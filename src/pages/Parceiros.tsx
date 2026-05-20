@@ -134,6 +134,18 @@ const COL_ORDER_STORAGE_KEY = "parceiros:colOrder:v1";
 
 const MONTH_NAMES = ["Jan","Fev","Mar","Abr","Mai","Jun","Jul","Ago","Set","Out","Nov","Dez"];
 
+const MAPPING_FIELDS: { key: string; label: string; match: string[] }[] = [
+  { key: "id_negocio", label: "ID do Negócio", match: ["id_negocio", "id negocio", "deal"] },
+  { key: "campanha", label: "Campanha", match: ["campanha"] },
+  { key: "embaixador", label: "Embaixador", match: ["embaixador", "indicador"] },
+  { key: "vendedor", label: "Vendedor", match: ["vendedor"] },
+  { key: "empresa", label: "Empresa", match: ["empresa", "negocio"] },
+  { key: "mrr", label: "MRR", match: ["mrr"] },
+  { key: "valorTotal", label: "Valor total", match: ["valor total", "valortotal", "total"] },
+  { key: "dataIndicacao", label: "Data indicação", match: ["indicac"] },
+  { key: "dataVenda", label: "Data venda", match: ["venda"] },
+];
+
 /* ─────────────────────────── Página ─────────────────────────── */
 
 export default function Parceiros() {

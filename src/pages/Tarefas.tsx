@@ -470,7 +470,7 @@ export default function Tarefas() {
         open={!!editing}
         tarefa={editing || undefined}
         onClose={() => setEditing(null)}
-        onSave={(patch) => { if (editing) { update(editing.id, patch); setEditing(null); } }}
+        onSave={(patch) => { if (editing) update(editing.id, patch); }}
         title="Editar Tarefa"
       />
     </div>

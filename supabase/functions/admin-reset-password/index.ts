@@ -55,6 +55,7 @@ Deno.serve(async (req) => {
       if (!authUserId) throw new Error("Usuário criado sem ID");
 
       if (prof?.id) {
+        await admin.from("profiles").delete().eq("user_id", authUserId).neq("id", prof.id);
         const { error: profileErr } = await admin.from("profiles").update({ user_id: authUserId, email: target }).eq("id", prof.id);
         if (profileErr) throw profileErr;
       } else {
@@ -68,6 +69,7 @@ Deno.serve(async (req) => {
     }
 
     if (prof?.id && prof.user_id !== authUserId) {
+      await admin.from("profiles").delete().eq("user_id", authUserId).neq("id", prof.id);
       const { error: profileErr } = await admin.from("profiles").update({ user_id: authUserId, email: target }).eq("id", prof.id);
       if (profileErr) throw profileErr;
     }

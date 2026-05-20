@@ -164,6 +164,11 @@ export default function Parceiros() {
   const [campFilter, setCampFilter] = useState<Set<string>>(new Set());
   const [embOpen, setEmbOpen] = useState(false);
   const [campOpen, setCampOpen] = useState(false);
+  const [mapOpen, setMapOpen] = useState(false);
+  const [sheetHeaders, setSheetHeaders] = useState<string[]>([]);
+  const [sheetRows, setSheetRows] = useState<any[]>([]);
+  const [mapping, setMapping] = useState<Record<string, string>>({});
+  const [importing, setImporting] = useState(false);
 
   useEffect(() => {
     try { localStorage.setItem(COL_ORDER_STORAGE_KEY, JSON.stringify(columnOrder)); } catch {}

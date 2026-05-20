@@ -108,7 +108,7 @@ Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response(null, { headers: corsHeaders });
   const started = Date.now();
 
-  const apiKey = Deno.env.get("FIRECRAWL_API_KEY");
+  const apiKey = Deno.env.get("CHAVE_API_FIRCRAWL") ?? Deno.env.get("FIRECRAWL_API_KEY");
   if (!apiKey) {
     return new Response(JSON.stringify({
       ok: false, fonte: SLUG, status: "erro",

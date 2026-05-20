@@ -134,16 +134,23 @@ const COL_ORDER_STORAGE_KEY = "parceiros:colOrder:v1";
 
 const MONTH_NAMES = ["Jan","Fev","Mar","Abr","Mai","Jun","Jul","Ago","Set","Out","Nov","Dez"];
 
-const MAPPING_FIELDS: { key: string; label: string; match: string[] }[] = [
-  { key: "id_negocio", label: "ID do Negócio", match: ["id_negocio", "id negocio", "deal"] },
-  { key: "campanha", label: "Campanha", match: ["campanha"] },
-  { key: "embaixador", label: "Embaixador", match: ["embaixador", "indicador"] },
-  { key: "vendedor", label: "Vendedor", match: ["vendedor"] },
-  { key: "empresa", label: "Empresa", match: ["empresa", "negocio"] },
-  { key: "mrr", label: "MRR", match: ["mrr"] },
-  { key: "valorTotal", label: "Valor total", match: ["valor total", "valortotal", "total"] },
-  { key: "dataIndicacao", label: "Data indicação", match: ["indicac"] },
-  { key: "dataVenda", label: "Data venda", match: ["venda"] },
+const MAPPING_FIELDS: { key: string; label: string; column: string; match: string[]; type?: "number" | "date"; required?: boolean }[] = [
+  { key: "id_negocio", label: "ID do Negócio *", column: "id_negocio", match: ["id_negocio", "id negocio", "deal"], required: true },
+  { key: "id_campanha", label: "ID da Campanha", column: "id_campanha", match: ["id_campanha", "id campanha"] },
+  { key: "campanha", label: "Campanha", column: "nome_campanha", match: ["nome_campanha", "campanha"] },
+  { key: "embaixador", label: "Embaixador / Indicador", column: "indicador", match: ["embaixador", "indicador"] },
+  { key: "email_indicador", label: "E-mail do Indicador", column: "email_indicador", match: ["email_indicador", "email"] },
+  { key: "vendedor", label: "Vendedor", column: "vendedor", match: ["vendedor"] },
+  { key: "codigo_indicacao", label: "Código de Indicação", column: "codigo_indicacao", match: ["codigo_indicacao", "codigo", "código"] },
+  { key: "empresa", label: "Empresa / Negócio", column: "nome_negocio", match: ["nome_negocio", "empresa", "negocio"] },
+  { key: "mrr", label: "MRR", column: "mrr", match: ["mrr"], type: "number" },
+  { key: "valorTotal", label: "Valor total", column: "valor_total", match: ["valor_total", "valor total", "valortotal", "total"], type: "number" },
+  { key: "dataIndicacao", label: "Data indicação", column: "data_indicacao", match: ["data_indicacao", "indicac"], type: "date" },
+  { key: "dataVenda", label: "Data venda", column: "data_venda", match: ["data_venda", "venda"], type: "date" },
+  { key: "canal_aquisicao", label: "Canal de aquisição", column: "canal_aquisicao", match: ["canal"] },
+  { key: "origem", label: "Origem", column: "origem", match: ["origem"] },
+  { key: "hubspot", label: "URL Hubspot", column: "hubspot_url", match: ["hubspot"] },
+  { key: "asaas", label: "URL Asaas", column: "asaas_url", match: ["asaas"] },
 ];
 
 /* ─────────────────────────── Página ─────────────────────────── */
@@ -320,28 +327,35 @@ export default function Parceiros() {
         const col = mapping[key];
         return col && col !== "__none__" ? r[col] : "";
       };
-      const toInsert = sheetRows.map((r, i) => ({
-        id_negocio: String(g(r, "id_negocio") ?? "").trim() || `import-${Date.now()}-${i}`,
-        nome_campanha: String(g(r, "campanha") ?? "") || null,
-        indicador: String(g(r, "embaixador") ?? "") || null,
-        vendedor: String(g(r, "vendedor") ?? "") || null,
-        nome_negocio: String(g(r, "empresa") ?? "") || null,
-        mrr: mapping.mrr && mapping.mrr !== "__none__" ? parseNumberCell(g(r, "mrr")) : null,
-        valor_total: mapping.valorTotal && mapping.valorTotal !== "__none__" ? parseNumberCell(g(r, "valorTotal")) : null,
-        data_indicacao: mapping.dataIndicacao && mapping.dataIndicacao !== "__none__" ? parseDateCell(g(r, "dataIndicacao")) : null,
-        data_venda: mapping.dataVenda && mapping.dataVenda !== "__none__" ? parseDateCell(g(r, "dataVenda")) : null,
-        origem: "import_planilha",
-      })).filter((p) => p.nome_campanha || p.nome_negocio || p.indicador);
+      const toInsert: any[] = [];
+      let skipped = 0;
+      sheetRows.forEach((r) => {
+        const idNegocio = String(g(r, "id_negocio") ?? "").trim();
+        if (!idNegocio) { skipped++; return; }
+        const payload: Record<string, any> = { id_negocio: idNegocio };
+        MAPPING_FIELDS.forEach((f) => {
+          if (f.key === "id_negocio") return;
+          const col = mapping[f.key];
+          if (!col || col === "__none__") return;
+          const raw = r[col];
+          if (raw == null || raw === "") return;
+          if (f.type === "number") payload[f.column] = parseNumberCell(raw);
+          else if (f.type === "date") payload[f.column] = parseDateCell(raw);
+          else payload[f.column] = String(raw).trim() || null;
+        });
+        if (!payload.origem) payload.origem = "import_planilha";
+        toInsert.push(payload);
+      });
 
       if (toInsert.length === 0) {
-        toast.warning("Nenhuma linha válida encontrada");
+        toast.warning("Nenhuma linha válida encontrada (ID do Negócio é obrigatório)");
         return;
       }
       const { error } = await supabase
         .from("parceiros_indicacoes")
         .upsert(toInsert, { onConflict: "id_negocio", ignoreDuplicates: false });
       if (error) throw error;
-      toast.success(`${toInsert.length} indicação(ões) importada(s)`);
+      toast.success(`${toInsert.length} indicação(ões) importada(s)${skipped ? ` · ${skipped} ignorada(s) sem ID` : ""}`);
       setMapOpen(false);
       setSheetRows([]);
       setSheetHeaders([]);

@@ -180,7 +180,7 @@ export function parseValorBR(text: string | null | undefined): number {
 
 export async function runFirecrawlCollector(cfg: FirecrawlCollectorConfig): Promise<Response> {
   const started = Date.now();
-  const apiKey = Deno.env.get("FIRECRAWL_API_KEY");
+  const apiKey = Deno.env.get("CHAVE_API_FIRCRAWL") ?? Deno.env.get("FIRECRAWL_API_KEY");
   if (!apiKey) {
     return new Response(JSON.stringify({
       ok: false, fonte: cfg.slug, status: "erro",

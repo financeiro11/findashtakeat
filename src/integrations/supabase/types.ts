@@ -14,20 +14,1460 @@ export type Database = {
   }
   public: {
     Tables: {
-      editais: {
+      ai_conversations: {
         Row: {
           created_at: string
-          id: number
+          id: string
+          titulo: string
+          updated_at: string
+          user_id: string
         }
         Insert: {
           created_at?: string
-          id?: number
+          id?: string
+          titulo?: string
+          updated_at?: string
+          user_id: string
         }
         Update: {
           created_at?: string
-          id?: number
+          id?: string
+          titulo?: string
+          updated_at?: string
+          user_id?: string
         }
         Relationships: []
+      }
+      ai_dashboard_cache: {
+        Row: {
+          created_at: string
+          id: string
+          insights: Json
+          periodo: string
+          user_id: string
+        }
+        Insert: {
+          created_at?: string
+          id?: string
+          insights?: Json
+          periodo: string
+          user_id: string
+        }
+        Update: {
+          created_at?: string
+          id?: string
+          insights?: Json
+          periodo?: string
+          user_id?: string
+        }
+        Relationships: []
+      }
+      ai_messages: {
+        Row: {
+          content: string
+          conversation_id: string
+          created_at: string
+          id: string
+          role: string
+          user_id: string
+        }
+        Insert: {
+          content: string
+          conversation_id: string
+          created_at?: string
+          id?: string
+          role: string
+          user_id: string
+        }
+        Update: {
+          content?: string
+          conversation_id?: string
+          created_at?: string
+          id?: string
+          role?: string
+          user_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "ai_messages_conversation_id_fkey"
+            columns: ["conversation_id"]
+            isOneToOne: false
+            referencedRelation: "ai_conversations"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      ai_model_pricing: {
+        Row: {
+          input_per_1m_usd: number
+          model: string
+          output_per_1m_usd: number
+          updated_at: string
+        }
+        Insert: {
+          input_per_1m_usd?: number
+          model: string
+          output_per_1m_usd?: number
+          updated_at?: string
+        }
+        Update: {
+          input_per_1m_usd?: number
+          model?: string
+          output_per_1m_usd?: number
+          updated_at?: string
+        }
+        Relationships: []
+      }
+      ai_usage_log: {
+        Row: {
+          completion_tokens: number
+          cost_usd: number
+          created_at: string
+          feature: string
+          id: string
+          model: string
+          prompt_tokens: number
+          total_tokens: number
+          user_id: string
+        }
+        Insert: {
+          completion_tokens?: number
+          cost_usd?: number
+          created_at?: string
+          feature: string
+          id?: string
+          model: string
+          prompt_tokens?: number
+          total_tokens?: number
+          user_id: string
+        }
+        Update: {
+          completion_tokens?: number
+          cost_usd?: number
+          created_at?: string
+          feature?: string
+          id?: string
+          model?: string
+          prompt_tokens?: number
+          total_tokens?: number
+          user_id?: string
+        }
+        Relationships: []
+      }
+      automacoes_catalogo: {
+        Row: {
+          automacao: string
+          categoria: string | null
+          created_at: string
+          dor: string | null
+          execucoes: number
+          ferramentas: string | null
+          horas_mes: number | null
+          id: string
+          impacto: string | null
+          observacao: string | null
+          ordem: number
+          responsavel: string | null
+          solucao: string | null
+          status: string
+          ultima_falha: string | null
+          updated_at: string
+        }
+        Insert: {
+          automacao: string
+          categoria?: string | null
+          created_at?: string
+          dor?: string | null
+          execucoes?: number
+          ferramentas?: string | null
+          horas_mes?: number | null
+          id?: string
+          impacto?: string | null
+          observacao?: string | null
+          ordem?: number
+          responsavel?: string | null
+          solucao?: string | null
+          status?: string
+          ultima_falha?: string | null
+          updated_at?: string
+        }
+        Update: {
+          automacao?: string
+          categoria?: string | null
+          created_at?: string
+          dor?: string | null
+          execucoes?: number
+          ferramentas?: string | null
+          horas_mes?: number | null
+          id?: string
+          impacto?: string | null
+          observacao?: string | null
+          ordem?: number
+          responsavel?: string | null
+          solucao?: string | null
+          status?: string
+          ultima_falha?: string | null
+          updated_at?: string
+        }
+        Relationships: []
+      }
+      base_conhecimento: {
+        Row: {
+          conteudo: string
+          created_at: string
+          id: string
+          tipo: string
+          titulo: string
+          updated_at: string
+        }
+        Insert: {
+          conteudo: string
+          created_at?: string
+          id?: string
+          tipo?: string
+          titulo: string
+          updated_at?: string
+        }
+        Update: {
+          conteudo?: string
+          created_at?: string
+          id?: string
+          tipo?: string
+          titulo?: string
+          updated_at?: string
+        }
+        Relationships: []
+      }
+      bp_anual: {
+        Row: {
+          ano: number
+          created_at: string
+          dados: Json
+          id: string
+          observacao: string | null
+          updated_at: string
+        }
+        Insert: {
+          ano: number
+          created_at?: string
+          dados?: Json
+          id?: string
+          observacao?: string | null
+          updated_at?: string
+        }
+        Update: {
+          ano?: number
+          created_at?: string
+          dados?: Json
+          id?: string
+          observacao?: string | null
+          updated_at?: string
+        }
+        Relationships: []
+      }
+      cenarios: {
+        Row: {
+          analise: string | null
+          created_at: string
+          descricao: string | null
+          graficos: Json | null
+          id: string
+          meses_projecao: number
+          nome: string
+          periodo_base: string | null
+          premissas: Json
+          projecao: Json | null
+          sensibilidade: Json | null
+          updated_at: string
+        }
+        Insert: {
+          analise?: string | null
+          created_at?: string
+          descricao?: string | null
+          graficos?: Json | null
+          id?: string
+          meses_projecao?: number
+          nome: string
+          periodo_base?: string | null
+          premissas?: Json
+          projecao?: Json | null
+          sensibilidade?: Json | null
+          updated_at?: string
+        }
+        Update: {
+          analise?: string | null
+          created_at?: string
+          descricao?: string | null
+          graficos?: Json | null
+          id?: string
+          meses_projecao?: number
+          nome?: string
+          periodo_base?: string | null
+          premissas?: Json
+          projecao?: Json | null
+          sensibilidade?: Json | null
+          updated_at?: string
+        }
+        Relationships: []
+      }
+      de_para_rules: {
+        Row: {
+          categoria: string | null
+          centro_custo: string | null
+          cliente_fornecedor: string | null
+          conta: string | null
+          created_at: string
+          id: string
+          keyword: string
+          observacao: string | null
+          tipo: string
+          updated_at: string
+        }
+        Insert: {
+          categoria?: string | null
+          centro_custo?: string | null
+          cliente_fornecedor?: string | null
+          conta?: string | null
+          created_at?: string
+          id?: string
+          keyword: string
+          observacao?: string | null
+          tipo: string
+          updated_at?: string
+        }
+        Update: {
+          categoria?: string | null
+          centro_custo?: string | null
+          cliente_fornecedor?: string | null
+          conta?: string | null
+          created_at?: string
+          id?: string
+          keyword?: string
+          observacao?: string | null
+          tipo?: string
+          updated_at?: string
+        }
+        Relationships: []
+      }
+      demonstracoes_contabeis: {
+        Row: {
+          created_at: string
+          dados: Json
+          id: string
+          observacao: string | null
+          pdf_path: string | null
+          periodo: string
+          tipo: string
+          updated_at: string
+        }
+        Insert: {
+          created_at?: string
+          dados?: Json
+          id?: string
+          observacao?: string | null
+          pdf_path?: string | null
+          periodo: string
+          tipo: string
+          updated_at?: string
+        }
+        Update: {
+          created_at?: string
+          dados?: Json
+          id?: string
+          observacao?: string | null
+          pdf_path?: string | null
+          periodo?: string
+          tipo?: string
+          updated_at?: string
+        }
+        Relationships: []
+      }
+      editais: {
+        Row: {
+          categoria: string | null
+          created_at: string
+          criterios_elegibilidade: string | null
+          data_abertura: string | null
+          data_captura: string
+          data_publicacao: string | null
+          documentos: Json | null
+          exclusion_reason: string | null
+          external_id: string | null
+          fonte: string | null
+          hash_dedupe: string | null
+          id: string
+          link: string | null
+          match_score: number | null
+          modalidade: string | null
+          numero: string | null
+          objeto: string | null
+          observacao: string | null
+          opportunity_type: string | null
+          orgao: string | null
+          pdf_path: string | null
+          pipeline_stage: string
+          prazo_envio: string | null
+          prioridade: string
+          proximos_passos: string | null
+          regiao: string | null
+          relevance_reason: string | null
+          responsavel: string | null
+          resumo_ia: string | null
+          riscos: string | null
+          source_priority: number
+          status: string
+          titulo: string
+          updated_at: string
+          valor_estimado: number | null
+          visibility_status: string
+        }
+        Insert: {
+          categoria?: string | null
+          created_at?: string
+          criterios_elegibilidade?: string | null
+          data_abertura?: string | null
+          data_captura?: string
+          data_publicacao?: string | null
+          documentos?: Json | null
+          exclusion_reason?: string | null
+          external_id?: string | null
+          fonte?: string | null
+          hash_dedupe?: string | null
+          id?: string
+          link?: string | null
+          match_score?: number | null
+          modalidade?: string | null
+          numero?: string | null
+          objeto?: string | null
+          observacao?: string | null
+          opportunity_type?: string | null
+          orgao?: string | null
+          pdf_path?: string | null
+          pipeline_stage?: string
+          prazo_envio?: string | null
+          prioridade?: string
+          proximos_passos?: string | null
+          regiao?: string | null
+          relevance_reason?: string | null
+          responsavel?: string | null
+          resumo_ia?: string | null
+          riscos?: string | null
+          source_priority?: number
+          status?: string
+          titulo: string
+          updated_at?: string
+          valor_estimado?: number | null
+          visibility_status?: string
+        }
+        Update: {
+          categoria?: string | null
+          created_at?: string
+          criterios_elegibilidade?: string | null
+          data_abertura?: string | null
+          data_captura?: string
+          data_publicacao?: string | null
+          documentos?: Json | null
+          exclusion_reason?: string | null
+          external_id?: string | null
+          fonte?: string | null
+          hash_dedupe?: string | null
+          id?: string
+          link?: string | null
+          match_score?: number | null
+          modalidade?: string | null
+          numero?: string | null
+          objeto?: string | null
+          observacao?: string | null
+          opportunity_type?: string | null
+          orgao?: string | null
+          pdf_path?: string | null
+          pipeline_stage?: string
+          prazo_envio?: string | null
+          prioridade?: string
+          proximos_passos?: string | null
+          regiao?: string | null
+          relevance_reason?: string | null
+          responsavel?: string | null
+          resumo_ia?: string | null
+          riscos?: string | null
+          source_priority?: number
+          status?: string
+          titulo?: string
+          updated_at?: string
+          valor_estimado?: number | null
+          visibility_status?: string
+        }
+        Relationships: []
+      }
+      editais_fontes: {
+        Row: {
+          ativo: boolean
+          config: Json
+          created_at: string
+          endpoint: string | null
+          id: string
+          intervalo_horas: number
+          nome: string
+          proxima_sync: string | null
+          slug: string
+          tipo: string
+          ultima_sync: string | null
+          updated_at: string
+        }
+        Insert: {
+          ativo?: boolean
+          config?: Json
+          created_at?: string
+          endpoint?: string | null
+          id?: string
+          intervalo_horas?: number
+          nome: string
+          proxima_sync?: string | null
+          slug: string
+          tipo?: string
+          ultima_sync?: string | null
+          updated_at?: string
+        }
+        Update: {
+          ativo?: boolean
+          config?: Json
+          created_at?: string
+          endpoint?: string | null
+          id?: string
+          intervalo_horas?: number
+          nome?: string
+          proxima_sync?: string | null
+          slug?: string
+          tipo?: string
+          ultima_sync?: string | null
+          updated_at?: string
+        }
+        Relationships: []
+      }
+      editais_sync_logs: {
+        Row: {
+          capturados: number
+          descartados_filtro: number
+          duplicados: number
+          duracao_ms: number | null
+          erros: Json | null
+          finalizado_em: string | null
+          fonte_slug: string
+          id: string
+          iniciado_em: string
+          mensagem: string | null
+          novos: number
+          status: string
+        }
+        Insert: {
+          capturados?: number
+          descartados_filtro?: number
+          duplicados?: number
+          duracao_ms?: number | null
+          erros?: Json | null
+          finalizado_em?: string | null
+          fonte_slug: string
+          id?: string
+          iniciado_em?: string
+          mensagem?: string | null
+          novos?: number
+          status?: string
+        }
+        Update: {
+          capturados?: number
+          descartados_filtro?: number
+          duplicados?: number
+          duracao_ms?: number | null
+          erros?: Json | null
+          finalizado_em?: string | null
+          fonte_slug?: string
+          id?: string
+          iniciado_em?: string
+          mensagem?: string | null
+          novos?: number
+          status?: string
+        }
+        Relationships: []
+      }
+      edital_filter_settings: {
+        Row: {
+          created_at: string
+          excluded_keywords: string[]
+          excluded_sources: string[]
+          fapes_priority_boost: number
+          id: string
+          innovation_priority_boost: number
+          min_match_score: number
+          notif_diarias: boolean
+          notif_prazo: boolean
+          opportunity_types: string[]
+          perfil_empresa: string | null
+          pncp_min_match_score: number
+          preferred_keywords: string[]
+          preferred_regions: string[]
+          preferred_sources: string[]
+          show_low_relevance: boolean
+          show_pncp_results: boolean
+          startup_priority_boost: number
+          updated_at: string
+        }
+        Insert: {
+          created_at?: string
+          excluded_keywords?: string[]
+          excluded_sources?: string[]
+          fapes_priority_boost?: number
+          id?: string
+          innovation_priority_boost?: number
+          min_match_score?: number
+          notif_diarias?: boolean
+          notif_prazo?: boolean
+          opportunity_types?: string[]
+          perfil_empresa?: string | null
+          pncp_min_match_score?: number
+          preferred_keywords?: string[]
+          preferred_regions?: string[]
+          preferred_sources?: string[]
+          show_low_relevance?: boolean
+          show_pncp_results?: boolean
+          startup_priority_boost?: number
+          updated_at?: string
+        }
+        Update: {
+          created_at?: string
+          excluded_keywords?: string[]
+          excluded_sources?: string[]
+          fapes_priority_boost?: number
+          id?: string
+          innovation_priority_boost?: number
+          min_match_score?: number
+          notif_diarias?: boolean
+          notif_prazo?: boolean
+          opportunity_types?: string[]
+          perfil_empresa?: string | null
+          pncp_min_match_score?: number
+          preferred_keywords?: string[]
+          preferred_regions?: string[]
+          preferred_sources?: string[]
+          show_low_relevance?: boolean
+          show_pncp_results?: boolean
+          startup_priority_boost?: number
+          updated_at?: string
+        }
+        Relationships: []
+      }
+      extratos_importados: {
+        Row: {
+          created_at: string
+          filename: string
+          id: string
+          n8n_response: string | null
+          n8n_status: number | null
+          nome: string
+          status: string
+          tipo: string
+          user_id: string
+        }
+        Insert: {
+          created_at?: string
+          filename: string
+          id?: string
+          n8n_response?: string | null
+          n8n_status?: number | null
+          nome: string
+          status?: string
+          tipo: string
+          user_id: string
+        }
+        Update: {
+          created_at?: string
+          filename?: string
+          id?: string
+          n8n_response?: string | null
+          n8n_status?: number | null
+          nome?: string
+          status?: string
+          tipo?: string
+          user_id?: string
+        }
+        Relationships: []
+      }
+      historico_financeiro: {
+        Row: {
+          ano: number
+          created_at: string
+          id: string
+          mes: number
+          metrica: string
+          origem: string | null
+          updated_at: string
+          valor: number
+        }
+        Insert: {
+          ano: number
+          created_at?: string
+          id?: string
+          mes: number
+          metrica: string
+          origem?: string | null
+          updated_at?: string
+          valor?: number
+        }
+        Update: {
+          ano?: number
+          created_at?: string
+          id?: string
+          mes?: number
+          metrica?: string
+          origem?: string | null
+          updated_at?: string
+          valor?: number
+        }
+        Relationships: []
+      }
+      lib_cargos: {
+        Row: {
+          created_at: string
+          descricao: string | null
+          id: string
+          nome: string
+          updated_at: string
+        }
+        Insert: {
+          created_at?: string
+          descricao?: string | null
+          id?: string
+          nome: string
+          updated_at?: string
+        }
+        Update: {
+          created_at?: string
+          descricao?: string | null
+          id?: string
+          nome?: string
+          updated_at?: string
+        }
+        Relationships: []
+      }
+      lib_centros_custo: {
+        Row: {
+          codigo: string | null
+          created_at: string
+          descricao: string | null
+          id: string
+          nome: string
+          updated_at: string
+        }
+        Insert: {
+          codigo?: string | null
+          created_at?: string
+          descricao?: string | null
+          id?: string
+          nome: string
+          updated_at?: string
+        }
+        Update: {
+          codigo?: string | null
+          created_at?: string
+          descricao?: string | null
+          id?: string
+          nome?: string
+          updated_at?: string
+        }
+        Relationships: []
+      }
+      lib_colaboradores: {
+        Row: {
+          cargo_id: string | null
+          centro_custo_id: string | null
+          created_at: string
+          data_admissao: string | null
+          departamento_id: string | null
+          email: string | null
+          gestor_id: string | null
+          id: string
+          nome: string
+          observacao: string | null
+          status: string
+          tags: string[]
+          telefone: string | null
+          updated_at: string
+        }
+        Insert: {
+          cargo_id?: string | null
+          centro_custo_id?: string | null
+          created_at?: string
+          data_admissao?: string | null
+          departamento_id?: string | null
+          email?: string | null
+          gestor_id?: string | null
+          id?: string
+          nome: string
+          observacao?: string | null
+          status?: string
+          tags?: string[]
+          telefone?: string | null
+          updated_at?: string
+        }
+        Update: {
+          cargo_id?: string | null
+          centro_custo_id?: string | null
+          created_at?: string
+          data_admissao?: string | null
+          departamento_id?: string | null
+          email?: string | null
+          gestor_id?: string | null
+          id?: string
+          nome?: string
+          observacao?: string | null
+          status?: string
+          tags?: string[]
+          telefone?: string | null
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "lib_colaboradores_cargo_id_fkey"
+            columns: ["cargo_id"]
+            isOneToOne: false
+            referencedRelation: "lib_cargos"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "lib_colaboradores_centro_custo_id_fkey"
+            columns: ["centro_custo_id"]
+            isOneToOne: false
+            referencedRelation: "lib_centros_custo"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "lib_colaboradores_departamento_id_fkey"
+            columns: ["departamento_id"]
+            isOneToOne: false
+            referencedRelation: "lib_departamentos"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "lib_colaboradores_gestor_id_fkey"
+            columns: ["gestor_id"]
+            isOneToOne: false
+            referencedRelation: "lib_colaboradores"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      lib_departamentos: {
+        Row: {
+          created_at: string
+          descricao: string | null
+          gestor_id: string | null
+          id: string
+          nome: string
+          updated_at: string
+        }
+        Insert: {
+          created_at?: string
+          descricao?: string | null
+          gestor_id?: string | null
+          id?: string
+          nome: string
+          updated_at?: string
+        }
+        Update: {
+          created_at?: string
+          descricao?: string | null
+          gestor_id?: string | null
+          id?: string
+          nome?: string
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "lib_departamentos_gestor_fk"
+            columns: ["gestor_id"]
+            isOneToOne: false
+            referencedRelation: "lib_colaboradores"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      lib_fornecedores: {
+        Row: {
+          categoria: string | null
+          contato_email: string | null
+          contato_nome: string | null
+          contato_telefone: string | null
+          created_at: string
+          documento: string | null
+          id: string
+          nome: string
+          observacao: string | null
+          status: string
+          tags: string[]
+          updated_at: string
+        }
+        Insert: {
+          categoria?: string | null
+          contato_email?: string | null
+          contato_nome?: string | null
+          contato_telefone?: string | null
+          created_at?: string
+          documento?: string | null
+          id?: string
+          nome: string
+          observacao?: string | null
+          status?: string
+          tags?: string[]
+          updated_at?: string
+        }
+        Update: {
+          categoria?: string | null
+          contato_email?: string | null
+          contato_nome?: string | null
+          contato_telefone?: string | null
+          created_at?: string
+          documento?: string | null
+          id?: string
+          nome?: string
+          observacao?: string | null
+          status?: string
+          tags?: string[]
+          updated_at?: string
+        }
+        Relationships: []
+      }
+      lib_politicas: {
+        Row: {
+          aplica_a: string[]
+          ativa: boolean
+          categoria: string | null
+          conteudo: string
+          created_at: string
+          id: string
+          tags: string[]
+          titulo: string
+          updated_at: string
+        }
+        Insert: {
+          aplica_a?: string[]
+          ativa?: boolean
+          categoria?: string | null
+          conteudo: string
+          created_at?: string
+          id?: string
+          tags?: string[]
+          titulo: string
+          updated_at?: string
+        }
+        Update: {
+          aplica_a?: string[]
+          ativa?: boolean
+          categoria?: string | null
+          conteudo?: string
+          created_at?: string
+          id?: string
+          tags?: string[]
+          titulo?: string
+          updated_at?: string
+        }
+        Relationships: []
+      }
+      parceiros_cadastro: {
+        Row: {
+          bonificacao: boolean
+          campanha: string | null
+          created_at: string
+          id: string
+          metodo_bonificacao: string | null
+          metodo_recorrencia: string | null
+          nome: string
+          recorrencia: boolean
+          status: string
+          tier: string
+          updated_at: string
+          valor_bonificacao: number | null
+          valor_recorrencia: number | null
+        }
+        Insert: {
+          bonificacao?: boolean
+          campanha?: string | null
+          created_at?: string
+          id?: string
+          metodo_bonificacao?: string | null
+          metodo_recorrencia?: string | null
+          nome: string
+          recorrencia?: boolean
+          status?: string
+          tier?: string
+          updated_at?: string
+          valor_bonificacao?: number | null
+          valor_recorrencia?: number | null
+        }
+        Update: {
+          bonificacao?: boolean
+          campanha?: string | null
+          created_at?: string
+          id?: string
+          metodo_bonificacao?: string | null
+          metodo_recorrencia?: string | null
+          nome?: string
+          recorrencia?: boolean
+          status?: string
+          tier?: string
+          updated_at?: string
+          valor_bonificacao?: number | null
+          valor_recorrencia?: number | null
+        }
+        Relationships: []
+      }
+      parceiros_indicacoes: {
+        Row: {
+          asaas_url: string | null
+          canal_aquisicao: string | null
+          codigo_indicacao: string | null
+          created_at: string
+          data_indicacao: string | null
+          data_venda: string | null
+          email_indicador: string | null
+          hubspot_url: string | null
+          id: string
+          id_campanha: string | null
+          id_negocio: string
+          indicador: string | null
+          mrr: number | null
+          nome_campanha: string | null
+          nome_negocio: string | null
+          observacoes: string | null
+          origem: string | null
+          responsavel_takeat: string | null
+          synced_at: string
+          valor_total: number | null
+          vendedor: string | null
+        }
+        Insert: {
+          asaas_url?: string | null
+          canal_aquisicao?: string | null
+          codigo_indicacao?: string | null
+          created_at?: string
+          data_indicacao?: string | null
+          data_venda?: string | null
+          email_indicador?: string | null
+          hubspot_url?: string | null
+          id?: string
+          id_campanha?: string | null
+          id_negocio: string
+          indicador?: string | null
+          mrr?: number | null
+          nome_campanha?: string | null
+          nome_negocio?: string | null
+          observacoes?: string | null
+          origem?: string | null
+          responsavel_takeat?: string | null
+          synced_at?: string
+          valor_total?: number | null
+          vendedor?: string | null
+        }
+        Update: {
+          asaas_url?: string | null
+          canal_aquisicao?: string | null
+          codigo_indicacao?: string | null
+          created_at?: string
+          data_indicacao?: string | null
+          data_venda?: string | null
+          email_indicador?: string | null
+          hubspot_url?: string | null
+          id?: string
+          id_campanha?: string | null
+          id_negocio?: string
+          indicador?: string | null
+          mrr?: number | null
+          nome_campanha?: string | null
+          nome_negocio?: string | null
+          observacoes?: string | null
+          origem?: string | null
+          responsavel_takeat?: string | null
+          synced_at?: string
+          valor_total?: number | null
+          vendedor?: string | null
+        }
+        Relationships: []
+      }
+      playbook_assets: {
+        Row: {
+          created_at: string
+          file_name: string
+          file_size: number | null
+          file_type: string | null
+          file_url: string
+          id: string
+          playbook_id: string
+        }
+        Insert: {
+          created_at?: string
+          file_name: string
+          file_size?: number | null
+          file_type?: string | null
+          file_url: string
+          id?: string
+          playbook_id: string
+        }
+        Update: {
+          created_at?: string
+          file_name?: string
+          file_size?: number | null
+          file_type?: string | null
+          file_url?: string
+          id?: string
+          playbook_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "playbook_assets_playbook_id_fkey"
+            columns: ["playbook_id"]
+            isOneToOne: false
+            referencedRelation: "playbooks"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      playbooks: {
+        Row: {
+          archived: boolean
+          category: string
+          content: Json
+          created_at: string
+          description: string | null
+          id: string
+          last_edited_by: string | null
+          owner_name: string | null
+          status: string
+          title: string
+          updated_at: string
+        }
+        Insert: {
+          archived?: boolean
+          category?: string
+          content?: Json
+          created_at?: string
+          description?: string | null
+          id?: string
+          last_edited_by?: string | null
+          owner_name?: string | null
+          status?: string
+          title: string
+          updated_at?: string
+        }
+        Update: {
+          archived?: boolean
+          category?: string
+          content?: Json
+          created_at?: string
+          description?: string | null
+          id?: string
+          last_edited_by?: string | null
+          owner_name?: string | null
+          status?: string
+          title?: string
+          updated_at?: string
+        }
+        Relationships: []
+      }
+      profiles: {
+        Row: {
+          cargo: string | null
+          created_at: string
+          email: string
+          id: string
+          nome: string
+          updated_at: string
+          user_id: string
+        }
+        Insert: {
+          cargo?: string | null
+          created_at?: string
+          email: string
+          id?: string
+          nome: string
+          updated_at?: string
+          user_id: string
+        }
+        Update: {
+          cargo?: string | null
+          created_at?: string
+          email?: string
+          id?: string
+          nome?: string
+          updated_at?: string
+          user_id?: string
+        }
+        Relationships: []
+      }
+      projetos: {
+        Row: {
+          automacao: string
+          created_at: string
+          descricao_entrega: string | null
+          id: string
+          observacao: string | null
+          ordem: number
+          responsavel: string | null
+          status: string
+          updated_at: string
+        }
+        Insert: {
+          automacao: string
+          created_at?: string
+          descricao_entrega?: string | null
+          id?: string
+          observacao?: string | null
+          ordem?: number
+          responsavel?: string | null
+          status?: string
+          updated_at?: string
+        }
+        Update: {
+          automacao?: string
+          created_at?: string
+          descricao_entrega?: string | null
+          id?: string
+          observacao?: string | null
+          ordem?: number
+          responsavel?: string | null
+          status?: string
+          updated_at?: string
+        }
+        Relationships: []
+      }
+      recargas_celulares: {
+        Row: {
+          created_at: string
+          id: string
+          numero: string | null
+          proprietario: string
+          proxima_recarga: string | null
+          setor: string | null
+          situacao: string | null
+          ultima_recarga: string | null
+          updated_at: string
+          valor: number | null
+          verificado: string | null
+        }
+        Insert: {
+          created_at?: string
+          id?: string
+          numero?: string | null
+          proprietario: string
+          proxima_recarga?: string | null
+          setor?: string | null
+          situacao?: string | null
+          ultima_recarga?: string | null
+          updated_at?: string
+          valor?: number | null
+          verificado?: string | null
+        }
+        Update: {
+          created_at?: string
+          id?: string
+          numero?: string | null
+          proprietario?: string
+          proxima_recarga?: string | null
+          setor?: string | null
+          situacao?: string | null
+          ultima_recarga?: string | null
+          updated_at?: string
+          valor?: number | null
+          verificado?: string | null
+        }
+        Relationships: []
+      }
+      recargas_viagens: {
+        Row: {
+          created_at: string
+          data: string
+          id: string
+          observacao: string | null
+          updated_at: string
+          valor_total: number
+        }
+        Insert: {
+          created_at?: string
+          data: string
+          id?: string
+          observacao?: string | null
+          updated_at?: string
+          valor_total?: number
+        }
+        Update: {
+          created_at?: string
+          data?: string
+          id?: string
+          observacao?: string | null
+          updated_at?: string
+          valor_total?: number
+        }
+        Relationships: []
+      }
+      recargas_viagens_itens: {
+        Row: {
+          created_at: string
+          evento: string | null
+          evento_fim: string | null
+          evento_inicio: string | null
+          id: string
+          nome: string
+          setor: string | null
+          valor: number
+          viagem_id: string
+        }
+        Insert: {
+          created_at?: string
+          evento?: string | null
+          evento_fim?: string | null
+          evento_inicio?: string | null
+          id?: string
+          nome: string
+          setor?: string | null
+          valor?: number
+          viagem_id: string
+        }
+        Update: {
+          created_at?: string
+          evento?: string | null
+          evento_fim?: string | null
+          evento_inicio?: string | null
+          id?: string
+          nome?: string
+          setor?: string | null
+          valor?: number
+          viagem_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "recargas_viagens_itens_viagem_id_fkey"
+            columns: ["viagem_id"]
+            isOneToOne: false
+            referencedRelation: "recargas_viagens"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      tarefas: {
+        Row: {
+          created_at: string
+          id: string
+          observacao: string | null
+          ordem: number
+          prazo: string | null
+          prioridade: string
+          responsavel: string | null
+          status: string
+          subtarefas: Json
+          titulo: string
+          updated_at: string
+        }
+        Insert: {
+          created_at?: string
+          id?: string
+          observacao?: string | null
+          ordem?: number
+          prazo?: string | null
+          prioridade?: string
+          responsavel?: string | null
+          status?: string
+          subtarefas?: Json
+          titulo: string
+          updated_at?: string
+        }
+        Update: {
+          created_at?: string
+          id?: string
+          observacao?: string | null
+          ordem?: number
+          prazo?: string | null
+          prioridade?: string
+          responsavel?: string | null
+          status?: string
+          subtarefas?: Json
+          titulo?: string
+          updated_at?: string
+        }
+        Relationships: []
+      }
+      viagens_eventos_excluidos: {
+        Row: {
+          created_at: string
+          evento_hash: string
+        }
+        Insert: {
+          created_at?: string
+          evento_hash: string
+        }
+        Update: {
+          created_at?: string
+          evento_hash?: string
+        }
+        Relationships: []
+      }
+      workspace_pages: {
+        Row: {
+          archived: boolean
+          content: Json
+          cover_url: string | null
+          created_at: string
+          created_by: string | null
+          created_by_name: string | null
+          icon: string | null
+          id: string
+          is_favorite: boolean
+          last_edited_by: string | null
+          parent_id: string | null
+          position: number
+          tags: string[]
+          title: string
+          updated_at: string
+        }
+        Insert: {
+          archived?: boolean
+          content?: Json
+          cover_url?: string | null
+          created_at?: string
+          created_by?: string | null
+          created_by_name?: string | null
+          icon?: string | null
+          id?: string
+          is_favorite?: boolean
+          last_edited_by?: string | null
+          parent_id?: string | null
+          position?: number
+          tags?: string[]
+          title?: string
+          updated_at?: string
+        }
+        Update: {
+          archived?: boolean
+          content?: Json
+          cover_url?: string | null
+          created_at?: string
+          created_by?: string | null
+          created_by_name?: string | null
+          icon?: string | null
+          id?: string
+          is_favorite?: boolean
+          last_edited_by?: string | null
+          parent_id?: string | null
+          position?: number
+          tags?: string[]
+          title?: string
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "workspace_pages_parent_id_fkey"
+            columns: ["parent_id"]
+            isOneToOne: false
+            referencedRelation: "workspace_pages"
+            referencedColumns: ["id"]
+          },
+        ]
       }
     }
     Views: {

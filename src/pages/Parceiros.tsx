@@ -134,16 +134,23 @@ const COL_ORDER_STORAGE_KEY = "parceiros:colOrder:v1";
 
 const MONTH_NAMES = ["Jan","Fev","Mar","Abr","Mai","Jun","Jul","Ago","Set","Out","Nov","Dez"];
 
-const MAPPING_FIELDS: { key: string; label: string; match: string[] }[] = [
-  { key: "id_negocio", label: "ID do Negócio", match: ["id_negocio", "id negocio", "deal"] },
-  { key: "campanha", label: "Campanha", match: ["campanha"] },
-  { key: "embaixador", label: "Embaixador", match: ["embaixador", "indicador"] },
-  { key: "vendedor", label: "Vendedor", match: ["vendedor"] },
-  { key: "empresa", label: "Empresa", match: ["empresa", "negocio"] },
-  { key: "mrr", label: "MRR", match: ["mrr"] },
-  { key: "valorTotal", label: "Valor total", match: ["valor total", "valortotal", "total"] },
-  { key: "dataIndicacao", label: "Data indicação", match: ["indicac"] },
-  { key: "dataVenda", label: "Data venda", match: ["venda"] },
+const MAPPING_FIELDS: { key: string; label: string; column: string; match: string[]; type?: "number" | "date"; required?: boolean }[] = [
+  { key: "id_negocio", label: "ID do Negócio *", column: "id_negocio", match: ["id_negocio", "id negocio", "deal"], required: true },
+  { key: "id_campanha", label: "ID da Campanha", column: "id_campanha", match: ["id_campanha", "id campanha"] },
+  { key: "campanha", label: "Campanha", column: "nome_campanha", match: ["nome_campanha", "campanha"] },
+  { key: "embaixador", label: "Embaixador / Indicador", column: "indicador", match: ["embaixador", "indicador"] },
+  { key: "email_indicador", label: "E-mail do Indicador", column: "email_indicador", match: ["email_indicador", "email"] },
+  { key: "vendedor", label: "Vendedor", column: "vendedor", match: ["vendedor"] },
+  { key: "codigo_indicacao", label: "Código de Indicação", column: "codigo_indicacao", match: ["codigo_indicacao", "codigo", "código"] },
+  { key: "empresa", label: "Empresa / Negócio", column: "nome_negocio", match: ["nome_negocio", "empresa", "negocio"] },
+  { key: "mrr", label: "MRR", column: "mrr", match: ["mrr"], type: "number" },
+  { key: "valorTotal", label: "Valor total", column: "valor_total", match: ["valor_total", "valor total", "valortotal", "total"], type: "number" },
+  { key: "dataIndicacao", label: "Data indicação", column: "data_indicacao", match: ["data_indicacao", "indicac"], type: "date" },
+  { key: "dataVenda", label: "Data venda", column: "data_venda", match: ["data_venda", "venda"], type: "date" },
+  { key: "canal_aquisicao", label: "Canal de aquisição", column: "canal_aquisicao", match: ["canal"] },
+  { key: "origem", label: "Origem", column: "origem", match: ["origem"] },
+  { key: "hubspot", label: "URL Hubspot", column: "hubspot_url", match: ["hubspot"] },
+  { key: "asaas", label: "URL Asaas", column: "asaas_url", match: ["asaas"] },
 ];
 
 /* ─────────────────────────── Página ─────────────────────────── */

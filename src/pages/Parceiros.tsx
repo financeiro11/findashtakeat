@@ -12,6 +12,8 @@ import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from "@/components/ui/table";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from "@/components/ui/dialog";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { SectionCard } from "@/components/ui/section-card";
 import { cn } from "@/lib/utils";
 import { supabase } from "@/integrations/supabase/client";
@@ -132,6 +134,18 @@ const COL_ORDER_STORAGE_KEY = "parceiros:colOrder:v1";
 
 const MONTH_NAMES = ["Jan","Fev","Mar","Abr","Mai","Jun","Jul","Ago","Set","Out","Nov","Dez"];
 
+const MAPPING_FIELDS: { key: string; label: string; match: string[] }[] = [
+  { key: "id_negocio", label: "ID do Negócio", match: ["id_negocio", "id negocio", "deal"] },
+  { key: "campanha", label: "Campanha", match: ["campanha"] },
+  { key: "embaixador", label: "Embaixador", match: ["embaixador", "indicador"] },
+  { key: "vendedor", label: "Vendedor", match: ["vendedor"] },
+  { key: "empresa", label: "Empresa", match: ["empresa", "negocio"] },
+  { key: "mrr", label: "MRR", match: ["mrr"] },
+  { key: "valorTotal", label: "Valor total", match: ["valor total", "valortotal", "total"] },
+  { key: "dataIndicacao", label: "Data indicação", match: ["indicac"] },
+  { key: "dataVenda", label: "Data venda", match: ["venda"] },
+];
+
 /* ─────────────────────────── Página ─────────────────────────── */
 
 export default function Parceiros() {
@@ -162,6 +176,11 @@ export default function Parceiros() {
   const [campFilter, setCampFilter] = useState<Set<string>>(new Set());
   const [embOpen, setEmbOpen] = useState(false);
   const [campOpen, setCampOpen] = useState(false);
+  const [mapOpen, setMapOpen] = useState(false);
+  const [sheetHeaders, setSheetHeaders] = useState<string[]>([]);
+  const [sheetRows, setSheetRows] = useState<any[]>([]);
+  const [mapping, setMapping] = useState<Record<string, string>>({});
+  const [importing, setImporting] = useState(false);
 
   useEffect(() => {
     try { localStorage.setItem(COL_ORDER_STORAGE_KEY, JSON.stringify(columnOrder)); } catch {}
@@ -272,54 +291,65 @@ export default function Parceiros() {
       const wb = XLSX.read(buf, { type: "array", cellDates: true });
       const ws = wb.Sheets[wb.SheetNames[0]];
       const data: any[] = XLSX.utils.sheet_to_json(ws, { defval: "" });
+      if (data.length === 0) {
+        toast.warning("Planilha vazia");
+        return;
+      }
+      const headers = Object.keys(data[0]);
+      // auto-detect defaults
+      const norm = (s: string) => s.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+      const findHeader = (...needles: string[]) =>
+        headers.find((h) => needles.some((n) => norm(h).includes(n))) || "";
+      const auto: Record<string, string> = {};
+      MAPPING_FIELDS.forEach((f) => { auto[f.key] = findHeader(...f.match); });
+      setSheetHeaders(headers);
+      setSheetRows(data);
+      setMapping(auto);
+      setMapOpen(true);
+    } catch (err: any) {
+      toast.error(err?.message || "Falha ao ler planilha");
+    } finally {
+      if (fileInputRef.current) fileInputRef.current.value = "";
+    }
+  };
 
-      const findKey = (row: any, ...needles: string[]) => {
-        const keys = Object.keys(row);
-        return keys.find((k) =>
-          needles.some((n) => k.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").includes(n))
-        );
+  const confirmImport = async () => {
+    setImporting(true);
+    try {
+      const g = (r: any, key: string) => {
+        const col = mapping[key];
+        return col && col !== "__none__" ? r[col] : "";
       };
-
-      const toInsert = data.map((r, i) => {
-        const kCamp = findKey(r, "campanha");
-        const kEmb = findKey(r, "embaixador", "indicador");
-        const kVend = findKey(r, "vendedor");
-        const kEmp = findKey(r, "empresa", "negocio");
-        const kMrr = findKey(r, "mrr");
-        const kTot = findKey(r, "valor total", "valortotal", "total");
-        const kInd = findKey(r, "indicac");
-        const kVen = findKey(r, "venda");
-        const kIdNeg = findKey(r, "id_negocio", "id negocio", "deal");
-        return {
-          id_negocio: kIdNeg ? String(r[kIdNeg] ?? "").trim() : `import-${Date.now()}-${i}`,
-          nome_campanha: kCamp ? String(r[kCamp] ?? "") : null,
-          indicador: kEmb ? String(r[kEmb] ?? "") : null,
-          vendedor: kVend ? String(r[kVend] ?? "") : null,
-          nome_negocio: kEmp ? String(r[kEmp] ?? "") : null,
-          mrr: kMrr ? parseNumberCell(r[kMrr]) : null,
-          valor_total: kTot ? parseNumberCell(r[kTot]) : null,
-          data_indicacao: kInd ? parseDateCell(r[kInd]) : null,
-          data_venda: kVen ? parseDateCell(r[kVen]) : null,
-          origem: "import_planilha",
-        };
-      }).filter((p) => p.nome_campanha || p.nome_negocio || p.indicador);
+      const toInsert = sheetRows.map((r, i) => ({
+        id_negocio: String(g(r, "id_negocio") ?? "").trim() || `import-${Date.now()}-${i}`,
+        nome_campanha: String(g(r, "campanha") ?? "") || null,
+        indicador: String(g(r, "embaixador") ?? "") || null,
+        vendedor: String(g(r, "vendedor") ?? "") || null,
+        nome_negocio: String(g(r, "empresa") ?? "") || null,
+        mrr: mapping.mrr && mapping.mrr !== "__none__" ? parseNumberCell(g(r, "mrr")) : null,
+        valor_total: mapping.valorTotal && mapping.valorTotal !== "__none__" ? parseNumberCell(g(r, "valorTotal")) : null,
+        data_indicacao: mapping.dataIndicacao && mapping.dataIndicacao !== "__none__" ? parseDateCell(g(r, "dataIndicacao")) : null,
+        data_venda: mapping.dataVenda && mapping.dataVenda !== "__none__" ? parseDateCell(g(r, "dataVenda")) : null,
+        origem: "import_planilha",
+      })).filter((p) => p.nome_campanha || p.nome_negocio || p.indicador);
 
       if (toInsert.length === 0) {
         toast.warning("Nenhuma linha válida encontrada");
         return;
       }
-
       const { error } = await supabase
         .from("parceiros_indicacoes")
         .upsert(toInsert, { onConflict: "id_negocio", ignoreDuplicates: false });
-
       if (error) throw error;
       toast.success(`${toInsert.length} indicação(ões) importada(s)`);
+      setMapOpen(false);
+      setSheetRows([]);
+      setSheetHeaders([]);
       await loadRows();
     } catch (err: any) {
-      toast.error(err?.message || "Falha ao ler planilha");
+      toast.error(err?.message || "Falha ao importar");
     } finally {
-      if (fileInputRef.current) fileInputRef.current.value = "";
+      setImporting(false);
     }
   };
 
@@ -697,6 +727,47 @@ export default function Parceiros() {
           </Table>
         </div>
       </SectionCard>
+
+      <Dialog open={mapOpen} onOpenChange={(o) => { if (!importing) setMapOpen(o); }}>
+        <DialogContent className="max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>Mapear colunas da planilha</DialogTitle>
+            <DialogDescription>
+              Vincule cada campo da lista de indicações à coluna correspondente da planilha importada.
+              {sheetRows.length > 0 && ` ${sheetRows.length} linha(s) detectada(s).`}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="max-h-[60vh] overflow-y-auto pr-1">
+            <div className="space-y-2">
+              {MAPPING_FIELDS.map((f) => (
+                <div key={f.key} className="grid grid-cols-1 items-center gap-1 sm:grid-cols-[1fr_1.4fr] sm:gap-3">
+                  <label className="text-[12.5px] font-medium text-foreground">{f.label}</label>
+                  <Select
+                    value={mapping[f.key] || "__none__"}
+                    onValueChange={(v) => setMapping((m) => ({ ...m, [f.key]: v }))}
+                  >
+                    <SelectTrigger className="h-8 text-[12.5px]">
+                      <SelectValue placeholder="— Não importar —" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="__none__">— Não importar —</SelectItem>
+                      {sheetHeaders.map((h) => (
+                        <SelectItem key={h} value={h}>{h}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+              ))}
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setMapOpen(false)} disabled={importing}>Cancelar</Button>
+            <Button onClick={confirmImport} disabled={importing}>
+              {importing ? "Importando…" : "Importar"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

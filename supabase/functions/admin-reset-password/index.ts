@@ -46,6 +46,10 @@ Deno.serve(async (req) => {
       prof = (profiles ?? []).find((p) => p.user_id === authUserId) ?? prof;
     }
 
+    if (authUserId && prof?.id) {
+      await admin.from("profiles").delete().ilike("email", target).neq("id", prof.id);
+    }
+
     if (!authUserId) {
       // Auth user doesn't exist yet — create it using profile data if available.
       const nome = (prof as any)?.nome ?? target.split("@")[0];

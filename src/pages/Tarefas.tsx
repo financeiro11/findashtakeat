@@ -470,7 +470,7 @@ export default function Tarefas() {
         open={!!editing}
         tarefa={editing || undefined}
         onClose={() => setEditing(null)}
-        onSave={(patch) => { if (editing) { update(editing.id, patch); setEditing(null); } }}
+        onSave={(patch) => { if (editing) update(editing.id, patch); }}
         title="Editar Tarefa"
       />
     </div>
@@ -1036,6 +1036,28 @@ function TaskDialog({ columns, open, tarefa, defaultStatus, onClose, onSave, tit
   const subsDone = subtarefas.filter(s => s.done).length;
   const subsProgress = subtarefas.length ? Math.round((subsDone / subtarefas.length) * 100) : 0;
 
+  // Autosave para edição: dispara onSave com debounce quando valores mudam
+  const isEdit = !!tarefa;
+  const firstSyncRef = useRef(true);
+  useEffect(() => {
+    if (!open || !isEdit) return;
+    if (firstSyncRef.current) { firstSyncRef.current = false; return; }
+    const handle = setTimeout(() => {
+      onSave({
+        titulo,
+        responsavel: responsavel || null,
+        status,
+        prioridade,
+        prazo: prazo || null,
+        observacao: observacao || null,
+        subtarefas,
+      });
+    }, 500);
+    return () => clearTimeout(handle);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [titulo, responsavel, status, prioridade, prazo, observacao, subtarefas, open, isEdit]);
+  useEffect(() => { if (open) firstSyncRef.current = true; }, [open, tarefa?.id]);
+
   return (
     <Dialog open={open} onOpenChange={(o) => !o && onClose()}>
       <DialogContent className="max-w-xl max-h-[90vh] overflow-y-auto">
@@ -1165,18 +1187,24 @@ function TaskDialog({ columns, open, tarefa, defaultStatus, onClose, onSave, tit
           </div>
         </div>
         <DialogFooter>
-          <Button variant="outline" onClick={onClose}>Cancelar</Button>
-          <Button onClick={() => onSave({
-            titulo,
-            responsavel: responsavel || null,
-            status,
-            prioridade,
-            prazo: prazo || null,
-            observacao: observacao || null,
-            subtarefas,
-          })}>
-            Salvar
-          </Button>
+          {isEdit ? (
+            <Button variant="outline" onClick={onClose}>Fechar</Button>
+          ) : (
+            <>
+              <Button variant="outline" onClick={onClose}>Cancelar</Button>
+              <Button onClick={() => onSave({
+                titulo,
+                responsavel: responsavel || null,
+                status,
+                prioridade,
+                prazo: prazo || null,
+                observacao: observacao || null,
+                subtarefas,
+              })}>
+                Criar
+              </Button>
+            </>
+          )}
         </DialogFooter>
       </DialogContent>
     </Dialog>

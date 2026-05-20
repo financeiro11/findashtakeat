@@ -25,11 +25,13 @@ Deno.serve(async (req) => {
 
     // 1) Read the profile, but don't trust profile.user_id until it is verified in Auth.
     let authUserId: string | null = null;
-    const { data: prof } = await admin
+    const { data: profiles, error: profilesErr } = await admin
       .from("profiles")
       .select("id, user_id, nome, cargo, email")
       .ilike("email", target)
-      .maybeSingle();
+      .order("created_at", { ascending: false });
+    if (profilesErr) throw profilesErr;
+    let prof = (profiles ?? [])[0] ?? null;
 
     // 2) Auth is the source of truth. Find the real Auth user by email.
     for (let page = 1; page <= 10 && !authUserId; page++) {
@@ -38,6 +40,10 @@ Deno.serve(async (req) => {
       const found = data.users.find((u) => (u.email ?? "").toLowerCase() === target);
       if (found) authUserId = found.id;
       if (data.users.length < 200) break;
+    }
+
+    if (authUserId) {
+      prof = (profiles ?? []).find((p) => p.user_id === authUserId) ?? prof;
     }
 
     if (!authUserId) {
@@ -55,6 +61,7 @@ Deno.serve(async (req) => {
       if (!authUserId) throw new Error("Usuário criado sem ID");
 
       if (prof?.id) {
+        await admin.from("profiles").delete().ilike("email", target).neq("id", prof.id);
         await admin.from("profiles").delete().eq("user_id", authUserId).neq("id", prof.id);
         const { error: profileErr } = await admin.from("profiles").update({ user_id: authUserId, email: target }).eq("id", prof.id);
         if (profileErr) throw profileErr;
@@ -69,6 +76,7 @@ Deno.serve(async (req) => {
     }
 
     if (prof?.id && prof.user_id !== authUserId) {
+      await admin.from("profiles").delete().ilike("email", target).neq("id", prof.id);
       await admin.from("profiles").delete().eq("user_id", authUserId).neq("id", prof.id);
       const { error: profileErr } = await admin.from("profiles").update({ user_id: authUserId, email: target }).eq("id", prof.id);
       if (profileErr) throw profileErr;

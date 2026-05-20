@@ -738,14 +738,11 @@ export default function Parceiros() {
             </DialogDescription>
           </DialogHeader>
           <div className="max-h-[60vh] overflow-y-auto pr-1">
-            <div className="grid grid-cols-1 gap-2 sm:grid-cols-[1fr_1.2fr] sm:items-center">
-              <div className="hidden text-[11px] uppercase tracking-wide text-muted-foreground sm:block">Campo da lista</div>
-              <div className="hidden text-[11px] uppercase tracking-wide text-muted-foreground sm:block">Coluna da planilha</div>
+            <div className="space-y-2">
               {MAPPING_FIELDS.map((f) => (
-                <>
-                  <label key={`l-${f.key}`} className="text-[12.5px] font-medium text-foreground">{f.label}</label>
+                <div key={f.key} className="grid grid-cols-1 items-center gap-1 sm:grid-cols-[1fr_1.4fr] sm:gap-3">
+                  <label className="text-[12.5px] font-medium text-foreground">{f.label}</label>
                   <Select
-                    key={`s-${f.key}`}
                     value={mapping[f.key] || "__none__"}
                     onValueChange={(v) => setMapping((m) => ({ ...m, [f.key]: v }))}
                   >
@@ -759,7 +756,7 @@ export default function Parceiros() {
                       ))}
                     </SelectContent>
                   </Select>
-                </>
+                </div>
               ))}
             </div>
           </div>

@@ -727,6 +727,50 @@ export default function Parceiros() {
           </Table>
         </div>
       </SectionCard>
+
+      <Dialog open={mapOpen} onOpenChange={(o) => { if (!importing) setMapOpen(o); }}>
+        <DialogContent className="max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>Mapear colunas da planilha</DialogTitle>
+            <DialogDescription>
+              Vincule cada campo da lista de indicações à coluna correspondente da planilha importada.
+              {sheetRows.length > 0 && ` ${sheetRows.length} linha(s) detectada(s).`}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="max-h-[60vh] overflow-y-auto pr-1">
+            <div className="grid grid-cols-1 gap-2 sm:grid-cols-[1fr_1.2fr] sm:items-center">
+              <div className="hidden text-[11px] uppercase tracking-wide text-muted-foreground sm:block">Campo da lista</div>
+              <div className="hidden text-[11px] uppercase tracking-wide text-muted-foreground sm:block">Coluna da planilha</div>
+              {MAPPING_FIELDS.map((f) => (
+                <>
+                  <label key={`l-${f.key}`} className="text-[12.5px] font-medium text-foreground">{f.label}</label>
+                  <Select
+                    key={`s-${f.key}`}
+                    value={mapping[f.key] || "__none__"}
+                    onValueChange={(v) => setMapping((m) => ({ ...m, [f.key]: v }))}
+                  >
+                    <SelectTrigger className="h-8 text-[12.5px]">
+                      <SelectValue placeholder="— Não importar —" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="__none__">— Não importar —</SelectItem>
+                      {sheetHeaders.map((h) => (
+                        <SelectItem key={h} value={h}>{h}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </>
+              ))}
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setMapOpen(false)} disabled={importing}>Cancelar</Button>
+            <Button onClick={confirmImport} disabled={importing}>
+              {importing ? "Importando…" : "Importar"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

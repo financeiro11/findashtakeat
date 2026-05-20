@@ -43,7 +43,21 @@ Deno.serve(async (req) => {
       }
     }
 
-    if (!userId) throw new Error("Usuário não encontrado");
+    if (!userId) {
+      // Auth user doesn't exist yet — create it using profile data if available
+      const nome = (prof as any)?.nome ?? target.split("@")[0];
+      const cargo = (prof as any)?.cargo ?? "";
+      const { data: created, error: createErr } = await admin.auth.admin.createUser({
+        email: target,
+        password,
+        email_confirm: true,
+        user_metadata: { nome, cargo },
+      });
+      if (createErr) throw createErr;
+      return new Response(JSON.stringify({ ok: true, created: true, user_id: created.user?.id }), {
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
 
     const { error } = await admin.auth.admin.updateUserById(userId, { password });
     if (error) throw error;

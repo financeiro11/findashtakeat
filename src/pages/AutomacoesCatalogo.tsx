@@ -579,7 +579,7 @@ export default function AutomacoesCatalogo() {
 
       {/* Editor */}
       <Dialog open={!!editing} onOpenChange={(o) => { if (!o) { setEditing(null); setCreatingStatus(null); } }}>
-        <DialogContent className="max-w-xl">
+        <DialogContent className="max-w-xl max-h-[90vh] overflow-y-auto">
           <DialogHeader>
             <DialogTitle>{creatingStatus ? "Nova automação" : "Editar automação"}</DialogTitle>
           </DialogHeader>

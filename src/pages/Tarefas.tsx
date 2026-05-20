@@ -1187,18 +1187,24 @@ function TaskDialog({ columns, open, tarefa, defaultStatus, onClose, onSave, tit
           </div>
         </div>
         <DialogFooter>
-          <Button variant="outline" onClick={onClose}>Cancelar</Button>
-          <Button onClick={() => onSave({
-            titulo,
-            responsavel: responsavel || null,
-            status,
-            prioridade,
-            prazo: prazo || null,
-            observacao: observacao || null,
-            subtarefas,
-          })}>
-            Salvar
-          </Button>
+          {isEdit ? (
+            <Button variant="outline" onClick={onClose}>Fechar</Button>
+          ) : (
+            <>
+              <Button variant="outline" onClick={onClose}>Cancelar</Button>
+              <Button onClick={() => onSave({
+                titulo,
+                responsavel: responsavel || null,
+                status,
+                prioridade,
+                prazo: prazo || null,
+                observacao: observacao || null,
+                subtarefas,
+              })}>
+                Criar
+              </Button>
+            </>
+          )}
         </DialogFooter>
       </DialogContent>
     </Dialog>

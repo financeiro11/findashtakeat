@@ -23,28 +23,35 @@ Deno.serve(async (req) => {
 
     const target = String(email).trim().toLowerCase();
 
-    // 1) Try profiles table first
-    let userId: string | null = null;
-    const { data: prof } = await admin
+    // 1) Read the profile, but don't trust profile.user_id until it is verified in Auth.
+    let authUserId: string | null = null;
+    const { data: profiles, error: profilesErr } = await admin
       .from("profiles")
-      .select("user_id, email")
+      .select("id, user_id, nome, cargo, email")
       .ilike("email", target)
-      .maybeSingle();
-    if (prof?.user_id) userId = prof.user_id as string;
+      .order("created_at", { ascending: false });
+    if (profilesErr) throw profilesErr;
+    let prof = (profiles ?? [])[0] ?? null;
 
-    // 2) Fallback: paginate through auth users
-    if (!userId) {
-      for (let page = 1; page <= 10 && !userId; page++) {
-        const { data, error } = await admin.auth.admin.listUsers({ page, perPage: 200 });
-        if (error) throw error;
-        const found = data.users.find((u) => (u.email ?? "").toLowerCase() === target);
-        if (found) userId = found.id;
-        if (data.users.length < 200) break;
-      }
+    // 2) Auth is the source of truth. Find the real Auth user by email.
+    for (let page = 1; page <= 10 && !authUserId; page++) {
+      const { data, error } = await admin.auth.admin.listUsers({ page, perPage: 200 });
+      if (error) throw error;
+      const found = data.users.find((u) => (u.email ?? "").toLowerCase() === target);
+      if (found) authUserId = found.id;
+      if (data.users.length < 200) break;
     }
 
-    if (!userId) {
-      // Auth user doesn't exist yet — create it using profile data if available
+    if (authUserId) {
+      prof = (profiles ?? []).find((p) => p.user_id === authUserId) ?? prof;
+    }
+
+    if (authUserId && prof?.id) {
+      await admin.from("profiles").delete().ilike("email", target).neq("id", prof.id);
+    }
+
+    if (!authUserId) {
+      // Auth user doesn't exist yet — create it using profile data if available.
       const nome = (prof as any)?.nome ?? target.split("@")[0];
       const cargo = (prof as any)?.cargo ?? "";
       const { data: created, error: createErr } = await admin.auth.admin.createUser({
@@ -54,12 +61,32 @@ Deno.serve(async (req) => {
         user_metadata: { nome, cargo },
       });
       if (createErr) throw createErr;
-      return new Response(JSON.stringify({ ok: true, created: true, user_id: created.user?.id }), {
+      authUserId = created.user?.id ?? null;
+      if (!authUserId) throw new Error("Usuário criado sem ID");
+
+      if (prof?.id) {
+        await admin.from("profiles").delete().ilike("email", target).neq("id", prof.id);
+        await admin.from("profiles").delete().eq("user_id", authUserId).neq("id", prof.id);
+        const { error: profileErr } = await admin.from("profiles").update({ user_id: authUserId, email: target }).eq("id", prof.id);
+        if (profileErr) throw profileErr;
+      } else {
+        const { error: profileErr } = await admin.from("profiles").insert({ user_id: authUserId, email: target, nome, cargo });
+        if (profileErr) throw profileErr;
+      }
+
+      return new Response(JSON.stringify({ ok: true, created: true, user_id: authUserId }), {
         headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
     }
 
-    const { error } = await admin.auth.admin.updateUserById(userId, { password });
+    if (prof?.id && prof.user_id !== authUserId) {
+      await admin.from("profiles").delete().ilike("email", target).neq("id", prof.id);
+      await admin.from("profiles").delete().eq("user_id", authUserId).neq("id", prof.id);
+      const { error: profileErr } = await admin.from("profiles").update({ user_id: authUserId, email: target }).eq("id", prof.id);
+      if (profileErr) throw profileErr;
+    }
+
+    const { error } = await admin.auth.admin.updateUserById(authUserId, { password });
     if (error) throw error;
 
     return new Response(JSON.stringify({ ok: true }), {

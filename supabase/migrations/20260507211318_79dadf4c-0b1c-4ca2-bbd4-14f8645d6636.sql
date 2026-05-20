@@ -1,0 +1,1 @@
+ALTER TABLE public.cenarios ADD COLUMN IF NOT EXISTS graficos jsonb;

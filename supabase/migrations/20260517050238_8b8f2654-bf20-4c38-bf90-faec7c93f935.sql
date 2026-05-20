@@ -1,0 +1,1 @@
+ALTER TABLE public.automacoes_catalogo ADD COLUMN IF NOT EXISTS impacto text DEFAULT 'Média';

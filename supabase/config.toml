@@ -1,0 +1,49 @@
+project_id = "vwwogbshvkhzoosjkgoi"
+
+[functions.classify-transaction]
+verify_jwt = false
+
+[functions.create-user]
+verify_jwt = false
+
+[functions.list-users]
+verify_jwt = false
+
+[functions.admin-reset-password]
+verify_jwt = false
+
+[functions.editais-sync]
+verify_jwt = false
+
+[functions.editais-fonte-pncp]
+verify_jwt = false
+
+[functions.editais-fonte-finep]
+verify_jwt = false
+
+[functions.editais-fonte-bndes]
+verify_jwt = false
+
+[functions.editais-fonte-sebrae]
+verify_jwt = false
+
+[functions.editais-fonte-embrapii]
+verify_jwt = false
+
+[functions.editais-fonte-govbr]
+verify_jwt = false
+
+[functions.editais-fonte-inovativa]
+verify_jwt = false
+
+[functions.editais-fonte-fapes]
+verify_jwt = false
+
+[functions.ask-finance-ai]
+verify_jwt = false
+
+[functions.login-stats]
+verify_jwt = false
+
+[functions.upsert-indicacao]
+verify_jwt = false

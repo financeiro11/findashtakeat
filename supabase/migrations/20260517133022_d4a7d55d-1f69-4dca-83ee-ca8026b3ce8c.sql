@@ -1,0 +1,1 @@
+DELETE FROM public.lib_colaboradores WHERE status = 'inativo';

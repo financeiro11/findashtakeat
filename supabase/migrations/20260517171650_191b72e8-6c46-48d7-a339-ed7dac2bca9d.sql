@@ -1,0 +1,1 @@
+DELETE FROM public.historico_financeiro WHERE ano IN (2024, 2025);

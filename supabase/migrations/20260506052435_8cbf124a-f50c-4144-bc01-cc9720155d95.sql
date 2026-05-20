@@ -1,0 +1,2 @@
+ALTER TABLE public.demonstracoes_contabeis DROP CONSTRAINT IF EXISTS demonstracoes_contabeis_tipo_check;
+ALTER TABLE public.demonstracoes_contabeis ADD CONSTRAINT demonstracoes_contabeis_tipo_check CHECK (tipo IN ('dre','dfc','balancete','balanco'));

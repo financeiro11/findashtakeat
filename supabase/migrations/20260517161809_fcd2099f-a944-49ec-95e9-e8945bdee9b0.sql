@@ -1,0 +1,1 @@
+DELETE FROM public.editais WHERE fonte='FAPES';

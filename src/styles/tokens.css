@@ -1,0 +1,88 @@
+/* Central do Financeiro — Design tokens */
+:root {
+  /* Brand */
+  --takeat-red: 0 78% 47%;
+  --takeat-red-hover: 0 78% 40%;
+  --takeat-red-soft: 0 80% 96%;
+
+  /* Neutrals (cool slate base) */
+  --neutral-0: 220 20% 100%;
+  --neutral-50: 220 20% 98%;
+  --neutral-100: 220 16% 96%;
+  --neutral-200: 220 14% 92%;
+  --neutral-300: 220 13% 86%;
+  --neutral-400: 220 10% 64%;
+  --neutral-500: 220 9% 46%;
+  --neutral-600: 220 12% 32%;
+  --neutral-700: 220 14% 22%;
+  --neutral-800: 220 16% 14%;
+  --neutral-900: 220 20% 9%;
+
+  /* Surfaces */
+  --surface-base: var(--neutral-50);
+  --surface-raised: var(--neutral-0);
+  --surface-sunken: var(--neutral-100);
+
+  /* Text */
+  --text-strong: var(--neutral-900);
+  --text-default: var(--neutral-700);
+  --text-muted: var(--neutral-500);
+  --text-subtle: var(--neutral-400);
+  --text-on-brand: 0 0% 100%;
+
+  /* Semantic deltas (positive / negative / neutral) */
+  --pos: 152 60% 36%;
+  --neg: 0 72% 48%;
+  --neu: 220 9% 46%;
+
+  /* Status */
+  --info: 212 80% 45%;
+  --warn: 38 92% 48%;
+
+  /* Lines */
+  --line: 220 14% 90%;
+  --line-strong: 220 13% 82%;
+
+  /* Density */
+  --density-row: 32px;
+  --density-row-sm: 28px;
+  --density-row-lg: 40px;
+
+  /* Radii */
+  --radius-xs: 4px;
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+
+  /* Shadows */
+  --shadow-xs: 0 1px 0 hsl(220 20% 10% / 0.04);
+  --shadow-sm: 0 1px 2px hsl(220 20% 10% / 0.06);
+  --shadow-md: 0 4px 12px hsl(220 20% 10% / 0.08);
+
+  /* Type scale */
+  --font-sans: "Inter Tight", system-ui, -apple-system, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.dark {
+  --surface-base: var(--neutral-900);
+  --surface-raised: var(--neutral-800);
+  --surface-sunken: 220 22% 7%;
+  --text-strong: 0 0% 98%;
+  --text-default: 220 14% 88%;
+  --text-muted: 220 10% 66%;
+  --text-subtle: 220 10% 50%;
+  --line: 220 14% 18%;
+  --line-strong: 220 14% 26%;
+  --pos: 152 55% 50%;
+  --neg: 0 75% 60%;
+}
+
+/* Tabular monospaced numerals — required for any monetary value */
+.num,
+.mono {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum", "zero";
+  letter-spacing: -0.01em;
+}

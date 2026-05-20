@@ -1,0 +1,1 @@
+ALTER TABLE public.recargas_celulares ADD COLUMN IF NOT EXISTS rpa text NOT NULL DEFAULT 'Não';

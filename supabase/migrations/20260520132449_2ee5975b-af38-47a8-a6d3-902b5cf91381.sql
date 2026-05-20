@@ -1,0 +1,1 @@
+ALTER TABLE public.parceiros_cadastro ADD COLUMN IF NOT EXISTS campanha text;

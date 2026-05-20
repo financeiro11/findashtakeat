@@ -347,15 +347,22 @@ export default function Parceiros() {
         toInsert.push(payload);
       });
 
-      if (toInsert.length === 0) {
+      // Dedupe por id_negocio (mantém a última ocorrência) — evita erro
+      // "ON CONFLICT DO UPDATE command cannot affect row a second time"
+      const byId = new Map<string, any>();
+      toInsert.forEach((p) => byId.set(p.id_negocio, { ...byId.get(p.id_negocio), ...p }));
+      const deduped = Array.from(byId.values());
+      const duplicatesRemoved = toInsert.length - deduped.length;
+
+      if (deduped.length === 0) {
         toast.warning("Nenhuma linha válida encontrada (ID do Negócio é obrigatório)");
         return;
       }
       const { error } = await supabase
         .from("parceiros_indicacoes")
-        .upsert(toInsert, { onConflict: "id_negocio", ignoreDuplicates: false });
+        .upsert(deduped, { onConflict: "id_negocio", ignoreDuplicates: false });
       if (error) throw error;
-      toast.success(`${toInsert.length} indicação(ões) importada(s)${skipped ? ` · ${skipped} ignorada(s) sem ID` : ""}`);
+      toast.success(`${deduped.length} indicação(ões) importada(s)${skipped ? ` · ${skipped} sem ID` : ""}${duplicatesRemoved ? ` · ${duplicatesRemoved} duplicada(s) mescladas` : ""}`);
       setMapOpen(false);
       setSheetRows([]);
       setSheetHeaders([]);

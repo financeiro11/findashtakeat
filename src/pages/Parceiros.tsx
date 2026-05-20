@@ -327,28 +327,35 @@ export default function Parceiros() {
         const col = mapping[key];
         return col && col !== "__none__" ? r[col] : "";
       };
-      const toInsert = sheetRows.map((r, i) => ({
-        id_negocio: String(g(r, "id_negocio") ?? "").trim() || `import-${Date.now()}-${i}`,
-        nome_campanha: String(g(r, "campanha") ?? "") || null,
-        indicador: String(g(r, "embaixador") ?? "") || null,
-        vendedor: String(g(r, "vendedor") ?? "") || null,
-        nome_negocio: String(g(r, "empresa") ?? "") || null,
-        mrr: mapping.mrr && mapping.mrr !== "__none__" ? parseNumberCell(g(r, "mrr")) : null,
-        valor_total: mapping.valorTotal && mapping.valorTotal !== "__none__" ? parseNumberCell(g(r, "valorTotal")) : null,
-        data_indicacao: mapping.dataIndicacao && mapping.dataIndicacao !== "__none__" ? parseDateCell(g(r, "dataIndicacao")) : null,
-        data_venda: mapping.dataVenda && mapping.dataVenda !== "__none__" ? parseDateCell(g(r, "dataVenda")) : null,
-        origem: "import_planilha",
-      })).filter((p) => p.nome_campanha || p.nome_negocio || p.indicador);
+      const toInsert: any[] = [];
+      let skipped = 0;
+      sheetRows.forEach((r) => {
+        const idNegocio = String(g(r, "id_negocio") ?? "").trim();
+        if (!idNegocio) { skipped++; return; }
+        const payload: Record<string, any> = { id_negocio: idNegocio };
+        MAPPING_FIELDS.forEach((f) => {
+          if (f.key === "id_negocio") return;
+          const col = mapping[f.key];
+          if (!col || col === "__none__") return;
+          const raw = r[col];
+          if (raw == null || raw === "") return;
+          if (f.type === "number") payload[f.column] = parseNumberCell(raw);
+          else if (f.type === "date") payload[f.column] = parseDateCell(raw);
+          else payload[f.column] = String(raw).trim() || null;
+        });
+        if (!payload.origem) payload.origem = "import_planilha";
+        toInsert.push(payload);
+      });
 
       if (toInsert.length === 0) {
-        toast.warning("Nenhuma linha válida encontrada");
+        toast.warning("Nenhuma linha válida encontrada (ID do Negócio é obrigatório)");
         return;
       }
       const { error } = await supabase
         .from("parceiros_indicacoes")
         .upsert(toInsert, { onConflict: "id_negocio", ignoreDuplicates: false });
       if (error) throw error;
-      toast.success(`${toInsert.length} indicação(ões) importada(s)`);
+      toast.success(`${toInsert.length} indicação(ões) importada(s)${skipped ? ` · ${skipped} ignorada(s) sem ID` : ""}`);
       setMapOpen(false);
       setSheetRows([]);
       setSheetHeaders([]);

@@ -1,105 +1,95 @@
-## Premissas confirmadas
-- Substitui o `/dashboard` atual (arquivado como `/dashboard-legacy` para fallback durante 1 release).
-- Mês de referência selecionável (default = último mês com dados, hoje **dez/25**). Mockup mostra "abr/26" mas a base só tem até dez/25 — o seletor cobre os dois cenários quando chegar novo dado.
-- Tudo entregue na mesma resposta. Sem mudar fonte de dados; uso `historico_financeiro`, `bp_anual`, `demonstracoes_contabeis` exatamente como já vivem.
-- Sem emoji decorativo, sem gradientes em barras de dados, mono nos números, design tokens já existentes (não vou hard-codar #851818 — uso `hsl(var(--primary))` etc).
+# Diagramas/Fluxogramas no Playbook
 
-## Arquitetura
+## Visão geral
+Adicionar uma terceira aba no Hub do Playbook chamada **Fluxos** (ao lado de Playbooks e Workspace), onde o usuário cria e edita diagramas visuais de processos no estilo das imagens enviadas (caixas, losangos de decisão, swimlanes, setas conectando etapas).
+
+Além disso, permitir **embedar um fluxo dentro de um Playbook ou página do Workspace** como bloco — assim o processo escrito e o diagrama vivem juntos.
+
+## Escolha da biblioteca: **React Flow (@xyflow/react)**
+
+Avaliação rápida:
+- **React Flow** ✅ — open-source, mantida, integra perfeitamente com React/Vite/Tailwind, suporta nós customizados (retângulo, losango decisão, start/end, swimlanes), arrastar, conectar, zoom, minimap, export para PNG/SVG. É o padrão de mercado para esse tipo de UI (n8n, Typebot, Stripe usam variantes).
+- Mermaid — só renderiza, não permite edição visual drag-and-drop. Bom como export, ruim como editor.
+- tldraw / excalidraw — quadro branco livre, ótimo para rabisco, mas não estruturado para "processo de empresa" com nós tipados/exportáveis para automação futura.
+- Drawio embed — pesado, iframe, fora do design system.
+
+**Decisão:** React Flow como editor, com opção de **exportar para PNG e Mermaid** (para colar em outros lugares).
+
+## Estrutura do que vou construir
+
+### 1. Banco de dados (nova migration)
+Tabela `playbook_flows`:
+- `id`, `org_id`, `title`, `description`, `category`, `status` (mesmos enums dos Playbooks)
+- `nodes` jsonb — array de nós React Flow
+- `edges` jsonb — array de conexões
+- `viewport` jsonb — zoom/pan salvos
+- `playbook_id` (nullable) — vincular opcionalmente a um Playbook existente
+- `owner_name`, `last_edited_by`, `archived`, `created_at`, `updated_at`
+- RLS por `org_id` (mesmo padrão das outras tabelas do Playbook)
+
+### 2. Nova aba "Fluxos" no `PlaybookHub.tsx`
+Terceiro botão no segmented switcher, ícone `Workflow` ou `GitBranch`.
+
+### 3. Página `src/pages/playbook/flows/Flows.tsx`
+Mesmo layout dos Playbooks:
+- Sidebar com lista (busca, filtro por categoria/status)
+- Detail com o canvas do fluxo
+- Header com título editável, status, owner, autosave (debounce 800ms igual ao Playbook)
+- Ações: Novo, Duplicar, Excluir, Arquivar, Exportar PNG, Exportar Mermaid, Copiar link
+
+### 4. Componente `FlowEditor.tsx` (React Flow)
+- **Paleta lateral (esquerda)** com nós arrastáveis:
+  - Início / Fim (pílula)
+  - Etapa (retângulo arredondado)
+  - Decisão (losango com handles Sim/Não)
+  - Subprocesso (retângulo com borda dupla)
+  - Anotação / nota adesiva (post-it amarelo)
+  - Ator / responsável (chip com avatar)
+- **Swimlanes** (raias por responsável: "Diretor", "PM", "Financeiro" — como na imagem 1) via nós-container redimensionáveis
+- **Canvas** com grid, snap-to-grid, minimap, controles de zoom, pan
+- **Edição inline**: duplo-clique no nó edita o label
+- **Conexão**: arrastar das handles cria arestas com setas; arestas editáveis (rótulo "Sim"/"Não" para decisões)
+- **Cores por tipo de nó** usando design tokens (sem cores hard-coded)
+- **Autosave** com debounce, indicador "Salvando…/Salvo às HH:mm"
+- **Atalhos**: Delete remove, Ctrl+D duplica, Ctrl+Z desfaz (built-in React Flow)
+
+### 5. Bloco "Fluxo" no Workspace e Playbook
+- No Tiptap (`WorkspaceEditor` e `PlaybookEditor`): nova extensão de nó que aceita um `flowId` e renderiza um preview read-only do fluxo (thumbnail + botão "Abrir fluxo").
+- Comando `/fluxo` no SlashCommand do Workspace para inserir.
+
+### 6. Export
+- **PNG**: usar `toPng` do `html-to-image` sobre o viewport React Flow.
+- **Mermaid**: função utilitária que percorre `nodes`/`edges` e gera `flowchart TD` — útil para colar em chats, README, etc.
+
+## Detalhes técnicos
+- Dependências novas: `@xyflow/react`, `html-to-image`
+- Tipos de nós custom em `src/pages/playbook/flows/nodes/` (`StepNode.tsx`, `DecisionNode.tsx`, `StartEndNode.tsx`, `LaneNode.tsx`, `NoteNode.tsx`)
+- Reusar `PLAYBOOK_CATEGORIES`, `PLAYBOOK_STATUSES`, `STATUS_STYLES` de `constants.ts`
+- Bucket de storage `playbook-flows` para PNGs exportados (opcional, se quiser persistir thumbnails)
+- Sem cores diretas em componentes — tudo via tokens do `index.css` (`--primary`, `--accent`, novo `--flow-decision`, `--flow-step`, etc.)
+
+## Diagrama da arquitetura
 
 ```text
-src/pages/Dashboard.tsx                 ← shell + estado do mês + composição
-src/pages/dashboard/
-  ├─ useFinanceData.ts                  ← hook único: carrega DRE/DFC/BP + memoiza séries
-  ├─ metrics.ts                         ← cálculos puros (margem, runway, cashburn, bridge)
-  ├─ Greeting.tsx                       ← saudação + botões
-  ├─ AskAIBar.tsx                       ← chips + input + atalho ⌘↵ (abre drawer)
-  ├─ HealthStrip.tsx                    ← hero status com 3 pulsos
-  ├─ KpiRow.tsx                         ← 4 KPIs (Receita / EBITDA / Caixa / Burn+Runway)
-  ├─ BridgeWaterfall.tsx                ← 9 colunas waterfall com drill-down
-  ├─ InsightsList.tsx                   ← anomalia cards com ações
-  ├─ TrendChart.tsx                     ← Receita Líq × EBITDA + margem%
-  ├─ BurnRanking.tsx                    ← onde queimamos mais
-  ├─ ProjectionChart.tsx                ← realizado + projeção (cenário base/oti/pess)
-  ├─ AIDrawer.tsx                       ← drawer lateral com chat streamed
-  ├─ ReductionPlanModal.tsx             ← plano de redução
-  └─ TweaksPanel.tsx                    ← painel flutuante de configurações
-
-supabase/functions/
-  ├─ ai-dashboard-insights/             ← estender: também gera headline do Health Strip
-  ├─ ask-finance-ai/                    ← já existe — usado pelo AskAIBar + drawer (streamed)
-  ├─ ai-reduction-plan/  (novo)         ← gera sugestões priorizadas com impacto em runway
-  └─ ai-forecast-scenarios/ (novo)      ← gera premissas de cada cenário
+PlaybookHub
+ ├── Playbooks   (existente)
+ ├── Workspace   (existente)
+ └── Fluxos      (NOVO)
+      ├── FlowsList (sidebar)
+      └── FlowEditor
+           ├── NodePalette
+           ├── ReactFlow canvas
+           │    ├── StepNode
+           │    ├── DecisionNode
+           │    ├── StartEndNode
+           │    ├── LaneNode (swimlane)
+           │    └── NoteNode
+           └── Toolbar (autosave, export PNG/Mermaid, link)
 ```
 
-## Estado e dados
-- 1 só fetch no mount: `historico_financeiro` (toda janela 24m), `bp_anual` (anos visíveis), `profiles` (nome). Memoizado por mês selecionado.
-- `metrics.ts` deriva tudo (sem chamada extra ao banco):
-  - Receita Bruta = `Entradas` (ou soma `Receita de Serviços + Receita Markup`)
-  - EBITDA = Receita Líq − (Pessoal+Mkt+Custos+Adm) (usando agrupamento já feito em `DRE.tsx`)
-  - Saldo de caixa = saldo inicial configurável + Σ FCL
-  - Cashburn = FCL excluindo `(+) Novos Empréstimos & Financiamentos`
-  - Runway = saldo / |burn médio 3m|
-  - Bridge = saldo mês ant + Entradas + cada bloco de saída (sinal correto)
-- Tudo derivado vira séries `{ mes: 'mai/25', valor }[]` reutilizadas nos charts.
+## Perguntas antes de implementar
+1. Quer **swimlanes por responsável** (estilo imagem 1 com colunas "Board Member / PM / Project Manager / Financial Director") já no MVP, ou começamos só com nós livres e adicionamos raias depois?
+2. Os fluxos devem ficar **vinculados a um Playbook específico** (cada playbook tem seus fluxos) ou são uma biblioteca **independente** com vínculo opcional? Recomendo independente + vínculo opcional.
+3. Precisa de **colaboração em tempo real** (vários editando ao mesmo tempo via Supabase Realtime) ou autosave individual já basta?
 
-## Status & cores (Health Strip)
-- Vermelho: runway < 3m **ou** margem EBITDA < −30%
-- Âmbar: runway 3–6m **ou** margem < −10%
-- Verde: caso contrário
-- Comunicado também por ícone (CheckCircle / AlertTriangle / AlertOctagon) + texto da pill, não só cor.
-
-## IA — onde pluga e como
-
-| Ponto | Como funciona |
-|---|---|
-| AskAIBar + AIDrawer | Streama via `ask-finance-ai`. Contexto = JSON enxuto (KPIs do mês + linhas relevantes DRE/DFC + BP). Respostas em markdown com tag `[linha:Eventos e Feiras:abr/26]` que vira link de drill-down |
-| Health Strip headline | `ai-dashboard-insights` estendido — retorna `{ headline, sub }`. Cache em `ai_dashboard_cache` por `user_id+periodo` (regenera só ao trocar mês) |
-| Plano de redução | Novo `ai-reduction-plan`: recebe top-N rubricas em maior crescimento + saldo + meta runway; devolve `[{categoria, corte_estimado, novo_runway, impacto, justificativa}]` |
-| Anomalias | Reaproveita `ai-dashboard-insights` — variação > 1.5σ vs média móvel 6m por rubrica. Ações `vista/investigação/resolvido` salvas em `ai_dashboard_cache.insights[].status` |
-| Cenários do forecast | Novo `ai-forecast-scenarios`: 3 premissas (base/oti/pess) com taxas mensais; usuário edita e refaz projeção local sem nova chamada |
-
-## Drill-downs e navegação
-- KPI click → `/dre?metrica=...&mes=...` (ou `/dfc` para caixa); rotas existentes já suportam querystring? Se não, adiciono `useSearchParams` no `DRE.tsx`/`DFC.tsx`.
-- Bridge coluna click → drawer local com lista de rubricas daquela categoria no mês.
-- Citações da IA viram `<button onClick={() => navigate(...)}>`.
-
-## Estados
-- Loading: skeleton cinza animado com mesmo layout por card.
-- Empty mês: `<EmptyState>` com CTA "Importar tracker" → `/importar-extrato`.
-- Erro fetch: pill vermelha + retry.
-
-## Tweaks (painel flutuante)
-- Botão flutuante bottom-right → Popover com:
-  - Período comparação (mês ant / mesmo mês ano passado / orçado)
-  - Janela do gráfico (6/12/24/YTD)
-  - Toggle Cashburn vs FCL
-  - Modo escuro (já existe `next-themes`)
-- Preferências persistidas em `localStorage` (`dashboard:tweaks`).
-
-## Acessibilidade
-- Todo SVG com `<title>`, contraste AA, cores sempre + texto/ícone, atalhos com `aria-keyshortcuts`.
-
-## Migrações necessárias
-Nenhuma de schema obrigatória. Pode ser preciso adicionar coluna `status` aos objetos de `ai_dashboard_cache.insights` (mas é jsonb — sem migration).
-
-## O que NÃO vou fazer (explicitamente)
-- Não vou mudar a fonte de dados, nem agregar novas tabelas sem avisar.
-- Não vou tocar sidebar/topo do app além de renomear o item de menu se necessário.
-- Não vou adicionar seção fora das 7 listadas.
-
-## Ordem de implementação dentro da entrega
-1. `useFinanceData` + `metrics.ts` (base sem UI nova ainda funciona em isolado)
-2. Shell (`Dashboard.tsx`) com seletor de mês + Greeting
-3. KpiRow + HealthStrip + AskAIBar (sem IA ainda — mock)
-4. BridgeWaterfall + drill-down drawer
-5. TrendChart + BurnRanking
-6. ProjectionChart com cenários (sem IA ainda)
-7. Edge functions: estender `ai-dashboard-insights` (headline), criar `ai-reduction-plan` e `ai-forecast-scenarios`
-8. AIDrawer streamed + plugar todos os 5 pontos
-9. TweaksPanel + estados (loading/empty/error)
-10. Smoke test em dez/25, conferir números contra DRE/DFC existentes.
-
-## Riscos
-- Volume de código (~2 a 2,5k linhas novas). Vou parcelar arquivos pequenos pra evitar diff gigante.
-- Streaming de IA depende do edge function devolver SSE; `ask-finance-ai` hoje pode retornar JSON único — checo ao implementar e adapto.
-- Recharts não tem waterfall nativo — implemento com `BarChart` empilhado + offsets calculados.
+Posso seguir com defaults razoáveis (swimlanes no MVP, biblioteca independente com vínculo opcional, autosave sem realtime) se preferir não responder agora.

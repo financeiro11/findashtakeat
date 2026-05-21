@@ -311,6 +311,7 @@ export default function Flows() {
                   nodes={draft.nodes as any}
                   edges={draft.edges as any}
                   viewport={draft.viewport}
+                  title={draft.title}
                   onChange={(next) => updateDraft({ nodes: next.nodes as any, edges: next.edges as any, viewport: next.viewport })}
                 />
               </div>

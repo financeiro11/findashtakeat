@@ -219,6 +219,7 @@ function Inner({ nodes, edges, viewport, onChange }: Props) {
           onNodesChange={onNodesChange}
           onEdgesChange={onEdgesChange}
           onConnect={onConnect}
+          onNodeDragStart={onNodeDragStart}
           nodeTypes={NODE_TYPES}
           defaultViewport={viewport}
           fitView={nodes.length > 0}

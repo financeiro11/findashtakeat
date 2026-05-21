@@ -410,7 +410,14 @@ export default function Workspace() {
         </aside>
 
         {/* Editor / Landing */}
-        <section className="flex-1 overflow-y-auto bg-background">
+        <section
+          className="flex-1 overflow-y-auto bg-background"
+          onScroll={(e) => {
+            const top = (e.target as HTMLElement).scrollTop;
+            if (top > 60 && !headerCollapsed) setHeaderCollapsed(true);
+            else if (top < 8 && headerCollapsed) setHeaderCollapsed(false);
+          }}
+        >
           {!draft ? (
             <WorkspaceLanding
               userName={profile?.nome ?? "você"}

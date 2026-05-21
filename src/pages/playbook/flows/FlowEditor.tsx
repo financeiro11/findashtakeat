@@ -189,17 +189,17 @@ function Inner({ nodes, edges, viewport, title, onChange }: Props) {
     [nodes, updateLabel]
   );
 
-  const hydratedEdges = useMemo(
+  const hydratedEdges = useMemo<Edge[]>(
     () => edges.map(edge => ({
       ...edge,
       type: edge.type ?? "smoothstep",
-      markerEnd: typeof edge.markerEnd === "object"
+      markerEnd: edge.markerEnd && typeof edge.markerEnd === "object"
         ? { ...edge.markerEnd, color: EDGE_COLOR }
         : { type: MarkerType.ArrowClosed, width: 18, height: 18, color: EDGE_COLOR },
       style: { ...(edge.style ?? {}), stroke: EDGE_COLOR, strokeWidth: 1.8 },
       labelStyle: { fill: "hsl(var(--foreground))", fontSize: 11, fontWeight: 700, ...(edge.labelStyle ?? {}) },
       labelBgStyle: { fill: "hsl(var(--background))", fillOpacity: 0.95, ...(edge.labelBgStyle ?? {}) },
-      labelBgPadding: edge.labelBgPadding ?? [4, 2],
+      labelBgPadding: edge.labelBgPadding ?? ([4, 2] as [number, number]),
       labelBgBorderRadius: edge.labelBgBorderRadius ?? 4,
     })),
     [edges]
@@ -233,7 +233,7 @@ function Inner({ nodes, edges, viewport, title, onChange }: Props) {
       style: { stroke: EDGE_COLOR, strokeWidth: 1.8 },
       labelStyle: { fill: "hsl(var(--foreground))", fontSize: 11, fontWeight: 700 },
       labelBgStyle: { fill: "hsl(var(--background))", fillOpacity: 0.95 },
-      labelBgPadding: [4, 2],
+      labelBgPadding: [4, 2] as [number, number],
       labelBgBorderRadius: 4,
     }, edges);
     onChange({ nodes, edges: next, viewport: getViewport() });

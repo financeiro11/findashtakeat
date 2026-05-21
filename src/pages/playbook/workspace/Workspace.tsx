@@ -6,7 +6,7 @@ import { Input } from "@/components/ui/input";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import {
-  Plus, Search, Star, Archive, Trash2, Copy, ChevronRight, ChevronDown,
+  Plus, Search, Star, Archive, Trash2, Copy, ChevronRight, ChevronDown, ChevronUp,
   FileText, Loader2, Image as ImageIcon, MoreHorizontal, Clock, Sparkles, X,
   CheckCircle2, AlertTriangle, Tag, Pencil, Users, Share2, ChevronsUpDown,
   Folder, FolderOpen, Home, ArrowLeft,

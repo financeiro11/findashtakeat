@@ -1129,6 +1129,57 @@ export type Database = {
           },
         ]
       }
+      playbook_flows: {
+        Row: {
+          archived: boolean
+          category: string
+          created_at: string
+          description: string | null
+          edges: Json
+          id: string
+          last_edited_by: string | null
+          nodes: Json
+          owner_name: string | null
+          playbook_id: string | null
+          status: string
+          title: string
+          updated_at: string
+          viewport: Json
+        }
+        Insert: {
+          archived?: boolean
+          category?: string
+          created_at?: string
+          description?: string | null
+          edges?: Json
+          id?: string
+          last_edited_by?: string | null
+          nodes?: Json
+          owner_name?: string | null
+          playbook_id?: string | null
+          status?: string
+          title?: string
+          updated_at?: string
+          viewport?: Json
+        }
+        Update: {
+          archived?: boolean
+          category?: string
+          created_at?: string
+          description?: string | null
+          edges?: Json
+          id?: string
+          last_edited_by?: string | null
+          nodes?: Json
+          owner_name?: string | null
+          playbook_id?: string | null
+          status?: string
+          title?: string
+          updated_at?: string
+          viewport?: Json
+        }
+        Relationships: []
+      }
       playbooks: {
         Row: {
           archived: boolean

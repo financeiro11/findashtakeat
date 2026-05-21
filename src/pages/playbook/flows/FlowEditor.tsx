@@ -193,7 +193,9 @@ function Inner({ nodes, edges, viewport, title, onChange }: Props) {
     () => edges.map(edge => ({
       ...edge,
       type: edge.type ?? "smoothstep",
-      markerEnd: edge.markerEnd ?? { type: MarkerType.ArrowClosed, width: 18, height: 18, color: EDGE_COLOR },
+      markerEnd: typeof edge.markerEnd === "object"
+        ? { ...edge.markerEnd, color: EDGE_COLOR }
+        : { type: MarkerType.ArrowClosed, width: 18, height: 18, color: EDGE_COLOR },
       style: { ...(edge.style ?? {}), stroke: EDGE_COLOR, strokeWidth: 1.8 },
       labelStyle: { fill: "hsl(var(--foreground))", fontSize: 11, fontWeight: 700, ...(edge.labelStyle ?? {}) },
       labelBgStyle: { fill: "hsl(var(--background))", fillOpacity: 0.95, ...(edge.labelBgStyle ?? {}) },
@@ -227,7 +229,7 @@ function Inner({ nodes, edges, viewport, title, onChange }: Props) {
       type: "smoothstep",
       animated: false,
       label,
-      markerEnd: { type: MarkerType.ArrowClosed, width: 18, height: 18 },
+      markerEnd: { type: MarkerType.ArrowClosed, width: 18, height: 18, color: EDGE_COLOR },
       style: { stroke: EDGE_COLOR, strokeWidth: 1.8 },
       labelStyle: { fill: "hsl(var(--foreground))", fontSize: 11, fontWeight: 700 },
       labelBgStyle: { fill: "hsl(var(--background))", fillOpacity: 0.95 },

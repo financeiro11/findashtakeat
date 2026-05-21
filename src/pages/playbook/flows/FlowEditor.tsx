@@ -210,13 +210,46 @@ function Inner({ nodes, edges, viewport, title, onChange }: Props) {
   };
 
   async function exportPng() {
-    const el = wrapperRef.current?.querySelector(".react-flow__viewport") as HTMLElement | null;
-    const container = wrapperRef.current?.querySelector(".react-flow") as HTMLElement | null;
-    if (!container) return;
+    const viewportEl = wrapperRef.current?.querySelector(".react-flow__viewport") as HTMLElement | null;
+    if (!viewportEl || nodes.length === 0) { toast.error("Nada para exportar"); return; }
+    const padding = 48;
+    const bounds = getNodesBounds(nodes);
+    // Extra room so labels positioned outside node bounds (ex: "Sim"/"Não") não sejam cortadas
+    const extra = 32;
+    const width = Math.ceil(bounds.width + padding * 2 + extra * 2);
+    const height = Math.ceil(bounds.height + padding * 2 + extra * 2);
+    const tx = -bounds.x + padding + extra;
+    const ty = -bounds.y + padding + extra;
     try {
-      const dataUrl = await toPng(container, { backgroundColor: "#ffffff", pixelRatio: 2, cacheBust: true });
+      const dataUrl = await toPng(viewportEl, {
+        backgroundColor: "#ffffff",
+        width,
+        height,
+        pixelRatio: 2,
+        cacheBust: true,
+        style: {
+          width: `${width}px`,
+          height: `${height}px`,
+          transform: `translate(${tx}px, ${ty}px) scale(1)`,
+          transformOrigin: "0 0",
+        },
+        filter: (node) => {
+          if (!(node instanceof HTMLElement)) return true;
+          const cls = node.classList;
+          if (!cls) return true;
+          if (
+            cls.contains("react-flow__minimap") ||
+            cls.contains("react-flow__controls") ||
+            cls.contains("react-flow__background") ||
+            cls.contains("react-flow__attribution") ||
+            cls.contains("react-flow__panel")
+          ) return false;
+          return true;
+        },
+      });
+      const safe = (title ?? "fluxo").trim().replace(/[\\/:*?"<>|]+/g, "").replace(/\s+/g, "_") || "fluxo";
       const a = document.createElement("a");
-      a.href = dataUrl; a.download = "fluxo.png"; a.click();
+      a.href = dataUrl; a.download = `fluxo_${safe}.png`; a.click();
       toast.success("PNG exportado");
     } catch (err: any) {
       toast.error("Falha ao exportar PNG", { description: err?.message });

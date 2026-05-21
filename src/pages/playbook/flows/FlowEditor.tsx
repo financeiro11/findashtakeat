@@ -352,7 +352,7 @@ function Inner({ nodes, edges, viewport, title, onChange }: Props) {
         </div>
         <ReactFlow
           nodes={hydratedNodes}
-          edges={edges}
+          edges={hydratedEdges}
           onNodesChange={onNodesChange}
           onEdgesChange={onEdgesChange}
           onConnect={onConnect}

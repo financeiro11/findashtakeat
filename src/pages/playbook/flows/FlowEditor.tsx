@@ -79,6 +79,57 @@ function Inner({ nodes, edges, viewport, onChange }: Props) {
     onChange({ nodes: nxt.nodes, edges: nxt.edges, viewport: getViewport() });
   }, [onChange, getViewport]);
 
+  // ---- Clipboard (copy / paste / duplicate) ----
+  const clipboard = useRef<Snapshot | null>(null);
+
+  const copySelection = useCallback(() => {
+    const selNodes = latest.current.nodes.filter(n => n.selected);
+    if (selNodes.length === 0) return false;
+    const ids = new Set(selNodes.map(n => n.id));
+    const selEdges = latest.current.edges.filter(e => ids.has(e.source) && ids.has(e.target));
+    clipboard.current = {
+      nodes: selNodes.map(n => ({ ...n, position: { ...n.position }, data: { ...n.data } })),
+      edges: selEdges.map(e => ({ ...e })),
+    };
+    return true;
+  }, []);
+
+  const pasteClipboard = useCallback(() => {
+    const cb = clipboard.current;
+    if (!cb || cb.nodes.length === 0) return;
+    const offset = 24;
+    const idMap = new Map<string, string>();
+    const newNodes: Node[] = cb.nodes.map(n => {
+      const newId = `n_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+      idMap.set(n.id, newId);
+      return {
+        ...n,
+        id: newId,
+        position: { x: n.position.x + offset, y: n.position.y + offset },
+        selected: true,
+        data: { ...n.data },
+      };
+    });
+    const newEdges: Edge[] = cb.edges.map(e => ({
+      ...e,
+      id: `e_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+      source: idMap.get(e.source) ?? e.source,
+      target: idMap.get(e.target) ?? e.target,
+      selected: false,
+    }));
+    pushHistory();
+    const merged = latest.current.nodes.map(n => ({ ...n, selected: false }));
+    onChange({
+      nodes: [...merged, ...newNodes],
+      edges: [...latest.current.edges, ...newEdges],
+      viewport: getViewport(),
+    });
+  }, [onChange, getViewport, pushHistory]);
+
+  const duplicateSelection = useCallback(() => {
+    if (copySelection()) pasteClipboard();
+  }, [copySelection, pasteClipboard]);
+
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const meta = e.ctrlKey || e.metaKey;
@@ -89,10 +140,13 @@ function Inner({ nodes, edges, viewport, onChange }: Props) {
       if (tag === "INPUT" || tag === "TEXTAREA" || target?.isContentEditable) return;
       if (k === "z" && !e.shiftKey) { e.preventDefault(); undo(); }
       else if ((k === "z" && e.shiftKey) || k === "y") { e.preventDefault(); redo(); }
+      else if (k === "c") { if (copySelection()) e.preventDefault(); }
+      else if (k === "v") { if (clipboard.current) { e.preventDefault(); pasteClipboard(); } }
+      else if (k === "d") { e.preventDefault(); duplicateSelection(); }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [undo, redo]);
+  }, [undo, redo, copySelection, pasteClipboard, duplicateSelection]);
 
   const updateLabel = useCallback((id: string, label: string) => {
     pushHistory();
@@ -226,6 +280,10 @@ function Inner({ nodes, edges, viewport, onChange }: Props) {
           snapToGrid
           snapGrid={[16, 16]}
           deleteKeyCode={["Backspace", "Delete"]}
+          multiSelectionKeyCode={["Shift", "Meta", "Control"]}
+          selectionOnDrag
+          panOnDrag={[1, 2]}
+          selectionKeyCode={null}
           proOptions={{ hideAttribution: true }}
         >
           <Background variant={BackgroundVariant.Dots} gap={16} size={1} />

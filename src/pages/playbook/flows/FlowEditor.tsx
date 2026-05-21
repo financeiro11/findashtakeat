@@ -47,6 +47,35 @@ const PALETTE = [
 
 type Snapshot = { nodes: Node[]; edges: Edge[] };
 
+const EDGE_COLOR = "hsl(var(--muted-foreground))";
+
+const DEFAULT_NODE_SIZE: Record<string, { width: number; height: number }> = {
+  start: { width: 120, height: 44 },
+  end: { width: 120, height: 44 },
+  step: { width: 160, height: 56 },
+  decision: { width: 180, height: 110 },
+  subprocess: { width: 180, height: 60 },
+  note: { width: 180, height: 80 },
+  lane: { width: 320, height: 360 },
+};
+
+function numericSize(value: unknown) {
+  if (typeof value === "number") return value;
+  if (typeof value === "string") {
+    const parsed = Number.parseFloat(value);
+    return Number.isFinite(parsed) ? parsed : undefined;
+  }
+  return undefined;
+}
+
+function nodeWithExportSize(node: Node): Node {
+  const fallback = DEFAULT_NODE_SIZE[node.type ?? "step"] ?? DEFAULT_NODE_SIZE.step;
+  const measured = (node as any).measured ?? {};
+  const width = numericSize((node.style as any)?.width) ?? (node as any).width ?? measured.width ?? fallback.width;
+  const height = numericSize((node.style as any)?.height) ?? (node as any).height ?? measured.height ?? fallback.height;
+  return { ...node, width, height } as Node;
+}
+
 function Inner({ nodes, edges, viewport, title, onChange }: Props) {
   const wrapperRef = useRef<HTMLDivElement>(null);
   const { screenToFlowPosition, getViewport } = useReactFlow();
@@ -160,6 +189,22 @@ function Inner({ nodes, edges, viewport, title, onChange }: Props) {
     [nodes, updateLabel]
   );
 
+  const hydratedEdges = useMemo<Edge[]>(
+    () => edges.map(edge => ({
+      ...edge,
+      type: edge.type ?? "smoothstep",
+      markerEnd: edge.markerEnd && typeof edge.markerEnd === "object"
+        ? { ...edge.markerEnd, color: EDGE_COLOR }
+        : { type: MarkerType.ArrowClosed, width: 18, height: 18, color: EDGE_COLOR },
+      style: { ...(edge.style ?? {}), stroke: EDGE_COLOR, strokeWidth: 1.8 },
+      labelStyle: { fill: "hsl(var(--foreground))", fontSize: 11, fontWeight: 700, ...(edge.labelStyle ?? {}) },
+      labelBgStyle: { fill: "hsl(var(--background))", fillOpacity: 0.95, ...(edge.labelBgStyle ?? {}) },
+      labelBgPadding: edge.labelBgPadding ?? ([4, 2] as [number, number]),
+      labelBgBorderRadius: edge.labelBgBorderRadius ?? 4,
+    })),
+    [edges]
+  );
+
   const onNodesChange = useCallback((changes: NodeChange[]) => {
     if (changes.some(c => c.type === "remove")) pushHistory();
     const next = applyNodeChanges(changes, nodes);
@@ -184,8 +229,12 @@ function Inner({ nodes, edges, viewport, title, onChange }: Props) {
       type: "smoothstep",
       animated: false,
       label,
-      markerEnd: { type: MarkerType.ArrowClosed, width: 18, height: 18 },
-      style: { strokeWidth: 1.6 },
+      markerEnd: { type: MarkerType.ArrowClosed, width: 18, height: 18, color: EDGE_COLOR },
+      style: { stroke: EDGE_COLOR, strokeWidth: 1.8 },
+      labelStyle: { fill: "hsl(var(--foreground))", fontSize: 11, fontWeight: 700 },
+      labelBgStyle: { fill: "hsl(var(--background))", fillOpacity: 0.95 },
+      labelBgPadding: [4, 2] as [number, number],
+      labelBgBorderRadius: 4,
     }, edges);
     onChange({ nodes, edges: next, viewport: getViewport() });
   }, [nodes, edges, onChange, getViewport, pushHistory]);
@@ -212,10 +261,11 @@ function Inner({ nodes, edges, viewport, title, onChange }: Props) {
   async function exportPng() {
     const viewportEl = wrapperRef.current?.querySelector(".react-flow__viewport") as HTMLElement | null;
     if (!viewportEl || nodes.length === 0) { toast.error("Nada para exportar"); return; }
-    const padding = 48;
-    const bounds = getNodesBounds(nodes);
+    const padding = 80;
+    const exportNodes = nodes.map(nodeWithExportSize);
+    const bounds = getNodesBounds(exportNodes);
     // Extra room so labels positioned outside node bounds (ex: "Sim"/"Não") não sejam cortadas
-    const extra = 32;
+    const extra = 48;
     const width = Math.ceil(bounds.width + padding * 2 + extra * 2);
     const height = Math.ceil(bounds.height + padding * 2 + extra * 2);
     const tx = -bounds.x + padding + extra;
@@ -238,6 +288,7 @@ function Inner({ nodes, edges, viewport, title, onChange }: Props) {
           const cls = node.classList;
           if (!cls) return true;
           if (
+            cls.contains("react-flow__handle") ||
             cls.contains("react-flow__minimap") ||
             cls.contains("react-flow__controls") ||
             cls.contains("react-flow__background") ||
@@ -303,7 +354,7 @@ function Inner({ nodes, edges, viewport, title, onChange }: Props) {
         </div>
         <ReactFlow
           nodes={hydratedNodes}
-          edges={edges}
+          edges={hydratedEdges}
           onNodesChange={onNodesChange}
           onEdgesChange={onEdgesChange}
           onConnect={onConnect}

@@ -296,32 +296,69 @@ export default function Workspace() {
   return (
     <div className="flex flex-col h-full bg-muted/20">
       {/* Top header bar (breadcrumb + title + actions) */}
-      <header className="border-b bg-background px-8 pt-5 pb-4">
+      <header className="border-b bg-background px-8 pt-3 pb-3">
         <div className="max-w-[1400px] mx-auto">
-          <div className="flex items-center gap-1.5 text-[12px] text-muted-foreground mb-1.5">
-            <Home className="h-3 w-3" />
-            <span>Início</span>
-            <ChevronRight className="h-3 w-3" />
-            <span className="text-foreground">Workspace</span>
-          </div>
-          <div className="flex items-start justify-between gap-4">
-            <div className="min-w-0">
-              <h1 className="text-[26px] font-bold tracking-tight">Workspace</h1>
-              <p className="text-[13px] text-muted-foreground mt-0.5 max-w-2xl">
-                Seu bloco de anotações privado: reuniões, estudos, ideias e rascunhos. Quando um rascunho amadurecer, vire um <strong className="text-foreground font-semibold">Playbook</strong>.
-              </p>
-            </div>
-            <div className="flex items-center gap-2 shrink-0">
-              <Button variant="outline" size="sm" className="h-9 gap-2">
-                <Share2 className="h-3.5 w-3.5"/> Compartilhadas
+          {headerCollapsed ? (
+            <div className="flex items-center justify-between gap-3">
+              <div className="flex items-center gap-2 min-w-0">
+                <Home className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+                <ChevronRight className="h-3 w-3 opacity-60 shrink-0" />
+                <h1 className="text-[15px] font-semibold tracking-tight truncate">Workspace</h1>
+                {draft && (
+                  <>
+                    <ChevronRight className="h-3 w-3 opacity-60 shrink-0" />
+                    <span className="text-[13px] text-muted-foreground truncate">{draft.title || "Sem título"}</span>
+                  </>
+                )}
+              </div>
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-7 gap-1.5 text-[12px]"
+                onClick={() => setHeaderCollapsed(false)}
+                title="Expandir cabeçalho"
+              >
+                <ChevronDown className="h-3.5 w-3.5" /> Expandir
               </Button>
-              <Button size="sm" className="h-9 gap-2 bg-red-600 hover:bg-red-700 text-white shadow-sm" onClick={() => createPage(null)}>
-                <Plus className="h-3.5 w-3.5"/> Nova página
-              </Button>
             </div>
-          </div>
+          ) : (
+            <>
+              <div className="flex items-center gap-1.5 text-[12px] text-muted-foreground mb-1.5">
+                <Home className="h-3 w-3" />
+                <span>Início</span>
+                <ChevronRight className="h-3 w-3" />
+                <span className="text-foreground">Workspace</span>
+              </div>
+              <div className="flex items-start justify-between gap-4">
+                <div className="min-w-0">
+                  <h1 className="text-[26px] font-bold tracking-tight">Workspace</h1>
+                  <p className="text-[13px] text-muted-foreground mt-0.5 max-w-2xl">
+                    Seu bloco de anotações privado: reuniões, estudos, ideias e rascunhos. Quando um rascunho amadurecer, vire um <strong className="text-foreground font-semibold">Playbook</strong>.
+                  </p>
+                </div>
+                <div className="flex items-center gap-2 shrink-0">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="h-9 gap-1.5"
+                    onClick={() => setHeaderCollapsed(true)}
+                    title="Recolher cabeçalho"
+                  >
+                    <ChevronUp className="h-4 w-4" /> Recolher topo
+                  </Button>
+                  <Button variant="outline" size="sm" className="h-9 gap-2">
+                    <Share2 className="h-3.5 w-3.5"/> Compartilhadas
+                  </Button>
+                  <Button size="sm" className="h-9 gap-2 bg-red-600 hover:bg-red-700 text-white shadow-sm" onClick={() => createPage(null)}>
+                    <Plus className="h-3.5 w-3.5"/> Nova página
+                  </Button>
+                </div>
+              </div>
+            </>
+          )}
         </div>
       </header>
+
 
       {/* Main split area */}
       <div className="flex flex-1 min-h-0">

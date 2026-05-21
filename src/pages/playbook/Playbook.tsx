@@ -24,7 +24,7 @@ import {
   Plus, Search, BookOpenCheck, Edit3, Copy, Trash2, Archive,
   CheckCircle2, AlertTriangle, Link as LinkIcon, MoreHorizontal,
   Paperclip, Loader2, FileText, Save, X, Upload, ChevronRight,
-  PanelLeftClose, PanelLeftOpen, Home,
+  PanelLeftClose, PanelLeftOpen, Home, ChevronUp, ChevronDown,
 } from "lucide-react";
 import { Textarea } from "@/components/ui/textarea";
 import {
@@ -62,6 +62,8 @@ export default function Playbook() {
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [assets, setAssets] = useState<Asset[]>([]);
   const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [headerCollapsed, setHeaderCollapsed] = useState(false);
+  const scrollRef = useRef<HTMLElement | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const debounceRef = useRef<any>(null);
 
@@ -237,101 +239,140 @@ export default function Playbook() {
   return (
     <div className="flex flex-col h-full bg-muted/20">
       {/* Header */}
-      <div className="border-b bg-background/80 backdrop-blur-sm px-6 pt-4 pb-3">
-        {/* Breadcrumb */}
-        <nav aria-label="breadcrumb" className="flex items-center gap-1.5 text-[12px] text-muted-foreground mb-2">
-          <Home className="h-3.5 w-3.5" />
-          <span>Início</span>
-          <ChevronRight className="h-3 w-3 opacity-60" />
-          <span className={cn(selected ? "" : "text-foreground font-medium")}>Playbook</span>
-          {selected && (
-            <>
+      <div className="border-b bg-background/80 backdrop-blur-sm px-6 pt-3 pb-3">
+        {headerCollapsed ? (
+          <div className="flex items-center justify-between gap-3">
+            <div className="flex items-center gap-2 min-w-0">
+              <Home className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+              <ChevronRight className="h-3 w-3 opacity-60 shrink-0" />
+              <h1 className="text-[15px] font-semibold tracking-tight truncate">Playbook</h1>
+              {selected && (
+                <>
+                  <ChevronRight className="h-3 w-3 opacity-60 shrink-0" />
+                  <span className="text-[13px] text-muted-foreground truncate">{selected.title}</span>
+                </>
+              )}
+            </div>
+            <div className="flex items-center gap-2">
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-7 gap-1.5 text-[12px]"
+                onClick={() => setHeaderCollapsed(false)}
+                title="Expandir cabeçalho"
+              >
+                <ChevronDown className="h-3.5 w-3.5" /> Expandir
+              </Button>
+            </div>
+          </div>
+        ) : (
+          <>
+            {/* Breadcrumb */}
+            <nav aria-label="breadcrumb" className="flex items-center gap-1.5 text-[12px] text-muted-foreground mb-2">
+              <Home className="h-3.5 w-3.5" />
+              <span>Início</span>
               <ChevronRight className="h-3 w-3 opacity-60" />
-              <span className="text-foreground font-medium truncate max-w-[420px]">{selected.title}</span>
-            </>
-          )}
-        </nav>
+              <span className={cn(selected ? "" : "text-foreground font-medium")}>Playbook</span>
+              {selected && (
+                <>
+                  <ChevronRight className="h-3 w-3 opacity-60" />
+                  <span className="text-foreground font-medium truncate max-w-[420px]">{selected.title}</span>
+                </>
+              )}
+            </nav>
 
-        <div className="flex items-end justify-between gap-4 flex-wrap">
-          <div className="min-w-0">
-            <div className="flex items-center gap-2.5">
-              <h1 className="text-[22px] font-semibold tracking-tight leading-none">Playbook Financeiro</h1>
-              <span className="inline-flex items-center h-[22px] px-2 rounded-full bg-secondary text-secondary-foreground text-[11px] font-medium tabular-nums">
-                {items.length} {items.length === 1 ? "documento" : "documentos"}
-              </span>
+            <div className="flex items-end justify-between gap-4 flex-wrap">
+              <div className="min-w-0">
+                <div className="flex items-center gap-2.5">
+                  <h1 className="text-[22px] font-semibold tracking-tight leading-none">Playbook Financeiro</h1>
+                  <span className="inline-flex items-center h-[22px] px-2 rounded-full bg-secondary text-secondary-foreground text-[11px] font-medium tabular-nums">
+                    {items.length} {items.length === 1 ? "documento" : "documentos"}
+                  </span>
+                </div>
+                <p className="text-[12.5px] text-muted-foreground mt-1.5 max-w-2xl">
+                  Central de documentação financeira: processos, rotinas, checklists e instruções de onboarding em um só lugar.
+                </p>
+              </div>
+              <div className="flex items-center gap-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="h-9 gap-1.5"
+                  onClick={() => setHeaderCollapsed(true)}
+                  title="Recolher cabeçalho"
+                >
+                  <ChevronUp className="h-4 w-4" /> Recolher topo
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="h-9 gap-1.5"
+                  onClick={() => setSidebarOpen(o => !o)}
+                  title={sidebarOpen ? "Recolher lista" : "Expandir lista"}
+                >
+                  {sidebarOpen ? <PanelLeftClose className="h-4 w-4" /> : <PanelLeftOpen className="h-4 w-4" />}
+                  {sidebarOpen ? "Recolher" : "Expandir"}
+                </Button>
+                <Button onClick={() => setCreateOpen(true)} className="h-9 gap-2">
+                  <Plus className="h-4 w-4" /> Novo playbook
+                </Button>
+              </div>
             </div>
-            <p className="text-[12.5px] text-muted-foreground mt-1.5 max-w-2xl">
-              Central de documentação financeira: processos, rotinas, checklists e instruções de onboarding em um só lugar.
-            </p>
-          </div>
-          <div className="flex items-center gap-2">
-            <Button
-              variant="outline"
-              size="sm"
-              className="h-9 gap-1.5"
-              onClick={() => setSidebarOpen(o => !o)}
-              title={sidebarOpen ? "Recolher lista" : "Expandir lista"}
-            >
-              {sidebarOpen ? <PanelLeftClose className="h-4 w-4" /> : <PanelLeftOpen className="h-4 w-4" />}
-              {sidebarOpen ? "Recolher" : "Expandir"}
-            </Button>
-            <Button onClick={() => setCreateOpen(true)} className="h-9 gap-2">
-              <Plus className="h-4 w-4" /> Novo playbook
-            </Button>
-          </div>
-        </div>
 
-        {/* Counter stats (status filters) */}
-        <div className="flex items-center gap-5 mt-3 flex-wrap">
-          {([
-            { key: "all", label: "documentos", num: "text-foreground" },
-            { key: "Publicado", label: "publicados", num: "text-emerald-600" },
-            { key: "Em revisão", label: "em revisão", num: "text-amber-600" },
-            { key: "Rascunho", label: "rascunhos", num: "text-foreground" },
-          ] as const).map(c => {
-            const count = c.key === "all" ? items.length : items.filter(i => i.status === c.key).length;
-            const active = filterStatus === c.key;
-            return (
-              <button key={c.key}
-                onClick={() => setFilterStatus(c.key)}
-                className={cn(
-                  "inline-flex items-baseline gap-1.5 text-[13px] transition-colors",
-                  active ? "opacity-100" : "opacity-80 hover:opacity-100"
-                )}>
-                <span className={cn("text-[16px] font-bold tabular-nums leading-none", c.num)}>{count}</span>
-                <span className={cn("text-muted-foreground", active && "underline underline-offset-4 decoration-2 decoration-foreground/40")}>{c.label}</span>
-              </button>
-            );
-          })}
-          <div className="ml-auto flex items-center gap-2 flex-wrap">
-            <div className="relative w-[300px]">
-              <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
-              <Input
-                value={search}
-                onChange={e => setSearch(e.target.value)}
-                placeholder="Buscar processo, rotina ou palavra-chave..."
-                className="pl-8 h-9 bg-background"
-              />
+            {/* Counter stats (status filters) */}
+            <div className="flex items-center gap-5 mt-3 flex-wrap">
+              {([
+                { key: "all", label: "documentos", num: "text-foreground" },
+                { key: "Publicado", label: "publicados", num: "text-emerald-600" },
+                { key: "Em revisão", label: "em revisão", num: "text-amber-600" },
+                { key: "Rascunho", label: "rascunhos", num: "text-foreground" },
+              ] as const).map(c => {
+                const count = c.key === "all" ? items.length : items.filter(i => i.status === c.key).length;
+                const active = filterStatus === c.key;
+                return (
+                  <button key={c.key}
+                    onClick={() => setFilterStatus(c.key)}
+                    className={cn(
+                      "inline-flex items-baseline gap-1.5 text-[13px] transition-colors",
+                      active ? "opacity-100" : "opacity-80 hover:opacity-100"
+                    )}>
+                    <span className={cn("text-[16px] font-bold tabular-nums leading-none", c.num)}>{count}</span>
+                    <span className={cn("text-muted-foreground", active && "underline underline-offset-4 decoration-2 decoration-foreground/40")}>{c.label}</span>
+                  </button>
+                );
+              })}
+              <div className="ml-auto flex items-center gap-2 flex-wrap">
+                <div className="relative w-[300px]">
+                  <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
+                  <Input
+                    value={search}
+                    onChange={e => setSearch(e.target.value)}
+                    placeholder="Buscar processo, rotina ou palavra-chave..."
+                    className="pl-8 h-9 bg-background"
+                  />
+                </div>
+                <Select value={filterCat} onValueChange={setFilterCat}>
+                  <SelectTrigger className="h-9 w-[170px] bg-background"><SelectValue placeholder="Categoria" /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">Todas categorias</SelectItem>
+                    {PLAYBOOK_CATEGORIES.map(c => <SelectItem key={c} value={c}>{c}</SelectItem>)}
+                  </SelectContent>
+                </Select>
+                <Select value={sortBy} onValueChange={(v: any) => setSortBy(v)}>
+                  <SelectTrigger className="h-9 w-[170px] bg-background"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="updated">Última atualização</SelectItem>
+                    <SelectItem value="newest">Mais recentes</SelectItem>
+                    <SelectItem value="oldest">Mais antigos</SelectItem>
+                    <SelectItem value="alpha">Ordem alfabética</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
             </div>
-            <Select value={filterCat} onValueChange={setFilterCat}>
-              <SelectTrigger className="h-9 w-[170px] bg-background"><SelectValue placeholder="Categoria" /></SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">Todas categorias</SelectItem>
-                {PLAYBOOK_CATEGORIES.map(c => <SelectItem key={c} value={c}>{c}</SelectItem>)}
-              </SelectContent>
-            </Select>
-            <Select value={sortBy} onValueChange={(v: any) => setSortBy(v)}>
-              <SelectTrigger className="h-9 w-[170px] bg-background"><SelectValue /></SelectTrigger>
-              <SelectContent>
-                <SelectItem value="updated">Última atualização</SelectItem>
-                <SelectItem value="newest">Mais recentes</SelectItem>
-                <SelectItem value="oldest">Mais antigos</SelectItem>
-                <SelectItem value="alpha">Ordem alfabética</SelectItem>
-              </SelectContent>
-            </Select>
-          </div>
-        </div>
+          </>
+        )}
       </div>
+
 
       {/* Body */}
       <div
@@ -406,7 +447,15 @@ export default function Playbook() {
         </aside>
 
         {/* Detail */}
-        <section className="overflow-y-auto bg-muted/30">
+        <section
+          ref={scrollRef as any}
+          onScroll={(e) => {
+            const top = (e.target as HTMLElement).scrollTop;
+            if (top > 60 && !headerCollapsed) setHeaderCollapsed(true);
+            else if (top < 8 && headerCollapsed) setHeaderCollapsed(false);
+          }}
+          className="overflow-y-auto bg-muted/30"
+        >
           {!draft ? (
             <PlaybookLanding
               items={items}
@@ -647,49 +696,58 @@ function PlaybookLanding({
     count: items.filter(i => i.category === c).length,
     docs: items.filter(i => i.category === c).slice(0, 1),
   }));
+  const [catOpen, setCatOpen] = useState(true);
 
   return (
     <div className="max-w-6xl mx-auto px-6 py-6 space-y-7">
       {/* Categories grid */}
       <section>
-        <div className="flex items-baseline gap-2 mb-3">
+        <button
+          type="button"
+          onClick={() => setCatOpen(o => !o)}
+          className="flex items-center gap-2 mb-3 group"
+        >
+          {catOpen ? <ChevronDown className="h-3.5 w-3.5 text-muted-foreground" /> : <ChevronRight className="h-3.5 w-3.5 text-muted-foreground" />}
           <h3 className="text-[14px] font-semibold tracking-tight">Explore por categoria</h3>
-          <span className="text-[11.5px] text-muted-foreground">clique para filtrar a lista abaixo</span>
-        </div>
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-          {categoriesWithCount.map(c => {
-            const tint = CATEGORY_TINTS[c.name] ?? { bar: "bg-zinc-400", chip: "bg-zinc-100 text-zinc-800", letter: c.name[0] };
-            const empty = c.count === 0;
-            return (
-              <button key={c.name} onClick={() => empty ? onCreate() : onSelectCategory(c.name)}
-                className="group relative text-left rounded-xl border bg-card overflow-hidden hover:shadow-md hover:border-foreground/20 transition-all">
-                <div className={cn("h-1 w-full", tint.bar)} />
-                <div className="p-3.5">
-                  <div className="flex items-center gap-2">
-                    <span className={cn("h-7 w-7 grid place-items-center rounded-md text-[12px] font-bold", tint.chip)}>{tint.letter}</span>
-                    <div className="min-w-0 flex-1">
-                      <div className="text-[13px] font-semibold truncate">{c.name}</div>
-                      <div className="text-[11px] text-muted-foreground tabular-nums">
-                        {empty ? "sem docs" : `${c.count} ${c.count === 1 ? "doc" : "docs"}`}
+          <span className="text-[11.5px] text-muted-foreground">{catOpen ? "clique para filtrar a lista abaixo" : "clique para expandir"}</span>
+        </button>
+        {catOpen && (
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+            {categoriesWithCount.map(c => {
+              const tint = CATEGORY_TINTS[c.name] ?? { bar: "bg-zinc-400", chip: "bg-zinc-100 text-zinc-800", letter: c.name[0] };
+              const empty = c.count === 0;
+              return (
+                <button key={c.name} onClick={() => empty ? onCreate() : onSelectCategory(c.name)}
+                  className="group relative text-left rounded-xl border bg-card overflow-hidden hover:shadow-md hover:border-foreground/20 transition-all">
+                  <div className={cn("h-1 w-full", tint.bar)} />
+                  <div className="p-3.5">
+                    <div className="flex items-center gap-2">
+                      <span className={cn("h-7 w-7 grid place-items-center rounded-md text-[12px] font-bold", tint.chip)}>{tint.letter}</span>
+                      <div className="min-w-0 flex-1">
+                        <div className="text-[13px] font-semibold truncate">{c.name}</div>
+                        <div className="text-[11px] text-muted-foreground tabular-nums">
+                          {empty ? "sem docs" : `${c.count} ${c.count === 1 ? "doc" : "docs"}`}
+                        </div>
                       </div>
                     </div>
+                    <div className="mt-2.5 min-h-[18px]">
+                      {empty ? (
+                        <span className="text-[11.5px] text-primary font-medium">+ Documentar</span>
+                      ) : (
+                        <div className="flex items-center gap-1.5 text-[11.5px] text-muted-foreground truncate">
+                          <span className={cn("h-1.5 w-1.5 rounded-full shrink-0", tint.bar)} />
+                          <span className="truncate">{c.docs[0]?.title}</span>
+                        </div>
+                      )}
+                    </div>
                   </div>
-                  <div className="mt-2.5 min-h-[18px]">
-                    {empty ? (
-                      <span className="text-[11.5px] text-primary font-medium">+ Documentar</span>
-                    ) : (
-                      <div className="flex items-center gap-1.5 text-[11.5px] text-muted-foreground truncate">
-                        <span className={cn("h-1.5 w-1.5 rounded-full shrink-0", tint.bar)} />
-                        <span className="truncate">{c.docs[0]?.title}</span>
-                      </div>
-                    )}
-                  </div>
-                </div>
-              </button>
-            );
-          })}
-        </div>
+                </button>
+              );
+            })}
+          </div>
+        )}
       </section>
+
 
       {/* Hero CTA */}
       <div className="relative overflow-hidden rounded-2xl border bg-gradient-to-br from-primary/10 via-orange-50 to-rose-50 p-5 flex items-center justify-between gap-6">

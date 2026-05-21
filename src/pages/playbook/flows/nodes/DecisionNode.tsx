@@ -20,8 +20,8 @@ export function DecisionNode({ data, id, selected }: NodeProps) {
       >
         <defs>
           <linearGradient id={`dg-${id}`} x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" stopColor="hsl(var(--card))" />
-            <stop offset="100%" stopColor="hsl(var(--muted))" />
+            <stop offset="0%" stopColor="#fef9c3" />
+            <stop offset="100%" stopColor="#fde68a" />
           </linearGradient>
           <filter id={`ds-${id}`} x="-20%" y="-20%" width="140%" height="140%">
             <feDropShadow dx="0" dy="1.5" stdDeviation="1.5" floodColor="#000" floodOpacity="0.12" />
@@ -30,7 +30,7 @@ export function DecisionNode({ data, id, selected }: NodeProps) {
         <polygon
           points={`${W / 2},4 ${W - 4},${H / 2} ${W / 2},${H - 4} 4,${H / 2}`}
           fill={`url(#dg-${id})`}
-          stroke={selected ? "hsl(var(--primary))" : "hsl(var(--border))"}
+          stroke={selected ? "#b45309" : "#d97706"}
           strokeWidth={selected ? 2 : 1.5}
           filter={`url(#ds-${id})`}
         />

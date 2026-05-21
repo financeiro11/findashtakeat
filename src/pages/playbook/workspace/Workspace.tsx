@@ -71,6 +71,7 @@ export default function Workspace() {
   const [saveState, setSaveState] = useState<"idle" | "saving" | "saved" | "error">("idle");
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [tagInput, setTagInput] = useState("");
+  const [headerCollapsed, setHeaderCollapsed] = useState(false);
   const debounceRef = useRef<any>(null);
   const coverRef = useRef<HTMLInputElement>(null);
 

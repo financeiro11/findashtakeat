@@ -239,101 +239,140 @@ export default function Playbook() {
   return (
     <div className="flex flex-col h-full bg-muted/20">
       {/* Header */}
-      <div className="border-b bg-background/80 backdrop-blur-sm px-6 pt-4 pb-3">
-        {/* Breadcrumb */}
-        <nav aria-label="breadcrumb" className="flex items-center gap-1.5 text-[12px] text-muted-foreground mb-2">
-          <Home className="h-3.5 w-3.5" />
-          <span>Início</span>
-          <ChevronRight className="h-3 w-3 opacity-60" />
-          <span className={cn(selected ? "" : "text-foreground font-medium")}>Playbook</span>
-          {selected && (
-            <>
+      <div className="border-b bg-background/80 backdrop-blur-sm px-6 pt-3 pb-3">
+        {headerCollapsed ? (
+          <div className="flex items-center justify-between gap-3">
+            <div className="flex items-center gap-2 min-w-0">
+              <Home className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+              <ChevronRight className="h-3 w-3 opacity-60 shrink-0" />
+              <h1 className="text-[15px] font-semibold tracking-tight truncate">Playbook</h1>
+              {selected && (
+                <>
+                  <ChevronRight className="h-3 w-3 opacity-60 shrink-0" />
+                  <span className="text-[13px] text-muted-foreground truncate">{selected.title}</span>
+                </>
+              )}
+            </div>
+            <div className="flex items-center gap-2">
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-7 gap-1.5 text-[12px]"
+                onClick={() => setHeaderCollapsed(false)}
+                title="Expandir cabeçalho"
+              >
+                <ChevronDown className="h-3.5 w-3.5" /> Expandir
+              </Button>
+            </div>
+          </div>
+        ) : (
+          <>
+            {/* Breadcrumb */}
+            <nav aria-label="breadcrumb" className="flex items-center gap-1.5 text-[12px] text-muted-foreground mb-2">
+              <Home className="h-3.5 w-3.5" />
+              <span>Início</span>
               <ChevronRight className="h-3 w-3 opacity-60" />
-              <span className="text-foreground font-medium truncate max-w-[420px]">{selected.title}</span>
-            </>
-          )}
-        </nav>
+              <span className={cn(selected ? "" : "text-foreground font-medium")}>Playbook</span>
+              {selected && (
+                <>
+                  <ChevronRight className="h-3 w-3 opacity-60" />
+                  <span className="text-foreground font-medium truncate max-w-[420px]">{selected.title}</span>
+                </>
+              )}
+            </nav>
 
-        <div className="flex items-end justify-between gap-4 flex-wrap">
-          <div className="min-w-0">
-            <div className="flex items-center gap-2.5">
-              <h1 className="text-[22px] font-semibold tracking-tight leading-none">Playbook Financeiro</h1>
-              <span className="inline-flex items-center h-[22px] px-2 rounded-full bg-secondary text-secondary-foreground text-[11px] font-medium tabular-nums">
-                {items.length} {items.length === 1 ? "documento" : "documentos"}
-              </span>
+            <div className="flex items-end justify-between gap-4 flex-wrap">
+              <div className="min-w-0">
+                <div className="flex items-center gap-2.5">
+                  <h1 className="text-[22px] font-semibold tracking-tight leading-none">Playbook Financeiro</h1>
+                  <span className="inline-flex items-center h-[22px] px-2 rounded-full bg-secondary text-secondary-foreground text-[11px] font-medium tabular-nums">
+                    {items.length} {items.length === 1 ? "documento" : "documentos"}
+                  </span>
+                </div>
+                <p className="text-[12.5px] text-muted-foreground mt-1.5 max-w-2xl">
+                  Central de documentação financeira: processos, rotinas, checklists e instruções de onboarding em um só lugar.
+                </p>
+              </div>
+              <div className="flex items-center gap-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="h-9 gap-1.5"
+                  onClick={() => setHeaderCollapsed(true)}
+                  title="Recolher cabeçalho"
+                >
+                  <ChevronUp className="h-4 w-4" /> Recolher topo
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="h-9 gap-1.5"
+                  onClick={() => setSidebarOpen(o => !o)}
+                  title={sidebarOpen ? "Recolher lista" : "Expandir lista"}
+                >
+                  {sidebarOpen ? <PanelLeftClose className="h-4 w-4" /> : <PanelLeftOpen className="h-4 w-4" />}
+                  {sidebarOpen ? "Recolher" : "Expandir"}
+                </Button>
+                <Button onClick={() => setCreateOpen(true)} className="h-9 gap-2">
+                  <Plus className="h-4 w-4" /> Novo playbook
+                </Button>
+              </div>
             </div>
-            <p className="text-[12.5px] text-muted-foreground mt-1.5 max-w-2xl">
-              Central de documentação financeira: processos, rotinas, checklists e instruções de onboarding em um só lugar.
-            </p>
-          </div>
-          <div className="flex items-center gap-2">
-            <Button
-              variant="outline"
-              size="sm"
-              className="h-9 gap-1.5"
-              onClick={() => setSidebarOpen(o => !o)}
-              title={sidebarOpen ? "Recolher lista" : "Expandir lista"}
-            >
-              {sidebarOpen ? <PanelLeftClose className="h-4 w-4" /> : <PanelLeftOpen className="h-4 w-4" />}
-              {sidebarOpen ? "Recolher" : "Expandir"}
-            </Button>
-            <Button onClick={() => setCreateOpen(true)} className="h-9 gap-2">
-              <Plus className="h-4 w-4" /> Novo playbook
-            </Button>
-          </div>
-        </div>
 
-        {/* Counter stats (status filters) */}
-        <div className="flex items-center gap-5 mt-3 flex-wrap">
-          {([
-            { key: "all", label: "documentos", num: "text-foreground" },
-            { key: "Publicado", label: "publicados", num: "text-emerald-600" },
-            { key: "Em revisão", label: "em revisão", num: "text-amber-600" },
-            { key: "Rascunho", label: "rascunhos", num: "text-foreground" },
-          ] as const).map(c => {
-            const count = c.key === "all" ? items.length : items.filter(i => i.status === c.key).length;
-            const active = filterStatus === c.key;
-            return (
-              <button key={c.key}
-                onClick={() => setFilterStatus(c.key)}
-                className={cn(
-                  "inline-flex items-baseline gap-1.5 text-[13px] transition-colors",
-                  active ? "opacity-100" : "opacity-80 hover:opacity-100"
-                )}>
-                <span className={cn("text-[16px] font-bold tabular-nums leading-none", c.num)}>{count}</span>
-                <span className={cn("text-muted-foreground", active && "underline underline-offset-4 decoration-2 decoration-foreground/40")}>{c.label}</span>
-              </button>
-            );
-          })}
-          <div className="ml-auto flex items-center gap-2 flex-wrap">
-            <div className="relative w-[300px]">
-              <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
-              <Input
-                value={search}
-                onChange={e => setSearch(e.target.value)}
-                placeholder="Buscar processo, rotina ou palavra-chave..."
-                className="pl-8 h-9 bg-background"
-              />
+            {/* Counter stats (status filters) */}
+            <div className="flex items-center gap-5 mt-3 flex-wrap">
+              {([
+                { key: "all", label: "documentos", num: "text-foreground" },
+                { key: "Publicado", label: "publicados", num: "text-emerald-600" },
+                { key: "Em revisão", label: "em revisão", num: "text-amber-600" },
+                { key: "Rascunho", label: "rascunhos", num: "text-foreground" },
+              ] as const).map(c => {
+                const count = c.key === "all" ? items.length : items.filter(i => i.status === c.key).length;
+                const active = filterStatus === c.key;
+                return (
+                  <button key={c.key}
+                    onClick={() => setFilterStatus(c.key)}
+                    className={cn(
+                      "inline-flex items-baseline gap-1.5 text-[13px] transition-colors",
+                      active ? "opacity-100" : "opacity-80 hover:opacity-100"
+                    )}>
+                    <span className={cn("text-[16px] font-bold tabular-nums leading-none", c.num)}>{count}</span>
+                    <span className={cn("text-muted-foreground", active && "underline underline-offset-4 decoration-2 decoration-foreground/40")}>{c.label}</span>
+                  </button>
+                );
+              })}
+              <div className="ml-auto flex items-center gap-2 flex-wrap">
+                <div className="relative w-[300px]">
+                  <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
+                  <Input
+                    value={search}
+                    onChange={e => setSearch(e.target.value)}
+                    placeholder="Buscar processo, rotina ou palavra-chave..."
+                    className="pl-8 h-9 bg-background"
+                  />
+                </div>
+                <Select value={filterCat} onValueChange={setFilterCat}>
+                  <SelectTrigger className="h-9 w-[170px] bg-background"><SelectValue placeholder="Categoria" /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">Todas categorias</SelectItem>
+                    {PLAYBOOK_CATEGORIES.map(c => <SelectItem key={c} value={c}>{c}</SelectItem>)}
+                  </SelectContent>
+                </Select>
+                <Select value={sortBy} onValueChange={(v: any) => setSortBy(v)}>
+                  <SelectTrigger className="h-9 w-[170px] bg-background"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="updated">Última atualização</SelectItem>
+                    <SelectItem value="newest">Mais recentes</SelectItem>
+                    <SelectItem value="oldest">Mais antigos</SelectItem>
+                    <SelectItem value="alpha">Ordem alfabética</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
             </div>
-            <Select value={filterCat} onValueChange={setFilterCat}>
-              <SelectTrigger className="h-9 w-[170px] bg-background"><SelectValue placeholder="Categoria" /></SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">Todas categorias</SelectItem>
-                {PLAYBOOK_CATEGORIES.map(c => <SelectItem key={c} value={c}>{c}</SelectItem>)}
-              </SelectContent>
-            </Select>
-            <Select value={sortBy} onValueChange={(v: any) => setSortBy(v)}>
-              <SelectTrigger className="h-9 w-[170px] bg-background"><SelectValue /></SelectTrigger>
-              <SelectContent>
-                <SelectItem value="updated">Última atualização</SelectItem>
-                <SelectItem value="newest">Mais recentes</SelectItem>
-                <SelectItem value="oldest">Mais antigos</SelectItem>
-                <SelectItem value="alpha">Ordem alfabética</SelectItem>
-              </SelectContent>
-            </Select>
-          </div>
-        </div>
+          </>
+        )}
       </div>
+
 
       {/* Body */}
       <div

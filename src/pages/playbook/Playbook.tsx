@@ -62,6 +62,8 @@ export default function Playbook() {
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [assets, setAssets] = useState<Asset[]>([]);
   const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [headerCollapsed, setHeaderCollapsed] = useState(false);
+  const scrollRef = useRef<HTMLElement | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const debounceRef = useRef<any>(null);
 

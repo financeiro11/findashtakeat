@@ -280,6 +280,10 @@ function Inner({ nodes, edges, viewport, onChange }: Props) {
           snapToGrid
           snapGrid={[16, 16]}
           deleteKeyCode={["Backspace", "Delete"]}
+          multiSelectionKeyCode={["Shift", "Meta", "Control"]}
+          selectionOnDrag
+          panOnDrag={[1, 2]}
+          selectionKeyCode={null}
           proOptions={{ hideAttribution: true }}
         >
           <Background variant={BackgroundVariant.Dots} gap={16} size={1} />

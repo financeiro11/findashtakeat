@@ -1288,6 +1288,39 @@ export type Database = {
         }
         Relationships: []
       }
+      rc_asaas_finopstkt: {
+        Row: {
+          billing_type: string | null
+          created_at: string | null
+          customer: string | null
+          data_pagamento: string | null
+          id: number
+          id_asaas: string | null
+          status: string | null
+          valor: number | null
+        }
+        Insert: {
+          billing_type?: string | null
+          created_at?: string | null
+          customer?: string | null
+          data_pagamento?: string | null
+          id?: number
+          id_asaas?: string | null
+          status?: string | null
+          valor?: number | null
+        }
+        Update: {
+          billing_type?: string | null
+          created_at?: string | null
+          customer?: string | null
+          data_pagamento?: string | null
+          id?: number
+          id_asaas?: string | null
+          status?: string | null
+          valor?: number | null
+        }
+        Relationships: []
+      }
       recargas_celulares: {
         Row: {
           created_at: string
@@ -1400,6 +1433,72 @@ export type Database = {
             referencedColumns: ["id"]
           },
         ]
+      }
+      receitas_asaas: {
+        Row: {
+          billing_type: string | null
+          created_at: string | null
+          customer: string | null
+          data_pagamento: string | null
+          id: number
+          id_asaas: string | null
+          status: string | null
+          valor: number | null
+        }
+        Insert: {
+          billing_type?: string | null
+          created_at?: string | null
+          customer?: string | null
+          data_pagamento?: string | null
+          id?: number
+          id_asaas?: string | null
+          status?: string | null
+          valor?: number | null
+        }
+        Update: {
+          billing_type?: string | null
+          created_at?: string | null
+          customer?: string | null
+          data_pagamento?: string | null
+          id?: number
+          id_asaas?: string | null
+          status?: string | null
+          valor?: number | null
+        }
+        Relationships: []
+      }
+      receitas_caixa_asaas: {
+        Row: {
+          billing_type: string | null
+          created_at: string | null
+          customer: string | null
+          data_pagamento: string | null
+          id: number
+          id_asaas: string | null
+          status: string | null
+          valor: number | null
+        }
+        Insert: {
+          billing_type?: string | null
+          created_at?: string | null
+          customer?: string | null
+          data_pagamento?: string | null
+          id?: number
+          id_asaas?: string | null
+          status?: string | null
+          valor?: number | null
+        }
+        Update: {
+          billing_type?: string | null
+          created_at?: string | null
+          customer?: string | null
+          data_pagamento?: string | null
+          id?: number
+          id_asaas?: string | null
+          status?: string | null
+          valor?: number | null
+        }
+        Relationships: []
       }
       tarefas: {
         Row: {

@@ -47,7 +47,7 @@ const PALETTE = [
 
 type Snapshot = { nodes: Node[]; edges: Edge[] };
 
-function Inner({ nodes, edges, viewport, onChange }: Props) {
+function Inner({ nodes, edges, viewport, title, onChange }: Props) {
   const wrapperRef = useRef<HTMLDivElement>(null);
   const { screenToFlowPosition, getViewport } = useReactFlow();
 

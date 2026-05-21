@@ -47,6 +47,35 @@ const PALETTE = [
 
 type Snapshot = { nodes: Node[]; edges: Edge[] };
 
+const EDGE_COLOR = "hsl(var(--muted-foreground))";
+
+const DEFAULT_NODE_SIZE: Record<string, { width: number; height: number }> = {
+  start: { width: 120, height: 44 },
+  end: { width: 120, height: 44 },
+  step: { width: 160, height: 56 },
+  decision: { width: 180, height: 110 },
+  subprocess: { width: 180, height: 60 },
+  note: { width: 180, height: 80 },
+  lane: { width: 320, height: 360 },
+};
+
+function numericSize(value: unknown) {
+  if (typeof value === "number") return value;
+  if (typeof value === "string") {
+    const parsed = Number.parseFloat(value);
+    return Number.isFinite(parsed) ? parsed : undefined;
+  }
+  return undefined;
+}
+
+function nodeWithExportSize(node: Node): Node {
+  const fallback = DEFAULT_NODE_SIZE[node.type ?? "step"] ?? DEFAULT_NODE_SIZE.step;
+  const measured = (node as any).measured ?? {};
+  const width = numericSize((node.style as any)?.width) ?? (node as any).width ?? measured.width ?? fallback.width;
+  const height = numericSize((node.style as any)?.height) ?? (node as any).height ?? measured.height ?? fallback.height;
+  return { ...node, width, height } as Node;
+}
+
 function Inner({ nodes, edges, viewport, title, onChange }: Props) {
   const wrapperRef = useRef<HTMLDivElement>(null);
   const { screenToFlowPosition, getViewport } = useReactFlow();
@@ -158,6 +187,20 @@ function Inner({ nodes, edges, viewport, title, onChange }: Props) {
   const hydratedNodes = useMemo(
     () => nodes.map(n => ({ ...n, data: { ...n.data, onLabelChange: updateLabel } })),
     [nodes, updateLabel]
+  );
+
+  const hydratedEdges = useMemo(
+    () => edges.map(edge => ({
+      ...edge,
+      type: edge.type ?? "smoothstep",
+      markerEnd: edge.markerEnd ?? { type: MarkerType.ArrowClosed, width: 18, height: 18, color: EDGE_COLOR },
+      style: { stroke: EDGE_COLOR, strokeWidth: 1.8, ...(edge.style ?? {}) },
+      labelStyle: { fill: "hsl(var(--foreground))", fontSize: 11, fontWeight: 700, ...(edge.labelStyle ?? {}) },
+      labelBgStyle: { fill: "hsl(var(--background))", fillOpacity: 0.95, ...(edge.labelBgStyle ?? {}) },
+      labelBgPadding: edge.labelBgPadding ?? [4, 2],
+      labelBgBorderRadius: edge.labelBgBorderRadius ?? 4,
+    })),
+    [edges]
   );
 
   const onNodesChange = useCallback((changes: NodeChange[]) => {

@@ -17,7 +17,9 @@ export function NoteNode({ data, selected, id }: NodeProps) {
           autoFocus
           defaultValue={label}
           onBlur={(e) => { (data as any).onLabelChange?.(id, e.target.value); setEditing(false); }}
-          className="w-full h-full bg-transparent outline-none resize-none"
+          onPointerDown={(e) => e.stopPropagation()}
+          onMouseDown={(e) => e.stopPropagation()}
+          className="nodrag nopan w-full h-full bg-transparent outline-none resize-none"
         />
       ) : (
         <div className="whitespace-pre-wrap leading-snug">{label}</div>

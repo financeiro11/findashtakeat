@@ -22,7 +22,9 @@ export function StartEndNode({ data, id, type }: NodeProps) {
           defaultValue={label}
           onBlur={(e) => { (data as any).onLabelChange?.(id, e.target.value); setEditing(false); }}
           onKeyDown={(e) => { if (e.key === "Enter") { (data as any).onLabelChange?.(id, (e.target as HTMLInputElement).value); setEditing(false); } }}
-          className="w-full bg-transparent text-center outline-none"
+          onPointerDown={(e) => e.stopPropagation()}
+          onMouseDown={(e) => e.stopPropagation()}
+          className="nodrag nopan w-full bg-transparent text-center outline-none"
         />
       ) : (
         <span>{label}</span>

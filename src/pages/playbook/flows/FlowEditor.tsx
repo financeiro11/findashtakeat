@@ -44,14 +44,61 @@ const PALETTE = [
   { type: "lane", label: "Raia", icon: Columns3, size: { width: 320, height: 360 } },
 ] as const;
 
+type Snapshot = { nodes: Node[]; edges: Edge[] };
+
 function Inner({ nodes, edges, viewport, onChange }: Props) {
   const wrapperRef = useRef<HTMLDivElement>(null);
   const { screenToFlowPosition, getViewport } = useReactFlow();
 
+  // ---- Undo / Redo history ----
+  const past = useRef<Snapshot[]>([]);
+  const future = useRef<Snapshot[]>([]);
+  const latest = useRef<Snapshot>({ nodes, edges });
+  useEffect(() => { latest.current = { nodes, edges }; }, [nodes, edges]);
+
+  const pushHistory = useCallback(() => {
+    past.current.push({
+      nodes: latest.current.nodes.map(n => ({ ...n, position: { ...n.position } })),
+      edges: latest.current.edges.map(e => ({ ...e })),
+    });
+    if (past.current.length > 100) past.current.shift();
+    future.current = [];
+  }, []);
+
+  const undo = useCallback(() => {
+    const prev = past.current.pop();
+    if (!prev) return;
+    future.current.push(latest.current);
+    onChange({ nodes: prev.nodes, edges: prev.edges, viewport: getViewport() });
+  }, [onChange, getViewport]);
+
+  const redo = useCallback(() => {
+    const nxt = future.current.pop();
+    if (!nxt) return;
+    past.current.push(latest.current);
+    onChange({ nodes: nxt.nodes, edges: nxt.edges, viewport: getViewport() });
+  }, [onChange, getViewport]);
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const meta = e.ctrlKey || e.metaKey;
+      if (!meta) return;
+      const k = e.key.toLowerCase();
+      const target = e.target as HTMLElement | null;
+      const tag = target?.tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA" || target?.isContentEditable) return;
+      if (k === "z" && !e.shiftKey) { e.preventDefault(); undo(); }
+      else if ((k === "z" && e.shiftKey) || k === "y") { e.preventDefault(); redo(); }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [undo, redo]);
+
   const updateLabel = useCallback((id: string, label: string) => {
+    pushHistory();
     const next = nodes.map(n => n.id === id ? { ...n, data: { ...n.data, label } } : n);
     onChange({ nodes: next, edges, viewport: getViewport() });
-  }, [nodes, edges, onChange, getViewport]);
+  }, [nodes, edges, onChange, getViewport, pushHistory]);
 
   const hydratedNodes = useMemo(
     () => nodes.map(n => ({ ...n, data: { ...n.data, onLabelChange: updateLabel } })),
@@ -59,16 +106,21 @@ function Inner({ nodes, edges, viewport, onChange }: Props) {
   );
 
   const onNodesChange = useCallback((changes: NodeChange[]) => {
+    if (changes.some(c => c.type === "remove")) pushHistory();
     const next = applyNodeChanges(changes, nodes);
     onChange({ nodes: next, edges, viewport: getViewport() });
-  }, [nodes, edges, onChange, getViewport]);
+  }, [nodes, edges, onChange, getViewport, pushHistory]);
 
   const onEdgesChange = useCallback((changes: EdgeChange[]) => {
+    if (changes.some(c => c.type === "remove")) pushHistory();
     const next = applyEdgeChanges(changes, edges);
     onChange({ nodes, edges: next, viewport: getViewport() });
-  }, [nodes, edges, onChange, getViewport]);
+  }, [nodes, edges, onChange, getViewport, pushHistory]);
+
+  const onNodeDragStart = useCallback(() => { pushHistory(); }, [pushHistory]);
 
   const onConnect = useCallback((conn: Connection) => {
+    pushHistory();
     let label: string | undefined;
     if (conn.sourceHandle === "yes") label = "Sim";
     if (conn.sourceHandle === "no") label = "Não";
@@ -81,7 +133,7 @@ function Inner({ nodes, edges, viewport, onChange }: Props) {
       style: { strokeWidth: 1.6 },
     }, edges);
     onChange({ nodes, edges: next, viewport: getViewport() });
-  }, [nodes, edges, onChange, getViewport]);
+  }, [nodes, edges, onChange, getViewport, pushHistory]);
 
   const onDragOver = (e: React.DragEvent) => { e.preventDefault(); e.dataTransfer.dropEffect = "move"; };
 

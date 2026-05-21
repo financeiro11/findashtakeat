@@ -46,7 +46,9 @@ export function DecisionNode({ data, id, selected }: NodeProps) {
               if (e.key === "Enter") { (data as any).onLabelChange?.(id, (e.target as HTMLInputElement).value); setEditing(false); }
               if (e.key === "Escape") setEditing(false);
             }}
-            className="w-[110px] bg-transparent text-center outline-none text-[12px] font-medium pointer-events-auto"
+            onPointerDown={(e) => e.stopPropagation()}
+            onMouseDown={(e) => e.stopPropagation()}
+            className="nodrag nopan w-[110px] bg-transparent text-center outline-none text-[12px] font-medium pointer-events-auto"
           />
         ) : (
           <span className="text-[12px] font-medium leading-tight text-foreground break-words">

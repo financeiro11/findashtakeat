@@ -696,49 +696,58 @@ function PlaybookLanding({
     count: items.filter(i => i.category === c).length,
     docs: items.filter(i => i.category === c).slice(0, 1),
   }));
+  const [catOpen, setCatOpen] = useState(true);
 
   return (
     <div className="max-w-6xl mx-auto px-6 py-6 space-y-7">
       {/* Categories grid */}
       <section>
-        <div className="flex items-baseline gap-2 mb-3">
+        <button
+          type="button"
+          onClick={() => setCatOpen(o => !o)}
+          className="flex items-center gap-2 mb-3 group"
+        >
+          {catOpen ? <ChevronDown className="h-3.5 w-3.5 text-muted-foreground" /> : <ChevronRight className="h-3.5 w-3.5 text-muted-foreground" />}
           <h3 className="text-[14px] font-semibold tracking-tight">Explore por categoria</h3>
-          <span className="text-[11.5px] text-muted-foreground">clique para filtrar a lista abaixo</span>
-        </div>
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-          {categoriesWithCount.map(c => {
-            const tint = CATEGORY_TINTS[c.name] ?? { bar: "bg-zinc-400", chip: "bg-zinc-100 text-zinc-800", letter: c.name[0] };
-            const empty = c.count === 0;
-            return (
-              <button key={c.name} onClick={() => empty ? onCreate() : onSelectCategory(c.name)}
-                className="group relative text-left rounded-xl border bg-card overflow-hidden hover:shadow-md hover:border-foreground/20 transition-all">
-                <div className={cn("h-1 w-full", tint.bar)} />
-                <div className="p-3.5">
-                  <div className="flex items-center gap-2">
-                    <span className={cn("h-7 w-7 grid place-items-center rounded-md text-[12px] font-bold", tint.chip)}>{tint.letter}</span>
-                    <div className="min-w-0 flex-1">
-                      <div className="text-[13px] font-semibold truncate">{c.name}</div>
-                      <div className="text-[11px] text-muted-foreground tabular-nums">
-                        {empty ? "sem docs" : `${c.count} ${c.count === 1 ? "doc" : "docs"}`}
+          <span className="text-[11.5px] text-muted-foreground">{catOpen ? "clique para filtrar a lista abaixo" : "clique para expandir"}</span>
+        </button>
+        {catOpen && (
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+            {categoriesWithCount.map(c => {
+              const tint = CATEGORY_TINTS[c.name] ?? { bar: "bg-zinc-400", chip: "bg-zinc-100 text-zinc-800", letter: c.name[0] };
+              const empty = c.count === 0;
+              return (
+                <button key={c.name} onClick={() => empty ? onCreate() : onSelectCategory(c.name)}
+                  className="group relative text-left rounded-xl border bg-card overflow-hidden hover:shadow-md hover:border-foreground/20 transition-all">
+                  <div className={cn("h-1 w-full", tint.bar)} />
+                  <div className="p-3.5">
+                    <div className="flex items-center gap-2">
+                      <span className={cn("h-7 w-7 grid place-items-center rounded-md text-[12px] font-bold", tint.chip)}>{tint.letter}</span>
+                      <div className="min-w-0 flex-1">
+                        <div className="text-[13px] font-semibold truncate">{c.name}</div>
+                        <div className="text-[11px] text-muted-foreground tabular-nums">
+                          {empty ? "sem docs" : `${c.count} ${c.count === 1 ? "doc" : "docs"}`}
+                        </div>
                       </div>
                     </div>
+                    <div className="mt-2.5 min-h-[18px]">
+                      {empty ? (
+                        <span className="text-[11.5px] text-primary font-medium">+ Documentar</span>
+                      ) : (
+                        <div className="flex items-center gap-1.5 text-[11.5px] text-muted-foreground truncate">
+                          <span className={cn("h-1.5 w-1.5 rounded-full shrink-0", tint.bar)} />
+                          <span className="truncate">{c.docs[0]?.title}</span>
+                        </div>
+                      )}
+                    </div>
                   </div>
-                  <div className="mt-2.5 min-h-[18px]">
-                    {empty ? (
-                      <span className="text-[11.5px] text-primary font-medium">+ Documentar</span>
-                    ) : (
-                      <div className="flex items-center gap-1.5 text-[11.5px] text-muted-foreground truncate">
-                        <span className={cn("h-1.5 w-1.5 rounded-full shrink-0", tint.bar)} />
-                        <span className="truncate">{c.docs[0]?.title}</span>
-                      </div>
-                    )}
-                  </div>
-                </div>
-              </button>
-            );
-          })}
-        </div>
+                </button>
+              );
+            })}
+          </div>
+        )}
       </section>
+
 
       {/* Hero CTA */}
       <div className="relative overflow-hidden rounded-2xl border bg-gradient-to-br from-primary/10 via-orange-50 to-rose-50 p-5 flex items-center justify-between gap-6">

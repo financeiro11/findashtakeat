@@ -150,6 +150,7 @@ function Inner({ nodes, edges, viewport, onChange }: Props) {
       data: { label },
       ...(type === "lane" || type === "subprocess" || type === "note" ? { style: { width, height } } : {}),
     };
+    pushHistory();
     onChange({ nodes: [...nodes, newNode], edges, viewport: getViewport() });
   };
 

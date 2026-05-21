@@ -8,7 +8,6 @@ import "@xyflow/react/dist/style.css";
 import { toPng } from "html-to-image";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
-import { toast } from "sonner";
 import { Download, FileCode2, Square, Diamond, Circle, StickyNote, Layers, Columns3 } from "lucide-react";
 import { StepNode } from "./nodes/StepNode";
 import { DecisionNode } from "./nodes/DecisionNode";

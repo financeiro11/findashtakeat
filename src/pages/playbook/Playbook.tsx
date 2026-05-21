@@ -24,7 +24,7 @@ import {
   Plus, Search, BookOpenCheck, Edit3, Copy, Trash2, Archive,
   CheckCircle2, AlertTriangle, Link as LinkIcon, MoreHorizontal,
   Paperclip, Loader2, FileText, Save, X, Upload, ChevronRight,
-  PanelLeftClose, PanelLeftOpen, Home,
+  PanelLeftClose, PanelLeftOpen, Home, ChevronUp, ChevronDown,
 } from "lucide-react";
 import { Textarea } from "@/components/ui/textarea";
 import {

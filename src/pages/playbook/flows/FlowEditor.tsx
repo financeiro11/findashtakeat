@@ -21,6 +21,7 @@ type Props = {
   nodes: Node[];
   edges: Edge[];
   viewport: { x: number; y: number; zoom: number };
+  title?: string;
   onChange: (next: { nodes: Node[]; edges: Edge[]; viewport: { x: number; y: number; zoom: number } }) => void;
 };
 

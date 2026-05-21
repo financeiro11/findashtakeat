@@ -37,7 +37,7 @@ const NODE_TYPES = {
 const PALETTE = [
   { type: "start", label: "Início", icon: Circle, size: { width: 120, height: 44 } },
   { type: "step", label: "Etapa", icon: Square, size: { width: 160, height: 56 } },
-  { type: "decision", label: "Decisão", icon: Diamond, size: { width: 160, height: 100 } },
+  { type: "decision", label: "Decisão", icon: Diamond, size: { width: 180, height: 110 } },
   { type: "subprocess", label: "Subprocesso", icon: Layers, size: { width: 180, height: 60 } },
   { type: "end", label: "Fim", icon: Circle, size: { width: 120, height: 44 } },
   { type: "note", label: "Anotação", icon: StickyNote, size: { width: 180, height: 80 } },

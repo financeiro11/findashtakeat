@@ -447,7 +447,15 @@ export default function Playbook() {
         </aside>
 
         {/* Detail */}
-        <section className="overflow-y-auto bg-muted/30">
+        <section
+          ref={scrollRef as any}
+          onScroll={(e) => {
+            const top = (e.target as HTMLElement).scrollTop;
+            if (top > 60 && !headerCollapsed) setHeaderCollapsed(true);
+            else if (top < 8 && headerCollapsed) setHeaderCollapsed(false);
+          }}
+          className="overflow-y-auto bg-muted/30"
+        >
           {!draft ? (
             <PlaybookLanding
               items={items}

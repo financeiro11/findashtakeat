@@ -128,6 +128,7 @@ export default function Playbook() {
     }).select().single();
     if (error) { toast.error("Erro ao criar", { description: error.message }); return; }
     setItems(prev => [data as Playbook, ...prev]);
+    justCreatedRef.current = data!.id;
     setSelectedId(data!.id);
     setEditing(true);
     setCreateOpen(false);

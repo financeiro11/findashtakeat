@@ -145,6 +145,29 @@ function tagsFor(t: Tarefa): { label: string; cls: string }[] {
   return tags;
 }
 
+// Extrai "evento" do título no padrão "Recarga de viagem - {evento}"
+function eventoFor(t: Tarefa): string {
+  const m = /^\s*Recarga de viagem\s*[-–]\s*(.+?)\s*$/i.exec(t.titulo || "");
+  if (m) return m[1].trim();
+  return "";
+}
+function groupByEvento(items: Tarefa[]): { evento: string; items: Tarefa[] }[] {
+  const map = new Map<string, Tarefa[]>();
+  for (const t of items) {
+    const ev = eventoFor(t);
+    if (!map.has(ev)) map.set(ev, []);
+    map.get(ev)!.push(t);
+  }
+  // sem-evento primeiro (sem header), depois eventos em ordem alfabética
+  const groups: { evento: string; items: Tarefa[] }[] = [];
+  if (map.has("")) groups.push({ evento: "", items: map.get("")! });
+  [...map.keys()]
+    .filter(k => k !== "")
+    .sort((a, b) => a.localeCompare(b, "pt-BR"))
+    .forEach(k => groups.push({ evento: k, items: map.get(k)! }));
+  return groups;
+}
+
 function progressBarColor(p: number): string {
   if (p >= 100) return "bg-emerald-500";
   if (p >= 51) return "bg-orange-500";
@@ -711,14 +734,32 @@ function KanbanView({
               </div>
             </div>
             <div className="flex flex-1 flex-col gap-2 p-2">
-              {items.map(t => (
-                <KanbanCard
-                  key={t.id}
-                  t={t}
-                  bar={colorOf(t.status, colsMeta).bar}
-                  onClick={() => onOpen(t)}
-                  onRemove={() => onRemove(t.id)}
-                />
+              {groupByEvento(items).map(g => (
+                <div key={g.evento || "__none__"} className="space-y-1.5">
+                  {g.evento && (
+                    <div className="flex items-center gap-1.5 px-0.5 pt-1">
+                      <span className="h-1 w-1 rounded-full bg-muted-foreground/60" />
+                      <span className="truncate text-[9px] font-bold uppercase tracking-wider text-muted-foreground">
+                        {g.evento}
+                      </span>
+                      <span className="num rounded bg-secondary px-1 py-px text-[9px] text-muted-foreground">
+                        {g.items.length}
+                      </span>
+                      <div className="h-px flex-1 bg-border/60" />
+                    </div>
+                  )}
+                  <div className="flex flex-col gap-2">
+                    {g.items.map(t => (
+                      <KanbanCard
+                        key={t.id}
+                        t={t}
+                        bar={colorOf(t.status, colsMeta).bar}
+                        onClick={() => onOpen(t)}
+                        onRemove={() => onRemove(t.id)}
+                      />
+                    ))}
+                  </div>
+                </div>
               ))}
               <button
                 onClick={() => onAdd(col)}

@@ -711,14 +711,32 @@ function KanbanView({
               </div>
             </div>
             <div className="flex flex-1 flex-col gap-2 p-2">
-              {items.map(t => (
-                <KanbanCard
-                  key={t.id}
-                  t={t}
-                  bar={colorOf(t.status, colsMeta).bar}
-                  onClick={() => onOpen(t)}
-                  onRemove={() => onRemove(t.id)}
-                />
+              {groupByEvento(items).map(g => (
+                <div key={g.evento || "__none__"} className="space-y-1.5">
+                  {g.evento && (
+                    <div className="flex items-center gap-1.5 px-0.5 pt-1">
+                      <span className="h-1 w-1 rounded-full bg-muted-foreground/60" />
+                      <span className="truncate text-[9px] font-bold uppercase tracking-wider text-muted-foreground">
+                        {g.evento}
+                      </span>
+                      <span className="num rounded bg-secondary px-1 py-px text-[9px] text-muted-foreground">
+                        {g.items.length}
+                      </span>
+                      <div className="h-px flex-1 bg-border/60" />
+                    </div>
+                  )}
+                  <div className="flex flex-col gap-2">
+                    {g.items.map(t => (
+                      <KanbanCard
+                        key={t.id}
+                        t={t}
+                        bar={colorOf(t.status, colsMeta).bar}
+                        onClick={() => onOpen(t)}
+                        onRemove={() => onRemove(t.id)}
+                      />
+                    ))}
+                  </div>
+                </div>
               ))}
               <button
                 onClick={() => onAdd(col)}

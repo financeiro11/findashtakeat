@@ -66,6 +66,7 @@ export default function Playbook() {
   const scrollRef = useRef<HTMLElement | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const debounceRef = useRef<any>(null);
+  const justCreatedRef = useRef<string | null>(null);
 
   const selected = useMemo(() => items.find(i => i.id === selectedId) ?? null, [items, selectedId]);
 
@@ -73,7 +74,8 @@ export default function Playbook() {
   useEffect(() => {
     if (selected) {
       setDraft(selected);
-      setEditing(false);
+      setEditing(justCreatedRef.current === selected.id);
+      justCreatedRef.current = null;
       loadAssets(selected.id);
     } else {
       setDraft(null);

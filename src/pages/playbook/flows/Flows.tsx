@@ -276,33 +276,34 @@ export default function Flows() {
           ) : (
             <>
               {/* Sub-header */}
-              <div className="border-b bg-background/80 px-4 py-2.5 flex items-center gap-3 flex-wrap">
+              <div className="border-b bg-background/80 px-3 py-1.5 flex items-center gap-2">
                 <Input
                   value={draft.title}
                   onChange={e => updateDraft({ title: e.target.value })}
-                  className="h-9 max-w-md text-[15px] font-semibold border-transparent hover:border-border focus-visible:border-border bg-transparent"
+                  className="h-7 flex-1 min-w-0 text-[13px] font-semibold border-transparent hover:border-border focus-visible:border-border bg-transparent px-2"
                 />
                 <Select value={draft.status} onValueChange={v => updateDraft({ status: v })}>
-                  <SelectTrigger className="h-8 w-[150px] text-xs"><SelectValue /></SelectTrigger>
+                  <SelectTrigger className="h-7 w-[120px] text-[11px]"><SelectValue /></SelectTrigger>
                   <SelectContent>{PLAYBOOK_STATUSES.map(s => <SelectItem key={s} value={s}>{s}</SelectItem>)}</SelectContent>
                 </Select>
                 <Select value={draft.category} onValueChange={v => updateDraft({ category: v })}>
-                  <SelectTrigger className="h-8 w-[170px] text-xs"><SelectValue /></SelectTrigger>
+                  <SelectTrigger className="h-7 w-[140px] text-[11px]"><SelectValue /></SelectTrigger>
                   <SelectContent>{PLAYBOOK_CATEGORIES.map(c => <SelectItem key={c} value={c}>{c}</SelectItem>)}</SelectContent>
                 </Select>
-                <div className="ml-auto flex items-center gap-2">
-                  <SaveBadge state={saveState} savedAt={savedAt} />
-                  <Button variant="outline" size="sm" className="h-8 gap-1.5" onClick={() => handleDuplicate(draft)}>
-                    <Copy className="h-3.5 w-3.5" /> Duplicar
+                <SaveBadge state={saveState} savedAt={savedAt} />
+                <div className="flex items-center gap-0.5 border-l pl-1.5 ml-0.5">
+                  <Button variant="ghost" size="icon" className="h-7 w-7" title="Duplicar" onClick={() => handleDuplicate(draft)}>
+                    <Copy className="h-3.5 w-3.5" />
                   </Button>
-                  <Button variant="outline" size="sm" className="h-8 gap-1.5" onClick={() => updateDraft({ archived: !draft.archived })}>
-                    <Archive className="h-3.5 w-3.5" /> {draft.archived ? "Desarquivar" : "Arquivar"}
+                  <Button variant="ghost" size="icon" className="h-7 w-7" title={draft.archived ? "Desarquivar" : "Arquivar"} onClick={() => updateDraft({ archived: !draft.archived })}>
+                    <Archive className="h-3.5 w-3.5" />
                   </Button>
-                  <Button variant="outline" size="sm" className="h-8 gap-1.5 text-destructive" onClick={() => setConfirmDelete(true)}>
-                    <Trash2 className="h-3.5 w-3.5" /> Excluir
+                  <Button variant="ghost" size="icon" className="h-7 w-7 text-destructive hover:text-destructive" title="Excluir" onClick={() => setConfirmDelete(true)}>
+                    <Trash2 className="h-3.5 w-3.5" />
                   </Button>
                 </div>
               </div>
+
 
               {/* Canvas */}
               <div className="flex-1 min-h-0">

@@ -124,12 +124,18 @@ export default function RecargasViagens() {
       return next;
     });
     if (viagemHash) {
+      const { error: upErr } = await supabase
+        .from("recargas_viagens_status" as any)
+        .upsert({ viagem_hash: viagemHash, status: s }, { onConflict: "viagem_hash" });
+      if (upErr) {
+        toast.error("Não foi possível salvar o status: " + upErr.message);
+        return;
+      }
       const novoStatus = s === "Feito" ? "Concluído" : "Backlog";
-      const { error } = await supabase
+      await supabase
         .from("tarefas")
         .update({ status: novoStatus })
         .ilike("observacao", `%[viagem:${viagemHash}]%`);
-      if (error) toast.error("Não foi possível atualizar a tarefa vinculada");
     }
   };
 

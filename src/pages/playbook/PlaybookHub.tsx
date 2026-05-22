@@ -11,16 +11,16 @@ export default function PlaybookHub() {
   const [mode, setMode] = useState<Mode>("playbooks");
 
   return (
-    <div className="flex flex-col h-[calc(100vh-49px)]">
-      <div className="flex items-center justify-center border-b bg-background/80 backdrop-blur-sm px-6 py-2.5">
-        <div className="inline-flex items-center rounded-xl border bg-muted/40 p-1 shadow-sm">
-          <ModeBtn active={mode === "playbooks"} onClick={() => setMode("playbooks")} icon={<BookOpenCheck className="h-3.5 w-3.5"/>}>
+    <div className="relative flex flex-col h-[calc(100vh-49px)]">
+      <div className="pointer-events-none absolute top-2 right-4 z-30">
+        <div className="pointer-events-auto inline-flex items-center rounded-lg border bg-background/90 backdrop-blur p-0.5 shadow-sm">
+          <ModeBtn active={mode === "playbooks"} onClick={() => setMode("playbooks")} icon={<BookOpenCheck className="h-3 w-3"/>}>
             Playbooks
           </ModeBtn>
-          <ModeBtn active={mode === "workspace"} onClick={() => setMode("workspace")} icon={<NotebookPen className="h-3.5 w-3.5"/>}>
+          <ModeBtn active={mode === "workspace"} onClick={() => setMode("workspace")} icon={<NotebookPen className="h-3 w-3"/>}>
             Workspace
           </ModeBtn>
-          <ModeBtn active={mode === "flows"} onClick={() => setMode("flows")} icon={<Workflow className="h-3.5 w-3.5"/>}>
+          <ModeBtn active={mode === "flows"} onClick={() => setMode("flows")} icon={<Workflow className="h-3 w-3"/>}>
             Fluxos
           </ModeBtn>
         </div>
@@ -38,9 +38,9 @@ function ModeBtn({ active, onClick, icon, children }: { active: boolean; onClick
     <button
       onClick={onClick}
       className={cn(
-        "inline-flex items-center gap-1.5 px-4 h-8 rounded-lg text-[13px] font-medium transition-all",
+        "inline-flex items-center gap-1 px-2.5 h-6 rounded-md text-[11.5px] font-medium transition-all",
         active
-          ? "bg-background shadow-sm text-foreground ring-1 ring-border"
+          ? "bg-muted text-foreground"
           : "text-muted-foreground hover:text-foreground"
       )}
     >

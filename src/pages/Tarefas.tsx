@@ -145,10 +145,18 @@ function tagsFor(t: Tarefa): { label: string; cls: string }[] {
   return tags;
 }
 
-// Extrai "evento" do título no padrão "Recarga de viagem - {evento}"
+// Extrai "evento" da observação ("Evento: XXX") ou do título "Recarga de viagem - {evento}"
 function eventoFor(t: Tarefa): string {
-  const m = /^\s*Recarga de viagem\s*[-–]\s*(.+?)\s*$/i.exec(t.titulo || "");
-  if (m) return m[1].trim();
+  const obs = (t as any).observacao as string | null | undefined;
+  if (obs) {
+    const m = /^\s*Evento:\s*(.+?)\s*$/im.exec(obs);
+    if (m) {
+      const ev = m[1].trim();
+      if (ev && ev !== "—" && ev !== "-") return ev;
+    }
+  }
+  const mt = /^\s*Recarga de viagem\s*[-–]\s*(.+?)\s*$/i.exec(t.titulo || "");
+  if (mt) return mt[1].trim();
   return "";
 }
 function groupByEvento(items: Tarefa[]): { evento: string; items: Tarefa[] }[] {

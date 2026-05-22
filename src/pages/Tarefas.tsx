@@ -145,6 +145,29 @@ function tagsFor(t: Tarefa): { label: string; cls: string }[] {
   return tags;
 }
 
+// Extrai "evento" do título no padrão "Recarga de viagem - {evento}"
+function eventoFor(t: Tarefa): string {
+  const m = /^\s*Recarga de viagem\s*[-–]\s*(.+?)\s*$/i.exec(t.titulo || "");
+  if (m) return m[1].trim();
+  return "";
+}
+function groupByEvento(items: Tarefa[]): { evento: string; items: Tarefa[] }[] {
+  const map = new Map<string, Tarefa[]>();
+  for (const t of items) {
+    const ev = eventoFor(t);
+    if (!map.has(ev)) map.set(ev, []);
+    map.get(ev)!.push(t);
+  }
+  // sem-evento primeiro (sem header), depois eventos em ordem alfabética
+  const groups: { evento: string; items: Tarefa[] }[] = [];
+  if (map.has("")) groups.push({ evento: "", items: map.get("")! });
+  [...map.keys()]
+    .filter(k => k !== "")
+    .sort((a, b) => a.localeCompare(b, "pt-BR"))
+    .forEach(k => groups.push({ evento: k, items: map.get(k)! }));
+  return groups;
+}
+
 function progressBarColor(p: number): string {
   if (p >= 100) return "bg-emerald-500";
   if (p >= 51) return "bg-orange-500";

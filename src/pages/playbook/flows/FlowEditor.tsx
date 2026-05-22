@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ReactFlow, ReactFlowProvider, Background, Controls, MiniMap, MarkerType,
   addEdge, applyNodeChanges, applyEdgeChanges, useReactFlow, getNodesBounds,
@@ -8,7 +8,7 @@ import "@xyflow/react/dist/style.css";
 import { toPng } from "html-to-image";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
-import { Download, FileCode2, Square, Diamond, Circle, StickyNote, Layers, Columns3 } from "lucide-react";
+import { Download, FileCode2, Square, Diamond, Circle, StickyNote, Layers, Columns3, PanelRightClose, PanelRightOpen } from "lucide-react";
 import { StepNode } from "./nodes/StepNode";
 import { DecisionNode } from "./nodes/DecisionNode";
 import { StartEndNode } from "./nodes/StartEndNode";
@@ -313,34 +313,51 @@ function Inner({ nodes, edges, viewport, title, onChange }: Props) {
     toast.success("Mermaid copiado para a área de transferência");
   }
 
+  const [paletteOpen, setPaletteOpen] = useState(true);
+
   return (
     <div className="flex h-full">
       {/* Palette */}
-      <aside className="w-48 shrink-0 border-r bg-background/60 p-2.5 overflow-y-auto">
-        <div className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wide px-1 mb-1.5">Blocos</div>
-        <div className="space-y-1">
-          {PALETTE.map(p => {
-            const Icon = p.icon;
-            return (
-              <div
-                key={p.type}
-                draggable
-                onDragStart={(e) => {
-                  e.dataTransfer.setData("application/x-flow-node", JSON.stringify({ type: p.type, label: p.label, width: p.size.width, height: p.size.height }));
-                  e.dataTransfer.effectAllowed = "move";
-                }}
-                className="flex items-center gap-2 rounded-md border bg-background px-2 py-1.5 cursor-grab active:cursor-grabbing text-[13px] hover:bg-muted/60 hover:border-primary/40 transition-colors"
-              >
-                <Icon className="h-3.5 w-3.5 text-muted-foreground" />
-                <span>{p.label}</span>
-              </div>
-            );
-          })}
-        </div>
-        <div className="mt-4 text-[10.5px] leading-relaxed text-muted-foreground px-1">
-          Arraste blocos para o canvas. Duplo-clique edita o texto. Conecte arrastando das bolinhas.
-        </div>
-      </aside>
+      {paletteOpen ? (
+        <aside className="w-48 shrink-0 border-r bg-background/60 p-2.5 overflow-y-auto relative">
+          <div className="flex items-center justify-between px-1 mb-1.5">
+            <div className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wide">Blocos</div>
+            <Button variant="ghost" size="icon" className="h-5 w-5" title="Recolher blocos" onClick={() => setPaletteOpen(false)}>
+              <PanelRightOpen className="h-3.5 w-3.5" />
+            </Button>
+          </div>
+          <div className="space-y-1">
+            {PALETTE.map(p => {
+              const Icon = p.icon;
+              return (
+                <div
+                  key={p.type}
+                  draggable
+                  onDragStart={(e) => {
+                    e.dataTransfer.setData("application/x-flow-node", JSON.stringify({ type: p.type, label: p.label, width: p.size.width, height: p.size.height }));
+                    e.dataTransfer.effectAllowed = "move";
+                  }}
+                  className="flex items-center gap-2 rounded-md border bg-background px-2 py-1.5 cursor-grab active:cursor-grabbing text-[13px] hover:bg-muted/60 hover:border-primary/40 transition-colors"
+                >
+                  <Icon className="h-3.5 w-3.5 text-muted-foreground" />
+                  <span>{p.label}</span>
+                </div>
+              );
+            })}
+          </div>
+          <div className="mt-4 text-[10.5px] leading-relaxed text-muted-foreground px-1">
+            Arraste blocos para o canvas. Duplo-clique edita o texto. Conecte arrastando das bolinhas.
+          </div>
+        </aside>
+      ) : (
+        <button
+          onClick={() => setPaletteOpen(true)}
+          title="Mostrar blocos"
+          className="w-6 shrink-0 border-r bg-background/60 hover:bg-muted/60 flex items-start justify-center pt-2 transition-colors"
+        >
+          <PanelRightClose className="h-3.5 w-3.5 text-muted-foreground" />
+        </button>
+      )}
 
       {/* Canvas */}
       <div className="flex-1 relative" ref={wrapperRef} onDrop={onDrop} onDragOver={onDragOver}>

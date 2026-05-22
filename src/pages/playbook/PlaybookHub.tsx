@@ -12,7 +12,7 @@ export default function PlaybookHub() {
 
   return (
     <div className="relative flex flex-col h-[calc(100vh-49px)]">
-      <div className="pointer-events-none absolute top-2 right-4 z-30">
+      <div className="pointer-events-none absolute top-2 left-1/2 -translate-x-1/2 z-30">
         <div className="pointer-events-auto inline-flex items-center rounded-lg border bg-background/90 backdrop-blur p-0.5 shadow-sm">
           <ModeBtn active={mode === "playbooks"} onClick={() => setMode("playbooks")} icon={<BookOpenCheck className="h-3 w-3"/>}>
             Playbooks

@@ -74,7 +74,7 @@ export default function Playbook() {
   useEffect(() => {
     if (selected) {
       setDraft(selected);
-      setEditing(justCreatedRef.current === selected.id);
+      setEditing(true);
       justCreatedRef.current = null;
       loadAssets(selected.id);
     } else {
@@ -489,42 +489,26 @@ export default function Playbook() {
                   {draft.last_edited_by && <span className="text-muted-foreground/80">por {draft.last_edited_by}</span>}
                 </div>
                 <div className="flex items-center gap-2">
-                  {editing ? (
-                    <>
-                      <Button size="sm" variant="outline" onClick={() => { setDraft(selected); setEditing(false); }}>
-                        <X className="h-3.5 w-3.5" /> Cancelar
-                      </Button>
-                      <Button size="sm" onClick={handleManualSave}>
-                        <Save className="h-3.5 w-3.5" /> Salvar alterações
-                      </Button>
-                    </>
-                  ) : (
-                    <>
-                      <Button size="sm" variant="outline" onClick={() => setEditing(true)}>
-                        <Edit3 className="h-3.5 w-3.5" /> Editar
-                      </Button>
-                      <Button size="sm" variant="outline" onClick={() => handleDuplicate(draft)}>
-                        <Copy className="h-3.5 w-3.5" /> Duplicar
-                      </Button>
-                      <DropdownMenu>
-                        <DropdownMenuTrigger asChild>
-                          <Button size="sm" variant="outline"><MoreHorizontal className="h-3.5 w-3.5" /> Mais ações</Button>
-                        </DropdownMenuTrigger>
-                        <DropdownMenuContent align="end" className="w-56">
-                          <DropdownMenuItem onClick={() => handleSetStatus("Publicado")}><CheckCircle2 className="h-4 w-4" /> Marcar como publicado</DropdownMenuItem>
-                          <DropdownMenuItem onClick={() => handleSetStatus("Desatualizado")}><AlertTriangle className="h-4 w-4" /> Marcar como desatualizado</DropdownMenuItem>
-                          <DropdownMenuItem onClick={handleArchive}><Archive className="h-4 w-4" /> {draft.archived ? "Desarquivar" : "Arquivar"}</DropdownMenuItem>
-                          <DropdownMenuSeparator />
-                          <DropdownMenuItem onClick={copyLink}><LinkIcon className="h-4 w-4" /> Copiar link</DropdownMenuItem>
-                          <DropdownMenuItem onClick={exportPdf}><FileText className="h-4 w-4" /> Exportar como PDF</DropdownMenuItem>
-                          <DropdownMenuSeparator />
-                          <DropdownMenuItem className="text-destructive focus:text-destructive" onClick={() => setConfirmDelete(true)}>
-                            <Trash2 className="h-4 w-4" /> Excluir
-                          </DropdownMenuItem>
-                        </DropdownMenuContent>
-                      </DropdownMenu>
-                    </>
-                  )}
+                  <Button size="sm" variant="outline" onClick={() => handleDuplicate(draft)}>
+                    <Copy className="h-3.5 w-3.5" /> Duplicar
+                  </Button>
+                  <DropdownMenu>
+                    <DropdownMenuTrigger asChild>
+                      <Button size="sm" variant="outline"><MoreHorizontal className="h-3.5 w-3.5" /> Mais ações</Button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="end" className="w-56">
+                      <DropdownMenuItem onClick={() => handleSetStatus("Publicado")}><CheckCircle2 className="h-4 w-4" /> Marcar como publicado</DropdownMenuItem>
+                      <DropdownMenuItem onClick={() => handleSetStatus("Desatualizado")}><AlertTriangle className="h-4 w-4" /> Marcar como desatualizado</DropdownMenuItem>
+                      <DropdownMenuItem onClick={handleArchive}><Archive className="h-4 w-4" /> {draft.archived ? "Desarquivar" : "Arquivar"}</DropdownMenuItem>
+                      <DropdownMenuSeparator />
+                      <DropdownMenuItem onClick={copyLink}><LinkIcon className="h-4 w-4" /> Copiar link</DropdownMenuItem>
+                      <DropdownMenuItem onClick={exportPdf}><FileText className="h-4 w-4" /> Exportar como PDF</DropdownMenuItem>
+                      <DropdownMenuSeparator />
+                      <DropdownMenuItem className="text-destructive focus:text-destructive" onClick={() => setConfirmDelete(true)}>
+                        <Trash2 className="h-4 w-4" /> Excluir
+                      </DropdownMenuItem>
+                    </DropdownMenuContent>
+                  </DropdownMenu>
                 </div>
               </div>
 

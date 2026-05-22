@@ -146,14 +146,32 @@ export default function RecargasViagens() {
 
   const load = async () => {
     setLoading(true);
-    const { data, error } = await supabase.functions.invoke(
-      "recargas-viagens-sheet",
-    );
+    const [sheetRes, statusRes] = await Promise.all([
+      supabase.functions.invoke("recargas-viagens-sheet"),
+      supabase.from("recargas_viagens_status" as any).select("viagem_hash,status"),
+    ]);
     setLoading(false);
+    const { data, error } = sheetRes;
     if (error) return toast.error(error.message);
     if ((data as any)?.error) return toast.error((data as any).error);
-    setViagens(((data as any)?.viagens || []) as Viagem[]);
+    const vs = ((data as any)?.viagens || []) as Viagem[];
+    setViagens(vs);
     setLastSync(new Date());
+
+    // Merge DB status into map (DB wins over localStorage)
+    const dbRows = (statusRes.data as any[]) || [];
+    const byHash: Record<string, StatusViagem> = {};
+    dbRows.forEach((r) => { byHash[r.viagem_hash] = r.status as StatusViagem; });
+    setStatusMap((prev) => {
+      const next = { ...prev };
+      vs.forEach((v) => {
+        if (v.viagem_hash && byHash[v.viagem_hash]) {
+          next[cardKey(v)] = byHash[v.viagem_hash];
+        }
+      });
+      localStorage.setItem(STATUS_KEY, JSON.stringify(next));
+      return next;
+    });
   };
 
   // group by year/month from data_ida

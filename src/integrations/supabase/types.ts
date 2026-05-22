@@ -1434,6 +1434,24 @@ export type Database = {
           },
         ]
       }
+      recargas_viagens_status: {
+        Row: {
+          status: string
+          updated_at: string
+          viagem_hash: string
+        }
+        Insert: {
+          status?: string
+          updated_at?: string
+          viagem_hash: string
+        }
+        Update: {
+          status?: string
+          updated_at?: string
+          viagem_hash?: string
+        }
+        Relationships: []
+      }
       receitas_asaas: {
         Row: {
           billing_type: string | null

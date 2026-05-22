@@ -74,7 +74,7 @@ export default function Playbook() {
   useEffect(() => {
     if (selected) {
       setDraft(selected);
-      setEditing(justCreatedRef.current === selected.id);
+      setEditing(true);
       justCreatedRef.current = null;
       loadAssets(selected.id);
     } else {

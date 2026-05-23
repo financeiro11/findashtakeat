@@ -42,12 +42,13 @@ const PROJETOS: Projeto[] = [
     status: "em_execucao",
     pode_usar_para: ["Software & SaaS", "Cloud / Infraestrutura", "Consultoria técnica", "Serviços PJ"],
     rubricas: [
-      { nome: "Equipamentos e Material Permanente", planejado: 180_000, gasto: 160_200, pendencias_nf: 1, sugestoes: ["Notebooks", "Servidores"] },
+      { nome: "Equipamentos e Material Permanente", planejado: 180_000, gasto: 160_200, pendencias_nf: 2, sugestoes: ["Notebooks", "Servidores"] },
       { nome: "Software & Serviços", planejado: 240_000, gasto: 96_000, sugestoes: ["HubSpot", "AWS", "Vercel"] },
       { nome: "Serviços de Terceiros PJ", planejado: 180_000, gasto: 72_000, sugestoes: ["Consultoria técnica", "Agência"] },
-      { nome: "Material de Consumo", planejado: 40_000, gasto: 22_000, pendencias_nf: 1 },
+      { nome: "Material de Consumo", planejado: 40_000, gasto: 22_000 },
       { nome: "Diárias e Passagens", planejado: 30_000, gasto: 9_400 },
-      { nome: "Reserva técnica obrigatória", planejado: 60_000, gasto: 0, reservado: true },
+      { nome: "Aceleração", planejado: 70_000, gasto: 0, reservado: true, sugestoes: ["Programa de aceleração obrigatório"] },
+      { nome: "Internacionalização", planejado: 25_200, gasto: 0, reservado: true, sugestoes: ["Missão internacional obrigatória"] },
     ],
   },
   {
@@ -57,12 +58,12 @@ const PROJETOS: Projeto[] = [
     status: "em_execucao",
     pode_usar_para: ["Diárias", "Passagens limitadas", "Equipamentos remanescentes"],
     rubricas: [
-      { nome: "Material de Consumo", planejado: 25_000, gasto: 42_250 },
+      { nome: "Material de Consumo", planejado: 25_000, gasto: 42_250, pendencias_nf: 2 },
       { nome: "Passagens", planejado: 18_000, gasto: 20_340 },
       { nome: "Diárias", planejado: 32_000, gasto: 12_800, sugestoes: ["Diárias técnicas", "Visitas em campo"] },
       { nome: "Equipamentos", planejado: 70_000, gasto: 41_500, sugestoes: ["Hardware de bancada"] },
       { nome: "Serviços PJ", planejado: 60_000, gasto: 38_400, pendencias_nf: 1 },
-      { nome: "Reserva internacionalização", planejado: 35_200, gasto: 0, reservado: true },
+      { nome: "Reserva internacionalização", planejado: 35_200, gasto: 0, reservado: true, sugestoes: ["Missão internacional obrigatória"] },
     ],
   },
   {

@@ -163,7 +163,7 @@ export default function ProjetosAprovadosLayout() {
   const { pathname } = useLocation();
   const current = subItems.find(i => (i.end ? pathname === i.to : pathname.startsWith(i.to)));
 
-  useEffect(() => { document.title = `Editais · Radar de Editais · ${current?.label ?? ""}`; }, [current]);
+  useEffect(() => { document.title = `Editais · Projetos Aprovados · ${current?.label ?? ""}`; }, [current]);
 
   return (
     <div className="flex flex-col gap-4">
@@ -172,7 +172,7 @@ export default function ProjetosAprovadosLayout() {
         <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
           <NavLink to="/editais" className="hover:text-foreground transition-colors">Editais</NavLink>
           <span>/</span>
-          <span className="text-foreground">Radar de Editais</span>
+          <span className="text-foreground">Projetos Aprovados</span>
           <span>·</span>
           <span>{current?.label ?? ""}</span>
         </div>
@@ -183,7 +183,7 @@ export default function ProjetosAprovadosLayout() {
 
       {/* Título */}
       <div className="flex items-center gap-2 -mt-1">
-        <h1 className="text-lg font-semibold tracking-tight">Radar de Editais</h1>
+        <h1 className="text-lg font-semibold tracking-tight">Projetos Aprovados</h1>
         <span className="text-[10px] uppercase tracking-wider text-rose-600 font-semibold bg-rose-500/10 px-1.5 py-0.5 rounded">Execução</span>
       </div>
 

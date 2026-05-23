@@ -323,7 +323,10 @@ export function ExecutivoTab() {
     const bMatCons = breta.rubricas.find(r => /Material de Consumo/i.test(r.nome))!;
     const bPass = breta.rubricas.find(r => /Passagens/i.test(r.nome))!;
     const tEq = tec.rubricas.find(r => /Equipamentos/i.test(r.nome))!;
-    return { bMatCons, bPass, tEq, livre: metricas.saldoLivre, pendNF: metricas.pendNF };
+    const tAcel = tec.rubricas.find(r => /Acelera/i.test(r.nome))!;
+    const reservadasTec = tec.rubricas.filter(r => r.reservado);
+    const totalReservadoTec = reservadasTec.reduce((s, r) => s + r.planejado, 0);
+    return { bMatCons, bPass, tEq, tAcel, reservadasTec, totalReservadoTec, livre: metricas.saldoLivre, pendNF: metricas.pendNF };
   }, [metricas]);
 
   return (

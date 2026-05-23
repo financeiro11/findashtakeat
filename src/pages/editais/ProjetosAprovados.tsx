@@ -42,12 +42,13 @@ const PROJETOS: Projeto[] = [
     status: "em_execucao",
     pode_usar_para: ["Software & SaaS", "Cloud / Infraestrutura", "Consultoria técnica", "Serviços PJ"],
     rubricas: [
-      { nome: "Equipamentos e Material Permanente", planejado: 180_000, gasto: 160_200, pendencias_nf: 1, sugestoes: ["Notebooks", "Servidores"] },
+      { nome: "Equipamentos e Material Permanente", planejado: 180_000, gasto: 160_200, pendencias_nf: 2, sugestoes: ["Notebooks", "Servidores"] },
       { nome: "Software & Serviços", planejado: 240_000, gasto: 96_000, sugestoes: ["HubSpot", "AWS", "Vercel"] },
       { nome: "Serviços de Terceiros PJ", planejado: 180_000, gasto: 72_000, sugestoes: ["Consultoria técnica", "Agência"] },
-      { nome: "Material de Consumo", planejado: 40_000, gasto: 22_000, pendencias_nf: 1 },
+      { nome: "Material de Consumo", planejado: 40_000, gasto: 22_000 },
       { nome: "Diárias e Passagens", planejado: 30_000, gasto: 9_400 },
-      { nome: "Reserva técnica obrigatória", planejado: 60_000, gasto: 0, reservado: true },
+      { nome: "Aceleração", planejado: 70_000, gasto: 0, reservado: true, sugestoes: ["Programa de aceleração obrigatório"] },
+      { nome: "Internacionalização", planejado: 25_200, gasto: 0, reservado: true, sugestoes: ["Missão internacional obrigatória"] },
     ],
   },
   {
@@ -57,12 +58,12 @@ const PROJETOS: Projeto[] = [
     status: "em_execucao",
     pode_usar_para: ["Diárias", "Passagens limitadas", "Equipamentos remanescentes"],
     rubricas: [
-      { nome: "Material de Consumo", planejado: 25_000, gasto: 42_250 },
+      { nome: "Material de Consumo", planejado: 25_000, gasto: 42_250, pendencias_nf: 2 },
       { nome: "Passagens", planejado: 18_000, gasto: 20_340 },
       { nome: "Diárias", planejado: 32_000, gasto: 12_800, sugestoes: ["Diárias técnicas", "Visitas em campo"] },
       { nome: "Equipamentos", planejado: 70_000, gasto: 41_500, sugestoes: ["Hardware de bancada"] },
       { nome: "Serviços PJ", planejado: 60_000, gasto: 38_400, pendencias_nf: 1 },
-      { nome: "Reserva internacionalização", planejado: 35_200, gasto: 0, reservado: true },
+      { nome: "Reserva internacionalização", planejado: 35_200, gasto: 0, reservado: true, sugestoes: ["Missão internacional obrigatória"] },
     ],
   },
   {
@@ -105,7 +106,7 @@ const RUBRICA_BADGE: Record<ReturnType<typeof statusRubrica>, string> = {
   atencao: "bg-amber-500/10 text-amber-600 border-amber-500/30",
   critico: "bg-orange-500/10 text-orange-600 border-orange-500/30",
   estourado: "bg-rose-500/10 text-rose-600 border-rose-500/30",
-  reservado: "bg-sky-500/10 text-sky-600 border-sky-500/30",
+  reservado: "bg-amber-500/10 text-amber-700 border-amber-500/30",
 };
 
 const RUBRICA_LABEL: Record<ReturnType<typeof statusRubrica>, string> = {
@@ -259,8 +260,8 @@ export function ExecutivoTab() {
       trend: [0,0,1,1,1,1,1,2,2,2], accent: "hsl(38 92% 48%)" },
     { label: "Rubricas estouradas", value: String(metricas.rubricasEstouradas.length), sub: "acima do planejado",
       trend: [0,0,0,1,1,1,2,2,2,2], accent: "hsl(0 78% 47%)" },
-    { label: "Pendências de NF", value: String(metricas.pendNF), sub: "lançamentos sem documento",
-      trend: [1,1,2,2,3,3,3,3,3,3], accent: "hsl(0 78% 47%)" },
+    { label: "Pendências documentais", value: String(metricas.pendNF), sub: "lançamentos sem NF",
+      trend: [1,1,2,2,3,3,3,3,3,3], accent: "hsl(38 92% 48%)" },
     { label: "Aguardando resultado", value: String(metricas.aguardando.length), sub: "pipeline futuro",
       trend: [1,1,1,1,1,1,1,1,1,1], accent: "hsl(212 80% 45%)" },
   ];
@@ -298,10 +299,10 @@ export function ExecutivoTab() {
     }
     if (metricas.reservado > 0) {
       items.push({
-        nivel: "Info", icon: Lock,
-        titulo: `${fmtBRL(metricas.reservado)} estão reservados obrigatoriamente`,
-        sub: "Não considerar no saldo operacional",
-        color: "text-sky-600 bg-sky-500/10 border-sky-500/30",
+        nivel: "Info", icon: Zap,
+        titulo: `${fmtBRL(metricas.reservado)} reservados obrigatoriamente`,
+        sub: "Verba protegida · não considerar no saldo operacional livre",
+        color: "text-amber-700 bg-amber-500/10 border-amber-500/40",
       });
     }
     metricas.aguardando.forEach(p => {
@@ -322,7 +323,10 @@ export function ExecutivoTab() {
     const bMatCons = breta.rubricas.find(r => /Material de Consumo/i.test(r.nome))!;
     const bPass = breta.rubricas.find(r => /Passagens/i.test(r.nome))!;
     const tEq = tec.rubricas.find(r => /Equipamentos/i.test(r.nome))!;
-    return { bMatCons, bPass, tEq, livre: metricas.saldoLivre, pendNF: metricas.pendNF };
+    const tAcel = tec.rubricas.find(r => /Acelera/i.test(r.nome))!;
+    const reservadasTec = tec.rubricas.filter(r => r.reservado);
+    const totalReservadoTec = reservadasTec.reduce((s, r) => s + r.planejado, 0);
+    return { bMatCons, bPass, tEq, tAcel, reservadasTec, totalReservadoTec, livre: metricas.saldoLivre, pendNF: metricas.pendNF };
   }, [metricas]);
 
   return (
@@ -413,6 +417,13 @@ export function ExecutivoTab() {
                   </li>
                 )}
               </ul>
+              <div className="rounded-md bg-amber-500/5 border border-amber-500/30 px-3 py-2 flex items-start gap-2">
+                <Lock className="h-3.5 w-3.5 text-amber-700 mt-0.5 shrink-0" />
+                <div className="text-[12.5px] leading-relaxed">
+                  A rubrica <b>Aceleração</b> do Tecnova III possui <b className="num">{fmtBRL(respostaIA.tAcel.planejado)}</b> reservados obrigatoriamente para programa de aceleração.
+                  Somando as {respostaIA.reservadasTec.length} rubricas reservadas do projeto, <b className="num">{fmtBRL(respostaIA.totalReservadoTec)}</b> não devem ser considerados saldo livre operacional.
+                </div>
+              </div>
               <div className="rounded-md bg-emerald-500/5 border border-emerald-500/20 px-3 py-2 mt-1">
                 <div className="text-[10.5px] uppercase tracking-wider text-emerald-700 font-semibold">Saldo operacional livre estimado</div>
                 <div className="text-base font-semibold num text-emerald-700">{fmtBRL(respostaIA.livre)}</div>
@@ -688,6 +699,10 @@ export function ProjetosTab() {
       {PROJETOS.map(p => {
         const a = projAgregado(p);
         const risco = projRisco(p);
+        const estouradas = p.rubricas.filter(r => !r.reservado && r.gasto > r.planejado);
+        const reservadasNaoIniciadas = p.rubricas.filter(r => r.reservado && r.gasto === 0);
+        const totalReservadoNaoIniciado = reservadasNaoIniciadas.reduce((s, r) => s + r.planejado, 0);
+        const pendNF = p.rubricas.reduce((s, r) => s + (r.pendencias_nf ?? 0), 0);
         return (
           <Card key={p.nome} className="p-0 overflow-hidden">
             <div className="px-4 py-3 border-b flex items-center justify-between flex-wrap gap-2">
@@ -703,9 +718,43 @@ export function ProjetosTab() {
                 <span>Planejado: <b className="num text-foreground">{fmtBRL(a.planejado)}</b></span>
                 <span>Executado: <b className="num text-foreground">{fmtBRL(a.gasto)}</b></span>
                 <span>Saldo livre: <b className="num text-emerald-700">{fmtBRL(a.saldoLivre)}</b></span>
-                {a.reservado > 0 && <span>Reservado: <b className="num text-sky-700">{fmtBRL(a.reservado)}</b></span>}
+                {a.reservado > 0 && <span>Reservado: <b className="num text-amber-700">{fmtBRL(a.reservado)}</b></span>}
               </div>
             </div>
+
+            {/* Banners automáticos */}
+            {(estouradas.length > 0 || reservadasNaoIniciadas.length > 0 || pendNF > 0) && (
+              <div className="px-4 py-2.5 border-b flex flex-col gap-1.5 bg-muted/20">
+                {estouradas.length > 0 && (
+                  <div className="flex items-start gap-2 rounded-md border border-rose-500/30 bg-rose-500/5 px-3 py-2">
+                    <ShieldAlert className="h-3.5 w-3.5 text-rose-600 mt-0.5 shrink-0" />
+                    <div className="text-[12px] leading-snug">
+                      <b className="text-rose-700">{estouradas.length} rubrica{estouradas.length > 1 ? "s" : ""} ultrapassou o valor planejado neste projeto.</b>
+                      <span className="text-muted-foreground"> {estouradas.map(r => `${r.nome} (${Math.round(pct(r))}%)`).join(" · ")}</span>
+                    </div>
+                  </div>
+                )}
+                {reservadasNaoIniciadas.length > 0 && (
+                  <div className="flex items-start gap-2 rounded-md border border-amber-500/30 bg-amber-500/5 px-3 py-2">
+                    <Zap className="h-3.5 w-3.5 text-amber-700 mt-0.5 shrink-0" />
+                    <div className="text-[12px] leading-snug">
+                      <b className="text-amber-800">Existem rubricas obrigatórias sem execução iniciada.</b>
+                      <span className="text-muted-foreground"> {reservadasNaoIniciadas.map(r => r.nome).join(" · ")} · total <b className="num text-foreground">{fmtBRL(totalReservadoNaoIniciado)}</b>. Evite encerrar o projeto com verba obrigatória não utilizada.</span>
+                    </div>
+                  </div>
+                )}
+                {pendNF > 0 && (
+                  <div className="flex items-start gap-2 rounded-md border border-amber-500/30 bg-amber-500/5 px-3 py-2">
+                    <FileWarning className="h-3.5 w-3.5 text-amber-700 mt-0.5 shrink-0" />
+                    <div className="text-[12px] leading-snug">
+                      <b className="text-amber-800">{pendNF} lançamento{pendNF > 1 ? "s" : ""} sem nota fiscal.</b>
+                      <span className="text-muted-foreground"> Regularize antes da prestação de contas.</span>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+
 
             <div className="overflow-x-auto">
               <table className="w-full text-[12.5px]">
@@ -725,14 +774,21 @@ export function ProjetosTab() {
                     const st = statusRubrica(r);
                     const p2 = pct(r);
                     return (
-                      <tr key={r.nome} className="border-t border-border/50 hover:bg-muted/30">
+                      <tr key={r.nome} className={cn("border-t border-border/50 hover:bg-muted/30", r.reservado && "bg-amber-500/[0.03]")}>
                         <td className="px-4 py-2.5">
-                          <div className="font-medium">{r.nome}</div>
-                          {(r.pendencias_nf ?? 0) > 0 && (
-                            <div className="text-[10.5px] text-amber-600 mt-0.5 inline-flex items-center gap-1">
-                              <FileWarning className="h-3 w-3" /> {r.pendencias_nf} sem NF
-                            </div>
-                          )}
+                          <div className="flex items-center gap-1.5 flex-wrap">
+                            <span className="font-medium">{r.nome}</span>
+                            {r.reservado && (
+                              <Badge variant="outline" className="text-[10px] font-normal bg-amber-500/10 text-amber-700 border-amber-500/40 gap-0.5">
+                                <Zap className="h-2.5 w-2.5" /> Obrigatório
+                              </Badge>
+                            )}
+                            {(r.pendencias_nf ?? 0) > 0 && (
+                              <Badge variant="outline" className="text-[10px] font-normal bg-amber-500/10 text-amber-700 border-amber-500/40 gap-0.5">
+                                <FileWarning className="h-2.5 w-2.5" /> {r.pendencias_nf} sem NF
+                              </Badge>
+                            )}
+                          </div>
                         </td>
                         <td className="px-2 py-2.5 text-right num">{fmtBRL(r.planejado)}</td>
                         <td className="px-2 py-2.5 text-right num">{fmtBRL(r.gasto)}</td>
@@ -741,16 +797,22 @@ export function ProjetosTab() {
                         </td>
                         <td className="px-2 py-2.5">
                           <div className="flex items-center gap-2 min-w-[110px]">
-                            <div className="flex-1 h-1.5 rounded-full bg-muted overflow-hidden">
+                            <div className={cn("flex-1 h-1.5 rounded-full overflow-hidden", st === "reservado" ? "bg-amber-500/15" : "bg-muted")}>
                               <div
                                 className={cn(
                                   "h-full rounded-full",
-                                  st === "estourado" ? "bg-rose-500" : st === "critico" ? "bg-orange-500" : st === "atencao" ? "bg-amber-500" : st === "reservado" ? "bg-sky-500" : "bg-emerald-500"
+                                  st === "estourado" ? "bg-rose-500"
+                                  : st === "critico" ? "bg-orange-500"
+                                  : st === "atencao" ? "bg-amber-500"
+                                  : st === "reservado" ? "bg-amber-400/70"
+                                  : "bg-emerald-500"
                                 )}
-                                style={{ width: `${Math.min(100, p2)}%` }}
+                                style={{ width: st === "reservado" ? "100%" : `${Math.min(100, p2)}%` }}
                               />
                             </div>
-                            <span className="num text-[11px] text-muted-foreground w-10 text-right">{Math.round(p2)}%</span>
+                            <span className="num text-[11px] text-muted-foreground w-10 text-right">
+                              {st === "reservado" ? "—" : `${Math.round(p2)}%`}
+                            </span>
                           </div>
                         </td>
                         <td className="px-2 py-2.5">

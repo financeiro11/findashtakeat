@@ -167,12 +167,24 @@ export default function ProjetosAprovadosLayout() {
 
   return (
     <div className="flex flex-col gap-4">
-      <div className="flex items-center gap-2 -mt-2">
-        <div className="flex items-baseline gap-2">
-          <span className="text-sm font-semibold tracking-tight">Projetos Aprovados</span>
-          <span className="text-[10px] uppercase tracking-wider text-rose-600 font-semibold bg-rose-500/10 px-1.5 py-0.5 rounded">Execução</span>
+      {/* Breadcrumb topo */}
+      <div className="flex items-center justify-between -mt-2">
+        <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
+          <NavLink to="/editais" className="hover:text-foreground transition-colors">Editais</NavLink>
+          <span>/</span>
+          <span className="text-foreground">Projetos Aprovados</span>
+          <span>·</span>
+          <span>{current?.label ?? ""}</span>
         </div>
-        <div className="text-xs text-muted-foreground ml-1">/ {current?.label ?? ""}</div>
+        <Button variant="outline" size="sm" className="h-7 text-[11.5px] gap-1.5">
+          <FileCheck2 className="h-3 w-3" /> Manual
+        </Button>
+      </div>
+
+      {/* Título */}
+      <div className="flex items-center gap-2 -mt-1">
+        <h1 className="text-lg font-semibold tracking-tight">Projetos Aprovados</h1>
+        <span className="text-[10px] uppercase tracking-wider text-rose-600 font-semibold bg-rose-500/10 px-1.5 py-0.5 rounded">Execução</span>
       </div>
 
       <nav className="flex items-center gap-0 border-b -mt-1 overflow-x-auto">
@@ -200,6 +212,14 @@ export default function ProjetosAprovadosLayout() {
       <Outlet />
     </div>
   );
+}
+
+/* abbreviação BRL → "R$ 341 mil" */
+function fmtBRLkurz(v: number): { num: string; suffix: string } {
+  const abs = Math.abs(v);
+  if (abs >= 1_000_000) return { num: (v / 1_000_000).toFixed(abs >= 10_000_000 ? 1 : 2).replace(".", ","), suffix: "mi" };
+  if (abs >= 1_000) return { num: Math.round(v / 1_000).toString(), suffix: "mil" };
+  return { num: Math.round(v).toString(), suffix: "" };
 }
 
 /* ───────────────────────── Executivo ───────────────────────── */

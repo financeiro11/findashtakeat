@@ -37,6 +37,7 @@ const automacoes: NavItem[] = [
 
 const editais: NavItem[] = [
   { title: "Editais", url: "/editais", icon: Gavel },
+  { title: "Projetos Aprovados", url: "/editais/projetos-aprovados", icon: CheckCircle2 },
 ];
 
 const investimentos: NavItem[] = [

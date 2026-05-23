@@ -260,8 +260,8 @@ export function ExecutivoTab() {
       trend: [0,0,1,1,1,1,1,2,2,2], accent: "hsl(38 92% 48%)" },
     { label: "Rubricas estouradas", value: String(metricas.rubricasEstouradas.length), sub: "acima do planejado",
       trend: [0,0,0,1,1,1,2,2,2,2], accent: "hsl(0 78% 47%)" },
-    { label: "Pendências de NF", value: String(metricas.pendNF), sub: "lançamentos sem documento",
-      trend: [1,1,2,2,3,3,3,3,3,3], accent: "hsl(0 78% 47%)" },
+    { label: "Pendências documentais", value: String(metricas.pendNF), sub: "lançamentos sem NF",
+      trend: [1,1,2,2,3,3,3,3,3,3], accent: "hsl(38 92% 48%)" },
     { label: "Aguardando resultado", value: String(metricas.aguardando.length), sub: "pipeline futuro",
       trend: [1,1,1,1,1,1,1,1,1,1], accent: "hsl(212 80% 45%)" },
   ];

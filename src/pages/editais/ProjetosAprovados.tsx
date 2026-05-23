@@ -480,209 +480,241 @@ export function ExecutivoTab() {
       </div>
 
 
-      {/* BLOCO 4 — Projetos prioritários + Alertas */}
-      <div className="grid grid-cols-1 lg:grid-cols-[1fr_340px] gap-4">
-        <Card className="p-0 overflow-hidden">
-          <div className="flex items-center justify-between px-4 py-3 border-b">
-            <div className="flex items-center gap-2">
-              <FolderKanban className="h-3.5 w-3.5 text-primary" />
-              <h3 className="text-[13px] font-semibold tracking-tight">Projetos prioritários</h3>
-              <Badge variant="outline" className="text-[10px] font-normal">{PROJETOS.length}</Badge>
-            </div>
-            <Button variant="ghost" size="sm" className="h-7 text-[11.5px] gap-1">
-              Ver todos <ArrowRight className="h-3 w-3" />
-            </Button>
+      {/* BLOCO 4 — Projetos prioritários (cards) */}
+      <div className="flex flex-col gap-3">
+        <div className="flex items-center justify-between">
+          <div className="flex items-baseline gap-2">
+            <h3 className="text-[13px] font-semibold tracking-tight">Projetos prioritários</h3>
+            <span className="text-[11px] text-muted-foreground">
+              {PROJETOS.length} projetos · ordenados por urgência · alertas inline
+            </span>
           </div>
-          <div className="overflow-x-auto">
-            <table className="w-full text-[12.5px]">
-              <thead>
-                <tr className="text-left text-[10.5px] uppercase tracking-wider text-muted-foreground bg-muted/40">
-                  <th className="px-4 py-2 font-medium">Projeto</th>
-                  <th className="px-2 py-2 font-medium">Órgão</th>
-                  <th className="px-2 py-2 font-medium text-right">Saldo livre</th>
-                  <th className="px-2 py-2 font-medium">Execução</th>
-                  <th className="px-2 py-2 font-medium">Prazo</th>
-                  <th className="px-2 py-2 font-medium">Risco</th>
-                  <th className="px-2 py-2 font-medium">Melhor uso sugerido</th>
-                  <th className="px-4 py-2 font-medium">Status</th>
-                </tr>
-              </thead>
-              <tbody>
-                {PROJETOS.map(p => {
-                  const a = projAgregado(p);
-                  const risco = projRisco(p);
-                  return (
-                    <tr key={p.nome} className="border-t border-border/50 hover:bg-muted/30 transition-colors">
-                      <td className="px-4 py-2.5 font-medium">{p.nome}</td>
-                      <td className="px-2 py-2.5 text-muted-foreground">{p.orgao}</td>
-                      <td className="px-2 py-2.5 text-right num font-semibold">
-                        {p.status === "em_execucao" ? fmtBRL(a.saldoLivre) : "—"}
-                      </td>
-                      <td className="px-2 py-2.5">
-                        {p.status === "em_execucao" ? (
-                          <div className="flex items-center gap-2 min-w-[110px]">
-                            <div className="flex-1 h-1.5 rounded-full bg-muted overflow-hidden">
-                              <div
-                                className={cn(
-                                  "h-full rounded-full",
-                                  a.exec >= 100 ? "bg-rose-500" : a.exec >= 85 ? "bg-amber-500" : a.exec >= 50 ? "bg-sky-500" : "bg-emerald-500"
-                                )}
-                                style={{ width: `${Math.min(100, a.exec)}%` }}
-                              />
-                            </div>
-                            <span className="num text-[11px] text-muted-foreground w-9 text-right">{Math.round(a.exec)}%</span>
-                          </div>
-                        ) : <span className="text-muted-foreground">—</span>}
-                      </td>
-                      <td className="px-2 py-2.5 num text-muted-foreground">{p.prazo}</td>
-                      <td className="px-2 py-2.5">
-                        <Badge variant="outline" className={cn("text-[10.5px] font-normal capitalize", riscoBadge(risco))}>{risco}</Badge>
-                      </td>
-                      <td className="px-2 py-2.5 text-muted-foreground">
-                        <span className="inline-flex items-center gap-1">
-                          <Sparkles className="h-3 w-3 text-primary/70" />
-                          {p.pode_usar_para[0] ?? (p.status === "encerrado" ? "Encerrado" : "Aguardando")}
-                        </span>
-                      </td>
-                      <td className="px-4 py-2.5">
-                        <Badge variant="outline" className={cn("text-[10.5px] font-normal", projStatusBadge(p.status))}>
-                          {projStatusLabel(p.status)}
-                        </Badge>
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-        </Card>
-
-        <Card className="p-0 overflow-hidden h-fit">
-          <div className="flex items-center justify-between px-4 py-3 border-b">
-            <div className="flex items-center gap-2">
-              <BellRing className="h-3.5 w-3.5 text-rose-600" />
-              <h3 className="text-[13px] font-semibold tracking-tight">Alertas inteligentes</h3>
-              <Badge variant="outline" className="text-[10px] font-normal">{ALERTAS.length}</Badge>
-            </div>
-          </div>
-          <div className="divide-y divide-border/50 max-h-[520px] overflow-y-auto">
-            {ALERTAS.map((a, i) => {
-              const Icon = a.icon;
-              return (
-                <div key={i} className="px-4 py-3 flex items-start gap-2.5 hover:bg-muted/30 transition-colors group">
-                  <div className={cn("h-7 w-7 rounded-md grid place-items-center border shrink-0", a.color)}>
-                    <Icon className="h-3.5 w-3.5" />
-                  </div>
-                  <div className="flex-1 min-w-0">
-                    <div className="text-[12.5px] font-medium leading-tight">{a.titulo}</div>
-                    <div className="text-[11px] text-muted-foreground mt-0.5">{a.sub}</div>
-                    <div className="flex items-center gap-2 mt-1.5">
-                      <span className="text-[10px] uppercase tracking-wider text-muted-foreground">{a.nivel}</span>
-                      <button className="text-[10.5px] uppercase tracking-wider font-semibold text-primary opacity-0 group-hover:opacity-100 transition-opacity inline-flex items-center gap-0.5">
-                        Resolver <ArrowRight className="h-2.5 w-2.5" />
-                      </button>
-                    </div>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        </Card>
-      </div>
-
-      {/* BLOCO 5 — Pode usar para */}
-      <Card className="p-0 overflow-hidden">
-        <div className="flex items-center justify-between px-4 py-3 border-b">
           <div className="flex items-center gap-2">
-            <Lightbulb className="h-3.5 w-3.5 text-amber-600" />
-            <h3 className="text-[13px] font-semibold tracking-tight">Pode usar para</h3>
-            <span className="text-[11px] text-muted-foreground">decisão rápida por projeto</span>
+            <Button variant="outline" size="sm" className="h-7 text-[11.5px] gap-1">▽ Filtros</Button>
+            <Button variant="outline" size="sm" className="h-7 text-[11.5px] gap-1">Risco ↓</Button>
           </div>
         </div>
-        <div className="overflow-x-auto">
-          <table className="w-full text-[12.5px]">
-            <thead>
-              <tr className="text-left text-[10.5px] uppercase tracking-wider text-muted-foreground bg-muted/40">
-                <th className="px-4 py-2 font-medium">Projeto</th>
-                <th className="px-2 py-2 font-medium">Pode usar para</th>
-                <th className="px-2 py-2 font-medium">Rubricas disponíveis</th>
-                <th className="px-2 py-2 font-medium">Rubricas críticas</th>
-                <th className="px-2 py-2 font-medium">Rubricas estouradas</th>
-                <th className="px-4 py-2 font-medium text-right">Saldo livre</th>
-              </tr>
-            </thead>
-            <tbody>
-              {PROJETOS.map(p => {
-                const a = projAgregado(p);
-                const disp = p.rubricas.filter(r => !r.reservado && statusRubrica(r) !== "estourado" && statusRubrica(r) !== "critico");
-                const crit = p.rubricas.filter(r => statusRubrica(r) === "critico");
-                const est = p.rubricas.filter(r => statusRubrica(r) === "estourado");
-                if (p.status === "encerrado") {
-                  return (
-                    <tr key={p.nome} className="border-t border-border/50">
-                      <td className="px-4 py-2.5 font-medium">{p.nome}</td>
-                      <td className="px-2 py-2.5 text-muted-foreground italic" colSpan={4}>Encerrado · sem novas execuções</td>
-                      <td className="px-4 py-2.5 text-right text-muted-foreground">—</td>
-                    </tr>
-                  );
-                }
-                if (p.status === "aguardando_resultado") {
-                  return (
-                    <tr key={p.nome} className="border-t border-border/50">
-                      <td className="px-4 py-2.5 font-medium">{p.nome}</td>
-                      <td className="px-2 py-2.5 text-muted-foreground italic" colSpan={4}>Aguardando resultado · pipeline futuro</td>
-                      <td className="px-4 py-2.5 text-right text-muted-foreground">—</td>
-                    </tr>
-                  );
-                }
-                return (
-                  <tr key={p.nome} className="border-t border-border/50 hover:bg-muted/30">
-                    <td className="px-4 py-2.5 font-medium align-top">{p.nome}</td>
-                    <td className="px-2 py-2.5 align-top">
-                      <div className="flex items-center gap-1 flex-wrap">
-                        {p.pode_usar_para.map(t => (
-                          <Badge key={t} variant="outline" className="text-[10.5px] font-normal bg-emerald-500/5 text-emerald-700 border-emerald-500/30">
-                            <CheckCircle2 className="h-2.5 w-2.5 mr-1" /> {t}
-                          </Badge>
-                        ))}
-                      </div>
-                    </td>
-                    <td className="px-2 py-2.5 align-top">
-                      <div className="flex items-center gap-1 flex-wrap">
-                        {disp.length === 0 ? <span className="text-muted-foreground">—</span> :
-                          disp.slice(0, 3).map(r => (
-                            <span key={r.nome} className="text-[11px] text-muted-foreground">{r.nome}{disp.indexOf(r) < Math.min(disp.length,3)-1 ? "," : ""}</span>
-                          ))}
-                        {disp.length > 3 && <span className="text-[11px] text-muted-foreground">+{disp.length-3}</span>}
-                      </div>
-                    </td>
-                    <td className="px-2 py-2.5 align-top">
-                      {crit.length === 0 ? <span className="text-muted-foreground">—</span> :
-                        crit.map(r => (
-                          <Badge key={r.nome} variant="outline" className={cn("text-[10.5px] font-normal mr-1", RUBRICA_BADGE.critico)}>
-                            {r.nome.split(" ")[0]} {Math.round(pct(r))}%
-                          </Badge>
-                        ))}
-                    </td>
-                    <td className="px-2 py-2.5 align-top">
-                      {est.length === 0 ? <span className="text-muted-foreground">—</span> :
-                        est.map(r => (
-                          <Badge key={r.nome} variant="outline" className={cn("text-[10.5px] font-normal mr-1", RUBRICA_BADGE.estourado)}>
-                            {r.nome.split(" ")[0]} {Math.round(pct(r))}%
-                          </Badge>
-                        ))}
-                    </td>
-                    <td className="px-4 py-2.5 text-right num font-semibold align-top">{fmtBRL(a.saldoLivre)}</td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
-      </Card>
+
+        {PROJETOS.map(p => <ProjetoCard key={p.nome} p={p} />)}
+      </div>
     </div>
   );
 }
+
+/* ───────────────────────── ProjetoCard (card de execução) ───────────────────────── */
+
+function diasRestantes(prazo: string): number | null {
+  const m = prazo.match(/^(\d{2})\/(\d{4})$/);
+  if (!m) return null;
+  const end = new Date(Number(m[2]), Number(m[1]), 0); // último dia do mês
+  const today = new Date();
+  return Math.max(0, Math.ceil((end.getTime() - today.getTime()) / 86_400_000));
+}
+
+const rubricaSegColor = (s: ReturnType<typeof statusRubrica>) =>
+  s === "estourado" ? "bg-rose-500"
+  : s === "critico" ? "bg-amber-500"
+  : s === "atencao" ? "bg-amber-400"
+  : s === "reservado" ? "bg-amber-300"
+  : "bg-emerald-500";
+
+const rubricaDot = (s: ReturnType<typeof statusRubrica>) =>
+  s === "estourado" ? "bg-rose-500"
+  : s === "critico" ? "bg-amber-500"
+  : s === "atencao" ? "bg-amber-400"
+  : s === "reservado" ? "bg-amber-300"
+  : "bg-emerald-500";
+
+const fmtK = (v: number) => {
+  const abs = Math.abs(v);
+  if (abs >= 1_000_000) return `${(v / 1_000_000).toFixed(1).replace(".", ",")}M`;
+  if (abs >= 1_000) return `${Math.round(v / 1_000)}k`;
+  return String(Math.round(v));
+};
+
+function ProjetoCard({ p }: { p: Projeto }) {
+  const a = projAgregado(p);
+  const risco = projRisco(p);
+  const dias = diasRestantes(p.prazo);
+
+  // Alertas inline
+  type AlertaInline = { tone: "rose" | "amber"; titulo: string; sub: string };
+  const alertas: AlertaInline[] = [];
+  p.rubricas.forEach(r => {
+    const st = statusRubrica(r);
+    if (st === "estourado") {
+      alertas.push({
+        tone: "rose",
+        titulo: `${r.nome} estourou em ${Math.round(pct(r))}%`,
+        sub: `${fmtBRL(r.gasto)} sobre ${fmtBRL(r.planejado)} planejado`,
+      });
+    } else if (st === "critico") {
+      alertas.push({
+        tone: "amber",
+        titulo: `${r.nome} atingiu ${Math.round(pct(r))}%`,
+        sub: `Resta ${fmtBRL(r.planejado - r.gasto)} antes do limite`,
+      });
+    }
+  });
+
+  if (p.status !== "em_execucao") {
+    const label = p.status === "aguardando_resultado"
+      ? "Aguardando resultado · pipeline futuro"
+      : "Encerrado · sem novas execuções";
+    return (
+      <Card className="p-0 overflow-hidden">
+        <div className="px-4 py-3 flex items-center justify-between gap-3 border-b">
+          <div className="flex items-center gap-2">
+            <h4 className="text-sm font-semibold tracking-tight">{p.nome}</h4>
+            <Badge variant="outline" className={cn("text-[10.5px] font-normal", projStatusBadge(p.status))}>{projStatusLabel(p.status)}</Badge>
+          </div>
+          <Button variant="ghost" size="sm" className="h-7 text-[11.5px] gap-1">Abrir <ArrowRight className="h-3 w-3" /></Button>
+        </div>
+        <div className="px-4 py-2 text-[11px] text-muted-foreground">{p.orgao}</div>
+        <div className="px-4 py-6 text-center text-[11.5px] italic text-muted-foreground border-t bg-muted/20">{label}</div>
+      </Card>
+    );
+  }
+
+  // Contexto subtítulo
+  const ativasNaoReservadas = p.rubricas.filter(r => !r.reservado);
+  const piorRubrica = [...ativasNaoReservadas].sort((x, y) => pct(y) - pct(x))[0];
+  const piorStatus = piorRubrica ? statusRubrica(piorRubrica) : null;
+  const contextoCurto = piorStatus === "estourado"
+    ? `${p.rubricas.filter(r => r.gasto > r.planejado).length} rubricas estouradas`
+    : piorStatus === "critico"
+    ? `${piorRubrica?.nome} crítico`
+    : "execução saudável";
+
+  const sugestaoTopo = p.pode_usar_para[0] ?? "";
+  const accentBorder = risco === "alto" ? "border-t-rose-500" : risco === "medio" ? "border-t-amber-500" : "border-t-emerald-500";
+
+  return (
+    <Card className={cn("p-0 overflow-hidden border-t-2", accentBorder)}>
+      {/* Cabeçalho */}
+      <div className="px-4 pt-3 pb-3 flex items-start justify-between gap-3 flex-wrap">
+        <div className="min-w-0">
+          <div className="flex items-center gap-2 flex-wrap">
+            <h4 className="text-sm font-semibold tracking-tight">{p.nome}</h4>
+            <Badge variant="outline" className={cn("text-[10.5px] font-normal", projStatusBadge(p.status))}>{projStatusLabel(p.status)}</Badge>
+            <Badge variant="outline" className={cn("text-[10.5px] font-normal capitalize", riscoBadge(risco))}>{risco}</Badge>
+          </div>
+          <div className="text-[11px] text-muted-foreground mt-1">
+            {p.orgao} · prazo {p.prazo}
+            {dias !== null && <> · <b className="text-foreground/80 num">{dias}d restantes</b></>}
+            {sugestaoTopo && <> · janela curta para gastar {sugestaoTopo}</>}
+          </div>
+        </div>
+        <div className="flex items-center gap-3 shrink-0">
+          <div className="text-right">
+            <div className="text-[10px] uppercase tracking-wider text-muted-foreground font-medium">Saldo livre</div>
+            <div className="flex items-baseline gap-1 justify-end">
+              <span className="text-[11px] text-muted-foreground">R$</span>
+              <span className="text-2xl font-semibold tracking-tight num text-emerald-700 leading-none">{fmtBRLkurz(a.saldoLivre).num}</span>
+              <span className="text-[11px] text-muted-foreground">{fmtBRLkurz(a.saldoLivre).suffix}</span>
+            </div>
+          </div>
+          <Button variant="ghost" size="sm" className="h-8 text-[11.5px] gap-1">Abrir <ArrowRight className="h-3 w-3" /></Button>
+        </div>
+      </div>
+
+      {/* Execução do projeto */}
+      <div className="px-4 pb-3">
+        <div className="flex items-center justify-between mb-1.5">
+          <span className="text-[10px] uppercase tracking-wider text-muted-foreground font-medium">Execução do projeto</span>
+          <span className="text-[11px] text-muted-foreground">
+            <b className="text-foreground num">{Math.round(a.exec)}%</b> · <span className="num">R$ {fmtK(a.gasto)}</span> de <span className="num">R$ {fmtK(a.planejado)}</span>
+          </span>
+        </div>
+        <div className="flex h-2 w-full rounded-full overflow-hidden bg-muted gap-px">
+          {p.rubricas.map(r => {
+            const w = a.planejado > 0 ? (r.planejado / (a.planejado + a.reservado)) * 100 : 0;
+            const st = statusRubrica(r);
+            const fill = Math.min(100, pct(r));
+            return (
+              <div key={r.nome} className="relative bg-muted/60" style={{ width: `${w}%` }} title={`${r.nome} · ${Math.round(pct(r))}%`}>
+                <div className={cn("h-full", rubricaSegColor(st))} style={{ width: `${fill}%` }} />
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* Grid de rubricas */}
+      <div className="px-4 pb-3 grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-x-4 gap-y-2.5">
+        {p.rubricas.map(r => {
+          const st = statusRubrica(r);
+          const p100 = Math.min(100, pct(r));
+          return (
+            <div key={r.nome} className="min-w-0">
+              <div className="flex items-center gap-1.5 min-w-0">
+                <span className={cn("h-1.5 w-1.5 rounded-full shrink-0", rubricaDot(st))} />
+                <span className="text-[11.5px] truncate">{r.nome}</span>
+              </div>
+              <div className="text-[10.5px] text-muted-foreground num mt-0.5 ml-3">
+                <b className={cn(
+                  "text-foreground",
+                  st === "estourado" ? "text-rose-600" : st === "critico" ? "text-amber-600" : ""
+                )}>{Math.round(pct(r))}%</b>
+                {" "}<span>{fmtK(r.gasto)}</span> / <span>{fmtK(r.planejado)}</span>
+              </div>
+              <div className="ml-3 mt-1 h-1 rounded-full bg-muted overflow-hidden">
+                <div className={cn("h-full rounded-full", rubricaSegColor(st))} style={{ width: `${p100}%` }} />
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      {/* Pode usar para */}
+      {p.pode_usar_para.length > 0 && (
+        <div className="px-4 pb-3 flex items-center gap-2 flex-wrap border-t pt-3">
+          <span className="text-[10px] uppercase tracking-wider text-muted-foreground font-medium inline-flex items-center gap-1">
+            <Sparkles className="h-3 w-3 text-amber-600" /> Pode usar para
+          </span>
+          {p.pode_usar_para.map(t => (
+            <Badge key={t} variant="outline" className="text-[10.5px] font-normal bg-emerald-500/5 text-emerald-700 border-emerald-500/30">
+              <CheckCircle2 className="h-2.5 w-2.5 mr-1" /> {t}
+            </Badge>
+          ))}
+        </div>
+      )}
+
+      {/* Alertas inline */}
+      {alertas.length > 0 && (
+        <div className="border-t bg-muted/20">
+          <div className="px-4 py-2 text-[10px] uppercase tracking-wider text-muted-foreground font-medium">
+            Alertas deste projeto · {alertas.length}
+          </div>
+          <div className="px-4 pb-3 flex flex-col gap-1.5">
+            {alertas.map((al, i) => (
+              <div
+                key={i}
+                className={cn(
+                  "rounded-md border flex items-center gap-2.5 px-3 py-2",
+                  al.tone === "rose" ? "border-rose-500/30 bg-rose-500/5" : "border-amber-500/30 bg-amber-500/5"
+                )}
+              >
+                <div className={cn(
+                  "h-6 w-6 rounded grid place-items-center shrink-0",
+                  al.tone === "rose" ? "bg-rose-500/10 text-rose-600" : "bg-amber-500/10 text-amber-600"
+                )}>
+                  {al.tone === "rose" ? <ShieldAlert className="h-3.5 w-3.5" /> : <AlertTriangle className="h-3.5 w-3.5" />}
+                </div>
+                <div className="flex-1 min-w-0">
+                  <div className="text-[12px] font-medium leading-tight">{al.titulo}</div>
+                  <div className="text-[10.5px] text-muted-foreground mt-0.5 num">{al.sub}</div>
+                </div>
+                <Button variant="outline" size="sm" className="h-7 text-[11px]">Tratar</Button>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </Card>
+  );
+}
+
 
 /* ───────────────────────── Projetos (detalhe por rubrica) ───────────────────────── */
 

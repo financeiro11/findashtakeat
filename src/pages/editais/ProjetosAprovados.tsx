@@ -331,114 +331,106 @@ export function ExecutivoTab() {
 
   return (
     <div className="flex flex-col gap-4">
-      {/* BLOCO 1 — EDI (estética da referência) */}
-      <Card className="p-0 overflow-hidden">
-        <div className="px-3 pt-2.5 pb-1.5 flex items-center gap-2 flex-wrap border-b">
-          <span className="text-[12px] font-semibold tracking-tight">EDI · Consultor IA de Execução</span>
-          <span className="inline-flex items-center gap-1 text-[9.5px] uppercase tracking-wider font-semibold text-emerald-700 bg-emerald-500/10 border border-emerald-500/30 px-1.5 py-0.5 rounded">
-            <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 animate-pulse" />
-            IA ativa
-          </span>
-          <span className="text-[10px] uppercase tracking-wider text-muted-foreground">
-            contexto: {PROJETOS.length} projetos · {PROJETOS.reduce((s, p) => s + p.rubricas.length, 0)} rubricas
-          </span>
-        </div>
+      {/* BLOCO 1 — EDI */}
+      <Card className="relative overflow-hidden border-primary/30 bg-gradient-to-br from-primary/5 via-background to-rose-500/5">
+        <div className="absolute inset-0 pointer-events-none opacity-[0.04] bg-[radial-gradient(circle_at_top_right,hsl(var(--primary))_0,transparent_60%)]" />
+        <div className="relative p-5 flex flex-col gap-4">
+          <div className="flex items-start gap-3">
+            <div className="h-9 w-9 rounded-lg bg-gradient-to-br from-primary to-rose-600 grid place-items-center text-primary-foreground shadow-sm shrink-0">
+              <Sparkles className="h-4 w-4" />
+            </div>
+            <div className="flex-1 min-w-0">
+              <div className="flex items-center gap-2 flex-wrap">
+                <h2 className="text-base font-semibold tracking-tight">EDI · Consultor IA de Execução</h2>
+                <span className="inline-flex items-center gap-1 text-[10px] uppercase tracking-wider font-semibold text-emerald-700 bg-emerald-500/10 border border-emerald-500/30 px-1.5 py-0.5 rounded">
+                  <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 animate-pulse" />
+                  IA ativa
+                </span>
+                <span className="text-[10px] uppercase tracking-wider text-muted-foreground">
+                  contexto: {PROJETOS.length} projetos · {PROJETOS.reduce((s,p)=>s+p.rubricas.length,0)} rubricas
+                </span>
+              </div>
+              <p className="text-xs text-muted-foreground mt-0.5">
+                Pergunte sobre saldos, elegibilidade, rubricas, fornecedores e melhor uso da verba aprovada.
+              </p>
+            </div>
+          </div>
 
-        <div className="flex items-center gap-3 px-3 py-2.5">
-          <div className="h-8 w-8 rounded-md bg-gradient-to-br from-primary to-rose-600 grid place-items-center text-primary-foreground shrink-0">
-            <Sparkles className="h-4 w-4" />
-          </div>
-          <div className="flex items-center gap-2 flex-1 min-w-0">
-            <span className="text-[13px] font-semibold whitespace-nowrap">Pergunte à IA:</span>
-            <Input
-              value={pergunta}
-              onChange={e => setPergunta(e.target.value)}
-              onKeyDown={e => e.key === "Enter" && setMostrarResposta(true)}
-              placeholder='"Como está o runway no cenário atual?"'
-              className="h-8 text-[13px] italic text-muted-foreground placeholder:text-muted-foreground/80 border-0 shadow-none focus-visible:ring-0 px-0 bg-transparent"
-            />
-          </div>
-          <div className="flex items-center gap-1.5 shrink-0">
-            {[
-              { label: "Anomalias", q: "Quais anomalias foram detectadas nos projetos?" },
-              { label: "Forecast", q: "Qual o forecast de execução dos projetos?" },
-              { label: "Drill-down DRE", q: "Faça um drill-down do DRE por projeto." },
-            ].map(b => (
-              <Button
-                key={b.label}
-                variant="outline"
-                size="sm"
-                className="h-8 text-[12px] font-medium"
-                onClick={() => { setPergunta(b.q); setMostrarResposta(true); }}
-              >
-                {b.label}
-              </Button>
-            ))}
-            <Button size="sm" className="h-8 gap-1.5" onClick={() => setMostrarResposta(true)}>
+          <div className="flex items-center gap-2">
+            <div className="relative flex-1">
+              <Brain className="h-4 w-4 text-muted-foreground absolute left-3 top-1/2 -translate-y-1/2" />
+              <Input
+                value={pergunta}
+                onChange={e => setPergunta(e.target.value)}
+                onKeyDown={e => e.key === "Enter" && setMostrarResposta(true)}
+                placeholder="Ex: posso pagar HubSpot pelo Tecnova III?"
+                className="pl-9 h-10 text-[13px] bg-background"
+              />
+            </div>
+            <Button onClick={() => setMostrarResposta(true)} className="h-10 gap-1.5">
               <Send className="h-3.5 w-3.5" /> Consultar EDI
             </Button>
           </div>
-        </div>
 
-        <div className="px-3 pb-2.5 flex items-center gap-1.5 flex-wrap">
-          <span className="text-[11px] text-muted-foreground mr-1">Sugestões:</span>
-          {SUGESTOES.map(s => (
-            <button
-              key={s}
-              onClick={() => { setPergunta(s); setMostrarResposta(true); }}
-              className="text-[11.5px] px-2 py-1 rounded-full border border-border bg-background/60 hover:border-primary/40 hover:text-primary transition-colors"
-            >
-              {s}
-            </button>
-          ))}
-        </div>
+          <div className="flex items-center gap-1.5 flex-wrap">
+            <span className="text-[11px] text-muted-foreground mr-1">Sugestões:</span>
+            {SUGESTOES.map(s => (
+              <button
+                key={s}
+                onClick={() => { setPergunta(s); setMostrarResposta(true); }}
+                className="text-[11.5px] px-2 py-1 rounded-full border border-border bg-background/60 hover:border-primary/40 hover:text-primary transition-colors"
+              >
+                {s}
+              </button>
+            ))}
+          </div>
 
-
-        {mostrarResposta && (
-          <div className="border-t bg-muted/20 p-4 flex flex-col gap-3">
-            <div className="flex items-center gap-2">
-              <Zap className="h-3.5 w-3.5 text-primary" />
-              <span className="text-[11px] uppercase tracking-wider font-semibold text-primary">Resposta do EDI</span>
-            </div>
-            <p className="text-[13px] leading-relaxed">
-              Identificamos <span className="font-semibold text-rose-600">risco operacional no projeto BretA</span>:
-            </p>
-            <ul className="text-[12.5px] space-y-1 ml-1">
-              <li className="flex items-start gap-2">
-                <TrendingDown className="h-3 w-3 text-rose-600 mt-1 shrink-0" />
-                <span><b>{respostaIA.bMatCons.nome}</b> está <b className="num">{Math.round(pct(respostaIA.bMatCons))}%</b> executado</span>
-              </li>
-              <li className="flex items-start gap-2">
-                <TrendingDown className="h-3 w-3 text-rose-600 mt-1 shrink-0" />
-                <span><b>{respostaIA.bPass.nome}</b> atingiu <b className="num">{Math.round(pct(respostaIA.bPass))}%</b></span>
-              </li>
-            </ul>
-            <p className="text-[13px] leading-relaxed">No <b>Tecnova III</b>:</p>
-            <ul className="text-[12.5px] space-y-1 ml-1">
-              <li className="flex items-start gap-2">
-                <AlertTriangle className="h-3 w-3 text-amber-600 mt-1 shrink-0" />
-                <span><b>{respostaIA.tEq.nome}</b> possui apenas <b className="num">{Math.round(100 - pct(respostaIA.tEq))}%</b> disponível</span>
-              </li>
-              {respostaIA.pendNF > 0 && (
+          {mostrarResposta && (
+            <div className="rounded-lg border border-primary/20 bg-background/80 backdrop-blur p-4 flex flex-col gap-3">
+              <div className="flex items-center gap-2">
+                <Zap className="h-3.5 w-3.5 text-primary" />
+                <span className="text-[11px] uppercase tracking-wider font-semibold text-primary">Resposta do EDI</span>
+              </div>
+              <p className="text-[13px] leading-relaxed">
+                Identificamos <span className="font-semibold text-rose-600">risco operacional no projeto BretA</span>:
+              </p>
+              <ul className="text-[12.5px] space-y-1 ml-1">
                 <li className="flex items-start gap-2">
-                  <FileWarning className="h-3 w-3 text-amber-600 mt-1 shrink-0" />
-                  <span>Existem <b>{respostaIA.pendNF} lançamentos pendentes sem NF</b></span>
+                  <TrendingDown className="h-3 w-3 text-rose-600 mt-1 shrink-0" />
+                  <span><b>{respostaIA.bMatCons.nome}</b> está <b className="num">{Math.round(pct(respostaIA.bMatCons))}%</b> executado</span>
                 </li>
-              )}
-            </ul>
-            <div className="rounded-md bg-amber-500/5 border border-amber-500/30 px-3 py-2 flex items-start gap-2">
-              <Lock className="h-3.5 w-3.5 text-amber-700 mt-0.5 shrink-0" />
-              <div className="text-[12.5px] leading-relaxed">
-                A rubrica <b>Aceleração</b> do Tecnova III possui <b className="num">{fmtBRL(respostaIA.tAcel.planejado)}</b> reservados obrigatoriamente para programa de aceleração.
-                Somando as {respostaIA.reservadasTec.length} rubricas reservadas do projeto, <b className="num">{fmtBRL(respostaIA.totalReservadoTec)}</b> não devem ser considerados saldo livre operacional.
+                <li className="flex items-start gap-2">
+                  <TrendingDown className="h-3 w-3 text-rose-600 mt-1 shrink-0" />
+                  <span><b>{respostaIA.bPass.nome}</b> atingiu <b className="num">{Math.round(pct(respostaIA.bPass))}%</b></span>
+                </li>
+              </ul>
+              <p className="text-[13px] leading-relaxed">No <b>Tecnova III</b>:</p>
+              <ul className="text-[12.5px] space-y-1 ml-1">
+                <li className="flex items-start gap-2">
+                  <AlertTriangle className="h-3 w-3 text-amber-600 mt-1 shrink-0" />
+                  <span><b>{respostaIA.tEq.nome}</b> possui apenas <b className="num">{Math.round(100 - pct(respostaIA.tEq))}%</b> disponível</span>
+                </li>
+                {respostaIA.pendNF > 0 && (
+                  <li className="flex items-start gap-2">
+                    <FileWarning className="h-3 w-3 text-amber-600 mt-1 shrink-0" />
+                    <span>Existem <b>{respostaIA.pendNF} lançamentos pendentes sem NF</b></span>
+                  </li>
+                )}
+              </ul>
+              <div className="rounded-md bg-amber-500/5 border border-amber-500/30 px-3 py-2 flex items-start gap-2">
+                <Lock className="h-3.5 w-3.5 text-amber-700 mt-0.5 shrink-0" />
+                <div className="text-[12.5px] leading-relaxed">
+                  A rubrica <b>Aceleração</b> do Tecnova III possui <b className="num">{fmtBRL(respostaIA.tAcel.planejado)}</b> reservados obrigatoriamente para programa de aceleração.
+                  Somando as {respostaIA.reservadasTec.length} rubricas reservadas do projeto, <b className="num">{fmtBRL(respostaIA.totalReservadoTec)}</b> não devem ser considerados saldo livre operacional.
+                </div>
+              </div>
+              <div className="rounded-md bg-emerald-500/5 border border-emerald-500/20 px-3 py-2 mt-1">
+                <div className="text-[10.5px] uppercase tracking-wider text-emerald-700 font-semibold">Saldo operacional livre estimado</div>
+                <div className="text-base font-semibold num text-emerald-700">{fmtBRL(respostaIA.livre)}</div>
               </div>
             </div>
-            <div className="rounded-md bg-emerald-500/5 border border-emerald-500/20 px-3 py-2 mt-1">
-              <div className="text-[10.5px] uppercase tracking-wider text-emerald-700 font-semibold">Saldo operacional livre estimado</div>
-              <div className="text-base font-semibold num text-emerald-700">{fmtBRL(respostaIA.livre)}</div>
-            </div>
-          </div>
-        )}
+          )}
+        </div>
       </Card>
 
       {/* BLOCO 2 — KPIs executivos */}

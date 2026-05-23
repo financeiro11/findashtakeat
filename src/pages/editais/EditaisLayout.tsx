@@ -7,7 +7,7 @@ const items = [
   { to: "/editais/radar", label: "Radar", icon: Radar },
   { to: "/editais/triagem", label: "Triagem", icon: Filter },
   { to: "/editais/pipeline", label: "Pipeline", icon: Kanban },
-  { to: "/editais/projetos-aprovados", label: "Projetos Aprovados", icon: CheckCircle2 },
+  { to: "/editais/projetos-aprovados", label: "Radar de Editais", icon: CheckCircle2 },
   { to: "/editais/calendario", label: "Calendário", icon: CalendarDays },
   { to: "/editais/historico", label: "Histórico", icon: History },
   { to: "/editais/monitor", label: "Monitor", icon: Activity },

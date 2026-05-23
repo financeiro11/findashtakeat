@@ -17,10 +17,12 @@ const items = [
 export default function EditaisLayout() {
   const { pathname } = useLocation();
   const current = items.find(i => (i.end ? pathname === i.to : pathname.startsWith(i.to)));
+  const hideTopBar = pathname.startsWith("/editais/projetos-aprovados");
 
   return (
     <div className="min-h-[calc(100vh-49px)] flex flex-col">
       {/* Top bar com brand + tabs */}
+      {!hideTopBar && (
       <div className="border-b bg-background/80 backdrop-blur sticky top-0 z-10">
         <div className="px-6 pt-3 pb-0 flex items-center justify-between gap-4 flex-wrap">
           <div className="flex items-center gap-2.5">

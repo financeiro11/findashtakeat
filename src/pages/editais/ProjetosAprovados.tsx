@@ -170,7 +170,7 @@ export default function ProjetosAprovadosLayout() {
       {/* Breadcrumb topo */}
       <div className="flex items-center justify-between -mt-2">
         <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
-          <NavLink to="/editais" className="hover:text-foreground transition-colors">Editais</NavLink>
+          <NavLink to="/editais" className="hover:text-foreground transition-colors">Radar de Editais</NavLink>
           <span>/</span>
           <span className="text-foreground">Projetos Aprovados</span>
           <span>·</span>

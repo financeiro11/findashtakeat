@@ -59,6 +59,7 @@ export default function EditaisLayout() {
           })}
         </nav>
       </div>
+      )}
 
       <div className="flex-1 overflow-auto">
         <div className="p-6">

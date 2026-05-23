@@ -106,7 +106,7 @@ const RUBRICA_BADGE: Record<ReturnType<typeof statusRubrica>, string> = {
   atencao: "bg-amber-500/10 text-amber-600 border-amber-500/30",
   critico: "bg-orange-500/10 text-orange-600 border-orange-500/30",
   estourado: "bg-rose-500/10 text-rose-600 border-rose-500/30",
-  reservado: "bg-sky-500/10 text-sky-600 border-sky-500/30",
+  reservado: "bg-amber-500/10 text-amber-700 border-amber-500/30",
 };
 
 const RUBRICA_LABEL: Record<ReturnType<typeof statusRubrica>, string> = {

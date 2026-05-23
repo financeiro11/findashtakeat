@@ -774,14 +774,21 @@ export function ProjetosTab() {
                     const st = statusRubrica(r);
                     const p2 = pct(r);
                     return (
-                      <tr key={r.nome} className="border-t border-border/50 hover:bg-muted/30">
+                      <tr key={r.nome} className={cn("border-t border-border/50 hover:bg-muted/30", r.reservado && "bg-amber-500/[0.03]")}>
                         <td className="px-4 py-2.5">
-                          <div className="font-medium">{r.nome}</div>
-                          {(r.pendencias_nf ?? 0) > 0 && (
-                            <div className="text-[10.5px] text-amber-600 mt-0.5 inline-flex items-center gap-1">
-                              <FileWarning className="h-3 w-3" /> {r.pendencias_nf} sem NF
-                            </div>
-                          )}
+                          <div className="flex items-center gap-1.5 flex-wrap">
+                            <span className="font-medium">{r.nome}</span>
+                            {r.reservado && (
+                              <Badge variant="outline" className="text-[10px] font-normal bg-amber-500/10 text-amber-700 border-amber-500/40 gap-0.5">
+                                <Zap className="h-2.5 w-2.5" /> Obrigatório
+                              </Badge>
+                            )}
+                            {(r.pendencias_nf ?? 0) > 0 && (
+                              <Badge variant="outline" className="text-[10px] font-normal bg-amber-500/10 text-amber-700 border-amber-500/40 gap-0.5">
+                                <FileWarning className="h-2.5 w-2.5" /> {r.pendencias_nf} sem NF
+                              </Badge>
+                            )}
+                          </div>
                         </td>
                         <td className="px-2 py-2.5 text-right num">{fmtBRL(r.planejado)}</td>
                         <td className="px-2 py-2.5 text-right num">{fmtBRL(r.gasto)}</td>
@@ -790,16 +797,22 @@ export function ProjetosTab() {
                         </td>
                         <td className="px-2 py-2.5">
                           <div className="flex items-center gap-2 min-w-[110px]">
-                            <div className="flex-1 h-1.5 rounded-full bg-muted overflow-hidden">
+                            <div className={cn("flex-1 h-1.5 rounded-full overflow-hidden", st === "reservado" ? "bg-amber-500/15" : "bg-muted")}>
                               <div
                                 className={cn(
                                   "h-full rounded-full",
-                                  st === "estourado" ? "bg-rose-500" : st === "critico" ? "bg-orange-500" : st === "atencao" ? "bg-amber-500" : st === "reservado" ? "bg-sky-500" : "bg-emerald-500"
+                                  st === "estourado" ? "bg-rose-500"
+                                  : st === "critico" ? "bg-orange-500"
+                                  : st === "atencao" ? "bg-amber-500"
+                                  : st === "reservado" ? "bg-amber-400/70"
+                                  : "bg-emerald-500"
                                 )}
-                                style={{ width: `${Math.min(100, p2)}%` }}
+                                style={{ width: st === "reservado" ? "100%" : `${Math.min(100, p2)}%` }}
                               />
                             </div>
-                            <span className="num text-[11px] text-muted-foreground w-10 text-right">{Math.round(p2)}%</span>
+                            <span className="num text-[11px] text-muted-foreground w-10 text-right">
+                              {st === "reservado" ? "—" : `${Math.round(p2)}%`}
+                            </span>
                           </div>
                         </td>
                         <td className="px-2 py-2.5">

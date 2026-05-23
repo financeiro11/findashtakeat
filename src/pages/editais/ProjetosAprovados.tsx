@@ -166,22 +166,20 @@ export default function ProjetosAprovadosLayout() {
   useEffect(() => { document.title = `Editais · Projetos Aprovados · ${current?.label ?? ""}`; }, [current]);
 
   return (
-    <div className="flex flex-col gap-4">
-      {/* Ação topo */}
-      <div className="flex items-center justify-end -mt-2">
+    <div className="flex flex-col gap-3">
+      {/* Título + ação */}
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          <h1 className="text-lg font-semibold tracking-tight">Projetos Aprovados</h1>
+          <span className="text-[10px] uppercase tracking-wider text-rose-600 font-semibold bg-rose-500/10 px-1.5 py-0.5 rounded">Execução</span>
+        </div>
         <Button variant="outline" size="sm" className="h-7 text-[11.5px] gap-1.5">
           <FileCheck2 className="h-3 w-3" /> Manual
         </Button>
       </div>
 
+      <nav className="flex items-center gap-0 border-b overflow-x-auto">
 
-      {/* Título */}
-      <div className="flex items-center gap-2 -mt-1">
-        <h1 className="text-lg font-semibold tracking-tight">Projetos Aprovados</h1>
-        <span className="text-[10px] uppercase tracking-wider text-rose-600 font-semibold bg-rose-500/10 px-1.5 py-0.5 rounded">Execução</span>
-      </div>
-
-      <nav className="flex items-center gap-0 border-b -mt-1 overflow-x-auto">
         {subItems.map(it => {
           const Icon = it.icon;
           return (

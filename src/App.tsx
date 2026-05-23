@@ -73,6 +73,14 @@ const App = () => (
                 <Route path="calendario" element={<EditaisCalendario />} />
                 <Route path="historico" element={<EditaisHistorico />} />
                 <Route path="monitor" element={<EditaisMonitor />} />
+                <Route path="projetos-aprovados" element={<ProjetosAprovadosLayout />}>
+                  <Route index element={<ExecutivoTab />} />
+                  <Route path="projetos" element={<ProjetosTab />} />
+                  <Route path="ia" element={<IATab />} />
+                  <Route path="alertas" element={<AlertasTab />} />
+                  <Route path="prestacao" element={<PrestacaoTab />} />
+                  <Route path="config" element={<ConfigTab />} />
+                </Route>
                 <Route path="configuracoes" element={<EditaisConfiguracoes />} />
               </Route>
               <Route path="/tarefas" element={<Tarefas />} />

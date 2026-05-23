@@ -34,6 +34,9 @@ import EditaisHistorico from "./pages/editais/Historico";
 import EditaisConfiguracoes from "./pages/editais/Configuracoes";
 import EditaisMonitor from "./pages/editais/Monitor";
 import EditaisTriagem from "./pages/editais/Triagem";
+import ProjetosAprovadosLayout, {
+  ExecutivoTab, ProjetosTab, IATab, AlertasTab, PrestacaoTab, ConfigTab,
+} from "./pages/editais/ProjetosAprovados";
 import Tarefas from "./pages/Tarefas";
 import Playbook from "./pages/playbook/PlaybookHub";
 import Captable from "./pages/Captable";

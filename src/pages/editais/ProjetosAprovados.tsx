@@ -417,6 +417,13 @@ export function ExecutivoTab() {
                   </li>
                 )}
               </ul>
+              <div className="rounded-md bg-amber-500/5 border border-amber-500/30 px-3 py-2 flex items-start gap-2">
+                <Lock className="h-3.5 w-3.5 text-amber-700 mt-0.5 shrink-0" />
+                <div className="text-[12.5px] leading-relaxed">
+                  A rubrica <b>Aceleração</b> do Tecnova III possui <b className="num">{fmtBRL(respostaIA.tAcel.planejado)}</b> reservados obrigatoriamente para programa de aceleração.
+                  Somando as {respostaIA.reservadasTec.length} rubricas reservadas do projeto, <b className="num">{fmtBRL(respostaIA.totalReservadoTec)}</b> não devem ser considerados saldo livre operacional.
+                </div>
+              </div>
               <div className="rounded-md bg-emerald-500/5 border border-emerald-500/20 px-3 py-2 mt-1">
                 <div className="text-[10.5px] uppercase tracking-wider text-emerald-700 font-semibold">Saldo operacional livre estimado</div>
                 <div className="text-base font-semibold num text-emerald-700">{fmtBRL(respostaIA.livre)}</div>

@@ -299,10 +299,10 @@ export function ExecutivoTab() {
     }
     if (metricas.reservado > 0) {
       items.push({
-        nivel: "Info", icon: Lock,
-        titulo: `${fmtBRL(metricas.reservado)} estão reservados obrigatoriamente`,
-        sub: "Não considerar no saldo operacional",
-        color: "text-sky-600 bg-sky-500/10 border-sky-500/30",
+        nivel: "Info", icon: Zap,
+        titulo: `${fmtBRL(metricas.reservado)} reservados obrigatoriamente`,
+        sub: "Verba protegida · não considerar no saldo operacional livre",
+        color: "text-amber-700 bg-amber-500/10 border-amber-500/40",
       });
     }
     metricas.aguardando.forEach(p => {

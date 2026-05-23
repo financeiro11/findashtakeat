@@ -266,25 +266,22 @@ export function ExecutivoTab() {
     };
   }, []);
 
-  /* ─── KPIs ─── */
-  const KPIS = [
-    { label: "Saldo disponível total", value: fmtBRL(metricas.saldoBruto), sub: `${metricas.ativos.length} projetos ativos`,
-      trend: [10,18,22,24,28,32,38,42,48,52], accent: "hsl(var(--primary))" },
-    { label: "Saldo operacional livre", value: fmtBRL(metricas.saldoLivre), sub: "descontados reservados e comprometidos",
-      trend: [12,15,18,22,26,30,34,36,40,42], accent: "hsl(152 60% 40%)" },
-    { label: "Valor já executado", value: fmtBRL(metricas.gasto), sub: "soma de todas as rubricas",
-      trend: [4,8,12,18,24,30,38,46,54,62], accent: "hsl(212 80% 45%)" },
-    { label: "Verba reservada obrigatória", value: fmtBRL(metricas.reservado), sub: "proteção contratual",
-      trend: [2,2,3,3,4,4,5,5,5,5], accent: "hsl(212 80% 45%)" },
-    { label: "Rubricas críticas", value: String(metricas.rubricasCriticas.length), sub: "≥ 85% executado",
-      trend: [0,0,1,1,1,1,1,2,2,2], accent: "hsl(38 92% 48%)" },
-    { label: "Rubricas estouradas", value: String(metricas.rubricasEstouradas.length), sub: "acima do planejado",
-      trend: [0,0,0,1,1,1,2,2,2,2], accent: "hsl(0 78% 47%)" },
-    { label: "Pendências documentais", value: String(metricas.pendNF), sub: "lançamentos sem NF",
-      trend: [1,1,2,2,3,3,3,3,3,3], accent: "hsl(38 92% 48%)" },
-    { label: "Aguardando resultado", value: String(metricas.aguardando.length), sub: "pipeline futuro",
-      trend: [1,1,1,1,1,1,1,1,1,1], accent: "hsl(212 80% 45%)" },
+  /* ─── KPIs (2 linhas de 4) ─── */
+  const totalRubricas = PROJETOS.reduce((s, p) => s + p.rubricas.length, 0);
+  const aguardandoNomes = metricas.aguardando.map(p => p.nome).join(", ");
+  const KPIS_TOP = [
+    { label: "Saldo realmente utilizável", value: metricas.saldoLivre, sub: "descontados reservados e rubricas comprometidas" },
+    { label: "Saldo operacional livre",    value: metricas.saldoLivre, sub: `${metricas.ativos.length} projetos com verba ativa` },
+    { label: "Valor já executado",         value: metricas.gasto,      sub: "soma de todas as rubricas" },
+    { label: "Verba reservada obrigatória",value: metricas.reservado,  sub: "proteção contratual · não disponível" },
   ];
+  const KPIS_BOTTOM = [
+    { label: "Rubricas críticas",       value: metricas.rubricasCriticas.length,   sub: "≥ 85% executado",          tone: "amber" as const },
+    { label: "Rubricas estouradas",     value: metricas.rubricasEstouradas.length, sub: "acima do planejado",       tone: "rose"  as const },
+    { label: "Pendências documentais",  value: metricas.pendNF,                    sub: "lançamentos sem NF",       tone: "rose"  as const },
+    { label: "Aguardando resultado",    value: metricas.aguardando.length,         sub: `pipeline futuro${aguardandoNomes ? ` · ${aguardandoNomes}` : ""}`, tone: "slate" as const },
+  ];
+
 
   /* ─── Alertas automáticos ─── */
   const ALERTAS = useMemo(() => {

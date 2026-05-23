@@ -699,6 +699,10 @@ export function ProjetosTab() {
       {PROJETOS.map(p => {
         const a = projAgregado(p);
         const risco = projRisco(p);
+        const estouradas = p.rubricas.filter(r => !r.reservado && r.gasto > r.planejado);
+        const reservadasNaoIniciadas = p.rubricas.filter(r => r.reservado && r.gasto === 0);
+        const totalReservadoNaoIniciado = reservadasNaoIniciadas.reduce((s, r) => s + r.planejado, 0);
+        const pendNF = p.rubricas.reduce((s, r) => s + (r.pendencias_nf ?? 0), 0);
         return (
           <Card key={p.nome} className="p-0 overflow-hidden">
             <div className="px-4 py-3 border-b flex items-center justify-between flex-wrap gap-2">
@@ -714,9 +718,43 @@ export function ProjetosTab() {
                 <span>Planejado: <b className="num text-foreground">{fmtBRL(a.planejado)}</b></span>
                 <span>Executado: <b className="num text-foreground">{fmtBRL(a.gasto)}</b></span>
                 <span>Saldo livre: <b className="num text-emerald-700">{fmtBRL(a.saldoLivre)}</b></span>
-                {a.reservado > 0 && <span>Reservado: <b className="num text-sky-700">{fmtBRL(a.reservado)}</b></span>}
+                {a.reservado > 0 && <span>Reservado: <b className="num text-amber-700">{fmtBRL(a.reservado)}</b></span>}
               </div>
             </div>
+
+            {/* Banners automáticos */}
+            {(estouradas.length > 0 || reservadasNaoIniciadas.length > 0 || pendNF > 0) && (
+              <div className="px-4 py-2.5 border-b flex flex-col gap-1.5 bg-muted/20">
+                {estouradas.length > 0 && (
+                  <div className="flex items-start gap-2 rounded-md border border-rose-500/30 bg-rose-500/5 px-3 py-2">
+                    <ShieldAlert className="h-3.5 w-3.5 text-rose-600 mt-0.5 shrink-0" />
+                    <div className="text-[12px] leading-snug">
+                      <b className="text-rose-700">{estouradas.length} rubrica{estouradas.length > 1 ? "s" : ""} ultrapassou o valor planejado neste projeto.</b>
+                      <span className="text-muted-foreground"> {estouradas.map(r => `${r.nome} (${Math.round(pct(r))}%)`).join(" · ")}</span>
+                    </div>
+                  </div>
+                )}
+                {reservadasNaoIniciadas.length > 0 && (
+                  <div className="flex items-start gap-2 rounded-md border border-amber-500/30 bg-amber-500/5 px-3 py-2">
+                    <Zap className="h-3.5 w-3.5 text-amber-700 mt-0.5 shrink-0" />
+                    <div className="text-[12px] leading-snug">
+                      <b className="text-amber-800">Existem rubricas obrigatórias sem execução iniciada.</b>
+                      <span className="text-muted-foreground"> {reservadasNaoIniciadas.map(r => r.nome).join(" · ")} · total <b className="num text-foreground">{fmtBRL(totalReservadoNaoIniciado)}</b>. Evite encerrar o projeto com verba obrigatória não utilizada.</span>
+                    </div>
+                  </div>
+                )}
+                {pendNF > 0 && (
+                  <div className="flex items-start gap-2 rounded-md border border-amber-500/30 bg-amber-500/5 px-3 py-2">
+                    <FileWarning className="h-3.5 w-3.5 text-amber-700 mt-0.5 shrink-0" />
+                    <div className="text-[12px] leading-snug">
+                      <b className="text-amber-800">{pendNF} lançamento{pendNF > 1 ? "s" : ""} sem nota fiscal.</b>
+                      <span className="text-muted-foreground"> Regularize antes da prestação de contas.</span>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+
 
             <div className="overflow-x-auto">
               <table className="w-full text-[12.5px]">

@@ -167,12 +167,24 @@ export default function ProjetosAprovadosLayout() {
 
   return (
     <div className="flex flex-col gap-4">
-      <div className="flex items-center gap-2 -mt-2">
-        <div className="flex items-baseline gap-2">
-          <span className="text-sm font-semibold tracking-tight">Projetos Aprovados</span>
-          <span className="text-[10px] uppercase tracking-wider text-rose-600 font-semibold bg-rose-500/10 px-1.5 py-0.5 rounded">Execução</span>
+      {/* Breadcrumb topo */}
+      <div className="flex items-center justify-between -mt-2">
+        <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
+          <NavLink to="/editais" className="hover:text-foreground transition-colors">Editais</NavLink>
+          <span>/</span>
+          <span className="text-foreground">Projetos Aprovados</span>
+          <span>·</span>
+          <span>{current?.label ?? ""}</span>
         </div>
-        <div className="text-xs text-muted-foreground ml-1">/ {current?.label ?? ""}</div>
+        <Button variant="outline" size="sm" className="h-7 text-[11.5px] gap-1.5">
+          <FileCheck2 className="h-3 w-3" /> Manual
+        </Button>
+      </div>
+
+      {/* Título */}
+      <div className="flex items-center gap-2 -mt-1">
+        <h1 className="text-lg font-semibold tracking-tight">Projetos Aprovados</h1>
+        <span className="text-[10px] uppercase tracking-wider text-rose-600 font-semibold bg-rose-500/10 px-1.5 py-0.5 rounded">Execução</span>
       </div>
 
       <nav className="flex items-center gap-0 border-b -mt-1 overflow-x-auto">
@@ -200,6 +212,14 @@ export default function ProjetosAprovadosLayout() {
       <Outlet />
     </div>
   );
+}
+
+/* abbreviação BRL → "R$ 341 mil" */
+function fmtBRLkurz(v: number): { num: string; suffix: string } {
+  const abs = Math.abs(v);
+  if (abs >= 1_000_000) return { num: (v / 1_000_000).toFixed(abs >= 10_000_000 ? 1 : 2).replace(".", ","), suffix: "mi" };
+  if (abs >= 1_000) return { num: Math.round(v / 1_000).toString(), suffix: "mil" };
+  return { num: Math.round(v).toString(), suffix: "" };
 }
 
 /* ───────────────────────── Executivo ───────────────────────── */
@@ -246,25 +266,22 @@ export function ExecutivoTab() {
     };
   }, []);
 
-  /* ─── KPIs ─── */
-  const KPIS = [
-    { label: "Saldo disponível total", value: fmtBRL(metricas.saldoBruto), sub: `${metricas.ativos.length} projetos ativos`,
-      trend: [10,18,22,24,28,32,38,42,48,52], accent: "hsl(var(--primary))" },
-    { label: "Saldo operacional livre", value: fmtBRL(metricas.saldoLivre), sub: "descontados reservados e comprometidos",
-      trend: [12,15,18,22,26,30,34,36,40,42], accent: "hsl(152 60% 40%)" },
-    { label: "Valor já executado", value: fmtBRL(metricas.gasto), sub: "soma de todas as rubricas",
-      trend: [4,8,12,18,24,30,38,46,54,62], accent: "hsl(212 80% 45%)" },
-    { label: "Verba reservada obrigatória", value: fmtBRL(metricas.reservado), sub: "proteção contratual",
-      trend: [2,2,3,3,4,4,5,5,5,5], accent: "hsl(212 80% 45%)" },
-    { label: "Rubricas críticas", value: String(metricas.rubricasCriticas.length), sub: "≥ 85% executado",
-      trend: [0,0,1,1,1,1,1,2,2,2], accent: "hsl(38 92% 48%)" },
-    { label: "Rubricas estouradas", value: String(metricas.rubricasEstouradas.length), sub: "acima do planejado",
-      trend: [0,0,0,1,1,1,2,2,2,2], accent: "hsl(0 78% 47%)" },
-    { label: "Pendências documentais", value: String(metricas.pendNF), sub: "lançamentos sem NF",
-      trend: [1,1,2,2,3,3,3,3,3,3], accent: "hsl(38 92% 48%)" },
-    { label: "Aguardando resultado", value: String(metricas.aguardando.length), sub: "pipeline futuro",
-      trend: [1,1,1,1,1,1,1,1,1,1], accent: "hsl(212 80% 45%)" },
+  /* ─── KPIs (2 linhas de 4) ─── */
+  const totalRubricas = PROJETOS.reduce((s, p) => s + p.rubricas.length, 0);
+  const aguardandoNomes = metricas.aguardando.map(p => p.nome).join(", ");
+  const KPIS_TOP = [
+    { label: "Saldo realmente utilizável", value: metricas.saldoLivre, sub: "descontados reservados e rubricas comprometidas" },
+    { label: "Saldo operacional livre",    value: metricas.saldoLivre, sub: `${metricas.ativos.length} projetos com verba ativa` },
+    { label: "Valor já executado",         value: metricas.gasto,      sub: "soma de todas as rubricas" },
+    { label: "Verba reservada obrigatória",value: metricas.reservado,  sub: "proteção contratual · não disponível" },
   ];
+  const KPIS_BOTTOM = [
+    { label: "Rubricas críticas",       value: metricas.rubricasCriticas.length,   sub: "≥ 85% executado",          tone: "amber" as const },
+    { label: "Rubricas estouradas",     value: metricas.rubricasEstouradas.length, sub: "acima do planejado",       tone: "rose"  as const },
+    { label: "Pendências documentais",  value: metricas.pendNF,                    sub: "lançamentos sem NF",       tone: "rose"  as const },
+    { label: "Aguardando resultado",    value: metricas.aguardando.length,         sub: `pipeline futuro${aguardandoNomes ? ` · ${aguardandoNomes}` : ""}`, tone: "slate" as const },
+  ];
+
 
   /* ─── Alertas automáticos ─── */
   const ALERTAS = useMemo(() => {
@@ -331,161 +348,137 @@ export function ExecutivoTab() {
 
   return (
     <div className="flex flex-col gap-4">
-      {/* BLOCO 1 — EDI */}
-      <Card className="relative overflow-hidden border-primary/30 bg-gradient-to-br from-primary/5 via-background to-rose-500/5">
-        <div className="absolute inset-0 pointer-events-none opacity-[0.04] bg-[radial-gradient(circle_at_top_right,hsl(var(--primary))_0,transparent_60%)]" />
-        <div className="relative p-5 flex flex-col gap-4">
-          <div className="flex items-start gap-3">
-            <div className="h-9 w-9 rounded-lg bg-gradient-to-br from-primary to-rose-600 grid place-items-center text-primary-foreground shadow-sm shrink-0">
-              <Sparkles className="h-4 w-4" />
-            </div>
-            <div className="flex-1 min-w-0">
-              <div className="flex items-center gap-2 flex-wrap">
-                <h2 className="text-base font-semibold tracking-tight">EDI · Consultor IA de Execução</h2>
-                <span className="inline-flex items-center gap-1 text-[10px] uppercase tracking-wider font-semibold text-emerald-700 bg-emerald-500/10 border border-emerald-500/30 px-1.5 py-0.5 rounded">
-                  <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 animate-pulse" />
-                  IA ativa
-                </span>
-                <span className="text-[10px] uppercase tracking-wider text-muted-foreground">
-                  contexto: {PROJETOS.length} projetos · {PROJETOS.reduce((s,p)=>s+p.rubricas.length,0)} rubricas
-                </span>
-              </div>
-              <p className="text-xs text-muted-foreground mt-0.5">
-                Pergunte sobre saldos, elegibilidade, rubricas, fornecedores e melhor uso da verba aprovada.
-              </p>
-            </div>
+      {/* BLOCO 1 — EDI compacto */}
+      <Card className="p-3 flex flex-col gap-2.5 border-border">
+        <div className="flex items-center gap-2">
+          <div className="h-7 px-2 rounded-md bg-gradient-to-br from-primary to-rose-600 grid place-items-center text-primary-foreground text-[10px] font-bold tracking-wider shadow-sm shrink-0">
+            EDI
           </div>
-
-          <div className="flex items-center gap-2">
-            <div className="relative flex-1">
-              <Brain className="h-4 w-4 text-muted-foreground absolute left-3 top-1/2 -translate-y-1/2" />
-              <Input
-                value={pergunta}
-                onChange={e => setPergunta(e.target.value)}
-                onKeyDown={e => e.key === "Enter" && setMostrarResposta(true)}
-                placeholder="Ex: posso pagar HubSpot pelo Tecnova III?"
-                className="pl-9 h-10 text-[13px] bg-background"
-              />
-            </div>
-            <Button onClick={() => setMostrarResposta(true)} className="h-10 gap-1.5">
-              <Send className="h-3.5 w-3.5" /> Consultar EDI
-            </Button>
+          <span className="text-[12px] text-muted-foreground">
+            Consultor IA · {PROJETOS.length} projetos · {totalRubricas} rubricas
+          </span>
+          <span className="inline-flex items-center gap-1 text-[10px] uppercase tracking-wider font-semibold text-emerald-700 bg-emerald-500/10 border border-emerald-500/30 px-1.5 py-0.5 rounded">
+            <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 animate-pulse" />
+            Ativa
+          </span>
+          <div className="relative flex-1 ml-2">
+            <Input
+              value={pergunta}
+              onChange={e => setPergunta(e.target.value)}
+              onKeyDown={e => e.key === "Enter" && setMostrarResposta(true)}
+              placeholder="Ex: posso pagar HubSpot pelo Tecnova III?"
+              className="h-9 text-[13px] bg-background pr-10"
+            />
+            <button className="absolute right-2 top-1/2 -translate-y-1/2 h-6 w-6 grid place-items-center rounded text-muted-foreground hover:text-foreground hover:bg-muted transition-colors" aria-label="opções">
+              <Brain className="h-3.5 w-3.5" />
+            </button>
           </div>
-
-          <div className="flex items-center gap-1.5 flex-wrap">
-            <span className="text-[11px] text-muted-foreground mr-1">Sugestões:</span>
-            {SUGESTOES.map(s => (
-              <button
-                key={s}
-                onClick={() => { setPergunta(s); setMostrarResposta(true); }}
-                className="text-[11.5px] px-2 py-1 rounded-full border border-border bg-background/60 hover:border-primary/40 hover:text-primary transition-colors"
-              >
-                {s}
-              </button>
-            ))}
-          </div>
-
-          {mostrarResposta && (
-            <div className="rounded-lg border border-primary/20 bg-background/80 backdrop-blur p-4 flex flex-col gap-3">
-              <div className="flex items-center gap-2">
-                <Zap className="h-3.5 w-3.5 text-primary" />
-                <span className="text-[11px] uppercase tracking-wider font-semibold text-primary">Resposta do EDI</span>
-              </div>
-              <p className="text-[13px] leading-relaxed">
-                Identificamos <span className="font-semibold text-rose-600">risco operacional no projeto BretA</span>:
-              </p>
-              <ul className="text-[12.5px] space-y-1 ml-1">
-                <li className="flex items-start gap-2">
-                  <TrendingDown className="h-3 w-3 text-rose-600 mt-1 shrink-0" />
-                  <span><b>{respostaIA.bMatCons.nome}</b> está <b className="num">{Math.round(pct(respostaIA.bMatCons))}%</b> executado</span>
-                </li>
-                <li className="flex items-start gap-2">
-                  <TrendingDown className="h-3 w-3 text-rose-600 mt-1 shrink-0" />
-                  <span><b>{respostaIA.bPass.nome}</b> atingiu <b className="num">{Math.round(pct(respostaIA.bPass))}%</b></span>
-                </li>
-              </ul>
-              <p className="text-[13px] leading-relaxed">No <b>Tecnova III</b>:</p>
-              <ul className="text-[12.5px] space-y-1 ml-1">
-                <li className="flex items-start gap-2">
-                  <AlertTriangle className="h-3 w-3 text-amber-600 mt-1 shrink-0" />
-                  <span><b>{respostaIA.tEq.nome}</b> possui apenas <b className="num">{Math.round(100 - pct(respostaIA.tEq))}%</b> disponível</span>
-                </li>
-                {respostaIA.pendNF > 0 && (
-                  <li className="flex items-start gap-2">
-                    <FileWarning className="h-3 w-3 text-amber-600 mt-1 shrink-0" />
-                    <span>Existem <b>{respostaIA.pendNF} lançamentos pendentes sem NF</b></span>
-                  </li>
-                )}
-              </ul>
-              <div className="rounded-md bg-amber-500/5 border border-amber-500/30 px-3 py-2 flex items-start gap-2">
-                <Lock className="h-3.5 w-3.5 text-amber-700 mt-0.5 shrink-0" />
-                <div className="text-[12.5px] leading-relaxed">
-                  A rubrica <b>Aceleração</b> do Tecnova III possui <b className="num">{fmtBRL(respostaIA.tAcel.planejado)}</b> reservados obrigatoriamente para programa de aceleração.
-                  Somando as {respostaIA.reservadasTec.length} rubricas reservadas do projeto, <b className="num">{fmtBRL(respostaIA.totalReservadoTec)}</b> não devem ser considerados saldo livre operacional.
-                </div>
-              </div>
-              <div className="rounded-md bg-emerald-500/5 border border-emerald-500/20 px-3 py-2 mt-1">
-                <div className="text-[10.5px] uppercase tracking-wider text-emerald-700 font-semibold">Saldo operacional livre estimado</div>
-                <div className="text-base font-semibold num text-emerald-700">{fmtBRL(respostaIA.livre)}</div>
-              </div>
-            </div>
-          )}
+          <Button onClick={() => setMostrarResposta(true)} className="h-9 gap-1.5 bg-primary hover:bg-primary/90">
+            <ArrowRight className="h-3.5 w-3.5" /> Consultar
+          </Button>
         </div>
-      </Card>
 
-      {/* BLOCO 2 — KPIs executivos */}
-      <Card className="p-0 overflow-hidden">
-        <div className="flex flex-wrap divide-x divide-border/50">
-          {KPIS.map(k => (
-            <div key={k.label} className="flex-1 min-w-[180px] px-4 py-3">
-              <div className="text-[10px] uppercase tracking-wider text-muted-foreground font-medium">{k.label}</div>
-              <div className="flex items-end justify-between mt-1.5 gap-2">
-                <div>
-                  <div className="text-xl font-semibold tracking-tight num">{k.value}</div>
-                  <div className="text-[10px] text-muted-foreground mt-0.5">{k.sub}</div>
-                </div>
-                <div className="opacity-70">
-                  <Sparkline data={k.trend} color={k.accent} width={56} height={24} />
-                </div>
-              </div>
-            </div>
+        <div className="flex items-center gap-1.5 flex-wrap">
+          <span className="text-[10px] uppercase tracking-wider text-muted-foreground font-medium mr-1">Atalhos</span>
+          {SUGESTOES.map(s => (
+            <button
+              key={s}
+              onClick={() => { setPergunta(s); setMostrarResposta(true); }}
+              className="text-[11.5px] px-2 py-1 rounded-full border border-border bg-background hover:border-primary/40 hover:text-primary transition-colors"
+            >
+              {s}
+            </button>
           ))}
         </div>
-      </Card>
 
-      {/* BLOCO 3 — Saldo realmente utilizável (destaque) */}
-      <Card className="p-0 overflow-hidden border-emerald-500/30">
-        <div className="grid grid-cols-1 lg:grid-cols-[1.2fr_2fr]">
-          <div className="p-5 bg-gradient-to-br from-emerald-500/10 via-background to-transparent border-r border-border/50">
-            <div className="flex items-center gap-2 mb-2">
-              <Wallet className="h-3.5 w-3.5 text-emerald-700" />
-              <span className="text-[10.5px] uppercase tracking-wider font-semibold text-emerald-700">Saldo realmente utilizável</span>
+        {mostrarResposta && (
+          <div className="rounded-lg border border-primary/20 bg-background p-4 flex flex-col gap-3 mt-1">
+            <div className="flex items-center gap-2">
+              <Zap className="h-3.5 w-3.5 text-primary" />
+              <span className="text-[11px] uppercase tracking-wider font-semibold text-primary">Resposta do EDI</span>
             </div>
-            <div className="text-3xl font-semibold tracking-tight num text-emerald-700">{fmtBRL(metricas.saldoLivre)}</div>
-            <div className="text-[11px] text-muted-foreground mt-1">descontados reservados e rubricas comprometidas</div>
-          </div>
-          <div className="p-5 grid grid-cols-2 sm:grid-cols-4 gap-4">
-            <div>
-              <div className="text-[10px] uppercase tracking-wider text-muted-foreground">Saldo bruto</div>
-              <div className="text-sm font-semibold num mt-1">{fmtBRL(metricas.saldoBruto)}</div>
-            </div>
-            <div>
-              <div className="text-[10px] uppercase tracking-wider text-muted-foreground flex items-center gap-1"><Lock className="h-3 w-3" /> Reservado</div>
-              <div className="text-sm font-semibold num mt-1 text-sky-700">- {fmtBRL(metricas.reservado)}</div>
-            </div>
-            <div>
-              <div className="text-[10px] uppercase tracking-wider text-muted-foreground">Comprometido (estouros)</div>
-              <div className="text-sm font-semibold num mt-1 text-rose-600">
-                - {fmtBRL(metricas.rubricasEstouradas.reduce((s, x) => s + (x.rubrica.gasto - x.rubrica.planejado), 0))}
+            <p className="text-[13px] leading-relaxed">
+              Identificamos <span className="font-semibold text-rose-600">risco operacional no projeto BretA</span>:
+            </p>
+            <ul className="text-[12.5px] space-y-1 ml-1">
+              <li className="flex items-start gap-2">
+                <TrendingDown className="h-3 w-3 text-rose-600 mt-1 shrink-0" />
+                <span><b>{respostaIA.bMatCons.nome}</b> está <b className="num">{Math.round(pct(respostaIA.bMatCons))}%</b> executado</span>
+              </li>
+              <li className="flex items-start gap-2">
+                <TrendingDown className="h-3 w-3 text-rose-600 mt-1 shrink-0" />
+                <span><b>{respostaIA.bPass.nome}</b> atingiu <b className="num">{Math.round(pct(respostaIA.bPass))}%</b></span>
+              </li>
+            </ul>
+            <p className="text-[13px] leading-relaxed">No <b>Tecnova III</b>:</p>
+            <ul className="text-[12.5px] space-y-1 ml-1">
+              <li className="flex items-start gap-2">
+                <AlertTriangle className="h-3 w-3 text-amber-600 mt-1 shrink-0" />
+                <span><b>{respostaIA.tEq.nome}</b> possui apenas <b className="num">{Math.round(100 - pct(respostaIA.tEq))}%</b> disponível</span>
+              </li>
+              {respostaIA.pendNF > 0 && (
+                <li className="flex items-start gap-2">
+                  <FileWarning className="h-3 w-3 text-amber-600 mt-1 shrink-0" />
+                  <span>Existem <b>{respostaIA.pendNF} lançamentos pendentes sem NF</b></span>
+                </li>
+              )}
+            </ul>
+            <div className="rounded-md bg-amber-500/5 border border-amber-500/30 px-3 py-2 flex items-start gap-2">
+              <Lock className="h-3.5 w-3.5 text-amber-700 mt-0.5 shrink-0" />
+              <div className="text-[12.5px] leading-relaxed">
+                A rubrica <b>Aceleração</b> do Tecnova III possui <b className="num">{fmtBRL(respostaIA.tAcel.planejado)}</b> reservados obrigatoriamente para programa de aceleração.
+                Somando as {respostaIA.reservadasTec.length} rubricas reservadas do projeto, <b className="num">{fmtBRL(respostaIA.totalReservadoTec)}</b> não devem ser considerados saldo livre operacional.
               </div>
             </div>
-            <div>
-              <div className="text-[10px] uppercase tracking-wider text-muted-foreground">= Operacional livre</div>
-              <div className="text-sm font-semibold num mt-1 text-emerald-700">{fmtBRL(metricas.saldoLivre)}</div>
+            <div className="rounded-md bg-emerald-500/5 border border-emerald-500/20 px-3 py-2 mt-1">
+              <div className="text-[10.5px] uppercase tracking-wider text-emerald-700 font-semibold">Saldo operacional livre estimado</div>
+              <div className="text-base font-semibold num text-emerald-700">{fmtBRL(respostaIA.livre)}</div>
             </div>
           </div>
-        </div>
+        )}
       </Card>
+
+      {/* BLOCO 2 — KPIs em 2 linhas de 4 */}
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+        {KPIS_TOP.map(k => {
+          const f = fmtBRLkurz(k.value);
+          return (
+            <Card key={k.label} className="relative p-3.5 pl-4 overflow-hidden">
+              <span className="absolute left-0 top-2.5 bottom-2.5 w-[3px] rounded-r bg-primary" />
+              <div className="text-[10px] uppercase tracking-wider text-muted-foreground font-medium">{k.label}</div>
+              <div className="mt-1 flex items-baseline gap-1.5">
+                <span className="text-[11px] text-muted-foreground">R$</span>
+                <span className="text-3xl font-semibold tracking-tight num leading-none">{f.num}</span>
+                {f.suffix && <span className="text-[11px] text-muted-foreground">{f.suffix}</span>}
+              </div>
+              <div className="text-[10.5px] text-muted-foreground mt-1.5">{k.sub}</div>
+            </Card>
+          );
+        })}
+      </div>
+
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+        {KPIS_BOTTOM.map(k => {
+          const toneColor =
+            k.tone === "rose" ? "bg-rose-500 text-rose-600"
+            : k.tone === "amber" ? "bg-amber-500 text-amber-600"
+            : "bg-slate-400 text-slate-600";
+          const [accentBg, numColor] = toneColor.split(" ");
+          return (
+            <Card key={k.label} className="relative p-3.5 pl-4 overflow-hidden">
+              <span className={cn("absolute left-0 top-2.5 bottom-2.5 w-[3px] rounded-r", accentBg)} />
+              <div className="flex items-start justify-between gap-2">
+                <div className="min-w-0">
+                  <div className="text-[10px] uppercase tracking-wider text-muted-foreground font-medium">{k.label}</div>
+                  <div className="text-[10.5px] text-muted-foreground mt-1.5">{k.sub}</div>
+                </div>
+                <div className={cn("text-3xl font-semibold tracking-tight num leading-none", numColor)}>{k.value}</div>
+              </div>
+            </Card>
+          );
+        })}
+      </div>
+
 
       {/* BLOCO 4 — Projetos prioritários + Alertas */}
       <div className="grid grid-cols-1 lg:grid-cols-[1fr_340px] gap-4">

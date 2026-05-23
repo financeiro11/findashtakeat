@@ -167,19 +167,13 @@ export default function ProjetosAprovadosLayout() {
 
   return (
     <div className="flex flex-col gap-4">
-      {/* Breadcrumb topo */}
-      <div className="flex items-center justify-between -mt-2">
-        <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
-          <NavLink to="/editais" className="hover:text-foreground transition-colors">Radar de Editais</NavLink>
-          <span>/</span>
-          <span className="text-foreground">Projetos Aprovados</span>
-          <span>·</span>
-          <span>{current?.label ?? ""}</span>
-        </div>
+      {/* Ação topo */}
+      <div className="flex items-center justify-end -mt-2">
         <Button variant="outline" size="sm" className="h-7 text-[11.5px] gap-1.5">
           <FileCheck2 className="h-3 w-3" /> Manual
         </Button>
       </div>
+
 
       {/* Título */}
       <div className="flex items-center gap-2 -mt-1">

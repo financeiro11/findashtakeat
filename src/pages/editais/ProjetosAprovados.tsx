@@ -331,8 +331,19 @@ export function ExecutivoTab() {
 
   return (
     <div className="flex flex-col gap-4">
-      {/* BLOCO 1 — EDI (barra compacta) */}
+      {/* BLOCO 1 — EDI (estética da referência) */}
       <Card className="p-0 overflow-hidden">
+        <div className="px-3 pt-2.5 pb-1.5 flex items-center gap-2 flex-wrap border-b">
+          <span className="text-[12px] font-semibold tracking-tight">EDI · Consultor IA de Execução</span>
+          <span className="inline-flex items-center gap-1 text-[9.5px] uppercase tracking-wider font-semibold text-emerald-700 bg-emerald-500/10 border border-emerald-500/30 px-1.5 py-0.5 rounded">
+            <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 animate-pulse" />
+            IA ativa
+          </span>
+          <span className="text-[10px] uppercase tracking-wider text-muted-foreground">
+            contexto: {PROJETOS.length} projetos · {PROJETOS.reduce((s, p) => s + p.rubricas.length, 0)} rubricas
+          </span>
+        </div>
+
         <div className="flex items-center gap-3 px-3 py-2.5">
           <div className="h-8 w-8 rounded-md bg-gradient-to-br from-primary to-rose-600 grid place-items-center text-primary-foreground shrink-0">
             <Sparkles className="h-4 w-4" />
@@ -363,8 +374,25 @@ export function ExecutivoTab() {
                 {b.label}
               </Button>
             ))}
+            <Button size="sm" className="h-8 gap-1.5" onClick={() => setMostrarResposta(true)}>
+              <Send className="h-3.5 w-3.5" /> Consultar EDI
+            </Button>
           </div>
         </div>
+
+        <div className="px-3 pb-2.5 flex items-center gap-1.5 flex-wrap">
+          <span className="text-[11px] text-muted-foreground mr-1">Sugestões:</span>
+          {SUGESTOES.map(s => (
+            <button
+              key={s}
+              onClick={() => { setPergunta(s); setMostrarResposta(true); }}
+              className="text-[11.5px] px-2 py-1 rounded-full border border-border bg-background/60 hover:border-primary/40 hover:text-primary transition-colors"
+            >
+              {s}
+            </button>
+          ))}
+        </div>
+
 
         {mostrarResposta && (
           <div className="border-t bg-muted/20 p-4 flex flex-col gap-3">

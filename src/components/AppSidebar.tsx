@@ -135,15 +135,21 @@ export function AppSidebar() {
         </div>
 
         <div className="flex-1 overflow-y-auto pb-3">
-          <Group label="Início" items={inicio} pathname={pathname} />
-          <Group label="Operacional" items={operacional} pathname={pathname} />
-          <Group label="Recargas" items={recargas} pathname={pathname} />
-          <Group label="Automações" items={automacoes} pathname={pathname} />
-          <Group label="Editais" items={editais} pathname={pathname} />
-          <Group label="Investimentos" items={investimentos} pathname={pathname} />
-          <Group label="Demonstrações" items={demonstracoes} pathname={pathname} />
-          <Group label="Análise Preditiva" items={analise} pathname={pathname} />
-          <Group label="Configurações" items={config} pathname={pathname} />
+          {(profile?.cargo ?? "").trim().toLowerCase() === "parcerias" ? (
+            <Group label="Operacional" items={operacional.filter(i => i.url === "/operacional/parceiros")} pathname={pathname} />
+          ) : (
+            <>
+              <Group label="Início" items={inicio} pathname={pathname} />
+              <Group label="Operacional" items={operacional} pathname={pathname} />
+              <Group label="Recargas" items={recargas} pathname={pathname} />
+              <Group label="Automações" items={automacoes} pathname={pathname} />
+              <Group label="Editais" items={editais} pathname={pathname} />
+              <Group label="Investimentos" items={investimentos} pathname={pathname} />
+              <Group label="Demonstrações" items={demonstracoes} pathname={pathname} />
+              <Group label="Análise Preditiva" items={analise} pathname={pathname} />
+              <Group label="Configurações" items={config} pathname={pathname} />
+            </>
+          )}
         </div>
 
         {/* Footer / user */}

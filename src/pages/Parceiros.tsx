@@ -39,6 +39,7 @@ type Parceiro = {
   asaasUrl: string;
   bonificacaoVenda?: number | null;
   embaixadorStatus?: "ativo" | "inativo" | "nao_cadastrado";
+  campanhaCadastrada?: string | null;
 };
 
 /* ─────────────────────────── Helpers ─────────────────────────── */
@@ -245,7 +246,14 @@ export default function Parceiros() {
   });
   const [dragCol, setDragCol] = useState<ColKey | null>(null);
   const [dragOverCol, setDragOverCol] = useState<ColKey | null>(null);
-  const [cadastros, setCadastros] = useState<Array<{ nome: string; tier: string; status: string; bonificacao: boolean; metodo_bonificacao: string | null; valor_bonificacao: number | null; recorrencia: boolean; metodo_recorrencia: string | null; valor_recorrencia: number | null }>>([]);
+  const [cadastros, setCadastros] = useState<Array<{ nome: string; tier: string; status: string; campanha: string | null; bonificacao: boolean; metodo_bonificacao: string | null; valor_bonificacao: number | null; recorrencia: boolean; metodo_recorrencia: string | null; valor_recorrencia: number | null }>>([]);
+  const [naoCadOpen, setNaoCadOpen] = useState(false);
+  const [naoCadNome, setNaoCadNome] = useState("");
+  const [editCampOpen, setEditCampOpen] = useState(false);
+  const [editCampTarget, setEditCampTarget] = useState<EditarCampanhaTarget | null>(null);
+
+  const openNaoCadastrado = (nome: string) => { setNaoCadNome(nome); setNaoCadOpen(true); };
+  const openEditCampanha = (t: EditarCampanhaTarget) => { setEditCampTarget(t); setEditCampOpen(true); };
   const [embFilter, setEmbFilter] = useState<Set<string>>(new Set());
   const [campFilter, setCampFilter] = useState<Set<string>>(new Set());
   const [embOpen, setEmbOpen] = useState(false);
@@ -323,7 +331,7 @@ export default function Parceiros() {
   }, []);
 
   const loadCadastros = async () => {
-    const { data, error } = await supabase.from("parceiros_cadastro").select("nome,tier,status,bonificacao,metodo_bonificacao,valor_bonificacao,recorrencia,metodo_recorrencia,valor_recorrencia");
+    const { data, error } = await supabase.from("parceiros_cadastro").select("nome,tier,status,campanha,bonificacao,metodo_bonificacao,valor_bonificacao,recorrencia,metodo_recorrencia,valor_recorrencia");
     if (error) { console.error(error); return; }
     setCadastros((data ?? []) as any);
   };

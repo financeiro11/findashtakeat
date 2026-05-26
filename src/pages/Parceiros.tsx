@@ -1215,6 +1215,7 @@ export default function Parceiros() {
               ) : (
                 recorrenciasPaginated.map((r) => {
                   const cadRec = cadastroByNome.get((r.embaixador || "").trim().toLowerCase());
+                  const campMismatch = !!cadRec?.campanha && (r.campanha || "").trim().toLowerCase() !== (cadRec.campanha || "").trim().toLowerCase();
                   return (
                   <TableRow key={`rec-${r.id}`} className="text-[12.5px]">
                     <TableCell className="py-2.5">
@@ -1224,7 +1225,36 @@ export default function Parceiros() {
                         <Badge className="bg-rose-500/15 text-rose-700 dark:text-rose-400 hover:bg-rose-500/20 text-[10.5px] font-normal">Inativo</Badge>
                       )}
                     </TableCell>
-                    <TableCell className="py-2.5 font-medium text-foreground">{r.campanha || "—"}</TableCell>
+                    <TableCell className="py-2.5 font-medium text-foreground">
+                      <span className="inline-flex items-center gap-1.5">
+                        <span>{r.campanha || "—"}</span>
+                        {campMismatch && (
+                          <TooltipProvider delayDuration={150}>
+                            <Tooltip>
+                              <TooltipTrigger asChild>
+                                <button
+                                  type="button"
+                                  onClick={() => openEditCampanha({
+                                    table: "parceiros_recorrencias",
+                                    id: r.id,
+                                    embaixador: r.embaixador,
+                                    campanhaAtual: r.campanha || "",
+                                    campanhaCadastrada: cadRec?.campanha || "",
+                                  })}
+                                  className="inline-flex items-center justify-center rounded-full text-amber-600 dark:text-amber-400 hover:text-amber-700 focus:outline-none focus:ring-1 focus:ring-amber-500/40"
+                                  aria-label="Campanha divergente"
+                                >
+                                  <AlertTriangle className="h-3.5 w-3.5" />
+                                </button>
+                              </TooltipTrigger>
+                              <TooltipContent side="right" className="text-[11.5px]">
+                                Campanha do registro diferente da cadastrada ({cadRec?.campanha}). Clique para editar.
+                              </TooltipContent>
+                            </Tooltip>
+                          </TooltipProvider>
+                        )}
+                      </span>
+                    </TableCell>
                     <TableCell className="py-2.5">
                       <span className="inline-flex items-center gap-1.5">
                         <span>{r.embaixador || "—"}</span>
@@ -1232,12 +1262,17 @@ export default function Parceiros() {
                           <TooltipProvider delayDuration={150}>
                             <Tooltip>
                               <TooltipTrigger asChild>
-                                <button type="button" className="inline-flex items-center justify-center rounded-full text-amber-600 dark:text-amber-400 hover:text-amber-700 focus:outline-none focus:ring-1 focus:ring-amber-500/40" aria-label="Embaixador não cadastrado">
+                                <button
+                                  type="button"
+                                  onClick={() => openNaoCadastrado(r.embaixador)}
+                                  className="inline-flex items-center justify-center rounded-full text-amber-600 dark:text-amber-400 hover:text-amber-700 focus:outline-none focus:ring-1 focus:ring-amber-500/40"
+                                  aria-label="Embaixador não cadastrado"
+                                >
                                   <AlertTriangle className="h-3.5 w-3.5" />
                                 </button>
                               </TooltipTrigger>
                               <TooltipContent side="right" className="text-[11.5px]">
-                                Embaixador não cadastrado na Gestão de Parceiros.
+                                Embaixador não cadastrado. Clique para cadastrar ou associar.
                               </TooltipContent>
                             </Tooltip>
                           </TooltipProvider>

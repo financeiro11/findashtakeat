@@ -982,11 +982,69 @@ export default function Parceiros() {
                         aria-label="Selecionar linha"
                       />
                     </TableCell>
-                    {columnOrder.map((key) => (
-                      <TableCell key={key} className={cn("py-2.5", COLUMNS[key].cellClass)}>
-                        {COLUMNS[key].render(r)}
-                      </TableCell>
-                    ))}
+                    {columnOrder.map((key) => {
+                      const mismatch =
+                        key === "campanha" &&
+                        !!r.campanhaCadastrada &&
+                        (r.campanha || "").trim().toLowerCase() !== (r.campanhaCadastrada || "").trim().toLowerCase();
+                      return (
+                        <TableCell key={key} className={cn("py-2.5", COLUMNS[key].cellClass)}>
+                          {key === "embaixador" && r.embaixadorStatus === "nao_cadastrado" && r.embaixador ? (
+                            <span className="inline-flex items-center gap-1.5">
+                              <span>{r.embaixador}</span>
+                              <TooltipProvider delayDuration={150}>
+                                <Tooltip>
+                                  <TooltipTrigger asChild>
+                                    <button
+                                      type="button"
+                                      onClick={() => openNaoCadastrado(r.embaixador)}
+                                      className="inline-flex items-center justify-center rounded-full text-amber-600 dark:text-amber-400 hover:text-amber-700 focus:outline-none focus:ring-1 focus:ring-amber-500/40"
+                                      aria-label="Embaixador não cadastrado"
+                                    >
+                                      <AlertTriangle className="h-3.5 w-3.5" />
+                                    </button>
+                                  </TooltipTrigger>
+                                  <TooltipContent side="right" className="text-[11.5px]">
+                                    Embaixador não cadastrado. Clique para cadastrar ou associar.
+                                  </TooltipContent>
+                                </Tooltip>
+                              </TooltipProvider>
+                            </span>
+                          ) : key === "campanha" ? (
+                            <span className="inline-flex items-center gap-1.5">
+                              {COLUMNS.campanha.render(r)}
+                              {mismatch && (
+                                <TooltipProvider delayDuration={150}>
+                                  <Tooltip>
+                                    <TooltipTrigger asChild>
+                                      <button
+                                        type="button"
+                                        onClick={() => openEditCampanha({
+                                          table: "parceiros_indicacoes",
+                                          id: r.id,
+                                          embaixador: r.embaixador,
+                                          campanhaAtual: r.campanha || "",
+                                          campanhaCadastrada: r.campanhaCadastrada || "",
+                                        })}
+                                        className="inline-flex items-center justify-center rounded-full text-amber-600 dark:text-amber-400 hover:text-amber-700 focus:outline-none focus:ring-1 focus:ring-amber-500/40"
+                                        aria-label="Campanha divergente"
+                                      >
+                                        <AlertTriangle className="h-3.5 w-3.5" />
+                                      </button>
+                                    </TooltipTrigger>
+                                    <TooltipContent side="right" className="text-[11.5px]">
+                                      Campanha do registro diferente da cadastrada ({r.campanhaCadastrada}). Clique para editar.
+                                    </TooltipContent>
+                                  </Tooltip>
+                                </TooltipProvider>
+                              )}
+                            </span>
+                          ) : (
+                            COLUMNS[key].render(r)
+                          )}
+                        </TableCell>
+                      );
+                    })}
                   </TableRow>
                 ))
               )}

@@ -779,6 +779,15 @@ export default function Parceiros() {
             </TableBody>
           </Table>
         </div>
+        {conversoes.length > 0 && (
+          <Pagination
+            page={convPage}
+            totalPages={convTotalPages}
+            pageSize={convPageSize}
+            onPageChange={setConvPage}
+            onPageSizeChange={setConvPageSize}
+          />
+        )}
       </SectionCard>
 
       <Dialog open={mapOpen} onOpenChange={(o) => { if (!importing) setMapOpen(o); }}>

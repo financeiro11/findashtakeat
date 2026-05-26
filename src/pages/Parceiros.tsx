@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import * as XLSX from "xlsx";
 import { toast } from "sonner";
-import { Search, Plus, Download, ExternalLink, Filter, Upload, RefreshCw, GripVertical, AlertTriangle } from "lucide-react";
+import { Search, Plus, Download, ExternalLink, Filter, Upload, RefreshCw, GripVertical, AlertTriangle, ArrowUpDown, ArrowUp, ArrowDown } from "lucide-react";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -78,15 +78,44 @@ function AsaasIcon({ className }: { className?: string }) {
 
 type ColKey = "campanha" | "embaixador" | "vendedor" | "empresa" | "mrr" | "valorTotal" | "bonificacao" | "dataIndicacao" | "dataVenda" | "hubspot" | "asaas";
 
+type SortState = { key: string; dir: "asc" | "desc" } | null;
+
+const cmpVal = (a: any, b: any) => {
+  const aNil = a === null || a === undefined || a === "";
+  const bNil = b === null || b === undefined || b === "";
+  if (aNil && bNil) return 0;
+  if (aNil) return 1;
+  if (bNil) return -1;
+  if (typeof a === "number" && typeof b === "number") return a - b;
+  return String(a).localeCompare(String(b), "pt-BR", { numeric: true, sensitivity: "base" });
+};
+
+const sortArr = <T,>(arr: T[], accessor: (r: T) => any, dir: "asc" | "desc") => {
+  const out = [...arr];
+  out.sort((a, b) => {
+    const r = cmpVal(accessor(a), accessor(b));
+    return dir === "asc" ? r : -r;
+  });
+  return out;
+};
+
+const toggleSort = (prev: SortState, key: string): SortState => {
+  if (prev?.key !== key) return { key, dir: "asc" };
+  if (prev.dir === "asc") return { key, dir: "desc" };
+  return null;
+};
+
 const COLUMNS: Record<ColKey, {
   label: string;
   headClass?: string;
   cellClass?: string;
   render: (r: Parceiro) => React.ReactNode;
+  sortValue?: (r: Parceiro) => any;
 }> = {
-  campanha: { label: "Campanha", render: (r) => <span className="font-medium text-foreground">{r.campanha || "—"}</span> },
+  campanha: { label: "Campanha", sortValue: (r) => r.campanha, render: (r) => <span className="font-medium text-foreground">{r.campanha || "—"}</span> },
   embaixador: {
     label: "Embaixador",
+    sortValue: (r) => r.embaixador,
     render: (r) => (
       <span className="inline-flex items-center gap-1.5">
         <span>{r.embaixador || "—"}</span>
@@ -113,15 +142,16 @@ const COLUMNS: Record<ColKey, {
       </span>
     ),
   },
-  vendedor: { label: "Vendedor", render: (r) => r.vendedor || "—" },
-  empresa: { label: "Empresa", render: (r) => r.empresa || "—" },
-  mrr: { label: "MRR", headClass: "text-right", cellClass: "text-right tabular-nums", render: (r) => BRL(r.mrr) },
-  valorTotal: { label: "Valor total", headClass: "text-right", cellClass: "text-right tabular-nums font-medium", render: (r) => BRL(r.valorTotal) },
-  bonificacao: { label: "Bonificação", headClass: "text-right", cellClass: "text-right tabular-nums", render: (r) => r.bonificacaoVenda != null ? BRL(r.bonificacaoVenda) : <span className="text-muted-foreground">—</span> },
-  dataIndicacao: { label: "Data indicação", cellClass: "tabular-nums text-muted-foreground", render: (r) => fmtDate(r.dataIndicacao) },
+  vendedor: { label: "Vendedor", sortValue: (r) => r.vendedor, render: (r) => r.vendedor || "—" },
+  empresa: { label: "Empresa", sortValue: (r) => r.empresa, render: (r) => r.empresa || "—" },
+  mrr: { label: "MRR", headClass: "text-right", cellClass: "text-right tabular-nums", sortValue: (r) => r.mrr, render: (r) => BRL(r.mrr) },
+  valorTotal: { label: "Valor total", headClass: "text-right", cellClass: "text-right tabular-nums font-medium", sortValue: (r) => r.valorTotal, render: (r) => BRL(r.valorTotal) },
+  bonificacao: { label: "Bonificação", headClass: "text-right", cellClass: "text-right tabular-nums", sortValue: (r) => r.bonificacaoVenda ?? null, render: (r) => r.bonificacaoVenda != null ? BRL(r.bonificacaoVenda) : <span className="text-muted-foreground">—</span> },
+  dataIndicacao: { label: "Data indicação", cellClass: "tabular-nums text-muted-foreground", sortValue: (r) => r.dataIndicacao, render: (r) => fmtDate(r.dataIndicacao) },
   dataVenda: {
     label: "Data venda",
     cellClass: "tabular-nums",
+    sortValue: (r) => r.dataVenda,
     render: (r) => r.dataVenda
       ? <span className="text-foreground">{fmtDate(r.dataVenda)}</span>
       : <Badge variant="outline" className="text-[10.5px] font-normal">Aguardando</Badge>,
@@ -146,6 +176,7 @@ const COLUMNS: Record<ColKey, {
 
 const DEFAULT_COL_ORDER: ColKey[] = ["campanha","embaixador","vendedor","empresa","mrr","valorTotal","bonificacao","dataIndicacao","dataVenda","hubspot","asaas"];
 const COL_ORDER_STORAGE_KEY = "parceiros:colOrder:v1";
+
 
 const MONTH_NAMES = ["Jan","Fev","Mar","Abr","Mai","Jun","Jul","Ago","Set","Out","Nov","Dez"];
 
@@ -230,6 +261,9 @@ export default function Parceiros() {
   const [recPageSize, setRecPageSize] = useState<number>(25);
   const [recPage, setRecPage] = useState<number>(1);
   const [recRows, setRecRows] = useState<Array<{ id: string; id_negocio: string; campanha: string; embaixador: string; vendedor: string; empresa: string; mrr: number; recorrenciaValor: number; dataIndicacao: string | null; ativo: boolean; hubspotUrl: string; asaasUrl: string }>>([]);
+  const [sortInd, setSortInd] = useState<SortState>(null);
+  const [sortConv, setSortConv] = useState<SortState>(null);
+  const [sortRec, setSortRec] = useState<SortState>(null);
 
 
   useEffect(() => {
@@ -578,7 +612,7 @@ export default function Parceiros() {
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
-    return rows
+    const base = rows
       .filter((r) => {
         if (monthFilter) {
           if (!r.dataVenda || r.dataVenda.slice(0, 7) !== monthFilter) return false;
@@ -594,7 +628,12 @@ export default function Parceiros() {
         const status: "ativo" | "inativo" | "nao_cadastrado" = !cad ? "nao_cadastrado" : (cad.status === "inativo" ? "inativo" : "ativo");
         return { ...r, bonificacaoVenda: bonus, embaixadorStatus: status };
       });
-  }, [rows, query, monthFilter, embFilter, campFilter, cadastroByNome]);
+    if (!sortInd) return base;
+    const col = COLUMNS[sortInd.key as ColKey];
+    if (!col?.sortValue) return base;
+    return sortArr(base, col.sortValue as (r: any) => any, sortInd.dir);
+  }, [rows, query, monthFilter, embFilter, campFilter, cadastroByNome, sortInd]);
+
 
 
   const totals = useMemo(() => {
@@ -628,19 +667,24 @@ export default function Parceiros() {
     return Array.from(m.values()).sort((a, b) => b.indicacoes - a.indicacoes);
   }, [filtered]);
 
-  const convTotalPages = Math.max(1, Math.ceil(conversoes.length / convPageSize));
-  useEffect(() => { setConvPage(1); }, [query, monthFilter, embFilter, campFilter, convPageSize]);
-  useEffect(() => { if (convPage > convTotalPages) setConvPage(convTotalPages); }, [convTotalPages, convPage]);
-  const conversoesPaginated = useMemo(
-    () => conversoes.slice((convPage - 1) * convPageSize, convPage * convPageSize),
-    [conversoes, convPage, convPageSize]
-  );
+
 
   // Apuração Recorrências: fonte independente (tabela parceiros_recorrencias).
   // Inclui ativos e inativos — o status é exibido na primeira coluna.
+  const REC_SORT_ACCESSORS: Record<string, (r: any) => any> = {
+    status: (r) => (r.ativo ? 1 : 0),
+    campanha: (r) => r.campanha,
+    embaixador: (r) => r.embaixador,
+    vendedor: (r) => r.vendedor,
+    empresa: (r) => r.empresa,
+    mrr: (r) => r.mrr,
+    recorrencia: (r) => r.recorrenciaValor,
+    dataIndicacao: (r) => r.dataIndicacao,
+  };
+
   const recorrencias = useMemo(() => {
     const q = query.trim().toLowerCase();
-    return recRows
+    const base = recRows
       .filter((r) => {
         if (monthFilter) {
           if (!r.dataIndicacao || r.dataIndicacao.slice(0, 7) !== monthFilter) return false;
@@ -655,7 +699,12 @@ export default function Parceiros() {
         const calc = calcRecorrencia(r.mrr || 0, cad);
         return { ...r, recorrenciaValor: calc != null ? calc : (r.recorrenciaValor || 0) };
       });
-  }, [recRows, query, monthFilter, embFilter, campFilter, cadastroByNome]);
+    if (!sortRec) return base;
+    const acc = REC_SORT_ACCESSORS[sortRec.key];
+    if (!acc) return base;
+    return sortArr(base, acc, sortRec.dir);
+  }, [recRows, query, monthFilter, embFilter, campFilter, cadastroByNome, sortRec]);
+
 
 
   const recTotalPages = Math.max(1, Math.ceil(recorrencias.length / recPageSize));
@@ -681,6 +730,33 @@ export default function Parceiros() {
     });
     return m;
   }, [recorrencias]);
+
+  const conversoesSorted = useMemo(() => {
+    if (!sortConv) return conversoes;
+    const accessors: Record<string, (c: typeof conversoes[number]) => any> = {
+      embaixador: (c) => c.nome,
+      tier: (c) => cadastroByNome.get(c.nome.toLowerCase())?.tier ?? "",
+      bonificacao: (c) => cadastroByNome.get(c.nome.toLowerCase())?.valor_bonificacao ?? null,
+      recorrencia: (c) => cadastroByNome.get(c.nome.toLowerCase())?.valor_recorrencia ?? null,
+      indicacoes: (c) => c.indicacoes,
+      vendas: (c) => c.vendas,
+      mrr: (c) => c.mrr,
+      valorTotal: (c) => c.valorTotal,
+      bonificacaoTotal: (c) => c.bonificacaoTotal,
+      recorrenciaTotal: (c) => recorrenciaPorEmbaixador.get(c.nome.toLowerCase()) ?? 0,
+    };
+    const acc = accessors[sortConv.key];
+    if (!acc) return conversoes;
+    return sortArr(conversoes, acc, sortConv.dir);
+  }, [conversoes, sortConv, cadastroByNome, recorrenciaPorEmbaixador]);
+
+  const convTotalPages = Math.max(1, Math.ceil(conversoesSorted.length / convPageSize));
+  useEffect(() => { setConvPage(1); }, [query, monthFilter, embFilter, campFilter, convPageSize]);
+  useEffect(() => { if (convPage > convTotalPages) setConvPage(convTotalPages); }, [convTotalPages, convPage]);
+  const conversoesPaginated = useMemo(
+    () => conversoesSorted.slice((convPage - 1) * convPageSize, convPage * convPageSize),
+    [conversoesSorted, convPage, convPageSize]
+  );
 
 
 
@@ -844,25 +920,33 @@ export default function Parceiros() {
                 </Th>
                 {columnOrder.map((key) => {
                   const c = COLUMNS[key];
+                  const sortable = !!c.sortValue;
+                  const active = sortInd?.key === key;
+                  const SortIcon = active ? (sortInd!.dir === "asc" ? ArrowUp : ArrowDown) : ArrowUpDown;
                   return (
                     <Th
                       key={key}
-                      className={cn(c.headClass, "cursor-move select-none", dragOverCol === key && "bg-muted/50")}
+                      className={cn(c.headClass, "cursor-move select-none", dragOverCol === key && "bg-muted/50", sortable && "hover:text-foreground transition-colors")}
                       draggable
                       onDragStart={() => setDragCol(key)}
                       onDragOver={(e) => { e.preventDefault(); if (dragOverCol !== key) setDragOverCol(key); }}
                       onDragLeave={() => setDragOverCol((p) => (p === key ? null : p))}
                       onDrop={() => handleDropCol(key)}
                       onDragEnd={() => { setDragCol(null); setDragOverCol(null); }}
-                      title="Arraste para reordenar"
+                      onClick={sortable ? () => setSortInd((s) => toggleSort(s, key)) : undefined}
+                      title={sortable ? "Clique para ordenar · arraste para reordenar" : "Arraste para reordenar"}
                     >
                       <span className={cn("inline-flex items-center gap-1", c.headClass?.includes("text-right") && "flex-row-reverse")}>
                         <GripVertical className="h-3 w-3 text-muted-foreground/40" aria-hidden />
                         {c.label}
+                        {sortable && (
+                          <SortIcon className={cn("h-3 w-3", active ? "text-foreground" : "text-muted-foreground/40")} aria-hidden />
+                        )}
                       </span>
                     </Th>
                   );
                 })}
+
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -921,16 +1005,16 @@ export default function Parceiros() {
           <Table>
             <TableHeader>
               <TableRow>
-                <Th>Embaixador</Th>
-                <Th>Tier</Th>
-                <Th>Bonificação</Th>
-                <Th>Recorrência</Th>
-                <Th className="text-right">Indicações</Th>
-                <Th className="text-right">Vendas</Th>
-                <Th className="text-right">MRR</Th>
-                <Th className="text-right">Valor total</Th>
-                <Th className="text-right">Bonificação Total</Th>
-                <Th className="text-right">Recorrência Total</Th>
+                <SortableTh sortKey="embaixador" sort={sortConv} setSort={setSortConv}>Embaixador</SortableTh>
+                <SortableTh sortKey="tier" sort={sortConv} setSort={setSortConv}>Tier</SortableTh>
+                <SortableTh sortKey="bonificacao" sort={sortConv} setSort={setSortConv}>Bonificação</SortableTh>
+                <SortableTh sortKey="recorrencia" sort={sortConv} setSort={setSortConv}>Recorrência</SortableTh>
+                <SortableTh sortKey="indicacoes" sort={sortConv} setSort={setSortConv} className="text-right" align="right">Indicações</SortableTh>
+                <SortableTh sortKey="vendas" sort={sortConv} setSort={setSortConv} className="text-right" align="right">Vendas</SortableTh>
+                <SortableTh sortKey="mrr" sort={sortConv} setSort={setSortConv} className="text-right" align="right">MRR</SortableTh>
+                <SortableTh sortKey="valorTotal" sort={sortConv} setSort={setSortConv} className="text-right" align="right">Valor total</SortableTh>
+                <SortableTh sortKey="bonificacaoTotal" sort={sortConv} setSort={setSortConv} className="text-right" align="right">Bonificação Total</SortableTh>
+                <SortableTh sortKey="recorrenciaTotal" sort={sortConv} setSort={setSortConv} className="text-right" align="right">Recorrência Total</SortableTh>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -1036,14 +1120,14 @@ export default function Parceiros() {
           <Table>
             <TableHeader>
               <TableRow>
-                <Th>Status</Th>
-                <Th>Campanha</Th>
-                <Th>Embaixador</Th>
-                <Th>Responsável Takeat</Th>
-                <Th>Empresa</Th>
-                <Th className="text-right">MRR</Th>
-                <Th className="text-right">Recorrência</Th>
-                <Th>Data indicação</Th>
+                <SortableTh sortKey="status" sort={sortRec} setSort={setSortRec}>Status</SortableTh>
+                <SortableTh sortKey="campanha" sort={sortRec} setSort={setSortRec}>Campanha</SortableTh>
+                <SortableTh sortKey="embaixador" sort={sortRec} setSort={setSortRec}>Embaixador</SortableTh>
+                <SortableTh sortKey="vendedor" sort={sortRec} setSort={setSortRec}>Responsável Takeat</SortableTh>
+                <SortableTh sortKey="empresa" sort={sortRec} setSort={setSortRec}>Empresa</SortableTh>
+                <SortableTh sortKey="mrr" sort={sortRec} setSort={setSortRec} className="text-right" align="right">MRR</SortableTh>
+                <SortableTh sortKey="recorrencia" sort={sortRec} setSort={setSortRec} className="text-right" align="right">Recorrência</SortableTh>
+                <SortableTh sortKey="dataIndicacao" sort={sortRec} setSort={setSortRec}>Data indicação</SortableTh>
                 <Th className="text-center">HubSpot</Th>
                 <Th className="text-center">Asaas</Th>
               </TableRow>
@@ -1181,6 +1265,36 @@ function Th({ children, className, ...rest }: React.ThHTMLAttributes<HTMLTableCe
     >
       {children}
     </TableHead>
+  );
+}
+
+function SortableTh({
+  children, sortKey, sort, setSort, className, align,
+}: {
+  children: React.ReactNode;
+  sortKey: string;
+  sort: SortState;
+  setSort: React.Dispatch<React.SetStateAction<SortState>>;
+  className?: string;
+  align?: "left" | "right" | "center";
+}) {
+  const active = sort?.key === sortKey;
+  const dir = active ? sort!.dir : null;
+  const Icon = dir === "asc" ? ArrowUp : dir === "desc" ? ArrowDown : ArrowUpDown;
+  return (
+    <Th
+      className={cn("cursor-pointer select-none hover:text-foreground transition-colors", className)}
+      onClick={() => setSort((s) => toggleSort(s, sortKey))}
+    >
+      <span className={cn(
+        "inline-flex items-center gap-1",
+        align === "right" && "flex-row-reverse w-full",
+        align === "center" && "justify-center w-full",
+      )}>
+        {children}
+        <Icon className={cn("h-3 w-3", active ? "text-foreground" : "text-muted-foreground/40")} />
+      </span>
+    </Th>
   );
 }
 

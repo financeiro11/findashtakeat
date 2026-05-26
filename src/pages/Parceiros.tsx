@@ -824,6 +824,75 @@ export default function Parceiros() {
         )}
       </SectionCard>
 
+      {/* Apuração Recorrências */}
+      <SectionCard
+        title="Apuração Recorrências"
+        subtitle={`Indicações convertidas com recorrência ativa · Total: ${BRL(recTotal)}`}
+        padded={false}
+      >
+        <div className="overflow-x-auto">
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <Th>Campanha</Th>
+                <Th>Embaixador</Th>
+                <Th>Responsável Takeat</Th>
+                <Th>Empresa</Th>
+                <Th className="text-right">MRR</Th>
+                <Th className="text-right">Recorrência</Th>
+                <Th>Data indicação</Th>
+                <Th className="text-center">HubSpot</Th>
+                <Th className="text-center">Asaas</Th>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {recorrencias.length === 0 ? (
+                <TableRow>
+                  <TableCell colSpan={9} className="py-10 text-center text-[12.5px] text-muted-foreground">
+                    Nenhuma indicação ativa com recorrência no período.
+                  </TableCell>
+                </TableRow>
+              ) : (
+                recorrenciasPaginated.map((r) => (
+                  <TableRow key={`rec-${r.id}`} className="text-[12.5px]">
+                    <TableCell className="py-2.5 font-medium text-foreground">{r.campanha || "—"}</TableCell>
+                    <TableCell className="py-2.5">{r.embaixador || "—"}</TableCell>
+                    <TableCell className="py-2.5">{r.vendedor || "—"}</TableCell>
+                    <TableCell className="py-2.5">{r.empresa || "—"}</TableCell>
+                    <TableCell className="py-2.5 text-right tabular-nums">{BRL(r.mrr)}</TableCell>
+                    <TableCell className="py-2.5 text-right tabular-nums font-medium text-emerald-700 dark:text-emerald-400">
+                      {BRL(r.recorrenciaValor || 0)}
+                    </TableCell>
+                    <TableCell className="py-2.5 tabular-nums text-muted-foreground">{fmtDate(r.dataIndicacao)}</TableCell>
+                    <TableCell className="py-2.5 text-center">
+                      <IntegrationLink href={r.hubspotUrl} label="HubSpot" tone="hubspot">
+                        <HubspotIcon className="h-3.5 w-3.5" />
+                      </IntegrationLink>
+                    </TableCell>
+                    <TableCell className="py-2.5 text-center">
+                      <IntegrationLink href={r.asaasUrl} label="Asaas" tone="asaas">
+                        <AsaasIcon className="h-3.5 w-3.5" />
+                      </IntegrationLink>
+                    </TableCell>
+                  </TableRow>
+                ))
+              )}
+            </TableBody>
+          </Table>
+        </div>
+        {recorrencias.length > 0 && (
+          <Pagination
+            page={recPage}
+            totalPages={recTotalPages}
+            pageSize={recPageSize}
+            onPageChange={setRecPage}
+            onPageSizeChange={setRecPageSize}
+          />
+        )}
+      </SectionCard>
+
+
+
       <Dialog open={mapOpen} onOpenChange={(o) => { if (!importing) setMapOpen(o); }}>
         <DialogContent className="max-w-2xl">
           <DialogHeader>

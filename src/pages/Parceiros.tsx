@@ -437,6 +437,15 @@ export default function Parceiros() {
     return { mrr, total, count: filtered.length };
   }, [filtered]);
 
+  const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize));
+  useEffect(() => { setPage(1); }, [query, monthFilter, embFilter, campFilter, pageSize]);
+  useEffect(() => { if (page > totalPages) setPage(totalPages); }, [totalPages, page]);
+  const paginated = useMemo(
+    () => filtered.slice((page - 1) * pageSize, page * pageSize),
+    [filtered, page, pageSize]
+  );
+
+
   const conversoes = useMemo(() => {
     const m = new Map<string, { nome: string; indicacoes: number; vendas: number; mrr: number; valorTotal: number; bonificacaoTotal: number }>();
     filtered.forEach((r) => {

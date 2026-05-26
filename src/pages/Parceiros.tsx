@@ -261,6 +261,9 @@ export default function Parceiros() {
   const [recPageSize, setRecPageSize] = useState<number>(25);
   const [recPage, setRecPage] = useState<number>(1);
   const [recRows, setRecRows] = useState<Array<{ id: string; id_negocio: string; campanha: string; embaixador: string; vendedor: string; empresa: string; mrr: number; recorrenciaValor: number; dataIndicacao: string | null; ativo: boolean; hubspotUrl: string; asaasUrl: string }>>([]);
+  const [sortInd, setSortInd] = useState<SortState>(null);
+  const [sortConv, setSortConv] = useState<SortState>(null);
+  const [sortRec, setSortRec] = useState<SortState>(null);
 
 
   useEffect(() => {

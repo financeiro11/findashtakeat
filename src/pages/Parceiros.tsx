@@ -719,12 +719,29 @@ export default function Parceiros() {
               <Trash2 className="h-3.5 w-3.5" /> Apagar ({selected.size})
             </Button>
           )}
-          <Button variant="outline" size="sm" className="h-8 gap-1.5 text-[12.5px]" onClick={handleImportClick}>
-            <Upload className="h-3.5 w-3.5" /> Importar planilha
-          </Button>
-          <Button variant="outline" size="sm" className="h-8 gap-1.5 text-[12.5px]">
-            <Download className="h-3.5 w-3.5" /> Exportar
-          </Button>
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button variant="outline" size="sm" className="h-8 gap-1.5 text-[12.5px]">
+                <Upload className="h-3.5 w-3.5" /> Importar planilha
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end">
+              <DropdownMenuItem onClick={() => handleImportClick("indicacoes")}>Lista de Indicações</DropdownMenuItem>
+              <DropdownMenuItem onClick={() => handleImportClick("recorrencias")}>Apuração Recorrências</DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button variant="outline" size="sm" className="h-8 gap-1.5 text-[12.5px]">
+                <Download className="h-3.5 w-3.5" /> Exportar
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end">
+              <DropdownMenuItem onClick={() => handleExport("indicacoes")}>Lista de Indicações</DropdownMenuItem>
+              <DropdownMenuItem onClick={() => handleExport("conversoes")}>Conversões por embaixador</DropdownMenuItem>
+              <DropdownMenuItem onClick={() => handleExport("recorrencias")}>Apuração Recorrências</DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
           <Button size="sm" className="h-8 gap-1.5 text-[12.5px]">
             <Plus className="h-3.5 w-3.5" /> Nova indicação
           </Button>

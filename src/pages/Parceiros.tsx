@@ -1075,15 +1075,15 @@ export default function Parceiros() {
       <Dialog open={mapOpen} onOpenChange={(o) => { if (!importing) setMapOpen(o); }}>
         <DialogContent className="max-w-2xl">
           <DialogHeader>
-            <DialogTitle>Mapear colunas da planilha</DialogTitle>
+            <DialogTitle>Mapear colunas da planilha — {importTarget === "recorrencias" ? "Apuração Recorrências" : "Lista de Indicações"}</DialogTitle>
             <DialogDescription>
-              Vincule cada campo da lista de indicações à coluna correspondente da planilha importada.
+              Vincule cada campo à coluna correspondente da planilha importada.
               {sheetRows.length > 0 && ` ${sheetRows.length} linha(s) detectada(s).`}
             </DialogDescription>
           </DialogHeader>
           <div className="max-h-[60vh] overflow-y-auto pr-1">
             <div className="space-y-2">
-              {MAPPING_FIELDS.map((f) => (
+              {activeMappingFields.map((f) => (
                 <div key={f.key} className="grid grid-cols-1 items-center gap-1 sm:grid-cols-[1fr_1.4fr] sm:gap-3">
                   <label className="text-[12.5px] font-medium text-foreground">{f.label}</label>
                   <Select

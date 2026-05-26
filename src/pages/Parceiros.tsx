@@ -711,7 +711,7 @@ export default function Parceiros() {
                   </TableCell>
                 </TableRow>
               ) : (
-                conversoes.map((c) => {
+                conversoesPaginated.map((c) => {
                   const cad = cadastroByNome.get(c.nome.toLowerCase());
                   return (
                     <TableRow key={c.nome} className="text-[12.5px]">

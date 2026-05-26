@@ -671,16 +671,14 @@ export default function Parceiros() {
   // Soma de recorrência ativa por embaixador (usada na lista de Conversões por embaixador).
   const recorrenciaPorEmbaixador = useMemo(() => {
     const m = new Map<string, number>();
-    recRows.forEach((r) => {
+    recorrencias.forEach((r) => {
       if (!r.ativo) return;
       const key = (r.embaixador || "").trim().toLowerCase();
-      const cad = cadastroByNome.get(key);
-      const calc = calcRecorrencia(r.mrr || 0, cad);
-      const val = calc != null ? calc : (r.recorrenciaValor || 0);
-      m.set(key, (m.get(key) ?? 0) + val);
+      m.set(key, (m.get(key) ?? 0) + (r.recorrenciaValor || 0));
     });
     return m;
-  }, [recRows, cadastroByNome]);
+  }, [recorrencias]);
+
 
 
   const allChecked = filtered.length > 0 && filtered.every((r) => selected.has(r.id));

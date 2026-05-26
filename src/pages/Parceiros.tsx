@@ -1100,19 +1100,24 @@ export default function Parceiros() {
                       <TableCell className="py-2.5 font-medium text-foreground">
                         <span className="inline-flex items-center gap-1.5 flex-wrap">
                           {c.nome}
-                          {!cad && (
+                          {!cad && c.nome && c.nome !== "—" && (
                             <TooltipProvider delayDuration={150}>
                               <Tooltip>
                                 <TooltipTrigger asChild>
-                                  <span className="inline-flex items-center gap-1 rounded-full bg-amber-100 px-1.5 py-0.5 text-[10.5px] font-medium text-amber-700 dark:bg-amber-500/15 dark:text-amber-400">
+                                  <button
+                                    type="button"
+                                    onClick={() => openNaoCadastrado(c.nome)}
+                                    className="inline-flex items-center gap-1 rounded-full bg-amber-100 px-1.5 py-0.5 text-[10.5px] font-medium text-amber-700 hover:bg-amber-200 dark:bg-amber-500/15 dark:text-amber-400 dark:hover:bg-amber-500/25 focus:outline-none focus:ring-1 focus:ring-amber-500/40"
+                                  >
                                     <AlertTriangle className="h-3 w-3" />
                                     Não cadastrado
-                                  </span>
+                                  </button>
                                 </TooltipTrigger>
                                 <TooltipContent side="right" className="text-[11.5px]">
-                                  Parceiro não cadastrado na Gestão de Parceiros.
+                                  Parceiro não cadastrado. Clique para cadastrar ou associar.
                                 </TooltipContent>
                               </Tooltip>
+
                             </TooltipProvider>
                           )}
                           {cad && cad.status === "inativo" && (

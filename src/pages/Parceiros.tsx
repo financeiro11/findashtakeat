@@ -1120,14 +1120,14 @@ export default function Parceiros() {
           <Table>
             <TableHeader>
               <TableRow>
-                <Th>Status</Th>
-                <Th>Campanha</Th>
-                <Th>Embaixador</Th>
-                <Th>Responsável Takeat</Th>
-                <Th>Empresa</Th>
-                <Th className="text-right">MRR</Th>
-                <Th className="text-right">Recorrência</Th>
-                <Th>Data indicação</Th>
+                <SortableTh sortKey="status" sort={sortRec} setSort={setSortRec}>Status</SortableTh>
+                <SortableTh sortKey="campanha" sort={sortRec} setSort={setSortRec}>Campanha</SortableTh>
+                <SortableTh sortKey="embaixador" sort={sortRec} setSort={setSortRec}>Embaixador</SortableTh>
+                <SortableTh sortKey="vendedor" sort={sortRec} setSort={setSortRec}>Responsável Takeat</SortableTh>
+                <SortableTh sortKey="empresa" sort={sortRec} setSort={setSortRec}>Empresa</SortableTh>
+                <SortableTh sortKey="mrr" sort={sortRec} setSort={setSortRec} className="text-right" align="right">MRR</SortableTh>
+                <SortableTh sortKey="recorrencia" sort={sortRec} setSort={setSortRec} className="text-right" align="right">Recorrência</SortableTh>
+                <SortableTh sortKey="dataIndicacao" sort={sortRec} setSort={setSortRec}>Data indicação</SortableTh>
                 <Th className="text-center">HubSpot</Th>
                 <Th className="text-center">Asaas</Th>
               </TableRow>

@@ -1099,7 +1099,8 @@ export default function Parceiros() {
                       </IntegrationLink>
                     </TableCell>
                   </TableRow>
-                ))
+                  );
+                })
               )}
             </TableBody>
           </Table>

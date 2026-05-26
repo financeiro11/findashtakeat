@@ -1005,16 +1005,16 @@ export default function Parceiros() {
           <Table>
             <TableHeader>
               <TableRow>
-                <Th>Embaixador</Th>
-                <Th>Tier</Th>
-                <Th>Bonificação</Th>
-                <Th>Recorrência</Th>
-                <Th className="text-right">Indicações</Th>
-                <Th className="text-right">Vendas</Th>
-                <Th className="text-right">MRR</Th>
-                <Th className="text-right">Valor total</Th>
-                <Th className="text-right">Bonificação Total</Th>
-                <Th className="text-right">Recorrência Total</Th>
+                <SortableTh sortKey="embaixador" sort={sortConv} setSort={setSortConv}>Embaixador</SortableTh>
+                <SortableTh sortKey="tier" sort={sortConv} setSort={setSortConv}>Tier</SortableTh>
+                <SortableTh sortKey="bonificacao" sort={sortConv} setSort={setSortConv}>Bonificação</SortableTh>
+                <SortableTh sortKey="recorrencia" sort={sortConv} setSort={setSortConv}>Recorrência</SortableTh>
+                <SortableTh sortKey="indicacoes" sort={sortConv} setSort={setSortConv} className="text-right" align="right">Indicações</SortableTh>
+                <SortableTh sortKey="vendas" sort={sortConv} setSort={setSortConv} className="text-right" align="right">Vendas</SortableTh>
+                <SortableTh sortKey="mrr" sort={sortConv} setSort={setSortConv} className="text-right" align="right">MRR</SortableTh>
+                <SortableTh sortKey="valorTotal" sort={sortConv} setSort={setSortConv} className="text-right" align="right">Valor total</SortableTh>
+                <SortableTh sortKey="bonificacaoTotal" sort={sortConv} setSort={setSortConv} className="text-right" align="right">Bonificação Total</SortableTh>
+                <SortableTh sortKey="recorrenciaTotal" sort={sortConv} setSort={setSortConv} className="text-right" align="right">Recorrência Total</SortableTh>
               </TableRow>
             </TableHeader>
             <TableBody>

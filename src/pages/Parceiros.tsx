@@ -640,7 +640,7 @@ export default function Parceiros() {
                   </TableCell>
                 </TableRow>
               ) : (
-                filtered.map((r) => (
+                paginated.map((r) => (
                   <TableRow key={r.id} className="text-[12.5px]" data-state={selected.has(r.id) ? "selected" : undefined}>
                     <TableCell className="py-2.5">
                       <Checkbox
@@ -660,7 +660,17 @@ export default function Parceiros() {
             </TableBody>
           </Table>
         </div>
+        {filtered.length > 0 && (
+          <Pagination
+            page={page}
+            totalPages={totalPages}
+            pageSize={pageSize}
+            onPageChange={setPage}
+            onPageSizeChange={setPageSize}
+          />
+        )}
       </SectionCard>
+
 
       {/* Conversões por embaixador */}
       <SectionCard

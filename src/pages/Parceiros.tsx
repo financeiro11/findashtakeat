@@ -773,6 +773,7 @@ export default function Parceiros() {
                 <Th className="text-right">MRR</Th>
                 <Th className="text-right">Valor total</Th>
                 <Th className="text-right">Bonificação Total</Th>
+                <Th className="text-right">Recorrência Total</Th>
               </TableRow>
             </TableHeader>
             <TableBody>

@@ -207,6 +207,7 @@ export default function Parceiros() {
   const [sheetRows, setSheetRows] = useState<any[]>([]);
   const [mapping, setMapping] = useState<Record<string, string>>({});
   const [importing, setImporting] = useState(false);
+  const [importTarget, setImportTarget] = useState<"indicacoes" | "recorrencias">("indicacoes");
   const [pageSize, setPageSize] = useState<number>(25);
   const [page, setPage] = useState<number>(1);
   const [convPageSize, setConvPageSize] = useState<number>(25);

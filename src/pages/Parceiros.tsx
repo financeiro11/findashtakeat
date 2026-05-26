@@ -402,6 +402,12 @@ export default function Parceiros() {
     return Number(cad.valor_bonificacao);
   };
 
+  const calcRecorrencia = (mrr: number, cad?: typeof cadastros[number]) => {
+    if (!cad || !cad.recorrencia || cad.valor_recorrencia == null) return null;
+    if (cad.metodo_recorrencia === "%") return (Number(mrr) || 0) * (Number(cad.valor_recorrencia) / 100);
+    return Number(cad.valor_recorrencia);
+  };
+
   const embOptions = useMemo(() => {
     const s = new Set<string>();
     rows.forEach((r) => { if (r.embaixador) s.add(r.embaixador); });

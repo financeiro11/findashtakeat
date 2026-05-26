@@ -248,12 +248,36 @@ export default function Parceiros() {
   useEffect(() => {
     loadRows();
     loadCadastros();
+    loadRecorrencias();
   }, []);
 
   const loadCadastros = async () => {
     const { data, error } = await supabase.from("parceiros_cadastro").select("nome,tier,status,bonificacao,metodo_bonificacao,valor_bonificacao,recorrencia,metodo_recorrencia,valor_recorrencia");
     if (error) { console.error(error); return; }
     setCadastros((data ?? []) as any);
+  };
+
+  const loadRecorrencias = async () => {
+    const { data, error } = await supabase
+      .from("parceiros_recorrencias")
+      .select("*")
+      .order("data_indicacao", { ascending: false, nullsFirst: false });
+    if (error) { console.error(error); return; }
+    const mapped = (data ?? []).map((r: any) => ({
+      id: r.id,
+      id_negocio: r.id_negocio ?? "",
+      campanha: r.nome_campanha ?? "",
+      embaixador: r.indicador ?? "",
+      vendedor: r.responsavel_takeat ?? "",
+      empresa: r.nome_negocio ?? "",
+      mrr: Number(r.mrr ?? 0),
+      recorrenciaValor: Number(r.recorrencia_valor ?? 0),
+      dataIndicacao: r.data_indicacao,
+      ativo: r.ativo !== false,
+      hubspotUrl: r.hubspot_url || hubspotUrlFor(r.id_negocio ?? ""),
+      asaasUrl: r.asaas_url || asaasUrlFor(r.id_negocio ?? ""),
+    }));
+    setRecRows(mapped);
   };
 
   const handleRefresh = async () => {

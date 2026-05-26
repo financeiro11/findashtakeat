@@ -13,6 +13,7 @@ import {
 } from "@/components/ui/table";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from "@/components/ui/dialog";
+import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem } from "@/components/ui/dropdown-menu";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { SectionCard } from "@/components/ui/section-card";
 import { cn } from "@/lib/utils";
@@ -134,7 +135,9 @@ const COL_ORDER_STORAGE_KEY = "parceiros:colOrder:v1";
 
 const MONTH_NAMES = ["Jan","Fev","Mar","Abr","Mai","Jun","Jul","Ago","Set","Out","Nov","Dez"];
 
-const MAPPING_FIELDS: { key: string; label: string; column: string; match: string[]; type?: "number" | "date"; required?: boolean }[] = [
+type MappingField = { key: string; label: string; column: string; match: string[]; type?: "number" | "date" | "bool"; required?: boolean };
+
+const MAPPING_FIELDS: MappingField[] = [
   { key: "id_negocio", label: "ID do Negócio *", column: "id_negocio", match: ["id_negocio", "id negocio", "deal"], required: true },
   { key: "id_campanha", label: "ID da Campanha", column: "id_campanha", match: ["id_campanha", "id campanha"] },
   { key: "campanha", label: "Campanha", column: "nome_campanha", match: ["nome_campanha", "campanha"] },
@@ -149,6 +152,23 @@ const MAPPING_FIELDS: { key: string; label: string; column: string; match: strin
   { key: "dataVenda", label: "Data venda", column: "data_venda", match: ["data_venda", "venda"], type: "date" },
   { key: "canal_aquisicao", label: "Canal de aquisição", column: "canal_aquisicao", match: ["canal"] },
   { key: "origem", label: "Origem", column: "origem", match: ["origem"] },
+  { key: "hubspot", label: "URL Hubspot", column: "hubspot_url", match: ["hubspot"] },
+  { key: "asaas", label: "URL Asaas", column: "asaas_url", match: ["asaas"] },
+];
+
+const REC_MAPPING_FIELDS: MappingField[] = [
+  { key: "id_negocio", label: "ID do Negócio *", column: "id_negocio", match: ["id_negocio", "id negocio", "deal"], required: true },
+  { key: "id_campanha", label: "ID da Campanha", column: "id_campanha", match: ["id_campanha", "id campanha"] },
+  { key: "campanha", label: "Campanha", column: "nome_campanha", match: ["nome_campanha", "campanha"] },
+  { key: "embaixador", label: "Embaixador / Indicador", column: "indicador", match: ["embaixador", "indicador"] },
+  { key: "email_indicador", label: "E-mail do Indicador", column: "email_indicador", match: ["email_indicador", "email"] },
+  { key: "responsavel_takeat", label: "Responsável Takeat", column: "responsavel_takeat", match: ["responsavel", "takeat"] },
+  { key: "empresa", label: "Empresa / Negócio", column: "nome_negocio", match: ["nome_negocio", "empresa", "negocio"] },
+  { key: "mrr", label: "MRR", column: "mrr", match: ["mrr"], type: "number" },
+  { key: "recorrencia_valor", label: "Recorrência (valor)", column: "recorrencia_valor", match: ["recorrencia", "recorrência"], type: "number" },
+  { key: "dataIndicacao", label: "Data indicação", column: "data_indicacao", match: ["data_indicacao", "indicac"], type: "date" },
+  { key: "dataVenda", label: "Data venda", column: "data_venda", match: ["data_venda", "venda"], type: "date" },
+  { key: "ativo", label: "Status (ativo)", column: "ativo", match: ["ativo", "status"], type: "bool" },
   { key: "hubspot", label: "URL Hubspot", column: "hubspot_url", match: ["hubspot"] },
   { key: "asaas", label: "URL Asaas", column: "asaas_url", match: ["asaas"] },
 ];
@@ -188,6 +208,7 @@ export default function Parceiros() {
   const [sheetRows, setSheetRows] = useState<any[]>([]);
   const [mapping, setMapping] = useState<Record<string, string>>({});
   const [importing, setImporting] = useState(false);
+  const [importTarget, setImportTarget] = useState<"indicacoes" | "recorrencias">("indicacoes");
   const [pageSize, setPageSize] = useState<number>(25);
   const [page, setPage] = useState<number>(1);
   const [convPageSize, setConvPageSize] = useState<number>(25);
@@ -320,7 +341,17 @@ export default function Parceiros() {
     return isNaN(n) ? 0 : n;
   };
 
-  const handleImportClick = () => fileInputRef.current?.click();
+  const handleImportClick = (target: "indicacoes" | "recorrencias") => {
+    setImportTarget(target);
+    fileInputRef.current?.click();
+  };
+
+  const activeMappingFields = importTarget === "recorrencias" ? REC_MAPPING_FIELDS : MAPPING_FIELDS;
+
+  const parseBoolCell = (v: any): boolean => {
+    const s = String(v ?? "").trim().toLowerCase();
+    return ["true", "1", "sim", "yes", "y", "s", "verdadeiro", "ativo"].includes(s);
+  };
 
   const handleFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -335,12 +366,11 @@ export default function Parceiros() {
         return;
       }
       const headers = Object.keys(data[0]);
-      // auto-detect defaults
       const norm = (s: string) => s.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
       const findHeader = (...needles: string[]) =>
         headers.find((h) => needles.some((n) => norm(h).includes(n))) || "";
       const auto: Record<string, string> = {};
-      MAPPING_FIELDS.forEach((f) => { auto[f.key] = findHeader(...f.match); });
+      activeMappingFields.forEach((f) => { auto[f.key] = findHeader(...f.match); });
       setSheetHeaders(headers);
       setSheetRows(data);
       setMapping(auto);
@@ -355,6 +385,7 @@ export default function Parceiros() {
   const confirmImport = async () => {
     setImporting(true);
     try {
+      const fields = activeMappingFields;
       const g = (r: any, key: string) => {
         const col = mapping[key];
         return col && col !== "__none__" ? r[col] : "";
@@ -365,7 +396,7 @@ export default function Parceiros() {
         const idNegocio = String(g(r, "id_negocio") ?? "").trim();
         if (!idNegocio) { skipped++; return; }
         const payload: Record<string, any> = { id_negocio: idNegocio };
-        MAPPING_FIELDS.forEach((f) => {
+        fields.forEach((f) => {
           if (f.key === "id_negocio") return;
           const col = mapping[f.key];
           if (!col || col === "__none__") return;
@@ -373,14 +404,14 @@ export default function Parceiros() {
           if (raw == null || raw === "") return;
           if (f.type === "number") payload[f.column] = parseNumberCell(raw);
           else if (f.type === "date") payload[f.column] = parseDateCell(raw);
+          else if (f.type === "bool") payload[f.column] = parseBoolCell(raw);
           else payload[f.column] = String(raw).trim() || null;
         });
-        if (!payload.origem) payload.origem = "import_planilha";
+        if (importTarget === "indicacoes" && !payload.origem) payload.origem = "import_planilha";
         toInsert.push(payload);
       });
 
-      // Dedupe por id_negocio (mantém a última ocorrência) — evita erro
-      // "ON CONFLICT DO UPDATE command cannot affect row a second time"
+      // Dedupe por id_negocio
       const byId = new Map<string, any>();
       toInsert.forEach((p) => byId.set(p.id_negocio, { ...byId.get(p.id_negocio), ...p }));
       const deduped = Array.from(byId.values());
@@ -390,19 +421,102 @@ export default function Parceiros() {
         toast.warning("Nenhuma linha válida encontrada (ID do Negócio é obrigatório)");
         return;
       }
-      const { error } = await supabase
-        .from("parceiros_indicacoes")
-        .upsert(deduped, { onConflict: "id_negocio", ignoreDuplicates: false });
-      if (error) throw error;
-      toast.success(`${deduped.length} indicação(ões) importada(s)${skipped ? ` · ${skipped} sem ID` : ""}${duplicatesRemoved ? ` · ${duplicatesRemoved} duplicada(s) mescladas` : ""}`);
+
+      if (importTarget === "indicacoes") {
+        const { error } = await supabase
+          .from("parceiros_indicacoes")
+          .upsert(deduped, { onConflict: "id_negocio", ignoreDuplicates: false });
+        if (error) throw error;
+        toast.success(`${deduped.length} indicação(ões) importada(s)${skipped ? ` · ${skipped} sem ID` : ""}${duplicatesRemoved ? ` · ${duplicatesRemoved} duplicada(s) mescladas` : ""}`);
+        await loadRows();
+      } else {
+        // Recorrências: substitui registros existentes por id_negocio (delete + insert)
+        const ids = deduped.map((p) => p.id_negocio);
+        await supabase.from("parceiros_recorrencias").delete().in("id_negocio", ids);
+        const { error } = await supabase.from("parceiros_recorrencias").insert(deduped);
+        if (error) throw error;
+        toast.success(`${deduped.length} recorrência(s) importada(s)${skipped ? ` · ${skipped} sem ID` : ""}${duplicatesRemoved ? ` · ${duplicatesRemoved} duplicada(s) mescladas` : ""}`);
+        await loadRecorrencias();
+      }
+
       setMapOpen(false);
       setSheetRows([]);
       setSheetHeaders([]);
-      await loadRows();
     } catch (err: any) {
       toast.error(err?.message || "Falha ao importar");
     } finally {
       setImporting(false);
+    }
+  };
+
+  const handleExport = (target: "indicacoes" | "conversoes" | "recorrencias") => {
+    try {
+      let rowsOut: any[] = [];
+      let sheetName = "Dados";
+      let fileName = "parceiros.xlsx";
+
+      if (target === "indicacoes") {
+        sheetName = "Indicações";
+        fileName = "indicacoes.xlsx";
+        rowsOut = filtered.map((r) => ({
+          Campanha: r.campanha,
+          Embaixador: r.embaixador,
+          Vendedor: r.vendedor,
+          Empresa: r.empresa,
+          MRR: r.mrr,
+          "Valor total": r.valorTotal,
+          Bonificação: r.bonificacaoVenda ?? "",
+          "Data indicação": r.dataIndicacao ?? "",
+          "Data venda": r.dataVenda ?? "",
+          HubSpot: r.hubspotUrl,
+          Asaas: r.asaasUrl,
+        }));
+      } else if (target === "conversoes") {
+        sheetName = "Conversões";
+        fileName = "conversoes-embaixador.xlsx";
+        rowsOut = conversoes.map((c) => {
+          const cad = cadastroByNome.get(c.nome.toLowerCase());
+          return {
+            Embaixador: c.nome,
+            Tier: cad?.tier ?? "",
+            Bonificação: cad?.bonificacao ? "Sim" : "Não",
+            Recorrência: cad?.recorrencia ? "Sim" : "Não",
+            Indicações: c.indicacoes,
+            Vendas: c.vendas,
+            MRR: c.mrr,
+            "Valor total": c.valorTotal,
+            "Bonificação Total": c.bonificacaoTotal,
+            "Recorrência Total": recorrenciaPorEmbaixador.get(c.nome.toLowerCase()) ?? 0,
+          };
+        });
+      } else {
+        sheetName = "Apuração Recorrências";
+        fileName = "apuracao-recorrencias.xlsx";
+        rowsOut = recorrencias.map((r) => ({
+          Status: r.ativo ? "Ativo" : "Inativo",
+          Campanha: r.campanha,
+          Embaixador: r.embaixador,
+          "Responsável Takeat": r.vendedor,
+          Empresa: r.empresa,
+          MRR: r.mrr,
+          Recorrência: r.recorrenciaValor,
+          "Data indicação": r.dataIndicacao ?? "",
+          HubSpot: r.hubspotUrl,
+          Asaas: r.asaasUrl,
+        }));
+      }
+
+      if (rowsOut.length === 0) {
+        toast.warning("Nenhum dado para exportar");
+        return;
+      }
+      const ws = XLSX.utils.json_to_sheet(rowsOut);
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, ws, sheetName);
+      XLSX.writeFile(wb, fileName);
+      toast.success(`${rowsOut.length} linha(s) exportada(s)`);
+    } catch (err: any) {
+      toast.error(err?.message || "Falha ao exportar");
     }
   };
 
@@ -606,12 +720,29 @@ export default function Parceiros() {
               <Trash2 className="h-3.5 w-3.5" /> Apagar ({selected.size})
             </Button>
           )}
-          <Button variant="outline" size="sm" className="h-8 gap-1.5 text-[12.5px]" onClick={handleImportClick}>
-            <Upload className="h-3.5 w-3.5" /> Importar planilha
-          </Button>
-          <Button variant="outline" size="sm" className="h-8 gap-1.5 text-[12.5px]">
-            <Download className="h-3.5 w-3.5" /> Exportar
-          </Button>
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button variant="outline" size="sm" className="h-8 gap-1.5 text-[12.5px]">
+                <Upload className="h-3.5 w-3.5" /> Importar planilha
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end">
+              <DropdownMenuItem onClick={() => handleImportClick("indicacoes")}>Lista de Indicações</DropdownMenuItem>
+              <DropdownMenuItem onClick={() => handleImportClick("recorrencias")}>Apuração Recorrências</DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button variant="outline" size="sm" className="h-8 gap-1.5 text-[12.5px]">
+                <Download className="h-3.5 w-3.5" /> Exportar
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end">
+              <DropdownMenuItem onClick={() => handleExport("indicacoes")}>Lista de Indicações</DropdownMenuItem>
+              <DropdownMenuItem onClick={() => handleExport("conversoes")}>Conversões por embaixador</DropdownMenuItem>
+              <DropdownMenuItem onClick={() => handleExport("recorrencias")}>Apuração Recorrências</DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
           <Button size="sm" className="h-8 gap-1.5 text-[12.5px]">
             <Plus className="h-3.5 w-3.5" /> Nova indicação
           </Button>
@@ -944,15 +1075,15 @@ export default function Parceiros() {
       <Dialog open={mapOpen} onOpenChange={(o) => { if (!importing) setMapOpen(o); }}>
         <DialogContent className="max-w-2xl">
           <DialogHeader>
-            <DialogTitle>Mapear colunas da planilha</DialogTitle>
+            <DialogTitle>Mapear colunas da planilha — {importTarget === "recorrencias" ? "Apuração Recorrências" : "Lista de Indicações"}</DialogTitle>
             <DialogDescription>
-              Vincule cada campo da lista de indicações à coluna correspondente da planilha importada.
+              Vincule cada campo à coluna correspondente da planilha importada.
               {sheetRows.length > 0 && ` ${sheetRows.length} linha(s) detectada(s).`}
             </DialogDescription>
           </DialogHeader>
           <div className="max-h-[60vh] overflow-y-auto pr-1">
             <div className="space-y-2">
-              {MAPPING_FIELDS.map((f) => (
+              {activeMappingFields.map((f) => (
                 <div key={f.key} className="grid grid-cols-1 items-center gap-1 sm:grid-cols-[1fr_1.4fr] sm:gap-3">
                   <label className="text-[12.5px] font-medium text-foreground">{f.label}</label>
                   <Select

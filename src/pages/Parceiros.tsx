@@ -1316,6 +1316,20 @@ export default function Parceiros() {
 
 
 
+      <NaoCadastradoDialog
+        open={naoCadOpen}
+        onOpenChange={setNaoCadOpen}
+        nome={naoCadNome}
+        onDone={() => { loadCadastros(); loadRows(); loadRecorrencias(); }}
+      />
+
+      <EditarCampanhaDialog
+        open={editCampOpen}
+        onOpenChange={setEditCampOpen}
+        target={editCampTarget}
+        onDone={() => { loadRows(); loadRecorrencias(); }}
+      />
+
       <Dialog open={mapOpen} onOpenChange={(o) => { if (!importing) setMapOpen(o); }}>
         <DialogContent className="max-w-2xl">
           <DialogHeader>

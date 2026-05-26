@@ -731,6 +731,33 @@ export default function Parceiros() {
     return m;
   }, [recorrencias]);
 
+  const conversoesSorted = useMemo(() => {
+    if (!sortConv) return conversoes;
+    const accessors: Record<string, (c: typeof conversoes[number]) => any> = {
+      embaixador: (c) => c.nome,
+      tier: (c) => cadastroByNome.get(c.nome.toLowerCase())?.tier ?? "",
+      bonificacao: (c) => cadastroByNome.get(c.nome.toLowerCase())?.valor_bonificacao ?? null,
+      recorrencia: (c) => cadastroByNome.get(c.nome.toLowerCase())?.valor_recorrencia ?? null,
+      indicacoes: (c) => c.indicacoes,
+      vendas: (c) => c.vendas,
+      mrr: (c) => c.mrr,
+      valorTotal: (c) => c.valorTotal,
+      bonificacaoTotal: (c) => c.bonificacaoTotal,
+      recorrenciaTotal: (c) => recorrenciaPorEmbaixador.get(c.nome.toLowerCase()) ?? 0,
+    };
+    const acc = accessors[sortConv.key];
+    if (!acc) return conversoes;
+    return sortArr(conversoes, acc, sortConv.dir);
+  }, [conversoes, sortConv, cadastroByNome, recorrenciaPorEmbaixador]);
+
+  const convTotalPages = Math.max(1, Math.ceil(conversoesSorted.length / convPageSize));
+  useEffect(() => { setConvPage(1); }, [query, monthFilter, embFilter, campFilter, convPageSize]);
+  useEffect(() => { if (convPage > convTotalPages) setConvPage(convTotalPages); }, [convTotalPages, convPage]);
+  const conversoesPaginated = useMemo(
+    () => conversoesSorted.slice((convPage - 1) * convPageSize, convPage * convPageSize),
+    [conversoesSorted, convPage, convPageSize]
+  );
+
 
 
   const allChecked = filtered.length > 0 && filtered.every((r) => selected.has(r.id));

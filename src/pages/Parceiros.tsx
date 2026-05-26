@@ -190,6 +190,8 @@ export default function Parceiros() {
   const [importing, setImporting] = useState(false);
   const [pageSize, setPageSize] = useState<number>(25);
   const [page, setPage] = useState<number>(1);
+  const [convPageSize, setConvPageSize] = useState<number>(25);
+  const [convPage, setConvPage] = useState<number>(1);
 
 
   useEffect(() => {
@@ -462,6 +464,14 @@ export default function Parceiros() {
     return Array.from(m.values()).sort((a, b) => b.indicacoes - a.indicacoes);
   }, [filtered]);
 
+  const convTotalPages = Math.max(1, Math.ceil(conversoes.length / convPageSize));
+  useEffect(() => { setConvPage(1); }, [query, monthFilter, embFilter, campFilter, convPageSize]);
+  useEffect(() => { if (convPage > convTotalPages) setConvPage(convTotalPages); }, [convTotalPages, convPage]);
+  const conversoesPaginated = useMemo(
+    () => conversoes.slice((convPage - 1) * convPageSize, convPage * convPageSize),
+    [conversoes, convPage, convPageSize]
+  );
+
   const allChecked = filtered.length > 0 && filtered.every((r) => selected.has(r.id));
   const someChecked = filtered.some((r) => selected.has(r.id));
   const toggleAll = () => {
@@ -701,7 +711,7 @@ export default function Parceiros() {
                   </TableCell>
                 </TableRow>
               ) : (
-                conversoes.map((c) => {
+                conversoesPaginated.map((c) => {
                   const cad = cadastroByNome.get(c.nome.toLowerCase());
                   return (
                     <TableRow key={c.nome} className="text-[12.5px]">
@@ -769,6 +779,15 @@ export default function Parceiros() {
             </TableBody>
           </Table>
         </div>
+        {conversoes.length > 0 && (
+          <Pagination
+            page={convPage}
+            totalPages={convTotalPages}
+            pageSize={convPageSize}
+            onPageChange={setConvPage}
+            onPageSizeChange={setConvPageSize}
+          />
+        )}
       </SectionCard>
 
       <Dialog open={mapOpen} onOpenChange={(o) => { if (!importing) setMapOpen(o); }}>

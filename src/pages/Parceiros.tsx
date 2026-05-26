@@ -677,9 +677,20 @@ export default function Parceiros() {
 
   // Apuração Recorrências: fonte independente (tabela parceiros_recorrencias).
   // Inclui ativos e inativos — o status é exibido na primeira coluna.
+  const REC_SORT_ACCESSORS: Record<string, (r: any) => any> = {
+    status: (r) => (r.ativo ? 1 : 0),
+    campanha: (r) => r.campanha,
+    embaixador: (r) => r.embaixador,
+    vendedor: (r) => r.vendedor,
+    empresa: (r) => r.empresa,
+    mrr: (r) => r.mrr,
+    recorrencia: (r) => r.recorrenciaValor,
+    dataIndicacao: (r) => r.dataIndicacao,
+  };
+
   const recorrencias = useMemo(() => {
     const q = query.trim().toLowerCase();
-    return recRows
+    const base = recRows
       .filter((r) => {
         if (monthFilter) {
           if (!r.dataIndicacao || r.dataIndicacao.slice(0, 7) !== monthFilter) return false;
@@ -694,7 +705,12 @@ export default function Parceiros() {
         const calc = calcRecorrencia(r.mrr || 0, cad);
         return { ...r, recorrenciaValor: calc != null ? calc : (r.recorrenciaValor || 0) };
       });
-  }, [recRows, query, monthFilter, embFilter, campFilter, cadastroByNome]);
+    if (!sortRec) return base;
+    const acc = REC_SORT_ACCESSORS[sortRec.key];
+    if (!acc) return base;
+    return sortArr(base, acc, sortRec.dir);
+  }, [recRows, query, monthFilter, embFilter, campFilter, cadastroByNome, sortRec]);
+
 
 
   const recTotalPages = Math.max(1, Math.ceil(recorrencias.length / recPageSize));

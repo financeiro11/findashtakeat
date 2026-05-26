@@ -980,7 +980,7 @@ export default function Parceiros() {
                         </span>
                       </TableCell>
                       <TableCell className="py-2.5">
-                        {cad ? <Badge variant="outline" className="text-[10.5px] font-normal">{cad.tier}</Badge> : <span className="text-muted-foreground">—</span>}
+                        {cad ? <Badge variant="outline" className="text-[10.5px] font-normal whitespace-nowrap">{cad.tier === "Não possui" ? "—" : cad.tier.replace("Tier ", "T")}</Badge> : <span className="text-muted-foreground">—</span>}
                       </TableCell>
                       <TableCell className="py-2.5">
                         {cad ? (cad.bonificacao

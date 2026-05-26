@@ -464,6 +464,14 @@ export default function Parceiros() {
     return Array.from(m.values()).sort((a, b) => b.indicacoes - a.indicacoes);
   }, [filtered]);
 
+  const convTotalPages = Math.max(1, Math.ceil(conversoes.length / convPageSize));
+  useEffect(() => { setConvPage(1); }, [query, monthFilter, embFilter, campFilter, convPageSize]);
+  useEffect(() => { if (convPage > convTotalPages) setConvPage(convTotalPages); }, [convTotalPages, convPage]);
+  const conversoesPaginated = useMemo(
+    () => conversoes.slice((convPage - 1) * convPageSize, convPage * convPageSize),
+    [conversoes, convPage, convPageSize]
+  );
+
   const allChecked = filtered.length > 0 && filtered.every((r) => selected.has(r.id));
   const someChecked = filtered.some((r) => selected.has(r.id));
   const toggleAll = () => {

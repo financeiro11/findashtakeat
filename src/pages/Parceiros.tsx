@@ -984,18 +984,23 @@ export default function Parceiros() {
                       </TableCell>
                       <TableCell className="py-2.5">
                         {cad ? (cad.bonificacao
-                          ? <Badge className="bg-emerald-500/15 text-emerald-700 dark:text-emerald-400 hover:bg-emerald-500/20 text-[10.5px] font-normal">
-                              Sim{cad.metodo_bonificacao ? ` · ${cad.metodo_bonificacao}${cad.valor_bonificacao != null ? ` ${cad.metodo_bonificacao === "%" ? `${cad.valor_bonificacao}%` : BRL(Number(cad.valor_bonificacao))}` : ""}` : ""}
+                          ? <Badge className="bg-emerald-500/15 text-emerald-700 dark:text-emerald-400 hover:bg-emerald-500/20 text-[10.5px] font-normal whitespace-nowrap">
+                              {cad.valor_bonificacao != null
+                                ? (cad.metodo_bonificacao === "%" ? `${cad.valor_bonificacao}%` : BRL(Number(cad.valor_bonificacao)))
+                                : "Sim"}
                             </Badge>
                           : <span className="text-muted-foreground">Não</span>) : <span className="text-muted-foreground">—</span>}
                       </TableCell>
                       <TableCell className="py-2.5">
                         {cad ? (cad.recorrencia
-                          ? <Badge className="bg-sky-500/15 text-sky-700 dark:text-sky-400 hover:bg-sky-500/20 text-[10.5px] font-normal">
-                              Sim{cad.metodo_recorrencia ? ` · ${cad.metodo_recorrencia}${cad.valor_recorrencia != null ? ` ${cad.metodo_recorrencia === "%" ? `${cad.valor_recorrencia}%` : BRL(Number(cad.valor_recorrencia))}` : ""}` : ""}
+                          ? <Badge className="bg-sky-500/15 text-sky-700 dark:text-sky-400 hover:bg-sky-500/20 text-[10.5px] font-normal whitespace-nowrap">
+                              {cad.valor_recorrencia != null
+                                ? (cad.metodo_recorrencia === "%" ? `${cad.valor_recorrencia}%` : BRL(Number(cad.valor_recorrencia)))
+                                : "Sim"}
                             </Badge>
                           : <span className="text-muted-foreground">Não</span>) : <span className="text-muted-foreground">—</span>}
                       </TableCell>
+
                       <TableCell className="py-2.5 text-right tabular-nums font-medium">{c.indicacoes}</TableCell>
                       <TableCell className="py-2.5 text-right tabular-nums">{c.vendas}</TableCell>
                       <TableCell className="py-2.5 text-right tabular-nums">{BRL(c.mrr)}</TableCell>

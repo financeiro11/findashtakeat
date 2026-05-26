@@ -78,15 +78,44 @@ function AsaasIcon({ className }: { className?: string }) {
 
 type ColKey = "campanha" | "embaixador" | "vendedor" | "empresa" | "mrr" | "valorTotal" | "bonificacao" | "dataIndicacao" | "dataVenda" | "hubspot" | "asaas";
 
+type SortState = { key: string; dir: "asc" | "desc" } | null;
+
+const cmpVal = (a: any, b: any) => {
+  const aNil = a === null || a === undefined || a === "";
+  const bNil = b === null || b === undefined || b === "";
+  if (aNil && bNil) return 0;
+  if (aNil) return 1;
+  if (bNil) return -1;
+  if (typeof a === "number" && typeof b === "number") return a - b;
+  return String(a).localeCompare(String(b), "pt-BR", { numeric: true, sensitivity: "base" });
+};
+
+const sortArr = <T,>(arr: T[], accessor: (r: T) => any, dir: "asc" | "desc") => {
+  const out = [...arr];
+  out.sort((a, b) => {
+    const r = cmpVal(accessor(a), accessor(b));
+    return dir === "asc" ? r : -r;
+  });
+  return out;
+};
+
+const toggleSort = (prev: SortState, key: string): SortState => {
+  if (prev?.key !== key) return { key, dir: "asc" };
+  if (prev.dir === "asc") return { key, dir: "desc" };
+  return null;
+};
+
 const COLUMNS: Record<ColKey, {
   label: string;
   headClass?: string;
   cellClass?: string;
   render: (r: Parceiro) => React.ReactNode;
+  sortValue?: (r: Parceiro) => any;
 }> = {
-  campanha: { label: "Campanha", render: (r) => <span className="font-medium text-foreground">{r.campanha || "—"}</span> },
+  campanha: { label: "Campanha", sortValue: (r) => r.campanha, render: (r) => <span className="font-medium text-foreground">{r.campanha || "—"}</span> },
   embaixador: {
     label: "Embaixador",
+    sortValue: (r) => r.embaixador,
     render: (r) => (
       <span className="inline-flex items-center gap-1.5">
         <span>{r.embaixador || "—"}</span>
@@ -113,15 +142,16 @@ const COLUMNS: Record<ColKey, {
       </span>
     ),
   },
-  vendedor: { label: "Vendedor", render: (r) => r.vendedor || "—" },
-  empresa: { label: "Empresa", render: (r) => r.empresa || "—" },
-  mrr: { label: "MRR", headClass: "text-right", cellClass: "text-right tabular-nums", render: (r) => BRL(r.mrr) },
-  valorTotal: { label: "Valor total", headClass: "text-right", cellClass: "text-right tabular-nums font-medium", render: (r) => BRL(r.valorTotal) },
-  bonificacao: { label: "Bonificação", headClass: "text-right", cellClass: "text-right tabular-nums", render: (r) => r.bonificacaoVenda != null ? BRL(r.bonificacaoVenda) : <span className="text-muted-foreground">—</span> },
-  dataIndicacao: { label: "Data indicação", cellClass: "tabular-nums text-muted-foreground", render: (r) => fmtDate(r.dataIndicacao) },
+  vendedor: { label: "Vendedor", sortValue: (r) => r.vendedor, render: (r) => r.vendedor || "—" },
+  empresa: { label: "Empresa", sortValue: (r) => r.empresa, render: (r) => r.empresa || "—" },
+  mrr: { label: "MRR", headClass: "text-right", cellClass: "text-right tabular-nums", sortValue: (r) => r.mrr, render: (r) => BRL(r.mrr) },
+  valorTotal: { label: "Valor total", headClass: "text-right", cellClass: "text-right tabular-nums font-medium", sortValue: (r) => r.valorTotal, render: (r) => BRL(r.valorTotal) },
+  bonificacao: { label: "Bonificação", headClass: "text-right", cellClass: "text-right tabular-nums", sortValue: (r) => r.bonificacaoVenda ?? null, render: (r) => r.bonificacaoVenda != null ? BRL(r.bonificacaoVenda) : <span className="text-muted-foreground">—</span> },
+  dataIndicacao: { label: "Data indicação", cellClass: "tabular-nums text-muted-foreground", sortValue: (r) => r.dataIndicacao, render: (r) => fmtDate(r.dataIndicacao) },
   dataVenda: {
     label: "Data venda",
     cellClass: "tabular-nums",
+    sortValue: (r) => r.dataVenda,
     render: (r) => r.dataVenda
       ? <span className="text-foreground">{fmtDate(r.dataVenda)}</span>
       : <Badge variant="outline" className="text-[10.5px] font-normal">Aguardando</Badge>,
@@ -146,6 +176,7 @@ const COLUMNS: Record<ColKey, {
 
 const DEFAULT_COL_ORDER: ColKey[] = ["campanha","embaixador","vendedor","empresa","mrr","valorTotal","bonificacao","dataIndicacao","dataVenda","hubspot","asaas"];
 const COL_ORDER_STORAGE_KEY = "parceiros:colOrder:v1";
+
 
 const MONTH_NAMES = ["Jan","Fev","Mar","Abr","Mai","Jun","Jul","Ago","Set","Out","Nov","Dez"];
 

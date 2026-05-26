@@ -188,6 +188,9 @@ export default function Parceiros() {
   const [sheetRows, setSheetRows] = useState<any[]>([]);
   const [mapping, setMapping] = useState<Record<string, string>>({});
   const [importing, setImporting] = useState(false);
+  const [pageSize, setPageSize] = useState<number>(25);
+  const [page, setPage] = useState<number>(1);
+
 
   useEffect(() => {
     try { localStorage.setItem(COL_ORDER_STORAGE_KEY, JSON.stringify(columnOrder)); } catch {}
@@ -434,6 +437,15 @@ export default function Parceiros() {
     return { mrr, total, count: filtered.length };
   }, [filtered]);
 
+  const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize));
+  useEffect(() => { setPage(1); }, [query, monthFilter, embFilter, campFilter, pageSize]);
+  useEffect(() => { if (page > totalPages) setPage(totalPages); }, [totalPages, page]);
+  const paginated = useMemo(
+    () => filtered.slice((page - 1) * pageSize, page * pageSize),
+    [filtered, page, pageSize]
+  );
+
+
   const conversoes = useMemo(() => {
     const m = new Map<string, { nome: string; indicacoes: number; vendas: number; mrr: number; valorTotal: number; bonificacaoTotal: number }>();
     filtered.forEach((r) => {
@@ -628,7 +640,7 @@ export default function Parceiros() {
                   </TableCell>
                 </TableRow>
               ) : (
-                filtered.map((r) => (
+                paginated.map((r) => (
                   <TableRow key={r.id} className="text-[12.5px]" data-state={selected.has(r.id) ? "selected" : undefined}>
                     <TableCell className="py-2.5">
                       <Checkbox
@@ -648,7 +660,17 @@ export default function Parceiros() {
             </TableBody>
           </Table>
         </div>
+        {filtered.length > 0 && (
+          <Pagination
+            page={page}
+            totalPages={totalPages}
+            pageSize={pageSize}
+            onPageChange={setPage}
+            onPageSizeChange={setPageSize}
+          />
+        )}
       </SectionCard>
+
 
       {/* Conversões por embaixador */}
       <SectionCard
@@ -866,6 +888,73 @@ function MultiFilter({
     </Popover>
   );
 }
+
+function Pagination({
+  page, totalPages, pageSize, onPageChange, onPageSizeChange,
+}: {
+  page: number;
+  totalPages: number;
+  pageSize: number;
+  onPageChange: (p: number) => void;
+  onPageSizeChange: (s: number) => void;
+}) {
+  const pages: (number | "…")[] = [];
+  const add = (n: number | "…") => { if (pages[pages.length - 1] !== n) pages.push(n); };
+  const window = 1;
+  for (let i = 1; i <= totalPages; i++) {
+    if (i === 1 || i === totalPages || (i >= page - window && i <= page + window)) add(i);
+    else if (i < page) add("…");
+    else if (i > page) { add("…"); i = totalPages - 1; }
+  }
+  return (
+    <div className="flex flex-wrap items-center justify-center gap-1 border-t border-border px-3 py-2 text-[12.5px]">
+      <Button
+        variant="ghost" size="sm" className="h-7 gap-1 px-2 text-[12.5px]"
+        disabled={page <= 1} onClick={() => onPageChange(page - 1)}
+      >
+        ‹ Voltar
+      </Button>
+      {pages.map((p, i) =>
+        p === "…" ? (
+          <span key={`e${i}`} className="px-1 text-muted-foreground">…</span>
+        ) : (
+          <button
+            key={p}
+            onClick={() => onPageChange(p)}
+            className={cn(
+              "h-7 min-w-7 rounded-md px-2 text-[12.5px] transition-colors",
+              p === page
+                ? "border border-border bg-muted font-semibold text-foreground"
+                : "text-foreground hover:bg-muted/60"
+            )}
+          >
+            {p}
+          </button>
+        )
+      )}
+      <Button
+        variant="ghost" size="sm" className="h-7 gap-1 px-2 text-[12.5px]"
+        disabled={page >= totalPages} onClick={() => onPageChange(page + 1)}
+      >
+        Próximo ›
+      </Button>
+      <div className="ml-2">
+        <Select value={String(pageSize)} onValueChange={(v) => onPageSizeChange(Number(v))}>
+          <SelectTrigger className="h-7 w-[130px] text-[12.5px]">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="25">25 por página</SelectItem>
+            <SelectItem value="50">50 por página</SelectItem>
+            <SelectItem value="100">100 por página</SelectItem>
+          </SelectContent>
+        </Select>
+      </div>
+    </div>
+  );
+}
+
+
 
 
 function KpiCard({ label, value }: { label: string; value: string }) {

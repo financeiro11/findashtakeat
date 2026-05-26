@@ -188,6 +188,9 @@ export default function Parceiros() {
   const [sheetRows, setSheetRows] = useState<any[]>([]);
   const [mapping, setMapping] = useState<Record<string, string>>({});
   const [importing, setImporting] = useState(false);
+  const [pageSize, setPageSize] = useState<number>(25);
+  const [page, setPage] = useState<number>(1);
+
 
   useEffect(() => {
     try { localStorage.setItem(COL_ORDER_STORAGE_KEY, JSON.stringify(columnOrder)); } catch {}

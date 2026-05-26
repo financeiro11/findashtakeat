@@ -623,16 +623,23 @@ export default function Parceiros() {
   // Inclui ativos e inativos — o status é exibido na primeira coluna.
   const recorrencias = useMemo(() => {
     const q = query.trim().toLowerCase();
-    return recRows.filter((r) => {
-      if (monthFilter) {
-        if (!r.dataIndicacao || r.dataIndicacao.slice(0, 7) !== monthFilter) return false;
-      }
-      if (embFilter.size > 0 && !embFilter.has(r.embaixador)) return false;
-      if (campFilter.size > 0 && !campFilter.has(r.campanha)) return false;
-      if (q && ![r.campanha, r.embaixador, r.vendedor, r.empresa].some((f) => f?.toLowerCase().includes(q))) return false;
-      return true;
-    });
-  }, [recRows, query, monthFilter, embFilter, campFilter]);
+    return recRows
+      .filter((r) => {
+        if (monthFilter) {
+          if (!r.dataIndicacao || r.dataIndicacao.slice(0, 7) !== monthFilter) return false;
+        }
+        if (embFilter.size > 0 && !embFilter.has(r.embaixador)) return false;
+        if (campFilter.size > 0 && !campFilter.has(r.campanha)) return false;
+        if (q && ![r.campanha, r.embaixador, r.vendedor, r.empresa].some((f) => f?.toLowerCase().includes(q))) return false;
+        return true;
+      })
+      .map((r) => {
+        const cad = cadastroByNome.get((r.embaixador || "").trim().toLowerCase());
+        const calc = calcRecorrencia(r.mrr || 0, cad);
+        return { ...r, recorrenciaValor: calc != null ? calc : (r.recorrenciaValor || 0) };
+      });
+  }, [recRows, query, monthFilter, embFilter, campFilter, cadastroByNome]);
+
 
   const recTotalPages = Math.max(1, Math.ceil(recorrencias.length / recPageSize));
   useEffect(() => { setRecPage(1); }, [query, monthFilter, embFilter, campFilter, recPageSize]);
@@ -653,10 +660,14 @@ export default function Parceiros() {
     recRows.forEach((r) => {
       if (!r.ativo) return;
       const key = (r.embaixador || "").trim().toLowerCase();
-      m.set(key, (m.get(key) ?? 0) + (r.recorrenciaValor || 0));
+      const cad = cadastroByNome.get(key);
+      const calc = calcRecorrencia(r.mrr || 0, cad);
+      const val = calc != null ? calc : (r.recorrenciaValor || 0);
+      m.set(key, (m.get(key) ?? 0) + val);
     });
     return m;
-  }, [recRows]);
+  }, [recRows, cadastroByNome]);
+
 
   const allChecked = filtered.length > 0 && filtered.every((r) => selected.has(r.id));
   const someChecked = filtered.some((r) => selected.has(r.id));

@@ -19,6 +19,8 @@ import { SectionCard } from "@/components/ui/section-card";
 import { cn } from "@/lib/utils";
 import { supabase } from "@/integrations/supabase/client";
 import { GestaoParceirosDialog } from "./parceiros/GestaoParceirosDialog";
+import { NaoCadastradoDialog } from "./parceiros/NaoCadastradoDialog";
+import { EditarCampanhaDialog, type EditarCampanhaTarget } from "./parceiros/EditarCampanhaDialog";
 
 /* ─────────────────────────── Tipos ─────────────────────────── */
 

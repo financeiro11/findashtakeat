@@ -660,10 +660,14 @@ export default function Parceiros() {
     recRows.forEach((r) => {
       if (!r.ativo) return;
       const key = (r.embaixador || "").trim().toLowerCase();
-      m.set(key, (m.get(key) ?? 0) + (r.recorrenciaValor || 0));
+      const cad = cadastroByNome.get(key);
+      const calc = calcRecorrencia(r.mrr || 0, cad);
+      const val = calc != null ? calc : (r.recorrenciaValor || 0);
+      m.set(key, (m.get(key) ?? 0) + val);
     });
     return m;
-  }, [recRows]);
+  }, [recRows, cadastroByNome]);
+
 
   const allChecked = filtered.length > 0 && filtered.every((r) => selected.has(r.id));
   const someChecked = filtered.some((r) => selected.has(r.id));

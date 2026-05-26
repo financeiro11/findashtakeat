@@ -90,6 +90,20 @@ const COLUMNS: Record<ColKey, {
     render: (r) => (
       <span className="inline-flex items-center gap-1.5">
         <span>{r.embaixador || "—"}</span>
+        {r.embaixadorStatus === "nao_cadastrado" && r.embaixador && (
+          <TooltipProvider delayDuration={150}>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <button type="button" className="inline-flex items-center justify-center rounded-full text-amber-600 dark:text-amber-400 hover:text-amber-700 focus:outline-none focus:ring-1 focus:ring-amber-500/40" aria-label="Embaixador não cadastrado">
+                  <AlertTriangle className="h-3.5 w-3.5" />
+                </button>
+              </TooltipTrigger>
+              <TooltipContent side="right" className="text-[11.5px]">
+                Embaixador não cadastrado na Gestão de Parceiros.
+              </TooltipContent>
+            </Tooltip>
+          </TooltipProvider>
+        )}
         {r.embaixadorStatus === "ativo" && (
           <Badge className="bg-emerald-500/15 text-emerald-700 dark:text-emerald-400 hover:bg-emerald-500/20 text-[10px] font-normal h-4 px-1.5">Ativo</Badge>
         )}

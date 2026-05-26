@@ -612,7 +612,7 @@ export default function Parceiros() {
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
-    return rows
+    const base = rows
       .filter((r) => {
         if (monthFilter) {
           if (!r.dataVenda || r.dataVenda.slice(0, 7) !== monthFilter) return false;
@@ -628,7 +628,12 @@ export default function Parceiros() {
         const status: "ativo" | "inativo" | "nao_cadastrado" = !cad ? "nao_cadastrado" : (cad.status === "inativo" ? "inativo" : "ativo");
         return { ...r, bonificacaoVenda: bonus, embaixadorStatus: status };
       });
-  }, [rows, query, monthFilter, embFilter, campFilter, cadastroByNome]);
+    if (!sortInd) return base;
+    const col = COLUMNS[sortInd.key as ColKey];
+    if (!col?.sortValue) return base;
+    return sortArr(base, col.sortValue as (r: any) => any, sortInd.dir);
+  }, [rows, query, monthFilter, embFilter, campFilter, cadastroByNome, sortInd]);
+
 
 
   const totals = useMemo(() => {

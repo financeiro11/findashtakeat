@@ -872,6 +872,7 @@ export default function Parceiros() {
           <Table>
             <TableHeader>
               <TableRow>
+                <Th>Status</Th>
                 <Th>Campanha</Th>
                 <Th>Embaixador</Th>
                 <Th>Responsável Takeat</Th>
@@ -886,19 +887,26 @@ export default function Parceiros() {
             <TableBody>
               {recorrencias.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={9} className="py-10 text-center text-[12.5px] text-muted-foreground">
+                  <TableCell colSpan={10} className="py-10 text-center text-[12.5px] text-muted-foreground">
                     Nenhuma indicação ativa com recorrência no período.
                   </TableCell>
                 </TableRow>
               ) : (
                 recorrenciasPaginated.map((r) => (
                   <TableRow key={`rec-${r.id}`} className="text-[12.5px]">
+                    <TableCell className="py-2.5">
+                      {r.ativo ? (
+                        <Badge className="bg-emerald-500/15 text-emerald-700 dark:text-emerald-400 hover:bg-emerald-500/20 text-[10.5px] font-normal">Ativo</Badge>
+                      ) : (
+                        <Badge className="bg-rose-500/15 text-rose-700 dark:text-rose-400 hover:bg-rose-500/20 text-[10.5px] font-normal">Inativo</Badge>
+                      )}
+                    </TableCell>
                     <TableCell className="py-2.5 font-medium text-foreground">{r.campanha || "—"}</TableCell>
                     <TableCell className="py-2.5">{r.embaixador || "—"}</TableCell>
                     <TableCell className="py-2.5">{r.vendedor || "—"}</TableCell>
                     <TableCell className="py-2.5">{r.empresa || "—"}</TableCell>
                     <TableCell className="py-2.5 text-right tabular-nums">{BRL(r.mrr)}</TableCell>
-                    <TableCell className="py-2.5 text-right tabular-nums font-medium text-emerald-700 dark:text-emerald-400">
+                    <TableCell className={cn("py-2.5 text-right tabular-nums font-medium", r.ativo ? "text-emerald-700 dark:text-emerald-400" : "text-muted-foreground line-through")}>
                       {BRL(r.recorrenciaValor || 0)}
                     </TableCell>
                     <TableCell className="py-2.5 tabular-nums text-muted-foreground">{fmtDate(r.dataIndicacao)}</TableCell>

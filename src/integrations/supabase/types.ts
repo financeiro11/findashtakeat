@@ -1091,6 +1091,72 @@ export type Database = {
         }
         Relationships: []
       }
+      parceiros_recorrencias: {
+        Row: {
+          asaas_url: string | null
+          ativo: boolean
+          created_at: string
+          data_indicacao: string | null
+          data_venda: string | null
+          email_indicador: string | null
+          hubspot_url: string | null
+          id: string
+          id_campanha: string | null
+          id_negocio: string | null
+          indicador: string | null
+          mrr: number | null
+          nome_campanha: string | null
+          nome_negocio: string | null
+          observacoes: string | null
+          recorrencia_valor: number | null
+          responsavel_takeat: string | null
+          synced_at: string
+          updated_at: string
+        }
+        Insert: {
+          asaas_url?: string | null
+          ativo?: boolean
+          created_at?: string
+          data_indicacao?: string | null
+          data_venda?: string | null
+          email_indicador?: string | null
+          hubspot_url?: string | null
+          id?: string
+          id_campanha?: string | null
+          id_negocio?: string | null
+          indicador?: string | null
+          mrr?: number | null
+          nome_campanha?: string | null
+          nome_negocio?: string | null
+          observacoes?: string | null
+          recorrencia_valor?: number | null
+          responsavel_takeat?: string | null
+          synced_at?: string
+          updated_at?: string
+        }
+        Update: {
+          asaas_url?: string | null
+          ativo?: boolean
+          created_at?: string
+          data_indicacao?: string | null
+          data_venda?: string | null
+          email_indicador?: string | null
+          hubspot_url?: string | null
+          id?: string
+          id_campanha?: string | null
+          id_negocio?: string | null
+          indicador?: string | null
+          mrr?: number | null
+          nome_campanha?: string | null
+          nome_negocio?: string | null
+          observacoes?: string | null
+          recorrencia_valor?: number | null
+          responsavel_takeat?: string | null
+          synced_at?: string
+          updated_at?: string
+        }
+        Relationships: []
+      }
       playbook_assets: {
         Row: {
           created_at: string

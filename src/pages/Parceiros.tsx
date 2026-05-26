@@ -667,13 +667,33 @@ export default function Parceiros() {
     return Array.from(m.values()).sort((a, b) => b.indicacoes - a.indicacoes);
   }, [filtered]);
 
-  const convTotalPages = Math.max(1, Math.ceil(conversoes.length / convPageSize));
+  const conversoesSorted = useMemo(() => {
+    if (!sortConv) return conversoes;
+    const accessors: Record<string, (c: typeof conversoes[number]) => any> = {
+      embaixador: (c) => c.nome,
+      tier: (c) => cadastroByNome.get(c.nome.toLowerCase())?.tier ?? "",
+      bonificacao: (c) => cadastroByNome.get(c.nome.toLowerCase())?.valor_bonificacao ?? null,
+      recorrencia: (c) => cadastroByNome.get(c.nome.toLowerCase())?.valor_recorrencia ?? null,
+      indicacoes: (c) => c.indicacoes,
+      vendas: (c) => c.vendas,
+      mrr: (c) => c.mrr,
+      valorTotal: (c) => c.valorTotal,
+      bonificacaoTotal: (c) => c.bonificacaoTotal,
+      recorrenciaTotal: (c) => recorrenciaPorEmbaixador.get(c.nome.toLowerCase()) ?? 0,
+    };
+    const acc = accessors[sortConv.key];
+    if (!acc) return conversoes;
+    return sortArr(conversoes, acc, sortConv.dir);
+  }, [conversoes, sortConv, cadastroByNome, recorrenciaPorEmbaixador]);
+
+  const convTotalPages = Math.max(1, Math.ceil(conversoesSorted.length / convPageSize));
   useEffect(() => { setConvPage(1); }, [query, monthFilter, embFilter, campFilter, convPageSize]);
   useEffect(() => { if (convPage > convTotalPages) setConvPage(convTotalPages); }, [convTotalPages, convPage]);
   const conversoesPaginated = useMemo(
-    () => conversoes.slice((convPage - 1) * convPageSize, convPage * convPageSize),
-    [conversoes, convPage, convPageSize]
+    () => conversoesSorted.slice((convPage - 1) * convPageSize, convPage * convPageSize),
+    [conversoesSorted, convPage, convPageSize]
   );
+
 
   // Apuração Recorrências: fonte independente (tabela parceiros_recorrencias).
   // Inclui ativos e inativos — o status é exibido na primeira coluna.

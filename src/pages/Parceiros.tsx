@@ -564,14 +564,17 @@ export default function Parceiros() {
   const embOptions = useMemo(() => {
     const s = new Set<string>();
     rows.forEach((r) => { if (r.embaixador) s.add(r.embaixador); });
+    recRows.forEach((r) => { if (r.embaixador) s.add(r.embaixador); });
     return Array.from(s).sort();
-  }, [rows]);
+  }, [rows, recRows]);
 
   const campOptions = useMemo(() => {
     const s = new Set<string>();
     rows.forEach((r) => { if (r.campanha) s.add(r.campanha); });
+    recRows.forEach((r) => { if (r.campanha) s.add(r.campanha); });
     return Array.from(s).sort();
-  }, [rows]);
+  }, [rows, recRows]);
+
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();

@@ -505,18 +505,21 @@ export default function Parceiros() {
     [conversoes, convPage, convPageSize]
   );
 
-  // Apuração Recorrências: indicações convertidas (com data de venda)
-  // de embaixadores que possuem recorrência ativa no cadastro.
+  // Apuração Recorrências: fonte independente (tabela parceiros_recorrencias).
+  // Aplica os mesmos filtros da página (busca, mês, embaixador, campanha).
   const recorrencias = useMemo(() => {
-    return filtered
-      .filter((r) => r.dataVenda)
-      .map((r) => {
-        const cad = cadastroByNome.get((r.embaixador || "").trim().toLowerCase());
-        const recorrenciaValor = calcRecorrencia(r.mrr, cad);
-        return { ...r, recorrenciaValor, _cad: cad };
-      })
-      .filter((r) => r._cad && r._cad.recorrencia && r.recorrenciaValor != null);
-  }, [filtered, cadastroByNome]);
+    const q = query.trim().toLowerCase();
+    return recRows.filter((r) => {
+      if (!r.ativo) return false;
+      if (monthFilter) {
+        if (!r.dataIndicacao || r.dataIndicacao.slice(0, 7) !== monthFilter) return false;
+      }
+      if (embFilter.size > 0 && !embFilter.has(r.embaixador)) return false;
+      if (campFilter.size > 0 && !campFilter.has(r.campanha)) return false;
+      if (q && ![r.campanha, r.embaixador, r.vendedor, r.empresa].some((f) => f?.toLowerCase().includes(q))) return false;
+      return true;
+    });
+  }, [recRows, query, monthFilter, embFilter, campFilter]);
 
   const recTotalPages = Math.max(1, Math.ceil(recorrencias.length / recPageSize));
   useEffect(() => { setRecPage(1); }, [query, monthFilter, embFilter, campFilter, recPageSize]);

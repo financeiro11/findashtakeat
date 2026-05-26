@@ -192,6 +192,8 @@ export default function Parceiros() {
   const [page, setPage] = useState<number>(1);
   const [convPageSize, setConvPageSize] = useState<number>(25);
   const [convPage, setConvPage] = useState<number>(1);
+  const [recPageSize, setRecPageSize] = useState<number>(25);
+  const [recPage, setRecPage] = useState<number>(1);
 
 
   useEffect(() => {
@@ -400,6 +402,12 @@ export default function Parceiros() {
     return Number(cad.valor_bonificacao);
   };
 
+  const calcRecorrencia = (mrr: number, cad?: typeof cadastros[number]) => {
+    if (!cad || !cad.recorrencia || cad.valor_recorrencia == null) return null;
+    if (cad.metodo_recorrencia === "%") return (Number(mrr) || 0) * (Number(cad.valor_recorrencia) / 100);
+    return Number(cad.valor_recorrencia);
+  };
+
   const embOptions = useMemo(() => {
     const s = new Set<string>();
     rows.forEach((r) => { if (r.embaixador) s.add(r.embaixador); });
@@ -470,6 +478,32 @@ export default function Parceiros() {
   const conversoesPaginated = useMemo(
     () => conversoes.slice((convPage - 1) * convPageSize, convPage * convPageSize),
     [conversoes, convPage, convPageSize]
+  );
+
+  // Apuração Recorrências: indicações convertidas (com data de venda)
+  // de embaixadores que possuem recorrência ativa no cadastro.
+  const recorrencias = useMemo(() => {
+    return filtered
+      .filter((r) => r.dataVenda)
+      .map((r) => {
+        const cad = cadastroByNome.get((r.embaixador || "").trim().toLowerCase());
+        const recorrenciaValor = calcRecorrencia(r.mrr, cad);
+        return { ...r, recorrenciaValor, _cad: cad };
+      })
+      .filter((r) => r._cad && r._cad.recorrencia && r.recorrenciaValor != null);
+  }, [filtered, cadastroByNome]);
+
+  const recTotalPages = Math.max(1, Math.ceil(recorrencias.length / recPageSize));
+  useEffect(() => { setRecPage(1); }, [query, monthFilter, embFilter, campFilter, recPageSize]);
+  useEffect(() => { if (recPage > recTotalPages) setRecPage(recTotalPages); }, [recTotalPages, recPage]);
+  const recorrenciasPaginated = useMemo(
+    () => recorrencias.slice((recPage - 1) * recPageSize, recPage * recPageSize),
+    [recorrencias, recPage, recPageSize]
+  );
+
+  const recTotal = useMemo(
+    () => recorrencias.reduce((s, r) => s + (r.recorrenciaValor || 0), 0),
+    [recorrencias]
   );
 
   const allChecked = filtered.length > 0 && filtered.every((r) => selected.has(r.id));
@@ -789,6 +823,75 @@ export default function Parceiros() {
           />
         )}
       </SectionCard>
+
+      {/* Apuração Recorrências */}
+      <SectionCard
+        title="Apuração Recorrências"
+        subtitle={`Indicações convertidas com recorrência ativa · Total: ${BRL(recTotal)}`}
+        padded={false}
+      >
+        <div className="overflow-x-auto">
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <Th>Campanha</Th>
+                <Th>Embaixador</Th>
+                <Th>Responsável Takeat</Th>
+                <Th>Empresa</Th>
+                <Th className="text-right">MRR</Th>
+                <Th className="text-right">Recorrência</Th>
+                <Th>Data indicação</Th>
+                <Th className="text-center">HubSpot</Th>
+                <Th className="text-center">Asaas</Th>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {recorrencias.length === 0 ? (
+                <TableRow>
+                  <TableCell colSpan={9} className="py-10 text-center text-[12.5px] text-muted-foreground">
+                    Nenhuma indicação ativa com recorrência no período.
+                  </TableCell>
+                </TableRow>
+              ) : (
+                recorrenciasPaginated.map((r) => (
+                  <TableRow key={`rec-${r.id}`} className="text-[12.5px]">
+                    <TableCell className="py-2.5 font-medium text-foreground">{r.campanha || "—"}</TableCell>
+                    <TableCell className="py-2.5">{r.embaixador || "—"}</TableCell>
+                    <TableCell className="py-2.5">{r.vendedor || "—"}</TableCell>
+                    <TableCell className="py-2.5">{r.empresa || "—"}</TableCell>
+                    <TableCell className="py-2.5 text-right tabular-nums">{BRL(r.mrr)}</TableCell>
+                    <TableCell className="py-2.5 text-right tabular-nums font-medium text-emerald-700 dark:text-emerald-400">
+                      {BRL(r.recorrenciaValor || 0)}
+                    </TableCell>
+                    <TableCell className="py-2.5 tabular-nums text-muted-foreground">{fmtDate(r.dataIndicacao)}</TableCell>
+                    <TableCell className="py-2.5 text-center">
+                      <IntegrationLink href={r.hubspotUrl} label="HubSpot" tone="hubspot">
+                        <HubspotIcon className="h-3.5 w-3.5" />
+                      </IntegrationLink>
+                    </TableCell>
+                    <TableCell className="py-2.5 text-center">
+                      <IntegrationLink href={r.asaasUrl} label="Asaas" tone="asaas">
+                        <AsaasIcon className="h-3.5 w-3.5" />
+                      </IntegrationLink>
+                    </TableCell>
+                  </TableRow>
+                ))
+              )}
+            </TableBody>
+          </Table>
+        </div>
+        {recorrencias.length > 0 && (
+          <Pagination
+            page={recPage}
+            totalPages={recTotalPages}
+            pageSize={recPageSize}
+            onPageChange={setRecPage}
+            onPageSizeChange={setRecPageSize}
+          />
+        )}
+      </SectionCard>
+
+
 
       <Dialog open={mapOpen} onOpenChange={(o) => { if (!importing) setMapOpen(o); }}>
         <DialogContent className="max-w-2xl">

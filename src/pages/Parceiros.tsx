@@ -190,6 +190,8 @@ export default function Parceiros() {
   const [importing, setImporting] = useState(false);
   const [pageSize, setPageSize] = useState<number>(25);
   const [page, setPage] = useState<number>(1);
+  const [convPageSize, setConvPageSize] = useState<number>(25);
+  const [convPage, setConvPage] = useState<number>(1);
 
 
   useEffect(() => {

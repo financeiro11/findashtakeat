@@ -636,7 +636,7 @@ export default function Parceiros() {
         const cad = cadastroByNome.get((r.embaixador || "").trim().toLowerCase());
         const bonus = r.dataVenda ? calcBonificacao(r.valorTotal, cad) : null;
         const status: "ativo" | "inativo" | "nao_cadastrado" = !cad ? "nao_cadastrado" : (cad.status === "inativo" ? "inativo" : "ativo");
-        return { ...r, bonificacaoVenda: bonus, embaixadorStatus: status };
+        return { ...r, bonificacaoVenda: bonus, embaixadorStatus: status, campanhaCadastrada: cad?.campanha ?? null };
       });
     if (!sortInd) return base;
     const col = COLUMNS[sortInd.key as ColKey];

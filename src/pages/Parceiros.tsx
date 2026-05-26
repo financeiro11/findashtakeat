@@ -134,7 +134,9 @@ const COL_ORDER_STORAGE_KEY = "parceiros:colOrder:v1";
 
 const MONTH_NAMES = ["Jan","Fev","Mar","Abr","Mai","Jun","Jul","Ago","Set","Out","Nov","Dez"];
 
-const MAPPING_FIELDS: { key: string; label: string; column: string; match: string[]; type?: "number" | "date"; required?: boolean }[] = [
+type MappingField = { key: string; label: string; column: string; match: string[]; type?: "number" | "date" | "bool"; required?: boolean };
+
+const MAPPING_FIELDS: MappingField[] = [
   { key: "id_negocio", label: "ID do Negócio *", column: "id_negocio", match: ["id_negocio", "id negocio", "deal"], required: true },
   { key: "id_campanha", label: "ID da Campanha", column: "id_campanha", match: ["id_campanha", "id campanha"] },
   { key: "campanha", label: "Campanha", column: "nome_campanha", match: ["nome_campanha", "campanha"] },
@@ -149,6 +151,23 @@ const MAPPING_FIELDS: { key: string; label: string; column: string; match: strin
   { key: "dataVenda", label: "Data venda", column: "data_venda", match: ["data_venda", "venda"], type: "date" },
   { key: "canal_aquisicao", label: "Canal de aquisição", column: "canal_aquisicao", match: ["canal"] },
   { key: "origem", label: "Origem", column: "origem", match: ["origem"] },
+  { key: "hubspot", label: "URL Hubspot", column: "hubspot_url", match: ["hubspot"] },
+  { key: "asaas", label: "URL Asaas", column: "asaas_url", match: ["asaas"] },
+];
+
+const REC_MAPPING_FIELDS: MappingField[] = [
+  { key: "id_negocio", label: "ID do Negócio *", column: "id_negocio", match: ["id_negocio", "id negocio", "deal"], required: true },
+  { key: "id_campanha", label: "ID da Campanha", column: "id_campanha", match: ["id_campanha", "id campanha"] },
+  { key: "campanha", label: "Campanha", column: "nome_campanha", match: ["nome_campanha", "campanha"] },
+  { key: "embaixador", label: "Embaixador / Indicador", column: "indicador", match: ["embaixador", "indicador"] },
+  { key: "email_indicador", label: "E-mail do Indicador", column: "email_indicador", match: ["email_indicador", "email"] },
+  { key: "responsavel_takeat", label: "Responsável Takeat", column: "responsavel_takeat", match: ["responsavel", "takeat"] },
+  { key: "empresa", label: "Empresa / Negócio", column: "nome_negocio", match: ["nome_negocio", "empresa", "negocio"] },
+  { key: "mrr", label: "MRR", column: "mrr", match: ["mrr"], type: "number" },
+  { key: "recorrencia_valor", label: "Recorrência (valor)", column: "recorrencia_valor", match: ["recorrencia", "recorrência"], type: "number" },
+  { key: "dataIndicacao", label: "Data indicação", column: "data_indicacao", match: ["data_indicacao", "indicac"], type: "date" },
+  { key: "dataVenda", label: "Data venda", column: "data_venda", match: ["data_venda", "venda"], type: "date" },
+  { key: "ativo", label: "Status (ativo)", column: "ativo", match: ["ativo", "status"], type: "bool" },
   { key: "hubspot", label: "URL Hubspot", column: "hubspot_url", match: ["hubspot"] },
   { key: "asaas", label: "URL Asaas", column: "asaas_url", match: ["asaas"] },
 ];

@@ -19,6 +19,8 @@ import { SectionCard } from "@/components/ui/section-card";
 import { cn } from "@/lib/utils";
 import { supabase } from "@/integrations/supabase/client";
 import { GestaoParceirosDialog } from "./parceiros/GestaoParceirosDialog";
+import { NaoCadastradoDialog } from "./parceiros/NaoCadastradoDialog";
+import { EditarCampanhaDialog, type EditarCampanhaTarget } from "./parceiros/EditarCampanhaDialog";
 
 /* ─────────────────────────── Tipos ─────────────────────────── */
 
@@ -37,6 +39,7 @@ type Parceiro = {
   asaasUrl: string;
   bonificacaoVenda?: number | null;
   embaixadorStatus?: "ativo" | "inativo" | "nao_cadastrado";
+  campanhaCadastrada?: string | null;
 };
 
 /* ─────────────────────────── Helpers ─────────────────────────── */
@@ -243,7 +246,14 @@ export default function Parceiros() {
   });
   const [dragCol, setDragCol] = useState<ColKey | null>(null);
   const [dragOverCol, setDragOverCol] = useState<ColKey | null>(null);
-  const [cadastros, setCadastros] = useState<Array<{ nome: string; tier: string; status: string; bonificacao: boolean; metodo_bonificacao: string | null; valor_bonificacao: number | null; recorrencia: boolean; metodo_recorrencia: string | null; valor_recorrencia: number | null }>>([]);
+  const [cadastros, setCadastros] = useState<Array<{ nome: string; tier: string; status: string; campanha: string | null; bonificacao: boolean; metodo_bonificacao: string | null; valor_bonificacao: number | null; recorrencia: boolean; metodo_recorrencia: string | null; valor_recorrencia: number | null }>>([]);
+  const [naoCadOpen, setNaoCadOpen] = useState(false);
+  const [naoCadNome, setNaoCadNome] = useState("");
+  const [editCampOpen, setEditCampOpen] = useState(false);
+  const [editCampTarget, setEditCampTarget] = useState<EditarCampanhaTarget | null>(null);
+
+  const openNaoCadastrado = (nome: string) => { setNaoCadNome(nome); setNaoCadOpen(true); };
+  const openEditCampanha = (t: EditarCampanhaTarget) => { setEditCampTarget(t); setEditCampOpen(true); };
   const [embFilter, setEmbFilter] = useState<Set<string>>(new Set());
   const [campFilter, setCampFilter] = useState<Set<string>>(new Set());
   const [embOpen, setEmbOpen] = useState(false);
@@ -321,7 +331,7 @@ export default function Parceiros() {
   }, []);
 
   const loadCadastros = async () => {
-    const { data, error } = await supabase.from("parceiros_cadastro").select("nome,tier,status,bonificacao,metodo_bonificacao,valor_bonificacao,recorrencia,metodo_recorrencia,valor_recorrencia");
+    const { data, error } = await supabase.from("parceiros_cadastro").select("nome,tier,status,campanha,bonificacao,metodo_bonificacao,valor_bonificacao,recorrencia,metodo_recorrencia,valor_recorrencia");
     if (error) { console.error(error); return; }
     setCadastros((data ?? []) as any);
   };
@@ -626,7 +636,7 @@ export default function Parceiros() {
         const cad = cadastroByNome.get((r.embaixador || "").trim().toLowerCase());
         const bonus = r.dataVenda ? calcBonificacao(r.valorTotal, cad) : null;
         const status: "ativo" | "inativo" | "nao_cadastrado" = !cad ? "nao_cadastrado" : (cad.status === "inativo" ? "inativo" : "ativo");
-        return { ...r, bonificacaoVenda: bonus, embaixadorStatus: status };
+        return { ...r, bonificacaoVenda: bonus, embaixadorStatus: status, campanhaCadastrada: cad?.campanha ?? null };
       });
     if (!sortInd) return base;
     const col = COLUMNS[sortInd.key as ColKey];
@@ -972,11 +982,69 @@ export default function Parceiros() {
                         aria-label="Selecionar linha"
                       />
                     </TableCell>
-                    {columnOrder.map((key) => (
-                      <TableCell key={key} className={cn("py-2.5", COLUMNS[key].cellClass)}>
-                        {COLUMNS[key].render(r)}
-                      </TableCell>
-                    ))}
+                    {columnOrder.map((key) => {
+                      const mismatch =
+                        key === "campanha" &&
+                        !!r.campanhaCadastrada &&
+                        (r.campanha || "").trim().toLowerCase() !== (r.campanhaCadastrada || "").trim().toLowerCase();
+                      return (
+                        <TableCell key={key} className={cn("py-2.5", COLUMNS[key].cellClass)}>
+                          {key === "embaixador" && r.embaixadorStatus === "nao_cadastrado" && r.embaixador ? (
+                            <span className="inline-flex items-center gap-1.5">
+                              <span>{r.embaixador}</span>
+                              <TooltipProvider delayDuration={150}>
+                                <Tooltip>
+                                  <TooltipTrigger asChild>
+                                    <button
+                                      type="button"
+                                      onClick={() => openNaoCadastrado(r.embaixador)}
+                                      className="inline-flex items-center justify-center rounded-full text-amber-600 dark:text-amber-400 hover:text-amber-700 focus:outline-none focus:ring-1 focus:ring-amber-500/40"
+                                      aria-label="Embaixador não cadastrado"
+                                    >
+                                      <AlertTriangle className="h-3.5 w-3.5" />
+                                    </button>
+                                  </TooltipTrigger>
+                                  <TooltipContent side="right" className="text-[11.5px]">
+                                    Embaixador não cadastrado. Clique para cadastrar ou associar.
+                                  </TooltipContent>
+                                </Tooltip>
+                              </TooltipProvider>
+                            </span>
+                          ) : key === "campanha" ? (
+                            <span className="inline-flex items-center gap-1.5">
+                              {COLUMNS.campanha.render(r)}
+                              {mismatch && (
+                                <TooltipProvider delayDuration={150}>
+                                  <Tooltip>
+                                    <TooltipTrigger asChild>
+                                      <button
+                                        type="button"
+                                        onClick={() => openEditCampanha({
+                                          table: "parceiros_indicacoes",
+                                          id: r.id,
+                                          embaixador: r.embaixador,
+                                          campanhaAtual: r.campanha || "",
+                                          campanhaCadastrada: r.campanhaCadastrada || "",
+                                        })}
+                                        className="inline-flex items-center justify-center rounded-full text-amber-600 dark:text-amber-400 hover:text-amber-700 focus:outline-none focus:ring-1 focus:ring-amber-500/40"
+                                        aria-label="Campanha divergente"
+                                      >
+                                        <AlertTriangle className="h-3.5 w-3.5" />
+                                      </button>
+                                    </TooltipTrigger>
+                                    <TooltipContent side="right" className="text-[11.5px]">
+                                      Campanha do registro diferente da cadastrada ({r.campanhaCadastrada}). Clique para editar.
+                                    </TooltipContent>
+                                  </Tooltip>
+                                </TooltipProvider>
+                              )}
+                            </span>
+                          ) : (
+                            COLUMNS[key].render(r)
+                          )}
+                        </TableCell>
+                      );
+                    })}
                   </TableRow>
                 ))
               )}
@@ -1032,19 +1100,24 @@ export default function Parceiros() {
                       <TableCell className="py-2.5 font-medium text-foreground">
                         <span className="inline-flex items-center gap-1.5 flex-wrap">
                           {c.nome}
-                          {!cad && (
+                          {!cad && c.nome && c.nome !== "—" && (
                             <TooltipProvider delayDuration={150}>
                               <Tooltip>
                                 <TooltipTrigger asChild>
-                                  <span className="inline-flex items-center gap-1 rounded-full bg-amber-100 px-1.5 py-0.5 text-[10.5px] font-medium text-amber-700 dark:bg-amber-500/15 dark:text-amber-400">
+                                  <button
+                                    type="button"
+                                    onClick={() => openNaoCadastrado(c.nome)}
+                                    className="inline-flex items-center gap-1 rounded-full bg-amber-100 px-1.5 py-0.5 text-[10.5px] font-medium text-amber-700 hover:bg-amber-200 dark:bg-amber-500/15 dark:text-amber-400 dark:hover:bg-amber-500/25 focus:outline-none focus:ring-1 focus:ring-amber-500/40"
+                                  >
                                     <AlertTriangle className="h-3 w-3" />
                                     Não cadastrado
-                                  </span>
+                                  </button>
                                 </TooltipTrigger>
                                 <TooltipContent side="right" className="text-[11.5px]">
-                                  Parceiro não cadastrado na Gestão de Parceiros.
+                                  Parceiro não cadastrado. Clique para cadastrar ou associar.
                                 </TooltipContent>
                               </Tooltip>
+
                             </TooltipProvider>
                           )}
                           {cad && cad.status === "inativo" && (
@@ -1142,6 +1215,7 @@ export default function Parceiros() {
               ) : (
                 recorrenciasPaginated.map((r) => {
                   const cadRec = cadastroByNome.get((r.embaixador || "").trim().toLowerCase());
+                  const campMismatch = !!cadRec?.campanha && (r.campanha || "").trim().toLowerCase() !== (cadRec.campanha || "").trim().toLowerCase();
                   return (
                   <TableRow key={`rec-${r.id}`} className="text-[12.5px]">
                     <TableCell className="py-2.5">
@@ -1151,7 +1225,36 @@ export default function Parceiros() {
                         <Badge className="bg-rose-500/15 text-rose-700 dark:text-rose-400 hover:bg-rose-500/20 text-[10.5px] font-normal">Inativo</Badge>
                       )}
                     </TableCell>
-                    <TableCell className="py-2.5 font-medium text-foreground">{r.campanha || "—"}</TableCell>
+                    <TableCell className="py-2.5 font-medium text-foreground">
+                      <span className="inline-flex items-center gap-1.5">
+                        <span>{r.campanha || "—"}</span>
+                        {campMismatch && (
+                          <TooltipProvider delayDuration={150}>
+                            <Tooltip>
+                              <TooltipTrigger asChild>
+                                <button
+                                  type="button"
+                                  onClick={() => openEditCampanha({
+                                    table: "parceiros_recorrencias",
+                                    id: r.id,
+                                    embaixador: r.embaixador,
+                                    campanhaAtual: r.campanha || "",
+                                    campanhaCadastrada: cadRec?.campanha || "",
+                                  })}
+                                  className="inline-flex items-center justify-center rounded-full text-amber-600 dark:text-amber-400 hover:text-amber-700 focus:outline-none focus:ring-1 focus:ring-amber-500/40"
+                                  aria-label="Campanha divergente"
+                                >
+                                  <AlertTriangle className="h-3.5 w-3.5" />
+                                </button>
+                              </TooltipTrigger>
+                              <TooltipContent side="right" className="text-[11.5px]">
+                                Campanha do registro diferente da cadastrada ({cadRec?.campanha}). Clique para editar.
+                              </TooltipContent>
+                            </Tooltip>
+                          </TooltipProvider>
+                        )}
+                      </span>
+                    </TableCell>
                     <TableCell className="py-2.5">
                       <span className="inline-flex items-center gap-1.5">
                         <span>{r.embaixador || "—"}</span>
@@ -1159,12 +1262,17 @@ export default function Parceiros() {
                           <TooltipProvider delayDuration={150}>
                             <Tooltip>
                               <TooltipTrigger asChild>
-                                <button type="button" className="inline-flex items-center justify-center rounded-full text-amber-600 dark:text-amber-400 hover:text-amber-700 focus:outline-none focus:ring-1 focus:ring-amber-500/40" aria-label="Embaixador não cadastrado">
+                                <button
+                                  type="button"
+                                  onClick={() => openNaoCadastrado(r.embaixador)}
+                                  className="inline-flex items-center justify-center rounded-full text-amber-600 dark:text-amber-400 hover:text-amber-700 focus:outline-none focus:ring-1 focus:ring-amber-500/40"
+                                  aria-label="Embaixador não cadastrado"
+                                >
                                   <AlertTriangle className="h-3.5 w-3.5" />
                                 </button>
                               </TooltipTrigger>
                               <TooltipContent side="right" className="text-[11.5px]">
-                                Embaixador não cadastrado na Gestão de Parceiros.
+                                Embaixador não cadastrado. Clique para cadastrar ou associar.
                               </TooltipContent>
                             </Tooltip>
                           </TooltipProvider>
@@ -1207,6 +1315,20 @@ export default function Parceiros() {
       </SectionCard>
 
 
+
+      <NaoCadastradoDialog
+        open={naoCadOpen}
+        onOpenChange={setNaoCadOpen}
+        nome={naoCadNome}
+        onDone={() => { loadCadastros(); loadRows(); loadRecorrencias(); }}
+      />
+
+      <EditarCampanhaDialog
+        open={editCampOpen}
+        onOpenChange={setEditCampOpen}
+        target={editCampTarget}
+        onDone={() => { loadRows(); loadRecorrencias(); }}
+      />
 
       <Dialog open={mapOpen} onOpenChange={(o) => { if (!importing) setMapOpen(o); }}>
         <DialogContent className="max-w-2xl">

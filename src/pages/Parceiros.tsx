@@ -506,11 +506,10 @@ export default function Parceiros() {
   );
 
   // Apuração Recorrências: fonte independente (tabela parceiros_recorrencias).
-  // Aplica os mesmos filtros da página (busca, mês, embaixador, campanha).
+  // Inclui ativos e inativos — o status é exibido na primeira coluna.
   const recorrencias = useMemo(() => {
     const q = query.trim().toLowerCase();
     return recRows.filter((r) => {
-      if (!r.ativo) return false;
       if (monthFilter) {
         if (!r.dataIndicacao || r.dataIndicacao.slice(0, 7) !== monthFilter) return false;
       }
@@ -530,9 +529,20 @@ export default function Parceiros() {
   );
 
   const recTotal = useMemo(
-    () => recorrencias.reduce((s, r) => s + (r.recorrenciaValor || 0), 0),
+    () => recorrencias.filter((r) => r.ativo).reduce((s, r) => s + (r.recorrenciaValor || 0), 0),
     [recorrencias]
   );
+
+  // Soma de recorrência ativa por embaixador (usada na lista de Conversões por embaixador).
+  const recorrenciaPorEmbaixador = useMemo(() => {
+    const m = new Map<string, number>();
+    recRows.forEach((r) => {
+      if (!r.ativo) return;
+      const key = (r.embaixador || "").trim().toLowerCase();
+      m.set(key, (m.get(key) ?? 0) + (r.recorrenciaValor || 0));
+    });
+    return m;
+  }, [recRows]);
 
   const allChecked = filtered.length > 0 && filtered.every((r) => selected.has(r.id));
   const someChecked = filtered.some((r) => selected.has(r.id));
@@ -763,12 +773,13 @@ export default function Parceiros() {
                 <Th className="text-right">MRR</Th>
                 <Th className="text-right">Valor total</Th>
                 <Th className="text-right">Bonificação Total</Th>
+                <Th className="text-right">Recorrência Total</Th>
               </TableRow>
             </TableHeader>
             <TableBody>
               {conversoes.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={9} className="py-10 text-center text-[12.5px] text-muted-foreground">
+                  <TableCell colSpan={10} className="py-10 text-center text-[12.5px] text-muted-foreground">
                     Sem indicações no período.
                   </TableCell>
                 </TableRow>
@@ -834,6 +845,7 @@ export default function Parceiros() {
                       <TableCell className="py-2.5 text-right tabular-nums">{BRL(c.mrr)}</TableCell>
                       <TableCell className="py-2.5 text-right tabular-nums font-medium">{BRL(c.valorTotal)}</TableCell>
                       <TableCell className="py-2.5 text-right tabular-nums font-medium">{c.bonificacaoTotal > 0 ? BRL(c.bonificacaoTotal) : <span className="text-muted-foreground">—</span>}</TableCell>
+                      <TableCell className="py-2.5 text-right tabular-nums font-medium text-emerald-700 dark:text-emerald-400">{(recorrenciaPorEmbaixador.get(c.nome.toLowerCase()) ?? 0) > 0 ? BRL(recorrenciaPorEmbaixador.get(c.nome.toLowerCase()) ?? 0) : <span className="text-muted-foreground font-normal">—</span>}</TableCell>
                     </TableRow>
                   );
                 })
@@ -862,6 +874,7 @@ export default function Parceiros() {
           <Table>
             <TableHeader>
               <TableRow>
+                <Th>Status</Th>
                 <Th>Campanha</Th>
                 <Th>Embaixador</Th>
                 <Th>Responsável Takeat</Th>
@@ -876,19 +889,26 @@ export default function Parceiros() {
             <TableBody>
               {recorrencias.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={9} className="py-10 text-center text-[12.5px] text-muted-foreground">
+                  <TableCell colSpan={10} className="py-10 text-center text-[12.5px] text-muted-foreground">
                     Nenhuma indicação ativa com recorrência no período.
                   </TableCell>
                 </TableRow>
               ) : (
                 recorrenciasPaginated.map((r) => (
                   <TableRow key={`rec-${r.id}`} className="text-[12.5px]">
+                    <TableCell className="py-2.5">
+                      {r.ativo ? (
+                        <Badge className="bg-emerald-500/15 text-emerald-700 dark:text-emerald-400 hover:bg-emerald-500/20 text-[10.5px] font-normal">Ativo</Badge>
+                      ) : (
+                        <Badge className="bg-rose-500/15 text-rose-700 dark:text-rose-400 hover:bg-rose-500/20 text-[10.5px] font-normal">Inativo</Badge>
+                      )}
+                    </TableCell>
                     <TableCell className="py-2.5 font-medium text-foreground">{r.campanha || "—"}</TableCell>
                     <TableCell className="py-2.5">{r.embaixador || "—"}</TableCell>
                     <TableCell className="py-2.5">{r.vendedor || "—"}</TableCell>
                     <TableCell className="py-2.5">{r.empresa || "—"}</TableCell>
                     <TableCell className="py-2.5 text-right tabular-nums">{BRL(r.mrr)}</TableCell>
-                    <TableCell className="py-2.5 text-right tabular-nums font-medium text-emerald-700 dark:text-emerald-400">
+                    <TableCell className={cn("py-2.5 text-right tabular-nums font-medium", r.ativo ? "text-emerald-700 dark:text-emerald-400" : "text-muted-foreground line-through")}>
                       {BRL(r.recorrenciaValor || 0)}
                     </TableCell>
                     <TableCell className="py-2.5 tabular-nums text-muted-foreground">{fmtDate(r.dataIndicacao)}</TableCell>

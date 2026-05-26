@@ -480,6 +480,32 @@ export default function Parceiros() {
     [conversoes, convPage, convPageSize]
   );
 
+  // Apuração Recorrências: indicações convertidas (com data de venda)
+  // de embaixadores que possuem recorrência ativa no cadastro.
+  const recorrencias = useMemo(() => {
+    return filtered
+      .filter((r) => r.dataVenda)
+      .map((r) => {
+        const cad = cadastroByNome.get((r.embaixador || "").trim().toLowerCase());
+        const recorrenciaValor = calcRecorrencia(r.mrr, cad);
+        return { ...r, recorrenciaValor, _cad: cad };
+      })
+      .filter((r) => r._cad && r._cad.recorrencia && r.recorrenciaValor != null);
+  }, [filtered, cadastroByNome]);
+
+  const recTotalPages = Math.max(1, Math.ceil(recorrencias.length / recPageSize));
+  useEffect(() => { setRecPage(1); }, [query, monthFilter, embFilter, campFilter, recPageSize]);
+  useEffect(() => { if (recPage > recTotalPages) setRecPage(recTotalPages); }, [recTotalPages, recPage]);
+  const recorrenciasPaginated = useMemo(
+    () => recorrencias.slice((recPage - 1) * recPageSize, recPage * recPageSize),
+    [recorrencias, recPage, recPageSize]
+  );
+
+  const recTotal = useMemo(
+    () => recorrencias.reduce((s, r) => s + (r.recorrenciaValor || 0), 0),
+    [recorrencias]
+  );
+
   const allChecked = filtered.length > 0 && filtered.every((r) => selected.has(r.id));
   const someChecked = filtered.some((r) => selected.has(r.id));
   const toggleAll = () => {

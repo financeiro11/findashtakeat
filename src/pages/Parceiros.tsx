@@ -920,25 +920,33 @@ export default function Parceiros() {
                 </Th>
                 {columnOrder.map((key) => {
                   const c = COLUMNS[key];
+                  const sortable = !!c.sortValue;
+                  const active = sortInd?.key === key;
+                  const SortIcon = active ? (sortInd!.dir === "asc" ? ArrowUp : ArrowDown) : ArrowUpDown;
                   return (
                     <Th
                       key={key}
-                      className={cn(c.headClass, "cursor-move select-none", dragOverCol === key && "bg-muted/50")}
+                      className={cn(c.headClass, "cursor-move select-none", dragOverCol === key && "bg-muted/50", sortable && "hover:text-foreground transition-colors")}
                       draggable
                       onDragStart={() => setDragCol(key)}
                       onDragOver={(e) => { e.preventDefault(); if (dragOverCol !== key) setDragOverCol(key); }}
                       onDragLeave={() => setDragOverCol((p) => (p === key ? null : p))}
                       onDrop={() => handleDropCol(key)}
                       onDragEnd={() => { setDragCol(null); setDragOverCol(null); }}
-                      title="Arraste para reordenar"
+                      onClick={sortable ? () => setSortInd((s) => toggleSort(s, key)) : undefined}
+                      title={sortable ? "Clique para ordenar · arraste para reordenar" : "Arraste para reordenar"}
                     >
                       <span className={cn("inline-flex items-center gap-1", c.headClass?.includes("text-right") && "flex-row-reverse")}>
                         <GripVertical className="h-3 w-3 text-muted-foreground/40" aria-hidden />
                         {c.label}
+                        {sortable && (
+                          <SortIcon className={cn("h-3 w-3", active ? "text-foreground" : "text-muted-foreground/40")} aria-hidden />
+                        )}
                       </span>
                     </Th>
                   );
                 })}
+
               </TableRow>
             </TableHeader>
             <TableBody>

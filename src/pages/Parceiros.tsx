@@ -1050,7 +1050,9 @@ export default function Parceiros() {
                   </TableCell>
                 </TableRow>
               ) : (
-                recorrenciasPaginated.map((r) => (
+                recorrenciasPaginated.map((r) => {
+                  const cadRec = cadastroByNome.get((r.embaixador || "").trim().toLowerCase());
+                  return (
                   <TableRow key={`rec-${r.id}`} className="text-[12.5px]">
                     <TableCell className="py-2.5">
                       {r.ativo ? (
@@ -1060,7 +1062,25 @@ export default function Parceiros() {
                       )}
                     </TableCell>
                     <TableCell className="py-2.5 font-medium text-foreground">{r.campanha || "—"}</TableCell>
-                    <TableCell className="py-2.5">{r.embaixador || "—"}</TableCell>
+                    <TableCell className="py-2.5">
+                      <span className="inline-flex items-center gap-1.5">
+                        <span>{r.embaixador || "—"}</span>
+                        {!cadRec && r.embaixador && (
+                          <TooltipProvider delayDuration={150}>
+                            <Tooltip>
+                              <TooltipTrigger asChild>
+                                <button type="button" className="inline-flex items-center justify-center rounded-full text-amber-600 dark:text-amber-400 hover:text-amber-700 focus:outline-none focus:ring-1 focus:ring-amber-500/40" aria-label="Embaixador não cadastrado">
+                                  <AlertTriangle className="h-3.5 w-3.5" />
+                                </button>
+                              </TooltipTrigger>
+                              <TooltipContent side="right" className="text-[11.5px]">
+                                Embaixador não cadastrado na Gestão de Parceiros.
+                              </TooltipContent>
+                            </Tooltip>
+                          </TooltipProvider>
+                        )}
+                      </span>
+                    </TableCell>
                     <TableCell className="py-2.5">{r.vendedor || "—"}</TableCell>
                     <TableCell className="py-2.5">{r.empresa || "—"}</TableCell>
                     <TableCell className="py-2.5 text-right tabular-nums">{BRL(r.mrr)}</TableCell>

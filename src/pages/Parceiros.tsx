@@ -564,14 +564,17 @@ export default function Parceiros() {
   const embOptions = useMemo(() => {
     const s = new Set<string>();
     rows.forEach((r) => { if (r.embaixador) s.add(r.embaixador); });
+    recRows.forEach((r) => { if (r.embaixador) s.add(r.embaixador); });
     return Array.from(s).sort();
-  }, [rows]);
+  }, [rows, recRows]);
 
   const campOptions = useMemo(() => {
     const s = new Set<string>();
     rows.forEach((r) => { if (r.campanha) s.add(r.campanha); });
+    recRows.forEach((r) => { if (r.campanha) s.add(r.campanha); });
     return Array.from(s).sort();
-  }, [rows]);
+  }, [rows, recRows]);
+
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -671,16 +674,14 @@ export default function Parceiros() {
   // Soma de recorrência ativa por embaixador (usada na lista de Conversões por embaixador).
   const recorrenciaPorEmbaixador = useMemo(() => {
     const m = new Map<string, number>();
-    recRows.forEach((r) => {
+    recorrencias.forEach((r) => {
       if (!r.ativo) return;
       const key = (r.embaixador || "").trim().toLowerCase();
-      const cad = cadastroByNome.get(key);
-      const calc = calcRecorrencia(r.mrr || 0, cad);
-      const val = calc != null ? calc : (r.recorrenciaValor || 0);
-      m.set(key, (m.get(key) ?? 0) + val);
+      m.set(key, (m.get(key) ?? 0) + (r.recorrenciaValor || 0));
     });
     return m;
-  }, [recRows, cadastroByNome]);
+  }, [recorrencias]);
+
 
 
   const allChecked = filtered.length > 0 && filtered.every((r) => selected.has(r.id));

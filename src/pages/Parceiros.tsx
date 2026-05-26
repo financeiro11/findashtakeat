@@ -340,7 +340,17 @@ export default function Parceiros() {
     return isNaN(n) ? 0 : n;
   };
 
-  const handleImportClick = () => fileInputRef.current?.click();
+  const handleImportClick = (target: "indicacoes" | "recorrencias") => {
+    setImportTarget(target);
+    fileInputRef.current?.click();
+  };
+
+  const activeMappingFields = importTarget === "recorrencias" ? REC_MAPPING_FIELDS : MAPPING_FIELDS;
+
+  const parseBoolCell = (v: any): boolean => {
+    const s = String(v ?? "").trim().toLowerCase();
+    return ["true", "1", "sim", "yes", "y", "s", "verdadeiro", "ativo"].includes(s);
+  };
 
   const handleFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -355,12 +365,11 @@ export default function Parceiros() {
         return;
       }
       const headers = Object.keys(data[0]);
-      // auto-detect defaults
       const norm = (s: string) => s.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
       const findHeader = (...needles: string[]) =>
         headers.find((h) => needles.some((n) => norm(h).includes(n))) || "";
       const auto: Record<string, string> = {};
-      MAPPING_FIELDS.forEach((f) => { auto[f.key] = findHeader(...f.match); });
+      activeMappingFields.forEach((f) => { auto[f.key] = findHeader(...f.match); });
       setSheetHeaders(headers);
       setSheetRows(data);
       setMapping(auto);
@@ -375,6 +384,7 @@ export default function Parceiros() {
   const confirmImport = async () => {
     setImporting(true);
     try {
+      const fields = activeMappingFields;
       const g = (r: any, key: string) => {
         const col = mapping[key];
         return col && col !== "__none__" ? r[col] : "";
@@ -385,7 +395,7 @@ export default function Parceiros() {
         const idNegocio = String(g(r, "id_negocio") ?? "").trim();
         if (!idNegocio) { skipped++; return; }
         const payload: Record<string, any> = { id_negocio: idNegocio };
-        MAPPING_FIELDS.forEach((f) => {
+        fields.forEach((f) => {
           if (f.key === "id_negocio") return;
           const col = mapping[f.key];
           if (!col || col === "__none__") return;
@@ -393,14 +403,14 @@ export default function Parceiros() {
           if (raw == null || raw === "") return;
           if (f.type === "number") payload[f.column] = parseNumberCell(raw);
           else if (f.type === "date") payload[f.column] = parseDateCell(raw);
+          else if (f.type === "bool") payload[f.column] = parseBoolCell(raw);
           else payload[f.column] = String(raw).trim() || null;
         });
-        if (!payload.origem) payload.origem = "import_planilha";
+        if (importTarget === "indicacoes" && !payload.origem) payload.origem = "import_planilha";
         toInsert.push(payload);
       });
 
-      // Dedupe por id_negocio (mantém a última ocorrência) — evita erro
-      // "ON CONFLICT DO UPDATE command cannot affect row a second time"
+      // Dedupe por id_negocio
       const byId = new Map<string, any>();
       toInsert.forEach((p) => byId.set(p.id_negocio, { ...byId.get(p.id_negocio), ...p }));
       const deduped = Array.from(byId.values());
@@ -410,19 +420,102 @@ export default function Parceiros() {
         toast.warning("Nenhuma linha válida encontrada (ID do Negócio é obrigatório)");
         return;
       }
-      const { error } = await supabase
-        .from("parceiros_indicacoes")
-        .upsert(deduped, { onConflict: "id_negocio", ignoreDuplicates: false });
-      if (error) throw error;
-      toast.success(`${deduped.length} indicação(ões) importada(s)${skipped ? ` · ${skipped} sem ID` : ""}${duplicatesRemoved ? ` · ${duplicatesRemoved} duplicada(s) mescladas` : ""}`);
+
+      if (importTarget === "indicacoes") {
+        const { error } = await supabase
+          .from("parceiros_indicacoes")
+          .upsert(deduped, { onConflict: "id_negocio", ignoreDuplicates: false });
+        if (error) throw error;
+        toast.success(`${deduped.length} indicação(ões) importada(s)${skipped ? ` · ${skipped} sem ID` : ""}${duplicatesRemoved ? ` · ${duplicatesRemoved} duplicada(s) mescladas` : ""}`);
+        await loadRows();
+      } else {
+        // Recorrências: substitui registros existentes por id_negocio (delete + insert)
+        const ids = deduped.map((p) => p.id_negocio);
+        await supabase.from("parceiros_recorrencias").delete().in("id_negocio", ids);
+        const { error } = await supabase.from("parceiros_recorrencias").insert(deduped);
+        if (error) throw error;
+        toast.success(`${deduped.length} recorrência(s) importada(s)${skipped ? ` · ${skipped} sem ID` : ""}${duplicatesRemoved ? ` · ${duplicatesRemoved} duplicada(s) mescladas` : ""}`);
+        await loadRecorrencias();
+      }
+
       setMapOpen(false);
       setSheetRows([]);
       setSheetHeaders([]);
-      await loadRows();
     } catch (err: any) {
       toast.error(err?.message || "Falha ao importar");
     } finally {
       setImporting(false);
+    }
+  };
+
+  const handleExport = (target: "indicacoes" | "conversoes" | "recorrencias") => {
+    try {
+      let rowsOut: any[] = [];
+      let sheetName = "Dados";
+      let fileName = "parceiros.xlsx";
+
+      if (target === "indicacoes") {
+        sheetName = "Indicações";
+        fileName = "indicacoes.xlsx";
+        rowsOut = filtered.map((r) => ({
+          Campanha: r.campanha,
+          Embaixador: r.embaixador,
+          Vendedor: r.vendedor,
+          Empresa: r.empresa,
+          MRR: r.mrr,
+          "Valor total": r.valorTotal,
+          Bonificação: r.bonificacaoVenda ?? "",
+          "Data indicação": r.dataIndicacao ?? "",
+          "Data venda": r.dataVenda ?? "",
+          HubSpot: r.hubspotUrl,
+          Asaas: r.asaasUrl,
+        }));
+      } else if (target === "conversoes") {
+        sheetName = "Conversões";
+        fileName = "conversoes-embaixador.xlsx";
+        rowsOut = conversoes.map((c) => {
+          const cad = cadastroByNome.get(c.nome.toLowerCase());
+          return {
+            Embaixador: c.nome,
+            Tier: cad?.tier ?? "",
+            Bonificação: cad?.bonificacao ? "Sim" : "Não",
+            Recorrência: cad?.recorrencia ? "Sim" : "Não",
+            Indicações: c.indicacoes,
+            Vendas: c.vendas,
+            MRR: c.mrr,
+            "Valor total": c.valorTotal,
+            "Bonificação Total": c.bonificacaoTotal,
+            "Recorrência Total": recorrenciaPorEmbaixador.get(c.nome.toLowerCase()) ?? 0,
+          };
+        });
+      } else {
+        sheetName = "Apuração Recorrências";
+        fileName = "apuracao-recorrencias.xlsx";
+        rowsOut = recorrencias.map((r) => ({
+          Status: r.ativo ? "Ativo" : "Inativo",
+          Campanha: r.campanha,
+          Embaixador: r.embaixador,
+          "Responsável Takeat": r.vendedor,
+          Empresa: r.empresa,
+          MRR: r.mrr,
+          Recorrência: r.recorrenciaValor,
+          "Data indicação": r.dataIndicacao ?? "",
+          HubSpot: r.hubspotUrl,
+          Asaas: r.asaasUrl,
+        }));
+      }
+
+      if (rowsOut.length === 0) {
+        toast.warning("Nenhum dado para exportar");
+        return;
+      }
+      const ws = XLSX.utils.json_to_sheet(rowsOut);
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, ws, sheetName);
+      XLSX.writeFile(wb, fileName);
+      toast.success(`${rowsOut.length} linha(s) exportada(s)`);
+    } catch (err: any) {
+      toast.error(err?.message || "Falha ao exportar");
     }
   };
 

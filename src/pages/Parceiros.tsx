@@ -506,11 +506,10 @@ export default function Parceiros() {
   );
 
   // Apuração Recorrências: fonte independente (tabela parceiros_recorrencias).
-  // Aplica os mesmos filtros da página (busca, mês, embaixador, campanha).
+  // Inclui ativos e inativos — o status é exibido na primeira coluna.
   const recorrencias = useMemo(() => {
     const q = query.trim().toLowerCase();
     return recRows.filter((r) => {
-      if (!r.ativo) return false;
       if (monthFilter) {
         if (!r.dataIndicacao || r.dataIndicacao.slice(0, 7) !== monthFilter) return false;
       }
@@ -530,9 +529,20 @@ export default function Parceiros() {
   );
 
   const recTotal = useMemo(
-    () => recorrencias.reduce((s, r) => s + (r.recorrenciaValor || 0), 0),
+    () => recorrencias.filter((r) => r.ativo).reduce((s, r) => s + (r.recorrenciaValor || 0), 0),
     [recorrencias]
   );
+
+  // Soma de recorrência ativa por embaixador (usada na lista de Conversões por embaixador).
+  const recorrenciaPorEmbaixador = useMemo(() => {
+    const m = new Map<string, number>();
+    recRows.forEach((r) => {
+      if (!r.ativo) return;
+      const key = (r.embaixador || "").trim().toLowerCase();
+      m.set(key, (m.get(key) ?? 0) + (r.recorrenciaValor || 0));
+    });
+    return m;
+  }, [recRows]);
 
   const allChecked = filtered.length > 0 && filtered.every((r) => selected.has(r.id));
   const someChecked = filtered.some((r) => selected.has(r.id));

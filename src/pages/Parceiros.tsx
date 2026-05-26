@@ -1260,6 +1260,36 @@ function Th({ children, className, ...rest }: React.ThHTMLAttributes<HTMLTableCe
   );
 }
 
+function SortableTh({
+  children, sortKey, sort, setSort, className, align,
+}: {
+  children: React.ReactNode;
+  sortKey: string;
+  sort: SortState;
+  setSort: React.Dispatch<React.SetStateAction<SortState>>;
+  className?: string;
+  align?: "left" | "right" | "center";
+}) {
+  const active = sort?.key === sortKey;
+  const dir = active ? sort!.dir : null;
+  const Icon = dir === "asc" ? ArrowUp : dir === "desc" ? ArrowDown : ArrowUpDown;
+  return (
+    <Th
+      className={cn("cursor-pointer select-none hover:text-foreground transition-colors", className)}
+      onClick={() => setSort((s) => toggleSort(s, sortKey))}
+    >
+      <span className={cn(
+        "inline-flex items-center gap-1",
+        align === "right" && "flex-row-reverse w-full",
+        align === "center" && "justify-center w-full",
+      )}>
+        {children}
+        <Icon className={cn("h-3 w-3", active ? "text-foreground" : "text-muted-foreground/40")} />
+      </span>
+    </Th>
+  );
+}
+
 function MultiFilter({
   label, open, setOpen, options, selected, setSelected,
 }: {

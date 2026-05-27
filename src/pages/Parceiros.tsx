@@ -1263,7 +1263,7 @@ export default function Parceiros() {
             </TableBody>
           </Table>
         </div>
-        {conversoes.length > 0 && (
+        {conversoesFiltradas.length > 0 && (
           <Pagination
             page={convPage}
             totalPages={convTotalPages}

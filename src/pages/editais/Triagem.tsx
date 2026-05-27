@@ -19,11 +19,20 @@ export default function Triagem() {
 
   const load = async () => {
     setLoading(true);
+    const hoje = new Date().toISOString().slice(0, 10);
     let query: any = supabase.from("editais" as any).select("*").order("match_score", { ascending: false }).limit(500);
+    query = query.or(`prazo_envio.is.null,prazo_envio.gte.${hoje}`);
     if (filter !== "all") query = query.eq("visibility_status", filter);
     const { data, error } = await query;
     if (error) toast.error(error.message); else setRows((data as any) ?? []);
     setLoading(false);
+  };
+
+  const excluir = async (id: string) => {
+    if (!confirm("Excluir definitivamente este edital? Ele sairá de Radar, Triagem e Pipeline.")) return;
+    const { error } = await supabase.from("editais" as any).delete().eq("id", id);
+    if (error) toast.error(error.message);
+    else { toast.success("Excluído"); load(); }
   };
 
   const setVisibility = async (id: string, status: string) => {

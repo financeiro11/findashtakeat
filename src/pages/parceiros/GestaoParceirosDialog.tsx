@@ -547,6 +547,57 @@ export function GestaoParceirosDialog() {
           </div>
         </div>
       </DialogContent>
+
+      {/* Mapping dialog */}
+      <Dialog open={mapOpen} onOpenChange={(v) => { if (!v) { setMapOpen(false); setPendingRows([]); setPendingHeaders([]); setMapping({}); } }}>
+        <DialogContent className="max-w-2xl">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <FileSpreadsheet className="h-4 w-4" /> Vincular colunas da planilha
+            </DialogTitle>
+            <p className="text-[11.5px] text-muted-foreground">
+              {pendingRows.length} linha(s) detectada(s). Escolha qual coluna da planilha corresponde a cada campo do banco. Apenas <span className="font-medium">Nome</span> é obrigatório.
+            </p>
+          </DialogHeader>
+
+          <div className="grid max-h-[60vh] gap-2 overflow-y-auto pr-1">
+            {DB_FIELDS.map((f) => (
+              <div key={f.key} className="grid grid-cols-[1fr,1.4fr] items-center gap-3 rounded-md border border-border bg-card/40 px-3 py-2">
+                <Label className="text-[12.5px]">
+                  {f.label} {f.required && <span className="text-destructive">*</span>}
+                  <div className="text-[10.5px] font-normal text-muted-foreground">{f.key}</div>
+                </Label>
+                <Select
+                  value={mapping[f.key] ?? "__none__"}
+                  onValueChange={(v) => setMapping((m) => {
+                    const n = { ...m };
+                    if (v === "__none__") delete n[f.key];
+                    else n[f.key] = v;
+                    return n;
+                  })}
+                >
+                  <SelectTrigger className="h-8 text-[12.5px]"><SelectValue placeholder="— não importar —" /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="__none__">— não importar —</SelectItem>
+                    {pendingHeaders.map((h) => (
+                      <SelectItem key={h} value={h}>{h}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            ))}
+          </div>
+
+          <DialogFooter className="gap-2">
+            <Button variant="ghost" size="sm" className="h-8 text-[12.5px]" onClick={() => setMapOpen(false)} disabled={importing}>
+              Cancelar
+            </Button>
+            <Button size="sm" className="h-8 gap-1.5 text-[12.5px]" onClick={confirmImport} disabled={importing || !mapping.nome}>
+              {importing ? "Importando…" : "Confirmar importação"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </Dialog>
   );
 }

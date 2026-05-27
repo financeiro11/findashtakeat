@@ -1738,3 +1738,135 @@ function EmptyState() {
     </div>
   );
 }
+
+function FiltrosTabs({
+  filtInd, setFiltInd, filtConv, setFiltConv, filtRec, setFiltRec,
+  tierOptions, totalCount, indCount, convCount, recCount,
+}: {
+  filtInd: { campanhaDivergente: boolean; embStatus: Set<string>; comHistorico: boolean };
+  setFiltInd: React.Dispatch<React.SetStateAction<{ campanhaDivergente: boolean; embStatus: Set<string>; comHistorico: boolean }>>;
+  filtConv: { tier: Set<string>; recorrencia: "todos" | "sim" | "nao"; naoCadastrados: boolean; comHistorico: boolean };
+  setFiltConv: React.Dispatch<React.SetStateAction<{ tier: Set<string>; recorrencia: "todos" | "sim" | "nao"; naoCadastrados: boolean; comHistorico: boolean }>>;
+  filtRec: { status: Set<string>; campanhaDivergente: boolean; embaixadorNaoCadastrado: boolean; comHistorico: boolean };
+  setFiltRec: React.Dispatch<React.SetStateAction<{ status: Set<string>; campanhaDivergente: boolean; embaixadorNaoCadastrado: boolean; comHistorico: boolean }>>;
+  tierOptions: string[];
+  totalCount: number; indCount: number; convCount: number; recCount: number;
+}) {
+  const toggleSet = (s: Set<string>, v: string) => {
+    const next = new Set(s);
+    if (next.has(v)) next.delete(v); else next.add(v);
+    return next;
+  };
+  const Row = ({ label, children }: { label: string; children: React.ReactNode }) => (
+    <div className="flex items-center justify-between gap-2 py-1.5">
+      <Label className="text-[12.5px]">{label}</Label>
+      {children}
+    </div>
+  );
+  const Chip = ({ active, onClick, children }: { active: boolean; onClick: () => void; children: React.ReactNode }) => (
+    <button
+      type="button"
+      onClick={onClick}
+      className={cn(
+        "rounded-full px-2 py-0.5 text-[11.5px] border transition-colors",
+        active ? "border-primary bg-primary text-primary-foreground" : "border-border bg-muted/30 text-foreground hover:bg-muted"
+      )}
+    >{children}</button>
+  );
+  return (
+    <Popover>
+      <PopoverTrigger asChild>
+        <Button variant="outline" size="sm" className="h-8 gap-1.5 text-[12.5px]">
+          <Filter className="h-3.5 w-3.5" /> Filtros
+          {totalCount > 0 && <Badge variant="secondary" className="ml-0.5 h-4 px-1.5 text-[10px]">{totalCount}</Badge>}
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent className="w-[340px] p-3" align="end">
+        <Tabs defaultValue="ind">
+          <TabsList className="grid w-full grid-cols-3">
+            <TabsTrigger value="ind" className="text-[11.5px]">Indicações{indCount > 0 && <span className="ml-1 text-[10px] opacity-70">({indCount})</span>}</TabsTrigger>
+            <TabsTrigger value="conv" className="text-[11.5px]">Conversões{convCount > 0 && <span className="ml-1 text-[10px] opacity-70">({convCount})</span>}</TabsTrigger>
+            <TabsTrigger value="rec" className="text-[11.5px]">Recorrências{recCount > 0 && <span className="ml-1 text-[10px] opacity-70">({recCount})</span>}</TabsTrigger>
+          </TabsList>
+
+          <TabsContent value="ind" className="mt-3 space-y-1">
+            <Row label="Campanha divergente da cadastrada">
+              <Switch checked={filtInd.campanhaDivergente} onCheckedChange={(v) => setFiltInd((f) => ({ ...f, campanhaDivergente: v }))} />
+            </Row>
+            <div className="py-1.5">
+              <Label className="text-[12.5px]">Status do embaixador</Label>
+              <div className="mt-1.5 flex flex-wrap gap-1.5">
+                {(["ativo", "inativo", "nao_cadastrado"] as const).map((s) => (
+                  <Chip key={s} active={filtInd.embStatus.has(s)} onClick={() => setFiltInd((f) => ({ ...f, embStatus: toggleSet(f.embStatus, s) }))}>
+                    {s === "nao_cadastrado" ? "Não cadastrado" : s === "ativo" ? "Ativo" : "Inativo"}
+                  </Chip>
+                ))}
+              </div>
+            </div>
+            <Row label="Com histórico de edições">
+              <Switch checked={filtInd.comHistorico} onCheckedChange={(v) => setFiltInd((f) => ({ ...f, comHistorico: v }))} />
+            </Row>
+            {indCount > 0 && (
+              <Button variant="ghost" size="sm" className="mt-1 h-7 w-full text-[11.5px]" onClick={() => setFiltInd({ campanhaDivergente: false, embStatus: new Set(), comHistorico: false })}>Limpar filtros</Button>
+            )}
+          </TabsContent>
+
+          <TabsContent value="conv" className="mt-3 space-y-1">
+            <div className="py-1.5">
+              <Label className="text-[12.5px]">Tier</Label>
+              <div className="mt-1.5 flex flex-wrap gap-1.5">
+                {tierOptions.map((t) => (
+                  <Chip key={t} active={filtConv.tier.has(t)} onClick={() => setFiltConv((f) => ({ ...f, tier: toggleSet(f.tier, t) }))}>{t}</Chip>
+                ))}
+              </div>
+            </div>
+            <div className="py-1.5">
+              <Label className="text-[12.5px]">Recorrência</Label>
+              <div className="mt-1.5 flex flex-wrap gap-1.5">
+                {(["todos", "sim", "nao"] as const).map((v) => (
+                  <Chip key={v} active={filtConv.recorrencia === v} onClick={() => setFiltConv((f) => ({ ...f, recorrencia: v }))}>
+                    {v === "todos" ? "Todos" : v === "sim" ? "Com recorrência" : "Sem recorrência"}
+                  </Chip>
+                ))}
+              </div>
+            </div>
+            <Row label="Apenas não cadastrados">
+              <Switch checked={filtConv.naoCadastrados} onCheckedChange={(v) => setFiltConv((f) => ({ ...f, naoCadastrados: v }))} />
+            </Row>
+            <Row label="Com histórico de edições">
+              <Switch checked={filtConv.comHistorico} onCheckedChange={(v) => setFiltConv((f) => ({ ...f, comHistorico: v }))} />
+            </Row>
+            {convCount > 0 && (
+              <Button variant="ghost" size="sm" className="mt-1 h-7 w-full text-[11.5px]" onClick={() => setFiltConv({ tier: new Set(), recorrencia: "todos", naoCadastrados: false, comHistorico: false })}>Limpar filtros</Button>
+            )}
+          </TabsContent>
+
+          <TabsContent value="rec" className="mt-3 space-y-1">
+            <div className="py-1.5">
+              <Label className="text-[12.5px]">Status</Label>
+              <div className="mt-1.5 flex flex-wrap gap-1.5">
+                {(["ativo", "inativo"] as const).map((s) => (
+                  <Chip key={s} active={filtRec.status.has(s)} onClick={() => setFiltRec((f) => ({ ...f, status: toggleSet(f.status, s) }))}>
+                    {s === "ativo" ? "Ativo" : "Inativo"}
+                  </Chip>
+                ))}
+              </div>
+            </div>
+            <Row label="Campanha divergente da cadastrada">
+              <Switch checked={filtRec.campanhaDivergente} onCheckedChange={(v) => setFiltRec((f) => ({ ...f, campanhaDivergente: v }))} />
+            </Row>
+            <Row label="Embaixador não cadastrado">
+              <Switch checked={filtRec.embaixadorNaoCadastrado} onCheckedChange={(v) => setFiltRec((f) => ({ ...f, embaixadorNaoCadastrado: v }))} />
+            </Row>
+            <Row label="Com histórico de edições">
+              <Switch checked={filtRec.comHistorico} onCheckedChange={(v) => setFiltRec((f) => ({ ...f, comHistorico: v }))} />
+            </Row>
+            {recCount > 0 && (
+              <Button variant="ghost" size="sm" className="mt-1 h-7 w-full text-[11.5px]" onClick={() => setFiltRec({ status: new Set(), campanhaDivergente: false, embaixadorNaoCadastrado: false, comHistorico: false })}>Limpar filtros</Button>
+            )}
+          </TabsContent>
+        </Tabs>
+      </PopoverContent>
+    </Popover>
+  );
+}

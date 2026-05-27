@@ -15,6 +15,9 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from "@/components/ui/dialog";
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem } from "@/components/ui/dropdown-menu";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
+import { Switch } from "@/components/ui/switch";
+import { Label } from "@/components/ui/label";
 import { SectionCard } from "@/components/ui/section-card";
 import { cn } from "@/lib/utils";
 import { supabase } from "@/integrations/supabase/client";
@@ -279,6 +282,22 @@ export default function Parceiros() {
   const [sortConv, setSortConv] = useState<SortState>(null);
   const [sortRec, setSortRec] = useState<SortState>(null);
 
+  // Logs de edição (para mostrar ícone Histórico apenas quando houver)
+  const [logKeys, setLogKeys] = useState<Set<string>>(new Set());
+  const hasLog = (table: "parceiros_indicacoes" | "parceiros_recorrencias", id: string) =>
+    logKeys.has(`${table}:${id}`);
+
+  // Filtros avançados por lista
+  type FiltInd = { campanhaDivergente: boolean; embStatus: Set<string>; comHistorico: boolean };
+  type FiltConv = { tier: Set<string>; recorrencia: "todos" | "sim" | "nao"; naoCadastrados: boolean; comHistorico: boolean };
+  type FiltRec = { status: Set<string>; campanhaDivergente: boolean; embaixadorNaoCadastrado: boolean; comHistorico: boolean };
+  const [filtInd, setFiltInd] = useState<FiltInd>({ campanhaDivergente: false, embStatus: new Set(), comHistorico: false });
+  const [filtConv, setFiltConv] = useState<FiltConv>({ tier: new Set(), recorrencia: "todos", naoCadastrados: false, comHistorico: false });
+  const [filtRec, setFiltRec] = useState<FiltRec>({ status: new Set(), campanhaDivergente: false, embaixadorNaoCadastrado: false, comHistorico: false });
+  const filtIndCount = (filtInd.campanhaDivergente ? 1 : 0) + (filtInd.embStatus.size > 0 ? 1 : 0) + (filtInd.comHistorico ? 1 : 0);
+  const filtConvCount = (filtConv.tier.size > 0 ? 1 : 0) + (filtConv.recorrencia !== "todos" ? 1 : 0) + (filtConv.naoCadastrados ? 1 : 0) + (filtConv.comHistorico ? 1 : 0);
+  const filtRecCount = (filtRec.status.size > 0 ? 1 : 0) + (filtRec.campanhaDivergente ? 1 : 0) + (filtRec.embaixadorNaoCadastrado ? 1 : 0) + (filtRec.comHistorico ? 1 : 0);
+  const filtTotalCount = filtIndCount + filtConvCount + filtRecCount;
 
   useEffect(() => {
     try { localStorage.setItem(COL_ORDER_STORAGE_KEY, JSON.stringify(columnOrder)); } catch {}
@@ -332,7 +351,16 @@ export default function Parceiros() {
     loadRows();
     loadCadastros();
     loadRecorrencias();
+    loadLogKeys();
   }, []);
+
+  const loadLogKeys = async () => {
+    const { data, error } = await supabase
+      .from("parceiros_campanha_logs")
+      .select("registro_tabela, registro_id");
+    if (error) { console.error(error); return; }
+    setLogKeys(new Set((data ?? []).map((l: any) => `${l.registro_tabela}:${l.registro_id}`)));
+  };
 
   const loadCadastros = async () => {
     const { data, error } = await supabase.from("parceiros_cadastro").select("nome,tier,status,campanha,bonificacao,metodo_bonificacao,valor_bonificacao,recorrencia,metodo_recorrencia,valor_recorrencia");
@@ -626,27 +654,32 @@ export default function Parceiros() {
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
-    const base = rows
-      .filter((r) => {
-        if (monthFilter) {
-          if (!r.dataVenda || r.dataVenda.slice(0, 7) !== monthFilter) return false;
-        }
-        if (embFilter.size > 0 && !embFilter.has(r.embaixador)) return false;
-        if (campFilter.size > 0 && !campFilter.has(r.campanha)) return false;
-        if (q && ![r.campanha, r.embaixador, r.vendedor, r.empresa].some((f) => f?.toLowerCase().includes(q))) return false;
-        return true;
-      })
-      .map((r) => {
-        const cad = cadastroByNome.get((r.embaixador || "").trim().toLowerCase());
-        const bonus = r.dataVenda ? calcBonificacao(r.valorTotal, cad) : null;
-        const status: "ativo" | "inativo" | "nao_cadastrado" = !cad ? "nao_cadastrado" : (cad.status === "inativo" ? "inativo" : "ativo");
-        return { ...r, bonificacaoVenda: bonus, embaixadorStatus: status, campanhaCadastrada: cad?.campanha ?? null };
-      });
+    const mapped = rows.map((r) => {
+      const cad = cadastroByNome.get((r.embaixador || "").trim().toLowerCase());
+      const bonus = r.dataVenda ? calcBonificacao(r.valorTotal, cad) : null;
+      const status: "ativo" | "inativo" | "nao_cadastrado" = !cad ? "nao_cadastrado" : (cad.status === "inativo" ? "inativo" : "ativo");
+      return { ...r, bonificacaoVenda: bonus, embaixadorStatus: status, campanhaCadastrada: cad?.campanha ?? null };
+    });
+    const base = mapped.filter((r) => {
+      if (monthFilter) {
+        if (!r.dataVenda || r.dataVenda.slice(0, 7) !== monthFilter) return false;
+      }
+      if (embFilter.size > 0 && !embFilter.has(r.embaixador)) return false;
+      if (campFilter.size > 0 && !campFilter.has(r.campanha)) return false;
+      if (q && ![r.campanha, r.embaixador, r.vendedor, r.empresa].some((f) => f?.toLowerCase().includes(q))) return false;
+      if (filtInd.campanhaDivergente) {
+        const div = !!r.campanhaCadastrada && (r.campanha || "").trim().toLowerCase() !== (r.campanhaCadastrada || "").trim().toLowerCase();
+        if (!div) return false;
+      }
+      if (filtInd.embStatus.size > 0 && !filtInd.embStatus.has(r.embaixadorStatus)) return false;
+      if (filtInd.comHistorico && !logKeys.has(`parceiros_indicacoes:${r.id}`)) return false;
+      return true;
+    });
     if (!sortInd) return base;
     const col = COLUMNS[sortInd.key as ColKey];
     if (!col?.sortValue) return base;
     return sortArr(base, col.sortValue as (r: any) => any, sortInd.dir);
-  }, [rows, query, monthFilter, embFilter, campFilter, cadastroByNome, sortInd]);
+  }, [rows, query, monthFilter, embFilter, campFilter, cadastroByNome, sortInd, filtInd, logKeys]);
 
 
 
@@ -657,7 +690,7 @@ export default function Parceiros() {
   }, [filtered]);
 
   const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize));
-  useEffect(() => { setPage(1); }, [query, monthFilter, embFilter, campFilter, pageSize]);
+  useEffect(() => { setPage(1); }, [query, monthFilter, embFilter, campFilter, pageSize, filtInd]);
   useEffect(() => { if (page > totalPages) setPage(totalPages); }, [totalPages, page]);
   const paginated = useMemo(
     () => filtered.slice((page - 1) * pageSize, page * pageSize),
@@ -699,6 +732,11 @@ export default function Parceiros() {
   const recorrencias = useMemo(() => {
     const q = query.trim().toLowerCase();
     const base = recRows
+      .map((r) => {
+        const cad = cadastroByNome.get((r.embaixador || "").trim().toLowerCase());
+        const calc = calcRecorrencia(r.mrr || 0, cad);
+        return { ...r, recorrenciaValor: calc != null ? calc : (r.recorrenciaValor || 0), _cad: cad };
+      })
       .filter((r) => {
         if (monthFilter) {
           if (!r.dataIndicacao || r.dataIndicacao.slice(0, 7) !== monthFilter) return false;
@@ -706,23 +744,25 @@ export default function Parceiros() {
         if (embFilter.size > 0 && !embFilter.has(r.embaixador)) return false;
         if (campFilter.size > 0 && !campFilter.has(r.campanha)) return false;
         if (q && ![r.campanha, r.embaixador, r.vendedor, r.empresa].some((f) => f?.toLowerCase().includes(q))) return false;
+        if (filtRec.status.size > 0 && !filtRec.status.has(r.ativo ? "ativo" : "inativo")) return false;
+        if (filtRec.campanhaDivergente) {
+          const div = !!r._cad?.campanha && (r.campanha || "").trim().toLowerCase() !== (r._cad.campanha || "").trim().toLowerCase();
+          if (!div) return false;
+        }
+        if (filtRec.embaixadorNaoCadastrado && r._cad) return false;
+        if (filtRec.comHistorico && !logKeys.has(`parceiros_recorrencias:${r.id}`)) return false;
         return true;
-      })
-      .map((r) => {
-        const cad = cadastroByNome.get((r.embaixador || "").trim().toLowerCase());
-        const calc = calcRecorrencia(r.mrr || 0, cad);
-        return { ...r, recorrenciaValor: calc != null ? calc : (r.recorrenciaValor || 0) };
       });
     if (!sortRec) return base;
     const acc = REC_SORT_ACCESSORS[sortRec.key];
     if (!acc) return base;
     return sortArr(base, acc, sortRec.dir);
-  }, [recRows, query, monthFilter, embFilter, campFilter, cadastroByNome, sortRec]);
+  }, [recRows, query, monthFilter, embFilter, campFilter, cadastroByNome, sortRec, filtRec, logKeys]);
 
 
 
   const recTotalPages = Math.max(1, Math.ceil(recorrencias.length / recPageSize));
-  useEffect(() => { setRecPage(1); }, [query, monthFilter, embFilter, campFilter, recPageSize]);
+  useEffect(() => { setRecPage(1); }, [query, monthFilter, embFilter, campFilter, recPageSize, filtRec]);
   useEffect(() => { if (recPage > recTotalPages) setRecPage(recTotalPages); }, [recTotalPages, recPage]);
   const recorrenciasPaginated = useMemo(
     () => recorrencias.slice((recPage - 1) * recPageSize, recPage * recPageSize),
@@ -745,6 +785,20 @@ export default function Parceiros() {
     return m;
   }, [recorrencias]);
 
+  // Embaixadores que possuem algum registro com histórico (indicações ou recorrências)
+  const embaixadoresComLog = useMemo(() => {
+    const s = new Set<string>();
+    rows.forEach((r) => { if (logKeys.has(`parceiros_indicacoes:${r.id}`)) s.add((r.embaixador || "").trim().toLowerCase()); });
+    recRows.forEach((r) => { if (logKeys.has(`parceiros_recorrencias:${r.id}`)) s.add((r.embaixador || "").trim().toLowerCase()); });
+    return s;
+  }, [rows, recRows, logKeys]);
+
+  const tierOptions = useMemo(() => {
+    const s = new Set<string>();
+    cadastros.forEach((c) => { if (c.tier) s.add(c.tier); });
+    return Array.from(s);
+  }, [cadastros]);
+
   const conversoesSorted = useMemo(() => {
     if (!sortConv) return conversoes;
     const accessors: Record<string, (c: typeof conversoes[number]) => any> = {
@@ -764,12 +818,24 @@ export default function Parceiros() {
     return sortArr(conversoes, acc, sortConv.dir);
   }, [conversoes, sortConv, cadastroByNome, recorrenciaPorEmbaixador]);
 
-  const convTotalPages = Math.max(1, Math.ceil(conversoesSorted.length / convPageSize));
-  useEffect(() => { setConvPage(1); }, [query, monthFilter, embFilter, campFilter, convPageSize]);
+  const conversoesFiltradas = useMemo(() => {
+    return conversoesSorted.filter((c) => {
+      const cad = cadastroByNome.get(c.nome.toLowerCase());
+      if (filtConv.tier.size > 0 && !filtConv.tier.has(cad?.tier ?? "Não possui")) return false;
+      if (filtConv.recorrencia === "sim" && !cad?.recorrencia) return false;
+      if (filtConv.recorrencia === "nao" && cad?.recorrencia) return false;
+      if (filtConv.naoCadastrados && cad) return false;
+      if (filtConv.comHistorico && !embaixadoresComLog.has(c.nome.toLowerCase())) return false;
+      return true;
+    });
+  }, [conversoesSorted, cadastroByNome, filtConv, embaixadoresComLog]);
+
+  const convTotalPages = Math.max(1, Math.ceil(conversoesFiltradas.length / convPageSize));
+  useEffect(() => { setConvPage(1); }, [query, monthFilter, embFilter, campFilter, convPageSize, filtConv]);
   useEffect(() => { if (convPage > convTotalPages) setConvPage(convTotalPages); }, [convTotalPages, convPage]);
   const conversoesPaginated = useMemo(
-    () => conversoesSorted.slice((convPage - 1) * convPageSize, convPage * convPageSize),
-    [conversoesSorted, convPage, convPageSize]
+    () => conversoesFiltradas.slice((convPage - 1) * convPageSize, convPage * convPageSize),
+    [conversoesFiltradas, convPage, convPageSize]
   );
 
 
@@ -915,9 +981,14 @@ export default function Parceiros() {
               selected={campFilter}
               setSelected={setCampFilter}
             />
-            <Button variant="outline" size="sm" className="h-8 gap-1.5 text-[12.5px]">
-              <Filter className="h-3.5 w-3.5" /> Filtros
-            </Button>
+            <FiltrosTabs
+              filtInd={filtInd} setFiltInd={setFiltInd}
+              filtConv={filtConv} setFiltConv={setFiltConv}
+              filtRec={filtRec} setFiltRec={setFiltRec}
+              tierOptions={tierOptions}
+              totalCount={filtTotalCount}
+              indCount={filtIndCount} convCount={filtConvCount} recCount={filtRecCount}
+            />
           </div>
         }
       >
@@ -1017,27 +1088,29 @@ export default function Parceiros() {
                           ) : key === "campanha" ? (
                             <span className="inline-flex items-center gap-1.5">
                               {COLUMNS.campanha.render(r)}
-                              <TooltipProvider delayDuration={150}>
-                                <Tooltip>
-                                  <TooltipTrigger asChild>
-                                    <button
-                                      type="button"
-                                      onClick={() => openHistorico({
-                                        table: "parceiros_indicacoes",
-                                        id: r.id,
-                                        titulo: `${r.embaixador || "—"} · ${r.empresa || r.campanha || ""}`,
-                                      })}
-                                      className="inline-flex items-center justify-center rounded-full text-muted-foreground hover:text-foreground focus:outline-none focus:ring-1 focus:ring-primary/40"
-                                      aria-label="Histórico de campanha"
-                                    >
-                                      <History className="h-3.5 w-3.5" />
-                                    </button>
-                                  </TooltipTrigger>
-                                  <TooltipContent side="right" className="text-[11.5px]">
-                                    Ver histórico de alterações de campanha
-                                  </TooltipContent>
-                                </Tooltip>
-                              </TooltipProvider>
+                              {hasLog("parceiros_indicacoes", r.id) && (
+                                <TooltipProvider delayDuration={150}>
+                                  <Tooltip>
+                                    <TooltipTrigger asChild>
+                                      <button
+                                        type="button"
+                                        onClick={() => openHistorico({
+                                          table: "parceiros_indicacoes",
+                                          id: r.id,
+                                          titulo: `${r.embaixador || "—"} · ${r.empresa || r.campanha || ""}`,
+                                        })}
+                                        className="inline-flex items-center justify-center rounded-full text-muted-foreground hover:text-foreground focus:outline-none focus:ring-1 focus:ring-primary/40"
+                                        aria-label="Histórico de campanha"
+                                      >
+                                        <History className="h-3.5 w-3.5" />
+                                      </button>
+                                    </TooltipTrigger>
+                                    <TooltipContent side="right" className="text-[11.5px]">
+                                      Ver histórico de alterações de campanha
+                                    </TooltipContent>
+                                  </Tooltip>
+                                </TooltipProvider>
+                              )}
                               {mismatch && (
                                 <TooltipProvider delayDuration={150}>
                                   <Tooltip>
@@ -1111,7 +1184,7 @@ export default function Parceiros() {
               </TableRow>
             </TableHeader>
             <TableBody>
-              {conversoes.length === 0 ? (
+              {conversoesFiltradas.length === 0 ? (
                 <TableRow>
                   <TableCell colSpan={10} className="py-10 text-center text-[12.5px] text-muted-foreground">
                     Sem indicações no período.
@@ -1197,7 +1270,7 @@ export default function Parceiros() {
             </TableBody>
           </Table>
         </div>
-        {conversoes.length > 0 && (
+        {conversoesFiltradas.length > 0 && (
           <Pagination
             page={convPage}
             totalPages={convTotalPages}
@@ -1253,27 +1326,29 @@ export default function Parceiros() {
                     <TableCell className="py-2.5 font-medium text-foreground">
                       <span className="inline-flex items-center gap-1.5">
                         <span>{r.campanha || "—"}</span>
-                        <TooltipProvider delayDuration={150}>
-                          <Tooltip>
-                            <TooltipTrigger asChild>
-                              <button
-                                type="button"
-                                onClick={() => openHistorico({
-                                  table: "parceiros_recorrencias",
-                                  id: r.id,
-                                  titulo: `${r.embaixador || "—"} · ${r.empresa || r.campanha || ""}`,
-                                })}
-                                className="inline-flex items-center justify-center rounded-full text-muted-foreground hover:text-foreground focus:outline-none focus:ring-1 focus:ring-primary/40"
-                                aria-label="Histórico de campanha"
-                              >
-                                <History className="h-3.5 w-3.5" />
-                              </button>
-                            </TooltipTrigger>
-                            <TooltipContent side="right" className="text-[11.5px]">
-                              Ver histórico de alterações de campanha
-                            </TooltipContent>
-                          </Tooltip>
-                        </TooltipProvider>
+                        {hasLog("parceiros_recorrencias", r.id) && (
+                          <TooltipProvider delayDuration={150}>
+                            <Tooltip>
+                              <TooltipTrigger asChild>
+                                <button
+                                  type="button"
+                                  onClick={() => openHistorico({
+                                    table: "parceiros_recorrencias",
+                                    id: r.id,
+                                    titulo: `${r.embaixador || "—"} · ${r.empresa || r.campanha || ""}`,
+                                  })}
+                                  className="inline-flex items-center justify-center rounded-full text-muted-foreground hover:text-foreground focus:outline-none focus:ring-1 focus:ring-primary/40"
+                                  aria-label="Histórico de campanha"
+                                >
+                                  <History className="h-3.5 w-3.5" />
+                                </button>
+                              </TooltipTrigger>
+                              <TooltipContent side="right" className="text-[11.5px]">
+                                Ver histórico de alterações de campanha
+                              </TooltipContent>
+                            </Tooltip>
+                          </TooltipProvider>
+                        )}
                         {campMismatch && (
                           <TooltipProvider delayDuration={150}>
                             <Tooltip>
@@ -1661,5 +1736,137 @@ function EmptyState() {
         venda e links para HubSpot e Asaas.
       </p>
     </div>
+  );
+}
+
+function FiltrosTabs({
+  filtInd, setFiltInd, filtConv, setFiltConv, filtRec, setFiltRec,
+  tierOptions, totalCount, indCount, convCount, recCount,
+}: {
+  filtInd: { campanhaDivergente: boolean; embStatus: Set<string>; comHistorico: boolean };
+  setFiltInd: React.Dispatch<React.SetStateAction<{ campanhaDivergente: boolean; embStatus: Set<string>; comHistorico: boolean }>>;
+  filtConv: { tier: Set<string>; recorrencia: "todos" | "sim" | "nao"; naoCadastrados: boolean; comHistorico: boolean };
+  setFiltConv: React.Dispatch<React.SetStateAction<{ tier: Set<string>; recorrencia: "todos" | "sim" | "nao"; naoCadastrados: boolean; comHistorico: boolean }>>;
+  filtRec: { status: Set<string>; campanhaDivergente: boolean; embaixadorNaoCadastrado: boolean; comHistorico: boolean };
+  setFiltRec: React.Dispatch<React.SetStateAction<{ status: Set<string>; campanhaDivergente: boolean; embaixadorNaoCadastrado: boolean; comHistorico: boolean }>>;
+  tierOptions: string[];
+  totalCount: number; indCount: number; convCount: number; recCount: number;
+}) {
+  const toggleSet = (s: Set<string>, v: string) => {
+    const next = new Set(s);
+    if (next.has(v)) next.delete(v); else next.add(v);
+    return next;
+  };
+  const Row = ({ label, children }: { label: string; children: React.ReactNode }) => (
+    <div className="flex items-center justify-between gap-2 py-1.5">
+      <Label className="text-[12.5px]">{label}</Label>
+      {children}
+    </div>
+  );
+  const Chip = ({ active, onClick, children }: { active: boolean; onClick: () => void; children: React.ReactNode }) => (
+    <button
+      type="button"
+      onClick={onClick}
+      className={cn(
+        "rounded-full px-2 py-0.5 text-[11.5px] border transition-colors",
+        active ? "border-primary bg-primary text-primary-foreground" : "border-border bg-muted/30 text-foreground hover:bg-muted"
+      )}
+    >{children}</button>
+  );
+  return (
+    <Popover>
+      <PopoverTrigger asChild>
+        <Button variant="outline" size="sm" className="h-8 gap-1.5 text-[12.5px]">
+          <Filter className="h-3.5 w-3.5" /> Filtros
+          {totalCount > 0 && <Badge variant="secondary" className="ml-0.5 h-4 px-1.5 text-[10px]">{totalCount}</Badge>}
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent className="w-[340px] p-3" align="end">
+        <Tabs defaultValue="ind">
+          <TabsList className="grid w-full grid-cols-3">
+            <TabsTrigger value="ind" className="text-[11.5px]">Indicações{indCount > 0 && <span className="ml-1 text-[10px] opacity-70">({indCount})</span>}</TabsTrigger>
+            <TabsTrigger value="conv" className="text-[11.5px]">Conversões{convCount > 0 && <span className="ml-1 text-[10px] opacity-70">({convCount})</span>}</TabsTrigger>
+            <TabsTrigger value="rec" className="text-[11.5px]">Recorrências{recCount > 0 && <span className="ml-1 text-[10px] opacity-70">({recCount})</span>}</TabsTrigger>
+          </TabsList>
+
+          <TabsContent value="ind" className="mt-3 space-y-1">
+            <Row label="Campanha divergente da cadastrada">
+              <Switch checked={filtInd.campanhaDivergente} onCheckedChange={(v) => setFiltInd((f) => ({ ...f, campanhaDivergente: v }))} />
+            </Row>
+            <div className="py-1.5">
+              <Label className="text-[12.5px]">Status do embaixador</Label>
+              <div className="mt-1.5 flex flex-wrap gap-1.5">
+                {(["ativo", "inativo", "nao_cadastrado"] as const).map((s) => (
+                  <Chip key={s} active={filtInd.embStatus.has(s)} onClick={() => setFiltInd((f) => ({ ...f, embStatus: toggleSet(f.embStatus, s) }))}>
+                    {s === "nao_cadastrado" ? "Não cadastrado" : s === "ativo" ? "Ativo" : "Inativo"}
+                  </Chip>
+                ))}
+              </div>
+            </div>
+            <Row label="Com histórico de edições">
+              <Switch checked={filtInd.comHistorico} onCheckedChange={(v) => setFiltInd((f) => ({ ...f, comHistorico: v }))} />
+            </Row>
+            {indCount > 0 && (
+              <Button variant="ghost" size="sm" className="mt-1 h-7 w-full text-[11.5px]" onClick={() => setFiltInd({ campanhaDivergente: false, embStatus: new Set(), comHistorico: false })}>Limpar filtros</Button>
+            )}
+          </TabsContent>
+
+          <TabsContent value="conv" className="mt-3 space-y-1">
+            <div className="py-1.5">
+              <Label className="text-[12.5px]">Tier</Label>
+              <div className="mt-1.5 flex flex-wrap gap-1.5">
+                {tierOptions.map((t) => (
+                  <Chip key={t} active={filtConv.tier.has(t)} onClick={() => setFiltConv((f) => ({ ...f, tier: toggleSet(f.tier, t) }))}>{t}</Chip>
+                ))}
+              </div>
+            </div>
+            <div className="py-1.5">
+              <Label className="text-[12.5px]">Recorrência</Label>
+              <div className="mt-1.5 flex flex-wrap gap-1.5">
+                {(["todos", "sim", "nao"] as const).map((v) => (
+                  <Chip key={v} active={filtConv.recorrencia === v} onClick={() => setFiltConv((f) => ({ ...f, recorrencia: v }))}>
+                    {v === "todos" ? "Todos" : v === "sim" ? "Com recorrência" : "Sem recorrência"}
+                  </Chip>
+                ))}
+              </div>
+            </div>
+            <Row label="Apenas não cadastrados">
+              <Switch checked={filtConv.naoCadastrados} onCheckedChange={(v) => setFiltConv((f) => ({ ...f, naoCadastrados: v }))} />
+            </Row>
+            <Row label="Com histórico de edições">
+              <Switch checked={filtConv.comHistorico} onCheckedChange={(v) => setFiltConv((f) => ({ ...f, comHistorico: v }))} />
+            </Row>
+            {convCount > 0 && (
+              <Button variant="ghost" size="sm" className="mt-1 h-7 w-full text-[11.5px]" onClick={() => setFiltConv({ tier: new Set(), recorrencia: "todos", naoCadastrados: false, comHistorico: false })}>Limpar filtros</Button>
+            )}
+          </TabsContent>
+
+          <TabsContent value="rec" className="mt-3 space-y-1">
+            <div className="py-1.5">
+              <Label className="text-[12.5px]">Status</Label>
+              <div className="mt-1.5 flex flex-wrap gap-1.5">
+                {(["ativo", "inativo"] as const).map((s) => (
+                  <Chip key={s} active={filtRec.status.has(s)} onClick={() => setFiltRec((f) => ({ ...f, status: toggleSet(f.status, s) }))}>
+                    {s === "ativo" ? "Ativo" : "Inativo"}
+                  </Chip>
+                ))}
+              </div>
+            </div>
+            <Row label="Campanha divergente da cadastrada">
+              <Switch checked={filtRec.campanhaDivergente} onCheckedChange={(v) => setFiltRec((f) => ({ ...f, campanhaDivergente: v }))} />
+            </Row>
+            <Row label="Embaixador não cadastrado">
+              <Switch checked={filtRec.embaixadorNaoCadastrado} onCheckedChange={(v) => setFiltRec((f) => ({ ...f, embaixadorNaoCadastrado: v }))} />
+            </Row>
+            <Row label="Com histórico de edições">
+              <Switch checked={filtRec.comHistorico} onCheckedChange={(v) => setFiltRec((f) => ({ ...f, comHistorico: v }))} />
+            </Row>
+            {recCount > 0 && (
+              <Button variant="ghost" size="sm" className="mt-1 h-7 w-full text-[11.5px]" onClick={() => setFiltRec({ status: new Set(), campanhaDivergente: false, embaixadorNaoCadastrado: false, comHistorico: false })}>Limpar filtros</Button>
+            )}
+          </TabsContent>
+        </Tabs>
+      </PopoverContent>
+    </Popover>
   );
 }

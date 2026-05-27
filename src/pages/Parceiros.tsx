@@ -1253,6 +1253,27 @@ export default function Parceiros() {
                     <TableCell className="py-2.5 font-medium text-foreground">
                       <span className="inline-flex items-center gap-1.5">
                         <span>{r.campanha || "—"}</span>
+                        <TooltipProvider delayDuration={150}>
+                          <Tooltip>
+                            <TooltipTrigger asChild>
+                              <button
+                                type="button"
+                                onClick={() => openHistorico({
+                                  table: "parceiros_recorrencias",
+                                  id: r.id,
+                                  titulo: `${r.embaixador || "—"} · ${r.empresa || r.campanha || ""}`,
+                                })}
+                                className="inline-flex items-center justify-center rounded-full text-muted-foreground hover:text-foreground focus:outline-none focus:ring-1 focus:ring-primary/40"
+                                aria-label="Histórico de campanha"
+                              >
+                                <History className="h-3.5 w-3.5" />
+                              </button>
+                            </TooltipTrigger>
+                            <TooltipContent side="right" className="text-[11.5px]">
+                              Ver histórico de alterações de campanha
+                            </TooltipContent>
+                          </Tooltip>
+                        </TooltipProvider>
                         {campMismatch && (
                           <TooltipProvider delayDuration={150}>
                             <Tooltip>

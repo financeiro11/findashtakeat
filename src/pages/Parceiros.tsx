@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import * as XLSX from "xlsx";
 import { toast } from "sonner";
-import { Search, Plus, Download, ExternalLink, Filter, Upload, RefreshCw, GripVertical, AlertTriangle, ArrowUpDown, ArrowUp, ArrowDown } from "lucide-react";
+import { Search, Plus, Download, ExternalLink, Filter, Upload, RefreshCw, GripVertical, AlertTriangle, ArrowUpDown, ArrowUp, ArrowDown, History } from "lucide-react";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -21,6 +21,7 @@ import { supabase } from "@/integrations/supabase/client";
 import { GestaoParceirosDialog } from "./parceiros/GestaoParceirosDialog";
 import { NaoCadastradoDialog } from "./parceiros/NaoCadastradoDialog";
 import { EditarCampanhaDialog, type EditarCampanhaTarget } from "./parceiros/EditarCampanhaDialog";
+import { HistoricoCampanhaSheet, type HistoricoTarget } from "./parceiros/HistoricoCampanhaSheet";
 
 /* ─────────────────────────── Tipos ─────────────────────────── */
 
@@ -254,6 +255,9 @@ export default function Parceiros() {
 
   const openNaoCadastrado = (nome: string) => { setNaoCadNome(nome); setNaoCadOpen(true); };
   const openEditCampanha = (t: EditarCampanhaTarget) => { setEditCampTarget(t); setEditCampOpen(true); };
+  const [histOpen, setHistOpen] = useState(false);
+  const [histTarget, setHistTarget] = useState<HistoricoTarget | null>(null);
+  const openHistorico = (t: HistoricoTarget) => { setHistTarget(t); setHistOpen(true); };
   const [embFilter, setEmbFilter] = useState<Set<string>>(new Set());
   const [campFilter, setCampFilter] = useState<Set<string>>(new Set());
   const [embOpen, setEmbOpen] = useState(false);
@@ -1013,6 +1017,27 @@ export default function Parceiros() {
                           ) : key === "campanha" ? (
                             <span className="inline-flex items-center gap-1.5">
                               {COLUMNS.campanha.render(r)}
+                              <TooltipProvider delayDuration={150}>
+                                <Tooltip>
+                                  <TooltipTrigger asChild>
+                                    <button
+                                      type="button"
+                                      onClick={() => openHistorico({
+                                        table: "parceiros_indicacoes",
+                                        id: r.id,
+                                        titulo: `${r.embaixador || "—"} · ${r.empresa || r.campanha || ""}`,
+                                      })}
+                                      className="inline-flex items-center justify-center rounded-full text-muted-foreground hover:text-foreground focus:outline-none focus:ring-1 focus:ring-primary/40"
+                                      aria-label="Histórico de campanha"
+                                    >
+                                      <History className="h-3.5 w-3.5" />
+                                    </button>
+                                  </TooltipTrigger>
+                                  <TooltipContent side="right" className="text-[11.5px]">
+                                    Ver histórico de alterações de campanha
+                                  </TooltipContent>
+                                </Tooltip>
+                              </TooltipProvider>
                               {mismatch && (
                                 <TooltipProvider delayDuration={150}>
                                   <Tooltip>
@@ -1228,6 +1253,27 @@ export default function Parceiros() {
                     <TableCell className="py-2.5 font-medium text-foreground">
                       <span className="inline-flex items-center gap-1.5">
                         <span>{r.campanha || "—"}</span>
+                        <TooltipProvider delayDuration={150}>
+                          <Tooltip>
+                            <TooltipTrigger asChild>
+                              <button
+                                type="button"
+                                onClick={() => openHistorico({
+                                  table: "parceiros_recorrencias",
+                                  id: r.id,
+                                  titulo: `${r.embaixador || "—"} · ${r.empresa || r.campanha || ""}`,
+                                })}
+                                className="inline-flex items-center justify-center rounded-full text-muted-foreground hover:text-foreground focus:outline-none focus:ring-1 focus:ring-primary/40"
+                                aria-label="Histórico de campanha"
+                              >
+                                <History className="h-3.5 w-3.5" />
+                              </button>
+                            </TooltipTrigger>
+                            <TooltipContent side="right" className="text-[11.5px]">
+                              Ver histórico de alterações de campanha
+                            </TooltipContent>
+                          </Tooltip>
+                        </TooltipProvider>
                         {campMismatch && (
                           <TooltipProvider delayDuration={150}>
                             <Tooltip>
@@ -1328,6 +1374,12 @@ export default function Parceiros() {
         onOpenChange={setEditCampOpen}
         target={editCampTarget}
         onDone={() => { loadRows(); loadRecorrencias(); }}
+      />
+
+      <HistoricoCampanhaSheet
+        open={histOpen}
+        onOpenChange={setHistOpen}
+        target={histTarget}
       />
 
       <Dialog open={mapOpen} onOpenChange={(o) => { if (!importing) setMapOpen(o); }}>

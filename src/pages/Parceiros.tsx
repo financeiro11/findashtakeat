@@ -690,7 +690,7 @@ export default function Parceiros() {
   }, [filtered]);
 
   const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize));
-  useEffect(() => { setPage(1); }, [query, monthFilter, embFilter, campFilter, pageSize]);
+  useEffect(() => { setPage(1); }, [query, monthFilter, embFilter, campFilter, pageSize, filtInd]);
   useEffect(() => { if (page > totalPages) setPage(totalPages); }, [totalPages, page]);
   const paginated = useMemo(
     () => filtered.slice((page - 1) * pageSize, page * pageSize),

@@ -1376,6 +1376,12 @@ export default function Parceiros() {
         onDone={() => { loadRows(); loadRecorrencias(); }}
       />
 
+      <HistoricoCampanhaSheet
+        open={histOpen}
+        onOpenChange={setHistOpen}
+        target={histTarget}
+      />
+
       <Dialog open={mapOpen} onOpenChange={(o) => { if (!importing) setMapOpen(o); }}>
         <DialogContent className="max-w-2xl">
           <DialogHeader>

@@ -282,6 +282,22 @@ export default function Parceiros() {
   const [sortConv, setSortConv] = useState<SortState>(null);
   const [sortRec, setSortRec] = useState<SortState>(null);
 
+  // Logs de edição (para mostrar ícone Histórico apenas quando houver)
+  const [logKeys, setLogKeys] = useState<Set<string>>(new Set());
+  const hasLog = (table: "parceiros_indicacoes" | "parceiros_recorrencias", id: string) =>
+    logKeys.has(`${table}:${id}`);
+
+  // Filtros avançados por lista
+  type FiltInd = { campanhaDivergente: boolean; embStatus: Set<string>; comHistorico: boolean };
+  type FiltConv = { tier: Set<string>; recorrencia: "todos" | "sim" | "nao"; naoCadastrados: boolean; comHistorico: boolean };
+  type FiltRec = { status: Set<string>; campanhaDivergente: boolean; embaixadorNaoCadastrado: boolean; comHistorico: boolean };
+  const [filtInd, setFiltInd] = useState<FiltInd>({ campanhaDivergente: false, embStatus: new Set(), comHistorico: false });
+  const [filtConv, setFiltConv] = useState<FiltConv>({ tier: new Set(), recorrencia: "todos", naoCadastrados: false, comHistorico: false });
+  const [filtRec, setFiltRec] = useState<FiltRec>({ status: new Set(), campanhaDivergente: false, embaixadorNaoCadastrado: false, comHistorico: false });
+  const filtIndCount = (filtInd.campanhaDivergente ? 1 : 0) + (filtInd.embStatus.size > 0 ? 1 : 0) + (filtInd.comHistorico ? 1 : 0);
+  const filtConvCount = (filtConv.tier.size > 0 ? 1 : 0) + (filtConv.recorrencia !== "todos" ? 1 : 0) + (filtConv.naoCadastrados ? 1 : 0) + (filtConv.comHistorico ? 1 : 0);
+  const filtRecCount = (filtRec.status.size > 0 ? 1 : 0) + (filtRec.campanhaDivergente ? 1 : 0) + (filtRec.embaixadorNaoCadastrado ? 1 : 0) + (filtRec.comHistorico ? 1 : 0);
+  const filtTotalCount = filtIndCount + filtConvCount + filtRecCount;
 
   useEffect(() => {
     try { localStorage.setItem(COL_ORDER_STORAGE_KEY, JSON.stringify(columnOrder)); } catch {}

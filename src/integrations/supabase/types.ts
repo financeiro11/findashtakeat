@@ -1019,6 +1019,48 @@ export type Database = {
         }
         Relationships: []
       }
+      parceiros_campanha_logs: {
+        Row: {
+          campanha_anterior: string | null
+          campanha_nova: string | null
+          created_at: string
+          id: string
+          id_negocio: string | null
+          indicador: string | null
+          nome_negocio: string | null
+          registro_id: string
+          registro_tabela: string
+          user_email: string | null
+          user_id: string | null
+        }
+        Insert: {
+          campanha_anterior?: string | null
+          campanha_nova?: string | null
+          created_at?: string
+          id?: string
+          id_negocio?: string | null
+          indicador?: string | null
+          nome_negocio?: string | null
+          registro_id: string
+          registro_tabela: string
+          user_email?: string | null
+          user_id?: string | null
+        }
+        Update: {
+          campanha_anterior?: string | null
+          campanha_nova?: string | null
+          created_at?: string
+          id?: string
+          id_negocio?: string | null
+          indicador?: string | null
+          nome_negocio?: string | null
+          registro_id?: string
+          registro_tabela?: string
+          user_email?: string | null
+          user_id?: string | null
+        }
+        Relationships: []
+      }
       parceiros_indicacoes: {
         Row: {
           asaas_url: string | null

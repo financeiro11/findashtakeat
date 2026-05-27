@@ -785,6 +785,20 @@ export default function Parceiros() {
     return m;
   }, [recorrencias]);
 
+  // Embaixadores que possuem algum registro com histórico (indicações ou recorrências)
+  const embaixadoresComLog = useMemo(() => {
+    const s = new Set<string>();
+    rows.forEach((r) => { if (logKeys.has(`parceiros_indicacoes:${r.id}`)) s.add((r.embaixador || "").trim().toLowerCase()); });
+    recRows.forEach((r) => { if (logKeys.has(`parceiros_recorrencias:${r.id}`)) s.add((r.embaixador || "").trim().toLowerCase()); });
+    return s;
+  }, [rows, recRows, logKeys]);
+
+  const tierOptions = useMemo(() => {
+    const s = new Set<string>();
+    cadastros.forEach((c) => { if (c.tier) s.add(c.tier); });
+    return Array.from(s);
+  }, [cadastros]);
+
   const conversoesSorted = useMemo(() => {
     if (!sortConv) return conversoes;
     const accessors: Record<string, (c: typeof conversoes[number]) => any> = {
@@ -804,12 +818,24 @@ export default function Parceiros() {
     return sortArr(conversoes, acc, sortConv.dir);
   }, [conversoes, sortConv, cadastroByNome, recorrenciaPorEmbaixador]);
 
-  const convTotalPages = Math.max(1, Math.ceil(conversoesSorted.length / convPageSize));
-  useEffect(() => { setConvPage(1); }, [query, monthFilter, embFilter, campFilter, convPageSize]);
+  const conversoesFiltradas = useMemo(() => {
+    return conversoesSorted.filter((c) => {
+      const cad = cadastroByNome.get(c.nome.toLowerCase());
+      if (filtConv.tier.size > 0 && !filtConv.tier.has(cad?.tier ?? "Não possui")) return false;
+      if (filtConv.recorrencia === "sim" && !cad?.recorrencia) return false;
+      if (filtConv.recorrencia === "nao" && cad?.recorrencia) return false;
+      if (filtConv.naoCadastrados && cad) return false;
+      if (filtConv.comHistorico && !embaixadoresComLog.has(c.nome.toLowerCase())) return false;
+      return true;
+    });
+  }, [conversoesSorted, cadastroByNome, filtConv, embaixadoresComLog]);
+
+  const convTotalPages = Math.max(1, Math.ceil(conversoesFiltradas.length / convPageSize));
+  useEffect(() => { setConvPage(1); }, [query, monthFilter, embFilter, campFilter, convPageSize, filtConv]);
   useEffect(() => { if (convPage > convTotalPages) setConvPage(convTotalPages); }, [convTotalPages, convPage]);
   const conversoesPaginated = useMemo(
-    () => conversoesSorted.slice((convPage - 1) * convPageSize, convPage * convPageSize),
-    [conversoesSorted, convPage, convPageSize]
+    () => conversoesFiltradas.slice((convPage - 1) * convPageSize, convPage * convPageSize),
+    [conversoesFiltradas, convPage, convPageSize]
   );
 
 

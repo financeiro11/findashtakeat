@@ -109,6 +109,23 @@ export function GestaoParceirosDialog() {
   const [saving, setSaving] = useState(false);
   const [importing, setImporting] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
+  const [mapOpen, setMapOpen] = useState(false);
+  const [pendingRows, setPendingRows] = useState<Record<string, any>[]>([]);
+  const [pendingHeaders, setPendingHeaders] = useState<string[]>([]);
+  const [mapping, setMapping] = useState<Record<string, string>>({});
+
+  const DB_FIELDS: { key: string; label: string; required?: boolean }[] = [
+    { key: "nome", label: "Nome", required: true },
+    { key: "tier", label: "Tier" },
+    { key: "status", label: "Status" },
+    { key: "campanha", label: "Campanha" },
+    { key: "bonificacao", label: "Bonificação (sim/não)" },
+    { key: "metodo_bonificacao", label: "Método bonificação" },
+    { key: "valor_bonificacao", label: "Valor bonificação" },
+    { key: "recorrencia", label: "Recorrência (sim/não)" },
+    { key: "metodo_recorrencia", label: "Método recorrência" },
+    { key: "valor_recorrencia", label: "Valor recorrência" },
+  ];
 
   const load = async () => {
     setLoading(true);

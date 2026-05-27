@@ -1298,6 +1298,17 @@ export default function Parceiros() {
         title="Apuração Recorrências"
         subtitle={`Indicações convertidas com recorrência ativa · Total: ${BRL(recTotal)}`}
         padded={false}
+        stickyHeader
+        actions={
+          <FiltrosTabs
+            filtInd={filtInd} setFiltInd={setFiltInd}
+            filtConv={filtConv} setFiltConv={setFiltConv}
+            filtRec={filtRec} setFiltRec={setFiltRec}
+            tierOptions={tierOptions}
+            totalCount={filtTotalCount}
+            indCount={filtIndCount} convCount={filtConvCount} recCount={filtRecCount}
+          />
+        }
       >
         <div className="overflow-x-auto">
           <Table>

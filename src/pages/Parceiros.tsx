@@ -938,23 +938,12 @@ export default function Parceiros() {
         <KpiCard label="Valor total" value={BRL(totals.total)} />
       </div>
 
-      {/* Filtros avançados (fixo no topo ao rolar) */}
-      <div className="sticky top-0 z-20 -mx-4 border-b border-border bg-background/95 px-4 py-2 backdrop-blur lg:-mx-5 lg:px-5">
-        <FiltrosTabs
-          filtInd={filtInd} setFiltInd={setFiltInd}
-          filtConv={filtConv} setFiltConv={setFiltConv}
-          filtRec={filtRec} setFiltRec={setFiltRec}
-          tierOptions={tierOptions}
-          totalCount={filtTotalCount}
-          indCount={filtIndCount} convCount={filtConvCount} recCount={filtRecCount}
-        />
-      </div>
-
       {/* Tabela */}
       <SectionCard
         title="Lista de Indicações"
         subtitle="Visualização consolidada por campanha"
         padded={false}
+        stickyHeader
         actions={
           <div className="flex items-center gap-1.5">
             <div className="relative">

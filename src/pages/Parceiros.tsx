@@ -739,7 +739,13 @@ export default function Parceiros() {
       })
       .filter((r) => {
         if (monthFilter) {
-          if (!r.dataIndicacao || r.dataIndicacao.slice(0, 7) !== monthFilter) return false;
+          // Apuração Recorrências: só considera registros ativos cuja indicação ocorreu há pelo menos 1 mês.
+          if (!r.ativo) return false;
+          if (!r.dataIndicacao) return false;
+          const ind = new Date(r.dataIndicacao);
+          const cutoff = new Date();
+          cutoff.setMonth(cutoff.getMonth() - 1);
+          if (isNaN(ind.getTime()) || ind > cutoff) return false;
         }
         if (embFilter.size > 0 && !embFilter.has(r.embaixador)) return false;
         if (campFilter.size > 0 && !campFilter.has(r.campanha)) return false;

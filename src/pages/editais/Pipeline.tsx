@@ -44,7 +44,9 @@ export default function Pipeline() {
 
   useEffect(() => { document.title = "Editais · Pipeline"; load(); }, [cfg.min_match_score, cfg.show_low_relevance]);
   const load = async () => {
+    const hoje = new Date().toISOString().slice(0, 10);
     let q: any = supabase.from("editais" as any).select("*").order("created_at", { ascending: false });
+    q = q.or(`prazo_envio.is.null,prazo_envio.gte.${hoje}`);
     if (!cfg.show_low_relevance) q = q.eq("visibility_status", "visivel");
     if (cfg.min_match_score > 0) q = q.gte("match_score", cfg.min_match_score);
     const { data } = await q;

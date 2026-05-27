@@ -89,14 +89,8 @@ Deno.serve(async (req) => {
   if (selErr) return json({ error: selErr.message }, 500);
 
   if (existing) {
-    const { data, error } = await supabase
-      .from("parceiros_indicacoes")
-      .update(payload)
-      .eq("id_negocio", id_negocio)
-      .select()
-      .single();
-    if (error) return json({ error: error.message }, 500);
-    return json({ ok: true, action: "updated", data });
+    // Registro já existe: NÃO atualizamos nada para preservar edições feitas no front.
+    return json({ ok: true, action: "skipped", reason: "already_exists", id: existing.id });
   }
 
   const { data, error } = await supabase

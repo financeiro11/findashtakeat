@@ -255,6 +255,9 @@ export default function Parceiros() {
 
   const openNaoCadastrado = (nome: string) => { setNaoCadNome(nome); setNaoCadOpen(true); };
   const openEditCampanha = (t: EditarCampanhaTarget) => { setEditCampTarget(t); setEditCampOpen(true); };
+  const [histOpen, setHistOpen] = useState(false);
+  const [histTarget, setHistTarget] = useState<HistoricoTarget | null>(null);
+  const openHistorico = (t: HistoricoTarget) => { setHistTarget(t); setHistOpen(true); };
   const [embFilter, setEmbFilter] = useState<Set<string>>(new Set());
   const [campFilter, setCampFilter] = useState<Set<string>>(new Set());
   const [embOpen, setEmbOpen] = useState(false);

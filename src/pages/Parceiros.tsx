@@ -1177,7 +1177,7 @@ export default function Parceiros() {
               </TableRow>
             </TableHeader>
             <TableBody>
-              {conversoes.length === 0 ? (
+              {conversoesFiltradas.length === 0 ? (
                 <TableRow>
                   <TableCell colSpan={10} className="py-10 text-center text-[12.5px] text-muted-foreground">
                     Sem indicações no período.

@@ -1167,6 +1167,17 @@ export default function Parceiros() {
         title="Conversões por embaixador"
         subtitle={monthFilter ? "Apuração do mês selecionado (data da venda)" : "Apuração de todos os períodos"}
         padded={false}
+        stickyHeader
+        actions={
+          <FiltrosTabs
+            filtInd={filtInd} setFiltInd={setFiltInd}
+            filtConv={filtConv} setFiltConv={setFiltConv}
+            filtRec={filtRec} setFiltRec={setFiltRec}
+            tierOptions={tierOptions}
+            totalCount={filtTotalCount}
+            indCount={filtIndCount} convCount={filtConvCount} recCount={filtRecCount}
+          />
+        }
       >
         <div className="overflow-x-auto">
           <Table>

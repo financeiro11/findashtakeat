@@ -1862,6 +1862,16 @@ function FiltrosTabs({
                 ))}
               </div>
             </div>
+            <div className="py-1.5">
+              <Label className="text-[12.5px]">Bonificação</Label>
+              <div className="mt-1.5 flex flex-wrap gap-1.5">
+                {(["todos", "sim", "nao"] as const).map((v) => (
+                  <Chip key={v} active={filtConv.bonificacao === v} onClick={() => setFiltConv((f) => ({ ...f, bonificacao: v }))}>
+                    {v === "todos" ? "Todos" : v === "sim" ? "Com bonificação" : "Sem bonificação"}
+                  </Chip>
+                ))}
+              </div>
+            </div>
             <Row label="Apenas não cadastrados">
               <Switch checked={filtConv.naoCadastrados} onCheckedChange={(v) => setFiltConv((f) => ({ ...f, naoCadastrados: v }))} />
             </Row>
@@ -1869,7 +1879,7 @@ function FiltrosTabs({
               <Switch checked={filtConv.comHistorico} onCheckedChange={(v) => setFiltConv((f) => ({ ...f, comHistorico: v }))} />
             </Row>
             {convCount > 0 && (
-              <Button variant="ghost" size="sm" className="mt-1 h-7 w-full text-[11.5px]" onClick={() => setFiltConv({ tier: new Set(), recorrencia: "todos", naoCadastrados: false, comHistorico: false })}>Limpar filtros</Button>
+              <Button variant="ghost" size="sm" className="mt-1 h-7 w-full text-[11.5px]" onClick={() => setFiltConv({ tier: new Set(), recorrencia: "todos", bonificacao: "todos", naoCadastrados: false, comHistorico: false })}>Limpar filtros</Button>
             )}
           </TabsContent>
 

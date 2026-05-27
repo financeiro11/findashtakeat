@@ -1777,8 +1777,8 @@ function FiltrosTabs({
 }: {
   filtInd: { campanhaDivergente: boolean; embStatus: Set<string>; comHistorico: boolean };
   setFiltInd: React.Dispatch<React.SetStateAction<{ campanhaDivergente: boolean; embStatus: Set<string>; comHistorico: boolean }>>;
-  filtConv: { tier: Set<string>; recorrencia: "todos" | "sim" | "nao"; naoCadastrados: boolean; comHistorico: boolean };
-  setFiltConv: React.Dispatch<React.SetStateAction<{ tier: Set<string>; recorrencia: "todos" | "sim" | "nao"; naoCadastrados: boolean; comHistorico: boolean }>>;
+  filtConv: { tier: Set<string>; recorrencia: "todos" | "sim" | "nao"; bonificacao: "todos" | "sim" | "nao"; naoCadastrados: boolean; comHistorico: boolean };
+  setFiltConv: React.Dispatch<React.SetStateAction<{ tier: Set<string>; recorrencia: "todos" | "sim" | "nao"; bonificacao: "todos" | "sim" | "nao"; naoCadastrados: boolean; comHistorico: boolean }>>;
   filtRec: { status: Set<string>; campanhaDivergente: boolean; embaixadorNaoCadastrado: boolean; comHistorico: boolean };
   setFiltRec: React.Dispatch<React.SetStateAction<{ status: Set<string>; campanhaDivergente: boolean; embaixadorNaoCadastrado: boolean; comHistorico: boolean }>>;
   tierOptions: string[];

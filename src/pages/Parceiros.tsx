@@ -289,13 +289,14 @@ export default function Parceiros() {
 
   // Filtros avançados por lista
   type FiltInd = { campanhaDivergente: boolean; embStatus: Set<string>; comHistorico: boolean };
-  type FiltConv = { tier: Set<string>; recorrencia: "todos" | "sim" | "nao"; naoCadastrados: boolean; comHistorico: boolean };
+  type FiltConv = { tier: Set<string>; recorrencia: "todos" | "sim" | "nao"; bonificacao: "todos" | "sim" | "nao"; naoCadastrados: boolean; comHistorico: boolean };
+
   type FiltRec = { status: Set<string>; campanhaDivergente: boolean; embaixadorNaoCadastrado: boolean; comHistorico: boolean };
   const [filtInd, setFiltInd] = useState<FiltInd>({ campanhaDivergente: false, embStatus: new Set(), comHistorico: false });
-  const [filtConv, setFiltConv] = useState<FiltConv>({ tier: new Set(), recorrencia: "todos", naoCadastrados: false, comHistorico: false });
+  const [filtConv, setFiltConv] = useState<FiltConv>({ tier: new Set(), recorrencia: "todos", bonificacao: "todos", naoCadastrados: false, comHistorico: false });
   const [filtRec, setFiltRec] = useState<FiltRec>({ status: new Set(), campanhaDivergente: false, embaixadorNaoCadastrado: false, comHistorico: false });
   const filtIndCount = (filtInd.campanhaDivergente ? 1 : 0) + (filtInd.embStatus.size > 0 ? 1 : 0) + (filtInd.comHistorico ? 1 : 0);
-  const filtConvCount = (filtConv.tier.size > 0 ? 1 : 0) + (filtConv.recorrencia !== "todos" ? 1 : 0) + (filtConv.naoCadastrados ? 1 : 0) + (filtConv.comHistorico ? 1 : 0);
+  const filtConvCount = (filtConv.tier.size > 0 ? 1 : 0) + (filtConv.recorrencia !== "todos" ? 1 : 0) + (filtConv.bonificacao !== "todos" ? 1 : 0) + (filtConv.naoCadastrados ? 1 : 0) + (filtConv.comHistorico ? 1 : 0);
   const filtRecCount = (filtRec.status.size > 0 ? 1 : 0) + (filtRec.campanhaDivergente ? 1 : 0) + (filtRec.embaixadorNaoCadastrado ? 1 : 0) + (filtRec.comHistorico ? 1 : 0);
   const filtTotalCount = filtIndCount + filtConvCount + filtRecCount;
 
@@ -830,6 +831,8 @@ export default function Parceiros() {
       if (filtConv.tier.size > 0 && !filtConv.tier.has(cad?.tier ?? "Não possui")) return false;
       if (filtConv.recorrencia === "sim" && !cad?.recorrencia) return false;
       if (filtConv.recorrencia === "nao" && cad?.recorrencia) return false;
+      if (filtConv.bonificacao === "sim" && !cad?.bonificacao) return false;
+      if (filtConv.bonificacao === "nao" && cad?.bonificacao) return false;
       if (filtConv.naoCadastrados && cad) return false;
       if (filtConv.comHistorico && !embaixadoresComLog.has(c.nome.toLowerCase())) return false;
       return true;
@@ -1774,8 +1777,8 @@ function FiltrosTabs({
 }: {
   filtInd: { campanhaDivergente: boolean; embStatus: Set<string>; comHistorico: boolean };
   setFiltInd: React.Dispatch<React.SetStateAction<{ campanhaDivergente: boolean; embStatus: Set<string>; comHistorico: boolean }>>;
-  filtConv: { tier: Set<string>; recorrencia: "todos" | "sim" | "nao"; naoCadastrados: boolean; comHistorico: boolean };
-  setFiltConv: React.Dispatch<React.SetStateAction<{ tier: Set<string>; recorrencia: "todos" | "sim" | "nao"; naoCadastrados: boolean; comHistorico: boolean }>>;
+  filtConv: { tier: Set<string>; recorrencia: "todos" | "sim" | "nao"; bonificacao: "todos" | "sim" | "nao"; naoCadastrados: boolean; comHistorico: boolean };
+  setFiltConv: React.Dispatch<React.SetStateAction<{ tier: Set<string>; recorrencia: "todos" | "sim" | "nao"; bonificacao: "todos" | "sim" | "nao"; naoCadastrados: boolean; comHistorico: boolean }>>;
   filtRec: { status: Set<string>; campanhaDivergente: boolean; embaixadorNaoCadastrado: boolean; comHistorico: boolean };
   setFiltRec: React.Dispatch<React.SetStateAction<{ status: Set<string>; campanhaDivergente: boolean; embaixadorNaoCadastrado: boolean; comHistorico: boolean }>>;
   tierOptions: string[];
@@ -1859,6 +1862,16 @@ function FiltrosTabs({
                 ))}
               </div>
             </div>
+            <div className="py-1.5">
+              <Label className="text-[12.5px]">Bonificação</Label>
+              <div className="mt-1.5 flex flex-wrap gap-1.5">
+                {(["todos", "sim", "nao"] as const).map((v) => (
+                  <Chip key={v} active={filtConv.bonificacao === v} onClick={() => setFiltConv((f) => ({ ...f, bonificacao: v }))}>
+                    {v === "todos" ? "Todos" : v === "sim" ? "Com bonificação" : "Sem bonificação"}
+                  </Chip>
+                ))}
+              </div>
+            </div>
             <Row label="Apenas não cadastrados">
               <Switch checked={filtConv.naoCadastrados} onCheckedChange={(v) => setFiltConv((f) => ({ ...f, naoCadastrados: v }))} />
             </Row>
@@ -1866,7 +1879,7 @@ function FiltrosTabs({
               <Switch checked={filtConv.comHistorico} onCheckedChange={(v) => setFiltConv((f) => ({ ...f, comHistorico: v }))} />
             </Row>
             {convCount > 0 && (
-              <Button variant="ghost" size="sm" className="mt-1 h-7 w-full text-[11.5px]" onClick={() => setFiltConv({ tier: new Set(), recorrencia: "todos", naoCadastrados: false, comHistorico: false })}>Limpar filtros</Button>
+              <Button variant="ghost" size="sm" className="mt-1 h-7 w-full text-[11.5px]" onClick={() => setFiltConv({ tier: new Set(), recorrencia: "todos", bonificacao: "todos", naoCadastrados: false, comHistorico: false })}>Limpar filtros</Button>
             )}
           </TabsContent>
 

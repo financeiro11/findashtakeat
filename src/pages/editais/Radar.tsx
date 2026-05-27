@@ -41,7 +41,11 @@ export default function Radar() {
   useEffect(() => { document.title = "Editais · Radar"; load(); }, [quick, cfg.min_match_score, cfg.show_low_relevance]);
 
   const load = async () => {
+    const hoje = new Date().toISOString().slice(0, 10);
     let q: any = supabase.from("editais" as any).select("*").order("match_score", { ascending: false });
+
+    // Esconde editais com prazo vencido (mantém os sem prazo definido)
+    q = q.or(`prazo_envio.is.null,prazo_envio.gte.${hoje}`);
 
     // Filtros rápidos
     if (quick === "ocultos") {

@@ -21,6 +21,7 @@ import { supabase } from "@/integrations/supabase/client";
 import { GestaoParceirosDialog } from "./parceiros/GestaoParceirosDialog";
 import { NaoCadastradoDialog } from "./parceiros/NaoCadastradoDialog";
 import { EditarCampanhaDialog, type EditarCampanhaTarget } from "./parceiros/EditarCampanhaDialog";
+import { HistoricoCampanhaSheet, type HistoricoTarget } from "./parceiros/HistoricoCampanhaSheet";
 
 /* ─────────────────────────── Tipos ─────────────────────────── */
 

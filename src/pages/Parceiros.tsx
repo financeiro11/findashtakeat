@@ -351,7 +351,16 @@ export default function Parceiros() {
     loadRows();
     loadCadastros();
     loadRecorrencias();
+    loadLogKeys();
   }, []);
+
+  const loadLogKeys = async () => {
+    const { data, error } = await supabase
+      .from("parceiros_campanha_logs")
+      .select("registro_tabela, registro_id");
+    if (error) { console.error(error); return; }
+    setLogKeys(new Set((data ?? []).map((l: any) => `${l.registro_tabela}:${l.registro_id}`)));
+  };
 
   const loadCadastros = async () => {
     const { data, error } = await supabase.from("parceiros_cadastro").select("nome,tier,status,campanha,bonificacao,metodo_bonificacao,valor_bonificacao,recorrencia,metodo_recorrencia,valor_recorrencia");

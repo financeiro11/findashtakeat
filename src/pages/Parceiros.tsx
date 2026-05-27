@@ -831,6 +831,8 @@ export default function Parceiros() {
       if (filtConv.tier.size > 0 && !filtConv.tier.has(cad?.tier ?? "Não possui")) return false;
       if (filtConv.recorrencia === "sim" && !cad?.recorrencia) return false;
       if (filtConv.recorrencia === "nao" && cad?.recorrencia) return false;
+      if (filtConv.bonificacao === "sim" && !cad?.bonificacao) return false;
+      if (filtConv.bonificacao === "nao" && cad?.bonificacao) return false;
       if (filtConv.naoCadastrados && cad) return false;
       if (filtConv.comHistorico && !embaixadoresComLog.has(c.nome.toLowerCase())) return false;
       return true;

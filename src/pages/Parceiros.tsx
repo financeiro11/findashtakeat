@@ -762,7 +762,7 @@ export default function Parceiros() {
 
 
   const recTotalPages = Math.max(1, Math.ceil(recorrencias.length / recPageSize));
-  useEffect(() => { setRecPage(1); }, [query, monthFilter, embFilter, campFilter, recPageSize]);
+  useEffect(() => { setRecPage(1); }, [query, monthFilter, embFilter, campFilter, recPageSize, filtRec]);
   useEffect(() => { if (recPage > recTotalPages) setRecPage(recTotalPages); }, [recTotalPages, recPage]);
   const recorrenciasPaginated = useMemo(
     () => recorrencias.slice((recPage - 1) * recPageSize, recPage * recPageSize),

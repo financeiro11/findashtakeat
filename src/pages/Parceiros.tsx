@@ -654,27 +654,32 @@ export default function Parceiros() {
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
-    const base = rows
-      .filter((r) => {
-        if (monthFilter) {
-          if (!r.dataVenda || r.dataVenda.slice(0, 7) !== monthFilter) return false;
-        }
-        if (embFilter.size > 0 && !embFilter.has(r.embaixador)) return false;
-        if (campFilter.size > 0 && !campFilter.has(r.campanha)) return false;
-        if (q && ![r.campanha, r.embaixador, r.vendedor, r.empresa].some((f) => f?.toLowerCase().includes(q))) return false;
-        return true;
-      })
-      .map((r) => {
-        const cad = cadastroByNome.get((r.embaixador || "").trim().toLowerCase());
-        const bonus = r.dataVenda ? calcBonificacao(r.valorTotal, cad) : null;
-        const status: "ativo" | "inativo" | "nao_cadastrado" = !cad ? "nao_cadastrado" : (cad.status === "inativo" ? "inativo" : "ativo");
-        return { ...r, bonificacaoVenda: bonus, embaixadorStatus: status, campanhaCadastrada: cad?.campanha ?? null };
-      });
+    const mapped = rows.map((r) => {
+      const cad = cadastroByNome.get((r.embaixador || "").trim().toLowerCase());
+      const bonus = r.dataVenda ? calcBonificacao(r.valorTotal, cad) : null;
+      const status: "ativo" | "inativo" | "nao_cadastrado" = !cad ? "nao_cadastrado" : (cad.status === "inativo" ? "inativo" : "ativo");
+      return { ...r, bonificacaoVenda: bonus, embaixadorStatus: status, campanhaCadastrada: cad?.campanha ?? null };
+    });
+    const base = mapped.filter((r) => {
+      if (monthFilter) {
+        if (!r.dataVenda || r.dataVenda.slice(0, 7) !== monthFilter) return false;
+      }
+      if (embFilter.size > 0 && !embFilter.has(r.embaixador)) return false;
+      if (campFilter.size > 0 && !campFilter.has(r.campanha)) return false;
+      if (q && ![r.campanha, r.embaixador, r.vendedor, r.empresa].some((f) => f?.toLowerCase().includes(q))) return false;
+      if (filtInd.campanhaDivergente) {
+        const div = !!r.campanhaCadastrada && (r.campanha || "").trim().toLowerCase() !== (r.campanhaCadastrada || "").trim().toLowerCase();
+        if (!div) return false;
+      }
+      if (filtInd.embStatus.size > 0 && !filtInd.embStatus.has(r.embaixadorStatus)) return false;
+      if (filtInd.comHistorico && !logKeys.has(`parceiros_indicacoes:${r.id}`)) return false;
+      return true;
+    });
     if (!sortInd) return base;
     const col = COLUMNS[sortInd.key as ColKey];
     if (!col?.sortValue) return base;
     return sortArr(base, col.sortValue as (r: any) => any, sortInd.dir);
-  }, [rows, query, monthFilter, embFilter, campFilter, cadastroByNome, sortInd]);
+  }, [rows, query, monthFilter, embFilter, campFilter, cadastroByNome, sortInd, filtInd, logKeys]);
 
 
 

@@ -732,6 +732,11 @@ export default function Parceiros() {
   const recorrencias = useMemo(() => {
     const q = query.trim().toLowerCase();
     const base = recRows
+      .map((r) => {
+        const cad = cadastroByNome.get((r.embaixador || "").trim().toLowerCase());
+        const calc = calcRecorrencia(r.mrr || 0, cad);
+        return { ...r, recorrenciaValor: calc != null ? calc : (r.recorrenciaValor || 0), _cad: cad };
+      })
       .filter((r) => {
         if (monthFilter) {
           if (!r.dataIndicacao || r.dataIndicacao.slice(0, 7) !== monthFilter) return false;
@@ -739,18 +744,20 @@ export default function Parceiros() {
         if (embFilter.size > 0 && !embFilter.has(r.embaixador)) return false;
         if (campFilter.size > 0 && !campFilter.has(r.campanha)) return false;
         if (q && ![r.campanha, r.embaixador, r.vendedor, r.empresa].some((f) => f?.toLowerCase().includes(q))) return false;
+        if (filtRec.status.size > 0 && !filtRec.status.has(r.ativo ? "ativo" : "inativo")) return false;
+        if (filtRec.campanhaDivergente) {
+          const div = !!r._cad?.campanha && (r.campanha || "").trim().toLowerCase() !== (r._cad.campanha || "").trim().toLowerCase();
+          if (!div) return false;
+        }
+        if (filtRec.embaixadorNaoCadastrado && r._cad) return false;
+        if (filtRec.comHistorico && !logKeys.has(`parceiros_recorrencias:${r.id}`)) return false;
         return true;
-      })
-      .map((r) => {
-        const cad = cadastroByNome.get((r.embaixador || "").trim().toLowerCase());
-        const calc = calcRecorrencia(r.mrr || 0, cad);
-        return { ...r, recorrenciaValor: calc != null ? calc : (r.recorrenciaValor || 0) };
       });
     if (!sortRec) return base;
     const acc = REC_SORT_ACCESSORS[sortRec.key];
     if (!acc) return base;
     return sortArr(base, acc, sortRec.dir);
-  }, [recRows, query, monthFilter, embFilter, campFilter, cadastroByNome, sortRec]);
+  }, [recRows, query, monthFilter, embFilter, campFilter, cadastroByNome, sortRec, filtRec, logKeys]);
 
 
 

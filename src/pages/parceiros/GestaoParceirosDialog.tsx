@@ -109,6 +109,23 @@ export function GestaoParceirosDialog() {
   const [saving, setSaving] = useState(false);
   const [importing, setImporting] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
+  const [mapOpen, setMapOpen] = useState(false);
+  const [pendingRows, setPendingRows] = useState<Record<string, any>[]>([]);
+  const [pendingHeaders, setPendingHeaders] = useState<string[]>([]);
+  const [mapping, setMapping] = useState<Record<string, string>>({});
+
+  const DB_FIELDS: { key: string; label: string; required?: boolean }[] = [
+    { key: "nome", label: "Nome", required: true },
+    { key: "tier", label: "Tier" },
+    { key: "status", label: "Status" },
+    { key: "campanha", label: "Campanha" },
+    { key: "bonificacao", label: "Bonificação (sim/não)" },
+    { key: "metodo_bonificacao", label: "Método bonificação" },
+    { key: "valor_bonificacao", label: "Valor bonificação" },
+    { key: "recorrencia", label: "Recorrência (sim/não)" },
+    { key: "metodo_recorrencia", label: "Método recorrência" },
+    { key: "valor_recorrencia", label: "Valor recorrência" },
+  ];
 
   const load = async () => {
     setLoading(true);
@@ -184,43 +201,65 @@ export function GestaoParceirosDialog() {
       const data: Record<string, any>[] = XLSX.utils.sheet_to_json(ws, { defval: "" });
       if (!data.length) { toast.warning("Planilha vazia"); return; }
 
-      const payloads = data
+      const headers = Object.keys(data[0]);
+      const candidates: Record<string, string[]> = {
+        nome: ["nome"],
+        tier: ["tier"],
+        status: ["status"],
+        campanha: ["campanha"],
+        bonificacao: ["bonificacao", "bonificação"],
+        metodo_bonificacao: ["metodo bonificacao", "metodo bonificação", "método bonificação"],
+        valor_bonificacao: ["valor bonificacao", "valor bonificação"],
+        recorrencia: ["recorrencia", "recorrência"],
+        metodo_recorrencia: ["metodo recorrencia", "metodo recorrência", "método recorrência"],
+        valor_recorrencia: ["valor recorrencia", "valor recorrência"],
+      };
+      const autoMap: Record<string, string> = {};
+      for (const [field, cands] of Object.entries(candidates)) {
+        const k = findKey(data[0], cands);
+        if (k) autoMap[field] = k;
+      }
+
+      setPendingRows(data);
+      setPendingHeaders(headers);
+      setMapping(autoMap);
+      setMapOpen(true);
+    } catch (e: any) {
+      toast.error(`Erro ao ler planilha: ${e?.message ?? e}`);
+    } finally {
+      setImporting(false);
+      if (fileRef.current) fileRef.current.value = "";
+    }
+  };
+
+  const confirmImport = async () => {
+    if (!mapping.nome) { toast.warning("Mapeie a coluna 'Nome' (obrigatória)"); return; }
+    setImporting(true);
+    try {
+      const get = (r: Record<string, any>, f: string) => (mapping[f] ? r[mapping[f]] : "");
+      const payloads = pendingRows
         .map((r) => {
-          const kNome = findKey(r, ["nome"]);
-          const kTier = findKey(r, ["tier"]);
-          const kStatus = findKey(r, ["status"]);
-          const kBon = findKey(r, ["bonificacao", "bonificação"]);
-          const kMBon = findKey(r, ["metodo bonificacao", "metodo bonificação", "método bonificação"]);
-          const kVBon = findKey(r, ["valor bonificacao", "valor bonificação"]);
-          const kRec = findKey(r, ["recorrencia", "recorrência"]);
-          const kMRec = findKey(r, ["metodo recorrencia", "metodo recorrência", "método recorrência"]);
-          const kVRec = findKey(r, ["valor recorrencia", "valor recorrência"]);
-          const kCamp = findKey(r, ["campanha"]);
-
-          const nome = String(r[kNome ?? ""] ?? "").trim();
+          const nome = String(get(r, "nome") ?? "").trim();
           if (!nome) return null;
-
-          const bonificacao = kBon ? parseBool(r[kBon]) : false;
-          const recorrencia = kRec ? parseBool(r[kRec]) : false;
-
+          const bonificacao = mapping.bonificacao ? parseBool(get(r, "bonificacao")) : false;
+          const recorrencia = mapping.recorrencia ? parseBool(get(r, "recorrencia")) : false;
           return {
             nome,
-            tier: parseTier(r[kTier ?? ""]),
-            status: parseStatus(r[kStatus ?? ""]),
+            tier: mapping.tier ? parseTier(get(r, "tier")) : ("Não possui" as Tier),
+            status: mapping.status ? parseStatus(get(r, "status")) : ("ativo" as const),
             bonificacao,
-            metodo_bonificacao: bonificacao ? parseMetodo(r[kMBon ?? ""]) : null,
-            valor_bonificacao: bonificacao ? parseNum(r[kVBon ?? ""]) : null,
+            metodo_bonificacao: bonificacao ? parseMetodo(get(r, "metodo_bonificacao")) : null,
+            valor_bonificacao: bonificacao ? parseNum(get(r, "valor_bonificacao")) : null,
             recorrencia,
-            metodo_recorrencia: recorrencia ? parseMetodo(r[kMRec ?? ""]) : null,
-            valor_recorrencia: recorrencia ? parseNum(r[kVRec ?? ""]) : null,
-            campanha: kCamp ? (String(r[kCamp] ?? "").trim() || null) : null,
+            metodo_recorrencia: recorrencia ? parseMetodo(get(r, "metodo_recorrencia")) : null,
+            valor_recorrencia: recorrencia ? parseNum(get(r, "valor_recorrencia")) : null,
+            campanha: mapping.campanha ? (String(get(r, "campanha") ?? "").trim() || null) : null,
           };
         })
         .filter((p): p is NonNullable<typeof p> => p !== null);
 
       if (!payloads.length) { toast.warning("Nenhuma linha válida encontrada"); return; }
 
-      // upsert por nome: atualiza se existir, insere se não
       const existingByName = new Map(rows.map((r) => [r.nome.toLowerCase(), r.id]));
       const toUpdate = payloads.filter((p) => existingByName.has(p.nome.toLowerCase()));
       const toInsert = payloads.filter((p) => !existingByName.has(p.nome.toLowerCase()));
@@ -240,12 +279,15 @@ export function GestaoParceirosDialog() {
       }
 
       toast.success(`Importação concluída: ${okCount} ok${errCount ? `, ${errCount} com erro` : ""}`);
+      setMapOpen(false);
+      setPendingRows([]);
+      setPendingHeaders([]);
+      setMapping({});
       load();
     } catch (e: any) {
       toast.error(`Erro ao importar: ${e?.message ?? e}`);
     } finally {
       setImporting(false);
-      if (fileRef.current) fileRef.current.value = "";
     }
   };
 
@@ -505,6 +547,57 @@ export function GestaoParceirosDialog() {
           </div>
         </div>
       </DialogContent>
+
+      {/* Mapping dialog */}
+      <Dialog open={mapOpen} onOpenChange={(v) => { if (!v) { setMapOpen(false); setPendingRows([]); setPendingHeaders([]); setMapping({}); } }}>
+        <DialogContent className="max-w-2xl">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <FileSpreadsheet className="h-4 w-4" /> Vincular colunas da planilha
+            </DialogTitle>
+            <p className="text-[11.5px] text-muted-foreground">
+              {pendingRows.length} linha(s) detectada(s). Escolha qual coluna da planilha corresponde a cada campo do banco. Apenas <span className="font-medium">Nome</span> é obrigatório.
+            </p>
+          </DialogHeader>
+
+          <div className="grid max-h-[60vh] gap-2 overflow-y-auto pr-1">
+            {DB_FIELDS.map((f) => (
+              <div key={f.key} className="grid grid-cols-[1fr,1.4fr] items-center gap-3 rounded-md border border-border bg-card/40 px-3 py-2">
+                <Label className="text-[12.5px]">
+                  {f.label} {f.required && <span className="text-destructive">*</span>}
+                  <div className="text-[10.5px] font-normal text-muted-foreground">{f.key}</div>
+                </Label>
+                <Select
+                  value={mapping[f.key] ?? "__none__"}
+                  onValueChange={(v) => setMapping((m) => {
+                    const n = { ...m };
+                    if (v === "__none__") delete n[f.key];
+                    else n[f.key] = v;
+                    return n;
+                  })}
+                >
+                  <SelectTrigger className="h-8 text-[12.5px]"><SelectValue placeholder="— não importar —" /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="__none__">— não importar —</SelectItem>
+                    {pendingHeaders.map((h) => (
+                      <SelectItem key={h} value={h}>{h}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            ))}
+          </div>
+
+          <DialogFooter className="gap-2">
+            <Button variant="ghost" size="sm" className="h-8 text-[12.5px]" onClick={() => setMapOpen(false)} disabled={importing}>
+              Cancelar
+            </Button>
+            <Button size="sm" className="h-8 gap-1.5 text-[12.5px]" onClick={confirmImport} disabled={importing || !mapping.nome}>
+              {importing ? "Importando…" : "Confirmar importação"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </Dialog>
   );
 }

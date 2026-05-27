@@ -982,6 +982,14 @@ export default function Parceiros() {
               selected={campFilter}
               setSelected={setCampFilter}
             />
+            <FiltrosTabs
+              filtInd={filtInd} setFiltInd={setFiltInd}
+              filtConv={filtConv} setFiltConv={setFiltConv}
+              filtRec={filtRec} setFiltRec={setFiltRec}
+              tierOptions={tierOptions}
+              totalCount={filtTotalCount}
+              indCount={filtIndCount} convCount={filtConvCount} recCount={filtRecCount}
+            />
           </div>
         }
       >

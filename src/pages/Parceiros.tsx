@@ -981,9 +981,14 @@ export default function Parceiros() {
               selected={campFilter}
               setSelected={setCampFilter}
             />
-            <Button variant="outline" size="sm" className="h-8 gap-1.5 text-[12.5px]">
-              <Filter className="h-3.5 w-3.5" /> Filtros
-            </Button>
+            <FiltrosTabs
+              filtInd={filtInd} setFiltInd={setFiltInd}
+              filtConv={filtConv} setFiltConv={setFiltConv}
+              filtRec={filtRec} setFiltRec={setFiltRec}
+              tierOptions={tierOptions}
+              totalCount={filtTotalCount}
+              indCount={filtIndCount} convCount={filtConvCount} recCount={filtRecCount}
+            />
           </div>
         }
       >

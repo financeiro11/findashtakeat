@@ -1083,27 +1083,29 @@ export default function Parceiros() {
                           ) : key === "campanha" ? (
                             <span className="inline-flex items-center gap-1.5">
                               {COLUMNS.campanha.render(r)}
-                              <TooltipProvider delayDuration={150}>
-                                <Tooltip>
-                                  <TooltipTrigger asChild>
-                                    <button
-                                      type="button"
-                                      onClick={() => openHistorico({
-                                        table: "parceiros_indicacoes",
-                                        id: r.id,
-                                        titulo: `${r.embaixador || "—"} · ${r.empresa || r.campanha || ""}`,
-                                      })}
-                                      className="inline-flex items-center justify-center rounded-full text-muted-foreground hover:text-foreground focus:outline-none focus:ring-1 focus:ring-primary/40"
-                                      aria-label="Histórico de campanha"
-                                    >
-                                      <History className="h-3.5 w-3.5" />
-                                    </button>
-                                  </TooltipTrigger>
-                                  <TooltipContent side="right" className="text-[11.5px]">
-                                    Ver histórico de alterações de campanha
-                                  </TooltipContent>
-                                </Tooltip>
-                              </TooltipProvider>
+                              {hasLog("parceiros_indicacoes", r.id) && (
+                                <TooltipProvider delayDuration={150}>
+                                  <Tooltip>
+                                    <TooltipTrigger asChild>
+                                      <button
+                                        type="button"
+                                        onClick={() => openHistorico({
+                                          table: "parceiros_indicacoes",
+                                          id: r.id,
+                                          titulo: `${r.embaixador || "—"} · ${r.empresa || r.campanha || ""}`,
+                                        })}
+                                        className="inline-flex items-center justify-center rounded-full text-muted-foreground hover:text-foreground focus:outline-none focus:ring-1 focus:ring-primary/40"
+                                        aria-label="Histórico de campanha"
+                                      >
+                                        <History className="h-3.5 w-3.5" />
+                                      </button>
+                                    </TooltipTrigger>
+                                    <TooltipContent side="right" className="text-[11.5px]">
+                                      Ver histórico de alterações de campanha
+                                    </TooltipContent>
+                                  </Tooltip>
+                                </TooltipProvider>
+                              )}
                               {mismatch && (
                                 <TooltipProvider delayDuration={150}>
                                   <Tooltip>

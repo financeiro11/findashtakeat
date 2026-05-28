@@ -147,7 +147,8 @@ export default function Triagem() {
                 </TableRow>
               );
             })}
-            {!filtered.length && (
+              <TableRow><TableCell colSpan={9} className="text-center text-sm text-muted-foreground py-12">{loading ? "Carregando..." : "Nenhum edital."}</TableCell></TableRow>
+
               <TableRow><TableCell colSpan={7} className="text-center text-sm text-muted-foreground py-12">{loading ? "Carregando..." : "Nenhum edital."}</TableCell></TableRow>
             )}
           </TableBody>

@@ -51,19 +51,21 @@ export default function Radar() {
     if (quick === "ocultos") {
       q = q.neq("visibility_status", "visivel");
     } else if (quick === "fapes") {
-      q = q.eq("visibility_status", "visivel").ilike("fonte", "%FAPES%");
+      q = q.eq("visibility_status", "visivel").neq("lifecycle_status", "encerrado").ilike("fonte", "%FAPES%");
     } else if (quick === "alta") {
-      q = q.eq("visibility_status", "visivel").gte("match_score", 80);
+      q = q.eq("visibility_status", "visivel").neq("lifecycle_status", "encerrado").gte("match_score", 80);
     } else if (quick === "inovacao") {
-      q = q.eq("visibility_status", "visivel").in("opportunity_type", ["fomento","subvencao","programa_startup","aceleracao","chamada_publica"]);
+      q = q.eq("visibility_status", "visivel").neq("lifecycle_status", "encerrado").in("opportunity_type", ["fomento","subvencao","programa_startup","aceleracao","chamada_publica"]);
     } else if (quick === "prazo_aberto") {
-      q = q.eq("visibility_status", "visivel").gte("prazo_envio", new Date().toISOString().slice(0, 10));
+      q = q.eq("visibility_status", "visivel").neq("lifecycle_status", "encerrado").gte("prazo_envio", new Date().toISOString().slice(0, 10));
     } else if (quick === "pncp") {
       q = q.ilike("fonte", "%PNCP%");
     } else {
-      // todos visíveis
+      // todos visíveis e não encerrados
+      q = q.neq("lifecycle_status", "encerrado");
       if (!cfg.show_low_relevance) q = q.eq("visibility_status", "visivel");
     }
+
 
     const { data, error } = await q;
     if (error) toast.error(error.message); else setRows((data as any) ?? []);

@@ -110,8 +110,11 @@ export default function Triagem() {
                   <TableCell>
                     <div className="font-medium text-sm max-w-[420px] truncate">{r.titulo}</div>
                     <div className="text-[10px] text-muted-foreground truncate max-w-[420px]">{r.orgao ?? "—"}</div>
-                  </TableCell>
-                  <TableCell className="text-xs">{r.fonte ?? "—"}</TableCell>
+                  <TableCell className={`num text-xs font-semibold ${matchColor(score)}`}>{score}%</TableCell>
+                  <TableCell className={`num text-xs font-semibold ${matchColor(Number(r.confidence_score ?? 0))}`}>{Number(r.confidence_score ?? 0)}%</TableCell>
+                  <TableCell><Badge variant="outline" className={lifecycleBadge(r.lifecycle_status)}>{lifecycleLabel(r.lifecycle_status)}</Badge></TableCell>
+                  <TableCell><Badge variant="outline" className={visibilityBadge(r.visibility_status)}>{VISIBILITY_STATUSES.find(v => v.value === r.visibility_status)?.label ?? r.visibility_status ?? "—"}</Badge></TableCell>
+
                   <TableCell><Badge variant="outline" className="text-[10px]">{opportunityLabel(r.opportunity_type)}</Badge></TableCell>
                   <TableCell className={`num text-xs font-semibold ${matchColor(score)}`}>{score}%</TableCell>
                   <TableCell><Badge variant="outline" className={visibilityBadge(r.visibility_status)}>{VISIBILITY_STATUSES.find(v => v.value === r.visibility_status)?.label ?? r.visibility_status ?? "—"}</Badge></TableCell>

@@ -164,6 +164,18 @@ function cleanTitle(s: string): string {
   }).trim();
 }
 
+// URLs que sinalizam edital/oportunidade (prioriza) vs. ruído (ignora)
+const URL_RELEVANT = /(edital|chamada|chamamento|subven[çc][ãa]o|oportunidade|fomento|programa|selecao|sele[çc][ãa]o|inscric|inscri[çc])/i;
+const URL_IRRELEVANT = /(noticia|not[íi]cia|\/blog\/|imprensa|\/eventos?\/|resultado|transparencia|transpar[êe]ncia|historico|hist[óo]rico|\.jpg|\.png|\/tag\/|\/categoria\/)/i;
+
+/** true se a URL deve ser descartada (ruído conhecido e sem sinal de edital) */
+export function urlIsNoise(url: string | null | undefined): boolean {
+  const u = (url || "").toLowerCase();
+  if (!u) return false;
+  if (URL_RELEVANT.test(u)) return false; // sinal positivo vence o ruído
+  return URL_IRRELEVANT.test(u);
+}
+
 // Extrai valor "R$ 10,6 milhões", "R$ 1,8 bi", "R$ 56 mil" → número em reais
 export function parseValorBR(text: string | null | undefined): number {
   if (!text) return 0;

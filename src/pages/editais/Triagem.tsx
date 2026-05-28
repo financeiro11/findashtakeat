@@ -21,10 +21,13 @@ async function makeHashClient(titulo: string, orgao?: string | null, dataPub?: s
   const hash = await crypto.subtle.digest("SHA-256", buf);
   return Array.from(new Uint8Array(hash)).map((b) => b.toString(16).padStart(2, "0")).join("");
 }
-
-export default function Triagem() {
   const [rows, setRows] = useState<Edital[]>([]);
   const [filter, setFilter] = useState<string>("all");
+  const [q, setQ] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [selected, setSelected] = useState<Edital | null>(null);
+  const [open, setOpen] = useState(false);
+
   const [q, setQ] = useState("");
   const [loading, setLoading] = useState(false);
 

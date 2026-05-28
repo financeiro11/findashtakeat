@@ -31,9 +31,25 @@ export type Edital = {
   exclusion_reason?: string | null;
   source_priority?: number | null;
   opportunity_type?: string | null;
+  confidence_score?: number | null;
+  lifecycle_status?: string | null;
+  external_id?: string | null;
   created_at?: string;
   updated_at?: string;
 };
+
+export const LIFECYCLE_STATUSES = [
+  { value: "aberto", label: "Aberto", color: "bg-emerald-500/10 text-emerald-600 border-emerald-500/30" },
+  { value: "encerrando", label: "Encerrando", color: "bg-amber-500/10 text-amber-600 border-amber-500/30" },
+  { value: "encerrado", label: "Encerrado", color: "bg-rose-500/10 text-rose-600 border-rose-500/30" },
+];
+
+export const lifecycleBadge = (s: string | null | undefined) =>
+  LIFECYCLE_STATUSES.find(v => v.value === s)?.color ?? "bg-muted text-muted-foreground border-border";
+
+export const lifecycleLabel = (s: string | null | undefined) =>
+  LIFECYCLE_STATUSES.find(v => v.value === s)?.label ?? (s ?? "—");
+
 
 export const OPPORTUNITY_TYPES = [
   { value: "fomento", label: "Fomento" },

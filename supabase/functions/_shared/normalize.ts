@@ -1,7 +1,13 @@
 import { createClient, SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2.45.0";
 import { enrichEdital } from "./ai-stub.ts";
 import { makeHash } from "./dedupe.ts";
-import { calculateEditalRelevance, FilterSettings, loadFilterSettings } from "./relevance.ts";
+import { calculateEditalRelevance, FilterSettings, loadFilterSettings, validateEdital, detectLifecycle } from "./relevance.ts";
+
+const normTituloKey = (s: string) =>
+  (s || "").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/\s+/g, " ").trim();
+
+const normUrlKey = (s: string | null | undefined) =>
+  (s || "").toLowerCase().replace(/[#?].*$/, "").replace(/\/+$/, "").trim();
 
 export interface RawEdital {
   external_id?: string | null;
@@ -25,14 +31,35 @@ export interface UpsertResult {
   novos: number;
   duplicados: number;
   ocultados: number;
+  /** itens ignorados por estarem na blacklist (excluídos permanentemente) */
+  bloqueados: number;
 }
+
+interface BlacklistIndex {
+  urls: Set<string>;
+  titulos: Set<string>;
+  hashes: Set<string>;
+  externalIds: Set<string>;
+}
+
+async function loadBlacklist(supa: SupabaseClient): Promise<BlacklistIndex> {
+  const idx: BlacklistIndex = { urls: new Set(), titulos: new Set(), hashes: new Set(), externalIds: new Set() };
+  const { data } = await supa.from("editais_blacklist").select("url, titulo_norm, hash_dedupe, external_id").limit(10000);
+  for (const b of (data ?? []) as any[]) {
+    if (b.url) idx.urls.add(normUrlKey(b.url));
+    if (b.titulo_norm) idx.titulos.add(b.titulo_norm);
+    if (b.hash_dedupe) idx.hashes.add(b.hash_dedupe);
+    if (b.external_id) idx.externalIds.add(b.external_id);
+  }
+  return idx;
+}
+
 
 export function getServiceClient(): SupabaseClient {
   const url = Deno.env.get("SUPABASE_URL")!;
   const key = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
   return createClient(url, key, { auth: { persistSession: false } });
 }
-
 export async function upsertEditais(
   supa: SupabaseClient,
   raws: RawEdital[],
@@ -40,13 +67,30 @@ export async function upsertEditais(
   fonteSlug?: string,
   settingsOverride?: FilterSettings,
 ): Promise<UpsertResult> {
-  let novos = 0, duplicados = 0, ocultados = 0;
+  let novos = 0, duplicados = 0, ocultados = 0, bloqueados = 0;
   const settings = settingsOverride ?? await loadFilterSettings(supa);
+  const blacklist = await loadBlacklist(supa);
+
+  // Confiança mínima para considerar a página um edital de verdade (não notícia)
+  const minConfidence = 45;
 
   for (const r of raws) {
     const slug = (r.fonte_slug ?? fonteSlug ?? r.fonte ?? "").toLowerCase();
     const enrich = enrichEdital({ titulo: r.titulo, objeto: r.objeto, orgao: r.orgao });
     const hash = await makeHash(r.titulo, r.orgao, r.data_publicacao);
+    const tituloKey = normTituloKey(r.titulo);
+    const urlKey = normUrlKey(r.link);
+
+    // 1) BLACKLIST — itens excluídos permanentemente nunca voltam (url, título OU hash OU external_id)
+    if (
+      (urlKey && blacklist.urls.has(urlKey)) ||
+      (tituloKey && blacklist.titulos.has(tituloKey)) ||
+      (hash && blacklist.hashes.has(hash)) ||
+      (r.external_id && blacklist.externalIds.has(r.external_id))
+    ) {
+      bloqueados++;
+      continue;
+    }
 
     const rel = calculateEditalRelevance({
       titulo: r.titulo,
@@ -60,7 +104,30 @@ export async function upsertEditais(
       fonte_slug: slug,
     }, settings);
 
-    if (rel.visibility_status !== "visivel") ocultados++;
+    // 2) VALIDAÇÃO DE EDITAL — descarta notícias/institucional
+    const val = validateEdital({
+      titulo: r.titulo, objeto: r.objeto, resumo_ia: enrich.resumo_ia,
+      link: r.link, numero: r.numero, prazo_envio: r.prazo_envio, modalidade: r.modalidade,
+    }, minConfidence);
+
+    // 3) CICLO DE VIDA — aberto / encerrando / encerrado
+    const life = detectLifecycle({
+      titulo: r.titulo, objeto: r.objeto, resumo_ia: enrich.resumo_ia,
+    }, r.prazo_envio);
+
+    // Decisão final de visibilidade
+    let visibility = rel.visibility_status;
+    let exclusion = rel.exclusion_reason;
+
+    if (!val.is_edital) {
+      visibility = "oculto_por_baixa_relevancia";
+      exclusion = `Provável não-edital (confiança ${val.confidence}). ${val.reasons.slice(0, 4).join(", ")}`;
+    } else if (life.closed) {
+      visibility = "oculto_por_baixa_relevancia";
+      exclusion = life.reason ?? "Edital encerrado.";
+    }
+
+    if (visibility !== "visivel") ocultados++;
 
     const row = {
       titulo: r.titulo,
@@ -80,13 +147,15 @@ export async function upsertEditais(
       categoria: enrich.categoria,
       resumo_ia: enrich.resumo_ia,
       match_score: rel.score,
+      confidence_score: val.confidence,
+      lifecycle_status: life.lifecycle,
       data_captura: new Date().toISOString(),
       status: "Em análise",
       pipeline_stage: "Encontrado",
       prioridade: rel.score >= 75 ? "Alta" : rel.score >= 50 ? "Média" : "Baixa",
-      visibility_status: rel.visibility_status,
+      visibility_status: visibility,
       relevance_reason: rel.relevance_reason,
-      exclusion_reason: rel.exclusion_reason,
+      exclusion_reason: exclusion,
       source_priority: rel.source_priority,
       opportunity_type: rel.opportunity_type,
     };
@@ -113,5 +182,6 @@ export async function upsertEditais(
     if (!error) novos++;
   }
 
-  return { novos, duplicados, ocultados };
+  return { novos, duplicados, ocultados, bloqueados };
 }
+

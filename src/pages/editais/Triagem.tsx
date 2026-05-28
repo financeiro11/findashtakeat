@@ -5,9 +5,20 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { Edital, opportunityLabel, visibilityBadge, VISIBILITY_STATUSES, matchColor } from "./types";
+import { Edital, opportunityLabel, visibilityBadge, VISIBILITY_STATUSES, matchColor, lifecycleBadge, lifecycleLabel } from "./types";
+
 import { Eye, EyeOff, Star, Trash2, Search } from "lucide-react";
 import { toast } from "sonner";
+
+const normTitulo = (s: string) =>
+  (s || "").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/\s+/g, " ").trim();
+
+async function makeHashClient(titulo: string, orgao?: string | null, dataPub?: string | null): Promise<string> {
+  const payload = [normTitulo(titulo), normTitulo(orgao ?? ""), dataPub ?? ""].join("|");
+  const buf = new TextEncoder().encode(payload);
+  const hash = await crypto.subtle.digest("SHA-256", buf);
+  return Array.from(new Uint8Array(hash)).map((b) => b.toString(16).padStart(2, "0")).join("");
+}
 
 export default function Triagem() {
   const [rows, setRows] = useState<Edital[]>([]);
@@ -28,12 +39,25 @@ export default function Triagem() {
     setLoading(false);
   };
 
-  const excluir = async (id: string) => {
-    if (!confirm("Excluir definitivamente este edital? Ele sairá de Radar, Triagem e Pipeline.")) return;
-    const { error } = await supabase.from("editais" as any).delete().eq("id", id);
+  const excluir = async (r: Edital) => {
+    if (!confirm("Excluir definitivamente este edital? Ele entra na blacklist e NÃO voltará a aparecer em futuras execuções do crawler.")) return;
+    // 1) grava na blacklist permanente (url + título normalizado + hash + external_id)
+    const titulo_norm = normTitulo(r.titulo);
+    const hash_dedupe = await makeHashClient(r.titulo, r.orgao, r.data_publicacao);
+    const { error: blErr } = await supabase.from("editais_blacklist" as any).insert({
+      url: r.link ?? null,
+      titulo_norm,
+      hash_dedupe,
+      external_id: (r as any).external_id ?? null,
+      motivo: "Excluído manualmente na triagem",
+    });
+    if (blErr) { toast.error(blErr.message); return; }
+    // 2) remove o registro atual
+    const { error } = await supabase.from("editais" as any).delete().eq("id", r.id);
     if (error) toast.error(error.message);
-    else { toast.success("Excluído"); load(); }
+    else { toast.success("Excluído e adicionado à blacklist"); load(); }
   };
+
 
   const setVisibility = async (id: string, status: string) => {
     const { error } = await supabase.from("editais" as any).update({ visibility_status: status }).eq("id", id);
@@ -71,7 +95,10 @@ export default function Triagem() {
               <TableHead>Fonte</TableHead>
               <TableHead>Tipo</TableHead>
               <TableHead className="num">Score</TableHead>
+              <TableHead className="num">Confiança</TableHead>
+              <TableHead>Situação</TableHead>
               <TableHead>Visibilidade</TableHead>
+
               <TableHead>Motivo</TableHead>
               <TableHead className="text-right">Ações</TableHead>
             </TableRow>
@@ -88,11 +115,14 @@ export default function Triagem() {
                   <TableCell className="text-xs">{r.fonte ?? "—"}</TableCell>
                   <TableCell><Badge variant="outline" className="text-[10px]">{opportunityLabel(r.opportunity_type)}</Badge></TableCell>
                   <TableCell className={`num text-xs font-semibold ${matchColor(score)}`}>{score}%</TableCell>
+                  <TableCell className={`num text-xs font-semibold ${matchColor(Number(r.confidence_score ?? 0))}`}>{Number(r.confidence_score ?? 0)}%</TableCell>
+                  <TableCell><Badge variant="outline" className={lifecycleBadge(r.lifecycle_status)}>{lifecycleLabel(r.lifecycle_status)}</Badge></TableCell>
                   <TableCell><Badge variant="outline" className={visibilityBadge(r.visibility_status)}>{VISIBILITY_STATUSES.find(v => v.value === r.visibility_status)?.label ?? r.visibility_status ?? "—"}</Badge></TableCell>
                   <TableCell className="text-[11px] text-muted-foreground max-w-[360px]">
                     {r.exclusion_reason && <div className="text-rose-600">⛔ {r.exclusion_reason}</div>}
                     {r.relevance_reason && <div className="truncate">✓ {r.relevance_reason}</div>}
                   </TableCell>
+
                   <TableCell className="text-right">
                     <div className="flex justify-end gap-1">
                       {r.visibility_status !== "visivel" && (
@@ -108,7 +138,8 @@ export default function Triagem() {
                       <Button size="sm" variant="outline" className="h-7 px-2" onClick={() => setVisibility(r.id, "pendente_revisao")} title="Marcar como relevante p/ revisão">
                         <Star className="h-3 w-3" />
                       </Button>
-                      <Button size="sm" variant="outline" className="h-7 px-2 text-rose-600" onClick={() => excluir(r.id)} title="Excluir definitivamente">
+                      <Button size="sm" variant="outline" className="h-7 px-2 text-rose-600" onClick={() => excluir(r)} title="Excluir definitivamente">
+
                         <Trash2 className="h-3 w-3" />
                       </Button>
                     </div>
@@ -117,8 +148,9 @@ export default function Triagem() {
               );
             })}
             {!filtered.length && (
-              <TableRow><TableCell colSpan={7} className="text-center text-sm text-muted-foreground py-12">{loading ? "Carregando..." : "Nenhum edital."}</TableCell></TableRow>
+              <TableRow><TableCell colSpan={9} className="text-center text-sm text-muted-foreground py-12">{loading ? "Carregando..." : "Nenhum edital."}</TableCell></TableRow>
             )}
+
           </TableBody>
         </Table>
       </Card>

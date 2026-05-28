@@ -317,15 +317,27 @@ const NEGATIVE_INDICATORS: Array<[RegExp, number, string]> = [
   [/\bblog\b/, 12, "blog"],
 ];
 
+// Caminhos de URL que denunciam notícia/institucional (não-edital)
+const URL_NEWS_PATH = /\/(noticias?|blog|imprensa|sala-de-imprensa|press|eventos?|agenda|galeria|videos?|podcasts?|artigos?|reportagens?)\b/;
+// Verbos jornalísticos típicos de manchete de notícia
+const NEWS_HEADLINE = /\b(lan[çc]a|lan[çc]ou|anuncia|anunciou|divulga|divulgou|abre|abriu|libera|liberou|destaca|comemora|recebe|participa|apresenta|realiza|realizou|promove|investe|investir[áa])\b/;
+
 export function validateEdital(
   e: EditalValidationInput,
   minConfidence = 45,
 ): EditalValidationResult {
   const haystack = norm(`${e.titulo ?? ""} ${e.objeto ?? ""} ${e.resumo_ia ?? ""} ${e.modalidade ?? ""}`);
   const url = norm(e.link ?? "");
+  let urlPath = url;
+  try { urlPath = new URL(e.link ?? "").pathname.toLowerCase(); } catch { /* usa string toda */ }
   const reasons: string[] = [];
   let confidence = 25; // base neutra
 
+  // URL de notícia/blog/imprensa → penalidade dura (não é edital, é matéria)
+  if (URL_NEWS_PATH.test(urlPath)) { confidence -= 30; reasons.push("-30 URL de notícia/blog"); }
+  // Título com cara de manchete jornalística
+  const tituloNorm = norm(e.titulo ?? "");
+  if (NEWS_HEADLINE.test(tituloNorm)) { confidence -= 16; reasons.push("-16 título de manchete"); }
   // PDF anexado é forte indicador de edital
   if (/\.pdf(\?|#|$)/.test(url)) { confidence += 18; reasons.push("PDF anexado (+18)"); }
   // Número de edital explícito no campo numero
@@ -345,11 +357,16 @@ export function validateEdital(
 
   confidence = Math.max(0, Math.min(100, Math.round(confidence)));
 
-  // Regra dura: nenhum indicador positivo e algum negativo → quase certamente não é edital
-  const isEdital = confidence >= minConfidence && (posHits > 0 || /\.pdf/.test(url));
+  // Regra dura: nenhum indicador positivo e algum negativo → quase certamente não é edital.
+  // URL de notícia bloqueia sempre, ainda que tenha "edital" no slug.
+  const isEdital =
+    confidence >= minConfidence &&
+    (posHits > 0 || /\.pdf/.test(url)) &&
+    !URL_NEWS_PATH.test(urlPath);
 
   return { confidence, is_edital: isEdital, reasons };
 }
+
 
 // ============================================================================
 // CICLO DE VIDA — aberto / encerrando / encerrado

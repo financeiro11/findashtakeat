@@ -259,3 +259,134 @@ export async function loadFilterSettings(supa: any): Promise<FilterSettings> {
     innovation_priority_boost: data.innovation_priority_boost ?? 20,
   };
 }
+
+// ============================================================================
+// VALIDAÇÃO DE EDITAL — distingue editais reais de notícias / páginas institucionais
+// ============================================================================
+
+export interface EditalValidationInput {
+  titulo?: string | null;
+  objeto?: string | null;
+  resumo_ia?: string | null;
+  link?: string | null;
+  numero?: string | null;
+  prazo_envio?: string | null;
+  modalidade?: string | null;
+}
+
+export interface EditalValidationResult {
+  /** 0-100, quão provável é que seja um edital de verdade */
+  confidence: number;
+  /** true se acima do limite mínimo */
+  is_edital: boolean;
+  reasons: string[];
+}
+
+// Indicadores POSITIVOS de que a página é um edital/chamada real
+const POSITIVE_INDICATORS: Array<[RegExp, number, string]> = [
+  [/inscri[çc][õo]es?\s+abertas?/, 18, "inscrições abertas"],
+  [/inscri[çc][õo]es?\s+at[ée]/, 14, "inscrições até"],
+  [/submiss[ãa]o\s+de\s+propostas?/, 16, "submissão de propostas"],
+  [/submiss[ãa]o/, 8, "submissão"],
+  [/chamada\s+p[úu]blica/, 18, "chamada pública"],
+  [/chamamento\s+p[úu]blico/, 16, "chamamento público"],
+  [/sele[çc][ãa]o\s+p[úu]blica/, 14, "seleção pública"],
+  [/\bedital\b/, 12, "edital"],
+  [/regulamento/, 8, "regulamento"],
+  [/cronograma/, 8, "cronograma"],
+  [/\bproposta(s)?\b/, 6, "proposta"],
+  [/prazo\s+(final|de\s+inscri|de\s+envio|de\s+submiss)/, 12, "prazo"],
+  [/\banexo(s)?\b/, 4, "anexo"],
+  [/n[ºo°]\s*\d+\/?\d*\s*\/?\s*20\d{2}/, 10, "número do edital"],
+];
+
+// Indicadores NEGATIVOS — provavelmente notícia / institucional / encerrado
+const NEGATIVE_INDICATORS: Array<[RegExp, number, string]> = [
+  [/\bnot[íi]cia(s)?\b/, 22, "notícia"],
+  [/publica[çc][ãa]o\s+institucional/, 18, "publicação institucional"],
+  [/\bcomunicado\b/, 14, "comunicado"],
+  [/lista\s+de\s+aprovados/, 30, "lista de aprovados"],
+  [/resultado\s+(final|preliminar|da\s+sele)/, 28, "resultado"],
+  [/\bresultado\b/, 14, "resultado"],
+  [/homologa[çc][ãa]o/, 26, "homologação"],
+  [/\bencerrad[oa]\b/, 24, "encerrado"],
+  [/\barquivad[oa]\b/, 22, "arquivado"],
+  [/inscri[çc][õo]es?\s+encerradas?/, 30, "inscrições encerradas"],
+  [/prazo\s+(expirad|encerrad|esgotad)/, 26, "prazo expirado"],
+  [/\bevento(s)?\b/, 8, "evento"],
+  [/\bblog\b/, 12, "blog"],
+];
+
+export function validateEdital(
+  e: EditalValidationInput,
+  minConfidence = 45,
+): EditalValidationResult {
+  const haystack = norm(`${e.titulo ?? ""} ${e.objeto ?? ""} ${e.resumo_ia ?? ""} ${e.modalidade ?? ""}`);
+  const url = norm(e.link ?? "");
+  const reasons: string[] = [];
+  let confidence = 25; // base neutra
+
+  // PDF anexado é forte indicador de edital
+  if (/\.pdf(\?|#|$)/.test(url)) { confidence += 18; reasons.push("PDF anexado (+18)"); }
+  // Número de edital explícito no campo numero
+  if (e.numero && /\d/.test(String(e.numero))) { confidence += 8; reasons.push("possui número (+8)"); }
+  // Possui prazo definido
+  if (e.prazo_envio) { confidence += 10; reasons.push("prazo definido (+10)"); }
+
+  let posHits = 0;
+  for (const [re, w, label] of POSITIVE_INDICATORS) {
+    if (re.test(haystack)) { confidence += w; posHits++; if (reasons.length < 12) reasons.push(`+${w} ${label}`); }
+  }
+
+  let negHits = 0;
+  for (const [re, w, label] of NEGATIVE_INDICATORS) {
+    if (re.test(haystack)) { confidence -= w; negHits++; if (reasons.length < 18) reasons.push(`-${w} ${label}`); }
+  }
+
+  confidence = Math.max(0, Math.min(100, Math.round(confidence)));
+
+  // Regra dura: nenhum indicador positivo e algum negativo → quase certamente não é edital
+  const isEdital = confidence >= minConfidence && (posHits > 0 || /\.pdf/.test(url));
+
+  return { confidence, is_edital: isEdital, reasons };
+}
+
+// ============================================================================
+// CICLO DE VIDA — aberto / encerrando / encerrado
+// ============================================================================
+
+export type LifecycleStatus = "aberto" | "encerrando" | "encerrado";
+
+export interface LifecycleResult {
+  lifecycle: LifecycleStatus;
+  /** true se deve sair do radar principal */
+  closed: boolean;
+  reason: string | null;
+}
+
+const CLOSED_TEXT = /(resultado\s+final|homologa[çc][ãa]o|\bencerrad[oa]\b|\barquivad[oa]\b|inscri[çc][õo]es?\s+encerradas?|prazo\s+(expirad|encerrad|esgotad)|lista\s+de\s+aprovados)/;
+
+export function detectLifecycle(
+  e: EditalValidationInput,
+  prazo?: string | null,
+  soonDays = 7,
+): LifecycleResult {
+  const haystack = norm(`${e.titulo ?? ""} ${e.objeto ?? ""} ${e.resumo_ia ?? ""}`);
+
+  // Texto explícito de encerramento tem prioridade
+  if (CLOSED_TEXT.test(haystack)) {
+    return { lifecycle: "encerrado", closed: true, reason: "Texto indica edital encerrado/resultado." };
+  }
+
+  if (prazo) {
+    const t = new Date(prazo).getTime();
+    if (isFinite(t)) {
+      const dias = Math.ceil((t - Date.now()) / 86400000);
+      if (dias < 0) return { lifecycle: "encerrado", closed: true, reason: `Prazo venceu há ${Math.abs(dias)} dia(s).` };
+      if (dias <= soonDays) return { lifecycle: "encerrando", closed: false, reason: `Encerra em ${dias} dia(s).` };
+      return { lifecycle: "aberto", closed: false, reason: null };
+    }
+  }
+
+  return { lifecycle: "aberto", closed: false, reason: null };
+}

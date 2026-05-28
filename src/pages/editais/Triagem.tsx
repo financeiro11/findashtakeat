@@ -9,6 +9,16 @@ import { Edital, opportunityLabel, visibilityBadge, VISIBILITY_STATUSES, matchCo
 import { Eye, EyeOff, Star, Trash2, Search } from "lucide-react";
 import { toast } from "sonner";
 
+const normTitulo = (s: string) =>
+  (s || "").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/\s+/g, " ").trim();
+
+async function makeHashClient(titulo: string, orgao?: string | null, dataPub?: string | null): Promise<string> {
+  const payload = [normTitulo(titulo), normTitulo(orgao ?? ""), dataPub ?? ""].join("|");
+  const buf = new TextEncoder().encode(payload);
+  const hash = await crypto.subtle.digest("SHA-256", buf);
+  return Array.from(new Uint8Array(hash)).map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
 export default function Triagem() {
   const [rows, setRows] = useState<Edital[]>([]);
   const [filter, setFilter] = useState<string>("all");

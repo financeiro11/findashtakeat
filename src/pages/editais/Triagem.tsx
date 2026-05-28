@@ -114,9 +114,16 @@ async function makeHashClient(titulo: string, orgao?: string | null, dataPub?: s
               return (
                 <TableRow key={r.id}>
                   <TableCell>
-                    <div className="font-medium text-sm max-w-[420px] truncate">{r.titulo}</div>
-                    <div className="text-[10px] text-muted-foreground truncate max-w-[420px]">{r.orgao ?? "—"}</div>
+                    <button
+                      type="button"
+                      className="text-left hover:underline focus:outline-none"
+                      onClick={() => { setSelected(r); setOpen(true); }}
+                    >
+                      <div className="font-medium text-sm max-w-[420px] truncate">{r.titulo}</div>
+                      <div className="text-[10px] text-muted-foreground truncate max-w-[420px]">{r.orgao ?? "—"}</div>
+                    </button>
                   </TableCell>
+
                   <TableCell className="text-xs">{r.fonte ?? "—"}</TableCell>
                   <TableCell><Badge variant="outline" className="text-[10px]">{opportunityLabel(r.opportunity_type)}</Badge></TableCell>
                   <TableCell className={`num text-xs font-semibold ${matchColor(score)}`}>{score}%</TableCell>

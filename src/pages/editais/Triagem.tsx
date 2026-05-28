@@ -166,6 +166,9 @@ async function makeHashClient(titulo: string, orgao?: string | null, dataPub?: s
           </TableBody>
         </Table>
       </Card>
+
+      <EditalDrawer edital={selected} open={open} onOpenChange={setOpen} onSaved={load} />
     </div>
+
   );
 }

@@ -88,20 +88,28 @@ export function NaoCadastradoDialog({
     if (!alvo) return;
     setSaving(true);
     try {
-      // Atualiza registros de indicações e recorrências que tenham o nome original
+      // Match tolerante: ignora espaços extras e diferenças de caixa
+      const pattern = `%${nome.trim()}%`;
       const upd1 = await supabase
         .from("parceiros_indicacoes")
         .update({ indicador: alvo.nome })
-        .ilike("indicador", nome);
+        .ilike("indicador", pattern)
+        .select("id");
       const upd2 = await supabase
         .from("parceiros_recorrencias")
         .update({ indicador: alvo.nome })
-        .ilike("indicador", nome);
+        .ilike("indicador", pattern)
+        .select("id");
       if (upd1.error) throw upd1.error;
       if (upd2.error) throw upd2.error;
-      toast.success(`Registros associados a ${alvo.nome}`);
-      onOpenChange(false);
-      onDone?.();
+      const total = (upd1.data?.length ?? 0) + (upd2.data?.length ?? 0);
+      if (total === 0) {
+        toast.warning(`Nenhum registro encontrado com indicador "${nome}"`);
+      } else {
+        toast.success(`${total} registro(s) associado(s) a ${alvo.nome}`);
+        onOpenChange(false);
+        onDone?.();
+      }
     } catch (err: any) {
       toast.error(err?.message || "Falha ao associar");
     } finally {

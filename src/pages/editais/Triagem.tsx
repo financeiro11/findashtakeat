@@ -5,7 +5,8 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { Edital, opportunityLabel, visibilityBadge, VISIBILITY_STATUSES, matchColor } from "./types";
+import { Edital, opportunityLabel, visibilityBadge, VISIBILITY_STATUSES, matchColor, lifecycleBadge, lifecycleLabel } from "./types";
+
 import { Eye, EyeOff, Star, Trash2, Search } from "lucide-react";
 import { toast } from "sonner";
 

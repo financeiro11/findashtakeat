@@ -131,7 +131,8 @@ export default function Triagem() {
                       <Button size="sm" variant="outline" className="h-7 px-2" onClick={() => setVisibility(r.id, "pendente_revisao")} title="Marcar como relevante p/ revisão">
                         <Star className="h-3 w-3" />
                       </Button>
-                      <Button size="sm" variant="outline" className="h-7 px-2 text-rose-600" onClick={() => excluir(r.id)} title="Excluir definitivamente">
+                      <Button size="sm" variant="outline" className="h-7 px-2 text-rose-600" onClick={() => excluir(r)} title="Excluir definitivamente">
+
                         <Trash2 className="h-3 w-3" />
                       </Button>
                     </div>

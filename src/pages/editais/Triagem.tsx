@@ -94,7 +94,10 @@ export default function Triagem() {
               <TableHead>Fonte</TableHead>
               <TableHead>Tipo</TableHead>
               <TableHead className="num">Score</TableHead>
+              <TableHead className="num">Confiança</TableHead>
+              <TableHead>Situação</TableHead>
               <TableHead>Visibilidade</TableHead>
+
               <TableHead>Motivo</TableHead>
               <TableHead className="text-right">Ações</TableHead>
             </TableRow>

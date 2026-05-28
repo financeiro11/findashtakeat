@@ -266,7 +266,10 @@ export async function runFirecrawlCollector(cfg: FirecrawlCollectorConfig): Prom
       for (const r of results) {
         const titulo = cleanTitle(r.title || "");
         if (!titulo || titulo.length < 8) continue;
+        // Ignora URLs de ruído (notícias, blog, imprensa, eventos, resultado...)
+        if (urlIsNoise(r.url)) continue;
         const link = absLink(r.url, r.url) ?? r.url;
+
         raws.push({
           external_id: link,
           titulo,

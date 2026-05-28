@@ -31,7 +31,29 @@ export interface UpsertResult {
   novos: number;
   duplicados: number;
   ocultados: number;
+  /** itens ignorados por estarem na blacklist (excluídos permanentemente) */
+  bloqueados: number;
 }
+
+interface BlacklistIndex {
+  urls: Set<string>;
+  titulos: Set<string>;
+  hashes: Set<string>;
+  externalIds: Set<string>;
+}
+
+async function loadBlacklist(supa: SupabaseClient): Promise<BlacklistIndex> {
+  const idx: BlacklistIndex = { urls: new Set(), titulos: new Set(), hashes: new Set(), externalIds: new Set() };
+  const { data } = await supa.from("editais_blacklist").select("url, titulo_norm, hash_dedupe, external_id").limit(10000);
+  for (const b of (data ?? []) as any[]) {
+    if (b.url) idx.urls.add(normUrlKey(b.url));
+    if (b.titulo_norm) idx.titulos.add(b.titulo_norm);
+    if (b.hash_dedupe) idx.hashes.add(b.hash_dedupe);
+    if (b.external_id) idx.externalIds.add(b.external_id);
+  }
+  return idx;
+}
+
 
 export function getServiceClient(): SupabaseClient {
   const url = Deno.env.get("SUPABASE_URL")!;

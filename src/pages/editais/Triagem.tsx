@@ -28,12 +28,25 @@ export default function Triagem() {
     setLoading(false);
   };
 
-  const excluir = async (id: string) => {
-    if (!confirm("Excluir definitivamente este edital? Ele sairá de Radar, Triagem e Pipeline.")) return;
-    const { error } = await supabase.from("editais" as any).delete().eq("id", id);
+  const excluir = async (r: Edital) => {
+    if (!confirm("Excluir definitivamente este edital? Ele entra na blacklist e NÃO voltará a aparecer em futuras execuções do crawler.")) return;
+    // 1) grava na blacklist permanente (url + título normalizado + hash + external_id)
+    const titulo_norm = normTitulo(r.titulo);
+    const hash_dedupe = await makeHashClient(r.titulo, r.orgao, r.data_publicacao);
+    const { error: blErr } = await supabase.from("editais_blacklist" as any).insert({
+      url: r.link ?? null,
+      titulo_norm,
+      hash_dedupe,
+      external_id: (r as any).external_id ?? null,
+      motivo: "Excluído manualmente na triagem",
+    });
+    if (blErr) { toast.error(blErr.message); return; }
+    // 2) remove o registro atual
+    const { error } = await supabase.from("editais" as any).delete().eq("id", r.id);
     if (error) toast.error(error.message);
-    else { toast.success("Excluído"); load(); }
+    else { toast.success("Excluído e adicionado à blacklist"); load(); }
   };
+
 
   const setVisibility = async (id: string, status: string) => {
     const { error } = await supabase.from("editais" as any).update({ visibility_status: status }).eq("id", id);

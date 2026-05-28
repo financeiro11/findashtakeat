@@ -168,13 +168,22 @@ function cleanTitle(s: string): string {
 const URL_RELEVANT = /(edital|chamada|chamamento|subven[çc][ãa]o|oportunidade|fomento|programa|selecao|sele[çc][ãa]o|inscric|inscri[çc])/i;
 const URL_IRRELEVANT = /(noticia|not[íi]cia|\/blog\/|imprensa|\/eventos?\/|resultado|transparencia|transpar[êe]ncia|historico|hist[óo]rico|\.jpg|\.png|\/tag\/|\/categoria\/)/i;
 
+// Segmentos de caminho que SEMPRE indicam ruído (notícia, blog, imprensa…),
+// mesmo que o slug contenha "edital"/"chamada". Ex: /noticias/fapes-lanca-edital-x
+const URL_HARD_NOISE = /\/(noticias?|blog|imprensa|sala-de-imprensa|press|eventos?|agenda|galeria|videos?|podcasts?|tag|tags|categoria|categorias|busca|search|resultados?|aprovados|homologa)\b/i;
+
 /** true se a URL deve ser descartada (ruído conhecido e sem sinal de edital) */
 export function urlIsNoise(url: string | null | undefined): boolean {
   const u = (url || "").toLowerCase();
   if (!u) return false;
-  if (URL_RELEVANT.test(u)) return false; // sinal positivo vence o ruído
+  // Caminho de notícia/blog/imprensa é ruído absoluto — "edital" no slug não salva
+  let path = u;
+  try { path = new URL(u).pathname; } catch { /* usa a string toda */ }
+  if (URL_HARD_NOISE.test(path)) return true;
+  if (URL_RELEVANT.test(u)) return false; // sinal positivo vence o ruído brando
   return URL_IRRELEVANT.test(u);
 }
+
 
 // Extrai valor "R$ 10,6 milhões", "R$ 1,8 bi", "R$ 56 mil" → número em reais
 export function parseValorBR(text: string | null | undefined): number {

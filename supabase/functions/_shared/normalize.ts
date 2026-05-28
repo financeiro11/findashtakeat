@@ -185,4 +185,3 @@ export async function upsertEditais(
   return { novos, duplicados, ocultados, bloqueados };
 }
 
-}

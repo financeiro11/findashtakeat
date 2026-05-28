@@ -385,6 +385,7 @@ export type Database = {
       editais: {
         Row: {
           categoria: string | null
+          confidence_score: number
           created_at: string
           criterios_elegibilidade: string | null
           data_abertura: string | null
@@ -396,6 +397,7 @@ export type Database = {
           fonte: string | null
           hash_dedupe: string | null
           id: string
+          lifecycle_status: string
           link: string | null
           match_score: number | null
           modalidade: string | null
@@ -423,6 +425,7 @@ export type Database = {
         }
         Insert: {
           categoria?: string | null
+          confidence_score?: number
           created_at?: string
           criterios_elegibilidade?: string | null
           data_abertura?: string | null
@@ -434,6 +437,7 @@ export type Database = {
           fonte?: string | null
           hash_dedupe?: string | null
           id?: string
+          lifecycle_status?: string
           link?: string | null
           match_score?: number | null
           modalidade?: string | null
@@ -461,6 +465,7 @@ export type Database = {
         }
         Update: {
           categoria?: string | null
+          confidence_score?: number
           created_at?: string
           criterios_elegibilidade?: string | null
           data_abertura?: string | null
@@ -472,6 +477,7 @@ export type Database = {
           fonte?: string | null
           hash_dedupe?: string | null
           id?: string
+          lifecycle_status?: string
           link?: string | null
           match_score?: number | null
           modalidade?: string | null
@@ -496,6 +502,36 @@ export type Database = {
           updated_at?: string
           valor_estimado?: number | null
           visibility_status?: string
+        }
+        Relationships: []
+      }
+      editais_blacklist: {
+        Row: {
+          created_at: string
+          external_id: string | null
+          hash_dedupe: string | null
+          id: string
+          motivo: string | null
+          titulo_norm: string | null
+          url: string | null
+        }
+        Insert: {
+          created_at?: string
+          external_id?: string | null
+          hash_dedupe?: string | null
+          id?: string
+          motivo?: string | null
+          titulo_norm?: string | null
+          url?: string | null
+        }
+        Update: {
+          created_at?: string
+          external_id?: string | null
+          hash_dedupe?: string | null
+          id?: string
+          motivo?: string | null
+          titulo_norm?: string | null
+          url?: string | null
         }
         Relationships: []
       }

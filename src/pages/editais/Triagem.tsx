@@ -6,6 +6,8 @@ import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Edital, opportunityLabel, visibilityBadge, VISIBILITY_STATUSES, matchColor, lifecycleBadge, lifecycleLabel } from "./types";
+import EditalDrawer from "./EditalDrawer";
+
 
 import { Eye, EyeOff, Star, Trash2, Search } from "lucide-react";
 import { toast } from "sonner";
@@ -19,10 +21,13 @@ async function makeHashClient(titulo: string, orgao?: string | null, dataPub?: s
   const hash = await crypto.subtle.digest("SHA-256", buf);
   return Array.from(new Uint8Array(hash)).map((b) => b.toString(16).padStart(2, "0")).join("");
 }
-
-export default function Triagem() {
   const [rows, setRows] = useState<Edital[]>([]);
   const [filter, setFilter] = useState<string>("all");
+  const [q, setQ] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [selected, setSelected] = useState<Edital | null>(null);
+  const [open, setOpen] = useState(false);
+
   const [q, setQ] = useState("");
   const [loading, setLoading] = useState(false);
 
@@ -109,9 +114,16 @@ export default function Triagem() {
               return (
                 <TableRow key={r.id}>
                   <TableCell>
-                    <div className="font-medium text-sm max-w-[420px] truncate">{r.titulo}</div>
-                    <div className="text-[10px] text-muted-foreground truncate max-w-[420px]">{r.orgao ?? "—"}</div>
+                    <button
+                      type="button"
+                      className="text-left hover:underline focus:outline-none"
+                      onClick={() => { setSelected(r); setOpen(true); }}
+                    >
+                      <div className="font-medium text-sm max-w-[420px] truncate">{r.titulo}</div>
+                      <div className="text-[10px] text-muted-foreground truncate max-w-[420px]">{r.orgao ?? "—"}</div>
+                    </button>
                   </TableCell>
+
                   <TableCell className="text-xs">{r.fonte ?? "—"}</TableCell>
                   <TableCell><Badge variant="outline" className="text-[10px]">{opportunityLabel(r.opportunity_type)}</Badge></TableCell>
                   <TableCell className={`num text-xs font-semibold ${matchColor(score)}`}>{score}%</TableCell>
@@ -154,6 +166,9 @@ export default function Triagem() {
           </TableBody>
         </Table>
       </Card>
+
+      <EditalDrawer edital={selected} open={open} onOpenChange={setOpen} onSaved={load} />
     </div>
+
   );
 }

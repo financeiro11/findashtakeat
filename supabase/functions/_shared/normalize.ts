@@ -1,7 +1,13 @@
 import { createClient, SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2.45.0";
 import { enrichEdital } from "./ai-stub.ts";
 import { makeHash } from "./dedupe.ts";
-import { calculateEditalRelevance, FilterSettings, loadFilterSettings } from "./relevance.ts";
+import { calculateEditalRelevance, FilterSettings, loadFilterSettings, validateEdital, detectLifecycle } from "./relevance.ts";
+
+const normTituloKey = (s: string) =>
+  (s || "").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/\s+/g, " ").trim();
+
+const normUrlKey = (s: string | null | undefined) =>
+  (s || "").toLowerCase().replace(/[#?].*$/, "").replace(/\/+$/, "").trim();
 
 export interface RawEdital {
   external_id?: string | null;

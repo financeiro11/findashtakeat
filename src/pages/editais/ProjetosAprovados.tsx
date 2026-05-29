@@ -256,6 +256,7 @@ const SUGESTOES = [
 export function ExecutivoTab() {
   const [pergunta, setPergunta] = useState("");
   const [mostrarResposta, setMostrarResposta] = useState(false);
+  const { projetos: PROJETOS, loading } = useProjetosFromDB();
 
   /* ─── Métricas agregadas ─── */
   const metricas = useMemo(() => {
@@ -284,7 +285,7 @@ export function ExecutivoTab() {
       ativos, aguardando, saldoBruto, gasto, reservado, saldoLivre, pendNF,
       rubricasCriticas, rubricasEstouradas, sugestaoTerceiros,
     };
-  }, []);
+  }, [PROJETOS]);
 
   /* ─── KPIs (2 linhas de 4) ─── */
   const totalRubricas = PROJETOS.reduce((s, p) => s + p.rubricas.length, 0);
@@ -351,20 +352,36 @@ export function ExecutivoTab() {
       });
     });
     return items;
+  }, [metricas, PROJETOS]);
+
+  /* ─── Resposta contextual IA (dinâmica: pega as piores rubricas dos projetos ativos) ─── */
+  const respostaIA = useMemo(() => {
+    const ativos = metricas.ativos;
+    // pior projeto = maior % de execução em rubricas não reservadas
+    const piorProjeto = [...ativos].sort((a, b) => projAgregado(b).exec - projAgregado(a).exec)[0] ?? null;
+    const segundoPior = ativos.filter(p => p !== piorProjeto)
+      .sort((a, b) => projAgregado(b).exec - projAgregado(a).exec)[0] ?? null;
+
+    const piorRubricas = piorProjeto
+      ? [...piorProjeto.rubricas].filter(r => !r.reservado).sort((a, b) => pct(b) - pct(a)).slice(0, 2)
+      : [];
+    const segundoRubricasCriticas = segundoPior
+      ? [...segundoPior.rubricas].filter(r => !r.reservado && pct(r) >= 60).sort((a, b) => pct(b) - pct(a)).slice(0, 1)
+      : [];
+
+    // qualquer projeto com rubrica reservada destacada
+    const projetoComReserva = ativos.find(p => p.rubricas.some(r => r.reservado)) ?? null;
+    const reservadas = projetoComReserva?.rubricas.filter(r => r.reservado) ?? [];
+    const totalReservado = reservadas.reduce((s, r) => s + r.planejado, 0);
+    const reservaDestaque = reservadas[0] ?? null;
+
+    return {
+      piorProjeto, segundoPior, piorRubricas, segundoRubricasCriticas,
+      projetoComReserva, reservadas, totalReservado, reservaDestaque,
+      livre: metricas.saldoLivre, pendNF: metricas.pendNF,
+    };
   }, [metricas]);
 
-  /* ─── Resposta contextual IA ─── */
-  const respostaIA = useMemo(() => {
-    const breta = PROJETOS.find(p => p.nome === "BretA")!;
-    const tec = PROJETOS.find(p => p.nome === "Tecnova III")!;
-    const bMatCons = breta.rubricas.find(r => /Material de Consumo/i.test(r.nome))!;
-    const bPass = breta.rubricas.find(r => /Passagens/i.test(r.nome))!;
-    const tEq = tec.rubricas.find(r => /Equipamentos/i.test(r.nome))!;
-    const tAcel = tec.rubricas.find(r => /Acelera/i.test(r.nome))!;
-    const reservadasTec = tec.rubricas.filter(r => r.reservado);
-    const totalReservadoTec = reservadasTec.reduce((s, r) => s + r.planejado, 0);
-    return { bMatCons, bPass, tEq, tAcel, reservadasTec, totalReservadoTec, livre: metricas.saldoLivre, pendNF: metricas.pendNF };
-  }, [metricas]);
 
   return (
     <div className="flex flex-col gap-4">

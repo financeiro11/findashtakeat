@@ -319,6 +319,48 @@ export function useFinanceData() {
     .replace(/^[\(\)\+\-\s]+/, "")
     .replace(/\s+/g, " ")
     .trim();
+  // Aliases: rubricas do DRE/historico_financeiro ↔ rubricas do BP Anual.
+  // O BP usa rótulos numerados ("5.4.Viagens & Transportes") e agrega contas
+  // que aparecem separadas no realizado. Mapeamos manualmente para que o
+  // "vs orçado" funcione para todas as rubricas, não só "Equipe Comercial".
+  const ORC_ALIASES: Record<string, string[]> = {
+    "equipe administrativa": ["4.1.Equipe Administrativa"],
+    "equipe marketing": ["4.2.Equipe Marketing"],
+    "equipe comercial": ["4.3.Equipe Comercial"],
+    "equipe onboarding": ["4.4.Equipe Onboarding"],
+    "equipe tecnologia": ["4.5.Equipe Tecnologia"],
+    "equipe operacional": ["3.1.Equipe Operacional"],
+    "beneficios": ["4.6.Benefícios"],
+    "premiacoes operacionais": ["3.2.Premiação Operacional"],
+    "premiacoes": ["3.2.Premiação Operacional"],
+    "meios de pagamento": ["3.3.Meios de Pagamento"],
+    "servidor": ["3.4.Infraestrutura"],
+    "softwares operacionais": ["3.5.Softwares Operacionais"],
+    "outros custos": ["3.6.Outros Custos"],
+    "cmv materiais": ["3.6.Outros Custos"],
+    "ocupacao & escritorio": ["5.1.Ocupação & Escritório"],
+    "assessorias & consultorias": ["5.2.Assessorias & Consultorias"],
+    "agencias & consultorias": ["5.2.Assessorias & Consultorias"],
+    "softwares administrativos": ["5.3.Softwares Administrativos"],
+    "viagens & transportes adm": ["5.4.Viagens & Transportes"],
+    "viagens & transportes mkt": ["5.4.Viagens & Transportes"],
+    "outras despesas adm": ["5.5.Outras Despesas Adm"],
+    "campanhas de midia paga": ["6.1.Aquisição de Clientes"],
+    "campanhas de outros canais": ["6.1.Aquisição de Clientes"],
+    "comissoes consultores / parceiros": ["6.2.Comissões"],
+    "mgm": ["6.3.Outras Despesas M&V"],
+    "eventos e feiras": ["6.3.Outras Despesas M&V"],
+    "outras despesas mkt": ["6.3.Outras Despesas M&V"],
+    "softwares marketing & vendas": ["6.3.Outras Despesas M&V"],
+    "(+) receita financeira": ["9.1.Recebimento de Juros"],
+    "(-) juros": ["9.2.Pagamento de Juros"],
+    "pis": ["2.1.PIS"],
+    "cofins": ["2.2.COFINS"],
+    "iss": ["2.3.ISS"],
+    "receita liquida": ["Receita Líquida"],
+    "ebitda": ["EBITDA"],
+  };
+
   const orcado = useMemo(() => {
     const idx = new Map<string, number>();
     for (const r of bp) {
@@ -327,7 +369,13 @@ export function useFinanceData() {
     }
     return (metricas: string | string[], p: Periodo): number | null => {
       const nomes = Array.isArray(metricas) ? metricas : [metricas];
+      const candidatos: string[] = [];
       for (const nome of nomes) {
+        candidatos.push(nome);
+        const alias = ORC_ALIASES[normMetric(nome)];
+        if (alias) candidatos.push(...alias);
+      }
+      for (const nome of candidatos) {
         const v = idx.get(`${normMetric(nome)}|${p.ano}|${p.mes}`);
         if (v != null) return v;
       }

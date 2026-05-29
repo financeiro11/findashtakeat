@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -290,11 +290,20 @@ function RubricaRows({
         const g = gastoPorRubrica.get(ch.id) ?? 0;
         const s = Number(ch.valor_planejado) - g;
         const p = Number(ch.valor_planejado) > 0 ? (g / Number(ch.valor_planejado)) * 100 : 0;
+        const chOpen = !!expanded[ch.id];
+        const chCompras = compras.filter(c => c.rubrica_id === ch.id);
         return (
-          <tr key={ch.id} className={cn("border-t border-border/30 bg-muted/10 hover:bg-muted/30", ch.obrigatorio && "bg-amber-500/[0.04]")}>
+          <React.Fragment key={ch.id}>
+          <tr className={cn("border-t border-border/30 bg-muted/10 hover:bg-muted/30", ch.obrigatorio && "bg-amber-500/[0.04]")}>
             <td className="px-4 py-2 pl-10 italic text-muted-foreground">
               <div className="flex items-center gap-1.5">
+                <button onClick={() => toggle(ch.id)} className="text-muted-foreground hover:text-foreground">
+                  {chOpen ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
+                </button>
                 {ch.categoria}
+                {chCompras.length > 0 && (
+                  <Badge variant="outline" className="text-[9.5px] font-normal h-4 px-1">{chCompras.length}</Badge>
+                )}
                 {ch.obrigatorio && <Zap className="h-2.5 w-2.5 text-amber-600" />}
               </div>
             </td>
@@ -317,6 +326,21 @@ function RubricaRows({
               </CompraDialog>
             </td>
           </tr>
+          {chOpen && (
+            <tr>
+              <td colSpan={6} className="px-4 py-3 pl-14 bg-muted/5 border-t border-border/20">
+                {chCompras.length === 0 ? (
+                  <div className="text-[11.5px] text-muted-foreground italic">Nenhuma compra lançada nessa subcategoria.</div>
+                ) : (
+                  <div className="flex flex-col gap-1">
+                    <div className="text-[10px] uppercase tracking-wider text-muted-foreground font-medium mb-1">Compras em {ch.categoria}</div>
+                    {chCompras.map(c => <CompraRow key={c.id} compra={c} onChanged={onChanged} />)}
+                  </div>
+                )}
+              </td>
+            </tr>
+          )}
+          </React.Fragment>
         );
       })}
 

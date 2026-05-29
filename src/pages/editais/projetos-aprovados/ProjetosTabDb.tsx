@@ -293,7 +293,7 @@ function RubricaRows({
         const chOpen = !!expanded[ch.id];
         const chCompras = compras.filter(c => c.rubrica_id === ch.id);
         return (
-          <FragmentWithKey key={ch.id}>
+          <React.Fragment key={ch.id}>
           <tr className={cn("border-t border-border/30 bg-muted/10 hover:bg-muted/30", ch.obrigatorio && "bg-amber-500/[0.04]")}>
             <td className="px-4 py-2 pl-10 italic text-muted-foreground">
               <div className="flex items-center gap-1.5">

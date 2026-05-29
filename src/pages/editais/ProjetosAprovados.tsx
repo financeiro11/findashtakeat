@@ -22,7 +22,8 @@ type Rubrica = {
   nome: string;
   planejado: number;
   gasto: number;
-  reservado?: boolean;       // verba protegida (obrigatória)
+  reservado?: boolean;       // verba inteira é protegida (obrigatória)
+  reservado_valor?: number;  // parcela obrigatória dentro da rubrica (subdivisão)
   pendencias_nf?: number;    // nº de lançamentos sem NF
   sugestoes?: string[];      // o que pode pagar
 };

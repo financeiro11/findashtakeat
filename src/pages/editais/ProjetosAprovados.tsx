@@ -265,7 +265,31 @@ const SUGESTOES = [
 export function ExecutivoTab() {
   const [pergunta, setPergunta] = useState("");
   const [mostrarResposta, setMostrarResposta] = useState(false);
+  const [iaLoading, setIaLoading] = useState(false);
+  const [iaAnswer, setIaAnswer] = useState<string | null>(null);
+  const [iaError, setIaError] = useState<string | null>(null);
   const { projetos: PROJETOS, loading } = useProjetosFromDB();
+
+  const consultarIA = async (q: string) => {
+    const txt = (q ?? "").trim();
+    if (!txt) return;
+    setMostrarResposta(true);
+    setIaLoading(true);
+    setIaAnswer(null);
+    setIaError(null);
+    try {
+      const { data, error } = await supabase.functions.invoke("editais-edi-consult", {
+        body: { pergunta: txt },
+      });
+      if (error) throw error;
+      if ((data as any)?.error) throw new Error((data as any).error);
+      setIaAnswer((data as any)?.answer ?? "Sem resposta.");
+    } catch (e: any) {
+      setIaError(e?.message ?? "Falha ao consultar a IA.");
+    } finally {
+      setIaLoading(false);
+    }
+  };
 
   /* ─── Métricas agregadas ─── */
   const metricas = useMemo(() => {

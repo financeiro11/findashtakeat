@@ -340,7 +340,7 @@ function RubricaRows({
               </td>
             </tr>
           )}
-          </>
+          </React.Fragment>
         );
       })}
 

@@ -494,36 +494,6 @@ export function ExecutivoTab() {
               </p>
             )}
 
-            {respostaIA.segundoPior && respostaIA.segundoRubricasCriticas.length > 0 && (
-              <>
-                <p className="text-[13px] leading-relaxed">No <b>{respostaIA.segundoPior.nome}</b>:</p>
-                <ul className="text-[12.5px] space-y-1 ml-1">
-                  {respostaIA.segundoRubricasCriticas.map(r => (
-                    <li key={r.nome} className="flex items-start gap-2">
-                      <AlertTriangle className="h-3 w-3 text-amber-600 mt-1 shrink-0" />
-                      <span><b>{r.nome}</b> possui apenas <b className="num">{Math.round(Math.max(0, 100 - pct(r)))}%</b> disponível</span>
-                    </li>
-                  ))}
-                  {respostaIA.pendNF > 0 && (
-                    <li className="flex items-start gap-2">
-                      <FileWarning className="h-3 w-3 text-amber-600 mt-1 shrink-0" />
-                      <span>Existem <b>{respostaIA.pendNF} lançamentos pendentes sem NF</b></span>
-                    </li>
-                  )}
-                </ul>
-              </>
-            )}
-
-            {respostaIA.projetoComReserva && respostaIA.reservaDestaque && (
-              <div className="rounded-md bg-amber-500/5 border border-amber-500/30 px-3 py-2 flex items-start gap-2">
-                <Lock className="h-3.5 w-3.5 text-amber-700 mt-0.5 shrink-0" />
-                <div className="text-[12.5px] leading-relaxed">
-                  A rubrica <b>{respostaIA.reservaDestaque.nome}</b> do {respostaIA.projetoComReserva.nome} possui <b className="num">{fmtBRL(respostaIA.reservaDestaque.planejado)}</b> reservados obrigatoriamente.
-                  Somando as {respostaIA.reservadas.length} rubricas reservadas do projeto, <b className="num">{fmtBRL(respostaIA.totalReservado)}</b> não devem ser considerados saldo livre operacional.
-                </div>
-              </div>
-            )}
-
             <div className="rounded-md bg-emerald-500/5 border border-emerald-500/20 px-3 py-2 mt-1">
               <div className="text-[10.5px] uppercase tracking-wider text-emerald-700 font-semibold">Saldo operacional livre estimado</div>
               <div className="text-base font-semibold num text-emerald-700">{fmtBRL(respostaIA.livre)}</div>

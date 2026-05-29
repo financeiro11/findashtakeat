@@ -83,17 +83,21 @@ function useProjetosFromDB() {
 
       const rubricas: Rubrica[] = tops.map(top => {
         const filhos = rubs.filter(rb => rb.parent_id === top.id);
-        const planejado = Number(top.valor_planejado || 0) +
-          filhos.reduce((s, f) => s + Number(f.valor_planejado || 0), 0);
+        // O valor do top já representa o total da rubrica; os filhos são subdivisões internas.
+        const planejado = Number(top.valor_planejado || 0);
         const gasto = (gastoPorRubrica.get(top.id) ?? 0) +
           filhos.reduce((s, f) => s + (gastoPorRubrica.get(f.id) ?? 0), 0);
         const pendencias_nf = (pendPorRubrica.get(top.id) ?? 0) +
           filhos.reduce((s, f) => s + (pendPorRubrica.get(f.id) ?? 0), 0);
-        const reservado = !!top.obrigatorio || filhos.some(f => f.obrigatorio);
+        const reservadoTodo = !!top.obrigatorio && filhos.length === 0;
+        const reservadoParcial = filhos
+          .filter(f => f.obrigatorio)
+          .reduce((s, f) => s + Number(f.valor_planejado || 0), 0);
         return {
           nome: top.categoria,
           planejado, gasto,
-          reservado: reservado || undefined,
+          reservado: reservadoTodo || undefined,
+          reservado_valor: reservadoParcial > 0 ? reservadoParcial : undefined,
           pendencias_nf: pendencias_nf || undefined,
         };
       });

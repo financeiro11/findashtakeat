@@ -1432,6 +1432,221 @@ export type Database = {
         }
         Relationships: []
       }
+      projetos_aprovados: {
+        Row: {
+          created_at: string
+          data_inicio: string | null
+          duracao_meses: number | null
+          id: string
+          nome: string
+          observacao: string | null
+          ordem: number
+          orgao: string | null
+          prazo_final: string | null
+          status: string
+          updated_at: string
+          valor_aprovado: number
+          valor_contrapartida: number
+        }
+        Insert: {
+          created_at?: string
+          data_inicio?: string | null
+          duracao_meses?: number | null
+          id?: string
+          nome: string
+          observacao?: string | null
+          ordem?: number
+          orgao?: string | null
+          prazo_final?: string | null
+          status?: string
+          updated_at?: string
+          valor_aprovado?: number
+          valor_contrapartida?: number
+        }
+        Update: {
+          created_at?: string
+          data_inicio?: string | null
+          duracao_meses?: number | null
+          id?: string
+          nome?: string
+          observacao?: string | null
+          ordem?: number
+          orgao?: string | null
+          prazo_final?: string | null
+          status?: string
+          updated_at?: string
+          valor_aprovado?: number
+          valor_contrapartida?: number
+        }
+        Relationships: []
+      }
+      projetos_aprovados_compras: {
+        Row: {
+          created_at: string
+          data: string
+          descricao: string
+          fornecedor: string | null
+          id: string
+          nf_anexada: boolean
+          nf_numero: string | null
+          observacao: string | null
+          projeto_id: string
+          rubrica_id: string
+          status: string
+          updated_at: string
+          valor: number
+        }
+        Insert: {
+          created_at?: string
+          data?: string
+          descricao: string
+          fornecedor?: string | null
+          id?: string
+          nf_anexada?: boolean
+          nf_numero?: string | null
+          observacao?: string | null
+          projeto_id: string
+          rubrica_id: string
+          status?: string
+          updated_at?: string
+          valor?: number
+        }
+        Update: {
+          created_at?: string
+          data?: string
+          descricao?: string
+          fornecedor?: string | null
+          id?: string
+          nf_anexada?: boolean
+          nf_numero?: string | null
+          observacao?: string | null
+          projeto_id?: string
+          rubrica_id?: string
+          status?: string
+          updated_at?: string
+          valor?: number
+        }
+        Relationships: [
+          {
+            foreignKeyName: "projetos_aprovados_compras_projeto_id_fkey"
+            columns: ["projeto_id"]
+            isOneToOne: false
+            referencedRelation: "projetos_aprovados"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "projetos_aprovados_compras_rubrica_id_fkey"
+            columns: ["rubrica_id"]
+            isOneToOne: false
+            referencedRelation: "projetos_aprovados_rubricas"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      projetos_aprovados_parcelas: {
+        Row: {
+          created_at: string
+          data_prevista: string | null
+          data_recebimento: string | null
+          descricao: string | null
+          id: string
+          numero: number
+          observacao: string | null
+          projeto_id: string
+          recebido: boolean
+          updated_at: string
+          valor: number
+        }
+        Insert: {
+          created_at?: string
+          data_prevista?: string | null
+          data_recebimento?: string | null
+          descricao?: string | null
+          id?: string
+          numero: number
+          observacao?: string | null
+          projeto_id: string
+          recebido?: boolean
+          updated_at?: string
+          valor?: number
+        }
+        Update: {
+          created_at?: string
+          data_prevista?: string | null
+          data_recebimento?: string | null
+          descricao?: string | null
+          id?: string
+          numero?: number
+          observacao?: string | null
+          projeto_id?: string
+          recebido?: boolean
+          updated_at?: string
+          valor?: number
+        }
+        Relationships: [
+          {
+            foreignKeyName: "projetos_aprovados_parcelas_projeto_id_fkey"
+            columns: ["projeto_id"]
+            isOneToOne: false
+            referencedRelation: "projetos_aprovados"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      projetos_aprovados_rubricas: {
+        Row: {
+          categoria: string
+          created_at: string
+          id: string
+          obrigatorio: boolean
+          observacao: string | null
+          ordem: number
+          parent_id: string | null
+          projeto_id: string
+          updated_at: string
+          valor_planejado: number
+        }
+        Insert: {
+          categoria: string
+          created_at?: string
+          id?: string
+          obrigatorio?: boolean
+          observacao?: string | null
+          ordem?: number
+          parent_id?: string | null
+          projeto_id: string
+          updated_at?: string
+          valor_planejado?: number
+        }
+        Update: {
+          categoria?: string
+          created_at?: string
+          id?: string
+          obrigatorio?: boolean
+          observacao?: string | null
+          ordem?: number
+          parent_id?: string | null
+          projeto_id?: string
+          updated_at?: string
+          valor_planejado?: number
+        }
+        Relationships: [
+          {
+            foreignKeyName: "projetos_aprovados_rubricas_parent_id_fkey"
+            columns: ["parent_id"]
+            isOneToOne: false
+            referencedRelation: "projetos_aprovados_rubricas"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "projetos_aprovados_rubricas_projeto_id_fkey"
+            columns: ["projeto_id"]
+            isOneToOne: false
+            referencedRelation: "projetos_aprovados"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       rc_asaas_finopstkt: {
         Row: {
           billing_type: string | null

@@ -434,39 +434,57 @@ export function ExecutivoTab() {
               <Zap className="h-3.5 w-3.5 text-primary" />
               <span className="text-[11px] uppercase tracking-wider font-semibold text-primary">Resposta do EDI</span>
             </div>
-            <p className="text-[13px] leading-relaxed">
-              Identificamos <span className="font-semibold text-rose-600">risco operacional no projeto BretA</span>:
-            </p>
-            <ul className="text-[12.5px] space-y-1 ml-1">
-              <li className="flex items-start gap-2">
-                <TrendingDown className="h-3 w-3 text-rose-600 mt-1 shrink-0" />
-                <span><b>{respostaIA.bMatCons.nome}</b> está <b className="num">{Math.round(pct(respostaIA.bMatCons))}%</b> executado</span>
-              </li>
-              <li className="flex items-start gap-2">
-                <TrendingDown className="h-3 w-3 text-rose-600 mt-1 shrink-0" />
-                <span><b>{respostaIA.bPass.nome}</b> atingiu <b className="num">{Math.round(pct(respostaIA.bPass))}%</b></span>
-              </li>
-            </ul>
-            <p className="text-[13px] leading-relaxed">No <b>Tecnova III</b>:</p>
-            <ul className="text-[12.5px] space-y-1 ml-1">
-              <li className="flex items-start gap-2">
-                <AlertTriangle className="h-3 w-3 text-amber-600 mt-1 shrink-0" />
-                <span><b>{respostaIA.tEq.nome}</b> possui apenas <b className="num">{Math.round(100 - pct(respostaIA.tEq))}%</b> disponível</span>
-              </li>
-              {respostaIA.pendNF > 0 && (
-                <li className="flex items-start gap-2">
-                  <FileWarning className="h-3 w-3 text-amber-600 mt-1 shrink-0" />
-                  <span>Existem <b>{respostaIA.pendNF} lançamentos pendentes sem NF</b></span>
-                </li>
-              )}
-            </ul>
-            <div className="rounded-md bg-amber-500/5 border border-amber-500/30 px-3 py-2 flex items-start gap-2">
-              <Lock className="h-3.5 w-3.5 text-amber-700 mt-0.5 shrink-0" />
-              <div className="text-[12.5px] leading-relaxed">
-                A rubrica <b>Aceleração</b> do Tecnova III possui <b className="num">{fmtBRL(respostaIA.tAcel.planejado)}</b> reservados obrigatoriamente para programa de aceleração.
-                Somando as {respostaIA.reservadasTec.length} rubricas reservadas do projeto, <b className="num">{fmtBRL(respostaIA.totalReservadoTec)}</b> não devem ser considerados saldo livre operacional.
+
+            {respostaIA.piorProjeto && respostaIA.piorRubricas.length > 0 ? (
+              <>
+                <p className="text-[13px] leading-relaxed">
+                  Maior risco operacional no projeto <span className="font-semibold text-rose-600">{respostaIA.piorProjeto.nome}</span>:
+                </p>
+                <ul className="text-[12.5px] space-y-1 ml-1">
+                  {respostaIA.piorRubricas.map(r => (
+                    <li key={r.nome} className="flex items-start gap-2">
+                      <TrendingDown className="h-3 w-3 text-rose-600 mt-1 shrink-0" />
+                      <span><b>{r.nome}</b> está <b className="num">{Math.round(pct(r))}%</b> executado</span>
+                    </li>
+                  ))}
+                </ul>
+              </>
+            ) : (
+              <p className="text-[13px] leading-relaxed text-muted-foreground">
+                {loading ? "Carregando dados dos projetos…" : "Nenhum projeto em execução cadastrado ainda."}
+              </p>
+            )}
+
+            {respostaIA.segundoPior && respostaIA.segundoRubricasCriticas.length > 0 && (
+              <>
+                <p className="text-[13px] leading-relaxed">No <b>{respostaIA.segundoPior.nome}</b>:</p>
+                <ul className="text-[12.5px] space-y-1 ml-1">
+                  {respostaIA.segundoRubricasCriticas.map(r => (
+                    <li key={r.nome} className="flex items-start gap-2">
+                      <AlertTriangle className="h-3 w-3 text-amber-600 mt-1 shrink-0" />
+                      <span><b>{r.nome}</b> possui apenas <b className="num">{Math.round(Math.max(0, 100 - pct(r)))}%</b> disponível</span>
+                    </li>
+                  ))}
+                  {respostaIA.pendNF > 0 && (
+                    <li className="flex items-start gap-2">
+                      <FileWarning className="h-3 w-3 text-amber-600 mt-1 shrink-0" />
+                      <span>Existem <b>{respostaIA.pendNF} lançamentos pendentes sem NF</b></span>
+                    </li>
+                  )}
+                </ul>
+              </>
+            )}
+
+            {respostaIA.projetoComReserva && respostaIA.reservaDestaque && (
+              <div className="rounded-md bg-amber-500/5 border border-amber-500/30 px-3 py-2 flex items-start gap-2">
+                <Lock className="h-3.5 w-3.5 text-amber-700 mt-0.5 shrink-0" />
+                <div className="text-[12.5px] leading-relaxed">
+                  A rubrica <b>{respostaIA.reservaDestaque.nome}</b> do {respostaIA.projetoComReserva.nome} possui <b className="num">{fmtBRL(respostaIA.reservaDestaque.planejado)}</b> reservados obrigatoriamente.
+                  Somando as {respostaIA.reservadas.length} rubricas reservadas do projeto, <b className="num">{fmtBRL(respostaIA.totalReservado)}</b> não devem ser considerados saldo livre operacional.
+                </div>
               </div>
-            </div>
+            )}
+
             <div className="rounded-md bg-emerald-500/5 border border-emerald-500/20 px-3 py-2 mt-1">
               <div className="text-[10.5px] uppercase tracking-wider text-emerald-700 font-semibold">Saldo operacional livre estimado</div>
               <div className="text-base font-semibold num text-emerald-700">{fmtBRL(respostaIA.livre)}</div>
@@ -474,6 +492,7 @@ export function ExecutivoTab() {
           </div>
         )}
       </Card>
+
 
       {/* BLOCO 2 — KPIs em 2 linhas de 4 */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">

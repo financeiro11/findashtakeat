@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { NavLink, Outlet, useLocation } from "react-router-dom";
 import { cn } from "@/lib/utils";
+import { supabase } from "@/integrations/supabase/client";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -14,7 +15,8 @@ import {
 } from "lucide-react";
 import { fmtBRL } from "./types";
 
-/* ───────────────────────── DADOS REAIS ───────────────────────── */
+
+/* ───────────────────────── DADOS (carregados do banco) ───────────────────────── */
 
 type Rubrica = {
   nome: string;
@@ -34,59 +36,85 @@ type Projeto = {
   pode_usar_para: string[];
 };
 
-const PROJETOS: Projeto[] = [
-  {
-    nome: "Tecnova III",
-    orgao: "FINEP / FAPES",
-    prazo: "11/2026",
-    status: "em_execucao",
-    pode_usar_para: ["Software & SaaS", "Cloud / Infraestrutura", "Consultoria técnica", "Serviços PJ"],
-    rubricas: [
-      { nome: "Equipamentos e Material Permanente", planejado: 180_000, gasto: 160_200, pendencias_nf: 2, sugestoes: ["Notebooks", "Servidores"] },
-      { nome: "Software & Serviços", planejado: 240_000, gasto: 96_000, sugestoes: ["HubSpot", "AWS", "Vercel"] },
-      { nome: "Serviços de Terceiros PJ", planejado: 180_000, gasto: 72_000, sugestoes: ["Consultoria técnica", "Agência"] },
-      { nome: "Material de Consumo", planejado: 40_000, gasto: 22_000 },
-      { nome: "Diárias e Passagens", planejado: 30_000, gasto: 9_400 },
-      { nome: "Aceleração", planejado: 70_000, gasto: 0, reservado: true, sugestoes: ["Programa de aceleração obrigatório"] },
-      { nome: "Internacionalização", planejado: 25_200, gasto: 0, reservado: true, sugestoes: ["Missão internacional obrigatória"] },
-    ],
-  },
-  {
-    nome: "BretA",
-    orgao: "EMBRAPII",
-    prazo: "08/2026",
-    status: "em_execucao",
-    pode_usar_para: ["Diárias", "Passagens limitadas", "Equipamentos remanescentes"],
-    rubricas: [
-      { nome: "Material de Consumo", planejado: 25_000, gasto: 42_250, pendencias_nf: 2 },
-      { nome: "Passagens", planejado: 18_000, gasto: 20_340 },
-      { nome: "Diárias", planejado: 32_000, gasto: 12_800, sugestoes: ["Diárias técnicas", "Visitas em campo"] },
-      { nome: "Equipamentos", planejado: 70_000, gasto: 41_500, sugestoes: ["Hardware de bancada"] },
-      { nome: "Serviços PJ", planejado: 60_000, gasto: 38_400, pendencias_nf: 1 },
-      { nome: "Reserva internacionalização", planejado: 35_200, gasto: 0, reservado: true, sugestoes: ["Missão internacional obrigatória"] },
-    ],
-  },
-  {
-    nome: "Clusters",
-    orgao: "SEBRAE",
-    prazo: "—",
-    status: "aguardando_resultado",
-    pode_usar_para: [],
-    rubricas: [
-      { nome: "Pleito global", planejado: 420_000, gasto: 0 },
-    ],
-  },
-  {
-    nome: "Parceria Startups",
-    orgao: "FAPES",
-    prazo: "encerrado",
-    status: "encerrado",
-    pode_usar_para: [],
-    rubricas: [
-      { nome: "Execução total", planejado: 180_000, gasto: 180_000 },
-    ],
-  },
-];
+const sb = supabase as any;
+
+const mapStatus = (s: string | null | undefined): Projeto["status"] => {
+  const v = (s ?? "").toLowerCase();
+  if (v.includes("aguard")) return "aguardando_resultado";
+  if (v.includes("encerr") || v.includes("finaliz")) return "encerrado";
+  return "em_execucao";
+};
+
+const fmtPrazo = (d: string | null | undefined): string => {
+  if (!d) return "—";
+  const [y, m] = d.split("-");
+  return m && y ? `${m}/${y}` : "—";
+};
+
+/** Carrega todos os projetos do banco e converte para o formato usado pelo Executivo. */
+function useProjetosFromDB() {
+  const [projetos, setProjetos] = useState<Projeto[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  const load = async () => {
+    setLoading(true);
+    const [p, r, c] = await Promise.all([
+      sb.from("projetos_aprovados").select("*").order("ordem"),
+      sb.from("projetos_aprovados_rubricas").select("*").order("ordem"),
+      sb.from("projetos_aprovados_compras").select("*"),
+    ]);
+    const rawProjetos = (p.data ?? []) as any[];
+    const rawRubricas = (r.data ?? []) as any[];
+    const rawCompras = (c.data ?? []) as any[];
+
+    // gasto e pendências por rubrica (excluindo canceladas)
+    const gastoPorRubrica = new Map<string, number>();
+    const pendPorRubrica = new Map<string, number>();
+    rawCompras.filter(co => co.status !== "Cancelada").forEach(co => {
+      gastoPorRubrica.set(co.rubrica_id, (gastoPorRubrica.get(co.rubrica_id) ?? 0) + Number(co.valor || 0));
+      if (!co.nf_anexada) pendPorRubrica.set(co.rubrica_id, (pendPorRubrica.get(co.rubrica_id) ?? 0) + 1);
+    });
+
+    // mapear: para cada projeto, agrupar rubricas top-level e somar filhos
+    const result: Projeto[] = rawProjetos.map(pr => {
+      const rubs = rawRubricas.filter(rb => rb.projeto_id === pr.id);
+      const tops = rubs.filter(rb => !rb.parent_id);
+
+      const rubricas: Rubrica[] = tops.map(top => {
+        const filhos = rubs.filter(rb => rb.parent_id === top.id);
+        const planejado = Number(top.valor_planejado || 0) +
+          filhos.reduce((s, f) => s + Number(f.valor_planejado || 0), 0);
+        const gasto = (gastoPorRubrica.get(top.id) ?? 0) +
+          filhos.reduce((s, f) => s + (gastoPorRubrica.get(f.id) ?? 0), 0);
+        const pendencias_nf = (pendPorRubrica.get(top.id) ?? 0) +
+          filhos.reduce((s, f) => s + (pendPorRubrica.get(f.id) ?? 0), 0);
+        const reservado = !!top.obrigatorio || filhos.some(f => f.obrigatorio);
+        return {
+          nome: top.categoria,
+          planejado, gasto,
+          reservado: reservado || undefined,
+          pendencias_nf: pendencias_nf || undefined,
+        };
+      });
+
+      return {
+        nome: pr.nome,
+        orgao: pr.orgao ?? "—",
+        prazo: fmtPrazo(pr.prazo_final),
+        status: mapStatus(pr.status),
+        rubricas,
+        pode_usar_para: [],
+      };
+    });
+
+    setProjetos(result);
+    setLoading(false);
+  };
+
+  useEffect(() => { load(); }, []);
+  return { projetos, loading, reload: load };
+}
+
 
 /* ───────────────────────── Derivações / regras de negócio ───────────────────────── */
 
@@ -228,6 +256,7 @@ const SUGESTOES = [
 export function ExecutivoTab() {
   const [pergunta, setPergunta] = useState("");
   const [mostrarResposta, setMostrarResposta] = useState(false);
+  const { projetos: PROJETOS, loading } = useProjetosFromDB();
 
   /* ─── Métricas agregadas ─── */
   const metricas = useMemo(() => {
@@ -256,7 +285,7 @@ export function ExecutivoTab() {
       ativos, aguardando, saldoBruto, gasto, reservado, saldoLivre, pendNF,
       rubricasCriticas, rubricasEstouradas, sugestaoTerceiros,
     };
-  }, []);
+  }, [PROJETOS]);
 
   /* ─── KPIs (2 linhas de 4) ─── */
   const totalRubricas = PROJETOS.reduce((s, p) => s + p.rubricas.length, 0);
@@ -323,20 +352,36 @@ export function ExecutivoTab() {
       });
     });
     return items;
+  }, [metricas, PROJETOS]);
+
+  /* ─── Resposta contextual IA (dinâmica: pega as piores rubricas dos projetos ativos) ─── */
+  const respostaIA = useMemo(() => {
+    const ativos = metricas.ativos;
+    // pior projeto = maior % de execução em rubricas não reservadas
+    const piorProjeto = [...ativos].sort((a, b) => projAgregado(b).exec - projAgregado(a).exec)[0] ?? null;
+    const segundoPior = ativos.filter(p => p !== piorProjeto)
+      .sort((a, b) => projAgregado(b).exec - projAgregado(a).exec)[0] ?? null;
+
+    const piorRubricas = piorProjeto
+      ? [...piorProjeto.rubricas].filter(r => !r.reservado).sort((a, b) => pct(b) - pct(a)).slice(0, 2)
+      : [];
+    const segundoRubricasCriticas = segundoPior
+      ? [...segundoPior.rubricas].filter(r => !r.reservado && pct(r) >= 60).sort((a, b) => pct(b) - pct(a)).slice(0, 1)
+      : [];
+
+    // qualquer projeto com rubrica reservada destacada
+    const projetoComReserva = ativos.find(p => p.rubricas.some(r => r.reservado)) ?? null;
+    const reservadas = projetoComReserva?.rubricas.filter(r => r.reservado) ?? [];
+    const totalReservado = reservadas.reduce((s, r) => s + r.planejado, 0);
+    const reservaDestaque = reservadas[0] ?? null;
+
+    return {
+      piorProjeto, segundoPior, piorRubricas, segundoRubricasCriticas,
+      projetoComReserva, reservadas, totalReservado, reservaDestaque,
+      livre: metricas.saldoLivre, pendNF: metricas.pendNF,
+    };
   }, [metricas]);
 
-  /* ─── Resposta contextual IA ─── */
-  const respostaIA = useMemo(() => {
-    const breta = PROJETOS.find(p => p.nome === "BretA")!;
-    const tec = PROJETOS.find(p => p.nome === "Tecnova III")!;
-    const bMatCons = breta.rubricas.find(r => /Material de Consumo/i.test(r.nome))!;
-    const bPass = breta.rubricas.find(r => /Passagens/i.test(r.nome))!;
-    const tEq = tec.rubricas.find(r => /Equipamentos/i.test(r.nome))!;
-    const tAcel = tec.rubricas.find(r => /Acelera/i.test(r.nome))!;
-    const reservadasTec = tec.rubricas.filter(r => r.reservado);
-    const totalReservadoTec = reservadasTec.reduce((s, r) => s + r.planejado, 0);
-    return { bMatCons, bPass, tEq, tAcel, reservadasTec, totalReservadoTec, livre: metricas.saldoLivre, pendNF: metricas.pendNF };
-  }, [metricas]);
 
   return (
     <div className="flex flex-col gap-4">
@@ -389,39 +434,57 @@ export function ExecutivoTab() {
               <Zap className="h-3.5 w-3.5 text-primary" />
               <span className="text-[11px] uppercase tracking-wider font-semibold text-primary">Resposta do EDI</span>
             </div>
-            <p className="text-[13px] leading-relaxed">
-              Identificamos <span className="font-semibold text-rose-600">risco operacional no projeto BretA</span>:
-            </p>
-            <ul className="text-[12.5px] space-y-1 ml-1">
-              <li className="flex items-start gap-2">
-                <TrendingDown className="h-3 w-3 text-rose-600 mt-1 shrink-0" />
-                <span><b>{respostaIA.bMatCons.nome}</b> está <b className="num">{Math.round(pct(respostaIA.bMatCons))}%</b> executado</span>
-              </li>
-              <li className="flex items-start gap-2">
-                <TrendingDown className="h-3 w-3 text-rose-600 mt-1 shrink-0" />
-                <span><b>{respostaIA.bPass.nome}</b> atingiu <b className="num">{Math.round(pct(respostaIA.bPass))}%</b></span>
-              </li>
-            </ul>
-            <p className="text-[13px] leading-relaxed">No <b>Tecnova III</b>:</p>
-            <ul className="text-[12.5px] space-y-1 ml-1">
-              <li className="flex items-start gap-2">
-                <AlertTriangle className="h-3 w-3 text-amber-600 mt-1 shrink-0" />
-                <span><b>{respostaIA.tEq.nome}</b> possui apenas <b className="num">{Math.round(100 - pct(respostaIA.tEq))}%</b> disponível</span>
-              </li>
-              {respostaIA.pendNF > 0 && (
-                <li className="flex items-start gap-2">
-                  <FileWarning className="h-3 w-3 text-amber-600 mt-1 shrink-0" />
-                  <span>Existem <b>{respostaIA.pendNF} lançamentos pendentes sem NF</b></span>
-                </li>
-              )}
-            </ul>
-            <div className="rounded-md bg-amber-500/5 border border-amber-500/30 px-3 py-2 flex items-start gap-2">
-              <Lock className="h-3.5 w-3.5 text-amber-700 mt-0.5 shrink-0" />
-              <div className="text-[12.5px] leading-relaxed">
-                A rubrica <b>Aceleração</b> do Tecnova III possui <b className="num">{fmtBRL(respostaIA.tAcel.planejado)}</b> reservados obrigatoriamente para programa de aceleração.
-                Somando as {respostaIA.reservadasTec.length} rubricas reservadas do projeto, <b className="num">{fmtBRL(respostaIA.totalReservadoTec)}</b> não devem ser considerados saldo livre operacional.
+
+            {respostaIA.piorProjeto && respostaIA.piorRubricas.length > 0 ? (
+              <>
+                <p className="text-[13px] leading-relaxed">
+                  Maior risco operacional no projeto <span className="font-semibold text-rose-600">{respostaIA.piorProjeto.nome}</span>:
+                </p>
+                <ul className="text-[12.5px] space-y-1 ml-1">
+                  {respostaIA.piorRubricas.map(r => (
+                    <li key={r.nome} className="flex items-start gap-2">
+                      <TrendingDown className="h-3 w-3 text-rose-600 mt-1 shrink-0" />
+                      <span><b>{r.nome}</b> está <b className="num">{Math.round(pct(r))}%</b> executado</span>
+                    </li>
+                  ))}
+                </ul>
+              </>
+            ) : (
+              <p className="text-[13px] leading-relaxed text-muted-foreground">
+                {loading ? "Carregando dados dos projetos…" : "Nenhum projeto em execução cadastrado ainda."}
+              </p>
+            )}
+
+            {respostaIA.segundoPior && respostaIA.segundoRubricasCriticas.length > 0 && (
+              <>
+                <p className="text-[13px] leading-relaxed">No <b>{respostaIA.segundoPior.nome}</b>:</p>
+                <ul className="text-[12.5px] space-y-1 ml-1">
+                  {respostaIA.segundoRubricasCriticas.map(r => (
+                    <li key={r.nome} className="flex items-start gap-2">
+                      <AlertTriangle className="h-3 w-3 text-amber-600 mt-1 shrink-0" />
+                      <span><b>{r.nome}</b> possui apenas <b className="num">{Math.round(Math.max(0, 100 - pct(r)))}%</b> disponível</span>
+                    </li>
+                  ))}
+                  {respostaIA.pendNF > 0 && (
+                    <li className="flex items-start gap-2">
+                      <FileWarning className="h-3 w-3 text-amber-600 mt-1 shrink-0" />
+                      <span>Existem <b>{respostaIA.pendNF} lançamentos pendentes sem NF</b></span>
+                    </li>
+                  )}
+                </ul>
+              </>
+            )}
+
+            {respostaIA.projetoComReserva && respostaIA.reservaDestaque && (
+              <div className="rounded-md bg-amber-500/5 border border-amber-500/30 px-3 py-2 flex items-start gap-2">
+                <Lock className="h-3.5 w-3.5 text-amber-700 mt-0.5 shrink-0" />
+                <div className="text-[12.5px] leading-relaxed">
+                  A rubrica <b>{respostaIA.reservaDestaque.nome}</b> do {respostaIA.projetoComReserva.nome} possui <b className="num">{fmtBRL(respostaIA.reservaDestaque.planejado)}</b> reservados obrigatoriamente.
+                  Somando as {respostaIA.reservadas.length} rubricas reservadas do projeto, <b className="num">{fmtBRL(respostaIA.totalReservado)}</b> não devem ser considerados saldo livre operacional.
+                </div>
               </div>
-            </div>
+            )}
+
             <div className="rounded-md bg-emerald-500/5 border border-emerald-500/20 px-3 py-2 mt-1">
               <div className="text-[10.5px] uppercase tracking-wider text-emerald-700 font-semibold">Saldo operacional livre estimado</div>
               <div className="text-base font-semibold num text-emerald-700">{fmtBRL(respostaIA.livre)}</div>
@@ -429,6 +492,7 @@ export function ExecutivoTab() {
           </div>
         )}
       </Card>
+
 
       {/* BLOCO 2 — KPIs em 2 linhas de 4 */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">

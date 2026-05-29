@@ -22,7 +22,8 @@ type Rubrica = {
   nome: string;
   planejado: number;
   gasto: number;
-  reservado?: boolean;       // verba protegida (obrigatória)
+  reservado?: boolean;       // verba inteira é protegida (obrigatória)
+  reservado_valor?: number;  // parcela obrigatória dentro da rubrica (subdivisão)
   pendencias_nf?: number;    // nº de lançamentos sem NF
   sugestoes?: string[];      // o que pode pagar
 };
@@ -82,17 +83,21 @@ function useProjetosFromDB() {
 
       const rubricas: Rubrica[] = tops.map(top => {
         const filhos = rubs.filter(rb => rb.parent_id === top.id);
-        const planejado = Number(top.valor_planejado || 0) +
-          filhos.reduce((s, f) => s + Number(f.valor_planejado || 0), 0);
+        // O valor do top já representa o total da rubrica; os filhos são subdivisões internas.
+        const planejado = Number(top.valor_planejado || 0);
         const gasto = (gastoPorRubrica.get(top.id) ?? 0) +
           filhos.reduce((s, f) => s + (gastoPorRubrica.get(f.id) ?? 0), 0);
         const pendencias_nf = (pendPorRubrica.get(top.id) ?? 0) +
           filhos.reduce((s, f) => s + (pendPorRubrica.get(f.id) ?? 0), 0);
-        const reservado = !!top.obrigatorio || filhos.some(f => f.obrigatorio);
+        const reservadoTodo = !!top.obrigatorio && filhos.length === 0;
+        const reservadoParcial = filhos
+          .filter(f => f.obrigatorio)
+          .reduce((s, f) => s + Number(f.valor_planejado || 0), 0);
         return {
           nome: top.categoria,
           planejado, gasto,
-          reservado: reservado || undefined,
+          reservado: reservadoTodo || undefined,
+          reservado_valor: reservadoParcial > 0 ? reservadoParcial : undefined,
           pendencias_nf: pendencias_nf || undefined,
         };
       });
@@ -163,14 +168,18 @@ const riscoBadge = (r: string) =>
   : r === "baixo" ? "bg-emerald-500/10 text-emerald-600 border-emerald-500/30"
   : "bg-muted text-muted-foreground border-border";
 
+const rubricaReservado = (r: Rubrica) =>
+  r.reservado ? r.planejado : (r.reservado_valor ?? 0);
+
 const projAgregado = (p: Projeto) => {
-  const ativas = p.rubricas.filter(r => !r.reservado);
-  const planejado = ativas.reduce((s, r) => s + r.planejado, 0);
-  const gasto = ativas.reduce((s, r) => s + r.gasto, 0);
-  const reservado = p.rubricas.filter(r => r.reservado).reduce((s, r) => s + r.planejado, 0);
+  const planejado = p.rubricas.reduce((s, r) => s + (r.reservado ? 0 : r.planejado), 0);
+  const gasto = p.rubricas.filter(r => !r.reservado).reduce((s, r) => s + r.gasto, 0);
+  const reservado = p.rubricas.reduce((s, r) => s + rubricaReservado(r), 0);
+  // saldo livre desconta a parcela obrigatória embutida nas rubricas mistas
+  const carvedDentroDeAtivas = p.rubricas.filter(r => !r.reservado).reduce((s, r) => s + (r.reservado_valor ?? 0), 0);
   const saldoBruto = planejado - gasto;
-  const comprometido = ativas.filter(r => r.gasto > r.planejado).reduce((s, r) => s + (r.gasto - r.planejado), 0);
-  const saldoLivre = Math.max(0, saldoBruto - comprometido);
+  const comprometido = p.rubricas.filter(r => !r.reservado && r.gasto > r.planejado).reduce((s, r) => s + (r.gasto - r.planejado), 0);
+  const saldoLivre = Math.max(0, saldoBruto - comprometido - carvedDentroDeAtivas);
   const exec = planejado > 0 ? (gasto / planejado) * 100 : 0;
   const pendNF = p.rubricas.reduce((s, r) => s + (r.pendencias_nf ?? 0), 0);
   return { planejado, gasto, reservado, saldoBruto, saldoLivre, exec, pendNF };

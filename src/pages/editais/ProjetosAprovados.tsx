@@ -16,7 +16,7 @@ import {
 import { fmtBRL } from "./types";
 
 
-/* ───────────────────────── DADOS REAIS ───────────────────────── */
+/* ───────────────────────── DADOS (carregados do banco) ───────────────────────── */
 
 type Rubrica = {
   nome: string;
@@ -36,59 +36,85 @@ type Projeto = {
   pode_usar_para: string[];
 };
 
-const PROJETOS: Projeto[] = [
-  {
-    nome: "Tecnova III",
-    orgao: "FINEP / FAPES",
-    prazo: "11/2026",
-    status: "em_execucao",
-    pode_usar_para: ["Software & SaaS", "Cloud / Infraestrutura", "Consultoria técnica", "Serviços PJ"],
-    rubricas: [
-      { nome: "Equipamentos e Material Permanente", planejado: 180_000, gasto: 160_200, pendencias_nf: 2, sugestoes: ["Notebooks", "Servidores"] },
-      { nome: "Software & Serviços", planejado: 240_000, gasto: 96_000, sugestoes: ["HubSpot", "AWS", "Vercel"] },
-      { nome: "Serviços de Terceiros PJ", planejado: 180_000, gasto: 72_000, sugestoes: ["Consultoria técnica", "Agência"] },
-      { nome: "Material de Consumo", planejado: 40_000, gasto: 22_000 },
-      { nome: "Diárias e Passagens", planejado: 30_000, gasto: 9_400 },
-      { nome: "Aceleração", planejado: 70_000, gasto: 0, reservado: true, sugestoes: ["Programa de aceleração obrigatório"] },
-      { nome: "Internacionalização", planejado: 25_200, gasto: 0, reservado: true, sugestoes: ["Missão internacional obrigatória"] },
-    ],
-  },
-  {
-    nome: "BretA",
-    orgao: "EMBRAPII",
-    prazo: "08/2026",
-    status: "em_execucao",
-    pode_usar_para: ["Diárias", "Passagens limitadas", "Equipamentos remanescentes"],
-    rubricas: [
-      { nome: "Material de Consumo", planejado: 25_000, gasto: 42_250, pendencias_nf: 2 },
-      { nome: "Passagens", planejado: 18_000, gasto: 20_340 },
-      { nome: "Diárias", planejado: 32_000, gasto: 12_800, sugestoes: ["Diárias técnicas", "Visitas em campo"] },
-      { nome: "Equipamentos", planejado: 70_000, gasto: 41_500, sugestoes: ["Hardware de bancada"] },
-      { nome: "Serviços PJ", planejado: 60_000, gasto: 38_400, pendencias_nf: 1 },
-      { nome: "Reserva internacionalização", planejado: 35_200, gasto: 0, reservado: true, sugestoes: ["Missão internacional obrigatória"] },
-    ],
-  },
-  {
-    nome: "Clusters",
-    orgao: "SEBRAE",
-    prazo: "—",
-    status: "aguardando_resultado",
-    pode_usar_para: [],
-    rubricas: [
-      { nome: "Pleito global", planejado: 420_000, gasto: 0 },
-    ],
-  },
-  {
-    nome: "Parceria Startups",
-    orgao: "FAPES",
-    prazo: "encerrado",
-    status: "encerrado",
-    pode_usar_para: [],
-    rubricas: [
-      { nome: "Execução total", planejado: 180_000, gasto: 180_000 },
-    ],
-  },
-];
+const sb = supabase as any;
+
+const mapStatus = (s: string | null | undefined): Projeto["status"] => {
+  const v = (s ?? "").toLowerCase();
+  if (v.includes("aguard")) return "aguardando_resultado";
+  if (v.includes("encerr") || v.includes("finaliz")) return "encerrado";
+  return "em_execucao";
+};
+
+const fmtPrazo = (d: string | null | undefined): string => {
+  if (!d) return "—";
+  const [y, m] = d.split("-");
+  return m && y ? `${m}/${y}` : "—";
+};
+
+/** Carrega todos os projetos do banco e converte para o formato usado pelo Executivo. */
+function useProjetosFromDB() {
+  const [projetos, setProjetos] = useState<Projeto[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  const load = async () => {
+    setLoading(true);
+    const [p, r, c] = await Promise.all([
+      sb.from("projetos_aprovados").select("*").order("ordem"),
+      sb.from("projetos_aprovados_rubricas").select("*").order("ordem"),
+      sb.from("projetos_aprovados_compras").select("*"),
+    ]);
+    const rawProjetos = (p.data ?? []) as any[];
+    const rawRubricas = (r.data ?? []) as any[];
+    const rawCompras = (c.data ?? []) as any[];
+
+    // gasto e pendências por rubrica (excluindo canceladas)
+    const gastoPorRubrica = new Map<string, number>();
+    const pendPorRubrica = new Map<string, number>();
+    rawCompras.filter(co => co.status !== "Cancelada").forEach(co => {
+      gastoPorRubrica.set(co.rubrica_id, (gastoPorRubrica.get(co.rubrica_id) ?? 0) + Number(co.valor || 0));
+      if (!co.nf_anexada) pendPorRubrica.set(co.rubrica_id, (pendPorRubrica.get(co.rubrica_id) ?? 0) + 1);
+    });
+
+    // mapear: para cada projeto, agrupar rubricas top-level e somar filhos
+    const result: Projeto[] = rawProjetos.map(pr => {
+      const rubs = rawRubricas.filter(rb => rb.projeto_id === pr.id);
+      const tops = rubs.filter(rb => !rb.parent_id);
+
+      const rubricas: Rubrica[] = tops.map(top => {
+        const filhos = rubs.filter(rb => rb.parent_id === top.id);
+        const planejado = Number(top.valor_planejado || 0) +
+          filhos.reduce((s, f) => s + Number(f.valor_planejado || 0), 0);
+        const gasto = (gastoPorRubrica.get(top.id) ?? 0) +
+          filhos.reduce((s, f) => s + (gastoPorRubrica.get(f.id) ?? 0), 0);
+        const pendencias_nf = (pendPorRubrica.get(top.id) ?? 0) +
+          filhos.reduce((s, f) => s + (pendPorRubrica.get(f.id) ?? 0), 0);
+        const reservado = !!top.obrigatorio || filhos.some(f => f.obrigatorio);
+        return {
+          nome: top.categoria,
+          planejado, gasto,
+          reservado: reservado || undefined,
+          pendencias_nf: pendencias_nf || undefined,
+        };
+      });
+
+      return {
+        nome: pr.nome,
+        orgao: pr.orgao ?? "—",
+        prazo: fmtPrazo(pr.prazo_final),
+        status: mapStatus(pr.status),
+        rubricas,
+        pode_usar_para: [],
+      };
+    });
+
+    setProjetos(result);
+    setLoading(false);
+  };
+
+  useEffect(() => { load(); }, []);
+  return { projetos, loading, reload: load };
+}
+
 
 /* ───────────────────────── Derivações / regras de negócio ───────────────────────── */
 

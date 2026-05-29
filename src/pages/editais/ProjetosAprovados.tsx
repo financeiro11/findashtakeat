@@ -265,7 +265,31 @@ const SUGESTOES = [
 export function ExecutivoTab() {
   const [pergunta, setPergunta] = useState("");
   const [mostrarResposta, setMostrarResposta] = useState(false);
+  const [iaLoading, setIaLoading] = useState(false);
+  const [iaAnswer, setIaAnswer] = useState<string | null>(null);
+  const [iaError, setIaError] = useState<string | null>(null);
   const { projetos: PROJETOS, loading } = useProjetosFromDB();
+
+  const consultarIA = async (q: string) => {
+    const txt = (q ?? "").trim();
+    if (!txt) return;
+    setMostrarResposta(true);
+    setIaLoading(true);
+    setIaAnswer(null);
+    setIaError(null);
+    try {
+      const { data, error } = await supabase.functions.invoke("editais-edi-consult", {
+        body: { pergunta: txt },
+      });
+      if (error) throw error;
+      if ((data as any)?.error) throw new Error((data as any).error);
+      setIaAnswer((data as any)?.answer ?? "Sem resposta.");
+    } catch (e: any) {
+      setIaError(e?.message ?? "Falha ao consultar a IA.");
+    } finally {
+      setIaLoading(false);
+    }
+  };
 
   /* ─── Métricas agregadas ─── */
   const metricas = useMemo(() => {
@@ -411,7 +435,7 @@ export function ExecutivoTab() {
             <Input
               value={pergunta}
               onChange={e => setPergunta(e.target.value)}
-              onKeyDown={e => e.key === "Enter" && setMostrarResposta(true)}
+              onKeyDown={e => e.key === "Enter" && consultarIA(pergunta)}
               placeholder="Ex: posso pagar HubSpot pelo Tecnova III?"
               className="h-9 text-[13px] bg-background pr-10"
             />
@@ -419,8 +443,8 @@ export function ExecutivoTab() {
               <Brain className="h-3.5 w-3.5" />
             </button>
           </div>
-          <Button onClick={() => setMostrarResposta(true)} className="h-9 gap-1.5 bg-primary hover:bg-primary/90">
-            <ArrowRight className="h-3.5 w-3.5" /> Consultar
+          <Button onClick={() => consultarIA(pergunta)} disabled={iaLoading} className="h-9 gap-1.5 bg-primary hover:bg-primary/90">
+            <ArrowRight className="h-3.5 w-3.5" /> {iaLoading ? "Consultando…" : "Consultar"}
           </Button>
         </div>
 
@@ -429,7 +453,7 @@ export function ExecutivoTab() {
           {SUGESTOES.map(s => (
             <button
               key={s}
-              onClick={() => { setPergunta(s); setMostrarResposta(true); }}
+              onClick={() => { setPergunta(s); consultarIA(s); }}
               className="text-[11.5px] px-2 py-1 rounded-full border border-border bg-background hover:border-primary/40 hover:text-primary transition-colors"
             >
               {s}
@@ -444,54 +468,30 @@ export function ExecutivoTab() {
               <span className="text-[11px] uppercase tracking-wider font-semibold text-primary">Resposta do EDI</span>
             </div>
 
-            {respostaIA.piorProjeto && respostaIA.piorRubricas.length > 0 ? (
-              <>
-                <p className="text-[13px] leading-relaxed">
-                  Maior risco operacional no projeto <span className="font-semibold text-rose-600">{respostaIA.piorProjeto.nome}</span>:
-                </p>
-                <ul className="text-[12.5px] space-y-1 ml-1">
-                  {respostaIA.piorRubricas.map(r => (
-                    <li key={r.nome} className="flex items-start gap-2">
-                      <TrendingDown className="h-3 w-3 text-rose-600 mt-1 shrink-0" />
-                      <span><b>{r.nome}</b> está <b className="num">{Math.round(pct(r))}%</b> executado</span>
-                    </li>
-                  ))}
-                </ul>
-              </>
-            ) : (
+            {iaLoading && (
+              <p className="text-[13px] text-muted-foreground">Analisando projetos, rubricas e lançamentos…</p>
+            )}
+
+            {!iaLoading && iaError && (
+              <p className="text-[13px] text-rose-600">{iaError}</p>
+            )}
+
+            {!iaLoading && !iaError && iaAnswer && (
+              <div
+                className="text-[13px] leading-relaxed whitespace-pre-wrap [&_b]:font-semibold [&_strong]:font-semibold"
+                dangerouslySetInnerHTML={{
+                  __html: iaAnswer
+                    .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+                    .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
+                    .replace(/^- (.+)$/gm, "• $1"),
+                }}
+              />
+            )}
+
+            {!iaLoading && !iaError && !iaAnswer && (
               <p className="text-[13px] leading-relaxed text-muted-foreground">
-                {loading ? "Carregando dados dos projetos…" : "Nenhum projeto em execução cadastrado ainda."}
+                {loading ? "Carregando dados dos projetos…" : "Faça uma pergunta ou use um dos atalhos."}
               </p>
-            )}
-
-            {respostaIA.segundoPior && respostaIA.segundoRubricasCriticas.length > 0 && (
-              <>
-                <p className="text-[13px] leading-relaxed">No <b>{respostaIA.segundoPior.nome}</b>:</p>
-                <ul className="text-[12.5px] space-y-1 ml-1">
-                  {respostaIA.segundoRubricasCriticas.map(r => (
-                    <li key={r.nome} className="flex items-start gap-2">
-                      <AlertTriangle className="h-3 w-3 text-amber-600 mt-1 shrink-0" />
-                      <span><b>{r.nome}</b> possui apenas <b className="num">{Math.round(Math.max(0, 100 - pct(r)))}%</b> disponível</span>
-                    </li>
-                  ))}
-                  {respostaIA.pendNF > 0 && (
-                    <li className="flex items-start gap-2">
-                      <FileWarning className="h-3 w-3 text-amber-600 mt-1 shrink-0" />
-                      <span>Existem <b>{respostaIA.pendNF} lançamentos pendentes sem NF</b></span>
-                    </li>
-                  )}
-                </ul>
-              </>
-            )}
-
-            {respostaIA.projetoComReserva && respostaIA.reservaDestaque && (
-              <div className="rounded-md bg-amber-500/5 border border-amber-500/30 px-3 py-2 flex items-start gap-2">
-                <Lock className="h-3.5 w-3.5 text-amber-700 mt-0.5 shrink-0" />
-                <div className="text-[12.5px] leading-relaxed">
-                  A rubrica <b>{respostaIA.reservaDestaque.nome}</b> do {respostaIA.projetoComReserva.nome} possui <b className="num">{fmtBRL(respostaIA.reservaDestaque.planejado)}</b> reservados obrigatoriamente.
-                  Somando as {respostaIA.reservadas.length} rubricas reservadas do projeto, <b className="num">{fmtBRL(respostaIA.totalReservado)}</b> não devem ser considerados saldo livre operacional.
-                </div>
-              </div>
             )}
 
             <div className="rounded-md bg-emerald-500/5 border border-emerald-500/20 px-3 py-2 mt-1">

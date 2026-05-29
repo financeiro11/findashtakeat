@@ -168,14 +168,18 @@ const riscoBadge = (r: string) =>
   : r === "baixo" ? "bg-emerald-500/10 text-emerald-600 border-emerald-500/30"
   : "bg-muted text-muted-foreground border-border";
 
+const rubricaReservado = (r: Rubrica) =>
+  r.reservado ? r.planejado : (r.reservado_valor ?? 0);
+
 const projAgregado = (p: Projeto) => {
-  const ativas = p.rubricas.filter(r => !r.reservado);
-  const planejado = ativas.reduce((s, r) => s + r.planejado, 0);
-  const gasto = ativas.reduce((s, r) => s + r.gasto, 0);
-  const reservado = p.rubricas.filter(r => r.reservado).reduce((s, r) => s + r.planejado, 0);
+  const planejado = p.rubricas.reduce((s, r) => s + (r.reservado ? 0 : r.planejado), 0);
+  const gasto = p.rubricas.filter(r => !r.reservado).reduce((s, r) => s + r.gasto, 0);
+  const reservado = p.rubricas.reduce((s, r) => s + rubricaReservado(r), 0);
+  // saldo livre desconta a parcela obrigatória embutida nas rubricas mistas
+  const carvedDentroDeAtivas = p.rubricas.filter(r => !r.reservado).reduce((s, r) => s + (r.reservado_valor ?? 0), 0);
   const saldoBruto = planejado - gasto;
-  const comprometido = ativas.filter(r => r.gasto > r.planejado).reduce((s, r) => s + (r.gasto - r.planejado), 0);
-  const saldoLivre = Math.max(0, saldoBruto - comprometido);
+  const comprometido = p.rubricas.filter(r => !r.reservado && r.gasto > r.planejado).reduce((s, r) => s + (r.gasto - r.planejado), 0);
+  const saldoLivre = Math.max(0, saldoBruto - comprometido - carvedDentroDeAtivas);
   const exec = planejado > 0 ? (gasto / planejado) * 100 : 0;
   const pendNF = p.rubricas.reduce((s, r) => s + (r.pendencias_nf ?? 0), 0);
   return { planejado, gasto, reservado, saldoBruto, saldoLivre, exec, pendNF };

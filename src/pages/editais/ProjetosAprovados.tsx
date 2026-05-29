@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { NavLink, Outlet, useLocation } from "react-router-dom";
 import { cn } from "@/lib/utils";
+import { supabase } from "@/integrations/supabase/client";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -13,6 +14,7 @@ import {
   TrendingDown, Wallet, Lightbulb,
 } from "lucide-react";
 import { fmtBRL } from "./types";
+
 
 /* ───────────────────────── DADOS REAIS ───────────────────────── */
 

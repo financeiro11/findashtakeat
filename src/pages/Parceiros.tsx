@@ -968,17 +968,33 @@ export default function Parceiros() {
                 className="h-8 w-56 pl-7 text-[12.5px]"
               />
             </div>
-            <select
-              value={monthFilter}
-              onChange={(e) => setMonthFilter(e.target.value)}
-              className="h-8 rounded-md border border-input bg-background px-2 text-[12.5px] text-foreground"
-              title="Filtrar por mês da data da venda"
-            >
-              <option value="">Todos os meses (venda)</option>
-              {monthOptions.map((m) => (
-                <option key={m.value} value={m.value}>{m.label}</option>
-              ))}
-            </select>
+            <div className={cn("relative", !monthFilter && "month-filter-alert")}> 
+              <select
+                value={monthFilter}
+                onChange={(e) => setMonthFilter(e.target.value)}
+                className={cn(
+                  "h-8 rounded-md border bg-background px-2 text-[12.5px] text-foreground transition-colors",
+                  !monthFilter
+                    ? "border-rose-500 text-rose-700 dark:text-rose-400 font-medium pr-2"
+                    : "border-input",
+                )}
+                title="Filtrar por mês da data da venda"
+              >
+                <option value="">Todos os meses (venda)</option>
+                {monthOptions.map((m) => (
+                  <option key={m.value} value={m.value}>{m.label}</option>
+                ))}
+              </select>
+              {!monthFilter && (
+                <span
+                  role="alert"
+                  className="pointer-events-none absolute left-1/2 top-[calc(100%+6px)] z-20 -translate-x-1/2 whitespace-nowrap rounded-md bg-rose-600 px-2 py-1 text-[11px] font-medium text-white shadow-md animate-bounce"
+                >
+                  <span className="absolute -top-1 left-1/2 h-2 w-2 -translate-x-1/2 rotate-45 bg-rose-600" />
+                  Lembre de filtrar o mês correto para apuração
+                </span>
+              )}
+            </div>
             <MultiFilter
               label="Embaixador"
               open={embOpen}

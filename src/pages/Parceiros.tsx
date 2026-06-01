@@ -820,6 +820,7 @@ export default function Parceiros() {
       valorTotal: (c) => c.valorTotal,
       bonificacaoTotal: (c) => c.bonificacaoTotal,
       recorrenciaTotal: (c) => recorrenciaPorEmbaixador.get(c.nome.toLowerCase()) ?? 0,
+      bonificacaoMaisRecorrencia: (c) => (c.bonificacaoTotal || 0) + (recorrenciaPorEmbaixador.get(c.nome.toLowerCase()) ?? 0),
     };
     const acc = accessors[sortConv.key];
     if (!acc) return conversoes;

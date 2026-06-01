@@ -1205,6 +1205,7 @@ export default function Parceiros() {
                 <SortableTh sortKey="valorTotal" sort={sortConv} setSort={setSortConv} className="text-right" align="right">Valor total</SortableTh>
                 <SortableTh sortKey="bonificacaoTotal" sort={sortConv} setSort={setSortConv} className="text-right" align="right">Bonificação Total</SortableTh>
                 <SortableTh sortKey="recorrenciaTotal" sort={sortConv} setSort={setSortConv} className="text-right" align="right">Recorrência Total</SortableTh>
+                <SortableTh sortKey="bonificacaoMaisRecorrencia" sort={sortConv} setSort={setSortConv} className="text-right" align="right">Bonificação + Recorrência</SortableTh>
               </TableRow>
             </TableHeader>
             <TableBody>

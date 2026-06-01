@@ -687,7 +687,8 @@ export default function Parceiros() {
   const totals = useMemo(() => {
     const mrr = filtered.reduce((s, r) => s + (r.mrr || 0), 0);
     const total = filtered.reduce((s, r) => s + (r.valorTotal || 0), 0);
-    return { mrr, total, count: filtered.length };
+    const bonificacao = filtered.reduce((s, r) => s + (r.bonificacaoVenda || 0), 0);
+    return { mrr, total, bonificacao, count: filtered.length };
   }, [filtered]);
 
   const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize));
@@ -819,6 +820,7 @@ export default function Parceiros() {
       valorTotal: (c) => c.valorTotal,
       bonificacaoTotal: (c) => c.bonificacaoTotal,
       recorrenciaTotal: (c) => recorrenciaPorEmbaixador.get(c.nome.toLowerCase()) ?? 0,
+      bonificacaoMaisRecorrencia: (c) => (c.bonificacaoTotal || 0) + (recorrenciaPorEmbaixador.get(c.nome.toLowerCase()) ?? 0),
     };
     const acc = accessors[sortConv.key];
     if (!acc) return conversoes;
@@ -941,10 +943,12 @@ export default function Parceiros() {
       </div>
 
       {/* KPIs */}
-      <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-5">
         <KpiCard label="Indicações" value={totals.count.toString()} />
         <KpiCard label="MRR somado" value={BRL(totals.mrr)} />
         <KpiCard label="Valor total" value={BRL(totals.total)} />
+        <KpiCard label="Bonificação total" value={BRL(totals.bonificacao)} />
+        <KpiCard label="Recorrência total" value={BRL(recTotal)} />
       </div>
 
       {/* Tabela */}
@@ -964,17 +968,33 @@ export default function Parceiros() {
                 className="h-8 w-56 pl-7 text-[12.5px]"
               />
             </div>
-            <select
-              value={monthFilter}
-              onChange={(e) => setMonthFilter(e.target.value)}
-              className="h-8 rounded-md border border-input bg-background px-2 text-[12.5px] text-foreground"
-              title="Filtrar por mês da data da venda"
-            >
-              <option value="">Todos os meses (venda)</option>
-              {monthOptions.map((m) => (
-                <option key={m.value} value={m.value}>{m.label}</option>
-              ))}
-            </select>
+            <div className={cn("relative", !monthFilter && "month-filter-alert")}> 
+              <select
+                value={monthFilter}
+                onChange={(e) => setMonthFilter(e.target.value)}
+                className={cn(
+                  "h-8 rounded-md border bg-background px-2 text-[12.5px] text-foreground transition-colors",
+                  !monthFilter
+                    ? "border-rose-500 text-rose-700 dark:text-rose-400 font-medium pr-2"
+                    : "border-input",
+                )}
+                title="Filtrar por mês da data da venda"
+              >
+                <option value="">Todos os meses (venda)</option>
+                {monthOptions.map((m) => (
+                  <option key={m.value} value={m.value}>{m.label}</option>
+                ))}
+              </select>
+              {!monthFilter && (
+                <span
+                  role="alert"
+                  className="pointer-events-none absolute left-1/2 top-[calc(100%+6px)] z-20 -translate-x-1/2 whitespace-nowrap rounded-md bg-rose-600 px-2 py-1 text-[11px] font-medium text-white shadow-md animate-bounce"
+                >
+                  <span className="absolute -top-1 left-1/2 h-2 w-2 -translate-x-1/2 rotate-45 bg-rose-600" />
+                  Lembre de filtrar o mês correto para apuração
+                </span>
+              )}
+            </div>
             <MultiFilter
               label="Embaixador"
               open={embOpen}
@@ -1202,12 +1222,13 @@ export default function Parceiros() {
                 <SortableTh sortKey="valorTotal" sort={sortConv} setSort={setSortConv} className="text-right" align="right">Valor total</SortableTh>
                 <SortableTh sortKey="bonificacaoTotal" sort={sortConv} setSort={setSortConv} className="text-right" align="right">Bonificação Total</SortableTh>
                 <SortableTh sortKey="recorrenciaTotal" sort={sortConv} setSort={setSortConv} className="text-right" align="right">Recorrência Total</SortableTh>
+                <SortableTh sortKey="bonificacaoMaisRecorrencia" sort={sortConv} setSort={setSortConv} className="text-right" align="right">Bonificação + Recorrência</SortableTh>
               </TableRow>
             </TableHeader>
             <TableBody>
               {conversoesFiltradas.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={10} className="py-10 text-center text-[12.5px] text-muted-foreground">
+                  <TableCell colSpan={11} className="py-10 text-center text-[12.5px] text-muted-foreground">
                     Sem indicações no período.
                   </TableCell>
                 </TableRow>
@@ -1284,6 +1305,7 @@ export default function Parceiros() {
                       <TableCell className="py-2.5 text-right tabular-nums font-medium">{BRL(c.valorTotal)}</TableCell>
                       <TableCell className="py-2.5 text-right tabular-nums font-medium">{c.bonificacaoTotal > 0 ? BRL(c.bonificacaoTotal) : <span className="text-muted-foreground">—</span>}</TableCell>
                       <TableCell className="py-2.5 text-right tabular-nums font-medium text-emerald-700 dark:text-emerald-400">{(recorrenciaPorEmbaixador.get(c.nome.toLowerCase()) ?? 0) > 0 ? BRL(recorrenciaPorEmbaixador.get(c.nome.toLowerCase()) ?? 0) : <span className="text-muted-foreground font-normal">—</span>}</TableCell>
+                      <TableCell className="py-2.5 text-right tabular-nums font-semibold text-foreground">{(() => { const soma = (c.bonificacaoTotal || 0) + (recorrenciaPorEmbaixador.get(c.nome.toLowerCase()) ?? 0); return soma > 0 ? BRL(soma) : <span className="text-muted-foreground font-normal">—</span>; })()}</TableCell>
                     </TableRow>
                   );
                 })

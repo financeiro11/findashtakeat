@@ -942,10 +942,12 @@ export default function Parceiros() {
       </div>
 
       {/* KPIs */}
-      <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-5">
         <KpiCard label="Indicações" value={totals.count.toString()} />
         <KpiCard label="MRR somado" value={BRL(totals.mrr)} />
         <KpiCard label="Valor total" value={BRL(totals.total)} />
+        <KpiCard label="Bonificação total" value={BRL(totals.bonificacao)} />
+        <KpiCard label="Recorrência total" value={BRL(recTotal)} />
       </div>
 
       {/* Tabela */}

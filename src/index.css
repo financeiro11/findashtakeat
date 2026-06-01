@@ -172,6 +172,19 @@
   }
   @keyframes pulse { 50% { opacity: 0.4; } }
 
+  .month-filter-alert {
+    border-radius: 8px;
+    animation: monthFilterPulse 1.6s ease-in-out infinite;
+  }
+  @keyframes monthFilterPulse {
+    0%, 100% {
+      box-shadow: 0 0 0 0 hsl(0 84% 55% / 0.55), 0 0 0 0 hsl(0 84% 55% / 0.35);
+    }
+    50% {
+      box-shadow: 0 0 0 4px hsl(0 84% 55% / 0), 0 0 10px 2px hsl(0 84% 55% / 0.55);
+    }
+  }
+
   .insight-tag {
     display: inline-flex;
     align-items: center;

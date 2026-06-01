@@ -1288,6 +1288,7 @@ export default function Parceiros() {
                       <TableCell className="py-2.5 text-right tabular-nums font-medium">{BRL(c.valorTotal)}</TableCell>
                       <TableCell className="py-2.5 text-right tabular-nums font-medium">{c.bonificacaoTotal > 0 ? BRL(c.bonificacaoTotal) : <span className="text-muted-foreground">—</span>}</TableCell>
                       <TableCell className="py-2.5 text-right tabular-nums font-medium text-emerald-700 dark:text-emerald-400">{(recorrenciaPorEmbaixador.get(c.nome.toLowerCase()) ?? 0) > 0 ? BRL(recorrenciaPorEmbaixador.get(c.nome.toLowerCase()) ?? 0) : <span className="text-muted-foreground font-normal">—</span>}</TableCell>
+                      <TableCell className="py-2.5 text-right tabular-nums font-semibold text-foreground">{(() => { const soma = (c.bonificacaoTotal || 0) + (recorrenciaPorEmbaixador.get(c.nome.toLowerCase()) ?? 0); return soma > 0 ? BRL(soma) : <span className="text-muted-foreground font-normal">—</span>; })()}</TableCell>
                     </TableRow>
                   );
                 })

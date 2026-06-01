@@ -687,7 +687,8 @@ export default function Parceiros() {
   const totals = useMemo(() => {
     const mrr = filtered.reduce((s, r) => s + (r.mrr || 0), 0);
     const total = filtered.reduce((s, r) => s + (r.valorTotal || 0), 0);
-    return { mrr, total, count: filtered.length };
+    const bonificacao = filtered.reduce((s, r) => s + (r.bonificacaoVenda || 0), 0);
+    return { mrr, total, bonificacao, count: filtered.length };
   }, [filtered]);
 
   const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize));

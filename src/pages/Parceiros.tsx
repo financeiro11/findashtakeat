@@ -817,6 +817,7 @@ export default function Parceiros() {
     const accessors: Record<string, (c: typeof conversoes[number]) => any> = {
       embaixador: (c) => c.nome,
       tier: (c) => cadastroByNome.get(c.nome.toLowerCase())?.tier ?? "",
+      campanha: (c) => cadastroByNome.get(c.nome.toLowerCase())?.campanha ?? "",
       bonificacao: (c) => cadastroByNome.get(c.nome.toLowerCase())?.valor_bonificacao ?? null,
       recorrencia: (c) => cadastroByNome.get(c.nome.toLowerCase())?.valor_recorrencia ?? null,
       indicacoes: (c) => c.indicacoes,

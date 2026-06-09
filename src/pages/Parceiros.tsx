@@ -1035,7 +1035,7 @@ export default function Parceiros() {
               filtInd={filtInd} setFiltInd={setFiltInd}
               filtConv={filtConv} setFiltConv={setFiltConv}
               filtRec={filtRec} setFiltRec={setFiltRec}
-              tierOptions={tierOptions}
+              tierOptions={tierOptions} campanhaCadastroOptions={campanhaCadastroOptions}
               totalCount={filtTotalCount}
               indCount={filtIndCount} convCount={filtConvCount} recCount={filtRecCount}
             />
@@ -1222,7 +1222,7 @@ export default function Parceiros() {
             filtInd={filtInd} setFiltInd={setFiltInd}
             filtConv={filtConv} setFiltConv={setFiltConv}
             filtRec={filtRec} setFiltRec={setFiltRec}
-            tierOptions={tierOptions}
+            tierOptions={tierOptions} campanhaCadastroOptions={campanhaCadastroOptions}
             totalCount={filtTotalCount}
             indCount={filtIndCount} convCount={filtConvCount} recCount={filtRecCount}
           />
@@ -1359,7 +1359,7 @@ export default function Parceiros() {
             filtInd={filtInd} setFiltInd={setFiltInd}
             filtConv={filtConv} setFiltConv={setFiltConv}
             filtRec={filtRec} setFiltRec={setFiltRec}
-            tierOptions={tierOptions}
+            tierOptions={tierOptions} campanhaCadastroOptions={campanhaCadastroOptions}
             totalCount={filtTotalCount}
             indCount={filtIndCount} convCount={filtConvCount} recCount={filtRecCount}
           />

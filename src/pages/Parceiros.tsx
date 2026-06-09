@@ -1023,7 +1023,7 @@ export default function Parceiros() {
   return (
     <div className="flex flex-col gap-4 p-4 lg:p-5">
       {/* Cabeçalho fixo */}
-      <div className="sticky top-0 z-20 -mx-4 lg:-mx-5 border-b border-border bg-background/95 px-4 py-3 backdrop-blur supports-[backdrop-filter]:bg-background/80 lg:px-5">
+      <div className="sticky top-0 z-40 -mx-4 lg:-mx-5 border-b border-border bg-background/95 px-4 py-3 shadow-sm backdrop-blur supports-[backdrop-filter]:bg-background/80 lg:px-5">
         <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
           <div className="min-w-0">
             <h1 className="text-xl font-semibold tracking-tight text-foreground">Parceiros</h1>

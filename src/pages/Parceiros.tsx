@@ -806,6 +806,12 @@ export default function Parceiros() {
     return Array.from(s);
   }, [cadastros]);
 
+  const campanhaCadastroOptions = useMemo(() => {
+    const s = new Set<string>();
+    cadastros.forEach((c) => { if (c.campanha) s.add(c.campanha); });
+    return Array.from(s).sort();
+  }, [cadastros]);
+
   const conversoesSorted = useMemo(() => {
     if (!sortConv) return conversoes;
     const accessors: Record<string, (c: typeof conversoes[number]) => any> = {

@@ -1899,6 +1899,16 @@ function FiltrosTabs({
               </div>
             </div>
             <div className="py-1.5">
+              <Label className="text-[12.5px]">Campanha</Label>
+              <div className="mt-1.5 flex flex-wrap gap-1.5 max-h-40 overflow-y-auto">
+                {campanhaCadastroOptions.length === 0 ? (
+                  <span className="text-[11.5px] text-muted-foreground">Nenhuma campanha cadastrada</span>
+                ) : campanhaCadastroOptions.map((c) => (
+                  <Chip key={c} active={filtConv.campanha.has(c)} onClick={() => setFiltConv((f) => ({ ...f, campanha: toggleSet(f.campanha, c) }))}>{c}</Chip>
+                ))}
+              </div>
+            </div>
+            <div className="py-1.5">
               <Label className="text-[12.5px]">Recorrência</Label>
               <div className="mt-1.5 flex flex-wrap gap-1.5">
                 {(["todos", "sim", "nao"] as const).map((v) => (

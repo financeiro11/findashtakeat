@@ -1039,7 +1039,7 @@ export default function Parceiros() {
               hidden
               onChange={handleFile}
             />
-            <div className={cn("relative", !monthFilter && "month-filter-alert")}>
+            <div className={cn("relative inline-block", !monthFilter && "month-filter-alert")}>
               <select
                 value={monthFilter}
                 onChange={(e) => setMonthFilter(e.target.value)}
@@ -1059,13 +1059,14 @@ export default function Parceiros() {
               {!monthFilter && (
                 <span
                   role="alert"
-                  className="pointer-events-none absolute left-1/2 top-[calc(100%+6px)] z-30 -translate-x-1/2 whitespace-nowrap rounded-md bg-rose-600 px-2 py-1 text-[11px] font-medium text-white shadow-md animate-bounce"
+                  className="pointer-events-none absolute left-0 top-[calc(100%+8px)] z-30 whitespace-nowrap rounded-md bg-rose-600 px-2 py-1 text-[11px] font-medium text-white shadow-md animate-bounce"
                 >
-                  <span className="absolute -top-1 left-1/2 h-2 w-2 -translate-x-1/2 rotate-45 bg-rose-600" />
+                  <span className="absolute -top-1 left-6 h-2 w-2 rotate-45 bg-rose-600" />
                   Lembre de filtrar o mês correto para apuração
                 </span>
               )}
             </div>
+
             <Button variant="outline" size="sm" className="h-8 gap-1.5 text-[12.5px]" onClick={handleRefresh} disabled={refreshing}>
               <RefreshCw className={cn("h-3.5 w-3.5", refreshing && "animate-spin")} /> Atualizar
             </Button>

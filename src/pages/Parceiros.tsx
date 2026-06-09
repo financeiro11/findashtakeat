@@ -1023,7 +1023,7 @@ export default function Parceiros() {
   return (
     <div className="flex flex-col gap-4 p-4 lg:p-5">
       {/* Cabeçalho fixo */}
-      <div className="sticky top-0 z-40 -mx-4 lg:-mx-5 border-b border-border bg-background/95 px-4 py-3 shadow-sm backdrop-blur supports-[backdrop-filter]:bg-background/80 lg:px-5">
+      <div className="fixed left-[var(--sidebar-width)] right-0 top-[49px] z-40 border-b border-border bg-background/95 px-4 py-3 shadow-md backdrop-blur supports-[backdrop-filter]:bg-background/80 lg:px-5">
         <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
           <div className="min-w-0">
             <h1 className="text-xl font-semibold tracking-tight text-foreground">Parceiros</h1>
@@ -1105,6 +1105,7 @@ export default function Parceiros() {
           </div>
         </div>
       </div>
+      <div className="h-[92px] shrink-0 sm:h-[78px]" aria-hidden="true" />
 
 
       {/* KPIs — Lista de Indicações */}

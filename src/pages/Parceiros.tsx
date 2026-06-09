@@ -290,7 +290,6 @@ export default function Parceiros() {
   // Filtros avançados por lista
   type FiltInd = { campanhaDivergente: boolean; embStatus: Set<string>; comHistorico: boolean };
   type FiltConv = { tier: Set<string>; campanha: Set<string>; recorrencia: "todos" | "sim" | "nao"; bonificacao: "todos" | "sim" | "nao"; naoCadastrados: boolean; comHistorico: boolean };
-  type FiltInd = { campanhaDivergente: boolean; embStatus: Set<string>; comHistorico: boolean };
   const [filtInd, setFiltInd] = useState<FiltInd>({ campanhaDivergente: false, embStatus: new Set(), comHistorico: false });
   const [filtConv, setFiltConv] = useState<FiltConv>({ tier: new Set(), campanha: new Set(), recorrencia: "todos", bonificacao: "todos", naoCadastrados: false, comHistorico: false });
   type FiltRec = { status: Set<string>; campanhaDivergente: boolean; embaixadorNaoCadastrado: boolean; comHistorico: boolean };

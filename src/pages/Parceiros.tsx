@@ -1519,15 +1519,27 @@ export default function Parceiros() {
         padded={false}
         stickyHeader
         actions={
-          <FiltrosTabs
-            filtInd={filtInd} setFiltInd={setFiltInd}
-            filtConv={filtConv} setFiltConv={setFiltConv}
-            filtRec={filtRec} setFiltRec={setFiltRec}
-            tierOptions={tierOptions} campanhaCadastroOptions={campanhaCadastroOptions}
-            totalCount={filtTotalCount}
-            indCount={filtIndCount} convCount={filtConvCount} recCount={filtRecCount}
-          />
+          <div className="flex items-center gap-1.5">
+            <div className="relative">
+              <Search className="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+              <Input
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                placeholder="Buscar embaixador, empresa…"
+                className="h-8 w-56 pl-7 text-[12.5px]"
+              />
+            </div>
+            <FiltrosTabs
+              filtInd={filtInd} setFiltInd={setFiltInd}
+              filtConv={filtConv} setFiltConv={setFiltConv}
+              filtRec={filtRec} setFiltRec={setFiltRec}
+              tierOptions={tierOptions} campanhaCadastroOptions={campanhaCadastroOptions}
+              totalCount={filtTotalCount}
+              indCount={filtIndCount} convCount={filtConvCount} recCount={filtRecCount}
+            />
+          </div>
         }
+
       >
         <div className="overflow-x-auto">
           <Table>

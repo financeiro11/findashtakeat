@@ -1486,8 +1486,9 @@ export default function Parceiros() {
 
       {/* KPIs — Apuração Recorrências */}
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
-        <KpiDeltaCard label="Recorrências ativas" current={recAgg.count} previous={recPrev.count} format="number" />
-        <KpiDeltaCard label="MRR ativo (recorrências)" current={recAgg.mrrAtivo} previous={recPrev.mrrAtivo} />
+        <KpiDeltaCard label="Recorrências ativas" current={recAgg.count} previous={monthFilter ? recPrev.count : undefined} format="number" />
+        <KpiDeltaCard label="MRR ativo (recorrências)" current={recAgg.mrrAtivo} previous={monthFilter ? recPrev.mrrAtivo : undefined} />
+
         <KpiInfoCard
           label="ROI · MRR ativo vs Recorrência"
           value={recAgg.roi != null ? `${recAgg.roi.toFixed(2)}x` : "—"}

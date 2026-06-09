@@ -1022,59 +1022,89 @@ export default function Parceiros() {
 
   return (
     <div className="flex flex-col gap-4 p-4 lg:p-5">
-      {/* Cabeçalho */}
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
-        <div className="min-w-0">
-          <h1 className="text-xl font-semibold tracking-tight text-foreground">Parceiros</h1>
-          <p className="mt-1 text-[12.5px] text-muted-foreground">
-            Indicações de embaixadores, vendas atribuídas e integrações com HubSpot e Asaas.
-          </p>
-        </div>
-        <div className="flex flex-wrap items-center gap-2">
-          <input
-            ref={fileInputRef}
-            type="file"
-            accept=".xlsx,.xls,.csv"
-            hidden
-            onChange={handleFile}
-          />
-          <Button variant="outline" size="sm" className="h-8 gap-1.5 text-[12.5px]" onClick={handleRefresh} disabled={refreshing}>
-            <RefreshCw className={cn("h-3.5 w-3.5", refreshing && "animate-spin")} /> Atualizar
-          </Button>
-          <GestaoParceirosDialog />
-          {selected.size > 0 && (
-            <Button variant="destructive" size="sm" className="h-8 gap-1.5 text-[12.5px]" onClick={handleDeleteSelected} disabled={deleting}>
-              <Trash2 className="h-3.5 w-3.5" /> Apagar ({selected.size})
+      {/* Cabeçalho fixo */}
+      <div className="sticky top-0 z-20 -mx-4 lg:-mx-5 border-b border-border bg-background/95 px-4 py-3 backdrop-blur supports-[backdrop-filter]:bg-background/80 lg:px-5">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+          <div className="min-w-0">
+            <h1 className="text-xl font-semibold tracking-tight text-foreground">Parceiros</h1>
+            <p className="mt-1 text-[12.5px] text-muted-foreground">
+              Indicações de embaixadores, vendas atribuídas e integrações com HubSpot e Asaas.
+            </p>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept=".xlsx,.xls,.csv"
+              hidden
+              onChange={handleFile}
+            />
+            <div className={cn("relative", !monthFilter && "month-filter-alert")}>
+              <select
+                value={monthFilter}
+                onChange={(e) => setMonthFilter(e.target.value)}
+                className={cn(
+                  "h-8 rounded-md border bg-background px-2 text-[12.5px] text-foreground transition-colors",
+                  !monthFilter
+                    ? "border-rose-500 text-rose-700 dark:text-rose-400 font-medium pr-2"
+                    : "border-input",
+                )}
+                title="Filtrar por mês da data da venda"
+              >
+                <option value="">Todos os meses (venda)</option>
+                {monthOptions.map((m) => (
+                  <option key={m.value} value={m.value}>{m.label}</option>
+                ))}
+              </select>
+              {!monthFilter && (
+                <span
+                  role="alert"
+                  className="pointer-events-none absolute left-1/2 top-[calc(100%+6px)] z-30 -translate-x-1/2 whitespace-nowrap rounded-md bg-rose-600 px-2 py-1 text-[11px] font-medium text-white shadow-md animate-bounce"
+                >
+                  <span className="absolute -top-1 left-1/2 h-2 w-2 -translate-x-1/2 rotate-45 bg-rose-600" />
+                  Lembre de filtrar o mês correto para apuração
+                </span>
+              )}
+            </div>
+            <Button variant="outline" size="sm" className="h-8 gap-1.5 text-[12.5px]" onClick={handleRefresh} disabled={refreshing}>
+              <RefreshCw className={cn("h-3.5 w-3.5", refreshing && "animate-spin")} /> Atualizar
             </Button>
-          )}
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <Button variant="outline" size="sm" className="h-8 gap-1.5 text-[12.5px]">
-                <Upload className="h-3.5 w-3.5" /> Importar planilha
+            <GestaoParceirosDialog />
+            {selected.size > 0 && (
+              <Button variant="destructive" size="sm" className="h-8 gap-1.5 text-[12.5px]" onClick={handleDeleteSelected} disabled={deleting}>
+                <Trash2 className="h-3.5 w-3.5" /> Apagar ({selected.size})
               </Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end">
-              <DropdownMenuItem onClick={() => handleImportClick("indicacoes")}>Lista de Indicações</DropdownMenuItem>
-              <DropdownMenuItem onClick={() => handleImportClick("recorrencias")}>Apuração Recorrências</DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <Button variant="outline" size="sm" className="h-8 gap-1.5 text-[12.5px]">
-                <Download className="h-3.5 w-3.5" /> Exportar
-              </Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end">
-              <DropdownMenuItem onClick={() => handleExport("indicacoes")}>Lista de Indicações</DropdownMenuItem>
-              <DropdownMenuItem onClick={() => handleExport("conversoes")}>Conversões por embaixador</DropdownMenuItem>
-              <DropdownMenuItem onClick={() => handleExport("recorrencias")}>Apuração Recorrências</DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
-          <Button size="sm" className="h-8 gap-1.5 text-[12.5px]">
-            <Plus className="h-3.5 w-3.5" /> Nova indicação
-          </Button>
+            )}
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button variant="outline" size="sm" className="h-8 gap-1.5 text-[12.5px]">
+                  <Upload className="h-3.5 w-3.5" /> Importar planilha
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end">
+                <DropdownMenuItem onClick={() => handleImportClick("indicacoes")}>Lista de Indicações</DropdownMenuItem>
+                <DropdownMenuItem onClick={() => handleImportClick("recorrencias")}>Apuração Recorrências</DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button variant="outline" size="sm" className="h-8 gap-1.5 text-[12.5px]">
+                  <Download className="h-3.5 w-3.5" /> Exportar
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end">
+                <DropdownMenuItem onClick={() => handleExport("indicacoes")}>Lista de Indicações</DropdownMenuItem>
+                <DropdownMenuItem onClick={() => handleExport("conversoes")}>Conversões por embaixador</DropdownMenuItem>
+                <DropdownMenuItem onClick={() => handleExport("recorrencias")}>Apuração Recorrências</DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+            <Button size="sm" className="h-8 gap-1.5 text-[12.5px]">
+              <Plus className="h-3.5 w-3.5" /> Nova indicação
+            </Button>
+          </div>
         </div>
       </div>
+
 
       {/* KPIs — Lista de Indicações */}
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">

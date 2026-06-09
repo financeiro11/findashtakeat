@@ -830,6 +830,7 @@ export default function Parceiros() {
     return conversoesSorted.filter((c) => {
       const cad = cadastroByNome.get(c.nome.toLowerCase());
       if (filtConv.tier.size > 0 && !filtConv.tier.has(cad?.tier ?? "Não possui")) return false;
+      if (filtConv.campanha.size > 0 && !filtConv.campanha.has(cad?.campanha ?? "")) return false;
       if (filtConv.recorrencia === "sim" && !cad?.recorrencia) return false;
       if (filtConv.recorrencia === "nao" && cad?.recorrencia) return false;
       if (filtConv.bonificacao === "sim" && !cad?.bonificacao) return false;

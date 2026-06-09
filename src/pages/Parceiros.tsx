@@ -1936,7 +1936,7 @@ function FiltrosTabs({
               <Switch checked={filtConv.comHistorico} onCheckedChange={(v) => setFiltConv((f) => ({ ...f, comHistorico: v }))} />
             </Row>
             {convCount > 0 && (
-              <Button variant="ghost" size="sm" className="mt-1 h-7 w-full text-[11.5px]" onClick={() => setFiltConv({ tier: new Set(), recorrencia: "todos", bonificacao: "todos", naoCadastrados: false, comHistorico: false })}>Limpar filtros</Button>
+              <Button variant="ghost" size="sm" className="mt-1 h-7 w-full text-[11.5px]" onClick={() => setFiltConv({ tier: new Set(), campanha: new Set(), recorrencia: "todos", bonificacao: "todos", naoCadastrados: false, comHistorico: false })}>Limpar filtros</Button>
             )}
           </TabsContent>
 

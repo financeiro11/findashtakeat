@@ -1819,7 +1819,7 @@ function EmptyState() {
 
 function FiltrosTabs({
   filtInd, setFiltInd, filtConv, setFiltConv, filtRec, setFiltRec,
-  tierOptions, totalCount, indCount, convCount, recCount,
+  tierOptions, campanhaCadastroOptions, totalCount, indCount, convCount, recCount,
 }: {
   filtInd: { campanhaDivergente: boolean; embStatus: Set<string>; comHistorico: boolean };
   setFiltInd: React.Dispatch<React.SetStateAction<{ campanhaDivergente: boolean; embStatus: Set<string>; comHistorico: boolean }>>;

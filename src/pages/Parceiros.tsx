@@ -289,14 +289,13 @@ export default function Parceiros() {
 
   // Filtros avançados por lista
   type FiltInd = { campanhaDivergente: boolean; embStatus: Set<string>; comHistorico: boolean };
-  type FiltConv = { tier: Set<string>; recorrencia: "todos" | "sim" | "nao"; bonificacao: "todos" | "sim" | "nao"; naoCadastrados: boolean; comHistorico: boolean };
-
-  type FiltRec = { status: Set<string>; campanhaDivergente: boolean; embaixadorNaoCadastrado: boolean; comHistorico: boolean };
+  type FiltConv = { tier: Set<string>; campanha: Set<string>; recorrencia: "todos" | "sim" | "nao"; bonificacao: "todos" | "sim" | "nao"; naoCadastrados: boolean; comHistorico: boolean };
   const [filtInd, setFiltInd] = useState<FiltInd>({ campanhaDivergente: false, embStatus: new Set(), comHistorico: false });
-  const [filtConv, setFiltConv] = useState<FiltConv>({ tier: new Set(), recorrencia: "todos", bonificacao: "todos", naoCadastrados: false, comHistorico: false });
+  const [filtConv, setFiltConv] = useState<FiltConv>({ tier: new Set(), campanha: new Set(), recorrencia: "todos", bonificacao: "todos", naoCadastrados: false, comHistorico: false });
+  type FiltRec = { status: Set<string>; campanhaDivergente: boolean; embaixadorNaoCadastrado: boolean; comHistorico: boolean };
   const [filtRec, setFiltRec] = useState<FiltRec>({ status: new Set(), campanhaDivergente: false, embaixadorNaoCadastrado: false, comHistorico: false });
   const filtIndCount = (filtInd.campanhaDivergente ? 1 : 0) + (filtInd.embStatus.size > 0 ? 1 : 0) + (filtInd.comHistorico ? 1 : 0);
-  const filtConvCount = (filtConv.tier.size > 0 ? 1 : 0) + (filtConv.recorrencia !== "todos" ? 1 : 0) + (filtConv.bonificacao !== "todos" ? 1 : 0) + (filtConv.naoCadastrados ? 1 : 0) + (filtConv.comHistorico ? 1 : 0);
+  const filtConvCount = (filtConv.tier.size > 0 ? 1 : 0) + (filtConv.campanha.size > 0 ? 1 : 0) + (filtConv.recorrencia !== "todos" ? 1 : 0) + (filtConv.bonificacao !== "todos" ? 1 : 0) + (filtConv.naoCadastrados ? 1 : 0) + (filtConv.comHistorico ? 1 : 0);
   const filtRecCount = (filtRec.status.size > 0 ? 1 : 0) + (filtRec.campanhaDivergente ? 1 : 0) + (filtRec.embaixadorNaoCadastrado ? 1 : 0) + (filtRec.comHistorico ? 1 : 0);
   const filtTotalCount = filtIndCount + filtConvCount + filtRecCount;
 
@@ -565,19 +564,32 @@ export default function Parceiros() {
       } else if (target === "conversoes") {
         sheetName = "Conversões";
         fileName = "conversoes-embaixador.xlsx";
-        rowsOut = conversoes.map((c) => {
+        rowsOut = conversoesFiltradas.map((c) => {
           const cad = cadastroByNome.get(c.nome.toLowerCase());
+          const recTotal = recorrenciaPorEmbaixador.get(c.nome.toLowerCase()) ?? 0;
+          const bonifFmt = cad?.bonificacao
+            ? (cad.valor_bonificacao != null
+                ? (cad.metodo_bonificacao === "%" ? `${cad.valor_bonificacao}%` : Number(cad.valor_bonificacao))
+                : "Sim")
+            : "Não";
+          const recFmt = cad?.recorrencia
+            ? (cad.valor_recorrencia != null
+                ? (cad.metodo_recorrencia === "%" ? `${cad.valor_recorrencia}%` : Number(cad.valor_recorrencia))
+                : "Sim")
+            : "Não";
           return {
             Embaixador: c.nome,
             Tier: cad?.tier ?? "",
-            Bonificação: cad?.bonificacao ? "Sim" : "Não",
-            Recorrência: cad?.recorrencia ? "Sim" : "Não",
+            Campanha: cad?.campanha ?? "",
+            Bonificação: bonifFmt,
+            Recorrência: recFmt,
             Indicações: c.indicacoes,
             Vendas: c.vendas,
             MRR: c.mrr,
             "Valor total": c.valorTotal,
             "Bonificação Total": c.bonificacaoTotal,
-            "Recorrência Total": recorrenciaPorEmbaixador.get(c.nome.toLowerCase()) ?? 0,
+            "Recorrência Total": recTotal,
+            "Bonificação + Recorrência": (c.bonificacaoTotal || 0) + recTotal,
           };
         });
       } else {
@@ -807,11 +819,18 @@ export default function Parceiros() {
     return Array.from(s);
   }, [cadastros]);
 
+  const campanhaCadastroOptions = useMemo(() => {
+    const s = new Set<string>();
+    cadastros.forEach((c) => { if (c.campanha) s.add(c.campanha); });
+    return Array.from(s).sort();
+  }, [cadastros]);
+
   const conversoesSorted = useMemo(() => {
     if (!sortConv) return conversoes;
     const accessors: Record<string, (c: typeof conversoes[number]) => any> = {
       embaixador: (c) => c.nome,
       tier: (c) => cadastroByNome.get(c.nome.toLowerCase())?.tier ?? "",
+      campanha: (c) => cadastroByNome.get(c.nome.toLowerCase())?.campanha ?? "",
       bonificacao: (c) => cadastroByNome.get(c.nome.toLowerCase())?.valor_bonificacao ?? null,
       recorrencia: (c) => cadastroByNome.get(c.nome.toLowerCase())?.valor_recorrencia ?? null,
       indicacoes: (c) => c.indicacoes,
@@ -831,6 +850,7 @@ export default function Parceiros() {
     return conversoesSorted.filter((c) => {
       const cad = cadastroByNome.get(c.nome.toLowerCase());
       if (filtConv.tier.size > 0 && !filtConv.tier.has(cad?.tier ?? "Não possui")) return false;
+      if (filtConv.campanha.size > 0 && !filtConv.campanha.has(cad?.campanha ?? "")) return false;
       if (filtConv.recorrencia === "sim" && !cad?.recorrencia) return false;
       if (filtConv.recorrencia === "nao" && cad?.recorrencia) return false;
       if (filtConv.bonificacao === "sim" && !cad?.bonificacao) return false;
@@ -1015,7 +1035,7 @@ export default function Parceiros() {
               filtInd={filtInd} setFiltInd={setFiltInd}
               filtConv={filtConv} setFiltConv={setFiltConv}
               filtRec={filtRec} setFiltRec={setFiltRec}
-              tierOptions={tierOptions}
+              tierOptions={tierOptions} campanhaCadastroOptions={campanhaCadastroOptions}
               totalCount={filtTotalCount}
               indCount={filtIndCount} convCount={filtConvCount} recCount={filtRecCount}
             />
@@ -1202,7 +1222,7 @@ export default function Parceiros() {
             filtInd={filtInd} setFiltInd={setFiltInd}
             filtConv={filtConv} setFiltConv={setFiltConv}
             filtRec={filtRec} setFiltRec={setFiltRec}
-            tierOptions={tierOptions}
+            tierOptions={tierOptions} campanhaCadastroOptions={campanhaCadastroOptions}
             totalCount={filtTotalCount}
             indCount={filtIndCount} convCount={filtConvCount} recCount={filtRecCount}
           />
@@ -1214,6 +1234,7 @@ export default function Parceiros() {
               <TableRow>
                 <SortableTh sortKey="embaixador" sort={sortConv} setSort={setSortConv}>Embaixador</SortableTh>
                 <SortableTh sortKey="tier" sort={sortConv} setSort={setSortConv}>Tier</SortableTh>
+                <SortableTh sortKey="campanha" sort={sortConv} setSort={setSortConv}>Campanha</SortableTh>
                 <SortableTh sortKey="bonificacao" sort={sortConv} setSort={setSortConv}>Bonificação</SortableTh>
                 <SortableTh sortKey="recorrencia" sort={sortConv} setSort={setSortConv}>Recorrência</SortableTh>
                 <SortableTh sortKey="indicacoes" sort={sortConv} setSort={setSortConv} className="text-right" align="right">Indicações</SortableTh>
@@ -1228,7 +1249,7 @@ export default function Parceiros() {
             <TableBody>
               {conversoesFiltradas.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={11} className="py-10 text-center text-[12.5px] text-muted-foreground">
+                  <TableCell colSpan={12} className="py-10 text-center text-[12.5px] text-muted-foreground">
                     Sem indicações no período.
                   </TableCell>
                 </TableRow>
@@ -1279,6 +1300,9 @@ export default function Parceiros() {
                       </TableCell>
                       <TableCell className="py-2.5">
                         {cad ? <Badge variant="outline" className="text-[10.5px] font-normal whitespace-nowrap">{cad.tier === "Não possui" ? "—" : cad.tier.replace("Tier ", "T")}</Badge> : <span className="text-muted-foreground">—</span>}
+                      </TableCell>
+                      <TableCell className="py-2.5 text-[12px]">
+                        {cad?.campanha ? <span className="text-foreground">{cad.campanha}</span> : <span className="text-muted-foreground">—</span>}
                       </TableCell>
                       <TableCell className="py-2.5">
                         {cad ? (cad.bonificacao
@@ -1335,7 +1359,7 @@ export default function Parceiros() {
             filtInd={filtInd} setFiltInd={setFiltInd}
             filtConv={filtConv} setFiltConv={setFiltConv}
             filtRec={filtRec} setFiltRec={setFiltRec}
-            tierOptions={tierOptions}
+            tierOptions={tierOptions} campanhaCadastroOptions={campanhaCadastroOptions}
             totalCount={filtTotalCount}
             indCount={filtIndCount} convCount={filtConvCount} recCount={filtRecCount}
           />
@@ -1795,15 +1819,16 @@ function EmptyState() {
 
 function FiltrosTabs({
   filtInd, setFiltInd, filtConv, setFiltConv, filtRec, setFiltRec,
-  tierOptions, totalCount, indCount, convCount, recCount,
+  tierOptions, campanhaCadastroOptions, totalCount, indCount, convCount, recCount,
 }: {
   filtInd: { campanhaDivergente: boolean; embStatus: Set<string>; comHistorico: boolean };
   setFiltInd: React.Dispatch<React.SetStateAction<{ campanhaDivergente: boolean; embStatus: Set<string>; comHistorico: boolean }>>;
-  filtConv: { tier: Set<string>; recorrencia: "todos" | "sim" | "nao"; bonificacao: "todos" | "sim" | "nao"; naoCadastrados: boolean; comHistorico: boolean };
-  setFiltConv: React.Dispatch<React.SetStateAction<{ tier: Set<string>; recorrencia: "todos" | "sim" | "nao"; bonificacao: "todos" | "sim" | "nao"; naoCadastrados: boolean; comHistorico: boolean }>>;
+  filtConv: { tier: Set<string>; campanha: Set<string>; recorrencia: "todos" | "sim" | "nao"; bonificacao: "todos" | "sim" | "nao"; naoCadastrados: boolean; comHistorico: boolean };
+  setFiltConv: React.Dispatch<React.SetStateAction<{ tier: Set<string>; campanha: Set<string>; recorrencia: "todos" | "sim" | "nao"; bonificacao: "todos" | "sim" | "nao"; naoCadastrados: boolean; comHistorico: boolean }>>;
   filtRec: { status: Set<string>; campanhaDivergente: boolean; embaixadorNaoCadastrado: boolean; comHistorico: boolean };
   setFiltRec: React.Dispatch<React.SetStateAction<{ status: Set<string>; campanhaDivergente: boolean; embaixadorNaoCadastrado: boolean; comHistorico: boolean }>>;
   tierOptions: string[];
+  campanhaCadastroOptions: string[];
   totalCount: number; indCount: number; convCount: number; recCount: number;
 }) {
   const toggleSet = (s: Set<string>, v: string) => {
@@ -1875,6 +1900,16 @@ function FiltrosTabs({
               </div>
             </div>
             <div className="py-1.5">
+              <Label className="text-[12.5px]">Campanha</Label>
+              <div className="mt-1.5 flex flex-wrap gap-1.5 max-h-40 overflow-y-auto">
+                {campanhaCadastroOptions.length === 0 ? (
+                  <span className="text-[11.5px] text-muted-foreground">Nenhuma campanha cadastrada</span>
+                ) : campanhaCadastroOptions.map((c) => (
+                  <Chip key={c} active={filtConv.campanha.has(c)} onClick={() => setFiltConv((f) => ({ ...f, campanha: toggleSet(f.campanha, c) }))}>{c}</Chip>
+                ))}
+              </div>
+            </div>
+            <div className="py-1.5">
               <Label className="text-[12.5px]">Recorrência</Label>
               <div className="mt-1.5 flex flex-wrap gap-1.5">
                 {(["todos", "sim", "nao"] as const).map((v) => (
@@ -1901,7 +1936,7 @@ function FiltrosTabs({
               <Switch checked={filtConv.comHistorico} onCheckedChange={(v) => setFiltConv((f) => ({ ...f, comHistorico: v }))} />
             </Row>
             {convCount > 0 && (
-              <Button variant="ghost" size="sm" className="mt-1 h-7 w-full text-[11.5px]" onClick={() => setFiltConv({ tier: new Set(), recorrencia: "todos", bonificacao: "todos", naoCadastrados: false, comHistorico: false })}>Limpar filtros</Button>
+              <Button variant="ghost" size="sm" className="mt-1 h-7 w-full text-[11.5px]" onClick={() => setFiltConv({ tier: new Set(), campanha: new Set(), recorrencia: "todos", bonificacao: "todos", naoCadastrados: false, comHistorico: false })}>Limpar filtros</Button>
             )}
           </TabsContent>
 

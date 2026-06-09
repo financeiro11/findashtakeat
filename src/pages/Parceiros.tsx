@@ -564,19 +564,32 @@ export default function Parceiros() {
       } else if (target === "conversoes") {
         sheetName = "Conversões";
         fileName = "conversoes-embaixador.xlsx";
-        rowsOut = conversoes.map((c) => {
+        rowsOut = conversoesFiltradas.map((c) => {
           const cad = cadastroByNome.get(c.nome.toLowerCase());
+          const recTotal = recorrenciaPorEmbaixador.get(c.nome.toLowerCase()) ?? 0;
+          const bonifFmt = cad?.bonificacao
+            ? (cad.valor_bonificacao != null
+                ? (cad.metodo_bonificacao === "%" ? `${cad.valor_bonificacao}%` : Number(cad.valor_bonificacao))
+                : "Sim")
+            : "Não";
+          const recFmt = cad?.recorrencia
+            ? (cad.valor_recorrencia != null
+                ? (cad.metodo_recorrencia === "%" ? `${cad.valor_recorrencia}%` : Number(cad.valor_recorrencia))
+                : "Sim")
+            : "Não";
           return {
             Embaixador: c.nome,
             Tier: cad?.tier ?? "",
-            Bonificação: cad?.bonificacao ? "Sim" : "Não",
-            Recorrência: cad?.recorrencia ? "Sim" : "Não",
+            Campanha: cad?.campanha ?? "",
+            Bonificação: bonifFmt,
+            Recorrência: recFmt,
             Indicações: c.indicacoes,
             Vendas: c.vendas,
             MRR: c.mrr,
             "Valor total": c.valorTotal,
             "Bonificação Total": c.bonificacaoTotal,
-            "Recorrência Total": recorrenciaPorEmbaixador.get(c.nome.toLowerCase()) ?? 0,
+            "Recorrência Total": recTotal,
+            "Bonificação + Recorrência": (c.bonificacaoTotal || 0) + recTotal,
           };
         });
       } else {

@@ -1076,13 +1076,11 @@ export default function Parceiros() {
         </div>
       </div>
 
-      {/* KPIs */}
-      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-5">
-        <KpiCard label="Indicações" value={totals.count.toString()} />
-        <KpiCard label="MRR somado" value={BRL(totals.mrr)} />
-        <KpiCard label="Valor total" value={BRL(totals.total)} />
-        <KpiCard label="Bonificação total" value={BRL(totals.bonificacao)} />
-        <KpiCard label="Recorrência total" value={BRL(recTotal)} />
+      {/* KPIs — Lista de Indicações */}
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+        <KpiDeltaCard label="Indicações" current={totals.count} previous={totalsPrev.count} format="number" />
+        <KpiDeltaCard label="MRR somado" current={totals.mrr} previous={totalsPrev.mrr} />
+        <KpiDeltaCard label="Valor total" current={totals.total} previous={totalsPrev.total} />
       </div>
 
       {/* Tabela */}

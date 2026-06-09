@@ -703,6 +703,45 @@ export default function Parceiros() {
     return { mrr, total, bonificacao, count: filtered.length };
   }, [filtered]);
 
+  // ===== Período anterior (para deltas dos KPIs) =====
+  // Define current/prev YYYY-MM. Se monthFilter vazio, usa o mês corrente vs anterior.
+  const currentMonthKey = useMemo(() => {
+    if (monthFilter) return monthFilter;
+    const d = new Date();
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+  }, [monthFilter]);
+  const prevMonthKey = useMemo(() => {
+    const [y, m] = currentMonthKey.split("-").map(Number);
+    const d = new Date(y, (m - 1) - 1, 1);
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+  }, [currentMonthKey]);
+
+  // Mesma lógica do `filtered`, porém para o mês anterior (ignora monthFilter atual).
+  const filteredPrev = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    const mapped = rows.map((r) => {
+      const cad = cadastroByNome.get((r.embaixador || "").trim().toLowerCase());
+      const bonus = r.dataVenda ? calcBonificacao(r.valorTotal, cad) : null;
+      const status: "ativo" | "inativo" | "nao_cadastrado" = !cad ? "nao_cadastrado" : (cad.status === "inativo" ? "inativo" : "ativo");
+      return { ...r, bonificacaoVenda: bonus, embaixadorStatus: status, campanhaCadastrada: cad?.campanha ?? null };
+    });
+    return mapped.filter((r) => {
+      if (!r.dataVenda || r.dataVenda.slice(0, 7) !== prevMonthKey) return false;
+      if (embFilter.size > 0 && !embFilter.has(r.embaixador)) return false;
+      if (campFilter.size > 0 && !campFilter.has(r.campanha)) return false;
+      if (q && ![r.campanha, r.embaixador, r.vendedor, r.empresa].some((f) => f?.toLowerCase().includes(q))) return false;
+      if (filtInd.embStatus.size > 0 && !filtInd.embStatus.has(r.embaixadorStatus)) return false;
+      return true;
+    });
+  }, [rows, query, prevMonthKey, embFilter, campFilter, cadastroByNome, filtInd]);
+
+  const totalsPrev = useMemo(() => {
+    const mrr = filteredPrev.reduce((s, r) => s + (r.mrr || 0), 0);
+    const total = filteredPrev.reduce((s, r) => s + (r.valorTotal || 0), 0);
+    const bonificacao = filteredPrev.reduce((s, r) => s + (r.bonificacaoVenda || 0), 0);
+    return { mrr, total, bonificacao, count: filteredPrev.length };
+  }, [filteredPrev]);
+
   const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize));
   useEffect(() => { setPage(1); }, [query, monthFilter, embFilter, campFilter, pageSize, filtInd]);
   useEffect(() => { if (page > totalPages) setPage(totalPages); }, [totalPages, page]);
@@ -803,6 +842,81 @@ export default function Parceiros() {
       m.set(key, (m.get(key) ?? 0) + (r.recorrenciaValor || 0));
     });
     return m;
+  }, [recorrencias]);
+
+  // ===== Agregados do período atual (conversões) =====
+  const convAgg = useMemo(() => {
+    const bonificacaoTotal = conversoes.reduce((s, c) => s + (c.bonificacaoTotal || 0), 0);
+    const recorrenciaTotal = Array.from(recorrenciaPorEmbaixador.values()).reduce((s, v) => s + v, 0);
+    // Top campanhas
+    const byCamp = new Map<string, { mrr: number; valor: number }>();
+    filtered.forEach((r) => {
+      const cad = cadastroByNome.get((r.embaixador || "").trim().toLowerCase());
+      const camp = cad?.campanha || r.campanha || "—";
+      const cur = byCamp.get(camp) ?? { mrr: 0, valor: 0 };
+      cur.mrr += r.mrr || 0;
+      cur.valor += r.valorTotal || 0;
+      byCamp.set(camp, cur);
+    });
+    let topMrrCamp: { nome: string; valor: number } | null = null;
+    let topValorCamp: { nome: string; valor: number } | null = null;
+    byCamp.forEach((v, nome) => {
+      if (!topMrrCamp || v.mrr > topMrrCamp.valor) topMrrCamp = { nome, valor: v.mrr };
+      if (!topValorCamp || v.valor > topValorCamp.valor) topValorCamp = { nome, valor: v.valor };
+    });
+    // Top 3 embaixadores por Bonificação + Recorrência
+    const top3 = conversoes
+      .map((c) => ({ nome: c.nome, soma: (c.bonificacaoTotal || 0) + (recorrenciaPorEmbaixador.get(c.nome.toLowerCase()) ?? 0) }))
+      .filter((x) => x.soma > 0)
+      .sort((a, b) => b.soma - a.soma)
+      .slice(0, 3);
+    return { bonificacaoTotal, recorrenciaTotal, soma: bonificacaoTotal + recorrenciaTotal, topMrrCamp, topValorCamp, top3 };
+  }, [conversoes, recorrenciaPorEmbaixador, filtered, cadastroByNome]);
+
+  // ===== Conversões do período anterior =====
+  const conversoesPrev = useMemo(() => {
+    const m = new Map<string, { bonificacaoTotal: number }>();
+    filteredPrev.forEach((r) => {
+      const key = (r.embaixador || "—").trim().toLowerCase();
+      const cur = m.get(key) ?? { bonificacaoTotal: 0 };
+      cur.bonificacaoTotal += r.bonificacaoVenda || 0;
+      m.set(key, cur);
+    });
+    const bonificacaoTotal = Array.from(m.values()).reduce((s, x) => s + x.bonificacaoTotal, 0);
+    return { bonificacaoTotal };
+  }, [filteredPrev]);
+
+  // ===== Recorrências do período anterior (snapshot 1 mês antes) =====
+  // Considera recRows ativos cuja indicação ocorreu até 2 meses atrás (snapshot anterior).
+  const recPrev = useMemo(() => {
+    const base = recRows
+      .map((r) => {
+        const cad = cadastroByNome.get((r.embaixador || "").trim().toLowerCase());
+        const calc = calcRecorrencia(r.mrr || 0, cad);
+        return { ...r, recorrenciaValor: calc != null ? calc : (r.recorrenciaValor || 0) };
+      })
+      .filter((r) => {
+        if (!r.ativo) return false;
+        if (!r.dataIndicacao) return false;
+        const ind = new Date(r.dataIndicacao);
+        const cutoff = new Date();
+        cutoff.setMonth(cutoff.getMonth() - 2);
+        return !isNaN(ind.getTime()) && ind <= cutoff;
+      });
+    const count = base.length;
+    const recValor = base.reduce((s, r) => s + (r.recorrenciaValor || 0), 0);
+    const mrrAtivo = base.reduce((s, r) => s + (r.mrr || 0), 0);
+    return { count, recValor, mrrAtivo };
+  }, [recRows, cadastroByNome]);
+
+  // ===== Apuração Recorrências (período atual) =====
+  const recAgg = useMemo(() => {
+    const ativos = recorrencias.filter((r) => r.ativo);
+    const count = ativos.length;
+    const mrrAtivo = ativos.reduce((s, r) => s + (r.mrr || 0), 0);
+    const recValor = ativos.reduce((s, r) => s + (r.recorrenciaValor || 0), 0);
+    const roi = recValor > 0 ? mrrAtivo / recValor : null;
+    return { count, mrrAtivo, recValor, roi };
   }, [recorrencias]);
 
   // Embaixadores que possuem algum registro com histórico (indicações ou recorrências)
@@ -962,13 +1076,11 @@ export default function Parceiros() {
         </div>
       </div>
 
-      {/* KPIs */}
-      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-5">
-        <KpiCard label="Indicações" value={totals.count.toString()} />
-        <KpiCard label="MRR somado" value={BRL(totals.mrr)} />
-        <KpiCard label="Valor total" value={BRL(totals.total)} />
-        <KpiCard label="Bonificação total" value={BRL(totals.bonificacao)} />
-        <KpiCard label="Recorrência total" value={BRL(recTotal)} />
+      {/* KPIs — Lista de Indicações */}
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+        <KpiDeltaCard label="Indicações" current={totals.count} previous={totalsPrev.count} format="number" />
+        <KpiDeltaCard label="MRR somado" current={totals.mrr} previous={totalsPrev.mrr} />
+        <KpiDeltaCard label="Valor total" current={totals.total} previous={totalsPrev.total} />
       </div>
 
       {/* Tabela */}
@@ -1211,6 +1323,28 @@ export default function Parceiros() {
       </SectionCard>
 
 
+      {/* KPIs — Conversões por embaixador */}
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
+        <KpiDeltaCard label="Bonificação total" current={convAgg.bonificacaoTotal} previous={conversoesPrev.bonificacaoTotal} />
+        <KpiDeltaCard label="Recorrência total" current={convAgg.recorrenciaTotal} previous={recPrev.recValor} />
+        <KpiDeltaCard label="Bonificação + Recorrência" current={convAgg.soma} previous={conversoesPrev.bonificacaoTotal + recPrev.recValor} />
+        <KpiInfoCard
+          label="Campanha · maior MRR"
+          value={(convAgg.topMrrCamp as any)?.nome ?? "—"}
+          sub={convAgg.topMrrCamp ? BRL((convAgg.topMrrCamp as any).valor) : undefined}
+        />
+        <KpiInfoCard
+          label="Campanha · maior valor"
+          value={(convAgg.topValorCamp as any)?.nome ?? "—"}
+          sub={convAgg.topValorCamp ? BRL((convAgg.topValorCamp as any).valor) : undefined}
+        />
+        <KpiInfoCard
+          label="Top 3 Embaixadores"
+          value={convAgg.top3.length > 0 ? convAgg.top3.map((t, i) => `${i + 1}. ${t.nome}`).join(" · ") : "—"}
+          sub={convAgg.top3.length > 0 ? convAgg.top3.map((t) => BRL(t.soma)).join(" · ") : undefined}
+        />
+      </div>
+
       {/* Conversões por embaixador */}
       <SectionCard
         title="Conversões por embaixador"
@@ -1347,6 +1481,17 @@ export default function Parceiros() {
           />
         )}
       </SectionCard>
+
+      {/* KPIs — Apuração Recorrências */}
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+        <KpiDeltaCard label="Recorrências ativas" current={recAgg.count} previous={recPrev.count} format="number" />
+        <KpiDeltaCard label="MRR ativo (recorrências)" current={recAgg.mrrAtivo} previous={recPrev.mrrAtivo} />
+        <KpiInfoCard
+          label="ROI · MRR ativo vs Recorrência"
+          value={recAgg.roi != null ? `${recAgg.roi.toFixed(2)}x` : "—"}
+          sub={`MRR ${BRL(recAgg.mrrAtivo)} ÷ Recorrência ${BRL(recAgg.recValor)}`}
+        />
+      </div>
 
       {/* Apuração Recorrências */}
       <SectionCard
@@ -1751,11 +1896,55 @@ function Pagination({
 
 
 
-function KpiCard({ label, value }: { label: string; value: string }) {
+function KpiCard({ label, value, prev, format = "number", hint }: { label: string; value: string; prev?: number | null; format?: "number" | "currency"; hint?: string }) {
+  // Calcula delta apenas quando prev é fornecido e for um número finito.
+  let delta: { pct: number | null; up: boolean; flat: boolean; absPrev: number } | null = null;
+  if (typeof prev === "number" && isFinite(prev)) {
+    // Reconstrói o valor numérico a partir do string formatado é complicado; deixe o caller informar via data-attr? Em vez disso, compare contra prev usando o valor exibido convertido.
+    // Como `value` já está formatado, usamos um truque: o caller deve passar um número via prop "prevDisplay" se quiser delta. Aqui apenas exibimos "vs período anterior" textual.
+    delta = { pct: null, up: false, flat: true, absPrev: prev };
+  }
   return (
     <div className="card-surface px-4 py-3">
       <div className="text-[11px] uppercase tracking-wide text-muted-foreground">{label}</div>
       <div className="mt-1 text-lg font-semibold tabular-nums text-foreground">{value}</div>
+      {hint && <div className="mt-0.5 text-[10.5px] text-muted-foreground">{hint}</div>}
+    </div>
+  );
+}
+
+function KpiDeltaCard({ label, current, previous, format = "currency", invertColor = false }: { label: string; current: number; previous: number; format?: "currency" | "number"; invertColor?: boolean }) {
+  const diff = current - previous;
+  const pct = previous !== 0 ? (diff / Math.abs(previous)) * 100 : (current !== 0 ? 100 : 0);
+  const up = diff > 0;
+  const flat = diff === 0;
+  const positive = invertColor ? !up : up;
+  const tone = flat
+    ? "text-muted-foreground"
+    : positive
+      ? "text-emerald-600 dark:text-emerald-400"
+      : "text-rose-600 dark:text-rose-400";
+  const arrow = flat ? "→" : up ? "▲" : "▼";
+  const fmt = (n: number) => format === "currency" ? BRL(n) : new Intl.NumberFormat("pt-BR").format(n);
+  return (
+    <div className="card-surface px-4 py-3">
+      <div className="text-[11px] uppercase tracking-wide text-muted-foreground">{label}</div>
+      <div className="mt-1 text-lg font-semibold tabular-nums text-foreground">{fmt(current)}</div>
+      <div className={cn("mt-0.5 text-[10.5px] font-medium tabular-nums flex items-center gap-1", tone)}>
+        <span>{arrow}</span>
+        <span>{flat ? "estável" : `${pct >= 0 ? "+" : ""}${pct.toFixed(1)}%`}</span>
+        <span className="text-muted-foreground font-normal">vs anterior ({fmt(previous)})</span>
+      </div>
+    </div>
+  );
+}
+
+function KpiInfoCard({ label, value, sub }: { label: string; value: string; sub?: string }) {
+  return (
+    <div className="card-surface px-4 py-3">
+      <div className="text-[11px] uppercase tracking-wide text-muted-foreground">{label}</div>
+      <div className="mt-1 text-lg font-semibold tabular-nums text-foreground truncate" title={value}>{value}</div>
+      {sub && <div className="mt-0.5 text-[10.5px] text-muted-foreground truncate" title={sub}>{sub}</div>}
     </div>
   );
 }

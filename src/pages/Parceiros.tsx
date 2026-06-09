@@ -1326,9 +1326,10 @@ export default function Parceiros() {
 
       {/* KPIs — Conversões por embaixador */}
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
-        <KpiDeltaCard label="Bonificação total" current={convAgg.bonificacaoTotal} previous={conversoesPrev.bonificacaoTotal} />
-        <KpiDeltaCard label="Recorrência total" current={convAgg.recorrenciaTotal} previous={recPrev.recValor} />
-        <KpiDeltaCard label="Bonificação + Recorrência" current={convAgg.soma} previous={conversoesPrev.bonificacaoTotal + recPrev.recValor} />
+        <KpiDeltaCard label="Bonificação total" current={convAgg.bonificacaoTotal} previous={monthFilter ? conversoesPrev.bonificacaoTotal : undefined} />
+        <KpiDeltaCard label="Recorrência total" current={convAgg.recorrenciaTotal} previous={monthFilter ? recPrev.recValor : undefined} />
+        <KpiDeltaCard label="Bonificação + Recorrência" current={convAgg.soma} previous={monthFilter ? conversoesPrev.bonificacaoTotal + recPrev.recValor : undefined} />
+
         <KpiInfoCard
           label="Campanha · maior MRR"
           value={(convAgg.topMrrCamp as any)?.nome ?? "—"}

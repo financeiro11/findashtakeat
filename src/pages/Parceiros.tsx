@@ -1022,85 +1022,24 @@ export default function Parceiros() {
 
   return (
     <div className="flex flex-col gap-4 p-4 lg:p-5">
-      {/* Cabeçalho */}
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
-        <div className="min-w-0">
-          <h1 className="text-xl font-semibold tracking-tight text-foreground">Parceiros</h1>
-          <p className="mt-1 text-[12.5px] text-muted-foreground">
-            Indicações de embaixadores, vendas atribuídas e integrações com HubSpot e Asaas.
-          </p>
-        </div>
-        <div className="flex flex-wrap items-center gap-2">
-          <input
-            ref={fileInputRef}
-            type="file"
-            accept=".xlsx,.xls,.csv"
-            hidden
-            onChange={handleFile}
-          />
-          <Button variant="outline" size="sm" className="h-8 gap-1.5 text-[12.5px]" onClick={handleRefresh} disabled={refreshing}>
-            <RefreshCw className={cn("h-3.5 w-3.5", refreshing && "animate-spin")} /> Atualizar
-          </Button>
-          <GestaoParceirosDialog />
-          {selected.size > 0 && (
-            <Button variant="destructive" size="sm" className="h-8 gap-1.5 text-[12.5px]" onClick={handleDeleteSelected} disabled={deleting}>
-              <Trash2 className="h-3.5 w-3.5" /> Apagar ({selected.size})
-            </Button>
-          )}
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <Button variant="outline" size="sm" className="h-8 gap-1.5 text-[12.5px]">
-                <Upload className="h-3.5 w-3.5" /> Importar planilha
-              </Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end">
-              <DropdownMenuItem onClick={() => handleImportClick("indicacoes")}>Lista de Indicações</DropdownMenuItem>
-              <DropdownMenuItem onClick={() => handleImportClick("recorrencias")}>Apuração Recorrências</DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <Button variant="outline" size="sm" className="h-8 gap-1.5 text-[12.5px]">
-                <Download className="h-3.5 w-3.5" /> Exportar
-              </Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end">
-              <DropdownMenuItem onClick={() => handleExport("indicacoes")}>Lista de Indicações</DropdownMenuItem>
-              <DropdownMenuItem onClick={() => handleExport("conversoes")}>Conversões por embaixador</DropdownMenuItem>
-              <DropdownMenuItem onClick={() => handleExport("recorrencias")}>Apuração Recorrências</DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
-          <Button size="sm" className="h-8 gap-1.5 text-[12.5px]">
-            <Plus className="h-3.5 w-3.5" /> Nova indicação
-          </Button>
-        </div>
-      </div>
-
-      {/* KPIs — Lista de Indicações */}
-      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
-        <KpiDeltaCard label="Indicações" current={totals.count} previous={totalsPrev.count} format="number" />
-        <KpiDeltaCard label="MRR somado" current={totals.mrr} previous={totalsPrev.mrr} />
-        <KpiDeltaCard label="Valor total" current={totals.total} previous={totalsPrev.total} />
-      </div>
-
-      {/* Tabela */}
-      <SectionCard
-        title="Lista de Indicações"
-        subtitle="Visualização consolidada por campanha"
-        padded={false}
-        stickyHeader
-        actions={
-          <div className="flex items-center gap-1.5">
-            <div className="relative">
-              <Search className="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
-              <Input
-                value={query}
-                onChange={(e) => setQuery(e.target.value)}
-                placeholder="Buscar campanha, empresa, vendedor…"
-                className="h-8 w-56 pl-7 text-[12.5px]"
-              />
-            </div>
-            <div className={cn("relative", !monthFilter && "month-filter-alert")}> 
+      {/* Cabeçalho fixo */}
+      <div className="sticky top-0 z-20 -mx-4 lg:-mx-5 border-b border-border bg-background/95 px-4 py-3 backdrop-blur supports-[backdrop-filter]:bg-background/80 lg:px-5">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+          <div className="min-w-0">
+            <h1 className="text-xl font-semibold tracking-tight text-foreground">Parceiros</h1>
+            <p className="mt-1 text-[12.5px] text-muted-foreground">
+              Indicações de embaixadores, vendas atribuídas e integrações com HubSpot e Asaas.
+            </p>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept=".xlsx,.xls,.csv"
+              hidden
+              onChange={handleFile}
+            />
+            <div className={cn("relative", !monthFilter && "month-filter-alert")}>
               <select
                 value={monthFilter}
                 onChange={(e) => setMonthFilter(e.target.value)}
@@ -1120,12 +1059,77 @@ export default function Parceiros() {
               {!monthFilter && (
                 <span
                   role="alert"
-                  className="pointer-events-none absolute left-1/2 top-[calc(100%+6px)] z-20 -translate-x-1/2 whitespace-nowrap rounded-md bg-rose-600 px-2 py-1 text-[11px] font-medium text-white shadow-md animate-bounce"
+                  className="pointer-events-none absolute left-1/2 top-[calc(100%+6px)] z-30 -translate-x-1/2 whitespace-nowrap rounded-md bg-rose-600 px-2 py-1 text-[11px] font-medium text-white shadow-md animate-bounce"
                 >
                   <span className="absolute -top-1 left-1/2 h-2 w-2 -translate-x-1/2 rotate-45 bg-rose-600" />
                   Lembre de filtrar o mês correto para apuração
                 </span>
               )}
+            </div>
+            <Button variant="outline" size="sm" className="h-8 gap-1.5 text-[12.5px]" onClick={handleRefresh} disabled={refreshing}>
+              <RefreshCw className={cn("h-3.5 w-3.5", refreshing && "animate-spin")} /> Atualizar
+            </Button>
+            <GestaoParceirosDialog />
+            {selected.size > 0 && (
+              <Button variant="destructive" size="sm" className="h-8 gap-1.5 text-[12.5px]" onClick={handleDeleteSelected} disabled={deleting}>
+                <Trash2 className="h-3.5 w-3.5" /> Apagar ({selected.size})
+              </Button>
+            )}
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button variant="outline" size="sm" className="h-8 gap-1.5 text-[12.5px]">
+                  <Upload className="h-3.5 w-3.5" /> Importar planilha
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end">
+                <DropdownMenuItem onClick={() => handleImportClick("indicacoes")}>Lista de Indicações</DropdownMenuItem>
+                <DropdownMenuItem onClick={() => handleImportClick("recorrencias")}>Apuração Recorrências</DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button variant="outline" size="sm" className="h-8 gap-1.5 text-[12.5px]">
+                  <Download className="h-3.5 w-3.5" /> Exportar
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end">
+                <DropdownMenuItem onClick={() => handleExport("indicacoes")}>Lista de Indicações</DropdownMenuItem>
+                <DropdownMenuItem onClick={() => handleExport("conversoes")}>Conversões por embaixador</DropdownMenuItem>
+                <DropdownMenuItem onClick={() => handleExport("recorrencias")}>Apuração Recorrências</DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+            <Button size="sm" className="h-8 gap-1.5 text-[12.5px]">
+              <Plus className="h-3.5 w-3.5" /> Nova indicação
+            </Button>
+          </div>
+        </div>
+      </div>
+
+
+      {/* KPIs — Lista de Indicações */}
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+        <KpiDeltaCard label="Indicações" current={totals.count} previous={monthFilter ? totalsPrev.count : undefined} format="number" />
+        <KpiDeltaCard label="MRR somado" current={totals.mrr} previous={monthFilter ? totalsPrev.mrr : undefined} />
+        <KpiDeltaCard label="Valor total" current={totals.total} previous={monthFilter ? totalsPrev.total : undefined} />
+      </div>
+
+
+      {/* Tabela */}
+      <SectionCard
+        title="Lista de Indicações"
+        subtitle="Visualização consolidada por campanha"
+        padded={false}
+        stickyHeader
+        actions={
+          <div className="flex items-center gap-1.5">
+            <div className="relative">
+              <Search className="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+              <Input
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                placeholder="Buscar campanha, empresa, vendedor…"
+                className="h-8 w-56 pl-7 text-[12.5px]"
+              />
             </div>
             <MultiFilter
               label="Embaixador"
@@ -1153,6 +1157,7 @@ export default function Parceiros() {
             />
           </div>
         }
+
       >
         <div className="overflow-x-auto">
           <Table>
@@ -1325,9 +1330,10 @@ export default function Parceiros() {
 
       {/* KPIs — Conversões por embaixador */}
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
-        <KpiDeltaCard label="Bonificação total" current={convAgg.bonificacaoTotal} previous={conversoesPrev.bonificacaoTotal} />
-        <KpiDeltaCard label="Recorrência total" current={convAgg.recorrenciaTotal} previous={recPrev.recValor} />
-        <KpiDeltaCard label="Bonificação + Recorrência" current={convAgg.soma} previous={conversoesPrev.bonificacaoTotal + recPrev.recValor} />
+        <KpiDeltaCard label="Bonificação total" current={convAgg.bonificacaoTotal} previous={monthFilter ? conversoesPrev.bonificacaoTotal : undefined} />
+        <KpiDeltaCard label="Recorrência total" current={convAgg.recorrenciaTotal} previous={monthFilter ? recPrev.recValor : undefined} />
+        <KpiDeltaCard label="Bonificação + Recorrência" current={convAgg.soma} previous={monthFilter ? conversoesPrev.bonificacaoTotal + recPrev.recValor : undefined} />
+
         <KpiInfoCard
           label="Campanha · maior MRR"
           value={(convAgg.topMrrCamp as any)?.nome ?? "—"}
@@ -1352,15 +1358,27 @@ export default function Parceiros() {
         padded={false}
         stickyHeader
         actions={
-          <FiltrosTabs
-            filtInd={filtInd} setFiltInd={setFiltInd}
-            filtConv={filtConv} setFiltConv={setFiltConv}
-            filtRec={filtRec} setFiltRec={setFiltRec}
-            tierOptions={tierOptions} campanhaCadastroOptions={campanhaCadastroOptions}
-            totalCount={filtTotalCount}
-            indCount={filtIndCount} convCount={filtConvCount} recCount={filtRecCount}
-          />
+          <div className="flex items-center gap-1.5">
+            <div className="relative">
+              <Search className="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+              <Input
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                placeholder="Buscar embaixador, campanha…"
+                className="h-8 w-56 pl-7 text-[12.5px]"
+              />
+            </div>
+            <FiltrosTabs
+              filtInd={filtInd} setFiltInd={setFiltInd}
+              filtConv={filtConv} setFiltConv={setFiltConv}
+              filtRec={filtRec} setFiltRec={setFiltRec}
+              tierOptions={tierOptions} campanhaCadastroOptions={campanhaCadastroOptions}
+              totalCount={filtTotalCount}
+              indCount={filtIndCount} convCount={filtConvCount} recCount={filtRecCount}
+            />
+          </div>
         }
+
       >
         <div className="overflow-x-auto">
           <Table>
@@ -1484,8 +1502,9 @@ export default function Parceiros() {
 
       {/* KPIs — Apuração Recorrências */}
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
-        <KpiDeltaCard label="Recorrências ativas" current={recAgg.count} previous={recPrev.count} format="number" />
-        <KpiDeltaCard label="MRR ativo (recorrências)" current={recAgg.mrrAtivo} previous={recPrev.mrrAtivo} />
+        <KpiDeltaCard label="Recorrências ativas" current={recAgg.count} previous={monthFilter ? recPrev.count : undefined} format="number" />
+        <KpiDeltaCard label="MRR ativo (recorrências)" current={recAgg.mrrAtivo} previous={monthFilter ? recPrev.mrrAtivo : undefined} />
+
         <KpiInfoCard
           label="ROI · MRR ativo vs Recorrência"
           value={recAgg.roi != null ? `${recAgg.roi.toFixed(2)}x` : "—"}
@@ -1500,15 +1519,27 @@ export default function Parceiros() {
         padded={false}
         stickyHeader
         actions={
-          <FiltrosTabs
-            filtInd={filtInd} setFiltInd={setFiltInd}
-            filtConv={filtConv} setFiltConv={setFiltConv}
-            filtRec={filtRec} setFiltRec={setFiltRec}
-            tierOptions={tierOptions} campanhaCadastroOptions={campanhaCadastroOptions}
-            totalCount={filtTotalCount}
-            indCount={filtIndCount} convCount={filtConvCount} recCount={filtRecCount}
-          />
+          <div className="flex items-center gap-1.5">
+            <div className="relative">
+              <Search className="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+              <Input
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                placeholder="Buscar embaixador, empresa…"
+                className="h-8 w-56 pl-7 text-[12.5px]"
+              />
+            </div>
+            <FiltrosTabs
+              filtInd={filtInd} setFiltInd={setFiltInd}
+              filtConv={filtConv} setFiltConv={setFiltConv}
+              filtRec={filtRec} setFiltRec={setFiltRec}
+              tierOptions={tierOptions} campanhaCadastroOptions={campanhaCadastroOptions}
+              totalCount={filtTotalCount}
+              indCount={filtIndCount} convCount={filtConvCount} recCount={filtRecCount}
+            />
+          </div>
         }
+
       >
         <div className="overflow-x-auto">
           <Table>
@@ -1913,31 +1944,37 @@ function KpiCard({ label, value, prev, format = "number", hint }: { label: strin
   );
 }
 
-function KpiDeltaCard({ label, current, previous, format = "currency", invertColor = false }: { label: string; current: number; previous: number; format?: "currency" | "number"; invertColor?: boolean }) {
-  const diff = current - previous;
-  const pct = previous !== 0 ? (diff / Math.abs(previous)) * 100 : (current !== 0 ? 100 : 0);
-  const up = diff > 0;
-  const flat = diff === 0;
-  const positive = invertColor ? !up : up;
-  const tone = flat
-    ? "text-muted-foreground"
-    : positive
-      ? "text-emerald-600 dark:text-emerald-400"
-      : "text-rose-600 dark:text-rose-400";
-  const arrow = flat ? "→" : up ? "▲" : "▼";
+function KpiDeltaCard({ label, current, previous, format = "currency", invertColor = false }: { label: string; current: number; previous?: number | null; format?: "currency" | "number"; invertColor?: boolean }) {
   const fmt = (n: number) => format === "currency" ? BRL(n) : new Intl.NumberFormat("pt-BR").format(n);
+  const hasPrev = typeof previous === "number" && isFinite(previous);
+  let tone = "text-muted-foreground";
+  let arrow = "→";
+  let label2: React.ReactNode = null;
+  if (hasPrev) {
+    const diff = current - (previous as number);
+    const pct = previous !== 0 ? (diff / Math.abs(previous as number)) * 100 : (current !== 0 ? 100 : 0);
+    const up = diff > 0;
+    const flat = diff === 0;
+    const positive = invertColor ? !up : up;
+    tone = flat ? "text-muted-foreground" : positive ? "text-emerald-600 dark:text-emerald-400" : "text-rose-600 dark:text-rose-400";
+    arrow = flat ? "→" : up ? "▲" : "▼";
+    label2 = (
+      <div className={cn("mt-0.5 text-[10.5px] font-medium tabular-nums flex items-center gap-1", tone)}>
+        <span>{arrow}</span>
+        <span>{diff === 0 ? "estável" : `${pct >= 0 ? "+" : ""}${pct.toFixed(1)}%`}</span>
+        <span className="text-muted-foreground font-normal">vs anterior ({fmt(previous as number)})</span>
+      </div>
+    );
+  }
   return (
     <div className="card-surface px-4 py-3">
       <div className="text-[11px] uppercase tracking-wide text-muted-foreground">{label}</div>
       <div className="mt-1 text-lg font-semibold tabular-nums text-foreground">{fmt(current)}</div>
-      <div className={cn("mt-0.5 text-[10.5px] font-medium tabular-nums flex items-center gap-1", tone)}>
-        <span>{arrow}</span>
-        <span>{flat ? "estável" : `${pct >= 0 ? "+" : ""}${pct.toFixed(1)}%`}</span>
-        <span className="text-muted-foreground font-normal">vs anterior ({fmt(previous)})</span>
-      </div>
+      {label2}
     </div>
   );
 }
+
 
 function KpiInfoCard({ label, value, sub }: { label: string; value: string; sub?: string }) {
   return (

@@ -1865,11 +1865,55 @@ function Pagination({
 
 
 
-function KpiCard({ label, value }: { label: string; value: string }) {
+function KpiCard({ label, value, prev, format = "number", hint }: { label: string; value: string; prev?: number | null; format?: "number" | "currency"; hint?: string }) {
+  // Calcula delta apenas quando prev é fornecido e for um número finito.
+  let delta: { pct: number | null; up: boolean; flat: boolean; absPrev: number } | null = null;
+  if (typeof prev === "number" && isFinite(prev)) {
+    // Reconstrói o valor numérico a partir do string formatado é complicado; deixe o caller informar via data-attr? Em vez disso, compare contra prev usando o valor exibido convertido.
+    // Como `value` já está formatado, usamos um truque: o caller deve passar um número via prop "prevDisplay" se quiser delta. Aqui apenas exibimos "vs período anterior" textual.
+    delta = { pct: null, up: false, flat: true, absPrev: prev };
+  }
   return (
     <div className="card-surface px-4 py-3">
       <div className="text-[11px] uppercase tracking-wide text-muted-foreground">{label}</div>
       <div className="mt-1 text-lg font-semibold tabular-nums text-foreground">{value}</div>
+      {hint && <div className="mt-0.5 text-[10.5px] text-muted-foreground">{hint}</div>}
+    </div>
+  );
+}
+
+function KpiDeltaCard({ label, current, previous, format = "currency", invertColor = false }: { label: string; current: number; previous: number; format?: "currency" | "number"; invertColor?: boolean }) {
+  const diff = current - previous;
+  const pct = previous !== 0 ? (diff / Math.abs(previous)) * 100 : (current !== 0 ? 100 : 0);
+  const up = diff > 0;
+  const flat = diff === 0;
+  const positive = invertColor ? !up : up;
+  const tone = flat
+    ? "text-muted-foreground"
+    : positive
+      ? "text-emerald-600 dark:text-emerald-400"
+      : "text-rose-600 dark:text-rose-400";
+  const arrow = flat ? "→" : up ? "▲" : "▼";
+  const fmt = (n: number) => format === "currency" ? BRL(n) : new Intl.NumberFormat("pt-BR").format(n);
+  return (
+    <div className="card-surface px-4 py-3">
+      <div className="text-[11px] uppercase tracking-wide text-muted-foreground">{label}</div>
+      <div className="mt-1 text-lg font-semibold tabular-nums text-foreground">{fmt(current)}</div>
+      <div className={cn("mt-0.5 text-[10.5px] font-medium tabular-nums flex items-center gap-1", tone)}>
+        <span>{arrow}</span>
+        <span>{flat ? "estável" : `${pct >= 0 ? "+" : ""}${pct.toFixed(1)}%`}</span>
+        <span className="text-muted-foreground font-normal">vs anterior ({fmt(previous)})</span>
+      </div>
+    </div>
+  );
+}
+
+function KpiInfoCard({ label, value, sub }: { label: string; value: string; sub?: string }) {
+  return (
+    <div className="card-surface px-4 py-3">
+      <div className="text-[11px] uppercase tracking-wide text-muted-foreground">{label}</div>
+      <div className="mt-1 text-lg font-semibold tabular-nums text-foreground truncate" title={value}>{value}</div>
+      {sub && <div className="mt-0.5 text-[10.5px] text-muted-foreground truncate" title={sub}>{sub}</div>}
     </div>
   );
 }

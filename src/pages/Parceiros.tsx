@@ -1221,6 +1221,7 @@ export default function Parceiros() {
               <TableRow>
                 <SortableTh sortKey="embaixador" sort={sortConv} setSort={setSortConv}>Embaixador</SortableTh>
                 <SortableTh sortKey="tier" sort={sortConv} setSort={setSortConv}>Tier</SortableTh>
+                <SortableTh sortKey="campanha" sort={sortConv} setSort={setSortConv}>Campanha</SortableTh>
                 <SortableTh sortKey="bonificacao" sort={sortConv} setSort={setSortConv}>Bonificação</SortableTh>
                 <SortableTh sortKey="recorrencia" sort={sortConv} setSort={setSortConv}>Recorrência</SortableTh>
                 <SortableTh sortKey="indicacoes" sort={sortConv} setSort={setSortConv} className="text-right" align="right">Indicações</SortableTh>
@@ -1235,7 +1236,7 @@ export default function Parceiros() {
             <TableBody>
               {conversoesFiltradas.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={11} className="py-10 text-center text-[12.5px] text-muted-foreground">
+                  <TableCell colSpan={12} className="py-10 text-center text-[12.5px] text-muted-foreground">
                     Sem indicações no período.
                   </TableCell>
                 </TableRow>

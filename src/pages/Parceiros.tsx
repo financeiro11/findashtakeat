@@ -844,6 +844,81 @@ export default function Parceiros() {
     return m;
   }, [recorrencias]);
 
+  // ===== Agregados do período atual (conversões) =====
+  const convAgg = useMemo(() => {
+    const bonificacaoTotal = conversoes.reduce((s, c) => s + (c.bonificacaoTotal || 0), 0);
+    const recorrenciaTotal = Array.from(recorrenciaPorEmbaixador.values()).reduce((s, v) => s + v, 0);
+    // Top campanhas
+    const byCamp = new Map<string, { mrr: number; valor: number }>();
+    filtered.forEach((r) => {
+      const cad = cadastroByNome.get((r.embaixador || "").trim().toLowerCase());
+      const camp = cad?.campanha || r.campanha || "—";
+      const cur = byCamp.get(camp) ?? { mrr: 0, valor: 0 };
+      cur.mrr += r.mrr || 0;
+      cur.valor += r.valorTotal || 0;
+      byCamp.set(camp, cur);
+    });
+    let topMrrCamp: { nome: string; valor: number } | null = null;
+    let topValorCamp: { nome: string; valor: number } | null = null;
+    byCamp.forEach((v, nome) => {
+      if (!topMrrCamp || v.mrr > topMrrCamp.valor) topMrrCamp = { nome, valor: v.mrr };
+      if (!topValorCamp || v.valor > topValorCamp.valor) topValorCamp = { nome, valor: v.valor };
+    });
+    // Top 3 embaixadores por Bonificação + Recorrência
+    const top3 = conversoes
+      .map((c) => ({ nome: c.nome, soma: (c.bonificacaoTotal || 0) + (recorrenciaPorEmbaixador.get(c.nome.toLowerCase()) ?? 0) }))
+      .filter((x) => x.soma > 0)
+      .sort((a, b) => b.soma - a.soma)
+      .slice(0, 3);
+    return { bonificacaoTotal, recorrenciaTotal, soma: bonificacaoTotal + recorrenciaTotal, topMrrCamp, topValorCamp, top3 };
+  }, [conversoes, recorrenciaPorEmbaixador, filtered, cadastroByNome]);
+
+  // ===== Conversões do período anterior =====
+  const conversoesPrev = useMemo(() => {
+    const m = new Map<string, { bonificacaoTotal: number }>();
+    filteredPrev.forEach((r) => {
+      const key = (r.embaixador || "—").trim().toLowerCase();
+      const cur = m.get(key) ?? { bonificacaoTotal: 0 };
+      cur.bonificacaoTotal += r.bonificacaoVenda || 0;
+      m.set(key, cur);
+    });
+    const bonificacaoTotal = Array.from(m.values()).reduce((s, x) => s + x.bonificacaoTotal, 0);
+    return { bonificacaoTotal };
+  }, [filteredPrev]);
+
+  // ===== Recorrências do período anterior (snapshot 1 mês antes) =====
+  // Considera recRows ativos cuja indicação ocorreu até 2 meses atrás (snapshot anterior).
+  const recPrev = useMemo(() => {
+    const base = recRows
+      .map((r) => {
+        const cad = cadastroByNome.get((r.embaixador || "").trim().toLowerCase());
+        const calc = calcRecorrencia(r.mrr || 0, cad);
+        return { ...r, recorrenciaValor: calc != null ? calc : (r.recorrenciaValor || 0) };
+      })
+      .filter((r) => {
+        if (!r.ativo) return false;
+        if (!r.dataIndicacao) return false;
+        const ind = new Date(r.dataIndicacao);
+        const cutoff = new Date();
+        cutoff.setMonth(cutoff.getMonth() - 2);
+        return !isNaN(ind.getTime()) && ind <= cutoff;
+      });
+    const count = base.length;
+    const recValor = base.reduce((s, r) => s + (r.recorrenciaValor || 0), 0);
+    const mrrAtivo = base.reduce((s, r) => s + (r.mrr || 0), 0);
+    return { count, recValor, mrrAtivo };
+  }, [recRows, cadastroByNome]);
+
+  // ===== Apuração Recorrências (período atual) =====
+  const recAgg = useMemo(() => {
+    const ativos = recorrencias.filter((r) => r.ativo);
+    const count = ativos.length;
+    const mrrAtivo = ativos.reduce((s, r) => s + (r.mrr || 0), 0);
+    const recValor = ativos.reduce((s, r) => s + (r.recorrenciaValor || 0), 0);
+    const roi = recValor > 0 ? mrrAtivo / recValor : null;
+    return { count, mrrAtivo, recValor, roi };
+  }, [recorrencias]);
+
   // Embaixadores que possuem algum registro com histórico (indicações ou recorrências)
   const embaixadoresComLog = useMemo(() => {
     const s = new Set<string>();

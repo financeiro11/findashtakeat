@@ -703,6 +703,45 @@ export default function Parceiros() {
     return { mrr, total, bonificacao, count: filtered.length };
   }, [filtered]);
 
+  // ===== Período anterior (para deltas dos KPIs) =====
+  // Define current/prev YYYY-MM. Se monthFilter vazio, usa o mês corrente vs anterior.
+  const currentMonthKey = useMemo(() => {
+    if (monthFilter) return monthFilter;
+    const d = new Date();
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+  }, [monthFilter]);
+  const prevMonthKey = useMemo(() => {
+    const [y, m] = currentMonthKey.split("-").map(Number);
+    const d = new Date(y, (m - 1) - 1, 1);
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+  }, [currentMonthKey]);
+
+  // Mesma lógica do `filtered`, porém para o mês anterior (ignora monthFilter atual).
+  const filteredPrev = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    const mapped = rows.map((r) => {
+      const cad = cadastroByNome.get((r.embaixador || "").trim().toLowerCase());
+      const bonus = r.dataVenda ? calcBonificacao(r.valorTotal, cad) : null;
+      const status: "ativo" | "inativo" | "nao_cadastrado" = !cad ? "nao_cadastrado" : (cad.status === "inativo" ? "inativo" : "ativo");
+      return { ...r, bonificacaoVenda: bonus, embaixadorStatus: status, campanhaCadastrada: cad?.campanha ?? null };
+    });
+    return mapped.filter((r) => {
+      if (!r.dataVenda || r.dataVenda.slice(0, 7) !== prevMonthKey) return false;
+      if (embFilter.size > 0 && !embFilter.has(r.embaixador)) return false;
+      if (campFilter.size > 0 && !campFilter.has(r.campanha)) return false;
+      if (q && ![r.campanha, r.embaixador, r.vendedor, r.empresa].some((f) => f?.toLowerCase().includes(q))) return false;
+      if (filtInd.embStatus.size > 0 && !filtInd.embStatus.has(r.embaixadorStatus)) return false;
+      return true;
+    });
+  }, [rows, query, prevMonthKey, embFilter, campFilter, cadastroByNome, filtInd]);
+
+  const totalsPrev = useMemo(() => {
+    const mrr = filteredPrev.reduce((s, r) => s + (r.mrr || 0), 0);
+    const total = filteredPrev.reduce((s, r) => s + (r.valorTotal || 0), 0);
+    const bonificacao = filteredPrev.reduce((s, r) => s + (r.bonificacaoVenda || 0), 0);
+    return { mrr, total, bonificacao, count: filteredPrev.length };
+  }, [filteredPrev]);
+
   const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize));
   useEffect(() => { setPage(1); }, [query, monthFilter, embFilter, campFilter, pageSize, filtInd]);
   useEffect(() => { if (page > totalPages) setPage(totalPages); }, [totalPages, page]);

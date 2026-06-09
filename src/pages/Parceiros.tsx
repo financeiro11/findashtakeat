@@ -1913,31 +1913,37 @@ function KpiCard({ label, value, prev, format = "number", hint }: { label: strin
   );
 }
 
-function KpiDeltaCard({ label, current, previous, format = "currency", invertColor = false }: { label: string; current: number; previous: number; format?: "currency" | "number"; invertColor?: boolean }) {
-  const diff = current - previous;
-  const pct = previous !== 0 ? (diff / Math.abs(previous)) * 100 : (current !== 0 ? 100 : 0);
-  const up = diff > 0;
-  const flat = diff === 0;
-  const positive = invertColor ? !up : up;
-  const tone = flat
-    ? "text-muted-foreground"
-    : positive
-      ? "text-emerald-600 dark:text-emerald-400"
-      : "text-rose-600 dark:text-rose-400";
-  const arrow = flat ? "→" : up ? "▲" : "▼";
+function KpiDeltaCard({ label, current, previous, format = "currency", invertColor = false }: { label: string; current: number; previous?: number | null; format?: "currency" | "number"; invertColor?: boolean }) {
   const fmt = (n: number) => format === "currency" ? BRL(n) : new Intl.NumberFormat("pt-BR").format(n);
+  const hasPrev = typeof previous === "number" && isFinite(previous);
+  let tone = "text-muted-foreground";
+  let arrow = "→";
+  let label2: React.ReactNode = null;
+  if (hasPrev) {
+    const diff = current - (previous as number);
+    const pct = previous !== 0 ? (diff / Math.abs(previous as number)) * 100 : (current !== 0 ? 100 : 0);
+    const up = diff > 0;
+    const flat = diff === 0;
+    const positive = invertColor ? !up : up;
+    tone = flat ? "text-muted-foreground" : positive ? "text-emerald-600 dark:text-emerald-400" : "text-rose-600 dark:text-rose-400";
+    arrow = flat ? "→" : up ? "▲" : "▼";
+    label2 = (
+      <div className={cn("mt-0.5 text-[10.5px] font-medium tabular-nums flex items-center gap-1", tone)}>
+        <span>{arrow}</span>
+        <span>{diff === 0 ? "estável" : `${pct >= 0 ? "+" : ""}${pct.toFixed(1)}%`}</span>
+        <span className="text-muted-foreground font-normal">vs anterior ({fmt(previous as number)})</span>
+      </div>
+    );
+  }
   return (
     <div className="card-surface px-4 py-3">
       <div className="text-[11px] uppercase tracking-wide text-muted-foreground">{label}</div>
       <div className="mt-1 text-lg font-semibold tabular-nums text-foreground">{fmt(current)}</div>
-      <div className={cn("mt-0.5 text-[10.5px] font-medium tabular-nums flex items-center gap-1", tone)}>
-        <span>{arrow}</span>
-        <span>{flat ? "estável" : `${pct >= 0 ? "+" : ""}${pct.toFixed(1)}%`}</span>
-        <span className="text-muted-foreground font-normal">vs anterior ({fmt(previous)})</span>
-      </div>
+      {label2}
     </div>
   );
 }
+
 
 function KpiInfoCard({ label, value, sub }: { label: string; value: string; sub?: string }) {
   return (

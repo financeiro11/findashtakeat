@@ -1109,11 +1109,18 @@ export default function Parceiros() {
 
 
       {/* KPIs — Lista de Indicações */}
-      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
-        <KpiDeltaCard label="Indicações" current={totals.count} previous={monthFilter ? totalsPrev.count : undefined} format="number" />
-        <KpiDeltaCard label="MRR somado" current={totals.mrr} previous={monthFilter ? totalsPrev.mrr : undefined} />
-        <KpiDeltaCard label="Valor total" current={totals.total} previous={monthFilter ? totalsPrev.total : undefined} />
-      </div>
+      <KpiSection
+        active={buildActiveFilters({
+          monthFilter, query, embFilter, campFilter,
+          extra: filtIndLabels(filtInd),
+        })}
+      >
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+          <KpiDeltaCard label="Indicações" current={totals.count} previous={monthFilter ? totalsPrev.count : undefined} format="number" />
+          <KpiDeltaCard label="MRR somado" current={totals.mrr} previous={monthFilter ? totalsPrev.mrr : undefined} />
+          <KpiDeltaCard label="Valor total" current={totals.total} previous={monthFilter ? totalsPrev.total : undefined} />
+        </div>
+      </KpiSection>
 
 
       {/* Tabela */}

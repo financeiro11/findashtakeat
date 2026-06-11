@@ -2145,6 +2145,9 @@ function Top3PodiumCard({ top3, activeFilters }: { top3: Array<{ nome: string; s
             {top3.map((t) => BRL(t.soma)).join(" · ")}
           </div>
         )}
+        {hasData && (
+          <div className="mt-1 text-[10.5px] font-medium text-primary">Clique para ver →</div>
+        )}
       </button>
       <Dialog open={open} onOpenChange={setOpen}>
         <DialogContent className="max-w-md">

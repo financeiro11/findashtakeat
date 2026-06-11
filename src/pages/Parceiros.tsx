@@ -1969,7 +1969,7 @@ function KpiCard({ label, value, prev, format = "number", hint }: { label: strin
   );
 }
 
-function KpiDeltaCard({ label, current, previous, format = "currency", invertColor = false }: { label: string; current: number; previous?: number | null; format?: "currency" | "number"; invertColor?: boolean }) {
+function KpiDeltaCard({ label, current, previous, format = "currency", invertColor = false, activeFilters }: { label: string; current: number; previous?: number | null; format?: "currency" | "number"; invertColor?: boolean; activeFilters?: string[] }) {
   const fmt = (n: number) => format === "currency" ? BRL(n) : new Intl.NumberFormat("pt-BR").format(n);
   const hasPrev = typeof previous === "number" && isFinite(previous);
   let tone = "text-muted-foreground";
@@ -1992,10 +1992,34 @@ function KpiDeltaCard({ label, current, previous, format = "currency", invertCol
     );
   }
   return (
-    <div className="card-surface px-4 py-3">
-      <div className="text-[11px] uppercase tracking-wide text-muted-foreground">{label}</div>
+    <div className="card-surface px-4 py-3 relative">
+      <FilterIndicator active={activeFilters} />
+      <div className="text-[11px] uppercase tracking-wide text-muted-foreground pr-5">{label}</div>
       <div className="mt-1 text-lg font-semibold tabular-nums text-foreground">{fmt(current)}</div>
       {label2}
+    </div>
+  );
+}
+
+function FilterIndicator({ active }: { active?: string[] }) {
+  if (!active || active.length === 0) return null;
+  return (
+    <div className="absolute top-1.5 right-1.5 z-10">
+      <TooltipProvider delayDuration={150}>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <span className="inline-flex h-4 w-4 items-center justify-center rounded-full bg-primary/10 text-primary cursor-help">
+              <Filter className="h-2.5 w-2.5" />
+            </span>
+          </TooltipTrigger>
+          <TooltipContent side="left" className="max-w-xs text-[11.5px]">
+            <div className="font-semibold mb-1">Filtros aplicados</div>
+            <ul className="space-y-0.5">
+              {active.map((a, i) => (<li key={i}>· {a}</li>))}
+            </ul>
+          </TooltipContent>
+        </Tooltip>
+      </TooltipProvider>
     </div>
   );
 }

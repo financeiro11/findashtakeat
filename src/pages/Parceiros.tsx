@@ -1109,11 +1109,18 @@ export default function Parceiros() {
 
 
       {/* KPIs — Lista de Indicações */}
-      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
-        <KpiDeltaCard label="Indicações" current={totals.count} previous={monthFilter ? totalsPrev.count : undefined} format="number" />
-        <KpiDeltaCard label="MRR somado" current={totals.mrr} previous={monthFilter ? totalsPrev.mrr : undefined} />
-        <KpiDeltaCard label="Valor total" current={totals.total} previous={monthFilter ? totalsPrev.total : undefined} />
-      </div>
+      <KpiSection
+        active={buildActiveFilters({
+          monthFilter, query, embFilter, campFilter,
+          extra: filtIndLabels(filtInd),
+        })}
+      >
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+          <KpiDeltaCard label="Indicações" current={totals.count} previous={monthFilter ? totalsPrev.count : undefined} format="number" />
+          <KpiDeltaCard label="MRR somado" current={totals.mrr} previous={monthFilter ? totalsPrev.mrr : undefined} />
+          <KpiDeltaCard label="Valor total" current={totals.total} previous={monthFilter ? totalsPrev.total : undefined} />
+        </div>
+      </KpiSection>
 
 
       {/* Tabela */}
@@ -1331,27 +1338,34 @@ export default function Parceiros() {
 
 
       {/* KPIs — Conversões por embaixador */}
-      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
-        <KpiDeltaCard label="Bonificação total" current={convAgg.bonificacaoTotal} previous={monthFilter ? conversoesPrev.bonificacaoTotal : undefined} />
-        <KpiDeltaCard label="Recorrência total" current={convAgg.recorrenciaTotal} previous={monthFilter ? recPrev.recValor : undefined} />
-        <KpiDeltaCard label="Bonificação + Recorrência" current={convAgg.soma} previous={monthFilter ? conversoesPrev.bonificacaoTotal + recPrev.recValor : undefined} />
+      <KpiSection
+        active={buildActiveFilters({
+          monthFilter, query, embFilter, campFilter,
+          extra: filtConvLabels(filtConv),
+        })}
+      >
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
+          <KpiDeltaCard label="Bonificação total" current={convAgg.bonificacaoTotal} previous={monthFilter ? conversoesPrev.bonificacaoTotal : undefined} />
+          <KpiDeltaCard label="Recorrência total" current={convAgg.recorrenciaTotal} previous={monthFilter ? recPrev.recValor : undefined} />
+          <KpiDeltaCard label="Bonificação + Recorrência" current={convAgg.soma} previous={monthFilter ? conversoesPrev.bonificacaoTotal + recPrev.recValor : undefined} />
 
-        <KpiInfoCard
-          label="Campanha · maior MRR"
-          value={(convAgg.topMrrCamp as any)?.nome ?? "—"}
-          sub={convAgg.topMrrCamp ? BRL((convAgg.topMrrCamp as any).valor) : undefined}
-        />
-        <KpiInfoCard
-          label="Campanha · maior valor"
-          value={(convAgg.topValorCamp as any)?.nome ?? "—"}
-          sub={convAgg.topValorCamp ? BRL((convAgg.topValorCamp as any).valor) : undefined}
-        />
-        <KpiInfoCard
-          label="Top 3 Embaixadores"
-          value={convAgg.top3.length > 0 ? convAgg.top3.map((t, i) => `${i + 1}. ${t.nome}`).join(" · ") : "—"}
-          sub={convAgg.top3.length > 0 ? convAgg.top3.map((t) => BRL(t.soma)).join(" · ") : undefined}
-        />
-      </div>
+          <KpiInfoCard
+            label="Campanha · maior MRR"
+            value={(convAgg.topMrrCamp as any)?.nome ?? "—"}
+            sub={convAgg.topMrrCamp ? BRL((convAgg.topMrrCamp as any).valor) : undefined}
+          />
+          <KpiInfoCard
+            label="Campanha · maior valor"
+            value={(convAgg.topValorCamp as any)?.nome ?? "—"}
+            sub={convAgg.topValorCamp ? BRL((convAgg.topValorCamp as any).valor) : undefined}
+          />
+          <KpiInfoCard
+            label="Top 3 Embaixadores"
+            value={convAgg.top3.length > 0 ? convAgg.top3.map((t, i) => `${i + 1}. ${t.nome}`).join(" · ") : "—"}
+            sub={convAgg.top3.length > 0 ? convAgg.top3.map((t) => BRL(t.soma)).join(" · ") : undefined}
+          />
+        </div>
+      </KpiSection>
 
       {/* Conversões por embaixador */}
       <SectionCard
@@ -1503,16 +1517,23 @@ export default function Parceiros() {
       </SectionCard>
 
       {/* KPIs — Apuração Recorrências */}
-      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
-        <KpiDeltaCard label="Recorrências ativas" current={recAgg.count} previous={monthFilter ? recPrev.count : undefined} format="number" />
-        <KpiDeltaCard label="MRR ativo (recorrências)" current={recAgg.mrrAtivo} previous={monthFilter ? recPrev.mrrAtivo : undefined} />
-
-        <KpiInfoCard
-          label="ROI · MRR ativo vs Recorrência"
-          value={recAgg.roi != null ? `${recAgg.roi.toFixed(2)}x` : "—"}
-          sub={`MRR ${BRL(recAgg.mrrAtivo)} ÷ Recorrência ${BRL(recAgg.recValor)}`}
-        />
-      </div>
+      <KpiSection
+        active={buildActiveFilters({
+          monthFilter, query, embFilter, campFilter,
+          extra: filtRecLabels(filtRec),
+        })}
+      >
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
+          <KpiDeltaCard label="Recorrências ativas" current={recAgg.count} previous={monthFilter ? recPrev.count : undefined} format="number" />
+          <KpiDeltaCard label="MRR ativo (recorrências)" current={recAgg.mrrAtivo} previous={monthFilter ? recPrev.mrrAtivo : undefined} />
+          <KpiDeltaCard label="Recorrência total" current={recAgg.recValor} previous={monthFilter ? recPrev.recValor : undefined} />
+          <KpiInfoCard
+            label="ROI · MRR ativo vs Recorrência"
+            value={recAgg.roi != null ? `${recAgg.roi.toFixed(2)}x` : "—"}
+            sub={`MRR ${BRL(recAgg.mrrAtivo)} ÷ Recorrência ${BRL(recAgg.recValor)}`}
+          />
+        </div>
+      </KpiSection>
 
       {/* Apuração Recorrências */}
       <SectionCard
@@ -1977,6 +1998,86 @@ function KpiDeltaCard({ label, current, previous, format = "currency", invertCol
   );
 }
 
+
+function buildActiveFilters({
+  monthFilter, query, embFilter, campFilter, extra,
+}: {
+  monthFilter: string;
+  query: string;
+  embFilter: Set<string>;
+  campFilter: Set<string>;
+  extra?: string[];
+}): string[] {
+  const list: string[] = [];
+  if (monthFilter) {
+    const [y, m] = monthFilter.split("-");
+    list.push(`Mês: ${m}/${y}`);
+  }
+  if (query && query.trim()) list.push(`Busca: "${query.trim()}"`);
+  if (embFilter.size > 0) list.push(`Embaixador: ${Array.from(embFilter).join(", ")}`);
+  if (campFilter.size > 0) list.push(`Campanha: ${Array.from(campFilter).join(", ")}`);
+  if (extra) list.push(...extra);
+  return list;
+}
+
+function filtIndLabels(f: { campanhaDivergente: boolean; embStatus: Set<string>; comHistorico: boolean }): string[] {
+  const out: string[] = [];
+  if (f.campanhaDivergente) out.push("Campanha divergente");
+  if (f.embStatus.size > 0) out.push(`Status embaixador: ${Array.from(f.embStatus).join(", ")}`);
+  if (f.comHistorico) out.push("Com histórico");
+  return out;
+}
+
+function filtConvLabels(f: { tier: Set<string>; campanha: Set<string>; recorrencia: string; bonificacao: string; naoCadastrados: boolean; comHistorico: boolean }): string[] {
+  const out: string[] = [];
+  if (f.tier.size > 0) out.push(`Tier: ${Array.from(f.tier).join(", ")}`);
+  if (f.campanha.size > 0) out.push(`Campanha (cadastro): ${Array.from(f.campanha).join(", ")}`);
+  if (f.recorrencia !== "todos") out.push(`Recorrência: ${f.recorrencia}`);
+  if (f.bonificacao !== "todos") out.push(`Bonificação: ${f.bonificacao}`);
+  if (f.naoCadastrados) out.push("Não cadastrados");
+  if (f.comHistorico) out.push("Com histórico");
+  return out;
+}
+
+function filtRecLabels(f: { status: Set<string>; campanhaDivergente: boolean; embaixadorNaoCadastrado: boolean; comHistorico: boolean }): string[] {
+  const out: string[] = [];
+  if (f.status.size > 0) out.push(`Status: ${Array.from(f.status).join(", ")}`);
+  if (f.campanhaDivergente) out.push("Campanha divergente");
+  if (f.embaixadorNaoCadastrado) out.push("Embaixador não cadastrado");
+  if (f.comHistorico) out.push("Com histórico");
+  return out;
+}
+
+function KpiSection({ active, children }: { active: string[]; children: React.ReactNode }) {
+  const has = active.length > 0;
+  return (
+    <div className="relative">
+      {has && (
+        <div className="absolute -top-2 right-0 z-10">
+          <TooltipProvider delayDuration={150}>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <span className="inline-flex items-center gap-1 rounded-full border border-primary/30 bg-primary/10 px-2 py-0.5 text-[10.5px] font-medium text-primary shadow-sm cursor-help">
+                  <Filter className="h-3 w-3" />
+                  {active.length} filtro{active.length > 1 ? "s" : ""}
+                </span>
+              </TooltipTrigger>
+              <TooltipContent side="left" className="max-w-xs text-[11.5px]">
+                <div className="font-semibold mb-1">Filtros aplicados</div>
+                <ul className="space-y-0.5">
+                  {active.map((a, i) => (
+                    <li key={i}>· {a}</li>
+                  ))}
+                </ul>
+              </TooltipContent>
+            </Tooltip>
+          </TooltipProvider>
+        </div>
+      )}
+      {children}
+    </div>
+  );
+}
 
 function KpiInfoCard({ label, value, sub }: { label: string; value: string; sub?: string }) {
   return (

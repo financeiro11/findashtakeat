@@ -1517,23 +1517,24 @@ export default function Parceiros() {
       </SectionCard>
 
       {/* KPIs — Apuração Recorrências */}
-      <KpiSection
-        active={buildActiveFilters({
-          monthFilter, query, embFilter, campFilter,
-          extra: filtRecLabels(filtRec),
-        })}
-      >
-        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
-          <KpiDeltaCard label="Recorrências ativas" current={recAgg.count} previous={monthFilter ? recPrev.count : undefined} format="number" />
-          <KpiDeltaCard label="MRR ativo (recorrências)" current={recAgg.mrrAtivo} previous={monthFilter ? recPrev.mrrAtivo : undefined} />
-          <KpiDeltaCard label="Recorrência total" current={recAgg.recValor} previous={monthFilter ? recPrev.recValor : undefined} />
-          <KpiInfoCard
-            label="ROI · MRR ativo vs Recorrência"
-            value={recAgg.roi != null ? `${recAgg.roi.toFixed(2)}x` : "—"}
-            sub={`MRR ${BRL(recAgg.mrrAtivo)} ÷ Recorrência ${BRL(recAgg.recValor)}`}
-          />
-        </div>
-      </KpiSection>
+      {(() => {
+        const recActive = buildActiveFilters({ monthFilter, query, embFilter, campFilter, extra: filtRecLabels(filtRec) });
+        return (
+          <KpiSection active={recActive}>
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
+              <KpiDeltaCard activeFilters={recActive} label="Recorrências ativas" current={recAgg.count} previous={monthFilter ? recPrev.count : undefined} format="number" />
+              <KpiDeltaCard activeFilters={recActive} label="MRR ativo (recorrências)" current={recAgg.mrrAtivo} previous={monthFilter ? recPrev.mrrAtivo : undefined} />
+              <KpiDeltaCard activeFilters={recActive} label="Recorrência total" current={recAgg.recValor} previous={monthFilter ? recPrev.recValor : undefined} />
+              <KpiInfoCard
+                activeFilters={recActive}
+                label="ROI · MRR ativo vs Recorrência"
+                value={recAgg.roi != null ? `${recAgg.roi.toFixed(2)}x` : "—"}
+                sub={`MRR ${BRL(recAgg.mrrAtivo)} ÷ Recorrência ${BRL(recAgg.recValor)}`}
+              />
+            </div>
+          </KpiSection>
+        );
+      })()}
 
       {/* Apuração Recorrências */}
       <SectionCard

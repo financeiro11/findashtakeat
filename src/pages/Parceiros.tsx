@@ -898,6 +898,8 @@ export default function Parceiros() {
       .filter((r) => {
         if (!r.ativo) return false;
         if (!r.dataIndicacao) return false;
+        if (embFilter.size > 0 && !embFilter.has(r.embaixador)) return false;
+        if (campFilter.size > 0 && !campFilter.has(r.campanha)) return false;
         const ind = new Date(r.dataIndicacao);
         const cutoff = new Date();
         cutoff.setMonth(cutoff.getMonth() - 2);
@@ -907,7 +909,7 @@ export default function Parceiros() {
     const recValor = base.reduce((s, r) => s + (r.recorrenciaValor || 0), 0);
     const mrrAtivo = base.reduce((s, r) => s + (r.mrr || 0), 0);
     return { count, recValor, mrrAtivo };
-  }, [recRows, cadastroByNome]);
+  }, [recRows, cadastroByNome, embFilter, campFilter]);
 
   // ===== Apuração Recorrências (período atual) =====
   const recAgg = useMemo(() => {
@@ -1109,18 +1111,18 @@ export default function Parceiros() {
 
 
       {/* KPIs — Lista de Indicações */}
-      <KpiSection
-        active={buildActiveFilters({
-          monthFilter, query, embFilter, campFilter,
-          extra: filtIndLabels(filtInd),
-        })}
-      >
-        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
-          <KpiDeltaCard label="Indicações" current={totals.count} previous={monthFilter ? totalsPrev.count : undefined} format="number" />
-          <KpiDeltaCard label="MRR somado" current={totals.mrr} previous={monthFilter ? totalsPrev.mrr : undefined} />
-          <KpiDeltaCard label="Valor total" current={totals.total} previous={monthFilter ? totalsPrev.total : undefined} />
-        </div>
-      </KpiSection>
+      {(() => {
+        const indActive = buildActiveFilters({ monthFilter, query, embFilter, campFilter, extra: filtIndLabels(filtInd) });
+        return (
+          <KpiSection active={indActive}>
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+              <KpiDeltaCard activeFilters={indActive} label="Indicações" current={totals.count} previous={monthFilter ? totalsPrev.count : undefined} format="number" />
+              <KpiDeltaCard activeFilters={indActive} label="MRR somado" current={totals.mrr} previous={monthFilter ? totalsPrev.mrr : undefined} />
+              <KpiDeltaCard activeFilters={indActive} label="Valor total" current={totals.total} previous={monthFilter ? totalsPrev.total : undefined} />
+            </div>
+          </KpiSection>
+        );
+      })()}
 
 
       {/* Tabela */}
@@ -1338,34 +1340,32 @@ export default function Parceiros() {
 
 
       {/* KPIs — Conversões por embaixador */}
-      <KpiSection
-        active={buildActiveFilters({
-          monthFilter, query, embFilter, campFilter,
-          extra: filtConvLabels(filtConv),
-        })}
-      >
-        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
-          <KpiDeltaCard label="Bonificação total" current={convAgg.bonificacaoTotal} previous={monthFilter ? conversoesPrev.bonificacaoTotal : undefined} />
-          <KpiDeltaCard label="Recorrência total" current={convAgg.recorrenciaTotal} previous={monthFilter ? recPrev.recValor : undefined} />
-          <KpiDeltaCard label="Bonificação + Recorrência" current={convAgg.soma} previous={monthFilter ? conversoesPrev.bonificacaoTotal + recPrev.recValor : undefined} />
+      {(() => {
+        const convActive = buildActiveFilters({ monthFilter, query, embFilter, campFilter, extra: filtConvLabels(filtConv) });
+        return (
+          <KpiSection active={convActive}>
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
+              <KpiDeltaCard activeFilters={convActive} label="Bonificação total" current={convAgg.bonificacaoTotal} previous={monthFilter ? conversoesPrev.bonificacaoTotal : undefined} />
+              <KpiDeltaCard activeFilters={convActive} label="Recorrência total" current={convAgg.recorrenciaTotal} previous={monthFilter ? recPrev.recValor : undefined} />
+              <KpiDeltaCard activeFilters={convActive} label="Bonificação + Recorrência" current={convAgg.soma} previous={monthFilter ? conversoesPrev.bonificacaoTotal + recPrev.recValor : undefined} />
 
-          <KpiInfoCard
-            label="Campanha · maior MRR"
-            value={(convAgg.topMrrCamp as any)?.nome ?? "—"}
-            sub={convAgg.topMrrCamp ? BRL((convAgg.topMrrCamp as any).valor) : undefined}
-          />
-          <KpiInfoCard
-            label="Campanha · maior valor"
-            value={(convAgg.topValorCamp as any)?.nome ?? "—"}
-            sub={convAgg.topValorCamp ? BRL((convAgg.topValorCamp as any).valor) : undefined}
-          />
-          <KpiInfoCard
-            label="Top 3 Embaixadores"
-            value={convAgg.top3.length > 0 ? convAgg.top3.map((t, i) => `${i + 1}. ${t.nome}`).join(" · ") : "—"}
-            sub={convAgg.top3.length > 0 ? convAgg.top3.map((t) => BRL(t.soma)).join(" · ") : undefined}
-          />
-        </div>
-      </KpiSection>
+              <KpiInfoCard
+                activeFilters={convActive}
+                label="Campanha · maior MRR"
+                value={(convAgg.topMrrCamp as any)?.nome ?? "—"}
+                sub={convAgg.topMrrCamp ? BRL((convAgg.topMrrCamp as any).valor) : undefined}
+              />
+              <KpiInfoCard
+                activeFilters={convActive}
+                label="Campanha · maior valor"
+                value={(convAgg.topValorCamp as any)?.nome ?? "—"}
+                sub={convAgg.topValorCamp ? BRL((convAgg.topValorCamp as any).valor) : undefined}
+              />
+              <Top3PodiumCard activeFilters={convActive} top3={convAgg.top3} />
+            </div>
+          </KpiSection>
+        );
+      })()}
 
       {/* Conversões por embaixador */}
       <SectionCard
@@ -1517,23 +1517,24 @@ export default function Parceiros() {
       </SectionCard>
 
       {/* KPIs — Apuração Recorrências */}
-      <KpiSection
-        active={buildActiveFilters({
-          monthFilter, query, embFilter, campFilter,
-          extra: filtRecLabels(filtRec),
-        })}
-      >
-        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
-          <KpiDeltaCard label="Recorrências ativas" current={recAgg.count} previous={monthFilter ? recPrev.count : undefined} format="number" />
-          <KpiDeltaCard label="MRR ativo (recorrências)" current={recAgg.mrrAtivo} previous={monthFilter ? recPrev.mrrAtivo : undefined} />
-          <KpiDeltaCard label="Recorrência total" current={recAgg.recValor} previous={monthFilter ? recPrev.recValor : undefined} />
-          <KpiInfoCard
-            label="ROI · MRR ativo vs Recorrência"
-            value={recAgg.roi != null ? `${recAgg.roi.toFixed(2)}x` : "—"}
-            sub={`MRR ${BRL(recAgg.mrrAtivo)} ÷ Recorrência ${BRL(recAgg.recValor)}`}
-          />
-        </div>
-      </KpiSection>
+      {(() => {
+        const recActive = buildActiveFilters({ monthFilter, query, embFilter, campFilter, extra: filtRecLabels(filtRec) });
+        return (
+          <KpiSection active={recActive}>
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
+              <KpiDeltaCard activeFilters={recActive} label="Recorrências ativas" current={recAgg.count} previous={monthFilter ? recPrev.count : undefined} format="number" />
+              <KpiDeltaCard activeFilters={recActive} label="MRR ativo (recorrências)" current={recAgg.mrrAtivo} previous={monthFilter ? recPrev.mrrAtivo : undefined} />
+              <KpiDeltaCard activeFilters={recActive} label="Recorrência total" current={recAgg.recValor} previous={monthFilter ? recPrev.recValor : undefined} />
+              <KpiInfoCard
+                activeFilters={recActive}
+                label="ROI · MRR ativo vs Recorrência"
+                value={recAgg.roi != null ? `${recAgg.roi.toFixed(2)}x` : "—"}
+                sub={`MRR ${BRL(recAgg.mrrAtivo)} ÷ Recorrência ${BRL(recAgg.recValor)}`}
+              />
+            </div>
+          </KpiSection>
+        );
+      })()}
 
       {/* Apuração Recorrências */}
       <SectionCard
@@ -1967,7 +1968,7 @@ function KpiCard({ label, value, prev, format = "number", hint }: { label: strin
   );
 }
 
-function KpiDeltaCard({ label, current, previous, format = "currency", invertColor = false }: { label: string; current: number; previous?: number | null; format?: "currency" | "number"; invertColor?: boolean }) {
+function KpiDeltaCard({ label, current, previous, format = "currency", invertColor = false, activeFilters }: { label: string; current: number; previous?: number | null; format?: "currency" | "number"; invertColor?: boolean; activeFilters?: string[] }) {
   const fmt = (n: number) => format === "currency" ? BRL(n) : new Intl.NumberFormat("pt-BR").format(n);
   const hasPrev = typeof previous === "number" && isFinite(previous);
   let tone = "text-muted-foreground";
@@ -1990,10 +1991,34 @@ function KpiDeltaCard({ label, current, previous, format = "currency", invertCol
     );
   }
   return (
-    <div className="card-surface px-4 py-3">
-      <div className="text-[11px] uppercase tracking-wide text-muted-foreground">{label}</div>
+    <div className="card-surface px-4 py-3 relative">
+      <FilterIndicator active={activeFilters} />
+      <div className="text-[11px] uppercase tracking-wide text-muted-foreground pr-5">{label}</div>
       <div className="mt-1 text-lg font-semibold tabular-nums text-foreground">{fmt(current)}</div>
       {label2}
+    </div>
+  );
+}
+
+function FilterIndicator({ active }: { active?: string[] }) {
+  if (!active || active.length === 0) return null;
+  return (
+    <div className="absolute top-1.5 right-1.5 z-10">
+      <TooltipProvider delayDuration={150}>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <span className="inline-flex h-4 w-4 items-center justify-center rounded-full bg-primary/10 text-primary cursor-help">
+              <Filter className="h-2.5 w-2.5" />
+            </span>
+          </TooltipTrigger>
+          <TooltipContent side="left" className="max-w-xs text-[11.5px]">
+            <div className="font-semibold mb-1">Filtros aplicados</div>
+            <ul className="space-y-0.5">
+              {active.map((a, i) => (<li key={i}>· {a}</li>))}
+            </ul>
+          </TooltipContent>
+        </Tooltip>
+      </TooltipProvider>
     </div>
   );
 }
@@ -2079,13 +2104,89 @@ function KpiSection({ active, children }: { active: string[]; children: React.Re
   );
 }
 
-function KpiInfoCard({ label, value, sub }: { label: string; value: string; sub?: string }) {
+function KpiInfoCard({ label, value, sub, activeFilters }: { label: string; value: string; sub?: string; activeFilters?: string[] }) {
   return (
-    <div className="card-surface px-4 py-3">
-      <div className="text-[11px] uppercase tracking-wide text-muted-foreground">{label}</div>
+    <div className="card-surface px-4 py-3 relative">
+      <FilterIndicator active={activeFilters} />
+      <div className="text-[11px] uppercase tracking-wide text-muted-foreground pr-5">{label}</div>
       <div className="mt-1 text-lg font-semibold tabular-nums text-foreground truncate" title={value}>{value}</div>
       {sub && <div className="mt-0.5 text-[10.5px] text-muted-foreground truncate" title={sub}>{sub}</div>}
     </div>
+  );
+}
+
+function Top3PodiumCard({ top3, activeFilters }: { top3: Array<{ nome: string; soma: number }>; activeFilters?: string[] }) {
+  const [open, setOpen] = useState(false);
+  const hasData = top3.length > 0;
+  // Podium order: 2nd, 1st, 3rd
+  const order = [top3[1], top3[0], top3[2]].filter(Boolean) as Array<{ nome: string; soma: number }>;
+  const heights = [
+    { rank: 2, h: "h-16", bg: "bg-slate-300 dark:bg-slate-600", medal: "🥈" },
+    { rank: 1, h: "h-24", bg: "bg-amber-300 dark:bg-amber-500", medal: "🥇" },
+    { rank: 3, h: "h-12", bg: "bg-orange-300 dark:bg-orange-700", medal: "🥉" },
+  ];
+  return (
+    <>
+      <button
+        type="button"
+        onClick={() => hasData && setOpen(true)}
+        className={cn(
+          "card-surface px-4 py-3 relative text-left w-full transition",
+          hasData ? "hover:ring-2 hover:ring-primary/30 cursor-pointer" : "cursor-default"
+        )}
+      >
+        <FilterIndicator active={activeFilters} />
+        <div className="text-[11px] uppercase tracking-wide text-muted-foreground pr-5">Top 3 Embaixadores</div>
+        <div className="mt-1 text-lg font-semibold tabular-nums text-foreground truncate">
+          {hasData ? top3.map((t, i) => `${i + 1}. ${t.nome}`).join(" · ") : "—"}
+        </div>
+        {hasData && (
+          <div className="mt-0.5 text-[10.5px] text-muted-foreground truncate">
+            {top3.map((t) => BRL(t.soma)).join(" · ")}
+          </div>
+        )}
+      </button>
+      <Dialog open={open} onOpenChange={setOpen}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>🏆 Top 3 Embaixadores</DialogTitle>
+            <DialogDescription>Ranking por Bonificação + Recorrência no período filtrado.</DialogDescription>
+          </DialogHeader>
+          {hasData ? (
+            <div className="pt-2">
+              <div className="flex items-end justify-center gap-3 h-44 pb-2">
+                {order.map((t, idx) => {
+                  const meta = heights[idx];
+                  return (
+                    <div key={t.nome + idx} className="flex flex-col items-center w-1/3">
+                      <div className="text-2xl mb-1">{meta.medal}</div>
+                      <div className="text-xs font-semibold text-center line-clamp-2 mb-1" title={t.nome}>{t.nome}</div>
+                      <div className="text-[10.5px] tabular-nums text-muted-foreground mb-1">{BRL(t.soma)}</div>
+                      <div className={cn("w-full rounded-t-md flex items-start justify-center pt-1 text-xs font-bold text-foreground/80", meta.h, meta.bg)}>
+                        {meta.rank}º
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+              <div className="mt-4 space-y-1.5">
+                {top3.map((t, i) => (
+                  <div key={t.nome} className="flex items-center justify-between rounded-md border border-border px-3 py-1.5 text-sm">
+                    <div className="flex items-center gap-2">
+                      <span className="text-base">{["🥇", "🥈", "🥉"][i]}</span>
+                      <span className="font-medium">{t.nome}</span>
+                    </div>
+                    <span className="tabular-nums font-semibold">{BRL(t.soma)}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ) : (
+            <div className="text-sm text-muted-foreground py-6 text-center">Sem dados no período.</div>
+          )}
+        </DialogContent>
+      </Dialog>
+    </>
   );
 }
 

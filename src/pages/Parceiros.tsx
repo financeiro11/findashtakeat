@@ -2105,10 +2105,11 @@ function KpiSection({ active, children }: { active: string[]; children: React.Re
   );
 }
 
-function KpiInfoCard({ label, value, sub }: { label: string; value: string; sub?: string }) {
+function KpiInfoCard({ label, value, sub, activeFilters }: { label: string; value: string; sub?: string; activeFilters?: string[] }) {
   return (
-    <div className="card-surface px-4 py-3">
-      <div className="text-[11px] uppercase tracking-wide text-muted-foreground">{label}</div>
+    <div className="card-surface px-4 py-3 relative">
+      <FilterIndicator active={activeFilters} />
+      <div className="text-[11px] uppercase tracking-wide text-muted-foreground pr-5">{label}</div>
       <div className="mt-1 text-lg font-semibold tabular-nums text-foreground truncate" title={value}>{value}</div>
       {sub && <div className="mt-0.5 text-[10.5px] text-muted-foreground truncate" title={sub}>{sub}</div>}
     </div>

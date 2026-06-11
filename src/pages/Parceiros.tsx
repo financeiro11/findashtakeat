@@ -2079,8 +2079,7 @@ function KpiSection({ active, children }: { active: string[]; children: React.Re
   );
 }
 
-
-
+function KpiInfoCard({ label, value, sub }: { label: string; value: string; sub?: string }) {
   return (
     <div className="card-surface px-4 py-3">
       <div className="text-[11px] uppercase tracking-wide text-muted-foreground">{label}</div>

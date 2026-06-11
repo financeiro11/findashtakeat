@@ -2115,6 +2115,81 @@ function KpiInfoCard({ label, value, sub, activeFilters }: { label: string; valu
   );
 }
 
+function Top3PodiumCard({ top3, activeFilters }: { top3: Array<{ nome: string; soma: number }>; activeFilters?: string[] }) {
+  const [open, setOpen] = useState(false);
+  const hasData = top3.length > 0;
+  // Podium order: 2nd, 1st, 3rd
+  const order = [top3[1], top3[0], top3[2]].filter(Boolean) as Array<{ nome: string; soma: number }>;
+  const heights = [
+    { rank: 2, h: "h-16", bg: "bg-slate-300 dark:bg-slate-600", medal: "🥈" },
+    { rank: 1, h: "h-24", bg: "bg-amber-300 dark:bg-amber-500", medal: "🥇" },
+    { rank: 3, h: "h-12", bg: "bg-orange-300 dark:bg-orange-700", medal: "🥉" },
+  ];
+  return (
+    <>
+      <button
+        type="button"
+        onClick={() => hasData && setOpen(true)}
+        className={cn(
+          "card-surface px-4 py-3 relative text-left w-full transition",
+          hasData ? "hover:ring-2 hover:ring-primary/30 cursor-pointer" : "cursor-default"
+        )}
+      >
+        <FilterIndicator active={activeFilters} />
+        <div className="text-[11px] uppercase tracking-wide text-muted-foreground pr-5">Top 3 Embaixadores</div>
+        <div className="mt-1 text-lg font-semibold tabular-nums text-foreground truncate">
+          {hasData ? top3.map((t, i) => `${i + 1}. ${t.nome}`).join(" · ") : "—"}
+        </div>
+        {hasData && (
+          <div className="mt-0.5 text-[10.5px] text-muted-foreground truncate">
+            {top3.map((t) => BRL(t.soma)).join(" · ")}
+          </div>
+        )}
+      </button>
+      <Dialog open={open} onOpenChange={setOpen}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>🏆 Top 3 Embaixadores</DialogTitle>
+            <DialogDescription>Ranking por Bonificação + Recorrência no período filtrado.</DialogDescription>
+          </DialogHeader>
+          {hasData ? (
+            <div className="pt-2">
+              <div className="flex items-end justify-center gap-3 h-44 pb-2">
+                {order.map((t, idx) => {
+                  const meta = heights[idx];
+                  return (
+                    <div key={t.nome + idx} className="flex flex-col items-center w-1/3">
+                      <div className="text-2xl mb-1">{meta.medal}</div>
+                      <div className="text-xs font-semibold text-center line-clamp-2 mb-1" title={t.nome}>{t.nome}</div>
+                      <div className="text-[10.5px] tabular-nums text-muted-foreground mb-1">{BRL(t.soma)}</div>
+                      <div className={cn("w-full rounded-t-md flex items-start justify-center pt-1 text-xs font-bold text-foreground/80", meta.h, meta.bg)}>
+                        {meta.rank}º
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+              <div className="mt-4 space-y-1.5">
+                {top3.map((t, i) => (
+                  <div key={t.nome} className="flex items-center justify-between rounded-md border border-border px-3 py-1.5 text-sm">
+                    <div className="flex items-center gap-2">
+                      <span className="text-base">{["🥇", "🥈", "🥉"][i]}</span>
+                      <span className="font-medium">{t.nome}</span>
+                    </div>
+                    <span className="tabular-nums font-semibold">{BRL(t.soma)}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ) : (
+            <div className="text-sm text-muted-foreground py-6 text-center">Sem dados no período.</div>
+          )}
+        </DialogContent>
+      </Dialog>
+    </>
+  );
+}
+
 function IntegrationLink({
   href,
   label,

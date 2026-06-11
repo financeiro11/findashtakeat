@@ -1338,27 +1338,34 @@ export default function Parceiros() {
 
 
       {/* KPIs — Conversões por embaixador */}
-      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
-        <KpiDeltaCard label="Bonificação total" current={convAgg.bonificacaoTotal} previous={monthFilter ? conversoesPrev.bonificacaoTotal : undefined} />
-        <KpiDeltaCard label="Recorrência total" current={convAgg.recorrenciaTotal} previous={monthFilter ? recPrev.recValor : undefined} />
-        <KpiDeltaCard label="Bonificação + Recorrência" current={convAgg.soma} previous={monthFilter ? conversoesPrev.bonificacaoTotal + recPrev.recValor : undefined} />
+      <KpiSection
+        active={buildActiveFilters({
+          monthFilter, query, embFilter, campFilter,
+          extra: filtConvLabels(filtConv),
+        })}
+      >
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
+          <KpiDeltaCard label="Bonificação total" current={convAgg.bonificacaoTotal} previous={monthFilter ? conversoesPrev.bonificacaoTotal : undefined} />
+          <KpiDeltaCard label="Recorrência total" current={convAgg.recorrenciaTotal} previous={monthFilter ? recPrev.recValor : undefined} />
+          <KpiDeltaCard label="Bonificação + Recorrência" current={convAgg.soma} previous={monthFilter ? conversoesPrev.bonificacaoTotal + recPrev.recValor : undefined} />
 
-        <KpiInfoCard
-          label="Campanha · maior MRR"
-          value={(convAgg.topMrrCamp as any)?.nome ?? "—"}
-          sub={convAgg.topMrrCamp ? BRL((convAgg.topMrrCamp as any).valor) : undefined}
-        />
-        <KpiInfoCard
-          label="Campanha · maior valor"
-          value={(convAgg.topValorCamp as any)?.nome ?? "—"}
-          sub={convAgg.topValorCamp ? BRL((convAgg.topValorCamp as any).valor) : undefined}
-        />
-        <KpiInfoCard
-          label="Top 3 Embaixadores"
-          value={convAgg.top3.length > 0 ? convAgg.top3.map((t, i) => `${i + 1}. ${t.nome}`).join(" · ") : "—"}
-          sub={convAgg.top3.length > 0 ? convAgg.top3.map((t) => BRL(t.soma)).join(" · ") : undefined}
-        />
-      </div>
+          <KpiInfoCard
+            label="Campanha · maior MRR"
+            value={(convAgg.topMrrCamp as any)?.nome ?? "—"}
+            sub={convAgg.topMrrCamp ? BRL((convAgg.topMrrCamp as any).valor) : undefined}
+          />
+          <KpiInfoCard
+            label="Campanha · maior valor"
+            value={(convAgg.topValorCamp as any)?.nome ?? "—"}
+            sub={convAgg.topValorCamp ? BRL((convAgg.topValorCamp as any).valor) : undefined}
+          />
+          <KpiInfoCard
+            label="Top 3 Embaixadores"
+            value={convAgg.top3.length > 0 ? convAgg.top3.map((t, i) => `${i + 1}. ${t.nome}`).join(" · ") : "—"}
+            sub={convAgg.top3.length > 0 ? convAgg.top3.map((t) => BRL(t.soma)).join(" · ") : undefined}
+          />
+        </div>
+      </KpiSection>
 
       {/* Conversões por embaixador */}
       <SectionCard

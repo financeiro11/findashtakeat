@@ -2137,11 +2137,11 @@ function Top3PodiumCard({ top3, activeFilters }: { top3: Array<{ nome: string; s
       >
         <FilterIndicator active={activeFilters} />
         <div className="text-[11px] uppercase tracking-wide text-muted-foreground pr-5">Top 3 Embaixadores</div>
-        <div className="mt-1 text-lg font-semibold tabular-nums text-foreground truncate">
+        <div className="mt-1 text-[10.5px] font-bold tabular-nums text-foreground truncate">
           {hasData ? top3.map((t, i) => `${i + 1}. ${t.nome}`).join(" · ") : "—"}
         </div>
         {hasData && (
-          <div className="mt-0.5 text-[10.5px] text-muted-foreground truncate">
+          <div className="mt-0.5 text-[10.5px] font-bold tabular-nums text-muted-foreground truncate">
             {top3.map((t) => BRL(t.soma)).join(" · ")}
           </div>
         )}

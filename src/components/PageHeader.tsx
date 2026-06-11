@@ -116,39 +116,31 @@ export function PageHeader({ breadcrumbs, context }: PageHeaderProps) {
         {ctx && <span className="ml-2 truncate text-[12px] text-muted-foreground">· {ctx}</span>}
       </nav>
 
-      <div className="flex shrink-0 items-center gap-1.5">
-        <Popover>
-          <PopoverTrigger asChild>
-            <button className="ghost-btn"><CalIcon className="h-3.5 w-3.5" /> {fmtMonth(period)}</button>
-          </PopoverTrigger>
-          <PopoverContent className="w-auto p-0" align="end">
-            <Calendar
-              mode="single"
-              selected={period}
-              onSelect={(d) => d && setPeriod(d)}
-              className={cn("p-3 pointer-events-auto")}
-            />
-          </PopoverContent>
-        </Popover>
+      {pathname !== "/operacional/parceiros" && (
+        <div className="flex shrink-0 items-center gap-1.5">
+          <Popover>
+            <PopoverTrigger asChild>
+              <button className="ghost-btn"><CalIcon className="h-3.5 w-3.5" /> {fmtMonth(period)}</button>
+            </PopoverTrigger>
+            <PopoverContent className="w-auto p-0" align="end">
+              <Calendar mode="single" selected={period} onSelect={(d) => d && setPeriod(d)} className={cn("p-3 pointer-events-auto")} />
+            </PopoverContent>
+          </Popover>
 
-        <Popover>
-          <PopoverTrigger asChild>
-            <button className="ghost-btn"><GitCompare className="h-3.5 w-3.5" /> vs {fmtMonth(compare)}</button>
-          </PopoverTrigger>
-          <PopoverContent className="w-auto p-0" align="end">
-            <Calendar
-              mode="single"
-              selected={compare}
-              onSelect={(d) => d && setCompare(d)}
-              className={cn("p-3 pointer-events-auto")}
-            />
-          </PopoverContent>
-        </Popover>
+          <Popover>
+            <PopoverTrigger asChild>
+              <button className="ghost-btn"><GitCompare className="h-3.5 w-3.5" /> vs {fmtMonth(compare)}</button>
+            </PopoverTrigger>
+            <PopoverContent className="w-auto p-0" align="end">
+              <Calendar mode="single" selected={compare} onSelect={(d) => d && setCompare(d)} className={cn("p-3 pointer-events-auto")} />
+            </PopoverContent>
+          </Popover>
 
-        <button onClick={handleAssistant} className="ghost-btn px-2" title="Assistente IA"><SlidersHorizontal className="h-3.5 w-3.5" /></button>
-        <button onClick={handleDownload} className="ghost-btn px-2" title="Exportar (PDF)"><Download className="h-3.5 w-3.5" /></button>
-        <button onClick={handleRefresh} className="ghost-btn px-2" title="Atualizar"><RefreshCw className="h-3.5 w-3.5" /></button>
-      </div>
+          <button onClick={handleAssistant} className="ghost-btn px-2" title="Assistente IA"><SlidersHorizontal className="h-3.5 w-3.5" /></button>
+          <button onClick={handleDownload} className="ghost-btn px-2" title="Exportar (PDF)"><Download className="h-3.5 w-3.5" /></button>
+          <button onClick={handleRefresh} className="ghost-btn px-2" title="Atualizar"><RefreshCw className="h-3.5 w-3.5" /></button>
+        </div>
+      )}
     </div>
   );
 }

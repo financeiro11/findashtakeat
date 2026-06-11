@@ -898,6 +898,8 @@ export default function Parceiros() {
       .filter((r) => {
         if (!r.ativo) return false;
         if (!r.dataIndicacao) return false;
+        if (embFilter.size > 0 && !embFilter.has(r.embaixador)) return false;
+        if (campFilter.size > 0 && !campFilter.has(r.campanha)) return false;
         const ind = new Date(r.dataIndicacao);
         const cutoff = new Date();
         cutoff.setMonth(cutoff.getMonth() - 2);
@@ -907,7 +909,7 @@ export default function Parceiros() {
     const recValor = base.reduce((s, r) => s + (r.recorrenciaValor || 0), 0);
     const mrrAtivo = base.reduce((s, r) => s + (r.mrr || 0), 0);
     return { count, recValor, mrrAtivo };
-  }, [recRows, cadastroByNome]);
+  }, [recRows, cadastroByNome, embFilter, campFilter]);
 
   // ===== Apuração Recorrências (período atual) =====
   const recAgg = useMemo(() => {

@@ -108,11 +108,17 @@ export function GestaoParceirosDialog() {
   const [form, setForm] = useState<Omit<Parceiro, "id">>(emptyForm);
   const [saving, setSaving] = useState(false);
   const [importing, setImporting] = useState(false);
+  const [search, setSearch] = useState("");
   const fileRef = useRef<HTMLInputElement>(null);
   const [mapOpen, setMapOpen] = useState(false);
   const [pendingRows, setPendingRows] = useState<Record<string, any>[]>([]);
   const [pendingHeaders, setPendingHeaders] = useState<string[]>([]);
   const [mapping, setMapping] = useState<Record<string, string>>({});
+
+  const filteredRows = rows.filter((p) =>
+    norm(p.nome).includes(norm(search))
+  );
+
 
   const DB_FIELDS: { key: string; label: string; required?: boolean }[] = [
     { key: "nome", label: "Nome", required: true },

@@ -495,16 +495,27 @@ export function GestaoParceirosDialog() {
 
           {/* List */}
           <div className="rounded-lg border border-border bg-card/40 p-3">
-            <div className="mb-2 text-[12px] font-medium uppercase tracking-wide text-muted-foreground">
-              Parceiros cadastrados ({rows.length})
+            <div className="mb-2 flex items-center justify-between gap-2">
+              <div className="text-[12px] font-medium uppercase tracking-wide text-muted-foreground">
+                Parceiros cadastrados ({filteredRows.length}{search ? `/${rows.length}` : ""})
+              </div>
             </div>
+            <Input
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Buscar parceiro pelo nome…"
+              className="mb-2 h-8 text-[12.5px]"
+            />
             <div className="max-h-[420px] space-y-1.5 overflow-y-auto pr-1">
               {loading ? (
                 <div className="py-8 text-center text-[12.5px] text-muted-foreground">Carregando…</div>
-              ) : rows.length === 0 ? (
-                <div className="py-8 text-center text-[12.5px] text-muted-foreground">Nenhum parceiro cadastrado</div>
+              ) : filteredRows.length === 0 ? (
+                <div className="py-8 text-center text-[12.5px] text-muted-foreground">
+                  {search ? "Nenhum parceiro encontrado" : "Nenhum parceiro cadastrado"}
+                </div>
               ) : (
-                rows.map((p) => (
+                filteredRows.map((p) => (
+
                   <div
                     key={p.id}
                     className={cn(

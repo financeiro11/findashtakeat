@@ -324,8 +324,8 @@ function Inner({ nodes, edges, viewport, title, locked, onChange }: Props) {
 
   return (
     <div className="flex h-full">
-      {/* Palette */}
-      {paletteOpen ? (
+      {/* Palette — hidden when locked/published */}
+      {!locked && (paletteOpen ? (
         <aside className="w-48 shrink-0 border-r bg-background/60 p-2.5 overflow-y-auto relative">
           <div className="flex items-center justify-between px-1 mb-1.5">
             <div className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wide">Blocos</div>
@@ -364,11 +364,16 @@ function Inner({ nodes, edges, viewport, title, locked, onChange }: Props) {
         >
           <PanelRightClose className="h-3.5 w-3.5 text-muted-foreground" />
         </button>
-      )}
+      ))}
 
       {/* Canvas */}
-      <div className="flex-1 relative" ref={wrapperRef} onDrop={onDrop} onDragOver={onDragOver}>
+      <div className="flex-1 relative" ref={wrapperRef} onDrop={locked ? undefined : onDrop} onDragOver={locked ? undefined : onDragOver}>
         <div className="absolute top-2 right-2 z-10 flex gap-1.5">
+          {locked && (
+            <span className="inline-flex items-center h-8 px-2.5 rounded-md border bg-emerald-50 text-emerald-800 border-emerald-200 text-[11px] font-semibold dark:bg-emerald-950/40 dark:text-emerald-300 dark:border-emerald-900">
+              🔒 Publicado · somente leitura
+            </span>
+          )}
           <Button size="sm" variant="outline" className="h-8 gap-1.5" onClick={exportMermaid}>
             <FileCode2 className="h-3.5 w-3.5" /> Mermaid
           </Button>
@@ -379,19 +384,27 @@ function Inner({ nodes, edges, viewport, title, locked, onChange }: Props) {
         <ReactFlow
           nodes={hydratedNodes}
           edges={hydratedEdges}
-          onNodesChange={onNodesChange}
-          onEdgesChange={onEdgesChange}
-          onConnect={onConnect}
+          onNodesChange={locked ? undefined : onNodesChange}
+          onEdgesChange={locked ? undefined : onEdgesChange}
+          onConnect={locked ? undefined : onConnect}
           onNodeDragStart={onNodeDragStart}
           nodeTypes={NODE_TYPES}
           defaultViewport={viewport}
           fitView={nodes.length > 0}
           snapToGrid
           snapGrid={[16, 16]}
-          deleteKeyCode={["Backspace", "Delete"]}
+          deleteKeyCode={locked ? null : ["Backspace", "Delete"]}
           multiSelectionKeyCode={["Shift", "Meta", "Control"]}
           selectionKeyCode="Shift"
+          nodesDraggable={!locked}
+          nodesConnectable={!locked}
+          elementsSelectable={!locked}
+          edgesFocusable={!locked}
+          nodesFocusable={!locked}
           panOnDrag
+          panOnScroll
+          zoomOnScroll={false}
+          zoomOnPinch
           proOptions={{ hideAttribution: true }}
         >
           <Background variant={BackgroundVariant.Dots} gap={16} size={1} />

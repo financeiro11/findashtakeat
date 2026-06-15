@@ -185,9 +185,15 @@ function Inner({ nodes, edges, viewport, title, locked, onChange }: Props) {
     onChange({ nodes: next, edges, viewport: getViewport() });
   }, [nodes, edges, onChange, getViewport, pushHistory]);
 
+  const updateColor = useCallback((id: string, color: string) => {
+    pushHistory();
+    const next = nodes.map(n => n.id === id ? { ...n, data: { ...n.data, color } } : n);
+    onChange({ nodes: next, edges, viewport: getViewport() });
+  }, [nodes, edges, onChange, getViewport, pushHistory]);
+
   const hydratedNodes = useMemo(
-    () => nodes.map(n => ({ ...n, data: { ...n.data, onLabelChange: updateLabel } })),
-    [nodes, updateLabel]
+    () => nodes.map(n => ({ ...n, data: { ...n.data, onLabelChange: updateLabel, onColorChange: updateColor } })),
+    [nodes, updateLabel, updateColor]
   );
 
   const hydratedEdges = useMemo<Edge[]>(

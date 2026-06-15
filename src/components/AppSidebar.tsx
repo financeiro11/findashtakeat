@@ -152,17 +152,6 @@ export function AppSidebar() {
           )}
         </div>
 
-        {/* Footer / user */}
-        <div className="mt-auto flex items-center gap-2 border-t border-sidebar-border px-3 py-2.5">
-          <div className="flex h-7 w-7 items-center justify-center rounded-md bg-sidebar-foreground text-[10.5px] font-semibold text-sidebar">
-            {initials}
-          </div>
-          <div className="min-w-0 flex-1 text-[11.5px] leading-tight">
-            <div className="truncate font-semibold text-sidebar-foreground">{profile?.nome ?? "—"}</div>
-            <div className="truncate text-sidebar-foreground/70">{profile?.cargo ?? "—"}</div>
-          </div>
-          <Settings className="h-3.5 w-3.5 text-sidebar-foreground/70" />
-        </div>
       </SidebarContent>
     </Sidebar>
   );

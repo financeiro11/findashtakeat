@@ -50,7 +50,7 @@ export function WorkspaceEditor({ value, onChange, pageId }: Props) {
       Dropcursor.configure({ color: "hsl(var(--primary))", width: 2 }),
       TextAlign.configure({ types: ["heading", "paragraph"] }),
       TaskList,
-      TaskItem.configure({ nested: true }),
+      TaskItem.extend({ draggable: true }).configure({ nested: true }),
       Link.configure({ openOnClick: false, HTMLAttributes: { class: "text-primary underline underline-offset-2" } }),
       Image.configure({ HTMLAttributes: { class: "rounded-lg border my-3 max-w-full" } }),
       Placeholder.configure({

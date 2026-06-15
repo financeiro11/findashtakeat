@@ -313,6 +313,7 @@ export default function Flows() {
                   edges={draft.edges as any}
                   viewport={draft.viewport}
                   title={draft.title}
+                  locked={draft.status === "Publicado"}
                   onChange={(next) => updateDraft({ nodes: next.nodes as any, edges: next.edges as any, viewport: next.viewport })}
                 />
               </div>

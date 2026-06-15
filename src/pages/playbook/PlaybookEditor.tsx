@@ -32,7 +32,7 @@ export function PlaybookEditor({ value, onChange, editable, playbookId }: Props)
     extensions: [
       StarterKit.configure({ heading: { levels: [1, 2, 3] } }),
       TaskList,
-      TaskItem.configure({ nested: true }),
+      TaskItem.extend({ draggable: true }).configure({ nested: true }),
       Link.configure({ openOnClick: false, HTMLAttributes: { class: "text-primary underline" } }),
       Image.configure({ HTMLAttributes: { class: "rounded-md border my-2 max-w-full" } }),
       Placeholder.configure({ placeholder: "Comece a escrever o processo..." }),

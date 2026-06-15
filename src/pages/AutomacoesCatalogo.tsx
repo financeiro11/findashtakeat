@@ -35,6 +35,7 @@ type Automacao = {
 const STATUS_COLS = [
   { key: "Ideias", icon: "💡", accent: "bg-amber-500" },
   { key: "A fazer", icon: "📝", accent: "bg-slate-500" },
+  { key: "Em andamento", icon: "⚙️", accent: "bg-sky-500" },
   { key: "Em teste", icon: "🧪", accent: "bg-blue-500" },
   { key: "Rodando", icon: "✅", accent: "bg-emerald-500" },
 ] as const;

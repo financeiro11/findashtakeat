@@ -332,7 +332,8 @@ export default function Tarefas() {
   const total = baseForCounts.length;
   const emAnd = baseForCounts.filter(r => ["Em andamento", "Acompanhamento", "Revisão", "Tasks - RPA"].includes(r.status)).length;
   const concl = baseForCounts.filter(r => r.status === "Concluído").length;
-  const atras = baseForCounts.filter(isAtrasada).length;
+  // Conta apenas tarefas atrasadas cujo status está visível nas colunas (evita contar registros de status legados/órfãos que não aparecem na UI)
+  const atras = baseForCounts.filter(r => isAtrasada(r) && COLUMNS.includes(r.status)).length;
   const pctEm = total ? Math.round((emAnd / total) * 100) : 0;
   const META_CONCLUIDAS = 22;
 

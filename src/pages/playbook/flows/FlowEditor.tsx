@@ -22,6 +22,7 @@ type Props = {
   edges: Edge[];
   viewport: { x: number; y: number; zoom: number };
   title?: string;
+  locked?: boolean;
   onChange: (next: { nodes: Node[]; edges: Edge[]; viewport: { x: number; y: number; zoom: number } }) => void;
 };
 
@@ -76,7 +77,7 @@ function nodeWithExportSize(node: Node): Node {
   return { ...node, width, height } as Node;
 }
 
-function Inner({ nodes, edges, viewport, title, onChange }: Props) {
+function Inner({ nodes, edges, viewport, title, locked, onChange }: Props) {
   const wrapperRef = useRef<HTMLDivElement>(null);
   const { screenToFlowPosition, getViewport } = useReactFlow();
 

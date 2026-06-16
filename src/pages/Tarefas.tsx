@@ -271,6 +271,7 @@ export default function Tarefas() {
   const [chipPrio, setChipPrio] = useState<string>("");
   const [chipResp, setChipResp] = useState<string>("");
   const [chipAtrasadas, setChipAtrasadas] = useState(false);
+  const [chipPeriodo, setChipPeriodo] = useState<string>(""); // "", "mes", "3m", "ano"
 
   // Filtros tabela (header)
   const [fStatus, setFStatus] = useState<string[]>([]);

@@ -246,7 +246,9 @@ export default function Workspace() {
   const totalPages = useMemo(() => pages.filter(p => !p.archived).length, [pages]);
 
   const renderTree = (parent: string | null, depth = 0): React.ReactNode => {
-    const children = visiblePages.filter(p => p.parent_id === parent);
+    const children = visiblePages
+      .filter(p => p.parent_id === parent)
+      .sort((a, b) => ((a.position ?? 0) - (b.position ?? 0)) || a.created_at.localeCompare(b.created_at));
     if (children.length === 0) return null;
     return (
       <ul>

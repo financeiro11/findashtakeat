@@ -300,6 +300,23 @@ export default function Tarefas() {
 
   const responsaveis = useMemo(() => ["Henrique", "Júlia"], []);
 
+  const periodoMatch = (r: Tarefa) => {
+    if (!chipPeriodo) return true;
+    const ref = r.prazo ? new Date(r.prazo) : new Date(r.created_at);
+    const now = new Date();
+    if (chipPeriodo === "mes") {
+      return ref.getMonth() === now.getMonth() && ref.getFullYear() === now.getFullYear();
+    }
+    if (chipPeriodo === "3m") {
+      const cutoff = new Date(now); cutoff.setMonth(cutoff.getMonth() - 3);
+      return ref >= cutoff;
+    }
+    if (chipPeriodo === "ano") {
+      return ref.getFullYear() === now.getFullYear();
+    }
+    return true;
+  };
+
   const filteredBase = useMemo(() => {
     const q = search.trim().toLowerCase();
     return rows.filter(r => {
@@ -307,9 +324,10 @@ export default function Tarefas() {
       if (chipPrio && r.prioridade !== chipPrio) return false;
       if (chipResp && normalizeResp(r.responsavel) !== chipResp) return false;
       if (chipAtrasadas && !isAtrasada(r)) return false;
+      if (!periodoMatch(r)) return false;
       return true;
     });
-  }, [rows, search, chipPrio, chipResp, chipAtrasadas]);
+  }, [rows, search, chipPrio, chipResp, chipAtrasadas, chipPeriodo]);
 
   const filteredTable = useMemo(() => filteredBase.filter(r => {
     if (fStatus.length && !fStatus.includes(r.status)) return false;
@@ -326,9 +344,10 @@ export default function Tarefas() {
       if (q && !r.titulo.toLowerCase().includes(q) && !(r.responsavel || "").toLowerCase().includes(q)) return false;
       if (chipPrio && r.prioridade !== chipPrio) return false;
       if (chipResp && normalizeResp(r.responsavel) !== chipResp) return false;
+      if (!periodoMatch(r)) return false;
       return true;
     });
-  }, [rows, search, chipPrio, chipResp]);
+  }, [rows, search, chipPrio, chipResp, chipPeriodo]);
 
   const total = baseForCounts.length;
   const emAnd = baseForCounts.filter(r => ["Em andamento", "Acompanhamento", "Revisão", "Tasks - RPA"].includes(r.status)).length;

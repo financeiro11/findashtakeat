@@ -376,11 +376,14 @@ export default function Tarefas() {
   };
 
   const create = async (t: Partial<Tarefa>) => {
+    if (!t.titulo?.trim()) { toast.error("Título é obrigatório"); return; }
+    if (!t.responsavel) { toast.error("Responsável é obrigatório"); return; }
+    if (!t.prazo) { toast.error("Prazo é obrigatório"); return; }
     const ordem = rows.length ? Math.max(...rows.map(r => r.ordem)) + 1 : 1;
     const { error } = await supabase.from("tarefas").insert({
-      ordem, titulo: t.titulo || "Nova tarefa", responsavel: t.responsavel || null,
+      ordem, titulo: t.titulo, responsavel: t.responsavel,
       status: t.status || creatingStatus, prioridade: t.prioridade || "Média",
-      prazo: t.prazo || null, observacao: t.observacao || null,
+      prazo: t.prazo, observacao: t.observacao || null,
       subtarefas: (t.subtarefas || []) as any,
     });
     if (error) toast.error(error.message);

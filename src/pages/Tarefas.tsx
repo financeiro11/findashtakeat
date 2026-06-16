@@ -1300,20 +1300,12 @@ function TaskDialog({ columns, open, tarefa, defaultStatus, onClose, onSave, tit
         </div>
         <DialogFooter>
           {isEdit ? (
-            <Button variant="outline" onClick={onClose}>Fechar</Button>
+            <Button variant="outline" onClick={onClose}>Fechar <span className="ml-2 text-[10px] text-muted-foreground">Ctrl+Enter</span></Button>
           ) : (
             <>
               <Button variant="outline" onClick={onClose}>Cancelar</Button>
-              <Button onClick={() => onSave({
-                titulo,
-                responsavel: responsavel || null,
-                status,
-                prioridade,
-                prazo: prazo || null,
-                observacao: observacao || null,
-                subtarefas,
-              })}>
-                Criar
+              <Button onClick={submit} disabled={!canSave} title={canSave ? "" : "Preencha título, responsável e prazo"}>
+                Criar <span className="ml-2 text-[10px] opacity-70">Ctrl+Enter</span>
               </Button>
             </>
           )}

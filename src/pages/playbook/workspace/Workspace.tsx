@@ -67,6 +67,7 @@ export default function Workspace() {
   const [draft, setDraft] = useState<WorkspacePage | null>(null);
   const [search, setSearch] = useState("");
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  const [collapsedRoots, setCollapsedRoots] = useState<Set<string>>(new Set());
   const [view, setView] = useState<"all" | "favorites" | "recents" | "archive">("all");
   const [saveState, setSaveState] = useState<"idle" | "saving" | "saved" | "error">("idle");
   const [confirmDelete, setConfirmDelete] = useState(false);
@@ -222,7 +223,7 @@ export default function Workspace() {
         {children.map(p => {
           const subs = pages.filter(c => c.parent_id === p.id);
           const hasChildren = subs.length > 0;
-          const isExpanded = expanded.has(p.id) || depth === 0; // root folders open by default
+          const isExpanded = depth === 0 ? !collapsedRoots.has(p.id) : expanded.has(p.id);
           const active = selectedId === p.id;
           return (
             <li key={p.id}>
@@ -237,11 +238,19 @@ export default function Workspace() {
                   className="h-4 w-4 grid place-items-center text-muted-foreground hover:text-foreground shrink-0"
                   onClick={() => {
                     if (!hasChildren) return;
-                    setExpanded(prev => {
-                      const n = new Set(prev);
-                      n.has(p.id) ? n.delete(p.id) : n.add(p.id);
-                      return n;
-                    });
+                    if (depth === 0) {
+                      setCollapsedRoots(prev => {
+                        const n = new Set(prev);
+                        n.has(p.id) ? n.delete(p.id) : n.add(p.id);
+                        return n;
+                      });
+                    } else {
+                      setExpanded(prev => {
+                        const n = new Set(prev);
+                        n.has(p.id) ? n.delete(p.id) : n.add(p.id);
+                        return n;
+                      });
+                    }
                   }}
                 >
                   {hasChildren ? (isExpanded ? <ChevronDown className="h-3 w-3"/> : <ChevronRight className="h-3 w-3"/>) : <span className="block h-1 w-1 rounded-full bg-muted-foreground/40" />}

@@ -271,6 +271,7 @@ export default function Tarefas() {
   const [chipPrio, setChipPrio] = useState<string>("");
   const [chipResp, setChipResp] = useState<string>("");
   const [chipAtrasadas, setChipAtrasadas] = useState(false);
+  const [chipPeriodo, setChipPeriodo] = useState<string>(""); // "", "mes", "3m", "ano"
 
   // Filtros tabela (header)
   const [fStatus, setFStatus] = useState<string[]>([]);
@@ -299,6 +300,23 @@ export default function Tarefas() {
 
   const responsaveis = useMemo(() => ["Henrique", "Júlia"], []);
 
+  const periodoMatch = (r: Tarefa) => {
+    if (!chipPeriodo) return true;
+    const ref = r.prazo ? new Date(r.prazo) : new Date(r.created_at);
+    const now = new Date();
+    if (chipPeriodo === "mes") {
+      return ref.getMonth() === now.getMonth() && ref.getFullYear() === now.getFullYear();
+    }
+    if (chipPeriodo === "3m") {
+      const cutoff = new Date(now); cutoff.setMonth(cutoff.getMonth() - 3);
+      return ref >= cutoff;
+    }
+    if (chipPeriodo === "ano") {
+      return ref.getFullYear() === now.getFullYear();
+    }
+    return true;
+  };
+
   const filteredBase = useMemo(() => {
     const q = search.trim().toLowerCase();
     return rows.filter(r => {
@@ -306,9 +324,10 @@ export default function Tarefas() {
       if (chipPrio && r.prioridade !== chipPrio) return false;
       if (chipResp && normalizeResp(r.responsavel) !== chipResp) return false;
       if (chipAtrasadas && !isAtrasada(r)) return false;
+      if (!periodoMatch(r)) return false;
       return true;
     });
-  }, [rows, search, chipPrio, chipResp, chipAtrasadas]);
+  }, [rows, search, chipPrio, chipResp, chipAtrasadas, chipPeriodo]);
 
   const filteredTable = useMemo(() => filteredBase.filter(r => {
     if (fStatus.length && !fStatus.includes(r.status)) return false;
@@ -325,9 +344,10 @@ export default function Tarefas() {
       if (q && !r.titulo.toLowerCase().includes(q) && !(r.responsavel || "").toLowerCase().includes(q)) return false;
       if (chipPrio && r.prioridade !== chipPrio) return false;
       if (chipResp && normalizeResp(r.responsavel) !== chipResp) return false;
+      if (!periodoMatch(r)) return false;
       return true;
     });
-  }, [rows, search, chipPrio, chipResp]);
+  }, [rows, search, chipPrio, chipResp, chipPeriodo]);
 
   const total = baseForCounts.length;
   const emAnd = baseForCounts.filter(r => ["Em andamento", "Acompanhamento", "Revisão", "Tasks - RPA"].includes(r.status)).length;
@@ -356,11 +376,14 @@ export default function Tarefas() {
   };
 
   const create = async (t: Partial<Tarefa>) => {
+    if (!t.titulo?.trim()) { toast.error("Título é obrigatório"); return; }
+    if (!t.responsavel) { toast.error("Responsável é obrigatório"); return; }
+    if (!t.prazo) { toast.error("Prazo é obrigatório"); return; }
     const ordem = rows.length ? Math.max(...rows.map(r => r.ordem)) + 1 : 1;
     const { error } = await supabase.from("tarefas").insert({
-      ordem, titulo: t.titulo || "Nova tarefa", responsavel: t.responsavel || null,
+      ordem, titulo: t.titulo, responsavel: t.responsavel,
       status: t.status || creatingStatus, prioridade: t.prioridade || "Média",
-      prazo: t.prazo || null, observacao: t.observacao || null,
+      prazo: t.prazo, observacao: t.observacao || null,
       subtarefas: (t.subtarefas || []) as any,
     });
     if (error) toast.error(error.message);
@@ -375,6 +398,7 @@ export default function Tarefas() {
   // ---------- Header com KPIs + chips ----------
   return (
     <div className="space-y-4 p-5">
+      <div className="sticky top-0 z-20 -mx-5 -mt-5 px-5 pt-5 pb-4 bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/80 border-b space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h2 className="text-xl font-bold tracking-tight">Tarefas</h2>
@@ -415,6 +439,17 @@ export default function Tarefas() {
             className="h-8 w-72 pl-7 text-xs"
           />
         </div>
+        <Select value={chipPeriodo || "all"} onValueChange={(v) => setChipPeriodo(v === "all" ? "" : v)}>
+          <SelectTrigger className="h-8 w-[170px] text-xs">
+            <SelectValue placeholder="Período" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">Todo o período</SelectItem>
+            <SelectItem value="mes">Mês corrente</SelectItem>
+            <SelectItem value="3m">Últimos 3 meses</SelectItem>
+            <SelectItem value="ano">Ano corrente</SelectItem>
+          </SelectContent>
+        </Select>
         <ChipSelect
           label="Todas prioridades"
           value={chipPrio}
@@ -455,6 +490,7 @@ export default function Tarefas() {
             <TableIcon className="h-3.5 w-3.5" /> Tabela
           </button>
         </div>
+      </div>
       </div>
 
       {view === "kanban" ? (
@@ -1108,9 +1144,35 @@ function TaskDialog({ columns, open, tarefa, defaultStatus, onClose, onSave, tit
   }, [titulo, responsavel, status, prioridade, prazo, observacao, subtarefas, open, isEdit]);
   useEffect(() => { if (open) firstSyncRef.current = true; }, [open, tarefa?.id]);
 
+  const canSave = !!titulo.trim() && !!responsavel && !!prazo;
+  const submit = () => {
+    if (!canSave) {
+      toast.error("Preencha título, responsável e prazo");
+      return;
+    }
+    onSave({
+      titulo,
+      responsavel: responsavel || null,
+      status,
+      prioridade,
+      prazo: prazo || null,
+      observacao: observacao || null,
+      subtarefas,
+    });
+  };
+
   return (
     <Dialog open={open} onOpenChange={(o) => !o && onClose()}>
-      <DialogContent className="max-w-xl max-h-[90vh] overflow-y-auto">
+      <DialogContent
+        className="max-w-xl max-h-[90vh] overflow-y-auto"
+        onKeyDown={(e) => {
+          if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
+            e.preventDefault();
+            if (isEdit) onClose();
+            else submit();
+          }
+        }}
+      >
         <DialogHeader><DialogTitle>{title}</DialogTitle></DialogHeader>
         <div className="space-y-3">
           <div>
@@ -1238,20 +1300,12 @@ function TaskDialog({ columns, open, tarefa, defaultStatus, onClose, onSave, tit
         </div>
         <DialogFooter>
           {isEdit ? (
-            <Button variant="outline" onClick={onClose}>Fechar</Button>
+            <Button variant="outline" onClick={onClose}>Fechar <span className="ml-2 text-[10px] text-muted-foreground">Ctrl+Enter</span></Button>
           ) : (
             <>
               <Button variant="outline" onClick={onClose}>Cancelar</Button>
-              <Button onClick={() => onSave({
-                titulo,
-                responsavel: responsavel || null,
-                status,
-                prioridade,
-                prazo: prazo || null,
-                observacao: observacao || null,
-                subtarefas,
-              })}>
-                Criar
+              <Button onClick={submit} disabled={!canSave} title={canSave ? "" : "Preencha título, responsável e prazo"}>
+                Criar <span className="ml-2 text-[10px] opacity-70">Ctrl+Enter</span>
               </Button>
             </>
           )}

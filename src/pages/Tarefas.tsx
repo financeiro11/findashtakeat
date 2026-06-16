@@ -1144,9 +1144,35 @@ function TaskDialog({ columns, open, tarefa, defaultStatus, onClose, onSave, tit
   }, [titulo, responsavel, status, prioridade, prazo, observacao, subtarefas, open, isEdit]);
   useEffect(() => { if (open) firstSyncRef.current = true; }, [open, tarefa?.id]);
 
+  const canSave = !!titulo.trim() && !!responsavel && !!prazo;
+  const submit = () => {
+    if (!canSave) {
+      toast.error("Preencha título, responsável e prazo");
+      return;
+    }
+    onSave({
+      titulo,
+      responsavel: responsavel || null,
+      status,
+      prioridade,
+      prazo: prazo || null,
+      observacao: observacao || null,
+      subtarefas,
+    });
+  };
+
   return (
     <Dialog open={open} onOpenChange={(o) => !o && onClose()}>
-      <DialogContent className="max-w-xl max-h-[90vh] overflow-y-auto">
+      <DialogContent
+        className="max-w-xl max-h-[90vh] overflow-y-auto"
+        onKeyDown={(e) => {
+          if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
+            e.preventDefault();
+            if (isEdit) onClose();
+            else submit();
+          }
+        }}
+      >
         <DialogHeader><DialogTitle>{title}</DialogTitle></DialogHeader>
         <div className="space-y-3">
           <div>

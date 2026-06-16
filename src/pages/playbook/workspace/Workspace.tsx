@@ -75,6 +75,36 @@ export default function Workspace() {
   const [headerCollapsed, setHeaderCollapsed] = useState(false);
   const debounceRef = useRef<any>(null);
   const coverRef = useRef<HTMLInputElement>(null);
+  const [dragId, setDragId] = useState<string | null>(null);
+  const [dropTarget, setDropTarget] = useState<{ id: string; pos: "before" | "after" } | null>(null);
+
+  async function reorderSibling(sourceId: string, targetId: string, pos: "before" | "after") {
+    if (sourceId === targetId) return;
+    const source = pages.find(p => p.id === sourceId);
+    const target = pages.find(p => p.id === targetId);
+    if (!source || !target) return;
+    if (source.parent_id !== target.parent_id) {
+      toast.error("Só é possível reordenar entre itens do mesmo nível");
+      return;
+    }
+    const siblings = pages
+      .filter(p => p.parent_id === source.parent_id && p.id !== sourceId)
+      .sort((a, b) => (a.position ?? 0) - (b.position ?? 0));
+    const targetIdx = siblings.findIndex(s => s.id === targetId);
+    const insertAt = pos === "before" ? targetIdx : targetIdx + 1;
+    siblings.splice(insertAt, 0, source);
+    // Reassign positions sequentially
+    const updates = siblings.map((s, i) => ({ id: s.id, position: i }));
+    setPages(prev => prev.map(p => {
+      const u = updates.find(x => x.id === p.id);
+      return u ? { ...p, position: u.position } : p;
+    }));
+    // Persist (parallel)
+    await Promise.all(updates.map(u =>
+      supabase.from("workspace_pages").update({ position: u.position }).eq("id", u.id)
+    ));
+  }
+
 
   useEffect(() => { load(); }, []);
   useEffect(() => {
@@ -228,9 +258,35 @@ export default function Workspace() {
           return (
             <li key={p.id}>
               <div
+                draggable
+                onDragStart={(e) => { setDragId(p.id); e.dataTransfer.effectAllowed = "move"; e.dataTransfer.setData("text/plain", p.id); }}
+                onDragEnd={() => { setDragId(null); setDropTarget(null); }}
+                onDragOver={(e) => {
+                  if (!dragId || dragId === p.id) return;
+                  const src = pages.find(x => x.id === dragId);
+                  if (!src || src.parent_id !== p.parent_id) return;
+                  e.preventDefault();
+                  const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
+                  const pos: "before" | "after" = (e.clientY - r.top) < r.height / 2 ? "before" : "after";
+                  setDropTarget({ id: p.id, pos });
+                }}
+                onDragLeave={(e) => {
+                  if (dropTarget?.id === p.id) setDropTarget(null);
+                }}
+                onDrop={(e) => {
+                  e.preventDefault();
+                  if (dragId && dropTarget?.id === p.id) {
+                    reorderSibling(dragId, p.id, dropTarget.pos);
+                  }
+                  setDragId(null);
+                  setDropTarget(null);
+                }}
                 className={cn(
-                  "group flex items-center gap-1 rounded-md py-[5px] pr-1 transition-colors",
-                  active ? "bg-accent" : "hover:bg-accent/60"
+                  "group relative flex items-center gap-1 rounded-md py-[5px] pr-1 transition-colors",
+                  active ? "bg-accent" : "hover:bg-accent/60",
+                  dragId === p.id && "opacity-50",
+                  dropTarget?.id === p.id && dropTarget.pos === "before" && "before:absolute before:left-2 before:right-2 before:top-0 before:h-[2px] before:bg-primary before:rounded-full",
+                  dropTarget?.id === p.id && dropTarget.pos === "after" && "after:absolute after:left-2 after:right-2 after:bottom-0 after:h-[2px] after:bg-primary after:rounded-full"
                 )}
                 style={{ paddingLeft: 6 + depth * 14 }}
               >

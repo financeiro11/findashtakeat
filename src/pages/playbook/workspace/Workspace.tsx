@@ -67,6 +67,7 @@ export default function Workspace() {
   const [draft, setDraft] = useState<WorkspacePage | null>(null);
   const [search, setSearch] = useState("");
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  const [collapsedRoots, setCollapsedRoots] = useState<Set<string>>(new Set());
   const [view, setView] = useState<"all" | "favorites" | "recents" | "archive">("all");
   const [saveState, setSaveState] = useState<"idle" | "saving" | "saved" | "error">("idle");
   const [confirmDelete, setConfirmDelete] = useState(false);

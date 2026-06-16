@@ -75,6 +75,36 @@ export default function Workspace() {
   const [headerCollapsed, setHeaderCollapsed] = useState(false);
   const debounceRef = useRef<any>(null);
   const coverRef = useRef<HTMLInputElement>(null);
+  const [dragId, setDragId] = useState<string | null>(null);
+  const [dropTarget, setDropTarget] = useState<{ id: string; pos: "before" | "after" } | null>(null);
+
+  async function reorderSibling(sourceId: string, targetId: string, pos: "before" | "after") {
+    if (sourceId === targetId) return;
+    const source = pages.find(p => p.id === sourceId);
+    const target = pages.find(p => p.id === targetId);
+    if (!source || !target) return;
+    if (source.parent_id !== target.parent_id) {
+      toast.error("Só é possível reordenar entre itens do mesmo nível");
+      return;
+    }
+    const siblings = pages
+      .filter(p => p.parent_id === source.parent_id && p.id !== sourceId)
+      .sort((a, b) => (a.position ?? 0) - (b.position ?? 0));
+    const targetIdx = siblings.findIndex(s => s.id === targetId);
+    const insertAt = pos === "before" ? targetIdx : targetIdx + 1;
+    siblings.splice(insertAt, 0, source);
+    // Reassign positions sequentially
+    const updates = siblings.map((s, i) => ({ id: s.id, position: i }));
+    setPages(prev => prev.map(p => {
+      const u = updates.find(x => x.id === p.id);
+      return u ? { ...p, position: u.position } : p;
+    }));
+    // Persist (parallel)
+    await Promise.all(updates.map(u =>
+      supabase.from("workspace_pages").update({ position: u.position }).eq("id", u.id)
+    ));
+  }
+
 
   useEffect(() => { load(); }, []);
   useEffect(() => {

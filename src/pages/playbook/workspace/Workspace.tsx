@@ -258,9 +258,35 @@ export default function Workspace() {
           return (
             <li key={p.id}>
               <div
+                draggable
+                onDragStart={(e) => { setDragId(p.id); e.dataTransfer.effectAllowed = "move"; e.dataTransfer.setData("text/plain", p.id); }}
+                onDragEnd={() => { setDragId(null); setDropTarget(null); }}
+                onDragOver={(e) => {
+                  if (!dragId || dragId === p.id) return;
+                  const src = pages.find(x => x.id === dragId);
+                  if (!src || src.parent_id !== p.parent_id) return;
+                  e.preventDefault();
+                  const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
+                  const pos: "before" | "after" = (e.clientY - r.top) < r.height / 2 ? "before" : "after";
+                  setDropTarget({ id: p.id, pos });
+                }}
+                onDragLeave={(e) => {
+                  if (dropTarget?.id === p.id) setDropTarget(null);
+                }}
+                onDrop={(e) => {
+                  e.preventDefault();
+                  if (dragId && dropTarget?.id === p.id) {
+                    reorderSibling(dragId, p.id, dropTarget.pos);
+                  }
+                  setDragId(null);
+                  setDropTarget(null);
+                }}
                 className={cn(
-                  "group flex items-center gap-1 rounded-md py-[5px] pr-1 transition-colors",
-                  active ? "bg-accent" : "hover:bg-accent/60"
+                  "group relative flex items-center gap-1 rounded-md py-[5px] pr-1 transition-colors",
+                  active ? "bg-accent" : "hover:bg-accent/60",
+                  dragId === p.id && "opacity-50",
+                  dropTarget?.id === p.id && dropTarget.pos === "before" && "before:absolute before:left-2 before:right-2 before:top-0 before:h-[2px] before:bg-primary before:rounded-full",
+                  dropTarget?.id === p.id && dropTarget.pos === "after" && "after:absolute after:left-2 after:right-2 after:bottom-0 after:h-[2px] after:bg-primary after:rounded-full"
                 )}
                 style={{ paddingLeft: 6 + depth * 14 }}
               >

@@ -398,6 +398,7 @@ export default function Tarefas() {
   // ---------- Header com KPIs + chips ----------
   return (
     <div className="space-y-4 p-5">
+      <div className="sticky top-0 z-20 -mx-5 -mt-5 px-5 pt-5 pb-4 bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/80 border-b space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h2 className="text-xl font-bold tracking-tight">Tarefas</h2>
@@ -438,6 +439,17 @@ export default function Tarefas() {
             className="h-8 w-72 pl-7 text-xs"
           />
         </div>
+        <Select value={chipPeriodo || "all"} onValueChange={(v) => setChipPeriodo(v === "all" ? "" : v)}>
+          <SelectTrigger className="h-8 w-[170px] text-xs">
+            <SelectValue placeholder="Período" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">Todo o período</SelectItem>
+            <SelectItem value="mes">Mês corrente</SelectItem>
+            <SelectItem value="3m">Últimos 3 meses</SelectItem>
+            <SelectItem value="ano">Ano corrente</SelectItem>
+          </SelectContent>
+        </Select>
         <ChipSelect
           label="Todas prioridades"
           value={chipPrio}
@@ -478,6 +490,7 @@ export default function Tarefas() {
             <TableIcon className="h-3.5 w-3.5" /> Tabela
           </button>
         </div>
+      </div>
       </div>
 
       {view === "kanban" ? (

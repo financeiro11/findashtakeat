@@ -64,8 +64,15 @@ export default function Usuarios() {
 
   const remove = async (p: Profile) => {
     if (!confirm(`Excluir ${p.nome}?`)) return;
-    const { error } = await supabase.from("profiles").delete().eq("id", p.id);
-    if (error) toast.error(error.message); else { toast.success("Removido"); load(); }
+    const { data, error } = await supabase.functions.invoke("delete-user", {
+      body: { user_id: p.user_id, email: p.email },
+    });
+    if (error || (data as any)?.error) {
+      toast.error((data as any)?.error || error?.message || "Erro ao excluir");
+    } else {
+      toast.success("Removido");
+      load();
+    }
   };
 
   return (

@@ -64,14 +64,17 @@ export default function Usuarios() {
 
   const remove = async (p: Profile) => {
     if (!confirm(`Excluir ${p.nome}?`)) return;
+    setBusy(true);
     const { data, error } = await supabase.functions.invoke("delete-user", {
       body: { user_id: p.user_id, email: p.email },
     });
+    setBusy(false);
     if (error || (data as any)?.error) {
       toast.error((data as any)?.error || error?.message || "Erro ao excluir");
     } else {
       toast.success("Removido");
-      load();
+      setUsers((current) => current.filter((user) => user.id !== p.id && user.user_id !== p.user_id));
+      await load();
     }
   };
 
@@ -132,7 +135,7 @@ export default function Usuarios() {
                     <Button variant="ghost" size="icon" onClick={() => openEdit(u)}>
                       <Pencil className="h-4 w-4" />
                     </Button>
-                    <Button variant="ghost" size="icon" onClick={() => remove(u)}>
+                    <Button variant="ghost" size="icon" onClick={() => remove(u)} disabled={busy}>
                       <Trash2 className="h-4 w-4 text-destructive" />
                     </Button>
                   </TableCell>

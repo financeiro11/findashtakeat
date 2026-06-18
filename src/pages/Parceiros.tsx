@@ -1605,10 +1605,12 @@ export default function Parceiros() {
                   return (
                   <TableRow key={`rec-${r.id}`} className="text-[12.5px]">
                     <TableCell className="py-2.5">
-                      {r.ativo ? (
-                        <Badge className="bg-emerald-500/15 text-emerald-700 dark:text-emerald-400 hover:bg-emerald-500/20 text-[10.5px] font-normal">Ativo</Badge>
-                      ) : (
+                      {!r.ativo ? (
                         <Badge className="bg-rose-500/15 text-rose-700 dark:text-rose-400 hover:bg-rose-500/20 text-[10.5px] font-normal">Inativo</Badge>
+                      ) : r.vencida ? (
+                        <Badge className="bg-amber-500/15 text-amber-700 dark:text-amber-400 hover:bg-amber-500/20 text-[10.5px] font-normal">Vencida</Badge>
+                      ) : (
+                        <Badge className="bg-emerald-500/15 text-emerald-700 dark:text-emerald-400 hover:bg-emerald-500/20 text-[10.5px] font-normal">Ativo</Badge>
                       )}
                     </TableCell>
                     <TableCell className="py-2.5 font-medium text-foreground">

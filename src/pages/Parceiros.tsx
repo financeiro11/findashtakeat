@@ -928,7 +928,7 @@ export default function Parceiros() {
 
   // ===== Apuração Recorrências (período atual) =====
   const recAgg = useMemo(() => {
-    const ativos = recorrencias.filter((r) => r.ativo);
+    const ativos = recorrencias.filter((r) => r.ativo && !r.vencida);
     const count = ativos.length;
     const mrrAtivo = ativos.reduce((s, r) => s + (r.mrr || 0), 0);
     const recValor = ativos.reduce((s, r) => s + (r.recorrenciaValor || 0), 0);

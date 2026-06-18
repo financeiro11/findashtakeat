@@ -1840,6 +1840,14 @@ export default function Parceiros() {
         onDone={() => { loadRows(); loadRecorrencias(); }}
       />
 
+      <EditarRegistroDialog
+        open={editRegOpen}
+        onOpenChange={setEditRegOpen}
+        target={editRegTarget}
+        cadastros={cadastros.map((c) => ({ nome: c.nome, campanha: c.campanha, status: c.status }))}
+        onDone={() => { loadRows(); loadRecorrencias(); }}
+      />
+
       <HistoricoCampanhaSheet
         open={histOpen}
         onOpenChange={setHistOpen}

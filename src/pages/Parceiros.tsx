@@ -596,7 +596,7 @@ export default function Parceiros() {
         sheetName = "Apuração Recorrências";
         fileName = "apuracao-recorrencias.xlsx";
         rowsOut = recorrencias.map((r) => ({
-          Status: r.ativo ? "Ativo" : "Inativo",
+          Status: !r.ativo ? "Inativo" : (r as any).vencida ? "Vencida" : "Ativo",
           Campanha: r.campanha,
           Embaixador: r.embaixador,
           "Responsável Takeat": r.vendedor,

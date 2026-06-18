@@ -271,7 +271,7 @@ export default function Tarefas() {
   const [chipPrio, setChipPrio] = useState<string>("");
   const [chipResp, setChipResp] = useState<string>("");
   const [chipAtrasadas, setChipAtrasadas] = useState(false);
-  const [chipPeriodo, setChipPeriodo] = useState<string>(""); // "", "mes", "3m", "ano"
+  const [chipPeriodo, setChipPeriodo] = useState<string>("mes"); // "", "mes", "3m", "ano"
 
   // Filtros tabela (header)
   const [fStatus, setFStatus] = useState<string[]>([]);
@@ -398,7 +398,7 @@ export default function Tarefas() {
   // ---------- Header com KPIs + chips ----------
   return (
     <div className="space-y-4 p-5">
-      <div className="sticky top-0 z-20 -mx-5 -mt-5 px-5 pt-5 pb-4 bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/80 border-b space-y-4">
+      <div className="sticky top-0 z-30 -mx-5 -mt-5 px-5 pt-5 pb-4 bg-background border-b shadow-sm space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h2 className="text-xl font-bold tracking-tight">Tarefas</h2>

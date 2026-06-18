@@ -1257,29 +1257,54 @@ export default function Parceiros() {
                         (r.campanha || "").trim().toLowerCase() !== (r.campanhaCadastrada || "").trim().toLowerCase();
                       return (
                         <TableCell key={key} className={cn("py-2.5", COLUMNS[key].cellClass)}>
-                          {key === "embaixador" && r.embaixadorStatus === "nao_cadastrado" && r.embaixador ? (
-                            <span className="inline-flex items-center gap-1.5">
-                              <span>{r.embaixador}</span>
+                          {key === "embaixador" ? (
+                            <span className="inline-flex items-center gap-1.5 group/cell">
+                              <span>{r.embaixador || "—"}</span>
+                              {r.embaixadorStatus === "nao_cadastrado" && r.embaixador && (
+                                <TooltipProvider delayDuration={150}>
+                                  <Tooltip>
+                                    <TooltipTrigger asChild>
+                                      <button
+                                        type="button"
+                                        onClick={() => openNaoCadastrado(r.embaixador)}
+                                        className="inline-flex items-center justify-center rounded-full text-amber-600 dark:text-amber-400 hover:text-amber-700 focus:outline-none focus:ring-1 focus:ring-amber-500/40"
+                                        aria-label="Embaixador não cadastrado"
+                                      >
+                                        <AlertTriangle className="h-3.5 w-3.5" />
+                                      </button>
+                                    </TooltipTrigger>
+                                    <TooltipContent side="right" className="text-[11.5px]">
+                                      Embaixador não cadastrado. Clique para cadastrar ou associar.
+                                    </TooltipContent>
+                                  </Tooltip>
+                                </TooltipProvider>
+                              )}
                               <TooltipProvider delayDuration={150}>
                                 <Tooltip>
                                   <TooltipTrigger asChild>
                                     <button
                                       type="button"
-                                      onClick={() => openNaoCadastrado(r.embaixador)}
-                                      className="inline-flex items-center justify-center rounded-full text-amber-600 dark:text-amber-400 hover:text-amber-700 focus:outline-none focus:ring-1 focus:ring-amber-500/40"
-                                      aria-label="Embaixador não cadastrado"
+                                      onClick={() => openEditRegistro({
+                                        table: "parceiros_indicacoes",
+                                        id: r.id,
+                                        embaixadorAtual: r.embaixador || "",
+                                        campanhaAtual: r.campanha || "",
+                                        empresa: r.empresa,
+                                      })}
+                                      className="inline-flex items-center justify-center rounded-full text-muted-foreground hover:text-foreground opacity-0 group-hover/cell:opacity-100 focus:opacity-100 focus:outline-none focus:ring-1 focus:ring-primary/40 transition-opacity"
+                                      aria-label="Editar registro"
                                     >
-                                      <AlertTriangle className="h-3.5 w-3.5" />
+                                      <Pencil className="h-3 w-3" />
                                     </button>
                                   </TooltipTrigger>
                                   <TooltipContent side="right" className="text-[11.5px]">
-                                    Embaixador não cadastrado. Clique para cadastrar ou associar.
+                                    Editar embaixador / campanha
                                   </TooltipContent>
                                 </Tooltip>
                               </TooltipProvider>
                             </span>
                           ) : key === "campanha" ? (
-                            <span className="inline-flex items-center gap-1.5">
+                            <span className="inline-flex items-center gap-1.5 group/cell">
                               {COLUMNS.campanha.render(r)}
                               {hasLog("parceiros_indicacoes", r.id) && (
                                 <TooltipProvider delayDuration={150}>
@@ -1329,6 +1354,29 @@ export default function Parceiros() {
                                   </Tooltip>
                                 </TooltipProvider>
                               )}
+                              <TooltipProvider delayDuration={150}>
+                                <Tooltip>
+                                  <TooltipTrigger asChild>
+                                    <button
+                                      type="button"
+                                      onClick={() => openEditRegistro({
+                                        table: "parceiros_indicacoes",
+                                        id: r.id,
+                                        embaixadorAtual: r.embaixador || "",
+                                        campanhaAtual: r.campanha || "",
+                                        empresa: r.empresa,
+                                      })}
+                                      className="inline-flex items-center justify-center rounded-full text-muted-foreground hover:text-foreground opacity-0 group-hover/cell:opacity-100 focus:opacity-100 focus:outline-none focus:ring-1 focus:ring-primary/40 transition-opacity"
+                                      aria-label="Editar registro"
+                                    >
+                                      <Pencil className="h-3 w-3" />
+                                    </button>
+                                  </TooltipTrigger>
+                                  <TooltipContent side="right" className="text-[11.5px]">
+                                    Editar embaixador / campanha
+                                  </TooltipContent>
+                                </Tooltip>
+                              </TooltipProvider>
                             </span>
                           ) : (
                             COLUMNS[key].render(r)

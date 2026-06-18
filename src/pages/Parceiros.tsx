@@ -1667,7 +1667,7 @@ export default function Parceiros() {
                       )}
                     </TableCell>
                     <TableCell className="py-2.5 font-medium text-foreground">
-                      <span className="inline-flex items-center gap-1.5">
+                      <span className="inline-flex items-center gap-1.5 group/cell">
                         <span>{r.campanha || "—"}</span>
                         {hasLog("parceiros_recorrencias", r.id) && (
                           <TooltipProvider delayDuration={150}>
@@ -1717,10 +1717,33 @@ export default function Parceiros() {
                             </Tooltip>
                           </TooltipProvider>
                         )}
+                        <TooltipProvider delayDuration={150}>
+                          <Tooltip>
+                            <TooltipTrigger asChild>
+                              <button
+                                type="button"
+                                onClick={() => openEditRegistro({
+                                  table: "parceiros_recorrencias",
+                                  id: r.id,
+                                  embaixadorAtual: r.embaixador || "",
+                                  campanhaAtual: r.campanha || "",
+                                  empresa: r.empresa,
+                                })}
+                                className="inline-flex items-center justify-center rounded-full text-muted-foreground hover:text-foreground opacity-0 group-hover/cell:opacity-100 focus:opacity-100 focus:outline-none focus:ring-1 focus:ring-primary/40 transition-opacity"
+                                aria-label="Editar registro"
+                              >
+                                <Pencil className="h-3 w-3" />
+                              </button>
+                            </TooltipTrigger>
+                            <TooltipContent side="right" className="text-[11.5px]">
+                              Editar embaixador / campanha
+                            </TooltipContent>
+                          </Tooltip>
+                        </TooltipProvider>
                       </span>
                     </TableCell>
                     <TableCell className="py-2.5">
-                      <span className="inline-flex items-center gap-1.5">
+                      <span className="inline-flex items-center gap-1.5 group/cell">
                         <span>{r.embaixador || "—"}</span>
                         {!cadRec && r.embaixador && (
                           <TooltipProvider delayDuration={150}>
@@ -1741,6 +1764,29 @@ export default function Parceiros() {
                             </Tooltip>
                           </TooltipProvider>
                         )}
+                        <TooltipProvider delayDuration={150}>
+                          <Tooltip>
+                            <TooltipTrigger asChild>
+                              <button
+                                type="button"
+                                onClick={() => openEditRegistro({
+                                  table: "parceiros_recorrencias",
+                                  id: r.id,
+                                  embaixadorAtual: r.embaixador || "",
+                                  campanhaAtual: r.campanha || "",
+                                  empresa: r.empresa,
+                                })}
+                                className="inline-flex items-center justify-center rounded-full text-muted-foreground hover:text-foreground opacity-0 group-hover/cell:opacity-100 focus:opacity-100 focus:outline-none focus:ring-1 focus:ring-primary/40 transition-opacity"
+                                aria-label="Editar registro"
+                              >
+                                <Pencil className="h-3 w-3" />
+                              </button>
+                            </TooltipTrigger>
+                            <TooltipContent side="right" className="text-[11.5px]">
+                              Editar embaixador / campanha
+                            </TooltipContent>
+                          </Tooltip>
+                        </TooltipProvider>
                       </span>
                     </TableCell>
                     <TableCell className="py-2.5">{r.vendedor || "—"}</TableCell>

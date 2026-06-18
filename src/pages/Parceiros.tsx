@@ -257,8 +257,12 @@ export default function Parceiros() {
   const [editCampOpen, setEditCampOpen] = useState(false);
   const [editCampTarget, setEditCampTarget] = useState<EditarCampanhaTarget | null>(null);
 
+  const [editRegOpen, setEditRegOpen] = useState(false);
+  const [editRegTarget, setEditRegTarget] = useState<EditarRegistroTarget | null>(null);
+
   const openNaoCadastrado = (nome: string) => { setNaoCadNome(nome); setNaoCadOpen(true); };
   const openEditCampanha = (t: EditarCampanhaTarget) => { setEditCampTarget(t); setEditCampOpen(true); };
+  const openEditRegistro = (t: EditarRegistroTarget) => { setEditRegTarget(t); setEditRegOpen(true); };
   const [histOpen, setHistOpen] = useState(false);
   const [histTarget, setHistTarget] = useState<HistoricoTarget | null>(null);
   const openHistorico = (t: HistoricoTarget) => { setHistTarget(t); setHistOpen(true); };

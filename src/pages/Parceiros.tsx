@@ -839,15 +839,15 @@ export default function Parceiros() {
   );
 
   const recTotal = useMemo(
-    () => recorrencias.filter((r) => r.ativo).reduce((s, r) => s + (r.recorrenciaValor || 0), 0),
+    () => recorrencias.filter((r) => r.ativo && !r.vencida).reduce((s, r) => s + (r.recorrenciaValor || 0), 0),
     [recorrencias]
   );
 
-  // Soma de recorrência ativa por embaixador (usada na lista de Conversões por embaixador).
+  // Soma de recorrência ativa (não vencida) por embaixador (usada na lista de Conversões por embaixador).
   const recorrenciaPorEmbaixador = useMemo(() => {
     const m = new Map<string, number>();
     recorrencias.forEach((r) => {
-      if (!r.ativo) return;
+      if (!r.ativo || r.vencida) return;
       const key = (r.embaixador || "").trim().toLowerCase();
       m.set(key, (m.get(key) ?? 0) + (r.recorrenciaValor || 0));
     });

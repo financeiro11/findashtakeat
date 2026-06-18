@@ -596,7 +596,7 @@ export default function Parceiros() {
         sheetName = "Apuração Recorrências";
         fileName = "apuracao-recorrencias.xlsx";
         rowsOut = recorrencias.map((r) => ({
-          Status: r.ativo ? "Ativo" : "Inativo",
+          Status: !r.ativo ? "Inativo" : (r as any).vencida ? "Vencida" : "Ativo",
           Campanha: r.campanha,
           Embaixador: r.embaixador,
           "Responsável Takeat": r.vendedor,
@@ -784,11 +784,21 @@ export default function Parceiros() {
 
   const recorrencias = useMemo(() => {
     const q = query.trim().toLowerCase();
+    const now = new Date();
     const base = recRows
       .map((r) => {
         const cad = cadastroByNome.get((r.embaixador || "").trim().toLowerCase());
         const calc = calcRecorrencia(r.mrr || 0, cad);
-        return { ...r, recorrenciaValor: calc != null ? calc : (r.recorrenciaValor || 0), _cad: cad };
+        let vencida = false;
+        if (r.ativo && r.dataIndicacao) {
+          const ind = new Date(r.dataIndicacao);
+          if (!isNaN(ind.getTime())) {
+            const limite = new Date(ind);
+            limite.setFullYear(limite.getFullYear() + 1);
+            vencida = now > limite;
+          }
+        }
+        return { ...r, recorrenciaValor: calc != null ? calc : (r.recorrenciaValor || 0), _cad: cad, vencida };
       })
       .filter((r) => {
         if (monthFilter) {
@@ -829,15 +839,15 @@ export default function Parceiros() {
   );
 
   const recTotal = useMemo(
-    () => recorrencias.filter((r) => r.ativo).reduce((s, r) => s + (r.recorrenciaValor || 0), 0),
+    () => recorrencias.filter((r) => r.ativo && !r.vencida).reduce((s, r) => s + (r.recorrenciaValor || 0), 0),
     [recorrencias]
   );
 
-  // Soma de recorrência ativa por embaixador (usada na lista de Conversões por embaixador).
+  // Soma de recorrência ativa (não vencida) por embaixador (usada na lista de Conversões por embaixador).
   const recorrenciaPorEmbaixador = useMemo(() => {
     const m = new Map<string, number>();
     recorrencias.forEach((r) => {
-      if (!r.ativo) return;
+      if (!r.ativo || r.vencida) return;
       const key = (r.embaixador || "").trim().toLowerCase();
       m.set(key, (m.get(key) ?? 0) + (r.recorrenciaValor || 0));
     });
@@ -1595,10 +1605,12 @@ export default function Parceiros() {
                   return (
                   <TableRow key={`rec-${r.id}`} className="text-[12.5px]">
                     <TableCell className="py-2.5">
-                      {r.ativo ? (
-                        <Badge className="bg-emerald-500/15 text-emerald-700 dark:text-emerald-400 hover:bg-emerald-500/20 text-[10.5px] font-normal">Ativo</Badge>
-                      ) : (
+                      {!r.ativo ? (
                         <Badge className="bg-rose-500/15 text-rose-700 dark:text-rose-400 hover:bg-rose-500/20 text-[10.5px] font-normal">Inativo</Badge>
+                      ) : r.vencida ? (
+                        <Badge className="bg-amber-500/15 text-amber-700 dark:text-amber-400 hover:bg-amber-500/20 text-[10.5px] font-normal">Vencida</Badge>
+                      ) : (
+                        <Badge className="bg-emerald-500/15 text-emerald-700 dark:text-emerald-400 hover:bg-emerald-500/20 text-[10.5px] font-normal">Ativo</Badge>
                       )}
                     </TableCell>
                     <TableCell className="py-2.5 font-medium text-foreground">
@@ -1681,7 +1693,7 @@ export default function Parceiros() {
                     <TableCell className="py-2.5">{r.vendedor || "—"}</TableCell>
                     <TableCell className="py-2.5">{r.empresa || "—"}</TableCell>
                     <TableCell className="py-2.5 text-right tabular-nums">{BRL(r.mrr)}</TableCell>
-                    <TableCell className={cn("py-2.5 text-right tabular-nums font-medium", r.ativo ? "text-emerald-700 dark:text-emerald-400" : "text-muted-foreground line-through")}>
+                    <TableCell className={cn("py-2.5 text-right tabular-nums font-medium", !r.ativo ? "text-muted-foreground line-through" : r.vencida ? "text-amber-700 dark:text-amber-400" : "text-emerald-700 dark:text-emerald-400")}>
                       {BRL(r.recorrenciaValor || 0)}
                     </TableCell>
                     <TableCell className="py-2.5 tabular-nums text-muted-foreground">{fmtDate(r.dataIndicacao)}</TableCell>

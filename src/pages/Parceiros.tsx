@@ -789,7 +789,14 @@ export default function Parceiros() {
 
   const recorrencias = useMemo(() => {
     const q = query.trim().toLowerCase();
-    const now = new Date();
+    // Data de referência para apuração: último dia do mês filtrado, ou hoje se sem filtro.
+    const refDate = (() => {
+      if (monthFilter) {
+        const [y, m] = monthFilter.split("-").map(Number);
+        if (y && m) return new Date(y, m, 0, 23, 59, 59); // dia 0 do mês seguinte = último dia do mês
+      }
+      return new Date();
+    })();
     const base = recRows
       .map((r) => {
         const cad = cadastroByNome.get((r.embaixador || "").trim().toLowerCase());
@@ -800,11 +807,12 @@ export default function Parceiros() {
           if (!isNaN(ind.getTime())) {
             const limite = new Date(ind);
             limite.setFullYear(limite.getFullYear() + 1);
-            vencida = now > limite;
+            vencida = refDate > limite;
           }
         }
         return { ...r, recorrenciaValor: calc != null ? calc : (r.recorrenciaValor || 0), _cad: cad, vencida };
       })
+
       .filter((r) => {
         if (monthFilter) {
           // Apuração Recorrências: só considera registros ativos cuja indicação ocorreu há pelo menos 1 mês.

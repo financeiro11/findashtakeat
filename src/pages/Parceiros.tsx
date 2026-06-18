@@ -784,11 +784,21 @@ export default function Parceiros() {
 
   const recorrencias = useMemo(() => {
     const q = query.trim().toLowerCase();
+    const now = new Date();
     const base = recRows
       .map((r) => {
         const cad = cadastroByNome.get((r.embaixador || "").trim().toLowerCase());
         const calc = calcRecorrencia(r.mrr || 0, cad);
-        return { ...r, recorrenciaValor: calc != null ? calc : (r.recorrenciaValor || 0), _cad: cad };
+        let vencida = false;
+        if (r.ativo && r.dataIndicacao) {
+          const ind = new Date(r.dataIndicacao);
+          if (!isNaN(ind.getTime())) {
+            const limite = new Date(ind);
+            limite.setFullYear(limite.getFullYear() + 1);
+            vencida = now > limite;
+          }
+        }
+        return { ...r, recorrenciaValor: calc != null ? calc : (r.recorrenciaValor || 0), _cad: cad, vencida };
       })
       .filter((r) => {
         if (monthFilter) {

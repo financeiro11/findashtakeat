@@ -1793,7 +1793,7 @@ export default function Parceiros() {
                     <TableCell className="py-2.5">{r.empresa || "—"}</TableCell>
                     <TableCell className="py-2.5 text-right tabular-nums">{BRL(r.mrr)}</TableCell>
                     <TableCell className={cn("py-2.5 text-right tabular-nums font-medium", !r.ativo ? "text-muted-foreground line-through" : r.vencida ? "text-amber-700 dark:text-amber-400" : "text-emerald-700 dark:text-emerald-400")}>
-                      {BRL(r.recorrenciaValor || 0)}
+                      {!r.ativo || r.vencida ? <span className="text-muted-foreground">—</span> : BRL(r.recorrenciaValor || 0)}
                     </TableCell>
                     <TableCell className="py-2.5 tabular-nums text-muted-foreground">{fmtDate(r.dataIndicacao)}</TableCell>
                     <TableCell className="py-2.5 text-center">

@@ -1,95 +1,124 @@
-# Diagramas/Fluxogramas no Playbook
 
-## Visão geral
-Adicionar uma terceira aba no Hub do Playbook chamada **Fluxos** (ao lado de Playbooks e Workspace), onde o usuário cria e edita diagramas visuais de processos no estilo das imagens enviadas (caixas, losangos de decisão, swimlanes, setas conectando etapas).
+# Diagnóstico — "Bonificação + Recorrência" em /operacional/parceiros
 
-Além disso, permitir **embedar um fluxo dentro de um Playbook ou página do Workspace** como bloco — assim o processo escrito e o diagrama vivem juntos.
+Sem alterações de código. Só investigação.
 
-## Escolha da biblioteca: **React Flow (@xyflow/react)**
+## 1. Onde o valor é calculado
 
-Avaliação rápida:
-- **React Flow** ✅ — open-source, mantida, integra perfeitamente com React/Vite/Tailwind, suporta nós customizados (retângulo, losango decisão, start/end, swimlanes), arrastar, conectar, zoom, minimap, export para PNG/SVG. É o padrão de mercado para esse tipo de UI (n8n, Typebot, Stripe usam variantes).
-- Mermaid — só renderiza, não permite edição visual drag-and-drop. Bom como export, ruim como editor.
-- tldraw / excalidraw — quadro branco livre, ótimo para rabisco, mas não estruturado para "processo de empresa" com nós tipados/exportáveis para automação futura.
-- Drawio embed — pesado, iframe, fora do design system.
+**100% calculado no front-end**, em `src/pages/Parceiros.tsx`. Não existe coluna, view, RPC nem Edge Function no Supabase que retorne esse total pronto. O banco entrega apenas dados crus (indicações, recorrências e cadastro do embaixador) e o React faz toda a aritmética em `useMemo`s.
 
-**Decisão:** React Flow como editor, com opção de **exportar para PNG e Mermaid** (para colar em outros lugares).
+Não há função RPC nem Edge Function ligada a essa bonificação. (Existe a Edge Function `upsert-indicacao`, mas ela só insere/atualiza indicações — não calcula bonificação.)
 
-## Estrutura do que vou construir
+## 2. Tabelas Supabase que alimentam o cálculo
 
-### 1. Banco de dados (nova migration)
-Tabela `playbook_flows`:
-- `id`, `org_id`, `title`, `description`, `category`, `status` (mesmos enums dos Playbooks)
-- `nodes` jsonb — array de nós React Flow
-- `edges` jsonb — array de conexões
-- `viewport` jsonb — zoom/pan salvos
-- `playbook_id` (nullable) — vincular opcionalmente a um Playbook existente
-- `owner_name`, `last_edited_by`, `archived`, `created_at`, `updated_at`
-- RLS por `org_id` (mesmo padrão das outras tabelas do Playbook)
+Três tabelas, lidas direto do client (`@/integrations/supabase/client`):
 
-### 2. Nova aba "Fluxos" no `PlaybookHub.tsx`
-Terceiro botão no segmented switcher, ícone `Workflow` ou `GitBranch`.
+- **`parceiros_indicacoes`** — uma linha por indicação/venda.
+  Query (linha 329-332):
+  ```ts
+  supabase.from("parceiros_indicacoes")
+    .select("*")
+    .order("data_indicacao", { ascending: false, nullsFirst: false })
+  ```
+  Colunas usadas: `id`, `id_negocio`, `nome_campanha`, `indicador` (=embaixador), `vendedor`, `nome_negocio`, `mrr`, `valor_total`, `data_indicacao`, `data_venda`, `hubspot_url`, `asaas_url`.
 
-### 3. Página `src/pages/playbook/flows/Flows.tsx`
-Mesmo layout dos Playbooks:
-- Sidebar com lista (busca, filtro por categoria/status)
-- Detail com o canvas do fluxo
-- Header com título editável, status, owner, autosave (debounce 800ms igual ao Playbook)
-- Ações: Novo, Duplicar, Excluir, Arquivar, Exportar PNG, Exportar Mermaid, Copiar link
+- **`parceiros_recorrencias`** — uma linha por contrato recorrente ativo/inativo.
+  Query (linha 378-382):
+  ```ts
+  supabase.from("parceiros_recorrencias")
+    .select("*")
+    .order("data_indicacao", { ascending: false, nullsFirst: false })
+  ```
+  Colunas usadas: `id`, `id_negocio`, `nome_campanha`, `indicador`, `responsavel_takeat`, `nome_negocio`, `mrr`, `recorrencia_valor`, `data_indicacao`, `ativo`, `hubspot_url`, `asaas_url`.
 
-### 4. Componente `FlowEditor.tsx` (React Flow)
-- **Paleta lateral (esquerda)** com nós arrastáveis:
-  - Início / Fim (pílula)
-  - Etapa (retângulo arredondado)
-  - Decisão (losango com handles Sim/Não)
-  - Subprocesso (retângulo com borda dupla)
-  - Anotação / nota adesiva (post-it amarelo)
-  - Ator / responsável (chip com avatar)
-- **Swimlanes** (raias por responsável: "Diretor", "PM", "Financeiro" — como na imagem 1) via nós-container redimensionáveis
-- **Canvas** com grid, snap-to-grid, minimap, controles de zoom, pan
-- **Edição inline**: duplo-clique no nó edita o label
-- **Conexão**: arrastar das handles cria arestas com setas; arestas editáveis (rótulo "Sim"/"Não" para decisões)
-- **Cores por tipo de nó** usando design tokens (sem cores hard-coded)
-- **Autosave** com debounce, indicador "Salvando…/Salvo às HH:mm"
-- **Atalhos**: Delete remove, Ctrl+D duplica, Ctrl+Z desfaz (built-in React Flow)
+- **`parceiros_cadastro`** — regra do embaixador (tier, campanha e como remunerar).
+  Query (linha 373):
+  ```ts
+  supabase.from("parceiros_cadastro")
+    .select("nome,tier,status,campanha,bonificacao,metodo_bonificacao,valor_bonificacao,recorrencia,metodo_recorrencia,valor_recorrencia")
+  ```
 
-### 5. Bloco "Fluxo" no Workspace e Playbook
-- No Tiptap (`WorkspaceEditor` e `PlaybookEditor`): nova extensão de nó que aceita um `flowId` e renderiza um preview read-only do fluxo (thumbnail + botão "Abrir fluxo").
-- Comando `/fluxo` no SlashCommand do Workspace para inserir.
+O join é feito em memória pelo nome do embaixador: `cadastroByNome = Map<lower(nome), cadastro>` (linha 642-646).
 
-### 6. Export
-- **PNG**: usar `toPng` do `html-to-image` sobre o viewport React Flow.
-- **Mermaid**: função utilitária que percorre `nodes`/`edges` e gera `flowchart TD` — útil para colar em chats, README, etc.
+## 3. Fórmula passo a passo
 
-## Detalhes técnicos
-- Dependências novas: `@xyflow/react`, `html-to-image`
-- Tipos de nós custom em `src/pages/playbook/flows/nodes/` (`StepNode.tsx`, `DecisionNode.tsx`, `StartEndNode.tsx`, `LaneNode.tsx`, `NoteNode.tsx`)
-- Reusar `PLAYBOOK_CATEGORIES`, `PLAYBOOK_STATUSES`, `STATUS_STYLES` de `constants.ts`
-- Bucket de storage `playbook-flows` para PNGs exportados (opcional, se quiser persistir thumbnails)
-- Sem cores diretas em componentes — tudo via tokens do `index.css` (`--primary`, `--accent`, novo `--flow-decision`, `--flow-step`, etc.)
+O valor exibido no card/linha "Bonificação + Recorrência" do embaixador `X` no período filtrado é:
 
-## Diagrama da arquitetura
-
-```text
-PlaybookHub
- ├── Playbooks   (existente)
- ├── Workspace   (existente)
- └── Fluxos      (NOVO)
-      ├── FlowsList (sidebar)
-      └── FlowEditor
-           ├── NodePalette
-           ├── ReactFlow canvas
-           │    ├── StepNode
-           │    ├── DecisionNode
-           │    ├── StartEndNode
-           │    ├── LaneNode (swimlane)
-           │    └── NoteNode
-           └── Toolbar (autosave, export PNG/Mermaid, link)
+```
+total(X) = bonificacaoTotal(X) + recorrenciaTotal(X)
 ```
 
-## Perguntas antes de implementar
-1. Quer **swimlanes por responsável** (estilo imagem 1 com colunas "Board Member / PM / Project Manager / Financial Director") já no MVP, ou começamos só com nós livres e adicionamos raias depois?
-2. Os fluxos devem ficar **vinculados a um Playbook específico** (cada playbook tem seus fluxos) ou são uma biblioteca **independente** com vínculo opcional? Recomendo independente + vínculo opcional.
-3. Precisa de **colaboração em tempo real** (vários editando ao mesmo tempo via Supabase Realtime) ou autosave individual já basta?
+### 3.1 `bonificacaoTotal(X)` — vem de `parceiros_indicacoes`
 
-Posso seguir com defaults razoáveis (swimlanes no MVP, biblioteca independente com vínculo opcional, autosave sem realtime) se preferir não responder agora.
+Para cada linha `r` de `parceiros_indicacoes` que passou nos filtros (mês de `data_venda` = filtro, embaixador, campanha, busca, etc. — `filtered`, linha 675-702):
+
+```
+cad = cadastroByNome[lower(r.indicador)]
+
+bonus(r) =
+  (r.data_venda existe) e (cad.bonificacao = true) e (cad.valor_bonificacao != null)
+    ? cad.metodo_bonificacao === "%"
+        ? r.valor_total * (cad.valor_bonificacao / 100)
+        : cad.valor_bonificacao              // valor fixo em R$
+    : null
+```
+Função `calcBonificacao` em linha 648-652; aplicação em linha 679.
+
+Depois, agrupa por embaixador (linha 761-775):
+```
+bonificacaoTotal(X) = Σ bonus(r)  para todas as linhas r com indicador = X
+```
+
+### 3.2 `recorrenciaTotal(X)` — vem de `parceiros_recorrencias`
+
+Para cada linha `r` de `parceiros_recorrencias` (memo `recorrencias`, linha 792-844):
+
+```
+cad = cadastroByNome[lower(r.indicador)]
+
+calc(r) =
+  (cad.recorrencia = true) e (cad.valor_recorrencia != null)
+    ? cad.metodo_recorrencia === "%"
+        ? r.mrr * (cad.valor_recorrencia / 100)
+        : cad.valor_recorrencia
+    : r.recorrencia_valor   // fallback para o valor já gravado na linha
+
+// Marca como "Vencida" se data_indicacao + 1 ano < refDate
+//   refDate = último dia do mês filtrado (ou hoje, se sem filtro)
+vencida(r) = r.ativo && r.data_indicacao && refDate > r.data_indicacao + 1 ano
+```
+Função `calcRecorrencia` em linha 654-658.
+
+Soma por embaixador (linha 862-870), **excluindo inativos e vencidos**:
+```
+recorrenciaTotal(X) = Σ calc(r)   para r com r.ativo && !r.vencida && indicador = X
+```
+
+### 3.3 Onde aparece o número no card/linha
+
+- Coluna da tabela "Conversões por embaixador": linha 1573
+  ```
+  soma = c.bonificacaoTotal + recorrenciaPorEmbaixador.get(lower(c.nome))
+  ```
+- KPI agregado "Bonificação + Recorrência" (linha 1423): `convAgg.soma = bonificacaoTotal + recorrenciaTotal` (linha 873-898), somando todos os embaixadores filtrados.
+
+## 4. RPC / Edge Function
+
+Nenhuma RPC e nenhuma Edge Function participa do cálculo dessa bonificação. As únicas funções relacionadas a parceiros são:
+
+- `upsert-indicacao` (Edge Function) — apenas grava indicação.
+- `log_parceiros_campanha_change` (trigger no banco) — só registra mudança de `nome_campanha` em `parceiros_campanha_logs`.
+
+Nenhuma das duas calcula, persiste ou retorna "bonificação + recorrência".
+
+## Resumo executivo
+
+| Pergunta | Resposta |
+|---|---|
+| Valor gravado no banco? | Não. |
+| View/RPC/Edge Function? | Nenhuma. |
+| Origem dos dados | Tabelas `parceiros_indicacoes`, `parceiros_recorrencias`, `parceiros_cadastro` |
+| Onde é calculado | `src/pages/Parceiros.tsx`, memos `filtered` → `conversoes` (bonificação) e `recorrencias` → `recorrenciaPorEmbaixador` (recorrência) |
+| Fórmula final | `Σ bonus(indicação) + Σ recorrência(contrato ativo, não vencido)` por embaixador, no período filtrado |
+
+Posso seguir só com explicações ou prefere que eu prepare um plano para mover esse cálculo para uma view/RPC no Supabase?

@@ -1617,6 +1617,15 @@ export default function Parceiros() {
         stickyHeader
         actions={
           <div className="flex items-center gap-1.5">
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-8 gap-1.5 border-amber-300 text-amber-700 hover:bg-amber-50 hover:text-amber-800 dark:border-amber-700 dark:text-amber-300 dark:hover:bg-amber-950/40"
+              onClick={() => setGestaoVencidasOpen(true)}
+            >
+              <AlertTriangle className="h-3.5 w-3.5" />
+              Gestão de Recorrências
+            </Button>
             <div className="relative">
               <Search className="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
               <Input

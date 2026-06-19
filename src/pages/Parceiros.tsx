@@ -1867,6 +1867,14 @@ export default function Parceiros() {
         onDone={() => { loadRows(); loadRecorrencias(); }}
       />
 
+      <GestaoRecorrenciasDialog
+        open={gestaoVencidasOpen}
+        onOpenChange={setGestaoVencidasOpen}
+        recRows={recRows}
+        cadastroByNome={cadastroByNome as any}
+        initialMonthFilter={monthFilter}
+      />
+
       <HistoricoCampanhaSheet
         open={histOpen}
         onOpenChange={setHistOpen}

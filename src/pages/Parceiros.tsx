@@ -287,6 +287,7 @@ export default function Parceiros() {
   const [sortInd, setSortInd] = useState<SortState>(null);
   const [sortConv, setSortConv] = useState<SortState>(null);
   const [sortRec, setSortRec] = useState<SortState>(null);
+  const [gestaoVencidasOpen, setGestaoVencidasOpen] = useState(false);
 
   // Logs de edição (para mostrar ícone Histórico apenas quando houver)
   const [logKeys, setLogKeys] = useState<Set<string>>(new Set());

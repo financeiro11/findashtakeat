@@ -25,6 +25,7 @@ import { GestaoParceirosDialog } from "./parceiros/GestaoParceirosDialog";
 import { NaoCadastradoDialog } from "./parceiros/NaoCadastradoDialog";
 import { EditarCampanhaDialog, type EditarCampanhaTarget } from "./parceiros/EditarCampanhaDialog";
 import { EditarRegistroDialog, type EditarRegistroTarget } from "./parceiros/EditarRegistroDialog";
+import { GestaoRecorrenciasDialog } from "./parceiros/GestaoRecorrenciasDialog";
 import { HistoricoCampanhaSheet, type HistoricoTarget } from "./parceiros/HistoricoCampanhaSheet";
 
 /* ─────────────────────────── Tipos ─────────────────────────── */
@@ -286,6 +287,7 @@ export default function Parceiros() {
   const [sortInd, setSortInd] = useState<SortState>(null);
   const [sortConv, setSortConv] = useState<SortState>(null);
   const [sortRec, setSortRec] = useState<SortState>(null);
+  const [gestaoVencidasOpen, setGestaoVencidasOpen] = useState(false);
 
   // Logs de edição (para mostrar ícone Histórico apenas quando houver)
   const [logKeys, setLogKeys] = useState<Set<string>>(new Set());
@@ -1615,6 +1617,15 @@ export default function Parceiros() {
         stickyHeader
         actions={
           <div className="flex items-center gap-1.5">
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-8 gap-1.5 border-amber-300 text-amber-700 hover:bg-amber-50 hover:text-amber-800 dark:border-amber-700 dark:text-amber-300 dark:hover:bg-amber-950/40"
+              onClick={() => setGestaoVencidasOpen(true)}
+            >
+              <AlertTriangle className="h-3.5 w-3.5" />
+              Gestão de Recorrências
+            </Button>
             <div className="relative">
               <Search className="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
               <Input
@@ -1854,6 +1865,14 @@ export default function Parceiros() {
         target={editRegTarget}
         cadastros={cadastros.map((c) => ({ nome: c.nome, campanha: c.campanha, status: c.status }))}
         onDone={() => { loadRows(); loadRecorrencias(); }}
+      />
+
+      <GestaoRecorrenciasDialog
+        open={gestaoVencidasOpen}
+        onOpenChange={setGestaoVencidasOpen}
+        recRows={recRows}
+        cadastroByNome={cadastroByNome as any}
+        initialMonthFilter={monthFilter}
       />
 
       <HistoricoCampanhaSheet

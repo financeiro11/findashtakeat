@@ -25,6 +25,7 @@ import { GestaoParceirosDialog } from "./parceiros/GestaoParceirosDialog";
 import { NaoCadastradoDialog } from "./parceiros/NaoCadastradoDialog";
 import { EditarCampanhaDialog, type EditarCampanhaTarget } from "./parceiros/EditarCampanhaDialog";
 import { EditarRegistroDialog, type EditarRegistroTarget } from "./parceiros/EditarRegistroDialog";
+import { GestaoRecorrenciasDialog } from "./parceiros/GestaoRecorrenciasDialog";
 import { HistoricoCampanhaSheet, type HistoricoTarget } from "./parceiros/HistoricoCampanhaSheet";
 
 /* ─────────────────────────── Tipos ─────────────────────────── */

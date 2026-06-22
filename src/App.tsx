@@ -41,6 +41,8 @@ import Tarefas from "./pages/Tarefas";
 import Playbook from "./pages/playbook/PlaybookHub";
 import Captable from "./pages/Captable";
 import Parceiros from "./pages/Parceiros";
+import Reembolsos from "./pages/operacional/Reembolsos";
+import Estornos from "./pages/operacional/Estornos";
 import NotFound from "./pages/NotFound.tsx";
 
 const queryClient = new QueryClient();
@@ -96,6 +98,8 @@ const App = () => (
               <Route path="/analise/conhecimento" element={<BaseConhecimento />} />
               <Route path="/planilhamento/conta-corrente" element={<ContaCorrente />} />
               <Route path="/operacional/parceiros" element={<Parceiros />} />
+              <Route path="/operacional/reembolsos" element={<Reembolsos />} />
+              <Route path="/operacional/estornos" element={<Estornos />} />
             </Route>
             <Route path="*" element={<NotFound />} />
           </Routes>

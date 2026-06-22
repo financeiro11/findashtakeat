@@ -691,6 +691,39 @@ export type Database = {
         }
         Relationships: []
       }
+      embaixador_valores_calculados: {
+        Row: {
+          bonificacao_total: number
+          calculado_em: string
+          embaixador: string
+          embaixador_normalizado: string
+          id: string
+          mes: string
+          recorrencia_total: number
+          soma: number
+        }
+        Insert: {
+          bonificacao_total?: number
+          calculado_em?: string
+          embaixador: string
+          embaixador_normalizado: string
+          id?: string
+          mes: string
+          recorrencia_total?: number
+          soma?: number
+        }
+        Update: {
+          bonificacao_total?: number
+          calculado_em?: string
+          embaixador?: string
+          embaixador_normalizado?: string
+          id?: string
+          mes?: string
+          recorrencia_total?: number
+          soma?: number
+        }
+        Relationships: []
+      }
       extratos_importados: {
         Row: {
           created_at: string

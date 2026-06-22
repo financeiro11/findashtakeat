@@ -960,19 +960,20 @@ export default function Parceiros() {
       });
       return;
     }
-    supabase
-      .from("embaixador_valores_calculados")
-      .upsert(payload, { onConflict: "embaixador_normalizado,mes" })
-      .then(({ data, error }) => {
+    void (async () => {
+      try {
+        const { data, error } = await supabase
+          .from("embaixador_valores_calculados")
+          .upsert(payload, { onConflict: "embaixador_normalizado,mes" });
         if (error) {
           console.warn("[upsert-embaixador] erro ao gravar:", error);
           return;
         }
         console.log("[upsert-embaixador] gravado com sucesso:", data);
-      })
-      .catch((error) => {
+      } catch (error) {
         console.error("[upsert-embaixador] falha inesperada no upsert:", error);
-      });
+      }
+    })();
   }, [conversoes, recorrenciaPorEmbaixador, monthFilter]);
 
   // ===== Conversões do período anterior =====

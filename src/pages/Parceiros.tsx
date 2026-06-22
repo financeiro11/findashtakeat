@@ -898,6 +898,56 @@ export default function Parceiros() {
     return { bonificacaoTotal, recorrenciaTotal, soma: bonificacaoTotal + recorrenciaTotal, topMrrCamp, topValorCamp, top3 };
   }, [conversoes, recorrenciaPorEmbaixador, filtered, cadastroByNome]);
 
+  // ===== Persistência: BONIFICAÇÃO + RECORRÊNCIA por embaixador no Supabase =====
+  // Apenas grava os valores JÁ calculados (não recalcula nada).
+  // Tabela: embaixador_valores_calculados (unique: embaixador_normalizado, mes).
+  const lastPersistedRef = useRef<Map<string, string>>(new Map());
+  useEffect(() => {
+    if (!monthFilter) return;
+    if (conversoes.length === 0) return;
+    const normalizar = (s: string) =>
+      (s || "")
+        .toString()
+        .normalize("NFD")
+        .replace(/[\u0300-\u036f]/g, "")
+        .toLowerCase()
+        .replace(/[^a-z0-9 ]/g, " ")
+        .replace(/\s+/g, " ")
+        .trim();
+
+    const rowsToUpsert = conversoes
+      .map((c) => {
+        const nome = c.nome || "—";
+        const bonificacao_total = Number(c.bonificacaoTotal || 0);
+        const recorrencia_total = Number(recorrenciaPorEmbaixador.get(nome.toLowerCase()) ?? 0);
+        const soma = bonificacao_total + recorrencia_total;
+        return {
+          embaixador: nome,
+          embaixador_normalizado: normalizar(nome),
+          mes: monthFilter,
+          bonificacao_total,
+          recorrencia_total,
+          soma,
+        };
+      })
+      .filter((r) => r.embaixador_normalizado.length > 0)
+      .filter((r) => {
+        const key = `${r.embaixador_normalizado}|${r.mes}`;
+        const sig = `${r.bonificacao_total}|${r.recorrencia_total}|${r.soma}`;
+        if (lastPersistedRef.current.get(key) === sig) return false;
+        lastPersistedRef.current.set(key, sig);
+        return true;
+      });
+
+    if (rowsToUpsert.length === 0) return;
+    supabase
+      .from("embaixador_valores_calculados")
+      .upsert(rowsToUpsert, { onConflict: "embaixador_normalizado,mes" })
+      .then(({ error }) => {
+        if (error) console.warn("[embaixador_valores_calculados] upsert error", error);
+      });
+  }, [conversoes, recorrenciaPorEmbaixador, monthFilter]);
+
   // ===== Conversões do período anterior =====
   const conversoesPrev = useMemo(() => {
     const m = new Map<string, { bonificacaoTotal: number }>();

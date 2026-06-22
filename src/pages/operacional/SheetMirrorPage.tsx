@@ -2,10 +2,15 @@ import { useEffect, useMemo, useState } from "react";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { RefreshCw, Loader2, ExternalLink, Plus, Save, X } from "lucide-react";
+import { RefreshCw, Loader2, ExternalLink, Plus, Save, X, Filter, FilterX, Calendar as CalendarIcon } from "lucide-react";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Calendar } from "@/components/ui/calendar";
+import { Badge } from "@/components/ui/badge";
 import { supabase } from "@/integrations/supabase/client";
 import { toast } from "@/hooks/use-toast";
+import { cn } from "@/lib/utils";
 
 type Props = {
   spreadsheetId: string;
@@ -18,6 +23,58 @@ type Props = {
 
 type SheetData = { headers: string[]; rows: string[][]; sheet: string };
 
+type DateRange = { from?: Date; to?: Date; preset?: string };
+type TextFilter = { selected: Set<string> }; // empty set = no filter
+
+const DATE_HEADER_RE = /(data|timestamp|carimbo|vencimento|venc\.|date|periodo|período|mês|mes\b)/i;
+
+function parseAnyDate(s: string): Date | null {
+  if (!s) return null;
+  const t = s.trim();
+  // dd/mm/yyyy [hh:mm[:ss]]
+  let m = t.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})(?:[ T](\d{1,2}):(\d{2})(?::(\d{2}))?)?/);
+  if (m) {
+    const yy = m[3].length === 2 ? 2000 + parseInt(m[3]) : parseInt(m[3]);
+    return new Date(yy, parseInt(m[2]) - 1, parseInt(m[1]), parseInt(m[4] || "0"), parseInt(m[5] || "0"), parseInt(m[6] || "0"));
+  }
+  // yyyy-mm-dd
+  m = t.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/);
+  if (m) return new Date(parseInt(m[1]), parseInt(m[2]) - 1, parseInt(m[3]));
+  const d = new Date(t);
+  return isNaN(d.getTime()) ? null : d;
+}
+
+function applyPreset(preset: string): DateRange {
+  const now = new Date();
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const end = new Date(today); end.setHours(23, 59, 59, 999);
+  switch (preset) {
+    case "today": return { from: today, to: end, preset };
+    case "7d": { const f = new Date(today); f.setDate(f.getDate() - 6); return { from: f, to: end, preset }; }
+    case "month": return { from: new Date(now.getFullYear(), now.getMonth(), 1), to: end, preset };
+    case "3m": return { from: new Date(now.getFullYear(), now.getMonth() - 2, 1), to: end, preset };
+    case "6m": return { from: new Date(now.getFullYear(), now.getMonth() - 5, 1), to: end, preset };
+    case "ytd": return { from: new Date(now.getFullYear(), 0, 1), to: end, preset };
+    case "12m": { const f = new Date(today); f.setFullYear(f.getFullYear() - 1); return { from: f, to: end, preset }; }
+    default: return {};
+  }
+}
+
+const PRESETS: { id: string; label: string }[] = [
+  { id: "today", label: "Hoje" },
+  { id: "7d", label: "Últimos 7 dias" },
+  { id: "month", label: "Mês atual" },
+  { id: "3m", label: "Últimos 3 meses" },
+  { id: "6m", label: "Últimos 6 meses" },
+  { id: "ytd", label: "Este ano" },
+  { id: "12m", label: "Últimos 12 meses" },
+];
+
+function fmt(d?: Date) {
+  if (!d) return "—";
+  return d.toLocaleDateString("pt-BR");
+}
+
 export default function SheetMirrorPage({ spreadsheetId, sheet, sheetUrl, title, description, Icon }: Props) {
   const [data, setData] = useState<SheetData | null>(null);
   const [loading, setLoading] = useState(false);
@@ -26,6 +83,10 @@ export default function SheetMirrorPage({ spreadsheetId, sheet, sheetUrl, title,
   const [editing, setEditing] = useState<{ r: number; c: number; v: string } | null>(null);
   const [appending, setAppending] = useState(false);
   const [newRow, setNewRow] = useState<string[]>([]);
+
+  const [textFilters, setTextFilters] = useState<Record<number, TextFilter>>({});
+  const [dateFilters, setDateFilters] = useState<Record<number, DateRange>>({});
+  const [textSearch, setTextSearch] = useState<Record<number, string>>({});
 
   async function load(force = false) {
     setLoading(true);
@@ -46,7 +107,6 @@ export default function SheetMirrorPage({ spreadsheetId, sheet, sheetUrl, title,
 
   useEffect(() => { load(); /* eslint-disable-next-line */ }, [spreadsheetId, sheet]);
 
-  // Indices of visible columns: drop columns whose header is empty/whitespace
   const visibleCols = useMemo(() => {
     if (!data) return [];
     return data.headers
@@ -54,6 +114,72 @@ export default function SheetMirrorPage({ spreadsheetId, sheet, sheetUrl, title,
       .filter((x) => x.h.length > 0)
       .map((x) => x.i);
   }, [data]);
+
+  // Detect date columns: header matches keywords OR >=60% of non-empty cells parse as a date
+  const dateCols = useMemo(() => {
+    if (!data) return new Set<number>();
+    const out = new Set<number>();
+    for (const i of visibleCols) {
+      const header = data.headers[i] ?? "";
+      if (DATE_HEADER_RE.test(header)) { out.add(i); continue; }
+      let ok = 0, total = 0;
+      for (const r of data.rows) {
+        const v = (r[i] ?? "").trim();
+        if (!v) continue;
+        total++;
+        if (parseAnyDate(v)) ok++;
+        if (total >= 30) break;
+      }
+      if (total >= 5 && ok / total >= 0.6) out.add(i);
+    }
+    return out;
+  }, [data, visibleCols]);
+
+  // Unique values per text column
+  const uniqueValues = useMemo(() => {
+    const m: Record<number, string[]> = {};
+    if (!data) return m;
+    for (const i of visibleCols) {
+      if (dateCols.has(i)) continue;
+      const s = new Set<string>();
+      for (const r of data.rows) s.add((r[i] ?? "").trim());
+      m[i] = Array.from(s).sort((a, b) => a.localeCompare(b, "pt-BR"));
+    }
+    return m;
+  }, [data, visibleCols, dateCols]);
+
+  // Filtered rows
+  const filteredRows = useMemo(() => {
+    if (!data) return [] as { row: string[]; origIdx: number }[];
+    return data.rows
+      .map((row, origIdx) => ({ row, origIdx }))
+      .filter(({ row }) => {
+        for (const [colStr, f] of Object.entries(textFilters)) {
+          const c = Number(colStr);
+          if (!f.selected.size) continue;
+          if (!f.selected.has((row[c] ?? "").trim())) return false;
+        }
+        for (const [colStr, dr] of Object.entries(dateFilters)) {
+          const c = Number(colStr);
+          if (!dr.from && !dr.to) continue;
+          const d = parseAnyDate((row[c] ?? "").trim());
+          if (!d) return false;
+          if (dr.from && d < dr.from) return false;
+          if (dr.to && d > dr.to) return false;
+        }
+        return true;
+      });
+  }, [data, textFilters, dateFilters]);
+
+  const activeFilterCount =
+    Object.values(textFilters).filter((f) => f.selected.size > 0).length +
+    Object.values(dateFilters).filter((d) => d.from || d.to).length;
+
+  function clearAllFilters() {
+    setTextFilters({});
+    setDateFilters({});
+    setTextSearch({});
+  }
 
   async function saveCell(rowIdx: number, colIdx: number, value: string) {
     if (!data) return;
@@ -87,7 +213,6 @@ export default function SheetMirrorPage({ spreadsheetId, sheet, sheetUrl, title,
 
   async function appendRow() {
     if (!data) return;
-    // Build full-width row aligned by header index, filling unedited cols with ""
     const full: string[] = data.headers.map((_, i) => {
       const visIdx = visibleCols.indexOf(i);
       return visIdx >= 0 ? (newRow[visIdx] ?? "") : "";
@@ -108,6 +233,130 @@ export default function SheetMirrorPage({ spreadsheetId, sheet, sheetUrl, title,
     } finally {
       setSavingKey(null);
     }
+  }
+
+  function toggleTextValue(col: number, value: string) {
+    setTextFilters((prev) => {
+      const cur = prev[col]?.selected ?? new Set<string>();
+      const next = new Set(cur);
+      if (next.has(value)) next.delete(value); else next.add(value);
+      return { ...prev, [col]: { selected: next } };
+    });
+  }
+
+  function renderColumnFilter(colIdx: number) {
+    if (!data) return null;
+    const isDate = dateCols.has(colIdx);
+    const active = isDate
+      ? !!(dateFilters[colIdx]?.from || dateFilters[colIdx]?.to)
+      : (textFilters[colIdx]?.selected.size ?? 0) > 0;
+
+    return (
+      <Popover>
+        <PopoverTrigger asChild>
+          <Button
+            variant="ghost"
+            size="sm"
+            className={cn("h-6 w-6 p-0 ml-1", active && "text-primary")}
+            title="Filtrar"
+          >
+            {isDate ? <CalendarIcon className="h-3.5 w-3.5" /> : <Filter className="h-3.5 w-3.5" />}
+          </Button>
+        </PopoverTrigger>
+        <PopoverContent className="w-72 p-3 pointer-events-auto" align="start">
+          {isDate ? (
+            <div className="space-y-3">
+              <div className="text-xs font-medium text-muted-foreground">Período</div>
+              <div className="grid grid-cols-2 gap-1">
+                {PRESETS.map((p) => (
+                  <Button
+                    key={p.id}
+                    variant={dateFilters[colIdx]?.preset === p.id ? "default" : "outline"}
+                    size="sm"
+                    className="h-7 text-xs"
+                    onClick={() => setDateFilters((prev) => ({ ...prev, [colIdx]: applyPreset(p.id) }))}
+                  >
+                    {p.label}
+                  </Button>
+                ))}
+              </div>
+              <div className="border-t pt-2 space-y-2">
+                <div className="text-xs font-medium text-muted-foreground">Personalizado</div>
+                <Calendar
+                  mode="range"
+                  selected={{ from: dateFilters[colIdx]?.from, to: dateFilters[colIdx]?.to }}
+                  onSelect={(range) =>
+                    setDateFilters((prev) => ({
+                      ...prev,
+                      [colIdx]: { from: range?.from, to: range?.to, preset: undefined },
+                    }))
+                  }
+                  numberOfMonths={1}
+                  className={cn("p-0 pointer-events-auto")}
+                />
+                <div className="text-xs text-muted-foreground">
+                  {fmt(dateFilters[colIdx]?.from)} → {fmt(dateFilters[colIdx]?.to)}
+                </div>
+              </div>
+              <Button
+                variant="ghost"
+                size="sm"
+                className="w-full h-7 text-xs"
+                onClick={() => setDateFilters((prev) => { const { [colIdx]: _, ...rest } = prev; return rest; })}
+              >
+                <FilterX className="h-3.5 w-3.5" /> Limpar
+              </Button>
+            </div>
+          ) : (
+            <div className="space-y-2">
+              <Input
+                placeholder="Buscar valor…"
+                value={textSearch[colIdx] ?? ""}
+                onChange={(e) => setTextSearch((p) => ({ ...p, [colIdx]: e.target.value }))}
+                className="h-8"
+              />
+              <div className="flex gap-2 text-xs">
+                <button
+                  className="text-primary hover:underline"
+                  onClick={() =>
+                    setTextFilters((p) => ({
+                      ...p,
+                      [colIdx]: { selected: new Set(uniqueValues[colIdx] ?? []) },
+                    }))
+                  }
+                >
+                  Selecionar todos
+                </button>
+                <span className="text-muted-foreground">·</span>
+                <button
+                  className="text-primary hover:underline"
+                  onClick={() => setTextFilters((p) => { const { [colIdx]: _, ...rest } = p; return rest; })}
+                >
+                  Limpar
+                </button>
+              </div>
+              <div className="max-h-56 overflow-auto space-y-1 border rounded p-2">
+                {(uniqueValues[colIdx] ?? [])
+                  .filter((v) => {
+                    const q = (textSearch[colIdx] ?? "").toLowerCase();
+                    return !q || v.toLowerCase().includes(q);
+                  })
+                  .slice(0, 500)
+                  .map((v) => {
+                    const checked = textFilters[colIdx]?.selected.has(v) ?? false;
+                    return (
+                      <label key={v} className="flex items-center gap-2 text-xs cursor-pointer hover:bg-muted/50 rounded px-1 py-0.5">
+                        <Checkbox checked={checked} onCheckedChange={() => toggleTextValue(colIdx, v)} />
+                        <span className="truncate">{v || <em className="text-muted-foreground">(vazio)</em>}</span>
+                      </label>
+                    );
+                  })}
+              </div>
+            </div>
+          )}
+        </PopoverContent>
+      </Popover>
+    );
   }
 
   return (
@@ -133,16 +382,28 @@ export default function SheetMirrorPage({ spreadsheetId, sheet, sheetUrl, title,
 
       <Card className="border-border shadow-[var(--shadow-card)]">
         <CardHeader>
-          <div className="flex items-center gap-3">
-            <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-primary-soft text-primary">
-              <Icon className="h-5 w-5" />
+          <div className="flex items-center justify-between gap-3">
+            <div className="flex items-center gap-3">
+              <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-primary-soft text-primary">
+                <Icon className="h-5 w-5" />
+              </div>
+              <div>
+                <CardTitle>{title}</CardTitle>
+                <CardDescription>
+                  {data
+                    ? `${filteredRows.length} de ${data.rows.length} linha(s) · aba: "${data.sheet}" · clique numa célula para editar`
+                    : "Carregando…"}
+                </CardDescription>
+              </div>
             </div>
-            <div>
-              <CardTitle>{title}</CardTitle>
-              <CardDescription>
-                {data ? `${data.rows.length} linha(s) · aba: "${data.sheet}" · clique numa célula para editar` : "Carregando…"}
-              </CardDescription>
-            </div>
+            {activeFilterCount > 0 && (
+              <div className="flex items-center gap-2">
+                <Badge variant="secondary">{activeFilterCount} filtro(s) ativo(s)</Badge>
+                <Button variant="ghost" size="sm" onClick={clearAllFilters}>
+                  <FilterX className="h-4 w-4" /> Limpar tudo
+                </Button>
+              </div>
+            )}
           </div>
         </CardHeader>
         <CardContent className="p-0">
@@ -158,7 +419,12 @@ export default function SheetMirrorPage({ spreadsheetId, sheet, sheetUrl, title,
                 <TableHeader className="sticky top-0 bg-background z-10">
                   <TableRow>
                     {visibleCols.map((i) => (
-                      <TableHead key={i} className="whitespace-nowrap">{data.headers[i]}</TableHead>
+                      <TableHead key={i} className="whitespace-nowrap">
+                        <div className="flex items-center">
+                          <span>{data.headers[i]}</span>
+                          {renderColumnFilter(i)}
+                        </div>
+                      </TableHead>
                     ))}
                   </TableRow>
                 </TableHeader>
@@ -187,7 +453,7 @@ export default function SheetMirrorPage({ spreadsheetId, sheet, sheetUrl, title,
                       </TableCell>
                     </TableRow>
                   )}
-                  {data.rows.map((row, rIdx) => (
+                  {filteredRows.map(({ row, origIdx: rIdx }) => (
                     <TableRow key={rIdx}>
                       {visibleCols.map((cIdx) => {
                         const cell = row[cIdx] ?? "";
@@ -233,10 +499,10 @@ export default function SheetMirrorPage({ spreadsheetId, sheet, sheetUrl, title,
                       })}
                     </TableRow>
                   ))}
-                  {data.rows.length === 0 && !appending && (
+                  {filteredRows.length === 0 && !appending && (
                     <TableRow>
                       <TableCell colSpan={visibleCols.length} className="text-center text-sm text-muted-foreground py-8">
-                        Nenhuma linha na planilha.
+                        {data.rows.length === 0 ? "Nenhuma linha na planilha." : "Nenhuma linha corresponde aos filtros."}
                       </TableCell>
                     </TableRow>
                   )}

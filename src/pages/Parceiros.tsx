@@ -903,8 +903,22 @@ export default function Parceiros() {
   // Tabela: embaixador_valores_calculados (unique: embaixador_normalizado, mes).
   const lastPersistedRef = useRef<Map<string, string>>(new Map());
   useEffect(() => {
-    if (!monthFilter) return;
-    if (conversoes.length === 0) return;
+    console.log(
+      "[upsert-embaixador] efeito disparou. monthFilter=",
+      monthFilter,
+      "tipo=",
+      typeof monthFilter,
+      "qtd embaixadores=",
+      conversoes.length,
+    );
+    if (!monthFilter) {
+      console.log("[upsert-embaixador] interrompido: monthFilter vazio/falsy", monthFilter);
+      return;
+    }
+    if (conversoes.length === 0) {
+      console.log("[upsert-embaixador] interrompido: nenhum embaixador calculado para o filtro atual");
+      return;
+    }
     const normalizar = (s: string) =>
       (s || "")
         .toString()
@@ -915,7 +929,7 @@ export default function Parceiros() {
         .replace(/\s+/g, " ")
         .trim();
 
-    const rowsToUpsert = conversoes
+    const payload = conversoes
       .map((c) => {
         const nome = c.nome || "—";
         const bonificacao_total = Number(c.bonificacaoTotal || 0);
@@ -939,13 +953,27 @@ export default function Parceiros() {
         return true;
       });
 
-    if (rowsToUpsert.length === 0) return;
-    supabase
-      .from("embaixador_valores_calculados")
-      .upsert(rowsToUpsert, { onConflict: "embaixador_normalizado,mes" })
-      .then(({ error }) => {
-        if (error) console.warn("[embaixador_valores_calculados] upsert error", error);
+    console.log("[upsert-embaixador] vai gravar linhas:", payload);
+    if (payload.length === 0) {
+      console.log("[upsert-embaixador] interrompido: payload vazio após deduplicação", {
+        cachedKeys: Array.from(lastPersistedRef.current.keys()),
       });
+      return;
+    }
+    void (async () => {
+      try {
+        const { data, error } = await supabase
+          .from("embaixador_valores_calculados")
+          .upsert(payload, { onConflict: "embaixador_normalizado,mes" });
+        if (error) {
+          console.warn("[upsert-embaixador] erro ao gravar:", error);
+          return;
+        }
+        console.log("[upsert-embaixador] gravado com sucesso:", data);
+      } catch (error) {
+        console.error("[upsert-embaixador] falha inesperada no upsert:", error);
+      }
+    })();
   }, [conversoes, recorrenciaPorEmbaixador, monthFilter]);
 
   // ===== Conversões do período anterior =====

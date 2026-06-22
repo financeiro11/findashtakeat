@@ -84,9 +84,61 @@ export default function SheetMirrorPage({ spreadsheetId, sheet, sheetUrl, title,
   const [appending, setAppending] = useState(false);
   const [newRow, setNewRow] = useState<string[]>([]);
 
-  const [textFilters, setTextFilters] = useState<Record<number, TextFilter>>({});
-  const [dateFilters, setDateFilters] = useState<Record<number, DateRange>>({});
+  const storageKey = `sheet-mirror-filters:${spreadsheetId}:${sheet}`;
+
+  const [textFilters, setTextFilters] = useState<Record<number, TextFilter>>(() => {
+    try {
+      const raw = localStorage.getItem(storageKey);
+      if (!raw) return {};
+      const parsed = JSON.parse(raw);
+      const out: Record<number, TextFilter> = {};
+      for (const [k, v] of Object.entries(parsed.textFilters ?? {})) {
+        out[Number(k)] = { selected: new Set((v as any).selected ?? []) };
+      }
+      return out;
+    } catch { return {}; }
+  });
+  const [dateFilters, setDateFilters] = useState<Record<number, DateRange>>(() => {
+    try {
+      const raw = localStorage.getItem(storageKey);
+      if (!raw) return {};
+      const parsed = JSON.parse(raw);
+      const out: Record<number, DateRange> = {};
+      for (const [k, v] of Object.entries(parsed.dateFilters ?? {})) {
+        const dr = v as any;
+        if (dr.preset) {
+          out[Number(k)] = applyPreset(dr.preset);
+        } else {
+          out[Number(k)] = {
+            from: dr.from ? new Date(dr.from) : undefined,
+            to: dr.to ? new Date(dr.to) : undefined,
+          };
+        }
+      }
+      return out;
+    } catch { return {}; }
+  });
   const [textSearch, setTextSearch] = useState<Record<number, string>>({});
+
+  useEffect(() => {
+    try {
+      const tf: Record<string, { selected: string[] }> = {};
+      for (const [k, v] of Object.entries(textFilters)) {
+        if (v.selected.size) tf[k] = { selected: Array.from(v.selected) };
+      }
+      const df: Record<string, { from?: string; to?: string; preset?: string }> = {};
+      for (const [k, v] of Object.entries(dateFilters)) {
+        if (v.from || v.to || v.preset) {
+          df[k] = {
+            from: v.from ? v.from.toISOString() : undefined,
+            to: v.to ? v.to.toISOString() : undefined,
+            preset: v.preset,
+          };
+        }
+      }
+      localStorage.setItem(storageKey, JSON.stringify({ textFilters: tf, dateFilters: df }));
+    } catch {}
+  }, [textFilters, dateFilters, storageKey]);
 
   async function load(force = false) {
     setLoading(true);

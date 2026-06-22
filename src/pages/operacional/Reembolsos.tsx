@@ -2,7 +2,7 @@ import { Receipt } from "lucide-react";
 import SheetMirrorPage from "./SheetMirrorPage";
 
 const SPREADSHEET_ID = "1P7O1xRyrybuDQOfw3WIRkne15FOM7bBPMTWweMrCulA";
-const SHEET_NAME = "Respostas ao formulário 1";
+const SHEET_NAME = "Form Responses 1";
 const SHEET_URL = `https://docs.google.com/spreadsheets/d/${SPREADSHEET_ID}/edit?gid=2045888472`;
 
 export default function Reembolsos() {

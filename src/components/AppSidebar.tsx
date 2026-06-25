@@ -56,6 +56,7 @@ const demonstracoes: NavItem[] = [
 const analise: NavItem[] = [
   { title: "Cenários", url: "/analise/cenarios", icon: Target },
   { title: "BP Anual", url: "/analise/bp", icon: FileBarChart },
+  { title: "Orçamento", url: "/orcamento", icon: Wallet2 },
   { title: "Histórico Multianual", url: "/analise/historico", icon: TrendingUp },
 ];
 

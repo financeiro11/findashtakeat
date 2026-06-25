@@ -1467,6 +1467,28 @@ export default function Parceiros() {
                                 </Tooltip>
                               </TooltipProvider>
                             </span>
+                          ) : key === "dataIndicacao" ? (
+                            <EditableDateCell
+                              table="parceiros_indicacoes"
+                              id={r.id}
+                              field="data_indicacao"
+                              value={r.dataIndicacao}
+                              emptyLabel="Definir data"
+                              onSaved={() => { loadRows(); loadLogKeys(); }}
+                            />
+                          ) : key === "dataVenda" ? (
+                            r.dataVenda ? (
+                              COLUMNS.dataVenda.render(r)
+                            ) : (
+                              <EditableDateCell
+                                table="parceiros_indicacoes"
+                                id={r.id}
+                                field="data_venda"
+                                value={r.dataVenda}
+                                emptyLabel="Definir venda"
+                                onSaved={() => { loadRows(); loadLogKeys(); }}
+                              />
+                            )
                           ) : (
                             COLUMNS[key].render(r)
                           )}

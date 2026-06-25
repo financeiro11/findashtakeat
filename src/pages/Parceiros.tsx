@@ -27,6 +27,7 @@ import { EditarCampanhaDialog, type EditarCampanhaTarget } from "./parceiros/Edi
 import { EditarRegistroDialog, type EditarRegistroTarget } from "./parceiros/EditarRegistroDialog";
 import { GestaoRecorrenciasDialog } from "./parceiros/GestaoRecorrenciasDialog";
 import { HistoricoCampanhaSheet, type HistoricoTarget } from "./parceiros/HistoricoCampanhaSheet";
+import { EditableDateCell } from "./parceiros/EditableDateCell";
 
 /* ─────────────────────────── Tipos ─────────────────────────── */
 

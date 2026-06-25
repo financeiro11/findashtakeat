@@ -27,6 +27,7 @@ import { EditarCampanhaDialog, type EditarCampanhaTarget } from "./parceiros/Edi
 import { EditarRegistroDialog, type EditarRegistroTarget } from "./parceiros/EditarRegistroDialog";
 import { GestaoRecorrenciasDialog } from "./parceiros/GestaoRecorrenciasDialog";
 import { HistoricoCampanhaSheet, type HistoricoTarget } from "./parceiros/HistoricoCampanhaSheet";
+import { EditableDateCell } from "./parceiros/EditableDateCell";
 
 /* ─────────────────────────── Tipos ─────────────────────────── */
 
@@ -1406,13 +1407,13 @@ export default function Parceiros() {
                                           titulo: `${r.embaixador || "—"} · ${r.empresa || r.campanha || ""}`,
                                         })}
                                         className="inline-flex items-center justify-center rounded-full text-muted-foreground hover:text-foreground focus:outline-none focus:ring-1 focus:ring-primary/40"
-                                        aria-label="Histórico de campanha"
+                                        aria-label="Histórico de edições"
                                       >
                                         <History className="h-3.5 w-3.5" />
                                       </button>
                                     </TooltipTrigger>
                                     <TooltipContent side="right" className="text-[11.5px]">
-                                      Ver histórico de alterações de campanha
+                                      Ver histórico de edições
                                     </TooltipContent>
                                   </Tooltip>
                                 </TooltipProvider>
@@ -1466,6 +1467,28 @@ export default function Parceiros() {
                                 </Tooltip>
                               </TooltipProvider>
                             </span>
+                          ) : key === "dataIndicacao" ? (
+                            <EditableDateCell
+                              table="parceiros_indicacoes"
+                              id={r.id}
+                              field="data_indicacao"
+                              value={r.dataIndicacao}
+                              emptyLabel="Definir data"
+                              onSaved={() => { loadRows(); loadLogKeys(); }}
+                            />
+                          ) : key === "dataVenda" ? (
+                            r.dataVenda ? (
+                              COLUMNS.dataVenda.render(r)
+                            ) : (
+                              <EditableDateCell
+                                table="parceiros_indicacoes"
+                                id={r.id}
+                                field="data_venda"
+                                value={r.dataVenda}
+                                emptyLabel="Definir venda"
+                                onSaved={() => { loadRows(); loadLogKeys(); }}
+                              />
+                            )
                           ) : (
                             COLUMNS[key].render(r)
                           )}
@@ -1778,13 +1801,13 @@ export default function Parceiros() {
                                     titulo: `${r.embaixador || "—"} · ${r.empresa || r.campanha || ""}`,
                                   })}
                                   className="inline-flex items-center justify-center rounded-full text-muted-foreground hover:text-foreground focus:outline-none focus:ring-1 focus:ring-primary/40"
-                                  aria-label="Histórico de campanha"
+                                  aria-label="Histórico de edições"
                                 >
                                   <History className="h-3.5 w-3.5" />
                                 </button>
                               </TooltipTrigger>
                               <TooltipContent side="right" className="text-[11.5px]">
-                                Ver histórico de alterações de campanha
+                                Ver histórico de edições
                               </TooltipContent>
                             </Tooltip>
                           </TooltipProvider>
@@ -1892,7 +1915,16 @@ export default function Parceiros() {
                     <TableCell className={cn("py-2.5 text-right tabular-nums font-medium", !r.ativo ? "text-muted-foreground line-through" : r.vencida ? "text-amber-700 dark:text-amber-400" : "text-emerald-700 dark:text-emerald-400")}>
                       {!r.ativo || r.vencida ? <span className="text-muted-foreground">—</span> : BRL(r.recorrenciaValor || 0)}
                     </TableCell>
-                    <TableCell className="py-2.5 tabular-nums text-muted-foreground">{fmtDate(r.dataIndicacao)}</TableCell>
+                    <TableCell className="py-2.5 tabular-nums">
+                      <EditableDateCell
+                        table="parceiros_recorrencias"
+                        id={r.id}
+                        field="data_indicacao"
+                        value={r.dataIndicacao}
+                        emptyLabel="Definir data"
+                        onSaved={() => { loadRecorrencias(); loadLogKeys(); }}
+                      />
+                    </TableCell>
                     <TableCell className="py-2.5 text-center">
                       <IntegrationLink href={r.hubspotUrl} label="HubSpot" tone="hubspot">
                         <HubspotIcon className="h-3.5 w-3.5" />

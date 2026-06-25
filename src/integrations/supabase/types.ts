@@ -1092,6 +1092,7 @@ export type Database = {
         Row: {
           campanha_anterior: string | null
           campanha_nova: string | null
+          campo: string | null
           created_at: string
           id: string
           id_negocio: string | null
@@ -1101,10 +1102,13 @@ export type Database = {
           registro_tabela: string
           user_email: string | null
           user_id: string | null
+          valor_anterior: string | null
+          valor_novo: string | null
         }
         Insert: {
           campanha_anterior?: string | null
           campanha_nova?: string | null
+          campo?: string | null
           created_at?: string
           id?: string
           id_negocio?: string | null
@@ -1114,10 +1118,13 @@ export type Database = {
           registro_tabela: string
           user_email?: string | null
           user_id?: string | null
+          valor_anterior?: string | null
+          valor_novo?: string | null
         }
         Update: {
           campanha_anterior?: string | null
           campanha_nova?: string | null
+          campo?: string | null
           created_at?: string
           id?: string
           id_negocio?: string | null
@@ -1127,6 +1134,8 @@ export type Database = {
           registro_tabela?: string
           user_email?: string | null
           user_id?: string | null
+          valor_anterior?: string | null
+          valor_novo?: string | null
         }
         Relationships: []
       }

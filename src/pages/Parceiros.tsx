@@ -1915,7 +1915,16 @@ export default function Parceiros() {
                     <TableCell className={cn("py-2.5 text-right tabular-nums font-medium", !r.ativo ? "text-muted-foreground line-through" : r.vencida ? "text-amber-700 dark:text-amber-400" : "text-emerald-700 dark:text-emerald-400")}>
                       {!r.ativo || r.vencida ? <span className="text-muted-foreground">—</span> : BRL(r.recorrenciaValor || 0)}
                     </TableCell>
-                    <TableCell className="py-2.5 tabular-nums text-muted-foreground">{fmtDate(r.dataIndicacao)}</TableCell>
+                    <TableCell className="py-2.5 tabular-nums">
+                      <EditableDateCell
+                        table="parceiros_recorrencias"
+                        id={r.id}
+                        field="data_indicacao"
+                        value={r.dataIndicacao}
+                        emptyLabel="Definir data"
+                        onSaved={() => { loadRecorrencias(); loadLogKeys(); }}
+                      />
+                    </TableCell>
                     <TableCell className="py-2.5 text-center">
                       <IntegrationLink href={r.hubspotUrl} label="HubSpot" tone="hubspot">
                         <HubspotIcon className="h-3.5 w-3.5" />

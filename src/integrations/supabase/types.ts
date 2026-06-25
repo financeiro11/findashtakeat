@@ -1040,6 +1040,45 @@ export type Database = {
         }
         Relationships: []
       }
+      orcamento_area_linha: {
+        Row: {
+          ano: number
+          area: string
+          atualizado_em: string
+          fonte: string | null
+          id: number
+          mes: number
+          orcado: number
+          pessoal: boolean
+          realizado: number
+          subcategoria: string
+        }
+        Insert: {
+          ano: number
+          area: string
+          atualizado_em?: string
+          fonte?: string | null
+          id?: never
+          mes: number
+          orcado?: number
+          pessoal?: boolean
+          realizado?: number
+          subcategoria: string
+        }
+        Update: {
+          ano?: number
+          area?: string
+          atualizado_em?: string
+          fonte?: string | null
+          id?: never
+          mes?: number
+          orcado?: number
+          pessoal?: boolean
+          realizado?: number
+          subcategoria?: string
+        }
+        Relationships: []
+      }
       parceiros_cadastro: {
         Row: {
           bonificacao: boolean
@@ -2040,7 +2079,57 @@ export type Database = {
       }
     }
     Views: {
-      [_ in never]: never
+      vw_orcamento_area: {
+        Row: {
+          ano: number | null
+          area: string | null
+          consumido_pct: number | null
+          mes: number | null
+          orcado: number | null
+          orcado_pessoal: number | null
+          realizado: number | null
+          realizado_pessoal: number | null
+          saldo: number | null
+          status: string | null
+        }
+        Relationships: []
+      }
+      vw_orcamento_area_linha: {
+        Row: {
+          ano: number | null
+          area: string | null
+          consumido_pct: number | null
+          mes: number | null
+          orcado: number | null
+          pessoal: boolean | null
+          realizado: number | null
+          saldo: number | null
+          subcategoria: string | null
+        }
+        Insert: {
+          ano?: number | null
+          area?: string | null
+          consumido_pct?: never
+          mes?: number | null
+          orcado?: number | null
+          pessoal?: boolean | null
+          realizado?: number | null
+          saldo?: never
+          subcategoria?: string | null
+        }
+        Update: {
+          ano?: number | null
+          area?: string | null
+          consumido_pct?: never
+          mes?: number | null
+          orcado?: number | null
+          pessoal?: boolean | null
+          realizado?: number | null
+          saldo?: never
+          subcategoria?: string | null
+        }
+        Relationships: []
+      }
     }
     Functions: {
       [_ in never]: never

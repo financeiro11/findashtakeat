@@ -1407,13 +1407,13 @@ export default function Parceiros() {
                                           titulo: `${r.embaixador || "—"} · ${r.empresa || r.campanha || ""}`,
                                         })}
                                         className="inline-flex items-center justify-center rounded-full text-muted-foreground hover:text-foreground focus:outline-none focus:ring-1 focus:ring-primary/40"
-                                        aria-label="Histórico de campanha"
+                                        aria-label="Histórico de edições"
                                       >
                                         <History className="h-3.5 w-3.5" />
                                       </button>
                                     </TooltipTrigger>
                                     <TooltipContent side="right" className="text-[11.5px]">
-                                      Ver histórico de alterações de campanha
+                                      Ver histórico de edições
                                     </TooltipContent>
                                   </Tooltip>
                                 </TooltipProvider>
@@ -1801,13 +1801,13 @@ export default function Parceiros() {
                                     titulo: `${r.embaixador || "—"} · ${r.empresa || r.campanha || ""}`,
                                   })}
                                   className="inline-flex items-center justify-center rounded-full text-muted-foreground hover:text-foreground focus:outline-none focus:ring-1 focus:ring-primary/40"
-                                  aria-label="Histórico de campanha"
+                                  aria-label="Histórico de edições"
                                 >
                                   <History className="h-3.5 w-3.5" />
                                 </button>
                               </TooltipTrigger>
                               <TooltipContent side="right" className="text-[11.5px]">
-                                Ver histórico de alterações de campanha
+                                Ver histórico de edições
                               </TooltipContent>
                             </Tooltip>
                           </TooltipProvider>

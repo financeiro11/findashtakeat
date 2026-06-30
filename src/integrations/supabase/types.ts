@@ -1255,6 +1255,7 @@ export type Database = {
           asaas_url: string | null
           ativo: boolean
           created_at: string
+          data_cancelamento: string | null
           data_indicacao: string | null
           data_venda: string | null
           email_indicador: string | null
@@ -1276,6 +1277,7 @@ export type Database = {
           asaas_url?: string | null
           ativo?: boolean
           created_at?: string
+          data_cancelamento?: string | null
           data_indicacao?: string | null
           data_venda?: string | null
           email_indicador?: string | null
@@ -1297,6 +1299,7 @@ export type Database = {
           asaas_url?: string | null
           ativo?: boolean
           created_at?: string
+          data_cancelamento?: string | null
           data_indicacao?: string | null
           data_venda?: string | null
           email_indicador?: string | null

@@ -659,18 +659,32 @@ export default function Parceiros() {
   };
 
   const embOptions = useMemo(() => {
-    const s = new Set<string>();
-    rows.forEach((r) => { if (r.embaixador) s.add(r.embaixador); });
-    recRows.forEach((r) => { if (r.embaixador) s.add(r.embaixador); });
-    return Array.from(s).sort();
-  }, [rows, recRows]);
+    const map = new Map<string, string>();
+    const add = (n?: string | null) => {
+      const v = (n || "").trim();
+      if (!v) return;
+      const k = v.toLowerCase();
+      if (!map.has(k)) map.set(k, v);
+    };
+    rows.forEach((r) => add(r.embaixador));
+    recRows.forEach((r) => add(r.embaixador));
+    cadastros.forEach((c) => add(c.nome));
+    return Array.from(map.values()).sort((a, b) => a.localeCompare(b));
+  }, [rows, recRows, cadastros]);
 
   const campOptions = useMemo(() => {
-    const s = new Set<string>();
-    rows.forEach((r) => { if (r.campanha) s.add(r.campanha); });
-    recRows.forEach((r) => { if (r.campanha) s.add(r.campanha); });
-    return Array.from(s).sort();
-  }, [rows, recRows]);
+    const map = new Map<string, string>();
+    const add = (n?: string | null) => {
+      const v = (n || "").trim();
+      if (!v) return;
+      const k = v.toLowerCase();
+      if (!map.has(k)) map.set(k, v);
+    };
+    rows.forEach((r) => add(r.campanha));
+    recRows.forEach((r) => add(r.campanha));
+    cadastros.forEach((c) => add(c.campanha));
+    return Array.from(map.values()).sort((a, b) => a.localeCompare(b));
+  }, [rows, recRows, cadastros]);
 
 
   const filtered = useMemo(() => {

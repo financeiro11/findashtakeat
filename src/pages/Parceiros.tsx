@@ -1949,6 +1949,7 @@ export default function Parceiros() {
                         {!r.ativo ? fmtDate(r.dataCancelamento) : <span className="text-muted-foreground">—</span>}
                       </TableCell>
                     )}
+                    <TableCell className="py-2.5 text-center">
                       <IntegrationLink href={r.hubspotUrl} label="HubSpot" tone="hubspot">
                         <HubspotIcon className="h-3.5 w-3.5" />
                       </IntegrationLink>

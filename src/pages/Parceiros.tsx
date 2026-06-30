@@ -1945,7 +1945,18 @@ export default function Parceiros() {
                     </TableCell>
                     {recorrencias.some((rr) => !rr.ativo) && (
                       <TableCell className="py-2.5 tabular-nums">
-                        {!r.ativo ? fmtDate(r.dataCancelamento) : <span className="text-muted-foreground">—</span>}
+                        {!r.ativo ? (
+                          <EditableDateCell
+                            table="parceiros_recorrencias"
+                            id={r.id}
+                            field="data_cancelamento"
+                            value={r.dataCancelamento}
+                            emptyLabel="Definir data"
+                            onSaved={() => { loadRecorrencias(); loadLogKeys(); }}
+                          />
+                        ) : (
+                          <span className="text-muted-foreground">—</span>
+                        )}
                       </TableCell>
                     )}
                     <TableCell className="py-2.5 text-center">

@@ -1944,7 +1944,11 @@ export default function Parceiros() {
                         onSaved={() => { loadRecorrencias(); loadLogKeys(); }}
                       />
                     </TableCell>
-                    <TableCell className="py-2.5 text-center">
+                    {recorrencias.some((rr) => !rr.ativo) && (
+                      <TableCell className="py-2.5 tabular-nums">
+                        {!r.ativo ? fmtDate(r.dataCancelamento) : <span className="text-muted-foreground">—</span>}
+                      </TableCell>
+                    )}
                       <IntegrationLink href={r.hubspotUrl} label="HubSpot" tone="hubspot">
                         <HubspotIcon className="h-3.5 w-3.5" />
                       </IntegrationLink>

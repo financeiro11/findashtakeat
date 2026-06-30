@@ -284,7 +284,7 @@ export default function Parceiros() {
   const [convPage, setConvPage] = useState<number>(1);
   const [recPageSize, setRecPageSize] = useState<number>(25);
   const [recPage, setRecPage] = useState<number>(1);
-  const [recRows, setRecRows] = useState<Array<{ id: string; id_negocio: string; campanha: string; embaixador: string; vendedor: string; empresa: string; mrr: number; recorrenciaValor: number; dataIndicacao: string | null; ativo: boolean; hubspotUrl: string; asaasUrl: string }>>([]);
+  const [recRows, setRecRows] = useState<Array<{ id: string; id_negocio: string; campanha: string; embaixador: string; vendedor: string; empresa: string; mrr: number; recorrenciaValor: number; dataIndicacao: string | null; dataCancelamento: string | null; ativo: boolean; hubspotUrl: string; asaasUrl: string }>>([]);
   const [sortInd, setSortInd] = useState<SortState>(null);
   const [sortConv, setSortConv] = useState<SortState>(null);
   const [sortRec, setSortRec] = useState<SortState>(null);
@@ -392,6 +392,7 @@ export default function Parceiros() {
       mrr: Number(r.mrr ?? 0),
       recorrenciaValor: Number(r.recorrencia_valor ?? 0),
       dataIndicacao: r.data_indicacao,
+      dataCancelamento: r.data_cancelamento ?? null,
       ativo: r.ativo !== false,
       hubspotUrl: r.hubspot_url || hubspotUrlFor(r.id_negocio ?? ""),
       asaasUrl: r.asaas_url || asaasUrlFor(r.id_negocio ?? ""),
@@ -1774,6 +1775,9 @@ export default function Parceiros() {
                 <SortableTh sortKey="mrr" sort={sortRec} setSort={setSortRec} className="text-right" align="right">MRR</SortableTh>
                 <SortableTh sortKey="recorrencia" sort={sortRec} setSort={setSortRec} className="text-right" align="right">Recorrência</SortableTh>
                 <SortableTh sortKey="dataIndicacao" sort={sortRec} setSort={setSortRec}>Data indicação</SortableTh>
+                {recorrencias.some((r) => !r.ativo) && (
+                  <Th>Data Cancelamento</Th>
+                )}
                 <Th className="text-center">HubSpot</Th>
                 <Th className="text-center">Asaas</Th>
               </TableRow>
@@ -1781,7 +1785,7 @@ export default function Parceiros() {
             <TableBody>
               {recorrencias.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={10} className="py-10 text-center text-[12.5px] text-muted-foreground">
+                  <TableCell colSpan={recorrencias.some((r) => !r.ativo) ? 11 : 10} className="py-10 text-center text-[12.5px] text-muted-foreground">
                     Nenhuma indicação ativa com recorrência no período.
                   </TableCell>
                 </TableRow>
@@ -1939,6 +1943,11 @@ export default function Parceiros() {
                         onSaved={() => { loadRecorrencias(); loadLogKeys(); }}
                       />
                     </TableCell>
+                    {recorrencias.some((rr) => !rr.ativo) && (
+                      <TableCell className="py-2.5 tabular-nums">
+                        {!r.ativo ? fmtDate(r.dataCancelamento) : <span className="text-muted-foreground">—</span>}
+                      </TableCell>
+                    )}
                     <TableCell className="py-2.5 text-center">
                       <IntegrationLink href={r.hubspotUrl} label="HubSpot" tone="hubspot">
                         <HubspotIcon className="h-3.5 w-3.5" />

@@ -10,7 +10,7 @@ import { supabase } from "@/integrations/supabase/client";
 import { toast } from "sonner";
 
 type Table = "parceiros_indicacoes" | "parceiros_recorrencias";
-type Field = "data_indicacao" | "data_venda";
+type Field = "data_indicacao" | "data_venda" | "data_cancelamento";
 
 function toIsoDate(d: Date): string {
   // YYYY-MM-DD (date column, no timezone shift)

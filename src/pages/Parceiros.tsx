@@ -1764,6 +1764,7 @@ export default function Parceiros() {
 
       >
         <div className="overflow-x-auto">
+          {(() => null)()}
           <Table>
             <TableHeader>
               <TableRow>
@@ -1775,6 +1776,9 @@ export default function Parceiros() {
                 <SortableTh sortKey="mrr" sort={sortRec} setSort={setSortRec} className="text-right" align="right">MRR</SortableTh>
                 <SortableTh sortKey="recorrencia" sort={sortRec} setSort={setSortRec} className="text-right" align="right">Recorrência</SortableTh>
                 <SortableTh sortKey="dataIndicacao" sort={sortRec} setSort={setSortRec}>Data indicação</SortableTh>
+                {recorrencias.some((r) => !r.ativo) && (
+                  <Th>Data Cancelamento</Th>
+                )}
                 <Th className="text-center">HubSpot</Th>
                 <Th className="text-center">Asaas</Th>
               </TableRow>
@@ -1782,7 +1786,7 @@ export default function Parceiros() {
             <TableBody>
               {recorrencias.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={10} className="py-10 text-center text-[12.5px] text-muted-foreground">
+                  <TableCell colSpan={recorrencias.some((r) => !r.ativo) ? 11 : 10} className="py-10 text-center text-[12.5px] text-muted-foreground">
                     Nenhuma indicação ativa com recorrência no período.
                   </TableCell>
                 </TableRow>

@@ -107,7 +107,7 @@ export function EditableDateCell({
         />
         <div className="flex items-center justify-between gap-2 border-t border-border p-2">
           <Badge variant="outline" className="text-[10.5px]">
-            {field === "data_indicacao" ? "Data indicação" : "Data venda"}
+            {field === "data_indicacao" ? "Data indicação" : field === "data_venda" ? "Data venda" : "Data cancelamento"}
           </Badge>
           <div className="flex items-center gap-1.5">
             <Button size="sm" variant="ghost" className="h-7 text-[11.5px]" onClick={() => setOpen(false)}>

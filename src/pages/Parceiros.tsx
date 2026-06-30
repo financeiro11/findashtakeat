@@ -1764,7 +1764,6 @@ export default function Parceiros() {
 
       >
         <div className="overflow-x-auto">
-          {(() => null)()}
           <Table>
             <TableHeader>
               <TableRow>

@@ -392,6 +392,7 @@ export default function Parceiros() {
       mrr: Number(r.mrr ?? 0),
       recorrenciaValor: Number(r.recorrencia_valor ?? 0),
       dataIndicacao: r.data_indicacao,
+      dataCancelamento: r.data_cancelamento ?? null,
       ativo: r.ativo !== false,
       hubspotUrl: r.hubspot_url || hubspotUrlFor(r.id_negocio ?? ""),
       asaasUrl: r.asaas_url || asaasUrlFor(r.id_negocio ?? ""),

@@ -254,7 +254,7 @@ export default function Orcamento() {
       {/* Conteúdo */}
       {view === "resumo" ? (
         <div className="grid grid-cols-1 gap-3 md:grid-cols-2 lg:grid-cols-3">
-          {areaAgg.map(a => (
+          {areaAgg.filter(a => a.status !== "sem").map(a => (
             <AreaCard key={a.area} area={a} linhas={linhaAgg.filter(l => l.area === a.area)} />
           ))}
         </div>

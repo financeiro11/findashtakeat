@@ -42,6 +42,7 @@ import Playbook from "./pages/playbook/PlaybookHub";
 import Captable from "./pages/Captable";
 import Parceiros from "./pages/Parceiros";
 import Orcamento from "./pages/Orcamento";
+import Auditoria from "./pages/Auditoria";
 import Reembolsos from "./pages/operacional/Reembolsos";
 import Estornos from "./pages/operacional/Estornos";
 import NotFound from "./pages/NotFound.tsx";

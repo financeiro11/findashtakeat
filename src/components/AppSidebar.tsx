@@ -3,7 +3,7 @@ import { NavLink, useLocation } from "react-router-dom";
 import {
   Wallet, CreditCard, Users, Handshake, ListTree,
   Percent, BookOpen, UserCog, Smartphone, Plane, Settings,
-  FolderKanban, FileBarChart, FileText, Scale, TrendingUp, Brain, Target, Home, Search, Sparkles, Gavel, CheckSquare, ChevronDown, BookOpenCheck, PieChart, Handshake as HandshakeIcon, CheckCircle2, Receipt, Undo2, Wallet2,
+  FolderKanban, FileBarChart, FileText, Scale, TrendingUp, Brain, Target, Home, Search, Sparkles, Gavel, CheckSquare, ChevronDown, BookOpenCheck, PieChart, Handshake as HandshakeIcon, CheckCircle2, Receipt, Undo2, Wallet2, ShieldCheck,
 } from "lucide-react";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import takeatLogo from "@/assets/takeat-logo.png";
@@ -61,6 +61,7 @@ const analise: NavItem[] = [
 
 const governanca: NavItem[] = [
   { title: "Orçamento", url: "/orcamento", icon: Wallet2 },
+  { title: "Auditoria", url: "/governanca/auditoria", icon: ShieldCheck },
 ];
 
 const config: NavItem[] = [

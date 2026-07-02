@@ -101,6 +101,7 @@ const App = () => (
               <Route path="/planilhamento/conta-corrente" element={<ContaCorrente />} />
               <Route path="/operacional/parceiros" element={<Parceiros />} />
               <Route path="/orcamento" element={<Orcamento />} />
+              <Route path="/governanca/auditoria" element={<Auditoria />} />
               <Route path="/operacional/reembolsos" element={<Reembolsos />} />
               <Route path="/operacional/estornos" element={<Estornos />} />
             </Route>

@@ -153,6 +153,7 @@ export function AppSidebar() {
               <Group label="Investimentos" items={investimentos} pathname={pathname} />
               <Group label="Demonstrações" items={demonstracoes} pathname={pathname} />
               <Group label="Análise Preditiva" items={analise} pathname={pathname} />
+              <Group label="Governança" items={governanca} pathname={pathname} />
               <Group label="Configurações" items={config} pathname={pathname} />
             </>
           )}

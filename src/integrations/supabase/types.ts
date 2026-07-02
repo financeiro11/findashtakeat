@@ -154,6 +154,66 @@ export type Database = {
         }
         Relationships: []
       }
+      auditoria: {
+        Row: {
+          area: string
+          competencia: string
+          created_at: string
+          data_lancamento: string | null
+          descricao: string | null
+          id: number
+          id_transacao: string | null
+          id_unico: string
+          origem: string | null
+          regra: string
+          responsavel: string | null
+          severidade: string
+          status: string
+          titulo: string
+          trilha: Json
+          updated_at: string
+          valor: number
+        }
+        Insert: {
+          area: string
+          competencia: string
+          created_at?: string
+          data_lancamento?: string | null
+          descricao?: string | null
+          id?: never
+          id_transacao?: string | null
+          id_unico: string
+          origem?: string | null
+          regra: string
+          responsavel?: string | null
+          severidade: string
+          status?: string
+          titulo: string
+          trilha?: Json
+          updated_at?: string
+          valor?: number
+        }
+        Update: {
+          area?: string
+          competencia?: string
+          created_at?: string
+          data_lancamento?: string | null
+          descricao?: string | null
+          id?: never
+          id_transacao?: string | null
+          id_unico?: string
+          origem?: string | null
+          regra?: string
+          responsavel?: string | null
+          severidade?: string
+          status?: string
+          titulo?: string
+          trilha?: Json
+          updated_at?: string
+          valor?: number
+        }
+        Relationships: []
+      }
       automacoes_catalogo: {
         Row: {
           automacao: string

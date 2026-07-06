@@ -212,6 +212,83 @@ export type Database = {
           updated_at?: string
           valor?: number
         }
+        Relationships: [
+          {
+            foreignKeyName: "fk_auditoria_area"
+            columns: ["area"]
+            isOneToOne: false
+            referencedRelation: "lib_departamentos"
+            referencedColumns: ["nome"]
+          },
+        ]
+      }
+      auditoria_cartao_lancamentos: {
+        Row: {
+          arquivo_comprovante: string | null
+          card_final: string | null
+          categoria: string | null
+          competencia: string
+          created_at: string
+          data: string | null
+          descricao_original: string | null
+          estabelecimento: string | null
+          gestor: string | null
+          id: number
+          id_unico: string
+          observacao: string | null
+          origem: string
+          parcela: string | null
+          referencia: string
+          status_escopo: string | null
+          status_nf: string
+          time: string | null
+          updated_at: string
+          valor: number
+        }
+        Insert: {
+          arquivo_comprovante?: string | null
+          card_final?: string | null
+          categoria?: string | null
+          competencia: string
+          created_at?: string
+          data?: string | null
+          descricao_original?: string | null
+          estabelecimento?: string | null
+          gestor?: string | null
+          id?: number
+          id_unico: string
+          observacao?: string | null
+          origem?: string
+          parcela?: string | null
+          referencia: string
+          status_escopo?: string | null
+          status_nf: string
+          time?: string | null
+          updated_at?: string
+          valor?: number
+        }
+        Update: {
+          arquivo_comprovante?: string | null
+          card_final?: string | null
+          categoria?: string | null
+          competencia?: string
+          created_at?: string
+          data?: string | null
+          descricao_original?: string | null
+          estabelecimento?: string | null
+          gestor?: string | null
+          id?: number
+          id_unico?: string
+          observacao?: string | null
+          origem?: string
+          parcela?: string | null
+          referencia?: string
+          status_escopo?: string | null
+          status_nf?: string
+          time?: string | null
+          updated_at?: string
+          valor?: number
+        }
         Relationships: []
       }
       automacoes_catalogo: {
@@ -2195,7 +2272,13 @@ export type Database = {
       }
     }
     Functions: {
-      [_ in never]: never
+      importar_auditoria: {
+        Args: { p_achados: Json }
+        Returns: {
+          atualizados: number
+          inseridos: number
+        }[]
+      }
     }
     Enums: {
       [_ in never]: never

@@ -156,15 +156,17 @@ export default function Achados() {
   }, [periodRows, filtro, fSev, fArea, fRegra]);
 
   const filtered = useMemo(() => {
+    const q = busca.trim().toLowerCase();
     return periodRows.filter(r => {
       if (filtro !== "todas" && r.status !== filtro) return false;
       if (fSev !== "todas" && r.severidade !== fSev) return false;
       if (fArea !== "todas" && r.area !== fArea) return false;
       if (fRegra !== "todas" && r.regra !== fRegra) return false;
       if (fCat !== "todas" && r.categoria !== fCat) return false;
+      if (q && !(r.titulo || "").toLowerCase().includes(q)) return false;
       return true;
     });
-  }, [periodRows, filtro, fSev, fArea, fRegra, fCat]);
+  }, [periodRows, filtro, fSev, fArea, fRegra, fCat, busca]);
 
   const kpis = useMemo(() => {
     const pend = periodRows.filter(r => r.status === "Pendente");

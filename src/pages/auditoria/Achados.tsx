@@ -105,7 +105,7 @@ export default function Achados() {
     setLoading(true);
     const { data, error } = await supabase
       .from("auditoria")
-      .select("id,id_unico,competencia,titulo,area,severidade,valor,responsavel,data_lancamento,descricao,regra,origem,id_transacao,status,trilha")
+      .select("id,id_unico,competencia,titulo,area,severidade,valor,responsavel,data_lancamento,descricao,regra,origem,id_transacao,status,trilha,categoria,link_comprovante")
       .order("data_lancamento", { ascending: false });
     if (error) { toast.error("Erro ao carregar auditoria"); setRows([]); }
     else { setRows((data ?? []) as unknown as Row[]); }

@@ -400,13 +400,12 @@ export default function Achados() {
 
       {/* Table */}
       <div className="rounded-xl border border-border bg-card overflow-hidden">
-        <div className="grid grid-cols-[minmax(220px,1.6fr)_110px_130px_150px_100px_120px_130px_140px_40px] gap-3 px-4 py-3 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground border-b border-border">
+        <div className="grid grid-cols-[minmax(240px,1.8fr)_150px_100px_120px_130px_130px_140px_40px] gap-3 px-4 py-3 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground border-b border-border">
           <div>Lançamento</div>
-          <div>Severidade</div>
-          <div>Área</div>
           <div>Regra</div>
           <div>Origem</div>
           <div className="text-right">Valor</div>
+          <div>Área</div>
           <div>Data</div>
           <div>Status</div>
           <div></div>
@@ -416,16 +415,23 @@ export default function Achados() {
         ) : filtered.length === 0 ? (
           <div className="p-12 text-center text-sm text-muted-foreground">Nenhum lançamento em auditoria neste período</div>
         ) : filtered.map(r => {
-          const ss = statusStyle(r.status);
           return (
             <div
               key={r.id}
-              className="grid grid-cols-[minmax(220px,1.6fr)_110px_130px_150px_100px_120px_130px_140px_40px] gap-3 px-4 py-3 items-center border-b border-border last:border-0 hover:bg-accent/40 transition"
+              className="grid grid-cols-[minmax(240px,1.8fr)_150px_100px_120px_130px_130px_140px_40px] gap-3 px-4 py-3 items-center border-b border-border last:border-0 hover:bg-accent/40 transition"
             >
-              <div className="text-left min-w-0 flex items-center gap-1.5">
+              <div className="text-left min-w-0 flex items-start gap-1.5">
                 <button onClick={() => setSelected(r)} className="text-left min-w-0 flex-1">
-                  <div className="font-semibold text-sm truncate">{r.titulo}</div>
-                  <div className="text-xs text-muted-foreground truncate">{r.responsavel || "—"}</div>
+                  <div className="font-medium text-sm truncate">{r.titulo}</div>
+                  <div className="flex items-center gap-1.5 mt-0.5 flex-wrap">
+                    <span className="text-xs text-muted-foreground truncate">{r.responsavel || "—"}</span>
+                    {r.categoria && (
+                      <span className={cn("inline-flex px-1.5 py-0.5 rounded text-[10px] font-medium border", catStyle(r.categoria))}>{r.categoria}</span>
+                    )}
+                    <span className={cn("inline-flex px-1.5 py-0.5 rounded text-[10px] font-medium border", sevBadge(r.severidade))}>
+                      {r.severidade}
+                    </span>
+                  </div>
                 </button>
                 {r.link_comprovante && (
                   <TooltipProvider delayDuration={200}>
@@ -436,7 +442,7 @@ export default function Achados() {
                           target="_blank"
                           rel="noopener noreferrer"
                           onClick={(e) => e.stopPropagation()}
-                          className="text-muted-foreground hover:text-primary transition-colors shrink-0"
+                          className="text-muted-foreground hover:text-primary transition-colors shrink-0 mt-0.5"
                         >
                           <ExternalLink className="h-4 w-4" />
                         </a>
@@ -446,15 +452,10 @@ export default function Achados() {
                   </TooltipProvider>
                 )}
               </div>
-              <div>
-                <span className={cn("inline-flex px-2 py-0.5 rounded-full text-[11px] font-medium border", sevBadge(r.severidade))}>
-                  {r.severidade}
-                </span>
-              </div>
-              <div className="text-sm text-foreground/80 truncate">{r.area}</div>
               <div className="text-xs text-muted-foreground truncate">{r.regra}</div>
-              <div className="text-xs text-foreground/70">{r.origem}</div>
+              <div className="text-xs text-foreground/70 truncate">{r.origem}</div>
               <div className="text-right num text-sm font-medium">{brl(Number(r.valor || 0))}</div>
+              <div className="text-sm text-foreground/80 truncate">{r.area}</div>
               <div className="text-sm text-muted-foreground">{fmtDateBR(r.data_lancamento)}</div>
               <div>
                 <StatusMenu status={r.status} onChange={(n) => mudarStatusInline(r, n)} />
@@ -466,6 +467,7 @@ export default function Achados() {
           );
         })}
       </div>
+
 
       {/* Drawer */}
       <Sheet open={!!selected} onOpenChange={(o) => !o && setSelected(null)}>

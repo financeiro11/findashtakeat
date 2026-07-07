@@ -49,6 +49,7 @@ const ROUTE_MAP: Record<string, { crumbs: string[]; context?: string }> = {
 interface PageHeaderProps {
   breadcrumbs?: string[];
   context?: string;
+  hideToolbar?: boolean;
 }
 
 const MONTHS_PT = ["Jan","Fev","Mar","Abr","Mai","Jun","Jul","Ago","Set","Out","Nov","Dez"];

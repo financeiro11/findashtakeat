@@ -262,20 +262,33 @@ export default function Achados() {
     <div className="mx-auto max-w-[1400px] px-6 py-6 space-y-6">
       {/* Header row */}
       <div className="flex items-end justify-between gap-4 flex-wrap">
-        <div>
+        <div className="min-w-0">
           <div className="text-[11px] uppercase tracking-wider text-muted-foreground font-medium">Hub Financeiro · Governança</div>
           <h1 className="text-3xl font-bold tracking-tight mt-0.5">Auditoria</h1>
           <p className="text-sm text-muted-foreground mt-1">Achados financeiros com workflow de análise e aprovação.</p>
         </div>
-        <div className="flex items-center gap-2">
-          <select
-            value={competencia}
-            onChange={e => setCompetencia(e.target.value)}
-            className="h-9 rounded-lg border border-border bg-card px-3 text-sm font-medium capitalize"
-          >
-            {competencias.map(c => <option key={c} value={c} className="capitalize">{compLabel(c)}</option>)}
-            {competencias.length === 0 && <option value="">—</option>}
-          </select>
+        <div className="flex items-center gap-2 flex-wrap">
+          <div className="relative">
+            <Search className="h-4 w-4 absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground pointer-events-none" />
+            <input
+              type="text"
+              value={busca}
+              onChange={e => setBusca(e.target.value)}
+              placeholder="Buscar lançamento..."
+              className="h-9 w-64 rounded-lg border border-border bg-card pl-9 pr-3 text-sm outline-none focus:ring-2 focus:ring-foreground/10"
+            />
+          </div>
+          <label className="inline-flex items-center gap-2 h-9 rounded-lg border border-border bg-card px-3">
+            <span className="text-[11px] uppercase tracking-wider text-muted-foreground font-medium">Competência</span>
+            <select
+              value={competencia}
+              onChange={e => setCompetencia(e.target.value)}
+              className="text-sm font-medium bg-transparent outline-none capitalize"
+            >
+              {competencias.map(c => <option key={c} value={c} className="capitalize">{compLabel(c)}</option>)}
+              {competencias.length === 0 && <option value="">—</option>}
+            </select>
+          </label>
           <Button onClick={exportCsv} className="bg-foreground text-background hover:bg-foreground/90 h-9">
             <Download className="h-4 w-4 mr-2" /> Exportar
           </Button>
@@ -284,15 +297,51 @@ export default function Achados() {
 
       {/* KPIs */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-        {loading ? Array.from({ length: 4 }).map((_, i) => <Skeleton key={i} className="h-28 rounded-xl" />) : (
+        {loading ? Array.from({ length: 4 }).map((_, i) => <Skeleton key={i} className="h-32 rounded-xl" />) : (
           <>
-            <KpiCard label="Pendentes" value={String(kpis.pend)} legend="aguardando ação" />
+            <KpiCard
+              label="Pendentes"
+              value={String(kpis.pend)}
+              legend="aguardando ação"
+              breakdown={
+                <div className="flex flex-wrap gap-1.5 mt-2">
+                  <MiniChip cls={catStyle("SEM NF")} text={`SEM NF ${kpis.pendSemNf}`} />
+                  <MiniChip cls={catStyle("A CONFERIR")} text={`A CONFERIR ${kpis.pendAConf}`} />
+                  <MiniChip cls={catStyle("FORA DE ESCOPO")} text={`FORA ${kpis.pendFora}`} />
+                </div>
+              }
+            />
             <KpiCard label="Em análise" value={String(kpis.emAn)} legend="em verificação" valueClass="text-[hsl(212_80%_45%)]" />
-            <KpiCard label="Valor sob auditoria" value={brlAbbr(kpis.valorSob)} legend={`em ${kpis.qtdSob} lançamento${kpis.qtdSob === 1 ? "" : "s"}`} />
-            <KpiCard label="Resolvidas" value={String(kpis.resolv)} legend={`${kpis.aprov} aprovadas · ${kpis.repr} reprovadas`} valueClass="text-[hsl(152_60%_36%)]" />
+            <KpiCard
+              label="Valor sob auditoria"
+              value={brlAbbr(kpis.valorSob)}
+              legend={`em ${kpis.qtdSob} lançamento${kpis.qtdSob === 1 ? "" : "s"}`}
+              breakdown={
+                <div className="flex flex-wrap gap-1.5 mt-2">
+                  {kpis.sobComNf > 0 && <MiniChip cls={catStyle("COM NF")} text={`COM NF ${brlAbbr(kpis.sobComNf)}`} />}
+                  {kpis.sobSemNf > 0 && <MiniChip cls={catStyle("SEM NF")} text={`SEM NF ${brlAbbr(kpis.sobSemNf)}`} />}
+                  {kpis.sobFora > 0 && <MiniChip cls={catStyle("FORA DE ESCOPO")} text={`FORA ${brlAbbr(kpis.sobFora)}`} />}
+                  {kpis.sobAConf > 0 && <MiniChip cls={catStyle("A CONFERIR")} text={`A CONF. ${brlAbbr(kpis.sobAConf)}`} />}
+                </div>
+              }
+            />
+            <KpiCard
+              label="Resolvidas"
+              value={String(kpis.resolv)}
+              legend={`${kpis.aprov} aprovadas · ${kpis.repr} reprovadas`}
+              valueClass="text-[hsl(152_60%_36%)]"
+              breakdown={
+                kpis.aprovComNf > 0 ? (
+                  <div className="flex flex-wrap gap-1.5 mt-2">
+                    <MiniChip cls={catStyle("COM NF")} text={`COM NF ${kpis.aprovComNf} aprovadas`} />
+                  </div>
+                ) : null
+              }
+            />
           </>
         )}
       </div>
+
 
       {/* Status tabs */}
       <div className="flex flex-wrap gap-2">

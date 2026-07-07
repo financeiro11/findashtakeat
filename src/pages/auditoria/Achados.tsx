@@ -612,14 +612,19 @@ export default function Achados() {
   );
 }
 
-function KpiCard({ label, value, legend, valueClass }: { label: string; value: string; legend: string; valueClass?: string }) {
+function KpiCard({ label, value, legend, valueClass, breakdown }: { label: string; value: string; legend: string; valueClass?: string; breakdown?: React.ReactNode }) {
   return (
     <div className="rounded-xl border border-border bg-card p-5">
       <div className="text-xs font-medium text-muted-foreground">{label}</div>
       <div className={cn("mt-2 text-3xl font-bold num tracking-tight", valueClass)}>{value}</div>
       <div className="text-xs text-muted-foreground mt-1">{legend}</div>
+      {breakdown}
     </div>
   );
+}
+
+function MiniChip({ cls, text }: { cls: string; text: string }) {
+  return <span className={cn("inline-flex px-1.5 py-0.5 rounded-md text-[10px] font-medium border", cls)}>{text}</span>;
 }
 
 function MetaItem({ label, value, full }: { label: string; value: string; full?: boolean }) {

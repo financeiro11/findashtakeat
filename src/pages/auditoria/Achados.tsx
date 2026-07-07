@@ -173,9 +173,22 @@ export default function Achados() {
     const emAn = periodRows.filter(r => r.status === "Em análise");
     const sob = [...pend, ...emAn];
     const valorSob = sob.reduce((s, r) => s + Number(r.valor || 0), 0);
-    const aprov = periodRows.filter(r => r.status === "Aprovado").length;
+    const aprov = periodRows.filter(r => r.status === "Aprovado");
     const repr = periodRows.filter(r => r.status === "Reprovado").length;
-    return { pend: pend.length, emAn: emAn.length, valorSob, qtdSob: sob.length, resolv: aprov + repr, aprov, repr };
+    const catCount = (arr: Row[], c: Categoria) => arr.filter(r => r.categoria === c).length;
+    const catSum = (arr: Row[], c: Categoria) => arr.filter(r => r.categoria === c).reduce((s, r) => s + Number(r.valor || 0), 0);
+    return {
+      pend: pend.length, emAn: emAn.length, valorSob, qtdSob: sob.length,
+      resolv: aprov.length + repr, aprov: aprov.length, repr,
+      pendSemNf: catCount(pend, "SEM NF"),
+      pendAConf: catCount(pend, "A CONFERIR"),
+      pendFora: catCount(pend, "FORA DE ESCOPO"),
+      sobComNf: catSum(sob, "COM NF"),
+      sobSemNf: catSum(sob, "SEM NF"),
+      sobFora: catSum(sob, "FORA DE ESCOPO"),
+      sobAConf: catSum(sob, "A CONFERIR"),
+      aprovComNf: catCount(aprov, "COM NF"),
+    };
   }, [periodRows]);
 
   useEffect(() => {

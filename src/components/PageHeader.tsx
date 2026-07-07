@@ -61,7 +61,7 @@ function fmtMonth(d: Date) {
 const PERIOD_KEY = "header:period";
 const COMPARE_KEY = "header:compare";
 
-export function PageHeader({ breadcrumbs, context }: PageHeaderProps) {
+export function PageHeader({ breadcrumbs, context, hideToolbar }: PageHeaderProps) {
   const { pathname } = useLocation();
   const fallback = ROUTE_MAP[pathname] ?? { crumbs: [pathname] };
   const crumbs = breadcrumbs ?? fallback.crumbs;

@@ -6,13 +6,15 @@ import { Sheet, SheetContent } from "@/components/ui/sheet";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Textarea } from "@/components/ui/textarea";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Download, X, ChevronRight, Check } from "lucide-react";
+import { Download, X, ChevronRight, Check, ExternalLink } from "lucide-react";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
 import { brl, brlAbbr, fmtDateBR, fmtTrilha, compLabel, MESES_PT_LONG } from "./utils";
 
 type Severidade = "Crítico" | "Alto" | "Médio" | "Baixo";
 type Status = "Pendente" | "Em análise" | "Aprovado" | "Reprovado" | "Ajuste solicitado";
+type Categoria = "COM NF" | "SEM NF" | "FORA DE ESCOPO" | "A CONFERIR";
 type TrilhaEvento = {
   em?: string; por?: string; de?: string; para?: string; comentario?: string;
   ator?: string; tipo?: string; texto?: string; quando?: string;
@@ -33,8 +35,22 @@ type Row = {
   id_transacao: string | null;
   status: Status;
   trilha: TrilhaEvento[] | null;
+  categoria: Categoria | string | null;
+  link_comprovante: string | null;
 };
 type Filtro = "todas" | Status;
+type FiltroCat = "todas" | Categoria;
+
+const ALL_CATEGORIAS: Categoria[] = ["COM NF", "SEM NF", "FORA DE ESCOPO", "A CONFERIR"];
+function catStyle(c: string | null | undefined) {
+  switch (c) {
+    case "COM NF": return "bg-[hsl(152_55%_94%)] text-[hsl(152_60%_28%)] border-[hsl(152_55%_82%)]";
+    case "SEM NF": return "bg-[hsl(0_80%_96%)] text-[hsl(0_72%_38%)] border-[hsl(0_80%_88%)]";
+    case "FORA DE ESCOPO": return "bg-[hsl(22_92%_95%)] text-[hsl(22_85%_38%)] border-[hsl(22_92%_85%)]";
+    case "A CONFERIR": return "bg-[hsl(48_96%_92%)] text-[hsl(38_80%_32%)] border-[hsl(48_92%_80%)]";
+    default: return "bg-muted text-muted-foreground border-border";
+  }
+}
 
 type CartaoLanc = {
   id_unico: string; referencia: string; competencia: string; origem: string;
@@ -78,6 +94,7 @@ export default function Achados() {
   const [fSev, setFSev] = useState<string>("todas");
   const [fArea, setFArea] = useState<string>("todas");
   const [fRegra, setFRegra] = useState<string>("todas");
+  const [fCat, setFCat] = useState<FiltroCat>("todas");
   const [selected, setSelected] = useState<Row | null>(null);
   const [origemCart, setOrigemCart] = useState<CartaoLanc | null>(null);
   const [confirm, setConfirm] = useState<{ novo: Status } | null>(null);
@@ -88,7 +105,7 @@ export default function Achados() {
     setLoading(true);
     const { data, error } = await supabase
       .from("auditoria")
-      .select("id,id_unico,competencia,titulo,area,severidade,valor,responsavel,data_lancamento,descricao,regra,origem,id_transacao,status,trilha")
+      .select("id,id_unico,competencia,titulo,area,severidade,valor,responsavel,data_lancamento,descricao,regra,origem,id_transacao,status,trilha,categoria,link_comprovante")
       .order("data_lancamento", { ascending: false });
     if (error) { toast.error("Erro ao carregar auditoria"); setRows([]); }
     else { setRows((data ?? []) as unknown as Row[]); }
@@ -120,15 +137,31 @@ export default function Achados() {
     return c;
   }, [periodRows]);
 
-  const filtered = useMemo(() => {
-    return periodRows.filter(r => {
+  const catCounts = useMemo(() => {
+    // Categoria counts respect current status/sev/area/regra filters (but not fCat itself)
+    const base = periodRows.filter(r => {
       if (filtro !== "todas" && r.status !== filtro) return false;
       if (fSev !== "todas" && r.severidade !== fSev) return false;
       if (fArea !== "todas" && r.area !== fArea) return false;
       if (fRegra !== "todas" && r.regra !== fRegra) return false;
       return true;
     });
+    const c: Record<string, number> = { todas: base.length };
+    ALL_CATEGORIAS.forEach(k => c[k] = 0);
+    base.forEach(r => { if (r.categoria) c[r.categoria] = (c[r.categoria] ?? 0) + 1; });
+    return c;
   }, [periodRows, filtro, fSev, fArea, fRegra]);
+
+  const filtered = useMemo(() => {
+    return periodRows.filter(r => {
+      if (filtro !== "todas" && r.status !== filtro) return false;
+      if (fSev !== "todas" && r.severidade !== fSev) return false;
+      if (fArea !== "todas" && r.area !== fArea) return false;
+      if (fRegra !== "todas" && r.regra !== fRegra) return false;
+      if (fCat !== "todas" && r.categoria !== fCat) return false;
+      return true;
+    });
+  }, [periodRows, filtro, fSev, fArea, fRegra, fCat]);
 
   const kpis = useMemo(() => {
     const pend = periodRows.filter(r => r.status === "Pendente");
@@ -260,6 +293,32 @@ export default function Achados() {
         ))}
       </div>
 
+      {/* Categoria chips */}
+      <div className="flex flex-wrap gap-2">
+        {([
+          { k: "todas" as FiltroCat, label: `Todas (${catCounts.todas})`, cls: "" },
+          ...ALL_CATEGORIAS.map(c => ({ k: c as FiltroCat, label: `${c} (${catCounts[c] ?? 0})`, cls: catStyle(c) })),
+        ]).map(f => {
+          const count = f.k === "todas" ? catCounts.todas : (catCounts[f.k] ?? 0);
+          const disabled = f.k !== "todas" && count === 0;
+          const active = fCat === f.k;
+          return (
+            <button
+              key={f.k}
+              onClick={() => !disabled && setFCat(f.k)}
+              disabled={disabled}
+              className={cn(
+                "px-3.5 py-1.5 rounded-full text-xs font-medium border transition",
+                active
+                  ? (f.k === "todas" ? "bg-foreground text-background border-foreground" : cn(f.cls, "ring-2 ring-offset-1 ring-foreground/40"))
+                  : (f.k === "todas" ? "bg-card text-foreground border-border hover:bg-accent" : cn(f.cls, "opacity-90 hover:opacity-100")),
+                disabled && "opacity-40 cursor-not-allowed hover:opacity-40"
+              )}
+            >{f.label}</button>
+          );
+        })}
+      </div>
+
       {/* Filters row */}
       <div className="flex flex-wrap gap-2 items-center">
         <FilterSelect label="Severidade" value={fSev} onChange={setFSev} options={["Crítico","Alto","Médio","Baixo"]} />
@@ -296,10 +355,30 @@ export default function Achados() {
               key={r.id}
               className="grid grid-cols-[minmax(220px,1.6fr)_110px_130px_150px_100px_120px_130px_140px_40px] gap-3 px-4 py-3 items-center border-b border-border last:border-0 hover:bg-accent/40 transition"
             >
-              <button onClick={() => setSelected(r)} className="text-left min-w-0">
-                <div className="font-semibold text-sm truncate">{r.titulo}</div>
-                <div className="text-xs text-muted-foreground truncate">{r.responsavel || "—"}</div>
-              </button>
+              <div className="text-left min-w-0 flex items-center gap-1.5">
+                <button onClick={() => setSelected(r)} className="text-left min-w-0 flex-1">
+                  <div className="font-semibold text-sm truncate">{r.titulo}</div>
+                  <div className="text-xs text-muted-foreground truncate">{r.responsavel || "—"}</div>
+                </button>
+                {r.link_comprovante && (
+                  <TooltipProvider delayDuration={200}>
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <a
+                          href={r.link_comprovante}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          onClick={(e) => e.stopPropagation()}
+                          className="text-muted-foreground hover:text-primary transition-colors shrink-0"
+                        >
+                          <ExternalLink className="h-4 w-4" />
+                        </a>
+                      </TooltipTrigger>
+                      <TooltipContent>Ver comprovante no Drive</TooltipContent>
+                    </Tooltip>
+                  </TooltipProvider>
+                )}
+              </div>
               <div>
                 <span className={cn("inline-flex px-2 py-0.5 rounded-full text-[11px] font-medium border", sevBadge(r.severidade))}>
                   {r.severidade}
@@ -346,6 +425,11 @@ export default function Achados() {
                   <span className="inline-flex px-2.5 py-1 rounded-full text-xs font-medium bg-muted border border-border">
                     Origem {selected.origem}
                   </span>
+                  {selected.categoria && (
+                    <span className={cn("inline-flex px-2.5 py-1 rounded-full text-xs font-medium border", catStyle(selected.categoria))}>
+                      {selected.categoria}
+                    </span>
+                  )}
                 </div>
 
                 <div className="num text-3xl font-bold">{brl(Number(selected.valor || 0))}</div>
@@ -357,6 +441,21 @@ export default function Achados() {
                   <MetaItem label="Data do gasto" value={fmtDateBR(selected.data_lancamento)} />
                   <MetaItem label="Competência" value={compLabel(selected.competencia)} />
                   <MetaItem label="ID transação" value={selected.id_transacao || "—"} />
+                  <div className="col-span-2">
+                    <div className="text-[11px] uppercase tracking-wider text-muted-foreground font-medium">Comprovante</div>
+                    <div className="text-sm mt-1">
+                      {selected.link_comprovante ? (
+                        <a
+                          href={selected.link_comprovante}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-border bg-card hover:bg-accent text-sm font-medium transition"
+                        >
+                          <ExternalLink className="h-3.5 w-3.5" /> Abrir no Drive
+                        </a>
+                      ) : "—"}
+                    </div>
+                  </div>
                 </div>
 
                 {origemCart && (

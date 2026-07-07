@@ -425,6 +425,11 @@ export default function Achados() {
                   <span className="inline-flex px-2.5 py-1 rounded-full text-xs font-medium bg-muted border border-border">
                     Origem {selected.origem}
                   </span>
+                  {selected.categoria && (
+                    <span className={cn("inline-flex px-2.5 py-1 rounded-full text-xs font-medium border", catStyle(selected.categoria))}>
+                      {selected.categoria}
+                    </span>
+                  )}
                 </div>
 
                 <div className="num text-3xl font-bold">{brl(Number(selected.valor || 0))}</div>
@@ -436,6 +441,21 @@ export default function Achados() {
                   <MetaItem label="Data do gasto" value={fmtDateBR(selected.data_lancamento)} />
                   <MetaItem label="Competência" value={compLabel(selected.competencia)} />
                   <MetaItem label="ID transação" value={selected.id_transacao || "—"} />
+                  <div className="col-span-2">
+                    <div className="text-[11px] uppercase tracking-wider text-muted-foreground font-medium">Comprovante</div>
+                    <div className="text-sm mt-1">
+                      {selected.link_comprovante ? (
+                        <a
+                          href={selected.link_comprovante}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-border bg-card hover:bg-accent text-sm font-medium transition"
+                        >
+                          <ExternalLink className="h-3.5 w-3.5" /> Abrir no Drive
+                        </a>
+                      ) : "—"}
+                    </div>
+                  </div>
                 </div>
 
                 {origemCart && (

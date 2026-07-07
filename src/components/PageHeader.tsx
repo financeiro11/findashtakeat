@@ -117,7 +117,7 @@ export function PageHeader({ breadcrumbs, context, hideToolbar }: PageHeaderProp
         {ctx && <span className="ml-2 truncate text-[12px] text-muted-foreground">· {ctx}</span>}
       </nav>
 
-      {pathname !== "/operacional/parceiros" && (
+      {!hideToolbar && pathname !== "/operacional/parceiros" && (
         <div className="flex shrink-0 items-center gap-1.5">
           <Popover>
             <PopoverTrigger asChild>

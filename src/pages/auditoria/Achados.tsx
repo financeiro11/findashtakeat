@@ -293,6 +293,32 @@ export default function Achados() {
         ))}
       </div>
 
+      {/* Categoria chips */}
+      <div className="flex flex-wrap gap-2">
+        {([
+          { k: "todas" as FiltroCat, label: `Todas (${catCounts.todas})`, cls: "" },
+          ...ALL_CATEGORIAS.map(c => ({ k: c as FiltroCat, label: `${c} (${catCounts[c] ?? 0})`, cls: catStyle(c) })),
+        ]).map(f => {
+          const count = f.k === "todas" ? catCounts.todas : (catCounts[f.k] ?? 0);
+          const disabled = f.k !== "todas" && count === 0;
+          const active = fCat === f.k;
+          return (
+            <button
+              key={f.k}
+              onClick={() => !disabled && setFCat(f.k)}
+              disabled={disabled}
+              className={cn(
+                "px-3.5 py-1.5 rounded-full text-xs font-medium border transition",
+                active
+                  ? (f.k === "todas" ? "bg-foreground text-background border-foreground" : cn(f.cls, "ring-2 ring-offset-1 ring-foreground/40"))
+                  : (f.k === "todas" ? "bg-card text-foreground border-border hover:bg-accent" : cn(f.cls, "opacity-90 hover:opacity-100")),
+                disabled && "opacity-40 cursor-not-allowed hover:opacity-40"
+              )}
+            >{f.label}</button>
+          );
+        })}
+      </div>
+
       {/* Filters row */}
       <div className="flex flex-wrap gap-2 items-center">
         <FilterSelect label="Severidade" value={fSev} onChange={setFSev} options={["Crítico","Alto","Médio","Baixo"]} />

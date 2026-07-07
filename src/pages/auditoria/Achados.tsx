@@ -355,10 +355,30 @@ export default function Achados() {
               key={r.id}
               className="grid grid-cols-[minmax(220px,1.6fr)_110px_130px_150px_100px_120px_130px_140px_40px] gap-3 px-4 py-3 items-center border-b border-border last:border-0 hover:bg-accent/40 transition"
             >
-              <button onClick={() => setSelected(r)} className="text-left min-w-0">
-                <div className="font-semibold text-sm truncate">{r.titulo}</div>
-                <div className="text-xs text-muted-foreground truncate">{r.responsavel || "—"}</div>
-              </button>
+              <div className="text-left min-w-0 flex items-center gap-1.5">
+                <button onClick={() => setSelected(r)} className="text-left min-w-0 flex-1">
+                  <div className="font-semibold text-sm truncate">{r.titulo}</div>
+                  <div className="text-xs text-muted-foreground truncate">{r.responsavel || "—"}</div>
+                </button>
+                {r.link_comprovante && (
+                  <TooltipProvider delayDuration={200}>
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <a
+                          href={r.link_comprovante}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          onClick={(e) => e.stopPropagation()}
+                          className="text-muted-foreground hover:text-primary transition-colors shrink-0"
+                        >
+                          <ExternalLink className="h-4 w-4" />
+                        </a>
+                      </TooltipTrigger>
+                      <TooltipContent>Ver comprovante no Drive</TooltipContent>
+                    </Tooltip>
+                  </TooltipProvider>
+                )}
+              </div>
               <div>
                 <span className={cn("inline-flex px-2 py-0.5 rounded-full text-[11px] font-medium border", sevBadge(r.severidade))}>
                   {r.severidade}

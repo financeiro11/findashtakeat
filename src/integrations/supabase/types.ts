@@ -157,6 +157,7 @@ export type Database = {
       auditoria: {
         Row: {
           area: string
+          categoria: string | null
           competencia: string
           created_at: string
           data_lancamento: string | null
@@ -164,6 +165,7 @@ export type Database = {
           id: number
           id_transacao: string | null
           id_unico: string
+          link_comprovante: string | null
           origem: string | null
           regra: string
           responsavel: string | null
@@ -176,6 +178,7 @@ export type Database = {
         }
         Insert: {
           area: string
+          categoria?: string | null
           competencia: string
           created_at?: string
           data_lancamento?: string | null
@@ -183,6 +186,7 @@ export type Database = {
           id?: never
           id_transacao?: string | null
           id_unico: string
+          link_comprovante?: string | null
           origem?: string | null
           regra: string
           responsavel?: string | null
@@ -195,6 +199,7 @@ export type Database = {
         }
         Update: {
           area?: string
+          categoria?: string | null
           competencia?: string
           created_at?: string
           data_lancamento?: string | null
@@ -202,6 +207,7 @@ export type Database = {
           id?: never
           id_transacao?: string | null
           id_unico?: string
+          link_comprovante?: string | null
           origem?: string | null
           regra?: string
           responsavel?: string | null
@@ -227,6 +233,7 @@ export type Database = {
           arquivo_comprovante: string | null
           card_final: string | null
           categoria: string | null
+          categoria_auditoria: string | null
           competencia: string
           created_at: string
           data: string | null
@@ -235,6 +242,7 @@ export type Database = {
           gestor: string | null
           id: number
           id_unico: string
+          link_comprovante: string | null
           observacao: string | null
           origem: string
           parcela: string | null
@@ -249,6 +257,7 @@ export type Database = {
           arquivo_comprovante?: string | null
           card_final?: string | null
           categoria?: string | null
+          categoria_auditoria?: string | null
           competencia: string
           created_at?: string
           data?: string | null
@@ -257,6 +266,7 @@ export type Database = {
           gestor?: string | null
           id?: number
           id_unico: string
+          link_comprovante?: string | null
           observacao?: string | null
           origem?: string
           parcela?: string | null
@@ -271,6 +281,7 @@ export type Database = {
           arquivo_comprovante?: string | null
           card_final?: string | null
           categoria?: string | null
+          categoria_auditoria?: string | null
           competencia?: string
           created_at?: string
           data?: string | null
@@ -279,6 +290,7 @@ export type Database = {
           gestor?: string | null
           id?: number
           id_unico?: string
+          link_comprovante?: string | null
           observacao?: string | null
           origem?: string
           parcela?: string | null

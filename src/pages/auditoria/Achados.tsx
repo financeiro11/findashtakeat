@@ -507,8 +507,10 @@ export default function Achados() {
 
                 <div className="grid grid-cols-2 gap-4 pt-2">
                   <MetaItem label="Responsável" value={selected.responsavel} />
+                  <MetaItem label="Área" value={selected.area} />
                   <MetaItem label="Data do gasto" value={fmtDateBR(selected.data_lancamento)} />
                   <MetaItem label="Competência" value={compLabel(selected.competencia)} />
+                  <MetaItem label="Regra" value={selected.regra} full />
                   <MetaItem label="ID transação" value={selected.id_transacao || "—"} />
                   <div className="col-span-2">
                     <div className="text-[11px] uppercase tracking-wider text-muted-foreground font-medium">Comprovante</div>

@@ -14,6 +14,7 @@ import { brl, brlAbbr, fmtDateBR, fmtTrilha, compLabel, MESES_PT_LONG } from "./
 
 type Severidade = "Crítico" | "Alto" | "Médio" | "Baixo";
 type Status = "Pendente" | "Em análise" | "Aprovado" | "Reprovado" | "Ajuste solicitado";
+type Categoria = "COM NF" | "SEM NF" | "FORA DE ESCOPO" | "A CONFERIR";
 type TrilhaEvento = {
   em?: string; por?: string; de?: string; para?: string; comentario?: string;
   ator?: string; tipo?: string; texto?: string; quando?: string;
@@ -34,8 +35,22 @@ type Row = {
   id_transacao: string | null;
   status: Status;
   trilha: TrilhaEvento[] | null;
+  categoria: Categoria | string | null;
+  link_comprovante: string | null;
 };
 type Filtro = "todas" | Status;
+type FiltroCat = "todas" | Categoria;
+
+const ALL_CATEGORIAS: Categoria[] = ["COM NF", "SEM NF", "FORA DE ESCOPO", "A CONFERIR"];
+function catStyle(c: string | null | undefined) {
+  switch (c) {
+    case "COM NF": return "bg-[hsl(152_55%_94%)] text-[hsl(152_60%_28%)] border-[hsl(152_55%_82%)]";
+    case "SEM NF": return "bg-[hsl(0_80%_96%)] text-[hsl(0_72%_38%)] border-[hsl(0_80%_88%)]";
+    case "FORA DE ESCOPO": return "bg-[hsl(22_92%_95%)] text-[hsl(22_85%_38%)] border-[hsl(22_92%_85%)]";
+    case "A CONFERIR": return "bg-[hsl(48_96%_92%)] text-[hsl(38_80%_32%)] border-[hsl(48_92%_80%)]";
+    default: return "bg-muted text-muted-foreground border-border";
+  }
+}
 
 type CartaoLanc = {
   id_unico: string; referencia: string; competencia: string; origem: string;

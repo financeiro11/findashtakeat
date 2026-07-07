@@ -94,6 +94,7 @@ export default function Achados() {
   const [fSev, setFSev] = useState<string>("todas");
   const [fArea, setFArea] = useState<string>("todas");
   const [fRegra, setFRegra] = useState<string>("todas");
+  const [fCat, setFCat] = useState<FiltroCat>("todas");
   const [selected, setSelected] = useState<Row | null>(null);
   const [origemCart, setOrigemCart] = useState<CartaoLanc | null>(null);
   const [confirm, setConfirm] = useState<{ novo: Status } | null>(null);

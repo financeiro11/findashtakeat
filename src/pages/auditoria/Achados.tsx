@@ -137,15 +137,31 @@ export default function Achados() {
     return c;
   }, [periodRows]);
 
-  const filtered = useMemo(() => {
-    return periodRows.filter(r => {
+  const catCounts = useMemo(() => {
+    // Categoria counts respect current status/sev/area/regra filters (but not fCat itself)
+    const base = periodRows.filter(r => {
       if (filtro !== "todas" && r.status !== filtro) return false;
       if (fSev !== "todas" && r.severidade !== fSev) return false;
       if (fArea !== "todas" && r.area !== fArea) return false;
       if (fRegra !== "todas" && r.regra !== fRegra) return false;
       return true;
     });
+    const c: Record<string, number> = { todas: base.length };
+    ALL_CATEGORIAS.forEach(k => c[k] = 0);
+    base.forEach(r => { if (r.categoria) c[r.categoria] = (c[r.categoria] ?? 0) + 1; });
+    return c;
   }, [periodRows, filtro, fSev, fArea, fRegra]);
+
+  const filtered = useMemo(() => {
+    return periodRows.filter(r => {
+      if (filtro !== "todas" && r.status !== filtro) return false;
+      if (fSev !== "todas" && r.severidade !== fSev) return false;
+      if (fArea !== "todas" && r.area !== fArea) return false;
+      if (fRegra !== "todas" && r.regra !== fRegra) return false;
+      if (fCat !== "todas" && r.categoria !== fCat) return false;
+      return true;
+    });
+  }, [periodRows, filtro, fSev, fArea, fRegra, fCat]);
 
   const kpis = useMemo(() => {
     const pend = periodRows.filter(r => r.status === "Pendente");

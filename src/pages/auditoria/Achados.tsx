@@ -71,8 +71,10 @@ const NEXT_STATUS: Record<Status, Status[]> = {
 };
 
 function sevBadge(s: Severidade) {
-  if (s === "Crítico" || s === "Alto") return "bg-[hsl(0_80%_96%)] text-[hsl(0_72%_38%)] border-[hsl(0_80%_88%)]";
-  if (s === "Médio") return "bg-[hsl(38_92%_95%)] text-[hsl(30_80%_35%)] border-[hsl(38_92%_85%)]";
+  if (s === "Crítico") return "bg-red-700 text-white border-red-700";
+  if (s === "Alto") return "bg-red-600 text-white border-red-600";
+  if (s === "Médio") return "bg-amber-500 text-white border-amber-500";
+  if (s === "Baixo") return "bg-blue-500 text-white border-blue-500";
   return "bg-muted text-muted-foreground border-border";
 }
 function statusStyle(s: Status) {

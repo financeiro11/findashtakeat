@@ -49,6 +49,7 @@ const ROUTE_MAP: Record<string, { crumbs: string[]; context?: string }> = {
 interface PageHeaderProps {
   breadcrumbs?: string[];
   context?: string;
+  hideToolbar?: boolean;
 }
 
 const MONTHS_PT = ["Jan","Fev","Mar","Abr","Mai","Jun","Jul","Ago","Set","Out","Nov","Dez"];
@@ -60,7 +61,7 @@ function fmtMonth(d: Date) {
 const PERIOD_KEY = "header:period";
 const COMPARE_KEY = "header:compare";
 
-export function PageHeader({ breadcrumbs, context }: PageHeaderProps) {
+export function PageHeader({ breadcrumbs, context, hideToolbar }: PageHeaderProps) {
   const { pathname } = useLocation();
   const fallback = ROUTE_MAP[pathname] ?? { crumbs: [pathname] };
   const crumbs = breadcrumbs ?? fallback.crumbs;
@@ -116,7 +117,7 @@ export function PageHeader({ breadcrumbs, context }: PageHeaderProps) {
         {ctx && <span className="ml-2 truncate text-[12px] text-muted-foreground">· {ctx}</span>}
       </nav>
 
-      {pathname !== "/operacional/parceiros" && (
+      {!hideToolbar && pathname !== "/operacional/parceiros" && (
         <div className="flex shrink-0 items-center gap-1.5">
           <Popover>
             <PopoverTrigger asChild>

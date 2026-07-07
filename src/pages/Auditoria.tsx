@@ -16,7 +16,7 @@ export default function Auditoria() {
 
   return (
     <div className="min-h-screen bg-[hsl(40_30%_97%)]">
-      <PageHeader />
+      <PageHeader hideToolbar />
 
       {/* Sub-tabs (mesmo estilo do PlaybookHub) */}
       <div className="flex justify-center pt-3">

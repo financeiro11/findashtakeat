@@ -6,7 +6,7 @@ import { Sheet, SheetContent } from "@/components/ui/sheet";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Textarea } from "@/components/ui/textarea";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Download, X, ChevronRight, Check, ExternalLink } from "lucide-react";
+import { Download, X, ChevronRight, Check, ExternalLink, Search } from "lucide-react";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
@@ -71,8 +71,10 @@ const NEXT_STATUS: Record<Status, Status[]> = {
 };
 
 function sevBadge(s: Severidade) {
-  if (s === "Crítico" || s === "Alto") return "bg-[hsl(0_80%_96%)] text-[hsl(0_72%_38%)] border-[hsl(0_80%_88%)]";
-  if (s === "Médio") return "bg-[hsl(38_92%_95%)] text-[hsl(30_80%_35%)] border-[hsl(38_92%_85%)]";
+  if (s === "Crítico") return "bg-red-700 text-white border-red-700";
+  if (s === "Alto") return "bg-red-600 text-white border-red-600";
+  if (s === "Médio") return "bg-amber-500 text-white border-amber-500";
+  if (s === "Baixo") return "bg-blue-500 text-white border-blue-500";
   return "bg-muted text-muted-foreground border-border";
 }
 function statusStyle(s: Status) {
@@ -95,6 +97,7 @@ export default function Achados() {
   const [fArea, setFArea] = useState<string>("todas");
   const [fRegra, setFRegra] = useState<string>("todas");
   const [fCat, setFCat] = useState<FiltroCat>("todas");
+  const [busca, setBusca] = useState("");
   const [selected, setSelected] = useState<Row | null>(null);
   const [origemCart, setOrigemCart] = useState<CartaoLanc | null>(null);
   const [confirm, setConfirm] = useState<{ novo: Status } | null>(null);
@@ -153,24 +156,39 @@ export default function Achados() {
   }, [periodRows, filtro, fSev, fArea, fRegra]);
 
   const filtered = useMemo(() => {
+    const q = busca.trim().toLowerCase();
     return periodRows.filter(r => {
       if (filtro !== "todas" && r.status !== filtro) return false;
       if (fSev !== "todas" && r.severidade !== fSev) return false;
       if (fArea !== "todas" && r.area !== fArea) return false;
       if (fRegra !== "todas" && r.regra !== fRegra) return false;
       if (fCat !== "todas" && r.categoria !== fCat) return false;
+      if (q && !(r.titulo || "").toLowerCase().includes(q)) return false;
       return true;
     });
-  }, [periodRows, filtro, fSev, fArea, fRegra, fCat]);
+  }, [periodRows, filtro, fSev, fArea, fRegra, fCat, busca]);
 
   const kpis = useMemo(() => {
     const pend = periodRows.filter(r => r.status === "Pendente");
     const emAn = periodRows.filter(r => r.status === "Em análise");
     const sob = [...pend, ...emAn];
     const valorSob = sob.reduce((s, r) => s + Number(r.valor || 0), 0);
-    const aprov = periodRows.filter(r => r.status === "Aprovado").length;
+    const aprov = periodRows.filter(r => r.status === "Aprovado");
     const repr = periodRows.filter(r => r.status === "Reprovado").length;
-    return { pend: pend.length, emAn: emAn.length, valorSob, qtdSob: sob.length, resolv: aprov + repr, aprov, repr };
+    const catCount = (arr: Row[], c: Categoria) => arr.filter(r => r.categoria === c).length;
+    const catSum = (arr: Row[], c: Categoria) => arr.filter(r => r.categoria === c).reduce((s, r) => s + Number(r.valor || 0), 0);
+    return {
+      pend: pend.length, emAn: emAn.length, valorSob, qtdSob: sob.length,
+      resolv: aprov.length + repr, aprov: aprov.length, repr,
+      pendSemNf: catCount(pend, "SEM NF"),
+      pendAConf: catCount(pend, "A CONFERIR"),
+      pendFora: catCount(pend, "FORA DE ESCOPO"),
+      sobComNf: catSum(sob, "COM NF"),
+      sobSemNf: catSum(sob, "SEM NF"),
+      sobFora: catSum(sob, "FORA DE ESCOPO"),
+      sobAConf: catSum(sob, "A CONFERIR"),
+      aprovComNf: catCount(aprov, "COM NF"),
+    };
   }, [periodRows]);
 
   useEffect(() => {
@@ -244,20 +262,33 @@ export default function Achados() {
     <div className="mx-auto max-w-[1400px] px-6 py-6 space-y-6">
       {/* Header row */}
       <div className="flex items-end justify-between gap-4 flex-wrap">
-        <div>
+        <div className="min-w-0">
           <div className="text-[11px] uppercase tracking-wider text-muted-foreground font-medium">Hub Financeiro · Governança</div>
           <h1 className="text-3xl font-bold tracking-tight mt-0.5">Auditoria</h1>
           <p className="text-sm text-muted-foreground mt-1">Achados financeiros com workflow de análise e aprovação.</p>
         </div>
-        <div className="flex items-center gap-2">
-          <select
-            value={competencia}
-            onChange={e => setCompetencia(e.target.value)}
-            className="h-9 rounded-lg border border-border bg-card px-3 text-sm font-medium capitalize"
-          >
-            {competencias.map(c => <option key={c} value={c} className="capitalize">{compLabel(c)}</option>)}
-            {competencias.length === 0 && <option value="">—</option>}
-          </select>
+        <div className="flex items-center gap-2 flex-wrap">
+          <div className="relative">
+            <Search className="h-4 w-4 absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground pointer-events-none" />
+            <input
+              type="text"
+              value={busca}
+              onChange={e => setBusca(e.target.value)}
+              placeholder="Buscar lançamento..."
+              className="h-9 w-64 rounded-lg border border-border bg-card pl-9 pr-3 text-sm outline-none focus:ring-2 focus:ring-foreground/10"
+            />
+          </div>
+          <label className="inline-flex items-center gap-2 h-9 rounded-lg border border-border bg-card px-3">
+            <span className="text-[11px] uppercase tracking-wider text-muted-foreground font-medium">Competência</span>
+            <select
+              value={competencia}
+              onChange={e => setCompetencia(e.target.value)}
+              className="text-sm font-medium bg-transparent outline-none capitalize"
+            >
+              {competencias.map(c => <option key={c} value={c} className="capitalize">{compLabel(c)}</option>)}
+              {competencias.length === 0 && <option value="">—</option>}
+            </select>
+          </label>
           <Button onClick={exportCsv} className="bg-foreground text-background hover:bg-foreground/90 h-9">
             <Download className="h-4 w-4 mr-2" /> Exportar
           </Button>
@@ -266,15 +297,51 @@ export default function Achados() {
 
       {/* KPIs */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-        {loading ? Array.from({ length: 4 }).map((_, i) => <Skeleton key={i} className="h-28 rounded-xl" />) : (
+        {loading ? Array.from({ length: 4 }).map((_, i) => <Skeleton key={i} className="h-32 rounded-xl" />) : (
           <>
-            <KpiCard label="Pendentes" value={String(kpis.pend)} legend="aguardando ação" />
+            <KpiCard
+              label="Pendentes"
+              value={String(kpis.pend)}
+              legend="aguardando ação"
+              breakdown={
+                <div className="flex flex-wrap gap-1.5 mt-2">
+                  <MiniChip cls={catStyle("SEM NF")} text={`SEM NF ${kpis.pendSemNf}`} />
+                  <MiniChip cls={catStyle("A CONFERIR")} text={`A CONFERIR ${kpis.pendAConf}`} />
+                  <MiniChip cls={catStyle("FORA DE ESCOPO")} text={`FORA ${kpis.pendFora}`} />
+                </div>
+              }
+            />
             <KpiCard label="Em análise" value={String(kpis.emAn)} legend="em verificação" valueClass="text-[hsl(212_80%_45%)]" />
-            <KpiCard label="Valor sob auditoria" value={brlAbbr(kpis.valorSob)} legend={`em ${kpis.qtdSob} lançamento${kpis.qtdSob === 1 ? "" : "s"}`} />
-            <KpiCard label="Resolvidas" value={String(kpis.resolv)} legend={`${kpis.aprov} aprovadas · ${kpis.repr} reprovadas`} valueClass="text-[hsl(152_60%_36%)]" />
+            <KpiCard
+              label="Valor sob auditoria"
+              value={brlAbbr(kpis.valorSob)}
+              legend={`em ${kpis.qtdSob} lançamento${kpis.qtdSob === 1 ? "" : "s"}`}
+              breakdown={
+                <div className="flex flex-wrap gap-1.5 mt-2">
+                  {kpis.sobComNf > 0 && <MiniChip cls={catStyle("COM NF")} text={`COM NF ${brlAbbr(kpis.sobComNf)}`} />}
+                  {kpis.sobSemNf > 0 && <MiniChip cls={catStyle("SEM NF")} text={`SEM NF ${brlAbbr(kpis.sobSemNf)}`} />}
+                  {kpis.sobFora > 0 && <MiniChip cls={catStyle("FORA DE ESCOPO")} text={`FORA ${brlAbbr(kpis.sobFora)}`} />}
+                  {kpis.sobAConf > 0 && <MiniChip cls={catStyle("A CONFERIR")} text={`A CONF. ${brlAbbr(kpis.sobAConf)}`} />}
+                </div>
+              }
+            />
+            <KpiCard
+              label="Resolvidas"
+              value={String(kpis.resolv)}
+              legend={`${kpis.aprov} aprovadas · ${kpis.repr} reprovadas`}
+              valueClass="text-[hsl(152_60%_36%)]"
+              breakdown={
+                kpis.aprovComNf > 0 ? (
+                  <div className="flex flex-wrap gap-1.5 mt-2">
+                    <MiniChip cls={catStyle("COM NF")} text={`COM NF ${kpis.aprovComNf} aprovadas`} />
+                  </div>
+                ) : null
+              }
+            />
           </>
         )}
       </div>
+
 
       {/* Status tabs */}
       <div className="flex flex-wrap gap-2">
@@ -333,13 +400,12 @@ export default function Achados() {
 
       {/* Table */}
       <div className="rounded-xl border border-border bg-card overflow-hidden">
-        <div className="grid grid-cols-[minmax(220px,1.6fr)_110px_130px_150px_100px_120px_130px_140px_40px] gap-3 px-4 py-3 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground border-b border-border">
+        <div className="grid grid-cols-[minmax(240px,1.8fr)_150px_100px_120px_130px_130px_140px_40px] gap-3 px-4 py-3 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground border-b border-border">
           <div>Lançamento</div>
-          <div>Severidade</div>
-          <div>Área</div>
           <div>Regra</div>
           <div>Origem</div>
           <div className="text-right">Valor</div>
+          <div>Área</div>
           <div>Data</div>
           <div>Status</div>
           <div></div>
@@ -349,16 +415,23 @@ export default function Achados() {
         ) : filtered.length === 0 ? (
           <div className="p-12 text-center text-sm text-muted-foreground">Nenhum lançamento em auditoria neste período</div>
         ) : filtered.map(r => {
-          const ss = statusStyle(r.status);
           return (
             <div
               key={r.id}
-              className="grid grid-cols-[minmax(220px,1.6fr)_110px_130px_150px_100px_120px_130px_140px_40px] gap-3 px-4 py-3 items-center border-b border-border last:border-0 hover:bg-accent/40 transition"
+              className="grid grid-cols-[minmax(240px,1.8fr)_150px_100px_120px_130px_130px_140px_40px] gap-3 px-4 py-3 items-center border-b border-border last:border-0 hover:bg-accent/40 transition"
             >
-              <div className="text-left min-w-0 flex items-center gap-1.5">
+              <div className="text-left min-w-0 flex items-start gap-1.5">
                 <button onClick={() => setSelected(r)} className="text-left min-w-0 flex-1">
-                  <div className="font-semibold text-sm truncate">{r.titulo}</div>
-                  <div className="text-xs text-muted-foreground truncate">{r.responsavel || "—"}</div>
+                  <div className="font-medium text-sm truncate">{r.titulo}</div>
+                  <div className="flex items-center gap-1.5 mt-0.5 flex-wrap">
+                    <span className="text-xs text-muted-foreground truncate">{r.responsavel || "—"}</span>
+                    {r.categoria && (
+                      <span className={cn("inline-flex px-1.5 py-0.5 rounded text-[10px] font-medium border", catStyle(r.categoria))}>{r.categoria}</span>
+                    )}
+                    <span className={cn("inline-flex px-1.5 py-0.5 rounded text-[10px] font-medium border", sevBadge(r.severidade))}>
+                      {r.severidade}
+                    </span>
+                  </div>
                 </button>
                 {r.link_comprovante && (
                   <TooltipProvider delayDuration={200}>
@@ -369,7 +442,7 @@ export default function Achados() {
                           target="_blank"
                           rel="noopener noreferrer"
                           onClick={(e) => e.stopPropagation()}
-                          className="text-muted-foreground hover:text-primary transition-colors shrink-0"
+                          className="text-muted-foreground hover:text-primary transition-colors shrink-0 mt-0.5"
                         >
                           <ExternalLink className="h-4 w-4" />
                         </a>
@@ -379,15 +452,10 @@ export default function Achados() {
                   </TooltipProvider>
                 )}
               </div>
-              <div>
-                <span className={cn("inline-flex px-2 py-0.5 rounded-full text-[11px] font-medium border", sevBadge(r.severidade))}>
-                  {r.severidade}
-                </span>
-              </div>
-              <div className="text-sm text-foreground/80 truncate">{r.area}</div>
               <div className="text-xs text-muted-foreground truncate">{r.regra}</div>
-              <div className="text-xs text-foreground/70">{r.origem}</div>
+              <div className="text-xs text-foreground/70 truncate">{r.origem}</div>
               <div className="text-right num text-sm font-medium">{brl(Number(r.valor || 0))}</div>
+              <div className="text-sm text-foreground/80 truncate">{r.area}</div>
               <div className="text-sm text-muted-foreground">{fmtDateBR(r.data_lancamento)}</div>
               <div>
                 <StatusMenu status={r.status} onChange={(n) => mudarStatusInline(r, n)} />
@@ -399,6 +467,7 @@ export default function Achados() {
           );
         })}
       </div>
+
 
       {/* Drawer */}
       <Sheet open={!!selected} onOpenChange={(o) => !o && setSelected(null)}>
@@ -438,8 +507,10 @@ export default function Achados() {
 
                 <div className="grid grid-cols-2 gap-4 pt-2">
                   <MetaItem label="Responsável" value={selected.responsavel} />
+                  <MetaItem label="Área" value={selected.area} />
                   <MetaItem label="Data do gasto" value={fmtDateBR(selected.data_lancamento)} />
                   <MetaItem label="Competência" value={compLabel(selected.competencia)} />
+                  <MetaItem label="Regra" value={selected.regra} full />
                   <MetaItem label="ID transação" value={selected.id_transacao || "—"} />
                   <div className="col-span-2">
                     <div className="text-[11px] uppercase tracking-wider text-muted-foreground font-medium">Comprovante</div>
@@ -545,14 +616,19 @@ export default function Achados() {
   );
 }
 
-function KpiCard({ label, value, legend, valueClass }: { label: string; value: string; legend: string; valueClass?: string }) {
+function KpiCard({ label, value, legend, valueClass, breakdown }: { label: string; value: string; legend: string; valueClass?: string; breakdown?: React.ReactNode }) {
   return (
     <div className="rounded-xl border border-border bg-card p-5">
       <div className="text-xs font-medium text-muted-foreground">{label}</div>
       <div className={cn("mt-2 text-3xl font-bold num tracking-tight", valueClass)}>{value}</div>
       <div className="text-xs text-muted-foreground mt-1">{legend}</div>
+      {breakdown}
     </div>
   );
+}
+
+function MiniChip({ cls, text }: { cls: string; text: string }) {
+  return <span className={cn("inline-flex px-1.5 py-0.5 rounded-md text-[10px] font-medium border", cls)}>{text}</span>;
 }
 
 function MetaItem({ label, value, full }: { label: string; value: string; full?: boolean }) {

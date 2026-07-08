@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Plus, Trash2, Upload, Search, X, LayoutGrid, List as ListIcon } from "lucide-react";
+import { Plus, Trash2, Upload, Search, X, LayoutGrid, List as ListIcon, ChevronLeft, ChevronRight } from "lucide-react";
 import * as XLSX from "xlsx";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -130,6 +130,8 @@ export default function AutomacoesCatalogo() {
   const [newCatOpen, setNewCatOpen] = useState(false);
   const [newCatName, setNewCatName] = useState("");
   const [view, setView] = useState<"kanban" | "list">("list");
+  const [page, setPage] = useState(1);
+  const [perPage, setPerPage] = useState(15);
   const fileRef = useRef<HTMLInputElement>(null);
 
   const CATEGORIAS = useMemo(() => {
@@ -181,6 +183,15 @@ export default function AutomacoesCatalogo() {
         .some((f) => (f || "").toLowerCase().includes(q));
     });
   }, [rows, search, filtCat, filtImp, filtResp, filtTool]);
+
+  // Paginação (apenas na visão em lista)
+  const totalPages = Math.max(1, Math.ceil(filtered.length / perPage));
+  const pageStart = (page - 1) * perPage;
+  const paginated = filtered.slice(pageStart, pageStart + perPage);
+  // Volta para a 1ª página quando os filtros ou o tamanho da página mudam
+  useEffect(() => { setPage(1); }, [search, filtCat, filtImp, filtResp, filtTool, perPage]);
+  // Mantém a página dentro do intervalo válido quando a lista encolhe
+  useEffect(() => { if (page > totalPages) setPage(totalPages); }, [page, totalPages]);
 
   // KPIs
   const rodandoCount = useMemo(() => rows.filter((r) => r.status === "Rodando").length, [rows]);
@@ -419,7 +430,7 @@ export default function AutomacoesCatalogo() {
                     Nenhuma automação encontrada.
                   </TableCell>
                 </TableRow>
-              ) : filtered.map((r) => {
+              ) : paginated.map((r) => {
                 const cat = r.categoria ? colorForCategoria(r.categoria) : CAT_DEFAULT;
                 const ts = parseTools(r.ferramentas);
                 const statusCol = STATUS_COLS.find((s) => s.key === r.status);
@@ -478,6 +489,43 @@ export default function AutomacoesCatalogo() {
               })}
             </TableBody>
           </Table>
+          {filtered.length > 0 && (
+            <div className="flex flex-wrap items-center justify-between gap-3 border-t border-border px-3 py-2 text-xs text-muted-foreground">
+              <div className="flex items-center gap-2">
+                <span>Itens por página</span>
+                <Select value={String(perPage)} onValueChange={(v) => setPerPage(Number(v))}>
+                  <SelectTrigger className="h-7 w-[68px] text-xs"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    {[10, 15, 25, 50, 100].map((n) => <SelectItem key={n} value={String(n)}>{n}</SelectItem>)}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="flex items-center gap-3">
+                <span className="tabular-nums">
+                  {pageStart + 1}–{Math.min(pageStart + perPage, filtered.length)} de {filtered.length}
+                </span>
+                <div className="flex items-center gap-1">
+                  <Button
+                    variant="outline" size="icon" className="h-7 w-7"
+                    disabled={page <= 1}
+                    onClick={() => setPage((p) => Math.max(1, p - 1))}
+                    title="Página anterior"
+                  >
+                    <ChevronLeft className="h-4 w-4" />
+                  </Button>
+                  <span className="tabular-nums px-1">{page} / {totalPages}</span>
+                  <Button
+                    variant="outline" size="icon" className="h-7 w-7"
+                    disabled={page >= totalPages}
+                    onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+                    title="Próxima página"
+                  >
+                    <ChevronRight className="h-4 w-4" />
+                  </Button>
+                </div>
+              </div>
+            </div>
+          )}
         </div>
       ) : (
       <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">

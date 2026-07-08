@@ -1,9 +1,6 @@
-import { Calendar as CalIcon, GitCompare, SlidersHorizontal, Download, RefreshCw, ChevronRight } from "lucide-react";
+import { SlidersHorizontal, Download, RefreshCw, ChevronRight } from "lucide-react";
 import { useLocation } from "react-router-dom";
 import { useEffect, useState } from "react";
-import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { Calendar } from "@/components/ui/calendar";
-import { cn } from "@/lib/utils";
 import { toast } from "sonner";
 
 const ROUTE_MAP: Record<string, { crumbs: string[]; context?: string }> = {
@@ -12,7 +9,7 @@ const ROUTE_MAP: Record<string, { crumbs: string[]; context?: string }> = {
   "/de-para": { crumbs: ["Configurações", "DE_PARA"], context: "Mapeamento de classificações" },
   "/usuarios": { crumbs: ["Configurações", "Usuários"] },
   "/configuracoes/uso-ia": { crumbs: ["Configurações", "Uso IA"], context: "Custo estimado das chamadas à IA" },
-  "/automacoes/proporcionais": { crumbs: ["Automações", "Proporcionais"] },
+  "/automacoes/proporcionais": { crumbs: ["Automações", "Proporcionais"], context: "Aprovação de salários proporcionais" },
   "/automacoes/catalogo": { crumbs: ["Automações", "Catálogo"] },
   "/automacoes/projetos": { crumbs: ["Automações", "Projetos"] },
   "/recargas/celulares": { crumbs: ["Recargas", "Celulares"] },
@@ -117,26 +114,8 @@ export function PageHeader({ breadcrumbs, context, hideToolbar }: PageHeaderProp
         {ctx && <span className="ml-2 truncate text-[12px] text-muted-foreground">· {ctx}</span>}
       </nav>
 
-      {!hideToolbar && pathname !== "/operacional/parceiros" && (
+      {!hideToolbar && pathname !== "/operacional/parceiros" && pathname !== "/governanca/auditoria" && (
         <div className="flex shrink-0 items-center gap-1.5">
-          <Popover>
-            <PopoverTrigger asChild>
-              <button className="ghost-btn"><CalIcon className="h-3.5 w-3.5" /> {fmtMonth(period)}</button>
-            </PopoverTrigger>
-            <PopoverContent className="w-auto p-0" align="end">
-              <Calendar mode="single" selected={period} onSelect={(d) => d && setPeriod(d)} className={cn("p-3 pointer-events-auto")} />
-            </PopoverContent>
-          </Popover>
-
-          <Popover>
-            <PopoverTrigger asChild>
-              <button className="ghost-btn"><GitCompare className="h-3.5 w-3.5" /> vs {fmtMonth(compare)}</button>
-            </PopoverTrigger>
-            <PopoverContent className="w-auto p-0" align="end">
-              <Calendar mode="single" selected={compare} onSelect={(d) => d && setCompare(d)} className={cn("p-3 pointer-events-auto")} />
-            </PopoverContent>
-          </Popover>
-
           <button onClick={handleAssistant} className="ghost-btn px-2" title="Assistente IA"><SlidersHorizontal className="h-3.5 w-3.5" /></button>
           <button onClick={handleDownload} className="ghost-btn px-2" title="Exportar (PDF)"><Download className="h-3.5 w-3.5" /></button>
           <button onClick={handleRefresh} className="ghost-btn px-2" title="Atualizar"><RefreshCw className="h-3.5 w-3.5" /></button>

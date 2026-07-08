@@ -119,7 +119,7 @@ export default function BaseCartao() {
   };
 
   return (
-    <div className="mx-auto max-w-[1400px] px-6 py-6 space-y-6">
+    <div className="mx-auto max-w-[1400px] px-6 pt-3 pb-6 space-y-5">
       <div className="flex items-end justify-between gap-4 flex-wrap">
         <div>
           <div className="text-[11px] uppercase tracking-wider text-muted-foreground font-medium">Hub Financeiro · Governança</div>

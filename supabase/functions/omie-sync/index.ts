@@ -197,58 +197,72 @@ Deno.serve(async (req) => {
     const logId = (logRow as any)?.id;
 
     try {
-      // 1) DE_PARA
+      // 1) DE_PARA (chave: descrição normalizada da categoria; ver passo 2)
       const { data: mapaRows } = await supabase
         .from("omie_dre_mapa")
         .select("codigo_categoria, rubrica, demonstrativo, ativo");
+      const norm = (s: string) => String(s ?? "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/\s+/g, " ").trim().toLowerCase();
       const mapaDre = new Map<string, string>();
       const mapaDfc = new Map<string, string>();
       for (const m of (mapaRows ?? []) as any[]) {
         if (m.ativo === false) continue;
-        if (m.demonstrativo === "dre" || m.demonstrativo === "ambos") mapaDre.set(String(m.codigo_categoria), m.rubrica);
-        if (m.demonstrativo === "dfc" || m.demonstrativo === "ambos") mapaDfc.set(String(m.codigo_categoria), m.rubrica);
+        const k = norm(m.codigo_categoria);
+        if (m.demonstrativo === "dre" || m.demonstrativo === "ambos") mapaDre.set(k, m.rubrica);
+        if (m.demonstrativo === "dfc" || m.demonstrativo === "ambos") mapaDfc.set(k, m.rubrica);
       }
 
-      // 2) Movimentos no período (filtra por emissão; agrupa em código depois).
-      //    NOTE: os nomes dos campos de filtro/data podem variar por conta Omie —
-      //    o modo "preview" mostra o objeto real para ajuste fino.
-      const movimentos = await listarMovimentos({
-        dDtEmisDe: fmtOmie(dDe),
-        dDtEmisAte: fmtOmie(dAte),
-      });
+      // 2) Descoberta importante: `cCodCateg` no movimento é o código curto do Omie
+      // (ex.: "1.01.03"), mas o DE_PARA foi semeado com a DESCRIÇÃO da categoria
+      // (ex.: "1.1.1. Receita Assinaturas"). Portanto: monta um mapa
+      // codigoOmie → descrição a partir de ListarCategorias e casa por descrição.
+      const categorias = await listarCategorias();
+      const codigoToDescricao = new Map<string, string>();
+      for (const c of categorias) {
+        if (c.codigo) codigoToDescricao.set(String(c.codigo), c.descricao ?? "");
+      }
+
+      // 3) Movimentos. O endpoint financas/mf/ListarMovimentos NÃO aceita filtros
+      // de data nem cTipoData em algumas contas Omie (erro "Tag [...] não faz parte
+      // da estrutura ..."). Trazemos tudo e filtramos por período em memória.
+      const movimentos = await listarMovimentos({});
 
       const dreAgg: Agg = new Map();
       const dfcAgg: Agg = new Map();
       const naoMapeadas = new Set<string>();
+      const dentroPeriodo = (d: Date | null) => !!d && d >= dDe && d <= dAte;
 
       for (const mov of movimentos) {
         const det = mov?.detalhes ?? {};
+        // Natureza no Omie: "R" (receber / receita) vs "P" (pagar / despesa).
         const natureza = String(det.cNatureza ?? det.natureza ?? "R").toUpperCase();
-        const sinal = natureza.startsWith("D") ? -1 : 1;
+        const sinal = natureza.startsWith("P") || natureza.startsWith("D") ? -1 : 1;
 
-        // DRE → data de registro (competência); DFC → data de pagamento (caixa)
         const dataDre = pickDate(det, ["dDtRegistro", "dDtInclusao", "dDtEmissao", "dDtPrevisao"]);
         const dataDfc = pickDate(det, ["dDtPagamento", "dDtBaixa", "dDtCredito", "dDtConciliacao"]);
+        const usaDre = dentroPeriodo(dataDre);
+        const usaDfc = dentroPeriodo(dataDfc);
+        if (!usaDre && !usaDfc) continue;
 
-        // rateio por categoria (ou categoria única do título)
         const cats = Array.isArray(mov?.categorias) && mov.categorias.length
           ? mov.categorias
           : [{ cCodCateg: det.cCodCateg, nValor: det.nValorTitulo }];
 
         for (const cat of cats) {
-          const codigo = String(cat.cCodCateg ?? "");
+          const codigoOmie = String(cat.cCodCateg ?? "");
+          if (!codigoOmie) continue;
+          const descricao = codigoToDescricao.get(codigoOmie) ?? codigoOmie;
+          const chave = norm(descricao);
           const valor = sinal * Math.abs(toNum(cat.nValor));
-          if (!codigo) continue;
 
-          if (dataDre) {
-            const rub = mapaDre.get(codigo);
-            if (rub) addTo(dreAgg, rub, monthKey(dataDre), valor);
-            else naoMapeadas.add(codigo);
+          if (usaDre) {
+            const rub = mapaDre.get(chave);
+            if (rub) addTo(dreAgg, rub, monthKey(dataDre!), valor);
+            else naoMapeadas.add(`${codigoOmie} :: ${descricao}`);
           }
-          if (dataDfc) {
-            const rub = mapaDfc.get(codigo);
-            if (rub) addTo(dfcAgg, rub, monthKey(dataDfc), valor);
-            else naoMapeadas.add(codigo);
+          if (usaDfc) {
+            const rub = mapaDfc.get(chave);
+            if (rub) addTo(dfcAgg, rub, monthKey(dataDfc!), valor);
+            else naoMapeadas.add(`${codigoOmie} :: ${descricao}`);
           }
         }
       }

@@ -100,10 +100,12 @@ export async function listarMovimentos(
   let nPagina = 1;
   let totalPaginas = 1;
   do {
+    // Nota: `cExibirDadosCategoria` NÃO faz parte do request de financas/mf/ListarMovimentos
+    // (Omie retorna erro "Tag [CEXIBIRDADOSCATEGORIA] não faz parte da estrutura ..."). Os
+    // rateios por categoria já vêm no objeto `categorias` de cada movimento.
     const r = await omieCall<any>("financas/mf", "ListarMovimentos", {
       nPagina,
       nRegPorPagina: 500,
-      cExibirDadosCategoria: "S",
       ...filtros,
     });
     for (const m of (r?.movimentos ?? [])) out.push(m);

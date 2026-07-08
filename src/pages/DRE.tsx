@@ -1,13 +1,14 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import * as XLSX from "xlsx";
 import {
-  Upload, ChevronDown, ChevronRight, Search, Sparkles, Loader2,
+  Upload, ChevronDown, ChevronRight, Search, Sparkles, Loader2, RefreshCw,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { supabase } from "@/integrations/supabase/client";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
+import { OmieDeParaPanel } from "@/components/OmieDeParaPanel";
 
 /* ============================================================
  *  Helpers
@@ -175,6 +176,10 @@ const DRE_SCHEMA: Node[] = [
   { label: "% Margem Líquida", kind: "percent", pctOf: "Receita Líquida" },
 ];
 
+const flattenLabels = (nodes: Node[]): string[] =>
+  nodes.flatMap((n) => [n.label, ...(n.children ? flattenLabels(n.children) : [])]);
+const DRE_RUBRICAS = flattenLabels(DRE_SCHEMA);
+
 /* ============================================================
  *  Page
  * ============================================================ */
@@ -184,6 +189,8 @@ export default function DRE() {
   const [columns, setColumns] = useState<string[]>([]);
   const [loading, setLoading] = useState(false);
   const [importing, setImporting] = useState(false);
+  const [syncing, setSyncing] = useState(false);
+  const [view, setView] = useState<"dre" | "depara">("dre");
   const [tab, setTab] = useState<"valores" | "mom" | "pct">("valores");
   const [search, setSearch] = useState("");
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
@@ -230,6 +237,25 @@ export default function DRE() {
     setLoading(false);
   };
   useEffect(() => { load(); }, []);
+
+  const sincronizarOmie = async () => {
+    setSyncing(true);
+    try {
+      const { data, error } = await supabase.functions.invoke("omie-sync", { body: { action: "sync" } });
+      if (error) throw new Error(error.message);
+      if ((data as any)?.error) throw new Error((data as any).error);
+      const d = data as any;
+      toast.success(
+        `Omie sincronizado · ${d.movimentos ?? 0} lançamentos` +
+        (d.nao_mapeadas ? ` · ${d.nao_mapeadas} categoria(s) sem DE_PARA` : ""),
+      );
+      await load();
+    } catch (e: any) {
+      toast.error("Falha ao sincronizar com o Omie: " + e.message);
+    } finally {
+      setSyncing(false);
+    }
+  };
 
   // Default: ao carregar, seleciona o ano mais recente com dados
   useEffect(() => {
@@ -536,17 +562,40 @@ export default function DRE() {
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
+          <div className="inline-flex items-center rounded-md border border-border p-0.5">
+            <button
+              onClick={() => setView("dre")}
+              className={cn("h-7 rounded px-2.5 text-[12px] font-medium transition-colors", view === "dre" ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground")}
+            >
+              DRE
+            </button>
+            <button
+              onClick={() => setView("depara")}
+              className={cn("h-7 rounded px-2.5 text-[12px] font-medium transition-colors", view === "depara" ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground")}
+            >
+              DE-PARA
+            </button>
+          </div>
           <span className="inline-flex items-center gap-1.5 rounded-md bg-emerald-50 border border-emerald-200 px-2.5 h-8 text-[11.5px] font-medium text-emerald-700">
             <Sparkles className="h-3.5 w-3.5" />
             Tracker vOMIE ativo · sincronizado
           </span>
-          <Button variant="outline" size="sm" className="h-8 text-[12px]">Mapear chaves</Button>
           <Button variant="outline" size="sm" className="h-8 text-[12px]">Exportar</Button>
           <Button
             size="sm"
+            onClick={sincronizarOmie}
+            disabled={syncing}
+            className="h-8 text-[12px] bg-primary text-primary-foreground hover:bg-primary/90"
+          >
+            {syncing ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="mr-1.5 h-3.5 w-3.5" />}
+            Sincronizar Omie
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
             onClick={() => fileRef.current?.click()}
             disabled={importing}
-            className="h-8 text-[12px] bg-foreground text-background hover:bg-foreground/90"
+            className="h-8 text-[12px]"
           >
             {importing ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> : <Upload className="mr-1.5 h-3.5 w-3.5" />}
             Reimportar Excel
@@ -555,6 +604,10 @@ export default function DRE() {
         </div>
       </div>
 
+      {view === "depara" ? (
+        <OmieDeParaPanel demonstrativo="dre" rubricas={DRE_RUBRICAS} />
+      ) : (
+      <>
       {/* KPI cards */}
       <div className="grid grid-cols-2 gap-3 px-6 md:grid-cols-3 lg:grid-cols-5">
         {kpis.map(k => {
@@ -755,6 +808,8 @@ export default function DRE() {
           <div>Importado de Tracker_vOMIE_Realizado.xlsx · sincronizado há 12 min</div>
         </div>
       </div>
+      </>
+      )}
     </div>
   );
 }

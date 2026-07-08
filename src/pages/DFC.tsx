@@ -1,13 +1,14 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import * as XLSX from "xlsx";
 import {
-  Upload, ChevronDown, ChevronRight, Search, Sparkles, Loader2,
+  Upload, ChevronDown, ChevronRight, Search, Sparkles, Loader2, RefreshCw,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { supabase } from "@/integrations/supabase/client";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
+import { OmieDeParaPanel } from "@/components/OmieDeParaPanel";
 
 /* ============================================================
  *  Helpers
@@ -86,51 +87,96 @@ type Node = {
   children?: Node[];
 };
 
+// Estrutura completa da DFC (método direto). Os rótulos-folha batem EXATAMENTE
+// com as rubricas do DE_PARA (coluna "PARA DFC"), inclusive capitalização.
+// A ordem dos 7 blocos de topo é fixa (usada pelos KPIs):
+//   [0] Entradas · [1] Saídas · [2] FCO · [3] Investimentos · [4] Financiamento · [5] Fluxo Livre · [6] Cashburn
 const DFC_SCHEMA: Node[] = [
-  { label: "Entradas", kind: "header", children: [
-    { label: "Receita de Serviços", kind: "child" },
+  { label: "Entradas Operacionais", kind: "header", children: [
+    { label: "Receita de Assinaturas", kind: "child" },
+    { label: "Receita com Materiais", kind: "child" },
     { label: "Receita Markup", kind: "child" },
-    { label: "(+) Receita Financeira", kind: "child" },
+    { label: "Receita de Serviços", kind: "child" },
+    { label: "Entrada de Receita", kind: "child" },
+    { label: "(+) Receita financeira", kind: "child" },
+    { label: "(+) Resultado Não Operacional", kind: "child" },
   ]},
-  { label: "Saídas", kind: "header", children: [
-    { label: "Impostos & Deduções", kind: "child" },
-    { label: "Custos Operacionais", kind: "child", children: [
+  { label: "Saídas Operacionais", kind: "header", children: [
+    { label: "Impostos", kind: "child", children: [
+      { label: "Simples Nacional", kind: "leaf" },
+      { label: "PIS", kind: "leaf" },
+      { label: "COFINS", kind: "leaf" },
+      { label: "ISS", kind: "leaf" },
+      { label: "ICMS", kind: "leaf" },
+      { label: "IRF", kind: "leaf" },
+      { label: "Parcelamento de Impostos", kind: "leaf" },
+      { label: "Retenção de Contribuição", kind: "leaf" },
+    ]},
+    { label: "Pessoal", kind: "child", children: [
+      { label: "Equipe Administrativa", kind: "leaf" },
+      { label: "Equipe Comercial", kind: "leaf" },
+      { label: "Equipe Marketing", kind: "leaf" },
+      { label: "Equipe Tecnologia", kind: "leaf" },
       { label: "Equipe Operacional", kind: "leaf" },
-      { label: "CMV Materiais", kind: "leaf" },
-      { label: "Meios de Pagamento", kind: "leaf" },
+      { label: "Equipe Onboarding", kind: "leaf" },
       { label: "Premiações Operacionais", kind: "leaf" },
+      { label: "Premiações", kind: "leaf" },
+      { label: "Encargos sociais", kind: "leaf" },
+      { label: "Benefícios", kind: "leaf" },
+    ]},
+    { label: "Custos de Operação", kind: "child", children: [
+      { label: "CMV Materiais", kind: "leaf" },
+      { label: "Outros Custos", kind: "leaf" },
+      { label: "Meios de Pagamento", kind: "leaf" },
       { label: "Servidor", kind: "leaf" },
       { label: "Softwares Operacionais", kind: "leaf" },
-      { label: "Outros Custos", kind: "leaf" },
+      { label: "MGM", kind: "leaf" },
     ]},
-    { label: "Pessoal", kind: "child" },
-    { label: "Despesas Administrativas", kind: "child" },
+    { label: "Despesas Administrativas", kind: "child", children: [
+      { label: "Assessorias & Consultorias", kind: "leaf" },
+      { label: "Softwares Administrativos", kind: "leaf" },
+      { label: "Ocupação & Escritório", kind: "leaf" },
+      { label: "Viagens & Transportes Adm", kind: "leaf" },
+      { label: "Outras Despesas Adm", kind: "leaf" },
+    ]},
     { label: "Despesas Marketing & Vendas", kind: "child", children: [
+      { label: "Softwares Marketing & Vendas", kind: "leaf" },
+      { label: "Agências & Consultorias", kind: "leaf" },
       { label: "Campanhas de Mídia Paga", kind: "leaf" },
       { label: "Campanhas de Outros Canais", kind: "leaf" },
       { label: "Comissões Consultores / Parceiros", kind: "leaf" },
-      { label: "Premiações", kind: "leaf" },
-      { label: "MGM", kind: "leaf" },
-      { label: "Softwares Marketing & Vendas", kind: "leaf" },
-      { label: "Viagens & Transportes Mkt", kind: "leaf" },
       { label: "Eventos e Feiras", kind: "leaf" },
-      { label: "Outras despesas Mkt", kind: "leaf" },
+      { label: "Viagens & Transportes Mkt", kind: "leaf" },
+      { label: "Outras Despesas Mkt", kind: "leaf" },
     ]},
-    { label: "Financeiras & Impostos", kind: "child" },
+    { label: "Financeiras", kind: "child", children: [
+      { label: "(-) Juros", kind: "leaf" },
+      { label: "(-) IOF", kind: "leaf" },
+      { label: "(-) Depesas Financeiras", kind: "leaf" },
+    ]},
+    { label: "Devoluções", kind: "child" },
   ]},
   { label: "Fluxo de Caixa Operacional", kind: "total" },
-  { label: "Fluxo de Caixa de Investimentos", kind: "header", children: [
-    { label: "(+) Resultado Não Operacional", kind: "child" },
+  { label: "Investimentos", kind: "header", children: [
     { label: "(-) Compra de Equipamentos", kind: "child" },
     { label: "(-) Investimentos em Estrutura", kind: "child" },
-    { label: "(-) Compra de Participações", kind: "child" },
+    { label: "(-) Compra de Participação", kind: "child" },
+    { label: "Depósitos e Caução", kind: "child" },
   ]},
-  { label: "Fluxo de Financiamento", kind: "header", children: [
-    { label: "Novos Empréstimos & Instrumentos", kind: "child" },
+  { label: "Financiamento", kind: "header", children: [
+    { label: "(+) Novos Empréstimos & Financiamentos", kind: "child" },
+    { label: "(-) Amortização de Financiamentos", kind: "child" },
+    { label: "Antecipação da Receita", kind: "child" },
+    { label: "Abatimento de Antecipação da Receita", kind: "child" },
+    { label: "(-) Rodada de Investimentos", kind: "child" },
   ]},
   { label: "Fluxo Livre", kind: "total" },
   { label: "Cashburn 12M", kind: "total" },
 ];
+
+const flattenLabels = (nodes: Node[]): string[] =>
+  nodes.flatMap((n) => [n.label, ...(n.children ? flattenLabels(n.children) : [])]);
+const DFC_RUBRICAS = flattenLabels(DFC_SCHEMA);
 
 /* ============================================================
  *  Page
@@ -141,6 +187,8 @@ export default function DFC() {
   const [columns, setColumns] = useState<string[]>([]);
   const [loading, setLoading] = useState(false);
   const [importing, setImporting] = useState(false);
+  const [syncing, setSyncing] = useState(false);
+  const [view, setView] = useState<"dfc" | "depara">("dfc");
   const [tab, setTab] = useState<"valores" | "mom" | "acum">("valores");
   const [search, setSearch] = useState("");
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
@@ -185,6 +233,25 @@ export default function DFC() {
     setLoading(false);
   };
   useEffect(() => { load(); }, []);
+
+  const sincronizarOmie = async () => {
+    setSyncing(true);
+    try {
+      const { data, error } = await supabase.functions.invoke("omie-sync", { body: { action: "sync" } });
+      if (error) throw new Error(error.message);
+      if ((data as any)?.error) throw new Error((data as any).error);
+      const d = data as any;
+      toast.success(
+        `Omie sincronizado · ${d.movimentos ?? 0} lançamentos` +
+        (d.nao_mapeadas ? ` · ${d.nao_mapeadas} categoria(s) sem DE_PARA` : ""),
+      );
+      await load();
+    } catch (e: any) {
+      toast.error("Falha ao sincronizar com o Omie: " + e.message);
+    } finally {
+      setSyncing(false);
+    }
+  };
 
   /* ----- Lookup map by label ----- */
   const valueByLabel = useMemo(() => {
@@ -544,17 +611,40 @@ export default function DFC() {
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
+          <div className="inline-flex items-center rounded-md border border-border p-0.5">
+            <button
+              onClick={() => setView("dfc")}
+              className={cn("h-7 rounded px-2.5 text-[12px] font-medium transition-colors", view === "dfc" ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground")}
+            >
+              DFC
+            </button>
+            <button
+              onClick={() => setView("depara")}
+              className={cn("h-7 rounded px-2.5 text-[12px] font-medium transition-colors", view === "depara" ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground")}
+            >
+              DE-PARA
+            </button>
+          </div>
           <span className="inline-flex items-center gap-1.5 rounded-md bg-emerald-50 border border-emerald-200 px-2.5 h-8 text-[11.5px] font-medium text-emerald-700">
             <Sparkles className="h-3.5 w-3.5" />
             Tracker vOMIE ativo · sincronizado
           </span>
-          <Button variant="outline" size="sm" className="h-8 text-[12px]">Mapear chaves</Button>
           <Button variant="outline" size="sm" className="h-8 text-[12px]">Exportar</Button>
           <Button
             size="sm"
+            onClick={sincronizarOmie}
+            disabled={syncing}
+            className="h-8 text-[12px] bg-primary text-primary-foreground hover:bg-primary/90"
+          >
+            {syncing ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="mr-1.5 h-3.5 w-3.5" />}
+            Sincronizar Omie
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
             onClick={() => fileRef.current?.click()}
             disabled={importing}
-            className="h-8 text-[12px] bg-foreground text-background hover:bg-foreground/90"
+            className="h-8 text-[12px]"
           >
             {importing ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> : <Upload className="mr-1.5 h-3.5 w-3.5" />}
             Reimportar Excel
@@ -563,6 +653,10 @@ export default function DFC() {
         </div>
       </div>
 
+      {view === "depara" ? (
+        <OmieDeParaPanel demonstrativo="dfc" rubricas={DFC_RUBRICAS} />
+      ) : (
+        <>
       {/* KPI cards */}
       <div className="grid grid-cols-2 gap-3 px-6 md:grid-cols-3 lg:grid-cols-5">
         {kpis.map(k => {
@@ -766,6 +860,8 @@ export default function DFC() {
           <div>Importado de Tracker_vOMIE_Realizado.xlsx · sincronizado há 12 min</div>
         </div>
       </div>
+      </>
+      )}
     </div>
   );
 }

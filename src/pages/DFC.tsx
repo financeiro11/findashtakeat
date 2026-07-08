@@ -9,6 +9,7 @@ import { supabase } from "@/integrations/supabase/client";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import { OmieDeParaPanel } from "@/components/OmieDeParaPanel";
+import { runOmieSync } from "@/lib/omieSync";
 
 /* ============================================================
  *  Helpers
@@ -236,16 +237,21 @@ export default function DFC() {
 
   const sincronizarOmie = async () => {
     setSyncing(true);
+    toast.message("Sincronização iniciada — buscando dados do Omie (pode levar ~1–2 min)…");
     try {
-      const { data, error } = await supabase.functions.invoke("omie-sync", { body: { action: "sync" } });
-      if (error) throw new Error(error.message);
-      if ((data as any)?.error) throw new Error((data as any).error);
-      const d = data as any;
-      toast.success(
-        `Omie sincronizado · ${d.movimentos ?? 0} lançamentos` +
-        (d.nao_mapeadas ? ` · ${d.nao_mapeadas} categoria(s) sem DE_PARA` : ""),
-      );
-      await load();
+      const r = await runOmieSync();
+      if (r.status === "ok") {
+        toast.success(
+          `Omie sincronizado · ${r.movimentos ?? 0} lançamentos` +
+          (r.nao_mapeadas ? ` · ${r.nao_mapeadas} categoria(s) sem DE_PARA` : ""),
+        );
+        await load();
+      } else if (r.status === "erro") {
+        toast.error("Falha na sincronização: " + (r.erro || "erro desconhecido"));
+      } else {
+        toast.message("A sincronização continua rodando em segundo plano. Recarregando o que já temos…");
+        await load();
+      }
     } catch (e: any) {
       toast.error("Falha ao sincronizar com o Omie: " + e.message);
     } finally {

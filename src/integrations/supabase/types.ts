@@ -1189,6 +1189,84 @@ export type Database = {
         }
         Relationships: []
       }
+      omie_dre_mapa: {
+        Row: {
+          ativo: boolean
+          codigo_categoria: string
+          created_at: string
+          demonstrativo: string
+          descricao_categoria: string | null
+          id: string
+          rubrica: string
+          updated_at: string
+        }
+        Insert: {
+          ativo?: boolean
+          codigo_categoria: string
+          created_at?: string
+          demonstrativo?: string
+          descricao_categoria?: string | null
+          id?: string
+          rubrica: string
+          updated_at?: string
+        }
+        Update: {
+          ativo?: boolean
+          codigo_categoria?: string
+          created_at?: string
+          demonstrativo?: string
+          descricao_categoria?: string | null
+          id?: string
+          rubrica?: string
+          updated_at?: string
+        }
+        Relationships: []
+      }
+      omie_sync_log: {
+        Row: {
+          categorias: number
+          concluido_em: string | null
+          dfc_linhas: number
+          dre_linhas: number
+          erro: string | null
+          id: string
+          iniciado_em: string
+          movimentos: number
+          nao_mapeadas: number
+          periodo_ate: string | null
+          periodo_de: string | null
+          status: string
+        }
+        Insert: {
+          categorias?: number
+          concluido_em?: string | null
+          dfc_linhas?: number
+          dre_linhas?: number
+          erro?: string | null
+          id?: string
+          iniciado_em?: string
+          movimentos?: number
+          nao_mapeadas?: number
+          periodo_ate?: string | null
+          periodo_de?: string | null
+          status?: string
+        }
+        Update: {
+          categorias?: number
+          concluido_em?: string | null
+          dfc_linhas?: number
+          dre_linhas?: number
+          erro?: string | null
+          id?: string
+          iniciado_em?: string
+          movimentos?: number
+          nao_mapeadas?: number
+          periodo_ate?: string | null
+          periodo_de?: string | null
+          status?: string
+        }
+        Relationships: []
+      }
       orcamento_area_linha: {
         Row: {
           ano: number

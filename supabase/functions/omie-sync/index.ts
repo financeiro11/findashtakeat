@@ -221,25 +221,17 @@ Deno.serve(async (req) => {
         if (c.codigo) codigoToDescricao.set(String(c.codigo), c.descricao ?? "");
       }
 
-      // 3) Movimentos no período. O endpoint financas/mf/ListarMovimentos usa
-      // dDtInicial/dDtFinal + cTipoData. Fazemos 2 passes: um pela competência
-      // (REGISTRO) para a DRE e outro pelo caixa (PAGAMENTO) para a DFC.
-      const movimentosDre = await listarMovimentos({
-        dDtInicial: fmtOmie(dDe), dDtFinal: fmtOmie(dAte), cTipoData: "REGISTRO",
-      });
-      const movimentosDfc = await listarMovimentos({
-        dDtInicial: fmtOmie(dDe), dDtFinal: fmtOmie(dAte), cTipoData: "PAGAMENTO",
-      });
-      const movimentos = [...movimentosDre, ...movimentosDfc];
+      // 3) Movimentos. O endpoint financas/mf/ListarMovimentos NÃO aceita filtros
+      // de data nem cTipoData em algumas contas Omie (erro "Tag [...] não faz parte
+      // da estrutura ..."). Trazemos tudo e filtramos por período em memória.
+      const movimentos = await listarMovimentos({});
 
       const dreAgg: Agg = new Map();
       const dfcAgg: Agg = new Map();
       const naoMapeadas = new Set<string>();
+      const dentroPeriodo = (d: Date | null) => !!d && d >= dDe && d <= dAte;
 
-      const visitosDre = new Set<string>(); // dedup por título (nCodTitulo) por pass
-      const visitosDfc = new Set<string>();
-
-      function processar(mov: any, escopo: "dre" | "dfc") {
+      for (const mov of movimentos) {
         const det = mov?.detalhes ?? {};
         // Natureza no Omie: "R" (receber / receita) vs "P" (pagar / despesa).
         const natureza = String(det.cNatureza ?? det.natureza ?? "R").toUpperCase();
@@ -247,6 +239,9 @@ Deno.serve(async (req) => {
 
         const dataDre = pickDate(det, ["dDtRegistro", "dDtInclusao", "dDtEmissao", "dDtPrevisao"]);
         const dataDfc = pickDate(det, ["dDtPagamento", "dDtBaixa", "dDtCredito", "dDtConciliacao"]);
+        const usaDre = dentroPeriodo(dataDre);
+        const usaDfc = dentroPeriodo(dataDfc);
+        if (!usaDre && !usaDfc) continue;
 
         const cats = Array.isArray(mov?.categorias) && mov.categorias.length
           ? mov.categorias
@@ -259,30 +254,17 @@ Deno.serve(async (req) => {
           const chave = norm(descricao);
           const valor = sinal * Math.abs(toNum(cat.nValor));
 
-          if (escopo === "dre" && dataDre) {
+          if (usaDre) {
             const rub = mapaDre.get(chave);
-            if (rub) addTo(dreAgg, rub, monthKey(dataDre), valor);
+            if (rub) addTo(dreAgg, rub, monthKey(dataDre!), valor);
             else naoMapeadas.add(`${codigoOmie} :: ${descricao}`);
           }
-          if (escopo === "dfc" && dataDfc) {
+          if (usaDfc) {
             const rub = mapaDfc.get(chave);
-            if (rub) addTo(dfcAgg, rub, monthKey(dataDfc), valor);
+            if (rub) addTo(dfcAgg, rub, monthKey(dataDfc!), valor);
             else naoMapeadas.add(`${codigoOmie} :: ${descricao}`);
           }
         }
-      }
-
-      for (const mov of movimentosDre) {
-        const id = String(mov?.detalhes?.nCodTitulo ?? mov?.detalhes?.nCodTitRepet ?? "");
-        if (id && visitosDre.has(id)) continue;
-        if (id) visitosDre.add(id);
-        processar(mov, "dre");
-      }
-      for (const mov of movimentosDfc) {
-        const id = String(mov?.detalhes?.nCodTitulo ?? mov?.detalhes?.nCodTitRepet ?? "");
-        if (id && visitosDfc.has(id)) continue;
-        if (id) visitosDfc.add(id);
-        processar(mov, "dfc");
       }
 
       // 3) Totais

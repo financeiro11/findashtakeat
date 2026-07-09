@@ -649,10 +649,15 @@ export default function Achados() {
       {selected && (
         <AjusteSolicitadoModal
           open={ajusteOpen}
-          onClose={() => setAjusteOpen(false)}
+          onClose={() => {
+            setAjusteOpen(false);
+            setSelected(null);
+            setSheetHidden(false);
+          }}
           onSent={() => {
             setAjusteOpen(false);
             setSelected(null);
+            setSheetHidden(false);
             load();
           }}
           idUnico={selected.id_unico}

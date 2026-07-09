@@ -114,9 +114,11 @@ export default function AjusteSolicitadoModal({
       role="dialog"
       aria-modal="true"
       aria-label="Enviar solicitação de ajuste via WhatsApp"
-      className="fixed inset-0 z-[70] flex items-center justify-center bg-black/50 p-4"
+      className="fixed inset-0 z-[70] overflow-y-auto bg-black/50"
+      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
     >
-      <div className="bg-background rounded-xl shadow-lg w-full max-w-[560px] max-h-[90vh] overflow-y-auto border border-border">
+      <div className="min-h-full flex items-start justify-center p-4">
+      <div className="bg-background rounded-xl shadow-lg w-full max-w-[560px] my-4 border border-border">
         {/* Header */}
         <div className="bg-muted/50 rounded-t-xl px-5 py-4 border-b border-border">
           <div className="flex items-start gap-3">
@@ -235,9 +237,11 @@ export default function AjusteSolicitadoModal({
           </div>
         </div>
       </div>
+      </div>
     </div>
   );
 }
+
 
 function MiniCard({ label, value }: { label: string; value: React.ReactNode }) {
   return (

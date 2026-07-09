@@ -136,9 +136,11 @@ export default function SolicitarJustificativasModal({ open, onClose, onSent, re
       role="dialog"
       aria-modal="true"
       aria-label="Solicitar justificativas consolidadas via WhatsApp"
-      className="fixed inset-0 z-[70] flex items-center justify-center bg-black/50 p-4"
+      className="fixed inset-0 z-[70] overflow-y-auto bg-black/50"
+      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
     >
-      <div className="bg-background rounded-xl shadow-lg w-full max-w-[620px] max-h-[90vh] overflow-y-auto border border-border">
+      <div className="min-h-full flex items-start justify-center p-4">
+      <div className="bg-background rounded-xl shadow-lg w-full max-w-[620px] my-4 border border-border">
         {/* Header */}
         <div className="bg-muted/50 rounded-t-xl px-5 py-4 border-b border-border">
           <div className="flex items-start gap-3">
@@ -231,9 +233,11 @@ export default function SolicitarJustificativasModal({ open, onClose, onSent, re
           </div>
         </div>
       </div>
+      </div>
     </div>
   );
 }
+
 
 function MiniCard({ label, value }: { label: string; value: React.ReactNode }) {
   return (

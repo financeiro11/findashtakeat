@@ -107,6 +107,7 @@ export default function Achados() {
   const [comentario, setComentario] = useState("");
   const [saving, setSaving] = useState(false);
   const [ajusteOpen, setAjusteOpen] = useState(false);
+  const [sheetHidden, setSheetHidden] = useState(false);
   const [consolidadoOpen, setConsolidadoOpen] = useState(false);
 
   // Garante que o modal de "Ajuste solicitado" NUNCA venha aberto ao abrir/trocar de lançamento
@@ -506,7 +507,7 @@ export default function Achados() {
 
 
       {/* Drawer */}
-      <Sheet open={!!selected} onOpenChange={(o) => { if (!o && !ajusteOpen) setSelected(null); }}>
+      <Sheet open={!!selected && !ajusteOpen && !sheetHidden} onOpenChange={(o) => { if (!o && !ajusteOpen && !sheetHidden) setSelected(null); }}>
         <SheetContent
           side="right"
           className="w-full sm:max-w-[620px] p-0 flex flex-col"
@@ -627,7 +628,11 @@ export default function Achados() {
                     variant={s === "Aprovado" ? "default" : "outline"}
                     className={cn(s === "Aprovado" && "bg-[hsl(152_60%_36%)] hover:bg-[hsl(152_60%_30%)] text-white")}
                     onClick={() => {
-                      if (s === "Ajuste solicitado") setAjusteOpen(true);
+                      if (s === "Ajuste solicitado") {
+                        // Fecha slide-over antes de abrir modal para evitar conflito de eventos
+                        setSheetHidden(true);
+                        setTimeout(() => setAjusteOpen(true), 200);
+                      }
                       else setConfirm({ novo: s });
                     }}
                   >
@@ -644,10 +649,15 @@ export default function Achados() {
       {selected && (
         <AjusteSolicitadoModal
           open={ajusteOpen}
-          onClose={() => setAjusteOpen(false)}
+          onClose={() => {
+            setAjusteOpen(false);
+            setSelected(null);
+            setSheetHidden(false);
+          }}
           onSent={() => {
             setAjusteOpen(false);
             setSelected(null);
+            setSheetHidden(false);
             load();
           }}
           idUnico={selected.id_unico}

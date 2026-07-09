@@ -104,6 +104,7 @@ export default function Achados() {
   const [confirm, setConfirm] = useState<{ novo: Status } | null>(null);
   const [comentario, setComentario] = useState("");
   const [saving, setSaving] = useState(false);
+  const [ajusteOpen, setAjusteOpen] = useState(false);
 
   const load = async () => {
     setLoading(true);

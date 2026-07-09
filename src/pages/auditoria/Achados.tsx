@@ -140,6 +140,10 @@ export default function Achados() {
 
   const areas = useMemo(() => Array.from(new Set(periodRows.map(r => r.area).filter(Boolean))).sort(), [periodRows]);
   const regras = useMemo(() => Array.from(new Set(periodRows.map(r => r.regra).filter(Boolean))).sort(), [periodRows]);
+  const responsaveisPendentes = useMemo(
+    () => Array.from(new Set(rows.filter(r => r.status === "Pendente" && r.responsavel).map(r => r.responsavel))).sort((a, b) => a.localeCompare(b, "pt-BR")),
+    [rows]
+  );
 
   const counts = useMemo(() => {
     const c: Record<string, number> = { todas: periodRows.length };

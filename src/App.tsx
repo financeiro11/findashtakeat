@@ -60,6 +60,7 @@ const App = () => (
           <ErrorBoundary>
           <Routes>
             <Route path="/login" element={<Login />} />
+            <Route path="/l/:token" element={<LinkPublico />} />
             <Route element={<AppLayout />}>
               <Route path="/" element={<Dashboard />} />
               <Route path="/dashboard-legacy" element={<DashboardLegacy />} />

@@ -630,6 +630,7 @@ export default function Achados() {
                     onClick={() => {
                       if (s === "Ajuste solicitado") {
                         // Fecha slide-over antes de abrir modal para evitar conflito de eventos
+                        setSheetHidden(true);
                         setTimeout(() => setAjusteOpen(true), 200);
                       }
                       else setConfirm({ novo: s });

@@ -165,6 +165,7 @@ export type Database = {
           id: number
           id_transacao: string | null
           id_unico: string
+          justificativa: string | null
           link_comprovante: string | null
           origem: string | null
           regra: string
@@ -186,6 +187,7 @@ export type Database = {
           id?: never
           id_transacao?: string | null
           id_unico: string
+          justificativa?: string | null
           link_comprovante?: string | null
           origem?: string | null
           regra: string
@@ -207,6 +209,7 @@ export type Database = {
           id?: never
           id_transacao?: string | null
           id_unico?: string
+          justificativa?: string | null
           link_comprovante?: string | null
           origem?: string | null
           regra?: string
@@ -2439,6 +2442,7 @@ export type Database = {
         Returns: Json
       }
       fmt_brl: { Args: { v: number }; Returns: string }
+      hub_base_url: { Args: never; Returns: string }
       importar_auditoria: {
         Args: { p_achados: Json }
         Returns: {
@@ -2450,6 +2454,10 @@ export type Database = {
       preview_msg_ajuste: { Args: { p_id_unico: string }; Returns: Json }
       preview_msg_consolidada: {
         Args: { p_responsavel: string }
+        Returns: Json
+      }
+      registrar_comprovante_via_token: {
+        Args: { p_id_unico: string; p_storage_path: string; p_token: string }
         Returns: Json
       }
       resolve_colaborador_por_nome: {
@@ -2465,7 +2473,15 @@ export type Database = {
         Args: { p_ip?: string; p_token: string }
         Returns: Json
       }
+      salvar_justificativa_via_token: {
+        Args: { p_id_unico: string; p_texto: string; p_token: string }
+        Returns: Json
+      }
       unaccent: { Args: { "": string }; Returns: string }
+      validar_token_para_id_unico: {
+        Args: { p_id_unico: string; p_token: string }
+        Returns: boolean
+      }
     }
     Enums: {
       [_ in never]: never

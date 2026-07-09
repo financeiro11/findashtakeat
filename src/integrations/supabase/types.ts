@@ -1080,6 +1080,7 @@ export type Database = {
           gestor_id: string | null
           id: string
           nome: string
+          telefone_whatsapp: string | null
           updated_at: string
         }
         Insert: {
@@ -1088,6 +1089,7 @@ export type Database = {
           gestor_id?: string | null
           id?: string
           nome: string
+          telefone_whatsapp?: string | null
           updated_at?: string
         }
         Update: {
@@ -1096,6 +1098,7 @@ export type Database = {
           gestor_id?: string | null
           id?: string
           nome?: string
+          telefone_whatsapp?: string | null
           updated_at?: string
         }
         Relationships: [
@@ -2362,6 +2365,7 @@ export type Database = {
       }
     }
     Functions: {
+      fmt_brl: { Args: { v: number }; Returns: string }
       importar_auditoria: {
         Args: { p_achados: Json }
         Returns: {

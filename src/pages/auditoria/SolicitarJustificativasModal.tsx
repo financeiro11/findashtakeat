@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/hooks/useAuth";
 import { Button } from "@/components/ui/button";
@@ -79,6 +80,7 @@ export default function SolicitarJustificativasModal({ open, onClose, onSent, re
   }, [open, responsavel]);
 
   if (!open) return null;
+  if (typeof document === "undefined") return null;
 
   const telefoneOk = !!preview?.telefone_ok;
   const now = new Date();
@@ -131,18 +133,20 @@ export default function SolicitarJustificativasModal({ open, onClose, onSent, re
     }
   };
 
-  return (
+  return createPortal(
     <div
       role="dialog"
       aria-modal="true"
       aria-label="Solicitar justificativas consolidadas via WhatsApp"
-      className="fixed inset-0 z-[70] overflow-y-auto bg-black/50"
-      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
+      className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 p-4"
+      onClick={onClose}
     >
-      <div className="min-h-full flex items-start justify-center p-4">
-      <div className="bg-background rounded-xl shadow-lg w-full max-w-[620px] my-4 border border-border">
+      <div
+        className="bg-background rounded-xl shadow-lg w-full max-w-[620px] max-h-[90vh] min-h-0 flex flex-col border border-border"
+        onClick={(e) => e.stopPropagation()}
+      >
         {/* Header */}
-        <div className="bg-muted/50 rounded-t-xl px-5 py-4 border-b border-border">
+        <div className="bg-muted/50 rounded-t-xl px-5 py-4 border-b border-border flex-shrink-0">
           <div className="flex items-start gap-3">
             <div
               className="h-11 w-11 rounded-full flex items-center justify-center text-white text-sm font-semibold shrink-0"
@@ -170,14 +174,14 @@ export default function SolicitarJustificativasModal({ open, onClose, onSent, re
           </div>
         </div>
 
-        <div className="flex justify-center py-3">
+        <div className="flex justify-center py-3 flex-shrink-0">
           <span className="text-[11px] uppercase tracking-wide px-3 py-1 rounded-full bg-muted text-muted-foreground">
             Prévia da mensagem consolidada
           </span>
         </div>
 
         {/* WhatsApp area */}
-        <div className="mx-5 mb-4 p-4 rounded-lg" style={{ backgroundColor: "#ECE5DD" }}>
+        <div className="min-h-[220px] flex-1 overflow-y-auto px-5 py-4" style={{ backgroundColor: "#ECE5DD" }}>
           <div className="flex justify-end">
             <div className="max-w-[90%] rounded-lg px-3 py-2 shadow-sm" style={{ backgroundColor: "#DCF8C6" }}>
               {editing ? (
@@ -206,7 +210,7 @@ export default function SolicitarJustificativasModal({ open, onClose, onSent, re
           </div>
         </div>
 
-        <div className="px-5 pb-5 space-y-3">
+        <div className="px-5 py-4 space-y-3 border-t border-border flex-shrink-0">
           {preview && !telefoneOk && (
             <div className="flex items-start gap-2 p-3 rounded-lg bg-red-50 border border-red-200 text-red-700 text-xs">
               <AlertCircle className="h-4 w-4 shrink-0 mt-0.5" />
@@ -233,8 +237,8 @@ export default function SolicitarJustificativasModal({ open, onClose, onSent, re
           </div>
         </div>
       </div>
-      </div>
-    </div>
+    </div>,
+    document.body,
   );
 }
 

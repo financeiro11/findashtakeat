@@ -472,8 +472,14 @@ export default function Achados() {
 
 
       {/* Drawer */}
-      <Sheet open={!!selected} onOpenChange={(o) => !o && setSelected(null)}>
-        <SheetContent side="right" className="w-full sm:max-w-[620px] p-0 flex flex-col">
+      <Sheet open={!!selected} onOpenChange={(o) => { if (!o && !ajusteOpen) setSelected(null); }}>
+        <SheetContent
+          side="right"
+          className="w-full sm:max-w-[620px] p-0 flex flex-col"
+          onPointerDownOutside={(e) => { if (ajusteOpen) e.preventDefault(); }}
+          onInteractOutside={(e) => { if (ajusteOpen) e.preventDefault(); }}
+          onEscapeKeyDown={(e) => { if (ajusteOpen) e.preventDefault(); }}
+        >
           {selected && (
             <>
               <div className="flex items-start justify-between px-6 pt-6 pb-4">

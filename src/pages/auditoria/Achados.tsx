@@ -11,6 +11,7 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/comp
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
 import { brl, brlAbbr, fmtDateBR, fmtTrilha, compLabel, MESES_PT_LONG } from "./utils";
+import AjusteSolicitadoModal from "./AjusteSolicitadoModal";
 
 type Severidade = "Crítico" | "Alto" | "Médio" | "Baixo";
 type Status = "Pendente" | "Em análise" | "Aprovado" | "Reprovado" | "Ajuste solicitado";

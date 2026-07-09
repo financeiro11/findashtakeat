@@ -110,7 +110,6 @@ export default function AjusteSolicitadoModal({
       aria-modal="true"
       aria-label="Enviar solicitação de ajuste via WhatsApp"
       className="fixed inset-0 z-[70] flex items-center justify-center bg-black/50 p-4"
-      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
     >
       <div className="bg-background rounded-xl shadow-lg w-full max-w-[560px] max-h-[90vh] overflow-y-auto border border-border">
         {/* Header */}

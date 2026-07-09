@@ -2369,6 +2369,7 @@ export type Database = {
           inseridos: number
         }[]
       }
+      preview_msg_ajuste: { Args: { p_id_unico: string }; Returns: Json }
     }
     Enums: {
       [_ in never]: never

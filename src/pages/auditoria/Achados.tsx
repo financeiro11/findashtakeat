@@ -601,6 +601,23 @@ export default function Achados() {
         </SheetContent>
       </Sheet>
 
+      {selected && (
+        <AjusteSolicitadoModal
+          open={ajusteOpen}
+          onClose={() => setAjusteOpen(false)}
+          onSent={() => {
+            setAjusteOpen(false);
+            setSelected(null);
+            load();
+          }}
+          idUnico={selected.id_unico}
+          valor={selected.valor}
+          regra={selected.regra}
+          competencia={selected.competencia}
+        />
+      )}
+
+
       <Dialog open={!!confirm} onOpenChange={(o) => { if (!o) { setConfirm(null); setComentario(""); } }}>
         <DialogContent>
           <DialogHeader><DialogTitle>Alterar para "{confirm?.novo}"</DialogTitle></DialogHeader>

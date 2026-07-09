@@ -627,7 +627,10 @@ export default function Achados() {
                     variant={s === "Aprovado" ? "default" : "outline"}
                     className={cn(s === "Aprovado" && "bg-[hsl(152_60%_36%)] hover:bg-[hsl(152_60%_30%)] text-white")}
                     onClick={() => {
-                      if (s === "Ajuste solicitado") setAjusteOpen(true);
+                      if (s === "Ajuste solicitado") {
+                        // Fecha slide-over antes de abrir modal para evitar conflito de eventos
+                        setTimeout(() => setAjusteOpen(true), 200);
+                      }
                       else setConfirm({ novo: s });
                     }}
                   >

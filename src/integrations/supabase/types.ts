@@ -2365,6 +2365,10 @@ export type Database = {
       }
     }
     Functions: {
+      append_trilha_e_status: {
+        Args: { p_evento: Json; p_id_unico: string; p_status: string }
+        Returns: undefined
+      }
       fmt_brl: { Args: { v: number }; Returns: string }
       importar_auditoria: {
         Args: { p_achados: Json }

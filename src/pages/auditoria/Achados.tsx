@@ -586,7 +586,10 @@ export default function Achados() {
                     key={s}
                     variant={s === "Aprovado" ? "default" : "outline"}
                     className={cn(s === "Aprovado" && "bg-[hsl(152_60%_36%)] hover:bg-[hsl(152_60%_30%)] text-white")}
-                    onClick={() => setConfirm({ novo: s })}
+                    onClick={() => {
+                      if (s === "Ajuste solicitado") setAjusteOpen(true);
+                      else setConfirm({ novo: s });
+                    }}
                   >
                     {s === "Aprovado" && <Check className="h-4 w-4 mr-1.5" />}
                     {s}

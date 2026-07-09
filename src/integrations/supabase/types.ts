@@ -1192,6 +1192,65 @@ export type Database = {
         }
         Relationships: []
       }
+      magic_tokens: {
+        Row: {
+          acessos: number
+          colaborador_id: string | null
+          criado_em: string
+          criado_por: string | null
+          enviado_para: string | null
+          expira_em: string
+          id_unicos: Json
+          ip_ultimo_acesso: string | null
+          qtd_itens: number
+          responsavel: string
+          status: string
+          token: string
+          ultimo_acesso: string | null
+          valor_total: number
+        }
+        Insert: {
+          acessos?: number
+          colaborador_id?: string | null
+          criado_em?: string
+          criado_por?: string | null
+          enviado_para?: string | null
+          expira_em: string
+          id_unicos?: Json
+          ip_ultimo_acesso?: string | null
+          qtd_itens?: number
+          responsavel: string
+          status?: string
+          token: string
+          ultimo_acesso?: string | null
+          valor_total?: number
+        }
+        Update: {
+          acessos?: number
+          colaborador_id?: string | null
+          criado_em?: string
+          criado_por?: string | null
+          enviado_para?: string | null
+          expira_em?: string
+          id_unicos?: Json
+          ip_ultimo_acesso?: string | null
+          qtd_itens?: number
+          responsavel?: string
+          status?: string
+          token?: string
+          ultimo_acesso?: string | null
+          valor_total?: number
+        }
+        Relationships: [
+          {
+            foreignKeyName: "magic_tokens_colaborador_id_fkey"
+            columns: ["colaborador_id"]
+            isOneToOne: false
+            referencedRelation: "lib_colaboradores"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       omie_dre_mapa: {
         Row: {
           ativo: boolean
@@ -2369,6 +2428,16 @@ export type Database = {
         Args: { p_evento: Json; p_id_unico: string; p_status: string }
         Returns: undefined
       }
+      criar_token_e_registrar: {
+        Args: {
+          p_colaborador_id?: string
+          p_criado_por?: string
+          p_id_unicos: Json
+          p_responsavel: string
+          p_telefone?: string
+        }
+        Returns: Json
+      }
       fmt_brl: { Args: { v: number }; Returns: string }
       importar_auditoria: {
         Args: { p_achados: Json }
@@ -2377,7 +2446,26 @@ export type Database = {
           inseridos: number
         }[]
       }
+      normaliza_nome: { Args: { p_nome: string }; Returns: string }
       preview_msg_ajuste: { Args: { p_id_unico: string }; Returns: Json }
+      preview_msg_consolidada: {
+        Args: { p_responsavel: string }
+        Returns: Json
+      }
+      resolve_colaborador_por_nome: {
+        Args: { p_nome: string }
+        Returns: {
+          id: string
+          match_type: string
+          nome: string
+          telefone: string
+        }[]
+      }
+      resolver_token: {
+        Args: { p_ip?: string; p_token: string }
+        Returns: Json
+      }
+      unaccent: { Args: { "": string }; Returns: string }
     }
     Enums: {
       [_ in never]: never

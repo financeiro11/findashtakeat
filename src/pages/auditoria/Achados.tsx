@@ -601,7 +601,7 @@ export default function Achados() {
                     }}
                   >
                     {s === "Aprovado" && <Check className="h-4 w-4 mr-1.5" />}
-                    {s}
+                    {s === "Ajuste solicitado" ? "Solicitar ajuste" : s}
                   </Button>
                 ))}
               </div>

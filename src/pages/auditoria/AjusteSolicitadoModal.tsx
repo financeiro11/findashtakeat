@@ -17,6 +17,8 @@ type Preview = {
   mensagem: string;
   exige_nf: boolean;
   telefone_ok: boolean;
+  id_unicos?: string[];
+  colaborador_id?: string | null;
 };
 
 type Props = {
@@ -90,11 +92,30 @@ export default function AjusteSolicitadoModal({
     if (!preview || !telefoneOk) return;
     setSending(true);
     try {
+      const idUnicos = preview.id_unicos && preview.id_unicos.length > 0 ? preview.id_unicos : [idUnico];
+
+      const { data: tokenData, error: tokErr } = await supabase.rpc("criar_token_e_registrar", {
+        p_responsavel: preview.gestor_nome,
+        p_id_unicos: idUnicos,
+        p_colaborador_id: preview.colaborador_id ?? null,
+        p_telefone: preview.telefone,
+        p_criado_por: user?.email ?? null,
+      });
+      if (tokErr || !tokenData || !(tokenData as any).token) {
+        toast.error(tokErr?.message || "Falha ao gerar token");
+        return;
+      }
+      const url = (tokenData as any).url as string;
+      const mensagemFinal = mensagem.replace(
+        "https://findashtakeat.lovable.app/l/{{TOKEN}}",
+        url,
+      );
+
       const { data, error } = await supabase.functions.invoke("enviar-ajuste", {
         body: {
           id_unico: idUnico,
           telefone: preview.telefone,
-          mensagem_final: mensagem,
+          mensagem_final: mensagemFinal,
           enviado_por: user?.email ?? null,
         },
       });

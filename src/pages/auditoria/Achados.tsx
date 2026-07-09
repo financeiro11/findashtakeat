@@ -277,7 +277,29 @@ export default function Achados() {
       <div className="flex items-end justify-between gap-4 flex-wrap">
         <div className="min-w-0">
           <div className="text-[11px] uppercase tracking-wider text-muted-foreground font-medium">Hub Financeiro · Governança</div>
-          <h1 className="text-3xl font-bold tracking-tight mt-0.5">Auditoria</h1>
+          <div className="flex items-center gap-3 mt-0.5 flex-wrap">
+            <h1 className="text-3xl font-bold tracking-tight">Auditoria</h1>
+            <TooltipProvider delayDuration={200}>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <span>
+                    <Button
+                      onClick={() => setConsolidadoOpen(true)}
+                      disabled={fResp === "todas"}
+                      className="h-9 text-white disabled:opacity-50"
+                      style={{ backgroundColor: "#0F6E56" }}
+                    >
+                      <Send className="h-4 w-4 mr-2" />
+                      {fResp === "todas" ? "Solicitar Justificativas" : `Solicitar Justificativas (${fResp})`}
+                    </Button>
+                  </span>
+                </TooltipTrigger>
+                {fResp === "todas" && (
+                  <TooltipContent>Selecione um responsável para solicitar justificativas em lote</TooltipContent>
+                )}
+              </Tooltip>
+            </TooltipProvider>
+          </div>
           <p className="text-sm text-muted-foreground mt-1">Achados financeiros com workflow de análise e aprovação.</p>
         </div>
         <div className="flex items-center gap-2 flex-wrap">

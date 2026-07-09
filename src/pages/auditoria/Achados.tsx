@@ -657,6 +657,15 @@ export default function Achados() {
         />
       )}
 
+      {consolidadoOpen && fResp !== "todas" && (
+        <SolicitarJustificativasModal
+          open={consolidadoOpen}
+          onClose={() => setConsolidadoOpen(false)}
+          onSent={() => { setConsolidadoOpen(false); load(); }}
+          responsavel={fResp}
+        />
+      )}
+
 
       <Dialog open={!!confirm} onOpenChange={(o) => { if (!o) { setConfirm(null); setComentario(""); } }}>
         <DialogContent>

@@ -11,6 +11,7 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/comp
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
 import { brl, brlAbbr, fmtDateBR, fmtTrilha, compLabel, MESES_PT_LONG } from "./utils";
+import AjusteSolicitadoModal from "./AjusteSolicitadoModal";
 
 type Severidade = "Crítico" | "Alto" | "Médio" | "Baixo";
 type Status = "Pendente" | "Em análise" | "Aprovado" | "Reprovado" | "Ajuste solicitado";
@@ -103,6 +104,7 @@ export default function Achados() {
   const [confirm, setConfirm] = useState<{ novo: Status } | null>(null);
   const [comentario, setComentario] = useState("");
   const [saving, setSaving] = useState(false);
+  const [ajusteOpen, setAjusteOpen] = useState(false);
 
   const load = async () => {
     setLoading(true);
@@ -584,7 +586,10 @@ export default function Achados() {
                     key={s}
                     variant={s === "Aprovado" ? "default" : "outline"}
                     className={cn(s === "Aprovado" && "bg-[hsl(152_60%_36%)] hover:bg-[hsl(152_60%_30%)] text-white")}
-                    onClick={() => setConfirm({ novo: s })}
+                    onClick={() => {
+                      if (s === "Ajuste solicitado") setAjusteOpen(true);
+                      else setConfirm({ novo: s });
+                    }}
                   >
                     {s === "Aprovado" && <Check className="h-4 w-4 mr-1.5" />}
                     {s}
@@ -595,6 +600,23 @@ export default function Achados() {
           )}
         </SheetContent>
       </Sheet>
+
+      {selected && (
+        <AjusteSolicitadoModal
+          open={ajusteOpen}
+          onClose={() => setAjusteOpen(false)}
+          onSent={() => {
+            setAjusteOpen(false);
+            setSelected(null);
+            load();
+          }}
+          idUnico={selected.id_unico}
+          valor={selected.valor}
+          regra={selected.regra}
+          competencia={selected.competencia}
+        />
+      )}
+
 
       <Dialog open={!!confirm} onOpenChange={(o) => { if (!o) { setConfirm(null); setComentario(""); } }}>
         <DialogContent>

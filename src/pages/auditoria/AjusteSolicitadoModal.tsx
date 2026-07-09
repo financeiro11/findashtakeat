@@ -1,0 +1,251 @@
+import { useEffect, useRef, useState } from "react";
+import { supabase } from "@/integrations/supabase/client";
+import { useAuth } from "@/hooks/useAuth";
+import { Button } from "@/components/ui/button";
+import { Textarea } from "@/components/ui/textarea";
+import { X, Pencil, Send, Loader2, Check, AlertCircle } from "lucide-react";
+import { toast } from "sonner";
+import { cn } from "@/lib/utils";
+import { brl, compLabel } from "./utils";
+
+type Preview = {
+  telefone: string | null;
+  gestor_nome: string;
+  primeiro_nome: string;
+  area: string;
+  mensagem: string;
+  exige_nf: boolean;
+  telefone_ok: boolean;
+};
+
+type Props = {
+  open: boolean;
+  onClose: () => void;
+  onSent: () => void;
+  idUnico: string;
+  valor: number;
+  regra: string;
+  competencia: string;
+};
+
+function initials(nome: string) {
+  const parts = nome.trim().split(/\s+/).filter(Boolean);
+  if (parts.length === 0) return "?";
+  return ((parts[0][0] || "") + (parts[parts.length - 1][0] || "")).toUpperCase();
+}
+
+function maskPhone(tel: string | null) {
+  if (!tel) return "—";
+  const d = tel.replace(/\D/g, "");
+  if (d.length < 10) return tel;
+  const cc = d.length > 10 ? d.slice(0, d.length - 10) : "55";
+  const ddd = d.slice(-10, -8);
+  return `+${cc} ${ddd} 9****-****`;
+}
+
+export default function AjusteSolicitadoModal({
+  open, onClose, onSent, idUnico, valor, regra, competencia,
+}: Props) {
+  const { user } = useAuth();
+  const [loading, setLoading] = useState(false);
+  const [sending, setSending] = useState(false);
+  const [preview, setPreview] = useState<Preview | null>(null);
+  const [editing, setEditing] = useState(false);
+  const [mensagem, setMensagem] = useState("");
+  const sendBtnRef = useRef<HTMLButtonElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    let cancel = false;
+    setLoading(true);
+    setEditing(false);
+    setPreview(null);
+    (async () => {
+      const { data, error } = await supabase.rpc("preview_msg_ajuste", { p_id_unico: idUnico });
+      if (cancel) return;
+      if (error) {
+        toast.error(`Erro ao carregar prévia: ${error.message}`);
+        onClose();
+        return;
+      }
+      const p = data as unknown as Preview;
+      setPreview(p);
+      setMensagem(p?.mensagem || "");
+      setLoading(false);
+      setTimeout(() => sendBtnRef.current?.focus(), 50);
+    })();
+    return () => { cancel = true; };
+  }, [open, idUnico]);
+
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [open, onClose]);
+
+  if (!open) return null;
+
+  const telefoneOk = !!preview?.telefone_ok;
+  const now = new Date();
+  const hhmm = `${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}`;
+
+  const handleSend = async () => {
+    if (!preview || !telefoneOk) return;
+    setSending(true);
+    const { error } = await supabase.functions.invoke("enviar-ajuste", {
+      body: {
+        id_unico: idUnico,
+        mensagem_final: mensagem,
+        telefone: preview.telefone,
+        enviado_por: user?.email ?? null,
+      },
+    });
+    setSending(false);
+    if (error) {
+      toast.error(error.message || "Falha ao enviar mensagem");
+      return;
+    }
+    toast.success(`Mensagem enviada para ${preview.gestor_nome}`);
+    onSent();
+  };
+
+  return (
+    <div
+      role="dialog"
+      aria-modal="true"
+      aria-label="Enviar solicitação de ajuste via WhatsApp"
+      className="fixed inset-0 z-[70] flex items-center justify-center bg-black/50 p-4"
+      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
+    >
+      <div className="bg-background rounded-xl shadow-lg w-full max-w-[560px] max-h-[90vh] overflow-y-auto border border-border">
+        {/* Header */}
+        <div className="bg-muted/50 rounded-t-xl px-5 py-4 border-b border-border">
+          <div className="flex items-start gap-3">
+            <div
+              className="h-11 w-11 rounded-full flex items-center justify-center text-white text-sm font-semibold shrink-0"
+              style={{ backgroundColor: "#0F6E56" }}
+            >
+              {loading ? "…" : initials(preview?.gestor_nome || "?")}
+            </div>
+            <div className="flex-1 min-w-0">
+              <div className="text-sm font-semibold text-foreground truncate">
+                {loading ? "Carregando…" : (preview?.gestor_nome || "Sem gestor cadastrado")}
+              </div>
+              <div className="text-xs text-muted-foreground font-mono">
+                {loading ? "—" : maskPhone(preview?.telefone ?? null)}
+              </div>
+            </div>
+            <button
+              onClick={onClose}
+              className="p-1 rounded hover:bg-muted text-muted-foreground"
+              aria-label="Fechar"
+            >
+              <X className="h-4 w-4" />
+            </button>
+          </div>
+
+          <div className="grid grid-cols-3 gap-2 mt-4">
+            <MiniCard label="Valor" value={brl(valor)} />
+            <MiniCard
+              label="Regra"
+              value={<span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-[hsl(48_96%_92%)] text-[hsl(38_80%_32%)] border border-[hsl(48_92%_80%)]">{regra}</span>}
+            />
+            <MiniCard label="Competência" value={compLabel(competencia)} />
+          </div>
+        </div>
+
+        {/* Pílula central */}
+        <div className="flex justify-center py-3">
+          <span className="text-[11px] uppercase tracking-wide px-3 py-1 rounded-full bg-muted text-muted-foreground">
+            Prévia da mensagem automática
+          </span>
+        </div>
+
+        {/* WhatsApp area */}
+        <div className="mx-5 mb-4 p-4 rounded-lg" style={{ backgroundColor: "#ECE5DD" }}>
+          <div className="flex justify-end">
+            <div
+              className="max-w-[85%] rounded-lg px-3 py-2 shadow-sm"
+              style={{ backgroundColor: "#DCF8C6" }}
+            >
+              {editing ? (
+                <Textarea
+                  value={mensagem}
+                  onChange={(e) => setMensagem(e.target.value)}
+                  rows={Math.max(6, mensagem.split("\n").length)}
+                  className="border-0 bg-transparent focus-visible:ring-0 p-0 resize-none text-[13px] leading-[1.5] font-sans text-neutral-900"
+                  style={{ minHeight: 120 }}
+                  autoFocus
+                />
+              ) : (
+                <pre
+                  className="whitespace-pre-wrap break-words m-0 font-sans text-neutral-900"
+                  style={{ fontSize: 13, lineHeight: 1.5 }}
+                >
+                  {loading ? "Carregando prévia…" : mensagem}
+                </pre>
+              )}
+              <div className="flex items-center justify-end gap-1 mt-1 text-[10px] text-neutral-500">
+                <span>{hhmm}</span>
+                <Check className="h-3 w-3 -mr-1.5" />
+                <Check className="h-3 w-3" />
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* Footer */}
+        <div className="px-5 pb-5 space-y-3">
+          {preview && !telefoneOk && (
+            <div className="flex items-start gap-2 p-3 rounded-lg bg-red-50 border border-red-200 text-red-700 text-xs">
+              <AlertCircle className="h-4 w-4 shrink-0 mt-0.5" />
+              <span>
+                Líder da área <strong>{preview.area}</strong> sem telefone cadastrado. Envio bloqueado.
+              </span>
+            </div>
+          )}
+
+          <div className="flex flex-wrap items-center justify-end gap-2">
+            <Button variant="outline" onClick={onClose} disabled={sending}>
+              Cancelar
+            </Button>
+            <Button
+              variant="outline"
+              onClick={() => setEditing((v) => !v)}
+              disabled={loading || sending}
+            >
+              {editing ? (
+                <><Check className="h-4 w-4 mr-1.5" />Salvar edição</>
+              ) : (
+                <><Pencil className="h-4 w-4 mr-1.5" />Editar texto</>
+              )}
+            </Button>
+            <Button
+              ref={sendBtnRef}
+              onClick={handleSend}
+              disabled={loading || sending || !telefoneOk}
+              className="text-white"
+              style={{ backgroundColor: "#0F6E56" }}
+            >
+              {sending ? (
+                <><Loader2 className="h-4 w-4 mr-1.5 animate-spin" />Enviando…</>
+              ) : (
+                <><Send className="h-4 w-4 mr-1.5" />Enviar WhatsApp</>
+              )}
+            </Button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function MiniCard({ label, value }: { label: string; value: React.ReactNode }) {
+  return (
+    <div className="rounded-lg border border-border bg-background px-2.5 py-1.5">
+      <div className="text-[10px] uppercase tracking-wide text-muted-foreground">{label}</div>
+      <div className="text-xs font-medium text-foreground truncate mt-0.5">{value}</div>
+    </div>
+  );
+}

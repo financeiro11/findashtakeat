@@ -1,12 +1,16 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useParams } from "react-router-dom";
 import { supabase } from "@/integrations/supabase/client";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Skeleton } from "@/components/ui/skeleton";
-import { LinkIcon, Paperclip, AlertTriangle } from "lucide-react";
+import { Badge } from "@/components/ui/badge";
+import { LinkIcon, Paperclip, AlertTriangle, Loader2, CheckCircle2 } from "lucide-react";
 import { toast } from "sonner";
 import { brl } from "@/pages/auditoria/utils";
+
+const SUPABASE_URL = "https://lgcxyxyidoirqmbdlldh.supabase.co";
+const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImxnY3h5eHlpZG9pcnFtYmRsbGRoIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzg1MzM2OTAsImV4cCI6MjA5NDEwOTY5MH0.-lENhEbTqq1cHs9oImKGCrCIhDKfWMu9BL8TwhfX04U";
 
 type Item = {
   id_unico: string;
@@ -19,6 +23,8 @@ type Item = {
   parcela: string | null;
   status: string;
   link_comprovante: string | null;
+  justificativa: string | null;
+  resolvido: boolean;
 };
 
 type ResolveOk = {
@@ -38,19 +44,21 @@ export default function LinkPublico() {
   const [loading, setLoading] = useState(true);
   const [data, setData] = useState<Resolve | null>(null);
 
+  const load = useCallback(async () => {
+    if (!token) { setLoading(false); return; }
+    const { data, error } = await supabase.rpc("resolver_token", {
+      p_token: token,
+      p_ip: null,
+    });
+    if (error) setData({ erro: "Não foi possível validar o link. Tente novamente mais tarde." });
+    else setData(data as unknown as Resolve);
+    setLoading(false);
+  }, [token]);
+
   useEffect(() => {
     document.title = "Takeat · Pendências";
-    if (!token) { setLoading(false); return; }
-    (async () => {
-      const { data, error } = await supabase.rpc("resolver_token", {
-        p_token: token,
-        p_ip: null,
-      });
-      if (error) setData({ erro: "Não foi possível validar o link. Tente novamente mais tarde." });
-      else setData(data as unknown as Resolve);
-      setLoading(false);
-    })();
-  }, [token]);
+    load();
+  }, [load]);
 
   if (loading) {
     return (
@@ -68,7 +76,7 @@ export default function LinkPublico() {
     return <ErrorPage message={data?.erro || "Link inválido"} />;
   }
 
-  return <TokenPage data={data} />;
+  return <TokenPage data={data} token={token!} onRefresh={load} />;
 }
 
 function ErrorPage({ message }: { message: string }) {
@@ -88,8 +96,10 @@ function ErrorPage({ message }: { message: string }) {
   );
 }
 
-function TokenPage({ data }: { data: ResolveOk }) {
-  const resolvidos = data.itens.filter(i => !!i.link_comprovante).length;
+function TokenPage({ data, token, onRefresh }: { data: ResolveOk; token: string; onRefresh: () => Promise<void> }) {
+  const resolvidos = data.itens.filter(i => i.resolvido).length;
+  const pct = data.qtd_itens ? Math.round((resolvidos / data.qtd_itens) * 100) : 0;
+  const allDone = data.qtd_itens > 0 && resolvidos === data.qtd_itens;
 
   return (
     <div className="min-h-screen bg-background">
@@ -100,7 +110,16 @@ function TokenPage({ data }: { data: ResolveOk }) {
       </header>
 
       <main className="mx-auto max-w-[720px] px-4 py-6 space-y-5">
-        {/* Bloco 1 — Saudação */}
+        {allDone && (
+          <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4 flex items-start gap-3">
+            <CheckCircle2 className="h-5 w-5 text-emerald-600 shrink-0 mt-0.5" />
+            <div className="text-sm text-emerald-900">
+              <strong>Você resolveu todas as {data.qtd_itens} pendências!</strong>
+              <div>O time financeiro vai revisar e retornar em breve. Obrigado!</div>
+            </div>
+          </div>
+        )}
+
         <section className="rounded-xl border border-border bg-card p-5 space-y-3">
           <h1 className="text-2xl font-bold tracking-tight">Olá, {data.responsavel}!</h1>
           <p className="text-sm text-foreground/80">
@@ -116,25 +135,23 @@ function TokenPage({ data }: { data: ResolveOk }) {
           <div>
             <div className="flex items-center justify-between text-xs text-muted-foreground mb-1">
               <span>{resolvidos} de {data.qtd_itens} lançamento{data.qtd_itens === 1 ? "" : "s"} resolvido{resolvidos === 1 ? "" : "s"}</span>
-              <span>{data.qtd_itens ? Math.round((resolvidos / data.qtd_itens) * 100) : 0}%</span>
+              <span>{pct}%</span>
             </div>
             <div className="h-2 rounded-full bg-muted overflow-hidden">
               <div
-                className="h-full bg-[hsl(152_60%_40%)] transition-all"
-                style={{ width: `${data.qtd_itens ? (resolvidos / data.qtd_itens) * 100 : 0}%` }}
+                className="h-full bg-emerald-500 transition-all"
+                style={{ width: `${pct}%` }}
               />
             </div>
           </div>
         </section>
 
-        {/* Bloco 2 — Lista */}
         <section className="space-y-3">
-          {data.itens.map((it, idx) => (
-            <ItemCard key={idx} item={it} />
+          {data.itens.map((it) => (
+            <ItemCard key={it.id_unico} item={it} token={token} onRefresh={onRefresh} />
           ))}
         </section>
 
-        {/* Bloco 3 — Rodapé */}
         <footer className="pt-4 pb-6 text-center text-[11px] text-muted-foreground">
           Financeiro Takeat · Este link é seu, não compartilhe.
         </footer>
@@ -143,21 +160,88 @@ function TokenPage({ data }: { data: ResolveOk }) {
   );
 }
 
-function ItemCard({ item }: { item: Item }) {
-  const [justificativa, setJustificativa] = useState("");
+function fileToBase64(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result));
+    reader.onerror = () => reject(reader.error);
+    reader.readAsDataURL(file);
+  });
+}
+
+function ItemCard({ item, token, onRefresh }: { item: Item; token: string; onRefresh: () => Promise<void> }) {
+  const [justificativa, setJustificativa] = useState(item.justificativa || "");
+  const [uploading, setUploading] = useState(false);
+  const [saving, setSaving] = useState(false);
 
   const handleAnexar = () => {
     const input = document.createElement("input");
     input.type = "file";
-    input.accept = "application/pdf,image/jpeg,image/png,image/jpg";
-    input.onchange = () => {
-      toast.message("Upload virá na próxima iteração");
+    input.accept = "application/pdf,image/jpeg,image/png";
+    input.onchange = async () => {
+      const file = input.files?.[0];
+      if (!file) return;
+      if (file.size > 10 * 1024 * 1024) {
+        toast.error("Arquivo maior que 10 MB não é aceito");
+        return;
+      }
+      setUploading(true);
+      try {
+        const base64 = await fileToBase64(file);
+        const res = await fetch(`${SUPABASE_URL}/functions/v1/anexar-comprovante-auditoria`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "apikey": SUPABASE_ANON_KEY,
+          },
+          body: JSON.stringify({
+            token,
+            id_unico: item.id_unico,
+            file_base64: base64,
+            filename: file.name,
+            mime_type: file.type,
+          }),
+        });
+        const data = await res.json();
+        if (res.ok && data.ok) {
+          toast.success("Comprovante anexado com sucesso");
+          await onRefresh();
+        } else {
+          toast.error(data.erro || "Erro ao anexar comprovante");
+        }
+      } catch {
+        toast.error("Erro ao anexar comprovante");
+      } finally {
+        setUploading(false);
+      }
     };
     input.click();
   };
 
-  const handleSalvar = () => {
-    toast.message("Upload virá na próxima iteração");
+  const handleSalvar = async () => {
+    if (!justificativa.trim()) {
+      toast.error("Escreva uma justificativa antes de salvar");
+      return;
+    }
+    setSaving(true);
+    try {
+      const { data, error } = await supabase.rpc("salvar_justificativa_via_token", {
+        p_token: token,
+        p_id_unico: item.id_unico,
+        p_texto: justificativa,
+      });
+      const payload = data as { ok?: boolean; erro?: string } | null;
+      if (error || !payload?.ok) {
+        toast.error(payload?.erro || "Erro ao salvar justificativa");
+      } else {
+        toast.success("Justificativa salva");
+        await onRefresh();
+      }
+    } catch {
+      toast.error("Erro ao salvar justificativa");
+    } finally {
+      setSaving(false);
+    }
   };
 
   const meta = [
@@ -168,20 +252,47 @@ function ItemCard({ item }: { item: Item }) {
     item.parcela ? `Parcela ${item.parcela}` : null,
   ].filter(Boolean).join(" · ");
 
+  const resolvido = item.resolvido;
+  const jShort = item.justificativa && item.justificativa.length > 100
+    ? item.justificativa.slice(0, 100) + "..."
+    : item.justificativa;
+
   return (
-    <div className="rounded-lg border border-border bg-muted/30 p-4 space-y-3">
+    <div
+      className={`rounded-lg border bg-muted/30 p-4 space-y-3 ${resolvido ? "border-emerald-200" : "border-border"}`}
+      style={resolvido ? { borderLeft: "4px solid #10B981" } : undefined}
+    >
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0 flex-1">
+          {resolvido && (
+            <Badge className="mb-1.5 bg-emerald-100 text-emerald-800 hover:bg-emerald-100 border-emerald-200">
+              ✓ Resolvido
+            </Badge>
+          )}
           <div className="font-medium text-sm truncate">{item.estabelecimento}</div>
           <div className="text-xs text-muted-foreground mt-0.5">{meta || "—"}</div>
         </div>
         <div className="num text-lg font-semibold shrink-0">{brl(Number(item.valor || 0))}</div>
       </div>
 
+      {resolvido && item.link_comprovante && (
+        <div className="text-xs text-emerald-800 bg-emerald-50 rounded px-2 py-1.5">
+          📎 Comprovante anexado
+        </div>
+      )}
+      {resolvido && item.justificativa && (
+        <div className="text-xs text-emerald-800 bg-emerald-50 rounded px-2 py-1.5">
+          💬 {jShort}
+        </div>
+      )}
+
       <div className="flex flex-wrap items-center gap-2">
-        <Button variant="outline" size="sm" onClick={handleAnexar}>
-          <Paperclip className="h-3.5 w-3.5 mr-1.5" />
-          Anexar comprovante
+        <Button variant="outline" size="sm" onClick={handleAnexar} disabled={uploading}>
+          {uploading ? (
+            <><Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" />Enviando...</>
+          ) : (
+            <><Paperclip className="h-3.5 w-3.5 mr-1.5" />{item.link_comprovante ? "Substituir comprovante" : "Anexar comprovante"}</>
+          )}
         </Button>
       </div>
 
@@ -194,8 +305,8 @@ function ItemCard({ item }: { item: Item }) {
           className="text-sm"
         />
         <div className="flex justify-end">
-          <Button size="sm" onClick={handleSalvar} disabled={!justificativa.trim()}>
-            Salvar justificativa
+          <Button size="sm" onClick={handleSalvar} disabled={saving || !justificativa.trim()}>
+            {saving ? (<><Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" />Salvando...</>) : "Salvar justificativa"}
           </Button>
         </div>
       </div>

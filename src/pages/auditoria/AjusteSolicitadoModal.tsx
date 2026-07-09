@@ -237,9 +237,11 @@ export default function AjusteSolicitadoModal({
           </div>
         </div>
       </div>
+      </div>
     </div>
   );
 }
+
 
 function MiniCard({ label, value }: { label: string; value: React.ReactNode }) {
   return (

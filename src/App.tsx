@@ -46,6 +46,7 @@ import Auditoria from "./pages/Auditoria";
 import Reembolsos from "./pages/operacional/Reembolsos";
 import Estornos from "./pages/operacional/Estornos";
 import NotFound from "./pages/NotFound.tsx";
+import LinkPublico from "./pages/LinkPublico";
 
 const queryClient = new QueryClient();
 
@@ -59,6 +60,7 @@ const App = () => (
           <ErrorBoundary>
           <Routes>
             <Route path="/login" element={<Login />} />
+            <Route path="/l/:token" element={<LinkPublico />} />
             <Route element={<AppLayout />}>
               <Route path="/" element={<Dashboard />} />
               <Route path="/dashboard-legacy" element={<DashboardLegacy />} />

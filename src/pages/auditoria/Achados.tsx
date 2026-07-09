@@ -99,6 +99,7 @@ export default function Achados() {
   const [fArea, setFArea] = useState<string>("todas");
   const [fRegra, setFRegra] = useState<string>("todas");
   const [fCat, setFCat] = useState<FiltroCat>("todas");
+  const [fResp, setFResp] = useState<string>("todas");
   const [busca, setBusca] = useState("");
   const [selected, setSelected] = useState<Row | null>(null);
   const [origemCart, setOrigemCart] = useState<CartaoLanc | null>(null);
@@ -106,6 +107,7 @@ export default function Achados() {
   const [comentario, setComentario] = useState("");
   const [saving, setSaving] = useState(false);
   const [ajusteOpen, setAjusteOpen] = useState(false);
+  const [consolidadoOpen, setConsolidadoOpen] = useState(false);
 
   // Garante que o modal de "Ajuste solicitado" NUNCA venha aberto ao abrir/trocar de lançamento
   useEffect(() => { setAjusteOpen(false); }, [selected?.id]);

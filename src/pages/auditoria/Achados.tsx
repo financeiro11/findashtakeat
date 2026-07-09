@@ -6,12 +6,13 @@ import { Sheet, SheetContent } from "@/components/ui/sheet";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Textarea } from "@/components/ui/textarea";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Download, X, ChevronRight, Check, ExternalLink, Search } from "lucide-react";
+import { Download, X, ChevronRight, Check, ExternalLink, Search, Send } from "lucide-react";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
 import { brl, brlAbbr, fmtDateBR, fmtTrilha, compLabel, MESES_PT_LONG } from "./utils";
 import AjusteSolicitadoModal from "./AjusteSolicitadoModal";
+import SolicitarJustificativasModal from "./SolicitarJustificativasModal";
 
 type Severidade = "Crítico" | "Alto" | "Médio" | "Baixo";
 type Status = "Pendente" | "Em análise" | "Aprovado" | "Reprovado" | "Ajuste solicitado";
@@ -98,6 +99,7 @@ export default function Achados() {
   const [fArea, setFArea] = useState<string>("todas");
   const [fRegra, setFRegra] = useState<string>("todas");
   const [fCat, setFCat] = useState<FiltroCat>("todas");
+  const [fResp, setFResp] = useState<string>("todas");
   const [busca, setBusca] = useState("");
   const [selected, setSelected] = useState<Row | null>(null);
   const [origemCart, setOrigemCart] = useState<CartaoLanc | null>(null);
@@ -105,6 +107,7 @@ export default function Achados() {
   const [comentario, setComentario] = useState("");
   const [saving, setSaving] = useState(false);
   const [ajusteOpen, setAjusteOpen] = useState(false);
+  const [consolidadoOpen, setConsolidadoOpen] = useState(false);
 
   // Garante que o modal de "Ajuste solicitado" NUNCA venha aberto ao abrir/trocar de lançamento
   useEffect(() => { setAjusteOpen(false); }, [selected?.id]);
@@ -137,6 +140,10 @@ export default function Achados() {
 
   const areas = useMemo(() => Array.from(new Set(periodRows.map(r => r.area).filter(Boolean))).sort(), [periodRows]);
   const regras = useMemo(() => Array.from(new Set(periodRows.map(r => r.regra).filter(Boolean))).sort(), [periodRows]);
+  const responsaveisPendentes = useMemo(
+    () => Array.from(new Set(rows.filter(r => r.status === "Pendente" && r.responsavel).map(r => r.responsavel))).sort((a, b) => a.localeCompare(b, "pt-BR")),
+    [rows]
+  );
 
   const counts = useMemo(() => {
     const c: Record<string, number> = { todas: periodRows.length };
@@ -168,10 +175,11 @@ export default function Achados() {
       if (fArea !== "todas" && r.area !== fArea) return false;
       if (fRegra !== "todas" && r.regra !== fRegra) return false;
       if (fCat !== "todas" && r.categoria !== fCat) return false;
+      if (fResp !== "todas" && r.responsavel !== fResp) return false;
       if (q && !(r.titulo || "").toLowerCase().includes(q)) return false;
       return true;
     });
-  }, [periodRows, filtro, fSev, fArea, fRegra, fCat, busca]);
+  }, [periodRows, filtro, fSev, fArea, fRegra, fCat, fResp, busca]);
 
   const kpis = useMemo(() => {
     const pend = periodRows.filter(r => r.status === "Pendente");
@@ -269,7 +277,29 @@ export default function Achados() {
       <div className="flex items-end justify-between gap-4 flex-wrap">
         <div className="min-w-0">
           <div className="text-[11px] uppercase tracking-wider text-muted-foreground font-medium">Hub Financeiro · Governança</div>
-          <h1 className="text-3xl font-bold tracking-tight mt-0.5">Auditoria</h1>
+          <div className="flex items-center gap-3 mt-0.5 flex-wrap">
+            <h1 className="text-3xl font-bold tracking-tight">Auditoria</h1>
+            <TooltipProvider delayDuration={200}>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <span>
+                    <Button
+                      onClick={() => setConsolidadoOpen(true)}
+                      disabled={fResp === "todas"}
+                      className="h-9 text-white disabled:opacity-50"
+                      style={{ backgroundColor: "#0F6E56" }}
+                    >
+                      <Send className="h-4 w-4 mr-2" />
+                      {fResp === "todas" ? "Solicitar Justificativas" : `Solicitar Justificativas (${fResp})`}
+                    </Button>
+                  </span>
+                </TooltipTrigger>
+                {fResp === "todas" && (
+                  <TooltipContent>Selecione um responsável para solicitar justificativas em lote</TooltipContent>
+                )}
+              </Tooltip>
+            </TooltipProvider>
+          </div>
           <p className="text-sm text-muted-foreground mt-1">Achados financeiros com workflow de análise e aprovação.</p>
         </div>
         <div className="flex items-center gap-2 flex-wrap">
@@ -396,8 +426,9 @@ export default function Achados() {
         <FilterSelect label="Severidade" value={fSev} onChange={setFSev} options={["Crítico","Alto","Médio","Baixo"]} />
         <FilterSelect label="Área" value={fArea} onChange={setFArea} options={areas} />
         <FilterSelect label="Regra" value={fRegra} onChange={setFRegra} options={regras} />
-        {(fSev !== "todas" || fArea !== "todas" || fRegra !== "todas") && (
-          <button onClick={() => { setFSev("todas"); setFArea("todas"); setFRegra("todas"); }} className="text-xs text-muted-foreground hover:text-foreground underline">
+        <FilterSelect label="Responsável" value={fResp} onChange={setFResp} options={responsaveisPendentes} />
+        {(fSev !== "todas" || fArea !== "todas" || fRegra !== "todas" || fResp !== "todas") && (
+          <button onClick={() => { setFSev("todas"); setFArea("todas"); setFRegra("todas"); setFResp("todas"); }} className="text-xs text-muted-foreground hover:text-foreground underline">
             limpar filtros
           </button>
         )}
@@ -623,6 +654,15 @@ export default function Achados() {
           valor={selected.valor}
           regra={selected.regra}
           competencia={selected.competencia}
+        />
+      )}
+
+      {consolidadoOpen && fResp !== "todas" && (
+        <SolicitarJustificativasModal
+          open={consolidadoOpen}
+          onClose={() => setConsolidadoOpen(false)}
+          onSent={() => { setConsolidadoOpen(false); load(); }}
+          responsavel={fResp}
         />
       )}
 

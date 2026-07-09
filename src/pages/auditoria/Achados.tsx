@@ -107,6 +107,7 @@ export default function Achados() {
   const [comentario, setComentario] = useState("");
   const [saving, setSaving] = useState(false);
   const [ajusteOpen, setAjusteOpen] = useState(false);
+  const [sheetHidden, setSheetHidden] = useState(false);
   const [consolidadoOpen, setConsolidadoOpen] = useState(false);
 
   // Garante que o modal de "Ajuste solicitado" NUNCA venha aberto ao abrir/trocar de lançamento

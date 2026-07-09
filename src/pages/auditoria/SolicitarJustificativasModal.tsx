@@ -233,9 +233,11 @@ export default function SolicitarJustificativasModal({ open, onClose, onSent, re
           </div>
         </div>
       </div>
+      </div>
     </div>
   );
 }
+
 
 function MiniCard({ label, value }: { label: string; value: React.ReactNode }) {
   return (

@@ -87,21 +87,26 @@ export default function AjusteSolicitadoModal({
   const handleSend = async () => {
     if (!preview || !telefoneOk) return;
     setSending(true);
-    const { error } = await supabase.functions.invoke("enviar-ajuste", {
-      body: {
-        id_unico: idUnico,
-        mensagem_final: mensagem,
-        telefone: preview.telefone,
-        enviado_por: user?.email ?? null,
-      },
-    });
-    setSending(false);
-    if (error) {
-      toast.error(error.message || "Falha ao enviar mensagem");
-      return;
+    try {
+      const { data, error } = await supabase.functions.invoke("enviar-ajuste", {
+        body: {
+          id_unico: idUnico,
+          telefone: preview.telefone,
+          mensagem_final: mensagem,
+          enviado_por: user?.email ?? null,
+        },
+      });
+      if (error || (data as any)?.error) {
+        toast.error((data as any)?.error || error?.message || "Falha ao enviar mensagem");
+        return;
+      }
+      toast.success(`Mensagem enviada para ${preview.gestor_nome}`);
+      onSent();
+    } catch (e) {
+      toast.error(String(e));
+    } finally {
+      setSending(false);
     }
-    toast.success(`Mensagem enviada para ${preview.gestor_nome}`);
-    onSent();
   };
 
   return (

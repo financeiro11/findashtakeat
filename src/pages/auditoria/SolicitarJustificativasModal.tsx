@@ -88,36 +88,47 @@ export default function SolicitarJustificativasModal({ open, onClose, onSent, re
   const handleSend = async () => {
     if (!preview || !telefoneOk) return;
     setSending(true);
-    const { data: tokenData, error: tokErr } = await supabase.rpc("criar_token_e_registrar", {
-      p_responsavel: preview.responsavel,
-      p_id_unicos: preview.id_unicos,
-      p_colaborador_id: preview.colaborador_id,
-      p_telefone: preview.telefone,
-      p_criado_por: user?.email ?? null,
-    });
-    if (tokErr || !tokenData) {
+    try {
+      const { data: tokenData, error: tokErr } = await supabase.rpc("criar_token_e_registrar", {
+        p_responsavel: preview.responsavel,
+        p_id_unicos: preview.id_unicos,
+        p_colaborador_id: preview.colaborador_id,
+        p_telefone: preview.telefone,
+        p_criado_por: user?.email ?? null,
+      });
+      if (tokErr || !tokenData || !(tokenData as any).token) {
+        toast.error(tokErr?.message || "Falha ao gerar token");
+        return;
+      }
+      const url = (tokenData as any).url as string;
+      const mensagemFinal = mensagem.replace(
+        "https://findashtakeat.lovable.app/l/{{TOKEN}}",
+        url,
+      );
+
+      const { data, error } = await supabase.functions.invoke("enviar-consolidado", {
+        body: {
+          token: (tokenData as any).token,
+          telefone: preview.telefone,
+          mensagem_final: mensagemFinal,
+          id_unicos: preview.id_unicos,
+          enviado_por: user?.email ?? null,
+        },
+      });
+
+      if (error || (data as any)?.error) {
+        toast.error((data as any)?.error || error?.message || "Falha ao enviar");
+        return;
+      }
+
+      const enviados = (data as any)?.enviados ?? preview.id_unicos.length;
+      toast.success(`Mensagem enviada para ${nomeExibir} (${enviados} pendências)`);
+      onSent();
+    } catch (e) {
+      toast.error(String(e));
+    } finally {
       setSending(false);
-      toast.error(tokErr?.message || "Falha ao gerar token");
-      return;
     }
-    const url = (tokenData as any).url as string;
-    const mensagemFinal = mensagem.replace("https://hub.takeat.com/l/{{TOKEN}}", url);
-
-    // TODO: invocar edge function 'enviar-consolidado' quando estiver disponível
-    // const { error: fnErr } = await supabase.functions.invoke("enviar-consolidado", {
-    //   body: {
-    //     token: (tokenData as any).token,
-    //     telefone: preview.telefone,
-    //     mensagem_final: mensagemFinal,
-    //     id_unicos: preview.id_unicos,
-    //     enviado_por: user?.email ?? null,
-    //   },
-    // });
-    // if (fnErr) { setSending(false); toast.error(fnErr.message); return; }
-
-    setSending(false);
-    toast.success(`Mensagem enviada para ${nomeExibir}`);
-    onSent();
   };
 
   return (

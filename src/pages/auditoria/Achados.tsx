@@ -426,8 +426,9 @@ export default function Achados() {
         <FilterSelect label="Severidade" value={fSev} onChange={setFSev} options={["Crítico","Alto","Médio","Baixo"]} />
         <FilterSelect label="Área" value={fArea} onChange={setFArea} options={areas} />
         <FilterSelect label="Regra" value={fRegra} onChange={setFRegra} options={regras} />
-        {(fSev !== "todas" || fArea !== "todas" || fRegra !== "todas") && (
-          <button onClick={() => { setFSev("todas"); setFArea("todas"); setFRegra("todas"); }} className="text-xs text-muted-foreground hover:text-foreground underline">
+        <FilterSelect label="Responsável" value={fResp} onChange={setFResp} options={responsaveisPendentes} />
+        {(fSev !== "todas" || fArea !== "todas" || fRegra !== "todas" || fResp !== "todas") && (
+          <button onClick={() => { setFSev("todas"); setFArea("todas"); setFRegra("todas"); setFResp("todas"); }} className="text-xs text-muted-foreground hover:text-foreground underline">
             limpar filtros
           </button>
         )}

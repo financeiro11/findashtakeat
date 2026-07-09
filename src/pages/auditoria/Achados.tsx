@@ -175,10 +175,11 @@ export default function Achados() {
       if (fArea !== "todas" && r.area !== fArea) return false;
       if (fRegra !== "todas" && r.regra !== fRegra) return false;
       if (fCat !== "todas" && r.categoria !== fCat) return false;
+      if (fResp !== "todas" && r.responsavel !== fResp) return false;
       if (q && !(r.titulo || "").toLowerCase().includes(q)) return false;
       return true;
     });
-  }, [periodRows, filtro, fSev, fArea, fRegra, fCat, busca]);
+  }, [periodRows, filtro, fSev, fArea, fRegra, fCat, fResp, busca]);
 
   const kpis = useMemo(() => {
     const pend = periodRows.filter(r => r.status === "Pendente");

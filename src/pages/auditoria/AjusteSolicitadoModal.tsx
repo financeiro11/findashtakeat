@@ -17,6 +17,8 @@ type Preview = {
   mensagem: string;
   exige_nf: boolean;
   telefone_ok: boolean;
+  id_unicos?: string[];
+  colaborador_id?: string | null;
 };
 
 type Props = {

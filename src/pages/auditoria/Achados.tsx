@@ -106,6 +106,9 @@ export default function Achados() {
   const [saving, setSaving] = useState(false);
   const [ajusteOpen, setAjusteOpen] = useState(false);
 
+  // Garante que o modal de "Ajuste solicitado" NUNCA venha aberto ao abrir/trocar de lançamento
+  useEffect(() => { setAjusteOpen(false); }, [selected?.id]);
+
   const load = async () => {
     setLoading(true);
     const { data, error } = await supabase

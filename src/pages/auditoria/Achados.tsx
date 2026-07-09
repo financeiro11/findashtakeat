@@ -507,7 +507,7 @@ export default function Achados() {
 
 
       {/* Drawer */}
-      <Sheet open={!!selected && !ajusteOpen} onOpenChange={(o) => { if (!o && !ajusteOpen) setSelected(null); }}>
+      <Sheet open={!!selected && !ajusteOpen && !sheetHidden} onOpenChange={(o) => { if (!o && !ajusteOpen && !sheetHidden) setSelected(null); }}>
         <SheetContent
           side="right"
           className="w-full sm:max-w-[620px] p-0 flex flex-col"

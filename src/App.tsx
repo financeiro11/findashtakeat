@@ -46,6 +46,7 @@ import Auditoria from "./pages/Auditoria";
 import Reembolsos from "./pages/operacional/Reembolsos";
 import Estornos from "./pages/operacional/Estornos";
 import NotFound from "./pages/NotFound.tsx";
+import LinkPublico from "./pages/LinkPublico";
 
 const queryClient = new QueryClient();
 

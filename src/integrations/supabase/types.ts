@@ -342,6 +342,7 @@ export type Database = {
       auditoria_pix_lancamentos: {
         Row: {
           anexo_nome: string | null
+          anexo_verificado: boolean
           categoria: string | null
           categoria_codigo: string | null
           comprovante_url: string | null
@@ -362,6 +363,7 @@ export type Database = {
         }
         Insert: {
           anexo_nome?: string | null
+          anexo_verificado?: boolean
           categoria?: string | null
           categoria_codigo?: string | null
           comprovante_url?: string | null
@@ -382,6 +384,7 @@ export type Database = {
         }
         Update: {
           anexo_nome?: string | null
+          anexo_verificado?: boolean
           categoria?: string | null
           categoria_codigo?: string | null
           comprovante_url?: string | null

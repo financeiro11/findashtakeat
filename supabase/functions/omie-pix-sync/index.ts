@@ -284,9 +284,30 @@ Deno.serve(async (req) => {
       };
     });
 
+    // Um mesmo título pode gerar 2 movimentos (o título + a baixa) com o MESMO nCodTitulo →
+    // deduplica por id_unico. Sem isso o upsert quebra ("ON CONFLICT ... cannot affect row a
+    // second time") e o valor seria contado em dobro. Mantém o registro mais completo.
+    const porId = new Map<string, any>();
+    for (const l of linhas) {
+      const ex = porId.get(l.id_unico);
+      if (!ex) { porId.set(l.id_unico, l); continue; }
+      porId.set(l.id_unico, {
+        ...ex,
+        valor: Math.max(Number(ex.valor) || 0, Number(l.valor) || 0),
+        data: ex.data ?? l.data,
+        descricao: ex.descricao ?? l.descricao,
+        cod_cliente: ex.cod_cliente ?? l.cod_cliente,
+        cnpj_cpf: ex.cnpj_cpf ?? l.cnpj_cpf,
+        categoria: ex.categoria ?? l.categoria,
+        categoria_codigo: ex.categoria_codigo ?? l.categoria_codigo,
+        conta_corrente: ex.conta_corrente ?? l.conta_corrente,
+      });
+    }
+    const linhasUnicas = [...porId.values()];
+
     let gravados = 0;
-    for (let i = 0; i < linhas.length; i += 200) {
-      const lote = linhas.slice(i, i + 200);
+    for (let i = 0; i < linhasUnicas.length; i += 200) {
+      const lote = linhasUnicas.slice(i, i + 200);
       const { error } = await supabase.from("auditoria_pix_lancamentos").upsert(lote, { onConflict: "id_unico" });
       if (error) throw error;
       gravados += lote.length;

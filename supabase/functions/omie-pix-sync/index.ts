@@ -109,6 +109,17 @@ async function consultarNomeCliente(cod: string): Promise<string | null> {
     return nome || null;
   } catch (_) { return null; }
 }
+// Fallback: quando o movimento não traz o código do cliente, acha o cadastro pelo CNPJ/CPF.
+async function consultarNomePorCnpj(cnpj: string): Promise<string | null> {
+  try {
+    const r = await omieCall<any>("geral/clientes", "ListarClientes", {
+      pagina: 1, registros_por_pagina: 5, apenas_importado_api: "N", clientesFiltro: { cnpj_cpf: cnpj },
+    });
+    const c = (r?.clientes_cadastro ?? [])[0];
+    const nome = String(c?.nome_fantasia || c?.razao_social || "").trim();
+    return nome || null;
+  } catch (_) { return null; }
+}
 async function anexoDe(nId: number | string, cTabela: string): Promise<{ url: string; nome: string } | null> {
   try {
     const r = await omieCall<any>("geral/anexo", "ListarAnexo", { nId, cTabela, nPagina: 1, nRegPorPagina: 50 });
@@ -136,23 +147,31 @@ Deno.serve(async (req) => {
       const cTabela = String(body?.anexoTabela ?? "conta-pagar");
 
       let q = supabase.from("auditoria_pix_lancamentos")
-        .select("id,id_unico,cod_cliente,favorecido").eq("anexo_verificado", false).limit(limite);
+        .select("id,id_unico,cod_cliente,cnpj_cpf,favorecido").eq("anexo_verificado", false).limit(limite);
       if (ref) q = q.eq("referencia", ref);
       const { data: pend, error: pendErr } = await q;
       if (pendErr) throw pendErr;
-      const rows = (pend ?? []) as { id: number; id_unico: string; cod_cliente: string | null; favorecido: string | null }[];
+      const rows = (pend ?? []) as { id: number; id_unico: string; cod_cliente: string | null; cnpj_cpf: string | null; favorecido: string | null }[];
 
-      // 1) Nome do fornecedor: resolve os códigos DISTINTOS que ainda faltam nome (dedup →
-      //    bem menos chamadas ao Omie que resolver por linha).
-      const distintos = [...new Set(rows.filter((r) => !r.favorecido && r.cod_cliente && r.cod_cliente !== "0").map((r) => String(r.cod_cliente)))];
-      const nomeCache = new Map<string, string>();
+      const semNome = rows.filter((r) => !r.favorecido);
       const CN = 4;
-      for (let i = 0; i < distintos.length; i += CN) {
-        const lote = distintos.slice(i, i + CN);
-        await Promise.all(lote.map(async (cod) => { const n = await consultarNomeCliente(cod); if (n) nomeCache.set(cod, n); }));
+
+      // 1a) Nome pelo CÓDIGO do cliente (deduplicado).
+      const nomePorCod = new Map<string, string>();
+      const cods = [...new Set(semNome.filter((r) => r.cod_cliente && r.cod_cliente !== "0").map((r) => String(r.cod_cliente)))];
+      for (let i = 0; i < cods.length; i += CN) {
+        await Promise.all(cods.slice(i, i + CN).map(async (cod) => { const n = await consultarNomeCliente(cod); if (n) nomePorCod.set(cod, n); }));
+      }
+      // 1b) Fallback pelo CNPJ para quem não resolveu pelo código (movimento sem vínculo).
+      const nomePorCnpj = new Map<string, string>();
+      const cnpjs = [...new Set(
+        semNome.filter((r) => r.cnpj_cpf && !(r.cod_cliente && nomePorCod.get(String(r.cod_cliente)))).map((r) => String(r.cnpj_cpf)),
+      )];
+      for (let i = 0; i < cnpjs.length; i += CN) {
+        await Promise.all(cnpjs.slice(i, i + CN).map(async (cnpj) => { const n = await consultarNomePorCnpj(cnpj); if (n) nomePorCnpj.set(cnpj, n); }));
       }
 
-      // 2) Anexo (comprovante) por linha + grava (nome vem do cache).
+      // 2) Anexo (comprovante) por linha + grava (nome vem dos caches).
       const CA = 6;
       let comAnexo = 0, nomesResolvidos = 0;
       for (let i = 0; i < rows.length; i += CA) {
@@ -167,7 +186,8 @@ Deno.serve(async (req) => {
             anexo_nome: anexo?.nome || null,
             updated_at: new Date().toISOString(),
           };
-          const nome = !r.favorecido && r.cod_cliente ? nomeCache.get(String(r.cod_cliente)) : null;
+          const nome = r.favorecido ? null
+            : (r.cod_cliente && nomePorCod.get(String(r.cod_cliente))) || (r.cnpj_cpf && nomePorCnpj.get(String(r.cnpj_cpf))) || null;
           if (nome) { patch.favorecido = nome; nomesResolvidos++; }
           await supabase.from("auditoria_pix_lancamentos").update(patch).eq("id", r.id);
         }));

@@ -602,16 +602,20 @@ export default function Achados() {
                   <div className="col-span-2">
                     <div className="text-[11px] uppercase tracking-wider text-muted-foreground font-medium">Comprovante</div>
                     <div className="text-sm mt-1">
-                      {selected.link_comprovante ? (
-                        <a
-                          href={selected.link_comprovante}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-border bg-card hover:bg-accent text-sm font-medium transition"
-                        >
-                          <ExternalLink className="h-3.5 w-3.5" /> Abrir no Drive
-                        </a>
-                      ) : "—"}
+                      {(() => {
+                        // Usa o comprovante do achado; se vazio, cai no do lançamento de origem (cartão).
+                        const compUrl = selected.link_comprovante || origemCart?.arquivo_comprovante || null;
+                        return compUrl ? (
+                          <a
+                            href={compUrl}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-border bg-card hover:bg-accent text-sm font-medium transition"
+                          >
+                            <ExternalLink className="h-3.5 w-3.5" /> Abrir comprovante / NF
+                          </a>
+                        ) : "—";
+                      })()}
                     </div>
                   </div>
                 </div>

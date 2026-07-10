@@ -232,7 +232,7 @@ Deno.serve(async (req) => {
         valor: Math.abs(toNum(det.nValorTitulo ?? det.nValorMovimento ?? det.nValorPago)),
         descricao: String(det.cObs ?? det.observacao ?? det.cNumTitulo ?? "").trim() || null,
         favorecido: String(det.cRazaoCliente ?? det.cNomeCliente ?? det.cCPFCNPJCliente ?? "").trim() || null,
-        conta_corrente: contas.map.get(String(det.nCodCC))?.nome ?? String(det.nCodCC ?? "") || null,
+        conta_corrente: (contas.map.get(String(det.nCodCC))?.nome ?? String(det.nCodCC ?? "")) || null,
         categoria_codigo: c.codigo || null, categoria: c.desc || null,
         gerado_em: agora, updated_at: agora,
       });

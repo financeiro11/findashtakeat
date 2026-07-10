@@ -8,9 +8,11 @@
 //   • se o movimento tem anexo no Omie, o link/nome vêm junto (tem_comprovante).
 //
 // Ações (body.action):
-//   "preview" → amostra crua de movimentos + tipos de documento distintos + sonda de
+//   "preview" → distribuições de cTipo/cCodModDoc/cOrigem/conta + dump bruto + sonda de
 //               anexo (para confirmar como o Omie identifica PIX e expõe anexos) SEM gravar.
-//   "sync"    → calcula o mês e grava. Params: { referencia?: "YYYY-MM", tiposPix?: string[] }
+//   "sync"    → calcula o mês e grava. Params:
+//               { referencia?: "YYYY-MM", modDocPix?: string[], tiposPix?: string[] }
+//   Detecção de PIX: por padrão cCodModDoc = "18"; ajuste via modDocPix/tiposPix após o preview.
 //
 // A conciliação Sicoob→Omie é diária, então rode este sync depois dela (ex.: 1x/dia).
 
@@ -53,11 +55,18 @@ function categoriaExcluida(desc: string): boolean {
   return CATEGORIAS_EXCLUIDAS.some((k) => d.includes(k));
 }
 
-// Detecta PIX no movimento. Por padrão procura "PIX" nos campos de tipo/origem/obs;
-// pode ser fixado via body.tiposPix (lista de valores de det.cTipo) após o preview.
-function isPix(det: any, tiposPix: string[] | null): boolean {
-  if (tiposPix && tiposPix.length) return tiposPix.map(norm).includes(norm(det?.cTipo));
-  const hay = norm([det?.cTipo, det?.cOrigem, det?.cObs, det?.observacao, det?.cCodModDoc].filter(Boolean).join(" "));
+// Omie identifica o MEIO DE PAGAMENTO em cCodModDoc (não em cTipo, que é o tipo de
+// documento: NF/BOL/NFS/99999). PIX costuma ser o código "18". A confirmar no preview.
+const MOD_DOC_PIX_DEFAULT = ["18"];
+type DetectOpts = { tiposPix: string[] | null; modDocPix: string[] | null };
+
+// Detecta PIX no movimento: por cCodModDoc (principal), por cTipo (se fixado) ou por
+// texto "PIX" em qualquer campo. Ambos os filtros podem ser fixados via body após o preview.
+function isPix(det: any, opts: DetectOpts): boolean {
+  if (opts.tiposPix && opts.tiposPix.length && opts.tiposPix.map(norm).includes(norm(det?.cTipo))) return true;
+  const mods = (opts.modDocPix && opts.modDocPix.length) ? opts.modDocPix : MOD_DOC_PIX_DEFAULT;
+  if (mods.map(norm).includes(norm(det?.cCodModDoc))) return true;
+  const hay = norm([det?.cTipo, det?.cOrigem, det?.cObs, det?.observacao, det?.cCodModDoc, det?.cNumDocFiscal].filter(Boolean).join(" "));
   return hay.includes("PIX");
 }
 
@@ -83,7 +92,10 @@ Deno.serve(async (req) => {
   try {
     const body = req.method === "POST" ? await req.json().catch(() => ({})) : {};
     const action = body?.action ?? "sync";
-    const tiposPix: string[] | null = Array.isArray(body?.tiposPix) ? body.tiposPix : null;
+    const detectOpts: DetectOpts = {
+      tiposPix: Array.isArray(body?.tiposPix) ? body.tiposPix : null,
+      modDocPix: Array.isArray(body?.modDocPix) ? body.modDocPix : null,
+    };
 
     // Categorias do Omie (código → descrição) — usadas em ambas as ações.
     const categorias = await listarCategorias();
@@ -105,34 +117,42 @@ Deno.serve(async (req) => {
 
     /* ---------------- PREVIEW ---------------- */
     if (action === "preview") {
-      const tiposDistintos = new Map<string, number>();
-      for (const m of movimentos) {
-        const t = String((m as any)?.detalhes?.cTipo ?? "—");
-        tiposDistintos.set(t, (tiposDistintos.get(t) ?? 0) + 1);
-      }
-      const pixMovs = movimentos.filter((m) => isPix((m as any)?.detalhes, tiposPix));
+      // Distribuições dos campos candidatos a identificar o meio de pagamento.
+      const dist = (get: (det: any) => unknown) => {
+        const m = new Map<string, number>();
+        for (const mov of movimentos) { const k = String(get((mov as any)?.detalhes) ?? "—"); m.set(k, (m.get(k) ?? 0) + 1); }
+        return Object.fromEntries([...m.entries()].sort((a, b) => b[1] - a[1]).slice(0, 40));
+      };
+      const pixMovs = movimentos.filter((m) => isPix((m as any)?.detalhes, detectOpts));
       const amostraPix = pixMovs.slice(0, 5).map((m) => {
         const det = (m as any).detalhes ?? {};
         const c = catPrincipal(m);
         return {
-          nCodTitulo: det.nCodTitulo, cTipo: det.cTipo, cNatureza: det.cNatureza,
-          nValorTitulo: det.nValorTitulo, dDtPagamento: det.dDtPagamento, dDtRegistro: det.dDtRegistro,
-          cObs: det.cObs, nCodCC: det.nCodCC, cCPFCNPJCliente: det.cCPFCNPJCliente,
-          categoria: c.desc, excluida: categoriaExcluida(c.desc),
+          nCodTitulo: det.nCodTitulo, cTipo: det.cTipo, cCodModDoc: det.cCodModDoc, cNatureza: det.cNatureza,
+          nValorTitulo: det.nValorTitulo, dDtPagamento: det.dDtPagamento,
+          cObs: det.cObs, nCodCC: det.nCodCC, categoria: c.desc, excluida: categoriaExcluida(c.desc),
         };
       });
-      // Sonda de anexo no 1º PIX que tiver nCodTitulo.
+      // Dump bruto de alguns movimentos genéricos (cTipo 99999) — onde o PIX deve estar.
+      const genericos = movimentos.filter((m) => String((m as any)?.detalhes?.cTipo) === "99999").slice(0, 6);
+      const amostraBruta = (genericos.length ? genericos : movimentos.slice(0, 6)).map((m) => (m as any)?.detalhes ?? {});
+
+      // Sonda de anexo no 1º PIX (ou, se nenhum, no 1º movimento) que tiver nCodTitulo.
       let anexoProbe: any = null;
-      const alvo = pixMovs.map((m) => (m as any)?.detalhes?.nCodTitulo).find(Boolean);
+      const alvo = [...pixMovs, ...movimentos].map((m) => (m as any)?.detalhes?.nCodTitulo).find(Boolean);
       if (alvo) anexoProbe = await sondarAnexos(alvo);
 
       return json({
         ok: true,
         total_movimentos: movimentos.length,
         total_pix_detectados: pixMovs.length,
-        tipos_documento: Object.fromEntries([...tiposDistintos.entries()].sort((a, b) => b[1] - a[1])),
+        detector_usado: { modDocPix: detectOpts.modDocPix ?? MOD_DOC_PIX_DEFAULT, tiposPix: detectOpts.tiposPix },
+        tipos_documento: dist((d) => d?.cTipo),
+        mod_documento: dist((d) => d?.cCodModDoc),
+        origem: dist((d) => d?.cOrigem),
+        contas_nCodCC: dist((d) => d?.nCodCC),
         amostra_pix: amostraPix,
-        amostra_movimento_bruto: movimentos[0] ?? null,
+        amostra_bruta: amostraBruta,
         anexo_probe: anexoProbe,
       });
     }
@@ -150,7 +170,7 @@ Deno.serve(async (req) => {
     for (const mov of movimentos) {
       const det = (mov as any)?.detalhes ?? {};
       if (norm(det.cNatureza) !== "P") continue;            // só saídas
-      if (!isPix(det, tiposPix)) continue;                  // só PIX
+      if (!isPix(det, detectOpts)) continue;                // só PIX
       const c = catPrincipal(mov);
       if (categoriaExcluida(c.desc)) continue;              // exclui pessoal/premiação/escala/benefícios
 

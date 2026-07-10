@@ -247,6 +247,10 @@ export type Database = {
           id_unico: string
           link_comprovante: string | null
           observacao: string | null
+          omie_categoria_codigo: string | null
+          omie_categoria_descricao: string | null
+          omie_match_confianca: string | null
+          omie_matched_em: string | null
           origem: string
           parcela: string | null
           referencia: string
@@ -271,6 +275,10 @@ export type Database = {
           id_unico: string
           link_comprovante?: string | null
           observacao?: string | null
+          omie_categoria_codigo?: string | null
+          omie_categoria_descricao?: string | null
+          omie_match_confianca?: string | null
+          omie_matched_em?: string | null
           origem?: string
           parcela?: string | null
           referencia: string
@@ -295,6 +303,10 @@ export type Database = {
           id_unico?: string
           link_comprovante?: string | null
           observacao?: string | null
+          omie_categoria_codigo?: string | null
+          omie_categoria_descricao?: string | null
+          omie_match_confianca?: string | null
+          omie_matched_em?: string | null
           origem?: string
           parcela?: string | null
           referencia?: string

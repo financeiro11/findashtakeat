@@ -345,6 +345,8 @@ export type Database = {
           anexo_verificado: boolean
           categoria: string | null
           categoria_codigo: string | null
+          cnpj_cpf: string | null
+          cod_cliente: string | null
           comprovante_url: string | null
           conta_corrente: string | null
           created_at: string
@@ -366,6 +368,8 @@ export type Database = {
           anexo_verificado?: boolean
           categoria?: string | null
           categoria_codigo?: string | null
+          cnpj_cpf?: string | null
+          cod_cliente?: string | null
           comprovante_url?: string | null
           conta_corrente?: string | null
           created_at?: string
@@ -387,6 +391,8 @@ export type Database = {
           anexo_verificado?: boolean
           categoria?: string | null
           categoria_codigo?: string | null
+          cnpj_cpf?: string | null
+          cod_cliente?: string | null
           comprovante_url?: string | null
           conta_corrente?: string | null
           created_at?: string

@@ -1,0 +1,2 @@
+ALTER TABLE public.auditoria_pix_lancamentos ADD COLUMN IF NOT EXISTS anexo_verificado boolean NOT NULL DEFAULT false;
+CREATE INDEX IF NOT EXISTS idx_auditoria_pix_anexo_verificado ON public.auditoria_pix_lancamentos (anexo_verificado) WHERE anexo_verificado = false;

@@ -44,12 +44,35 @@ export default function Asaas() {
     toast.message(`Sincronizando ${mesLabel(ref)} com o Asaas…`);
     try {
       const { data, error } = await supabase.functions.invoke("asaas-sync", { body: { action: "sync", referencia: ref } });
-      if (error) throw new Error(error.message);
+
+      // supabase-js embrulha respostas non-2xx num FunctionsHttpError cujo corpo real
+      // fica em error.context (um Response). Extraímos pra saber o QUE falhou.
+      if (error) {
+        let detalhe = error.message || "";
+        let status: number | undefined;
+        const ctx: any = (error as any).context;
+        if (ctx && typeof ctx.text === "function") {
+          try {
+            status = ctx.status;
+            const raw = await ctx.text();
+            try { detalhe = JSON.parse(raw)?.error || raw || detalhe; } catch { detalhe = raw || detalhe; }
+          } catch { /* mantém error.message */ }
+        }
+        console.error("[asaas-sync] falhou", { status, detalhe, error });
+        if (status === 404 || /not found|Failed to send|Failed to fetch/i.test(detalhe)) {
+          throw new Error("A função asaas-sync ainda não foi publicada no Supabase (deploy pendente pelo Lovable).");
+        }
+        if (/ASAAS_API_KEY/i.test(detalhe)) {
+          throw new Error("O secret ASAAS_API_KEY não está configurado nas Edge Functions do Supabase.");
+        }
+        throw new Error(detalhe || "Erro desconhecido no backend.");
+      }
       if ((data as any)?.error) throw new Error((data as any).error);
       toast.success("Asaas sincronizado.");
       await load();
     } catch (e: any) {
-      toast.error("Falha ao sincronizar com o Asaas: " + e.message);
+      console.error("[asaas-sync] erro no handler", e);
+      toast.error("Falha ao sincronizar: " + e.message, { duration: 8000 });
     } finally { setSyncing(false); }
   };
 

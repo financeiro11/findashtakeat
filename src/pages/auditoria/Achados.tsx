@@ -47,6 +47,20 @@ type Filtro = "todas" | Status;
 type FiltroCat = "todas" | Categoria;
 
 const ALL_CATEGORIAS: Categoria[] = ["COM NF", "SEM NF", "FORA DE ESCOPO", "A CONFERIR"];
+
+// Deriva a categoria de um achado quando o n8n não a preencheu, a partir dos sinais
+// reais da auditoria: a `regra` do achado + o status de NF/escopo da origem no cartão.
+// Prioridade (linhas são mutuamente exclusivas): fora de escopo > a conferir > com nf > sem nf.
+function deriveCategoria(regra?: string | null, statusNf?: string | null, statusEscopo?: string | null): Categoria | null {
+  const rg = (regra || "").toUpperCase();
+  const nf = (statusNf || "").toUpperCase();
+  const esc = (statusEscopo || "").toUpperCase();
+  if (esc.includes("FORA") || rg.includes("FORA")) return "FORA DE ESCOPO";
+  if (nf.includes("CONFERIR") || rg.includes("CONFERIR")) return "A CONFERIR";
+  if (nf === "OK") return "COM NF";
+  if (nf.includes("SEM") || rg.includes("SEM NF")) return "SEM NF";
+  return null;
+}
 function catStyle(c: string | null | undefined) {
   switch (c) {
     case "COM NF": return "bg-[hsl(152_55%_94%)] text-[hsl(152_60%_28%)] border-[hsl(152_55%_82%)]";
@@ -123,24 +137,31 @@ export default function Achados() {
         .from("auditoria")
         .select("id,id_unico,competencia,titulo,area,severidade,valor,responsavel,data_lancamento,descricao,regra,origem,id_transacao,status,trilha,categoria,link_comprovante")
         .order("data_lancamento", { ascending: false }),
-      // "Aprovadas direto": lançamentos do cartão que bateram com a nota (status_nf = "OK").
-      // Elas vivem na base do cartão, não na tabela `auditoria` (o n8n só grava os achados
-      // que precisam de ação). Trazemos aqui como findings "Aprovado / COM NF" read-only.
+      // Base do cartão: usada para (a) trazer as "aprovadas direto" (status_nf = "OK") e
+      // (b) derivar a categoria dos achados que o n8n não classificou (via status_nf/escopo).
       supabase
         .from("auditoria_cartao_lancamentos")
-        .select("id_unico,competencia,referencia,origem,gestor,time,data,estabelecimento,descricao_original,valor,status_nf,arquivo_comprovante")
-        .eq("status_nf", "OK")
+        .select("id_unico,competencia,referencia,origem,gestor,time,data,estabelecimento,descricao_original,valor,status_nf,status_escopo,arquivo_comprovante")
         .order("data", { ascending: false })
         .limit(5000),
     ]);
 
     if (audRes.error) { toast.error("Erro ao carregar auditoria"); setRows([]); setLoading(false); return; }
-    const audRows = (audRes.data ?? []) as unknown as Row[];
+    const cartRows = (cartRes.data ?? []) as any[];
+    const cardByUnico = new Map<string, any>(cartRows.map((c) => [c.id_unico, c]));
+
+    // Achados reais — deriva a categoria quando ela vem vazia do n8n.
+    const audRows: Row[] = (audRes.data ?? []).map((r: any): Row => {
+      if (r.categoria) return r as Row;
+      const orig = r.id_transacao ? cardByUnico.get(r.id_transacao) : null;
+      const cat = deriveCategoria(r.regra, orig?.status_nf, orig?.status_escopo);
+      return (cat ? { ...r, categoria: cat } : r) as Row;
+    });
 
     // Evita duplicar caso um achado já referencie o mesmo lançamento do cartão.
     const jaNaAuditoria = new Set(audRows.map(r => r.id_transacao).filter(Boolean) as string[]);
-    const aprovadasDireto: Row[] = (cartRes.data ?? [])
-      .filter((c: any) => c.id_unico && !jaNaAuditoria.has(c.id_unico))
+    const aprovadasDireto: Row[] = cartRows
+      .filter((c: any) => c.status_nf === "OK" && c.id_unico && !jaNaAuditoria.has(c.id_unico))
       .map((c: any, i: number): Row => ({
         id: -(i + 1), // id negativo/sintético — nunca é gravado
         id_unico: c.id_unico,

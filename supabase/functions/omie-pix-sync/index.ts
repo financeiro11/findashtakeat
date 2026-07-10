@@ -8,7 +8,8 @@
 // pelos movimentos de saída daquela conta.
 //
 // Regras de negócio:
-//   • só SAÍDAS (natureza "P") da(s) conta(s) Sicoob;
+//   • só SAÍDAS (natureza "P") da conta corrente do Sicoob (contas a pagar);
+//   • NÃO entram transferências de saída (cOrigem "TRAP");
 //   • NÃO entram categorias de pessoal / premiação / escala / benefícios;
 //   • se o título tem anexo no Omie, o link/nome vêm junto (tem_comprovante).
 //
@@ -52,6 +53,9 @@ const iso = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart
 // Categorias que NÃO devem ser auditadas aqui (pedido do financeiro).
 const CATEGORIAS_EXCLUIDAS = ["PESSOAL", "PREMIA", "ESCALA", "BENEF"];
 const categoriaExcluida = (desc: string) => CATEGORIAS_EXCLUIDAS.some((k) => norm(desc).includes(k));
+
+// Origens de transferência de saída (transferência entre contas próprias) — excluídas.
+const ORIGENS_TRANSFERENCIA = new Set(["TRAP"]);
 
 // Contas correntes do Omie: nCodCC → { nome, banco }. Usado p/ achar o Sicoob pelo nome.
 async function listarContasCorrentes(): Promise<{ map: Map<string, { nome: string; banco: string }>; raw: any }> {
@@ -111,18 +115,20 @@ Deno.serve(async (req) => {
     const body = req.method === "POST" ? await req.json().catch(() => ({})) : {};
     const action = body?.action ?? "sync";
     const contasSicoobOverride: string[] | null = Array.isArray(body?.contasSicoob) ? body.contasSicoob.map(String) : null;
-    const anexoTabelas: string[] = body?.anexoTabela ? [String(body.anexoTabela)] : ANEXO_TABELAS;
+    // "conta-pagar" é o cTabela válido dos anexos (confirmado no preview). Fixável via body.
+    const anexoTabelas: string[] = body?.anexoTabela ? [String(body.anexoTabela)] : ["conta-pagar"];
 
     // Categorias (código → descrição) e contas correntes (p/ achar o Sicoob).
     const [categorias, contas] = await Promise.all([listarCategorias(), listarContasCorrentes()]);
     const codToDesc = new Map<string, string>();
     for (const c of categorias) if (c.codigo) codToDesc.set(String(c.codigo), c.descricao ?? "");
 
-    // Resolve o conjunto de contas do Sicoob (override > auto por nome/banco 756).
+    // Conta a auditar: SÓ a conta corrente do Sicoob (exclui o cartão e a aplicação, que
+    // também são "Sicoob"). Override via body.contasSicoob; senão auto por nome.
     const sicoobIds = new Set<string>(
       contasSicoobOverride ??
       [...contas.map.entries()]
-        .filter(([, info]) => norm(info.nome).includes("SICOOB") || norm(info.banco).includes("SICOOB") || info.banco === "756")
+        .filter(([, info]) => norm(info.nome).includes("SICOOB") && norm(info.nome).includes("CONTA CORRENTE"))
         .map(([id]) => id),
     );
 
@@ -185,8 +191,9 @@ Deno.serve(async (req) => {
     const cands: Cand[] = [];
     for (const mov of movimentos) {
       const det = (mov as any)?.detalhes ?? {};
-      if (norm(det.cNatureza) !== "P") continue;              // só saídas
-      if (!sicoobIds.has(String(det.nCodCC))) continue;       // só conta(s) Sicoob
+      if (norm(det.cNatureza) !== "P") continue;              // só saídas (contas a pagar)
+      if (!sicoobIds.has(String(det.nCodCC))) continue;       // só a conta corrente do Sicoob
+      if (ORIGENS_TRANSFERENCIA.has(norm(det.cOrigem))) continue; // exclui transferência de saída
       const c = catPrincipal(mov);
       if (categoriaExcluida(c.desc)) continue;                // exclui pessoal/premiação/escala/benefícios
 

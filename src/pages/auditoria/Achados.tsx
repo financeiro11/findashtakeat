@@ -380,7 +380,7 @@ export default function Achados() {
             />
           </div>
           <label className="inline-flex items-center gap-2 h-9 rounded-lg border border-border bg-card px-3">
-            <span className="text-[11px] uppercase tracking-wider text-muted-foreground font-medium">Competência</span>
+            <span className="text-[11px] uppercase tracking-wider text-muted-foreground font-medium">Fatura</span>
             <select
               value={competencia}
               onChange={e => setCompetencia(e.target.value)}

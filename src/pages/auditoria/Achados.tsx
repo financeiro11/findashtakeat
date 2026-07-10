@@ -39,6 +39,9 @@ type Row = {
   trilha: TrilhaEvento[] | null;
   categoria: Categoria | string | null;
   link_comprovante: string | null;
+  /** true = aprovado automaticamente (bate com a nota); vem da base do cartão, não da
+   *  tabela `auditoria`, portanto é somente leitura (sem mudança de status). */
+  _ro?: boolean;
 };
 type Filtro = "todas" | Status;
 type FiltroCat = "todas" | Categoria;
@@ -115,12 +118,51 @@ export default function Achados() {
 
   const load = async () => {
     setLoading(true);
-    const { data, error } = await supabase
-      .from("auditoria")
-      .select("id,id_unico,competencia,titulo,area,severidade,valor,responsavel,data_lancamento,descricao,regra,origem,id_transacao,status,trilha,categoria,link_comprovante")
-      .order("data_lancamento", { ascending: false });
-    if (error) { toast.error("Erro ao carregar auditoria"); setRows([]); }
-    else { setRows((data ?? []) as unknown as Row[]); }
+    const [audRes, cartRes] = await Promise.all([
+      supabase
+        .from("auditoria")
+        .select("id,id_unico,competencia,titulo,area,severidade,valor,responsavel,data_lancamento,descricao,regra,origem,id_transacao,status,trilha,categoria,link_comprovante")
+        .order("data_lancamento", { ascending: false }),
+      // "Aprovadas direto": lançamentos do cartão que bateram com a nota (status_nf = "OK").
+      // Elas vivem na base do cartão, não na tabela `auditoria` (o n8n só grava os achados
+      // que precisam de ação). Trazemos aqui como findings "Aprovado / COM NF" read-only.
+      supabase
+        .from("auditoria_cartao_lancamentos")
+        .select("id_unico,competencia,referencia,origem,gestor,time,data,estabelecimento,descricao_original,valor,status_nf,arquivo_comprovante")
+        .eq("status_nf", "OK")
+        .order("data", { ascending: false })
+        .limit(5000),
+    ]);
+
+    if (audRes.error) { toast.error("Erro ao carregar auditoria"); setRows([]); setLoading(false); return; }
+    const audRows = (audRes.data ?? []) as unknown as Row[];
+
+    // Evita duplicar caso um achado já referencie o mesmo lançamento do cartão.
+    const jaNaAuditoria = new Set(audRows.map(r => r.id_transacao).filter(Boolean) as string[]);
+    const aprovadasDireto: Row[] = (cartRes.data ?? [])
+      .filter((c: any) => c.id_unico && !jaNaAuditoria.has(c.id_unico))
+      .map((c: any, i: number): Row => ({
+        id: -(i + 1), // id negativo/sintético — nunca é gravado
+        id_unico: c.id_unico,
+        competencia: c.competencia || c.referencia || "",
+        titulo: c.estabelecimento || c.descricao_original || "Lançamento com nota",
+        area: c.time || "—",
+        severidade: "Baixo",
+        valor: Number(c.valor || 0),
+        responsavel: c.gestor || "",
+        data_lancamento: c.data || "",
+        descricao: c.descricao_original || "",
+        regra: "Bate com a nota",
+        origem: c.origem || "Cartão",
+        id_transacao: c.id_unico,
+        status: "Aprovado",
+        trilha: null,
+        categoria: "COM NF",
+        link_comprovante: c.arquivo_comprovante,
+        _ro: true,
+      }));
+
+    setRows([...audRows, ...aprovadasDireto]);
     setLoading(false);
   };
   useEffect(() => { load(); }, []);
@@ -235,6 +277,7 @@ export default function Achados() {
 
   const mudarStatus = async (novo: Status, coment: string) => {
     if (!selected) return;
+    if (selected._ro) { toast.message("Aprovado automaticamente (bate com a nota) — somente leitura."); return; }
     const evento: TrilhaEvento = {
       em: new Date().toISOString(),
       por: user?.email ?? "desconhecido",
@@ -258,6 +301,7 @@ export default function Achados() {
   };
 
   const mudarStatusInline = async (row: Row, novo: Status) => {
+    if (row._ro) { toast.message("Aprovado automaticamente (bate com a nota) — somente leitura."); return; }
     const evento: TrilhaEvento = {
       em: new Date().toISOString(),
       por: user?.email ?? "desconhecido",

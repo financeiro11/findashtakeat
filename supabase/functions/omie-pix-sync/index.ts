@@ -222,6 +222,27 @@ Deno.serve(async (req) => {
       const alvoAnexo = movimentos.map((m) => (m as any)?.detalhes?.nCodTitulo).find(Boolean);
       const anexoProbe = alvoAnexo ? await probarAnexos(alvoAnexo) : [];
 
+      // Diagnóstico de fornecedor: testa a cadeia inteira (código → ConsultarCliente) em
+      // candidatos reais do Sicoob, p/ ver qual campo tem o código e o que o Omie devolve.
+      const sicoobCands = movimentos.filter((m) => { const d = (m as any)?.detalhes ?? {}; return norm(d.cNatureza) === "P" && sicoobIds.has(String(d.nCodCC)); });
+      const diagForn: any[] = [];
+      for (const m of sicoobCands.slice(0, 3)) {
+        const d = (m as any).detalhes ?? {};
+        const cod = String(d.nCodCliente ?? d.nCodFornecedor ?? "");
+        let consulta: any = null;
+        if (cod && cod !== "0") {
+          try {
+            const r = await omieCall<any>("geral/clientes", "ConsultarCliente", { codigo_cliente_omie: Number(cod) });
+            consulta = { nome_fantasia: r?.nome_fantasia, razao_social: r?.razao_social, cnpj_cpf: r?.cnpj_cpf, chaves: Object.keys(r || {}).slice(0, 25) };
+          } catch (e) { consulta = { erro: String(e instanceof Error ? e.message : e).slice(0, 220) }; }
+        }
+        diagForn.push({
+          nCodCliente: d.nCodCliente, nCodFornecedor: d.nCodFornecedor,
+          cRazaoCliente: d.cRazaoCliente, cNomeCliente: d.cNomeCliente, cCPFCNPJCliente: d.cCPFCNPJCliente,
+          cod_usado: cod, consulta,
+        });
+      }
+
       // Amostra dos candidatos REAIS do Sicoob (detalhes + resumo) — p/ confirmar os nomes
       // dos campos de valor e de fornecedor caso ainda venham errados.
       const amostraSicoob = movimentos
@@ -233,6 +254,7 @@ Deno.serve(async (req) => {
         ok: true, total_movimentos: movimentos.length,
         contas_sicoob_detectadas: [...sicoobIds], contas: contasNomeadas, contas_corrente_raw: contas.raw,
         origem: dist((d) => d?.cOrigem), anexo_probe: anexoProbe,
+        diag_fornecedor: diagForn,
         amostra_sicoob: amostraSicoob,
         amostra_bruta: movimentos.slice(0, 2).map((m) => (m as any)?.detalhes ?? {}),
       });

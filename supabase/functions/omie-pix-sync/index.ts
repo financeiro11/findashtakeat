@@ -39,6 +39,17 @@ function toNum(v: unknown): number {
   const n = typeof v === "number" ? v : parseFloat(String(v ?? "").replace(/\./g, "").replace(",", "."));
   return isNaN(n) ? 0 : n;
 }
+// Primeiro valor NÃO-zero entre vários campos candidatos (baixas trazem nValorTitulo = 0
+// e o valor real fica em outro campo/no resumo). `??` não serve aqui pois 0 é "presente".
+function primeiroNum(...vs: unknown[]): number {
+  for (const v of vs) { const n = Math.abs(toNum(v)); if (n > 0) return n; }
+  return 0;
+}
+// String limpa: vazia, "0" ou "-" viram null (para não poluir favorecido/descrição).
+function limpa(v: unknown): string | null {
+  const s = String(v ?? "").trim();
+  return !s || s === "0" || s === "-" ? null : s;
+}
 function mesAtual(): string {
   const d = new Date();
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
@@ -190,11 +201,19 @@ Deno.serve(async (req) => {
       const alvoAnexo = movimentos.map((m) => (m as any)?.detalhes?.nCodTitulo).find(Boolean);
       const anexoProbe = alvoAnexo ? await probarAnexos(alvoAnexo) : [];
 
+      // Amostra dos candidatos REAIS do Sicoob (detalhes + resumo) — p/ confirmar os nomes
+      // dos campos de valor e de fornecedor caso ainda venham errados.
+      const amostraSicoob = movimentos
+        .filter((m) => { const d = (m as any)?.detalhes ?? {}; return norm(d.cNatureza) === "P" && sicoobIds.has(String(d.nCodCC)); })
+        .slice(0, 3)
+        .map((m) => ({ detalhes: (m as any)?.detalhes ?? {}, resumo: (m as any)?.resumo ?? null, categorias: (m as any)?.categorias ?? null }));
+
       return json({
         ok: true, total_movimentos: movimentos.length,
         contas_sicoob_detectadas: [...sicoobIds], contas: contasNomeadas, contas_corrente_raw: contas.raw,
         origem: dist((d) => d?.cOrigem), anexo_probe: anexoProbe,
-        amostra_bruta: movimentos.slice(0, 4).map((m) => (m as any)?.detalhes ?? {}),
+        amostra_sicoob: amostraSicoob,
+        amostra_bruta: movimentos.slice(0, 2).map((m) => (m as any)?.detalhes ?? {}),
       });
     }
 
@@ -208,8 +227,9 @@ Deno.serve(async (req) => {
 
     const refFiltro: string | null = body?.referencia ? String(body.referencia) : null;
 
-    const linhas: any[] = [];
-    const agora = new Date().toISOString();
+    // 1ª passada: seleciona os candidatos (guarda det/mov p/ montar depois).
+    type Cand = { det: any; mov: any; codigo: string; desc: string; ref: string; idu: string };
+    const cands: Cand[] = [];
     for (const mov of movimentos) {
       const det = (mov as any)?.detalhes ?? {};
       if (norm(det.cNatureza) !== "P") continue;                 // só saídas (contas a pagar)
@@ -224,19 +244,46 @@ Deno.serve(async (req) => {
 
       const idu = String(det.nCodTitulo ?? det.cCodIntTitulo ?? "");
       if (!idu) continue;
-
-      // NÃO gravamos os campos de anexo aqui (ficam a cargo da ação "anexos"); assim um
-      // re-sync não apaga comprovantes já preenchidos. Novas linhas nascem não-verificadas.
-      linhas.push({
-        id_unico: idu, referencia: ref, data: dataPg ? iso(dataPg) : null,
-        valor: Math.abs(toNum(det.nValorTitulo ?? det.nValorMovimento ?? det.nValorPago)),
-        descricao: String(det.cObs ?? det.observacao ?? det.cNumTitulo ?? "").trim() || null,
-        favorecido: String(det.cRazaoCliente ?? det.cNomeCliente ?? det.cCPFCNPJCliente ?? "").trim() || null,
-        conta_corrente: (contas.map.get(String(det.nCodCC))?.nome ?? String(det.nCodCC ?? "")) || null,
-        categoria_codigo: c.codigo || null, categoria: c.desc || null,
-        gerado_em: agora, updated_at: agora,
-      });
+      cands.push({ det, mov, codigo: c.codigo, desc: c.desc, ref, idu });
     }
+
+    // Resolve o NOME do fornecedor (Nome Fantasia) por nCodCliente — o movimento só traz
+    // o código/CNPJ. Só os códigos dos candidatos do mês (limitado), em lotes concorrentes.
+    const codigosCli = [...new Set(cands.map((x) => String(x.det.nCodCliente ?? x.det.nCodFornecedor ?? "")).filter((v) => v && v !== "0"))];
+    const nomeCli = new Map<string, string>();
+    const CC = 6;
+    for (let i = 0; i < codigosCli.length && i < 1500; i += CC) {
+      const lote = codigosCli.slice(i, i + CC);
+      await Promise.all(lote.map(async (cod) => {
+        try {
+          const r = await omieCall<any>("geral/clientes", "ConsultarCliente", { codigo_cliente_omie: Number(cod) });
+          const nome = String(r?.nome_fantasia || r?.razao_social || "").trim();
+          if (nome) nomeCli.set(cod, nome);
+        } catch (_) { /* mantém CNPJ como fallback */ }
+      }));
+    }
+
+    // 2ª passada: monta as linhas. NÃO gravamos anexos aqui (ação "anexos"); assim um
+    // re-sync não apaga comprovantes já preenchidos. Novas linhas nascem não-verificadas.
+    const agora = new Date().toISOString();
+    const linhas = cands.map(({ det, mov, codigo, desc, ref, idu }) => {
+      const cod = String(det.nCodCliente ?? det.nCodFornecedor ?? "");
+      const favorecido = nomeCli.get(cod) ?? limpa(det.cRazaoCliente) ?? limpa(det.cNomeCliente) ?? limpa(det.cCPFCNPJCliente);
+      const dataPg = parseOmieDate(det.dDtPagamento) ?? parseOmieDate(det.dDtRegistro) ?? parseOmieDate(det.dDtEmissao);
+      return {
+        id_unico: idu, referencia: ref, data: dataPg ? iso(dataPg) : null,
+        valor: primeiroNum(
+          det.nValorTitulo, det.nValorMovimento, det.nValorDocumento, det.nValorBaixa, det.nValorPago,
+          (mov as any)?.resumo?.nValPago, (mov as any)?.resumo?.nValLiquido, (mov as any)?.resumo?.nValAberto,
+          (mov as any)?.resumo?.nValMovimento, det.nValor, det.nValLiquido,
+        ),
+        descricao: limpa(det.cObs) ?? limpa(det.observacao) ?? limpa(det.cNumDocFiscal),
+        favorecido,
+        conta_corrente: contas.map.get(String(det.nCodCC))?.nome ?? limpa(det.nCodCC),
+        categoria_codigo: limpa(codigo), categoria: limpa(desc),
+        gerado_em: agora, updated_at: agora,
+      };
+    });
 
     let gravados = 0;
     for (let i = 0; i < linhas.length; i += 200) {

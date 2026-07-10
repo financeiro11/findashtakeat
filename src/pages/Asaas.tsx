@@ -65,6 +65,9 @@ export default function Asaas() {
         if (/ASAAS_API_KEY/i.test(detalhe)) {
           throw new Error("O secret ASAAS_API_KEY não está configurado nas Edge Functions do Supabase.");
         }
+        if (/IDLE_TIMEOUT|idle timeout|timeout/i.test(detalhe)) {
+          throw new Error("Demorou demais (muitos lançamentos no mês). Republique a asaas-sync com a versão nova — ela busca as páginas em paralelo.");
+        }
         throw new Error(detalhe || "Erro desconhecido no backend.");
       }
       if ((data as any)?.error) throw new Error((data as any).error);

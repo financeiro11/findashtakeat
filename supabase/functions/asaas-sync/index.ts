@@ -81,14 +81,18 @@ Deno.serve(async (req) => {
     const ref = String(body?.referencia || mesAtual());
     const { de, ate } = rangeMes(ref);
 
-    // Pagamentos recebidos NO mês (data de pagamento no período)
-    const pagosNoMes = await asaasList("/payments", { "paymentDate[ge]": de, "paymentDate[le]": ate });
-    // Pagamentos que VENCEM no mês (todos os status) → conversão e a-receber
-    const vencemNoMes = await asaasList("/payments", { "dueDate[ge]": de, "dueDate[le]": ate });
-    // Assinaturas ativas
-    const assinaturas = await asaasList("/subscriptions", { status: "ACTIVE" });
-    // NF-e criadas no mês
-    const notas = await asaasList("/invoices", { "effectiveDate[ge]": de, "effectiveDate[le]": ate });
+    // As 4 buscas são independentes → rodam em paralelo (cada uma já paraleliza
+    // suas próprias páginas internamente). Corta drasticamente o tempo total.
+    const [pagosNoMes, vencemNoMes, assinaturas, notas] = await Promise.all([
+      // Pagamentos recebidos NO mês (data de pagamento no período)
+      asaasList("/payments", { "paymentDate[ge]": de, "paymentDate[le]": ate }),
+      // Pagamentos que VENCEM no mês (todos os status) → conversão e a-receber
+      asaasList("/payments", { "dueDate[ge]": de, "dueDate[le]": ate }),
+      // Assinaturas ativas
+      asaasList("/subscriptions", { status: "ACTIVE" }),
+      // NF-e criadas no mês
+      asaasList("/invoices", { "effectiveDate[ge]": de, "effectiveDate[le]": ate }),
+    ]);
 
     // --- Recebimentos ---
     const recebidos = pagosNoMes.filter((p) => RECEBIDO.has(String(p.status)));

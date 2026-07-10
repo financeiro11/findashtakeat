@@ -39,17 +39,45 @@ export async function asaasGet<T = any>(path: string, params: Record<string, unk
   throw lastErr;
 }
 
-/** Lista paginada (Asaas usa offset/limit e devolve { data, hasMore, totalCount }). */
+/**
+ * Lista paginada do Asaas (offset/limit, resposta { data, hasMore, totalCount }).
+ * Busca a 1ª página para descobrir o totalCount e então dispara as páginas
+ * restantes em lotes concorrentes — muito mais rápido que sequencial em meses
+ * com muitos lançamentos (evita o idle timeout de 150s do gateway).
+ * Se o totalCount não vier, cai no modo sequencial (seguro).
+ */
 export async function asaasList(path: string, params: Record<string, unknown> = {}, maxPaginas = 300): Promise<any[]> {
-  const out: any[] = [];
   const limit = 100;
-  let offset = 0;
-  for (let page = 0; page < maxPaginas; page++) {
-    const r = await asaasGet<any>(path, { ...params, offset, limit });
-    const data = r?.data ?? [];
-    out.push(...data);
-    if (!r?.hasMore || data.length === 0) break;
-    offset += limit;
+  const CONC = 6; // páginas simultâneas por lote (respeita o rate limit do Asaas)
+
+  const first = await asaasGet<any>(path, { ...params, offset: 0, limit });
+  const out: any[] = [...(first?.data ?? [])];
+  if (!first?.hasMore || out.length === 0) return out;
+
+  const total = typeof first?.totalCount === "number" ? first.totalCount : null;
+
+  // Sem totalCount: fallback sequencial usando hasMore.
+  if (total == null) {
+    let offset = limit;
+    for (let page = 1; page < maxPaginas; page++) {
+      const r = await asaasGet<any>(path, { ...params, offset, limit });
+      const data = r?.data ?? [];
+      out.push(...data);
+      if (!r?.hasMore || data.length === 0) break;
+      offset += limit;
+    }
+    return out;
+  }
+
+  // Com totalCount: paraleliza as páginas restantes em lotes.
+  const totalPaginas = Math.min(maxPaginas, Math.ceil(total / limit));
+  const offsets: number[] = [];
+  for (let p = 1; p < totalPaginas; p++) offsets.push(p * limit);
+
+  for (let i = 0; i < offsets.length; i += CONC) {
+    const lote = offsets.slice(i, i + CONC);
+    const partes = await Promise.all(lote.map((off) => asaasGet<any>(path, { ...params, offset: off, limit })));
+    for (const r of partes) out.push(...(r?.data ?? []));
   }
   return out;
 }

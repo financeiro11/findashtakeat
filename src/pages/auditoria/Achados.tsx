@@ -39,6 +39,8 @@ type Row = {
   trilha: TrilhaEvento[] | null;
   categoria: Categoria | string | null;
   link_comprovante: string | null;
+  /** descrição da categoria do Omie casada (via lançamento de origem no cartão). */
+  omie_categoria?: string | null;
   /** true = aprovado automaticamente (bate com a nota); vem da base do cartão, não da
    *  tabela `auditoria`, portanto é somente leitura (sem mudança de status). */
   _ro?: boolean;
@@ -144,7 +146,7 @@ export default function Achados() {
       // (b) derivar a categoria dos achados que o n8n não classificou (via status_nf/escopo).
       supabase
         .from("auditoria_cartao_lancamentos")
-        .select("id_unico,competencia,referencia,origem,gestor,time,data,estabelecimento,descricao_original,valor,status_nf,status_escopo,arquivo_comprovante")
+        .select("id_unico,competencia,referencia,origem,gestor,time,data,estabelecimento,descricao_original,valor,status_nf,status_escopo,arquivo_comprovante,omie_categoria_descricao")
         .order("data", { ascending: false })
         .limit(5000),
     ]);
@@ -153,12 +155,13 @@ export default function Achados() {
     const cartRows = (cartRes.data ?? []) as any[];
     const cardByUnico = new Map<string, any>(cartRows.map((c) => [c.id_unico, c]));
 
-    // Achados reais — deriva a categoria quando ela vem vazia do n8n.
+    // Achados reais — deriva a categoria quando ela vem vazia do n8n, e anexa a
+    // categoria do Omie casada (via o lançamento de origem no cartão).
     const audRows: Row[] = (audRes.data ?? []).map((r: any): Row => {
-      if (r.categoria) return r as Row;
       const orig = r.id_transacao ? cardByUnico.get(r.id_transacao) : null;
-      const cat = deriveCategoria(r.regra, orig?.status_nf, orig?.status_escopo);
-      return (cat ? { ...r, categoria: cat } : r) as Row;
+      const omie_categoria = orig?.omie_categoria_descricao ?? null;
+      const categoria = r.categoria || deriveCategoria(r.regra, orig?.status_nf, orig?.status_escopo);
+      return { ...r, categoria, omie_categoria } as Row;
     });
 
     // Evita duplicar caso um achado já referencie o mesmo lançamento do cartão.
@@ -183,6 +186,7 @@ export default function Achados() {
         trilha: null,
         categoria: "COM NF",
         link_comprovante: c.arquivo_comprovante,
+        omie_categoria: c.omie_categoria_descricao ?? null,
         _ro: true,
       }));
 
@@ -573,9 +577,9 @@ export default function Achados() {
 
       {/* Table */}
       <div className="rounded-xl border border-border bg-card overflow-hidden">
-        <div className="grid grid-cols-[minmax(240px,1.8fr)_150px_100px_120px_130px_130px_140px_40px] gap-3 px-4 py-3 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground border-b border-border">
+        <div className="grid grid-cols-[minmax(240px,1.8fr)_210px_100px_120px_130px_130px_140px_40px] gap-3 px-4 py-3 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground border-b border-border">
           <div>Lançamento</div>
-          <div>Regra</div>
+          <div>Categoria Omie</div>
           <div>Origem</div>
           <div className="text-right">Valor</div>
           <div>Área</div>
@@ -591,7 +595,7 @@ export default function Achados() {
           return (
             <div
               key={r.id}
-              className="grid grid-cols-[minmax(240px,1.8fr)_150px_100px_120px_130px_130px_140px_40px] gap-3 px-4 py-3 items-center border-b border-border last:border-0 hover:bg-accent/40 transition"
+              className="grid grid-cols-[minmax(240px,1.8fr)_210px_100px_120px_130px_130px_140px_40px] gap-3 px-4 py-3 items-center border-b border-border last:border-0 hover:bg-accent/40 transition"
             >
               <div className="text-left min-w-0 flex items-start gap-1.5">
                 <button onClick={() => setSelected(r)} className="text-left min-w-0 flex-1">
@@ -625,7 +629,7 @@ export default function Achados() {
                   </TooltipProvider>
                 )}
               </div>
-              <div className="text-xs text-muted-foreground truncate">{r.regra}</div>
+              <div className="text-xs text-muted-foreground truncate" title={r.omie_categoria || ""}>{r.omie_categoria || "—"}</div>
               <div className="text-xs text-foreground/70 truncate">{r.origem}</div>
               <div className="text-right num text-sm font-medium">{brl(Number(r.valor || 0))}</div>
               <div className="text-sm text-foreground/80 truncate">{r.area}</div>

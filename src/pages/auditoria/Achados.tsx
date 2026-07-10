@@ -6,7 +6,7 @@ import { Sheet, SheetContent } from "@/components/ui/sheet";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Textarea } from "@/components/ui/textarea";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Download, X, ChevronRight, Check, ExternalLink, Search, Send } from "lucide-react";
+import { Download, X, ChevronRight, Check, ExternalLink, Search, Send, RefreshCw, Loader2 } from "lucide-react";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
@@ -78,6 +78,8 @@ type CartaoLanc = {
   categoria: string | null; parcela: string | null; valor: number;
   status_nf: string; arquivo_comprovante: string | null;
   status_escopo: string | null; observacao: string | null;
+  omie_categoria_codigo: string | null; omie_categoria_descricao: string | null;
+  omie_match_confianca: string | null;
 };
 
 const ALL_STATUS: Status[] = ["Pendente","Em análise","Aprovado","Reprovado","Ajuste solicitado"];
@@ -126,6 +128,7 @@ export default function Achados() {
   const [ajusteOpen, setAjusteOpen] = useState(false);
   const [sheetHidden, setSheetHidden] = useState(false);
   const [consolidadoOpen, setConsolidadoOpen] = useState(false);
+  const [cruzando, setCruzando] = useState(false);
 
   // Garante que o modal de "Ajuste solicitado" NUNCA venha aberto ao abrir/trocar de lançamento
   useEffect(() => { setAjusteOpen(false); }, [selected?.id]);
@@ -281,6 +284,42 @@ export default function Achados() {
     }
   }, [selected]);
 
+  // Cruza os lançamentos do cartão com os movimentos do Omie (categoria contábil).
+  // O sync do Omie leva ~1–2 min, então disparamos e acompanhamos o omie_matched_em
+  // (evita o timeout de rede do functions.invoke).
+  const cruzarOmie = async () => {
+    setCruzando(true);
+    toast.message("Cruzando com o Omie… pode levar ~1–2 min. As categorias aparecem ao concluir.");
+    // baseline: último matched_em existente
+    const { data: prev } = await supabase
+      .from("auditoria_cartao_lancamentos")
+      .select("omie_matched_em")
+      .order("omie_matched_em", { ascending: false, nullsFirst: false })
+      .limit(1)
+      .maybeSingle();
+    const prevMatched = (prev as any)?.omie_matched_em ?? null;
+
+    supabase.functions.invoke("omie-match-cartao", { body: { action: "match" } }).catch(() => {});
+
+    const deadline = Date.now() + 180000;
+    let done = false;
+    while (Date.now() < deadline && !done) {
+      await new Promise((r) => setTimeout(r, 4000));
+      const { data } = await supabase
+        .from("auditoria_cartao_lancamentos")
+        .select("omie_matched_em")
+        .order("omie_matched_em", { ascending: false, nullsFirst: false })
+        .limit(1)
+        .maybeSingle();
+      const latest = (data as any)?.omie_matched_em ?? null;
+      if (latest && latest !== prevMatched) done = true;
+    }
+    if (done) toast.success("Cruzamento com o Omie concluído.");
+    else toast.message("Ainda cruzando em segundo plano. Recarregando o que já temos…");
+    await load();
+    setCruzando(false);
+  };
+
   const exportCsv = () => {
     const header = ["Título","Área","Severidade","Regra","Origem","Valor","Responsável","Data","Status"];
     const lines = filtered.map(r => [
@@ -390,6 +429,9 @@ export default function Achados() {
               {competencias.length === 0 && <option value="">—</option>}
             </select>
           </label>
+          <Button variant="outline" onClick={cruzarOmie} disabled={cruzando} className="h-9" title="Casa cada lançamento do cartão com o movimento do Omie (categoria contábil)">
+            {cruzando ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <RefreshCw className="h-4 w-4 mr-2" />} Cruzar com Omie
+          </Button>
           <Button onClick={exportCsv} className="bg-foreground text-background hover:bg-foreground/90 h-9">
             <Download className="h-4 w-4 mr-2" /> Exportar
           </Button>
@@ -648,7 +690,14 @@ export default function Achados() {
                       <MetaItem label="Data" value={fmtDateBR(origemCart.data)} />
                       <MetaItem label="Estabelecimento" value={origemCart.estabelecimento || "—"} />
                       <MetaItem label="Descrição" value={origemCart.descricao_original || "—"} full />
-                      <MetaItem label="Categoria" value={origemCart.categoria || "—"} />
+                      <MetaItem
+                        label="Categoria Omie"
+                        full
+                        value={origemCart.omie_categoria_descricao
+                          ? `${origemCart.omie_categoria_descricao}${origemCart.omie_match_confianca ? ` (confiança: ${origemCart.omie_match_confianca})` : ""}`
+                          : "— (rode \"Cruzar com Omie\")"}
+                      />
+                      <MetaItem label="Categoria (cartão)" value={origemCart.categoria || "—"} />
                       <MetaItem label="Parcela" value={origemCart.parcela || "—"} />
                       <MetaItem label="Cartão final" value={origemCart.card_final || "—"} />
                       <MetaItem label="Gestor" value={origemCart.gestor || "—"} />

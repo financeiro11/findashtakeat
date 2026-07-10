@@ -1,16 +1,23 @@
 import { useEffect, useState } from "react";
 import Achados from "./auditoria/Achados";
 import BaseCartao from "./auditoria/BaseCartao";
-import { AlertTriangle, CreditCard } from "lucide-react";
+import BasePix from "./auditoria/BasePix";
+import { AlertTriangle, CreditCard, Zap } from "lucide-react";
 import { cn } from "@/lib/utils";
 
-type Mode = "achados" | "base";
+type Mode = "achados" | "base" | "pix";
+
+const TITLES: Record<Mode, string> = {
+  achados: "FinHub · Auditoria",
+  base: "FinHub · Base do Cartão",
+  pix: "FinHub · PIX Sicoob",
+};
 
 export default function Auditoria() {
   const [mode, setMode] = useState<Mode>("achados");
 
   useEffect(() => {
-    document.title = mode === "achados" ? "FinHub · Auditoria" : "FinHub · Base do Cartão";
+    document.title = TITLES[mode];
   }, [mode]);
 
   return (
@@ -24,10 +31,13 @@ export default function Auditoria() {
           <ModeBtn active={mode === "base"} onClick={() => setMode("base")} icon={<CreditCard className="h-3 w-3" />}>
             Base do Cartão
           </ModeBtn>
+          <ModeBtn active={mode === "pix"} onClick={() => setMode("pix")} icon={<Zap className="h-3 w-3" />}>
+            PIX
+          </ModeBtn>
         </div>
       </div>
 
-      {mode === "achados" ? <Achados /> : <BaseCartao />}
+      {mode === "achados" ? <Achados /> : mode === "base" ? <BaseCartao /> : <BasePix />}
     </div>
   );
 }

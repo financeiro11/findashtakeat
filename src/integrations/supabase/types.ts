@@ -154,6 +154,27 @@ export type Database = {
         }
         Relationships: []
       }
+      asaas_snapshots: {
+        Row: {
+          dados: Json
+          gerado_em: string
+          id: string
+          referencia: string
+        }
+        Insert: {
+          dados?: Json
+          gerado_em?: string
+          id?: string
+          referencia: string
+        }
+        Update: {
+          dados?: Json
+          gerado_em?: string
+          id?: string
+          referencia?: string
+        }
+        Relationships: []
+      }
       auditoria: {
         Row: {
           area: string

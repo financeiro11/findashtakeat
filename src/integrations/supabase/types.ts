@@ -339,6 +339,69 @@ export type Database = {
         }
         Relationships: []
       }
+      auditoria_pix_lancamentos: {
+        Row: {
+          anexo_nome: string | null
+          categoria: string | null
+          categoria_codigo: string | null
+          comprovante_url: string | null
+          conta_corrente: string | null
+          created_at: string
+          data: string | null
+          descricao: string | null
+          favorecido: string | null
+          gerado_em: string
+          id: number
+          id_unico: string
+          observacao: string | null
+          referencia: string
+          status: string
+          tem_comprovante: boolean
+          updated_at: string
+          valor: number
+        }
+        Insert: {
+          anexo_nome?: string | null
+          categoria?: string | null
+          categoria_codigo?: string | null
+          comprovante_url?: string | null
+          conta_corrente?: string | null
+          created_at?: string
+          data?: string | null
+          descricao?: string | null
+          favorecido?: string | null
+          gerado_em?: string
+          id?: never
+          id_unico: string
+          observacao?: string | null
+          referencia: string
+          status?: string
+          tem_comprovante?: boolean
+          updated_at?: string
+          valor?: number
+        }
+        Update: {
+          anexo_nome?: string | null
+          categoria?: string | null
+          categoria_codigo?: string | null
+          comprovante_url?: string | null
+          conta_corrente?: string | null
+          created_at?: string
+          data?: string | null
+          descricao?: string | null
+          favorecido?: string | null
+          gerado_em?: string
+          id?: never
+          id_unico?: string
+          observacao?: string | null
+          referencia?: string
+          status?: string
+          tem_comprovante?: boolean
+          updated_at?: string
+          valor?: number
+        }
+        Relationships: []
+      }
       automacoes_catalogo: {
         Row: {
           automacao: string

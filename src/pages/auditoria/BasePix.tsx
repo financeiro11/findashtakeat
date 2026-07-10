@@ -33,12 +33,19 @@ const referenciaLabel = (ref: string) => {
   const meses = ["janeiro","fevereiro","março","abril","maio","junho","julho","agosto","setembro","outubro","novembro","dezembro"];
   return `${meses[Number(m) - 1] ?? m} / ${y}`;
 };
+const mesAtual = () => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`; };
+function ultimosMeses(n: number): string[] {
+  const out: string[] = [];
+  const d = new Date();
+  for (let i = 0; i < n; i++) { out.push(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`); d.setMonth(d.getMonth() - 1); }
+  return out;
+}
 
 export default function BasePix() {
   const [rows, setRows] = useState<Lanc[]>([]);
   const [loading, setLoading] = useState(true);
   const [syncing, setSyncing] = useState(false);
-  const [referencia, setReferencia] = useState<string>("");
+  const [referencia, setReferencia] = useState<string>(mesAtual());
   const [fCat, setFCat] = useState("todas");
   const [fCompr, setFCompr] = useState<"todos" | "com" | "sem">("todos");
   const [fStatus, setFStatus] = useState("todos");
@@ -58,28 +65,44 @@ export default function BasePix() {
   };
   useEffect(() => { load(); }, []);
 
+  // Invoca a função e extrai o erro real do FunctionsHttpError (corpo em error.context).
+  const invocar = async (payload: Record<string, unknown>) => {
+    const { data, error } = await supabase.functions.invoke("omie-pix-sync", { body: payload });
+    if (error) {
+      let detalhe = error.message || "";
+      const ctx: any = (error as any).context;
+      if (ctx && typeof ctx.text === "function") {
+        try { const raw = await ctx.text(); detalhe = JSON.parse(raw)?.error || raw || detalhe; } catch { /* keep */ }
+      }
+      console.error("[omie-pix-sync]", detalhe, error);
+      if (/not found|Failed to (send|fetch)/i.test(detalhe)) throw new Error("A função omie-pix-sync ainda não foi publicada no Supabase (deploy pendente pelo Lovable).");
+      if (/OMIE_APP_KEY|OMIE_APP_SECRET|Credenciais do Omie/i.test(detalhe)) throw new Error("Faltam os secrets OMIE_APP_KEY / OMIE_APP_SECRET no Supabase.");
+      throw new Error(detalhe || "Erro no backend.");
+    }
+    if ((data as any)?.error) throw new Error((data as any).error);
+    return data as any;
+  };
+
   const sync = async () => {
     setSyncing(true);
-    toast.message(referencia ? `Sincronizando PIX de ${referenciaLabel(referencia)} com o Omie…` : "Sincronizando PIX com o Omie…");
+    toast.message(`Sincronizando PIX de ${referenciaLabel(referencia)} com o Omie…`);
     try {
-      const { data, error } = await supabase.functions.invoke("omie-pix-sync", {
-        body: { action: "sync", ...(referencia ? { referencia } : {}) },
-      });
-      if (error) {
-        let detalhe = error.message || "";
-        const ctx: any = (error as any).context;
-        if (ctx && typeof ctx.text === "function") {
-          try { const raw = await ctx.text(); detalhe = JSON.parse(raw)?.error || raw || detalhe; } catch { /* keep */ }
-        }
-        console.error("[omie-pix-sync]", detalhe, error);
-        if (/not found|Failed to (send|fetch)/i.test(detalhe)) throw new Error("A função omie-pix-sync ainda não foi publicada no Supabase (deploy pendente pelo Lovable).");
-        if (/OMIE_APP_KEY|OMIE_APP_SECRET|Credenciais do Omie/i.test(detalhe)) throw new Error("Faltam os secrets OMIE_APP_KEY / OMIE_APP_SECRET no Supabase.");
-        throw new Error(detalhe || "Erro no backend.");
-      }
-      if ((data as any)?.error) throw new Error((data as any).error);
-      const d = data as any;
-      toast.success(`PIX sincronizado: ${d.pix_gravados} lançamentos · ${d.com_comprovante} com comprovante, ${d.sem_comprovante} sem.`);
+      // 1) Grava os lançamentos do mês (rápido, sem anexos).
+      const d = await invocar({ action: "sync", referencia });
+      toast.success(`${d.pix_gravados} lançamentos gravados. Buscando comprovantes…`);
       await load();
+
+      // 2) Preenche os comprovantes em lotes até zerar (evita o timeout do wall-time).
+      let restantes = Number(d.anexos_pendentes ?? 0);
+      let seguranca = 0;
+      while (restantes > 0 && seguranca < 100) {
+        const a = await invocar({ action: "anexos", referencia, limite: 150 });
+        restantes = Number(a.restantes ?? 0);
+        seguranca++;
+        toast.message(`Comprovantes: ${restantes} lançamento(s) restante(s)…`);
+      }
+      await load();
+      toast.success("PIX sincronizado.");
     } catch (e: any) {
       toast.error("Falha ao sincronizar PIX: " + e.message, { duration: 8000 });
     } finally { setSyncing(false); }
@@ -98,8 +121,11 @@ export default function BasePix() {
     }
   };
 
-  const referencias = useMemo(() => Array.from(new Set(rows.map(r => r.referencia))).sort().reverse(), [rows]);
-  useEffect(() => { if (!referencia && referencias.length) setReferencia(referencias[0]); }, [referencias, referencia]);
+  // Opções de mês: últimos 18 + qualquer mês que já tenha dados (mesmo mais antigo).
+  const referencias = useMemo(() => {
+    const set = new Set<string>([...ultimosMeses(18), ...rows.map(r => r.referencia).filter(Boolean)]);
+    return Array.from(set).sort().reverse();
+  }, [rows]);
 
   const periodRows = useMemo(() => referencia ? rows.filter(r => r.referencia === referencia) : rows, [rows, referencia]);
   const categorias = useMemo(() => Array.from(new Set(periodRows.map(r => r.categoria).filter(Boolean) as string[])).sort(), [periodRows]);

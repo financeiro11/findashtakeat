@@ -1,11 +1,10 @@
 // Edge Function: omie-pix-sync
-// Puxa do Omie os lançamentos da(s) conta(s) Sicoob (a auditar) já conciliados/
+// Puxa do Omie os lançamentos da conta corrente Sicoob (a auditar) já conciliados/
 // categorizados pela conciliação diária Sicoob → Omie e grava em auditoria_pix_lancamentos.
 //
 // IMPORTANTE (descoberto via preview): o Omie NÃO expõe o meio de pagamento em
-// financas/mf/ListarMovimentos — cCodModDoc vem vazio e não há "PIX" em nenhum campo.
-// O que existe é a CONTA BANCÁRIA (nCodCC). Como o Sicoob é a conta de PIX, filtramos
-// pelos movimentos de saída daquela conta.
+// financas/mf/ListarMovimentos (cCodModDoc vem vazio). O que existe é a CONTA BANCÁRIA
+// (nCodCC). Como o Sicoob é a conta de PIX, filtramos as saídas daquela conta.
 //
 // Regras de negócio:
 //   • só SAÍDAS (natureza "P") da conta corrente do Sicoob (contas a pagar);
@@ -13,12 +12,16 @@
 //   • NÃO entram categorias de pessoal / premiação / escala / benefícios;
 //   • se o título tem anexo no Omie, o link/nome vêm junto (tem_comprovante).
 //
+// O passo de anexos é SEPARADO do sync: um ListarAnexo por título estourava o wall-time
+// da edge function. O sync grava rápido; a ação "anexos" preenche os comprovantes em lotes.
+//
 // Ações (body.action):
-//   "preview" → nomes das contas (p/ achar o Sicoob), distribuições e sonda de anexo
-//               com os erros do Omie (p/ achar o cTabela correto). SEM gravar.
-//   "sync"    → grava. Params:
-//               { referencia?: "YYYY-MM", contasSicoob?: (string|number)[], anexoTabela?: string }
-//   Sem contasSicoob, a função auto-detecta a conta pelo nome/banco "SICOOB" (código 756).
+//   "preview" → diagnóstico (contas nomeadas, distribuições, sonda de anexo). SEM gravar.
+//   "sync"    → grava os lançamentos do mês (sem anexos). Params:
+//               { referencia?: "YYYY-MM", contasSicoob?: (string|number)[] }
+//   "anexos"  → preenche comprovantes de um LOTE de lançamentos ainda não verificados.
+//               Params: { referencia?: "YYYY-MM", limite?: number, anexoTabela?: string }
+//               Chame repetidamente até `restantes` = 0.
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { listarCategorias, listarMovimentos, omieCall } from "../_shared/omie.ts";
@@ -50,14 +53,11 @@ function parseOmieDate(s?: string | null): Date | null {
 const ym = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
 const iso = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 
-// Categorias que NÃO devem ser auditadas aqui (pedido do financeiro).
 const CATEGORIAS_EXCLUIDAS = ["PESSOAL", "PREMIA", "ESCALA", "BENEF"];
 const categoriaExcluida = (desc: string) => CATEGORIAS_EXCLUIDAS.some((k) => norm(desc).includes(k));
+const ORIGENS_TRANSFERENCIA = new Set(["TRAP"]); // transferência de saída — excluída
 
-// Origens de transferência de saída (transferência entre contas próprias) — excluídas.
-const ORIGENS_TRANSFERENCIA = new Set(["TRAP"]);
-
-// Contas correntes do Omie: nCodCC → { nome, banco }. Usado p/ achar o Sicoob pelo nome.
+// Contas correntes do Omie: nCodCC → { nome, banco }.
 async function listarContasCorrentes(): Promise<{ map: Map<string, { nome: string; banco: string }>; raw: any }> {
   const map = new Map<string, { nome: string; banco: string }>();
   let raw: any = null;
@@ -76,8 +76,6 @@ async function listarContasCorrentes(): Promise<{ map: Map<string, { nome: strin
   return { map, raw };
 }
 
-// Sonda de anexos: tenta vários cTabela e, no preview, devolve o erro do Omie de cada um
-// (o Omie geralmente lista os valores válidos na mensagem de erro).
 const ANEXO_TABELAS = ["conta-pagar", "contas-a-pagar", "financas-contapagar", "financas-conta-pagar", "titulos-pagar", "financas-movimentos", "movimentos"];
 async function probarAnexos(nId: number | string): Promise<any[]> {
   const out: any[] = [];
@@ -92,18 +90,15 @@ async function probarAnexos(nId: number | string): Promise<any[]> {
   }
   return out;
 }
-async function anexoDe(nId: number | string, tabelas: string[]): Promise<{ url: string; nome: string } | null> {
-  for (const cTabela of tabelas) {
-    try {
-      const r = await omieCall<any>("geral/anexo", "ListarAnexo", { nId, cTabela, nPagina: 1, nRegPorPagina: 50 });
-      const anexos = r?.listaAnexos ?? r?.anexos ?? r?.arquivos ?? [];
-      if (Array.isArray(anexos) && anexos.length) {
-        const a = anexos[0];
-        return { url: String(a.cUrl ?? a.url ?? a.cLinkDownload ?? ""), nome: String(a.cNomeArquivo ?? a.nome ?? a.cArquivo ?? "anexo") };
-      }
-      if (Array.isArray(anexos)) return null; // tabela certa, sem anexos
-    } catch (_) { /* tenta a próxima */ }
-  }
+async function anexoDe(nId: number | string, cTabela: string): Promise<{ url: string; nome: string } | null> {
+  try {
+    const r = await omieCall<any>("geral/anexo", "ListarAnexo", { nId, cTabela, nPagina: 1, nRegPorPagina: 50 });
+    const anexos = r?.listaAnexos ?? r?.anexos ?? r?.arquivos ?? [];
+    if (Array.isArray(anexos) && anexos.length) {
+      const a = anexos[0];
+      return { url: String(a.cUrl ?? a.url ?? a.cLinkDownload ?? ""), nome: String(a.cNomeArquivo ?? a.nome ?? a.cArquivo ?? "anexo") };
+    }
+  } catch (_) { /* melhor-esforço */ }
   return null;
 }
 
@@ -114,17 +109,53 @@ Deno.serve(async (req) => {
   try {
     const body = req.method === "POST" ? await req.json().catch(() => ({})) : {};
     const action = body?.action ?? "sync";
-    const contasSicoobOverride: string[] | null = Array.isArray(body?.contasSicoob) ? body.contasSicoob.map(String) : null;
-    // "conta-pagar" é o cTabela válido dos anexos (confirmado no preview). Fixável via body.
-    const anexoTabelas: string[] = body?.anexoTabela ? [String(body.anexoTabela)] : ["conta-pagar"];
 
-    // Categorias (código → descrição) e contas correntes (p/ achar o Sicoob).
+    /* ================= ANEXOS (lote resumível) ================= */
+    if (action === "anexos") {
+      const ref: string | null = body?.referencia ? String(body.referencia) : null;
+      const limite = Math.min(Number(body?.limite ?? 150), 400);
+      const cTabela = String(body?.anexoTabela ?? "conta-pagar");
+
+      let q = supabase.from("auditoria_pix_lancamentos")
+        .select("id,id_unico").eq("anexo_verificado", false).limit(limite);
+      if (ref) q = q.eq("referencia", ref);
+      const { data: pend, error: pendErr } = await q;
+      if (pendErr) throw pendErr;
+
+      const CONC = 12;
+      let comAnexo = 0;
+      const rows = (pend ?? []) as { id: number; id_unico: string }[];
+      for (let i = 0; i < rows.length; i += CONC) {
+        const lote = rows.slice(i, i + CONC);
+        await Promise.all(lote.map(async (r) => {
+          const anexo = await anexoDe(r.id_unico, cTabela);
+          if (anexo?.url) comAnexo++;
+          await supabase.from("auditoria_pix_lancamentos").update({
+            anexo_verificado: true,
+            tem_comprovante: !!anexo?.url,
+            comprovante_url: anexo?.url || null,
+            anexo_nome: anexo?.nome || null,
+            updated_at: new Date().toISOString(),
+          }).eq("id", r.id);
+        }));
+      }
+
+      // Quantos ainda faltam verificar (para o front saber se continua o loop).
+      let cq = supabase.from("auditoria_pix_lancamentos")
+        .select("id", { count: "exact", head: true }).eq("anexo_verificado", false);
+      if (ref) cq = cq.eq("referencia", ref);
+      const { count } = await cq;
+
+      return json({ ok: true, processados: rows.length, com_anexo: comAnexo, restantes: count ?? 0 });
+    }
+
+    // preview e sync precisam de categorias + contas + movimentos.
     const [categorias, contas] = await Promise.all([listarCategorias(), listarContasCorrentes()]);
     const codToDesc = new Map<string, string>();
     for (const c of categorias) if (c.codigo) codToDesc.set(String(c.codigo), c.descricao ?? "");
 
-    // Conta a auditar: SÓ a conta corrente do Sicoob (exclui o cartão e a aplicação, que
-    // também são "Sicoob"). Override via body.contasSicoob; senão auto por nome.
+    const contasSicoobOverride: string[] | null = Array.isArray(body?.contasSicoob) ? body.contasSicoob.map(String) : null;
+    // Conta a auditar: SÓ a conta corrente do Sicoob (exclui cartão e aplicação).
     const sicoobIds = new Set<string>(
       contasSicoobOverride ??
       [...contas.map.entries()]
@@ -143,59 +174,49 @@ Deno.serve(async (req) => {
       return { codigo, desc: codToDesc.get(codigo) || codigo };
     };
 
-    /* ---------------- PREVIEW ---------------- */
+    /* ================= PREVIEW ================= */
     if (action === "preview") {
       const dist = (get: (det: any) => unknown) => {
         const m = new Map<string, number>();
         for (const mov of movimentos) { const k = String(get((mov as any)?.detalhes) ?? "—"); m.set(k, (m.get(k) ?? 0) + 1); }
         return Object.fromEntries([...m.entries()].sort((a, b) => b[1] - a[1]).slice(0, 40));
       };
-      // Contas nomeadas + volume de movimentos por conta (p/ identificar o Sicoob).
       const volPorConta = new Map<string, number>();
       for (const mov of movimentos) { const k = String((mov as any)?.detalhes?.nCodCC ?? "—"); volPorConta.set(k, (volPorConta.get(k) ?? 0) + 1); }
       const contasNomeadas = [...volPorConta.entries()].sort((a, b) => b[1] - a[1]).map(([id, mov]) => ({
         nCodCC: id, movimentos: mov, nome: contas.map.get(id)?.nome ?? "(desconhecido)", banco: contas.map.get(id)?.banco ?? "",
         sicoob_detectado: sicoobIds.has(id),
       }));
-
       const alvoAnexo = movimentos.map((m) => (m as any)?.detalhes?.nCodTitulo).find(Boolean);
       const anexoProbe = alvoAnexo ? await probarAnexos(alvoAnexo) : [];
 
       return json({
-        ok: true,
-        total_movimentos: movimentos.length,
-        contas_sicoob_detectadas: [...sicoobIds],
-        contas: contasNomeadas,
-        contas_corrente_raw: contas.raw,
-        origem: dist((d) => d?.cOrigem),
-        anexo_probe: anexoProbe,
+        ok: true, total_movimentos: movimentos.length,
+        contas_sicoob_detectadas: [...sicoobIds], contas: contasNomeadas, contas_corrente_raw: contas.raw,
+        origem: dist((d) => d?.cOrigem), anexo_probe: anexoProbe,
         amostra_bruta: movimentos.slice(0, 4).map((m) => (m as any)?.detalhes ?? {}),
       });
     }
 
-    /* ---------------- SYNC ---------------- */
+    /* ================= SYNC (sem anexos) ================= */
     if (sicoobIds.size === 0) {
       return json({
-        error: "Não identifiquei a conta do Sicoob no Omie. Rode o preview, veja a lista `contas` e me passe o nCodCC do Sicoob (ou configure via body.contasSicoob).",
+        error: "Não identifiquei a conta corrente do Sicoob no Omie. Rode o preview, veja `contas` e me passe o nCodCC (ou configure via body.contasSicoob).",
         contas: [...contas.map.entries()].map(([id, info]) => ({ nCodCC: id, ...info })),
       }, 200);
     }
 
     const refFiltro: string | null = body?.referencia ? String(body.referencia) : null;
 
-    type Cand = {
-      id_unico: string; referencia: string; data: string | null; valor: number;
-      descricao: string; favorecido: string; conta_corrente: string;
-      categoria_codigo: string; categoria: string; nCodTitulo: any;
-    };
-    const cands: Cand[] = [];
+    const linhas: any[] = [];
+    const agora = new Date().toISOString();
     for (const mov of movimentos) {
       const det = (mov as any)?.detalhes ?? {};
-      if (norm(det.cNatureza) !== "P") continue;              // só saídas (contas a pagar)
-      if (!sicoobIds.has(String(det.nCodCC))) continue;       // só a conta corrente do Sicoob
+      if (norm(det.cNatureza) !== "P") continue;                 // só saídas (contas a pagar)
+      if (!sicoobIds.has(String(det.nCodCC))) continue;          // só a conta corrente do Sicoob
       if (ORIGENS_TRANSFERENCIA.has(norm(det.cOrigem))) continue; // exclui transferência de saída
       const c = catPrincipal(mov);
-      if (categoriaExcluida(c.desc)) continue;                // exclui pessoal/premiação/escala/benefícios
+      if (categoriaExcluida(c.desc)) continue;                   // exclui pessoal/premiação/escala/benefícios
 
       const dataPg = parseOmieDate(det.dDtPagamento) ?? parseOmieDate(det.dDtRegistro) ?? parseOmieDate(det.dDtEmissao);
       const ref = dataPg ? ym(dataPg) : mesAtual();
@@ -204,37 +225,18 @@ Deno.serve(async (req) => {
       const idu = String(det.nCodTitulo ?? det.cCodIntTitulo ?? "");
       if (!idu) continue;
 
-      cands.push({
+      // NÃO gravamos os campos de anexo aqui (ficam a cargo da ação "anexos"); assim um
+      // re-sync não apaga comprovantes já preenchidos. Novas linhas nascem não-verificadas.
+      linhas.push({
         id_unico: idu, referencia: ref, data: dataPg ? iso(dataPg) : null,
         valor: Math.abs(toNum(det.nValorTitulo ?? det.nValorMovimento ?? det.nValorPago)),
-        descricao: String(det.cObs ?? det.observacao ?? det.cNumTitulo ?? "").trim(),
-        favorecido: String(det.cRazaoCliente ?? det.cNomeCliente ?? det.cCPFCNPJCliente ?? "").trim(),
-        conta_corrente: contas.map.get(String(det.nCodCC))?.nome ?? String(det.nCodCC ?? ""),
-        categoria_codigo: c.codigo, categoria: c.desc, nCodTitulo: det.nCodTitulo,
+        descricao: String(det.cObs ?? det.observacao ?? det.cNumTitulo ?? "").trim() || null,
+        favorecido: String(det.cRazaoCliente ?? det.cNomeCliente ?? det.cCPFCNPJCliente ?? "").trim() || null,
+        conta_corrente: contas.map.get(String(det.nCodCC))?.nome ?? String(det.nCodCC ?? "") || null,
+        categoria_codigo: c.codigo || null, categoria: c.desc || null,
+        gerado_em: agora, updated_at: agora,
       });
     }
-
-    // Anexos: melhor-esforço, em lotes concorrentes. Falha de um não derruba o sync.
-    const CONC = 5;
-    const anexoPorId = new Map<string, { url: string; nome: string } | null>();
-    for (let i = 0; i < cands.length; i += CONC) {
-      const lote = cands.slice(i, i + CONC);
-      await Promise.all(lote.map(async (cd) => {
-        anexoPorId.set(cd.id_unico, cd.nCodTitulo ? await anexoDe(cd.nCodTitulo, anexoTabelas) : null);
-      }));
-    }
-
-    const agora = new Date().toISOString();
-    const linhas = cands.map((cd) => {
-      const anexo = anexoPorId.get(cd.id_unico) ?? null;
-      return {
-        id_unico: cd.id_unico, referencia: cd.referencia, data: cd.data, valor: cd.valor,
-        descricao: cd.descricao || null, favorecido: cd.favorecido || null, conta_corrente: cd.conta_corrente || null,
-        categoria_codigo: cd.categoria_codigo || null, categoria: cd.categoria || null,
-        tem_comprovante: !!(anexo && anexo.url), comprovante_url: anexo?.url || null, anexo_nome: anexo?.nome || null,
-        gerado_em: agora, updated_at: agora,
-      };
-    });
 
     let gravados = 0;
     for (let i = 0; i < linhas.length; i += 200) {
@@ -244,11 +246,13 @@ Deno.serve(async (req) => {
       gravados += lote.length;
     }
 
-    const comCompr = linhas.filter((l) => l.tem_comprovante).length;
-    return json({
-      ok: true, referencia: refFiltro ?? "todos", contas_sicoob: [...sicoobIds],
-      pix_gravados: gravados, com_comprovante: comCompr, sem_comprovante: gravados - comCompr,
-    });
+    // Faltam verificar os anexos deste mês (o front chama a ação "anexos" em seguida).
+    let cq = supabase.from("auditoria_pix_lancamentos")
+      .select("id", { count: "exact", head: true }).eq("anexo_verificado", false);
+    if (refFiltro) cq = cq.eq("referencia", refFiltro);
+    const { count } = await cq;
+
+    return json({ ok: true, referencia: refFiltro ?? "todos", contas_sicoob: [...sicoobIds], pix_gravados: gravados, anexos_pendentes: count ?? 0 });
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     console.error("omie-pix-sync error:", msg);

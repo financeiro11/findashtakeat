@@ -14,6 +14,7 @@ type Lanc = {
   valor: number;
   descricao: string | null;
   favorecido: string | null;
+  cnpj_cpf: string | null;
   conta_corrente: string | null;
   categoria_codigo: string | null;
   categoria: string | null;
@@ -87,19 +88,20 @@ export default function BasePix() {
     setSyncing(true);
     toast.message(`Sincronizando PIX de ${referenciaLabel(referencia)} com o Omie…`);
     try {
-      // 1) Grava os lançamentos do mês (rápido, sem anexos).
+      // 1) Grava os lançamentos do mês (rápido, sem chamadas por título).
       const d = await invocar({ action: "sync", referencia });
-      toast.success(`${d.pix_gravados} lançamentos gravados. Buscando comprovantes…`);
+      toast.success(`${d.pix_gravados} lançamentos gravados. Buscando fornecedores e comprovantes…`);
       await load();
 
-      // 2) Preenche os comprovantes em lotes até zerar (evita o timeout do wall-time).
+      // 2) Enriquece (nome do fornecedor + comprovante) em lotes até zerar — evita o timeout.
       let restantes = Number(d.anexos_pendentes ?? 0);
       let seguranca = 0;
-      while (restantes > 0 && seguranca < 100) {
-        const a = await invocar({ action: "anexos", referencia, limite: 150 });
+      while (restantes > 0 && seguranca < 150) {
+        const a = await invocar({ action: "anexos", referencia, limite: 100 });
         restantes = Number(a.restantes ?? 0);
         seguranca++;
-        toast.message(`Comprovantes: ${restantes} lançamento(s) restante(s)…`);
+        toast.message(`Fornecedores e comprovantes: ${restantes} restante(s)…`);
+        await load();
       }
       await load();
       toast.success("PIX sincronizado.");
@@ -138,7 +140,7 @@ export default function BasePix() {
       if (fCompr === "sem" && r.tem_comprovante) return false;
       if (fStatus !== "todos" && r.status !== fStatus) return false;
       if (q) {
-        const hay = `${r.favorecido ?? ""} ${r.descricao ?? ""} ${r.categoria ?? ""}`.toLowerCase();
+        const hay = `${r.favorecido ?? ""} ${r.cnpj_cpf ?? ""} ${r.descricao ?? ""} ${r.categoria ?? ""}`.toLowerCase();
         if (!hay.includes(q)) return false;
       }
       return true;
@@ -270,7 +272,7 @@ function PixRow({ r, onStatus }: { r: Lanc; onStatus: (r: Lanc, novo: string) =>
     <div className={cn("grid grid-cols-[100px_1.4fr_1.4fr_130px_110px_130px_140px] gap-3 px-4 py-2.5 items-center border-b border-border last:border-0 text-sm", bg)}>
       <div className="text-muted-foreground">{fmtDateBR(r.data)}</div>
       <div className="min-w-0">
-        <div className="font-medium truncate">{r.favorecido || r.descricao || "—"}</div>
+        <div className="font-medium truncate">{r.favorecido || r.cnpj_cpf || r.descricao || "—"}</div>
         {r.descricao && r.descricao !== r.favorecido && (
           <div className="text-xs text-muted-foreground truncate">{r.descricao}</div>
         )}

@@ -101,6 +101,14 @@ async function probarAnexos(nId: number | string): Promise<any[]> {
   }
   return out;
 }
+// Nome do fornecedor (Nome Fantasia > Razão Social) a partir do código do cliente Omie.
+async function consultarNomeCliente(cod: string): Promise<string | null> {
+  try {
+    const r = await omieCall<any>("geral/clientes", "ConsultarCliente", { codigo_cliente_omie: Number(cod) });
+    const nome = String(r?.nome_fantasia || r?.razao_social || "").trim();
+    return nome || null;
+  } catch (_) { return null; }
+}
 async function anexoDe(nId: number | string, cTabela: string): Promise<{ url: string; nome: string } | null> {
   try {
     const r = await omieCall<any>("geral/anexo", "ListarAnexo", { nId, cTabela, nPagina: 1, nRegPorPagina: 50 });
@@ -121,43 +129,49 @@ Deno.serve(async (req) => {
     const body = req.method === "POST" ? await req.json().catch(() => ({})) : {};
     const action = body?.action ?? "sync";
 
-    /* ================= ANEXOS (lote resumível) ================= */
+    /* ============ ENRIQUECER: anexo + nome do fornecedor (lote resumível) ============ */
     if (action === "anexos") {
       const ref: string | null = body?.referencia ? String(body.referencia) : null;
-      const limite = Math.min(Number(body?.limite ?? 150), 400);
+      const limite = Math.min(Number(body?.limite ?? 100), 300);
       const cTabela = String(body?.anexoTabela ?? "conta-pagar");
 
       let q = supabase.from("auditoria_pix_lancamentos")
-        .select("id,id_unico").eq("anexo_verificado", false).limit(limite);
+        .select("id,id_unico,cod_cliente,favorecido").eq("anexo_verificado", false).limit(limite);
       if (ref) q = q.eq("referencia", ref);
       const { data: pend, error: pendErr } = await q;
       if (pendErr) throw pendErr;
 
-      const CONC = 12;
-      let comAnexo = 0;
-      const rows = (pend ?? []) as { id: number; id_unico: string }[];
+      const CONC = 10;
+      let comAnexo = 0, nomesResolvidos = 0;
+      const rows = (pend ?? []) as { id: number; id_unico: string; cod_cliente: string | null; favorecido: string | null }[];
       for (let i = 0; i < rows.length; i += CONC) {
         const lote = rows.slice(i, i + CONC);
         await Promise.all(lote.map(async (r) => {
-          const anexo = await anexoDe(r.id_unico, cTabela);
+          // Anexo (comprovante) + nome do fornecedor em paralelo.
+          const [anexo, nome] = await Promise.all([
+            anexoDe(r.id_unico, cTabela),
+            (!r.favorecido && r.cod_cliente && r.cod_cliente !== "0")
+              ? consultarNomeCliente(r.cod_cliente) : Promise.resolve(null),
+          ]);
           if (anexo?.url) comAnexo++;
-          await supabase.from("auditoria_pix_lancamentos").update({
+          const patch: Record<string, unknown> = {
             anexo_verificado: true,
             tem_comprovante: !!anexo?.url,
             comprovante_url: anexo?.url || null,
             anexo_nome: anexo?.nome || null,
             updated_at: new Date().toISOString(),
-          }).eq("id", r.id);
+          };
+          if (nome) { patch.favorecido = nome; nomesResolvidos++; }
+          await supabase.from("auditoria_pix_lancamentos").update(patch).eq("id", r.id);
         }));
       }
 
-      // Quantos ainda faltam verificar (para o front saber se continua o loop).
       let cq = supabase.from("auditoria_pix_lancamentos")
         .select("id", { count: "exact", head: true }).eq("anexo_verificado", false);
       if (ref) cq = cq.eq("referencia", ref);
       const { count } = await cq;
 
-      return json({ ok: true, processados: rows.length, com_anexo: comAnexo, restantes: count ?? 0 });
+      return json({ ok: true, processados: rows.length, com_anexo: comAnexo, nomes_resolvidos: nomesResolvidos, restantes: count ?? 0 });
     }
 
     // preview e sync precisam de categorias + contas + movimentos.
@@ -247,28 +261,12 @@ Deno.serve(async (req) => {
       cands.push({ det, mov, codigo: c.codigo, desc: c.desc, ref, idu });
     }
 
-    // Resolve o NOME do fornecedor (Nome Fantasia) por nCodCliente — o movimento só traz
-    // o código/CNPJ. Só os códigos dos candidatos do mês (limitado), em lotes concorrentes.
-    const codigosCli = [...new Set(cands.map((x) => String(x.det.nCodCliente ?? x.det.nCodFornecedor ?? "")).filter((v) => v && v !== "0"))];
-    const nomeCli = new Map<string, string>();
-    const CC = 6;
-    for (let i = 0; i < codigosCli.length && i < 1500; i += CC) {
-      const lote = codigosCli.slice(i, i + CC);
-      await Promise.all(lote.map(async (cod) => {
-        try {
-          const r = await omieCall<any>("geral/clientes", "ConsultarCliente", { codigo_cliente_omie: Number(cod) });
-          const nome = String(r?.nome_fantasia || r?.razao_social || "").trim();
-          if (nome) nomeCli.set(cod, nome);
-        } catch (_) { /* mantém CNPJ como fallback */ }
-      }));
-    }
-
-    // 2ª passada: monta as linhas. NÃO gravamos anexos aqui (ação "anexos"); assim um
-    // re-sync não apaga comprovantes já preenchidos. Novas linhas nascem não-verificadas.
+    // 2ª passada: monta as linhas. O NOME do fornecedor (favorecido) NÃO é resolvido aqui —
+    // fica a cargo do passo em lotes (ação "anexos"), que faz o ConsultarCliente. Guardamos
+    // cod_cliente (p/ o lote resolver) e cnpj_cpf (fallback de exibição). Também não gravamos
+    // favorecido nem anexos aqui → re-sync não reverte nome/comprovante já resolvidos.
     const agora = new Date().toISOString();
     const linhas = cands.map(({ det, mov, codigo, desc, ref, idu }) => {
-      const cod = String(det.nCodCliente ?? det.nCodFornecedor ?? "");
-      const favorecido = nomeCli.get(cod) ?? limpa(det.cRazaoCliente) ?? limpa(det.cNomeCliente) ?? limpa(det.cCPFCNPJCliente);
       const dataPg = parseOmieDate(det.dDtPagamento) ?? parseOmieDate(det.dDtRegistro) ?? parseOmieDate(det.dDtEmissao);
       return {
         id_unico: idu, referencia: ref, data: dataPg ? iso(dataPg) : null,
@@ -278,7 +276,8 @@ Deno.serve(async (req) => {
           (mov as any)?.resumo?.nValMovimento, det.nValor, det.nValLiquido,
         ),
         descricao: limpa(det.cObs) ?? limpa(det.observacao) ?? limpa(det.cNumDocFiscal),
-        favorecido,
+        cod_cliente: limpa(det.nCodCliente ?? det.nCodFornecedor),
+        cnpj_cpf: limpa(det.cCPFCNPJCliente),
         conta_corrente: contas.map.get(String(det.nCodCC))?.nome ?? limpa(det.nCodCC),
         categoria_codigo: limpa(codigo), categoria: limpa(desc),
         gerado_em: agora, updated_at: agora,

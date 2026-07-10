@@ -299,12 +299,25 @@ export default function Achados() {
       .maybeSingle();
     const prevMatched = (prev as any)?.omie_matched_em ?? null;
 
-    supabase.functions.invoke("omie-match-cartao", { body: { action: "match" } }).catch(() => {});
+    // Dispara o cruzamento. Captura erro/resumo (não engole mais em silêncio).
+    let invokeErr: string | null = null;
+    let resumo: any = null;
+    const invokePromise = supabase.functions
+      .invoke("omie-match-cartao", { body: { action: "match" } })
+      .then(({ data, error }) => {
+        if (error) invokeErr = error.message;
+        else if ((data as any)?.error) invokeErr = (data as any).error;
+        else resumo = data;
+      })
+      .catch((e) => { invokeErr = e?.message || String(e); });
 
+    // Acompanha por omie_matched_em (o sync leva ~1–2 min e o invoke pode estourar timeout de rede).
     const deadline = Date.now() + 180000;
     let done = false;
     while (Date.now() < deadline && !done) {
       await new Promise((r) => setTimeout(r, 4000));
+      if (invokeErr) break;                 // erro do backend → para na hora
+      if (resumo) { done = true; break; }   // invoke retornou o resumo
       const { data } = await supabase
         .from("auditoria_cartao_lancamentos")
         .select("omie_matched_em")
@@ -314,9 +327,25 @@ export default function Achados() {
       const latest = (data as any)?.omie_matched_em ?? null;
       if (latest && latest !== prevMatched) done = true;
     }
-    if (done) toast.success("Cruzamento com o Omie concluído.");
-    else toast.message("Ainda cruzando em segundo plano. Recarregando o que já temos…");
-    await load();
+    await invokePromise.catch(() => {});
+
+    if (invokeErr) {
+      toast.error(
+        String(invokeErr).includes("Function not found") || String(invokeErr).includes("404")
+          ? "A função omie-match-cartao ainda não foi publicada no Supabase (aguarde o deploy do Lovable)."
+          : "Falha ao cruzar com o Omie: " + invokeErr,
+      );
+    } else if (done) {
+      if (resumo && typeof resumo.casados === "number") {
+        toast.success(`Cruzamento concluído · ${resumo.casados} casados (${resumo.alta}/${resumo.media}/${resumo.baixa}) · ${resumo.sem_match} sem match`);
+      } else {
+        toast.success("Cruzamento com o Omie concluído.");
+      }
+      await load();
+    } else {
+      toast.message("Ainda cruzando em segundo plano. Recarregue em instantes.");
+      await load();
+    }
     setCruzando(false);
   };
 

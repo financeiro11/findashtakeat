@@ -21,6 +21,7 @@ const inicio: NavItem[] = [
 ];
 
 const operacional: NavItem[] = [
+  { title: "Asaas", url: "/asaas", icon: CreditCard },
   { title: "Planilhamento", url: "/planilhamento/conta-corrente", icon: Wallet },
   { title: "Parceiros", url: "/operacional/parceiros", icon: HandshakeIcon },
   { title: "Reembolsos", url: "/operacional/reembolsos", icon: Receipt },

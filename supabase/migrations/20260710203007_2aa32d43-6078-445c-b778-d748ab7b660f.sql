@@ -1,0 +1,1 @@
+ALTER TABLE public.auditoria_pix_lancamentos ADD COLUMN IF NOT EXISTS cod_cliente text; ALTER TABLE public.auditoria_pix_lancamentos ADD COLUMN IF NOT EXISTS cnpj_cpf text;

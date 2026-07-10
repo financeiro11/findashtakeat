@@ -300,7 +300,12 @@ Deno.serve(async (req) => {
 
     return json({ ok: true, referencia: refFiltro ?? "todos", contas_sicoob: [...sicoobIds], pix_gravados: gravados, anexos_pendentes: count ?? 0 });
   } catch (e) {
-    const msg = e instanceof Error ? e.message : String(e);
+    // Erros do Supabase (PostgrestError) não são Error → extrair message/details/hint
+    // para não virar "[object Object]".
+    const msg = e instanceof Error ? e.message
+      : (e && typeof e === "object")
+        ? ([(e as any).message, (e as any).details, (e as any).hint].filter(Boolean).join(" — ") || JSON.stringify(e))
+        : String(e);
     console.error("omie-pix-sync error:", msg);
     return json({ error: msg }, 200);
   }

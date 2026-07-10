@@ -66,21 +66,29 @@ export default function BasePix() {
   };
   useEffect(() => { load(); }, []);
 
+  // Garante string legível de qualquer erro (objeto, PostgrestError, etc.).
+  const comoTexto = (v: any): string => {
+    if (v == null) return "";
+    if (typeof v === "string") return v;
+    return [v.message, v.details, v.hint].filter(Boolean).join(" — ") || (() => { try { return JSON.stringify(v); } catch { return String(v); } })();
+  };
+
   // Invoca a função e extrai o erro real do FunctionsHttpError (corpo em error.context).
   const invocar = async (payload: Record<string, unknown>) => {
     const { data, error } = await supabase.functions.invoke("omie-pix-sync", { body: payload });
     if (error) {
-      let detalhe = error.message || "";
+      let detalhe = comoTexto(error.message) || "";
       const ctx: any = (error as any).context;
       if (ctx && typeof ctx.text === "function") {
-        try { const raw = await ctx.text(); detalhe = JSON.parse(raw)?.error || raw || detalhe; } catch { /* keep */ }
+        try { const raw = await ctx.text(); const p = JSON.parse(raw); detalhe = comoTexto(p?.error) || raw || detalhe; } catch { /* keep */ }
       }
       console.error("[omie-pix-sync]", detalhe, error);
       if (/not found|Failed to (send|fetch)/i.test(detalhe)) throw new Error("A função omie-pix-sync ainda não foi publicada no Supabase (deploy pendente pelo Lovable).");
       if (/OMIE_APP_KEY|OMIE_APP_SECRET|Credenciais do Omie/i.test(detalhe)) throw new Error("Faltam os secrets OMIE_APP_KEY / OMIE_APP_SECRET no Supabase.");
+      if (/cod_cliente|cnpj_cpf|column .* does not exist/i.test(detalhe)) throw new Error("A migration nova (colunas cod_cliente/cnpj_cpf) ainda não foi aplicada no Supabase.");
       throw new Error(detalhe || "Erro no backend.");
     }
-    if ((data as any)?.error) throw new Error((data as any).error);
+    if ((data as any)?.error) throw new Error(comoTexto((data as any).error));
     return data as any;
   };
 

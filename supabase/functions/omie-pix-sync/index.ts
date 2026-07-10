@@ -140,19 +140,25 @@ Deno.serve(async (req) => {
       if (ref) q = q.eq("referencia", ref);
       const { data: pend, error: pendErr } = await q;
       if (pendErr) throw pendErr;
-
-      const CONC = 10;
-      let comAnexo = 0, nomesResolvidos = 0;
       const rows = (pend ?? []) as { id: number; id_unico: string; cod_cliente: string | null; favorecido: string | null }[];
-      for (let i = 0; i < rows.length; i += CONC) {
-        const lote = rows.slice(i, i + CONC);
+
+      // 1) Nome do fornecedor: resolve os códigos DISTINTOS que ainda faltam nome (dedup →
+      //    bem menos chamadas ao Omie que resolver por linha).
+      const distintos = [...new Set(rows.filter((r) => !r.favorecido && r.cod_cliente && r.cod_cliente !== "0").map((r) => String(r.cod_cliente)))];
+      const nomeCache = new Map<string, string>();
+      const CN = 4;
+      for (let i = 0; i < distintos.length; i += CN) {
+        const lote = distintos.slice(i, i + CN);
+        await Promise.all(lote.map(async (cod) => { const n = await consultarNomeCliente(cod); if (n) nomeCache.set(cod, n); }));
+      }
+
+      // 2) Anexo (comprovante) por linha + grava (nome vem do cache).
+      const CA = 6;
+      let comAnexo = 0, nomesResolvidos = 0;
+      for (let i = 0; i < rows.length; i += CA) {
+        const lote = rows.slice(i, i + CA);
         await Promise.all(lote.map(async (r) => {
-          // Anexo (comprovante) + nome do fornecedor em paralelo.
-          const [anexo, nome] = await Promise.all([
-            anexoDe(r.id_unico, cTabela),
-            (!r.favorecido && r.cod_cliente && r.cod_cliente !== "0")
-              ? consultarNomeCliente(r.cod_cliente) : Promise.resolve(null),
-          ]);
+          const anexo = await anexoDe(r.id_unico, cTabela);
           if (anexo?.url) comAnexo++;
           const patch: Record<string, unknown> = {
             anexo_verificado: true,
@@ -161,6 +167,7 @@ Deno.serve(async (req) => {
             anexo_nome: anexo?.nome || null,
             updated_at: new Date().toISOString(),
           };
+          const nome = !r.favorecido && r.cod_cliente ? nomeCache.get(String(r.cod_cliente)) : null;
           if (nome) { patch.favorecido = nome; nomesResolvidos++; }
           await supabase.from("auditoria_pix_lancamentos").update(patch).eq("id", r.id);
         }));
@@ -313,7 +320,14 @@ Deno.serve(async (req) => {
       gravados += lote.length;
     }
 
-    // Faltam verificar os anexos deste mês (o front chama a ação "anexos" em seguida).
+    // Re-enriquece o mês inteiro: remarca para reprocessar nome + comprovante (conserta
+    // linhas que ficaram sem nome e reverifica anexos). O favorecido já resolvido é
+    // preservado (o passo em lotes só consulta o nome quando favorecido está nulo).
+    if (refFiltro) {
+      await supabase.from("auditoria_pix_lancamentos").update({ anexo_verificado: false }).eq("referencia", refFiltro);
+    }
+
+    // Faltam enriquecer (nome + anexo) neste mês (o front chama a ação "anexos" em seguida).
     let cq = supabase.from("auditoria_pix_lancamentos")
       .select("id", { count: "exact", head: true }).eq("anexo_verificado", false);
     if (refFiltro) cq = cq.eq("referencia", refFiltro);

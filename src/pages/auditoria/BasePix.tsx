@@ -102,14 +102,20 @@ export default function BasePix() {
       await load();
 
       // 2) Enriquece (nome do fornecedor + comprovante) em lotes até zerar — evita o timeout.
+      //    Retenta falhas transitórias (o passo é resumível) antes de desistir.
       let restantes = Number(d.anexos_pendentes ?? 0);
-      let seguranca = 0;
-      while (restantes > 0 && seguranca < 150) {
-        const a = await invocar({ action: "anexos", referencia, limite: 100 });
-        restantes = Number(a.restantes ?? 0);
+      let seguranca = 0, falhas = 0;
+      while (restantes > 0 && seguranca < 300) {
+        try {
+          const a = await invocar({ action: "anexos", referencia, limite: 60 });
+          restantes = Number(a.restantes ?? 0);
+          falhas = 0;
+          toast.message(`Fornecedores e comprovantes: ${restantes} restante(s)…`);
+          await load();
+        } catch (e) {
+          if (++falhas >= 3) throw e; // desiste após 3 falhas seguidas
+        }
         seguranca++;
-        toast.message(`Fornecedores e comprovantes: ${restantes} restante(s)…`);
-        await load();
       }
       await load();
       toast.success("PIX sincronizado.");

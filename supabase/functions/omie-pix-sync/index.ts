@@ -122,6 +122,17 @@ async function consultarNomePorCnpj(cnpj: string): Promise<string | null> {
     return nome || null;
   } catch (_) { return null; }
 }
+// Lista bruta de anexos de um título (com id p/ poder excluir).
+async function listarAnexos(nId: number | string, cTabela: string): Promise<{ nIdAnexo: any; nome: string }[]> {
+  try {
+    const r = await omieCall<any>("geral/anexo", "ListarAnexo", { nId, cTabela, nPagina: 1, nRegPorPagina: 50 });
+    const arr = r?.listaAnexos ?? r?.anexos ?? r?.arquivos ?? [];
+    return (Array.isArray(arr) ? arr : []).map((a: any) => ({
+      nIdAnexo: a.nIdAnexo ?? a.nCodAnexo ?? a.nId ?? a.cCodIntAnexo,
+      nome: String(a.cNomeArquivo ?? a.nome ?? a.cArquivo ?? "anexo"),
+    }));
+  } catch (_) { return []; }
+}
 async function anexoDe(nId: number | string, cTabela: string): Promise<{ url: string; nome: string } | null> {
   try {
     const r = await omieCall<any>("geral/anexo", "ListarAnexo", { nId, cTabela, nPagina: 1, nRegPorPagina: 50 });
@@ -210,7 +221,22 @@ Deno.serve(async (req) => {
       const nome = String(body?.nome ?? "comprovante").slice(0, 120);
       const base64 = String(body?.base64 ?? "");          // conteúdo do arquivo em base64 (sem prefixo data:)
       const cTabela = String(body?.anexoTabela ?? "conta-pagar");
+      const modo = String(body?.modo ?? "");              // "", "acrescentar", "substituir"
       if (!id || !nId || !base64) return json({ error: "Parâmetros faltando (id, id_unico, base64)." }, 200);
+
+      // Se o título já tem anexo e o usuário ainda não decidiu, devolve p/ o Hub perguntar.
+      const existentes = await listarAnexos(nId, cTabela);
+      if (existentes.length > 0 && modo !== "acrescentar" && modo !== "substituir") {
+        return json({ ok: true, ja_tem_anexo: true, qtd: existentes.length, nomes: existentes.map((a) => a.nome) });
+      }
+
+      // Substituir: remove os anexos existentes antes de incluir o novo.
+      if (modo === "substituir") {
+        for (const a of existentes) {
+          if (a.nIdAnexo == null) continue;
+          try { await omieCall("geral/anexo", "ExcluirAnexo", { nId: Number(nId), cTabela, nIdAnexo: a.nIdAnexo }); } catch (_) { /* melhor-esforço */ }
+        }
+      }
 
       const ext = (nome.includes(".") ? nome.split(".").pop()! : "pdf").toLowerCase().replace(/[^a-z0-9]/g, "") || "pdf";
 
@@ -233,7 +259,7 @@ Deno.serve(async (req) => {
       }).eq("id", id);
       if (error) throw error;
 
-      return json({ ok: true, url: anexo?.url ?? null, anexo_nome: anexo?.nome ?? nome });
+      return json({ ok: true, substituido: modo === "substituir", url: anexo?.url ?? null, anexo_nome: anexo?.nome ?? nome });
     }
 
     // preview e sync precisam de categorias + contas + movimentos.

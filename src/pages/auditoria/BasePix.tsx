@@ -5,6 +5,8 @@ import { cn } from "@/lib/utils";
 import { toast } from "sonner";
 import { brl, brlAbbr, fmtDateBR } from "./utils";
 import { Search, RefreshCw, Loader2, ExternalLink, FileWarning, FileCheck2, Upload } from "lucide-react";
+import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Button } from "@/components/ui/button";
 
 type Lanc = {
   id: number;
@@ -53,6 +55,7 @@ export default function BasePix() {
   const [busca, setBusca] = useState("");
   const [page, setPage] = useState(1);
   const [uploadingId, setUploadingId] = useState<number | null>(null);
+  const [askReplace, setAskReplace] = useState<{ row: Lanc; base64: string; nome: string; nomes: string[] } | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const pendingRow = useRef<Lanc | null>(null);
 
@@ -163,8 +166,28 @@ export default function BasePix() {
     toast.message(`Enviando comprovante de ${row.favorecido || row.cnpj_cpf || "lançamento"}…`);
     try {
       const base64 = await lerBase64(file);
-      await invocar({ action: "upload", id: row.id, id_unico: row.id_unico, nome: file.name, base64 });
-      toast.success("Comprovante anexado e enviado ao Omie.");
+      const resp = await invocar({ action: "upload", id: row.id, id_unico: row.id_unico, nome: file.name, base64 });
+      if (resp?.ja_tem_anexo) {
+        // Já existe anexo no Omie → pergunta substituir/acrescentar (guarda o base64).
+        setAskReplace({ row, base64, nome: file.name, nomes: resp.nomes ?? [] });
+      } else {
+        toast.success("Comprovante anexado e enviado ao Omie.");
+        await load();
+      }
+    } catch (err: any) {
+      toast.error("Falha ao anexar: " + err.message, { duration: 8000 });
+    } finally { setUploadingId(null); }
+  };
+
+  const confirmarModo = async (modo: "substituir" | "acrescentar") => {
+    const a = askReplace;
+    if (!a) return;
+    setAskReplace(null);
+    setUploadingId(a.row.id);
+    toast.message(modo === "substituir" ? "Substituindo comprovante no Omie…" : "Acrescentando comprovante no Omie…");
+    try {
+      await invocar({ action: "upload", id: a.row.id, id_unico: a.row.id_unico, nome: a.nome, base64: a.base64, modo });
+      toast.success(modo === "substituir" ? "Comprovante substituído no Omie." : "Comprovante acrescentado no Omie.");
       await load();
     } catch (err: any) {
       toast.error("Falha ao anexar: " + err.message, { duration: 8000 });
@@ -211,6 +234,23 @@ export default function BasePix() {
   return (
     <div className="mx-auto max-w-[1400px] px-6 pt-3 pb-6 space-y-5">
       <input ref={fileRef} type="file" accept=".pdf,.jpg,.jpeg,.png,application/pdf,image/jpeg,image/png" hidden onChange={onArquivo} />
+
+      <Dialog open={!!askReplace} onOpenChange={(o) => { if (!o) setAskReplace(null); }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Este lançamento já tem comprovante no Omie</DialogTitle>
+          </DialogHeader>
+          <p className="text-sm text-muted-foreground">
+            Já existe {askReplace?.nomes.length ?? 0} anexo(s) neste título{askReplace?.nomes.length ? `: ${askReplace.nomes.join(", ")}` : ""}.
+            {" "}O que deseja fazer com <b>{askReplace?.nome}</b>?
+          </p>
+          <DialogFooter className="gap-2 sm:gap-2">
+            <Button variant="outline" onClick={() => confirmarModo("acrescentar")}>Acrescentar</Button>
+            <Button onClick={() => confirmarModo("substituir")}>Substituir</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
       <div className="flex items-end justify-between gap-4 flex-wrap">
         <div>
           <div className="text-[11px] uppercase tracking-wider text-muted-foreground font-medium">Hub Financeiro · Governança</div>
@@ -329,16 +369,26 @@ function PixRow({ r, onStatus, onAnexar, uploading }: { r: Lanc; onStatus: (r: L
       <div className="text-right num font-medium">{brl(Number(r.valor || 0))}</div>
       <div>
         {r.tem_comprovante ? (
-          r.comprovante_url ? (
-            <a href={r.comprovante_url} target="_blank" rel="noreferrer"
-              className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-medium border bg-[hsl(152_55%_94%)] text-[hsl(152_60%_28%)] border-[hsl(152_55%_82%)] hover:underline">
-              <FileCheck2 className="h-3 w-3" /> abrir <ExternalLink className="h-2.5 w-2.5" />
-            </a>
-          ) : (
-            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-medium border bg-[hsl(152_55%_94%)] text-[hsl(152_60%_28%)] border-[hsl(152_55%_82%)]">
-              <FileCheck2 className="h-3 w-3" /> tem
-            </span>
-          )
+          <div className="flex items-center gap-1.5">
+            {r.comprovante_url ? (
+              <a href={r.comprovante_url} target="_blank" rel="noreferrer"
+                className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-medium border bg-[hsl(152_55%_94%)] text-[hsl(152_60%_28%)] border-[hsl(152_55%_82%)] hover:underline">
+                <FileCheck2 className="h-3 w-3" /> abrir <ExternalLink className="h-2.5 w-2.5" />
+              </a>
+            ) : (
+              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-medium border bg-[hsl(152_55%_94%)] text-[hsl(152_60%_28%)] border-[hsl(152_55%_82%)]">
+                <FileCheck2 className="h-3 w-3" /> tem
+              </span>
+            )}
+            <button
+              onClick={() => onAnexar(r)}
+              disabled={uploading}
+              title="Anexar outro / substituir"
+              className="inline-flex items-center justify-center h-5 w-5 rounded-full border border-border text-muted-foreground hover:bg-accent disabled:opacity-60"
+            >
+              {uploading ? <Loader2 className="h-3 w-3 animate-spin" /> : <Upload className="h-3 w-3" />}
+            </button>
+          </div>
         ) : (
           <button
             onClick={() => onAnexar(r)}

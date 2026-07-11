@@ -1,10 +1,10 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
 import { brl, brlAbbr, fmtDateBR } from "./utils";
-import { Search, RefreshCw, Loader2, ExternalLink, FileWarning, FileCheck2 } from "lucide-react";
+import { Search, RefreshCw, Loader2, ExternalLink, FileWarning, FileCheck2, Upload } from "lucide-react";
 
 type Lanc = {
   id: number;
@@ -52,6 +52,9 @@ export default function BasePix() {
   const [fStatus, setFStatus] = useState("todos");
   const [busca, setBusca] = useState("");
   const [page, setPage] = useState(1);
+  const [uploadingId, setUploadingId] = useState<number | null>(null);
+  const fileRef = useRef<HTMLInputElement>(null);
+  const pendingRow = useRef<Lanc | null>(null);
 
   const load = async () => {
     setLoading(true);
@@ -138,6 +141,36 @@ export default function BasePix() {
   };
 
   // Opções de mês: últimos 18 + qualquer mês que já tenha dados (mesmo mais antigo).
+  // Anexar comprovante: lê o arquivo, envia à função (que anexa no Omie) e recarrega.
+  const abrirSeletor = (row: Lanc) => { pendingRow.current = row; fileRef.current?.click(); };
+  const lerBase64 = (file: File) => new Promise<string>((res, rej) => {
+    const r = new FileReader();
+    r.onload = () => { const s = String(r.result || ""); res(s.slice(s.indexOf(",") + 1)); };
+    r.onerror = () => rej(r.error ?? new Error("Falha ao ler o arquivo"));
+    r.readAsDataURL(file);
+  });
+  const onArquivo = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    const row = pendingRow.current;
+    pendingRow.current = null;
+    if (!file || !row) return;
+    if (!/\.(pdf|jpe?g|png)$/i.test(file.name) && !/^(application\/pdf|image\/(jpeg|png))$/.test(file.type)) {
+      return toast.error("Formato inválido. Use PDF, JPG ou PNG.");
+    }
+    if (file.size > 6 * 1024 * 1024) return toast.error("Arquivo acima de 6 MB.");
+    setUploadingId(row.id);
+    toast.message(`Enviando comprovante de ${row.favorecido || row.cnpj_cpf || "lançamento"}…`);
+    try {
+      const base64 = await lerBase64(file);
+      await invocar({ action: "upload", id: row.id, id_unico: row.id_unico, nome: file.name, base64 });
+      toast.success("Comprovante anexado e enviado ao Omie.");
+      await load();
+    } catch (err: any) {
+      toast.error("Falha ao anexar: " + err.message, { duration: 8000 });
+    } finally { setUploadingId(null); }
+  };
+
   const referencias = useMemo(() => {
     const set = new Set<string>([...ultimosMeses(18), ...rows.map(r => r.referencia).filter(Boolean)]);
     return Array.from(set).sort().reverse();
@@ -177,6 +210,7 @@ export default function BasePix() {
 
   return (
     <div className="mx-auto max-w-[1400px] px-6 pt-3 pb-6 space-y-5">
+      <input ref={fileRef} type="file" accept=".pdf,.jpg,.jpeg,.png,application/pdf,image/jpeg,image/png" hidden onChange={onArquivo} />
       <div className="flex items-end justify-between gap-4 flex-wrap">
         <div>
           <div className="text-[11px] uppercase tracking-wider text-muted-foreground font-medium">Hub Financeiro · Governança</div>
@@ -261,7 +295,7 @@ export default function BasePix() {
           <div className="p-12 text-center text-sm text-muted-foreground">Nenhum lançamento com esses filtros.</div>
         ) : (
           <>
-            {paged.map(r => <PixRow key={r.id} r={r} onStatus={mudarStatus} />)}
+            {paged.map(r => <PixRow key={r.id} r={r} onStatus={mudarStatus} onAnexar={abrirSeletor} uploading={uploadingId === r.id} />)}
             {totalPages > 1 && (
               <div className="flex items-center justify-between px-4 py-3 text-xs text-muted-foreground border-t border-border">
                 <div>Página {page} de {totalPages} · {filtered.length} lançamentos</div>
@@ -280,7 +314,7 @@ export default function BasePix() {
   );
 }
 
-function PixRow({ r, onStatus }: { r: Lanc; onStatus: (r: Lanc, novo: string) => void }) {
+function PixRow({ r, onStatus, onAnexar, uploading }: { r: Lanc; onStatus: (r: Lanc, novo: string) => void; onAnexar: (r: Lanc) => void; uploading: boolean }) {
   const bg = !r.tem_comprovante ? "bg-[hsl(0_80%_97%)]" : "";
   return (
     <div className={cn("grid grid-cols-[100px_1.4fr_1.4fr_130px_110px_130px_140px] gap-3 px-4 py-2.5 items-center border-b border-border last:border-0 text-sm", bg)}>
@@ -306,9 +340,15 @@ function PixRow({ r, onStatus }: { r: Lanc; onStatus: (r: Lanc, novo: string) =>
             </span>
           )
         ) : (
-          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-medium border bg-[hsl(0_80%_96%)] text-[hsl(0_72%_38%)] border-[hsl(0_80%_88%)]">
-            <FileWarning className="h-3 w-3" /> sem
-          </span>
+          <button
+            onClick={() => onAnexar(r)}
+            disabled={uploading}
+            title="Anexar comprovante (envia ao Omie)"
+            className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-medium border bg-[hsl(0_80%_96%)] text-[hsl(0_72%_38%)] border-[hsl(0_80%_88%)] hover:bg-[hsl(0_80%_92%)] disabled:opacity-60"
+          >
+            {uploading ? <Loader2 className="h-3 w-3 animate-spin" /> : <Upload className="h-3 w-3" />}
+            {uploading ? "enviando…" : "anexar"}
+          </button>
         )}
       </div>
       <div>

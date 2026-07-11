@@ -22,6 +22,8 @@
 //   "anexos"  → preenche comprovantes de um LOTE de lançamentos ainda não verificados.
 //               Params: { referencia?: "YYYY-MM", limite?: number, anexoTabela?: string }
 //               Chame repetidamente até `restantes` = 0.
+//   "upload"  → anexa um comprovante (base64) no título do Omie e marca a linha como
+//               Aprovada. Params: { id, id_unico, nome, base64, anexoTabela? }
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { listarCategorias, listarMovimentos, omieCall } from "../_shared/omie.ts";
@@ -199,6 +201,39 @@ Deno.serve(async (req) => {
       const { count } = await cq;
 
       return json({ ok: true, processados: rows.length, com_anexo: comAnexo, nomes_resolvidos: nomesResolvidos, restantes: count ?? 0 });
+    }
+
+    /* ============ UPLOAD: anexa comprovante no Hub e envia ao Omie ============ */
+    if (action === "upload") {
+      const id = Number(body?.id);
+      const nId = String(body?.id_unico ?? "");          // nCodTitulo (conta a pagar)
+      const nome = String(body?.nome ?? "comprovante").slice(0, 120);
+      const base64 = String(body?.base64 ?? "");          // conteúdo do arquivo em base64 (sem prefixo data:)
+      const cTabela = String(body?.anexoTabela ?? "conta-pagar");
+      if (!id || !nId || !base64) return json({ error: "Parâmetros faltando (id, id_unico, base64)." }, 200);
+
+      const ext = (nome.includes(".") ? nome.split(".").pop()! : "pdf").toLowerCase().replace(/[^a-z0-9]/g, "") || "pdf";
+
+      // Anexa no título correspondente do Omie (contas a pagar).
+      await omieCall("geral/anexo", "IncluirAnexo", {
+        cCodIntAnexo: `hub-${nId}-${Date.now()}`,
+        cTabela, nId: Number(nId),
+        cNomeArquivo: nome, cTipoArquivo: ext, cArquivo: base64,
+      });
+
+      // Recupera o link do anexo recém-incluído e atualiza a linha (status → Aprovado).
+      const anexo = await anexoDe(nId, cTabela);
+      const { error } = await supabase.from("auditoria_pix_lancamentos").update({
+        tem_comprovante: true,
+        comprovante_url: anexo?.url || null,
+        anexo_nome: anexo?.nome || nome,
+        anexo_verificado: true,
+        status: "Aprovado",
+        updated_at: new Date().toISOString(),
+      }).eq("id", id);
+      if (error) throw error;
+
+      return json({ ok: true, url: anexo?.url ?? null, anexo_nome: anexo?.nome ?? nome });
     }
 
     // preview e sync precisam de categorias + contas + movimentos.

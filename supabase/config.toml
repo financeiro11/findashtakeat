@@ -1,4 +1,6 @@
 project_id = "lgcxyxyidoirqmbdlldh"
 
+# delete-user exige JWT válido no gateway (defesa em profundidade) — além do
+# guard interno requireUser, que também bloqueia o cargo "parcerias".
 [functions.delete-user]
-verify_jwt = false
+verify_jwt = true

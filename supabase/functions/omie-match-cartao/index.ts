@@ -13,6 +13,7 @@
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { listarCategorias, listarMovimentos } from "../_shared/omie.ts";
+import { requireUser } from "../_shared/auth.ts";
 
 // Normalização e semelhança de texto (mesma lógica de src/lib/normalize.ts).
 function normalize(s: string): string {
@@ -67,6 +68,7 @@ Deno.serve(async (req) => {
   const supabase = createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!);
 
   try {
+    await requireUser(req, { bloquearCargos: ["parcerias"] });
     const body = req.method === "POST" ? await req.json().catch(() => ({})) : {};
     const action = body?.action ?? "match";
     const maxDias = Number(body?.maxDias ?? 10);

@@ -5,9 +5,11 @@ import ReactMarkdown from "react-markdown";
 import { SectionCard } from "@/components/ui/section-card";
 import { cn } from "@/lib/utils";
 import { openAIAssistant } from "@/components/AIAssistant";
+import { useAuth } from "@/hooks/useAuth";
+import { Link } from "react-router-dom";
 import {
   Sparkles, RefreshCw, Loader2, CalendarDays, AlertTriangle, Mail,
-  Clock, ArrowRight, Newspaper, CalendarClock,
+  Clock, ArrowRight, Newspaper, CalendarClock, ListChecks, CheckCircle2,
 } from "lucide-react";
 
 /* ------------------------------ tipos (JSONB) ------------------------------ */
@@ -39,6 +41,7 @@ type Briefing = {
   noticias: Noticias | null;
   gerado_em: string;
 };
+type TarefaBrief = { id: string; titulo: string; responsavel: string | null; status: string; prioridade: string; prazo: string | null };
 
 const sb = supabase as any;
 
@@ -50,6 +53,25 @@ const fmtDDMM = (d: Date) => `${String(d.getDate()).padStart(2, "0")}/${String(d
 const fmtDDMMYYYY = (d: Date) => `${fmtDDMM(d)}/${d.getFullYear()}`;
 const fmtHoraBRT = (iso: string) =>
   new Date(iso).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit", timeZone: "America/Sao_Paulo" });
+/** data do dia (YYYY-MM-DD) no fuso BRT — usada para casar com tarefas.prazo (date). */
+const isoDateBRT = (iso: string) => new Date(iso).toLocaleDateString("en-CA", { timeZone: "America/Sao_Paulo" });
+
+/* mesma normalização de responsável usada na página Tarefas (prefixo do nome) */
+const normalizeResp = (v?: string | null) => {
+  const s = (v || "").trim().toLowerCase();
+  if (s.startsWith("henr")) return "Henrique";
+  if (s.startsWith("jul") || s.startsWith("júl")) return "Júlia";
+  return (v || "").trim() || "—";
+};
+const iniciais = (nome?: string | null) => {
+  if (!nome) return "—";
+  const p = nome.trim().split(/\s+/);
+  return ((p[0]?.[0] || "") + (p[1]?.[0] || "")).toUpperCase();
+};
+const PRIO_ORDER: Record<string, number> = { "Urgente": 3, "Alta": 2, "Média": 1, "Baixa": 0 };
+const PRIO_DOT_B: Record<string, string> = {
+  "Baixa": "bg-muted-foreground", "Média": "bg-amber-500", "Alta": "bg-red-600", "Urgente": "bg-primary",
+};
 
 /* --------------------------- cores / estilos por tipo --------------------------- */
 const CORES_PESSOA: Record<string, string> = {
@@ -91,9 +113,11 @@ const mdComponents = {
 };
 
 export default function Briefing() {
+  const { profile } = useAuth();
   const [b, setB] = useState<Briefing | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [tarefas, setTarefas] = useState<TarefaBrief[]>([]);
 
   async function carregar(silencioso = false): Promise<Briefing | null> {
     if (!silencioso) setLoading(true);
@@ -110,6 +134,21 @@ export default function Briefing() {
     return row;
   }
   useEffect(() => { carregar(); }, []);
+
+  // Tarefas com prazo para o dia do briefing (busca ao vivo — independe da skill).
+  useEffect(() => {
+    if (!b) { setTarefas([]); return; }
+    const dia = b.agenda?.data ?? isoDateBRT(b.gerado_em);
+    let cancelado = false;
+    (async () => {
+      const { data } = await sb
+        .from("tarefas")
+        .select("id,titulo,responsavel,status,prioridade,prazo")
+        .eq("prazo", dia);
+      if (!cancelado) setTarefas((data as TarefaBrief[]) ?? []);
+    })();
+    return () => { cancelado = true; };
+  }, [b]);
 
   async function regerar() {
     // A geração real roda na tarefa agendada das 09:00 (skill com Gmail/Agenda/WebSearch).
@@ -158,12 +197,13 @@ export default function Briefing() {
     );
   }
 
-  return <BriefingView b={b} onRegerar={regerar} onAprofundar={aprofundar} refreshing={refreshing} />;
+  return <BriefingView b={b} tarefas={tarefas} meNome={profile?.nome ?? null} onRegerar={regerar} onAprofundar={aprofundar} refreshing={refreshing} />;
 }
 
 /* ============================================================================ */
-function BriefingView({ b, onRegerar, onAprofundar, refreshing }: {
-  b: Briefing; onRegerar: () => void; onAprofundar: () => void; refreshing: boolean;
+function BriefingView({ b, tarefas, meNome, onRegerar, onAprofundar, refreshing }: {
+  b: Briefing; tarefas: TarefaBrief[]; meNome: string | null;
+  onRegerar: () => void; onAprofundar: () => void; refreshing: boolean;
 }) {
   const ag = b.agenda ?? {};
   const em = b.emails ?? {};
@@ -171,7 +211,7 @@ function BriefingView({ b, onRegerar, onAprofundar, refreshing }: {
   const temEstruturado = !!(b.agenda || b.emails || b.noticias);
 
   /* ---------------- cabeçalho: data + janela ---------------- */
-  const dataHoje = ag.data ? parseLocal(ag.data) : parseLocal(b.periodo_fim);
+  const dataHoje = parseLocal(ag.data ?? isoDateBRT(b.gerado_em));
   const diaSemana = ag.dia_semana ?? DIAS_SEMANA[dataHoje.getDay()];
   const ini = parseLocal(b.periodo_inicio), fim = parseLocal(b.periodo_fim);
   const janelaLabel = b.periodo_inicio === b.periodo_fim
@@ -185,6 +225,19 @@ function BriefingView({ b, onRegerar, onAprofundar, refreshing }: {
   const emailItens = em.itens ?? [];
   const vencemSemana = em.vencem_semana ?? emailItens.filter((i) => i.vence_em).length;
   const prox = ag.proximo_evento;
+
+  /* ---------------- tarefas com prazo hoje (você + Júlia) ---------------- */
+  const meNorm = normalizeResp(meNome);
+  const alvos = Array.from(new Set([meNorm && meNorm !== "—" ? meNorm : "Henrique", "Júlia"]));
+  const tarefasPorPessoa = alvos.map((alvo) => ({
+    alvo,
+    nome: alvo === meNorm ? (meNome?.split(/\s+/)[0] || alvo) : alvo,
+    ehVoce: alvo === meNorm,
+    itens: tarefas
+      .filter((t) => normalizeResp(t.responsavel) === alvo)
+      .sort((a, z) => (PRIO_ORDER[z.prioridade] ?? 0) - (PRIO_ORDER[a.prioridade] ?? 0)),
+  }));
+  const totalTarefas = tarefasPorPessoa.reduce((s, p) => s + p.itens.length, 0);
 
   return (
     <div className="space-y-4 p-4 md:p-6">
@@ -392,6 +445,56 @@ function BriefingView({ b, onRegerar, onAprofundar, refreshing }: {
           </div>
         </SectionCard>
       )}
+
+      {/* ---------------- Tarefas com prazo para hoje ---------------- */}
+      <SectionCard
+        title={<span className="flex items-center gap-2"><ListChecks className="h-4 w-4 text-muted-foreground" /> Tarefas com prazo para hoje</span>}
+        subtitle={`${totalTarefas} tarefa${totalTarefas === 1 ? "" : "s"} · você e Júlia · vence ${fmtDDMM(dataHoje)}`}
+        actions={<Link to="/tarefas" className="inline-flex items-center gap-1 text-[11px] font-medium text-primary hover:underline">Abrir Tarefas <ArrowRight className="h-3 w-3" /></Link>}
+      >
+        {totalTarefas === 0 ? (
+          <div className="py-4 text-center text-[12.5px] text-muted-foreground">Nenhuma tarefa com prazo para hoje para você ou a Júlia.</div>
+        ) : (
+          <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+            {tarefasPorPessoa.map((p) => (
+              <div key={p.alvo} className="space-y-2">
+                <div className="flex items-center gap-2">
+                  <span className={cn("flex h-6 w-6 items-center justify-center rounded-full text-[10px] font-bold", p.ehVoce ? "bg-primary/10 text-primary" : "bg-emerald-500/15 text-emerald-600 dark:text-emerald-400")}>
+                    {iniciais(p.nome)}
+                  </span>
+                  <span className="text-[12.5px] font-semibold text-foreground">{p.nome}</span>
+                  {p.ehVoce && <span className="rounded bg-secondary px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wider text-muted-foreground">você</span>}
+                  <span className="num text-[11px] text-muted-foreground">· {p.itens.length}</span>
+                </div>
+                {p.itens.length === 0 ? (
+                  <div className="rounded-md border border-dashed border-border px-3 py-2 text-[11.5px] text-muted-foreground">Sem tarefas para hoje.</div>
+                ) : (
+                  <ul className="space-y-1.5">
+                    {p.itens.map((t) => {
+                      const done = t.status === "Concluído";
+                      return (
+                        <li key={t.id} className="flex items-start gap-2 rounded-md border border-border bg-card px-2.5 py-2">
+                          <span className={cn("mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full", PRIO_DOT_B[t.prioridade] ?? "bg-muted-foreground")} />
+                          <div className="min-w-0 flex-1">
+                            <div className={cn("text-[12.5px] font-medium leading-snug", done ? "text-muted-foreground line-through" : "text-foreground")}>{t.titulo}</div>
+                            <div className="mt-0.5 flex items-center gap-1.5 text-[10.5px] text-muted-foreground">
+                              <span>{t.prioridade}</span>
+                              <span>·</span>
+                              <span className="inline-flex items-center gap-1">
+                                {done && <CheckCircle2 className="h-3 w-3 text-emerald-500" />}{t.status}
+                              </span>
+                            </div>
+                          </div>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+      </SectionCard>
 
       <div className="pt-1 text-center text-[11px] text-muted-foreground">
         Gerado automaticamente às {fmtHoraBRT(b.gerado_em)} · publicado no Hub (Supabase · <span className="num">briefing_diario</span>)

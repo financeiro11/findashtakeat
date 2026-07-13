@@ -1050,6 +1050,24 @@ export type Database = {
         }
         Relationships: []
       }
+      internal_cron_tokens: {
+        Row: {
+          criado_em: string
+          name: string
+          token: string
+        }
+        Insert: {
+          criado_em?: string
+          name: string
+          token?: string
+        }
+        Update: {
+          criado_em?: string
+          name?: string
+          token?: string
+        }
+        Relationships: []
+      }
       lib_cargos: {
         Row: {
           created_at: string
@@ -1358,6 +1376,72 @@ export type Database = {
             referencedColumns: ["id"]
           },
         ]
+      }
+      omie_caixa_conta: {
+        Row: {
+          atualizado_em: string
+          banco: string | null
+          id: number
+          incluir: boolean
+          ncodcc: string
+          nome: string | null
+          nome_exibicao: string | null
+          ordem: number
+          saldo: number
+          saldo_inicial: number
+          subtitulo: string | null
+        }
+        Insert: {
+          atualizado_em?: string
+          banco?: string | null
+          id?: never
+          incluir?: boolean
+          ncodcc: string
+          nome?: string | null
+          nome_exibicao?: string | null
+          ordem?: number
+          saldo?: number
+          saldo_inicial?: number
+          subtitulo?: string | null
+        }
+        Update: {
+          atualizado_em?: string
+          banco?: string | null
+          id?: never
+          incluir?: boolean
+          ncodcc?: string
+          nome?: string | null
+          nome_exibicao?: string | null
+          ordem?: number
+          saldo?: number
+          saldo_inicial?: number
+          subtitulo?: string | null
+        }
+        Relationships: []
+      }
+      omie_caixa_snapshot: {
+        Row: {
+          criado_em: string
+          dados: Json
+          gerado_em: string
+          id: number
+          sincronizado_em: string | null
+        }
+        Insert: {
+          criado_em?: string
+          dados: Json
+          gerado_em?: string
+          id?: never
+          sincronizado_em?: string | null
+        }
+        Update: {
+          criado_em?: string
+          dados?: Json
+          gerado_em?: string
+          id?: never
+          sincronizado_em?: string | null
+        }
+        Relationships: []
       }
       omie_dre_mapa: {
         Row: {

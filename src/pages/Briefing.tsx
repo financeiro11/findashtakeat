@@ -7,9 +7,10 @@ import { cn } from "@/lib/utils";
 import { openAIAssistant } from "@/components/AIAssistant";
 import { useAuth } from "@/hooks/useAuth";
 import { Link } from "react-router-dom";
+import { TaskDialog, DEFAULT_COLUMNS, type Tarefa } from "@/components/tarefas/TaskDialog";
 import {
   Sparkles, RefreshCw, Loader2, CalendarDays, AlertTriangle, Mail,
-  Clock, ArrowRight, Newspaper, CalendarClock, ListChecks, CheckCircle2,
+  Clock, ArrowRight, Newspaper, CalendarClock, ListChecks, CheckCircle2, Pencil,
 } from "lucide-react";
 
 /* ============================================================================
@@ -30,7 +31,6 @@ type Briefing = {
   noticias: any;
   gerado_em: string;
 };
-type TarefaBrief = { id: string; titulo: string; responsavel: string | null; status: string; prioridade: string; prazo: string | null };
 
 const sb = supabase as any;
 
@@ -264,7 +264,8 @@ export default function Briefing() {
   const [b, setB] = useState<Briefing | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
-  const [tarefas, setTarefas] = useState<TarefaBrief[]>([]);
+  const [tarefas, setTarefas] = useState<Tarefa[]>([]);
+  const [editing, setEditing] = useState<Tarefa | null>(null);
 
   async function carregar(silencioso = false): Promise<Briefing | null> {
     if (!silencioso) setLoading(true);
@@ -283,19 +284,25 @@ export default function Briefing() {
   useEffect(() => { carregar(); }, []);
 
   // Tarefas com prazo para o dia do briefing (busca ao vivo — independe da skill).
-  useEffect(() => {
+  async function carregarTarefas() {
     if (!b) { setTarefas([]); return; }
     const dia = b.agenda?.data ?? isoDateBRT(b.gerado_em);
-    let cancelado = false;
-    (async () => {
-      const { data } = await sb
-        .from("tarefas")
-        .select("id,titulo,responsavel,status,prioridade,prazo")
-        .eq("prazo", dia);
-      if (!cancelado) setTarefas((data as TarefaBrief[]) ?? []);
-    })();
-    return () => { cancelado = true; };
-  }, [b]);
+    const { data } = await sb
+      .from("tarefas")
+      .select("*")
+      .eq("prazo", dia)
+      .order("ordem");
+    setTarefas(((data as any[]) ?? []).map((r) => ({ ...r, subtarefas: Array.isArray(r.subtarefas) ? r.subtarefas : [] })) as Tarefa[]);
+  }
+  useEffect(() => { carregarTarefas(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [b]);
+
+  // Edição a partir do briefing: grava a alteração na tabela tarefas (otimista).
+  async function salvarTarefa(patch: Partial<Tarefa>) {
+    if (!editing) return;
+    setTarefas((ts) => ts.map((t) => (t.id === editing.id ? { ...t, ...patch } : t)));
+    const { error } = await sb.from("tarefas").update(patch as any).eq("id", editing.id);
+    if (error) toast.error("Erro ao salvar tarefa: " + error.message);
+  }
 
   async function regerar() {
     // A geração real roda na tarefa agendada das 09:00 (skill com Gmail/Agenda/WebSearch).
@@ -341,12 +348,27 @@ export default function Briefing() {
   }
 
   const vm = buildVM(b);
-  return <BriefingView b={b} vm={vm} tarefas={tarefas} meNome={profile?.nome ?? null} onRegerar={regerar} onAprofundar={aprofundar} refreshing={refreshing} />;
+  // garante que o status atual da tarefa esteja entre as opções do seletor
+  const editColumns = Array.from(new Set([...DEFAULT_COLUMNS, editing?.status].filter(Boolean))) as string[];
+  return (
+    <>
+      <BriefingView b={b} vm={vm} tarefas={tarefas} meNome={profile?.nome ?? null} onEdit={setEditing} onRegerar={regerar} onAprofundar={aprofundar} refreshing={refreshing} />
+      <TaskDialog
+        columns={editColumns}
+        open={!!editing}
+        tarefa={editing ?? undefined}
+        onClose={() => { setEditing(null); carregarTarefas(); }}
+        onSave={salvarTarefa}
+        title="Editar Tarefa"
+      />
+    </>
+  );
 }
 
 /* ============================================================================ */
-function BriefingView({ b, vm, tarefas, meNome, onRegerar, onAprofundar, refreshing }: {
-  b: Briefing; vm: VM; tarefas: TarefaBrief[]; meNome: string | null;
+function BriefingView({ b, vm, tarefas, meNome, onEdit, onRegerar, onAprofundar, refreshing }: {
+  b: Briefing; vm: VM; tarefas: Tarefa[]; meNome: string | null;
+  onEdit: (t: Tarefa) => void;
   onRegerar: () => void; onAprofundar: () => void; refreshing: boolean;
 }) {
   /* ---------------- tarefas com prazo hoje (você + Júlia) ---------------- */
@@ -593,18 +615,28 @@ function BriefingView({ b, vm, tarefas, meNome, onRegerar, onAprofundar, refresh
                     {p.itens.map((t) => {
                       const done = t.status === "Concluído";
                       return (
-                        <li key={t.id} className="flex items-start gap-2 rounded-md border border-border bg-card px-2.5 py-2">
-                          <span className={cn("mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full", PRIO_DOT_B[t.prioridade] ?? "bg-muted-foreground")} />
-                          <div className="min-w-0 flex-1">
-                            <div className={cn("text-[12.5px] font-medium leading-snug", done ? "text-muted-foreground line-through" : "text-foreground")}>{t.titulo}</div>
-                            <div className="mt-0.5 flex items-center gap-1.5 text-[10.5px] text-muted-foreground">
-                              <span>{t.prioridade}</span>
-                              <span>·</span>
-                              <span className="inline-flex items-center gap-1">
-                                {done && <CheckCircle2 className="h-3 w-3 text-emerald-500" />}{t.status}
-                              </span>
+                        <li key={t.id}>
+                          <button
+                            type="button"
+                            onClick={() => onEdit(t)}
+                            title="Clique para editar (data, prioridade, responsável…)"
+                            className="group flex w-full items-start gap-2 rounded-md border border-border bg-card px-2.5 py-2 text-left transition hover:border-primary/40 hover:bg-secondary/40"
+                          >
+                            <span className={cn("mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full", PRIO_DOT_B[t.prioridade] ?? "bg-muted-foreground")} />
+                            <div className="min-w-0 flex-1">
+                              <div className={cn("text-[12.5px] font-medium leading-snug", done ? "text-muted-foreground line-through" : "text-foreground")}>{t.titulo}</div>
+                              <div className="mt-0.5 flex items-center gap-1.5 text-[10.5px] text-muted-foreground">
+                                <span>{t.prioridade}</span>
+                                <span>·</span>
+                                <span>{t.prazo ? fmtDDMM(parseLocal(t.prazo)) : "—"}</span>
+                                <span>·</span>
+                                <span className="inline-flex items-center gap-1">
+                                  {done && <CheckCircle2 className="h-3 w-3 text-emerald-500" />}{t.status}
+                                </span>
+                              </div>
                             </div>
-                          </div>
+                            <Pencil className="mt-0.5 h-3.5 w-3.5 shrink-0 text-transparent transition group-hover:text-muted-foreground" />
+                          </button>
                         </li>
                       );
                     })}

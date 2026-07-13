@@ -15,6 +15,7 @@ type NavItem = { title: string; url: string; icon: any; badge?: string };
 
 const inicio: NavItem[] = [
   { title: "Dashboard", url: "/", icon: Home },
+  { title: "Briefing", url: "/briefing", icon: Sparkles },
   { title: "Tarefas", url: "/tarefas", icon: CheckSquare },
   { title: "Caixa", url: "/caixa", icon: Landmark, badge: "OMIE" },
   { title: "Playbook", url: "/playbook", icon: BookOpenCheck },

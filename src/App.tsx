@@ -9,6 +9,7 @@ import { ErrorBoundary } from "@/components/ErrorBoundary";
 import Dashboard from "./pages/Dashboard";
 import DashboardLegacy from "./pages/DashboardLegacy";
 import Caixa from "./pages/Caixa";
+import Briefing from "./pages/Briefing";
 import ContaCorrente from "./pages/ContaCorrente";
 import Login from "./pages/Login";
 import Usuarios from "./pages/Usuarios";
@@ -66,6 +67,7 @@ const App = () => (
             <Route element={<AppLayout />}>
               <Route path="/" element={<Dashboard />} />
               <Route path="/dashboard-legacy" element={<DashboardLegacy />} />
+              <Route path="/briefing" element={<Briefing />} />
               <Route path="/caixa" element={<Caixa />} />
               <Route path="/design-system" element={<DesignSystem />} />
               <Route path="/usuarios" element={<Usuarios />} />

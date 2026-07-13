@@ -5,6 +5,7 @@ import { toast } from "sonner";
 
 const ROUTE_MAP: Record<string, { crumbs: string[]; context?: string }> = {
   "/": { crumbs: ["Início", "Dashboard"], context: "Visão consolidada · DRE + DFC" },
+  "/caixa": { crumbs: ["Início", "Caixa"], context: "Panorama do caixa · Omie" },
   "/design-system": { crumbs: ["Início", "Design System"] },
   "/de-para": { crumbs: ["Configurações", "DE_PARA"], context: "Mapeamento de classificações" },
   "/usuarios": { crumbs: ["Configurações", "Usuários"] },

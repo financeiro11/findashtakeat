@@ -255,9 +255,14 @@ export default function Workspace() {
   const folderCount = useMemo(() => pages.filter(p => !p.archived && pages.some(c => c.parent_id === p.id)).length, [pages]);
   const totalPages = useMemo(() => pages.filter(p => !p.archived).length, [pages]);
 
+  const visibleIds = new Set(visiblePages.map(p => p.id));
   const renderTree = (parent: string | null, depth = 0): React.ReactNode => {
     const children = visiblePages
-      .filter(p => p.parent_id === parent)
+      // Na raiz, inclui "órfãos": notas cujo pai está fora do filtro atual (ex.: uma
+      // subnota oculta cujo pai não está oculto). Sem isso elas sumiriam da aba.
+      .filter(p => parent === null
+        ? (p.parent_id === null || !visibleIds.has(p.parent_id))
+        : p.parent_id === parent)
       .sort((a, b) => ((a.position ?? 0) - (b.position ?? 0)) || a.created_at.localeCompare(b.created_at));
     if (children.length === 0) return null;
     return (

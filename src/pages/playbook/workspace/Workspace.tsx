@@ -9,7 +9,7 @@ import {
   Plus, Search, Star, Archive, Trash2, Copy, ChevronRight, ChevronDown, ChevronUp,
   FileText, Loader2, Image as ImageIcon, MoreHorizontal, Clock, Sparkles, X,
   CheckCircle2, AlertTriangle, Tag, Pencil, Users, Share2, ChevronsUpDown,
-  Folder, FolderOpen, Home, ArrowLeft,
+  Folder, FolderOpen, Home, ArrowLeft, Eye, EyeOff,
 } from "lucide-react";
 import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger,
@@ -31,6 +31,7 @@ export type WorkspacePage = {
   tags: string[];
   is_favorite: boolean;
   archived: boolean;
+  oculta: boolean;
   position: number;
   created_by: string | null;
   created_by_name: string | null;
@@ -68,7 +69,7 @@ export default function Workspace() {
   const [search, setSearch] = useState("");
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [collapsedRoots, setCollapsedRoots] = useState<Set<string>>(new Set());
-  const [view, setView] = useState<"all" | "favorites" | "recents" | "archive">("all");
+  const [view, setView] = useState<"all" | "favorites" | "recents" | "archive" | "hidden">("all");
   const [saveState, setSaveState] = useState<"idle" | "saving" | "saved" | "error">("idle");
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [tagInput, setTagInput] = useState("");
@@ -197,6 +198,14 @@ export default function Workspace() {
     toast.success(next ? "Arquivada" : "Restaurada");
   }
 
+  async function toggleOculta(p: WorkspacePage) {
+    const next = !p.oculta;
+    await supabase.from("workspace_pages").update({ oculta: next } as any).eq("id", p.id);
+    setPages(prev => prev.map(x => x.id === p.id ? { ...x, oculta: next } : x));
+    if (next && selectedId === p.id) setSelectedId(null);
+    toast.success(next ? "Nota ocultada" : "Nota reexibida");
+  }
+
   async function remove(p: WorkspacePage) {
     await supabase.from("workspace_pages").delete().eq("id", p.id);
     setPages(prev => prev.filter(x => x.id !== p.id && x.parent_id !== p.id));
@@ -229,8 +238,9 @@ export default function Workspace() {
 
   // Tree filtering
   const visiblePages = useMemo(() => {
-    let arr = pages.filter(p => !p.archived);
+    let arr = pages.filter(p => !p.archived && !p.oculta);
     if (view === "favorites") arr = arr.filter(p => p.is_favorite);
+    if (view === "hidden") arr = pages.filter(p => p.oculta && !p.archived);
     if (view === "archive") arr = pages.filter(p => p.archived);
     if (view === "recents") {
       arr = [...arr].sort((a, b) => b.updated_at.localeCompare(a.updated_at)).slice(0, 15);
@@ -337,6 +347,7 @@ export default function Workspace() {
                     <DropdownMenuItem onClick={() => createPage(p.id)}><Plus className="h-3.5 w-3.5"/> Subpágina</DropdownMenuItem>
                     <DropdownMenuItem onClick={() => toggleFavorite(p)}><Star className="h-3.5 w-3.5"/> {p.is_favorite ? "Remover favorito" : "Favoritar"}</DropdownMenuItem>
                     <DropdownMenuItem onClick={() => duplicate(p)}><Copy className="h-3.5 w-3.5"/> Duplicar</DropdownMenuItem>
+                    <DropdownMenuItem onClick={() => toggleOculta(p)}>{p.oculta ? <Eye className="h-3.5 w-3.5"/> : <EyeOff className="h-3.5 w-3.5"/>} {p.oculta ? "Reexibir" : "Ocultar"}</DropdownMenuItem>
                     <DropdownMenuItem onClick={() => toggleArchive(p)}><Archive className="h-3.5 w-3.5"/> {p.archived ? "Restaurar" : "Arquivar"}</DropdownMenuItem>
                     <DropdownMenuSeparator/>
                     <DropdownMenuItem className="text-destructive focus:text-destructive" onClick={() => { setSelectedId(p.id); setConfirmDelete(true); }}>
@@ -446,6 +457,7 @@ export default function Workspace() {
               <ViewBtn active={view === "all"} onClick={() => setView("all")}>Todas</ViewBtn>
               <ViewBtn active={view === "favorites"} onClick={() => setView("favorites")}><Star className="h-3 w-3"/></ViewBtn>
               <ViewBtn active={view === "recents"} onClick={() => setView("recents")}><Clock className="h-3 w-3"/></ViewBtn>
+              <ViewBtn active={view === "hidden"} onClick={() => setView("hidden")} title="Ocultas"><EyeOff className="h-3 w-3"/></ViewBtn>
               <ViewBtn active={view === "archive"} onClick={() => setView("archive")}><Trash2 className="h-3 w-3"/></ViewBtn>
               <button className="ml-auto h-7 w-7 grid place-items-center rounded-md text-muted-foreground hover:bg-accent">
                 <ChevronsUpDown className="h-3 w-3"/>
@@ -488,7 +500,7 @@ export default function Workspace() {
           {!draft ? (
             <WorkspaceLanding
               userName={profile?.nome ?? "você"}
-              recents={[...pages].filter(p => !p.archived).sort((a,b) => b.updated_at.localeCompare(a.updated_at))}
+              recents={[...pages].filter(p => !p.archived && !p.oculta).sort((a,b) => b.updated_at.localeCompare(a.updated_at))}
               onCreate={() => createPage(null)}
               onOpen={(id) => setSelectedId(id)}
               onUseTemplate={(k) => createFromTemplate(k)}
@@ -533,6 +545,7 @@ export default function Workspace() {
                       <DropdownMenuContent align="end" className="w-48">
                         <DropdownMenuItem onClick={() => createPage(draft.id)}><Plus className="h-3.5 w-3.5"/> Subpágina</DropdownMenuItem>
                         <DropdownMenuItem onClick={() => duplicate(draft)}><Copy className="h-3.5 w-3.5"/> Duplicar</DropdownMenuItem>
+                        <DropdownMenuItem onClick={() => toggleOculta(draft)}>{draft.oculta ? <Eye className="h-3.5 w-3.5"/> : <EyeOff className="h-3.5 w-3.5"/>} {draft.oculta ? "Reexibir" : "Ocultar"}</DropdownMenuItem>
                         <DropdownMenuItem onClick={() => toggleArchive(draft)}><Archive className="h-3.5 w-3.5"/> {draft.archived ? "Restaurar" : "Arquivar"}</DropdownMenuItem>
                         <DropdownMenuSeparator/>
                         <DropdownMenuItem className="text-destructive focus:text-destructive" onClick={() => setConfirmDelete(true)}>
@@ -617,10 +630,11 @@ export default function Workspace() {
   );
 }
 
-function ViewBtn({ active, onClick, children }: { active?: boolean; onClick: () => void; children: React.ReactNode }) {
+function ViewBtn({ active, onClick, children, title }: { active?: boolean; onClick: () => void; children: React.ReactNode; title?: string }) {
   return (
     <button
       onClick={onClick}
+      title={title}
       className={cn(
         "h-7 px-2.5 inline-flex items-center justify-center gap-1 rounded-md text-[11.5px] font-medium transition-colors",
         active ? "bg-red-50 text-red-700 ring-1 ring-red-200" : "text-muted-foreground hover:bg-accent/60"

@@ -5,8 +5,10 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
-import { AlertTriangle, Download } from "lucide-react";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
+import { AlertTriangle, Download, CloudDownload, Loader2, Check } from "lucide-react";
 import { ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip, Legend, CartesianGrid } from "recharts";
+import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 
 type AreaRow = {
@@ -15,6 +17,7 @@ type AreaRow = {
   realizado: number; realizado_pessoal: number;
   saldo: number; consumido_pct: number | null;
   status: "dentro" | "atencao" | "estourado" | "sem";
+  tem_omie?: boolean;
 };
 type LinhaRow = {
   area: string; subcategoria: string; pessoal: boolean;
@@ -35,6 +38,10 @@ function brlAbbr(n: number) {
   if (abs >= 1_000_000) return `${sign}R$ ${(abs/1_000_000).toLocaleString("pt-BR",{minimumFractionDigits:2,maximumFractionDigits:2})} mi`;
   if (abs >= 1_000) return `${sign}R$ ${Math.round(abs/1_000).toLocaleString("pt-BR")} mil`;
   return brl(n);
+}
+function fmtDateTime(iso: string | null) {
+  if (!iso) return "";
+  return new Date(iso).toLocaleString("pt-BR", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" });
 }
 
 type Status = AreaRow["status"];
@@ -71,20 +78,64 @@ export default function Orcamento() {
   const [scope, setScope] = useState<"mes"|"acum">("mes");
   const [view, setView] = useState<"resumo"|"tabela">("resumo");
   const [mes, setMes] = useState<number>(5);
+  const [syncing, setSyncing] = useState(false);
+  const [applying, setApplying] = useState(false);
+  const [preview, setPreview] = useState<any | null>(null);
+  const [lastSync, setLastSync] = useState<string | null>(null);
+
+  async function recarregar() {
+    const [a, l] = await Promise.all([
+      supabase.from("vw_orcamento_area").select("*").eq("ano", ANO),
+      supabase.from("vw_orcamento_area_linha").select("*").eq("ano", ANO),
+    ]);
+    setAreaRows((a.data as any) ?? []);
+    setLinhaRows((l.data as any) ?? []);
+  }
 
   useEffect(() => {
     document.title = "FinHub · Orçamento";
     (async () => {
       setLoading(true);
-      const [a, l] = await Promise.all([
-        supabase.from("vw_orcamento_area").select("*").eq("ano", ANO),
-        supabase.from("vw_orcamento_area_linha").select("*").eq("ano", ANO),
-      ]);
-      setAreaRows((a.data as any) ?? []);
-      setLinhaRows((l.data as any) ?? []);
+      await recarregar();
+      const { data: log } = await supabase
+        .from("orcamento_omie_sync_log" as any)
+        .select("concluido_em").eq("status", "ok")
+        .order("concluido_em", { ascending: false }).limit(1).maybeSingle();
+      setLastSync((log as any)?.concluido_em ?? null);
       setLoading(false);
     })();
   }, []);
+
+  async function abrirPrevia() {
+    setSyncing(true);
+    try {
+      const { data, error } = await supabase.functions.invoke("omie-orcamento-sync", { body: { action: "preview", ano: ANO } });
+      if (error) throw error;
+      if ((data as any)?.error) throw new Error((data as any).error);
+      setPreview(data);
+    } catch (e: any) {
+      toast.error("Falha na prévia do Omie: " + (e?.message ?? String(e)));
+    } finally {
+      setSyncing(false);
+    }
+  }
+
+  async function aplicarSync() {
+    setApplying(true);
+    try {
+      const { data, error } = await supabase.functions.invoke("omie-orcamento-sync", { body: { action: "sync", ano: ANO } });
+      if (error) throw error;
+      if ((data as any)?.error) throw new Error((data as any).error);
+      toast.success(`Realizado sincronizado do Omie · ${(data as any).linhas_atualizadas} linhas atualizadas.`);
+      setPreview(null);
+      await recarregar();
+      setLastSync(new Date().toISOString());
+    } catch (e: any) {
+      toast.error("Falha ao sincronizar: " + (e?.message ?? String(e)));
+    } finally {
+      setApplying(false);
+    }
+  }
 
   const areaAgg = useMemo(() => {
     const map = new Map<string, { orcado: number; realizado: number; hasData: boolean }>();
@@ -153,11 +204,20 @@ export default function Orcamento() {
 
   return (
     <div className="px-5 py-5 space-y-5">
-      {/* Banner de aviso */}
-      <div className="flex items-center gap-2 rounded-md border border-warn/30 bg-warn-soft px-3 py-2 text-[12.5px] text-warn">
-        <AlertTriangle className="h-4 w-4 shrink-0" />
-        <span>Dados provisórios — mapeamento linha→área a validar.</span>
-      </div>
+      {/* Banner de fonte do realizado */}
+      {areaRows.some((r: any) => r.tem_omie) ? (
+        <div className="flex items-center gap-2 rounded-md border border-pos/30 bg-pos-soft px-3 py-2 text-[12.5px] text-pos">
+          <Check className="h-4 w-4 shrink-0" />
+          <span>
+            Realizado sincronizado do Omie (competência){lastSync ? ` · última sync ${fmtDateTime(lastSync)}` : ""}. Linhas sem categoria no Omie usam o tracker.
+          </span>
+        </div>
+      ) : (
+        <div className="flex items-center gap-2 rounded-md border border-warn/30 bg-warn-soft px-3 py-2 text-[12.5px] text-warn">
+          <AlertTriangle className="h-4 w-4 shrink-0" />
+          <span>Realizado do tracker (provisório). Clique em "Sincronizar com Omie" para puxar o realizado direto do ERP.</span>
+        </div>
+      )}
 
       {/* Título + controles */}
       <div className="flex flex-wrap items-end justify-between gap-3">
@@ -188,6 +248,9 @@ export default function Orcamento() {
             onChange={(v) => setView(v as "resumo"|"tabela")}
             options={[{ v: "resumo", label: "Resumo" }, { v: "tabela", label: "Tabela" }]}
           />
+          <Button variant="outline" size="sm" onClick={abrirPrevia} disabled={syncing} className="h-8 gap-1.5">
+            {syncing ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <CloudDownload className="h-3.5 w-3.5" />} Sincronizar com Omie
+          </Button>
           <Button variant="outline" size="sm" onClick={handleExport} className="h-8 gap-1.5">
             <Download className="h-3.5 w-3.5" /> Exportar
           </Button>
@@ -300,6 +363,79 @@ export default function Orcamento() {
       )}
 
       {loading && <div className="text-center text-[12px] text-muted-foreground">Carregando…</div>}
+
+      {/* Prévia da sincronização com o Omie */}
+      <Dialog open={!!preview} onOpenChange={(o) => !o && setPreview(null)}>
+        <DialogContent className="max-w-2xl max-h-[85vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>Prévia — realizado do Omie ({ANO})</DialogTitle>
+          </DialogHeader>
+          {preview && !preview.error && (
+            <div className="space-y-4">
+              <p className="text-[12.5px] text-muted-foreground">
+                {preview.movimentos} movimentos lidos (competência). Comparação do realizado atual (tracker) com o do Omie, por área. Nada é gravado até você aplicar.
+              </p>
+              <div className="overflow-hidden rounded-md border">
+                <table className="w-full text-[12.5px]">
+                  <thead className="bg-muted/60 text-muted-foreground">
+                    <tr>
+                      <th className="px-3 py-2 text-left font-semibold">Área</th>
+                      <th className="px-3 py-2 text-right font-semibold">Atual (tracker)</th>
+                      <th className="px-3 py-2 text-right font-semibold">Novo (Omie)</th>
+                      <th className="px-3 py-2 text-right font-semibold">Δ</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {preview.areas.map((a: any) => (
+                      <tr key={a.area} className="border-t border-border">
+                        <td className="px-3 py-1.5">{a.area}</td>
+                        <td className="px-3 py-1.5 text-right num">{brlAbbr(a.atual)}</td>
+                        <td className="px-3 py-1.5 text-right num">{brlAbbr(a.novo)}</td>
+                        <td className={cn("px-3 py-1.5 text-right num", a.delta > 0 ? "text-neg" : a.delta < 0 ? "text-pos" : "")}>
+                          {a.delta >= 0 ? "+" : ""}{brlAbbr(a.delta)}
+                        </td>
+                      </tr>
+                    ))}
+                    <tr className="border-t border-border bg-muted/60 font-semibold">
+                      <td className="px-3 py-1.5">Total</td>
+                      <td className="px-3 py-1.5 text-right num">{brlAbbr(preview.total_atual)}</td>
+                      <td className="px-3 py-1.5 text-right num">{brlAbbr(preview.total_novo)}</td>
+                      <td className="px-3 py-1.5 text-right num">{preview.total_novo - preview.total_atual >= 0 ? "+" : ""}{brlAbbr(preview.total_novo - preview.total_atual)}</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+              {preview.linhas_sem_fonte?.length > 0 && (
+                <div className="text-[11.5px] text-muted-foreground">
+                  <span className="font-medium text-foreground">Sem fonte no Omie (mantêm o tracker):</span> {preview.linhas_sem_fonte.join(" · ")}
+                </div>
+              )}
+              {preview.nao_mapeadas?.total > 0 && (
+                <details className="rounded-md border border-border p-2 text-[11.5px]">
+                  <summary className="cursor-pointer text-muted-foreground">
+                    Despesas do Omie fora do orçamento: {brlAbbr(preview.nao_mapeadas.total)} ({preview.nao_mapeadas.qtd} categorias)
+                  </summary>
+                  <ul className="mt-2 space-y-0.5">
+                    {preview.nao_mapeadas.top.map((x: any, i: number) => (
+                      <li key={i} className="flex justify-between gap-3">
+                        <span className="truncate">{x.descricao}</span>
+                        <span className="num shrink-0">{brlAbbr(x.valor)}</span>
+                      </li>
+                    ))}
+                  </ul>
+                </details>
+              )}
+            </div>
+          )}
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setPreview(null)}>Cancelar</Button>
+            <Button onClick={aplicarSync} disabled={applying}>
+              {applying ? <Loader2 className="mr-1.5 h-4 w-4 animate-spin" /> : <Check className="mr-1.5 h-4 w-4" />}
+              Aplicar sincronização
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

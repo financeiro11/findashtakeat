@@ -8,7 +8,32 @@
 // diferentes — o de Sheets lê células, e não entrega o binário de um arquivo. É preciso
 // conectar o Google Drive no Lovable e guardar a chave dele no secret GOOGLE_DRIVE_API_KEY.
 
-const GATEWAY_URL = "https://connector-gateway.lovable.dev/google_drive/v3";
+// O slug do conector é `google_drive` — descoberto empiricamente, porque a documentação
+// do Lovable não publica isso. As sondas provaram:
+//   • /googledrive/* e /drive/*  → 400 "connector_type_mismatch" (a credencial é de OUTRO
+//     tipo, logo esses slugs existem mas não são o nosso);
+//   • /google-drive/*            → 404 "connector_not_found" (não existe);
+//   • /google_drive/*            → 404 com o HTML de erro DO GOOGLE — ou seja, o gateway
+//     encaminhou de verdade para o Google. A rota do conector está certa; o que estava
+//     errado era o caminho DEPOIS dela (/about não é o que ele expõe).
+//
+// Como o mapeamento do prefixo também não é documentado, testamos os candidatos com uma
+// sonda que usa a capacidade central do conector (listar arquivos), e não /about — que
+// pode simplesmente não estar no escopo concedido.
+const PREFIXOS_CANDIDATOS = [
+  "https://connector-gateway.lovable.dev/google_drive/v3",
+  "https://connector-gateway.lovable.dev/google_drive",
+  "https://connector-gateway.lovable.dev/google_drive/v3/drive/v3",
+  "https://connector-gateway.lovable.dev/google_drive/drive/v3",
+];
+
+/** Sonda barata: lista 1 arquivo. Só depende da credencial, não de um arquivo específico. */
+const SONDA = "/files?pageSize=1&fields=files(id,name)&supportsAllDrives=true&includeItemsFromAllDrives=true";
+
+let baseOk: string | null = null;
+
+/** Qual prefixo o gateway aceitou (para o diagnóstico dizer o que funcionou). */
+export const baseDoDrive = (): string | null => baseOk;
 
 /** Quais secrets existem. Booleano apenas — o valor da chave nunca sai daqui. */
 export const statusDrive = (): { lovable: boolean; drive: boolean } => ({
@@ -55,27 +80,65 @@ export class ErroDrive extends Error {
   }
 }
 
-async function gw(path: string, init: RequestInit = {}, retries = 3): Promise<Response> {
-  const LOVABLE_API_KEY = Deno.env.get("LOVABLE_API_KEY");
-  const GOOGLE_DRIVE_API_KEY = Deno.env.get("GOOGLE_DRIVE_API_KEY");
-  if (!LOVABLE_API_KEY) throw new Error("LOVABLE_API_KEY não configurada nos secrets do Supabase.");
-  if (!GOOGLE_DRIVE_API_KEY) {
+function chaves(): { lovable: string; drive: string } {
+  const lovable = Deno.env.get("LOVABLE_API_KEY");
+  const drive = Deno.env.get("GOOGLE_DRIVE_API_KEY");
+  if (!lovable) throw new Error("LOVABLE_API_KEY não configurada nos secrets do Supabase.");
+  if (!drive) {
     throw new Error(
       "GOOGLE_DRIVE_API_KEY não configurada. Conecte o Google Drive no Lovable e guarde a chave da conexão nesse secret " +
       "(a chave do Sheets não serve — é outro conector).",
     );
   }
+  return { lovable, drive };
+}
+
+async function chamar(base: string, path: string, init: RequestInit = {}): Promise<Response> {
+  const { lovable, drive } = chaves();
+  return await fetch(`${base}${path}`, {
+    ...init,
+    headers: {
+      Authorization: `Bearer ${lovable}`,
+      "X-Connection-Api-Key": drive,
+      ...(init.headers || {}),
+    },
+  });
+}
+
+/**
+ * Descobre qual prefixo do gateway o Drive atende, usando a SONDA (listar 1 arquivo) —
+ * que só depende da credencial, nunca de um arquivo específico. Roda uma vez e memoriza.
+ *
+ * Se nenhum responder, o erro carrega o status e o corpo de CADA tentativa. Foi assim que
+ * descobrimos o slug: os corpos distinguem "conector não existe" de "credencial de outro
+ * tipo" de "o gateway encaminhou e quem recusou foi o Google".
+ */
+async function descobrirBase(): Promise<string> {
+  if (baseOk) return baseOk;
+
+  const tentativas: string[] = [];
+  for (const base of PREFIXOS_CANDIDATOS) {
+    try {
+      const res = await chamar(base, SONDA);
+      if (res.ok) {
+        baseOk = base;
+        return base;
+      }
+      const corpo = (await res.text().catch(() => "")).slice(0, 160).replace(/\s+/g, " ");
+      tentativas.push(`${base.replace("https://connector-gateway.lovable.dev", "")} → ${res.status} ${corpo}`);
+    } catch (e) {
+      tentativas.push(`${base} → ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+  throw new ErroDrive(404, tentativas.join(" | "), `Nenhum prefixo do gateway respondeu. Tentativas: ${tentativas.join(" | ")}`);
+}
+
+async function gw(path: string, init: RequestInit = {}, retries = 3): Promise<Response> {
+  const base = await descobrirBase();
 
   let lastErr: unknown = null;
   for (let attempt = 0; attempt <= retries; attempt++) {
-    const res = await fetch(`${GATEWAY_URL}${path}`, {
-      ...init,
-      headers: {
-        Authorization: `Bearer ${LOVABLE_API_KEY}`,
-        "X-Connection-Api-Key": GOOGLE_DRIVE_API_KEY,
-        ...(init.headers || {}),
-      },
-    });
+    const res = await chamar(base, path, init);
     if (res.ok) return res;
 
     const corpo = (await res.text().catch(() => "")).slice(0, 400);
@@ -85,9 +148,9 @@ async function gw(path: string, init: RequestInit = {}, retries = 3): Promise<Re
       continue;
     }
 
-    // NÃO interpretamos o status aqui. Um 404 pode ser "a rota do gateway não existe" OU
-    // "o arquivo não existe / a conta conectada não enxerga ele" — a API do Drive usa 404
-    // para os dois. Quem chama decide, com o contexto que tem (ver sondarDrive).
+    // NÃO interpretamos o status aqui. Com a base já validada por /about, um 404 significa
+    // "o arquivo não existe ou a conta conectada não o enxerga" — o Drive usa 404, e não
+    // 403, para o que você não pode ver. Quem chama decide (ver baixarDoDrive).
     lastErr = new ErroDrive(res.status, corpo, `Drive [${res.status}]: ${corpo || res.statusText}`);
     throw lastErr;
   }
@@ -95,21 +158,25 @@ async function gw(path: string, init: RequestInit = {}, retries = 3): Promise<Re
 }
 
 /**
- * Confere se o conector responde e diz QUAL conta Google está conectada.
+ * Confere se o conector responde e, se der, diz qual conta Google está conectada.
  *
- * É o que separa as duas causas de um 404 ao baixar um arquivo:
- *   • se esta sonda falhar    → a rota do gateway está errada / o Drive não está ligado no projeto;
- *   • se esta sonda funcionar → o conector está OK, e o 404 do arquivo significa que a conta
- *     conectada não tem acesso àquele arquivo (o Drive responde 404, não 403, para o que
- *     você não pode ver).
+ * O e-mail é BÔNUS: `/about` pode não estar no escopo concedido ao conector, e isso não
+ * é motivo para considerar o Drive quebrado — o que importa é conseguir listar/ler
+ * arquivos. Se o /about falhar, seguimos com a conta "(desconhecida)".
  */
 export async function sondarDrive(): Promise<{ email: string; nome: string }> {
-  const res = await gw(`/about?fields=user`);
-  const j = await res.json().catch(() => ({}));
-  return {
-    email: String(j?.user?.emailAddress ?? "(desconhecido)"),
-    nome: String(j?.user?.displayName ?? ""),
-  };
+  await descobrirBase();   // lança se nenhum prefixo responder — este é o teste de verdade
+
+  try {
+    const res = await gw(`/about?fields=user`);
+    const j = await res.json().catch(() => ({}));
+    return {
+      email: String(j?.user?.emailAddress ?? "(desconhecida)"),
+      nome: String(j?.user?.displayName ?? ""),
+    };
+  } catch {
+    return { email: "(desconhecida)", nome: "" };
+  }
 }
 
 /** Metadados (nome e tipo) — usados para nomear o anexo no Omie. */
@@ -117,6 +184,35 @@ async function metadados(id: string): Promise<{ nome: string; mime: string }> {
   const res = await gw(`/files/${id}?fields=name,mimeType&supportsAllDrives=true`);
   const j = await res.json().catch(() => ({}));
   return { nome: String(j?.name ?? "comprovante"), mime: String(j?.mimeType ?? "") };
+}
+
+/** Mensagem de um 404 já com a base validada: é acesso ao arquivo, não rota. */
+async function semAcesso(): Promise<string> {
+  const quem = await sondarDrive().then((u) => u.email).catch(() => null);
+  const conta = quem && quem !== "(desconhecida)" ? ` (${quem})` : "";
+  return `A conta do Google conectada ao Lovable${conta} não tem acesso a este arquivo. ` +
+    `Compartilhe a pasta dos comprovantes com ela, ou conecte a conta dona dos arquivos.`;
+}
+
+/**
+ * A conta conectada consegue LER este arquivo? Só metadados — não baixa o conteúdo.
+ *
+ * Existe para o preview não prometer o que não pode cumprir: antes, um item do Drive era
+ * liberado só porque o conector estava configurado, e o erro só aparecia no envio.
+ */
+export async function podeLerNoDrive(idOuUrl: string): Promise<{ ok: true } | { ok: false; erro: string }> {
+  const id = extrairIdDrive(idOuUrl);
+  if (!id) return { ok: false, erro: "O link não é um arquivo do Google Drive." };
+  try {
+    const m = await metadados(id);
+    if (m.mime.startsWith("application/vnd.google-apps")) {
+      return { ok: false, erro: `É um documento Google nativo (${m.mime}), não um arquivo anexável.` };
+    }
+    return { ok: true };
+  } catch (e) {
+    if (e instanceof ErroDrive && e.status === 404) return { ok: false, erro: await semAcesso() };
+    return { ok: false, erro: e instanceof Error ? e.message : String(e) };
+  }
 }
 
 /**
@@ -132,18 +228,9 @@ export async function baixarDoDrive(idOuUrl: string): Promise<ArquivoDrive> {
   try {
     meta = await metadados(id);
   } catch (e) {
-    // 404 aqui quase sempre é acesso, não rota: o Drive responde 404 (e não 403) para
-    // arquivo que a conta conectada não pode ver. Dizemos isso em vez de "não existe".
-    if (e instanceof ErroDrive && e.status === 404) {
-      const quem = await sondarDrive().then((u) => u.email).catch(() => null);
-      throw new Error(
-        quem
-          ? `A conta conectada no Lovable (${quem}) não tem acesso a este arquivo do Drive. ` +
-            `Compartilhe a pasta dos comprovantes com ela (ou conecte a conta dona dos arquivos).`
-          : `O conector do Google Drive não respondeu (404). Confirme que ele está vinculado a ESTE projeto no Lovable ` +
-            `(na tela de conectores, a coluna "Projects" precisa estar em 1, não 0).`,
-      );
-    }
+    // Com a base já validada pela sonda, um 404 aqui é ACESSO, não rota: o Drive responde
+    // 404 (e não 403) para arquivo que a conta conectada não pode ver.
+    if (e instanceof ErroDrive && e.status === 404) throw new Error(await semAcesso());
     throw e;
   }
 

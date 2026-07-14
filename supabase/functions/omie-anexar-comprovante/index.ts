@@ -33,7 +33,7 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { listarCategorias, listarMovimentos, omieCall } from "../_shared/omie.ts";
 import { casarComOmie, indexarMovimentos, MatchResult } from "../_shared/match-cartao.ts";
-import { baixarDoDrive, driveConfigurado, ehHtml, extrairIdDrive, sondarDrive, statusDrive } from "../_shared/drive.ts";
+import { baixarDoDrive, baseDoDrive, driveConfigurado, ehHtml, extrairIdDrive, podeLerNoDrive, sondarDrive, statusDrive } from "../_shared/drive.ts";
 import { requireUser } from "../_shared/auth.ts";
 
 const corsHeaders = {
@@ -95,6 +95,8 @@ type Item = {
   match: MatchResult | null;
   /** null = pode enviar; senão, por que não */
   bloqueio: Motivo;
+  /** mensagem específica do bloqueio (ex.: qual conta do Drive não tem acesso) */
+  detalhe?: string;
 };
 
 Deno.serve(async (req) => {
@@ -225,6 +227,23 @@ Deno.serve(async (req) => {
 
     const elegiveis: Item[] = [...daAuditoria, ...doCartao];
 
+    // Conector configurado NÃO significa arquivo legível. Antes de dizer que um item do
+    // Drive está pronto, conferimos que a conta conectada abre AQUELE arquivo — senão a
+    // tela mostra tudo verde e o erro só aparece no envio (foi exatamente o que houve).
+    // Só metadados, sem baixar conteúdo.
+    if (comDrive) {
+      const doDrive = elegiveis.filter((e) => !e.bloqueio && ehUrl(e.comprovante));
+      for (let i = 0; i < doDrive.length; i += 5) {
+        await Promise.all(doDrive.slice(i, i + 5).map(async (e) => {
+          const r = await podeLerNoDrive(e.comprovante);
+          if (!r.ok) {
+            e.bloqueio = "drive";
+            e.detalhe = r.erro;
+          }
+        }));
+      }
+    }
+
     /* -------- PREVIEW -------- */
     if (action === "preview") {
       return json({
@@ -267,20 +286,21 @@ Deno.serve(async (req) => {
       try {
         conta = await sondarDrive();
       } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.error("testar_drive: conector não respondeu ·", msg);
         return json({
           ok: false,
           drive_configurado: true,
           conector_ok: false,
-          erro:
-            "O conector do Google Drive não respondeu: " +
-            (err instanceof Error ? err.message : String(err)) +
-            ' — confirme, na tela de conectores do Lovable, que a coluna "Projects" do Google Drive está em 1 (não 0).',
+          // O corpo cru de cada tentativa vai junto: é o que diz se o slug do gateway está
+          // errado ou se a conexão não está vinculada a este projeto.
+          erro: msg,
         });
       }
 
       const alvo = elegiveis.find((e) => ehUrl(e.comprovante) && extrairIdDrive(e.comprovante));
       if (!alvo) {
-        return json({ ok: true, drive_configurado: true, conector_ok: true, conta: conta.email, aviso: "Conector OK. Nenhum comprovante do Drive para testar." });
+        return json({ ok: true, drive_configurado: true, conector_ok: true, conta: conta.email, base: baseDoDrive(), aviso: "Conector OK. Nenhum comprovante do Drive para testar." });
       }
 
       // Passo 2: a conta conectada consegue LER este arquivo?
@@ -291,6 +311,7 @@ Deno.serve(async (req) => {
           drive_configurado: true,
           conector_ok: true,
           conta: conta.email,
+          base: baseDoDrive(),
           baixou: true,
           lancamento: alvo.estabelecimento ?? alvo.titulo,
           arquivo: arq.nome,
@@ -476,10 +497,11 @@ Deno.serve(async (req) => {
           omie_cod_titulo: e.match!.codTitulo, confianca: e.match!.conf, arquivo: nome,
         });
       } catch (err) {
-        falhas.push({
-          achado_id: e.achado_id, titulo: e.titulo,
-          erro: err instanceof Error ? err.message : String(err),
-        });
+        const erro = err instanceof Error ? err.message : String(err);
+        // Vai para o log da função: a resposta sai com HTTP 200 (erro no corpo), então
+        // sem isto a falha não aparece em lugar nenhum que dê para investigar depois.
+        console.error(`envio falhou · ${e.titulo} · título ${e.match?.codTitulo} · ${erro}`);
+        falhas.push({ achado_id: e.achado_id, titulo: e.titulo, erro });
       }
     }
 

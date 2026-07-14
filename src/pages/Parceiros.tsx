@@ -244,6 +244,8 @@ export default function Parceiros() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [refreshing, setRefreshing] = useState(false);
   const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [selectedRec, setSelectedRec] = useState<Set<string>>(new Set());
+  const [deletingRec, setDeletingRec] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [monthFilter, setMonthFilter] = useState<string>("");
   const [columnOrder, setColumnOrder] = useState<ColKey[]>(() => {

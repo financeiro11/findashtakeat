@@ -1893,7 +1893,16 @@ export default function Parceiros() {
                   const cadRec = cadastroByNome.get((r.embaixador || "").trim().toLowerCase());
                   const campMismatch = !!cadRec?.campanha && (r.campanha || "").trim().toLowerCase() !== (cadRec.campanha || "").trim().toLowerCase();
                   return (
-                  <TableRow key={`rec-${r.id}`} className="text-[12.5px]">
+                  <TableRow key={`rec-${r.id}`} className="text-[12.5px]" data-state={selectedRec.has(r.id) ? "selected" : undefined}>
+                    {canDelete && (
+                      <TableCell className="py-2.5">
+                        <Checkbox
+                          checked={selectedRec.has(r.id)}
+                          onCheckedChange={() => toggleRecRow(r.id)}
+                          aria-label="Selecionar linha"
+                        />
+                      </TableCell>
+                    )}
                     <TableCell className="py-2.5">
                       {!r.ativo ? (
                         <Badge className="bg-rose-500/15 text-rose-700 dark:text-rose-400 hover:bg-rose-500/20 text-[10.5px] font-normal">Inativo</Badge>

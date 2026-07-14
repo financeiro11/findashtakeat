@@ -1131,11 +1131,32 @@ export default function Parceiros() {
     });
   };
   const handleDeleteSelected = async () => {
+    if (!canDelete) { toast.error("Sem permissão para apagar."); return; }
     if (selected.size === 0) return;
     if (!confirm(`Apagar ${selected.size} indicação(ões)? Esta ação não pode ser desfeita.`)) return;
     setDeleting(true);
     try {
       const ids = Array.from(selected);
+      // Snapshot antes de apagar — para trilha de auditoria.
+      const { data: snapshots } = await supabase
+        .from("parceiros_indicacoes")
+        .select("*")
+        .in("id", ids);
+      const auditRows = (snapshots ?? []).map((s: any) => ({
+        action: "delete",
+        indicacao_id: s.id,
+        id_negocio: s.id_negocio ?? null,
+        snapshot: s,
+        user_id: user?.id ?? null,
+        user_email: profile?.email ?? user?.email ?? null,
+        user_nome: profile?.nome ?? null,
+      }));
+      if (auditRows.length) {
+        const { error: auditErr } = await supabase
+          .from("parceiros_indicacoes_audit" as any)
+          .insert(auditRows);
+        if (auditErr) throw auditErr;
+      }
       const { error } = await supabase.from("parceiros_indicacoes").delete().in("id", ids);
       if (error) throw error;
       toast.success(`${ids.length} indicação(ões) apagada(s)`);
@@ -1147,6 +1168,7 @@ export default function Parceiros() {
       setDeleting(false);
     }
   };
+
 
   return (
     <div className="flex flex-col gap-4 p-4 lg:p-5">

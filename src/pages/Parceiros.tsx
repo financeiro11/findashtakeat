@@ -1221,9 +1221,12 @@ export default function Parceiros() {
               <RefreshCw className={cn("h-3.5 w-3.5", refreshing && "animate-spin")} /> Atualizar
             </Button>
             <GestaoParceirosDialog />
-            {selected.size > 0 && (
+            {canDelete && <AuditoriaParceirosDialog />}
+            {canDelete && selected.size > 0 && (
               <Button variant="destructive" size="sm" className="h-8 gap-1.5 text-[12.5px]" onClick={handleDeleteSelected} disabled={deleting}>
                 <Trash2 className="h-3.5 w-3.5" /> Apagar ({selected.size})
+              </Button>
+            )}
               </Button>
             )}
             <DropdownMenu>

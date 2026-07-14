@@ -235,6 +235,9 @@ const REC_MAPPING_FIELDS: MappingField[] = [
 /* ─────────────────────────── Página ─────────────────────────── */
 
 export default function Parceiros() {
+  const { user, profile } = useAuth();
+  const canDelete = user?.id === VICTOR_USER_ID;
+
   const [query, setQuery] = useState("");
   const [rows, setRows] = useState<Parceiro[]>([]);
   const [loading, setLoading] = useState(true);

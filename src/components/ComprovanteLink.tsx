@@ -2,7 +2,7 @@ import { forwardRef, useState } from "react";
 import { Loader2 } from "lucide-react";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
-import { podeAbrirComprovante, resolverComprovante } from "@/lib/comprovante";
+import { ehUrl, podeAbrirComprovante, resolverComprovante } from "@/lib/comprovante";
 
 type Props = {
   valor: string | null | undefined;
@@ -12,9 +12,12 @@ type Props = {
 };
 
 /**
- * Abre um comprovante da auditoria, seja ele uma URL http ou um caminho no bucket
- * privado (que exige signed URL — por isso a resolução é assíncrona e não dá para
- * usar um <a href> simples).
+ * Abre um comprovante da auditoria.
+ *
+ * Dois casos, e é importante NÃO tratar os dois do mesmo jeito:
+ *   • URL http (Drive) → <a href> normal. O navegador abre. Sem JS no meio.
+ *   • caminho no bucket privado → precisa gerar uma signed URL, o que é assíncrono;
+ *     só aí entra o onClick.
  *
  * Não renderiza nada quando o valor não é abrível (ex.: só o nome do arquivo).
  * É forwardRef porque costuma ir dentro de um <TooltipTrigger asChild>, que passa ref.
@@ -24,19 +27,41 @@ export const ComprovanteLink = forwardRef<HTMLAnchorElement, Props>(
     const [carregando, setCarregando] = useState(false);
     if (!podeAbrirComprovante(valor)) return null;
 
+    // Caso simples: já é uma URL. Link de verdade — nada de window.open.
+    if (ehUrl(valor)) {
+      return (
+        <a
+          ref={ref}
+          href={(valor as string).trim()}
+          target="_blank"
+          rel="noopener noreferrer"
+          title={title}
+          onClick={(e) => e.stopPropagation()} // a linha do achado é clicável (abre o drawer)
+          className={className}
+          {...rest}
+        >
+          {children}
+        </a>
+      );
+    }
+
+    // Caso do bucket privado: resolve a signed URL e só então navega.
     const abrir = async (e: React.MouseEvent) => {
       e.preventDefault();
-      e.stopPropagation(); // a linha do achado é clicável (abre o drawer)
+      e.stopPropagation();
       if (carregando) return;
       setCarregando(true);
 
-      // A aba precisa ser aberta AGORA, dentro do gesto do usuário: se abrirmos depois
-      // do await da signed URL, o bloqueador de pop-up mata.
-      const aba = window.open("", "_blank", "noopener,noreferrer");
+      // A aba tem que ser aberta AGORA, dentro do gesto do usuário — se abrirmos depois
+      // do await, o bloqueador de pop-up mata. E sem passar "noopener" nas features:
+      // com noopener o window.open retorna null e a referência se perde.
+      const aba = window.open("", "_blank");
+      if (aba) aba.opener = null; // o noopener que a gente queria, sem perder a referência
+
       try {
         const url = await resolverComprovante(valor as string);
         if (aba) aba.location.href = url;
-        else window.location.href = url; // pop-up bloqueado → navega na própria aba
+        else window.location.href = url; // pop-up bloqueado → abre na própria aba
       } catch (err: any) {
         aba?.close();
         toast.error("Não consegui abrir o comprovante: " + (err?.message ?? "erro desconhecido"));

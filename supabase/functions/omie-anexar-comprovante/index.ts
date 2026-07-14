@@ -222,6 +222,88 @@ Deno.serve(async (req) => {
       });
     }
 
+    /* -------- ANEXAR ARQUIVO (upload manual) --------
+     * Saída para o caso "drive": o servidor não consegue baixar do Google, mas a PESSOA
+     * consegue (está logada). Ela baixa a nota do Drive e sobe aqui; o arquivo vai para o
+     * título do Omie e fica guardado no nosso bucket. Params: { id, nome, base64 }.
+     */
+    if (action === "anexar_arquivo") {
+      const id = Number(body?.id);
+      const nomeArq = String(body?.nome ?? "comprovante").slice(0, 120);
+      const base64 = String(body?.base64 ?? "");
+      if (!id || !base64) return json({ error: "Parâmetros faltando (id, base64)." }, 200);
+
+      const item = elegiveis.find((e) => e.achado_id === id);
+      if (!item) return json({ error: "Lançamento não está mais na lista de elegíveis." }, 200);
+      if (!item.match?.codTitulo) {
+        return json({ error: "Não achei o título correspondente no Omie — não há onde anexar." }, 200);
+      }
+
+      // base64 → bytes
+      let bytes: Uint8Array;
+      try {
+        const limpo = base64.replace(/^data:[^;]+;base64,/, "");
+        bytes = Uint8Array.from(atob(limpo), (c) => c.charCodeAt(0));
+      } catch {
+        return json({ error: "Arquivo inválido (base64)." }, 200);
+      }
+      if (!bytes.length) return json({ error: "Arquivo vazio." }, 200);
+      if (bytes.length > 10 * 1024 * 1024) return json({ error: "Arquivo maior que 10 MB." }, 200);
+
+      // Mesma trava do envio: se alguém subir por engano o HTML que o Drive devolve,
+      // recusamos — um "comprovante" que é uma tela de login é pior que nenhum.
+      const cab = new TextDecoder().decode(bytes.subarray(0, 64)).trim().toLowerCase();
+      if (cab.startsWith("<!doctype html") || cab.startsWith("<html")) {
+        return json({ error: "Isso é uma página HTML, não um comprovante. Baixe o arquivo do Drive e envie o PDF/imagem." }, 200);
+      }
+
+      // Guarda no bucket (nosso rastro do que foi mandado ao Omie).
+      const seguro = nomeArq.replace(/[^a-zA-Z0-9._-]/g, "_");
+      const path = `hub/${item.cartao_id_unico ?? item.achado_id}/${Date.now()}_${seguro}`;
+      const { error: upErr } = await supabase.storage.from(BUCKET).upload(path, bytes, {
+        contentType: body?.mime ? String(body.mime) : undefined,
+        upsert: false,
+      });
+      if (upErr) return json({ error: `Falha ao guardar o arquivo: ${upErr.message}` }, 200);
+
+      // Anexa no título do Omie (acrescenta, nunca substitui).
+      await omieCall("geral/anexo", "IncluirAnexo", {
+        cCodIntAnexo: `hub-up-${item.achado_id}-${Date.now()}`,
+        cTabela,
+        nId: Number(item.match.codTitulo),
+        cNomeArquivo: nomeArq,
+        cTipoArquivo: extDe(nomeArq),
+        cArquivo: toBase64(bytes),
+      });
+
+      const agora = new Date().toISOString();
+      if (item.cartao_id) {
+        await supabase.from("auditoria_cartao_lancamentos").update({
+          omie_cod_titulo: item.match.codTitulo,
+          omie_anexo_enviado_em: agora,
+          omie_anexo_nome: nomeArq,
+          updated_at: agora,
+        }).eq("id", item.cartao_id);
+      }
+      if (item.origem === "achado") {
+        const { data: atual } = await supabase.from("auditoria").select("trilha").eq("id", item.achado_id).maybeSingle();
+        const trilha = Array.isArray((atual as any)?.trilha) ? (atual as any).trilha : [];
+        await supabase.from("auditoria").update({
+          trilha: [...trilha, {
+            evento: "comprovante_enviado_omie",
+            canal: "hub_upload",
+            omie_cod_titulo: item.match.codTitulo,
+            confianca: item.match.conf,
+            arquivo: nomeArq,
+            timestamp: agora,
+          }],
+          updated_at: agora,
+        }).eq("id", item.achado_id);
+      }
+
+      return json({ ok: true, anexado: true, omie_cod_titulo: item.match.codTitulo, arquivo: nomeArq, storage_path: path });
+    }
+
     /* -------- ENVIAR -------- */
     if (action !== "enviar") return json({ error: `Ação desconhecida: ${action}` }, 200);
 

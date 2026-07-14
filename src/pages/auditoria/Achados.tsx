@@ -6,7 +6,7 @@ import { Sheet, SheetContent } from "@/components/ui/sheet";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Textarea } from "@/components/ui/textarea";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Download, X, ChevronRight, Check, ExternalLink, Search, Send, RefreshCw, Loader2 } from "lucide-react";
+import { Download, X, ChevronRight, Check, ExternalLink, Search, Send, RefreshCw, Loader2, Paperclip } from "lucide-react";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
@@ -15,6 +15,7 @@ import { podeAbrirComprovante } from "@/lib/comprovante";
 import { brl, brlAbbr, fmtDateBR, fmtTrilha, compLabel, MESES_PT_LONG } from "./utils";
 import AjusteSolicitadoModal from "./AjusteSolicitadoModal";
 import SolicitarJustificativasModal from "./SolicitarJustificativasModal";
+import EnviarOmieDialog from "./EnviarOmieDialog";
 
 type Severidade = "Crítico" | "Alto" | "Médio" | "Baixo";
 type Status = "Pendente" | "Em análise" | "Aprovado" | "Reprovado" | "Ajuste solicitado";
@@ -133,6 +134,7 @@ export default function Achados() {
   const [sheetHidden, setSheetHidden] = useState(false);
   const [consolidadoOpen, setConsolidadoOpen] = useState(false);
   const [cruzando, setCruzando] = useState(false);
+  const [enviarOmieOpen, setEnviarOmieOpen] = useState(false);
 
   // Garante que o modal de "Ajuste solicitado" NUNCA venha aberto ao abrir/trocar de lançamento
   useEffect(() => { setAjusteOpen(false); }, [selected?.id]);
@@ -468,6 +470,14 @@ export default function Achados() {
           </label>
           <Button variant="outline" onClick={cruzarOmie} disabled={cruzando} className="h-9" title="Casa cada lançamento do cartão com o movimento do Omie (categoria contábil)">
             {cruzando ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <RefreshCw className="h-4 w-4 mr-2" />} Cruzar com Omie
+          </Button>
+          <Button
+            variant="outline"
+            onClick={() => setEnviarOmieOpen(true)}
+            className="h-9"
+            title="Anexa no título do Omie os comprovantes dos achados Aprovados"
+          >
+            <Paperclip className="h-4 w-4 mr-2" /> Enviar comprovantes ao Omie
           </Button>
           <Button onClick={exportCsv} className="bg-foreground text-background hover:bg-foreground/90 h-9">
             <Download className="h-4 w-4 mr-2" /> Exportar
@@ -834,6 +844,12 @@ export default function Achados() {
           responsavel={fResp}
         />
       )}
+
+      <EnviarOmieDialog
+        open={enviarOmieOpen}
+        onOpenChange={setEnviarOmieOpen}
+        onDone={load}
+      />
 
 
       <Dialog open={!!confirm} onOpenChange={(o) => { if (!o) { setConfirm(null); setComentario(""); } }}>

@@ -28,6 +28,10 @@ import { EditarRegistroDialog, type EditarRegistroTarget } from "./parceiros/Edi
 import { GestaoRecorrenciasDialog } from "./parceiros/GestaoRecorrenciasDialog";
 import { HistoricoCampanhaSheet, type HistoricoTarget } from "./parceiros/HistoricoCampanhaSheet";
 import { EditableDateCell } from "./parceiros/EditableDateCell";
+import { AuditoriaParceirosDialog } from "./parceiros/AuditoriaParceirosDialog";
+import { useAuth } from "@/hooks/useAuth";
+
+const VICTOR_USER_ID = "a32c1044-9637-4a62-8dfe-205c4b660e79";
 
 /* ─────────────────────────── Tipos ─────────────────────────── */
 
@@ -231,12 +235,17 @@ const REC_MAPPING_FIELDS: MappingField[] = [
 /* ─────────────────────────── Página ─────────────────────────── */
 
 export default function Parceiros() {
+  const { user, profile } = useAuth();
+  const canDelete = user?.id === VICTOR_USER_ID;
+
   const [query, setQuery] = useState("");
   const [rows, setRows] = useState<Parceiro[]>([]);
   const [loading, setLoading] = useState(true);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [refreshing, setRefreshing] = useState(false);
   const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [selectedRec, setSelectedRec] = useState<Set<string>>(new Set());
+  const [deletingRec, setDeletingRec] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [monthFilter, setMonthFilter] = useState<string>("");
   const [columnOrder, setColumnOrder] = useState<ColKey[]>(() => {
@@ -1124,11 +1133,32 @@ export default function Parceiros() {
     });
   };
   const handleDeleteSelected = async () => {
+    if (!canDelete) { toast.error("Sem permissão para apagar."); return; }
     if (selected.size === 0) return;
     if (!confirm(`Apagar ${selected.size} indicação(ões)? Esta ação não pode ser desfeita.`)) return;
     setDeleting(true);
     try {
       const ids = Array.from(selected);
+      // Snapshot antes de apagar — para trilha de auditoria.
+      const { data: snapshots } = await supabase
+        .from("parceiros_indicacoes")
+        .select("*")
+        .in("id", ids);
+      const auditRows = (snapshots ?? []).map((s: any) => ({
+        action: "delete",
+        indicacao_id: s.id,
+        id_negocio: s.id_negocio ?? null,
+        snapshot: s,
+        user_id: user?.id ?? null,
+        user_email: profile?.email ?? user?.email ?? null,
+        user_nome: profile?.nome ?? null,
+      }));
+      if (auditRows.length) {
+        const { error: auditErr } = await supabase
+          .from("parceiros_indicacoes_audit" as any)
+          .insert(auditRows);
+        if (auditErr) throw auditErr;
+      }
       const { error } = await supabase.from("parceiros_indicacoes").delete().in("id", ids);
       if (error) throw error;
       toast.success(`${ids.length} indicação(ões) apagada(s)`);
@@ -1140,6 +1170,54 @@ export default function Parceiros() {
       setDeleting(false);
     }
   };
+
+  const toggleRecRow = (id: string) => {
+    setSelectedRec((prev) => {
+      const next = new Set(prev);
+      next.has(id) ? next.delete(id) : next.add(id);
+      return next;
+    });
+  };
+  const handleDeleteRecSelected = async () => {
+    if (!canDelete) { toast.error("Sem permissão para apagar."); return; }
+    if (selectedRec.size === 0) return;
+    if (!confirm(`Apagar ${selectedRec.size} recorrência(s)? Esta ação não pode ser desfeita.`)) return;
+    setDeletingRec(true);
+    try {
+      const ids = Array.from(selectedRec);
+      const { data: snapshots } = await supabase
+        .from("parceiros_recorrencias")
+        .select("*")
+        .in("id", ids);
+      const auditRows = (snapshots ?? []).map((s: any) => ({
+        action: "delete_recorrencia",
+        indicacao_id: null,
+        id_negocio: s.id_negocio ?? null,
+        snapshot: { ...s, _source: "parceiros_recorrencias" },
+        user_id: user?.id ?? null,
+        user_email: profile?.email ?? user?.email ?? null,
+        user_nome: profile?.nome ?? null,
+      }));
+      if (auditRows.length) {
+        const { error: auditErr } = await supabase
+          .from("parceiros_indicacoes_audit" as any)
+          .insert(auditRows);
+        if (auditErr) throw auditErr;
+      }
+      const { error } = await supabase.from("parceiros_recorrencias").delete().in("id", ids);
+      if (error) throw error;
+      toast.success(`${ids.length} recorrência(s) apagada(s)`);
+      setSelectedRec(new Set());
+      await loadRows();
+    } catch (err: any) {
+      toast.error(err?.message || "Falha ao apagar");
+    } finally {
+      setDeletingRec(false);
+    }
+  };
+
+
+
 
   return (
     <div className="flex flex-col gap-4 p-4 lg:p-5">
@@ -1192,7 +1270,8 @@ export default function Parceiros() {
               <RefreshCw className={cn("h-3.5 w-3.5", refreshing && "animate-spin")} /> Atualizar
             </Button>
             <GestaoParceirosDialog />
-            {selected.size > 0 && (
+            {canDelete && <AuditoriaParceirosDialog />}
+            {canDelete && selected.size > 0 && (
               <Button variant="destructive" size="sm" className="h-8 gap-1.5 text-[12.5px]" onClick={handleDeleteSelected} disabled={deleting}>
                 <Trash2 className="h-3.5 w-3.5" /> Apagar ({selected.size})
               </Button>
@@ -1293,13 +1372,15 @@ export default function Parceiros() {
           <Table>
             <TableHeader>
               <TableRow>
-                <Th className="w-10">
-                  <Checkbox
-                    checked={allChecked ? true : someChecked ? "indeterminate" : false}
-                    onCheckedChange={toggleAll}
-                    aria-label="Selecionar todas"
-                  />
-                </Th>
+                {canDelete && (
+                  <Th className="w-10">
+                    <Checkbox
+                      checked={allChecked ? true : someChecked ? "indeterminate" : false}
+                      onCheckedChange={toggleAll}
+                      aria-label="Selecionar todas"
+                    />
+                  </Th>
+                )}
                 {columnOrder.map((key) => {
                   const c = COLUMNS[key];
                   const sortable = !!c.sortValue;
@@ -1334,26 +1415,28 @@ export default function Parceiros() {
             <TableBody>
               {loading ? (
                 <TableRow>
-                  <TableCell colSpan={columnOrder.length + 1} className="py-16 text-center text-[12.5px] text-muted-foreground">
+                  <TableCell colSpan={columnOrder.length + (canDelete ? 1 : 0)} className="py-16 text-center text-[12.5px] text-muted-foreground">
                     Carregando…
                   </TableCell>
                 </TableRow>
               ) : filtered.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={columnOrder.length + 1} className="py-16 text-center">
+                  <TableCell colSpan={columnOrder.length + (canDelete ? 1 : 0)} className="py-16 text-center">
                     <EmptyState />
                   </TableCell>
                 </TableRow>
               ) : (
                 paginated.map((r) => (
                   <TableRow key={r.id} className="text-[12.5px]" data-state={selected.has(r.id) ? "selected" : undefined}>
-                    <TableCell className="py-2.5">
-                      <Checkbox
-                        checked={selected.has(r.id)}
-                        onCheckedChange={() => toggleRow(r.id)}
-                        aria-label="Selecionar linha"
-                      />
-                    </TableCell>
+                    {canDelete && (
+                      <TableCell className="py-2.5">
+                        <Checkbox
+                          checked={selected.has(r.id)}
+                          onCheckedChange={() => toggleRow(r.id)}
+                          aria-label="Selecionar linha"
+                        />
+                      </TableCell>
+                    )}
                     {columnOrder.map((key) => {
                       const mismatch =
                         key === "campanha" &&
@@ -1733,6 +1816,11 @@ export default function Parceiros() {
         stickyHeader
         actions={
           <div className="flex items-center gap-1.5">
+            {canDelete && selectedRec.size > 0 && (
+              <Button variant="destructive" size="sm" className="h-8 gap-1.5 text-[12.5px]" onClick={handleDeleteRecSelected} disabled={deletingRec}>
+                <Trash2 className="h-3.5 w-3.5" /> Apagar ({selectedRec.size})
+              </Button>
+            )}
             <Button
               variant="outline"
               size="sm"
@@ -1767,6 +1855,17 @@ export default function Parceiros() {
           <Table>
             <TableHeader>
               <TableRow>
+                {canDelete && (
+                  <Th className="w-8">
+                    <Checkbox
+                      checked={recorrencias.length > 0 && recorrencias.every((r) => selectedRec.has(r.id))}
+                      onCheckedChange={(v) => {
+                        setSelectedRec(v ? new Set(recorrencias.map((r) => r.id)) : new Set());
+                      }}
+                      aria-label="Selecionar todas"
+                    />
+                  </Th>
+                )}
                 <SortableTh sortKey="status" sort={sortRec} setSort={setSortRec}>Status</SortableTh>
                 <SortableTh sortKey="campanha" sort={sortRec} setSort={setSortRec}>Campanha</SortableTh>
                 <SortableTh sortKey="embaixador" sort={sortRec} setSort={setSortRec}>Embaixador</SortableTh>
@@ -1785,7 +1884,7 @@ export default function Parceiros() {
             <TableBody>
               {recorrencias.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={recorrencias.some((r) => !r.ativo) ? 11 : 10} className="py-10 text-center text-[12.5px] text-muted-foreground">
+                  <TableCell colSpan={(recorrencias.some((r) => !r.ativo) ? 11 : 10) + (canDelete ? 1 : 0)} className="py-10 text-center text-[12.5px] text-muted-foreground">
                     Nenhuma indicação ativa com recorrência no período.
                   </TableCell>
                 </TableRow>
@@ -1794,7 +1893,16 @@ export default function Parceiros() {
                   const cadRec = cadastroByNome.get((r.embaixador || "").trim().toLowerCase());
                   const campMismatch = !!cadRec?.campanha && (r.campanha || "").trim().toLowerCase() !== (cadRec.campanha || "").trim().toLowerCase();
                   return (
-                  <TableRow key={`rec-${r.id}`} className="text-[12.5px]">
+                  <TableRow key={`rec-${r.id}`} className="text-[12.5px]" data-state={selectedRec.has(r.id) ? "selected" : undefined}>
+                    {canDelete && (
+                      <TableCell className="py-2.5">
+                        <Checkbox
+                          checked={selectedRec.has(r.id)}
+                          onCheckedChange={() => toggleRecRow(r.id)}
+                          aria-label="Selecionar linha"
+                        />
+                      </TableCell>
+                    )}
                     <TableCell className="py-2.5">
                       {!r.ativo ? (
                         <Badge className="bg-rose-500/15 text-rose-700 dark:text-rose-400 hover:bg-rose-500/20 text-[10.5px] font-normal">Inativo</Badge>

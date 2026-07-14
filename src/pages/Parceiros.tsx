@@ -1855,6 +1855,17 @@ export default function Parceiros() {
           <Table>
             <TableHeader>
               <TableRow>
+                {canDelete && (
+                  <Th className="w-8">
+                    <Checkbox
+                      checked={recorrencias.length > 0 && recorrencias.every((r) => selectedRec.has(r.id))}
+                      onCheckedChange={(v) => {
+                        setSelectedRec(v ? new Set(recorrencias.map((r) => r.id)) : new Set());
+                      }}
+                      aria-label="Selecionar todas"
+                    />
+                  </Th>
+                )}
                 <SortableTh sortKey="status" sort={sortRec} setSort={setSortRec}>Status</SortableTh>
                 <SortableTh sortKey="campanha" sort={sortRec} setSort={setSortRec}>Campanha</SortableTh>
                 <SortableTh sortKey="embaixador" sort={sortRec} setSort={setSortRec}>Embaixador</SortableTh>
@@ -1873,7 +1884,7 @@ export default function Parceiros() {
             <TableBody>
               {recorrencias.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={recorrencias.some((r) => !r.ativo) ? 11 : 10} className="py-10 text-center text-[12.5px] text-muted-foreground">
+                  <TableCell colSpan={(recorrencias.some((r) => !r.ativo) ? 11 : 10) + (canDelete ? 1 : 0)} className="py-10 text-center text-[12.5px] text-muted-foreground">
                     Nenhuma indicação ativa com recorrência no período.
                   </TableCell>
                 </TableRow>

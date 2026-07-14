@@ -10,6 +10,8 @@ import { Download, X, ChevronRight, Check, ExternalLink, Search, Send, RefreshCw
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
+import { ComprovanteLink } from "@/components/ComprovanteLink";
+import { podeAbrirComprovante } from "@/lib/comprovante";
 import { brl, brlAbbr, fmtDateBR, fmtTrilha, compLabel, MESES_PT_LONG } from "./utils";
 import AjusteSolicitadoModal from "./AjusteSolicitadoModal";
 import SolicitarJustificativasModal from "./SolicitarJustificativasModal";
@@ -78,7 +80,7 @@ type CartaoLanc = {
   gestor: string | null; time: string | null; card_final: string | null;
   data: string | null; estabelecimento: string | null; descricao_original: string | null;
   categoria: string | null; parcela: string | null; valor: number;
-  status_nf: string; arquivo_comprovante: string | null;
+  status_nf: string; arquivo_comprovante: string | null; link_comprovante: string | null;
   status_escopo: string | null; observacao: string | null;
   omie_categoria_codigo: string | null; omie_categoria_descricao: string | null;
   omie_match_confianca: string | null;
@@ -146,7 +148,7 @@ export default function Achados() {
       // (b) derivar a categoria dos achados que o n8n não classificou (via status_nf/escopo).
       supabase
         .from("auditoria_cartao_lancamentos")
-        .select("id_unico,competencia,referencia,origem,gestor,time,data,estabelecimento,descricao_original,valor,status_nf,status_escopo,arquivo_comprovante,omie_categoria_descricao")
+        .select("id_unico,competencia,referencia,origem,gestor,time,data,estabelecimento,descricao_original,valor,status_nf,status_escopo,arquivo_comprovante,link_comprovante,omie_categoria_descricao")
         .order("data", { ascending: false })
         .limit(5000),
     ]);
@@ -185,7 +187,9 @@ export default function Achados() {
         status: "Aprovado",
         trilha: null,
         categoria: "COM NF",
-        link_comprovante: c.arquivo_comprovante,
+        // `arquivo_comprovante` é só o NOME do arquivo — não abre nada. A URL de verdade
+        // (Drive) mora em `link_comprovante`, que a página não estava nem buscando.
+        link_comprovante: c.link_comprovante || c.arquivo_comprovante,
         omie_categoria: c.omie_categoria_descricao ?? null,
         _ro: true,
       }));
@@ -610,21 +614,18 @@ export default function Achados() {
                     </span>
                   </div>
                 </button>
-                {r.link_comprovante && (
+                {podeAbrirComprovante(r.link_comprovante) && (
                   <TooltipProvider delayDuration={200}>
                     <Tooltip>
                       <TooltipTrigger asChild>
-                        <a
-                          href={r.link_comprovante}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          onClick={(e) => e.stopPropagation()}
+                        <ComprovanteLink
+                          valor={r.link_comprovante}
                           className="text-muted-foreground hover:text-primary transition-colors shrink-0 mt-0.5"
                         >
                           <ExternalLink className="h-4 w-4" />
-                        </a>
+                        </ComprovanteLink>
                       </TooltipTrigger>
-                      <TooltipContent>Ver comprovante no Drive</TooltipContent>
+                      <TooltipContent>Ver comprovante</TooltipContent>
                     </Tooltip>
                   </TooltipProvider>
                 )}
@@ -699,18 +700,25 @@ export default function Achados() {
                     <div className="text-[11px] uppercase tracking-wider text-muted-foreground font-medium">Comprovante</div>
                     <div className="text-sm mt-1">
                       {(() => {
-                        // Usa o comprovante do achado; se vazio, cai no do lançamento de origem (cartão).
-                        const compUrl = selected.link_comprovante || origemCart?.arquivo_comprovante || null;
-                        return compUrl ? (
-                          <a
-                            href={compUrl}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-border bg-card hover:bg-accent text-sm font-medium transition"
-                          >
-                            <ExternalLink className="h-3.5 w-3.5" /> Abrir comprovante / NF
-                          </a>
-                        ) : "—";
+                        // Comprovante do achado (caminho no bucket privado) e, se vazio, o do
+                        // lançamento de origem no cartão (URL do Drive). `arquivo_comprovante`
+                        // é só o nome do arquivo — serve para EXIBIR, nunca para abrir.
+                        const comp = selected.link_comprovante || origemCart?.link_comprovante || null;
+                        if (podeAbrirComprovante(comp)) {
+                          return (
+                            <ComprovanteLink
+                              valor={comp}
+                              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-border bg-card hover:bg-accent text-sm font-medium transition"
+                            >
+                              <ExternalLink className="h-3.5 w-3.5" /> Abrir comprovante / NF
+                            </ComprovanteLink>
+                          );
+                        }
+                        // Sem link abrível: mostra o nome do arquivo, se houver, em vez de sumir.
+                        const nome = origemCart?.arquivo_comprovante || selected.link_comprovante;
+                        return nome
+                          ? <span className="text-muted-foreground" title="Arquivo registrado, mas sem link para abrir.">{nome}</span>
+                          : "—";
                       })()}
                     </div>
                   </div>

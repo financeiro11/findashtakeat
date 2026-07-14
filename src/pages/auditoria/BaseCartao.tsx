@@ -4,7 +4,8 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
 import { brl, brlAbbr, fmtDateBR } from "./utils";
-import { Search } from "lucide-react";
+import { Search, ExternalLink } from "lucide-react";
+import { ComprovanteLink } from "@/components/ComprovanteLink";
 
 type Lanc = {
   id: number;
@@ -24,6 +25,10 @@ type Lanc = {
   status_nf: string;
   status_escopo: string | null;
   observacao: string | null;
+  /** URL http (Drive) — é o que abre. */
+  link_comprovante: string | null;
+  /** só o NOME do arquivo; serve para exibir/tooltip, não para abrir. */
+  arquivo_comprovante: string | null;
 };
 
 const PAGE_SIZE = 50;
@@ -242,13 +247,22 @@ function BaseRow({ r }: { r: Lanc }) {
       <div className="text-xs truncate">{r.categoria || "—"}</div>
       <div className="text-xs text-muted-foreground">{r.parcela || "—"}</div>
       <div className="text-right num font-medium">{brl(Number(r.valor || 0))}</div>
-      <div>
+      <div className="flex items-center gap-1.5">
         <span className={cn(
           "inline-flex px-2 py-0.5 rounded-full text-[11px] font-medium border",
           r.status_nf === "SEM NF" ? "bg-[hsl(0_80%_96%)] text-[hsl(0_72%_38%)] border-[hsl(0_80%_88%)]" :
           r.status_nf === "OK" ? "bg-[hsl(152_55%_94%)] text-[hsl(152_60%_28%)] border-[hsl(152_55%_82%)]" :
           "bg-muted text-muted-foreground border-border"
         )}>{r.status_nf}</span>
+        {/* O comprovante pode ser URL (Drive) ou caminho no bucket privado — o
+            ComprovanteLink resolve os dois e não renderiza quando não dá para abrir. */}
+        <ComprovanteLink
+          valor={r.link_comprovante}
+          title={r.arquivo_comprovante || "Abrir comprovante"}
+          className="text-muted-foreground hover:text-primary transition-colors shrink-0"
+        >
+          <ExternalLink className="h-3.5 w-3.5" />
+        </ComprovanteLink>
       </div>
       <div>
         {r.status_escopo && (

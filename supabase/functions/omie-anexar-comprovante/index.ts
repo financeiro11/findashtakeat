@@ -31,7 +31,7 @@
 //   "anexar_arquivo" → a pessoa sobe o arquivo e ele vai direto ao título. { id, nome, base64 }.
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
-import { listarCategorias, listarMovimentos, omieCall } from "../_shared/omie.ts";
+import { incluirAnexo, listarCategorias, listarMovimentos, toBase64 } from "../_shared/omie.ts";
 import { casarComOmie, indexarMovimentos, MatchResult } from "../_shared/match-cartao.ts";
 import { baixarDoDrive, baseDoDrive, driveConfigurado, ehHtml, extrairIdDrive, podeLerNoDrive, sondarDrive, statusDrive } from "../_shared/drive.ts";
 import { requireUser } from "../_shared/auth.ts";
@@ -46,23 +46,11 @@ const json = (body: unknown, status = 200) =>
 
 const BUCKET = "comprovantes-auditoria";
 
-/** Uint8Array → base64, em blocos (String.fromCharCode(...bytes) estoura a pilha em PDFs grandes). */
-function toBase64(bytes: Uint8Array): string {
-  let bin = "";
-  const CHUNK = 0x8000;
-  for (let i = 0; i < bytes.length; i += CHUNK) {
-    bin += String.fromCharCode(...bytes.subarray(i, i + CHUNK));
-  }
-  return btoa(bin);
-}
-
 const nomeDoPath = (p: string) => {
   const base = p.split("/").pop() || "comprovante";
   // o upload prefixa com timestamp ("1783626823462_nota.pdf") — tira para o Omie
   return base.replace(/^\d{10,}_/, "");
 };
-const extDe = (nome: string) =>
-  (nome.includes(".") ? nome.split(".").pop()! : "pdf").toLowerCase().replace(/[^a-z0-9]/g, "") || "pdf";
 
 /**
  * Código interno do anexo no Omie. O campo cCodIntAnexo aceita NO MÁXIMO 20 caracteres —
@@ -383,13 +371,12 @@ Deno.serve(async (req) => {
       if (upErr) return json({ error: `Falha ao guardar o arquivo: ${upErr.message}` }, 200);
 
       // Anexa no título do Omie (acrescenta, nunca substitui).
-      await omieCall("geral/anexo", "IncluirAnexo", {
-        cCodIntAnexo: codIntAnexo(item.achado_id),
+      await incluirAnexo({
+        nId: item.match.codTitulo,
         cTabela,
-        nId: Number(item.match.codTitulo),
-        cNomeArquivo: nomeArq,
-        cTipoArquivo: extDe(nomeArq),
-        cArquivo: toBase64(bytes),
+        nome: nomeArq,
+        base64: toBase64(bytes),
+        codInt: codIntAnexo(item.achado_id),
       });
 
       const agora = new Date().toISOString();
@@ -460,13 +447,12 @@ Deno.serve(async (req) => {
 
         // 3b) Anexa no título do Omie. "Sempre acrescentar": não listamos nem excluímos
         // os anexos que já existem lá — o IncluirAnexo entra ao lado deles.
-        await omieCall("geral/anexo", "IncluirAnexo", {
-          cCodIntAnexo: codIntAnexo(e.achado_id),
+        await incluirAnexo({
+          nId: e.match!.codTitulo,
           cTabela,
-          nId: Number(e.match!.codTitulo),
-          cNomeArquivo: nome,
-          cTipoArquivo: extDe(nome),
-          cArquivo: toBase64(bytes),
+          nome,
+          base64: toBase64(bytes),
+          codInt: codIntAnexo(e.achado_id),
         });
 
         const agora = new Date().toISOString();

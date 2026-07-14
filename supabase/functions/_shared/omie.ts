@@ -4,6 +4,8 @@
 // As credenciais (par app_key + app_secret) vêm dos secrets do Supabase
 // (OMIE_APP_KEY / OMIE_APP_SECRET) e nunca são expostas ao frontend.
 
+import { crypto as stdCrypto } from "https://deno.land/std@0.224.0/crypto/mod.ts";
+
 const BASE = "https://app.omie.com.br/api/v1";
 
 function creds() {
@@ -79,6 +81,87 @@ export async function omieCall<T = any>(
     throw lastErr;
   }
   throw lastErr;
+}
+
+/* ============================================================
+ *  Anexos (geral/anexo/IncluirAnexo)
+ * ============================================================ */
+
+/** Uint8Array → base64, em blocos (String.fromCharCode(...bytes) estoura a pilha em PDFs grandes). */
+export function toBase64(bytes: Uint8Array): string {
+  let bin = "";
+  const CHUNK = 0x8000;
+  for (let i = 0; i < bytes.length; i += CHUNK) {
+    bin += String.fromCharCode(...bytes.subarray(i, i + CHUNK));
+  }
+  return btoa(bin);
+}
+
+/** base64 → bytes. */
+export function deBase64(b64: string): Uint8Array {
+  const limpo = b64.replace(/^data:[^;]+;base64,/, "");
+  return Uint8Array.from(atob(limpo), (c) => c.charCodeAt(0));
+}
+
+/**
+ * MD5 em hexadecimal.
+ *
+ * Usa o `crypto` do std do Deno, e não o global: o Web Crypto NÃO implementa MD5
+ * (é considerado quebrado para uso criptográfico), e `crypto.subtle.digest("MD5", …)`
+ * lançaria "Unrecognized algorithm name". Aqui o MD5 não é segurança — é o checksum
+ * que o Omie exige para conferir a integridade do anexo.
+ */
+async function md5Hex(data: Uint8Array | string): Promise<string> {
+  const bytes = typeof data === "string" ? new TextEncoder().encode(data) : data;
+  const buf = await stdCrypto.subtle.digest("MD5", bytes);
+  return [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+const extDe = (nome: string) =>
+  (nome.includes(".") ? nome.split(".").pop()! : "pdf").toLowerCase().replace(/[^a-z0-9]/g, "") || "pdf";
+
+/**
+ * Anexa um arquivo a um título do Omie.
+ *
+ * Duas armadilhas deste endpoint, ambas descobertas na marra:
+ *
+ *  1. `cCodIntAnexo` aceita NO MÁXIMO 20 caracteres. Um id + Date.now() estoura fácil
+ *     (o timestamp sozinho já são 13 dígitos) e o Omie recusa o anexo inteiro.
+ *
+ *  2. `cMd5` é OBRIGATÓRIO, e a documentação é ambígua sobre o que ele deve hashear:
+ *     "MD5 do arquivo enviado na tag 'cArquivo'" pode ser a string base64 OU os bytes do
+ *     arquivo. Em vez de apostar, tentamos a leitura literal (base64) e, se o Omie
+ *     reclamar especificamente do MD5, refazemos com o hash dos bytes.
+ */
+export async function incluirAnexo(opts: {
+  nId: number | string;
+  cTabela: string;
+  nome: string;
+  /** conteúdo do arquivo em base64 (sem o prefixo data:) */
+  base64: string;
+  /** identificador interno; será truncado em 20 caracteres */
+  codInt: string;
+}): Promise<unknown> {
+  const cCodIntAnexo = opts.codInt.slice(0, 20);
+
+  const tentar = (cMd5: string) =>
+    omieCall("geral/anexo", "IncluirAnexo", {
+      cCodIntAnexo,
+      cTabela: opts.cTabela,
+      nId: Number(opts.nId),
+      cNomeArquivo: opts.nome,
+      cTipoArquivo: extDe(opts.nome),
+      cArquivo: opts.base64,
+      cMd5,
+    });
+
+  try {
+    return await tentar(await md5Hex(opts.base64));      // leitura literal: MD5 do que vai na tag
+  } catch (e) {
+    if (!/md5/i.test(e instanceof Error ? e.message : String(e))) throw e;
+    console.warn("Omie recusou o MD5 da base64; refazendo com o MD5 dos bytes do arquivo.");
+    return await tentar(await md5Hex(deBase64(opts.base64)));
+  }
 }
 
 export interface OmieCategoria {

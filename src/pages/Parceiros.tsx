@@ -1171,6 +1171,53 @@ export default function Parceiros() {
     }
   };
 
+  const toggleRecRow = (id: string) => {
+    setSelectedRec((prev) => {
+      const next = new Set(prev);
+      next.has(id) ? next.delete(id) : next.add(id);
+      return next;
+    });
+  };
+  const handleDeleteRecSelected = async () => {
+    if (!canDelete) { toast.error("Sem permissão para apagar."); return; }
+    if (selectedRec.size === 0) return;
+    if (!confirm(`Apagar ${selectedRec.size} recorrência(s)? Esta ação não pode ser desfeita.`)) return;
+    setDeletingRec(true);
+    try {
+      const ids = Array.from(selectedRec);
+      const { data: snapshots } = await supabase
+        .from("parceiros_recorrencias")
+        .select("*")
+        .in("id", ids);
+      const auditRows = (snapshots ?? []).map((s: any) => ({
+        action: "delete_recorrencia",
+        indicacao_id: null,
+        id_negocio: s.id_negocio ?? null,
+        snapshot: { ...s, _source: "parceiros_recorrencias" },
+        user_id: user?.id ?? null,
+        user_email: profile?.email ?? user?.email ?? null,
+        user_nome: profile?.nome ?? null,
+      }));
+      if (auditRows.length) {
+        const { error: auditErr } = await supabase
+          .from("parceiros_indicacoes_audit" as any)
+          .insert(auditRows);
+        if (auditErr) throw auditErr;
+      }
+      const { error } = await supabase.from("parceiros_recorrencias").delete().in("id", ids);
+      if (error) throw error;
+      toast.success(`${ids.length} recorrência(s) apagada(s)`);
+      setSelectedRec(new Set());
+      await loadRows();
+    } catch (err: any) {
+      toast.error(err?.message || "Falha ao apagar");
+    } finally {
+      setDeletingRec(false);
+    }
+  };
+
+
+
 
   return (
     <div className="flex flex-col gap-4 p-4 lg:p-5">

@@ -1366,7 +1366,7 @@ export default function Parceiros() {
             <TableBody>
               {loading ? (
                 <TableRow>
-                  <TableCell colSpan={columnOrder.length + 1} className="py-16 text-center text-[12.5px] text-muted-foreground">
+                  <TableCell colSpan={columnOrder.length + (canDelete ? 1 : 0)} className="py-16 text-center text-[12.5px] text-muted-foreground">
                     Carregando…
                   </TableCell>
                 </TableRow>

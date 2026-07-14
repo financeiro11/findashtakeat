@@ -104,7 +104,7 @@ const mdComponents = {
 };
 
 /* ============================ NORMALIZADOR ============================ */
-type VMEvento = { hora: string; titulo: string; timed: boolean; sortKey: string; conflito?: boolean; com?: string | null };
+type VMEvento = { hora: string; horaLabel: string; titulo: string; timed: boolean; sortKey: string; conflito?: boolean; com?: string | null };
 type VMPessoa = { id: string; nome: string; papel: string; iniciais: string; cor: string; eventos: VMEvento[] };
 type VMEmail = { remetente: string; badge: string | null; tom: "red" | "amber" | "neutral"; resumo: string; busca: string; link: string | null };
 
@@ -113,20 +113,50 @@ const IGNORE_AGENDA_KEYS = new Set([
   "total_pessoas", "proximo_evento", "resumo_ia", "resumo_tags", "timeline", "pessoas",
 ]);
 
+/** Extrai eventos de agenda de vários formatos que a skill (LLM) já produziu:
+ *  {summary,start,end,date,all_day,note} | {titulo,horario:"HH:MM-HH:MM"|"HH:MM",compartilhado_com} | string */
 function normEvento(ev: any): VMEvento | null {
   if (ev == null) return null;
-  if (typeof ev === "string") return { hora: "—", titulo: ev, timed: false, sortKey: "99:99" };
-  const summary = ev.summary ?? ev.titulo ?? ev.title ?? "(sem título)";
-  let hora: string = ev.hora ?? "";
+  if (typeof ev === "string") return { hora: "—", horaLabel: "", titulo: ev, timed: false, sortKey: "99:99" };
+  const titulo0 = ev.summary ?? ev.titulo ?? ev.title ?? ev.nome ?? "(sem título)";
+
+  const rawHorario = ev.horario ?? ev.hora ?? ev.time ?? "";
+  const isDiaTodoStr = typeof rawHorario === "string" && /dia\s*todo|all[\s-]*day/i.test(rawHorario);
+  const allDay = ev.all_day ?? ev.allDay ?? ev.dia_todo ?? isDiaTodoStr ?? (!!ev.date && !ev.start && !rawHorario);
+
+  let hora = "";        // "HH:MM" de início — ordenação / timeline / próximo evento
+  let horaLabel = "";   // rótulo exibido (faixa completa quando houver)
   let timed = false;
-  const allDay = ev.all_day ?? ev.allDay ?? (!!ev.date && !ev.start && !ev.hora);
-  if (!hora) {
-    if (allDay) hora = "dia todo";
-    else if (ev.start) { const m = /T(\d{2}:\d{2})/.exec(String(ev.start)); if (m) { hora = m[1]; timed = true; } }
-  } else if (/^\d{1,2}:\d{2}/.test(hora)) timed = true;
+
+  const mIni = typeof rawHorario === "string" ? rawHorario.match(/(\d{1,2}:\d{2})/) : null;
+  if (allDay) {
+    horaLabel = "dia todo";
+  } else if (mIni) {
+    hora = mIni[1].padStart(5, "0");
+    horaLabel = String(rawHorario).trim();
+    timed = true;
+  } else if (ev.start) {
+    const mS = /T(\d{2}:\d{2})/.exec(String(ev.start));
+    if (mS) {
+      hora = mS[1];
+      const mE = /T(\d{2}:\d{2})/.exec(String(ev.end ?? ""));
+      horaLabel = mE ? `${mS[1]}–${mE[1]}` : mS[1];
+      timed = true;
+    }
+  }
+
   const note = ev.note ?? ev.nota ?? null;
-  const titulo = note ? `${summary} · ${note}` : summary;
-  return { hora: hora || "—", titulo, timed, sortKey: timed ? hora : "00:00", conflito: !!ev.conflito, com: ev.com ?? null };
+  const titulo = note ? `${titulo0} · ${note}` : titulo0;
+  const comRaw = ev.com ?? ev.compartilhado_com ?? ev.participantes ?? null;
+  const com = Array.isArray(comRaw) ? (comRaw.join(", ") || null) : (comRaw || null);
+
+  return {
+    hora: hora || (allDay ? "dia todo" : "—"),
+    horaLabel: horaLabel || (allDay ? "dia todo" : ""),
+    titulo, timed,
+    sortKey: timed ? hora : (allDay ? "00:00" : "99:99"),
+    conflito: !!ev.conflito, com,
+  };
 }
 
 function normalizeAgenda(agenda: any) {
@@ -478,7 +508,7 @@ function BriefingView({ b, vm, tarefas, meNome, onEdit, onRegerar, onAprofundar,
                               i > 0 && "border-t border-border/40",
                               e.conflito && "bg-primary/[0.04]",
                             )}>
-                              <span className="num w-16 shrink-0 font-semibold text-muted-foreground">{e.hora}</span>
+                              <span className="num w-[86px] shrink-0 whitespace-nowrap font-semibold text-muted-foreground">{e.horaLabel || e.hora}</span>
                               <span className="min-w-0 flex-1 truncate text-foreground">{e.titulo}</span>
                               {e.conflito && (
                                 <span className="shrink-0 rounded bg-primary/10 px-1.5 py-0.5 text-[9.5px] font-bold uppercase tracking-wider text-primary">Conflito</span>

@@ -28,6 +28,10 @@ import { EditarRegistroDialog, type EditarRegistroTarget } from "./parceiros/Edi
 import { GestaoRecorrenciasDialog } from "./parceiros/GestaoRecorrenciasDialog";
 import { HistoricoCampanhaSheet, type HistoricoTarget } from "./parceiros/HistoricoCampanhaSheet";
 import { EditableDateCell } from "./parceiros/EditableDateCell";
+import { AuditoriaParceirosDialog } from "./parceiros/AuditoriaParceirosDialog";
+import { useAuth } from "@/hooks/useAuth";
+
+const VICTOR_USER_ID = "a32c1044-9637-4a62-8dfe-205c4b660e79";
 
 /* ─────────────────────────── Tipos ─────────────────────────── */
 

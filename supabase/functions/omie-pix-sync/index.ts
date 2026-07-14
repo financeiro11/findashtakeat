@@ -243,8 +243,10 @@ Deno.serve(async (req) => {
       const ext = (nome.includes(".") ? nome.split(".").pop()! : "pdf").toLowerCase().replace(/[^a-z0-9]/g, "") || "pdf";
 
       // Anexa no título correspondente do Omie (contas a pagar).
+      // cCodIntAnexo aceita NO MÁXIMO 20 caracteres: "hub-{nCodTitulo}-{Date.now()}" dava
+      // 28 e o Omie recusava o anexo inteiro. Timestamp em base36 + truncagem por garantia.
       await omieCall("geral/anexo", "IncluirAnexo", {
-        cCodIntAnexo: `hub-${nId}-${Date.now()}`,
+        cCodIntAnexo: `h${nId}-${Date.now().toString(36)}`.slice(0, 20),
         cTabela, nId: Number(nId),
         cNomeArquivo: nome, cTipoArquivo: ext, cArquivo: base64,
       });

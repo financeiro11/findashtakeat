@@ -65,6 +65,14 @@ const extDe = (nome: string) =>
   (nome.includes(".") ? nome.split(".").pop()! : "pdf").toLowerCase().replace(/[^a-z0-9]/g, "") || "pdf";
 
 /**
+ * Código interno do anexo no Omie. O campo cCodIntAnexo aceita NO MÁXIMO 20 caracteres —
+ * "hub-ach-{id}-{Date.now()}" dava 26 e o Omie recusava o anexo inteiro. O timestamp vai
+ * em base36 (8 caracteres em vez de 13) e o resultado é truncado por garantia.
+ */
+const codIntAnexo = (id: number): string =>
+  `h${id}-${Date.now().toString(36)}`.slice(0, 20);
+
+/**
  * O comprovante pode estar em dois lugares, e só UM deles o servidor consegue ler:
  *
  *   • caminho no bucket `comprovantes-auditoria` (o gestor subiu pelo link público)
@@ -376,7 +384,7 @@ Deno.serve(async (req) => {
 
       // Anexa no título do Omie (acrescenta, nunca substitui).
       await omieCall("geral/anexo", "IncluirAnexo", {
-        cCodIntAnexo: `hub-up-${item.achado_id}-${Date.now()}`,
+        cCodIntAnexo: codIntAnexo(item.achado_id),
         cTabela,
         nId: Number(item.match.codTitulo),
         cNomeArquivo: nomeArq,
@@ -453,7 +461,7 @@ Deno.serve(async (req) => {
         // 3b) Anexa no título do Omie. "Sempre acrescentar": não listamos nem excluímos
         // os anexos que já existem lá — o IncluirAnexo entra ao lado deles.
         await omieCall("geral/anexo", "IncluirAnexo", {
-          cCodIntAnexo: `hub-ach-${e.achado_id}-${Date.now()}`,
+          cCodIntAnexo: codIntAnexo(e.achado_id),
           cTabela,
           nId: Number(e.match!.codTitulo),
           cNomeArquivo: nome,

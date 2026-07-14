@@ -1227,8 +1227,6 @@ export default function Parceiros() {
                 <Trash2 className="h-3.5 w-3.5" /> Apagar ({selected.size})
               </Button>
             )}
-              </Button>
-            )}
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
                 <Button variant="outline" size="sm" className="h-8 gap-1.5 text-[12.5px]">

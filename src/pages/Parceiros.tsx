@@ -1323,13 +1323,15 @@ export default function Parceiros() {
           <Table>
             <TableHeader>
               <TableRow>
-                <Th className="w-10">
-                  <Checkbox
-                    checked={allChecked ? true : someChecked ? "indeterminate" : false}
-                    onCheckedChange={toggleAll}
-                    aria-label="Selecionar todas"
-                  />
-                </Th>
+                {canDelete && (
+                  <Th className="w-10">
+                    <Checkbox
+                      checked={allChecked ? true : someChecked ? "indeterminate" : false}
+                      onCheckedChange={toggleAll}
+                      aria-label="Selecionar todas"
+                    />
+                  </Th>
+                )}
                 {columnOrder.map((key) => {
                   const c = COLUMNS[key];
                   const sortable = !!c.sortValue;

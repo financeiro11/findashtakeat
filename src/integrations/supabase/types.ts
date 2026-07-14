@@ -522,6 +522,39 @@ export type Database = {
         }
         Relationships: []
       }
+      briefing_diario: {
+        Row: {
+          agenda: Json | null
+          conteudo_markdown: string
+          emails: Json | null
+          gerado_em: string
+          id: string
+          noticias: Json | null
+          periodo_fim: string
+          periodo_inicio: string
+        }
+        Insert: {
+          agenda?: Json | null
+          conteudo_markdown: string
+          emails?: Json | null
+          gerado_em?: string
+          id?: string
+          noticias?: Json | null
+          periodo_fim: string
+          periodo_inicio: string
+        }
+        Update: {
+          agenda?: Json | null
+          conteudo_markdown?: string
+          emails?: Json | null
+          gerado_em?: string
+          id?: string
+          noticias?: Json | null
+          periodo_fim?: string
+          periodo_inicio?: string
+        }
+        Relationships: []
+      }
       cenarios: {
         Row: {
           analise: string | null
@@ -1377,6 +1410,27 @@ export type Database = {
           },
         ]
       }
+      ml_tokens: {
+        Row: {
+          access_token: string | null
+          id: number
+          refresh_token: string
+          updated_at: string
+        }
+        Insert: {
+          access_token?: string | null
+          id?: never
+          refresh_token: string
+          updated_at?: string
+        }
+        Update: {
+          access_token?: string | null
+          id?: never
+          refresh_token?: string
+          updated_at?: string
+        }
+        Relationships: []
+      }
       omie_caixa_conta: {
         Row: {
           atualizado_em: string
@@ -1529,9 +1583,11 @@ export type Database = {
           fonte: string | null
           id: number
           mes: number
+          omie_sincronizado_em: string | null
           orcado: number
           pessoal: boolean
           realizado: number
+          realizado_omie: number | null
           subcategoria: string
         }
         Insert: {
@@ -1541,9 +1597,11 @@ export type Database = {
           fonte?: string | null
           id?: never
           mes: number
+          omie_sincronizado_em?: string | null
           orcado?: number
           pessoal?: boolean
           realizado?: number
+          realizado_omie?: number | null
           subcategoria: string
         }
         Update: {
@@ -1553,10 +1611,81 @@ export type Database = {
           fonte?: string | null
           id?: never
           mes?: number
+          omie_sincronizado_em?: string | null
           orcado?: number
           pessoal?: boolean
           realizado?: number
+          realizado_omie?: number | null
           subcategoria?: string
+        }
+        Relationships: []
+      }
+      orcamento_omie_map: {
+        Row: {
+          area: string | null
+          ativo: boolean
+          atualizado_em: string
+          descricao_categoria: string
+          origem: string
+          rubrica: string | null
+          subcategoria: string | null
+        }
+        Insert: {
+          area?: string | null
+          ativo?: boolean
+          atualizado_em?: string
+          descricao_categoria: string
+          origem?: string
+          rubrica?: string | null
+          subcategoria?: string | null
+        }
+        Update: {
+          area?: string | null
+          ativo?: boolean
+          atualizado_em?: string
+          descricao_categoria?: string
+          origem?: string
+          rubrica?: string | null
+          subcategoria?: string | null
+        }
+        Relationships: []
+      }
+      orcamento_omie_sync_log: {
+        Row: {
+          ano: number | null
+          concluido_em: string | null
+          erro: string | null
+          id: number
+          iniciado_em: string
+          linhas_atualizadas: number | null
+          movimentos: number | null
+          nao_mapeadas: number | null
+          status: string
+          valor_nao_mapeado: number | null
+        }
+        Insert: {
+          ano?: number | null
+          concluido_em?: string | null
+          erro?: string | null
+          id?: never
+          iniciado_em?: string
+          linhas_atualizadas?: number | null
+          movimentos?: number | null
+          nao_mapeadas?: number | null
+          status: string
+          valor_nao_mapeado?: number | null
+        }
+        Update: {
+          ano?: number | null
+          concluido_em?: string | null
+          erro?: string | null
+          id?: never
+          iniciado_em?: string
+          linhas_atualizadas?: number | null
+          movimentos?: number | null
+          nao_mapeadas?: number | null
+          status?: string
+          valor_nao_mapeado?: number | null
         }
         Relationships: []
       }
@@ -2511,6 +2640,7 @@ export type Database = {
           id: string
           is_favorite: boolean
           last_edited_by: string | null
+          oculta: boolean
           parent_id: string | null
           position: number
           tags: string[]
@@ -2528,6 +2658,7 @@ export type Database = {
           id?: string
           is_favorite?: boolean
           last_edited_by?: string | null
+          oculta?: boolean
           parent_id?: string | null
           position?: number
           tags?: string[]
@@ -2545,6 +2676,7 @@ export type Database = {
           id?: string
           is_favorite?: boolean
           last_edited_by?: string | null
+          oculta?: boolean
           parent_id?: string | null
           position?: number
           tags?: string[]
@@ -2575,6 +2707,7 @@ export type Database = {
           realizado_pessoal: number | null
           saldo: number | null
           status: string | null
+          tem_omie: boolean | null
         }
         Relationships: []
       }
@@ -2583,6 +2716,7 @@ export type Database = {
           ano: number | null
           area: string | null
           consumido_pct: number | null
+          fonte_realizado: string | null
           mes: number | null
           orcado: number | null
           pessoal: boolean | null
@@ -2594,10 +2728,11 @@ export type Database = {
           ano?: number | null
           area?: string | null
           consumido_pct?: never
+          fonte_realizado?: never
           mes?: number | null
           orcado?: number | null
           pessoal?: boolean | null
-          realizado?: number | null
+          realizado?: never
           saldo?: never
           subcategoria?: string | null
         }
@@ -2605,10 +2740,11 @@ export type Database = {
           ano?: number | null
           area?: string | null
           consumido_pct?: never
+          fonte_realizado?: never
           mes?: number | null
           orcado?: number | null
           pessoal?: boolean | null
-          realizado?: number | null
+          realizado?: never
           saldo?: never
           subcategoria?: string | null
         }
@@ -2619,6 +2755,10 @@ export type Database = {
       append_trilha_e_status: {
         Args: { p_evento: Json; p_id_unico: string; p_status: string }
         Returns: undefined
+      }
+      apply_orcamento_realizado_omie: {
+        Args: { p_ano: number; p_dados: Json }
+        Returns: number
       }
       criar_token_e_registrar: {
         Args: {

@@ -10,8 +10,16 @@
 
 const GATEWAY_URL = "https://connector-gateway.lovable.dev/google_drive/v3";
 
-export const driveConfigurado = (): boolean =>
-  !!Deno.env.get("LOVABLE_API_KEY") && !!Deno.env.get("GOOGLE_DRIVE_API_KEY");
+/** Quais secrets existem. Booleano apenas — o valor da chave nunca sai daqui. */
+export const statusDrive = (): { lovable: boolean; drive: boolean } => ({
+  lovable: !!Deno.env.get("LOVABLE_API_KEY"),
+  drive: !!Deno.env.get("GOOGLE_DRIVE_API_KEY"),
+});
+
+export const driveConfigurado = (): boolean => {
+  const s = statusDrive();
+  return s.lovable && s.drive;
+};
 
 /**
  * Extrai o ID do arquivo de uma URL do Drive. Cobre os formatos que aparecem no banco:

@@ -33,7 +33,7 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { listarCategorias, listarMovimentos, omieCall } from "../_shared/omie.ts";
 import { casarComOmie, indexarMovimentos, MatchResult } from "../_shared/match-cartao.ts";
-import { baixarDoDrive, driveConfigurado, ehHtml, extrairIdDrive } from "../_shared/drive.ts";
+import { baixarDoDrive, driveConfigurado, ehHtml, extrairIdDrive, statusDrive } from "../_shared/drive.ts";
 import { requireUser } from "../_shared/auth.ts";
 
 const corsHeaders = {
@@ -245,10 +245,20 @@ Deno.serve(async (req) => {
      */
     if (action === "testar_drive") {
       if (!comDrive) {
+        const s = statusDrive();
+        const faltando = [
+          !s.lovable ? "LOVABLE_API_KEY" : null,
+          !s.drive ? "GOOGLE_DRIVE_API_KEY" : null,
+        ].filter(Boolean);
         return json({
           ok: false,
           drive_configurado: false,
-          erro: "Faltam os secrets LOVABLE_API_KEY e/ou GOOGLE_DRIVE_API_KEY no Supabase.",
+          secrets: s,
+          erro:
+            `Falta o secret ${faltando.join(" e ")} no Supabase (Edge Functions → Secrets).` +
+            (!s.drive && s.lovable
+              ? " A LOVABLE_API_KEY já está lá — só falta conectar o Google Drive no Lovable e guardar a chave dessa conexão. A chave do Sheets não serve: é outro conector."
+              : ""),
         });
       }
       const alvo = elegiveis.find((e) => ehUrl(e.comprovante) && extrairIdDrive(e.comprovante));

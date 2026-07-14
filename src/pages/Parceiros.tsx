@@ -1816,6 +1816,11 @@ export default function Parceiros() {
         stickyHeader
         actions={
           <div className="flex items-center gap-1.5">
+            {canDelete && selectedRec.size > 0 && (
+              <Button variant="destructive" size="sm" className="h-8 gap-1.5 text-[12.5px]" onClick={handleDeleteRecSelected} disabled={deletingRec}>
+                <Trash2 className="h-3.5 w-3.5" /> Apagar ({selectedRec.size})
+              </Button>
+            )}
             <Button
               variant="outline"
               size="sm"

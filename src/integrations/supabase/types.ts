@@ -1860,6 +1860,42 @@ export type Database = {
         }
         Relationships: []
       }
+      parceiros_indicacoes_audit: {
+        Row: {
+          action: string
+          created_at: string
+          id: string
+          id_negocio: string | null
+          indicacao_id: string | null
+          snapshot: Json | null
+          user_email: string | null
+          user_id: string | null
+          user_nome: string | null
+        }
+        Insert: {
+          action: string
+          created_at?: string
+          id?: string
+          id_negocio?: string | null
+          indicacao_id?: string | null
+          snapshot?: Json | null
+          user_email?: string | null
+          user_id?: string | null
+          user_nome?: string | null
+        }
+        Update: {
+          action?: string
+          created_at?: string
+          id?: string
+          id_negocio?: string | null
+          indicacao_id?: string | null
+          snapshot?: Json | null
+          user_email?: string | null
+          user_id?: string | null
+          user_nome?: string | null
+        }
+        Relationships: []
+      }
       parceiros_recorrencias: {
         Row: {
           asaas_url: string | null

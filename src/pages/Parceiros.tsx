@@ -28,6 +28,10 @@ import { EditarRegistroDialog, type EditarRegistroTarget } from "./parceiros/Edi
 import { GestaoRecorrenciasDialog } from "./parceiros/GestaoRecorrenciasDialog";
 import { HistoricoCampanhaSheet, type HistoricoTarget } from "./parceiros/HistoricoCampanhaSheet";
 import { EditableDateCell } from "./parceiros/EditableDateCell";
+import { AuditoriaParceirosDialog } from "./parceiros/AuditoriaParceirosDialog";
+import { useAuth } from "@/hooks/useAuth";
+
+const VICTOR_USER_ID = "a32c1044-9637-4a62-8dfe-205c4b660e79";
 
 /* ─────────────────────────── Tipos ─────────────────────────── */
 
@@ -231,6 +235,9 @@ const REC_MAPPING_FIELDS: MappingField[] = [
 /* ─────────────────────────── Página ─────────────────────────── */
 
 export default function Parceiros() {
+  const { user, profile } = useAuth();
+  const canDelete = user?.id === VICTOR_USER_ID;
+
   const [query, setQuery] = useState("");
   const [rows, setRows] = useState<Parceiro[]>([]);
   const [loading, setLoading] = useState(true);
@@ -1124,11 +1131,32 @@ export default function Parceiros() {
     });
   };
   const handleDeleteSelected = async () => {
+    if (!canDelete) { toast.error("Sem permissão para apagar."); return; }
     if (selected.size === 0) return;
     if (!confirm(`Apagar ${selected.size} indicação(ões)? Esta ação não pode ser desfeita.`)) return;
     setDeleting(true);
     try {
       const ids = Array.from(selected);
+      // Snapshot antes de apagar — para trilha de auditoria.
+      const { data: snapshots } = await supabase
+        .from("parceiros_indicacoes")
+        .select("*")
+        .in("id", ids);
+      const auditRows = (snapshots ?? []).map((s: any) => ({
+        action: "delete",
+        indicacao_id: s.id,
+        id_negocio: s.id_negocio ?? null,
+        snapshot: s,
+        user_id: user?.id ?? null,
+        user_email: profile?.email ?? user?.email ?? null,
+        user_nome: profile?.nome ?? null,
+      }));
+      if (auditRows.length) {
+        const { error: auditErr } = await supabase
+          .from("parceiros_indicacoes_audit" as any)
+          .insert(auditRows);
+        if (auditErr) throw auditErr;
+      }
       const { error } = await supabase.from("parceiros_indicacoes").delete().in("id", ids);
       if (error) throw error;
       toast.success(`${ids.length} indicação(ões) apagada(s)`);
@@ -1140,6 +1168,7 @@ export default function Parceiros() {
       setDeleting(false);
     }
   };
+
 
   return (
     <div className="flex flex-col gap-4 p-4 lg:p-5">
@@ -1192,7 +1221,8 @@ export default function Parceiros() {
               <RefreshCw className={cn("h-3.5 w-3.5", refreshing && "animate-spin")} /> Atualizar
             </Button>
             <GestaoParceirosDialog />
-            {selected.size > 0 && (
+            {canDelete && <AuditoriaParceirosDialog />}
+            {canDelete && selected.size > 0 && (
               <Button variant="destructive" size="sm" className="h-8 gap-1.5 text-[12.5px]" onClick={handleDeleteSelected} disabled={deleting}>
                 <Trash2 className="h-3.5 w-3.5" /> Apagar ({selected.size})
               </Button>
@@ -1293,13 +1323,15 @@ export default function Parceiros() {
           <Table>
             <TableHeader>
               <TableRow>
-                <Th className="w-10">
-                  <Checkbox
-                    checked={allChecked ? true : someChecked ? "indeterminate" : false}
-                    onCheckedChange={toggleAll}
-                    aria-label="Selecionar todas"
-                  />
-                </Th>
+                {canDelete && (
+                  <Th className="w-10">
+                    <Checkbox
+                      checked={allChecked ? true : someChecked ? "indeterminate" : false}
+                      onCheckedChange={toggleAll}
+                      aria-label="Selecionar todas"
+                    />
+                  </Th>
+                )}
                 {columnOrder.map((key) => {
                   const c = COLUMNS[key];
                   const sortable = !!c.sortValue;
@@ -1334,26 +1366,28 @@ export default function Parceiros() {
             <TableBody>
               {loading ? (
                 <TableRow>
-                  <TableCell colSpan={columnOrder.length + 1} className="py-16 text-center text-[12.5px] text-muted-foreground">
+                  <TableCell colSpan={columnOrder.length + (canDelete ? 1 : 0)} className="py-16 text-center text-[12.5px] text-muted-foreground">
                     Carregando…
                   </TableCell>
                 </TableRow>
               ) : filtered.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={columnOrder.length + 1} className="py-16 text-center">
+                  <TableCell colSpan={columnOrder.length + (canDelete ? 1 : 0)} className="py-16 text-center">
                     <EmptyState />
                   </TableCell>
                 </TableRow>
               ) : (
                 paginated.map((r) => (
                   <TableRow key={r.id} className="text-[12.5px]" data-state={selected.has(r.id) ? "selected" : undefined}>
-                    <TableCell className="py-2.5">
-                      <Checkbox
-                        checked={selected.has(r.id)}
-                        onCheckedChange={() => toggleRow(r.id)}
-                        aria-label="Selecionar linha"
-                      />
-                    </TableCell>
+                    {canDelete && (
+                      <TableCell className="py-2.5">
+                        <Checkbox
+                          checked={selected.has(r.id)}
+                          onCheckedChange={() => toggleRow(r.id)}
+                          aria-label="Selecionar linha"
+                        />
+                      </TableCell>
+                    )}
                     {columnOrder.map((key) => {
                       const mismatch =
                         key === "campanha" &&

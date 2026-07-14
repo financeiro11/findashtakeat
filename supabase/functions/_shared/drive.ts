@@ -49,6 +49,12 @@ export interface ArquivoDrive {
   mime: string;
 }
 
+export class ErroDrive extends Error {
+  constructor(readonly status: number, readonly corpo: string, msg: string) {
+    super(msg);
+  }
+}
+
 async function gw(path: string, init: RequestInit = {}, retries = 3): Promise<Response> {
   const LOVABLE_API_KEY = Deno.env.get("LOVABLE_API_KEY");
   const GOOGLE_DRIVE_API_KEY = Deno.env.get("GOOGLE_DRIVE_API_KEY");
@@ -72,42 +78,74 @@ async function gw(path: string, init: RequestInit = {}, retries = 3): Promise<Re
     });
     if (res.ok) return res;
 
-    const texto = await res.text().catch(() => "");
-    lastErr = new Error(`Drive [${res.status}]: ${texto.slice(0, 300) || res.statusText}`);
+    const corpo = (await res.text().catch(() => "")).slice(0, 400);
 
-    // 404 no gateway costuma significar "esse conector não existe/não está conectado".
-    if (res.status === 404) {
-      throw new Error(
-        `O gateway do Lovable não respondeu ao conector do Google Drive (404). ` +
-        `Confirme que o Drive está conectado no Lovable — o conector de Sheets não cobre arquivos.`,
-      );
-    }
-    if (res.status === 401 || res.status === 403) {
-      throw new Error(
-        `Sem permissão no Drive [${res.status}]. Compartilhe a pasta dos comprovantes com a conta Google conectada ao Lovable.`,
-      );
-    }
     if ((res.status === 429 || res.status >= 500) && attempt < retries) {
       await new Promise((r) => setTimeout(r, Math.min(8000, 600 * 2 ** attempt)));
       continue;
     }
+
+    // NÃO interpretamos o status aqui. Um 404 pode ser "a rota do gateway não existe" OU
+    // "o arquivo não existe / a conta conectada não enxerga ele" — a API do Drive usa 404
+    // para os dois. Quem chama decide, com o contexto que tem (ver sondarDrive).
+    lastErr = new ErroDrive(res.status, corpo, `Drive [${res.status}]: ${corpo || res.statusText}`);
     throw lastErr;
   }
   throw lastErr;
 }
 
+/**
+ * Confere se o conector responde e diz QUAL conta Google está conectada.
+ *
+ * É o que separa as duas causas de um 404 ao baixar um arquivo:
+ *   • se esta sonda falhar    → a rota do gateway está errada / o Drive não está ligado no projeto;
+ *   • se esta sonda funcionar → o conector está OK, e o 404 do arquivo significa que a conta
+ *     conectada não tem acesso àquele arquivo (o Drive responde 404, não 403, para o que
+ *     você não pode ver).
+ */
+export async function sondarDrive(): Promise<{ email: string; nome: string }> {
+  const res = await gw(`/about?fields=user`);
+  const j = await res.json().catch(() => ({}));
+  return {
+    email: String(j?.user?.emailAddress ?? "(desconhecido)"),
+    nome: String(j?.user?.displayName ?? ""),
+  };
+}
+
 /** Metadados (nome e tipo) — usados para nomear o anexo no Omie. */
 async function metadados(id: string): Promise<{ nome: string; mime: string }> {
-  const res = await gw(`/files/${id}?fields=name,mimeType`);
+  const res = await gw(`/files/${id}?fields=name,mimeType&supportsAllDrives=true`);
   const j = await res.json().catch(() => ({}));
   return { nome: String(j?.name ?? "comprovante"), mime: String(j?.mimeType ?? "") };
 }
 
-/** Baixa o conteúdo binário do arquivo. */
+/**
+ * Baixa o conteúdo binário do arquivo.
+ *
+ * `supportsAllDrives=true` é necessário quando o arquivo está num Drive compartilhado
+ * (unidade de equipe) — sem isso o Google finge que ele não existe e devolve 404.
+ */
 export async function baixarDoDrive(idOuUrl: string): Promise<ArquivoDrive> {
   const id = extrairIdDrive(idOuUrl) ?? idOuUrl;
 
-  const meta = await metadados(id).catch(() => ({ nome: "comprovante", mime: "" }));
+  let meta: { nome: string; mime: string };
+  try {
+    meta = await metadados(id);
+  } catch (e) {
+    // 404 aqui quase sempre é acesso, não rota: o Drive responde 404 (e não 403) para
+    // arquivo que a conta conectada não pode ver. Dizemos isso em vez de "não existe".
+    if (e instanceof ErroDrive && e.status === 404) {
+      const quem = await sondarDrive().then((u) => u.email).catch(() => null);
+      throw new Error(
+        quem
+          ? `A conta conectada no Lovable (${quem}) não tem acesso a este arquivo do Drive. ` +
+            `Compartilhe a pasta dos comprovantes com ela (ou conecte a conta dona dos arquivos).`
+          : `O conector do Google Drive não respondeu (404). Confirme que ele está vinculado a ESTE projeto no Lovable ` +
+            `(na tela de conectores, a coluna "Projects" precisa estar em 1, não 0).`,
+      );
+    }
+    throw e;
+  }
 
   // Google Docs/Sheets/Slides nativos não têm binário — teriam que ser exportados. Um
   // comprovante nunca deveria ser um desses; se for, é sinal de que o link está errado.
@@ -115,7 +153,7 @@ export async function baixarDoDrive(idOuUrl: string): Promise<ArquivoDrive> {
     throw new Error(`O link do Drive aponta para um documento Google (${meta.mime}), não para um arquivo anexável.`);
   }
 
-  const res = await gw(`/files/${id}?alt=media`);
+  const res = await gw(`/files/${id}?alt=media&supportsAllDrives=true`);
   const bytes = new Uint8Array(await res.arrayBuffer());
 
   if (!bytes.length) throw new Error("O Drive devolveu um arquivo vazio.");

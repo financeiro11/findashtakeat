@@ -33,7 +33,7 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { listarCategorias, listarMovimentos, omieCall } from "../_shared/omie.ts";
 import { casarComOmie, indexarMovimentos, MatchResult } from "../_shared/match-cartao.ts";
-import { baixarDoDrive, driveConfigurado, ehHtml, extrairIdDrive, statusDrive } from "../_shared/drive.ts";
+import { baixarDoDrive, driveConfigurado, ehHtml, extrairIdDrive, sondarDrive, statusDrive } from "../_shared/drive.ts";
 import { requireUser } from "../_shared/auth.ts";
 
 const corsHeaders = {
@@ -261,14 +261,36 @@ Deno.serve(async (req) => {
               : ""),
         });
       }
-      const alvo = elegiveis.find((e) => ehUrl(e.comprovante) && extrairIdDrive(e.comprovante));
-      if (!alvo) return json({ ok: true, drive_configurado: true, aviso: "Nenhum comprovante do Drive para testar." });
+      // Passo 1: o conector responde? Isso separa "rota errada / Drive não vinculado ao
+      // projeto" de "conta conectada não vê o arquivo" — o Drive usa 404 para os dois.
+      let conta: { email: string; nome: string };
+      try {
+        conta = await sondarDrive();
+      } catch (err) {
+        return json({
+          ok: false,
+          drive_configurado: true,
+          conector_ok: false,
+          erro:
+            "O conector do Google Drive não respondeu: " +
+            (err instanceof Error ? err.message : String(err)) +
+            ' — confirme, na tela de conectores do Lovable, que a coluna "Projects" do Google Drive está em 1 (não 0).',
+        });
+      }
 
+      const alvo = elegiveis.find((e) => ehUrl(e.comprovante) && extrairIdDrive(e.comprovante));
+      if (!alvo) {
+        return json({ ok: true, drive_configurado: true, conector_ok: true, conta: conta.email, aviso: "Conector OK. Nenhum comprovante do Drive para testar." });
+      }
+
+      // Passo 2: a conta conectada consegue LER este arquivo?
       try {
         const arq = await baixarDoDrive(alvo.comprovante);
         return json({
           ok: true,
           drive_configurado: true,
+          conector_ok: true,
+          conta: conta.email,
           baixou: true,
           lancamento: alvo.estabelecimento ?? alvo.titulo,
           arquivo: arq.nome,
@@ -279,6 +301,8 @@ Deno.serve(async (req) => {
         return json({
           ok: false,
           drive_configurado: true,
+          conector_ok: true,
+          conta: conta.email,
           baixou: false,
           lancamento: alvo.estabelecimento ?? alvo.titulo,
           erro: err instanceof Error ? err.message : String(err),

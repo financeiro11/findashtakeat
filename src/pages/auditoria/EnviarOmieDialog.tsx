@@ -96,10 +96,16 @@ export default function EnviarOmieDialog({
       if (error) throw new Error(error.message);
       const d = data as any;
       if (d?.baixou) {
-        toast.success(`Drive OK — baixei "${d.arquivo}" (${Math.round(d.bytes / 1024)} KB). Recarregando…`);
+        toast.success(
+          `Drive OK (${d.conta}) — baixei "${d.arquivo}" (${Math.round(d.bytes / 1024)} KB). Recarregando…`,
+        );
         await carregar();
       } else {
-        toast.error("Drive não funcionou: " + (d?.erro ?? "erro desconhecido"), { duration: 14000 });
+        toast.error(
+          (d?.conector_ok ? `Conector OK, conectado como ${d.conta}. ` : "") +
+            (d?.erro ?? "erro desconhecido"),
+          { duration: 16000 },
+        );
       }
     } catch (e: any) {
       toast.error("Falha no teste: " + e.message, { duration: 10000 });

@@ -443,6 +443,15 @@ export default function Achados() {
                 )}
               </Tooltip>
             </TooltipProvider>
+            <Button
+              onClick={() => setEnviarOmieOpen(true)}
+              className="h-9 text-white hover:opacity-90"
+              style={{ backgroundColor: "#1D63C7" }}
+              title="Anexa no título do Omie os comprovantes dos achados Aprovados"
+            >
+              <Paperclip className="h-4 w-4 mr-2" />
+              Enviar comprovantes ao Omie
+            </Button>
           </div>
           <p className="text-sm text-muted-foreground mt-1">Achados financeiros com workflow de análise e aprovação.</p>
         </div>
@@ -470,14 +479,6 @@ export default function Achados() {
           </label>
           <Button variant="outline" onClick={cruzarOmie} disabled={cruzando} className="h-9" title="Casa cada lançamento do cartão com o movimento do Omie (categoria contábil)">
             {cruzando ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <RefreshCw className="h-4 w-4 mr-2" />} Cruzar com Omie
-          </Button>
-          <Button
-            variant="outline"
-            onClick={() => setEnviarOmieOpen(true)}
-            className="h-9"
-            title="Anexa no título do Omie os comprovantes dos achados Aprovados"
-          >
-            <Paperclip className="h-4 w-4 mr-2" /> Enviar comprovantes ao Omie
           </Button>
           <Button onClick={exportCsv} className="bg-foreground text-background hover:bg-foreground/90 h-9">
             <Download className="h-4 w-4 mr-2" /> Exportar

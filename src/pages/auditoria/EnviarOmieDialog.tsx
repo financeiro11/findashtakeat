@@ -19,15 +19,28 @@ type Match = {
   sim: number;
 };
 
+type Motivo = null | "drive" | "sem_titulo" | "ja_enviado" | "comprovante_invalido";
+
 type Elegivel = {
   achado_id: number;
+  origem: "achado" | "cartao";
   titulo: string;
   valor: number;
   data: string | null;
   estabelecimento: string | null;
   ja_enviado_em: string | null;
   match: Match | null;
+  bloqueio: Motivo;
   pode_enviar_direto: boolean;
+};
+
+const EXPLICA_BLOQUEIO: Record<Exclude<Motivo, null>, string> = {
+  drive:
+    "O comprovante é um link do Google Drive. O servidor não tem credencial do Google, então não consegue baixar o arquivo — o Drive devolve uma página de login no lugar dele.",
+  sem_titulo: "Não achei no Omie um título que corresponda a este lançamento (valor + data).",
+  ja_enviado: "Já foi anexado no Omie antes.",
+  comprovante_invalido:
+    "O registro guarda só o nome do arquivo, não o arquivo em si — não há o que enviar.",
 };
 
 /**
@@ -75,10 +88,16 @@ export default function EnviarOmieDialog({
   }, [open]);
 
   const automaticos = elegiveis.filter((e) => e.pode_enviar_direto);
-  // Tem título no Omie, mas o casamento não é confiável o bastante para ir sozinho.
-  const confirmar = elegiveis.filter((e) => !e.pode_enviar_direto && e.match && !e.ja_enviado_em);
-  const jaEnviados = elegiveis.filter((e) => e.ja_enviado_em);
-  const semTitulo = elegiveis.filter((e) => !e.match && !e.ja_enviado_em);
+  // Sem bloqueio, mas o casamento não é confiável o bastante para ir sozinho.
+  const confirmar = elegiveis.filter((e) => !e.bloqueio && !e.pode_enviar_direto);
+  // Bloqueados: a confirmação do usuário não resolve — o arquivo ou o destino não existem.
+  const bloqueados = elegiveis.filter((e) => !!e.bloqueio);
+
+  // Agrupa por motivo, para explicar cada um uma vez só em vez de repetir por linha.
+  const porMotivo = bloqueados.reduce<Record<string, Elegivel[]>>((acc, e) => {
+    (acc[e.bloqueio!] ??= []).push(e);
+    return acc;
+  }, {});
 
   const totalEnviar = automaticos.length + marcados.size;
 
@@ -133,9 +152,9 @@ export default function EnviarOmieDialog({
           </div>
         ) : !elegiveis.length ? (
           <div className="py-10 text-center text-sm text-muted-foreground">
-            Nenhum achado <b>Aprovado</b> com comprovante anexado.
+            Nenhum lançamento <b>Aprovado</b> com comprovante anexado.
             <div className="mt-1 text-xs">
-              O comprovante enviado pelo gestor entra como “Em análise” — aprove-o primeiro para poder mandar ao Omie.
+              O comprovante que o gestor manda pelo link entra como “Em análise” — aprove-o primeiro para poder mandar ao Omie.
             </div>
           </div>
         ) : (
@@ -175,28 +194,20 @@ export default function EnviarOmieDialog({
               </section>
             )}
 
-            {semTitulo.length > 0 && (
-              <section>
-                <div className="mb-2 flex items-center gap-1.5 text-[12px] font-semibold text-muted-foreground">
+            {Object.entries(porMotivo).map(([motivo, itens]) => (
+              <section key={motivo}>
+                <div className="mb-1 flex items-center gap-1.5 text-[12px] font-semibold text-muted-foreground">
                   <Ban className="h-3.5 w-3.5" />
-                  {semTitulo.length} sem título correspondente no Omie — não dá para anexar
+                  {itens.length} não {itens.length === 1 ? "pode" : "podem"} ser enviado{itens.length === 1 ? "" : "s"}
                 </div>
-                <div className="rounded-lg border border-border divide-y divide-border/60">
-                  {semTitulo.map((e) => <Linha key={e.achado_id} e={e} />)}
-                </div>
-              </section>
-            )}
-
-            {jaEnviados.length > 0 && (
-              <section>
-                <div className="mb-2 text-[12px] font-semibold text-muted-foreground">
-                  {jaEnviados.length} já enviados antes — serão ignorados
-                </div>
-                <div className="rounded-lg border border-border divide-y divide-border/60 opacity-60">
-                  {jaEnviados.map((e) => <Linha key={e.achado_id} e={e} />)}
+                <p className="mb-2 text-[11.5px] text-muted-foreground">
+                  {EXPLICA_BLOQUEIO[motivo as Exclude<Motivo, null>]}
+                </p>
+                <div className="rounded-lg border border-border divide-y divide-border/60 opacity-70">
+                  {itens.map((e) => <Linha key={e.achado_id} e={e} />)}
                 </div>
               </section>
-            )}
+            ))}
           </div>
         )}
 

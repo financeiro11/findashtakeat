@@ -1379,13 +1379,15 @@ export default function Parceiros() {
               ) : (
                 paginated.map((r) => (
                   <TableRow key={r.id} className="text-[12.5px]" data-state={selected.has(r.id) ? "selected" : undefined}>
-                    <TableCell className="py-2.5">
-                      <Checkbox
-                        checked={selected.has(r.id)}
-                        onCheckedChange={() => toggleRow(r.id)}
-                        aria-label="Selecionar linha"
-                      />
-                    </TableCell>
+                    {canDelete && (
+                      <TableCell className="py-2.5">
+                        <Checkbox
+                          checked={selected.has(r.id)}
+                          onCheckedChange={() => toggleRow(r.id)}
+                          aria-label="Selecionar linha"
+                        />
+                      </TableCell>
+                    )}
                     {columnOrder.map((key) => {
                       const mismatch =
                         key === "campanha" &&

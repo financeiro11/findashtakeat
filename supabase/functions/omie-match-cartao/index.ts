@@ -79,7 +79,7 @@ Deno.serve(async (req) => {
       return json({
         ok: true,
         total_lancamentos: cards?.length ?? 0,
-        total_movimentos_omie: omieItems.length,
+        total_movimentos_omie: movimentos.length,
         amostra: results.slice(0, 30),
       });
     }

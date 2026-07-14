@@ -268,8 +268,11 @@ export type Database = {
           id_unico: string
           link_comprovante: string | null
           observacao: string | null
+          omie_anexo_enviado_em: string | null
+          omie_anexo_nome: string | null
           omie_categoria_codigo: string | null
           omie_categoria_descricao: string | null
+          omie_cod_titulo: string | null
           omie_match_confianca: string | null
           omie_matched_em: string | null
           origem: string
@@ -296,8 +299,11 @@ export type Database = {
           id_unico: string
           link_comprovante?: string | null
           observacao?: string | null
+          omie_anexo_enviado_em?: string | null
+          omie_anexo_nome?: string | null
           omie_categoria_codigo?: string | null
           omie_categoria_descricao?: string | null
+          omie_cod_titulo?: string | null
           omie_match_confianca?: string | null
           omie_matched_em?: string | null
           origem?: string
@@ -324,8 +330,11 @@ export type Database = {
           id_unico?: string
           link_comprovante?: string | null
           observacao?: string | null
+          omie_anexo_enviado_em?: string | null
+          omie_anexo_nome?: string | null
           omie_categoria_codigo?: string | null
           omie_categoria_descricao?: string | null
+          omie_cod_titulo?: string | null
           omie_match_confianca?: string | null
           omie_matched_em?: string | null
           origem?: string

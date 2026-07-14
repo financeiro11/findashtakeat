@@ -1372,7 +1372,7 @@ export default function Parceiros() {
                 </TableRow>
               ) : filtered.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={columnOrder.length + 1} className="py-16 text-center">
+                  <TableCell colSpan={columnOrder.length + (canDelete ? 1 : 0)} className="py-16 text-center">
                     <EmptyState />
                   </TableCell>
                 </TableRow>

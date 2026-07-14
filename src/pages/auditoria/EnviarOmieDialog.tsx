@@ -36,11 +36,11 @@ type Elegivel = {
 
 const EXPLICA_BLOQUEIO: Record<Exclude<Motivo, null>, string> = {
   drive:
-    "O comprovante é um link do Google Drive. O servidor não tem credencial do Google, então não consegue baixar o arquivo — o Drive devolve uma página de login no lugar dele.",
+    "O comprovante é um link do Google Drive, e o conector do Drive não está configurado — sem credencial, o Google devolve uma página de login no lugar do arquivo.",
   sem_titulo: "Não achei no Omie um título que corresponda a este lançamento (valor + data).",
   ja_enviado: "Já foi anexado no Omie antes.",
   comprovante_invalido:
-    "O registro guarda só o nome do arquivo, não o arquivo em si — não há o que enviar.",
+    "O comprovante não é um arquivo que o servidor consiga buscar (é só o nome do arquivo, ou um link que não é do Drive).",
 };
 
 /**
@@ -64,6 +64,7 @@ export default function EnviarOmieDialog({
   const [carregando, setCarregando] = useState(false);
   const [enviando, setEnviando] = useState(false);
   const [anexandoId, setAnexandoId] = useState<number | null>(null);
+  const [testando, setTestando] = useState(false);
   const [elegiveis, setElegiveis] = useState<Elegivel[]>([]);
   const [marcados, setMarcados] = useState<Set<number>>(new Set());
 
@@ -82,6 +83,28 @@ export default function EnviarOmieDialog({
       setElegiveis([]);
     } finally {
       setCarregando(false);
+    }
+  };
+
+  /** Baixa um comprovante do Drive SEM tocar no Omie — só para validar o conector. */
+  const testarDrive = async () => {
+    setTestando(true);
+    try {
+      const { data, error } = await supabase.functions.invoke("omie-anexar-comprovante", {
+        body: { action: "testar_drive" },
+      });
+      if (error) throw new Error(error.message);
+      const d = data as any;
+      if (d?.baixou) {
+        toast.success(`Drive OK — baixei "${d.arquivo}" (${Math.round(d.bytes / 1024)} KB). Recarregando…`);
+        await carregar();
+      } else {
+        toast.error("Drive não funcionou: " + (d?.erro ?? "erro desconhecido"), { duration: 14000 });
+      }
+    } catch (e: any) {
+      toast.error("Falha no teste: " + e.message, { duration: 10000 });
+    } finally {
+      setTestando(false);
     }
   };
 
@@ -260,6 +283,18 @@ export default function EnviarOmieDialog({
                       </>
                     )}
                   </p>
+                  {motivo === "drive" && (
+                    <div className="mb-2 flex items-center gap-2">
+                      <Button size="sm" variant="outline" className="h-7 text-[11.5px]" onClick={testarDrive} disabled={testando}>
+                        {testando
+                          ? <><Loader2 className="mr-1.5 h-3 w-3 animate-spin" /> Testando…</>
+                          : "Testar conexão com o Drive"}
+                      </Button>
+                      <span className="text-[11px] text-muted-foreground">
+                        Baixa um comprovante para conferir a credencial. Não escreve nada no Omie.
+                      </span>
+                    </div>
+                  )}
                   <div className="rounded-lg border border-border divide-y divide-border/60">
                     {itens.map((e) => (
                       <Linha

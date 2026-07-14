@@ -8,9 +8,11 @@
 //   • lançamento do cartão com status_nf = "OK" e comprovante — a tela o exibe como
 //     "Aprovado", mas ele NÃO existe em `auditoria` (é linha sintética do front).
 //
-// Nem todo elegível é enviável, e o motivo é informado item a item (`bloqueio`):
-// comprovante no Google Drive (o servidor não tem credencial e o download devolve uma
-// página de login), sem título correspondente no Omie, ou já enviado antes.
+// O comprovante pode estar em dois lugares:
+//   • no bucket `comprovantes-auditoria` (o gestor subiu pelo link público) → sempre legível;
+//   • num link do Google Drive (veio do n8n) → só legível se o conector do Drive estiver
+//     configurado (LOVABLE_API_KEY + GOOGLE_DRIVE_API_KEY). Sem ele, o item fica bloqueado
+//     e a saída é a ação "anexar_arquivo".
 //
 // O título do Omie NÃO está gravado em lugar nenhum (o omie-match-cartao só guardava a
 // categoria), então ele é reencontrado aqui com a MESMA lógica de casamento
@@ -23,13 +25,15 @@
 // Se o título já tiver anexo no Omie, ACRESCENTA (nunca substitui).
 //
 // Ações (body.action):
-//   "preview" → lista os elegíveis com o título encontrado. NÃO envia nada.
-//   "enviar"  → envia. Params: { ids?: number[] } (ids de `auditoria`).
-//               Sem `ids`, envia só os de confiança alta ainda não enviados.
+//   "preview"        → lista os elegíveis com o título encontrado. NÃO envia nada.
+//   "testar_drive"   → baixa um comprovante do Drive para validar o conector. NÃO toca no Omie.
+//   "enviar"         → envia. Params: { ids?: number[] }.
+//   "anexar_arquivo" → a pessoa sobe o arquivo e ele vai direto ao título. { id, nome, base64 }.
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { listarCategorias, listarMovimentos, omieCall } from "../_shared/omie.ts";
 import { casarComOmie, indexarMovimentos, MatchResult } from "../_shared/match-cartao.ts";
+import { baixarDoDrive, driveConfigurado, ehHtml, extrairIdDrive } from "../_shared/drive.ts";
 import { requireUser } from "../_shared/auth.ts";
 
 const corsHeaders = {
@@ -149,10 +153,22 @@ Deno.serve(async (req) => {
     for (const c of categorias) if (c.codigo) codToDesc.set(String(c.codigo), c.descricao ?? "");
     const byValue = indexarMovimentos(movimentos);
 
+    // Com o conector do Drive configurado, o servidor passa a conseguir baixar o arquivo
+    // — e os links do Drive deixam de ser um bloqueio. Sem ele, continuam bloqueados e a
+    // saída é a ação "anexar_arquivo" (a pessoa baixa do Drive e sobe pelo Hub).
+    const comDrive = driveConfigurado();
+
     /** Decide por que um item não pode ser enviado (null = pode). */
     const motivo = (comprovante: string, match: MatchResult | null, jaEnviado: string | null): Motivo => {
       if (jaEnviado) return "ja_enviado";
-      if (ehUrl(comprovante)) return "drive";              // servidor não consegue baixar
+      if (ehUrl(comprovante)) {
+        const id = extrairIdDrive(comprovante);
+        // URL que não é do Drive (ou sem id reconhecível) não tem como ser baixada.
+        if (!id) return "comprovante_invalido";
+        if (!comDrive) return "drive";
+        // Com credencial, só falta o destino.
+        return match?.codTitulo ? null : "sem_titulo";
+      }
       if (!ehCaminhoStorage(comprovante)) return "comprovante_invalido"; // só o nome do arquivo
       if (!match?.codTitulo) return "sem_titulo";
       return null;
@@ -214,12 +230,50 @@ Deno.serve(async (req) => {
       return json({
         ok: true,
         total: elegiveis.length,
+        drive_configurado: comDrive,
         // O front usa isso para separar "envia direto", "confirmar" e "não dá".
         elegiveis: elegiveis.map((e) => ({
           ...e,
           pode_enviar_direto: !e.bloqueio && e.match?.conf === "alta",
         })),
       });
+    }
+
+    /* -------- TESTAR DRIVE --------
+     * Tenta baixar o primeiro comprovante do Drive e diz o que aconteceu, SEM tocar no
+     * Omie. Serve para validar o conector do Lovable sem arriscar um anexo errado.
+     */
+    if (action === "testar_drive") {
+      if (!comDrive) {
+        return json({
+          ok: false,
+          drive_configurado: false,
+          erro: "Faltam os secrets LOVABLE_API_KEY e/ou GOOGLE_DRIVE_API_KEY no Supabase.",
+        });
+      }
+      const alvo = elegiveis.find((e) => ehUrl(e.comprovante) && extrairIdDrive(e.comprovante));
+      if (!alvo) return json({ ok: true, drive_configurado: true, aviso: "Nenhum comprovante do Drive para testar." });
+
+      try {
+        const arq = await baixarDoDrive(alvo.comprovante);
+        return json({
+          ok: true,
+          drive_configurado: true,
+          baixou: true,
+          lancamento: alvo.estabelecimento ?? alvo.titulo,
+          arquivo: arq.nome,
+          mime: arq.mime,
+          bytes: arq.bytes.length,
+        });
+      } catch (err) {
+        return json({
+          ok: false,
+          drive_configurado: true,
+          baixou: false,
+          lancamento: alvo.estabelecimento ?? alvo.titulo,
+          erro: err instanceof Error ? err.message : String(err),
+        });
+      }
     }
 
     /* -------- ANEXAR ARQUIVO (upload manual) --------
@@ -252,8 +306,7 @@ Deno.serve(async (req) => {
 
       // Mesma trava do envio: se alguém subir por engano o HTML que o Drive devolve,
       // recusamos — um "comprovante" que é uma tela de login é pior que nenhum.
-      const cab = new TextDecoder().decode(bytes.subarray(0, 64)).trim().toLowerCase();
-      if (cab.startsWith("<!doctype html") || cab.startsWith("<html")) {
+      if (ehHtml(bytes)) {
         return json({ error: "Isso é uma página HTML, não um comprovante. Baixe o arquivo do Drive e envie o PDF/imagem." }, 200);
       }
 
@@ -322,19 +375,24 @@ Deno.serve(async (req) => {
 
     for (const e of alvos) {
       try {
-        // 3a) Baixa o arquivo do bucket privado (service role passa pela RLS).
-        const { data: blob, error: dlErr } = await supabase.storage.from(BUCKET).download(e.comprovante);
-        if (dlErr || !blob) throw new Error(`Falha ao baixar do storage: ${dlErr?.message ?? "arquivo não encontrado"}`);
-        const bytes = new Uint8Array(await blob.arrayBuffer());
-        const nome = nomeDoPath(e.comprovante);
+        // 3a) Busca o arquivo — do Drive ou do nosso bucket, conforme a origem.
+        let bytes: Uint8Array;
+        let nome: string;
 
-        // Cinto de segurança: nunca anexar uma página HTML no Omie. Se um dia o
-        // comprovante vier de uma origem que exige login (Drive, por exemplo), o
-        // download "bem-sucedido" é a tela de login — e viraria um anexo falso.
-        const cabecalho = new TextDecoder().decode(bytes.subarray(0, 64)).trim().toLowerCase();
-        if (cabecalho.startsWith("<!doctype html") || cabecalho.startsWith("<html")) {
-          throw new Error("O arquivo baixado é uma página HTML, não um comprovante.");
+        if (ehUrl(e.comprovante)) {
+          const arq = await baixarDoDrive(e.comprovante);   // já recusa HTML e arquivo vazio
+          bytes = arq.bytes;
+          nome = arq.nome;
+        } else {
+          const { data: blob, error: dlErr } = await supabase.storage.from(BUCKET).download(e.comprovante);
+          if (dlErr || !blob) throw new Error(`Falha ao baixar do storage: ${dlErr?.message ?? "arquivo não encontrado"}`);
+          bytes = new Uint8Array(await blob.arrayBuffer());
+          nome = nomeDoPath(e.comprovante);
         }
+
+        // Cinto de segurança: nunca anexar uma página HTML no Omie. Um download que
+        // "deu certo" mas veio da tela de login viraria um anexo falso, com cara de nota.
+        if (ehHtml(bytes)) throw new Error("O arquivo baixado é uma página HTML, não um comprovante.");
         if (bytes.length === 0) throw new Error("Arquivo vazio.");
 
         // 3b) Anexa no título do Omie. "Sempre acrescentar": não listamos nem excluímos

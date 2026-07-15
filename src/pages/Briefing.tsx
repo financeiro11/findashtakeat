@@ -10,7 +10,7 @@ import { Link } from "react-router-dom";
 import { TaskDialog, DEFAULT_COLUMNS, type Tarefa } from "@/components/tarefas/TaskDialog";
 import {
   Sparkles, RefreshCw, Loader2, CalendarDays, AlertTriangle, Mail,
-  Clock, ArrowRight, Newspaper, CalendarClock, ListChecks, CheckCircle2, Pencil,
+  Clock, ArrowRight, Newspaper, CalendarClock, ListChecks, CheckCircle2, Pencil, Wallet,
 } from "lucide-react";
 
 /* ============================================================================
@@ -104,8 +104,11 @@ const mdComponents = {
 };
 
 /* ============================ NORMALIZADOR ============================ */
-type VMEvento = { hora: string; horaLabel: string; titulo: string; timed: boolean; sortKey: string; conflito?: boolean; com?: string | null };
+type VMEvento = { hora: string; horaLabel: string; titulo: string; timed: boolean; allDay: boolean; sortKey: string; conflito?: boolean; com?: string | null };
 type VMPessoa = { id: string; nome: string; papel: string; iniciais: string; cor: string; eventos: VMEvento[] };
+type Participante = { nome: string; iniciais: string; cor: string };
+/** Evento unificado (deduplicado entre pessoas — você e Júlia compartilham calendário). */
+type VMEvUnificado = { hora: string; horaLabel: string; titulo: string; timed: boolean; allDay: boolean; conflito: boolean; sortKey: string; participantes: Participante[] };
 type VMEmail = { remetente: string; badge: string | null; tom: "red" | "amber" | "neutral"; resumo: string; busca: string; link: string | null };
 
 const IGNORE_AGENDA_KEYS = new Set([
@@ -117,12 +120,12 @@ const IGNORE_AGENDA_KEYS = new Set([
  *  {summary,start,end,date,all_day,note} | {titulo,horario:"HH:MM-HH:MM"|"HH:MM",compartilhado_com} | string */
 function normEvento(ev: any): VMEvento | null {
   if (ev == null) return null;
-  if (typeof ev === "string") return { hora: "—", horaLabel: "", titulo: ev, timed: false, sortKey: "99:99" };
+  if (typeof ev === "string") return { hora: "—", horaLabel: "", titulo: ev, timed: false, allDay: false, sortKey: "99:99" };
   const titulo0 = ev.summary ?? ev.titulo ?? ev.title ?? ev.nome ?? "(sem título)";
 
   const rawHorario = ev.horario ?? ev.hora ?? ev.time ?? "";
   const isDiaTodoStr = typeof rawHorario === "string" && /dia\s*todo|all[\s-]*day/i.test(rawHorario);
-  const allDay = ev.all_day ?? ev.allDay ?? ev.dia_todo ?? isDiaTodoStr ?? (!!ev.date && !ev.start && !rawHorario);
+  const allDay = !!(ev.all_day ?? ev.allDay ?? ev.dia_todo) || isDiaTodoStr || (!!ev.date && !ev.start && !rawHorario);
 
   let hora = "";        // "HH:MM" de início — ordenação / timeline / próximo evento
   let horaLabel = "";   // rótulo exibido (faixa completa quando houver)
@@ -153,7 +156,7 @@ function normEvento(ev: any): VMEvento | null {
   return {
     hora: hora || (allDay ? "dia todo" : "—"),
     horaLabel: horaLabel || (allDay ? "dia todo" : ""),
-    titulo, timed,
+    titulo, timed, allDay,
     sortKey: timed ? hora : (allDay ? "00:00" : "99:99"),
     conflito: !!ev.conflito, com,
   };
@@ -193,20 +196,52 @@ function normalizeAgenda(agenda: any) {
         },
   );
 
-  let timeline: { hora: string; titulo: string; dot: string }[] = [];
+  // ---- unificação por evento: você e a Júlia compartilham calendário, então o
+  // mesmo evento aparece para várias pessoas. Deduplica por (título + hora) e junta
+  // os participantes. Dia-todo = pagamento; com horário = compromisso. ----
+  const pessoaPorNome = new Map<string, VMPessoa>();
+  pessoas.forEach((p) => pessoaPorNome.set(norm(p.nome), p));
+  const addPart = (m: Map<string, Participante>, part: Participante) => { const k = norm(part.nome); if (!m.has(k)) m.set(k, part); };
+  const eventos = new Map<string, { ev: VMEvento; parts: Map<string, Participante> }>();
+  for (const p of pessoas) {
+    for (const e of p.eventos) {
+      const key = `${norm(e.titulo)}|${e.hora}`;
+      let g = eventos.get(key);
+      if (!g) { g = { ev: e, parts: new Map() }; eventos.set(key, g); }
+      else if (e.conflito && !g.ev.conflito) g.ev = { ...g.ev, conflito: true };
+      addPart(g.parts, { nome: p.nome, iniciais: p.iniciais, cor: p.cor });
+      if (e.com) String(e.com).split(/\s*,\s*/).filter(Boolean).forEach((nm) => {
+        const known = pessoaPorNome.get(norm(nm));
+        addPart(g.parts, known ? { nome: known.nome, iniciais: known.iniciais, cor: known.cor } : { nome: nm, iniciais: iniciais(nm), cor: "green" });
+      });
+    }
+  }
+  const unificados: VMEvUnificado[] = [...eventos.values()].map((g) => ({
+    hora: g.ev.hora, horaLabel: g.ev.horaLabel, titulo: g.ev.titulo, timed: g.ev.timed, allDay: g.ev.allDay,
+    conflito: !!g.ev.conflito, sortKey: g.ev.sortKey, participantes: [...g.parts.values()],
+  }));
+  const compromissos = unificados.filter((e) => !e.allDay).sort((x, y) => x.sortKey.localeCompare(y.sortKey));
+  const pagamentos = unificados.filter((e) => e.allDay);
+
+  // timeline (coluna lateral): compromissos com horário, cor pela 1ª pessoa
+  let timeline: { hora: string; titulo: string; dot: string }[];
   if (Array.isArray(a.timeline) && a.timeline.length) {
     timeline = a.timeline.map((t: any) => ({ hora: t.hora, titulo: t.titulo, dot: DOT_TIMELINE[t.tipo ?? "outro"] ?? DOT_TIMELINE.outro }));
   } else {
-    const items: { hora: string; titulo: string; dot: string }[] = [];
-    pessoas.forEach((p) => p.eventos.forEach((e) => { if (e.timed) items.push({ hora: e.hora, titulo: e.titulo, dot: COR_DOT[p.cor] ?? DOT_TIMELINE.outro }); }));
-    conflitos.forEach((c) => { if (c.hora) items.push({ hora: c.hora, titulo: c.titulo, dot: "bg-primary" }); });
-    items.sort((x, y) => String(x.hora).localeCompare(String(y.hora)));
-    timeline = items;
+    timeline = compromissos.filter((e) => e.timed).map((e) => ({
+      hora: e.hora, titulo: e.titulo, dot: COR_DOT[e.participantes[0]?.cor ?? "primary"] ?? DOT_TIMELINE.outro,
+    }));
+    conflitos.forEach((c) => { if (c.hora) timeline.push({ hora: c.hora, titulo: c.titulo, dot: "bg-primary" }); });
+    timeline.sort((x, y) => String(x.hora).localeCompare(String(y.hora)));
   }
 
-  const nCompromissos = a.total_compromissos ?? pessoas.reduce((s, p) => s + p.eventos.length, 0);
-  const nPessoas = a.total_pessoas ?? pessoas.length;
-  return { pessoas, conflitos, timeline, nCompromissos, nPessoas, resumoIa: a.resumo_ia ?? null, resumoTags: (a.resumo_tags ?? []) as string[], proximoCanon: a.proximo_evento ?? null };
+  const totalParts = new Set<string>();
+  unificados.forEach((e) => e.participantes.forEach((p) => totalParts.add(norm(p.nome))));
+  return {
+    compromissos, pagamentos, conflitos, timeline,
+    nCompromissos: compromissos.length, nPessoas: totalParts.size || pessoas.length,
+    resumoIa: a.resumo_ia ?? null, resumoTags: (a.resumo_tags ?? []) as string[], proximoCanon: a.proximo_evento ?? null,
+  };
 }
 
 /** tom visual de um e-mail canônico (com tipo/vencimento) */
@@ -280,10 +315,10 @@ function buildVM(b: Briefing) {
   return {
     diaISO, dataHoje, diaSemana: DIAS_SEMANA[dataHoje.getDay()], janelaLabel, entregueHora: fmtHoraBRT(b.gerado_em),
     nCompromissos: A.nCompromissos, nPessoas: A.nPessoas, conflitos: A.conflitos, timeline: A.timeline,
-    pessoas: A.pessoas, resumoIa: A.resumoIa, resumoTags: A.resumoTags, proximo,
+    compromissos: A.compromissos, pagamentos: A.pagamentos, resumoIa: A.resumoIa, resumoTags: A.resumoTags, proximo,
     emails: E.itens, nEmails: E.total, vencemSemana: E.vencemSemana,
     temas: N.temas, janelaNoticias: N.janela ?? (b.periodo_inicio === b.periodo_fim ? null : `${fmtDDMM(ini)}–${fmtDDMM(fim)}`),
-    temEstruturado: A.pessoas.length > 0 || E.itens.length > 0 || N.temas.length > 0,
+    temEstruturado: A.compromissos.length > 0 || A.pagamentos.length > 0 || E.itens.length > 0 || N.temas.length > 0,
   };
 }
 type VM = ReturnType<typeof buildVM>;
@@ -474,14 +509,14 @@ function BriefingView({ b, vm, tarefas, meNome, onEdit, onRegerar, onAprofundar,
             <div className="lg:col-span-2">
               <SectionCard
                 title={<span className="flex items-center gap-2"><CalendarDays className="h-4 w-4 text-muted-foreground" /> Agenda de hoje</span>}
-                subtitle={`${vm.nPessoas} pessoas · ${vm.nCompromissos} compromissos`}
+                subtitle={`${vm.nCompromissos} compromisso${vm.nCompromissos === 1 ? "" : "s"} · entre ${vm.nPessoas} pessoa${vm.nPessoas === 1 ? "" : "s"}`}
                 actions={vm.conflitos.length > 0 && (
                   <span className="inline-flex items-center gap-1 rounded bg-primary/10 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider text-primary">
                     <AlertTriangle className="h-3 w-3" /> {vm.conflitos.length} conflito{vm.conflitos.length === 1 ? "" : "s"}
                   </span>
                 )}
               >
-                <div className="space-y-3">
+                <div className="space-y-2.5">
                   {vm.conflitos.map((c, i) => (
                     <div key={i} className="flex items-start gap-2 rounded-md border border-primary/30 bg-primary/[0.06] px-3 py-2 text-[12px]">
                       <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-primary" />
@@ -489,39 +524,26 @@ function BriefingView({ b, vm, tarefas, meNome, onEdit, onRegerar, onAprofundar,
                     </div>
                   ))}
 
-                  {vm.pessoas.map((p) => (
-                    <div key={p.id} className="rounded-lg border border-border/70">
-                      <div className="flex items-center gap-2.5 border-b border-border/60 px-3 py-2">
-                        <span className={cn("flex h-7 w-7 items-center justify-center rounded-full text-[11px] font-bold", CORES_PESSOA[p.cor] ?? CORES_PESSOA.primary)}>
-                          {p.iniciais}
-                        </span>
-                        <span className="text-[13px] font-semibold text-foreground">{p.nome}</span>
-                        <span className="truncate text-[11px] text-muted-foreground">{p.papel}</span>
-                      </div>
-                      {p.eventos.length === 0 ? (
-                        <div className="px-3 py-2 text-[12px] text-muted-foreground">Nenhum compromisso hoje.</div>
-                      ) : (
-                        <ul>
-                          {p.eventos.map((e, i) => (
-                            <li key={i} className={cn(
-                              "flex items-center gap-3 px-3 py-1.5 text-[12.5px]",
-                              i > 0 && "border-t border-border/40",
-                              e.conflito && "bg-primary/[0.04]",
-                            )}>
-                              <span className="num w-[86px] shrink-0 whitespace-nowrap font-semibold text-muted-foreground">{e.horaLabel || e.hora}</span>
-                              <span className="min-w-0 flex-1 truncate text-foreground">{e.titulo}</span>
-                              {e.conflito && (
-                                <span className="shrink-0 rounded bg-primary/10 px-1.5 py-0.5 text-[9.5px] font-bold uppercase tracking-wider text-primary">Conflito</span>
-                              )}
-                              {e.com && (
-                                <span className="shrink-0 rounded bg-secondary px-1.5 py-0.5 text-[9.5px] font-semibold uppercase tracking-wider text-muted-foreground">C/ {e.com}</span>
-                              )}
-                            </li>
-                          ))}
-                        </ul>
-                      )}
-                    </div>
-                  ))}
+                  {vm.compromissos.length === 0 ? (
+                    <div className="py-4 text-center text-[12.5px] text-muted-foreground">Nenhum compromisso com horário hoje.</div>
+                  ) : (
+                    <ul className="overflow-hidden rounded-lg border border-border/70">
+                      {vm.compromissos.map((e, i) => (
+                        <li key={i} className={cn(
+                          "flex items-center gap-3 px-3 py-2 text-[12.5px]",
+                          i > 0 && "border-t border-border/40",
+                          e.conflito && "bg-primary/[0.04]",
+                        )}>
+                          <span className="num w-[92px] shrink-0 whitespace-nowrap font-semibold text-muted-foreground">{e.horaLabel || e.hora}</span>
+                          <span className="min-w-0 flex-1 truncate text-foreground">{e.titulo}</span>
+                          {e.conflito && (
+                            <span className="shrink-0 rounded bg-primary/10 px-1.5 py-0.5 text-[9.5px] font-bold uppercase tracking-wider text-primary">Conflito</span>
+                          )}
+                          <Participantes lista={e.participantes} />
+                        </li>
+                      ))}
+                    </ul>
+                  )}
                 </div>
               </SectionCard>
             </div>
@@ -556,6 +578,28 @@ function BriefingView({ b, vm, tarefas, meNome, onEdit, onRegerar, onAprofundar,
               )}
             </div>
           </div>
+
+          {/* ---------------- Pagamentos do dia (eventos de dia inteiro) ---------------- */}
+          <SectionCard
+            title={<span className="flex items-center gap-2"><Wallet className="h-4 w-4 text-muted-foreground" /> Pagamentos do dia</span>}
+            subtitle={`${vm.pagamentos.length} pagamento${vm.pagamentos.length === 1 ? "" : "s"} · marcados como evento de dia inteiro na agenda`}
+          >
+            {vm.pagamentos.length === 0 ? (
+              <div className="py-4 text-center text-[12.5px] text-muted-foreground">Nenhum pagamento marcado para hoje.</div>
+            ) : (
+              <ul className="space-y-2">
+                {vm.pagamentos.map((p, i) => (
+                  <li key={i} className="flex items-start gap-3 rounded-md border border-border bg-card px-3 py-2.5">
+                    <span className="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-emerald-500/12 text-emerald-600 dark:text-emerald-400">
+                      <Wallet className="h-3.5 w-3.5" />
+                    </span>
+                    <div className="min-w-0 flex-1 text-[12.5px] font-medium leading-snug text-foreground">{p.titulo}</div>
+                    <Participantes lista={p.participantes} />
+                  </li>
+                ))}
+              </ul>
+            )}
+          </SectionCard>
 
           {/* ---------------- E-mails ---------------- */}
           {vm.emails.length > 0 && (
@@ -686,6 +730,22 @@ function BriefingView({ b, vm, tarefas, meNome, onEdit, onRegerar, onAprofundar,
 }
 
 /* ------------------------------ subcomponentes ------------------------------ */
+function Participantes({ lista }: { lista: Participante[] }) {
+  if (!lista?.length) return null;
+  return (
+    <div className="flex shrink-0 -space-x-1.5" title={lista.map((p) => p.nome).join(", ")}>
+      {lista.slice(0, 3).map((p, i) => (
+        <span key={i} className={cn("flex h-5 w-5 items-center justify-center rounded-full border border-card text-[9px] font-bold", CORES_PESSOA[p.cor] ?? CORES_PESSOA.primary)}>
+          {p.iniciais}
+        </span>
+      ))}
+      {lista.length > 3 && (
+        <span className="flex h-5 w-5 items-center justify-center rounded-full border border-card bg-secondary text-[9px] font-semibold text-muted-foreground">+{lista.length - 3}</span>
+      )}
+    </div>
+  );
+}
+
 function Kpi({ icon: Icon, eyebrow, value, sub, tone, mono }: {
   icon: any; eyebrow: string; value: string; sub: string; tone?: "neg" | "pos"; mono?: boolean;
 }) {

@@ -25,6 +25,7 @@ import {
 import { toast } from "sonner";
 import { supabase } from "@/integrations/supabase/client";
 import { cn } from "@/lib/utils";
+import NovaViagemDialog from "@/pages/recargas/NovaViagemDialog";
 
 const STATUS_OPTS = ["Pendente", "Feito"] as const;
 type StatusViagem = (typeof STATUS_OPTS)[number];
@@ -116,6 +117,7 @@ export default function RecargasViagens() {
   const [month, setMonth] = useState(today.getMonth()); // 0-11
   const [lastSync, setLastSync] = useState<Date | null>(null);
   const [statusFilter, setStatusFilter] = useState<"todos" | StatusViagem>("todos");
+  const [novaOpen, setNovaOpen] = useState(false);
 
   const setStatus = async (key: string, s: StatusViagem, viagemHash?: string) => {
     setStatusMap((prev) => {
@@ -146,15 +148,27 @@ export default function RecargasViagens() {
 
   const load = async () => {
     setLoading(true);
-    const [sheetRes, statusRes] = await Promise.all([
+    const [sheetRes, statusRes, manuaisRes] = await Promise.all([
       supabase.functions.invoke("recargas-viagens-sheet"),
       supabase.from("recargas_viagens_status" as any).select("viagem_hash,status"),
+      supabase.from("recargas_viagens_manuais" as any).select("*").order("data_ida", { ascending: false }),
     ]);
     setLoading(false);
     const { data, error } = sheetRes;
     if (error) return toast.error(error.message);
     if ((data as any)?.error) return toast.error((data as any).error);
-    const vs = ((data as any)?.viagens || []) as Viagem[];
+    const sheetViagens = ((data as any)?.viagens || []) as Viagem[];
+    const manuais: Viagem[] = (((manuaisRes.data as any[]) || [])).map((m) => ({
+      id: `manual-${m.id}`,
+      colaborador: m.colaborador,
+      destino: m.destino,
+      data_ida: m.data_ida,
+      data_volta: m.data_volta,
+      dias: Number(m.dias || 0),
+      valor_total: Number(m.valor_total || 0),
+      viagem_hash: m.viagem_hash || undefined,
+    }));
+    const vs = [...manuais, ...sheetViagens];
     setViagens(vs);
     setLastSync(new Date());
 
@@ -254,7 +268,7 @@ export default function RecargasViagens() {
             />
             Sincronizar
           </Button>
-          <Button size="sm" className="bg-rose-600 hover:bg-rose-700 text-white">
+          <Button size="sm" className="bg-rose-600 hover:bg-rose-700 text-white" onClick={() => setNovaOpen(true)}>
             <Plus className="mr-1.5 h-4 w-4" /> Nova recarga
           </Button>
         </div>
@@ -469,6 +483,8 @@ export default function RecargasViagens() {
         Sincronizado com <strong className="font-semibold">Planilha de Recargas · Viagens</strong>
         {minutesAgo !== null && <> · última atualização há {minutesAgo} min</>}
       </div>
+
+      <NovaViagemDialog open={novaOpen} onOpenChange={setNovaOpen} onSaved={load} />
     </div>
   );
 }

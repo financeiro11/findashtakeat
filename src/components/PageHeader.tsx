@@ -40,10 +40,6 @@ const ROUTE_MAP: Record<string, { crumbs: string[]; context?: string }> = {
   "/analise/bp": { crumbs: ["Análise Preditiva", "BP Anual"] },
   "/analise/historico": { crumbs: ["Análise Preditiva", "Histórico Multianual"] },
   "/analise/conhecimento": { crumbs: ["Análise Preditiva", "Biblioteca"] },
-  "/planilhamento/conta-corrente": { crumbs: ["Operacional", "Conta Corrente"] },
-  "/planilhamento/cartao-credito": { crumbs: ["Operacional", "Cartão de Crédito"] },
-  "/planilhamento/comissoes-time": { crumbs: ["Operacional", "Comissões — Time"] },
-  "/planilhamento/comissoes-parceiros": { crumbs: ["Operacional", "Comissões — Parceiros"] },
 };
 
 interface PageHeaderProps {

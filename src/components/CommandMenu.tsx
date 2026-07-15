@@ -10,12 +10,6 @@ import {
 
 const ITEMS: { group: string; items: { title: string; url: string; icon: any }[] }[] = [
   { group: "Início", items: [{ title: "Dashboard", url: "/", icon: Home }] },
-  { group: "Operacional", items: [
-    { title: "Conta Corrente", url: "/planilhamento/conta-corrente", icon: Wallet },
-    { title: "Cartão de Crédito", url: "/planilhamento/cartao-credito", icon: CreditCard },
-    { title: "Comissões — Time", url: "/planilhamento/comissoes-time", icon: Users },
-    { title: "Comissões — Parceiros", url: "/planilhamento/comissoes-parceiros", icon: Handshake },
-  ]},
   { group: "Recargas", items: [
     { title: "Celulares", url: "/recargas/celulares", icon: Smartphone },
     { title: "Viagens", url: "/recargas/viagens", icon: Plane },

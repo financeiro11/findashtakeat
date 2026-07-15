@@ -10,7 +10,6 @@ import Dashboard from "./pages/Dashboard";
 import DashboardLegacy from "./pages/DashboardLegacy";
 import Caixa from "./pages/Caixa";
 import Briefing from "./pages/Briefing";
-import ContaCorrente from "./pages/ContaCorrente";
 import Login from "./pages/Login";
 import Usuarios from "./pages/Usuarios";
 import AutomacoesCatalogo from "./pages/AutomacoesCatalogo";
@@ -105,7 +104,6 @@ const App = () => (
               <Route path="/analise/bp" element={<BPAnual />} />
               <Route path="/analise/historico" element={<HistoricoMultianual />} />
               <Route path="/analise/conhecimento" element={<BaseConhecimento />} />
-              <Route path="/planilhamento/conta-corrente" element={<ContaCorrente />} />
               <Route path="/operacional/parceiros" element={<Parceiros />} />
               <Route path="/orcamento" element={<Orcamento />} />
               <Route path="/asaas" element={<Asaas />} />

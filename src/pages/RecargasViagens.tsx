@@ -148,15 +148,27 @@ export default function RecargasViagens() {
 
   const load = async () => {
     setLoading(true);
-    const [sheetRes, statusRes] = await Promise.all([
+    const [sheetRes, statusRes, manuaisRes] = await Promise.all([
       supabase.functions.invoke("recargas-viagens-sheet"),
       supabase.from("recargas_viagens_status" as any).select("viagem_hash,status"),
+      supabase.from("recargas_viagens_manuais" as any).select("*").order("data_ida", { ascending: false }),
     ]);
     setLoading(false);
     const { data, error } = sheetRes;
     if (error) return toast.error(error.message);
     if ((data as any)?.error) return toast.error((data as any).error);
-    const vs = ((data as any)?.viagens || []) as Viagem[];
+    const sheetViagens = ((data as any)?.viagens || []) as Viagem[];
+    const manuais: Viagem[] = (((manuaisRes.data as any[]) || [])).map((m) => ({
+      id: `manual-${m.id}`,
+      colaborador: m.colaborador,
+      destino: m.destino,
+      data_ida: m.data_ida,
+      data_volta: m.data_volta,
+      dias: Number(m.dias || 0),
+      valor_total: Number(m.valor_total || 0),
+      viagem_hash: m.viagem_hash || undefined,
+    }));
+    const vs = [...manuais, ...sheetViagens];
     setViagens(vs);
     setLastSync(new Date());
 

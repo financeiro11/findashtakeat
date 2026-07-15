@@ -25,6 +25,7 @@ import {
 import { toast } from "sonner";
 import { supabase } from "@/integrations/supabase/client";
 import { cn } from "@/lib/utils";
+import NovaViagemDialog from "@/pages/recargas/NovaViagemDialog";
 
 const STATUS_OPTS = ["Pendente", "Feito"] as const;
 type StatusViagem = (typeof STATUS_OPTS)[number];

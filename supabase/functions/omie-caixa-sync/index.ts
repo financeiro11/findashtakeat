@@ -316,16 +316,18 @@ Deno.serve(async (req) => {
           const cur = fornMap.get(fk) ?? { nome, categoria: m.catDesc, valor: 0 };
           cur.valor += m.valor; fornMap.set(fk, cur);
         }
-        if (movimentacoes.length < 60) {
-          movimentacoes.push({
-            data: m.dPago ? iso(m.dPago) : null,
-            descricao: nomeFornecedor(m),  // nome do fornecedor (não a categoria — evita redundância com a coluna Categoria)
-            categoria: m.catDesc,
-            conta: contasCC.map.get(m.ncodcc)?.nome ?? "",
-            valor: m.valor,
-            natureza: m.entrada ? "entrada" : "saida",
-          });
-        }
+        // Junta TODAS as movimentações da janela; o corte para as 60 maiores é feito
+        // depois do sort. (Antes cortávamos em 60 DURANTE a iteração, na ordem crua do
+        // Omie — que traz os salários primeiro —, então os grandes pagamentos de
+        // fornecedor nem entravam na lista e sobrava só "Pessoal" caindo na categoria.)
+        movimentacoes.push({
+          data: m.dPago ? iso(m.dPago) : null,
+          descricao: nomeFornecedor(m),  // nome do fornecedor (não a categoria — evita redundância com a coluna Categoria)
+          categoria: m.catDesc,
+          conta: contasCC.map.get(m.ncodcc)?.nome ?? "",
+          valor: m.valor,
+          natureza: m.entrada ? "entrada" : "saida",
+        });
       }
       const totalSai = saidas || 1;
       const gastos_categoria = [...catMap.entries()].map(([nome, valor]) => ({ nome, valor, pct: (valor / totalSai) * 100 }))
@@ -335,6 +337,7 @@ Deno.serve(async (req) => {
       if (restoVal > 0) top.push({ nome: "Outros", valor: restoVal, pct: (restoVal / totalSai) * 100 });
       const fornecedores = [...fornMap.values()].sort((a, b) => b.valor - a.valor).slice(0, 5);
       movimentacoes.sort((a, b) => b.valor - a.valor);
+      const movimentacoesTop = movimentacoes.slice(0, 60); // as 60 maiores da janela
 
       const mediaEntJanela = media30Ent * dias, mediaSaiJanela = media30Sai * dias;
       return {
@@ -345,7 +348,7 @@ Deno.serve(async (req) => {
         liquido_pct: saidas ? ((entradas - saidas) / saidas) * 100 : 0,
         gastos_categoria: top,
         fornecedores,
-        movimentacoes,
+        movimentacoes: movimentacoesTop,
         mov_total: nRec + nPag,
       };
     }

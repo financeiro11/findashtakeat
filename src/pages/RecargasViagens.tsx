@@ -483,6 +483,8 @@ export default function RecargasViagens() {
         Sincronizado com <strong className="font-semibold">Planilha de Recargas · Viagens</strong>
         {minutesAgo !== null && <> · última atualização há {minutesAgo} min</>}
       </div>
+
+      <NovaViagemDialog open={novaOpen} onOpenChange={setNovaOpen} onSaved={load} />
     </div>
   );
 }

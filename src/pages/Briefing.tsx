@@ -46,6 +46,8 @@ const fmtHoraBRT = (iso: string) =>
 const isoDateBRT = (iso: string) => new Date(iso).toLocaleDateString("en-CA", { timeZone: "America/Sao_Paulo" });
 const agoraHHMM_BRT = () => new Date().toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", timeZone: "America/Sao_Paulo" });
 const hostOf = (url: string) => { try { return new URL(url).hostname.replace(/^www\./, ""); } catch { return "fonte"; } };
+/** normalização genérica (sem acento, minúsculo, espaços colapsados) p/ deduplicar eventos/nomes */
+const norm = (s?: string | null) => String(s ?? "").normalize("NFD").replace(/\p{Diacritic}/gu, "").replace(/\s+/g, " ").trim().toLowerCase();
 
 /* mesma normalização de responsável usada na página Tarefas (prefixo do nome) */
 const normalizeResp = (v?: string | null) => {

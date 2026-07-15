@@ -144,7 +144,7 @@ export default function Achados() {
     const [audRes, cartRes] = await Promise.all([
       supabase
         .from("auditoria")
-        .select("id,id_unico,competencia,titulo,area,severidade,valor,responsavel,data_lancamento,descricao,regra,origem,id_transacao,status,trilha,categoria,link_comprovante")
+        .select("id,id_unico,competencia,titulo,area,severidade,valor,responsavel,data_lancamento,descricao,regra,origem,id_transacao,status,trilha,categoria,link_comprovante,omie_categoria_descricao")
         .order("data_lancamento", { ascending: false }),
       // Base do cartão: usada para (a) trazer as "aprovadas direto" (status_nf = "OK") e
       // (b) derivar a categoria dos achados que o n8n não classificou (via status_nf/escopo).
@@ -163,7 +163,9 @@ export default function Achados() {
     // categoria do Omie casada (via o lançamento de origem no cartão).
     const audRows: Row[] = (audRes.data ?? []).map((r: any): Row => {
       const orig = r.id_transacao ? cardByUnico.get(r.id_transacao) : null;
-      const omie_categoria = orig?.omie_categoria_descricao ?? null;
+      // Prioriza a categoria casada na base do cartão (junho); se o achado não tem
+      // vínculo (id_transacao nulo, ex.: julho), usa a que foi casada direto no achado.
+      const omie_categoria = orig?.omie_categoria_descricao ?? r.omie_categoria_descricao ?? null;
       const categoria = r.categoria || deriveCategoria(r.regra, orig?.status_nf, orig?.status_escopo);
       return { ...r, categoria, omie_categoria } as Row;
     });
@@ -300,20 +302,23 @@ export default function Achados() {
   const cruzarOmie = async () => {
     setCruzando(true);
     toast.message("Cruzando com o Omie… pode levar ~1–2 min. As categorias aparecem ao concluir.");
-    // baseline: último matched_em existente
-    const { data: prev } = await supabase
-      .from("auditoria_cartao_lancamentos")
-      .select("omie_matched_em")
-      .order("omie_matched_em", { ascending: false, nullsFirst: false })
-      .limit(1)
-      .maybeSingle();
-    const prevMatched = (prev as any)?.omie_matched_em ?? null;
+    // maior omie_matched_em entre as duas tabelas (cartão para junho; achados p/ julho).
+    const maxMatched = async (): Promise<string | null> => {
+      const [a, b] = await Promise.all([
+        supabase.from("auditoria_cartao_lancamentos").select("omie_matched_em").order("omie_matched_em", { ascending: false, nullsFirst: false }).limit(1).maybeSingle(),
+        supabase.from("auditoria").select("omie_matched_em").order("omie_matched_em", { ascending: false, nullsFirst: false }).limit(1).maybeSingle(),
+      ]);
+      const ts = [(a.data as any)?.omie_matched_em, (b.data as any)?.omie_matched_em].filter(Boolean) as string[];
+      return ts.sort().pop() ?? null;
+    };
+    const prevMatched = await maxMatched(); // baseline
 
     // Dispara o cruzamento. Captura erro/resumo (não engole mais em silêncio).
+    // Passa a competência selecionada p/ casar os achados daquela fatura direto com o Omie.
     let invokeErr: string | null = null;
     let resumo: any = null;
     const invokePromise = supabase.functions
-      .invoke("omie-match-cartao", { body: { action: "match" } })
+      .invoke("omie-match-cartao", { body: { action: "match", competencia } })
       .then(({ data, error }) => {
         if (error) invokeErr = error.message;
         else if ((data as any)?.error) invokeErr = (data as any).error;
@@ -328,13 +333,7 @@ export default function Achados() {
       await new Promise((r) => setTimeout(r, 4000));
       if (invokeErr) break;                 // erro do backend → para na hora
       if (resumo) { done = true; break; }   // invoke retornou o resumo
-      const { data } = await supabase
-        .from("auditoria_cartao_lancamentos")
-        .select("omie_matched_em")
-        .order("omie_matched_em", { ascending: false, nullsFirst: false })
-        .limit(1)
-        .maybeSingle();
-      const latest = (data as any)?.omie_matched_em ?? null;
+      const latest = await maxMatched();
       if (latest && latest !== prevMatched) done = true;
     }
     await invokePromise.catch(() => {});
@@ -347,7 +346,8 @@ export default function Achados() {
       );
     } else if (done) {
       if (resumo && typeof resumo.casados === "number") {
-        toast.success(`Cruzamento concluído · ${resumo.casados} casados (${resumo.alta}/${resumo.media}/${resumo.baixa}) · ${resumo.sem_match} sem match`);
+        const extra = resumo.casados_achados ? ` · ${resumo.casados_achados} achado(s) casado(s) direto` : "";
+        toast.success(`Cruzamento concluído · ${resumo.casados} casados (${resumo.alta}/${resumo.media}/${resumo.baixa}) · ${resumo.sem_match} sem match${extra}`);
       } else {
         toast.success("Cruzamento com o Omie concluído.");
       }

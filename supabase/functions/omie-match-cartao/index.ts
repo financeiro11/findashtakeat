@@ -109,12 +109,64 @@ Deno.serve(async (req) => {
       casados += g.ids.length;
     }
 
-    const semMatch = results.filter((r) => !r.matched).length;
-    const porConf = (c: string) => results.filter((r) => r.matched && r.conf === c).length;
+    // 7) Achados SEM vínculo com o cartão (id_transacao nulo) — ex.: faturas importadas
+    //    direto na tabela `auditoria` (como a de Julho/2026). Casa o achado DIRETO com o
+    //    Omie por valor + data (mesma lógica) e grava a categoria NO PRÓPRIO achado.
+    //    Sem isto, esses achados nunca recebiam categoria do Omie: dependiam da base do
+    //    cartão via id_transacao, que aqui não existe.
+    let qa = supabase
+      .from("auditoria")
+      .select("id,valor,data_lancamento,titulo,descricao,competencia")
+      .is("id_transacao", null)
+      .limit(10000);
+    if (body?.competencia) qa = qa.eq("competencia", body.competencia);
+    if (!body?.reprocess) qa = qa.is("omie_categoria_codigo", null);
+    const { data: achados, error: achErr } = await qa;
+    if (achErr) throw achErr;
+
+    const achResults: Res[] = [];
+    for (const a of (achados ?? []) as any[]) {
+      // adapta o achado ao shape que casarComOmie espera
+      const alvo = { valor: a.valor, data: a.data_lancamento, estabelecimento: a.titulo, descricao_original: a.descricao };
+      const m = casarComOmie(alvo, byValue, codToDesc, maxDias);
+      if (!m) { achResults.push({ id: a.id, id_unico: "", matched: false, valor: Number(a.valor ?? 0) }); continue; }
+      achResults.push({
+        id: a.id, id_unico: "", matched: true,
+        codigo: m.codigo, descricao: m.descricao, conf: m.conf, dias: m.dias, sim: m.sim, valor: Number(a.valor ?? 0),
+      });
+    }
+    const agrupadoAch = new Map<string, { codigo: string; descricao: string; conf: string; ids: number[] }>();
+    for (const r of achResults) {
+      if (!r.matched) continue;
+      const key = `${r.codigo}|${r.conf}`;
+      const g = agrupadoAch.get(key) ?? { codigo: r.codigo!, descricao: r.descricao!, conf: r.conf!, ids: [] };
+      g.ids.push(r.id);
+      agrupadoAch.set(key, g);
+    }
+    let casadosAchados = 0;
+    for (const g of agrupadoAch.values()) {
+      const { error } = await supabase
+        .from("auditoria")
+        .update({
+          omie_categoria_codigo: g.codigo,
+          omie_categoria_descricao: g.descricao,
+          omie_match_confianca: g.conf,
+          omie_matched_em: agora,
+        })
+        .in("id", g.ids);
+      if (error) throw error;
+      casadosAchados += g.ids.length;
+    }
+
+    const todos = [...results, ...achResults];
+    const semMatch = todos.filter((r) => !r.matched).length;
+    const porConf = (c: string) => todos.filter((r) => r.matched && r.conf === c).length;
     return json({
       ok: true,
-      total: cards?.length ?? 0,
-      casados,
+      total: (cards?.length ?? 0) + (achados?.length ?? 0),
+      casados: casados + casadosAchados,
+      casados_cartao: casados,
+      casados_achados: casadosAchados,
       sem_match: semMatch,
       alta: porConf("alta"),
       media: porConf("media"),

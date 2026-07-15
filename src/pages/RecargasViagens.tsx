@@ -268,7 +268,7 @@ export default function RecargasViagens() {
             />
             Sincronizar
           </Button>
-          <Button size="sm" className="bg-rose-600 hover:bg-rose-700 text-white">
+          <Button size="sm" className="bg-rose-600 hover:bg-rose-700 text-white" onClick={() => setNovaOpen(true)}>
             <Plus className="mr-1.5 h-4 w-4" /> Nova recarga
           </Button>
         </div>

@@ -337,7 +337,8 @@ Deno.serve(async (req) => {
       if (restoVal > 0) top.push({ nome: "Outros", valor: restoVal, pct: (restoVal / totalSai) * 100 });
       const fornecedores = [...fornMap.values()].sort((a, b) => b.valor - a.valor).slice(0, 5);
       movimentacoes.sort((a, b) => b.valor - a.valor);
-      const movimentacoesTop = movimentacoes.slice(0, 60); // as 60 maiores da janela
+      // guarda até 400 (as maiores) para o modal de "ver tudo"; a UI mostra as 60 primeiras inline.
+      const movimentacoesTop = movimentacoes.slice(0, 400);
 
       const mediaEntJanela = media30Ent * dias, mediaSaiJanela = media30Sai * dias;
       return {
@@ -395,8 +396,8 @@ Deno.serve(async (req) => {
       })),
     };
 
-    // 10) Fluxo de caixa projetado (próximos 21 dias) a partir do saldo atual.
-    const projDias = 21;
+    // 10) Fluxo de caixa projetado (próximos 30 dias) a partir do saldo atual.
+    const projDias = 30;
     const entAberto: number[] = new Array(projDias + 1).fill(0);
     const saiAberto: number[] = new Array(projDias + 1).fill(0);
     for (const m of movs) {

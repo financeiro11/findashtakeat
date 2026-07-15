@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Loader2, AlertTriangle, CheckCircle2, Send, Ban } from "lucide-react";
+import { Loader2, AlertTriangle, CheckCircle2, Send, Ban, Paperclip } from "lucide-react";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -36,11 +36,11 @@ type Elegivel = {
 
 const EXPLICA_BLOQUEIO: Record<Exclude<Motivo, null>, string> = {
   drive:
-    "O comprovante é um link do Google Drive. O servidor não tem credencial do Google, então não consegue baixar o arquivo — o Drive devolve uma página de login no lugar dele.",
+    "O comprovante é um link do Google Drive, e o conector do Drive não está configurado — sem credencial, o Google devolve uma página de login no lugar do arquivo.",
   sem_titulo: "Não achei no Omie um título que corresponda a este lançamento (valor + data).",
   ja_enviado: "Já foi anexado no Omie antes.",
   comprovante_invalido:
-    "O registro guarda só o nome do arquivo, não o arquivo em si — não há o que enviar.",
+    "O comprovante não é um arquivo que o servidor consiga buscar (é só o nome do arquivo, ou um link que não é do Drive).",
 };
 
 /**
@@ -63,28 +63,60 @@ export default function EnviarOmieDialog({
 }) {
   const [carregando, setCarregando] = useState(false);
   const [enviando, setEnviando] = useState(false);
+  const [anexandoId, setAnexandoId] = useState<number | null>(null);
+  const [testando, setTestando] = useState(false);
   const [elegiveis, setElegiveis] = useState<Elegivel[]>([]);
   const [marcados, setMarcados] = useState<Set<number>>(new Set());
 
-  useEffect(() => {
-    if (!open) return;
-    (async () => {
-      setCarregando(true);
-      setMarcados(new Set());
-      try {
-        const { data, error } = await supabase.functions.invoke("omie-anexar-comprovante", {
-          body: { action: "preview" },
-        });
-        if (error) throw new Error(error.message);
-        if ((data as any)?.error) throw new Error((data as any).error);
-        setElegiveis(((data as any)?.elegiveis ?? []) as Elegivel[]);
-      } catch (e: any) {
-        toast.error("Não consegui consultar o Omie: " + e.message, { duration: 8000 });
-        setElegiveis([]);
-      } finally {
-        setCarregando(false);
+  const carregar = async () => {
+    setCarregando(true);
+    setMarcados(new Set());
+    try {
+      const { data, error } = await supabase.functions.invoke("omie-anexar-comprovante", {
+        body: { action: "preview" },
+      });
+      if (error) throw new Error(error.message);
+      if ((data as any)?.error) throw new Error((data as any).error);
+      setElegiveis(((data as any)?.elegiveis ?? []) as Elegivel[]);
+    } catch (e: any) {
+      toast.error("Não consegui consultar o Omie: " + e.message, { duration: 8000 });
+      setElegiveis([]);
+    } finally {
+      setCarregando(false);
+    }
+  };
+
+  /** Baixa um comprovante do Drive SEM tocar no Omie — só para validar o conector. */
+  const testarDrive = async () => {
+    setTestando(true);
+    try {
+      const { data, error } = await supabase.functions.invoke("omie-anexar-comprovante", {
+        body: { action: "testar_drive" },
+      });
+      if (error) throw new Error(error.message);
+      const d = data as any;
+      if (d?.baixou) {
+        toast.success(
+          `Drive OK (${d.conta}) — baixei "${d.arquivo}" (${Math.round(d.bytes / 1024)} KB). Recarregando…`,
+        );
+        await carregar();
+      } else {
+        toast.error(
+          (d?.conector_ok ? `Conector OK, conectado como ${d.conta}. ` : "") +
+            (d?.erro ?? "erro desconhecido"),
+          { duration: 16000 },
+        );
       }
-    })();
+    } catch (e: any) {
+      toast.error("Falha no teste: " + e.message, { duration: 10000 });
+    } finally {
+      setTestando(false);
+    }
+  };
+
+  useEffect(() => {
+    if (open) carregar();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
 
   const automaticos = elegiveis.filter((e) => e.pode_enviar_direto);
@@ -107,6 +139,47 @@ export default function EnviarOmieDialog({
       n.has(id) ? n.delete(id) : n.add(id);
       return n;
     });
+
+  /**
+   * Saída para o comprovante que está no Drive: o servidor não consegue baixar de lá,
+   * mas a pessoa consegue (está logada no Google). Ela escolhe o arquivo e nós mandamos
+   * direto para o título do Omie.
+   */
+  const anexarArquivo = (e: Elegivel) => {
+    const input = document.createElement("input");
+    input.type = "file";
+    input.accept = "application/pdf,image/jpeg,image/png";
+    input.onchange = async () => {
+      const file = input.files?.[0];
+      if (!file) return;
+      if (file.size > 10 * 1024 * 1024) return toast.error("Arquivo maior que 10 MB.");
+
+      setAnexandoId(e.achado_id);
+      try {
+        const base64 = await new Promise<string>((res, rej) => {
+          const fr = new FileReader();
+          fr.onload = () => res(String(fr.result).split(",")[1] ?? "");
+          fr.onerror = () => rej(new Error("Não consegui ler o arquivo."));
+          fr.readAsDataURL(file);
+        });
+
+        const { data, error } = await supabase.functions.invoke("omie-anexar-comprovante", {
+          body: { action: "anexar_arquivo", id: e.achado_id, nome: file.name, mime: file.type, base64 },
+        });
+        if (error) throw new Error(error.message);
+        if ((data as any)?.error) throw new Error((data as any).error);
+
+        toast.success(`Anexado no título ${(data as any).omie_cod_titulo} do Omie.`);
+        await carregar();   // o item sai de "bloqueado" e vira "já enviado"
+        onDone();
+      } catch (err: any) {
+        toast.error("Falha ao anexar: " + err.message, { duration: 10000 });
+      } finally {
+        setAnexandoId(null);
+      }
+    };
+    input.click();
+  };
 
   const enviar = async () => {
     if (!totalEnviar) return;
@@ -194,20 +267,53 @@ export default function EnviarOmieDialog({
               </section>
             )}
 
-            {Object.entries(porMotivo).map(([motivo, itens]) => (
-              <section key={motivo}>
-                <div className="mb-1 flex items-center gap-1.5 text-[12px] font-semibold text-muted-foreground">
-                  <Ban className="h-3.5 w-3.5" />
-                  {itens.length} não {itens.length === 1 ? "pode" : "podem"} ser enviado{itens.length === 1 ? "" : "s"}
-                </div>
-                <p className="mb-2 text-[11.5px] text-muted-foreground">
-                  {EXPLICA_BLOQUEIO[motivo as Exclude<Motivo, null>]}
-                </p>
-                <div className="rounded-lg border border-border divide-y divide-border/60 opacity-70">
-                  {itens.map((e) => <Linha key={e.achado_id} e={e} />)}
-                </div>
-              </section>
-            ))}
+            {Object.entries(porMotivo).map(([motivo, itens]) => {
+              // O bloqueio "drive" é o único que a pessoa consegue destravar: ela está
+              // logada no Google, baixa a nota e sobe aqui. Os outros (sem título, já
+              // enviado) não têm o que fazer.
+              const temSaida = motivo === "drive" || motivo === "comprovante_invalido";
+              return (
+                <section key={motivo}>
+                  <div className="mb-1 flex items-center gap-1.5 text-[12px] font-semibold text-muted-foreground">
+                    <Ban className="h-3.5 w-3.5" />
+                    {itens.length} não {itens.length === 1 ? "pode" : "podem"} ser enviado{itens.length === 1 ? "" : "s"} automaticamente
+                  </div>
+                  <p className="mb-2 text-[11.5px] text-muted-foreground">
+                    {EXPLICA_BLOQUEIO[motivo as Exclude<Motivo, null>]}
+                    {temSaida && (
+                      <>
+                        {" "}
+                        <b className="text-foreground">
+                          Baixe a nota e use “Anexar arquivo” — ela vai direto para o título no Omie.
+                        </b>
+                      </>
+                    )}
+                  </p>
+                  {motivo === "drive" && (
+                    <div className="mb-2 flex items-center gap-2">
+                      <Button size="sm" variant="outline" className="h-7 text-[11.5px]" onClick={testarDrive} disabled={testando}>
+                        {testando
+                          ? <><Loader2 className="mr-1.5 h-3 w-3 animate-spin" /> Testando…</>
+                          : "Testar conexão com o Drive"}
+                      </Button>
+                      <span className="text-[11px] text-muted-foreground">
+                        Baixa um comprovante para conferir a credencial. Não escreve nada no Omie.
+                      </span>
+                    </div>
+                  )}
+                  <div className="rounded-lg border border-border divide-y divide-border/60">
+                    {itens.map((e) => (
+                      <Linha
+                        key={e.achado_id}
+                        e={e}
+                        onAnexar={temSaida && e.match ? () => anexarArquivo(e) : undefined}
+                        anexando={anexandoId === e.achado_id}
+                      />
+                    ))}
+                  </div>
+                </section>
+              );
+            })}
           </div>
         )}
 
@@ -225,7 +331,19 @@ export default function EnviarOmieDialog({
   );
 }
 
-function Linha({ e, marcado, onToggle }: { e: Elegivel; marcado?: boolean; onToggle?: () => void }) {
+function Linha({
+  e,
+  marcado,
+  onToggle,
+  onAnexar,
+  anexando,
+}: {
+  e: Elegivel;
+  marcado?: boolean;
+  onToggle?: () => void;
+  onAnexar?: () => void;
+  anexando?: boolean;
+}) {
   const m = e.match;
   return (
     <div className="flex items-start gap-3 px-3 py-2.5 text-sm">
@@ -237,6 +355,19 @@ function Linha({ e, marcado, onToggle }: { e: Elegivel; marcado?: boolean; onTog
         <div className="text-[11.5px] text-muted-foreground">
           {fmtDateBR(e.data)} · {brl(Number(e.valor || 0))}
         </div>
+        {onAnexar && (
+          <Button
+            size="sm"
+            variant="outline"
+            className="mt-1.5 h-7 text-[11.5px]"
+            onClick={onAnexar}
+            disabled={anexando}
+          >
+            {anexando
+              ? <><Loader2 className="mr-1.5 h-3 w-3 animate-spin" /> Anexando…</>
+              : <><Paperclip className="mr-1.5 h-3 w-3" /> Anexar arquivo</>}
+          </Button>
+        )}
       </div>
       <div className="min-w-0 flex-1 text-right">
         {m ? (

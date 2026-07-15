@@ -26,7 +26,7 @@
 //               Aprovada. Params: { id, id_unico, nome, base64, anexoTabela? }
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
-import { listarCategorias, listarMovimentos, omieCall } from "../_shared/omie.ts";
+import { incluirAnexo, listarCategorias, listarMovimentos, omieCall } from "../_shared/omie.ts";
 import { requireUser } from "../_shared/auth.ts";
 
 const corsHeaders = {
@@ -242,13 +242,15 @@ Deno.serve(async (req) => {
         }
       }
 
-      const ext = (nome.includes(".") ? nome.split(".").pop()! : "pdf").toLowerCase().replace(/[^a-z0-9]/g, "") || "pdf";
-
       // Anexa no título correspondente do Omie (contas a pagar).
-      await omieCall("geral/anexo", "IncluirAnexo", {
-        cCodIntAnexo: `hub-${nId}-${Date.now()}`,
-        cTabela, nId: Number(nId),
-        cNomeArquivo: nome, cTipoArquivo: ext, cArquivo: base64,
+      // O helper cuida das duas armadilhas do endpoint: cCodIntAnexo tem limite de 20
+      // caracteres, e cMd5 é obrigatório (com a documentação ambígua sobre o que hashear).
+      await incluirAnexo({
+        nId,
+        cTabela,
+        nome,
+        base64: base64.replace(/^data:[^;]+;base64,/, ""),
+        codInt: `h${nId}-${Date.now().toString(36)}`,
       });
 
       // Recupera o link do anexo recém-incluído e atualiza a linha (status → Aprovado).

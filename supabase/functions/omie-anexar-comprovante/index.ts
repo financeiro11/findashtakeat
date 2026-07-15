@@ -8,9 +8,11 @@
 //   • lançamento do cartão com status_nf = "OK" e comprovante — a tela o exibe como
 //     "Aprovado", mas ele NÃO existe em `auditoria` (é linha sintética do front).
 //
-// Nem todo elegível é enviável, e o motivo é informado item a item (`bloqueio`):
-// comprovante no Google Drive (o servidor não tem credencial e o download devolve uma
-// página de login), sem título correspondente no Omie, ou já enviado antes.
+// O comprovante pode estar em dois lugares:
+//   • no bucket `comprovantes-auditoria` (o gestor subiu pelo link público) → sempre legível;
+//   • num link do Google Drive (veio do n8n) → só legível se o conector do Drive estiver
+//     configurado (LOVABLE_API_KEY + GOOGLE_DRIVE_API_KEY). Sem ele, o item fica bloqueado
+//     e a saída é a ação "anexar_arquivo".
 //
 // O título do Omie NÃO está gravado em lugar nenhum (o omie-match-cartao só guardava a
 // categoria), então ele é reencontrado aqui com a MESMA lógica de casamento
@@ -23,13 +25,15 @@
 // Se o título já tiver anexo no Omie, ACRESCENTA (nunca substitui).
 //
 // Ações (body.action):
-//   "preview" → lista os elegíveis com o título encontrado. NÃO envia nada.
-//   "enviar"  → envia. Params: { ids?: number[] } (ids de `auditoria`).
-//               Sem `ids`, envia só os de confiança alta ainda não enviados.
+//   "preview"        → lista os elegíveis com o título encontrado. NÃO envia nada.
+//   "testar_drive"   → baixa um comprovante do Drive para validar o conector. NÃO toca no Omie.
+//   "enviar"         → envia. Params: { ids?: number[] }.
+//   "anexar_arquivo" → a pessoa sobe o arquivo e ele vai direto ao título. { id, nome, base64 }.
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
-import { listarCategorias, listarMovimentos, omieCall } from "../_shared/omie.ts";
+import { incluirAnexo, listarCategorias, listarMovimentos, toBase64 } from "../_shared/omie.ts";
 import { casarComOmie, indexarMovimentos, MatchResult } from "../_shared/match-cartao.ts";
+import { baixarDoDrive, baseDoDrive, driveConfigurado, ehHtml, extrairIdDrive, podeLerNoDrive, sondarDrive, statusDrive } from "../_shared/drive.ts";
 import { requireUser } from "../_shared/auth.ts";
 
 const corsHeaders = {
@@ -42,23 +46,19 @@ const json = (body: unknown, status = 200) =>
 
 const BUCKET = "comprovantes-auditoria";
 
-/** Uint8Array → base64, em blocos (String.fromCharCode(...bytes) estoura a pilha em PDFs grandes). */
-function toBase64(bytes: Uint8Array): string {
-  let bin = "";
-  const CHUNK = 0x8000;
-  for (let i = 0; i < bytes.length; i += CHUNK) {
-    bin += String.fromCharCode(...bytes.subarray(i, i + CHUNK));
-  }
-  return btoa(bin);
-}
-
 const nomeDoPath = (p: string) => {
   const base = p.split("/").pop() || "comprovante";
   // o upload prefixa com timestamp ("1783626823462_nota.pdf") — tira para o Omie
   return base.replace(/^\d{10,}_/, "");
 };
-const extDe = (nome: string) =>
-  (nome.includes(".") ? nome.split(".").pop()! : "pdf").toLowerCase().replace(/[^a-z0-9]/g, "") || "pdf";
+
+/**
+ * Código interno do anexo no Omie. O campo cCodIntAnexo aceita NO MÁXIMO 20 caracteres —
+ * "hub-ach-{id}-{Date.now()}" dava 26 e o Omie recusava o anexo inteiro. O timestamp vai
+ * em base36 (8 caracteres em vez de 13) e o resultado é truncado por garantia.
+ */
+const codIntAnexo = (id: number): string =>
+  `h${id}-${Date.now().toString(36)}`.slice(0, 20);
 
 /**
  * O comprovante pode estar em dois lugares, e só UM deles o servidor consegue ler:
@@ -91,6 +91,8 @@ type Item = {
   match: MatchResult | null;
   /** null = pode enviar; senão, por que não */
   bloqueio: Motivo;
+  /** mensagem específica do bloqueio (ex.: qual conta do Drive não tem acesso) */
+  detalhe?: string;
 };
 
 Deno.serve(async (req) => {
@@ -149,10 +151,22 @@ Deno.serve(async (req) => {
     for (const c of categorias) if (c.codigo) codToDesc.set(String(c.codigo), c.descricao ?? "");
     const byValue = indexarMovimentos(movimentos);
 
+    // Com o conector do Drive configurado, o servidor passa a conseguir baixar o arquivo
+    // — e os links do Drive deixam de ser um bloqueio. Sem ele, continuam bloqueados e a
+    // saída é a ação "anexar_arquivo" (a pessoa baixa do Drive e sobe pelo Hub).
+    const comDrive = driveConfigurado();
+
     /** Decide por que um item não pode ser enviado (null = pode). */
     const motivo = (comprovante: string, match: MatchResult | null, jaEnviado: string | null): Motivo => {
       if (jaEnviado) return "ja_enviado";
-      if (ehUrl(comprovante)) return "drive";              // servidor não consegue baixar
+      if (ehUrl(comprovante)) {
+        const id = extrairIdDrive(comprovante);
+        // URL que não é do Drive (ou sem id reconhecível) não tem como ser baixada.
+        if (!id) return "comprovante_invalido";
+        if (!comDrive) return "drive";
+        // Com credencial, só falta o destino.
+        return match?.codTitulo ? null : "sem_titulo";
+      }
       if (!ehCaminhoStorage(comprovante)) return "comprovante_invalido"; // só o nome do arquivo
       if (!match?.codTitulo) return "sem_titulo";
       return null;
@@ -209,17 +223,188 @@ Deno.serve(async (req) => {
 
     const elegiveis: Item[] = [...daAuditoria, ...doCartao];
 
+    // Conector configurado NÃO significa arquivo legível. Antes de dizer que um item do
+    // Drive está pronto, conferimos que a conta conectada abre AQUELE arquivo — senão a
+    // tela mostra tudo verde e o erro só aparece no envio (foi exatamente o que houve).
+    // Só metadados, sem baixar conteúdo.
+    if (comDrive) {
+      const doDrive = elegiveis.filter((e) => !e.bloqueio && ehUrl(e.comprovante));
+      for (let i = 0; i < doDrive.length; i += 5) {
+        await Promise.all(doDrive.slice(i, i + 5).map(async (e) => {
+          const r = await podeLerNoDrive(e.comprovante);
+          if (!r.ok) {
+            e.bloqueio = "drive";
+            e.detalhe = r.erro;
+          }
+        }));
+      }
+    }
+
     /* -------- PREVIEW -------- */
     if (action === "preview") {
       return json({
         ok: true,
         total: elegiveis.length,
+        drive_configurado: comDrive,
         // O front usa isso para separar "envia direto", "confirmar" e "não dá".
         elegiveis: elegiveis.map((e) => ({
           ...e,
           pode_enviar_direto: !e.bloqueio && e.match?.conf === "alta",
         })),
       });
+    }
+
+    /* -------- TESTAR DRIVE --------
+     * Tenta baixar o primeiro comprovante do Drive e diz o que aconteceu, SEM tocar no
+     * Omie. Serve para validar o conector do Lovable sem arriscar um anexo errado.
+     */
+    if (action === "testar_drive") {
+      if (!comDrive) {
+        const s = statusDrive();
+        const faltando = [
+          !s.lovable ? "LOVABLE_API_KEY" : null,
+          !s.drive ? "GOOGLE_DRIVE_API_KEY" : null,
+        ].filter(Boolean);
+        return json({
+          ok: false,
+          drive_configurado: false,
+          secrets: s,
+          erro:
+            `Falta o secret ${faltando.join(" e ")} no Supabase (Edge Functions → Secrets).` +
+            (!s.drive && s.lovable
+              ? " A LOVABLE_API_KEY já está lá — só falta conectar o Google Drive no Lovable e guardar a chave dessa conexão. A chave do Sheets não serve: é outro conector."
+              : ""),
+        });
+      }
+      // Passo 1: o conector responde? Isso separa "rota errada / Drive não vinculado ao
+      // projeto" de "conta conectada não vê o arquivo" — o Drive usa 404 para os dois.
+      let conta: { email: string; nome: string };
+      try {
+        conta = await sondarDrive();
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.error("testar_drive: conector não respondeu ·", msg);
+        return json({
+          ok: false,
+          drive_configurado: true,
+          conector_ok: false,
+          // O corpo cru de cada tentativa vai junto: é o que diz se o slug do gateway está
+          // errado ou se a conexão não está vinculada a este projeto.
+          erro: msg,
+        });
+      }
+
+      const alvo = elegiveis.find((e) => ehUrl(e.comprovante) && extrairIdDrive(e.comprovante));
+      if (!alvo) {
+        return json({ ok: true, drive_configurado: true, conector_ok: true, conta: conta.email, base: baseDoDrive(), aviso: "Conector OK. Nenhum comprovante do Drive para testar." });
+      }
+
+      // Passo 2: a conta conectada consegue LER este arquivo?
+      try {
+        const arq = await baixarDoDrive(alvo.comprovante);
+        return json({
+          ok: true,
+          drive_configurado: true,
+          conector_ok: true,
+          conta: conta.email,
+          base: baseDoDrive(),
+          baixou: true,
+          lancamento: alvo.estabelecimento ?? alvo.titulo,
+          arquivo: arq.nome,
+          mime: arq.mime,
+          bytes: arq.bytes.length,
+        });
+      } catch (err) {
+        return json({
+          ok: false,
+          drive_configurado: true,
+          conector_ok: true,
+          conta: conta.email,
+          baixou: false,
+          lancamento: alvo.estabelecimento ?? alvo.titulo,
+          erro: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
+
+    /* -------- ANEXAR ARQUIVO (upload manual) --------
+     * Saída para o caso "drive": o servidor não consegue baixar do Google, mas a PESSOA
+     * consegue (está logada). Ela baixa a nota do Drive e sobe aqui; o arquivo vai para o
+     * título do Omie e fica guardado no nosso bucket. Params: { id, nome, base64 }.
+     */
+    if (action === "anexar_arquivo") {
+      const id = Number(body?.id);
+      const nomeArq = String(body?.nome ?? "comprovante").slice(0, 120);
+      const base64 = String(body?.base64 ?? "");
+      if (!id || !base64) return json({ error: "Parâmetros faltando (id, base64)." }, 200);
+
+      const item = elegiveis.find((e) => e.achado_id === id);
+      if (!item) return json({ error: "Lançamento não está mais na lista de elegíveis." }, 200);
+      if (!item.match?.codTitulo) {
+        return json({ error: "Não achei o título correspondente no Omie — não há onde anexar." }, 200);
+      }
+
+      // base64 → bytes
+      let bytes: Uint8Array;
+      try {
+        const limpo = base64.replace(/^data:[^;]+;base64,/, "");
+        bytes = Uint8Array.from(atob(limpo), (c) => c.charCodeAt(0));
+      } catch {
+        return json({ error: "Arquivo inválido (base64)." }, 200);
+      }
+      if (!bytes.length) return json({ error: "Arquivo vazio." }, 200);
+      if (bytes.length > 10 * 1024 * 1024) return json({ error: "Arquivo maior que 10 MB." }, 200);
+
+      // Mesma trava do envio: se alguém subir por engano o HTML que o Drive devolve,
+      // recusamos — um "comprovante" que é uma tela de login é pior que nenhum.
+      if (ehHtml(bytes)) {
+        return json({ error: "Isso é uma página HTML, não um comprovante. Baixe o arquivo do Drive e envie o PDF/imagem." }, 200);
+      }
+
+      // Guarda no bucket (nosso rastro do que foi mandado ao Omie).
+      const seguro = nomeArq.replace(/[^a-zA-Z0-9._-]/g, "_");
+      const path = `hub/${item.cartao_id_unico ?? item.achado_id}/${Date.now()}_${seguro}`;
+      const { error: upErr } = await supabase.storage.from(BUCKET).upload(path, bytes, {
+        contentType: body?.mime ? String(body.mime) : undefined,
+        upsert: false,
+      });
+      if (upErr) return json({ error: `Falha ao guardar o arquivo: ${upErr.message}` }, 200);
+
+      // Anexa no título do Omie (acrescenta, nunca substitui).
+      await incluirAnexo({
+        nId: item.match.codTitulo,
+        cTabela,
+        nome: nomeArq,
+        base64: toBase64(bytes),
+        codInt: codIntAnexo(item.achado_id),
+      });
+
+      const agora = new Date().toISOString();
+      if (item.cartao_id) {
+        await supabase.from("auditoria_cartao_lancamentos").update({
+          omie_cod_titulo: item.match.codTitulo,
+          omie_anexo_enviado_em: agora,
+          omie_anexo_nome: nomeArq,
+          updated_at: agora,
+        }).eq("id", item.cartao_id);
+      }
+      if (item.origem === "achado") {
+        const { data: atual } = await supabase.from("auditoria").select("trilha").eq("id", item.achado_id).maybeSingle();
+        const trilha = Array.isArray((atual as any)?.trilha) ? (atual as any).trilha : [];
+        await supabase.from("auditoria").update({
+          trilha: [...trilha, {
+            evento: "comprovante_enviado_omie",
+            canal: "hub_upload",
+            omie_cod_titulo: item.match.codTitulo,
+            confianca: item.match.conf,
+            arquivo: nomeArq,
+            timestamp: agora,
+          }],
+          updated_at: agora,
+        }).eq("id", item.achado_id);
+      }
+
+      return json({ ok: true, anexado: true, omie_cod_titulo: item.match.codTitulo, arquivo: nomeArq, storage_path: path });
     }
 
     /* -------- ENVIAR -------- */
@@ -240,30 +425,34 @@ Deno.serve(async (req) => {
 
     for (const e of alvos) {
       try {
-        // 3a) Baixa o arquivo do bucket privado (service role passa pela RLS).
-        const { data: blob, error: dlErr } = await supabase.storage.from(BUCKET).download(e.comprovante);
-        if (dlErr || !blob) throw new Error(`Falha ao baixar do storage: ${dlErr?.message ?? "arquivo não encontrado"}`);
-        const bytes = new Uint8Array(await blob.arrayBuffer());
-        const nome = nomeDoPath(e.comprovante);
+        // 3a) Busca o arquivo — do Drive ou do nosso bucket, conforme a origem.
+        let bytes: Uint8Array;
+        let nome: string;
 
-        // Cinto de segurança: nunca anexar uma página HTML no Omie. Se um dia o
-        // comprovante vier de uma origem que exige login (Drive, por exemplo), o
-        // download "bem-sucedido" é a tela de login — e viraria um anexo falso.
-        const cabecalho = new TextDecoder().decode(bytes.subarray(0, 64)).trim().toLowerCase();
-        if (cabecalho.startsWith("<!doctype html") || cabecalho.startsWith("<html")) {
-          throw new Error("O arquivo baixado é uma página HTML, não um comprovante.");
+        if (ehUrl(e.comprovante)) {
+          const arq = await baixarDoDrive(e.comprovante);   // já recusa HTML e arquivo vazio
+          bytes = arq.bytes;
+          nome = arq.nome;
+        } else {
+          const { data: blob, error: dlErr } = await supabase.storage.from(BUCKET).download(e.comprovante);
+          if (dlErr || !blob) throw new Error(`Falha ao baixar do storage: ${dlErr?.message ?? "arquivo não encontrado"}`);
+          bytes = new Uint8Array(await blob.arrayBuffer());
+          nome = nomeDoPath(e.comprovante);
         }
+
+        // Cinto de segurança: nunca anexar uma página HTML no Omie. Um download que
+        // "deu certo" mas veio da tela de login viraria um anexo falso, com cara de nota.
+        if (ehHtml(bytes)) throw new Error("O arquivo baixado é uma página HTML, não um comprovante.");
         if (bytes.length === 0) throw new Error("Arquivo vazio.");
 
         // 3b) Anexa no título do Omie. "Sempre acrescentar": não listamos nem excluímos
         // os anexos que já existem lá — o IncluirAnexo entra ao lado deles.
-        await omieCall("geral/anexo", "IncluirAnexo", {
-          cCodIntAnexo: `hub-ach-${e.achado_id}-${Date.now()}`,
+        await incluirAnexo({
+          nId: e.match!.codTitulo,
           cTabela,
-          nId: Number(e.match!.codTitulo),
-          cNomeArquivo: nome,
-          cTipoArquivo: extDe(nome),
-          cArquivo: toBase64(bytes),
+          nome,
+          base64: toBase64(bytes),
+          codInt: codIntAnexo(e.achado_id),
         });
 
         const agora = new Date().toISOString();
@@ -302,10 +491,11 @@ Deno.serve(async (req) => {
           omie_cod_titulo: e.match!.codTitulo, confianca: e.match!.conf, arquivo: nome,
         });
       } catch (err) {
-        falhas.push({
-          achado_id: e.achado_id, titulo: e.titulo,
-          erro: err instanceof Error ? err.message : String(err),
-        });
+        const erro = err instanceof Error ? err.message : String(err);
+        // Vai para o log da função: a resposta sai com HTTP 200 (erro no corpo), então
+        // sem isto a falha não aparece em lugar nenhum que dê para investigar depois.
+        console.error(`envio falhou · ${e.titulo} · título ${e.match?.codTitulo} · ${erro}`);
+        falhas.push({ achado_id: e.achado_id, titulo: e.titulo, erro });
       }
     }
 

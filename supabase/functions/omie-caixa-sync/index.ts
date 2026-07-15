@@ -319,7 +319,7 @@ Deno.serve(async (req) => {
         if (movimentacoes.length < 60) {
           movimentacoes.push({
             data: m.dPago ? iso(m.dPago) : null,
-            descricao: limpa(m.det.cNumTitulo ?? m.det.cCodIntTitulo) ?? m.catDesc,
+            descricao: nomeFornecedor(m),  // nome do fornecedor (não a categoria — evita redundância com a coluna Categoria)
             categoria: m.catDesc,
             conta: contasCC.map.get(m.ncodcc)?.nome ?? "",
             valor: m.valor,

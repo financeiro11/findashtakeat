@@ -140,17 +140,17 @@ function normEvento(ev: any): VMEvento | null {
     hora = mIni[1].padStart(5, "0");
     horaLabel = String(rawHorario).trim();
     timed = true;
-  } else if (ev.start) {
-    const mS = /T(\d{2}:\d{2})/.exec(String(ev.start));
+  } else if (ev.start || ev.inicio) {
+    const mS = /[T\s](\d{1,2}:\d{2})/.exec(String(ev.start ?? ev.inicio ?? ""));
     if (mS) {
-      hora = mS[1];
-      const mE = /T(\d{2}:\d{2})/.exec(String(ev.end ?? ""));
+      hora = mS[1].padStart(5, "0");
+      const mE = /[T\s](\d{1,2}:\d{2})/.exec(String(ev.end ?? ev.fim ?? ""));
       horaLabel = mE ? `${mS[1]}–${mE[1]}` : mS[1];
       timed = true;
     }
   }
 
-  const note = ev.note ?? ev.nota ?? null;
+  const note = ev.note ?? ev.nota ?? ev.detalhe ?? null;
   const titulo = note ? `${titulo0} · ${note}` : titulo0;
   const comRaw = ev.com ?? ev.compartilhado_com ?? ev.participantes ?? null;
   const com = Array.isArray(comRaw) ? (comRaw.join(", ") || null) : (comRaw || null);

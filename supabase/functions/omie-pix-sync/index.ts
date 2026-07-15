@@ -193,10 +193,12 @@ Deno.serve(async (req) => {
         const lote = rows.slice(i, i + CA);
         await Promise.all(lote.map(async (r) => {
           const anexo = await anexoDe(r.id_unico, cTabela);
-          if (anexo?.url) comAnexo++;
+          if (anexo) comAnexo++;
           const patch: Record<string, unknown> = {
             anexo_verificado: true,
-            tem_comprovante: !!anexo?.url,
+            // ListarAnexo lista o anexo (nome/id) mas NÃO devolve link de download.
+            // Ter anexo já é ter comprovante — a URL, quando vier, é bônus (abre o arquivo).
+            tem_comprovante: !!anexo,
             comprovante_url: anexo?.url || null,
             anexo_nome: anexo?.nome || null,
             updated_at: new Date().toISOString(),

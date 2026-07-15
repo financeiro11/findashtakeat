@@ -4,7 +4,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
 import { brl, brlAbbr, fmtDateBR } from "./utils";
-import { Search, RefreshCw, Loader2, ExternalLink, FileWarning, FileCheck2, Upload } from "lucide-react";
+import { Search, RefreshCw, Loader2, ExternalLink, FileWarning, FileCheck2, Upload, CheckCircle2 } from "lucide-react";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 
@@ -372,12 +372,15 @@ function PixRow({ r, onStatus, onAnexar, uploading }: { r: Lanc; onStatus: (r: L
           <div className="flex items-center gap-1.5">
             {r.comprovante_url ? (
               <a href={r.comprovante_url} target="_blank" rel="noreferrer"
-                className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-medium border bg-[hsl(152_55%_94%)] text-[hsl(152_60%_28%)] border-[hsl(152_55%_82%)] hover:underline">
-                <FileCheck2 className="h-3 w-3" /> abrir <ExternalLink className="h-2.5 w-2.5" />
+                title={r.anexo_nome || "Comprovante anexado no Omie · abrir"}
+                className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-semibold border bg-[hsl(152_55%_92%)] text-[hsl(152_65%_26%)] border-[hsl(152_55%_78%)] hover:brightness-95">
+                <CheckCircle2 className="h-3 w-3" /> anexado <ExternalLink className="h-2.5 w-2.5" />
               </a>
             ) : (
-              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-medium border bg-[hsl(152_55%_94%)] text-[hsl(152_60%_28%)] border-[hsl(152_55%_82%)]">
-                <FileCheck2 className="h-3 w-3" /> tem
+              <span
+                title={r.anexo_nome || "Comprovante anexado no Omie"}
+                className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-semibold border bg-[hsl(152_55%_92%)] text-[hsl(152_65%_26%)] border-[hsl(152_55%_78%)]">
+                <CheckCircle2 className="h-3 w-3" /> anexado
               </span>
             )}
             <button

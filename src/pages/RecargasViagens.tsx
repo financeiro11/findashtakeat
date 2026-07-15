@@ -117,6 +117,7 @@ export default function RecargasViagens() {
   const [month, setMonth] = useState(today.getMonth()); // 0-11
   const [lastSync, setLastSync] = useState<Date | null>(null);
   const [statusFilter, setStatusFilter] = useState<"todos" | StatusViagem>("todos");
+  const [novaOpen, setNovaOpen] = useState(false);
 
   const setStatus = async (key: string, s: StatusViagem, viagemHash?: string) => {
     setStatusMap((prev) => {

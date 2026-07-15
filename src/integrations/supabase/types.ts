@@ -609,6 +609,63 @@ export type Database = {
         }
         Relationships: []
       }
+      comprovantes_index: {
+        Row: {
+          chave_nfe: string | null
+          cnpj_emitente: string | null
+          created_time: string | null
+          data_doc: string | null
+          file_id: string
+          fonte: string
+          hash_conteudo: string | null
+          lancamento_id: string | null
+          referencia_casada: string | null
+          status: string
+          texto_ocr: string | null
+          tipo: string | null
+          titulo: string | null
+          ts_index: string
+          ts_update: string
+          valor: number | null
+        }
+        Insert: {
+          chave_nfe?: string | null
+          cnpj_emitente?: string | null
+          created_time?: string | null
+          data_doc?: string | null
+          file_id: string
+          fonte: string
+          hash_conteudo?: string | null
+          lancamento_id?: string | null
+          referencia_casada?: string | null
+          status?: string
+          texto_ocr?: string | null
+          tipo?: string | null
+          titulo?: string | null
+          ts_index?: string
+          ts_update?: string
+          valor?: number | null
+        }
+        Update: {
+          chave_nfe?: string | null
+          cnpj_emitente?: string | null
+          created_time?: string | null
+          data_doc?: string | null
+          file_id?: string
+          fonte?: string
+          hash_conteudo?: string | null
+          lancamento_id?: string | null
+          referencia_casada?: string | null
+          status?: string
+          texto_ocr?: string | null
+          tipo?: string | null
+          titulo?: string | null
+          ts_index?: string
+          ts_update?: string
+          valor?: number | null
+        }
+        Relationships: []
+      }
       de_para_rules: {
         Row: {
           categoria: string | null

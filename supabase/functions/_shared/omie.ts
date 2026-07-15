@@ -120,48 +120,86 @@ async function md5Hex(data: Uint8Array | string): Promise<string> {
 const extDe = (nome: string) =>
   (nome.includes(".") ? nome.split(".").pop()! : "pdf").toLowerCase().replace(/[^a-z0-9]/g, "") || "pdf";
 
+/** Conta quantos anexos um título tem numa dada tabela (-1 se a tabela não for válida). */
+async function contarAnexos(nId: number | string, cTabela: string): Promise<number> {
+  try {
+    const r = await omieCall<any>("geral/anexo", "ListarAnexo", { nId: Number(nId), cTabela, nPagina: 1, nRegPorPagina: 50 });
+    const arr = r?.listaAnexos ?? r?.anexos ?? r?.arquivos ?? [];
+    return Array.isArray(arr) ? arr.length : 0;
+  } catch {
+    return -1; // tabela inválida para este registro
+  }
+}
+
+// O nome da tabela do anexo VARIA por conta Omie e não está documentado. "conta-pagar" foi
+// um chute que o Omie ACEITOU (200) mas onde o anexo não apareceu — por isso não confiamos
+// no sucesso e verificamos. Ordem: a preferida primeiro, depois as candidatas conhecidas.
+const TABELAS_ANEXO = ["conta-pagar", "financas-conta-pagar", "financas-contapagar", "contas-a-pagar", "movimentos", "financas-movimentos"];
+
 /**
- * Anexa um arquivo a um título do Omie.
+ * Anexa um arquivo a um título do Omie — e CONFIRMA que colou.
  *
- * Duas armadilhas deste endpoint, ambas descobertas na marra:
+ * Três armadilhas deste endpoint, todas descobertas na marra:
  *
- *  1. `cCodIntAnexo` aceita NO MÁXIMO 20 caracteres. Um id + Date.now() estoura fácil
- *     (o timestamp sozinho já são 13 dígitos) e o Omie recusa o anexo inteiro.
+ *  1. `cCodIntAnexo` aceita NO MÁXIMO 20 caracteres. Um id + Date.now() estoura fácil e o
+ *     Omie recusa o anexo inteiro. (Truncado aqui.)
  *
- *  2. `cMd5` é OBRIGATÓRIO, e a documentação é ambígua sobre o que ele deve hashear:
- *     "MD5 do arquivo enviado na tag 'cArquivo'" pode ser a string base64 OU os bytes do
- *     arquivo. Em vez de apostar, tentamos a leitura literal (base64) e, se o Omie
- *     reclamar especificamente do MD5, refazemos com o hash dos bytes.
+ *  2. `cMd5` é OBRIGATÓRIO e a doc é ambígua ("MD5 do arquivo enviado na tag cArquivo"):
+ *     pode ser o hash da string base64 OU dos bytes. Tentamos a base64 e, se reclamar do
+ *     MD5, refazemos com os bytes.
+ *
+ *  3. O `cTabela` errado é ACEITO com HTTP 200 mas não anexa nada visível. Então, depois de
+ *     incluir, contamos os anexos: se não aumentou, aquela tabela estava errada e vamos para
+ *     a próxima. Só retornamos quando o Omie CONFIRMA o anexo — nunca confiando só no 200.
+ *
+ * Retorna a `cTabela` que funcionou.
  */
 export async function incluirAnexo(opts: {
   nId: number | string;
+  /** tabela preferida; se não colar, tentamos as demais candidatas */
   cTabela: string;
   nome: string;
   /** conteúdo do arquivo em base64 (sem o prefixo data:) */
   base64: string;
   /** identificador interno; será truncado em 20 caracteres */
   codInt: string;
-}): Promise<unknown> {
+}): Promise<{ cTabela: string }> {
   const cCodIntAnexo = opts.codInt.slice(0, 20);
+  const md5b64 = await md5Hex(opts.base64);
+  const md5bytes = await md5Hex(deBase64(opts.base64));
 
-  const tentar = (cMd5: string) =>
-    omieCall("geral/anexo", "IncluirAnexo", {
-      cCodIntAnexo,
-      cTabela: opts.cTabela,
-      nId: Number(opts.nId),
-      cNomeArquivo: opts.nome,
-      cTipoArquivo: extDe(opts.nome),
-      cArquivo: opts.base64,
-      cMd5,
-    });
+  const tabelas = [opts.cTabela, ...TABELAS_ANEXO.filter((t) => t !== opts.cTabela)];
+  const diagnostico: string[] = [];
 
-  try {
-    return await tentar(await md5Hex(opts.base64));      // leitura literal: MD5 do que vai na tag
-  } catch (e) {
-    if (!/md5/i.test(e instanceof Error ? e.message : String(e))) throw e;
-    console.warn("Omie recusou o MD5 da base64; refazendo com o MD5 dos bytes do arquivo.");
-    return await tentar(await md5Hex(deBase64(opts.base64)));
+  for (const cTabela of tabelas) {
+    const antes = await contarAnexos(opts.nId, cTabela);
+    if (antes < 0) { diagnostico.push(`${cTabela}: tabela inválida`); continue; }
+
+    const incluir = (cMd5: string) =>
+      omieCall("geral/anexo", "IncluirAnexo", {
+        cCodIntAnexo, cTabela, nId: Number(opts.nId),
+        cNomeArquivo: opts.nome, cTipoArquivo: extDe(opts.nome),
+        cArquivo: opts.base64, cMd5,
+      });
+
+    try {
+      try { await incluir(md5b64); }
+      catch (e) {
+        if (!/md5/i.test(e instanceof Error ? e.message : String(e))) throw e;
+        await incluir(md5bytes);   // a doc não diz qual MD5; tenta o dos bytes
+      }
+    } catch (e) {
+      diagnostico.push(`${cTabela}: ${(e instanceof Error ? e.message : String(e)).slice(0, 120)}`);
+      continue;
+    }
+
+    // NÃO confiar no 200: confirmar que o anexo realmente entrou.
+    const depois = await contarAnexos(opts.nId, cTabela);
+    if (depois > antes) return { cTabela };
+    diagnostico.push(`${cTabela}: incluiu sem erro mas o anexo não apareceu (${antes}->${depois})`);
   }
+
+  throw new Error("O Omie aceitou a chamada mas o anexo não foi confirmado em nenhuma tabela. " + diagnostico.join(" | "));
 }
 
 export interface OmieCategoria {

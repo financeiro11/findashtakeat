@@ -8,8 +8,8 @@
 //
 // Regras de negócio:
 //   • só SAÍDAS (natureza "P") da conta corrente do Sicoob (contas a pagar);
-//   • NÃO entram transferências de saída (cOrigem "TRAP");
-//   • NÃO entram categorias de pessoal / premiação / escala / benefícios;
+//   • a ÚNICA exclusão é transferência de saída (cOrigem "TRAP") — pessoal/premiação/
+//     escala/benefícios ENTRAM (voltaram por decisão do time);
 //   • se o título tem anexo no Omie, o link/nome vêm junto (tem_comprovante).
 //
 // O passo de anexos é SEPARADO do sync: um ListarAnexo por título estourava o wall-time
@@ -67,8 +67,6 @@ function parseOmieDate(s?: string | null): Date | null {
 const ym = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
 const iso = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 
-const CATEGORIAS_EXCLUIDAS = ["PESSOAL", "PREMIA", "ESCALA", "BENEF"];
-const categoriaExcluida = (desc: string) => CATEGORIAS_EXCLUIDAS.some((k) => norm(desc).includes(k));
 const ORIGENS_TRANSFERENCIA = new Set(["TRAP"]); // transferência de saída — excluída
 
 // Contas correntes do Omie: nCodCC → { nome, banco }.
@@ -365,8 +363,9 @@ Deno.serve(async (req) => {
       if (norm(det.cNatureza) !== "P") continue;                 // só saídas (contas a pagar)
       if (!sicoobIds.has(String(det.nCodCC))) continue;          // só a conta corrente do Sicoob
       if (ORIGENS_TRANSFERENCIA.has(norm(det.cOrigem))) continue; // exclui transferência de saída
+      // Sem exclusão por categoria: entram TODAS as saídas (inclusive pessoal/premiação/
+      // escala/benefícios) que não sejam transferência de saída.
       const c = catPrincipal(mov);
-      if (categoriaExcluida(c.desc)) continue;                   // exclui pessoal/premiação/escala/benefícios
 
       const dataPg = parseOmieDate(det.dDtPagamento) ?? parseOmieDate(det.dDtRegistro) ?? parseOmieDate(det.dDtEmissao);
       const ref = dataPg ? ym(dataPg) : mesAtual();

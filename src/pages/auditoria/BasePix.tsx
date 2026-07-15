@@ -51,7 +51,6 @@ export default function BasePix() {
   const [referencia, setReferencia] = useState<string>(mesAtual());
   const [fCat, setFCat] = useState("todas");
   const [fCompr, setFCompr] = useState<"todos" | "com" | "sem">("todos");
-  const [fStatus, setFStatus] = useState("todos");
   const [busca, setBusca] = useState("");
   const [page, setPage] = useState(1);
   const [uploadingId, setUploadingId] = useState<number | null>(null);
@@ -130,19 +129,6 @@ export default function BasePix() {
     } finally { setSyncing(false); }
   };
 
-  const mudarStatus = async (row: Lanc, novo: string) => {
-    const anterior = row.status;
-    setRows((rs) => rs.map((r) => r.id === row.id ? { ...r, status: novo } : r));
-    const { error } = await supabase
-      .from("auditoria_pix_lancamentos" as any)
-      .update({ status: novo, updated_at: new Date().toISOString() })
-      .eq("id", row.id);
-    if (error) {
-      toast.error("Não foi possível salvar o status");
-      setRows((rs) => rs.map((r) => r.id === row.id ? { ...r, status: anterior } : r));
-    }
-  };
-
   // Opções de mês: últimos 18 + qualquer mês que já tenha dados (mesmo mais antigo).
   // Anexar comprovante: lê o arquivo, envia à função (que anexa no Omie) e recarrega.
   const abrirSeletor = (row: Lanc) => { pendingRow.current = row; fileRef.current?.click(); };
@@ -208,16 +194,15 @@ export default function BasePix() {
       if (fCat !== "todas" && r.categoria !== fCat) return false;
       if (fCompr === "com" && !r.tem_comprovante) return false;
       if (fCompr === "sem" && r.tem_comprovante) return false;
-      if (fStatus !== "todos" && r.status !== fStatus) return false;
       if (q) {
         const hay = `${r.favorecido ?? ""} ${r.cnpj_cpf ?? ""} ${r.descricao ?? ""} ${r.categoria ?? ""}`.toLowerCase();
         if (!hay.includes(q)) return false;
       }
       return true;
     });
-  }, [periodRows, fCat, fCompr, fStatus, busca]);
+  }, [periodRows, fCat, fCompr, busca]);
 
-  useEffect(() => { setPage(1); }, [referencia, fCat, fCompr, fStatus, busca]);
+  useEffect(() => { setPage(1); }, [referencia, fCat, fCompr, busca]);
 
   const kpis = useMemo(() => {
     const total = periodRows.length;
@@ -256,8 +241,7 @@ export default function BasePix() {
           <div className="text-[11px] uppercase tracking-wider text-muted-foreground font-medium">Hub Financeiro · Governança</div>
           <h1 className="text-3xl font-bold tracking-tight mt-0.5">PIX · Sicoob</h1>
           <p className="text-sm text-muted-foreground mt-1">
-            Saídas (contas a pagar) da conta corrente Sicoob, puxadas do Omie · sem transferências,
-            pessoal, premiação, escala ou benefícios · com categoria e comprovante.
+            Saídas (contas a pagar) da conta corrente Sicoob, puxadas do Omie · exceto transferências de saída · com categoria e comprovante.
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -303,7 +287,6 @@ export default function BasePix() {
             <option value="sem">sem comprovante</option>
           </select>
         </label>
-        <FilterSelect label="Status" value={fStatus} onChange={setFStatus} options={[...STATUS]} allLabel="todos" />
         <label className="inline-flex items-center gap-2 h-9 rounded-lg border border-border bg-card px-3 min-w-[240px] flex-1 max-w-[360px]">
           <Search className="h-3.5 w-3.5 text-muted-foreground" />
           <input
@@ -316,14 +299,12 @@ export default function BasePix() {
 
       {/* Table */}
       <div className="rounded-xl border border-border bg-card overflow-hidden">
-        <div className="grid grid-cols-[100px_1.4fr_1.4fr_130px_110px_130px_140px] gap-3 px-4 py-3 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground border-b border-border">
+        <div className="grid grid-cols-[110px_1.6fr_1.6fr_150px_160px] gap-3 px-4 py-3 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground border-b border-border">
           <div>Data</div>
           <div>Favorecido / Descrição</div>
           <div>Categoria Omie</div>
           <div className="text-right">Valor</div>
           <div>Comprovante</div>
-          <div>Status</div>
-          <div className="text-right">Ação</div>
         </div>
         {loading ? (
           <div className="p-5 space-y-3">{Array.from({ length: 6 }).map((_, i) => <Skeleton key={i} className="h-10 rounded" />)}</div>
@@ -335,7 +316,7 @@ export default function BasePix() {
           <div className="p-12 text-center text-sm text-muted-foreground">Nenhum lançamento com esses filtros.</div>
         ) : (
           <>
-            {paged.map(r => <PixRow key={r.id} r={r} onStatus={mudarStatus} onAnexar={abrirSeletor} uploading={uploadingId === r.id} />)}
+            {paged.map(r => <PixRow key={r.id} r={r} onAnexar={abrirSeletor} uploading={uploadingId === r.id} />)}
             {totalPages > 1 && (
               <div className="flex items-center justify-between px-4 py-3 text-xs text-muted-foreground border-t border-border">
                 <div>Página {page} de {totalPages} · {filtered.length} lançamentos</div>
@@ -354,10 +335,10 @@ export default function BasePix() {
   );
 }
 
-function PixRow({ r, onStatus, onAnexar, uploading }: { r: Lanc; onStatus: (r: Lanc, novo: string) => void; onAnexar: (r: Lanc) => void; uploading: boolean }) {
+function PixRow({ r, onAnexar, uploading }: { r: Lanc; onAnexar: (r: Lanc) => void; uploading: boolean }) {
   const bg = !r.tem_comprovante ? "bg-[hsl(0_80%_97%)]" : "";
   return (
-    <div className={cn("grid grid-cols-[100px_1.4fr_1.4fr_130px_110px_130px_140px] gap-3 px-4 py-2.5 items-center border-b border-border last:border-0 text-sm", bg)}>
+    <div className={cn("grid grid-cols-[110px_1.6fr_1.6fr_150px_160px] gap-3 px-4 py-2.5 items-center border-b border-border last:border-0 text-sm", bg)}>
       <div className="text-muted-foreground">{fmtDateBR(r.data)}</div>
       <div className="min-w-0">
         <div className="font-medium truncate">{r.favorecido || r.cnpj_cpf || r.descricao || "—"}</div>
@@ -403,24 +384,6 @@ function PixRow({ r, onStatus, onAnexar, uploading }: { r: Lanc; onStatus: (r: L
             {uploading ? "enviando…" : "anexar"}
           </button>
         )}
-      </div>
-      <div>
-        <span className={cn(
-          "inline-flex px-2 py-0.5 rounded-full text-[11px] font-medium border",
-          r.status === "Aprovado" ? "bg-[hsl(152_55%_94%)] text-[hsl(152_60%_28%)] border-[hsl(152_55%_82%)]" :
-          r.status === "Reprovado" ? "bg-[hsl(0_80%_96%)] text-[hsl(0_72%_38%)] border-[hsl(0_80%_88%)]" :
-          r.status === "Em análise" ? "bg-[hsl(212_80%_96%)] text-[hsl(212_80%_35%)] border-[hsl(212_80%_88%)]" :
-          "bg-[hsl(38_92%_95%)] text-[hsl(30_80%_35%)] border-[hsl(38_92%_85%)]"
-        )}>{r.status}</span>
-      </div>
-      <div className="text-right">
-        <select
-          value={r.status}
-          onChange={e => onStatus(r, e.target.value)}
-          className="h-7 rounded-md border border-border bg-card px-1.5 text-xs outline-none"
-        >
-          {STATUS.map(s => <option key={s} value={s}>{s}</option>)}
-        </select>
       </div>
     </div>
   );

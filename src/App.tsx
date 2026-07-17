@@ -17,7 +17,7 @@ import AutomacoesProporcionais from "./pages/AutomacoesProporcionais";
 import RecargasCelulares from "./pages/RecargasCelulares";
 import RecargasViagens from "./pages/RecargasViagens";
 import Projetos from "./pages/Projetos";
-import Demonstracoes from "./pages/Demonstracoes";
+import Balanco from "./pages/Balanco";
 import Balancete from "./pages/Balancete";
 import DRE from "./pages/DRE";
 import DFC from "./pages/DFC";
@@ -47,6 +47,12 @@ import Asaas from "./pages/Asaas";
 import Auditoria from "./pages/Auditoria";
 import Reembolsos from "./pages/operacional/Reembolsos";
 import Estornos from "./pages/operacional/Estornos";
+import FacilitiesDashboard from "./pages/facilities/FacilitiesDashboard";
+import FacilitiesSolicitacoes from "./pages/facilities/Solicitacoes";
+import FacilitiesCotacoes from "./pages/facilities/Cotacoes";
+import FacilitiesFornecedores from "./pages/facilities/Fornecedores";
+import FacilitiesHistorico from "./pages/facilities/Historico";
+import FacilitiesContratos from "./pages/facilities/Contratos";
 import NotFound from "./pages/NotFound.tsx";
 import LinkPublico from "./pages/LinkPublico";
 
@@ -99,7 +105,7 @@ const App = () => (
               <Route path="/demonstracoes/dre" element={<DRE />} />
               <Route path="/demonstracoes/dfc" element={<DFC />} />
               <Route path="/demonstracoes/balancete" element={<Balancete />} />
-              <Route path="/demonstracoes/balanco" element={<Demonstracoes tipo="balanco" modo="trimestre" titulo="Demonstrações Financeiras · Balanço" />} />
+              <Route path="/demonstracoes/balanco" element={<Balanco />} />
               <Route path="/analise/cenarios" element={<AnalisePreditiva />} />
               <Route path="/analise/bp" element={<BPAnual />} />
               <Route path="/analise/historico" element={<HistoricoMultianual />} />
@@ -110,6 +116,12 @@ const App = () => (
               <Route path="/governanca/auditoria" element={<Auditoria />} />
               <Route path="/operacional/reembolsos" element={<Reembolsos />} />
               <Route path="/operacional/estornos" element={<Estornos />} />
+              <Route path="/facilities" element={<FacilitiesDashboard />} />
+              <Route path="/facilities/solicitacoes" element={<FacilitiesSolicitacoes />} />
+              <Route path="/facilities/cotacoes" element={<FacilitiesCotacoes />} />
+              <Route path="/facilities/fornecedores" element={<FacilitiesFornecedores />} />
+              <Route path="/facilities/historico" element={<FacilitiesHistorico />} />
+              <Route path="/facilities/contratos" element={<FacilitiesContratos />} />
             </Route>
             <Route path="*" element={<NotFound />} />
           </Routes>

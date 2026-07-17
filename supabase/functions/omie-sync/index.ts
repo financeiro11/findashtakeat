@@ -14,7 +14,9 @@
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { listarCategorias, listarMovimentos } from "../_shared/omie.ts";
+import { lerMovimentos, lerCategorias } from "../_shared/omie-cache.ts";
 import { requireUser } from "../_shared/auth.ts";
+import { salvarDemonstracao } from "../_shared/demonstracoes.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -163,6 +165,8 @@ Deno.serve(async (req) => {
     await requireUser(req, { bloquearCargos: ["parcerias"] });
     const body = req.method === "POST" ? await req.json().catch(() => ({})) : {};
     const action = body?.action ?? "sync";
+    // atualizar=true força buscar do Omie; senão usa o cache compartilhado (recálculo local).
+    const forcar = body?.atualizar === true;
 
     /* ---------------- PREVIEW ---------------- */
     if (action === "preview") {
@@ -217,16 +221,17 @@ Deno.serve(async (req) => {
       // (ex.: "1.01.03"), mas o DE_PARA foi semeado com a DESCRIÇÃO da categoria
       // (ex.: "1.1.1. Receita Assinaturas"). Portanto: monta um mapa
       // codigoOmie → descrição a partir de ListarCategorias e casa por descrição.
-      const categorias = await listarCategorias();
+      const { dados: categorias } = await lerCategorias(supabase, { forcar });
       const codigoToDescricao = new Map<string, string>();
       for (const c of categorias) {
         if (c.codigo) codigoToDescricao.set(String(c.codigo), c.descricao ?? "");
       }
 
-      // 3) Movimentos. O endpoint financas/mf/ListarMovimentos NÃO aceita filtros
-      // de data nem cTipoData em algumas contas Omie (erro "Tag [...] não faz parte
-      // da estrutura ..."). Trazemos tudo e filtramos por período em memória.
-      const movimentos = await listarMovimentos({});
+      // 3) Movimentos — via cache compartilhado (_shared/omie-cache.ts). Sem `atualizar`,
+      // reaproveita o último pull do Omie (recálculo local); com `atualizar:true` refaz o pull.
+      // O endpoint ListarMovimentos não aceita filtro de data nesta conta, então o cache
+      // guarda a lista inteira; a filtragem por período segue em memória.
+      const { dados: movimentos, origem: origemMov, idadeMin: idadeMov } = await lerMovimentos(supabase, { forcar });
 
       const dreAgg: Agg = new Map();
       const dfcAgg: Agg = new Map();
@@ -298,19 +303,11 @@ Deno.serve(async (req) => {
         dfcPayload.rows.push(cashRow);
       }
 
-      // 4) Grava nas demonstrações (mesmo formato do import de Excel)
-      const upserts = await Promise.all([
-        supabase.from("demonstracoes_contabeis").upsert(
-          { tipo: "dre", periodo: "completo", dados: { columns: drePayload.columns, rows: drePayload.rows }, pdf_path: null },
-          { onConflict: "tipo,periodo" },
-        ),
-        supabase.from("demonstracoes_contabeis").upsert(
-          { tipo: "dfc", periodo: "completo", dados: { columns: dfcPayload.columns, rows: dfcPayload.rows }, pdf_path: null },
-          { onConflict: "tipo,periodo" },
-        ),
-      ]);
-      const upErr = upserts.map((u) => u.error).filter(Boolean)[0];
-      if (upErr) throw upErr;
+      // 4) Grava nas demonstrações (mesmo formato do import de Excel) — respeitando meses
+      // já TRANCADOS por um import de tracker (nunca sobrescreve mês fechado; só atualiza
+      // o que ainda está aberto). Ver _shared/demonstracoes.ts.
+      await salvarDemonstracao(supabase, "dre", { columns: drePayload.columns, rows: drePayload.rows });
+      await salvarDemonstracao(supabase, "dfc", { columns: dfcPayload.columns, rows: dfcPayload.rows });
 
       if (logId) {
         await supabase.from("omie_sync_log").update({
@@ -323,6 +320,8 @@ Deno.serve(async (req) => {
       return json({
         ok: true,
         movimentos: movimentos.length,
+        origem: origemMov,                       // "cache" | "omie"
+        cache_idade_min: Math.round(idadeMov),
         dre_linhas: drePayload.linhas,
         dfc_linhas: dfcPayload.linhas,
         nao_mapeadas: naoMapeadas.size,

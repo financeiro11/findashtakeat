@@ -22,3 +22,6 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Claude Code (config local da ferramenta — não faz parte do app)
+.claude/

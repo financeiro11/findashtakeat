@@ -3,10 +3,16 @@
 // em orcamento_area_linha.realizado_omie (não-destrutivo; o tracker fica de fallback).
 //
 // Ações (body.action):
-//   "preview" (default) → agrega o realizado do Omie por (área, subcategoria, mês) via
-//                         orcamento_omie_map e devolve a comparação por área (Omie × atual)
-//                         + categorias de despesa não mapeadas. NÃO grava.
-//   "sync"              → aplica o realizado (RPC apply_orcamento_realizado_omie em lote).
+//   "preview"         (default) → agrega o realizado do Omie por (área, subcategoria, mês)
+//                      via orcamento_omie_map e devolve a comparação por área (Omie × atual)
+//                      + categorias de despesa não mapeadas. NÃO grava.
+//   "sync"             → aplica o realizado (RPC apply_orcamento_realizado_omie em lote).
+//   "agendar_horario"  → grava um novo horário (BRT) para o cron diário. Só entra em
+//                        vigor a partir de AMANHÃ (nunca no mesmo dia — evita ambiguidade
+//                        sobre se o sync de hoje já rodou no horário velho ou no novo);
+//                        um cron de promoção separado (promover_agendamentos_sync, 00:10
+//                        BRT) aplica a mudança no cron.job quando a data chega.
+//                        Params: { hora: number (0–23, BRT) }
 //
 // Regime = competência (data de registro), igual à DRE do Omie.
 // Auth: usuário logado (requireUser, bloqueia "parcerias") OU x-cron-token (cron).
@@ -80,6 +86,34 @@ async function listarMovimentos(filtros: Record<string, unknown> = {}, limitePag
   return out;
 }
 
+/* ===================== Cache compartilhado do Omie =====================
+ * Lê os movimentos/categorias da tabela `omie_cache` (populada por qualquer
+ * uma das 4 sincronizações) em vez de repuxar todo o histórico do Omie a cada
+ * execução. Reaproveita o pull quando fresco; refaz quando velho ou forçado.
+ * (Inline de propósito: esta função é self-contained para deploy via MCP.) */
+async function lerCacheMovimentos(supabase: any, forcar: boolean, maxIdadeMin = 360): Promise<any[]> {
+  if (!forcar) {
+    const { data } = await supabase.from("omie_cache").select("dados, atualizado_em").eq("chave", "movimentos").maybeSingle();
+    if (data && Array.isArray(data.dados) && (Date.now() - new Date(data.atualizado_em).getTime()) / 60000 <= maxIdadeMin) {
+      return data.dados;
+    }
+  }
+  const dados = await listarMovimentos({});
+  await supabase.from("omie_cache").upsert({ chave: "movimentos", dados, registros: dados.length, atualizado_em: new Date().toISOString() }, { onConflict: "chave" });
+  return dados;
+}
+async function lerCacheCategorias(supabase: any, forcar: boolean, maxIdadeMin = 1440): Promise<any[]> {
+  if (!forcar) {
+    const { data } = await supabase.from("omie_cache").select("dados, atualizado_em").eq("chave", "categorias").maybeSingle();
+    if (data && Array.isArray(data.dados) && (Date.now() - new Date(data.atualizado_em).getTime()) / 60000 <= maxIdadeMin) {
+      return data.dados;
+    }
+  }
+  const dados = await listarCategorias();
+  await supabase.from("omie_cache").upsert({ chave: "categorias", dados, registros: dados.length, atualizado_em: new Date().toISOString() }, { onConflict: "chave" });
+  return dados;
+}
+
 /* ============================ Helpers ============================ */
 function parseOmieDate(s?: string | null): Date | null {
   if (!s) return null;
@@ -138,7 +172,29 @@ Deno.serve(async (req) => {
 
     const body = req.method === "POST" ? await req.json().catch(() => ({})) : {};
     const action = body?.action ?? "preview";
+    const forcar = body?.atualizar === true; // força buscar do Omie; senão usa o cache
     const ano = Number(body?.ano ?? 2026);
+
+    /* ---------------- AGENDAR HORÁRIO (cron diário) ---------------- */
+    if (action === "agendar_horario") {
+      const hora = Number(body?.hora);
+      if (!Number.isInteger(hora) || hora < 0 || hora > 23) {
+        return json({ error: "Hora inválida. Use um número inteiro de 0 a 23." }, 200);
+      }
+      // Vigência SEMPRE a partir de amanhã (BRT) — nunca no mesmo dia, mesmo que a
+      // hora escolhida ainda não tenha passado hoje. Calculada no servidor (não confia
+      // no relógio do navegador). Um cron de promoção separado aplica a mudança.
+      const hojeBRT = new Date(new Date().toLocaleString("en-US", { timeZone: "America/Sao_Paulo" }));
+      const amanha = new Date(hojeBRT.getFullYear(), hojeBRT.getMonth(), hojeBRT.getDate() + 1);
+      const vigenteAPartir = `${amanha.getFullYear()}-${String(amanha.getMonth() + 1).padStart(2, "0")}-${String(amanha.getDate()).padStart(2, "0")}`;
+
+      const { data, error } = await supabase.from("sync_agendamento")
+        .update({ hora_pendente: hora, vigente_a_partir: vigenteAPartir, atualizado_em: new Date().toISOString() })
+        .eq("job_name", "omie-orcamento-sync-diario")
+        .select().single();
+      if (error) throw error;
+      return json({ ok: true, agendamento: data });
+    }
 
     // ---- de-para categoria -> linha do orçamento ----
     const { data: mapRows } = await supabase
@@ -150,13 +206,13 @@ Deno.serve(async (req) => {
       mappedLines.add(`${m.area}||${m.subcategoria}`);
     }
 
-    // ---- categorias: cCodCateg -> descrição ----
-    const categorias = await listarCategorias();
+    // ---- categorias: cCodCateg -> descrição (via cache compartilhado) ----
+    const categorias = await lerCacheCategorias(supabase, forcar);
     const codigoToDescricao = new Map<string, string>();
     for (const c of categorias) if (c.codigo) codigoToDescricao.set(String(c.codigo), c.descricao ?? "");
 
-    // ---- movimentos (traz tudo, filtra por ano/competência em memória) ----
-    const movimentos = await listarMovimentos({});
+    // ---- movimentos: via cache compartilhado (recálculo local; `atualizar:true` refaz o pull) ----
+    const movimentos = await lerCacheMovimentos(supabase, forcar);
 
     const agg = new Map<string, Map<number, number>>();   // "area||sub" -> mes -> valor
     const naoMap = new Map<string, number>();             // descrição -> valor

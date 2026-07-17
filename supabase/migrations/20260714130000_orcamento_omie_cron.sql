@@ -1,8 +1,9 @@
 -- Sincronização automática diária do realizado do Orçamento (omie-orcamento-sync).
--- 10:00 BRT (13:00 UTC) — depois do sync do Caixa (09:00) para não competir pelas
--- chamadas ao Omie (evita MISUSE_API_PROCESS/concorrência). Usa o padrão x-cron-token
--- (internal_cron_tokens) porque a função exige requireUser; o token nunca aparece em
--- texto no cron.job. `ano` é o ano corrente em America/Sao_Paulo (auto-ajusta na virada).
+-- 08:00 BRT (11:00 UTC). Usa o padrão x-cron-token (internal_cron_tokens) porque a
+-- função exige requireUser; o token nunca aparece em texto no cron.job. `ano` é o ano
+-- corrente em America/Sao_Paulo (auto-ajusta na virada).
+--
+-- 2026-07-16: reagendado de 10:00 BRT (13:00 UTC) para 08:00 BRT a pedido do usuário.
 
 CREATE EXTENSION IF NOT EXISTS pg_cron WITH SCHEMA extensions;
 CREATE EXTENSION IF NOT EXISTS pg_net  WITH SCHEMA extensions;
@@ -15,7 +16,7 @@ SELECT cron.unschedule('omie-orcamento-sync-diario') WHERE EXISTS (
 );
 SELECT cron.schedule(
   'omie-orcamento-sync-diario',
-  '0 13 * * *',
+  '0 11 * * *',
   $$
   SELECT net.http_post(
     url := 'https://lgcxyxyidoirqmbdlldh.supabase.co/functions/v1/omie-orcamento-sync',

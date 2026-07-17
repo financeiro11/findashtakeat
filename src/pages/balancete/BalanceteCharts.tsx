@@ -1,23 +1,21 @@
-import { useMemo } from "react";
-import { Cell, Pie, PieChart, ResponsiveContainer, Tooltip, BarChart, Bar, XAxis, YAxis, CartesianGrid, LineChart, Line, Legend } from "recharts";
+import { useMemo, useState } from "react";
+import { ResponsiveContainer, XAxis, YAxis, CartesianGrid, LineChart, Line, Legend, Tooltip } from "recharts";
+import { BarChart3, ChevronDown } from "lucide-react";
 import { fmtBRL } from "./utils";
 import type { BalanceteAccount } from "./types";
 
-const COLORS = [
-  "hsl(var(--primary))",
-  "hsl(var(--pos))",
-  "hsl(var(--neg))",
-  "hsl(var(--warn))",
-  "hsl(var(--accent))",
-  "hsl(var(--muted-foreground))",
-];
+// Paleta categórica cíclica pras barras de composição — mesma lógica de "gasto por
+// categoria" já usada noutras telas do Hub (cor fixa por posição, não por conta).
+const PALETTE = ["#3b82f6", "#14b8a6", "#8b5cf6", "#22c55e", "#f59e0b", "#f43f5e", "#64748b"];
 
 interface Props {
   accounts: BalanceteAccount[];
   history: { periodo: string; ativo: number; passivo: number; pl: number }[];
+  /** Ex.: "últimos 6 meses" (Balancete) ou "últimos trimestres" (Balanço). */
+  histLabel?: string;
 }
 
-function topByGroup(accounts: BalanceteAccount[], group: string, level = 2, limit = 6) {
+function topByGroup(accounts: BalanceteAccount[], group: string, level = 2, limit = 8) {
   return accounts
     .filter((a) => a.group === group && a.level === level)
     .map((a) => ({ name: a.name, value: Math.abs(a.saldo_atual) }))
@@ -26,103 +24,6 @@ function topByGroup(accounts: BalanceteAccount[], group: string, level = 2, limi
 }
 
 const tooltipFmt = (v: any) => fmtBRL(Number(v));
-
-export function BalanceteCharts({ accounts, history }: Props) {
-  const ativo = useMemo(() => topByGroup(accounts, "ativo"), [accounts]);
-  const passivoPl = useMemo(
-    () => [...topByGroup(accounts, "passivo"), ...topByGroup(accounts, "pl")],
-    [accounts],
-  );
-  const despesas = useMemo(() => topByGroup(accounts, "despesa", 2, 8), [accounts]);
-
-  return (
-    <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
-      <div className="card-surface p-4">
-        <div className="eyebrow mb-2">Composição do Ativo</div>
-        <div className="h-[240px]">
-          {ativo.length === 0 ? (
-            <Empty />
-          ) : (
-            <ResponsiveContainer>
-              <PieChart>
-                <Pie data={ativo} dataKey="value" nameKey="name" innerRadius={50} outerRadius={90} strokeWidth={1}>
-                  {ativo.map((_, i) => (
-                    <Cell key={i} fill={COLORS[i % COLORS.length]} />
-                  ))}
-                </Pie>
-                <Tooltip formatter={tooltipFmt} contentStyle={tooltipStyle} />
-                <Legend wrapperStyle={{ fontSize: 11 }} />
-              </PieChart>
-            </ResponsiveContainer>
-          )}
-        </div>
-      </div>
-
-      <div className="card-surface p-4">
-        <div className="eyebrow mb-2">Passivo + Patrimônio Líquido</div>
-        <div className="h-[240px]">
-          {passivoPl.length === 0 ? (
-            <Empty />
-          ) : (
-            <ResponsiveContainer>
-              <PieChart>
-                <Pie data={passivoPl} dataKey="value" nameKey="name" innerRadius={50} outerRadius={90} strokeWidth={1}>
-                  {passivoPl.map((_, i) => (
-                    <Cell key={i} fill={COLORS[i % COLORS.length]} />
-                  ))}
-                </Pie>
-                <Tooltip formatter={tooltipFmt} contentStyle={tooltipStyle} />
-                <Legend wrapperStyle={{ fontSize: 11 }} />
-              </PieChart>
-            </ResponsiveContainer>
-          )}
-        </div>
-      </div>
-
-      <div className="card-surface p-4 lg:col-span-2">
-        <div className="eyebrow mb-2">Evolução patrimonial (últimos meses)</div>
-        <div className="h-[260px]">
-          {history.length === 0 ? (
-            <Empty msg="Importe outros meses para ver a evolução." />
-          ) : (
-            <ResponsiveContainer>
-              <LineChart data={history}>
-                <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
-                <XAxis dataKey="periodo" tick={{ fontSize: 11, fill: "hsl(var(--muted-foreground))" }} />
-                <YAxis tick={{ fontSize: 11, fill: "hsl(var(--muted-foreground))" }} tickFormatter={(v) => fmtBRL(v, { compact: true })} />
-                <Tooltip formatter={tooltipFmt} contentStyle={tooltipStyle} />
-                <Legend wrapperStyle={{ fontSize: 11 }} />
-                <Line type="monotone" dataKey="ativo" name="Ativo" stroke={COLORS[0]} strokeWidth={2} dot={{ r: 3 }} />
-                <Line type="monotone" dataKey="passivo" name="Passivo" stroke={COLORS[2]} strokeWidth={2} dot={{ r: 3 }} />
-                <Line type="monotone" dataKey="pl" name="PL" stroke={COLORS[1]} strokeWidth={2} dot={{ r: 3 }} />
-              </LineChart>
-            </ResponsiveContainer>
-          )}
-        </div>
-      </div>
-
-      <div className="card-surface p-4 lg:col-span-2">
-        <div className="eyebrow mb-2">Distribuição de despesas / obrigações</div>
-        <div className="h-[260px]">
-          {despesas.length === 0 ? (
-            <Empty msg="Nenhuma despesa identificada neste período." />
-          ) : (
-            <ResponsiveContainer>
-              <BarChart data={despesas} layout="vertical" margin={{ left: 16, right: 16 }}>
-                <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" horizontal={false} />
-                <XAxis type="number" tick={{ fontSize: 11, fill: "hsl(var(--muted-foreground))" }} tickFormatter={(v) => fmtBRL(v, { compact: true })} />
-                <YAxis type="category" dataKey="name" width={180} tick={{ fontSize: 11, fill: "hsl(var(--muted-foreground))" }} />
-                <Tooltip formatter={tooltipFmt} contentStyle={tooltipStyle} />
-                <Bar dataKey="value" fill={COLORS[0]} radius={[0, 4, 4, 0]} />
-              </BarChart>
-            </ResponsiveContainer>
-          )}
-        </div>
-      </div>
-    </div>
-  );
-}
-
 const tooltipStyle = {
   background: "hsl(var(--card))",
   border: "1px solid hsl(var(--border))",
@@ -130,10 +31,93 @@ const tooltipStyle = {
   fontSize: 12,
 };
 
-function Empty({ msg = "Sem dados para exibir." }: { msg?: string }) {
+function BarList({ items }: { items: { name: string; value: number }[] }) {
+  const max = Math.max(...items.map((i) => i.value), 1);
+  if (items.length === 0) {
+    return <div className="py-8 text-center text-[12.5px] text-muted-foreground">Sem dados para exibir.</div>;
+  }
   return (
-    <div className="h-full flex items-center justify-center text-sm text-muted-foreground">
-      {msg}
+    <div className="space-y-3">
+      {items.map((it, i) => (
+        <div key={it.name}>
+          <div className="flex items-center justify-between gap-3 text-[12.5px]">
+            <span className="truncate text-foreground">{it.name}</span>
+            <span className="num shrink-0 font-medium text-foreground">{fmtBRL(it.value, { compact: true })}</span>
+          </div>
+          <div className="mt-1 h-1.5 w-full overflow-hidden rounded-full bg-muted">
+            <div
+              className="h-full rounded-full"
+              style={{ width: `${(it.value / max) * 100}%`, background: PALETTE[i % PALETTE.length] }}
+            />
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+export function BalanceteCharts({ accounts, history, histLabel = "últimos 6 meses" }: Props) {
+  const [show, setShow] = useState(true);
+  const ativo = useMemo(() => topByGroup(accounts, "ativo"), [accounts]);
+  const passivoPl = useMemo(
+    () => [...topByGroup(accounts, "passivo"), ...topByGroup(accounts, "pl")],
+    [accounts],
+  );
+
+  return (
+    <div className="card-surface p-4">
+      <div className="flex items-center justify-between gap-3">
+        <div className="flex items-center gap-2">
+          <BarChart3 className="h-4 w-4 text-muted-foreground" />
+          <span className="text-[13.5px] font-semibold text-foreground">Gráficos e composição patrimonial</span>
+        </div>
+        <button
+          onClick={() => setShow((s) => !s)}
+          className="flex items-center gap-1 text-[12px] font-medium text-muted-foreground hover:text-foreground"
+        >
+          {show ? "Ocultar" : "Mostrar"}
+          <ChevronDown className={`h-3.5 w-3.5 transition-transform ${show ? "" : "-rotate-90"}`} />
+        </button>
+      </div>
+
+      {show && (
+        <div className="mt-4 space-y-4">
+          <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
+            <div>
+              <div className="eyebrow mb-3">Composição do Ativo</div>
+              <BarList items={ativo} />
+            </div>
+            <div>
+              <div className="eyebrow mb-3">Passivo + Patrimônio Líquido</div>
+              <BarList items={passivoPl} />
+            </div>
+          </div>
+
+          <div>
+            <div className="eyebrow mb-2">Evolução patrimonial · {histLabel}</div>
+            <div className="h-[260px]">
+              {history.length === 0 ? (
+                <div className="flex h-full items-center justify-center text-[12.5px] text-muted-foreground">
+                  Importe outros períodos para ver a evolução.
+                </div>
+              ) : (
+                <ResponsiveContainer>
+                  <LineChart data={history}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
+                    <XAxis dataKey="periodo" tick={{ fontSize: 11, fill: "hsl(var(--muted-foreground))" }} />
+                    <YAxis tick={{ fontSize: 11, fill: "hsl(var(--muted-foreground))" }} tickFormatter={(v) => fmtBRL(v, { compact: true })} />
+                    <Tooltip formatter={tooltipFmt} contentStyle={tooltipStyle} />
+                    <Legend wrapperStyle={{ fontSize: 11 }} />
+                    <Line type="monotone" dataKey="ativo" name="Ativo" stroke="#3b82f6" strokeWidth={2} dot={{ r: 3 }} />
+                    <Line type="monotone" dataKey="passivo" name="Passivo" stroke="#f59e0b" strokeWidth={2} dot={{ r: 3 }} />
+                    <Line type="monotone" dataKey="pl" name="PL" stroke="#8b5cf6" strokeWidth={2} dot={{ r: 3 }} />
+                  </LineChart>
+                </ResponsiveContainer>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

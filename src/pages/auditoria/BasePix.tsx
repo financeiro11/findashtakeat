@@ -241,7 +241,7 @@ export default function BasePix() {
           <div className="text-[11px] uppercase tracking-wider text-muted-foreground font-medium">Hub Financeiro · Governança</div>
           <h1 className="text-3xl font-bold tracking-tight mt-0.5">PIX · Sicoob</h1>
           <p className="text-sm text-muted-foreground mt-1">
-            Saídas (contas a pagar) da conta corrente Sicoob, puxadas do Omie · exceto transferências de saída · com categoria e comprovante.
+            Saídas já pagas da conta corrente Sicoob, puxadas do Omie · só títulos baixados (data de pagamento) · exceto transferências de saída · com categoria e comprovante.
           </p>
         </div>
         <div className="flex items-center gap-2">

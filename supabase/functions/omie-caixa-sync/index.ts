@@ -17,6 +17,7 @@
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { listarCategorias, listarMovimentos, omieCall } from "../_shared/omie.ts";
+import { lerMovimentos, lerCategorias } from "../_shared/omie-cache.ts";
 import { requireUser } from "../_shared/auth.ts";
 
 const corsHeaders = {
@@ -124,6 +125,18 @@ async function consultarNomeCliente(cod: string): Promise<string | null> {
     return nome || null;
   } catch (_) { return null; }
 }
+// Fallback: quando o movimento não traz o código do cliente (só o CNPJ/CPF do documento),
+// acha o cadastro pelo CNPJ/CPF — mesmo recurso usado no omie-pix-sync.
+async function consultarNomePorCnpj(cnpj: string): Promise<string | null> {
+  try {
+    const r = await omieCall<any>("geral/clientes", "ListarClientes", {
+      pagina: 1, registros_por_pagina: 5, apenas_importado_api: "N", clientesFiltro: { cnpj_cpf: cnpj },
+    });
+    const c = (r?.clientes_cadastro ?? [])[0];
+    const nome = String(c?.nome_fantasia || c?.razao_social || "").trim();
+    return nome || null;
+  } catch (_) { return null; }
+}
 
 // Chamada agendada (cron): o header `x-cron-token` precisa casar com a linha da
 // tabela `internal_cron_tokens` (só service_role lê). Assim o agendamento diário
@@ -145,6 +158,7 @@ Deno.serve(async (req) => {
     if (!(await chamadaDeCron(req, supabase))) await requireUser(req, { bloquearCargos: ["parcerias"] });
     const body = req.method === "POST" ? await req.json().catch(() => ({})) : {};
     const action = body?.action ?? "sync";
+    const forcar = body?.atualizar === true; // força buscar do Omie; senão usa o cache
 
     /* ---------------- PREVIEW (diagnóstico) ---------------- */
     if (action === "preview") {
@@ -173,8 +187,8 @@ Deno.serve(async (req) => {
     const agora = new Date();
     const hojeD = startOfDay(agora);
 
-    // 1) Categorias: código → descrição.
-    const categorias = await listarCategorias();
+    // 1) Categorias: código → descrição (via cache compartilhado).
+    const { dados: categorias } = await lerCategorias(supabase, { forcar });
     const codToDesc = new Map<string, string>();
     for (const c of categorias) if (c.codigo) codToDesc.set(String(c.codigo), String(c.descricao ?? c.codigo));
     const descCategoria = (cod: unknown) => {
@@ -185,8 +199,38 @@ Deno.serve(async (req) => {
     // 2) Contas correntes.
     const contasCC = await listarContasCorrentes();
 
-    // 3) Movimentos (base única). Omie ignora filtro de data em algumas contas → traz tudo e filtra em memória.
-    const movimentos = await listarMovimentos({});
+    // 3) Movimentos (base única) — via cache compartilhado (_shared/omie-cache.ts).
+    // Sem `atualizar`, reaproveita o último pull do Omie; com `atualizar:true`, refaz.
+    const { dados: movimentosBrutos } = await lerMovimentos(supabase, { forcar });
+
+    // 3b) Dedup por título: todo título JÁ BAIXADO/CONCILIADO gera DOIS registros no
+    // ListarMovimentos com o MESMO nCodTitulo — um do "título" (cGrupo CONTA_A_RECEBER/
+    // PAGAR, com nValorTitulo) e outro da "baixa/conciliação" (cGrupo CONTA_CORRENTE_REC/
+    // PAG, com nValorMovCC), ambos com a MESMA dDtPagamento. Sem deduplicar, todo valor
+    // realizado entra em DOBRO (confirmado via diagnóstico: 2.834 de 4.926 títulos duplicados
+    // em julho/2026 — ~57% do volume). Mesmo padrão já tratado no omie-pix-sync.
+    // Mescla os detalhes (união dos campos; o primeiro registro visto prevalece, o(s)
+    // seguinte(s) só preenchem o que faltar) para não perder nenhum campo de nenhum dos dois.
+    // nCodTitulo=0/ausente NUNCA é usado como chave (senão juntaria lançamentos sem título
+    // nenhum em relação um ao outro) — cada um desses vira uma linha própria e única.
+    const porTitulo = new Map<string, any>();
+    let semTitulo = 0;
+    for (const mov of movimentosBrutos) {
+      const det = (mov as any)?.detalhes ?? {};
+      const idRaw = String(det?.nCodTitulo ?? det?.cCodIntTitulo ?? "").trim();
+      const id = (!idRaw || idRaw === "0") ? `__semid_${semTitulo++}` : idRaw;
+      const existente = porTitulo.get(id);
+      if (!existente) { porTitulo.set(id, mov); continue; }
+      const detExist = (existente as any)?.detalhes ?? {};
+      porTitulo.set(id, {
+        ...existente,
+        detalhes: { ...det, ...detExist },
+        resumo: (existente as any)?.resumo ?? (mov as any)?.resumo ?? null,
+        categorias: (Array.isArray((existente as any)?.categorias) && (existente as any).categorias.length)
+          ? (existente as any).categorias : ((mov as any)?.categorias ?? null),
+      });
+    }
+    const movimentos = [...porTitulo.values()];
 
     // 3a) Classifica cada movimento uma vez.
     type Mov = {
@@ -281,39 +325,35 @@ Deno.serve(async (req) => {
       mes: { de: new Date(agora.getFullYear(), agora.getMonth(), 1), ate: agora, dias: agora.getDate() },
     };
 
-    // resolve nomes de fornecedor só para os movimentos que a UI mostra (limite p/ não estourar tempo).
-    const codParaNome = new Set<string>();
-    const coletaCods = (m: Mov) => { if (m.codCliente && m.codCliente !== "0") codParaNome.add(m.codCliente); };
+    // Nome do fornecedor é resolvido DEPOIS (ver "resolve nomes" abaixo) — aqui só se
+    // monta a estrutura com os identificadores brutos (codCliente/cnpj/categoria/nome direto
+    // do movimento, quando houver). Motivo: resolver nome por código/CNPJ é uma chamada à API
+    // do Omie por item, e um mês tem centenas de fornecedores distintos — resolver todos de
+    // antemão (como antes) exige um corte arbitrário (ex.: só os 120 primeiros na ordem crua
+    // do Omie), e o corte podia pular exatamente os fornecedores que aparecem no Top 5 ou nas
+    // movimentações exibidas. Resolvendo só o que a UI realmente mostra (após agregar as 4
+    // janelas), o conjunto de nomes a buscar fica pequeno e SEMPRE cobre o que é exibido.
     const dentro = (d: Date | null, de: Date, ate: Date) => !!d && d >= de && d <= ate;
-
-    const ini31 = addDays(hojeD, -31);
-    for (const m of movs) {
-      if (m.transfer) continue;
-      if (!m.entrada && m.dPago && m.dPago >= ini31 && m.dPago <= agora) coletaCods(m); // saídas recentes (fornecedores: ontem/hoje/semana/mês)
-      if (!m.dPago && m.dVenc && m.dVenc >= hojeD && m.dVenc <= addDays(hojeD, 30)) coletaCods(m); // contas a pagar próximas
-    }
-    const nomePorCod = new Map<string, string>();
-    const cods = [...codParaNome].slice(0, 120);
-    const CN = 4;
-    for (let i = 0; i < cods.length; i += CN) {
-      await Promise.all(cods.slice(i, i + CN).map(async (cod) => { const n = await consultarNomeCliente(cod); if (n) nomePorCod.set(cod, n); }));
-    }
-    const nomeFornecedor = (m: Mov) =>
-      (m.codCliente && nomePorCod.get(m.codCliente)) || limpa(m.det.cNomeCliente) || (m.cnpj ? m.cnpj : null) || m.catDesc || "—";
+    type Identificado = { codCliente: string | null; cnpj: string | null; catDesc: string; nomeDireto: string | null };
+    const identDe = (m: Mov): Identificado =>
+      ({ codCliente: m.codCliente, cnpj: m.cnpj, catDesc: m.catDesc, nomeDireto: limpa(m.det.cNomeCliente) });
 
     function computeWindow(de: Date, ate: Date, dias: number) {
       let entradas = 0, saidas = 0, nRec = 0, nPag = 0;
       const catMap = new Map<string, number>();
-      const fornMap = new Map<string, { nome: string; categoria: string; valor: number }>();
-      const movimentacoes: any[] = [];
+      // Agrupa por CNPJ/CPF quando não há código de cliente — antes agrupava por CATEGORIA
+      // nesse caso, o que juntava fornecedores DIFERENTES (sem código, mesma categoria) numa
+      // única linha somada (mesma classe de bug da duplicata de título: chave errada de junção).
+      const fornMap = new Map<string, Identificado & { valor: number }>();
+      const movimentacoes: (Identificado & { data: string | null; categoria: string; conta: string; valor: number; natureza: string })[] = [];
       for (const m of movs) {
         if (m.transfer || !dentro(m.dPago, de, ate)) continue;
         if (m.entrada) { entradas += m.valor; nRec++; } else { saidas += m.valor; nPag++; }
         if (!m.entrada) {
           for (const c of m.categorias) catMap.set(c.desc, (catMap.get(c.desc) ?? 0) + (c.valor || 0));
-          const fk = m.codCliente ?? m.catDesc;
-          const nome = nomeFornecedor(m);
-          const cur = fornMap.get(fk) ?? { nome, categoria: m.catDesc, valor: 0 };
+          const ident = identDe(m);
+          const fk = m.codCliente ?? m.cnpj ?? m.catDesc;
+          const cur = fornMap.get(fk) ?? { ...ident, valor: 0 };
           cur.valor += m.valor; fornMap.set(fk, cur);
         }
         // Junta TODAS as movimentações da janela; o corte para as 60 maiores é feito
@@ -321,8 +361,8 @@ Deno.serve(async (req) => {
         // Omie — que traz os salários primeiro —, então os grandes pagamentos de
         // fornecedor nem entravam na lista e sobrava só "Pessoal" caindo na categoria.)
         movimentacoes.push({
+          ...identDe(m),
           data: m.dPago ? iso(m.dPago) : null,
-          descricao: nomeFornecedor(m),  // nome do fornecedor (não a categoria — evita redundância com a coluna Categoria)
           categoria: m.catDesc,
           conta: contasCC.map.get(m.ncodcc)?.nome ?? "",
           valor: m.valor,
@@ -336,9 +376,13 @@ Deno.serve(async (req) => {
       const restoVal = gastos_categoria.slice(5).reduce((s, c) => s + c.valor, 0);
       if (restoVal > 0) top.push({ nome: "Outros", valor: restoVal, pct: (restoVal / totalSai) * 100 });
       const fornecedores = [...fornMap.values()].sort((a, b) => b.valor - a.valor).slice(0, 5);
-      movimentacoes.sort((a, b) => b.valor - a.valor);
-      // guarda até 400 (as maiores) para o modal de "ver tudo"; a UI mostra as 60 primeiras inline.
-      const movimentacoesTop = movimentacoes.slice(0, 400);
+      // Corta pelas 400 MAIORES (por valor) primeiro — só para limitar o payload em janelas
+      // com muitos lançamentos, sem descartar os grandes pagamentos por causa da ordem crua
+      // do Omie. A exibição em si (aqui e na UI) é por DATA, mais recente primeiro.
+      const movimentacoesTop = [...movimentacoes]
+        .sort((a, b) => b.valor - a.valor)
+        .slice(0, 400)
+        .sort((a, b) => (b.data ?? "").localeCompare(a.data ?? ""));
 
       const mediaEntJanela = media30Ent * dias, mediaSaiJanela = media30Sai * dias;
       return {
@@ -362,16 +406,59 @@ Deno.serve(async (req) => {
     };
 
     // 8) Contas a pagar próximas (30 dias, em aberto).
-    const cap: { data: string; descricao: string; categoria: string; valor: number; dias: number }[] = [];
+    const cap: (Identificado & { data: string; valor: number; dias: number })[] = [];
     for (const m of movs) {
       if (m.entrada || m.dPago || m.transfer || !m.dVenc) continue;
       if (m.dVenc >= hojeD && m.dVenc <= addDays(hojeD, 30)) {
         const dias = Math.round((startOfDay(m.dVenc).getTime() - hojeD.getTime()) / 86400000);
-        cap.push({ data: iso(m.dVenc), descricao: nomeFornecedor(m), categoria: m.catDesc, valor: m.aberto, dias });
+        cap.push({ ...identDe(m), data: iso(m.dVenc), valor: m.aberto, dias });
       }
     }
     cap.sort((a, b) => a.data.localeCompare(b.data) || b.valor - a.valor);
-    const contas_a_pagar = { total: cap.reduce((s, c) => s + c.valor, 0), itens: cap.slice(0, 30) };
+    const capTop = cap.slice(0, 30);
+
+    // resolve nomes de fornecedor SÓ para o que aparece nas listas acima (Top 5 fornecedores +
+    // movimentações de cada janela + contas a pagar) — nunca "todo o mês", então o conjunto é
+    // pequeno e cobre exatamente o que a UI mostra. Se não há código de cliente, busca pelo
+    // CNPJ/CPF (mesmo recurso do omie-pix-sync) — antes disso o fallback era mostrar o
+    // CNPJ/CPF cru (ilegível).
+    const codsNecessarios = new Set<string>();
+    const cnpjsNecessarios = new Set<string>();
+    const registrar = (id: Identificado) => {
+      if (id.nomeDireto) return; // já tem nome legível, não precisa de API
+      if (id.codCliente) codsNecessarios.add(id.codCliente);
+      else if (id.cnpj) cnpjsNecessarios.add(id.cnpj);
+    };
+    for (const janela of Object.values(periodos)) {
+      for (const f of janela.fornecedores) registrar(f);
+      for (const mv of janela.movimentacoes) registrar(mv);
+    }
+    for (const c of capTop) registrar(c);
+
+    const nomePorCod = new Map<string, string>();
+    const nomePorCnpj = new Map<string, string>();
+    const CN = 4;
+    const cods = [...codsNecessarios];
+    for (let i = 0; i < cods.length; i += CN) {
+      await Promise.all(cods.slice(i, i + CN).map(async (cod) => { const n = await consultarNomeCliente(cod); if (n) nomePorCod.set(cod, n); }));
+    }
+    const cnpjs = [...cnpjsNecessarios];
+    for (let i = 0; i < cnpjs.length; i += CN) {
+      await Promise.all(cnpjs.slice(i, i + CN).map(async (cnpj) => { const n = await consultarNomePorCnpj(cnpj); if (n) nomePorCnpj.set(cnpj, n); }));
+    }
+    const nomeDe = (id: Identificado) =>
+      id.nomeDireto || (id.codCliente && nomePorCod.get(id.codCliente)) || (id.cnpj && nomePorCnpj.get(id.cnpj)) || id.cnpj || id.catDesc || "—";
+
+    for (const janela of Object.values(periodos)) {
+      (janela as any).fornecedores = janela.fornecedores.map((f: any) => ({ nome: nomeDe(f), categoria: f.catDesc, valor: f.valor }));
+      (janela as any).movimentacoes = janela.movimentacoes.map((mv: any) => ({
+        data: mv.data, descricao: nomeDe(mv), categoria: mv.categoria, conta: mv.conta, valor: mv.valor, natureza: mv.natureza,
+      }));
+    }
+    const contas_a_pagar = {
+      total: cap.reduce((s, c) => s + c.valor, 0),
+      itens: capTop.map((c) => ({ data: c.data, descricao: nomeDe(c), categoria: c.catDesc, valor: c.valor, dias: c.dias })),
+    };
 
     // 9) Calendário do mês corrente (realizado + projeção de pagamentos).
     const ano = agora.getFullYear(), mesIdx = agora.getMonth();
@@ -394,6 +481,24 @@ Deno.serve(async (req) => {
         tem_projetado: v.projetado > 0,
         entradas: v.entradas, saidas: v.saidas, projetado: v.projetado,
       })),
+    };
+
+    // 9b) Calendário do mês ANTERIOR (mesmo formato, só entradas/saídas realizadas) — usado
+    // pela UI para comparar o período selecionado com os MESMOS dias do mês anterior.
+    const anoAnt = mesIdx === 0 ? ano - 1 : ano;
+    const mesAntIdx = mesIdx === 0 ? 11 : mesIdx - 1;
+    const diasNoMesAnt = new Date(anoAnt, mesAntIdx + 1, 0).getDate();
+    const calDiasAnt: Record<number, { entradas: number; saidas: number }> = {};
+    for (let d = 1; d <= diasNoMesAnt; d++) calDiasAnt[d] = { entradas: 0, saidas: 0 };
+    for (const m of movs) {
+      if (m.transfer || !m.dPago) continue;
+      if (m.dPago.getFullYear() === anoAnt && m.dPago.getMonth() === mesAntIdx) {
+        if (m.entrada) calDiasAnt[m.dPago.getDate()].entradas += m.valor; else calDiasAnt[m.dPago.getDate()].saidas += m.valor;
+      }
+    }
+    const calendario_anterior = {
+      ano: anoAnt, mes: mesAntIdx,
+      dias: Object.entries(calDiasAnt).map(([dia, v]) => ({ dia: Number(dia), entradas: v.entradas, saidas: v.saidas })),
     };
 
     // 10) Fluxo de caixa projetado (próximos 30 dias) a partir do saldo atual.
@@ -430,6 +535,7 @@ Deno.serve(async (req) => {
       periodos,
       contas_a_pagar,
       calendario,
+      calendario_anterior,
       fluxo_projetado,
       movimentos_lidos: movimentos.length,
     };

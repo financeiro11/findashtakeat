@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import * as XLSX from "xlsx";
 import {
-  Upload, ChevronDown, ChevronRight, Search, Sparkles, Loader2, RefreshCw,
+  Upload, ChevronDown, ChevronRight, Search, Sparkles, Loader2, RefreshCw, Lock,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -10,6 +10,7 @@ import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import { OmieDeParaPanel } from "@/components/OmieDeParaPanel";
 import { runOmieSync } from "@/lib/omieSync";
+import { SyncOmieButtons } from "@/components/SyncOmieButtons";
 
 /* ============================================================
  *  Helpers
@@ -75,6 +76,26 @@ function fmtCompact(v: number | null | undefined): string {
 function fmtPct(v: number | null | undefined): string {
   if (v === null || v === undefined || isNaN(v as number)) return "—";
   return `${(v * 100).toFixed(1).replace(".", ",")}%`;
+}
+
+// Corta as colunas do import nas que têm dado real e substancial — planilhas de tracker
+// costumam ter o ano inteiro (ou vários anos) de cabeçalho, mas só os meses já FECHADOS
+// vêm de fato preenchidos; os meses futuros ficam em branco ou com lixo esporádico
+// (ex.: uma fórmula do template deixando "1" numa célula). Sem esse corte, o import travava
+// e sobrescrevia meses que nem estavam fechados ainda — inclusive apagando o que o Omie já
+// tinha calculado pra eles. Mesmo critério do heurístico de lastCol/prevCol (linha populada
+// em pelo menos 25% do máximo, piso de 3), parando no primeiro mês que não bate o critério.
+function colunasFechadas(rows: Record<string, any>[], colsOrdenadas: string[]): string[] {
+  const counts = colsOrdenadas.map((col) => rows.reduce((acc, row) => (typeof row[col] === "number" ? acc + 1 : acc), 0));
+  const maxCount = Math.max(...counts, 0);
+  if (maxCount === 0) return [];
+  const minCount = Math.max(3, Math.ceil(maxCount * 0.25));
+  let ultimoIdx = -1;
+  for (let i = 0; i < counts.length; i++) {
+    if (counts[i] >= minCount) ultimoIdx = i;
+    else break;
+  }
+  return colsOrdenadas.slice(0, ultimoIdx + 1);
 }
 
 /* ============================================================
@@ -194,6 +215,7 @@ export default function DFC() {
   const [search, setSearch] = useState("");
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
   const [yearFilter, setYearFilter] = useState<string>("all");
+  const [travados, setTravados] = useState<Set<string>>(new Set());
   const fileRef = useRef<HTMLInputElement>(null);
 
   const availableYears = useMemo(() => {
@@ -214,13 +236,16 @@ export default function DFC() {
 
   const load = async () => {
     setLoading(true);
-    const { data } = await supabase
-      .from("demonstracoes_contabeis" as any)
-      .select("dados,updated_at")
-      .eq("tipo", "dfc")
-      .order("updated_at", { ascending: false })
-      .limit(1)
-      .maybeSingle();
+    const [{ data }, { data: travasData }] = await Promise.all([
+      supabase
+        .from("demonstracoes_contabeis" as any)
+        .select("dados,updated_at")
+        .eq("tipo", "dfc")
+        .order("updated_at", { ascending: false })
+        .limit(1)
+        .maybeSingle(),
+      supabase.from("demonstracoes_mes_trancado" as any).select("col_key"),
+    ]);
     const raw: any = (data as any)?.dados;
     let r: any[] = [];
     let cols: string[] = [];
@@ -231,15 +256,18 @@ export default function DFC() {
     const monthCols = cols.filter(c => /^[A-Za-z]{3}-\d{2}$/.test(c)).sort((a, b) => sortKey(a) - sortKey(b));
     setColumns(monthCols);
     setRows(r);
+    setTravados(new Set(((travasData as any[]) ?? []).map((t) => String(t.col_key))));
     setLoading(false);
   };
   useEffect(() => { load(); }, []);
 
-  const sincronizarOmie = async () => {
+  const sincronizarOmie = async (forcar: boolean) => {
     setSyncing(true);
-    toast.message("Sincronização iniciada — buscando dados do Omie (pode levar ~1–2 min)…");
+    toast.message(forcar
+      ? "Buscando dados do Omie (pode levar ~1–2 min)…"
+      : "Recalculando com o cache do Omie…");
     try {
-      const r = await runOmieSync();
+      const r = await runOmieSync({ forcar });
       if (r.status === "ok") {
         toast.success(
           `Omie sincronizado · ${r.movimentos ?? 0} lançamentos` +
@@ -283,9 +311,14 @@ export default function DFC() {
   /* ----- Import (Tracker template - reaproveita o mesmo fluxo do DRE, salva ambos) ----- */
   const onImport = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const f = e.target.files?.[0]; if (!f) return;
+    const ext = f.name.split(".").pop()?.toLowerCase();
+    if (!["xlsx", "xls", "csv"].includes(ext ?? "")) {
+      toast.error("Formato não suportado. Envie um arquivo .xlsx, .xls ou .csv.");
+      e.target.value = "";
+      return;
+    }
     setImporting(true);
     try {
-      const ext = f.name.split(".").pop()?.toLowerCase();
       let matrix: any[][] = [];
       if (ext === "csv") {
         const buf = await f.arrayBuffer();
@@ -378,21 +411,30 @@ export default function DFC() {
       const dreRows = buildRows(dreStart, dreEnd);
       const dfcRows = dfcStart > 0 ? buildRows(dfcStart, dfcEnd) : [];
 
-      const ops: any[] = [];
-      ops.push(await supabase.from("demonstracoes_contabeis" as any).upsert(
-        { tipo: "dre", periodo: "completo", dados: { columns: ["Conta", ...cols], rows: dreRows }, pdf_path: null } as any,
-        { onConflict: "tipo,periodo" },
-      ));
-      if (dfcRows.length) {
-        ops.push(await supabase.from("demonstracoes_contabeis" as any).upsert(
-          { tipo: "dfc", periodo: "completo", dados: { columns: ["Conta", ...cols], rows: dfcRows }, pdf_path: null } as any,
-          { onConflict: "tipo,periodo" },
-        ));
-      }
-      const errs = ops.map(r => (r as any).error).filter(Boolean);
-      if (errs.length) throw errs[0];
+      // Só considera "fechado" (grava + tranca) até o último mês com dado substancial em
+      // cada demonstrativo — meses além disso (template ainda não preenchido) ficam de fora
+      // e continuam sendo calculados normalmente pelo Sincronizar Omie.
+      const dreColsFechadas = colunasFechadas(dreRows, cols);
+      const dfcColsFechadas = colunasFechadas(dfcRows, cols);
+      const mesesTrancados = new Set([...dreColsFechadas, ...dfcColsFechadas]);
+      const colsIgnoradas = cols.filter((c) => !mesesTrancados.has(c));
+
+      // Grava via edge function: mescla célula a célula com o que já existe (não substitui
+      // o blob inteiro) e TRANCA os meses fechados deste arquivo — a partir de agora o
+      // Sincronizar Omie não sobrescreve mais esses meses, só os que ainda estiverem abertos.
+      const { data: impData, error: impErr } = await supabase.functions.invoke("demonstracoes-import", {
+        body: {
+          dre: dreColsFechadas.length ? { columns: ["Conta", ...dreColsFechadas], rows: dreRows } : undefined,
+          dfc: dfcRows.length && dfcColsFechadas.length ? { columns: ["Conta", ...dfcColsFechadas], rows: dfcRows } : undefined,
+        },
+      });
+      if (impErr) throw impErr;
+      if ((impData as any)?.error) throw new Error((impData as any).error);
       toast.success(
-        `Importado: ${dfcRows.length} linhas DFC` + (dreRows.length ? ` · ${dreRows.length} linhas DRE` : ""),
+        `Importado e travado: ${dfcRows.length} linhas DFC` + (dreRows.length ? ` · ${dreRows.length} linhas DRE` : "") +
+        ` · ${mesesTrancados.size} mês(es) trancado(s)` +
+        (colsIgnoradas.length ? ` · ${colsIgnoradas.length} ignorado(s) por dado incompleto (${colsIgnoradas.map(ptLabelFromKey).join(", ")})` : ""),
+        { duration: 8000 },
       );
       load();
     } catch (err: any) {
@@ -404,8 +446,21 @@ export default function DFC() {
     }
   };
 
-  /* ----- KPIs (mês mais recente realmente preenchido) ----- */
+  /* ----- KPIs: compara sempre os DOIS ÚLTIMOS MESES FECHADOS (travados) -----
+   * Meses travados são meses fechados de verdade (tracker importado); o mês corrente
+   * (aberto, sincronizando com o Omie aos poucos) está sempre incompleto e comparar
+   * contra ele dava variações sem sentido. Se ainda não há pelo menos 2 meses travados
+   * (ex.: instalação nova, antes do 1º import), cai no heurístico antigo de "mês mais
+   * preenchido" para não deixar os KPIs vazios. */
   const { lastCol, prevCol } = useMemo(() => {
+    const travadosOrdenados = columns.filter((c) => travados.has(c));
+    if (travadosOrdenados.length >= 2) {
+      return {
+        lastCol: travadosOrdenados[travadosOrdenados.length - 1],
+        prevCol: travadosOrdenados[travadosOrdenados.length - 2],
+      };
+    }
+
     const populatedCounts = columns.map((col) => {
       const count = rows.reduce((acc, row) => {
         const raw = row?.[col];
@@ -425,7 +480,7 @@ export default function DFC() {
       ? validMonths[lastValidIdx - 1]
       : columns[Math.max(columns.indexOf(last) - 1, 0)];
     return { lastCol: last, prevCol: prev };
-  }, [columns, rows]);
+  }, [columns, rows, travados]);
 
   // Default ano = ano mais recente com dados
   useEffect(() => {
@@ -614,6 +669,11 @@ export default function DFC() {
           </h1>
           <p className="mt-1 text-[12.5px] text-muted-foreground">
             Demonstrativo do fluxo de caixa · {lastLabel} · {prevLabel} · {monthsCount} meses · método direto
+            {travados.size > 0 && (
+              <span className="inline-flex items-center gap-1 ml-1.5 text-emerald-700">
+                <Lock className="h-3 w-3" /> {travados.size} travado{travados.size === 1 ? "" : "s"}
+              </span>
+            )}
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
@@ -636,15 +696,13 @@ export default function DFC() {
             Tracker vOMIE ativo · sincronizado
           </span>
           <Button variant="outline" size="sm" className="h-8 text-[12px]">Exportar</Button>
-          <Button
-            size="sm"
-            onClick={sincronizarOmie}
-            disabled={syncing}
-            className="h-8 text-[12px] bg-primary text-primary-foreground hover:bg-primary/90"
-          >
-            {syncing ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="mr-1.5 h-3.5 w-3.5" />}
-            Sincronizar Omie
-          </Button>
+          <SyncOmieButtons
+            syncing={syncing}
+            onRecalcular={() => sincronizarOmie(false)}
+            onAtualizar={() => sincronizarOmie(true)}
+            recalcularHint="Recalcula a DRE/DFC com os dados já baixados do Omie (cache das últimas horas). Instantâneo e sem consumir a API do Omie. Use para refletir mudanças de DE_PARA ou de meses travados."
+            atualizarHint="Busca os lançamentos direto do Omie agora, ignorando o cache, e recalcula. Mais lento (~1–2 min) e consome a API do Omie. Use quando lançou/alterou algo no Omie e quer refletir na hora."
+          />
           <Button
             variant="outline"
             size="sm"
@@ -653,7 +711,7 @@ export default function DFC() {
             className="h-8 text-[12px]"
           >
             {importing ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> : <Upload className="mr-1.5 h-3.5 w-3.5" />}
-            Reimportar Excel
+            Importar Excel/CSV
           </Button>
           <input ref={fileRef} type="file" accept=".xlsx,.xls,.csv" hidden onChange={onImport} />
         </div>
@@ -748,19 +806,24 @@ export default function DFC() {
           <div className="py-16 text-center text-sm text-muted-foreground">Carregando…</div>
         ) : !rows.length ? (
           <div className="py-16 text-center text-sm text-muted-foreground">
-            Nenhum dado importado. Clique em <b>Reimportar Excel</b> para enviar o Tracker.
+            Nenhum dado importado. Clique em <b>Importar Excel/CSV</b> para enviar o Tracker.
           </div>
         ) : (
           <div className="mt-3 overflow-x-auto rounded-lg border border-border bg-card">
-            <table className="w-full border-collapse">
+            <table className="border-collapse">
               <thead>
                 <tr className="border-b border-border bg-muted/40">
-                  <th className="sticky left-0 z-20 bg-muted px-3 py-2 text-left text-[10px] font-semibold tracking-[0.08em] text-muted-foreground w-[280px] min-w-[280px] shadow-[1px_0_0_0_hsl(var(--border))]">
+                  <th className="sticky left-0 z-20 bg-muted px-3 py-2 text-left text-[10px] font-semibold tracking-[0.08em] text-muted-foreground w-[220px] min-w-[220px] shadow-[1px_0_0_0_hsl(var(--border))]">
                     RUBRICA
                   </th>
                   {displayColumns.map(c => (
-                    <th key={c} className="px-3 py-2 text-right text-[10px] font-semibold tracking-[0.06em] text-muted-foreground whitespace-nowrap num min-w-[88px]">
-                      {ptLabelFromKey(c).replace("/", " ")}
+                    <th key={c} className="px-1.5 py-2 text-right text-[10px] font-semibold tracking-[0.06em] text-muted-foreground whitespace-nowrap num min-w-[64px]">
+                      <span className="inline-flex items-center justify-end gap-1">
+                        {travados.has(c) && (
+                          <Lock className="h-2.5 w-2.5 text-emerald-600" aria-label="Mês travado" title="Mês travado — dado do tracker, não sincroniza com o Omie" />
+                        )}
+                        {ptLabelFromKey(c).replace("/", " ")}
+                      </span>
                     </th>
                   ))}
                 </tr>
@@ -786,7 +849,7 @@ export default function DFC() {
                     <tr key={node.label + depth} className={rowCls}>
                       <td
                         className={cn(
-                          "sticky left-0 z-[2] px-3 py-1.5 text-[12.5px] w-[280px] min-w-[280px] shadow-[1px_0_0_0_hsl(var(--border))]",
+                          "sticky left-0 z-[2] px-3 py-1.5 text-[12.5px] w-[220px] min-w-[220px] shadow-[1px_0_0_0_hsl(var(--border))]",
                           isTotal ? "bg-emerald-50" : "bg-card",
                         )}
                         style={{ paddingLeft: 12 + depth * 18 }}
@@ -844,7 +907,7 @@ export default function DFC() {
                           <td
                             key={c}
                             className={cn(
-                              "px-3 py-1.5 text-right text-[12px] num whitespace-nowrap min-w-[88px]",
+                              "px-1.5 py-1.5 text-right text-[12px] num whitespace-nowrap min-w-[64px]",
                               isNeg ? "text-primary" : isTotal ? "text-emerald-800" : "text-foreground/90",
                               v == null && "text-muted-foreground/40",
                             )}

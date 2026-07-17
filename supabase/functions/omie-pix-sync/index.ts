@@ -8,8 +8,11 @@
 //
 // Regras de negócio:
 //   • só SAÍDAS (natureza "P") da conta corrente do Sicoob (contas a pagar);
-//   • a ÚNICA exclusão é transferência de saída (cOrigem "TRAP") — pessoal/premiação/
-//     escala/benefícios ENTRAM (voltaram por decisão do time);
+//   • só títulos JÁ PAGOS (que têm data de pagamento/baixa) — o audit é de PIX que SAIU.
+//     Conta a vencer/atrasada não entra: não gerou movimento no banco e não tem comprovante.
+//     A data é a de caixa (dDtPagamento), nunca a de emissão/registro (davam data futura);
+//   • a ÚNICA exclusão adicional é transferência de saída (cOrigem "TRAP") — pessoal/
+//     premiação/escala/benefícios ENTRAM (voltaram por decisão do time);
 //   • se o título tem anexo no Omie, o link/nome vêm junto (tem_comprovante).
 //
 // O passo de anexos é SEPARADO do sync: um ListarAnexo por título estourava o wall-time
@@ -27,6 +30,7 @@
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { incluirAnexo, listarCategorias, listarMovimentos, omieCall } from "../_shared/omie.ts";
+import { lerMovimentos, lerCategorias } from "../_shared/omie-cache.ts";
 import { requireUser } from "../_shared/auth.ts";
 
 const corsHeaders = {
@@ -53,10 +57,6 @@ function limpa(v: unknown): string | null {
   const s = String(v ?? "").trim();
   return !s || s === "0" || s === "-" ? null : s;
 }
-function mesAtual(): string {
-  const d = new Date();
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
-}
 function parseOmieDate(s?: string | null): Date | null {
   if (!s) return null;
   const m = String(s).trim().match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})$/);
@@ -66,6 +66,16 @@ function parseOmieDate(s?: string | null): Date | null {
 }
 const ym = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
 const iso = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+
+// Data em que o dinheiro EFETIVAMENTE saiu da conta (data de caixa/realizado). Só existe
+// em título já pago/baixado. Título "A VENCER"/"ATRASADO" NÃO traz nenhum destes campos —
+// devolve null e é excluído do audit (não é um PIX que saiu). NÃO caímos em dDtRegistro/
+// dDtEmissao: essas são datas de competência/entrada e davam "pagamento" no futuro (ex.:
+// conta a vencer em 31/07 aparecia como PIX saído). Mesma lógica do omie-caixa-sync.
+function dataCaixa(det: any): Date | null {
+  return parseOmieDate(det?.dDtPagamento) ?? parseOmieDate(det?.dDtBaixa)
+    ?? parseOmieDate(det?.dDtCredito) ?? parseOmieDate(det?.dDtConciliacao);
+}
 
 const ORIGENS_TRANSFERENCIA = new Set(["TRAP"]); // transferência de saída — excluída
 
@@ -152,6 +162,7 @@ Deno.serve(async (req) => {
     await requireUser(req, { bloquearCargos: ["parcerias"] });
     const body = req.method === "POST" ? await req.json().catch(() => ({})) : {};
     const action = body?.action ?? "sync";
+    const forcar = body?.atualizar === true; // força buscar do Omie; senão usa o cache
 
     /* ============ ENRIQUECER: anexo + nome do fornecedor (lote resumível) ============ */
     if (action === "anexos") {
@@ -267,7 +278,7 @@ Deno.serve(async (req) => {
     }
 
     // preview e sync precisam de categorias + contas + movimentos.
-    const [categorias, contas] = await Promise.all([listarCategorias(), listarContasCorrentes()]);
+    const [{ dados: categorias }, contas] = await Promise.all([lerCategorias(supabase, { forcar }), listarContasCorrentes()]);
     const codToDesc = new Map<string, string>();
     for (const c of categorias) if (c.codigo) codToDesc.set(String(c.codigo), c.descricao ?? "");
 
@@ -280,7 +291,7 @@ Deno.serve(async (req) => {
         .map(([id]) => id),
     );
 
-    const movimentos = await listarMovimentos({});
+    const { dados: movimentos } = await lerMovimentos(supabase, { forcar });
 
     const catPrincipal = (mov: any): { codigo: string; desc: string } => {
       const det = mov?.detalhes ?? {};
@@ -367,8 +378,9 @@ Deno.serve(async (req) => {
       // escala/benefícios) que não sejam transferência de saída.
       const c = catPrincipal(mov);
 
-      const dataPg = parseOmieDate(det.dDtPagamento) ?? parseOmieDate(det.dDtRegistro) ?? parseOmieDate(det.dDtEmissao);
-      const ref = dataPg ? ym(dataPg) : mesAtual();
+      const dataPg = dataCaixa(det);
+      if (!dataPg) continue;                                      // só títulos JÁ PAGOS (PIX que saiu)
+      const ref = ym(dataPg);
       if (refFiltro && ref !== refFiltro) continue;
 
       const idu = String(det.nCodTitulo ?? det.cCodIntTitulo ?? "");
@@ -382,7 +394,7 @@ Deno.serve(async (req) => {
     // favorecido nem anexos aqui → re-sync não reverte nome/comprovante já resolvidos.
     const agora = new Date().toISOString();
     const linhas = cands.map(({ det, mov, codigo, desc, ref, idu }) => {
-      const dataPg = parseOmieDate(det.dDtPagamento) ?? parseOmieDate(det.dDtRegistro) ?? parseOmieDate(det.dDtEmissao);
+      const dataPg = dataCaixa(det);
       return {
         id_unico: idu, referencia: ref, data: dataPg ? iso(dataPg) : null,
         valor: primeiroNum(
@@ -426,6 +438,18 @@ Deno.serve(async (req) => {
       const { error } = await supabase.from("auditoria_pix_lancamentos").upsert(lote, { onConflict: "id_unico" });
       if (error) throw error;
       gravados += lote.length;
+    }
+
+    // Reconciliação: remove do mês linhas que NÃO são mais PIX pagos (ex.: contas a vencer
+    // gravadas por uma sync anterior, antes do filtro de "só pagos"). Sem isso o upsert só
+    // adiciona/atualiza e as linhas velhas ficariam poluindo o total e o "sem comprovante".
+    // Guarda em movimentos.length: se o Omie devolveu vazio (instabilidade), NÃO apaga o mês.
+    if (refFiltro && movimentos.length > 0) {
+      const ids = linhasUnicas.map((l) => String(l.id_unico));
+      let del = supabase.from("auditoria_pix_lancamentos").delete().eq("referencia", refFiltro);
+      if (ids.length) del = del.not("id_unico", "in", `(${ids.join(",")})`);
+      const { error: delErr } = await del;
+      if (delErr) throw delErr;
     }
 
     // Re-enriquece o mês inteiro: remarca para reprocessar nome + comprovante (conserta

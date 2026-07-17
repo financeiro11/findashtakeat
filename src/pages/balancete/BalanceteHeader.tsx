@@ -1,4 +1,4 @@
-import { ChevronLeft, ChevronRight, FileText, RefreshCw, Trash2, Upload, Eye, Loader2, CheckCircle2, AlertCircle } from "lucide-react";
+import { ChevronLeft, ChevronRight, RefreshCw, Trash2, Upload, Eye, Loader2, CheckCircle2, AlertCircle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
@@ -19,20 +19,40 @@ interface Props {
   onViewPdf: () => void;
   onClear: () => void;
   yearsRange?: number;
+  /** "mes" (Balancete, período "YYYY-MM") ou "trimestre" (Balanço, período "qTyy"). */
+  modo?: "mes" | "trimestre";
+  /** Ex.: "Hub Financeiro · Balancete" / "Hub Financeiro · Balanço". */
+  eyebrow?: string;
 }
 
 export function BalanceteHeader({
   periodo, onPeriodoChange, importedAt, status, errorMsg,
   hasPdf, onImportPdf, onReprocess, onViewPdf, onClear,
-  yearsRange = 5,
+  yearsRange = 5, modo = "mes", eyebrow = "Hub Financeiro · Balancete",
 }: Props) {
-  const [y, m] = periodo.split("-").map(Number);
   const today = new Date();
+  const isTrimestre = modo === "trimestre";
+
+  // --- parsing do período conforme o modo ---
+  const [y, m] = isTrimestre ? [0, 0] : periodo.split("-").map(Number);
+  const trimMatch = isTrimestre ? periodo.match(/^(\d)T(\d{2})$/) : null;
+  const q = trimMatch ? Number(trimMatch[1]) : Math.floor(today.getMonth() / 3) + 1;
+  const yTri = trimMatch ? 2000 + Number(trimMatch[2]) : today.getFullYear();
 
   const navega = (delta: number) => {
-    const d = new Date(y, m - 1 + delta, 1);
-    onPeriodoChange(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`);
+    if (isTrimestre) {
+      let nq = q + delta;
+      let ny = yTri;
+      if (nq > 4) { nq = 1; ny += 1; }
+      if (nq < 1) { nq = 4; ny -= 1; }
+      onPeriodoChange(`${nq}T${String(ny).slice(-2)}`);
+    } else {
+      const d = new Date(y, m - 1 + delta, 1);
+      onPeriodoChange(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`);
+    }
   };
+
+  const titulo = isTrimestre ? `${q}º Trimestre ${yTri}` : `${MESES[m - 1]} ${y}`;
 
   const statusBadge = () => {
     switch (status) {
@@ -69,11 +89,9 @@ export function BalanceteHeader({
     <div className="card-surface p-5 flex flex-col gap-4">
       <div className="flex flex-wrap items-center justify-between gap-4">
         <div className="flex flex-col gap-1">
-          <div className="eyebrow">Hub Financeiro · Balancete</div>
+          <div className="eyebrow">{eyebrow}</div>
           <div className="flex items-center gap-3 flex-wrap">
-            <h1 className="text-2xl font-semibold tracking-tight text-foreground">
-              {MESES[m - 1]} {y}
-            </h1>
+            <h1 className="text-2xl font-semibold tracking-tight text-foreground">{titulo}</h1>
             {statusBadge()}
           </div>
           <div className="text-xs text-muted-foreground mt-1">
@@ -84,19 +102,31 @@ export function BalanceteHeader({
 
         <div className="flex flex-wrap items-center gap-2">
           <div className="flex items-center gap-1">
-            <Button size="icon" variant="outline" onClick={() => navega(-1)} title="Mês anterior">
+            <Button size="icon" variant="outline" onClick={() => navega(-1)} title={isTrimestre ? "Trimestre anterior" : "Mês anterior"}>
               <ChevronLeft className="h-4 w-4" />
             </Button>
+            {isTrimestre ? (
+              <Select value={String(q)} onValueChange={(v) => onPeriodoChange(`${v}T${String(yTri).slice(-2)}`)}>
+                <SelectTrigger className="w-[110px]"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  {[1, 2, 3, 4].map((nq) => <SelectItem key={nq} value={String(nq)}>{nq}º Trimestre</SelectItem>)}
+                </SelectContent>
+              </Select>
+            ) : (
+              <Select
+                value={String(m)}
+                onValueChange={(v) => onPeriodoChange(`${y}-${String(Number(v)).padStart(2, "0")}`)}
+              >
+                <SelectTrigger className="w-[110px]"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  {MESES.map((nm, i) => <SelectItem key={nm} value={String(i + 1)}>{nm}</SelectItem>)}
+                </SelectContent>
+              </Select>
+            )}
             <Select
-              value={String(m)}
-              onValueChange={(v) => onPeriodoChange(`${y}-${String(Number(v)).padStart(2, "0")}`)}
+              value={String(isTrimestre ? yTri : y)}
+              onValueChange={(v) => onPeriodoChange(isTrimestre ? `${q}T${String(v).slice(-2)}` : `${v}-${String(m).padStart(2, "0")}`)}
             >
-              <SelectTrigger className="w-[110px]"><SelectValue /></SelectTrigger>
-              <SelectContent>
-                {MESES.map((nm, i) => <SelectItem key={nm} value={String(i + 1)}>{nm}</SelectItem>)}
-              </SelectContent>
-            </Select>
-            <Select value={String(y)} onValueChange={(v) => onPeriodoChange(`${v}-${String(m).padStart(2, "0")}`)}>
               <SelectTrigger className="w-[100px]"><SelectValue /></SelectTrigger>
               <SelectContent>
                 {Array.from({ length: yearsRange + 2 }, (_, i) => today.getFullYear() - yearsRange + i).map((yr) => (
@@ -104,7 +134,7 @@ export function BalanceteHeader({
                 ))}
               </SelectContent>
             </Select>
-            <Button size="icon" variant="outline" onClick={() => navega(1)} title="Próximo mês">
+            <Button size="icon" variant="outline" onClick={() => navega(1)} title={isTrimestre ? "Próximo trimestre" : "Próximo mês"}>
               <ChevronRight className="h-4 w-4" />
             </Button>
           </div>

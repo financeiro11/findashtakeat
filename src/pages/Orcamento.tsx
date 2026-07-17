@@ -6,10 +6,11 @@ import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
-import { AlertTriangle, Download, CloudDownload, Loader2, Check } from "lucide-react";
+import { AlertTriangle, Download, CloudDownload, Loader2, Check, Clock } from "lucide-react";
 import { ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip, Legend, CartesianGrid } from "recharts";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
+import { SyncOmieButtons } from "@/components/SyncOmieButtons";
 
 type AreaRow = {
   area: string; ano: number; mes: number;
@@ -23,6 +24,12 @@ type LinhaRow = {
   area: string; subcategoria: string; pessoal: boolean;
   ano: number; mes: number;
   orcado: number; realizado: number; saldo: number; consumido_pct: number | null;
+};
+type AgendamentoRow = {
+  job_name: string;
+  hora_atual: number;
+  hora_pendente: number | null;
+  vigente_a_partir: string | null;
 };
 
 const ANO = 2026;
@@ -42,6 +49,12 @@ function brlAbbr(n: number) {
 function fmtDateTime(iso: string | null) {
   if (!iso) return "";
   return new Date(iso).toLocaleString("pt-BR", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" });
+}
+// "YYYY-MM-DD" -> "DD/MM/AAAA", sem passar por Date (evita fuso trocando o dia).
+function fmtDataISO(iso: string | null) {
+  if (!iso) return "";
+  const [y, m, d] = iso.split("-");
+  return `${d}/${m}/${y}`;
 }
 
 type Status = AreaRow["status"];
@@ -82,6 +95,10 @@ export default function Orcamento() {
   const [applying, setApplying] = useState(false);
   const [preview, setPreview] = useState<any | null>(null);
   const [lastSync, setLastSync] = useState<string | null>(null);
+  const [agendamento, setAgendamento] = useState<AgendamentoRow | null>(null);
+  const [showHorarioDialog, setShowHorarioDialog] = useState(false);
+  const [novaHora, setNovaHora] = useState<string>("8");
+  const [salvandoHorario, setSalvandoHorario] = useState(false);
 
   async function recarregar() {
     const [a, l] = await Promise.all([
@@ -102,14 +119,45 @@ export default function Orcamento() {
         .select("concluido_em").eq("status", "ok")
         .order("concluido_em", { ascending: false }).limit(1).maybeSingle();
       setLastSync((log as any)?.concluido_em ?? null);
+      await recarregarAgendamento();
       setLoading(false);
     })();
   }, []);
 
-  async function abrirPrevia() {
-    setSyncing(true);
+  async function recarregarAgendamento() {
+    const { data } = await supabase
+      .from("sync_agendamento" as any)
+      .select("job_name, hora_atual, hora_pendente, vigente_a_partir")
+      .eq("job_name", "omie-orcamento-sync-diario").maybeSingle();
+    const row = data as AgendamentoRow | null;
+    setAgendamento(row);
+    setNovaHora(String(row?.hora_pendente ?? row?.hora_atual ?? 8));
+  }
+
+  async function salvarHorario() {
+    setSalvandoHorario(true);
     try {
-      const { data, error } = await supabase.functions.invoke("omie-orcamento-sync", { body: { action: "preview", ano: ANO } });
+      const { data, error } = await supabase.functions.invoke("omie-orcamento-sync", {
+        body: { action: "agendar_horario", hora: Number(novaHora) },
+      });
+      if (error) throw error;
+      if ((data as any)?.error) throw new Error((data as any).error);
+      const row = (data as any).agendamento as AgendamentoRow;
+      setAgendamento(row);
+      toast.success(`Novo horário salvo: ${String(row.hora_pendente).padStart(2, "0")}:00 a partir de ${fmtDataISO(row.vigente_a_partir)}.`);
+      setShowHorarioDialog(false);
+    } catch (e: any) {
+      toast.error("Falha ao salvar horário: " + (e?.message ?? String(e)));
+    } finally {
+      setSalvandoHorario(false);
+    }
+  }
+
+  async function abrirPrevia(forcar = false) {
+    setSyncing(true);
+    if (forcar) toast.message("Buscando dados do Omie para a prévia…");
+    try {
+      const { data, error } = await supabase.functions.invoke("omie-orcamento-sync", { body: { action: "preview", ano: ANO, atualizar: forcar } });
       if (error) throw error;
       if ((data as any)?.error) throw new Error((data as any).error);
       setPreview(data);
@@ -248,8 +296,20 @@ export default function Orcamento() {
             onChange={(v) => setView(v as "resumo"|"tabela")}
             options={[{ v: "resumo", label: "Resumo" }, { v: "tabela", label: "Tabela" }]}
           />
-          <Button variant="outline" size="sm" onClick={abrirPrevia} disabled={syncing} className="h-8 gap-1.5">
-            {syncing ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <CloudDownload className="h-3.5 w-3.5" />} Sincronizar com Omie
+          <SyncOmieButtons
+            syncing={syncing}
+            onRecalcular={() => abrirPrevia(false)}
+            onAtualizar={() => abrirPrevia(true)}
+            recalcularHint="Abre a prévia de comparação (tracker × Omie) usando os dados já baixados do Omie (cache das últimas horas). Instantâneo e sem consumir a API do Omie."
+            atualizarHint="Abre a prévia buscando os lançamentos direto do Omie agora, ignorando o cache. Mais lento (~1 min) e consome a API do Omie. Use quando lançou/alterou algo no Omie e quer refletir na hora."
+          />
+          <Button
+            variant="outline" size="sm" className="h-8 gap-1.5"
+            onClick={() => { setNovaHora(String(agendamento?.hora_pendente ?? agendamento?.hora_atual ?? 8)); setShowHorarioDialog(true); }}
+            title="Configurar horário da sincronização automática"
+          >
+            <Clock className="h-3.5 w-3.5" />
+            Auto: {String(agendamento?.hora_atual ?? 8).padStart(2, "0")}h
           </Button>
           <Button variant="outline" size="sm" onClick={handleExport} className="h-8 gap-1.5">
             <Download className="h-3.5 w-3.5" /> Exportar
@@ -432,6 +492,48 @@ export default function Orcamento() {
             <Button onClick={aplicarSync} disabled={applying}>
               {applying ? <Loader2 className="mr-1.5 h-4 w-4 animate-spin" /> : <Check className="mr-1.5 h-4 w-4" />}
               Aplicar sincronização
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Horário da sincronização automática diária */}
+      <Dialog open={showHorarioDialog} onOpenChange={setShowHorarioDialog}>
+        <DialogContent className="max-w-sm">
+          <DialogHeader>
+            <DialogTitle>Sincronização automática diária</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-3">
+            <p className="text-[12.5px] text-muted-foreground">
+              Horário atual: <span className="font-medium text-foreground">{String(agendamento?.hora_atual ?? 8).padStart(2, "0")}:00</span> (horário de Brasília).
+            </p>
+            {agendamento?.hora_pendente != null && (
+              <div className="rounded-md border border-warn/30 bg-warn-soft px-3 py-2 text-[12px] text-warn">
+                Alteração pendente: muda para <span className="font-medium">{String(agendamento.hora_pendente).padStart(2, "0")}:00</span> a partir de {fmtDataISO(agendamento.vigente_a_partir)}.
+              </div>
+            )}
+            <div className="space-y-1.5">
+              <label className="text-[12px] font-medium text-muted-foreground">Novo horário</label>
+              <Select value={novaHora} onValueChange={setNovaHora}>
+                <SelectTrigger className="h-9 w-full text-[13px]">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {Array.from({ length: 24 }, (_, h) => (
+                    <SelectItem key={h} value={String(h)}>{String(h).padStart(2, "0")}:00</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <p className="text-[11.5px] text-muted-foreground">
+              A mudança só entra em vigor a partir de amanhã — a sincronização de hoje já roda no horário atual.
+            </p>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setShowHorarioDialog(false)}>Cancelar</Button>
+            <Button onClick={salvarHorario} disabled={salvandoHorario}>
+              {salvandoHorario ? <Loader2 className="mr-1.5 h-4 w-4 animate-spin" /> : <Check className="mr-1.5 h-4 w-4" />}
+              Salvar
             </Button>
           </DialogFooter>
         </DialogContent>

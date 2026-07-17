@@ -5,6 +5,7 @@ import { PageHeader } from "@/components/PageHeader";
 import { ProfileMenu } from "@/components/ProfileMenu";
 import { AIAssistant } from "@/components/AIAssistant";
 import { useAuth } from "@/hooks/useAuth";
+import { moduleAccess, currentModule } from "@/lib/modules";
 
 export default function AppLayout() {
   const { user, profile, loading } = useAuth();
@@ -12,10 +13,22 @@ export default function AppLayout() {
   if (loading) return <div className="flex min-h-screen items-center justify-center text-sm text-muted-foreground">Carregando…</div>;
   if (!user) return <Navigate to="/login" replace />;
 
-  const isParcerias = (profile?.cargo ?? "").trim().toLowerCase() === "parcerias";
-  if (isParcerias && !pathname.startsWith("/operacional/parceiros")) {
+  const access = moduleAccess(profile?.cargo);
+
+  // Parcerias: travado na área de parceiros (comportamento existente).
+  if (access.parceriasOnly && !pathname.startsWith("/operacional/parceiros")) {
     return <Navigate to="/operacional/parceiros" replace />;
   }
+  // Usuário exclusivo de Facilities: travado no módulo Facilities.
+  if (access.facilitiesOnly && !pathname.startsWith("/facilities")) {
+    return <Navigate to="/facilities" replace />;
+  }
+  // Sem acesso ao módulo Facilities: volta ao Hub Financeiro.
+  if (pathname.startsWith("/facilities") && !access.modules.includes("facilities")) {
+    return <Navigate to="/" replace />;
+  }
+  const isParcerias = access.parceriasOnly;
+  const emFacilities = access.facilitiesOnly || currentModule(pathname) === "facilities";
 
   return (
     <SidebarProvider style={{ "--sidebar-width": "212px", "--sidebar-width-icon": "212px" } as React.CSSProperties}>
@@ -30,7 +43,7 @@ export default function AppLayout() {
             <Outlet />
           </main>
         </div>
-        {!isParcerias && <AIAssistant />}
+        {!isParcerias && !emFacilities && <AIAssistant />}
       </div>
     </SidebarProvider>
   );

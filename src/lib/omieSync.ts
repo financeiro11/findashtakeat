@@ -18,7 +18,7 @@ export type OmieSyncResult = {
  * Para não confundir com uma sincronização anterior, guardamos o id do último
  * log ANTES de disparar e só aceitamos uma linha diferente (a nova).
  */
-export async function runOmieSync(opts?: { maxWaitMs?: number; intervalMs?: number }): Promise<OmieSyncResult> {
+export async function runOmieSync(opts?: { maxWaitMs?: number; intervalMs?: number; forcar?: boolean }): Promise<OmieSyncResult> {
   const intervalMs = opts?.intervalMs ?? 3000;
   const maxWaitMs = opts?.maxWaitMs ?? 180000; // 3 min
 
@@ -28,8 +28,9 @@ export async function runOmieSync(opts?: { maxWaitMs?: number; intervalMs?: numb
   const { data: prev } = await log().select("id").order("iniciado_em", { ascending: false }).limit(1).maybeSingle();
   const prevId = (prev as any)?.id ?? null;
 
-  // dispara e não aguarda (o invoke pode estourar timeout — ignoramos e confiamos no log)
-  supabase.functions.invoke("omie-sync", { body: { action: "sync" } }).catch(() => {});
+  // dispara e não aguarda (o invoke pode estourar timeout — ignoramos e confiamos no log).
+  // forcar=true força buscar do Omie; senão usa o cache compartilhado (recálculo local).
+  supabase.functions.invoke("omie-sync", { body: { action: "sync", atualizar: opts?.forcar === true } }).catch(() => {});
 
   const deadline = Date.now() + maxWaitMs;
   while (Date.now() < deadline) {

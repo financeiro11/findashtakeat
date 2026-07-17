@@ -40,6 +40,12 @@ const ROUTE_MAP: Record<string, { crumbs: string[]; context?: string }> = {
   "/analise/bp": { crumbs: ["Análise Preditiva", "BP Anual"] },
   "/analise/historico": { crumbs: ["Análise Preditiva", "Histórico Multianual"] },
   "/analise/conhecimento": { crumbs: ["Análise Preditiva", "Biblioteca"] },
+  "/facilities": { crumbs: ["Facilities", "Dashboard"], context: "Visão consolidada · compras e fornecedores" },
+  "/facilities/solicitacoes": { crumbs: ["Facilities", "Solicitações"], context: "Pipeline de compras" },
+  "/facilities/cotacoes": { crumbs: ["Facilities", "Cotações"], context: "Comparativo de orçamentos" },
+  "/facilities/fornecedores": { crumbs: ["Facilities", "Fornecedores"], context: "Cadastro e histórico por fornecedor" },
+  "/facilities/historico": { crumbs: ["Facilities", "Histórico"], context: "Compras realizadas" },
+  "/facilities/contratos": { crumbs: ["Facilities", "Contratos"], context: "Serviços recorrentes" },
 };
 
 interface PageHeaderProps {

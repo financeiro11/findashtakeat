@@ -1,15 +1,26 @@
-import { useEffect, useState } from "react";
+import { useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import {
   CommandDialog, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList, CommandSeparator,
 } from "@/components/ui/command";
+import { useAuth } from "@/hooks/useAuth";
+import { moduleAccess } from "@/lib/modules";
 import {
   Wallet, CreditCard, Users, Handshake, Smartphone, Plane, Percent, BookOpen, FolderKanban,
   FileBarChart, FileText, Scale, TrendingUp, Brain, Target, Home, ListTree, UserCog,
+  LayoutDashboard, Kanban, FileSpreadsheet, Truck, History, FileSignature,
 } from "lucide-react";
 
 const ITEMS: { group: string; items: { title: string; url: string; icon: any }[] }[] = [
   { group: "Início", items: [{ title: "Dashboard", url: "/", icon: Home }] },
+  { group: "Facilities", items: [
+    { title: "Facilities · Dashboard", url: "/facilities", icon: LayoutDashboard },
+    { title: "Solicitações", url: "/facilities/solicitacoes", icon: Kanban },
+    { title: "Cotações", url: "/facilities/cotacoes", icon: FileSpreadsheet },
+    { title: "Fornecedores", url: "/facilities/fornecedores", icon: Truck },
+    { title: "Histórico de compras", url: "/facilities/historico", icon: History },
+    { title: "Contratos", url: "/facilities/contratos", icon: FileSignature },
+  ]},
   { group: "Recargas", items: [
     { title: "Celulares", url: "/recargas/celulares", icon: Smartphone },
     { title: "Viagens", url: "/recargas/viagens", icon: Plane },
@@ -38,6 +49,11 @@ const ITEMS: { group: string; items: { title: string; url: string; icon: any }[]
 
 export function CommandMenu({ open, onOpenChange }: { open: boolean; onOpenChange: (v: boolean) => void }) {
   const nav = useNavigate();
+  const { profile } = useAuth();
+  const access = moduleAccess(profile?.cargo);
+  const items = ITEMS.filter((g) =>
+    g.group === "Facilities" ? access.modules.includes("facilities") : !access.facilitiesOnly,
+  );
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -55,7 +71,7 @@ export function CommandMenu({ open, onOpenChange }: { open: boolean; onOpenChang
       <CommandInput placeholder="Buscar ou ir para…" />
       <CommandList>
         <CommandEmpty>Nada encontrado.</CommandEmpty>
-        {ITEMS.map((g, i) => (
+        {items.map((g, i) => (
           <div key={g.group}>
             {i > 0 && <CommandSeparator />}
             <CommandGroup heading={g.group}>

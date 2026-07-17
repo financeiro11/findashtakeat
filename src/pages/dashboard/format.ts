@@ -10,7 +10,7 @@ export const fmtBRLShort = (n: number) => {
   const sign = n < 0 ? "-" : "";
   if (abs >= 1_000_000_000) return `${sign}R$ ${(abs / 1_000_000_000).toFixed(2).replace(".", ",")} bi`;
   if (abs >= 1_000_000) return `${sign}R$ ${(abs / 1_000_000).toFixed(2).replace(".", ",")} M`;
-  if (abs >= 1_000) return `${sign}R$ ${(abs / 1_000).toFixed(0)} k`;
+  if (abs >= 1_000) return `${sign}R$ ${(abs / 1_000).toFixed(1).replace(".", ",")} k`;
   return `${sign}R$ ${abs.toFixed(0)}`;
 };
 

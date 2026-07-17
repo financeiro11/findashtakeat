@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Plus, Trash2, ChevronDown, ChevronRight, Filter, X, LayoutGrid,
   Table as TableIcon, AlertTriangle, MoreHorizontal,
-  Search, GripVertical, Pencil, Palette, Check, CheckCircle2, Clock, ListChecks, Target,
+  Search, GripVertical, Pencil, Palette, Check, CheckCircle2, Clock, ListChecks, Target, BarChart3,
 } from "lucide-react";
 import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger,
@@ -31,6 +31,7 @@ import {
   TaskDialog, DEFAULT_COLUMNS, PRIO_OPTS, progressBarColor,
   type Subtarefa, type Tarefa,
 } from "@/components/tarefas/TaskDialog";
+import { AnaliseSemanal } from "@/components/tarefas/AnaliseSemanal";
 
 export type { Subtarefa } from "@/components/tarefas/TaskDialog";
 const COLUMNS_CFG_KEY = "tarefas.columns.cfg.v1";
@@ -182,7 +183,7 @@ function Sparkline({ data, color }: { data: number[]; color: string }) {
 
 export default function Tarefas() {
   const [rows, setRows] = useState<Tarefa[]>([]);
-  const [view, setView] = useState<"kanban" | "tabela">("kanban");
+  const [view, setView] = useState<"kanban" | "tabela" | "analise">("kanban");
   const [search, setSearch] = useState("");
   const [concluidoCollapsed, setConcluidoCollapsed] = useState(true);
   const [editing, setEditing] = useState<Tarefa | null>(null);
@@ -404,59 +405,65 @@ export default function Tarefas() {
       </div>
 
       {/* KPIs */}
-      <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
-        <KPI label="Total" value={total} hint={`${total} no escopo atual`} tone="foreground" icon={ListChecks} />
-        <KPI label="Em andamento" value={emAnd} hint={`${pctEm}% do total`} tone="warning" icon={Clock} progress={pctEm} />
-        <KPI label="Concluídas" value={concl} hint={`meta ${META_CONCLUIDAS}`} tone="success" icon={CheckCircle2} progress={META_CONCLUIDAS ? Math.min(100, Math.round((concl / META_CONCLUIDAS) * 100)) : 0} />
-        <KPI label="Atrasadas" value={atras} hint={atras ? "requerem ação" : "tudo em dia"} tone="destructive" icon={AlertTriangle} progress={total ? Math.round((atras / total) * 100) : 0} />
-      </div>
+      {view !== "analise" && (
+        <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+          <KPI label="Total" value={total} hint={`${total} no escopo atual`} tone="foreground" icon={ListChecks} />
+          <KPI label="Em andamento" value={emAnd} hint={`${pctEm}% do total`} tone="warning" icon={Clock} progress={pctEm} />
+          <KPI label="Concluídas" value={concl} hint={`meta ${META_CONCLUIDAS}`} tone="success" icon={CheckCircle2} progress={META_CONCLUIDAS ? Math.min(100, Math.round((concl / META_CONCLUIDAS) * 100)) : 0} />
+          <KPI label="Atrasadas" value={atras} hint={atras ? "requerem ação" : "tudo em dia"} tone="destructive" icon={AlertTriangle} progress={total ? Math.round((atras / total) * 100) : 0} />
+        </div>
+      )}
 
       {/* Toolbar de chips */}
       <div className="flex flex-wrap items-center gap-2">
-        <div className="relative">
-          <Search className="absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
-          <Input
-            placeholder="Buscar por título, tag ou responsável..."
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            className="h-8 w-72 pl-7 text-xs"
-          />
-        </div>
-        <Select value={chipPeriodo || "all"} onValueChange={(v) => setChipPeriodo(v === "all" ? "" : v)}>
-          <SelectTrigger className="h-8 w-[170px] text-xs">
-            <SelectValue placeholder="Período" />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="all">Todo o período</SelectItem>
-            <SelectItem value="mes">Mês corrente</SelectItem>
-            <SelectItem value="3m">Últimos 3 meses</SelectItem>
-            <SelectItem value="ano">Ano corrente</SelectItem>
-          </SelectContent>
-        </Select>
-        <ChipSelect
-          label="Todas prioridades"
-          value={chipPrio}
-          options={PRIO_OPTS}
-          onChange={setChipPrio}
-        />
-        <ChipSelect
-          label="Todos responsáveis"
-          value={chipResp}
-          options={responsaveis}
-          onChange={setChipResp}
-        />
-        <button
-          onClick={() => setChipAtrasadas(v => !v)}
-          className={cn(
-            "flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-xs transition-colors",
-            chipAtrasadas
-              ? "border-destructive/30 bg-destructive/10 text-destructive"
-              : "border-border bg-card text-muted-foreground hover:text-foreground"
-          )}
-        >
-          <AlertTriangle className="h-3 w-3" />
-          Atrasadas ({atras})
-        </button>
+        {view !== "analise" && (
+          <>
+            <div className="relative">
+              <Search className="absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+              <Input
+                placeholder="Buscar por título, tag ou responsável..."
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                className="h-8 w-72 pl-7 text-xs"
+              />
+            </div>
+            <Select value={chipPeriodo || "all"} onValueChange={(v) => setChipPeriodo(v === "all" ? "" : v)}>
+              <SelectTrigger className="h-8 w-[170px] text-xs">
+                <SelectValue placeholder="Período" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">Todo o período</SelectItem>
+                <SelectItem value="mes">Mês corrente</SelectItem>
+                <SelectItem value="3m">Últimos 3 meses</SelectItem>
+                <SelectItem value="ano">Ano corrente</SelectItem>
+              </SelectContent>
+            </Select>
+            <ChipSelect
+              label="Todas prioridades"
+              value={chipPrio}
+              options={PRIO_OPTS}
+              onChange={setChipPrio}
+            />
+            <ChipSelect
+              label="Todos responsáveis"
+              value={chipResp}
+              options={responsaveis}
+              onChange={setChipResp}
+            />
+            <button
+              onClick={() => setChipAtrasadas(v => !v)}
+              className={cn(
+                "flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-xs transition-colors",
+                chipAtrasadas
+                  ? "border-destructive/30 bg-destructive/10 text-destructive"
+                  : "border-border bg-card text-muted-foreground hover:text-foreground"
+              )}
+            >
+              <AlertTriangle className="h-3 w-3" />
+              Atrasadas ({atras})
+            </button>
+          </>
+        )}
         <div className="ml-auto flex items-center gap-0.5 rounded-md border-2 border-destructive bg-destructive p-0.5 shadow-sm">
           <button
             onClick={() => setView("kanban")}
@@ -471,6 +478,13 @@ export default function Tarefas() {
               view === "tabela" ? "bg-white text-destructive" : "text-white hover:bg-white/10")}
           >
             <TableIcon className="h-3.5 w-3.5" /> Tabela
+          </button>
+          <button
+            onClick={() => setView("analise")}
+            className={cn("flex items-center gap-1.5 rounded px-3 py-1 text-xs font-bold transition-colors",
+              view === "analise" ? "bg-white text-destructive" : "text-white hover:bg-white/10")}
+          >
+            <BarChart3 className="h-3.5 w-3.5" /> Análise
           </button>
         </div>
       </div>
@@ -494,7 +508,7 @@ export default function Tarefas() {
           onMoveColumn={moveColumn}
           isCustomColumn={(c) => !DEFAULT_COLUMNS.includes(c)}
         />
-      ) : (
+      ) : view === "tabela" ? (
         <TableView
           columns={COLUMNS}
           colsMeta={colsCfg.meta}
@@ -506,6 +520,8 @@ export default function Tarefas() {
           onOpen={setEditing}
           onRemove={remove}
         />
+      ) : (
+        <AnaliseSemanal />
       )}
 
       <TaskDialog

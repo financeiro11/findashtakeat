@@ -63,6 +63,25 @@ export function previousPeriodo(periodo: string): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
 }
 
+/** Trimestre anterior a partir de um período "qTyy" (ex.: "1T26" → "4T25"). */
+export function previousPeriodoTrimestre(periodo: string): string {
+  const m = periodo.match(/^(\d)T(\d{2})$/);
+  if (!m) return periodo;
+  let q = Number(m[1]) - 1;
+  let y = 2000 + Number(m[2]);
+  if (q < 1) { q = 4; y -= 1; }
+  return `${q}T${String(y).slice(-2)}`;
+}
+
+/** Chave numérica pra ordenar cronologicamente períodos "qTyy" (que NÃO são
+ * ordenáveis como string — "1T26" vem antes de "4T25" alfabeticamente, mas depois
+ * cronologicamente). */
+export function sortKeyTrimestre(periodo: string): number {
+  const m = periodo.match(/^(\d)T(\d{2})$/);
+  if (!m) return -1;
+  return (2000 + Number(m[2])) * 4 + Number(m[1]);
+}
+
 export function isV2(d: any): d is BalanceteData {
   return d && d.version === 2 && Array.isArray(d.accounts);
 }

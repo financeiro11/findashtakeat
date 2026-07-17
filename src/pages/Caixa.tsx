@@ -9,6 +9,7 @@ import {
 import { RefreshCw, Loader2, MessageCircle, Eye, EyeOff, Maximize2, Search } from "lucide-react";
 import { fmtBRLShort, fmtPct } from "@/pages/dashboard/format";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { SyncOmieButtons } from "@/components/SyncOmieButtons";
 
 /* ------------------------------ formatters ------------------------------ */
 const fmtBRL = (n: number) =>
@@ -40,6 +41,7 @@ type Snapshot = {
   periodos: { ontem: Periodo; hoje: Periodo; semana: Periodo; mes: Periodo };
   contas_a_pagar: { total: number; itens: { data: string; descricao: string; categoria: string; valor: number; dias: number }[] };
   calendario: { ano: number; mes: number; hoje: number; dias: DiaCal[] };
+  calendario_anterior: { ano: number; mes: number; dias: { dia: number; entradas: number; saidas: number }[] };
   fluxo_projetado: {
     menor: { valor: number; data: string }; maior_desembolso: { valor: number; data: string };
     saldo_final: { data: string; saldo: number }; saldo_atual: number;
@@ -83,14 +85,16 @@ export default function Caixa() {
     }
   }, [snap]);
 
-  async function sincronizar() {
+  async function sincronizar(forcar = false) {
     setSyncing(true);
-    toast.message("Sincronizando com o Omie… isso pode levar até 1 minuto.");
+    toast.message(forcar
+      ? "Buscando dados do Omie… isso pode levar até 1 minuto."
+      : "Recalculando o caixa com o cache do Omie…");
     try {
-      const { data, error } = await supabase.functions.invoke("omie-caixa-sync", { body: { action: "sync" } });
+      const { data, error } = await supabase.functions.invoke("omie-caixa-sync", { body: { action: "sync", atualizar: forcar } });
       if (error) throw error;
       if ((data as any)?.error) throw new Error((data as any).error);
-      toast.success("Caixa atualizado com dados do Omie.");
+      toast.success("Caixa atualizado.");
       await carregar();
     } catch (e: any) {
       toast.error("Erro ao sincronizar: " + (e?.message ?? String(e)));
@@ -146,6 +150,28 @@ export default function Caixa() {
       { entradas: 0, saidas: 0, projetado: 0 },
     );
   }, [snap, selMin, selMax]);
+
+  // Mesmos dias (por número) no mês ANTERIOR, para o comparativo abaixo de cada linha.
+  // Dias que não existem no mês anterior (ex.: dia 31 selecionado e o mês anterior tem 30)
+  // ficam de fora da soma — sinalizado por `diasComparados < diasSelecionados`.
+  const periodoAnterior = useMemo(() => {
+    if (!snap?.calendario_anterior || selMin == null) return null;
+    const hi = selMax ?? selMin;
+    const byDia = new Map(snap.calendario_anterior.dias.map((d) => [d.dia, d]));
+    let entradas = 0, saidas = 0, diasComparados = 0;
+    for (let d = selMin; d <= hi; d++) {
+      const info = byDia.get(d);
+      if (info) { entradas += info.entradas; saidas += info.saidas; diasComparados++; }
+    }
+    return { entradas, saidas, resultado: entradas - saidas, diasComparados, diasSelecionados: hi - selMin + 1 };
+  }, [snap, selMin, selMax]);
+
+  // Comparativo genérico: delta absoluto + % vs. o mesmo período do mês anterior.
+  function comparativo(atual: number, anteriorVal: number) {
+    const delta = atual - anteriorVal;
+    const pct = Math.abs(anteriorVal) > 0.005 ? (delta / Math.abs(anteriorVal)) * 100 : null;
+    return { delta, pct };
+  }
 
   function onDayClick(dia: number) {
     if (rangeStart == null || rangeEnd != null) { setRangeStart(dia); setRangeEnd(null); }
@@ -215,7 +241,7 @@ export default function Caixa() {
           Sincronize com o Omie para trazer saldos, entradas, saídas, contas a pagar e o fluxo projetado.
         </p>
         <button
-          onClick={sincronizar}
+          onClick={() => sincronizar(true)}
           disabled={syncing}
           className="inline-flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-[13px] font-medium text-primary-foreground disabled:opacity-60"
         >
@@ -269,9 +295,13 @@ export default function Caixa() {
               </button>
             ))}
           </div>
-          <button onClick={sincronizar} disabled={syncing} className="ghost-btn px-2" title="Sincronizar com o Omie">
-            {syncing ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
-          </button>
+          <SyncOmieButtons
+            syncing={syncing}
+            onRecalcular={() => sincronizar(false)}
+            onAtualizar={() => sincronizar(true)}
+            recalcularHint="Refaz o painel do caixa com os dados já baixados do Omie (cache das últimas horas). Instantâneo e sem consumir a API do Omie."
+            atualizarHint="Busca os lançamentos direto do Omie agora, ignorando o cache, e refaz o painel. Mais lento (~1 min) e consome a API do Omie. Use quando algo mudou no Omie e você quer o saldo/entradas na hora."
+          />
         </div>
       </div>
 
@@ -363,9 +393,25 @@ export default function Caixa() {
             }
           >
             <div className="space-y-2">
-              <LinhaDia titulo="Entradas recebidas" sub="cobranças e recebimentos liquidados" valor={periodoDia?.entradas ?? 0} tone="pos" />
-              <LinhaDia titulo="Saídas pagas" sub="títulos liquidados no período" valor={-(periodoDia?.saidas ?? 0)} tone="neg" />
-              <LinhaDia titulo="Resultado do período" sub="entradas − saídas" valor={(periodoDia?.entradas ?? 0) - (periodoDia?.saidas ?? 0)} tone="auto" destaque />
+              <LinhaDia
+                titulo="Entradas recebidas" sub="cobranças e recebimentos liquidados" valor={periodoDia?.entradas ?? 0} tone="pos"
+                comparativo={periodoAnterior && comparativo(periodoDia?.entradas ?? 0, periodoAnterior.entradas)}
+                favoravelSeAumenta
+                diasIncompletos={periodoAnterior ? periodoAnterior.diasComparados < periodoAnterior.diasSelecionados : false}
+              />
+              <LinhaDia
+                titulo="Saídas pagas" sub="títulos liquidados no período" valor={-(periodoDia?.saidas ?? 0)} tone="neg"
+                comparativo={periodoAnterior && comparativo(periodoDia?.saidas ?? 0, periodoAnterior.saidas)}
+                favoravelSeAumenta={false}
+                diasIncompletos={periodoAnterior ? periodoAnterior.diasComparados < periodoAnterior.diasSelecionados : false}
+              />
+              <LinhaDia
+                titulo="Resultado do período" sub="entradas − saídas"
+                valor={(periodoDia?.entradas ?? 0) - (periodoDia?.saidas ?? 0)} tone="auto" destaque
+                comparativo={periodoAnterior && comparativo((periodoDia?.entradas ?? 0) - (periodoDia?.saidas ?? 0), periodoAnterior.resultado)}
+                favoravelSeAumenta
+                diasIncompletos={periodoAnterior ? periodoAnterior.diasComparados < periodoAnterior.diasSelecionados : false}
+              />
               {periodoDia && periodoDia.projetado > 0 && (
                 <LinhaDia titulo="Pagamentos projetados" sub="títulos a vencer no período" valor={-(periodoDia.projetado)} tone="neg" />
               )}
@@ -735,7 +781,14 @@ function Footnote({ children }: { children: React.ReactNode }) {
 function Vazio({ children }: { children: React.ReactNode }) {
   return <div className="py-4 text-center text-[12px] text-muted-foreground">{children}</div>;
 }
-function LinhaDia({ titulo, sub, valor, tone, destaque }: { titulo: string; sub: string; valor: number; tone: "pos" | "neg" | "auto"; destaque?: boolean }) {
+function LinhaDia({
+  titulo, sub, valor, tone, destaque, comparativo, favoravelSeAumenta, diasIncompletos,
+}: {
+  titulo: string; sub: string; valor: number; tone: "pos" | "neg" | "auto"; destaque?: boolean;
+  comparativo?: { delta: number; pct: number | null } | null;
+  favoravelSeAumenta?: boolean;
+  diasIncompletos?: boolean;
+}) {
   const cor = tone === "auto" ? (valor >= 0 ? "text-pos" : "text-neg") : tone === "pos" ? "text-pos" : "text-neg";
   return (
     <div className={cn("flex items-center justify-between gap-3 rounded-md px-3 py-2", destaque ? "bg-secondary/60" : "bg-secondary/30")}>
@@ -743,9 +796,29 @@ function LinhaDia({ titulo, sub, valor, tone, destaque }: { titulo: string; sub:
         <div className="text-[12.5px] font-medium text-foreground">{titulo}</div>
         <div className="text-[11px] text-muted-foreground">{sub}</div>
       </div>
-      <div className={cn("num shrink-0 text-[14px] font-semibold", cor)}>
-        {valor >= 0 ? "+" : ""}{fmtBRL(valor)}
+      <div className="shrink-0 text-right">
+        <div className={cn("num text-[14px] font-semibold", cor)}>
+          {valor >= 0 ? "+" : ""}{fmtBRL(valor)}
+        </div>
+        {comparativo && <ComparativoMes {...comparativo} favoravelSeAumenta={!!favoravelSeAumenta} diasIncompletos={diasIncompletos} />}
       </div>
+    </div>
+  );
+}
+
+/* Linha "vs mês anterior: +R$ X (+Y%)" abaixo do valor — cor reflete se a direção é boa ou ruim. */
+function ComparativoMes({
+  delta, pct, favoravelSeAumenta, diasIncompletos,
+}: { delta: number; pct: number | null; favoravelSeAumenta: boolean; diasIncompletos?: boolean }) {
+  const semMudanca = Math.abs(delta) < 0.005;
+  const aumentou = delta > 0;
+  const favoravel = semMudanca ? null : aumentou === favoravelSeAumenta;
+  const cor = favoravel == null ? "text-muted-foreground" : favoravel ? "text-pos" : "text-neg";
+  return (
+    <div className={cn("num text-[10.5px]", cor)} title={diasIncompletos ? "O mês anterior tem menos dias — comparando só os dias correspondentes." : undefined}>
+      vs mês anterior: {delta >= 0 ? "+" : ""}{fmtBRLShort(delta)}
+      {pct !== null && ` (${fmtPct(pct)})`}
+      {diasIncompletos && "*"}
     </div>
   );
 }

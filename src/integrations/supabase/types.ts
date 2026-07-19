@@ -188,6 +188,10 @@ export type Database = {
           id_unico: string
           justificativa: string | null
           link_comprovante: string | null
+          omie_categoria_codigo: string | null
+          omie_categoria_descricao: string | null
+          omie_match_confianca: string | null
+          omie_matched_em: string | null
           origem: string | null
           regra: string
           responsavel: string | null
@@ -210,6 +214,10 @@ export type Database = {
           id_unico: string
           justificativa?: string | null
           link_comprovante?: string | null
+          omie_categoria_codigo?: string | null
+          omie_categoria_descricao?: string | null
+          omie_match_confianca?: string | null
+          omie_matched_em?: string | null
           origem?: string | null
           regra: string
           responsavel?: string | null
@@ -232,6 +240,10 @@ export type Database = {
           id_unico?: string
           justificativa?: string | null
           link_comprovante?: string | null
+          omie_categoria_codigo?: string | null
+          omie_categoria_descricao?: string | null
+          omie_match_confianca?: string | null
+          omie_matched_em?: string | null
           origem?: string | null
           regra?: string
           responsavel?: string | null
@@ -738,6 +750,24 @@ export type Database = {
         }
         Relationships: []
       }
+      demonstracoes_mes_trancado: {
+        Row: {
+          col_key: string
+          origem: string | null
+          trancado_em: string
+        }
+        Insert: {
+          col_key: string
+          origem?: string | null
+          trancado_em?: string
+        }
+        Update: {
+          col_key?: string
+          origem?: string | null
+          trancado_em?: string
+        }
+        Relationships: []
+      }
       editais: {
         Row: {
           categoria: string | null
@@ -1113,6 +1143,242 @@ export type Database = {
           status?: string
           tipo?: string
           user_id?: string
+        }
+        Relationships: []
+      }
+      facilities_compras: {
+        Row: {
+          categoria: string | null
+          created_at: string
+          data: string
+          forma_pagamento: string | null
+          fornecedor_id: string | null
+          fornecedor_nome: string | null
+          id: string
+          item: string
+          nf_status: string
+          solicitacao_id: string | null
+          valor: number
+        }
+        Insert: {
+          categoria?: string | null
+          created_at?: string
+          data?: string
+          forma_pagamento?: string | null
+          fornecedor_id?: string | null
+          fornecedor_nome?: string | null
+          id?: string
+          item: string
+          nf_status?: string
+          solicitacao_id?: string | null
+          valor: number
+        }
+        Update: {
+          categoria?: string | null
+          created_at?: string
+          data?: string
+          forma_pagamento?: string | null
+          fornecedor_id?: string | null
+          fornecedor_nome?: string | null
+          id?: string
+          item?: string
+          nf_status?: string
+          solicitacao_id?: string | null
+          valor?: number
+        }
+        Relationships: [
+          {
+            foreignKeyName: "facilities_compras_fornecedor_id_fkey"
+            columns: ["fornecedor_id"]
+            isOneToOne: false
+            referencedRelation: "facilities_fornecedores"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "facilities_compras_solicitacao_id_fkey"
+            columns: ["solicitacao_id"]
+            isOneToOne: false
+            referencedRelation: "facilities_solicitacoes"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      facilities_contratos: {
+        Row: {
+          categoria: string | null
+          created_at: string
+          descricao: string | null
+          fornecedor_id: string | null
+          fornecedor_nome: string
+          id: string
+          renova_em: string | null
+          sem_prazo: boolean
+          status: string
+          updated_at: string
+          valor_mensal: number
+          vence_em: string | null
+        }
+        Insert: {
+          categoria?: string | null
+          created_at?: string
+          descricao?: string | null
+          fornecedor_id?: string | null
+          fornecedor_nome: string
+          id?: string
+          renova_em?: string | null
+          sem_prazo?: boolean
+          status?: string
+          updated_at?: string
+          valor_mensal: number
+          vence_em?: string | null
+        }
+        Update: {
+          categoria?: string | null
+          created_at?: string
+          descricao?: string | null
+          fornecedor_id?: string | null
+          fornecedor_nome?: string
+          id?: string
+          renova_em?: string | null
+          sem_prazo?: boolean
+          status?: string
+          updated_at?: string
+          valor_mensal?: number
+          vence_em?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "facilities_contratos_fornecedor_id_fkey"
+            columns: ["fornecedor_id"]
+            isOneToOne: false
+            referencedRelation: "facilities_fornecedores"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      facilities_cotacoes: {
+        Row: {
+          anexo_url: string | null
+          created_at: string
+          escolhida: boolean
+          fornecedor_id: string | null
+          fornecedor_nome: string | null
+          id: string
+          solicitacao_id: string
+          valor: number
+        }
+        Insert: {
+          anexo_url?: string | null
+          created_at?: string
+          escolhida?: boolean
+          fornecedor_id?: string | null
+          fornecedor_nome?: string | null
+          id?: string
+          solicitacao_id: string
+          valor: number
+        }
+        Update: {
+          anexo_url?: string | null
+          created_at?: string
+          escolhida?: boolean
+          fornecedor_id?: string | null
+          fornecedor_nome?: string | null
+          id?: string
+          solicitacao_id?: string
+          valor?: number
+        }
+        Relationships: [
+          {
+            foreignKeyName: "facilities_cotacoes_fornecedor_id_fkey"
+            columns: ["fornecedor_id"]
+            isOneToOne: false
+            referencedRelation: "facilities_fornecedores"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "facilities_cotacoes_solicitacao_id_fkey"
+            columns: ["solicitacao_id"]
+            isOneToOne: false
+            referencedRelation: "facilities_solicitacoes"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      facilities_fornecedores: {
+        Row: {
+          categoria: string | null
+          contato: string | null
+          created_at: string
+          id: string
+          nome: string
+          observacao: string | null
+          status: string
+          tem_contrato: boolean
+          updated_at: string
+        }
+        Insert: {
+          categoria?: string | null
+          contato?: string | null
+          created_at?: string
+          id?: string
+          nome: string
+          observacao?: string | null
+          status?: string
+          tem_contrato?: boolean
+          updated_at?: string
+        }
+        Update: {
+          categoria?: string | null
+          contato?: string | null
+          created_at?: string
+          id?: string
+          nome?: string
+          observacao?: string | null
+          status?: string
+          tem_contrato?: boolean
+          updated_at?: string
+        }
+        Relationships: []
+      }
+      facilities_solicitacoes: {
+        Row: {
+          categoria: string | null
+          created_at: string
+          decidido_em: string | null
+          decidido_por: string | null
+          id: string
+          observacao: string | null
+          solicitante: string | null
+          status: string
+          titulo: string
+          updated_at: string
+          valor: number | null
+        }
+        Insert: {
+          categoria?: string | null
+          created_at?: string
+          decidido_em?: string | null
+          decidido_por?: string | null
+          id?: string
+          observacao?: string | null
+          solicitante?: string | null
+          status?: string
+          titulo: string
+          updated_at?: string
+          valor?: number | null
+        }
+        Update: {
+          categoria?: string | null
+          created_at?: string
+          decidido_em?: string | null
+          decidido_por?: string | null
+          id?: string
+          observacao?: string | null
+          solicitante?: string | null
+          status?: string
+          titulo?: string
+          updated_at?: string
+          valor?: number | null
         }
         Relationships: []
       }
@@ -1494,6 +1760,27 @@ export type Database = {
           id?: never
           refresh_token?: string
           updated_at?: string
+        }
+        Relationships: []
+      }
+      omie_cache: {
+        Row: {
+          atualizado_em: string
+          chave: string
+          dados: Json
+          registros: number | null
+        }
+        Insert: {
+          atualizado_em?: string
+          chave: string
+          dados: Json
+          registros?: number | null
+        }
+        Update: {
+          atualizado_em?: string
+          chave?: string
+          dados?: Json
+          registros?: number | null
         }
         Relationships: []
       }
@@ -2715,8 +3002,69 @@ export type Database = {
         }
         Relationships: []
       }
+      resumo_tarefas_semana: {
+        Row: {
+          gerado_em: string
+          id: string
+          leitura_gerado_em: string | null
+          leitura_md: string | null
+          payload: Json
+          semana_fim: string
+          semana_inicio: string
+          total_concluidas: number | null
+        }
+        Insert: {
+          gerado_em?: string
+          id?: string
+          leitura_gerado_em?: string | null
+          leitura_md?: string | null
+          payload?: Json
+          semana_fim: string
+          semana_inicio: string
+          total_concluidas?: number | null
+        }
+        Update: {
+          gerado_em?: string
+          id?: string
+          leitura_gerado_em?: string | null
+          leitura_md?: string | null
+          payload?: Json
+          semana_fim?: string
+          semana_inicio?: string
+          total_concluidas?: number | null
+        }
+        Relationships: []
+      }
+      sync_agendamento: {
+        Row: {
+          atualizado_em: string
+          hora_atual: number
+          hora_pendente: number | null
+          job_name: string
+          vigente_a_partir: string | null
+        }
+        Insert: {
+          atualizado_em?: string
+          hora_atual: number
+          hora_pendente?: number | null
+          job_name: string
+          vigente_a_partir?: string | null
+        }
+        Update: {
+          atualizado_em?: string
+          hora_atual?: number
+          hora_pendente?: number | null
+          job_name?: string
+          vigente_a_partir?: string | null
+        }
+        Relationships: []
+      }
       tarefas: {
         Row: {
+          cat_area: string | null
+          cat_natureza: string | null
+          cat_origem: string | null
+          concluido_em: string | null
           created_at: string
           id: string
           observacao: string | null
@@ -2730,6 +3078,10 @@ export type Database = {
           updated_at: string
         }
         Insert: {
+          cat_area?: string | null
+          cat_natureza?: string | null
+          cat_origem?: string | null
+          concluido_em?: string | null
           created_at?: string
           id?: string
           observacao?: string | null
@@ -2743,6 +3095,10 @@ export type Database = {
           updated_at?: string
         }
         Update: {
+          cat_area?: string | null
+          cat_natureza?: string | null
+          cat_origem?: string | null
+          concluido_em?: string | null
           created_at?: string
           id?: string
           observacao?: string | null
@@ -2915,6 +3271,14 @@ export type Database = {
         Returns: Json
       }
       fmt_brl: { Args: { v: number }; Returns: string }
+      fn_classifica_texto: {
+        Args: { p_texto: string }
+        Returns: {
+          area: string
+          natureza: string
+        }[]
+      }
+      fn_resumo_tarefas_semana: { Args: { p_ref?: string }; Returns: Json }
       hub_base_url: { Args: never; Returns: string }
       importar_auditoria: {
         Args: { p_achados: Json }
@@ -2929,6 +3293,7 @@ export type Database = {
         Args: { p_responsavel: string }
         Returns: Json
       }
+      promover_agendamentos_sync: { Args: never; Returns: undefined }
       registrar_comprovante_via_token: {
         Args: { p_id_unico: string; p_storage_path: string; p_token: string }
         Returns: Json

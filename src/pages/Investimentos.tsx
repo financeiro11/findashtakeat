@@ -499,7 +499,7 @@ function detectarEntidade(aoa: unknown[][]): Entity | null {
     const cell = aoa[i]?.[0];
     if (typeof cell === "string") {
       const t = cell.trim();
-      if (/^takeat\s+ltd\b/i.test(t)) return "Takeat Ltd";
+      if (/^takeat\s+ltd\b/i.test(t)) return "Takeat LTD";
       if (/^takeat\s+llc\b/i.test(t)) return "Takeat LLC";
     }
   }

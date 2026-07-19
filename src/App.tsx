@@ -43,6 +43,7 @@ import Playbook from "./pages/playbook/PlaybookHub";
 import Captable from "./pages/Captable";
 import Parceiros from "./pages/Parceiros";
 import Orcamento from "./pages/Orcamento";
+import Investimentos from "./pages/Investimentos";
 import Asaas from "./pages/Asaas";
 import Auditoria from "./pages/Auditoria";
 import Reembolsos from "./pages/operacional/Reembolsos";
@@ -112,6 +113,7 @@ const App = () => (
               <Route path="/analise/conhecimento" element={<BaseConhecimento />} />
               <Route path="/operacional/parceiros" element={<Parceiros />} />
               <Route path="/orcamento" element={<Orcamento />} />
+              <Route path="/investimentos" element={<Investimentos />} />
               <Route path="/asaas" element={<Asaas />} />
               <Route path="/governanca/auditoria" element={<Auditoria />} />
               <Route path="/operacional/reembolsos" element={<Reembolsos />} />

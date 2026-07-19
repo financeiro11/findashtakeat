@@ -1,6 +1,6 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
-import { LayoutGrid, List, Plus } from "lucide-react";
+import { LayoutGrid, List, Plus, Paperclip, Loader2, X, FileText } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -11,12 +11,21 @@ import {
 } from "@/components/ui/dialog";
 import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
+import { supabase } from "@/integrations/supabase/client";
 import { FacToolbar } from "./NovaSolicitacaoDialog";
 import { CatDot } from "./components";
 import {
   db, fmtBRL, fmtData, CATEGORIAS,
-  type Fornecedor, type Compra,
+  type Fornecedor, type Compra, type FornecedorAnexo,
 } from "./lib";
+
+const CONTRATOS_BUCKET = "facilities-contratos";
+
+function fmtTamanho(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
 
 interface Stats { compras: number; total: number; ultima: string | null; }
 
@@ -86,7 +95,12 @@ export default function Fornecedores() {
             return (
               <button key={f.id} onClick={() => setEdit(f)} className="card-surface p-4 text-left transition-colors hover:border-primary/40">
                 <div className="flex items-start justify-between">
-                  <div className="text-[14px] font-semibold text-foreground">{f.nome}</div>
+                  <div className="flex items-center gap-1.5 text-[14px] font-semibold text-foreground">
+                    {f.nome}
+                    {f.contratos?.length > 0 && (
+                      <Paperclip className="h-3.5 w-3.5 shrink-0 text-muted-foreground" aria-label={`${f.contratos.length} anexo(s)`} />
+                    )}
+                  </div>
                   {f.tem_contrato && <span className="rounded bg-sky-50 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-sky-700">Contrato</span>}
                 </div>
                 <div className="mt-0.5"><CatDot cat={f.categoria} label /></div>
@@ -119,7 +133,13 @@ export default function Fornecedores() {
                 return (
                   <tr key={f.id} className="cursor-pointer border-b border-border/60 last:border-0 hover:bg-muted/30" onClick={() => setEdit(f)}>
                     <td className="px-4 py-2.5 text-[13px] font-medium text-foreground">
-                      {f.nome} {f.tem_contrato && <span className="ml-1 rounded bg-sky-50 px-1 text-[9px] font-semibold uppercase text-sky-700">contrato</span>}
+                      <span className="inline-flex items-center gap-1.5">
+                        {f.nome}
+                        {f.contratos?.length > 0 && (
+                          <Paperclip className="h-3 w-3 shrink-0 text-muted-foreground" aria-label={`${f.contratos.length} anexo(s)`} />
+                        )}
+                      </span>
+                      {f.tem_contrato && <span className="ml-1 rounded bg-sky-50 px-1 text-[9px] font-semibold uppercase text-sky-700">contrato</span>}
                     </td>
                     <td className="px-4 py-2.5"><CatDot cat={f.categoria} label /></td>
                     <td className="px-4 py-2.5 text-[12.5px] text-muted-foreground">{f.contato || "—"}</td>
@@ -156,7 +176,10 @@ function FornecedorDialog({ alvo, onClose, onSaved }: { alvo: Fornecedor | "novo
   const [contato, setContato] = useState("");
   const [temContrato, setTemContrato] = useState(false);
   const [observacao, setObservacao] = useState("");
+  const [contratos, setContratos] = useState<FornecedorAnexo[]>([]);
+  const [uploading, setUploading] = useState(false);
   const [busy, setBusy] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     setNome(f?.nome ?? "");
@@ -164,7 +187,29 @@ function FornecedorDialog({ alvo, onClose, onSaved }: { alvo: Fornecedor | "novo
     setContato(f?.contato ?? "");
     setTemContrato(f?.tem_contrato ?? false);
     setObservacao(f?.observacao ?? "");
+    setContratos(f?.contratos ?? []);
   }, [alvo]);
+
+  const anexarArquivos = async (files: FileList | null) => {
+    if (!files || files.length === 0) return;
+    setUploading(true);
+    const novos: FornecedorAnexo[] = [];
+    for (const file of Array.from(files)) {
+      if (file.size > 20 * 1024 * 1024) { toast.error(`${file.name}: máximo 20MB`); continue; }
+      const path = `${Date.now()}-${file.name.replace(/[^\w.\-]+/g, "_")}`;
+      const up = await supabase.storage.from(CONTRATOS_BUCKET).upload(path, file);
+      if (up.error) { toast.error(`${file.name}: ${up.error.message}`); continue; }
+      const { data } = supabase.storage.from(CONTRATOS_BUCKET).getPublicUrl(path);
+      novos.push({ nome: file.name, url: data.publicUrl, tamanho: file.size });
+    }
+    if (novos.length) setContratos((prev) => [...prev, ...novos]);
+    setUploading(false);
+    if (fileInputRef.current) fileInputRef.current.value = "";
+  };
+
+  const removerAnexo = (idx: number) => {
+    setContratos((prev) => prev.filter((_, i) => i !== idx));
+  };
 
   const salvar = async () => {
     if (!nome.trim()) { toast.error("Informe o nome"); return; }
@@ -175,6 +220,7 @@ function FornecedorDialog({ alvo, onClose, onSaved }: { alvo: Fornecedor | "novo
       contato: contato.trim() || null,
       tem_contrato: temContrato,
       observacao: observacao.trim() || null,
+      contratos,
     };
     const { error } = f
       ? await db.from("facilities_fornecedores").update(payload).eq("id", f.id)
@@ -228,6 +274,55 @@ function FornecedorDialog({ alvo, onClose, onSaved }: { alvo: Fornecedor | "novo
           <div className="space-y-1.5">
             <Label>Observação</Label>
             <Textarea value={observacao} onChange={(e) => setObservacao(e.target.value)} rows={2} />
+          </div>
+          <div className="space-y-2">
+            <div className="flex items-center justify-between">
+              <Label>Contratos anexados</Label>
+              <input
+                ref={fileInputRef}
+                type="file"
+                multiple
+                className="hidden"
+                onChange={(e) => anexarArquivos(e.target.files)}
+              />
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="h-7 gap-1.5 px-2 text-[11.5px]"
+                disabled={uploading}
+                onClick={() => fileInputRef.current?.click()}
+              >
+                {uploading ? <Loader2 className="h-3 w-3 animate-spin" /> : <Paperclip className="h-3 w-3" />}
+                {uploading ? "Enviando…" : "Anexar"}
+              </Button>
+            </div>
+            {contratos.length > 0 && (
+              <div className="space-y-1">
+                {contratos.map((c, idx) => (
+                  <div key={idx} className="flex items-center gap-2 rounded-md border border-border bg-muted/30 px-2 py-1">
+                    <FileText className="h-3 w-3 shrink-0 text-muted-foreground" />
+                    <a
+                      href={c.url}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="min-w-0 flex-1 truncate text-[11.5px] text-foreground hover:text-primary hover:underline"
+                    >
+                      {c.nome}
+                    </a>
+                    <span className="shrink-0 text-[10px] text-muted-foreground">{fmtTamanho(c.tamanho)}</span>
+                    <button
+                      type="button"
+                      onClick={() => removerAnexo(idx)}
+                      className="shrink-0 rounded p-0.5 text-muted-foreground hover:text-destructive hover:bg-destructive/10"
+                      aria-label={`Remover ${c.nome}`}
+                    >
+                      <X className="h-3 w-3" />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         </div>
         <DialogFooter className="items-center">

@@ -65,18 +65,38 @@ export async function salvarDemonstracao(
     const conta = String((r as any)?.Conta ?? "").trim();
     if (conta) porConta.set(conta, { ...r });
   }
+
+  // IMPORT (travar): o arquivo importado é a ÚNICA fonte para os meses que ele traz.
+  // Antes de aplicar, ZERA esses meses em TODAS as linhas já salvas. Sem isto, rubricas
+  // que só vieram do Omie (ex.: "Entrada de Receita") continuavam com valor no mesmo mês
+  // e eram somadas junto com as do tracker sob o mesmo cabeçalho — o "somatório" errado
+  // que aparecia no mês fechado. (No path sync, `travar` é falso e nada é zerado aqui.)
+  if (opts.travar) {
+    for (const base of porConta.values()) {
+      for (const col of mesesNovos) delete (base as any)[col];
+    }
+  }
+
   for (const r of novo.rows ?? []) {
     const conta = String((r as any)?.Conta ?? "").trim();
     if (!conta) continue;
     const base = porConta.get(conta) ?? { Conta: conta };
     for (const col of mesesNovos) {
-      if (travadas.has(col)) continue; // mês fechado: preserva o que já está salvo
+      if (travadas.has(col)) continue; // mês fechado (só no path sync): preserva o salvo
       base[col] = (r as any)[col];
     }
     porConta.set(conta, base);
   }
 
-  const dados: Dados = { columns, rows: [...porConta.values()] };
+  // Remove linhas que ficaram SEM nenhum valor (só a coluna "Conta") — evita que rubricas
+  // órfãs do Omie, cujos únicos meses foram substituídos por um import de tracker, fiquem
+  // acumuladas no blob como linhas vazias.
+  const temValor = (row: Record<string, unknown>) =>
+    Object.keys(row).some(
+      (k) => k !== "Conta" && row[k] !== undefined && row[k] !== null && row[k] !== "",
+    );
+
+  const dados: Dados = { columns, rows: [...porConta.values()].filter(temValor) };
 
   const { error: upErr } = await supabase.from("demonstracoes_contabeis").upsert(
     { tipo, periodo: "completo", dados, pdf_path: null },

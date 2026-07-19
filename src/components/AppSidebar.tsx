@@ -21,7 +21,7 @@ const inicio: NavItem[] = [
   { title: "Briefing", url: "/briefing", icon: Sparkles },
   { title: "Tarefas", url: "/tarefas", icon: CheckSquare },
   { title: "Caixa", url: "/caixa", icon: Landmark, badge: "OMIE" },
-  { title: "Playbook", url: "/playbook", icon: BookOpenCheck },
+  { title: "Anotações", url: "/playbook", icon: BookOpenCheck },
   { title: "Projetos", url: "/automacoes/projetos", icon: FolderKanban },
 ];
 
@@ -58,6 +58,7 @@ const editais: NavItem[] = [
 
 const investimentos: NavItem[] = [
   { title: "Captable", url: "/captable", icon: PieChart },
+  { title: "Investimentos", url: "/investimentos", icon: TrendingUp },
 ];
 
 const demonstracoes: NavItem[] = [

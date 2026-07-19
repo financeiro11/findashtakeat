@@ -90,27 +90,7 @@ export function TaskDialog({ columns, open, tarefa, defaultStatus, onClose, onSa
   const subsDone = subtarefas.filter(s => s.done).length;
   const subsProgress = subtarefas.length ? Math.round((subsDone / subtarefas.length) * 100) : 0;
 
-  // Autosave para edição: dispara onSave com debounce quando valores mudam
   const isEdit = !!tarefa;
-  const firstSyncRef = useRef(true);
-  useEffect(() => {
-    if (!open || !isEdit) return;
-    if (firstSyncRef.current) { firstSyncRef.current = false; return; }
-    const handle = setTimeout(() => {
-      onSave({
-        titulo,
-        responsavel: responsavel || null,
-        status,
-        prioridade,
-        prazo: prazo || null,
-        observacao: observacao || null,
-        subtarefas,
-      });
-    }, 500);
-    return () => clearTimeout(handle);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [titulo, responsavel, status, prioridade, prazo, observacao, subtarefas, open, isEdit]);
-  useEffect(() => { if (open) firstSyncRef.current = true; }, [open, tarefa?.id]);
 
   const canSave = !!titulo.trim() && !!responsavel && !!prazo;
   const submit = () => {
@@ -268,7 +248,12 @@ export function TaskDialog({ columns, open, tarefa, defaultStatus, onClose, onSa
         </div>
         <DialogFooter>
           {isEdit ? (
-            <Button variant="outline" onClick={onClose}>Fechar <span className="ml-2 text-[10px] text-muted-foreground">Ctrl+Enter</span></Button>
+            <>
+              <Button variant="outline" onClick={onClose}>Fechar</Button>
+              <Button onClick={submit} disabled={!canSave} title={canSave ? "" : "Preencha título, responsável e prazo"}>
+                Salvar <span className="ml-2 text-[10px] opacity-70">Ctrl+Enter</span>
+              </Button>
+            </>
           ) : (
             <>
               <Button variant="outline" onClick={onClose}>Cancelar</Button>

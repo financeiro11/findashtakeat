@@ -13,6 +13,12 @@ export type SolicStatus =
   | "comprado"
   | "recusado";
 
+export interface FornecedorAnexo {
+  nome: string;
+  url: string;
+  tamanho: number;
+}
+
 export interface Fornecedor {
   id: string;
   nome: string;
@@ -21,6 +27,7 @@ export interface Fornecedor {
   tem_contrato: boolean;
   status: string;
   observacao: string | null;
+  contratos: FornecedorAnexo[];
   created_at: string;
   updated_at: string;
 }

@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Plus, Trash2, ChevronDown, ChevronRight, Filter, X, LayoutGrid,
   Table as TableIcon, AlertTriangle, MoreHorizontal,
-  Search, GripVertical, Pencil, Palette, Check, CheckCircle2, Clock, ListChecks, Target, BarChart3,
+  Search, GripVertical, Pencil, Palette, Check, CheckCircle2, Clock, ListChecks, Target, BarChart3, History,
 } from "lucide-react";
 import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger,
@@ -27,11 +27,13 @@ import {
 import { supabase } from "@/integrations/supabase/client";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
+import { useAuth } from "@/hooks/useAuth";
 import {
   TaskDialog, DEFAULT_COLUMNS, PRIO_OPTS, progressBarColor,
   type Subtarefa, type Tarefa,
 } from "@/components/tarefas/TaskDialog";
 import { AnaliseSemanal } from "@/components/tarefas/AnaliseSemanal";
+import { HistoricoTarefas } from "@/components/tarefas/HistoricoTarefas";
 
 export type { Subtarefa } from "@/components/tarefas/TaskDialog";
 const COLUMNS_CFG_KEY = "tarefas.columns.cfg.v1";
@@ -108,6 +110,32 @@ function isAtrasada(t: Tarefa) {
   if (!t.prazo || t.status === "Concluído") return false;
   return new Date(t.prazo) < new Date(new Date().toDateString());
 }
+
+// Descreve, em texto legível, o que mudou de `old` para `patch` — usado no log de histórico.
+function describeChanges(old: Tarefa, patch: Partial<Tarefa>): string {
+  const parts: string[] = [];
+  if ("status" in patch && patch.status !== old.status)
+    parts.push(`moveu de "${old.status}" para "${patch.status}"`);
+  if ("prioridade" in patch && patch.prioridade !== old.prioridade)
+    parts.push(`prioridade: ${old.prioridade} → ${patch.prioridade}`);
+  if ("responsavel" in patch && (patch.responsavel ?? "") !== (old.responsavel ?? ""))
+    parts.push(`responsável: ${old.responsavel || "—"} → ${patch.responsavel || "—"}`);
+  if ("prazo" in patch && (patch.prazo ?? null) !== (old.prazo ?? null))
+    parts.push(`prazo: ${fmtDate(old.prazo)} → ${fmtDate(patch.prazo ?? null)}`);
+  if ("titulo" in patch && patch.titulo !== old.titulo)
+    parts.push(`título: "${old.titulo}" → "${patch.titulo}"`);
+  if ("observacao" in patch && (patch.observacao ?? "") !== (old.observacao ?? ""))
+    parts.push("editou a observação");
+  if ("subtarefas" in patch) {
+    const oldSubs = old.subtarefas || [];
+    const newSubs = (patch.subtarefas as Subtarefa[]) || [];
+    const oldDone = oldSubs.filter((s) => s.done).length;
+    const newDone = newSubs.filter((s) => s.done).length;
+    if (oldSubs.length !== newSubs.length) parts.push(`checklist: ${oldSubs.length} → ${newSubs.length} itens`);
+    else if (oldDone !== newDone) parts.push(`checklist: ${newDone}/${newSubs.length} concluídos`);
+  }
+  return parts.join(" · ");
+}
 function diasDesde(iso: string) {
   const d = new Date(iso);
   return Math.max(0, Math.floor((Date.now() - d.getTime()) / 86_400_000));
@@ -182,8 +210,23 @@ function Sparkline({ data, color }: { data: number[]; color: string }) {
 }
 
 export default function Tarefas() {
+  const { user, profile } = useAuth();
   const [rows, setRows] = useState<Tarefa[]>([]);
-  const [view, setView] = useState<"kanban" | "tabela" | "analise">("kanban");
+  const [view, setView] = useState<"kanban" | "tabela" | "analise" | "historico">("kanban");
+
+  // Registra uma ação num card no histórico (tarefas_log). Best-effort: nunca quebra a
+  // ação principal — se a tabela ainda não existir, o erro é ignorado silenciosamente.
+  const logTarefa = async (e: { tarefa_id: string | null; tarefa_titulo: string; acao: string; descricao: string }) => {
+    if (!e.descricao) return;
+    await supabase.from("tarefas_log" as any).insert({
+      tarefa_id: e.tarefa_id,
+      tarefa_titulo: e.tarefa_titulo,
+      acao: e.acao,
+      descricao: e.descricao,
+      usuario: profile?.nome ?? null,
+      usuario_id: user?.id ?? null,
+    });
+  };
   const [search, setSearch] = useState("");
   const [concluidoCollapsed, setConcluidoCollapsed] = useState(true);
   const [editing, setEditing] = useState<Tarefa | null>(null);
@@ -348,15 +391,29 @@ export default function Tarefas() {
     return g;
   }, [filteredBase]);
 
-  const update = async (id: string, patch: Partial<Tarefa>) => {
+  const update = async (id: string, patch: Partial<Tarefa>, skipLog = false) => {
+    const old = rows.find(r => r.id === id);
     setRows(rs => rs.map(r => r.id === id ? { ...r, ...patch } : r));
     const { error } = await supabase.from("tarefas").update(patch as any).eq("id", id);
-    if (error) toast.error(error.message);
+    if (error) { toast.error(error.message); return; }
+    if (old && !skipLog) {
+      const descricao = describeChanges(old, patch);
+      const soMoveu = Object.keys(patch).length === 1 && "status" in patch;
+      logTarefa({
+        tarefa_id: id,
+        tarefa_titulo: (patch.titulo ?? old.titulo) as string,
+        acao: soMoveu ? "movida" : "editada",
+        descricao,
+      });
+    }
   };
 
   const remove = async (id: string) => {
+    const alvo = rows.find(r => r.id === id);
     const { error } = await supabase.from("tarefas").delete().eq("id", id);
-    if (error) toast.error(error.message); else load();
+    if (error) { toast.error(error.message); return; }
+    if (alvo) logTarefa({ tarefa_id: id, tarefa_titulo: alvo.titulo, acao: "excluida", descricao: `Excluída (estava em "${alvo.status}")` });
+    load();
   };
 
   const create = async (t: Partial<Tarefa>) => {
@@ -364,14 +421,18 @@ export default function Tarefas() {
     if (!t.responsavel) { toast.error("Responsável é obrigatório"); return; }
     if (!t.prazo) { toast.error("Prazo é obrigatório"); return; }
     const ordem = rows.length ? Math.max(...rows.map(r => r.ordem)) + 1 : 1;
-    const { error } = await supabase.from("tarefas").insert({
+    const status = t.status || creatingStatus;
+    const { data: inserida, error } = await supabase.from("tarefas").insert({
       ordem, titulo: t.titulo, responsavel: t.responsavel,
-      status: t.status || creatingStatus, prioridade: t.prioridade || "Média",
+      status, prioridade: t.prioridade || "Média",
       prazo: t.prazo, observacao: t.observacao || null,
       subtarefas: (t.subtarefas || []) as any,
-    });
+    }).select("id").single();
     if (error) toast.error(error.message);
-    else { toast.success("Tarefa criada"); load(); setCreating(false); }
+    else {
+      logTarefa({ tarefa_id: (inserida as any)?.id ?? null, tarefa_titulo: t.titulo, acao: "criada", descricao: `Criada em "${status}"` });
+      toast.success("Tarefa criada"); load(); setCreating(false);
+    }
   };
 
   const openCreate = (status?: string) => {
@@ -405,7 +466,7 @@ export default function Tarefas() {
       </div>
 
       {/* KPIs */}
-      {view !== "analise" && (
+      {(view === "kanban" || view === "tabela") && (
         <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
           <KPI label="Total" value={total} hint={`${total} no escopo atual`} tone="foreground" icon={ListChecks} />
           <KPI label="Em andamento" value={emAnd} hint={`${pctEm}% do total`} tone="warning" icon={Clock} progress={pctEm} />
@@ -416,7 +477,7 @@ export default function Tarefas() {
 
       {/* Toolbar de chips */}
       <div className="flex flex-wrap items-center gap-2">
-        {view !== "analise" && (
+        {(view === "kanban" || view === "tabela") && (
           <>
             <div className="relative">
               <Search className="absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
@@ -486,6 +547,13 @@ export default function Tarefas() {
           >
             <BarChart3 className="h-3.5 w-3.5" /> Análise
           </button>
+          <button
+            onClick={() => setView("historico")}
+            className={cn("flex items-center gap-1.5 rounded px-3 py-1 text-xs font-bold transition-colors",
+              view === "historico" ? "bg-white text-destructive" : "text-white hover:bg-white/10")}
+          >
+            <History className="h-3.5 w-3.5" /> Histórico
+          </button>
         </div>
       </div>
       </div>
@@ -520,8 +588,10 @@ export default function Tarefas() {
           onOpen={setEditing}
           onRemove={remove}
         />
-      ) : (
+      ) : view === "analise" ? (
         <AnaliseSemanal />
+      ) : (
+        <HistoricoTarefas />
       )}
 
       <TaskDialog

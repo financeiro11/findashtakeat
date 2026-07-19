@@ -1308,6 +1308,7 @@ export type Database = {
         Row: {
           categoria: string | null
           contato: string | null
+          contratos: Json
           created_at: string
           id: string
           nome: string
@@ -1319,6 +1320,7 @@ export type Database = {
         Insert: {
           categoria?: string | null
           contato?: string | null
+          contratos?: Json
           created_at?: string
           id?: string
           nome: string
@@ -1330,6 +1332,7 @@ export type Database = {
         Update: {
           categoria?: string | null
           contato?: string | null
+          contratos?: Json
           created_at?: string
           id?: string
           nome?: string
@@ -1827,6 +1830,30 @@ export type Database = {
         Relationships: []
       }
       omie_caixa_snapshot: {
+        Row: {
+          criado_em: string
+          dados: Json
+          gerado_em: string
+          id: number
+          sincronizado_em: string | null
+        }
+        Insert: {
+          criado_em?: string
+          dados: Json
+          gerado_em?: string
+          id?: never
+          sincronizado_em?: string | null
+        }
+        Update: {
+          criado_em?: string
+          dados?: Json
+          gerado_em?: string
+          id?: never
+          sincronizado_em?: string | null
+        }
+        Relationships: []
+      }
+      omie_capital_giro_snapshot: {
         Row: {
           criado_em: string
           dados: Json
@@ -3110,6 +3137,39 @@ export type Database = {
           subtarefas?: Json
           titulo?: string
           updated_at?: string
+        }
+        Relationships: []
+      }
+      tarefas_log: {
+        Row: {
+          acao: string
+          created_at: string
+          descricao: string | null
+          id: string
+          tarefa_id: string | null
+          tarefa_titulo: string | null
+          usuario: string | null
+          usuario_id: string | null
+        }
+        Insert: {
+          acao: string
+          created_at?: string
+          descricao?: string | null
+          id?: string
+          tarefa_id?: string | null
+          tarefa_titulo?: string | null
+          usuario?: string | null
+          usuario_id?: string | null
+        }
+        Update: {
+          acao?: string
+          created_at?: string
+          descricao?: string | null
+          id?: string
+          tarefa_id?: string | null
+          tarefa_titulo?: string | null
+          usuario?: string | null
+          usuario_id?: string | null
         }
         Relationships: []
       }

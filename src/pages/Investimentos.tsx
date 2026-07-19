@@ -46,11 +46,11 @@ interface FlatData { columns: string[]; rows: (string | number)[][] }
 type SheetKey = "balance" | "pl" | "cf" | "ap" | "gl" | "tb" | "capital";
 type EntityData = Partial<Record<SheetKey, HierData | FlatData>> & { issuedAt?: string };
 
-const ENTITIES = ["Takeat Ltd", "Takeat LLC"] as const;
+const ENTITIES = ["Takeat LTD", "Takeat LLC"] as const;
 type Entity = (typeof ENTITIES)[number];
 
 const ENTITY_META: Record<Entity, { eyebrow: string; local: string }> = {
-  "Takeat Ltd": { eyebrow: "INVESTIMENTOS · LTD / LLC", local: "Cayman / BVI — holding" },
+  "Takeat LTD": { eyebrow: "INVESTIMENTOS · LTD / LLC", local: "Cayman / BVI — holding" },
   "Takeat LLC": { eyebrow: "INVESTIMENTOS · LTD / LLC", local: "Delaware, USA — operating" },
 };
 
@@ -508,9 +508,9 @@ function detectarEntidade(aoa: unknown[][]): Entity | null {
 
 // ================================================================ componente
 export default function Investimentos() {
-  const [entity, setEntity] = useState<Entity>("Takeat Ltd");
+  const [entity, setEntity] = useState<Entity>("Takeat LTD");
   const [statement, setStatement] = useState<SheetKey>("balance");
-  const [data, setData] = useState<Record<Entity, EntityData>>({ "Takeat Ltd": {}, "Takeat LLC": {} });
+  const [data, setData] = useState<Record<Entity, EntityData>>({ "Takeat LTD": {}, "Takeat LLC": {} });
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
   const [importing, setImporting] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);

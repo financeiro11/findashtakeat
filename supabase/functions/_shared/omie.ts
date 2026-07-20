@@ -167,45 +167,56 @@ export async function incluirAnexo(opts: {
   base64: string;
   /** identificador interno; será truncado em 20 caracteres */
   codInt: string;
-}): Promise<{ cTabela: string }> {
+}): Promise<{ cTabela: string; variante: string }> {
   const cCodIntAnexo = opts.codInt.slice(0, 20);
 
-  // Zipa o arquivo original — exigência do Omie. O nome dentro do zip é o do arquivo.
-  const original = deBase64(opts.base64);
-  const zip = zipSync({ [opts.nome]: original }, { level: 6 });
+  // O Omie DESCARTA o anexo em silêncio (HTTP 200, sem erro) quando o cMd5 não confere ou o
+  // formato do cArquivo não é o esperado. A doc diz "zip + base64" e "MD5 do arquivo enviado
+  // na tag cArquivo", mas na prática varia o que ele hasheia. Em vez de adivinhar, montamos
+  // as VARIANTES plausíveis e confirmamos por ListarAnexo qual delas realmente gruda.
+  const originalRaw = deBase64(opts.base64);
+  const rawB64 = toBase64(originalRaw);            // arquivo cru re-normalizado
+  const zip = zipSync({ [opts.nome]: originalRaw }, { level: 6 });
   const zipB64 = toBase64(zip);
-  const md5DosBytes = await md5Hex(zip);     // MD5 do zip (interpretação principal)
-  const md5DaBase64 = await md5Hex(zipB64);  // fallback, caso o Omie queira o hash da string
+
+  const variantes: { nome: string; cArquivo: string; cMd5: string }[] = [
+    { nome: "zip+md5(zip)",     cArquivo: zipB64, cMd5: await md5Hex(zip) },
+    { nome: "zip+md5(original)", cArquivo: zipB64, cMd5: await md5Hex(originalRaw) },
+    { nome: "zip+md5(zipB64)",  cArquivo: zipB64, cMd5: await md5Hex(zipB64) },
+    { nome: "raw+md5(raw)",     cArquivo: rawB64, cMd5: await md5Hex(originalRaw) },
+    { nome: "raw+md5(rawB64)",  cArquivo: rawB64, cMd5: await md5Hex(rawB64) },
+  ];
 
   const tabelas = [opts.cTabela, ...TABELAS_ANEXO.filter((t) => t !== opts.cTabela)];
   const diagnostico: string[] = [];
-
-  const incluir = (cTabela: string, cMd5: string) =>
-    omieCall("geral/anexo", "IncluirAnexo", {
-      cCodIntAnexo, cTabela, nId: Number(opts.nId),
-      cNomeArquivo: opts.nome, cTipoArquivo: extDe(opts.nome),
-      cArquivo: zipB64, cMd5,
-    });
 
   for (const cTabela of tabelas) {
     const antes = await contarAnexos(opts.nId, cTabela);
     if (antes < 0) { diagnostico.push(`${cTabela}: tabela inválida para este título`); continue; }
 
-    try {
-      try { await incluir(cTabela, md5DosBytes); }
-      catch (e) {
-        if (!/md5/i.test(e instanceof Error ? e.message : String(e))) throw e;
-        await incluir(cTabela, md5DaBase64);
+    for (const v of variantes) {
+      try {
+        await omieCall("geral/anexo", "IncluirAnexo", {
+          cCodIntAnexo, cTabela, nId: Number(opts.nId),
+          cNomeArquivo: opts.nome, cTipoArquivo: extDe(opts.nome),
+          cArquivo: v.cArquivo, cMd5: v.cMd5,
+        });
+      } catch (e) {
+        const msg = (e instanceof Error ? e.message : String(e));
+        // Erro que NÃO é de md5/formato → o título/tabela não serve; pula para a próxima tabela.
+        if (!/md5|arquivo|conte|inv[aá]lid|tamanho/i.test(msg)) {
+          diagnostico.push(`${cTabela}: ${msg.slice(0, 120)}`);
+          break;
+        }
+        diagnostico.push(`${cTabela}/${v.nome}: ${msg.slice(0, 80)}`);
+        continue;
       }
-    } catch (e) {
-      diagnostico.push(`${cTabela}: ${(e instanceof Error ? e.message : String(e)).slice(0, 140)}`);
-      continue;
-    }
 
-    // Confirma que o anexo realmente entrou (o 200 sozinho já mentiu antes).
-    const depois = await contarAnexos(opts.nId, cTabela);
-    if (depois > antes) return { cTabela };
-    diagnostico.push(`${cTabela}: incluiu sem erro mas o anexo não apareceu (${antes}->${depois})`);
+      // NÃO confiar no 200: só a contagem prova que gravou.
+      const depois = await contarAnexos(opts.nId, cTabela);
+      if (depois > antes) return { cTabela, variante: v.nome };
+      diagnostico.push(`${cTabela}/${v.nome}: 200 mas não gravou (${antes}->${depois})`);
+    }
   }
 
   throw new Error("Anexo não confirmado no Omie. " + diagnostico.join(" | "));

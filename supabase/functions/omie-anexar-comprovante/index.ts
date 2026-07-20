@@ -336,7 +336,8 @@ Deno.serve(async (req) => {
         if (bytes.length === 0) throw new Error("Arquivo vazio.");
 
         // incluirAnexo ZIPA, envia e CONFIRMA que o anexo colou (ou lança com diagnóstico).
-        const { cTabela: cTabelaOk } = await incluirAnexo({ nId: e.match!.codTitulo, cTabela, nome, base64: toBase64(bytes), codInt: codIntAnexo(e.achado_id) });
+        const { cTabela: cTabelaOk, variante } = await incluirAnexo({ nId: e.match!.codTitulo, cTabela, nome, base64: toBase64(bytes), codInt: codIntAnexo(e.achado_id) });
+        console.log(`anexo OK · ${e.titulo} · título ${e.match!.codTitulo} · ${cTabelaOk} · ${variante}`);
 
         const agora = new Date().toISOString();
 
@@ -349,7 +350,7 @@ Deno.serve(async (req) => {
           await supabase.from("auditoria").update({ trilha: [...trilha, { evento: "comprovante_enviado_omie", canal: "hub", omie_cod_titulo: e.match!.codTitulo, cTabela: cTabelaOk, arquivo: nome, timestamp: agora }], updated_at: agora }).eq("id", e.achado_id);
         }
 
-        enviados.push({ achado_id: e.achado_id, titulo: e.titulo, omie_cod_titulo: e.match!.codTitulo, cTabela: cTabelaOk, arquivo: nome });
+        enviados.push({ achado_id: e.achado_id, titulo: e.titulo, omie_cod_titulo: e.match!.codTitulo, cTabela: cTabelaOk, variante, arquivo: nome });
       } catch (err) {
         const erro = err instanceof Error ? err.message : String(err);
         console.error(`envio falhou · ${e.titulo} · título ${e.match?.codTitulo} · ${erro}`);

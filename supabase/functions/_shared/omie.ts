@@ -167,55 +167,56 @@ export async function incluirAnexo(opts: {
   base64: string;
   /** identificador interno; será truncado em 20 caracteres */
   codInt: string;
-}): Promise<{ cTabela: string; variante: string }> {
-  const cCodIntAnexo = opts.codInt.slice(0, 20);
+}): Promise<{ cTabela: string; variante: string; nIdAnexo: unknown }> {
+  const baseCod = opts.codInt.slice(0, 14);   // deixa espaço p/ sufixo único por tentativa
 
-  // O Omie DESCARTA o anexo em silêncio (HTTP 200, sem erro) quando o cMd5 não confere ou o
-  // formato do cArquivo não é o esperado. A doc diz "zip + base64" e "MD5 do arquivo enviado
-  // na tag cArquivo", mas na prática varia o que ele hasheia. Em vez de adivinhar, montamos
-  // as VARIANTES plausíveis e confirmamos por ListarAnexo qual delas realmente gruda.
+  // O que aprendemos com os erros do próprio Omie:
+  //  • cMd5 é o MD5 da STRING base64 (o "arquivo enviado na tag cArquivo"), NÃO dos bytes:
+  //    os hashes dos bytes voltaram "MD5 inválido"; o da base64 passou na validação.
+  //  • O sucesso é confirmado pela RESPOSTA (nIdAnexo), não por recontar via ListarAnexo —
+  //    esse recontar sofria rate-limit e dava falso-negativo.
+  // A doc pede zip; deixamos o arquivo cru como 2º recurso (contas antigas às vezes aceitam).
   const originalRaw = deBase64(opts.base64);
-  const rawB64 = toBase64(originalRaw);            // arquivo cru re-normalizado
   const zip = zipSync({ [opts.nome]: originalRaw }, { level: 6 });
   const zipB64 = toBase64(zip);
+  const rawB64 = toBase64(originalRaw);
 
   const variantes: { nome: string; cArquivo: string; cMd5: string }[] = [
-    { nome: "zip+md5(zip)",     cArquivo: zipB64, cMd5: await md5Hex(zip) },
-    { nome: "zip+md5(original)", cArquivo: zipB64, cMd5: await md5Hex(originalRaw) },
-    { nome: "zip+md5(zipB64)",  cArquivo: zipB64, cMd5: await md5Hex(zipB64) },
-    { nome: "raw+md5(raw)",     cArquivo: rawB64, cMd5: await md5Hex(originalRaw) },
-    { nome: "raw+md5(rawB64)",  cArquivo: rawB64, cMd5: await md5Hex(rawB64) },
+    { nome: "zip", cArquivo: zipB64, cMd5: await md5Hex(zipB64) },
+    { nome: "raw", cArquivo: rawB64, cMd5: await md5Hex(rawB64) },
   ];
 
   const tabelas = [opts.cTabela, ...TABELAS_ANEXO.filter((t) => t !== opts.cTabela)];
   const diagnostico: string[] = [];
+  let sufixo = 0;
 
   for (const cTabela of tabelas) {
-    const antes = await contarAnexos(opts.nId, cTabela);
-    if (antes < 0) { diagnostico.push(`${cTabela}: tabela inválida para este título`); continue; }
-
     for (const v of variantes) {
+      const cCodIntAnexo = `${baseCod}-${(sufixo++).toString(36)}`.slice(0, 20);
+      let resp: any;
       try {
-        await omieCall("geral/anexo", "IncluirAnexo", {
+        resp = await omieCall<any>("geral/anexo", "IncluirAnexo", {
           cCodIntAnexo, cTabela, nId: Number(opts.nId),
           cNomeArquivo: opts.nome, cTipoArquivo: extDe(opts.nome),
           cArquivo: v.cArquivo, cMd5: v.cMd5,
         });
       } catch (e) {
         const msg = (e instanceof Error ? e.message : String(e));
-        // Erro que NÃO é de md5/formato → o título/tabela não serve; pula para a próxima tabela.
-        if (!/md5|arquivo|conte|inv[aá]lid|tamanho/i.test(msg)) {
+        // Erro de título/tabela (não de md5/arquivo) → essa tabela não serve; próxima tabela.
+        if (!/md5|arquivo|conte|inv[aá]lid|tamanho|zip|base ?64/i.test(msg)) {
           diagnostico.push(`${cTabela}: ${msg.slice(0, 120)}`);
           break;
         }
-        diagnostico.push(`${cTabela}/${v.nome}: ${msg.slice(0, 80)}`);
+        diagnostico.push(`${cTabela}/${v.nome}: ${msg.slice(0, 90)}`);
         continue;
       }
 
-      // NÃO confiar no 200: só a contagem prova que gravou.
-      const depois = await contarAnexos(opts.nId, cTabela);
-      if (depois > antes) return { cTabela, variante: v.nome };
-      diagnostico.push(`${cTabela}/${v.nome}: 200 mas não gravou (${antes}->${depois})`);
+      // Sucesso = o Omie devolveu o id do anexo criado.
+      const nIdAnexo = resp?.nIdAnexo ?? resp?.nCodAnexo ?? resp?.nId ?? null;
+      const statusOk = /^(0|ok)$/i.test(String(resp?.cCodStatus ?? ""));
+      if (nIdAnexo || statusOk) return { cTabela, variante: v.nome, nIdAnexo: nIdAnexo ?? true };
+
+      diagnostico.push(`${cTabela}/${v.nome}: 200 sem nIdAnexo (${JSON.stringify(resp).slice(0, 90)})`);
     }
   }
 

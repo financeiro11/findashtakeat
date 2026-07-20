@@ -191,6 +191,9 @@ export async function incluirAnexo(opts: {
   let sufixo = 0;
 
   for (const cTabela of tabelas) {
+    const antes = await contarAnexos(opts.nId, cTabela);
+    if (antes < 0) { diagnostico.push(`${cTabela}: tabela inválida para este título`); continue; }
+
     for (const v of variantes) {
       const cCodIntAnexo = `${baseCod}-${(sufixo++).toString(36)}`.slice(0, 20);
       let resp: any;
@@ -211,12 +214,17 @@ export async function incluirAnexo(opts: {
         continue;
       }
 
-      // Sucesso = o Omie devolveu o id do anexo criado.
-      const nIdAnexo = resp?.nIdAnexo ?? resp?.nCodAnexo ?? resp?.nId ?? null;
-      const statusOk = /^(0|ok)$/i.test(String(resp?.cCodStatus ?? ""));
-      if (nIdAnexo || statusOk) return { cTabela, variante: v.nome, nIdAnexo: nIdAnexo ?? true };
+      // Caminho rápido: o Omie devolveu um id de anexo real (> 0).
+      const nIdAnexo = Number(resp?.nIdAnexo ?? resp?.nCodAnexo ?? 0);
+      if (nIdAnexo > 0) return { cTabela, variante: v.nome, nIdAnexo };
 
-      diagnostico.push(`${cTabela}/${v.nome}: 200 sem nIdAnexo (${JSON.stringify(resp).slice(0, 90)})`);
+      // Alguns tenants respondem nIdAnexo:0 mesmo gravando. Confirma pela contagem, com uma
+      // folga p/ propagar (e poucas chamadas, p/ não cair no rate-limit que já nos enganou).
+      await new Promise((r) => setTimeout(r, 1500));
+      const depois = await contarAnexos(opts.nId, cTabela);
+      if (depois > antes) return { cTabela, variante: v.nome, nIdAnexo: nIdAnexo || true };
+
+      diagnostico.push(`${cTabela}/${v.nome}: nIdAnexo=0 e sem gravar (${antes}->${depois}) resp=${JSON.stringify(resp).slice(0, 220)}`);
     }
   }
 

@@ -263,8 +263,12 @@ export default function Achados() {
 
   // Recorte do "Enviar comprovantes ao Omie": os lançamentos VISÍVEIS com os filtros atuais.
   // Antes o botão ignorava fatura/responsável e varria tudo — isto amarra ao que está na tela.
+  // Duas chaves: id_transacao (cartão) e achado_id (achados sem vínculo, ex.: fatura de Julho).
   const escopoOmie = useMemo(
-    () => Array.from(new Set(filtered.map(r => r.id_transacao).filter(Boolean))) as string[],
+    () => ({
+      idsUnicos: Array.from(new Set(filtered.map(r => r.id_transacao).filter(Boolean))) as string[],
+      achadoIds: filtered.filter(r => r.id > 0).map(r => r.id),
+    }),
     [filtered],
   );
   const escopoOmieLabel = useMemo(
@@ -273,13 +277,20 @@ export default function Achados() {
   );
 
   // Envio individual pelo drawer: manda só o anexo deste lançamento para o título do Omie.
+  // Achado real (id > 0) casa por achado_id; linha sintética do cartão (id < 0) por id_transacao.
   const enviarUmOmie = async (row: Row) => {
-    if (!row.id_transacao) { toast.error("Este lançamento não tem vínculo com o cartão/Omie."); return; }
+    const escopo = row.id > 0
+      ? { achadoIds: [row.id], idsUnicos: [] as string[] }
+      : { achadoIds: [] as number[], idsUnicos: row.id_transacao ? [row.id_transacao] : [] };
+    if (!escopo.achadoIds.length && !escopo.idsUnicos.length) {
+      toast.error("Este lançamento não pode ser identificado para envio.");
+      return;
+    }
     setEnviandoUm(true);
     toast.message("Enviando anexo ao Omie… (pode levar até ~1 min)");
     try {
       const { data, error } = await supabase.functions.invoke("omie-anexar-comprovante", {
-        body: { action: "enviar", escopo: [row.id_transacao], todos: true },
+        body: { action: "enviar", escopo, todos: true },
       });
       if (error) throw new Error(error.message);
       const d = data as any;
@@ -769,7 +780,7 @@ export default function Achados() {
                     {/* Envio individual: manda SÓ o anexo deste lançamento para o título do Omie. */}
                     {(() => {
                       const comp = selected.link_comprovante || origemCart?.link_comprovante || null;
-                      if (!podeAbrirComprovante(comp) || !selected.id_transacao) return null;
+                      if (!podeAbrirComprovante(comp)) return null;
                       return (
                         <Button
                           size="sm"

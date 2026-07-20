@@ -62,8 +62,12 @@ export default function EnviarOmieDialog({
   open: boolean;
   onOpenChange: (v: boolean) => void;
   onDone: () => void;
-  /** id_transacao dos lançamentos visíveis com os filtros atuais da página (fatura + responsável…) */
-  escopo: string[];
+  /**
+   * Recorte visível com os filtros atuais da página (fatura + responsável…). Duas chaves
+   * porque achados importados direto em `auditoria` não têm id_transacao — para esses a
+   * chave é o achado_id.
+   */
+  escopo: { idsUnicos: string[]; achadoIds: number[] };
   /** rótulo do recorte, ex.: "Junho/2026 · Ana Clara" — só para exibir */
   escopoLabel?: string;
 }) {

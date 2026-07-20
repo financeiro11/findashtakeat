@@ -184,13 +184,16 @@ Deno.serve(async (req) => {
 
     let elegiveis: Item[] = [...daAuditoria, ...doCartao];
 
-    // ESCOPO: a tela manda os id_transacao dos lançamentos visíveis com os filtros atuais
-    // (fatura + responsável + busca…). Sem isto o botão ignorava os filtros e pegava anexos
-    // de qualquer fatura. Um único id_transacao = envio individual pelo drawer.
-    const escopo: string[] | null = Array.isArray(body?.escopo) ? body.escopo.map(String) : null;
-    if (escopo) {
-      const set = new Set(escopo);
-      elegiveis = elegiveis.filter((e) => e.id_transacao && set.has(e.id_transacao));
+    // ESCOPO: a tela manda o recorte visível (filtros de fatura + responsável + busca…) como
+    // DUAS chaves, porque nem todo lançamento tem id_transacao: os achados importados direto
+    // em `auditoria` (ex.: fatura de Julho) não têm vínculo com o cartão, e para esses a chave
+    // é o próprio achado_id. Sem isto o botão ignorava os filtros e/ou pulava esses achados.
+    const escIdsUnicos: string[] | null = Array.isArray(body?.escopo?.idsUnicos) ? body.escopo.idsUnicos.map(String) : null;
+    const escAchados: number[] | null = Array.isArray(body?.escopo?.achadoIds) ? body.escopo.achadoIds.map(Number) : null;
+    if (escIdsUnicos || escAchados) {
+      const su = new Set(escIdsUnicos ?? []);
+      const sa = new Set(escAchados ?? []);
+      elegiveis = elegiveis.filter((e) => (e.id_transacao && su.has(e.id_transacao)) || sa.has(e.achado_id));
     }
 
     // Conector configurado NÃO significa arquivo legível. Antes de dizer que um item do Drive

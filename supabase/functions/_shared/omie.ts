@@ -5,6 +5,7 @@
 // (OMIE_APP_KEY / OMIE_APP_SECRET) e nunca são expostas ao frontend.
 
 import { crypto as stdCrypto } from "https://deno.land/std@0.224.0/crypto/mod.ts";
+import { zipSync } from "https://esm.sh/fflate@0.8.2";
 
 const BASE = "https://app.omie.com.br/api/v1";
 
@@ -131,27 +132,30 @@ async function contarAnexos(nId: number | string, cTabela: string): Promise<numb
   }
 }
 
-// O nome da tabela do anexo VARIA por conta Omie e não está documentado. "conta-pagar" foi
-// um chute que o Omie ACEITOU (200) mas onde o anexo não apareceu — por isso não confiamos
-// no sucesso e verificamos. Ordem: a preferida primeiro, depois as candidatas conhecidas.
-const TABELAS_ANEXO = ["conta-pagar", "financas-conta-pagar", "financas-contapagar", "contas-a-pagar", "movimentos", "financas-movimentos"];
+// Valores de cTabela válidos para IncluirAnexo (documentação oficial). Para um título vindo
+// de financas/mf o nCodTitulo é uma conta a pagar (despesa do cartão) ou, raramente, a
+// receber — por isso tentamos pagar primeiro e receber como fallback, sempre confirmando.
+const TABELAS_ANEXO = ["conta-pagar", "conta-receber"];
 
 /**
  * Anexa um arquivo a um título do Omie — e CONFIRMA que colou.
  *
- * Três armadilhas deste endpoint, todas descobertas na marra:
+ * As armadilhas deste endpoint, todas descobertas na marra e conferidas na doc oficial:
  *
- *  1. `cCodIntAnexo` aceita NO MÁXIMO 20 caracteres. Um id + Date.now() estoura fácil e o
- *     Omie recusa o anexo inteiro. (Truncado aqui.)
+ *  1. O ARQUIVO PRECISA SER ZIPADO. A doc diz: cArquivo = "conteúdo do arquivo compactado
+ *     (zip) e convertido em base 64". Mandar o PDF/JPEG cru era aceito com HTTP 200 mas o
+ *     anexo não colava. Zipamos o arquivo (o Omie descompacta e guarda o original).
  *
- *  2. `cMd5` é OBRIGATÓRIO e a doc é ambígua ("MD5 do arquivo enviado na tag cArquivo"):
- *     pode ser o hash da string base64 OU dos bytes. Tentamos a base64 e, se reclamar do
- *     MD5, refazemos com os bytes.
+ *  2. `cCodIntAnexo` aceita NO MÁXIMO 20 caracteres (truncado aqui).
  *
- *  3. O `cTabela` errado é ACEITO com HTTP 200 mas não anexa nada visível. Então, depois de
- *     incluir, contamos os anexos: se não aumentou, aquela tabela estava errada e vamos para
- *     a próxima. Só retornamos quando o Omie CONFIRMA o anexo — nunca confiando só no 200.
+ *  3. `cMd5` é o MD5 do arquivo enviado na tag cArquivo — ou seja, do ZIP. Como a doc é
+ *     ambígua entre "bytes do zip" e "string base64 do zip", tentamos o dos bytes e, se o
+ *     Omie reclamar do MD5, refazemos com o da base64.
  *
+ *  4. Não confiar no 200: depois de incluir, contamos os anexos do título; se não aumentou,
+ *     tentamos a próxima cTabela. Só retornamos quando o Omie CONFIRMA o anexo.
+ *
+ * `base64` é o conteúdo do arquivo ORIGINAL em base64 (nós zipamos aqui dentro).
  * Retorna a `cTabela` que funcionou.
  */
 export async function incluirAnexo(opts: {
@@ -159,47 +163,52 @@ export async function incluirAnexo(opts: {
   /** tabela preferida; se não colar, tentamos as demais candidatas */
   cTabela: string;
   nome: string;
-  /** conteúdo do arquivo em base64 (sem o prefixo data:) */
+  /** conteúdo do arquivo ORIGINAL em base64 (sem o prefixo data:) — zipado aqui dentro */
   base64: string;
   /** identificador interno; será truncado em 20 caracteres */
   codInt: string;
 }): Promise<{ cTabela: string }> {
   const cCodIntAnexo = opts.codInt.slice(0, 20);
-  const md5b64 = await md5Hex(opts.base64);
-  const md5bytes = await md5Hex(deBase64(opts.base64));
+
+  // Zipa o arquivo original — exigência do Omie. O nome dentro do zip é o do arquivo.
+  const original = deBase64(opts.base64);
+  const zip = zipSync({ [opts.nome]: original }, { level: 6 });
+  const zipB64 = toBase64(zip);
+  const md5DosBytes = await md5Hex(zip);     // MD5 do zip (interpretação principal)
+  const md5DaBase64 = await md5Hex(zipB64);  // fallback, caso o Omie queira o hash da string
 
   const tabelas = [opts.cTabela, ...TABELAS_ANEXO.filter((t) => t !== opts.cTabela)];
   const diagnostico: string[] = [];
 
+  const incluir = (cTabela: string, cMd5: string) =>
+    omieCall("geral/anexo", "IncluirAnexo", {
+      cCodIntAnexo, cTabela, nId: Number(opts.nId),
+      cNomeArquivo: opts.nome, cTipoArquivo: extDe(opts.nome),
+      cArquivo: zipB64, cMd5,
+    });
+
   for (const cTabela of tabelas) {
     const antes = await contarAnexos(opts.nId, cTabela);
-    if (antes < 0) { diagnostico.push(`${cTabela}: tabela inválida`); continue; }
-
-    const incluir = (cMd5: string) =>
-      omieCall("geral/anexo", "IncluirAnexo", {
-        cCodIntAnexo, cTabela, nId: Number(opts.nId),
-        cNomeArquivo: opts.nome, cTipoArquivo: extDe(opts.nome),
-        cArquivo: opts.base64, cMd5,
-      });
+    if (antes < 0) { diagnostico.push(`${cTabela}: tabela inválida para este título`); continue; }
 
     try {
-      try { await incluir(md5b64); }
+      try { await incluir(cTabela, md5DosBytes); }
       catch (e) {
         if (!/md5/i.test(e instanceof Error ? e.message : String(e))) throw e;
-        await incluir(md5bytes);   // a doc não diz qual MD5; tenta o dos bytes
+        await incluir(cTabela, md5DaBase64);
       }
     } catch (e) {
-      diagnostico.push(`${cTabela}: ${(e instanceof Error ? e.message : String(e)).slice(0, 120)}`);
+      diagnostico.push(`${cTabela}: ${(e instanceof Error ? e.message : String(e)).slice(0, 140)}`);
       continue;
     }
 
-    // NÃO confiar no 200: confirmar que o anexo realmente entrou.
+    // Confirma que o anexo realmente entrou (o 200 sozinho já mentiu antes).
     const depois = await contarAnexos(opts.nId, cTabela);
     if (depois > antes) return { cTabela };
     diagnostico.push(`${cTabela}: incluiu sem erro mas o anexo não apareceu (${antes}->${depois})`);
   }
 
-  throw new Error("O Omie aceitou a chamada mas o anexo não foi confirmado em nenhuma tabela. " + diagnostico.join(" | "));
+  throw new Error("Anexo não confirmado no Omie. " + diagnostico.join(" | "));
 }
 
 export interface OmieCategoria {

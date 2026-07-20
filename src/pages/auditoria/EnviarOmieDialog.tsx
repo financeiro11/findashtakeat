@@ -56,10 +56,16 @@ export default function EnviarOmieDialog({
   open,
   onOpenChange,
   onDone,
+  escopo,
+  escopoLabel,
 }: {
   open: boolean;
   onOpenChange: (v: boolean) => void;
   onDone: () => void;
+  /** id_transacao dos lançamentos visíveis com os filtros atuais da página (fatura + responsável…) */
+  escopo: string[];
+  /** rótulo do recorte, ex.: "Junho/2026 · Ana Clara" — só para exibir */
+  escopoLabel?: string;
 }) {
   const [carregando, setCarregando] = useState(false);
   const [enviando, setEnviando] = useState(false);
@@ -73,7 +79,7 @@ export default function EnviarOmieDialog({
     setMarcados(new Set());
     try {
       const { data, error } = await supabase.functions.invoke("omie-anexar-comprovante", {
-        body: { action: "preview" },
+        body: { action: "preview", escopo },
       });
       if (error) throw new Error(error.message);
       if ((data as any)?.error) throw new Error((data as any).error);
@@ -164,7 +170,7 @@ export default function EnviarOmieDialog({
         });
 
         const { data, error } = await supabase.functions.invoke("omie-anexar-comprovante", {
-          body: { action: "anexar_arquivo", id: e.achado_id, nome: file.name, mime: file.type, base64 },
+          body: { action: "anexar_arquivo", id: e.achado_id, nome: file.name, mime: file.type, base64, escopo },
         });
         if (error) throw new Error(error.message);
         if ((data as any)?.error) throw new Error((data as any).error);
@@ -187,7 +193,7 @@ export default function EnviarOmieDialog({
     try {
       const ids = [...automaticos.map((e) => e.achado_id), ...marcados];
       const { data, error } = await supabase.functions.invoke("omie-anexar-comprovante", {
-        body: { action: "enviar", ids },
+        body: { action: "enviar", ids, escopo },
       });
       if (error) throw new Error(error.message);
       if ((data as any)?.error) throw new Error((data as any).error);
@@ -216,6 +222,9 @@ export default function EnviarOmieDialog({
       <DialogContent className="max-w-3xl">
         <DialogHeader>
           <DialogTitle>Enviar comprovantes ao Omie</DialogTitle>
+          {escopoLabel && (
+            <p className="text-[12px] text-muted-foreground">Recorte atual: {escopoLabel}</p>
+          )}
         </DialogHeader>
 
         {carregando ? (

@@ -135,6 +135,7 @@ export default function Achados() {
   const [consolidadoOpen, setConsolidadoOpen] = useState(false);
   const [cruzando, setCruzando] = useState(false);
   const [enviarOmieOpen, setEnviarOmieOpen] = useState(false);
+  const [enviandoUm, setEnviandoUm] = useState(false);
 
   // Garante que o modal de "Ajuste solicitado" NUNCA venha aberto ao abrir/trocar de lançamento
   useEffect(() => { setAjusteOpen(false); }, [selected?.id]);
@@ -259,6 +260,39 @@ export default function Achados() {
       return true;
     });
   }, [periodRows, filtro, fSev, fArea, fRegra, fCat, fResp, busca]);
+
+  // Recorte do "Enviar comprovantes ao Omie": os lançamentos VISÍVEIS com os filtros atuais.
+  // Antes o botão ignorava fatura/responsável e varria tudo — isto amarra ao que está na tela.
+  const escopoOmie = useMemo(
+    () => Array.from(new Set(filtered.map(r => r.id_transacao).filter(Boolean))) as string[],
+    [filtered],
+  );
+  const escopoOmieLabel = useMemo(
+    () => [compLabel(competencia), fResp !== "todas" ? fResp : null].filter(Boolean).join(" · "),
+    [competencia, fResp],
+  );
+
+  // Envio individual pelo drawer: manda só o anexo deste lançamento para o título do Omie.
+  const enviarUmOmie = async (row: Row) => {
+    if (!row.id_transacao) { toast.error("Este lançamento não tem vínculo com o cartão/Omie."); return; }
+    setEnviandoUm(true);
+    toast.message("Enviando anexo ao Omie… (pode levar até ~1 min)");
+    try {
+      const { data, error } = await supabase.functions.invoke("omie-anexar-comprovante", {
+        body: { action: "enviar", escopo: [row.id_transacao], todos: true },
+      });
+      if (error) throw new Error(error.message);
+      const d = data as any;
+      if (d?.error) throw new Error(d.error);
+      if (d.enviados) { toast.success("Comprovante anexado no Omie."); await load(); }
+      else if (d.falhas) toast.error("Falha: " + (d.detalhe_falhas?.[0]?.erro ?? "desconhecida"), { duration: 12000 });
+      else toast.message("Nada foi enviado — este lançamento não é elegível (sem comprovante ou sem título casado).");
+    } catch (e: any) {
+      toast.error("Falha ao enviar: " + e.message, { duration: 10000 });
+    } finally {
+      setEnviandoUm(false);
+    }
+  };
 
   const kpis = useMemo(() => {
     const pend = periodRows.filter(r => r.status === "Pendente");
@@ -732,6 +766,24 @@ export default function Achados() {
                           : "—";
                       })()}
                     </div>
+                    {/* Envio individual: manda SÓ o anexo deste lançamento para o título do Omie. */}
+                    {(() => {
+                      const comp = selected.link_comprovante || origemCart?.link_comprovante || null;
+                      if (!podeAbrirComprovante(comp) || !selected.id_transacao) return null;
+                      return (
+                        <Button
+                          size="sm"
+                          onClick={() => enviarUmOmie(selected)}
+                          disabled={enviandoUm}
+                          className="mt-2 h-8 text-[12px] text-white"
+                          style={{ backgroundColor: "#1D63C7" }}
+                        >
+                          {enviandoUm
+                            ? <><Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> Enviando…</>
+                            : <><Paperclip className="mr-1.5 h-3.5 w-3.5" /> Enviar anexo ao Omie</>}
+                        </Button>
+                      );
+                    })()}
                   </div>
                 </div>
 
@@ -850,6 +902,8 @@ export default function Achados() {
         open={enviarOmieOpen}
         onOpenChange={setEnviarOmieOpen}
         onDone={load}
+        escopo={escopoOmie}
+        escopoLabel={escopoOmieLabel}
       />
 
 

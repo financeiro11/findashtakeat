@@ -67,6 +67,7 @@ export interface Compra {
   categoria: string | null;
   forma_pagamento: "cartao_corporativo" | "pix_boleto" | "reembolso" | null;
   nf_status: "ok" | "pendente";
+  nf_url: string | null;
   valor: number;
   created_at: string;
 }

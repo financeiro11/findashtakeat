@@ -114,19 +114,26 @@ export default function Contratos() {
             if (row.kind === "contrato") {
               const c = row.data;
               return (
-                <button key={c.id} onClick={() => setEdit(c)} className="card-surface p-5 text-left transition-colors hover:border-primary/40">
+                <button key={c.id} onClick={() => setEdit(c)} className="card-surface flex h-full flex-col p-5 text-left transition-colors hover:border-primary/40">
                   <div className="flex items-start justify-between gap-2">
-                    <div className="text-[14px] font-semibold text-foreground">{c.fornecedor_nome}</div>
-                    <span className={cn("rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide", STATUS_STYLE[c.status])}>
+                    <div className="min-w-0 flex-1 text-[15px] font-semibold leading-tight text-foreground">
+                      {c.fornecedor_nome}
+                    </div>
+                    <span className={cn("shrink-0 rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide", STATUS_STYLE[c.status])}>
                       {STATUS_LABEL[c.status]}
                     </span>
                   </div>
-                  {c.descricao && <div className="mt-1 text-[14px] text-muted-foreground">{c.descricao}</div>}
-                  <div className="num mt-3 text-[24px] font-bold text-foreground">
-                    {fmtBRL(c.valor_mensal)}<span className="text-[12px] font-normal text-muted-foreground"> /mês</span>
+                  {c.descricao && (
+                    <div className="mt-1.5 line-clamp-2 text-[12.5px] leading-snug text-muted-foreground">
+                      {c.descricao}
+                    </div>
+                  )}
+                  <div className="num mt-4 text-[24px] font-bold leading-none text-foreground">
+                    {fmtBRL(c.valor_mensal)}
+                    <span className="ml-1 text-[12px] font-normal text-muted-foreground">/mês</span>
                   </div>
-                  <div className="mt-3 flex items-center justify-between border-t border-border pt-3 text-[12px]">
-                    <span className="text-muted-foreground">{prazoTexto(c)}</span>
+                  <div className="mt-auto flex items-center justify-between gap-2 border-t border-border pt-3 text-[12px]">
+                    <span className="truncate text-muted-foreground">{prazoTexto(c)}</span>
                     <CatDot cat={c.categoria} label />
                   </div>
                 </button>

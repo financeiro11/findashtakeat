@@ -104,15 +104,38 @@ export default function Fornecedores() {
         </Button>
       </FacToolbar>
 
+      <div className="flex flex-wrap gap-1.5">
+        {[
+          { key: "todas", label: "Todas" },
+          ...CATEGORIAS.map((c) => ({ key: c, label: c })),
+          { key: "sem_categoria", label: "Sem categoria" },
+        ].filter((f) => f.key === "todas" || (catCounts[f.key] ?? 0) > 0).map((f) => (
+          <button
+            key={f.key}
+            onClick={() => setCatFiltro(f.key)}
+            className={cn(
+              "rounded-md px-2.5 py-1 text-[12px] font-medium transition-colors",
+              catFiltro === f.key
+                ? "bg-primary text-primary-foreground"
+                : "border border-border text-muted-foreground hover:bg-muted",
+            )}
+          >
+            {f.label} <span className="opacity-70">({catCounts[f.key] ?? 0})</span>
+          </button>
+        ))}
+      </div>
+
       {loading ? (
         <Skeleton className="h-80 rounded-lg" />
-      ) : fornecedores.length === 0 ? (
+      ) : fornecedoresFiltrados.length === 0 ? (
         <div className="card-surface py-16 text-center text-[13px] text-muted-foreground">
-          Nenhum fornecedor cadastrado. Clique em <span className="font-medium text-foreground">Novo fornecedor</span>.
+          {fornecedores.length === 0
+            ? <>Nenhum fornecedor cadastrado. Clique em <span className="font-medium text-foreground">Novo fornecedor</span>.</>
+            : "Nenhum fornecedor nesta categoria."}
         </div>
       ) : view === "cards" ? (
         <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
-          {fornecedores.map((f) => {
+          {fornecedoresFiltrados.map((f) => {
             const s = statsDe.get(f.id)!;
             return (
               <button key={f.id} onClick={() => setEdit(f)} className="card-surface p-4 text-left transition-colors hover:border-primary/40">

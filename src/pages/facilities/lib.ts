@@ -22,6 +22,7 @@ export interface FornecedorAnexo {
 export interface Fornecedor {
   id: string;
   nome: string;
+  cnpj: string | null;
   categoria: string | null;
   contato: string | null;
   tem_contrato: boolean;

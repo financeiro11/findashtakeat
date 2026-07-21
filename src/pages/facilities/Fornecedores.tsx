@@ -27,6 +27,23 @@ function fmtTamanho(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
+function formatCnpj(v: string): string {
+  const d = v.replace(/\D/g, "").slice(0, 14);
+  const parts = [
+    d.slice(0, 2),
+    d.slice(2, 5),
+    d.slice(5, 8),
+    d.slice(8, 12),
+    d.slice(12, 14),
+  ];
+  let out = parts[0];
+  if (d.length > 2) out += "." + parts[1];
+  if (d.length > 5) out += "." + parts[2];
+  if (d.length > 8) out += "/" + parts[3];
+  if (d.length > 12) out += "-" + parts[4];
+  return out;
+}
+
 interface Stats { compras: number; total: number; ultima: string | null; }
 
 export default function Fornecedores() {
@@ -149,6 +166,7 @@ export default function Fornecedores() {
                   {f.tem_contrato && <span className="rounded bg-sky-50 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-sky-700">Contrato</span>}
                 </div>
                 <div className="mt-0.5"><CatDot cat={f.categoria} label /></div>
+                {f.cnpj && <div className="mt-0.5 num text-[11.5px] text-muted-foreground">{formatCnpj(f.cnpj)}</div>}
                 <div className="mt-1 text-[12.5px] text-muted-foreground">{f.contato || "—"}</div>
                 <div className="mt-3 grid grid-cols-3 gap-2 border-t border-border pt-3">
                   <Stat label="Compras" value={String(s.compras)} />
@@ -217,6 +235,7 @@ function FornecedorDialog({ alvo, onClose, onSaved }: { alvo: Fornecedor | "novo
   const isNovo = alvo === "novo";
   const f = alvo && alvo !== "novo" ? alvo : null;
   const [nome, setNome] = useState("");
+  const [cnpj, setCnpj] = useState("");
   const [categoria, setCategoria] = useState("");
   const [contato, setContato] = useState("");
   const [temContrato, setTemContrato] = useState(false);
@@ -230,6 +249,7 @@ function FornecedorDialog({ alvo, onClose, onSaved }: { alvo: Fornecedor | "novo
 
   useEffect(() => {
     setNome(f?.nome ?? "");
+    setCnpj(f?.cnpj ?? "");
     setCategoria(f?.categoria ?? "");
     setContato(f?.contato ?? "");
     setTemContrato(f?.tem_contrato ?? false);
@@ -277,9 +297,12 @@ function FornecedorDialog({ alvo, onClose, onSaved }: { alvo: Fornecedor | "novo
 
   const salvar = async () => {
     if (!nome.trim()) { toast.error("Informe o nome"); return; }
+    const cnpjDig = cnpj.replace(/\D/g, "");
+    if (cnpjDig && cnpjDig.length !== 14) { toast.error("CNPJ deve ter 14 dígitos"); return; }
     setBusy(true);
     const payload = {
       nome: nome.trim(),
+      cnpj: cnpjDig ? cnpjDig : null,
       categoria: categoria || null,
       contato: contato.trim() || null,
       tem_contrato: temContrato,
@@ -314,7 +337,17 @@ function FornecedorDialog({ alvo, onClose, onSaved }: { alvo: Fornecedor | "novo
         <div className="space-y-3">
           <div className="space-y-1.5">
             <Label>Nome</Label>
-            <Input value={nome} onChange={(e) => setNome(e.target.value)} placeholder="Ex.: Limpamax Serviços" autoFocus />
+            <Input value={nome} onChange={(e) => setNome(e.target.value)} placeholder="Ex.: Limpamax Serviços" maxLength={120} autoFocus />
+          </div>
+          <div className="space-y-1.5">
+            <Label>CNPJ</Label>
+            <Input
+              value={cnpj}
+              onChange={(e) => setCnpj(formatCnpj(e.target.value))}
+              placeholder="00.000.000/0000-00"
+              inputMode="numeric"
+              maxLength={18}
+            />
           </div>
           <div className="grid grid-cols-2 gap-3">
             <div className="space-y-1.5">

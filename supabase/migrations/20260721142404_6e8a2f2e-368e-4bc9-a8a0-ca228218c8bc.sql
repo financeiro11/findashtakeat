@@ -1,0 +1,1 @@
+ALTER TABLE public.facilities_fornecedores ADD COLUMN IF NOT EXISTS cnpj text;

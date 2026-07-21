@@ -163,6 +163,7 @@ export default function Historico() {
                   <th className="px-4 py-2.5 font-semibold">Item</th>
                   <th className="px-4 py-2.5 font-semibold">Fornecedor</th>
                   <th className="px-4 py-2.5 font-semibold">Pagamento</th>
+                  <th className="px-4 py-2.5 font-semibold">Status pagamento</th>
                   <th className="px-4 py-2.5 font-semibold">NF</th>
                   <th className="px-5 py-2.5 text-right font-semibold">Valor</th>
                 </tr>

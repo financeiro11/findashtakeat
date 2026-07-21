@@ -187,6 +187,41 @@ export default function Historico() {
                         </span>
                       </td>
                       <td className="px-4 py-2.5">
+                        {(() => {
+                          const pag = c.pagamento_status || "pendente";
+                          const opt = PAGAMENTO_STATUS_OPTS.find((o) => o.key === pag) || PAGAMENTO_STATUS_OPTS[0];
+                          return (
+                            <DropdownMenu>
+                              <DropdownMenuTrigger asChild>
+                                <button
+                                  className="inline-flex items-center gap-1 rounded-md px-2 py-0.5 text-[11.5px] font-medium transition-opacity hover:opacity-80"
+                                  style={{ backgroundColor: opt.bg, color: opt.color }}
+                                  title="Alterar status de pagamento"
+                                >
+                                  {opt.label}
+                                  <ChevronDown className="h-3 w-3" />
+                                </button>
+                              </DropdownMenuTrigger>
+                              <DropdownMenuContent align="start" className="min-w-[160px]">
+                                {PAGAMENTO_STATUS_OPTS.map((o) => (
+                                  <DropdownMenuItem
+                                    key={o.key}
+                                    onClick={() => changePagStatus(c, o.key)}
+                                    className="text-[12.5px]"
+                                  >
+                                    <span
+                                      className="mr-2 inline-block h-2 w-2 rounded-full"
+                                      style={{ backgroundColor: o.color }}
+                                    />
+                                    {o.label}
+                                  </DropdownMenuItem>
+                                ))}
+                              </DropdownMenuContent>
+                            </DropdownMenu>
+                          );
+                        })()}
+                      </td>
+                      <td className="px-4 py-2.5">
                         <div className="flex items-center gap-2">
                           {c.nf_status === "ok" ? (
                             <button

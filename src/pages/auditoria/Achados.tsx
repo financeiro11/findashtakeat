@@ -44,6 +44,11 @@ type Row = {
   link_comprovante: string | null;
   /** descrição da categoria do Omie casada (via lançamento de origem no cartão). */
   omie_categoria?: string | null;
+  /** confiança do casamento com o Omie ("alta" | "media" | "baixa"). */
+  omie_match_confianca?: string | null;
+  /** id do título do Omie que casou (nCodTitulo). Preenchido = categoria veio de um
+   *  movimento REAL do Omie; vazio = ainda não casado / não confirmado. */
+  omie_cod_titulo?: string | null;
   /** true = aprovado automaticamente (bate com a nota); vem da base do cartão, não da
    *  tabela `auditoria`, portanto é somente leitura (sem mudança de status). */
   _ro?: boolean;
@@ -145,13 +150,13 @@ export default function Achados() {
     const [audRes, cartRes] = await Promise.all([
       supabase
         .from("auditoria")
-        .select("id,id_unico,competencia,titulo,area,severidade,valor,responsavel,data_lancamento,descricao,regra,origem,id_transacao,status,trilha,categoria,link_comprovante,omie_categoria_descricao")
+        .select("id,id_unico,competencia,titulo,area,severidade,valor,responsavel,data_lancamento,descricao,regra,origem,id_transacao,status,trilha,categoria,link_comprovante,omie_categoria_descricao,omie_match_confianca,omie_cod_titulo")
         .order("data_lancamento", { ascending: false }),
       // Base do cartão: usada para (a) trazer as "aprovadas direto" (status_nf = "OK") e
       // (b) derivar a categoria dos achados que o n8n não classificou (via status_nf/escopo).
       supabase
         .from("auditoria_cartao_lancamentos")
-        .select("id_unico,competencia,referencia,origem,gestor,time,data,estabelecimento,descricao_original,valor,status_nf,status_escopo,arquivo_comprovante,link_comprovante,omie_categoria_descricao")
+        .select("id_unico,competencia,referencia,origem,gestor,time,data,estabelecimento,descricao_original,valor,status_nf,status_escopo,arquivo_comprovante,link_comprovante,omie_categoria_descricao,omie_match_confianca,omie_cod_titulo")
         .order("data", { ascending: false })
         .limit(5000),
     ]);
@@ -167,8 +172,10 @@ export default function Achados() {
       // Prioriza a categoria casada na base do cartão (junho); se o achado não tem
       // vínculo (id_transacao nulo, ex.: julho), usa a que foi casada direto no achado.
       const omie_categoria = orig?.omie_categoria_descricao ?? r.omie_categoria_descricao ?? null;
+      const omie_match_confianca = orig?.omie_match_confianca ?? r.omie_match_confianca ?? null;
+      const omie_cod_titulo = orig?.omie_cod_titulo ?? r.omie_cod_titulo ?? null;
       const categoria = r.categoria || deriveCategoria(r.regra, orig?.status_nf, orig?.status_escopo);
-      return { ...r, categoria, omie_categoria } as Row;
+      return { ...r, categoria, omie_categoria, omie_match_confianca, omie_cod_titulo } as Row;
     });
 
     // Evita duplicar caso um achado já referencie o mesmo lançamento do cartão.
@@ -752,6 +759,37 @@ export default function Achados() {
                   <MetaItem label="Competência" value={compLabel(selected.competencia)} />
                   <MetaItem label="Regra" value={selected.regra} full />
                   <MetaItem label="ID transação" value={selected.id_transacao || "—"} />
+
+                  {/* Vínculo com o Omie: a categoria só é "de verdade" quando há um título
+                      casado (omie_cod_titulo). Sem id, é apenas a categoria que casaria. */}
+                  <div className="col-span-2">
+                    <div className="text-[11px] uppercase tracking-wider text-muted-foreground font-medium">Categoria Omie</div>
+                    <div className="text-sm mt-1">
+                      {selected.omie_categoria ? (
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span>{selected.omie_categoria}</span>
+                          {selected.omie_match_confianca && (
+                            <span className={cn(
+                              "inline-flex px-1.5 py-0.5 rounded-full text-[10px] font-medium border",
+                              selected.omie_match_confianca === "alta" ? "border-emerald-200 bg-emerald-50 text-emerald-700"
+                                : selected.omie_match_confianca === "media" ? "border-amber-200 bg-amber-50 text-amber-700"
+                                  : "border-red-200 bg-red-50 text-red-700",
+                            )}>
+                              confiança {selected.omie_match_confianca}
+                            </span>
+                          )}
+                          {selected.omie_cod_titulo ? (
+                            <span className="text-[11px] text-muted-foreground">· título Omie {selected.omie_cod_titulo}</span>
+                          ) : (
+                            <span className="text-[11px] text-amber-600" title="A categoria mostrada é a que casaria por valor/data, mas ainda não foi confirmada num título do Omie. Rode 'Cruzar com Omie'.">
+                              · sem título casado (não confirmado)
+                            </span>
+                          )}
+                        </div>
+                      ) : "—"}
+                    </div>
+                  </div>
+
                   <div className="col-span-2">
                     <div className="text-[11px] uppercase tracking-wider text-muted-foreground font-medium">Comprovante</div>
                     <div className="text-sm mt-1">

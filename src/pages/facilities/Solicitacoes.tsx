@@ -368,19 +368,32 @@ function SolicitacaoDetail({
               </Button>
             </>
           )}
-          {solic.status !== "comprado" && (
-            <div className="flex items-center gap-2">
-              <Select value={forma} onValueChange={setForma}>
-                <SelectTrigger className="h-8 w-[150px] text-[12px]"><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  {Object.entries(FORMA_PAGAMENTO_LABEL).map(([k, v]) => <SelectItem key={k} value={k}>{v}</SelectItem>)}
-                </SelectContent>
-              </Select>
-              <Button size="sm" className="gap-1" onClick={registrarCompra} disabled={busy}>
-                <ShoppingCart className="h-4 w-4" /> Registrar compra
-              </Button>
-            </div>
-          )}
+          {solic.status !== "comprado" && (() => {
+            const escolhida = cotacoes.find((c) => c.escolhida) ?? cotacoes[0];
+            const valorAtual = Number(escolhida?.valor ?? solic.valor ?? 0);
+            const bloqueado = valorAtual > LIMITE_APROVACAO && solic.status !== "aprovado";
+            return (
+              <div className="flex items-center gap-2">
+                <Select value={forma} onValueChange={setForma} disabled={bloqueado}>
+                  <SelectTrigger className="h-8 w-[150px] text-[12px]"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    {Object.entries(FORMA_PAGAMENTO_LABEL).map(([k, v]) => <SelectItem key={k} value={k}>{v}</SelectItem>)}
+                  </SelectContent>
+                </Select>
+                <Button
+                  size="sm"
+                  className="gap-1"
+                  onClick={registrarCompra}
+                  disabled={busy || bloqueado}
+                  title={bloqueado ? `Compra acima de ${fmtBRL(LIMITE_APROVACAO)} — aguardando aprovação` : undefined}
+                >
+                  {bloqueado ? <Lock className="h-4 w-4" /> : <ShoppingCart className="h-4 w-4" />}
+                  {bloqueado ? "Aguardando aprovação" : "Registrar compra"}
+                </Button>
+              </div>
+            );
+          })()}
+
           <button onClick={excluirSolic} className="ml-auto text-[12px] text-muted-foreground hover:text-primary">Excluir</button>
         </div>
       </DialogContent>

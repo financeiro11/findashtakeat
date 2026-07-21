@@ -4,6 +4,7 @@ import { Check, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useAuth } from "@/hooks/useAuth";
+import { moduleAccess } from "@/lib/modules";
 import { FacToolbar } from "./NovaSolicitacaoDialog";
 import { CatDot } from "./components";
 import {

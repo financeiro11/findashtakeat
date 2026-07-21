@@ -281,21 +281,77 @@ function SolicitacaoDetail({
             </div>
           )}
           <div className="flex items-center gap-2">
-            <Input
-              list="fac-forn-list"
-              value={novoForn}
-              onChange={(e) => setNovoForn(e.target.value)}
-              placeholder="Fornecedor"
-              className="h-8 flex-1"
-            />
-            <datalist id="fac-forn-list">
-              {fornecedores.map((f) => <option key={f.id} value={f.nome} />)}
-            </datalist>
+            <Popover open={fornOpen} onOpenChange={setFornOpen}>
+              <PopoverTrigger asChild>
+                <button
+                  type="button"
+                  className="flex h-8 flex-1 items-center justify-between rounded-md border border-input bg-background px-2.5 text-[12.5px] text-foreground hover:bg-accent/40"
+                >
+                  <span className={novoForn ? "" : "text-muted-foreground"}>
+                    {novoForn || "Fornecedor"}
+                  </span>
+                  <ChevronsUpDown className="h-3.5 w-3.5 opacity-50" />
+                </button>
+              </PopoverTrigger>
+              <PopoverContent className="w-[280px] p-0" align="start">
+                <Command
+                  filter={(value, search) => {
+                    if (value === "__outro__") return 1;
+                    return value.toLowerCase().includes(search.toLowerCase()) ? 1 : 0;
+                  }}
+                >
+                  <CommandInput placeholder="Buscar fornecedor…" className="h-9" />
+                  <CommandList className="max-h-56">
+                    <CommandEmpty>
+                      <button
+                        type="button"
+                        className="text-[12.5px] text-primary hover:underline"
+                        onClick={() => {
+                          const el = document.querySelector<HTMLInputElement>('[cmdk-input=""]');
+                          const v = el?.value?.trim();
+                          if (v) { setNovoForn(v); setFornOpen(false); }
+                        }}
+                      >
+                        Usar como novo fornecedor
+                      </button>
+                    </CommandEmpty>
+                    <CommandGroup>
+                      {fornecedores.map((f) => (
+                        <CommandItem
+                          key={f.id}
+                          value={f.nome}
+                          onSelect={(val) => { setNovoForn(val); setFornOpen(false); }}
+                        >
+                          {f.nome}
+                        </CommandItem>
+                      ))}
+                      <CommandItem
+                        value="__outro__"
+                        onSelect={() => { setNovoForn("Outro"); setFornOpen(false); }}
+                        className="text-muted-foreground"
+                      >
+                        <Plus className="mr-1.5 h-3.5 w-3.5" /> Outro (digitar)
+                      </CommandItem>
+                    </CommandGroup>
+                  </CommandList>
+                </Command>
+              </PopoverContent>
+            </Popover>
+            {novoForn === "Outro" && (
+              <Input
+                value={novoForn === "Outro" ? "" : novoForn}
+                onChange={(e) => setNovoForn(e.target.value)}
+                placeholder="Nome do fornecedor"
+                className="h-8 flex-1"
+                autoFocus
+              />
+            )}
             <Input value={novoValor} onChange={(e) => setNovoValor(e.target.value)} placeholder="R$" inputMode="decimal" className="h-8 w-24" />
             <Button size="sm" variant="outline" className="h-8 gap-1" onClick={addCotacao} disabled={busy}>
               <Plus className="h-3.5 w-3.5" /> Add
             </Button>
           </div>
+
         </div>
 
         {/* Ações */}

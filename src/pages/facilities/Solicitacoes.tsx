@@ -259,7 +259,12 @@ function SolicitacaoDetail({
   };
 
   const excluirSolic = async () => {
-    if (!confirm(`Excluir a solicitação "${solic.titulo}"?`)) return;
+    if (!confirm(`Excluir a solicitação "${solic.titulo}"?\n\nIsto também removerá o lançamento correspondente no Histórico de compras (se existir).`)) return;
+    // remove compras vinculadas para não ficar "órfão" no Histórico
+    const { error: eCompras } = await db.from("facilities_compras").delete().eq("solicitacao_id", solic.id);
+    if (eCompras) return toast.error(eCompras.message);
+    // remove cotações vinculadas (não há cascade)
+    await db.from("facilities_cotacoes").delete().eq("solicitacao_id", solic.id);
     const { error } = await db.from("facilities_solicitacoes").delete().eq("id", solic.id);
     if (error) return toast.error(error.message);
     toast.success("Excluída");

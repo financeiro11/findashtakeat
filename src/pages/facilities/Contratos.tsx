@@ -211,12 +211,19 @@ export default function Contratos() {
         </div>
       )}
 
-      <ContratoDialog alvo={edit} onClose={() => setEdit(null)} onSaved={load} />
+      <ContratoDialog alvo={edit} fornecedores={fornecedores} onClose={() => setEdit(null)} onSaved={load} />
     </div>
   );
 }
 
-function ContratoDialog({ alvo, onClose, onSaved }: { alvo: Contrato | "novo" | null; onClose: () => void; onSaved: () => void }) {
+function ContratoDialog({
+  alvo, fornecedores, onClose, onSaved,
+}: {
+  alvo: Contrato | "novo" | null;
+  fornecedores: Fornecedor[];
+  onClose: () => void;
+  onSaved: () => void;
+}) {
   const isNovo = alvo === "novo";
   const c = alvo && alvo !== "novo" ? alvo : null;
   const [nome, setNome] = useState("");
@@ -238,6 +245,18 @@ function ContratoDialog({ alvo, onClose, onSaved }: { alvo: Contrato | "novo" | 
     setSemPrazo(c?.sem_prazo ?? false);
   }, [alvo]);
 
+  const fornecedorAtual = useMemo(
+    () => fornecedores.find((f) => f.nome.trim().toLowerCase() === nome.trim().toLowerCase()) ?? null,
+    [fornecedores, nome],
+  );
+  const anexosFornecedor = fornecedorAtual?.contratos ?? [];
+
+  const selecionarFornecedor = (novoNome: string) => {
+    setNome(novoNome);
+    const f = fornecedores.find((x) => x.nome === novoNome);
+    if (f && !categoria && f.categoria) setCategoria(f.categoria);
+  };
+
   const salvar = async () => {
     if (!nome.trim()) { toast.error("Informe o fornecedor"); return; }
     const v = parseValor(valor);
@@ -245,6 +264,7 @@ function ContratoDialog({ alvo, onClose, onSaved }: { alvo: Contrato | "novo" | 
     setBusy(true);
     const payload = {
       fornecedor_nome: nome.trim(),
+      fornecedor_id: fornecedorAtual?.id ?? null,
       descricao: descricao.trim() || null,
       categoria: categoria || null,
       valor_mensal: v,
@@ -270,21 +290,73 @@ function ContratoDialog({ alvo, onClose, onSaved }: { alvo: Contrato | "novo" | 
     onClose(); onSaved();
   };
 
+  const listId = "contratos-fornecedores-list";
+
   return (
     <Dialog open={!!alvo} onOpenChange={(o) => !o && onClose()}>
-      <DialogContent>
+      <DialogContent className="max-w-lg">
         <DialogHeader>
           <DialogTitle>{isNovo ? "Novo contrato" : "Editar contrato"}</DialogTitle>
           <DialogDescription>Serviço recorrente com valor mensal.</DialogDescription>
         </DialogHeader>
-        <div className="space-y-3">
+        <div className="space-y-4">
           <div className="space-y-1.5">
             <Label>Fornecedor</Label>
-            <Input value={nome} onChange={(e) => setNome(e.target.value)} placeholder="Ex.: NetVix Telecom" autoFocus />
+            <Input
+              list={listId}
+              value={nome}
+              onChange={(e) => selecionarFornecedor(e.target.value)}
+              placeholder="Selecione ou digite um fornecedor"
+              autoFocus
+            />
+            <datalist id={listId}>
+              {fornecedores.map((f) => (
+                <option key={f.id} value={f.nome}>{f.categoria ?? ""}</option>
+              ))}
+            </datalist>
+            {fornecedorAtual && (
+              <div className="text-[11px] text-muted-foreground">
+                Vinculado ao cadastro de fornecedores
+                {fornecedorAtual.cnpj ? ` — CNPJ ${fornecedorAtual.cnpj}` : ""}
+              </div>
+            )}
           </div>
+
+          {anexosFornecedor.length > 0 && (
+            <div className="rounded-md border border-border bg-muted/30 p-3">
+              <div className="mb-2 flex items-center gap-1.5 text-[12px] font-medium text-foreground">
+                <Paperclip className="h-3.5 w-3.5" />
+                Contratos anexados no fornecedor
+              </div>
+              <div className="space-y-1">
+                {anexosFornecedor.map((a, i) => (
+                  <a
+                    key={i}
+                    href={a.url}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="flex items-center gap-1.5 text-[12px] text-foreground hover:text-primary hover:underline"
+                  >
+                    <FileText className="h-3 w-3 shrink-0 text-muted-foreground" />
+                    <span className="truncate">{a.nome}</span>
+                  </a>
+                ))}
+              </div>
+              <div className="mt-2 text-[11px] text-muted-foreground">
+                Para adicionar ou remover arquivos, edite este fornecedor na aba Fornecedores.
+              </div>
+            </div>
+          )}
+
           <div className="space-y-1.5">
             <Label>Descrição</Label>
-            <Input value={descricao} onChange={(e) => setDescricao(e.target.value)} placeholder="Ex.: Internet dedicada 500 Mb — escritório" />
+            <Textarea
+              value={descricao}
+              onChange={(e) => setDescricao(e.target.value)}
+              placeholder="Ex.: Internet dedicada 500 Mb — escritório"
+              rows={3}
+              className="resize-none"
+            />
           </div>
           <div className="grid grid-cols-2 gap-3">
             <div className="space-y-1.5">

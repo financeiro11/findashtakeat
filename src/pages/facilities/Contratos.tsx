@@ -1,6 +1,6 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
-import { Plus } from "lucide-react";
+import { Plus, Paperclip, FileText } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -12,7 +12,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
 import { FacToolbar } from "./NovaSolicitacaoDialog";
 import { CatDot } from "./components";
-import { db, fmtBRL, parseValor, CATEGORIAS, type Contrato } from "./lib";
+import { db, fmtBRL, parseValor, CATEGORIAS, type Contrato, type Fornecedor } from "./lib";
 
 const STATUS_STYLE: Record<string, string> = {
   ativo: "bg-emerald-50 text-emerald-700",

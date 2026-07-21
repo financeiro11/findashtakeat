@@ -4,6 +4,7 @@ import { Plus, Paperclip, FileText } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription,
@@ -49,24 +50,35 @@ type ContratoRow = ContratoNormal | ContratoAnexado;
 export default function Contratos() {
   const [loading, setLoading] = useState(true);
   const [contratos, setContratos] = useState<Contrato[]>([]);
-  const [fornecedoresContrato, setFornecedoresContrato] = useState<Fornecedor[]>([]);
+  const [fornecedores, setFornecedores] = useState<Fornecedor[]>([]);
   const [edit, setEdit] = useState<Contrato | "novo" | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
     const [ct, fn] = await Promise.all([
       db.from("facilities_contratos").select("*").order("valor_mensal", { ascending: false }),
-      db.from("facilities_fornecedores").select("*").eq("tem_contrato", true),
+      db.from("facilities_fornecedores").select("*").order("nome"),
     ]);
     setContratos((ct.data as Contrato[]) ?? []);
-    // só entram os que têm contrato ativo E anexo
-    const comAnexo = ((fn.data as Fornecedor[]) ?? []).filter(
-      (f) => Array.isArray(f.contratos) && f.contratos.length > 0,
-    );
-    setFornecedoresContrato(comAnexo);
+    setFornecedores((fn.data as Fornecedor[]) ?? []);
     setLoading(false);
   }, []);
   useEffect(() => { load(); }, [load]);
+
+  // fornecedores com contrato ativo E arquivos anexados
+  const fornecedoresContrato = useMemo(
+    () => fornecedores.filter((f) => f.tem_contrato && Array.isArray(f.contratos) && f.contratos.length > 0),
+    [fornecedores],
+  );
+
+  // mapa nome (normalizado) → anexos, para enriquecer contratos formais que tenham arquivo no fornecedor
+  const anexosPorNome = useMemo(() => {
+    const m = new Map<string, { nome: string; url: string }[]>();
+    for (const f of fornecedoresContrato) {
+      m.set(f.nome.trim().toLowerCase(), f.contratos.map((a) => ({ nome: a.nome, url: a.url })));
+    }
+    return m;
+  }, [fornecedoresContrato]);
 
   const linhas: ContratoRow[] = useMemo(() => {
     const nomesContrato = new Set(contratos.map((c) => c.fornecedor_nome.trim().toLowerCase()));
@@ -113,6 +125,7 @@ export default function Contratos() {
           {linhas.map((row) => {
             if (row.kind === "contrato") {
               const c = row.data;
+              const anexos = anexosPorNome.get(c.fornecedor_nome.trim().toLowerCase()) ?? [];
               return (
                 <button key={c.id} onClick={() => setEdit(c)} className="card-surface flex h-full flex-col p-5 text-left transition-colors hover:border-primary/40">
                   <div className="flex items-start justify-between gap-2">
@@ -132,8 +145,31 @@ export default function Contratos() {
                     {fmtBRL(c.valor_mensal)}
                     <span className="ml-1 text-[12px] font-normal text-muted-foreground">/mês</span>
                   </div>
+                  {anexos.length > 0 && (
+                    <div className="mt-3 space-y-1 border-t border-border pt-3">
+                      {anexos.slice(0, 3).map((a, i) => (
+                        <a
+                          key={i}
+                          href={a.url}
+                          target="_blank"
+                          rel="noreferrer"
+                          onClick={(e) => e.stopPropagation()}
+                          className="flex items-center gap-1.5 text-[12px] text-foreground hover:text-primary hover:underline"
+                        >
+                          <FileText className="h-3 w-3 shrink-0 text-muted-foreground" />
+                          <span className="truncate">{a.nome}</span>
+                        </a>
+                      ))}
+                      {anexos.length > 3 && (
+                        <div className="text-[11px] text-muted-foreground">+{anexos.length - 3} arquivo(s)</div>
+                      )}
+                    </div>
+                  )}
                   <div className="mt-auto flex items-center justify-between gap-2 border-t border-border pt-3 text-[12px]">
-                    <span className="truncate text-muted-foreground">{prazoTexto(c)}</span>
+                    <span className="inline-flex items-center gap-1 truncate text-muted-foreground">
+                      {anexos.length > 0 && <Paperclip className="h-3 w-3 shrink-0" />}
+                      {prazoTexto(c)}
+                    </span>
                     <CatDot cat={c.categoria} label />
                   </div>
                 </button>
@@ -175,12 +211,19 @@ export default function Contratos() {
         </div>
       )}
 
-      <ContratoDialog alvo={edit} onClose={() => setEdit(null)} onSaved={load} />
+      <ContratoDialog alvo={edit} fornecedores={fornecedores} onClose={() => setEdit(null)} onSaved={load} />
     </div>
   );
 }
 
-function ContratoDialog({ alvo, onClose, onSaved }: { alvo: Contrato | "novo" | null; onClose: () => void; onSaved: () => void }) {
+function ContratoDialog({
+  alvo, fornecedores, onClose, onSaved,
+}: {
+  alvo: Contrato | "novo" | null;
+  fornecedores: Fornecedor[];
+  onClose: () => void;
+  onSaved: () => void;
+}) {
   const isNovo = alvo === "novo";
   const c = alvo && alvo !== "novo" ? alvo : null;
   const [nome, setNome] = useState("");
@@ -202,6 +245,18 @@ function ContratoDialog({ alvo, onClose, onSaved }: { alvo: Contrato | "novo" | 
     setSemPrazo(c?.sem_prazo ?? false);
   }, [alvo]);
 
+  const fornecedorAtual = useMemo(
+    () => fornecedores.find((f) => f.nome.trim().toLowerCase() === nome.trim().toLowerCase()) ?? null,
+    [fornecedores, nome],
+  );
+  const anexosFornecedor = fornecedorAtual?.contratos ?? [];
+
+  const selecionarFornecedor = (novoNome: string) => {
+    setNome(novoNome);
+    const f = fornecedores.find((x) => x.nome === novoNome);
+    if (f && !categoria && f.categoria) setCategoria(f.categoria);
+  };
+
   const salvar = async () => {
     if (!nome.trim()) { toast.error("Informe o fornecedor"); return; }
     const v = parseValor(valor);
@@ -209,6 +264,7 @@ function ContratoDialog({ alvo, onClose, onSaved }: { alvo: Contrato | "novo" | 
     setBusy(true);
     const payload = {
       fornecedor_nome: nome.trim(),
+      fornecedor_id: fornecedorAtual?.id ?? null,
       descricao: descricao.trim() || null,
       categoria: categoria || null,
       valor_mensal: v,
@@ -234,21 +290,73 @@ function ContratoDialog({ alvo, onClose, onSaved }: { alvo: Contrato | "novo" | 
     onClose(); onSaved();
   };
 
+  const listId = "contratos-fornecedores-list";
+
   return (
     <Dialog open={!!alvo} onOpenChange={(o) => !o && onClose()}>
-      <DialogContent>
+      <DialogContent className="max-w-lg">
         <DialogHeader>
           <DialogTitle>{isNovo ? "Novo contrato" : "Editar contrato"}</DialogTitle>
           <DialogDescription>Serviço recorrente com valor mensal.</DialogDescription>
         </DialogHeader>
-        <div className="space-y-3">
+        <div className="space-y-4">
           <div className="space-y-1.5">
             <Label>Fornecedor</Label>
-            <Input value={nome} onChange={(e) => setNome(e.target.value)} placeholder="Ex.: NetVix Telecom" autoFocus />
+            <Input
+              list={listId}
+              value={nome}
+              onChange={(e) => selecionarFornecedor(e.target.value)}
+              placeholder="Selecione ou digite um fornecedor"
+              autoFocus
+            />
+            <datalist id={listId}>
+              {fornecedores.map((f) => (
+                <option key={f.id} value={f.nome}>{f.categoria ?? ""}</option>
+              ))}
+            </datalist>
+            {fornecedorAtual && (
+              <div className="text-[11px] text-muted-foreground">
+                Vinculado ao cadastro de fornecedores
+                {fornecedorAtual.cnpj ? ` — CNPJ ${fornecedorAtual.cnpj}` : ""}
+              </div>
+            )}
           </div>
+
+          {anexosFornecedor.length > 0 && (
+            <div className="rounded-md border border-border bg-muted/30 p-3">
+              <div className="mb-2 flex items-center gap-1.5 text-[12px] font-medium text-foreground">
+                <Paperclip className="h-3.5 w-3.5" />
+                Contratos anexados no fornecedor
+              </div>
+              <div className="space-y-1">
+                {anexosFornecedor.map((a, i) => (
+                  <a
+                    key={i}
+                    href={a.url}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="flex items-center gap-1.5 text-[12px] text-foreground hover:text-primary hover:underline"
+                  >
+                    <FileText className="h-3 w-3 shrink-0 text-muted-foreground" />
+                    <span className="truncate">{a.nome}</span>
+                  </a>
+                ))}
+              </div>
+              <div className="mt-2 text-[11px] text-muted-foreground">
+                Para adicionar ou remover arquivos, edite este fornecedor na aba Fornecedores.
+              </div>
+            </div>
+          )}
+
           <div className="space-y-1.5">
             <Label>Descrição</Label>
-            <Input value={descricao} onChange={(e) => setDescricao(e.target.value)} placeholder="Ex.: Internet dedicada 500 Mb — escritório" />
+            <Textarea
+              value={descricao}
+              onChange={(e) => setDescricao(e.target.value)}
+              placeholder="Ex.: Internet dedicada 500 Mb — escritório"
+              rows={3}
+              className="resize-none"
+            />
           </div>
           <div className="grid grid-cols-2 gap-3">
             <div className="space-y-1.5">

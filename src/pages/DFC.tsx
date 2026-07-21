@@ -820,7 +820,9 @@ export default function DFC() {
                     <th key={c} className="px-1.5 py-2 text-right text-[10px] font-semibold tracking-[0.06em] text-muted-foreground whitespace-nowrap num min-w-[64px]">
                       <span className="inline-flex items-center justify-end gap-1">
                         {travados.has(c) && (
-                          <Lock className="h-2.5 w-2.5 text-emerald-600" aria-label="Mês travado" title="Mês travado — dado do tracker, não sincroniza com o Omie" />
+                          <span title="Mês travado — dado do tracker, não sincroniza com o Omie" className="inline-flex">
+                            <Lock className="h-2.5 w-2.5 text-emerald-600" aria-label="Mês travado" />
+                          </span>
                         )}
                         {ptLabelFromKey(c).replace("/", " ")}
                       </span>

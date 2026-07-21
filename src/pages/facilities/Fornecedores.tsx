@@ -231,6 +231,7 @@ function FornecedorDialog({ alvo, onClose, onSaved }: { alvo: Fornecedor | "novo
 
   useEffect(() => {
     setNome(f?.nome ?? "");
+    setCnpj(f?.cnpj ?? "");
     setCategoria(f?.categoria ?? "");
     setContato(f?.contato ?? "");
     setTemContrato(f?.tem_contrato ?? false);
@@ -278,9 +279,12 @@ function FornecedorDialog({ alvo, onClose, onSaved }: { alvo: Fornecedor | "novo
 
   const salvar = async () => {
     if (!nome.trim()) { toast.error("Informe o nome"); return; }
+    const cnpjDig = cnpj.replace(/\D/g, "");
+    if (cnpjDig && cnpjDig.length !== 14) { toast.error("CNPJ deve ter 14 dígitos"); return; }
     setBusy(true);
     const payload = {
       nome: nome.trim(),
+      cnpj: cnpjDig ? cnpjDig : null,
       categoria: categoria || null,
       contato: contato.trim() || null,
       tem_contrato: temContrato,
@@ -315,7 +319,17 @@ function FornecedorDialog({ alvo, onClose, onSaved }: { alvo: Fornecedor | "novo
         <div className="space-y-3">
           <div className="space-y-1.5">
             <Label>Nome</Label>
-            <Input value={nome} onChange={(e) => setNome(e.target.value)} placeholder="Ex.: Limpamax Serviços" autoFocus />
+            <Input value={nome} onChange={(e) => setNome(e.target.value)} placeholder="Ex.: Limpamax Serviços" maxLength={120} autoFocus />
+          </div>
+          <div className="space-y-1.5">
+            <Label>CNPJ</Label>
+            <Input
+              value={cnpj}
+              onChange={(e) => setCnpj(formatCnpj(e.target.value))}
+              placeholder="00.000.000/0000-00"
+              inputMode="numeric"
+              maxLength={18}
+            />
           </div>
           <div className="grid grid-cols-2 gap-3">
             <div className="space-y-1.5">

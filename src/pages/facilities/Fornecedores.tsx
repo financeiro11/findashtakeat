@@ -217,6 +217,7 @@ function FornecedorDialog({ alvo, onClose, onSaved }: { alvo: Fornecedor | "novo
   const isNovo = alvo === "novo";
   const f = alvo && alvo !== "novo" ? alvo : null;
   const [nome, setNome] = useState("");
+  const [cnpj, setCnpj] = useState("");
   const [categoria, setCategoria] = useState("");
   const [contato, setContato] = useState("");
   const [temContrato, setTemContrato] = useState(false);

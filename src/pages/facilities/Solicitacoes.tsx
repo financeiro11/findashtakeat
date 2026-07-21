@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
-import { Paperclip, Check, X, Trash2, Plus, ShoppingCart } from "lucide-react";
+import { Paperclip, Check, X, Trash2, Plus, ShoppingCart, ChevronsUpDown, Lock } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -8,14 +8,17 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription,
 } from "@/components/ui/dialog";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useAuth } from "@/hooks/useAuth";
 import { FacToolbar } from "./NovaSolicitacaoDialog";
 import { CatDot, StatusBadge } from "./components";
 import {
-  db, fmtBRL, parseValor, PIPELINE, STATUS_LABEL, FORMA_PAGAMENTO_LABEL,
+  db, fmtBRL, parseValor, PIPELINE, STATUS_LABEL, FORMA_PAGAMENTO_LABEL, LIMITE_APROVACAO,
   type Solicitacao, type Cotacao, type Fornecedor, type SolicStatus,
 } from "./lib";
+
 
 export default function Solicitacoes() {
   const [loading, setLoading] = useState(true);

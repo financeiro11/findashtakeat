@@ -166,6 +166,7 @@ export default function Fornecedores() {
                   {f.tem_contrato && <span className="rounded bg-sky-50 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-sky-700">Contrato</span>}
                 </div>
                 <div className="mt-0.5"><CatDot cat={f.categoria} label /></div>
+                {f.cnpj && <div className="mt-0.5 num text-[11.5px] text-muted-foreground">{formatCnpj(f.cnpj)}</div>}
                 <div className="mt-1 text-[12.5px] text-muted-foreground">{f.contato || "—"}</div>
                 <div className="mt-3 grid grid-cols-3 gap-2 border-t border-border pt-3">
                   <Stat label="Compras" value={String(s.compras)} />

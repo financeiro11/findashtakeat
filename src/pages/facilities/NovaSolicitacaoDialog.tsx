@@ -18,12 +18,12 @@ export function NovaSolicitacaoDialog({ onCreated }: { onCreated?: () => void })
   const [titulo, setTitulo] = useState("");
   const [categoria, setCategoria] = useState<string>("");
   const [valor, setValor] = useState("");
-  const [solicitante, setSolicitante] = useState("");
+  const [solicitante, setSolicitante] = useState("Renan");
   const [observacao, setObservacao] = useState("");
   const [saving, setSaving] = useState(false);
 
   const reset = () => {
-    setTitulo(""); setCategoria(""); setValor(""); setSolicitante(""); setObservacao("");
+    setTitulo(""); setCategoria(""); setValor(""); setSolicitante("Renan"); setObservacao("");
   };
 
   const salvar = async () => {

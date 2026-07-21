@@ -168,10 +168,19 @@ function SolicitacaoDetail({
     setBusy(false);
     if (error) return toast.error(error.message);
     setNovoForn(""); setNovoValor("");
-    // ao adicionar cotação, se ainda estava "solicitado", passa para "em_cotacao"
-    if (solic.status === "solicitado") await setStatus("em_cotacao");
-    else onChanged();
+    // Se o valor desta cotação (ou de alguma já existente) supera o limite, envia para aprovação.
+    const menor = Math.min(v, ...cotacoes.map((c) => Number(c.valor)));
+    const precisaAprovacao = menor > LIMITE_APROVACAO;
+    if (precisaAprovacao && solic.status !== "aprovado" && solic.status !== "aguardando_aprovacao") {
+      await setStatus("aguardando_aprovacao");
+      toast.info(`Compra acima de ${fmtBRL(LIMITE_APROVACAO)} — enviada para aprovação do financeiro.`);
+    } else if (solic.status === "solicitado") {
+      await setStatus("em_cotacao");
+    } else {
+      onChanged();
+    }
   };
+
 
   const escolher = async (id: string) => {
     setBusy(true);

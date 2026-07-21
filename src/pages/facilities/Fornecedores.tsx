@@ -27,6 +27,23 @@ function fmtTamanho(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
+function formatCnpj(v: string): string {
+  const d = v.replace(/\D/g, "").slice(0, 14);
+  const parts = [
+    d.slice(0, 2),
+    d.slice(2, 5),
+    d.slice(5, 8),
+    d.slice(8, 12),
+    d.slice(12, 14),
+  ];
+  let out = parts[0];
+  if (d.length > 2) out += "." + parts[1];
+  if (d.length > 5) out += "." + parts[2];
+  if (d.length > 8) out += "/" + parts[3];
+  if (d.length > 12) out += "-" + parts[4];
+  return out;
+}
+
 interface Stats { compras: number; total: number; ultima: string | null; }
 
 export default function Fornecedores() {

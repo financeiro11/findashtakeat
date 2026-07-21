@@ -103,10 +103,10 @@ export function NovaSolicitacaoDialog({ onCreated }: { onCreated?: () => void })
 // Barra de ações padrão no topo de cada página do módulo.
 export function FacToolbar({
   context, onChanged, children,
-}: { context: string; onChanged?: () => void; children?: React.ReactNode }) {
+}: { context?: string; onChanged?: () => void; children?: React.ReactNode }) {
   return (
     <div className="flex flex-wrap items-center justify-between gap-3">
-      <p className="text-[13px] text-muted-foreground">{context}</p>
+      {context ? <p className="text-[13px] text-muted-foreground">{context}</p> : <span />}
       <div className="flex items-center gap-2">
         {children}
         <NovaSolicitacaoDialog onCreated={onChanged} />

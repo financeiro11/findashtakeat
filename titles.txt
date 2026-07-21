@@ -1,0 +1,31 @@
+Módulo Facilities — Títulos e descrições
+=========================================
+
+Padrão visual
+- Título: h1 text-[20px] font-semibold tracking-tight text-foreground
+- Descrição: p text-[12.5px] text-muted-foreground (logo abaixo do título)
+- Toolbar (FacToolbar) fica após o bloco de título, sem duplicar a descrição.
+
+Aba: Painel (/facilities)
+  Título: Painel de Facilities
+  Descrição: Visão consolidada de compras, aprovações pendentes e gastos por categoria no mês corrente.
+
+Aba: Solicitações (/facilities/solicitacoes)
+  Título: Fluxo de solicitações
+  Descrição: Pipeline de compras — arraste os cards entre as etapas para atualizar o status. Compras acima do limite vão para aprovação.
+
+Aba: Cotações (/facilities/cotacoes)
+  Título: Cotações e evidências
+  Descrição: Compare orçamentos por compra e anexe comprovantes, links e observações para dar rastreabilidade aos valores.
+
+Aba: Fornecedores (/facilities/fornecedores)
+  Título: Catálogo de fornecedores
+  Descrição: Cadastro, histórico de compras e contratos por fornecedor — com filtro por categoria e indicação de contrato ativo.
+
+Aba: Contratos (/facilities/contratos)
+  Título: Contratos ativos
+  Descrição: Serviços recorrentes e acordos com fornecedores — valores mensais, prazos e arquivos anexados.
+
+Aba: Histórico (/facilities/historico)
+  Título: Histórico de compras
+  Descrição: Todas as compras já registradas — filtre por período, forma de pagamento e status da NF, e anexe notas fiscais pendentes.

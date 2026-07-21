@@ -89,7 +89,14 @@ export default function Contratos() {
 
   return (
     <div className="space-y-4 p-5">
-      <FacToolbar context={`Serviços recorrentes · ${fmtBRL(totalMensal)}/mês em contratos ativos`} onChanged={load}>
+      <div>
+        <h1 className="text-[20px] font-semibold tracking-tight text-foreground">Contratos ativos</h1>
+        <p className="mt-0.5 text-[12.5px] text-muted-foreground">
+          Serviços recorrentes e acordos com fornecedores — valores mensais, prazos e arquivos anexados.{" "}
+          <span className="num font-semibold text-foreground">{fmtBRL(totalMensal)}</span>/mês em contratos ativos.
+        </p>
+      </div>
+      <FacToolbar onChanged={load}>
         <Button variant="outline" className="h-9 gap-2" onClick={() => setEdit("novo")}>
           <Plus className="h-4 w-4" /> Novo contrato
         </Button>

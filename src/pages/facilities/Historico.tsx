@@ -104,9 +104,14 @@ export default function Historico() {
 
   return (
     <div className="space-y-4 p-5">
-      <h1 className="text-[22px] font-semibold tracking-tight text-foreground">Histórico de Compras</h1>
+      <div>
+        <h1 className="text-[20px] font-semibold tracking-tight text-foreground">Histórico de compras</h1>
+        <p className="mt-0.5 text-[12.5px] text-muted-foreground">
+          Todas as compras já registradas — filtre por período, forma de pagamento e status da NF, e anexe notas fiscais pendentes.
+        </p>
+      </div>
 
-      <FacToolbar context="Compras realizadas" onChanged={load} />
+      <FacToolbar onChanged={load} />
 
       <div className="card-surface">
         <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border px-5 py-4">

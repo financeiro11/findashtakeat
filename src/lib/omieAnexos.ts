@@ -1,6 +1,12 @@
 import { supabase } from "@/integrations/supabase/client";
 
-const WEBHOOK_URL = import.meta.env.VITE_OMIE_WEBHOOK_URL as string;
+// A URL do webhook não é secreta (o browser a chama direto). O Lovable NÃO injeta
+// variáveis VITE_* no build publicado — por isso o client do Supabase gerado também
+// hardcoda seus valores. Então: usa a env se existir (dev/staging local) e cai no
+// valor de produção quando ela não vier (build do Lovable).
+const WEBHOOK_URL =
+  (import.meta.env.VITE_OMIE_WEBHOOK_URL as string | undefined) ||
+  "https://n8n.codless.cloud/webhook/enviar-anexo-omie";
 
 export type ItemEnvio = { idAuditoria: string; nId: number; driveLink: string; nomeArquivo?: string };
 export type ResItem = { idAuditoria: string; nId: number; status: "ENVIADO" | "JA_ENVIADO" | "ERRO"; detalhe: string };
@@ -36,11 +42,6 @@ export async function buscarProntos(pessoa?: string): Promise<ItemEnvio[]> {
 
 export async function enviarAoOmie(items: ItemEnvio[]): Promise<Resposta> {
   if (!items.length) return { resumo: { total: 0, enviados: 0, jaEnviados: 0, erros: 0 }, itens: [] };
-  // Causa nº 1 de "o botão não chama o fluxo": a env não foi carregada (dev server não reiniciado
-  // depois de editar o .env). Falha alto em vez de fazer um fetch para uma URL "undefined".
-  if (!WEBHOOK_URL) {
-    throw new Error("VITE_OMIE_WEBHOOK_URL não configurada — reinicie o dev server (npm run dev) após editar o .env.");
-  }
   console.info("[omieAnexos] POST", WEBHOOK_URL, `(${items.length} item(s))`, items);
   let res: Response;
   try {

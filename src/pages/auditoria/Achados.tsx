@@ -282,7 +282,15 @@ export default function Achados() {
     setEnviandoMassa(true);
     try {
       const resumo = await enviarProntos(responsavel);
-      toast.success(`${resumo.enviados} enviados · ${resumo.jaEnviados} já enviados · ${resumo.erros} erros`);
+      if (resumo.total === 0) {
+        toast.message(
+          responsavel
+            ? `Nenhum lançamento pendente de ${responsavel} (com comprovante + título do Omie).`
+            : "Nenhum lançamento pendente para enviar (com comprovante + título do Omie).",
+        );
+      } else {
+        toast.success(`${resumo.enviados} enviados · ${resumo.jaEnviados} já enviados · ${resumo.erros} erros`);
+      }
       await load();
     } catch (e: any) {
       toast.error("Falha ao enviar ao Omie: " + (e?.message ?? String(e)), { duration: 10000 });

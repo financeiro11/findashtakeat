@@ -36,13 +36,32 @@ export async function buscarProntos(pessoa?: string): Promise<ItemEnvio[]> {
 
 export async function enviarAoOmie(items: ItemEnvio[]): Promise<Resposta> {
   if (!items.length) return { resumo: { total: 0, enviados: 0, jaEnviados: 0, erros: 0 }, itens: [] };
-  const res = await fetch(WEBHOOK_URL, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ items }),
-  });
-  if (!res.ok) throw new Error("Webhook falhou: " + res.status);
-  return res.json();
+  // Causa nº 1 de "o botão não chama o fluxo": a env não foi carregada (dev server não reiniciado
+  // depois de editar o .env). Falha alto em vez de fazer um fetch para uma URL "undefined".
+  if (!WEBHOOK_URL) {
+    throw new Error("VITE_OMIE_WEBHOOK_URL não configurada — reinicie o dev server (npm run dev) após editar o .env.");
+  }
+  console.info("[omieAnexos] POST", WEBHOOK_URL, `(${items.length} item(s))`, items);
+  let res: Response;
+  try {
+    res = await fetch(WEBHOOK_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ items }),
+    });
+  } catch (e: any) {
+    // Erro de rede/CORS: o browser bloqueia antes de qualquer status HTTP.
+    console.error("[omieAnexos] fetch falhou (rede/CORS):", e);
+    throw new Error("Não foi possível chamar o webhook do n8n (rede ou CORS): " + (e?.message ?? String(e)));
+  }
+  if (!res.ok) {
+    const corpo = await res.text().catch(() => "");
+    console.error("[omieAnexos] webhook HTTP", res.status, corpo);
+    throw new Error(`Webhook falhou: ${res.status}${corpo ? " · " + corpo.slice(0, 300) : ""}`);
+  }
+  const json = (await res.json()) as Resposta;
+  console.info("[omieAnexos] resposta", json?.resumo);
+  return json;
 }
 
 // Grava controle na tabela certa pelo prefixo do id (CART- = base, ACH- = auditoria).

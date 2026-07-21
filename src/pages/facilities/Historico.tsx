@@ -8,8 +8,13 @@ import { FacToolbar } from "./NovaSolicitacaoDialog";
 import { CatDot } from "./components";
 import {
   db, fmtBRL, fmtData, FORMA_PAGAMENTO_LABEL, MESES_PT,
-  type Compra,
+  PAGAMENTO_STATUS_OPTS,
+  type Compra, type PagamentoStatus,
 } from "./lib";
+import {
+  DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import { ChevronDown } from "lucide-react";
 
 type Filtro = { key: string; label: string };
 

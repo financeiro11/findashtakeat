@@ -1322,6 +1322,7 @@ export type Database = {
       facilities_fornecedores: {
         Row: {
           categoria: string | null
+          cnpj: string | null
           contato: string | null
           contratos: Json
           created_at: string
@@ -1334,6 +1335,7 @@ export type Database = {
         }
         Insert: {
           categoria?: string | null
+          cnpj?: string | null
           contato?: string | null
           contratos?: Json
           created_at?: string
@@ -1346,6 +1348,7 @@ export type Database = {
         }
         Update: {
           categoria?: string | null
+          cnpj?: string | null
           contato?: string | null
           contratos?: Json
           created_at?: string

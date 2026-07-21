@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
-import { Paperclip, Check, X, Trash2, Plus, ShoppingCart } from "lucide-react";
+import { Paperclip, Check, X, Trash2, Plus, ShoppingCart, ChevronsUpDown, Lock } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -8,14 +8,17 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription,
 } from "@/components/ui/dialog";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useAuth } from "@/hooks/useAuth";
 import { FacToolbar } from "./NovaSolicitacaoDialog";
 import { CatDot, StatusBadge } from "./components";
 import {
-  db, fmtBRL, parseValor, PIPELINE, STATUS_LABEL, FORMA_PAGAMENTO_LABEL,
+  db, fmtBRL, parseValor, PIPELINE, STATUS_LABEL, FORMA_PAGAMENTO_LABEL, LIMITE_APROVACAO,
   type Solicitacao, type Cotacao, type Fornecedor, type SolicStatus,
 } from "./lib";
+
 
 export default function Solicitacoes() {
   const [loading, setLoading] = useState(true);
@@ -130,6 +133,7 @@ function SolicitacaoDetail({
   const [fornecedores, setFornecedores] = useState<Fornecedor[]>([]);
   const [novoForn, setNovoForn] = useState("");
   const [novoValor, setNovoValor] = useState("");
+  const [fornOpen, setFornOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   // registrar compra
   const [forma, setForma] = useState<string>("cartao_corporativo");
@@ -138,6 +142,7 @@ function SolicitacaoDetail({
     if (solic) db.from("facilities_fornecedores").select("*").order("nome").then((r: any) => setFornecedores(r.data ?? []));
     setNovoForn(""); setNovoValor(""); setForma("cartao_corporativo");
   }, [solic]);
+
 
   if (!solic) return null;
 
@@ -163,10 +168,19 @@ function SolicitacaoDetail({
     setBusy(false);
     if (error) return toast.error(error.message);
     setNovoForn(""); setNovoValor("");
-    // ao adicionar cotação, se ainda estava "solicitado", passa para "em_cotacao"
-    if (solic.status === "solicitado") await setStatus("em_cotacao");
-    else onChanged();
+    // Se o valor desta cotação (ou de alguma já existente) supera o limite, envia para aprovação.
+    const menor = Math.min(v, ...cotacoes.map((c) => Number(c.valor)));
+    const precisaAprovacao = menor > LIMITE_APROVACAO;
+    if (precisaAprovacao && solic.status !== "aprovado" && solic.status !== "aguardando_aprovacao") {
+      await setStatus("aguardando_aprovacao");
+      toast.info(`Compra acima de ${fmtBRL(LIMITE_APROVACAO)} — enviada para aprovação do financeiro.`);
+    } else if (solic.status === "solicitado") {
+      await setStatus("em_cotacao");
+    } else {
+      onChanged();
+    }
   };
+
 
   const escolher = async (id: string) => {
     setBusy(true);
@@ -267,21 +281,77 @@ function SolicitacaoDetail({
             </div>
           )}
           <div className="flex items-center gap-2">
-            <Input
-              list="fac-forn-list"
-              value={novoForn}
-              onChange={(e) => setNovoForn(e.target.value)}
-              placeholder="Fornecedor"
-              className="h-8 flex-1"
-            />
-            <datalist id="fac-forn-list">
-              {fornecedores.map((f) => <option key={f.id} value={f.nome} />)}
-            </datalist>
+            <Popover open={fornOpen} onOpenChange={setFornOpen}>
+              <PopoverTrigger asChild>
+                <button
+                  type="button"
+                  className="flex h-8 flex-1 items-center justify-between rounded-md border border-input bg-background px-2.5 text-[12.5px] text-foreground hover:bg-accent/40"
+                >
+                  <span className={novoForn ? "" : "text-muted-foreground"}>
+                    {novoForn || "Fornecedor"}
+                  </span>
+                  <ChevronsUpDown className="h-3.5 w-3.5 opacity-50" />
+                </button>
+              </PopoverTrigger>
+              <PopoverContent className="w-[280px] p-0" align="start">
+                <Command
+                  filter={(value, search) => {
+                    if (value === "__outro__") return 1;
+                    return value.toLowerCase().includes(search.toLowerCase()) ? 1 : 0;
+                  }}
+                >
+                  <CommandInput placeholder="Buscar fornecedor…" className="h-9" />
+                  <CommandList className="max-h-56">
+                    <CommandEmpty>
+                      <button
+                        type="button"
+                        className="text-[12.5px] text-primary hover:underline"
+                        onClick={() => {
+                          const el = document.querySelector<HTMLInputElement>('[cmdk-input=""]');
+                          const v = el?.value?.trim();
+                          if (v) { setNovoForn(v); setFornOpen(false); }
+                        }}
+                      >
+                        Usar como novo fornecedor
+                      </button>
+                    </CommandEmpty>
+                    <CommandGroup>
+                      {fornecedores.map((f) => (
+                        <CommandItem
+                          key={f.id}
+                          value={f.nome}
+                          onSelect={(val) => { setNovoForn(val); setFornOpen(false); }}
+                        >
+                          {f.nome}
+                        </CommandItem>
+                      ))}
+                      <CommandItem
+                        value="__outro__"
+                        onSelect={() => { setNovoForn("Outro"); setFornOpen(false); }}
+                        className="text-muted-foreground"
+                      >
+                        <Plus className="mr-1.5 h-3.5 w-3.5" /> Outro (digitar)
+                      </CommandItem>
+                    </CommandGroup>
+                  </CommandList>
+                </Command>
+              </PopoverContent>
+            </Popover>
+            {novoForn && !fornecedores.some((f) => f.nome === novoForn) && (
+              <Input
+                value={novoForn === "Outro" ? "" : novoForn}
+                onChange={(e) => setNovoForn(e.target.value)}
+                placeholder="Nome do fornecedor"
+                className="h-8 flex-1"
+              />
+            )}
+
             <Input value={novoValor} onChange={(e) => setNovoValor(e.target.value)} placeholder="R$" inputMode="decimal" className="h-8 w-24" />
             <Button size="sm" variant="outline" className="h-8 gap-1" onClick={addCotacao} disabled={busy}>
               <Plus className="h-3.5 w-3.5" /> Add
             </Button>
           </div>
+
         </div>
 
         {/* Ações */}
@@ -298,19 +368,32 @@ function SolicitacaoDetail({
               </Button>
             </>
           )}
-          {solic.status !== "comprado" && (
-            <div className="flex items-center gap-2">
-              <Select value={forma} onValueChange={setForma}>
-                <SelectTrigger className="h-8 w-[150px] text-[12px]"><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  {Object.entries(FORMA_PAGAMENTO_LABEL).map(([k, v]) => <SelectItem key={k} value={k}>{v}</SelectItem>)}
-                </SelectContent>
-              </Select>
-              <Button size="sm" className="gap-1" onClick={registrarCompra} disabled={busy}>
-                <ShoppingCart className="h-4 w-4" /> Registrar compra
-              </Button>
-            </div>
-          )}
+          {solic.status !== "comprado" && (() => {
+            const escolhida = cotacoes.find((c) => c.escolhida) ?? cotacoes[0];
+            const valorAtual = Number(escolhida?.valor ?? solic.valor ?? 0);
+            const bloqueado = valorAtual > LIMITE_APROVACAO && solic.status !== "aprovado";
+            return (
+              <div className="flex items-center gap-2">
+                <Select value={forma} onValueChange={setForma} disabled={bloqueado}>
+                  <SelectTrigger className="h-8 w-[150px] text-[12px]"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    {Object.entries(FORMA_PAGAMENTO_LABEL).map(([k, v]) => <SelectItem key={k} value={k}>{v}</SelectItem>)}
+                  </SelectContent>
+                </Select>
+                <Button
+                  size="sm"
+                  className="gap-1"
+                  onClick={registrarCompra}
+                  disabled={busy || bloqueado}
+                  title={bloqueado ? `Compra acima de ${fmtBRL(LIMITE_APROVACAO)} — aguardando aprovação` : undefined}
+                >
+                  {bloqueado ? <Lock className="h-4 w-4" /> : <ShoppingCart className="h-4 w-4" />}
+                  {bloqueado ? "Aguardando aprovação" : "Registrar compra"}
+                </Button>
+              </div>
+            );
+          })()}
+
           <button onClick={excluirSolic} className="ml-auto text-[12px] text-muted-foreground hover:text-primary">Excluir</button>
         </div>
       </DialogContent>

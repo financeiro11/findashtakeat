@@ -209,14 +209,20 @@ export default function FacilitiesDashboard() {
                       </div>
                     </div>
                     <div className="num shrink-0 text-[13px] font-semibold text-foreground">{fmtBRL(p.valor)}</div>
-                    <div className="flex shrink-0 gap-1.5">
-                      <Button size="sm" className="h-7 gap-1 bg-emerald-600 px-2 text-white hover:bg-emerald-700" onClick={() => decidir(p.id, true)}>
-                        <Check className="h-3.5 w-3.5" /> Aprovar
-                      </Button>
-                      <Button size="sm" variant="outline" className="h-7 gap-1 px-2 text-muted-foreground" onClick={() => decidir(p.id, false)}>
-                        <X className="h-3.5 w-3.5" /> Recusar
-                      </Button>
-                    </div>
+                    {moduleAccess(profile?.cargo).isAdmin ? (
+                      <div className="flex shrink-0 gap-1.5">
+                        <Button size="sm" className="h-7 gap-1 bg-emerald-600 px-2 text-white hover:bg-emerald-700" onClick={() => decidir(p.id, true)}>
+                          <Check className="h-3.5 w-3.5" /> Aprovar
+                        </Button>
+                        <Button size="sm" variant="outline" className="h-7 gap-1 px-2 text-muted-foreground" onClick={() => decidir(p.id, false)}>
+                          <X className="h-3.5 w-3.5" /> Recusar
+                        </Button>
+                      </div>
+                    ) : (
+                      <span className="shrink-0 rounded-md bg-amber-50 px-2 py-1 text-[10.5px] font-medium text-amber-700">
+                        Aguardando financeiro
+                      </span>
+                    )}
                   </div>
                 );
               })}

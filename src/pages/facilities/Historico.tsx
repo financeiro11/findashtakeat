@@ -82,6 +82,14 @@ export default function Historico() {
     setCompras((prev) => prev.map((x) => x.id === c.id ? { ...x, nf_status: novo } : x));
   };
 
+  const changePagStatus = async (c: Compra, novo: PagamentoStatus) => {
+    if (novo === c.pagamento_status) return;
+    const { error } = await db.from("facilities_compras").update({ pagamento_status: novo }).eq("id", c.id);
+    if (error) return toast.error(error.message);
+    setCompras((prev) => prev.map((x) => x.id === c.id ? { ...x, pagamento_status: novo } : x));
+    toast.success("Status de pagamento atualizado.");
+  };
+
   const anexarNf = async (c: Compra, file: File) => {
     setUploadingId(c.id);
     try {

@@ -15,7 +15,7 @@ import { podeAbrirComprovante } from "@/lib/comprovante";
 import { brl, brlAbbr, fmtDateBR, fmtTrilha, compLabel, MESES_PT_LONG } from "./utils";
 import AjusteSolicitadoModal from "./AjusteSolicitadoModal";
 import SolicitarJustificativasModal from "./SolicitarJustificativasModal";
-import EnviarOmieDialog from "./EnviarOmieDialog";
+import { enviarProntos, enviarUnitario } from "@/lib/omieAnexos";
 
 type Severidade = "Crítico" | "Alto" | "Médio" | "Baixo";
 type Status = "Pendente" | "Em análise" | "Aprovado" | "Reprovado" | "Ajuste solicitado";
@@ -49,6 +49,8 @@ type Row = {
   /** id do título do Omie que casou (nCodTitulo). Preenchido = categoria veio de um
    *  movimento REAL do Omie; vazio = ainda não casado / não confirmado. */
   omie_cod_titulo?: string | null;
+  /** carimbo de quando o comprovante foi enviado ao Omie; !null = já enviado (esconde o botão). */
+  omie_anexo_enviado_em?: string | null;
   /** true = aprovado automaticamente (bate com a nota); vem da base do cartão, não da
    *  tabela `auditoria`, portanto é somente leitura (sem mudança de status). */
   _ro?: boolean;
@@ -139,8 +141,8 @@ export default function Achados() {
   const [sheetHidden, setSheetHidden] = useState(false);
   const [consolidadoOpen, setConsolidadoOpen] = useState(false);
   const [cruzando, setCruzando] = useState(false);
-  const [enviarOmieOpen, setEnviarOmieOpen] = useState(false);
   const [enviandoUm, setEnviandoUm] = useState(false);
+  const [enviandoMassa, setEnviandoMassa] = useState(false);
 
   // Garante que o modal de "Ajuste solicitado" NUNCA venha aberto ao abrir/trocar de lançamento
   useEffect(() => { setAjusteOpen(false); }, [selected?.id]);
@@ -150,13 +152,13 @@ export default function Achados() {
     const [audRes, cartRes] = await Promise.all([
       supabase
         .from("auditoria")
-        .select("id,id_unico,competencia,titulo,area,severidade,valor,responsavel,data_lancamento,descricao,regra,origem,id_transacao,status,trilha,categoria,link_comprovante,omie_categoria_descricao,omie_match_confianca,omie_cod_titulo")
+        .select("id,id_unico,competencia,titulo,area,severidade,valor,responsavel,data_lancamento,descricao,regra,origem,id_transacao,status,trilha,categoria,link_comprovante,omie_categoria_descricao,omie_match_confianca,omie_cod_titulo,omie_anexo_enviado_em")
         .order("data_lancamento", { ascending: false }),
       // Base do cartão: usada para (a) trazer as "aprovadas direto" (status_nf = "OK") e
       // (b) derivar a categoria dos achados que o n8n não classificou (via status_nf/escopo).
       supabase
         .from("auditoria_cartao_lancamentos")
-        .select("id_unico,competencia,referencia,origem,gestor,time,data,estabelecimento,descricao_original,valor,status_nf,status_escopo,arquivo_comprovante,link_comprovante,omie_categoria_descricao,omie_match_confianca,omie_cod_titulo")
+        .select("id_unico,competencia,referencia,origem,gestor,time,data,estabelecimento,descricao_original,valor,status_nf,status_escopo,arquivo_comprovante,link_comprovante,omie_categoria_descricao,omie_match_confianca,omie_cod_titulo,omie_anexo_enviado_em")
         .order("data", { ascending: false })
         .limit(5000),
     ]);
@@ -207,6 +209,7 @@ export default function Achados() {
         // Sem isto, as linhas "COM NF" (vindas do cartão) nunca exibiam o ID do Omie,
         // mesmo com o nCodTitulo gravado na base do cartão.
         omie_cod_titulo: c.omie_cod_titulo ?? null,
+        omie_anexo_enviado_em: c.omie_anexo_enviado_em ?? null,
         _ro: true,
       }));
 
@@ -272,45 +275,44 @@ export default function Achados() {
     });
   }, [periodRows, filtro, fSev, fArea, fRegra, fCat, fResp, busca]);
 
-  // Recorte do "Enviar comprovantes ao Omie": os lançamentos VISÍVEIS com os filtros atuais.
-  // Antes o botão ignorava fatura/responsável e varria tudo — isto amarra ao que está na tela.
-  // Duas chaves: id_transacao (cartão) e achado_id (achados sem vínculo, ex.: fatura de Julho).
-  const escopoOmie = useMemo(
-    () => ({
-      idsUnicos: Array.from(new Set(filtered.map(r => r.id_transacao).filter(Boolean))) as string[],
-      achadoIds: filtered.filter(r => r.id > 0).map(r => r.id),
-    }),
-    [filtered],
-  );
-  const escopoOmieLabel = useMemo(
-    () => [compLabel(competencia), fResp !== "todas" ? fResp : null].filter(Boolean).join(" · "),
-    [competencia, fResp],
-  );
+  // Envio em massa via webhook do n8n: manda TODOS os pendentes (base do cartão + achados)
+  // do responsável selecionado — junho + julho, independente da fatura na tela (intencional).
+  const enviarMassaOmie = async () => {
+    const responsavel = fResp === "todas" ? undefined : fResp;
+    setEnviandoMassa(true);
+    try {
+      const resumo = await enviarProntos(responsavel);
+      toast.success(`${resumo.enviados} enviados · ${resumo.jaEnviados} já enviados · ${resumo.erros} erros`);
+      await load();
+    } catch (e: any) {
+      toast.error("Falha ao enviar ao Omie: " + (e?.message ?? String(e)), { duration: 10000 });
+    } finally {
+      setEnviandoMassa(false);
+    }
+  };
 
   // Envio individual pelo drawer: manda só o anexo deste lançamento para o título do Omie.
-  // Achado real (id > 0) casa por achado_id; linha sintética do cartão (id < 0) por id_transacao.
   const enviarUmOmie = async (row: Row) => {
-    const escopo = row.id > 0
-      ? { achadoIds: [row.id], idsUnicos: [] as string[] }
-      : { achadoIds: [] as number[], idsUnicos: row.id_transacao ? [row.id_transacao] : [] };
-    if (!escopo.achadoIds.length && !escopo.idsUnicos.length) {
-      toast.error("Este lançamento não pode ser identificado para envio.");
+    if (!row.link_comprovante || !row.omie_cod_titulo) {
+      toast.error("Lançamento sem comprovante ou sem título do Omie.");
       return;
     }
     setEnviandoUm(true);
-    toast.message("Enviando anexo ao Omie… (pode levar até ~1 min)");
     try {
-      const { data, error } = await supabase.functions.invoke("omie-anexar-comprovante", {
-        body: { action: "enviar", escopo, todos: true },
+      const resumo = await enviarUnitario({
+        id_unico: row.id_unico,
+        omie_cod_titulo: row.omie_cod_titulo,
+        link_comprovante: row.link_comprovante,
       });
-      if (error) throw new Error(error.message);
-      const d = data as any;
-      if (d?.error) throw new Error(d.error);
-      if (d.enviados) { toast.success("Comprovante anexado no Omie."); await load(); }
-      else if (d.falhas) toast.error("Falha: " + (d.detalhe_falhas?.[0]?.erro ?? "desconhecida"), { duration: 12000 });
-      else toast.message("Nada foi enviado — este lançamento não é elegível (sem comprovante ou sem título casado).");
+      toast.success(`${resumo.enviados} enviados · ${resumo.jaEnviados} já enviados · ${resumo.erros} erros`);
+      // Reflete localmente para o botão sumir sem esperar o reload (omie_anexo_enviado_em passa a ter valor).
+      if (resumo.enviados + resumo.jaEnviados > 0) {
+        const agora = new Date().toISOString();
+        setSelected(s => s && s.id === row.id ? { ...s, omie_anexo_enviado_em: agora } : s);
+      }
+      await load();
     } catch (e: any) {
-      toast.error("Falha ao enviar: " + e.message, { duration: 10000 });
+      toast.error("Falha ao enviar ao Omie: " + (e?.message ?? String(e)), { duration: 10000 });
     } finally {
       setEnviandoUm(false);
     }
@@ -500,13 +502,15 @@ export default function Achados() {
               </Tooltip>
             </TooltipProvider>
             <Button
-              onClick={() => setEnviarOmieOpen(true)}
-              className="h-9 text-white hover:opacity-90"
+              onClick={enviarMassaOmie}
+              disabled={enviandoMassa}
+              className="h-9 text-white hover:opacity-90 disabled:opacity-60"
               style={{ backgroundColor: "#1D63C7" }}
-              title="Anexa no título do Omie os comprovantes dos achados Aprovados"
+              title="Envia ao Omie os comprovantes pendentes (base do cartão + achados) do responsável selecionado — todas as faturas"
             >
-              <Paperclip className="h-4 w-4 mr-2" />
-              Enviar comprovantes ao Omie
+              {enviandoMassa
+                ? <><Loader2 className="h-4 w-4 mr-2 animate-spin" /> Enviando…</>
+                : <><Paperclip className="h-4 w-4 mr-2" /> {fResp === "todas" ? "Enviar comprovantes ao Omie" : `Enviar comprovantes ao Omie (${fResp})`}</>}
             </Button>
           </div>
           <p className="text-sm text-muted-foreground mt-1">Achados financeiros com workflow de análise e aprovação.</p>
@@ -850,24 +854,21 @@ export default function Achados() {
                           : "—";
                       })()}
                     </div>
-                    {/* Envio individual: manda SÓ o anexo deste lançamento para o título do Omie. */}
-                    {(() => {
-                      const comp = selected.link_comprovante || origemCart?.link_comprovante || null;
-                      if (!podeAbrirComprovante(comp)) return null;
-                      return (
-                        <Button
-                          size="sm"
-                          onClick={() => enviarUmOmie(selected)}
-                          disabled={enviandoUm}
-                          className="mt-2 h-8 text-[12px] text-white"
-                          style={{ backgroundColor: "#1D63C7" }}
-                        >
-                          {enviandoUm
-                            ? <><Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> Enviando…</>
-                            : <><Paperclip className="mr-1.5 h-3.5 w-3.5" /> Enviar anexo ao Omie</>}
-                        </Button>
-                      );
-                    })()}
+                    {/* Envio individual: manda SÓ o anexo deste lançamento para o título do Omie.
+                        Só aparece com comprovante + título do Omie e enquanto não foi enviado. */}
+                    {selected.link_comprovante && selected.omie_cod_titulo && !selected.omie_anexo_enviado_em && (
+                      <Button
+                        size="sm"
+                        onClick={() => enviarUmOmie(selected)}
+                        disabled={enviandoUm}
+                        className="mt-2 h-8 text-[12px] text-white"
+                        style={{ backgroundColor: "#1D63C7" }}
+                      >
+                        {enviandoUm
+                          ? <><Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> Enviando…</>
+                          : <><Paperclip className="mr-1.5 h-3.5 w-3.5" /> Enviar ao Omie</>}
+                      </Button>
+                    )}
                   </div>
                 </div>
 
@@ -981,15 +982,6 @@ export default function Achados() {
           responsavel={fResp}
         />
       )}
-
-      <EnviarOmieDialog
-        open={enviarOmieOpen}
-        onOpenChange={setEnviarOmieOpen}
-        onDone={load}
-        escopo={escopoOmie}
-        escopoLabel={escopoOmieLabel}
-      />
-
 
       <Dialog open={!!confirm} onOpenChange={(o) => { if (!o) { setConfirm(null); setComentario(""); } }}>
         <DialogContent>

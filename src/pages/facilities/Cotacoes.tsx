@@ -56,6 +56,12 @@ export default function Cotacoes() {
 
   return (
     <div className="space-y-4 p-5">
+      <div>
+        <h1 className="text-[18px] font-semibold text-foreground">Cotações e evidências</h1>
+        <p className="mt-0.5 text-[12.5px] text-muted-foreground">
+          Compare orçamentos e anexe comprovantes, links e observações para rastreabilidade dos valores.
+        </p>
+      </div>
       <FacToolbar context="Comparativo de orçamentos por compra · clique numa cotação para anexar comprovantes" onChanged={load}>
         <div className="flex items-center rounded-md border border-border p-0.5">
           <button onClick={() => setView("cards")} className={cn("flex items-center gap-1 rounded px-2.5 py-1 text-[12px]", view === "cards" ? "bg-primary text-primary-foreground" : "text-muted-foreground")}>

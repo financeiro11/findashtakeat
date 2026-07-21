@@ -1160,6 +1160,7 @@ export type Database = {
           id: string
           item: string
           nf_status: string
+          nf_url: string | null
           solicitacao_id: string | null
           valor: number
         }
@@ -1173,6 +1174,7 @@ export type Database = {
           id?: string
           item: string
           nf_status?: string
+          nf_url?: string | null
           solicitacao_id?: string | null
           valor: number
         }
@@ -1186,6 +1188,7 @@ export type Database = {
           id?: string
           item?: string
           nf_status?: string
+          nf_url?: string | null
           solicitacao_id?: string | null
           valor?: number
         }

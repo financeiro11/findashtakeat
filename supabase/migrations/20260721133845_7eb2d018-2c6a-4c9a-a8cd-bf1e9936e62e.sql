@@ -1,0 +1,1 @@
+ALTER TABLE public.facilities_compras ADD COLUMN IF NOT EXISTS nf_url TEXT;

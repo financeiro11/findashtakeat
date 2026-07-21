@@ -138,7 +138,13 @@ export default function FacilitiesDashboard() {
 
   return (
     <div className="space-y-4 p-5">
-      <FacToolbar context={`Visão consolidada · compras e fornecedores · ${nomeMes} ${anoAtual}`} onChanged={load} />
+      <div>
+        <h1 className="text-[20px] font-semibold tracking-tight text-foreground">Painel de Facilities</h1>
+        <p className="mt-0.5 text-[12.5px] text-muted-foreground">
+          Visão consolidada de compras, aprovações pendentes e gastos por categoria — {nomeMes} {anoAtual}.
+        </p>
+      </div>
+      <FacToolbar onChanged={load} />
 
       {/* KPIs */}
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">

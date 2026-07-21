@@ -57,7 +57,7 @@ export default function Cotacoes() {
   return (
     <div className="space-y-4 p-5">
       <div>
-        <h1 className="text-[20px] font-semibold tracking-tight text-foreground">Cotações e evidências</h1>
+        <h1 className="text-[28px] font-semibold tracking-tight text-foreground">Cotações e evidências</h1>
         <p className="mt-0.5 text-[12.5px] text-muted-foreground">
           Compare orçamentos por compra e anexe comprovantes, links e observações para dar rastreabilidade aos valores.
         </p>

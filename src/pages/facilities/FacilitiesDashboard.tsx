@@ -139,7 +139,7 @@ export default function FacilitiesDashboard() {
   return (
     <div className="space-y-4 p-5">
       <div>
-        <h1 className="text-[20px] font-semibold tracking-tight text-foreground">Painel de Facilities</h1>
+        <h1 className="text-[28px] font-semibold tracking-tight text-foreground">Painel de Facilities</h1>
         <p className="mt-0.5 text-[12.5px] text-muted-foreground">
           Visão consolidada de compras, aprovações pendentes e gastos por categoria — {nomeMes} {anoAtual}.
         </p>

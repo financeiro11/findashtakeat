@@ -190,6 +190,7 @@ export type Database = {
           link_comprovante: string | null
           omie_categoria_codigo: string | null
           omie_categoria_descricao: string | null
+          omie_cod_titulo: string | null
           omie_match_confianca: string | null
           omie_matched_em: string | null
           origem: string | null
@@ -216,6 +217,7 @@ export type Database = {
           link_comprovante?: string | null
           omie_categoria_codigo?: string | null
           omie_categoria_descricao?: string | null
+          omie_cod_titulo?: string | null
           omie_match_confianca?: string | null
           omie_matched_em?: string | null
           origem?: string | null
@@ -242,6 +244,7 @@ export type Database = {
           link_comprovante?: string | null
           omie_categoria_codigo?: string | null
           omie_categoria_descricao?: string | null
+          omie_cod_titulo?: string | null
           omie_match_confianca?: string | null
           omie_matched_em?: string | null
           origem?: string | null

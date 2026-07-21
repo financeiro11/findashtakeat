@@ -68,6 +68,10 @@ export default function Fornecedores() {
 
   return (
     <div className="space-y-4 p-5">
+      <div>
+        <h1 className="text-[20px] font-semibold text-foreground">Catálogo de Fornecedores</h1>
+        <p className="text-[12.5px] text-muted-foreground">Cadastro, histórico de compras e contratos por fornecedor.</p>
+      </div>
       <FacToolbar context={`${ativos.length} fornecedor(es) ativo(s)`} onChanged={load}>
         <div className="flex items-center rounded-md border border-border p-0.5">
           <button onClick={() => setView("cards")} className={cn("flex items-center gap-1 rounded px-2.5 py-1 text-[12px]", view === "cards" ? "bg-primary text-primary-foreground" : "text-muted-foreground")}>
@@ -179,6 +183,8 @@ function FornecedorDialog({ alvo, onClose, onSaved }: { alvo: Fornecedor | "novo
   const [contratos, setContratos] = useState<FornecedorAnexo[]>([]);
   const [uploading, setUploading] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [historico, setHistorico] = useState<Compra[]>([]);
+  const [loadingHist, setLoadingHist] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -189,6 +195,23 @@ function FornecedorDialog({ alvo, onClose, onSaved }: { alvo: Fornecedor | "novo
     setObservacao(f?.observacao ?? "");
     setContratos(f?.contratos ?? []);
   }, [alvo]);
+
+  useEffect(() => {
+    if (!f) { setHistorico([]); return; }
+    setLoadingHist(true);
+    (async () => {
+      const { data } = await db
+        .from("facilities_compras")
+        .select("*")
+        .or(`fornecedor_id.eq.${f.id},fornecedor_nome.eq.${f.nome}`)
+        .order("data", { ascending: false });
+      setHistorico((data as Compra[]) ?? []);
+      setLoadingHist(false);
+    })();
+  }, [f?.id]);
+
+  const totalHist = historico.reduce((s, c) => s + Number(c.valor || 0), 0);
+
 
   const anexarArquivos = async (files: FileList | null) => {
     if (!files || files.length === 0) return;
@@ -324,7 +347,46 @@ function FornecedorDialog({ alvo, onClose, onSaved }: { alvo: Fornecedor | "novo
               </div>
             )}
           </div>
+          {f && (
+            <div className="space-y-2 border-t border-border pt-3">
+              <div className="flex items-center justify-between">
+                <Label>Histórico de compras</Label>
+                <span className="text-[11px] text-muted-foreground">
+                  {historico.length} compra(s) · {fmtBRL(totalHist)}
+                </span>
+              </div>
+              {loadingHist ? (
+                <Skeleton className="h-20 rounded-md" />
+              ) : historico.length === 0 ? (
+                <div className="rounded-md border border-dashed border-border py-4 text-center text-[12px] text-muted-foreground">
+                  Nenhuma compra registrada.
+                </div>
+              ) : (
+                <div className="max-h-56 overflow-y-auto rounded-md border border-border">
+                  <table className="w-full border-collapse">
+                    <thead className="sticky top-0 bg-muted/40">
+                      <tr className="text-left text-[10.5px] uppercase tracking-wide text-muted-foreground">
+                        <th className="px-2.5 py-1.5 font-semibold">Data</th>
+                        <th className="px-2.5 py-1.5 font-semibold">Item</th>
+                        <th className="px-2.5 py-1.5 text-right font-semibold">Valor</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {historico.map((c) => (
+                        <tr key={c.id} className="border-t border-border/60">
+                          <td className="px-2.5 py-1.5 text-[11.5px] text-muted-foreground whitespace-nowrap">{fmtData(c.data)}</td>
+                          <td className="px-2.5 py-1.5 text-[12px] text-foreground">{c.item}</td>
+                          <td className="num px-2.5 py-1.5 text-right text-[12px]">{fmtBRL(Number(c.valor || 0), true)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          )}
         </div>
+
         <DialogFooter className="items-center">
           {f && <button onClick={excluir} className="mr-auto text-[12px] text-muted-foreground hover:text-primary">Excluir</button>}
           <Button variant="outline" onClick={onClose} disabled={busy}>Cancelar</Button>

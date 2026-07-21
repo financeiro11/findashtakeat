@@ -88,7 +88,7 @@ export default function Fornecedores() {
     <div className="space-y-4 p-5">
       <div>
         <h1 className="text-[28px] font-semibold tracking-tight text-foreground">Catálogo de fornecedores</h1>
-        <p className="mt-0.5 text-[12.5px] text-muted-foreground">Cadastro, histórico de compras e contratos por fornecedor — filtre por categoria e veja quem tem contrato ativo.</p>
+        <p className="mt-1 text-[14px] text-muted-foreground">Cadastro, histórico de compras e contratos por fornecedor — filtre por categoria e veja quem tem contrato ativo.</p>
       </div>
       <FacToolbar context={`${ativos.length} fornecedor(es) ativo(s)`} onChanged={load}>
         <div className="flex items-center rounded-md border border-border p-0.5">

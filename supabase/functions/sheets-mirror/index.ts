@@ -68,8 +68,38 @@ Deno.serve(async (req) => {
     const action = body?.action ?? "read";
     const spreadsheetId: string = body?.spreadsheetId;
     const sheet: string = body?.sheet;
-    if (!spreadsheetId || !sheet) {
-      return new Response(JSON.stringify({ error: "spreadsheetId e sheet são obrigatórios" }), {
+    if (!spreadsheetId) {
+      return new Response(JSON.stringify({ error: "spreadsheetId é obrigatório" }), {
+        status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
+
+    // List a spreadsheet's tab titles (no specific sheet required). Used to
+    // discover which monthly tabs exist per team in the "Variável" area.
+    if (action === "meta") {
+      const metaKey = `${spreadsheetId}::__meta__`;
+      const cachedMeta = cache.get(metaKey);
+      if (body?.force !== true && cachedMeta && Date.now() - cachedMeta.at < CACHE_TTL_MS) {
+        return new Response(JSON.stringify({ ...cachedMeta.payload, cached: true }), {
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+      const data = await gw(`/spreadsheets/${spreadsheetId}?fields=sheets.properties(title,sheetId,gridProperties(rowCount,columnCount))`);
+      const sheets = (data.sheets ?? []).map((s: any) => ({
+        title: s.properties?.title ?? "",
+        sheetId: s.properties?.sheetId ?? null,
+        rowCount: s.properties?.gridProperties?.rowCount ?? 0,
+        columnCount: s.properties?.gridProperties?.columnCount ?? 0,
+      }));
+      const payload = { sheets };
+      cache.set(metaKey, { at: Date.now(), payload });
+      return new Response(JSON.stringify(payload), {
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
+
+    if (!sheet) {
+      return new Response(JSON.stringify({ error: "sheet é obrigatório" }), {
         status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
     }

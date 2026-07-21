@@ -28,6 +28,7 @@ const inicio: NavItem[] = [
 const operacional: NavItem[] = [
   { title: "Asaas", url: "/asaas", icon: CreditCard },
   { title: "Parceiros", url: "/operacional/parceiros", icon: HandshakeIcon },
+  { title: "Variável", url: "/operacional/variavel", icon: Percent },
   { title: "Reembolsos", url: "/operacional/reembolsos", icon: Receipt },
   { title: "Estornos", url: "/operacional/estornos", icon: Undo2 },
 ];

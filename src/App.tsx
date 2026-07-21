@@ -48,6 +48,7 @@ import Asaas from "./pages/Asaas";
 import Auditoria from "./pages/Auditoria";
 import Reembolsos from "./pages/operacional/Reembolsos";
 import Estornos from "./pages/operacional/Estornos";
+import Variavel from "./pages/operacional/Variavel";
 import FacilitiesDashboard from "./pages/facilities/FacilitiesDashboard";
 import FacilitiesSolicitacoes from "./pages/facilities/Solicitacoes";
 import FacilitiesCotacoes from "./pages/facilities/Cotacoes";
@@ -118,6 +119,7 @@ const App = () => (
               <Route path="/governanca/auditoria" element={<Auditoria />} />
               <Route path="/operacional/reembolsos" element={<Reembolsos />} />
               <Route path="/operacional/estornos" element={<Estornos />} />
+              <Route path="/operacional/variavel" element={<Variavel />} />
               <Route path="/facilities" element={<FacilitiesDashboard />} />
               <Route path="/facilities/solicitacoes" element={<FacilitiesSolicitacoes />} />
               <Route path="/facilities/cotacoes" element={<FacilitiesCotacoes />} />

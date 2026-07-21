@@ -8,8 +8,13 @@ import { FacToolbar } from "./NovaSolicitacaoDialog";
 import { CatDot } from "./components";
 import {
   db, fmtBRL, fmtData, FORMA_PAGAMENTO_LABEL, MESES_PT,
-  type Compra,
+  PAGAMENTO_STATUS_OPTS,
+  type Compra, type PagamentoStatus,
 } from "./lib";
+import {
+  DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import { ChevronDown } from "lucide-react";
 
 type Filtro = { key: string; label: string };
 
@@ -75,6 +80,14 @@ export default function Historico() {
     const { error } = await db.from("facilities_compras").update({ nf_status: novo }).eq("id", c.id);
     if (error) return toast.error(error.message);
     setCompras((prev) => prev.map((x) => x.id === c.id ? { ...x, nf_status: novo } : x));
+  };
+
+  const changePagStatus = async (c: Compra, novo: PagamentoStatus) => {
+    if (novo === c.pagamento_status) return;
+    const { error } = await db.from("facilities_compras").update({ pagamento_status: novo }).eq("id", c.id);
+    if (error) return toast.error(error.message);
+    setCompras((prev) => prev.map((x) => x.id === c.id ? { ...x, pagamento_status: novo } : x));
+    toast.success("Status de pagamento atualizado.");
   };
 
   const anexarNf = async (c: Compra, file: File) => {
@@ -150,6 +163,7 @@ export default function Historico() {
                   <th className="px-4 py-2.5 font-semibold">Item</th>
                   <th className="px-4 py-2.5 font-semibold">Fornecedor</th>
                   <th className="px-4 py-2.5 font-semibold">Pagamento</th>
+                  <th className="px-4 py-2.5 font-semibold">Status pagamento</th>
                   <th className="px-4 py-2.5 font-semibold">NF</th>
                   <th className="px-5 py-2.5 text-right font-semibold">Valor</th>
                 </tr>
@@ -171,6 +185,41 @@ export default function Historico() {
                         <span className="rounded-md border border-border px-2 py-0.5 text-[11.5px] text-foreground">
                           {c.forma_pagamento ? FORMA_PAGAMENTO_LABEL[c.forma_pagamento] : "—"}
                         </span>
+                      </td>
+                      <td className="px-4 py-2.5">
+                        {(() => {
+                          const pag = c.pagamento_status || "pendente";
+                          const opt = PAGAMENTO_STATUS_OPTS.find((o) => o.key === pag) || PAGAMENTO_STATUS_OPTS[0];
+                          return (
+                            <DropdownMenu>
+                              <DropdownMenuTrigger asChild>
+                                <button
+                                  className="inline-flex items-center gap-1 rounded-md px-2 py-0.5 text-[11.5px] font-medium transition-opacity hover:opacity-80"
+                                  style={{ backgroundColor: opt.bg, color: opt.color }}
+                                  title="Alterar status de pagamento"
+                                >
+                                  {opt.label}
+                                  <ChevronDown className="h-3 w-3" />
+                                </button>
+                              </DropdownMenuTrigger>
+                              <DropdownMenuContent align="start" className="min-w-[160px]">
+                                {PAGAMENTO_STATUS_OPTS.map((o) => (
+                                  <DropdownMenuItem
+                                    key={o.key}
+                                    onClick={() => changePagStatus(c, o.key)}
+                                    className="text-[12.5px]"
+                                  >
+                                    <span
+                                      className="mr-2 inline-block h-2 w-2 rounded-full"
+                                      style={{ backgroundColor: o.color }}
+                                    />
+                                    {o.label}
+                                  </DropdownMenuItem>
+                                ))}
+                              </DropdownMenuContent>
+                            </DropdownMenu>
+                          );
+                        })()}
                       </td>
                       <td className="px-4 py-2.5">
                         <div className="flex items-center gap-2">

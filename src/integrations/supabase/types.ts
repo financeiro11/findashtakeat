@@ -1161,6 +1161,7 @@ export type Database = {
           item: string
           nf_status: string
           nf_url: string | null
+          pagamento_status: string
           solicitacao_id: string | null
           valor: number
         }
@@ -1175,6 +1176,7 @@ export type Database = {
           item: string
           nf_status?: string
           nf_url?: string | null
+          pagamento_status?: string
           solicitacao_id?: string | null
           valor: number
         }
@@ -1189,6 +1191,7 @@ export type Database = {
           item?: string
           nf_status?: string
           nf_url?: string | null
+          pagamento_status?: string
           solicitacao_id?: string | null
           valor?: number
         }

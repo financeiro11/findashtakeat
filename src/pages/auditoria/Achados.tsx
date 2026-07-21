@@ -6,7 +6,7 @@ import { Sheet, SheetContent } from "@/components/ui/sheet";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Textarea } from "@/components/ui/textarea";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Download, X, ChevronRight, Check, ExternalLink, Search, Send, RefreshCw, Loader2, Paperclip } from "lucide-react";
+import { Download, X, ChevronRight, Check, ExternalLink, Search, Send, RefreshCw, Loader2, Paperclip, Copy } from "lucide-react";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
@@ -203,6 +203,10 @@ export default function Achados() {
         // (Drive) mora em `link_comprovante`, que a página não estava nem buscando.
         link_comprovante: c.link_comprovante || c.arquivo_comprovante,
         omie_categoria: c.omie_categoria_descricao ?? null,
+        omie_match_confianca: c.omie_match_confianca ?? null,
+        // Sem isto, as linhas "COM NF" (vindas do cartão) nunca exibiam o ID do Omie,
+        // mesmo com o nCodTitulo gravado na base do cartão.
+        omie_cod_titulo: c.omie_cod_titulo ?? null,
         _ro: true,
       }));
 
@@ -693,7 +697,12 @@ export default function Achados() {
                   </TooltipProvider>
                 )}
               </div>
-              <div className="text-xs text-muted-foreground truncate" title={r.omie_categoria || ""}>{r.omie_categoria || "—"}</div>
+              <div className="min-w-0" title={r.omie_categoria || ""}>
+                <div className="text-xs text-muted-foreground truncate">{r.omie_categoria || "—"}</div>
+                {r.omie_cod_titulo && (
+                  <div className="font-mono text-[10px] text-foreground/45 truncate">Omie {r.omie_cod_titulo}</div>
+                )}
+              </div>
               <div className="text-xs text-foreground/70 truncate">{r.origem}</div>
               <div className="text-right num text-sm font-medium">{brl(Number(r.valor || 0))}</div>
               <div className="text-sm text-foreground/80 truncate">{r.area}</div>
@@ -758,7 +767,33 @@ export default function Achados() {
                   <MetaItem label="Data do gasto" value={fmtDateBR(selected.data_lancamento)} />
                   <MetaItem label="Competência" value={compLabel(selected.competencia)} />
                   <MetaItem label="Regra" value={selected.regra} full />
-                  <MetaItem label="ID transação" value={selected.id_transacao || "—"} />
+                  <MetaItem label="ID transação (cartão)" value={selected.id_transacao || "—"} />
+
+                  {/* ID do lançamento no Omie (nCodTitulo) — número que a automação usa.
+                      Dedicado e copiável; antes só aparecia em texto cinza na linha da categoria. */}
+                  <div>
+                    <div className="text-[11px] uppercase tracking-wider text-muted-foreground font-medium">ID Omie (nCodTitulo)</div>
+                    {selected.omie_cod_titulo ? (
+                      <button
+                        type="button"
+                        onClick={async () => {
+                          try {
+                            await navigator.clipboard.writeText(selected.omie_cod_titulo!);
+                            toast.success("ID do Omie copiado");
+                          } catch {
+                            toast.error("Não foi possível copiar");
+                          }
+                        }}
+                        className="mt-1 inline-flex items-center gap-1.5 font-mono text-sm text-foreground hover:text-primary transition"
+                        title="Clique para copiar o ID do Omie"
+                      >
+                        {selected.omie_cod_titulo}
+                        <Copy className="h-3.5 w-3.5 shrink-0" />
+                      </button>
+                    ) : (
+                      <div className="text-sm mt-1 text-muted-foreground" title="Ainda sem título casado no Omie — rode 'Cruzar com Omie'.">—</div>
+                    )}
+                  </div>
 
                   {/* Vínculo com o Omie: a categoria só é "de verdade" quando há um título
                       casado (omie_cod_titulo). Sem id, é apenas a categoria que casaria. */}
@@ -778,9 +813,9 @@ export default function Achados() {
                               confiança {selected.omie_match_confianca}
                             </span>
                           )}
-                          {selected.omie_cod_titulo ? (
-                            <span className="text-[11px] text-muted-foreground">· título Omie {selected.omie_cod_titulo}</span>
-                          ) : (
+                          {/* O número do título vive no campo dedicado "ID Omie" acima; aqui só
+                              sinalizamos se a categoria está ou não confirmada num título real. */}
+                          {!selected.omie_cod_titulo && (
                             <span className="text-[11px] text-amber-600" title="A categoria mostrada é a que casaria por valor/data, mas ainda não foi confirmada num título do Omie. Rode 'Cruzar com Omie'.">
                               · sem título casado (não confirmado)
                             </span>

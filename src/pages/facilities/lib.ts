@@ -54,6 +54,9 @@ export interface Cotacao {
   valor: number;
   escolhida: boolean;
   anexo_url: string | null;
+  link_url: string | null;
+  observacao: string | null;
+  anexos: { nome: string; url: string }[];
   created_at: string;
 }
 

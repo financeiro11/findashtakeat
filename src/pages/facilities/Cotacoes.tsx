@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Check, LayoutGrid, List } from "lucide-react";
+import { Check, LayoutGrid, Link2, List, Paperclip, StickyNote } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
 import { FacToolbar } from "./NovaSolicitacaoDialog";
 import { CatDot } from "./components";
+import { CotacaoEvidenciaDialog } from "./CotacaoEvidenciaDialog";
 import {
   db, fmtBRL, STATUS_LABEL,
   type Solicitacao, type Cotacao,
@@ -21,6 +22,7 @@ export default function Cotacoes() {
   const [view, setView] = useState<"cards" | "lista">("lista");
   const [solicitacoes, setSolicitacoes] = useState<Solicitacao[]>([]);
   const [cotacoes, setCotacoes] = useState<Cotacao[]>([]);
+  const [editing, setEditing] = useState<{ cot: Cotacao; titulo: string } | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -54,7 +56,7 @@ export default function Cotacoes() {
 
   return (
     <div className="space-y-4 p-5">
-      <FacToolbar context="Comparativo de orçamentos por compra · o melhor preço é destacado" onChanged={load}>
+      <FacToolbar context="Comparativo de orçamentos por compra · clique numa cotação para anexar comprovantes" onChanged={load}>
         <div className="flex items-center rounded-md border border-border p-0.5">
           <button onClick={() => setView("cards")} className={cn("flex items-center gap-1 rounded px-2.5 py-1 text-[12px]", view === "cards" ? "bg-primary text-primary-foreground" : "text-muted-foreground")}>
             <LayoutGrid className="h-3.5 w-3.5" /> Cards
@@ -100,7 +102,11 @@ export default function Cotacoes() {
                     if (!c) return <td key={i} className="px-4 py-3 align-top"><CotBox /></td>;
                     return (
                       <td key={i} className="px-4 py-3 align-top">
-                        <CotBox nome={c.fornecedor_nome} valor={Number(c.valor)} best={Number(c.valor) === melhor} chosen={c.escolhida} />
+                        <CotBox
+                          cot={c}
+                          best={Number(c.valor) === melhor}
+                          onClick={() => setEditing({ cot: c, titulo: solic.titulo })}
+                        />
                       </td>
                     );
                   })}
@@ -125,7 +131,12 @@ export default function Cotacoes() {
               <div className="mt-0.5 text-[11.5px] text-muted-foreground">{solic.categoria ?? "—"} · {STATUS_LABEL[solic.status]}</div>
               <div className="mt-3 space-y-1.5">
                 {cots.map((c) => (
-                  <CotBox key={c.id} nome={c.fornecedor_nome} valor={Number(c.valor)} best={Number(c.valor) === melhor} chosen={c.escolhida} />
+                  <CotBox
+                    key={c.id}
+                    cot={c}
+                    best={Number(c.valor) === melhor}
+                    onClick={() => setEditing({ cot: c, titulo: solic.titulo })}
+                  />
                 ))}
               </div>
               {economia > 0 && (
@@ -137,21 +148,52 @@ export default function Cotacoes() {
           ))}
         </div>
       )}
+
+      <CotacaoEvidenciaDialog
+        cotacao={editing?.cot ?? null}
+        solicTitulo={editing?.titulo}
+        open={!!editing}
+        onOpenChange={(v) => { if (!v) setEditing(null); }}
+        onSaved={load}
+      />
     </div>
   );
 }
 
-function CotBox({ nome, valor, best, chosen }: { nome?: string | null; valor?: number; best?: boolean; chosen?: boolean }) {
-  if (nome == null) {
+function CotBox({ cot, best, onClick }: { cot?: Cotacao; best?: boolean; onClick?: () => void }) {
+  if (!cot) {
     return <div className="flex h-[52px] items-center justify-center rounded-md border border-dashed border-border text-muted-foreground/50">—</div>;
   }
+  const anexosLen = Array.isArray(cot.anexos) ? cot.anexos.length : 0;
+  const hasLink = !!cot.link_url;
+  const hasObs = !!cot.observacao;
+  const hasEvidencia = anexosLen > 0 || hasLink || hasObs;
   return (
-    <div className={cn("rounded-md border px-3 py-2", best ? "border-emerald-300 bg-emerald-50/60" : "border-border")}>
+    <button
+      type="button"
+      onClick={onClick}
+      className={cn(
+        "w-full rounded-md border px-3 py-2 text-left transition hover:border-primary/50 hover:shadow-sm",
+        best ? "border-emerald-300 bg-emerald-50/60" : "border-border",
+      )}
+    >
       <div className="flex items-center justify-between gap-2">
-        <span className="truncate text-[11.5px] text-muted-foreground">{nome}</span>
-        {(best || chosen) && <Check className="h-3.5 w-3.5 shrink-0 text-emerald-600" />}
+        <span className="truncate text-[11.5px] text-muted-foreground">{cot.fornecedor_nome ?? "—"}</span>
+        <div className="flex shrink-0 items-center gap-1">
+          {hasLink && <Link2 className="h-3 w-3 text-blue-600" />}
+          {anexosLen > 0 && (
+            <span className="flex items-center gap-0.5 text-[10.5px] text-muted-foreground">
+              <Paperclip className="h-3 w-3" />{anexosLen}
+            </span>
+          )}
+          {hasObs && !anexosLen && !hasLink && <StickyNote className="h-3 w-3 text-amber-600" />}
+          {(best || cot.escolhida) && <Check className="h-3.5 w-3.5 text-emerald-600" />}
+        </div>
       </div>
-      <div className="num text-[13px] font-semibold text-foreground">{fmtBRL(valor)}</div>
-    </div>
+      <div className="num text-[13px] font-semibold text-foreground">{fmtBRL(Number(cot.valor))}</div>
+      {!hasEvidencia && (
+        <div className="mt-0.5 text-[10.5px] text-muted-foreground/70">clique para anexar evidências</div>
+      )}
+    </button>
   );
 }

@@ -1265,31 +1265,40 @@ export type Database = {
       facilities_cotacoes: {
         Row: {
           anexo_url: string | null
+          anexos: Json
           created_at: string
           escolhida: boolean
           fornecedor_id: string | null
           fornecedor_nome: string | null
           id: string
+          link_url: string | null
+          observacao: string | null
           solicitacao_id: string
           valor: number
         }
         Insert: {
           anexo_url?: string | null
+          anexos?: Json
           created_at?: string
           escolhida?: boolean
           fornecedor_id?: string | null
           fornecedor_nome?: string | null
           id?: string
+          link_url?: string | null
+          observacao?: string | null
           solicitacao_id: string
           valor: number
         }
         Update: {
           anexo_url?: string | null
+          anexos?: Json
           created_at?: string
           escolhida?: boolean
           fornecedor_id?: string | null
           fornecedor_nome?: string | null
           id?: string
+          link_url?: string | null
+          observacao?: string | null
           solicitacao_id?: string
           valor?: number
         }

@@ -60,13 +60,30 @@ export async function enviarAoOmie(items: ItemEnvio[]): Promise<Resposta> {
     console.error("[omieAnexos] webhook HTTP", res.status, corpo);
     throw new Error(`Webhook falhou: ${res.status}${corpo ? " · " + corpo.slice(0, 300) : ""}`);
   }
-  const json = (await res.json()) as Resposta;
+  // Lê como texto primeiro: o n8n às vezes responde 200 com corpo VAZIO (nó "Respond to
+  // Webhook" ausente ou em "Respond Immediately") — aí res.json() estoura "Unexpected end
+  // of JSON input". Damos um erro claro em vez do críptico.
+  const raw = await res.text();
+  console.info("[omieAnexos] resposta bruta", res.status, raw);
+  if (!raw.trim()) {
+    throw new Error(
+      `O n8n respondeu vazio (HTTP ${res.status}). No fluxo do n8n, termine num nó "Respond to Webhook" ` +
+      `devolvendo o JSON { resumo, itens }.`,
+    );
+  }
+  let json: Resposta;
+  try {
+    json = JSON.parse(raw) as Resposta;
+  } catch {
+    throw new Error("O n8n respondeu algo que não é JSON: " + raw.slice(0, 200));
+  }
   console.info("[omieAnexos] resposta", json?.resumo);
   return json;
 }
 
 // Grava controle na tabela certa pelo prefixo do id (CART- = base, ACH- = auditoria).
 export async function marcarEnviados(itens: ResItem[]): Promise<void> {
+  if (!Array.isArray(itens) || itens.length === 0) return;
   const now = new Date().toISOString();
   const pick = (re: RegExp) =>
     itens.filter((i) => re.test(i.idAuditoria) && (i.status === "ENVIADO" || i.status === "JA_ENVIADO"))

@@ -12,6 +12,7 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useAuth } from "@/hooks/useAuth";
+import { moduleAccess } from "@/lib/modules";
 import { FacToolbar } from "./NovaSolicitacaoDialog";
 import { CatDot, StatusBadge } from "./components";
 import {

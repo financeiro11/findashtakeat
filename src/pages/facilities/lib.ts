@@ -61,6 +61,14 @@ export interface Cotacao {
   created_at: string;
 }
 
+export type PagamentoStatus =
+  | "pendente"
+  | "agendado"
+  | "pago_parcial"
+  | "pago"
+  | "atrasado"
+  | "estornado";
+
 export interface Compra {
   id: string;
   solicitacao_id: string | null;
@@ -73,8 +81,22 @@ export interface Compra {
   nf_status: "ok" | "pendente";
   nf_url: string | null;
   valor: number;
+  pagamento_status: PagamentoStatus;
   created_at: string;
 }
+
+export const PAGAMENTO_STATUS_OPTS: { key: PagamentoStatus; label: string; color: string; bg: string }[] = [
+  { key: "pendente",     label: "Pendente",       color: "#9a6b00", bg: "#fff4d6" },
+  { key: "agendado",     label: "Agendado",       color: "#1e40af", bg: "#dbeafe" },
+  { key: "pago_parcial", label: "Pago parcial",   color: "#7c3aed", bg: "#ede9fe" },
+  { key: "pago",         label: "Pago",           color: "#047857", bg: "#d1fae5" },
+  { key: "atrasado",     label: "Atrasado",       color: "#b91c1c", bg: "#fee2e2" },
+  { key: "estornado",    label: "Estornado",      color: "#475569", bg: "#e2e8f0" },
+];
+
+export const PAGAMENTO_STATUS_LABEL: Record<PagamentoStatus, string> = Object.fromEntries(
+  PAGAMENTO_STATUS_OPTS.map((o) => [o.key, o.label]),
+) as Record<PagamentoStatus, string>;
 
 export interface Contrato {
   id: string;

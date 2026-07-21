@@ -1,0 +1,1 @@
+ALTER TABLE public.facilities_compras ADD COLUMN IF NOT EXISTS pagamento_status TEXT NOT NULL DEFAULT 'pendente';

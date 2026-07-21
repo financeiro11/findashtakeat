@@ -35,6 +35,7 @@ export default function Fornecedores() {
   const [fornecedores, setFornecedores] = useState<Fornecedor[]>([]);
   const [compras, setCompras] = useState<Compra[]>([]);
   const [edit, setEdit] = useState<Fornecedor | "novo" | null>(null);
+  const [catFiltro, setCatFiltro] = useState<string>("todas");
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -64,7 +65,24 @@ export default function Fornecedores() {
     return m;
   }, [fornecedores, compras]);
 
+  const catCounts = useMemo(() => {
+    const m: Record<string, number> = { todas: fornecedores.length, sem_categoria: 0 };
+    for (const cat of CATEGORIAS) m[cat] = 0;
+    for (const f of fornecedores) {
+      if (f.categoria && m[f.categoria] != null) m[f.categoria] += 1;
+      else if (!f.categoria) m.sem_categoria += 1;
+    }
+    return m;
+  }, [fornecedores]);
+
+  const fornecedoresFiltrados = useMemo(() => {
+    if (catFiltro === "todas") return fornecedores;
+    if (catFiltro === "sem_categoria") return fornecedores.filter((f) => !f.categoria);
+    return fornecedores.filter((f) => f.categoria === catFiltro);
+  }, [fornecedores, catFiltro]);
+
   const ativos = fornecedores.filter((f) => f.status !== "inativo");
+
 
   return (
     <div className="space-y-4 p-5">

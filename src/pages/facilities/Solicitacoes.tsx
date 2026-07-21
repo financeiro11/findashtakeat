@@ -337,15 +337,15 @@ function SolicitacaoDetail({
                 </Command>
               </PopoverContent>
             </Popover>
-            {novoForn === "Outro" && (
+            {novoForn && !fornecedores.some((f) => f.nome === novoForn) && (
               <Input
                 value={novoForn === "Outro" ? "" : novoForn}
                 onChange={(e) => setNovoForn(e.target.value)}
                 placeholder="Nome do fornecedor"
                 className="h-8 flex-1"
-                autoFocus
               />
             )}
+
             <Input value={novoValor} onChange={(e) => setNovoValor(e.target.value)} placeholder="R$" inputMode="decimal" className="h-8 w-24" />
             <Button size="sm" variant="outline" className="h-8 gap-1" onClick={addCotacao} disabled={busy}>
               <Plus className="h-3.5 w-3.5" /> Add

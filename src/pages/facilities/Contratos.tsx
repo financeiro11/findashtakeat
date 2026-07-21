@@ -50,24 +50,35 @@ type ContratoRow = ContratoNormal | ContratoAnexado;
 export default function Contratos() {
   const [loading, setLoading] = useState(true);
   const [contratos, setContratos] = useState<Contrato[]>([]);
-  const [fornecedoresContrato, setFornecedoresContrato] = useState<Fornecedor[]>([]);
+  const [fornecedores, setFornecedores] = useState<Fornecedor[]>([]);
   const [edit, setEdit] = useState<Contrato | "novo" | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
     const [ct, fn] = await Promise.all([
       db.from("facilities_contratos").select("*").order("valor_mensal", { ascending: false }),
-      db.from("facilities_fornecedores").select("*").eq("tem_contrato", true),
+      db.from("facilities_fornecedores").select("*").order("nome"),
     ]);
     setContratos((ct.data as Contrato[]) ?? []);
-    // só entram os que têm contrato ativo E anexo
-    const comAnexo = ((fn.data as Fornecedor[]) ?? []).filter(
-      (f) => Array.isArray(f.contratos) && f.contratos.length > 0,
-    );
-    setFornecedoresContrato(comAnexo);
+    setFornecedores((fn.data as Fornecedor[]) ?? []);
     setLoading(false);
   }, []);
   useEffect(() => { load(); }, [load]);
+
+  // fornecedores com contrato ativo E arquivos anexados
+  const fornecedoresContrato = useMemo(
+    () => fornecedores.filter((f) => f.tem_contrato && Array.isArray(f.contratos) && f.contratos.length > 0),
+    [fornecedores],
+  );
+
+  // mapa nome (normalizado) → anexos, para enriquecer contratos formais que tenham arquivo no fornecedor
+  const anexosPorNome = useMemo(() => {
+    const m = new Map<string, { nome: string; url: string }[]>();
+    for (const f of fornecedoresContrato) {
+      m.set(f.nome.trim().toLowerCase(), f.contratos.map((a) => ({ nome: a.nome, url: a.url })));
+    }
+    return m;
+  }, [fornecedoresContrato]);
 
   const linhas: ContratoRow[] = useMemo(() => {
     const nomesContrato = new Set(contratos.map((c) => c.fornecedor_nome.trim().toLowerCase()));

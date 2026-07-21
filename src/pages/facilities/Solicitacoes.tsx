@@ -396,7 +396,7 @@ function SolicitacaoDetail({
 
         {/* Ações */}
         <div className="flex flex-wrap items-center gap-2 border-t border-border pt-3">
-          {solic.status === "aguardando_aprovacao" && (
+          {solic.status === "aguardando_aprovacao" && moduleAccess(profile?.cargo).isAdmin && (
             <>
               <Button size="sm" className="gap-1 bg-emerald-600 text-white hover:bg-emerald-700" disabled={busy}
                 onClick={() => setStatus("aprovado", { decidido_por: profile?.nome ?? null, decidido_em: new Date().toISOString() })}>
@@ -407,6 +407,11 @@ function SolicitacaoDetail({
                 <X className="h-4 w-4" /> Recusar
               </Button>
             </>
+          )}
+          {solic.status === "aguardando_aprovacao" && !moduleAccess(profile?.cargo).isAdmin && (
+            <span className="rounded-md bg-amber-50 px-2.5 py-1 text-[11.5px] font-medium text-amber-700">
+              Aguardando aprovação do financeiro
+            </span>
           )}
           {solic.status !== "comprado" && (() => {
             const escolhida = cotacoes.find((c) => c.escolhida) ?? cotacoes[0];

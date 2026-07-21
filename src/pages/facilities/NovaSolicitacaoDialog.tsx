@@ -84,7 +84,7 @@ export function NovaSolicitacaoDialog({ onCreated }: { onCreated?: () => void })
           </div>
           <div className="space-y-1.5">
             <Label>Solicitante</Label>
-            <Input value={solicitante} onChange={(e) => setSolicitante(e.target.value)} placeholder={profile?.nome || "Seu nome"} />
+            <Input value={solicitante} onChange={(e) => setSolicitante(e.target.value)} placeholder="Renan" />
           </div>
           <div className="space-y-1.5">
             <Label>Observação</Label>

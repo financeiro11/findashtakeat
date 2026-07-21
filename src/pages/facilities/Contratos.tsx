@@ -36,20 +36,56 @@ function prazoTexto(c: Contrato): string {
   return "—";
 }
 
+type ContratoAnexado = {
+  kind: "anexo";
+  fornecedor_id: string;
+  fornecedor_nome: string;
+  categoria: string | null;
+  anexos: { nome: string; url: string }[];
+};
+type ContratoNormal = { kind: "contrato"; data: Contrato };
+type ContratoRow = ContratoNormal | ContratoAnexado;
+
 export default function Contratos() {
   const [loading, setLoading] = useState(true);
   const [contratos, setContratos] = useState<Contrato[]>([]);
+  const [fornecedoresContrato, setFornecedoresContrato] = useState<Fornecedor[]>([]);
   const [edit, setEdit] = useState<Contrato | "novo" | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
-    const { data } = await db.from("facilities_contratos").select("*").order("valor_mensal", { ascending: false });
-    setContratos((data as Contrato[]) ?? []);
+    const [ct, fn] = await Promise.all([
+      db.from("facilities_contratos").select("*").order("valor_mensal", { ascending: false }),
+      db.from("facilities_fornecedores").select("*").eq("tem_contrato", true),
+    ]);
+    setContratos((ct.data as Contrato[]) ?? []);
+    // só entram os que têm contrato ativo E anexo
+    const comAnexo = ((fn.data as Fornecedor[]) ?? []).filter(
+      (f) => Array.isArray(f.contratos) && f.contratos.length > 0,
+    );
+    setFornecedoresContrato(comAnexo);
     setLoading(false);
   }, []);
   useEffect(() => { load(); }, [load]);
 
-  const totalMensal = contratos.filter((c) => c.status !== "encerrado").reduce((s, c) => s + Number(c.valor_mensal || 0), 0);
+  const linhas: ContratoRow[] = useMemo(() => {
+    const nomesContrato = new Set(contratos.map((c) => c.fornecedor_nome.trim().toLowerCase()));
+    const anexadas: ContratoRow[] = fornecedoresContrato
+      // evita duplicar quando o mesmo fornecedor já tem contrato formal com valor
+      .filter((f) => !nomesContrato.has(f.nome.trim().toLowerCase()))
+      .map((f) => ({
+        kind: "anexo" as const,
+        fornecedor_id: f.id,
+        fornecedor_nome: f.nome,
+        categoria: f.categoria,
+        anexos: f.contratos.map((a) => ({ nome: a.nome, url: a.url })),
+      }));
+    return [...contratos.map((c) => ({ kind: "contrato" as const, data: c })), ...anexadas];
+  }, [contratos, fornecedoresContrato]);
+
+  const totalMensal = contratos
+    .filter((c) => c.status !== "encerrado")
+    .reduce((s, c) => s + Number(c.valor_mensal || 0), 0);
 
   return (
     <div className="space-y-4 p-5">
@@ -61,30 +97,67 @@ export default function Contratos() {
 
       {loading ? (
         <Skeleton className="h-64 rounded-lg" />
-      ) : contratos.length === 0 ? (
+      ) : linhas.length === 0 ? (
         <div className="card-surface py-16 text-center text-[13px] text-muted-foreground">
           Nenhum contrato cadastrado. Clique em <span className="font-medium text-foreground">Novo contrato</span>.
         </div>
       ) : (
         <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
-          {contratos.map((c) => (
-            <button key={c.id} onClick={() => setEdit(c)} className="card-surface p-5 text-left transition-colors hover:border-primary/40">
-              <div className="flex items-start justify-between gap-2">
-                <div className="text-[14px] font-semibold text-foreground">{c.fornecedor_nome}</div>
-                <span className={cn("rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide", STATUS_STYLE[c.status])}>
-                  {STATUS_LABEL[c.status]}
-                </span>
+          {linhas.map((row) => {
+            if (row.kind === "contrato") {
+              const c = row.data;
+              return (
+                <button key={c.id} onClick={() => setEdit(c)} className="card-surface p-5 text-left transition-colors hover:border-primary/40">
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="text-[14px] font-semibold text-foreground">{c.fornecedor_nome}</div>
+                    <span className={cn("rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide", STATUS_STYLE[c.status])}>
+                      {STATUS_LABEL[c.status]}
+                    </span>
+                  </div>
+                  {c.descricao && <div className="mt-0.5 text-[12.5px] text-muted-foreground">{c.descricao}</div>}
+                  <div className="num mt-3 text-[24px] font-bold text-foreground">
+                    {fmtBRL(c.valor_mensal)}<span className="text-[12px] font-normal text-muted-foreground"> /mês</span>
+                  </div>
+                  <div className="mt-3 flex items-center justify-between border-t border-border pt-3 text-[12px]">
+                    <span className="text-muted-foreground">{prazoTexto(c)}</span>
+                    <CatDot cat={c.categoria} label />
+                  </div>
+                </button>
+              );
+            }
+            // linha vinda de Fornecedores (contrato ativo + anexo)
+            return (
+              <div key={`f-${row.fornecedor_id}`} className="card-surface p-5">
+                <div className="flex items-start justify-between gap-2">
+                  <div className="text-[14px] font-semibold text-foreground">{row.fornecedor_nome}</div>
+                  <span className="rounded bg-sky-50 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-sky-700">
+                    Do fornecedor
+                  </span>
+                </div>
+                <div className="mt-0.5 text-[12.5px] text-muted-foreground">Contrato ativo com arquivo anexado</div>
+                <div className="mt-3 space-y-1 border-t border-border pt-3">
+                  {row.anexos.map((a, i) => (
+                    <a
+                      key={i}
+                      href={a.url}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="flex items-center gap-1.5 text-[12px] text-foreground hover:text-primary hover:underline"
+                    >
+                      <FileText className="h-3 w-3 shrink-0 text-muted-foreground" />
+                      <span className="truncate">{a.nome}</span>
+                    </a>
+                  ))}
+                </div>
+                <div className="mt-3 flex items-center justify-between border-t border-border pt-3 text-[12px]">
+                  <span className="inline-flex items-center gap-1 text-muted-foreground">
+                    <Paperclip className="h-3 w-3" /> {row.anexos.length} anexo(s)
+                  </span>
+                  <CatDot cat={row.categoria} label />
+                </div>
               </div>
-              {c.descricao && <div className="mt-0.5 text-[12.5px] text-muted-foreground">{c.descricao}</div>}
-              <div className="num mt-3 text-[24px] font-bold text-foreground">
-                {fmtBRL(c.valor_mensal)}<span className="text-[12px] font-normal text-muted-foreground"> /mês</span>
-              </div>
-              <div className="mt-3 flex items-center justify-between border-t border-border pt-3 text-[12px]">
-                <span className="text-muted-foreground">{prazoTexto(c)}</span>
-                <CatDot cat={c.categoria} label />
-              </div>
-            </button>
-          ))}
+            );
+          })}
         </div>
       )}
 

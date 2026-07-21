@@ -129,7 +129,7 @@ export default function Orcamento() {
       .from("sync_agendamento" as any)
       .select("job_name, hora_atual, hora_pendente, vigente_a_partir")
       .eq("job_name", "omie-orcamento-sync-diario").maybeSingle();
-    const row = data as AgendamentoRow | null;
+    const row = (data as unknown as AgendamentoRow | null);
     setAgendamento(row);
     setNovaHora(String(row?.hora_pendente ?? row?.hora_atual ?? 8));
   }

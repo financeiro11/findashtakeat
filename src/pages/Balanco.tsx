@@ -144,7 +144,7 @@ export default function Balanco() {
         // Processamento é assíncrono no servidor — aguarda o resultado.
         toast.message("Lendo o PDF com IA… isso pode levar até 2 minutos para documentos escaneados.");
         const r = await aguardarExtracao("balanco", periodo);
-        if (!r.ok) throw new Error(r.error);
+        if (!r.ok) throw new Error((r as { ok: false; error: string }).error);
         toast.success(`Balanço processado (${r.contas} contas)`);
         await load();
       } catch (err: any) {

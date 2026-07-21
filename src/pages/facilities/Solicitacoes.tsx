@@ -67,8 +67,8 @@ export default function Solicitacoes() {
   return (
     <div className="space-y-4 p-5">
       <div>
-        <h1 className="text-[20px] font-semibold tracking-tight text-foreground">Fluxo de solicitações</h1>
-        <p className="mt-0.5 text-[12.5px] text-muted-foreground">
+        <h1 className="text-[28px] font-semibold tracking-tight text-foreground">Fluxo de solicitações</h1>
+        <p className="mt-1 text-[14px] text-muted-foreground">
           Pipeline de compras — arraste os cards entre as etapas para atualizar o status.{" "}
           <span className="num font-semibold text-foreground">{emAndamento.length}</span> em andamento ·{" "}
           <span className="num font-semibold text-foreground">{fmtBRL(valorMov)}</span> em movimento.

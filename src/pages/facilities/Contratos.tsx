@@ -90,8 +90,8 @@ export default function Contratos() {
   return (
     <div className="space-y-4 p-5">
       <div>
-        <h1 className="text-[20px] font-semibold tracking-tight text-foreground">Contratos ativos</h1>
-        <p className="mt-0.5 text-[12.5px] text-muted-foreground">
+        <h1 className="text-[28px] font-semibold tracking-tight text-foreground">Contratos ativos</h1>
+        <p className="mt-1 text-[14px] text-muted-foreground">
           Serviços recorrentes e acordos com fornecedores — valores mensais, prazos e arquivos anexados.{" "}
           <span className="num font-semibold text-foreground">{fmtBRL(totalMensal)}</span>/mês em contratos ativos.
         </p>
@@ -121,7 +121,7 @@ export default function Contratos() {
                       {STATUS_LABEL[c.status]}
                     </span>
                   </div>
-                  {c.descricao && <div className="mt-0.5 text-[12.5px] text-muted-foreground">{c.descricao}</div>}
+                  {c.descricao && <div className="mt-1 text-[14px] text-muted-foreground">{c.descricao}</div>}
                   <div className="num mt-3 text-[24px] font-bold text-foreground">
                     {fmtBRL(c.valor_mensal)}<span className="text-[12px] font-normal text-muted-foreground"> /mês</span>
                   </div>
@@ -141,7 +141,7 @@ export default function Contratos() {
                     Do fornecedor
                   </span>
                 </div>
-                <div className="mt-0.5 text-[12.5px] text-muted-foreground">Contrato ativo com arquivo anexado</div>
+                <div className="mt-1 text-[14px] text-muted-foreground">Contrato ativo com arquivo anexado</div>
                 <div className="mt-3 space-y-1 border-t border-border pt-3">
                   {row.anexos.map((a, i) => (
                     <a

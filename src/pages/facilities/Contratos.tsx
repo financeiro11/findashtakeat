@@ -125,6 +125,7 @@ export default function Contratos() {
           {linhas.map((row) => {
             if (row.kind === "contrato") {
               const c = row.data;
+              const anexos = anexosPorNome.get(c.fornecedor_nome.trim().toLowerCase()) ?? [];
               return (
                 <button key={c.id} onClick={() => setEdit(c)} className="card-surface flex h-full flex-col p-5 text-left transition-colors hover:border-primary/40">
                   <div className="flex items-start justify-between gap-2">
@@ -144,8 +145,31 @@ export default function Contratos() {
                     {fmtBRL(c.valor_mensal)}
                     <span className="ml-1 text-[12px] font-normal text-muted-foreground">/mês</span>
                   </div>
+                  {anexos.length > 0 && (
+                    <div className="mt-3 space-y-1 border-t border-border pt-3">
+                      {anexos.slice(0, 3).map((a, i) => (
+                        <a
+                          key={i}
+                          href={a.url}
+                          target="_blank"
+                          rel="noreferrer"
+                          onClick={(e) => e.stopPropagation()}
+                          className="flex items-center gap-1.5 text-[12px] text-foreground hover:text-primary hover:underline"
+                        >
+                          <FileText className="h-3 w-3 shrink-0 text-muted-foreground" />
+                          <span className="truncate">{a.nome}</span>
+                        </a>
+                      ))}
+                      {anexos.length > 3 && (
+                        <div className="text-[11px] text-muted-foreground">+{anexos.length - 3} arquivo(s)</div>
+                      )}
+                    </div>
+                  )}
                   <div className="mt-auto flex items-center justify-between gap-2 border-t border-border pt-3 text-[12px]">
-                    <span className="truncate text-muted-foreground">{prazoTexto(c)}</span>
+                    <span className="inline-flex items-center gap-1 truncate text-muted-foreground">
+                      {anexos.length > 0 && <Paperclip className="h-3 w-3 shrink-0" />}
+                      {prazoTexto(c)}
+                    </span>
                     <CatDot cat={c.categoria} label />
                   </div>
                 </button>

@@ -133,6 +133,7 @@ function SolicitacaoDetail({
   const [fornecedores, setFornecedores] = useState<Fornecedor[]>([]);
   const [novoForn, setNovoForn] = useState("");
   const [novoValor, setNovoValor] = useState("");
+  const [fornOpen, setFornOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   // registrar compra
   const [forma, setForma] = useState<string>("cartao_corporativo");
@@ -141,6 +142,7 @@ function SolicitacaoDetail({
     if (solic) db.from("facilities_fornecedores").select("*").order("nome").then((r: any) => setFornecedores(r.data ?? []));
     setNovoForn(""); setNovoValor(""); setForma("cartao_corporativo");
   }, [solic]);
+
 
   if (!solic) return null;
 

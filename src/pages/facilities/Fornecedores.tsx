@@ -173,7 +173,7 @@ export default function Fornecedores() {
               </tr>
             </thead>
             <tbody>
-              {fornecedores.map((f) => {
+              {fornecedoresFiltrados.map((f) => {
                 const s = statsDe.get(f.id)!;
                 return (
                   <tr key={f.id} className="cursor-pointer border-b border-border/60 last:border-0 hover:bg-muted/30" onClick={() => setEdit(f)}>

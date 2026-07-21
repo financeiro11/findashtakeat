@@ -49,14 +49,33 @@ export default function Solicitacoes() {
 
   const porStatus = (st: SolicStatus) => solicitacoes.filter((s) => s.status === st);
 
+  const [dragId, setDragId] = useState<string | null>(null);
+  const [dragOver, setDragOver] = useState<SolicStatus | null>(null);
+
+  const moverPara = async (id: string, novo: SolicStatus) => {
+    const atual = solicitacoes.find((s) => s.id === id);
+    if (!atual || atual.status === novo) return;
+    // otimista
+    setSolicitacoes((prev) => prev.map((s) => (s.id === id ? { ...s, status: novo } : s)));
+    const { error } = await db.from("facilities_solicitacoes").update({ status: novo }).eq("id", id);
+    if (error) {
+      toast.error(error.message);
+      load();
+    }
+  };
+
   return (
     <div className="space-y-4 p-5">
       <FacToolbar context="Pipeline de compras" onChanged={load} />
 
-      <p className="text-[13px] text-muted-foreground">
-        <span className="num font-semibold text-foreground">{emAndamento.length}</span> solicitações em andamento ·{" "}
-        <span className="num font-semibold text-foreground">{fmtBRL(valorMov)}</span> em movimento
-      </p>
+      <div>
+        <h1 className="text-[20px] font-semibold tracking-tight text-foreground">Fluxo de solicitações</h1>
+        <p className="mt-1 text-[13px] text-muted-foreground">
+          <span className="num font-semibold text-foreground">{emAndamento.length}</span> solicitações em andamento ·{" "}
+          <span className="num font-semibold text-foreground">{fmtBRL(valorMov)}</span> em movimento
+          <span className="ml-2 text-muted-foreground/70">· arraste os cards entre as etapas</span>
+        </p>
+      </div>
 
       {loading ? (
         <Skeleton className="h-[420px] rounded-lg" />
@@ -65,8 +84,21 @@ export default function Solicitacoes() {
           {PIPELINE.map((col) => {
             const itens = porStatus(col.key);
             const soma = itens.reduce((s, x) => s + Number(x.valor || 0), 0);
+            const isOver = dragOver === col.key;
             return (
-              <div key={col.key} className="flex flex-col rounded-lg border border-border bg-muted/20">
+              <div
+                key={col.key}
+                onDragOver={(e) => { e.preventDefault(); if (dragOver !== col.key) setDragOver(col.key); }}
+                onDragLeave={() => { if (dragOver === col.key) setDragOver(null); }}
+                onDrop={(e) => {
+                  e.preventDefault();
+                  const id = e.dataTransfer.getData("text/plain") || dragId;
+                  setDragOver(null);
+                  setDragId(null);
+                  if (id) moverPara(id, col.key);
+                }}
+                className={`flex flex-col rounded-lg border bg-muted/20 transition-colors ${isOver ? "border-primary/60 bg-primary/5" : "border-border"}`}
+              >
                 <div className="flex items-center justify-between border-b border-border px-3 py-2.5">
                   <div className="flex items-center gap-2">
                     <span className="h-2 w-2 rounded-full" style={{ background: col.color }} />
@@ -80,11 +112,19 @@ export default function Solicitacoes() {
                 <div className="flex-1 space-y-2 p-2">
                   {itens.map((it) => {
                     const n = cotCount.get(it.id) ?? 0;
+                    const dragging = dragId === it.id;
                     return (
-                      <button
+                      <div
                         key={it.id}
+                        draggable
+                        onDragStart={(e) => {
+                          setDragId(it.id);
+                          e.dataTransfer.setData("text/plain", it.id);
+                          e.dataTransfer.effectAllowed = "move";
+                        }}
+                        onDragEnd={() => { setDragId(null); setDragOver(null); }}
                         onClick={() => setSel(it)}
-                        className="w-full rounded-md border border-border bg-card p-2.5 text-left transition-colors hover:border-primary/40 hover:shadow-sm"
+                        className={`w-full cursor-grab rounded-md border border-border bg-card p-2.5 text-left transition-colors hover:border-primary/40 hover:shadow-sm active:cursor-grabbing ${dragging ? "opacity-40" : ""}`}
                       >
                         <div className="text-[12.5px] font-medium leading-snug text-foreground">{it.titulo}</div>
                         <div className="mt-0.5 flex items-center gap-1.5 text-[11px] text-muted-foreground">
@@ -98,7 +138,7 @@ export default function Solicitacoes() {
                             </span>
                           )}
                         </div>
-                      </button>
+                      </div>
                     );
                   })}
                   {itens.length === 0 && (
@@ -110,6 +150,7 @@ export default function Solicitacoes() {
           })}
         </div>
       )}
+
 
       <SolicitacaoDetail
         solic={sel}

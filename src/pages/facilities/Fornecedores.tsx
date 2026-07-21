@@ -183,6 +183,8 @@ function FornecedorDialog({ alvo, onClose, onSaved }: { alvo: Fornecedor | "novo
   const [contratos, setContratos] = useState<FornecedorAnexo[]>([]);
   const [uploading, setUploading] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [historico, setHistorico] = useState<Compra[]>([]);
+  const [loadingHist, setLoadingHist] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -193,6 +195,23 @@ function FornecedorDialog({ alvo, onClose, onSaved }: { alvo: Fornecedor | "novo
     setObservacao(f?.observacao ?? "");
     setContratos(f?.contratos ?? []);
   }, [alvo]);
+
+  useEffect(() => {
+    if (!f) { setHistorico([]); return; }
+    setLoadingHist(true);
+    (async () => {
+      const { data } = await db
+        .from("facilities_compras")
+        .select("*")
+        .or(`fornecedor_id.eq.${f.id},fornecedor_nome.eq.${f.nome}`)
+        .order("data", { ascending: false });
+      setHistorico((data as Compra[]) ?? []);
+      setLoadingHist(false);
+    })();
+  }, [f?.id]);
+
+  const totalHist = historico.reduce((s, c) => s + Number(c.valor || 0), 0);
+
 
   const anexarArquivos = async (files: FileList | null) => {
     if (!files || files.length === 0) return;

@@ -693,9 +693,6 @@ export default function Achados() {
                     {r.categoria && (
                       <span className={cn("inline-flex px-1.5 py-0.5 rounded text-[10px] font-medium border", catStyle(r.categoria))}>{r.categoria}</span>
                     )}
-                    <span className={cn("inline-flex px-1.5 py-0.5 rounded text-[10px] font-medium border", sevBadge(r.severidade))}>
-                      {r.severidade}
-                    </span>
                     {r.omie_anexo_enviado_em && (
                       <Paperclip
                         className="h-3 w-3 shrink-0 text-[hsl(152_60%_40%)]"

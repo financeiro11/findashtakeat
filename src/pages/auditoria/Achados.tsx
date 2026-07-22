@@ -697,12 +697,10 @@ export default function Achados() {
                       {r.severidade}
                     </span>
                     {r.omie_anexo_enviado_em && (
-                      <span
-                        className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium border bg-[hsl(152_55%_94%)] text-[hsl(152_60%_28%)] border-[hsl(152_55%_82%)]"
+                      <Paperclip
+                        className="h-3 w-3 shrink-0 text-[hsl(152_60%_40%)]"
                         title={`Anexado ao Omie em ${fmtDateTimeBR(r.omie_anexo_enviado_em)}`}
-                      >
-                        <Paperclip className="h-2.5 w-2.5" /> Anexado ao Omie
-                      </span>
+                      />
                     )}
                   </div>
                 </button>

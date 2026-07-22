@@ -179,7 +179,11 @@ export default function Achados() {
       const omie_match_confianca = orig?.omie_match_confianca ?? r.omie_match_confianca ?? null;
       const omie_cod_titulo = orig?.omie_cod_titulo ?? r.omie_cod_titulo ?? null;
       const categoria = r.categoria || deriveCategoria(r.regra, orig?.status_nf, orig?.status_escopo);
-      return { ...r, categoria, omie_categoria, omie_match_confianca, omie_cod_titulo } as Row;
+      // Achado real muitas vezes tem link_comprovante nulo, mas o lançamento de origem
+      // no cartão traz a URL do Drive. Sem esse fallback, o ícone de "abrir comprovante"
+      // some nas linhas COM NF (Sonorização, Cartório, Fogo de Chão…).
+      const link_comprovante = r.link_comprovante || orig?.link_comprovante || null;
+      return { ...r, categoria, omie_categoria, omie_match_confianca, omie_cod_titulo, link_comprovante } as Row;
     });
 
     // Evita duplicar caso um achado já referencie o mesmo lançamento do cartão.

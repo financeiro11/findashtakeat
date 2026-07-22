@@ -49,7 +49,7 @@ function maskPhone(tel: string | null) {
   return `+${cc} ${ddd} 9****-****`;
 }
 
-export default function SolicitarJustificativasModal({ open, onClose, onSent, responsavel }: Props) {
+export default function SolicitarJustificativasModal({ open, onClose, onSent, responsavel, competencia }: Props) {
   const { user } = useAuth();
   const [loading, setLoading] = useState(false);
   const [sending, setSending] = useState(false);

@@ -89,68 +89,79 @@ type TeamStatus =
       sheetTabId: number | null;
     };
 
-/** Colaborador com seus valores por coluna e o total. */
-type ParsedRow = { colaborador: string; cargo: string; values: number[]; total: number };
-/** Time depois de interpretar a planilha: colunas de valor, linhas e total geral. */
+/**
+ * Colaborador com os campos PADRONIZADOS que interessam ao financeiro.
+ * As planilhas de cada time têm colunas próprias (coeficiente, follow-fix, etc.), mas aqui só
+ * expomos o que é comum a todas: nome, cargo e variável. O OPS é a única exceção — além do
+ * variável tem escala de onboarding e de suporte, que ficam separadas.
+ */
+type ParsedRow = {
+  colaborador: string;
+  cargo: string;
+  variavel: number;
+  onboarding: number; // só OPS
+  suporte: number;    // só OPS
+  total: number;
+};
+/** Time depois de interpretar a planilha: linhas padronizadas + total geral. */
 type ParsedTeam = {
-  valueHeaders: string[];
-  hasCargo: boolean;
+  isOps: boolean;
   rows: ParsedRow[];
   total: number;
-  /** Mais de uma coluna de valor (ex.: OPS) — mostramos cada coluna + total por colaborador. */
-  multi: boolean;
 };
 
 /**
- * Interpreta a planilha bruta de um time em colaboradores + colunas de valor.
- * - Coluna "colaborador"/"nome" (ou a 1ª) vira o nome; coluna "cargo" vira o cargo.
- * - Colunas de valor = demais colunas com cabeçalho, que não sejam "total", e que contenham
- *   ao menos um valor numérico. O total por colaborador (e do time) é somado a partir delas.
+ * Interpreta a planilha bruta de um time e extrai APENAS os campos padronizados.
+ * - Nome = coluna "colaborador"/"nome" (ou a 1ª); Cargo = coluna "cargo".
+ * - Variável = coluna cujo cabeçalho contém "variável" (fallback: 1ª coluna numérica útil).
+ * - OPS: além do variável, captura "onboarding" e "suporte" (as demais colunas são ignoradas).
+ * Colunas como coeficiente/follow-fix não entram nem na tabela nem no total.
  */
-function parseTeam(data: SheetData | null): ParsedTeam {
-  const empty: ParsedTeam = { valueHeaders: [], hasCargo: false, rows: [], total: 0, multi: false };
-  if (!data) return empty;
+function parseTeam(team: Team, data: SheetData | null): ParsedTeam {
+  const isOps = team.key === "ops";
+  if (!data) return { isOps, rows: [], total: 0 };
 
   const headers = data.headers.map((h) => (h ?? "").trim());
   const colabIdx = headers.findIndex((h) => norm(h).includes("colaborador") || norm(h).includes("nome"));
   const nameIdx = colabIdx >= 0 ? colabIdx : 0;
   const cargoIdx = headers.findIndex((h) => norm(h).includes("cargo"));
 
-  const valueCols = headers
-    .map((h, i) => ({ h, i }))
-    .filter(({ h, i }) => {
-      if (i === nameIdx || i === cargoIdx) return false;
-      if (!h) return false;
-      if (norm(h).includes("total")) return false; // total é calculado por nós
-      return data.rows.some((r) => /\d/.test(r[i] ?? ""));
-    });
+  const findCol = (pred: (h: string) => boolean) =>
+    headers.findIndex((h, i) => i !== nameIdx && i !== cargoIdx && !!h && pred(norm(h)));
+
+  const onbIdx = isOps ? findCol((h) => h.includes("onboarding")) : -1;
+  const supIdx = isOps ? findCol((h) => h.includes("suporte")) : -1;
+
+  let varIdx = findCol((h) => h.includes("variavel"));
+  if (varIdx < 0) {
+    // Fallback: 1ª coluna numérica útil que não seja onboarding/suporte.
+    varIdx = headers.findIndex(
+      (h, i) =>
+        i !== nameIdx && i !== cargoIdx && i !== onbIdx && i !== supIdx && !!h &&
+        !norm(h).includes("total") && data.rows.some((r) => /\d/.test(r[i] ?? "")),
+    );
+  }
 
   const rows: ParsedRow[] = [];
   for (const r of data.rows) {
     const colaborador = (r[nameIdx] ?? "").trim();
     if (!colaborador) continue;
     if (norm(colaborador).startsWith("total")) continue; // ignora linha de total da planilha
-    const values = valueCols.map((c) => parseMoney(r[c.i] ?? ""));
-    const total = values.reduce((a, b) => a + b, 0);
+    const variavel = varIdx >= 0 ? parseMoney(r[varIdx] ?? "") : 0;
+    const onboarding = onbIdx >= 0 ? parseMoney(r[onbIdx] ?? "") : 0;
+    const suporte = supIdx >= 0 ? parseMoney(r[supIdx] ?? "") : 0;
     rows.push({
       colaborador,
       cargo: cargoIdx >= 0 ? (r[cargoIdx] ?? "").trim() : "",
-      values,
-      total,
+      variavel,
+      onboarding,
+      suporte,
+      total: variavel + onboarding + suporte,
     });
   }
 
-  // Só conta como "lançamento" quem tem algum valor.
-  const filledRows = rows.filter((r) => r.total > 0);
-  const total = filledRows.reduce((a, b) => a + b.total, 0);
-
-  return {
-    valueHeaders: valueCols.map((c) => c.h),
-    hasCargo: cargoIdx >= 0,
-    rows,
-    total,
-    multi: valueCols.length > 1,
-  };
+  const total = rows.filter((r) => r.total > 0).reduce((a, b) => a + b.total, 0);
+  return { isOps, rows, total };
 }
 
 async function invokeSheets(body: Record<string, unknown>): Promise<any> {
@@ -244,7 +255,7 @@ export default function Variavel() {
     const map: Record<string, ParsedTeam> = {};
     for (const t of TEAMS) {
       const s = statuses[t.key];
-      map[t.key] = s?.state === "done" ? parseTeam(s.data) : parseTeam(null);
+      map[t.key] = parseTeam(t, s?.state === "done" ? s.data : null);
     }
     return map;
   }, [statuses]);
@@ -409,11 +420,6 @@ function TeamRows({
             />
             <span className={cn("h-2 w-2 shrink-0 rounded-full", dot)} />
             <span className="font-semibold">{team.label}</span>
-            {parsed.multi && (
-              <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
-                Multi
-              </span>
-            )}
           </div>
         </td>
 
@@ -478,9 +484,15 @@ function TeamRows({
 }
 
 function TeamDetail({ team, parsed, sheetTabId }: { team: Team; parsed: ParsedTeam; sheetTabId: number | null }) {
-  const { valueHeaders, hasCargo, multi } = parsed;
+  const { isOps } = parsed;
   // Não mostramos linhas totalmente zeradas no detalhe (colaborador sem lançamento no mês).
   const rows = parsed.rows.filter((r) => r.total > 0);
+  // Colunas de valor: iguais em todos os times; o OPS acrescenta onboarding e suporte.
+  // colSpan das células vazias do rodapé = tudo antes da última coluna (Total).
+  const emptyFootCols = isOps ? 4 : 2; // Cargo + Variável (+ Onboarding + Suporte no OPS)
+
+  const money = (v: number) =>
+    v > 0 ? fmtBRL(v) : <span className="text-muted-foreground/50">—</span>;
 
   return (
     <div className="overflow-hidden rounded-lg border border-border">
@@ -489,26 +501,22 @@ function TeamDetail({ team, parsed, sheetTabId }: { team: Team; parsed: ParsedTe
           <thead>
             <tr className="bg-muted/50 text-[11px] uppercase tracking-wide text-muted-foreground">
               <th className="px-4 py-2.5 text-left font-medium">Colaborador</th>
-              {hasCargo && <th className="px-4 py-2.5 text-left font-medium">Cargo</th>}
-              {valueHeaders.map((h, i) => (
-                <th key={i} className="px-4 py-2.5 text-right font-medium">{h}</th>
-              ))}
-              {multi && <th className="px-4 py-2.5 text-right font-medium">Total</th>}
+              <th className="px-4 py-2.5 text-left font-medium">Cargo</th>
+              <th className="px-4 py-2.5 text-right font-medium">Variável</th>
+              {isOps && <th className="px-4 py-2.5 text-right font-medium">Escala Onboarding</th>}
+              {isOps && <th className="px-4 py-2.5 text-right font-medium">Escala Suporte</th>}
+              <th className="px-4 py-2.5 text-right font-medium">Total</th>
             </tr>
           </thead>
           <tbody>
             {rows.map((r, ri) => (
               <tr key={ri} className="border-t border-border/60">
                 <td className="px-4 py-2.5 font-medium">{r.colaborador}</td>
-                {hasCargo && <td className="px-4 py-2.5 text-muted-foreground">{r.cargo || "—"}</td>}
-                {r.values.map((v, vi) => (
-                  <td key={vi} className="px-4 py-2.5 text-right tabular-nums">
-                    {v > 0 ? fmtBRL(v) : <span className="text-muted-foreground/50">—</span>}
-                  </td>
-                ))}
-                {multi && (
-                  <td className="px-4 py-2.5 text-right font-semibold tabular-nums">{fmtBRL(r.total)}</td>
-                )}
+                <td className="px-4 py-2.5 text-muted-foreground">{r.cargo || "—"}</td>
+                <td className="px-4 py-2.5 text-right tabular-nums">{money(r.variavel)}</td>
+                {isOps && <td className="px-4 py-2.5 text-right tabular-nums">{money(r.onboarding)}</td>}
+                {isOps && <td className="px-4 py-2.5 text-right tabular-nums">{money(r.suporte)}</td>}
+                <td className="px-4 py-2.5 text-right font-semibold tabular-nums">{fmtBRL(r.total)}</td>
               </tr>
             ))}
           </tbody>
@@ -517,9 +525,7 @@ function TeamDetail({ team, parsed, sheetTabId }: { team: Team; parsed: ParsedTe
               <td className="px-4 py-2.5 text-xs font-medium uppercase tracking-wide text-muted-foreground">
                 Total do time
               </td>
-              {hasCargo && <td />}
-              {/* Empurra o total para a última coluna de valor. */}
-              {valueHeaders.slice(0, -1).map((_, i) => <td key={i} />)}
+              <td colSpan={emptyFootCols} />
               <td className="px-4 py-2.5 text-right font-bold tabular-nums text-primary">
                 {fmtBRL(parsed.total)}
               </td>

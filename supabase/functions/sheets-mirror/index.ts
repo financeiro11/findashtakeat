@@ -114,7 +114,8 @@ Deno.serve(async (req) => {
           headers: { ...corsHeaders, "Content-Type": "application/json" },
         });
       }
-      const data = await gw(`/spreadsheets/${spreadsheetId}/values/${sheetRef}!A1:ZZ5000`);
+      const range = body?.range ?? "A1:CV2000"; // limita default a 100 colunas x 2000 linhas
+      const data = await gw(`/spreadsheets/${spreadsheetId}/values/${sheetRef}!${range}`);
       const values: string[][] = data.values ?? [];
       const headers = values[0] ?? [];
       const rows = values.slice(1);

@@ -373,17 +373,15 @@ export default function Variavel() {
   return (
     <div className="space-y-6 p-5">
       {/* Cabeçalho */}
-      <div className="flex flex-wrap items-start justify-between gap-4">
-        <div className="flex items-center gap-3">
-          <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-primary-soft text-primary">
-            <Percent className="h-5 w-5" />
+      <div className="flex items-end justify-between gap-4 flex-wrap">
+        <div className="min-w-0">
+          <div className="text-[11px] uppercase tracking-wider text-muted-foreground font-medium">Hub Financeiro · Operacional</div>
+          <div className="flex items-center gap-3 mt-0.5 flex-wrap">
+            <h1 className="text-3xl font-bold tracking-tight">Comissões Variáveis</h1>
           </div>
-          <div>
-            <h2 className="text-2xl font-bold tracking-tight">Comissões Variáveis</h2>
-            <p className="text-sm text-muted-foreground">
-              Centraliza as planilhas de bonificação dos times e consolida o total variável do mês.
-            </p>
-          </div>
+          <p className="text-sm text-muted-foreground mt-1">
+            Centraliza as planilhas de bonificação dos times e consolida o total variável do mês.
+          </p>
         </div>
         <div className="flex items-center gap-2">
           <Select

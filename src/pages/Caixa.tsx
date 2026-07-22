@@ -11,6 +11,7 @@ import { fmtBRLShort, fmtPct } from "@/pages/dashboard/format";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator } from "@/components/ui/dropdown-menu";
 import { SyncOmieButtons } from "@/components/SyncOmieButtons";
+import RelatorioCaixaModal from "@/components/RelatorioCaixaModal";
 
 /* ------------------------------ formatters ------------------------------ */
 const fmtBRL = (n: number) =>
@@ -728,35 +729,15 @@ export default function Caixa() {
         Dados sincronizados do Omie ERP às {fmtHora(snap.sincronizado_em)} · contas correntes, contas a pagar e contas a receber
       </div>
 
-      {/* ---------------- Modal: Prévia do relatório (editável) ---------------- */}
-      <Dialog open={msgOpen} onOpenChange={setMsgOpen}>
-        <DialogContent className="max-w-lg">
-          <DialogHeader>
-            <DialogTitle>Prévia do relatório · {msgTitulo}</DialogTitle>
-          </DialogHeader>
-          <p className="-mt-1 text-[11.5px] text-muted-foreground">
-            Revise e edite o texto antes de enviar. No WhatsApp, <code className="rounded bg-secondary px-1">*texto*</code> vira negrito e <code className="rounded bg-secondary px-1">_texto_</code> vira itálico.
-          </p>
-          <textarea
-            value={msgTexto}
-            onChange={(e) => setMsgTexto(e.target.value)}
-            rows={18}
-            spellCheck={false}
-            className="w-full resize-y rounded-md border border-border bg-background p-3 font-mono text-[12px] leading-relaxed outline-none focus:ring-1 focus:ring-ring"
-          />
-          <div className="flex flex-wrap items-center justify-end gap-2">
-            <button onClick={copiarRelatorio} className="ghost-btn px-3 py-2 text-[12.5px]">Copiar</button>
-            {/* Envio: hoje abre o WhatsApp com o texto (editado). Para enviar via n8n, trocar por
-                um POST ao webhook (ex.: fetch(WEBHOOK_URL, { method: "POST", body: JSON.stringify({ texto: msgTexto }) })). */}
-            <button
-              onClick={() => window.open(`https://wa.me/?text=${encodeURIComponent(msgTexto)}`, "_blank")}
-              className="inline-flex items-center gap-2 rounded-md bg-[#25D366] px-3 py-2 text-[12.5px] font-semibold text-white transition hover:brightness-95"
-            >
-              <MessageCircle className="h-4 w-4" /> Abrir no WhatsApp
-            </button>
-          </div>
-        </DialogContent>
-      </Dialog>
+      {/* ---------------- Modal: Prévia do relatório (WhatsApp → Miguel) ---------------- */}
+      <RelatorioCaixaModal
+        open={msgOpen}
+        onClose={() => setMsgOpen(false)}
+        titulo={msgTitulo}
+        texto={msgTexto}
+        onChangeTexto={setMsgTexto}
+        onCopiar={copiarRelatorio}
+      />
 
       {/* ---------------- Modal: Movimentações (ver tudo) ---------------- */}
       <Dialog open={movOpen} onOpenChange={setMovOpen}>

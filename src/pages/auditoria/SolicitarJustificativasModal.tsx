@@ -65,7 +65,7 @@ export default function SolicitarJustificativasModal({ open, onClose, onSent, re
     setEditing(false);
     setPreview(null);
     (async () => {
-      const { data, error } = await supabase.rpc("preview_msg_consolidada", { p_responsavel: responsavel });
+      const { data, error } = await supabase.rpc("preview_msg_consolidada", { p_responsavel: responsavel, p_competencia: competencia ?? null } as any);
       if (cancel) return;
       const p = data as unknown as Preview;
       if (error || (p && p.erro)) {

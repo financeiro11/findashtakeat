@@ -99,31 +99,29 @@ export default function RelatorioCaixaModal({
 
         {/* WhatsApp area */}
         <div className="min-h-[220px] flex-1 overflow-y-auto px-5 py-4" style={{ backgroundColor: "#ECE5DD" }}>
-          <div className="flex justify-end">
-            <div className="max-w-[92%] rounded-lg px-3 py-2 shadow-sm" style={{ backgroundColor: "#DCF8C6" }}>
-              {editing ? (
-                <Textarea
-                  value={texto}
-                  onChange={(e) => onChangeTexto(e.target.value)}
-                  rows={Math.max(10, texto.split("\n").length)}
-                  className="border-0 bg-transparent focus-visible:ring-0 p-0 resize-none text-[13px] leading-[1.5] font-sans text-neutral-900"
-                  style={{ minHeight: 220 }}
-                  autoFocus
-                />
-              ) : (
+          {editing ? (
+            <Textarea
+              value={texto}
+              onChange={(e) => onChangeTexto(e.target.value)}
+              className="w-full h-full min-h-[300px] bg-white border border-border rounded-lg p-3 resize-none text-[13px] leading-[1.5] font-sans text-neutral-900 focus-visible:ring-1"
+              autoFocus
+            />
+          ) : (
+            <div className="flex justify-end">
+              <div className="max-w-[92%] rounded-lg px-3 py-2 shadow-sm" style={{ backgroundColor: "#DCF8C6" }}>
                 <div
                   className="whitespace-pre-wrap break-words m-0 font-sans text-neutral-900"
                   style={{ fontSize: 13, lineHeight: 1.5 }}
                   dangerouslySetInnerHTML={renderWhatsApp(texto)}
                 />
-              )}
-              <div className="flex items-center justify-end gap-1 mt-1 text-[10px] text-neutral-500">
-                <span>{hhmm}</span>
-                <Check className="h-3 w-3 -mr-1.5" />
-                <Check className="h-3 w-3" />
+                <div className="flex items-center justify-end gap-1 mt-1 text-[10px] text-neutral-500">
+                  <span>{hhmm}</span>
+                  <Check className="h-3 w-3 -mr-1.5" />
+                  <Check className="h-3 w-3" />
+                </div>
               </div>
             </div>
-          </div>
+          )}
         </div>
 
         <div className="px-5 py-4 flex flex-wrap items-center justify-end gap-2 border-t border-border flex-shrink-0">

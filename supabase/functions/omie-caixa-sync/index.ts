@@ -514,55 +514,65 @@ Deno.serve(async (req) => {
     // 9) Calendário do mês corrente (realizado + projeção de pagamentos).
     const ano = agora.getFullYear(), mesIdx = agora.getMonth();
 
-    // Extrato REAL do Asaas (financialTransactions) para alimentar o calendário — mês atual
-    // + anterior. `value` tem sinal (>0 entrada, <0 saída); transferências (type *TRANSFER*)
-    // não contam (só trocam de bolso). As contas Asaas do Omie ficam fora do calendário
-    // (ASAAS_NCODCC) para não duplicar. Se a API do Asaas falhar, o calendário fica sem Asaas.
+    // Extrato REAL do Asaas (financialTransactions) para o calendário — mês atual + anterior.
+    // `value` tem sinal (>0 entrada, <0 saída); transferências (type *TRANSFER*) não contam.
+    // As contas Asaas do Omie ficam fora do calendário (ASAAS_NCODCC) para não duplicar.
     //
-    // CACHE (omie_cache/asaas_extrato_dias): o Asaas registra CADA taxinha como um lançamento
-    // (~15 mil/2 meses), então puxar tudo leva ~2 min. Guardamos o agregado por dia e só
-    // re-puxamos quando forçado (atualizar=true) ou quando o cache passou de 6h — assim o
-    // "Recalcular" é instantâneo. O saldo por conta continua sempre ao vivo (chamada separada).
+    // BUSCA INCREMENTAL (economiza chamadas de API): o extrato do Asaas é um ledger
+    // APPEND-ONLY — um estorno/chargeback vira um lançamento NOVO na data em que ocorre, não
+    // altera o dia passado. Logo, dias já fechados NUNCA mudam. Guardamos o agregado por dia
+    // permanentemente (omie_cache/asaas_extrato_dias) com um marcador `sincronizado_ate`; a
+    // cada atualização só buscamos do Asaas os últimos ASAAS_OVERLAP_DIAS dias + hoje — nunca
+    // todo o histórico de novo. O overlap cobre lançamentos que cheguem com data de dias atrás.
+    // Só faz a carga completa ("seed") na 1ª vez ou se pedirem rebuild explícito.
     const ASAAS_CACHE_KEY = "asaas_extrato_dias";
-    const ASAAS_CACHE_MAX_MIN = 360; // 6 h
+    const ASAAS_OVERLAP_DIAS = 4;   // re-confere os últimos 4 dias (o resto fica congelado)
+    const ASAAS_TTL_MIN = 180;      // dentro de 3h, o "Recalcular" nem chama o Asaas
+    const rebuildAsaas = body?.asaas_rebuild === true;
     const asaasPorDia = new Map<string, { entradas: number; saidas: number }>();
-    let asaasTxTotal = 0;
-    let asaasTipos: Record<string, number> = {};
-    let asaasOrigem: "cache" | "asaas" | "erro" = "cache";
+    let asaasOrigem: "cache" | "incremental" | "seed" | "erro" = "cache";
+    let asaasBuscados = 0;
     try {
       const { data: cacheRow } = await supabase
         .from("omie_cache").select("dados, atualizado_em").eq("chave", ASAAS_CACHE_KEY).maybeSingle();
+      const store: any = (cacheRow as any)?.dados ?? {};
+      const diasStore: Record<string, { e: number; s: number }> =
+        (store.dias && !Array.isArray(store.dias) && typeof store.dias === "object") ? store.dias : {};
       const idadeMin = (cacheRow as any)?.atualizado_em
         ? (Date.now() - new Date((cacheRow as any).atualizado_em).getTime()) / 60000 : Infinity;
-      const dadosCache = (cacheRow as any)?.dados;
 
-      if (!forcar && Array.isArray(dadosCache?.dias) && idadeMin <= ASAAS_CACHE_MAX_MIN) {
-        for (const r of dadosCache.dias) asaasPorDia.set(r.d, { entradas: Number(r.e) || 0, saidas: Number(r.s) || 0 });
-        asaasTxTotal = Number(dadosCache.total) || 0;
-        asaasTipos = dadosCache.tipos ?? {};
-      } else {
-        asaasOrigem = "asaas";
-        const iniPrev = new Date(ano, mesIdx - 1, 1);
-        const tx = await asaasList("/financialTransactions", { startDate: iso(iniPrev), finishDate: iso(hojeD) });
+      const needFrom = iso(new Date(ano, mesIdx - 1, 1)); // 1º dia do mês anterior (início da janela)
+      let modo: "seed" | "incremental" | "cache";
+      if (!store.sincronizado_ate || rebuildAsaas) modo = "seed";
+      else if (forcar || idadeMin > ASAAS_TTL_MIN) modo = "incremental";
+      else modo = "cache";
+      asaasOrigem = modo;
+
+      if (modo !== "cache") {
+        // seed: janela inteira; incremental: só os últimos dias (overlap), nunca antes de needFrom.
+        const overlapFrom = iso(addDays(hojeD, -ASAAS_OVERLAP_DIAS));
+        const de = modo === "seed" ? needFrom : (overlapFrom > needFrom ? overlapFrom : needFrom);
+        const tx = await asaasList("/financialTransactions", { startDate: de, finishDate: iso(hojeD) });
+        // Re-confere só os dias >= de (apaga e re-agrega); dias anteriores ficam congelados.
+        for (const k of Object.keys(diasStore)) if (k >= de) delete diasStore[k];
         for (const t of tx) {
+          asaasBuscados++;
           const tipo = String((t as any)?.type ?? "").toUpperCase();
-          asaasTipos[tipo] = (asaasTipos[tipo] ?? 0) + 1;
           if (tipo.includes("TRANSFER")) continue;
           const d = String((t as any)?.date ?? "").slice(0, 10);
-          if (!/^\d{4}-\d{2}-\d{2}$/.test(d)) continue;
+          if (!/^\d{4}-\d{2}-\d{2}$/.test(d) || d < de) continue;
           const v = toNum((t as any)?.value);
           if (v === 0) continue;
-          const cur = asaasPorDia.get(d) ?? { entradas: 0, saidas: 0 };
-          if (v > 0) cur.entradas += v; else cur.saidas += Math.abs(v);
-          asaasPorDia.set(d, cur);
-          asaasTxTotal++;
+          const cur = diasStore[d] ?? { e: 0, s: 0 };
+          if (v > 0) cur.e += v; else cur.s += Math.abs(v);
+          diasStore[d] = cur;
         }
-        const dias = [...asaasPorDia.entries()].map(([d, v]) => ({ d, e: v.entradas, s: v.saidas }));
         await supabase.from("omie_cache").upsert(
-          { chave: ASAAS_CACHE_KEY, dados: { dias, total: asaasTxTotal, tipos: asaasTipos }, registros: dias.length, atualizado_em: new Date().toISOString() },
+          { chave: ASAAS_CACHE_KEY, dados: { dias: diasStore, sincronizado_ate: iso(hojeD) }, registros: Object.keys(diasStore).length, atualizado_em: new Date().toISOString() },
           { onConflict: "chave" },
         );
       }
+      for (const [d, v] of Object.entries(diasStore)) asaasPorDia.set(d, { entradas: Number(v.e) || 0, saidas: Number(v.s) || 0 });
     } catch (e) {
       asaasOrigem = "erro";
       console.warn("omie-caixa-sync: extrato Asaas indisponível p/ calendário:", e instanceof Error ? e.message : String(e));
@@ -673,7 +683,7 @@ Deno.serve(async (req) => {
       contas: contasComPct.length,
       saldo_consolidado: saldoConsolidado,
       contas_a_pagar_total: contas_a_pagar.total,
-      asaas_extrato: { origem: asaasOrigem, lancamentos: asaasTxTotal, tipos: asaasTipos },
+      asaas_extrato: { origem: asaasOrigem, dias: asaasPorDia.size, buscados: asaasBuscados },
       hoje: { entradas: periodos.hoje.entradas, saidas: periodos.hoje.saidas, resultado: periodos.hoje.resultado },
     });
   } catch (e) {

@@ -4,10 +4,11 @@ import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/hooks/useAuth";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
-import { X, Pencil, Send, Loader2, Check, AlertCircle } from "lucide-react";
+import { X, Pencil, Loader2, Check, AlertCircle } from "lucide-react";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import { brl, compLabel } from "./utils";
+import { WhatsAppBadge } from "@/components/brand-logos";
 
 type Preview = {
   telefone: string | null;
@@ -256,7 +257,7 @@ export default function AjusteSolicitadoModal({
               {sending ? (
                 <><Loader2 className="h-4 w-4 mr-1.5 animate-spin" />Enviando…</>
               ) : (
-                <><Send className="h-4 w-4 mr-1.5" />Enviar WhatsApp</>
+                <><WhatsAppBadge className="h-5 w-5 mr-1.5" />Enviar WhatsApp</>
               )}
             </Button>
           </div>

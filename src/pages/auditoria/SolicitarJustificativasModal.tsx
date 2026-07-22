@@ -4,9 +4,10 @@ import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/hooks/useAuth";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
-import { X, Pencil, Send, Loader2, Check, AlertCircle } from "lucide-react";
+import { X, Pencil, Loader2, Check, AlertCircle } from "lucide-react";
 import { toast } from "sonner";
 import { brl } from "./utils";
+import { WhatsAppBadge } from "@/components/brand-logos";
 
 type Preview = {
   responsavel: string;
@@ -232,7 +233,7 @@ export default function SolicitarJustificativasModal({ open, onClose, onSent, re
               className="text-white"
               style={{ backgroundColor: "#0F6E56" }}
             >
-              {sending ? (<><Loader2 className="h-4 w-4 mr-1.5 animate-spin" />Enviando…</>) : (<><Send className="h-4 w-4 mr-1.5" />Enviar WhatsApp</>)}
+              {sending ? (<><Loader2 className="h-4 w-4 mr-1.5 animate-spin" />Enviando…</>) : (<><WhatsAppBadge className="h-5 w-5 mr-1.5" />Enviar WhatsApp</>)}
             </Button>
           </div>
         </div>

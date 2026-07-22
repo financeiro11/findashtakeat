@@ -6,7 +6,7 @@ import { Sheet, SheetContent } from "@/components/ui/sheet";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Textarea } from "@/components/ui/textarea";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Download, X, ChevronRight, Check, ExternalLink, Search, Send, RefreshCw, Loader2, Paperclip, Copy } from "lucide-react";
+import { Download, X, ChevronRight, Check, ExternalLink, Search, RefreshCw, Loader2, Paperclip, Copy } from "lucide-react";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
@@ -16,6 +16,7 @@ import { brl, brlAbbr, fmtDateBR, fmtDateTimeBR, fmtTrilha, compLabel, MESES_PT_
 import AjusteSolicitadoModal from "./AjusteSolicitadoModal";
 import SolicitarJustificativasModal from "./SolicitarJustificativasModal";
 import { enviarProntos, enviarUnitario } from "@/lib/omieAnexos";
+import { WhatsAppBadge, OmieBadge } from "@/components/brand-logos";
 
 type Severidade = "Crítico" | "Alto" | "Médio" | "Baixo";
 type Status = "Pendente" | "Em análise" | "Aprovado" | "Reprovado" | "Ajuste solicitado";
@@ -502,7 +503,7 @@ export default function Achados() {
                       className="h-9 text-white disabled:opacity-50"
                       style={{ backgroundColor: "#0F6E56" }}
                     >
-                      <Send className="h-4 w-4 mr-2" />
+                      <WhatsAppBadge className="h-5 w-5 mr-2" />
                       {fResp === "todas" ? "Solicitar Justificativas" : `Solicitar Justificativas (${fResp})`}
                     </Button>
                   </span>
@@ -521,7 +522,7 @@ export default function Achados() {
             >
               {enviandoMassa
                 ? <><Loader2 className="h-4 w-4 mr-2 animate-spin" /> Enviando…</>
-                : <><Paperclip className="h-4 w-4 mr-2" /> {fResp === "todas" ? "Enviar comprovantes ao Omie" : `Enviar comprovantes ao Omie (${fResp})`}</>}
+                : <><OmieBadge className="h-5 w-5 mr-2" /> {fResp === "todas" ? "Enviar comprovantes ao Omie" : `Enviar comprovantes ao Omie (${fResp})`}</>}
             </Button>
           </div>
           <p className="text-sm text-muted-foreground mt-1">Achados financeiros com workflow de análise e aprovação.</p>
@@ -886,7 +887,7 @@ export default function Achados() {
                       >
                         {enviandoUm
                           ? <><Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> Enviando…</>
-                          : <><Paperclip className="mr-1.5 h-3.5 w-3.5" /> Enviar ao Omie</>}
+                          : <><OmieBadge className="mr-1.5 h-4 w-4" /> Enviar ao Omie</>}
                       </Button>
                     )}
                   </div>

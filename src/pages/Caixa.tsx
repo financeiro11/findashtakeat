@@ -23,11 +23,10 @@ const MESES = ["Janeiro", "Fevereiro", "Março", "Abril", "Maio", "Junho", "Julh
 const DOW = ["Dom", "Seg", "Ter", "Qua", "Qui", "Sex", "Sáb"];
 const HIDDEN_KEY = "caixa:contas-ocultas";
 
-/* Convenção de variação definida pelo Miguel (CEO): variação = (mês anterior − mês atual).
-   Leitura: SAÍDA positiva = gastou menos (economia); ENTRADA negativa = recebeu mais;
-   SALDO negativo = caixa melhorou (menos negativo / mais positivo) que no mês anterior. */
+/* Variação vs. período anterior = (atual − anterior); % sobre |anterior|.
+   ENTRADA positiva = recebeu mais; SAÍDA negativa = gastou menos; SALDO positivo = melhorou. */
 function fmtVariacao(atual: number, anterior: number) {
-  const diff = anterior - atual;
+  const diff = atual - anterior;
   const pct = Math.abs(anterior) > 0.005 ? (diff / Math.abs(anterior)) * 100 : null;
   const sinal = diff >= 0 ? "+" : "-";
   if (pct === null) return `${sinal}${fmtBRL(Math.abs(diff))} (período anterior zerado)`;
@@ -254,38 +253,42 @@ export default function Caixa() {
         catMap.set(c, (catMap.get(c) ?? 0) + m.valor);
       }
     }
-    const totalCat = [...catMap.values()].reduce((s, v) => s + v, 0);
     const top = [...catMap.entries()].sort((a, b) => b[1] - a[1]).slice(0, 3);
 
     const dd = (n: number) => String(n).padStart(2, "0");
     const mm = dd(cal.mes + 1), mmA = dd(calAnt.mes + 1);
+    const dAtual = (n: number) => `${dd(n)}/${mm}/${cal.ano}`;
+    const dAnt = (n: number) => `${dd(n)}/${mmA}/${calAnt.ano}`;
+    const pctCat = (v: number) => (saida ? (v / saida) * 100 : 0).toFixed(2).replace(".", ",");
+    const periodoAtual = `${dAtual(diaIni)} a ${dAtual(diaFim)}`;
+    const periodoAnt = `${dAnt(diaIni)} a ${dAnt(fimAnt)}`;
+
     const L: string[] = [];
-    L.push(`*CAIXA · ${rotulo} · ${MESES[cal.mes]}/${cal.ano} · Takeat*`);
-    L.push(`Período: ${dd(diaIni)}/${mm}/${cal.ano} a ${dd(diaFim)}/${mm}/${cal.ano}`);
+    L.push(`CAIXA: ${rotulo.toUpperCase()} — ${MESES[cal.mes]}/${cal.ano} — Takeat`);
+    L.push(`Período: ${periodoAtual}`);
     L.push(`Gerado em: ${new Date().toLocaleDateString("pt-BR")}`);
     L.push("");
-    L.push("*ENTRADA DE CAIXA*");
-    L.push(`Período: ${fmtBRL(entrada)}`);
-    L.push(`Mesmo período mês anterior (${dd(diaIni)}/${mmA} a ${dd(fimAnt)}/${mmA}): ${fmtBRL(entradaAnt)}`);
-    L.push(`Variação: ${fmtVariacao(entrada, entradaAnt)}`);
+    L.push("- ENTRADA DE CAIXA (Asaas)");
+    L.push(`${periodoAtual}: ${fmtBRL(entrada)}`);
+    L.push(`Mesmo período do mês anterior (${periodoAnt}): ${fmtBRL(entradaAnt)}`);
+    L.push(`📈 Variação vs. período anterior: ${fmtVariacao(entrada, entradaAnt)}`);
     L.push("");
-    L.push("*SAÍDA DE CAIXA*");
-    L.push(`Período: ${fmtBRL(saida)}`);
-    L.push(`Mesmo período mês anterior (${dd(diaIni)}/${mmA} a ${dd(fimAnt)}/${mmA}): ${fmtBRL(saidaAnt)}`);
-    L.push(`Variação: ${fmtVariacao(saida, saidaAnt)}`);
+    L.push("- SAÍDA DE CAIXA");
+    L.push(`${periodoAtual}: ${fmtBRL(saida)}`);
+    L.push(`Mesmo período do mês anterior (${periodoAnt}): ${fmtBRL(saidaAnt)}`);
+    L.push(`📈 Variação vs. período anterior: ${fmtVariacao(saida, saidaAnt)}`);
     if (top.length) {
       L.push("");
-      L.push("Maiores categorias de saída:");
-      top.forEach(([c, v], i) => L.push(`${i + 1}. ${c} — ${fmtBRL(v)} (${(totalCat ? (v / totalCat) * 100 : 0).toFixed(1).replace(".", ",")}%)`));
+      L.push("Top 3 categorias do período:");
+      top.forEach(([c, v], i) => L.push(`${i + 1}. ${c} — ${fmtBRL(v)} (${pctCat(v)}%)`));
     }
     L.push("");
-    L.push("*SALDO DO PERÍODO (Entrada − Saída)*");
-    L.push(`Período: ${fmtBRL(saldo)}`);
-    L.push(`Mesmo período mês anterior: ${fmtBRL(saldoAnt)}`);
-    L.push(`Variação: ${fmtVariacao(saldo, saldoAnt)}`);
-    if (saldo < 0) L.push(`\n⚠ Saída maior que a entrada no período (caixa negativo em ${fmtBRL(Math.abs(saldo))}).`);
+    L.push("________");
+    L.push("SALDO DO PERÍODO (Entrada − Saída)");
     L.push("");
-    L.push("_Variação = (mês anterior − mês atual). Entrada: sinal negativo = recebeu mais. Saída: sinal positivo = gastou menos (economia). Saldo: sinal negativo = caixa melhorou._");
+    L.push(`${periodoAtual}: ${fmtBRL(saldo)}`);
+    L.push(`Mesmo período do mês anterior: ${fmtBRL(saldoAnt)}`);
+    L.push(`📈 Variação vs. período anterior: ${fmtVariacao(saldo, saldoAnt)}`);
     return L.join("\n");
   }
 

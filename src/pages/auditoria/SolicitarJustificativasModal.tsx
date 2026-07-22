@@ -79,7 +79,7 @@ export default function SolicitarJustificativasModal({ open, onClose, onSent, re
       setTimeout(() => sendBtnRef.current?.focus(), 50);
     })();
     return () => { cancel = true; };
-  }, [open, responsavel]);
+  }, [open, responsavel, competencia]);
 
   if (!open) return null;
   if (typeof document === "undefined") return null;

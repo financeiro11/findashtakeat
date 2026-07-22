@@ -76,6 +76,11 @@ const CATEGORIAS_TRANSFERENCIA = new Set(["0.01", "0.01.01", "0.01.02", "1.04.94
 // por isso as movimentações do Omie dessas contas ficam FORA do calendário, para não duplicar.
 const ASAAS_NCODCC = new Set(["5460455582", "5471927663"]);
 
+// "Caixa recebido" (a ENTRADA dos relatórios) = só as contas onde o dinheiro realmente cai:
+// Sicoob - Conta Corrente (pelo Omie) + Asaas Disponível (pelo extrato do Asaas). A saída dos
+// relatórios continua sendo de todas as contas; isto afeta apenas o campo `recebido` do dia.
+const RECEBIDO_NCODCC = new Set(["5455988727"]); // Sicoob - Conta Corrente
+
 // Data de caixa (realizado) e data de competência/vencimento (projetado).
 const dataPagamento = (det: any): Date | null => pickDate(det, ["dDtPagamento", "dDtBaixa", "dDtCredito", "dDtConciliacao"]);
 const dataVencimento = (det: any): Date | null => pickDate(det, ["dDtVencimento", "dDtPrevisao", "dDtEmissao", "dDtRegistro"]);
@@ -580,21 +585,23 @@ Deno.serve(async (req) => {
     const mmAtual = String(mesIdx + 1).padStart(2, "0");
 
     const diasNoMes = new Date(ano, mesIdx + 1, 0).getDate();
-    const calDias: Record<number, { entradas: number; saidas: number; projetado: number }> = {};
-    for (let d = 1; d <= diasNoMes; d++) calDias[d] = { entradas: 0, saidas: 0, projetado: 0 };
+    const calDias: Record<number, { entradas: number; saidas: number; projetado: number; recebido: number }> = {};
+    for (let d = 1; d <= diasNoMes; d++) calDias[d] = { entradas: 0, saidas: 0, projetado: 0, recebido: 0 };
     for (const m of movs) {
       if (m.transfer || ASAAS_NCODCC.has(m.ncodcc)) continue;
       if (m.dPago && m.dPago.getFullYear() === ano && m.dPago.getMonth() === mesIdx) {
-        if (m.entrada) calDias[m.dPago.getDate()].entradas += m.valor; else calDias[m.dPago.getDate()].saidas += m.valor;
+        const dia = m.dPago.getDate();
+        if (m.entrada) { calDias[dia].entradas += m.valor; if (RECEBIDO_NCODCC.has(m.ncodcc)) calDias[dia].recebido += m.valor; }
+        else calDias[dia].saidas += m.valor;
       } else if (!m.dPago && !m.entrada && m.dVenc && m.dVenc.getFullYear() === ano && m.dVenc.getMonth() === mesIdx && m.dVenc >= hojeD) {
         calDias[m.dVenc.getDate()].projetado += m.aberto;
       }
     }
-    // Soma o extrato do Asaas (mês atual) aos dias do calendário.
+    // Soma o extrato do Asaas (mês atual) — nas entradas totais E no recebido (Asaas Disponível).
     for (const [d, v] of asaasPorDia.entries()) {
       if (d.slice(0, 7) !== `${ano}-${mmAtual}`) continue;
       const dia = Number(d.slice(8, 10));
-      if (calDias[dia]) { calDias[dia].entradas += v.entradas; calDias[dia].saidas += v.saidas; }
+      if (calDias[dia]) { calDias[dia].entradas += v.entradas; calDias[dia].saidas += v.saidas; calDias[dia].recebido += v.entradas; }
     }
     const calendario = {
       ano, mes: mesIdx, hoje: agora.getDate(),
@@ -602,7 +609,7 @@ Deno.serve(async (req) => {
         dia: Number(dia),
         realizado: v.entradas > 0 || v.saidas > 0,
         tem_projetado: v.projetado > 0,
-        entradas: v.entradas, saidas: v.saidas, projetado: v.projetado,
+        entradas: v.entradas, saidas: v.saidas, projetado: v.projetado, recebido: v.recebido,
       })),
     };
 
@@ -611,24 +618,26 @@ Deno.serve(async (req) => {
     const anoAnt = mesIdx === 0 ? ano - 1 : ano;
     const mesAntIdx = mesIdx === 0 ? 11 : mesIdx - 1;
     const diasNoMesAnt = new Date(anoAnt, mesAntIdx + 1, 0).getDate();
-    const calDiasAnt: Record<number, { entradas: number; saidas: number }> = {};
-    for (let d = 1; d <= diasNoMesAnt; d++) calDiasAnt[d] = { entradas: 0, saidas: 0 };
+    const calDiasAnt: Record<number, { entradas: number; saidas: number; recebido: number }> = {};
+    for (let d = 1; d <= diasNoMesAnt; d++) calDiasAnt[d] = { entradas: 0, saidas: 0, recebido: 0 };
     for (const m of movs) {
       if (m.transfer || ASAAS_NCODCC.has(m.ncodcc) || !m.dPago) continue;
       if (m.dPago.getFullYear() === anoAnt && m.dPago.getMonth() === mesAntIdx) {
-        if (m.entrada) calDiasAnt[m.dPago.getDate()].entradas += m.valor; else calDiasAnt[m.dPago.getDate()].saidas += m.valor;
+        const dia = m.dPago.getDate();
+        if (m.entrada) { calDiasAnt[dia].entradas += m.valor; if (RECEBIDO_NCODCC.has(m.ncodcc)) calDiasAnt[dia].recebido += m.valor; }
+        else calDiasAnt[dia].saidas += m.valor;
       }
     }
-    // Soma o extrato do Asaas (mês anterior) aos dias do calendário anterior.
+    // Soma o extrato do Asaas (mês anterior) — entradas totais E recebido (Asaas Disponível).
     const mmAnt = String(mesAntIdx + 1).padStart(2, "0");
     for (const [d, v] of asaasPorDia.entries()) {
       if (d.slice(0, 7) !== `${anoAnt}-${mmAnt}`) continue;
       const dia = Number(d.slice(8, 10));
-      if (calDiasAnt[dia]) { calDiasAnt[dia].entradas += v.entradas; calDiasAnt[dia].saidas += v.saidas; }
+      if (calDiasAnt[dia]) { calDiasAnt[dia].entradas += v.entradas; calDiasAnt[dia].saidas += v.saidas; calDiasAnt[dia].recebido += v.entradas; }
     }
     const calendario_anterior = {
       ano: anoAnt, mes: mesAntIdx,
-      dias: Object.entries(calDiasAnt).map(([dia, v]) => ({ dia: Number(dia), entradas: v.entradas, saidas: v.saidas })),
+      dias: Object.entries(calDiasAnt).map(([dia, v]) => ({ dia: Number(dia), entradas: v.entradas, saidas: v.saidas, recebido: v.recebido })),
     };
 
     // 10) Fluxo de caixa projetado (próximos 30 dias) a partir do saldo atual.

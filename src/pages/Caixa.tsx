@@ -43,7 +43,7 @@ type Periodo = {
   mov_total: number;
 };
 type Conta = { ncodcc: string; nome: string; banco: string; subtitulo: string; saldo: number; saldo_data?: string | null; pct: number; incluir: boolean };
-type DiaCal = { dia: number; realizado: boolean; tem_projetado: boolean; entradas: number; saidas: number; projetado: number };
+type DiaCal = { dia: number; realizado: boolean; tem_projetado: boolean; entradas: number; saidas: number; projetado: number; recebido: number };
 type Snapshot = {
   sincronizado_em: string;
   saldo_consolidado: number;
@@ -53,7 +53,7 @@ type Snapshot = {
   periodos: { ontem: Periodo; hoje: Periodo; semana: Periodo; mes: Periodo };
   contas_a_pagar: { total: number; itens: { data: string; descricao: string; categoria: string; valor: number; dias: number }[] };
   calendario: { ano: number; mes: number; hoje: number; dias: DiaCal[] };
-  calendario_anterior: { ano: number; mes: number; dias: { dia: number; entradas: number; saidas: number }[] };
+  calendario_anterior: { ano: number; mes: number; dias: { dia: number; entradas: number; saidas: number; recebido: number }[] };
   fluxo_projetado: {
     menor: { valor: number; data: string }; maior_desembolso: { valor: number; data: string };
     saldo_final: { data: string; saldo: number }; saldo_atual: number;
@@ -236,12 +236,14 @@ export default function Caixa() {
     const ultimoDiaAnt = calAnt.dias.length;      // nº de dias do mês anterior
     const fimAnt = Math.min(diaFim, ultimoDiaAnt); // mês anterior mais curto → usa o último dia
 
-    const soma = (dias: { dia: number; entradas: number; saidas: number }[], de: number, ate: number) =>
-      dias.reduce((a, d) => (d.dia >= de && d.dia <= ate ? { e: a.e + d.entradas, s: a.s + d.saidas } : a), { e: 0, s: 0 });
+    // ENTRADA = "caixa recebido" (só Asaas Disponível + Sicoob CC, campo `recebido`).
+    // SAÍDA = todos os pagamentos do período (campo `saidas`, todas as contas).
+    const soma = (dias: { dia: number; recebido: number; saidas: number }[], de: number, ate: number) =>
+      dias.reduce((a, d) => (d.dia >= de && d.dia <= ate ? { rec: a.rec + (d.recebido ?? 0), s: a.s + d.saidas } : a), { rec: 0, s: 0 });
     const at = soma(cal.dias, diaIni, diaFim);
     const an = soma(calAnt.dias, diaIni, fimAnt);
-    const entrada = at.e, saida = at.s, saldo = entrada - saida;
-    const entradaAnt = an.e, saidaAnt = an.s, saldoAnt = entradaAnt - saidaAnt;
+    const entrada = at.rec, saida = at.s, saldo = entrada - saida;
+    const entradaAnt = an.rec, saidaAnt = an.s, saldoAnt = entradaAnt - saidaAnt;
 
     // Top 3 categorias de saída no período (das movimentações do mês, filtradas por dia).
     const catMap = new Map<string, number>();
@@ -268,7 +270,7 @@ export default function Caixa() {
     L.push(`Período: ${periodoAtual}`);
     L.push(`Gerado em: ${new Date().toLocaleDateString("pt-BR")}`);
     L.push("");
-    L.push("- ENTRADA DE CAIXA (Asaas)");
+    L.push("- ENTRADA DE CAIXA (Asaas Disponível + Sicoob CC)");
     L.push(`${periodoAtual}: ${fmtBRL(entrada)}`);
     L.push(`Mesmo período do mês anterior (${periodoAnt}): ${fmtBRL(entradaAnt)}`);
     L.push(`📈 Variação vs. período anterior: ${fmtVariacao(entrada, entradaAnt)}`);

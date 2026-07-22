@@ -12,7 +12,7 @@ import { cn } from "@/lib/utils";
 import { toast } from "sonner";
 import { ComprovanteLink } from "@/components/ComprovanteLink";
 import { podeAbrirComprovante } from "@/lib/comprovante";
-import { brl, brlAbbr, fmtDateBR, fmtTrilha, compLabel, MESES_PT_LONG } from "./utils";
+import { brl, brlAbbr, fmtDateBR, fmtDateTimeBR, fmtTrilha, compLabel, MESES_PT_LONG } from "./utils";
 import AjusteSolicitadoModal from "./AjusteSolicitadoModal";
 import SolicitarJustificativasModal from "./SolicitarJustificativasModal";
 import { enviarProntos, enviarUnitario } from "@/lib/omieAnexos";
@@ -131,6 +131,7 @@ export default function Achados() {
   const [fRegra, setFRegra] = useState<string>("todas");
   const [fCat, setFCat] = useState<FiltroCat>("todas");
   const [fResp, setFResp] = useState<string>("todas");
+  const [fAnexo, setFAnexo] = useState<string>("todas");
   const [busca, setBusca] = useState("");
   const [selected, setSelected] = useState<Row | null>(null);
   const [origemCart, setOrigemCart] = useState<CartaoLanc | null>(null);
@@ -270,10 +271,12 @@ export default function Achados() {
       if (fRegra !== "todas" && r.regra !== fRegra) return false;
       if (fCat !== "todas" && r.categoria !== fCat) return false;
       if (fResp !== "todas" && r.responsavel !== fResp) return false;
+      if (fAnexo === "Anexado" && !r.omie_anexo_enviado_em) return false;
+      if (fAnexo === "Não anexado" && r.omie_anexo_enviado_em) return false;
       if (q && !(r.titulo || "").toLowerCase().includes(q)) return false;
       return true;
     });
-  }, [periodRows, filtro, fSev, fArea, fRegra, fCat, fResp, busca]);
+  }, [periodRows, filtro, fSev, fArea, fRegra, fCat, fResp, fAnexo, busca]);
 
   // Envio em massa via webhook do n8n: manda TODOS os pendentes (base do cartão + achados)
   // do responsável selecionado — junho + julho, independente da fatura na tela (intencional).
@@ -651,8 +654,9 @@ export default function Achados() {
         <FilterSelect label="Área" value={fArea} onChange={setFArea} options={areas} />
         <FilterSelect label="Regra" value={fRegra} onChange={setFRegra} options={regras} />
         <FilterSelect label="Responsável" value={fResp} onChange={setFResp} options={responsaveisPendentes} />
-        {(fSev !== "todas" || fArea !== "todas" || fRegra !== "todas" || fResp !== "todas") && (
-          <button onClick={() => { setFSev("todas"); setFArea("todas"); setFRegra("todas"); setFResp("todas"); }} className="text-xs text-muted-foreground hover:text-foreground underline">
+        <FilterSelect label="Anexo Omie" value={fAnexo} onChange={setFAnexo} options={["Anexado", "Não anexado"]} />
+        {(fSev !== "todas" || fArea !== "todas" || fRegra !== "todas" || fResp !== "todas" || fAnexo !== "todas") && (
+          <button onClick={() => { setFSev("todas"); setFArea("todas"); setFRegra("todas"); setFResp("todas"); setFAnexo("todas"); }} className="text-xs text-muted-foreground hover:text-foreground underline">
             limpar filtros
           </button>
         )}
@@ -691,6 +695,14 @@ export default function Achados() {
                     <span className={cn("inline-flex px-1.5 py-0.5 rounded text-[10px] font-medium border", sevBadge(r.severidade))}>
                       {r.severidade}
                     </span>
+                    {r.omie_anexo_enviado_em && (
+                      <span
+                        className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium border bg-[hsl(152_55%_94%)] text-[hsl(152_60%_28%)] border-[hsl(152_55%_82%)]"
+                        title={`Anexado ao Omie em ${fmtDateTimeBR(r.omie_anexo_enviado_em)}`}
+                      >
+                        <Paperclip className="h-2.5 w-2.5" /> Anexado ao Omie
+                      </span>
+                    )}
                   </div>
                 </button>
                 {podeAbrirComprovante(r.link_comprovante) && (
@@ -877,6 +889,13 @@ export default function Achados() {
                           : <><Paperclip className="mr-1.5 h-3.5 w-3.5" /> Enviar ao Omie</>}
                       </Button>
                     )}
+                  </div>
+
+                  <div className="col-span-2">
+                    <div className="text-[11px] uppercase tracking-wider text-muted-foreground font-medium">Anexo Omie</div>
+                    <div className="text-sm mt-1">
+                      {selected.omie_anexo_enviado_em ? `Anexado em ${fmtDateTimeBR(selected.omie_anexo_enviado_em)}` : "—"}
+                    </div>
                   </div>
                 </div>
 

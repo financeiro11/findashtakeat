@@ -16,6 +16,15 @@ export function fmtDateBR(iso: string | null | undefined) {
   const d = new Date(iso.length === 10 ? iso + "T00:00:00" : iso);
   return `${String(d.getDate()).padStart(2, "0")}/${String(d.getMonth() + 1).padStart(2, "0")}/${d.getFullYear()}`;
 }
+export function fmtDateTimeBR(iso: string | null | undefined) {
+  if (!iso) return "—";
+  const d = new Date(iso);
+  const dd = String(d.getDate()).padStart(2, "0");
+  const MM = String(d.getMonth() + 1).padStart(2, "0");
+  const hh = String(d.getHours()).padStart(2, "0");
+  const mi = String(d.getMinutes()).padStart(2, "0");
+  return `${dd}/${MM}/${d.getFullYear()} ${hh}:${mi}`;
+}
 export function fmtTrilha(iso: string) {
   const d = new Date(iso);
   const dd = String(d.getDate()).padStart(2, "0");

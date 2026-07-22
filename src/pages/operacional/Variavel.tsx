@@ -124,7 +124,19 @@ function parseTeam(team: Team, data: SheetData | null): ParsedTeam {
   if (!data) return { isOps, isRpa: team.kind === "rpa", rows: [], total: 0 };
   if (team.kind === "rpa") return parseRpa(data);
 
-  const headers = data.headers.map((h) => (h ?? "").trim());
+  // Algumas planilhas (ex.: OPS) têm uma linha-título mesclada ("Setor de Operações")
+  // na linha 1; o cabeçalho real fica na linha 2. Detecta e desloca.
+  let headers = data.headers.map((h) => (h ?? "").trim());
+  let bodyRows = data.rows;
+  if (
+    headers.filter(Boolean).length <= 1 &&
+    bodyRows[0] &&
+    bodyRows[0].some((c) => norm(c).includes("colaborador") || norm(c).includes("nome"))
+  ) {
+    headers = bodyRows[0].map((h) => (h ?? "").trim());
+    bodyRows = bodyRows.slice(1);
+    data = { headers, rows: bodyRows };
+  }
   const colabIdx = headers.findIndex((h) => norm(h).includes("colaborador") || norm(h).includes("nome"));
   const nameIdx = colabIdx >= 0 ? colabIdx : 0;
   const cargoIdx = headers.findIndex((h) => norm(h).includes("cargo"));

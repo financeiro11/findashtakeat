@@ -1,13 +1,9 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
-import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import {
-  Percent, RefreshCw, Loader2, ExternalLink, CheckCircle2, AlertTriangle,
-  ShieldAlert, FileWarning,
+  Percent, RefreshCw, Loader2, ExternalLink, ChevronRight,
+  ShieldAlert, FileWarning, CheckCircle2,
 } from "lucide-react";
 import { supabase } from "@/integrations/supabase/client";
 import { cn } from "@/lib/utils";
@@ -16,8 +12,10 @@ import { cn } from "@/lib/utils";
  * Central de Comissões Variáveis.
  * Cada time preenche uma planilha "[Time] - Colaboradores e Comissionamento" no Google Drive,
  * onde CADA MÊS é uma aba separada (Janeiro, Fevereiro, ...). Esta página lê essas planilhas
- * via a edge function `sheets-mirror` e mostra, para o mês selecionado, quem já lançou as
- * bonificações e quem ainda está pendente — para o time financeiro cobrar e fechar o mês.
+ * via a edge function `sheets-mirror` e consolida, para o mês selecionado, o total variável de
+ * cada time. Cada linha é expansível e revela os lançamentos por colaborador. Times com mais de
+ * uma coluna de valor (ex.: OPS, com Variável/Meta + Plantão Suporte + Plantão Onboarding)
+ * mostram cada coluna e um total por colaborador.
  */
 
 type Team = {
@@ -50,6 +48,18 @@ function norm(s: string): string {
   return (s ?? "").normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase().trim();
 }
 
+/** Interpreta um valor monetário em pt-BR ("R$ 6.998,55", "1.560,00", "-", "") -> número. */
+function parseMoney(s: string): number {
+  const t = (s ?? "").replace(/r\$/i, "").replace(/\s/g, "").trim();
+  if (!t || t === "-" || t === "—") return 0;
+  const n = parseFloat(t.replace(/\./g, "").replace(",", "."));
+  return Number.isFinite(n) ? n : 0;
+}
+
+function fmtBRL(n: number): string {
+  return n.toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
+}
+
 /** Interpreta o nome de uma aba: "Junho" -> mês; "Fevereiro26" -> mês + ano 2026. */
 function parseTabMonth(title: string): { monthIdx: number; year: number | null } | null {
   const n = norm(title);
@@ -74,12 +84,74 @@ type TeamStatus =
   | { state: "error"; message: string; forbidden?: boolean }
   | {
       state: "done";
-      filled: boolean;
       tabTitle: string | null;
-      lancamentos: number;
       data: SheetData | null;
       sheetTabId: number | null;
     };
+
+/** Colaborador com seus valores por coluna e o total. */
+type ParsedRow = { colaborador: string; cargo: string; values: number[]; total: number };
+/** Time depois de interpretar a planilha: colunas de valor, linhas e total geral. */
+type ParsedTeam = {
+  valueHeaders: string[];
+  hasCargo: boolean;
+  rows: ParsedRow[];
+  total: number;
+  /** Mais de uma coluna de valor (ex.: OPS) — mostramos cada coluna + total por colaborador. */
+  multi: boolean;
+};
+
+/**
+ * Interpreta a planilha bruta de um time em colaboradores + colunas de valor.
+ * - Coluna "colaborador"/"nome" (ou a 1ª) vira o nome; coluna "cargo" vira o cargo.
+ * - Colunas de valor = demais colunas com cabeçalho, que não sejam "total", e que contenham
+ *   ao menos um valor numérico. O total por colaborador (e do time) é somado a partir delas.
+ */
+function parseTeam(data: SheetData | null): ParsedTeam {
+  const empty: ParsedTeam = { valueHeaders: [], hasCargo: false, rows: [], total: 0, multi: false };
+  if (!data) return empty;
+
+  const headers = data.headers.map((h) => (h ?? "").trim());
+  const colabIdx = headers.findIndex((h) => norm(h).includes("colaborador") || norm(h).includes("nome"));
+  const nameIdx = colabIdx >= 0 ? colabIdx : 0;
+  const cargoIdx = headers.findIndex((h) => norm(h).includes("cargo"));
+
+  const valueCols = headers
+    .map((h, i) => ({ h, i }))
+    .filter(({ h, i }) => {
+      if (i === nameIdx || i === cargoIdx) return false;
+      if (!h) return false;
+      if (norm(h).includes("total")) return false; // total é calculado por nós
+      return data.rows.some((r) => /\d/.test(r[i] ?? ""));
+    });
+
+  const rows: ParsedRow[] = [];
+  for (const r of data.rows) {
+    const colaborador = (r[nameIdx] ?? "").trim();
+    if (!colaborador) continue;
+    if (norm(colaborador).startsWith("total")) continue; // ignora linha de total da planilha
+    const values = valueCols.map((c) => parseMoney(r[c.i] ?? ""));
+    const total = values.reduce((a, b) => a + b, 0);
+    rows.push({
+      colaborador,
+      cargo: cargoIdx >= 0 ? (r[cargoIdx] ?? "").trim() : "",
+      values,
+      total,
+    });
+  }
+
+  // Só conta como "lançamento" quem tem algum valor.
+  const filledRows = rows.filter((r) => r.total > 0);
+  const total = filledRows.reduce((a, b) => a + b.total, 0);
+
+  return {
+    valueHeaders: valueCols.map((c) => c.h),
+    hasCargo: cargoIdx >= 0,
+    rows,
+    total,
+    multi: valueCols.length > 1,
+  };
+}
 
 async function invokeSheets(body: Record<string, unknown>): Promise<any> {
   const { data, error } = await supabase.functions.invoke("sheets-mirror", { body });
@@ -90,23 +162,6 @@ async function invokeSheets(body: Record<string, unknown>): Promise<any> {
     throw e;
   }
   return data;
-}
-
-/** Conta quantos lançamentos (colaboradores/linhas com valor) o mês tem. */
-function contarLancamentos(team: Team, data: SheetData): number {
-  const { headers, rows } = data;
-  if (team.kind === "rpa") {
-    // Liderança: qualquer linha com >= 2 células preenchidas conta como conteúdo lançado.
-    return rows.filter((r) => r.filter((c) => (c ?? "").trim()).length >= 2).length;
-  }
-  const varIdx = headers.findIndex((h) => norm(h).includes("variavel"));
-  return rows.filter((r) => {
-    const colaborador = (r[0] ?? "").trim();
-    if (!colaborador) return false;
-    if (varIdx < 0) return r.filter((c) => (c ?? "").trim()).length >= 2;
-    const v = (r[varIdx] ?? "").trim();
-    return v !== "" && v !== "-";
-  }).length;
 }
 
 /** Executa tarefas com concorrência limitada (evita estourar o limite do Google Sheets). */
@@ -132,9 +187,17 @@ export default function Variavel() {
   const [year, setYear] = useState(now.getFullYear());
   const [statuses, setStatuses] = useState<Record<string, TeamStatus>>({});
   const [loading, setLoading] = useState(false);
-  const [active, setActive] = useState(TEAMS[0].key);
+  const [expanded, setExpanded] = useState<Set<string>>(new Set());
 
   const periodKey = `${year}-${monthIdx}`;
+
+  const toggle = useCallback((key: string) => {
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      next.has(key) ? next.delete(key) : next.add(key);
+      return next;
+    });
+  }, []);
 
   const loadAll = useCallback(async (force = false) => {
     setLoading(true);
@@ -152,24 +215,16 @@ export default function Variavel() {
         if (!match) {
           setStatuses((prev) => ({
             ...prev,
-            [team.key]: { state: "done", filled: false, tabTitle: null, lancamentos: 0, data: null, sheetTabId: null },
+            [team.key]: { state: "done", tabTitle: null, data: null, sheetTabId: null },
           }));
           return;
         }
 
         const read = await invokeSheets({ action: "read", spreadsheetId: team.spreadsheetId, sheet: match.title, force });
         const data: SheetData = { headers: read?.headers ?? [], rows: read?.rows ?? [] };
-        const lancamentos = contarLancamentos(team, data);
         setStatuses((prev) => ({
           ...prev,
-          [team.key]: {
-            state: "done",
-            filled: lancamentos > 0,
-            tabTitle: match.title,
-            lancamentos,
-            data,
-            sheetTabId: match.sheetId,
-          },
+          [team.key]: { state: "done", tabTitle: match.title, data, sheetTabId: match.sheetId },
         }));
       } catch (e: any) {
         setStatuses((prev) => ({
@@ -184,19 +239,26 @@ export default function Variavel() {
 
   useEffect(() => { loadAll(); /* eslint-disable-next-line */ }, [periodKey]);
 
-  const resumo = useMemo(() => {
-    let preenchidos = 0, pendentes = 0, erros = 0, carregando = 0;
+  // Interpreta cada time e calcula o resumo geral.
+  const parsedByTeam = useMemo(() => {
+    const map: Record<string, ParsedTeam> = {};
     for (const t of TEAMS) {
       const s = statuses[t.key];
-      if (!s || s.state === "loading") carregando++;
-      else if (s.state === "error") erros++;
-      else if (s.filled) preenchidos++;
-      else pendentes++;
+      map[t.key] = s?.state === "done" ? parseTeam(s.data) : parseTeam(null);
     }
-    return { preenchidos, pendentes, erros, carregando };
+    return map;
   }, [statuses]);
 
-  // Opções de mês: últimos 12 meses a partir do mês atual.
+  const resumo = useMemo(() => {
+    let totalGeral = 0, lancados = 0;
+    for (const t of TEAMS) {
+      const s = statuses[t.key];
+      const p = parsedByTeam[t.key];
+      if (s?.state === "done" && p.total > 0) { lancados++; totalGeral += p.total; }
+    }
+    return { totalGeral, lancados };
+  }, [statuses, parsedByTeam]);
+
   const monthOptions = useMemo(() => {
     const opts: { value: string; label: string }[] = [];
     const base = new Date(now.getFullYear(), now.getMonth(), 1);
@@ -219,7 +281,7 @@ export default function Variavel() {
           <div>
             <h2 className="text-2xl font-bold tracking-tight">Comissões Variáveis</h2>
             <p className="text-sm text-muted-foreground">
-              Centraliza as planilhas de bonificação dos times e mostra quem já lançou o mês.
+              Centraliza as planilhas de bonificação dos times e consolida o total variável do mês.
             </p>
           </div>
         </div>
@@ -245,202 +307,236 @@ export default function Variavel() {
         </div>
       </div>
 
-      {/* Box de status / cobrança */}
-      <Card className="border-border shadow-[var(--shadow-card)]">
-        <CardHeader className="pb-3">
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <div>
-              <CardTitle className="text-base">Status do fechamento · {MESES[monthIdx]} / {year}</CardTitle>
-              <CardDescription>
-                {resumo.preenchidos} de {TEAMS.length} times já lançaram
-                {resumo.pendentes > 0 && ` · ${resumo.pendentes} pendente(s)`}
-                {resumo.erros > 0 && ` · ${resumo.erros} com erro`}
-              </CardDescription>
+      {/* Tabela consolidada */}
+      <div className="rounded-2xl border border-border bg-card p-4 shadow-[var(--shadow-card)] sm:p-6">
+        {/* Título + resumo geral */}
+        <div className="mb-4 flex flex-wrap items-center justify-between gap-4">
+          <h3 className="text-xl font-bold tracking-tight">
+            Comissões Variáveis{" "}
+            <span className="text-base font-normal text-muted-foreground">{MESES[monthIdx]} / {year}</span>
+          </h3>
+          <div className="flex items-center gap-6 rounded-xl border border-border px-5 py-2.5">
+            <div className="flex items-baseline gap-2">
+              <span className="text-xs uppercase tracking-wide text-muted-foreground">Total geral</span>
+              <span className="text-lg font-bold text-primary">{fmtBRL(resumo.totalGeral)}</span>
             </div>
-            <div className="flex items-center gap-2">
-              <Badge variant="outline" className="gap-1 border-emerald-300 text-emerald-700 dark:border-emerald-700 dark:text-emerald-300">
-                <CheckCircle2 className="h-3.5 w-3.5" /> {resumo.preenchidos} preenchidos
-              </Badge>
-              <Badge variant="outline" className="gap-1 border-amber-300 text-amber-700 dark:border-amber-700 dark:text-amber-300">
-                <AlertTriangle className="h-3.5 w-3.5" /> {resumo.pendentes} pendentes
-              </Badge>
+            <div className="flex items-center gap-1.5 text-sm font-medium text-muted-foreground">
+              <span className="h-2 w-2 rounded-full bg-emerald-500" />
+              {resumo.lancados} <span className="text-muted-foreground/70">/ {TEAMS.length} lançados</span>
             </div>
           </div>
-        </CardHeader>
-        <CardContent>
-          <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3">
-            {TEAMS.map((team) => {
-              const s = statuses[team.key];
-              return (
-                <button
+        </div>
+
+        <div className="overflow-x-auto">
+          <table className="w-full border-collapse">
+            <thead>
+              <tr className="border-b border-border text-xs uppercase tracking-wide text-muted-foreground">
+                <th className="px-4 py-3 text-left font-medium">Time</th>
+                <th className="px-4 py-3 text-center font-medium">Status</th>
+                <th className="px-4 py-3 text-right font-medium">Lanç.</th>
+                <th className="px-4 py-3 text-right font-medium">Total Variável</th>
+              </tr>
+            </thead>
+            <tbody>
+              {TEAMS.map((team) => (
+                <TeamRows
                   key={team.key}
-                  onClick={() => setActive(team.key)}
-                  className={cn(
-                    "flex items-center justify-between gap-3 rounded-lg border px-3 py-2.5 text-left transition-colors hover:bg-muted/50",
-                    active === team.key && "ring-2 ring-primary/40",
-                    !s || s.state === "loading" ? "border-border" :
-                      s.state === "error" ? "border-destructive/40 bg-destructive/5" :
-                      s.filled ? "border-emerald-200 bg-emerald-50/50 dark:border-emerald-900 dark:bg-emerald-950/20" :
-                      "border-amber-200 bg-amber-50/50 dark:border-amber-900 dark:bg-amber-950/20",
-                  )}
-                >
-                  <div className="min-w-0">
-                    <div className="truncate text-sm font-medium">{team.label}</div>
-                    <div className="truncate text-xs text-muted-foreground">
-                      {(!s || s.state === "loading") ? "verificando…" :
-                        s.state === "error" ? (s.forbidden ? "sem acesso à planilha" : "erro ao ler") :
-                        s.filled ? `${s.lancamentos} lançamento(s) · aba "${s.tabTitle}"` :
-                        s.tabTitle ? "aba do mês vazia" : "sem aba do mês"}
-                    </div>
-                  </div>
-                  <StatusIcon status={s} />
-                </button>
-              );
-            })}
-          </div>
-        </CardContent>
-      </Card>
-
-      {/* Abas por time */}
-      <Tabs value={active} onValueChange={setActive} className="space-y-4">
-        <TabsList className="h-auto flex-wrap justify-start gap-1">
-          {TEAMS.map((team) => {
-            const s = statuses[team.key];
-            const dot =
-              !s || s.state === "loading" ? "bg-muted-foreground/40" :
-              s.state === "error" ? "bg-destructive" :
-              s.filled ? "bg-emerald-500" : "bg-amber-500";
-            return (
-              <TabsTrigger key={team.key} value={team.key} className="gap-1.5">
-                <span className={cn("h-1.5 w-1.5 rounded-full", dot)} />
-                {team.label}
-              </TabsTrigger>
-            );
-          })}
-        </TabsList>
-
-        {TEAMS.map((team) => (
-          <TabsContent key={team.key} value={team.key} className="space-y-4">
-            {team.key === active && (
-              <TeamPanel
-                team={team}
-                status={statuses[team.key]}
-                mesLabel={`${MESES[monthIdx]} / ${year}`}
-              />
-            )}
-          </TabsContent>
-        ))}
-      </Tabs>
+                  team={team}
+                  status={statuses[team.key]}
+                  parsed={parsedByTeam[team.key]}
+                  open={expanded.has(team.key)}
+                  onToggle={() => toggle(team.key)}
+                />
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
     </div>
   );
 }
 
-function StatusIcon({ status }: { status: TeamStatus | undefined }) {
-  if (!status || status.state === "loading") return <Loader2 className="h-4 w-4 shrink-0 animate-spin text-muted-foreground" />;
-  if (status.state === "error") {
-    return status.forbidden
-      ? <ShieldAlert className="h-4 w-4 shrink-0 text-destructive" />
-      : <FileWarning className="h-4 w-4 shrink-0 text-destructive" />;
-  }
-  return status.filled
-    ? <CheckCircle2 className="h-4 w-4 shrink-0 text-emerald-600 dark:text-emerald-400" />
-    : <AlertTriangle className="h-4 w-4 shrink-0 text-amber-600 dark:text-amber-400" />;
-}
+function TeamRows({
+  team, status, parsed, open, onToggle,
+}: {
+  team: Team;
+  status: TeamStatus | undefined;
+  parsed: ParsedTeam;
+  open: boolean;
+  onToggle: () => void;
+}) {
+  const loading = !status || status.state === "loading";
+  const error = status?.state === "error";
+  const done = status?.state === "done";
+  const filled = done && parsed.total > 0;
+  const lancamentos = parsed.rows.filter((r) => r.total > 0).length;
+  const canExpand = filled;
 
-function TeamPanel({ team, status, mesLabel }: { team: Team; status: TeamStatus | undefined; mesLabel: string }) {
-  const sheetTabId = status && status.state === "done" ? status.sheetTabId : null;
-  const url = sheetUrl(team.spreadsheetId, sheetTabId);
+  // Texto/cor do status na coluna do meio.
+  let statusText: string;
+  let statusClass: string;
+  if (loading) { statusText = "Verificando…"; statusClass = "text-muted-foreground"; }
+  else if (error) {
+    statusText = (status as any).forbidden ? "Sem acesso" : "Erro";
+    statusClass = "text-destructive";
+  } else if (filled) { statusText = "Preenchido"; statusClass = "text-emerald-600 dark:text-emerald-400"; }
+  else { statusText = "Pendente"; statusClass = "text-amber-600 dark:text-amber-500"; }
+
+  const dot =
+    loading ? "bg-muted-foreground/40" :
+    error ? "bg-destructive" :
+    filled ? "bg-emerald-500" : "bg-amber-500";
 
   return (
-    <Card className="border-border shadow-[var(--shadow-card)]">
-      <CardHeader>
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <div>
-            <CardTitle className="text-base">{team.label}</CardTitle>
-            <CardDescription>
-              {mesLabel}
-              {status?.state === "done" && status.filled && ` · ${status.lancamentos} lançamento(s)`}
-            </CardDescription>
-          </div>
-          <Button variant="outline" size="sm" onClick={() => window.open(url, "_blank")}>
-            <ExternalLink className="h-4 w-4" /> Abrir planilha
-          </Button>
-        </div>
-      </CardHeader>
-      <CardContent className="p-0">
-        {(!status || status.state === "loading") && (
-          <div className="flex items-center justify-center gap-2 p-8 text-sm text-muted-foreground">
-            <Loader2 className="h-4 w-4 animate-spin" /> Lendo planilha…
-          </div>
+    <>
+      <tr
+        className={cn(
+          "border-b border-border transition-colors",
+          canExpand && "cursor-pointer hover:bg-muted/40",
+          open && "bg-muted/30",
         )}
-
-        {status?.state === "error" && (
-          <div className="m-4 rounded-md border border-destructive/40 bg-destructive/5 px-4 py-3 text-sm text-destructive">
-            {status.forbidden ? (
-              <>Sem acesso à planilha. Compartilhe-a (como Editor) com a conta Google conectada ao Hub e clique em Atualizar.</>
-            ) : (
-              <>Erro ao ler a planilha: {status.message}</>
+        onClick={canExpand ? onToggle : undefined}
+      >
+        {/* Time */}
+        <td className="px-4 py-4">
+          <div className="flex items-center gap-2.5">
+            <ChevronRight
+              className={cn(
+                "h-4 w-4 shrink-0 text-muted-foreground/60 transition-transform",
+                open && "rotate-90",
+                !canExpand && "opacity-0",
+              )}
+            />
+            <span className={cn("h-2 w-2 shrink-0 rounded-full", dot)} />
+            <span className="font-semibold">{team.label}</span>
+            {parsed.multi && (
+              <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+                Multi
+              </span>
             )}
           </div>
-        )}
+        </td>
 
-        {status?.state === "done" && !status.tabTitle && (
-          <div className="m-4 rounded-md border border-amber-300 bg-amber-50/60 px-4 py-3 text-sm text-amber-800 dark:border-amber-800 dark:bg-amber-950/30 dark:text-amber-200">
-            <AlertTriangle className="mr-1.5 inline h-4 w-4" />
-            Ainda não existe a aba de <strong>{mesLabel}</strong> nesta planilha. O time ainda não lançou este mês.
-          </div>
-        )}
+        {/* Status */}
+        <td className={cn("px-4 py-4 text-center text-sm font-medium", statusClass)}>
+          {statusText}
+        </td>
 
-        {status?.state === "done" && status.tabTitle && !status.filled && (
-          <div className="m-4 rounded-md border border-amber-300 bg-amber-50/60 px-4 py-3 text-sm text-amber-800 dark:border-amber-800 dark:bg-amber-950/30 dark:text-amber-200">
-            <AlertTriangle className="mr-1.5 inline h-4 w-4" />
-            A aba "{status.tabTitle}" existe mas está sem lançamentos de variável.
-          </div>
-        )}
+        {/* Lançamentos */}
+        <td className="px-4 py-4 text-right text-sm tabular-nums text-muted-foreground">
+          {filled ? lancamentos : "0"}
+        </td>
 
-        {status?.state === "done" && status.data && status.data.rows.length > 0 && (
-          <ReadOnlyTable data={status.data} />
-        )}
-      </CardContent>
-    </Card>
+        {/* Total variável / ação */}
+        <td className="px-4 py-4 text-right">
+          {filled ? (
+            <div className="flex items-center justify-end gap-4">
+              <span className="font-bold tabular-nums">{fmtBRL(parsed.total)}</span>
+              <span className="inline-flex items-center gap-1 whitespace-nowrap text-xs text-emerald-600 dark:text-emerald-400">
+                <CheckCircle2 className="h-3.5 w-3.5" /> conferido
+              </span>
+            </div>
+          ) : loading ? (
+            <span className="text-muted-foreground">—</span>
+          ) : error ? (
+            <div className="flex items-center justify-end gap-2 text-xs text-destructive">
+              {(status as any).forbidden
+                ? <ShieldAlert className="h-3.5 w-3.5" />
+                : <FileWarning className="h-3.5 w-3.5" />}
+              <button
+                type="button"
+                onClick={(e) => { e.stopPropagation(); window.open(sheetUrl(team.spreadsheetId, done ? (status as any).sheetTabId : null), "_blank"); }}
+                className="underline underline-offset-2 hover:text-destructive/80"
+              >
+                Abrir planilha
+              </button>
+            </div>
+          ) : (
+            <div className="flex items-center justify-end gap-3">
+              <span className="text-muted-foreground">—</span>
+              <button
+                type="button"
+                onClick={(e) => { e.stopPropagation(); window.open(sheetUrl(team.spreadsheetId, done ? (status as any).sheetTabId : null), "_blank"); }}
+                className="inline-flex items-center gap-1.5 rounded-full border border-destructive/30 bg-destructive/5 px-3 py-1 text-xs font-medium text-destructive transition-colors hover:bg-destructive/10"
+              >
+                Cobrar
+              </button>
+            </div>
+          )}
+        </td>
+      </tr>
+
+      {open && filled && (
+        <tr className="border-b border-border bg-muted/10">
+          <td colSpan={4} className="px-4 pb-5 pt-1">
+            <TeamDetail team={team} parsed={parsed} sheetTabId={done ? (status as any).sheetTabId : null} />
+          </td>
+        </tr>
+      )}
+    </>
   );
 }
 
-function ReadOnlyTable({ data }: { data: SheetData }) {
-  // Mostra apenas colunas com cabeçalho (ignora colunas de apoio/vazias).
-  const cols = data.headers
-    .map((h, i) => ({ h: (h ?? "").trim(), i }))
-    .filter((c) => c.h.length > 0);
-
-  if (cols.length === 0) {
-    return <div className="p-6 text-center text-sm text-muted-foreground">Planilha sem cabeçalho reconhecível.</div>;
-  }
+function TeamDetail({ team, parsed, sheetTabId }: { team: Team; parsed: ParsedTeam; sheetTabId: number | null }) {
+  const { valueHeaders, hasCargo, multi } = parsed;
+  // Não mostramos linhas totalmente zeradas no detalhe (colaborador sem lançamento no mês).
+  const rows = parsed.rows.filter((r) => r.total > 0);
 
   return (
-    <div className="overflow-auto max-h-[65vh]">
-      <Table>
-        <TableHeader className="sticky top-0 z-10 bg-background">
-          <TableRow>
-            {cols.map((c) => (
-              <TableHead key={c.i} className="whitespace-nowrap">{c.h}</TableHead>
+    <div className="overflow-hidden rounded-lg border border-border">
+      <div className="overflow-x-auto">
+        <table className="w-full border-collapse text-sm">
+          <thead>
+            <tr className="bg-muted/50 text-[11px] uppercase tracking-wide text-muted-foreground">
+              <th className="px-4 py-2.5 text-left font-medium">Colaborador</th>
+              {hasCargo && <th className="px-4 py-2.5 text-left font-medium">Cargo</th>}
+              {valueHeaders.map((h, i) => (
+                <th key={i} className="px-4 py-2.5 text-right font-medium">{h}</th>
+              ))}
+              {multi && <th className="px-4 py-2.5 text-right font-medium">Total</th>}
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((r, ri) => (
+              <tr key={ri} className="border-t border-border/60">
+                <td className="px-4 py-2.5 font-medium">{r.colaborador}</td>
+                {hasCargo && <td className="px-4 py-2.5 text-muted-foreground">{r.cargo || "—"}</td>}
+                {r.values.map((v, vi) => (
+                  <td key={vi} className="px-4 py-2.5 text-right tabular-nums">
+                    {v > 0 ? fmtBRL(v) : <span className="text-muted-foreground/50">—</span>}
+                  </td>
+                ))}
+                {multi && (
+                  <td className="px-4 py-2.5 text-right font-semibold tabular-nums">{fmtBRL(r.total)}</td>
+                )}
+              </tr>
             ))}
-          </TableRow>
-        </TableHeader>
-        <TableBody>
-          {data.rows.map((row, ri) => (
-            <TableRow key={ri}>
-              {cols.map((c) => {
-                const cell = (row[c.i] ?? "").trim();
-                return (
-                  <TableCell key={c.i} className="whitespace-nowrap text-sm">
-                    {cell || <span className="text-muted-foreground/50">—</span>}
-                  </TableCell>
-                );
-              })}
-            </TableRow>
-          ))}
-        </TableBody>
-      </Table>
+          </tbody>
+          <tfoot>
+            <tr className="border-t border-border bg-muted/30">
+              <td className="px-4 py-2.5 text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                Total do time
+              </td>
+              {hasCargo && <td />}
+              {/* Empurra o total para a última coluna de valor. */}
+              {valueHeaders.slice(0, -1).map((_, i) => <td key={i} />)}
+              <td className="px-4 py-2.5 text-right font-bold tabular-nums text-primary">
+                {fmtBRL(parsed.total)}
+              </td>
+            </tr>
+          </tfoot>
+        </table>
+      </div>
+
+      <div className="flex justify-end border-t border-border bg-card px-4 py-2">
+        <button
+          type="button"
+          onClick={() => window.open(sheetUrl(team.spreadsheetId, sheetTabId), "_blank")}
+          className="inline-flex items-center gap-1.5 text-xs text-muted-foreground transition-colors hover:text-foreground"
+        >
+          <ExternalLink className="h-3.5 w-3.5" /> Abrir planilha
+        </button>
+      </div>
     </div>
   );
 }

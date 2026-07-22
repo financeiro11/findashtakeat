@@ -32,6 +32,7 @@ type Props = {
   onClose: () => void;
   onSent: () => void;
   responsavel: string;
+  competencia?: string | null;
 };
 
 function initials(nome: string) {

@@ -7,9 +7,10 @@
 // geral/categorias (descrições) + geral/clientes (nome dos fornecedores, sob demanda).
 //
 // Regime de CAIXA: tudo que tem data de PAGAMENTO/baixa é "realizado"; títulos em
-// aberto com vencimento futuro são "projetados". Transferências entre contas
-// próprias (origem TRAP) não contam como entrada/saída de resultado, mas afetam o
-// saldo por conta.
+// aberto com vencimento futuro são "projetados". Transferências entre contas próprias
+// (detectadas por origem TRAP/TRAR ou por categoria de transferência) não contam como
+// entrada/saída de resultado. O saldo por conta vem da posição conciliada do Omie
+// (saldo_inicial@saldo_data), não de somar movimentos.
 //
 // Ações (body.action):
 //   "preview" → diagnóstico: contas correntes cru + amostra de movimento + status.
@@ -19,6 +20,7 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { listarCategorias, listarMovimentos, omieCall } from "../_shared/omie.ts";
 import { lerMovimentos, lerCategorias } from "../_shared/omie-cache.ts";
 import { requireUser } from "../_shared/auth.ts";
+import { asaasGet, asaasList } from "../_shared/asaas.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -60,7 +62,19 @@ const startOfDay = (d: Date) => new Date(d.getFullYear(), d.getMonth(), d.getDat
 const addDays = (d: Date, n: number) => { const x = new Date(d); x.setDate(x.getDate() + n); return x; };
 const sameDay = (a: Date, b: Date) => a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
 
-const ORIGENS_TRANSFERENCIA = new Set(["TRAP"]); // transferência entre contas próprias
+// Transferências entre contas próprias — só trocam de bolso, não entram no resultado de caixa.
+// Por ORIGEM: a transferência nativa do Omie gera um par TRAP (saída) + TRAR (entrada).
+const ORIGENS_TRANSFERENCIA = new Set(["TRAP", "TRAR"]);
+// Por CATEGORIA: lançamentos manuais classificados como transferência têm origens comuns
+// (MANR/BAXR/MANP/BAXP), indistinguíveis de um recebimento/pagamento real — então só dá para
+// pegá-los pelo código da categoria no plano de contas do Omie. Se criarem novas categorias
+// de transferência, incluir os códigos aqui.
+const CATEGORIAS_TRANSFERENCIA = new Set(["0.01", "0.01.01", "0.01.02", "1.04.94", "2.10.96"]);
+
+// Contas Asaas no Omie (Disponível + Pago). No CALENDÁRIO, os lançamentos dessas contas
+// vêm do extrato REAL do Asaas (financialTransactions), não do Omie (que fica defasado) —
+// por isso as movimentações do Omie dessas contas ficam FORA do calendário, para não duplicar.
+const ASAAS_NCODCC = new Set(["5460455582", "5471927663"]);
 
 // Data de caixa (realizado) e data de competência/vencimento (projetado).
 const dataPagamento = (det: any): Date | null => pickDate(det, ["dDtPagamento", "dDtBaixa", "dDtCredito", "dDtConciliacao"]);
@@ -171,6 +185,22 @@ Deno.serve(async (req) => {
         const k = `${det.cNatureza ?? "?"} | ${det.cStatus ?? det.cSituacao ?? det.status_titulo ?? "?"} | pago:${dataPagamento(det) ? "s" : "n"}`;
         statusDist[k] = (statusDist[k] ?? 0) + 1;
       }
+      // Sonda do extrato do Asaas (financialTransactions): tipos distintos + amostra + volume,
+      // para calibrar a integração do extrato no calendário. Não grava nada.
+      let asaasProbe: any = null;
+      try {
+        const hj = new Date();
+        const de = new Date(hj.getFullYear(), hj.getMonth() - 1, 1);
+        const ft = await asaasGet<any>("/financialTransactions", {
+          startDate: iso(de), finishDate: iso(hj), offset: 0, limit: 20,
+        });
+        const tipos: Record<string, number> = {};
+        for (const t of (ft?.data ?? [])) tipos[String(t.type)] = (tipos[String(t.type)] ?? 0) + 1;
+        asaasProbe = { totalCount: ft?.totalCount, hasMore: ft?.hasMore, tipos, amostra: (ft?.data ?? []).slice(0, 6) };
+      } catch (e) {
+        asaasProbe = { erro: e instanceof Error ? e.message : String(e) };
+      }
+
       return json({
         ok: true,
         total_contas: contas.map.size,
@@ -180,6 +210,7 @@ Deno.serve(async (req) => {
         amostra_resumo: (amostra[0] as any)?.resumo ?? null,
         amostra_categorias: (amostra[0] as any)?.categorias ?? null,
         status_distribuicao: statusDist,
+        asaas_probe: asaasProbe,
       });
     }
 
@@ -241,11 +272,15 @@ Deno.serve(async (req) => {
     const movs: Mov[] = [];
     for (const mov of movimentos) {
       const det = (mov as any)?.detalhes ?? {};
-      const transfer = ORIGENS_TRANSFERENCIA.has(norm(det.cOrigem));
       const cats = (Array.isArray((mov as any)?.categorias) && (mov as any).categorias.length
         ? (mov as any).categorias
         : [{ cCodCateg: det.cCodCateg, nValor: valorMov(mov) }]
       ).map((c: any) => ({ cod: String(c.cCodCateg ?? ""), desc: descCategoria(c.cCodCateg), valor: Math.abs(toNum(c.nValor)) }));
+      // É transferência se a origem for de transferência (TRAP/TRAR nativas) OU se a categoria
+      // (no cabeçalho ou em qualquer rateio) for uma categoria de transferência.
+      const transfer = ORIGENS_TRANSFERENCIA.has(norm(det.cOrigem))
+        || CATEGORIAS_TRANSFERENCIA.has(String(det.cCodCateg ?? ""))
+        || cats.some((c: { cod: string }) => CATEGORIAS_TRANSFERENCIA.has(c.cod));
       movs.push({
         det,
         entrada: ehEntrada(det),
@@ -273,18 +308,34 @@ Deno.serve(async (req) => {
     const cfgByCC = new Map<string, any>();
     for (const c of (contasCfg ?? []) as any[]) cfgByCC.set(String(c.ncodcc), c);
 
+    // Saldo AO VIVO do Asaas (saldo disponível, GET /finance/balance) — sobrescreve a posição
+    // conciliada do Omie SÓ para a conta "ASAAS Disponível", que fica sempre defasada no Omie.
+    // Se a API do Asaas falhar (chave ausente, indisponível), mantém o valor do Omie e segue.
+    let asaasSaldo: number | null = null;
+    try {
+      const bal = await asaasGet<{ balance?: number }>("/finance/balance");
+      if (bal && typeof bal.balance === "number") asaasSaldo = bal.balance;
+    } catch (e) {
+      console.warn("omie-caixa-sync: saldo do Asaas indisponível, mantendo o do Omie:", e instanceof Error ? e.message : String(e));
+    }
+    const ehAsaasDisponivel = (nome: unknown) => { const n = norm(nome); return n.includes("ASAAS") && n.includes("DISPON"); };
+
     const contasOut: { ncodcc: string; nome: string; banco: string; subtitulo: string; saldo: number; saldo_data: string | null; incluir: boolean; ordem: number }[] = [];
     for (const [ncodcc, info] of contasCC.map.entries()) {
       const cfg = cfgByCC.get(ncodcc);
       const ajusteManual = cfg ? toNum(cfg.saldo_inicial) : 0;
-      const saldo = info.saldoInicial + ajusteManual;
+      const nome = (cfg?.nome_exibicao || info.nome || `Conta ${ncodcc}`).trim();
+      // Asaas ao vivo tem prioridade sobre a posição conciliada + ajuste manual do Omie.
+      const usaAsaas = asaasSaldo != null && (ehAsaasDisponivel(info.nome) || ehAsaasDisponivel(nome));
+      const saldo = usaAsaas ? asaasSaldo! : info.saldoInicial + ajusteManual;
       contasOut.push({
         ncodcc,
-        nome: (cfg?.nome_exibicao || info.nome || `Conta ${ncodcc}`).trim(),
+        nome,
         banco: info.banco,
         subtitulo: (cfg?.subtitulo || info.subtitulo || "").trim(),
         saldo,
-        saldo_data: info.saldoData ? iso(info.saldoData) : null,
+        // conta Asaas: a posição é de AGORA (ao vivo); demais, a data conciliada do Omie.
+        saldo_data: usaAsaas ? iso(hojeD) : (info.saldoData ? iso(info.saldoData) : null),
         // conta nova: por padrão só entra no consolidado se for ativa e conta de fluxo.
         incluir: cfg ? cfg.incluir !== false : (!info.inativo && !info.naoFluxo),
         ordem: cfg ? Number(cfg.ordem ?? 100) : 100,
@@ -462,16 +513,78 @@ Deno.serve(async (req) => {
 
     // 9) Calendário do mês corrente (realizado + projeção de pagamentos).
     const ano = agora.getFullYear(), mesIdx = agora.getMonth();
+
+    // Extrato REAL do Asaas (financialTransactions) para alimentar o calendário — mês atual
+    // + anterior. `value` tem sinal (>0 entrada, <0 saída); transferências (type *TRANSFER*)
+    // não contam (só trocam de bolso). As contas Asaas do Omie ficam fora do calendário
+    // (ASAAS_NCODCC) para não duplicar. Se a API do Asaas falhar, o calendário fica sem Asaas.
+    //
+    // CACHE (omie_cache/asaas_extrato_dias): o Asaas registra CADA taxinha como um lançamento
+    // (~15 mil/2 meses), então puxar tudo leva ~2 min. Guardamos o agregado por dia e só
+    // re-puxamos quando forçado (atualizar=true) ou quando o cache passou de 6h — assim o
+    // "Recalcular" é instantâneo. O saldo por conta continua sempre ao vivo (chamada separada).
+    const ASAAS_CACHE_KEY = "asaas_extrato_dias";
+    const ASAAS_CACHE_MAX_MIN = 360; // 6 h
+    const asaasPorDia = new Map<string, { entradas: number; saidas: number }>();
+    let asaasTxTotal = 0;
+    let asaasTipos: Record<string, number> = {};
+    let asaasOrigem: "cache" | "asaas" | "erro" = "cache";
+    try {
+      const { data: cacheRow } = await supabase
+        .from("omie_cache").select("dados, atualizado_em").eq("chave", ASAAS_CACHE_KEY).maybeSingle();
+      const idadeMin = (cacheRow as any)?.atualizado_em
+        ? (Date.now() - new Date((cacheRow as any).atualizado_em).getTime()) / 60000 : Infinity;
+      const dadosCache = (cacheRow as any)?.dados;
+
+      if (!forcar && Array.isArray(dadosCache?.dias) && idadeMin <= ASAAS_CACHE_MAX_MIN) {
+        for (const r of dadosCache.dias) asaasPorDia.set(r.d, { entradas: Number(r.e) || 0, saidas: Number(r.s) || 0 });
+        asaasTxTotal = Number(dadosCache.total) || 0;
+        asaasTipos = dadosCache.tipos ?? {};
+      } else {
+        asaasOrigem = "asaas";
+        const iniPrev = new Date(ano, mesIdx - 1, 1);
+        const tx = await asaasList("/financialTransactions", { startDate: iso(iniPrev), finishDate: iso(hojeD) });
+        for (const t of tx) {
+          const tipo = String((t as any)?.type ?? "").toUpperCase();
+          asaasTipos[tipo] = (asaasTipos[tipo] ?? 0) + 1;
+          if (tipo.includes("TRANSFER")) continue;
+          const d = String((t as any)?.date ?? "").slice(0, 10);
+          if (!/^\d{4}-\d{2}-\d{2}$/.test(d)) continue;
+          const v = toNum((t as any)?.value);
+          if (v === 0) continue;
+          const cur = asaasPorDia.get(d) ?? { entradas: 0, saidas: 0 };
+          if (v > 0) cur.entradas += v; else cur.saidas += Math.abs(v);
+          asaasPorDia.set(d, cur);
+          asaasTxTotal++;
+        }
+        const dias = [...asaasPorDia.entries()].map(([d, v]) => ({ d, e: v.entradas, s: v.saidas }));
+        await supabase.from("omie_cache").upsert(
+          { chave: ASAAS_CACHE_KEY, dados: { dias, total: asaasTxTotal, tipos: asaasTipos }, registros: dias.length, atualizado_em: new Date().toISOString() },
+          { onConflict: "chave" },
+        );
+      }
+    } catch (e) {
+      asaasOrigem = "erro";
+      console.warn("omie-caixa-sync: extrato Asaas indisponível p/ calendário:", e instanceof Error ? e.message : String(e));
+    }
+    const mmAtual = String(mesIdx + 1).padStart(2, "0");
+
     const diasNoMes = new Date(ano, mesIdx + 1, 0).getDate();
     const calDias: Record<number, { entradas: number; saidas: number; projetado: number }> = {};
     for (let d = 1; d <= diasNoMes; d++) calDias[d] = { entradas: 0, saidas: 0, projetado: 0 };
     for (const m of movs) {
-      if (m.transfer) continue;
+      if (m.transfer || ASAAS_NCODCC.has(m.ncodcc)) continue;
       if (m.dPago && m.dPago.getFullYear() === ano && m.dPago.getMonth() === mesIdx) {
         if (m.entrada) calDias[m.dPago.getDate()].entradas += m.valor; else calDias[m.dPago.getDate()].saidas += m.valor;
       } else if (!m.dPago && !m.entrada && m.dVenc && m.dVenc.getFullYear() === ano && m.dVenc.getMonth() === mesIdx && m.dVenc >= hojeD) {
         calDias[m.dVenc.getDate()].projetado += m.aberto;
       }
+    }
+    // Soma o extrato do Asaas (mês atual) aos dias do calendário.
+    for (const [d, v] of asaasPorDia.entries()) {
+      if (d.slice(0, 7) !== `${ano}-${mmAtual}`) continue;
+      const dia = Number(d.slice(8, 10));
+      if (calDias[dia]) { calDias[dia].entradas += v.entradas; calDias[dia].saidas += v.saidas; }
     }
     const calendario = {
       ano, mes: mesIdx, hoje: agora.getDate(),
@@ -491,10 +604,17 @@ Deno.serve(async (req) => {
     const calDiasAnt: Record<number, { entradas: number; saidas: number }> = {};
     for (let d = 1; d <= diasNoMesAnt; d++) calDiasAnt[d] = { entradas: 0, saidas: 0 };
     for (const m of movs) {
-      if (m.transfer || !m.dPago) continue;
+      if (m.transfer || ASAAS_NCODCC.has(m.ncodcc) || !m.dPago) continue;
       if (m.dPago.getFullYear() === anoAnt && m.dPago.getMonth() === mesAntIdx) {
         if (m.entrada) calDiasAnt[m.dPago.getDate()].entradas += m.valor; else calDiasAnt[m.dPago.getDate()].saidas += m.valor;
       }
+    }
+    // Soma o extrato do Asaas (mês anterior) aos dias do calendário anterior.
+    const mmAnt = String(mesAntIdx + 1).padStart(2, "0");
+    for (const [d, v] of asaasPorDia.entries()) {
+      if (d.slice(0, 7) !== `${anoAnt}-${mmAnt}`) continue;
+      const dia = Number(d.slice(8, 10));
+      if (calDiasAnt[dia]) { calDiasAnt[dia].entradas += v.entradas; calDiasAnt[dia].saidas += v.saidas; }
     }
     const calendario_anterior = {
       ano: anoAnt, mes: mesAntIdx,
@@ -553,6 +673,7 @@ Deno.serve(async (req) => {
       contas: contasComPct.length,
       saldo_consolidado: saldoConsolidado,
       contas_a_pagar_total: contas_a_pagar.total,
+      asaas_extrato: { origem: asaasOrigem, lancamentos: asaasTxTotal, tipos: asaasTipos },
       hoje: { entradas: periodos.hoje.entradas, saidas: periodos.hoje.saidas, resultado: periodos.hoje.resultado },
     });
   } catch (e) {

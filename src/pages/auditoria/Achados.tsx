@@ -1006,6 +1006,7 @@ export default function Achados() {
           onClose={() => setConsolidadoOpen(false)}
           onSent={() => { setConsolidadoOpen(false); load(); }}
           responsavel={fResp}
+          competencia={competencia || null}
         />
       )}
 

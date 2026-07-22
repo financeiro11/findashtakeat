@@ -32,6 +32,7 @@ type Props = {
   onClose: () => void;
   onSent: () => void;
   responsavel: string;
+  competencia?: string | null;
 };
 
 function initials(nome: string) {
@@ -48,7 +49,7 @@ function maskPhone(tel: string | null) {
   return `+${cc} ${ddd} 9****-****`;
 }
 
-export default function SolicitarJustificativasModal({ open, onClose, onSent, responsavel }: Props) {
+export default function SolicitarJustificativasModal({ open, onClose, onSent, responsavel, competencia }: Props) {
   const { user } = useAuth();
   const [loading, setLoading] = useState(false);
   const [sending, setSending] = useState(false);
@@ -64,7 +65,7 @@ export default function SolicitarJustificativasModal({ open, onClose, onSent, re
     setEditing(false);
     setPreview(null);
     (async () => {
-      const { data, error } = await supabase.rpc("preview_msg_consolidada", { p_responsavel: responsavel });
+      const { data, error } = await supabase.rpc("preview_msg_consolidada", { p_responsavel: responsavel, p_competencia: competencia ?? null } as any);
       if (cancel) return;
       const p = data as unknown as Preview;
       if (error || (p && p.erro)) {
@@ -78,7 +79,7 @@ export default function SolicitarJustificativasModal({ open, onClose, onSent, re
       setTimeout(() => sendBtnRef.current?.focus(), 50);
     })();
     return () => { cancel = true; };
-  }, [open, responsavel]);
+  }, [open, responsavel, competencia]);
 
   if (!open) return null;
   if (typeof document === "undefined") return null;

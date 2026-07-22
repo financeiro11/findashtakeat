@@ -3376,10 +3376,12 @@ export type Database = {
       }
       normaliza_nome: { Args: { p_nome: string }; Returns: string }
       preview_msg_ajuste: { Args: { p_id_unico: string }; Returns: Json }
-      preview_msg_consolidada: {
-        Args: { p_responsavel: string }
-        Returns: Json
-      }
+      preview_msg_consolidada:
+        | { Args: { p_responsavel: string }; Returns: Json }
+        | {
+            Args: { p_competencia?: string; p_responsavel: string }
+            Returns: Json
+          }
       promover_agendamentos_sync: { Args: never; Returns: undefined }
       registrar_comprovante_via_token: {
         Args: { p_id_unico: string; p_storage_path: string; p_token: string }

@@ -11,6 +11,7 @@ import { fmtBRLShort, fmtPct } from "@/pages/dashboard/format";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator } from "@/components/ui/dropdown-menu";
 import { SyncOmieButtons } from "@/components/SyncOmieButtons";
+import RelatorioCaixaModal from "@/components/RelatorioCaixaModal";
 
 /* ------------------------------ formatters ------------------------------ */
 const fmtBRL = (n: number) =>

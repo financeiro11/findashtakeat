@@ -6,9 +6,10 @@ import { cn } from "@/lib/utils";
 import {
   ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip, Cell,
 } from "recharts";
-import { RefreshCw, Loader2, MessageCircle, Eye, EyeOff, Maximize2, Search } from "lucide-react";
+import { RefreshCw, Loader2, MessageCircle, Eye, EyeOff, Maximize2, Search, ChevronDown } from "lucide-react";
 import { fmtBRLShort, fmtPct } from "@/pages/dashboard/format";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator } from "@/components/ui/dropdown-menu";
 import { SyncOmieButtons } from "@/components/SyncOmieButtons";
 
 /* ------------------------------ formatters ------------------------------ */
@@ -20,6 +21,17 @@ const fmtDiaMes = (d: string) => { const [, m, dd] = d.split("-"); return `${dd}
 const MESES = ["Janeiro", "Fevereiro", "Março", "Abril", "Maio", "Junho", "Julho", "Agosto", "Setembro", "Outubro", "Novembro", "Dezembro"];
 const DOW = ["Dom", "Seg", "Ter", "Qua", "Qui", "Sex", "Sáb"];
 const HIDDEN_KEY = "caixa:contas-ocultas";
+
+/* Convenção de variação definida pelo Miguel (CEO): variação = (mês anterior − mês atual).
+   Leitura: SAÍDA positiva = gastou menos (economia); ENTRADA negativa = recebeu mais;
+   SALDO negativo = caixa melhorou (menos negativo / mais positivo) que no mês anterior. */
+function fmtVariacao(atual: number, anterior: number) {
+  const diff = anterior - atual;
+  const pct = Math.abs(anterior) > 0.005 ? (diff / Math.abs(anterior)) * 100 : null;
+  const sinal = diff >= 0 ? "+" : "-";
+  if (pct === null) return `${sinal}${fmtBRL(Math.abs(diff))} (período anterior zerado)`;
+  return `${sinal}${fmtBRL(Math.abs(diff))} (${sinal}${Math.abs(pct).toFixed(2).replace(".", ",")}%)`;
+}
 
 /* ------------------------------ types (loose) ------------------------------ */
 type Periodo = {
@@ -60,6 +72,10 @@ export default function Caixa() {
   const [movOpen, setMovOpen] = useState(false);
   const [movFiltro, setMovFiltro] = useState("");
   const [fluxoOpen, setFluxoOpen] = useState(false);
+  // prévia editável do relatório antes de enviar (WhatsApp / futuro webhook n8n)
+  const [msgOpen, setMsgOpen] = useState(false);
+  const [msgTitulo, setMsgTitulo] = useState("");
+  const [msgTexto, setMsgTexto] = useState("");
   // seleção de período no calendário (2 cliques): início e fim
   const [rangeStart, setRangeStart] = useState<number | null>(null);
   const [rangeEnd, setRangeEnd] = useState<number | null>(null);
@@ -210,19 +226,78 @@ export default function Caixa() {
     { entradas: 0, saidas: 0 },
   ), [movFiltradas]);
 
-  function relatorioWhatsApp() {
+  /* Relatório de caixa por corte de dia do mês (dia 1 → diaFim), no padrão da skill do Miguel:
+     entrada/saída/saldo do período + comparativo com o MESMO período do mês anterior (mesmos
+     números de dia, com o convênio de variação do Miguel) + top 3 categorias de saída.
+     Fonte: o próprio snapshot — `calendario`/`calendario_anterior` (já incluem Omie + Asaas),
+     então a entrada é calculada automaticamente (na skill ela era digitada à mão). */
+  function montarRelatorio(diaIni: number, diaFim: number, rotulo: string): string {
+    const cal = snap!.calendario, calAnt = snap!.calendario_anterior;
+    const ultimoDiaAnt = calAnt.dias.length;      // nº de dias do mês anterior
+    const fimAnt = Math.min(diaFim, ultimoDiaAnt); // mês anterior mais curto → usa o último dia
+
+    const soma = (dias: { dia: number; entradas: number; saidas: number }[], de: number, ate: number) =>
+      dias.reduce((a, d) => (d.dia >= de && d.dia <= ate ? { e: a.e + d.entradas, s: a.s + d.saidas } : a), { e: 0, s: 0 });
+    const at = soma(cal.dias, diaIni, diaFim);
+    const an = soma(calAnt.dias, diaIni, fimAnt);
+    const entrada = at.e, saida = at.s, saldo = entrada - saida;
+    const entradaAnt = an.e, saidaAnt = an.s, saldoAnt = entradaAnt - saidaAnt;
+
+    // Top 3 categorias de saída no período (das movimentações do mês, filtradas por dia).
+    const catMap = new Map<string, number>();
+    for (const m of snap!.periodos.mes.movimentacoes) {
+      if (m.natureza !== "saida" || !m.data) continue;
+      const d = Number(m.data.slice(8, 10));
+      if (d >= diaIni && d <= diaFim) {
+        const c = m.categoria || "(sem categoria)";
+        catMap.set(c, (catMap.get(c) ?? 0) + m.valor);
+      }
+    }
+    const totalCat = [...catMap.values()].reduce((s, v) => s + v, 0);
+    const top = [...catMap.entries()].sort((a, b) => b[1] - a[1]).slice(0, 3);
+
+    const dd = (n: number) => String(n).padStart(2, "0");
+    const mm = dd(cal.mes + 1), mmA = dd(calAnt.mes + 1);
+    const L: string[] = [];
+    L.push(`*CAIXA · ${rotulo} · ${MESES[cal.mes]}/${cal.ano} · Takeat*`);
+    L.push(`Período: ${dd(diaIni)}/${mm}/${cal.ano} a ${dd(diaFim)}/${mm}/${cal.ano}`);
+    L.push(`Gerado em: ${new Date().toLocaleDateString("pt-BR")}`);
+    L.push("");
+    L.push("*ENTRADA DE CAIXA*");
+    L.push(`Período: ${fmtBRL(entrada)}`);
+    L.push(`Mesmo período mês anterior (${dd(diaIni)}/${mmA} a ${dd(fimAnt)}/${mmA}): ${fmtBRL(entradaAnt)}`);
+    L.push(`Variação: ${fmtVariacao(entrada, entradaAnt)}`);
+    L.push("");
+    L.push("*SAÍDA DE CAIXA*");
+    L.push(`Período: ${fmtBRL(saida)}`);
+    L.push(`Mesmo período mês anterior (${dd(diaIni)}/${mmA} a ${dd(fimAnt)}/${mmA}): ${fmtBRL(saidaAnt)}`);
+    L.push(`Variação: ${fmtVariacao(saida, saidaAnt)}`);
+    if (top.length) {
+      L.push("");
+      L.push("Maiores categorias de saída:");
+      top.forEach(([c, v], i) => L.push(`${i + 1}. ${c} — ${fmtBRL(v)} (${(totalCat ? (v / totalCat) * 100 : 0).toFixed(1).replace(".", ",")}%)`));
+    }
+    L.push("");
+    L.push("*SALDO DO PERÍODO (Entrada − Saída)*");
+    L.push(`Período: ${fmtBRL(saldo)}`);
+    L.push(`Mesmo período mês anterior: ${fmtBRL(saldoAnt)}`);
+    L.push(`Variação: ${fmtVariacao(saldo, saldoAnt)}`);
+    if (saldo < 0) L.push(`\n⚠ Saída maior que a entrada no período (caixa negativo em ${fmtBRL(Math.abs(saldo))}).`);
+    L.push("");
+    L.push("_Variação = (mês anterior − mês atual). Entrada: sinal negativo = recebeu mais. Saída: sinal positivo = gastou menos (economia). Saldo: sinal negativo = caixa melhorou._");
+    return L.join("\n");
+  }
+
+  // Abre a PRÉVIA editável (não envia direto). O envio final é feito de dentro do modal.
+  function abrirRelatorio(diaIni: number, diaFim: number, rotulo: string) {
     if (!snap) return;
-    const ph = snap.periodos.hoje;
-    const txt = [
-      `*Caixa Takeat · ${new Date(snap.sincronizado_em).toLocaleDateString("pt-BR")}*`,
-      `Saldo consolidado: ${fmtBRL(contasView.consolidado)}`,
-      `Entradas hoje: ${fmtBRL(ph.entradas)} (${ph.n_recebimentos} recebimentos)`,
-      `Saídas hoje: ${fmtBRL(ph.saidas)} (${ph.n_pagamentos} pagamentos)`,
-      `Resultado do dia: ${fmtBRL(ph.resultado)}`,
-      `Contas a pagar (30d): ${fmtBRL(snap.contas_a_pagar.total)}`,
-      `Menor saldo projetado: ${fmtBRL(snap.fluxo_projetado.menor.valor - contasView.delta)} em ${fmtDiaMes(snap.fluxo_projetado.menor.data)}`,
-    ].join("\n");
-    window.open(`https://wa.me/?text=${encodeURIComponent(txt)}`, "_blank");
+    setMsgTitulo(rotulo);
+    setMsgTexto(montarRelatorio(diaIni, diaFim, rotulo));
+    setMsgOpen(true);
+  }
+  async function copiarRelatorio() {
+    try { await navigator.clipboard.writeText(msgTexto); toast.success("Texto copiado."); }
+    catch { toast.error("Não consegui copiar o texto."); }
   }
 
   if (loading) {
@@ -275,12 +350,38 @@ export default function Caixa() {
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
-          <button
-            onClick={relatorioWhatsApp}
-            className="inline-flex items-center gap-2 rounded-md bg-[#25D366] px-3 py-2 text-[12.5px] font-semibold text-white shadow-sm transition hover:brightness-95"
-          >
-            <MessageCircle className="h-4 w-4" /> Relatório semanal → WhatsApp
-          </button>
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <button className="inline-flex items-center gap-2 rounded-md bg-[#25D366] px-3 py-2 text-[12.5px] font-semibold text-white shadow-sm transition hover:brightness-95">
+                <MessageCircle className="h-4 w-4" /> Relatório → WhatsApp <ChevronDown className="h-3.5 w-3.5" />
+              </button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="start" className="w-60">
+              <DropdownMenuLabel className="text-[11px] font-normal text-muted-foreground">Corte do dia 1 até…</DropdownMenuLabel>
+              {[15, 20, 25].map((n) => (
+                <DropdownMenuItem
+                  key={n}
+                  disabled={n > snap.calendario.hoje}
+                  onClick={() => abrirRelatorio(1, n, `Corte dia ${n}`)}
+                  className="text-[12.5px]"
+                >
+                  Corte dia {n}
+                  {n > snap.calendario.hoje && <span className="ml-auto text-[10px] text-muted-foreground">ainda não chegou</span>}
+                </DropdownMenuItem>
+              ))}
+              <DropdownMenuItem onClick={() => abrirRelatorio(1, snap.calendario.hoje, "Mês até hoje")} className="text-[12.5px]">
+                Mês (até hoje)
+              </DropdownMenuItem>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem
+                disabled={rangeStart == null || selMin == null}
+                onClick={() => selMin != null && abrirRelatorio(selMin, selMax ?? selMin, `Período ${String(selMin).padStart(2, "0")}–${String(selMax ?? selMin).padStart(2, "0")}`)}
+                className="text-[12.5px]"
+              >
+                Período selecionado no calendário
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
           <div className="flex rounded-md border border-border bg-card p-0.5">
             {(["ontem", "hoje", "semana", "mes"] as const).map((k) => (
               <button
@@ -626,6 +727,36 @@ export default function Caixa() {
       <div className="pt-1 text-center text-[11px] text-muted-foreground">
         Dados sincronizados do Omie ERP às {fmtHora(snap.sincronizado_em)} · contas correntes, contas a pagar e contas a receber
       </div>
+
+      {/* ---------------- Modal: Prévia do relatório (editável) ---------------- */}
+      <Dialog open={msgOpen} onOpenChange={setMsgOpen}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Prévia do relatório · {msgTitulo}</DialogTitle>
+          </DialogHeader>
+          <p className="-mt-1 text-[11.5px] text-muted-foreground">
+            Revise e edite o texto antes de enviar. No WhatsApp, <code className="rounded bg-secondary px-1">*texto*</code> vira negrito e <code className="rounded bg-secondary px-1">_texto_</code> vira itálico.
+          </p>
+          <textarea
+            value={msgTexto}
+            onChange={(e) => setMsgTexto(e.target.value)}
+            rows={18}
+            spellCheck={false}
+            className="w-full resize-y rounded-md border border-border bg-background p-3 font-mono text-[12px] leading-relaxed outline-none focus:ring-1 focus:ring-ring"
+          />
+          <div className="flex flex-wrap items-center justify-end gap-2">
+            <button onClick={copiarRelatorio} className="ghost-btn px-3 py-2 text-[12.5px]">Copiar</button>
+            {/* Envio: hoje abre o WhatsApp com o texto (editado). Para enviar via n8n, trocar por
+                um POST ao webhook (ex.: fetch(WEBHOOK_URL, { method: "POST", body: JSON.stringify({ texto: msgTexto }) })). */}
+            <button
+              onClick={() => window.open(`https://wa.me/?text=${encodeURIComponent(msgTexto)}`, "_blank")}
+              className="inline-flex items-center gap-2 rounded-md bg-[#25D366] px-3 py-2 text-[12.5px] font-semibold text-white transition hover:brightness-95"
+            >
+              <MessageCircle className="h-4 w-4" /> Abrir no WhatsApp
+            </button>
+          </div>
+        </DialogContent>
+      </Dialog>
 
       {/* ---------------- Modal: Movimentações (ver tudo) ---------------- */}
       <Dialog open={movOpen} onOpenChange={setMovOpen}>

@@ -106,6 +106,8 @@ type ParsedRow = {
 /** Time depois de interpretar a planilha: linhas padronizadas + total geral. */
 type ParsedTeam = {
   isOps: boolean;
+  /** RPA (Liderança): cada linha é um líder; mostramos todos, mesmo com bônus 0. */
+  isRpa: boolean;
   rows: ParsedRow[];
   total: number;
 };
@@ -119,7 +121,7 @@ type ParsedTeam = {
  */
 function parseTeam(team: Team, data: SheetData | null): ParsedTeam {
   const isOps = team.key === "ops";
-  if (!data) return { isOps, rows: [], total: 0 };
+  if (!data) return { isOps, isRpa: team.kind === "rpa", rows: [], total: 0 };
   if (team.kind === "rpa") return parseRpa(data);
 
   const headers = data.headers.map((h) => (h ?? "").trim());
@@ -162,7 +164,7 @@ function parseTeam(team: Team, data: SheetData | null): ParsedTeam {
   }
 
   const total = rows.filter((r) => r.total > 0).reduce((a, b) => a + b.total, 0);
-  return { isOps, rows, total };
+  return { isOps, isRpa: false, rows, total };
 }
 
 /**
@@ -236,7 +238,7 @@ function parseRpa(data: SheetData): ParsedTeam {
   }
 
   const total = rows.filter((r) => r.total > 0).reduce((a, b) => a + b.total, 0);
-  return { isOps: false, rows, total };
+  return { isOps: false, isRpa: true, rows, total };
 }
 
 async function invokeSheets(body: Record<string, unknown>): Promise<any> {
@@ -455,7 +457,8 @@ function TeamRows({
   const error = status?.state === "error";
   const done = status?.state === "done";
   const filled = done && parsed.total > 0;
-  const lancamentos = parsed.rows.filter((r) => r.total > 0).length;
+  // No RPA cada líder é um lançamento (mesmo com bônus 0); nos demais, só quem tem valor.
+  const lancamentos = (parsed.isRpa ? parsed.rows : parsed.rows.filter((r) => r.total > 0)).length;
   const canExpand = filled;
 
   // Texto/cor do status na coluna do meio.
@@ -559,9 +562,9 @@ function TeamRows({
 }
 
 function TeamDetail({ team, parsed, sheetTabId }: { team: Team; parsed: ParsedTeam; sheetTabId: number | null }) {
-  const { isOps } = parsed;
-  // Não mostramos linhas totalmente zeradas no detalhe (colaborador sem lançamento no mês).
-  const rows = parsed.rows.filter((r) => r.total > 0);
+  const { isOps, isRpa } = parsed;
+  // No RPA mostramos todos os líderes (mesmo com bônus 0); nos demais, escondemos linhas zeradas.
+  const rows = isRpa ? parsed.rows : parsed.rows.filter((r) => r.total > 0);
   // Colunas de valor: iguais em todos os times; o OPS acrescenta onboarding e suporte.
   // colSpan das células vazias do rodapé = tudo antes da última coluna (Total).
   const emptyFootCols = isOps ? 4 : 2; // Cargo + Variável (+ Onboarding + Suporte no OPS)
@@ -588,7 +591,7 @@ function TeamDetail({ team, parsed, sheetTabId }: { team: Team; parsed: ParsedTe
               <tr key={ri} className="border-t border-border/60">
                 <td className="px-4 py-2.5 font-medium">{r.colaborador}</td>
                 <td className="px-4 py-2.5 text-muted-foreground">{r.cargo || "—"}</td>
-                <td className="px-4 py-2.5 text-right tabular-nums">{money(r.variavel)}</td>
+                <td className="px-4 py-2.5 text-right tabular-nums">{fmtBRL(r.variavel)}</td>
                 {isOps && <td className="px-4 py-2.5 text-right tabular-nums">{money(r.onboarding)}</td>}
                 {isOps && <td className="px-4 py-2.5 text-right tabular-nums">{money(r.suporte)}</td>}
                 <td className="px-4 py-2.5 text-right font-semibold tabular-nums">{fmtBRL(r.total)}</td>

@@ -120,6 +120,7 @@ type ParsedTeam = {
 function parseTeam(team: Team, data: SheetData | null): ParsedTeam {
   const isOps = team.key === "ops";
   if (!data) return { isOps, rows: [], total: 0 };
+  if (team.kind === "rpa") return parseRpa(data);
 
   const headers = data.headers.map((h) => (h ?? "").trim());
   const colabIdx = headers.findIndex((h) => norm(h).includes("colaborador") || norm(h).includes("nome"));
@@ -162,6 +163,80 @@ function parseTeam(team: Team, data: SheetData | null): ParsedTeam {
 
   const total = rows.filter((r) => r.total > 0).reduce((a, b) => a + b.total, 0);
   return { isOps, rows, total };
+}
+
+/**
+ * Parser específico da planilha de RPA (Liderança), que tem um layout em blocos —
+ * um por líder: um título tipo "Receita (Arthur)" ou "OPS (Guilherme)", subáreas com
+ * resultado (%) e uma linha "Bônus Final" cujo valor (coluna Variável) é o que interessa.
+ * Padronizamos para: Colaborador = nome entre parênteses; Cargo = área antes do parêntese;
+ * Variável/Total = valor do Bônus Final.
+ */
+function parseRpa(data: SheetData): ParsedTeam {
+  const grid: string[][] = [data.headers, ...data.rows];
+  const nameRe = /\(([^)]+)\)/;
+
+  // Localiza as linhas de título de bloco (contêm um nome entre parênteses, ex.: "(Arthur)").
+  const titles: { i: number; area: string; name: string }[] = [];
+  for (let i = 0; i < grid.length; i++) {
+    for (const cell of grid[i] ?? []) {
+      const c = (cell ?? "").trim();
+      if (!c) continue;
+      const m = c.match(nameRe);
+      // Ignora "Resultado (%)" e afins — o miolo do parêntese precisa ter letras e não ser "%".
+      if (m && !m[1].includes("%") && /[A-Za-zÀ-ÿ]/.test(m[1])) {
+        titles.push({ i, area: c.slice(0, c.indexOf("(")).trim(), name: m[1].trim() });
+        break;
+      }
+    }
+  }
+
+  const rows: ParsedRow[] = [];
+  for (let b = 0; b < titles.length; b++) {
+    const start = titles[b].i;
+    const end = b + 1 < titles.length ? titles[b + 1].i : grid.length;
+
+    // Coluna "Variável" dentro do bloco.
+    let varCol = -1;
+    for (let i = start; i < end && varCol < 0; i++) {
+      const idx = (grid[i] ?? []).findIndex((c) => norm(c).includes("variavel"));
+      if (idx >= 0) varCol = idx;
+    }
+
+    // Linha "Bônus Final" → valor da variável.
+    let variavel = 0;
+    for (let i = start; i < end; i++) {
+      const line = grid[i] ?? [];
+      if (!line.some((c) => norm(c).startsWith("bonus"))) continue;
+      const atVarCol = varCol >= 0 ? (line[varCol] ?? "").trim() : "";
+      if (atVarCol) {
+        variavel = parseMoney(atVarCol);
+      } else {
+        // Fallback: célula com "R$" (ou a numérica mais à direita) da linha do bônus.
+        const withMoney = line.find((c) => /r\$/i.test(c ?? ""));
+        if (withMoney != null) variavel = parseMoney(withMoney);
+        else {
+          for (let k = line.length - 1; k >= 0; k--) {
+            const cell = (line[k] ?? "").trim();
+            if (cell && !cell.includes("%") && /\d/.test(cell)) { variavel = parseMoney(cell); break; }
+          }
+        }
+      }
+      break;
+    }
+
+    rows.push({
+      colaborador: titles[b].name,
+      cargo: titles[b].area,
+      variavel,
+      onboarding: 0,
+      suporte: 0,
+      total: variavel,
+    });
+  }
+
+  const total = rows.filter((r) => r.total > 0).reduce((a, b) => a + b.total, 0);
+  return { isOps: false, rows, total };
 }
 
 async function invokeSheets(body: Record<string, unknown>): Promise<any> {

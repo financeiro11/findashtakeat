@@ -188,6 +188,8 @@ export type Database = {
           id_unico: string
           justificativa: string | null
           link_comprovante: string | null
+          omie_anexo_enviado_em: string | null
+          omie_anexo_nome: string | null
           omie_categoria_codigo: string | null
           omie_categoria_descricao: string | null
           omie_cod_titulo: string | null
@@ -215,6 +217,8 @@ export type Database = {
           id_unico: string
           justificativa?: string | null
           link_comprovante?: string | null
+          omie_anexo_enviado_em?: string | null
+          omie_anexo_nome?: string | null
           omie_categoria_codigo?: string | null
           omie_categoria_descricao?: string | null
           omie_cod_titulo?: string | null
@@ -242,6 +246,8 @@ export type Database = {
           id_unico?: string
           justificativa?: string | null
           link_comprovante?: string | null
+          omie_anexo_enviado_em?: string | null
+          omie_anexo_nome?: string | null
           omie_categoria_codigo?: string | null
           omie_categoria_descricao?: string | null
           omie_cod_titulo?: string | null

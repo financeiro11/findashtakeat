@@ -1772,6 +1772,42 @@ export type Database = {
           },
         ]
       }
+      ml_pedidos: {
+        Row: {
+          baixado: boolean
+          created_at: string
+          item_title: string | null
+          order_id: string
+          pack_id: string | null
+          periodo: string
+          seller: string | null
+          status: string | null
+          valor: number | null
+        }
+        Insert: {
+          baixado?: boolean
+          created_at?: string
+          item_title?: string | null
+          order_id: string
+          pack_id?: string | null
+          periodo: string
+          seller?: string | null
+          status?: string | null
+          valor?: number | null
+        }
+        Update: {
+          baixado?: boolean
+          created_at?: string
+          item_title?: string | null
+          order_id?: string
+          pack_id?: string | null
+          periodo?: string
+          seller?: string | null
+          status?: string | null
+          valor?: number | null
+        }
+        Relationships: []
+      }
       ml_tokens: {
         Row: {
           access_token: string | null

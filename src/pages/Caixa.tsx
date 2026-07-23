@@ -20,6 +20,10 @@ const fmtHora = (isoStr?: string | null) =>
   isoStr ? new Date(isoStr).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" }) : "—";
 const fmtDiaMes = (d: string) => { const [, m, dd] = d.split("-"); return `${dd}/${m}`; };
 const MESES = ["Janeiro", "Fevereiro", "Março", "Abril", "Maio", "Junho", "Julho", "Agosto", "Setembro", "Outubro", "Novembro", "Dezembro"];
+// "2026-06" → "Junho 2026" / "Jun/26"
+const fmtMesRef = (mes: string) => { const [y, m] = mes.split("-").map(Number); return `${MESES[(m || 1) - 1]} ${y}`; };
+const fmtMesCurto = (mes: string) => { const [y, m] = mes.split("-").map(Number); return `${MESES[(m || 1) - 1].slice(0, 3)}/${String(y).slice(-2)}`; };
+const mesAnteriorStr = (mes: string) => { const [y, m] = mes.split("-").map(Number); const pm = m > 1 ? m - 1 : 12; const py = m > 1 ? y : y - 1; return `${py}-${String(pm).padStart(2, "0")}`; };
 const DOW = ["Dom", "Seg", "Ter", "Qua", "Qui", "Sex", "Sáb"];
 const HIDDEN_KEY = "caixa:contas-ocultas";
 
@@ -61,10 +65,35 @@ type Snapshot = {
   };
 };
 
+/* ---- Capital de giro (necessidade mensal) — snapshot do Omie CAP ---- */
+type CapitalGiroMes = {
+  mes: string;
+  necessidade_total: number;
+  fechado: boolean;
+  parcial: boolean;
+  [grupo: string]: number | string | boolean; // custos, pessoal, marketing, admin, tecnologia, impostos, excl_*
+};
+type CapitalGiro = {
+  meses: CapitalGiroMes[];
+  mes_referencia: string;        // último mês fechado (ex.: "2026-06")
+  necessidade_mes: number;       // necessidade do mês de referência (destaque)
+  necessidade_mes_anterior: number;
+  run_rate_2m: number;
+  run_rate_3m: number;           // média móvel dos últimos 3 meses fechados
+  var_mom_pct: number;           // variação vs. mês anterior (%)
+  grupos_op: string[];
+  grupos_label: Record<string, string>;
+  mes_atual_parcial: string;
+  definicao: string;
+  metodo: string;
+  sincronizado_em: string;
+};
+
 const sb = supabase as any;
 
 export default function Caixa() {
   const [snap, setSnap] = useState<Snapshot | null>(null);
+  const [cg, setCg] = useState<CapitalGiro | null>(null);
   const [loading, setLoading] = useState(true);
   const [syncing, setSyncing] = useState(false);
   const [janela, setJanela] = useState<"ontem" | "hoje" | "semana" | "mes">("hoje");
@@ -93,6 +122,16 @@ export default function Caixa() {
     setLoading(false);
   }
   useEffect(() => { carregar(); }, []);
+
+  // Capital de giro (necessidade mensal) — carrega o snapshot mais recente à parte,
+  // pra uma tabela ausente/vazia não derrubar o painel do caixa.
+  useEffect(() => {
+    (async () => {
+      const { data } = await sb
+        .from("omie_capital_giro_snapshot").select("dados").order("gerado_em", { ascending: false }).limit(1).maybeSingle();
+      setCg((data?.dados as CapitalGiro) ?? null);
+    })();
+  }, []);
 
   // 1ª carga: se o usuário nunca escolheu, herda o `incluir` do snapshot.
   useEffect(() => {
@@ -339,6 +378,18 @@ export default function Caixa() {
   const rangeLabel = selMin === selMax || selMax == null ? dataLabel(selMin!) : `${dataLabel(selMin!)} – ${dataLabel(selMax)}`;
   const tagPeriodo = (selMax ?? selMin!) <= (calHoje ?? 0) ? "Realizado" : (selMin ?? 0) > (calHoje ?? 0) ? "Projetado" : "Período";
 
+  // ---- capital de giro: composição do mês de referência + comparações ----
+  const cgMesRef = cg?.meses.find((m) => m.mes === cg.mes_referencia);
+  const cgGrupos = cg
+    ? cg.grupos_op
+        .map((g) => ({ key: g, label: cg.grupos_label[g] ?? g, valor: Number((cgMesRef as any)?.[g] ?? 0) }))
+        .filter((x) => x.valor > 0)
+        .sort((a, b) => b.valor - a.valor)
+    : [];
+  const cgMaxGrupo = Math.max(1, ...cgGrupos.map((g) => g.valor));
+  const cgDiff3m = cg ? cg.necessidade_mes - cg.run_rate_3m : 0;         // destaque vs. média móvel 3m
+  const cgPct3m = cg && cg.run_rate_3m ? (cgDiff3m / cg.run_rate_3m) * 100 : 0;
+
   return (
     <div className="space-y-4 p-4 md:p-6">
       {/* ---------------- Cabeçalho ---------------- */}
@@ -466,6 +517,87 @@ export default function Caixa() {
           <Footnote>Entradas − saídas do período</Footnote>
         </div>
       </div>
+
+      {/* ---------------- Necessidade de capital de giro ---------------- */}
+      {cg && (
+        <div className="card-surface p-4">
+          <div className="flex flex-col gap-1 sm:flex-row sm:items-start sm:justify-between">
+            <div className="min-w-0">
+              <div className="eyebrow">Necessidade de capital de giro</div>
+              <p className="mt-0.5 text-[11.5px] text-muted-foreground">
+                Saídas operacionais previstas por mês · fonte Omie (contas a pagar){cg.mes_atual_parcial ? ` · ${fmtMesCurto(cg.mes_atual_parcial)} ainda parcial` : ""}
+              </p>
+            </div>
+            <span className="shrink-0 text-[10.5px] text-muted-foreground/70">
+              Sincronizado {new Date(cg.sincronizado_em).toLocaleDateString("pt-BR")} {fmtHora(cg.sincronizado_em)}
+            </span>
+          </div>
+
+          <div className="mt-3 grid grid-cols-1 gap-4 lg:grid-cols-[minmax(0,300px)_1fr]">
+            {/* Destaque: mês de referência (mês anterior fechado) */}
+            <div className="flex flex-col gap-2 lg:border-r lg:border-border/60 lg:pr-4">
+              <div className="flex items-center gap-2">
+                <span className="text-[12.5px] font-semibold text-foreground">{fmtMesRef(cg.mes_referencia)}</span>
+                <span className="rounded bg-secondary px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider text-muted-foreground">mês fechado</span>
+              </div>
+              <div className="num text-[30px] font-semibold leading-none tracking-tight text-foreground">{fmtBRL(cg.necessidade_mes)}</div>
+              <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                <span className={cn(
+                  "num inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] font-semibold",
+                  cg.var_mom_pct > 0 ? "bg-neg/10 text-neg" : "bg-pos/10 text-pos",
+                )}>
+                  {cg.var_mom_pct > 0 ? "▲" : "▼"} {fmtPct(Math.abs(cg.var_mom_pct))}
+                </span>
+                <span className="text-[11px] text-muted-foreground">
+                  vs. {fmtMesCurto(mesAnteriorStr(cg.mes_referencia))} ({fmtBRLShort(cg.necessidade_mes_anterior)})
+                </span>
+              </div>
+              <Footnote>Custos, pessoal, marketing, admin, tecnologia e impostos · exclui transferências, CAPEX, captação e financeiras</Footnote>
+            </div>
+
+            {/* Comparação: média móvel + composição */}
+            <div className="flex flex-col gap-3">
+              <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-3">
+                <div className="rounded-lg border border-border/60 bg-secondary/30 p-2.5">
+                  <div className="text-[9.5px] uppercase tracking-wider text-muted-foreground/80">Média móvel · 3 meses</div>
+                  <div className="num mt-1 text-[18px] font-semibold text-foreground">{fmtBRLShort(cg.run_rate_3m)}</div>
+                  <div className={cn("num mt-0.5 text-[11px] font-medium", cgDiff3m >= 0 ? "text-neg" : "text-pos")}>
+                    ref. {fmtPct(cgPct3m)} vs. média
+                  </div>
+                </div>
+                <div className="rounded-lg border border-border/60 bg-secondary/30 p-2.5">
+                  <div className="text-[9.5px] uppercase tracking-wider text-muted-foreground/80">Média móvel · 2 meses</div>
+                  <div className="num mt-1 text-[18px] font-semibold text-foreground">{fmtBRLShort(cg.run_rate_2m)}</div>
+                  <div className="num mt-0.5 text-[11px] text-muted-foreground">tendência recente</div>
+                </div>
+                <div className="col-span-2 rounded-lg border border-border/60 bg-secondary/30 p-2.5 sm:col-span-1">
+                  <div className="text-[9.5px] uppercase tracking-wider text-muted-foreground/80">Mês anterior</div>
+                  <div className="num mt-1 text-[18px] font-semibold text-foreground">{fmtBRLShort(cg.necessidade_mes_anterior)}</div>
+                  <div className="num mt-0.5 text-[11px] text-muted-foreground">{fmtMesCurto(mesAnteriorStr(cg.mes_referencia))}</div>
+                </div>
+              </div>
+
+              {/* Composição do mês de referência */}
+              {cgGrupos.length > 0 && (
+                <div className="space-y-1.5">
+                  <div className="text-[10px] uppercase tracking-wider text-muted-foreground/80">Composição · {fmtMesRef(cg.mes_referencia)}</div>
+                  <div className="grid grid-cols-1 gap-x-5 gap-y-1.5 sm:grid-cols-2">
+                    {cgGrupos.map((g) => (
+                      <div key={g.key} className="flex items-center gap-2">
+                        <span className="w-24 shrink-0 truncate text-[11px] text-muted-foreground" title={g.label}>{g.label}</span>
+                        <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-secondary">
+                          <div className="h-full rounded-full bg-primary/70" style={{ width: `${(g.valor / cgMaxGrupo) * 100}%` }} />
+                        </div>
+                        <span className="num w-[68px] shrink-0 text-right text-[11px] font-medium text-foreground">{fmtBRLShort(g.valor)}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* ---------------- Calendário + Saldo por conta ---------------- */}
       <div className="grid grid-cols-1 gap-3 lg:grid-cols-3">

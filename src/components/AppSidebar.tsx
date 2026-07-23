@@ -59,7 +59,7 @@ const editais: NavItem[] = [
 
 const investimentos: NavItem[] = [
   { title: "Captable", url: "/captable", icon: PieChart },
-  { title: "Investimentos", url: "/investimentos", icon: TrendingUp },
+  { title: "Takeat LTD/LLC", url: "/investimentos", icon: TrendingUp },
 ];
 
 const demonstracoes: NavItem[] = [

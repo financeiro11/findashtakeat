@@ -14,7 +14,7 @@ const ROUTE_MAP: Record<string, { crumbs: string[]; context?: string }> = {
   "/automacoes/proporcionais": { crumbs: ["Automações", "Proporcionais"], context: "Aprovação de salários proporcionais" },
   "/asaas": { crumbs: ["Operacional", "Asaas"], context: "Recebimentos · Assinaturas · NF-e" },
   "/operacional/variavel": { crumbs: ["Operacional", "Variável"], context: "Comissões variáveis · fechamento mensal" },
-  "/investimentos": { crumbs: ["Investimentos", "LTD / LLC"], context: "Financials Ltd & LLC · export do contador" },
+  "/investimentos": { crumbs: ["Investimentos", "Takeat LTD/LLC"], context: "Financials LTD & LLC · export do contador" },
   "/automacoes/catalogo": { crumbs: ["Automações", "Catálogo"] },
   "/automacoes/projetos": { crumbs: ["Automações", "Projetos"] },
   "/recargas/celulares": { crumbs: ["Recargas", "Celulares"] },

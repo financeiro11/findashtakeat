@@ -459,7 +459,9 @@ function parseFlat(aoa: unknown[][]): FlatData {
 function kpisFromData(bs: HierData | undefined, pl: HierData | undefined): KPI[] {
   const acha = (rs: BalanceRow[], re: RegExp) => rs.find((r) => re.test(r.account));
   const norm = (s: string) => s.toLowerCase().replace(/\s+/g, " ").trim();
-  const achaAcct = (rs: BalanceRow[], test: (a: string) => boolean) => rs.find((r) => test(norm(r.account)));
+  // Prioriza linhas de TOTAL (o valor mora no total, não no cabeçalho de mesmo nome).
+  const achaAcct = (rs: BalanceRow[], test: (a: string) => boolean) =>
+    rs.find((r) => r.tipo === "total" && test(norm(r.account))) ?? rs.find((r) => test(norm(r.account)));
   const base: KPI[] = [
     { label: "Cash (fim do período)", big: "—", detalhe: "Sem dados", brl: brlAprox(0), variacao: "—", variacaoUp: true, icon: Wallet, tone: "blue" },
     { label: "Total Assets", big: "—", detalhe: "Sem dados", brl: brlAprox(0), variacao: "—", variacaoUp: true, icon: Archive, tone: "indigo" },
@@ -489,36 +491,39 @@ function kpisFromData(bs: HierData | undefined, pl: HierData | undefined): KPI[]
   // Cash: total de caixa/checking; Total Assets: o total geral (não "CURRENT ASSETS Total");
   // Equity: patrimônio total (não "LIABILITIES & EQUITY").
   const cash = achaAcct(bs.rows, (a) =>
-    a === "cash" || a === "cash total" || a === "total cash" ||
-    a === "checking/savings" || a.endsWith("checking/savings total"));
+    a === "cash total" || a === "total cash" || a.endsWith("checking/savings total"));
   const assets = achaAcct(bs.rows, (a) =>
     a === "total assets" || a === "assets total" ||
     (/(^| )assets total$/.test(a) && !/(current|other|fixed|non-?current|intangible|long-?term)/.test(a)));
   const equity = achaAcct(bs.rows, (a) =>
-    a === "equity" || a === "total equity" || a === "equity total" ||
-    /total (shareholders?|stockholders?)'? equity$/.test(a) ||
-    (/equity total$/.test(a) && !/liabilit/.test(a)));
+    a === "total equity" || a === "equity total" ||
+    /total (shareholders?|stockholders?)'? equity$/.test(a));
   set(0, cash?.valores[ult], cash?.valores[pen ?? ""]);
   set(1, assets?.valores[ult], assets?.valores[pen ?? ""]);
   set(2, equity?.valores[ult], equity?.valores[pen ?? ""]);
 
-  // Net Income (acumulado): soma dos meses no P&L; senão a linha "Net Income" da BS.
-  let niSet = false;
+  // Net Income (acumulado Jan–Jun): soma dos meses no P&L; se o P&L vier vazio/zerado,
+  // usa a linha "Net Income" do Balance Sheet (que já é o acumulado do ano).
+  let niVal: number | undefined;
+  let niDetalhe = "";
   if (pl && pl.months.length) {
     const ni = pl.rows.find((r) => /^net income( total)?$/i.test(r.account.trim()));
     if (ni) {
-      const comDados = pl.months.filter((m) => typeof ni.valores[m] === "number" && ni.valores[m] !== 0);
       const soma = pl.months.reduce((s, m) => s + (ni.valores[m] || 0), 0);
-      const mesUlt = comDados[comDados.length - 1] ?? pl.months[pl.months.length - 1];
-      const vUlt = ni.valores[mesUlt] || 0;
-      set(3, soma, undefined, `${mesUlt}: ${vUlt >= 0 ? "+" : ""}${fullUSD(vUlt)}  ·  `);
-      niSet = true;
+      if (soma !== 0) {
+        const comDados = pl.months.filter((m) => typeof ni.valores[m] === "number" && ni.valores[m] !== 0);
+        const mesUlt = comDados[comDados.length - 1] ?? pl.months[pl.months.length - 1];
+        const vUlt = ni.valores[mesUlt] || 0;
+        niVal = soma;
+        niDetalhe = `${mesUlt}: ${vUlt >= 0 ? "+" : ""}${fullUSD(vUlt)}  ·  `;
+      }
     }
   }
-  if (!niSet) {
+  if (niVal == null) {
     const ni = achaAcct(bs.rows, (a) => a === "net income" || a === "net income total");
-    set(3, ni?.valores[ult], ni?.valores[pen ?? ""]);
+    niVal = ni?.valores[ult];
   }
+  set(3, niVal, undefined, niDetalhe);
   return base;
 }
 

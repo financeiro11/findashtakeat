@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Upload, ChevronDown, ChevronRight, Loader2, Wallet, Archive, Scale, Activity,
   Languages, type LucideIcon,
@@ -8,13 +8,17 @@ import { Card } from "@/components/ui/card";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
+import { supabase } from "@/integrations/supabase/client";
 
 // ============================================================================
 // Investimentos · LTD / LLC — espelha o export do contador (Financials Ltd & LLC).
 // "Importar planilha" lê TODAS as abas (Balance Sheet, P&L, Cash Flow, AP Aging,
 // GL, TB, Capital) e popula cada aba correspondente. Entidade é detectada de A1
-// ("Takeat Ltd" vs "Takeat LLC"). Dados ficam em memória (não persistem).
+// ("Takeat Ltd" vs "Takeat LLC"). Os dados são PERSISTIDOS em
+// `investimentos_snapshot` (1 linha por entidade) — sobrevivem a refresh/navegação.
 // ============================================================================
+
+const sb = supabase as any;
 
 type Tone = "blue" | "violet" | "indigo" | "green";
 
@@ -451,6 +455,8 @@ function parseFlat(aoa: unknown[][]): FlatData {
 // KPIs derivados da Balance Sheet (+ Net Income Jan–Jun do P&L, se disponível).
 function kpisFromData(bs: HierData | undefined, pl: HierData | undefined): KPI[] {
   const acha = (rs: BalanceRow[], re: RegExp) => rs.find((r) => re.test(r.account));
+  const norm = (s: string) => s.toLowerCase().replace(/\s+/g, " ").trim();
+  const achaAcct = (rs: BalanceRow[], test: (a: string) => boolean) => rs.find((r) => test(norm(r.account)));
   const base: KPI[] = [
     { label: "Cash (fim do período)", big: "—", detalhe: "Sem dados", brl: brlAprox(0), variacao: "—", variacaoUp: true, icon: Wallet, tone: "blue" },
     { label: "Total Assets", big: "—", detalhe: "Sem dados", brl: brlAprox(0), variacao: "—", variacaoUp: true, icon: Archive, tone: "indigo" },
@@ -472,23 +478,32 @@ function kpisFromData(bs: HierData | undefined, pl: HierData | undefined): KPI[]
     }
     base[i] = { ...base[i], big: compactUSD(val), detalhe: prefix + fullUSD(val), brl: brlAprox(val), variacao, variacaoUp: up, negativo: val < 0 };
   };
-  const cash = acha(bs.rows, /checking\/savings total|^cash|cash total/i);
-  const assets = acha(bs.rows, /total assets|^assets total|assets total$/i);
-  const equity = acha(bs.rows, /^equity total|equity total$|^total equity/i);
+  // Cash: total de caixa/checking; Total Assets: o total geral (não "CURRENT ASSETS Total");
+  // Equity: patrimônio total (não "LIABILITIES & EQUITY").
+  const cash = achaAcct(bs.rows, (a) =>
+    a === "cash" || a === "cash total" || a === "total cash" ||
+    a === "checking/savings" || a.endsWith("checking/savings total"));
+  const assets = achaAcct(bs.rows, (a) =>
+    a === "total assets" || a === "assets total" ||
+    (/(^| )assets total$/.test(a) && !/(current|other|fixed|non-?current|intangible|long-?term)/.test(a)));
+  const equity = achaAcct(bs.rows, (a) =>
+    a === "equity" || a === "total equity" || a === "equity total" ||
+    /total (shareholders?|stockholders?)'? equity$/.test(a) ||
+    (/equity total$/.test(a) && !/liabilit/.test(a)));
   set(0, cash?.valores[ult], cash?.valores[pen ?? ""]);
   set(1, assets?.valores[ult], assets?.valores[pen ?? ""]);
   set(2, equity?.valores[ult], equity?.valores[pen ?? ""]);
 
   // Net Income Jan–Jun: soma no P&L, ou usa a linha "Net Income" da BS.
   if (pl && pl.months.length) {
-    const ni = pl.rows.find((r) => /^net income( total)?$/i.test(r.account));
+    const ni = pl.rows.find((r) => /^net income( total)?$/i.test(r.account.trim()));
     if (ni) {
       const soma = pl.months.reduce((s, m) => s + (ni.valores[m] || 0), 0);
       const mesUlt = pl.months[pl.months.length - 1];
       set(3, soma, undefined, `${mesUlt}: ${(ni.valores[mesUlt] || 0) >= 0 ? "+" : ""}${fullUSD(ni.valores[mesUlt] || 0).replace("$", "$")}  ·  `);
     }
   } else {
-    const ni = acha(bs.rows, /^net income$/i);
+    const ni = achaAcct(bs.rows, (a) => a === "net income" || a === "net income total");
     set(3, ni?.valores[ult], ni?.valores[pen ?? ""]);
   }
   return base;
@@ -514,6 +529,24 @@ export default function Investimentos() {
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
   const [importing, setImporting] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Carrega os snapshots persistidos (1 linha por entidade) na montagem.
+  useEffect(() => {
+    (async () => {
+      const { data: rows, error } = await sb
+        .from("investimentos_snapshot").select("entity,dados");
+      if (error) { console.error("Falha ao carregar investimentos:", error.message); return; }
+      if (rows?.length) {
+        setData((prev) => {
+          const next = { ...prev };
+          for (const r of rows as { entity: Entity; dados: EntityData }[]) {
+            if (r.entity in next) next[r.entity] = r.dados ?? {};
+          }
+          return next;
+        });
+      }
+    })();
+  }, []);
 
   const meta = ENTITY_META[entity];
   const entData = data[entity] || {};
@@ -574,6 +607,15 @@ export default function Investimentos() {
 
       const agora = new Date();
       nova.issuedAt = agora.toLocaleDateString("pt-BR") + " " + agora.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" });
+
+      // Persiste no banco (sobrevive a refresh/navegação) e atualiza a UI.
+      const { error: upErr } = await sb
+        .from("investimentos_snapshot")
+        .upsert({ entity: ent, dados: nova, atualizado_em: new Date().toISOString() }, { onConflict: "entity" });
+      if (upErr) {
+        toast.error("Importado, mas falhou ao salvar: " + upErr.message);
+      }
+
       setData((prev) => ({ ...prev, [ent]: nova }));
       setEntity(ent);
       setCollapsed(new Set());

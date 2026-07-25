@@ -403,9 +403,12 @@ function parseHier(aoa: unknown[][]): HierData {
     const isTotal = /\bTotal\s*$/i.test(account);
     const tipo: RowTipo = isTotal ? "total" : code ? "leaf" : "header";
 
+    // Só grava célula com valor real — deixa cabeçalhos/meses futuros vazios em branco
+    // (senão a tabela inteira aparece como "0.00").
     const valores: Record<string, number> = {};
     monthCols.forEach((mc) => {
       const v = linha[mc.idx];
+      if (v == null || (typeof v === "string" && v.trim() === "")) return;
       valores[mc.label] = typeof v === "number" ? v : parseNumero(v);
     });
 
@@ -465,8 +468,13 @@ function kpisFromData(bs: HierData | undefined, pl: HierData | undefined): KPI[]
   ];
   if (!bs || !bs.months.length) return base;
   const ms = bs.months;
-  const ult = ms[ms.length - 1];
-  const pen = ms.length > 1 ? ms[ms.length - 2] : undefined;
+  // A planilha traz meses futuros zerados — pega o último mês que TEM dados.
+  let ult = ms[ms.length - 1];
+  for (let i = ms.length - 1; i >= 0; i--) {
+    if (bs.rows.some((r) => { const v = r.valores[ms[i]]; return typeof v === "number" && v !== 0; })) { ult = ms[i]; break; }
+  }
+  const iUlt = ms.indexOf(ult);
+  const pen = iUlt > 0 ? ms[iUlt - 1] : undefined;
   const set = (i: number, val: number | undefined, prev: number | undefined, prefix = "") => {
     if (val == null) return;
     let variacao = "—";
@@ -494,15 +502,20 @@ function kpisFromData(bs: HierData | undefined, pl: HierData | undefined): KPI[]
   set(1, assets?.valores[ult], assets?.valores[pen ?? ""]);
   set(2, equity?.valores[ult], equity?.valores[pen ?? ""]);
 
-  // Net Income Jan–Jun: soma no P&L, ou usa a linha "Net Income" da BS.
+  // Net Income (acumulado): soma dos meses no P&L; senão a linha "Net Income" da BS.
+  let niSet = false;
   if (pl && pl.months.length) {
     const ni = pl.rows.find((r) => /^net income( total)?$/i.test(r.account.trim()));
     if (ni) {
+      const comDados = pl.months.filter((m) => typeof ni.valores[m] === "number" && ni.valores[m] !== 0);
       const soma = pl.months.reduce((s, m) => s + (ni.valores[m] || 0), 0);
-      const mesUlt = pl.months[pl.months.length - 1];
-      set(3, soma, undefined, `${mesUlt}: ${(ni.valores[mesUlt] || 0) >= 0 ? "+" : ""}${fullUSD(ni.valores[mesUlt] || 0).replace("$", "$")}  ·  `);
+      const mesUlt = comDados[comDados.length - 1] ?? pl.months[pl.months.length - 1];
+      const vUlt = ni.valores[mesUlt] || 0;
+      set(3, soma, undefined, `${mesUlt}: ${vUlt >= 0 ? "+" : ""}${fullUSD(vUlt)}  ·  `);
+      niSet = true;
     }
-  } else {
+  }
+  if (!niSet) {
     const ni = achaAcct(bs.rows, (a) => a === "net income" || a === "net income total");
     set(3, ni?.valores[ult], ni?.valores[pen ?? ""]);
   }

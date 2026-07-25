@@ -159,10 +159,21 @@ function parseMes(rows: any[][]) {
     .map(([plano, v]) => ({ plano, ...v }))
     .sort((a, b) => b.mrr - a.mrr);
 
-  const top_contratos = clients
-    .filter((c) => !NAO_CORE.test(c.nome + " " + c.descricao))
+  // Top contratos: top 20 de CADA nível (pra o filtro P/M/G/XG ter conteúdo),
+  // depois tudo junto ordenado por MRR (o "Todos" mostra os maiores no topo).
+  const core = clients.filter((c) => !NAO_CORE.test(c.nome + " " + c.descricao));
+  const porNivel = new Map<string, typeof core>();
+  for (const c of core) {
+    const arr = porNivel.get(c.nivel) ?? [];
+    arr.push(c); porNivel.set(c.nivel, arr);
+  }
+  const selecionados: typeof core = [];
+  for (const arr of porNivel.values()) {
+    arr.sort((a, b) => b.valor_mensal - a.valor_mensal);
+    selecionados.push(...arr.slice(0, 20));
+  }
+  const top_contratos = selecionados
     .sort((a, b) => b.valor_mensal - a.valor_mensal)
-    .slice(0, 50)
     .map((c) => ({
       nome: c.nome, plano: c.plano, descricao: c.descricao, nivel: c.nivel,
       intervalo: c.intervalo, dia_venc: c.dia_venc, mrr: c.valor_mensal,

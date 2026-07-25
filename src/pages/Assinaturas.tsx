@@ -115,7 +115,7 @@ export default function Assinaturas() {
     if (topNivel !== "Todos") rows = rows.filter((r) => r.nivel === topNivel);
     const q = busca.trim().toLowerCase();
     if (q) rows = rows.filter((r) => r.nome.toLowerCase().includes(q));
-    return rows;
+    return rows.slice(0, 60);
   }, [d, topNivel, busca]);
 
   if (loading) {

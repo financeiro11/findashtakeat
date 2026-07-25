@@ -45,6 +45,7 @@ import Parceiros from "./pages/Parceiros";
 import Orcamento from "./pages/Orcamento";
 import Investimentos from "./pages/Investimentos";
 import Asaas from "./pages/Asaas";
+import Assinaturas from "./pages/Assinaturas";
 import Auditoria from "./pages/Auditoria";
 import Reembolsos from "./pages/operacional/Reembolsos";
 import Estornos from "./pages/operacional/Estornos";
@@ -116,6 +117,7 @@ const App = () => (
               <Route path="/orcamento" element={<Orcamento />} />
               <Route path="/investimentos" element={<Investimentos />} />
               <Route path="/asaas" element={<Asaas />} />
+              <Route path="/assinaturas" element={<Assinaturas />} />
               <Route path="/governanca/auditoria" element={<Auditoria />} />
               <Route path="/operacional/reembolsos" element={<Reembolsos />} />
               <Route path="/operacional/estornos" element={<Estornos />} />

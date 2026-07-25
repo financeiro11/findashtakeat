@@ -13,6 +13,7 @@ const ROUTE_MAP: Record<string, { crumbs: string[]; context?: string }> = {
   "/configuracoes/uso-ia": { crumbs: ["Configurações", "Uso IA"], context: "Custo estimado das chamadas à IA" },
   "/automacoes/proporcionais": { crumbs: ["Automações", "Proporcionais"], context: "Aprovação de salários proporcionais" },
   "/asaas": { crumbs: ["Operacional", "Asaas"], context: "Recebimentos · Assinaturas · NF-e" },
+  "/assinaturas": { crumbs: ["Início", "Assinaturas"], context: "Base Asaas · MRR & carteira de clientes" },
   "/operacional/variavel": { crumbs: ["Operacional", "Variável"], context: "Comissões variáveis · fechamento mensal" },
   "/investimentos": { crumbs: ["Investimentos", "Takeat LTD/LLC"], context: "Financials LTD & LLC · export do contador" },
   "/automacoes/catalogo": { crumbs: ["Automações", "Catálogo"] },

@@ -39,6 +39,7 @@ import ProjetosAprovadosLayout, {
   ExecutivoTab, ProjetosTab, IATab, AlertasTab, PrestacaoTab, ConfigTab,
 } from "./pages/editais/ProjetosAprovados";
 import Tarefas from "./pages/Tarefas";
+import TimeFinanceiro from "./pages/TimeFinanceiro";
 import Playbook from "./pages/playbook/PlaybookHub";
 import Captable from "./pages/Captable";
 import Parceiros from "./pages/Parceiros";
@@ -103,6 +104,7 @@ const App = () => (
                 <Route path="configuracoes" element={<EditaisConfiguracoes />} />
               </Route>
               <Route path="/tarefas" element={<Tarefas />} />
+              <Route path="/time/visao" element={<TimeFinanceiro />} />
               <Route path="/playbook" element={<Playbook />} />
               <Route path="/captable" element={<Captable />} />
               <Route path="/demonstracoes/dre" element={<DRE />} />

@@ -19,11 +19,18 @@ type NavItem = { title: string; url: string; icon: any; badge?: string };
 const inicio: NavItem[] = [
   { title: "Dashboard", url: "/", icon: Home },
   { title: "Briefing", url: "/briefing", icon: Sparkles },
-  { title: "Tarefas", url: "/tarefas", icon: CheckSquare },
   { title: "Caixa", url: "/caixa", icon: Landmark, badge: "OMIE" },
   { title: "Assinaturas", url: "/assinaturas", icon: Repeat },
   { title: "Anotações", url: "/playbook", icon: BookOpenCheck },
+];
+
+// Gestão do time financeiro — estrutura, tarefas e automações internas.
+const timeFinanceiro: NavItem[] = [
+  { title: "Visão do Time", url: "/time/visao", icon: Users },
+  { title: "Tarefas", url: "/tarefas", icon: CheckSquare },
   { title: "Projetos", url: "/automacoes/projetos", icon: FolderKanban },
+  { title: "Proporcionais", url: "/automacoes/proporcionais", icon: Percent },
+  { title: "Catálogo", url: "/automacoes/catalogo", icon: BookOpen },
 ];
 
 const operacional: NavItem[] = [
@@ -37,11 +44,6 @@ const operacional: NavItem[] = [
 const recargas: NavItem[] = [
   { title: "Celulares", url: "/recargas/celulares", icon: Smartphone },
   { title: "Viagens", url: "/recargas/viagens", icon: Plane },
-];
-
-const automacoes: NavItem[] = [
-  { title: "Proporcionais", url: "/automacoes/proporcionais", icon: Percent },
-  { title: "Catálogo", url: "/automacoes/catalogo", icon: BookOpen },
 ];
 
 const facilities: NavItem[] = [
@@ -193,7 +195,7 @@ export function AppSidebar() {
     ? []
     : mod === "facilities"
     ? facilities
-    : [...inicio, ...operacional, ...recargas, ...automacoes, ...editais, ...investimentos, ...demonstracoes, ...analise, ...governanca, ...config];
+    : [...inicio, ...timeFinanceiro, ...operacional, ...recargas, ...editais, ...investimentos, ...demonstracoes, ...analise, ...governanca, ...config];
   const favoritosItems = pool.filter((i) => favoritos.has(i.url));
 
   return (
@@ -250,9 +252,9 @@ export function AppSidebar() {
           ) : (
             <>
               <Group label="Início" items={inicio} pathname={pathname} favoritos={favoritos} onToggleFavorito={toggleFavorito} />
+              <Group label="Time Financeiro" items={timeFinanceiro} pathname={pathname} favoritos={favoritos} onToggleFavorito={toggleFavorito} />
               <Group label="Operacional" items={operacional} pathname={pathname} favoritos={favoritos} onToggleFavorito={toggleFavorito} />
               <Group label="Recargas" items={recargas} pathname={pathname} favoritos={favoritos} onToggleFavorito={toggleFavorito} />
-              <Group label="Automações" items={automacoes} pathname={pathname} favoritos={favoritos} onToggleFavorito={toggleFavorito} />
               <Group label="Editais" items={editais} pathname={pathname} favoritos={favoritos} onToggleFavorito={toggleFavorito} />
               <Group label="Investimentos" items={investimentos} pathname={pathname} favoritos={favoritos} onToggleFavorito={toggleFavorito} />
               <Group label="Demonstrações" items={demonstracoes} pathname={pathname} favoritos={favoritos} onToggleFavorito={toggleFavorito} />

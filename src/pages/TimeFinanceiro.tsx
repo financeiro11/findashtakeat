@@ -1,0 +1,770 @@
+import { useEffect, useMemo, useState } from "react";
+import { supabase } from "@/integrations/supabase/client";
+import { toast } from "sonner";
+import { cn } from "@/lib/utils";
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import {
+  Loader2, Plus, Pencil, Trash2, X, Users, UserPlus, Network, ListChecks,
+  CalendarDays, Bot, Target, Zap, Clock, ArrowRight,
+} from "lucide-react";
+
+// ============================================================================
+// Time Financeiro · Visão do Time — estrutura do time (organograma, funções,
+// vagas & expansão), rituais mensais e maturidade em IA. Fonte da verdade:
+// tabelas `time_cargos` e `time_passos` (seed importado da planilha da
+// diretoria, que foi abandonada — tudo é editado aqui).
+// ============================================================================
+
+const sb = supabase as any;
+
+/* ------------------------------ tipos ------------------------------ */
+type Status = "efetivo" | "vaga_aberta" | "entrevista" | "contratado" | "planejado";
+type AtribGrupo = { titulo: string; itens: string[] };
+type Cargo = {
+  id: string; titulo: string; pessoa: string | null; senioridade: string | null;
+  status: Status; acumulo: boolean; prioridade: string | null; custo_mensal: number | null;
+  alvo: string | null; parent_id: string | null; atribuicoes: AtribGrupo[]; ordem: number;
+};
+type Passo = { id: string; texto: string; done: boolean; ordem: number };
+
+/* ------------------------------ metadados ------------------------------ */
+const STATUS_META: Record<Status, { label: string; badge: string; borda: string }> = {
+  efetivo:     { label: "EFETIVO",       badge: "bg-success/10 text-success",              borda: "border-l-[3px] border-l-primary" },
+  vaga_aberta: { label: "VAGA ABERTA",   badge: "bg-primary/10 text-primary",              borda: "border-primary" },
+  entrevista:  { label: "EM ENTREVISTA", badge: "bg-amber-500/15 text-amber-600 dark:text-amber-400", borda: "border-amber-500/60" },
+  contratado:  { label: "CONTRATADO",    badge: "bg-success/15 text-success",              borda: "border-success/60" },
+  planejado:   { label: "PLANEJADO",     badge: "bg-muted text-muted-foreground",          borda: "border-dashed" },
+};
+
+const fmtBRL0 = (n: number) => `R$ ${Math.round(n).toLocaleString("pt-BR")}`;
+
+const RITUAIS = [
+  { semana: "Semana 1", titulo: "Fechamento do mês anterior", desc: "Conciliação bancária, DRE e DFC do mês que fechou." },
+  { semana: "Semana 2", titulo: "Revisão de processos", desc: "Revisão profunda de processos internos, despesas e ERP." },
+  { semana: "Semana 3", titulo: "Revisão orçamentária", desc: "Real vs. orçado completo e atualização de projeções." },
+  { semana: "Semana 4", titulo: "Preparação do fechamento", desc: "Provisões, pagamentos e acertos para virar o mês." },
+];
+
+// ---- IA & Automação: pirâmide de maturidade + automações em produção ----
+const NIVEL_ATUAL = 3;
+const NIVEIS = [
+  { n: 1, nome: "Fundação Operacional", bullets: ["Caixa, pagamentos e conciliação com rotinas automatizadas", "Relatórios operacionais recorrentes (posição e cortes de caixa)", "Consolidações automáticas no Omie (comissões, categorias, faturas)"] },
+  { n: 2, nome: "Controles & Auditoria", bullets: ["Cruzamentos automáticos (cartão × notas fiscais)", "Playbooks de fluxos operacionais (n8n)", "Trilhas de verificação contínuas sobre os lançamentos"] },
+  { n: 3, nome: "Relatórios, Insights & FP&A", bullets: ["DRE e DFC — real vs. orçado", "Orçamento por área e métricas SaaS (MRR, CAC/LTV, NRR)", "Análise de churn real", "Relatório gerencial para diretoria"] },
+  { n: 4, nome: "Projeções & Cenários", bullets: ["Projeção de caixa (45 dias)", "Cenários e simulações orçamentárias", "Alertas preditivos de desvio"] },
+  { n: 5, nome: "Financeiro Autônomo", bullets: ["Agentes executando rotinas ponta a ponta", "Decisões assistidas com aprovação humana", "Fechamento contínuo (continuous close)"] },
+];
+// Cores da pirâmide (base → topo), espelhando o design aprovado.
+const NIVEL_COR = ["hsl(0 62% 20%)", "hsl(0 65% 31%)", "hsl(0 84% 51%)", "hsl(0 70% 68%)", "hsl(0 0% 12%)"];
+
+const AUTOMACOES: { nivel: number; nome: string }[] = [
+  { nivel: 1, nome: "Posição de caixa mensal" },
+  { nivel: 1, nome: "Relatório de caixa — cortes 15/20/25" },
+  { nivel: 1, nome: "Consolidação de comissões (Omie)" },
+  { nivel: 1, nome: "Rescisão PJ automática" },
+  { nivel: 1, nome: "Revisor de categorias do Omie" },
+  { nivel: 1, nome: "Comparativo de faturas de cartão" },
+  { nivel: 2, nome: "Auditoria cartão × notas fiscais" },
+  { nivel: 2, nome: "Playbook de fluxos n8n" },
+  { nivel: 3, nome: "Análise DRE/DFC vs. orçado" },
+  { nivel: 3, nome: "Relatório gerencial mensal" },
+  { nivel: 3, nome: "Comentários do tracker (MoM)" },
+  { nivel: 3, nome: "Churn real (Asaas)" },
+  { nivel: 3, nome: "Custos & CAC mensal" },
+  { nivel: 3, nome: "Análise de tarefas da semana" },
+  { nivel: 4, nome: "Projeção de caixa (45 dias)" },
+];
+
+const TABS = [
+  { key: "org", label: "Organograma", icon: Network },
+  { key: "funcoes", label: "Funções", icon: ListChecks },
+  { key: "vagas", label: "Vagas & Expansão", icon: UserPlus },
+  { key: "rituais", label: "Rituais", icon: CalendarDays },
+  { key: "ia", label: "IA & Automação", icon: Bot },
+] as const;
+type TabKey = (typeof TABS)[number]["key"];
+
+/* ------------------------------ subcomponentes ------------------------------ */
+function Avatar({ cargo, size = "h-9 w-9 text-[13px]" }: { cargo: Cargo; size?: string }) {
+  if (!cargo.pessoa) {
+    return (
+      <div className={cn("flex shrink-0 items-center justify-center rounded-full border-2 border-dashed border-primary/60 text-primary", size)}>
+        <UserPlus className="h-4 w-4" />
+      </div>
+    );
+  }
+  return (
+    <div className={cn("flex shrink-0 items-center justify-center rounded-full bg-primary font-bold text-primary-foreground", size)}>
+      {cargo.pessoa.trim()[0]?.toUpperCase()}
+    </div>
+  );
+}
+
+function subtitulo(c: Cargo): string {
+  if (c.pessoa) return [c.pessoa, c.senioridade].filter(Boolean).join(" · ");
+  return ["Em aberto", c.senioridade, c.prioridade ? `prioridade ${c.prioridade}` : null].filter(Boolean).join(" · ");
+}
+
+function CargoCard({ c, selected, onClick }: { c: Cargo; selected: boolean; onClick: () => void }) {
+  const meta = STATUS_META[c.status];
+  return (
+    <button
+      onClick={onClick}
+      className={cn(
+        "w-[230px] rounded-lg border bg-card p-3 text-left shadow-sm transition hover:shadow-md",
+        meta.borda,
+        selected && "ring-2 ring-primary/40",
+      )}
+    >
+      <div className="flex items-center gap-2.5">
+        <Avatar cargo={c} />
+        <div className="min-w-0">
+          <div className="truncate text-[13px] font-semibold text-foreground">{c.titulo}</div>
+          <div className="truncate text-[11.5px] text-muted-foreground">{subtitulo(c)}</div>
+        </div>
+      </div>
+      <div className="mt-2.5 flex items-center justify-between gap-2">
+        <span className={cn("rounded px-1.5 py-0.5 text-[9px] font-bold tracking-wider", meta.badge)}>
+          {meta.label}{c.acumulo ? " · ACÚMULO" : ""}
+        </span>
+        {c.custo_mensal != null && c.status !== "efetivo" && (
+          <span className="num text-[11px] font-semibold text-foreground">{fmtBRL0(c.custo_mensal)}/mês</span>
+        )}
+      </div>
+    </button>
+  );
+}
+
+// Pirâmide de maturidade (SVG) — clique num nível para ver os detalhes.
+function Piramide({ sel, onSel }: { sel: number; onSel: (n: number) => void }) {
+  const PAD = 18, H = 250, HALF = 148, CX = 196, GAP = 6;
+  const h = (H - GAP * 4) / 5;
+  const halfAt = (y: number) => ((y - PAD) / H) * HALF;
+  const slices = [1, 2, 3, 4, 5].map((k) => {
+    const yTop = PAD + (5 - k) * (h + GAP);
+    const yBot = yTop + h;
+    const ht = halfAt(yTop), hb = halfAt(yBot);
+    return { k, yTop, yBot, pts: `${CX - ht},${yTop} ${CX + ht},${yTop} ${CX + hb},${yBot} ${CX - hb},${yBot}` };
+  });
+  return (
+    <svg viewBox="0 0 392 312" className="mx-auto w-full max-w-[420px]">
+      {/* eixo lateral */}
+      <text x={22} y={92} fontSize={9} letterSpacing={2.5} fill="hsl(var(--muted-foreground))" transform="rotate(-90 22 92)" textAnchor="middle">AUTÔNOMO</text>
+      <text x={22} y={226} fontSize={9} letterSpacing={2.5} fill="hsl(var(--muted-foreground))" transform="rotate(-90 22 226)" textAnchor="middle">OPERACIONAL</text>
+      <line x1={32} y1={PAD + 4} x2={32} y2={PAD + H - 4} stroke="hsl(var(--border))" strokeWidth={1} />
+      {slices.map(({ k, yTop, yBot, pts }) => {
+        const cy = (yTop + yBot) / 2 + (k === 5 ? 8 : 0);
+        return (
+          <g key={k} onClick={() => onSel(k)} className="cursor-pointer transition-opacity hover:opacity-90">
+            <polygon points={pts} fill={NIVEL_COR[k - 1]} stroke={sel === k ? "hsl(var(--foreground))" : "transparent"} strokeWidth={2} />
+            <circle cx={CX} cy={cy} r={12} fill="none" stroke="white" strokeWidth={1.4} />
+            <text x={CX} y={cy + 3.5} fontSize={11} fontWeight={700} fill="white" textAnchor="middle">{k}</text>
+            {k === NIVEL_ATUAL && (
+              <g>
+                <rect x={CX - 52} y={yBot - 15} width={104} height={14} rx={7} fill="hsl(var(--success))" />
+                <text x={CX} y={yBot - 5} fontSize={8} fontWeight={700} letterSpacing={1} fill="white" textAnchor="middle">VOCÊ ESTÁ AQUI</text>
+              </g>
+            )}
+          </g>
+        );
+      })}
+      <text x={CX} y={PAD + H + 26} fontSize={9.5} fontWeight={700} letterSpacing={1.6} fill="hsl(var(--muted-foreground))" textAnchor="middle">BASE: FUNDAÇÃO OPERACIONAL</text>
+    </svg>
+  );
+}
+
+/* ================================ componente ================================ */
+export default function TimeFinanceiro() {
+  const [cargos, setCargos] = useState<Cargo[]>([]);
+  const [passos, setPassos] = useState<Passo[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [tab, setTab] = useState<TabKey>("org");
+  const [selCargoId, setSelCargoId] = useState<string | null>(null);
+  const [nivelSel, setNivelSel] = useState(NIVEL_ATUAL);
+  const [novoPasso, setNovoPasso] = useState("");
+
+  // diálogo de cargo/vaga (criar + editar)
+  const vazio = { titulo: "", pessoa: "", senioridade: "Pleno", status: "vaga_aberta" as Status, prioridade: "Alta", custo_mensal: "", alvo: "", parent_id: "" };
+  const [dlgOpen, setDlgOpen] = useState(false);
+  const [editId, setEditId] = useState<string | null>(null);
+  const [form, setForm] = useState(vazio);
+  const [salvando, setSalvando] = useState(false);
+
+  async function carregar() {
+    const [{ data: cs, error: e1 }, { data: ps, error: e2 }] = await Promise.all([
+      sb.from("time_cargos").select("*").order("ordem", { ascending: true }),
+      sb.from("time_passos").select("*").order("ordem", { ascending: true }),
+    ]);
+    if (e1 || e2) toast.error("Falha ao carregar o time: " + (e1?.message ?? e2?.message));
+    setCargos((cs ?? []) as Cargo[]);
+    setPassos((ps ?? []) as Passo[]);
+    setLoading(false);
+  }
+  useEffect(() => { carregar(); }, []);
+
+  /* ------------------------------ KPIs ------------------------------ */
+  const kpi = useMemo(() => {
+    const headcount = new Set(cargos.filter((c) => c.status === "efetivo" && c.pessoa).map((c) => c.pessoa!.trim().toLowerCase())).size;
+    const vagas = cargos.filter((c) => c.status === "vaga_aberta" || c.status === "entrevista").length;
+    const planejados = cargos.filter((c) => c.status === "planejado").length;
+    const custo = cargos
+      .filter((c) => ["vaga_aberta", "entrevista", "planejado"].includes(c.status))
+      .reduce((a, c) => a + (c.custo_mensal ?? 0), 0);
+    return { headcount, vagas, planejados, custo };
+  }, [cargos]);
+
+  const raiz = cargos.find((c) => !c.parent_id);
+  const filhos = cargos.filter((c) => raiz && c.parent_id === raiz.id);
+  const selCargo = cargos.find((c) => c.id === selCargoId) ?? null;
+
+  /* ------------------------------ ações ------------------------------ */
+  function abrirNovo(status: Status = "vaga_aberta") {
+    setEditId(null);
+    setForm({ ...vazio, status, parent_id: raiz?.id ?? "" });
+    setDlgOpen(true);
+  }
+  function abrirEdicao(c: Cargo) {
+    setEditId(c.id);
+    setForm({
+      titulo: c.titulo, pessoa: c.pessoa ?? "", senioridade: c.senioridade ?? "",
+      status: c.status, prioridade: c.prioridade ?? "", custo_mensal: c.custo_mensal != null ? String(c.custo_mensal) : "",
+      alvo: c.alvo ?? "", parent_id: c.parent_id ?? "",
+    });
+    setDlgOpen(true);
+  }
+
+  async function salvarCargo() {
+    if (!form.titulo.trim()) { toast.error("Informe o título do cargo."); return; }
+    setSalvando(true);
+    const payload = {
+      titulo: form.titulo.trim(),
+      pessoa: form.pessoa.trim() || null,
+      senioridade: form.senioridade.trim() || null,
+      status: form.status,
+      prioridade: form.prioridade.trim() || null,
+      custo_mensal: form.custo_mensal ? parseFloat(form.custo_mensal.replace(/\./g, "").replace(",", ".")) : null,
+      alvo: form.alvo.trim() || null,
+      parent_id: form.parent_id || null,
+      atualizado_em: new Date().toISOString(),
+    };
+    const { error } = editId
+      ? await sb.from("time_cargos").update(payload).eq("id", editId)
+      : await sb.from("time_cargos").insert({ ...payload, ordem: cargos.length });
+    setSalvando(false);
+    if (error) { toast.error("Falha ao salvar: " + error.message); return; }
+    toast.success(editId ? "Cargo atualizado." : "Cargo criado.");
+    setDlgOpen(false);
+    carregar();
+  }
+
+  async function excluirCargo() {
+    if (!editId) return;
+    if (!window.confirm("Excluir este cargo/vaga?")) return;
+    const { error } = await sb.from("time_cargos").delete().eq("id", editId);
+    if (error) { toast.error("Falha ao excluir: " + error.message); return; }
+    toast.success("Cargo excluído.");
+    setDlgOpen(false);
+    if (selCargoId === editId) setSelCargoId(null);
+    carregar();
+  }
+
+  async function moverStatus(c: Cargo, status: Status) {
+    const { error } = await sb.from("time_cargos").update({ status, atualizado_em: new Date().toISOString() }).eq("id", c.id);
+    if (error) { toast.error("Falha ao mover: " + error.message); return; }
+    carregar();
+  }
+
+  async function addPasso() {
+    const texto = novoPasso.trim();
+    if (!texto) return;
+    setNovoPasso("");
+    const { error } = await sb.from("time_passos").insert({ texto, ordem: passos.length });
+    if (error) toast.error("Falha ao adicionar: " + error.message);
+    carregar();
+  }
+  async function togglePasso(p: Passo) {
+    await sb.from("time_passos").update({ done: !p.done }).eq("id", p.id);
+    carregar();
+  }
+  async function removerPasso(p: Passo) {
+    await sb.from("time_passos").delete().eq("id", p.id);
+    carregar();
+  }
+
+  /* ------------------------------ render ------------------------------ */
+  if (loading) {
+    return (
+      <div className="flex h-[60vh] items-center justify-center text-muted-foreground">
+        <Loader2 className="mr-2 h-5 w-5 animate-spin" /> Carregando o time…
+      </div>
+    );
+  }
+
+  const nivel = NIVEIS.find((n) => n.n === nivelSel)!;
+  const autosNivel = AUTOMACOES.filter((a) => a.nivel === nivelSel).length;
+
+  const KANBAN: { status: Status; label: string; vazio: React.ReactNode }[] = [
+    { status: "planejado", label: "Planejado", vazio: <>Nenhum cargo planejado — clique em “Novo cargo”.</> },
+    { status: "vaga_aberta", label: "Vaga aberta", vazio: <>Nenhuma vaga aberta.</> },
+    { status: "entrevista", label: "Em entrevista", vazio: <>Nenhum processo em andamento.</> },
+    { status: "contratado", label: "Contratado", vazio: <>Contratações concluídas aparecem aqui.</> },
+  ];
+  const ACAO: Partial<Record<Status, { rotulo: string; prox: Status }>> = {
+    planejado: { rotulo: "Abrir vaga", prox: "vaga_aberta" },
+    vaga_aberta: { rotulo: "Mover p/ entrevista", prox: "entrevista" },
+    entrevista: { rotulo: "Marcar contratado", prox: "contratado" },
+    contratado: { rotulo: "Tornar efetivo", prox: "efetivo" },
+  };
+
+  return (
+    <div className="space-y-4 p-4 md:p-6">
+      {/* ---------------- Cabeçalho ---------------- */}
+      <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+        <div className="min-w-0">
+          <h1 className="text-[22px] font-semibold tracking-tight text-foreground">Time Financeiro</h1>
+          <p className="mt-0.5 text-[12.5px] text-muted-foreground">
+            Estrutura atual e planejamento do time — o financeiro de hoje e o de daqui a 5 anos.
+          </p>
+        </div>
+        <button
+          onClick={() => abrirNovo("vaga_aberta")}
+          className="inline-flex shrink-0 items-center gap-1.5 self-start rounded-md bg-primary px-3.5 py-2 text-[12.5px] font-semibold text-primary-foreground shadow-sm transition hover:brightness-110"
+        >
+          <Plus className="h-4 w-4" /> Novo cargo / vaga
+        </button>
+      </div>
+
+      {/* ---------------- KPIs ---------------- */}
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
+        <div className="card-surface p-4">
+          <div className="eyebrow">Headcount atual</div>
+          <div className="num mt-1.5 text-[26px] font-semibold leading-none">{kpi.headcount}</div>
+          <div className="mt-1.5 text-[12px] text-muted-foreground">pessoas no time</div>
+        </div>
+        <div className="card-surface p-4">
+          <div className="eyebrow">Vagas abertas</div>
+          <div className="num mt-1.5 text-[26px] font-semibold leading-none text-primary">{kpi.vagas}</div>
+          <div className="mt-1.5 text-[12px] text-muted-foreground">abertas ou em entrevista</div>
+        </div>
+        <div className="card-surface p-4">
+          <div className="eyebrow">Cargos planejados</div>
+          <div className="num mt-1.5 text-[26px] font-semibold leading-none">{kpi.planejados}</div>
+          <div className="mt-1.5 text-[12px] text-muted-foreground">visão de futuro (1–5 anos)</div>
+        </div>
+        <div className="card-surface p-4">
+          <div className="eyebrow">Custo mensal da expansão</div>
+          <div className="num mt-1.5 text-[26px] font-semibold leading-none">{fmtBRL0(kpi.custo)}</div>
+          <div className="mt-1.5 text-[12px] text-muted-foreground">soma das vagas + planejados</div>
+        </div>
+      </div>
+
+      {/* ---------------- Abas ---------------- */}
+      <div className="flex w-fit max-w-full flex-wrap gap-1 rounded-lg bg-secondary/60 p-1">
+        {TABS.map((t) => (
+          <button
+            key={t.key}
+            onClick={() => setTab(t.key)}
+            className={cn(
+              "inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-[12.5px] font-medium transition",
+              tab === t.key ? "border border-border bg-card text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground",
+            )}
+          >
+            <t.icon className="h-3.5 w-3.5" /> {t.label}
+          </button>
+        ))}
+      </div>
+
+      {/* ---------------- Organograma ---------------- */}
+      {tab === "org" && (
+        <div className="grid grid-cols-1 gap-3 lg:grid-cols-[minmax(0,1fr)_320px]">
+          <div className="card-surface p-5">
+            {raiz ? (
+              <div className="flex flex-col items-center">
+                <CargoCard c={raiz} selected={selCargoId === raiz.id} onClick={() => setSelCargoId(raiz.id)} />
+                {filhos.length > 0 && (
+                  <>
+                    <div className="h-6 w-px bg-border" />
+                    <div className="relative flex flex-wrap items-start justify-center gap-x-4 gap-y-6">
+                      <div className="absolute inset-x-16 top-0 h-px bg-border" />
+                      {filhos.map((c) => (
+                        <div key={c.id} className="flex flex-col items-center">
+                          <div className="h-5 w-px bg-border" />
+                          <CargoCard c={c} selected={selCargoId === c.id} onClick={() => setSelCargoId(c.id)} />
+                        </div>
+                      ))}
+                    </div>
+                  </>
+                )}
+                <button
+                  onClick={() => abrirNovo("planejado")}
+                  className="mt-6 flex w-[230px] flex-col items-center gap-1 rounded-lg border-2 border-dashed border-border p-4 text-muted-foreground transition hover:border-primary/50 hover:text-foreground"
+                >
+                  <Plus className="h-4 w-4" />
+                  <span className="text-[12px]">Adicionar cargo futuro</span>
+                </button>
+                <div className="mt-6 flex flex-wrap items-center justify-center gap-4 text-[11px] text-muted-foreground">
+                  <span className="flex items-center gap-1.5"><span className="h-2.5 w-2.5 rounded-[3px] bg-primary" /> Efetivo</span>
+                  <span className="flex items-center gap-1.5"><span className="h-2.5 w-2.5 rounded-[3px] border-2 border-primary" /> Vaga aberta / entrevista</span>
+                  <span className="flex items-center gap-1.5"><span className="h-2.5 w-2.5 rounded-[3px] border-2 border-dashed border-muted-foreground" /> Planejado (futuro)</span>
+                </div>
+              </div>
+            ) : (
+              <div className="py-10 text-center text-[13px] text-muted-foreground">Nenhum cargo cadastrado — clique em “Novo cargo / vaga”.</div>
+            )}
+          </div>
+
+          {/* Painel de atribuições */}
+          <div className="card-surface flex flex-col p-4">
+            {selCargo ? (
+              <>
+                <div className="flex items-center gap-2.5 border-b border-border/60 pb-3">
+                  <Avatar cargo={selCargo} />
+                  <div className="min-w-0">
+                    <div className="truncate text-[13.5px] font-semibold">{selCargo.titulo}</div>
+                    <div className="truncate text-[11.5px] text-muted-foreground">{subtitulo(selCargo)}</div>
+                  </div>
+                  <button onClick={() => abrirEdicao(selCargo)} className="ml-auto rounded p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground" title="Editar cargo">
+                    <Pencil className="h-3.5 w-3.5" />
+                  </button>
+                </div>
+                <div className="mt-3 max-h-[440px] space-y-3 overflow-y-auto pr-1">
+                  {selCargo.atribuicoes.length ? selCargo.atribuicoes.map((g, i) => (
+                    <div key={i}>
+                      <div className="flex items-baseline gap-2">
+                        <span className="num text-[11px] font-bold text-primary">{String(i + 1).padStart(2, "0")}</span>
+                        <span className="text-[12.5px] font-semibold text-foreground">{g.titulo}</span>
+                      </div>
+                      {g.itens.length > 0 && (
+                        <ul className="mt-1 space-y-0.5 pl-6">
+                          {g.itens.map((it, j) => (
+                            <li key={j} className="list-disc text-[12px] leading-relaxed text-muted-foreground">{it}</li>
+                          ))}
+                        </ul>
+                      )}
+                    </div>
+                  )) : (
+                    <p className="text-[12px] text-muted-foreground">Sem atribuições cadastradas para este cargo.</p>
+                  )}
+                </div>
+              </>
+            ) : (
+              <div className="flex flex-1 flex-col items-center justify-center gap-2 py-10 text-center">
+                <Network className="h-8 w-8 text-muted-foreground/40" />
+                <p className="max-w-[220px] text-[12.5px] text-muted-foreground">
+                  Clique num cargo para ver as atribuições completas. Cargos <span className="font-semibold">pontilhados</span> são planejamento futuro.
+                </p>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* ---------------- Funções ---------------- */}
+      {tab === "funcoes" && (
+        <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
+          {cargos.map((c) => (
+            <div key={c.id} className="card-surface p-4">
+              <div className="flex items-center gap-2.5 border-b border-border/60 pb-3">
+                <Avatar cargo={c} />
+                <div className="min-w-0">
+                  <div className="truncate text-[14px] font-semibold">{c.titulo}</div>
+                  <div className="truncate text-[11.5px] text-muted-foreground">{subtitulo(c)}</div>
+                </div>
+                <span className={cn("ml-auto shrink-0 rounded px-1.5 py-0.5 text-[9px] font-bold tracking-wider", STATUS_META[c.status].badge)}>
+                  {STATUS_META[c.status].label}
+                </span>
+              </div>
+              <div className="mt-3 space-y-3">
+                {c.atribuicoes.map((g, i) => (
+                  <div key={i}>
+                    <div className="flex items-baseline gap-2">
+                      <span className="num text-[11px] font-bold text-primary">{String(i + 1).padStart(2, "0")}</span>
+                      <span className="text-[13px] font-semibold text-foreground">{g.titulo}</span>
+                    </div>
+                    {g.itens.length > 0 && (
+                      <ul className="mt-1 space-y-0.5 pl-6">
+                        {g.itens.map((it, j) => (
+                          <li key={j} className="list-disc text-[12px] leading-relaxed text-muted-foreground">{it}</li>
+                        ))}
+                      </ul>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* ---------------- Vagas & Expansão ---------------- */}
+      {tab === "vagas" && (
+        <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-5">
+          {KANBAN.map((col) => {
+            const items = cargos.filter((c) => c.status === col.status);
+            return (
+              <div key={col.status} className="card-surface flex flex-col p-3">
+                <div className="flex items-center justify-between px-1 pb-2">
+                  <span className={cn("text-[10.5px] font-bold uppercase tracking-wider", col.status === "vaga_aberta" ? "text-primary" : col.status === "contratado" ? "text-success" : "text-muted-foreground")}>
+                    {col.label}
+                  </span>
+                  <span className="num rounded border border-border px-1.5 text-[10px] text-muted-foreground">{items.length}</span>
+                </div>
+                <div className={cn("flex-1 space-y-2 rounded-lg", !items.length && "flex min-h-[200px] items-center justify-center border-2 border-dashed border-border/60 p-3")}>
+                  {items.length ? items.map((c) => {
+                    const acao = ACAO[c.status];
+                    return (
+                      <div key={c.id} className="rounded-lg border border-border bg-card p-3 shadow-sm">
+                        <div className="flex items-start justify-between gap-2">
+                          <div className="min-w-0">
+                            <div className="truncate text-[13px] font-semibold text-foreground">{c.titulo}</div>
+                            {c.alvo && <div className="text-[11px] text-muted-foreground">Alvo {c.alvo}</div>}
+                          </div>
+                          <button onClick={() => abrirEdicao(c)} className="rounded p-1 text-muted-foreground hover:bg-muted hover:text-foreground" title="Editar">
+                            <Pencil className="h-3 w-3" />
+                          </button>
+                        </div>
+                        <div className="mt-2 flex flex-wrap items-center gap-1.5">
+                          {c.prioridade && <span className="rounded bg-primary/10 px-1.5 py-0.5 text-[10px] font-semibold text-primary">{c.prioridade}</span>}
+                          {c.senioridade && <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">{c.senioridade}</span>}
+                          {c.custo_mensal != null && <span className="num rounded border border-border px-1.5 py-0.5 text-[10px] font-semibold">{fmtBRL0(c.custo_mensal)}</span>}
+                        </div>
+                        {acao && (
+                          <button
+                            onClick={() => {
+                              if (acao.prox === "efetivo" && !c.pessoa) { toast.message("Preencha quem foi contratado antes de efetivar."); abrirEdicao(c); return; }
+                              moverStatus(c, acao.prox);
+                            }}
+                            className="mt-2.5 flex w-full items-center justify-center gap-1 rounded-md border border-primary/40 bg-primary/5 px-2 py-1.5 text-[11.5px] font-semibold text-primary transition hover:bg-primary/10"
+                          >
+                            {acao.rotulo} <ArrowRight className="h-3 w-3" />
+                          </button>
+                        )}
+                      </div>
+                    );
+                  }) : (
+                    <p className="px-2 text-center text-[11.5px] text-muted-foreground">{col.vazio}</p>
+                  )}
+                </div>
+              </div>
+            );
+          })}
+
+          {/* Próximos passos */}
+          <div className="card-surface p-4">
+            <div className="flex items-center gap-2">
+              <Target className="h-4 w-4 text-primary" />
+              <span className="text-[13.5px] font-semibold">Próximos passos do time</span>
+            </div>
+            <div className="mt-3 space-y-2">
+              {passos.map((p) => (
+                <div key={p.id} className="group flex items-start gap-2">
+                  <input
+                    type="checkbox"
+                    checked={p.done}
+                    onChange={() => togglePasso(p)}
+                    className="mt-0.5 h-4 w-4 shrink-0 cursor-pointer accent-primary"
+                  />
+                  <span className={cn("flex-1 text-[12.5px] leading-snug", p.done ? "text-muted-foreground line-through" : "text-foreground")}>{p.texto}</span>
+                  <button onClick={() => removerPasso(p)} className="rounded p-0.5 text-muted-foreground/50 opacity-0 transition hover:text-destructive group-hover:opacity-100" title="Remover">
+                    <X className="h-3.5 w-3.5" />
+                  </button>
+                </div>
+              ))}
+              {!passos.length && <p className="text-[12px] text-muted-foreground">Nenhum passo — adicione abaixo.</p>}
+            </div>
+            <div className="mt-3 flex items-center gap-1.5">
+              <input
+                value={novoPasso}
+                onChange={(e) => setNovoPasso(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && addPasso()}
+                placeholder="Novo passo… (Enter)"
+                className="h-8 min-w-0 flex-1 rounded-md border border-border bg-card px-2 text-[12px] outline-none focus:ring-1 focus:ring-primary"
+              />
+              <button onClick={addPasso} className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-primary text-primary-foreground hover:brightness-110">
+                <Plus className="h-4 w-4" />
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ---------------- Rituais ---------------- */}
+      {tab === "rituais" && (
+        <div className="space-y-3">
+          <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-4">
+            {RITUAIS.map((r) => (
+              <div key={r.semana} className="card-surface border-t-2 border-t-primary p-4">
+                <div className="flex items-center justify-between">
+                  <span className="eyebrow">{r.semana}</span>
+                  <CalendarDays className="h-4 w-4 text-primary" />
+                </div>
+                <div className="mt-2 text-[14px] font-semibold text-foreground">{r.titulo}</div>
+                <p className="mt-1 text-[12px] leading-relaxed text-muted-foreground">{r.desc}</p>
+              </div>
+            ))}
+          </div>
+          <div className="flex items-start gap-2.5 rounded-lg border border-primary/20 bg-primary/5 px-4 py-3">
+            <Clock className="mt-0.5 h-4 w-4 shrink-0 text-primary" />
+            <p className="text-[12.5px] leading-relaxed text-foreground">
+              <span className="font-semibold">Cadência mensal do financeiro</span> — cada semana tem um ritual fixo; os cortes de caixa dos dias 15, 20 e 25 e o fechamento acumulado atravessam todas as semanas.
+            </p>
+          </div>
+        </div>
+      )}
+
+      {/* ---------------- IA & Automação ---------------- */}
+      {tab === "ia" && (
+        <div className="space-y-3">
+          <div className="grid grid-cols-1 gap-3 lg:grid-cols-[minmax(0,440px)_1fr]">
+            <div className="card-surface bg-secondary/30 p-5">
+              <div className="text-center">
+                <div className="text-[14px] font-bold tracking-wide text-foreground">PIRÂMIDE DE MATURIDADE FINANCEIRA</div>
+                <div className="text-[11.5px] text-primary">Roadmap de Implementação de IA no Financeiro</div>
+              </div>
+              <div className="mt-3">
+                <Piramide sel={nivelSel} onSel={setNivelSel} />
+              </div>
+            </div>
+
+            <div className="card-surface flex flex-col p-5">
+              <div className="flex flex-wrap items-center gap-3">
+                <span className="flex h-8 w-8 items-center justify-center rounded-full text-[14px] font-bold text-white" style={{ background: NIVEL_COR[nivel.n - 1] }}>
+                  {nivel.n}
+                </span>
+                <span className="text-[16px] font-semibold text-foreground">Nível {nivel.n} — {nivel.nome}</span>
+                {nivel.n === NIVEL_ATUAL && (
+                  <span className="ml-auto rounded-full bg-success/10 px-2.5 py-1 text-[10px] font-bold tracking-wider text-success">NÍVEL ATUAL DO TIME</span>
+                )}
+              </div>
+              <ul className="mt-4 space-y-2 pl-5">
+                {nivel.bullets.map((b, i) => (
+                  <li key={i} className="list-disc text-[13px] leading-relaxed text-foreground">{b}</li>
+                ))}
+              </ul>
+              <div className="mt-auto flex items-center gap-2 border-t border-border/60 pt-3 text-[12.5px] text-muted-foreground">
+                <Zap className="h-4 w-4 text-primary" />
+                {autosNivel > 0
+                  ? <>{autosNivel} automações deste nível já rodando no Hub</>
+                  : <>Nenhuma automação deste nível em produção ainda</>}
+              </div>
+            </div>
+          </div>
+
+          <div className="card-surface p-4">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <Bot className="h-4 w-4 text-primary" />
+                <span className="text-[13.5px] font-semibold">Automações e skills em produção</span>
+              </div>
+              <span className="text-[11.5px] text-muted-foreground">agrupadas por nível da pirâmide</span>
+            </div>
+            <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
+              {AUTOMACOES.map((a, i) => (
+                <div key={i} className="flex items-center gap-2 rounded-lg border border-border px-2.5 py-2">
+                  <span className="num shrink-0 rounded px-1.5 py-0.5 text-[10px] font-bold text-white" style={{ background: NIVEL_COR[a.nivel - 1] }}>
+                    N{a.nivel}
+                  </span>
+                  <span className="truncate text-[12px] text-foreground" title={a.nome}>{a.nome}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ---------------- Dialog: novo/editar cargo ---------------- */}
+      <Dialog open={dlgOpen} onOpenChange={setDlgOpen}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>{editId ? "Editar cargo / vaga" : "Novo cargo / vaga"}</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-3">
+            <div>
+              <Label className="text-[12px]">Título do cargo *</Label>
+              <Input value={form.titulo} onChange={(e) => setForm({ ...form, titulo: e.target.value })} placeholder="ex.: Analista FP&A" className="mt-1 h-9" />
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <Label className="text-[12px]">Pessoa (se ocupado)</Label>
+                <Input value={form.pessoa} onChange={(e) => setForm({ ...form, pessoa: e.target.value })} placeholder="ex.: Júlia" className="mt-1 h-9" />
+              </div>
+              <div>
+                <Label className="text-[12px]">Senioridade</Label>
+                <Input value={form.senioridade} onChange={(e) => setForm({ ...form, senioridade: e.target.value })} placeholder="Pleno" className="mt-1 h-9" />
+              </div>
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <Label className="text-[12px]">Status</Label>
+                <select
+                  value={form.status}
+                  onChange={(e) => setForm({ ...form, status: e.target.value as Status })}
+                  className="mt-1 h-9 w-full rounded-md border border-border bg-card px-2 text-[13px] outline-none focus:ring-1 focus:ring-primary"
+                >
+                  <option value="planejado">Planejado (futuro)</option>
+                  <option value="vaga_aberta">Vaga aberta</option>
+                  <option value="entrevista">Em entrevista</option>
+                  <option value="contratado">Contratado</option>
+                  <option value="efetivo">Efetivo</option>
+                </select>
+              </div>
+              <div>
+                <Label className="text-[12px]">Prioridade</Label>
+                <select
+                  value={form.prioridade}
+                  onChange={(e) => setForm({ ...form, prioridade: e.target.value })}
+                  className="mt-1 h-9 w-full rounded-md border border-border bg-card px-2 text-[13px] outline-none focus:ring-1 focus:ring-primary"
+                >
+                  <option value="">—</option>
+                  <option value="Alta">Alta</option>
+                  <option value="Média">Média</option>
+                  <option value="Baixa">Baixa</option>
+                </select>
+              </div>
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <Label className="text-[12px]">Custo mensal (R$)</Label>
+                <Input value={form.custo_mensal} onChange={(e) => setForm({ ...form, custo_mensal: e.target.value })} placeholder="8000" className="mt-1 h-9" inputMode="decimal" />
+              </div>
+              <div>
+                <Label className="text-[12px]">Alvo (ano)</Label>
+                <Input value={form.alvo} onChange={(e) => setForm({ ...form, alvo: e.target.value })} placeholder="2026" className="mt-1 h-9" />
+              </div>
+            </div>
+            <div>
+              <Label className="text-[12px]">Reporta a</Label>
+              <select
+                value={form.parent_id}
+                onChange={(e) => setForm({ ...form, parent_id: e.target.value })}
+                className="mt-1 h-9 w-full rounded-md border border-border bg-card px-2 text-[13px] outline-none focus:ring-1 focus:ring-primary"
+              >
+                <option value="">— (topo do organograma)</option>
+                {cargos.filter((c) => c.id !== editId).map((c) => (
+                  <option key={c.id} value={c.id}>{c.titulo}{c.pessoa ? ` (${c.pessoa})` : ""}</option>
+                ))}
+              </select>
+            </div>
+            <div className="flex items-center justify-between pt-1">
+              {editId ? (
+                <button onClick={excluirCargo} className="inline-flex items-center gap-1 text-[12px] text-destructive hover:underline">
+                  <Trash2 className="h-3.5 w-3.5" /> Excluir
+                </button>
+              ) : <span />}
+              <div className="flex gap-2">
+                <button onClick={() => setDlgOpen(false)} className="rounded-md border border-border px-3 py-1.5 text-[12.5px] font-medium text-foreground hover:bg-muted">
+                  Cancelar
+                </button>
+                <button onClick={salvarCargo} disabled={salvando} className="inline-flex items-center gap-1.5 rounded-md bg-primary px-3.5 py-1.5 text-[12.5px] font-semibold text-primary-foreground hover:brightness-110 disabled:opacity-60">
+                  {salvando && <Loader2 className="h-3.5 w-3.5 animate-spin" />} Salvar
+                </button>
+              </div>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+    </div>
+  );
+}

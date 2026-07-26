@@ -22,13 +22,38 @@ const sb = supabase as any;
 
 /* ------------------------------ tipos ------------------------------ */
 type Status = "efetivo" | "vaga_aberta" | "entrevista" | "contratado" | "planejado";
-type AtribGrupo = { titulo: string; itens: string[] };
+// Item de atribuição: texto simples OU objeto com transferência pendente (Request:
+// ao "mover" para um cargo ainda não efetivo, o item continua na origem sinalizado
+// e só some quando o destino vira efetivo).
+type AtribItem = string | { texto: string; transfPara?: string; transfParaNome?: string };
+type AtribGrupo = { titulo: string; itens: AtribItem[] };
 type Cargo = {
   id: string; titulo: string; pessoa: string | null; senioridade: string | null;
   status: Status; acumulo: boolean; prioridade: string | null; custo_mensal: number | null;
   alvo: string | null; parent_id: string | null; atribuicoes: AtribGrupo[]; ordem: number; ano: number;
+  chave: string; desacoplado: boolean;
 };
 const ANOS = [2026, 2027, 2028];
+
+// Texto e flag de transferência de um item.
+const itxt = (it: AtribItem): string => (typeof it === "string" ? it : it?.texto ?? "");
+const itransf = (it: AtribItem): { paraId: string; paraNome?: string } | null =>
+  typeof it === "object" && it && it.transfPara ? { paraId: it.transfPara, paraNome: it.transfParaNome } : null;
+
+// Linha de item (leitura) — mostra a sinalização quando o item está a caminho de outro cargo.
+function ItemLinha({ it }: { it: AtribItem }) {
+  const t = itransf(it);
+  return (
+    <li className={cn("list-disc text-[12px] leading-relaxed", t ? "text-amber-700 dark:text-amber-400" : "text-muted-foreground")}>
+      {itxt(it)}
+      {t && (
+        <span className="ml-1.5 inline-flex items-center gap-0.5 whitespace-nowrap rounded bg-amber-500/15 px-1 text-[9.5px] font-semibold text-amber-600 dark:text-amber-400" title={`Vai para "${t.paraNome ?? "outro cargo"}" quando esse cargo for efetivado`}>
+          <ArrowRightLeft className="h-2.5 w-2.5" /> {t.paraNome ?? "transferência"}
+        </span>
+      )}
+    </li>
+  );
+}
 type Passo = { id: string; texto: string; done: boolean; ordem: number };
 type Ritual = { id: string; titulo: string; tipo: string | null; periodicidade: string | null; descricao: string | null; pauta: string[]; ordem: number };
 
@@ -186,11 +211,18 @@ function CargoCard({ c, selected, onClick }: { c: Cargo; selected: boolean; onCl
         </div>
       </div>
       <div className="mt-2.5 flex items-center justify-between gap-2">
-        <span className={cn("rounded px-1.5 py-0.5 text-[9px] font-bold tracking-wider", meta.badge)}>
-          {meta.label}{c.acumulo ? " · ACÚMULO" : ""}
-        </span>
+        <div className="flex min-w-0 items-center gap-1">
+          <span className={cn("shrink-0 rounded px-1.5 py-0.5 text-[9px] font-bold tracking-wider", meta.badge)}>
+            {meta.label}{c.acumulo ? " · ACÚMULO" : ""}
+          </span>
+          {c.desacoplado && (
+            <span className="shrink-0 rounded bg-amber-500/15 px-1 py-0.5 text-[9px] font-bold text-amber-600 dark:text-amber-400" title="Personalizado neste ano — não herda mais mudanças do ano anterior">
+              EDITADO
+            </span>
+          )}
+        </div>
         {c.custo_mensal != null && c.status !== "efetivo" && (
-          <span className="num text-[11px] font-semibold text-foreground">{fmtBRL0(c.custo_mensal)}/mês</span>
+          <span className="num shrink-0 text-[11px] font-semibold text-foreground">{fmtBRL0(c.custo_mensal)}/mês</span>
         )}
       </div>
     </button>
@@ -395,46 +427,86 @@ export default function TimeFinanceiro() {
     setDlgOpen(true);
   }
 
+  // Ao virar efetivo, os itens que estavam sinalizados "vão para este cargo" saem em
+  // definitivo das origens (no mesmo ano).
+  async function finalizarTransferencias(destId: string, anoC: number) {
+    const afetados = cargos.filter((src) => src.ano === anoC && src.atribuicoes.some((g) => g.itens.some((it) => itransf(it)?.paraId === destId)));
+    for (const src of afetados) {
+      const nova = src.atribuicoes.map((g) => ({ ...g, itens: g.itens.filter((it) => itransf(it)?.paraId !== destId) }));
+      await sb.from("time_cargos").update({ atribuicoes: nova, atualizado_em: new Date().toISOString() }).eq("id", src.id);
+    }
+  }
+
   async function salvarCargo() {
     if (!form.titulo.trim()) { toast.error("Informe o título do cargo."); return; }
     setSalvando(true);
-    const payload = {
+    const meta = {
       titulo: form.titulo.trim(),
       pessoa: form.pessoa.trim() || null,
       senioridade: form.senioridade.trim() || null,
-      status: form.status,
       prioridade: form.prioridade.trim() || null,
       custo_mensal: form.custo_mensal ? parseFloat(form.custo_mensal.replace(/\./g, "").replace(",", ".")) : null,
       alvo: form.alvo.trim() || null,
-      parent_id: form.parent_id || null,
-      atualizado_em: new Date().toISOString(),
     };
-    const { error } = editId
-      ? await sb.from("time_cargos").update(payload).eq("id", editId)
-      : await sb.from("time_cargos").insert({ ...payload, ordem: cargosDoAno.length, ano });
+    const parentChave = form.parent_id ? cargos.find((c) => c.id === form.parent_id)?.chave ?? null : null;
+    const parentNoAno = (a: number) => (parentChave ? cargos.find((c) => c.chave === parentChave && c.ano === a)?.id ?? null : null);
+
+    let error: any = null;
+    if (editId) {
+      const alvo = cargos.find((c) => c.id === editId)!;
+      ({ error } = await sb.from("time_cargos").update({ ...meta, status: form.status, parent_id: form.parent_id || null, atualizado_em: new Date().toISOString() }).eq("id", editId));
+      if (!error) {
+        // desacopla se herda de ano anterior; propaga metadados (não status) para anos seguintes acoplados
+        if (cargos.some((c) => c.chave === alvo.chave && c.ano < alvo.ano)) {
+          await sb.from("time_cargos").update({ desacoplado: true }).eq("id", editId);
+        }
+        for (const s of cargos.filter((c) => c.chave === alvo.chave && c.ano > alvo.ano && !c.desacoplado)) {
+          await sb.from("time_cargos").update({ ...meta, parent_id: parentNoAno(s.ano), atualizado_em: new Date().toISOString() }).eq("id", s.id);
+        }
+        if (form.status === "efetivo" && alvo.status !== "efetivo") await finalizarTransferencias(editId, alvo.ano);
+      }
+    } else {
+      // cria no ano atual + espelha para os anos seguintes (mesma linhagem)
+      const chave = crypto.randomUUID();
+      const rows: any[] = [{ ...meta, status: form.status, parent_id: form.parent_id || null, atribuicoes: [], ordem: cargosDoAno.length, ano, chave, desacoplado: false }];
+      for (const L of ANOS.filter((a) => a > ano)) {
+        rows.push({ ...meta, status: form.status, parent_id: parentNoAno(L), atribuicoes: [], ordem: cargosDoAno.length, ano: L, chave, desacoplado: false });
+      }
+      ({ error } = await sb.from("time_cargos").insert(rows));
+    }
     setSalvando(false);
     if (error) { toast.error("Falha ao salvar: " + error.message); return; }
-    toast.success(editId ? "Cargo atualizado." : "Cargo criado.");
+    toast.success(editId ? "Cargo atualizado." : `Cargo criado${ano < 2028 ? " (propagado para os anos seguintes)" : ""}.`);
     setDlgOpen(false);
     carregar();
   }
 
-  // Copia toda a estrutura (cargos + atribuições) de um ano para outro, remapeando a hierarquia.
+  // Herda a estrutura de um ano para outro preservando a LINHAGEM (só traz chaves que
+  // ainda não existem no destino). Usado quando um ano foi esvaziado.
   async function duplicarAno(origem: number, destino: number) {
     const fonte = cargos.filter((c) => c.ano === origem).sort((a, b) => a.ordem - b.ordem);
-    if (!fonte.length) { toast.error(`Sem estrutura em ${origem} para copiar.`); return; }
-    if (cargos.some((c) => c.ano === destino) && !window.confirm(`${destino} já tem cargos. Copiar de ${origem} mesmo assim (adiciona por cima)?`)) return;
+    if (!fonte.length) { toast.error(`Sem estrutura em ${origem} para herdar.`); return; }
+    const jaNoDestino = new Set(cargos.filter((c) => c.ano === destino).map((c) => c.chave));
+    const criar = fonte.filter((c) => !jaNoDestino.has(c.chave));
+    if (!criar.length) { toast.message(`${destino} já herda tudo de ${origem}.`); return; }
     const idMap = new Map<string, string>();
-    fonte.forEach((c) => idMap.set(c.id, crypto.randomUUID()));
-    const novos = fonte.map((c) => ({
+    criar.forEach((c) => idMap.set(c.id, crypto.randomUUID()));
+    const parentNoDestino = (c: Cargo): string | null => {
+      if (!c.parent_id) return null;
+      const pchave = cargos.find((x) => x.id === c.parent_id)?.chave;
+      const jaExiste = cargos.find((x) => x.ano === destino && x.chave === pchave);
+      if (jaExiste) return jaExiste.id;
+      const pLote = criar.find((x) => x.chave === pchave);
+      return pLote ? idMap.get(pLote.id) ?? null : null;
+    };
+    const novos = criar.map((c) => ({
       id: idMap.get(c.id), titulo: c.titulo, pessoa: c.pessoa, senioridade: c.senioridade, status: c.status,
       acumulo: c.acumulo, prioridade: c.prioridade, custo_mensal: c.custo_mensal, alvo: c.alvo,
-      parent_id: c.parent_id ? idMap.get(c.parent_id) ?? null : null,
-      atribuicoes: c.atribuicoes, ordem: c.ordem, ano: destino,
+      parent_id: parentNoDestino(c), atribuicoes: c.atribuicoes, ordem: c.ordem, ano: destino, chave: c.chave, desacoplado: false,
     }));
     const { error } = await sb.from("time_cargos").insert(novos);
-    if (error) { toast.error("Falha ao duplicar: " + error.message); return; }
-    toast.success(`Estrutura de ${origem} copiada para ${destino}.`);
+    if (error) { toast.error("Falha ao herdar: " + error.message); return; }
+    toast.success(`Estrutura de ${origem} herdada para ${destino}.`);
     carregar();
   }
 
@@ -452,6 +524,7 @@ export default function TimeFinanceiro() {
   async function moverStatus(c: Cargo, status: Status) {
     const { error } = await sb.from("time_cargos").update({ status, atualizado_em: new Date().toISOString() }).eq("id", c.id);
     if (error) { toast.error("Falha ao mover: " + error.message); return; }
+    if (status === "efetivo") await finalizarTransferencias(c.id, c.ano);
     carregar();
   }
 
@@ -467,41 +540,77 @@ export default function TimeFinanceiro() {
   const setBlocoTitulo = (i: number, v: string) => { const d = cloneDraft(); d[i].titulo = v; setAtbDraft(d); };
   const removeBloco = (i: number) => setAtbDraft(cloneDraft().filter((_, k) => k !== i));
   const addItem = (i: number) => { const d = cloneDraft(); d[i].itens.push(""); setAtbDraft(d); };
-  const setItem = (i: number, j: number, v: string) => { const d = cloneDraft(); d[i].itens[j] = v; setAtbDraft(d); };
+  const setItem = (i: number, j: number, v: string) => {
+    const d = cloneDraft(); const old = d[i].itens[j];
+    d[i].itens[j] = typeof old === "object" && old ? { ...old, texto: v } : v; // preserva flag de transferência
+    setAtbDraft(d);
+  };
   const removeItem = (i: number, j: number) => { const d = cloneDraft(); d[i].itens = d[i].itens.filter((_, k) => k !== j); setAtbDraft(d); };
   const togglePull = (key: string) => setPullSel((prev) => { const n = new Set(prev); n.has(key) ? n.delete(key) : n.add(key); return n; });
 
   function aplicarPull(displaySource: AtribGrupo[]) {
     if (!pullSourceId || !pullSel.size) return;
+    const destinoEfetivo = atbCargo?.status === "efetivo";
     const trazer = new Map<string, string[]>();
     displaySource.forEach((g, gi) => g.itens.forEach((it, ii) => {
-      if (pullSel.has(`${gi}:${ii}`)) { const arr = trazer.get(g.titulo) ?? []; arr.push(it); trazer.set(g.titulo, arr); }
+      if (pullSel.has(`${gi}:${ii}`)) { const arr = trazer.get(g.titulo) ?? []; arr.push(itxt(it)); trazer.set(g.titulo, arr); }
     }));
     // funde no cargo alvo, agrupando por título de bloco (evita duplicar)
     const novo = cloneDraft();
     trazer.forEach((items, titulo) => {
       const alvo = novo.find((g) => g.titulo.trim().toLowerCase() === titulo.trim().toLowerCase());
-      if (alvo) items.forEach((it) => { if (!alvo.itens.includes(it)) alvo.itens.push(it); });
-      else novo.push({ titulo, itens: Array.from(new Set(items)) });
+      const existentes = new Set((alvo?.itens ?? []).map(itxt));
+      const add = items.filter((t) => !existentes.has(t));
+      if (alvo) alvo.itens.push(...add);
+      else if (add.length) novo.push({ titulo, itens: Array.from(new Set(add)) });
     });
     setAtbDraft(novo);
-    // mover: remove os itens selecionados da origem (mantém blocos, mesmo vazios)
     if (pullMode === "mover") {
-      const novaOrigem = displaySource.map((g, gi) => ({ ...g, itens: g.itens.filter((_, ii) => !pullSel.has(`${gi}:${ii}`)) }));
+      const novaOrigem = displaySource.map((g, gi) => ({
+        ...g,
+        itens: g.itens
+          // destino efetivo → tira da origem já; destino ainda não efetivo → mantém sinalizado
+          .filter((it, ii) => destinoEfetivo ? !pullSel.has(`${gi}:${ii}`) : true)
+          .map((it, ii) => (!destinoEfetivo && pullSel.has(`${gi}:${ii}`))
+            ? { texto: itxt(it), transfPara: atbCargoId!, transfParaNome: atbCargo?.titulo }
+            : it),
+      }));
       setOrigensAlteradas((prev) => ({ ...prev, [pullSourceId]: novaOrigem }));
     }
     const total = Array.from(trazer.values()).reduce((a, arr) => a + arr.length, 0);
     setPullSel(new Set());
-    toast.success(`${total} responsabilidade(s) ${pullMode === "mover" ? "movida(s)" : "copiada(s)"}.`);
+    toast.success(
+      pullMode === "copiar" ? `${total} responsabilidade(s) copiada(s).`
+      : destinoEfetivo ? `${total} responsabilidade(s) movida(s).`
+      : `${total} responsabilidade(s) marcada(s) para transferência (saem da origem quando o cargo virar efetivo).`,
+    );
   }
+
+  // Limpa/normaliza itens preservando a flag de transferência.
+  const limparAtb = (arr: AtribGrupo[]) => arr.map((g) => ({
+    titulo: g.titulo.trim(),
+    itens: g.itens
+      .map((it) => (typeof it === "object" && it ? { ...it, texto: it.texto.trim() } : String(it).trim()))
+      .filter((it) => itxt(it)),
+  }));
 
   async function salvarAtribuicoes() {
     if (!atbCargoId) return;
     setSalvandoAtb(true);
-    const limpa = (arr: AtribGrupo[]) => arr.map((g) => ({ titulo: g.titulo.trim(), itens: g.itens.map((s) => s.trim()).filter(Boolean) }));
-    const updates = [sb.from("time_cargos").update({ atribuicoes: limpa(atbDraft), atualizado_em: new Date().toISOString() }).eq("id", atbCargoId)];
+    const alvo = cargos.find((c) => c.id === atbCargoId);
+    const novaAtb = limparAtb(atbDraft);
+    const updates = [sb.from("time_cargos").update({ atribuicoes: novaAtb, atualizado_em: new Date().toISOString() }).eq("id", atbCargoId)];
+    // desacopla o cargo editado se ele herda de um ano anterior; propaga para os anos seguintes ainda acoplados
+    if (alvo) {
+      if (cargos.some((c) => c.chave === alvo.chave && c.ano < alvo.ano)) {
+        updates.push(sb.from("time_cargos").update({ desacoplado: true }).eq("id", alvo.id));
+      }
+      cargos.filter((c) => c.chave === alvo.chave && c.ano > alvo.ano && !c.desacoplado).forEach((s) => {
+        updates.push(sb.from("time_cargos").update({ atribuicoes: novaAtb, atualizado_em: new Date().toISOString() }).eq("id", s.id));
+      });
+    }
     Object.entries(origensAlteradas).forEach(([sid, atb]) => {
-      updates.push(sb.from("time_cargos").update({ atribuicoes: limpa(atb), atualizado_em: new Date().toISOString() }).eq("id", sid));
+      updates.push(sb.from("time_cargos").update({ atribuicoes: limparAtb(atb), atualizado_em: new Date().toISOString() }).eq("id", sid));
     });
     const results = await Promise.all(updates);
     setSalvandoAtb(false);
@@ -710,7 +819,7 @@ export default function TimeFinanceiro() {
                 <div className="flex flex-wrap items-center justify-center gap-2">
                   {temAnoAnterior && (
                     <button onClick={() => duplicarAno(anoAnterior, ano)} className="inline-flex items-center gap-1.5 rounded-md bg-primary px-3.5 py-2 text-[12.5px] font-semibold text-primary-foreground transition hover:brightness-110">
-                      <Copy className="h-4 w-4" /> Copiar estrutura de {anoAnterior}
+                      <Copy className="h-4 w-4" /> Herdar estrutura de {anoAnterior}
                     </button>
                   )}
                   <button onClick={() => abrirNovo("efetivo")} className="inline-flex items-center gap-1.5 rounded-md border border-border px-3.5 py-2 text-[12.5px] font-medium text-foreground transition hover:bg-muted">
@@ -749,9 +858,7 @@ export default function TimeFinanceiro() {
                       </div>
                       {g.itens.length > 0 && (
                         <ul className="mt-1 space-y-0.5 pl-6">
-                          {g.itens.map((it, j) => (
-                            <li key={j} className="list-disc text-[12px] leading-relaxed text-muted-foreground">{it}</li>
-                          ))}
+                          {g.itens.map((it, j) => <ItemLinha key={j} it={it} />)}
                         </ul>
                       )}
                     </div>
@@ -1258,7 +1365,7 @@ export default function TimeFinanceiro() {
                           return (
                             <label key={ii} className="flex cursor-pointer items-start gap-2 py-0.5 pl-2 text-[12px] text-muted-foreground hover:text-foreground">
                               <input type="checkbox" checked={pullSel.has(key)} onChange={() => togglePull(key)} className="mt-0.5 h-3.5 w-3.5 shrink-0 accent-primary" />
-                              {it}
+                              {itxt(it)}
                             </label>
                           );
                         }) : <div className="pl-2 text-[11px] text-muted-foreground/60">(sem itens)</div>}
@@ -1294,20 +1401,28 @@ export default function TimeFinanceiro() {
                     </button>
                   </div>
                   <div className="mt-1.5 space-y-1 pl-6">
-                    {g.itens.map((it, j) => (
-                      <div key={j} className="flex items-center gap-1.5">
-                        <span className="h-1 w-1 shrink-0 rounded-full bg-muted-foreground/50" />
-                        <input
-                          value={it}
-                          onChange={(e) => setItem(i, j, e.target.value)}
-                          placeholder="Responsabilidade"
-                          className="h-7 flex-1 rounded-md border border-transparent bg-transparent px-1.5 text-[12px] outline-none hover:border-border focus:border-primary focus:bg-card"
-                        />
-                        <button onClick={() => removeItem(i, j)} className="rounded p-0.5 text-muted-foreground/60 hover:text-destructive" title="Remover item">
-                          <X className="h-3.5 w-3.5" />
-                        </button>
-                      </div>
-                    ))}
+                    {g.itens.map((it, j) => {
+                      const tr = itransf(it);
+                      return (
+                        <div key={j} className="flex items-center gap-1.5">
+                          <span className="h-1 w-1 shrink-0 rounded-full bg-muted-foreground/50" />
+                          <input
+                            value={itxt(it)}
+                            onChange={(e) => setItem(i, j, e.target.value)}
+                            placeholder="Responsabilidade"
+                            className="h-7 flex-1 rounded-md border border-transparent bg-transparent px-1.5 text-[12px] outline-none hover:border-border focus:border-primary focus:bg-card"
+                          />
+                          {tr && (
+                            <span className="inline-flex items-center gap-0.5 whitespace-nowrap rounded bg-amber-500/15 px-1 text-[9.5px] font-semibold text-amber-600 dark:text-amber-400" title={`A caminho de ${tr.paraNome ?? "outro cargo"}`}>
+                              <ArrowRightLeft className="h-2.5 w-2.5" /> {tr.paraNome ?? "transf."}
+                            </span>
+                          )}
+                          <button onClick={() => removeItem(i, j)} className="rounded p-0.5 text-muted-foreground/60 hover:text-destructive" title="Remover item">
+                            <X className="h-3.5 w-3.5" />
+                          </button>
+                        </div>
+                      );
+                    })}
                     <button onClick={() => addItem(i)} className="inline-flex items-center gap-1 pl-1 text-[11.5px] text-primary hover:underline">
                       <Plus className="h-3 w-3" /> adicionar item
                     </button>

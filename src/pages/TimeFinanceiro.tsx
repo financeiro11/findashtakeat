@@ -91,24 +91,6 @@ const NIVEIS = [
 // Cores da pirâmide (base → topo), espelhando o design aprovado.
 const NIVEL_COR = ["hsl(0 62% 20%)", "hsl(0 65% 31%)", "hsl(0 84% 51%)", "hsl(0 70% 68%)", "hsl(0 0% 12%)"];
 
-const AUTOMACOES: { nivel: number; nome: string }[] = [
-  { nivel: 1, nome: "Posição de caixa mensal" },
-  { nivel: 1, nome: "Relatório de caixa — cortes 15/20/25" },
-  { nivel: 1, nome: "Consolidação de comissões (Omie)" },
-  { nivel: 1, nome: "Rescisão PJ automática" },
-  { nivel: 1, nome: "Revisor de categorias do Omie" },
-  { nivel: 1, nome: "Comparativo de faturas de cartão" },
-  { nivel: 2, nome: "Auditoria cartão × notas fiscais" },
-  { nivel: 2, nome: "Playbook de fluxos n8n" },
-  { nivel: 3, nome: "Análise DRE/DFC vs. orçado" },
-  { nivel: 3, nome: "Relatório gerencial mensal" },
-  { nivel: 3, nome: "Comentários do tracker (MoM)" },
-  { nivel: 3, nome: "Churn real (Asaas)" },
-  { nivel: 3, nome: "Custos & CAC mensal" },
-  { nivel: 3, nome: "Análise de tarefas da semana" },
-  { nivel: 4, nome: "Projeção de caixa (45 dias)" },
-];
-
 // ---- Padrão de Mercado (referência: quem responde por quê no financeiro) ----
 // Pirâmide de obrigações macro (base → topo) + estrutura padrão em 3 pilares.
 const MACRO_COR = ["hsl(211 56% 24%)", "hsl(206 74% 42%)", "hsl(202 74% 66%)"]; // CFO, Controller, dia a dia
@@ -334,6 +316,7 @@ export default function TimeFinanceiro() {
   const [cargos, setCargos] = useState<Cargo[]>([]);
   const [passos, setPassos] = useState<Passo[]>([]);
   const [rituais, setRituais] = useState<Ritual[]>([]);
+  const [autoNiveis, setAutoNiveis] = useState<{ nivel: number | null; status: string }[]>([]);
   const [loading, setLoading] = useState(true);
   const [tab, setTab] = useState<TabKey>("org");
   const [ano, setAno] = useState<number>(2026);
@@ -380,15 +363,17 @@ export default function TimeFinanceiro() {
   const [salvandoRitu, setSalvandoRitu] = useState(false);
 
   async function carregar() {
-    const [{ data: cs, error: e1 }, { data: ps, error: e2 }, { data: rs, error: e3 }] = await Promise.all([
+    const [{ data: cs, error: e1 }, { data: ps, error: e2 }, { data: rs, error: e3 }, { data: au }] = await Promise.all([
       sb.from("time_cargos").select("*").order("ordem", { ascending: true }),
       sb.from("time_passos").select("*").order("ordem", { ascending: true }),
       sb.from("time_rituais").select("*").order("ordem", { ascending: true }),
+      sb.from("automacoes_catalogo").select("nivel,status"),
     ]);
     if (e1 || e2 || e3) toast.error("Falha ao carregar o time: " + (e1?.message ?? e2?.message ?? e3?.message));
     setCargos((cs ?? []) as Cargo[]);
     setPassos((ps ?? []) as Passo[]);
     setRituais((rs ?? []) as Ritual[]);
+    setAutoNiveis((au ?? []) as { nivel: number | null; status: string }[]);
     setLoading(false);
   }
   useEffect(() => { carregar(); }, []);
@@ -693,7 +678,7 @@ export default function TimeFinanceiro() {
   }
 
   const nivel = NIVEIS.find((n) => n.n === nivelSel)!;
-  const autosNivel = AUTOMACOES.filter((a) => a.nivel === nivelSel).length;
+  const autosNivel = autoNiveis.filter((a) => a.nivel === nivelSel && a.status === "Rodando").length;
 
   const atbCargo = cargos.find((c) => c.id === atbCargoId) ?? null;
   const pullSource = cargos.find((c) => c.id === pullSourceId) ?? null;

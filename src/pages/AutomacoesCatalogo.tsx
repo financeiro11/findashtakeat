@@ -29,8 +29,31 @@ type Automacao = {
   horas_mes: number | null;
   execucoes: number | null;
   ultima_falha: string | null;
+  nivel: number | null;
   created_at?: string;
 };
+
+// Nível de maturidade (pirâmide) — mesmo esquema de cor da aba IA & Automação.
+const NIVEL_COR = ["hsl(0 62% 20%)", "hsl(0 65% 31%)", "hsl(0 84% 51%)", "hsl(0 70% 68%)", "hsl(0 0% 12%)"];
+const NIVEIS_AUTO = [
+  { n: 1, nome: "Fundação Operacional" },
+  { n: 2, nome: "Controles & Auditoria" },
+  { n: 3, nome: "Relatórios, Insights & FP&A" },
+  { n: 4, nome: "Projeções & Cenários" },
+  { n: 5, nome: "Financeiro Autônomo" },
+];
+function NivelBadge({ n, className }: { n: number | null; className?: string }) {
+  if (!n) return null;
+  return (
+    <span
+      className={cn("inline-flex shrink-0 items-center justify-center rounded px-1.5 py-0.5 text-[10px] font-bold text-white", className)}
+      style={{ background: NIVEL_COR[n - 1] ?? "hsl(0 0% 40%)" }}
+      title={NIVEIS_AUTO.find((x) => x.n === n)?.nome}
+    >
+      N{n}
+    </span>
+  );
+}
 
 const STATUS_COLS = [
   { key: "Ideias", icon: "💡", accent: "bg-amber-500" },
@@ -124,6 +147,7 @@ export default function AutomacoesCatalogo({ embedded = false }: { embedded?: bo
   const [filtImp, setFiltImp] = useState("__all");
   const [filtResp, setFiltResp] = useState("__all");
   const [filtTool, setFiltTool] = useState("__all");
+  const [filtNivel, setFiltNivel] = useState("__all");
   const [editing, setEditing] = useState<Automacao | null>(null);
   const [creatingStatus, setCreatingStatus] = useState<string | null>(null);
   const [customCats, setCustomCats] = useState<string[]>(() => loadCustomCategorias());
@@ -178,18 +202,19 @@ export default function AutomacoesCatalogo({ embedded = false }: { embedded?: bo
       if (filtImp !== "__all" && (r.impacto || "") !== filtImp) return false;
       if (filtResp !== "__all" && (r.responsavel || "") !== filtResp) return false;
       if (filtTool !== "__all" && !parseTools(r.ferramentas).some((t) => t.name === filtTool)) return false;
+      if (filtNivel !== "__all" && String(r.nivel ?? "") !== filtNivel) return false;
       if (!q) return true;
       return [r.automacao, r.dor, r.solucao, r.ferramentas, r.categoria]
         .some((f) => (f || "").toLowerCase().includes(q));
     });
-  }, [rows, search, filtCat, filtImp, filtResp, filtTool]);
+  }, [rows, search, filtCat, filtImp, filtResp, filtTool, filtNivel]);
 
   // Paginação (apenas na visão em lista)
   const totalPages = Math.max(1, Math.ceil(filtered.length / perPage));
   const pageStart = (page - 1) * perPage;
   const paginated = filtered.slice(pageStart, pageStart + perPage);
   // Volta para a 1ª página quando os filtros ou o tamanho da página mudam
-  useEffect(() => { setPage(1); }, [search, filtCat, filtImp, filtResp, filtTool, perPage]);
+  useEffect(() => { setPage(1); }, [search, filtCat, filtImp, filtResp, filtTool, filtNivel, perPage]);
   // Mantém a página dentro do intervalo válido quando a lista encolhe
   useEffect(() => { if (page > totalPages) setPage(totalPages); }, [page, totalPages]);
 
@@ -231,7 +256,7 @@ export default function AutomacoesCatalogo({ embedded = false }: { embedded?: bo
     setEditing({
       id: "", ordem: 0, automacao: "", responsavel: "", status,
       dor: "", solucao: "", observacao: "", ferramentas: "",
-      impacto: "Médio", categoria: CATEGORIAS[0], horas_mes: null, execucoes: 0, ultima_falha: null,
+      impacto: "Médio", categoria: CATEGORIAS[0], horas_mes: null, execucoes: 0, ultima_falha: null, nivel: null,
     });
     setCreatingStatus(status);
   };
@@ -247,7 +272,7 @@ export default function AutomacoesCatalogo({ embedded = false }: { embedded?: bo
         status: editing.status, dor: editing.dor || null, solucao: editing.solucao || null,
         observacao: editing.observacao || null, ferramentas: editing.ferramentas || null,
         impacto: editing.impacto || "Médio", categoria: editing.categoria || null,
-        horas_mes: editing.horas_mes, execucoes: editing.execucoes ?? 0, ultima_falha: editing.ultima_falha,
+        horas_mes: editing.horas_mes, execucoes: editing.execucoes ?? 0, ultima_falha: editing.ultima_falha, nivel: editing.nivel ?? null,
       });
       if (error) { toast.error(error.message); return; }
     } else {
@@ -314,6 +339,7 @@ export default function AutomacoesCatalogo({ embedded = false }: { embedded?: bo
         impacto: pickImpacto(get(r, "impacto")),
         categoria: String(get(r, "categoria") || "") || null,
         horas_mes: Number(get(r, "horas_mes", "horas/mês", "horas")) || null,
+        nivel: Number(String(get(r, "nivel", "nível", "n")).replace(/\D/g, "")) || null,
       }));
       const { error } = await supabase.from("automacoes_catalogo").insert(payload);
       if (error) toast.error(error.message);
@@ -323,8 +349,8 @@ export default function AutomacoesCatalogo({ embedded = false }: { embedded?: bo
     }
   };
 
-  const clearFilters = () => { setFiltCat("__all"); setFiltImp("__all"); setFiltResp("__all"); setFiltTool("__all"); };
-  const hasFilters = filtCat !== "__all" || filtImp !== "__all" || filtResp !== "__all" || filtTool !== "__all";
+  const clearFilters = () => { setFiltCat("__all"); setFiltImp("__all"); setFiltResp("__all"); setFiltTool("__all"); setFiltNivel("__all"); };
+  const hasFilters = filtCat !== "__all" || filtImp !== "__all" || filtResp !== "__all" || filtTool !== "__all" || filtNivel !== "__all";
 
   return (
     <div className={embedded ? "space-y-5" : "space-y-5 p-5"}>
@@ -384,6 +410,7 @@ export default function AutomacoesCatalogo({ embedded = false }: { embedded?: bo
         <MiniSelect label="Impacto" value={filtImp} onChange={setFiltImp} options={[["__all", "Todos"], ...IMPACTO_OPTS.map(c => [c, c] as [string, string])]} />
         <MiniSelect label="Responsável" value={filtResp} onChange={setFiltResp} options={[["__all", "Todos"], ...responsaveis.map(c => [c, c] as [string, string])]} />
         <MiniSelect label="Tool" value={filtTool} onChange={setFiltTool} options={[["__all", "Todas"], ...tools.map(c => [c, c] as [string, string])]} />
+        <MiniSelect label="Nível" value={filtNivel} onChange={setFiltNivel} options={[["__all", "Todos"], ...NIVEIS_AUTO.map((x) => [String(x.n), `N${x.n} · ${x.nome}`] as [string, string])]} />
         {hasFilters && (
           <Button variant="ghost" size="sm" onClick={clearFilters}><X className="mr-1 h-3 w-3" /> Limpar</Button>
         )}
@@ -440,7 +467,12 @@ export default function AutomacoesCatalogo({ embedded = false }: { embedded?: bo
                 const statusCol = STATUS_COLS.find((s) => s.key === r.status);
                 return (
                   <TableRow key={r.id} className="cursor-pointer" onClick={() => openEdit(r)}>
-                    <TableCell className="font-medium">{r.automacao || "(sem nome)"}</TableCell>
+                    <TableCell className="font-medium">
+                      <span className="inline-flex items-center gap-1.5">
+                        <NivelBadge n={r.nivel} />
+                        {r.automacao || "(sem nome)"}
+                      </span>
+                    </TableCell>
                     <TableCell>
                       {r.categoria ? (
                         <span className={cn("inline-flex items-center gap-1.5 text-xs font-medium", cat.chip)}>
@@ -582,13 +614,16 @@ export default function AutomacoesCatalogo({ embedded = false }: { embedded?: bo
                         draggingId === r.id && "opacity-40 ring-2 ring-primary"
                       )}>
                       <div className="flex items-center justify-between gap-2">
-                        <div className={cn("flex items-center gap-1 text-[10.5px] font-semibold tracking-wide", cat.chip)}>
-                          <span className={cn("h-1.5 w-1.5 rounded-full", cat.dot)} />
-                          {r.categoria || "Sem categoria"}
+                        <div className={cn("flex min-w-0 items-center gap-1 text-[10.5px] font-semibold tracking-wide", cat.chip)}>
+                          <span className={cn("h-1.5 w-1.5 shrink-0 rounded-full", cat.dot)} />
+                          <span className="truncate">{r.categoria || "Sem categoria"}</span>
                         </div>
-                        <Badge className={cn("text-[10px] px-1.5 h-4", IMPACTO_CLS[r.impacto || "Médio"])}>
-                          {(r.impacto || "Médio").toUpperCase()}
-                        </Badge>
+                        <div className="flex shrink-0 items-center gap-1">
+                          <NivelBadge n={r.nivel} className="h-4 px-1 text-[9px]" />
+                          <Badge className={cn("text-[10px] px-1.5 h-4", IMPACTO_CLS[r.impacto || "Médio"])}>
+                            {(r.impacto || "Médio").toUpperCase()}
+                          </Badge>
+                        </div>
                       </div>
                       <div className="mt-1.5 text-[13px] font-semibold leading-snug text-foreground">{r.automacao || "(sem nome)"}</div>
                       {(r.dor || r.solucao) && (
@@ -701,6 +736,23 @@ export default function AutomacoesCatalogo({ embedded = false }: { embedded?: bo
                 <Select value={editing.impacto || "Médio"} onValueChange={(v) => setEditing({ ...editing, impacto: v })}>
                   <SelectTrigger><SelectValue /></SelectTrigger>
                   <SelectContent>{IMPACTO_OPTS.map(c => <SelectItem key={c} value={c}>{c}</SelectItem>)}</SelectContent>
+                </Select>
+              </div>
+              <div className="col-span-2">
+                <Label>Nível (pirâmide de maturidade)</Label>
+                <Select value={editing.nivel != null ? String(editing.nivel) : "0"} onValueChange={(v) => setEditing({ ...editing, nivel: v === "0" ? null : Number(v) })}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="0">— sem nível</SelectItem>
+                    {NIVEIS_AUTO.map((x) => (
+                      <SelectItem key={x.n} value={String(x.n)}>
+                        <span className="inline-flex items-center gap-2">
+                          <span className="inline-flex h-4 w-5 items-center justify-center rounded text-[9px] font-bold text-white" style={{ background: NIVEL_COR[x.n - 1] }}>N{x.n}</span>
+                          {x.nome}
+                        </span>
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
                 </Select>
               </div>
               <div>

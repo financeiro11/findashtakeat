@@ -5,6 +5,7 @@ import { cn } from "@/lib/utils";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import AutomacoesCatalogo from "@/pages/AutomacoesCatalogo";
 import {
   Loader2, Plus, Pencil, Trash2, X, Users, UserPlus, Network, ListChecks,
   CalendarDays, Bot, Target, Zap, Clock, ArrowRight, Layers, ChevronDown, ShieldCheck,
@@ -1114,24 +1115,9 @@ export default function TimeFinanceiro() {
             </div>
           </div>
 
+          {/* Roadmap & Catálogo de Automações (antes era o menu "Catálogo") */}
           <div className="card-surface p-4">
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <div className="flex items-center gap-2">
-                <Bot className="h-4 w-4 text-primary" />
-                <span className="text-[13.5px] font-semibold">Automações e skills em produção</span>
-              </div>
-              <span className="text-[11.5px] text-muted-foreground">agrupadas por nível da pirâmide</span>
-            </div>
-            <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
-              {AUTOMACOES.map((a, i) => (
-                <div key={i} className="flex items-center gap-2 rounded-lg border border-border px-2.5 py-2">
-                  <span className="num shrink-0 rounded px-1.5 py-0.5 text-[10px] font-bold text-white" style={{ background: NIVEL_COR[a.nivel - 1] }}>
-                    N{a.nivel}
-                  </span>
-                  <span className="truncate text-[12px] text-foreground" title={a.nome}>{a.nome}</span>
-                </div>
-              ))}
-            </div>
+            <AutomacoesCatalogo embedded />
           </div>
         </div>
       )}

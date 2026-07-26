@@ -30,7 +30,6 @@ const timeFinanceiro: NavItem[] = [
   { title: "Tarefas", url: "/tarefas", icon: CheckSquare },
   { title: "Projetos", url: "/automacoes/projetos", icon: FolderKanban },
   { title: "Proporcionais", url: "/automacoes/proporcionais", icon: Percent },
-  { title: "Catálogo", url: "/automacoes/catalogo", icon: BookOpen },
 ];
 
 const operacional: NavItem[] = [

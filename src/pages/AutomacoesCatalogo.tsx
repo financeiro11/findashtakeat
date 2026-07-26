@@ -117,7 +117,7 @@ function initials(name: string | null) {
   return ((parts[0]?.[0] || "") + (parts[1]?.[0] || "")).toUpperCase() || name[0].toUpperCase();
 }
 
-export default function AutomacoesCatalogo() {
+export default function AutomacoesCatalogo({ embedded = false }: { embedded?: boolean } = {}) {
   const [rows, setRows] = useState<Automacao[]>([]);
   const [search, setSearch] = useState("");
   const [filtCat, setFiltCat] = useState("__all");
@@ -327,13 +327,17 @@ export default function AutomacoesCatalogo() {
   const hasFilters = filtCat !== "__all" || filtImp !== "__all" || filtResp !== "__all" || filtTool !== "__all";
 
   return (
-    <div className="space-y-5 p-5">
+    <div className={embedded ? "space-y-5" : "space-y-5 p-5"}>
       {/* Cabeçalho */}
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <h2 className="text-2xl font-bold tracking-tight">Catálogo de Automações</h2>
-          <p className="text-sm text-muted-foreground max-w-2xl">
-            Pipeline das automações do time financeiro — da ideia ao roteiro de produção. Arraste cartões entre colunas para mover de etapa.
+          <h2 className={embedded ? "text-[15px] font-semibold" : "text-2xl font-bold tracking-tight"}>
+            {embedded ? "Roadmap & Catálogo de Automações" : "Catálogo de Automações"}
+          </h2>
+          <p className={cn("text-muted-foreground", embedded ? "text-[12px]" : "text-sm max-w-2xl")}>
+            {embedded
+              ? "Da ideia à produção — a Júlia desenvolve o roadmap arrastando os cartões entre as etapas."
+              : "Pipeline das automações do time financeiro — da ideia ao roteiro de produção. Arraste cartões entre colunas para mover de etapa."}
           </p>
         </div>
         <div className="flex gap-2">

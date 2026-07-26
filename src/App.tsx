@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { BrowserRouter, Route, Routes } from "react-router-dom";
+import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
 import { Toaster as Sonner } from "@/components/ui/sonner";
 import { Toaster } from "@/components/ui/toaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
@@ -12,7 +12,6 @@ import Caixa from "./pages/Caixa";
 import Briefing from "./pages/Briefing";
 import Login from "./pages/Login";
 import Usuarios from "./pages/Usuarios";
-import AutomacoesCatalogo from "./pages/AutomacoesCatalogo";
 import AutomacoesProporcionais from "./pages/AutomacoesProporcionais";
 import RecargasCelulares from "./pages/RecargasCelulares";
 import RecargasViagens from "./pages/RecargasViagens";
@@ -83,7 +82,8 @@ const App = () => (
               <Route path="/automacoes/proporcionais" element={<AutomacoesProporcionais />} />
               <Route path="/recargas/celulares" element={<RecargasCelulares />} />
               <Route path="/recargas/viagens" element={<RecargasViagens />} />
-              <Route path="/automacoes/catalogo" element={<AutomacoesCatalogo />} />
+              {/* Catálogo virou a aba "IA & Automação" da Visão do Time — redireciona links antigos. */}
+              <Route path="/automacoes/catalogo" element={<Navigate to="/time/visao" replace />} />
               <Route path="/automacoes/projetos" element={<Projetos />} />
               <Route path="/editais" element={<EditaisLayout />}>
                 <Route index element={<EditaisDashboard />} />

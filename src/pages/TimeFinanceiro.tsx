@@ -898,9 +898,7 @@ export default function TimeFinanceiro() {
                     </div>
                     {g.itens.length > 0 && (
                       <ul className="mt-1 space-y-0.5 pl-6">
-                        {g.itens.map((it, j) => (
-                          <li key={j} className="list-disc text-[12px] leading-relaxed text-muted-foreground">{it}</li>
-                        ))}
+                        {g.itens.map((it, j) => <ItemLinha key={j} it={it} />)}
                       </ul>
                     )}
                   </div>

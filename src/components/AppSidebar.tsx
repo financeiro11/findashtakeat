@@ -20,8 +20,9 @@ const inicio: NavItem[] = [
   { title: "Dashboard", url: "/", icon: Home },
   { title: "Briefing", url: "/briefing", icon: Sparkles },
   { title: "Caixa", url: "/caixa", icon: Landmark, badge: "OMIE" },
+  { title: "Asaas", url: "/asaas", icon: CreditCard },
   { title: "Assinaturas", url: "/assinaturas", icon: Repeat },
-  { title: "Anotações", url: "/playbook", icon: BookOpenCheck },
+  { title: "Parceiros", url: "/operacional/parceiros", icon: HandshakeIcon },
 ];
 
 // Gestão do time financeiro — estrutura, tarefas e automações internas.
@@ -29,15 +30,14 @@ const timeFinanceiro: NavItem[] = [
   { title: "Visão do Time", url: "/time/visao", icon: Users },
   { title: "Tarefas", url: "/tarefas", icon: CheckSquare },
   { title: "Projetos", url: "/automacoes/projetos", icon: FolderKanban },
-  { title: "Proporcionais", url: "/automacoes/proporcionais", icon: Percent },
+  { title: "Anotações", url: "/playbook", icon: BookOpenCheck },
 ];
 
 const operacional: NavItem[] = [
-  { title: "Asaas", url: "/asaas", icon: CreditCard },
-  { title: "Parceiros", url: "/operacional/parceiros", icon: HandshakeIcon },
   { title: "Variável", url: "/operacional/variavel", icon: Percent },
   { title: "Reembolsos", url: "/operacional/reembolsos", icon: Receipt },
   { title: "Estornos", url: "/operacional/estornos", icon: Undo2 },
+  { title: "Proporcionais", url: "/automacoes/proporcionais", icon: Percent },
 ];
 
 const recargas: NavItem[] = [
@@ -245,7 +245,7 @@ export function AppSidebar() {
             />
           )}
           {access.parceriasOnly ? (
-            <Group label="Operacional" items={operacional.filter(i => i.url === "/operacional/parceiros")} pathname={pathname} />
+            <Group label="Operacional" items={inicio.filter(i => i.url === "/operacional/parceiros")} pathname={pathname} />
           ) : mod === "facilities" ? (
             <Group label="Facilities" items={facilities} pathname={pathname} favoritos={favoritos} onToggleFavorito={toggleFavorito} />
           ) : (

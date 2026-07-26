@@ -26,8 +26,9 @@ type AtribGrupo = { titulo: string; itens: string[] };
 type Cargo = {
   id: string; titulo: string; pessoa: string | null; senioridade: string | null;
   status: Status; acumulo: boolean; prioridade: string | null; custo_mensal: number | null;
-  alvo: string | null; parent_id: string | null; atribuicoes: AtribGrupo[]; ordem: number;
+  alvo: string | null; parent_id: string | null; atribuicoes: AtribGrupo[]; ordem: number; ano: number;
 };
+const ANOS = [2026, 2027, 2028];
 type Passo = { id: string; texto: string; done: boolean; ordem: number };
 type Ritual = { id: string; titulo: string; tipo: string | null; periodicidade: string | null; descricao: string | null; pauta: string[]; ordem: number };
 
@@ -302,6 +303,7 @@ export default function TimeFinanceiro() {
   const [rituais, setRituais] = useState<Ritual[]>([]);
   const [loading, setLoading] = useState(true);
   const [tab, setTab] = useState<TabKey>("org");
+  const [ano, setAno] = useState<number>(2026);
   const [selCargoId, setSelCargoId] = useState<string | null>(null);
   const [nivelSel, setNivelSel] = useState(NIVEL_ATUAL);
   const [macroSel, setMacroSel] = useState(0);
@@ -358,19 +360,24 @@ export default function TimeFinanceiro() {
   }
   useEffect(() => { carregar(); }, []);
 
+  // Cargos do ano selecionado (o organograma/KPIs/funções/vagas são por ano).
+  const cargosDoAno = useMemo(() => cargos.filter((c) => c.ano === ano), [cargos, ano]);
+  const anoAnterior = ano - 1;
+  const temAnoAnterior = cargos.some((c) => c.ano === anoAnterior);
+
   /* ------------------------------ KPIs ------------------------------ */
   const kpi = useMemo(() => {
-    const headcount = new Set(cargos.filter((c) => c.status === "efetivo" && c.pessoa).map((c) => c.pessoa!.trim().toLowerCase())).size;
-    const vagas = cargos.filter((c) => c.status === "vaga_aberta" || c.status === "entrevista").length;
-    const planejados = cargos.filter((c) => c.status === "planejado").length;
-    const custo = cargos
+    const headcount = new Set(cargosDoAno.filter((c) => c.status === "efetivo" && c.pessoa).map((c) => c.pessoa!.trim().toLowerCase())).size;
+    const vagas = cargosDoAno.filter((c) => c.status === "vaga_aberta" || c.status === "entrevista").length;
+    const planejados = cargosDoAno.filter((c) => c.status === "planejado").length;
+    const custo = cargosDoAno
       .filter((c) => ["vaga_aberta", "entrevista", "planejado"].includes(c.status))
       .reduce((a, c) => a + (c.custo_mensal ?? 0), 0);
     return { headcount, vagas, planejados, custo };
-  }, [cargos]);
+  }, [cargosDoAno]);
 
-  const raiz = cargos.find((c) => !c.parent_id);
-  const selCargo = cargos.find((c) => c.id === selCargoId) ?? null;
+  const raiz = cargosDoAno.find((c) => !c.parent_id);
+  const selCargo = cargosDoAno.find((c) => c.id === selCargoId) ?? null;
 
   /* ------------------------------ ações ------------------------------ */
   function abrirNovo(status: Status = "vaga_aberta") {
@@ -404,11 +411,30 @@ export default function TimeFinanceiro() {
     };
     const { error } = editId
       ? await sb.from("time_cargos").update(payload).eq("id", editId)
-      : await sb.from("time_cargos").insert({ ...payload, ordem: cargos.length });
+      : await sb.from("time_cargos").insert({ ...payload, ordem: cargosDoAno.length, ano });
     setSalvando(false);
     if (error) { toast.error("Falha ao salvar: " + error.message); return; }
     toast.success(editId ? "Cargo atualizado." : "Cargo criado.");
     setDlgOpen(false);
+    carregar();
+  }
+
+  // Copia toda a estrutura (cargos + atribuições) de um ano para outro, remapeando a hierarquia.
+  async function duplicarAno(origem: number, destino: number) {
+    const fonte = cargos.filter((c) => c.ano === origem).sort((a, b) => a.ordem - b.ordem);
+    if (!fonte.length) { toast.error(`Sem estrutura em ${origem} para copiar.`); return; }
+    if (cargos.some((c) => c.ano === destino) && !window.confirm(`${destino} já tem cargos. Copiar de ${origem} mesmo assim (adiciona por cima)?`)) return;
+    const idMap = new Map<string, string>();
+    fonte.forEach((c) => idMap.set(c.id, crypto.randomUUID()));
+    const novos = fonte.map((c) => ({
+      id: idMap.get(c.id), titulo: c.titulo, pessoa: c.pessoa, senioridade: c.senioridade, status: c.status,
+      acumulo: c.acumulo, prioridade: c.prioridade, custo_mensal: c.custo_mensal, alvo: c.alvo,
+      parent_id: c.parent_id ? idMap.get(c.parent_id) ?? null : null,
+      atribuicoes: c.atribuicoes, ordem: c.ordem, ano: destino,
+    }));
+    const { error } = await sb.from("time_cargos").insert(novos);
+    if (error) { toast.error("Falha ao duplicar: " + error.message); return; }
+    toast.success(`Estrutura de ${origem} copiada para ${destino}.`);
     carregar();
   }
 
@@ -586,34 +612,50 @@ export default function TimeFinanceiro() {
             Estrutura atual e planejamento do time — o financeiro de hoje e o de daqui a 5 anos.
           </p>
         </div>
-        <button
-          onClick={() => abrirNovo("vaga_aberta")}
-          className="inline-flex shrink-0 items-center gap-1.5 self-start rounded-md bg-primary px-3.5 py-2 text-[12.5px] font-semibold text-primary-foreground shadow-sm transition hover:brightness-110"
-        >
-          <Plus className="h-4 w-4" /> Novo cargo / vaga
-        </button>
+        <div className="flex shrink-0 flex-wrap items-center gap-2 self-start">
+          <div className="flex items-center gap-0.5 rounded-md border border-border bg-card p-0.5">
+            {ANOS.map((a) => (
+              <button
+                key={a}
+                onClick={() => { setAno(a); setSelCargoId(null); }}
+                className={cn(
+                  "num rounded px-3 py-1.5 text-[12.5px] font-semibold transition",
+                  ano === a ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground",
+                )}
+              >
+                {a}
+              </button>
+            ))}
+          </div>
+          <button
+            onClick={() => abrirNovo("vaga_aberta")}
+            className="inline-flex items-center gap-1.5 rounded-md bg-primary px-3.5 py-2 text-[12.5px] font-semibold text-primary-foreground shadow-sm transition hover:brightness-110"
+          >
+            <Plus className="h-4 w-4" /> Novo cargo / vaga
+          </button>
+        </div>
       </div>
 
       {/* ---------------- KPIs ---------------- */}
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
         <div className="card-surface p-4">
-          <div className="eyebrow">Headcount atual</div>
+          <div className="eyebrow">Headcount · {ano}</div>
           <div className="num mt-1.5 text-[26px] font-semibold leading-none">{kpi.headcount}</div>
-          <div className="mt-1.5 text-[12px] text-muted-foreground">pessoas no time</div>
+          <div className="mt-1.5 text-[12px] text-muted-foreground">pessoas efetivas no time</div>
         </div>
         <div className="card-surface p-4">
-          <div className="eyebrow">Vagas abertas</div>
+          <div className="eyebrow">Vagas abertas · {ano}</div>
           <div className="num mt-1.5 text-[26px] font-semibold leading-none text-primary">{kpi.vagas}</div>
           <div className="mt-1.5 text-[12px] text-muted-foreground">abertas ou em entrevista</div>
         </div>
         <div className="card-surface p-4">
-          <div className="eyebrow">Cargos planejados</div>
+          <div className="eyebrow">Cargos planejados · {ano}</div>
           <div className="num mt-1.5 text-[26px] font-semibold leading-none">{kpi.planejados}</div>
-          <div className="mt-1.5 text-[12px] text-muted-foreground">visão de futuro (1–5 anos)</div>
+          <div className="mt-1.5 text-[12px] text-muted-foreground">visão de futuro</div>
         </div>
         <div className="card-surface p-4">
-          <div className="eyebrow">Custo mensal da expansão</div>
-          <div className="num mt-1.5 text-[26px] font-semibold leading-none">{fmtBRL0(kpi.custo)}</div>
+          <div className="eyebrow">Custo da expansão · {ano}</div>
+          <div className="num mt-1.5 text-[26px] font-semibold leading-none">{fmtBRL0(kpi.custo)}/mês</div>
           <div className="mt-1.5 text-[12px] text-muted-foreground">soma das vagas + planejados</div>
         </div>
       </div>
@@ -644,7 +686,7 @@ export default function TimeFinanceiro() {
                 <div className="w-full overflow-x-auto pb-2">
                   <div className="flex min-w-full justify-center">
                     <ul className="org-tree">
-                      <Ramo cargo={raiz} all={cargos} selId={selCargoId} onSel={setSelCargoId} />
+                      <Ramo cargo={raiz} all={cargosDoAno} selId={selCargoId} onSel={setSelCargoId} />
                     </ul>
                   </div>
                 </div>
@@ -653,7 +695,7 @@ export default function TimeFinanceiro() {
                   className="mt-6 flex w-[230px] flex-col items-center gap-1 rounded-lg border-2 border-dashed border-border p-4 text-muted-foreground transition hover:border-primary/50 hover:text-foreground"
                 >
                   <Plus className="h-4 w-4" />
-                  <span className="text-[12px]">Adicionar cargo futuro</span>
+                  <span className="text-[12px]">Adicionar cargo em {ano}</span>
                 </button>
                 <div className="mt-6 flex flex-wrap items-center justify-center gap-4 text-[11px] text-muted-foreground">
                   <span className="flex items-center gap-1.5"><span className="h-2.5 w-2.5 rounded-[3px] bg-primary" /> Efetivo</span>
@@ -662,7 +704,20 @@ export default function TimeFinanceiro() {
                 </div>
               </div>
             ) : (
-              <div className="py-10 text-center text-[13px] text-muted-foreground">Nenhum cargo cadastrado — clique em “Novo cargo / vaga”.</div>
+              <div className="flex flex-col items-center gap-3 py-12 text-center">
+                <Network className="h-8 w-8 text-muted-foreground/40" />
+                <div className="text-[13px] text-muted-foreground">Nenhuma estrutura para <span className="font-semibold text-foreground">{ano}</span> ainda.</div>
+                <div className="flex flex-wrap items-center justify-center gap-2">
+                  {temAnoAnterior && (
+                    <button onClick={() => duplicarAno(anoAnterior, ano)} className="inline-flex items-center gap-1.5 rounded-md bg-primary px-3.5 py-2 text-[12.5px] font-semibold text-primary-foreground transition hover:brightness-110">
+                      <Copy className="h-4 w-4" /> Copiar estrutura de {anoAnterior}
+                    </button>
+                  )}
+                  <button onClick={() => abrirNovo("efetivo")} className="inline-flex items-center gap-1.5 rounded-md border border-border px-3.5 py-2 text-[12.5px] font-medium text-foreground transition hover:bg-muted">
+                    <Plus className="h-4 w-4" /> Criar do zero
+                  </button>
+                </div>
+              </div>
             )}
           </div>
 
@@ -726,7 +781,10 @@ export default function TimeFinanceiro() {
       {/* ---------------- Funções ---------------- */}
       {tab === "funcoes" && (
         <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
-          {cargos.map((c) => (
+          {!cargosDoAno.length && (
+            <div className="card-surface col-span-full p-8 text-center text-[13px] text-muted-foreground">Nenhum cargo em {ano}.</div>
+          )}
+          {cargosDoAno.map((c) => (
             <div key={c.id} className="card-surface p-4">
               <div className="flex items-center gap-2.5 border-b border-border/60 pb-3">
                 <Avatar cargo={c} />
@@ -764,7 +822,7 @@ export default function TimeFinanceiro() {
       {tab === "vagas" && (
         <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-5">
           {KANBAN.map((col) => {
-            const items = cargos.filter((c) => c.status === col.status);
+            const items = cargosDoAno.filter((c) => c.status === col.status);
             return (
               <div key={col.status} className="card-surface flex flex-col p-3">
                 <div className="flex items-center justify-between px-1 pb-2">
@@ -1126,7 +1184,7 @@ export default function TimeFinanceiro() {
                 className="mt-1 h-9 w-full rounded-md border border-border bg-card px-2 text-[13px] outline-none focus:ring-1 focus:ring-primary"
               >
                 <option value="">— (topo do organograma)</option>
-                {cargos.filter((c) => c.id !== editId).map((c) => (
+                {cargosDoAno.filter((c) => c.id !== editId).map((c) => (
                   <option key={c.id} value={c.id}>{c.titulo}{c.pessoa ? ` (${c.pessoa})` : ""}</option>
                 ))}
               </select>
@@ -1170,7 +1228,7 @@ export default function TimeFinanceiro() {
                   className="h-8 rounded-md border border-border bg-card px-2 text-[12.5px] outline-none focus:ring-1 focus:ring-primary"
                 >
                   <option value="">Escolher cargo de origem…</option>
-                  {cargos.filter((c) => c.id !== atbCargoId).map((c) => (
+                  {cargosDoAno.filter((c) => c.id !== atbCargoId).map((c) => (
                     <option key={c.id} value={c.id}>{c.titulo}{c.pessoa ? ` (${c.pessoa})` : ""}</option>
                   ))}
                 </select>

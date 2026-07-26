@@ -8,6 +8,7 @@ import { Label } from "@/components/ui/label";
 import {
   Loader2, Plus, Pencil, Trash2, X, Users, UserPlus, Network, ListChecks,
   CalendarDays, Bot, Target, Zap, Clock, ArrowRight, Layers, ChevronDown, ShieldCheck,
+  Download, Copy, ArrowRightLeft,
 } from "lucide-react";
 
 // ============================================================================
@@ -256,6 +257,38 @@ function PiramideMacro({ sel, onSel }: { sel: number; onSel: (i: number) => void
   );
 }
 
+// CSS do organograma recursivo (conectores por pseudo-elementos; herda --border).
+const ORG_TREE_CSS = `
+.org-tree, .org-tree ul { list-style:none; margin:0; padding:0; }
+.org-tree { display:inline-flex; }
+.org-tree ul { display:flex; justify-content:center; padding-top:22px; position:relative; }
+.org-tree li { position:relative; padding:22px 14px 0; display:flex; flex-direction:column; align-items:center; box-sizing:border-box; }
+.org-tree li::before, .org-tree li::after { content:""; position:absolute; top:0; right:50%; width:50%; height:22px; border-top:1px solid hsl(var(--border)); box-sizing:border-box; }
+.org-tree li::after { right:auto; left:50%; border-left:1px solid hsl(var(--border)); }
+.org-tree li:only-child { padding-top:0; }
+.org-tree li:only-child::before, .org-tree li:only-child::after { display:none; }
+.org-tree li:first-child::before, .org-tree li:last-child::after { border:0 none; }
+.org-tree li:last-child::before { border-right:1px solid hsl(var(--border)); }
+.org-tree ul::before { content:""; position:absolute; top:0; left:50%; width:0; height:22px; border-left:1px solid hsl(var(--border)); }
+.org-tree > li { padding-top:0; }
+.org-tree > li::before, .org-tree > li::after { display:none; }
+`;
+
+// Nó recursivo do organograma (renderiza qualquer profundidade).
+function Ramo({ cargo, all, selId, onSel }: { cargo: Cargo; all: Cargo[]; selId: string | null; onSel: (id: string) => void }) {
+  const kids = all.filter((c) => c.parent_id === cargo.id).sort((a, b) => a.ordem - b.ordem);
+  return (
+    <li>
+      <CargoCard c={cargo} selected={selId === cargo.id} onClick={() => onSel(cargo.id)} />
+      {kids.length > 0 && (
+        <ul>
+          {kids.map((k) => <Ramo key={k.id} cargo={k} all={all} selId={selId} onSel={onSel} />)}
+        </ul>
+      )}
+    </li>
+  );
+}
+
 /* ================================ componente ================================ */
 export default function TimeFinanceiro() {
   const [cargos, setCargos] = useState<Cargo[]>([]);
@@ -287,6 +320,16 @@ export default function TimeFinanceiro() {
   const [form, setForm] = useState(vazio);
   const [salvando, setSalvando] = useState(false);
 
+  // editor de atribuições (blocos/itens) + "puxar de outro cargo"
+  const [atbDlgOpen, setAtbDlgOpen] = useState(false);
+  const [atbCargoId, setAtbCargoId] = useState<string | null>(null);
+  const [atbDraft, setAtbDraft] = useState<AtribGrupo[]>([]);
+  const [salvandoAtb, setSalvandoAtb] = useState(false);
+  const [pullSourceId, setPullSourceId] = useState("");
+  const [pullSel, setPullSel] = useState<Set<string>>(new Set());
+  const [pullMode, setPullMode] = useState<"copiar" | "mover">("copiar");
+  const [origensAlteradas, setOrigensAlteradas] = useState<Record<string, AtribGrupo[]>>({});
+
   async function carregar() {
     const [{ data: cs, error: e1 }, { data: ps, error: e2 }] = await Promise.all([
       sb.from("time_cargos").select("*").order("ordem", { ascending: true }),
@@ -311,7 +354,6 @@ export default function TimeFinanceiro() {
   }, [cargos]);
 
   const raiz = cargos.find((c) => !c.parent_id);
-  const filhos = cargos.filter((c) => raiz && c.parent_id === raiz.id);
   const selCargo = cargos.find((c) => c.id === selCargoId) ?? null;
 
   /* ------------------------------ ações ------------------------------ */
@@ -371,6 +413,63 @@ export default function TimeFinanceiro() {
     carregar();
   }
 
+  /* ---------------------- editor de atribuições ---------------------- */
+  function abrirAtribuicoes(c: Cargo) {
+    setAtbCargoId(c.id);
+    setAtbDraft(JSON.parse(JSON.stringify(c.atribuicoes ?? [])));
+    setPullSourceId(""); setPullSel(new Set()); setPullMode("copiar"); setOrigensAlteradas({});
+    setAtbDlgOpen(true);
+  }
+  const cloneDraft = () => atbDraft.map((g) => ({ ...g, itens: [...g.itens] }));
+  const addBloco = () => setAtbDraft([...cloneDraft(), { titulo: "Novo bloco", itens: [] }]);
+  const setBlocoTitulo = (i: number, v: string) => { const d = cloneDraft(); d[i].titulo = v; setAtbDraft(d); };
+  const removeBloco = (i: number) => setAtbDraft(cloneDraft().filter((_, k) => k !== i));
+  const addItem = (i: number) => { const d = cloneDraft(); d[i].itens.push(""); setAtbDraft(d); };
+  const setItem = (i: number, j: number, v: string) => { const d = cloneDraft(); d[i].itens[j] = v; setAtbDraft(d); };
+  const removeItem = (i: number, j: number) => { const d = cloneDraft(); d[i].itens = d[i].itens.filter((_, k) => k !== j); setAtbDraft(d); };
+  const togglePull = (key: string) => setPullSel((prev) => { const n = new Set(prev); n.has(key) ? n.delete(key) : n.add(key); return n; });
+
+  function aplicarPull(displaySource: AtribGrupo[]) {
+    if (!pullSourceId || !pullSel.size) return;
+    const trazer = new Map<string, string[]>();
+    displaySource.forEach((g, gi) => g.itens.forEach((it, ii) => {
+      if (pullSel.has(`${gi}:${ii}`)) { const arr = trazer.get(g.titulo) ?? []; arr.push(it); trazer.set(g.titulo, arr); }
+    }));
+    // funde no cargo alvo, agrupando por título de bloco (evita duplicar)
+    const novo = cloneDraft();
+    trazer.forEach((items, titulo) => {
+      const alvo = novo.find((g) => g.titulo.trim().toLowerCase() === titulo.trim().toLowerCase());
+      if (alvo) items.forEach((it) => { if (!alvo.itens.includes(it)) alvo.itens.push(it); });
+      else novo.push({ titulo, itens: Array.from(new Set(items)) });
+    });
+    setAtbDraft(novo);
+    // mover: remove os itens selecionados da origem (mantém blocos, mesmo vazios)
+    if (pullMode === "mover") {
+      const novaOrigem = displaySource.map((g, gi) => ({ ...g, itens: g.itens.filter((_, ii) => !pullSel.has(`${gi}:${ii}`)) }));
+      setOrigensAlteradas((prev) => ({ ...prev, [pullSourceId]: novaOrigem }));
+    }
+    const total = Array.from(trazer.values()).reduce((a, arr) => a + arr.length, 0);
+    setPullSel(new Set());
+    toast.success(`${total} responsabilidade(s) ${pullMode === "mover" ? "movida(s)" : "copiada(s)"}.`);
+  }
+
+  async function salvarAtribuicoes() {
+    if (!atbCargoId) return;
+    setSalvandoAtb(true);
+    const limpa = (arr: AtribGrupo[]) => arr.map((g) => ({ titulo: g.titulo.trim(), itens: g.itens.map((s) => s.trim()).filter(Boolean) }));
+    const updates = [sb.from("time_cargos").update({ atribuicoes: limpa(atbDraft), atualizado_em: new Date().toISOString() }).eq("id", atbCargoId)];
+    Object.entries(origensAlteradas).forEach(([sid, atb]) => {
+      updates.push(sb.from("time_cargos").update({ atribuicoes: limpa(atb), atualizado_em: new Date().toISOString() }).eq("id", sid));
+    });
+    const results = await Promise.all(updates);
+    setSalvandoAtb(false);
+    const err = (results as any[]).find((r) => r.error);
+    if (err) { toast.error("Falha ao salvar: " + err.error.message); return; }
+    toast.success("Atribuições salvas.");
+    setAtbDlgOpen(false);
+    carregar();
+  }
+
   async function addPasso() {
     const texto = novoPasso.trim();
     if (!texto) return;
@@ -399,6 +498,10 @@ export default function TimeFinanceiro() {
 
   const nivel = NIVEIS.find((n) => n.n === nivelSel)!;
   const autosNivel = AUTOMACOES.filter((a) => a.nivel === nivelSel).length;
+
+  const atbCargo = cargos.find((c) => c.id === atbCargoId) ?? null;
+  const pullSource = cargos.find((c) => c.id === pullSourceId) ?? null;
+  const displaySource: AtribGrupo[] = pullSource ? (origensAlteradas[pullSource.id] ?? pullSource.atribuicoes) : [];
 
   const KANBAN: { status: Status; label: string; vazio: React.ReactNode }[] = [
     { status: "planejado", label: "Planejado", vazio: <>Nenhum cargo planejado — clique em “Novo cargo”.</> },
@@ -475,23 +578,16 @@ export default function TimeFinanceiro() {
       {tab === "org" && (
         <div className="grid grid-cols-1 gap-3 lg:grid-cols-[minmax(0,1fr)_320px]">
           <div className="card-surface p-5">
+            <style>{ORG_TREE_CSS}</style>
             {raiz ? (
               <div className="flex flex-col items-center">
-                <CargoCard c={raiz} selected={selCargoId === raiz.id} onClick={() => setSelCargoId(raiz.id)} />
-                {filhos.length > 0 && (
-                  <>
-                    <div className="h-6 w-px bg-border" />
-                    <div className="relative flex flex-wrap items-start justify-center gap-x-4 gap-y-6">
-                      <div className="absolute inset-x-16 top-0 h-px bg-border" />
-                      {filhos.map((c) => (
-                        <div key={c.id} className="flex flex-col items-center">
-                          <div className="h-5 w-px bg-border" />
-                          <CargoCard c={c} selected={selCargoId === c.id} onClick={() => setSelCargoId(c.id)} />
-                        </div>
-                      ))}
-                    </div>
-                  </>
-                )}
+                <div className="w-full overflow-x-auto pb-2">
+                  <div className="flex min-w-full justify-center">
+                    <ul className="org-tree">
+                      <Ramo cargo={raiz} all={cargos} selId={selCargoId} onSel={setSelCargoId} />
+                    </ul>
+                  </div>
+                </div>
                 <button
                   onClick={() => abrirNovo("planejado")}
                   className="mt-6 flex w-[230px] flex-col items-center gap-1 rounded-lg border-2 border-dashed border-border p-4 text-muted-foreground transition hover:border-primary/50 hover:text-foreground"
@@ -520,11 +616,16 @@ export default function TimeFinanceiro() {
                     <div className="truncate text-[13.5px] font-semibold">{selCargo.titulo}</div>
                     <div className="truncate text-[11.5px] text-muted-foreground">{subtitulo(selCargo)}</div>
                   </div>
-                  <button onClick={() => abrirEdicao(selCargo)} className="ml-auto rounded p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground" title="Editar cargo">
-                    <Pencil className="h-3.5 w-3.5" />
-                  </button>
+                  <div className="ml-auto flex items-center gap-1">
+                    <button onClick={() => abrirAtribuicoes(selCargo)} className="rounded p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground" title="Gerenciar atribuições">
+                      <ListChecks className="h-3.5 w-3.5" />
+                    </button>
+                    <button onClick={() => abrirEdicao(selCargo)} className="rounded p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground" title="Editar cargo">
+                      <Pencil className="h-3.5 w-3.5" />
+                    </button>
+                  </div>
                 </div>
-                <div className="mt-3 max-h-[440px] space-y-3 overflow-y-auto pr-1">
+                <div className="mt-3 max-h-[420px] space-y-3 overflow-y-auto pr-1">
                   {selCargo.atribuicoes.length ? selCargo.atribuicoes.map((g, i) => (
                     <div key={i}>
                       <div className="flex items-baseline gap-2">
@@ -540,9 +641,15 @@ export default function TimeFinanceiro() {
                       )}
                     </div>
                   )) : (
-                    <p className="text-[12px] text-muted-foreground">Sem atribuições cadastradas para este cargo.</p>
+                    <p className="text-[12px] text-muted-foreground">Sem atribuições ainda — use “Gerenciar atribuições” para criar ou puxar de outro cargo.</p>
                   )}
                 </div>
+                <button
+                  onClick={() => abrirAtribuicoes(selCargo)}
+                  className="mt-3 inline-flex items-center justify-center gap-1.5 rounded-md border border-primary/40 bg-primary/5 px-3 py-2 text-[12.5px] font-semibold text-primary transition hover:bg-primary/10"
+                >
+                  <ListChecks className="h-3.5 w-3.5" /> Gerenciar atribuições
+                </button>
               </>
             ) : (
               <div className="flex flex-1 flex-col items-center justify-center gap-2 py-10 text-center">
@@ -944,6 +1051,127 @@ export default function TimeFinanceiro() {
                 </button>
               </div>
             </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* ---------------- Dialog: gerenciar atribuições ---------------- */}
+      <Dialog open={atbDlgOpen} onOpenChange={setAtbDlgOpen}>
+        <DialogContent className="max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>Atribuições — {atbCargo?.titulo}</DialogTitle>
+          </DialogHeader>
+
+          <div className="max-h-[68vh] space-y-4 overflow-y-auto pr-1">
+            {/* Puxar de outro cargo */}
+            <div className="rounded-lg border border-primary/20 bg-primary/5 p-3">
+              <div className="flex items-center gap-2 text-[12.5px] font-semibold text-foreground">
+                <Download className="h-4 w-4 text-primary" /> Puxar responsabilidades de outro cargo
+              </div>
+              <div className="mt-2 flex flex-wrap items-center gap-2">
+                <select
+                  value={pullSourceId}
+                  onChange={(e) => { setPullSourceId(e.target.value); setPullSel(new Set()); }}
+                  className="h-8 rounded-md border border-border bg-card px-2 text-[12.5px] outline-none focus:ring-1 focus:ring-primary"
+                >
+                  <option value="">Escolher cargo de origem…</option>
+                  {cargos.filter((c) => c.id !== atbCargoId).map((c) => (
+                    <option key={c.id} value={c.id}>{c.titulo}{c.pessoa ? ` (${c.pessoa})` : ""}</option>
+                  ))}
+                </select>
+                {pullSourceId && (
+                  <div className="flex items-center gap-0.5 rounded-md border border-border p-0.5">
+                    {(["copiar", "mover"] as const).map((m) => (
+                      <button
+                        key={m}
+                        onClick={() => setPullMode(m)}
+                        className={cn("rounded px-2.5 py-1 text-[11.5px] font-medium transition", pullMode === m ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground")}
+                        title={m === "copiar" ? "Mantém no cargo de origem" : "Remove do cargo de origem"}
+                      >
+                        {m === "copiar" ? "Copiar" : "Mover"}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+              {pullSourceId && (
+                <>
+                  <div className="mt-2 max-h-44 space-y-2 overflow-y-auto rounded-md border border-border bg-card p-2">
+                    {displaySource.length ? displaySource.map((g, gi) => (
+                      <div key={gi}>
+                        <div className="text-[11.5px] font-semibold text-foreground">{g.titulo}</div>
+                        {g.itens.length ? g.itens.map((it, ii) => {
+                          const key = `${gi}:${ii}`;
+                          return (
+                            <label key={ii} className="flex cursor-pointer items-start gap-2 py-0.5 pl-2 text-[12px] text-muted-foreground hover:text-foreground">
+                              <input type="checkbox" checked={pullSel.has(key)} onChange={() => togglePull(key)} className="mt-0.5 h-3.5 w-3.5 shrink-0 accent-primary" />
+                              {it}
+                            </label>
+                          );
+                        }) : <div className="pl-2 text-[11px] text-muted-foreground/60">(sem itens)</div>}
+                      </div>
+                    )) : <div className="text-[12px] text-muted-foreground">Nada para puxar.</div>}
+                  </div>
+                  <button
+                    onClick={() => aplicarPull(displaySource)}
+                    disabled={!pullSel.size}
+                    className="mt-2 inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-[12px] font-semibold text-primary-foreground transition hover:brightness-110 disabled:opacity-50"
+                  >
+                    {pullMode === "copiar" ? <Copy className="h-3.5 w-3.5" /> : <ArrowRightLeft className="h-3.5 w-3.5" />}
+                    {pullMode === "copiar" ? "Copiar" : "Mover"} {pullSel.size || ""} para {atbCargo?.titulo}
+                  </button>
+                </>
+              )}
+            </div>
+
+            {/* Blocos editáveis */}
+            <div className="space-y-3">
+              {atbDraft.map((g, i) => (
+                <div key={i} className="rounded-lg border border-border p-2.5">
+                  <div className="flex items-center gap-2">
+                    <span className="num text-[11px] font-bold text-primary">{String(i + 1).padStart(2, "0")}</span>
+                    <input
+                      value={g.titulo}
+                      onChange={(e) => setBlocoTitulo(i, e.target.value)}
+                      placeholder="Título do bloco"
+                      className="h-8 flex-1 rounded-md border border-transparent bg-transparent px-1.5 text-[13px] font-semibold outline-none hover:border-border focus:border-primary focus:bg-card"
+                    />
+                    <button onClick={() => removeBloco(i)} className="rounded p-1 text-muted-foreground hover:text-destructive" title="Remover bloco">
+                      <Trash2 className="h-3.5 w-3.5" />
+                    </button>
+                  </div>
+                  <div className="mt-1.5 space-y-1 pl-6">
+                    {g.itens.map((it, j) => (
+                      <div key={j} className="flex items-center gap-1.5">
+                        <span className="h-1 w-1 shrink-0 rounded-full bg-muted-foreground/50" />
+                        <input
+                          value={it}
+                          onChange={(e) => setItem(i, j, e.target.value)}
+                          placeholder="Responsabilidade"
+                          className="h-7 flex-1 rounded-md border border-transparent bg-transparent px-1.5 text-[12px] outline-none hover:border-border focus:border-primary focus:bg-card"
+                        />
+                        <button onClick={() => removeItem(i, j)} className="rounded p-0.5 text-muted-foreground/60 hover:text-destructive" title="Remover item">
+                          <X className="h-3.5 w-3.5" />
+                        </button>
+                      </div>
+                    ))}
+                    <button onClick={() => addItem(i)} className="inline-flex items-center gap-1 pl-1 text-[11.5px] text-primary hover:underline">
+                      <Plus className="h-3 w-3" /> adicionar item
+                    </button>
+                  </div>
+                </div>
+              ))}
+              <button onClick={addBloco} className="inline-flex items-center gap-1.5 rounded-md border border-dashed border-border px-3 py-1.5 text-[12px] text-muted-foreground transition hover:border-primary/50 hover:text-foreground">
+                <Plus className="h-3.5 w-3.5" /> Adicionar bloco
+              </button>
+            </div>
+          </div>
+
+          <div className="flex justify-end gap-2 border-t border-border pt-3">
+            <button onClick={() => setAtbDlgOpen(false)} className="rounded-md border border-border px-3 py-1.5 text-[12.5px] font-medium text-foreground hover:bg-muted">Cancelar</button>
+            <button onClick={salvarAtribuicoes} disabled={salvandoAtb} className="inline-flex items-center gap-1.5 rounded-md bg-primary px-3.5 py-1.5 text-[12.5px] font-semibold text-primary-foreground hover:brightness-110 disabled:opacity-60">
+              {salvandoAtb && <Loader2 className="h-3.5 w-3.5 animate-spin" />} Salvar atribuições
+            </button>
           </div>
         </DialogContent>
       </Dialog>

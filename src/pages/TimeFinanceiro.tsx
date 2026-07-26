@@ -29,6 +29,7 @@ type Cargo = {
   alvo: string | null; parent_id: string | null; atribuicoes: AtribGrupo[]; ordem: number;
 };
 type Passo = { id: string; texto: string; done: boolean; ordem: number };
+type Ritual = { id: string; titulo: string; tipo: string | null; periodicidade: string | null; descricao: string | null; pauta: string[]; ordem: number };
 
 /* ------------------------------ metadados ------------------------------ */
 const STATUS_META: Record<Status, { label: string; badge: string; borda: string }> = {
@@ -41,12 +42,15 @@ const STATUS_META: Record<Status, { label: string; badge: string; borda: string 
 
 const fmtBRL0 = (n: number) => `R$ ${Math.round(n).toLocaleString("pt-BR")}`;
 
-const RITUAIS = [
-  { semana: "Semana 1", titulo: "Fechamento do mês anterior", desc: "Conciliação bancária, DRE e DFC do mês que fechou." },
-  { semana: "Semana 2", titulo: "Revisão de processos", desc: "Revisão profunda de processos internos, despesas e ERP." },
-  { semana: "Semana 3", titulo: "Revisão orçamentária", desc: "Real vs. orçado completo e atualização de projeções." },
-  { semana: "Semana 4", titulo: "Preparação do fechamento", desc: "Provisões, pagamentos e acertos para virar o mês." },
-];
+// Cor do badge de tipo de ritual/reunião.
+function tipoRitualBadge(tipo?: string | null): string {
+  const t = (tipo ?? "").toLowerCase();
+  if (t.includes("estrat")) return "bg-violet-500/15 text-violet-600 dark:text-violet-400";
+  if (t.includes("tátic") || t.includes("tatic")) return "bg-blue-500/15 text-blue-600 dark:text-blue-400";
+  if (t.includes("operac")) return "bg-amber-500/15 text-amber-600 dark:text-amber-400";
+  if (t.includes("cad") || t.includes("fech") || t.includes("mensal")) return "bg-primary/10 text-primary";
+  return "bg-muted text-muted-foreground";
+}
 
 // ---- IA & Automação: pirâmide de maturidade + automações em produção ----
 const NIVEL_ATUAL = 3;
@@ -168,7 +172,7 @@ function CargoCard({ c, selected, onClick }: { c: Cargo; selected: boolean; onCl
     <button
       onClick={onClick}
       className={cn(
-        "w-[230px] rounded-lg border bg-card p-3 text-left shadow-sm transition hover:shadow-md",
+        "w-[230px] rounded-lg border border-muted-foreground/30 bg-card p-3 text-left shadow-sm transition hover:shadow-md",
         meta.borda,
         selected && "ring-2 ring-primary/40",
       )}
@@ -257,19 +261,21 @@ function PiramideMacro({ sel, onSel }: { sel: number; onSel: (i: number) => void
   );
 }
 
-// CSS do organograma recursivo (conectores por pseudo-elementos; herda --border).
+// CSS do organograma recursivo (conectores por pseudo-elementos). Linhas mais
+// visíveis que o --border padrão (usa muted-foreground com opacidade).
+const ORG_LINE = "hsl(var(--muted-foreground) / 0.5)";
 const ORG_TREE_CSS = `
 .org-tree, .org-tree ul { list-style:none; margin:0; padding:0; }
 .org-tree { display:inline-flex; }
-.org-tree ul { display:flex; justify-content:center; padding-top:22px; position:relative; }
-.org-tree li { position:relative; padding:22px 14px 0; display:flex; flex-direction:column; align-items:center; box-sizing:border-box; }
-.org-tree li::before, .org-tree li::after { content:""; position:absolute; top:0; right:50%; width:50%; height:22px; border-top:1px solid hsl(var(--border)); box-sizing:border-box; }
-.org-tree li::after { right:auto; left:50%; border-left:1px solid hsl(var(--border)); }
+.org-tree ul { display:flex; justify-content:center; padding-top:24px; position:relative; }
+.org-tree li { position:relative; padding:24px 16px 0; display:flex; flex-direction:column; align-items:center; box-sizing:border-box; }
+.org-tree li::before, .org-tree li::after { content:""; position:absolute; top:0; right:50%; width:50%; height:24px; border-top:2px solid ${ORG_LINE}; box-sizing:border-box; }
+.org-tree li::after { right:auto; left:50%; border-left:2px solid ${ORG_LINE}; }
 .org-tree li:only-child { padding-top:0; }
 .org-tree li:only-child::before, .org-tree li:only-child::after { display:none; }
 .org-tree li:first-child::before, .org-tree li:last-child::after { border:0 none; }
-.org-tree li:last-child::before { border-right:1px solid hsl(var(--border)); }
-.org-tree ul::before { content:""; position:absolute; top:0; left:50%; width:0; height:22px; border-left:1px solid hsl(var(--border)); }
+.org-tree li:last-child::before { border-right:2px solid ${ORG_LINE}; }
+.org-tree ul::before { content:""; position:absolute; top:0; left:50%; width:0; height:24px; border-left:2px solid ${ORG_LINE}; }
 .org-tree > li { padding-top:0; }
 .org-tree > li::before, .org-tree > li::after { display:none; }
 `;
@@ -293,6 +299,7 @@ function Ramo({ cargo, all, selId, onSel }: { cargo: Cargo; all: Cargo[]; selId:
 export default function TimeFinanceiro() {
   const [cargos, setCargos] = useState<Cargo[]>([]);
   const [passos, setPassos] = useState<Passo[]>([]);
+  const [rituais, setRituais] = useState<Ritual[]>([]);
   const [loading, setLoading] = useState(true);
   const [tab, setTab] = useState<TabKey>("org");
   const [selCargoId, setSelCargoId] = useState<string | null>(null);
@@ -330,14 +337,23 @@ export default function TimeFinanceiro() {
   const [pullMode, setPullMode] = useState<"copiar" | "mover">("copiar");
   const [origensAlteradas, setOrigensAlteradas] = useState<Record<string, AtribGrupo[]>>({});
 
+  // diálogo de ritual/reunião
+  const rituVazio = { titulo: "", tipo: "Tática", periodicidade: "Semanal", descricao: "", pauta: [] as string[] };
+  const [rituDlgOpen, setRituDlgOpen] = useState(false);
+  const [rituEditId, setRituEditId] = useState<string | null>(null);
+  const [rituForm, setRituForm] = useState(rituVazio);
+  const [salvandoRitu, setSalvandoRitu] = useState(false);
+
   async function carregar() {
-    const [{ data: cs, error: e1 }, { data: ps, error: e2 }] = await Promise.all([
+    const [{ data: cs, error: e1 }, { data: ps, error: e2 }, { data: rs, error: e3 }] = await Promise.all([
       sb.from("time_cargos").select("*").order("ordem", { ascending: true }),
       sb.from("time_passos").select("*").order("ordem", { ascending: true }),
+      sb.from("time_rituais").select("*").order("ordem", { ascending: true }),
     ]);
-    if (e1 || e2) toast.error("Falha ao carregar o time: " + (e1?.message ?? e2?.message));
+    if (e1 || e2 || e3) toast.error("Falha ao carregar o time: " + (e1?.message ?? e2?.message ?? e3?.message));
     setCargos((cs ?? []) as Cargo[]);
     setPassos((ps ?? []) as Passo[]);
+    setRituais((rs ?? []) as Ritual[]);
     setLoading(false);
   }
   useEffect(() => { carregar(); }, []);
@@ -467,6 +483,50 @@ export default function TimeFinanceiro() {
     if (err) { toast.error("Falha ao salvar: " + err.error.message); return; }
     toast.success("Atribuições salvas.");
     setAtbDlgOpen(false);
+    carregar();
+  }
+
+  /* ---------------------- rituais / reuniões ---------------------- */
+  function abrirNovoRitual() {
+    setRituEditId(null);
+    setRituForm({ ...rituVazio });
+    setRituDlgOpen(true);
+  }
+  function abrirEdicaoRitual(r: Ritual) {
+    setRituEditId(r.id);
+    setRituForm({ titulo: r.titulo, tipo: r.tipo ?? "", periodicidade: r.periodicidade ?? "", descricao: r.descricao ?? "", pauta: [...(r.pauta ?? [])] });
+    setRituDlgOpen(true);
+  }
+  const setPautaItem = (i: number, v: string) => setRituForm((f) => { const p = [...f.pauta]; p[i] = v; return { ...f, pauta: p }; });
+  const addPautaItem = () => setRituForm((f) => ({ ...f, pauta: [...f.pauta, ""] }));
+  const removePautaItem = (i: number) => setRituForm((f) => ({ ...f, pauta: f.pauta.filter((_, k) => k !== i) }));
+
+  async function salvarRitual() {
+    if (!rituForm.titulo.trim()) { toast.error("Informe o título do ritual."); return; }
+    setSalvandoRitu(true);
+    const payload = {
+      titulo: rituForm.titulo.trim(),
+      tipo: rituForm.tipo.trim() || null,
+      periodicidade: rituForm.periodicidade.trim() || null,
+      descricao: rituForm.descricao.trim() || null,
+      pauta: rituForm.pauta.map((s) => s.trim()).filter(Boolean),
+    };
+    const { error } = rituEditId
+      ? await sb.from("time_rituais").update(payload).eq("id", rituEditId)
+      : await sb.from("time_rituais").insert({ ...payload, ordem: rituais.length });
+    setSalvandoRitu(false);
+    if (error) { toast.error("Falha ao salvar: " + error.message); return; }
+    toast.success(rituEditId ? "Ritual atualizado." : "Ritual criado.");
+    setRituDlgOpen(false);
+    carregar();
+  }
+  async function excluirRitual() {
+    if (!rituEditId) return;
+    if (!window.confirm("Excluir este ritual?")) return;
+    const { error } = await sb.from("time_rituais").delete().eq("id", rituEditId);
+    if (error) { toast.error("Falha ao excluir: " + error.message); return; }
+    toast.success("Ritual excluído.");
+    setRituDlgOpen(false);
     carregar();
   }
 
@@ -795,18 +855,53 @@ export default function TimeFinanceiro() {
       {/* ---------------- Rituais ---------------- */}
       {tab === "rituais" && (
         <div className="space-y-3">
-          <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-4">
-            {RITUAIS.map((r) => (
-              <div key={r.semana} className="card-surface border-t-2 border-t-primary p-4">
-                <div className="flex items-center justify-between">
-                  <span className="eyebrow">{r.semana}</span>
-                  <CalendarDays className="h-4 w-4 text-primary" />
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div>
+              <div className="text-[14px] font-semibold text-foreground">Rituais e reuniões</div>
+              <p className="mt-0.5 text-[12px] text-muted-foreground">Cadência mensal do financeiro + reuniões táticas e estratégicas (tipo, periodicidade e pauta).</p>
+            </div>
+            <button onClick={abrirNovoRitual} className="inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-2 text-[12.5px] font-semibold text-primary-foreground shadow-sm transition hover:brightness-110">
+              <Plus className="h-4 w-4" /> Novo ritual / reunião
+            </button>
+          </div>
+
+          <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
+            {rituais.map((r) => (
+              <div key={r.id} className="card-surface group flex flex-col border-t-2 border-t-primary p-4">
+                <div className="flex items-start justify-between gap-2">
+                  <span className={cn("rounded px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wider", tipoRitualBadge(r.tipo))}>
+                    {r.tipo || "Ritual"}
+                  </span>
+                  <div className="flex items-center gap-1.5">
+                    {r.periodicidade && <span className="text-[11px] font-medium text-muted-foreground">{r.periodicidade}</span>}
+                    <div className="flex opacity-0 transition-opacity group-hover:opacity-100">
+                      <button onClick={() => abrirEdicaoRitual(r)} className="rounded p-1 text-muted-foreground hover:bg-muted hover:text-foreground" title="Editar"><Pencil className="h-3 w-3" /></button>
+                    </div>
+                  </div>
                 </div>
                 <div className="mt-2 text-[14px] font-semibold text-foreground">{r.titulo}</div>
-                <p className="mt-1 text-[12px] leading-relaxed text-muted-foreground">{r.desc}</p>
+                {r.descricao && <p className="mt-1 text-[12px] leading-relaxed text-muted-foreground">{r.descricao}</p>}
+                {r.pauta.length > 0 && (
+                  <div className="mt-2.5 border-t border-border/50 pt-2">
+                    <div className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/80">Pauta</div>
+                    <ul className="mt-1 space-y-0.5">
+                      {r.pauta.map((it, j) => (
+                        <li key={j} className="flex items-start gap-2 text-[12px] leading-relaxed text-foreground">
+                          <span className="mt-1.5 h-1 w-1 shrink-0 rounded-full bg-primary/60" />{it}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
               </div>
             ))}
+            {!rituais.length && (
+              <div className="card-surface col-span-full p-8 text-center text-[13px] text-muted-foreground">
+                Nenhum ritual — clique em “Novo ritual / reunião”.
+              </div>
+            )}
           </div>
+
           <div className="flex items-start gap-2.5 rounded-lg border border-primary/20 bg-primary/5 px-4 py-3">
             <Clock className="mt-0.5 h-4 w-4 shrink-0 text-primary" />
             <p className="text-[12.5px] leading-relaxed text-foreground">
@@ -1172,6 +1267,69 @@ export default function TimeFinanceiro() {
             <button onClick={salvarAtribuicoes} disabled={salvandoAtb} className="inline-flex items-center gap-1.5 rounded-md bg-primary px-3.5 py-1.5 text-[12.5px] font-semibold text-primary-foreground hover:brightness-110 disabled:opacity-60">
               {salvandoAtb && <Loader2 className="h-3.5 w-3.5 animate-spin" />} Salvar atribuições
             </button>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* ---------------- Dialog: novo/editar ritual ---------------- */}
+      <Dialog open={rituDlgOpen} onOpenChange={setRituDlgOpen}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>{rituEditId ? "Editar ritual / reunião" : "Novo ritual / reunião"}</DialogTitle>
+          </DialogHeader>
+          <div className="max-h-[68vh] space-y-3 overflow-y-auto pr-1">
+            <div>
+              <Label className="text-[12px]">Título *</Label>
+              <Input value={rituForm.titulo} onChange={(e) => setRituForm({ ...rituForm, titulo: e.target.value })} placeholder="ex.: Reunião Tática Semanal" className="mt-1 h-9" />
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <Label className="text-[12px]">Tipo</Label>
+                <Input value={rituForm.tipo} onChange={(e) => setRituForm({ ...rituForm, tipo: e.target.value })} placeholder="Tática / Estratégica" list="tipos-ritual" className="mt-1 h-9" />
+                <datalist id="tipos-ritual">
+                  <option value="Tática" /><option value="Estratégica" /><option value="Operacional" /><option value="Cadência mensal" />
+                </datalist>
+              </div>
+              <div>
+                <Label className="text-[12px]">Periodicidade</Label>
+                <Input value={rituForm.periodicidade} onChange={(e) => setRituForm({ ...rituForm, periodicidade: e.target.value })} placeholder="Semanal / Mensal" list="periodos-ritual" className="mt-1 h-9" />
+                <datalist id="periodos-ritual">
+                  <option value="Semanal" /><option value="Quinzenal" /><option value="Mensal" /><option value="Trimestral" /><option value="Semana 1" /><option value="Semana 2" /><option value="Semana 3" /><option value="Semana 4" />
+                </datalist>
+              </div>
+            </div>
+            <div>
+              <Label className="text-[12px]">Descrição</Label>
+              <Input value={rituForm.descricao} onChange={(e) => setRituForm({ ...rituForm, descricao: e.target.value })} placeholder="Resumo do objetivo da reunião" className="mt-1 h-9" />
+            </div>
+            <div>
+              <Label className="text-[12px]">Pauta</Label>
+              <div className="mt-1 space-y-1.5">
+                {rituForm.pauta.map((it, i) => (
+                  <div key={i} className="flex items-center gap-1.5">
+                    <span className="h-1 w-1 shrink-0 rounded-full bg-muted-foreground/50" />
+                    <Input value={it} onChange={(e) => setPautaItem(i, e.target.value)} placeholder={`Tópico ${i + 1}`} className="h-8 flex-1" />
+                    <button onClick={() => removePautaItem(i)} className="rounded p-1 text-muted-foreground/60 hover:text-destructive" title="Remover"><X className="h-3.5 w-3.5" /></button>
+                  </div>
+                ))}
+                <button onClick={addPautaItem} className="inline-flex items-center gap-1 text-[11.5px] text-primary hover:underline">
+                  <Plus className="h-3 w-3" /> adicionar tópico
+                </button>
+              </div>
+            </div>
+            <div className="flex items-center justify-between pt-1">
+              {rituEditId ? (
+                <button onClick={excluirRitual} className="inline-flex items-center gap-1 text-[12px] text-destructive hover:underline">
+                  <Trash2 className="h-3.5 w-3.5" /> Excluir
+                </button>
+              ) : <span />}
+              <div className="flex gap-2">
+                <button onClick={() => setRituDlgOpen(false)} className="rounded-md border border-border px-3 py-1.5 text-[12.5px] font-medium text-foreground hover:bg-muted">Cancelar</button>
+                <button onClick={salvarRitual} disabled={salvandoRitu} className="inline-flex items-center gap-1.5 rounded-md bg-primary px-3.5 py-1.5 text-[12.5px] font-semibold text-primary-foreground hover:brightness-110 disabled:opacity-60">
+                  {salvandoRitu && <Loader2 className="h-3.5 w-3.5 animate-spin" />} Salvar
+                </button>
+              </div>
+            </div>
           </div>
         </DialogContent>
       </Dialog>

@@ -7,7 +7,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
   Loader2, Plus, Pencil, Trash2, X, Users, UserPlus, Network, ListChecks,
-  CalendarDays, Bot, Target, Zap, Clock, ArrowRight,
+  CalendarDays, Bot, Target, Zap, Clock, ArrowRight, Layers, ChevronDown, ShieldCheck,
 } from "lucide-react";
 
 // ============================================================================
@@ -77,12 +77,66 @@ const AUTOMACOES: { nivel: number; nome: string }[] = [
   { nivel: 4, nome: "Projeção de caixa (45 dias)" },
 ];
 
+// ---- Padrão de Mercado (referência: quem responde por quê no financeiro) ----
+// Pirâmide de obrigações macro (base → topo) + estrutura padrão em 3 pilares.
+const MACRO_COR = ["hsl(211 56% 24%)", "hsl(206 74% 42%)", "hsl(202 74% 66%)"]; // CFO, Controller, dia a dia
+const OBRIGACOES_MACRO = [
+  {
+    eyebrow: "ESTRATÉGIA", role: "CFO",
+    subtitle: "Define a direção financeira e responde à diretoria e ao conselho.",
+    bullets: ["Planejamento estratégico", "Relacionamento com investidores", "Validação do orçamento", "Captação de recursos", "Acompanhamento de KPIs", "Fusões e aquisições (M&A)"],
+    footer: "Liderado pelo CFO",
+  },
+  {
+    eyebrow: "REPORTAR", role: "CONTROLLER",
+    subtitle: "Traduz a operação em números confiáveis e cobra os setores.",
+    bullets: ["Relatórios estratégicos", "Análise detalhada", "Gestão do orçamento", "Gestão de processos", "Supervisão dos setores", "Controles internos"],
+    footer: "Liderado pelo Controller",
+  },
+  {
+    eyebrow: "DIA A DIA", role: "CONTABILIDADE, TESOURARIA, FP&A",
+    subtitle: "Executa a operação financeira do dia a dia.",
+    bullets: ["Gestão diária e fechamento contábil", "Gerenciamento de despesas", "Execução do orçamento", "Faturamento", "Análise de tributos", "Gestão de caixa"],
+    footer: "Liderado pelo Controller",
+  },
+];
+
+const PILARES: { nome: string; grupos: { titulo: string; itens: string[] }[] }[] = [
+  {
+    nome: "Contabilidade",
+    grupos: [
+      { titulo: "Departamento Pessoal", itens: ["Contabilização de folha e encargos", "Suporte a auditorias e fiscalizações"] },
+      { titulo: "Contábil", itens: ["CPC/IFRS, conciliações, provisões e reconciliações", "Imobilizado e depreciação"] },
+      { titulo: "Fiscal / Tributário", itens: ["Apurações (ISS, ICMS, IPI, PIS/COFINS etc.)", "Obrigações acessórias (SPED, ECD/EFD, DCTF, PER/DCOMP)", "Planejamento e suporte a FP&A / Tesouraria"] },
+      { titulo: "Governança Societária", itens: ["Livros societários, atas, junta comercial e procurações", "Suporte a auditoria externa"] },
+    ],
+  },
+  {
+    nome: "Controladoria e Planejamento",
+    grupos: [
+      { titulo: "Orçamento", itens: ["Orçamento anual (OBZ / colaborativo)", "Rolling forecast (mensal / trimestral)"] },
+      { titulo: "Análise de Desempenho", itens: ["DRE gerencial, margem por produto/cliente", "Dashboards e relato à diretoria/conselho", "KPIs"] },
+      { titulo: "Políticas & Controles Internos", itens: ["Rateios e centros de custo", "Análises de custo", "Controle de SaaS", "Controle de processos e automações"] },
+    ],
+  },
+  {
+    nome: "Tesouraria",
+    grupos: [
+      { titulo: "Gestão de Fluxo de Caixa", itens: ["Conciliação diária, posição de caixa e aplicações de curto prazo", "Meios de pagamento: PIX, boletos, cartões, gateways/adquirentes", "Prioridade de pagamentos conforme política de liquidez"] },
+      { titulo: "Contas a Pagar", itens: ["Conferência fiscal/contratual, agendamento e execução de pagamentos", "Compras", "Compliance de alçadas de aprovação"] },
+      { titulo: "Contas a Receber", itens: ["Faturamento, geração de cobranças e baixa de títulos", "Cobrança e inadimplência (régua, negativação, protesto)"] },
+      { titulo: "Relacionamento Bancário", itens: ["Empréstimos, linhas e garantias", "Abertura e fechamento de contas", "Manutenção de cartões de crédito e conta corrente"] },
+    ],
+  },
+];
+
 const TABS = [
   { key: "org", label: "Organograma", icon: Network },
   { key: "funcoes", label: "Funções", icon: ListChecks },
   { key: "vagas", label: "Vagas & Expansão", icon: UserPlus },
   { key: "rituais", label: "Rituais", icon: CalendarDays },
   { key: "ia", label: "IA & Automação", icon: Bot },
+  { key: "padrao", label: "Padrão de Mercado", icon: Layers },
 ] as const;
 type TabKey = (typeof TABS)[number]["key"];
 
@@ -175,6 +229,33 @@ function Piramide({ sel, onSel }: { sel: number; onSel: (n: number) => void }) {
   );
 }
 
+// Pirâmide truncada das obrigações macro (3 faixas). Clique numa faixa.
+function PiramideMacro({ sel, onSel }: { sel: number; onSel: (i: number) => void }) {
+  const CX = 232, yTop = 34, H = 244, GAP = 5, topHalf = 74, botHalf = 205;
+  const halfAt = (y: number) => topHalf + (botHalf - topHalf) * ((y - yTop) / H);
+  const bandH = (H - GAP * 2) / 3;
+  return (
+    <svg viewBox="0 0 464 322" className="mx-auto w-full max-w-[440px]">
+      <text x={18} y={yTop + bandH} fontSize={8.5} letterSpacing={2} fill="hsl(var(--muted-foreground))" transform={`rotate(-90 18 ${yTop + bandH})`} textAnchor="middle">LIDERADO PELO CFO</text>
+      <text x={452} y={yTop + H - bandH} fontSize={8.5} letterSpacing={2} fill="hsl(var(--muted-foreground))" transform={`rotate(-90 452 ${yTop + H - bandH})`} textAnchor="middle">LIDERADO PELO CONTROLLER</text>
+      {[0, 1, 2].map((k) => {
+        const yA = yTop + k * (bandH + GAP), yB = yA + bandH;
+        const ha = halfAt(yA), hb = halfAt(yB);
+        const pts = `${CX - ha},${yA} ${CX + ha},${yA} ${CX + hb},${yB} ${CX - hb},${yB}`;
+        const m = OBRIGACOES_MACRO[k];
+        const cy = (yA + yB) / 2;
+        return (
+          <g key={k} onClick={() => onSel(k)} className="cursor-pointer transition-opacity hover:opacity-90">
+            <polygon points={pts} fill={MACRO_COR[k]} stroke={sel === k ? "hsl(var(--foreground))" : "transparent"} strokeWidth={2} />
+            <text x={CX} y={cy - 3} fontSize={8.5} letterSpacing={1.5} fontWeight={600} fill="rgba(255,255,255,.75)" textAnchor="middle">{m.eyebrow}</text>
+            <text x={CX} y={cy + 12} fontSize={k === 2 ? 11 : 14} fontWeight={700} fill="white" textAnchor="middle">{m.role}</text>
+          </g>
+        );
+      })}
+    </svg>
+  );
+}
+
 /* ================================ componente ================================ */
 export default function TimeFinanceiro() {
   const [cargos, setCargos] = useState<Cargo[]>([]);
@@ -183,7 +264,21 @@ export default function TimeFinanceiro() {
   const [tab, setTab] = useState<TabKey>("org");
   const [selCargoId, setSelCargoId] = useState<string | null>(null);
   const [nivelSel, setNivelSel] = useState(NIVEL_ATUAL);
+  const [macroSel, setMacroSel] = useState(0);
   const [novoPasso, setNovoPasso] = useState("");
+
+  // Estrutura padrão: todos os grupos abrem por padrão sempre que a página carrega.
+  const [gruposAbertos, setGruposAbertos] = useState<Set<string>>(() => {
+    const s = new Set<string>();
+    PILARES.forEach((p) => p.grupos.forEach((g) => s.add(`${p.nome}::${g.titulo}`)));
+    return s;
+  });
+  const toggleGrupo = (key: string) =>
+    setGruposAbertos((prev) => {
+      const next = new Set(prev);
+      next.has(key) ? next.delete(key) : next.add(key);
+      return next;
+    });
 
   // diálogo de cargo/vaga (criar + editar)
   const vazio = { titulo: "", pessoa: "", senioridade: "Pleno", status: "vaga_aberta" as Status, prioridade: "Alta", custo_mensal: "", alvo: "", parent_id: "" };
@@ -667,6 +762,93 @@ export default function TimeFinanceiro() {
                     N{a.nivel}
                   </span>
                   <span className="truncate text-[12px] text-foreground" title={a.nome}>{a.nome}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ---------------- Padrão de Mercado ---------------- */}
+      {tab === "padrao" && (
+        <div className="space-y-3">
+          <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
+            {/* Pirâmide de obrigações macro */}
+            <div className="card-surface bg-secondary/30 p-5">
+              <div className="text-center">
+                <div className="text-[14px] font-bold tracking-wide text-foreground">OBRIGAÇÕES MACRO DO DEPARTAMENTO FINANCEIRO</div>
+                <div className="text-[11.5px] text-primary">Referência de mercado — quem responde por quê</div>
+              </div>
+              <div className="mt-3"><PiramideMacro sel={macroSel} onSel={setMacroSel} /></div>
+              <p className="mt-1 text-center text-[11.5px] text-muted-foreground">Clique em uma camada para ver as obrigações</p>
+            </div>
+
+            {/* Detalhe da camada selecionada */}
+            {(() => {
+              const m = OBRIGACOES_MACRO[macroSel];
+              return (
+                <div className="card-surface flex flex-col p-5">
+                  <div className="flex flex-wrap items-center gap-2.5">
+                    <span className="rounded px-2 py-0.5 text-[10px] font-bold tracking-wider text-white" style={{ background: MACRO_COR[macroSel] }}>{m.eyebrow}</span>
+                    <span className="text-[17px] font-bold text-foreground">{m.role}</span>
+                  </div>
+                  <p className="mt-1.5 text-[13px] text-muted-foreground">{m.subtitle}</p>
+                  <div className="mt-4 grid grid-cols-1 gap-x-6 gap-y-2 sm:grid-cols-2">
+                    {m.bullets.map((b, i) => (
+                      <div key={i} className="flex items-start gap-2 text-[13px] text-foreground">
+                        <span className="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full" style={{ background: MACRO_COR[macroSel] }} />
+                        {b}
+                      </div>
+                    ))}
+                  </div>
+                  <div className="mt-auto flex items-center gap-2 border-t border-border/60 pt-3 text-[12.5px] text-muted-foreground">
+                    <ShieldCheck className="h-4 w-4" style={{ color: MACRO_COR[macroSel] }} /> {m.footer}
+                  </div>
+                </div>
+              );
+            })()}
+          </div>
+
+          {/* Estrutura padrão em 3 pilares */}
+          <div className="card-surface p-4">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <Network className="h-4 w-4 text-primary" />
+                <span className="text-[14px] font-semibold">Estrutura padrão de um departamento financeiro</span>
+              </div>
+              <span className="text-[11.5px] text-muted-foreground">Diretoria Financeira → 3 pilares · clique para abrir as atribuições</span>
+            </div>
+            <div className="mt-3 grid grid-cols-1 items-start gap-3 lg:grid-cols-3">
+              {PILARES.map((p) => (
+                <div key={p.nome} className="overflow-hidden rounded-lg border border-border">
+                  <div className="flex items-center justify-between border-b-2 border-primary px-3 py-2.5">
+                    <span className="text-[13.5px] font-bold text-primary">{p.nome}</span>
+                    <span className="num rounded bg-primary/10 px-1.5 text-[11px] font-semibold text-primary">{p.grupos.length}</span>
+                  </div>
+                  <div className="space-y-2 p-2.5">
+                    {p.grupos.map((g) => {
+                      const key = `${p.nome}::${g.titulo}`;
+                      const aberto = gruposAbertos.has(key);
+                      return (
+                        <div key={key} className="overflow-hidden rounded-lg border border-primary/15">
+                          <button onClick={() => toggleGrupo(key)} className="flex w-full items-center gap-2 bg-primary/5 px-2.5 py-2 text-left transition-colors hover:bg-primary/10">
+                            <ChevronDown className={cn("h-3.5 w-3.5 shrink-0 text-primary transition-transform", !aberto && "-rotate-90")} />
+                            <span className="text-[12.5px] font-semibold text-foreground">{g.titulo}</span>
+                          </button>
+                          {aberto && (
+                            <ul className="space-y-1 px-3 py-2">
+                              {g.itens.map((it, j) => (
+                                <li key={j} className="flex items-start gap-2 text-[12px] leading-relaxed text-muted-foreground">
+                                  <span className="mt-1.5 h-1 w-1 shrink-0 rounded-full bg-muted-foreground/50" />
+                                  {it}
+                                </li>
+                              ))}
+                            </ul>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
                 </div>
               ))}
             </div>

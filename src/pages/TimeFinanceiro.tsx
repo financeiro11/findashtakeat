@@ -203,6 +203,11 @@ function CargoCard({ c, selected, onClick }: { c: Cargo; selected: boolean; onCl
               EDITADO
             </span>
           )}
+          {c.alvo && (
+            <span className="num shrink-0 rounded bg-primary/10 px-1 py-0.5 text-[9px] font-bold text-primary" title={`Card específico do ano de ${c.alvo}`}>
+              {c.alvo}
+            </span>
+          )}
         </div>
         {c.custo_mensal != null && c.status !== "efetivo" && (
           <span className="num shrink-0 text-[11px] font-semibold text-foreground">{fmtBRL0(c.custo_mensal)}/mês</span>
@@ -379,7 +384,17 @@ export default function TimeFinanceiro() {
   useEffect(() => { carregar(); }, []);
 
   // Cargos do ano selecionado (o organograma/KPIs/funções/vagas são por ano).
-  const cargosDoAno = useMemo(() => cargos.filter((c) => c.ano === ano), [cargos, ano]);
+  // Um cargo com "alvo" (ano) definido só aparece no snapshot daquele ano; sem alvo (time
+  // efetivo/permanente) aparece em todos os anos. As cópias por linhagem existem em cada ano
+  // — o alvo esconde as dos anos que não são o dele.
+  const cargosDoAno = useMemo(
+    () => cargos.filter((c) => {
+      if (c.ano !== ano) return false;
+      const av = c.alvo ? Number(c.alvo) : null;
+      return av == null || Number.isNaN(av) || av === ano;
+    }),
+    [cargos, ano],
+  );
   const anoAnterior = ano - 1;
   const temAnoAnterior = cargos.some((c) => c.ano === anoAnterior);
 
@@ -449,15 +464,32 @@ export default function TimeFinanceiro() {
         for (const s of cargos.filter((c) => c.chave === alvo.chave && c.ano > alvo.ano && !c.desacoplado)) {
           await sb.from("time_cargos").update({ ...meta, parent_id: parentNoAno(s.ano), atualizado_em: new Date().toISOString() }).eq("id", s.id);
         }
+        // O "ano do card" (alvo) é uma propriedade da linhagem inteira — sincroniza em TODAS
+        // as cópias (inclusive anteriores/desacopladas), pra "mudar de ano" mover o card de
+        // fato, sem deixar cópia órfã presa em outro ano.
+        await sb.from("time_cargos").update({ alvo: meta.alvo }).eq("chave", alvo.chave);
+        // Garante que exista a cópia no ano-alvo (senão o card sumiria de todos os anos).
+        const alvoAno = meta.alvo && ANOS.includes(Number(meta.alvo)) ? Number(meta.alvo) : null;
+        if (alvoAno && !cargos.some((c) => c.chave === alvo.chave && c.ano === alvoAno)) {
+          await sb.from("time_cargos").insert([{
+            ...meta, status: form.status, parent_id: parentNoAno(alvoAno),
+            atribuicoes: alvo.atribuicoes, ordem: alvo.ordem, ano: alvoAno, chave: alvo.chave, desacoplado: false,
+          }]);
+        }
         if (form.status === "efetivo" && alvo.status !== "efetivo") await finalizarTransferencias(editId, alvo.ano);
       }
     } else {
-      // cria no ano atual + espelha para os anos seguintes (mesma linhagem)
+      // Cria a linhagem. Sem alvo, o cargo existe do ano atual em diante (papel novo que
+      // passa a existir agora). Com alvo, garante cópia desde o ano-alvo (mesmo anterior ao
+      // atual) até 2028 — assim o card aparece no ano marcado, independentemente de onde foi
+      // criado. parentNoAno(ano) resolve para o próprio parent escolhido no ano atual.
       const chave = crypto.randomUUID();
-      const rows: any[] = [{ ...meta, status: form.status, parent_id: form.parent_id || null, atribuicoes: [], ordem: cargosDoAno.length, ano, chave, desacoplado: false }];
-      for (const L of ANOS.filter((a) => a > ano)) {
-        rows.push({ ...meta, status: form.status, parent_id: parentNoAno(L), atribuicoes: [], ordem: cargosDoAno.length, ano: L, chave, desacoplado: false });
-      }
+      const alvoAno = meta.alvo && ANOS.includes(Number(meta.alvo)) ? Number(meta.alvo) : null;
+      const desde = alvoAno ? Math.min(ano, alvoAno) : ano;
+      const rows: any[] = ANOS.filter((a) => a >= desde).map((L) => ({
+        ...meta, status: form.status, parent_id: parentNoAno(L),
+        atribuicoes: [], ordem: cargosDoAno.length, ano: L, chave, desacoplado: false,
+      }));
       ({ error } = await sb.from("time_cargos").insert(rows));
     }
     setSalvando(false);
@@ -1248,8 +1280,15 @@ export default function TimeFinanceiro() {
                 <Input value={form.custo_mensal} onChange={(e) => setForm({ ...form, custo_mensal: e.target.value })} placeholder="8000" className="mt-1 h-9" inputMode="decimal" />
               </div>
               <div>
-                <Label className="text-[12px]">Alvo (ano)</Label>
-                <Input value={form.alvo} onChange={(e) => setForm({ ...form, alvo: e.target.value })} placeholder="2026" className="mt-1 h-9" />
+                <Label className="text-[12px]">Ano do card</Label>
+                <select
+                  value={form.alvo}
+                  onChange={(e) => setForm({ ...form, alvo: e.target.value })}
+                  className="mt-1 h-9 w-full rounded-md border border-border bg-card px-2 text-[13px] outline-none focus:ring-1 focus:ring-primary"
+                >
+                  <option value="">Todos os anos</option>
+                  {ANOS.map((a) => <option key={a} value={String(a)}>{a}</option>)}
+                </select>
               </div>
             </div>
             <div>

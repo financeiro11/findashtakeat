@@ -175,6 +175,33 @@ export type Database = {
         }
         Relationships: []
       }
+      assinaturas_snapshot: {
+        Row: {
+          competencia: string
+          dados: Json
+          gerado_em: string
+          insights: Json | null
+          mes_label: string
+          sincronizado_em: string | null
+        }
+        Insert: {
+          competencia: string
+          dados: Json
+          gerado_em?: string
+          insights?: Json | null
+          mes_label: string
+          sincronizado_em?: string | null
+        }
+        Update: {
+          competencia?: string
+          dados?: Json
+          gerado_em?: string
+          insights?: Json | null
+          mes_label?: string
+          sincronizado_em?: string | null
+        }
+        Relationships: []
+      }
       auditoria: {
         Row: {
           area: string
@@ -452,6 +479,7 @@ export type Database = {
           horas_mes: number | null
           id: string
           impacto: string | null
+          nivel: number | null
           observacao: string | null
           ordem: number
           responsavel: string | null
@@ -470,6 +498,7 @@ export type Database = {
           horas_mes?: number | null
           id?: string
           impacto?: string | null
+          nivel?: number | null
           observacao?: string | null
           ordem?: number
           responsavel?: string | null
@@ -488,6 +517,7 @@ export type Database = {
           horas_mes?: number | null
           id?: string
           impacto?: string | null
+          nivel?: number | null
           observacao?: string | null
           ordem?: number
           responsavel?: string | null
@@ -1460,6 +1490,24 @@ export type Database = {
           criado_em?: string
           name?: string
           token?: string
+        }
+        Relationships: []
+      }
+      investimentos_snapshot: {
+        Row: {
+          atualizado_em: string
+          dados: Json
+          entity: string
+        }
+        Insert: {
+          atualizado_em?: string
+          dados: Json
+          entity: string
+        }
+        Update: {
+          atualizado_em?: string
+          dados?: Json
+          entity?: string
         }
         Relationships: []
       }
@@ -3233,6 +3281,131 @@ export type Database = {
           tarefa_titulo?: string | null
           usuario?: string | null
           usuario_id?: string | null
+        }
+        Relationships: []
+      }
+      time_cargos: {
+        Row: {
+          acumulo: boolean
+          alvo: string | null
+          ano: number
+          atribuicoes: Json
+          atualizado_em: string
+          chave: string
+          criado_em: string
+          custo_mensal: number | null
+          desacoplado: boolean
+          id: string
+          ordem: number
+          parent_id: string | null
+          pessoa: string | null
+          prioridade: string | null
+          senioridade: string | null
+          status: string
+          titulo: string
+        }
+        Insert: {
+          acumulo?: boolean
+          alvo?: string | null
+          ano?: number
+          atribuicoes?: Json
+          atualizado_em?: string
+          chave?: string
+          criado_em?: string
+          custo_mensal?: number | null
+          desacoplado?: boolean
+          id?: string
+          ordem?: number
+          parent_id?: string | null
+          pessoa?: string | null
+          prioridade?: string | null
+          senioridade?: string | null
+          status?: string
+          titulo: string
+        }
+        Update: {
+          acumulo?: boolean
+          alvo?: string | null
+          ano?: number
+          atribuicoes?: Json
+          atualizado_em?: string
+          chave?: string
+          criado_em?: string
+          custo_mensal?: number | null
+          desacoplado?: boolean
+          id?: string
+          ordem?: number
+          parent_id?: string | null
+          pessoa?: string | null
+          prioridade?: string | null
+          senioridade?: string | null
+          status?: string
+          titulo?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "time_cargos_parent_id_fkey"
+            columns: ["parent_id"]
+            isOneToOne: false
+            referencedRelation: "time_cargos"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      time_passos: {
+        Row: {
+          criado_em: string
+          done: boolean
+          id: string
+          ordem: number
+          texto: string
+        }
+        Insert: {
+          criado_em?: string
+          done?: boolean
+          id?: string
+          ordem?: number
+          texto: string
+        }
+        Update: {
+          criado_em?: string
+          done?: boolean
+          id?: string
+          ordem?: number
+          texto?: string
+        }
+        Relationships: []
+      }
+      time_rituais: {
+        Row: {
+          criado_em: string
+          descricao: string | null
+          id: string
+          ordem: number
+          pauta: Json
+          periodicidade: string | null
+          tipo: string | null
+          titulo: string
+        }
+        Insert: {
+          criado_em?: string
+          descricao?: string | null
+          id?: string
+          ordem?: number
+          pauta?: Json
+          periodicidade?: string | null
+          tipo?: string | null
+          titulo: string
+        }
+        Update: {
+          criado_em?: string
+          descricao?: string | null
+          id?: string
+          ordem?: number
+          pauta?: Json
+          periodicidade?: string | null
+          tipo?: string | null
+          titulo?: string
         }
         Relationships: []
       }

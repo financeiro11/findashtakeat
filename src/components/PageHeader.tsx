@@ -6,6 +6,8 @@ import { toast } from "sonner";
 const ROUTE_MAP: Record<string, { crumbs: string[]; context?: string }> = {
   "/": { crumbs: ["Início", "Dashboard"], context: "Visão consolidada · DRE + DFC" },
   "/caixa": { crumbs: ["Início", "Caixa"], context: "Panorama do caixa · Omie" },
+  "/caixa/conta-corrente/sicoob": { crumbs: ["Início", "Caixa", "Conta Corrente"], context: "Extrato Sicoob" },
+  "/caixa/conta-corrente/asaas": { crumbs: ["Início", "Caixa", "Conta Corrente"], context: "Extrato Asaas" },
   "/briefing": { crumbs: ["Início", "Briefing Diário"], context: "Resumo do dia · agenda · e-mails · notícias" },
   "/design-system": { crumbs: ["Início", "Design System"] },
   "/de-para": { crumbs: ["Configurações", "DE_PARA"], context: "Mapeamento de classificações" },

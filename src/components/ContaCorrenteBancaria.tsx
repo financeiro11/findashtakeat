@@ -3,18 +3,19 @@ import { supabase } from "@/integrations/supabase/client";
 import { toast } from "sonner";
 import { SectionCard } from "@/components/ui/section-card";
 import { cn } from "@/lib/utils";
-import { Landmark, Loader2, AlertTriangle, Search } from "lucide-react";
+import { Loader2, AlertTriangle, Search } from "lucide-react";
 
-/* Seção "Conta Corrente" da aba Caixa: alterna entre bancos (Sicoob / Asaas) num
-   seletor de abas. Cada fonte tem duas tabelas de mesmo formato, populadas por uma
-   automação externa (n8n) — o frontend apenas LÊ (nunca chama a API do banco). */
+/* Extrato de conta corrente de um banco (Sicoob / Asaas), na página própria aberta
+   pelo seletor do Caixa. Cada fonte tem duas tabelas de mesmo formato, populadas por
+   uma automação externa (n8n) — o frontend apenas LÊ (nunca chama a API do banco).
+   O seletor entre bancos vive na página; aqui só se exibe a fonte recebida por prop. */
 
-// Fontes disponíveis no seletor. Extrato e saldo têm o MESMO schema em todas.
-const FONTES = [
+// Fontes disponíveis. Extrato e saldo têm o MESMO schema em todas.
+export const FONTES_CC = [
   { key: "sicoob", nome: "Sicoob", tabelaSaldo: "sicoob_saldo", tabelaExtrato: "sicoob_extrato" },
   { key: "asaas", nome: "Asaas", tabelaSaldo: "asaas_saldo", tabelaExtrato: "asaas_extrato" },
 ] as const;
-type FonteKey = (typeof FONTES)[number]["key"];
+export type FonteCCKey = (typeof FONTES_CC)[number]["key"];
 
 /* ------------------------------ formatters ------------------------------ */
 // Formato BR com centavos: R$ 1.234,56.
@@ -54,8 +55,7 @@ type FiltroTipo = "todos" | "credito" | "debito";
 const sb = supabase as any;
 const eCredito = (t: string | null) => (t ?? "").toLowerCase().startsWith("cred");
 
-export default function ContaCorrenteBancaria() {
-  const [fonteKey, setFonteKey] = useState<FonteKey>("sicoob");
+export default function ContaCorrenteBancaria({ banco }: { banco: FonteCCKey }) {
   const [saldo, setSaldo] = useState<Saldo | null>(null);
   const [extrato, setExtrato] = useState<Lancamento[]>([]);
   const [loading, setLoading] = useState(true);
@@ -64,7 +64,7 @@ export default function ContaCorrenteBancaria() {
   const [tipo, setTipo] = useState<FiltroTipo>("todos");
   const [busca, setBusca] = useState("");
 
-  const fonte = FONTES.find((f) => f.key === fonteKey)!;
+  const fonte = FONTES_CC.find((f) => f.key === banco) ?? FONTES_CC[0];
 
   // Recarrega ao trocar de banco. `cancelado` evita aplicar resposta de uma fonte antiga.
   useEffect(() => {
@@ -130,31 +130,6 @@ export default function ContaCorrenteBancaria() {
 
   return (
     <div className="space-y-3">
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <div className="flex items-center gap-2">
-          <Landmark className="h-4 w-4 text-primary" />
-          <h2 className="text-[15px] font-semibold tracking-tight text-foreground">Conta Corrente</h2>
-          <span className="inline-flex items-center gap-1 rounded-full bg-primary/10 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider text-primary">
-            <span className="h-1.5 w-1.5 rounded-full bg-primary" /> {fonte.nome}
-          </span>
-        </div>
-        {/* Seletor de banco (Sicoob / Asaas) — mesmo estilo das abas do Caixa */}
-        <div className="flex rounded-md border border-border bg-card p-0.5">
-          {FONTES.map((f) => (
-            <button
-              key={f.key}
-              onClick={() => setFonteKey(f.key)}
-              className={cn(
-                "rounded px-3 py-1 text-[12px] font-medium transition",
-                fonteKey === f.key ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground",
-              )}
-            >
-              {f.nome}
-            </button>
-          ))}
-        </div>
-      </div>
-
       <div className="grid grid-cols-1 gap-3 lg:grid-cols-3">
         {/* Card de saldo */}
         <SectionCard title="Saldo em conta corrente" subtitle={saldo?.conta ? `Conta ${saldo.conta}` : "Sincronizado via automação"}>

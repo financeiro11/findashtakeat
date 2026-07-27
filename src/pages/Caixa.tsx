@@ -6,13 +6,14 @@ import { cn } from "@/lib/utils";
 import {
   ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip, Cell,
 } from "recharts";
-import { RefreshCw, Loader2, MessageCircle, Eye, EyeOff, Maximize2, Search, ChevronDown } from "lucide-react";
+import { RefreshCw, Loader2, MessageCircle, Eye, EyeOff, Maximize2, Search, ChevronDown, Landmark, ArrowRight } from "lucide-react";
+import { useNavigate } from "react-router-dom";
 import { fmtBRLShort, fmtPct } from "@/pages/dashboard/format";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator } from "@/components/ui/dropdown-menu";
 import { SyncOmieButtons } from "@/components/SyncOmieButtons";
 import RelatorioCaixaModal from "@/components/RelatorioCaixaModal";
-import ContaCorrenteBancaria from "@/components/ContaCorrenteBancaria";
+import { FONTES_CC } from "@/components/ContaCorrenteBancaria";
 
 /* ------------------------------ formatters ------------------------------ */
 const fmtBRL = (n: number) =>
@@ -93,6 +94,7 @@ type CapitalGiro = {
 const sb = supabase as any;
 
 export default function Caixa() {
+  const navigate = useNavigate();
   const [snap, setSnap] = useState<Snapshot | null>(null);
   const [cg, setCg] = useState<CapitalGiro | null>(null);
   const [loading, setLoading] = useState(true);
@@ -393,6 +395,22 @@ export default function Caixa() {
 
   return (
     <div className="space-y-4 p-4 md:p-6">
+      {/* ---------------- Menu de conta corrente (topo) — abre a página de extrato por banco ---------------- */}
+      <div className="flex flex-wrap items-center gap-2 rounded-lg border border-border bg-card px-3 py-2">
+        <span className="flex items-center gap-1.5 text-[12px] font-medium text-muted-foreground">
+          <Landmark className="h-3.5 w-3.5" /> Extrato de conta corrente:
+        </span>
+        {FONTES_CC.map((f) => (
+          <button
+            key={f.key}
+            onClick={() => navigate(`/caixa/conta-corrente/${f.key}`)}
+            className="inline-flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-[12.5px] font-medium text-foreground transition hover:bg-secondary"
+          >
+            {f.nome} <ArrowRight className="h-3.5 w-3.5 text-muted-foreground" />
+          </button>
+        ))}
+      </div>
+
       {/* ---------------- Cabeçalho ---------------- */}
       <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
         <div className="min-w-0">
@@ -862,9 +880,6 @@ export default function Caixa() {
           </div>
         </SectionCard>
       </div>
-
-      {/* ---------------- Conta Corrente · Sicoob / Asaas (fonte: automação n8n, só leitura) ---------------- */}
-      <ContaCorrenteBancaria />
 
       <div className="pt-1 text-center text-[11px] text-muted-foreground">
         Dados sincronizados do Omie ERP às {fmtHora(snap.sincronizado_em)} · contas correntes, contas a pagar e contas a receber

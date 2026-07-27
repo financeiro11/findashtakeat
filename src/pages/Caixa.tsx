@@ -12,7 +12,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/u
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator } from "@/components/ui/dropdown-menu";
 import { SyncOmieButtons } from "@/components/SyncOmieButtons";
 import RelatorioCaixaModal from "@/components/RelatorioCaixaModal";
-import SicoobContaCorrente from "@/components/SicoobContaCorrente";
+import ContaCorrenteBancaria from "@/components/ContaCorrenteBancaria";
 
 /* ------------------------------ formatters ------------------------------ */
 const fmtBRL = (n: number) =>
@@ -863,8 +863,8 @@ export default function Caixa() {
         </SectionCard>
       </div>
 
-      {/* ---------------- Sicoob — Conta Corrente (fonte: automação n8n, só leitura) ---------------- */}
-      <SicoobContaCorrente />
+      {/* ---------------- Conta Corrente · Sicoob / Asaas (fonte: automação n8n, só leitura) ---------------- */}
+      <ContaCorrenteBancaria />
 
       <div className="pt-1 text-center text-[11px] text-muted-foreground">
         Dados sincronizados do Omie ERP às {fmtHora(snap.sincronizado_em)} · contas correntes, contas a pagar e contas a receber

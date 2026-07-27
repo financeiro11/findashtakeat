@@ -5,8 +5,19 @@ import { SectionCard } from "@/components/ui/section-card";
 import { cn } from "@/lib/utils";
 import { Landmark, Loader2, AlertTriangle, Search } from "lucide-react";
 
+/* Seção "Conta Corrente" da aba Caixa: alterna entre bancos (Sicoob / Asaas) num
+   seletor de abas. Cada fonte tem duas tabelas de mesmo formato, populadas por uma
+   automação externa (n8n) — o frontend apenas LÊ (nunca chama a API do banco). */
+
+// Fontes disponíveis no seletor. Extrato e saldo têm o MESMO schema em todas.
+const FONTES = [
+  { key: "sicoob", nome: "Sicoob", tabelaSaldo: "sicoob_saldo", tabelaExtrato: "sicoob_extrato" },
+  { key: "asaas", nome: "Asaas", tabelaSaldo: "asaas_saldo", tabelaExtrato: "asaas_extrato" },
+] as const;
+type FonteKey = (typeof FONTES)[number]["key"];
+
 /* ------------------------------ formatters ------------------------------ */
-// Formato BR com centavos: R$ 1.234,56 (a área Omie do Caixa usa o mesmo padrão).
+// Formato BR com centavos: R$ 1.234,56.
 const fmtBRL = (n: number) =>
   (n ?? 0).toLocaleString("pt-BR", { style: "currency", currency: "BRL", minimumFractionDigits: 2, maximumFractionDigits: 2 });
 // data_movimento chega como "AAAA-MM-DD" (date do Postgres) → "DD/MM/AAAA".
@@ -43,7 +54,8 @@ type FiltroTipo = "todos" | "credito" | "debito";
 const sb = supabase as any;
 const eCredito = (t: string | null) => (t ?? "").toLowerCase().startsWith("cred");
 
-export default function SicoobContaCorrente() {
+export default function ContaCorrenteBancaria() {
+  const [fonteKey, setFonteKey] = useState<FonteKey>("sicoob");
   const [saldo, setSaldo] = useState<Saldo | null>(null);
   const [extrato, setExtrato] = useState<Lancamento[]>([]);
   const [loading, setLoading] = useState(true);
@@ -52,28 +64,36 @@ export default function SicoobContaCorrente() {
   const [tipo, setTipo] = useState<FiltroTipo>("todos");
   const [busca, setBusca] = useState("");
 
+  const fonte = FONTES.find((f) => f.key === fonteKey)!;
+
+  // Recarrega ao trocar de banco. `cancelado` evita aplicar resposta de uma fonte antiga.
   useEffect(() => {
+    let cancelado = false;
     (async () => {
       setLoading(true);
+      setSaldo(null);
+      setExtrato([]);
       const [saldoRes, extratoRes] = await Promise.all([
         // Saldo atual = linha com maior atualizado_em (a automação só insere snapshots).
-        sb.from("sicoob_saldo")
+        sb.from(fonte.tabelaSaldo)
           .select("conta,saldo,saldo_disponivel,saldo_bloqueado,atualizado_em")
           .order("atualizado_em", { ascending: false })
           .limit(1)
           .maybeSingle(),
-        sb.from("sicoob_extrato")
+        sb.from(fonte.tabelaExtrato)
           .select("id,id_transacao,data_movimento,tipo,valor,historico,contraparte_nome,contraparte_documento,numero_documento")
           .order("data_movimento", { ascending: false })
           .limit(2000),
       ]);
-      if (saldoRes.error) toast.error("Falha ao carregar o saldo Sicoob: " + saldoRes.error.message);
-      if (extratoRes.error) toast.error("Falha ao carregar o extrato Sicoob: " + extratoRes.error.message);
+      if (cancelado) return;
+      if (saldoRes.error) toast.error(`Falha ao carregar o saldo ${fonte.nome}: ` + saldoRes.error.message);
+      if (extratoRes.error) toast.error(`Falha ao carregar o extrato ${fonte.nome}: ` + extratoRes.error.message);
       setSaldo((saldoRes.data as Saldo) ?? null);
       setExtrato((extratoRes.data as Lancamento[]) ?? []);
       setLoading(false);
     })();
-  }, []);
+    return () => { cancelado = true; };
+  }, [fonte.tabelaSaldo, fonte.tabelaExtrato, fonte.nome]);
 
   // "dado desatualizado" quando o último snapshot tem mais de 24h.
   const desatualizado = useMemo(() => {
@@ -110,12 +130,29 @@ export default function SicoobContaCorrente() {
 
   return (
     <div className="space-y-3">
-      <div className="flex items-center gap-2">
-        <Landmark className="h-4 w-4 text-primary" />
-        <h2 className="text-[15px] font-semibold tracking-tight text-foreground">Sicoob — Conta Corrente</h2>
-        <span className="inline-flex items-center gap-1 rounded-full bg-primary/10 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider text-primary">
-          <span className="h-1.5 w-1.5 rounded-full bg-primary" /> Sicoob
-        </span>
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="flex items-center gap-2">
+          <Landmark className="h-4 w-4 text-primary" />
+          <h2 className="text-[15px] font-semibold tracking-tight text-foreground">Conta Corrente</h2>
+          <span className="inline-flex items-center gap-1 rounded-full bg-primary/10 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider text-primary">
+            <span className="h-1.5 w-1.5 rounded-full bg-primary" /> {fonte.nome}
+          </span>
+        </div>
+        {/* Seletor de banco (Sicoob / Asaas) — mesmo estilo das abas do Caixa */}
+        <div className="flex rounded-md border border-border bg-card p-0.5">
+          {FONTES.map((f) => (
+            <button
+              key={f.key}
+              onClick={() => setFonteKey(f.key)}
+              className={cn(
+                "rounded px-3 py-1 text-[12px] font-medium transition",
+                fonteKey === f.key ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground",
+              )}
+            >
+              {f.nome}
+            </button>
+          ))}
+        </div>
       </div>
 
       <div className="grid grid-cols-1 gap-3 lg:grid-cols-3">
@@ -126,7 +163,7 @@ export default function SicoobContaCorrente() {
               <Loader2 className="mr-2 h-4 w-4 animate-spin" /> Carregando…
             </div>
           ) : !saldo ? (
-            <div className="py-6 text-center text-[12.5px] text-muted-foreground">Nenhum saldo Sicoob sincronizado ainda.</div>
+            <div className="py-6 text-center text-[12.5px] text-muted-foreground">Nenhum saldo {fonte.nome} sincronizado ainda.</div>
           ) : (
             <div className="space-y-3">
               <div>
@@ -183,7 +220,7 @@ export default function SicoobContaCorrente() {
       {/* Extrato */}
       <SectionCard
         title="Extrato da conta corrente"
-        subtitle="Lançamentos do Sicoob · crédito em verde, débito em vermelho"
+        subtitle={`Lançamentos do ${fonte.nome} · crédito em verde, débito em vermelho`}
         padded={false}
         actions={
           <div className="flex flex-wrap items-center gap-2">

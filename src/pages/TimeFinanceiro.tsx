@@ -9,7 +9,7 @@ import AutomacoesCatalogo from "@/pages/AutomacoesCatalogo";
 import {
   Loader2, Plus, Pencil, Trash2, X, Users, UserPlus, Network, ListChecks,
   CalendarDays, Bot, Target, Zap, Clock, ArrowRight, Layers, ChevronDown, ShieldCheck,
-  Download, Copy, ArrowRightLeft,
+  Download, Copy, ArrowRightLeft, Check, Lock, Wrench, Waypoints, Calculator, Landmark, Rocket,
 } from "lucide-react";
 
 // ============================================================================
@@ -144,10 +144,82 @@ const PILARES: { nome: string; grupos: { titulo: string; itens: string[] }[] }[]
   },
 ];
 
+/* ---- Escopo do Financeiro: árvore de competências (skill tree) ---- */
+type EscopoStatus = "hoje" | "construindo" | "futuro";
+type Escopo = {
+  id: string; pilar: string; titulo: string; descricao: string | null;
+  status: EscopoStatus; parent_id: string | null; responsavel: string | null; ordem: number;
+};
+const PILARES_ESCOPO: { nome: string; cor: string; Icon: any; sub: string }[] = [
+  { nome: "Tesouraria",    cor: "hsl(162 60% 36%)", Icon: Landmark,   sub: "Caixa, pagamentos e recebimentos" },
+  { nome: "Contabilidade", cor: "hsl(221 60% 52%)", Icon: Calculator, sub: "Contábil, fiscal, DP e societário" },
+  { nome: "Controladoria", cor: "hsl(0 72% 51%)",   Icon: Target,     sub: "Relatórios, orçamento e FP&A" },
+  { nome: "Estratégico",   cor: "hsl(38 92% 50%)",  Icon: Rocket,     sub: "Captação, pricing, M&A e IR" },
+];
+const ESCOPO_META: Record<EscopoStatus, { label: string; chip: string; dot: string; Icon: any }> = {
+  hoje:        { label: "Hoje",          chip: "bg-success/10 text-success",                          dot: "bg-success",             Icon: Check },
+  construindo: { label: "Em construção", chip: "bg-amber-500/15 text-amber-600 dark:text-amber-400",  dot: "bg-amber-500",           Icon: Wrench },
+  futuro:      { label: "Futuro",        chip: "bg-muted text-muted-foreground",                      dot: "bg-muted-foreground/50", Icon: Lock },
+};
+// Peso de cada status na barra de cobertura (0..1): dominado=1, desbloqueando=0.5.
+const escScore = (s: EscopoStatus) => (s === "hoje" ? 1 : s === "construindo" ? 0.5 : 0);
+
+// Nó recursivo da árvore de competências (tronco → competências).
+function EscopoNode({ e, all, cor, onEdit, onAvancar }: {
+  e: Escopo; all: Escopo[]; cor: string;
+  onEdit: (e: Escopo) => void; onAvancar: (e: Escopo) => void;
+}) {
+  const m = ESCOPO_META[e.status];
+  const filhos = all.filter((x) => x.parent_id === e.id).sort((a, b) => a.ordem - b.ordem);
+  const futuro = e.status === "futuro";
+  return (
+    <div className="relative">
+      <div
+        className={cn(
+          "group/esc flex items-center gap-2 rounded-md border bg-card px-2.5 py-1.5 shadow-sm transition hover:shadow-md",
+          futuro ? "border-dashed border-border/70 opacity-80 hover:opacity-100" : "border-border",
+        )}
+        style={{ borderLeft: `3px solid ${futuro ? "hsl(var(--border))" : cor}` }}
+      >
+        <span className={cn("flex h-4 w-4 shrink-0 items-center justify-center rounded-full text-white", m.dot)}>
+          <m.Icon className="h-2.5 w-2.5" strokeWidth={3} />
+        </span>
+        <div className="min-w-0 flex-1">
+          <div className={cn("truncate text-[12.5px] font-medium", futuro ? "text-muted-foreground" : "text-foreground")}>{e.titulo}</div>
+          {e.responsavel && <div className="truncate text-[10.5px] text-muted-foreground">{e.responsavel}</div>}
+        </div>
+        <span className={cn("shrink-0 rounded px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider", m.chip)}>{m.label}</span>
+        <div className="flex shrink-0 items-center opacity-0 transition-opacity group-hover/esc:opacity-100">
+          {e.status !== "hoje" && (
+            <button
+              onClick={() => onAvancar(e)}
+              className="rounded p-1 text-muted-foreground hover:bg-muted hover:text-success"
+              title={e.status === "futuro" ? "Começar a desbloquear (em construção)" : "Marcar como dominado (hoje)"}
+            >
+              <ArrowRight className="h-3 w-3" />
+            </button>
+          )}
+          <button onClick={() => onEdit(e)} className="rounded p-1 text-muted-foreground hover:bg-muted hover:text-foreground" title="Editar">
+            <Pencil className="h-3 w-3" />
+          </button>
+        </div>
+      </div>
+      {filhos.length > 0 && (
+        <div className="ml-2 mt-1.5 space-y-1.5 border-l-2 border-dashed border-border/60 pl-3">
+          {filhos.map((f) => (
+            <EscopoNode key={f.id} e={f} all={all} cor={cor} onEdit={onEdit} onAvancar={onAvancar} />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 const TABS = [
   { key: "org", label: "Organograma", icon: Network },
   { key: "funcoes", label: "Funções", icon: ListChecks },
   { key: "vagas", label: "Vagas & Expansão", icon: UserPlus },
+  { key: "escopo", label: "Escopo", icon: Waypoints },
   { key: "rituais", label: "Rituais", icon: CalendarDays },
   { key: "ia", label: "IA & Automação", icon: Bot },
   { key: "padrao", label: "Padrão de Mercado", icon: Layers },
@@ -321,6 +393,7 @@ export default function TimeFinanceiro() {
   const [cargos, setCargos] = useState<Cargo[]>([]);
   const [passos, setPassos] = useState<Passo[]>([]);
   const [rituais, setRituais] = useState<Ritual[]>([]);
+  const [escopos, setEscopos] = useState<Escopo[]>([]);
   const [autoNiveis, setAutoNiveis] = useState<{ nivel: number | null; status: string }[]>([]);
   const [loading, setLoading] = useState(true);
   const [tab, setTab] = useState<TabKey>("org");
@@ -367,18 +440,27 @@ export default function TimeFinanceiro() {
   const [rituForm, setRituForm] = useState(rituVazio);
   const [salvandoRitu, setSalvandoRitu] = useState(false);
 
+  // diálogo de escopo/competência
+  const escVazio = { pilar: "Tesouraria", titulo: "", descricao: "", status: "futuro" as EscopoStatus, parent_id: "", responsavel: "" };
+  const [escDlgOpen, setEscDlgOpen] = useState(false);
+  const [escEditId, setEscEditId] = useState<string | null>(null);
+  const [escForm, setEscForm] = useState(escVazio);
+  const [salvandoEsc, setSalvandoEsc] = useState(false);
+
   async function carregar() {
-    const [{ data: cs, error: e1 }, { data: ps, error: e2 }, { data: rs, error: e3 }, { data: au }] = await Promise.all([
+    const [{ data: cs, error: e1 }, { data: ps, error: e2 }, { data: rs, error: e3 }, { data: au }, { data: es, error: e5 }] = await Promise.all([
       sb.from("time_cargos").select("*").order("ordem", { ascending: true }),
       sb.from("time_passos").select("*").order("ordem", { ascending: true }),
       sb.from("time_rituais").select("*").order("ordem", { ascending: true }),
       sb.from("automacoes_catalogo").select("nivel,status"),
+      sb.from("time_escopos").select("*").order("ordem", { ascending: true }),
     ]);
-    if (e1 || e2 || e3) toast.error("Falha ao carregar o time: " + (e1?.message ?? e2?.message ?? e3?.message));
+    if (e1 || e2 || e3 || e5) toast.error("Falha ao carregar o time: " + (e1?.message ?? e2?.message ?? e3?.message ?? e5?.message));
     setCargos((cs ?? []) as Cargo[]);
     setPassos((ps ?? []) as Passo[]);
     setRituais((rs ?? []) as Ritual[]);
     setAutoNiveis((au ?? []) as { nivel: number | null; status: string }[]);
+    setEscopos((es ?? []) as Escopo[]);
     setLoading(false);
   }
   useEffect(() => { carregar(); }, []);
@@ -411,6 +493,33 @@ export default function TimeFinanceiro() {
 
   const raiz = cargosDoAno.find((c) => !c.parent_id);
   const selCargo = cargosDoAno.find((c) => c.id === selCargoId) ?? null;
+
+  /* ---- Escopo do financeiro (skill tree): agrupamento + cobertura ---- */
+  const escKpi = useMemo(() => {
+    const hoje = escopos.filter((e) => e.status === "hoje").length;
+    const constr = escopos.filter((e) => e.status === "construindo").length;
+    const fut = escopos.filter((e) => e.status === "futuro").length;
+    const total = escopos.length;
+    const cobertura = total ? Math.round((100 * escopos.reduce((a, e) => a + escScore(e.status), 0)) / total) : 0;
+    return { hoje, constr, fut, total, cobertura };
+  }, [escopos]);
+  const coberturaPilar = (pilar: string) => {
+    const nos = escopos.filter((e) => e.pilar === pilar);
+    if (!nos.length) return { pct: 0, hoje: 0, total: 0 };
+    return {
+      pct: Math.round((100 * nos.reduce((a, e) => a + escScore(e.status), 0)) / nos.length),
+      hoje: nos.filter((e) => e.status === "hoje").length,
+      total: nos.length,
+    };
+  };
+  // Pré-requisitos válidos no editor: mesmo pilar, sem o próprio nó nem seus descendentes (evita ciclo).
+  const escParentOpts = useMemo(() => {
+    if (!escEditId) return escopos.filter((e) => e.pilar === escForm.pilar);
+    const bloq = new Set<string>([escEditId]);
+    const walk = (pid: string) => escopos.filter((e) => e.parent_id === pid).forEach((c) => { if (!bloq.has(c.id)) { bloq.add(c.id); walk(c.id); } });
+    walk(escEditId);
+    return escopos.filter((e) => e.pilar === escForm.pilar && !bloq.has(e.id));
+  }, [escopos, escEditId, escForm.pilar]);
 
   /* ------------------------------ ações ------------------------------ */
   function abrirNovo(status: Status = "vaga_aberta") {
@@ -681,6 +790,55 @@ export default function TimeFinanceiro() {
     toast.success("Ritual excluído.");
     setRituDlgOpen(false);
     carregar();
+  }
+
+  /* ------------------------------ escopo ------------------------------ */
+  function abrirNovoEscopo(pilar: string, parentId = "") {
+    setEscEditId(null);
+    setEscForm({ ...escVazio, pilar, parent_id: parentId });
+    setEscDlgOpen(true);
+  }
+  function abrirEdicaoEscopo(e: Escopo) {
+    setEscEditId(e.id);
+    setEscForm({ pilar: e.pilar, titulo: e.titulo, descricao: e.descricao ?? "", status: e.status, parent_id: e.parent_id ?? "", responsavel: e.responsavel ?? "" });
+    setEscDlgOpen(true);
+  }
+  async function salvarEscopo() {
+    if (!escForm.titulo.trim()) { toast.error("Informe o título da competência."); return; }
+    setSalvandoEsc(true);
+    const payload = {
+      pilar: escForm.pilar, titulo: escForm.titulo.trim(),
+      descricao: escForm.descricao.trim() || null, status: escForm.status,
+      parent_id: escForm.parent_id || null, responsavel: escForm.responsavel.trim() || null,
+    };
+    let error: any = null;
+    if (escEditId) {
+      ({ error } = await sb.from("time_escopos").update({ ...payload, atualizado_em: new Date().toISOString() }).eq("id", escEditId));
+    } else {
+      const ordem = escopos.filter((e) => e.pilar === escForm.pilar && (e.parent_id ?? "") === (escForm.parent_id || "")).length;
+      ({ error } = await sb.from("time_escopos").insert([{ ...payload, ordem }]));
+    }
+    setSalvandoEsc(false);
+    if (error) { toast.error("Falha ao salvar: " + error.message); return; }
+    toast.success(escEditId ? "Competência atualizada." : "Competência adicionada.");
+    setEscDlgOpen(false);
+    carregar();
+  }
+  async function excluirEscopo() {
+    if (!escEditId) return;
+    if (!window.confirm("Excluir esta competência e as que dependem dela?")) return;
+    const { error } = await sb.from("time_escopos").delete().eq("id", escEditId);
+    if (error) { toast.error("Falha ao excluir: " + error.message); return; }
+    toast.success("Competência excluída.");
+    setEscDlgOpen(false);
+    carregar();
+  }
+  // Avança na maturidade: futuro → em construção → hoje (o "desbloquear").
+  async function avancarEscopo(e: Escopo) {
+    const prox: EscopoStatus = e.status === "futuro" ? "construindo" : "hoje";
+    setEscopos((prev) => prev.map((x) => (x.id === e.id ? { ...x, status: prox } : x)));
+    const { error } = await sb.from("time_escopos").update({ status: prox, atualizado_em: new Date().toISOString() }).eq("id", e.id);
+    if (error) { toast.error("Falha ao atualizar: " + error.message); carregar(); }
   }
 
   async function addPasso() {
@@ -1224,6 +1382,104 @@ export default function TimeFinanceiro() {
         </div>
       )}
 
+      {/* ---------------- Escopo do Financeiro (árvore de competências) ---------------- */}
+      {tab === "escopo" && (
+        <div className="space-y-4">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <div className="text-[14px] font-semibold text-foreground">Árvore de competências do financeiro</div>
+              <p className="mt-0.5 max-w-2xl text-[12px] text-muted-foreground">
+                O que o financeiro domina hoje e o que queremos desbloquear no futuro, por pilar. Passe o mouse num nó para desbloquear (→) ou editar.
+              </p>
+            </div>
+            <button onClick={() => abrirNovoEscopo(PILARES_ESCOPO[0].nome)} className="inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-2 text-[12.5px] font-semibold text-primary-foreground shadow-sm transition hover:brightness-110">
+              <Plus className="h-4 w-4" /> Nova competência
+            </button>
+          </div>
+
+          {/* KPIs de cobertura */}
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+            <div className="card-surface p-3.5">
+              <div className="eyebrow">Cobertura do escopo</div>
+              <div className="num mt-1 text-[24px] font-semibold leading-none">{escKpi.cobertura}%</div>
+              <div className="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-muted">
+                <div className="h-full rounded-full bg-success transition-all" style={{ width: `${escKpi.cobertura}%` }} />
+              </div>
+            </div>
+            <div className="card-surface p-3.5">
+              <div className="eyebrow">Dominamos hoje</div>
+              <div className="num mt-1 text-[24px] font-semibold leading-none text-success">{escKpi.hoje}</div>
+              <div className="mt-1.5 text-[11.5px] text-muted-foreground">de {escKpi.total} competências</div>
+            </div>
+            <div className="card-surface p-3.5">
+              <div className="eyebrow">Em construção</div>
+              <div className="num mt-1 text-[24px] font-semibold leading-none text-amber-500">{escKpi.constr}</div>
+              <div className="mt-1.5 text-[11.5px] text-muted-foreground">desbloqueando agora</div>
+            </div>
+            <div className="card-surface p-3.5">
+              <div className="eyebrow">Ambições futuras</div>
+              <div className="num mt-1 text-[24px] font-semibold leading-none">{escKpi.fut}</div>
+              <div className="mt-1.5 text-[11.5px] text-muted-foreground">a desbloquear</div>
+            </div>
+          </div>
+
+          {/* Legenda */}
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5 text-[11px] text-muted-foreground">
+            {(["hoje", "construindo", "futuro"] as EscopoStatus[]).map((s) => {
+              const m = ESCOPO_META[s];
+              return (
+                <span key={s} className="inline-flex items-center gap-1.5">
+                  <span className={cn("flex h-3.5 w-3.5 items-center justify-center rounded-full text-white", m.dot)}><m.Icon className="h-2 w-2" strokeWidth={3} /></span>
+                  {m.label}
+                </span>
+              );
+            })}
+            <span className="inline-flex items-center gap-1"><ArrowRight className="h-3 w-3" /> desbloquear · <Pencil className="h-3 w-3" /> editar</span>
+          </div>
+
+          {/* Colunas por pilar */}
+          <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-4">
+            {PILARES_ESCOPO.map((p) => {
+              const nos = escopos.filter((e) => e.pilar === p.nome);
+              const troncos = nos.filter((e) => !e.parent_id).sort((a, b) => a.ordem - b.ordem);
+              const cob = coberturaPilar(p.nome);
+              return (
+                <div key={p.nome} className="card-surface flex flex-col overflow-hidden p-0" style={{ borderTop: `3px solid ${p.cor}` }}>
+                  <div className="border-b border-border/60 p-3.5">
+                    <div className="flex items-center gap-2">
+                      <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-white" style={{ background: p.cor }}>
+                        <p.Icon className="h-4 w-4" />
+                      </span>
+                      <div className="min-w-0">
+                        <div className="truncate text-[13.5px] font-semibold text-foreground">{p.nome}</div>
+                        <div className="truncate text-[10.5px] text-muted-foreground">{p.sub}</div>
+                      </div>
+                    </div>
+                    <div className="mt-2.5 flex items-center gap-2">
+                      <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-muted">
+                        <div className="h-full rounded-full transition-all" style={{ width: `${cob.pct}%`, background: p.cor }} />
+                      </div>
+                      <span className="num shrink-0 text-[10.5px] font-semibold text-muted-foreground">{cob.hoje}/{cob.total}</span>
+                    </div>
+                  </div>
+                  <div className="flex-1 space-y-2 p-3">
+                    {troncos.map((t) => (
+                      <EscopoNode key={t.id} e={t} all={nos} cor={p.cor} onEdit={abrirEdicaoEscopo} onAvancar={avancarEscopo} />
+                    ))}
+                    {!troncos.length && (
+                      <div className="rounded-md border border-dashed border-border/70 p-4 text-center text-[11.5px] text-muted-foreground">Sem competências ainda.</div>
+                    )}
+                    <button onClick={() => abrirNovoEscopo(p.nome)} className="flex w-full items-center justify-center gap-1 rounded-md border border-dashed border-border/70 py-1.5 text-[11.5px] font-medium text-muted-foreground transition hover:border-primary/50 hover:text-primary">
+                      <Plus className="h-3.5 w-3.5" /> Adicionar em {p.nome}
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
       {/* ---------------- Dialog: novo/editar cargo ---------------- */}
       <Dialog open={dlgOpen} onOpenChange={setDlgOpen}>
         <DialogContent className="max-w-md">
@@ -1508,6 +1764,66 @@ export default function TimeFinanceiro() {
                 <button onClick={() => setRituDlgOpen(false)} className="rounded-md border border-border px-3 py-1.5 text-[12.5px] font-medium text-foreground hover:bg-muted">Cancelar</button>
                 <button onClick={salvarRitual} disabled={salvandoRitu} className="inline-flex items-center gap-1.5 rounded-md bg-primary px-3.5 py-1.5 text-[12.5px] font-semibold text-primary-foreground hover:brightness-110 disabled:opacity-60">
                   {salvandoRitu && <Loader2 className="h-3.5 w-3.5 animate-spin" />} Salvar
+                </button>
+              </div>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* ---------------- Dialog: nova/editar competência (escopo) ---------------- */}
+      <Dialog open={escDlgOpen} onOpenChange={setEscDlgOpen}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>{escEditId ? "Editar competência" : "Nova competência"}</DialogTitle>
+          </DialogHeader>
+          <div className="max-h-[68vh] space-y-3 overflow-y-auto pr-1">
+            <div>
+              <Label className="text-[12px]">Título *</Label>
+              <Input value={escForm.titulo} onChange={(e) => setEscForm({ ...escForm, titulo: e.target.value })} placeholder="ex.: Contas a receber estruturado" className="mt-1 h-9" />
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <Label className="text-[12px]">Pilar</Label>
+                <select value={escForm.pilar} onChange={(e) => setEscForm({ ...escForm, pilar: e.target.value, parent_id: "" })} className="mt-1 h-9 w-full rounded-md border border-border bg-card px-2 text-[13px] outline-none focus:ring-1 focus:ring-primary">
+                  {PILARES_ESCOPO.map((p) => <option key={p.nome} value={p.nome}>{p.nome}</option>)}
+                </select>
+              </div>
+              <div>
+                <Label className="text-[12px]">Status</Label>
+                <select value={escForm.status} onChange={(e) => setEscForm({ ...escForm, status: e.target.value as EscopoStatus })} className="mt-1 h-9 w-full rounded-md border border-border bg-card px-2 text-[13px] outline-none focus:ring-1 focus:ring-primary">
+                  <option value="hoje">Hoje (dominado)</option>
+                  <option value="construindo">Em construção</option>
+                  <option value="futuro">Futuro (a desbloquear)</option>
+                </select>
+              </div>
+            </div>
+            <div>
+              <Label className="text-[12px]">Depende de</Label>
+              <select value={escForm.parent_id} onChange={(e) => setEscForm({ ...escForm, parent_id: e.target.value })} className="mt-1 h-9 w-full rounded-md border border-border bg-card px-2 text-[13px] outline-none focus:ring-1 focus:ring-primary">
+                <option value="">— (tronco do pilar)</option>
+                {escParentOpts.map((e) => <option key={e.id} value={e.id}>{e.parent_id ? "↳ " : ""}{e.titulo}</option>)}
+              </select>
+              <p className="mt-1 text-[10.5px] text-muted-foreground">Pendure a competência num tronco (ex.: Gestão de Caixa) ou deixe como tronco do pilar.</p>
+            </div>
+            <div>
+              <Label className="text-[12px]">Descrição</Label>
+              <Input value={escForm.descricao} onChange={(e) => setEscForm({ ...escForm, descricao: e.target.value })} placeholder="O que essa competência envolve" className="mt-1 h-9" />
+            </div>
+            <div>
+              <Label className="text-[12px]">Responsável (opcional)</Label>
+              <Input value={escForm.responsavel} onChange={(e) => setEscForm({ ...escForm, responsavel: e.target.value })} placeholder="ex.: Júlia" className="mt-1 h-9" />
+            </div>
+            <div className="flex items-center justify-between pt-1">
+              {escEditId ? (
+                <button onClick={excluirEscopo} className="inline-flex items-center gap-1 text-[12px] text-destructive hover:underline">
+                  <Trash2 className="h-3.5 w-3.5" /> Excluir
+                </button>
+              ) : <span />}
+              <div className="flex gap-2">
+                <button onClick={() => setEscDlgOpen(false)} className="rounded-md border border-border px-3 py-1.5 text-[12.5px] font-medium text-foreground hover:bg-muted">Cancelar</button>
+                <button onClick={salvarEscopo} disabled={salvandoEsc} className="inline-flex items-center gap-1.5 rounded-md bg-primary px-3.5 py-1.5 text-[12.5px] font-semibold text-primary-foreground hover:brightness-110 disabled:opacity-60">
+                  {salvandoEsc && <Loader2 className="h-3.5 w-3.5 animate-spin" />} Salvar
                 </button>
               </div>
             </div>

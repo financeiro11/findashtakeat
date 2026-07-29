@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
+import { normalize } from "@/lib/normalize";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -9,7 +10,7 @@ import AutomacoesCatalogo from "@/pages/AutomacoesCatalogo";
 import {
   Loader2, Plus, Pencil, Trash2, X, Users, UserPlus, Network, ListChecks,
   CalendarDays, Bot, Target, Zap, Clock, ArrowRight, Layers, ChevronDown, ShieldCheck,
-  Download, Copy, ArrowRightLeft, Check, Lock, Wrench, Waypoints, Calculator, Landmark, Rocket,
+  Download, Copy, ArrowRightLeft, Check, Lock, Wrench, Waypoints, Calculator, Landmark, Rocket, Search,
 } from "lucide-react";
 
 // ============================================================================
@@ -144,11 +145,11 @@ const PILARES: { nome: string; grupos: { titulo: string; itens: string[] }[] }[]
   },
 ];
 
-/* ---- Escopo do Financeiro: árvore de competências (skill tree) ---- */
+/* ---- Escopo do Financeiro: matriz de trilhas (hoje → futuro) ---- */
 type EscopoStatus = "hoje" | "construindo" | "futuro";
 type Escopo = {
   id: string; pilar: string; titulo: string; descricao: string | null;
-  status: EscopoStatus; parent_id: string | null; responsavel: string | null; ordem: number;
+  status: EscopoStatus; horizonte: string | null; parent_id: string | null; responsavel: string | null; ordem: number;
 };
 const PILARES_ESCOPO: { nome: string; cor: string; Icon: any; sub: string }[] = [
   { nome: "Tesouraria",    cor: "hsl(162 60% 36%)", Icon: Landmark,   sub: "Caixa, pagamentos e recebimentos" },
@@ -156,62 +157,76 @@ const PILARES_ESCOPO: { nome: string; cor: string; Icon: any; sub: string }[] = 
   { nome: "Controladoria", cor: "hsl(0 72% 51%)",   Icon: Target,     sub: "Relatórios, orçamento e FP&A" },
   { nome: "Estratégico",   cor: "hsl(38 92% 50%)",  Icon: Rocket,     sub: "Captação, pricing, M&A e IR" },
 ];
-const ESCOPO_META: Record<EscopoStatus, { label: string; chip: string; dot: string; Icon: any }> = {
-  hoje:        { label: "Hoje",          chip: "bg-success/10 text-success",                          dot: "bg-success",             Icon: Check },
-  construindo: { label: "Em construção", chip: "bg-amber-500/15 text-amber-600 dark:text-amber-400",  dot: "bg-amber-500",           Icon: Wrench },
-  futuro:      { label: "Futuro",        chip: "bg-muted text-muted-foreground",                      dot: "bg-muted-foreground/50", Icon: Lock },
+const ESCOPO_META: Record<EscopoStatus, { label: string; chip: string; dot: string; bar: string; Icon: any }> = {
+  hoje:        { label: "Hoje",          chip: "bg-success/10 text-success",                          dot: "bg-success",             bar: "hsl(var(--success))", Icon: Check },
+  construindo: { label: "Em construção", chip: "bg-amber-500/15 text-amber-600 dark:text-amber-400",  dot: "bg-amber-500",           bar: "hsl(38 92% 50%)",     Icon: Wrench },
+  futuro:      { label: "Futuro",        chip: "bg-muted text-muted-foreground",                      dot: "bg-muted-foreground/50", bar: "hsl(var(--border))",  Icon: Lock },
 };
+// As 4 colunas (horizontes) da trilha. O futuro se divide em curto (1–2a) e longo (3–5a).
+const HORIZONTES: { key: string; label: string; sub: string; match: (e: Escopo) => boolean }[] = [
+  { key: "hoje",        label: "Dominado hoje", sub: "roda sem depender de ninguém", match: (e) => e.status === "hoje" },
+  { key: "construindo", label: "Em construção", sub: "próximos 6 meses",             match: (e) => e.status === "construindo" },
+  { key: "curto",       label: "1–2 anos",      sub: "próxima fronteira",            match: (e) => e.status === "futuro" && (e.horizonte ?? "curto") === "curto" },
+  { key: "longo",       label: "3–5 anos",      sub: "ambição de longo prazo",       match: (e) => e.status === "futuro" && e.horizonte === "longo" },
+];
 // Peso de cada status na barra de cobertura (0..1): dominado=1, desbloqueando=0.5.
 const escScore = (s: EscopoStatus) => (s === "hoje" ? 1 : s === "construindo" ? 0.5 : 0);
+// Cor estável do avatar de responsável a partir do nome.
+const RESP_COR = ["hsl(0 72% 51%)", "hsl(221 60% 52%)", "hsl(162 60% 36%)", "hsl(38 92% 45%)", "hsl(280 55% 55%)"];
+const respCor = (nome: string) => RESP_COR[[...nome].reduce((a, c) => a + c.charCodeAt(0), 0) % RESP_COR.length];
 
-// Nó recursivo da árvore de competências (tronco → competências).
-function EscopoNode({ e, all, cor, onEdit, onAvancar }: {
-  e: Escopo; all: Escopo[]; cor: string;
-  onEdit: (e: Escopo) => void; onAvancar: (e: Escopo) => void;
+// Card de uma competência dentro de uma célula da trilha.
+function EscopoCard({ e, dim, selected, onSel, onEdit, onAvancar }: {
+  e: Escopo; dim: boolean; selected: boolean;
+  onSel: (id: string) => void; onEdit: (e: Escopo) => void; onAvancar: (e: Escopo) => void;
 }) {
   const m = ESCOPO_META[e.status];
-  const filhos = all.filter((x) => x.parent_id === e.id).sort((a, b) => a.ordem - b.ordem);
   const futuro = e.status === "futuro";
   return (
-    <div className="relative">
-      <div
-        className={cn(
-          "group/esc flex items-center gap-2 rounded-md border bg-card px-2.5 py-1.5 shadow-sm transition hover:shadow-md",
-          futuro ? "border-dashed border-border/70 opacity-80 hover:opacity-100" : "border-border",
-        )}
-        style={{ borderLeft: `3px solid ${futuro ? "hsl(var(--border))" : cor}` }}
-      >
-        <span className={cn("flex h-4 w-4 shrink-0 items-center justify-center rounded-full text-white", m.dot)}>
-          <m.Icon className="h-2.5 w-2.5" strokeWidth={3} />
-        </span>
-        <div className="min-w-0 flex-1">
-          <div className={cn("truncate text-[12.5px] font-medium", futuro ? "text-muted-foreground" : "text-foreground")}>{e.titulo}</div>
-          {e.responsavel && <div className="truncate text-[10.5px] text-muted-foreground">{e.responsavel}</div>}
-        </div>
-        <span className={cn("shrink-0 rounded px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider", m.chip)}>{m.label}</span>
-        <div className="flex shrink-0 items-center opacity-0 transition-opacity group-hover/esc:opacity-100">
-          {e.status !== "hoje" && (
-            <button
-              onClick={() => onAvancar(e)}
-              className="rounded p-1 text-muted-foreground hover:bg-muted hover:text-success"
-              title={e.status === "futuro" ? "Começar a desbloquear (em construção)" : "Marcar como dominado (hoje)"}
-            >
-              <ArrowRight className="h-3 w-3" />
-            </button>
-          )}
-          <button onClick={() => onEdit(e)} className="rounded p-1 text-muted-foreground hover:bg-muted hover:text-foreground" title="Editar">
-            <Pencil className="h-3 w-3" />
-          </button>
-        </div>
-      </div>
-      {filhos.length > 0 && (
-        <div className="ml-2 mt-1.5 space-y-1.5 border-l-2 border-dashed border-border/60 pl-3">
-          {filhos.map((f) => (
-            <EscopoNode key={f.id} e={f} all={all} cor={cor} onEdit={onEdit} onAvancar={onAvancar} />
-          ))}
-        </div>
+    <div
+      className={cn(
+        "group/ec relative rounded-lg border bg-card px-2 py-1.5 shadow-sm transition",
+        futuro ? "border-dashed border-border/70" : "border-border",
+        dim ? "opacity-30" : "hover:shadow-md",
+        selected && "ring-2 ring-primary/50",
       )}
+      style={{ borderLeft: `3px solid ${m.bar}` }}
+    >
+      <button onClick={() => onSel(e.id)} title={e.descricao ?? "Ver a corrente de dependências"} className="flex w-full items-start gap-1.5 text-left">
+        <span className={cn("mt-1 h-2 w-2 shrink-0 rounded-full", m.dot)} />
+        <span className={cn("min-w-0 flex-1 text-[11.5px] font-medium leading-tight", futuro ? "text-muted-foreground" : "text-foreground")}>{e.titulo}</span>
+        {e.responsavel ? (
+          <span title={e.responsavel} className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full text-[8px] font-bold text-white" style={{ background: respCor(e.responsavel) }}>
+            {e.responsavel.trim()[0]?.toUpperCase()}
+          </span>
+        ) : (
+          <span title="Sem responsável" className="mt-1 h-1.5 w-1.5 shrink-0 rounded-full bg-muted-foreground/40" />
+        )}
+      </button>
+      <div className="absolute right-1 top-1 flex items-center gap-0.5 rounded bg-card/95 opacity-0 shadow-sm transition group-hover/ec:opacity-100">
+        {e.status !== "hoje" && (
+          <button onClick={() => onAvancar(e)} className="rounded p-1 text-muted-foreground hover:bg-muted hover:text-success" title={e.status === "futuro" ? "Começar a desbloquear" : "Marcar como dominado"}>
+            <ArrowRight className="h-3 w-3" />
+          </button>
+        )}
+        <button onClick={() => onEdit(e)} className="rounded p-1 text-muted-foreground hover:bg-muted hover:text-foreground" title="Editar"><Pencil className="h-3 w-3" /></button>
+      </div>
     </div>
+  );
+}
+
+// Chip de filtro (pilar / responsável).
+function Chip({ active, onClick, children }: { active: boolean; onClick: () => void; children: string }) {
+  return (
+    <button
+      onClick={onClick}
+      className={cn(
+        "rounded-full border px-2.5 py-1 text-[11.5px] font-medium transition",
+        active ? "border-foreground bg-foreground text-background" : "border-border bg-card text-muted-foreground hover:text-foreground",
+      )}
+    >
+      {children}
+    </button>
   );
 }
 
@@ -440,12 +455,16 @@ export default function TimeFinanceiro() {
   const [rituForm, setRituForm] = useState(rituVazio);
   const [salvandoRitu, setSalvandoRitu] = useState(false);
 
-  // diálogo de escopo/competência
-  const escVazio = { pilar: "Tesouraria", titulo: "", descricao: "", status: "futuro" as EscopoStatus, parent_id: "", responsavel: "" };
+  // diálogo de escopo/competência + filtros e seleção da trilha
+  const escVazio = { pilar: "Tesouraria", titulo: "", descricao: "", status: "futuro" as EscopoStatus, horizonte: "curto", parent_id: "", responsavel: "" };
   const [escDlgOpen, setEscDlgOpen] = useState(false);
   const [escEditId, setEscEditId] = useState<string | null>(null);
   const [escForm, setEscForm] = useState(escVazio);
   const [salvandoEsc, setSalvandoEsc] = useState(false);
+  const [escBusca, setEscBusca] = useState("");
+  const [escPilarFiltro, setEscPilarFiltro] = useState("");   // "" = todos
+  const [escRespFiltro, setEscRespFiltro] = useState("");      // "" = todos · "__sem" = sem responsável
+  const [escSelId, setEscSelId] = useState<string | null>(null); // nó destacado (corrente de dependências)
 
   async function carregar() {
     const [{ data: cs, error: e1 }, { data: ps, error: e2 }, { data: rs, error: e3 }, { data: au }, { data: es, error: e5 }] = await Promise.all([
@@ -520,6 +539,48 @@ export default function TimeFinanceiro() {
     walk(escEditId);
     return escopos.filter((e) => e.pilar === escForm.pilar && !bloq.has(e.id));
   }, [escopos, escEditId, escForm.pilar]);
+
+  // Folhas = competências (os troncos são as "trilhas"). Responsáveis distintos p/ os chips.
+  const escFolhas = useMemo(() => escopos.filter((e) => e.parent_id), [escopos]);
+  const escById = useMemo(() => new Map(escopos.map((e) => [e.id, e])), [escopos]);
+  const respExistentes = useMemo(
+    () => [...new Set(escFolhas.map((e) => e.responsavel).filter(Boolean) as string[])].sort((a, b) => a.localeCompare(b)),
+    [escFolhas],
+  );
+  const escFiltroAtivo = !!escBusca.trim() || !!escPilarFiltro || !!escRespFiltro;
+  // Passa nos filtros de busca/pilar/responsável? (aplicado às folhas)
+  const escPassa = (e: Escopo) => {
+    if (escPilarFiltro && e.pilar !== escPilarFiltro) return false;
+    if (escRespFiltro === "__sem" ? !!e.responsavel : escRespFiltro && e.responsavel !== escRespFiltro) return false;
+    if (escBusca.trim() && !normalize(e.titulo).includes(normalize(escBusca))) return false;
+    return true;
+  };
+  const escFolhasVisiveis = useMemo(() => escFolhas.filter(escPassa), [escFolhas, escBusca, escPilarFiltro, escRespFiltro]);
+  const semResp = useMemo(() => escFolhas.filter((e) => !e.responsavel).length, [escFolhas]);
+
+  // Corrente de dependências do nó selecionado (ele + ancestrais + descendentes).
+  const escChain = useMemo(() => {
+    if (!escSelId) return null;
+    const ids = new Set<string>([escSelId]);
+    let cur = escById.get(escSelId);
+    while (cur?.parent_id) { ids.add(cur.parent_id); cur = escById.get(cur.parent_id); }
+    const desc = (pid: string) => escopos.filter((e) => e.parent_id === pid).forEach((c) => { if (!ids.has(c.id)) { ids.add(c.id); desc(c.id); } });
+    desc(escSelId);
+    return ids;
+  }, [escSelId, escopos, escById]);
+
+  // "Próximo a desbloquear": competências em construção, priorizando as com tronco já dominado.
+  const escProximos = useMemo(() => {
+    const pIdx = (nome: string) => PILARES_ESCOPO.findIndex((p) => p.nome === nome);
+    return escFolhas
+      .filter((e) => e.status === "construindo")
+      .sort((a, b) => {
+        const pa = escById.get(a.parent_id!)?.status === "hoje" ? 0 : 1;
+        const pb = escById.get(b.parent_id!)?.status === "hoje" ? 0 : 1;
+        return pa - pb || pIdx(a.pilar) - pIdx(b.pilar) || a.ordem - b.ordem;
+      })
+      .slice(0, 5);
+  }, [escFolhas, escById]);
 
   /* ------------------------------ ações ------------------------------ */
   function abrirNovo(status: Status = "vaga_aberta") {
@@ -800,15 +861,17 @@ export default function TimeFinanceiro() {
   }
   function abrirEdicaoEscopo(e: Escopo) {
     setEscEditId(e.id);
-    setEscForm({ pilar: e.pilar, titulo: e.titulo, descricao: e.descricao ?? "", status: e.status, parent_id: e.parent_id ?? "", responsavel: e.responsavel ?? "" });
+    setEscForm({ pilar: e.pilar, titulo: e.titulo, descricao: e.descricao ?? "", status: e.status, horizonte: e.horizonte ?? "curto", parent_id: e.parent_id ?? "", responsavel: e.responsavel ?? "" });
     setEscDlgOpen(true);
   }
+  const toggleEscSel = (id: string) => setEscSelId((prev) => (prev === id ? null : id));
   async function salvarEscopo() {
     if (!escForm.titulo.trim()) { toast.error("Informe o título da competência."); return; }
     setSalvandoEsc(true);
     const payload = {
       pilar: escForm.pilar, titulo: escForm.titulo.trim(),
       descricao: escForm.descricao.trim() || null, status: escForm.status,
+      horizonte: escForm.status === "futuro" ? escForm.horizonte : null,
       parent_id: escForm.parent_id || null, responsavel: escForm.responsavel.trim() || null,
     };
     let error: any = null;
@@ -1382,14 +1445,14 @@ export default function TimeFinanceiro() {
         </div>
       )}
 
-      {/* ---------------- Escopo do Financeiro (árvore de competências) ---------------- */}
+      {/* ---------------- Escopo do Financeiro (matriz de trilhas) ---------------- */}
       {tab === "escopo" && (
-        <div className="space-y-4">
-          <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="space-y-3">
+          <div className="flex flex-wrap items-start justify-between gap-3">
             <div>
-              <div className="text-[14px] font-semibold text-foreground">Árvore de competências do financeiro</div>
+              <div className="text-[16px] font-semibold text-foreground">Árvore de competências do financeiro</div>
               <p className="mt-0.5 max-w-2xl text-[12px] text-muted-foreground">
-                O que o financeiro domina hoje e o que queremos desbloquear no futuro, por pilar. Passe o mouse num nó para desbloquear (→) ou editar.
+                Cada trilha corre da esquerda para a direita: o que já roda hoje, o que estamos desbloqueando e o que fica para os próximos anos. Clique num nó para acender a corrente de dependências dele.
               </p>
             </div>
             <button onClick={() => abrirNovoEscopo(PILARES_ESCOPO[0].nome)} className="inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-2 text-[12.5px] font-semibold text-primary-foreground shadow-sm transition hover:brightness-110">
@@ -1397,85 +1460,177 @@ export default function TimeFinanceiro() {
             </button>
           </div>
 
-          {/* KPIs de cobertura */}
-          <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-            <div className="card-surface p-3.5">
-              <div className="eyebrow">Cobertura do escopo</div>
-              <div className="num mt-1 text-[24px] font-semibold leading-none">{escKpi.cobertura}%</div>
-              <div className="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-muted">
-                <div className="h-full rounded-full bg-success transition-all" style={{ width: `${escKpi.cobertura}%` }} />
+          {/* Resumo de cobertura */}
+          <div className="card-surface flex flex-wrap items-center gap-x-5 gap-y-3 p-4">
+            <div className="flex items-center gap-3">
+              <div className="num text-[34px] font-bold leading-none text-foreground">{escKpi.cobertura}%</div>
+              <div className="flex h-2.5 w-40 overflow-hidden rounded-full bg-muted sm:w-64">
+                <div className="h-full bg-success" style={{ width: `${(100 * escKpi.hoje) / (escKpi.total || 1)}%` }} />
+                <div className="h-full bg-amber-500" style={{ width: `${(100 * escKpi.constr) / (escKpi.total || 1)}%` }} />
+                <div className="h-full bg-muted-foreground/25" style={{ width: `${(100 * escKpi.fut) / (escKpi.total || 1)}%` }} />
               </div>
             </div>
-            <div className="card-surface p-3.5">
-              <div className="eyebrow">Dominamos hoje</div>
-              <div className="num mt-1 text-[24px] font-semibold leading-none text-success">{escKpi.hoje}</div>
-              <div className="mt-1.5 text-[11.5px] text-muted-foreground">de {escKpi.total} competências</div>
-            </div>
-            <div className="card-surface p-3.5">
-              <div className="eyebrow">Em construção</div>
-              <div className="num mt-1 text-[24px] font-semibold leading-none text-amber-500">{escKpi.constr}</div>
-              <div className="mt-1.5 text-[11.5px] text-muted-foreground">desbloqueando agora</div>
-            </div>
-            <div className="card-surface p-3.5">
-              <div className="eyebrow">Ambições futuras</div>
-              <div className="num mt-1 text-[24px] font-semibold leading-none">{escKpi.fut}</div>
-              <div className="mt-1.5 text-[11.5px] text-muted-foreground">a desbloquear</div>
+            <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1 text-[11.5px] text-muted-foreground">
+              <span className="inline-flex items-center gap-1.5"><span className="h-2 w-2 rounded-full bg-success" /><b className="text-foreground">{escKpi.hoje}</b> dominadas</span>
+              <span>·</span>
+              <span className="inline-flex items-center gap-1.5"><span className="h-2 w-2 rounded-full bg-amber-500" /><b className="text-foreground">{escKpi.constr}</b> em construção</span>
+              <span>·</span>
+              <span className="inline-flex items-center gap-1.5"><span className="h-2 w-2 rounded-full bg-muted-foreground/40" /><b className="text-foreground">{escKpi.fut}</b> ambições futuras</span>
+              <span>· {escKpi.total} competências no escopo · em construção conta meio ponto</span>
             </div>
           </div>
 
-          {/* Legenda */}
-          <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5 text-[11px] text-muted-foreground">
-            {(["hoje", "construindo", "futuro"] as EscopoStatus[]).map((s) => {
-              const m = ESCOPO_META[s];
-              return (
-                <span key={s} className="inline-flex items-center gap-1.5">
-                  <span className={cn("flex h-3.5 w-3.5 items-center justify-center rounded-full text-white", m.dot)}><m.Icon className="h-2 w-2" strokeWidth={3} /></span>
-                  {m.label}
-                </span>
-              );
-            })}
-            <span className="inline-flex items-center gap-1"><ArrowRight className="h-3 w-3" /> desbloquear · <Pencil className="h-3 w-3" /> editar</span>
+          {/* Filtros */}
+          <div className="space-y-2">
+            <div className="flex flex-wrap items-center gap-2">
+              <div className="relative">
+                <Search className="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+                <input
+                  value={escBusca}
+                  onChange={(e) => setEscBusca(e.target.value)}
+                  placeholder="Buscar competência…"
+                  className="h-8 w-52 rounded-md border border-border bg-card pl-7 pr-2 text-[12px] outline-none focus:ring-1 focus:ring-primary"
+                />
+              </div>
+              <Chip active={!escPilarFiltro} onClick={() => setEscPilarFiltro("")}>Todos os pilares</Chip>
+              {PILARES_ESCOPO.map((p) => (
+                <Chip key={p.nome} active={escPilarFiltro === p.nome} onClick={() => setEscPilarFiltro(escPilarFiltro === p.nome ? "" : p.nome)}>{p.nome}</Chip>
+              ))}
+              <span className="ml-auto text-[11.5px] text-muted-foreground">{escFolhasVisiveis.length} de {escFolhas.length} competências visíveis</span>
+            </div>
+            {respExistentes.length > 0 && (
+              <div className="flex flex-wrap items-center gap-1.5">
+                <Chip active={!escRespFiltro} onClick={() => setEscRespFiltro("")}>Todos</Chip>
+                {respExistentes.map((r) => (
+                  <Chip key={r} active={escRespFiltro === r} onClick={() => setEscRespFiltro(escRespFiltro === r ? "" : r)}>{r}</Chip>
+                ))}
+                <Chip active={escRespFiltro === "__sem"} onClick={() => setEscRespFiltro(escRespFiltro === "__sem" ? "" : "__sem")}>Sem responsável</Chip>
+              </div>
+            )}
           </div>
 
-          {/* Colunas por pilar */}
-          <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-4">
-            {PILARES_ESCOPO.map((p) => {
-              const nos = escopos.filter((e) => e.pilar === p.nome);
-              const troncos = nos.filter((e) => !e.parent_id).sort((a, b) => a.ordem - b.ordem);
-              const cob = coberturaPilar(p.nome);
-              return (
-                <div key={p.nome} className="card-surface flex flex-col overflow-hidden p-0" style={{ borderTop: `3px solid ${p.cor}` }}>
-                  <div className="border-b border-border/60 p-3.5">
-                    <div className="flex items-center gap-2">
-                      <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-white" style={{ background: p.cor }}>
-                        <p.Icon className="h-4 w-4" />
-                      </span>
-                      <div className="min-w-0">
-                        <div className="truncate text-[13.5px] font-semibold text-foreground">{p.nome}</div>
-                        <div className="truncate text-[10.5px] text-muted-foreground">{p.sub}</div>
-                      </div>
-                    </div>
-                    <div className="mt-2.5 flex items-center gap-2">
-                      <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-muted">
-                        <div className="h-full rounded-full transition-all" style={{ width: `${cob.pct}%`, background: p.cor }} />
-                      </div>
-                      <span className="num shrink-0 text-[10.5px] font-semibold text-muted-foreground">{cob.hoje}/{cob.total}</span>
-                    </div>
+          <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_290px]">
+            {/* Matriz de trilhas */}
+            <div className="card-surface overflow-hidden p-0">
+              <div className="overflow-x-auto">
+                <div className="min-w-[900px]">
+                  {/* Cabeçalho dos horizontes */}
+                  <div className="grid grid-cols-[168px_repeat(4,minmax(180px,1fr))] border-b border-border bg-secondary/40">
+                    <div className="p-3 text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Trilha</div>
+                    {HORIZONTES.map((h, i) => {
+                      const count = escFolhasVisiveis.filter(h.match).length;
+                      const dot = i === 0 ? "bg-success" : i === 1 ? "bg-amber-500" : "bg-muted-foreground/50";
+                      return (
+                        <div key={h.key} className="border-l border-border/60 p-3">
+                          <div className="flex items-center gap-1.5 text-[12px] font-semibold text-foreground">
+                            <span className={cn("h-2 w-2 rounded-full", dot)} /> {h.label}
+                          </div>
+                          <div className="mt-0.5 text-[10px] text-muted-foreground">{h.sub} · {count} {count === 1 ? "item" : "itens"}</div>
+                        </div>
+                      );
+                    })}
                   </div>
-                  <div className="flex-1 space-y-2 p-3">
-                    {troncos.map((t) => (
-                      <EscopoNode key={t.id} e={t} all={nos} cor={p.cor} onEdit={abrirEdicaoEscopo} onAvancar={avancarEscopo} />
-                    ))}
-                    {!troncos.length && (
-                      <div className="rounded-md border border-dashed border-border/70 p-4 text-center text-[11.5px] text-muted-foreground">Sem competências ainda.</div>
-                    )}
-                    <button onClick={() => abrirNovoEscopo(p.nome)} className="flex w-full items-center justify-center gap-1 rounded-md border border-dashed border-border/70 py-1.5 text-[11.5px] font-medium text-muted-foreground transition hover:border-primary/50 hover:text-primary">
-                      <Plus className="h-3.5 w-3.5" /> Adicionar em {p.nome}
-                    </button>
-                  </div>
+
+                  {/* Pilares e trilhas */}
+                  {PILARES_ESCOPO.map((p) => {
+                    if (escPilarFiltro && escPilarFiltro !== p.nome) return null;
+                    const nos = escopos.filter((e) => e.pilar === p.nome);
+                    const troncos = nos.filter((e) => !e.parent_id).sort((a, b) => a.ordem - b.ordem);
+                    const troncosShow = troncos.filter((t) => !escFiltroAtivo || nos.some((x) => x.parent_id === t.id && escPassa(x)));
+                    if (!troncosShow.length) return null;
+                    const cob = coberturaPilar(p.nome);
+                    return (
+                      <div key={p.nome}>
+                        {/* Faixa do pilar */}
+                        <div className="flex items-center gap-2 border-b border-border/60 bg-secondary/20 px-3 py-2">
+                          <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-white" style={{ background: p.cor }}>
+                            <p.Icon className="h-3.5 w-3.5" />
+                          </span>
+                          <span className="text-[13px] font-semibold text-foreground">{p.nome}</span>
+                          <span className="hidden text-[11px] text-muted-foreground sm:inline">· {p.sub}</span>
+                          <div className="ml-auto flex items-center gap-2">
+                            <div className="h-1.5 w-24 overflow-hidden rounded-full bg-muted">
+                              <div className="h-full rounded-full" style={{ width: `${cob.pct}%`, background: p.cor }} />
+                            </div>
+                            <span className="num text-[10.5px] font-semibold text-muted-foreground">{cob.hoje}/{cob.total}</span>
+                            <button onClick={() => abrirNovoEscopo(p.nome)} className="rounded p-1 text-muted-foreground hover:bg-muted hover:text-primary" title={`Nova trilha em ${p.nome}`}><Plus className="h-3.5 w-3.5" /></button>
+                          </div>
+                        </div>
+
+                        {/* Uma linha por trilha (tronco) */}
+                        {troncosShow.map((t) => {
+                          const folhas = nos.filter((x) => x.parent_id === t.id).sort((a, b) => a.ordem - b.ordem);
+                          const folhasVis = folhas.filter((f) => !escFiltroAtivo || escPassa(f));
+                          const feitos = folhas.filter((f) => f.status === "hoje").length;
+                          const tm = ESCOPO_META[t.status];
+                          const dimT = !!escChain && !escChain.has(t.id);
+                          return (
+                            <div key={t.id} className="grid grid-cols-[168px_repeat(4,minmax(180px,1fr))] border-b border-border/40 last:border-b-0">
+                              <div className={cn("group/tr flex items-start gap-1.5 p-2.5 transition", dimT && "opacity-30")}>
+                                <span className={cn("mt-1 h-2 w-2 shrink-0 rounded-full", tm.dot)} />
+                                <button onClick={() => toggleEscSel(t.id)} className="min-w-0 flex-1 text-left" title="Acender a corrente de dependências">
+                                  <div className="text-[12px] font-semibold leading-tight text-foreground">{t.titulo}</div>
+                                </button>
+                                <button onClick={() => abrirNovoEscopo(p.nome, t.id)} className="shrink-0 rounded p-0.5 text-muted-foreground opacity-0 transition hover:bg-muted hover:text-primary group-hover/tr:opacity-100" title="Adicionar competência nesta trilha"><Plus className="h-3 w-3" /></button>
+                                <span className="num shrink-0 rounded bg-muted px-1 py-0.5 text-[9.5px] font-semibold text-muted-foreground">{feitos}/{folhas.length}</span>
+                              </div>
+                              {HORIZONTES.map((h) => (
+                                <div key={h.key} className="space-y-1.5 border-l border-border/40 p-2">
+                                  {folhasVis.filter(h.match).map((e) => (
+                                    <EscopoCard key={e.id} e={e} dim={!!escChain && !escChain.has(e.id)} selected={escSelId === e.id} onSel={toggleEscSel} onEdit={abrirEdicaoEscopo} onAvancar={avancarEscopo} />
+                                  ))}
+                                </div>
+                              ))}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    );
+                  })}
+                  {!escFolhasVisiveis.length && (
+                    <div className="p-10 text-center text-[12.5px] text-muted-foreground">Nenhuma competência bate com os filtros.</div>
+                  )}
                 </div>
-              );
-            })}
+              </div>
+            </div>
+
+            {/* Painel lateral */}
+            <div className="space-y-3">
+              <div className="card-surface p-4">
+                <div className="eyebrow">Próximo a desbloquear</div>
+                <p className="mt-1 text-[11.5px] leading-relaxed text-muted-foreground">As competências em construção com dependência já dominada — são as que dão retorno mais rápido.</p>
+                <div className="mt-3 space-y-2">
+                  {escProximos.map((e, i) => (
+                    <button key={e.id} onClick={() => { setEscSelId(e.id); setEscPilarFiltro(""); setEscRespFiltro(""); }} className="flex w-full items-start gap-2 rounded-md border border-border/70 p-2 text-left transition hover:border-primary/40 hover:bg-muted/40">
+                      <span className="num flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-amber-500/15 text-[10px] font-bold text-amber-600 dark:text-amber-400">{i + 1}</span>
+                      <div className="min-w-0">
+                        <div className="truncate text-[12px] font-semibold text-foreground">{e.titulo}</div>
+                        <div className="truncate text-[10.5px] text-muted-foreground">{e.pilar} · {escById.get(e.parent_id!)?.titulo ?? "—"} · {e.responsavel ?? "sem responsável"}</div>
+                      </div>
+                    </button>
+                  ))}
+                  {!escProximos.length && <div className="text-[11.5px] text-muted-foreground">Nada em construção agora.</div>}
+                </div>
+              </div>
+
+              <div className="card-surface p-4">
+                <div className="eyebrow">Sem responsável</div>
+                <div className="num mt-1 text-[28px] font-bold leading-none text-foreground">{semResp}<span className="text-[13px] font-medium text-muted-foreground"> de {escFolhas.length} competências</span></div>
+                <p className="mt-1.5 text-[11.5px] leading-relaxed text-muted-foreground">Nenhum dono definido — a maioria delas está em 1–2 e 3–5 anos. Vale nomear um responsável antes de virar meta.</p>
+                <button onClick={() => setEscRespFiltro(escRespFiltro === "__sem" ? "" : "__sem")} className="mt-3 w-full rounded-md border border-border py-1.5 text-[12px] font-semibold text-foreground transition hover:bg-muted">
+                  {escRespFiltro === "__sem" ? "Mostrar todas" : "Ver só as sem responsável"}
+                </button>
+              </div>
+
+              <div className="card-surface p-4">
+                <div className="eyebrow">Como ler</div>
+                <div className="mt-2 space-y-2 text-[11.5px] leading-relaxed text-muted-foreground">
+                  <p>A coluna da esquerda é a trilha; os nós andam para a direita conforme o horizonte.</p>
+                  <p>O contorno tracejado marca o que ainda não existe.</p>
+                  <p>Clique num nó para acender a corrente de dependências dele.</p>
+                </div>
+              </div>
+            </div>
           </div>
         </div>
       )}
@@ -1798,6 +1953,15 @@ export default function TimeFinanceiro() {
                 </select>
               </div>
             </div>
+            {escForm.status === "futuro" && (
+              <div>
+                <Label className="text-[12px]">Horizonte</Label>
+                <select value={escForm.horizonte} onChange={(e) => setEscForm({ ...escForm, horizonte: e.target.value })} className="mt-1 h-9 w-full rounded-md border border-border bg-card px-2 text-[13px] outline-none focus:ring-1 focus:ring-primary">
+                  <option value="curto">1–2 anos (próxima fronteira)</option>
+                  <option value="longo">3–5 anos (ambição de longo prazo)</option>
+                </select>
+              </div>
+            )}
             <div>
               <Label className="text-[12px]">Depende de</Label>
               <select value={escForm.parent_id} onChange={(e) => setEscForm({ ...escForm, parent_id: e.target.value })} className="mt-1 h-9 w-full rounded-md border border-border bg-card px-2 text-[13px] outline-none focus:ring-1 focus:ring-primary">

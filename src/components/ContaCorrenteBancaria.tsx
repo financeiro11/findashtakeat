@@ -3,7 +3,7 @@ import { supabase } from "@/integrations/supabase/client";
 import { toast } from "sonner";
 import { SectionCard } from "@/components/ui/section-card";
 import { cn } from "@/lib/utils";
-import { Loader2, AlertTriangle, Search } from "lucide-react";
+import { Loader2, AlertTriangle, Search, RefreshCw } from "lucide-react";
 
 /* Extrato de conta corrente de um banco (Sicoob / Asaas), na página própria aberta
    pelo seletor do Caixa. Cada fonte tem duas tabelas de mesmo formato, populadas por
@@ -11,9 +11,11 @@ import { Loader2, AlertTriangle, Search } from "lucide-react";
    O seletor entre bancos vive na página; aqui só se exibe a fonte recebida por prop. */
 
 // Fontes disponíveis. Extrato e saldo têm o MESMO schema em todas.
+// `sync`: nome da Edge Function que alimenta a base via API (botão "Sincronizar").
+// Sicoob é alimentado por automação externa (n8n) → sem sync no app.
 export const FONTES_CC = [
-  { key: "sicoob", nome: "Sicoob", tabelaSaldo: "sicoob_saldo", tabelaExtrato: "sicoob_extrato" },
-  { key: "asaas", nome: "Asaas", tabelaSaldo: "asaas_saldo", tabelaExtrato: "asaas_extrato" },
+  { key: "sicoob", nome: "Sicoob", tabelaSaldo: "sicoob_saldo", tabelaExtrato: "sicoob_extrato", sync: null as string | null },
+  { key: "asaas", nome: "Asaas", tabelaSaldo: "asaas_saldo", tabelaExtrato: "asaas_extrato", sync: "asaas-extrato-sync" as string | null },
 ] as const;
 export type FonteCCKey = (typeof FONTES_CC)[number]["key"];
 
@@ -59,6 +61,7 @@ export default function ContaCorrenteBancaria({ banco }: { banco: FonteCCKey }) 
   const [saldo, setSaldo] = useState<Saldo | null>(null);
   const [extrato, setExtrato] = useState<Lancamento[]>([]);
   const [loading, setLoading] = useState(true);
+  const [syncing, setSyncing] = useState(false);
   const [de, setDe] = useState("");   // AAAA-MM-DD
   const [ate, setAte] = useState(""); // AAAA-MM-DD
   const [tipo, setTipo] = useState<FiltroTipo>("todos");
@@ -66,34 +69,53 @@ export default function ContaCorrenteBancaria({ banco }: { banco: FonteCCKey }) 
 
   const fonte = FONTES_CC.find((f) => f.key === banco) ?? FONTES_CC[0];
 
-  // Recarrega ao trocar de banco. `cancelado` evita aplicar resposta de uma fonte antiga.
+  async function carregar(silencioso = false) {
+    if (!silencioso) setLoading(true);
+    const [saldoRes, extratoRes] = await Promise.all([
+      // Saldo atual = linha com maior atualizado_em (a automação só insere snapshots).
+      sb.from(fonte.tabelaSaldo)
+        .select("conta,saldo,saldo_disponivel,saldo_bloqueado,atualizado_em")
+        .order("atualizado_em", { ascending: false })
+        .limit(1)
+        .maybeSingle(),
+      sb.from(fonte.tabelaExtrato)
+        .select("id,id_transacao,data_movimento,tipo,valor,historico,contraparte_nome,contraparte_documento,numero_documento")
+        .order("data_movimento", { ascending: false })
+        .limit(2000),
+    ]);
+    if (saldoRes.error) toast.error(`Falha ao carregar o saldo ${fonte.nome}: ` + saldoRes.error.message);
+    if (extratoRes.error) toast.error(`Falha ao carregar o extrato ${fonte.nome}: ` + extratoRes.error.message);
+    setSaldo((saldoRes.data as Saldo) ?? null);
+    setExtrato((extratoRes.data as Lancamento[]) ?? []);
+    setLoading(false);
+  }
+
+  // Recarrega ao trocar de banco.
   useEffect(() => {
-    let cancelado = false;
-    (async () => {
-      setLoading(true);
-      setSaldo(null);
-      setExtrato([]);
-      const [saldoRes, extratoRes] = await Promise.all([
-        // Saldo atual = linha com maior atualizado_em (a automação só insere snapshots).
-        sb.from(fonte.tabelaSaldo)
-          .select("conta,saldo,saldo_disponivel,saldo_bloqueado,atualizado_em")
-          .order("atualizado_em", { ascending: false })
-          .limit(1)
-          .maybeSingle(),
-        sb.from(fonte.tabelaExtrato)
-          .select("id,id_transacao,data_movimento,tipo,valor,historico,contraparte_nome,contraparte_documento,numero_documento")
-          .order("data_movimento", { ascending: false })
-          .limit(2000),
-      ]);
-      if (cancelado) return;
-      if (saldoRes.error) toast.error(`Falha ao carregar o saldo ${fonte.nome}: ` + saldoRes.error.message);
-      if (extratoRes.error) toast.error(`Falha ao carregar o extrato ${fonte.nome}: ` + extratoRes.error.message);
-      setSaldo((saldoRes.data as Saldo) ?? null);
-      setExtrato((extratoRes.data as Lancamento[]) ?? []);
-      setLoading(false);
-    })();
-    return () => { cancelado = true; };
-  }, [fonte.tabelaSaldo, fonte.tabelaExtrato, fonte.nome]);
+    setSaldo(null);
+    setExtrato([]);
+    carregar();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fonte.tabelaSaldo, fonte.tabelaExtrato]);
+
+  // Sincroniza a base via API (só fontes com Edge Function — Asaas). Incremental no backend.
+  async function sincronizar() {
+    if (!fonte.sync) return;
+    setSyncing(true);
+    toast.message(`Buscando novos lançamentos no ${fonte.nome}…`);
+    try {
+      const { data, error } = await supabase.functions.invoke(fonte.sync, { body: { action: "sync" } });
+      if (error) throw error;
+      if ((data as any)?.error) throw new Error((data as any).error);
+      const novos = (data as any)?.novos_gravados ?? 0;
+      toast.success(novos > 0 ? `${novos} novo(s) lançamento(s) do ${fonte.nome}.` : `Base do ${fonte.nome} já estava em dia.`);
+      await carregar(true);
+    } catch (e: any) {
+      toast.error(`Erro ao sincronizar o ${fonte.nome}: ` + (e?.message ?? String(e)));
+    } finally {
+      setSyncing(false);
+    }
+  }
 
   // "dado desatualizado" quando o último snapshot tem mais de 24h.
   const desatualizado = useMemo(() => {
@@ -130,6 +152,23 @@ export default function ContaCorrenteBancaria({ banco }: { banco: FonteCCKey }) 
 
   return (
     <div className="space-y-3">
+      {fonte.sync && (
+        <div className="flex items-center justify-end gap-2">
+          {saldo?.atualizado_em && (
+            <span className="text-[11px] text-muted-foreground">Sincroniza automaticamente 1×/dia</span>
+          )}
+          <button
+            onClick={sincronizar}
+            disabled={syncing}
+            className="ghost-btn flex items-center gap-1.5 px-2.5 text-[12px] disabled:opacity-60"
+            title="Buscar lançamentos novos na API do Asaas (incremental)"
+          >
+            {syncing ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
+            Sincronizar
+          </button>
+        </div>
+      )}
+
       <div className="grid grid-cols-1 gap-3 lg:grid-cols-3">
         {/* Card de saldo */}
         <SectionCard title="Saldo em conta corrente" subtitle={saldo?.conta ? `Conta ${saldo.conta}` : "Sincronizado via automação"}>

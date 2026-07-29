@@ -465,6 +465,9 @@ export default function TimeFinanceiro() {
   const [escPilarFiltro, setEscPilarFiltro] = useState("");   // "" = todos
   const [escRespFiltro, setEscRespFiltro] = useState("");      // "" = todos · "__sem" = sem responsável
   const [escSelId, setEscSelId] = useState<string | null>(null); // nó destacado (corrente de dependências)
+  const [escRecolhidos, setEscRecolhidos] = useState<Set<string>>(new Set()); // pilares recolhidos na árvore
+  const toggleEscPilar = (nome: string) =>
+    setEscRecolhidos((prev) => { const n = new Set(prev); n.has(nome) ? n.delete(nome) : n.add(nome); return n; });
 
   async function carregar() {
     const [{ data: cs, error: e1 }, { data: ps, error: e2 }, { data: rs, error: e3 }, { data: au }, { data: es, error: e5 }] = await Promise.all([
@@ -498,17 +501,6 @@ export default function TimeFinanceiro() {
   );
   const anoAnterior = ano - 1;
   const temAnoAnterior = cargos.some((c) => c.ano === anoAnterior);
-
-  /* ------------------------------ KPIs ------------------------------ */
-  const kpi = useMemo(() => {
-    const headcount = new Set(cargosDoAno.filter((c) => c.status === "efetivo" && c.pessoa).map((c) => c.pessoa!.trim().toLowerCase())).size;
-    const vagas = cargosDoAno.filter((c) => c.status === "vaga_aberta" || c.status === "entrevista").length;
-    const planejados = cargosDoAno.filter((c) => c.status === "planejado").length;
-    const custo = cargosDoAno
-      .filter((c) => ["vaga_aberta", "entrevista", "planejado"].includes(c.status))
-      .reduce((a, c) => a + (c.custo_mensal ?? 0), 0);
-    return { headcount, vagas, planejados, custo };
-  }, [cargosDoAno]);
 
   const raiz = cargosDoAno.find((c) => !c.parent_id);
   const selCargo = cargosDoAno.find((c) => c.id === selCargoId) ?? null;
@@ -981,30 +973,6 @@ export default function TimeFinanceiro() {
           >
             <Plus className="h-4 w-4" /> Novo cargo / vaga
           </button>
-        </div>
-      </div>
-
-      {/* ---------------- KPIs ---------------- */}
-      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
-        <div className="card-surface p-4">
-          <div className="eyebrow">Headcount · {ano}</div>
-          <div className="num mt-1.5 text-[26px] font-semibold leading-none">{kpi.headcount}</div>
-          <div className="mt-1.5 text-[12px] text-muted-foreground">pessoas efetivas no time</div>
-        </div>
-        <div className="card-surface p-4">
-          <div className="eyebrow">Vagas abertas · {ano}</div>
-          <div className="num mt-1.5 text-[26px] font-semibold leading-none text-primary">{kpi.vagas}</div>
-          <div className="mt-1.5 text-[12px] text-muted-foreground">abertas ou em entrevista</div>
-        </div>
-        <div className="card-surface p-4">
-          <div className="eyebrow">Cargos planejados · {ano}</div>
-          <div className="num mt-1.5 text-[26px] font-semibold leading-none">{kpi.planejados}</div>
-          <div className="mt-1.5 text-[12px] text-muted-foreground">visão de futuro</div>
-        </div>
-        <div className="card-surface p-4">
-          <div className="eyebrow">Custo da expansão · {ano}</div>
-          <div className="num mt-1.5 text-[26px] font-semibold leading-none">{fmtBRL0(kpi.custo)}/mês</div>
-          <div className="mt-1.5 text-[12px] text-muted-foreground">soma das vagas + planejados</div>
         </div>
       </div>
 
@@ -1539,15 +1507,19 @@ export default function TimeFinanceiro() {
                     const troncosShow = troncos.filter((t) => !escFiltroAtivo || nos.some((x) => x.parent_id === t.id && escPassa(x)));
                     if (!troncosShow.length) return null;
                     const cob = coberturaPilar(p.nome);
+                    const recolhido = escRecolhidos.has(p.nome);
                     return (
                       <div key={p.nome}>
-                        {/* Faixa do pilar */}
+                        {/* Faixa do pilar (clique recolhe/expande as trilhas) */}
                         <div className="flex items-center gap-2 border-b border-border/60 bg-secondary/20 px-3 py-2">
-                          <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-white" style={{ background: p.cor }}>
-                            <p.Icon className="h-3.5 w-3.5" />
-                          </span>
-                          <span className="text-[13px] font-semibold text-foreground">{p.nome}</span>
-                          <span className="hidden text-[11px] text-muted-foreground sm:inline">· {p.sub}</span>
+                          <button onClick={() => toggleEscPilar(p.nome)} className="flex min-w-0 items-center gap-2 text-left" title={recolhido ? "Expandir" : "Recolher"}>
+                            <ChevronDown className={cn("h-4 w-4 shrink-0 text-muted-foreground transition-transform", recolhido && "-rotate-90")} />
+                            <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-white" style={{ background: p.cor }}>
+                              <p.Icon className="h-3.5 w-3.5" />
+                            </span>
+                            <span className="text-[13px] font-semibold text-foreground">{p.nome}</span>
+                            <span className="hidden text-[11px] text-muted-foreground sm:inline">· {recolhido ? `${troncosShow.length} trilhas` : p.sub}</span>
+                          </button>
                           <div className="ml-auto flex items-center gap-2">
                             <div className="h-1.5 w-24 overflow-hidden rounded-full bg-muted">
                               <div className="h-full rounded-full" style={{ width: `${cob.pct}%`, background: p.cor }} />
@@ -1558,7 +1530,7 @@ export default function TimeFinanceiro() {
                         </div>
 
                         {/* Uma linha por trilha (tronco) */}
-                        {troncosShow.map((t) => {
+                        {!recolhido && troncosShow.map((t) => {
                           const folhas = nos.filter((x) => x.parent_id === t.id).sort((a, b) => a.ordem - b.ordem);
                           const folhasVis = folhas.filter((f) => !escFiltroAtivo || escPassa(f));
                           const feitos = folhas.filter((f) => f.status === "hoje").length;

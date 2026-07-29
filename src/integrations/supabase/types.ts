@@ -154,6 +154,72 @@ export type Database = {
         }
         Relationships: []
       }
+      asaas_extrato: {
+        Row: {
+          contraparte_documento: string | null
+          contraparte_nome: string | null
+          criado_em: string
+          data_movimento: string | null
+          historico: string | null
+          id: string
+          id_transacao: string
+          numero_documento: string | null
+          tipo: string | null
+          valor: number | null
+        }
+        Insert: {
+          contraparte_documento?: string | null
+          contraparte_nome?: string | null
+          criado_em?: string
+          data_movimento?: string | null
+          historico?: string | null
+          id?: string
+          id_transacao: string
+          numero_documento?: string | null
+          tipo?: string | null
+          valor?: number | null
+        }
+        Update: {
+          contraparte_documento?: string | null
+          contraparte_nome?: string | null
+          criado_em?: string
+          data_movimento?: string | null
+          historico?: string | null
+          id?: string
+          id_transacao?: string
+          numero_documento?: string | null
+          tipo?: string | null
+          valor?: number | null
+        }
+        Relationships: []
+      }
+      asaas_saldo: {
+        Row: {
+          atualizado_em: string | null
+          conta: string | null
+          id: string
+          saldo: number | null
+          saldo_bloqueado: number | null
+          saldo_disponivel: number | null
+        }
+        Insert: {
+          atualizado_em?: string | null
+          conta?: string | null
+          id?: string
+          saldo?: number | null
+          saldo_bloqueado?: number | null
+          saldo_disponivel?: number | null
+        }
+        Update: {
+          atualizado_em?: string | null
+          conta?: string | null
+          id?: string
+          saldo?: number | null
+          saldo_bloqueado?: number | null
+          saldo_disponivel?: number | null
+        }
+        Relationships: []
+      }
       asaas_snapshots: {
         Row: {
           dados: Json
@@ -3173,6 +3239,72 @@ export type Database = {
         }
         Relationships: []
       }
+      sicoob_extrato: {
+        Row: {
+          contraparte_documento: string | null
+          contraparte_nome: string | null
+          criado_em: string
+          data_movimento: string | null
+          historico: string | null
+          id: string
+          id_transacao: string
+          numero_documento: string | null
+          tipo: string | null
+          valor: number | null
+        }
+        Insert: {
+          contraparte_documento?: string | null
+          contraparte_nome?: string | null
+          criado_em?: string
+          data_movimento?: string | null
+          historico?: string | null
+          id?: string
+          id_transacao: string
+          numero_documento?: string | null
+          tipo?: string | null
+          valor?: number | null
+        }
+        Update: {
+          contraparte_documento?: string | null
+          contraparte_nome?: string | null
+          criado_em?: string
+          data_movimento?: string | null
+          historico?: string | null
+          id?: string
+          id_transacao?: string
+          numero_documento?: string | null
+          tipo?: string | null
+          valor?: number | null
+        }
+        Relationships: []
+      }
+      sicoob_saldo: {
+        Row: {
+          atualizado_em: string | null
+          conta: string | null
+          id: string
+          saldo: number | null
+          saldo_bloqueado: number | null
+          saldo_disponivel: number | null
+        }
+        Insert: {
+          atualizado_em?: string | null
+          conta?: string | null
+          id?: string
+          saldo?: number | null
+          saldo_bloqueado?: number | null
+          saldo_disponivel?: number | null
+        }
+        Update: {
+          atualizado_em?: string | null
+          conta?: string | null
+          id?: string
+          saldo?: number | null
+          saldo_bloqueado?: number | null
+          saldo_disponivel?: number | null
+        }
+        Relationships: []
+      }
       sync_agendamento: {
         Row: {
           atualizado_em: string
@@ -3348,6 +3480,53 @@ export type Database = {
             columns: ["parent_id"]
             isOneToOne: false
             referencedRelation: "time_cargos"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      time_escopos: {
+        Row: {
+          atualizado_em: string
+          criado_em: string
+          descricao: string | null
+          id: string
+          ordem: number
+          parent_id: string | null
+          pilar: string
+          responsavel: string | null
+          status: string
+          titulo: string
+        }
+        Insert: {
+          atualizado_em?: string
+          criado_em?: string
+          descricao?: string | null
+          id?: string
+          ordem?: number
+          parent_id?: string | null
+          pilar: string
+          responsavel?: string | null
+          status?: string
+          titulo: string
+        }
+        Update: {
+          atualizado_em?: string
+          criado_em?: string
+          descricao?: string | null
+          id?: string
+          ordem?: number
+          parent_id?: string | null
+          pilar?: string
+          responsavel?: string | null
+          status?: string
+          titulo?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "time_escopos_parent_id_fkey"
+            columns: ["parent_id"]
+            isOneToOne: false
+            referencedRelation: "time_escopos"
             referencedColumns: ["id"]
           },
         ]

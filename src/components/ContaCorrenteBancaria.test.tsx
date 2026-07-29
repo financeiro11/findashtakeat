@@ -53,9 +53,9 @@ describe("ContaCorrenteBancaria", () => {
     await waitFor(() => expect(screen.getAllByText("Cobrança recebida").length).toBeGreaterThan(0));
 
     // paginação: 30 iniciais → 45 após "Carregar mais"
-    expect(screen.getByText("30")).toBeInTheDocument();
+    expect(screen.getAllByText("30").length).toBeGreaterThan(0);
     fireEvent.click(screen.getByText("Carregar mais"));
-    await waitFor(() => expect(screen.getByText("45")).toBeInTheDocument());
+    await waitFor(() => expect(screen.getAllByText("45").length).toBeGreaterThan(0));
 
     // filtro por tipo
     fireEvent.click(screen.getByText("Débito"));

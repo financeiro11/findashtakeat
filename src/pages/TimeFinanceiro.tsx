@@ -291,7 +291,7 @@ function CargoCard({ c, selected, onClick }: { c: Cargo; selected: boolean; onCl
             </span>
           )}
           {c.alvo && (
-            <span className="num shrink-0 rounded bg-primary/10 px-1 py-0.5 text-[9px] font-bold text-primary" title={`Card específico do ano de ${c.alvo}`}>
+            <span className="num shrink-0 rounded bg-primary/10 px-1 py-0.5 text-[9px] font-bold text-primary" title={`Passa a existir a partir de ${c.alvo} (segue nos anos seguintes)`}>
               {c.alvo}
             </span>
           )}
@@ -488,14 +488,15 @@ export default function TimeFinanceiro() {
   useEffect(() => { carregar(); }, []);
 
   // Cargos do ano selecionado (o organograma/KPIs/funções/vagas são por ano).
-  // Um cargo com "alvo" (ano) definido só aparece no snapshot daquele ano; sem alvo (time
-  // efetivo/permanente) aparece em todos os anos. As cópias por linhagem existem em cada ano
-  // — o alvo esconde as dos anos que não são o dele.
+  // Um cargo com "alvo" (ano em que passa a existir) aparece daquele ano EM DIANTE; sem alvo
+  // (time permanente) aparece em todos os anos. As cópias por linhagem existem em cada ano — o
+  // alvo só esconde os anos ANTERIORES ao de estreia, mantendo a persistência para a frente
+  // (criou num ano → segue nos próximos até ser excluído).
   const cargosDoAno = useMemo(
     () => cargos.filter((c) => {
       if (c.ano !== ano) return false;
       const av = c.alvo ? Number(c.alvo) : null;
-      return av == null || Number.isNaN(av) || av === ano;
+      return av == null || Number.isNaN(av) || av <= ano;
     }),
     [cargos, ano],
   );
@@ -1663,14 +1664,14 @@ export default function TimeFinanceiro() {
                 <Input value={form.custo_mensal} onChange={(e) => setForm({ ...form, custo_mensal: e.target.value })} placeholder="8000" className="mt-1 h-9" inputMode="decimal" />
               </div>
               <div>
-                <Label className="text-[12px]">Ano do card</Label>
+                <Label className="text-[12px]">Aparece a partir de</Label>
                 <select
                   value={form.alvo}
                   onChange={(e) => setForm({ ...form, alvo: e.target.value })}
                   className="mt-1 h-9 w-full rounded-md border border-border bg-card px-2 text-[13px] outline-none focus:ring-1 focus:ring-primary"
                 >
-                  <option value="">Todos os anos</option>
-                  {ANOS.map((a) => <option key={a} value={String(a)}>{a}</option>)}
+                  <option value="">Sempre (time atual)</option>
+                  {ANOS.map((a) => <option key={a} value={String(a)}>A partir de {a}</option>)}
                 </select>
               </div>
             </div>

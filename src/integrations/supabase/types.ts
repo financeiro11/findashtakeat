@@ -3489,6 +3489,7 @@ export type Database = {
           atualizado_em: string
           criado_em: string
           descricao: string | null
+          horizonte: string | null
           id: string
           ordem: number
           parent_id: string | null
@@ -3501,6 +3502,7 @@ export type Database = {
           atualizado_em?: string
           criado_em?: string
           descricao?: string | null
+          horizonte?: string | null
           id?: string
           ordem?: number
           parent_id?: string | null
@@ -3513,6 +3515,7 @@ export type Database = {
           atualizado_em?: string
           criado_em?: string
           descricao?: string | null
+          horizonte?: string | null
           id?: string
           ordem?: number
           parent_id?: string | null

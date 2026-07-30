@@ -122,7 +122,8 @@ export default function ContaCorrenteBancaria({ banco }: { banco: FonteCCKey }) 
   const [periodo, setPeriodo] = useState<Periodo>("tudo");
   const [tipo, setTipo] = useState<FiltroTipo>("todos");
   const [busca, setBusca] = useState("");
-  const [visiveis, setVisiveis] = useState(PAGINA);
+  const [porPagina, setPorPagina] = useState(PAGINA);
+  const [paginaAtual, setPaginaAtual] = useState(1);
 
   const fonte = FONTES_CC.find((f) => f.key === banco) ?? FONTES_CC[0];
 

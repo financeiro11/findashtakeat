@@ -154,7 +154,7 @@ export default function ContaCorrenteBancaria({ banco }: { banco: FonteCCKey }) 
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [fonte.tabelaSaldo, fonte.tabelaExtrato]);
 
-  useEffect(() => setVisiveis(PAGINA), [periodo, tipo, busca, banco]);
+  useEffect(() => setPaginaAtual(1), [periodo, tipo, busca, banco, porPagina]);
 
   async function sincronizar() {
     if (!fonte.sync) {

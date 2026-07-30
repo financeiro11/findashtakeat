@@ -28,6 +28,11 @@ const fmtDataHora = (iso?: string | null) =>
   iso ? new Date(iso).toLocaleString("pt-BR", { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" }) : "—";
 const fmtHora = (iso?: string | null) =>
   iso ? new Date(iso).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" }) : "";
+const diaSemana = (d?: string | null) => {
+  if (!d) return "";
+  const dt = new Date(d.slice(0, 10) + "T12:00:00");
+  return dt.toLocaleDateString("pt-BR", { weekday: "long" });
+};
 
 /* ------------------------------ types (loose) ------------------------------ */
 type Saldo = {
@@ -72,6 +77,33 @@ const DOT: Record<CatKey, string> = {
   nf: "bg-violet-500",
   outros: "bg-muted-foreground/50",
 };
+
+/* --------- Classificação Sicoob (chips do topo + selo da tabela) --------- */
+type SicKey = "pix_in" | "ted_in" | "pix_out" | "boleto" | "folha" | "imposto" | "tarifa" | "outros_in" | "outros_out";
+const SIC_META: Record<SicKey, { rot: string; selo: string; dot: string; chip: string }> = {
+  pix_in:    { rot: "Pix recebido",       selo: "Pix recebido",  dot: "bg-emerald-500", chip: "border-emerald-500/40 text-emerald-700 dark:text-emerald-400" },
+  ted_in:    { rot: "TED recebida",       selo: "TED recebida",  dot: "bg-teal-500",    chip: "border-teal-500/40 text-teal-700 dark:text-teal-400" },
+  pix_out:   { rot: "Pix enviado",        selo: "Pix enviado",   dot: "bg-sky-500",     chip: "border-sky-500/40 text-sky-700 dark:text-sky-400" },
+  boleto:    { rot: "Boletos pagos",      selo: "Boleto pago",   dot: "bg-violet-500",  chip: "border-violet-500/40 text-violet-700 dark:text-violet-400" },
+  folha:     { rot: "Folha e benefícios", selo: "Folha",         dot: "bg-amber-500",   chip: "border-amber-500/40 text-amber-700 dark:text-amber-400" },
+  imposto:   { rot: "Impostos",           selo: "Imposto",       dot: "bg-red-500",     chip: "border-red-500/40 text-red-700 dark:text-red-400" },
+  tarifa:    { rot: "Tarifas bancárias",  selo: "Tarifa banc.",  dot: "bg-zinc-500",    chip: "border-zinc-400/50 text-muted-foreground" },
+  outros_in: { rot: "Outras entradas",    selo: "Entrada",       dot: "bg-emerald-400", chip: "border-emerald-400/40 text-emerald-700 dark:text-emerald-400" },
+  outros_out:{ rot: "Outras saídas",      selo: "Saída",         dot: "bg-muted-foreground/60", chip: "border-border text-muted-foreground" },
+};
+const ORDEM_SIC: SicKey[] = ["pix_in", "ted_in", "pix_out", "boleto", "folha", "imposto", "tarifa", "outros_in", "outros_out"];
+
+function classificaSicoob(h: string | null, credito: boolean): SicKey {
+  const s = (h ?? "").toLowerCase();
+  const tem = (...t: string[]) => t.some((x) => s.includes(x));
+  if (tem("tarifa", "pacote de serv", "cesta", "manutenção de conta", "manutencao de conta")) return "tarifa";
+  if (tem("imposto", "darf", "das ", "fgts", "inss", "iss", "tribut", "gps", "gare")) return "imposto";
+  if (tem("folha", "salário", "salario", "sal.", "vale", "benefíc", "benefic", "rescis", "13º", "adiantamento")) return "folha";
+  if (tem("boleto", "titulo", "título", "fatura", "cobrança bancária", "cobranca bancaria")) return "boleto";
+  if (tem("pix")) return credito ? "pix_in" : "pix_out";
+  if (tem("ted", "doc ", "transf")) return credito ? "ted_in" : "outros_out";
+  return credito ? "outros_in" : "outros_out";
+}
 
 const hojeISO = () => new Date().toLocaleDateString("en-CA");
 function menosDias(n: number) {
@@ -124,7 +156,13 @@ export default function ContaCorrenteBancaria({ banco }: { banco: FonteCCKey }) 
   useEffect(() => setVisiveis(PAGINA), [periodo, tipo, busca, banco]);
 
   async function sincronizar() {
-    if (!fonte.sync) return;
+    if (!fonte.sync) {
+      // Sicoob é alimentado por automação externa (n8n): recarrega do banco.
+      toast.message("Recarregando extrato do Sicoob…");
+      await carregar(true);
+      toast.success("Extrato atualizado.");
+      return;
+    }
     setSyncing(true);
     toast.message(`Buscando novos lançamentos no ${fonte.nome}…`);
     try {
@@ -188,6 +226,8 @@ export default function ContaCorrenteBancaria({ banco }: { banco: FonteCCKey }) 
     [filtrado],
   );
   const liquido = totais.entradas - totais.saidas;
+  const qtdCreditos = useMemo(() => filtrado.filter((m) => eCredito(m.tipo)).length, [filtrado]);
+  const qtdDebitos = filtrado.length - qtdCreditos;
 
   // Acumulado por tipo de taxa (segue os filtros da tabela).
   const taxas = useMemo(() => {
@@ -206,7 +246,46 @@ export default function ContaCorrenteBancaria({ banco }: { banco: FonteCCKey }) 
     return { ...base, totalTaxas, qtdTaxas, custoPct: base.recebido.v > 0 ? (totalTaxas / base.recebido.v) * 100 : 0 };
   }, [filtrado]);
 
+  // Chips do Sicoob: acumulado por natureza do lançamento (segue os filtros).
+  const chipsSicoob = useMemo(() => {
+    const acc = new Map<SicKey, { v: number; q: number; credito: boolean }>();
+    for (const m of filtrado) {
+      const credito = eCredito(m.tipo);
+      const k = classificaSicoob(m.historico, credito);
+      const cur = acc.get(k) ?? { v: 0, q: 0, credito };
+      cur.v += m.valor ?? 0;
+      cur.q += 1;
+      acc.set(k, cur);
+    }
+    return ORDEM_SIC.filter((k) => acc.has(k)).map((k) => ({ key: k, ...acc.get(k)!, ...SIC_META[k] }));
+  }, [filtrado]);
+
+  // Totais por dia (linha separadora do feed).
+  const totaisDia = useMemo(() => {
+    const map = new Map<string, { c: number; d: number }>();
+    for (const m of filtrado) {
+      const dia = m.data_movimento?.slice(0, 10) ?? "";
+      const cur = map.get(dia) ?? { c: 0, d: 0 };
+      if (eCredito(m.tipo)) cur.c += m.valor ?? 0; else cur.d += m.valor ?? 0;
+      map.set(dia, cur);
+    }
+    return map;
+  }, [filtrado]);
+
   const pagina = filtrado.slice(0, visiveis);
+  // Saldo inicial do período = saldo após o lançamento mais antigo, desfeito.
+  const saldoInicial = useMemo(() => {
+    const ultimo = filtrado[filtrado.length - 1];
+    if (!ultimo) return saldo?.saldo ?? 0;
+    return (ultimo.saldoApos ?? 0) - (eCredito(ultimo.tipo) ? 1 : -1) * (ultimo.valor ?? 0);
+  }, [filtrado, saldo]);
+
+  function baixar(nome: string, conteudo: string, mime: string) {
+    const url = URL.createObjectURL(new Blob(["\uFEFF" + conteudo], { type: mime }));
+    const a = document.createElement("a");
+    a.href = url; a.download = nome; a.click();
+    URL.revokeObjectURL(url);
+  }
 
   function exportarCSV() {
     const linhas = [
@@ -217,14 +296,247 @@ export default function ContaCorrenteBancaria({ banco }: { banco: FonteCCKey }) 
       ]),
     ];
     const csv = linhas.map((l) => l.map((c) => `"${String(c).replace(/"/g, '""')}"`).join(";")).join("\n");
-    const url = URL.createObjectURL(new Blob(["\uFEFF" + csv], { type: "text/csv;charset=utf-8" }));
-    const a = document.createElement("a");
-    a.href = url; a.download = `extrato-${fonte.key}.csv`; a.click();
-    URL.revokeObjectURL(url);
+    baixar(`extrato-${fonte.key}.csv`, csv, "text/csv;charset=utf-8");
+  }
+
+  // OFX 1.0 (SGML) simples — aceito por contabilidade/ERP.
+  function exportarOFX() {
+    const dt = (d?: string | null) => (d ? d.slice(0, 10).replace(/-/g, "") : "");
+    const escapa = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    const trans = filtrado.map((m) => {
+      const credito = eCredito(m.tipo);
+      return [
+        "<STMTTRN>",
+        `<TRNTYPE>${credito ? "CREDIT" : "DEBIT"}`,
+        `<DTPOSTED>${dt(m.data_movimento)}`,
+        `<TRNAMT>${(credito ? 1 : -1) * (m.valor ?? 0)}`,
+        `<FITID>${escapa(String(m.id_transacao ?? m.id))}`,
+        `<MEMO>${escapa(`${m.historico ?? ""}${m.contraparte_nome ? " · " + m.contraparte_nome : ""}`)}`,
+        "</STMTTRN>",
+      ].join("\n");
+    }).join("\n");
+    const ofx = [
+      "OFXHEADER:100", "DATA:OFXSGML", "VERSION:102", "SECURITY:NONE", "ENCODING:UTF-8",
+      "CHARSET:NONE", "COMPRESSION:NONE", "OLDFILEUID:NONE", "NEWFILEUID:NONE", "",
+      "<OFX><BANKMSGSRSV1><STMTTRNRS><STMTRS><CURDEF>BRL",
+      `<BANKACCTFROM><ACCTID>${fonte.nome}</ACCTID><ACCTTYPE>CHECKING</ACCTTYPE></BANKACCTFROM>`,
+      "<BANKTRANLIST>", trans, "</BANKTRANLIST>",
+      `<LEDGERBAL><BALAMT>${saldo?.saldo ?? 0}<DTASOF>${dt(hojeISO())}</LEDGERBAL>`,
+      "</STMTRS></STMTTRNRS></BANKMSGSRSV1></OFX>",
+    ].join("\n");
+    baixar(`extrato-${fonte.key}.ofx`, ofx, "application/x-ofx");
   }
 
   const mostraTaxas = fonte.key === "asaas";
+  const sicoob = fonte.key === "sicoob";
 
+  /* ------------------------------ barra de filtros (compartilhada) ------------------------------ */
+  const barraFiltros = (
+    <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border px-4 py-3">
+      <div className="relative">
+        <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+        <input
+          value={busca}
+          onChange={(e) => setBusca(e.target.value)}
+          placeholder="Buscar histórico, cliente ou fatura"
+          className="h-8 w-72 rounded-md border border-border bg-background pl-8 pr-2 text-[12px] outline-none focus:ring-1 focus:ring-ring"
+        />
+      </div>
+      <div className="flex flex-wrap items-center gap-2">
+        <div className="flex rounded-md border border-border bg-card p-0.5">
+          {([["hoje", "Hoje"], ["7d", "7 dias"], ["30d", "30 dias"], ["mes", "Mês atual"], ["tudo", "Tudo"]] as const).map(([k, rot]) => (
+            <button
+              key={k}
+              onClick={() => setPeriodo(k)}
+              className={cn(
+                "rounded px-2.5 py-1 text-[11.5px] font-medium transition",
+                periodo === k ? "bg-secondary text-foreground" : "text-muted-foreground hover:text-foreground",
+              )}
+            >
+              {rot}
+            </button>
+          ))}
+        </div>
+        <div className="flex rounded-md border border-border bg-card p-0.5">
+          {([["todos", "Todos"], ["credito", "Crédito"], ["debito", "Débito"]] as const).map(([k, rot]) => (
+            <button
+              key={k}
+              onClick={() => setTipo(k)}
+              className={cn(
+                "rounded px-2.5 py-1 text-[11.5px] font-medium transition",
+                tipo === k ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground",
+              )}
+            >
+              {rot}
+            </button>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+
+  /* ============================== LAYOUT SICOOB ============================== */
+  if (sicoob) {
+    return (
+      <div className="card-surface overflow-hidden">
+        {/* Faixa de KPIs */}
+        <div className="grid grid-cols-1 divide-y divide-border border-b border-border sm:grid-cols-2 sm:divide-x lg:grid-cols-4 lg:divide-y-0">
+          <div className="px-5 py-4">
+            <div className="eyebrow">Saldo em conta · {fonte.nome}</div>
+            {loading ? (
+              <div className="mt-2 flex h-9 items-center text-[12.5px] text-muted-foreground">
+                <Loader2 className="mr-2 h-4 w-4 animate-spin" /> Carregando…
+              </div>
+            ) : (
+              <>
+                <div className={cn("num mt-1.5 text-[28px] font-semibold leading-none tracking-tight", (saldo?.saldo ?? 0) >= 0 ? "text-pos" : "text-neg")}>
+                  {fmtBRL(saldo?.saldo ?? 0)}
+                </div>
+                <div className={cn("mt-2 flex items-center gap-1.5 text-[10.5px]", desatualizado ? "text-amber-600 dark:text-amber-400" : "text-muted-foreground")}>
+                  {desatualizado && <AlertTriangle className="h-3 w-3 shrink-0" />}
+                  <span>
+                    saldo bloqueado {fmtNum(saldo?.saldo_bloqueado ?? 0)} · atualizado {fmtDataHora(saldo?.atualizado_em)}
+                  </span>
+                </div>
+              </>
+            )}
+          </div>
+          <div className="px-5 py-4">
+            <div className="eyebrow">Entradas</div>
+            <div className="num mt-1.5 text-[24px] font-semibold leading-none text-pos">+{fmtBRL(totais.entradas)}</div>
+            <div className="mt-2 text-[10.5px] text-muted-foreground">{qtdCreditos} crédito{qtdCreditos === 1 ? "" : "s"} no período</div>
+          </div>
+          <div className="px-5 py-4">
+            <div className="eyebrow">Saídas</div>
+            <div className="num mt-1.5 text-[24px] font-semibold leading-none text-neg">−{fmtBRL(totais.saidas)}</div>
+            <div className="mt-2 text-[10.5px] text-muted-foreground">{qtdDebitos} débito{qtdDebitos === 1 ? "" : "s"} no período</div>
+          </div>
+          <div className="px-5 py-4">
+            <div className="eyebrow">Resultado do período</div>
+            <div className={cn("num mt-1.5 text-[24px] font-semibold leading-none", liquido >= 0 ? "text-pos" : "text-neg")}>
+              {liquido >= 0 ? "+" : "−"}{fmtBRL(Math.abs(liquido))}
+            </div>
+            <div className="mt-2 text-[10.5px] text-muted-foreground">{filtrado.length} lançamentos filtrados</div>
+          </div>
+        </div>
+
+        {/* Chips por natureza */}
+        {chipsSicoob.length > 0 && (
+          <div className="grid grid-cols-2 gap-3 border-b border-border px-4 py-3 sm:grid-cols-3 lg:grid-cols-7">
+            {chipsSicoob.map((c) => (
+              <button
+                key={c.key}
+                onClick={() => setBusca(busca === c.rot ? "" : "")}
+                type="button"
+                className="cursor-default rounded-md border border-border px-3 py-2 text-left"
+              >
+                <div className="flex items-center gap-1.5">
+                  <span className={cn("h-1.5 w-1.5 shrink-0 rounded-full", c.dot)} />
+                  <span className="truncate text-[11px] text-muted-foreground" title={c.rot}>{c.rot}</span>
+                </div>
+                <div className={cn("num mt-1 text-[15px] font-semibold leading-none", c.credito ? "text-pos" : "text-neg")}>
+                  {c.credito ? "+" : "−"}{fmtBRL(c.v)}
+                </div>
+                <div className="mt-1.5 text-[10px] text-muted-foreground">{c.q} lançamento{c.q === 1 ? "" : "s"}</div>
+              </button>
+            ))}
+          </div>
+        )}
+
+        {barraFiltros}
+
+        {/* Feed */}
+        <div className="max-h-[560px] overflow-auto">
+          <table className="w-full text-[12.5px]">
+            <thead className="sticky top-0 z-10 bg-card">
+              <tr className="border-b border-border text-left text-[10px] uppercase tracking-wider text-muted-foreground">
+                <th className="w-[128px] px-4 py-2 font-medium">Tipo</th>
+                <th className="px-2 py-2 font-medium">Histórico</th>
+                <th className="w-[150px] px-2 py-2 font-medium">Documento</th>
+                <th className="w-[130px] px-2 py-2 text-right font-medium">Valor</th>
+                <th className="w-[130px] px-4 py-2 text-right font-medium">Saldo</th>
+              </tr>
+            </thead>
+            <tbody>
+              {loading && (
+                <tr><td colSpan={5} className="px-4 py-8 text-center text-muted-foreground">
+                  <Loader2 className="mr-2 inline h-4 w-4 animate-spin" /> Carregando extrato…
+                </td></tr>
+              )}
+              {!loading && pagina.length === 0 && (
+                <tr><td colSpan={5} className="px-4 py-8 text-center text-muted-foreground">Nenhum lançamento no período/filtro.</td></tr>
+              )}
+              {!loading && pagina.map((m, i) => {
+                const credito = eCredito(m.tipo);
+                const meta = SIC_META[classificaSicoob(m.historico, credito)];
+                const dia = m.data_movimento?.slice(0, 10) ?? "";
+                const novaData = i === 0 || (pagina[i - 1].data_movimento?.slice(0, 10) ?? "") !== dia;
+                const tot = totaisDia.get(dia);
+                return (
+                  <>
+                    {novaData && (
+                      <tr key={`d-${dia}`} className="bg-secondary/50">
+                        <td colSpan={2} className="px-4 py-1.5 text-[11.5px]">
+                          <span className="num font-semibold text-foreground">{fmtData(m.data_movimento)}</span>
+                          <span className="ml-2 text-muted-foreground">· {diaSemana(m.data_movimento)}</span>
+                        </td>
+                        <td className="num px-2 py-1.5 text-right text-[11px] text-pos">{tot?.c ? `+${fmtNum(tot.c)}` : ""}</td>
+                        <td className="num px-2 py-1.5 text-right text-[11px] text-neg">{tot?.d ? `−${fmtNum(tot.d)}` : ""}</td>
+                        <td className="num px-4 py-1.5 text-right text-[11px] text-muted-foreground">
+                          saldo do dia <b className="text-foreground">{fmtNum(m.saldoApos ?? 0)}</b>
+                        </td>
+                      </tr>
+                    )}
+                    <tr key={m.id} className="border-b border-border/50 hover:bg-secondary/40">
+                      <td className="px-4 py-2 align-middle">
+                        <span className={cn("inline-flex items-center rounded-full border px-2 py-0.5 text-[10.5px] font-medium", meta.chip)}>
+                          {meta.selo}
+                        </span>
+                      </td>
+                      <td className="px-2 py-2">
+                        <div className="truncate font-medium text-foreground">{m.contraparte_nome || m.historico || "Lançamento"}</div>
+                        {m.contraparte_nome && m.historico && (
+                          <div className="truncate text-[11.5px] text-muted-foreground">{m.historico}</div>
+                        )}
+                      </td>
+                      <td className="num whitespace-nowrap px-2 py-2 text-[11.5px] text-muted-foreground">{m.numero_documento || "—"}</td>
+                      <td className={cn("num whitespace-nowrap px-2 py-2 text-right font-semibold", credito ? "text-pos" : "text-neg")}>
+                        {credito ? "+" : "−"}{fmtBRL(m.valor ?? 0)}
+                      </td>
+                      <td className="num whitespace-nowrap px-4 py-2 text-right text-[11.5px] text-muted-foreground">{fmtNum(m.saldoApos ?? 0)}</td>
+                    </tr>
+                  </>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+
+        {/* Rodapé */}
+        <div className="flex flex-wrap items-center justify-between gap-3 border-t border-border px-4 py-2.5 text-[11.5px] text-muted-foreground">
+          <span>
+            Mostrando <b className="num text-foreground">{pagina.length}</b> de{" "}
+            <span className="num">{filtrado.length.toLocaleString("pt-BR")}</span> lançamentos · saldo inicial do período{" "}
+            <b className="num text-foreground">{fmtBRL(saldoInicial)}</b>
+          </span>
+          <div className="flex items-center gap-4">
+            <button onClick={() => carregar()} className="flex items-center gap-1.5 hover:text-foreground">
+              <RefreshCw className={cn("h-3.5 w-3.5", loading && "animate-spin")} /> Sincronizar
+            </button>
+            <button onClick={exportarOFX} className="hover:text-foreground">Exportar OFX</button>
+            <button onClick={exportarCSV} className="hover:text-foreground">Exportar CSV</button>
+            {visiveis < filtrado.length && (
+              <button onClick={() => setVisiveis((v) => v + PAGINA)} className="font-medium text-foreground hover:underline">
+                Carregar mais
+              </button>
+            )}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  /* ============================== LAYOUT ASAAS ============================== */
   return (
     <div className="card-surface overflow-hidden">
       {/* Barra superior: sync */}
@@ -308,102 +620,36 @@ export default function ContaCorrenteBancaria({ banco }: { banco: FonteCCKey }) 
             </span>
           </div>
 
-          {mostraTaxas ? (
-            <>
-              <div className="mt-3 grid grid-cols-2 gap-3 lg:grid-cols-4">
-                {([
-                  ["Taxa de mensageria", taxas.mensageria],
-                  ["Taxa do Pix", taxas.pix],
-                  ["Emissão de NF de serviço", taxas.nf],
-                  ["Total de taxas", { v: taxas.totalTaxas, q: taxas.qtdTaxas }],
-                ] as const).map(([rot, d]) => {
-                  const share = taxas.totalTaxas > 0 ? Math.max(4, (d.v / taxas.totalTaxas) * 100) : 0;
-                  return (
-                    <div key={rot} className="rounded-md border border-border px-3 py-2.5">
-                      <div className="truncate text-[11.5px] text-muted-foreground" title={rot}>{rot}</div>
-                      <div className="num mt-1 text-[20px] font-semibold leading-none text-neg">−{fmtNum(d.v)}</div>
-                      <div className="mt-2 h-[3px] w-full rounded-full bg-secondary">
-                        <div className="h-full rounded-full bg-neg" style={{ width: `${share}%` }} />
-                      </div>
-                      <div className="num mt-1.5 text-[10.5px] text-muted-foreground">{d.q} cobranças</div>
-                    </div>
-                  );
-                })}
-              </div>
-              <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-1 rounded-md bg-pos-soft px-3 py-2 text-[12.5px]">
-                <span className="text-muted-foreground">Cobranças recebidas</span>
-                <b className="num text-[15px] text-pos">+{fmtBRL(taxas.recebido.v)}</b>
-                <span className="ml-auto text-muted-foreground">Custo total das taxas sobre o recebido</span>
-                <b className="num text-neg">{taxas.custoPct.toFixed(2).replace(".", ",")}%</b>
-              </div>
-            </>
-          ) : (
-            <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-3">
-              <div className="rounded-md border border-border px-3 py-2.5">
-                <div className="text-[11.5px] text-muted-foreground">Total de entradas</div>
-                <div className="num text-[20px] font-semibold text-pos">+{fmtBRL(totais.entradas)}</div>
-              </div>
-              <div className="rounded-md border border-border px-3 py-2.5">
-                <div className="text-[11.5px] text-muted-foreground">Total de saídas</div>
-                <div className="num text-[20px] font-semibold text-neg">−{fmtBRL(totais.saidas)}</div>
-              </div>
-              <div className="rounded-md border border-border px-3 py-2.5">
-                <div className="text-[11.5px] text-muted-foreground">Resultado líquido</div>
-                <div className={cn("num text-[20px] font-semibold", liquido >= 0 ? "text-pos" : "text-neg")}>
-                  {liquido >= 0 ? "+" : "−"}{fmtBRL(Math.abs(liquido))}
+          <div className="mt-3 grid grid-cols-2 gap-3 lg:grid-cols-4">
+            {([
+              ["Taxa de mensageria", taxas.mensageria],
+              ["Taxa do Pix", taxas.pix],
+              ["Emissão de NF de serviço", taxas.nf],
+              ["Total de taxas", { v: taxas.totalTaxas, q: taxas.qtdTaxas }],
+            ] as const).map(([rot, d]) => {
+              const share = taxas.totalTaxas > 0 ? Math.max(4, (d.v / taxas.totalTaxas) * 100) : 0;
+              return (
+                <div key={rot} className="rounded-md border border-border px-3 py-2.5">
+                  <div className="truncate text-[11.5px] text-muted-foreground" title={rot}>{rot}</div>
+                  <div className="num mt-1 text-[20px] font-semibold leading-none text-neg">−{fmtNum(d.v)}</div>
+                  <div className="mt-2 h-[3px] w-full rounded-full bg-secondary">
+                    <div className="h-full rounded-full bg-neg" style={{ width: `${share}%` }} />
+                  </div>
+                  <div className="num mt-1.5 text-[10.5px] text-muted-foreground">{d.q} cobranças</div>
                 </div>
-              </div>
-            </div>
-          )}
+              );
+            })}
+          </div>
+          <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-1 rounded-md bg-pos-soft px-3 py-2 text-[12.5px]">
+            <span className="text-muted-foreground">Cobranças recebidas</span>
+            <b className="num text-[15px] text-pos">+{fmtBRL(taxas.recebido.v)}</b>
+            <span className="ml-auto text-muted-foreground">Custo total das taxas sobre o recebido</span>
+            <b className="num text-neg">{taxas.custoPct.toFixed(2).replace(".", ",")}%</b>
+          </div>
         </div>
       </div>
 
-      {/* Barra de filtros do extrato */}
-      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border px-4 py-3">
-        <div className="flex items-baseline gap-2">
-          <h3 className="text-[14px] font-semibold tracking-tight text-foreground">Extrato</h3>
-          <span className="text-[11.5px] text-muted-foreground">crédito em verde, débito em vermelho</span>
-        </div>
-        <div className="flex flex-wrap items-center gap-2">
-          <div className="relative">
-            <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
-            <input
-              value={busca}
-              onChange={(e) => setBusca(e.target.value)}
-              placeholder="Buscar histórico, cliente ou fatura"
-              className="h-8 w-60 rounded-md border border-border bg-background pl-8 pr-2 text-[12px] outline-none focus:ring-1 focus:ring-ring"
-            />
-          </div>
-          <div className="flex rounded-md border border-border bg-card p-0.5">
-            {([["hoje", "Hoje"], ["7d", "7 dias"], ["30d", "30 dias"], ["mes", "Mês atual"], ["tudo", "Tudo"]] as const).map(([k, rot]) => (
-              <button
-                key={k}
-                onClick={() => setPeriodo(k)}
-                className={cn(
-                  "rounded px-2.5 py-1 text-[11.5px] font-medium transition",
-                  periodo === k ? "bg-secondary text-foreground" : "text-muted-foreground hover:text-foreground",
-                )}
-              >
-                {rot}
-              </button>
-            ))}
-          </div>
-          <div className="flex rounded-md border border-border bg-card p-0.5">
-            {([["todos", "Todos"], ["credito", "Crédito"], ["debito", "Débito"]] as const).map(([k, rot]) => (
-              <button
-                key={k}
-                onClick={() => setTipo(k)}
-                className={cn(
-                  "rounded px-2.5 py-1 text-[11.5px] font-medium transition",
-                  tipo === k ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground",
-                )}
-              >
-                {rot}
-              </button>
-            ))}
-          </div>
-        </div>
-      </div>
+      {barraFiltros}
 
       {/* Feed de lançamentos */}
       <div className="max-h-[520px] overflow-auto">
@@ -463,6 +709,7 @@ export default function ContaCorrenteBancaria({ banco }: { banco: FonteCCKey }) 
           <span className="num">{filtrado.length.toLocaleString("pt-BR")}</span> lançamentos
         </span>
         <div className="flex items-center gap-4">
+          <button onClick={exportarOFX} className="hover:text-foreground">Exportar OFX</button>
           <button onClick={exportarCSV} className="hover:text-foreground">Exportar CSV</button>
           {visiveis < filtrado.length && (
             <button onClick={() => setVisiveis((v) => v + PAGINA)} className="font-medium text-foreground hover:underline">

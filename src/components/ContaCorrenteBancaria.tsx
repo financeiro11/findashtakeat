@@ -273,7 +273,10 @@ export default function ContaCorrenteBancaria({ banco }: { banco: FonteCCKey }) 
     return map;
   }, [filtrado]);
 
-  const pagina = filtrado.slice(0, visiveis);
+  const totalPaginas = Math.max(1, Math.ceil(filtrado.length / porPagina));
+  const pagAtual = Math.min(paginaAtual, totalPaginas);
+  const inicio = (pagAtual - 1) * porPagina;
+  const pagina = filtrado.slice(inicio, inicio + porPagina);
   // Saldo inicial do período = saldo após o lançamento mais antigo, desfeito.
   const saldoInicial = useMemo(() => {
     const ultimo = filtrado[filtrado.length - 1];

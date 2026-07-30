@@ -704,17 +704,20 @@ export default function ContaCorrenteBancaria({ banco }: { banco: FonteCCKey }) 
       {/* Rodapé */}
       <div className="flex flex-wrap items-center justify-between gap-3 border-t border-border px-4 py-2.5 text-[11.5px] text-muted-foreground">
         <span>
-          Mostrando <b className="num text-foreground">{pagina.length}</b> de{" "}
+          Mostrando{" "}
+          <b className="num text-foreground">{filtrado.length ? inicio + 1 : 0}–{inicio + pagina.length}</b> de{" "}
           <span className="num">{filtrado.length.toLocaleString("pt-BR")}</span> lançamentos
         </span>
-        <div className="flex items-center gap-4">
+        <div className="flex flex-wrap items-center gap-4">
           <button onClick={exportarOFX} className="hover:text-foreground">Exportar OFX</button>
           <button onClick={exportarCSV} className="hover:text-foreground">Exportar CSV</button>
-          {visiveis < filtrado.length && (
-            <button onClick={() => setVisiveis((v) => v + PAGINA)} className="font-medium text-foreground hover:underline">
-              Carregar mais
-            </button>
-          )}
+          <Paginador
+            pagina={pagAtual}
+            totalPaginas={totalPaginas}
+            porPagina={porPagina}
+            onPagina={setPaginaAtual}
+            onPorPagina={setPorPagina}
+          />
         </div>
       </div>
     </div>

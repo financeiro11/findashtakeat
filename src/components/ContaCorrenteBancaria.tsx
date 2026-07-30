@@ -113,6 +113,64 @@ function menosDias(n: number) {
 }
 
 const PAGINA = 30;
+const OPCOES_POR_PAGINA = [30, 50, 100, 200];
+
+function Paginador({
+  pagina, totalPaginas, porPagina, onPagina, onPorPagina,
+}: {
+  pagina: number;
+  totalPaginas: number;
+  porPagina: number;
+  onPagina: (p: number) => void;
+  onPorPagina: (n: number) => void;
+}) {
+  const numeros = useMemo(() => {
+    const out: (number | "…")[] = [];
+    const add = (n: number) => { if (!out.includes(n)) out.push(n); };
+    add(1);
+    if (pagina - 1 > 2) out.push("…");
+    for (let p = Math.max(2, pagina - 1); p <= Math.min(totalPaginas - 1, pagina + 1); p++) add(p);
+    if (pagina + 1 < totalPaginas - 1) out.push("…");
+    if (totalPaginas > 1) add(totalPaginas);
+    return out;
+  }, [pagina, totalPaginas]);
+
+  const btn = "flex h-6 min-w-6 items-center justify-center rounded-md border border-border px-1.5 text-[11.5px] transition-colors disabled:opacity-40 disabled:cursor-not-allowed hover:bg-muted";
+
+  return (
+    <div className="flex items-center gap-2">
+      <select
+        value={porPagina}
+        onChange={(e) => onPorPagina(Number(e.target.value))}
+        className="h-6 rounded-md border border-border bg-background px-1.5 text-[11.5px] text-muted-foreground"
+        aria-label="Itens por página"
+      >
+        {OPCOES_POR_PAGINA.map((n) => (
+          <option key={n} value={n}>{n}/pág.</option>
+        ))}
+      </select>
+      <div className="flex items-center gap-1">
+        <button className={btn} onClick={() => onPagina(pagina - 1)} disabled={pagina <= 1} aria-label="Página anterior">‹</button>
+        {numeros.map((n, i) =>
+          n === "…" ? (
+            <span key={`e${i}`} className="px-1 text-[11.5px]">…</span>
+          ) : (
+            <button
+              key={n}
+              onClick={() => onPagina(n)}
+              aria-current={n === pagina ? "page" : undefined}
+              className={cn(btn, "num", n === pagina && "border-primary bg-primary text-primary-foreground hover:bg-primary")}
+            >
+              {n}
+            </button>
+          )
+        )}
+        <button className={btn} onClick={() => onPagina(pagina + 1)} disabled={pagina >= totalPaginas} aria-label="Próxima página">›</button>
+      </div>
+    </div>
+  );
+}
+
 
 export default function ContaCorrenteBancaria({ banco }: { banco: FonteCCKey }) {
   const [saldo, setSaldo] = useState<Saldo | null>(null);
@@ -122,7 +180,8 @@ export default function ContaCorrenteBancaria({ banco }: { banco: FonteCCKey }) 
   const [periodo, setPeriodo] = useState<Periodo>("tudo");
   const [tipo, setTipo] = useState<FiltroTipo>("todos");
   const [busca, setBusca] = useState("");
-  const [visiveis, setVisiveis] = useState(PAGINA);
+  const [porPagina, setPorPagina] = useState(PAGINA);
+  const [paginaAtual, setPaginaAtual] = useState(1);
 
   const fonte = FONTES_CC.find((f) => f.key === banco) ?? FONTES_CC[0];
 
@@ -153,7 +212,7 @@ export default function ContaCorrenteBancaria({ banco }: { banco: FonteCCKey }) 
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [fonte.tabelaSaldo, fonte.tabelaExtrato]);
 
-  useEffect(() => setVisiveis(PAGINA), [periodo, tipo, busca, banco]);
+  useEffect(() => setPaginaAtual(1), [periodo, tipo, busca, banco, porPagina]);
 
   async function sincronizar() {
     if (!fonte.sync) {
@@ -272,7 +331,10 @@ export default function ContaCorrenteBancaria({ banco }: { banco: FonteCCKey }) 
     return map;
   }, [filtrado]);
 
-  const pagina = filtrado.slice(0, visiveis);
+  const totalPaginas = Math.max(1, Math.ceil(filtrado.length / porPagina));
+  const pagAtual = Math.min(paginaAtual, totalPaginas);
+  const inicio = (pagAtual - 1) * porPagina;
+  const pagina = filtrado.slice(inicio, inicio + porPagina);
   // Saldo inicial do período = saldo após o lançamento mais antigo, desfeito.
   const saldoInicial = useMemo(() => {
     const ultimo = filtrado[filtrado.length - 1];
@@ -510,21 +572,24 @@ export default function ContaCorrenteBancaria({ banco }: { banco: FonteCCKey }) 
         {/* Rodapé */}
         <div className="flex flex-wrap items-center justify-between gap-3 border-t border-border px-4 py-2.5 text-[11.5px] text-muted-foreground">
           <span>
-            Mostrando <b className="num text-foreground">{pagina.length}</b> de{" "}
+            Mostrando{" "}
+            <b className="num text-foreground">{filtrado.length ? inicio + 1 : 0}–{inicio + pagina.length}</b> de{" "}
             <span className="num">{filtrado.length.toLocaleString("pt-BR")}</span> lançamentos · saldo inicial do período{" "}
             <b className="num text-foreground">{fmtBRL(saldoInicial)}</b>
           </span>
-          <div className="flex items-center gap-4">
+          <div className="flex flex-wrap items-center gap-4">
             <button onClick={() => carregar()} className="flex items-center gap-1.5 hover:text-foreground">
               <RefreshCw className={cn("h-3.5 w-3.5", loading && "animate-spin")} /> Sincronizar
             </button>
             <button onClick={exportarOFX} className="hover:text-foreground">Exportar OFX</button>
             <button onClick={exportarCSV} className="hover:text-foreground">Exportar CSV</button>
-            {visiveis < filtrado.length && (
-              <button onClick={() => setVisiveis((v) => v + PAGINA)} className="font-medium text-foreground hover:underline">
-                Carregar mais
-              </button>
-            )}
+            <Paginador
+              pagina={pagAtual}
+              totalPaginas={totalPaginas}
+              porPagina={porPagina}
+              onPagina={setPaginaAtual}
+              onPorPagina={setPorPagina}
+            />
           </div>
         </div>
       </div>
@@ -700,17 +765,20 @@ export default function ContaCorrenteBancaria({ banco }: { banco: FonteCCKey }) 
       {/* Rodapé */}
       <div className="flex flex-wrap items-center justify-between gap-3 border-t border-border px-4 py-2.5 text-[11.5px] text-muted-foreground">
         <span>
-          Mostrando <b className="num text-foreground">{pagina.length}</b> de{" "}
+          Mostrando{" "}
+          <b className="num text-foreground">{filtrado.length ? inicio + 1 : 0}–{inicio + pagina.length}</b> de{" "}
           <span className="num">{filtrado.length.toLocaleString("pt-BR")}</span> lançamentos
         </span>
-        <div className="flex items-center gap-4">
+        <div className="flex flex-wrap items-center gap-4">
           <button onClick={exportarOFX} className="hover:text-foreground">Exportar OFX</button>
           <button onClick={exportarCSV} className="hover:text-foreground">Exportar CSV</button>
-          {visiveis < filtrado.length && (
-            <button onClick={() => setVisiveis((v) => v + PAGINA)} className="font-medium text-foreground hover:underline">
-              Carregar mais
-            </button>
-          )}
+          <Paginador
+            pagina={pagAtual}
+            totalPaginas={totalPaginas}
+            porPagina={porPagina}
+            onPagina={setPaginaAtual}
+            onPorPagina={setPorPagina}
+          />
         </div>
       </div>
     </div>

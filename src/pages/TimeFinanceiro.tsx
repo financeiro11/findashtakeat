@@ -1479,28 +1479,10 @@ export default function TimeFinanceiro() {
           </div>
 
           <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_290px]">
-            {/* Matriz de trilhas */}
+            {/* Matriz de trilhas — vertical: tronco = coluna (origem, no topo), horizontes descem */}
             <div className="card-surface overflow-hidden p-0">
               <div className="overflow-x-auto">
-                <div className="min-w-[900px]">
-                  {/* Cabeçalho dos horizontes */}
-                  <div className="grid grid-cols-[168px_repeat(4,minmax(180px,1fr))] border-b border-border bg-secondary/40">
-                    <div className="p-3 text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Trilha</div>
-                    {HORIZONTES.map((h, i) => {
-                      const count = escFolhasVisiveis.filter(h.match).length;
-                      const dot = i === 0 ? "bg-success" : i === 1 ? "bg-amber-500" : "bg-muted-foreground/50";
-                      return (
-                        <div key={h.key} className="border-l border-border/60 p-3">
-                          <div className="flex items-center gap-1.5 text-[12px] font-semibold text-foreground">
-                            <span className={cn("h-2 w-2 rounded-full", dot)} /> {h.label}
-                          </div>
-                          <div className="mt-0.5 text-[10px] text-muted-foreground">{h.sub} · {count} {count === 1 ? "item" : "itens"}</div>
-                        </div>
-                      );
-                    })}
-                  </div>
-
-                  {/* Pilares e trilhas */}
+                <div className="min-w-[940px]">
                   {PILARES_ESCOPO.map((p) => {
                     if (escPilarFiltro && escPilarFiltro !== p.nome) return null;
                     const nos = escopos.filter((e) => e.pilar === p.nome);
@@ -1509,10 +1491,12 @@ export default function TimeFinanceiro() {
                     if (!troncosShow.length) return null;
                     const cob = coberturaPilar(p.nome);
                     const recolhido = escRecolhidos.has(p.nome);
+                    const tint = p.cor.replace(")", " / 0.07)");
+                    const gridCols = { gridTemplateColumns: `150px repeat(${troncosShow.length}, minmax(190px, 1fr))` };
                     return (
-                      <div key={p.nome}>
-                        {/* Faixa do pilar (clique recolhe/expande as trilhas) */}
-                        <div className="flex items-center gap-2 border-b border-border/60 bg-secondary/20 px-3 py-2">
+                      <div key={p.nome} className="border-b border-border last:border-b-0">
+                        {/* Faixa do pilar (clique recolhe/expande) */}
+                        <div className="flex items-center gap-2 bg-secondary/20 px-3 py-2">
                           <button onClick={() => toggleEscPilar(p.nome)} className="flex min-w-0 items-center gap-2 text-left" title={recolhido ? "Expandir" : "Recolher"}>
                             <ChevronDown className={cn("h-4 w-4 shrink-0 text-muted-foreground transition-transform", recolhido && "-rotate-90")} />
                             <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-white" style={{ background: p.cor }}>
@@ -1530,33 +1514,67 @@ export default function TimeFinanceiro() {
                           </div>
                         </div>
 
-                        {/* Uma linha por trilha (tronco) */}
-                        {!recolhido && troncosShow.map((t) => {
-                          const folhas = nos.filter((x) => x.parent_id === t.id).sort((a, b) => a.ordem - b.ordem);
-                          const folhasVis = folhas.filter((f) => !escFiltroAtivo || escPassa(f));
-                          const feitos = folhas.filter((f) => f.status === "hoje").length;
-                          const tm = ESCOPO_META[t.status];
-                          const dimT = !!escChain && !escChain.has(t.id);
-                          return (
-                            <div key={t.id} className="grid grid-cols-[168px_repeat(4,minmax(180px,1fr))] border-b border-border/40 last:border-b-0">
-                              <div className={cn("group/tr flex items-start gap-1.5 p-2.5 transition", dimT && "opacity-30")}>
-                                <span className={cn("mt-1 h-2 w-2 shrink-0 rounded-full", tm.dot)} />
-                                <button onClick={() => toggleEscSel(t.id)} className="min-w-0 flex-1 text-left" title="Acender a corrente de dependências">
-                                  <div className="text-[12px] font-semibold leading-tight text-foreground">{t.titulo}</div>
-                                </button>
-                                <button onClick={() => abrirNovoEscopo(p.nome, t.id)} className="shrink-0 rounded p-0.5 text-muted-foreground opacity-0 transition hover:bg-muted hover:text-primary group-hover/tr:opacity-100" title="Adicionar competência nesta trilha"><Plus className="h-3 w-3" /></button>
-                                <span className="num shrink-0 rounded bg-muted px-1 py-0.5 text-[9.5px] font-semibold text-muted-foreground">{feitos}/{folhas.length}</span>
-                              </div>
-                              {HORIZONTES.map((h) => (
-                                <div key={h.key} className="space-y-1.5 border-l border-border/40 p-2">
-                                  {folhasVis.filter(h.match).map((e) => (
-                                    <EscopoCard key={e.id} e={e} dim={!!escChain && !escChain.has(e.id)} selected={escSelId === e.id} onSel={toggleEscSel} onEdit={abrirEdicaoEscopo} onAvancar={avancarEscopo} />
-                                  ))}
+                        {!recolhido && (
+                          <div className="grid gap-0" style={gridCols}>
+                            {/* Linha do topo: canto + cards de tronco (a origem, em destaque) */}
+                            <div className="border-b border-r border-border/50 bg-secondary/10" />
+                            {troncosShow.map((t) => {
+                              const folhas = nos.filter((x) => x.parent_id === t.id);
+                              const feitos = folhas.filter((f) => f.status === "hoje").length;
+                              const tm = ESCOPO_META[t.status];
+                              const dimT = !!escChain && !escChain.has(t.id);
+                              return (
+                                <div key={t.id} className="relative border-b border-border/50 bg-secondary/10 p-2">
+                                  <div className={cn("group/tr relative rounded-xl border-2 px-3 py-2.5 shadow-sm transition", dimT && "opacity-30")} style={{ borderColor: p.cor, background: tint }}>
+                                    <div className="flex items-center gap-2">
+                                      <span className={cn("h-2.5 w-2.5 shrink-0 rounded-full ring-2 ring-white/60", tm.dot)} />
+                                      <button onClick={() => toggleEscSel(t.id)} className="min-w-0 flex-1 text-left" title="Acender a corrente de dependências">
+                                        <div className="text-[13px] font-bold leading-tight text-foreground">{t.titulo}</div>
+                                      </button>
+                                      <span className="num shrink-0 rounded-full px-1.5 py-0.5 text-[10px] font-bold text-white" style={{ background: p.cor }}>{feitos}/{folhas.length}</span>
+                                    </div>
+                                    <div className="absolute right-1 top-1 flex items-center gap-0.5 rounded bg-card/95 opacity-0 shadow-sm transition group-hover/tr:opacity-100">
+                                      <button onClick={() => abrirNovoEscopo(p.nome, t.id)} className="rounded p-1 text-muted-foreground hover:bg-muted hover:text-primary" title="Adicionar competência"><Plus className="h-3 w-3" /></button>
+                                      <button onClick={() => abrirEdicaoEscopo(t)} className="rounded p-1 text-muted-foreground hover:bg-muted hover:text-foreground" title="Editar trilha"><Pencil className="h-3 w-3" /></button>
+                                    </div>
+                                  </div>
+                                  {/* stub da espinha, liga o tronco à primeira etapa */}
+                                  <span aria-hidden className="pointer-events-none absolute bottom-0 left-1/2 h-2 -translate-x-1/2 border-l-2 border-dashed border-muted-foreground/40" />
                                 </div>
-                              ))}
-                            </div>
-                          );
-                        })}
+                              );
+                            })}
+
+                            {/* Uma linha por horizonte (as etapas descem na vertical) */}
+                            {HORIZONTES.flatMap((h, hi) => {
+                              const dot = hi === 0 ? "bg-success" : hi === 1 ? "bg-amber-500" : "bg-muted-foreground/50";
+                              const ultimo = hi === HORIZONTES.length - 1;
+                              return [
+                                <div key={`${h.key}-lbl`} className={cn("flex flex-col justify-center gap-0.5 border-r border-border/50 px-3 py-3", !ultimo && "border-b border-b-border/30")}>
+                                  <div className="flex items-center gap-1.5 text-[12px] font-semibold text-foreground">
+                                    <span className={cn("h-2 w-2 rounded-full", dot)} /> {h.label}
+                                  </div>
+                                  <div className="text-[10px] text-muted-foreground">{h.sub}</div>
+                                </div>,
+                                ...troncosShow.map((t) => {
+                                  const folhas = nos.filter((x) => x.parent_id === t.id).sort((a, b) => a.ordem - b.ordem);
+                                  const folhasVis = folhas.filter((f) => !escFiltroAtivo || escPassa(f));
+                                  const cellItems = folhasVis.filter(h.match);
+                                  return (
+                                    <div key={`${h.key}-${t.id}`} className={cn("relative px-2 py-2", !ultimo && "border-b border-b-border/30")}>
+                                      {/* espinha pontilhada da trilha (liga uma etapa à outra) */}
+                                      <span aria-hidden className="pointer-events-none absolute left-1/2 top-0 h-full -translate-x-1/2 border-l-2 border-dashed border-muted-foreground/30" />
+                                      <div className="relative space-y-1.5">
+                                        {cellItems.map((e) => (
+                                          <EscopoCard key={e.id} e={e} dim={!!escChain && !escChain.has(e.id)} selected={escSelId === e.id} onSel={toggleEscSel} onEdit={abrirEdicaoEscopo} onAvancar={avancarEscopo} />
+                                        ))}
+                                      </div>
+                                    </div>
+                                  );
+                                }),
+                              ];
+                            })}
+                          </div>
+                        )}
                       </div>
                     );
                   })}

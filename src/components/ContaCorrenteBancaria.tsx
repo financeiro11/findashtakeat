@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { Fragment, useEffect, useMemo, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
@@ -424,12 +424,7 @@ export default function ContaCorrenteBancaria({ banco }: { banco: FonteCCKey }) 
         {chipsSicoob.length > 0 && (
           <div className="grid grid-cols-2 gap-3 border-b border-border px-4 py-3 sm:grid-cols-3 lg:grid-cols-7">
             {chipsSicoob.map((c) => (
-              <button
-                key={c.key}
-                onClick={() => setBusca(busca === c.rot ? "" : "")}
-                type="button"
-                className="cursor-default rounded-md border border-border px-3 py-2 text-left"
-              >
+              <div key={c.key} className="rounded-md border border-border px-3 py-2 text-left">
                 <div className="flex items-center gap-1.5">
                   <span className={cn("h-1.5 w-1.5 shrink-0 rounded-full", c.dot)} />
                   <span className="truncate text-[11px] text-muted-foreground" title={c.rot}>{c.rot}</span>
@@ -438,7 +433,7 @@ export default function ContaCorrenteBancaria({ banco }: { banco: FonteCCKey }) 
                   {c.credito ? "+" : "−"}{fmtBRL(c.v)}
                 </div>
                 <div className="mt-1.5 text-[10px] text-muted-foreground">{c.q} lançamento{c.q === 1 ? "" : "s"}</div>
-              </button>
+              </div>
             ))}
           </div>
         )}
@@ -473,9 +468,9 @@ export default function ContaCorrenteBancaria({ banco }: { banco: FonteCCKey }) 
                 const novaData = i === 0 || (pagina[i - 1].data_movimento?.slice(0, 10) ?? "") !== dia;
                 const tot = totaisDia.get(dia);
                 return (
-                  <>
+                  <Fragment key={m.id}>
                     {novaData && (
-                      <tr key={`d-${dia}`} className="bg-secondary/50">
+                      <tr className="bg-secondary/50">
                         <td colSpan={2} className="px-4 py-1.5 text-[11.5px]">
                           <span className="num font-semibold text-foreground">{fmtData(m.data_movimento)}</span>
                           <span className="ml-2 text-muted-foreground">· {diaSemana(m.data_movimento)}</span>
@@ -487,7 +482,7 @@ export default function ContaCorrenteBancaria({ banco }: { banco: FonteCCKey }) 
                         </td>
                       </tr>
                     )}
-                    <tr key={m.id} className="border-b border-border/50 hover:bg-secondary/40">
+                    <tr className="border-b border-border/50 hover:bg-secondary/40">
                       <td className="px-4 py-2 align-middle">
                         <span className={cn("inline-flex items-center rounded-full border px-2 py-0.5 text-[10.5px] font-medium", meta.chip)}>
                           {meta.selo}
@@ -505,7 +500,7 @@ export default function ContaCorrenteBancaria({ banco }: { banco: FonteCCKey }) 
                       </td>
                       <td className="num whitespace-nowrap px-4 py-2 text-right text-[11.5px] text-muted-foreground">{fmtNum(m.saldoApos ?? 0)}</td>
                     </tr>
-                  </>
+                  </Fragment>
                 );
               })}
             </tbody>

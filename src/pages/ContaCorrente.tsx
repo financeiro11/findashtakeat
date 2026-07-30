@@ -1,5 +1,5 @@
 import { Navigate, useNavigate, useParams } from "react-router-dom";
-import { ArrowLeft, Landmark } from "lucide-react";
+import { ArrowLeft } from "lucide-react";
 import { cn } from "@/lib/utils";
 import ContaCorrenteBancaria, { FONTES_CC, type FonteCCKey } from "@/components/ContaCorrenteBancaria";
 

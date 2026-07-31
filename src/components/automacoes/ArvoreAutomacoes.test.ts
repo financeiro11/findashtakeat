@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   montarLayout, correnteDe, destravadasPor, resumoTrilhas, alvosValidos, trilhaDe, bandaNoY,
+  ancoraNoTronco, yJuncaoTronco,
   type Automacao,
 } from "./arvore-layout";
 import { iconeDe, nomeIconeDe, ICONES } from "./arvore-icones";
@@ -240,5 +241,44 @@ describe("iconeDe", () => {
     const nome = nomeIconeDe({ automacao: "Anexos da NF no Omie" });
     expect(ICONES[nome]).toBeDefined();
     expect(nome).toBe("Paperclip");
+  });
+});
+
+/* ------------- nó sempre preso ao tronco (bug do nó flutuando) ------------- */
+describe("ancoraNoTronco", () => {
+  const hubY = 1000;
+  const jun = yJuncaoTronco(hubY);       // onde a curva do hub vira reta
+  const tronco = { x: 400, topo: 200 };  // trecho reto vai de 200 até jun
+
+  it("ancora na mesma altura do nó quando ele está ao lado do trecho reto", () => {
+    const a = ancoraNoTronco(tronco, hubY, { x: 900, y: 500 });
+    expect(a).toEqual({ x: 400, y: 500 });
+  });
+
+  it("nó arrastado acima do topo continua preso — prende no ponto mais alto", () => {
+    const a = ancoraNoTronco(tronco, hubY, { x: 50, y: -3000 });
+    expect(a.y).toBe(tronco.topo);
+  });
+
+  it("nó arrastado para baixo do hub continua preso — prende na junção", () => {
+    const a = ancoraNoTronco(tronco, hubY, { x: 50, y: 9999 });
+    expect(a.y).toBe(jun);
+  });
+
+  it("a âncora nunca sai do trecho reto, para qualquer posição de arraste", () => {
+    const lo = Math.min(tronco.topo, jun), hi = Math.max(tronco.topo, jun);
+    for (const y of [-5000, -1, 0, 250, 700, jun, hi + 1, 50000]) {
+      const a = ancoraNoTronco(tronco, hubY, { x: 123, y });
+      expect(a.x).toBe(tronco.x);
+      expect(a.y).toBeGreaterThanOrEqual(lo);
+      expect(a.y).toBeLessThanOrEqual(hi);
+    }
+  });
+
+  it("aguenta trilha cujos nós ficaram todos abaixo da junção", () => {
+    const baixo = { x: 400, topo: hubY - 10 }; // topo abaixo da junção
+    const a = ancoraNoTronco(baixo, hubY, { x: 0, y: hubY - 5 });
+    expect(a.y).toBeGreaterThanOrEqual(Math.min(baixo.topo, jun));
+    expect(a.y).toBeLessThanOrEqual(Math.max(baixo.topo, jun));
   });
 });

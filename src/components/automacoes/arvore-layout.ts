@@ -200,6 +200,28 @@ export function montarLayout(rows: Automacao[], niveis: Nivel[] = NIVEIS_PADRAO)
 
 export type Faixa = ReturnType<typeof montarLayout>["faixas"][number];
 
+/** Altura em que a curva que sai do hub vira o trecho reto do tronco. */
+export const yJuncaoTronco = (hubY: number) => hubY - 74;
+
+/**
+ * Ponto do tronco em que o galho de um nó se prende.
+ *
+ * O tronco é: curva do hub até (x, junção) + reta vertical de junção até o topo.
+ * A âncora é o ponto DESSA reta na altura do nó, preso ao intervalo que ela
+ * ocupa. Assim o galho nasce sempre em cima de linha desenhada — não importa
+ * para onde o nó tenha sido arrastado, ele nunca fica solto.
+ */
+export function ancoraNoTronco(
+  tronco: { x: number; topo: number },
+  hubY: number,
+  no: { x: number; y: number },
+): { x: number; y: number } {
+  const jun = yJuncaoTronco(hubY);
+  const lo = Math.min(tronco.topo, jun);
+  const hi = Math.max(tronco.topo, jun);
+  return { x: tronco.x, y: Math.max(lo, Math.min(hi, no.y)) };
+}
+
 /**
  * Em que banda cai um ponto Y do canvas — é o que diz, durante o arraste, se o
  * nó está cruzando a barreira e subindo/descendo de nível.

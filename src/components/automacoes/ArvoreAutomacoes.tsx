@@ -16,7 +16,7 @@ import {
   montarLayout, correnteDe, destravadasPor, resumoTrilhas, alvosValidos, bandaNoY,
   fiosDaTrilha, caminhoSuave,
   corTrilha, trilhaDe, tierDe, horasDe, bandaDe, nomeNivel, iniciaisDe, listaFerramentas,
-  TIER_META, TRILHAS, NIVEIS_PADRAO, STATUS_OPTS,
+  TIER_META, TRILHAS, NIVEIS_PADRAO, STATUS_OPTS, temUpgrade,
   type Automacao, type NoPos, type Nivel, type Faixa,
 } from "./arvore-layout";
 import { iconeDe, ICONES, NOMES_ICONES, nomeIconeDe } from "./arvore-icones";
@@ -38,12 +38,12 @@ import { iconeDe, ICONES, NOMES_ICONES, nomeIconeDe } from "./arvore-icones";
  * sem sair da árvore.
  * ========================================================================== */
 
-const CAMPOS = "id,automacao,categoria,nivel,status,horas_mes,ferramentas,responsavel,impacto,dor,solucao,observacao,depende_de,pos_x,pos_y,icone,ordem";
+const CAMPOS = "id,automacao,categoria,nivel,status,horas_mes,ferramentas,responsavel,impacto,dor,solucao,observacao,upgrade,depende_de,pos_x,pos_y,icone,ordem";
 
 const vazia = (nivel: number | null): Automacao => ({
   id: "", automacao: "", categoria: TRILHAS[0].categorias[0], nivel, status: "Ideias",
   horas_mes: null, ferramentas: "", responsavel: "", impacto: "Médio",
-  dor: "", solucao: "", observacao: "", depende_de: null, pos_x: null, pos_y: null,
+  dor: "", solucao: "", observacao: "", upgrade: "", depende_de: null, pos_x: null, pos_y: null,
   icone: null, ordem: 0,
 });
 
@@ -109,7 +109,11 @@ export default function ArvoreAutomacoes() {
   const temPrereq = useMemo(() => rows.some((r) => r.depende_de), [rows]);
   const kpi = useMemo(() => {
     const on = rows.filter((r) => tierDe(r.status) === "on");
-    return { total: rows.length, on: on.length, horas: on.reduce((s, r) => s + horasDe(r), 0) };
+    return {
+      total: rows.length, on: on.length,
+      horas: on.reduce((s, r) => s + horasDe(r), 0),
+      upgrades: rows.filter(temUpgrade).length,
+    };
   }, [rows]);
   const categorias = useMemo(
     () => Array.from(new Set([...TRILHAS.flatMap((t) => t.categorias), ...rows.map((r) => r.categoria || "").filter(Boolean)])).sort(),
@@ -298,6 +302,7 @@ export default function ArvoreAutomacoes() {
       status: editando.status, horas_mes: editando.horas_mes, ferramentas: editando.ferramentas || null,
       responsavel: editando.responsavel || null, impacto: editando.impacto || "Médio",
       dor: editando.dor || null, solucao: editando.solucao || null, observacao: editando.observacao || null,
+      upgrade: editando.upgrade || null,
       depende_de: editando.depende_de || null, icone: editando.icone || null,
     };
     if (criando) {
@@ -379,6 +384,17 @@ export default function ArvoreAutomacoes() {
             <div className="num text-[20px] font-bold leading-none text-white">{kpi.horas}</div>
             <div className="text-[9px] font-bold tracking-[0.16em] text-slate-600">H/MÊS</div>
           </div>
+          {kpi.upgrades > 0 && (
+            <>
+              <div className="h-8 w-px bg-white/10" />
+              <div className="text-right" title="Automações com upgrade sugerido">
+                <div className="num inline-flex items-center gap-0.5 text-[20px] font-bold leading-none text-emerald-400">
+                  <ArrowUp className="h-4 w-4" strokeWidth={3} />{kpi.upgrades}
+                </div>
+                <div className="text-[9px] font-bold tracking-[0.16em] text-slate-600">UPGRADES</div>
+              </div>
+            </>
+          )}
           <button
             onClick={novoNivel}
             title="Criar um nível novo — a faixa aparece na árvore e na pirâmide"
@@ -603,6 +619,16 @@ export default function ArvoreAutomacoes() {
                         style={{ background: meta.cor, border: "2px solid #06070b", boxShadow: `0 0 8px ${meta.cor}` }}
                         title={n.r.status}
                       />
+                    )}
+                    {/* oportunidade de upgrade — seta verde para cima */}
+                    {temUpgrade(n.r) && (
+                      <span
+                        className="absolute -left-1.5 -top-1.5 flex h-[18px] w-[18px] animate-pulse items-center justify-center rounded-full"
+                        style={{ background: "#0b1a14", border: "1.5px solid #34d399", boxShadow: "0 0 12px rgba(52,211,153,.85)" }}
+                        title="Tem upgrade sugerido — dá para deixar essa automação melhor"
+                      >
+                        <ArrowUp className="h-[11px] w-[11px] text-emerald-400" strokeWidth={3} />
+                      </span>
                     )}
                   </div>
                   <div
@@ -858,6 +884,21 @@ export default function ArvoreAutomacoes() {
                 <Textarea rows={2} value={editando.solucao || ""} placeholder="O que a automação faz" onChange={(e) => setEditando({ ...editando, solucao: e.target.value })} />
               </div>
               <div className="col-span-2">
+                <Label className="flex items-center gap-1.5">
+                  <ArrowUp className="h-3.5 w-3.5 text-emerald-500" strokeWidth={3} />
+                  Upgrade — melhoria possível
+                </Label>
+                <Textarea
+                  rows={2}
+                  value={editando.upgrade || ""}
+                  placeholder="Ex.: já roda, mas dá para ela também classificar o centro de custo sozinha"
+                  onChange={(e) => setEditando({ ...editando, upgrade: e.target.value })}
+                />
+                <p className="mt-1 text-[10.5px] text-muted-foreground">
+                  Preenchido, o nó ganha a seta verde de oportunidade na árvore. Em branco, a ficha mostra só dor e solução.
+                </p>
+              </div>
+              <div className="col-span-2">
                 <Label>Observação</Label>
                 <Textarea rows={2} value={editando.observacao || ""} onChange={(e) => setEditando({ ...editando, observacao: e.target.value })} />
               </div>
@@ -911,6 +952,17 @@ function FichaNo({ n, niveis, prereq, estilo, onEditar, onConectar, onDesligar, 
         <div className="mt-3 space-y-1.5 text-[11.5px] leading-relaxed">
           {n.r.dor && <div className="text-slate-300"><b className="text-rose-400">Dor</b> · {n.r.dor}</div>}
           {n.r.solucao && <div className="text-slate-300"><b className="text-emerald-400">Solução</b> · {n.r.solucao}</div>}
+        </div>
+      )}
+
+      {/* Upgrade: só aparece quando há melhoria sugerida — sem sugestão, a ficha
+          fica só com dor e solução. */}
+      {temUpgrade(n.r) && (
+        <div className="mt-2.5 rounded-md border border-amber-500/30 bg-amber-500/[0.07] px-2.5 py-2 text-[11.5px] leading-relaxed">
+          <div className="flex items-start gap-1.5 text-slate-300">
+            <ArrowUp className="mt-0.5 h-3.5 w-3.5 shrink-0 text-emerald-400" strokeWidth={3} />
+            <span><b className="text-amber-400">Upgrade</b> · {n.r.upgrade}</span>
+          </div>
         </div>
       )}
 

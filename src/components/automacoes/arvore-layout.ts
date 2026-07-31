@@ -19,6 +19,8 @@ export type Automacao = {
   dor: string | null;
   solucao: string | null;
   observacao: string | null;
+  /** melhoria possível numa automação que já roda — acende a seta de oportunidade */
+  upgrade?: string | null;
   depende_de?: string | null;
   pos_x?: number | null;
   pos_y?: number | null;
@@ -328,6 +330,9 @@ export function alvosValidos(rows: Automacao[], id: string): Automacao[] {
   }
   return rows.filter((r) => !bloq.has(r.id)).sort((a, b) => (a.automacao || "").localeCompare(b.automacao || "", "pt-BR"));
 }
+
+/** Tem oportunidade de melhoria registrada? (só conta texto de verdade) */
+export const temUpgrade = (r: { upgrade?: string | null }) => !!r.upgrade && r.upgrade.trim().length > 0;
 
 export const iniciaisDe = (nome: string | null | undefined) => {
   if (!nome) return "";

@@ -557,6 +557,7 @@ export type Database = {
           status: string
           ultima_falha: string | null
           updated_at: string
+          upgrade: string | null
         }
         Insert: {
           automacao: string
@@ -580,6 +581,7 @@ export type Database = {
           status?: string
           ultima_falha?: string | null
           updated_at?: string
+          upgrade?: string | null
         }
         Update: {
           automacao?: string
@@ -603,6 +605,7 @@ export type Database = {
           status?: string
           ultima_falha?: string | null
           updated_at?: string
+          upgrade?: string | null
         }
         Relationships: [
           {

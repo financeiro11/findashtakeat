@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   montarLayout, correnteDe, destravadasPor, resumoTrilhas, alvosValidos, trilhaDe, bandaNoY,
-  fiosDaTrilha, caminhoSuave,
+  fiosDaTrilha, caminhoSuave, temUpgrade,
   type Automacao,
 } from "./arvore-layout";
 import { iconeDe, nomeIconeDe, ICONES } from "./arvore-icones";
@@ -302,5 +302,20 @@ describe("caminhoSuave", () => {
   it("menos de dois pontos não desenha nada", () => {
     expect(caminhoSuave([{ x: 1, y: 1 }])).toBe("");
     expect(caminhoSuave([])).toBe("");
+  });
+});
+
+/* ------------------------- upgrade (oportunidade) ------------------------- */
+describe("temUpgrade", () => {
+  it("acende só quando há texto de verdade", () => {
+    expect(temUpgrade({ upgrade: "dá para ela classificar o centro de custo" })).toBe(true);
+    expect(temUpgrade({ upgrade: null })).toBe(false);
+    expect(temUpgrade({ upgrade: "" })).toBe(false);
+    expect(temUpgrade({})).toBe(false);
+  });
+
+  it("espaço em branco não vale como sugestão", () => {
+    expect(temUpgrade({ upgrade: "   " })).toBe(false);
+    expect(temUpgrade({ upgrade: "\n\t " })).toBe(false);
   });
 });

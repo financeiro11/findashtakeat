@@ -200,26 +200,54 @@ export function montarLayout(rows: Automacao[], niveis: Nivel[] = NIVEIS_PADRAO)
 
 export type Faixa = ReturnType<typeof montarLayout>["faixas"][number];
 
-/** Altura em que a curva que sai do hub vira o trecho reto do tronco. */
-export const yJuncaoTronco = (hubY: number) => hubY - 74;
+export type Ponto = { x: number; y: number };
 
 /**
- * Ponto do tronco em que o galho de um nó se prende.
+ * Fios de uma trilha: em vez de tronco reto com tocos perpendiculares, a linha
+ * SOBE DO HUB COSTURANDO OS NÓS. Como a curva é definida pelas coordenadas dos
+ * nós, arrastar um nó deforma o fio junto — é impossível o nó descolar.
  *
- * O tronco é: curva do hub até (x, junção) + reta vertical de junção até o topo.
- * A âncora é o ponto DESSA reta na altura do nó, preso ao intervalo que ela
- * ocupa. Assim o galho nasce sempre em cima de linha desenhada — não importa
- * para onde o nó tenha sido arrastado, ele nunca fica solto.
+ * Trilha cheia vira mais de um fio (senão a linha ziguezagueia demais). A
+ * repartição é gulosa pelo X: cada nó, de baixo para cima, entra no fio cuja
+ * ponta está mais perto — assim os fios saem paralelos, sem se cruzar.
  */
-export function ancoraNoTronco(
-  tronco: { x: number; topo: number },
-  hubY: number,
-  no: { x: number; y: number },
-): { x: number; y: number } {
-  const jun = yJuncaoTronco(hubY);
-  const lo = Math.min(tronco.topo, jun);
-  const hi = Math.max(tronco.topo, jun);
-  return { x: tronco.x, y: Math.max(lo, Math.min(hi, no.y)) };
+export function fiosDaTrilha(nosDaTrilha: Ponto[], hub: Ponto): Ponto[][] {
+  if (!nosDaTrilha.length) return [];
+  const ordenados = [...nosDaTrilha].sort((a, b) => b.y - a.y); // de baixo para cima
+  const qtd = Math.min(3, Math.max(1, Math.ceil(ordenados.length / 4)));
+  const fios: Ponto[][] = Array.from({ length: qtd }, () => [hub]);
+  for (const p of ordenados) {
+    let melhor = 0, dist = Infinity;
+    fios.forEach((f, i) => {
+      const ponta = f[f.length - 1];
+      // desempata pelo fio mais curto, para não concentrar tudo num só
+      const d = Math.abs(ponta.x - p.x) + f.length * 6;
+      if (d < dist) { dist = d; melhor = i; }
+    });
+    fios[melhor].push(p);
+  }
+  return fios.filter((f) => f.length > 1);
+}
+
+/**
+ * Curva suave passando POR todos os pontos (Catmull-Rom convertida em Bézier).
+ * É o que dá o movimento orgânico das linhas em vez de segmentos retos.
+ */
+export function caminhoSuave(pts: Ponto[], tensao = 0.22): string {
+  if (pts.length < 2) return "";
+  let d = `M ${pts[0].x} ${pts[0].y}`;
+  for (let i = 0; i < pts.length - 1; i++) {
+    const p0 = pts[i - 1] ?? pts[i];
+    const p1 = pts[i];
+    const p2 = pts[i + 1];
+    const p3 = pts[i + 2] ?? p2;
+    const c1x = p1.x + (p2.x - p0.x) * tensao;
+    const c1y = p1.y + (p2.y - p0.y) * tensao;
+    const c2x = p2.x - (p3.x - p1.x) * tensao;
+    const c2y = p2.y - (p3.y - p1.y) * tensao;
+    d += ` C ${c1x.toFixed(1)} ${c1y.toFixed(1)}, ${c2x.toFixed(1)} ${c2y.toFixed(1)}, ${p2.x.toFixed(1)} ${p2.y.toFixed(1)}`;
+  }
+  return d;
 }
 
 /**

@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   montarLayout, correnteDe, destravadasPor, resumoTrilhas, alvosValidos, trilhaDe, bandaNoY,
-  ancoraNoTronco, yJuncaoTronco,
+  fiosDaTrilha, caminhoSuave,
   type Automacao,
 } from "./arvore-layout";
 import { iconeDe, nomeIconeDe, ICONES } from "./arvore-icones";
@@ -244,41 +244,63 @@ describe("iconeDe", () => {
   });
 });
 
-/* ------------- nó sempre preso ao tronco (bug do nó flutuando) ------------- */
-describe("ancoraNoTronco", () => {
-  const hubY = 1000;
-  const jun = yJuncaoTronco(hubY);       // onde a curva do hub vira reta
-  const tronco = { x: 400, topo: 200 };  // trecho reto vai de 200 até jun
+/* ---------- fios: a linha passa pelos nós, então nada descola ---------- */
+describe("fiosDaTrilha", () => {
+  const hub = { x: 500, y: 1000 };
+  const pts = (n: number) => Array.from({ length: n }, (_, i) => ({ x: 400 + (i % 3) * 90, y: 900 - i * 80 }));
 
-  it("ancora na mesma altura do nó quando ele está ao lado do trecho reto", () => {
-    const a = ancoraNoTronco(tronco, hubY, { x: 900, y: 500 });
-    expect(a).toEqual({ x: 400, y: 500 });
+  it("todo nó entra em algum fio — nenhum fica de fora", () => {
+    const nos = pts(11);
+    const fios = fiosDaTrilha(nos, hub);
+    const dentro = fios.flatMap((f) => f.slice(1)); // tira o hub
+    expect(dentro).toHaveLength(nos.length);
+    for (const p of nos) expect(dentro).toContainEqual(p);
   });
 
-  it("nó arrastado acima do topo continua preso — prende no ponto mais alto", () => {
-    const a = ancoraNoTronco(tronco, hubY, { x: 50, y: -3000 });
-    expect(a.y).toBe(tronco.topo);
+  it("todo fio começa no hub", () => {
+    for (const f of fiosDaTrilha(pts(9), hub)) expect(f[0]).toEqual(hub);
   });
 
-  it("nó arrastado para baixo do hub continua preso — prende na junção", () => {
-    const a = ancoraNoTronco(tronco, hubY, { x: 50, y: 9999 });
-    expect(a.y).toBe(jun);
+  it("sobe de baixo para cima", () => {
+    const f = fiosDaTrilha(pts(4), hub)[0];
+    const ys = f.map((p) => p.y);
+    for (let i = 1; i < ys.length; i++) expect(ys[i]).toBeLessThanOrEqual(ys[i - 1]);
   });
 
-  it("a âncora nunca sai do trecho reto, para qualquer posição de arraste", () => {
-    const lo = Math.min(tronco.topo, jun), hi = Math.max(tronco.topo, jun);
-    for (const y of [-5000, -1, 0, 250, 700, jun, hi + 1, 50000]) {
-      const a = ancoraNoTronco(tronco, hubY, { x: 123, y });
-      expect(a.x).toBe(tronco.x);
-      expect(a.y).toBeGreaterThanOrEqual(lo);
-      expect(a.y).toBeLessThanOrEqual(hi);
-    }
+  it("divide trilha cheia em mais de um fio e não passa de três", () => {
+    expect(fiosDaTrilha(pts(3), hub)).toHaveLength(1);
+    expect(fiosDaTrilha(pts(9), hub).length).toBeGreaterThan(1);
+    expect(fiosDaTrilha(pts(40), hub).length).toBeLessThanOrEqual(3);
   });
 
-  it("aguenta trilha cujos nós ficaram todos abaixo da junção", () => {
-    const baixo = { x: 400, topo: hubY - 10 }; // topo abaixo da junção
-    const a = ancoraNoTronco(baixo, hubY, { x: 0, y: hubY - 5 });
-    expect(a.y).toBeGreaterThanOrEqual(Math.min(baixo.topo, jun));
-    expect(a.y).toBeLessThanOrEqual(Math.max(baixo.topo, jun));
+  it("nó arrastado para longe continua dentro do fio (não descola)", () => {
+    const longe = { x: -9000, y: -9000 };
+    const fios = fiosDaTrilha([...pts(5), longe], hub);
+    expect(fios.flatMap((f) => f.slice(1))).toContainEqual(longe);
+  });
+
+  it("trilha vazia não gera fio", () => {
+    expect(fiosDaTrilha([], hub)).toEqual([]);
+  });
+});
+
+describe("caminhoSuave", () => {
+  it("passa exatamente pelos pontos dados", () => {
+    const p = [{ x: 0, y: 0 }, { x: 100, y: -50 }, { x: 220, y: -160 }];
+    const d = caminhoSuave(p);
+    expect(d.startsWith("M 0 0")).toBe(true);
+    expect(d).toContain("100.0 -50.0");   // ponto final de cada segmento
+    expect(d).toContain("220.0 -160.0");
+  });
+
+  it("usa curvas, não segmentos retos", () => {
+    const d = caminhoSuave([{ x: 0, y: 0 }, { x: 50, y: -80 }, { x: 130, y: -140 }]);
+    expect(d).toContain("C");
+    expect(d).not.toContain("L");
+  });
+
+  it("menos de dois pontos não desenha nada", () => {
+    expect(caminhoSuave([{ x: 1, y: 1 }])).toBe("");
+    expect(caminhoSuave([])).toBe("");
   });
 });

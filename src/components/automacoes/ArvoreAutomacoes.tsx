@@ -14,7 +14,7 @@ import {
 } from "lucide-react";
 import {
   montarLayout, correnteDe, destravadasPor, resumoTrilhas, alvosValidos, bandaNoY,
-  ancoraNoTronco, yJuncaoTronco,
+  fiosDaTrilha, caminhoSuave,
   corTrilha, trilhaDe, tierDe, horasDe, bandaDe, nomeNivel, iniciaisDe, listaFerramentas,
   TIER_META, TRILHAS, NIVEIS_PADRAO, STATUS_OPTS,
   type Automacao, type NoPos, type Nivel, type Faixa,
@@ -85,19 +85,23 @@ export default function ArvoreAutomacoes() {
     [layout.nos, posLocal],
   );
   const porId = useMemo(() => new Map(nos.map((n) => [n.r.id, n])), [nos]);
-  // Extensão do tronco recalculada sobre as posições em tela (inclui o arraste
-  // em curso), senão o tronco não acompanha o nó e ele parece soltar da linha.
-  const troncos = useMemo(
-    () => layout.troncos.map((tr) => {
+  // Fios calculados sobre as posições EM TELA (inclui o arraste em curso): a
+  // curva passa pelos nós, então o nó nunca descola do galho.
+  const fios = useMemo(() => {
+    const hub = { x: layout.hubX, y: layout.hubY };
+    return layout.troncos.flatMap((tr) => {
       const meus = nos.filter((n) => n.trilha === tr.trilha);
-      if (!meus.length) return tr;
-      return {
-        ...tr,
-        topo: Math.min(...meus.map((n) => n.y)),
-        base: Math.max(...meus.map((n) => n.y)),
-      };
-    }),
-    [layout.troncos, nos],
+      return fiosDaTrilha(meus.map((n) => ({ x: n.x, y: n.y })), hub)
+        .map((pontos, i) => ({ chave: `${tr.trilha}#${i}`, trilha: tr.trilha, cor: tr.cor, d: caminhoSuave(pontos) }));
+    });
+  }, [layout.troncos, layout.hubX, layout.hubY, nos]);
+
+  // Etiqueta da trilha: fica logo acima do hub, na coluna da trilha.
+  const etiquetas = useMemo(
+    () => layout.troncos
+      .filter((tr) => nos.some((n) => n.trilha === tr.trilha))
+      .map((tr) => ({ ...tr, y: layout.hubY - 86 })),
+    [layout.troncos, layout.hubY, nos],
   );
   const corrente = useMemo(() => correnteDe(rows, sel), [sel, rows]);
   const destrava = useMemo(() => destravadasPor(rows, sel), [sel, rows]);
@@ -330,20 +334,14 @@ export default function ArvoreAutomacoes() {
   const selNo = sel ? porId.get(sel) : null;
 
   /* --------------------------- curvas ---------------------------
-   * O tronco tem duas partes: a curva que sai do hub e um trecho RETO vertical
-   * em colX. Todo galho se prende nesse trecho reto (ancoraNoTronco), então o
-   * nó continua ligado à linha para onde quer que seja arrastado. */
-  const jun = yJuncaoTronco(layout.hubY);
-  const curvaTronco = (x: number, topo: number) =>
-    `M ${layout.hubX} ${layout.hubY} C ${layout.hubX} ${layout.hubY - 46}, ${x} ${jun + 30}, ${x} ${jun} L ${x} ${topo}`;
-  const curvaGalho = (tr: { x: number; topo: number }, n: NoPos) => {
-    const a = ancoraNoTronco(tr, layout.hubY, n);
-    const dx = (n.x - a.x) * 0.55;
-    return `M ${a.x} ${a.y} C ${a.x + dx} ${a.y}, ${n.x - dx} ${n.y}, ${n.x} ${n.y}`;
-  };
+   * A corrente de pré-requisito sai pelo lado do nó de origem e chega pelo lado
+   * do destino, com folga proporcional à distância — dá o mesmo balanço das
+   * linhas da trilha em vez de subir reta. */
   const curvaPrereq = (a: NoPos, b: NoPos) => {
-    const meio = a.y + (b.y - a.y) / 2;
-    return `M ${a.x} ${a.y} C ${a.x} ${meio}, ${b.x} ${meio}, ${b.x} ${b.y}`;
+    const dy = b.y - a.y;
+    const dx = b.x - a.x;
+    const folga = Math.max(60, Math.abs(dy) * 0.45);
+    return `M ${a.x} ${a.y} C ${a.x + dx * 0.12} ${a.y - folga}, ${b.x - dx * 0.12} ${b.y + folga}, ${b.x} ${b.y}`;
   };
 
   if (loading) {
@@ -486,29 +484,17 @@ export default function ArvoreAutomacoes() {
                 );
               })}
 
-              {/* troncos das trilhas + brilho correndo do hub para as pontas */}
-              {troncos.map((tr, i) => {
-                const off = trilhaIso && tr.trilha !== trilhaIso;
-                const d = curvaTronco(tr.x, tr.topo);
+              {/* fios das trilhas: sobem do hub costurando os nós, com o brilho correndo por dentro */}
+              {fios.map((f, i) => {
+                const off = trilhaIso && f.trilha !== trilhaIso;
                 return (
-                  <g key={tr.trilha} opacity={off ? 0.08 : 1}>
-                    <path d={d} fill="none" stroke={tr.cor} strokeWidth={2.4} strokeLinecap="round" opacity={0.26} />
-                    <path d={d} fill="none" stroke={tr.cor} strokeWidth={2.6} strokeLinecap="round"
-                          pathLength={100} strokeDasharray="7 93" filter="url(#arv-glow)" opacity={0.95}>
-                      <animate attributeName="stroke-dashoffset" from="0" to="-100" dur="5s" begin={`${i * 0.7}s`} repeatCount="indefinite" />
+                  <g key={f.chave} opacity={off ? 0.07 : 1}>
+                    <path d={f.d} fill="none" stroke={f.cor} strokeWidth={2.6} strokeLinecap="round" strokeLinejoin="round" opacity={0.3} />
+                    <path d={f.d} fill="none" stroke={f.cor} strokeWidth={2.8} strokeLinecap="round" strokeLinejoin="round"
+                          pathLength={100} strokeDasharray="8 92" filter="url(#arv-glow)" opacity={0.95}>
+                      <animate attributeName="stroke-dashoffset" from="0" to="-100" dur="5.5s" begin={`${i * 0.55}s`} repeatCount="indefinite" />
                     </path>
                   </g>
-                );
-              })}
-
-              {/* galhos: todo nó se prende ao tronco, esteja onde estiver */}
-              {nos.map((n) => {
-                const tronco = troncos.find((x) => x.trilha === n.trilha);
-                if (!tronco) return null;
-                return (
-                  <path key={`g-${n.r.id}`} d={curvaGalho(tronco, n)} fill="none" stroke={n.cor}
-                        strokeWidth={1.6} strokeLinecap="round" opacity={apagado(n) ? 0.05 : 0.34}
-                        strokeDasharray={n.tier === "todo" ? "5 6" : undefined} />
                 );
               })}
 
@@ -546,13 +532,13 @@ export default function ArvoreAutomacoes() {
               </g>
 
               {/* etiqueta da trilha na base do tronco */}
-              {troncos.map((tr) => {
+              {etiquetas.map((tr) => {
                 const info = trilhas.find((x) => x.nome === tr.trilha);
                 const off = trilhaIso && tr.trilha !== trilhaIso;
                 return (
                   <g key={`et-${tr.trilha}`} opacity={off ? 0.15 : 1}>
-                    <rect x={tr.x - 96} y={tr.base + 36} width={192} height={22} rx={11} fill="rgba(8,10,16,.92)" stroke={`${tr.cor}66`} strokeWidth={1} />
-                    <text x={tr.x} y={tr.base + 51} fontSize={9} fontWeight={800} letterSpacing={1.8} fill={tr.cor} textAnchor="middle" className="font-mono">
+                    <rect x={tr.x - 96} y={tr.y} width={192} height={22} rx={11} fill="rgba(8,10,16,.92)" stroke={`${tr.cor}66`} strokeWidth={1} />
+                    <text x={tr.x} y={tr.y + 15} fontSize={9} fontWeight={800} letterSpacing={1.8} fill={tr.cor} textAnchor="middle" className="font-mono">
                       {tr.trilha.toUpperCase()} {info ? `${info.on}/${info.total}` : ""}
                     </text>
                   </g>

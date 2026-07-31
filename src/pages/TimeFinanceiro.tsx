@@ -7,10 +7,12 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/u
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import AutomacoesCatalogo from "@/pages/AutomacoesCatalogo";
+import ArvoreAutomacoes from "@/components/automacoes/ArvoreAutomacoes";
 import {
   Loader2, Plus, Pencil, Trash2, X, Users, UserPlus, Network, ListChecks,
   CalendarDays, Bot, Target, Zap, Clock, ArrowRight, Layers, ChevronDown, ShieldCheck,
   Download, Copy, ArrowRightLeft, Check, Lock, Wrench, Waypoints, Calculator, Landmark, Rocket, Search,
+  GitBranch, Triangle,
 } from "lucide-react";
 
 // ============================================================================
@@ -464,6 +466,8 @@ export default function TimeFinanceiro() {
   const [escBusca, setEscBusca] = useState("");
   const [escPilarFiltro, setEscPilarFiltro] = useState("");   // "" = todos
   const [escRespFiltro, setEscRespFiltro] = useState("");      // "" = todos · "__sem" = sem responsável
+  // IA & Automação: a árvore abre primeiro; a pirâmide fica a um clique.
+  const [iaVista, setIaVista] = useState<"arvore" | "piramide">("arvore");
   const [escSelId, setEscSelId] = useState<string | null>(null); // nó destacado (corrente de dependências)
   const [escRecolhidos, setEscRecolhidos] = useState<Set<string>>(new Set()); // pilares recolhidos na árvore
   const toggleEscPilar = (nome: string) =>
@@ -1285,40 +1289,70 @@ export default function TimeFinanceiro() {
       {/* ---------------- IA & Automação ---------------- */}
       {tab === "ia" && (
         <div className="space-y-3">
-          <div className="grid grid-cols-1 gap-3 lg:grid-cols-[minmax(0,440px)_1fr]">
-            <div className="card-surface bg-secondary/30 p-5">
-              <div className="text-center">
-                <div className="text-[14px] font-bold tracking-wide text-foreground">PIRÂMIDE DE MATURIDADE FINANCEIRA</div>
-                <div className="text-[11.5px] text-primary">Roadmap de Implementação de IA no Financeiro</div>
-              </div>
-              <div className="mt-3">
-                <Piramide sel={nivelSel} onSel={setNivelSel} />
-              </div>
+          {/* Alternador: a árvore é a visão de entrada; a pirâmide fica a um clique. */}
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="inline-flex rounded-lg border border-border bg-card p-0.5">
+              {([
+                { key: "arvore", label: "Árvore de automações", icon: GitBranch },
+                { key: "piramide", label: "Pirâmide de maturidade", icon: Triangle },
+              ] as const).map((v) => (
+                <button
+                  key={v.key}
+                  onClick={() => setIaVista(v.key)}
+                  className={cn(
+                    "inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-[12.5px] font-medium transition",
+                    iaVista === v.key ? "bg-primary text-primary-foreground shadow-sm" : "text-muted-foreground hover:bg-secondary",
+                  )}
+                >
+                  <v.icon className="h-3.5 w-3.5" /> {v.label}
+                </button>
+              ))}
             </div>
-
-            <div className="card-surface flex flex-col p-5">
-              <div className="flex flex-wrap items-center gap-3">
-                <span className="flex h-8 w-8 items-center justify-center rounded-full text-[14px] font-bold text-white" style={{ background: NIVEL_COR[nivel.n - 1] }}>
-                  {nivel.n}
-                </span>
-                <span className="text-[16px] font-semibold text-foreground">Nível {nivel.n} — {nivel.nome}</span>
-                {nivel.n === NIVEL_ATUAL && (
-                  <span className="ml-auto rounded-full bg-success/10 px-2.5 py-1 text-[10px] font-bold tracking-wider text-success">NÍVEL ATUAL DO TIME</span>
-                )}
-              </div>
-              <ul className="mt-4 space-y-2 pl-5">
-                {nivel.bullets.map((b, i) => (
-                  <li key={i} className="list-disc text-[13px] leading-relaxed text-foreground">{b}</li>
-                ))}
-              </ul>
-              <div className="mt-auto flex items-center gap-2 border-t border-border/60 pt-3 text-[12.5px] text-muted-foreground">
-                <Zap className="h-4 w-4 text-primary" />
-                {autosNivel > 0
-                  ? <>{autosNivel} automações deste nível já rodando no Hub</>
-                  : <>Nenhuma automação deste nível em produção ainda</>}
-              </div>
-            </div>
+            <span className="text-[11.5px] text-muted-foreground">
+              {iaVista === "arvore"
+                ? "Trilha × nível de maturidade — o mesmo N1→N5 da pirâmide, visto como roadmap"
+                : "Os 5 níveis de maturidade em IA no financeiro — clique num nível para ver o detalhe"}
+            </span>
           </div>
+
+          {iaVista === "arvore" ? (
+            <ArvoreAutomacoes />
+          ) : (
+            <div className="grid grid-cols-1 gap-3 lg:grid-cols-[minmax(0,440px)_1fr]">
+              <div className="card-surface bg-secondary/30 p-5">
+                <div className="text-center">
+                  <div className="text-[14px] font-bold tracking-wide text-foreground">PIRÂMIDE DE MATURIDADE FINANCEIRA</div>
+                  <div className="text-[11.5px] text-primary">Roadmap de Implementação de IA no Financeiro</div>
+                </div>
+                <div className="mt-3">
+                  <Piramide sel={nivelSel} onSel={setNivelSel} />
+                </div>
+              </div>
+
+              <div className="card-surface flex flex-col p-5">
+                <div className="flex flex-wrap items-center gap-3">
+                  <span className="flex h-8 w-8 items-center justify-center rounded-full text-[14px] font-bold text-white" style={{ background: NIVEL_COR[nivel.n - 1] }}>
+                    {nivel.n}
+                  </span>
+                  <span className="text-[16px] font-semibold text-foreground">Nível {nivel.n} — {nivel.nome}</span>
+                  {nivel.n === NIVEL_ATUAL && (
+                    <span className="ml-auto rounded-full bg-success/10 px-2.5 py-1 text-[10px] font-bold tracking-wider text-success">NÍVEL ATUAL DO TIME</span>
+                  )}
+                </div>
+                <ul className="mt-4 space-y-2 pl-5">
+                  {nivel.bullets.map((b, i) => (
+                    <li key={i} className="list-disc text-[13px] leading-relaxed text-foreground">{b}</li>
+                  ))}
+                </ul>
+                <div className="mt-auto flex items-center gap-2 border-t border-border/60 pt-3 text-[12.5px] text-muted-foreground">
+                  <Zap className="h-4 w-4 text-primary" />
+                  {autosNivel > 0
+                    ? <>{autosNivel} automações deste nível já rodando no Hub</>
+                    : <>Nenhuma automação deste nível em produção ainda</>}
+                </div>
+              </div>
+            </div>
+          )}
 
           {/* Roadmap & Catálogo de Automações (antes era o menu "Catálogo") */}
           <div className="card-surface p-4">

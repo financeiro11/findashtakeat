@@ -10,7 +10,7 @@ import { Link } from "react-router-dom";
 import { TaskDialog, DEFAULT_COLUMNS, type Tarefa } from "@/components/tarefas/TaskDialog";
 import {
   Sparkles, RefreshCw, Loader2, CalendarDays, AlertTriangle, Mail,
-  Clock, ArrowRight, Newspaper, CalendarClock, ListChecks, CheckCircle2, Pencil, Wallet,
+  ArrowRight, Newspaper, CalendarClock, ListChecks, CheckCircle2, Pencil, Wallet,
 } from "lucide-react";
 
 /* ============================================================================
@@ -491,21 +491,28 @@ function BriefingView({ b, vm, tarefas, meNome, onEdit, onRegerar, onAprofundar,
         </div>
       </div>
 
-      {/* ---------------- KPIs ---------------- */}
-      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
-        <Kpi icon={CalendarDays} eyebrow="Compromissos" value={String(vm.nCompromissos)}
-             sub={`entre ${vm.nPessoas} pessoa${vm.nPessoas === 1 ? "" : "s"} hoje`} />
-        <Kpi icon={AlertTriangle} eyebrow="Conflitos" value={String(vm.conflitos.length)} tone={vm.conflitos.length ? "neg" : undefined}
-             sub={vm.conflitos[0] ? `${vm.conflitos[0].hora ? vm.conflitos[0].hora + " · " : ""}${vm.conflitos[0].resumo_curto ?? vm.conflitos[0].titulo}` : "sem conflitos"} />
-        <Kpi icon={Mail} eyebrow="E-mails acionáveis" value={String(vm.nEmails)}
-             sub={vm.vencemSemana > 0 ? `${vm.vencemSemana} vence${vm.vencemSemana === 1 ? "" : "m"} esta semana` : "ruído filtrado"} />
-        <Kpi icon={Clock} eyebrow="Próximo evento" value={vm.proximo?.hora ?? "—"} mono
-             sub={vm.proximo?.titulo ?? "sem horários futuros"} />
-      </div>
-
       {/* ---------------- Agenda + coluna lateral ---------------- */}
       {vm.temEstruturado ? (
         <>
+          {/* ---------------- Notícias ---------------- */}
+          {vm.temas.length > 0 && (
+            <SectionCard
+              title={<span className="flex items-center gap-2"><Newspaper className="h-4 w-4 text-muted-foreground" /> Notícias</span>}
+              subtitle={vm.janelaNoticias ? `janela ${vm.janelaNoticias}` : undefined}
+            >
+              <div className="space-y-4">
+                {vm.temas.map((t, i) => (
+                  <div key={i} className="border-l-2 border-sky-500/60 pl-3">
+                    <div className="mb-0.5 text-[10.5px] font-bold uppercase tracking-wider text-muted-foreground/80">{t.titulo}</div>
+                    <div className="text-[12.5px] leading-relaxed text-foreground [&_a]:text-primary [&_a]:underline-offset-2 hover:[&_a]:underline">
+                      <ReactMarkdown components={mdComponents}>{t.resumo}</ReactMarkdown>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </SectionCard>
+          )}
+
           <div className="grid grid-cols-1 gap-3 lg:grid-cols-3">
             {/* Agenda */}
             <div className="lg:col-span-2">
@@ -581,28 +588,6 @@ function BriefingView({ b, vm, tarefas, meNome, onEdit, onRegerar, onAprofundar,
             </div>
           </div>
 
-          {/* ---------------- Pagamentos do dia (eventos de dia inteiro) ---------------- */}
-          <SectionCard
-            title={<span className="flex items-center gap-2"><Wallet className="h-4 w-4 text-muted-foreground" /> Pagamentos do dia</span>}
-            subtitle={`${vm.pagamentos.length} pagamento${vm.pagamentos.length === 1 ? "" : "s"} · marcados como evento de dia inteiro na agenda`}
-          >
-            {vm.pagamentos.length === 0 ? (
-              <div className="py-4 text-center text-[12.5px] text-muted-foreground">Nenhum pagamento marcado para hoje.</div>
-            ) : (
-              <ul className="space-y-2">
-                {vm.pagamentos.map((p, i) => (
-                  <li key={i} className="flex items-start gap-3 rounded-md border border-border bg-card px-3 py-2.5">
-                    <span className="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-emerald-500/12 text-emerald-600 dark:text-emerald-400">
-                      <Wallet className="h-3.5 w-3.5" />
-                    </span>
-                    <div className="min-w-0 flex-1 text-[12.5px] font-medium leading-snug text-foreground">{p.titulo}</div>
-                    <Participantes lista={p.participantes} />
-                  </li>
-                ))}
-              </ul>
-            )}
-          </SectionCard>
-
           {/* ---------------- E-mails ---------------- */}
           {vm.emails.length > 0 && (
             <SectionCard
@@ -636,24 +621,27 @@ function BriefingView({ b, vm, tarefas, meNome, onEdit, onRegerar, onAprofundar,
             </SectionCard>
           )}
 
-          {/* ---------------- Notícias ---------------- */}
-          {vm.temas.length > 0 && (
-            <SectionCard
-              title={<span className="flex items-center gap-2"><Newspaper className="h-4 w-4 text-muted-foreground" /> Notícias</span>}
-              subtitle={vm.janelaNoticias ? `janela ${vm.janelaNoticias}` : undefined}
-            >
-              <div className="space-y-4">
-                {vm.temas.map((t, i) => (
-                  <div key={i} className="border-l-2 border-sky-500/60 pl-3">
-                    <div className="mb-0.5 text-[10.5px] font-bold uppercase tracking-wider text-muted-foreground/80">{t.titulo}</div>
-                    <div className="text-[12.5px] leading-relaxed text-foreground [&_a]:text-primary [&_a]:underline-offset-2 hover:[&_a]:underline">
-                      <ReactMarkdown components={mdComponents}>{t.resumo}</ReactMarkdown>
-                    </div>
-                  </div>
+          {/* ---------------- Pagamentos do dia (eventos de dia inteiro) ---------------- */}
+          <SectionCard
+            title={<span className="flex items-center gap-2"><Wallet className="h-4 w-4 text-muted-foreground" /> Pagamentos do dia</span>}
+            subtitle={`${vm.pagamentos.length} pagamento${vm.pagamentos.length === 1 ? "" : "s"} · marcados como evento de dia inteiro na agenda`}
+          >
+            {vm.pagamentos.length === 0 ? (
+              <div className="py-4 text-center text-[12.5px] text-muted-foreground">Nenhum pagamento marcado para hoje.</div>
+            ) : (
+              <ul className="space-y-2">
+                {vm.pagamentos.map((p, i) => (
+                  <li key={i} className="flex items-start gap-3 rounded-md border border-border bg-card px-3 py-2.5">
+                    <span className="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-emerald-500/12 text-emerald-600 dark:text-emerald-400">
+                      <Wallet className="h-3.5 w-3.5" />
+                    </span>
+                    <div className="min-w-0 flex-1 text-[12.5px] font-medium leading-snug text-foreground">{p.titulo}</div>
+                    <Participantes lista={p.participantes} />
+                  </li>
                 ))}
-              </div>
-            </SectionCard>
-          )}
+              </ul>
+            )}
+          </SectionCard>
         </>
       ) : (
         /* fallback: só markdown publicado */
@@ -744,26 +732,6 @@ function Participantes({ lista }: { lista: Participante[] }) {
       {lista.length > 3 && (
         <span className="flex h-5 w-5 items-center justify-center rounded-full border border-card bg-secondary text-[9px] font-semibold text-muted-foreground">+{lista.length - 3}</span>
       )}
-    </div>
-  );
-}
-
-function Kpi({ icon: Icon, eyebrow, value, sub, tone, mono }: {
-  icon: any; eyebrow: string; value: string; sub: string; tone?: "neg" | "pos"; mono?: boolean;
-}) {
-  return (
-    <div className="card-surface flex flex-col gap-2 p-4">
-      <div className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/80">
-        <Icon className="h-3.5 w-3.5" /> {eyebrow}
-      </div>
-      <div className={cn(
-        "num font-semibold leading-none tracking-tight",
-        mono ? "text-[24px]" : "text-[26px]",
-        tone === "neg" ? "text-neg" : tone === "pos" ? "text-pos" : "text-foreground",
-      )}>
-        {value}
-      </div>
-      <div className="mt-auto truncate text-[11.5px] text-muted-foreground">{sub}</div>
     </div>
   );
 }

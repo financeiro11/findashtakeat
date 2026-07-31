@@ -549,6 +549,8 @@ export type Database = {
           nivel: number | null
           observacao: string | null
           ordem: number
+          pos_x: number | null
+          pos_y: number | null
           responsavel: string | null
           solucao: string | null
           status: string
@@ -569,6 +571,8 @@ export type Database = {
           nivel?: number | null
           observacao?: string | null
           ordem?: number
+          pos_x?: number | null
+          pos_y?: number | null
           responsavel?: string | null
           solucao?: string | null
           status?: string
@@ -589,6 +593,8 @@ export type Database = {
           nivel?: number | null
           observacao?: string | null
           ordem?: number
+          pos_x?: number | null
+          pos_y?: number | null
           responsavel?: string | null
           solucao?: string | null
           status?: string

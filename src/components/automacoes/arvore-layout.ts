@@ -16,33 +16,35 @@ export type Automacao = {
   ferramentas: string | null;
   responsavel: string | null;
   impacto: string | null;
+  dor: string | null;
+  solucao: string | null;
+  observacao: string | null;
   depende_de?: string | null;
+  pos_x?: number | null;
+  pos_y?: number | null;
   ordem: number;
 };
 
-/* -------------------------------- cores --------------------------------
- * O canvas é escuro nos dois temas de propósito (é uma superfície de "jogo",
- * como a pirâmide já faz com NIVEL_COR). Por isso as cores são literais: elas
- * não seguem o tema claro/escuro do app. */
-export const CANVAS_BG = "#0b0d12";
-export const CANVAS_GRID = "rgba(148,163,184,.055)";
+/* ------------------------------- trilhas -------------------------------
+ * Uma trilha agrupa categorias afins — é o "galho grosso" da árvore. Toda
+ * categoria que não estiver aqui vira uma trilha própria, então criar uma
+ * categoria nova no editor cria um galho novo sem precisar mexer no código. */
+export const TRILHAS: { nome: string; cor: string; categorias: string[] }[] = [
+  { nome: "Inteligência & IA", cor: "#f43f5e", categorias: ["IA & Categorização", "Dashboard"] },
+  { nome: "Pagamentos & Notas", cor: "#8b5cf6", categorias: ["Pagamentos & Cobrança", "Notas Fiscais", "Reembolsos"] },
+  { nome: "Reportes & FP&A", cor: "#38bdf8", categorias: ["Reportes & DRE", "Fechamento Mensal"] },
+  { nome: "Comunicação & Radar", cor: "#f59e0b", categorias: ["Comunicação Interna", "Editais"] },
+];
+const CAT_FALLBACK = ["#2dd4bf", "#818cf8", "#ec4899", "#a3e635", "#fb923c", "#22d3ee"];
 
-const CAT_COR: Record<string, string> = {
-  "IA & Categorização": "#f43f5e",
-  "Pagamentos & Cobrança": "#8b5cf6",
-  "Notas Fiscais": "#38bdf8",
-  "Reportes & DRE": "#10b981",
-  "Conciliação": "#f59e0b",
-  "Comunicação Interna": "#fb923c",
-  "Fechamento Mensal": "#2dd4bf",
-  "Editais": "#818cf8",
-  "Dashboard": "#ec4899",
-  "Reembolsos": "#a3e635",
-};
-const CAT_FALLBACK = ["#f43f5e", "#8b5cf6", "#38bdf8", "#10b981", "#f59e0b", "#fb923c", "#2dd4bf", "#818cf8", "#ec4899", "#a3e635"];
+export function trilhaDe(categoria: string | null): string {
+  const c = categoria || "Sem categoria";
+  return TRILHAS.find((t) => t.categorias.includes(c))?.nome ?? c;
+}
 
 export function corTrilha(nome: string): string {
-  if (CAT_COR[nome]) return CAT_COR[nome];
+  const t = TRILHAS.find((x) => x.nome === nome);
+  if (t) return t.cor;
   let h = 0;
   for (let i = 0; i < nome.length; i++) h = (h * 31 + nome.charCodeAt(i)) >>> 0;
   return CAT_FALLBACK[h % CAT_FALLBACK.length];
@@ -57,42 +59,57 @@ const STATUS_TIER: Record<string, Tier> = {
   "A fazer": "todo",
   "Ideias": "todo",
 };
+export const STATUS_OPTS = ["Ideias", "A fazer", "Em andamento", "Em teste", "Rodando"];
 export const tierDe = (s: string): Tier => STATUS_TIER[s] ?? "todo";
 export const TIER_META: Record<Tier, { cor: string; label: string }> = {
   on: { cor: "#34d399", label: "Rodando" },
   wip: { cor: "#fbbf24", label: "Em teste / andamento" },
-  todo: { cor: "#64748b", label: "Ideia / a fazer" },
+  todo: { cor: "#7c8698", label: "Ideia / a fazer" },
 };
 
-/* bandas de nível, da base para o topo (0 = ainda sem nível definido) */
+/* ---------------------------- níveis (pirâmide) ---------------------------- */
+export const NIVEIS = [
+  { n: 1, nome: "Fundação Operacional" },
+  { n: 2, nome: "Controles & Auditoria" },
+  { n: 3, nome: "Relatórios, Insights & FP&A" },
+  { n: 4, nome: "Projeções & Cenários" },
+  { n: 5, nome: "Financeiro Autônomo" },
+];
+/** bandas da base para o topo (0 = ainda sem nível definido, fica no topo) */
 export const BANDAS = [
-  { k: 1, label: "N1 · FUNDAÇÃO" },
-  { k: 2, label: "N2 · CONTROLES" },
-  { k: 3, label: "N3 · FP&A" },
-  { k: 4, label: "N4 · PROJEÇÃO" },
-  { k: 5, label: "N5 · AUTONOMIA" },
+  ...NIVEIS.map((x) => ({ k: x.n, label: `N${x.n} · ${x.nome.toUpperCase()}` })),
   { k: 0, label: "SEM NÍVEL AINDA" },
 ];
+export const nomeNivel = (n: number | null | undefined) =>
+  n ? `N${n} · ${NIVEIS.find((x) => x.n === n)?.nome.toUpperCase() ?? ""}` : "SEM NÍVEL";
 
 /* ----------------------------- geometria ----------------------------- */
-export const COL_W = 196;   // largura da trilha
-export const ROW_H = 104;   // altura de uma linha de nós
-export const DX = 44;       // deslocamento do nó em relação ao tronco
-export const PAD_X = 120;   // respiro lateral (rótulos das bandas moram aqui)
-const PAD_TOP = 70;
-const HUB_H = 150;          // espaço do hub abaixo da última linha
+export const COL_W = 320;   // largura da trilha
+export const ROW_H = 128;   // altura de uma linha de nós
+export const DX = 74;       // deslocamento do nó em relação ao tronco
+export const PAD_X = 150;   // respiro lateral (rótulos das bandas moram aqui)
+const PAD_TOP = 90;
+const HUB_H = 190;          // espaço do hub abaixo da última linha
 
-export type NoPos = { r: Automacao; x: number; y: number; trilha: string; cor: string; tier: Tier; banda: number };
+export type NoPos = {
+  r: Automacao; x: number; y: number; trilha: string; cor: string; tier: Tier;
+  banda: number; fixo: boolean; // fixo = posição salva pelo usuário (arrastado)
+};
 
 const ordemTier: Record<Tier, number> = { on: 0, wip: 1, todo: 2 };
 export const horasDe = (r: Automacao) => Number(r.horas_mes) || 0;
+export const bandaDe = (r: Automacao) => (r.nivel && r.nivel >= 1 && r.nivel <= 5 ? r.nivel : 0);
 
-/** Posiciona cada automação em trilha (X) × banda de nível (Y), com o hub embaixo. */
+/**
+ * Posiciona cada automação em trilha (X) × banda de nível (Y), com o hub embaixo.
+ * Quem tem pos_x/pos_y salvos (arrastado pelo usuário) usa a posição salva; o
+ * resto é calculado. O canvas cresce para caber os nós arrastados para fora.
+ */
 export function montarLayout(rows: Automacao[]) {
-  const trilhas = Array.from(new Set(rows.map((r) => r.categoria || "Sem categoria"))).sort((a, b) =>
-    a.localeCompare(b, "pt-BR"),
-  );
-  const bandaDe = (r: Automacao) => (r.nivel && r.nivel >= 1 && r.nivel <= 5 ? r.nivel : 0);
+  const trilhas = Array.from(new Set(rows.map((r) => trilhaDe(r.categoria)))).sort((a, b) => {
+    const ia = TRILHAS.findIndex((t) => t.nome === a), ib = TRILHAS.findIndex((t) => t.nome === b);
+    return (ia === -1 ? 99 : ia) - (ib === -1 ? 99 : ib) || a.localeCompare(b, "pt-BR");
+  });
 
   // Só entram as bandas que têm alguma automação — evita canvas vazio.
   const bandasPresentes = BANDAS.filter((b) => rows.some((r) => bandaDe(r) === b.k));
@@ -101,14 +118,14 @@ export function montarLayout(rows: Automacao[]) {
   const linhasPorBanda = bandasPresentes.map((b) => {
     const maxNaBanda = Math.max(
       1,
-      ...trilhas.map((t) => rows.filter((r) => (r.categoria || "Sem categoria") === t && bandaDe(r) === b.k).length),
+      ...trilhas.map((t) => rows.filter((r) => trilhaDe(r.categoria) === t && bandaDe(r) === b.k).length),
     );
     return Math.ceil(maxNaBanda / 2);
   });
 
   const totalLinhas = linhasPorBanda.reduce((a, c) => a + c, 0);
-  const W = PAD_X * 2 + Math.max(1, trilhas.length) * COL_W;
-  const H = PAD_TOP + totalLinhas * ROW_H + HUB_H;
+  let W = PAD_X * 2 + Math.max(1, trilhas.length) * COL_W;
+  let H = PAD_TOP + totalLinhas * ROW_H + HUB_H;
   const hubY = H - HUB_H / 2;
   const hubX = W / 2;
 
@@ -116,14 +133,14 @@ export function montarLayout(rows: Automacao[]) {
   const inicioBanda: number[] = [];
   let acc = 0;
   bandasPresentes.forEach((_, i) => { inicioBanda[i] = acc; acc += linhasPorBanda[i]; });
-  const yDaLinha = (linhaGlobal: number) => hubY - HUB_H / 2 - 20 - linhaGlobal * ROW_H;
+  const yDaLinha = (linhaGlobal: number) => hubY - HUB_H / 2 - 30 - linhaGlobal * ROW_H;
 
   const nos: NoPos[] = [];
   trilhas.forEach((t, ti) => {
     const colX = PAD_X + ti * COL_W + COL_W / 2;
     bandasPresentes.forEach((b, bi) => {
       const daCelula = rows
-        .filter((r) => (r.categoria || "Sem categoria") === t && bandaDe(r) === b.k)
+        .filter((r) => trilhaDe(r.categoria) === t && bandaDe(r) === b.k)
         .sort((a, z) =>
           ordemTier[tierDe(a.status)] - ordemTier[tierDe(z.status)] ||
           (a.automacao || "").localeCompare(z.automacao || "", "pt-BR"),
@@ -133,13 +150,20 @@ export function montarLayout(rows: Automacao[]) {
         // nó sozinho na linha fica centrado no tronco; em par, um de cada lado
         const sozinho = k === daCelula.length - 1 && k % 2 === 0;
         const lado = sozinho ? 0 : k % 2 === 0 ? -1 : 1;
+        const fixo = r.pos_x != null && r.pos_y != null;
         nos.push({
-          r, trilha: t, cor: corTrilha(t), tier: tierDe(r.status), banda: b.k,
-          x: colX + lado * DX,
-          y: yDaLinha(linha),
+          r, trilha: t, cor: corTrilha(t), tier: tierDe(r.status), banda: b.k, fixo,
+          x: fixo ? (r.pos_x as number) : colX + lado * DX,
+          y: fixo ? (r.pos_y as number) : yDaLinha(linha),
         });
       });
     });
+  });
+
+  // o canvas precisa caber quem foi arrastado para fora da área calculada
+  nos.forEach((n) => {
+    W = Math.max(W, n.x + PAD_X);
+    H = Math.max(H, n.y + 120);
   });
 
   // faixas horizontais das bandas (para o rótulo lateral)
@@ -149,14 +173,33 @@ export function montarLayout(rows: Automacao[]) {
     return { ...b, topo, base };
   });
 
-  // topo do tronco de cada trilha (até o nó mais alto que ela tem)
+  // tronco de cada trilha: sobe do hub até o nó mais alto que ela tem
   const troncos = trilhas.map((t, ti) => {
     const meus = nos.filter((n) => n.trilha === t);
-    const topo = meus.length ? Math.min(...meus.map((n) => n.y)) : hubY - 120;
-    return { trilha: t, x: PAD_X + ti * COL_W + COL_W / 2, topo, cor: corTrilha(t) };
+    const topo = meus.length ? Math.min(...meus.map((n) => n.y)) : hubY - 160;
+    const base = meus.length ? Math.max(...meus.map((n) => n.y)) : hubY - 160;
+    return { trilha: t, x: PAD_X + ti * COL_W + COL_W / 2, topo, base, cor: corTrilha(t) };
   });
 
   return { trilhas, nos, faixas, troncos, W, H, hubX, hubY };
+}
+
+/** Resumo por trilha para os cartões do topo. */
+export function resumoTrilhas(rows: Automacao[]) {
+  const nomes = Array.from(new Set(rows.map((r) => trilhaDe(r.categoria)))).sort((a, b) => {
+    const ia = TRILHAS.findIndex((t) => t.nome === a), ib = TRILHAS.findIndex((t) => t.nome === b);
+    return (ia === -1 ? 99 : ia) - (ib === -1 ? 99 : ib) || a.localeCompare(b, "pt-BR");
+  });
+  return nomes.map((nome) => {
+    const meus = rows.filter((r) => trilhaDe(r.categoria) === nome);
+    return {
+      nome,
+      cor: corTrilha(nome),
+      on: meus.filter((r) => tierDe(r.status) === "on").length,
+      total: meus.length,
+      categorias: Array.from(new Set(meus.map((r) => r.categoria || "Sem categoria"))),
+    };
+  });
 }
 
 /** Corrente do nó: ele + os pré-requisitos acima dele + tudo que ele destrava abaixo. */
@@ -190,3 +233,26 @@ export function destravadasPor(rows: Automacao[], sel: string | null): { ids: Se
   ids.forEach((id) => { const r = rows.find((x) => x.id === id); if (r) horas += horasDe(r); });
   return { ids, horas };
 }
+
+/**
+ * Alvos válidos para virar pré-requisito de `id`: qualquer um menos ele mesmo e
+ * quem já depende dele (direta ou indiretamente) — senão o grafo cria ciclo.
+ */
+export function alvosValidos(rows: Automacao[], id: string): Automacao[] {
+  const bloq = new Set<string>([id]);
+  let mudou = true;
+  while (mudou) {
+    mudou = false;
+    for (const r of rows) if (r.depende_de && bloq.has(r.depende_de) && !bloq.has(r.id)) { bloq.add(r.id); mudou = true; }
+  }
+  return rows.filter((r) => !bloq.has(r.id)).sort((a, b) => (a.automacao || "").localeCompare(b.automacao || "", "pt-BR"));
+}
+
+export const iniciaisDe = (nome: string | null | undefined) => {
+  if (!nome) return "";
+  const p = nome.trim().split(/\s+/);
+  return ((p[0]?.[0] || "") + (p[1]?.[0] || "")).toUpperCase();
+};
+
+export const listaFerramentas = (s: string | null | undefined) =>
+  (s || "").split(/[,;|/\n]+/).map((x) => x.trim()).filter(Boolean);

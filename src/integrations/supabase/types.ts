@@ -539,6 +539,7 @@ export type Database = {
           automacao: string
           categoria: string | null
           created_at: string
+          depende_de: string | null
           dor: string | null
           execucoes: number
           ferramentas: string | null
@@ -558,6 +559,7 @@ export type Database = {
           automacao: string
           categoria?: string | null
           created_at?: string
+          depende_de?: string | null
           dor?: string | null
           execucoes?: number
           ferramentas?: string | null
@@ -577,6 +579,7 @@ export type Database = {
           automacao?: string
           categoria?: string | null
           created_at?: string
+          depende_de?: string | null
           dor?: string | null
           execucoes?: number
           ferramentas?: string | null
@@ -592,7 +595,15 @@ export type Database = {
           ultima_falha?: string | null
           updated_at?: string
         }
-        Relationships: []
+        Relationships: [
+          {
+            foreignKeyName: "automacoes_catalogo_depende_de_fkey"
+            columns: ["depende_de"]
+            isOneToOne: false
+            referencedRelation: "automacoes_catalogo"
+            referencedColumns: ["id"]
+          },
+        ]
       }
       base_conhecimento: {
         Row: {

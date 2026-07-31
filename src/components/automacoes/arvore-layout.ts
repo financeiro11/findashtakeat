@@ -22,8 +22,12 @@ export type Automacao = {
   depende_de?: string | null;
   pos_x?: number | null;
   pos_y?: number | null;
+  icone?: string | null;
   ordem: number;
 };
+
+/** Nível da pirâmide — vem da tabela `automacoes_niveis`, não do código. */
+export type Nivel = { n: number; nome: string; bullets?: string[] };
 
 /* ------------------------------- trilhas -------------------------------
  * Uma trilha agrupa categorias afins — é o "galho grosso" da árvore. Toda
@@ -67,21 +71,27 @@ export const TIER_META: Record<Tier, { cor: string; label: string }> = {
   todo: { cor: "#7c8698", label: "Ideia / a fazer" },
 };
 
-/* ---------------------------- níveis (pirâmide) ---------------------------- */
-export const NIVEIS = [
+/* ---------------------------- níveis (pirâmide) ----------------------------
+ * Usado só como semente/fallback quando a tabela `automacoes_niveis` ainda não
+ * respondeu. A fonte da verdade é o banco — criar um nível novo lá faz a banda
+ * aparecer na árvore sozinha. */
+export const NIVEIS_PADRAO: Nivel[] = [
   { n: 1, nome: "Fundação Operacional" },
   { n: 2, nome: "Controles & Auditoria" },
   { n: 3, nome: "Relatórios, Insights & FP&A" },
   { n: 4, nome: "Projeções & Cenários" },
   { n: 5, nome: "Financeiro Autônomo" },
 ];
+
 /** bandas da base para o topo (0 = ainda sem nível definido, fica no topo) */
-export const BANDAS = [
-  ...NIVEIS.map((x) => ({ k: x.n, label: `N${x.n} · ${x.nome.toUpperCase()}` })),
-  { k: 0, label: "SEM NÍVEL AINDA" },
-];
-export const nomeNivel = (n: number | null | undefined) =>
-  n ? `N${n} · ${NIVEIS.find((x) => x.n === n)?.nome.toUpperCase() ?? ""}` : "SEM NÍVEL";
+export function bandasDe(niveis: Nivel[]) {
+  return [
+    ...[...niveis].sort((a, b) => a.n - b.n).map((x) => ({ k: x.n, label: `N${x.n} · ${x.nome.toUpperCase()}` })),
+    { k: 0, label: "SEM NÍVEL AINDA" },
+  ];
+}
+export const nomeNivel = (niveis: Nivel[], n: number | null | undefined) =>
+  n ? `N${n} · ${(niveis.find((x) => x.n === n)?.nome ?? "").toUpperCase()}` : "SEM NÍVEL";
 
 /* ----------------------------- geometria ----------------------------- */
 export const COL_W = 320;   // largura da trilha
@@ -98,27 +108,31 @@ export type NoPos = {
 
 const ordemTier: Record<Tier, number> = { on: 0, wip: 1, todo: 2 };
 export const horasDe = (r: Automacao) => Number(r.horas_mes) || 0;
-export const bandaDe = (r: Automacao) => (r.nivel && r.nivel >= 1 && r.nivel <= 5 ? r.nivel : 0);
+/** nível válido do registro — 0 quando não há nível ou o nível não existe mais */
+export const bandaDe = (r: Automacao, niveis: Nivel[] = NIVEIS_PADRAO) =>
+  r.nivel && niveis.some((x) => x.n === r.nivel) ? r.nivel : 0;
 
 /**
  * Posiciona cada automação em trilha (X) × banda de nível (Y), com o hub embaixo.
  * Quem tem pos_x/pos_y salvos (arrastado pelo usuário) usa a posição salva; o
  * resto é calculado. O canvas cresce para caber os nós arrastados para fora.
  */
-export function montarLayout(rows: Automacao[]) {
+export function montarLayout(rows: Automacao[], niveis: Nivel[] = NIVEIS_PADRAO) {
+  const BANDAS = bandasDe(niveis);
+  const banda = (r: Automacao) => bandaDe(r, niveis); // liga o nível ao conjunto recebido
   const trilhas = Array.from(new Set(rows.map((r) => trilhaDe(r.categoria)))).sort((a, b) => {
     const ia = TRILHAS.findIndex((t) => t.nome === a), ib = TRILHAS.findIndex((t) => t.nome === b);
     return (ia === -1 ? 99 : ia) - (ib === -1 ? 99 : ib) || a.localeCompare(b, "pt-BR");
   });
 
   // Só entram as bandas que têm alguma automação — evita canvas vazio.
-  const bandasPresentes = BANDAS.filter((b) => rows.some((r) => bandaDe(r) === b.k));
+  const bandasPresentes = BANDAS.filter((b) => rows.some((r) => banda(r) === b.k));
 
   // Altura de cada banda = maior "pilha" de uma trilha dentro dela (nós em ziguezague, 2 por linha).
   const linhasPorBanda = bandasPresentes.map((b) => {
     const maxNaBanda = Math.max(
       1,
-      ...trilhas.map((t) => rows.filter((r) => trilhaDe(r.categoria) === t && bandaDe(r) === b.k).length),
+      ...trilhas.map((t) => rows.filter((r) => trilhaDe(r.categoria) === t && banda(r) === b.k).length),
     );
     return Math.ceil(maxNaBanda / 2);
   });
@@ -140,7 +154,7 @@ export function montarLayout(rows: Automacao[]) {
     const colX = PAD_X + ti * COL_W + COL_W / 2;
     bandasPresentes.forEach((b, bi) => {
       const daCelula = rows
-        .filter((r) => trilhaDe(r.categoria) === t && bandaDe(r) === b.k)
+        .filter((r) => trilhaDe(r.categoria) === t && banda(r) === b.k)
         .sort((a, z) =>
           ordemTier[tierDe(a.status)] - ordemTier[tierDe(z.status)] ||
           (a.automacao || "").localeCompare(z.automacao || "", "pt-BR"),
@@ -182,6 +196,23 @@ export function montarLayout(rows: Automacao[]) {
   });
 
   return { trilhas, nos, faixas, troncos, W, H, hubX, hubY };
+}
+
+export type Faixa = ReturnType<typeof montarLayout>["faixas"][number];
+
+/**
+ * Em que banda cai um ponto Y do canvas — é o que diz, durante o arraste, se o
+ * nó está cruzando a barreira e subindo/descendo de nível.
+ * Acima da faixa mais alta o nó continua na banda mais alta; abaixo da base,
+ * na mais baixa (arrastar para fora não pode virar "sem nível" por acidente).
+ */
+export function bandaNoY(faixas: Faixa[], y: number): Faixa | null {
+  if (!faixas.length) return null;
+  const dentro = faixas.find((f) => y <= f.base && y >= f.topo);
+  if (dentro) return dentro;
+  const maisAlta = faixas.reduce((a, b) => (b.topo < a.topo ? b : a));
+  const maisBaixa = faixas.reduce((a, b) => (b.base > a.base ? b : a));
+  return y < maisAlta.topo ? maisAlta : y > maisBaixa.base ? maisBaixa : null;
 }
 
 /** Resumo por trilha para os cartões do topo. */

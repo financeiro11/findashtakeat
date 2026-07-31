@@ -544,6 +544,7 @@ export type Database = {
           execucoes: number
           ferramentas: string | null
           horas_mes: number | null
+          icone: string | null
           id: string
           impacto: string | null
           nivel: number | null
@@ -566,6 +567,7 @@ export type Database = {
           execucoes?: number
           ferramentas?: string | null
           horas_mes?: number | null
+          icone?: string | null
           id?: string
           impacto?: string | null
           nivel?: number | null
@@ -588,6 +590,7 @@ export type Database = {
           execucoes?: number
           ferramentas?: string | null
           horas_mes?: number | null
+          icone?: string | null
           id?: string
           impacto?: string | null
           nivel?: number | null
@@ -610,6 +613,36 @@ export type Database = {
             referencedColumns: ["id"]
           },
         ]
+      }
+      automacoes_niveis: {
+        Row: {
+          bullets: Json
+          created_at: string
+          descricao: string | null
+          id: string
+          n: number
+          nome: string
+          updated_at: string
+        }
+        Insert: {
+          bullets?: Json
+          created_at?: string
+          descricao?: string | null
+          id?: string
+          n: number
+          nome: string
+          updated_at?: string
+        }
+        Update: {
+          bullets?: Json
+          created_at?: string
+          descricao?: string | null
+          id?: string
+          n?: number
+          nome?: string
+          updated_at?: string
+        }
+        Relationships: []
       }
       base_conhecimento: {
         Row: {

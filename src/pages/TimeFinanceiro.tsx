@@ -307,15 +307,20 @@ function CargoCard({ c, selected, onClick }: { c: Cargo; selected: boolean; onCl
 }
 
 // Pirâmide de maturidade (SVG) — clique num nível para ver os detalhes.
-function Piramide({ sel, onSel }: { sel: number; onSel: (n: number) => void }) {
+// O número de andares vem da tabela `automacoes_niveis`: criar um nível novo
+// acrescenta um andar aqui e uma faixa na árvore, sem tocar em código.
+function Piramide({ sel, onSel, niveis }: { sel: number; onSel: (n: number) => void; niveis: { n: number; nome: string }[] }) {
   const PAD = 18, H = 250, HALF = 148, CX = 196, GAP = 6;
-  const h = (H - GAP * 4) / 5;
+  const total = Math.max(1, niveis.length);
+  const h = (H - GAP * (total - 1)) / total;
   const halfAt = (y: number) => ((y - PAD) / H) * HALF;
-  const slices = [1, 2, 3, 4, 5].map((k) => {
-    const yTop = PAD + (5 - k) * (h + GAP);
+  const topo = niveis.length ? Math.max(...niveis.map((x) => x.n)) : 5;
+  const base = niveis.length ? niveis.slice().sort((a, b) => a.n - b.n)[0] : null;
+  const slices = niveis.map((nv, i) => {
+    const yTop = PAD + (total - 1 - i) * (h + GAP);
     const yBot = yTop + h;
     const ht = halfAt(yTop), hb = halfAt(yBot);
-    return { k, yTop, yBot, pts: `${CX - ht},${yTop} ${CX + ht},${yTop} ${CX + hb},${yBot} ${CX - hb},${yBot}` };
+    return { k: nv.n, yTop, yBot, pts: `${CX - ht},${yTop} ${CX + ht},${yTop} ${CX + hb},${yBot} ${CX - hb},${yBot}` };
   });
   return (
     <svg viewBox="0 0 392 312" className="mx-auto w-full max-w-[420px]">
@@ -324,10 +329,10 @@ function Piramide({ sel, onSel }: { sel: number; onSel: (n: number) => void }) {
       <text x={22} y={226} fontSize={9} letterSpacing={2.5} fill="hsl(var(--muted-foreground))" transform="rotate(-90 22 226)" textAnchor="middle">OPERACIONAL</text>
       <line x1={32} y1={PAD + 4} x2={32} y2={PAD + H - 4} stroke="hsl(var(--border))" strokeWidth={1} />
       {slices.map(({ k, yTop, yBot, pts }) => {
-        const cy = (yTop + yBot) / 2 + (k === 5 ? 8 : 0);
+        const cy = (yTop + yBot) / 2 + (k === topo ? 8 : 0);
         return (
           <g key={k} onClick={() => onSel(k)} className="cursor-pointer transition-opacity hover:opacity-90">
-            <polygon points={pts} fill={NIVEL_COR[k - 1]} stroke={sel === k ? "hsl(var(--foreground))" : "transparent"} strokeWidth={2} />
+            <polygon points={pts} fill={NIVEL_COR[(k - 1) % NIVEL_COR.length]} stroke={sel === k ? "hsl(var(--foreground))" : "transparent"} strokeWidth={2} />
             <circle cx={CX} cy={cy} r={12} fill="none" stroke="white" strokeWidth={1.4} />
             <text x={CX} y={cy + 3.5} fontSize={11} fontWeight={700} fill="white" textAnchor="middle">{k}</text>
             {k === NIVEL_ATUAL && (
@@ -339,7 +344,9 @@ function Piramide({ sel, onSel }: { sel: number; onSel: (n: number) => void }) {
           </g>
         );
       })}
-      <text x={CX} y={PAD + H + 26} fontSize={9.5} fontWeight={700} letterSpacing={1.6} fill="hsl(var(--muted-foreground))" textAnchor="middle">BASE: FUNDAÇÃO OPERACIONAL</text>
+      <text x={CX} y={PAD + H + 26} fontSize={9.5} fontWeight={700} letterSpacing={1.6} fill="hsl(var(--muted-foreground))" textAnchor="middle">
+        BASE: {(base?.nome ?? "Fundação Operacional").toUpperCase()}
+      </text>
     </svg>
   );
 }
@@ -412,6 +419,8 @@ export default function TimeFinanceiro() {
   const [rituais, setRituais] = useState<Ritual[]>([]);
   const [escopos, setEscopos] = useState<Escopo[]>([]);
   const [autoNiveis, setAutoNiveis] = useState<{ nivel: number | null; status: string }[]>([]);
+  // Níveis da pirâmide vêm de automacoes_niveis; NIVEIS é só a semente/fallback.
+  const [niveisDb, setNiveisDb] = useState<{ n: number; nome: string; bullets?: string[] }[]>(NIVEIS);
   const [loading, setLoading] = useState(true);
   const [tab, setTab] = useState<TabKey>("org");
   const [ano, setAno] = useState<number>(2026);
@@ -474,11 +483,12 @@ export default function TimeFinanceiro() {
     setEscRecolhidos((prev) => { const n = new Set(prev); n.has(nome) ? n.delete(nome) : n.add(nome); return n; });
 
   async function carregar() {
-    const [{ data: cs, error: e1 }, { data: ps, error: e2 }, { data: rs, error: e3 }, { data: au }, { data: es, error: e5 }] = await Promise.all([
+    const [{ data: cs, error: e1 }, { data: ps, error: e2 }, { data: rs, error: e3 }, { data: au }, { data: nv }, { data: es, error: e5 }] = await Promise.all([
       sb.from("time_cargos").select("*").order("ordem", { ascending: true }),
       sb.from("time_passos").select("*").order("ordem", { ascending: true }),
       sb.from("time_rituais").select("*").order("ordem", { ascending: true }),
       sb.from("automacoes_catalogo").select("nivel,status"),
+      sb.from("automacoes_niveis").select("n,nome,bullets").order("n"),
       sb.from("time_escopos").select("*").order("ordem", { ascending: true }),
     ]);
     if (e1 || e2 || e3 || e5) toast.error("Falha ao carregar o time: " + (e1?.message ?? e2?.message ?? e3?.message ?? e5?.message));
@@ -486,6 +496,7 @@ export default function TimeFinanceiro() {
     setPassos((ps ?? []) as Passo[]);
     setRituais((rs ?? []) as Ritual[]);
     setAutoNiveis((au ?? []) as { nivel: number | null; status: string }[]);
+    if (nv?.length) setNiveisDb(nv as { n: number; nome: string; bullets?: string[] }[]);
     setEscopos((es ?? []) as Escopo[]);
     setLoading(false);
   }
@@ -927,7 +938,7 @@ export default function TimeFinanceiro() {
     );
   }
 
-  const nivel = NIVEIS.find((n) => n.n === nivelSel)!;
+  const nivel = niveisDb.find((n) => n.n === nivelSel) ?? niveisDb[0] ?? NIVEIS[0];
   const autosNivel = autoNiveis.filter((a) => a.nivel === nivelSel && a.status === "Rodando").length;
 
   const atbCargo = cargos.find((c) => c.id === atbCargoId) ?? null;
@@ -1325,7 +1336,7 @@ export default function TimeFinanceiro() {
                   <div className="text-[11.5px] text-primary">Roadmap de Implementação de IA no Financeiro</div>
                 </div>
                 <div className="mt-3">
-                  <Piramide sel={nivelSel} onSel={setNivelSel} />
+                  <Piramide sel={nivelSel} onSel={setNivelSel} niveis={niveisDb} />
                 </div>
               </div>
 
@@ -1340,7 +1351,7 @@ export default function TimeFinanceiro() {
                   )}
                 </div>
                 <ul className="mt-4 space-y-2 pl-5">
-                  {nivel.bullets.map((b, i) => (
+                  {(nivel.bullets ?? []).map((b, i) => (
                     <li key={i} className="list-disc text-[13px] leading-relaxed text-foreground">{b}</li>
                   ))}
                 </ul>

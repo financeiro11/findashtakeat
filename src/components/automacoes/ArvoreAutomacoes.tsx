@@ -9,17 +9,16 @@ import { Textarea } from "@/components/ui/textarea";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import {
-  Zap, Brain, Banknote, FileText, BarChart3, ArrowRightLeft, MessageSquare,
-  CalendarCheck, Radar, LayoutDashboard, Receipt, Minus, Plus, Maximize2,
-  Sparkles, Loader2, X, Pencil, Trash2, Link2, Unlink, MousePointer2, ArrowUp,
+  Zap, Minus, Plus, Maximize2, Sparkles, Loader2, X, Pencil, Trash2,
+  Link2, Unlink, MousePointer2, ArrowUp, Layers,
 } from "lucide-react";
-import type { LucideIcon } from "lucide-react";
 import {
-  montarLayout, correnteDe, destravadasPor, resumoTrilhas, alvosValidos,
+  montarLayout, correnteDe, destravadasPor, resumoTrilhas, alvosValidos, bandaNoY,
   corTrilha, trilhaDe, tierDe, horasDe, bandaDe, nomeNivel, iniciaisDe, listaFerramentas,
-  TIER_META, TRILHAS, NIVEIS, STATUS_OPTS,
-  type Automacao, type NoPos,
+  TIER_META, TRILHAS, NIVEIS_PADRAO, STATUS_OPTS,
+  type Automacao, type NoPos, type Nivel, type Faixa,
 } from "./arvore-layout";
+import { iconeDe, ICONES, NOMES_ICONES, nomeIconeDe } from "./arvore-icones";
 
 /* ============================================================================
  * Árvore de Automações — o catálogo desenhado como árvore de habilidades.
@@ -38,30 +37,18 @@ import {
  * sem sair da árvore.
  * ========================================================================== */
 
-const CAT_ICON: Record<string, LucideIcon> = {
-  "IA & Categorização": Brain,
-  "Pagamentos & Cobrança": Banknote,
-  "Notas Fiscais": FileText,
-  "Reportes & DRE": BarChart3,
-  "Conciliação": ArrowRightLeft,
-  "Comunicação Interna": MessageSquare,
-  "Fechamento Mensal": CalendarCheck,
-  "Editais": Radar,
-  "Dashboard": LayoutDashboard,
-  "Reembolsos": Receipt,
-};
-const iconeDe = (cat: string | null): LucideIcon => CAT_ICON[cat || ""] ?? Zap;
+const CAMPOS = "id,automacao,categoria,nivel,status,horas_mes,ferramentas,responsavel,impacto,dor,solucao,observacao,depende_de,pos_x,pos_y,icone,ordem";
 
-const CAMPOS = "id,automacao,categoria,nivel,status,horas_mes,ferramentas,responsavel,impacto,dor,solucao,observacao,depende_de,pos_x,pos_y,ordem";
-
-const vazia = (): Automacao => ({
-  id: "", automacao: "", categoria: TRILHAS[0].categorias[0], nivel: null, status: "Ideias",
+const vazia = (nivel: number | null): Automacao => ({
+  id: "", automacao: "", categoria: TRILHAS[0].categorias[0], nivel, status: "Ideias",
   horas_mes: null, ferramentas: "", responsavel: "", impacto: "Médio",
-  dor: "", solucao: "", observacao: "", depende_de: null, pos_x: null, pos_y: null, ordem: 0,
+  dor: "", solucao: "", observacao: "", depende_de: null, pos_x: null, pos_y: null,
+  icone: null, ordem: 0,
 });
 
 export default function ArvoreAutomacoes() {
   const [rows, setRows] = useState<Automacao[]>([]);
+  const [niveis, setNiveis] = useState<Nivel[]>(NIVEIS_PADRAO);
   const [loading, setLoading] = useState(true);
   const [sel, setSel] = useState<string | null>(null);
   const [hover, setHover] = useState<string | null>(null);
@@ -72,17 +59,22 @@ export default function ArvoreAutomacoes() {
   const [criando, setCriando] = useState(false);
   const [salvando, setSalvando] = useState(false);
   const [posLocal, setPosLocal] = useState<Record<string, { x: number; y: number }>>({});
+  const [bandaAlvo, setBandaAlvo] = useState<Faixa | null>(null); // banda sob o nó durante o arraste
 
   const carregar = useCallback(async () => {
-    const { data, error } = await supabase.from("automacoes_catalogo").select(CAMPOS).order("ordem");
+    const [{ data, error }, { data: nv }] = await Promise.all([
+      supabase.from("automacoes_catalogo").select(CAMPOS).order("ordem"),
+      supabase.from("automacoes_niveis").select("n,nome,bullets").order("n"),
+    ]);
     if (error) toast.error(error.message);
     else { setRows((data as Automacao[]) || []); setPosLocal({}); }
+    if (nv?.length) setNiveis(nv as unknown as Nivel[]);
     setLoading(false);
   }, []);
   useEffect(() => { carregar(); }, [carregar]);
 
   /* ----------------------------- layout ----------------------------- */
-  const layout = useMemo(() => montarLayout(rows), [rows]);
+  const layout = useMemo(() => montarLayout(rows, niveis), [rows, niveis]);
   // posições otimistas do arraste sobrepõem o layout, para as arestas seguirem o nó
   const nos: NoPos[] = useMemo(
     () => layout.nos.map((n) => {
@@ -175,11 +167,11 @@ export default function ArvoreAutomacoes() {
   };
 
   /* ------------------------- arraste do nó ------------------------- */
-  const arr = useRef<{ id: string; x: number; y: number; ox: number; oy: number; moveu: boolean } | null>(null);
+  const arr = useRef<{ id: string; x: number; y: number; ox: number; oy: number; banda: number; moveu: boolean } | null>(null);
 
   const onNoDown = (e: React.PointerEvent, n: NoPos) => {
     e.stopPropagation();
-    arr.current = { id: n.r.id, x: e.clientX, y: e.clientY, ox: n.x, oy: n.y, moveu: false };
+    arr.current = { id: n.r.id, x: e.clientX, y: e.clientY, ox: n.x, oy: n.y, banda: n.banda, moveu: false };
     (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
   };
   const onNoMove = (e: React.PointerEvent) => {
@@ -187,12 +179,19 @@ export default function ArvoreAutomacoes() {
     if (!a) return;
     const dx = (e.clientX - a.x) / k, dy = (e.clientY - a.y) / k;
     if (Math.abs(dx) > 2 || Math.abs(dy) > 2) a.moveu = true;
-    if (a.moveu) setPosLocal((p) => ({ ...p, [a.id]: { x: a.ox + dx, y: a.oy + dy } }));
+    if (!a.moveu) return;
+    const y = a.oy + dy;
+    setPosLocal((p) => ({ ...p, [a.id]: { x: a.ox + dx, y } }));
+    // avisa quando o nó cruza a barreira e passa a pertencer a outro nível
+    const alvo = bandaNoY(layout.faixas, y);
+    setBandaAlvo(alvo && alvo.k !== a.banda ? alvo : null);
   };
   const onNoUp = async (e: React.PointerEvent, n: NoPos) => {
     e.stopPropagation();
     const a = arr.current;
     arr.current = null;
+    const alvo = bandaAlvo;
+    setBandaAlvo(null);
     if (!a) return;
     if (!a.moveu) {          // clique simples
       if (conectando) { await ligar(conectando, n.r.id); return; }
@@ -202,10 +201,19 @@ export default function ArvoreAutomacoes() {
     }
     const p = posLocal[a.id];
     if (!p) return;
-    const { error } = await supabase.from("automacoes_catalogo")
-      .update({ pos_x: Math.round(p.x), pos_y: Math.round(p.y) } as never).eq("id", a.id);
+    // soltar dentro de outra faixa promove/rebaixa a automação de nível
+    const mudouNivel = alvo && alvo.k !== a.banda;
+    const patch: Record<string, unknown> = { pos_x: Math.round(p.x), pos_y: Math.round(p.y) };
+    if (mudouNivel) patch.nivel = alvo.k || null;
+    const { error } = await supabase.from("automacoes_catalogo").update(patch as never).eq("id", a.id);
     if (error) { toast.error("Não salvou a posição: " + error.message); return; }
-    setRows((rs) => rs.map((r) => (r.id === a.id ? { ...r, pos_x: p.x, pos_y: p.y } : r)));
+    setRows((rs) => rs.map((r) => (r.id === a.id
+      ? { ...r, pos_x: p.x, pos_y: p.y, ...(mudouNivel ? { nivel: alvo.k || null } : {}) }
+      : r)));
+    if (mudouNivel) {
+      const subiu = (alvo.k || 0) > a.banda;
+      toast.success(`${n.r.automacao} ${subiu ? "subiu" : "desceu"} para ${alvo.label}`);
+    }
   };
 
   const soltarPosicao = async (id: string) => {
@@ -226,6 +234,17 @@ export default function ArvoreAutomacoes() {
     await carregar();
     setAjustado(false);
     toast.success("Árvore reorganizada.");
+  };
+
+  /* --------------------------- níveis --------------------------- */
+  const novoNivel = async () => {
+    const nome = prompt("Nome do novo nível (ele vira uma faixa da árvore e um andar da pirâmide):");
+    if (!nome?.trim()) return;
+    const n = Math.max(0, ...niveis.map((x) => x.n)) + 1;
+    const { error } = await supabase.from("automacoes_niveis").insert({ n, nome: nome.trim() } as never);
+    if (error) { toast.error(error.message); return; }
+    await carregar();
+    toast.success(`Nível N${n} · ${nome.trim()} criado.`);
   };
 
   /* ------------------------- pré-requisitos ------------------------- */
@@ -260,7 +279,7 @@ export default function ArvoreAutomacoes() {
       status: editando.status, horas_mes: editando.horas_mes, ferramentas: editando.ferramentas || null,
       responsavel: editando.responsavel || null, impacto: editando.impacto || "Médio",
       dor: editando.dor || null, solucao: editando.solucao || null, observacao: editando.observacao || null,
-      depende_de: editando.depende_de || null,
+      depende_de: editando.depende_de || null, icone: editando.icone || null,
     };
     if (criando) {
       const ordem = rows.length ? Math.max(...rows.map((r) => r.ordem)) + 1 : 1;
@@ -341,8 +360,15 @@ export default function ArvoreAutomacoes() {
             <div className="text-[9px] font-bold tracking-[0.16em] text-slate-600">H/MÊS</div>
           </div>
           <button
-            onClick={() => { setEditando(vazia()); setCriando(true); }}
-            className="ml-1 inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-2 text-[12px] font-semibold text-primary-foreground transition hover:brightness-110"
+            onClick={novoNivel}
+            title="Criar um nível novo — a faixa aparece na árvore e na pirâmide"
+            className="ml-1 inline-flex items-center gap-1.5 rounded-md border border-white/[0.14] px-2.5 py-2 text-[12px] font-medium text-slate-300 transition hover:bg-white/[0.07]"
+          >
+            <Layers className="h-3.5 w-3.5" /> Novo nível
+          </button>
+          <button
+            onClick={() => { setEditando(vazia(null)); setCriando(true); }}
+            className="inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-2 text-[12px] font-semibold text-primary-foreground transition hover:brightness-110"
           >
             <Plus className="h-3.5 w-3.5" /> Nova automação
           </button>
@@ -400,7 +426,7 @@ export default function ArvoreAutomacoes() {
         {nos.length === 0 ? (
           <div className="flex h-full flex-col items-center justify-center gap-3 text-[13px] text-slate-400">
             Nenhuma automação no catálogo ainda.
-            <Button size="sm" onClick={() => { setEditando(vazia()); setCriando(true); }}>
+            <Button size="sm" onClick={() => { setEditando(vazia(null)); setCriando(true); }}>
               <Plus className="mr-1 h-4 w-4" /> Criar a primeira
             </Button>
           </div>
@@ -418,15 +444,25 @@ export default function ArvoreAutomacoes() {
                 </filter>
               </defs>
 
-              {/* faixas de nível */}
-              {layout.faixas.map((f) => (
-                <g key={f.k}>
-                  <line x1={40} y1={f.base} x2={layout.W - 40} y2={f.base} stroke="rgba(148,163,184,.09)" strokeWidth={1} strokeDasharray="2 9" />
-                  <text x={46} y={f.base - 12} fontSize={9} fontWeight={700} letterSpacing={2.6} fill="rgba(148,163,184,.42)" className="font-mono">
-                    {f.label}
-                  </text>
-                </g>
-              ))}
+              {/* faixas de nível — rótulo à esquerda + divisor tracejado atravessando a árvore */}
+              {layout.faixas.map((f) => {
+                const alvo = bandaAlvo?.k === f.k;
+                return (
+                  <g key={f.k}>
+                    {alvo && (
+                      <rect x={8} y={f.topo} width={layout.W - 16} height={Math.max(20, f.base - f.topo)}
+                            rx={10} fill="rgba(52,211,153,.07)" stroke="rgba(52,211,153,.45)" strokeWidth={1.5} strokeDasharray="9 6" />
+                    )}
+                    <line x1={20} y1={f.base} x2={layout.W - 20} y2={f.base}
+                          stroke={alvo ? "rgba(52,211,153,.5)" : "rgba(148,163,184,.13)"}
+                          strokeWidth={1} strokeDasharray="4 8" />
+                    <text x={20} y={f.base - 13} fontSize={8.5} fontWeight={700} letterSpacing={2.4}
+                          fill={alvo ? "rgba(52,211,153,.95)" : "rgba(148,163,184,.4)"} className="font-mono">
+                      {f.label}
+                    </text>
+                  </g>
+                );
+              })}
 
               {/* troncos das trilhas + brilho correndo do hub para as pontas */}
               {layout.troncos.map((tr, i) => {
@@ -506,7 +542,7 @@ export default function ArvoreAutomacoes() {
             {nos.map((n) => {
               const off = apagado(n);
               const meta = TIER_META[n.tier];
-              const Icone = iconeDe(n.r.categoria);
+              const Icone = iconeDe(n.r);
               const ehSel = sel === n.r.id;
               const novo = simular && sel && destrava.ids.has(n.r.id);
               const alvoConexao = conectando && conectando !== n.r.id;
@@ -577,6 +613,7 @@ export default function ArvoreAutomacoes() {
         {selNo && (
           <FichaNo
             n={selNo}
+            niveis={niveis}
             prereq={selNo.r.depende_de ? porId.get(selNo.r.depende_de)?.r.automacao ?? null : null}
             estilo={{
               left: Math.min(Math.max(selNo.x * k + t.x + 42, 10), (boxRef.current?.clientWidth ?? 900) - 320),
@@ -589,6 +626,16 @@ export default function ArvoreAutomacoes() {
             onExcluir={() => excluir(selNo.r.id)}
             onFechar={() => setSel(null)}
           />
+        )}
+
+        {/* cruzando a barreira de nível durante o arraste */}
+        {bandaAlvo && (
+          <div className="pointer-events-none absolute left-1/2 top-3 z-40 -translate-x-1/2 rounded-lg border border-emerald-500/60 px-4 py-2 text-center shadow-xl" style={{ background: "rgba(8,10,16,.96)" }}>
+            <div className="text-[11.5px] font-semibold text-emerald-400">
+              <ArrowUp className="mr-1 inline h-3.5 w-3.5" />
+              Soltar aqui move para {bandaAlvo.label}
+            </div>
+          </div>
         )}
 
         {/* modo conectar */}
@@ -693,6 +740,39 @@ export default function ArvoreAutomacoes() {
                 <Label>Nome</Label>
                 <Input autoFocus value={editando.automacao} onChange={(e) => setEditando({ ...editando, automacao: e.target.value })} placeholder="Ex.: Categorização com IA" />
               </div>
+              <div className="col-span-2">
+                <Label>Ícone do nó</Label>
+                <div className="mt-1 flex max-h-[132px] flex-wrap gap-1 overflow-y-auto rounded-md border border-border p-2">
+                  {NOMES_ICONES.map((nome) => {
+                    const Ic = ICONES[nome];
+                    const ativo = nomeIconeDe(editando) === nome;
+                    return (
+                      <button
+                        key={nome}
+                        type="button"
+                        title={nome}
+                        onClick={() => setEditando({ ...editando, icone: nome })}
+                        className={cn(
+                          "flex h-8 w-8 items-center justify-center rounded-md border transition",
+                          ativo ? "border-primary bg-primary/10 text-primary" : "border-transparent text-muted-foreground hover:bg-secondary",
+                        )}
+                      >
+                        <Ic className="h-4 w-4" />
+                      </button>
+                    );
+                  })}
+                </div>
+                <p className="mt-1 text-[10.5px] text-muted-foreground">
+                  {editando.icone
+                    ? "Ícone escolhido à mão."
+                    : "Nenhum escolhido — deduzido pelo nome da automação."}
+                  {editando.icone && (
+                    <button type="button" className="ml-1 text-primary hover:underline" onClick={() => setEditando({ ...editando, icone: null })}>
+                      voltar ao automático
+                    </button>
+                  )}
+                </p>
+              </div>
               <div>
                 <Label>Categoria (define a trilha)</Label>
                 <Select value={editando.categoria || ""} onValueChange={(v) => setEditando({ ...editando, categoria: v })}>
@@ -723,7 +803,7 @@ export default function ArvoreAutomacoes() {
                   <SelectTrigger><SelectValue /></SelectTrigger>
                   <SelectContent>
                     <SelectItem value="0">— sem nível</SelectItem>
-                    {NIVEIS.map((x) => <SelectItem key={x.n} value={String(x.n)}>N{x.n} · {x.nome}</SelectItem>)}
+                    {niveis.map((x) => <SelectItem key={x.n} value={String(x.n)}>N{x.n} · {x.nome}</SelectItem>)}
                   </SelectContent>
                 </Select>
               </div>
@@ -791,8 +871,8 @@ export default function ArvoreAutomacoes() {
 /* ---------------------------------------------------------------------------
  * Ficha do nó — o cartão que abre ao clicar, com as ações em cima do próprio nó.
  * ------------------------------------------------------------------------- */
-function FichaNo({ n, prereq, estilo, onEditar, onConectar, onDesligar, onSoltar, onExcluir, onFechar }: {
-  n: NoPos; prereq: string | null; estilo: React.CSSProperties;
+function FichaNo({ n, niveis, prereq, estilo, onEditar, onConectar, onDesligar, onSoltar, onExcluir, onFechar }: {
+  n: NoPos; niveis: Nivel[]; prereq: string | null; estilo: React.CSSProperties;
   onEditar: () => void; onConectar: () => void; onDesligar: () => void;
   onSoltar: () => void; onExcluir: () => void; onFechar: () => void;
 }) {
@@ -816,7 +896,7 @@ function FichaNo({ n, prereq, estilo, onEditar, onConectar, onDesligar, onSoltar
       </div>
 
       <div className="mt-1.5 font-mono text-[9.5px] leading-relaxed tracking-[0.09em] text-slate-500">
-        {nomeNivel(bandaDe(n.r) || null)} · {n.trilha.toUpperCase()}
+        {nomeNivel(niveis, bandaDe(n.r, niveis) || null)} · {n.trilha.toUpperCase()}
       </div>
 
       {(n.r.dor || n.r.solucao) && (

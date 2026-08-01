@@ -20,6 +20,7 @@ import {
   type Automacao, type NoPos, type Nivel, type Faixa,
 } from "./arvore-layout";
 import { iconeDe, ICONES, NOMES_ICONES, nomeIconeDe } from "./arvore-icones";
+import takeatSymbol from "@/assets/takeat-symbol-white.png";
 
 /* ============================================================================
  * Árvore de Automações — o catálogo desenhado como árvore de habilidades.
@@ -537,13 +538,17 @@ export default function ArvoreAutomacoes() {
                 );
               })}
 
-              {/* hub */}
+              {/* hub — símbolo da Takeat no miolo */}
               <g>
                 <circle cx={layout.hubX} cy={layout.hubY} r={58} fill="rgba(244,63,94,.06)" />
                 <circle cx={layout.hubX} cy={layout.hubY} r={30} fill="#12141d" stroke="#f43f5e" strokeWidth={2.2} filter="url(#arv-glow-forte)" />
-                <text x={layout.hubX} y={layout.hubY + 7} fontSize={20} textAnchor="middle" fill="#fff">⚡</text>
+                <image
+                  href={takeatSymbol}
+                  x={layout.hubX - 15} y={layout.hubY - 17} width={30} height={34}
+                  preserveAspectRatio="xMidYMid meet"
+                />
                 <text x={layout.hubX} y={layout.hubY + 56} fontSize={9.5} fontWeight={800} letterSpacing={3} fill="rgba(226,232,240,.6)" textAnchor="middle" className="font-mono">
-                  HUB FINANCEIRO
+                  FINANCEIRO TAKEAT
                 </text>
               </g>
 

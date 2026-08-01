@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
@@ -136,6 +136,18 @@ export default function ArvoreAutomacoes() {
   const pan = useRef<{ x: number; y: number; tx: number; ty: number; moveu: boolean } | null>(null);
   const [panning, setPanning] = useState(false);
   const [ajustado, setAjustado] = useState(false);
+  // Tamanho do canvas medido de verdade — a ficha precisa dele para caber
+  // dentro dos limites, e ler boxRef durante o render não reage a redimensionar.
+  const [caixa, setCaixa] = useState({ w: 0, h: 0 });
+  useEffect(() => {
+    const el = boxRef.current;
+    if (!el) return;
+    const medir = () => setCaixa({ w: el.clientWidth, h: el.clientHeight });
+    medir();
+    const ro = new ResizeObserver(medir);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [loading, telaCheia]);
 
   const ajustar = useCallback(() => {
     const el = boxRef.current;
@@ -154,6 +166,9 @@ export default function ArvoreAutomacoes() {
     const el = boxRef.current;
     if (!el) return;
     const onWheel = (e: WheelEvent) => {
+      // Sobre a ficha a roda tem que rolar o cartão, não dar zoom na árvore —
+      // sem isto o preventDefault engolia o scroll e o rodapé ficava inalcançável.
+      if ((e.target as HTMLElement).closest("[data-ficha]")) return;
       e.preventDefault();
       const rect = el.getBoundingClientRect();
       const px = e.clientX - rect.left, py = e.clientY - rect.top;
@@ -735,10 +750,8 @@ export default function ArvoreAutomacoes() {
             n={selNo}
             niveis={niveis}
             prereq={selNo.r.depende_de ? porId.get(selNo.r.depende_de)?.r.automacao ?? null : null}
-            estilo={{
-              left: Math.min(Math.max(selNo.x * k + t.x + 42, 10), (boxRef.current?.clientWidth ?? 900) - 320),
-              top: Math.min(Math.max(selNo.y * k + t.y - 40, 10), (boxRef.current?.clientHeight ?? 620) - 340),
-            }}
+            ancora={{ x: selNo.x * k + t.x, y: selNo.y * k + t.y }}
+            caixa={caixa}
             onEditar={() => { setEditando({ ...selNo.r }); setCriando(false); }}
             onConectar={() => { setConectando(selNo.r.id); toast.message("Agora clique no nó que depende dessa automação."); }}
             onDesligar={() => desligar(selNo.r.id)}
@@ -1023,34 +1036,75 @@ export default function ArvoreAutomacoes() {
 /* ---------------------------------------------------------------------------
  * Ficha do nó — o cartão que abre ao clicar, com as ações em cima do próprio nó.
  * ------------------------------------------------------------------------- */
-function FichaNo({ n, niveis, prereq, estilo, onEditar, onConectar, onDesligar, onSoltar, onExcluir, onFechar }: {
-  n: NoPos; niveis: Nivel[]; prereq: string | null; estilo: React.CSSProperties;
+function FichaNo({ n, niveis, prereq, ancora, caixa, onEditar, onConectar, onDesligar, onSoltar, onExcluir, onFechar }: {
+  n: NoPos; niveis: Nivel[]; prereq: string | null;
+  ancora: { x: number; y: number };   // posição do nó em coordenadas de tela
+  caixa: { w: number; h: number };    // tamanho do canvas
   onEditar: () => void; onConectar: () => void; onDesligar: () => void;
   onSoltar: () => void; onExcluir: () => void; onFechar: () => void;
 }) {
   const meta = TIER_META[n.tier];
   const ferramentas = listaFerramentas(n.r.ferramentas);
   const horas = horasDe(n.r);
+
+  /* A ficha precisa da PRÓPRIA altura para caber: com um Upgrade longo ela passa
+     de 600px, e a conta antiga assumia ~340px fixos — o rodapé com os botões
+     acabava fora do canvas, que é overflow-hidden, sem jeito de alcançar. */
+  const ref = useRef<HTMLDivElement>(null);
+  const [tam, setTam] = useState({ w: 310, h: 0 });
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const medir = () => setTam({ w: el.offsetWidth, h: el.offsetHeight });
+    medir();
+    const ro = new ResizeObserver(medir);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [n.r.id]);
+
+  const M = 10; // respiro das bordas do canvas
+  const maxAltura = Math.max(180, caixa.h - M * 2);
+  const prender = (v: number, min: number, max: number) => Math.max(min, Math.min(max, v));
+
+  // De preferência à direita do nó; se não couber, à esquerda.
+  const cabeDireita = ancora.x + 42 + tam.w + M <= caixa.w;
+  const left = caixa.w
+    ? prender(cabeDireita ? ancora.x + 42 : ancora.x - 42 - tam.w, M, Math.max(M, caixa.w - tam.w - M))
+    : ancora.x + 42;
+  const top = caixa.h
+    ? prender(ancora.y - 40, M, Math.max(M, caixa.h - tam.h - M))
+    : ancora.y - 40;
+
   return (
     <div
-      className="absolute z-30 w-[310px] rounded-xl border border-white/[0.12] p-4"
-      style={{ ...estilo, background: "rgba(10,12,18,.98)", boxShadow: `0 18px 50px rgba(0,0,0,.7), 0 0 0 1px ${n.cor}22` }}
+      ref={ref}
+      data-ficha
+      className="absolute z-30 flex w-[310px] touch-auto flex-col overflow-hidden rounded-xl border border-white/[0.12]"
+      style={{
+        left, top, maxHeight: maxAltura,
+        background: "rgba(10,12,18,.98)",
+        boxShadow: `0 18px 50px rgba(0,0,0,.7), 0 0 0 1px ${n.cor}22`,
+      }}
       onPointerDown={(e) => e.stopPropagation()}
     >
-      <div className="flex items-start justify-between gap-2">
-        <div className="text-[15px] font-bold leading-tight text-white">{n.r.automacao}</div>
-        <span
-          className="shrink-0 rounded-full border px-2 py-0.5 text-[9px] font-bold tracking-wider"
-          style={{ color: meta.cor, borderColor: `${meta.cor}66`, background: `${meta.cor}14` }}
-        >
-          {n.r.status.toUpperCase()}
-        </span>
+      {/* cabeçalho fixo */}
+      <div className="shrink-0 px-4 pb-2 pt-4">
+        <div className="flex items-start justify-between gap-2">
+          <div className="text-[15px] font-bold leading-tight text-white">{n.r.automacao}</div>
+          <span
+            className="shrink-0 rounded-full border px-2 py-0.5 text-[9px] font-bold tracking-wider"
+            style={{ color: meta.cor, borderColor: `${meta.cor}66`, background: `${meta.cor}14` }}
+          >
+            {n.r.status.toUpperCase()}
+          </span>
+        </div>
+        <div className="mt-1.5 font-mono text-[9.5px] leading-relaxed tracking-[0.09em] text-slate-500">
+          {nomeNivel(niveis, bandaDe(n.r, niveis) || null)} · {n.trilha.toUpperCase()}
+        </div>
       </div>
 
-      <div className="mt-1.5 font-mono text-[9.5px] leading-relaxed tracking-[0.09em] text-slate-500">
-        {nomeNivel(niveis, bandaDe(n.r, niveis) || null)} · {n.trilha.toUpperCase()}
-      </div>
-
+      {/* miolo rolável — é o que cresce quando o Upgrade é longo */}
+      <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 pb-3">
       {(n.r.dor || n.r.solucao) && (
         <div className="mt-3 space-y-1.5 text-[11.5px] leading-relaxed">
           {n.r.dor && <div className="text-slate-300"><b className="text-rose-400">Dor</b> · {n.r.dor}</div>}
@@ -1095,8 +1149,10 @@ function FichaNo({ n, niveis, prereq, estilo, onEditar, onConectar, onDesligar, 
           </span>
         )}
       </div>
+      </div>
 
-      <div className="mt-2.5 flex flex-wrap items-center gap-1.5">
+      {/* ações fixas — nunca somem, por mais longo que seja o texto acima */}
+      <div className="flex shrink-0 flex-wrap items-center gap-1.5 border-t border-white/[0.08] bg-black/30 px-4 py-3">
         <button onClick={onEditar} className="inline-flex items-center gap-1 rounded-md bg-primary px-2.5 py-1.5 text-[11px] font-semibold text-primary-foreground transition hover:brightness-110">
           <Pencil className="h-3 w-3" /> Editar
         </button>

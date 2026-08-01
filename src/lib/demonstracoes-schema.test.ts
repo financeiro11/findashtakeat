@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   parseColuna, colunasDe, indexar, valorBruto, valorDoNo, valorNoPeriodo,
-  ultimoMesFechado, variacao, rotulosDeDespesa, flattenLabels,
+  ultimoMesFechado, variacao, rotulosDeDespesa, flattenLabels, chaveRubrica,
   DRE_SCHEMA, DFC_SCHEMA, type LinhaBase, type Node,
 } from "./demonstracoes-schema";
 
@@ -174,5 +174,86 @@ describe("esquemas", () => {
       const labels = flattenLabels(esquema as Node[]);
       expect(new Set(labels).size).toBe(labels.length);
     }
+  });
+});
+
+/* --------- colisão de chave: o bug do "Margem de contribuição = 73" --------- */
+describe("chaveRubrica", () => {
+  it("NÃO confunde a linha de percentual com a de reais", () => {
+    // era isto que fazia a margem aparecer como 73 em vez de R$ 182 mil
+    expect(chaveRubrica("% Margem de contribuição")).not.toBe(chaveRubrica("Margem de contribuição"));
+    expect(chaveRubrica("% Margem EBITDA")).not.toBe(chaveRubrica("EBITDA"));
+  });
+
+  it("preserva os sinais que distinguem rubrica", () => {
+    expect(chaveRubrica("(+) Receita financeira")).not.toBe(chaveRubrica("(-) Receita financeira"));
+    expect(chaveRubrica("(-) Juros")).not.toBe(chaveRubrica("Juros"));
+  });
+
+  it("segue tolerante a acento e caixa — a base mistura as duas grafias", () => {
+    expect(chaveRubrica("Encargos sociais")).toBe(chaveRubrica("Encargos Sociais"));
+    expect(chaveRubrica("Outras Despesas Adm")).toBe(chaveRubrica("Outras despesas Adm"));
+    expect(chaveRubrica("Deduções")).toBe(chaveRubrica("DEDUCOES"));
+  });
+});
+
+describe("indexar com rubricas repetidas", () => {
+  it("soma as duas grafias em vez de descartar uma", () => {
+    const idx = indexar([
+      { Conta: "Encargos sociais", "Jan-24": -100 },
+      { Conta: "Encargos Sociais", "Jan-24": -250 },
+    ]);
+    expect(valorBruto(idx, "Encargos Sociais", "Jan-24")).toBe(-350);
+  });
+
+  it("mantém separadas a linha de valor e a de percentual", () => {
+    const idx = indexar([
+      { Conta: "Margem de contribuição", "Jan-24": 182248 },
+      { Conta: "% Margem de contribuição", "Jan-24": 73 },
+    ]);
+    expect(valorBruto(idx, "Margem de contribuição", "Jan-24")).toBe(182248);
+    expect(valorBruto(idx, "% Margem de contribuição", "Jan-24")).toBe(73);
+  });
+});
+
+describe("linhas percentuais apontam para uma rubrica que existe", () => {
+  const idx = indexar([
+    { Conta: "Receita Líquida", "Jan-24": 1000 },
+    { Conta: "Margem de contribuição", "Jan-24": 700 },
+    { Conta: "EBITDA", "Jan-24": -50 },
+    { Conta: "Lucro Líquido", "Jan-24": -80 },
+  ]);
+  const achar = (label: string): Node => {
+    let r: Node | null = null;
+    const walk = (ns: Node[]) => ns.forEach((n) => { if (n.label === label) r = n; if (n.children) walk(n.children); });
+    walk(DRE_SCHEMA);
+    return r!;
+  };
+
+  it("cada linha de % tem src e o src existe na base", () => {
+    for (const label of ["% Margem de contribuição", "% Margem EBITDA", "% Margem Líquida"]) {
+      const n = achar(label);
+      expect(n.src, `${label} sem src`).toBeTruthy();
+      expect(valorBruto(idx, n.src!, "Jan-24"), `${label} → ${n.src} não existe na base`).not.toBe(0);
+    }
+  });
+
+  it("o denominador também existe", () => {
+    for (const label of ["% Margem de contribuição", "% Margem EBITDA", "% Margem Líquida"]) {
+      expect(valorBruto(idx, achar(label).pctOf!, "Jan-24")).toBe(1000);
+    }
+  });
+});
+
+describe("bloco Não Operacional", () => {
+  it("inclui a rubrica onde o valor realmente mora", () => {
+    // a base guarda o total em "(+) Resultado Não Operacional"; sem esse filho o
+    // bloco somava zero e a tela mostrava "–" com R$ 17 mil escondidos
+    const bloco = DRE_SCHEMA.find((n) => n.label === "(+/-) Resultado Não Operacional")!;
+    const filhos = (bloco.children ?? []).map((c) => c.label);
+    expect(filhos).toContain("(+) Resultado Não Operacional");
+
+    const idx = indexar([{ Conta: "(+) Resultado Não Operacional", "Jan-24": 17043 }]);
+    expect(valorDoNo(idx, bloco, "Jan-24")).toBe(17043);
   });
 });

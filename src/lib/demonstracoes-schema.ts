@@ -1,5 +1,3 @@
-import { normalize } from "@/lib/normalize";
-
 /* ============================================================================
  * Esquema das demonstrações (DRE e DFC) + leitura da base congelada.
  *
@@ -52,7 +50,7 @@ export const DRE_SCHEMA: Node[] = [
     { label: "Outros Custos", kind: "child" },
   ]},
   { label: "Margem de contribuição", kind: "total" },
-  { label: "% Margem de contribuição", kind: "percent", pctOf: "Receita Líquida" },
+  { label: "% Margem de contribuição", kind: "percent", src: "Margem de contribuição", pctOf: "Receita Líquida" },
   { label: "(-) SG&A", kind: "header", children: [
     { label: "Pessoal", kind: "child", children: [
       { label: "Equipe Administrativa", kind: "leaf" },
@@ -85,7 +83,7 @@ export const DRE_SCHEMA: Node[] = [
     ]},
   ]},
   { label: "EBITDA", kind: "total" },
-  { label: "% Margem EBITDA", kind: "percent", pctOf: "Receita Líquida" },
+  { label: "% Margem EBITDA", kind: "percent", src: "EBITDA", pctOf: "Receita Líquida" },
   { label: "(+/-) Resultado Financeiro", kind: "header", children: [
     { label: "(-) Depreciação & Amortização", kind: "child" },
     { label: "(-) Juros", kind: "child" },
@@ -93,6 +91,7 @@ export const DRE_SCHEMA: Node[] = [
     { label: "(+) Receita financeira", kind: "child" },
   ]},
   { label: "(+/-) Resultado Não Operacional", kind: "header", children: [
+    { label: "(+) Resultado Não Operacional", kind: "child" },
     { label: "Despesas Não Operacionais", kind: "child" },
     { label: "(-) Estorno de Compras", kind: "child" },
   ]},
@@ -102,7 +101,7 @@ export const DRE_SCHEMA: Node[] = [
     { label: "IRF", kind: "child" },
   ]},
   { label: "Lucro Líquido", kind: "total" },
-  { label: "% Margem Líquida", kind: "percent", pctOf: "Receita Líquida" },
+  { label: "% Margem Líquida", kind: "percent", src: "Lucro Líquido", pctOf: "Receita Líquida" },
 ];
 
 // A ordem dos blocos de topo é fixa (usada pelos KPIs):
@@ -214,25 +213,50 @@ export const colunasDe = (columns: string[]): Coluna[] =>
 /* ----------------------------- leitura ----------------------------- */
 export type LinhaBase = Record<string, string | number | null>;
 
-/** Índice rótulo → linha, tolerante a acento e caixa (a base tem "Encargos sociais"
- *  em um lugar e "Encargos Sociais" em outro; sem isso viraria zero silencioso). */
-export function indexar(rows: LinhaBase[]): Map<string, LinhaBase> {
-  const m = new Map<string, LinhaBase>();
-  for (const r of rows) {
-    const conta = String(r["Conta"] ?? "").trim();
-    if (conta) m.set(normalize(conta), r);
-  }
-  return m;
-}
-
 const num = (v: unknown): number => {
   if (v == null || v === "") return 0;
   const n = typeof v === "number" ? v : Number(String(v).replace(/\./g, "").replace(",", "."));
   return Number.isFinite(n) ? n : 0;
 };
 
+/**
+ * Chave de rubrica: ignora acento e caixa — a base escreve "Encargos sociais" e
+ * "Encargos Sociais" para a mesma coisa — mas PRESERVA `%`, `+` e `-`, que são
+ * o que distingue rubricas de verdade. O `normalize` genérico derruba esses
+ * sinais e fazia "% Margem de contribuição" colidir com "Margem de
+ * contribuição": a linha de percentual sobrescrevia a de reais e a margem
+ * aparecia como "73" em vez de R$ 182 mil.
+ */
+export const chaveRubrica = (s: string): string =>
+  (s || "")
+    .normalize("NFD").replace(/\p{Diacritic}/gu, "")
+    .toUpperCase()
+    .replace(/[^A-Z0-9%+-]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+/** Índice rótulo → linha. Duas grafias da mesma rubrica são SOMADAS, nunca
+ *  sobrescritas — descartar uma delas seria perder dinheiro em silêncio. */
+export function indexar(rows: LinhaBase[]): Map<string, LinhaBase> {
+  const m = new Map<string, LinhaBase>();
+  for (const r of rows) {
+    const conta = String(r["Conta"] ?? "").trim();
+    if (!conta) continue;
+    const k = chaveRubrica(conta);
+    const atual = m.get(k);
+    if (!atual) { m.set(k, { ...r }); continue; }
+    const somado: LinhaBase = { ...atual };
+    for (const col of Object.keys(r)) {
+      if (col === "Conta") continue;
+      somado[col] = num(atual[col]) + num(r[col]);
+    }
+    m.set(k, somado);
+  }
+  return m;
+}
+
 export const valorBruto = (idx: Map<string, LinhaBase>, label: string, col: string): number =>
-  num(idx.get(normalize(label))?.[col]);
+  num(idx.get(chaveRubrica(label))?.[col]);
 
 /**
  * Valor de um nó numa coluna. Nó com filhos SOMA os filhos (mesma regra das

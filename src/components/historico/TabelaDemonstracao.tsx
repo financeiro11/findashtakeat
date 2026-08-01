@@ -140,8 +140,10 @@ export default function TabelaDemonstracao({
   const valorExibido = (node: Node, cols: Coluna[]): number | null => {
     if (!cols.length) return null;
     if (node.kind === "percent") {
+      // O numerador vem do `src` do esquema: "% Margem EBITDA" não existe na
+      // base — a linha se chama "EBITDA". Deduzir tirando o "%" dava sempre 0%.
       const base = somaRotulo(node.pctOf ?? rotuloReceita, cols);
-      const alvo = somaRotulo(node.label.replace(/^%\s*/, ""), cols);
+      const alvo = somaRotulo(node.src ?? node.label.replace(/^%\s*/, ""), cols);
       return base ? alvo / base : null;
     }
     const v = soma(node, cols);
@@ -229,7 +231,7 @@ export default function TabelaDemonstracao({
                     <td
                       key={c.chave}
                       className={cn("num whitespace-nowrap px-3 py-1.5 text-right tabular-nums", v != null && v < 0 && "text-destructive")}
-                      style={heatmap && !pct ? { background: corHeatmap(v ?? 0, maxAbs) } : undefined}
+                      style={heatmap ? { background: corHeatmap(v ?? 0, maxAbs) } : undefined}
                     >
                       {vazio ? <span className="text-muted-foreground">–</span> : pct ? fmtPct(v as number) : fmtNum(v as number)}
                     </td>

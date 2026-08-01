@@ -10,7 +10,7 @@ import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import {
   Zap, Minus, Plus, Maximize2, Sparkles, Loader2, X, Pencil, Trash2,
-  Link2, Unlink, MousePointer2, ArrowUp, Layers, Maximize, Minimize,
+  Link2, Unlink, MousePointer2, ArrowUp, Layers, Maximize, Minimize, ChevronDown,
 } from "lucide-react";
 import {
   montarLayout, correnteDe, destravadasPor, resumoTrilhas, alvosValidos, bandaNoY,
@@ -41,6 +41,12 @@ import takeatSymbol from "@/assets/takeat-symbol-white.png";
 
 const CAMPOS = "id,automacao,categoria,nivel,status,horas_mes,ferramentas,responsavel,impacto,dor,solucao,observacao,upgrade,depende_de,pos_x,pos_y,icone,ordem";
 
+/* A escolha de recolher as trilhas fica salva por navegador — é preferência de
+   quem está olhando, não dado do catálogo. */
+const LS_RECOLHIDO = "arvore.trilhas.recolhidas";
+const lerRecolhido = () => { try { return localStorage.getItem(LS_RECOLHIDO) === "1"; } catch { return false; } };
+const salvarRecolhido = (v: boolean) => { try { localStorage.setItem(LS_RECOLHIDO, v ? "1" : "0"); } catch { /* modo privado */ } };
+
 const vazia = (nivel: number | null): Automacao => ({
   id: "", automacao: "", categoria: TRILHAS[0].categorias[0], nivel, status: "Ideias",
   horas_mes: null, ferramentas: "", responsavel: "", impacto: "Médio",
@@ -63,6 +69,7 @@ export default function ArvoreAutomacoes() {
   const [posLocal, setPosLocal] = useState<Record<string, { x: number; y: number }>>({});
   const [bandaAlvo, setBandaAlvo] = useState<Faixa | null>(null); // banda sob o nó durante o arraste
   const [telaCheia, setTelaCheia] = useState(false);
+  const [trilhasRecolhidas, setTrilhasRecolhidas] = useState(lerRecolhido);
 
   const carregar = useCallback(async () => {
     const [{ data, error }, { data: nv }] = await Promise.all([
@@ -191,7 +198,7 @@ export default function ArvoreAutomacoes() {
     };
   }, [telaCheia, editando, conectando]);
 
-  // Reenquadra ao entrar/sair da tela cheia — o canvas mudou de tamanho.
+  // Reenquadra quando o canvas muda de tamanho: tela cheia e recolher trilhas.
   const ajustarRef = useRef(ajustar);
   ajustarRef.current = ajustar;
   const primeiraVez = useRef(true);
@@ -200,7 +207,7 @@ export default function ArvoreAutomacoes() {
     // dois quadros: um para o layout aplicar, outro para medir já com o novo tamanho
     const id = requestAnimationFrame(() => requestAnimationFrame(() => ajustarRef.current()));
     return () => cancelAnimationFrame(id);
-  }, [telaCheia]);
+  }, [telaCheia, trilhasRecolhidas]);
 
   const onPanDown = (e: React.PointerEvent) => {
     if ((e.target as HTMLElement).closest("[data-no]")) return;
@@ -458,9 +465,35 @@ export default function ArvoreAutomacoes() {
       </div>
 
       {/* ---------------- cartões de trilha ---------------- */}
-      <div className="border-b border-white/[0.07] px-4 py-3" style={{ background: "#080a10" }}>
-        <div className="mb-2 text-[9px] font-bold tracking-[0.18em] text-slate-600">TRILHAS · CLIQUE PARA ISOLAR</div>
-        <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 xl:grid-cols-4">
+      <div className="border-b border-white/[0.07] px-4 py-2.5" style={{ background: "#080a10" }}>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => setTrilhasRecolhidas((v) => { salvarRecolhido(!v); return !v; })}
+            className="inline-flex items-center gap-1.5 text-[9px] font-bold tracking-[0.18em] text-slate-500 transition hover:text-slate-300"
+            title={trilhasRecolhidas ? "Mostrar as trilhas" : "Recolher as trilhas e dar mais espaço para a árvore"}
+          >
+            <ChevronDown className={cn("h-3.5 w-3.5 transition-transform", trilhasRecolhidas && "-rotate-90")} />
+            TRILHAS {trilhasRecolhidas ? "" : "· CLIQUE PARA ISOLAR"}
+          </button>
+          {trilhasRecolhidas && (
+            <span className="num text-[10px] text-slate-600">
+              {trilhas.length} trilha{trilhas.length === 1 ? "" : "s"} · {kpi.on}/{kpi.total}
+            </span>
+          )}
+          {/* recolhido com trilha isolada: mostra qual, senão o filtro fica invisível */}
+          {trilhasRecolhidas && trilhaIso && (
+            <button
+              onClick={() => setTrilhaIso(null)}
+              className="inline-flex items-center gap-1.5 rounded-full border border-white/[0.14] px-2 py-0.5 text-[10px] text-slate-300 transition hover:bg-white/[0.07]"
+              title="Limpar o isolamento"
+            >
+              <span className="h-1.5 w-1.5 rounded-full" style={{ background: corTrilha(trilhaIso) }} />
+              {trilhaIso}
+              <X className="h-2.5 w-2.5" />
+            </button>
+          )}
+        </div>
+        <div className={cn("grid grid-cols-1 gap-2 sm:grid-cols-2 xl:grid-cols-4", trilhasRecolhidas ? "hidden" : "mt-2")}>
           {trilhas.map((tr) => {
             const ativo = trilhaIso === tr.nome;
             const pct = tr.total ? (100 * tr.on) / tr.total : 0;

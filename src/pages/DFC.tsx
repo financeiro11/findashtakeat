@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import * as XLSX from "xlsx";
 import {
-  Upload, ChevronDown, ChevronRight, Search, Sparkles, Loader2, RefreshCw, Lock,
+  Upload, ChevronDown, ChevronRight, Search, Sparkles, Loader2, RefreshCw,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -11,6 +11,7 @@ import { cn } from "@/lib/utils";
 import { OmieDeParaPanel } from "@/components/OmieDeParaPanel";
 import { runOmieSync } from "@/lib/omieSync";
 import { SyncOmieButtons } from "@/components/SyncOmieButtons";
+import { MesesTravadosChip, CadeadoColuna, alternarTrava } from "@/components/demonstracoes/MesesTravados";
 
 /* ============================================================
  *  Helpers
@@ -126,6 +127,7 @@ export default function DFC() {
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
   const [yearFilter, setYearFilter] = useState<string>("all");
   const [travados, setTravados] = useState<Set<string>>(new Set());
+  const [travaOcupada, setTravaOcupada] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
 
   const availableYears = useMemo(() => {
@@ -194,6 +196,27 @@ export default function DFC() {
       toast.error("Falha ao sincronizar com o Omie: " + e.message);
     } finally {
       setSyncing(false);
+    }
+  };
+
+  /* Destravar sozinho não muda nada na tela: a coluna continua exibindo o valor
+     congelado até alguém recalcular. Como o cache do Omie já está no Supabase, o
+     recálculo é instantâneo e não consome a API — então destravar já emenda nele
+     e o mês aparece preenchido no mesmo clique. Travar é só congelar o que está
+     na tela, não precisa recalcular. */
+  const alterarTrava = async (col: string, travar: boolean) => {
+    setTravaOcupada(col);
+    try {
+      if (!(await alternarTrava(col, travar))) return;
+      if (travar) {
+        await load();
+        toast.success(`${ptLabelFromKey(col)} travado — o Omie não sobrescreve mais esse mês.`);
+      } else {
+        toast.message(`${ptLabelFromKey(col)} destravado. Preenchendo com o que já veio do Omie…`);
+        await sincronizarOmie(false);
+      }
+    } finally {
+      setTravaOcupada(null);
     }
   };
 
@@ -579,10 +602,14 @@ export default function DFC() {
           </h1>
           <p className="mt-1 text-[12.5px] text-muted-foreground">
             Demonstrativo do fluxo de caixa · {lastLabel} · {prevLabel} · {monthsCount} meses · método direto
-            {travados.size > 0 && (
-              <span className="inline-flex items-center gap-1 ml-1.5 text-emerald-700">
-                <Lock className="h-3 w-3" /> {travados.size} travado{travados.size === 1 ? "" : "s"}
-              </span>
+            {columns.length > 0 && (
+              <MesesTravadosChip
+                columns={columns}
+                travados={travados}
+                label={ptLabelFromKey}
+                ocupado={!!travaOcupada || syncing}
+                onAlterar={alterarTrava}
+              />
             )}
           </p>
         </div>
@@ -727,13 +754,15 @@ export default function DFC() {
                     RUBRICA
                   </th>
                   {displayColumns.map(c => (
-                    <th key={c} className="px-1.5 py-2 text-right text-[10px] font-semibold tracking-[0.06em] text-muted-foreground whitespace-nowrap num min-w-[64px]">
+                    <th key={c} className="group/col px-1.5 py-2 text-right text-[10px] font-semibold tracking-[0.06em] text-muted-foreground whitespace-nowrap num min-w-[64px]">
                       <span className="inline-flex items-center justify-end gap-1">
-                        {travados.has(c) && (
-                          <span title="Mês travado — dado do tracker, não sincroniza com o Omie" className="inline-flex">
-                            <Lock className="h-2.5 w-2.5 text-emerald-600" aria-label="Mês travado" />
-                          </span>
-                        )}
+                        <CadeadoColuna
+                          col={c}
+                          travado={travados.has(c)}
+                          label={ptLabelFromKey(c).replace("/", " ")}
+                          ocupado={!!travaOcupada || syncing}
+                          onAlterar={alterarTrava}
+                        />
                         {ptLabelFromKey(c).replace("/", " ")}
                       </span>
                     </th>

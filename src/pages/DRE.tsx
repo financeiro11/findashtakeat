@@ -12,6 +12,7 @@ import { OmieDeParaPanel } from "@/components/OmieDeParaPanel";
 import { runOmieSync } from "@/lib/omieSync";
 import { SyncOmieButtons } from "@/components/SyncOmieButtons";
 import { MesesTravadosChip, CadeadoColuna, alternarTrava } from "@/components/demonstracoes/MesesTravados";
+import { LancamentosSheet, type AlvoLancamentos } from "@/components/demonstracoes/LancamentosSheet";
 
 /* ============================================================
  *  Helpers
@@ -129,6 +130,7 @@ export default function DRE() {
   const [yearFilter, setYearFilter] = useState<string>("all");
   const [travados, setTravados] = useState<Set<string>>(new Set());
   const [travaOcupada, setTravaOcupada] = useState<string | null>(null);
+  const [auditando, setAuditando] = useState<AlvoLancamentos | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
 
   // Anos disponíveis a partir das colunas
@@ -791,13 +793,25 @@ export default function DRE() {
                           isPercent || tab === "mom" || tab === "pct"
                             ? fmtPct(v)
                             : (isNeg ? `(${fmtCompact(Math.abs(v ?? 0))})` : fmtCompact(v));
+                        /* Só folha abre auditoria: linha com filhos é soma, e total
+                           e percentual são calculados — nenhuma delas vem de
+                           lançamento, então não haveria o que listar. Fora da aba
+                           "Valores" o número é derivado e não casaria com a soma. */
+                        const auditavel = tab === "valores" && !isTotal && !isPercent && !hasChildren && v != null;
                         return (
                           <td
                             key={c}
+                            onClick={auditavel ? () => setAuditando({
+                              tipo: "dre", rubrica: node.label, mes: c,
+                              mesLabel: ptLabelFromKey(c).replace("/", " "),
+                              celula: v, travado: travados.has(c),
+                            }) : undefined}
+                            title={auditavel ? "Ver os lançamentos que compõem este valor" : undefined}
                             className={cn(
                               "px-1.5 py-1.5 text-right text-[12px] num whitespace-nowrap min-w-[64px]",
                               isNeg && !isPercent ? "text-primary" : isTotal ? "text-emerald-800" : "text-foreground/90",
                               v == null && "text-muted-foreground/40",
+                              auditavel && "cursor-pointer hover:bg-primary/10 hover:underline hover:decoration-dotted hover:underline-offset-2",
                             )}
                           >
                             {display}
@@ -819,6 +833,8 @@ export default function DRE() {
       </div>
       </>
       )}
+
+      <LancamentosSheet alvo={auditando} onClose={() => setAuditando(null)} />
     </div>
   );
 }

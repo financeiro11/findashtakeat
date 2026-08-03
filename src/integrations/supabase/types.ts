@@ -3810,6 +3810,22 @@ export type Database = {
         }
         Returns: Json
       }
+      demonstracoes_lancamentos: {
+        Args: { p_mes: string; p_rubrica: string; p_tipo: string }
+        Returns: {
+          categoria_codigo: string
+          categoria_descricao: string
+          cnpj_cpf: string
+          contraparte: string
+          data: string
+          documento: string
+          grupo: string
+          status: string
+          titulo: string
+          valor: number
+          vencimento: string
+        }[]
+      }
       fmt_brl: { Args: { v: number }; Returns: string }
       fn_classifica_texto: {
         Args: { p_texto: string }

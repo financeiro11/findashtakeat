@@ -1,5 +1,6 @@
-import { useEffect, useState } from "react";
-import { Loader2, TriangleAlert, Check, FileText } from "lucide-react";
+import { useCallback, useEffect, useState } from "react";
+import { Loader2, TriangleAlert, Check, FileText, Users } from "lucide-react";
+import { toast } from "sonner";
 import { supabase } from "@/integrations/supabase/client";
 import { cn } from "@/lib/utils";
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
@@ -55,24 +56,40 @@ export function LancamentosSheet({ alvo, onClose }: { alvo: AlvoLancamentos | nu
   const [carregando, setCarregando] = useState(false);
   const [erro, setErro] = useState<string | null>(null);
 
-  useEffect(() => {
+  const carregar = useCallback(async () => {
     if (!alvo) return;
-    let cancelado = false;
     setCarregando(true);
     setErro(null);
-    supabase
-      .rpc("demonstracoes_lancamentos", { p_tipo: alvo.tipo, p_rubrica: alvo.rubrica, p_mes: alvo.mes })
-      .then(({ data, error }) => {
-        if (cancelado) return;
-        if (error) { setErro(error.message); setLinhas([]); }
-        else setLinhas((data as Lancamento[]) ?? []);
-        setCarregando(false);
-      });
-    return () => { cancelado = true; };
+    const { data, error } = await supabase
+      .rpc("demonstracoes_lancamentos", { p_tipo: alvo.tipo, p_rubrica: alvo.rubrica, p_mes: alvo.mes });
+    if (error) { setErro(error.message); setLinhas([]); }
+    else setLinhas((data as Lancamento[]) ?? []);
+    setCarregando(false);
     // Depende dos três campos da consulta, não do objeto: `celula` e `travado`
     // mudam de identidade a cada clique e disparariam uma busca idêntica.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [alvo?.tipo, alvo?.rubrica, alvo?.mes]);
+
+  useEffect(() => { carregar(); }, [carregar]);
+
+  /* O movimento do Omie não traz o nome da contraparte, só o código e o CNPJ —
+     quem resolve é o cadastro em `omie_cache`. Enquanto esse cache estiver vazio
+     a coluna mostra documento, então o botão de buscar aparece bem onde o
+     problema é visto, e some sozinho depois. */
+  const [buscandoNomes, setBuscandoNomes] = useState(false);
+  const semNome = linhas.filter((l) => !l.contraparte).length;
+
+  const buscarNomes = async () => {
+    setBuscandoNomes(true);
+    const { data, error } = await supabase.functions.invoke("omie-clientes-sync", { body: {} });
+    setBuscandoNomes(false);
+    if (error || data?.status === "erro") {
+      toast.error("Não consegui buscar os nomes no Omie: " + (data?.erro ?? error?.message ?? "erro desconhecido"));
+      return;
+    }
+    toast.success(`${data?.clientes ?? 0} cadastros carregados do Omie.`);
+    await carregar();
+  };
 
   const soma = linhas.reduce((s, l) => s + (Number(l.valor) || 0), 0);
   const bate = alvo?.celula != null && Math.abs(soma - alvo.celula) < 0.5;
@@ -131,6 +148,25 @@ export function LancamentosSheet({ alvo, onClose }: { alvo: AlvoLancamentos | nu
               <div className="shrink-0 border-b border-emerald-200 bg-emerald-50 px-5 py-2 text-[11.5px] text-emerald-800">
                 <Check className="mr-1 inline h-3.5 w-3.5" />
                 A soma dos lançamentos bate exatamente com o valor na tela.
+              </div>
+            )}
+
+            {!carregando && !erro && semNome > 0 && (
+              <div className="flex shrink-0 flex-wrap items-center justify-between gap-2 border-b border-border bg-muted/50 px-5 py-2">
+                <span className="text-[11.5px] text-muted-foreground">
+                  {semNome === linhas.length
+                    ? "Nenhuma contraparte tem nome — o Omie manda só o código no lançamento."
+                    : `${semNome} de ${linhas.length} contrapartes sem nome.`}
+                </span>
+                <button
+                  onClick={buscarNomes}
+                  disabled={buscandoNomes}
+                  className="inline-flex items-center gap-1.5 rounded-md border border-border bg-card px-2.5 py-1 text-[11.5px] font-medium transition hover:bg-secondary disabled:opacity-50"
+                >
+                  {buscandoNomes
+                    ? <><Loader2 className="h-3 w-3 animate-spin" /> Buscando…</>
+                    : <><Users className="h-3 w-3" /> Buscar nomes no Omie</>}
+                </button>
               </div>
             )}
 

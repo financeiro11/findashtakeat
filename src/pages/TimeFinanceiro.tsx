@@ -1321,7 +1321,7 @@ export default function TimeFinanceiro() {
             </div>
             <span className="text-[11.5px] text-muted-foreground">
               {iaVista === "arvore"
-                ? "Trilha × nível de maturidade — o mesmo N1→N5 da pirâmide, visto como roadmap"
+                ? "Trilha × nível de maturidade — e, embaixo, a fila do que fazer primeiro"
                 : "Os 5 níveis de maturidade em IA no financeiro — clique num nível para ver o detalhe"}
             </span>
           </div>
@@ -1329,6 +1329,7 @@ export default function TimeFinanceiro() {
           {iaVista === "arvore" ? (
             <ArvoreAutomacoes />
           ) : (
+            <>
             <div className="grid grid-cols-1 gap-3 lg:grid-cols-[minmax(0,440px)_1fr]">
               <div className="card-surface bg-secondary/30 p-5">
                 <div className="text-center">
@@ -1363,12 +1364,16 @@ export default function TimeFinanceiro() {
                 </div>
               </div>
             </div>
-          )}
 
-          {/* Roadmap & Catálogo de Automações (antes era o menu "Catálogo") */}
-          <div className="card-surface p-4">
-            <AutomacoesCatalogo embedded />
-          </div>
+            {/* O catálogo em tabela é leitura de inventário — combina com a
+                pirâmide, que também é uma foto do estado atual. Debaixo da
+                árvore quem responde "e agora, o que eu faço?" é a linha de
+                produção, então o catálogo saiu de lá. */}
+            <div className="card-surface p-4">
+              <AutomacoesCatalogo embedded />
+            </div>
+            </>
+          )}
         </div>
       )}
 

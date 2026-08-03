@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+﻿import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
@@ -9,17 +9,19 @@ import { Textarea } from "@/components/ui/textarea";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import {
-  Zap, Minus, Plus, Maximize2, Sparkles, Loader2, X, Pencil, Trash2,
-  Link2, Unlink, MousePointer2, ArrowUp, Layers, Maximize, Minimize, ChevronDown,
+  Zap, Minus, Plus, Maximize2, Sparkles, Loader2, X,
+  Link2, MousePointer2, ArrowUp, Layers, Maximize, Minimize, ChevronDown,
 } from "lucide-react";
 import {
   montarLayout, correnteDe, destravadasPor, resumoTrilhas, alvosValidos, bandaNoY,
   fiosDaTrilha, caminhoSuave,
-  corTrilha, trilhaDe, tierDe, horasDe, bandaDe, nomeNivel, iniciaisDe, listaFerramentas,
-  TIER_META, TRILHAS, NIVEIS_PADRAO, STATUS_OPTS, temUpgrade,
+  corTrilha, trilhaDe, tierDe, horasDe, iniciaisDe,
+  TIER_META, TRILHAS, NIVEIS_PADRAO, STATUS_OPTS, temUpgrade, IMPACTO_OPTS, ESFORCO_OPTS,
   type Automacao, type NoPos, type Nivel, type Faixa,
 } from "./arvore-layout";
 import { iconeDe, ICONES, NOMES_ICONES, nomeIconeDe } from "./arvore-icones";
+import FichaNo from "./FichaNo";
+import EsteiraAutomacoes from "./EsteiraAutomacoes";
 import takeatSymbol from "@/assets/takeat-symbol-white.png";
 
 /* ============================================================================
@@ -39,7 +41,7 @@ import takeatSymbol from "@/assets/takeat-symbol-white.png";
  * sem sair da árvore.
  * ========================================================================== */
 
-const CAMPOS = "id,automacao,categoria,nivel,status,horas_mes,ferramentas,responsavel,impacto,dor,solucao,observacao,upgrade,depende_de,pos_x,pos_y,icone,ordem";
+const CAMPOS = "id,automacao,categoria,nivel,status,horas_mes,ferramentas,responsavel,impacto,esforco,dor,solucao,observacao,upgrade,depende_de,pos_x,pos_y,icone,ordem,esteira_ordem,esteira_upgrade";
 
 /* A escolha de recolher as trilhas fica salva por navegador — é preferência de
    quem está olhando, não dado do catálogo. */
@@ -49,9 +51,9 @@ const salvarRecolhido = (v: boolean) => { try { localStorage.setItem(LS_RECOLHID
 
 const vazia = (nivel: number | null): Automacao => ({
   id: "", automacao: "", categoria: TRILHAS[0].categorias[0], nivel, status: "Ideias",
-  horas_mes: null, ferramentas: "", responsavel: "", impacto: "Médio",
+  horas_mes: null, ferramentas: "", responsavel: "", impacto: "Médio", esforco: "Médio",
   dor: "", solucao: "", observacao: "", upgrade: "", depende_de: null, pos_x: null, pos_y: null,
-  icone: null, ordem: 0,
+  icone: null, ordem: 0, esteira_ordem: null, esteira_upgrade: false,
 });
 
 export default function ArvoreAutomacoes() {
@@ -356,6 +358,7 @@ export default function ArvoreAutomacoes() {
       automacao: editando.automacao.trim(), categoria: editando.categoria || null, nivel: editando.nivel,
       status: editando.status, horas_mes: editando.horas_mes, ferramentas: editando.ferramentas || null,
       responsavel: editando.responsavel || null, impacto: editando.impacto || "Médio",
+      esforco: editando.esforco || "Médio",
       dor: editando.dor || null, solucao: editando.solucao || null, observacao: editando.observacao || null,
       upgrade: editando.upgrade || null,
       depende_de: editando.depende_de || null, icone: editando.icone || null,
@@ -373,6 +376,21 @@ export default function ArvoreAutomacoes() {
     setSalvando(false);
     setEditando(null); setCriando(false);
     await carregar();
+  };
+
+  /* Põe/tira da linha de produção o upgrade de uma automação que já roda. É
+     opt-in de propósito: 9 das que rodam têm upgrade escrito, e jogar todas na
+     fila de uma vez afogaria o que ainda falta construir do zero. Entrar ou
+     sair zera o pino — a posição antiga não quer dizer nada na fila nova. */
+  const alternarEsteira = async (r: Automacao) => {
+    const entrando = !r.esteira_upgrade;
+    const { error } = await supabase
+      .from("automacoes_catalogo")
+      .update({ esteira_upgrade: entrando, esteira_ordem: null } as never)
+      .eq("id", r.id);
+    if (error) { toast.error(error.message); return; }
+    await carregar();
+    toast.success(entrando ? "Upgrade entrou na linha de produção." : "Upgrade saiu da linha de produção.");
   };
 
   const excluir = async (id: string) => {
@@ -414,7 +432,11 @@ export default function ArvoreAutomacoes() {
     );
   }
 
+  /* Dois blocos irmãos: a árvore (o mapa) e a esteira (a fila que sai dela). O
+     conteúdo da árvore fica na indentação original de propósito — envolver 600
+     linhas só para deslocá-las esconderia a mudança de verdade no diff. */
   return (
+    <div className="space-y-3">
     <div
       className={cn(
         "overflow-hidden border border-border",
@@ -758,6 +780,7 @@ export default function ArvoreAutomacoes() {
             onSoltar={() => soltarPosicao(selNo.r.id)}
             onExcluir={() => excluir(selNo.r.id)}
             onFechar={() => setSel(null)}
+            onEsteira={tierDe(selNo.r.status) === "on" ? () => alternarEsteira(selNo.r) : undefined}
           />
         )}
 
@@ -961,8 +984,18 @@ export default function ArvoreAutomacoes() {
                 <Label>Impacto</Label>
                 <Select value={editando.impacto || "Médio"} onValueChange={(v) => setEditando({ ...editando, impacto: v })}>
                   <SelectTrigger><SelectValue /></SelectTrigger>
-                  <SelectContent>{["Baixo", "Médio", "Alto"].map((s) => <SelectItem key={s} value={s}>{s}</SelectItem>)}</SelectContent>
+                  <SelectContent>{IMPACTO_OPTS.map((s) => <SelectItem key={s} value={s}>{s}</SelectItem>)}</SelectContent>
                 </Select>
+              </div>
+              <div>
+                <Label>Esforço para construir</Label>
+                <Select value={editando.esforco || "Médio"} onValueChange={(v) => setEditando({ ...editando, esforco: v })}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>{ESFORCO_OPTS.map((s) => <SelectItem key={s} value={s}>{s}</SelectItem>)}</SelectContent>
+                </Select>
+                <p className="mt-1 text-[10.5px] text-muted-foreground">
+                  Com o impacto, define a posição na linha de produção.
+                </p>
               </div>
               <div className="col-span-2">
                 <Label>Pré-requisito (depende de)</Label>
@@ -1030,147 +1063,22 @@ export default function ArvoreAutomacoes() {
         </DialogContent>
       </Dialog>
     </div>
-  );
-}
 
-/* ---------------------------------------------------------------------------
- * Ficha do nó — o cartão que abre ao clicar, com as ações em cima do próprio nó.
- * ------------------------------------------------------------------------- */
-function FichaNo({ n, niveis, prereq, ancora, caixa, onEditar, onConectar, onDesligar, onSoltar, onExcluir, onFechar }: {
-  n: NoPos; niveis: Nivel[]; prereq: string | null;
-  ancora: { x: number; y: number };   // posição do nó em coordenadas de tela
-  caixa: { w: number; h: number };    // tamanho do canvas
-  onEditar: () => void; onConectar: () => void; onDesligar: () => void;
-  onSoltar: () => void; onExcluir: () => void; onFechar: () => void;
-}) {
-  const meta = TIER_META[n.tier];
-  const ferramentas = listaFerramentas(n.r.ferramentas);
-  const horas = horasDe(n.r);
-
-  /* A ficha precisa da PRÓPRIA altura para caber: com um Upgrade longo ela passa
-     de 600px, e a conta antiga assumia ~340px fixos — o rodapé com os botões
-     acabava fora do canvas, que é overflow-hidden, sem jeito de alcançar. */
-  const ref = useRef<HTMLDivElement>(null);
-  const [tam, setTam] = useState({ w: 310, h: 0 });
-  useLayoutEffect(() => {
-    const el = ref.current;
-    if (!el) return;
-    const medir = () => setTam({ w: el.offsetWidth, h: el.offsetHeight });
-    medir();
-    const ro = new ResizeObserver(medir);
-    ro.observe(el);
-    return () => ro.disconnect();
-  }, [n.r.id]);
-
-  const M = 10; // respiro das bordas do canvas
-  const maxAltura = Math.max(180, caixa.h - M * 2);
-  const prender = (v: number, min: number, max: number) => Math.max(min, Math.min(max, v));
-
-  // De preferência à direita do nó; se não couber, à esquerda.
-  const cabeDireita = ancora.x + 42 + tam.w + M <= caixa.w;
-  const left = caixa.w
-    ? prender(cabeDireita ? ancora.x + 42 : ancora.x - 42 - tam.w, M, Math.max(M, caixa.w - tam.w - M))
-    : ancora.x + 42;
-  const top = caixa.h
-    ? prender(ancora.y - 40, M, Math.max(M, caixa.h - tam.h - M))
-    : ancora.y - 40;
-
-  return (
-    <div
-      ref={ref}
-      data-ficha
-      className="absolute z-30 flex w-[310px] touch-auto flex-col overflow-hidden rounded-xl border border-white/[0.12]"
-      style={{
-        left, top, maxHeight: maxAltura,
-        background: "rgba(10,12,18,.98)",
-        boxShadow: `0 18px 50px rgba(0,0,0,.7), 0 0 0 1px ${n.cor}22`,
-      }}
-      onPointerDown={(e) => e.stopPropagation()}
-    >
-      {/* cabeçalho fixo */}
-      <div className="shrink-0 px-4 pb-2 pt-4">
-        <div className="flex items-start justify-between gap-2">
-          <div className="text-[15px] font-bold leading-tight text-white">{n.r.automacao}</div>
-          <span
-            className="shrink-0 rounded-full border px-2 py-0.5 text-[9px] font-bold tracking-wider"
-            style={{ color: meta.cor, borderColor: `${meta.cor}66`, background: `${meta.cor}14` }}
-          >
-            {n.r.status.toUpperCase()}
-          </span>
-        </div>
-        <div className="mt-1.5 font-mono text-[9.5px] leading-relaxed tracking-[0.09em] text-slate-500">
-          {nomeNivel(niveis, bandaDe(n.r, niveis) || null)} · {n.trilha.toUpperCase()}
-        </div>
-      </div>
-
-      {/* miolo rolável — é o que cresce quando o Upgrade é longo */}
-      <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 pb-3">
-      {(n.r.dor || n.r.solucao) && (
-        <div className="mt-3 space-y-1.5 text-[11.5px] leading-relaxed">
-          {n.r.dor && <div className="text-slate-300"><b className="text-rose-400">Dor</b> · {n.r.dor}</div>}
-          {n.r.solucao && <div className="text-slate-300"><b className="text-emerald-400">Solução</b> · {n.r.solucao}</div>}
-        </div>
+      {/* A fila sai da própria árvore: automação nova criada acima já aparece
+          aqui, na posição que impacto e esforço mandarem. Em tela cheia some,
+          porque lá a árvore ocupa a viewport inteira. */}
+      {!telaCheia && (
+        <EsteiraAutomacoes
+          rows={rows}
+          niveis={niveis}
+          porId={porId}
+          onEditar={(r) => { setEditando({ ...r }); setCriando(false); }}
+          onExcluir={excluir}
+          onDesligar={desligar}
+          onRecarregar={carregar}
+        />
       )}
-
-      {/* Upgrade: só aparece quando há melhoria sugerida — sem sugestão, a ficha
-          fica só com dor e solução. */}
-      {temUpgrade(n.r) && (
-        <div className="mt-2.5 rounded-md border border-amber-500/30 bg-amber-500/[0.07] px-2.5 py-2 text-[11.5px] leading-relaxed">
-          <div className="flex items-start gap-1.5 text-slate-300">
-            <ArrowUp className="mt-0.5 h-3.5 w-3.5 shrink-0 text-emerald-400" strokeWidth={3} />
-            <span><b className="text-amber-400">Upgrade</b> · {n.r.upgrade}</span>
-          </div>
-        </div>
-      )}
-
-      {ferramentas.length > 0 && (
-        <div className="mt-2.5 flex flex-wrap gap-1.5">
-          {ferramentas.map((f, i) => (
-            <span key={i} className="rounded border border-white/[0.09] bg-white/[0.05] px-1.5 py-0.5 font-mono text-[10px] text-slate-400">{f}</span>
-          ))}
-        </div>
-      )}
-
-      {prereq && (
-        <div className="mt-2.5 flex items-center gap-1.5 rounded-md border border-white/[0.08] bg-white/[0.03] px-2 py-1.5 text-[10.5px] text-slate-400">
-          <Link2 className="h-3 w-3 shrink-0" style={{ color: n.cor }} />
-          depende de <b className="text-slate-200">{prereq}</b>
-          <button onClick={onDesligar} title="Remover pré-requisito" className="ml-auto text-slate-500 hover:text-rose-400">
-            <Unlink className="h-3 w-3" />
-          </button>
-        </div>
-      )}
-
-      <div className="mt-3 flex items-center justify-between border-t border-white/[0.08] pt-2.5 text-[10.5px]">
-        <span className="text-slate-500">{n.r.responsavel ? `Construída por ${n.r.responsavel}` : "Sem responsável"}</span>
-        {horas > 0 && (
-          <span className="num inline-flex items-center gap-0.5 font-semibold text-emerald-400">
-            <ArrowUp className="h-3 w-3" /> {horas} h/mês
-          </span>
-        )}
-      </div>
-      </div>
-
-      {/* ações fixas — nunca somem, por mais longo que seja o texto acima */}
-      <div className="flex shrink-0 flex-wrap items-center gap-1.5 border-t border-white/[0.08] bg-black/30 px-4 py-3">
-        <button onClick={onEditar} className="inline-flex items-center gap-1 rounded-md bg-primary px-2.5 py-1.5 text-[11px] font-semibold text-primary-foreground transition hover:brightness-110">
-          <Pencil className="h-3 w-3" /> Editar
-        </button>
-        <button onClick={onConectar} className="inline-flex items-center gap-1 rounded-md border border-white/[0.12] px-2.5 py-1.5 text-[11px] font-medium text-slate-300 transition hover:bg-white/[0.07]">
-          <Link2 className="h-3 w-3" /> Conectar
-        </button>
-        {n.fixo && (
-          <button onClick={onSoltar} title="Voltar para a posição automática" className="inline-flex items-center gap-1 rounded-md border border-white/[0.12] px-2 py-1.5 text-[11px] text-slate-400 transition hover:bg-white/[0.07]">
-            <Maximize2 className="h-3 w-3" />
-          </button>
-        )}
-        <button onClick={onExcluir} title="Excluir" className="ml-auto inline-flex items-center rounded-md border border-white/[0.12] px-2 py-1.5 text-slate-500 transition hover:border-rose-500/50 hover:text-rose-400">
-          <Trash2 className="h-3 w-3" />
-        </button>
-        <button onClick={onFechar} title="Fechar" className="inline-flex items-center rounded-md border border-white/[0.12] px-2 py-1.5 text-slate-500 transition hover:bg-white/[0.07]">
-          <X className="h-3 w-3" />
-        </button>
-      </div>
     </div>
   );
 }
+

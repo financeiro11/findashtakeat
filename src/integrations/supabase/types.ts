@@ -541,6 +541,9 @@ export type Database = {
           created_at: string
           depende_de: string | null
           dor: string | null
+          esforco: string | null
+          esteira_ordem: number | null
+          esteira_upgrade: boolean
           execucoes: number
           ferramentas: string | null
           horas_mes: number | null
@@ -565,6 +568,9 @@ export type Database = {
           created_at?: string
           depende_de?: string | null
           dor?: string | null
+          esforco?: string | null
+          esteira_ordem?: number | null
+          esteira_upgrade?: boolean
           execucoes?: number
           ferramentas?: string | null
           horas_mes?: number | null
@@ -589,6 +595,9 @@ export type Database = {
           created_at?: string
           depende_de?: string | null
           dor?: string | null
+          esforco?: string | null
+          esteira_ordem?: number | null
+          esteira_upgrade?: boolean
           execucoes?: number
           ferramentas?: string | null
           horas_mes?: number | null

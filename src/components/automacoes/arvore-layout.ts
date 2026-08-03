@@ -16,11 +16,17 @@ export type Automacao = {
   ferramentas: string | null;
   responsavel: string | null;
   impacto: string | null;
+  /** custo de construir — a outra metade da prioridade na esteira */
+  esforco?: string | null;
   dor: string | null;
   solucao: string | null;
   observacao: string | null;
   /** melhoria possível numa automação que já roda — acende a seta de oportunidade */
   upgrade?: string | null;
+  /** posição fixada na mão na esteira; null = a esteira ordena sozinha */
+  esteira_ordem?: number | null;
+  /** automação que já roda e entrou na fila pelo upgrade dela (opt-in) */
+  esteira_upgrade?: boolean | null;
   depende_de?: string | null;
   pos_x?: number | null;
   pos_y?: number | null;
@@ -72,6 +78,35 @@ export const TIER_META: Record<Tier, { cor: string; label: string }> = {
   wip: { cor: "#fbbf24", label: "Em teste / andamento" },
   todo: { cor: "#7c8698", label: "Ideia / a fazer" },
 };
+
+/* -------------------------- impacto & esforço --------------------------
+ * As duas metades da prioridade na esteira. Mesma escala de três degraus do
+ * Catálogo, com cor calibrada para o fundo escuro da árvore (as classes do
+ * Catálogo são de tema claro e sumiriam aqui). Valor ausente ou fora da escala
+ * — inclusive o "Média" que existe em um registro antigo — cai em "Médio", que
+ * é o default da tabela.
+ *
+ * A cor sinaliza coisas opostas nas duas: impacto Alto é o que a gente quer
+ * (destaque), esforço Alto é o que custa caro (alerta). Por isso "Baixo" é
+ * cinza no impacto e verde no esforço. */
+export const IMPACTO_OPTS = ["Baixo", "Médio", "Alto"];
+export const ESFORCO_OPTS = ["Baixo", "Médio", "Alto"];
+
+const IMPACTO_CORES: Record<string, string> = { Baixo: "#94a3b8", Médio: "#fbbf24", Alto: "#fb7185" };
+const ESFORCO_CORES: Record<string, string> = { Baixo: "#34d399", Médio: "#fbbf24", Alto: "#fb7185" };
+
+const naEscala = (v: string | null | undefined) =>
+  IMPACTO_OPTS.find((x) => x === (v || "").trim()) || "Médio";
+
+export function impactoDe(r: { impacto?: string | null }): { nome: string; cor: string } {
+  const nome = naEscala(r.impacto);
+  return { nome, cor: IMPACTO_CORES[nome] };
+}
+
+export function esforcoDe(r: { esforco?: string | null }): { nome: string; cor: string } {
+  const nome = naEscala(r.esforco);
+  return { nome, cor: ESFORCO_CORES[nome] };
+}
 
 /* ---------------------------- níveis (pirâmide) ----------------------------
  * Usado só como semente/fallback quando a tabela `automacoes_niveis` ainda não

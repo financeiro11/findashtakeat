@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   montarLayout, correnteDe, destravadasPor, resumoTrilhas, alvosValidos, trilhaDe, bandaNoY,
-  fiosDaTrilha, caminhoSuave, temUpgrade,
+  fiosDaTrilha, caminhoSuave, temUpgrade, impactoDe,
   type Automacao,
 } from "./arvore-layout";
 import { iconeDe, nomeIconeDe, ICONES } from "./arvore-icones";
@@ -317,5 +317,21 @@ describe("temUpgrade", () => {
   it("espaço em branco não vale como sugestão", () => {
     expect(temUpgrade({ upgrade: "   " })).toBe(false);
     expect(temUpgrade({ upgrade: "\n\t " })).toBe(false);
+  });
+});
+
+/* ------------------------------- impacto ------------------------------- */
+describe("impactoDe", () => {
+  it("devolve o nível gravado com uma cor própria", () => {
+    expect(impactoDe({ impacto: "Alto" }).nome).toBe("Alto");
+    expect(impactoDe({ impacto: "Baixo" }).nome).toBe("Baixo");
+    expect(impactoDe({ impacto: "Alto" }).cor).not.toBe(impactoDe({ impacto: "Baixo" }).cor);
+  });
+
+  it("cai em Médio quando não há impacto — mesmo default da tabela", () => {
+    expect(impactoDe({ impacto: null }).nome).toBe("Médio");
+    expect(impactoDe({}).nome).toBe("Médio");
+    expect(impactoDe({ impacto: "   " }).nome).toBe("Médio");
+    expect(impactoDe({ impacto: "qualquer coisa" }).nome).toBe("Médio");
   });
 });

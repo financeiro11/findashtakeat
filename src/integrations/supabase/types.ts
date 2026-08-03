@@ -3398,6 +3398,7 @@ export type Database = {
           cat_origem: string | null
           concluido_em: string | null
           created_at: string
+          facilities_solicitacao_id: string | null
           id: string
           observacao: string | null
           ordem: number
@@ -3415,6 +3416,7 @@ export type Database = {
           cat_origem?: string | null
           concluido_em?: string | null
           created_at?: string
+          facilities_solicitacao_id?: string | null
           id?: string
           observacao?: string | null
           ordem?: number
@@ -3432,6 +3434,7 @@ export type Database = {
           cat_origem?: string | null
           concluido_em?: string | null
           created_at?: string
+          facilities_solicitacao_id?: string | null
           id?: string
           observacao?: string | null
           ordem?: number
@@ -3443,7 +3446,15 @@ export type Database = {
           titulo?: string
           updated_at?: string
         }
-        Relationships: []
+        Relationships: [
+          {
+            foreignKeyName: "tarefas_facilities_solicitacao_id_fkey"
+            columns: ["facilities_solicitacao_id"]
+            isOneToOne: false
+            referencedRelation: "facilities_solicitacoes"
+            referencedColumns: ["id"]
+          },
+        ]
       }
       tarefas_log: {
         Row: {

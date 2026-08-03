@@ -114,10 +114,13 @@ export function TaskDialog({ columns, open, tarefa, defaultStatus, onClose, onSa
       <DialogContent
         className="max-w-xl max-h-[90vh] overflow-y-auto"
         onKeyDown={(e) => {
+          // O atalho salva nos dois modos. Antes, em edição ele chamava onClose()
+          // e fechava DESCARTANDO o que tinha sido digitado — e o próprio botão
+          // anuncia "Salvar · Ctrl+Enter", então o atalho perdia o trabalho
+          // exatamente de quem confiou no rótulo.
           if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
             e.preventDefault();
-            if (isEdit) onClose();
-            else submit();
+            submit();
           }
         }}
       >

@@ -391,11 +391,17 @@ export default function Tarefas() {
     return g;
   }, [filteredBase]);
 
-  const update = async (id: string, patch: Partial<Tarefa>, skipLog = false) => {
+  /* Devolve se gravou. Quem abriu um diálogo precisa saber: fechar depois de uma
+     falha esconderia o erro e faria a edição sumir. */
+  const update = async (id: string, patch: Partial<Tarefa>, skipLog = false): Promise<boolean> => {
     const old = rows.find(r => r.id === id);
     setRows(rs => rs.map(r => r.id === id ? { ...r, ...patch } : r));
     const { error } = await supabase.from("tarefas").update(patch as any).eq("id", id);
-    if (error) { toast.error(error.message); return; }
+    if (error) {
+      toast.error(error.message);
+      load();   // desfaz o otimismo: a tela volta para o que o banco realmente tem
+      return false;
+    }
     if (old && !skipLog) {
       const descricao = describeChanges(old, patch);
       const soMoveu = Object.keys(patch).length === 1 && "status" in patch;
@@ -406,6 +412,7 @@ export default function Tarefas() {
         descricao,
       });
     }
+    return true;
   };
 
   const remove = async (id: string) => {
@@ -607,7 +614,18 @@ export default function Tarefas() {
         open={!!editing}
         tarefa={editing || undefined}
         onClose={() => setEditing(null)}
-        onSave={(patch) => { if (editing) update(editing.id, patch); }}
+        /* Salvar gravava e parava por aí: o diálogo continuava aberto e não vinha
+           confirmação nenhuma, então a edição parecia não ter pegado (e o pessoal
+           clicava de novo). O toast fica aqui, e não dentro de `update`, porque
+           `update` também é chamado ao arrastar card no kanban — ali avisar a cada
+           arraste seria barulho. */
+        onSave={async (patch) => {
+          if (!editing) return;
+          if (await update(editing.id, patch)) {
+            toast.success("Tarefa salva");
+            setEditing(null);
+          }
+        }}
         title="Editar Tarefa"
       />
     </div>

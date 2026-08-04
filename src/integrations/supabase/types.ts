@@ -2149,6 +2149,114 @@ export type Database = {
         }
         Relationships: []
       }
+      omie_reclassificacoes: {
+        Row: {
+          atualizado_em: string
+          cnpj_cpf: string | null
+          cod_titulo: string
+          data: string | null
+          detectado_em: string
+          fornecedor: string | null
+          fornecedor_chave: string
+          hist_lancamentos: number | null
+          hist_no_padrao: number | null
+          hist_rubricas: number | null
+          id: string
+          ignorado_em: string | null
+          ignorado_motivo: string | null
+          ignorado_por: string | null
+          mes: string
+          rubrica: string
+          rubrica_padrao: string
+          severidade: string
+          status: string
+          tipo: string
+          valor: number | null
+          valor_padrao: number | null
+        }
+        Insert: {
+          atualizado_em?: string
+          cnpj_cpf?: string | null
+          cod_titulo: string
+          data?: string | null
+          detectado_em?: string
+          fornecedor?: string | null
+          fornecedor_chave: string
+          hist_lancamentos?: number | null
+          hist_no_padrao?: number | null
+          hist_rubricas?: number | null
+          id?: string
+          ignorado_em?: string | null
+          ignorado_motivo?: string | null
+          ignorado_por?: string | null
+          mes: string
+          rubrica: string
+          rubrica_padrao: string
+          severidade: string
+          status?: string
+          tipo: string
+          valor?: number | null
+          valor_padrao?: number | null
+        }
+        Update: {
+          atualizado_em?: string
+          cnpj_cpf?: string | null
+          cod_titulo?: string
+          data?: string | null
+          detectado_em?: string
+          fornecedor?: string | null
+          fornecedor_chave?: string
+          hist_lancamentos?: number | null
+          hist_no_padrao?: number | null
+          hist_rubricas?: number | null
+          id?: string
+          ignorado_em?: string | null
+          ignorado_motivo?: string | null
+          ignorado_por?: string | null
+          mes?: string
+          rubrica?: string
+          rubrica_padrao?: string
+          severidade?: string
+          status?: string
+          tipo?: string
+          valor?: number | null
+          valor_padrao?: number | null
+        }
+        Relationships: []
+      }
+      omie_reclassificacoes_regras: {
+        Row: {
+          criado_em: string
+          criado_por: string | null
+          fornecedor: string | null
+          fornecedor_chave: string
+          id: string
+          motivo: string | null
+          rubrica_a: string
+          rubrica_b: string
+        }
+        Insert: {
+          criado_em?: string
+          criado_por?: string | null
+          fornecedor?: string | null
+          fornecedor_chave: string
+          id?: string
+          motivo?: string | null
+          rubrica_a: string
+          rubrica_b: string
+        }
+        Update: {
+          criado_em?: string
+          criado_por?: string | null
+          fornecedor?: string | null
+          fornecedor_chave?: string
+          id?: string
+          motivo?: string | null
+          rubrica_a?: string
+          rubrica_b?: string
+        }
+        Relationships: []
+      }
       omie_sync_log: {
         Row: {
           categorias: number
@@ -3827,6 +3935,7 @@ export type Database = {
           categoria_codigo: string
           categoria_descricao: string
           cnpj_cpf: string
+          cod_titulo: string
           contraparte: string
           data: string
           documento: string
@@ -3835,6 +3944,32 @@ export type Database = {
           titulo: string
           valor: number
           vencimento: string
+        }[]
+      }
+      demonstracoes_reclassificacoes: {
+        Args: { p_tipo: string }
+        Returns: {
+          alertas: number
+          mes: string
+          rubrica: string
+          severidade: string
+          valor_total: number
+        }[]
+      }
+      demonstracoes_reclassificacoes_celula: {
+        Args: { p_mes: string; p_rubrica: string; p_tipo: string }
+        Returns: {
+          cod_titulo: string
+          fornecedor: string
+          hist_lancamentos: number
+          hist_no_padrao: number
+          id: string
+          ignorado_motivo: string
+          rubrica_padrao: string
+          severidade: string
+          status: string
+          valor: number
+          valor_padrao: number
         }[]
       }
       fmt_brl: { Args: { v: number }; Returns: string }
@@ -3855,6 +3990,7 @@ export type Database = {
         }[]
       }
       normaliza_nome: { Args: { p_nome: string }; Returns: string }
+      omie_reclassificacoes_detectar: { Args: never; Returns: number }
       preview_msg_ajuste: { Args: { p_id_unico: string }; Returns: Json }
       preview_msg_consolidada:
         | { Args: { p_responsavel: string }; Returns: Json }
@@ -3863,6 +3999,11 @@ export type Database = {
             Returns: Json
           }
       promover_agendamentos_sync: { Args: never; Returns: undefined }
+      reclassificacao_ignorar: {
+        Args: { p_escopo?: string; p_id: string; p_motivo?: string }
+        Returns: number
+      }
+      reclassificacao_reabrir: { Args: { p_id: string }; Returns: number }
       registrar_comprovante_via_token: {
         Args: { p_id_unico: string; p_storage_path: string; p_token: string }
         Returns: Json

@@ -8,11 +8,16 @@ import { Input } from "@/components/ui/input";
 import { supabase } from "@/integrations/supabase/client";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
+import { valorExato } from "@/lib/valor";
 import { OmieDeParaPanel } from "@/components/OmieDeParaPanel";
 import { runOmieSync } from "@/lib/omieSync";
 import { SyncOmieButtons } from "@/components/SyncOmieButtons";
 import { MesesTravadosChip, CadeadoColuna, alternarTrava } from "@/components/demonstracoes/MesesTravados";
 import { LancamentosSheet, type AlvoLancamentos } from "@/components/demonstracoes/LancamentosSheet";
+import {
+  useReclassificacoes, chaveCelula, tituloReclassificacao,
+  MarcaReclassificacao, ResumoReclassificacoes, fundoCelulaReclassificacao,
+} from "@/components/demonstracoes/Reclassificacoes";
 
 /* ============================================================
  *  Helpers
@@ -79,6 +84,14 @@ function fmtPct(v: number | null | undefined): string {
   if (v === null || v === undefined || isNaN(v as number)) return "—";
   return `${(v * 100).toFixed(1).replace(".", ",")}%`;
 }
+/** Valor cheio pro tooltip — o número na tela é sempre abreviado (M/K) ou
+ * arredondado, e às vezes é preciso conferir o centavo. */
+function tituloValor(v: number | null | undefined, pct: boolean): string | undefined {
+  if (v === null || v === undefined || isNaN(v as number)) return undefined;
+  return pct
+    ? `${valorExato(v * 100, { moeda: false, casas: 4 })}%`
+    : valorExato(v);
+}
 
 // Corta as colunas do import nas que têm dado real e substancial — planilhas de tracker
 // costumam ter o ano inteiro (ou vários anos) de cabeçalho, mas só os meses já FECHADOS
@@ -130,6 +143,7 @@ export default function DFC() {
   const [travados, setTravados] = useState<Set<string>>(new Set());
   const [travaOcupada, setTravaOcupada] = useState<string | null>(null);
   const [auditando, setAuditando] = useState<AlvoLancamentos | null>(null);
+  const { reclassificacoes, recarregarReclassificacoes } = useReclassificacoes("dfc");
   const fileRef = useRef<HTMLInputElement>(null);
 
   const availableYears = useMemo(() => {
@@ -670,7 +684,10 @@ export default function DFC() {
             <div key={k.key} className="rounded-lg border border-border bg-card p-3.5">
               <div className="text-[10px] font-semibold tracking-[0.08em] text-muted-foreground">{k.title}</div>
               <div className="mt-2 flex items-baseline justify-between">
-                <div className={cn("text-[19px] font-bold tracking-tight num", isNeg ? "text-primary" : "text-foreground")}>
+                <div
+                  className={cn("text-[19px] font-bold tracking-tight num cursor-help", isNeg ? "text-primary" : "text-foreground")}
+                  title={tituloValor(k.val, false)}
+                >
                   {isNeg ? `(${fmtMoney(Math.abs(k.val ?? 0))})` : fmtMoney(k.val)}
                 </div>
                 {k.delta != null && (
@@ -748,6 +765,9 @@ export default function DFC() {
             Nenhum dado importado. Clique em <b>Importar Excel/CSV</b> para enviar o Tracker.
           </div>
         ) : (
+          <>
+          {/* Só na aba "Método direto": é onde as células estão marcadas. */}
+          {tab === "valores" && <ResumoReclassificacoes mapa={reclassificacoes} />}
           <div className="mt-3 overflow-x-auto rounded-lg border border-border bg-card">
             <table className="border-collapse">
               <thead>
@@ -851,7 +871,15 @@ export default function DFC() {
                            lançamento, então não haveria o que listar. Fora da aba
                            "Método direto" o número é derivado (variação ou
                            acumulado) e não casaria com a soma do mês. */
-                        const auditavel = tab === "valores" && !isTotal && !hasChildren && v != null;
+                        /* Marca só onde a célula é auditável: nas outras abas o
+                           número é derivado e o clique não abre nada, então o
+                           aviso seria um beco sem saída. */
+                        const podeAuditar = tab === "valores" && !isTotal && !hasChildren;
+                        const alerta = podeAuditar ? reclassificacoes.get(chaveCelula(node.label, c)) : undefined;
+                        /* Célula vazia COM alerta continua clicável: existe
+                           lançamento no Omie e a demonstração não mostra nada —
+                           esconder a marca esconderia justamente esse buraco. */
+                        const auditavel = podeAuditar && (v != null || !!alerta);
                         return (
                           <td
                             key={c}
@@ -860,15 +888,24 @@ export default function DFC() {
                               mesLabel: ptLabelFromKey(c).replace("/", " "),
                               celula: v, travado: travados.has(c),
                             }) : undefined}
-                            title={auditavel ? "Ver os lançamentos que compõem este valor" : undefined}
+                            title={[
+                              tituloValor(v, tab === "mom"),
+                              alerta ? tituloReclassificacao(alerta) : null,
+                              auditavel ? "clique para ver os lançamentos" : null,
+                            ].filter(Boolean).join(" · ") || undefined}
                             className={cn(
                               "px-1.5 py-1.5 text-right text-[12px] num whitespace-nowrap min-w-[64px]",
+                              v != null && "cursor-help",
                               isNeg ? "text-primary" : isTotal ? "text-emerald-800" : "text-foreground/90",
                               v == null && "text-muted-foreground/40",
                               auditavel && "cursor-pointer hover:bg-primary/10 hover:underline hover:decoration-dotted hover:underline-offset-2",
+                              alerta && fundoCelulaReclassificacao(alerta),
                             )}
                           >
-                            {display}
+                            <span className="inline-flex items-center justify-end gap-1">
+                              {alerta && <MarcaReclassificacao alerta={alerta} />}
+                              {display}
+                            </span>
                           </td>
                         );
                       })}
@@ -878,6 +915,7 @@ export default function DFC() {
               </tbody>
             </table>
           </div>
+          </>
         )}
 
         <div className="mt-3 flex items-center justify-between text-[11px] text-muted-foreground">
@@ -888,7 +926,12 @@ export default function DFC() {
       </>
       )}
 
-      <LancamentosSheet alvo={auditando} onClose={() => setAuditando(null)} />
+      {/* Fechar o drill-down recarrega as marcas: quem ignorou um alerta lá
+          dentro tem que ver a célula limpar aqui fora. */}
+      <LancamentosSheet
+        alvo={auditando}
+        onClose={() => { setAuditando(null); recarregarReclassificacoes(); }}
+      />
     </div>
   );
 }

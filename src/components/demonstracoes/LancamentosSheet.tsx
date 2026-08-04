@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useState } from "react";
-import { Loader2, TriangleAlert, Check, FileText, Users } from "lucide-react";
+import { Fragment, useCallback, useEffect, useState } from "react";
+import { Loader2, TriangleAlert, Check, FileText, Users, Undo2 } from "lucide-react";
 import { toast } from "sonner";
 import { supabase } from "@/integrations/supabase/client";
 import { cn } from "@/lib/utils";
@@ -36,6 +36,23 @@ type Lancamento = {
   grupo: string | null;
   status: string | null;
   valor: number | null;
+  cod_titulo: string | null;
+};
+
+/* Alerta de reclassificação (migration 20260804120000): este fornecedor vinha
+   caindo noutra rubrica. Casa com o lançamento pelo `cod_titulo`. */
+type Alerta = {
+  id: string;
+  cod_titulo: string;
+  fornecedor: string | null;
+  rubrica_padrao: string;
+  valor: number | null;
+  valor_padrao: number | null;
+  severidade: "alta" | "media" | "baixa";
+  status: "aberto" | "ignorado";
+  hist_lancamentos: number | null;
+  hist_no_padrao: number | null;
+  ignorado_motivo: string | null;
 };
 
 const moeda = (n: number) =>
@@ -53,8 +70,23 @@ const doc = (v: string | null) => {
 
 export function LancamentosSheet({ alvo, onClose }: { alvo: AlvoLancamentos | null; onClose: () => void }) {
   const [linhas, setLinhas] = useState<Lancamento[]>([]);
+  const [alertas, setAlertas] = useState<Map<string, Alerta>>(new Map());
   const [carregando, setCarregando] = useState(false);
   const [erro, setErro] = useState<string | null>(null);
+  const [decidindo, setDecidindo] = useState<string | null>(null);
+
+  /** Alertas da célula, por lançamento. Isolado porque é recarregado sozinho a
+   *  cada "ignorar" — a lista de lançamentos não muda nessa hora. */
+  const carregarAlertas = useCallback(async () => {
+    if (!alvo) return;
+    const { data } = await supabase.rpc("demonstracoes_reclassificacoes_celula", {
+      p_tipo: alvo.tipo, p_rubrica: alvo.rubrica, p_mes: alvo.mes,
+    });
+    const m = new Map<string, Alerta>();
+    for (const a of (data as Alerta[]) ?? []) m.set(a.cod_titulo, a);
+    setAlertas(m);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [alvo?.tipo, alvo?.rubrica, alvo?.mes]);
 
   const carregar = useCallback(async () => {
     if (!alvo) return;
@@ -71,6 +103,30 @@ export function LancamentosSheet({ alvo, onClose }: { alvo: AlvoLancamentos | nu
   }, [alvo?.tipo, alvo?.rubrica, alvo?.mes]);
 
   useEffect(() => { carregar(); }, [carregar]);
+  useEffect(() => { carregarAlertas(); }, [carregarAlertas]);
+
+  /* escopo 'lancamento' cala só este; 'fornecedor' aceita o par de rubricas
+     para sempre — é o que resolve quem legitimamente cai nas duas linhas. */
+  const decidir = async (a: Alerta, escopo: "lancamento" | "fornecedor") => {
+    setDecidindo(a.id);
+    const { error } = await supabase.rpc("reclassificacao_ignorar", { p_id: a.id, p_escopo: escopo });
+    setDecidindo(null);
+    if (error) { toast.error("Não consegui registrar: " + error.message); return; }
+    toast.success(escopo === "fornecedor"
+      ? `As duas rubricas passam a ser normais para ${a.fornecedor ?? "este fornecedor"}.`
+      : "Lançamento marcado como correto.");
+    await carregarAlertas();
+  };
+
+  const reabrir = async (a: Alerta) => {
+    setDecidindo(a.id);
+    const { error } = await supabase.rpc("reclassificacao_reabrir", { p_id: a.id });
+    setDecidindo(null);
+    if (error) { toast.error("Não consegui reabrir: " + error.message); return; }
+    await carregarAlertas();
+  };
+
+  const alertasAbertos = [...alertas.values()].filter(a => a.status === "aberto").length;
 
   /* O movimento do Omie não traz o nome da contraparte, só o código e o CNPJ —
      quem resolve é o cadastro em `omie_cache`. Enquanto esse cache estiver vazio
@@ -151,6 +207,20 @@ export function LancamentosSheet({ alvo, onClose }: { alvo: AlvoLancamentos | nu
               </div>
             )}
 
+            {!carregando && !erro && alertasAbertos > 0 && (
+              <div className="shrink-0 border-b border-amber-200 bg-amber-50 px-5 py-2.5">
+                <div className="flex items-start gap-2 text-[11.5px] leading-relaxed text-amber-900">
+                  <TriangleAlert className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                  <span>
+                    {alertasAbertos === 1
+                      ? "1 lançamento aqui está numa rubrica diferente da que o fornecedor vinha usando."
+                      : `${alertasAbertos} lançamentos aqui estão numa rubrica diferente da que o fornecedor vinha usando.`}
+                    {" "}Estão destacados abaixo — pode ser classificação errada no Omie.
+                  </span>
+                </div>
+              </div>
+            )}
+
             {!carregando && !erro && semNome > 0 && (
               <div className="flex shrink-0 flex-wrap items-center justify-between gap-2 border-b border-border bg-muted/50 px-5 py-2">
                 <span className="text-[11.5px] text-muted-foreground">
@@ -198,13 +268,23 @@ export function LancamentosSheet({ alvo, onClose }: { alvo: AlvoLancamentos | nu
                     </tr>
                   </thead>
                   <tbody>
-                    {linhas.map((l, i) => (
-                      <tr key={i} className="border-b border-border/60 align-top hover:bg-muted/30">
+                    {linhas.map((l, i) => {
+                      const a = l.cod_titulo ? alertas.get(l.cod_titulo) : undefined;
+                      const aberto = a?.status === "aberto";
+                      return (
+                      <Fragment key={i}>
+                      <tr className={cn(
+                        "align-top hover:bg-muted/30",
+                        aberto ? "border-b border-amber-300 bg-amber-100/60" : "border-b border-border/60",
+                      )}>
                         <td className="whitespace-nowrap px-3 py-2 text-[11.5px] num text-muted-foreground">
                           {dataCurta(l.data)}
                         </td>
                         <td className="px-2 py-2 text-[11.5px]">
-                          <div className="text-foreground">{l.contraparte ?? doc(l.cnpj_cpf)}</div>
+                          <div className="flex items-center gap-1 text-foreground">
+                            {aberto && <TriangleAlert strokeWidth={2.5} className="h-3.5 w-3.5 shrink-0 fill-amber-400 text-amber-800" />}
+                            {l.contraparte ?? doc(l.cnpj_cpf)}
+                          </div>
                           <div className="mt-px flex flex-wrap items-center gap-x-1.5 text-[10px] text-muted-foreground">
                             {l.titulo && <span className="inline-flex items-center gap-0.5"><FileText className="h-2.5 w-2.5" />{l.titulo}</span>}
                             {l.documento && <span>NF {l.documento}</span>}
@@ -224,7 +304,65 @@ export function LancamentosSheet({ alvo, onClose }: { alvo: AlvoLancamentos | nu
                           {moeda(Number(l.valor) || 0)}
                         </td>
                       </tr>
-                    ))}
+
+                      {/* A explicação vai numa linha própria: o motivo e as duas
+                          decisões não cabem nas colunas sem espremer o valor. */}
+                      {a && (
+                        <tr className={cn("border-b", aberto ? "border-amber-300 bg-amber-100/60" : "border-border/60 bg-muted/30")}>
+                          <td colSpan={4} className="px-3 pb-2.5 pt-0">
+                            <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-1.5 pl-[52px]">
+                              <span className={cn("text-[11px] leading-relaxed", aberto ? "text-amber-900" : "text-muted-foreground")}>
+                                Vinha em <b>{a.rubrica_padrao}</b>
+                                {a.hist_no_padrao != null && a.hist_lancamentos != null && (
+                                  <> ({a.hist_no_padrao} dos {a.hist_lancamentos} lançamentos anteriores)</>
+                                )}
+                                {a.valor_padrao != null && (
+                                  <>
+                                    {" · "}
+                                    {a.severidade === "alta"
+                                      ? <>mesmo valor de sempre, <b>{moeda(Number(a.valor_padrao))}</b></>
+                                      : <>valor típico {moeda(Number(a.valor_padrao))}</>}
+                                  </>
+                                )}
+                                {!aberto && a.status === "ignorado" && <> · <i>marcado como correto</i></>}
+                              </span>
+
+                              <span className="flex shrink-0 items-center gap-1.5">
+                                {aberto ? (
+                                  <>
+                                    <button
+                                      onClick={() => decidir(a, "lancamento")}
+                                      disabled={decidindo === a.id}
+                                      className="rounded-md border border-amber-300 bg-card px-2 py-1 text-[10.5px] font-medium text-amber-900 transition hover:bg-amber-100 disabled:opacity-50"
+                                    >
+                                      Este está certo
+                                    </button>
+                                    <button
+                                      onClick={() => decidir(a, "fornecedor")}
+                                      disabled={decidindo === a.id}
+                                      className="rounded-md border border-amber-300 bg-card px-2 py-1 text-[10.5px] font-medium text-amber-900 transition hover:bg-amber-100 disabled:opacity-50"
+                                      title={`Não avisar mais quando ${a.fornecedor ?? "este fornecedor"} cair em "${a.rubrica_padrao}" ou nesta rubrica`}
+                                    >
+                                      Sempre pode cair nas duas
+                                    </button>
+                                  </>
+                                ) : (
+                                  <button
+                                    onClick={() => reabrir(a)}
+                                    disabled={decidindo === a.id}
+                                    className="inline-flex items-center gap-1 rounded-md border border-border bg-card px-2 py-1 text-[10.5px] font-medium text-muted-foreground transition hover:bg-secondary disabled:opacity-50"
+                                  >
+                                    <Undo2 className="h-2.5 w-2.5" /> Reabrir
+                                  </button>
+                                )}
+                              </span>
+                            </div>
+                          </td>
+                        </tr>
+                      )}
+                      </Fragment>
+                      );
+                    })}
                   </tbody>
                 </table>
               )}

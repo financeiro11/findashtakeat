@@ -13,7 +13,8 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
 import { FacToolbar } from "./NovaSolicitacaoDialog";
 import { CatDot } from "./components";
-import { db, fmtBRL, parseValor, CATEGORIAS, type Contrato, type Fornecedor } from "./lib";
+import { db, fmtBRL as fmtBRLStr, parseValor, CATEGORIAS, type Contrato, type Fornecedor } from "./lib";
+import { comValorExato } from "@/components/ValorExato";
 
 const STATUS_STYLE: Record<string, string> = {
   ativo: "bg-emerald-50 text-emerald-700",
@@ -403,4 +404,11 @@ function ContratoDialog({
       </DialogContent>
     </Dialog>
   );
+}
+
+/* Os valores da tela saem sem centavos (fmtBRLStr); aqui eles viram um <span>
+   que mostra o número cheio ao passar o mouse. Onde precisa ser string mesmo
+   (toast, template literal, title), use fmtBRLStr direto. */
+function fmtBRL(v: number | null | undefined, comCentavos = false) {
+  return comValorExato(v, fmtBRLStr(v, comCentavos));
 }

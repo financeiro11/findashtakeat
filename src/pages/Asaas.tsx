@@ -3,9 +3,14 @@ import { RefreshCw, Loader2 } from "lucide-react";
 import { supabase } from "@/integrations/supabase/client";
 import { toast } from "sonner";
 import { KpiCard } from "@/components/ui/kpi-card";
+import { comValorExato } from "@/components/ValorExato";
 
-const brl = (n: number | null | undefined) =>
+/* brlStr arredonda pra unidade; na tela usamos brl, que é o mesmo texto num
+   <span> revelando os centavos ao passar o mouse. */
+const brlStr = (n: number | null | undefined) =>
   n == null ? "—" : Number(n).toLocaleString("pt-BR", { style: "currency", currency: "BRL", maximumFractionDigits: 0 });
+const brl = (n: number | null | undefined) =>
+  n == null ? "—" : comValorExato(n, brlStr(n));
 const brlFull = (n: number | null | undefined) =>
   n == null ? "—" : Number(n).toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
 const pct = (n: number | null | undefined) => (n == null ? "—" : `${(n * 100).toFixed(1).replace(".", ",")}%`);
@@ -120,7 +125,7 @@ export default function Asaas() {
           <section className="space-y-3">
             <h3 className="text-sm font-semibold text-foreground/90">Recebimentos</h3>
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-5">
-              <KpiCard label="Recebido no mês" value={brl(r?.recebido_valor)} valueTone="pos" subline={`${int(r?.recebido_qtd)} cobranças · líq. ${brl(r?.recebido_liquido)}`} />
+              <KpiCard label="Recebido no mês" value={brl(r?.recebido_valor)} valueTone="pos" subline={<>{int(r?.recebido_qtd)} cobranças · líq. {brl(r?.recebido_liquido)}</>} />
               <KpiCard label="A receber" value={brl(r?.a_receber_valor)} subline="pendentes que vencem no mês" />
               <KpiCard label="Conversão" value={pct(r?.conversao)} subline={`${int(r?.venc_pagos)}/${int(r?.venc_total)} vencidas → pagas`} />
               <KpiCard label="Dias até receber" value={r?.dias_ate_recebimento == null ? "—" : `${Math.round(r.dias_ate_recebimento)}d`} subline="ciclo médio (pagto − venc.)" />
@@ -144,8 +149,8 @@ export default function Asaas() {
             <h3 className="text-sm font-semibold text-foreground/90">NF-e · Fiscal</h3>
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
               <KpiCard label="Taxa de sucesso" value={pct(n?.taxa_sucesso)} valueTone={n?.taxa_sucesso != null && n.taxa_sucesso < 0.9 ? "neg" : "pos"} subline="emitidas / (emitidas + erro)" />
-              <KpiCard label="Emitidas" value={int(n?.emitidas)} valueTone="pos" subline={`${brl(n?.valor_emitido)} emitido`} />
-              <KpiCard label="Com erro" value={int(n?.erro)} valueTone="neg" subline={`${brl(n?.valor_erro)} · corrigir cadastro`} />
+              <KpiCard label="Emitidas" value={int(n?.emitidas)} valueTone="pos" subline={<>{brl(n?.valor_emitido)} emitido</>} />
+              <KpiCard label="Com erro" value={int(n?.erro)} valueTone="neg" subline={<>{brl(n?.valor_erro)} · corrigir cadastro</>} />
               <KpiCard label="Pendentes" value={int(n?.pendentes)} subline="na fila (não é erro)" />
             </div>
           </section>

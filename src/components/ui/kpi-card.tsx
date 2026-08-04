@@ -4,13 +4,15 @@ import { cn } from "@/lib/utils";
 
 export type KpiStat = {
   label: string;
-  value: string;
+  /** ReactNode e não string porque o valor costuma vir embrulhado num <span>
+   *  que revela o número cheio no hover (ver comValorExato). */
+  value: React.ReactNode;
   tone?: "pos" | "neg" | "warn" | "muted";
 };
 
 interface KpiCardProps {
   label: string;
-  value: string;
+  value: React.ReactNode;
   valueTone?: "pos" | "neg" | "neutral";
   deltaMonth?: number;
   deltaMonthLabel?: string;
@@ -18,11 +20,11 @@ interface KpiCardProps {
   inverse?: boolean;
   spark?: number[];
   sparkColor?: string;
-  budgetValue?: string;
+  budgetValue?: React.ReactNode;
   budgetProgress?: number;
-  subline?: string;
+  subline?: React.ReactNode;
   stats?: KpiStat[];
-  footnote?: string;
+  footnote?: React.ReactNode;
   className?: string;
   /** Ícone opcional exibido num selo colorido no canto superior direito (ignorado se `spark` estiver presente). */
   icon?: React.ComponentType<{ className?: string }>;

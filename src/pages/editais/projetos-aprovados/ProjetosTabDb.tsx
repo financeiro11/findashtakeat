@@ -11,7 +11,8 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Separator } from "@/components/ui/separator";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
-import { fmtBRL } from "../types";
+import { fmtBRL as fmtBRLStr } from "../types";
+import { comValorExato } from "@/components/ValorExato";
 import {
   Plus, ShoppingCart, Trash2, Zap, FileWarning, ChevronRight, ChevronDown,
   Wallet, FolderPlus, Pencil, FileText, Save, X,
@@ -791,4 +792,9 @@ function ProjetoDialog({ projeto, onSaved }: { projeto?: Projeto; onSaved: () =>
       </DialogContent>
     </Dialog>
   );
+}
+
+/* Valor abreviado na tela, número cheio no hover. */
+function fmtBRL(v: number | null | undefined) {
+  return comValorExato(v, fmtBRLStr(v));
 }

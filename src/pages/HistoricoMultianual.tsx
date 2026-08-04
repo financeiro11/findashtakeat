@@ -9,6 +9,8 @@ import {
   ultimoMesFechado, flattenLabels, MES_PT,
   type Coluna, type LinhaBase, type Node,
 } from "@/lib/demonstracoes-schema";
+import { valorExato } from "@/lib/valor";
+import { comValorExato } from "@/components/ValorExato";
 
 /* ============================================================================
  * Histórico Multianual — o realizado de 2024, 2025 e o ano corrente lado a lado.
@@ -34,13 +36,16 @@ const BLOCOS_SAIDA = [
   { chave: "(-) Custos Operacionais", rotulo: "Custos operacionais" },
 ];
 
-const fmtCompacto = (n: number) => {
+const fmtCompactoStr = (n: number) => {
   const a = Math.abs(n);
   const sinal = n < 0 ? "-" : "";
   if (a >= 1e6) return `${sinal}R$ ${(a / 1e6).toFixed(2).replace(".", ",")} M`;
   if (a >= 1e3) return `${sinal}R$ ${Math.round(a / 1e3)} k`;
   return `${sinal}R$ ${Math.round(a)}`;
 };
+/* Mesmo texto compacto, mas revelando o valor cheio no hover. Onde o resultado
+   precisa ser string (texto de insight, title), use fmtCompactoStr. */
+const fmtCompacto = (n: number) => comValorExato(n, fmtCompactoStr(n));
 const fmtPct1 = (n: number) => `${(n * 100).toFixed(1).replace(".", ",")}%`;
 
 type BaseBlob = { columns: string[]; rows: LinhaBase[] };
@@ -161,7 +166,7 @@ export default function HistoricoMultianual() {
 
     return [
       mk("Receita Bruta", (c) => somaDre("Receita Bruta", c),
-        (v) => `Ano fechado · média ${fmtCompacto(v / mesesAno)}/mês`),
+        (v) => `Ano fechado · média ${fmtCompactoStr(v / mesesAno)}/mês`),
       mk("Receita Líquida", (c) => somaDre("Receita Líquida", c),
         (v) => (rbAno ? `Retenção de ${fmtPct1(v / rbAno)} da receita bruta` : "—")),
       mk("EBITDA", (c) => somaDre("EBITDA", c),
@@ -169,7 +174,7 @@ export default function HistoricoMultianual() {
       mk("Lucro Líquido", (c) => somaDre("Lucro Líquido", c),
         (v) => (rlAno ? `Margem ${fmtPct1(v / rlAno)} sobre receita líquida` : "—")),
       mk("Cashburn", (c) => somaDfc("Cashburn", c),
-        (v) => `Média de ${fmtCompacto(v / mesesAno)}/mês em ${anoBase}`),
+        (v) => `Média de ${fmtCompactoStr(v / mesesAno)}/mês em ${anoBase}`),
     ];
   }, [dre, idxDre, idxDfc, anoBase, anoAnterior, tempo, colsDoAno]);
 
@@ -327,7 +332,7 @@ export default function HistoricoMultianual() {
                       <div key={p.chave}
                            className="flex items-center justify-center text-[10.5px] font-semibold text-white"
                            style={{ width: `${pct * 100}%`, background: cores[i] }}
-                           title={`${p.rotulo}: ${fmtCompacto(-p.valor)} (${fmtPct1(pct)})`}>
+                           title={`${p.rotulo}: ${valorExato(-p.valor)} (${fmtPct1(pct)})`}>
                         {pct > 0.07 && `${Math.round(pct * 100)}%`}
                       </div>
                     );

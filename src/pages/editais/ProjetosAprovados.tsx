@@ -13,7 +13,8 @@ import {
   CalendarClock, CircleDot, Zap, Lock, FileWarning, CheckCircle2,
   TrendingDown, Wallet, Lightbulb,
 } from "lucide-react";
-import { fmtBRL } from "./types";
+import { fmtBRL as fmtBRLStr } from "./types";
+import { comValorExato } from "@/components/ValorExato";
 
 
 /* ───────────────────────── DADOS (carregados do banco) ───────────────────────── */
@@ -347,14 +348,14 @@ export function ExecutivoTab() {
           items.push({
             nivel: "Alto", icon: ShieldAlert,
             titulo: `${p.nome} → ${r.nome} estourou em ${Math.round(pct(r))}%`,
-            sub: `Gasto ${fmtBRL(r.gasto)} sobre ${fmtBRL(r.planejado)} planejado`,
+            sub: `Gasto ${fmtBRLStr(r.gasto)} sobre ${fmtBRLStr(r.planejado)} planejado`,
             color: "text-rose-600 bg-rose-500/10 border-rose-500/30",
           });
         } else if (st === "critico") {
           items.push({
             nivel: "Médio", icon: AlertTriangle,
             titulo: `${p.nome} → ${r.nome} atingiu ${Math.round(pct(r))}%`,
-            sub: `Resta ${fmtBRL(r.planejado - r.gasto)} antes do limite`,
+            sub: `Resta ${fmtBRLStr(r.planejado - r.gasto)} antes do limite`,
             color: "text-amber-600 bg-amber-500/10 border-amber-500/30",
           });
         }
@@ -371,7 +372,7 @@ export function ExecutivoTab() {
     if (metricas.reservado > 0) {
       items.push({
         nivel: "Info", icon: Zap,
-        titulo: `${fmtBRL(metricas.reservado)} reservados obrigatoriamente`,
+        titulo: `${fmtBRLStr(metricas.reservado)} reservados obrigatoriamente`,
         sub: "Verba protegida · não considerar no saldo operacional livre",
         color: "text-amber-700 bg-amber-500/10 border-amber-500/40",
       });
@@ -380,7 +381,7 @@ export function ExecutivoTab() {
       items.push({
         nivel: "Info", icon: CalendarClock,
         titulo: `${p.nome} aguardando resultado`,
-        sub: `Pleito de ${fmtBRL(projAgregado(p).planejado)} · ${p.orgao}`,
+        sub: `Pleito de ${fmtBRLStr(projAgregado(p).planejado)} · ${p.orgao}`,
         color: "text-sky-600 bg-sky-500/10 border-sky-500/30",
       });
     });
@@ -611,13 +612,13 @@ function ProjetoCard({ p }: { p: Projeto }) {
       alertas.push({
         tone: "rose",
         titulo: `${r.nome} estourou em ${Math.round(pct(r))}%`,
-        sub: `${fmtBRL(r.gasto)} sobre ${fmtBRL(r.planejado)} planejado`,
+        sub: `${fmtBRLStr(r.gasto)} sobre ${fmtBRLStr(r.planejado)} planejado`,
       });
     } else if (st === "critico") {
       alertas.push({
         tone: "amber",
         titulo: `${r.nome} atingiu ${Math.round(pct(r))}%`,
-        sub: `Resta ${fmtBRL(r.planejado - r.gasto)} antes do limite`,
+        sub: `Resta ${fmtBRLStr(r.planejado - r.gasto)} antes do limite`,
       });
     }
   });
@@ -807,3 +808,10 @@ export const IATab = () => <Placeholder titulo="Inteligência IA" icone={Brain} 
 export const AlertasTab = () => <Placeholder titulo="Alertas" icone={BellRing} descricao="Central completa de alertas operacionais, regras e notificações personalizadas." />;
 export const PrestacaoTab = () => <Placeholder titulo="Prestação" icone={FileCheck2} descricao="Gestão de documentos, notas fiscais e prestação de contas por edital." />;
 export const ConfigTab = () => <Placeholder titulo="Configurações" icone={Settings} descricao="Parâmetros de rubricas, integrações fiscais e regras de elegibilidade." />;
+
+/* Os valores saem abreviados ("R$ 1,2 mi") ou sem centavos; aqui viram um
+   <span> que mostra o número cheio no hover. Em template literal / title use
+   fmtBRLStr direto. */
+function fmtBRL(v: number | null | undefined) {
+  return comValorExato(v, fmtBRLStr(v));
+}

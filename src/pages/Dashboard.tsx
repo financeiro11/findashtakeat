@@ -4,7 +4,9 @@ import { Greeting } from "./dashboard/Greeting";
 import { AskAIBar } from "./dashboard/AskAIBar";
 import { HealthStrip } from "./dashboard/HealthStrip";
 import { useFinanceData } from "./dashboard/useFinanceData";
-import { fmtBRL, fmtBRLShort, fmtPct, fmtMeses } from "./dashboard/format";
+import { fmtBRL as fmtBRLStr, fmtBRLShort as fmtBRLShortStr, fmtPct, fmtMeses } from "./dashboard/format";
+import { comValorExato } from "@/components/ValorExato";
+import { valorExato } from "@/lib/valor";
 import { calcMetricas, subMeses, periodoLabel, rankingCrescimento, serieDerivada, calcBridge, detectarAnomalias, GRUPOS } from "./dashboard/metrics";
 import { openFinanceAI } from "@/components/FinanceAIPanel";
 import { SectionCard } from "@/components/ui/section-card";
@@ -13,6 +15,13 @@ import { Loader2, Sparkles, RefreshCw, ChevronDown } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import { supabase } from "@/integrations/supabase/client";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
+
+/* Na tela o valor sai arredondado (fmtBRL) ou abreviado (fmtBRLShort); o número
+   cheio, com centavos, aparece ao passar o mouse. Onde o formatador precisa
+   devolver string mesmo (template literal, eixo/tooltip do Recharts, prompt da
+   IA), use as versões *Str. */
+const fmtBRL = (n: number) => comValorExato(n, fmtBRLStr(n));
+const fmtBRLShort = (n: number) => comValorExato(n, fmtBRLShortStr(n));
 
 export default function Dashboard() {
   const fd = useFinanceData();
@@ -201,7 +210,7 @@ export default function Dashboard() {
               spark={sparkSaldo}
               sparkColor="hsl(var(--pos))"
               stats={saldoStats}
-              footnote={`Σ FCL + saldo inicial (${periodoLabel(startPeriodo)} = ${fmtBRLShort(saldoInicio)})`}
+              footnote={<>Σ FCL + saldo inicial ({periodoLabel(startPeriodo)} = {fmtBRLShort(saldoInicio)})</>}
             />
             <KpiCard
               label="Cashburn & Runway"
@@ -301,13 +310,14 @@ export default function Dashboard() {
                 </defs>
                 <CartesianGrid stroke="hsl(var(--border))" strokeDasharray="2 4" vertical={false} />
                 <XAxis dataKey="mes" tick={{ fontSize: 10, fill: "hsl(var(--muted-foreground))" }} axisLine={false} tickLine={false} />
-                <YAxis yAxisId="L" tick={{ fontSize: 10, fill: "hsl(var(--muted-foreground))" }} axisLine={false} tickLine={false} tickFormatter={(v) => fmtBRLShort(v)} />
+                <YAxis yAxisId="L" tick={{ fontSize: 10, fill: "hsl(var(--muted-foreground))" }} axisLine={false} tickLine={false} tickFormatter={(v) => fmtBRLShortStr(v)} />
                 <YAxis yAxisId="R" orientation="right" tick={{ fontSize: 10, fill: "hsl(var(--muted-foreground))" }} axisLine={false} tickLine={false} tickFormatter={(v) => `${v}%`} />
                 <Tooltip
                   contentStyle={{ background: "hsl(var(--card))", border: "1px solid hsl(var(--border))", borderRadius: 8, fontSize: 11 }}
                   formatter={(value: any, name: any) => {
                     if (name === "margem") return [`${value}%`, "Margem"];
-                    return [fmtBRLShort(Number(value)), name === "receita" ? "Receita Líq." : "EBITDA"];
+                    // no tooltip cabe o número cheio — é onde se confere o valor
+                    return [valorExato(Number(value)), name === "receita" ? "Receita Líq." : "EBITDA"];
                   }}
                 />
                 <Legend
@@ -393,7 +403,7 @@ export default function Dashboard() {
                 return (
                   <button
                     key={r.metrica}
-                    onClick={() => askAI(`Compare o realizado de ${r.metrica} (${fmtBRLShort(r.real)}) com o orçado (${fmtBRLShort(r.orc)}) em ${periodoLabel(m.periodo)}.`)}
+                    onClick={() => askAI(`Compare o realizado de ${r.metrica} (${fmtBRLShortStr(r.real)}) com o orçado (${fmtBRLShortStr(r.orc)}) em ${periodoLabel(m.periodo)}.`)}
                     className="block w-full text-left"
                   >
                     <div className="flex items-baseline justify-between text-[11.5px] mb-1">
@@ -814,6 +824,8 @@ function TrioReceitaDespesa({
     if (Math.abs(n) >= 1_000) return `R$ ${Math.round(n / 1_000)}k`;
     return `R$ ${Math.round(n)}`;
   };
+  /** Mesmo abreviado, mas revelando o valor cheio no hover. */
+  const fmtKNode = (n: number) => comValorExato(n, fmtK(n));
 
   return (
     <div className="grid gap-4 lg:grid-cols-3">
@@ -885,7 +897,7 @@ function TrioReceitaDespesa({
                   <span className="h-2 w-2 shrink-0 rounded-sm" style={{ background: d.color }} />
                   <span className="truncate">{d.name}</span>
                 </span>
-                <span className="num shrink-0 text-muted-foreground">{fmtK(d.valor)}</span>
+                <span className="num shrink-0 text-muted-foreground">{fmtKNode(d.valor)}</span>
                 <span className={`num shrink-0 font-semibold ${d.cresc >= 0 ? "text-neg" : "text-pos"}`}>{d.cresc >= 0 ? "+" : ""}{d.cresc}%</span>
               </div>
             ))}
@@ -908,7 +920,7 @@ function TrioReceitaDespesa({
                 </Pie>
                 <Tooltip
                   contentStyle={{ background: "hsl(var(--card))", border: "1px solid hsl(var(--border))", borderRadius: 8, fontSize: 11 }}
-                  formatter={(v: any, n: any) => [fmtK(Number(v)), n]}
+                  formatter={(v: any, n: any) => [valorExato(Number(v)), n]}
                   position={{ x: 170, y: 10 }}
                 />
               </PieChart>
@@ -926,11 +938,11 @@ function TrioReceitaDespesa({
                   <span className="h-2 w-2 shrink-0 rounded-full" style={{ background: d.color }} />
                   <span className="truncate">{d.name}</span>
                 </span>
-                <span className="num shrink-0 text-muted-foreground">{fmtK(d.value)}</span>
+                <span className="num shrink-0 text-muted-foreground">{fmtKNode(d.value)}</span>
               </div>
             ))}
             <div className="mt-2 rounded-md border border-emerald-500/30 bg-emerald-500/5 px-2 py-1.5 text-[10.5px]">
-              <span className="font-semibold">Total bruto: {fmtK(totalReceita)}</span>
+              <span className="font-semibold">Total bruto: {fmtKNode(totalReceita)}</span>
               {assinaturas > enterprise && assinaturas > spot && <span className="text-muted-foreground"> · maior dependência: SMB.</span>}
             </div>
           </div>
@@ -954,7 +966,7 @@ function TrioReceitaDespesa({
                 </Pie>
                 <Tooltip
                   contentStyle={{ background: "hsl(var(--card))", border: "1px solid hsl(var(--border))", borderRadius: 8, fontSize: 11 }}
-                  formatter={(v: any, n: any) => [fmtK(Number(v)), n]}
+                  formatter={(v: any, n: any) => [valorExato(Number(v)), n]}
                   position={{ x: 170, y: 10 }}
                 />
               </PieChart>

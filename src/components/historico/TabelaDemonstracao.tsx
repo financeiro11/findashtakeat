@@ -5,6 +5,7 @@ import {
   valorDoNo, valorBruto, variacao, rotulosDeDespesa, MES_PT,
   type Node, type Coluna, type LinhaBase,
 } from "@/lib/demonstracoes-schema";
+import { valorExato } from "@/lib/valor";
 
 /* ============================================================================
  * Tabela da DRE / DFC no Histórico Multianual.
@@ -230,7 +231,12 @@ export default function TabelaDemonstracao({
                   return (
                     <td
                       key={c.chave}
-                      className={cn("num whitespace-nowrap px-3 py-1.5 text-right tabular-nums", v != null && v < 0 && "text-destructive")}
+                      /* a célula mostra o valor arredondado; o número cheio
+                         (com centavos) fica no hover */
+                      title={vazio ? undefined : pct
+                        ? `${valorExato((v as number) * 100, { moeda: false, casas: 4 })}%`
+                        : valorExato(v as number)}
+                      className={cn("num whitespace-nowrap px-3 py-1.5 text-right tabular-nums", !vazio && "cursor-help", v != null && v < 0 && "text-destructive")}
                       style={heatmap ? { background: corHeatmap(v ?? 0, maxAbs) } : undefined}
                     >
                       {vazio ? <span className="text-muted-foreground">–</span> : pct ? fmtPct(v as number) : fmtNum(v as number)}

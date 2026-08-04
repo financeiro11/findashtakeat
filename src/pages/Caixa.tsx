@@ -8,7 +8,8 @@ import {
 } from "recharts";
 import { RefreshCw, Loader2, MessageCircle, Eye, EyeOff, Maximize2, Search, ChevronDown, Landmark, ArrowRight } from "lucide-react";
 import { useNavigate } from "react-router-dom";
-import { fmtBRLShort, fmtPct } from "@/pages/dashboard/format";
+import { fmtBRLShort as fmtBRLShortStr, fmtPct } from "@/pages/dashboard/format";
+import { comValorExato } from "@/components/ValorExato";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator } from "@/components/ui/dropdown-menu";
 import { SyncOmieButtons } from "@/components/SyncOmieButtons";
@@ -16,6 +17,10 @@ import RelatorioCaixaModal from "@/components/RelatorioCaixaModal";
 import { FONTES_CC } from "@/components/ContaCorrenteBancaria";
 
 /* ------------------------------ formatters ------------------------------ */
+/* O abreviado (R$ 1,23 M) esconde a ordem de grandeza real, então na tela ele
+   vira um <span> que mostra o valor cheio no hover. Onde o resultado precisa
+   ser string mesmo (template literal, prompt da IA), use fmtBRLShortStr. */
+const fmtBRLShort = (n: number) => comValorExato(n, fmtBRLShortStr(n));
 const fmtBRL = (n: number) =>
   (n ?? 0).toLocaleString("pt-BR", { style: "currency", currency: "BRL", minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const fmtHora = (isoStr?: string | null) =>
@@ -960,9 +965,9 @@ export default function Caixa() {
           </DialogHeader>
           <div className="mb-3 grid grid-cols-2 gap-3 sm:grid-cols-4">
             <MiniStat label="Saldo atual" value={fmtBRLShort(contasView.consolidado)} />
-            <MiniStat label="Menor saldo" value={`${fmtBRLShort(snap.fluxo_projetado.menor.valor - contasView.delta)} · ${fmtDiaMes(snap.fluxo_projetado.menor.data)}`} tone="neg" />
-            <MiniStat label="Entradas 30d" value={`+${fmtBRLShort(projTotais.entradas)}`} tone="pos" />
-            <MiniStat label="Saídas 30d" value={`-${fmtBRLShort(projTotais.saidas)}`} tone="neg" />
+            <MiniStat label="Menor saldo" value={<>{fmtBRLShort(snap.fluxo_projetado.menor.valor - contasView.delta)} · {fmtDiaMes(snap.fluxo_projetado.menor.data)}</>} tone="neg" />
+            <MiniStat label="Entradas 30d" value={<>+{fmtBRLShort(projTotais.entradas)}</>} tone="pos" />
+            <MiniStat label="Saídas 30d" value={<>-{fmtBRLShort(projTotais.saidas)}</>} tone="neg" />
           </div>
           <div className="h-[240px] w-full">
             <ResponsiveContainer width="100%" height="100%">
@@ -1035,7 +1040,7 @@ function FluxoTooltip({ active, payload }: any) {
 }
 
 /* ------------------------------ subcomponentes ------------------------------ */
-function MiniStat({ label, value, tone }: { label: string; value: string; tone?: "pos" | "neg" }) {
+function MiniStat({ label, value, tone }: { label: string; value: React.ReactNode; tone?: "pos" | "neg" }) {
   return (
     <div className="flex min-w-0 flex-col gap-0.5">
       <span className="truncate text-[9.5px] uppercase tracking-wider text-muted-foreground/80">{label}</span>

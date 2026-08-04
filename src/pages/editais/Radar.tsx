@@ -7,7 +7,8 @@ import { Badge } from "@/components/ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Search, Plus, ArrowUpDown, Filter, ChevronLeft, ChevronRight, Sparkles, Download, SlidersHorizontal } from "lucide-react";
-import { Edital, STATUS_LIST, CATEGORIAS, REGIOES, fmtBRL, statusBadge, prioridadeBadge, matchColor, daysUntil, opportunityLabel } from "./types";
+import { Edital, STATUS_LIST, CATEGORIAS, REGIOES, fmtBRL as fmtBRLStr, statusBadge, prioridadeBadge, matchColor, daysUntil, opportunityLabel } from "./types";
+import { comValorExato } from "@/components/ValorExato";
 import EditalDrawer from "./EditalDrawer";
 import { toast } from "sonner";
 import { useEditaisConfig } from "./useEditaisConfig";
@@ -282,4 +283,11 @@ export default function Radar() {
       <EditalDrawer edital={selected} open={open} onOpenChange={setOpen} onSaved={load} />
     </div>
   );
+}
+
+/* Os valores saem abreviados ("R$ 1,2 mi") ou sem centavos; aqui viram um
+   <span> que mostra o número cheio no hover. Em template literal / title use
+   fmtBRLStr direto. */
+function fmtBRL(v: number | null | undefined) {
+  return comValorExato(v, fmtBRLStr(v));
 }

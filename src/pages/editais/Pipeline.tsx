@@ -2,7 +2,8 @@ import { useEffect, useMemo, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { Edital, PIPELINE_STAGES, fmtBRL, prioridadeBadge, matchColor, daysUntil } from "./types";
+import { Edital, PIPELINE_STAGES, fmtBRL as fmtBRLStr, prioridadeBadge, matchColor, daysUntil } from "./types";
+import { comValorExato } from "@/components/ValorExato";
 import EditalDrawer from "./EditalDrawer";
 import { toast } from "sonner";
 import { Star, SlidersHorizontal, Filter as FilterIcon, Plus, Pencil, Check, X } from "lucide-react";
@@ -220,4 +221,11 @@ export default function Pipeline() {
       <EditalDrawer edital={selected} open={open} onOpenChange={setOpen} onSaved={load} />
     </>
   );
+}
+
+/* Os valores saem abreviados ("R$ 1,2 mi") ou sem centavos; aqui viram um
+   <span> que mostra o número cheio no hover. Em template literal / title use
+   fmtBRLStr direto. */
+function fmtBRL(v: number | null | undefined) {
+  return comValorExato(v, fmtBRLStr(v));
 }

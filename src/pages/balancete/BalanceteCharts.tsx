@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 import { ResponsiveContainer, XAxis, YAxis, CartesianGrid, LineChart, Line, Legend, Tooltip } from "recharts";
 import { BarChart3, ChevronDown } from "lucide-react";
 import { fmtBRL } from "./utils";
+import { comValorExato } from "@/components/ValorExato";
 import type { BalanceteAccount } from "./types";
 
 // Paleta categórica cíclica pras barras de composição — mesma lógica de "gasto por
@@ -42,7 +43,7 @@ function BarList({ items }: { items: { name: string; value: number }[] }) {
         <div key={it.name}>
           <div className="flex items-center justify-between gap-3 text-[12.5px]">
             <span className="truncate text-foreground">{it.name}</span>
-            <span className="num shrink-0 font-medium text-foreground">{fmtBRL(it.value, { compact: true })}</span>
+            <span className="num shrink-0 font-medium text-foreground">{comValorExato(it.value, fmtBRL(it.value, { compact: true }))}</span>
           </div>
           <div className="mt-1 h-1.5 w-full overflow-hidden rounded-full bg-muted">
             <div

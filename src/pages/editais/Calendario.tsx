@@ -3,7 +3,8 @@ import { supabase } from "@/integrations/supabase/client";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { ChevronLeft, ChevronRight, SlidersHorizontal } from "lucide-react";
-import { Edital, fmtBRL, daysUntil, matchColor } from "./types";
+import { Edital, fmtBRL as fmtBRLStr, daysUntil, matchColor } from "./types";
+import { comValorExato } from "@/components/ValorExato";
 import EditalDrawer from "./EditalDrawer";
 import { cn } from "@/lib/utils";
 
@@ -223,4 +224,11 @@ export default function Calendario() {
       <EditalDrawer edital={selected} open={open} onOpenChange={setOpen} onSaved={load} />
     </>
   );
+}
+
+/* Os valores saem abreviados ("R$ 1,2 mi") ou sem centavos; aqui viram um
+   <span> que mostra o número cheio no hover. Em template literal / title use
+   fmtBRLStr direto. */
+function fmtBRL(v: number | null | undefined) {
+  return comValorExato(v, fmtBRLStr(v));
 }

@@ -15,9 +15,10 @@ import { supabase } from "@/integrations/supabase/client";
 import { FacToolbar } from "./NovaSolicitacaoDialog";
 import { CatDot } from "./components";
 import {
-  db, fmtBRL, fmtData, CATEGORIAS,
+  db, fmtBRL as fmtBRLStr, fmtData, CATEGORIAS,
   type Fornecedor, type Compra, type FornecedorAnexo,
 } from "./lib";
+import { comValorExato } from "@/components/ValorExato";
 
 const CONTRATOS_BUCKET = "facilities-contratos";
 
@@ -222,7 +223,7 @@ export default function Fornecedores() {
   );
 }
 
-function Stat({ label, value }: { label: string; value: string }) {
+function Stat({ label, value }: { label: string; value: React.ReactNode }) {
   return (
     <div>
       <div className="text-[9.5px] font-semibold uppercase tracking-wide text-muted-foreground">{label}</div>
@@ -469,4 +470,11 @@ function FornecedorDialog({ alvo, onClose, onSaved }: { alvo: Fornecedor | "novo
       </DialogContent>
     </Dialog>
   );
+}
+
+/* Os valores da tela saem sem centavos (fmtBRLStr); aqui eles viram um <span>
+   que mostra o número cheio ao passar o mouse. Onde precisa ser string mesmo
+   (toast, template literal, title), use fmtBRLStr direto. */
+function fmtBRL(v: number | null | undefined, comCentavos = false) {
+  return comValorExato(v, fmtBRLStr(v, comCentavos));
 }

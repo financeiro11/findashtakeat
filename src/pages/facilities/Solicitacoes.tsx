@@ -16,9 +16,10 @@ import { moduleAccess } from "@/lib/modules";
 import { FacToolbar } from "./NovaSolicitacaoDialog";
 import { CatDot, StatusBadge } from "./components";
 import {
-  db, fmtBRL, parseValor, PIPELINE, STATUS_LABEL, FORMA_PAGAMENTO_LABEL, LIMITE_APROVACAO,
+  db, fmtBRL as fmtBRLStr, parseValor, PIPELINE, STATUS_LABEL, FORMA_PAGAMENTO_LABEL, LIMITE_APROVACAO,
   type Solicitacao, type Cotacao, type Fornecedor, type SolicStatus,
 } from "./lib";
+import { comValorExato } from "@/components/ValorExato";
 
 
 export default function Solicitacoes() {
@@ -214,7 +215,7 @@ function SolicitacaoDetail({
     const precisaAprovacao = menor > LIMITE_APROVACAO;
     if (precisaAprovacao && solic.status !== "aprovado" && solic.status !== "aguardando_aprovacao") {
       await setStatus("aguardando_aprovacao");
-      toast.info(`Compra acima de ${fmtBRL(LIMITE_APROVACAO)} — enviada para aprovação do financeiro.`);
+      toast.info(`Compra acima de ${fmtBRLStr(LIMITE_APROVACAO)} — enviada para aprovação do financeiro.`);
     } else if (solic.status === "solicitado") {
       await setStatus("em_cotacao");
     } else {
@@ -284,7 +285,7 @@ function SolicitacaoDetail({
           <DialogDescription className="flex items-center gap-1.5">
             <CatDot cat={solic.categoria} /> {solic.categoria ?? "Sem categoria"}
             {solic.solicitante ? ` · ${solic.solicitante}` : ""}
-            {solic.valor != null ? ` · estimado ${fmtBRL(solic.valor)}` : ""}
+            {solic.valor != null ? ` · estimado ${fmtBRLStr(solic.valor)}` : ""}
           </DialogDescription>
         </DialogHeader>
 
@@ -436,7 +437,7 @@ function SolicitacaoDetail({
                   className="gap-1"
                   onClick={registrarCompra}
                   disabled={busy || bloqueado}
-                  title={bloqueado ? `Compra acima de ${fmtBRL(LIMITE_APROVACAO)} — aguardando aprovação` : undefined}
+                  title={bloqueado ? `Compra acima de ${fmtBRLStr(LIMITE_APROVACAO)} — aguardando aprovação` : undefined}
                 >
                   {bloqueado ? <Lock className="h-4 w-4" /> : <ShoppingCart className="h-4 w-4" />}
                   {bloqueado ? "Aguardando aprovação" : "Registrar compra"}
@@ -450,4 +451,11 @@ function SolicitacaoDetail({
       </DialogContent>
     </Dialog>
   );
+}
+
+/* Os valores da tela saem sem centavos (fmtBRLStr); aqui eles viram um <span>
+   que mostra o número cheio ao passar o mouse. Onde precisa ser string mesmo
+   (toast, template literal, title), use fmtBRLStr direto. */
+function fmtBRL(v: number | null | undefined, comCentavos = false) {
+  return comValorExato(v, fmtBRLStr(v, comCentavos));
 }

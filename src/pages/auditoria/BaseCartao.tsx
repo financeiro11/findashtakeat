@@ -4,6 +4,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
 import { brl, brlAbbr, fmtDateBR } from "./utils";
+import { comValorExato } from "@/components/ValorExato";
 import { Search, ExternalLink } from "lucide-react";
 import { ComprovanteLink } from "@/components/ComprovanteLink";
 
@@ -152,7 +153,7 @@ export default function BaseCartao() {
         {loading ? Array.from({ length: 5 }).map((_, i) => <Skeleton key={i} className="h-24 rounded-xl" />) : (
           <>
             <Kpi label="Lançamentos" value={String(kpis.total)} />
-            <Kpi label="Valor total" value={brlAbbr(kpis.soma)} />
+            <Kpi label="Valor total" value={comValorExato(kpis.soma, brlAbbr(kpis.soma))} />
             <Kpi label="SEM NF" value={String(kpis.semNf)} valueClass="text-[hsl(0_72%_45%)]" />
             <Kpi label="FORA-JUSTIFICAR" value={String(kpis.fora)} valueClass="text-[hsl(30_80%_40%)]" />
             <Kpi label="Cobertura NF" value={`${kpis.cobertura.toFixed(1)}%`} valueClass="text-[hsl(152_60%_36%)]" />
@@ -277,7 +278,7 @@ function BaseRow({ r }: { r: Lanc }) {
   );
 }
 
-function Kpi({ label, value, valueClass }: { label: string; value: string; valueClass?: string }) {
+function Kpi({ label, value, valueClass }: { label: string; value: React.ReactNode; valueClass?: string }) {
   return (
     <div className="rounded-xl border border-border bg-card p-5">
       <div className="text-xs font-medium text-muted-foreground">{label}</div>

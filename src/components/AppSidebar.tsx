@@ -71,9 +71,18 @@ const demonstracoes: NavItem[] = [
   { title: "Balanço", url: "/demonstracoes/balanco", icon: Scale },
 ];
 
+// Business Plan: o ano corrente é o plano vigente; o seguinte é o que está em
+// construção. Derivado da data pra não envelhecer na virada do ano.
+const ANO_BP = new Date().getFullYear();
+
+const bp: NavItem[] = [
+  { title: `BP ${ANO_BP}`, url: `/bp/${ANO_BP}`, icon: FileSpreadsheet },
+  { title: `BP ${ANO_BP + 1}`, url: `/bp/${ANO_BP + 1}`, icon: Sparkles, badge: "IA" },
+  { title: "Histórico de versões", url: "/bp/versoes", icon: History },
+];
+
 const analise: NavItem[] = [
   { title: "Cenários", url: "/analise/cenarios", icon: Target },
-  { title: "BP Anual", url: "/analise/bp", icon: FileBarChart },
   { title: "Histórico Multianual", url: "/analise/historico", icon: TrendingUp },
 ];
 
@@ -257,6 +266,7 @@ export function AppSidebar() {
               <Group label="Editais" items={editais} pathname={pathname} favoritos={favoritos} onToggleFavorito={toggleFavorito} />
               <Group label="Investimentos" items={investimentos} pathname={pathname} favoritos={favoritos} onToggleFavorito={toggleFavorito} />
               <Group label="Demonstrações" items={demonstracoes} pathname={pathname} favoritos={favoritos} onToggleFavorito={toggleFavorito} />
+              <Group label="BP" items={bp} pathname={pathname} favoritos={favoritos} onToggleFavorito={toggleFavorito} />
               <Group label="Análise Preditiva" items={analise} pathname={pathname} favoritos={favoritos} onToggleFavorito={toggleFavorito} />
               <Group label="Governança" items={governanca} pathname={pathname} favoritos={favoritos} onToggleFavorito={toggleFavorito} />
               <Group label="Configurações" items={config} pathname={pathname} favoritos={favoritos} onToggleFavorito={toggleFavorito} />

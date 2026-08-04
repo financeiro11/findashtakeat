@@ -22,6 +22,8 @@ import Balancete from "./pages/Balancete";
 import DRE from "./pages/DRE";
 import DFC from "./pages/DFC";
 import BPAnual from "./pages/BPAnual";
+import BP from "./pages/BP";
+import HistoricoVersoes from "./pages/bp/HistoricoVersoes";
 import BaseConhecimento from "./pages/BaseConhecimento";
 import AnalisePreditiva from "./pages/AnalisePreditiva";
 import DesignSystem from "./pages/DesignSystem";
@@ -113,6 +115,9 @@ const App = () => (
               <Route path="/demonstracoes/dfc" element={<DFC />} />
               <Route path="/demonstracoes/balancete" element={<Balancete />} />
               <Route path="/demonstracoes/balanco" element={<Balanco />} />
+              <Route path="/bp" element={<Navigate to={`/bp/${new Date().getFullYear()}`} replace />} />
+              <Route path="/bp/versoes" element={<HistoricoVersoes />} />
+              <Route path="/bp/:ano" element={<BP />} />
               <Route path="/analise/cenarios" element={<AnalisePreditiva />} />
               <Route path="/analise/bp" element={<BPAnual />} />
               <Route path="/analise/historico" element={<HistoricoMultianual />} />

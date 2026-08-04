@@ -36,9 +36,13 @@ const ITEMS: { group: string; items: { title: string; url: string; icon: any }[]
     { title: "Balancete", url: "/demonstracoes/balancete", icon: FileText },
     { title: "Balanço", url: "/demonstracoes/balanco", icon: Scale },
   ]},
+  { group: "BP", items: [
+    { title: `BP ${new Date().getFullYear()}`, url: `/bp/${new Date().getFullYear()}`, icon: FileBarChart },
+    { title: `BP ${new Date().getFullYear() + 1}`, url: `/bp/${new Date().getFullYear() + 1}`, icon: FileBarChart },
+    { title: "Histórico de versões", url: "/bp/versoes", icon: FileText },
+  ]},
   { group: "Análise Preditiva", items: [
     { title: "Cenários", url: "/analise/cenarios", icon: Target },
-    { title: "BP Anual", url: "/analise/bp", icon: FileBarChart },
     { title: "Biblioteca", url: "/analise/conhecimento", icon: Brain },
   ]},
   { group: "Configurações", items: [

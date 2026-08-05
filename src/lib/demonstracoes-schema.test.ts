@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   parseColuna, colunasDe, indexar, valorBruto, valorDoNo, valorNoPeriodo,
   ultimoMesFechado, variacao, rotulosDeDespesa, flattenLabels, chaveRubrica,
+  celulaNumero, indexarCelulas,
   DRE_SCHEMA, DFC_SCHEMA, type LinhaBase, type Node,
 } from "./demonstracoes-schema";
 import {
@@ -247,6 +248,62 @@ describe("linhas percentuais apontam para uma rubrica que existe", () => {
     for (const label of ["% Margem de contribuição", "% Margem EBITDA", "% Margem Líquida"]) {
       expect(valorBruto(idx, achar(label).pctOf!, "Jan-24")).toBe(1000);
     }
+  });
+});
+
+/* --------- o índice das telas de DRE/DFC: grafias que se somam --------- */
+describe("indexarCelulas", () => {
+  const cols = ["Apr-26", "May-26", "Jun-26", "Jul-26"];
+
+  /* O caso real que motivou: na DFC o tracker escreve "Outras despesas Adm" e o
+     DE_PARA do Omie escreve "Outras Despesas Adm". Sobrescrevendo, Jul/26
+     aparecia VAZIO na tela com R$ 26 mil e 54 lançamentos por trás. */
+  it("soma as duas grafias da mesma rubrica em vez de uma apagar a outra", () => {
+    const idx = indexarCelulas([
+      { Conta: "Outras despesas Adm", "Apr-26": -8105, "May-26": -14031, "Jun-26": -16518, "Jul-26": "" },
+      { Conta: "Outras Despesas Adm", "Apr-26": "", "May-26": "", "Jun-26": "", "Jul-26": -26341.62 },
+    ], cols);
+
+    const linha = idx.get("outras despesas adm")!;
+    expect(linha["Jun-26"]).toBe(-16518);
+    expect(linha["Jul-26"]).toBe(-26341.62);
+  });
+
+  it("mês em que as duas grafias têm valor soma os dois", () => {
+    const idx = indexarCelulas([
+      { Conta: "Encargos sociais", "Apr-26": -100 },
+      { Conta: "Encargos Sociais", "Apr-26": -250 },
+    ], ["Apr-26"]);
+    expect(idx.get("encargos sociais")!["Apr-26"]).toBe(-350);
+  });
+
+  it("vazio nas duas continua vazio — '—' não vira R$ 0,00", () => {
+    const idx = indexarCelulas([
+      { Conta: "Servidor", "Apr-26": "" },
+      { Conta: "servidor", "Apr-26": null },
+    ], ["Apr-26"]);
+    expect(idx.get("servidor")!["Apr-26"]).toBeNull();
+  });
+
+  it("zero de verdade não é confundido com vazio", () => {
+    const idx = indexarCelulas([{ Conta: "IOF", "Apr-26": 0 }], ["Apr-26"]);
+    expect(idx.get("iof")!["Apr-26"]).toBe(0);
+  });
+
+  it("linha sem rótulo é ignorada", () => {
+    const idx = indexarCelulas([{ Conta: "  ", "Apr-26": -1 }], ["Apr-26"]);
+    expect(idx.size).toBe(0);
+  });
+});
+
+describe("celulaNumero", () => {
+  it("preserva o vazio e lê o formato da planilha", () => {
+    expect(celulaNumero("")).toBeNull();
+    expect(celulaNumero(null)).toBeNull();
+    expect(celulaNumero("-")).toBeNull();
+    expect(celulaNumero(-16518)).toBe(-16518);
+    expect(celulaNumero("(1.234,50)")).toBe(-1234.5);
+    expect(celulaNumero("R$ 1.234,50")).toBe(1234.5);
   });
 });
 

@@ -21,6 +21,10 @@ import {
 import {
   useJustificativas, MarcaJustificativa, ResumoJustificativas, fundoCelulaJustificativa,
 } from "@/components/demonstracoes/Justificativas";
+import {
+  useValoresManuais, EditorValorManual, ResumoValoresManuais,
+  fundoCelulaManual, tituloValorManual,
+} from "@/components/demonstracoes/ValoresManuais";
 import { gerarJustificativas, criarValorEm } from "@/lib/justificativas";
 
 /* ============================================================
@@ -123,11 +127,23 @@ function colunasFechadas(rows: Record<string, any>[], colsOrdenadas: string[]): 
 
 // Esquema e cálculo vivem em lib/demonstracoes-schema — compartilhados com o
 // Histórico Multianual, para as três telas não divergirem.
-import { DFC_SCHEMA, type Kind, type Node } from "@/lib/demonstracoes-schema";
+import {
+  DFC_SCHEMA, indexarCelulas, rotulosDeDespesa, type Kind, type Node,
+} from "@/lib/demonstracoes-schema";
 
 const flattenLabels = (nodes: Node[]): string[] =>
   nodes.flatMap((n) => [n.label, ...(n.children ? flattenLabels(n.children) : [])]);
 const DFC_RUBRICAS = flattenLabels(DFC_SCHEMA);
+
+/* Rubricas em que o valor manual entra NEGATIVO. Aqui não basta o "(-)" do
+   rótulo, como na DRE: na DFC o bloco de saídas se chama "Saídas Operacionais"
+   e nenhum filho dele carrega o sinal — mas tudo ali sai do caixa. */
+const DFC_DESPESAS = (() => {
+  const marcadas = rotulosDeDespesa(DFC_SCHEMA);
+  const saidas = DFC_SCHEMA.find((n) => n.label === "Saídas Operacionais");
+  for (const l of flattenLabels(saidas?.children ?? [])) marcadas.add(l);
+  return marcadas;
+})();
 
 /* ============================================================
  *  Page
@@ -149,6 +165,7 @@ export default function DFC() {
   const [auditando, setAuditando] = useState<AlvoLancamentos | null>(null);
   const { reclassificacoes, recarregarReclassificacoes } = useReclassificacoes("dfc");
   const { justificativas, recarregarJustificativas } = useJustificativas("dfc");
+  const { manuais, recarregarManuais } = useValoresManuais("dfc");
   const [gerandoJust, setGerandoJust] = useState(false);
   const [progressoJust, setProgressoJust] = useState<string | null>(null);
   const [apenasUltimoMes, setApenasUltimoMes] = useState(false);
@@ -289,18 +306,10 @@ export default function DFC() {
   };
 
   /* ----- Lookup map by label ----- */
-  const valueByLabel = useMemo(() => {
-    const map = new Map<string, Record<string, number | null>>();
-    for (const r of rows) {
-      const labelKey = Object.keys(r).find(k => !/^[A-Za-z]{3}-\d{2}$/.test(k));
-      const label = labelKey ? String(r[labelKey] ?? "").trim() : "";
-      if (!label) continue;
-      const obj: Record<string, number | null> = {};
-      for (const c of columns) obj[c] = toNum(r[c]);
-      map.set(label.toLowerCase(), obj);
-    }
-    return map;
-  }, [rows, columns]);
+  /* Soma as duas grafias da mesma rubrica (a do tracker e a do DE_PARA do Omie)
+     em vez de deixar uma sobrescrever a outra — ver `indexarCelulas`. Era o que
+     escondia "Outras Despesas Adm" de Jul/26, com 54 lançamentos por trás. */
+  const valueByLabel = useMemo(() => indexarCelulas(rows, columns), [rows, columns]);
 
   function valuesFor(label: string): Record<string, number | null> {
     return valueByLabel.get(label.toLowerCase()) ?? Object.fromEntries(columns.map(c => [c, null]));
@@ -830,6 +839,7 @@ export default function DFC() {
           <>
           {/* Só na aba "Método direto": é onde as células estão marcadas. */}
           {tab === "valores" && <ResumoReclassificacoes mapa={reclassificacoes} />}
+          {tab === "valores" && <ResumoValoresManuais mapa={manuais} colunas={displayColumns} />}
           {tab === "valores" && (
             <ResumoJustificativas
               mapa={justificativas}
@@ -882,7 +892,9 @@ export default function DFC() {
                   );
 
                   return (
-                    <tr key={node.label + depth} className={rowCls}>
+                    // group/linha: o lápis de valor manual só aparece no hover da
+                    // linha — um lápis em cada célula competiria com os números.
+                    <tr key={node.label + depth} className={cn("group/linha", rowCls)}>
                       <td
                         className={cn(
                           "sticky left-0 z-[2] px-3 py-1.5 text-[12.5px] w-[220px] min-w-[220px] shadow-[1px_0_0_0_hsl(var(--border))]",
@@ -958,6 +970,12 @@ export default function DFC() {
                         const just = tab === "valores"
                           ? justificativas.get(chaveCelula(node.label, c))
                           : undefined;
+                        /* Digitar valor vale nas MESMAS células que abrem
+                           auditoria: linha com filhos é a soma dos filhos e total
+                           é calculado — o número digitado neles morreria no
+                           próximo recálculo. */
+                        const editavel = podeAuditar;
+                        const manual = editavel ? manuais.get(chaveCelula(node.label, c)) : undefined;
                         /* Célula vazia COM alerta continua clicável: existe
                            lançamento no Omie e a demonstração não mostra nada —
                            esconder a marca esconderia justamente esse buraco. */
@@ -972,24 +990,41 @@ export default function DFC() {
                             }) : undefined}
                             title={[
                               tituloValor(v, tab === "mom"),
+                              manual ? tituloValorManual(manual) : null,
                               alerta ? tituloReclassificacao(alerta) : null,
                               auditavel ? "clique para ver os lançamentos" : null,
                             ].filter(Boolean).join(" · ") || undefined}
                             className={cn(
-                              "px-1.5 py-1.5 text-right text-[12px] num whitespace-nowrap min-w-[64px]",
+                              // relative: o lápis do valor manual se posiciona por ela
+                              "relative px-1.5 py-1.5 text-right text-[12px] num whitespace-nowrap min-w-[64px]",
                               v != null && "cursor-help",
                               isNeg ? "text-primary" : isTotal ? "text-emerald-800" : "text-foreground/90",
                               v == null && "text-muted-foreground/40",
                               auditavel && "cursor-pointer hover:bg-primary/10 hover:underline hover:decoration-dotted hover:underline-offset-2",
                               // Excludentes de propósito: dois `bg-*` na mesma célula
                               // dependeriam da ordem no CSS gerado, não da ordem aqui.
-                              // O alerta de classificação errada tem prioridade.
-                              alerta ? fundoCelulaReclassificacao(alerta) : just && fundoCelulaJustificativa(just),
+                              // O alerta de classificação errada tem prioridade; o
+                              // valor manual vem antes do comentário porque muda o
+                              // número, não só o entendimento dele.
+                              alerta ? fundoCelulaReclassificacao(alerta)
+                                : manual ? fundoCelulaManual()
+                                : just && fundoCelulaJustificativa(just),
                             )}
                           >
                             <span className="inline-flex items-center justify-end gap-1">
                               {alerta && <MarcaReclassificacao alerta={alerta} />}
                               {just && travados.has(c) && (!apenasUltimoMes || ehUltimoMes) && <MarcaJustificativa justificativa={just} onMudou={recarregarJustificativas} />}
+                              {editavel && (
+                                <EditorValorManual
+                                  tipo="dfc"
+                                  rubrica={node.label}
+                                  col={c}
+                                  valorCelula={v}
+                                  manual={manual}
+                                  despesa={DFC_DESPESAS.has(node.label)}
+                                  onSalvo={async () => { await load(); await recarregarManuais(); }}
+                                />
+                              )}
                               {display}
                             </span>
                           </td>

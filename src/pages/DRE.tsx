@@ -128,7 +128,7 @@ function colunasFechadas(rows: Record<string, any>[], colsOrdenadas: string[]): 
 
 // Esquema e cálculo vivem em lib/demonstracoes-schema — compartilhados com o
 // Histórico Multianual, para as três telas não divergirem.
-import { DRE_SCHEMA, rotulosDeDespesa, type Kind, type Node } from "@/lib/demonstracoes-schema";
+import { DRE_SCHEMA, indexarCelulas, rotulosDeDespesa, type Kind, type Node } from "@/lib/demonstracoes-schema";
 
 const flattenLabels = (nodes: Node[]): string[] =>
   nodes.flatMap((n) => [n.label, ...(n.children ? flattenLabels(n.children) : [])]);
@@ -307,19 +307,10 @@ export default function DRE() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [columns]);
 
-  /* ----- Lookup map by label ----- */
-  const valueByLabel = useMemo(() => {
-    const map = new Map<string, Record<string, number | null>>();
-    for (const r of rows) {
-      const labelKey = Object.keys(r).find(k => !/^[A-Za-z]{3}-\d{2}$/.test(k));
-      const label = labelKey ? String(r[labelKey] ?? "").trim() : "";
-      if (!label) continue;
-      const obj: Record<string, number | null> = {};
-      for (const c of columns) obj[c] = toNum(r[c]);
-      map.set(label.toLowerCase(), obj);
-    }
-    return map;
-  }, [rows, columns]);
+  /* ----- Lookup map by label -----
+   * Soma as duas grafias da mesma rubrica (a do tracker e a do DE_PARA do Omie)
+   * em vez de deixar uma sobrescrever a outra — ver `indexarCelulas`. */
+  const valueByLabel = useMemo(() => indexarCelulas(rows, columns), [rows, columns]);
 
   function valuesFor(label: string): Record<string, number | null> {
     return valueByLabel.get(label.toLowerCase()) ?? Object.fromEntries(columns.map(c => [c, null]));

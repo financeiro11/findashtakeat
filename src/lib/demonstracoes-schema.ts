@@ -259,6 +259,62 @@ export const valorBruto = (idx: Map<string, LinhaBase>, label: string, col: stri
   num(idx.get(chaveRubrica(label))?.[col]);
 
 /**
+ * Célula do blob → número, PRESERVANDO o vazio.
+ *
+ * Diferente do `num` acima, que devolve 0: aqui "não existe" continua null,
+ * porque nas telas de DRE/DFC ele vira "—", e "—" e "R$ 0,00" dizem coisas
+ * diferentes para quem está auditando.
+ */
+export function celulaNumero(v: unknown): number | null {
+  if (v === null || v === undefined || v === "" || v === "-") return null;
+  if (typeof v === "number") return v;
+  let s = String(v).trim().replace(/\s/g, "").replace(/R\$/g, "");
+  const neg = /^\(.*\)$/.test(s);
+  s = s.replace(/[()]/g, "");
+  s = s.replace(/\./g, "").replace(",", ".").replace(/[^\d.-]/g, "");
+  const n = parseFloat(s);
+  return isNaN(n) ? null : (neg ? -n : n);
+}
+
+/**
+ * Índice das telas de DRE e DFC: rótulo (sem caixa) → { mês → valor }.
+ *
+ * Duas grafias da mesma rubrica são SOMADAS, nunca sobrescritas — a mesma regra
+ * do `indexar`, e pelo mesmo motivo. O blob tem os dois lados: o import do
+ * tracker escreve "Outras despesas Adm" e o DE_PARA do Omie escreve "Outras
+ * Despesas Adm". Com sobrescrita, a linha que vinha por último apagava a outra e
+ * o mês que existia só numa delas aparecia VAZIO na tela — foi o que aconteceu
+ * com Jul/26 na DFC, com 54 lançamentos e R$ 26 mil por trás do "—".
+ */
+export function indexarCelulas(
+  rows: Record<string, unknown>[],
+  columns: string[],
+): Map<string, Record<string, number | null>> {
+  const map = new Map<string, Record<string, number | null>>();
+  for (const r of rows) {
+    const labelKey = Object.keys(r).find((k) => !/^[A-Za-z]{3}-\d{2}$/.test(k));
+    const label = labelKey ? String(r[labelKey] ?? "").trim() : "";
+    if (!label) continue;
+
+    const chave = label.toLowerCase();
+    const atual = map.get(chave);
+    if (!atual) {
+      const obj: Record<string, number | null> = {};
+      for (const c of columns) obj[c] = celulaNumero(r[c]);
+      map.set(chave, obj);
+      continue;
+    }
+    // Soma célula a célula: vazio + vazio segue vazio, para o "—" não virar zero.
+    for (const c of columns) {
+      const a = atual[c];
+      const b = celulaNumero(r[c]);
+      atual[c] = a == null && b == null ? null : (a ?? 0) + (b ?? 0);
+    }
+  }
+  return map;
+}
+
+/**
  * Valor de um nó numa coluna. Nó com filhos SOMA os filhos (mesma regra das
  * páginas DRE/DFC — se lesse a própria linha, os três ecrãs divergiriam).
  */

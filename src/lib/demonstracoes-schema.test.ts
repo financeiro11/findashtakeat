@@ -4,6 +4,11 @@ import {
   ultimoMesFechado, variacao, rotulosDeDespesa, flattenLabels, chaveRubrica,
   DRE_SCHEMA, DFC_SCHEMA, type LinhaBase, type Node,
 } from "./demonstracoes-schema";
+import {
+  DRE_SCHEMA as DRE_SERVIDOR,
+  DFC_SCHEMA as DFC_SERVIDOR,
+  alvosDoAjuste,
+} from "../../supabase/functions/_shared/demonstracoes-schema.ts";
 
 /* A base congelada é um blob plano; toda a leitura passa por aqui. Os números
    dos testes são os reais da Takeat (2024/2025), para o cálculo não divergir
@@ -242,6 +247,47 @@ describe("linhas percentuais apontam para uma rubrica que existe", () => {
     for (const label of ["% Margem de contribuição", "% Margem EBITDA", "% Margem Líquida"]) {
       expect(valorBruto(idx, achar(label).pctOf!, "Jan-24")).toBe(1000);
     }
+  });
+});
+
+/* O esquema é copiado para supabase/functions/_shared porque Edge Function é Deno
+   e não enxerga `src/`. Cópia envelhece calada — rubrica nova só na tela ficaria
+   de fora da conta do total do valor manual. Este teste é o alarme. */
+describe("espelho do esquema no servidor", () => {
+  it("a DRE do servidor é idêntica à da tela", () => {
+    expect(DRE_SERVIDOR).toEqual(DRE_SCHEMA);
+  });
+
+  it("a DFC do servidor é idêntica à da tela", () => {
+    expect(DFC_SERVIDOR).toEqual(DFC_SCHEMA);
+  });
+});
+
+describe("alvosDoAjuste", () => {
+  it("leva a rubrica de custo até o lucro, passando pelo bloco", () => {
+    expect(alvosDoAjuste("dre", "Servidor")).toEqual({
+      ancestrais: ["(-) Custos Operacionais"],
+      totais: ["Margem de contribuição", "EBITDA", "Lucro Líquido"],
+    });
+  });
+
+  it("não deixa o resultado financeiro mexer no EBITDA", () => {
+    expect(alvosDoAjuste("dre", "(-) Depreciação & Amortização").totais).toEqual(["Lucro Líquido"]);
+  });
+
+  it("sobe a cadeia inteira quando a rubrica é neta", () => {
+    expect(alvosDoAjuste("dre", "Equipe Marketing")).toEqual({
+      ancestrais: ["(-) SG&A", "Pessoal"],
+      totais: ["EBITDA", "Lucro Líquido"],
+    });
+  });
+
+  it("acha a rubrica sem depender da caixa", () => {
+    expect(alvosDoAjuste("dre", "encargos sociais").ancestrais).toEqual(["(-) SG&A", "Pessoal"]);
+  });
+
+  it("rubrica fora do esquema não repercute em nada", () => {
+    expect(alvosDoAjuste("dre", "Conta que não existe")).toEqual({ ancestrais: [], totais: [] });
   });
 });
 

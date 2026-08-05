@@ -21,6 +21,10 @@ import {
 import {
   useJustificativas, MarcaJustificativa, ResumoJustificativas, fundoCelulaJustificativa,
 } from "@/components/demonstracoes/Justificativas";
+import {
+  useValoresManuais, EditorValorManual, ResumoValoresManuais,
+  fundoCelulaManual, tituloValorManual,
+} from "@/components/demonstracoes/ValoresManuais";
 import { gerarJustificativas, criarValorEm } from "@/lib/justificativas";
 
 /* ============================================================
@@ -124,11 +128,13 @@ function colunasFechadas(rows: Record<string, any>[], colsOrdenadas: string[]): 
 
 // Esquema e cálculo vivem em lib/demonstracoes-schema — compartilhados com o
 // Histórico Multianual, para as três telas não divergirem.
-import { DRE_SCHEMA, type Kind, type Node } from "@/lib/demonstracoes-schema";
+import { DRE_SCHEMA, rotulosDeDespesa, type Kind, type Node } from "@/lib/demonstracoes-schema";
 
 const flattenLabels = (nodes: Node[]): string[] =>
   nodes.flatMap((n) => [n.label, ...(n.children ? flattenLabels(n.children) : [])]);
 const DRE_RUBRICAS = flattenLabels(DRE_SCHEMA);
+// Rubricas que descem de um bloco "(-)": o valor manual delas entra negativo.
+const DRE_DESPESAS = rotulosDeDespesa(DRE_SCHEMA);
 
 /* ============================================================
  *  Page
@@ -150,6 +156,7 @@ export default function DRE() {
   const [auditando, setAuditando] = useState<AlvoLancamentos | null>(null);
   const { reclassificacoes, recarregarReclassificacoes } = useReclassificacoes("dre");
   const { justificativas, recarregarJustificativas } = useJustificativas("dre");
+  const { manuais, recarregarManuais } = useValoresManuais("dre");
   const [gerandoJust, setGerandoJust] = useState(false);
   const [progressoJust, setProgressoJust] = useState<string | null>(null);
   const [apenasUltimoMes, setApenasUltimoMes] = useState(false);
@@ -607,6 +614,14 @@ export default function DRE() {
     return total ?? valueAt(node.label, col);
   };
 
+  /* QUALQUER linha com filhos é a soma dos filhos — não só as `header`. O número
+     que o blob guarda para "Pessoal" ou "Receita Recorrente" só é reescrito no
+     import do tracker; o omie-sync mexe nas folhas e deixa o pai para trás, então
+     em mês destravado ele é lixo (Jul-26: Pessoal guardado -69.054 contra -557.477
+     somando as equipes). Ler o pai do blob era o bug — some sempre. */
+  const valorDaLinha = (node: Node, col: string): number | null =>
+    node.children?.length ? sumChildren(node, col) : getValueForRow(node, col);
+
   /* ============================================================
    *  UI
    * ============================================================ */
@@ -773,6 +788,7 @@ export default function DRE() {
           <>
           {/* Só na aba "Valores": é onde as células estão marcadas. */}
           {tab === "valores" && <ResumoReclassificacoes mapa={reclassificacoes} />}
+          {tab === "valores" && <ResumoValoresManuais mapa={manuais} colunas={displayColumns} />}
           {tab === "valores" && (
             <ResumoJustificativas
               mapa={justificativas}
@@ -828,7 +844,9 @@ export default function DRE() {
                   );
 
                   return (
-                    <tr key={node.label + depth} className={rowCls}>
+                    // group/linha: o lápis de valor manual só aparece no hover da
+                    // linha — um lápis em cada célula competiria com os números.
+                    <tr key={node.label + depth} className={cn("group/linha", rowCls)}>
                       <td
                         className={cn(
                           "sticky left-0 z-[2] px-3 py-1.5 text-[12.5px] w-[220px] min-w-[220px] shadow-[1px_0_0_0_hsl(var(--border))]",
@@ -861,16 +879,16 @@ export default function DRE() {
                         const ehUltimoMes = idx === displayColumns.length - 1;
                         let v: number | null = null;
                         if (tab === "valores") {
-                          v = isHeader && hasChildren ? sumChildren(node, c) : getValueForRow(node, c);
+                          v = valorDaLinha(node, c);
                         } else if (tab === "mom") {
                           const idx = columns.indexOf(c);
                           const prev = idx > 0 ? columns[idx - 1] : null;
-                          const cur = isHeader && hasChildren ? sumChildren(node, c) : getValueForRow(node, c);
-                          const pre = prev ? (isHeader && hasChildren ? sumChildren(node, prev) : getValueForRow(node, prev)) : null;
+                          const cur = valorDaLinha(node, c);
+                          const pre = prev ? valorDaLinha(node, prev) : null;
                           v = (cur != null && pre != null && pre !== 0) ? (cur - pre) / Math.abs(pre) : null;
                         } else {
                           // % sobre receita
-                          const cur = isHeader && hasChildren ? sumChildren(node, c) : getValueForRow(node, c);
+                          const cur = valorDaLinha(node, c);
                           const rec = valueAt("Receita Líquida", c);
                           v = (cur != null && rec && rec !== 0) ? cur / rec : null;
                         }
@@ -897,6 +915,12 @@ export default function DRE() {
                         const just = tab === "valores"
                           ? justificativas.get(chaveCelula(node.label, c))
                           : undefined;
+                        /* Digitar valor vale nas MESMAS células que abrem
+                           auditoria, e pelo mesmo motivo: linha com filhos é a
+                           soma dos filhos, total e percentual são calculados —
+                           o número digitado neles morreria no próximo recálculo. */
+                        const editavel = podeAuditar;
+                        const manual = editavel ? manuais.get(chaveCelula(node.label, c)) : undefined;
                         /* Célula vazia COM alerta continua clicável: existe
                            lançamento no Omie e a demonstração não mostra nada —
                            esconder a marca esconderia justamente esse buraco. */
@@ -911,24 +935,41 @@ export default function DRE() {
                             }) : undefined}
                             title={[
                               tituloValor(v, isPercent || tab === "mom" || tab === "pct"),
+                              manual ? tituloValorManual(manual) : null,
                               alerta ? tituloReclassificacao(alerta) : null,
                               auditavel ? "clique para ver os lançamentos" : null,
                             ].filter(Boolean).join(" · ") || undefined}
                             className={cn(
-                              "px-1.5 py-1.5 text-right text-[12px] num whitespace-nowrap min-w-[64px]",
+                              // relative: o lápis do valor manual se posiciona por ela
+                              "relative px-1.5 py-1.5 text-right text-[12px] num whitespace-nowrap min-w-[64px]",
                               v != null && "cursor-help",
                               isNeg && !isPercent ? "text-primary" : isTotal ? "text-emerald-800" : "text-foreground/90",
                               v == null && "text-muted-foreground/40",
                               auditavel && "cursor-pointer hover:bg-primary/10 hover:underline hover:decoration-dotted hover:underline-offset-2",
                               // Excludentes de propósito: dois `bg-*` na mesma célula
                               // dependeriam da ordem no CSS gerado, não da ordem aqui.
-                              // O alerta de classificação errada tem prioridade.
-                              alerta ? fundoCelulaReclassificacao(alerta) : just && fundoCelulaJustificativa(just),
+                              // O alerta de classificação errada tem prioridade; o
+                              // valor manual vem antes do comentário porque muda o
+                              // número, não só o entendimento dele.
+                              alerta ? fundoCelulaReclassificacao(alerta)
+                                : manual ? fundoCelulaManual()
+                                : just && fundoCelulaJustificativa(just),
                             )}
                           >
                             <span className="inline-flex items-center justify-end gap-1">
                               {alerta && <MarcaReclassificacao alerta={alerta} />}
                               {just && travados.has(c) && (!apenasUltimoMes || ehUltimoMes) && <MarcaJustificativa justificativa={just} onMudou={recarregarJustificativas} />}
+                              {editavel && (
+                                <EditorValorManual
+                                  tipo="dre"
+                                  rubrica={node.label}
+                                  col={c}
+                                  valorCelula={v}
+                                  manual={manual}
+                                  despesa={DRE_DESPESAS.has(node.label)}
+                                  onSalvo={async () => { await load(); await recarregarManuais(); }}
+                                />
+                              )}
                               {display}
                             </span>
                           </td>

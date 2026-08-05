@@ -535,6 +535,13 @@ export default function DFC() {
     return total ?? valueAt(node.label, col);
   };
 
+  /* QUALQUER linha com filhos é a soma dos filhos — não só as `header`. O número
+     que o blob guarda para "Pessoal" ou "Impostos" só é reescrito no import do
+     tracker; o omie-sync mexe nas folhas e deixa o pai para trás, então em mês
+     destravado ele é lixo. Ler o pai do blob era o bug — some sempre. */
+  const valorDaLinha = (node: Node, col: string): number | null =>
+    node.children?.length ? sumChildren(node, col) : getValueForRow(node, col);
+
   // Cálculos derivados quando rótulos não existem na planilha
   function entradasAt(col: string): number | null {
     if (valueByLabel.has("entradas")) return valueAt("Entradas", col);
@@ -908,12 +915,12 @@ export default function DFC() {
                         const ehUltimoMes = idx === displayColumns.length - 1;
                         let v: number | null = null;
                         if (tab === "valores") {
-                          v = isHeader && hasChildren ? sumChildren(node, c) : getValueForRow(node, c);
+                          v = valorDaLinha(node, c);
                         } else if (tab === "mom") {
                           const idx = columns.indexOf(c);
                           const prev = idx > 0 ? columns[idx - 1] : null;
-                          const cur = isHeader && hasChildren ? sumChildren(node, c) : getValueForRow(node, c);
-                          const pre = prev ? (isHeader && hasChildren ? sumChildren(node, prev) : getValueForRow(node, prev)) : null;
+                          const cur = valorDaLinha(node, c);
+                          const pre = prev ? valorDaLinha(node, prev) : null;
                           v = (cur != null && pre != null && pre !== 0) ? (cur - pre) / Math.abs(pre) : null;
                         } else {
                           // Caixa acumulado: soma do fluxo livre até a coluna
@@ -922,7 +929,7 @@ export default function DFC() {
                           else {
                             const w = columns.slice(0, idx + 1);
                             v = w.reduce<number | null>((acc, cc) => {
-                              const x = isHeader && hasChildren ? sumChildren(node, cc) : getValueForRow(node, cc);
+                              const x = valorDaLinha(node, cc);
                               return x == null ? acc : (acc ?? 0) + x;
                             }, null);
                           }

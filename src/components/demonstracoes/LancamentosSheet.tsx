@@ -1,10 +1,11 @@
 import { Fragment, useCallback, useEffect, useState } from "react";
-import { Loader2, TriangleAlert, Check, FileText, Users, Undo2, ArrowRightLeft } from "lucide-react";
+import { Loader2, TriangleAlert, Check, FileText, Users, Undo2, ArrowRightLeft, CreditCard } from "lucide-react";
 import { toast } from "sonner";
 import { supabase } from "@/integrations/supabase/client";
 import { cn } from "@/lib/utils";
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { CategoriaEditavel } from "@/components/demonstracoes/TrocarCategoria";
+import { ehCartao, lerObservacaoTitulo } from "@/lib/observacaoTitulo";
 
 /* ---------------------------------------------------------------------------
  * Auditoria: os lançamentos do Omie por trás de uma célula da DRE/DFC.
@@ -99,19 +100,80 @@ export function LancamentosSheet({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [alvo?.tipo, alvo?.rubrica, alvo?.mes]);
 
+  /* ----- observação do título ------------------------------------------
+   * Todo gasto de cartão chega aqui como "Lancamento Fatura Cartao" — é o
+   * balde da fatura no ERP. O que cada linha É está na OBSERVAÇÃO do título,
+   * que o Omie só entrega em ConsultarContaPagar, um título por chamada. Por
+   * isso o texto é guardado em `omie_titulo_texto`: lido uma vez, vale sempre.
+   * Ver a edge function `omie-titulo-texto`. */
+  const [textos, setTextos] = useState<Map<string, string | null>>(new Map());
+  const [buscandoObs, setBuscandoObs] = useState(false);
+
+  const lerTextos = useCallback(async (cods: string[]): Promise<Map<string, string | null>> => {
+    const m = new Map<string, string | null>();
+    if (!cods.length) return m;
+    const { data } = await supabase
+      .from("omie_titulo_texto" as never)
+      .select("cod_titulo,observacao")
+      .in("cod_titulo", cods.map(Number));
+    for (const r of (data as unknown as { cod_titulo: number; observacao: string | null }[]) ?? []) {
+      m.set(String(r.cod_titulo), r.observacao);
+    }
+    return m;
+  }, []);
+
+  /** Busca no Omie o texto que ainda não temos. Sequencial lá dentro (a API
+   *  recusa chamadas simultâneas do mesmo método), então vem com teto: o que
+   *  não couber é oferecido num botão em vez de segurar o painel. */
+  const buscarObs = useCallback(async (cods: string[]) => {
+    if (!cods.length) return;
+    setBuscandoObs(true);
+    try {
+      const { data, error } = await supabase.functions.invoke("omie-titulo-texto", {
+        body: { cod_titulos: cods },
+      });
+      if (error) throw error;
+      if ((data as { error?: string })?.error) throw new Error((data as { error: string }).error);
+      // Relê o cache: quem entrou some da lista de pendentes sozinho, e o que
+      // não coube no teto da função continua lá para o botão.
+      const novos = await lerTextos(cods);
+      setTextos((antes) => new Map([...antes, ...novos]));
+    } catch (e) {
+      // Acessório: sem a observação a lista continua de pé, só sem o nome do
+      // lojista. Não vale derrubar a auditoria por isso.
+      toast.error("Não consegui buscar as observações no Omie: " + (e instanceof Error ? e.message : String(e)));
+    } finally {
+      setBuscandoObs(false);
+    }
+  }, [lerTextos]);
+
   const carregar = useCallback(async () => {
     if (!alvo) return;
     setCarregando(true);
     setErro(null);
     const { data, error } = await supabase
       .rpc("demonstracoes_lancamentos", { p_tipo: alvo.tipo, p_rubrica: alvo.rubrica, p_mes: alvo.mes });
-    if (error) { setErro(error.message); setLinhas([]); }
-    else setLinhas((data as Lancamento[]) ?? []);
+    if (error) { setErro(error.message); setLinhas([]); setTextos(new Map()); setCarregando(false); return; }
+
+    const rows = (data as Lancamento[]) ?? [];
+    setLinhas(rows);
+    const cods = rows.map((l) => l.cod_titulo).filter(Boolean) as string[];
+    const cache = await lerTextos(cods);
+    setTextos(cache);
     setCarregando(false);
+
+    // Só o cartão puxa texto sozinho: é onde a contraparte não diz nada. Nas
+    // demais linhas o nome do fornecedor já está na tela e a chamada não se
+    // pagaria. Sem await: a lista aparece na hora e as observações entram
+    // depois, quando o Omie responder.
+    const faltam = rows
+      .filter((l) => l.cod_titulo && ehCartao(l.contraparte) && !cache.has(l.cod_titulo))
+      .map((l) => l.cod_titulo as string);
+    if (faltam.length) void buscarObs(faltam);
     // Depende dos três campos da consulta, não do objeto: `celula` e `travado`
     // mudam de identidade a cada clique e disparariam uma busca idêntica.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [alvo?.tipo, alvo?.rubrica, alvo?.mes]);
+  }, [alvo?.tipo, alvo?.rubrica, alvo?.mes, lerTextos, buscarObs]);
 
   useEffect(() => { carregar(); }, [carregar]);
   useEffect(() => { carregarAlertas(); }, [carregarAlertas]);
@@ -166,6 +228,13 @@ export function LancamentosSheet({
     toast.success(`${data?.clientes ?? 0} cadastros carregados do Omie.`);
     await carregar();
   };
+
+  /* Gastos de cartão cujo texto ainda não foi lido do Omie. `textos` guarda a
+     entrada mesmo quando a observação volta vazia, então "não tem no mapa" é
+     literalmente "ainda não perguntei" — e é isso que o botão resolve. */
+  const cartoesSemObs = linhas
+    .filter((l) => l.cod_titulo && ehCartao(l.contraparte) && !textos.has(l.cod_titulo))
+    .map((l) => l.cod_titulo as string);
 
   const soma = linhas.reduce((s, l) => s + (Number(l.valor) || 0), 0);
   const bate = alvo?.celula != null && Math.abs(soma - alvo.celula) < 0.5;
@@ -241,6 +310,25 @@ export function LancamentosSheet({
               </div>
             )}
 
+            {!carregando && !erro && (buscandoObs || cartoesSemObs.length > 0) && (
+              <div className="flex shrink-0 flex-wrap items-center justify-between gap-2 border-b border-border bg-muted/50 px-5 py-2">
+                <span className="inline-flex items-center gap-1.5 text-[11.5px] text-muted-foreground">
+                  {buscandoObs
+                    ? <><Loader2 className="h-3 w-3 animate-spin" /> Buscando a observação dos gastos de cartão no Omie…</>
+                    : <><CreditCard className="h-3 w-3" /> {cartoesSemObs.length} gasto(s) de cartão sem a observação carregada.</>}
+                </span>
+                {!buscandoObs && (
+                  <button
+                    onClick={() => buscarObs(cartoesSemObs)}
+                    title="Cada título custa uma consulta ao Omie; o que já foi lido não é lido de novo."
+                    className="inline-flex items-center gap-1.5 rounded-md border border-border bg-card px-2.5 py-1 text-[11.5px] font-medium transition hover:bg-secondary"
+                  >
+                    <CreditCard className="h-3 w-3" /> Buscar observações
+                  </button>
+                )}
+              </div>
+            )}
+
             {!carregando && !erro && semNome > 0 && (
               <div className="flex shrink-0 flex-wrap items-center justify-between gap-2 border-b border-border bg-muted/50 px-5 py-2">
                 <span className="text-[11.5px] text-muted-foreground">
@@ -291,6 +379,8 @@ export function LancamentosSheet({
                     {linhas.map((l, i) => {
                       const a = l.cod_titulo ? alertas.get(l.cod_titulo) : undefined;
                       const aberto = a?.status === "aberto";
+                      const obs = l.cod_titulo ? textos.get(l.cod_titulo) : undefined;
+                      const lida = lerObservacaoTitulo(obs);
                       return (
                       <Fragment key={i}>
                       <tr className={cn(
@@ -300,12 +390,25 @@ export function LancamentosSheet({
                         <td className="whitespace-nowrap px-3 py-2 text-[11.5px] num text-muted-foreground">
                           {dataCurta(l.data)}
                         </td>
+                        {/* No cartão a contraparte é sempre o balde da fatura
+                            ("Lancamento Fatura Cartao") e quem identifica o gasto
+                            é a observação do título — então ela vem na frente, e
+                            o balde desce para a linha de apoio. O texto cru fica
+                            no hover, porque é ele que se confere contra o ERP. */}
                         <td className="px-2 py-2 text-[11.5px]">
                           <div className="flex items-center gap-1 text-foreground">
                             {aberto && <TriangleAlert strokeWidth={2.5} className="h-3.5 w-3.5 shrink-0 fill-amber-400 text-amber-800" />}
-                            {l.contraparte ?? doc(l.cnpj_cpf)}
+                            {lida ? (
+                              <span className="inline-flex items-center gap-1" title={obs ?? undefined}>
+                                <CreditCard className="h-3 w-3 shrink-0 text-muted-foreground" />
+                                {lida.estabelecimento}
+                              </span>
+                            ) : (l.contraparte ?? doc(l.cnpj_cpf))}
                           </div>
                           <div className="mt-px flex flex-wrap items-center gap-x-1.5 text-[10px] text-muted-foreground">
+                            {lida && <span title={obs ?? undefined}>{l.contraparte ?? doc(l.cnpj_cpf)}</span>}
+                            {lida?.detalhe && <span>{lida.detalhe}</span>}
+                            {lida?.parcela && <span>parcela {lida.parcela}</span>}
                             {l.titulo && <span className="inline-flex items-center gap-0.5"><FileText className="h-2.5 w-2.5" />{l.titulo}</span>}
                             {l.documento && <span>NF {l.documento}</span>}
                             {l.status && <span className="uppercase">{l.status}</span>}

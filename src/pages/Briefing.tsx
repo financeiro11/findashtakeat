@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { toast } from "sonner";
 import ReactMarkdown from "react-markdown";
@@ -8,6 +8,7 @@ import { openAIAssistant } from "@/components/AIAssistant";
 import { useAuth } from "@/hooks/useAuth";
 import { Link } from "react-router-dom";
 import { TaskDialog, DEFAULT_COLUMNS, type Tarefa } from "@/components/tarefas/TaskDialog";
+import { conciliarPagamentos, descreverTitulo, type Conciliacao, type Situacao, type TituloOmie } from "@/lib/pagamentos";
 import {
   Sparkles, RefreshCw, Loader2, CalendarDays, AlertTriangle, Mail,
   ArrowRight, Newspaper, CalendarClock, ListChecks, CheckCircle2, Pencil, Wallet,
@@ -83,6 +84,18 @@ const BADGE_TOM: Record<string, string> = {
   red: "bg-primary/10 text-primary",
   amber: "bg-amber-500/15 text-amber-600 dark:text-amber-400",
   neutral: "bg-secondary text-muted-foreground",
+};
+
+/* --------- conferência dos pagamentos da agenda contra o Omie --------- */
+const fmtBRL = (v: number) =>
+  (v ?? 0).toLocaleString("pt-BR", { style: "currency", currency: "BRL", minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
+const SIT_META: Record<Situacao, { rotulo: string; chip: string; icone: string; alerta: boolean }> = {
+  provisionado:  { rotulo: "provisionado",  chip: "bg-emerald-500/15 text-emerald-600 dark:text-emerald-400", icone: "bg-emerald-500/12 text-emerald-600 dark:text-emerald-400", alerta: false },
+  outra_data:    { rotulo: "outra data",    chip: "bg-amber-500/15 text-amber-600 dark:text-amber-400",       icone: "bg-amber-500/12 text-amber-600 dark:text-amber-400",       alerta: true },
+  valor_diverge: { rotulo: "valor diverge", chip: "bg-amber-500/15 text-amber-600 dark:text-amber-400",       icone: "bg-amber-500/12 text-amber-600 dark:text-amber-400",       alerta: true },
+  ausente:       { rotulo: "sem provisão",  chip: "bg-primary/10 text-primary",                               icone: "bg-primary/10 text-primary",                               alerta: true },
+  rotina:        { rotulo: "rotina",        chip: "bg-secondary text-muted-foreground",                       icone: "bg-secondary text-muted-foreground",                       alerta: false },
 };
 
 /* metadados de exibição por chave de pessoa (formato da skill: financeiro/henrique/julia) */
@@ -333,6 +346,9 @@ export default function Briefing() {
   const [refreshing, setRefreshing] = useState(false);
   const [tarefas, setTarefas] = useState<Tarefa[]>([]);
   const [editing, setEditing] = useState<Tarefa | null>(null);
+  const [titulosOmie, setTitulosOmie] = useState<TituloOmie[] | null>(null);
+  const [erroOmie, setErroOmie] = useState<string | null>(null);
+  const [atualizandoOmie, setAtualizandoOmie] = useState(false);
 
   async function carregar(silencioso = false): Promise<Briefing | null> {
     if (!silencioso) setLoading(true);
@@ -362,6 +378,41 @@ export default function Briefing() {
     setTarefas(((data as any[]) ?? []).map((r) => ({ ...r, subtarefas: Array.isArray(r.subtarefas) ? r.subtarefas : [] })) as Tarefa[]);
   }
   useEffect(() => { carregarTarefas(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [b]);
+
+  // Títulos a pagar do Omie em torno do dia do briefing — é o outro lado da
+  // conferência dos pagamentos da agenda. Busca ao vivo (a skill não sabe do
+  // Omie), com uma folga de 7 dias para reconhecer o que está provisionado com
+  // outro vencimento em vez de gritar "não provisionado".
+  async function carregarTitulosOmie() {
+    if (!b) { setTitulosOmie(null); return; }
+    const dia = b.agenda?.data ?? isoDateBRT(b.gerado_em);
+    const { data, error } = await sb.rpc("pagamentos_previstos", { p_dia: dia, p_janela_dias: 7 });
+    if (error) {
+      setErroOmie(error.message);
+      setTitulosOmie(null);
+      return;
+    }
+    setErroOmie(null);
+    setTitulosOmie(((data as any[]) ?? []).map((t) => ({ ...t, valor: Number(t.valor), valor_aberto: Number(t.valor_aberto) })) as TituloOmie[]);
+  }
+  useEffect(() => { carregarTitulosOmie(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [b]);
+
+  // Repuxa a janela do Omie AGORA (título lançado há dez minutos ainda não está
+  // no cache) e reconfere. A observação de cada título custa uma chamada ao Omie,
+  // então aqui vai um teto curto: o grosso é o cron diário que mantém o cache.
+  async function atualizarDoOmie() {
+    setAtualizandoOmie(true);
+    const { data, error } = await sb.functions.invoke("omie-contas-pagar-sync", {
+      body: { max_consultas: 60, orcamento_ms: 25_000 },
+    });
+    if (error || data?.status === "erro") {
+      toast.error("Não deu para atualizar do Omie: " + (data?.erro ?? error?.message ?? "erro desconhecido"));
+    } else {
+      await carregarTitulosOmie();
+      toast.success(`Contas a pagar atualizadas · ${data?.titulos_janela ?? 0} títulos na janela.`);
+    }
+    setAtualizandoOmie(false);
+  }
 
   // Edição a partir do briefing: grava a alteração na tabela tarefas (otimista).
   async function salvarTarefa(patch: Partial<Tarefa>) {
@@ -419,7 +470,12 @@ export default function Briefing() {
   const editColumns = Array.from(new Set([...DEFAULT_COLUMNS, editing?.status].filter(Boolean))) as string[];
   return (
     <>
-      <BriefingView b={b} vm={vm} tarefas={tarefas} meNome={profile?.nome ?? null} onEdit={setEditing} onRegerar={regerar} onAprofundar={aprofundar} refreshing={refreshing} />
+      <BriefingView
+        b={b} vm={vm} tarefas={tarefas} meNome={profile?.nome ?? null}
+        titulosOmie={titulosOmie} erroOmie={erroOmie}
+        onAtualizarOmie={atualizarDoOmie} atualizandoOmie={atualizandoOmie}
+        onEdit={setEditing} onRegerar={regerar} onAprofundar={aprofundar} refreshing={refreshing}
+      />
       <TaskDialog
         columns={editColumns}
         open={!!editing}
@@ -433,11 +489,18 @@ export default function Briefing() {
 }
 
 /* ============================================================================ */
-function BriefingView({ b, vm, tarefas, meNome, onEdit, onRegerar, onAprofundar, refreshing }: {
+function BriefingView({ b, vm, tarefas, meNome, titulosOmie, erroOmie, onAtualizarOmie, atualizandoOmie, onEdit, onRegerar, onAprofundar, refreshing }: {
   b: Briefing; vm: VM; tarefas: Tarefa[]; meNome: string | null;
+  titulosOmie: TituloOmie[] | null; erroOmie: string | null;
+  onAtualizarOmie: () => void; atualizandoOmie: boolean;
   onEdit: (t: Tarefa) => void;
   onRegerar: () => void; onAprofundar: () => void; refreshing: boolean;
 }) {
+  /* ------- conferência: pagamentos da agenda × títulos a pagar do Omie ------- */
+  const conc: Conciliacao | null = useMemo(
+    () => (titulosOmie ? conciliarPagamentos(vm.pagamentos.map((p) => ({ titulo: p.titulo })), titulosOmie, vm.diaISO) : null),
+    [titulosOmie, vm.pagamentos, vm.diaISO],
+  );
   /* ---------------- tarefas com prazo hoje (você + Júlia) ---------------- */
   const meNorm = normalizeResp(meNome);
   const alvos = Array.from(new Set([meNorm && meNorm !== "—" ? meNorm : "Henrique", "Júlia"]));
@@ -621,25 +684,137 @@ function BriefingView({ b, vm, tarefas, meNome, onEdit, onRegerar, onAprofundar,
             </SectionCard>
           )}
 
-          {/* ---------------- Pagamentos do dia (eventos de dia inteiro) ---------------- */}
+          {/* ------- Pagamentos do dia: agenda (dia inteiro) × contas a pagar do Omie ------- */}
           <SectionCard
             title={<span className="flex items-center gap-2"><Wallet className="h-4 w-4 text-muted-foreground" /> Pagamentos do dia</span>}
-            subtitle={`${vm.pagamentos.length} pagamento${vm.pagamentos.length === 1 ? "" : "s"} · marcados como evento de dia inteiro na agenda`}
+            subtitle={
+              conc
+                ? `${conc.resumo.naAgenda} na agenda · ${conc.resumo.provisionados} provisionado${conc.resumo.provisionados === 1 ? "" : "s"} no Omie · ${conc.resumo.nOmieDia} título${conc.resumo.nOmieDia === 1 ? "" : "s"} vencendo hoje no ERP (${fmtBRL(conc.resumo.totalOmieDia)})`
+                : `${vm.pagamentos.length} pagamento${vm.pagamentos.length === 1 ? "" : "s"} · marcados como evento de dia inteiro na agenda`
+            }
+            actions={
+              <div className="flex items-center gap-2">
+                {conc && conc.alertas.length > 0 && (
+                  <span className="inline-flex items-center gap-1 rounded bg-primary/10 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider text-primary">
+                    <AlertTriangle className="h-3 w-3" /> {conc.alertas.length} a conferir
+                  </span>
+                )}
+                <button
+                  onClick={onAtualizarOmie}
+                  disabled={atualizandoOmie}
+                  title="Repuxa as contas a pagar do Omie agora e reconfere — use depois de lançar um título."
+                  className="inline-flex items-center gap-1 rounded border border-border px-2 py-1 text-[11px] font-medium text-muted-foreground transition hover:bg-secondary disabled:opacity-60"
+                >
+                  {atualizandoOmie ? <Loader2 className="h-3 w-3 animate-spin" /> : <RefreshCw className="h-3 w-3" />}
+                  {atualizandoOmie ? "conferindo…" : "Atualizar do Omie"}
+                </button>
+              </div>
+            }
           >
+            {erroOmie && (
+              <div className="mb-2 rounded-md border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-[11.5px] text-amber-700 dark:text-amber-400">
+                Não deu para conferir com o Omie agora ({erroOmie}). A lista abaixo é só a agenda.
+              </div>
+            )}
+            {!conc && !erroOmie && (
+              <div className="mb-2 flex items-center gap-2 text-[11.5px] text-muted-foreground">
+                <Loader2 className="h-3.5 w-3.5 animate-spin" /> conferindo com as contas a pagar do Omie…
+              </div>
+            )}
+
+            {conc && conc.resumo.naoProvisionados > 0 && (
+              <div className="mb-3 flex items-start gap-2 rounded-md border border-primary/30 bg-primary/5 px-3 py-2.5">
+                <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-primary" />
+                <div className="min-w-0 text-[12.5px] leading-snug">
+                  <span className="font-semibold text-foreground">
+                    {conc.resumo.naoProvisionados} pagamento{conc.resumo.naoProvisionados === 1 ? "" : "s"} da agenda sem provisão no Omie
+                  </span>
+                  <div className="mt-0.5 text-muted-foreground">
+                    {conc.itens.filter((i) => i.situacao === "ausente").map((i) => i.rotulo).join(" · ")}
+                    {" — "}lance o título antes de pagar, senão o valor sai do caixa sem estar previsto no ERP.
+                  </div>
+                </div>
+              </div>
+            )}
+
             {vm.pagamentos.length === 0 ? (
               <div className="py-4 text-center text-[12.5px] text-muted-foreground">Nenhum pagamento marcado para hoje.</div>
             ) : (
               <ul className="space-y-2">
-                {vm.pagamentos.map((p, i) => (
-                  <li key={i} className="flex items-start gap-3 rounded-md border border-border bg-card px-3 py-2.5">
-                    <span className="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-emerald-500/12 text-emerald-600 dark:text-emerald-400">
-                      <Wallet className="h-3.5 w-3.5" />
-                    </span>
-                    <div className="min-w-0 flex-1 text-[12.5px] font-medium leading-snug text-foreground">{p.titulo}</div>
-                    <Participantes lista={p.participantes} />
-                  </li>
-                ))}
+                {vm.pagamentos.map((p, i) => {
+                  const conf = conc?.itens[i];
+                  const meta = SIT_META[conf?.situacao ?? "rotina"];
+                  return (
+                    <li key={i} className="flex items-start gap-3 rounded-md border border-border bg-card px-3 py-2.5">
+                      <span className={cn("mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-md", conf ? meta.icone : "bg-emerald-500/12 text-emerald-600 dark:text-emerald-400")}>
+                        <Wallet className="h-3.5 w-3.5" />
+                      </span>
+                      <div className="min-w-0 flex-1">
+                        <div className="text-[12.5px] font-medium leading-snug text-foreground">{p.titulo}</div>
+                        {conf && conf.situacao !== "rotina" && (
+                          <div className="mt-0.5 text-[11px] text-muted-foreground">
+                            <div>{conf.motivo}</div>
+                            {/* o título como está no Omie: quem recebe + a observação, que
+                                é muitas vezes a única coisa que identifica o pagamento */}
+                            {conf.titulos.slice(0, 2).map((t) => (
+                              <div key={t.cod_titulo} className="truncate text-muted-foreground/80" title={descreverTitulo(t)}>
+                                ↳ {descreverTitulo(t)}
+                              </div>
+                            ))}
+                            {conf.titulos.length > 2 && (
+                              <div className="text-muted-foreground/80">↳ +{conf.titulos.length - 2} título{conf.titulos.length - 2 === 1 ? "" : "s"}</div>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                      {conf && (
+                        <span className={cn("mt-0.5 shrink-0 rounded px-1.5 py-0.5 text-[9.5px] font-bold uppercase tracking-wider", meta.chip)}>
+                          {meta.rotulo}
+                        </span>
+                      )}
+                      <Participantes lista={p.participantes} />
+                    </li>
+                  );
+                })}
               </ul>
+            )}
+
+            {conc && conc.resumo.nSemAgenda > 0 && (
+              <details className="group mt-3 rounded-md border border-dashed border-border px-3 py-2">
+                <summary className="flex cursor-pointer list-none items-center gap-2 text-[12px] text-muted-foreground marker:content-none">
+                  <CalendarClock className="h-3.5 w-3.5" />
+                  <span>
+                    <span className="font-semibold text-foreground">{conc.resumo.nSemAgenda}</span> título
+                    {conc.resumo.nSemAgenda === 1 ? "" : "s"} vencem hoje no Omie e não estão na agenda
+                    <span className="num"> · {fmtBRL(conc.resumo.totalSemAgenda)}</span>
+                  </span>
+                  <ArrowRight className="h-3 w-3 transition group-open:rotate-90" />
+                </summary>
+                <div className="mt-2 space-y-1.5">
+                  {conc.semAgendaPorCategoria.map((g) => (
+                    <div key={g.categoria} className="flex items-baseline justify-between gap-3 text-[11.5px]">
+                      <span className="min-w-0 truncate text-muted-foreground">{g.categoria}</span>
+                      <span className="num shrink-0 text-foreground">
+                        {g.n}× · {fmtBRL(g.total)}
+                      </span>
+                    </div>
+                  ))}
+                  {conc.semAgenda.length > 0 && (
+                    <div className="mt-2 space-y-1 border-t border-border pt-2">
+                      <div className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground/80">maiores</div>
+                      {conc.semAgenda.slice(0, 5).map((t) => (
+                        <div key={t.cod_titulo} className="flex items-baseline justify-between gap-3 text-[11.5px]">
+                          <span className="min-w-0 truncate text-muted-foreground" title={descreverTitulo(t)}>{descreverTitulo(t)}</span>
+                          <span className="num shrink-0 text-foreground">{fmtBRL(t.valor)}</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  <div className="pt-1 text-[11px] text-muted-foreground/80">
+                    Normal para folha de PJ e recorrências lançadas direto no ERP — vale o olho quando aparece algo grande fora do padrão.
+                  </div>
+                </div>
+              </details>
             )}
           </SectionCard>
         </>

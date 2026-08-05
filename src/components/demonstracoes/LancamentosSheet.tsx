@@ -1,9 +1,10 @@
 import { Fragment, useCallback, useEffect, useState } from "react";
-import { Loader2, TriangleAlert, Check, FileText, Users, Undo2 } from "lucide-react";
+import { Loader2, TriangleAlert, Check, FileText, Users, Undo2, ArrowRightLeft } from "lucide-react";
 import { toast } from "sonner";
 import { supabase } from "@/integrations/supabase/client";
 import { cn } from "@/lib/utils";
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
+import { CategoriaEditavel } from "@/components/demonstracoes/TrocarCategoria";
 
 /* ---------------------------------------------------------------------------
  * Auditoria: os lançamentos do Omie por trás de uma célula da DRE/DFC.
@@ -68,12 +69,22 @@ const doc = (v: string | null) => {
   return v ?? "—";
 };
 
-export function LancamentosSheet({ alvo, onClose }: { alvo: AlvoLancamentos | null; onClose: () => void }) {
+export function LancamentosSheet({
+  alvo, onClose, onCategoriaTrocada,
+}: {
+  alvo: AlvoLancamentos | null;
+  onClose: () => void;
+  /** Recalcular a demonstração depois da troca — quem sabe fazer isso é a página. */
+  onCategoriaTrocada?: () => void | Promise<void>;
+}) {
   const [linhas, setLinhas] = useState<Lancamento[]>([]);
   const [alertas, setAlertas] = useState<Map<string, Alerta>>(new Map());
   const [carregando, setCarregando] = useState(false);
   const [erro, setErro] = useState<string | null>(null);
   const [decidindo, setDecidindo] = useState<string | null>(null);
+  /* Qual seletor de categoria está aberto (cod_titulo). Fica aqui em cima
+     porque o botão "Mover para …" do alerta abre o seletor da linha DE CIMA. */
+  const [trocando, setTrocando] = useState<string | null>(null);
 
   /** Alertas da célula, por lançamento. Isolado porque é recarregado sozinho a
    *  cada "ignorar" — a lista de lançamentos não muda nessa hora. */
@@ -104,6 +115,15 @@ export function LancamentosSheet({ alvo, onClose }: { alvo: AlvoLancamentos | nu
 
   useEffect(() => { carregar(); }, [carregar]);
   useEffect(() => { carregarAlertas(); }, [carregarAlertas]);
+
+  /* Depois de trocar a categoria: a lista sai daqui (o lançamento foi para outra
+     rubrica) e o alerta some sozinho — a detecção roda no gatilho do cache. Só
+     a demonstração em si precisa de quem sabe recalcular: a página. */
+  const aposTroca = useCallback(async () => {
+    await carregar();
+    await carregarAlertas();
+    await onCategoriaTrocada?.();
+  }, [carregar, carregarAlertas, onCategoriaTrocada]);
 
   /* escopo 'lancamento' cala só este; 'fornecedor' aceita o par de rubricas
      para sempre — é o que resolve quem legitimamente cai nas duas linhas. */
@@ -292,10 +312,23 @@ export function LancamentosSheet({ alvo, onClose }: { alvo: AlvoLancamentos | nu
                           </div>
                         </td>
                         {/* O código é o que se corrige no Omie; a descrição é o que
-                            o DE-PARA casa. Auditar categorização precisa dos dois. */}
+                            o DE-PARA casa. Auditar categorização precisa dos dois.
+                            Clicar troca a categoria — no Omie e aqui. */}
                         <td className="px-2 py-2 text-[11.5px]">
-                          <div className="text-foreground/90">{l.categoria_descricao ?? "—"}</div>
-                          <div className="mt-px font-mono text-[10px] text-muted-foreground">{l.categoria_codigo ?? "—"}</div>
+                          <CategoriaEditavel
+                            codTitulo={l.cod_titulo}
+                            codigo={l.categoria_codigo}
+                            descricao={l.categoria_descricao}
+                            contraparte={l.contraparte}
+                            tipo={alvo.tipo}
+                            mes={alvo.mes}
+                            mesLabel={alvo.mesLabel}
+                            travado={alvo.travado}
+                            rubricaSugerida={aberto ? a?.rubrica_padrao : null}
+                            aberto={!!l.cod_titulo && trocando === l.cod_titulo}
+                            onAbertoChange={(o) => setTrocando(o ? l.cod_titulo : null)}
+                            onTrocado={aposTroca}
+                          />
                         </td>
                         <td className={cn(
                           "whitespace-nowrap px-3 py-2 text-right text-[11.5px] num font-medium",
@@ -330,6 +363,16 @@ export function LancamentosSheet({ alvo, onClose }: { alvo: AlvoLancamentos | nu
                               <span className="flex shrink-0 items-center gap-1.5">
                                 {aberto ? (
                                   <>
+                                    {/* Abre o seletor da linha de cima, já com as
+                                        categorias da rubrica de origem no topo. */}
+                                    <button
+                                      onClick={() => setTrocando(a.cod_titulo)}
+                                      disabled={decidindo === a.id}
+                                      className="inline-flex items-center gap-1 rounded-md border border-amber-400 bg-amber-200/70 px-2 py-1 text-[10.5px] font-semibold text-amber-950 transition hover:bg-amber-200 disabled:opacity-50"
+                                      title={`Trocar a categoria no Omie — sugerindo as de "${a.rubrica_padrao}"`}
+                                    >
+                                      <ArrowRightLeft className="h-2.5 w-2.5" /> Trocar categoria…
+                                    </button>
                                     <button
                                       onClick={() => decidir(a, "lancamento")}
                                       disabled={decidindo === a.id}

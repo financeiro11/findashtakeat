@@ -18,6 +18,10 @@ import {
   useReclassificacoes, chaveCelula, tituloReclassificacao,
   MarcaReclassificacao, ResumoReclassificacoes, fundoCelulaReclassificacao,
 } from "@/components/demonstracoes/Reclassificacoes";
+import {
+  useJustificativas, MarcaJustificativa, ResumoJustificativas, fundoCelulaJustificativa,
+} from "@/components/demonstracoes/Justificativas";
+import { gerarJustificativas, criarValorEm } from "@/lib/justificativas";
 
 /* ============================================================
  *  Helpers
@@ -144,6 +148,10 @@ export default function DFC() {
   const [travaOcupada, setTravaOcupada] = useState<string | null>(null);
   const [auditando, setAuditando] = useState<AlvoLancamentos | null>(null);
   const { reclassificacoes, recarregarReclassificacoes } = useReclassificacoes("dfc");
+  const { justificativas, recarregarJustificativas } = useJustificativas("dfc");
+  const [gerandoJust, setGerandoJust] = useState(false);
+  const [progressoJust, setProgressoJust] = useState<string | null>(null);
+  const [apenasUltimoMes, setApenasUltimoMes] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
 
   const availableYears = useMemo(() => {
@@ -186,8 +194,49 @@ export default function DFC() {
     setRows(r);
     setTravados(new Set(((travasData as any[]) ?? []).map((t) => String(t.col_key))));
     setLoading(false);
+    // Devolve o que acabou de ler: quem dispara a geração de justificativas logo
+    // depois de um import precisa dos dados NOVOS, e o estado do React só estará
+    // atualizado no próximo render.
+    return { rows: r, columns: monthCols };
   };
   useEffect(() => { load(); }, []);
+
+  /* ----- Justificativas de variação -------------------------------------
+   * O comentário que antes era escrito à mão em cima da célula do tracker.
+   * Roda sozinho depois de todo import/sync (é aí que os números mudam) e
+   * também sob demanda, pelo botão do resumo. Um mês por chamada — ver
+   * lib/justificativas.ts. */
+  const gerarJust = async (
+    force: boolean,
+    meses: string[],
+    base?: { rows: Record<string, unknown>[]; columns: string[] },
+  ) => {
+    const cols = base?.columns ?? columns;
+    const alvo = meses.filter((m) => cols.indexOf(m) > 0);
+    if (!alvo.length) return;
+    setGerandoJust(true);
+    setProgressoJust(`0/${alvo.length}`);
+    try {
+      const r = await gerarJustificativas({
+        tipo: "dfc",
+        schema: DFC_SCHEMA,
+        columns: cols,
+        valorEm: criarValorEm(base?.rows ?? rows, cols),
+        meses: alvo,
+        force,
+        onProgress: (p) => setProgressoJust(`${p.indice}/${p.total}`),
+      });
+      if (r.erros.length) toast.error("Justificativas: " + r.erros[0]);
+      else if (r.geradas) toast.success(`${r.geradas} justificativa(s) de variação gerada(s).`);
+      else if (r.puladas) toast.message("Nenhuma variação nova para justificar.");
+      await recarregarJustificativas();
+    } catch (e) {
+      toast.error("Falha ao gerar justificativas: " + (e instanceof Error ? e.message : String(e)));
+    } finally {
+      setGerandoJust(false);
+      setProgressoJust(null);
+    }
+  };
 
   const sincronizarOmie = async (forcar: boolean) => {
     setSyncing(true);
@@ -201,7 +250,10 @@ export default function DFC() {
           `Omie sincronizado · ${r.movimentos ?? 0} lançamentos` +
           (r.nao_mapeadas ? ` · ${r.nao_mapeadas} categoria(s) sem DE_PARA` : ""),
         );
-        await load();
+        const base = await load();
+        // O sync só mexe em mês ainda aberto, então justificar os últimos meses
+        // cobre o que mudou sem reescrever o ano inteiro a cada clique.
+        await gerarJust(false, base.columns.slice(-3), base);
       } else if (r.status === "erro") {
         toast.error("Falha na sincronização: " + (r.erro || "erro desconhecido"));
       } else {
@@ -385,7 +437,10 @@ export default function DFC() {
         (colsIgnoradas.length ? ` · ${colsIgnoradas.length} ignorado(s) por dado incompleto (${colsIgnoradas.map(ptLabelFromKey).join(", ")})` : ""),
         { duration: 8000 },
       );
-      load();
+      // Planilha nova = números novos: é exatamente aqui que os comentários do
+      // tracker eram reescritos à mão. Justifica só os meses que o arquivo trouxe.
+      const base = await load();
+      await gerarJust(false, [...mesesTrancados], base);
     } catch (err: any) {
       toast.error("Falha: " + err.message);
     } finally {
@@ -768,6 +823,17 @@ export default function DFC() {
           <>
           {/* Só na aba "Método direto": é onde as células estão marcadas. */}
           {tab === "valores" && <ResumoReclassificacoes mapa={reclassificacoes} />}
+          {tab === "valores" && (
+            <ResumoJustificativas
+              mapa={justificativas}
+              colunas={displayColumns}
+              gerando={gerandoJust}
+              progresso={progressoJust}
+              onGerar={(force) => gerarJust(force, displayColumns)}
+              apenasUltimoMes={apenasUltimoMes}
+              onApenasUltimoMesChange={setApenasUltimoMes}
+            />
+          )}
           <div className="mt-3 overflow-x-auto rounded-lg border border-border bg-card">
             <table className="border-collapse">
               <thead>
@@ -838,7 +904,8 @@ export default function DFC() {
                           </span>
                         </div>
                       </td>
-                      {displayColumns.map(c => {
+                      {displayColumns.map((c, idx) => {
+                        const ehUltimoMes = idx === displayColumns.length - 1;
                         let v: number | null = null;
                         if (tab === "valores") {
                           v = isHeader && hasChildren ? sumChildren(node, c) : getValueForRow(node, c);
@@ -876,6 +943,14 @@ export default function DFC() {
                            aviso seria um beco sem saída. */
                         const podeAuditar = tab === "valores" && !isTotal && !hasChildren;
                         const alerta = podeAuditar ? reclassificacoes.get(chaveCelula(node.label, c)) : undefined;
+                        /* A justificativa vale para QUALQUER linha da aba Valores,
+                           inclusive header e total: no tracker os comentários mais
+                           frequentes estão justamente em linhas somadas ("Entradas",
+                           "Pessoal"). Descartada continua aparecendo, só que apagada
+                           — senão não haveria como restaurar. */
+                        const just = tab === "valores"
+                          ? justificativas.get(chaveCelula(node.label, c))
+                          : undefined;
                         /* Célula vazia COM alerta continua clicável: existe
                            lançamento no Omie e a demonstração não mostra nada —
                            esconder a marca esconderia justamente esse buraco. */
@@ -899,11 +974,15 @@ export default function DFC() {
                               isNeg ? "text-primary" : isTotal ? "text-emerald-800" : "text-foreground/90",
                               v == null && "text-muted-foreground/40",
                               auditavel && "cursor-pointer hover:bg-primary/10 hover:underline hover:decoration-dotted hover:underline-offset-2",
-                              alerta && fundoCelulaReclassificacao(alerta),
+                              // Excludentes de propósito: dois `bg-*` na mesma célula
+                              // dependeriam da ordem no CSS gerado, não da ordem aqui.
+                              // O alerta de classificação errada tem prioridade.
+                              alerta ? fundoCelulaReclassificacao(alerta) : just && fundoCelulaJustificativa(just),
                             )}
                           >
                             <span className="inline-flex items-center justify-end gap-1">
                               {alerta && <MarcaReclassificacao alerta={alerta} />}
+                              {just && travados.has(c) && (!apenasUltimoMes || ehUltimoMes) && <MarcaJustificativa justificativa={just} onMudou={recarregarJustificativas} />}
                               {display}
                             </span>
                           </td>
@@ -931,6 +1010,12 @@ export default function DFC() {
       <LancamentosSheet
         alvo={auditando}
         onClose={() => { setAuditando(null); recarregarReclassificacoes(); }}
+        /* Trocar a categoria muda o Omie e o cache; a DFC só reflete depois de
+           recalcular — o mesmo recálculo local do botão de sincronizar. */
+        onCategoriaTrocada={async () => {
+          await sincronizarOmie(false);
+          await recarregarReclassificacoes();
+        }}
       />
     </div>
   );

@@ -34,6 +34,7 @@ const timeFinanceiro: NavItem[] = [
 ];
 
 const operacional: NavItem[] = [
+  { title: "Cartão → Omie", url: "/operacional/cartao", icon: CreditCard },
   { title: "Variável", url: "/operacional/variavel", icon: Percent },
   { title: "Reembolsos", url: "/operacional/reembolsos", icon: Receipt },
   { title: "Estornos", url: "/operacional/estornos", icon: Undo2 },

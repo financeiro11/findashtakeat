@@ -89,6 +89,7 @@ const analise: NavItem[] = [
 const governanca: NavItem[] = [
   { title: "Orçamento", url: "/orcamento", icon: Wallet2 },
   { title: "Auditoria", url: "/governanca/auditoria", icon: ShieldCheck },
+  { title: "Cartão", url: "/governanca/cartao", icon: CreditCard, badge: "OFX" },
 ];
 
 const config: NavItem[] = [

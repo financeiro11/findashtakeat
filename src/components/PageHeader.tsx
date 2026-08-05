@@ -10,6 +10,7 @@ const ROUTE_MAP: Record<string, { crumbs: string[]; context?: string }> = {
   "/caixa/conta-corrente/asaas": { crumbs: ["Início", "Caixa", "Conta Corrente"], context: "Extrato Asaas" },
   "/briefing": { crumbs: ["Início", "Briefing Diário"], context: "Resumo do dia · agenda · e-mails · notícias" },
   "/design-system": { crumbs: ["Início", "Design System"] },
+  "/governanca/cartao": { crumbs: ["Governança", "Cartão"], context: "Evolução da fatura · Sicoob" },
   "/de-para": { crumbs: ["Configurações", "DE_PARA"], context: "Mapeamento de classificações" },
   "/usuarios": { crumbs: ["Configurações", "Usuários"] },
   "/configuracoes/uso-ia": { crumbs: ["Configurações", "Uso IA"], context: "Custo estimado das chamadas à IA" },

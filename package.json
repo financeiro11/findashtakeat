@@ -9,6 +9,7 @@
     "build:dev": "vite build --mode development",
     "lint": "eslint .",
     "preview": "vite preview",
+    "cartao:ofx": "node scripts/cartao-ofx.mjs",
     "test": "vitest run",
     "test:watch": "vitest"
   },

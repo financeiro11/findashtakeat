@@ -17,7 +17,8 @@
 // nenhuma falha neles pode atrasar ou derrubar uma resposta sobre números.
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.0";
-import { errorResponse, generateJSON, generateText, handleCors, jsonResponse } from "../_shared/gemini.ts";
+import { errorResponse, handleCors, jsonResponse } from "../_shared/gemini.ts";
+import { gerarJSON, gerarTexto, provedorAtual } from "../_shared/assistente/llm.ts";
 import { requireUser } from "../_shared/auth.ts";
 import {
   caixaDoMes, lancamentosDaRubrica, Numero, panoramaDoMes, Resultado, rubricaDoMes,
@@ -157,7 +158,7 @@ Deno.serve(async (req) => {
     const hoje = new Date().toLocaleDateString("pt-BR", { timeZone: "America/Sao_Paulo" });
     let rota: { consulta?: string; ano?: number | null; mes?: number | null; rubrica?: string | null } = {};
     try {
-      rota = await generateJSON({
+      rota = await gerarJSON({
         temperature: 0,
         messages: [
           { role: "system", content: PROMPT_ROTEADOR.replace("{HOJE}", hoje) },
@@ -246,7 +247,7 @@ Deno.serve(async (req) => {
 
     // ---- Etapa 3: sintetizar (payload fechado, sem ferramentas) ----------------------
     const memoria = caller.userId ? await blocoDeMemoria(supabase, caller.userId) : "";
-    const texto = await generateText({
+    const texto = await gerarTexto({
       temperature: 0.3,
       messages: [
         { role: "system", content: [PROMPT_SINTESE, memoria].filter(Boolean).join("\n\n") },
@@ -290,6 +291,10 @@ Deno.serve(async (req) => {
 
     return jsonResponse({
       ok: true,
+      // Qual modelo respondeu. Exposto porque a troca de provedor é decidida em tempo de
+      // execução (ver _shared/assistente/llm.ts): sem isto, uma queda para o Gemini por
+      // chave inválida passaria despercebida.
+      provedor: provedorAtual(),
       consulta: resultado.consulta,
       resposta,
       numeros: resultado.numeros,

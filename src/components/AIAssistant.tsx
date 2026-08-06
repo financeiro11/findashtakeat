@@ -47,6 +47,8 @@ type Msg = {
   avisos?: string[];
   /** true = números conferidos nesta requisição; false = caminho geral. */
   verificado?: boolean;
+  /** Qual modelo respondeu — "openai" ou "gemini". */
+  provedor?: string;
 };
 
 type Conv = { id: string; titulo: string; created_at: string; updated_at: string };
@@ -267,7 +269,10 @@ export function AIAssistant({ initialPrompt }: { initialPrompt?: string } = {}) 
         body: { pergunta: text, historico: historico.slice(-4), conversa_id: cid },
       });
 
-      const resp = data as { ok?: boolean; consulta?: string; resposta?: string; numeros?: Numero[]; avisos?: string[] } | null;
+      const resp = data as {
+        ok?: boolean; consulta?: string; resposta?: string;
+        numeros?: Numero[]; avisos?: string[]; provedor?: string;
+      } | null;
 
       // Fora das consultas nomeadas (ou função indisponível) → caminho geral.
       if (error || !resp || resp.consulta === "nenhuma") {
@@ -283,6 +288,7 @@ export function AIAssistant({ initialPrompt }: { initialPrompt?: string } = {}) 
         numeros: resp.numeros ?? [],
         avisos: resp.avisos ?? [],
         verificado: !!resp.ok,
+        provedor: resp.provedor,
       };
       setMessages(prev => [...prev, msg]);
       if (cid && msg.content) { await persistMessage(cid, "assistant", msg.content); loadConversations(); }
@@ -409,7 +415,7 @@ export function AIAssistant({ initialPrompt }: { initialPrompt?: string } = {}) 
                             <ReactMarkdown>{m.content || "…"}</ReactMarkdown>
                           </div>
                           <div className="mt-1.5 flex items-center gap-2">
-                            <Selo verificado={m.verificado} />
+                            <Selo verificado={m.verificado} provedor={m.provedor} />
                             {suportaVoz() && m.content && (
                               <button
                                 onClick={() => falar(m.content)}
@@ -486,12 +492,18 @@ export function AIAssistant({ initialPrompt }: { initialPrompt?: string } = {}) 
  * pareceria tão confiável quanto um conferido — exatamente o que não pode acontecer com
  * dado que vai para diretoria.
  */
-function Selo({ verificado }: { verificado?: boolean }) {
+function Selo({ verificado, provedor }: { verificado?: boolean; provedor?: string }) {
   if (verificado === undefined) return null; // conversa recarregada do histórico
+
+  // O modelo aparece ao lado porque a escolha do provedor é feita em tempo de execução:
+  // se a chave da OpenAI falhar, a resposta vem do Gemini e isso precisa estar visível.
+  const modelo = provedor === "openai" ? "GPT" : provedor === "gemini" ? "Gemini" : null;
+
   return verificado ? (
     <span className="inline-flex items-center gap-1 text-[10.5px] text-emerald-700">
       <ShieldCheck className="h-3 w-3" />
       números conferidos agora
+      {modelo && <span className="text-muted-foreground">· {modelo}</span>}
     </span>
   ) : (
     <span className="inline-flex items-center gap-1 text-[10.5px] text-muted-foreground">

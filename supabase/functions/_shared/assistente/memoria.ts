@@ -9,7 +9,7 @@
 // A gravação usa service_role de propósito: a RLS deixa a pessoa LER e APAGAR a própria
 // memória, mas não inserir — assim ninguém planta um "fato" falso sobre si via PostgREST.
 
-import { generateJSON } from "../gemini.ts";
+import { gerarJSON } from "./llm.ts";
 
 export type Fato = { texto: string; tipo: "fato" | "preferencia" };
 
@@ -75,7 +75,7 @@ export async function memorizar(
   conversaId: string | null,
 ): Promise<number> {
   try {
-    const extraido = await generateJSON<{ fatos?: Fato[] }>({
+    const extraido = await gerarJSON<{ fatos?: Fato[] }>({
       temperature: 0,
       messages: [
         { role: "system", content: PROMPT_EXTRACAO },

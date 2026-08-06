@@ -36,6 +36,29 @@ const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: { ...corsHeaders, "Content-Type": "application/json" } });
 
 const mesValido = (c: string) => /^[A-Za-z]{3}-\d{2}$/.test(c);
+
+/**
+ * Mensagem legível de QUALQUER coisa lançada.
+ *
+ * Um erro do PostgREST (`{message, details, hint, code}`) é objeto CRU, não uma
+ * instância de `Error` — então `e instanceof Error ? e.message : String(e)`
+ * caía no `String(e)` e produzia "[object Object]". Foi isso que escondeu,
+ * durante toda a vida da linha, um 42P10 no upsert da decisão: a tela dizia
+ * "Não consegui salvar: [object Object]" e o log da função dizia 200.
+ */
+function textoDoErro(e: unknown): string {
+  if (e instanceof Error) return e.message;
+  if (e && typeof e === "object") {
+    const o = e as { message?: unknown; details?: unknown; hint?: unknown; code?: unknown };
+    const partes = [o.message, o.details, o.hint]
+      .filter((x): x is string => typeof x === "string" && x.length > 0)
+      .join(" · ");
+    if (partes) return o.code ? `${partes} (${o.code})` : partes;
+    try { return JSON.stringify(e); } catch { /* objeto circular */ }
+  }
+  return String(e);
+}
+
 /* O add-back do "salto" sai da mediana e chega com três casas. O blob guarda em
    centavos; sem arredondar aqui, a soma da linha não fecharia com os itens. */
 const cent = (n: number) => Math.round(n * 100) / 100;
@@ -78,6 +101,10 @@ Deno.serve(async (req) => {
         if (erro) return json({ error: erro }, 200);
       }
 
+      /* `onConflict` aponta para `demonstracoes_ebitda_ajuste_titulo_uk`, que
+         PRECISA ser um unique index CHEIO. Enquanto ele foi parcial
+         (`where cod_titulo is not null`) o Postgres se recusou a inferi-lo e
+         devolveu 42P10 em toda decisão — ver a migration 20260806220000. */
       const { error } = await supabase.from("demonstracoes_ebitda_ajuste").upsert({
         col_key: colKey,
         cod_titulo: codTitulo,
@@ -185,8 +212,10 @@ Deno.serve(async (req) => {
 
     return json({ ok: true, acao });
   } catch (e) {
-    const msg = e instanceof Error ? e.message : String(e);
-    console.error("demonstracoes-ebitda-ajuste error:", msg);
+    const msg = textoDoErro(e);
+    // O objeto inteiro no log, não só a mensagem: `details`/`hint` do Postgres
+    // é o que diz QUAL constraint reclamou.
+    console.error("demonstracoes-ebitda-ajuste error:", msg, e);
     return json({ error: msg }, 200);
   }
 });

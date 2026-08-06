@@ -160,6 +160,27 @@ const moeda = (n: number | null | undefined) =>
 
 const dataCurta = (d: string | null) => (d ? d.slice(8, 10) + "/" + d.slice(5, 7) : "—");
 
+/**
+ * Mensagem legível de QUALQUER coisa lançada.
+ *
+ * Um erro do PostgREST (`{message, details, hint, code}`) é objeto CRU, não uma
+ * instância de `Error`: `String(e)` nele dá "[object Object]". Foi assim que um
+ * 42P10 no upsert da decisão ficou invisível — a tela só sabia dizer que não
+ * tinha conseguido salvar, sem dizer por quê, e o log da função dizia 200.
+ */
+function textoDoErro(e: unknown): string {
+  if (e instanceof Error) return e.message;
+  if (e && typeof e === "object") {
+    const o = e as { message?: unknown; details?: unknown; hint?: unknown; code?: unknown };
+    const partes = [o.message, o.details, o.hint]
+      .filter((x): x is string => typeof x === "string" && x.length > 0)
+      .join(" · ");
+    if (partes) return o.code ? `${partes} (${o.code})` : partes;
+    try { return JSON.stringify(e); } catch { /* objeto circular */ }
+  }
+  return String(e);
+}
+
 const CORES_FORCA: Record<string, string> = {
   alta: "bg-teal-600 text-white",
   media: "bg-teal-100 text-teal-900",
@@ -238,7 +259,8 @@ export function PainelAjustesEbitda({
       await carregar(piso);
       await onMudou();
     } catch (e) {
-      toast.error("Não consegui salvar: " + (e instanceof Error ? e.message : String(e)));
+      console.error("ebitda-ajuste:", e);
+      toast.error("Não consegui salvar: " + textoDoErro(e));
     } finally {
       setOcupado(null);
     }

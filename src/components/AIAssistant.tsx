@@ -63,11 +63,11 @@ function fmtDateTime(iso: string) {
 }
 
 const SUGESTOES = [
-  "Qual foi o caixa no mês passado?",
+  "O que eu preciso saber?",
   "Por que o EBITDA caiu?",
+  "Qual foi o caixa no mês passado?",
   "Quais tarefas estão atrasadas e de quem?",
   "Quanto gastamos no cartão por estabelecimento?",
-  "Quais editais têm prazo neste mês?",
 ];
 
 export function AIAssistant({ initialPrompt }: { initialPrompt?: string } = {}) {

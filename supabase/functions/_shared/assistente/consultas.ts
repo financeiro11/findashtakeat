@@ -17,7 +17,8 @@ import {
 import { acharNo, folhasDe, rotulosDeDespesa, todosRotulos } from "./schema-dre.ts";
 import { acharFonte } from "./catalogo.ts";
 import {
-  compararComPlano, frasePadrao, IndiceBP, indexarBP, julgarSerie, serieAnterior,
+  analisarTendencia, compararComPlano, frasePadrao, fraseTendencia, IndiceBP, indexarBP,
+  julgarSerie, serieAnterior,
 } from "./julgamento.ts";
 
 /**
@@ -708,15 +709,17 @@ export async function rubricaDoMes(
     ...numeros.map((n) => `${n.rotulo}: ${n.formatado} (${n.competencia})`),
     "",
     "JULGAMENTO (calculado, não opinado — comunique, não recalcule):",
+    `  Trajetória: ${fraseTendencia(analisarTendencia([...historico, valor]))}.`,
     `  Contra o próprio histórico: ${frasePadrao(veredito, brl)}.`,
     plano
       ? `  Contra o plano: ${plano.desvio > 0 ? "acima" : "abaixo"} em ${brl(Math.abs(plano.desvio))}` +
         (plano.desvioPct !== null ? ` (${pct(Math.abs(plano.desvioPct))})` : "") + "."
       : "  Contra o plano: esta rubrica não está no BP anual — não dá para dizer se está dentro do combinado.",
     "",
-    "COMO USAR AS DUAS RÉGUAS: elas respondem coisas diferentes. Fora do padrão histórico",
-    "mas dentro do plano é crescimento previsto, não problema. Dentro do padrão mas acima",
-    "do plano é desvio de orçamento. Diga qual das duas está acesa.",
+    "COMO USAR AS RÉGUAS: elas respondem coisas diferentes. Fora do padrão histórico mas",
+    "dentro do plano é crescimento previsto, não problema. Dentro do padrão mas acima do",
+    "plano é desvio de orçamento. E a trajetória vale mais que o solavanco do mês: uma",
+    "rubrica pode cair agora e seguir subindo há meio ano. Diga qual régua está acesa.",
     "",
     "LIMITE: este é o total da rubrica. Se a pessoa quiser saber QUEM compõe esse valor,",
     "os lançamentos do Omie podem ser listados — ofereça, mas não invente nomes aqui.",
@@ -880,6 +883,158 @@ export async function lancamentosDaRubrica(
   ].join("\n");
 
   return { consulta: "lancamentos_da_rubrica", ok: true, numeros, paraModelo, avisos };
+}
+
+// ---------------------------------------------------------------------------
+// Radar — o que merece atenção, sem ninguém perguntar
+// ---------------------------------------------------------------------------
+
+type Achado = {
+  rubrica: string;
+  valor: number;
+  motivo: string;
+  /** Ordena o que aparece primeiro: peso em reais do que está fora do lugar. */
+  materialidade: number;
+};
+
+/**
+ * "O que eu preciso saber?" — varre todas as rubricas-folha do DRE e devolve as que
+ * fogem do padrão, da tendência ou do plano.
+ *
+ * POR QUE ORDENAR POR MATERIALIDADE, E NÃO POR DESVIO ESTATÍSTICO: uma rubrica de R$ 300
+ * que triplicou tem z-score altíssimo e não muda nada no resultado; uma de R$ 200 mil que
+ * subiu 15% decide o mês. Ordenar por sigma encheria a tela de irrelevância matematicamente
+ * impecável. O que ordena aqui é quanto dinheiro está fora do lugar.
+ *
+ * Custo: uma leitura do DRE, uma das travas e uma do BP. A varredura é em memória — o blob
+ * já traz a série inteira, então não há uma consulta por rubrica.
+ */
+export async function radar(supabase: { from: (t: string) => any }): Promise<Resultado> {
+  const [demRes, travasRes] = await Promise.all([
+    supabase.from("demonstracoes_contabeis").select("dados, updated_at")
+      .eq("tipo", "dre").eq("periodo", "completo").maybeSingle(),
+    supabase.from("demonstracoes_mes_trancado").select("col_key"),
+  ]);
+
+  if (demRes.error || !demRes.data) {
+    return { consulta: "radar", ok: false, numeros: [], paraModelo: "", avisos: ["DRE consolidado não encontrado."] };
+  }
+
+  const dre = estruturar(demRes.data.dados, demRes.data.updated_at ?? null);
+  const travas = ((travasRes.data ?? []) as { col_key: string }[]).map((t) => t.col_key);
+  const fechados = mesesFechados(dre, travas);
+
+  if (fechados.length < 5) {
+    return {
+      consulta: "radar", ok: false, numeros: [], paraModelo: "",
+      avisos: [
+        `Só ${fechados.length} mês(es) fechado(s). O radar precisa de pelo menos 5 para ` +
+        "distinguir movimento de ruído — com menos, apontaria alarme falso.",
+      ],
+    };
+  }
+
+  const alvo = fechados[fechados.length - 1];
+  const bp = await carregarBP(supabase);
+  const avisos: string[] = [];
+
+  // Todas as folhas do DRE: só elas vêm de lançamento; nó com filhos é soma.
+  const folhas = todosRotulos()
+    .map((r) => acharNo(r))
+    .filter((n): n is NonNullable<typeof n> => !!n && !n.children?.length);
+
+  const achados: Achado[] = [];
+
+  for (const folha of folhas) {
+    const rotulo = folha.src ?? folha.label;
+    const valor = valorDe(dre, rotulo, alvo);
+    if (valor === null || valor === 0) continue;
+
+    const historico = serieAnterior(dre, rotulo, fechados, alvo);
+    const veredito = julgarSerie(historico, valor);
+    const tendencia = analisarTendencia([...historico, valor]);
+    const plano = compararComPlano(bp, folha.label, alvo, valor);
+
+    const motivos: string[] = [];
+    let materialidade = 0;
+
+    if (veredito.padrao === "recorde") {
+      motivos.push(`recorde da série (${veredito.meses} meses)`);
+      materialidade = Math.max(materialidade, Math.abs(valor - (veredito.media ?? valor)));
+    } else if (veredito.padrao === "acima do padrão" || veredito.padrao === "abaixo do padrão") {
+      motivos.push(`${veredito.padrao} (${veredito.z?.toFixed(1)} desvios)`);
+      materialidade = Math.max(materialidade, Math.abs(valor - (veredito.media ?? valor)));
+    }
+
+    if (tendencia.direcao === "subindo" || tendencia.direcao === "caindo") {
+      if (Math.abs(tendencia.inclinacaoPct ?? 0) >= 5) {
+        motivos.push(fraseTendencia(tendencia));
+        // Peso da tendência: quanto ela move por mês, em reais.
+        materialidade = Math.max(materialidade, Math.abs(valor * (tendencia.inclinacaoPct ?? 0) / 100));
+      }
+    }
+
+    if (plano?.desvioPct != null && Math.abs(plano.desvioPct) >= 20) {
+      motivos.push(
+        `${plano.desvio > 0 ? "acima" : "abaixo"} do plano em ${brl(Math.abs(plano.desvio))} ` +
+        `(${pct(Math.abs(plano.desvioPct))})`,
+      );
+      materialidade = Math.max(materialidade, Math.abs(plano.desvio));
+    }
+
+    if (motivos.length > 0) {
+      achados.push({ rubrica: folha.label, valor, motivo: motivos.join("; "), materialidade });
+    }
+  }
+
+  if (achados.length === 0) {
+    return {
+      consulta: "radar", ok: true, numeros: [],
+      paraModelo: [
+        `RADAR — ${competenciaExtenso(alvo)} (último mês fechado)`,
+        "Nenhuma rubrica fora do padrão, da tendência ou do plano.",
+        "",
+        "Diga isso com naturalidade: mês sem sobressalto é uma informação boa, não uma",
+        "resposta vazia. Não invente preocupação para preencher espaço.",
+      ].join("\n"),
+      avisos,
+    };
+  }
+
+  achados.sort((a, b) => b.materialidade - a.materialidade);
+  const principais = achados.slice(0, 8);
+
+  const numeros: Numero[] = principais.map((a) => ({
+    rotulo: a.rubrica,
+    valor: a.valor,
+    formatado: brl(a.valor),
+    fonte: "DRE Omie · radar",
+    competencia: competenciaCurta(alvo),
+  }));
+
+  if (achados.length > principais.length) {
+    avisos.push(
+      `Mostrei os ${principais.length} de maior peso; outros ${achados.length - principais.length} ` +
+      "itens também fogem do padrão, mas movem pouco dinheiro.",
+    );
+  }
+
+  const paraModelo = [
+    `RADAR — ${competenciaExtenso(alvo)} (último mês fechado)`,
+    `${achados.length} rubrica(s) fora do padrão. As de maior peso, em ordem:`,
+    "",
+    ...principais.map((a) => `  ${a.rubrica}: ${brl(a.valor)} — ${a.motivo}`),
+    "",
+    "COMO APRESENTAR: destaque as três primeiras e diga por que cada uma importa. A ordem",
+    "já está por peso em reais, não por desvio estatístico — respeite-a. Não trate tudo",
+    "como alarme: 'acima do padrão mas dentro do plano' é observação, não problema.",
+    "Se a pessoa quiser saber quem causou, os lançamentos de cada rubrica podem ser vistos.",
+  ].join("\n");
+
+  return {
+    consulta: "radar", ok: true, numeros, paraModelo, avisos,
+    aprofundar: { consulta: "lancamentos_da_rubrica", rubrica: principais[0].rubrica },
+  };
 }
 
 // ---------------------------------------------------------------------------

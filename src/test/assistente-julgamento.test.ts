@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import {
-  compararComPlano, indexarBP, julgarSerie, planejado,
+  analisarTendencia, compararComPlano, indexarBP, julgarSerie, planejado,
 } from "../../supabase/functions/_shared/assistente/julgamento";
 
 describe("julgarSerie", () => {
@@ -43,6 +43,42 @@ describe("julgarSerie", () => {
     expect(v.padrao).toBe("dentro do padrão");
     expect(v.z).toBeNull();
     expect(Number.isFinite(v.desvio!)).toBe(true);
+  });
+});
+
+describe("analisarTendencia", () => {
+  it("não traça reta em série curta", () => {
+    expect(analisarTendencia([10, 20, 30, 40]).direcao).toBe("indefinida");
+  });
+
+  it("reconhece alta consistente", () => {
+    const t = analisarTendencia([100, 110, 120, 130, 140, 150]);
+    expect(t.direcao).toBe("subindo");
+    expect(t.inclinacaoPct!).toBeGreaterThan(2);
+    expect(t.aderencia!).toBeGreaterThan(0.9);
+  });
+
+  it("reconhece queda consistente", () => {
+    expect(analisarTendencia([150, 140, 130, 120, 110, 100]).direcao).toBe("caindo");
+  });
+
+  it("não chama ruído de tendência", () => {
+    // Serra: sobe e desce sem direção. Sem o corte de aderência, a reta acharia
+    // uma inclinação qualquer e isso viraria "tendência de alta".
+    const t = analisarTendencia([100, 60, 140, 55, 145, 62, 138]);
+    expect(t.direcao).toBe("oscilando");
+    expect(t.aderencia!).toBeLessThan(0.3);
+  });
+
+  it("chama de estável o que varia pouco", () => {
+    const t = analisarTendencia([100, 100.5, 101, 100.8, 101.2, 101.5]);
+    expect(t.direcao).toBe("estável");
+  });
+
+  it("não divide por zero em série constante", () => {
+    const t = analisarTendencia([50, 50, 50, 50, 50, 50]);
+    expect(t.direcao).toBe("estável");
+    expect(Number.isFinite(t.inclinacaoPct!)).toBe(true);
   });
 });
 

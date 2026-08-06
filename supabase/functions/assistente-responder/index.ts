@@ -26,8 +26,8 @@ import { gerarJSON, gerarTexto, provedorAtual } from "../_shared/assistente/llm.
 import { requireUser } from "../_shared/auth.ts";
 import { buildOrgContext } from "../_shared/org-context.ts";
 import {
-  caixaDoMes, explorar, lancamentosDaRubrica, Numero, panoramaDoMes, Resultado, rubricaDoMes,
-  ultimoMesFechado, variacaoEbitda,
+  caixaDoMes, explorar, lancamentosDaRubrica, Numero, panoramaDoMes, radar, Resultado,
+  rubricaDoMes, ultimoMesFechado, variacaoEbitda,
 } from "../_shared/assistente/consultas.ts";
 import { catalogoParaPrompt } from "../_shared/assistente/catalogo.ts";
 import { blocoDeMemoria, memorizar, registrarExecucao } from "../_shared/assistente/memoria.ts";
@@ -35,7 +35,7 @@ import { Competencia, competenciaExtenso } from "../_shared/assistente/dre.ts";
 
 const CONSULTAS = [
   "caixa_do_mes", "variacao_ebitda", "panorama_do_mes", "rubrica_do_mes",
-  "lancamentos_da_rubrica", "explorar",
+  "lancamentos_da_rubrica", "radar", "explorar",
 ] as const;
 type NomeConsulta = typeof CONSULTAS[number];
 
@@ -55,6 +55,9 @@ Consultas disponíveis:
 - "lancamentos_da_rubrica": os lançamentos individuais do Omie dentro de uma rubrica, com
   contrapartes. Devolva "rubrica". Para "quem recebeu", "me detalha", "do que é composto".
 - "caixa_do_mes": saldo bancário e movimentação de entradas/saídas (Sicoob e Asaas).
+- "radar": varre TODAS as rubricas e devolve as que fogem do padrão, da tendência ou do
+  plano, ordenadas por peso em reais. Para "o que eu preciso saber", "tem algo estranho",
+  "o que está fora do lugar", "me dá um resumo do que importa", "alguma anomalia".
 - "explorar": outras áreas do Hub. Devolva "fonte" e, se fizer sentido, "agrupar_por",
   "de" e "ate" (datas AAAA-MM-DD).
 
@@ -254,6 +257,8 @@ Deno.serve(async (req) => {
         }
         case "panorama_do_mes":
           return await panoramaDoMes(supabase, pedida);
+        case "radar":
+          return await radar(supabase);
         case "rubrica_do_mes": {
           const rubrica = String(item?.rubrica ?? "").trim();
           return rubrica ? await rubricaDoMes(supabase, rubrica, pedida) : null;

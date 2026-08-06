@@ -232,6 +232,80 @@ export function compararComPlano(
   return { planejado: plano, realizado, desvio, desvioPct };
 }
 
+// ---------------------------------------------------------------------------
+// Tendência
+// ---------------------------------------------------------------------------
+
+export type Tendencia = {
+  direcao: "subindo" | "caindo" | "estável" | "oscilando" | "indefinida";
+  /** Variação média por mês, em % sobre o nível médio da série. */
+  inclinacaoPct: number | null;
+  /** 0 a 1: o quanto a reta explica a série. Baixo = série errática. */
+  aderencia: number | null;
+  meses: number;
+};
+
+/**
+ * Direção da série por regressão linear.
+ *
+ * Comparar dois meses responde "mudou?", não "está indo para onde?". Uma rubrica pode cair
+ * neste mês e ainda estar em trajetória de alta há meio ano — e é a trajetória que importa
+ * para decidir, não o solavanco.
+ *
+ * A aderência (R²) evita o erro clássico de traçar reta em série errática: sem ela,
+ * qualquer ruído viraria "tendência de alta". Abaixo de 0,3 a resposta é "oscilando", que
+ * é uma informação honesta e não um veredito falso.
+ */
+export function analisarTendencia(serie: number[]): Tendencia {
+  const y = serie.filter((v) => Number.isFinite(v));
+  if (y.length < 5) {
+    return { direcao: "indefinida", inclinacaoPct: null, aderencia: null, meses: y.length };
+  }
+
+  const n = y.length;
+  const x = y.map((_, i) => i);
+  const mediaX = (n - 1) / 2;
+  const mediaY = y.reduce((a, b) => a + b, 0) / n;
+
+  let sxy = 0, sxx = 0, syy = 0;
+  for (let i = 0; i < n; i++) {
+    const dx = x[i] - mediaX;
+    const dy = y[i] - mediaY;
+    sxy += dx * dy;
+    sxx += dx * dx;
+    syy += dy * dy;
+  }
+
+  if (sxx === 0 || syy === 0) {
+    return { direcao: "estável", inclinacaoPct: 0, aderencia: 1, meses: n };
+  }
+
+  const inclinacao = sxy / sxx;                     // unidades por mês
+  const aderencia = (sxy * sxy) / (sxx * syy);      // R²
+  const escala = Math.abs(mediaY) || 1;
+  const inclinacaoPct = (inclinacao / escala) * 100;
+
+  // Série que a reta não explica: dizer "subindo" seria ler ruído como sinal.
+  if (aderencia < 0.3) {
+    return { direcao: "oscilando", inclinacaoPct, aderencia, meses: n };
+  }
+  // Menos de 2% ao mês é ruído de operação, não movimento.
+  if (Math.abs(inclinacaoPct) < 2) {
+    return { direcao: "estável", inclinacaoPct, aderencia, meses: n };
+  }
+  return {
+    direcao: inclinacaoPct > 0 ? "subindo" : "caindo",
+    inclinacaoPct, aderencia, meses: n,
+  };
+}
+
+export function fraseTendencia(t: Tendencia): string {
+  if (t.direcao === "indefinida") return `sem série suficiente para tendência (${t.meses} meses)`;
+  if (t.direcao === "oscilando") return `oscilando sem direção clara em ${t.meses} meses`;
+  if (t.direcao === "estável") return `estável nos últimos ${t.meses} meses`;
+  return `${t.direcao} ~${Math.abs(t.inclinacaoPct ?? 0).toFixed(1)}% ao mês nos últimos ${t.meses} meses`;
+}
+
 /** Frase pronta e determinística, para o modelo comunicar sem inventar adjetivo. */
 export function frasePadrao(v: Veredito, formatar: (n: number) => string): string {
   if (v.padrao === "sem histórico") return `sem histórico suficiente (${v.meses} mês/meses)`;

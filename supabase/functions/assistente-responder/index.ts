@@ -174,7 +174,12 @@ Deno.serve(async (req) => {
       : "nenhuma";
 
     const responderSemDados = (texto: string, avisos: string[] = []) => {
-      const resp = { ok: false, consulta: escolhida, resposta: texto, numeros: [], avisos };
+      // `provedor` vai em TODA resposta, não só nas bem-sucedidas: sem isso o modelo
+      // sumia da tela justamente nos casos em que a pessoa mais quer saber o que houve.
+      const resp = {
+        ok: false, provedor: provedorAtual(), consulta: escolhida,
+        resposta: texto, numeros: [], avisos,
+      };
       registrarExecucao(admin, {
         user_id: caller.userId ?? "", conversa_id: conversaId, pergunta,
         consulta: escolhida, ok: false, numeros: [], avisos, resposta: texto,

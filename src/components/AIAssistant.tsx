@@ -207,7 +207,10 @@ export function AIAssistant({ initialPrompt }: { initialPrompt?: string } = {}) 
         if (last?.role === "assistant") {
           return prev.map((m, i) => i === prev.length - 1 ? { ...m, content: acumulado } : m);
         }
-        return [...prev, { role: "assistant", content: acumulado, verificado: false }];
+        // O caminho geral é o `ai-chat`, que roda no Gemini (compartilhado com o Radar
+        // de Editais). Marcar explicitamente evita que a ausência do rótulo seja lida
+        // como "não sei qual modelo respondeu".
+        return [...prev, { role: "assistant", content: acumulado, verificado: false, provedor: "gemini" }];
       });
     };
 
@@ -495,20 +498,25 @@ export function AIAssistant({ initialPrompt }: { initialPrompt?: string } = {}) 
 function Selo({ verificado, provedor }: { verificado?: boolean; provedor?: string }) {
   if (verificado === undefined) return null; // conversa recarregada do histórico
 
-  // O modelo aparece ao lado porque a escolha do provedor é feita em tempo de execução:
-  // se a chave da OpenAI falhar, a resposta vem do Gemini e isso precisa estar visível.
+  // O modelo aparece em TODA resposta porque a escolha do provedor é feita em tempo de
+  // execução: se a chave da OpenAI for recusada, a resposta vem do Gemini, e uma queda
+  // silenciosa de modelo é exatamente o que não se pode ter.
   const modelo = provedor === "openai" ? "GPT" : provedor === "gemini" ? "Gemini" : null;
 
-  return verificado ? (
-    <span className="inline-flex items-center gap-1 text-[10.5px] text-emerald-700">
-      <ShieldCheck className="h-3 w-3" />
-      números conferidos agora
+  return (
+    <span className="inline-flex flex-wrap items-center gap-1 text-[10.5px]">
+      {verificado ? (
+        <span className="inline-flex items-center gap-1 text-emerald-700">
+          <ShieldCheck className="h-3 w-3" />
+          números conferidos agora
+        </span>
+      ) : (
+        <span className="inline-flex items-center gap-1 text-muted-foreground">
+          <AlertTriangle className="h-3 w-3" />
+          sem números verificados — confira antes de usar
+        </span>
+      )}
       {modelo && <span className="text-muted-foreground">· {modelo}</span>}
-    </span>
-  ) : (
-    <span className="inline-flex items-center gap-1 text-[10.5px] text-muted-foreground">
-      <AlertTriangle className="h-3 w-3" />
-      sem números verificados — confira antes de usar
     </span>
   );
 }

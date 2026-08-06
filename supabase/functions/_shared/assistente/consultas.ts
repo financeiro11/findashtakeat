@@ -20,7 +20,8 @@ import { brl, fecha, Numero, pct, Resultado } from "./base.ts";
 // Importado do módulo irmão: as justificativas são do Hub, mas enriquecem a explicação
 // de variação do DRE, que mora aqui. Sem ciclo, porque o contrato comum está em base.ts.
 import {
-  justificativaDe, justificativasDoMes, linhasDeSinais, sinaisDaCelula,
+  ajustesEbitda, justificativaDe, justificativasDoMes, linhasDeAjustes, linhasDeSinais,
+  perguntasDaCelula, sinaisDaCelula,
 } from "./consultas-hub.ts";
 import {
   analisarTendencia, compararComPlano, frasePadrao, fraseTendencia, IndiceBP, indexarBP,
@@ -366,7 +367,10 @@ export async function variacaoEbitda(
   // A explicação que alguém já escreveu para cada rubrica que se moveu. Atribuir a
   // variação estatisticamente e ignorar o comentário existente seria refazer, pior, um
   // trabalho pronto.
-  const justificativas = await justificativasDoMes(supabase, "dre", atual);
+  const [justificativas, ajustes] = await Promise.all([
+    justificativasDoMes(supabase, "dre", atual),
+    ajustesEbitda(supabase, atual),
+  ]);
   const comTexto = principais
     .map((d) => ({ rubrica: d.rubrica, texto: justificativas.get(d.rubrica) }))
     .filter((x): x is { rubrica: string; texto: string } => !!x.texto);
@@ -399,6 +403,7 @@ export async function variacaoEbitda(
          "explicação principal, elas valem mais que qualquer inferência sua:",
          ...comTexto.map((j) => `  ${j.rubrica}: "${j.texto}"`)]
       : []),
+    ...(ajustes.itens.length ? ["", ...linhasDeAjustes(ajustes, ebitdaAtual)] : []),
     "",
     "LIMITE DESTES DADOS: aqui você tem a atribuição por rubrica, não o lançamento.",
     "Diga qual rubrica moveu o resultado e PARE aí. Não invente a causa dentro dela —",
@@ -637,9 +642,13 @@ export async function rubricaDoMes(
   // ---- Julgamento: o número é normal? está dentro do combinado? --------------------
   const historico = serieAnterior(dre, rubrica, fechados, alvo);
   const veredito = julgarSerie(historico, valor);
-  const [bp, justificativa] = await Promise.all([
+  const [bp, justificativa, perguntas] = await Promise.all([
     carregarBP(supabase),
     justificativaDe(supabase, "dre", rubrica, alvo),
+    // O que já foi perguntado nesta célula na tela. Refazer a análise do zero pode
+    // chegar a uma conclusão diferente da que está registrada ali — e duas respostas
+    // divergentes sobre o mesmo número minam a confiança nas duas.
+    perguntasDaCelula(supabase, "dre", rubrica, alvo),
   ]);
   const plano = compararComPlano(bp, rubrica, alvo, valor);
 
@@ -678,6 +687,13 @@ export async function rubricaDoMes(
     ...(justificativa
       ? ["JUSTIFICATIVA JÁ REGISTRADA no Hub — use como a explicação principal:",
          `  ${justificativa}`, ""]
+      : []),
+    ...(perguntas.length
+      ? ["JÁ PERGUNTARAM SOBRE ESTA CÉLULA na tela de DRE, e ficou registrado:",
+         ...perguntas.map((p) => `  P: ${p.pergunta}\n  R: ${p.resposta}`),
+         "  Se a pergunta atual for a mesma, seja consistente com o que já foi respondido",
+         "  ali — duas respostas diferentes sobre o mesmo número minam a confiança nas duas.",
+         ""]
       : []),
     "JULGAMENTO (calculado, não opinado — comunique, não recalcule):",
     `  Trajetória: ${fraseTendencia(analisarTendencia([...historico, valor]))}.`,

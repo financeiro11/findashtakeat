@@ -30,8 +30,10 @@ import {
   rubricaDoMes, ultimoMesFechado, variacaoEbitda,
 } from "../_shared/assistente/consultas.ts";
 import {
-  briefingDoDia, dreCompleta, orcamentoPorArea, pagamentosPrevistos, panoramaDFC, snapshotKpis,
+  briefingDoDia, contrapartesComparadas, dreCompleta, orcamentoPorArea, pagamentosPrevistos,
+  panoramaDFC, snapshotKpis,
 } from "../_shared/assistente/consultas-hub.ts";
+import { mesesFechados, estruturar } from "../_shared/assistente/dre.ts";
 import { catalogoParaPrompt } from "../_shared/assistente/catalogo.ts";
 import { blocoDeMemoria, memorizar, registrarExecucao } from "../_shared/assistente/memoria.ts";
 import { Competencia, competenciaExtenso } from "../_shared/assistente/dre.ts";
@@ -40,7 +42,7 @@ const CONSULTAS = [
   "caixa_do_mes", "variacao_ebitda", "panorama_do_mes", "rubrica_do_mes",
   "lancamentos_da_rubrica", "radar", "dfc_do_mes", "orcamento_por_area",
   "pagamentos_previstos", "assinaturas", "churn", "investimentos", "briefing",
-  "dre_completa", "explorar",
+  "dre_completa", "contrapartes", "explorar",
 ] as const;
 type NomeConsulta = typeof CONSULTAS[number];
 
@@ -64,6 +66,9 @@ Consultas disponíveis:
   "abre essa rubrica", "quais lançamentos".
 - "dre_completa": a demonstração INTEIRA de um mês, com todos os blocos, grupos e folhas
   na hierarquia da tela. Para "me mostra a DRE", "quero ver tudo", "a DRE inteira".
+- "contrapartes": compara os fornecedores de uma rubrica entre dois meses e diz quem
+  APARECEU, quem SUMIU e quem mudou de valor. Devolva "rubrica". Para "esse fornecedor é
+  novo", "quem entrou", "isso já estava aqui mês passado", "o que mudou nos fornecedores".
 - "caixa_do_mes": saldo bancário e movimentação de entradas/saídas (Sicoob e Asaas).
 - "radar": varre TODAS as rubricas e devolve as que fogem do padrão, da tendência ou do
   plano, ordenadas por peso em reais. Para "o que eu preciso saber", "tem algo estranho",
@@ -308,6 +313,26 @@ Deno.serve(async (req) => {
           return await briefingDoDia(supabase);
         case "dre_completa":
           return await dreCompleta(supabase, pedida);
+        case "contrapartes": {
+          const rubrica = String(item?.rubrica ?? "").trim();
+          if (!rubrica) return null;
+          // A comparação precisa dos dois meses FECHADOS mais recentes — comparar contra
+          // mês aberto acusaria "fornecedor sumiu" só porque o sync ainda não chegou nele.
+          const { data } = await supabase.from("demonstracoes_contabeis")
+            .select("dados").eq("tipo", "dre").eq("periodo", "completo").maybeSingle();
+          const { data: travas } = await supabase.from("demonstracoes_mes_trancado").select("col_key");
+          if (!data) return null;
+          const fechados = mesesFechados(
+            estruturar(data.dados),
+            ((travas ?? []) as { col_key: string }[]).map((t) => t.col_key),
+          );
+          if (fechados.length < 2) return null;
+          const atual = pedida ?? fechados[fechados.length - 1];
+          const anterior = fechados.filter((f) =>
+            f.ano < atual.ano || (f.ano === atual.ano && f.mes < atual.mes)).pop();
+          if (!anterior) return null;
+          return await contrapartesComparadas(supabase, "dre", [rubrica], atual, anterior);
+        }
         case "rubrica_do_mes": {
           const rubrica = String(item?.rubrica ?? "").trim();
           return rubrica ? await rubricaDoMes(supabase, rubrica, pedida) : null;

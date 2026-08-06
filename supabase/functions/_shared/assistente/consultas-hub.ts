@@ -198,6 +198,209 @@ export async function justificativasDoMes(
 }
 
 // ---------------------------------------------------------------------------
+// EBITDA Ajustado — sem os eventos que não se repetem
+// ---------------------------------------------------------------------------
+
+type LinhaAjuste = {
+  col_key: string; rubrica: string | null; contraparte: string | null;
+  valor: number; descricao: string;
+};
+
+export type Ajustes = { total: number; itens: LinhaAjuste[] };
+
+/**
+ * Add-backs ACEITOS de um mês.
+ *
+ * O EBITDA contábil desaba quando sai uma rescisão e salta quando um fornecedor anual é
+ * pago — e quem lê a linha não tem como saber. A conversa com board e investidor é sempre
+ * sobre o EBITDA recorrente, o que a operação faz num mês normal. Ignorar os ajustes
+ * aceitos faria o assistente explicar uma queda que o time já sabe que é one-off.
+ *
+ * `valor` já vem somável (a migration guarda o add-back, não o lançamento), então aqui
+ * não se inverte sinal nenhum — reinventar essa inversão é justamente o erro que guardar
+ * já somável existe para evitar.
+ */
+export async function ajustesEbitda(
+  supabase: { from: (t: string) => any },
+  c: Competencia,
+): Promise<Ajustes> {
+  try {
+    const { data } = await supabase
+      .from("demonstracoes_ebitda_ajuste")
+      .select("col_key, rubrica, contraparte, valor, descricao")
+      .eq("col_key", montarColuna(c))
+      .eq("status", "aceito");
+
+    const itens = (data ?? []) as LinhaAjuste[];
+    return { total: itens.reduce((a, i) => a + Number(i.valor ?? 0), 0), itens };
+  } catch {
+    return { total: 0, itens: [] };
+  }
+}
+
+export function linhasDeAjustes(a: Ajustes, ebitdaContabil: number | null): string[] {
+  if (a.itens.length === 0) return [];
+  const linhas = [
+    `EBITDA AJUSTADO — ${a.itens.length} evento(s) não recorrente(s), add-back de ${brl(a.total)}:`,
+    ...a.itens.slice(0, 10).map((i) =>
+      `  ${i.contraparte ?? i.rubrica ?? "ajuste"}: ${brl(Number(i.valor))} — ${i.descricao}`),
+  ];
+  if (ebitdaContabil !== null) {
+    linhas.push(
+      `  EBITDA contábil ${brl(ebitdaContabil)} → ajustado ${brl(ebitdaContabil + a.total)}.`,
+    );
+  }
+  linhas.push(
+    "  Ao falar do resultado, cite os DOIS: o contábil é o que aconteceu, o ajustado é o",
+    "  que a operação faz num mês normal. Board e investidor conversam sobre o ajustado.",
+  );
+  return linhas;
+}
+
+// ---------------------------------------------------------------------------
+// Perguntas já respondidas na célula
+// ---------------------------------------------------------------------------
+
+/**
+ * O que já foi perguntado e respondido em cima daquela célula, na tela de DRE/DFC.
+ *
+ * Mesma lógica das justificativas: se alguém já perguntou "por que Pessoal não subiu com
+ * os reajustes?" e a resposta ficou registrada, o assistente refazer a análise do zero é
+ * desperdício — e pior, pode chegar a uma conclusão diferente da que está na tela, o que
+ * mina a confiança nas duas.
+ */
+export async function perguntasDaCelula(
+  supabase: { from: (t: string) => any },
+  tipo: "dre" | "dfc",
+  rubrica: string,
+  c: Competencia,
+): Promise<{ pergunta: string; resposta: string }[]> {
+  try {
+    const { data } = await supabase
+      .from("demonstracoes_perguntas")
+      .select("pergunta, resposta, criado_em")
+      .eq("tipo", tipo).eq("rubrica", rubrica).eq("mes", montarColuna(c))
+      .order("criado_em", { ascending: false })
+      .limit(3);
+
+    return ((data ?? []) as { pergunta: string; resposta: string }[])
+      .filter((p) => p.pergunta && p.resposta);
+  } catch {
+    return [];
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Contrapartes comparadas entre dois meses
+// ---------------------------------------------------------------------------
+
+type LinhaContraparte = {
+  rubrica: string; mes: string; contraparte: string; categoria: string | null;
+  valor: number; lancamentos: number;
+};
+
+/**
+ * "Quem é novo, quem sumiu, quem cresceu" dentro de uma rubrica.
+ *
+ * A lista de lançamentos responde "quem está aqui"; ela não responde a única pergunta que
+ * se faz olhando para ela — "isso já estava aqui mês passado?". Responder exige o mesmo
+ * corte do mês anterior, que é o que `demonstracoes_contrapartes` faz.
+ *
+ * É a mesma análise que o painel da célula faz na tela. Sem isto, o assistente listaria
+ * fornecedores sem conseguir dizer qual deles explica a variação.
+ */
+export async function contrapartesComparadas(
+  supabase: { rpc: (f: string, p: Record<string, unknown>) => any },
+  tipo: "dre" | "dfc",
+  rubricas: string[],
+  atual: Competencia,
+  anterior: Competencia,
+): Promise<Resultado> {
+  const mesAtual = montarColuna(atual);
+  const mesAnterior = montarColuna(anterior);
+
+  const { data, error } = await supabase.rpc("demonstracoes_contrapartes", {
+    p_tipo: tipo,
+    p_meses: [mesAtual, mesAnterior],
+    // A RPC filtra no join do DE-PARA, antes de agrupar: sem isto viria a empresa inteira.
+    p_rubrica: rubricas.length === 1 ? rubricas[0] : null,
+  });
+
+  if (error) {
+    return {
+      consulta: "contrapartes", ok: false, numeros: [], paraModelo: "",
+      avisos: [`Não consegui comparar as contrapartes: ${error.message}`],
+    };
+  }
+
+  const linhas = ((data ?? []) as LinhaContraparte[])
+    .filter((l) => rubricas.length === 0 || rubricas.includes(l.rubrica));
+
+  if (linhas.length === 0) {
+    return {
+      consulta: "contrapartes", ok: false, numeros: [], paraModelo: "",
+      avisos: [`Sem contrapartes para ${rubricas.join(", ") || "essas rubricas"} nos dois meses.`],
+    };
+  }
+
+  const agora = new Map<string, number>();
+  const antes = new Map<string, number>();
+  for (const l of linhas) {
+    const alvo = l.mes === mesAtual ? agora : l.mes === mesAnterior ? antes : null;
+    if (alvo) alvo.set(l.contraparte, (alvo.get(l.contraparte) ?? 0) + Number(l.valor ?? 0));
+  }
+
+  const nomes = new Set([...agora.keys(), ...antes.keys()]);
+  const novos: [string, number][] = [];
+  const sumiram: [string, number][] = [];
+  const variaram: [string, number, number][] = [];
+
+  for (const nome of nomes) {
+    const a = antes.get(nome);
+    const b = agora.get(nome);
+    if (a === undefined && b !== undefined) novos.push([nome, b]);
+    else if (b === undefined && a !== undefined) sumiram.push([nome, a]);
+    else if (a !== undefined && b !== undefined && a !== b) variaram.push([nome, a, b]);
+  }
+
+  novos.sort((x, y) => Math.abs(y[1]) - Math.abs(x[1]));
+  sumiram.sort((x, y) => Math.abs(y[1]) - Math.abs(x[1]));
+  variaram.sort((x, y) => Math.abs(y[2] - y[1]) - Math.abs(x[2] - x[1]));
+
+  const rotulo = `${competenciaCurta(anterior)} → ${competenciaCurta(atual)}`;
+  const numeros: Numero[] = [
+    ...novos.slice(0, 5).map(([n, v]) => ({
+      rotulo: `NOVO · ${n}`, valor: v, formatado: brl(v), fonte: "Omie · contrapartes", competencia: rotulo,
+    })),
+    ...sumiram.slice(0, 5).map(([n, v]) => ({
+      rotulo: `SUMIU · ${n}`, valor: v, formatado: brl(v), fonte: "Omie · contrapartes", competencia: rotulo,
+    })),
+    ...variaram.slice(0, 6).map(([n, a, b]) => ({
+      rotulo: `${n} · variação`, valor: b - a, formatado: brl(b - a), fonte: "Omie · contrapartes", competencia: rotulo,
+    })),
+  ];
+
+  const paraModelo = [
+    `CONTRAPARTES — ${rubricas.join(", ") || "rubricas selecionadas"} · ${rotulo}`,
+    "",
+    novos.length ? "APARECERAM neste mês (não existiam no anterior):" : "Nenhuma contraparte nova.",
+    ...novos.slice(0, 10).map(([n, v]) => `  ${n}: ${brl(v)}`),
+    "",
+    sumiram.length ? "SUMIRAM (existiam no mês anterior e não aparecem agora):" : "Nenhuma contraparte sumiu.",
+    ...sumiram.slice(0, 10).map(([n, v]) => `  ${n}: ${brl(v)}`),
+    "",
+    variaram.length ? "MUDARAM de valor:" : "Nenhuma variação relevante entre as que ficaram.",
+    ...variaram.slice(0, 10).map(([n, a, b]) =>
+      `  ${n}: ${brl(a)} → ${brl(b)} (${b - a >= 0 ? "+" : ""}${brl(b - a)})`),
+    "",
+    "Isto responde 'já estava aqui mês passado?', que a lista de lançamentos sozinha não",
+    "responde. Fornecedor NOVO de valor alto costuma ser a explicação inteira da variação.",
+  ].join("\n");
+
+  return { consulta: "contrapartes", ok: true, numeros, paraModelo, avisos: [] };
+}
+
+// ---------------------------------------------------------------------------
 // Sinais por trás de uma célula do DRE
 // ---------------------------------------------------------------------------
 //

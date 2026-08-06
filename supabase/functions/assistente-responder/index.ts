@@ -30,7 +30,7 @@ import {
   rubricaDoMes, ultimoMesFechado, variacaoEbitda,
 } from "../_shared/assistente/consultas.ts";
 import {
-  briefingDoDia, orcamentoPorArea, pagamentosPrevistos, panoramaDFC, snapshotKpis,
+  briefingDoDia, dreCompleta, orcamentoPorArea, pagamentosPrevistos, panoramaDFC, snapshotKpis,
 } from "../_shared/assistente/consultas-hub.ts";
 import { catalogoParaPrompt } from "../_shared/assistente/catalogo.ts";
 import { blocoDeMemoria, memorizar, registrarExecucao } from "../_shared/assistente/memoria.ts";
@@ -39,7 +39,8 @@ import { Competencia, competenciaExtenso } from "../_shared/assistente/dre.ts";
 const CONSULTAS = [
   "caixa_do_mes", "variacao_ebitda", "panorama_do_mes", "rubrica_do_mes",
   "lancamentos_da_rubrica", "radar", "dfc_do_mes", "orcamento_por_area",
-  "pagamentos_previstos", "assinaturas", "churn", "investimentos", "briefing", "explorar",
+  "pagamentos_previstos", "assinaturas", "churn", "investimentos", "briefing",
+  "dre_completa", "explorar",
 ] as const;
 type NomeConsulta = typeof CONSULTAS[number];
 
@@ -56,8 +57,13 @@ Consultas disponíveis:
   por rubrica. Para "por que o EBITDA caiu/subiu", "o que explica o resultado".
 - "rubrica_do_mes": valor de UMA rubrica do DRE. Devolva "rubrica". Para "quanto foi
   Mídia Paga".
-- "lancamentos_da_rubrica": os lançamentos individuais do Omie dentro de uma rubrica, com
-  contrapartes. Devolva "rubrica". Para "quem recebeu", "me detalha", "do que é composto".
+- "lancamentos_da_rubrica": os lançamentos do Omie que compõem uma rubrica, LINHA A LINHA
+  — data, contraparte, valor, categoria, documento, título e status —, mais os totais por
+  contraparte e por categoria. É o mesmo detalhamento que a aba de DRE abre ao clicar numa
+  célula. Devolva "rubrica". Para "quem recebeu", "me detalha", "do que é composto",
+  "abre essa rubrica", "quais lançamentos".
+- "dre_completa": a demonstração INTEIRA de um mês, com todos os blocos, grupos e folhas
+  na hierarquia da tela. Para "me mostra a DRE", "quero ver tudo", "a DRE inteira".
 - "caixa_do_mes": saldo bancário e movimentação de entradas/saídas (Sicoob e Asaas).
 - "radar": varre TODAS as rubricas e devolve as que fogem do padrão, da tendência ou do
   plano, ordenadas por peso em reais. Para "o que eu preciso saber", "tem algo estranho",
@@ -300,6 +306,8 @@ Deno.serve(async (req) => {
           return await snapshotKpis(supabase, "investimentos_snapshot", "Investimentos");
         case "briefing":
           return await briefingDoDia(supabase);
+        case "dre_completa":
+          return await dreCompleta(supabase, pedida);
         case "rubrica_do_mes": {
           const rubrica = String(item?.rubrica ?? "").trim();
           return rubrica ? await rubricaDoMes(supabase, rubrica, pedida) : null;

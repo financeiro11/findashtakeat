@@ -19,7 +19,9 @@ import { acharFonte } from "./catalogo.ts";
 import { brl, fecha, Numero, pct, Resultado } from "./base.ts";
 // Importado do módulo irmão: as justificativas são do Hub, mas enriquecem a explicação
 // de variação do DRE, que mora aqui. Sem ciclo, porque o contrato comum está em base.ts.
-import { justificativaDe, justificativasDoMes } from "./consultas-hub.ts";
+import {
+  justificativaDe, justificativasDoMes, linhasDeSinais, sinaisDaCelula,
+} from "./consultas-hub.ts";
 import {
   analisarTendencia, compararComPlano, frasePadrao, fraseTendencia, IndiceBP, indexarBP,
   julgarSerie, serieAnterior,
@@ -713,11 +715,20 @@ export async function rubricaDoMes(
 
 type LinhaLancamento = {
   data: string | null;
+  vencimento: string | null;
+  titulo: string | null;
+  documento: string | null;
   contraparte: string | null;
+  cnpj_cpf: string | null;
+  categoria_codigo: string | null;
   categoria_descricao: string | null;
-  valor: number | null;
+  grupo: string | null;
   status: string | null;
+  valor: number | null;
 };
+
+const dataBR = (iso: string | null): string =>
+  iso ? new Date(`${iso}T12:00:00Z`).toLocaleDateString("pt-BR", { timeZone: "America/Sao_Paulo" }) : "—";
 
 /**
  * "Por que a Equipe Comercial subiu?" — os lançamentos do Omie que compõem a célula.
@@ -800,6 +811,11 @@ export async function lancamentosDaRubrica(
   const somaLancamentos = linhas.reduce((a, l) => a + (l.valor ?? 0), 0);
   const celula = valorRubrica(dre, rubrica, alvo);
 
+  // Valor manual e reclassificação pendente: se a célula foi digitada à mão ou tem
+  // lançamento suspeito de rubrica errada, isso explica boa parte das divergências —
+  // e precisa ser dito junto com o número.
+  const sinais = linhasDeSinais(await sinaisDaCelula(supabase, "dre", rubrica, alvo));
+
   // A divergência que a migration manda vigiar.
   if (celula !== null && !fecha([somaLancamentos], celula, 0.01)) {
     avisos.push(
@@ -839,6 +855,31 @@ export async function lancamentosDaRubrica(
     );
   }
 
+  // Detalhamento LINHA A LINHA, além do agrupamento: é o que a aba de DRE mostra ao
+  // clicar numa célula. Agrupar por contraparte responde "quem"; a lista responde
+  // "quando, com que documento, sob qual categoria e em que status" — que é o que
+  // permite ir conferir no Omie.
+  const porValor = [...linhas].sort((a, b) => Math.abs(b.valor ?? 0) - Math.abs(a.valor ?? 0));
+  const detalhe = porValor.slice(0, 25).map((l) =>
+    "  " + [
+      dataBR(l.data),
+      (l.contraparte ?? "sem contraparte").slice(0, 48),
+      brl(l.valor ?? 0),
+      l.categoria_descricao ? `cat: ${l.categoria_descricao}` : null,
+      l.documento ? `doc: ${l.documento}` : null,
+      l.titulo ? `título: ${l.titulo}` : null,
+      l.status ? `status: ${l.status}` : null,
+      l.vencimento && l.vencimento !== l.data ? `venc: ${dataBR(l.vencimento)}` : null,
+    ].filter(Boolean).join(" · "));
+
+  // Por categoria do Omie: é a chave do DE/PARA, então divergência aqui explica
+  // rubrica com valor inesperado.
+  const porCategoria = new Map<string, number>();
+  for (const l of linhas) {
+    const cat = (l.categoria_descricao ?? l.categoria_codigo ?? "sem categoria").trim();
+    porCategoria.set(cat, (porCategoria.get(cat) ?? 0) + (l.valor ?? 0));
+  }
+
   const paraModelo = [
     `LANÇAMENTOS DE "${rubrica}" — ${competenciaExtenso(alvo)}`,
     `${linhas.length} lançamento(s), somando ${brl(somaLancamentos)}.`,
@@ -846,9 +887,21 @@ export async function lancamentosDaRubrica(
     "Maiores contrapartes:",
     ...maiores.map(([nome, v]) => `  ${nome}: ${brl(v)}`),
     "",
+    "Por categoria do Omie (a chave do DE/PARA):",
+    ...[...porCategoria.entries()]
+      .sort((a, b) => Math.abs(b[1]) - Math.abs(a[1]))
+      .slice(0, 10)
+      .map(([cat, v]) => `  ${cat}: ${brl(v)}`),
+    "",
+    `Lançamentos individuais (${Math.min(25, linhas.length)} maiores de ${linhas.length}):`,
+    ...detalhe,
+    ...(linhas.length > 25 ? [`  … e mais ${linhas.length - 25} de valor menor.`] : []),
+    "",
     "Este é o nível mais fundo que existe: lançamento a lançamento, vindo do Omie.",
-    "Pode apontar QUEM e QUANTO. Não invente o motivo comercial por trás de um pagamento —",
-    "isso não está no dado.",
+    "Pode apontar QUEM, QUANTO, QUANDO, sob qual categoria e em que status — é o bastante",
+    "para alguém ir conferir no Omie. Não invente o motivo comercial por trás de um",
+    "pagamento: isso não está no dado.",
+    ...(sinais.length ? ["", "SINAIS NESTA CÉLULA:", ...sinais] : []),
   ].join("\n");
 
   return { consulta: "lancamentos_da_rubrica", ok: true, numeros, paraModelo, avisos };

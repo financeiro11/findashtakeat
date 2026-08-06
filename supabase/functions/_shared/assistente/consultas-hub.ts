@@ -8,8 +8,9 @@
 import { brl, fecha, Numero, pct, Resultado } from "./base.ts";
 import {
   Competencia, competenciaCurta, competenciaExtenso, estruturar, mesesFechados,
-  montarColuna, ordenar, valorDe,
+  montarColuna, ordenar, valorDe, valorDoNo,
 } from "./dre.ts";
+import { DRE_SCHEMA, No } from "./schema-dre.ts";
 import { analisarTendencia, fraseTendencia, julgarSerie, frasePadrao, serieAnterior } from "./julgamento.ts";
 
 // ---------------------------------------------------------------------------
@@ -194,6 +195,165 @@ export async function justificativasDoMes(
     }
   } catch { /* silencioso por design */ }
   return mapa;
+}
+
+// ---------------------------------------------------------------------------
+// Sinais por trás de uma célula do DRE
+// ---------------------------------------------------------------------------
+//
+// A tela de DRE marca as células com três coisas que o número sozinho não conta:
+//   • VALOR MANUAL — alguém digitou aquele valor por cima do que veio do Omie;
+//   • RECLASSIFICAÇÃO — há lançamento suspeito de estar na rubrica errada;
+//   • JUSTIFICATIVA — alguém escreveu por que aquilo variou (ver acima).
+//
+// Sem esses sinais o assistente diz "R$ X, fonte DRE Omie" para um número que foi
+// digitado à mão — verdadeiro quanto ao valor, enganoso quanto à procedência. Quem leva
+// esse número a uma reunião precisa saber de onde ele veio.
+
+export type SinaisCelula = {
+  manual: { modo: string; valor: number; autor: string | null } | null;
+  reclassificacao: { alertas: number; severidade: string; valorTotal: number } | null;
+};
+
+export async function sinaisDaCelula(
+  supabase: { from: (t: string) => any; rpc: (f: string, p: Record<string, unknown>) => any },
+  tipo: "dre" | "dfc",
+  rubrica: string,
+  c: Competencia,
+): Promise<SinaisCelula> {
+  const col = montarColuna(c);
+  const vazio: SinaisCelula = { manual: null, reclassificacao: null };
+
+  try {
+    const [manualRes, reclasRes] = await Promise.all([
+      supabase.from("demonstracoes_valor_manual")
+        .select("modo, valor, autor_email")
+        .eq("tipo", tipo).eq("rubrica", rubrica).eq("col_key", col)
+        .maybeSingle(),
+      supabase.rpc("demonstracoes_reclassificacoes", { p_tipo: tipo }),
+    ]);
+
+    const m = manualRes?.data as { modo: string; valor: number; autor_email: string | null } | null;
+    const linhas = (reclasRes?.data ?? []) as {
+      rubrica: string; mes: string; alertas: number; severidade: string; valor_total: number;
+    }[];
+    const r = linhas.find((x) => x.rubrica === rubrica && x.mes === col);
+
+    return {
+      manual: m ? { modo: m.modo, valor: Number(m.valor), autor: m.autor_email } : null,
+      reclassificacao: r
+        ? { alertas: Number(r.alertas), severidade: r.severidade, valorTotal: Number(r.valor_total) }
+        : null,
+    };
+  } catch {
+    return vazio; // sinais são enriquecimento; ausência não derruba a resposta
+  }
+}
+
+/** Linhas prontas para o bloco do modelo. Vazio quando não há sinal nenhum. */
+export function linhasDeSinais(s: SinaisCelula): string[] {
+  const linhas: string[] = [];
+  if (s.manual) {
+    linhas.push(
+      `  VALOR MANUAL: alguém ${s.manual.modo === "soma" ? "somou" : "substituiu"} ` +
+      `${brl(s.manual.valor)} nesta célula` +
+      (s.manual.autor ? ` (${s.manual.autor})` : "") +
+      ". O número NÃO veio inteiro do Omie — diga isso ao citá-lo.",
+    );
+  }
+  if (s.reclassificacao) {
+    linhas.push(
+      `  RECLASSIFICAÇÃO EM ABERTO: ${s.reclassificacao.alertas} lançamento(s) de severidade ` +
+      `${s.reclassificacao.severidade}, somando ${brl(s.reclassificacao.valorTotal)}, podem estar ` +
+      "na rubrica errada. O valor pode mudar quando isso for resolvido.",
+    );
+  }
+  return linhas;
+}
+
+// ---------------------------------------------------------------------------
+// DRE completa de um mês
+// ---------------------------------------------------------------------------
+
+/**
+ * A demonstração inteira, com hierarquia, como a tela mostra.
+ *
+ * As consultas de panorama trazem cinco linhas de topo; esta traz tudo — cada bloco, cada
+ * grupo e cada folha, com indentação. É a resposta para "me mostra a DRE" ou "quero ver
+ * tudo", que antes caía num resumo e frustrava.
+ *
+ * Nó com filhos é SOMADO (não lido da própria linha), mesma regra da tela — ver valorDoNo.
+ */
+export async function dreCompleta(
+  supabase: { from: (t: string) => any },
+  pedida: Competencia | null,
+): Promise<Resultado> {
+  const [demRes, travasRes] = await Promise.all([
+    supabase.from("demonstracoes_contabeis").select("dados, updated_at")
+      .eq("tipo", "dre").eq("periodo", "completo").maybeSingle(),
+    supabase.from("demonstracoes_mes_trancado").select("col_key"),
+  ]);
+
+  if (demRes.error || !demRes.data) {
+    return { consulta: "dre_completa", ok: false, numeros: [], paraModelo: "", avisos: ["DRE não encontrado."] };
+  }
+
+  const dre = estruturar(demRes.data.dados, demRes.data.updated_at ?? null);
+  const travas = ((travasRes.data ?? []) as { col_key: string }[]).map((t) => t.col_key);
+  const fechados = mesesFechados(dre, travas);
+  if (dre.competencias.length === 0) {
+    return { consulta: "dre_completa", ok: false, numeros: [], paraModelo: "", avisos: ["O DRE está vazio."] };
+  }
+
+  const alvo = pedida ?? fechados[fechados.length - 1] ?? dre.competencias[dre.competencias.length - 1];
+  const anterior = fechados.filter((f) => ordenar(f, alvo) < 0).pop() ?? null;
+  const avisos: string[] = [];
+  if (!fechados.some((f) => f.ano === alvo.ano && f.mes === alvo.mes)) {
+    avisos.push(`${competenciaCurta(alvo)} não está fechado — valores parciais.`);
+  }
+
+  const numeros: Numero[] = [];
+  const linhas: string[] = [];
+
+  const percorrer = (nos: No[], nivel = 0) => {
+    for (const no of nos) {
+      const v = valorDoNo(dre, no, alvo);
+      const indent = "  ".repeat(nivel);
+      if (v === null) {
+        // Linha sem valor é informação: a tela mostra "—", não zero.
+        linhas.push(`${indent}${no.label}: —`);
+      } else {
+        const antes = anterior ? valorDoNo(dre, no, anterior) : null;
+        const delta = antes !== null ? v - antes : null;
+        linhas.push(
+          `${indent}${no.label}: ${brl(v)}` +
+          (delta !== null ? ` (${delta >= 0 ? "+" : ""}${brl(delta)} vs ${competenciaCurta(anterior!)})` : ""),
+        );
+        // Só totais e blocos vão para a tabela da tela: 50 folhas ali seriam ilegíveis.
+        if (nivel === 0) {
+          numeros.push({
+            rotulo: no.label, valor: v, formatado: brl(v),
+            fonte: "DRE Omie", competencia: competenciaCurta(alvo),
+          });
+        }
+      }
+      if (no.children?.length) percorrer(no.children, nivel + 1);
+    }
+  };
+  percorrer(DRE_SCHEMA);
+
+  const paraModelo = [
+    `DRE COMPLETA — ${competenciaExtenso(alvo)}` +
+      (anterior ? ` (comparada com ${competenciaCurta(anterior)})` : ""),
+    "",
+    ...linhas,
+    "",
+    "Esta é a demonstração inteira, na mesma hierarquia e com os mesmos valores da tela.",
+    "Linha com filhos é a SOMA dos filhos. '—' significa sem valor, não zero.",
+    "Ao responder, não despeje a lista: destaque o que a pergunta pediu.",
+  ].join("\n");
+
+  return { consulta: "dre_completa", ok: true, numeros, paraModelo, avisos };
 }
 
 // ---------------------------------------------------------------------------

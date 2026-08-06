@@ -16,6 +16,24 @@ import {
 } from "./dre.ts";
 import { acharNo, folhasDe, rotulosDeDespesa, todosRotulos } from "./schema-dre.ts";
 import { acharFonte } from "./catalogo.ts";
+import {
+  compararComPlano, frasePadrao, IndiceBP, indexarBP, julgarSerie, serieAnterior,
+} from "./julgamento.ts";
+
+/**
+ * Carrega o plano anual para comparar realizado × planejado.
+ *
+ * Falha em silêncio: sem BP o assistente ainda responde o valor, só perde a régua do
+ * "estamos dentro do combinado". Um plano indisponível não pode derrubar a resposta.
+ */
+async function carregarBP(supabase: { from: (t: string) => any }): Promise<IndiceBP> {
+  try {
+    const { data } = await supabase.from("bp_anual").select("ano, dados").order("ano", { ascending: false }).limit(3);
+    return indexarBP((data ?? []) as { ano: number; dados: unknown }[]);
+  } catch {
+    return new Map();
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Contrato
@@ -525,9 +543,40 @@ export async function panoramaDoMes(
     avisos.push("Não há mês fechado anterior para comparar.");
   }
 
+  // ---- Julgamento das linhas de topo -----------------------------------------------
+  const bp = await carregarBP(supabase);
+  const julgamentos: string[] = [];
+  for (const linha of ["Receita Líquida", "EBITDA"]) {
+    const v = valorRubrica(dre, linha, alvo);
+    if (v === null) continue;
+
+    const veredito = julgarSerie(serieAnterior(dre, linha, fechados, alvo), v);
+    const plano = compararComPlano(bp, linha, alvo, v);
+
+    if (plano) {
+      numeros.push({
+        rotulo: `${linha} · planejado`, valor: plano.planejado, formatado: brl(plano.planejado),
+        fonte: "BP Anual", competencia: competenciaCurta(alvo),
+      });
+    }
+    julgamentos.push(
+      `  ${linha}: ${frasePadrao(veredito, brl)}.` +
+      (plano
+        ? ` Contra o plano, ${plano.desvio >= 0 ? "acima" : "abaixo"} em ${brl(Math.abs(plano.desvio))}` +
+          (plano.desvioPct !== null ? ` (${pct(Math.abs(plano.desvioPct))})` : "") + "."
+        : " Sem linha correspondente no BP."),
+    );
+  }
+
   const paraModelo = [
     `PANORAMA — ${competenciaExtenso(alvo)}${fechado ? " (mês fechado)" : " (MÊS AINDA ABERTO — dado parcial)"}`,
     ...numeros.map((n) => `${n.rotulo}: ${n.formatado} (${n.fonte}, ${n.competencia})`),
+    ...(julgamentos.length
+      ? ["", "JULGAMENTO (calculado, não opinado — comunique, não recalcule):", ...julgamentos,
+         "",
+         "Fora do padrão histórico mas dentro do plano é crescimento previsto, não problema.",
+         "Dentro do padrão mas fora do plano é desvio de orçamento. Diga qual está acesa."]
+      : []),
     "",
     "LIMITE: estes são totais de rubrica. Não há lançamento nem fornecedor por trás deles.",
   ].join("\n");
@@ -620,6 +669,24 @@ export async function rubricaDoMes(
     fonte: "DRE Omie", competencia: competenciaCurta(alvo),
   }];
 
+  // ---- Julgamento: o número é normal? está dentro do combinado? --------------------
+  const historico = serieAnterior(dre, rubrica, fechados, alvo);
+  const veredito = julgarSerie(historico, valor);
+  const bp = await carregarBP(supabase);
+  const plano = compararComPlano(bp, rubrica, alvo, valor);
+
+  if (plano) {
+    numeros.push({
+      rotulo: "Planejado (BP)", valor: plano.planejado, formatado: brl(plano.planejado),
+      fonte: "BP Anual", competencia: competenciaCurta(alvo),
+    });
+    numeros.push({
+      rotulo: plano.desvio > 0 ? "Acima do plano" : "Abaixo do plano",
+      valor: plano.desvio, formatado: brl(plano.desvio),
+      fonte: "Realizado − BP", competencia: competenciaCurta(alvo),
+    });
+  }
+
   const anterior = fechados.filter((f) => ordenar(f, alvo) < 0).pop() ?? null;
   if (anterior) {
     const antes = valorRubrica(dre, rubrica, anterior);
@@ -640,11 +707,32 @@ export async function rubricaDoMes(
     `RUBRICA "${rubrica}" — ${competenciaExtenso(alvo)}`,
     ...numeros.map((n) => `${n.rotulo}: ${n.formatado} (${n.competencia})`),
     "",
+    "JULGAMENTO (calculado, não opinado — comunique, não recalcule):",
+    `  Contra o próprio histórico: ${frasePadrao(veredito, brl)}.`,
+    plano
+      ? `  Contra o plano: ${plano.desvio > 0 ? "acima" : "abaixo"} em ${brl(Math.abs(plano.desvio))}` +
+        (plano.desvioPct !== null ? ` (${pct(Math.abs(plano.desvioPct))})` : "") + "."
+      : "  Contra o plano: esta rubrica não está no BP anual — não dá para dizer se está dentro do combinado.",
+    "",
+    "COMO USAR AS DUAS RÉGUAS: elas respondem coisas diferentes. Fora do padrão histórico",
+    "mas dentro do plano é crescimento previsto, não problema. Dentro do padrão mas acima",
+    "do plano é desvio de orçamento. Diga qual das duas está acesa.",
+    "",
     "LIMITE: este é o total da rubrica. Se a pessoa quiser saber QUEM compõe esse valor,",
     "os lançamentos do Omie podem ser listados — ofereça, mas não invente nomes aqui.",
   ].join("\n");
 
-  return { consulta: "rubrica_do_mes", ok: true, numeros, paraModelo, avisos };
+  // Rubrica fora do padrão pede o detalhe de quem causou — só folha tem lançamento.
+  const ehFolha = !acharNo(rubrica)?.children?.length;
+  const chamaAtencao = veredito.padrao === "acima do padrão" || veredito.padrao === "recorde"
+    || (plano?.desvioPct != null && Math.abs(plano.desvioPct) > 20);
+
+  return {
+    consulta: "rubrica_do_mes", ok: true, numeros, paraModelo, avisos,
+    aprofundar: ehFolha && chamaAtencao
+      ? { consulta: "lancamentos_da_rubrica", rubrica }
+      : undefined,
+  };
 }
 
 // ---------------------------------------------------------------------------

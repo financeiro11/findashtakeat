@@ -1,9 +1,10 @@
 import { describe, it, expect } from "vitest";
 import {
-  estruturar, mesesFechados, montarColuna, parseColuna, toNum, valorDe,
+  estruturar, mesesFechados, montarColuna, parseColuna, toNum, valorDe, valorDoNo,
 } from "../../supabase/functions/_shared/assistente/dre";
+import { acharNo } from "../../supabase/functions/_shared/assistente/schema-dre";
 import {
-  fecha, panoramaDoMes, rubricaDoMes, variacaoEbitda,
+  fecha, lancamentosDaRubrica, panoramaDoMes, rubricaDoMes, variacaoEbitda,
 } from "../../supabase/functions/_shared/assistente/consultas";
 
 // ---------------------------------------------------------------------------
@@ -21,12 +22,29 @@ function encadeador(resultado: unknown) {
   return obj;
 }
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-function fakeSupabase(porTabela: Record<string, unknown>): { from: (t: string) => any } {
-  return { from: (t: string) => encadeador(porTabela[t] ?? { data: null, error: null }) };
+/* eslint-disable @typescript-eslint/no-explicit-any */
+function fakeSupabase(
+  porTabela: Record<string, unknown>,
+  rpc?: unknown,
+): { from: (t: string) => any; rpc: (f: string, p: Record<string, unknown>) => any } {
+  return {
+    from: (t: string) => encadeador(porTabela[t] ?? { data: null, error: null }),
+    rpc: async () => rpc ?? { data: [], error: null },
+  };
 }
+/* eslint-enable @typescript-eslint/no-explicit-any */
 
-/** DRE coerente: Receita − Custos − SG&A reproduz o EBITDA nos dois meses. */
+/**
+ * DRE coerente: Receita − Custos − SG&A reproduz o EBITDA nos dois meses.
+ *
+ * Os valores vivem nas FOLHAS, não nos blocos: "(-) Custos Operacionais" e "(-) SG&A" têm
+ * filhos na árvore e são calculados somando-os. Um valor gravado no pai seria ignorado —
+ * é exatamente o bug que o Hub já corrigiu nas telas ("ler o pai do blob era o bug").
+ *
+ *   Custos  = Equipe Operacional                              = 300 / 300
+ *   SG&A    = Equipe Administrativa + Equipe Comercial        = 400 / 500
+ *   EBITDA  = 1000 − 300 − 400 = 300     |    900 − 300 − 500 = 100
+ */
 const DRE_COERENTE = {
   data: {
     updated_at: "2026-08-01T00:00:00Z",
@@ -34,11 +52,14 @@ const DRE_COERENTE = {
       columns: ["Conta", "Jun-26", "Jul-26"],
       rows: [
         { Conta: "Receita Líquida", "Jun-26": 1000, "Jul-26": 900 },
-        { Conta: "(-) Custos Operacionais", "Jun-26": 300, "Jul-26": 300 },
-        { Conta: "(-) SG&A", "Jun-26": 400, "Jul-26": 500 },
-        { Conta: "EBITDA", "Jun-26": 300, "Jul-26": 100 },
+        { Conta: "Equipe Operacional", "Jun-26": 300, "Jul-26": 300 },
+        { Conta: "Equipe Administrativa", "Jun-26": 300, "Jul-26": 300 },
         { Conta: "Equipe Comercial", "Jun-26": 100, "Jul-26": 200 },
+        { Conta: "EBITDA", "Jun-26": 300, "Jul-26": 100 },
         { Conta: "% Margem EBITDA", "Jun-26": 30, "Jul-26": 11 },
+        // Valor gravado no PAI, propositalmente errado: tem que ser ignorado em favor
+        // da soma dos filhos. Se voltar a ser lido, os testes de variação quebram.
+        { Conta: "(-) SG&A", "Jun-26": 99999, "Jul-26": 99999 },
       ],
     },
   },
@@ -71,8 +92,36 @@ describe("dre — parsing do blob", () => {
 
   it("descarta linhas de percentual, que são derivadas", () => {
     const d = estruturar(DRE_COERENTE.data.dados);
-    expect(d.valores.has("% Margem EBITDA")).toBe(false);
+    expect(d.valores.has("% margem ebitda")).toBe(false);
     expect(valorDe(d, "EBITDA", { ano: 2026, mes: 7 })).toBe(100);
+  });
+
+  it("soma a mesma rubrica escrita em duas linhas", () => {
+    // Acontece de verdade: uma linha com a grafia do tracker e outra com a do DE_PARA
+    // do Omie. Sobrescrever (o comportamento antigo) subestimava a rubrica em silêncio.
+    const d = estruturar({
+      columns: ["Conta", "Jul-26"],
+      rows: [
+        { Conta: "Equipe Comercial", "Jul-26": 100 },
+        { Conta: "equipe comercial", "Jul-26": 50 },
+      ],
+    });
+    expect(valorDe(d, "Equipe Comercial", { ano: 2026, mes: 7 })).toBe(150);
+  });
+
+  it("soma os filhos em vez de ler o valor gravado no pai", () => {
+    // O blob traz "(-) SG&A" = 99999, que está desatualizado; o certo é
+    // Equipe Administrativa (300) + Equipe Comercial (200) = 500.
+    const d = estruturar(DRE_COERENTE.data.dados);
+    const sga = acharNo("(-) SG&A")!;
+    expect(valorDoNo(d, sga, { ano: 2026, mes: 7 })).toBe(500);
+    expect(valorDe(d, "(-) SG&A", { ano: 2026, mes: 7 })).toBe(99999); // leitura crua
+  });
+
+  it("devolve null quando nenhuma folha do nó tem valor", () => {
+    // Ausência não é zero: um bloco sem nenhum filho preenchido não vale R$ 0,00.
+    const d = estruturar({ columns: ["Conta", "Jul-26"], rows: [{ Conta: "EBITDA", "Jul-26": 10 }] });
+    expect(valorDoNo(d, acharNo("(-) Custos Operacionais")!, { ano: 2026, mes: 7 })).toBeNull();
   });
 
   it("considera fechado apenas o mês travado", () => {
@@ -132,8 +181,8 @@ describe("variacaoEbitda", () => {
           columns: ["Conta", "Jun-26", "Jul-26"],
           rows: [
             { Conta: "Receita Líquida", "Jun-26": 1000, "Jul-26": 900 },
-            { Conta: "(-) Custos Operacionais", "Jun-26": 300, "Jul-26": 300 },
-            { Conta: "(-) SG&A", "Jun-26": 400, "Jul-26": 500 },
+            { Conta: "Equipe Operacional", "Jun-26": 300, "Jul-26": 300 },
+            { Conta: "Equipe Administrativa", "Jun-26": 400, "Jul-26": 500 },
             { Conta: "EBITDA", "Jun-26": 999, "Jul-26": 777 },
           ],
         },
@@ -160,8 +209,9 @@ describe("variacaoEbitda", () => {
           columns: ["Conta", "Jun-26", "Jul-26"],
           rows: [
             { Conta: "Receita Líquida", "Jun-26": 1000, "Jul-26": 900 },
-            { Conta: "(-) Custos Operacionais", "Jun-26": -300, "Jul-26": -300 },
-            { Conta: "(-) SG&A", "Jun-26": -400, "Jul-26": -500 },
+            { Conta: "Equipe Operacional", "Jun-26": -300, "Jul-26": -300 },
+            { Conta: "Equipe Administrativa", "Jun-26": -300, "Jul-26": -300 },
+            { Conta: "Equipe Comercial", "Jun-26": -100, "Jul-26": -200 },
             { Conta: "EBITDA", "Jun-26": 300, "Jul-26": 100 },
           ],
         },
@@ -265,5 +315,59 @@ describe("rubricaDoMes", () => {
     expect(r.ok).toBe(false);
     expect(r.numeros).toHaveLength(0);
     expect(r.avisos.join(" ")).toMatch(/não encontrei/i);
+  });
+
+  it("soma os filhos ao pedirem um bloco, ignorando o valor do pai", async () => {
+    // O blob grava "(-) SG&A" = 99999; o certo é 300 + 200 = 500.
+    const r = await rubricaDoMes(fonte(), "SG&A", { ano: 2026, mes: 7 });
+    expect(r.ok).toBe(true);
+    expect(r.numeros[0].valor).toBe(500);
+  });
+});
+
+describe("lancamentosDaRubrica", () => {
+  const LANCAMENTOS = {
+    data: [
+      { data: "2026-07-03", contraparte: "Fulano Consultoria", categoria_descricao: "Comissão", valor: 120, status: "PAGO" },
+      { data: "2026-07-10", contraparte: "Fulano Consultoria", categoria_descricao: "Comissão", valor: 50, status: "PAGO" },
+      { data: "2026-07-20", contraparte: "Beltrano ME", categoria_descricao: "Comissão", valor: 30, status: "PAGO" },
+    ],
+    error: null,
+  };
+
+  const fonte = (rpc: unknown = LANCAMENTOS) => fakeSupabase({
+    demonstracoes_contabeis: DRE_COERENTE,
+    demonstracoes_mes_trancado: TRAVAS_DOIS_MESES,
+  }, rpc);
+
+  it("agrupa por contraparte, somando os lançamentos de cada uma", async () => {
+    const r = await lancamentosDaRubrica(fonte(), "Equipe Comercial", { ano: 2026, mes: 7 });
+    expect(r.ok).toBe(true);
+    expect(r.numeros.find((n) => n.rotulo === "Fulano Consultoria")?.valor).toBe(170);
+    expect(r.numeros.find((n) => n.rotulo === "Beltrano ME")?.valor).toBe(30);
+  });
+
+  it("avisa quando os lançamentos não fecham com a célula do DRE", async () => {
+    // Somam 200 e a célula de Equipe Comercial em Jul-26 é 200 — coerente. Aqui,
+    // trocando um valor, a divergência tem que aparecer em vez de passar batida.
+    const divergente = {
+      data: [{ data: "2026-07-03", contraparte: "X", categoria_descricao: "Y", valor: 999, status: "PAGO" }],
+      error: null,
+    };
+    const r = await lancamentosDaRubrica(fonte(divergente), "Equipe Comercial", { ano: 2026, mes: 7 });
+    expect(r.avisos.join(" ")).toMatch(/célula do DRE/i);
+  });
+
+  it("recusa rubrica que é soma de outras, e sugere as filhas", async () => {
+    // "(-) SG&A" não tem lançamento próprio — o detalhe está nas folhas.
+    const r = await lancamentosDaRubrica(fonte(), "SG&A", { ano: 2026, mes: 7 });
+    expect(r.ok).toBe(false);
+    expect(r.avisos.join(" ")).toMatch(/Pessoal/);
+  });
+
+  it("não inventa nada quando não há lançamento", async () => {
+    const r = await lancamentosDaRubrica(fonte({ data: [], error: null }), "Equipe Comercial", null);
+    expect(r.ok).toBe(false);
+    expect(r.numeros).toHaveLength(0);
   });
 });

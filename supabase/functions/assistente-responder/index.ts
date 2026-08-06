@@ -20,13 +20,15 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.0";
 import { errorResponse, generateJSON, generateText, handleCors, jsonResponse } from "../_shared/gemini.ts";
 import { requireUser } from "../_shared/auth.ts";
 import {
-  caixaDoMes, Numero, panoramaDoMes, Resultado, rubricaDoMes, ultimoMesFechado, variacaoEbitda,
+  caixaDoMes, lancamentosDaRubrica, Numero, panoramaDoMes, Resultado, rubricaDoMes,
+  ultimoMesFechado, variacaoEbitda,
 } from "../_shared/assistente/consultas.ts";
 import { blocoDeMemoria, memorizar, registrarExecucao } from "../_shared/assistente/memoria.ts";
 import { Competencia, competenciaExtenso } from "../_shared/assistente/dre.ts";
 
 const CONSULTAS = [
-  "caixa_do_mes", "variacao_ebitda", "panorama_do_mes", "rubrica_do_mes", "nenhuma",
+  "caixa_do_mes", "variacao_ebitda", "panorama_do_mes", "rubrica_do_mes",
+  "lancamentos_da_rubrica", "nenhuma",
 ] as const;
 type NomeConsulta = typeof CONSULTAS[number];
 
@@ -42,7 +44,14 @@ Consultas:
   "resumo do mês", "me dá os números do mês".
 - "rubrica_do_mes": valor de UMA rubrica específica do DRE. Para "quanto gastamos com
   Equipe Comercial", "quanto foi Mídia Paga". Devolva o nome da rubrica em "rubrica".
+- "lancamentos_da_rubrica": os lançamentos individuais do Omie que compõem uma rubrica —
+  contrapartes, valores. Para "quem recebeu", "quais lançamentos", "me detalha", "do que
+  é composto", "por que ESSA rubrica subiu". Devolva o nome da rubrica em "rubrica".
 - "nenhuma": a pergunta não é sobre nada disso.
+
+Diferença que importa: "variacao_ebitda" explica QUAL rubrica moveu o resultado;
+"lancamentos_da_rubrica" explica QUEM está dentro de uma rubrica. Se a pergunta já
+nomeia a rubrica e pede detalhe ou motivo, use lancamentos_da_rubrica.
 
 Se a pergunta citar um mês, devolva ano e mes. Se não citar, deixe nulos.
 A data de hoje é {HOJE}.
@@ -177,7 +186,8 @@ Deno.serve(async (req) => {
       return responderSemDados(
         "Ainda não sei responder isso. Hoje eu consulto: o caixa de um mês (saldo e " +
         "movimentação, Sicoob e Asaas), os totais do mês no DRE, o valor de uma rubrica " +
-        "específica e a variação do EBITDA entre os dois últimos meses fechados.",
+        "específica, os lançamentos do Omie por trás de uma rubrica, e a variação do " +
+        "EBITDA entre os dois últimos meses fechados.",
       );
     }
 
@@ -211,6 +221,14 @@ Deno.serve(async (req) => {
           return responderSemDados("Qual rubrica do DRE você quer ver? Me diga o nome dela.");
         }
         resultado = await rubricaDoMes(supabase, rubrica, pedida);
+        break;
+      }
+      case "lancamentos_da_rubrica": {
+        const rubrica = String(rota?.rubrica ?? "").trim();
+        if (!rubrica) {
+          return responderSemDados("De qual rubrica você quer ver os lançamentos?");
+        }
+        resultado = await lancamentosDaRubrica(supabase, rubrica, pedida);
         break;
       }
       default:

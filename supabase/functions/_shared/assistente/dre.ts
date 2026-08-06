@@ -69,8 +69,10 @@ export function toNum(v: unknown): number | null {
 }
 
 export type Demonstracao = {
-  /** rubrica → (coluna "Apr-26" → valor) */
+  /** rubrica em minúsculas → (coluna "Apr-26" → valor) */
   valores: Map<string, Map<string, number>>;
+  /** rubrica em minúsculas → rótulo original, para exibir do jeito que foi escrito */
+  rotulos: Map<string, string>;
   /** Todas as competências presentes no blob, em ordem cronológica. */
   competencias: Competencia[];
   atualizadoEm: string | null;
@@ -79,8 +81,15 @@ export type Demonstracao = {
 /**
  * Estrutura o blob para consulta por (rubrica, competência).
  *
- * Linhas de percentual ("% Margem EBITDA") são descartadas: são derivadas, e recalculá-las
- * a partir dos valores é mais confiável do que confiar no que foi salvo.
+ * Duas regras que vêm de bugs reais já corrigidos nas telas do Hub:
+ *
+ * 1. A MESMA rubrica pode aparecer em MAIS DE UMA LINHA — uma com a grafia do tracker,
+ *    outra com a do DE_PARA do Omie. O valor certo é a SOMA das duas, não a última lida.
+ *    Sobrescrever (o que este código fazia antes) subestimava a rubrica silenciosamente.
+ *    Mesma regra de `indexarCelulas` em src/lib/demonstracoes-schema.ts.
+ *
+ * 2. Linhas de percentual ("% Margem EBITDA") são descartadas: são derivadas, e
+ *    recalculá-las a partir dos valores é mais confiável do que confiar no que foi salvo.
  */
 export function estruturar(blob: unknown, atualizadoEm: string | null = null): Demonstracao {
   const linhas: Record<string, unknown>[] = Array.isArray(blob)
@@ -90,6 +99,7 @@ export function estruturar(blob: unknown, atualizadoEm: string | null = null): D
       : [];
 
   const valores = new Map<string, Map<string, number>>();
+  const rotulos = new Map<string, string>();
   const colunas = new Set<string>();
 
   for (const linha of linhas) {
@@ -99,15 +109,19 @@ export function estruturar(blob: unknown, atualizadoEm: string | null = null): D
     const rubrica = chaveRotulo ? String(linha[chaveRotulo] ?? "").trim() : "";
     if (!rubrica || rubrica.startsWith("%")) continue;
 
-    const porMes = valores.get(rubrica) ?? new Map<string, number>();
+    const chaveRubrica = rubrica.toLowerCase();
+    if (!rotulos.has(chaveRubrica)) rotulos.set(chaveRubrica, rubrica);
+
+    const porMes = valores.get(chaveRubrica) ?? new Map<string, number>();
     for (const chave of Object.keys(linha)) {
       if (parseColuna(chave) === null) continue;
       const n = toNum(linha[chave]);
       if (n === null) continue;
-      porMes.set(chave, n);
+      // SOMA, não substitui — ver regra 1 acima.
+      porMes.set(chave, (porMes.get(chave) ?? 0) + n);
       colunas.add(chave);
     }
-    if (porMes.size > 0) valores.set(rubrica, porMes);
+    if (porMes.size > 0) valores.set(chaveRubrica, porMes);
   }
 
   const competencias = [...colunas]
@@ -115,12 +129,47 @@ export function estruturar(blob: unknown, atualizadoEm: string | null = null): D
     .filter((c): c is Competencia => c !== null)
     .sort(ordenar);
 
-  return { valores, competencias, atualizadoEm };
+  return { valores, rotulos, competencias, atualizadoEm };
 }
 
-/** Valor de uma rubrica numa competência, ou null se a célula não existe. */
+/**
+ * Valor GRAVADO de uma rubrica, ou null se a célula não existe.
+ *
+ * Para rubrica com filhos, prefira `valorDoNo`: o número gravado no pai é lixo em mês
+ * destravado. Esta função é a leitura crua, usada nas folhas e nos totais.
+ */
 export function valorDe(d: Demonstracao, rubrica: string, c: Competencia): number | null {
-  return d.valores.get(rubrica)?.get(montarColuna(c)) ?? null;
+  return d.valores.get(rubrica.toLowerCase())?.get(montarColuna(c)) ?? null;
+}
+
+/**
+ * Valor de um nó da árvore: SOMA DOS FILHOS quando o nó tem filhos.
+ *
+ * O blob guarda um número para "Pessoal" e "(-) SG&A", mas o omie-sync atualiza só as
+ * folhas e deixa o pai desatualizado — em mês destravado o valor do pai não corresponde
+ * aos filhos (o caso registrado no repo: Pessoal com −69.054 gravado contra −557.477
+ * somando as equipes). As telas de DRE/DFC já somam; o Assistente precisa somar igual,
+ * senão daria um número diferente do que a pessoa vê na tela.
+ *
+ * Devolve null quando nenhuma folha abaixo do nó tem valor — ausência não é zero.
+ */
+export function valorDoNo(
+  d: Demonstracao,
+  node: { label: string; src?: string; children?: { label: string; src?: string; children?: unknown }[] },
+  c: Competencia,
+): number | null {
+  if (!node.children?.length) return valorDe(d, node.src ?? node.label, c);
+
+  let soma = 0;
+  let achou = false;
+  for (const filho of node.children) {
+    const v = valorDoNo(d, filho as Parameters<typeof valorDoNo>[1], c);
+    if (v !== null) {
+      soma += v;
+      achou = true;
+    }
+  }
+  return achou ? soma : null;
 }
 
 /**

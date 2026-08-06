@@ -12,8 +12,9 @@
 
 import {
   Competencia, Demonstracao, competenciaCurta, competenciaExtenso, estruturar,
-  mesesFechados, montarColuna, ordenar, valorDe,
+  mesesFechados, montarColuna, ordenar, valorDe, valorDoNo,
 } from "./dre.ts";
+import { acharNo, folhasDe, rotulosDeDespesa, todosRotulos } from "./schema-dre.ts";
 
 // ---------------------------------------------------------------------------
 // Contrato
@@ -201,36 +202,22 @@ export async function caixaDoMes(
 // Variação do EBITDA
 // ---------------------------------------------------------------------------
 
-/**
- * Rubricas-folha por grupo, espelhando a árvore de src/pages/DRE.tsx.
- *
- * Duplicação consciente: a árvore lá é de renderização e vive no bundle do browser. Se
- * rubricas forem renomeadas no DRE, ESTA lista precisa acompanhar — a conferência de soma
- * abaixo detecta a divergência (as folhas deixam de reproduzir o grupo) em vez de deixar
- * passar uma análise silenciosamente incompleta.
- */
-const FOLHAS_POR_GRUPO: Record<string, string[]> = {
-  "(-) Custos Operacionais": [
-    "Equipe Operacional", "Premiações Operacionais", "Meios de Pagamento", "CMV Materiais",
-    "Servidor", "Softwares Operacionais", "Outros Custos",
-  ],
-  "Pessoal": [
-    "Equipe Administrativa", "Equipe Marketing", "Equipe Parcerias", "Equipe Comercial",
-    "Equipe Onboarding", "Equipe Tecnologia", "Benefícios", "Encargos Sociais",
-  ],
-  "Despesas Administrativas": [
-    "Ocupação & Escritório", "Assessorias & Consultorias", "Softwares Administrativos",
-    "Viagens & Transportes Adm", "Outras despesas Adm",
-  ],
-  "Despesas Marketing & Vendas": [
-    "Campanhas de Mídia Paga", "Campanhas de Outros Canais", "Comissões Consultores / Parceiros",
-    "Premiações", "MGM", "Softwares Marketing & Vendas", "Agências & Consultorias",
-    "Viagens & Transportes Mkt", "Eventos e Feiras", "Outras despesas Mkt",
-  ],
-};
-
 /** Os três blocos de primeiro nível que compõem o EBITDA. */
 const BLOCOS_EBITDA = ["Receita Líquida", "(-) Custos Operacionais", "(-) SG&A"];
+
+/** Rubricas que descem de um bloco "(-)" — sobem, o resultado cai. */
+const DESPESAS = rotulosDeDespesa();
+
+/**
+ * Valor de uma rubrica pelo nome, respeitando a regra de somar filhos.
+ *
+ * Se a rubrica está na árvore e tem filhos, soma as folhas; senão lê a linha. Isso é o
+ * que faz o Assistente devolver o MESMO número que a tela de DRE mostra.
+ */
+function valorRubrica(d: Demonstracao, rubrica: string, c: Competencia): number | null {
+  const no = acharNo(rubrica);
+  return no ? valorDoNo(d, no, c) : valorDe(d, rubrica, c);
+}
 
 /**
  * Descobre o sinal com que custos e despesas estão gravados.
@@ -241,10 +228,10 @@ const BLOCOS_EBITDA = ["Receita Líquida", "(-) Custos Operacionais", "(-) SG&A"
  * que fecha. Se nenhuma fechar, não afirmamos nada.
  */
 function descobrirSinal(d: Demonstracao, c: Competencia): -1 | 1 | null {
-  const receita = valorDe(d, "Receita Líquida", c);
-  const custos = valorDe(d, "(-) Custos Operacionais", c);
-  const sga = valorDe(d, "(-) SG&A", c);
-  const ebitda = valorDe(d, "EBITDA", c);
+  const receita = valorRubrica(d, "Receita Líquida", c);
+  const custos = valorRubrica(d, "(-) Custos Operacionais", c);
+  const sga = valorRubrica(d, "(-) SG&A", c);
+  const ebitda = valorRubrica(d, "EBITDA", c);
   if (receita === null || custos === null || sga === null || ebitda === null) return null;
 
   if (fecha([receita, -custos, -sga], ebitda)) return 1;  // gravados positivos
@@ -300,8 +287,8 @@ export async function variacaoEbitda(
   const atual = fechados[fechados.length - 1];
   const anterior = fechados[fechados.length - 2];
 
-  const ebitdaAtual = valorDe(dre, "EBITDA", atual);
-  const ebitdaAnterior = valorDe(dre, "EBITDA", anterior);
+  const ebitdaAtual = valorRubrica(dre, "EBITDA", atual);
+  const ebitdaAnterior = valorRubrica(dre, "EBITDA", anterior);
   if (ebitdaAtual === null || ebitdaAnterior === null) {
     return {
       consulta: "variacao_ebitda", ok: false, numeros: [], paraModelo: "",
@@ -326,13 +313,13 @@ export async function variacaoEbitda(
   // Efeito de cada bloco sobre o EBITDA: receita entra somando, custo e despesa subtraindo.
   const contribuicoes: Contribuicao[] = [];
   for (const bloco of BLOCOS_EBITDA) {
-    const a = valorDe(dre, bloco, anterior);
-    const b = valorDe(dre, bloco, atual);
+    const a = valorRubrica(dre, bloco, anterior);
+    const b = valorRubrica(dre, bloco, atual);
     if (a === null || b === null) {
       avisos.push(`Bloco "${bloco}" ausente em um dos meses — decomposição incompleta.`);
       continue;
     }
-    const peso = bloco === "Receita Líquida" ? 1 : -sinal;
+    const peso = DESPESAS.has(bloco) ? -sinal : 1;
     contribuicoes.push({ rubrica: bloco, anterior: a, atual: b, efeito: (b - a) * peso });
   }
 
@@ -347,16 +334,18 @@ export async function variacaoEbitda(
     };
   }
 
-  // Detalhamento por folha, dentro dos grupos que existem no blob.
+  // Detalhamento por FOLHA da árvore — só folha vem de lançamento; nó com filhos é soma.
   const detalhes: Contribuicao[] = [];
-  for (const [grupo, folhas] of Object.entries(FOLHAS_POR_GRUPO)) {
-    for (const folha of folhas) {
-      const a = valorDe(dre, folha, anterior);
-      const b = valorDe(dre, folha, atual);
-      if (a === null || b === null || a === b) continue;
-      const peso = grupo === "Receita Líquida" ? 1 : -sinal;
-      detalhes.push({ rubrica: folha, anterior: a, atual: b, efeito: (b - a) * peso });
-    }
+  const folhasEbitda = BLOCOS_EBITDA.flatMap((b) => {
+    const no = acharNo(b);
+    return no ? folhasDe(no) : [];
+  });
+  for (const folha of folhasEbitda) {
+    const a = valorDe(dre, folha.src ?? folha.label, anterior);
+    const b = valorDe(dre, folha.src ?? folha.label, atual);
+    if (a === null || b === null || a === b) continue;
+    const peso = DESPESAS.has(folha.label) ? -sinal : 1;
+    detalhes.push({ rubrica: folha.label, anterior: a, atual: b, efeito: (b - a) * peso });
   }
   detalhes.sort((x, y) => Math.abs(y.efeito) - Math.abs(x.efeito));
   const principais = detalhes.slice(0, 6);
@@ -407,9 +396,10 @@ export async function variacaoEbitda(
     "Principais rubricas:",
     ...principais.map((d) => `  ${d.rubrica}: ${brl(d.anterior)} → ${brl(d.atual)} · efeito ${brl(d.efeito)}`),
     "",
-    "LIMITE DESTES DADOS: o DRE vai até o nível de rubrica. Não existe aqui o lançamento,",
-    "o fornecedor nem o centro de custo por trás de cada rubrica. Diga qual rubrica moveu o",
-    "resultado e PARE aí — não invente a causa dentro dela; aponte o Omie para investigar.",
+    "LIMITE DESTES DADOS: aqui você tem a atribuição por rubrica, não o lançamento.",
+    "Diga qual rubrica moveu o resultado e PARE aí. Não invente a causa dentro dela —",
+    "mas OFEREÇA: os lançamentos daquela rubrica podem ser consultados, basta a pessoa pedir",
+    "(ex.: \"me mostra os lançamentos de Equipe Comercial\").",
   ].join("\n");
 
   return { consulta: "variacao_ebitda", ok: true, numeros, paraModelo, avisos };
@@ -466,7 +456,7 @@ export async function panoramaDoMes(
   const numeros: Numero[] = [];
 
   for (const linha of LINHAS_PANORAMA) {
-    const v = valorDe(dre, linha, alvo);
+    const v = valorRubrica(dre, linha, alvo);
     if (v === null) continue;
     numeros.push({
       rotulo: linha, valor: v, formatado: brl(v),
@@ -482,8 +472,8 @@ export async function panoramaDoMes(
   }
 
   // Margem EBITDA recalculada sobre a receita líquida do próprio mês.
-  const receita = valorDe(dre, "Receita Líquida", alvo);
-  const ebitda = valorDe(dre, "EBITDA", alvo);
+  const receita = valorRubrica(dre, "Receita Líquida", alvo);
+  const ebitda = valorRubrica(dre, "EBITDA", alvo);
   if (receita !== null && ebitda !== null && receita !== 0) {
     const margem = (ebitda / receita) * 100;
     numeros.push({
@@ -494,8 +484,8 @@ export async function panoramaDoMes(
 
   if (anterior) {
     for (const linha of ["Receita Líquida", "EBITDA"]) {
-      const a = valorDe(dre, linha, anterior);
-      const b = valorDe(dre, linha, alvo);
+      const a = valorRubrica(dre, linha, anterior);
+      const b = valorRubrica(dre, linha, alvo);
       if (a === null || b === null) continue;
       const delta = b - a;
       numeros.push({
@@ -517,7 +507,13 @@ export async function panoramaDoMes(
   return { consulta: "panorama_do_mes", ok: true, numeros, paraModelo, avisos };
 }
 
-/** Casa o que a pessoa escreveu com o nome exato da rubrica no blob. */
+/**
+ * Casa o que a pessoa escreveu com o nome exato da rubrica.
+ *
+ * Procura primeiro na ÁRVORE e só depois no blob: assim "SG&A" ou "Pessoal" — que são nós
+ * com filhos — são reconhecidos e passam pela soma dos filhos, em vez de caírem na leitura
+ * crua da linha, que estaria desatualizada em mês destravado.
+ */
 function acharRubrica(dre: Demonstracao, procurado: string): string | null {
   // Remove acentos para casar "margem de contribuicao" com "Margem de contribuição".
   const limpar = (s: string) =>
@@ -527,13 +523,17 @@ function acharRubrica(dre: Demonstracao, procurado: string): string | null {
   const alvo = limpar(procurado);
   if (!alvo) return null;
 
-  const rubricas = [...dre.valores.keys()];
-  const exata = rubricas.find((r) => limpar(r) === alvo);
+  const daArvore = todosRotulos();
+  const doBlob = [...dre.rotulos.values()];
+  // Ordem importa: a árvore tem prioridade, o blob cobre rubrica fora do esquema.
+  const candidatas = [...daArvore, ...doBlob.filter((r) => !daArvore.includes(r))];
+
+  const exata = candidatas.find((r) => limpar(r) === alvo);
   if (exata) return exata;
 
   // Contém — a mais curta entre as candidatas é a mais específica
   // ("Equipe Comercial" ganha de "Equipe Comercial e Marketing" para a busca "comercial").
-  const contendo = rubricas
+  const contendo = candidatas
     .filter((r) => limpar(r).includes(alvo) || alvo.includes(limpar(r)))
     .sort((a, b) => a.length - b.length);
   return contendo[0] ?? null;
@@ -574,7 +574,7 @@ export async function rubricaDoMes(
   }
 
   const alvo = pedida ?? fechados[fechados.length - 1];
-  const valor = valorDe(dre, rubrica, alvo);
+  const valor = valorRubrica(dre, rubrica, alvo);
   if (valor === null) {
     return {
       consulta: "rubrica_do_mes", ok: false, numeros: [], paraModelo: "",
@@ -594,7 +594,7 @@ export async function rubricaDoMes(
 
   const anterior = fechados.filter((f) => ordenar(f, alvo) < 0).pop() ?? null;
   if (anterior) {
-    const antes = valorDe(dre, rubrica, anterior);
+    const antes = valorRubrica(dre, rubrica, anterior);
     if (antes !== null) {
       numeros.push({
         rotulo: `${rubrica} · ${competenciaCurta(anterior)}`, valor: antes, formatado: brl(antes),
@@ -612,11 +612,158 @@ export async function rubricaDoMes(
     `RUBRICA "${rubrica}" — ${competenciaExtenso(alvo)}`,
     ...numeros.map((n) => `${n.rotulo}: ${n.formatado} (${n.competencia})`),
     "",
-    `LIMITE: o DRE só tem o total da rubrica. Quem são os fornecedores, quais lançamentos`,
-    `compõem esse valor e por que ele mudou não está nesta base — isso está no Omie.`,
+    "LIMITE: este é o total da rubrica. Se a pessoa quiser saber QUEM compõe esse valor,",
+    "os lançamentos do Omie podem ser listados — ofereça, mas não invente nomes aqui.",
   ].join("\n");
 
   return { consulta: "rubrica_do_mes", ok: true, numeros, paraModelo, avisos };
+}
+
+// ---------------------------------------------------------------------------
+// Lançamentos — a causa raiz
+// ---------------------------------------------------------------------------
+
+type LinhaLancamento = {
+  data: string | null;
+  contraparte: string | null;
+  categoria_descricao: string | null;
+  valor: number | null;
+  status: string | null;
+};
+
+/**
+ * "Por que a Equipe Comercial subiu?" — os lançamentos do Omie que compõem a célula.
+ *
+ * Só funciona em rubrica FOLHA: nó com filhos é soma e não tem lançamento próprio; total
+ * e percentual são calculados. A RPC `demonstracoes_lancamentos` reproduz a atribuição
+ * lançamento → rubrica do omie-sync, e roda como SECURITY DEFINER porque o dump bruto do
+ * Omie não é exposto ao cliente.
+ *
+ * A conferência aqui é a que a própria migration recomenda: somar os lançamentos e
+ * comparar com a célula. Divergência não é escondida — vira aviso, porque significa que a
+ * regra de atribuição do sync mudou e o drill-down passou a mentir.
+ */
+export async function lancamentosDaRubrica(
+  supabase: { from: (t: string) => any; rpc: (f: string, p: Record<string, unknown>) => any },
+  procurada: string,
+  pedida: Competencia | null,
+): Promise<Resultado> {
+  const [demRes, travasRes] = await Promise.all([
+    supabase.from("demonstracoes_contabeis").select("dados, updated_at")
+      .eq("tipo", "dre").eq("periodo", "completo").maybeSingle(),
+    supabase.from("demonstracoes_mes_trancado").select("col_key"),
+  ]);
+
+  if (demRes.error || !demRes.data) {
+    return { consulta: "lancamentos_da_rubrica", ok: false, numeros: [], paraModelo: "", avisos: ["DRE consolidado não encontrado."] };
+  }
+
+  const dre = estruturar(demRes.data.dados, demRes.data.updated_at ?? null);
+  const travas = ((travasRes.data ?? []) as { col_key: string }[]).map((t) => t.col_key);
+  const fechados = mesesFechados(dre, travas);
+
+  const rubrica = acharRubrica(dre, procurada);
+  if (!rubrica) {
+    return {
+      consulta: "lancamentos_da_rubrica", ok: false, numeros: [], paraModelo: "",
+      avisos: [`Não encontrei a rubrica "${procurada}" no DRE.`],
+    };
+  }
+
+  // Nó com filhos não tem lançamento próprio — o detalhe está nas folhas dele.
+  const no = acharNo(rubrica);
+  if (no?.children?.length) {
+    const filhos = no.children.map((f) => f.label).join(", ");
+    return {
+      consulta: "lancamentos_da_rubrica", ok: false, numeros: [], paraModelo: "",
+      avisos: [
+        `"${rubrica}" é a soma de outras rubricas, não tem lançamento próprio. ` +
+        `Escolha uma destas: ${filhos}.`,
+      ],
+    };
+  }
+
+  if (fechados.length === 0) {
+    return { consulta: "lancamentos_da_rubrica", ok: false, numeros: [], paraModelo: "", avisos: ["Nenhum mês fechado no DRE."] };
+  }
+  const alvo = pedida ?? fechados[fechados.length - 1];
+  const mesChave = montarColuna(alvo);
+
+  const { data, error } = await supabase.rpc("demonstracoes_lancamentos", {
+    p_tipo: "dre", p_rubrica: rubrica, p_mes: mesChave,
+  });
+
+  if (error) {
+    return {
+      consulta: "lancamentos_da_rubrica", ok: false, numeros: [], paraModelo: "",
+      avisos: [`Não consegui listar os lançamentos: ${error.message}`],
+    };
+  }
+
+  const linhas = (data ?? []) as LinhaLancamento[];
+  if (linhas.length === 0) {
+    return {
+      consulta: "lancamentos_da_rubrica", ok: false, numeros: [], paraModelo: "",
+      avisos: [`Nenhum lançamento do Omie para "${rubrica}" em ${competenciaCurta(alvo)}.`],
+    };
+  }
+
+  const avisos: string[] = [];
+  const somaLancamentos = linhas.reduce((a, l) => a + (l.valor ?? 0), 0);
+  const celula = valorRubrica(dre, rubrica, alvo);
+
+  // A divergência que a migration manda vigiar.
+  if (celula !== null && !fecha([somaLancamentos], celula, 0.01)) {
+    avisos.push(
+      `Os lançamentos somam ${brl(somaLancamentos)}, mas a célula do DRE mostra ` +
+      `${brl(celula)}. A diferença pode ser valor manual, mês travado com dado de tracker, ` +
+      "ou mudança na regra de atribuição do sync. Trate a lista como indício, não como fechamento.",
+    );
+  }
+
+  // Agrupa por contraparte: "quem" costuma explicar mais que "quando".
+  const porContraparte = new Map<string, number>();
+  for (const l of linhas) {
+    const nome = (l.contraparte ?? "").trim() || "sem contraparte";
+    porContraparte.set(nome, (porContraparte.get(nome) ?? 0) + (l.valor ?? 0));
+  }
+  const maiores = [...porContraparte.entries()]
+    .sort((a, b) => Math.abs(b[1]) - Math.abs(a[1]))
+    .slice(0, 8);
+
+  const rotuloMes = competenciaCurta(alvo);
+  const numeros: Numero[] = [
+    {
+      rotulo: `${rubrica} · total`, valor: somaLancamentos, formatado: brl(somaLancamentos),
+      fonte: `Omie · ${linhas.length} lançamento(s)`, competencia: rotuloMes,
+    },
+    ...maiores.map(([nome, v]) => ({
+      rotulo: nome, valor: v, formatado: brl(v), fonte: "Omie", competencia: rotuloMes,
+    })),
+  ];
+
+  const cobertura = maiores.reduce((a, [, v]) => a + Math.abs(v), 0);
+  const total = [...porContraparte.values()].reduce((a, v) => a + Math.abs(v), 0);
+  if (total > 0 && cobertura / total < 0.9) {
+    avisos.push(
+      `As ${maiores.length} contrapartes listadas cobrem ${((cobertura / total) * 100).toFixed(0)}% ` +
+      `do total; há ${porContraparte.size - maiores.length} outra(s) menor(es).`,
+    );
+  }
+
+  const paraModelo = [
+    `LANÇAMENTOS DE "${rubrica}" — ${competenciaExtenso(alvo)}`,
+    `${linhas.length} lançamento(s), somando ${brl(somaLancamentos)}.`,
+    "",
+    "Maiores contrapartes:",
+    ...maiores.map(([nome, v]) => `  ${nome}: ${brl(v)}`),
+    "",
+    "Este é o nível mais fundo que existe: lançamento a lançamento, vindo do Omie.",
+    "Pode apontar QUEM e QUANTO. Não invente o motivo comercial por trás de um pagamento —",
+    "isso não está no dado.",
+  ].join("\n");
+
+  return { consulta: "lancamentos_da_rubrica", ok: true, numeros, paraModelo, avisos };
 }
 
 /** Última competência fechada — usada quando a pergunta não diz o mês. */

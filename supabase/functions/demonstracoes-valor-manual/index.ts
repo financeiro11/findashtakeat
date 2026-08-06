@@ -12,9 +12,11 @@
 //   { tipo: "dre"|"dfc", rubrica, col_key, valor, modo?: "substitui"|"soma" }
 //   { tipo, rubrica, col_key, remover: true }
 
-import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+// Versão fixa: `@2` solto resolve a última do dia e já quebrou o deploy.
+import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.0";
 import { requireUser } from "../_shared/auth.ts";
 import { aplicarValoresManuais, type Dados, type ValorManual } from "../_shared/valores-manuais.ts";
+import { aplicarEbitdaAjustado } from "../_shared/ebitda-ajustado.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -93,7 +95,10 @@ Deno.serve(async (req) => {
     if (blobErr) throw blobErr;
 
     const bruto: Dados = (blobRow?.dados as Dados) ?? { columns: [], rows: [] };
-    const dados = await aplicarValoresManuais(supabase, tipo, bruto, new Set(), removidos);
+    const comManuais = await aplicarValoresManuais(supabase, tipo, bruto, new Set(), removidos);
+    // Digitar depreciação derruba o EBITDA — e o EBITDA Ajustado, que sai dele,
+    // tem que descer junto na mesma chamada.
+    const dados = await aplicarEbitdaAjustado(supabase, tipo, comManuais);
 
     const { error: upErr } = await supabase.from("demonstracoes_contabeis")
       .upsert({ tipo, periodo: "completo", dados, pdf_path: null }, { onConflict: "tipo,periodo" });

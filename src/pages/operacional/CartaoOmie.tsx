@@ -158,13 +158,17 @@ export default function CartaoOmie() {
     setAprendendo(true);
     try {
       // O client corta em 1000 linhas por consulta e são ~3.400 lançamentos.
+      // Desempate por `id` obrigatório: `data` sozinha empata às dezenas (uma
+      // fatura fecha tudo no mesmo dia) e, sem ordem total, a fronteira entre
+      // duas páginas repete uma linha e engole outra — o de-para aprenderia com
+      // um histórico furado.
       const lancamentos: LinhaHistorico[] = [];
       for (let pagina = 0; ; pagina++) {
         const { data, error } = await db
           .from("cartao_lancamentos")
           .select("data, estabelecimento, descricao, valor, tipo")
           .eq("tipo", "gasto")
-          .order("data")
+          .order("data").order("id")
           .range(pagina * 1000, pagina * 1000 + 999);
         if (error) throw new Error(error.message);
         const linhas = data ?? [];

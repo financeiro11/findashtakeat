@@ -4,6 +4,7 @@ import {
   jsonResponse, streamAsOpenAISSE,
 } from "../_shared/gemini.ts";
 import { buildOrgContext } from "../_shared/org-context.ts";
+import { contextoAjustesEbitda } from "../_shared/ebitda-ajustado.ts";
 
 type Msg = ChatMessage;
 
@@ -21,6 +22,11 @@ async function buildContext(supabase: any): Promise<string> {
       parts.push(`### ${tipo.toUpperCase()} — período ${d.periodo}${d.observacao ? ` (${d.observacao})` : ""}\n${JSON.stringify(rows)}`);
     }
   }
+  // O blob acima já traz a linha "EBITDA Ajustado"; isto traz o PORQUÊ de cada
+  // ajuste — sem ele a IA explica como queda de rentabilidade o que foi uma
+  // rescisão que não se repete.
+  const ajustes = await contextoAjustesEbitda(supabase);
+  if (ajustes) parts.push(ajustes);
   const { data: ed } = await supabase.from("editais").select("titulo,orgao,modalidade,numero,objeto,valor_estimado,data_publicacao,data_abertura,prazo_envio,status,responsavel,observacao").limit(100);
   if (ed?.length) parts.push(`### Editais\n${JSON.stringify(ed)}`);
   const { data: bk } = await supabase.from("base_conhecimento").select("titulo,tipo,conteudo").limit(40);

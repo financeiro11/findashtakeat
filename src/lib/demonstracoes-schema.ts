@@ -84,6 +84,14 @@ export const DRE_SCHEMA: Node[] = [
   ]},
   { label: "EBITDA", kind: "total" },
   { label: "% Margem EBITDA", kind: "percent", src: "EBITDA", pctOf: "Receita Líquida" },
+  /* Linhas de memória: somam ao EBITDA os eventos que não se repetem e NÃO
+     mexem em nada abaixo delas. O Lucro Líquido continua saindo do EBITDA
+     contábil — ajustar o resultado do exercício com opinião sobre recorrência
+     seria outra coisa, e não é o que se assina. Ver a migration
+     20260806190000 e _shared/ebitda-ajustado.ts. */
+  { label: "(+) Ajustes de EBITDA", kind: "child" },
+  { label: "EBITDA Ajustado", kind: "total" },
+  { label: "% Margem EBITDA Ajustado", kind: "percent", src: "EBITDA Ajustado", pctOf: "Receita Líquida" },
   { label: "(+/-) Resultado Financeiro", kind: "header", children: [
     { label: "(-) Depreciação & Amortização", kind: "child" },
     { label: "(-) Juros", kind: "child" },
@@ -209,6 +217,26 @@ export function parseColuna(col: string): Coluna | null {
 
 export const colunasDe = (columns: string[]): Coluna[] =>
   columns.map(parseColuna).filter(Boolean) as Coluna[];
+
+/**
+ * A chave de `n` meses atrás: "Jul-26" com n=1 → "Jun-26".
+ *
+ * Anda em meses absolutos (ano×12 + mês) em vez de mexer no `Date`: a chave não
+ * tem dia, e `new Date(2026,6,31)` recuado um mês daria 01/07 de volta.
+ */
+export function mesAtras(col: string, n = 1): string | null {
+  const c = parseColuna(col);
+  if (!c) return null;
+  const i = c.ano * 12 + (c.mes - 1) - n;
+  if (i < 0) return null;
+  return `${MES_ABBR[i % 12]}-${String(Math.floor(i / 12) % 100).padStart(2, "0")}`;
+}
+
+/** "Jul-26" → "Jul 26", para caber em chip e cabeçalho de coluna. */
+export function mesCurto(col: string): string {
+  const c = parseColuna(col);
+  return c ? `${MES_PT[c.mes - 1]} ${String(c.ano % 100).padStart(2, "0")}` : col;
+}
 
 /* ----------------------------- leitura ----------------------------- */
 export type LinhaBase = Record<string, string | number | null>;

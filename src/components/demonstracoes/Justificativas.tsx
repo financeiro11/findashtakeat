@@ -8,6 +8,8 @@ import { cn } from "@/lib/utils";
 import { valorExato } from "@/lib/valor";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { chaveCelula } from "@/components/demonstracoes/Reclassificacoes";
+import { BlocoPerguntas, type Pergunta } from "@/components/demonstracoes/Perguntas";
+import type { PayloadPergunta } from "@/lib/perguntas";
 
 /* ---------------------------------------------------------------------------
  * Justificativa da variação, na célula da DRE/DFC.
@@ -52,6 +54,8 @@ export type Justificativa = {
   confianca: "alta" | "media" | "baixa" | null;
   sinais: { codigo: string; detalhe: string }[];
   status: "novo" | "aceito" | "descartado";
+  /** 'pergunta' = o texto que vale veio de uma resposta promovida (ver Perguntas) */
+  origem?: "auto" | "pergunta" | null;
   gerado_em: string;
 };
 
@@ -145,16 +149,44 @@ async function copiar(texto: string, rotulo: string) {
   }
 }
 
+/**
+ * O comentário fala do número contra o qual foi escrito — e a tabela guarda
+ * esse número justamente para dar para perceber quando ele envelhece. Só que
+ * ninguém comparava: em Jul/26 o balão dizia "Receita Recorrente caiu 1,13M"
+ * numa célula que mostrava 1,23M, porque o texto tinha sido escrito com o mês
+ * ainda pela metade. Divergiu, a tela diz que divergiu.
+ */
+function numeroMudou(j: Justificativa, valorCelula: number | null | undefined): boolean {
+  if (valorCelula === undefined) return false;   // a página não informou; não invente
+  const escrito = j.valor == null ? null : Number(j.valor);
+  if (escrito == null) return valorCelula != null;
+  if (valorCelula == null) return true;
+  return Math.abs(valorCelula - escrito) > Math.max(1, Math.abs(escrito) * 0.005);
+}
+
 export function MarcaJustificativa({
-  justificativa, onMudou,
-}: { justificativa: Justificativa; onMudou: () => void }) {
+  justificativa, onMudou, valorCelula, perguntas, montarPayload, onPerguntaMudou,
+}: {
+  justificativa: Justificativa;
+  onMudou: () => void;
+  /** O que a célula mostra AGORA. Omitido, a marca não checa envelhecimento. */
+  valorCelula?: number | null;
+  /* O fio de perguntas da MESMA célula. Vive aqui dentro, e não numa segunda
+     marca ao lado, porque é a mesma conversa: quem lê o comentário e discorda
+     dele quer perguntar dali mesmo. Sem estes três, o balão é só o comentário —
+     é assim que ele se comporta em telas que ainda não passaram o fio. */
+  perguntas?: Pergunta[];
+  montarPayload?: () => (PayloadPergunta | null);
+  onPerguntaMudou?: () => void | Promise<void>;
+}) {
   const j = justificativa;
   const [editando, setEditando] = useState(false);
   const [rascunho, setRascunho] = useState(textoFinal(j));
   const [salvando, setSalvando] = useState(false);
 
+  const desatualizado = numeroMudou(j, valorCelula) && j.status !== "descartado";
   const temSinal = j.sinais.length > 0 && j.status !== "descartado";
-  const Icone = temSinal ? MessageSquareWarning : MessageSquareText;
+  const Icone = temSinal || desatualizado ? MessageSquareWarning : MessageSquareText;
 
   const decidir = async (status: Justificativa["status"] | null, texto?: string | null) => {
     setSalvando(true);
@@ -180,10 +212,19 @@ export function MarcaJustificativa({
           /* A célula inteira abre o drill-down de lançamentos. Sem isto, ler o
              comentário abriria também a gaveta por baixo. */
           onClick={(e) => e.stopPropagation()}
-          title="Ver a justificativa desta variação"
+          title={[
+            desatualizado
+              ? "O número desta célula mudou depois do comentário — clique para ver"
+              : "Ver a justificativa desta variação",
+            perguntas?.length
+              ? `${perguntas.length} pergunta(s) respondida(s) aqui`
+              : montarPayload ? "e perguntar sobre este valor" : null,
+          ].filter(Boolean).join(" · ")}
+          /* Caixa de 18px: o ícone tem 14 e, encostado nas outras marcas da
+             célula, virava um alvo que só se acerta na sorte. */
           className={cn(
-            "inline-flex shrink-0 items-center rounded hover:bg-black/5",
-            CORES[j.status],
+            "inline-flex h-[18px] w-[18px] shrink-0 items-center justify-center rounded-sm transition hover:bg-black/10",
+            desatualizado ? "text-amber-600" : CORES[j.status],
           )}
         >
           <Icone strokeWidth={2.25} className="h-3.5 w-3.5" />
@@ -223,6 +264,18 @@ export function MarcaJustificativa({
           </div>
         </div>
 
+        {/* Sem este aviso o comentário passaria por atual. Ele descreve a
+            variação que existia quando foi escrito — se a célula mudou depois,
+            a frase pode estar falando de outro número. */}
+        {desatualizado && (
+          <div className="border-b border-amber-200 bg-amber-50 px-4 py-2 text-[10.5px] leading-relaxed text-amber-900">
+            <b>O número mudou depois deste comentário.</b> A célula mostra{" "}
+            <span className="num">{valorExato(valorCelula ?? null)}</span> e o texto foi escrito contra{" "}
+            <span className="num">{valorExato(j.valor)}</span>. Use “Regerar”, no resumo acima da tabela,
+            para reescrevê-lo com os números de agora.
+          </div>
+        )}
+
         {/* ---- o comentário ---- */}
         <div className="px-4 py-3">
           {editando ? (
@@ -245,7 +298,9 @@ export function MarcaJustificativa({
             <p className="mt-2 flex items-center gap-1 text-[10px] text-muted-foreground">
               <Sparkles className="h-2.5 w-2.5" />
               {j.texto_editado
-                ? "Reescrito por você."
+                ? (j.origem === "pergunta"
+                    ? "Resposta a uma pergunta feita nesta célula, promovida a comentário."
+                    : "Reescrito por você.")
                 : <>Rascunho automático dos lançamentos do Omie{j.confianca && ` · confiança ${j.confianca}`}. Confira antes de levar ao tracker.</>}
             </p>
           )}
@@ -372,6 +427,19 @@ export function MarcaJustificativa({
             </>
           )}
         </div>
+
+        {/* ---- perguntar sobre este valor ----
+            No rodapé, e não numa marca própria na célula: é a mesma conversa
+            sobre o mesmo número, e uma segunda marca alargaria toda a grade
+            para dizer isso duas vezes. */}
+        {montarPayload && onPerguntaMudou && (
+          <BlocoPerguntas
+            perguntas={perguntas ?? []}
+            montarPayload={montarPayload}
+            onMudou={onPerguntaMudou}
+            compacto
+          />
+        )}
       </PopoverContent>
     </Popover>
   );
@@ -417,6 +485,13 @@ export function ResumoJustificativas({
         <span>
           Nenhuma justificativa gerada ainda. A cada importação de tracker ou sincronização com o Omie
           elas saem sozinhas — ou gere agora para os meses já carregados.
+          {/* O "?" só aparece quando o mouse entra na linha: sem esta frase, um
+              recurso que responde pergunta em cima do número ficaria invisível
+              para quem não passa o mouse por cima à toa. */}
+          <span className="opacity-80">
+            {" "}Para uma dúvida específica (“teve reajuste, por que não subiu?”), passe o mouse na célula
+            e clique no “?”.
+          </span>
         </span>
         <button
           onClick={() => onGerar(false)}
@@ -442,7 +517,11 @@ export function ResumoJustificativas({
           {comSinal > 0 && <>, <b>{comSinal}</b> com sinal de possível erro de lançamento</>}.
           Clique no balão dentro da célula para ler, ajustar e copiar.
           {/* Sem isto, "só N comentários" pareceria a conta toda. */}
-          <span className="opacity-80"> Variação abaixo de 5% ou de R$ 1 mil não vira comentário.</span>
+          <span className="opacity-80">
+            {" "}Só mês travado ganha comentário, e variação abaixo de 10% ou de R$ 1 mil não vira comentário —
+            nem célula cuja variação nenhum lançamento do Omie explica. Para perguntar sobre um valor
+            específico — inclusive numa célula sem comentário — clique no “?” dentro da célula.
+          </span>
         </span>
       </span>
       <span className="flex shrink-0 items-center gap-2">

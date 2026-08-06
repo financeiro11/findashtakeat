@@ -1,6 +1,7 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.0";
 import { errorResponse, generateJSON, handleCors, jsonResponse } from "../_shared/gemini.ts";
 import { buildOrgContext } from "../_shared/org-context.ts";
+import { contextoAjustesEbitda } from "../_shared/ebitda-ajustado.ts";
 
 Deno.serve(async (req) => {
   const pre = handleCors(req); if (pre) return pre;
@@ -33,12 +34,14 @@ Deno.serve(async (req) => {
     const { data: bp } = await supabase.from("bp_anual").select("ano,dados").order("ano", { ascending: false }).limit(1).maybeSingle();
 
     const org = await buildOrgContext(supabase);
+    // O porquê de cada ajuste de EBITDA — o blob traz o número, não a razão.
+    const ajustes = await contextoAjustesEbitda(supabase);
     let parsed: { insights: Array<{ titulo: string; texto: string; tom: string }> };
     try {
       parsed = await generateJSON({
         messages: [
           { role: "system", content: `Você é analista financeiro sênior da Takeat. Gere 4 insights analíticos (3-4 linhas cada), em português, comentando os dados financeiros REAIS (DRE e DFC) e comparando com o ORÇADO do BP Anual quando disponível. Foque em: 1) Receita vs orçado e tendência, 2) Margem/EBITDA e drivers, 3) Caixa/DFC (atividades operacional, investimento, financiamento), 4) Cashburn/runway e risco. Cite valores específicos, % vs orçado, áreas ou centros de custo reais quando ajudar. Seja objetivo e acionável — não genérico. Retorne JSON: { insights: [{titulo, texto, tom}] } onde tom ∈ positivo|neutro|alerta.\n\n${org}` },
-          { role: "user", content: `DRE (período ${dre?.periodo ?? "n/d"}):\n${JSON.stringify(dre?.dados ?? []).slice(0, 8000)}\n\nDFC (período ${dfc?.periodo ?? "n/d"}):\n${JSON.stringify(dfc?.dados ?? []).slice(0, 6000)}\n\nBP Anual ${bp?.ano ?? ""} (orçado):\n${JSON.stringify(bp?.dados ?? []).slice(0, 6000)}` },
+          { role: "user", content: `DRE (período ${dre?.periodo ?? "n/d"}):\n${JSON.stringify(dre?.dados ?? []).slice(0, 8000)}\n\nDFC (período ${dfc?.periodo ?? "n/d"}):\n${JSON.stringify(dfc?.dados ?? []).slice(0, 6000)}\n\nBP Anual ${bp?.ano ?? ""} (orçado):\n${JSON.stringify(bp?.dados ?? []).slice(0, 6000)}${ajustes ? `\n\n${ajustes}` : ""}` },
         ],
         temperature: 0.3,
         responseSchema: {

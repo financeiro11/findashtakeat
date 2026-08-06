@@ -22,10 +22,21 @@ import {
   useJustificativas, MarcaJustificativa, ResumoJustificativas, fundoCelulaJustificativa,
 } from "@/components/demonstracoes/Justificativas";
 import {
+  usePerguntas, MarcaPerguntas, ResumoPerguntas, tituloPerguntas,
+} from "@/components/demonstracoes/Perguntas";
+import { montarPergunta } from "@/lib/perguntas";
+import {
   useValoresManuais, EditorValorManual, ResumoValoresManuais,
   fundoCelulaManual, tituloValorManual,
 } from "@/components/demonstracoes/ValoresManuais";
-import { gerarJustificativas, criarValorEm } from "@/lib/justificativas";
+import {
+  useAjustesEbitda, PainelAjustesEbitda, ResumoAjustesEbitda,
+  fundoCelulaAjuste, tituloAjustes, aceitos, type AlvoAjustes,
+} from "@/components/demonstracoes/AjustesEbitda";
+import {
+  LINHAS_DO_AJUSTE, LINHA_AJUSTES, LINHA_EBITDA_AJUSTADO, precisaRecalcular,
+} from "@/lib/ebitdaAjustado";
+import { gerarJustificativas } from "@/lib/justificativas";
 
 /* ============================================================
  *  Helpers
@@ -156,7 +167,11 @@ export default function DRE() {
   const [auditando, setAuditando] = useState<AlvoLancamentos | null>(null);
   const { reclassificacoes, recarregarReclassificacoes } = useReclassificacoes("dre");
   const { justificativas, recarregarJustificativas } = useJustificativas("dre");
+  const { perguntas, recarregarPerguntas } = usePerguntas("dre");
   const { manuais, recarregarManuais } = useValoresManuais("dre");
+  const { ajustes, ajustesCarregados, recarregarAjustes } = useAjustesEbitda();
+  const [ajustando, setAjustando] = useState<AlvoAjustes | null>(null);
+  const conferiuAjustes = useRef(false);
   const [gerandoJust, setGerandoJust] = useState(false);
   const [progressoJust, setProgressoJust] = useState<string | null>(null);
   const [apenasUltimoMes, setApenasUltimoMes] = useState(false);
@@ -224,13 +239,17 @@ export default function DRE() {
 
   /* ----- Justificativas de variação -------------------------------------
    * O comentário que antes era escrito à mão em cima da célula do tracker.
-   * Roda sozinho depois de todo import/sync (é aí que os números mudam) e
-   * também sob demanda, pelo botão do resumo. Um mês por chamada — ver
-   * lib/justificativas.ts. */
+   * Roda quando o mês FECHA (import do tracker, trava da coluna) e sob demanda
+   * pelo botão do resumo. Mês aberto não entra: o número ainda vai mudar, e o
+   * comentário congelado sobreviveria ao fechamento descrevendo um mês pela
+   * metade. Um mês por chamada — ver lib/justificativas.ts. */
   const gerarJust = async (
     force: boolean,
     meses: string[],
     base?: { rows: Record<string, unknown>[]; columns: string[] },
+    /* Quem acabou de travar a coluna não pode esperar o estado do React: o mês
+       recém-fechado ainda não está em `travados` e a geração o descartaria. */
+    travadosAgora?: Set<string>,
   ) => {
     const cols = base?.columns ?? columns;
     const alvo = meses.filter((m) => cols.indexOf(m) > 0);
@@ -242,14 +261,23 @@ export default function DRE() {
         tipo: "dre",
         schema: DRE_SCHEMA,
         columns: cols,
-        valorEm: criarValorEm(base?.rows ?? rows, cols),
+        rows: base?.rows ?? rows,
         meses: alvo,
+        travados: travadosAgora ?? travados,
         force,
         onProgress: (p) => setProgressoJust(`${p.indice}/${p.total}`),
       });
       if (r.erros.length) toast.error("Justificativas: " + r.erros[0]);
-      else if (r.geradas) toast.success(`${r.geradas} justificativa(s) de variação gerada(s).`);
+      else if (r.geradas) {
+        toast.success(
+          `${r.geradas} justificativa(s) de variação gerada(s).`
+          + (r.semLastro ? ` ${r.semLastro} célula(s) variaram sem lançamento no Omie que explicasse — sem comentário.` : ""),
+        );
+      }
       else if (r.puladas) toast.message("Nenhuma variação nova para justificar.");
+      else if (r.ignorados.length && !r.meses) {
+        toast.message("Justificativa só sai em mês travado — é o mês fechado, com os números que não mudam mais.");
+      }
       await recarregarJustificativas();
     } catch (e) {
       toast.error("Falha ao gerar justificativas: " + (e instanceof Error ? e.message : String(e)));
@@ -272,8 +300,10 @@ export default function DRE() {
           (r.nao_mapeadas ? ` · ${r.nao_mapeadas} categoria(s) sem DE_PARA` : ""),
         );
         const base = await load();
-        // O sync só mexe em mês ainda aberto, então justificar os últimos meses
-        // cobre o que mudou sem reescrever o ano inteiro a cada clique.
+        // O sync só mexe em mês ABERTO — e mês aberto não ganha comentário. Isto
+        // aqui só apanha o caso em que um mês travado foi corrigido por fora (o
+        // valor manual, por exemplo): a função compara os números e, se não
+        // mudou nada, não gasta uma ida à IA.
         await gerarJust(false, base.columns.slice(-3), base);
       } else if (r.status === "erro") {
         toast.error("Falha na sincronização: " + (r.erro || "erro desconhecido"));
@@ -298,8 +328,11 @@ export default function DRE() {
     try {
       if (!(await alternarTrava(col, travar))) return;
       if (travar) {
-        await load();
+        const base = await load();
         toast.success(`${ptLabelFromKey(col)} travado — o Omie não sobrescreve mais esse mês.`);
+        // Travar É fechar o mês: é aqui que o comentário do tracker era escrito,
+        // e é o único momento em que os números já são os definitivos.
+        await gerarJust(false, [col], base, new Set([...travados, col]));
       } else {
         toast.message(`${ptLabelFromKey(col)} destravado. Preenchendo com o que já veio do Omie…`);
         await sincronizarOmie(false);
@@ -329,6 +362,31 @@ export default function DRE() {
   function valueAt(label: string, col: string): number | null {
     return valuesFor(label)[col] ?? null;
   }
+
+  /* ----- A linha ajustada ficou para trás? -----------------------------
+   * "EBITDA Ajustado" é derivada, e quem escreve o blob é que a refaz. Um
+   * escritor que ainda não conhece a regra — o omie-sync do cron, por exemplo —
+   * mexe no EBITDA de um mês aberto e deixa a linha atrás. Em vez de exigir que
+   * todo escritor saiba, a tela confere e manda recalcular SÓ quando divergiu.
+   * Uma vez por sessão: se depois do recálculo ainda divergir, é bug de cálculo
+   * e ficar chamando em círculo só esconderia isso. */
+  useEffect(() => {
+    if (!ajustesCarregados || !rows.length || !columns.length) return;
+    if (conferiuAjustes.current) return;
+    const atrasada = precisaRecalcular(
+      columns,
+      (c) => valueAt("EBITDA", c),
+      (c) => valueAt(LINHA_EBITDA_AJUSTADO, c),
+      (c) => aceitos(ajustes.get(c)),
+    );
+    if (!atrasada) return;
+    conferiuAjustes.current = true;
+    supabase.functions
+      .invoke("demonstracoes-ebitda-ajuste", { body: { acao: "recalcular" } })
+      .then(() => load())
+      .catch(() => { /* acessório: a DRE segue com o resto na tela */ });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ajustesCarregados, rows, columns, ajustes]);
 
   /* ----- Import (Tracker template) ----- */
   const onImport = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -469,9 +527,11 @@ export default function DRE() {
         { duration: 8000 },
       );
       // Planilha nova = números novos: é exatamente aqui que os comentários do
-      // tracker eram reescritos à mão. Justifica só os meses que o arquivo trouxe.
+      // tracker eram reescritos à mão. Justifica só os meses que o arquivo trouxe
+      // — e são justamente os que ele acabou de travar, então entram na lista de
+      // travados à mão: o `load()` acima repovoa o estado, mas só no próximo render.
       const base = await load();
-      await gerarJust(false, [...mesesTrancados], base);
+      await gerarJust(false, [...mesesTrancados], base, new Set([...travados, ...mesesTrancados]));
     } catch (err: any) {
       toast.error("Falha: " + err.message);
     } finally {
@@ -540,6 +600,10 @@ export default function DRE() {
   const kpis: Array<{ key: string; title: string; val: number | null; prev: number | null; delta: number | null; pos: boolean; isPct?: boolean }> = [
     { key: "receita", title: "RECEITA LÍQUIDA", ...kpi("Receita Líquida"), pos: true },
     { key: "ebitda", title: "EBITDA", ...kpi("EBITDA"), pos: true },
+    /* Ao lado do EBITDA de propósito: os dois juntos é que contam a história —
+       um mês que desabou por causa de uma rescisão mostra a diferença aqui, sem
+       ninguém precisar abrir a grade. */
+    { key: "ebitdaAj", title: "EBITDA AJUSTADO", ...kpi(LINHA_EBITDA_AJUSTADO), pos: true },
     { key: "margem", title: "MARGEM EBITDA", ...pctKpi("EBITDA", "Receita Líquida"), pos: true, isPct: true },
     { key: "lucro", title: "LUCRO LÍQUIDO", ...kpi("Lucro Líquido"), pos: true },
     { key: "sga", title: "SG&A", ...kpi("(-) SG&A"), pos: false },
@@ -624,6 +688,30 @@ export default function DRE() {
   const valorDaLinha = (node: Node, col: string): number | null =>
     node.children?.length ? sumChildren(node, col) : getValueForRow(node, col);
 
+  /* Perguntar e promover mexem em DUAS tabelas: o fio da célula e — quando a
+     resposta vira o comentário oficial — a justificativa. Recarregar só o fio
+     deixaria o balão exibindo o texto velho até a próxima visita à página. */
+  const aposPergunta = async () => {
+    await recarregarPerguntas();
+    await recarregarJustificativas();
+  };
+
+  /* O dossiê que acompanha a pergunta, montado no instante do envio com a MESMA
+     função que pintou a célula (`valorDaLinha`) — é o que garante que a resposta
+     fale do número que está à vista. */
+  const dossieDaCelula = (node: Node, col: string, valorNaTela: number | null) => () =>
+    montarPergunta({
+      tipo: "dre",
+      schema: DRE_SCHEMA,
+      rubrica: node.label,
+      mes: col,
+      colunas: columns,
+      valorDaLinha,
+      despesa: DRE_DESPESAS.has(node.label),
+      travado: travados.has(col),
+      valorNaTela,
+    });
+
   /* ============================================================
    *  UI
    * ============================================================ */
@@ -697,7 +785,7 @@ export default function DRE() {
       ) : (
       <>
       {/* KPI cards */}
-      <div className="grid grid-cols-2 gap-3 px-6 md:grid-cols-3 lg:grid-cols-5">
+      <div className="grid grid-cols-2 gap-3 px-6 md:grid-cols-3 lg:grid-cols-6">
         {kpis.map(k => {
           const isNeg = (k.val ?? 0) < 0;
           const deltaPos = (k.delta ?? 0) > 0;
@@ -792,6 +880,17 @@ export default function DRE() {
           {tab === "valores" && <ResumoReclassificacoes mapa={reclassificacoes} />}
           {tab === "valores" && <ResumoValoresManuais mapa={manuais} colunas={displayColumns} />}
           {tab === "valores" && (
+            <ResumoAjustesEbitda
+              mapa={ajustes}
+              colunas={displayColumns}
+              onAbrir={(col) => setAjustando({
+                col,
+                colLabel: ptLabelFromKey(col).replace("/", " "),
+                ebitda: valueAt("EBITDA", col),
+              })}
+            />
+          )}
+          {tab === "valores" && (
             <ResumoJustificativas
               mapa={justificativas}
               colunas={displayColumns}
@@ -802,6 +901,7 @@ export default function DRE() {
               onApenasUltimoMesChange={setApenasUltimoMes}
             />
           )}
+          {tab === "valores" && <ResumoPerguntas mapa={perguntas} colunas={displayColumns} />}
           <div className="mt-3 overflow-x-auto rounded-lg border border-border bg-card">
             <table className="border-collapse">
               <thead>
@@ -907,7 +1007,13 @@ export default function DRE() {
                         /* Marca só onde a célula é auditável: fora da aba "Valores"
                            o número é derivado e o clique não abre nada, então o
                            aviso seria um beco sem saída. */
-                        const podeAuditar = tab === "valores" && !isTotal && !isPercent && !hasChildren;
+                        /* As linhas do EBITDA Ajustado são DERIVADAS (a soma dos
+                           ajustes aceitos e o EBITDA + ela): não vêm de
+                           lançamento, não se digitam à mão e não se comentam.
+                           Clicar nelas abre a curadoria, que é o único lugar
+                           onde o número delas se mexe. */
+                        const ehLinhaAjuste = LINHAS_DO_AJUSTE.has(node.label);
+                        const podeAuditar = tab === "valores" && !isTotal && !isPercent && !hasChildren && !ehLinhaAjuste;
                         const alerta = podeAuditar ? reclassificacoes.get(chaveCelula(node.label, c)) : undefined;
                         /* A justificativa vale para QUALQUER linha da aba Valores,
                            inclusive header e total: no tracker os comentários mais
@@ -917,6 +1023,15 @@ export default function DRE() {
                         const just = tab === "valores"
                           ? justificativas.get(chaveCelula(node.label, c))
                           : undefined;
+                        /* Uma marca só para "conversa sobre esta célula": onde há
+                           comentário, o fio de perguntas mora dentro do balão;
+                           onde não há, o "?" ocupa o MESMO lugar. Duas marcas
+                           lado a lado alargariam a grade inteira para dizer a
+                           mesma coisa duas vezes. */
+                        const mostraJust = !!just && travados.has(c) && (!apenasUltimoMes || ehUltimoMes);
+                        const perguntasDaCelula = tab === "valores"
+                          ? perguntas.get(chaveCelula(node.label, c)) ?? []
+                          : [];
                         /* Digitar valor vale nas MESMAS células que abrem
                            auditoria, e pelo mesmo motivo: linha com filhos é a
                            soma dos filhos, total e percentual são calculados —
@@ -927,27 +1042,46 @@ export default function DRE() {
                            lançamento no Omie e a demonstração não mostra nada —
                            esconder a marca esconderia justamente esse buraco. */
                         const auditavel = podeAuditar && (v != null || !!alerta);
+                        /* A célula de ajuste é clicável mesmo VAZIA: o mês sem
+                           nenhum ajuste é justamente o que ainda não foi
+                           garimpado, e esconder a porta esconderia o trabalho
+                           que falta fazer. A linha de % fica de fora — é
+                           consequência, não tem o que decidir nela. */
+                        const curavel = tab === "valores"
+                          && (node.label === LINHA_AJUSTES || node.label === LINHA_EBITDA_AJUSTADO);
+                        const ajustesDoMes = curavel ? ajustes.get(c) : undefined;
+                        const temAjuste = !!aceitos(ajustesDoMes).length;
                         return (
                           <td
                             key={c}
-                            onClick={auditavel ? () => setAuditando({
-                              tipo: "dre", rubrica: node.label, mes: c,
-                              mesLabel: ptLabelFromKey(c).replace("/", " "),
-                              celula: v, travado: travados.has(c),
-                            }) : undefined}
+                            onClick={
+                              auditavel ? () => setAuditando({
+                                tipo: "dre", rubrica: node.label, mes: c,
+                                mesLabel: ptLabelFromKey(c).replace("/", " "),
+                                celula: v, travado: travados.has(c),
+                              })
+                              : curavel ? () => setAjustando({
+                                col: c,
+                                colLabel: ptLabelFromKey(c).replace("/", " "),
+                                ebitda: valueAt("EBITDA", c),
+                              })
+                              : undefined
+                            }
                             title={[
                               tituloValor(v, isPercent || tab === "mom" || tab === "pct"),
                               manual ? tituloValorManual(manual) : null,
                               alerta ? tituloReclassificacao(alerta) : null,
+                              tituloPerguntas(perguntasDaCelula),
                               auditavel ? "clique para ver os lançamentos" : null,
+                              curavel ? tituloAjustes(ajustesDoMes ?? []) : null,
                             ].filter(Boolean).join(" · ") || undefined}
                             className={cn(
-                              // relative: o lápis do valor manual se posiciona por ela
-                              "relative px-1.5 py-1.5 text-right text-[12px] num whitespace-nowrap min-w-[64px]",
+                              "px-1.5 py-1.5 text-right text-[12px] num whitespace-nowrap min-w-[64px]",
                               v != null && "cursor-help",
                               isNeg && !isPercent ? "text-primary" : isTotal ? "text-emerald-800" : "text-foreground/90",
                               v == null && "text-muted-foreground/40",
                               auditavel && "cursor-pointer hover:bg-primary/10 hover:underline hover:decoration-dotted hover:underline-offset-2",
+                              curavel && "cursor-pointer hover:bg-teal-100/60 hover:underline hover:decoration-dotted hover:underline-offset-2",
                               // Excludentes de propósito: dois `bg-*` na mesma célula
                               // dependeriam da ordem no CSS gerado, não da ordem aqui.
                               // O alerta de classificação errada tem prioridade; o
@@ -955,12 +1089,14 @@ export default function DRE() {
                               // número, não só o entendimento dele.
                               alerta ? fundoCelulaReclassificacao(alerta)
                                 : manual ? fundoCelulaManual()
+                                : temAjuste ? fundoCelulaAjuste()
                                 : just && fundoCelulaJustificativa(just),
                             )}
                           >
+                            {/* Marcas em FILA à esquerda do número, cada uma na sua
+                                caixa: antes o lápis era absoluto e pousava em cima
+                                do triângulo e do balão. */}
                             <span className="inline-flex items-center justify-end gap-1">
-                              {alerta && <MarcaReclassificacao alerta={alerta} />}
-                              {just && travados.has(c) && (!apenasUltimoMes || ehUltimoMes) && <MarcaJustificativa justificativa={just} onMudou={recarregarJustificativas} />}
                               {editavel && (
                                 <EditorValorManual
                                   tipo="dre"
@@ -972,6 +1108,26 @@ export default function DRE() {
                                   onSalvo={async () => { await load(); await recarregarManuais(); }}
                                 />
                               )}
+                              {alerta && <MarcaReclassificacao alerta={alerta} />}
+                              {mostraJust ? (
+                                <MarcaJustificativa
+                                  justificativa={just!}
+                                  onMudou={recarregarJustificativas}
+                                  valorCelula={v}
+                                  perguntas={perguntasDaCelula}
+                                  montarPayload={dossieDaCelula(node, c, v)}
+                                  onPerguntaMudou={aposPergunta}
+                                />
+                              ) : tab === "valores" ? (
+                                <MarcaPerguntas
+                                  rubrica={node.label}
+                                  mes={c}
+                                  valorCelula={v}
+                                  perguntas={perguntasDaCelula}
+                                  montarPayload={dossieDaCelula(node, c, v)}
+                                  onMudou={aposPergunta}
+                                />
+                              ) : null}
                               {display}
                             </span>
                           </td>
@@ -1005,6 +1161,14 @@ export default function DRE() {
           await sincronizarOmie(false);
           await recarregarReclassificacoes();
         }}
+      />
+
+      {/* Decidir um ajuste reescreve a linha do EBITDA Ajustado dentro do blob —
+          o `load()` é o que traz o número novo para a grade e para o KPI. */}
+      <PainelAjustesEbitda
+        alvo={ajustando}
+        onClose={() => setAjustando(null)}
+        onMudou={async () => { await load(); await recarregarAjustes(); }}
       />
     </div>
   );

@@ -18,6 +18,7 @@
 // próximo sync, que reescreve a coluna inteira sem saber que ela existe.
 
 import { aplicarValoresManuais } from "./valores-manuais.ts";
+import { aplicarEbitdaAjustado } from "./ebitda-ajustado.ts";
 
 const EN = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
@@ -110,7 +111,10 @@ export async function salvarDemonstracao(
   const colunasAtualizadas = new Set(
     mesesNovos.filter((c) => opts.travar || !travadas.has(c)),
   );
-  const dados = await aplicarValoresManuais(supabase, tipo, bruto, colunasAtualizadas);
+  const comManuais = await aplicarValoresManuais(supabase, tipo, bruto, colunasAtualizadas);
+  // Depois dos manuais, nunca antes: o EBITDA Ajustado parte do EBITDA já
+  // corrigido pela depreciação digitada à mão. Ver ebitda-ajustado.ts.
+  const dados = await aplicarEbitdaAjustado(supabase, tipo, comManuais);
 
   const { error: upErr } = await supabase.from("demonstracoes_contabeis").upsert(
     { tipo, periodo: "completo", dados, pdf_path: null },

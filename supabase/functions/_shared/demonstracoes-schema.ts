@@ -86,6 +86,14 @@ export const DRE_SCHEMA: Node[] = [
   ]},
   { label: "EBITDA", kind: "total" },
   { label: "% Margem EBITDA", kind: "percent", src: "EBITDA", pctOf: "Receita Líquida" },
+  /* Linhas de memória: somam ao EBITDA os eventos que não se repetem e NÃO
+     mexem em nada abaixo delas. O Lucro Líquido continua saindo do EBITDA
+     contábil — ajustar o resultado do exercício com opinião sobre recorrência
+     seria outra coisa, e não é o que se assina. Ver a migration
+     20260806190000 e _shared/ebitda-ajustado.ts. */
+  { label: "(+) Ajustes de EBITDA", kind: "child" },
+  { label: "EBITDA Ajustado", kind: "total" },
+  { label: "% Margem EBITDA Ajustado", kind: "percent", src: "EBITDA Ajustado", pctOf: "Receita Líquida" },
   { label: "(+/-) Resultado Financeiro", kind: "header", children: [
     { label: "(-) Depreciação & Amortização", kind: "child" },
     { label: "(-) Juros", kind: "child" },

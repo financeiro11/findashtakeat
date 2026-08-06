@@ -7,8 +7,12 @@
 //   • um USUÁRIO logado (token de sessão) — opcionalmente bloqueando cargos; ou
 //   • a SERVICE ROLE KEY (chamadas de sistema/cron) — segredo, nunca exposta.
 // A anon key sozinha é rejeitada.
+//
+// A versão do supabase-js é FIXA: com `@2` solto, o bundler do Deno resolve a
+// última do dia e já quebrou o deploy ("Module not found" num submódulo do
+// postgrest 2.112.2). 2.45.0 é a que as outras funções deste projeto já usam.
 
-import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.0";
 
 export interface Caller { userId: string | null; cargo: string; isService: boolean; email?: string | null; }
 

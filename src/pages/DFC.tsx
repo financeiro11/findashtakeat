@@ -25,7 +25,11 @@ import {
   useValoresManuais, EditorValorManual, ResumoValoresManuais,
   fundoCelulaManual, tituloValorManual,
 } from "@/components/demonstracoes/ValoresManuais";
-import { gerarJustificativas, criarValorEm } from "@/lib/justificativas";
+import {
+  usePerguntas, MarcaPerguntas, ResumoPerguntas, tituloPerguntas,
+} from "@/components/demonstracoes/Perguntas";
+import { gerarJustificativas } from "@/lib/justificativas";
+import { montarPergunta } from "@/lib/perguntas";
 
 /* ============================================================
  *  Helpers
@@ -165,6 +169,7 @@ export default function DFC() {
   const [auditando, setAuditando] = useState<AlvoLancamentos | null>(null);
   const { reclassificacoes, recarregarReclassificacoes } = useReclassificacoes("dfc");
   const { justificativas, recarregarJustificativas } = useJustificativas("dfc");
+  const { perguntas, recarregarPerguntas } = usePerguntas("dfc");
   const { manuais, recarregarManuais } = useValoresManuais("dfc");
   const [gerandoJust, setGerandoJust] = useState(false);
   const [progressoJust, setProgressoJust] = useState<string | null>(null);
@@ -220,13 +225,17 @@ export default function DFC() {
 
   /* ----- Justificativas de variação -------------------------------------
    * O comentário que antes era escrito à mão em cima da célula do tracker.
-   * Roda sozinho depois de todo import/sync (é aí que os números mudam) e
-   * também sob demanda, pelo botão do resumo. Um mês por chamada — ver
-   * lib/justificativas.ts. */
+   * Roda quando o mês FECHA (import do tracker, trava da coluna) e sob demanda
+   * pelo botão do resumo. Mês aberto não entra: o número ainda vai mudar, e o
+   * comentário congelado sobreviveria ao fechamento descrevendo um mês pela
+   * metade. Um mês por chamada — ver lib/justificativas.ts. */
   const gerarJust = async (
     force: boolean,
     meses: string[],
     base?: { rows: Record<string, unknown>[]; columns: string[] },
+    /* Quem acabou de travar a coluna não pode esperar o estado do React: o mês
+       recém-fechado ainda não está em `travados` e a geração o descartaria. */
+    travadosAgora?: Set<string>,
   ) => {
     const cols = base?.columns ?? columns;
     const alvo = meses.filter((m) => cols.indexOf(m) > 0);
@@ -238,14 +247,23 @@ export default function DFC() {
         tipo: "dfc",
         schema: DFC_SCHEMA,
         columns: cols,
-        valorEm: criarValorEm(base?.rows ?? rows, cols),
+        rows: base?.rows ?? rows,
         meses: alvo,
+        travados: travadosAgora ?? travados,
         force,
         onProgress: (p) => setProgressoJust(`${p.indice}/${p.total}`),
       });
       if (r.erros.length) toast.error("Justificativas: " + r.erros[0]);
-      else if (r.geradas) toast.success(`${r.geradas} justificativa(s) de variação gerada(s).`);
+      else if (r.geradas) {
+        toast.success(
+          `${r.geradas} justificativa(s) de variação gerada(s).`
+          + (r.semLastro ? ` ${r.semLastro} célula(s) variaram sem lançamento no Omie que explicasse — sem comentário.` : ""),
+        );
+      }
       else if (r.puladas) toast.message("Nenhuma variação nova para justificar.");
+      else if (r.ignorados.length && !r.meses) {
+        toast.message("Justificativa só sai em mês travado — é o mês fechado, com os números que não mudam mais.");
+      }
       await recarregarJustificativas();
     } catch (e) {
       toast.error("Falha ao gerar justificativas: " + (e instanceof Error ? e.message : String(e)));
@@ -268,8 +286,10 @@ export default function DFC() {
           (r.nao_mapeadas ? ` · ${r.nao_mapeadas} categoria(s) sem DE_PARA` : ""),
         );
         const base = await load();
-        // O sync só mexe em mês ainda aberto, então justificar os últimos meses
-        // cobre o que mudou sem reescrever o ano inteiro a cada clique.
+        // O sync só mexe em mês ABERTO — e mês aberto não ganha comentário. Isto
+        // aqui só apanha o caso em que um mês travado foi corrigido por fora (o
+        // valor manual, por exemplo): a função compara os números e, se não
+        // mudou nada, não gasta uma ida à IA.
         await gerarJust(false, base.columns.slice(-3), base);
       } else if (r.status === "erro") {
         toast.error("Falha na sincronização: " + (r.erro || "erro desconhecido"));
@@ -294,8 +314,11 @@ export default function DFC() {
     try {
       if (!(await alternarTrava(col, travar))) return;
       if (travar) {
-        await load();
+        const base = await load();
         toast.success(`${ptLabelFromKey(col)} travado — o Omie não sobrescreve mais esse mês.`);
+        // Travar É fechar o mês: é aqui que o comentário do tracker era escrito,
+        // e é o único momento em que os números já são os definitivos.
+        await gerarJust(false, [col], base, new Set([...travados, col]));
       } else {
         toast.message(`${ptLabelFromKey(col)} destravado. Preenchendo com o que já veio do Omie…`);
         await sincronizarOmie(false);
@@ -447,9 +470,11 @@ export default function DFC() {
         { duration: 8000 },
       );
       // Planilha nova = números novos: é exatamente aqui que os comentários do
-      // tracker eram reescritos à mão. Justifica só os meses que o arquivo trouxe.
+      // tracker eram reescritos à mão. Justifica só os meses que o arquivo trouxe
+      // — e são justamente os que ele acabou de travar, então entram na lista de
+      // travados à mão: o `load()` acima repovoa o estado, mas só no próximo render.
       const base = await load();
-      await gerarJust(false, [...mesesTrancados], base);
+      await gerarJust(false, [...mesesTrancados], base, new Set([...travados, ...mesesTrancados]));
     } catch (err: any) {
       toast.error("Falha: " + err.message);
     } finally {
@@ -550,6 +575,30 @@ export default function DFC() {
      destravado ele é lixo. Ler o pai do blob era o bug — some sempre. */
   const valorDaLinha = (node: Node, col: string): number | null =>
     node.children?.length ? sumChildren(node, col) : getValueForRow(node, col);
+
+  /* Perguntar e promover mexem em DUAS tabelas: o fio da célula e — quando a
+     resposta vira o comentário oficial — a justificativa. Recarregar só o fio
+     deixaria o balão exibindo o texto velho até a próxima visita à página. */
+  const aposPergunta = async () => {
+    await recarregarPerguntas();
+    await recarregarJustificativas();
+  };
+
+  /* O dossiê que acompanha a pergunta, montado no instante do envio com a MESMA
+     função que pintou a célula (`valorDaLinha`) — é o que garante que a resposta
+     fale do número que está à vista. */
+  const dossieDaCelula = (node: Node, col: string, valorNaTela: number | null) => () =>
+    montarPergunta({
+      tipo: "dfc",
+      schema: DFC_SCHEMA,
+      rubrica: node.label,
+      mes: col,
+      colunas: columns,
+      valorDaLinha,
+      despesa: DFC_DESPESAS.has(node.label),
+      travado: travados.has(col),
+      valorNaTela,
+    });
 
   // Cálculos derivados quando rótulos não existem na planilha
   function entradasAt(col: string): number | null {
@@ -851,6 +900,7 @@ export default function DFC() {
               onApenasUltimoMesChange={setApenasUltimoMes}
             />
           )}
+          {tab === "valores" && <ResumoPerguntas mapa={perguntas} colunas={displayColumns} />}
           <div className="mt-3 overflow-x-auto rounded-lg border border-border bg-card">
             <table className="border-collapse">
               <thead>
@@ -970,6 +1020,15 @@ export default function DFC() {
                         const just = tab === "valores"
                           ? justificativas.get(chaveCelula(node.label, c))
                           : undefined;
+                        /* Uma marca só para "conversa sobre esta célula": onde há
+                           comentário, o fio de perguntas mora dentro do balão;
+                           onde não há, o "?" ocupa o MESMO lugar. Duas marcas
+                           lado a lado alargariam a grade inteira para dizer a
+                           mesma coisa duas vezes. */
+                        const mostraJust = !!just && travados.has(c) && (!apenasUltimoMes || ehUltimoMes);
+                        const perguntasDaCelula = tab === "valores"
+                          ? perguntas.get(chaveCelula(node.label, c)) ?? []
+                          : [];
                         /* Digitar valor vale nas MESMAS células que abrem
                            auditoria: linha com filhos é a soma dos filhos e total
                            é calculado — o número digitado neles morreria no
@@ -992,11 +1051,11 @@ export default function DFC() {
                               tituloValor(v, tab === "mom"),
                               manual ? tituloValorManual(manual) : null,
                               alerta ? tituloReclassificacao(alerta) : null,
+                              tituloPerguntas(perguntasDaCelula),
                               auditavel ? "clique para ver os lançamentos" : null,
                             ].filter(Boolean).join(" · ") || undefined}
                             className={cn(
-                              // relative: o lápis do valor manual se posiciona por ela
-                              "relative px-1.5 py-1.5 text-right text-[12px] num whitespace-nowrap min-w-[64px]",
+                              "px-1.5 py-1.5 text-right text-[12px] num whitespace-nowrap min-w-[64px]",
                               v != null && "cursor-help",
                               isNeg ? "text-primary" : isTotal ? "text-emerald-800" : "text-foreground/90",
                               v == null && "text-muted-foreground/40",
@@ -1011,9 +1070,10 @@ export default function DFC() {
                                 : just && fundoCelulaJustificativa(just),
                             )}
                           >
+                            {/* Marcas em FILA à esquerda do número, cada uma na sua
+                                caixa: antes o lápis era absoluto e pousava em cima
+                                do triângulo e do balão. */}
                             <span className="inline-flex items-center justify-end gap-1">
-                              {alerta && <MarcaReclassificacao alerta={alerta} />}
-                              {just && travados.has(c) && (!apenasUltimoMes || ehUltimoMes) && <MarcaJustificativa justificativa={just} onMudou={recarregarJustificativas} />}
                               {editavel && (
                                 <EditorValorManual
                                   tipo="dfc"
@@ -1025,6 +1085,26 @@ export default function DFC() {
                                   onSalvo={async () => { await load(); await recarregarManuais(); }}
                                 />
                               )}
+                              {alerta && <MarcaReclassificacao alerta={alerta} />}
+                              {mostraJust ? (
+                                <MarcaJustificativa
+                                  justificativa={just!}
+                                  onMudou={recarregarJustificativas}
+                                  valorCelula={v}
+                                  perguntas={perguntasDaCelula}
+                                  montarPayload={dossieDaCelula(node, c, v)}
+                                  onPerguntaMudou={aposPergunta}
+                                />
+                              ) : tab === "valores" ? (
+                                <MarcaPerguntas
+                                  rubrica={node.label}
+                                  mes={c}
+                                  valorCelula={v}
+                                  perguntas={perguntasDaCelula}
+                                  montarPayload={dossieDaCelula(node, c, v)}
+                                  onMudou={aposPergunta}
+                                />
+                              ) : null}
                               {display}
                             </span>
                           </td>

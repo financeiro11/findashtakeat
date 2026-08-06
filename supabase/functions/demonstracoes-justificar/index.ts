@@ -17,15 +17,27 @@
 //   virar ficção plausível — e é por isso que os drivers ficam salvos ao lado do
 //   texto: quem lê confere a conta sem sair da tela.
 //
+//   SEM DRIVER, SEM COMENTÁRIO. Se nenhum lançamento do Omie sustenta a variação,
+//   a célula não ganha texto: a nota existe para ser colada no tracker, e "não
+//   consegui explicar" não é uma nota. O buraco continua visível onde é
+//   acionável — clicando na célula, no confronto entre a soma e o valor.
+//
 // Body: {
 //   tipo: 'dre'|'dfc', mes: 'Jun-26', mesAnterior: 'May-26',
-//   celulas: [{ rubrica, valor, valorAnterior, delta, deltaPct, despesa }],
+//   celulas: [{ rubrica, valor, valorAnterior, delta, deltaPct, despesa, fontes }],
 //   force?: boolean            // regera até o que já foi aceito/reescrito
 // }
+//   `fontes` são os rótulos que compõem a célula (numa linha somada, os filhos):
+//   é por eles que se acha o lançamento, porque o DE-PARA do Omie aponta para a
+//   folha, nunca para o nome da linha somada.
+//
+//   A chamada só chega aqui para MÊS TRAVADO — ver lib/justificativas.ts.
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { requireUser } from "../_shared/auth.ts";
-import { generateJSON, handleCors, jsonResponse, errorResponse, DEFAULT_MODEL } from "../_shared/gemini.ts";
+// OpenAI, e não Gemini: a redação caía de 429 (cota) no meio do fechamento, que
+// é justamente quando ela é usada. Mesma superfície de `generateJSON`.
+import { generateJSON, handleCors, jsonResponse, errorResponse, DEFAULT_MODEL } from "../_shared/openai.ts";
 import { buildOrgContext } from "../_shared/org-context.ts";
 
 /* Quantas células por chamada ao Gemini. Lotes grandes economizam tokens de
@@ -43,6 +55,12 @@ type Celula = {
   delta: number;
   deltaPct: number | null;
   despesa: boolean;
+  /* Rótulos que compõem a célula. Numa linha somada ("Pessoal", "Receita
+     Recorrente") os lançamentos do Omie estão nos FILHOS: o DE-PARA aponta para
+     "Equipe Comercial", nunca para "Pessoal". Procurar pelo nome da linha somada
+     devolvia zero contraparte e o comentário saía dizendo que o Omie não
+     explicava a variação — em 59% dos casos. */
+  fontes?: string[];
 };
 
 type Driver = {
@@ -132,10 +150,13 @@ REGRAS
    pode-se observar", sem "é importante ressaltar".
 6. Fale em "subiu"/"caiu" na leitura natural da rubrica: em linha de despesa, gastar
    mais é subir. Os valores já chegam com essa orientação aplicada.
-7. Se os drivers não explicarem a variação (veja "cobertura" e o sinal
-   "sem_lastro_omie"), NÃO force uma explicação: diga que os lançamentos do Omie não
-   cobrem a diferença e indique onde olhar (mês travado vindo do tracker, lançamento
-   fora da janela de sincronização, ou DE-PARA).
+7. O campo "movimento" já vem redigido e com o sinal resolvido ("caiu 23,0k").
+   Copie a direção dele. NUNCA escreva o sinal junto do verbo — "caiu -23,0k" é
+   erro, não ênfase.
+8. Se a "cobertura" for baixa, diga o que os drivers explicam e pare aí, deixando
+   claro que o resto não tem lastro nos lançamentos. Não invente o resto, e não
+   encha o comentário de instruções de conferência — quem quiser o detalhe clica
+   na célula e vê os lançamentos.
 `.trim();
 
 /* ============================================================
@@ -202,10 +223,23 @@ function montarSinais(c: Celula, drivers: Driver[], deltaOmie: number, deltaOrie
       sinais.push({ codigo: "contraparte_nova", detalhe: `${d.contraparte} aparece pela primeira vez, com ${d.fmtAtual}.` });
     }
   }
-  if (!c.valorAnterior) {
+  if (c.valorAnterior == null) {
     sinais.push({ codigo: "sem_anterior", detalhe: "Não havia valor no mês anterior — a variação é de base zero." });
   }
   return sinais;
+}
+
+/**
+ * Percentual como texto, sem arredondar para o número redondo que engana.
+ *
+ * -99,996% virava "-100,0%" e o comentário passava a dizer que a rubrica zerou
+ * numa célula que ainda tinha R$ 1,00. Quem confere para de acreditar no resto.
+ */
+function pctTexto(p: number | null): string | null {
+  if (p == null || !Number.isFinite(p)) return null;
+  const a = Math.abs(p) * 100;
+  const casas = a > 99.9 && a < 100 ? 2 : 1;
+  return `${a.toFixed(casas).replace(".", ",")}%`;
 }
 
 /* ============================================================ */
@@ -244,6 +278,29 @@ Deno.serve(async (req) => {
       .eq("tipo", tipo)
       .eq("mes", mes);
 
+    /* Apagar um comentário é destrutivo, então só sai o que ninguém tocou:
+       status 'novo' e sem reescrita. Aceito ou editado fica, mesmo obsoleto —
+       a tela avisa que o número mudou. */
+    const descartavel = (r: { status: string; texto_editado: string | null }) =>
+      r.status === "novo" && !r.texto_editado;
+    let removidas = 0;
+    const apagar = async (ids: string[]) => {
+      if (!ids.length) return;
+      const { error } = await supabase.from("demonstracoes_justificativas").delete().in("id", ids);
+      if (!error) removidas += ids.length;
+    };
+
+    /* --- 1.1) Reconciliação: célula que não é mais candidata perde o texto ---
+       `upsert` só reescreve o que volta, então comentário escrito sob a regra
+       antiga (ou com o mês pela metade) ficaria na tela para sempre. A lista de
+       candidatas que chega é a do mês INTEIRO — o que não está nela não variou o
+       bastante para merecer comentário. */
+    const candidatas = new Set(celulas.map((c) => c.rubrica));
+    const orfas = ((existentes ?? []) as any[])
+      .filter((r) => !candidatas.has(r.rubrica) && descartavel(r))
+      .map((r) => String(r.id));
+    await apagar(orfas);
+
     const anteriores = new Map<string, { id: string; delta: number | null; status: string; texto_editado: string | null }>();
     for (const r of (existentes ?? []) as any[]) anteriores.set(r.rubrica, r);
 
@@ -272,7 +329,9 @@ Deno.serve(async (req) => {
       }
       aRegerar.push(c);
     }
-    if (!aRegerar.length) return jsonResponse({ ok: true, geradas: 0, puladas, mes, tipo });
+    if (!aRegerar.length) {
+      return jsonResponse({ ok: true, geradas: 0, puladas, removidas, mes, tipo });
+    }
 
     /* --- 2) Quem se mexeu, direto dos lançamentos do Omie ----------------- */
     const { data: contras, error: contraErr } = await supabase.rpc("demonstracoes_contrapartes", {
@@ -299,16 +358,36 @@ Deno.serve(async (req) => {
     }
 
     /* --- 3) Monta o dossiê de cada célula --------------------------------- */
-    const dossies = aRegerar.map((c) => {
+    /* Uma contraparte pode aparecer em mais de uma fonte da mesma célula (a
+       mesma pessoa em "Equipe Comercial" e "Equipe Operacional" dentro de
+       "Pessoal"): soma, senão ela viraria dois drivers menores e nenhum deles
+       explicaria nada sozinho. */
+    const contrapartesDe = (c: Celula) => {
+      const fontes = c.fontes?.length ? c.fontes : [c.rubrica];
+      const uniao = new Map<string, { atual: number; anterior: number; categoria: string | null }>();
+      for (const f of fontes) {
+        for (const [nome, v] of porRubrica.get(f) ?? new Map()) {
+          const acc = uniao.get(nome) ?? { atual: 0, anterior: 0, categoria: v.categoria };
+          acc.atual += v.atual;
+          acc.anterior += v.anterior;
+          uniao.set(nome, acc);
+        }
+      }
+      return uniao;
+    };
+
+    const dossiesTodos = aRegerar.map((c) => {
       const orient = (n: number | null) => (n == null ? 0 : c.despesa ? Math.abs(n) : n);
       const valorO = orient(c.valor);
       const anteriorO = orient(c.valorAnterior);
       const deltaO = valorO - anteriorO;
 
-      const { drivers, deltaOmie } = montarDrivers(porRubrica.get(c.rubrica) ?? new Map(), c.despesa);
+      const { drivers, deltaOmie } = montarDrivers(contrapartesDe(c), c.despesa);
       const sinais = montarSinais(c, drivers, deltaOmie, deltaO);
       const somaTop = drivers.reduce((s, d) => s + d.delta, 0);
       const cobertura = Math.abs(deltaO) > 0 ? somaTop / deltaO : null;
+      const direcao = deltaO > 0 ? "subiu" : "caiu";
+      const pct = pctTexto(c.deltaPct);
 
       return {
         celula: c,
@@ -320,8 +399,9 @@ Deno.serve(async (req) => {
           natureza: c.despesa ? "despesa (subir = gastar mais)" : "receita/resultado",
           valorMesAtual: brl(valorO),
           valorMesAnterior: brl(anteriorO),
-          variacao: `${deltaO > 0 ? "+" : ""}${abrev(deltaO)}`,
-          variacaoPct: c.deltaPct == null ? null : `${(c.deltaPct * 100).toFixed(1).replace(".", ",")}%`,
+          // Já redigido, com o sinal resolvido: o modelo escrevia "caiu -23,0k"
+          // quando recebia "-23,0k" e a instrução de falar em subiu/caiu.
+          movimento: `${direcao} ${abrev(Math.abs(deltaO))}${pct ? ` (${pct})` : ""}`,
           cobertura: cobertura == null ? null : `${Math.round(cobertura * 100)}% da variação está explicada pelos drivers abaixo`,
           drivers: drivers.map((d) => ({
             contraparte: d.contraparte,
@@ -335,6 +415,16 @@ Deno.serve(async (req) => {
         },
       };
     });
+
+    /* Sem NENHUM lançamento do Omie por trás, não há comentário a escrever: o
+       texto que saía ("os lançamentos do Omie não cobrem essa variação, verifique
+       o tracker / a janela de sincronização / o DE-PARA") é a máquina admitindo
+       que não sabe, em três frases de prosa, numa nota que existe para ser colada
+       no tracker. Eram 62% do que havia na base. O fato continua visível onde ele
+       é acionável: clicar na célula mostra os lançamentos e a diferença contra a
+       soma. */
+    const dossies = dossiesTodos.filter((d) => d.drivers.length > 0);
+    const semLastro = dossiesTodos.length - dossies.length;
 
     /* --- 4) Redação ------------------------------------------------------- */
     let orgCtx = "";
@@ -360,37 +450,56 @@ Deno.serve(async (req) => {
     };
 
     const porRubricaTexto = new Map<string, { texto: string; confianca: string }>();
+    /* Falha de redação NÃO é resposta. Contada aqui porque é ela que decide se o
+       descarte pode rodar — e porque volta para a tela: uma regeração que não
+       escreveu nada precisa dizer isso, não sair calada. */
+    let lotesFalhos = 0;
+    let falhaIA: string | null = null;
+
+    const redigir = async (lote: typeof dossies) => {
+      const out = await generateJSON<{ justificativas: { rubrica: string; texto: string; confianca: string }[] }>({
+        temperature: 0.35,
+        responseSchema: schema,
+        messages: [
+          { role: "system", content: `${ESTILO}\n\n${orgCtx}` },
+          {
+            role: "user",
+            content:
+              `Demonstrativo: ${tipo.toUpperCase()}\n` +
+              `Mês: ${rotuloMes(mes)} — comparado com ${rotuloMes(mesAnterior)}\n\n` +
+              `Escreva uma justificativa para CADA rubrica abaixo. Devolva a mesma quantidade de itens, ` +
+              `com o campo "rubrica" idêntico ao que veio.\n\n` +
+              JSON.stringify(lote.map((d) => d.payload), null, 1),
+          },
+        ],
+      });
+      for (const j of out?.justificativas ?? []) {
+        if (j?.rubrica && j?.texto) {
+          porRubricaTexto.set(String(j.rubrica), {
+            texto: String(j.texto).trim(),
+            confianca: ["alta", "media", "baixa"].includes(j.confianca) ? j.confianca : "media",
+          });
+        }
+      }
+    };
+
     for (let i = 0; i < dossies.length; i += LOTE) {
       const lote = dossies.slice(i, i + LOTE);
       try {
-        const out = await generateJSON<{ justificativas: { rubrica: string; texto: string; confianca: string }[] }>({
-          temperature: 0.35,
-          responseSchema: schema,
-          messages: [
-            { role: "system", content: `${ESTILO}\n\n${orgCtx}` },
-            {
-              role: "user",
-              content:
-                `Demonstrativo: ${tipo.toUpperCase()}\n` +
-                `Mês: ${rotuloMes(mes)} — comparado com ${rotuloMes(mesAnterior)}\n\n` +
-                `Escreva uma justificativa para CADA rubrica abaixo. Devolva a mesma quantidade de itens, ` +
-                `com o campo "rubrica" idêntico ao que veio.\n\n` +
-                JSON.stringify(lote.map((d) => d.payload), null, 1),
-            },
-          ],
-        });
-        for (const j of out?.justificativas ?? []) {
-          if (j?.rubrica && j?.texto) {
-            porRubricaTexto.set(String(j.rubrica), {
-              texto: String(j.texto).trim(),
-              confianca: ["alta", "media", "baixa"].includes(j.confianca) ? j.confianca : "media",
-            });
-          }
+        await redigir(lote);
+      } catch {
+        // Segunda tentativa: regerar vários meses dispara as chamadas em rajada e
+        // o provedor responde 429. A pausa é o que faz a segunda passar.
+        await new Promise((r) => setTimeout(r, 4000));
+        try {
+          await redigir(lote);
+        } catch (e) {
+          // Um lote que falha não derruba os outros: o mês fica com as células que
+          // deram certo, e a tela mostra menos comentários em vez de nenhum.
+          lotesFalhos++;
+          falhaIA = e instanceof Error ? e.message : String(e);
+          console.error("lote falhou", i, e);
         }
-      } catch (e) {
-        // Um lote que falha não derruba os outros: o mês fica com as células que
-        // deram certo, e a tela mostra menos comentários em vez de nenhum.
-        console.error("lote falhou", i, e);
       }
     }
 
@@ -415,9 +524,9 @@ Deno.serve(async (req) => {
           texto: g.texto,
           drivers: d.drivers,
           cobertura: d.cobertura,
-          // Sem driver que explique, a confiança é baixa independentemente do que
-          // a IA achou de si mesma.
-          confianca: d.drivers.length === 0 ? "baixa" : g.confianca,
+          // Cobertura magra é confiança baixa, independentemente do que a IA
+          // achou de si mesma: ela redige bem justamente quando sabe pouco.
+          confianca: Math.abs(Number(d.cobertura ?? 0)) < 0.5 ? "baixa" : g.confianca,
           sinais: d.sinais,
           modelo: DEFAULT_MODEL,
           gerado_em: new Date().toISOString(),
@@ -439,6 +548,30 @@ Deno.serve(async (req) => {
         .in("id", reabrir);
     }
 
+    /* --- 6) Descarte do que deixou de merecer comentário ------------------
+       SÓ POR DECISÃO, NUNCA POR FALHA. Esta distinção custou os comentários de
+       Jun e Jul/26 da DRE: a regra anterior apagava toda célula sem texto novo,
+       e "sem texto" incluía o lote que o Gemini recusou. A tela ficou vazia sem
+       ninguém ter decidido nada.
+
+       Some quem perdeu o lastro — decisão determinística, tomada aqui em cima,
+       sem IA no meio. Quem o modelo simplesmente não devolveu FICA como estava.
+
+       E o freio: se NENHUMA célula do mês tem driver, isso não é diagnóstico, é
+       insumo quebrado (cache do Omie vazio, DE-PARA fora do ar). Nesse caso não
+       se apaga nada — foi exatamente o formato do estrago. */
+    const algumComDriver = dossiesTodos.some((d) => d.drivers.length > 0);
+    if (algumComDriver) {
+      const semLastroRubricas = new Set(
+        dossiesTodos.filter((d) => d.drivers.length === 0).map((d) => d.celula.rubrica),
+      );
+      await apagar(
+        ((existentes ?? []) as any[])
+          .filter((r) => semLastroRubricas.has(r.rubrica) && descartavel(r))
+          .map((r) => String(r.id)),
+      );
+    }
+
     return jsonResponse({
       ok: true,
       tipo,
@@ -446,7 +579,14 @@ Deno.serve(async (req) => {
       geradas: linhas.length,
       puladas,
       reabertas: reabrir.length,
+      // Variou, mas nenhum lançamento do Omie por trás: não vira comentário.
+      sem_lastro: semLastro,
+      removidas,
       sem_texto: dossies.length - linhas.length,
+      // A tela precisa saber que a redação falhou — senão "0 geradas" passa por
+      // "não havia o que gerar", que foi como o estrago passou despercebido.
+      lotes_falhos: lotesFalhos,
+      falha_ia: falhaIA,
     });
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);

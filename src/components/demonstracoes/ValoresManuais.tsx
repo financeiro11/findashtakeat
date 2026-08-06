@@ -170,16 +170,21 @@ export function EditorValorManual({
       /* A célula inteira abre o drill-down de lançamentos. */
       onClick={(e) => { e.stopPropagation(); if (!montado) abrir(true); }}
       title={manual ? tituloValorManual(manual) : "Digitar um valor nesta célula"}
-      /* Absoluto, na sobra à esquerda da célula (o número é alinhado à direita):
-         inline, ele reservaria 14px em TODA célula que aceita digitação e
-         empurraria a grade inteira para caber um lápis invisível. */
+      /* Na fila de marcas, com lugar próprio. Já foi absoluto (`left-1`) para não
+         reservar largura nenhuma, e o preço era cair POR CIMA do triângulo de
+         reclassificação e do balão de justificativa — três alvos de 14px
+         empilhados no mesmo ponto, nenhum clicável.
+
+         Sem valor manual o lápis é `invisible`, não `hidden`: some da vista e do
+         clique, mas continua ocupando o espaço, então o número não dança quando
+         o mouse entra e sai da linha. */
       className={cn(
-        "absolute left-1 top-1/2 -translate-y-1/2 items-center rounded-sm p-px transition hover:bg-black/5",
+        "inline-flex h-[18px] w-[18px] shrink-0 items-center justify-center rounded-sm transition hover:bg-black/10",
         manual
-          ? "inline-flex text-violet-700"
+          ? "text-violet-700"
           // Sem valor manual o lápis só aparece no hover da linha: um lápis em
           // cada célula da grade competiria com os números.
-          : "hidden text-muted-foreground/70 group-hover/linha:inline-flex",
+          : "invisible text-muted-foreground/70 group-hover/linha:visible",
       )}
     >
       {manual

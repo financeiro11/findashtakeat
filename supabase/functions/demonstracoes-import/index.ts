@@ -7,7 +7,8 @@
 //
 // Body: { dre?: { columns: string[], rows: object[] }, dfc?: { columns: string[], rows: object[] } }
 
-import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+// Versão fixa: `@2` solto resolve a última do dia e já quebrou o deploy.
+import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.0";
 import { requireUser } from "../_shared/auth.ts";
 import { salvarDemonstracao, type Dados } from "../_shared/demonstracoes.ts";
 

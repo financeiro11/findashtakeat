@@ -26,10 +26,12 @@ function Trajetoria({ linha, cor, meses }: { linha: LinhaMatriz; cor: string; me
   // na borda do gráfico; a folga faz ela sair no meio, como reta mesmo.
   const folga = max === min ? Math.max(1, max * 0.2) : (max - min) * 0.15;
 
-  if (meses < 2) return <div className="h-8" />;
+  // Largura fixa, não `w-full`: ao lado de um `flex-1` (base 0) o `width:100%`
+  // vira base do flex, estoura a linha e o nome da categoria fica com 0px.
+  if (meses < 2) return <div className="h-8 w-[104px] shrink-0" />;
 
   return (
-    <div className="h-8 w-full min-w-[60px]">
+    <div className="h-8 w-[104px] shrink-0">
       <ResponsiveContainer width="100%" height="100%">
         <LineChart data={dados} margin={{ top: 2, right: 2, bottom: 2, left: 2 }}>
           <YAxis hide domain={[min - folga, max + folga]} />
@@ -66,7 +68,7 @@ export function Categorias({ analise }: { analise: Analise }) {
 
               <div className="min-w-0 flex-1">
                 <div className="truncate text-[12.5px] font-semibold">{c.chave}</div>
-                <div className="num text-[11px] text-muted-foreground">
+                <div className="num truncate text-[11px] text-muted-foreground">
                   {pctStr(totalPeriodo > 0 ? c.total / totalPeriodo : null, { sinal: false })} do período
                 </div>
               </div>

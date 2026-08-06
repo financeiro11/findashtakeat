@@ -35,17 +35,17 @@ import { Categorias } from "./cartao/Categorias";
    se edita à mão). Este alias mantém o resto do arquivo tipado em vez de
    espalhar `as any` por cada chamada. */
 type Resposta = Promise<{ data: unknown[] | null; error: unknown }>;
+/* `order` encadeável: a paginação precisa de mais de um critério (ver
+   `carregarLancamentos`). */
+type Paginavel = {
+  order: (c: string, o?: { ascending?: boolean }) => Paginavel;
+  range: (de: number, ate: number) => Resposta;
+};
 const db = supabase as unknown as {
   from: (t: string) => {
     select: (c: string) => {
       order: (c: string, o?: { ascending?: boolean }) => Resposta;
-      gte: (c: string, v: string) => {
-        lte: (c: string, v: string) => {
-          order: (c: string, o?: { ascending?: boolean }) => {
-            range: (de: number, ate: number) => Resposta;
-          };
-        };
-      };
+      gte: (c: string, v: string) => { lte: (c: string, v: string) => Paginavel };
     };
   };
   rpc: (fn: string, params: Record<string, unknown>) => Promise<{ error: { message: string } | null }>;
@@ -73,26 +73,41 @@ export default function Cartao() {
     return fs;
   }, []);
 
-  /* Busca paginada. O período inteiro já passa de 2.800 lançamentos e o PostgREST
+  /* Busca paginada. O período inteiro já passa de 3.700 lançamentos e o PostgREST
      corta a resposta num teto próprio sem avisar — e aqui truncar não deixa a
      tela "incompleta", deixa ERRADA: todo KPI e toda matriz saem desta lista.
      O tamanho efetivo da página é o que a primeira resposta devolveu, então isso
-     funciona seja qual for o teto do servidor. */
+     funciona seja qual for o teto do servidor.
+
+     A ordem precisa desempatar por `id`. Ordenar só por `data` é ordem PARCIAL —
+     uma fatura fecha no mesmo dia para dezenas de compras (só em 09/02/26 são 22)
+     — e o Postgres não promete a mesma ordem entre duas consultas quando o
+     critério empata. Como cada página é uma consulta nova, a fronteira caía no
+     meio de um empate e a mesma linha vinha em duas páginas enquanto outra não
+     vinha em nenhuma: 7 duplicadas e 7 PERDIDAS no período. As duplicadas viravam
+     `key` repetida na tabela de detalhe (linha fantasma que sobrevivia à busca) e
+     as perdidas sumiam caladamente dos totais. */
   const carregarLancamentos = useCallback(async (dDe: string, dAte: string) => {
     if (!dDe || !dAte) { setLancamentos([]); return; }
 
     const todos: Lancamento[] = [];
+    const vistos = new Set<string>();
     let pagina = 1000;
     for (let inicio = 0; ; inicio += pagina) {
       const { data, error } = await db
         .from("cartao_lancamentos").select("*")
         .gte("competencia", dDe).lte("competencia", dAte)
-        .order("data")
+        .order("data").order("id")
         .range(inicio, inicio + pagina - 1);
       if (error) { toast.error("Não consegui ler os lançamentos."); return; }
 
       const lote = (data ?? []) as Lancamento[];
-      todos.push(...lote);
+      // Cinto e suspensório: `id` repetido aqui é o que quebra a renderização.
+      for (const l of lote) {
+        if (vistos.has(l.id)) continue;
+        vistos.add(l.id);
+        todos.push(l);
+      }
       if (inicio === 0) pagina = lote.length;   // teto real do servidor
       if (!lote.length || lote.length < pagina) break;
     }

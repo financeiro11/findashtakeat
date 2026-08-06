@@ -62,21 +62,25 @@ export function tituloReclassificacao(a: AlertaCelula): string {
   return `${n} (${valorExato(a.valorTotal)})`;
 }
 
-/** Marca dentro da célula. Fica à esquerda do número para não empurrar a coluna. */
+/** Marca dentro da célula, na fila à esquerda do número. A caixa de 18px é a
+ *  mesma do balão e do lápis: as marcas ficam alinhadas e separadas, em vez de
+ *  encostadas uma na outra. */
 export function MarcaReclassificacao({ alerta }: { alerta: AlertaCelula }) {
   return (
-    <TriangleAlert
-      strokeWidth={2.5}
-      className={cn(
-        "h-3.5 w-3.5 shrink-0",
-        // Triângulo PREENCHIDO: em contorno fino de 12px o aviso sumia no meio
-        // da grade. A severidade muda a intensidade do preenchimento, mas
-        // nenhuma delas é discreta — alerta que não se vê não é alerta.
-        alerta.severidade === "alta" ? "fill-amber-400 text-amber-800"
-          : alerta.severidade === "media" ? "fill-amber-300 text-amber-800"
-          : "fill-amber-200 text-amber-700",
-      )}
-    />
+    <span className="inline-flex h-[18px] w-[18px] shrink-0 items-center justify-center">
+      <TriangleAlert
+        strokeWidth={2.5}
+        className={cn(
+          "h-3.5 w-3.5",
+          // Triângulo PREENCHIDO: em contorno fino de 12px o aviso sumia no meio
+          // da grade. A severidade muda a intensidade do preenchimento, mas
+          // nenhuma delas é discreta — alerta que não se vê não é alerta.
+          alerta.severidade === "alta" ? "fill-amber-400 text-amber-800"
+            : alerta.severidade === "media" ? "fill-amber-300 text-amber-800"
+            : "fill-amber-200 text-amber-700",
+        )}
+      />
+    </span>
   );
 }
 

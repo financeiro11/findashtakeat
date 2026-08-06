@@ -12,7 +12,8 @@
 //   DRE → data de registro (competência)
 //   DFC → data de pagamento / débito-crédito (caixa)
 
-import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+// Versão fixa: `@2` solto resolve a última do dia e já quebrou o deploy.
+import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.0";
 import { listarCategorias, listarMovimentos } from "../_shared/omie.ts";
 import { lerMovimentos, lerCategorias } from "../_shared/omie-cache.ts";
 import { requireUser } from "../_shared/auth.ts";

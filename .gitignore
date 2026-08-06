@@ -25,3 +25,6 @@ dist-ssr
 
 # Claude Code (config local da ferramenta — não faz parte do app)
 .claude/
+
+# Estado local do Supabase CLI (ref do projeto, cache) — não versionar.
+supabase/.temp/

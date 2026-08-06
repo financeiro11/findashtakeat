@@ -4,7 +4,8 @@ import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Search, Download, SlidersHorizontal, Filter as FilterIcon, RefreshCw } from "lucide-react";
-import { Edital, statusBadge, fmtBRL, matchColor } from "./types";
+import { Edital, statusBadge, fmtBRL as fmtBRLStr, matchColor } from "./types";
+import { comValorExato } from "@/components/ValorExato";
 import EditalDrawer from "./EditalDrawer";
 import { cn } from "@/lib/utils";
 
@@ -261,4 +262,11 @@ export default function Historico() {
       <EditalDrawer edital={selected} open={open} onOpenChange={setOpen} onSaved={load} />
     </>
   );
+}
+
+/* Os valores saem abreviados ("R$ 1,2 mi") ou sem centavos; aqui viram um
+   <span> que mostra o número cheio no hover. Em template literal / title use
+   fmtBRLStr direto. */
+function fmtBRL(v: number | null | undefined) {
+  return comValorExato(v, fmtBRLStr(v));
 }

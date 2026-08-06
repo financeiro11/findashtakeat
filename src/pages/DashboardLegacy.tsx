@@ -18,6 +18,8 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Label } from "@/components/ui/label";
 import { useAuth } from "@/hooks/useAuth";
 import { cn } from "@/lib/utils";
+import { valorExato } from "@/lib/valor";
+import { comValorExato } from "@/components/ValorExato";
 
 type Row = Record<string, any>;
 
@@ -86,6 +88,9 @@ const fmtBRLShort = (n: number) => {
   if (abs >= 1_000) return `${(n / 1_000).toFixed(0)}k`;
   return n.toFixed(0);
 };
+/* fmtBRL corta os centavos; fmtBRLNode mostra o mesmo texto num <span> que
+   revela o valor cheio ao passar o mouse. */
+const fmtBRLNode = (n: number) => comValorExato(n, fmtBRL(n));
 const normalizePctValue = (n: number) => (Math.abs(n) > 1 ? n : n * 100);
 const fmtPct = (n: number, digits = 2) => `${normalizePctValue(n).toFixed(digits).replace(".", ",")}%`;
 const pctDelta = (cur: number, prev: number) => {
@@ -560,14 +565,14 @@ export default function DashboardLegacy() {
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
             <KpiCard
               label={`Receita Bruta · ${last?.label ?? ""}`}
-              value={fmtBRL(kpiRBruta)}
+              value={fmtBRLNode(kpiRBruta)}
               deltaMonth={pctDelta(kpiRBruta, kpiRBrutaPrev)}
               spark={sparkRBruta}
               sparkColor={kpiRBruta >= kpiRBrutaPrev ? "hsl(var(--pos))" : "hsl(var(--neg))"}
             />
             <KpiCard
               label={`Margem de Contribuição · ${last?.label ?? ""}`}
-              value={fmtBRL(kpiMC)}
+              value={fmtBRLNode(kpiMC)}
               subline={pctMargemContribRow ? `${fmtPct(kpiMCPct)} da receita` : undefined}
               deltaMonth={pctDelta(kpiMC, kpiMCPrev)}
               spark={sparkMC}
@@ -575,7 +580,7 @@ export default function DashboardLegacy() {
             />
             <KpiCard
               label={`EBITDA · ${last?.label ?? ""}`}
-              value={fmtBRL(kpiEbitda)}
+              value={fmtBRLNode(kpiEbitda)}
               subline={margemEbitdaRow ? `Margem EBITDA ${fmtPct(kpiMargemEbitda)}` : undefined}
               deltaMonth={pctDelta(kpiEbitda, kpiEbitdaPrev)}
               spark={sparkEbitda}
@@ -583,7 +588,7 @@ export default function DashboardLegacy() {
             />
             <KpiCard
               label={`Cashburn · ${cashburnLastCol?.label ?? last?.label ?? ""}`}
-              value={fmtBRL(kpiCashburn)}
+              value={fmtBRLNode(kpiCashburn)}
               subline={`origem: ${cashburnFromDre ? "DRE" : "DFC"}`}
               deltaMonth={pctDelta(kpiCashburn, kpiCashburnPrev)}
               inverse
@@ -737,7 +742,7 @@ export default function DashboardLegacy() {
                       <PieChart>
                         <Tooltip
                           contentStyle={{ background: "hsl(var(--card))", border: "1px solid hsl(var(--border))", borderRadius: 8, fontSize: 12 }}
-                          formatter={(v: number) => fmtBRL(v * 1000)}
+                          formatter={(v: number) => valorExato(v * 1000)}
                         />
                         <Legend wrapperStyle={{ fontSize: 11 }} />
                         <Pie data={pieData} dataKey="value" nameKey="name" outerRadius={130} label={(d: any) => d.name}>
@@ -751,7 +756,7 @@ export default function DashboardLegacy() {
                         <YAxis tick={{ fontSize: 10.5, fill: "hsl(var(--muted-foreground))" }} axisLine={false} tickLine={false} tickFormatter={(v) => fmtBRLShort(v * 1000)} />
                         <Tooltip
                           contentStyle={{ background: "hsl(var(--card))", border: "1px solid hsl(var(--border))", borderRadius: 8, fontSize: 12 }}
-                          formatter={(v: number) => fmtBRL(v * 1000)}
+                          formatter={(v: number) => valorExato(v * 1000)}
                         />
                         <Legend wrapperStyle={{ fontSize: 11 }} />
                         {selectedMetrics.map((m, i) => (
@@ -766,7 +771,7 @@ export default function DashboardLegacy() {
                         <Tooltip
                           cursor={{ fill: "hsl(var(--secondary))" }}
                           contentStyle={{ background: "hsl(var(--card))", border: "1px solid hsl(var(--border))", borderRadius: 8, fontSize: 12 }}
-                          formatter={(v: number) => fmtBRL(v * 1000)}
+                          formatter={(v: number) => valorExato(v * 1000)}
                         />
                         <Legend wrapperStyle={{ fontSize: 11 }} />
                         {selectedMetrics.map((m, i) => (
@@ -921,7 +926,7 @@ export default function DashboardLegacy() {
                         <Tooltip
                           cursor={{ fill: "hsl(var(--secondary))" }}
                           contentStyle={{ background: "hsl(var(--card))", border: "1px solid hsl(var(--border))", borderRadius: 8, fontSize: 12 }}
-                          formatter={(v: number) => fmtBRL(v * 1000)}
+                          formatter={(v: number) => valorExato(v * 1000)}
                         />
                         <Bar dataKey="value" radius={[3, 3, 3, 3]}>
                           {cols.map((c, i) => {
@@ -952,7 +957,7 @@ export default function DashboardLegacy() {
                         <span className="truncate font-medium text-foreground">{d.cat}</span>
                         <span className="num shrink-0 text-[11px] text-muted-foreground">{d.share.toFixed(1).replace(".", ",")}%</span>
                       </div>
-                      <span className="num text-foreground">{fmtBRL(d.val)}</span>
+                      <span className="num text-foreground">{fmtBRLNode(d.val)}</span>
                       <Delta value={d.delta} inverse />
                     </li>
                   ))}
@@ -1041,10 +1046,10 @@ function DFCSection({ dfc, dfcCols }: { dfc: Row[]; dfcCols: { key: string; labe
   return (
     <div className="space-y-3">
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
-        <KpiCard label={`Caixa Operacional · ${last?.label ?? ""}`} value={fmtBRL(opLast)} deltaMonth={pctDelta(opLast, opPrev)} sparkColor={opLast >= 0 ? "hsl(var(--pos))" : "hsl(var(--neg))"} spark={visibleCols.map(c => valAt(opRow, c.key) / 1000)} />
-        <KpiCard label={`Investimento · ${last?.label ?? ""}`} value={fmtBRL(invLast)} sparkColor="hsl(var(--neg))" spark={visibleCols.map(c => valAt(invRow, c.key) / 1000)} />
-        <KpiCard label={`Financiamento · ${last?.label ?? ""}`} value={fmtBRL(finLast)} sparkColor={finLast >= 0 ? "hsl(var(--pos))" : "hsl(var(--neg))"} spark={visibleCols.map(c => valAt(finRow, c.key) / 1000)} />
-        <KpiCard label={`Fluxo de Caixa Livre · ${last?.label ?? ""}`} value={fmtBRL(livreLast)} subline={`Cashburn ${fmtBRL(cashburnLast)}`} sparkColor={livreLast >= 0 ? "hsl(var(--pos))" : "hsl(var(--neg))"} spark={visibleCols.map(c => valAt(livreRow, c.key) / 1000)} />
+        <KpiCard label={`Caixa Operacional · ${last?.label ?? ""}`} value={fmtBRLNode(opLast)} deltaMonth={pctDelta(opLast, opPrev)} sparkColor={opLast >= 0 ? "hsl(var(--pos))" : "hsl(var(--neg))"} spark={visibleCols.map(c => valAt(opRow, c.key) / 1000)} />
+        <KpiCard label={`Investimento · ${last?.label ?? ""}`} value={fmtBRLNode(invLast)} sparkColor="hsl(var(--neg))" spark={visibleCols.map(c => valAt(invRow, c.key) / 1000)} />
+        <KpiCard label={`Financiamento · ${last?.label ?? ""}`} value={fmtBRLNode(finLast)} sparkColor={finLast >= 0 ? "hsl(var(--pos))" : "hsl(var(--neg))"} spark={visibleCols.map(c => valAt(finRow, c.key) / 1000)} />
+        <KpiCard label={`Fluxo de Caixa Livre · ${last?.label ?? ""}`} value={fmtBRLNode(livreLast)} subline={`Cashburn ${fmtBRL(cashburnLast)}`} sparkColor={livreLast >= 0 ? "hsl(var(--pos))" : "hsl(var(--neg))"} spark={visibleCols.map(c => valAt(livreRow, c.key) / 1000)} />
       </div>
 
       <SectionCard
@@ -1069,7 +1074,7 @@ function DFCSection({ dfc, dfcCols }: { dfc: Row[]; dfcCols: { key: string; labe
               <CartesianGrid strokeDasharray="2 4" stroke="hsl(var(--border))" vertical={false} />
               <XAxis dataKey="mes" tick={{ fontSize: 11, fill: "hsl(var(--muted-foreground))" }} axisLine={false} tickLine={false} />
               <YAxis tick={{ fontSize: 10.5, fill: "hsl(var(--muted-foreground))" }} axisLine={false} tickLine={false} tickFormatter={(v) => fmtBRLShort(v * 1000)} />
-              <Tooltip cursor={{ fill: "hsl(var(--secondary))" }} contentStyle={{ background: "hsl(var(--card))", border: "1px solid hsl(var(--border))", borderRadius: 8, fontSize: 12 }} formatter={(v: number) => fmtBRL(v * 1000)} />
+              <Tooltip cursor={{ fill: "hsl(var(--secondary))" }} contentStyle={{ background: "hsl(var(--card))", border: "1px solid hsl(var(--border))", borderRadius: 8, fontSize: 12 }} formatter={(v: number) => valorExato(v * 1000)} />
               <Legend wrapperStyle={{ fontSize: 11 }} />
               <Bar dataKey="Operacional" fill="hsl(var(--primary))" radius={[2, 2, 0, 0]} />
               <Bar dataKey="Investimento" fill="hsl(38 92% 50%)" radius={[2, 2, 0, 0]} />
@@ -1093,7 +1098,7 @@ function DFCSection({ dfc, dfcCols }: { dfc: Row[]; dfcCols: { key: string; labe
                     <span className="truncate font-medium text-foreground">{d.cat}</span>
                     <span className="num shrink-0 text-[11px] text-muted-foreground">{d.share.toFixed(1).replace(".", ",")}%</span>
                   </div>
-                  <span className="num text-foreground">{fmtBRL(d.val)}</span>
+                  <span className="num text-foreground">{fmtBRLNode(d.val)}</span>
                   <Delta value={d.delta} inverse />
                 </li>
               ))}
@@ -1106,11 +1111,11 @@ function DFCSection({ dfc, dfcCols }: { dfc: Row[]; dfcCols: { key: string; labe
             <div className="grid grid-cols-2 gap-3">
               <div className="rounded-md border border-border p-3">
                 <div className="text-[11px] uppercase text-muted-foreground">Entradas</div>
-                <div className="num mt-1 text-lg font-semibold text-[hsl(var(--pos))]">{fmtBRL(entradasLast)}</div>
+                <div className="num mt-1 text-lg font-semibold text-[hsl(var(--pos))]">{fmtBRLNode(entradasLast)}</div>
               </div>
               <div className="rounded-md border border-border p-3">
                 <div className="text-[11px] uppercase text-muted-foreground">Saídas</div>
-                <div className="num mt-1 text-lg font-semibold text-[hsl(var(--neg))]">{fmtBRL(saidasLast)}</div>
+                <div className="num mt-1 text-lg font-semibold text-[hsl(var(--neg))]">{fmtBRLNode(saidasLast)}</div>
               </div>
             </div>
             <div>
@@ -1127,7 +1132,7 @@ function DFCSection({ dfc, dfcCols }: { dfc: Row[]; dfcCols: { key: string; labe
                 <BarChart data={visibleCols.map(c => ({ mes: c.label, Entradas: valAt(entradasRow, c.key) / 1000, Saídas: valAt(saidasRow, c.key) / 1000 }))} margin={{ top: 4, right: 4, bottom: 0, left: -12 }}>
                   <XAxis dataKey="mes" tick={{ fontSize: 10, fill: "hsl(var(--muted-foreground))" }} axisLine={false} tickLine={false} />
                   <YAxis tick={{ fontSize: 9.5, fill: "hsl(var(--muted-foreground))" }} axisLine={false} tickLine={false} tickFormatter={(v) => fmtBRLShort(v * 1000)} />
-                  <Tooltip contentStyle={{ background: "hsl(var(--card))", border: "1px solid hsl(var(--border))", borderRadius: 8, fontSize: 12 }} formatter={(v: number) => fmtBRL(v * 1000)} />
+                  <Tooltip contentStyle={{ background: "hsl(var(--card))", border: "1px solid hsl(var(--border))", borderRadius: 8, fontSize: 12 }} formatter={(v: number) => valorExato(v * 1000)} />
                   <Bar dataKey="Entradas" fill="hsl(var(--pos))" radius={[2, 2, 0, 0]} />
                   <Bar dataKey="Saídas" fill="hsl(var(--neg))" radius={[2, 2, 0, 0]} />
                 </BarChart>

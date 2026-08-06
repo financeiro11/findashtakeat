@@ -12,6 +12,12 @@
 // O merge é por CÉLULA (rubrica × mês), não por linha nem por blob inteiro: uma rubrica
 // que só existia nos dados antigos (e não veio nesta chamada) é preservada; uma rubrica
 // nova é criada; dentro de uma rubrica já existente, só as colunas relevantes mudam.
+//
+// Depois do merge — e ANTES de gravar — os valores manuais são reaplicados por cima
+// (ver valores-manuais.ts). É o que faz a depreciação digitada à mão sobreviver ao
+// próximo sync, que reescreve a coluna inteira sem saber que ela existe.
+
+import { aplicarValoresManuais } from "./valores-manuais.ts";
 
 const EN = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
@@ -96,7 +102,15 @@ export async function salvarDemonstracao(
       (k) => k !== "Conta" && row[k] !== undefined && row[k] !== null && row[k] !== "",
     );
 
-  const dados: Dados = { columns, rows: [...porConta.values()].filter(temValor) };
+  const bruto: Dados = { columns, rows: [...porConta.values()].filter(temValor) };
+
+  // Colunas que ESTA escrita refez do zero: no import são todas as que o arquivo
+  // trouxe; no sync, as que não estavam travadas (as travadas o loop acima pulou).
+  // É por esta lista que o manual sabe se a célula voltou a ser automática.
+  const colunasAtualizadas = new Set(
+    mesesNovos.filter((c) => opts.travar || !travadas.has(c)),
+  );
+  const dados = await aplicarValoresManuais(supabase, tipo, bruto, colunasAtualizadas);
 
   const { error: upErr } = await supabase.from("demonstracoes_contabeis").upsert(
     { tipo, periodo: "completo", dados, pdf_path: null },

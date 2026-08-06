@@ -5,7 +5,8 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Sparkles, ArrowRight, Plus, Download, SlidersHorizontal, Filter as FilterIcon } from "lucide-react";
 import { Link } from "react-router-dom";
-import { Edital, fmtBRL, daysUntil, matchColor } from "./types";
+import { Edital, fmtBRL as fmtBRLStr, daysUntil, matchColor } from "./types";
+import { comValorExato } from "@/components/ValorExato";
 import { Sparkline } from "@/components/ui/sparkline";
 
 type Fonte = {
@@ -389,4 +390,11 @@ export default function EditaisDashboard() {
       </div>
     </div>
   );
+}
+
+/* Os valores saem abreviados ("R$ 1,2 mi") ou sem centavos; aqui viram um
+   <span> que mostra o número cheio no hover. Em template literal / title use
+   fmtBRLStr direto. */
+function fmtBRL(v: number | null | undefined) {
+  return comValorExato(v, fmtBRLStr(v));
 }

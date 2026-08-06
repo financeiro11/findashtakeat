@@ -4,6 +4,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
 import { brl, brlAbbr, fmtDateBR } from "./utils";
+import { comValorExato } from "@/components/ValorExato";
 import { Search, RefreshCw, Loader2, ExternalLink, FileWarning, FileCheck2, Upload, CheckCircle2 } from "lucide-react";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
@@ -268,7 +269,7 @@ export default function BasePix() {
         {loading ? Array.from({ length: 5 }).map((_, i) => <Skeleton key={i} className="h-24 rounded-xl" />) : (
           <>
             <Kpi label="Lançamentos PIX" value={String(kpis.total)} />
-            <Kpi label="Valor total" value={brlAbbr(kpis.soma)} />
+            <Kpi label="Valor total" value={comValorExato(kpis.soma, brlAbbr(kpis.soma))} />
             <Kpi label="Sem comprovante" value={String(kpis.semCompr)} valueClass="text-[hsl(0_72%_45%)]" />
             <Kpi label="Com comprovante" value={String(kpis.comCompr)} valueClass="text-[hsl(152_60%_36%)]" />
             <Kpi label="Cobertura" value={`${kpis.cobertura.toFixed(1)}%`} valueClass="text-[hsl(152_60%_36%)]" />
@@ -389,7 +390,7 @@ function PixRow({ r, onAnexar, uploading }: { r: Lanc; onAnexar: (r: Lanc) => vo
   );
 }
 
-function Kpi({ label, value, valueClass }: { label: string; value: string; valueClass?: string }) {
+function Kpi({ label, value, valueClass }: { label: string; value: React.ReactNode; valueClass?: string }) {
   return (
     <div className="rounded-xl border border-border bg-card p-5">
       <div className="text-xs font-medium text-muted-foreground">{label}</div>

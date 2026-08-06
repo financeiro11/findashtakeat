@@ -7,10 +7,11 @@ import { supabase } from "@/integrations/supabase/client";
 import { FacToolbar } from "./NovaSolicitacaoDialog";
 import { CatDot } from "./components";
 import {
-  db, fmtBRL, fmtData, FORMA_PAGAMENTO_LABEL, MESES_PT,
+  db, fmtBRL as fmtBRLStr, fmtData, FORMA_PAGAMENTO_LABEL, MESES_PT,
   PAGAMENTO_STATUS_OPTS,
   type Compra, type PagamentoStatus,
 } from "./lib";
+import { comValorExato } from "@/components/ValorExato";
 import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
@@ -283,4 +284,11 @@ export default function Historico() {
       </div>
     </div>
   );
+}
+
+/* Os valores da tela saem sem centavos (fmtBRLStr); aqui eles viram um <span>
+   que mostra o número cheio ao passar o mouse. Onde precisa ser string mesmo
+   (toast, template literal, title), use fmtBRLStr direto. */
+function fmtBRL(v: number | null | undefined, comCentavos = false) {
+  return comValorExato(v, fmtBRLStr(v, comCentavos));
 }

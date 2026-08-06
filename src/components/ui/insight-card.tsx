@@ -8,7 +8,9 @@ interface InsightCardProps {
   time: string;
   title: string;
   description: string;
-  cta: string;
+  /** Sem CTA o card é só leitura — é o caso do painel de destaques do Cartão,
+   *  onde o próprio número já está na matriz logo abaixo. */
+  cta?: string;
   className?: string;
 }
 
@@ -36,9 +38,11 @@ export function InsightCard({ severity, time, title, description, cta, className
       </div>
       <h4 className="text-[13px] font-semibold leading-snug text-foreground">{title}</h4>
       <p className="mt-1 text-[12px] leading-relaxed text-muted-foreground">{description}</p>
-      <button className="mt-2 inline-flex items-center gap-1 text-[12px] font-medium text-primary hover:underline">
-        {cta} <ArrowRight className="h-3 w-3" />
-      </button>
+      {cta && (
+        <button className="mt-2 inline-flex items-center gap-1 text-[12px] font-medium text-primary hover:underline">
+          {cta} <ArrowRight className="h-3 w-3" />
+        </button>
+      )}
     </article>
   );
 }

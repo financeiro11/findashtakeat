@@ -1,5 +1,5 @@
 import { Navigate, useNavigate, useParams } from "react-router-dom";
-import { ArrowLeft, Landmark } from "lucide-react";
+import { ArrowLeft } from "lucide-react";
 import { cn } from "@/lib/utils";
 import ContaCorrenteBancaria, { FONTES_CC, type FonteCCKey } from "@/components/ContaCorrenteBancaria";
 
@@ -17,20 +17,21 @@ export default function ContaCorrente() {
   return (
     <div className="space-y-4 p-4 md:p-6">
       {/* Menu de seleção no topo da página */}
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-        <div className="flex items-center gap-2">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+        <div>
           <button
             onClick={() => navigate("/caixa")}
-            className="ghost-btn flex items-center gap-1 px-2 text-[12px]"
+            className="ghost-btn mb-2 flex items-center gap-1 px-2 text-[12px]"
             title="Voltar ao Caixa"
           >
             <ArrowLeft className="h-3.5 w-3.5" /> Caixa
           </button>
-          <div className="flex items-center gap-2">
-            <Landmark className="h-4 w-4 text-primary" />
-            <h1 className="text-[18px] font-semibold tracking-tight text-foreground">Extrato · Conta Corrente</h1>
+          <div className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+            HUB FINANCEIRO · CAIXA
           </div>
+          <h1 className="mt-1 text-3xl font-bold tracking-tight">Extrato · {fonte.nome}</h1>
         </div>
+
 
         {/* Abas Sicoob / Asaas — cada uma navega para a sua página */}
         <div className="flex rounded-md border border-border bg-card p-0.5">

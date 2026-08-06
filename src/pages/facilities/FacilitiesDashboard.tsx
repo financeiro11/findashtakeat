@@ -8,9 +8,10 @@ import { moduleAccess } from "@/lib/modules";
 import { FacToolbar } from "./NovaSolicitacaoDialog";
 import { CatDot } from "./components";
 import {
-  db, fmtBRL, fmtK, catColor, MESES_PT, LIMITE_APROVACAO,
+  db, fmtBRL as fmtBRLStr, fmtK, catColor, MESES_PT, LIMITE_APROVACAO,
   type Solicitacao, type Compra, type Cotacao,
 } from "./lib";
+import { comValorExato } from "@/components/ValorExato";
 
 function diasAtras(iso: string): string {
   const ms = Date.now() - new Date(iso).getTime();
@@ -158,7 +159,7 @@ export default function FacilitiesDashboard() {
         <Kpi
           label="Pendentes de aprovação"
           value={String(pendentes.length)}
-          hint={valorPendente > 0 ? `${fmtBRL(valorPendente)} aguardando seu OK` : "nada aguardando aprovação"}
+          hint={valorPendente > 0 ? `${fmtBRLStr(valorPendente)} aguardando seu OK` : "nada aguardando aprovação"}
           accent="amber"
           loading={loading}
         />
@@ -301,7 +302,7 @@ export default function FacilitiesDashboard() {
 }
 
 function Kpi({ label, value, hint, accent, loading }: {
-  label: string; value: string; hint: string; accent?: "amber" | "emerald"; loading: boolean;
+  label: string; value: React.ReactNode; hint: React.ReactNode; accent?: "amber" | "emerald"; loading: boolean;
 }) {
   const valColor = accent === "amber" ? "text-amber-600" : accent === "emerald" ? "text-emerald-600" : "text-foreground";
   return (
@@ -315,4 +316,11 @@ function Kpi({ label, value, hint, accent, loading }: {
       <div className="mt-1 text-[11.5px] text-muted-foreground">{hint}</div>
     </div>
   );
+}
+
+/* Os valores da tela saem sem centavos (fmtBRLStr); aqui eles viram um <span>
+   que mostra o número cheio ao passar o mouse. Onde precisa ser string mesmo
+   (toast, template literal, title), use fmtBRLStr direto. */
+function fmtBRL(v: number | null | undefined, comCentavos = false) {
+  return comValorExato(v, fmtBRLStr(v, comCentavos));
 }

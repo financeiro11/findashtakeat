@@ -11,6 +11,7 @@ import { ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip, Legend, Cart
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import { SyncOmieButtons } from "@/components/SyncOmieButtons";
+import { comValorExato } from "@/components/ValorExato";
 
 type AreaRow = {
   area: string; ano: number; mes: number;
@@ -39,13 +40,16 @@ const MESES = ["Jan","Fev","Mar","Abr","Mai","Jun","Jul","Ago","Set","Out","Nov"
 function brl(n: number) {
   return n.toLocaleString("pt-BR", { style: "currency", currency: "BRL", minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
-function brlAbbr(n: number) {
+function brlAbbrStr(n: number) {
   const abs = Math.abs(n);
   const sign = n < 0 ? "−" : "";
   if (abs >= 1_000_000) return `${sign}R$ ${(abs/1_000_000).toLocaleString("pt-BR",{minimumFractionDigits:2,maximumFractionDigits:2})} mi`;
   if (abs >= 1_000) return `${sign}R$ ${Math.round(abs/1_000).toLocaleString("pt-BR")} mil`;
   return brl(n);
 }
+/* "R$ 253 mil" esconde o valor real; o número cheio aparece no hover.
+   Onde precisa ser string (eixo do gráfico), use brlAbbrStr. */
+const brlAbbr = (n: number) => comValorExato(n, brlAbbrStr(n));
 function fmtDateTime(iso: string | null) {
   if (!iso) return "";
   return new Date(iso).toLocaleString("pt-BR", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" });
@@ -342,7 +346,7 @@ export default function Orcamento() {
             <BarChart data={chartData} margin={{ top: 10, right: 10, left: 0, bottom: 10 }}>
               <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" vertical={false} />
               <XAxis dataKey="area" tick={{ fontSize: 11, fill: "hsl(var(--muted-foreground))" }} interval={0} angle={-12} dy={8} height={50} />
-              <YAxis tick={{ fontSize: 11, fill: "hsl(var(--muted-foreground))" }} tickFormatter={(v) => brlAbbr(Number(v))} width={80} />
+              <YAxis tick={{ fontSize: 11, fill: "hsl(var(--muted-foreground))" }} tickFormatter={(v) => brlAbbrStr(Number(v))} width={80} />
               <Tooltip
                 formatter={(v: any) => brl(Number(v))}
                 contentStyle={{
@@ -563,7 +567,7 @@ function SegmentedToggle<T extends string>({
   );
 }
 
-function KpiBox({ label, value, sub, valueClass }: { label: string; value: string; sub?: string; valueClass?: string }) {
+function KpiBox({ label, value, sub, valueClass }: { label: string; value: React.ReactNode; sub?: React.ReactNode; valueClass?: string }) {
   return (
     <Card className="p-4 transition-shadow hover:shadow-sm">
       <div className="eyebrow">{label}</div>

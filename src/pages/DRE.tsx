@@ -1,16 +1,31 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import * as XLSX from "xlsx";
 import {
-  Upload, ChevronDown, ChevronRight, Search, Sparkles, Loader2, RefreshCw, Lock,
+  Upload, ChevronDown, ChevronRight, Search, Sparkles, Loader2, RefreshCw,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { supabase } from "@/integrations/supabase/client";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
+import { valorExato } from "@/lib/valor";
 import { OmieDeParaPanel } from "@/components/OmieDeParaPanel";
 import { runOmieSync } from "@/lib/omieSync";
 import { SyncOmieButtons } from "@/components/SyncOmieButtons";
+import { MesesTravadosChip, CadeadoColuna, alternarTrava } from "@/components/demonstracoes/MesesTravados";
+import { LancamentosSheet, type AlvoLancamentos } from "@/components/demonstracoes/LancamentosSheet";
+import {
+  useReclassificacoes, chaveCelula, tituloReclassificacao,
+  MarcaReclassificacao, ResumoReclassificacoes, fundoCelulaReclassificacao,
+} from "@/components/demonstracoes/Reclassificacoes";
+import {
+  useJustificativas, MarcaJustificativa, ResumoJustificativas, fundoCelulaJustificativa,
+} from "@/components/demonstracoes/Justificativas";
+import {
+  useValoresManuais, EditorValorManual, ResumoValoresManuais,
+  fundoCelulaManual, tituloValorManual,
+} from "@/components/demonstracoes/ValoresManuais";
+import { gerarJustificativas, criarValorEm } from "@/lib/justificativas";
 
 /* ============================================================
  *  Helpers
@@ -78,6 +93,14 @@ function fmtPct(v: number | null | undefined): string {
   if (v === null || v === undefined || isNaN(v as number)) return "—";
   return `${(v * 100).toFixed(1).replace(".", ",")}%`;
 }
+/** Valor cheio pro tooltip — o número na tela é sempre abreviado (M/K) ou
+ * arredondado, e às vezes é preciso conferir o centavo. */
+function tituloValor(v: number | null | undefined, pct: boolean): string | undefined {
+  if (v === null || v === undefined || isNaN(v as number)) return undefined;
+  return pct
+    ? `${valorExato(v * 100, { moeda: false, casas: 4 })}%`
+    : valorExato(v);
+}
 
 // Corta as colunas do import nas que têm dado real e substancial — planilhas de tracker
 // costumam ter o ano inteiro (ou vários anos) de cabeçalho, mas só os meses já FECHADOS
@@ -103,105 +126,15 @@ function colunasFechadas(rows: Record<string, any>[], colsOrdenadas: string[]): 
  *  DRE schema (hierarchy)
  * ============================================================ */
 
-type Kind = "header" | "child" | "leaf" | "total" | "percent";
-type Node = {
-  label: string;
-  kind: Kind;
-  /** label real no CSV (se diferente de `label`) */
-  src?: string;
-  /** se for percent, divide pelo total deste rótulo */
-  pctOf?: string;
-  children?: Node[];
-};
-
-const DRE_SCHEMA: Node[] = [
-  { label: "Receita Bruta", kind: "header", children: [
-    { label: "Receita Recorrente", kind: "child", children: [
-      { label: "Receita de Assinaturas", kind: "leaf" },
-      { label: "Enterprise", kind: "leaf" },
-    ]},
-    { label: "Receita Spot", kind: "child", children: [
-      { label: "Receita com Materiais", kind: "leaf" },
-      { label: "Receita Markup", kind: "leaf" },
-      { label: "Serviços para Clientes", kind: "leaf" },
-    ]},
-  ]},
-  { label: "(-) Deduções da receita", kind: "header", children: [
-    { label: "Simples Nacional", kind: "child" },
-    { label: "PIS", kind: "child" },
-    { label: "COFINS", kind: "child" },
-    { label: "ISS", kind: "child" },
-    { label: "ICMS", kind: "child" },
-    { label: "Inadimplência", kind: "child" },
-    { label: "Devoluções", kind: "child" },
-  ]},
-  { label: "Receita Líquida", kind: "total" },
-  { label: "(-) Custos Operacionais", kind: "header", children: [
-    { label: "Equipe Operacional", kind: "child" },
-    { label: "Premiações Operacionais", kind: "child" },
-    { label: "Meios de Pagamento", kind: "child" },
-    { label: "CMV Materiais", kind: "child" },
-    { label: "Servidor", kind: "child" },
-    { label: "Softwares Operacionais", kind: "child" },
-    { label: "Outros Custos", kind: "child" },
-  ]},
-  { label: "Margem de contribuição", kind: "total" },
-  { label: "% Margem de contribuição", kind: "percent", pctOf: "Receita Líquida" },
-  { label: "(-) SG&A", kind: "header", children: [
-    { label: "Pessoal", kind: "child", children: [
-      { label: "Equipe Administrativa", kind: "leaf" },
-      { label: "Equipe Marketing", kind: "leaf" },
-      { label: "Equipe Parcerias", kind: "leaf" },
-      { label: "Equipe Comercial", kind: "leaf" },
-      { label: "Equipe Onboarding", kind: "leaf" },
-      { label: "Equipe Tecnologia", kind: "leaf" },
-      { label: "Benefícios", kind: "leaf" },
-      { label: "Encargos Sociais", kind: "leaf" },
-    ]},
-    { label: "Despesas Administrativas", kind: "child", children: [
-      { label: "Ocupação & Escritório", kind: "leaf" },
-      { label: "Assessorias & Consultorias", kind: "leaf" },
-      { label: "Softwares Administrativos", kind: "leaf" },
-      { label: "Viagens & Transportes Adm", kind: "leaf" },
-      { label: "Outras despesas Adm", kind: "leaf" },
-    ]},
-    { label: "Despesas Marketing & Vendas", kind: "child", children: [
-      { label: "Campanhas de Mídia Paga", kind: "leaf" },
-      { label: "Campanhas de Outros Canais", kind: "leaf" },
-      { label: "Comissões Consultores / Parceiros", kind: "leaf" },
-      { label: "Premiações", kind: "leaf" },
-      { label: "MGM", kind: "leaf" },
-      { label: "Softwares Marketing & Vendas", kind: "leaf" },
-      { label: "Agências & Consultorias", kind: "leaf" },
-      { label: "Viagens & Transportes Mkt", kind: "leaf" },
-      { label: "Eventos e Feiras", kind: "leaf" },
-      { label: "Outras despesas Mkt", kind: "leaf" },
-    ]},
-  ]},
-  { label: "EBITDA", kind: "total" },
-  { label: "% Margem EBITDA", kind: "percent", pctOf: "Receita Líquida" },
-  { label: "(+/-) Resultado Financeiro", kind: "header", children: [
-    { label: "(-) Depreciação & Amortização", kind: "child" },
-    { label: "(-) Juros", kind: "child" },
-    { label: "(-) IOF", kind: "child" },
-    { label: "(+) Receita financeira", kind: "child" },
-  ]},
-  { label: "(+/-) Resultado Não Operacional", kind: "header", children: [
-    { label: "Despesas Não Operacionais", kind: "child" },
-    { label: "(-) Estorno de Compras", kind: "child" },
-  ]},
-  { label: "(-) Impostos", kind: "header", children: [
-    { label: "IRPJ", kind: "child" },
-    { label: "CSLL", kind: "child" },
-    { label: "IRF", kind: "child" },
-  ]},
-  { label: "Lucro Líquido", kind: "total" },
-  { label: "% Margem Líquida", kind: "percent", pctOf: "Receita Líquida" },
-];
+// Esquema e cálculo vivem em lib/demonstracoes-schema — compartilhados com o
+// Histórico Multianual, para as três telas não divergirem.
+import { DRE_SCHEMA, indexarCelulas, rotulosDeDespesa, type Kind, type Node } from "@/lib/demonstracoes-schema";
 
 const flattenLabels = (nodes: Node[]): string[] =>
   nodes.flatMap((n) => [n.label, ...(n.children ? flattenLabels(n.children) : [])]);
 const DRE_RUBRICAS = flattenLabels(DRE_SCHEMA);
+// Rubricas que descem de um bloco "(-)": o valor manual delas entra negativo.
+const DRE_DESPESAS = rotulosDeDespesa(DRE_SCHEMA);
 
 /* ============================================================
  *  Page
@@ -219,6 +152,14 @@ export default function DRE() {
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
   const [yearFilter, setYearFilter] = useState<string>("all");
   const [travados, setTravados] = useState<Set<string>>(new Set());
+  const [travaOcupada, setTravaOcupada] = useState<string | null>(null);
+  const [auditando, setAuditando] = useState<AlvoLancamentos | null>(null);
+  const { reclassificacoes, recarregarReclassificacoes } = useReclassificacoes("dre");
+  const { justificativas, recarregarJustificativas } = useJustificativas("dre");
+  const { manuais, recarregarManuais } = useValoresManuais("dre");
+  const [gerandoJust, setGerandoJust] = useState(false);
+  const [progressoJust, setProgressoJust] = useState<string | null>(null);
+  const [apenasUltimoMes, setApenasUltimoMes] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
 
   // Anos disponíveis a partir das colunas
@@ -231,11 +172,22 @@ export default function DRE() {
     return Array.from(ys).sort();
   }, [columns]);
 
-  // Colunas visíveis após filtro de ano
+  /* Colunas visíveis após filtro de ano.
+     Meses futuros ainda não fechados vêm no cabeçalho da planilha mas sem nenhum
+     valor — apareciam como uma coluna zerada/em branco no fim da tabela. Cortamos
+     essas colunas vazias do FIM (as do meio ficam, pois indicam buraco real). */
   const displayColumns = useMemo(() => {
-    if (yearFilter === "all") return columns;
-    return columns.filter(c => c.endsWith(`-${yearFilter}`));
-  }, [columns, yearFilter]);
+    let cols = yearFilter === "all" ? columns : columns.filter(c => c.endsWith(`-${yearFilter}`));
+    const temDado = (c: string) => rows.some((r) => {
+      const n = toNum((r as any)[c]);
+      return n !== null && n !== 0;
+    });
+    let fim = cols.length;
+    while (fim > 0 && !temDado(cols[fim - 1])) fim--;
+    if (fim > 0) cols = cols.slice(0, fim);
+    return cols;
+  }, [columns, yearFilter, rows]);
+
 
   useEffect(() => { document.title = "Demonstrações Financeiras · DRE"; }, []);
 
@@ -263,8 +215,49 @@ export default function DRE() {
     setRows(r);
     setTravados(new Set(((travasData as any[]) ?? []).map((t) => String(t.col_key))));
     setLoading(false);
+    // Devolve o que acabou de ler: quem dispara a geração de justificativas logo
+    // depois de um import precisa dos dados NOVOS, e o estado do React só estará
+    // atualizado no próximo render.
+    return { rows: r, columns: monthCols };
   };
   useEffect(() => { load(); }, []);
+
+  /* ----- Justificativas de variação -------------------------------------
+   * O comentário que antes era escrito à mão em cima da célula do tracker.
+   * Roda sozinho depois de todo import/sync (é aí que os números mudam) e
+   * também sob demanda, pelo botão do resumo. Um mês por chamada — ver
+   * lib/justificativas.ts. */
+  const gerarJust = async (
+    force: boolean,
+    meses: string[],
+    base?: { rows: Record<string, unknown>[]; columns: string[] },
+  ) => {
+    const cols = base?.columns ?? columns;
+    const alvo = meses.filter((m) => cols.indexOf(m) > 0);
+    if (!alvo.length) return;
+    setGerandoJust(true);
+    setProgressoJust(`0/${alvo.length}`);
+    try {
+      const r = await gerarJustificativas({
+        tipo: "dre",
+        schema: DRE_SCHEMA,
+        columns: cols,
+        valorEm: criarValorEm(base?.rows ?? rows, cols),
+        meses: alvo,
+        force,
+        onProgress: (p) => setProgressoJust(`${p.indice}/${p.total}`),
+      });
+      if (r.erros.length) toast.error("Justificativas: " + r.erros[0]);
+      else if (r.geradas) toast.success(`${r.geradas} justificativa(s) de variação gerada(s).`);
+      else if (r.puladas) toast.message("Nenhuma variação nova para justificar.");
+      await recarregarJustificativas();
+    } catch (e) {
+      toast.error("Falha ao gerar justificativas: " + (e instanceof Error ? e.message : String(e)));
+    } finally {
+      setGerandoJust(false);
+      setProgressoJust(null);
+    }
+  };
 
   const sincronizarOmie = async (forcar: boolean) => {
     setSyncing(true);
@@ -278,7 +271,10 @@ export default function DRE() {
           `Omie sincronizado · ${r.movimentos ?? 0} lançamentos` +
           (r.nao_mapeadas ? ` · ${r.nao_mapeadas} categoria(s) sem DE_PARA` : ""),
         );
-        await load();
+        const base = await load();
+        // O sync só mexe em mês ainda aberto, então justificar os últimos meses
+        // cobre o que mudou sem reescrever o ano inteiro a cada clique.
+        await gerarJust(false, base.columns.slice(-3), base);
       } else if (r.status === "erro") {
         toast.error("Falha na sincronização: " + (r.erro || "erro desconhecido"));
       } else {
@@ -292,6 +288,27 @@ export default function DRE() {
     }
   };
 
+  /* Destravar sozinho não muda nada na tela: a coluna continua exibindo o valor
+     congelado até alguém recalcular. Como o cache do Omie já está no Supabase, o
+     recálculo é instantâneo e não consome a API — então destravar já emenda nele
+     e o mês aparece preenchido no mesmo clique. Travar é só congelar o que está
+     na tela, não precisa recalcular. */
+  const alterarTrava = async (col: string, travar: boolean) => {
+    setTravaOcupada(col);
+    try {
+      if (!(await alternarTrava(col, travar))) return;
+      if (travar) {
+        await load();
+        toast.success(`${ptLabelFromKey(col)} travado — o Omie não sobrescreve mais esse mês.`);
+      } else {
+        toast.message(`${ptLabelFromKey(col)} destravado. Preenchendo com o que já veio do Omie…`);
+        await sincronizarOmie(false);
+      }
+    } finally {
+      setTravaOcupada(null);
+    }
+  };
+
   // Default: ao carregar, seleciona o ano mais recente com dados
   useEffect(() => {
     if (yearFilter !== "all") return;
@@ -301,19 +318,10 @@ export default function DRE() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [columns]);
 
-  /* ----- Lookup map by label ----- */
-  const valueByLabel = useMemo(() => {
-    const map = new Map<string, Record<string, number | null>>();
-    for (const r of rows) {
-      const labelKey = Object.keys(r).find(k => !/^[A-Za-z]{3}-\d{2}$/.test(k));
-      const label = labelKey ? String(r[labelKey] ?? "").trim() : "";
-      if (!label) continue;
-      const obj: Record<string, number | null> = {};
-      for (const c of columns) obj[c] = toNum(r[c]);
-      map.set(label.toLowerCase(), obj);
-    }
-    return map;
-  }, [rows, columns]);
+  /* ----- Lookup map by label -----
+   * Soma as duas grafias da mesma rubrica (a do tracker e a do DE_PARA do Omie)
+   * em vez de deixar uma sobrescrever a outra — ver `indexarCelulas`. */
+  const valueByLabel = useMemo(() => indexarCelulas(rows, columns), [rows, columns]);
 
   function valuesFor(label: string): Record<string, number | null> {
     return valueByLabel.get(label.toLowerCase()) ?? Object.fromEntries(columns.map(c => [c, null]));
@@ -460,7 +468,10 @@ export default function DRE() {
         (colsIgnoradas.length ? ` · ${colsIgnoradas.length} ignorado(s) por dado incompleto (${colsIgnoradas.map(ptLabelFromKey).join(", ")})` : ""),
         { duration: 8000 },
       );
-      load();
+      // Planilha nova = números novos: é exatamente aqui que os comentários do
+      // tracker eram reescritos à mão. Justifica só os meses que o arquivo trouxe.
+      const base = await load();
+      await gerarJust(false, [...mesesTrancados], base);
     } catch (err: any) {
       toast.error("Falha: " + err.message);
     } finally {
@@ -605,6 +616,14 @@ export default function DRE() {
     return total ?? valueAt(node.label, col);
   };
 
+  /* QUALQUER linha com filhos é a soma dos filhos — não só as `header`. O número
+     que o blob guarda para "Pessoal" ou "Receita Recorrente" só é reescrito no
+     import do tracker; o omie-sync mexe nas folhas e deixa o pai para trás, então
+     em mês destravado ele é lixo (Jul-26: Pessoal guardado -69.054 contra -557.477
+     somando as equipes). Ler o pai do blob era o bug — some sempre. */
+  const valorDaLinha = (node: Node, col: string): number | null =>
+    node.children?.length ? sumChildren(node, col) : getValueForRow(node, col);
+
   /* ============================================================
    *  UI
    * ============================================================ */
@@ -621,10 +640,14 @@ export default function DRE() {
           </h1>
           <p className="mt-1 text-[12.5px] text-muted-foreground">
             Demonstrativo de resultado · {lastLabel} · {prevLabel} · {monthsCount} meses · {rows.length} contas detectadas
-            {travados.size > 0 && (
-              <span className="inline-flex items-center gap-1 ml-1.5 text-emerald-700">
-                <Lock className="h-3 w-3" /> {travados.size} travado{travados.size === 1 ? "" : "s"}
-              </span>
+            {columns.length > 0 && (
+              <MesesTravadosChip
+                columns={columns}
+                travados={travados}
+                label={ptLabelFromKey}
+                ocupado={!!travaOcupada || syncing}
+                onAlterar={alterarTrava}
+              />
             )}
           </p>
         </div>
@@ -683,7 +706,10 @@ export default function DRE() {
             <div key={k.key} className="rounded-lg border border-border bg-card p-3.5">
               <div className="text-[10px] font-semibold tracking-[0.08em] text-muted-foreground">{k.title}</div>
               <div className="mt-2 flex items-baseline justify-between">
-                <div className={cn("text-[19px] font-bold tracking-tight num", isNeg ? "text-primary" : "text-foreground")}>
+                <div
+                  className={cn("text-[19px] font-bold tracking-tight num cursor-help", isNeg ? "text-primary" : "text-foreground")}
+                  title={tituloValor(k.val, !!k.isPct)}
+                >
                   {k.isPct ? fmtPct(k.val) : (isNeg ? `(${fmtMoney(Math.abs(k.val ?? 0)).replace("R$ ", "R$ ")})` : fmtMoney(k.val))}
                 </div>
                 {k.delta != null && (
@@ -761,6 +787,21 @@ export default function DRE() {
             Nenhum dado importado. Clique em <b>Importar Excel/CSV</b> para enviar o Tracker.
           </div>
         ) : (
+          <>
+          {/* Só na aba "Valores": é onde as células estão marcadas. */}
+          {tab === "valores" && <ResumoReclassificacoes mapa={reclassificacoes} />}
+          {tab === "valores" && <ResumoValoresManuais mapa={manuais} colunas={displayColumns} />}
+          {tab === "valores" && (
+            <ResumoJustificativas
+              mapa={justificativas}
+              colunas={displayColumns}
+              gerando={gerandoJust}
+              progresso={progressoJust}
+              onGerar={(force) => gerarJust(force, displayColumns)}
+              apenasUltimoMes={apenasUltimoMes}
+              onApenasUltimoMesChange={setApenasUltimoMes}
+            />
+          )}
           <div className="mt-3 overflow-x-auto rounded-lg border border-border bg-card">
             <table className="border-collapse">
               <thead>
@@ -769,13 +810,15 @@ export default function DRE() {
                     RUBRICA
                   </th>
                   {displayColumns.map(c => (
-                    <th key={c} className="px-1.5 py-2 text-right text-[10px] font-semibold tracking-[0.06em] text-muted-foreground whitespace-nowrap num min-w-[64px]">
+                    <th key={c} className="group/col px-1.5 py-2 text-right text-[10px] font-semibold tracking-[0.06em] text-muted-foreground whitespace-nowrap num min-w-[64px]">
                       <span className="inline-flex items-center justify-end gap-1">
-                        {travados.has(c) && (
-                          <span title="Mês travado — dado do tracker, não sincroniza com o Omie" className="inline-flex">
-                            <Lock className="h-2.5 w-2.5 text-emerald-600" aria-label="Mês travado" />
-                          </span>
-                        )}
+                        <CadeadoColuna
+                          col={c}
+                          travado={travados.has(c)}
+                          label={ptLabelFromKey(c).replace("/", " ")}
+                          ocupado={!!travaOcupada || syncing}
+                          onAlterar={alterarTrava}
+                        />
                         {ptLabelFromKey(c).replace("/", " ")}
                       </span>
                     </th>
@@ -803,7 +846,9 @@ export default function DRE() {
                   );
 
                   return (
-                    <tr key={node.label + depth} className={rowCls}>
+                    // group/linha: o lápis de valor manual só aparece no hover da
+                    // linha — um lápis em cada célula competiria com os números.
+                    <tr key={node.label + depth} className={cn("group/linha", rowCls)}>
                       <td
                         className={cn(
                           "sticky left-0 z-[2] px-3 py-1.5 text-[12.5px] w-[220px] min-w-[220px] shadow-[1px_0_0_0_hsl(var(--border))]",
@@ -832,19 +877,20 @@ export default function DRE() {
                           </span>
                         </div>
                       </td>
-                      {displayColumns.map(c => {
+                      {displayColumns.map((c, idx) => {
+                        const ehUltimoMes = idx === displayColumns.length - 1;
                         let v: number | null = null;
                         if (tab === "valores") {
-                          v = isHeader && hasChildren ? sumChildren(node, c) : getValueForRow(node, c);
+                          v = valorDaLinha(node, c);
                         } else if (tab === "mom") {
                           const idx = columns.indexOf(c);
                           const prev = idx > 0 ? columns[idx - 1] : null;
-                          const cur = isHeader && hasChildren ? sumChildren(node, c) : getValueForRow(node, c);
-                          const pre = prev ? (isHeader && hasChildren ? sumChildren(node, prev) : getValueForRow(node, prev)) : null;
+                          const cur = valorDaLinha(node, c);
+                          const pre = prev ? valorDaLinha(node, prev) : null;
                           v = (cur != null && pre != null && pre !== 0) ? (cur - pre) / Math.abs(pre) : null;
                         } else {
                           // % sobre receita
-                          const cur = isHeader && hasChildren ? sumChildren(node, c) : getValueForRow(node, c);
+                          const cur = valorDaLinha(node, c);
                           const rec = valueAt("Receita Líquida", c);
                           v = (cur != null && rec && rec !== 0) ? cur / rec : null;
                         }
@@ -854,16 +900,80 @@ export default function DRE() {
                           isPercent || tab === "mom" || tab === "pct"
                             ? fmtPct(v)
                             : (isNeg ? `(${fmtCompact(Math.abs(v ?? 0))})` : fmtCompact(v));
+                        /* Só folha abre auditoria: linha com filhos é soma, e total
+                           e percentual são calculados — nenhuma delas vem de
+                           lançamento, então não haveria o que listar. Fora da aba
+                           "Valores" o número é derivado e não casaria com a soma. */
+                        /* Marca só onde a célula é auditável: fora da aba "Valores"
+                           o número é derivado e o clique não abre nada, então o
+                           aviso seria um beco sem saída. */
+                        const podeAuditar = tab === "valores" && !isTotal && !isPercent && !hasChildren;
+                        const alerta = podeAuditar ? reclassificacoes.get(chaveCelula(node.label, c)) : undefined;
+                        /* A justificativa vale para QUALQUER linha da aba Valores,
+                           inclusive header e total: no tracker os comentários mais
+                           frequentes estão justamente em linhas somadas ("Receita
+                           Bruta", "Pessoal"). Descartada continua aparecendo, só que
+                           apagada — senão não haveria como restaurar. */
+                        const just = tab === "valores"
+                          ? justificativas.get(chaveCelula(node.label, c))
+                          : undefined;
+                        /* Digitar valor vale nas MESMAS células que abrem
+                           auditoria, e pelo mesmo motivo: linha com filhos é a
+                           soma dos filhos, total e percentual são calculados —
+                           o número digitado neles morreria no próximo recálculo. */
+                        const editavel = podeAuditar;
+                        const manual = editavel ? manuais.get(chaveCelula(node.label, c)) : undefined;
+                        /* Célula vazia COM alerta continua clicável: existe
+                           lançamento no Omie e a demonstração não mostra nada —
+                           esconder a marca esconderia justamente esse buraco. */
+                        const auditavel = podeAuditar && (v != null || !!alerta);
                         return (
                           <td
                             key={c}
+                            onClick={auditavel ? () => setAuditando({
+                              tipo: "dre", rubrica: node.label, mes: c,
+                              mesLabel: ptLabelFromKey(c).replace("/", " "),
+                              celula: v, travado: travados.has(c),
+                            }) : undefined}
+                            title={[
+                              tituloValor(v, isPercent || tab === "mom" || tab === "pct"),
+                              manual ? tituloValorManual(manual) : null,
+                              alerta ? tituloReclassificacao(alerta) : null,
+                              auditavel ? "clique para ver os lançamentos" : null,
+                            ].filter(Boolean).join(" · ") || undefined}
                             className={cn(
-                              "px-1.5 py-1.5 text-right text-[12px] num whitespace-nowrap min-w-[64px]",
+                              // relative: o lápis do valor manual se posiciona por ela
+                              "relative px-1.5 py-1.5 text-right text-[12px] num whitespace-nowrap min-w-[64px]",
+                              v != null && "cursor-help",
                               isNeg && !isPercent ? "text-primary" : isTotal ? "text-emerald-800" : "text-foreground/90",
                               v == null && "text-muted-foreground/40",
+                              auditavel && "cursor-pointer hover:bg-primary/10 hover:underline hover:decoration-dotted hover:underline-offset-2",
+                              // Excludentes de propósito: dois `bg-*` na mesma célula
+                              // dependeriam da ordem no CSS gerado, não da ordem aqui.
+                              // O alerta de classificação errada tem prioridade; o
+                              // valor manual vem antes do comentário porque muda o
+                              // número, não só o entendimento dele.
+                              alerta ? fundoCelulaReclassificacao(alerta)
+                                : manual ? fundoCelulaManual()
+                                : just && fundoCelulaJustificativa(just),
                             )}
                           >
-                            {display}
+                            <span className="inline-flex items-center justify-end gap-1">
+                              {alerta && <MarcaReclassificacao alerta={alerta} />}
+                              {just && travados.has(c) && (!apenasUltimoMes || ehUltimoMes) && <MarcaJustificativa justificativa={just} onMudou={recarregarJustificativas} />}
+                              {editavel && (
+                                <EditorValorManual
+                                  tipo="dre"
+                                  rubrica={node.label}
+                                  col={c}
+                                  valorCelula={v}
+                                  manual={manual}
+                                  despesa={DRE_DESPESAS.has(node.label)}
+                                  onSalvo={async () => { await load(); await recarregarManuais(); }}
+                                />
+                              )}
+                              {display}
+                            </span>
                           </td>
                         );
                       })}
@@ -873,6 +983,7 @@ export default function DRE() {
               </tbody>
             </table>
           </div>
+          </>
         )}
 
         <div className="mt-3 flex items-center justify-between text-[11px] text-muted-foreground">
@@ -882,6 +993,19 @@ export default function DRE() {
       </div>
       </>
       )}
+
+      {/* Fechar o drill-down recarrega as marcas: quem ignorou um alerta lá
+          dentro tem que ver a célula limpar aqui fora. */}
+      <LancamentosSheet
+        alvo={auditando}
+        onClose={() => { setAuditando(null); recarregarReclassificacoes(); }}
+        /* Trocar a categoria muda o Omie e o cache; a DRE só reflete depois de
+           recalcular — o mesmo recálculo local do botão de sincronizar. */
+        onCategoriaTrocada={async () => {
+          await sincronizarOmie(false);
+          await recarregarReclassificacoes();
+        }}
+      />
     </div>
   );
 }

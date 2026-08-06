@@ -231,6 +231,130 @@ export async function incluirAnexo(opts: {
   throw new Error("Anexo não confirmado no Omie. " + diagnostico.join(" | "));
 }
 
+/* ============================================================
+ *  Categoria de um título (contas a pagar / a receber)
+ * ============================================================ */
+
+// `cGrupo` do movimento diz em qual cadastro o título mora. Só estes dois são
+// títulos financeiros de verdade; PREVISAO_ORDEM_SERVICO e PREVISAO_CONTRATO são
+// projeções de OS/contrato (a categoria vem do documento de origem) e
+// CONTA_CORRENTE_* é a perna bancária, que não tem classificação própria.
+const CADASTRO: Record<string, { path: string; consultar: string; alterar: string; rotulo: string }> = {
+  CONTA_A_PAGAR:   { path: "financas/contapagar",   consultar: "ConsultarContaPagar",   alterar: "AlterarContaPagar",   rotulo: "conta a pagar" },
+  CONTA_A_RECEBER: { path: "financas/contareceber", consultar: "ConsultarContaReceber", alterar: "AlterarContaReceber", rotulo: "conta a receber" },
+};
+
+export const grupoAlteravel = (grupo: string): boolean => grupo in CADASTRO;
+
+/** Cadastro completo do título, como o Omie o tem agora. */
+export async function consultarTitulo(grupo: string, codTitulo: number | string): Promise<any> {
+  const c = CADASTRO[grupo];
+  if (!c) throw new Error(`Grupo ${grupo} não é um título financeiro alterável.`);
+  return await omieCall<any>(c.path, c.consultar, { codigo_lancamento_omie: Number(codTitulo) });
+}
+
+/** Rateio por categoria do título (vazio quando é categoria única). */
+const rateioDe = (cadastro: any): any[] => {
+  const arr = cadastro?.categorias ?? cadastro?.lista_categorias ?? [];
+  return Array.isArray(arr) ? arr.filter((c) => c && (c.codigo_categoria ?? c.cCodCateg)) : [];
+};
+
+const categoriaDe = (cadastro: any): string =>
+  String(cadastro?.codigo_categoria ?? cadastro?.cCodCateg ?? "");
+
+/** "Omie AlterarContaPagar [500]: ERROR: <o que interessa>" → só o que interessa. */
+const mensagemDoOmie = (e: unknown): string =>
+  (e instanceof Error ? e.message : String(e))
+    .replace(/^Omie \w+ \[\d+\]:\s*/i, "")
+    .replace(/^ERROR:\s*/i, "")
+    .trim();
+
+/**
+ * Troca a categoria de um título no Omie.
+ *
+ * O QUE FOI APRENDIDO CONTRA A API DE VERDADE (04/08/2026, títulos reais):
+ *
+ *  1. RATEIO. O Omie SEMPRE devolve `categorias` — em título simples vem com um
+ *     item de 100%. Um item é o caso normal e é reescrito junto com a chave;
+ *     mais de um é rateio de verdade, e mexer só em `codigo_categoria` deixaria
+ *     a soma na classificação antiga. Aí a função recusa e manda ajustar no
+ *     Omie, onde dá para redistribuir os valores.
+ *
+ *  2. PAYLOAD COMPLETO, SEMPRE. Mandar só a chave + `codigo_categoria` é
+ *     recusado com "O preenchimento da tag [valor_documento] é obrigatório para
+ *     alterar a categoria!". Então os campos obrigatórios do cadastro vão junto,
+ *     copiados da consulta — mesmos valores, só a categoria muda. (Tentar o
+ *     mínimo antes só gastava uma chamada e um erro garantido.)
+ *
+ *  3. NÃO RELER LOGO DEPOIS. O Omie protege contra "consumo redundante" (a mesma
+ *     chamada com os mesmos parâmetros dentro de ~21s é recusada) e serve a
+ *     leitura de um instantâneo velho por perto de um minuto depois da escrita.
+ *     Medido: uma troca gravada às 17:55 ainda era lida como a categoria antiga
+ *     na consulta seguinte; a alteração estava lá. Conferir relendo, portanto,
+ *     REPROVA alteração que deu certo. Quem confirma é a resposta da própria
+ *     alteração: recusa de verdade (período contábil fechado, tag faltando,
+ *     categoria inválida) vem como erro, não como silêncio.
+ *
+ *  4. PERÍODO CONTÁBIL FECHADO. Mês fechado no Omie recusa a alteração com uma
+ *     mensagem explicando quem fechou e quando. Ela sobe limpa para a tela: é o
+ *     ERP dizendo que a correção tem que passar por quem controla o fechamento.
+ */
+export async function trocarCategoriaTitulo(opts: {
+  grupo: string;
+  codTitulo: number | string;
+  codigoCategoria: string;
+}): Promise<{ de: string; para: string; jaEstava: boolean; confirmacao: string }> {
+  const c = CADASTRO[opts.grupo];
+  if (!c) throw new Error(`Grupo ${opts.grupo} não é um título financeiro alterável.`);
+
+  const atual = await consultarTitulo(opts.grupo, opts.codTitulo);
+  const de = categoriaDe(atual);
+  const rateio = rateioDe(atual);
+
+  if (rateio.length > 1) {
+    throw new Error(
+      `Este título está rateado entre ${rateio.length} categorias no Omie. ` +
+      "Trocar por aqui deixaria o rateio incoerente — ajuste direto no Omie.",
+    );
+  }
+  if (de && de === opts.codigoCategoria) {
+    return { de, para: opts.codigoCategoria, jaEstava: true, confirmacao: "já estava nesta categoria" };
+  }
+
+  const param: Record<string, unknown> = {
+    codigo_lancamento_omie: Number(opts.codTitulo),
+    codigo_categoria: opts.codigoCategoria,
+    // Obrigatórios do cadastro, repetidos com o mesmo valor (ver nota 2).
+    codigo_cliente_fornecedor: atual?.codigo_cliente_fornecedor,
+    data_vencimento: atual?.data_vencimento,
+    data_previsao: atual?.data_previsao,
+    valor_documento: atual?.valor_documento,
+  };
+  if (rateio.length === 1) param.categorias = [{ ...rateio[0], codigo_categoria: opts.codigoCategoria }];
+
+  let resposta: any;
+  try {
+    resposta = await omieCall<any>(c.path, c.alterar, param);
+  } catch (e) {
+    throw new Error(`O Omie recusou a alteração: ${mensagemDoOmie(e)}`);
+  }
+
+  const aceite = String(resposta?.descricao ?? resposta?.cDescricao ?? "");
+  const confirmou = Number(resposta?.codigo_lancamento_omie ?? 0) > 0 || /alterad|sucesso/i.test(aceite);
+  if (!confirmou) {
+    throw new Error(
+      "O Omie respondeu sem confirmar a alteração: " + JSON.stringify(resposta ?? null).slice(0, 240),
+    );
+  }
+
+  return {
+    de,
+    para: opts.codigoCategoria,
+    jaEstava: false,
+    confirmacao: aceite || `lançamento ${resposta?.codigo_lancamento_omie}`,
+  };
+}
+
 export interface OmieCategoria {
   codigo: string;
   descricao: string;

@@ -6,6 +6,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { cn } from "@/lib/utils";
 import { Delta } from "@/components/ui/delta";
 import { buildTree, fmtBRL, flattenVisible, indexByCode, pctDelta } from "./utils";
+import { comValorExato } from "@/components/ValorExato";
 import type { BalanceteAccount, BalanceteGroup } from "./types";
 
 const GROUPS: { key: BalanceteGroup | "all"; label: string }[] = [
@@ -96,7 +97,9 @@ export function BalanceteTable({ accounts, prevAccounts, prevColLabel = "Mês an
   const expandAll = () => setExpanded(new Set(accounts.map((a) => a.id)));
   const collapseAll = () => setExpanded(new Set());
 
-  const fmt = (v: number) => fmtBRL(v, { compact });
+  /* No modo compacto a célula mostra "R$ 1,23M"; o valor cheio (com centavos)
+     aparece ao passar o mouse. */
+  const fmt = (v: number) => comValorExato(v, fmtBRL(v, { compact }));
 
   return (
     <div className="card-surface flex flex-col overflow-hidden">

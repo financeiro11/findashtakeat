@@ -11,7 +11,8 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Separator } from "@/components/ui/separator";
 import { Star, Send, Workflow, ExternalLink, Sparkles, FileText, AlertTriangle, Target, ListChecks, Trash2, Save } from "lucide-react";
 import { toast } from "sonner";
-import { Edital, STATUS_LIST, PIPELINE_STAGES, PRIORIDADES, CATEGORIAS, REGIOES, fmtBRL, statusBadge, prioridadeBadge, matchColor, daysUntil } from "./types";
+import { Edital, STATUS_LIST, PIPELINE_STAGES, PRIORIDADES, CATEGORIAS, REGIOES, fmtBRL as fmtBRLStr, statusBadge, prioridadeBadge, matchColor, daysUntil } from "./types";
+import { comValorExato } from "@/components/ValorExato";
 
 interface Props {
   edital: Edital | null;
@@ -260,4 +261,11 @@ export default function EditalDrawer({ edital, open, onOpenChange, onSaved }: Pr
       </SheetContent>
     </Sheet>
   );
+}
+
+/* Os valores saem abreviados ("R$ 1,2 mi") ou sem centavos; aqui viram um
+   <span> que mostra o número cheio no hover. Em template literal / title use
+   fmtBRLStr direto. */
+function fmtBRL(v: number | null | undefined) {
+  return comValorExato(v, fmtBRLStr(v));
 }

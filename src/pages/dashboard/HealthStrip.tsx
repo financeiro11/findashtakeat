@@ -2,7 +2,11 @@ import { CheckCircle2, AlertTriangle, AlertOctagon, ChevronRight } from "lucide-
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { DashboardMetricas, HealthStatus, calcStatus, periodoLabel } from "./metrics";
-import { fmtBRLShort, fmtPct, fmtMeses } from "./format";
+import { fmtBRLShort as fmtBRLShortStr, fmtPct, fmtMeses } from "./format";
+import { comValorExato } from "@/components/ValorExato";
+
+/* Abreviado na tela, valor cheio no hover (ver comValorExato). */
+const fmtBRLShort = (n: number) => comValorExato(n, fmtBRLShortStr(n));
 
 interface Props {
   metricas: DashboardMetricas;
@@ -18,7 +22,7 @@ const COLORS: Record<HealthStatus, { bar: string; pill: string; icon: typeof Che
   vermelho: { bar: "bg-neg", pill: "bg-neg-soft text-neg", icon: AlertOctagon, label: "CRÍTICO" },
 };
 
-function Pulse({ label, valor, sub, tone }: { label: string; valor: string; sub: string; tone: "pos" | "neg" | "warn" | "muted" }) {
+function Pulse({ label, valor, sub, tone }: { label: string; valor: React.ReactNode; sub: React.ReactNode; tone: "pos" | "neg" | "warn" | "muted" }) {
   const cls = tone === "pos" ? "text-pos" : tone === "neg" ? "text-neg" : tone === "warn" ? "text-warn" : "text-foreground";
   return (
     <div className="flex flex-col gap-1">
@@ -106,5 +110,5 @@ function defaultHeadline(m: DashboardMetricas, status: HealthStatus): string {
   return "Mês saudável, indicadores dentro da meta";
 }
 function defaultSub(m: DashboardMetricas) {
-  return `EBITDA ${fmtBRLShort(m.ebitda)} · Margem ${m.margemEbitda.toFixed(1)}% · Saldo ${fmtBRLShort(m.saldoCaixa)} · Burn 3m ${fmtBRLShort(m.burnMedio3m)}/mês.`;
+  return `EBITDA ${fmtBRLShortStr(m.ebitda)} · Margem ${m.margemEbitda.toFixed(1)}% · Saldo ${fmtBRLShortStr(m.saldoCaixa)} · Burn 3m ${fmtBRLShortStr(m.burnMedio3m)}/mês.`;
 }

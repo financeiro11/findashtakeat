@@ -10,6 +10,8 @@ const ROUTE_MAP: Record<string, { crumbs: string[]; context?: string }> = {
   "/caixa/conta-corrente/asaas": { crumbs: ["Início", "Caixa", "Conta Corrente"], context: "Extrato Asaas" },
   "/briefing": { crumbs: ["Início", "Briefing Diário"], context: "Resumo do dia · agenda · e-mails · notícias" },
   "/design-system": { crumbs: ["Início", "Design System"] },
+  "/governanca/cartao": { crumbs: ["Governança", "Cartão"], context: "Evolução da fatura · Sicoob" },
+  "/operacional/cartao": { crumbs: ["Operacional", "Cartão → Omie"], context: "Importar a fatura · separar parcelas · provisionar" },
   "/de-para": { crumbs: ["Configurações", "DE_PARA"], context: "Mapeamento de classificações" },
   "/usuarios": { crumbs: ["Configurações", "Usuários"] },
   "/configuracoes/uso-ia": { crumbs: ["Configurações", "Uso IA"], context: "Custo estimado das chamadas à IA" },
@@ -42,8 +44,9 @@ const ROUTE_MAP: Record<string, { crumbs: string[]; context?: string }> = {
   "/demonstracoes/dfc": { crumbs: ["Demonstrações", "DFC"], context: "Fluxo de Caixa" },
   "/demonstracoes/balancete": { crumbs: ["Demonstrações", "Balancete"] },
   "/demonstracoes/balanco": { crumbs: ["Demonstrações", "Balanço"] },
+  "/bp/versoes": { crumbs: ["BP", "Histórico de versões"], context: "Planos importados por ano" },
   "/analise/cenarios": { crumbs: ["Análise Preditiva", "Cenários"] },
-  "/analise/bp": { crumbs: ["Análise Preditiva", "BP Anual"] },
+  "/analise/bp": { crumbs: ["Análise Preditiva", "BP Anual (legado)"] },
   "/analise/historico": { crumbs: ["Análise Preditiva", "Histórico Multianual"] },
   "/analise/conhecimento": { crumbs: ["Análise Preditiva", "Biblioteca"] },
   "/facilities": { crumbs: ["Facilities", "Dashboard"], context: "Visão consolidada · compras e fornecedores" },
@@ -72,11 +75,31 @@ function fmtMonth(d: Date) {
 const PERIOD_KEY = "header:period";
 const COMPARE_KEY = "header:compare";
 
+/**
+ * Rotas com parâmetro não cabem no ROUTE_MAP exato. Resolvidas por padrão,
+ * e a própria página refina o miolo via evento `header:breadcrumb`.
+ */
+function resolverDinamica(pathname: string): { crumbs: string[]; context?: string } | null {
+  const bp = pathname.match(/^\/bp\/(\d{4})$/);
+  if (bp) return { crumbs: ["BP", `BP ${bp[1]}`] };
+  return null;
+}
+
 export function PageHeader({ breadcrumbs, context, hideToolbar }: PageHeaderProps) {
   const { pathname } = useLocation();
-  const fallback = ROUTE_MAP[pathname] ?? { crumbs: [pathname] };
-  const crumbs = breadcrumbs ?? fallback.crumbs;
-  const ctx = context ?? fallback.context;
+  // Breadcrumb publicado pela página (ex.: a aba ativa do BP).
+  const [daPagina, setDaPagina] = useState<{ crumbs: string[]; context?: string } | null>(null);
+
+  useEffect(() => {
+    setDaPagina(null);
+    const ouvir = (e: Event) => setDaPagina((e as CustomEvent).detail ?? null);
+    window.addEventListener("header:breadcrumb", ouvir);
+    return () => window.removeEventListener("header:breadcrumb", ouvir);
+  }, [pathname]);
+
+  const fallback = ROUTE_MAP[pathname] ?? resolverDinamica(pathname) ?? { crumbs: [pathname] };
+  const crumbs = breadcrumbs ?? daPagina?.crumbs ?? fallback.crumbs;
+  const ctx = context ?? daPagina?.context ?? fallback.context;
 
   const [period, setPeriod] = useState<Date>(() => {
     const raw = localStorage.getItem(PERIOD_KEY);

@@ -6,9 +6,10 @@ import { FacToolbar } from "./NovaSolicitacaoDialog";
 import { CatDot } from "./components";
 import { CotacaoEvidenciaDialog } from "./CotacaoEvidenciaDialog";
 import {
-  db, fmtBRL, STATUS_LABEL,
+  db, fmtBRL as fmtBRLStr, STATUS_LABEL,
   type Solicitacao, type Cotacao,
 } from "./lib";
+import { comValorExato } from "@/components/ValorExato";
 
 interface Linha {
   solic: Solicitacao;
@@ -202,4 +203,11 @@ function CotBox({ cot, best, onClick }: { cot?: Cotacao; best?: boolean; onClick
       )}
     </button>
   );
+}
+
+/* Os valores da tela saem sem centavos (fmtBRLStr); aqui eles viram um <span>
+   que mostra o número cheio ao passar o mouse. Onde precisa ser string mesmo
+   (toast, template literal, title), use fmtBRLStr direto. */
+function fmtBRL(v: number | null | undefined, comCentavos = false) {
+  return comValorExato(v, fmtBRLStr(v, comCentavos));
 }

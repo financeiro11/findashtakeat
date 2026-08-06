@@ -7,7 +7,8 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import { supabase } from "@/integrations/supabase/client";
-import { db, fmtBRL, type Cotacao } from "./lib";
+import { db, fmtBRL as fmtBRLStr, type Cotacao } from "./lib";
+import { comValorExato } from "@/components/ValorExato";
 
 const BUCKET = "facilities-contratos";
 const MAX_MB = 10;
@@ -184,4 +185,11 @@ export function CotacaoEvidenciaDialog({ cotacao, solicTitulo, open, onOpenChang
       </DialogContent>
     </Dialog>
   );
+}
+
+/* Os valores da tela saem sem centavos (fmtBRLStr); aqui eles viram um <span>
+   que mostra o número cheio ao passar o mouse. Onde precisa ser string mesmo
+   (toast, template literal, title), use fmtBRLStr direto. */
+function fmtBRL(v: number | null | undefined, comCentavos = false) {
+  return comValorExato(v, fmtBRLStr(v, comCentavos));
 }

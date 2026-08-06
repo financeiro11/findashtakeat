@@ -13,6 +13,7 @@ import { toast } from "sonner";
 import { ComprovanteLink } from "@/components/ComprovanteLink";
 import { podeAbrirComprovante } from "@/lib/comprovante";
 import { brl, brlAbbr, fmtDateBR, fmtDateTimeBR, fmtTrilha, compLabel, MESES_PT_LONG } from "./utils";
+import { comValorExato } from "@/components/ValorExato";
 import AjusteSolicitadoModal from "./AjusteSolicitadoModal";
 import SolicitarJustificativasModal from "./SolicitarJustificativasModal";
 import { enviarProntos, enviarUnitario } from "@/lib/omieAnexos";
@@ -581,14 +582,14 @@ export default function Achados() {
             <KpiCard label="Em análise" value={String(kpis.emAn)} legend="em verificação" valueClass="text-[hsl(212_80%_45%)]" />
             <KpiCard
               label="Valor sob auditoria"
-              value={brlAbbr(kpis.valorSob)}
+              value={comValorExato(kpis.valorSob, brlAbbr(kpis.valorSob))}
               legend={`em ${kpis.qtdSob} lançamento${kpis.qtdSob === 1 ? "" : "s"}`}
               breakdown={
                 <div className="flex flex-wrap gap-1.5 mt-2">
-                  {kpis.sobComNf > 0 && <MiniChip cls={catStyle("COM NF")} text={`COM NF ${brlAbbr(kpis.sobComNf)}`} />}
-                  {kpis.sobSemNf > 0 && <MiniChip cls={catStyle("SEM NF")} text={`SEM NF ${brlAbbr(kpis.sobSemNf)}`} />}
-                  {kpis.sobFora > 0 && <MiniChip cls={catStyle("FORA DE ESCOPO")} text={`FORA ${brlAbbr(kpis.sobFora)}`} />}
-                  {kpis.sobAConf > 0 && <MiniChip cls={catStyle("A CONFERIR")} text={`A CONF. ${brlAbbr(kpis.sobAConf)}`} />}
+                  {kpis.sobComNf > 0 && <MiniChip cls={catStyle("COM NF")} text={`COM NF ${brlAbbr(kpis.sobComNf)}`} titulo={brl(kpis.sobComNf)} />}
+                  {kpis.sobSemNf > 0 && <MiniChip cls={catStyle("SEM NF")} text={`SEM NF ${brlAbbr(kpis.sobSemNf)}`} titulo={brl(kpis.sobSemNf)} />}
+                  {kpis.sobFora > 0 && <MiniChip cls={catStyle("FORA DE ESCOPO")} text={`FORA ${brlAbbr(kpis.sobFora)}`} titulo={brl(kpis.sobFora)} />}
+                  {kpis.sobAConf > 0 && <MiniChip cls={catStyle("A CONFERIR")} text={`A CONF. ${brlAbbr(kpis.sobAConf)}`} titulo={brl(kpis.sobAConf)} />}
                 </div>
               }
             />
@@ -1030,7 +1031,7 @@ export default function Achados() {
   );
 }
 
-function KpiCard({ label, value, legend, valueClass, breakdown }: { label: string; value: string; legend: string; valueClass?: string; breakdown?: React.ReactNode }) {
+function KpiCard({ label, value, legend, valueClass, breakdown }: { label: string; value: React.ReactNode; legend: string; valueClass?: string; breakdown?: React.ReactNode }) {
   return (
     <div className="rounded-xl border border-border bg-card p-5">
       <div className="text-xs font-medium text-muted-foreground">{label}</div>
@@ -1041,8 +1042,8 @@ function KpiCard({ label, value, legend, valueClass, breakdown }: { label: strin
   );
 }
 
-function MiniChip({ cls, text }: { cls: string; text: string }) {
-  return <span className={cn("inline-flex px-1.5 py-0.5 rounded-md text-[10px] font-medium border", cls)}>{text}</span>;
+function MiniChip({ cls, text, titulo }: { cls: string; text: string; titulo?: string }) {
+  return <span title={titulo} className={cn("inline-flex px-1.5 py-0.5 rounded-md text-[10px] font-medium border", cls, titulo && "cursor-help")}>{text}</span>;
 }
 
 function MetaItem({ label, value, full }: { label: string; value: string; full?: boolean }) {

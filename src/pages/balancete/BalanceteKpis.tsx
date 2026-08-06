@@ -2,6 +2,7 @@ import { Wallet, Banknote, Scale, TrendingUp, Coins, AlertTriangle } from "lucid
 import { KpiCard } from "@/components/ui/kpi-card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { fmtBRL, pctDelta } from "./utils";
+import { comValorExato } from "@/components/ValorExato";
 import type { BalanceteTotals } from "./types";
 
 interface Props {
@@ -49,7 +50,7 @@ export function BalanceteKpis({ totals, prevTotals, loading, deltaLabel = "vs m√
           <KpiCard
             key={it.label}
             label={it.label}
-            value={fmtBRL(it.value, { compact: true })}
+            value={comValorExato(it.value, fmtBRL(it.value, { compact: true }))}
             subline={fmtBRL(it.value)}
             deltaMonth={delta ?? undefined}
             deltaMonthLabel={deltaLabel}

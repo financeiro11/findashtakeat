@@ -154,6 +154,72 @@ export type Database = {
         }
         Relationships: []
       }
+      asaas_extrato: {
+        Row: {
+          contraparte_documento: string | null
+          contraparte_nome: string | null
+          criado_em: string
+          data_movimento: string | null
+          historico: string | null
+          id: string
+          id_transacao: string
+          numero_documento: string | null
+          tipo: string | null
+          valor: number | null
+        }
+        Insert: {
+          contraparte_documento?: string | null
+          contraparte_nome?: string | null
+          criado_em?: string
+          data_movimento?: string | null
+          historico?: string | null
+          id?: string
+          id_transacao: string
+          numero_documento?: string | null
+          tipo?: string | null
+          valor?: number | null
+        }
+        Update: {
+          contraparte_documento?: string | null
+          contraparte_nome?: string | null
+          criado_em?: string
+          data_movimento?: string | null
+          historico?: string | null
+          id?: string
+          id_transacao?: string
+          numero_documento?: string | null
+          tipo?: string | null
+          valor?: number | null
+        }
+        Relationships: []
+      }
+      asaas_saldo: {
+        Row: {
+          atualizado_em: string | null
+          conta: string | null
+          id: string
+          saldo: number | null
+          saldo_bloqueado: number | null
+          saldo_disponivel: number | null
+        }
+        Insert: {
+          atualizado_em?: string | null
+          conta?: string | null
+          id?: string
+          saldo?: number | null
+          saldo_bloqueado?: number | null
+          saldo_disponivel?: number | null
+        }
+        Update: {
+          atualizado_em?: string | null
+          conta?: string | null
+          id?: string
+          saldo?: number | null
+          saldo_bloqueado?: number | null
+          saldo_disponivel?: number | null
+        }
+        Relationships: []
+      }
       asaas_snapshots: {
         Row: {
           dados: Json
@@ -473,57 +539,119 @@ export type Database = {
           automacao: string
           categoria: string | null
           created_at: string
+          depende_de: string | null
           dor: string | null
+          esforco: string | null
+          esteira_ordem: number | null
+          esteira_upgrade: boolean
           execucoes: number
           ferramentas: string | null
           horas_mes: number | null
+          icone: string | null
           id: string
           impacto: string | null
           nivel: number | null
           observacao: string | null
           ordem: number
+          pos_x: number | null
+          pos_y: number | null
           responsavel: string | null
           solucao: string | null
           status: string
           ultima_falha: string | null
           updated_at: string
+          upgrade: string | null
         }
         Insert: {
           automacao: string
           categoria?: string | null
           created_at?: string
+          depende_de?: string | null
           dor?: string | null
+          esforco?: string | null
+          esteira_ordem?: number | null
+          esteira_upgrade?: boolean
           execucoes?: number
           ferramentas?: string | null
           horas_mes?: number | null
+          icone?: string | null
           id?: string
           impacto?: string | null
           nivel?: number | null
           observacao?: string | null
           ordem?: number
+          pos_x?: number | null
+          pos_y?: number | null
           responsavel?: string | null
           solucao?: string | null
           status?: string
           ultima_falha?: string | null
           updated_at?: string
+          upgrade?: string | null
         }
         Update: {
           automacao?: string
           categoria?: string | null
           created_at?: string
+          depende_de?: string | null
           dor?: string | null
+          esforco?: string | null
+          esteira_ordem?: number | null
+          esteira_upgrade?: boolean
           execucoes?: number
           ferramentas?: string | null
           horas_mes?: number | null
+          icone?: string | null
           id?: string
           impacto?: string | null
           nivel?: number | null
           observacao?: string | null
           ordem?: number
+          pos_x?: number | null
+          pos_y?: number | null
           responsavel?: string | null
           solucao?: string | null
           status?: string
           ultima_falha?: string | null
+          updated_at?: string
+          upgrade?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "automacoes_catalogo_depende_de_fkey"
+            columns: ["depende_de"]
+            isOneToOne: false
+            referencedRelation: "automacoes_catalogo"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      automacoes_niveis: {
+        Row: {
+          bullets: Json
+          created_at: string
+          descricao: string | null
+          id: string
+          n: number
+          nome: string
+          updated_at: string
+        }
+        Insert: {
+          bullets?: Json
+          created_at?: string
+          descricao?: string | null
+          id?: string
+          n: number
+          nome: string
+          updated_at?: string
+        }
+        Update: {
+          bullets?: Json
+          created_at?: string
+          descricao?: string | null
+          id?: string
+          n?: number
+          nome?: string
           updated_at?: string
         }
         Relationships: []
@@ -557,6 +685,7 @@ export type Database = {
       }
       bp_anual: {
         Row: {
+          abas: Json
           ano: number
           created_at: string
           dados: Json
@@ -565,6 +694,7 @@ export type Database = {
           updated_at: string
         }
         Insert: {
+          abas?: Json
           ano: number
           created_at?: string
           dados?: Json
@@ -573,6 +703,7 @@ export type Database = {
           updated_at?: string
         }
         Update: {
+          abas?: Json
           ano?: number
           created_at?: string
           dados?: Json
@@ -612,6 +743,104 @@ export type Database = {
           noticias?: Json | null
           periodo_fim?: string
           periodo_inicio?: string
+        }
+        Relationships: []
+      }
+      cartao_faturas: {
+        Row: {
+          arquivo: string | null
+          competencia: string
+          fechamento: string | null
+          importado_em: string
+          importado_por: string | null
+          mes_label: string
+        }
+        Insert: {
+          arquivo?: string | null
+          competencia: string
+          fechamento?: string | null
+          importado_em?: string
+          importado_por?: string | null
+          mes_label: string
+        }
+        Update: {
+          arquivo?: string | null
+          competencia?: string
+          fechamento?: string | null
+          importado_em?: string
+          importado_por?: string | null
+          mes_label?: string
+        }
+        Relationships: []
+      }
+      cartao_lancamentos: {
+        Row: {
+          categoria: string
+          cidade: string | null
+          competencia: string
+          data: string | null
+          descricao: string | null
+          estabelecimento: string
+          fitid: string | null
+          id: string
+          parcela: string | null
+          tipo: string
+          valor: number
+        }
+        Insert: {
+          categoria: string
+          cidade?: string | null
+          competencia: string
+          data?: string | null
+          descricao?: string | null
+          estabelecimento: string
+          fitid?: string | null
+          id?: string
+          parcela?: string | null
+          tipo?: string
+          valor: number
+        }
+        Update: {
+          categoria?: string
+          cidade?: string | null
+          competencia?: string
+          data?: string | null
+          descricao?: string | null
+          estabelecimento?: string
+          fitid?: string | null
+          id?: string
+          parcela?: string | null
+          tipo?: string
+          valor?: number
+        }
+        Relationships: [
+          {
+            foreignKeyName: "cartao_lancamentos_competencia_fkey"
+            columns: ["competencia"]
+            isOneToOne: false
+            referencedRelation: "cartao_faturas"
+            referencedColumns: ["competencia"]
+          },
+        ]
+      }
+      cartao_marcacoes: {
+        Row: {
+          estabelecimento: string
+          marcado_em: string
+          marcado_por: string | null
+          nota: string | null
+        }
+        Insert: {
+          estabelecimento: string
+          marcado_em?: string
+          marcado_por?: string | null
+          nota?: string | null
+        }
+        Update: {
+          estabelecimento?: string
+          marcado_em?: string
+          marcado_por?: string | null
+          nota?: string | null
         }
         Relationships: []
       }
@@ -657,6 +886,30 @@ export type Database = {
           projecao?: Json | null
           sensibilidade?: Json | null
           updated_at?: string
+        }
+        Relationships: []
+      }
+      churn_snapshot: {
+        Row: {
+          competencia: string
+          dados: Json
+          gerado_em: string
+          mes_label: string
+          sincronizado_em: string | null
+        }
+        Insert: {
+          competencia: string
+          dados: Json
+          gerado_em?: string
+          mes_label: string
+          sincronizado_em?: string | null
+        }
+        Update: {
+          competencia?: string
+          dados?: Json
+          gerado_em?: string
+          mes_label?: string
+          sincronizado_em?: string | null
         }
         Relationships: []
       }
@@ -789,6 +1042,81 @@ export type Database = {
         }
         Relationships: []
       }
+      demonstracoes_justificativas: {
+        Row: {
+          atualizado_em: string
+          cobertura: number | null
+          confianca: string | null
+          delta: number | null
+          delta_pct: number | null
+          despesa: boolean
+          drivers: Json
+          editado_em: string | null
+          editado_por: string | null
+          gerado_em: string
+          id: string
+          mes: string
+          mes_anterior: string | null
+          modelo: string | null
+          rubrica: string
+          sinais: Json
+          status: string
+          texto: string
+          texto_editado: string | null
+          tipo: string
+          valor: number | null
+          valor_anterior: number | null
+        }
+        Insert: {
+          atualizado_em?: string
+          cobertura?: number | null
+          confianca?: string | null
+          delta?: number | null
+          delta_pct?: number | null
+          despesa?: boolean
+          drivers?: Json
+          editado_em?: string | null
+          editado_por?: string | null
+          gerado_em?: string
+          id?: string
+          mes: string
+          mes_anterior?: string | null
+          modelo?: string | null
+          rubrica: string
+          sinais?: Json
+          status?: string
+          texto: string
+          texto_editado?: string | null
+          tipo: string
+          valor?: number | null
+          valor_anterior?: number | null
+        }
+        Update: {
+          atualizado_em?: string
+          cobertura?: number | null
+          confianca?: string | null
+          delta?: number | null
+          delta_pct?: number | null
+          despesa?: boolean
+          drivers?: Json
+          editado_em?: string | null
+          editado_por?: string | null
+          gerado_em?: string
+          id?: string
+          mes?: string
+          mes_anterior?: string | null
+          modelo?: string | null
+          rubrica?: string
+          sinais?: Json
+          status?: string
+          texto?: string
+          texto_editado?: string | null
+          tipo?: string
+          valor?: number | null
+          valor_anterior?: number | null
+        }
+        Relationships: []
+      }
       demonstracoes_mes_trancado: {
         Row: {
           col_key: string
@@ -804,6 +1132,51 @@ export type Database = {
           col_key?: string
           origem?: string | null
           trancado_em?: string
+        }
+        Relationships: []
+      }
+      demonstracoes_valor_manual: {
+        Row: {
+          atualizado_em: string
+          autor: string | null
+          autor_email: string | null
+          col_key: string
+          criado_em: string
+          id: string
+          modo: string
+          rubrica: string
+          tipo: string
+          valor: number
+          valor_aplicado: number | null
+          valor_base: number | null
+        }
+        Insert: {
+          atualizado_em?: string
+          autor?: string | null
+          autor_email?: string | null
+          col_key: string
+          criado_em?: string
+          id?: string
+          modo?: string
+          rubrica: string
+          tipo: string
+          valor: number
+          valor_aplicado?: number | null
+          valor_base?: number | null
+        }
+        Update: {
+          atualizado_em?: string
+          autor?: string | null
+          autor_email?: string | null
+          col_key?: string
+          criado_em?: string
+          id?: string
+          modo?: string
+          rubrica?: string
+          tipo?: string
+          valor?: number
+          valor_aplicado?: number | null
+          valor_base?: number | null
         }
         Relationships: []
       }
@@ -1988,6 +2361,78 @@ export type Database = {
         }
         Relationships: []
       }
+      omie_categoria_alteracoes: {
+        Row: {
+          alterado_por: string | null
+          alterado_por_email: string | null
+          categoria_de: string | null
+          categoria_para: string | null
+          cod_titulo: string
+          contraparte: string | null
+          criado_em: string
+          data: string | null
+          descricao_de: string | null
+          descricao_para: string | null
+          documento: string | null
+          grupo: string | null
+          id: string
+          mes: string | null
+          motivo: string | null
+          origem: string | null
+          rubrica_dfc_de: string | null
+          rubrica_dfc_para: string | null
+          rubrica_dre_de: string | null
+          rubrica_dre_para: string | null
+          valor: number | null
+        }
+        Insert: {
+          alterado_por?: string | null
+          alterado_por_email?: string | null
+          categoria_de?: string | null
+          categoria_para?: string | null
+          cod_titulo: string
+          contraparte?: string | null
+          criado_em?: string
+          data?: string | null
+          descricao_de?: string | null
+          descricao_para?: string | null
+          documento?: string | null
+          grupo?: string | null
+          id?: string
+          mes?: string | null
+          motivo?: string | null
+          origem?: string | null
+          rubrica_dfc_de?: string | null
+          rubrica_dfc_para?: string | null
+          rubrica_dre_de?: string | null
+          rubrica_dre_para?: string | null
+          valor?: number | null
+        }
+        Update: {
+          alterado_por?: string | null
+          alterado_por_email?: string | null
+          categoria_de?: string | null
+          categoria_para?: string | null
+          cod_titulo?: string
+          contraparte?: string | null
+          criado_em?: string
+          data?: string | null
+          descricao_de?: string | null
+          descricao_para?: string | null
+          documento?: string | null
+          grupo?: string | null
+          id?: string
+          mes?: string | null
+          motivo?: string | null
+          origem?: string | null
+          rubrica_dfc_de?: string | null
+          rubrica_dfc_para?: string | null
+          rubrica_dre_de?: string | null
+          rubrica_dre_para?: string | null
+          valor?: number | null
+        }
+        Relationships: []
+      }
       omie_dre_mapa: {
         Row: {
           ativo: boolean
@@ -2018,6 +2463,114 @@ export type Database = {
           id?: string
           rubrica?: string
           updated_at?: string
+        }
+        Relationships: []
+      }
+      omie_reclassificacoes: {
+        Row: {
+          atualizado_em: string
+          cnpj_cpf: string | null
+          cod_titulo: string
+          data: string | null
+          detectado_em: string
+          fornecedor: string | null
+          fornecedor_chave: string
+          hist_lancamentos: number | null
+          hist_no_padrao: number | null
+          hist_rubricas: number | null
+          id: string
+          ignorado_em: string | null
+          ignorado_motivo: string | null
+          ignorado_por: string | null
+          mes: string
+          rubrica: string
+          rubrica_padrao: string
+          severidade: string
+          status: string
+          tipo: string
+          valor: number | null
+          valor_padrao: number | null
+        }
+        Insert: {
+          atualizado_em?: string
+          cnpj_cpf?: string | null
+          cod_titulo: string
+          data?: string | null
+          detectado_em?: string
+          fornecedor?: string | null
+          fornecedor_chave: string
+          hist_lancamentos?: number | null
+          hist_no_padrao?: number | null
+          hist_rubricas?: number | null
+          id?: string
+          ignorado_em?: string | null
+          ignorado_motivo?: string | null
+          ignorado_por?: string | null
+          mes: string
+          rubrica: string
+          rubrica_padrao: string
+          severidade: string
+          status?: string
+          tipo: string
+          valor?: number | null
+          valor_padrao?: number | null
+        }
+        Update: {
+          atualizado_em?: string
+          cnpj_cpf?: string | null
+          cod_titulo?: string
+          data?: string | null
+          detectado_em?: string
+          fornecedor?: string | null
+          fornecedor_chave?: string
+          hist_lancamentos?: number | null
+          hist_no_padrao?: number | null
+          hist_rubricas?: number | null
+          id?: string
+          ignorado_em?: string | null
+          ignorado_motivo?: string | null
+          ignorado_por?: string | null
+          mes?: string
+          rubrica?: string
+          rubrica_padrao?: string
+          severidade?: string
+          status?: string
+          tipo?: string
+          valor?: number | null
+          valor_padrao?: number | null
+        }
+        Relationships: []
+      }
+      omie_reclassificacoes_regras: {
+        Row: {
+          criado_em: string
+          criado_por: string | null
+          fornecedor: string | null
+          fornecedor_chave: string
+          id: string
+          motivo: string | null
+          rubrica_a: string
+          rubrica_b: string
+        }
+        Insert: {
+          criado_em?: string
+          criado_por?: string | null
+          fornecedor?: string | null
+          fornecedor_chave: string
+          id?: string
+          motivo?: string | null
+          rubrica_a: string
+          rubrica_b: string
+        }
+        Update: {
+          criado_em?: string
+          criado_por?: string | null
+          fornecedor?: string | null
+          fornecedor_chave?: string
+          id?: string
+          motivo?: string | null
+          rubrica_a?: string
+          rubrica_b?: string
         }
         Relationships: []
       }
@@ -2063,6 +2616,33 @@ export type Database = {
           periodo_ate?: string | null
           periodo_de?: string | null
           status?: string
+        }
+        Relationships: []
+      }
+      omie_titulo_texto: {
+        Row: {
+          cod_titulo: number
+          documento: string | null
+          favorecido: string | null
+          lido_em: string
+          nota_fiscal: string | null
+          observacao: string | null
+        }
+        Insert: {
+          cod_titulo: number
+          documento?: string | null
+          favorecido?: string | null
+          lido_em?: string
+          nota_fiscal?: string | null
+          observacao?: string | null
+        }
+        Update: {
+          cod_titulo?: number
+          documento?: string | null
+          favorecido?: string | null
+          lido_em?: string
+          nota_fiscal?: string | null
+          observacao?: string | null
         }
         Relationships: []
       }
@@ -3173,6 +3753,72 @@ export type Database = {
         }
         Relationships: []
       }
+      sicoob_extrato: {
+        Row: {
+          contraparte_documento: string | null
+          contraparte_nome: string | null
+          criado_em: string
+          data_movimento: string | null
+          historico: string | null
+          id: string
+          id_transacao: string
+          numero_documento: string | null
+          tipo: string | null
+          valor: number | null
+        }
+        Insert: {
+          contraparte_documento?: string | null
+          contraparte_nome?: string | null
+          criado_em?: string
+          data_movimento?: string | null
+          historico?: string | null
+          id?: string
+          id_transacao: string
+          numero_documento?: string | null
+          tipo?: string | null
+          valor?: number | null
+        }
+        Update: {
+          contraparte_documento?: string | null
+          contraparte_nome?: string | null
+          criado_em?: string
+          data_movimento?: string | null
+          historico?: string | null
+          id?: string
+          id_transacao?: string
+          numero_documento?: string | null
+          tipo?: string | null
+          valor?: number | null
+        }
+        Relationships: []
+      }
+      sicoob_saldo: {
+        Row: {
+          atualizado_em: string | null
+          conta: string | null
+          id: string
+          saldo: number | null
+          saldo_bloqueado: number | null
+          saldo_disponivel: number | null
+        }
+        Insert: {
+          atualizado_em?: string | null
+          conta?: string | null
+          id?: string
+          saldo?: number | null
+          saldo_bloqueado?: number | null
+          saldo_disponivel?: number | null
+        }
+        Update: {
+          atualizado_em?: string | null
+          conta?: string | null
+          id?: string
+          saldo?: number | null
+          saldo_bloqueado?: number | null
+          saldo_disponivel?: number | null
+        }
+        Relationships: []
+      }
       sync_agendamento: {
         Row: {
           atualizado_em: string
@@ -3204,6 +3850,7 @@ export type Database = {
           cat_origem: string | null
           concluido_em: string | null
           created_at: string
+          facilities_solicitacao_id: string | null
           id: string
           observacao: string | null
           ordem: number
@@ -3221,6 +3868,7 @@ export type Database = {
           cat_origem?: string | null
           concluido_em?: string | null
           created_at?: string
+          facilities_solicitacao_id?: string | null
           id?: string
           observacao?: string | null
           ordem?: number
@@ -3238,6 +3886,7 @@ export type Database = {
           cat_origem?: string | null
           concluido_em?: string | null
           created_at?: string
+          facilities_solicitacao_id?: string | null
           id?: string
           observacao?: string | null
           ordem?: number
@@ -3249,7 +3898,15 @@ export type Database = {
           titulo?: string
           updated_at?: string
         }
-        Relationships: []
+        Relationships: [
+          {
+            foreignKeyName: "tarefas_facilities_solicitacao_id_fkey"
+            columns: ["facilities_solicitacao_id"]
+            isOneToOne: false
+            referencedRelation: "facilities_solicitacoes"
+            referencedColumns: ["id"]
+          },
+        ]
       }
       tarefas_log: {
         Row: {
@@ -3348,6 +4005,56 @@ export type Database = {
             columns: ["parent_id"]
             isOneToOne: false
             referencedRelation: "time_cargos"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      time_escopos: {
+        Row: {
+          atualizado_em: string
+          criado_em: string
+          descricao: string | null
+          horizonte: string | null
+          id: string
+          ordem: number
+          parent_id: string | null
+          pilar: string
+          responsavel: string | null
+          status: string
+          titulo: string
+        }
+        Insert: {
+          atualizado_em?: string
+          criado_em?: string
+          descricao?: string | null
+          horizonte?: string | null
+          id?: string
+          ordem?: number
+          parent_id?: string | null
+          pilar: string
+          responsavel?: string | null
+          status?: string
+          titulo: string
+        }
+        Update: {
+          atualizado_em?: string
+          criado_em?: string
+          descricao?: string | null
+          horizonte?: string | null
+          id?: string
+          ordem?: number
+          parent_id?: string | null
+          pilar?: string
+          responsavel?: string | null
+          status?: string
+          titulo?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "time_escopos_parent_id_fkey"
+            columns: ["parent_id"]
+            isOneToOne: false
+            referencedRelation: "time_escopos"
             referencedColumns: ["id"]
           },
         ]
@@ -3556,6 +4263,15 @@ export type Database = {
         Args: { p_ano: number; p_dados: Json }
         Returns: number
       }
+      cartao_importar: { Args: { p_payload: Json }; Returns: Json }
+      cartao_marcar: {
+        Args: {
+          p_estabelecimento: string
+          p_marcado?: boolean
+          p_nota?: string
+        }
+        Returns: undefined
+      }
       criar_token_e_registrar: {
         Args: {
           p_colaborador_id?: string
@@ -3565,6 +4281,60 @@ export type Database = {
           p_telefone?: string
         }
         Returns: Json
+      }
+      demonstracoes_contrapartes: {
+        Args: { p_meses: string[]; p_tipo: string }
+        Returns: {
+          categoria: string
+          contraparte: string
+          lancamentos: number
+          mes: string
+          rubrica: string
+          valor: number
+        }[]
+      }
+      demonstracoes_lancamentos: {
+        Args: { p_mes: string; p_rubrica: string; p_tipo: string }
+        Returns: {
+          categoria_codigo: string
+          categoria_descricao: string
+          cnpj_cpf: string
+          cod_titulo: string
+          contraparte: string
+          data: string
+          documento: string
+          grupo: string
+          status: string
+          titulo: string
+          valor: number
+          vencimento: string
+        }[]
+      }
+      demonstracoes_reclassificacoes: {
+        Args: { p_tipo: string }
+        Returns: {
+          alertas: number
+          mes: string
+          rubrica: string
+          severidade: string
+          valor_total: number
+        }[]
+      }
+      demonstracoes_reclassificacoes_celula: {
+        Args: { p_mes: string; p_rubrica: string; p_tipo: string }
+        Returns: {
+          cod_titulo: string
+          fornecedor: string
+          hist_lancamentos: number
+          hist_no_padrao: number
+          id: string
+          ignorado_motivo: string
+          rubrica_padrao: string
+          severidade: string
+          status: string
+          valor: number
+          valor_padrao: number
+        }[]
       }
       fmt_brl: { Args: { v: number }; Returns: string }
       fn_classifica_texto: {
@@ -3583,7 +4353,62 @@ export type Database = {
           inseridos: number
         }[]
       }
+      justificativa_decidir: {
+        Args: { p_id: string; p_status?: string; p_texto?: string }
+        Returns: undefined
+      }
       normaliza_nome: { Args: { p_nome: string }; Returns: string }
+      omie_cache_trocar_categoria: {
+        Args: { p_cod_titulo: string; p_codigo: string }
+        Returns: number
+      }
+      omie_categorias_disponiveis: {
+        Args: never
+        Returns: {
+          codigo: string
+          descricao: string
+          despesa: boolean
+          receita: boolean
+          rubrica_dfc: string
+          rubrica_dre: string
+          usos: number
+        }[]
+      }
+      omie_lancamento: {
+        Args: { p_cod_titulo: string }
+        Returns: {
+          categoria: string
+          cod_titulo: string
+          contraparte: string
+          data: string
+          documento: string
+          grupo: string
+          natureza: string
+          status: string
+          valor: number
+        }[]
+      }
+      omie_reclassificacoes_detectar: { Args: never; Returns: number }
+      pagamentos_previstos: {
+        Args: { p_dia: string; p_janela_dias?: number }
+        Returns: {
+          categoria_codigo: string
+          categoria_descricao: string
+          cnpj_cpf: string
+          cod_titulo: number
+          documento: string
+          documento_fiscal: string
+          favorecido: string
+          fornecedor: string
+          observacao: string
+          parcela: string
+          previsao: string
+          status: string
+          valor: number
+          valor_aberto: number
+          vencimento: string
+        }[]
+      }
       preview_msg_ajuste: { Args: { p_id_unico: string }; Returns: Json }
       preview_msg_consolidada:
         | { Args: { p_responsavel: string }; Returns: Json }
@@ -3592,6 +4417,11 @@ export type Database = {
             Returns: Json
           }
       promover_agendamentos_sync: { Args: never; Returns: undefined }
+      reclassificacao_ignorar: {
+        Args: { p_escopo?: string; p_id: string; p_motivo?: string }
+        Returns: number
+      }
+      reclassificacao_reabrir: { Args: { p_id: string }; Returns: number }
       registrar_comprovante_via_token: {
         Args: { p_id_unico: string; p_storage_path: string; p_token: string }
         Returns: Json

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Plus, Trash2, Upload, Search, X, LayoutGrid, List as ListIcon, ChevronLeft, ChevronRight } from "lucide-react";
+import { Plus, Trash2, Upload, Search, X, LayoutGrid, List as ListIcon, ChevronLeft, ChevronRight, Waypoints, Link2, Pencil } from "lucide-react";
 import * as XLSX from "xlsx";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -30,6 +30,7 @@ type Automacao = {
   execucoes: number | null;
   ultima_falha: string | null;
   nivel: number | null;
+  depende_de?: string | null;
   created_at?: string;
 };
 
@@ -62,6 +63,14 @@ const STATUS_COLS = [
   { key: "Em teste", icon: "🧪", accent: "bg-blue-500" },
   { key: "Rodando", icon: "✅", accent: "bg-emerald-500" },
 ] as const;
+// Cor da barra lateral do card no Roadmap por status.
+const STATUS_BORDER: Record<string, string> = {
+  Ideias: "border-l-amber-400", "A fazer": "border-l-slate-400", "Em andamento": "border-l-sky-400",
+  "Em teste": "border-l-blue-400", Rodando: "border-l-emerald-500",
+};
+const statusAccent = (s: string) => STATUS_COLS.find((c) => c.key === s)?.accent ?? "bg-slate-400";
+// Linhas do Roadmap: N1→N5 (básico→complexo) e uma faixa para o que ainda não tem nível.
+const ROAD_LEVELS: { n: number; nome: string }[] = [...NIVEIS_AUTO, { n: 0, nome: "Sem nível ainda" }];
 
 const IMPACTO_OPTS = ["Baixo", "Médio", "Alto"];
 const IMPACTO_CLS: Record<string, string> = {
@@ -153,7 +162,8 @@ export default function AutomacoesCatalogo({ embedded = false }: { embedded?: bo
   const [customCats, setCustomCats] = useState<string[]>(() => loadCustomCategorias());
   const [newCatOpen, setNewCatOpen] = useState(false);
   const [newCatName, setNewCatName] = useState("");
-  const [view, setView] = useState<"kanban" | "list">("list");
+  const [view, setView] = useState<"kanban" | "list" | "roadmap">("list");
+  const [roadSel, setRoadSel] = useState<string | null>(null); // card destacado (corrente de pré-requisitos)
   const [page, setPage] = useState(1);
   const [perPage, setPerPage] = useState(15);
   const fileRef = useRef<HTMLInputElement>(null);
@@ -208,6 +218,48 @@ export default function AutomacoesCatalogo({ embedded = false }: { embedded?: bo
         .some((f) => (f || "").toLowerCase().includes(q));
     });
   }, [rows, search, filtCat, filtImp, filtResp, filtTool, filtNivel]);
+
+  // ---- Roadmap: categorias (colunas), corrente de pré-requisitos, helpers ----
+  const roadCats = useMemo(() => {
+    const present = Array.from(new Set(filtered.map((r) => r.categoria || "Sem categoria")));
+    // Mantém a ordem das categorias conhecidas; extras vão para o fim.
+    return present.sort((a, b) => {
+      const ia = CATEGORIAS.indexOf(a), ib = CATEGORIAS.indexOf(b);
+      return (ia === -1 ? 999 : ia) - (ib === -1 ? 999 : ib);
+    });
+  }, [filtered, CATEGORIAS]);
+  // Corrente do card selecionado: ele + pré-requisitos (para cima) + o que ele destrava (para baixo).
+  const roadChain = useMemo(() => {
+    if (!roadSel) return null;
+    const byId = new Map(rows.map((r) => [r.id, r]));
+    const ids = new Set<string>([roadSel]);
+    let cur = byId.get(roadSel);
+    while (cur?.depende_de && !ids.has(cur.depende_de)) { ids.add(cur.depende_de); cur = byId.get(cur.depende_de); }
+    let changed = true;
+    while (changed) {
+      changed = false;
+      for (const r of rows) if (r.depende_de && ids.has(r.depende_de) && !ids.has(r.id)) { ids.add(r.id); changed = true; }
+    }
+    return ids;
+  }, [roadSel, rows]);
+  const toggleRoadSel = (id: string) => setRoadSel((p) => (p === id ? null : id));
+  // Pré-requisitos válidos no editor: qualquer automação, menos ela mesma e as que dependem dela (evita ciclo).
+  const prereqOpts = useMemo(() => {
+    if (!editing) return [] as Automacao[];
+    const bloq = new Set<string>([editing.id]);
+    let changed = true;
+    while (changed) { changed = false; for (const r of rows) if (r.depende_de && bloq.has(r.depende_de) && !bloq.has(r.id)) { bloq.add(r.id); changed = true; } }
+    return rows.filter((r) => r.id && !bloq.has(r.id)).sort((a, b) => (a.automacao || "").localeCompare(b.automacao || ""));
+  }, [editing, rows]);
+  const openNewRoad = (categoria: string, nivel: number | null) => {
+    setEditing({
+      id: "", ordem: 0, automacao: "", responsavel: "", status: "Ideias",
+      dor: "", solucao: "", observacao: "", ferramentas: "",
+      impacto: "Médio", categoria, horas_mes: null, execucoes: 0, ultima_falha: null, nivel,
+    });
+    setCreatingStatus("Ideias");
+  };
+  const nomeAuto = (id: string | null | undefined) => (id ? rows.find((r) => r.id === id)?.automacao ?? null : null);
 
   // Paginação (apenas na visão em lista)
   const totalPages = Math.max(1, Math.ceil(filtered.length / perPage));
@@ -273,6 +325,7 @@ export default function AutomacoesCatalogo({ embedded = false }: { embedded?: bo
         observacao: editing.observacao || null, ferramentas: editing.ferramentas || null,
         impacto: editing.impacto || "Médio", categoria: editing.categoria || null,
         horas_mes: editing.horas_mes, execucoes: editing.execucoes ?? 0, ultima_falha: editing.ultima_falha, nivel: editing.nivel ?? null,
+        ...(editing.depende_de ? { depende_de: editing.depende_de } : {}),
       });
       if (error) { toast.error(error.message); return; }
     } else {
@@ -416,6 +469,15 @@ export default function AutomacoesCatalogo({ embedded = false }: { embedded?: bo
         )}
         <div className="ml-auto flex items-center rounded-md border border-border p-0.5">
           <Button
+            variant={view === "roadmap" ? "secondary" : "ghost"}
+            size="sm"
+            className="h-7 px-2"
+            onClick={() => setView("roadmap")}
+            title="Roadmap (trilhas por categoria × nível)"
+          >
+            <Waypoints className="mr-1 h-3.5 w-3.5" /> Roadmap
+          </Button>
+          <Button
             variant={view === "kanban" ? "secondary" : "ghost"}
             size="sm"
             className="h-7 px-2"
@@ -558,6 +620,94 @@ export default function AutomacoesCatalogo({ embedded = false }: { embedded?: bo
                   >
                     <ChevronRight className="h-4 w-4" />
                   </Button>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+      ) : view === "roadmap" ? (
+        <div className="space-y-3">
+          {/* Legenda / como ler */}
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5 text-[11px] text-muted-foreground">
+            <span className="font-medium text-foreground">Do básico ao complexo ↓</span>
+            {STATUS_COLS.map((s) => (
+              <span key={s.key} className="inline-flex items-center gap-1.5"><span className={cn("h-2 w-2 rounded-full", s.accent)} />{s.key}</span>
+            ))}
+            <span className="inline-flex items-center gap-1"><Link2 className="h-3 w-3" /> clique num card para acender a corrente de pré-requisitos</span>
+          </div>
+
+          {roadCats.length === 0 ? (
+            <div className="rounded-lg border border-border p-10 text-center text-sm text-muted-foreground">Nenhuma automação bate com os filtros.</div>
+          ) : (
+            <div className="overflow-hidden rounded-lg border border-border bg-card">
+              <div className="overflow-x-auto">
+                <div style={{ minWidth: 140 + roadCats.length * 200 }}>
+                  <div className="grid gap-0" style={{ gridTemplateColumns: `140px repeat(${roadCats.length}, minmax(190px, 1fr))` }}>
+                    {/* Topo: canto + categorias (as trilhas/origem, em destaque) */}
+                    <div className="border-b border-r border-border/60 bg-secondary/20" />
+                    {roadCats.map((cat) => {
+                      const catRows = filtered.filter((r) => (r.categoria || "Sem categoria") === cat);
+                      const rod = catRows.filter((r) => r.status === "Rodando").length;
+                      const c = colorForCategoria(cat === "Sem categoria" ? "" : cat);
+                      const fullBorder = c.border.replace("border-l-", "border-");
+                      return (
+                        <div key={cat} className="relative border-b border-border/60 bg-secondary/20 p-2">
+                          <div className={cn("group/cat relative rounded-xl border-2 bg-card px-3 py-2.5 shadow-sm", fullBorder)}>
+                            <div className="flex items-center gap-2">
+                              <span className={cn("h-2.5 w-2.5 shrink-0 rounded-full", c.dot)} />
+                              <span className="min-w-0 flex-1 truncate text-[13px] font-bold text-foreground">{cat}</span>
+                              <span className="num shrink-0 rounded-full bg-muted px-1.5 py-0.5 text-[10px] font-bold text-muted-foreground">{rod}/{catRows.length}</span>
+                            </div>
+                            <button onClick={() => openNewRoad(cat === "Sem categoria" ? "" : cat, null)} className="absolute right-1 top-1 rounded p-1 text-muted-foreground opacity-0 transition hover:bg-muted hover:text-primary group-hover/cat:opacity-100" title="Nova automação nesta categoria"><Plus className="h-3 w-3" /></button>
+                          </div>
+                          <span aria-hidden className="pointer-events-none absolute bottom-0 left-1/2 h-2 -translate-x-1/2 border-l-2 border-dashed border-muted-foreground/40" />
+                        </div>
+                      );
+                    })}
+
+                    {/* Uma linha por nível (N1→N5→sem nível): do básico ao complexo */}
+                    {ROAD_LEVELS.flatMap((lvl, li) => {
+                      const ultimo = li === ROAD_LEVELS.length - 1;
+                      const cor = lvl.n ? NIVEL_COR[lvl.n - 1] : "hsl(0 0% 60%)";
+                      return [
+                        <div key={`lvl-${lvl.n}`} className={cn("flex flex-col justify-center gap-0.5 border-r border-border/60 px-2 py-3", !ultimo && "border-b border-b-border/30")}>
+                          <div className="flex items-center gap-1.5">
+                            {lvl.n
+                              ? <span className="inline-flex h-4 w-5 items-center justify-center rounded text-[9px] font-bold text-white" style={{ background: cor }}>N{lvl.n}</span>
+                              : <span className="h-2 w-2 rounded-full bg-muted-foreground/40" />}
+                            <span className="text-[11.5px] font-semibold leading-tight text-foreground">{lvl.nome}</span>
+                          </div>
+                        </div>,
+                        ...roadCats.map((cat) => {
+                          const cellItems = filtered.filter((r) => (r.categoria || "Sem categoria") === cat && (lvl.n ? r.nivel === lvl.n : !r.nivel));
+                          return (
+                            <div key={`${lvl.n}-${cat}`} className={cn("group/cell relative px-2 py-2", !ultimo && "border-b border-b-border/30")}>
+                              <span aria-hidden className="pointer-events-none absolute left-1/2 top-0 h-full -translate-x-1/2 border-l-2 border-dashed border-muted-foreground/25" />
+                              <div className="relative space-y-1.5">
+                                {cellItems.map((r) => {
+                                  const dim = !!roadChain && !roadChain.has(r.id);
+                                  const sel = roadSel === r.id;
+                                  const prereq = nomeAuto(r.depende_de);
+                                  return (
+                                    <div key={r.id} className={cn("group/rc relative rounded-lg border border-l-[3px] bg-card px-2 py-1.5 shadow-sm transition", STATUS_BORDER[r.status] || "border-l-slate-300", dim && "opacity-30", sel && "ring-2 ring-primary/50")}>
+                                      <button onClick={() => toggleRoadSel(r.id)} className="flex w-full items-start gap-1.5 text-left" title={prereq ? `Pré-requisito: ${prereq}` : (r.solucao || "Ver a corrente de pré-requisitos")}>
+                                        <span className={cn("mt-1 h-2 w-2 shrink-0 rounded-full", statusAccent(r.status))} />
+                                        <span className="min-w-0 flex-1 text-[11.5px] font-medium leading-tight text-foreground">{r.automacao || "(sem nome)"}</span>
+                                        {r.responsavel && <span title={r.responsavel} className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-primary/15 text-[8px] font-bold text-primary">{initials(r.responsavel)}</span>}
+                                      </button>
+                                      {prereq && <div className="mt-0.5 flex items-center gap-0.5 truncate pl-3.5 text-[9px] text-muted-foreground"><Link2 className="h-2.5 w-2.5 shrink-0" /> {prereq}</div>}
+                                      <button onClick={() => openEdit(r)} className="absolute right-1 top-1 rounded bg-card/95 p-1 text-muted-foreground opacity-0 shadow-sm transition hover:bg-muted hover:text-foreground group-hover/rc:opacity-100" title="Editar"><Pencil className="h-3 w-3" /></button>
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                              <button onClick={() => openNewRoad(cat === "Sem categoria" ? "" : cat, lvl.n || null)} className="absolute bottom-1 right-1 rounded bg-card/95 p-0.5 text-muted-foreground opacity-0 shadow-sm transition hover:bg-muted hover:text-primary group-hover/cell:opacity-100" title="Adicionar automação aqui"><Plus className="h-3 w-3" /></button>
+                            </div>
+                          );
+                        }),
+                      ];
+                    })}
+                  </div>
                 </div>
               </div>
             </div>
@@ -754,6 +904,21 @@ export default function AutomacoesCatalogo({ embedded = false }: { embedded?: bo
                     ))}
                   </SelectContent>
                 </Select>
+              </div>
+              <div className="col-span-2">
+                <Label>Pré-requisito (depende de)</Label>
+                <Select value={editing.depende_de ?? "__none"} onValueChange={(v) => setEditing({ ...editing, depende_de: v === "__none" ? null : v })}>
+                  <SelectTrigger><SelectValue placeholder="Nenhum" /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="__none">— nenhum (pode começar já)</SelectItem>
+                    {prereqOpts.map((o) => (
+                      <SelectItem key={o.id} value={o.id}>
+                        <span className="inline-flex items-center gap-2"><NivelBadge n={o.nivel} />{o.automacao || "(sem nome)"}</span>
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <p className="mt-1 text-[10.5px] text-muted-foreground">Esta automação só faz sentido depois que o pré-requisito estiver rodando.</p>
               </div>
               <div>
                 <Label>Horas/mês</Label>

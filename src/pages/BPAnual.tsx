@@ -10,6 +10,7 @@ import { Input } from "@/components/ui/input";
 import { supabase } from "@/integrations/supabase/client";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
+import { valorExato } from "@/lib/valor";
 
 /* ============================================================
  *  Helpers
@@ -59,6 +60,11 @@ function fmtCompact(v: number | null | undefined): string {
 function fmtPct(v: number | null | undefined, digits = 2): string {
   if (v === null || v === undefined || isNaN(v as number)) return "—";
   return `${(v * 100).toFixed(digits).replace(".", ",")}%`;
+}
+/** Valor cheio pro tooltip — na tela o número vem sempre abreviado (M/K). */
+function tituloValor(v: number | null | undefined, pct = false): string | undefined {
+  if (v === null || v === undefined || isNaN(v as number)) return undefined;
+  return pct ? `${valorExato(v * 100, { moeda: false, casas: 4 })}%` : valorExato(v);
 }
 function normLabel(s: string): string {
   return s.toString().toLowerCase()
@@ -480,10 +486,13 @@ export default function BPAnual() {
           return (
             <div key={k.title} className="rounded-lg border border-border bg-card p-3.5">
               <div className="text-[10px] font-semibold tracking-[0.08em] text-muted-foreground">{k.title}</div>
-              <div className={cn("mt-2 text-[19px] font-bold tracking-tight num", isNeg ? "text-primary" : "text-foreground")}>{main}</div>
+              <div
+                className={cn("mt-2 text-[19px] font-bold tracking-tight num cursor-help", isNeg ? "text-primary" : "text-foreground")}
+                title={tituloValor(k.orc, !!k.isPct)}
+              >{main}</div>
               <div className="mt-1 text-[10.5px] text-muted-foreground">orçado anual</div>
               <div className="mt-2 text-[10.5px] text-muted-foreground num">
-                Real YTD · <span className="text-foreground/80 font-semibold">{realStr}</span>
+                Real YTD · <span className="text-foreground/80 font-semibold cursor-help" title={tituloValor(k.real, !!k.isPct)}>{realStr}</span>
               </div>
             </div>
           );
@@ -631,8 +640,9 @@ export default function BPAnual() {
                         const display = isPercent ? fmtPct(v)
                           : (isNeg ? `(${fmtCompact(Math.abs(v ?? 0))})` : fmtCompact(v));
                         return (
-                          <td key={i} className={cn(
+                          <td key={i} title={tituloValor(v, isPercent)} className={cn(
                             "px-2 py-1.5 text-right text-[12px] num whitespace-nowrap min-w-[80px] relative",
+                            v != null && "cursor-help",
                             tag === "REAL" && "bg-emerald-50/30",
                             isNeg && !isPercent ? "text-primary" : isTotal ? "text-emerald-800" : "text-foreground/90",
                             v == null && "text-muted-foreground/40",
@@ -644,8 +654,10 @@ export default function BPAnual() {
 
                       {/* TOTAL ANUAL */}
                       <td
+                        title={isPercent ? undefined : tituloValor(tot)}
                         className={cn(
                           "sticky z-[2] px-2 py-1.5 text-right text-[12px] num whitespace-nowrap min-w-[90px] w-[90px] font-semibold shadow-[-1px_0_0_0_hsl(var(--border))]",
+                          !isPercent && tot != null && "cursor-help",
                           isTotal ? "bg-emerald-50" : "bg-card",
                           (tot ?? 0) < 0 && !isPercent ? "text-primary" : isTotal ? "text-emerald-800" : "text-foreground",
                           tab === "plano" ? "right-0" : "",
@@ -659,8 +671,10 @@ export default function BPAnual() {
                         <>
                           {/* YTD REAL */}
                           <td
+                            title={isPercent ? undefined : tituloValor(ytd)}
                             className={cn(
                               "sticky z-[2] px-2 py-1.5 text-right text-[12px] num whitespace-nowrap min-w-[90px] w-[90px]",
+                              !isPercent && ytd != null && "cursor-help",
                               isTotal ? "bg-emerald-50" : "bg-card",
                               (ytd ?? 0) < 0 && !isPercent ? "text-primary" : "text-foreground/90",
                               ytd == null && "text-muted-foreground/40",

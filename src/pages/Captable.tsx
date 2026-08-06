@@ -11,6 +11,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
+import { comValorExato } from "@/components/ValorExato";
 
 /* ============== Tipos ============== */
 type Round = {
@@ -37,6 +38,12 @@ const fmtBRLcompact = (n: number) => {
 const fmtUSD = (n: number) =>
   n.toLocaleString("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 });
 const fmtNum = (n: number) => n.toLocaleString("pt-BR", { maximumFractionDigits: 0 });
+/* Os valores da tela vêm arredondados (sem centavos) ou abreviados; estas
+   versões mostram o número cheio ao passar o mouse. */
+const moedaNode = (n: number, usd: boolean) =>
+  comValorExato(n, usd ? fmtUSD(n) : fmtBRL(n), { moeda: usd ? "USD" : true });
+const moedaCompactaNode = (n: number, usd: boolean) =>
+  comValorExato(n, usd ? fmtUSD(n) : fmtBRLcompact(n), { moeda: usd ? "USD" : true });
 const fmtPct = (n: number) => `${n.toFixed(2).replace(".", ",")}%`;
 const fmtPct3 = (n: number) => `${n.toFixed(3).replace(".", ",")}%`;
 const fmtMesAno = (d: string) =>
@@ -332,7 +339,7 @@ export default function Captable() {
             </div>
             <div className="num text-xs text-muted-foreground">
               {state.shareholders.length} sócios · {state.rounds.length} rodadas · capital subscrito de{" "}
-              <span className="font-semibold text-foreground">{fmtBRL(totalCapitalBRL)}</span>
+              <span className="font-semibold text-foreground">{moedaNode(totalCapitalBRL, false)}</span>
               {ultimaRodada && <> · última atualização {fmtDataLonga(ultimaRodada.data)}</>}
             </div>
           </div>
@@ -588,7 +595,7 @@ export default function Captable() {
                           <td key={r.id + "-c"}
                               onClick={() => startEdit(s.id, r.id)}
                               className={cn("cursor-pointer px-2 py-2 text-right num border-l border-border", c.credit ? "" : "text-muted-foreground/30")}>
-                            {c.credit ? (r.moeda === "USD" ? fmtUSD(c.credit) : fmtBRL(c.credit)) : "—"}
+                            {c.credit ? moedaNode(c.credit, r.moeda === "USD") : "—"}
                           </td>,
                           <td key={r.id + "-s"}
                               onClick={() => startEdit(s.id, r.id)}
@@ -614,7 +621,7 @@ export default function Captable() {
                       const t = totaisPorRodada[r.id] || { shares: 0, credit: 0 };
                       return r.showCredit ? [
                         <td key={r.id + "-c"} className="px-2 py-2 text-right num border-l border-border">
-                          {t.credit ? (r.moeda === "USD" ? fmtUSD(t.credit) : fmtBRL(t.credit)) : "—"}
+                          {t.credit ? moedaNode(t.credit, r.moeda === "USD") : "—"}
                         </td>,
                         <td key={r.id + "-s"} className="px-2 py-2 text-right num border-l border-border">+{fmtNum(t.shares)}</td>,
                       ] : [
@@ -757,11 +764,11 @@ function Timeline({
                   <div className="grid grid-cols-3 gap-4 text-right">
                     <Mini label="Capital" value={
                       (ev.creditBRL + ev.creditUSD) > 0
-                        ? (ev.round.moeda === "USD" ? fmtUSD(ev.creditUSD) : fmtBRLcompact(ev.creditBRL))
+                        ? moedaCompactaNode(ev.round.moeda === "USD" ? ev.creditUSD : ev.creditBRL, ev.round.moeda === "USD")
                         : "—"
                     } accent={p.text} />
                     <Mini label="Shares" value={ev.shares ? `+${fmtNum(ev.shares)}` : "—"} />
-                    <Mini label="Acum." value={fmtBRLcompact(ev.accBRL)} />
+                    <Mini label="Acum." value={moedaCompactaNode(ev.accBRL, false)} />
                   </div>
                 </div>
 
@@ -783,7 +790,7 @@ function Timeline({
                           <div className="num text-[11px] font-bold">{fmtNum(part.shares)} sh</div>
                           {part.credit > 0 && (
                             <div className="num text-[10px] text-muted-foreground">
-                              {ev.round.moeda === "USD" ? fmtUSD(part.credit) : fmtBRLcompact(part.credit)}
+                              {moedaCompactaNode(part.credit, ev.round.moeda === "USD")}
                             </div>
                           )}
                         </div>
@@ -800,7 +807,7 @@ function Timeline({
   );
 }
 
-function Mini({ label, value, accent }: { label: string; value: string; accent?: string }) {
+function Mini({ label, value, accent }: { label: string; value: React.ReactNode; accent?: string }) {
   return (
     <div>
       <div className="text-[9px] uppercase tracking-wider text-muted-foreground">{label}</div>
@@ -889,10 +896,10 @@ function KpiBlock({
   eyebrow, value, valueClass, sub, stats,
 }: {
   eyebrow: string;
-  value: string;
+  value: React.ReactNode;
   valueClass?: string;
-  sub: string;
-  stats: { label: string; value: string }[];
+  sub: React.ReactNode;
+  stats: { label: string; value: React.ReactNode }[];
 }) {
   return (
     <div className="rounded-xl border border-border bg-card p-4 flex flex-col gap-2.5">

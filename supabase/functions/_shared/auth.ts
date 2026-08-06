@@ -10,7 +10,7 @@
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
-export interface Caller { userId: string | null; cargo: string; isService: boolean; }
+export interface Caller { userId: string | null; cargo: string; isService: boolean; email?: string | null; }
 
 // Lê a claim `role` do JWT SEM verificar assinatura — seguro porque o gateway
 // (verify_jwt) já validou a assinatura antes da função rodar.
@@ -37,5 +37,5 @@ export async function requireUser(req: Request, opts: { bloquearCargos?: string[
   if (opts.bloquearCargos?.map((c) => c.toLowerCase()).includes(cargo)) {
     throw new Error("Você não tem permissão para esta ação.");
   }
-  return { userId: data.user.id, cargo, isService: false };
+  return { userId: data.user.id, cargo, isService: false, email: data.user.email ?? null };
 }

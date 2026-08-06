@@ -39,6 +39,27 @@ type Resposta = {
 
 type Turno = { pergunta: string; resposta: Resposta | null; erro?: string };
 
+/**
+ * Traduz a falha para algo acionável.
+ *
+ * O caso que mais importa: a tela pode chegar ao ar antes do deploy da Edge Function
+ * `assistente-responder` (frontend e backend são publicados por caminhos diferentes —
+ * Lovable a partir da main, funções pelo Supabase CLI). Sem este tratamento, quem abrisse
+ * a página nesse intervalo veria um erro técnico e concluiria que o assistente está
+ * quebrado, em vez de ainda não ativado.
+ */
+function mensagemDeErro(e: unknown): string {
+  const bruto = e instanceof Error ? e.message : String(e ?? "");
+  if (/not found|404|failed to send a request|failed to fetch/i.test(bruto)) {
+    return "O assistente ainda não foi ativado neste ambiente — falta publicar a função " +
+      "no servidor. Se você é do time técnico: supabase functions deploy assistente-responder.";
+  }
+  if (/401|não autenticado|unauthorized/i.test(bruto)) {
+    return "Sua sessão expirou. Recarregue a página e entre de novo.";
+  }
+  return bruto || "Falha ao consultar o assistente.";
+}
+
 const EXEMPLOS = [
   "Qual foi o caixa em julho?",
   "Por que o EBITDA caiu em relação ao mês passado?",
@@ -103,7 +124,7 @@ export default function AssistenteChat() {
       setTurnos((t) => [...t, { pergunta: limpa, resposta }]);
       if (vozLigada && resposta?.resposta) falar(resposta.resposta);
     } catch (e) {
-      const msg = e instanceof Error ? e.message : "Falha ao consultar o assistente.";
+      const msg = mensagemDeErro(e);
       setTurnos((t) => [...t, { pergunta: limpa, resposta: null, erro: msg }]);
       toast.error(msg);
     } finally {

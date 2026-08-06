@@ -20,7 +20,7 @@ import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import {
   Sparkles, X, Send, Loader2, Trash2, Plus, MessageSquare, Mic, Square,
-  Volume2, VolumeX, ShieldCheck, AlertTriangle, Brain,
+  Volume2, VolumeX, ShieldCheck, AlertTriangle, Brain, Database,
 } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import takeatSymbol from "@/assets/takeat-symbol-white.png";
@@ -45,8 +45,10 @@ type Msg = {
   /** Presentes só no caminho conferido. */
   numeros?: Numero[];
   avisos?: string[];
-  /** true = números conferidos nesta requisição; false = caminho geral. */
+  /** true = veio de uma consulta ao banco nesta requisição; false = caminho geral. */
   verificado?: boolean;
+  /** "conferido" (soma validada) ou "consultado" (leitura do banco, sem validação). */
+  nivel?: "conferido" | "consultado";
   /** Qual modelo respondeu — "openai" ou "gemini". */
   provedor?: string;
 };
@@ -63,8 +65,9 @@ function fmtDateTime(iso: string) {
 const SUGESTOES = [
   "Qual foi o caixa no mês passado?",
   "Por que o EBITDA caiu?",
-  "Como foi o mês passado?",
-  "Quanto gastamos com Equipe Comercial?",
+  "Quais tarefas estão atrasadas e de quem?",
+  "Quanto gastamos no cartão por estabelecimento?",
+  "Quais editais têm prazo neste mês?",
 ];
 
 export function AIAssistant({ initialPrompt }: { initialPrompt?: string } = {}) {
@@ -273,8 +276,8 @@ export function AIAssistant({ initialPrompt }: { initialPrompt?: string } = {}) 
       });
 
       const resp = data as {
-        ok?: boolean; consulta?: string; resposta?: string;
-        numeros?: Numero[]; avisos?: string[]; provedor?: string;
+        ok?: boolean; consulta?: string; resposta?: string; numeros?: Numero[];
+        avisos?: string[]; provedor?: string; nivel?: "conferido" | "consultado";
       } | null;
 
       // Fora das consultas nomeadas (ou função indisponível) → caminho geral.
@@ -291,6 +294,7 @@ export function AIAssistant({ initialPrompt }: { initialPrompt?: string } = {}) 
         numeros: resp.numeros ?? [],
         avisos: resp.avisos ?? [],
         verificado: !!resp.ok,
+        nivel: resp.nivel,
         provedor: resp.provedor,
       };
       setMessages(prev => [...prev, msg]);
@@ -418,7 +422,7 @@ export function AIAssistant({ initialPrompt }: { initialPrompt?: string } = {}) 
                             <ReactMarkdown>{m.content || "…"}</ReactMarkdown>
                           </div>
                           <div className="mt-1.5 flex items-center gap-2">
-                            <Selo verificado={m.verificado} provedor={m.provedor} />
+                            <Selo verificado={m.verificado} nivel={m.nivel} provedor={m.provedor} />
                             {suportaVoz() && m.content && (
                               <button
                                 onClick={() => falar(m.content)}
@@ -495,7 +499,21 @@ export function AIAssistant({ initialPrompt }: { initialPrompt?: string } = {}) 
  * pareceria tão confiável quanto um conferido — exatamente o que não pode acontecer com
  * dado que vai para diretoria.
  */
-function Selo({ verificado, provedor }: { verificado?: boolean; provedor?: string }) {
+/**
+ * Diz de onde veio a resposta. TRÊS níveis, não dois:
+ *
+ *   conferido  — consulta nomeada (DRE, caixa, EBITDA, lançamentos): a soma das partes
+ *                foi validada contra o total. É o que pode ir para diretoria.
+ *   consultado — explorador genérico: os dados vieram do banco agora, mas ninguém validou
+ *                se a agregação responde à pergunta. Origem confiável, leitura por sua conta.
+ *   nenhum     — caminho geral, sem consulta ao banco.
+ *
+ * Achatar isso em "confiável / não confiável" perderia a distinção que mais importa: um
+ * levantamento correto lido de forma errada continua sendo um número errado no slide.
+ */
+function Selo({
+  verificado, nivel, provedor,
+}: { verificado?: boolean; nivel?: "conferido" | "consultado"; provedor?: string }) {
   if (verificado === undefined) return null; // conversa recarregada do histórico
 
   // O modelo aparece em TODA resposta porque a escolha do provedor é feita em tempo de
@@ -505,15 +523,20 @@ function Selo({ verificado, provedor }: { verificado?: boolean; provedor?: strin
 
   return (
     <span className="inline-flex flex-wrap items-center gap-1 text-[10.5px]">
-      {verificado ? (
-        <span className="inline-flex items-center gap-1 text-emerald-700">
-          <ShieldCheck className="h-3 w-3" />
-          números conferidos agora
-        </span>
-      ) : (
+      {!verificado ? (
         <span className="inline-flex items-center gap-1 text-muted-foreground">
           <AlertTriangle className="h-3 w-3" />
           sem números verificados — confira antes de usar
+        </span>
+      ) : nivel === "consultado" ? (
+        <span className="inline-flex items-center gap-1 text-amber-700">
+          <Database className="h-3 w-3" />
+          consultado no banco · sem conferência de soma
+        </span>
+      ) : (
+        <span className="inline-flex items-center gap-1 text-emerald-700">
+          <ShieldCheck className="h-3 w-3" />
+          números conferidos agora
         </span>
       )}
       {modelo && <span className="text-muted-foreground">· {modelo}</span>}

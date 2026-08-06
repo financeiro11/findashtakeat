@@ -21,15 +21,16 @@ import { errorResponse, handleCors, jsonResponse } from "../_shared/gemini.ts";
 import { gerarJSON, gerarTexto, provedorAtual } from "../_shared/assistente/llm.ts";
 import { requireUser } from "../_shared/auth.ts";
 import {
-  caixaDoMes, lancamentosDaRubrica, Numero, panoramaDoMes, Resultado, rubricaDoMes,
+  caixaDoMes, explorar, lancamentosDaRubrica, Numero, panoramaDoMes, Resultado, rubricaDoMes,
   ultimoMesFechado, variacaoEbitda,
 } from "../_shared/assistente/consultas.ts";
+import { catalogoParaPrompt } from "../_shared/assistente/catalogo.ts";
 import { blocoDeMemoria, memorizar, registrarExecucao } from "../_shared/assistente/memoria.ts";
 import { Competencia, competenciaExtenso } from "../_shared/assistente/dre.ts";
 
 const CONSULTAS = [
   "caixa_do_mes", "variacao_ebitda", "panorama_do_mes", "rubrica_do_mes",
-  "lancamentos_da_rubrica", "nenhuma",
+  "lancamentos_da_rubrica", "explorar", "nenhuma",
 ] as const;
 type NomeConsulta = typeof CONSULTAS[number];
 
@@ -48,11 +49,24 @@ Consultas:
 - "lancamentos_da_rubrica": os lançamentos individuais do Omie que compõem uma rubrica —
   contrapartes, valores. Para "quem recebeu", "quais lançamentos", "me detalha", "do que
   é composto", "por que ESSA rubrica subiu". Devolva o nome da rubrica em "rubrica".
-- "nenhuma": a pergunta não é sobre nada disso.
+- "explorar": qualquer outra área do Hub (tarefas, auditoria, cartão, facilities,
+  parceiros, editais, projetos, recargas, biblioteca, uso de IA). Escolha a fonte na lista
+  abaixo e devolva também "fonte", e opcionalmente "agrupar_por", "de" e "ate"
+  (datas AAAA-MM-DD).
+- "nenhuma": a pergunta não é sobre nenhuma dessas áreas.
+
+FONTES para "explorar":
+{CATALOGO}
 
 Diferença que importa: "variacao_ebitda" explica QUAL rubrica moveu o resultado;
 "lancamentos_da_rubrica" explica QUEM está dentro de uma rubrica. Se a pergunta já
 nomeia a rubrica e pede detalhe ou motivo, use lancamentos_da_rubrica.
+
+Prefira SEMPRE uma consulta específica (caixa, EBITDA, panorama, rubrica, lançamentos)
+quando a pergunta for sobre DRE ou caixa. Use "explorar" só para as outras áreas.
+
+No JSON, além de "consulta", "ano", "mes" e "rubrica", devolva quando usar explorar:
+"fonte", "agrupar_por", "de", "ate" (use null quando não se aplicar).
 
 Se a pergunta citar um mês, devolva ano e mes. Se não citar, deixe nulos.
 A data de hoje é {HOJE}.
@@ -156,12 +170,18 @@ Deno.serve(async (req) => {
 
     // ---- Etapa 1: rotear (o modelo não vê nenhum dado financeiro aqui) ----------------
     const hoje = new Date().toLocaleDateString("pt-BR", { timeZone: "America/Sao_Paulo" });
-    let rota: { consulta?: string; ano?: number | null; mes?: number | null; rubrica?: string | null } = {};
+    let rota: {
+      consulta?: string; ano?: number | null; mes?: number | null; rubrica?: string | null;
+      fonte?: string | null; agrupar_por?: string | null; de?: string | null; ate?: string | null;
+    } = {};
     try {
       rota = await gerarJSON({
         temperature: 0,
         messages: [
-          { role: "system", content: PROMPT_ROTEADOR.replace("{HOJE}", hoje) },
+          {
+            role: "system",
+            content: PROMPT_ROTEADOR.replace("{HOJE}", hoje).replace("{CATALOGO}", catalogoParaPrompt()),
+          },
           { role: "user", content: [blocoHistorico(historico), `PERGUNTA: ${pergunta}`].filter(Boolean).join("\n\n") },
         ],
       });
@@ -190,10 +210,11 @@ Deno.serve(async (req) => {
 
     if (escolhida === "nenhuma") {
       return responderSemDados(
-        "Ainda não sei responder isso. Hoje eu consulto: o caixa de um mês (saldo e " +
-        "movimentação, Sicoob e Asaas), os totais do mês no DRE, o valor de uma rubrica " +
-        "específica, os lançamentos do Omie por trás de uma rubrica, e a variação do " +
-        "EBITDA entre os dois últimos meses fechados.",
+        "Ainda não sei responder isso. Hoje eu alcanço: DRE e caixa (totais do mês, " +
+        "rubricas, variação do EBITDA, lançamentos do Omie, extratos Sicoob e Asaas) e as " +
+        "áreas de tarefas, auditoria, cartão, facilities, parceiros, editais, projetos " +
+        "aprovados, recargas, biblioteca e uso de IA. Se a área que você precisa não está " +
+        "aí, me diga qual — dá para incluir.",
       );
     }
 
@@ -235,6 +256,19 @@ Deno.serve(async (req) => {
           return responderSemDados("De qual rubrica você quer ver os lançamentos?");
         }
         resultado = await lancamentosDaRubrica(supabase, rubrica, pedida);
+        break;
+      }
+      case "explorar": {
+        const fonte = String(rota?.fonte ?? "").trim();
+        if (!fonte) {
+          return responderSemDados("Não consegui identificar de qual área do Hub você fala.");
+        }
+        resultado = await explorar(supabase, {
+          fonte,
+          agrupar_por: rota?.agrupar_por ?? null,
+          de: rota?.de ?? null,
+          ate: rota?.ate ?? null,
+        });
         break;
       }
       default:
@@ -300,6 +334,9 @@ Deno.serve(async (req) => {
       // execução (ver _shared/assistente/llm.ts): sem isto, uma queda para o Gemini por
       // chave inválida passaria despercebida.
       provedor: provedorAtual(),
+      // "conferido" (soma validada) vs "consultado" (veio do banco, sem validação
+      // semântica). A tela mostra selos diferentes — ver Selo em AIAssistant.tsx.
+      nivel: resultado.nivel ?? "conferido",
       consulta: resultado.consulta,
       resposta,
       numeros: resultado.numeros,

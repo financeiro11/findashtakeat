@@ -15,6 +15,7 @@ import {
   mesesFechados, montarColuna, ordenar, valorDe, valorDoNo,
 } from "./dre.ts";
 import { acharNo, folhasDe, rotulosDeDespesa, todosRotulos } from "./schema-dre.ts";
+import { acharFonte } from "./catalogo.ts";
 
 // ---------------------------------------------------------------------------
 // Contrato
@@ -32,6 +33,18 @@ export type Numero = {
 export type Resultado = {
   consulta: string;
   ok: boolean;
+  /**
+   * Quão forte é a garantia por trás dos números.
+   *
+   * "conferido"  — consulta nomeada: o código conhece a semântica e CONFERIU que a soma
+   *                das partes bate com o total. É o que pode ir para diretoria.
+   * "consultado" — explorador genérico: os dados vieram do banco agora, mas ninguém
+   *                validou se a agregação responde de fato à pergunta. Confiável quanto
+   *                à origem, não quanto à interpretação.
+   *
+   * Ausente equivale a "conferido" (as consultas nomeadas vieram antes deste campo).
+   */
+  nivel?: "conferido" | "consultado";
   /** Vão para a tabela na tela, ao lado do texto. */
   numeros: Numero[];
   /** Bloco fechado entregue ao modelo. É a única coisa que ele sabe sobre os dados. */
@@ -764,6 +777,179 @@ export async function lancamentosDaRubrica(
   ].join("\n");
 
   return { consulta: "lancamentos_da_rubrica", ok: true, numeros, paraModelo, avisos };
+}
+
+// ---------------------------------------------------------------------------
+// Explorador genérico — o resto do Hub
+// ---------------------------------------------------------------------------
+
+/** Teto de linhas lidas. Alto o bastante para agregar um ano, baixo para não travar. */
+const TETO_LINHAS = 3000;
+
+export type PlanoExploracao = {
+  fonte: string;
+  /** Agrupa e soma por esta dimensão. Sem ela, lista as linhas mais recentes. */
+  agrupar_por?: string | null;
+  /** Filtro de igualdade simples: { coluna: valor }. */
+  filtros?: Record<string, string> | null;
+  /** Recorta pelo período usando a coluna de data da fonte. */
+  de?: string | null;
+  ate?: string | null;
+};
+
+/**
+ * Consulta qualquer fonte do catálogo, sem SQL escrito por modelo.
+ *
+ * O modelo escolhe a fonte e os parâmetros; o código monta a consulta contra uma lista
+ * fechada de tabelas e colunas. Coluna fora do catálogo é recusada — o modelo não alcança
+ * nada que não esteja declarado, e não consegue montar join nem subconsulta.
+ *
+ * A agregação acontece em memória porque o PostgREST não faz GROUP BY: lemos as linhas
+ * (respeitando a RLS do usuário) e somamos aqui. Quando o teto de linhas é atingido, o
+ * resultado avisa — número parcial apresentado como total é pior que número nenhum.
+ */
+export async function explorar(
+  supabase: { from: (t: string) => any },
+  plano: PlanoExploracao,
+): Promise<Resultado> {
+  const fonte = acharFonte(plano.fonte);
+  if (!fonte) {
+    return {
+      consulta: "explorar", ok: false, nivel: "consultado", numeros: [], paraModelo: "",
+      avisos: [`"${plano.fonte}" não está no catálogo de fontes do Assistente.`],
+    };
+  }
+
+  const avisos: string[] = [];
+  const colunasValidas = new Set([...fonte.dimensoes, ...fonte.listar, fonte.data, fonte.valor].filter(Boolean) as string[]);
+
+  const selecionar = [...new Set([...fonte.listar, ...fonte.dimensoes, fonte.data, fonte.valor].filter(Boolean))].join(",");
+  let q = supabase.from(fonte.id).select(selecionar).limit(TETO_LINHAS);
+
+  // Filtros: só colunas declaradas no catálogo.
+  for (const [coluna, valor] of Object.entries(plano.filtros ?? {})) {
+    if (!colunasValidas.has(coluna)) {
+      avisos.push(`Ignorei o filtro "${coluna}": não é uma coluna conhecida desta fonte.`);
+      continue;
+    }
+    q = q.eq(coluna, valor);
+  }
+
+  if (fonte.data && (plano.de || plano.ate)) {
+    if (plano.de) q = q.gte(fonte.data, plano.de);
+    if (plano.ate) q = q.lte(fonte.data, plano.ate);
+  } else if (plano.de || plano.ate) {
+    avisos.push(`A fonte "${fonte.id}" não tem coluna de data — o período foi ignorado.`);
+  }
+
+  if (fonte.data) q = q.order(fonte.data, { ascending: false });
+
+  const { data, error } = await q;
+  if (error) {
+    return {
+      consulta: "explorar", ok: false, nivel: "consultado", numeros: [], paraModelo: "",
+      avisos: [`Não consegui ler ${fonte.id}: ${error.message}`],
+    };
+  }
+
+  const linhas = (data ?? []) as Record<string, unknown>[];
+  if (linhas.length === 0) {
+    return {
+      consulta: "explorar", ok: false, nivel: "consultado", numeros: [], paraModelo: "",
+      avisos: [`Nenhum registro em ${fonte.id} com esses critérios.`],
+    };
+  }
+  if (linhas.length >= TETO_LINHAS) {
+    avisos.push(
+      `Li ${TETO_LINHAS} registros, que é o teto — pode haver mais. Os totais abaixo são ` +
+      "parciais; estreite o período para fechar a conta.",
+    );
+  }
+
+  const periodo = plano.de || plano.ate
+    ? `${plano.de ?? "início"} a ${plano.ate ?? "hoje"}`
+    : "todo o período";
+
+  const numeros: Numero[] = [];
+  const agrupar = plano.agrupar_por && fonte.dimensoes.includes(plano.agrupar_por)
+    ? plano.agrupar_por
+    : null;
+
+  if (plano.agrupar_por && !agrupar) {
+    avisos.push(`Não dá para agrupar por "${plano.agrupar_por}" nesta fonte.`);
+  }
+
+  if (agrupar && fonte.valor) {
+    // Soma por dimensão.
+    const somas = new Map<string, { total: number; qtd: number }>();
+    for (const l of linhas) {
+      const chave = String(l[agrupar] ?? "(sem valor)");
+      const atual = somas.get(chave) ?? { total: 0, qtd: 0 };
+      atual.total += Number(l[fonte.valor]) || 0;
+      atual.qtd += 1;
+      somas.set(chave, atual);
+    }
+    const ordenadas = [...somas.entries()].sort((a, b) => Math.abs(b[1].total) - Math.abs(a[1].total));
+    for (const [chave, { total, qtd }] of ordenadas.slice(0, 12)) {
+      numeros.push({
+        rotulo: `${chave} (${qtd})`, valor: total, formatado: brl(total),
+        fonte: fonte.id, competencia: periodo,
+      });
+    }
+    const totalGeral = [...somas.values()].reduce((a, v) => a + v.total, 0);
+    numeros.push({
+      rotulo: "Total", valor: totalGeral, formatado: brl(totalGeral),
+      fonte: fonte.id, competencia: periodo,
+    });
+    if (ordenadas.length > 12) {
+      avisos.push(`Mostrei os 12 maiores de ${ordenadas.length} grupos; o Total inclui todos.`);
+    }
+  } else if (agrupar) {
+    // Sem coluna de valor: conta ocorrências.
+    const contagem = new Map<string, number>();
+    for (const l of linhas) {
+      const chave = String(l[agrupar] ?? "(sem valor)");
+      contagem.set(chave, (contagem.get(chave) ?? 0) + 1);
+    }
+    for (const [chave, qtd] of [...contagem.entries()].sort((a, b) => b[1] - a[1]).slice(0, 12)) {
+      numeros.push({
+        rotulo: chave, valor: qtd, formatado: `${qtd}`,
+        fonte: fonte.id, competencia: periodo,
+      });
+    }
+  } else if (fonte.valor) {
+    const total = linhas.reduce((a, l) => a + (Number(l[fonte.valor!]) || 0), 0);
+    numeros.push({
+      rotulo: `Total (${linhas.length} registros)`, valor: total, formatado: brl(total),
+      fonte: fonte.id, competencia: periodo,
+    });
+  } else {
+    numeros.push({
+      rotulo: "Registros encontrados", valor: linhas.length, formatado: `${linhas.length}`,
+      fonte: fonte.id, competencia: periodo,
+    });
+  }
+
+  // Amostra de linhas para o modelo ter o "quem" e não só o "quanto".
+  const amostra = linhas.slice(0, 15).map((l) =>
+    "  " + fonte.listar.map((c) => `${c}: ${l[c] ?? "—"}`).join(" · "));
+
+  const paraModelo = [
+    `FONTE: ${fonte.id} (${fonte.area}) — ${fonte.descricao}`,
+    `Período: ${periodo} · ${linhas.length} registro(s) lidos`,
+    agrupar ? `Agrupado por: ${agrupar}` : "",
+    "",
+    ...numeros.map((n) => `${n.rotulo}: ${n.formatado}`),
+    "",
+    `Amostra (até 15 de ${linhas.length}):`,
+    ...amostra,
+    "",
+    "LIMITE: estes números vieram do banco agora, mas NÃO passaram por conferência de",
+    "soma como as consultas de DRE e caixa. Diga de qual tabela vieram e trate-os como",
+    "levantamento, não como fechamento contábil.",
+  ].filter(Boolean).join("\n");
+
+  return { consulta: `explorar:${fonte.id}`, ok: true, nivel: "consultado", numeros, paraModelo, avisos };
 }
 
 /** Última competência fechada — usada quando a pergunta não diz o mês. */

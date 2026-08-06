@@ -2,7 +2,15 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- viewport-fit=cover: sem isto o iOS não expõe env(safe-area-inset-*), e a
+         bottom nav do app instalado fica embaixo da barra de gestos. -->
+    <!-- interactive-widget: o teclado empurra o conteúdo em vez de cobrir o campo de
+         digitação do chat (Chrome Android; no iOS quem resolve é o 100dvh). -->
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content" />
+    <meta name="theme-color" content="#D51A1A" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+    <meta name="apple-mobile-web-app-title" content="Hub" />
     <!-- TODO: Set the document title to the name of your application -->
     <title>Dashboard Financeiro</title>
     <meta name="description" content="Dashboard financeiro">
@@ -23,7 +31,10 @@
   
     <link rel="icon" type="image/png" href="/favicon-32.png">
     <link rel="icon" type="image/png" sizes="256x256" href="/favicon.png">
-    <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png">
+    <!-- O iOS ignora o manifest para o ícone da tela inicial: tem que ser esta tag.
+         Aponta para o quadrado gerado por scripts/gen-pwa-icons.mjs — o
+         apple-touch-icon.png antigo é 142×180 e transparente (o iOS pinta de preto). -->
+    <link rel="apple-touch-icon" sizes="180x180" href="/icon-180.png">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter+Tight:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&family=Poppins:wght@500;600;700&family=Montserrat:wght@400;500;600&display=swap" rel="stylesheet">

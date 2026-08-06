@@ -65,9 +65,23 @@ import AssistenteMemoria from "./pages/assistente/Memoria";
 import TesteVozes from "./pages/assistente/TesteVozes";
 import NotFound from "./pages/NotFound.tsx";
 import LinkPublico from "./pages/LinkPublico";
+import { useIsMobile } from "@/hooks/use-mobile";
+import MobileLayout from "@/components/mobile/MobileLayout";
+import { DesktopOnly } from "@/components/mobile/DesktopOnly";
+import MobileInicio from "./pages/mobile/Inicio";
+import MobileTarefas from "./pages/mobile/Tarefas";
+import MobileNotas from "./pages/mobile/Notas";
+import MobileNota from "./pages/mobile/Nota";
+import MobileChat from "./pages/mobile/Chat";
+import MobilePerfil from "./pages/mobile/Perfil";
 
 const queryClient = new QueryClient();
 
+/**
+ * Abaixo de 768px o Hub monta um app próprio (cinco abas, ver MobileShell) em vez de
+ * espremer o layout de desktop. Mesma URL, mesma sessão, mesmas policies — só a árvore de
+ * telas muda. Com `isMobile` falso, o que é montado aqui é exatamente o que sempre foi.
+ */
 const App = () => (
   <QueryClientProvider client={queryClient}>
     <TooltipProvider>
@@ -76,6 +90,41 @@ const App = () => (
       <BrowserRouter>
         <AuthProvider>
           <ErrorBoundary>
+            <Rotas />
+          </ErrorBoundary>
+        </AuthProvider>
+      </BrowserRouter>
+    </TooltipProvider>
+  </QueryClientProvider>
+);
+
+function Rotas() {
+  const isMobile = useIsMobile();
+
+  if (isMobile) {
+    return (
+      <Routes>
+        <Route path="/login" element={<Login />} />
+        <Route path="/l/:token" element={<LinkPublico />} />
+        <Route element={<MobileLayout />}>
+          <Route path="/" element={<MobileInicio />} />
+          <Route path="/tarefas" element={<MobileTarefas />} />
+          <Route path="/notas" element={<MobileNotas />} />
+          <Route path="/notas/:id" element={<MobileNota />} />
+          <Route path="/chat" element={<MobileChat />} />
+          <Route path="/perfil" element={<MobilePerfil />} />
+          {/* Atalhos: o que virou aba no celular redireciona em vez de dizer "abra no PC". */}
+          <Route path="/briefing" element={<Navigate to="/" replace />} />
+          <Route path="/playbook" element={<Navigate to="/notas" replace />} />
+          {/* Todo o resto do Hub — DRE, auditorias, extratos, orçamento, editais,
+              parceiros, facilities, recargas, admin — só no computador. */}
+          <Route path="*" element={<DesktopOnly />} />
+        </Route>
+      </Routes>
+    );
+  }
+
+  return (
           <Routes>
             <Route path="/login" element={<Login />} />
             <Route path="/l/:token" element={<LinkPublico />} />
@@ -151,11 +200,7 @@ const App = () => (
             </Route>
             <Route path="*" element={<NotFound />} />
           </Routes>
-          </ErrorBoundary>
-        </AuthProvider>
-      </BrowserRouter>
-    </TooltipProvider>
-  </QueryClientProvider>
-);
+  );
+}
 
 export default App;

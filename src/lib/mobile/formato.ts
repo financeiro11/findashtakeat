@@ -1,0 +1,54 @@
+// Formatação da camada mobile. Sempre BR: R$ 1.234,56 e DD/MM/AAAA.
+//
+// Aqui os formatadores devolvem STRING pura, não ReactNode: no celular não existe hover,
+// então a convenção do desktop (valor abreviado + título com o número cheio, ver
+// src/lib/valor.ts) não se aplica — o mobile mostra o valor cheio direto.
+
+export const fmtBRL = (n: number | null | undefined): string =>
+  (n ?? 0).toLocaleString("pt-BR", {
+    style: "currency",
+    currency: "BRL",
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  });
+
+export const fmtInt = (n: number | null | undefined): string =>
+  Math.round(n ?? 0).toLocaleString("pt-BR");
+
+export const fmtPct = (n: number | null | undefined, casas = 1): string =>
+  `${(n ?? 0).toLocaleString("pt-BR", { minimumFractionDigits: casas, maximumFractionDigits: casas })}%`;
+
+/** "2026-08-06" ou ISO completo → "06/08/2026". Aceita só a parte da data para não
+ *  deslocar um dia por fuso (`prazo` é DATE, não timestamp). */
+export function fmtData(valor: string | null | undefined): string {
+  if (!valor) return "—";
+  const [ano, mes, dia] = valor.slice(0, 10).split("-");
+  if (!ano || !mes || !dia) return "—";
+  return `${dia}/${mes}/${ano}`;
+}
+
+/** ISO com hora → "06/08/2026 09:14". */
+export function fmtDataHora(iso: string | null | undefined): string {
+  if (!iso) return "—";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "—";
+  return d.toLocaleString("pt-BR", {
+    day: "2-digit", month: "2-digit", year: "numeric",
+    hour: "2-digit", minute: "2-digit",
+  });
+}
+
+/**
+ * Dado velho demais para se confiar sem avisar. Os snapshots são alimentados por cron
+ * diário; passando de 48h alguma sync parou e o número na tela não é o de hoje.
+ */
+export function desatualizado(iso: string | null | undefined, horas = 48, agora = Date.now()): boolean {
+  if (!iso) return true;
+  const t = new Date(iso).getTime();
+  if (Number.isNaN(t)) return true;
+  return agora - t > horas * 3_600_000;
+}
+
+/** Data de hoje em AAAA-MM-DD no fuso de São Paulo — base de comparação de `prazo`. */
+export const hojeISO = (): string =>
+  new Date().toLocaleDateString("en-CA", { timeZone: "America/Sao_Paulo" });

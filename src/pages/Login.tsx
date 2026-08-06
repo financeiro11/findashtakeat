@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { Navigate } from "react-router-dom";
-import { Loader2, Lock, ArrowRight } from "lucide-react";
+import { Loader2, Lock, ArrowRight, Mail } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -10,6 +10,7 @@ import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter,
 } from "@/components/ui/dialog";
 import { useAuth } from "@/hooks/useAuth";
+import { useIsMobile } from "@/hooks/use-mobile";
 import { toast } from "sonner";
 import { supabase } from "@/integrations/supabase/client";
 import takeatLogo from "@/assets/takeat-logo-white.png";
@@ -19,6 +20,8 @@ type UserOpt = { nome: string; email: string; cargo?: string | null };
 
 export default function Login() {
   const { user, loading, signIn } = useAuth();
+  const isMobile = useIsMobile();
+  const [linkEnviado, setLinkEnviado] = useState(false);
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("123456");
   const [showPwd, setShowPwd] = useState(false);
@@ -81,6 +84,26 @@ export default function Login() {
       setEmail("henrique@finops.com");
       setSeedShown(false);
     }
+  };
+
+  /**
+   * Magic link — só no celular. Digitar senha no teclado do telefone é o atrito que faz a
+   * pessoa desistir de abrir o app; o link chega no mesmo e-mail e abre a sessão.
+   *
+   * `shouldCreateUser: false` é obrigatório: sem isso um e-mail digitado errado CRIA um
+   * usuário novo no Auth, fora da tabela `profiles` e fora do controle de cargo.
+   */
+  const enviarMagicLink = async () => {
+    if (!email) return toast.error("Selecione seu usuário");
+    setBusy(true);
+    const { error } = await supabase.auth.signInWithOtp({
+      email,
+      options: { emailRedirectTo: `${window.location.origin}/`, shouldCreateUser: false },
+    });
+    setBusy(false);
+    if (error) return toast.error(error.message);
+    setLinkEnviado(true);
+    toast.success("Link enviado — confira seu e-mail.");
   };
 
   const openForgot = () => {
@@ -252,6 +275,26 @@ export default function Login() {
                   Entrar
                   {!busy && <ArrowRight className="ml-2 h-4 w-4" />}
                 </Button>
+
+                {isMobile && (
+                  <div className="space-y-2 pt-1">
+                    <div className="flex items-center gap-3">
+                      <span className="h-px flex-1 bg-border" />
+                      <span className="text-[11px] text-muted-foreground">ou</span>
+                      <span className="h-px flex-1 bg-border" />
+                    </div>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      className="h-11 w-full text-sm"
+                      onClick={enviarMagicLink}
+                      disabled={busy || linkEnviado}
+                    >
+                      <Mail className="mr-2 h-4 w-4" />
+                      {linkEnviado ? "Link enviado — confira o e-mail" : "Receber link por e-mail"}
+                    </Button>
+                  </div>
+                )}
 
                 {seedShown && (
                   <Button type="button" variant="outline" className="w-full" onClick={seedFirst} disabled={busy}>

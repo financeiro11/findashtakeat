@@ -172,11 +172,22 @@ export default function DRE() {
     return Array.from(ys).sort();
   }, [columns]);
 
-  // Colunas visíveis após filtro de ano
+  /* Colunas visíveis após filtro de ano.
+     Meses futuros ainda não fechados vêm no cabeçalho da planilha mas sem nenhum
+     valor — apareciam como uma coluna zerada/em branco no fim da tabela. Cortamos
+     essas colunas vazias do FIM (as do meio ficam, pois indicam buraco real). */
   const displayColumns = useMemo(() => {
-    if (yearFilter === "all") return columns;
-    return columns.filter(c => c.endsWith(`-${yearFilter}`));
-  }, [columns, yearFilter]);
+    let cols = yearFilter === "all" ? columns : columns.filter(c => c.endsWith(`-${yearFilter}`));
+    const temDado = (c: string) => rows.some((r) => {
+      const n = toNum((r as any)[c]);
+      return n !== null && n !== 0;
+    });
+    let fim = cols.length;
+    while (fim > 0 && !temDado(cols[fim - 1])) fim--;
+    if (fim > 0) cols = cols.slice(0, fim);
+    return cols;
+  }, [columns, yearFilter, rows]);
+
 
   useEffect(() => { document.title = "Demonstrações Financeiras · DRE"; }, []);
 

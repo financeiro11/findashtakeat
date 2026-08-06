@@ -57,6 +57,25 @@ type Conv = { id: string; titulo: string; created_at: string; updated_at: string
 
 const STORAGE_KEY = "ai_chat_open";
 
+// Saudação ao entrar no Hub.
+//
+// DESLIGADA POR PADRÃO, e por decisão de produto: ligar voz automática para todo o time
+// sem que ninguém tenha pedido é o tipo de coisa que faz as pessoas desativarem o
+// assistente inteiro no segundo dia. Quem quiser, liga no interruptor do painel.
+//
+// UMA VEZ POR DIA, não por navegação: o Hub é uma SPA, mas recarregar a página ou voltar
+// depois do almoço não é "entrar de novo". Ser cumprimentado cinco vezes por dia cansa
+// mais rápido que qualquer utilidade que a saudação tenha.
+const SAUDACAO_ATIVA = "assistente:saudacao";
+const SAUDACAO_DIA = "assistente:saudacao:dia";
+
+const PERGUNTA_SAUDACAO =
+  "Me dê o resumo do dia: meus compromissos de hoje e o que eu preciso saber dos números.";
+
+function hojeISO(): string {
+  return new Date().toLocaleDateString("sv-SE", { timeZone: "America/Sao_Paulo" }); // AAAA-MM-DD
+}
+
 function fmtDateTime(iso: string) {
   const d = new Date(iso);
   return d.toLocaleString("pt-BR", { day: "2-digit", month: "2-digit", year: "2-digit", hour: "2-digit", minute: "2-digit" });
@@ -79,6 +98,10 @@ export function AIAssistant({ initialPrompt }: { initialPrompt?: string } = {}) 
   const [convId, setConvId] = useState<string | null>(null);
   const [showHistory, setShowHistory] = useState(false);
   const [vozLigada, setVozLigada] = useState(false);
+  const [saudacaoAtiva, setSaudacaoAtiva] = useState(
+    () => localStorage.getItem(SAUDACAO_ATIVA) === "1",
+  );
+  const [saudacao, setSaudacao] = useState<string | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
 
   // `messages` congelaria no callback do microfone; a ref garante o estado atual.
@@ -322,10 +345,75 @@ export function AIAssistant({ initialPrompt }: { initialPrompt?: string } = {}) 
     if (open && initialPrompt && messages.length === 0) setInput(initialPrompt);
   }, [open, initialPrompt, messages.length]);
 
+  /* ----- Saudação ao entrar -------------------------------------------------------
+   * Roda uma vez por dia, fora do caminho de qualquer coisa: falha em silêncio e nunca
+   * abre o painel sozinho. O resultado aparece num balão ao lado da bolinha, que a
+   * pessoa fecha — interromper quem acabou de entrar com um painel de tela cheia seria
+   * o oposto de útil. */
+  useEffect(() => {
+    if (!saudacaoAtiva) return;
+    if (localStorage.getItem(SAUDACAO_DIA) === hojeISO()) return;
+
+    let cancelado = false;
+    (async () => {
+      try {
+        const { data, error } = await supabase.functions.invoke("assistente-responder", {
+          body: { pergunta: PERGUNTA_SAUDACAO },
+        });
+        if (error || cancelado) return;
+
+        const texto = String((data as { resposta?: string })?.resposta ?? "").trim();
+        if (!texto) return;
+
+        localStorage.setItem(SAUDACAO_DIA, hojeISO());
+        setSaudacao(texto);
+        // Se o navegador bloquear o áudio (sem gesto do usuário nesta aba), o texto
+        // continua no balão com o botão de ouvir. A voz é sempre o extra.
+        falar(texto);
+      } catch { /* saudação é cortesia; nunca atrapalha o uso do Hub */ }
+    })();
+
+    return () => { cancelado = true; };
+  }, [saudacaoAtiva]);
+
   const ouvindo = mic.estado === "ouvindo";
 
   return (
     <>
+      {!open && saudacao && (
+        <div className="fixed bottom-20 right-5 z-40 max-w-sm rounded-lg border border-border bg-card p-3.5 shadow-xl">
+          <div className="flex items-start justify-between gap-2">
+            <span className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+              Seu dia
+            </span>
+            <button
+              onClick={() => { pararFala(); setSaudacao(null); }}
+              className="-mt-1 rounded p-1 text-muted-foreground hover:bg-secondary"
+              aria-label="Fechar"
+            >
+              <X className="h-3.5 w-3.5" />
+            </button>
+          </div>
+          <p className="mt-1.5 whitespace-pre-wrap text-[12.5px] leading-relaxed">{saudacao}</p>
+          <div className="mt-2.5 flex items-center gap-2">
+            {suportaVoz() && (
+              <button
+                onClick={() => falar(saudacao)}
+                className="inline-flex items-center gap-1 text-[11px] text-muted-foreground hover:text-foreground"
+              >
+                <Volume2 className="h-3 w-3" /> Ouvir
+              </button>
+            )}
+            <button
+              onClick={() => { setSaudacao(null); setOpen(true); }}
+              className="text-[11px] text-primary hover:underline"
+            >
+              Abrir conversa
+            </button>
+          </div>
+        </div>
+      )}
+
       {!open && (
         <button
           onClick={() => setOpen(true)}
@@ -484,7 +572,31 @@ export function AIAssistant({ initialPrompt }: { initialPrompt?: string } = {}) 
                 {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
               </Button>
             </div>
-            <div className="mt-1.5 text-[10.5px] text-muted-foreground">⌘/Ctrl + I para abrir/fechar</div>
+            <div className="mt-1.5 flex items-center justify-between gap-2 text-[10.5px] text-muted-foreground">
+              <span>⌘/Ctrl + I para abrir/fechar</span>
+              <label className="inline-flex cursor-pointer items-center gap-1.5" title="Uma vez por dia, ao abrir o Hub">
+                <input
+                  type="checkbox"
+                  checked={saudacaoAtiva}
+                  onChange={(e) => {
+                    const ligado = e.target.checked;
+                    setSaudacaoAtiva(ligado);
+                    if (ligado) {
+                      localStorage.setItem(SAUDACAO_ATIVA, "1");
+                      // Zera o marcador do dia: quem acabou de ligar quer ver funcionando
+                      // agora, não amanhã.
+                      localStorage.removeItem(SAUDACAO_DIA);
+                    } else {
+                      localStorage.removeItem(SAUDACAO_ATIVA);
+                      pararFala();
+                      setSaudacao(null);
+                    }
+                  }}
+                  className="h-3 w-3 accent-[hsl(var(--primary))]"
+                />
+                Me receber ao entrar
+              </label>
+            </div>
           </div>
         </div>
       )}

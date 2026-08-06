@@ -167,6 +167,203 @@ export const CATALOGO: Fonte[] = [
     dimensoes: ["model", "feature"],
     listar: ["created_at", "model", "feature", "total_tokens", "cost_usd"],
   },
+
+  // --- Facilities (completando: compras, cotações, fornecedores) ---
+  {
+    id: "facilities_compras",
+    area: "Facilities",
+    descricao: "Compras efetivadas: item, fornecedor, categoria, forma de pagamento, status da NF e valor.",
+    data: "data",
+    valor: "valor",
+    dimensoes: ["categoria", "fornecedor_nome", "forma_pagamento", "nf_status", "pagamento_status"],
+    listar: ["data", "item", "fornecedor_nome", "categoria", "valor", "pagamento_status"],
+  },
+  {
+    id: "facilities_cotacoes",
+    area: "Facilities",
+    descricao: "Cotações recebidas por solicitação, com o fornecedor e se foi a escolhida.",
+    data: "created_at",
+    valor: "valor",
+    dimensoes: ["fornecedor_nome", "escolhida"],
+    listar: ["fornecedor_nome", "valor", "escolhida", "observacao"],
+  },
+  {
+    id: "facilities_fornecedores",
+    area: "Facilities",
+    descricao: "Fornecedores de facilities: categoria, contato, CNPJ e se tem contrato.",
+    dimensoes: ["categoria", "status", "tem_contrato"],
+    listar: ["nome", "categoria", "contato", "cnpj", "status"],
+  },
+
+  // --- Parceiros (completando: cadastro e recorrências) ---
+  {
+    id: "parceiros_cadastro",
+    area: "Parceiros",
+    descricao: "Cadastro de parceiros e embaixadores: tier, campanha, método e valores de bonificação e recorrência.",
+    valor: "valor_bonificacao",
+    dimensoes: ["tier", "campanha", "status", "metodo_bonificacao"],
+    listar: ["nome", "tier", "campanha", "status", "valor_bonificacao", "valor_recorrencia"],
+  },
+  {
+    id: "parceiros_recorrencias",
+    area: "Parceiros",
+    descricao: "Contratos recorrentes trazidos por parceiros, com MRR e data de cancelamento quando houver.",
+    data: "data_venda",
+    valor: "mrr",
+    dimensoes: ["indicador", "nome_campanha", "ativo", "responsavel_takeat"],
+    listar: ["indicador", "nome_negocio", "mrr", "recorrencia_valor", "ativo", "data_cancelamento"],
+  },
+  {
+    id: "embaixador_valores_calculados",
+    area: "Parceiros",
+    descricao: "Valores já calculados por embaixador e mês: bonificação, recorrência e soma.",
+    valor: "soma",
+    dimensoes: ["embaixador", "mes"],
+    listar: ["embaixador", "mes", "bonificacao_total", "recorrencia_total", "soma"],
+  },
+
+  // --- Projetos e fomento ---
+  {
+    id: "projetos_aprovados_parcelas",
+    area: "Radar de Editais",
+    descricao: "Parcelas de projetos aprovados: previsão, recebimento e valor.",
+    data: "data_prevista",
+    valor: "valor",
+    dimensoes: ["recebido"],
+    listar: ["descricao", "numero", "data_prevista", "data_recebimento", "valor", "recebido"],
+  },
+  {
+    id: "projetos",
+    area: "Automações",
+    descricao: "Projetos internos de automação: responsável, status e entrega.",
+    dimensoes: ["responsavel", "status", "automacao"],
+    listar: ["automacao", "descricao_entrega", "responsavel", "status"],
+  },
+  {
+    id: "automacoes_catalogo",
+    area: "Automações",
+    descricao:
+      "Catálogo de automações do time: dor que resolve, solução, ferramentas, esforço, " +
+      "impacto, horas economizadas por mês e nível de maturidade.",
+    valor: "horas_mes",
+    dimensoes: ["categoria", "status", "responsavel", "nivel", "impacto", "esforco"],
+    listar: ["automacao", "dor", "solucao", "responsavel", "status", "horas_mes", "nivel"],
+  },
+
+  // --- Time ---
+  {
+    id: "time_cargos",
+    area: "Time Financeiro",
+    descricao:
+      "Estrutura do time por ano: cargo, pessoa, senioridade, atribuições, custo mensal e " +
+      "se a vaga está preenchida ou é alvo futuro.",
+    valor: "custo_mensal",
+    dimensoes: ["ano", "pessoa", "senioridade", "status", "prioridade"],
+    listar: ["titulo", "pessoa", "senioridade", "ano", "status", "custo_mensal"],
+  },
+  {
+    id: "time_rituais",
+    area: "Time Financeiro",
+    descricao: "Rituais e cerimônias recorrentes do time financeiro.",
+    dimensoes: [],
+    listar: ["id"],
+  },
+  {
+    id: "tarefas_log",
+    area: "Time Financeiro",
+    descricao: "Histórico de mudanças nas tarefas — quem mexeu no quê e quando.",
+    dimensoes: [],
+    listar: ["id"],
+  },
+
+  // --- Conhecimento e configuração ---
+  {
+    id: "playbooks",
+    area: "Anotações",
+    descricao: "Playbooks e anotações do time: título, categoria, dono e conteúdo.",
+    data: "updated_at",
+    dimensoes: ["category", "status", "owner_name"],
+    listar: ["title", "category", "description", "owner_name", "status"],
+  },
+  {
+    id: "base_conhecimento",
+    area: "Biblioteca",
+    descricao: "Base de conhecimento da empresa: documentos e políticas em texto.",
+    data: "updated_at",
+    dimensoes: ["tipo"],
+    listar: ["titulo", "tipo", "updated_at"],
+  },
+  {
+    id: "lib_departamentos",
+    area: "Biblioteca",
+    descricao: "Departamentos da empresa, com gestor e descrição.",
+    dimensoes: [],
+    listar: ["nome", "descricao"],
+  },
+  {
+    id: "lib_centros_custo",
+    area: "Biblioteca",
+    descricao: "Centros de custo: código, nome e descrição.",
+    dimensoes: [],
+    listar: ["codigo", "nome", "descricao"],
+  },
+  {
+    id: "lib_politicas",
+    area: "Biblioteca",
+    descricao: "Políticas internas da empresa.",
+    dimensoes: [],
+    listar: ["id"],
+  },
+  {
+    id: "de_para_rules",
+    area: "Configurações",
+    descricao:
+      "Regras DE/PARA de classificação: palavra-chave que mapeia para categoria, conta, " +
+      "centro de custo e fornecedor no Omie.",
+    dimensoes: ["categoria", "centro_custo", "tipo", "conta"],
+    listar: ["keyword", "categoria", "conta", "centro_custo", "cliente_fornecedor"],
+  },
+
+  // --- Análise e cenários ---
+  {
+    id: "cenarios",
+    area: "Análise Preditiva",
+    descricao: "Cenários de projeção salvos, com premissas, projeção e análise.",
+    data: "updated_at",
+    dimensoes: ["periodo_base"],
+    listar: ["nome", "descricao", "periodo_base", "meses_projecao"],
+  },
+
+  // --- Operacional ---
+  {
+    id: "cartao_faturas",
+    area: "Cartão de Crédito",
+    descricao: "Faturas de cartão importadas, por competência e data de fechamento.",
+    data: "fechamento",
+    dimensoes: ["competencia"],
+    listar: ["mes_label", "competencia", "fechamento", "arquivo", "importado_em"],
+  },
+  {
+    id: "recargas_viagens_itens",
+    area: "Recargas",
+    descricao: "Itens individuais dentro de cada viagem lançada.",
+    dimensoes: [],
+    listar: ["id"],
+  },
+  {
+    id: "extratos_importados",
+    area: "Caixa",
+    descricao: "Extratos bancários importados manualmente para o Hub.",
+    dimensoes: [],
+    listar: ["id"],
+  },
+  {
+    id: "profiles",
+    area: "Configurações",
+    descricao: "Usuários do Hub: nome, e-mail e cargo. O cargo controla o acesso às áreas.",
+    dimensoes: ["cargo"],
+    listar: ["nome", "email", "cargo"],
+  },
 ];
 
 /** Bloco de fontes para o prompt do roteador. Só id, área e descrição — nada de colunas. */

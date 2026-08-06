@@ -29,13 +29,17 @@ import {
   caixaDoMes, explorar, lancamentosDaRubrica, Numero, panoramaDoMes, radar, Resultado,
   rubricaDoMes, ultimoMesFechado, variacaoEbitda,
 } from "../_shared/assistente/consultas.ts";
+import {
+  orcamentoPorArea, pagamentosPrevistos, panoramaDFC, snapshotKpis,
+} from "../_shared/assistente/consultas-hub.ts";
 import { catalogoParaPrompt } from "../_shared/assistente/catalogo.ts";
 import { blocoDeMemoria, memorizar, registrarExecucao } from "../_shared/assistente/memoria.ts";
 import { Competencia, competenciaExtenso } from "../_shared/assistente/dre.ts";
 
 const CONSULTAS = [
   "caixa_do_mes", "variacao_ebitda", "panorama_do_mes", "rubrica_do_mes",
-  "lancamentos_da_rubrica", "radar", "explorar",
+  "lancamentos_da_rubrica", "radar", "dfc_do_mes", "orcamento_por_area",
+  "pagamentos_previstos", "assinaturas", "churn", "investimentos", "explorar",
 ] as const;
 type NomeConsulta = typeof CONSULTAS[number];
 
@@ -58,6 +62,17 @@ Consultas disponíveis:
 - "radar": varre TODAS as rubricas e devolve as que fogem do padrão, da tendência ou do
   plano, ordenadas por peso em reais. Para "o que eu preciso saber", "tem algo estranho",
   "o que está fora do lugar", "me dá um resumo do que importa", "alguma anomalia".
+- "dfc_do_mes": fluxo de caixa CONTÁBIL por atividade (operacional, investimento,
+  financiamento, fluxo livre). Para "geramos ou queimamos caixa", "fluxo de caixa",
+  "cashburn", "DFC". NÃO confundir com caixa_do_mes, que é saldo e extrato bancário.
+- "orcamento_por_area": orçado × realizado por área, com saldo e % consumido. Para
+  "estamos dentro do orçamento", "qual área estourou", "quanto sobra em cada área".
+- "pagamentos_previstos": contas A PAGAR que vencem numa janela de dias. Para "o que
+  vence esta semana", "quanto tenho que pagar", "contas a pagar".
+- "assinaturas": KPIs da base de assinantes (MRR, carteira, mix). Para "como está a base
+  de clientes", "MRR", "assinaturas".
+- "churn": KPIs de cancelamento. Para "churn", "cancelamentos", "perdemos clientes".
+- "investimentos": posição das entidades de investimento (Takeat LTD/LLC).
 - "explorar": outras áreas do Hub. Devolva "fonte" e, se fizer sentido, "agrupar_por",
   "de" e "ate" (datas AAAA-MM-DD).
 
@@ -259,6 +274,22 @@ Deno.serve(async (req) => {
           return await panoramaDoMes(supabase, pedida);
         case "radar":
           return await radar(supabase);
+        case "dfc_do_mes":
+          return await panoramaDFC(supabase, pedida);
+        case "orcamento_por_area":
+          return await orcamentoPorArea(supabase, pedida);
+        case "pagamentos_previstos": {
+          // Sem data na pergunta, a janela é em torno de hoje — "o que vence" é sempre
+          // uma pergunta sobre o presente.
+          const dia = item?.de ?? new Date().toISOString().slice(0, 10);
+          return await pagamentosPrevistos(supabase, dia);
+        }
+        case "assinaturas":
+          return await snapshotKpis(supabase, "assinaturas_snapshot", "Assinaturas");
+        case "churn":
+          return await snapshotKpis(supabase, "churn_snapshot", "Churn");
+        case "investimentos":
+          return await snapshotKpis(supabase, "investimentos_snapshot", "Investimentos");
         case "rubrica_do_mes": {
           const rubrica = String(item?.rubrica ?? "").trim();
           return rubrica ? await rubricaDoMes(supabase, rubrica, pedida) : null;

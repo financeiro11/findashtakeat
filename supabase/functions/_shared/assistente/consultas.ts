@@ -16,6 +16,10 @@ import {
 } from "./dre.ts";
 import { acharNo, folhasDe, rotulosDeDespesa, todosRotulos } from "./schema-dre.ts";
 import { acharFonte } from "./catalogo.ts";
+import { brl, fecha, Numero, pct, Resultado } from "./base.ts";
+// Importado do módulo irmão: as justificativas são do Hub, mas enriquecem a explicação
+// de variação do DRE, que mora aqui. Sem ciclo, porque o contrato comum está em base.ts.
+import { justificativaDe, justificativasDoMes } from "./consultas-hub.ts";
 import {
   analisarTendencia, compararComPlano, frasePadrao, fraseTendencia, IndiceBP, indexarBP,
   julgarSerie, serieAnterior,
@@ -36,67 +40,11 @@ async function carregarBP(supabase: { from: (t: string) => any }): Promise<Indic
   }
 }
 
-// ---------------------------------------------------------------------------
-// Contrato
-// ---------------------------------------------------------------------------
-
-/** Um número exibido na tela, sempre acompanhado de onde veio. */
-export type Numero = {
-  rotulo: string;
-  valor: number;
-  formatado: string;
-  fonte: string;
-  competencia: string;
-};
-
-export type Resultado = {
-  consulta: string;
-  ok: boolean;
-  /**
-   * Quão forte é a garantia por trás dos números.
-   *
-   * "conferido"  — consulta nomeada: o código conhece a semântica e CONFERIU que a soma
-   *                das partes bate com o total. É o que pode ir para diretoria.
-   * "consultado" — explorador genérico: os dados vieram do banco agora, mas ninguém
-   *                validou se a agregação responde de fato à pergunta. Confiável quanto
-   *                à origem, não quanto à interpretação.
-   *
-   * Ausente equivale a "conferido" (as consultas nomeadas vieram antes deste campo).
-   */
-  nivel?: "conferido" | "consultado";
-  /** Vão para a tabela na tela, ao lado do texto. */
-  numeros: Numero[];
-  /** Bloco fechado entregue ao modelo. É a única coisa que ele sabe sobre os dados. */
-  paraModelo: string;
-  /** Lacunas e ressalvas — sempre mostradas, nunca escondidas. */
-  avisos: string[];
-  /**
-   * Próxima consulta que vale rodar sozinha, decidida por quem conhece o resultado.
-   *
-   * É o que separa um buscador de um analista: quem descobre que uma rubrica derrubou o
-   * EBITDA já sabe que o passo seguinte é ver os lançamentos dela. Deixar isso a cargo do
-   * modelo seria pedir para ele adivinhar; a consulta que produziu o dado sabe melhor.
-   */
-  aprofundar?: { consulta: string; rubrica?: string };
-};
-
-export const brl = (n: number): string =>
-  n.toLocaleString("pt-BR", { style: "currency", currency: "BRL", minimumFractionDigits: 2 });
-
-export const pct = (n: number): string =>
-  `${n.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}%`;
-
-/**
- * Confere que as partes somam o total.
- *
- * Tolerância relativa de 0,5% absorve arredondamento de centavos acumulado em dezenas de
- * rubricas, sem deixar passar erro estrutural (rubrica faltando, sinal invertido).
- */
-export function fecha(partes: number[], total: number, tolerancia = 0.005): boolean {
-  const soma = partes.reduce((a, b) => a + b, 0);
-  const escala = Math.max(Math.abs(total), 1);
-  return Math.abs(soma - total) / escala <= tolerancia;
-}
+// O contrato (Numero, Resultado, brl, pct, fecha) mora em base.ts para que este módulo e
+// consultas-hub.ts possam se referenciar sem ciclo. Re-exportado aqui porque o
+// orquestrador e os testes importam daqui desde antes da separação.
+export type { Numero, Resultado } from "./base.ts";
+export { brl, fecha, pct } from "./base.ts";
 
 // ---------------------------------------------------------------------------
 // Caixa do mês
@@ -413,6 +361,14 @@ export async function variacaoEbitda(
     });
   }
 
+  // A explicação que alguém já escreveu para cada rubrica que se moveu. Atribuir a
+  // variação estatisticamente e ignorar o comentário existente seria refazer, pior, um
+  // trabalho pronto.
+  const justificativas = await justificativasDoMes(supabase, "dre", atual);
+  const comTexto = principais
+    .map((d) => ({ rubrica: d.rubrica, texto: justificativas.get(d.rubrica) }))
+    .filter((x): x is { rubrica: string; texto: string } => !!x.texto);
+
   const cobertura = principais.reduce((a, d) => a + Math.abs(d.efeito), 0);
   const totalDetalhe = detalhes.reduce((a, d) => a + Math.abs(d.efeito), 0);
   if (totalDetalhe > 0 && cobertura / totalDetalhe < 0.9) {
@@ -435,6 +391,12 @@ export async function variacaoEbitda(
     "",
     "Principais rubricas:",
     ...principais.map((d) => `  ${d.rubrica}: ${brl(d.anterior)} → ${brl(d.atual)} · efeito ${brl(d.efeito)}`),
+    ...(comTexto.length
+      ? ["",
+         "JUSTIFICATIVAS JÁ REGISTRADAS no Hub para estas rubricas — use-as como a",
+         "explicação principal, elas valem mais que qualquer inferência sua:",
+         ...comTexto.map((j) => `  ${j.rubrica}: "${j.texto}"`)]
+      : []),
     "",
     "LIMITE DESTES DADOS: aqui você tem a atribuição por rubrica, não o lançamento.",
     "Diga qual rubrica moveu o resultado e PARE aí. Não invente a causa dentro dela —",
@@ -673,7 +635,10 @@ export async function rubricaDoMes(
   // ---- Julgamento: o número é normal? está dentro do combinado? --------------------
   const historico = serieAnterior(dre, rubrica, fechados, alvo);
   const veredito = julgarSerie(historico, valor);
-  const bp = await carregarBP(supabase);
+  const [bp, justificativa] = await Promise.all([
+    carregarBP(supabase),
+    justificativaDe(supabase, "dre", rubrica, alvo),
+  ]);
   const plano = compararComPlano(bp, rubrica, alvo, valor);
 
   if (plano) {
@@ -708,6 +673,10 @@ export async function rubricaDoMes(
     `RUBRICA "${rubrica}" — ${competenciaExtenso(alvo)}`,
     ...numeros.map((n) => `${n.rotulo}: ${n.formatado} (${n.competencia})`),
     "",
+    ...(justificativa
+      ? ["JUSTIFICATIVA JÁ REGISTRADA no Hub — use como a explicação principal:",
+         `  ${justificativa}`, ""]
+      : []),
     "JULGAMENTO (calculado, não opinado — comunique, não recalcule):",
     `  Trajetória: ${fraseTendencia(analisarTendencia([...historico, valor]))}.`,
     `  Contra o próprio histórico: ${frasePadrao(veredito, brl)}.`,

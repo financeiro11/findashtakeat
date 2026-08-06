@@ -57,6 +57,9 @@ import FacilitiesCotacoes from "./pages/facilities/Cotacoes";
 import FacilitiesFornecedores from "./pages/facilities/Fornecedores";
 import FacilitiesHistorico from "./pages/facilities/Historico";
 import FacilitiesContratos from "./pages/facilities/Contratos";
+import AssistenteChat from "./pages/assistente/Chat";
+import AssistenteMemoria from "./pages/assistente/Memoria";
+import TesteVozes from "./pages/assistente/TesteVozes";
 import NotFound from "./pages/NotFound.tsx";
 import LinkPublico from "./pages/LinkPublico";
 
@@ -132,6 +135,10 @@ const App = () => (
               <Route path="/facilities/fornecedores" element={<FacilitiesFornecedores />} />
               <Route path="/facilities/historico" element={<FacilitiesHistorico />} />
               <Route path="/facilities/contratos" element={<FacilitiesContratos />} />
+              <Route path="/assistente" element={<AssistenteChat />} />
+              <Route path="/assistente/memoria" element={<AssistenteMemoria />} />
+              {/* Diagnóstico do Assistente — fora do menu de propósito (ver TesteVozes.tsx). */}
+              <Route path="/assistente/teste-voz" element={<TesteVozes />} />
             </Route>
             <Route path="*" element={<NotFound />} />
           </Routes>

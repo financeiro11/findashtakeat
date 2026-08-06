@@ -5,6 +5,7 @@ import {
   Percent, BookOpen, UserCog, Smartphone, Plane, Settings,
   FolderKanban, FileBarChart, FileText, Scale, TrendingUp, Brain, Target, Home, Search, Sparkles, Gavel, CheckSquare, ChevronDown, BookOpenCheck, PieChart, Handshake as HandshakeIcon, CheckCircle2, Receipt, Undo2, Wallet2, ShieldCheck, Landmark,
   LayoutDashboard, Kanban, FileSpreadsheet, Truck, History, FileSignature, Wrench, Star, Repeat,
+  MessagesSquare,
 } from "lucide-react";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import takeatLogo from "@/assets/takeat-logo.png";
@@ -18,6 +19,7 @@ type NavItem = { title: string; url: string; icon: any; badge?: string };
 
 const inicio: NavItem[] = [
   { title: "Dashboard", url: "/", icon: Home },
+  { title: "Assistente", url: "/assistente", icon: MessagesSquare, badge: "NOVO" },
   { title: "Briefing", url: "/briefing", icon: Sparkles },
   { title: "Caixa", url: "/caixa", icon: Landmark, badge: "OMIE" },
   { title: "Asaas", url: "/asaas", icon: CreditCard },

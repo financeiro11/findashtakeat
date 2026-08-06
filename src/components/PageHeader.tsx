@@ -52,6 +52,9 @@ const ROUTE_MAP: Record<string, { crumbs: string[]; context?: string }> = {
   "/facilities/fornecedores": { crumbs: ["Facilities", "Fornecedores"], context: "Cadastro e histórico por fornecedor" },
   "/facilities/historico": { crumbs: ["Facilities", "Histórico"], context: "Compras realizadas" },
   "/facilities/contratos": { crumbs: ["Facilities", "Contratos"], context: "Serviços recorrentes" },
+  "/assistente": { crumbs: ["Assistente", "Conversa"], context: "Perguntas sobre os números · com fonte e competência" },
+  "/assistente/memoria": { crumbs: ["Assistente", "Memória"], context: "O que foi lembrado sobre você" },
+  "/assistente/teste-voz": { crumbs: ["Assistente", "Teste de Voz"], context: "Vozes gratuitas do navegador · diagnóstico" },
 };
 
 interface PageHeaderProps {

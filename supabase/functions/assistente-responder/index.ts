@@ -1,25 +1,30 @@
 // Edge Function: assistente-responder
 //
-// Responde perguntas sobre os números da Takeat em TRÊS etapas separadas de propósito:
+// Quatro etapas, separadas de propósito:
 //
-//   1. ROTEAR     — o modelo lê só a PERGUNTA (nenhum dado financeiro) e escolhe qual
-//                   consulta rodar e com quais parâmetros.
-//   2. COLETAR    — a consulta lê o Supabase sob a RLS do usuário e CONFERE as somas.
-//   3. SINTETIZAR — o modelo recebe um bloco fechado com os números já conferidos e
-//                   escreve o texto. Ele não tem ferramenta de busca: o que não veio na
-//                   etapa 2 não existe para ele.
+//   1. PLANEJAR   — o modelo lê só a PERGUNTA (nenhum dado financeiro) e escolhe ATÉ TRÊS
+//                   consultas. Perguntas reais raramente cabem numa fonte só: "o caixa
+//                   aguenta o ritmo de despesa?" precisa de caixa E de DRE.
+//   2. COLETAR    — as consultas rodam em paralelo, sob a RLS de quem perguntou, e cada
+//                   uma CONFERE suas somas.
+//   3. APROFUNDAR — quem produziu um resultado diz qual é o próximo passo (a rubrica que
+//                   derrubou o EBITDA pede seus lançamentos), e ele roda sozinho. É o que
+//                   separa um buscador de um analista.
+//   4. SINTETIZAR — o modelo recebe TODOS os blocos já conferidos e escreve. Ele não tem
+//                   ferramenta de busca: o que não veio nas etapas anteriores não existe.
 //
 // É essa separação que sustenta a regra de que nenhum número sai da cabeça do modelo.
-// Quando a coleta não fecha, a síntese NEM RODA — a resposta é determinística, montada
-// aqui, para que "não tenho esse dado" não passe por um redator criativo.
+// Quando nada é coletado, a síntese NEM RODA — a resposta é montada aqui, para que
+// "não tenho esse dado" não passe por um redator criativo.
 //
-// Memória e log de execução são efeitos colaterais deliberadamente NÃO-BLOQUEANTES:
-// nenhuma falha neles pode atrasar ou derrubar uma resposta sobre números.
+// Memória e log são efeitos colaterais NÃO-BLOQUEANTES: falha neles nunca derruba uma
+// resposta sobre números.
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.0";
 import { errorResponse, handleCors, jsonResponse } from "../_shared/gemini.ts";
 import { gerarJSON, gerarTexto, provedorAtual } from "../_shared/assistente/llm.ts";
 import { requireUser } from "../_shared/auth.ts";
+import { buildOrgContext } from "../_shared/org-context.ts";
 import {
   caixaDoMes, explorar, lancamentosDaRubrica, Numero, panoramaDoMes, Resultado, rubricaDoMes,
   ultimoMesFechado, variacaoEbitda,
@@ -30,65 +35,65 @@ import { Competencia, competenciaExtenso } from "../_shared/assistente/dre.ts";
 
 const CONSULTAS = [
   "caixa_do_mes", "variacao_ebitda", "panorama_do_mes", "rubrica_do_mes",
-  "lancamentos_da_rubrica", "explorar", "nenhuma",
+  "lancamentos_da_rubrica", "explorar",
 ] as const;
 type NomeConsulta = typeof CONSULTAS[number];
 
-const PROMPT_ROTEADOR = `Você roteia perguntas do time financeiro da Takeat para UMA consulta de dados.
+/** Teto de consultas por pergunta: cobre perguntas compostas sem virar varredura. */
+const MAX_CONSULTAS = 3;
 
-Consultas:
-- "caixa_do_mes": saldo bancário e movimentação de entradas/saídas. Para perguntas sobre
-  caixa, saldo, quanto entrou, quanto saiu, extrato, banco.
-- "variacao_ebitda": comparação do EBITDA entre os dois últimos meses fechados, com
-  atribuição da variação por rubrica. Para "por que o EBITDA caiu/subiu", "o que explica
-  o resultado".
-- "panorama_do_mes": totais do mês (receita, margem, EBITDA, lucro). Para "como foi julho",
-  "resumo do mês", "me dá os números do mês".
-- "rubrica_do_mes": valor de UMA rubrica específica do DRE. Para "quanto gastamos com
-  Equipe Comercial", "quanto foi Mídia Paga". Devolva o nome da rubrica em "rubrica".
-- "lancamentos_da_rubrica": os lançamentos individuais do Omie que compõem uma rubrica —
-  contrapartes, valores. Para "quem recebeu", "quais lançamentos", "me detalha", "do que
-  é composto", "por que ESSA rubrica subiu". Devolva o nome da rubrica em "rubrica".
-- "explorar": qualquer outra área do Hub (tarefas, auditoria, cartão, facilities,
-  parceiros, editais, projetos, recargas, biblioteca, uso de IA). Escolha a fonte na lista
-  abaixo e devolva também "fonte", e opcionalmente "agrupar_por", "de" e "ate"
-  (datas AAAA-MM-DD).
-- "nenhuma": a pergunta não é sobre nenhuma dessas áreas.
+const PROMPT_PLANEJADOR = `Você planeja quais consultas de dados respondem a uma pergunta do time
+financeiro da Takeat. Hoje é {HOJE}.
+
+Consultas disponíveis:
+- "panorama_do_mes": totais do mês no DRE (receita, margem, EBITDA, lucro). Para "como foi
+  julho", "resumo do mês".
+- "variacao_ebitda": compara o EBITDA dos dois últimos meses FECHADOS e atribui a variação
+  por rubrica. Para "por que o EBITDA caiu/subiu", "o que explica o resultado".
+- "rubrica_do_mes": valor de UMA rubrica do DRE. Devolva "rubrica". Para "quanto foi
+  Mídia Paga".
+- "lancamentos_da_rubrica": os lançamentos individuais do Omie dentro de uma rubrica, com
+  contrapartes. Devolva "rubrica". Para "quem recebeu", "me detalha", "do que é composto".
+- "caixa_do_mes": saldo bancário e movimentação de entradas/saídas (Sicoob e Asaas).
+- "explorar": outras áreas do Hub. Devolva "fonte" e, se fizer sentido, "agrupar_por",
+  "de" e "ate" (datas AAAA-MM-DD).
 
 FONTES para "explorar":
 {CATALOGO}
 
-Diferença que importa: "variacao_ebitda" explica QUAL rubrica moveu o resultado;
-"lancamentos_da_rubrica" explica QUEM está dentro de uma rubrica. Se a pergunta já
-nomeia a rubrica e pede detalhe ou motivo, use lancamentos_da_rubrica.
+COMO PLANEJAR:
+- Escolha de 1 a ${MAX_CONSULTAS} consultas. Use MAIS DE UMA quando a pergunta compara
+  coisas de naturezas diferentes: "o caixa aguenta a despesa?" pede caixa_do_mes E
+  panorama_do_mes; "como estamos?" pede panorama E caixa.
+- Use UMA só quando a pergunta é direta e cabe numa fonte.
+- Não peça a mesma consulta duas vezes.
+- Para DRE ou caixa, prefira sempre a consulta específica em vez de "explorar".
+- Se a pergunta não é sobre nenhuma dessas áreas, devolva a lista vazia.
 
-Prefira SEMPRE uma consulta específica (caixa, EBITDA, panorama, rubrica, lançamentos)
-quando a pergunta for sobre DRE ou caixa. Use "explorar" só para as outras áreas.
-
-No JSON, além de "consulta", "ano", "mes" e "rubrica", devolva quando usar explorar:
-"fonte", "agrupar_por", "de", "ate" (use null quando não se aplicar).
-
-Se a pergunta citar um mês, devolva ano e mes. Se não citar, deixe nulos.
-A data de hoje é {HOJE}.
+Se a pergunta citar um mês, devolva "ano" e "mes" na consulta a que se aplica.
 
 Responda SOMENTE com JSON:
-{"consulta": "...", "ano": null|número, "mes": null|número, "rubrica": null|"texto"}`;
+{"consultas": [{"consulta": "...", "ano": null, "mes": null, "rubrica": null, "fonte": null,
+"agrupar_por": null, "de": null, "ate": null}]}`;
 
 const PROMPT_SINTESE = `Você é analista financeiro do time da Takeat. Escreve em português do Brasil,
 direto e sem enrolação, como quem conhece os números da casa.
 
-REGRA ABSOLUTA: os únicos números que você pode escrever são os que aparecem no bloco DADOS.
+REGRA ABSOLUTA: os únicos números que você pode escrever são os que aparecem nos blocos DADOS.
 Não calcule números novos, não estime, não arredonde para um valor que não está lá, não traga
-nada de memória nem de conversas anteriores. Se algo não está no bloco, diga que não tem.
+nada de memória nem de conversas anteriores. Se algo não está nos blocos, diga que não tem.
 
 Como responder:
 - Comece pelo veredito em uma frase. Depois explique.
-- Use os números para sustentar a explicação, não para enfeitar. Duas ou três citações bastam.
-- Quando o bloco disser que existe um LIMITE nos dados, respeite-o e diga onde a explicação
-  termina. Não especule sobre a causa que os dados não mostram.
-- Não repita a tabela inteira em prosa: ela já aparece na tela ao lado da sua resposta.
-- Se o bloco disser que o mês está ABERTO, avise que o número é parcial.
-- Máximo 6 linhas.`;
+- Quando houver MAIS DE UM bloco, conecte-os: é isso que a pessoa não conseguiria ver
+  sozinha. Diga o que um número significa à luz do outro.
+- Use os números para sustentar, não para enfeitar. Duas ou três citações bastam.
+- Quando um bloco declarar um LIMITE, respeite-o e diga onde a explicação termina.
+- Se um bloco disser que os dados foram "consultados sem conferência de soma", trate-os
+  como levantamento e avise que não é fechamento contábil.
+- Se o mês estiver ABERTO, avise que o número é parcial.
+- Não repita a tabela em prosa: ela já aparece na tela ao lado.
+- Máximo 8 linhas.`;
 
 function normalizarCompetencia(ano: unknown, mes: unknown): Competencia | null {
   const a = Number(ano);
@@ -99,12 +104,12 @@ function normalizarCompetencia(ano: unknown, mes: unknown): Competencia | null {
 }
 
 /**
- * Guarda-corpo final: procura valores em reais no texto do modelo que NÃO existam entre os
- * números conferidos.
+ * Guarda-corpo final: valores em reais no texto do modelo que NÃO existam entre os
+ * números coletados.
  *
- * Não bloqueia a resposta — a etapa de coleta já garante a origem dos dados. Serve para
- * flagrar na tela quando o modelo compôs um valor por conta própria (somando duas linhas,
- * por exemplo), que é o modo de falha que sobra depois de tirar dele o acesso à busca.
+ * Não bloqueia a resposta — a coleta já garante a origem. Serve para flagrar quando o
+ * modelo compôs um valor por conta própria (somando dois blocos, por exemplo), que é o
+ * modo de falha que sobra depois de tirar dele o acesso à busca.
  */
 function valoresNaoReconhecidos(texto: string, numeros: Numero[]): string[] {
   const conhecidos = numeros.map((n) => Math.abs(n.valor));
@@ -114,15 +119,13 @@ function valoresNaoReconhecidos(texto: string, numeros: Numero[]): string[] {
     const bruto = m[1];
     const valor = Math.abs(parseFloat(bruto.replace(/\./g, "").replace(",", ".")));
     if (!Number.isFinite(valor)) continue;
-
-    // Tolerância de 1%: o modelo pode dizer "128 mil" para R$ 128.412,00, e isso é legítimo.
+    // Tolerância de 1%: dizer "128 mil" para R$ 128.412,00 é legítimo.
     const bate = conhecidos.some((c) => Math.abs(c - valor) / Math.max(c, 1) <= 0.01);
     if (!bate) achados.push(`R$ ${bruto}`);
   }
   return [...new Set(achados)];
 }
 
-/** Últimas trocas da conversa, para o modelo entender "e no mês anterior?". */
 type Turno = { pergunta: string; resposta: string };
 
 function blocoHistorico(historico: Turno[]): string {
@@ -132,6 +135,11 @@ function blocoHistorico(historico: Turno[]): string {
     ...historico.slice(-4).map((t) => `P: ${t.pergunta}\nR: ${t.resposta}`),
   ].join("\n");
 }
+
+type ItemPlano = {
+  consulta?: string; ano?: number | null; mes?: number | null; rubrica?: string | null;
+  fonte?: string | null; agrupar_por?: string | null; de?: string | null; ate?: string | null;
+};
 
 Deno.serve(async (req) => {
   const pre = handleCors(req);
@@ -156,7 +164,6 @@ Deno.serve(async (req) => {
           }))
       : [];
 
-    // Leitura sob a RLS do usuário; gravação (memória/log) com service_role.
     const auth = req.headers.get("Authorization") ?? "";
     const supabase = createClient(
       Deno.env.get("SUPABASE_URL")!,
@@ -168,47 +175,54 @@ Deno.serve(async (req) => {
       Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!,
     );
 
-    // ---- Etapa 1: rotear (o modelo não vê nenhum dado financeiro aqui) ----------------
+    // ---- Etapa 1: planejar (o modelo não vê nenhum dado financeiro aqui) --------------
     const hoje = new Date().toLocaleDateString("pt-BR", { timeZone: "America/Sao_Paulo" });
-    let rota: {
-      consulta?: string; ano?: number | null; mes?: number | null; rubrica?: string | null;
-      fonte?: string | null; agrupar_por?: string | null; de?: string | null; ate?: string | null;
-    } = {};
+    let plano: ItemPlano[] = [];
     try {
-      rota = await gerarJSON({
+      const resposta = await gerarJSON<{ consultas?: ItemPlano[] }>({
         temperature: 0,
         messages: [
           {
             role: "system",
-            content: PROMPT_ROTEADOR.replace("{HOJE}", hoje).replace("{CATALOGO}", catalogoParaPrompt()),
+            content: PROMPT_PLANEJADOR
+              .replace("{HOJE}", hoje)
+              .replace("{CATALOGO}", catalogoParaPrompt()),
           },
           { role: "user", content: [blocoHistorico(historico), `PERGUNTA: ${pergunta}`].filter(Boolean).join("\n\n") },
         ],
       });
+      plano = Array.isArray(resposta?.consultas) ? resposta.consultas : [];
     } catch {
-      rota = {};
+      plano = [];
     }
 
-    const escolhida = (CONSULTAS as readonly string[]).includes(String(rota?.consulta))
-      ? (rota.consulta as NomeConsulta)
-      : "nenhuma";
+    // Só consultas conhecidas, sem repetição, respeitando o teto.
+    const vistas = new Set<string>();
+    plano = plano
+      .filter((p) => (CONSULTAS as readonly string[]).includes(String(p?.consulta)))
+      .filter((p) => {
+        const chave = `${p.consulta}|${p.rubrica ?? ""}|${p.fonte ?? ""}|${p.ano ?? ""}-${p.mes ?? ""}`;
+        if (vistas.has(chave)) return false;
+        vistas.add(chave);
+        return true;
+      })
+      .slice(0, MAX_CONSULTAS);
 
     const responderSemDados = (texto: string, avisos: string[] = []) => {
-      // `provedor` vai em TODA resposta, não só nas bem-sucedidas: sem isso o modelo
-      // sumia da tela justamente nos casos em que a pessoa mais quer saber o que houve.
       const resp = {
-        ok: false, provedor: provedorAtual(), consulta: escolhida,
+        ok: false, provedor: provedorAtual(), nivel: "conferido" as const,
+        consulta: plano.map((p) => p.consulta).join("+") || "nenhuma",
         resposta: texto, numeros: [], avisos,
       };
       registrarExecucao(admin, {
         user_id: caller.userId ?? "", conversa_id: conversaId, pergunta,
-        consulta: escolhida, ok: false, numeros: [], avisos, resposta: texto,
+        consulta: resp.consulta, ok: false, numeros: [], avisos, resposta: texto,
         latencia_ms: Date.now() - inicio,
       });
       return jsonResponse(resp);
     };
 
-    if (escolhida === "nenhuma") {
+    if (plano.length === 0) {
       return responderSemDados(
         "Ainda não sei responder isso. Hoje eu alcanço: DRE e caixa (totais do mês, " +
         "rubricas, variação do EBITDA, lançamentos do Omie, extratos Sicoob e Asaas) e as " +
@@ -218,92 +232,106 @@ Deno.serve(async (req) => {
       );
     }
 
-    // ---- Etapa 2: coletar (conferindo as somas) --------------------------------------
-    const pedida = normalizarCompetencia(rota?.ano, rota?.mes);
-    let resultado: Resultado;
+    // ---- Etapa 2: coletar (em paralelo, cada uma conferindo suas somas) ---------------
+    const executar = async (item: ItemPlano): Promise<Resultado | null> => {
+      const pedida = normalizarCompetencia(item?.ano, item?.mes);
+      switch (item.consulta as NomeConsulta) {
+        case "caixa_do_mes": {
+          const competencia = pedida ?? (await ultimoMesFechado(supabase));
+          if (!competencia) return null;
+          const r = await caixaDoMes(supabase, competencia);
+          if (!pedida) {
+            r.avisos.push(`Usei ${competenciaExtenso(competencia)}, o último mês fechado.`);
+          }
+          return r;
+        }
+        case "panorama_do_mes":
+          return await panoramaDoMes(supabase, pedida);
+        case "rubrica_do_mes": {
+          const rubrica = String(item?.rubrica ?? "").trim();
+          return rubrica ? await rubricaDoMes(supabase, rubrica, pedida) : null;
+        }
+        case "lancamentos_da_rubrica": {
+          const rubrica = String(item?.rubrica ?? "").trim();
+          return rubrica ? await lancamentosDaRubrica(supabase, rubrica, pedida) : null;
+        }
+        case "explorar": {
+          const fonte = String(item?.fonte ?? "").trim();
+          return fonte
+            ? await explorar(supabase, {
+                fonte,
+                agrupar_por: item?.agrupar_por ?? null,
+                de: item?.de ?? null,
+                ate: item?.ate ?? null,
+              })
+            : null;
+        }
+        default:
+          return await variacaoEbitda(supabase);
+      }
+    };
 
-    switch (escolhida) {
-      case "caixa_do_mes": {
-        const competencia = pedida ?? (await ultimoMesFechado(supabase));
-        if (!competencia) {
-          return responderSemDados(
-            "Não consegui determinar de qual mês você fala e não há mês fechado no DRE " +
-            "para usar como padrão. Me diga a competência (por exemplo, 07/2026).",
-          );
-        }
-        resultado = await caixaDoMes(supabase, competencia);
-        if (!pedida) {
-          resultado.avisos.push(
-            `A pergunta não citou o mês; usei ${competenciaExtenso(competencia)}, o último fechado.`,
-          );
-        }
-        break;
+    const coletados = (await Promise.all(plano.map(executar))).filter((r): r is Resultado => r !== null);
+
+    // ---- Etapa 3: aprofundar (quem produziu o dado diz qual é o próximo passo) --------
+    const jaConsultadas = new Set(coletados.map((r) => r.consulta));
+    for (const r of coletados.filter((x) => x.ok && x.aprofundar)) {
+      if (coletados.length >= MAX_CONSULTAS + 1) break; // um passo extra, não uma cascata
+      const passo = r.aprofundar!;
+      if (jaConsultadas.has(passo.consulta)) continue;
+      const extra = await executar({ consulta: passo.consulta, rubrica: passo.rubrica });
+      if (extra?.ok) {
+        coletados.push(extra);
+        jaConsultadas.add(extra.consulta);
       }
-      case "panorama_do_mes":
-        resultado = await panoramaDoMes(supabase, pedida);
-        break;
-      case "rubrica_do_mes": {
-        const rubrica = String(rota?.rubrica ?? "").trim();
-        if (!rubrica) {
-          return responderSemDados("Qual rubrica do DRE você quer ver? Me diga o nome dela.");
-        }
-        resultado = await rubricaDoMes(supabase, rubrica, pedida);
-        break;
-      }
-      case "lancamentos_da_rubrica": {
-        const rubrica = String(rota?.rubrica ?? "").trim();
-        if (!rubrica) {
-          return responderSemDados("De qual rubrica você quer ver os lançamentos?");
-        }
-        resultado = await lancamentosDaRubrica(supabase, rubrica, pedida);
-        break;
-      }
-      case "explorar": {
-        const fonte = String(rota?.fonte ?? "").trim();
-        if (!fonte) {
-          return responderSemDados("Não consegui identificar de qual área do Hub você fala.");
-        }
-        resultado = await explorar(supabase, {
-          fonte,
-          agrupar_por: rota?.agrupar_por ?? null,
-          de: rota?.de ?? null,
-          ate: rota?.ate ?? null,
-        });
-        break;
-      }
-      default:
-        resultado = await variacaoEbitda(supabase);
     }
 
-    // Coleta não fechou: responde de forma determinística, SEM passar pelo modelo.
-    if (!resultado.ok) {
+    const uteis = coletados.filter((r) => r.ok);
+    if (uteis.length === 0) {
+      const avisos = coletados.flatMap((r) => r.avisos);
       return responderSemDados(
         "Não tenho esse dado com a confiabilidade necessária para responder." +
-        (resultado.avisos.length ? " " + resultado.avisos.join(" ") : ""),
-        resultado.avisos,
+        (avisos.length ? " " + avisos.join(" ") : ""),
+        avisos,
       );
     }
 
-    // ---- Etapa 3: sintetizar (payload fechado, sem ferramentas) ----------------------
+    // ---- Etapa 4: sintetizar (payload fechado, sem ferramentas) ----------------------
     const memoria = caller.userId ? await blocoDeMemoria(supabase, caller.userId) : "";
+
+    // Quem é quem na Takeat: colaboradores, fornecedores, centros de custo e políticas.
+    // Sem isto o assistente lê "Fulano Consultoria" como texto e não sabe que é fornecedor
+    // de marketing, nem que a política limita aquele tipo de gasto.
+    let organizacao = "";
+    try {
+      organizacao = await buildOrgContext(supabase);
+    } catch { /* contexto organizacional é enriquecimento, não requisito */ }
+
+    const blocos = uteis.map((r, i) => `[BLOCO ${i + 1} — ${r.consulta}]\n${r.paraModelo}`).join("\n\n");
+
     const texto = await gerarTexto({
       temperature: 0.3,
       messages: [
-        { role: "system", content: [PROMPT_SINTESE, memoria].filter(Boolean).join("\n\n") },
+        {
+          role: "system",
+          content: [PROMPT_SINTESE, organizacao, memoria].filter(Boolean).join("\n\n"),
+        },
         {
           role: "user",
           content: [
             blocoHistorico(historico),
             `PERGUNTA:\n${pergunta}`,
-            `DADOS:\n${resultado.paraModelo}`,
+            `DADOS (${uteis.length} bloco(s)):\n${blocos}`,
           ].filter(Boolean).join("\n\n"),
         },
       ],
     });
 
     const resposta = texto.trim();
-    const avisos = [...resultado.avisos];
-    const inventados = valoresNaoReconhecidos(resposta, resultado.numeros);
+    const numeros = uteis.flatMap((r) => r.numeros);
+    const avisos = uteis.flatMap((r) => r.avisos);
+
+    const inventados = valoresNaoReconhecidos(resposta, numeros);
     if (inventados.length > 0) {
       avisos.push(
         `Confira: ${inventados.join(", ")} não corresponde a nenhum número consultado. ` +
@@ -311,18 +339,19 @@ Deno.serve(async (req) => {
       );
     }
 
-    // Efeitos colaterais: não bloqueiam a resposta e não podem derrubá-la.
+    // Um bloco "consultado" rebaixa a resposta inteira: a garantia vale pelo elo mais fraco.
+    const nivel = uteis.some((r) => r.nivel === "consultado") ? "consultado" : "conferido";
+    const consulta = uteis.map((r) => r.consulta).join(" + ");
+
     if (caller.userId) {
       const depois = Promise.all([
         registrarExecucao(admin, {
           user_id: caller.userId, conversa_id: conversaId, pergunta,
-          consulta: resultado.consulta, ok: true, numeros: resultado.numeros,
-          avisos, resposta, latencia_ms: Date.now() - inicio,
+          consulta, ok: true, numeros, avisos, resposta, latencia_ms: Date.now() - inicio,
         }),
         memorizar(admin, caller.userId, pergunta, resposta, conversaId),
       ]).catch(() => {});
 
-      // waitUntil mantém o isolate vivo até terminarem, sem somar latência à resposta.
       const rt = (globalThis as { EdgeRuntime?: { waitUntil?: (p: Promise<unknown>) => void } }).EdgeRuntime;
       if (rt?.waitUntil) rt.waitUntil(depois);
       else await depois;
@@ -330,16 +359,11 @@ Deno.serve(async (req) => {
 
     return jsonResponse({
       ok: true,
-      // Qual modelo respondeu. Exposto porque a troca de provedor é decidida em tempo de
-      // execução (ver _shared/assistente/llm.ts): sem isto, uma queda para o Gemini por
-      // chave inválida passaria despercebida.
       provedor: provedorAtual(),
-      // "conferido" (soma validada) vs "consultado" (veio do banco, sem validação
-      // semântica). A tela mostra selos diferentes — ver Selo em AIAssistant.tsx.
-      nivel: resultado.nivel ?? "conferido",
-      consulta: resultado.consulta,
+      nivel,
+      consulta,
       resposta,
-      numeros: resultado.numeros,
+      numeros,
       avisos,
     });
   } catch (e) {

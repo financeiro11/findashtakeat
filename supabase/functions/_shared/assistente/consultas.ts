@@ -51,6 +51,14 @@ export type Resultado = {
   paraModelo: string;
   /** Lacunas e ressalvas — sempre mostradas, nunca escondidas. */
   avisos: string[];
+  /**
+   * Próxima consulta que vale rodar sozinha, decidida por quem conhece o resultado.
+   *
+   * É o que separa um buscador de um analista: quem descobre que uma rubrica derrubou o
+   * EBITDA já sabe que o passo seguinte é ver os lançamentos dela. Deixar isso a cargo do
+   * modelo seria pedir para ele adivinhar; a consulta que produziu o dado sabe melhor.
+   */
+  aprofundar?: { consulta: string; rubrica?: string };
 };
 
 export const brl = (n: number): string =>
@@ -415,7 +423,14 @@ export async function variacaoEbitda(
     "(ex.: \"me mostra os lançamentos de Equipe Comercial\").",
   ].join("\n");
 
-  return { consulta: "variacao_ebitda", ok: true, numeros, paraModelo, avisos };
+  // A rubrica que mais moveu o resultado é o próximo passo natural — desde que seja uma
+  // FOLHA, porque só folha tem lançamento por trás.
+  const dominante = principais[0];
+  const aprofundar = dominante && !acharNo(dominante.rubrica)?.children?.length
+    ? { consulta: "lancamentos_da_rubrica", rubrica: dominante.rubrica }
+    : undefined;
+
+  return { consulta: "variacao_ebitda", ok: true, numeros, paraModelo, avisos, aprofundar };
 }
 
 // ---------------------------------------------------------------------------

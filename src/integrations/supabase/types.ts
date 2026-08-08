@@ -14,6 +14,241 @@ export type Database = {
   }
   public: {
     Tables: {
+      agente_excecoes: {
+        Row: {
+          agente_id: string
+          atribuido_a: string | null
+          atualizado_em: string
+          criado_em: string
+          descricao: string | null
+          entidade: string | null
+          entidade_id: string | null
+          execucao_id: string | null
+          id: string
+          resolucao: string | null
+          resolvido_em: string | null
+          resolvido_por: string | null
+          severidade: string
+          sla_horas: number
+          status: string
+          tipo: string
+          titulo: string
+          valor: number | null
+          vence_em: string | null
+        }
+        Insert: {
+          agente_id: string
+          atribuido_a?: string | null
+          atualizado_em?: string
+          criado_em?: string
+          descricao?: string | null
+          entidade?: string | null
+          entidade_id?: string | null
+          execucao_id?: string | null
+          id?: string
+          resolucao?: string | null
+          resolvido_em?: string | null
+          resolvido_por?: string | null
+          severidade?: string
+          sla_horas?: number
+          status?: string
+          tipo: string
+          titulo: string
+          valor?: number | null
+          vence_em?: string | null
+        }
+        Update: {
+          agente_id?: string
+          atribuido_a?: string | null
+          atualizado_em?: string
+          criado_em?: string
+          descricao?: string | null
+          entidade?: string | null
+          entidade_id?: string | null
+          execucao_id?: string | null
+          id?: string
+          resolucao?: string | null
+          resolvido_em?: string | null
+          resolvido_por?: string | null
+          severidade?: string
+          sla_horas?: number
+          status?: string
+          tipo?: string
+          titulo?: string
+          valor?: number | null
+          vence_em?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "agente_excecoes_agente_id_fkey"
+            columns: ["agente_id"]
+            isOneToOne: false
+            referencedRelation: "agentes"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "agente_excecoes_agente_id_fkey"
+            columns: ["agente_id"]
+            isOneToOne: false
+            referencedRelation: "vw_agente_saude"
+            referencedColumns: ["agente_id"]
+          },
+          {
+            foreignKeyName: "agente_excecoes_atribuido_a_fkey"
+            columns: ["atribuido_a"]
+            isOneToOne: false
+            referencedRelation: "lib_colaboradores"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "agente_excecoes_execucao_id_fkey"
+            columns: ["execucao_id"]
+            isOneToOne: false
+            referencedRelation: "agente_execucoes"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "agente_excecoes_resolvido_por_fkey"
+            columns: ["resolvido_por"]
+            isOneToOne: false
+            referencedRelation: "lib_colaboradores"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      agente_execucoes: {
+        Row: {
+          agente_id: string
+          alcada: string | null
+          confianca: number | null
+          correcao: Json | null
+          corrigido_em: string | null
+          corrigido_por: string | null
+          corrigido_por_humano: boolean
+          entidade: string | null
+          entidade_id: string | null
+          entrada: Json | null
+          erro: string | null
+          executado_em: string
+          id: string
+          latencia_ms: number | null
+          regra_id: string | null
+          resultado: string
+          saida: Json | null
+          tarefa: string
+        }
+        Insert: {
+          agente_id: string
+          alcada?: string | null
+          confianca?: number | null
+          correcao?: Json | null
+          corrigido_em?: string | null
+          corrigido_por?: string | null
+          corrigido_por_humano?: boolean
+          entidade?: string | null
+          entidade_id?: string | null
+          entrada?: Json | null
+          erro?: string | null
+          executado_em?: string
+          id?: string
+          latencia_ms?: number | null
+          regra_id?: string | null
+          resultado: string
+          saida?: Json | null
+          tarefa: string
+        }
+        Update: {
+          agente_id?: string
+          alcada?: string | null
+          confianca?: number | null
+          correcao?: Json | null
+          corrigido_em?: string | null
+          corrigido_por?: string | null
+          corrigido_por_humano?: boolean
+          entidade?: string | null
+          entidade_id?: string | null
+          entrada?: Json | null
+          erro?: string | null
+          executado_em?: string
+          id?: string
+          latencia_ms?: number | null
+          regra_id?: string | null
+          resultado?: string
+          saida?: Json | null
+          tarefa?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "agente_execucoes_agente_id_fkey"
+            columns: ["agente_id"]
+            isOneToOne: false
+            referencedRelation: "agentes"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "agente_execucoes_agente_id_fkey"
+            columns: ["agente_id"]
+            isOneToOne: false
+            referencedRelation: "vw_agente_saude"
+            referencedColumns: ["agente_id"]
+          },
+          {
+            foreignKeyName: "agente_execucoes_corrigido_por_fkey"
+            columns: ["corrigido_por"]
+            isOneToOne: false
+            referencedRelation: "lib_colaboradores"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "agente_execucoes_regra_id_fkey"
+            columns: ["regra_id"]
+            isOneToOne: false
+            referencedRelation: "regras_decisao"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      agentes: {
+        Row: {
+          alcada_maxima: string
+          ativo: boolean
+          atualizado_em: string
+          automacao_id: string | null
+          criado_em: string
+          descricao: string | null
+          id: string
+          nome: string
+        }
+        Insert: {
+          alcada_maxima?: string
+          ativo?: boolean
+          atualizado_em?: string
+          automacao_id?: string | null
+          criado_em?: string
+          descricao?: string | null
+          id: string
+          nome: string
+        }
+        Update: {
+          alcada_maxima?: string
+          ativo?: boolean
+          atualizado_em?: string
+          automacao_id?: string | null
+          criado_em?: string
+          descricao?: string | null
+          id?: string
+          nome?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "agentes_automacao_id_fkey"
+            columns: ["automacao_id"]
+            isOneToOne: false
+            referencedRelation: "automacoes_catalogo"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       ai_conversations: {
         Row: {
           created_at: string
@@ -265,6 +500,81 @@ export type Database = {
           insights?: Json | null
           mes_label?: string
           sincronizado_em?: string | null
+        }
+        Relationships: []
+      }
+      assistente_execucao: {
+        Row: {
+          avisos: Json
+          consulta: string | null
+          conversa_id: string | null
+          criado_em: string
+          id: string
+          latencia_ms: number | null
+          numeros: Json
+          ok: boolean
+          pergunta: string
+          resposta: string | null
+          user_id: string
+        }
+        Insert: {
+          avisos?: Json
+          consulta?: string | null
+          conversa_id?: string | null
+          criado_em?: string
+          id?: string
+          latencia_ms?: number | null
+          numeros?: Json
+          ok?: boolean
+          pergunta: string
+          resposta?: string | null
+          user_id: string
+        }
+        Update: {
+          avisos?: Json
+          consulta?: string | null
+          conversa_id?: string | null
+          criado_em?: string
+          id?: string
+          latencia_ms?: number | null
+          numeros?: Json
+          ok?: boolean
+          pergunta?: string
+          resposta?: string | null
+          user_id?: string
+        }
+        Relationships: []
+      }
+      assistente_memoria: {
+        Row: {
+          conversa_id: string | null
+          criado_em: string
+          id: string
+          origem: string
+          texto: string
+          texto_norm: string | null
+          tipo: string
+          user_id: string
+        }
+        Insert: {
+          conversa_id?: string | null
+          criado_em?: string
+          id?: string
+          origem?: string
+          texto: string
+          texto_norm?: string | null
+          tipo?: string
+          user_id: string
+        }
+        Update: {
+          conversa_id?: string | null
+          criado_em?: string
+          id?: string
+          origem?: string
+          texto?: string
+          texto_norm?: string | null
+          tipo?: string
+          user_id?: string
         }
         Relationships: []
       }
@@ -746,6 +1056,66 @@ export type Database = {
         }
         Relationships: []
       }
+      calendario_financeiro: {
+        Row: {
+          agente_dono: string | null
+          antecedencia_dias: number
+          ativo: boolean
+          atualizado_em: string
+          automacao_id: string | null
+          criado_em: string
+          descricao: string | null
+          dia: number | null
+          evento: string
+          id: string
+          regra_data: string
+          responsavel_id: string | null
+        }
+        Insert: {
+          agente_dono?: string | null
+          antecedencia_dias?: number
+          ativo?: boolean
+          atualizado_em?: string
+          automacao_id?: string | null
+          criado_em?: string
+          descricao?: string | null
+          dia?: number | null
+          evento: string
+          id?: string
+          regra_data: string
+          responsavel_id?: string | null
+        }
+        Update: {
+          agente_dono?: string | null
+          antecedencia_dias?: number
+          ativo?: boolean
+          atualizado_em?: string
+          automacao_id?: string | null
+          criado_em?: string
+          descricao?: string | null
+          dia?: number | null
+          evento?: string
+          id?: string
+          regra_data?: string
+          responsavel_id?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "calendario_financeiro_automacao_id_fkey"
+            columns: ["automacao_id"]
+            isOneToOne: false
+            referencedRelation: "automacoes_catalogo"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "calendario_financeiro_responsavel_id_fkey"
+            columns: ["responsavel_id"]
+            isOneToOne: false
+            referencedRelation: "lib_colaboradores"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       cartao_faturas: {
         Row: {
           arquivo: string | null
@@ -917,12 +1287,16 @@ export type Database = {
         Row: {
           chave_nfe: string | null
           cnpj_emitente: string | null
+          cod_titulo: number | null
+          confianca_match: number | null
           created_time: string | null
           data_doc: string | null
           file_id: string
           fonte: string
+          fornecedor_id: string | null
           hash_conteudo: string | null
           lancamento_id: string | null
+          metodo_match: string | null
           referencia_casada: string | null
           status: string
           texto_ocr: string | null
@@ -935,12 +1309,16 @@ export type Database = {
         Insert: {
           chave_nfe?: string | null
           cnpj_emitente?: string | null
+          cod_titulo?: number | null
+          confianca_match?: number | null
           created_time?: string | null
           data_doc?: string | null
           file_id: string
           fonte: string
+          fornecedor_id?: string | null
           hash_conteudo?: string | null
           lancamento_id?: string | null
+          metodo_match?: string | null
           referencia_casada?: string | null
           status?: string
           texto_ocr?: string | null
@@ -953,12 +1331,16 @@ export type Database = {
         Update: {
           chave_nfe?: string | null
           cnpj_emitente?: string | null
+          cod_titulo?: number | null
+          confianca_match?: number | null
           created_time?: string | null
           data_doc?: string | null
           file_id?: string
           fonte?: string
+          fornecedor_id?: string | null
           hash_conteudo?: string | null
           lancamento_id?: string | null
+          metodo_match?: string | null
           referencia_casada?: string | null
           status?: string
           texto_ocr?: string | null
@@ -968,7 +1350,153 @@ export type Database = {
           ts_update?: string
           valor?: number | null
         }
-        Relationships: []
+        Relationships: [
+          {
+            foreignKeyName: "comprovantes_index_cod_titulo_fkey"
+            columns: ["cod_titulo"]
+            isOneToOne: false
+            referencedRelation: "omie_titulos"
+            referencedColumns: ["cod_titulo"]
+          },
+          {
+            foreignKeyName: "comprovantes_index_fornecedor_id_fkey"
+            columns: ["fornecedor_id"]
+            isOneToOne: false
+            referencedRelation: "lib_fornecedores"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      conciliacao: {
+        Row: {
+          alcada: string
+          atualizado_em: string
+          cod_titulo: number | null
+          comprovante_file_id: string | null
+          conciliado_em: string | null
+          conciliado_por: string
+          confianca: number
+          criado_em: string
+          data_movimento: string | null
+          divergencia_valor: number | null
+          extrato_id: string
+          id: string
+          metodo: string
+          observacao: string | null
+          origem: string
+          revisado_em: string | null
+          revisado_por: string | null
+          status: string
+          valor_extrato: number | null
+          valor_titulo: number | null
+        }
+        Insert: {
+          alcada?: string
+          atualizado_em?: string
+          cod_titulo?: number | null
+          comprovante_file_id?: string | null
+          conciliado_em?: string | null
+          conciliado_por?: string
+          confianca?: number
+          criado_em?: string
+          data_movimento?: string | null
+          divergencia_valor?: number | null
+          extrato_id: string
+          id?: string
+          metodo: string
+          observacao?: string | null
+          origem: string
+          revisado_em?: string | null
+          revisado_por?: string | null
+          status?: string
+          valor_extrato?: number | null
+          valor_titulo?: number | null
+        }
+        Update: {
+          alcada?: string
+          atualizado_em?: string
+          cod_titulo?: number | null
+          comprovante_file_id?: string | null
+          conciliado_em?: string | null
+          conciliado_por?: string
+          confianca?: number
+          criado_em?: string
+          data_movimento?: string | null
+          divergencia_valor?: number | null
+          extrato_id?: string
+          id?: string
+          metodo?: string
+          observacao?: string | null
+          origem?: string
+          revisado_em?: string | null
+          revisado_por?: string | null
+          status?: string
+          valor_extrato?: number | null
+          valor_titulo?: number | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "conciliacao_cod_titulo_fkey"
+            columns: ["cod_titulo"]
+            isOneToOne: false
+            referencedRelation: "omie_titulos"
+            referencedColumns: ["cod_titulo"]
+          },
+          {
+            foreignKeyName: "conciliacao_revisado_por_fkey"
+            columns: ["revisado_por"]
+            isOneToOne: false
+            referencedRelation: "lib_colaboradores"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      contrapartes_alias: {
+        Row: {
+          alias: string
+          alias_norm: string | null
+          atualizado_em: string
+          confianca: number
+          criado_em: string
+          documento_norm: string | null
+          fonte: string
+          fornecedor_id: string
+          id: string
+          origem: string
+        }
+        Insert: {
+          alias: string
+          alias_norm?: string | null
+          atualizado_em?: string
+          confianca?: number
+          criado_em?: string
+          documento_norm?: string | null
+          fonte: string
+          fornecedor_id: string
+          id?: string
+          origem?: string
+        }
+        Update: {
+          alias?: string
+          alias_norm?: string | null
+          atualizado_em?: string
+          confianca?: number
+          criado_em?: string
+          documento_norm?: string | null
+          fonte?: string
+          fornecedor_id?: string
+          id?: string
+          origem?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "contrapartes_alias_fornecedor_id_fkey"
+            columns: ["fornecedor_id"]
+            isOneToOne: false
+            referencedRelation: "lib_fornecedores"
+            referencedColumns: ["id"]
+          },
+        ]
       }
       de_para_rules: {
         Row: {
@@ -1042,6 +1570,66 @@ export type Database = {
         }
         Relationships: []
       }
+      demonstracoes_ebitda_ajuste: {
+        Row: {
+          atualizado_em: string
+          autor: string | null
+          autor_email: string | null
+          cod_titulo: string | null
+          col_key: string
+          contraparte: string | null
+          data: string | null
+          decidido_em: string
+          descricao: string
+          id: string
+          motivo_sugestao: string | null
+          origem: string
+          regra: string | null
+          rubrica: string | null
+          status: string
+          valor: number
+          valor_lancamento: number | null
+        }
+        Insert: {
+          atualizado_em?: string
+          autor?: string | null
+          autor_email?: string | null
+          cod_titulo?: string | null
+          col_key: string
+          contraparte?: string | null
+          data?: string | null
+          decidido_em?: string
+          descricao: string
+          id?: string
+          motivo_sugestao?: string | null
+          origem?: string
+          regra?: string | null
+          rubrica?: string | null
+          status: string
+          valor: number
+          valor_lancamento?: number | null
+        }
+        Update: {
+          atualizado_em?: string
+          autor?: string | null
+          autor_email?: string | null
+          cod_titulo?: string | null
+          col_key?: string
+          contraparte?: string | null
+          data?: string | null
+          decidido_em?: string
+          descricao?: string
+          id?: string
+          motivo_sugestao?: string | null
+          origem?: string
+          regra?: string | null
+          rubrica?: string | null
+          status?: string
+          valor?: number
+          valor_lancamento?: number | null
+        }
+        Relationships: []
+      }
       demonstracoes_justificativas: {
         Row: {
           atualizado_em: string
@@ -1058,6 +1646,8 @@ export type Database = {
           mes: string
           mes_anterior: string | null
           modelo: string | null
+          origem: string
+          pergunta_id: string | null
           rubrica: string
           sinais: Json
           status: string
@@ -1082,6 +1672,8 @@ export type Database = {
           mes: string
           mes_anterior?: string | null
           modelo?: string | null
+          origem?: string
+          pergunta_id?: string | null
           rubrica: string
           sinais?: Json
           status?: string
@@ -1106,6 +1698,8 @@ export type Database = {
           mes?: string
           mes_anterior?: string | null
           modelo?: string | null
+          origem?: string
+          pergunta_id?: string | null
           rubrica?: string
           sinais?: Json
           status?: string
@@ -1132,6 +1726,66 @@ export type Database = {
           col_key?: string
           origem?: string | null
           trancado_em?: string
+        }
+        Relationships: []
+      }
+      demonstracoes_perguntas: {
+        Row: {
+          autor_email: string | null
+          autor_id: string | null
+          confianca: string | null
+          criado_em: string
+          dados: Json
+          drivers: Json
+          id: string
+          mes: string
+          mes_anterior: string | null
+          modelo: string | null
+          pergunta: string
+          resposta: string
+          rubrica: string
+          tipo: string
+          travado: boolean
+          valor: number | null
+          valor_anterior: number | null
+        }
+        Insert: {
+          autor_email?: string | null
+          autor_id?: string | null
+          confianca?: string | null
+          criado_em?: string
+          dados?: Json
+          drivers?: Json
+          id?: string
+          mes: string
+          mes_anterior?: string | null
+          modelo?: string | null
+          pergunta: string
+          resposta: string
+          rubrica: string
+          tipo: string
+          travado?: boolean
+          valor?: number | null
+          valor_anterior?: number | null
+        }
+        Update: {
+          autor_email?: string | null
+          autor_id?: string | null
+          confianca?: string | null
+          criado_em?: string
+          dados?: Json
+          drivers?: Json
+          id?: string
+          mes?: string
+          mes_anterior?: string | null
+          modelo?: string | null
+          pergunta?: string
+          resposta?: string
+          rubrica?: string
+          tipo?: string
+          travado?: boolean
+          valor?: number | null
+          valor_anterior?: number | null
         }
         Relationships: []
       }
@@ -1910,30 +2564,50 @@ export type Database = {
       }
       lib_centros_custo: {
         Row: {
+          ativo: boolean
+          atualizado_em: string
           codigo: string | null
           created_at: string
+          departamento_id: string | null
           descricao: string | null
           id: string
           nome: string
+          omie_codigo: string | null
           updated_at: string
         }
         Insert: {
+          ativo?: boolean
+          atualizado_em?: string
           codigo?: string | null
           created_at?: string
+          departamento_id?: string | null
           descricao?: string | null
           id?: string
           nome: string
+          omie_codigo?: string | null
           updated_at?: string
         }
         Update: {
+          ativo?: boolean
+          atualizado_em?: string
           codigo?: string | null
           created_at?: string
+          departamento_id?: string | null
           descricao?: string | null
           id?: string
           nome?: string
+          omie_codigo?: string | null
           updated_at?: string
         }
-        Relationships: []
+        Relationships: [
+          {
+            foreignKeyName: "lib_centros_custo_departamento_id_fkey"
+            columns: ["departamento_id"]
+            isOneToOne: false
+            referencedRelation: "lib_departamentos"
+            referencedColumns: ["id"]
+          },
+        ]
       }
       lib_colaboradores: {
         Row: {
@@ -2055,84 +2729,174 @@ export type Database = {
       }
       lib_fornecedores: {
         Row: {
+          atualizado_em: string
           categoria: string | null
+          categoria_omie_codigo: string | null
+          centro_custo_id: string | null
+          confianca: number
           contato_email: string | null
           contato_nome: string | null
           contato_telefone: string | null
           created_at: string
+          departamento_id: string | null
           documento: string | null
+          documento_norm: string | null
+          exige_nf: boolean
+          gestor_aprovador_id: string | null
           id: string
+          n_ocorrencias: number
           nome: string
           observacao: string | null
+          omie_id: string | null
+          periodicidade: string | null
+          permite_auto_lancamento: boolean
+          prazo_pagamento_dias: number | null
           status: string
           tags: string[]
           updated_at: string
+          valor_max: number | null
+          valor_min: number | null
         }
         Insert: {
+          atualizado_em?: string
           categoria?: string | null
+          categoria_omie_codigo?: string | null
+          centro_custo_id?: string | null
+          confianca?: number
           contato_email?: string | null
           contato_nome?: string | null
           contato_telefone?: string | null
           created_at?: string
+          departamento_id?: string | null
           documento?: string | null
+          documento_norm?: string | null
+          exige_nf?: boolean
+          gestor_aprovador_id?: string | null
           id?: string
+          n_ocorrencias?: number
           nome: string
           observacao?: string | null
+          omie_id?: string | null
+          periodicidade?: string | null
+          permite_auto_lancamento?: boolean
+          prazo_pagamento_dias?: number | null
           status?: string
           tags?: string[]
           updated_at?: string
+          valor_max?: number | null
+          valor_min?: number | null
         }
         Update: {
+          atualizado_em?: string
           categoria?: string | null
+          categoria_omie_codigo?: string | null
+          centro_custo_id?: string | null
+          confianca?: number
           contato_email?: string | null
           contato_nome?: string | null
           contato_telefone?: string | null
           created_at?: string
+          departamento_id?: string | null
           documento?: string | null
+          documento_norm?: string | null
+          exige_nf?: boolean
+          gestor_aprovador_id?: string | null
           id?: string
+          n_ocorrencias?: number
           nome?: string
           observacao?: string | null
+          omie_id?: string | null
+          periodicidade?: string | null
+          permite_auto_lancamento?: boolean
+          prazo_pagamento_dias?: number | null
           status?: string
           tags?: string[]
           updated_at?: string
+          valor_max?: number | null
+          valor_min?: number | null
         }
-        Relationships: []
+        Relationships: [
+          {
+            foreignKeyName: "lib_fornecedores_centro_custo_id_fkey"
+            columns: ["centro_custo_id"]
+            isOneToOne: false
+            referencedRelation: "lib_centros_custo"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "lib_fornecedores_departamento_id_fkey"
+            columns: ["departamento_id"]
+            isOneToOne: false
+            referencedRelation: "lib_departamentos"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "lib_fornecedores_gestor_aprovador_id_fkey"
+            columns: ["gestor_aprovador_id"]
+            isOneToOne: false
+            referencedRelation: "lib_colaboradores"
+            referencedColumns: ["id"]
+          },
+        ]
       }
       lib_politicas: {
         Row: {
           aplica_a: string[]
           ativa: boolean
+          atualizado_em: string
           categoria: string | null
           conteudo: string
           created_at: string
           id: string
+          mantenedor_id: string | null
+          regras: Json
           tags: string[]
           titulo: string
           updated_at: string
+          versao: number
+          vigente_desde: string | null
         }
         Insert: {
           aplica_a?: string[]
           ativa?: boolean
+          atualizado_em?: string
           categoria?: string | null
           conteudo: string
           created_at?: string
           id?: string
+          mantenedor_id?: string | null
+          regras?: Json
           tags?: string[]
           titulo: string
           updated_at?: string
+          versao?: number
+          vigente_desde?: string | null
         }
         Update: {
           aplica_a?: string[]
           ativa?: boolean
+          atualizado_em?: string
           categoria?: string | null
           conteudo?: string
           created_at?: string
           id?: string
+          mantenedor_id?: string | null
+          regras?: Json
           tags?: string[]
           titulo?: string
           updated_at?: string
+          versao?: number
+          vigente_desde?: string | null
         }
-        Relationships: []
+        Relationships: [
+          {
+            foreignKeyName: "lib_politicas_mantenedor_id_fkey"
+            columns: ["mantenedor_id"]
+            isOneToOne: false
+            referencedRelation: "lib_colaboradores"
+            referencedColumns: ["id"]
+          },
+        ]
       }
       magic_tokens: {
         Row: {
@@ -2472,6 +3236,8 @@ export type Database = {
           cnpj_cpf: string | null
           cod_titulo: string
           data: string | null
+          decidido_em: string | null
+          decidido_por: string | null
           detectado_em: string
           fornecedor: string | null
           fornecedor_chave: string
@@ -2483,19 +3249,24 @@ export type Database = {
           ignorado_motivo: string | null
           ignorado_por: string | null
           mes: string
+          regra_id: string | null
           rubrica: string
+          rubrica_final: string | null
           rubrica_padrao: string
           severidade: string
           status: string
           tipo: string
           valor: number | null
           valor_padrao: number | null
+          virou_regra: boolean
         }
         Insert: {
           atualizado_em?: string
           cnpj_cpf?: string | null
           cod_titulo: string
           data?: string | null
+          decidido_em?: string | null
+          decidido_por?: string | null
           detectado_em?: string
           fornecedor?: string | null
           fornecedor_chave: string
@@ -2507,19 +3278,24 @@ export type Database = {
           ignorado_motivo?: string | null
           ignorado_por?: string | null
           mes: string
+          regra_id?: string | null
           rubrica: string
+          rubrica_final?: string | null
           rubrica_padrao: string
           severidade: string
           status?: string
           tipo: string
           valor?: number | null
           valor_padrao?: number | null
+          virou_regra?: boolean
         }
         Update: {
           atualizado_em?: string
           cnpj_cpf?: string | null
           cod_titulo?: string
           data?: string | null
+          decidido_em?: string | null
+          decidido_por?: string | null
           detectado_em?: string
           fornecedor?: string | null
           fornecedor_chave?: string
@@ -2531,15 +3307,33 @@ export type Database = {
           ignorado_motivo?: string | null
           ignorado_por?: string | null
           mes?: string
+          regra_id?: string | null
           rubrica?: string
+          rubrica_final?: string | null
           rubrica_padrao?: string
           severidade?: string
           status?: string
           tipo?: string
           valor?: number | null
           valor_padrao?: number | null
+          virou_regra?: boolean
         }
-        Relationships: []
+        Relationships: [
+          {
+            foreignKeyName: "omie_reclassificacoes_decidido_por_fkey"
+            columns: ["decidido_por"]
+            isOneToOne: false
+            referencedRelation: "lib_colaboradores"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "omie_reclassificacoes_regra_id_fkey"
+            columns: ["regra_id"]
+            isOneToOne: false
+            referencedRelation: "regras_decisao"
+            referencedColumns: ["id"]
+          },
+        ]
       }
       omie_reclassificacoes_regras: {
         Row: {
@@ -2645,6 +3439,103 @@ export type Database = {
           observacao?: string | null
         }
         Relationships: []
+      }
+      omie_titulos: {
+        Row: {
+          atualizado_em: string
+          categoria_codigo: string | null
+          centro_custo_id: string | null
+          cod_titulo: number
+          competencia: string | null
+          criado_em: string
+          data_emissao: string | null
+          data_pagamento: string | null
+          departamento_id: string | null
+          documento_norm: string | null
+          favorecido_texto: string | null
+          fornecedor_id: string | null
+          nota_fiscal: string | null
+          numero_documento: string | null
+          observacao: string | null
+          origem_lancamento: string | null
+          sincronizado_em: string
+          status: string | null
+          tipo: string
+          valor: number
+          valor_pago: number | null
+          vencimento: string | null
+        }
+        Insert: {
+          atualizado_em?: string
+          categoria_codigo?: string | null
+          centro_custo_id?: string | null
+          cod_titulo: number
+          competencia?: string | null
+          criado_em?: string
+          data_emissao?: string | null
+          data_pagamento?: string | null
+          departamento_id?: string | null
+          documento_norm?: string | null
+          favorecido_texto?: string | null
+          fornecedor_id?: string | null
+          nota_fiscal?: string | null
+          numero_documento?: string | null
+          observacao?: string | null
+          origem_lancamento?: string | null
+          sincronizado_em?: string
+          status?: string | null
+          tipo: string
+          valor: number
+          valor_pago?: number | null
+          vencimento?: string | null
+        }
+        Update: {
+          atualizado_em?: string
+          categoria_codigo?: string | null
+          centro_custo_id?: string | null
+          cod_titulo?: number
+          competencia?: string | null
+          criado_em?: string
+          data_emissao?: string | null
+          data_pagamento?: string | null
+          departamento_id?: string | null
+          documento_norm?: string | null
+          favorecido_texto?: string | null
+          fornecedor_id?: string | null
+          nota_fiscal?: string | null
+          numero_documento?: string | null
+          observacao?: string | null
+          origem_lancamento?: string | null
+          sincronizado_em?: string
+          status?: string | null
+          tipo?: string
+          valor?: number
+          valor_pago?: number | null
+          vencimento?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "omie_titulos_centro_custo_id_fkey"
+            columns: ["centro_custo_id"]
+            isOneToOne: false
+            referencedRelation: "lib_centros_custo"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "omie_titulos_departamento_id_fkey"
+            columns: ["departamento_id"]
+            isOneToOne: false
+            referencedRelation: "lib_departamentos"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "omie_titulos_fornecedor_id_fkey"
+            columns: ["fornecedor_id"]
+            isOneToOne: false
+            referencedRelation: "lib_fornecedores"
+            referencedColumns: ["id"]
+          },
+        ]
       }
       orcamento_area_linha: {
         Row: {
@@ -3720,6 +4611,87 @@ export type Database = {
         }
         Relationships: []
       }
+      regras_decisao: {
+        Row: {
+          acao: Json
+          acerto: number | null
+          alcada_resultante: string
+          ativa: boolean
+          atualizado_em: string
+          condicao: Json
+          confianca_minima: number
+          criada_por: string | null
+          criado_em: string
+          descricao: string | null
+          escopo: string
+          fornecedor_id: string | null
+          id: string
+          n_aplicacoes: number
+          n_corrigidas: number
+          nome: string
+          origem: string
+          prioridade: number
+          versao: number
+        }
+        Insert: {
+          acao?: Json
+          acerto?: number | null
+          alcada_resultante?: string
+          ativa?: boolean
+          atualizado_em?: string
+          condicao?: Json
+          confianca_minima?: number
+          criada_por?: string | null
+          criado_em?: string
+          descricao?: string | null
+          escopo: string
+          fornecedor_id?: string | null
+          id?: string
+          n_aplicacoes?: number
+          n_corrigidas?: number
+          nome: string
+          origem?: string
+          prioridade?: number
+          versao?: number
+        }
+        Update: {
+          acao?: Json
+          acerto?: number | null
+          alcada_resultante?: string
+          ativa?: boolean
+          atualizado_em?: string
+          condicao?: Json
+          confianca_minima?: number
+          criada_por?: string | null
+          criado_em?: string
+          descricao?: string | null
+          escopo?: string
+          fornecedor_id?: string | null
+          id?: string
+          n_aplicacoes?: number
+          n_corrigidas?: number
+          nome?: string
+          origem?: string
+          prioridade?: number
+          versao?: number
+        }
+        Relationships: [
+          {
+            foreignKeyName: "regras_decisao_criada_por_fkey"
+            columns: ["criada_por"]
+            isOneToOne: false
+            referencedRelation: "lib_colaboradores"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "regras_decisao_fornecedor_id_fkey"
+            columns: ["fornecedor_id"]
+            isOneToOne: false
+            referencedRelation: "lib_fornecedores"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       resumo_tarefas_semana: {
         Row: {
           gerado_em: string
@@ -4198,6 +5170,20 @@ export type Database = {
       }
     }
     Views: {
+      vw_agente_saude: {
+        Row: {
+          agente_id: string | null
+          ativo: boolean | null
+          corrigidas_30d: number | null
+          excecoes_abertas: number | null
+          excecoes_vencidas: number | null
+          execucoes_30d: number | null
+          falhas_30d: number | null
+          nome: string | null
+          ultima_execucao: string | null
+        }
+        Relationships: []
+      }
       vw_orcamento_area: {
         Row: {
           ano: number | null
@@ -4283,9 +5269,10 @@ export type Database = {
         Returns: Json
       }
       demonstracoes_contrapartes: {
-        Args: { p_meses: string[]; p_tipo: string }
+        Args: { p_meses: string[]; p_rubrica?: string; p_tipo: string }
         Returns: {
           categoria: string
+          cods: string[]
           contraparte: string
           lancamentos: number
           mes: string
@@ -4308,6 +5295,19 @@ export type Database = {
           titulo: string
           valor: number
           vencimento: string
+        }[]
+      }
+      demonstracoes_lancamentos_multi: {
+        Args: { p_meses: string[]; p_rubricas: string[]; p_tipo: string }
+        Returns: {
+          categoria: string
+          cod_titulo: string
+          contraparte: string
+          data: string
+          mes: string
+          observacao: string
+          rubrica: string
+          valor: number
         }[]
       }
       demonstracoes_reclassificacoes: {
@@ -4334,6 +5334,25 @@ export type Database = {
           status: string
           valor: number
           valor_padrao: number
+        }[]
+      }
+      ebitda_ajuste_candidatos: {
+        Args: { p_mes: string; p_piso?: number; p_rubricas: string[] }
+        Returns: {
+          categoria: string
+          cnpj_cpf: string
+          cod_titulo: string
+          contraparte: string
+          data: string
+          forca: string
+          hist_lancamentos: number
+          hist_mediana: number
+          motivo: string
+          regra: string
+          rubrica: string
+          texto: string
+          valor: number
+          valor_lancamento: number
         }[]
       }
       fmt_brl: { Args: { v: number }; Returns: string }
@@ -4408,6 +5427,19 @@ export type Database = {
           valor_aberto: number
           vencimento: string
         }[]
+      }
+      pergunta_apagar: { Args: { p_id: string }; Returns: undefined }
+      pergunta_promover: {
+        Args: {
+          p_delta?: number
+          p_delta_pct?: number
+          p_despesa?: boolean
+          p_id: string
+          p_mes_anterior?: string
+          p_valor?: number
+          p_valor_anterior?: number
+        }
+        Returns: undefined
       }
       preview_msg_ajuste: { Args: { p_id_unico: string }; Returns: Json }
       preview_msg_consolidada:

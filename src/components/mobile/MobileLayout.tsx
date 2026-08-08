@@ -2,7 +2,7 @@ import { useEffect } from "react";
 import { Navigate } from "react-router-dom";
 import { useAuth } from "@/hooks/useAuth";
 import { moduleAccess } from "@/lib/modules";
-import { aplicarTema, lerTema } from "@/lib/tema";
+import { observarTema } from "@/lib/tema";
 import { MobileShell } from "./MobileShell";
 import { DesktopOnly } from "./DesktopOnly";
 
@@ -18,7 +18,7 @@ import { DesktopOnly } from "./DesktopOnly";
 export default function MobileLayout() {
   const { user, profile, loading } = useAuth();
 
-  useEffect(() => { aplicarTema(lerTema()); }, []);
+  useEffect(() => observarTema(), []);
 
   if (loading) {
     return (

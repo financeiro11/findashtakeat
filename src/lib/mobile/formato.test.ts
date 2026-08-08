@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { desatualizado, fmtBRL, fmtData, fmtInt, fmtPct } from "./formato";
+import { desatualizado, emDias, fmtBRL, fmtData, fmtInt, fmtPct } from "./formato";
 
 /* O Intl separa "R$" do número com espaço fixo; aqui só o formato importa. */
 const espacos = (s: string) => s.replace(/\s/g, " ");
@@ -31,6 +31,28 @@ describe("datas", () => {
   it("vazio e lixo viram travessão", () => {
     expect(fmtData(null)).toBe("—");
     expect(fmtData("")).toBe("—");
+  });
+});
+
+// É o que os atalhos "Hoje / Amanhã / +1 semana" gravam em `tarefas.prazo`.
+describe("emDias", () => {
+  it("zero é o próprio dia", () => {
+    expect(emDias(0, "2026-08-06")).toBe("2026-08-06");
+  });
+
+  it("vira o mês e o ano sem ajuda", () => {
+    expect(emDias(1, "2026-08-31")).toBe("2026-09-01");
+    expect(emDias(7, "2026-12-28")).toBe("2027-01-04");
+  });
+
+  it("atravessa a virada do horário de verão sem perder o dia", () => {
+    // A conta é em UTC justamente para não depender de o aparelho estar em Brasília.
+    expect(emDias(7, "2026-10-15")).toBe("2026-10-22");
+    expect(emDias(1, "2026-02-28")).toBe("2026-03-01"); // 2026 não é bissexto
+  });
+
+  it("aceita voltar no tempo", () => {
+    expect(emDias(-1, "2026-01-01")).toBe("2025-12-31");
   });
 });
 

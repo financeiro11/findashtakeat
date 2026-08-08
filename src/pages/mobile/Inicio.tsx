@@ -5,11 +5,12 @@
 // linha no celular criaria um segundo número para a mesma pergunta — e o do celular seria
 // o errado, porque não conhece as regras de exclusão que as syncs aplicam.
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import { ChevronDown, CalendarClock, Mail, Newspaper, Sparkles, Landmark, CreditCard, Wallet, Repeat, TrendingDown, AlertTriangle } from "lucide-react";
 import { supabase } from "@/integrations/supabase/client";
 import { cn } from "@/lib/utils";
+import { useAoVoltar } from "@/hooks/useAoVoltar";
 import { fmtDataHora, desatualizado } from "@/lib/mobile/formato";
 import { montarKpis, type CartaoKpi, type ChaveKpi } from "@/lib/mobile/kpis";
 import { lerAgenda, lerEmails, lerNoticias, type ItemAgenda, type ItemEmail, type ItemNoticia } from "@/lib/mobile/briefing";
@@ -30,6 +31,17 @@ const ICONE_KPI: Record<ChaveKpi, typeof Landmark> = {
 };
 
 /* --------------------------------- dados --------------------------------- */
+/**
+ * Cada consulta do Supabase devolve `{ data, error }` — ela NÃO rejeita. Sem olhar o
+ * `error`, uma policy negando `briefing_diario` fazia a tela dizer "briefing ainda não
+ * gerado hoje", que é uma afirmação falsa sobre o dia de trabalho de alguém. Aqui a falha
+ * vira aviso; o que carregou continua na tela.
+ */
+function primeiroErro(...respostas: { error?: { message?: string } | null }[]): string | null {
+  for (const r of respostas) if (r?.error?.message) return r.error.message;
+  return null;
+}
+
 async function carregarTudo() {
   const [briefing, sicoob, asaas, caixa, assinaturas, churn] = await Promise.all([
     sb.from("briefing_diario")
@@ -53,6 +65,7 @@ async function carregarTudo() {
       sicoob: sicoob.data, asaas: asaas.data, caixa: caixa.data,
       assinaturas: assinaturas.data, churn: churn.data,
     }),
+    erro: primeiroErro(briefing, sicoob, asaas, caixa, assinaturas, churn),
   };
 }
 
@@ -63,14 +76,17 @@ export default function MobileInicio() {
   const [carregando, setCarregando] = useState(true);
   const [erro, setErro] = useState<string | null>(null);
 
-  useEffect(() => {
-    let vivo = true;
-    carregarTudo()
-      .then((r) => { if (vivo) { setBriefing(r.briefing); setKpis(r.kpis); } })
-      .catch((e) => { if (vivo) setErro(e?.message ?? "Falha ao carregar"); })
-      .finally(() => { if (vivo) setCarregando(false); });
-    return () => { vivo = false; };
+  const buscar = useCallback(() => {
+    setErro(null);
+    return carregarTudo()
+      .then((r) => { setBriefing(r.briefing); setKpis(r.kpis); setErro(r.erro); })
+      .catch((e) => setErro(e?.message ?? "Falha ao carregar"))
+      .finally(() => setCarregando(false));
   }, []);
+
+  useEffect(() => { buscar(); }, [buscar]);
+  // Saldo e briefing são de cron diário: voltar ao app horas depois tem que rebuscar.
+  useAoVoltar(buscar);
 
   const agenda = briefing ? lerAgenda(briefing.agenda) : [];
   const emails = briefing ? lerEmails(briefing.emails) : [];
@@ -84,7 +100,10 @@ export default function MobileInicio() {
         {erro && (
           <div className="mb-4 flex items-start gap-2 rounded-lg border border-destructive/30 bg-destructive/10 p-3 text-[13px] text-destructive">
             <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
-            <span>{erro}</span>
+            <span>
+              Parte dos dados não carregou — o que está na tela pode estar incompleto.
+              <span className="mt-0.5 block text-[11.5px] opacity-80">{erro}</span>
+            </span>
           </div>
         )}
 
@@ -99,9 +118,15 @@ export default function MobileInicio() {
             <div className="mx-auto mb-3 flex h-11 w-11 items-center justify-center rounded-xl bg-primary/10 text-primary">
               <Sparkles className="h-5 w-5" />
             </div>
-            <div className="text-[15px] font-semibold">Briefing ainda não gerado hoje</div>
+            {/* Só afirma "não gerado" quando a consulta de fato voltou vazia. Com erro na
+                leitura, dizer isso seria inventar um fato sobre o dia de alguém. */}
+            <div className="text-[15px] font-semibold">
+              {erro ? "Briefing não pôde ser lido" : "Briefing ainda não gerado hoje"}
+            </div>
             <p className="mt-1.5 text-[13px] leading-relaxed text-muted-foreground">
-              Ele é publicado automaticamente às 09:00 e aparece aqui assim que sai.
+              {erro
+                ? "A consulta falhou — puxe o app de volta em instantes ou abra no computador."
+                : "Ele é publicado automaticamente às 09:00 e aparece aqui assim que sai."}
             </p>
           </div>
         ) : (

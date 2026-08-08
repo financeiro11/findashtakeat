@@ -27,3 +27,20 @@ export function temaEfetivoEscuro(tema: Tema): boolean {
 export function aplicarTema(tema: Tema): void {
   document.documentElement.classList.toggle("dark", temaEfetivoEscuro(tema));
 }
+
+/**
+ * Aplica o tema salvo e mantém o <html> em dia enquanto o app estiver aberto. Devolve a
+ * função de parar de observar.
+ *
+ * Com "Do aparelho" escolhido, aplicar só na montagem deixava a tela clara depois do
+ * anoitecer no modo automático do celular — a opção prometia seguir o aparelho e não
+ * seguia até fechar e reabrir o app.
+ */
+export function observarTema(): () => void {
+  aplicarTema(lerTema());
+  const mq = typeof window !== "undefined" ? window.matchMedia?.("(prefers-color-scheme: dark)") : null;
+  if (!mq?.addEventListener) return () => {};
+  const aoMudar = () => { if (lerTema() === "sistema") aplicarTema("sistema"); };
+  mq.addEventListener("change", aoMudar);
+  return () => mq.removeEventListener("change", aoMudar);
+}

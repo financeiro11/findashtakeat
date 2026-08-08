@@ -1,5 +1,8 @@
 import { describe, it, expect } from "vitest";
-import { agrupar, aplicarFiltro, estaAtrasada, ordenar, type TarefaMin } from "./tarefas";
+import {
+  agrupar, aplicarFiltro, estaAtrasada, ordenar, statusDisponiveis,
+  ORDEM_STATUS, STATUS_CONCLUIDO, type TarefaMin,
+} from "./tarefas";
 
 const HOJE = "2026-08-06";
 
@@ -71,19 +74,37 @@ describe("agrupar", () => {
     t({ id: "backlog", status: "Backlog" }),
     t({ id: "revisao", status: "Revisão" }),
     t({ id: "concluida", status: "Concluído" }),
-    t({ id: "exotico", status: "Tasks - RPA" }),
+    t({ id: "exotico", status: "Coluna nova do desktop" }),
   ];
   const grupos = agrupar(linhas, HOJE);
 
-  it("abre com 'Precisa de atenção'", () => {
-    expect(grupos[0].chave).toBe("__atencao__");
-    expect(grupos[0].itens.map((x) => x.id).sort()).toEqual(["atrasada", "urgente"]);
+  it("o bloco é o status, e é ele que decide onde o card aparece", () => {
+    expect(grupos.map((g) => g.chave)).toEqual([
+      "Em andamento", "Revisão", "Backlog", "Coluna nova do desktop",
+    ]);
+    expect(grupos.find((g) => g.chave === "Backlog")!.itens.map((x) => x.id))
+      .toEqual(["urgente", "atrasada", "backlog"]);
   });
 
-  it("respeita a ordem dos status conhecidos e joga o desconhecido para o fim", () => {
-    expect(grupos.map((g) => g.chave)).toEqual([
-      "__atencao__", "Em andamento", "Revisão", "Backlog", "Tasks - RPA",
-    ]);
+  it("mudar o status move o card de bloco — é o bug que motivou o agrupamento por status", () => {
+    const antes = agrupar(linhas, HOJE);
+    expect(antes.find((g) => g.chave === "Backlog")!.itens.map((x) => x.id)).toContain("atrasada");
+
+    // A tarefa continua vencida: antes ela ficava presa em "Precisa de atenção" e a
+    // troca de status não tinha efeito visível nenhum.
+    const depois = agrupar(
+      linhas.map((x) => (x.id === "atrasada" ? { ...x, status: "Em andamento" } : x)),
+      HOJE,
+    );
+    expect(depois.find((g) => g.chave === "Backlog")!.itens.map((x) => x.id)).not.toContain("atrasada");
+    expect(depois.find((g) => g.chave === "Em andamento")!.itens.map((x) => x.id)).toContain("atrasada");
+  });
+
+  it("conta quantas do bloco precisam de atenção sem tirá-las dele", () => {
+    const backlog = grupos.find((g) => g.chave === "Backlog")!;
+    expect(backlog.itens).toHaveLength(3);
+    expect(backlog.nAtencao).toBe(2); // a vencida e a urgente
+    expect(grupos.find((g) => g.chave === "Revisão")!.nAtencao).toBe(0);
   });
 
   it("não repete a mesma tarefa em dois blocos", () => {
@@ -92,6 +113,30 @@ describe("agrupar", () => {
   });
 
   it("deixa 'Concluído' de fora (é carregado à parte, paginado)", () => {
+    expect(grupos.map((g) => g.chave)).not.toContain(STATUS_CONCLUIDO);
     expect(grupos.flatMap((g) => g.itens.map((x) => x.id))).not.toContain("concluida");
+  });
+});
+
+describe("statusDisponiveis", () => {
+  it("sempre oferece as colunas padrão, com 'Concluído' por último", () => {
+    const lista = statusDisponiveis([]);
+    expect(lista.slice(0, ORDEM_STATUS.length)).toEqual(ORDEM_STATUS);
+    expect(lista[lista.length - 1]).toBe(STATUS_CONCLUIDO);
+  });
+
+  it("descobre coluna criada no Kanban do desktop pelos dados", () => {
+    const lista = statusDisponiveis([t({ id: "x", status: "Aguardando NF" })]);
+    expect(lista).toContain("Aguardando NF");
+    expect(lista.indexOf("Aguardando NF")).toBeGreaterThan(lista.indexOf("Backlog"));
+  });
+
+  it("inclui o status da tarefa aberta mesmo que nenhuma outra linha o use", () => {
+    expect(statusDisponiveis([], "Coluna esquecida")).toContain("Coluna esquecida");
+  });
+
+  it("nunca duplica 'Concluído' quando ele vem dos dados", () => {
+    const lista = statusDisponiveis([t({ id: "c", status: STATUS_CONCLUIDO })]);
+    expect(lista.filter((s) => s === STATUS_CONCLUIDO)).toHaveLength(1);
   });
 });

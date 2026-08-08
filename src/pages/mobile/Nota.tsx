@@ -1,6 +1,6 @@
 // Uma nota em tela cheia. Leitura por padrão; edição só quando é seguro (ver notas.ts).
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { ArrowLeft, ChevronRight, Loader2, Pencil, Star, Lock, X, Check } from "lucide-react";
 import { toast } from "sonner";
@@ -12,38 +12,38 @@ import { Textarea } from "@/components/ui/textarea";
 import { NotaConteudo } from "@/components/mobile/NotaConteudo";
 import { docParaTexto, podeEditarNoCelular, textoParaDoc } from "@/lib/mobile/notas";
 import { fmtData } from "@/lib/mobile/formato";
-import { carregarPaginas, type PaginaWorkspace } from "@/lib/mobile/paginas";
+import { carregarNota, type PaginaResumo, type PaginaWorkspace } from "@/lib/mobile/paginas";
 
 export default function MobileNota() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const { profile } = useAuth();
-  const [paginas, setPaginas] = useState<PaginaWorkspace[]>([]);
+  const [nota, setNota] = useState<PaginaWorkspace | null>(null);
+  const [subpaginas, setSubpaginas] = useState<PaginaResumo[]>([]);
+  const [trilha, setTrilha] = useState<PaginaResumo[]>([]);
   const [carregando, setCarregando] = useState(true);
   const [editando, setEditando] = useState(false);
   const [rascunho, setRascunho] = useState("");
   const [salvando, setSalvando] = useState(false);
 
+  // A rota /notas/:id troca sem desmontar a tela (subpágina abre outra subpágina), então a
+  // busca depende do `id` — sem isso a segunda nota abriria com o conteúdo da primeira.
   useEffect(() => {
-    carregarPaginas()
-      .then(setPaginas)
-      .catch((e) => toast.error("Erro ao carregar a nota: " + e.message))
-      .finally(() => setCarregando(false));
-  }, []);
-
-  const porId = useMemo(() => new Map(paginas.map((p) => [p.id, p])), [paginas]);
-  const nota = id ? porId.get(id) : undefined;
-  const subpaginas = useMemo(() => paginas.filter((p) => p.parent_id === id), [paginas, id]);
-
-  const trilha = useMemo(() => {
-    const caminho: PaginaWorkspace[] = [];
-    let atual = nota?.parent_id ? porId.get(nota.parent_id) : undefined;
-    while (atual) {
-      caminho.unshift(atual);
-      atual = atual.parent_id ? porId.get(atual.parent_id) : undefined;
-    }
-    return caminho;
-  }, [nota, porId]);
+    if (!id) return;
+    let vivo = true;
+    setCarregando(true);
+    setEditando(false);
+    carregarNota(id)
+      .then((r) => {
+        if (!vivo) return;
+        setNota(r.nota);
+        setSubpaginas(r.filhos);
+        setTrilha(r.trilha);
+      })
+      .catch((e) => { if (vivo) toast.error("Erro ao carregar a nota: " + e.message); })
+      .finally(() => { if (vivo) setCarregando(false); });
+    return () => { vivo = false; };
+  }, [id]);
 
   const editavel = nota ? podeEditarNoCelular(nota.content) : false;
 
@@ -63,7 +63,7 @@ export default function MobileNota() {
       .eq("id", nota.id);
     setSalvando(false);
     if (error) { toast.error("Não deu para salvar: " + error.message); return; }
-    setPaginas((ps) => ps.map((p) => (p.id === nota.id ? { ...p, content, updated_at: new Date().toISOString() } : p)));
+    setNota({ ...nota, content, last_edited_by: profile?.nome ?? null, updated_at: new Date().toISOString() });
     setEditando(false);
     toast.success("Nota salva");
   }
@@ -71,10 +71,10 @@ export default function MobileNota() {
   async function alternarFavorita() {
     if (!nota) return;
     const proximo = !nota.is_favorite;
-    setPaginas((ps) => ps.map((p) => (p.id === nota.id ? { ...p, is_favorite: proximo } : p)));
+    setNota({ ...nota, is_favorite: proximo });
     const { error } = await supabase.from("workspace_pages").update({ is_favorite: proximo }).eq("id", nota.id);
     if (error) {
-      setPaginas((ps) => ps.map((p) => (p.id === nota.id ? { ...p, is_favorite: !proximo } : p)));
+      setNota((n) => (n ? { ...n, is_favorite: !proximo } : n));
       toast.error(error.message);
     }
   }

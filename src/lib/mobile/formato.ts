@@ -52,3 +52,18 @@ export function desatualizado(iso: string | null | undefined, horas = 48, agora 
 /** Data de hoje em AAAA-MM-DD no fuso de São Paulo — base de comparação de `prazo`. */
 export const hojeISO = (): string =>
   new Date().toLocaleDateString("en-CA", { timeZone: "America/Sao_Paulo" });
+
+/**
+ * A data a `dias` de hoje, em AAAA-MM-DD (0 = hoje). É o que os atalhos de adiar prazo
+ * escrevem em `tarefas.prazo`.
+ *
+ * A conta é feita em UTC de propósito: somar 86.400.000 ms sobre um `Date` local cai um dia
+ * inteiro quando a soma atravessa uma virada de horário de verão, e prazo errado por um dia
+ * é exatamente o tipo de erro que ninguém percebe até a cobrança chegar.
+ */
+export function emDias(dias: number, hoje = hojeISO()): string {
+  const [ano, mes, dia] = hoje.split("-").map(Number);
+  const alvo = new Date(Date.UTC(ano, mes - 1, dia) + dias * 86_400_000);
+  const dois = (n: number) => String(n).padStart(2, "0");
+  return `${alvo.getUTCFullYear()}-${dois(alvo.getUTCMonth() + 1)}-${dois(alvo.getUTCDate())}`;
+}

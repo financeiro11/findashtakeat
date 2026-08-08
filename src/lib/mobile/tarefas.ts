@@ -19,11 +19,21 @@ export type TarefaMin = {
 
 export const STATUS_CONCLUIDO = "Concluído";
 
-/** Ordem em que os blocos aparecem. O que não estiver aqui cai no fim, antes de Concluído. */
+/**
+ * Ordem em que os blocos aparecem. O que não estiver aqui cai no fim, antes de Concluído.
+ *
+ * Precisa cobrir TODAS as colunas padrão do Kanban do desktop (DEFAULT_COLUMNS em
+ * components/tarefas/TaskDialog.tsx) — se uma coluna faltar aqui, a folha de detalhe não
+ * oferece aquele destino e a tarefa que já está nele aparece sem nenhum chip marcado.
+ * A lista não é importada de lá de propósito: puxaria a árvore do editor de desktop para
+ * dentro do bundle do celular. Coluna criada à mão no desktop mora no localStorage daquele
+ * computador, então quem a descobre é `statusDisponiveis`, lendo os dados.
+ */
 export const ORDEM_STATUS = [
   "Em andamento",
   "Revisão",
   "Acompanhamento",
+  "Tasks - RPA",
   "Backlog",
   "Stand-by",
   "automações",
@@ -70,23 +80,28 @@ export function ordenar(tarefas: TarefaMin[]): TarefaMin[] {
   });
 }
 
-export type Grupo = { chave: string; titulo: string; itens: TarefaMin[]; atencao?: boolean };
+export type Grupo = { chave: string; titulo: string; itens: TarefaMin[]; nAtencao: number };
 
 /**
- * Blocos da lista. Uma tarefa aparece em UM bloco só: a que entra em "Precisa de atenção"
- * sai do bloco do status dela — repetir o mesmo card duas vezes numa tela de 375px faz a
- * pessoa achar que são duas tarefas.
+ * Blocos da lista, um por STATUS.
+ *
+ * O status é o único campo que a pessoa muda daqui, então tem que ser ele a desenhar os
+ * blocos: mover de "Backlog" para "Em andamento" precisa tirar o card de um bloco e
+ * colocar em outro, senão a ação não tem efeito visível nenhum.
+ *
+ * Já existiu aqui um bloco "Precisa de atenção" acima de tudo, que recolhia o que estava
+ * urgente ou vencido e o retirava do bloco do status. Ele engolia a lista inteira — hoje a
+ * maioria das tarefas abertas está com prazo vencido — e, como `ordenar` não olha status,
+ * trocar o status deixava o card exatamente no mesmo lugar. Era o bug de "mudo a situação
+ * e a tarefa não se move". O sinal continua: `nAtencao` no cabeçalho do bloco, `ordenar`
+ * pondo urgente/vencida no topo e o prazo em vermelho no card.
  *
  * "Concluído" não vem aqui: ele é carregado à parte, paginado (são 160 de 196 linhas).
  */
 export function agrupar(tarefas: TarefaMin[], hoje = hojeISO()): Grupo[] {
-  const abertas = tarefas.filter((t) => t.status !== STATUS_CONCLUIDO);
-  const atencao = abertas.filter((t) => precisaAtencao(t, hoje));
-  const idsAtencao = new Set(atencao.map((t) => t.id));
-  const resto = abertas.filter((t) => !idsAtencao.has(t.id));
-
   const porStatus = new Map<string, TarefaMin[]>();
-  for (const t of resto) {
+  for (const t of tarefas) {
+    if (t.status === STATUS_CONCLUIDO) continue;
     if (!porStatus.has(t.status)) porStatus.set(t.status, []);
     porStatus.get(t.status)!.push(t);
   }
@@ -96,12 +111,36 @@ export function agrupar(tarefas: TarefaMin[], hoje = hojeISO()): Grupo[] {
     .filter((s) => !ORDEM_STATUS.includes(s))
     .sort((a, b) => a.localeCompare(b, "pt-BR"));
 
-  const grupos: Grupo[] = [];
-  if (atencao.length) {
-    grupos.push({ chave: "__atencao__", titulo: "Precisa de atenção", itens: ordenar(atencao), atencao: true });
-  }
-  for (const s of [...conhecidos, ...outros]) {
-    grupos.push({ chave: s, titulo: s, itens: ordenar(porStatus.get(s)!) });
-  }
-  return grupos;
+  return [...conhecidos, ...outros].map((s) => {
+    const itens = ordenar(porStatus.get(s)!);
+    return {
+      chave: s,
+      titulo: s,
+      itens,
+      nAtencao: itens.filter((t) => precisaAtencao(t, hoje)).length,
+    };
+  });
+}
+
+/**
+ * Destinos que a folha de detalhe oferece.
+ *
+ * Sai dos dados, não de uma lista fixa: o Kanban do desktop deixa criar e renomear coluna,
+ * e essa configuração vive no localStorage do computador de cada um — o celular nunca a vê.
+ * Então vale o que existe: as colunas padrão (ORDEM_STATUS) mais qualquer status que
+ * apareça nas linhas carregadas, mais o status atual da tarefa aberta. Sem isto, uma
+ * tarefa numa coluna que o celular desconhece abre com nenhum chip marcado, e não há como
+ * devolvê-la para lá depois de mexer.
+ */
+export function statusDisponiveis(tarefas: TarefaMin[], atual?: string | null): string[] {
+  const vistos = new Set<string>(ORDEM_STATUS);
+  for (const t of tarefas) if (t.status) vistos.add(t.status);
+  if (atual) vistos.add(atual);
+  vistos.delete(STATUS_CONCLUIDO); // entra sempre por último, nunca no meio
+
+  const outros = [...vistos]
+    .filter((s) => !ORDEM_STATUS.includes(s))
+    .sort((a, b) => a.localeCompare(b, "pt-BR"));
+
+  return [...ORDEM_STATUS, ...outros, STATUS_CONCLUIDO];
 }

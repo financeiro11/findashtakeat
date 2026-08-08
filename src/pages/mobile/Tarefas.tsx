@@ -4,21 +4,22 @@
 // um botão dentro da folha de detalhe. E "Concluído" (160 das 196 linhas hoje) não é
 // carregado junto: vem paginado de 20 em 20, só quando a pessoa abre a seção.
 
-import { useCallback, useEffect, useMemo, useState } from "react";
-import { Plus, AlertTriangle, ChevronDown, ListChecks, Loader2, CalendarDays, Check } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Plus, AlertTriangle, ChevronDown, ListChecks, Loader2, CalendarDays, Check, X } from "lucide-react";
 import { toast } from "sonner";
 import { supabase } from "@/integrations/supabase/client";
 import { cn } from "@/lib/utils";
 import { useAuth } from "@/hooks/useAuth";
+import { useAoVoltar } from "@/hooks/useAoVoltar";
 import { Drawer, DrawerContent, DrawerTitle } from "@/components/ui/drawer";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
-import { fmtData, hojeISO } from "@/lib/mobile/formato";
-import { iniciais, rotuloResponsavel } from "@/lib/mobile/responsavel";
+import { emDias, fmtData, hojeISO } from "@/lib/mobile/formato";
+import { iniciais, mesmaPessoa, pessoasConhecidas, rotuloResponsavel, type Pessoa } from "@/lib/mobile/responsavel";
 import {
-  agrupar, aplicarFiltro, estaAtrasada, ordenar,
-  ORDEM_STATUS, PRIORIDADES, STATUS_CONCLUIDO,
+  agrupar, aplicarFiltro, estaAtrasada, statusDisponiveis,
+  PRIORIDADES, STATUS_CONCLUIDO,
   type FiltroTarefas, type TarefaMin,
 } from "@/lib/mobile/tarefas";
 
@@ -40,9 +41,6 @@ const CORES_PRIORIDADE: Record<string, string> = {
   Média: "bg-yellow-500/15 text-yellow-700 dark:text-yellow-400",
   Baixa: "bg-secondary text-muted-foreground",
 };
-
-/** Todos os status que a folha de detalhe oferece — os da lista mais "Concluído". */
-const STATUS_DISPONIVEIS = [...ORDEM_STATUS, STATUS_CONCLUIDO];
 
 const comSubtarefas = (r: any): Tarefa => ({
   ...r,
@@ -98,6 +96,13 @@ export default function MobileTarefas() {
     Promise.all([carregarAbertas(), carregarConcluidas(PAGINA_CONCLUIDAS)]).finally(() => setCarregando(false));
   }, [carregarAbertas, carregarConcluidas]);
 
+  // Quem mexe no Kanban é o time inteiro: voltar ao app depois de um tempo tem que trazer
+  // a lista de agora, não a de quando o celular foi para o bolso.
+  useAoVoltar(() => {
+    carregarAbertas();
+    carregarConcluidas(limiteConcluidas);
+  });
+
   /* ------------------------------ escrita ------------------------------ */
   async function salvar(alvo: Tarefa, patch: Partial<Tarefa>, descricao: string) {
     const atualizada = { ...alvo, ...patch };
@@ -128,14 +133,38 @@ export default function MobileTarefas() {
     // numa tarefa aberta bagunça a ordenação da lista de concluídas.
     if (status === STATUS_CONCLUIDO) patch.concluido_em = new Date().toISOString();
     else if (alvo.status === STATUS_CONCLUIDO) patch.concluido_em = null;
-    if (await salvar(alvo, patch, `moveu de "${alvo.status}" para "${status}"`)) {
-      if (status === STATUS_CONCLUIDO) { toast.success("Tarefa concluída"); setAberta(null); }
+    if (!(await salvar(alvo, patch, `moveu de "${alvo.status}" para "${status}"`))) return;
+
+    if (status === STATUS_CONCLUIDO) {
+      toast.success("Tarefa concluída");
+      setAberta(null);
+      return;
     }
+    // O card muda de bloco, mas o bloco de destino pode estar fora da tela — e a folha de
+    // detalhe segue aberta por cima da lista. Sem este aviso a ação fica sem resposta.
+    toast.success(`Movida para "${status}"`);
   }
 
   async function trocarPrioridade(alvo: Tarefa, prioridade: string) {
     if (prioridade === alvo.prioridade) return;
     await salvar(alvo, { prioridade }, `prioridade: ${alvo.prioridade} → ${prioridade}`);
+  }
+
+  async function trocarPrazo(alvo: Tarefa, prazo: string | null) {
+    if ((prazo ?? null) === (alvo.prazo ?? null)) return;
+    // Mesma frase do histórico do desktop (describeChanges em pages/Tarefas.tsx): a aba
+    // "Histórico" mistura as duas origens e não pode ficar com dois dialetos.
+    if (await salvar(alvo, { prazo }, `prazo: ${fmtData(alvo.prazo)} → ${fmtData(prazo)}`)) {
+      toast.success(prazo ? `Prazo: ${fmtData(prazo)}` : "Prazo removido");
+    }
+  }
+
+  async function trocarResponsavel(alvo: Tarefa, responsavel: string | null) {
+    if ((responsavel ?? "") === (alvo.responsavel ?? "")) return;
+    if (!(await salvar(alvo, { responsavel }, `responsável: ${alvo.responsavel || "—"} → ${responsavel || "—"}`))) return;
+    // Passar a tarefa para outra pessoa com o filtro em "Minhas" faz o card sumir da lista.
+    // É o certo — ela não é mais sua —, mas sumir sem explicação parece falha.
+    toast.success(responsavel ? `Agora é de ${rotuloResponsavel(responsavel)}` : "Responsável removido");
   }
 
   async function alternarSubtarefa(alvo: Tarefa, id: string) {
@@ -153,6 +182,9 @@ export default function MobileTarefas() {
     if (error) { toast.error(error.message); return false; }
     registrar({ id: (data as any)?.id ?? null, titulo: novo.titulo, acao: "criada", descricao: 'Criada em "Backlog" pelo celular' });
     toast.success("Tarefa criada");
+    // Criada para outra pessoa com o filtro em "Minhas", ela nasceria invisível: a tela
+    // diria "criada" e a lista continuaria igual. Mostra onde ela caiu.
+    if (filtro !== "todas" && !mesmaPessoa(novo.responsavel, profile?.nome)) setFiltro("todas");
     await carregarAbertas();
     return true;
   }
@@ -163,11 +195,28 @@ export default function MobileTarefas() {
     [abertas, filtro, profile?.nome, hoje],
   );
   const grupos = useMemo(() => agrupar(filtradas, hoje), [filtradas, hoje]);
+  // Sem reordenar: o banco já devolve da mais recente para a mais antiga, que é a ordem
+  // que "Carregar mais" continua. Reordenar por prioridade aqui embaralhava a paginação.
   const concluidasFiltradas = useMemo(
-    () => ordenar(aplicarFiltro(concluidas, filtro === "atrasadas" ? "todas" : filtro, profile?.nome, hoje)) as Tarefa[],
+    () => aplicarFiltro(concluidas, filtro === "atrasadas" ? "todas" : filtro, profile?.nome, hoje) as Tarefa[],
     [concluidas, filtro, profile?.nome, hoje],
   );
   const nAtrasadas = useMemo(() => abertas.filter((t) => estaAtrasada(t, hoje)).length, [abertas, hoje]);
+  // Os destinos saem do que existe hoje no banco (ver statusDisponiveis), não de uma
+  // lista fixa — inclui as colunas criadas no Kanban do desktop.
+  const statusPossiveis = useMemo(
+    () => statusDisponiveis([...abertas, ...concluidas], aberta?.status),
+    [abertas, concluidas, aberta?.status],
+  );
+  // Idem para as pessoas: quem já tem tarefa, mais quem está logado (que pode ainda não
+  // ter nenhuma e mesmo assim precisa poder pegar uma para si).
+  const pessoas = useMemo(
+    () => pessoasConhecidas([
+      ...[...abertas, ...concluidas].map((t) => t.responsavel),
+      profile?.nome?.split(" ")[0],
+    ]),
+    [abertas, concluidas, profile?.nome],
+  );
 
   return (
     <div className="relative pb-24">
@@ -189,21 +238,27 @@ export default function MobileTarefas() {
             <div className="rounded-xl border border-border bg-card px-4 py-10 text-center text-[13px] text-muted-foreground">
               {filtro === "minhas"
                 ? `Nada em aberto para ${profile?.nome?.split(" ")[0] ?? "você"}.`
-                : "Nenhuma tarefa em aberto."}
+                : filtro === "atrasadas"
+                  ? "Nenhuma tarefa com prazo vencido."
+                  : "Nenhuma tarefa em aberto."}
             </div>
           )}
 
           {grupos.map((g) => (
             <section key={g.chave}>
-              <h2 className={cn(
-                "mb-2 flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-wider",
-                g.atencao ? "text-destructive" : "text-muted-foreground",
-              )}>
-                {g.atencao && <AlertTriangle className="h-3 w-3" />}
+              <h2 className="mb-2 flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-wider text-muted-foreground">
                 {g.titulo}
                 <span className="num rounded bg-secondary px-1.5 py-0.5 text-[10px] font-semibold text-muted-foreground">
                   {g.itens.length}
                 </span>
+                {/* O bloco deixou de ser "Precisa de atenção"; o alerta virou este contador,
+                    e a ordem interna (ver `ordenar`) já põe urgente e vencida no topo. */}
+                {g.nAtencao > 0 && (
+                  <span className="num flex items-center gap-1 rounded bg-destructive/15 px-1.5 py-0.5 text-[10px] font-semibold text-destructive">
+                    <AlertTriangle className="h-2.5 w-2.5" />
+                    {g.nAtencao}
+                  </span>
+                )}
               </h2>
               <ul className="space-y-2">
                 {g.itens.map((t) => (
@@ -221,19 +276,31 @@ export default function MobileTarefas() {
             >
               <Check className="h-4 w-4 shrink-0 text-emerald-600 dark:text-emerald-400" />
               <span className="flex-1 text-[13.5px] font-semibold">Concluídas</span>
+              {/* Conta o que está NA TELA, não o que existe no banco: a lista vem paginada
+                  de 20 em 20 e ainda passa pelo filtro do topo. Mostrar 160 ao lado de três
+                  cards (ou de nenhum) fazia a seção parecer quebrada. O total vai no rodapé,
+                  junto do botão que carrega o resto. */}
               <span className="num rounded bg-secondary px-1.5 py-0.5 text-[11px] text-muted-foreground">
-                {totalConcluidas || concluidas.length}
+                {concluidasFiltradas.length}
               </span>
               <ChevronDown className={cn("h-4 w-4 text-muted-foreground transition-transform", mostrarConcluidas && "rotate-180")} />
             </button>
 
             {mostrarConcluidas && (
               <>
-                <ul className="mt-2 space-y-2">
-                  {concluidasFiltradas.map((t) => (
-                    <CardTarefa key={t.id} t={t} hoje={hoje} onAbrir={() => setAberta(t)} />
-                  ))}
-                </ul>
+                {concluidasFiltradas.length === 0 ? (
+                  <div className="mt-2 rounded-xl border border-border bg-card px-4 py-6 text-center text-[12.5px] leading-relaxed text-muted-foreground">
+                    {filtro === "minhas" && concluidas.length > 0
+                      ? `Nenhuma sua entre as ${concluidas.length} concluídas mais recentes.`
+                      : "Nenhuma tarefa concluída."}
+                  </div>
+                ) : (
+                  <ul className="mt-2 space-y-2">
+                    {concluidasFiltradas.map((t) => (
+                      <CardTarefa key={t.id} t={t} hoje={hoje} onAbrir={() => setAberta(t)} />
+                    ))}
+                  </ul>
+                )}
                 {concluidas.length < totalConcluidas && (
                   <button
                     onClick={() => {
@@ -243,7 +310,7 @@ export default function MobileTarefas() {
                     }}
                     className="mt-2 min-h-[44px] w-full rounded-xl border border-dashed border-border text-[13px] font-medium text-muted-foreground"
                   >
-                    Carregar mais ({totalConcluidas - concluidas.length} restantes)
+                    Carregar mais ({concluidas.length} de {totalConcluidas} carregadas)
                   </button>
                 )}
               </>
@@ -262,13 +329,18 @@ export default function MobileTarefas() {
 
       <FolhaDetalhe
         tarefa={aberta}
+        status={statusPossiveis}
+        pessoas={pessoas}
         onFechar={() => setAberta(null)}
         onStatus={trocarStatus}
         onPrioridade={trocarPrioridade}
         onSubtarefa={alternarSubtarefa}
+        onPrazo={trocarPrazo}
+        onResponsavel={trocarResponsavel}
       />
       <FolhaCriar
         aberta={criando}
+        pessoas={pessoas}
         responsavelPadrao={profile?.nome?.split(" ")[0] ?? ""}
         onFechar={() => setCriando(false)}
         onCriar={criar}
@@ -333,14 +405,111 @@ function CardTarefa({ t, hoje, onAbrir }: { t: Tarefa; hoje: string; onAbrir: ()
   );
 }
 
+/**
+ * Escolha de responsável em chips.
+ *
+ * Não é um `<select>` porque a lista de gente do financeiro cabe na tela e um toque é mais
+ * rápido que abrir a roda nativa do iOS. "Outra…" existe para quem ainda não tem nenhuma
+ * tarefa: sem ele, a única saída seria o computador. E se a tarefa já estiver com alguém
+ * que não está na lista, essa pessoa vira um chip próprio — nunca se perde de vista quem é
+ * o dono atual.
+ */
+function SeletorResponsavel({
+  pessoas, valor, permitirVazio, onEscolher,
+}: {
+  pessoas: Pessoa[];
+  valor: string | null;
+  permitirVazio?: boolean;
+  onEscolher: (valor: string | null) => void;
+}) {
+  const [digitando, setDigitando] = useState(false);
+  const [texto, setTexto] = useState("");
+
+  const atual = (valor ?? "").trim();
+  const conhecida = !atual || pessoas.some((p) => mesmaPessoa(p.valor, atual));
+  const lista = conhecida ? pessoas : [...pessoas, { chave: atual, rotulo: rotuloResponsavel(atual), valor: atual }];
+
+  const confirmar = () => {
+    const novo = texto.trim();
+    if (novo) onEscolher(novo);
+    setTexto("");
+    setDigitando(false);
+  };
+
+  return (
+    <div className="flex flex-wrap gap-2">
+      {lista.map((p) => (
+        <button
+          key={p.chave}
+          onClick={() => onEscolher(p.valor)}
+          className={cn(
+            "flex min-h-[38px] items-center gap-1.5 rounded-full border px-3 text-[12.5px] font-medium",
+            mesmaPessoa(p.valor, atual)
+              ? "border-primary bg-primary text-primary-foreground"
+              : "border-border bg-card text-foreground",
+          )}
+        >
+          <span className={cn(
+            "flex h-5 w-5 items-center justify-center rounded-full text-[9px] font-bold",
+            mesmaPessoa(p.valor, atual) ? "bg-primary-foreground/20" : "bg-primary/15 text-primary",
+          )}>
+            {iniciais(p.valor)}
+          </span>
+          {p.rotulo}
+        </button>
+      ))}
+
+      {permitirVazio && (
+        <button
+          onClick={() => onEscolher(null)}
+          className={cn(
+            "min-h-[38px] rounded-full border px-3.5 text-[12.5px] font-medium",
+            !atual ? "border-primary bg-primary text-primary-foreground" : "border-border bg-card text-muted-foreground",
+          )}
+        >
+          Sem responsável
+        </button>
+      )}
+
+      {digitando ? (
+        <div className="flex w-full items-center gap-2">
+          <Input
+            value={texto}
+            onChange={(e) => setTexto(e.target.value)}
+            onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); confirmar(); } }}
+            placeholder="Nome da pessoa"
+            className="h-11 flex-1 text-base"
+            autoFocus
+          />
+          <Button onClick={confirmar} disabled={!texto.trim()} className="h-11 px-4">OK</Button>
+          <Button variant="ghost" onClick={() => { setTexto(""); setDigitando(false); }} className="h-11 px-3">
+            <X className="h-4 w-4" />
+          </Button>
+        </div>
+      ) : (
+        <button
+          onClick={() => setDigitando(true)}
+          className="min-h-[38px] rounded-full border border-dashed border-border px-3.5 text-[12.5px] font-medium text-muted-foreground"
+        >
+          Outra…
+        </button>
+      )}
+    </div>
+  );
+}
+
 function FolhaDetalhe({
-  tarefa, onFechar, onStatus, onPrioridade, onSubtarefa,
+  tarefa, status, pessoas, onFechar, onStatus, onPrioridade, onSubtarefa, onPrazo, onResponsavel,
 }: {
   tarefa: Tarefa | null;
+  status: string[];
+  pessoas: Pessoa[];
   onFechar: () => void;
   onStatus: (t: Tarefa, s: string) => void;
   onPrioridade: (t: Tarefa, p: string) => void;
   onSubtarefa: (t: Tarefa, id: string) => void;
+  onPrazo: (t: Tarefa, prazo: string | null) => void;
+  onResponsavel: (t: Tarefa, responsavel: string | null) => void;
 }) {
   return (
     <Drawer open={!!tarefa} onOpenChange={(v) => !v && onFechar()}>
@@ -394,7 +563,7 @@ function FolhaDetalhe({
             <div className="mt-5">
               <div className="mb-1.5 text-[11px] font-bold uppercase tracking-wider text-muted-foreground">Status</div>
               <div className="flex flex-wrap gap-2">
-                {STATUS_DISPONIVEIS.map((s) => (
+                {status.map((s) => (
                   <button
                     key={s}
                     onClick={() => onStatus(tarefa, s)}
@@ -427,6 +596,42 @@ function FolhaDetalhe({
               </div>
             </div>
 
+            <div className="mt-4">
+              <div className="mb-1.5 text-[11px] font-bold uppercase tracking-wider text-muted-foreground">Responsável</div>
+              <SeletorResponsavel
+                pessoas={pessoas}
+                valor={tarefa.responsavel}
+                permitirVazio
+                onEscolher={(v) => onResponsavel(tarefa, v)}
+              />
+            </div>
+
+            <div className="mt-4">
+              <div className="mb-1.5 text-[11px] font-bold uppercase tracking-wider text-muted-foreground">Prazo</div>
+              <div className="flex items-center gap-2">
+                {/* `prazo` é DATE: corta em 10 caracteres para o input não receber hora e
+                    devolver o dia anterior por fuso. text-base evita o zoom do Safari. */}
+                <Input
+                  type="date"
+                  value={tarefa.prazo?.slice(0, 10) ?? ""}
+                  onChange={(e) => onPrazo(tarefa, e.target.value || null)}
+                  className="h-11 flex-1 text-base"
+                />
+                {tarefa.prazo && (
+                  <Button variant="outline" onClick={() => onPrazo(tarefa, null)} className="h-11 px-3 text-[12.5px]">
+                    Limpar
+                  </Button>
+                )}
+              </div>
+              <div className="mt-2 flex flex-wrap gap-2">
+                {/* Adiar é a ação mais comum no celular: quem abre a tarefa no corredor
+                    quer empurrar o prazo, não digitar uma data no teclado numérico. */}
+                <BotaoAdiar rotulo="Hoje" dias={0} onEscolher={(d) => onPrazo(tarefa, d)} />
+                <BotaoAdiar rotulo="Amanhã" dias={1} onEscolher={(d) => onPrazo(tarefa, d)} />
+                <BotaoAdiar rotulo="+1 semana" dias={7} onEscolher={(d) => onPrazo(tarefa, d)} />
+              </div>
+            </div>
+
             <p className="mt-5 text-[11.5px] leading-relaxed text-muted-foreground">
               Título, observação e checklist são editados no computador — aqui ficam as ações
               rápidas do dia a dia.
@@ -438,10 +643,22 @@ function FolhaDetalhe({
   );
 }
 
+function BotaoAdiar({ rotulo, dias, onEscolher }: { rotulo: string; dias: number; onEscolher: (d: string) => void }) {
+  return (
+    <button
+      onClick={() => onEscolher(emDias(dias))}
+      className="min-h-[36px] rounded-full border border-dashed border-border bg-card px-3 text-[12px] font-medium text-muted-foreground"
+    >
+      {rotulo}
+    </button>
+  );
+}
+
 function FolhaCriar({
-  aberta, responsavelPadrao, onFechar, onCriar,
+  aberta, pessoas, responsavelPadrao, onFechar, onCriar,
 }: {
   aberta: boolean;
+  pessoas: Pessoa[];
   responsavelPadrao: string;
   onFechar: () => void;
   onCriar: (t: { titulo: string; responsavel: string; prioridade: string; prazo: string }) => Promise<boolean>;
@@ -452,10 +669,21 @@ function FolhaCriar({
   const [prazo, setPrazo] = useState(hojeISO());
   const [salvando, setSalvando] = useState(false);
 
+  // Lido por ref, não por dependência: `pessoas` é um array novo a cada recarga da lista
+  // (e o app recarrega sozinho ao voltar do bolso), e como dependência isso limparia o
+  // formulário no meio da digitação.
+  const pessoasRef = useRef(pessoas);
+  pessoasRef.current = pessoas;
+
   useEffect(() => {
-    if (aberta) {
-      setTitulo(""); setResponsavel(responsavelPadrao); setPrioridade("Média"); setPrazo(hojeISO());
-    }
+    if (!aberta) return;
+    setTitulo("");
+    // Já existe grafia gravada para quem está logado? Usa ELA. Escrever "Júlia" onde a
+    // base inteira diz "Julia" só acrescentaria mais uma variante.
+    const conhecida = pessoasRef.current.find((p) => mesmaPessoa(p.valor, responsavelPadrao));
+    setResponsavel(conhecida?.valor ?? responsavelPadrao);
+    setPrioridade("Média");
+    setPrazo(hojeISO());
   }, [aberta, responsavelPadrao]);
 
   const enviar = async () => {
@@ -482,7 +710,9 @@ function FolhaCriar({
             </div>
             <div className="space-y-1.5">
               <Label className="text-[12px]">Responsável</Label>
-              <Input value={responsavel} onChange={(e) => setResponsavel(e.target.value)} className="h-11 text-base" placeholder="Henrique, Júlia…" />
+              {/* Antes era um campo livre, que é como a coluna acabou com cinco grafias
+                  para duas pessoas. Aqui a escolha padrão é reaproveitar quem já existe. */}
+              <SeletorResponsavel pessoas={pessoas} valor={responsavel} onEscolher={(v) => setResponsavel(v ?? "")} />
             </div>
             <div className="space-y-1.5">
               <Label className="text-[12px]">Prioridade</Label>
@@ -504,6 +734,11 @@ function FolhaCriar({
             <div className="space-y-1.5">
               <Label className="text-[12px]">Prazo</Label>
               <Input type="date" value={prazo} onChange={(e) => setPrazo(e.target.value)} className="h-11 text-base" />
+              <div className="flex flex-wrap gap-2 pt-0.5">
+                <BotaoAdiar rotulo="Hoje" dias={0} onEscolher={setPrazo} />
+                <BotaoAdiar rotulo="Amanhã" dias={1} onEscolher={setPrazo} />
+                <BotaoAdiar rotulo="+1 semana" dias={7} onEscolher={setPrazo} />
+              </div>
             </div>
 
             <Button onClick={enviar} disabled={salvando} className="h-12 w-full text-[14px] font-semibold">

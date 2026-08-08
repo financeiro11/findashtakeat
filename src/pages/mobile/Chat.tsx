@@ -15,6 +15,7 @@ import { supabase } from "@/integrations/supabase/client";
 import { cn } from "@/lib/utils";
 import { Drawer, DrawerContent, DrawerTitle } from "@/components/ui/drawer";
 import { fmtDataHora } from "@/lib/mobile/formato";
+import { marcarFalha, tirarPerguntaFalha } from "@/lib/mobile/chat";
 import {
   ErroAssistente, TIMEOUT_MS, criarConversa, gravarMensagem, perguntarConferido, streamAiChat,
   type MsgAssistente, type NumeroConferido,
@@ -22,6 +23,13 @@ import {
 
 type Conversa = { id: string; titulo: string; updated_at: string };
 type Msg = MsgAssistente & { numeros?: NumeroConferido[]; avisos?: string[] };
+
+/**
+ * A aba é uma rota: sair para Tarefas e voltar DESMONTA a tela e zera o estado. Sem isto a
+ * conversa em andamento some ao conferir um número em outra aba — o comportamento que
+ * nenhum app de mensagem tem. Guarda só o id; o texto é relido de `ai_messages`.
+ */
+const CHAVE_CONVERSA = "hub:chat:conversa";
 
 const SUGESTOES = [
   "O que eu preciso saber hoje?",
@@ -40,6 +48,7 @@ export default function MobileChat() {
   const [falhou, setFalhou] = useState<{ texto: string; motivo: string } | null>(null);
 
   const fim = useRef<HTMLDivElement>(null);
+  const campo = useRef<HTMLTextAreaElement>(null);
   const mensagensRef = useRef<Msg[]>([]);
   useEffect(() => { mensagensRef.current = mensagens; }, [mensagens]);
   useEffect(() => { fim.current?.scrollIntoView({ behavior: "smooth" }); }, [mensagens, pensando]);
@@ -52,23 +61,38 @@ export default function MobileChat() {
       .limit(50);
     setConversas(((data as any) ?? []) as Conversa[]);
   }
-  useEffect(() => { carregarConversas(); }, []);
+
+  useEffect(() => {
+    carregarConversas();
+    const guardada = sessionStorage.getItem(CHAVE_CONVERSA);
+    if (guardada) abrirConversa(guardada);
+  }, []);
+
+  function lembrarConversa(id: string | null) {
+    setConversaId(id);
+    try {
+      if (id) sessionStorage.setItem(CHAVE_CONVERSA, id);
+      else sessionStorage.removeItem(CHAVE_CONVERSA);
+    } catch { /* modo privado do Safari */ }
+  }
 
   async function abrirConversa(id: string) {
-    setConversaId(id);
+    lembrarConversa(id);
     setHistoricoAberto(false);
     setFalhou(null);
-    const { data } = await supabase
+    const { data, error } = await supabase
       .from("ai_messages" as any)
       .select("role,content,created_at")
       .eq("conversation_id", id)
       .order("created_at", { ascending: true });
+    // Conversa apagada em outro aparelho: o id guardado não vale mais.
+    if (error || !data) { lembrarConversa(null); setMensagens([]); return; }
     // Conversa recarregada não traz a tabela de números: `ai_messages` guarda só o texto.
-    setMensagens(((data as any) ?? []).map((m: any) => ({ role: m.role, content: m.content })));
+    setMensagens((data as any[]).map((m: any) => ({ role: m.role, content: m.content })));
   }
 
   function novaConversa() {
-    setConversaId(null);
+    lembrarConversa(null);
     setMensagens([]);
     setFalhou(null);
     setHistoricoAberto(false);
@@ -87,6 +111,9 @@ export default function MobileChat() {
 
     setFalhou(null);
     setEntrada("");
+    // O textarea cresce por `style.height` no onInput; limpar o valor não desfaz isso, e o
+    // campo ficava alto e vazio depois de mandar uma pergunta longa.
+    if (campo.current) campo.current.style.height = "auto";
     setPensando(true);
     const comPergunta: Msg[] = [...mensagensRef.current, { role: "user", content: pergunta }];
     setMensagens(comPergunta);
@@ -94,7 +121,7 @@ export default function MobileChat() {
     let cid = conversaId;
     if (!cid) {
       cid = await criarConversa(pergunta);
-      if (cid) setConversaId(cid);
+      if (cid) lembrarConversa(cid);
     }
     if (cid) gravarMensagem(cid, "user", pergunta);
 
@@ -109,7 +136,9 @@ export default function MobileChat() {
     }
 
     const controle = new AbortController();
-    const relogio = setTimeout(() => controle.abort(), TIMEOUT_MS);
+    // O relógio começa só quando o streaming começa. Ligado antes, um caminho conferido
+    // lento comia o tempo do outro e o stream nascia com poucos segundos de vida.
+    let relogio: ReturnType<typeof setTimeout> | undefined;
 
     try {
       const conferida = await perguntarConferido(pergunta, contexto, cid).catch(() => null);
@@ -131,6 +160,7 @@ export default function MobileChat() {
 
       // Caminho geral: a bolha do assistente nasce vazia e cresce com o streaming.
       let acumulado = "";
+      relogio = setTimeout(() => controle.abort(), TIMEOUT_MS);
       setMensagens((prev) => [...prev, { role: "assistant", content: "", verificado: false, provedor: "gemini" }]);
       acumulado = await streamAiChat(comPergunta, (pedaco) => {
         setMensagens((prev) =>
@@ -138,20 +168,18 @@ export default function MobileChat() {
         );
       }, controle.signal);
 
-      if (!acumulado) {
-        setMensagens((prev) => prev.slice(0, -1));
-        throw new ErroAssistente("O assistente não respondeu nada.", "servidor");
-      }
+      if (!acumulado) throw new ErroAssistente("O assistente não respondeu nada.", "servidor");
       if (cid) { await gravarMensagem(cid, "assistant", acumulado); carregarConversas(); }
     } catch (e) {
       const motivo = e instanceof ErroAssistente
         ? e.message
         : "Falha de conexão. Verifique a internet e tente de novo.";
-      // A pergunta continua na tela (marcada) e o botão reenvia — nada digitado se perde.
-      setMensagens((prev) => prev.map((m, i) => (i === prev.length - 1 && m.role === "user" ? { ...m, erro: true } : m)));
+      // Tira a bolha vazia do assistente e marca a pergunta, que fica na tela para o botão
+      // reenviar — nada digitado se perde. Regra e testes em lib/mobile/chat.ts.
+      setMensagens(marcarFalha);
       setFalhou({ texto: pergunta, motivo });
     } finally {
-      clearTimeout(relogio);
+      if (relogio) clearTimeout(relogio);
       setPensando(false);
     }
   }
@@ -160,10 +188,7 @@ export default function MobileChat() {
     if (!falhou) return;
     const texto = falhou.texto;
     // Tira a pergunta que falhou antes de reenviar, para não duplicar a bolha.
-    setMensagens((prev) => {
-      const ultima = prev[prev.length - 1];
-      return ultima?.role === "user" && ultima.erro ? prev.slice(0, -1) : prev;
-    });
+    setMensagens(tirarPerguntaFalha);
     setFalhou(null);
     setTimeout(() => enviar(texto), 0);
   }
@@ -273,6 +298,7 @@ export default function MobileChat() {
           className="flex items-end gap-2"
         >
           <textarea
+            ref={campo}
             value={entrada}
             onChange={(e) => setEntrada(e.target.value)}
             rows={1}

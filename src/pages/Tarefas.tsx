@@ -306,7 +306,10 @@ export default function Tarefas() {
   const [fResponsavel, setFResponsavel] = useState<string[]>([]);
 
   const load = async () => {
-    const { data, error } = await supabase.from("tarefas").select("*").order("ordem");
+    // Arquivada continua no banco (o histórico aponta para ela), mas fora do Kanban.
+    // Mesmo filtro da aba do celular — as duas telas mostram a mesma lista.
+    const { data, error } = await supabase
+      .from("tarefas").select("*").is("arquivada_em", null).order("ordem");
     if (error) toast.error(error.message);
     else {
       const mapped: Tarefa[] = ((data as any[]) || []).map(r => ({
@@ -415,12 +418,33 @@ export default function Tarefas() {
     return true;
   };
 
+  /**
+   * Arquiva em vez de apagar.
+   *
+   * Antes era `delete`: a linha sumia do banco e o registro em `tarefas_log` ficava
+   * apontando para um id que não existia mais. Agora a tarefa só sai das listas — das duas
+   * telas, porque o celular filtra igual — e dá para desfazer pelo aviso.
+   */
   const remove = async (id: string) => {
     const alvo = rows.find(r => r.id === id);
-    const { error } = await supabase.from("tarefas").delete().eq("id", id);
+    const { error } = await supabase
+      .from("tarefas").update({ arquivada_em: new Date().toISOString() } as any).eq("id", id);
     if (error) { toast.error(error.message); return; }
-    if (alvo) logTarefa({ tarefa_id: id, tarefa_titulo: alvo.titulo, acao: "excluida", descricao: `Excluída (estava em "${alvo.status}")` });
+    if (alvo) logTarefa({ tarefa_id: id, tarefa_titulo: alvo.titulo, acao: "arquivada", descricao: `Arquivada (estava em "${alvo.status}")` });
     load();
+    toast.success("Tarefa arquivada", {
+      action: {
+        label: "Desfazer",
+        onClick: async () => {
+          const { error: err } = await supabase
+            .from("tarefas").update({ arquivada_em: null } as any).eq("id", id);
+          if (err) { toast.error(err.message); return; }
+          if (alvo) logTarefa({ tarefa_id: id, tarefa_titulo: alvo.titulo, acao: "editada", descricao: "Arquivamento desfeito" });
+          load();
+          toast.success("Tarefa restaurada");
+        },
+      },
+    });
   };
 
   const create = async (t: Partial<Tarefa>) => {
@@ -926,9 +950,9 @@ function KanbanCard({ t, bar, onClick, onRemove }: { t: Tarefa; bar: string; onC
       className="group relative cursor-grab active:cursor-grabbing space-y-2 rounded-md border border-border bg-background p-2.5 shadow-sm transition-all hover:border-primary/40 hover:shadow"
     >
       <button
-        onClick={(e) => { e.stopPropagation(); if (confirm("Excluir esta tarefa?")) onRemove(); }}
+        onClick={(e) => { e.stopPropagation(); if (confirm("Arquivar esta tarefa? Ela sai do quadro, mas dá para restaurar.")) onRemove(); }}
         className="absolute right-1 top-1 rounded p-1 text-muted-foreground opacity-0 transition-opacity hover:bg-destructive/10 hover:text-destructive group-hover:opacity-100"
-        aria-label="Excluir tarefa"
+        aria-label="Arquivar tarefa"
       >
         <Trash2 className="h-3 w-3" />
       </button>
@@ -1103,7 +1127,7 @@ function TableView({
                         {idade}d
                       </TableCell>
                       <TableCell onClick={(e) => e.stopPropagation()}>
-                        <button onClick={() => { if (confirm("Excluir esta tarefa?")) onRemove(t.id); }} className="rounded p-1 text-muted-foreground hover:bg-secondary hover:text-destructive">
+                        <button onClick={() => { if (confirm("Arquivar esta tarefa? Ela sai do quadro, mas dá para restaurar.")) onRemove(t.id); }} className="rounded p-1 text-muted-foreground hover:bg-secondary hover:text-destructive">
                           <Trash2 className="h-3.5 w-3.5" />
                         </button>
                       </TableCell>

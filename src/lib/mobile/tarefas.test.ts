@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   agrupar, aplicarFiltro, estaAtrasada, ordenar, statusDisponiveis,
   ORDEM_STATUS, STATUS_CONCLUIDO, type TarefaMin,
+  adicionarSubtarefa, removerSubtarefa, alternarSubtarefa, descreverChecklist, type Subtarefa,
 } from "./tarefas";
 
 const HOJE = "2026-08-06";
@@ -138,5 +139,71 @@ describe("statusDisponiveis", () => {
   it("nunca duplica 'Concluído' quando ele vem dos dados", () => {
     const lista = statusDisponiveis([t({ id: "c", status: STATUS_CONCLUIDO })]);
     expect(lista.filter((s) => s === STATUS_CONCLUIDO)).toHaveLength(1);
+  });
+});
+
+/* ------------------------------ checklist ------------------------------ */
+const s = (id: string, done = false, titulo = `Item ${id}`): Subtarefa => ({
+  id, titulo, responsavel: null, done,
+});
+
+describe("adicionarSubtarefa", () => {
+  it("acrescenta no fim, sem marcar e sem responsável", () => {
+    const r = adicionarSubtarefa([s("1")], "Ligar para o contador", () => "novo");
+    expect(r).toHaveLength(2);
+    expect(r[1]).toEqual({ id: "novo", titulo: "Ligar para o contador", responsavel: null, done: false });
+  });
+
+  it("apara espaços do título", () => {
+    expect(adicionarSubtarefa([], "  conferir NF  ", () => "x")[0].titulo).toBe("conferir NF");
+  });
+
+  it("título vazio ou só espaço não cria item", () => {
+    expect(adicionarSubtarefa([s("1")], "   ", () => "x")).toHaveLength(1);
+  });
+
+  it("não altera o array recebido — o original serve para desfazer se o UPDATE falhar", () => {
+    const original = [s("1")];
+    adicionarSubtarefa(original, "novo item", () => "x");
+    expect(original).toHaveLength(1);
+  });
+});
+
+describe("removerSubtarefa", () => {
+  it("tira só o item pedido", () => {
+    expect(removerSubtarefa([s("1"), s("2"), s("3")], "2").map((x) => x.id)).toEqual(["1", "3"]);
+  });
+
+  it("id inexistente não mexe na lista", () => {
+    expect(removerSubtarefa([s("1")], "9")).toHaveLength(1);
+  });
+});
+
+describe("alternarSubtarefa", () => {
+  it("marca e desmarca o mesmo item", () => {
+    const marcado = alternarSubtarefa([s("1"), s("2")], "1");
+    expect(marcado[0].done).toBe(true);
+    expect(marcado[1].done).toBe(false);
+    expect(alternarSubtarefa(marcado, "1")[0].done).toBe(false);
+  });
+
+  it("não altera o array recebido", () => {
+    const original = [s("1")];
+    alternarSubtarefa(original, "1");
+    expect(original[0].done).toBe(false);
+  });
+});
+
+describe("descreverChecklist", () => {
+  it("mudou a quantidade: a frase é sobre quantidade", () => {
+    expect(descreverChecklist([s("1")], [s("1"), s("2")])).toBe("checklist: 1 → 2 itens");
+  });
+
+  it("mesma quantidade: a frase é sobre concluídos", () => {
+    expect(descreverChecklist([s("1"), s("2")], [s("1", true), s("2")])).toBe("checklist: 1/2 concluídos");
+  });
+
+  it("removeu item — continua sendo sobre quantidade", () => {
+    expect(descreverChecklist([s("1"), s("2")], [s("1")])).toBe("checklist: 2 → 1 itens");
   });
 });

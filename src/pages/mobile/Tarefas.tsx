@@ -5,7 +5,10 @@
 // carregado junto: vem paginado de 20 em 20, só quando a pessoa abre a seção.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Plus, AlertTriangle, ChevronDown, ListChecks, Loader2, CalendarDays, Check, X } from "lucide-react";
+import {
+  Plus, AlertTriangle, ChevronDown, ListChecks, Loader2, CalendarDays, Check, X,
+  Pencil, Archive, Trash2,
+} from "lucide-react";
 import { toast } from "sonner";
 import { supabase } from "@/integrations/supabase/client";
 import { cn } from "@/lib/utils";
@@ -15,22 +18,24 @@ import { Drawer, DrawerContent, DrawerTitle } from "@/components/ui/drawer";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
 import { emDias, fmtData, hojeISO } from "@/lib/mobile/formato";
 import { iniciais, mesmaPessoa, pessoasConhecidas, rotuloResponsavel, type Pessoa } from "@/lib/mobile/responsavel";
 import {
   agrupar, aplicarFiltro, estaAtrasada, statusDisponiveis,
+  adicionarSubtarefa, alternarSubtarefa, removerSubtarefa, descreverChecklist,
   PRIORIDADES, STATUS_CONCLUIDO,
-  type FiltroTarefas, type TarefaMin,
+  type FiltroTarefas, type TarefaMin, type Subtarefa,
 } from "@/lib/mobile/tarefas";
 
 const sb = supabase as any;
 
-type Subtarefa = { id: string; titulo: string; responsavel: string | null; done: boolean };
 type Tarefa = TarefaMin & {
   ordem: number;
   observacao: string | null;
   subtarefas: Subtarefa[];
   created_at: string;
+  arquivada_em?: string | null;
 };
 
 const PAGINA_CONCLUIDAS = 20;
@@ -73,8 +78,14 @@ export default function MobileTarefas() {
     [profile?.nome, user?.id],
   );
 
+  // `.is("arquivada_em", null)` nas duas: tarefa arquivada continua no banco (dá para
+  // desfazer e o histórico segue apontando para ela), mas não pode aparecer em lista.
   const carregarAbertas = useCallback(async () => {
-    const { data, error } = await sb.from("tarefas").select("*").neq("status", STATUS_CONCLUIDO).order("ordem");
+    const { data, error } = await sb
+      .from("tarefas").select("*")
+      .is("arquivada_em", null)
+      .neq("status", STATUS_CONCLUIDO)
+      .order("ordem");
     if (error) { toast.error(error.message); return; }
     setAbertas(((data as any[]) ?? []).map(comSubtarefas));
   }, []);
@@ -83,6 +94,7 @@ export default function MobileTarefas() {
     const { data, error, count } = await sb
       .from("tarefas")
       .select("*", { count: "exact" })
+      .is("arquivada_em", null)
       .eq("status", STATUS_CONCLUIDO)
       .order("concluido_em", { ascending: false, nullsFirst: false })
       .order("updated_at", { ascending: false })
@@ -167,10 +179,63 @@ export default function MobileTarefas() {
     toast.success(responsavel ? `Agora é de ${rotuloResponsavel(responsavel)}` : "Responsável removido");
   }
 
-  async function alternarSubtarefa(alvo: Tarefa, id: string) {
-    const subtarefas = alvo.subtarefas.map((s) => (s.id === id ? { ...s, done: !s.done } : s));
-    const feitas = subtarefas.filter((s) => s.done).length;
-    await salvar(alvo, { subtarefas }, `checklist: ${feitas}/${subtarefas.length} concluídos`);
+  /* Uma porta só para as três operações de checklist: todas gravam o jsonb inteiro e
+     descrevem a mudança com a mesma frase do desktop. */
+  async function mudarChecklist(alvo: Tarefa, subtarefas: Subtarefa[]) {
+    if (subtarefas === alvo.subtarefas) return;
+    await salvar(alvo, { subtarefas }, descreverChecklist(alvo.subtarefas, subtarefas));
+  }
+
+  async function renomear(alvo: Tarefa, titulo: string) {
+    const limpo = titulo.trim();
+    if (!limpo || limpo === alvo.titulo) return;
+    if (await salvar(alvo, { titulo: limpo }, `título: "${alvo.titulo}" → "${limpo}"`)) {
+      toast.success("Título atualizado");
+    }
+  }
+
+  async function trocarObservacao(alvo: Tarefa, observacao: string) {
+    const valor = observacao.trim() || null;
+    if ((valor ?? "") === (alvo.observacao ?? "")) return;
+    if (await salvar(alvo, { observacao: valor }, "editou a observação")) {
+      toast.success(valor ? "Observação salva" : "Observação removida");
+    }
+  }
+
+  /**
+   * Arquivar substitui o excluir.
+   *
+   * A linha continua no banco: o histórico em `tarefas_log` aponta para ela por id, e um
+   * toque errado no celular não pode destruir tarefa do time. O desfazer fica no próprio
+   * toast porque é ali que a pessoa ainda está olhando — depois que a folha fecha e o card
+   * some da lista, não há mais nenhum caminho de volta pelo celular.
+   */
+  async function arquivar(alvo: Tarefa) {
+    setAbertas((ts) => ts.filter((t) => t.id !== alvo.id));
+    setConcluidas((ts) => ts.filter((t) => t.id !== alvo.id));
+    setAberta(null);
+
+    const { error } = await sb
+      .from("tarefas").update({ arquivada_em: new Date().toISOString() }).eq("id", alvo.id);
+    if (error) {
+      toast.error(error.message);
+      await Promise.all([carregarAbertas(), carregarConcluidas(limiteConcluidas)]);
+      return;
+    }
+    registrar({ id: alvo.id, titulo: alvo.titulo, acao: "arquivada", descricao: `Arquivada (estava em "${alvo.status}")` });
+
+    toast.success("Tarefa arquivada", {
+      action: {
+        label: "Desfazer",
+        onClick: async () => {
+          const { error: err } = await sb.from("tarefas").update({ arquivada_em: null }).eq("id", alvo.id);
+          if (err) { toast.error(err.message); return; }
+          registrar({ id: alvo.id, titulo: alvo.titulo, acao: "editada", descricao: "Arquivamento desfeito" });
+          await Promise.all([carregarAbertas(), carregarConcluidas(limiteConcluidas)]);
+          toast.success("Tarefa restaurada");
+        },
+      },
+    });
   }
 
   async function criar(novo: { titulo: string; responsavel: string; prioridade: string; prazo: string }) {
@@ -334,9 +399,12 @@ export default function MobileTarefas() {
         onFechar={() => setAberta(null)}
         onStatus={trocarStatus}
         onPrioridade={trocarPrioridade}
-        onSubtarefa={alternarSubtarefa}
+        onChecklist={mudarChecklist}
         onPrazo={trocarPrazo}
         onResponsavel={trocarResponsavel}
+        onRenomear={renomear}
+        onObservacao={trocarObservacao}
+        onArquivar={arquivar}
       />
       <FolhaCriar
         aberta={criando}
@@ -499,7 +567,8 @@ function SeletorResponsavel({
 }
 
 function FolhaDetalhe({
-  tarefa, status, pessoas, onFechar, onStatus, onPrioridade, onSubtarefa, onPrazo, onResponsavel,
+  tarefa, status, pessoas, onFechar, onStatus, onPrioridade, onChecklist, onPrazo, onResponsavel,
+  onRenomear, onObservacao, onArquivar,
 }: {
   tarefa: Tarefa | null;
   status: string[];
@@ -507,16 +576,21 @@ function FolhaDetalhe({
   onFechar: () => void;
   onStatus: (t: Tarefa, s: string) => void;
   onPrioridade: (t: Tarefa, p: string) => void;
-  onSubtarefa: (t: Tarefa, id: string) => void;
+  onChecklist: (t: Tarefa, subtarefas: Subtarefa[]) => void;
   onPrazo: (t: Tarefa, prazo: string | null) => void;
   onResponsavel: (t: Tarefa, responsavel: string | null) => void;
+  onRenomear: (t: Tarefa, titulo: string) => void;
+  onObservacao: (t: Tarefa, observacao: string) => void;
+  onArquivar: (t: Tarefa) => void;
 }) {
   return (
     <Drawer open={!!tarefa} onOpenChange={(v) => !v && onFechar()}>
       <DrawerContent className="max-h-[88dvh]">
         {tarefa && (
           <div className="overflow-y-auto px-4 pb-[calc(1.5rem+env(safe-area-inset-bottom))] pt-3">
-            <DrawerTitle className="break-words text-[16px] leading-snug">{tarefa.titulo}</DrawerTitle>
+            {/* `key` remonta os campos quando a folha troca de tarefa: sem isso o rascunho
+                de uma tarefa vazaria para a próxima que fosse aberta. */}
+            <CampoTitulo key={`t-${tarefa.id}`} tarefa={tarefa} onSalvar={onRenomear} />
 
             <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-[12px] text-muted-foreground">
               <span>{rotuloResponsavel(tarefa.responsavel)}</span>
@@ -525,40 +599,9 @@ function FolhaDetalhe({
               </span>
             </div>
 
-            {tarefa.observacao && (
-              <div className="mt-4">
-                <div className="mb-1 text-[11px] font-bold uppercase tracking-wider text-muted-foreground">Observação</div>
-                <p className="whitespace-pre-wrap text-[13.5px] leading-relaxed text-foreground">{tarefa.observacao}</p>
-              </div>
-            )}
+            <CampoObservacao key={`o-${tarefa.id}`} tarefa={tarefa} onSalvar={onObservacao} />
 
-            {tarefa.subtarefas.length > 0 && (
-              <div className="mt-4">
-                <div className="mb-1.5 text-[11px] font-bold uppercase tracking-wider text-muted-foreground">
-                  Checklist · {tarefa.subtarefas.filter((s) => s.done).length}/{tarefa.subtarefas.length}
-                </div>
-                <ul className="space-y-1">
-                  {tarefa.subtarefas.map((s) => (
-                    <li key={s.id}>
-                      <button
-                        onClick={() => onSubtarefa(tarefa, s.id)}
-                        className="flex min-h-[44px] w-full items-center gap-3 rounded-lg px-1 text-left active:bg-secondary"
-                      >
-                        <span className={cn(
-                          "flex h-5 w-5 shrink-0 items-center justify-center rounded border",
-                          s.done ? "border-primary bg-primary text-primary-foreground" : "border-input",
-                        )}>
-                          {s.done && <Check className="h-3.5 w-3.5" />}
-                        </span>
-                        <span className={cn("text-[13.5px] leading-snug", s.done && "text-muted-foreground line-through")}>
-                          {s.titulo}
-                        </span>
-                      </button>
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            )}
+            <Checklist key={`c-${tarefa.id}`} tarefa={tarefa} onMudar={onChecklist} />
 
             <div className="mt-5">
               <div className="mb-1.5 text-[11px] font-bold uppercase tracking-wider text-muted-foreground">Status</div>
@@ -632,14 +675,181 @@ function FolhaDetalhe({
               </div>
             </div>
 
-            <p className="mt-5 text-[11.5px] leading-relaxed text-muted-foreground">
-              Título, observação e checklist são editados no computador — aqui ficam as ações
-              rápidas do dia a dia.
-            </p>
+            <div className="mt-6 border-t border-border pt-4">
+              <Button
+                variant="outline"
+                onClick={() => onArquivar(tarefa)}
+                className="h-11 w-full border-destructive/30 text-destructive active:bg-destructive/10"
+              >
+                <Archive className="mr-2 h-4 w-4" /> Arquivar tarefa
+              </Button>
+              <p className="mt-2 text-[11.5px] leading-relaxed text-muted-foreground">
+                Sai das listas do celular e do computador, mas não é apagada — dá para
+                desfazer no aviso que aparece logo depois.
+              </p>
+            </div>
           </div>
         )}
       </DrawerContent>
     </Drawer>
+  );
+}
+
+/**
+ * Título editável.
+ *
+ * Rascunho local com Salvar/Cancelar explícitos, e não gravação a cada tecla: no celular a
+ * folha fica aberta enquanto se digita e um `onChange` direto no banco mandaria um UPDATE
+ * por caractere. Confirmar com Enter porque o teclado do celular mostra "ir" e é o gesto
+ * que a pessoa já espera.
+ */
+function CampoTitulo({ tarefa, onSalvar }: { tarefa: Tarefa; onSalvar: (t: Tarefa, titulo: string) => void }) {
+  const [editando, setEditando] = useState(false);
+  const [texto, setTexto] = useState(tarefa.titulo);
+
+  if (!editando) {
+    return (
+      <button
+        onClick={() => { setTexto(tarefa.titulo); setEditando(true); }}
+        className="flex w-full items-start gap-2 text-left active:opacity-60"
+      >
+        <DrawerTitle className="min-w-0 flex-1 break-words text-[16px] leading-snug">{tarefa.titulo}</DrawerTitle>
+        <Pencil className="mt-1 h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+      </button>
+    );
+  }
+
+  const confirmar = () => { onSalvar(tarefa, texto); setEditando(false); };
+
+  return (
+    <div>
+      <DrawerTitle className="sr-only">{tarefa.titulo}</DrawerTitle>
+      <Input
+        autoFocus
+        value={texto}
+        onChange={(e) => setTexto(e.target.value)}
+        onKeyDown={(e) => { if (e.key === "Enter") confirmar(); }}
+        className="h-11 text-base"
+      />
+      <div className="mt-2 flex gap-2">
+        <Button onClick={confirmar} className="h-10 flex-1 text-[13px]">
+          <Check className="mr-1.5 h-4 w-4" /> Salvar
+        </Button>
+        <Button variant="outline" onClick={() => setEditando(false)} className="h-10 text-[13px]">
+          <X className="mr-1.5 h-4 w-4" /> Cancelar
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+function CampoObservacao({ tarefa, onSalvar }: { tarefa: Tarefa; onSalvar: (t: Tarefa, observacao: string) => void }) {
+  const [editando, setEditando] = useState(false);
+  const [texto, setTexto] = useState(tarefa.observacao ?? "");
+
+  if (editando) {
+    return (
+      <div className="mt-4">
+        <div className="mb-1 text-[11px] font-bold uppercase tracking-wider text-muted-foreground">Observação</div>
+        <Textarea
+          autoFocus
+          value={texto}
+          onChange={(e) => setTexto(e.target.value)}
+          rows={5}
+          className="text-base"
+          placeholder="Contexto, link, o que ficou combinado…"
+        />
+        <div className="mt-2 flex gap-2">
+          <Button onClick={() => { onSalvar(tarefa, texto); setEditando(false); }} className="h-10 flex-1 text-[13px]">
+            <Check className="mr-1.5 h-4 w-4" /> Salvar
+          </Button>
+          <Button variant="outline" onClick={() => setEditando(false)} className="h-10 text-[13px]">
+            <X className="mr-1.5 h-4 w-4" /> Cancelar
+          </Button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="mt-4">
+      <div className="mb-1 flex items-center justify-between">
+        <span className="text-[11px] font-bold uppercase tracking-wider text-muted-foreground">Observação</span>
+        <button
+          onClick={() => { setTexto(tarefa.observacao ?? ""); setEditando(true); }}
+          className="flex h-8 items-center gap-1 px-1 text-[12px] text-muted-foreground active:opacity-60"
+        >
+          <Pencil className="h-3.5 w-3.5" /> {tarefa.observacao ? "Editar" : "Adicionar"}
+        </button>
+      </div>
+      {tarefa.observacao ? (
+        <p className="whitespace-pre-wrap text-[13.5px] leading-relaxed text-foreground">{tarefa.observacao}</p>
+      ) : (
+        <p className="text-[13px] text-muted-foreground">Sem observação.</p>
+      )}
+    </div>
+  );
+}
+
+function Checklist({ tarefa, onMudar }: { tarefa: Tarefa; onMudar: (t: Tarefa, s: Subtarefa[]) => void }) {
+  const [novo, setNovo] = useState("");
+  const feitas = tarefa.subtarefas.filter((s) => s.done).length;
+
+  const acrescentar = () => {
+    if (!novo.trim()) return;
+    onMudar(tarefa, adicionarSubtarefa(tarefa.subtarefas, novo));
+    setNovo("");
+  };
+
+  return (
+    <div className="mt-4">
+      <div className="mb-1.5 text-[11px] font-bold uppercase tracking-wider text-muted-foreground">
+        Checklist{tarefa.subtarefas.length > 0 && ` · ${feitas}/${tarefa.subtarefas.length}`}
+      </div>
+
+      {tarefa.subtarefas.length > 0 && (
+        <ul className="space-y-1">
+          {tarefa.subtarefas.map((s) => (
+            <li key={s.id} className="flex items-center gap-1">
+              <button
+                onClick={() => onMudar(tarefa, alternarSubtarefa(tarefa.subtarefas, s.id))}
+                className="flex min-h-[44px] min-w-0 flex-1 items-center gap-3 rounded-lg px-1 text-left active:bg-secondary"
+              >
+                <span className={cn(
+                  "flex h-5 w-5 shrink-0 items-center justify-center rounded border",
+                  s.done ? "border-primary bg-primary text-primary-foreground" : "border-input",
+                )}>
+                  {s.done && <Check className="h-3.5 w-3.5" />}
+                </span>
+                <span className={cn("min-w-0 text-[13.5px] leading-snug", s.done && "text-muted-foreground line-through")}>
+                  {s.titulo}
+                </span>
+              </button>
+              <button
+                onClick={() => onMudar(tarefa, removerSubtarefa(tarefa.subtarefas, s.id))}
+                aria-label={`Remover "${s.titulo}"`}
+                className="flex h-11 w-9 shrink-0 items-center justify-center text-muted-foreground active:text-destructive"
+              >
+                <Trash2 className="h-4 w-4" />
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+
+      <div className="mt-1.5 flex gap-2">
+        <Input
+          value={novo}
+          onChange={(e) => setNovo(e.target.value)}
+          onKeyDown={(e) => { if (e.key === "Enter") acrescentar(); }}
+          placeholder="Novo item…"
+          className="h-11 flex-1 text-base"
+        />
+        <Button variant="outline" onClick={acrescentar} disabled={!novo.trim()} className="h-11 px-3">
+          <Plus className="h-4 w-4" />
+        </Button>
+      </div>
+    </div>
   );
 }
 

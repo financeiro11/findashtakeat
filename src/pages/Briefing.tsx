@@ -373,6 +373,7 @@ export default function Briefing() {
     const { data } = await sb
       .from("tarefas")
       .select("*")
+      .is("arquivada_em", null)   // arquivada some daqui também, senão o briefing cobra o que já foi tirado do quadro
       .eq("prazo", dia)
       .order("ordem");
     setTarefas(((data as any[]) ?? []).map((r) => ({ ...r, subtarefas: Array.isArray(r.subtarefas) ? r.subtarefas : [] })) as Tarefa[]);

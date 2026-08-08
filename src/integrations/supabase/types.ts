@@ -4817,6 +4817,7 @@ export type Database = {
       }
       tarefas: {
         Row: {
+          arquivada_em: string | null
           cat_area: string | null
           cat_natureza: string | null
           cat_origem: string | null
@@ -4835,6 +4836,7 @@ export type Database = {
           updated_at: string
         }
         Insert: {
+          arquivada_em?: string | null
           cat_area?: string | null
           cat_natureza?: string | null
           cat_origem?: string | null
@@ -4853,6 +4855,7 @@ export type Database = {
           updated_at?: string
         }
         Update: {
+          arquivada_em?: string | null
           cat_area?: string | null
           cat_natureza?: string | null
           cat_origem?: string | null

@@ -17,6 +17,9 @@ export type TarefaMin = {
   concluido_em?: string | null;
 };
 
+/** Igual à do desktop (components/tarefas/TaskDialog.tsx) — é a mesma coluna jsonb. */
+export type Subtarefa = { id: string; titulo: string; responsavel: string | null; done: boolean };
+
 export const STATUS_CONCLUIDO = "Concluído";
 
 /**
@@ -143,4 +146,44 @@ export function statusDisponiveis(tarefas: TarefaMin[], atual?: string | null): 
     .sort((a, b) => a.localeCompare(b, "pt-BR"));
 
   return [...ORDEM_STATUS, ...outros, STATUS_CONCLUIDO];
+}
+
+/* ------------------------------ checklist ------------------------------ */
+// `subtarefas` é uma coluna jsonb que o desktop também escreve. Toda mudança aqui grava o
+// array inteiro de volta, então estas funções nunca alteram o array recebido: se o UPDATE
+// falhar, o componente precisa do original intacto para desfazer o otimismo na tela.
+
+/** `novoId` é injetável só para o teste poder prever o id. */
+export function adicionarSubtarefa(
+  subtarefas: Subtarefa[],
+  titulo: string,
+  novoId: () => string = () => crypto.randomUUID(),
+): Subtarefa[] {
+  const limpo = titulo.trim();
+  if (!limpo) return subtarefas;
+  return [...subtarefas, { id: novoId(), titulo: limpo, responsavel: null, done: false }];
+}
+
+export function removerSubtarefa(subtarefas: Subtarefa[], id: string): Subtarefa[] {
+  return subtarefas.filter((s) => s.id !== id);
+}
+
+export function alternarSubtarefa(subtarefas: Subtarefa[], id: string): Subtarefa[] {
+  return subtarefas.map((s) => (s.id === id ? { ...s, done: !s.done } : s));
+}
+
+/**
+ * Frase do histórico para uma mudança no checklist.
+ *
+ * Repete a regra de `describeChanges` (pages/Tarefas.tsx): mudou a quantidade de itens, a
+ * frase é sobre quantidade; mudou só o que está marcado, é sobre concluídos. A aba
+ * "Histórico" junta o que veio do celular com o que veio do computador e não pode ficar
+ * com dois dialetos para o mesmo evento.
+ */
+export function descreverChecklist(antes: Subtarefa[], depois: Subtarefa[]): string {
+  if (antes.length !== depois.length) {
+    return `checklist: ${antes.length} → ${depois.length} itens`;
+  }
+  const feitas = depois.filter((s) => s.done).length;
+  return `checklist: ${feitas}/${depois.length} concluídos`;
 }

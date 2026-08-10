@@ -400,9 +400,11 @@ export default function Cartao() {
       </div>
 
       {/* ---- o painel consultivo ----
-          Largura inteira, e logo abaixo do herói: é a primeira coisa acionável da
-          tela. O texto de cada card tem três frases mais a ação — na coluna
-          estreita dos destaques só caberiam dois cards antes de precisar rolar. */}
+          Largura inteira e logo abaixo do gráfico: é a primeira coisa acionável
+          da tela. Mostra UMA recomendação por vez, com passador — seis cards em
+          duas colunas eram três fileiras e 700px de tela para uma leitura que se
+          faz um item por vez. Com a largura toda, o texto fica de um lado e a
+          série que prova o sinal do outro. */}
       <PainelRecomendacoes
         recomendacoes={recomendacoes}
         competencia={ultimaFatura}

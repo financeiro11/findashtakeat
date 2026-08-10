@@ -20,8 +20,8 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  AlertTriangle, Check, ClipboardList, ExternalLink, Eye, Flag, Flame, Loader2,
-  Pencil, RotateCcw, Sparkles, Trash2, TrendingUp, Zap,
+  AlertTriangle, Check, ChevronLeft, ChevronRight, ClipboardList, ExternalLink, Eye, Flag, Flame,
+  Loader2, Pencil, RotateCcw, Sparkles, Trash2, TrendingUp, Zap,
 } from "lucide-react";
 import { toast } from "sonner";
 import { Link } from "react-router-dom";
@@ -194,6 +194,29 @@ export function PainelRecomendacoes({
   const label = competencia ? labelDeCompetencia(competencia) : "—";
   const visiveis = mostrarDescartadas ? [...vivas, ...descartadas] : vivas;
 
+  /* Um comentário por vez, e não os seis empilhados: em duas colunas eram três
+     fileiras de card alto — 700px de tela para uma leitura que se faz um item
+     por vez. O passador troca altura por largura, e a largura o card usa (texto
+     de um lado, série e números do outro).
+
+     O índice é guardado e CLAMPADO na renderização, não corrigido por efeito:
+     descartar o último item encurta a lista no mesmo passo, e um `setState`
+     dentro de `useEffect` para consertar isso renderizaria uma vez com o índice
+     fora da faixa — que é exatamente o card em branco. */
+  const [indice, setIndice] = useState(0);
+  const i = visiveis.length ? Math.min(indice, visiveis.length - 1) : 0;
+  const atual = visiveis[i];
+  const ir = (delta: number) => {
+    if (visiveis.length < 2) return;
+    // Circular: no último, "próximo" volta ao primeiro. Quem está conferindo a
+    // fatura passa a lista mais de uma vez, e travar na ponta obriga a voltar
+    // clicando seis vezes.
+    setIndice((v) => {
+      const base = Math.min(v, visiveis.length - 1);
+      return (base + delta + visiveis.length) % visiveis.length;
+    });
+  };
+
   return (
     <div className="card-surface overflow-hidden">
       <div className="flex flex-wrap items-center gap-x-3 gap-y-2 border-b border-border px-4 py-2.5">
@@ -206,6 +229,50 @@ export function PainelRecomendacoes({
           <span className="rounded-full bg-sky-100 px-2 py-0.5 text-[11px] font-semibold text-sky-800">
             {novas} sem conferir
           </span>
+        )}
+
+        {/* ---- o passador ---- */}
+        {visiveis.length > 1 && (
+          <div className="flex items-center gap-1.5">
+            <button
+              onClick={() => ir(-1)}
+              title="Anterior (←)"
+              className="rounded-md border border-border bg-card p-1 text-muted-foreground transition hover:bg-secondary hover:text-foreground"
+            >
+              <ChevronLeft className="h-3.5 w-3.5" />
+            </button>
+            <span className="num min-w-[52px] text-center text-[11.5px] font-semibold tabular-nums">
+              {i + 1} <span className="font-normal text-muted-foreground">de {visiveis.length}</span>
+            </span>
+            <button
+              onClick={() => ir(1)}
+              title="Próxima (→)"
+              className="rounded-md border border-border bg-card p-1 text-muted-foreground transition hover:bg-secondary hover:text-foreground"
+            >
+              <ChevronRight className="h-3.5 w-3.5" />
+            </button>
+
+            {/* As bolinhas não são só posição: a cor diz o que ainda falta olhar,
+                então dá para ver "tem dois críticos aqui" sem passar por todos. */}
+            <div className="ml-1 flex items-center gap-1">
+              {visiveis.map((r, k) => (
+                <button
+                  key={r.id}
+                  onClick={() => setIndice(k)}
+                  title={r.titulo}
+                  aria-label={`Ir para ${r.estabelecimento}`}
+                  className={cn(
+                    "h-2 w-2 rounded-full transition",
+                    k === i ? "ring-2 ring-offset-1 ring-foreground/30" : "opacity-60 hover:opacity-100",
+                    r.status === "descartado" ? "bg-muted-foreground/40"
+                      : r.status === "aceito" ? "bg-emerald-500"
+                      : r.nivel === "critico" ? "bg-destructive"
+                      : "bg-amber-500",
+                  )}
+                />
+              ))}
+            </div>
+          </div>
         )}
 
         <div className="ml-auto flex items-center gap-2">
@@ -231,17 +298,27 @@ export function PainelRecomendacoes({
         </div>
       </div>
 
-      {visiveis.length ? (
-        <div className="grid gap-px bg-border md:grid-cols-2">
-          {visiveis.map((r) => (
-            <Card
-              key={r.id}
-              r={r}
-              onMudou={onMudou}
-              onMarcar={onMarcar}
-              onVerLancamentos={onVerLancamentos}
-            />
-          ))}
+      {atual ? (
+        /* As setas do teclado só valem com o painel em foco — um listener global
+           roubaria a seta de quem está rolando a matriz logo abaixo. */
+        <div
+          tabIndex={0}
+          onKeyDown={(e) => {
+            if (e.key === "ArrowRight") { e.preventDefault(); ir(1); }
+            if (e.key === "ArrowLeft") { e.preventDefault(); ir(-1); }
+          }}
+          className="outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring"
+        >
+          {/* `key` no card faz o React remontar ao trocar de recomendação: sem
+              isso o "editando" e o rascunho do item anterior vazariam para o
+              próximo, que é reescrever o texto errado. */}
+          <Card
+            key={atual.id}
+            r={atual}
+            onMudou={onMudou}
+            onMarcar={onMarcar}
+            onVerLancamentos={onVerLancamentos}
+          />
         </div>
       ) : (
         <p className="px-4 py-8 text-center text-[12.5px] leading-relaxed text-muted-foreground">
@@ -257,6 +334,8 @@ export function PainelRecomendacoes({
       <p className="border-t border-border px-4 py-2 text-[11px] leading-relaxed text-muted-foreground">
         O sinal e os números são calculados dos lançamentos, sempre com a mesma regra. A IA escreve só a leitura
         (o que o estabelecimento provavelmente é e com quem conferir) — passe o olho na série antes de repassar.
+        {visiveis.length > 1 && <> Use as setas para passar de uma recomendação para a outra; a cor da bolinha
+        mostra o que ainda falta conferir.</>}
       </p>
     </div>
   );
@@ -300,7 +379,7 @@ function Card({
   };
 
   return (
-    <article className={cn("bg-card p-4", r.status === "descartado" && "opacity-55")}>
+    <article className={cn("bg-card p-4 sm:p-5", r.status === "descartado" && "opacity-55")}>
       {/* ---- cabeçalho ---- */}
       <div className="mb-2 flex items-start justify-between gap-2">
         <span className={cn("insight-tag", r.nivel)}>
@@ -309,66 +388,73 @@ function Card({
         <span className="shrink-0 text-[10.5px] text-muted-foreground">{ROTULO_SINAL[r.sinal]}</span>
       </div>
 
-      <h4 className="text-[13.5px] font-semibold leading-snug">{r.titulo}</h4>
+      <h4 className="text-[14.5px] font-semibold leading-snug">{r.titulo}</h4>
 
-      <Serie serie={r.serie} />
+      {/* Um card por vez ganhou a largura toda: a LEITURA fica de um lado e a
+          PROVA (série, números, fatos) do outro, lado a lado. Empilhado, a prova
+          caía abaixo da dobra do card e ninguém conferia a hipótese. */}
+      <div className="mt-3 grid gap-x-5 gap-y-3 md:grid-cols-[minmax(0,1.35fr)_minmax(0,1fr)]">
+        <div className="min-w-0">
+          {/* ---- a leitura ---- */}
+          {editando ? (
+            <textarea
+              value={rascunho}
+              onChange={(e) => setRascunho(e.target.value)}
+              rows={5}
+              autoFocus
+              className="w-full resize-y rounded-md border border-input bg-background px-2.5 py-2 text-[12.5px] leading-relaxed focus:outline-none focus:ring-1 focus:ring-ring"
+            />
+          ) : (
+            <p className="whitespace-pre-wrap text-[13px] leading-relaxed text-foreground/90">
+              {textoFinal(r) || "—"}
+            </p>
+          )}
 
-      {/* ---- os números, para conferir a frase ---- */}
-      <div className="mt-2 flex flex-wrap items-baseline gap-x-2 gap-y-0.5 text-[11.5px] text-muted-foreground">
-        <span className="num font-semibold text-foreground">{fmtBRL(Number(r.valor ?? 0))}</span>
-        <span>nesta fatura</span>
-        <span className="opacity-60">·</span>
-        <span>normal</span>
-        <span className="num font-medium text-foreground/80">{fmtBRL(Number(r.valor_referencia ?? 0))}</span>
-        {r.lancamentos ? <span className="opacity-70">· {r.lancamentos} lanç.</span> : null}
-      </div>
-
-      {/* ---- a leitura ---- */}
-      <div className="mt-2.5">
-        {editando ? (
-          <textarea
-            value={rascunho}
-            onChange={(e) => setRascunho(e.target.value)}
-            rows={4}
-            autoFocus
-            className="w-full resize-y rounded-md border border-input bg-background px-2.5 py-2 text-[12px] leading-relaxed focus:outline-none focus:ring-1 focus:ring-ring"
-          />
-        ) : (
-          <p className="whitespace-pre-wrap text-[12.5px] leading-relaxed text-foreground/90">
-            {textoFinal(r) || "—"}
-          </p>
-        )}
-      </div>
-
-      {/* ---- a ação: o motivo de o painel existir ---- */}
-      {!editando && r.acao && (
-        <div className="mt-2.5 flex items-start gap-2 rounded-md border border-primary/25 bg-primary/5 px-2.5 py-2">
-          <ClipboardList className="mt-0.5 h-3.5 w-3.5 shrink-0 text-primary" />
-          <div className="min-w-0">
-            <p className="text-[12px] font-medium leading-relaxed text-foreground">{r.acao}</p>
-            {r.com_quem && (
-              <p className="mt-0.5 text-[10.5px] text-muted-foreground">com {r.com_quem}</p>
-            )}
-          </div>
+          {/* ---- a ação: o motivo de o painel existir ---- */}
+          {!editando && r.acao && (
+            <div className="mt-3 flex items-start gap-2 rounded-md border border-primary/25 bg-primary/5 px-2.5 py-2">
+              <ClipboardList className="mt-0.5 h-3.5 w-3.5 shrink-0 text-primary" />
+              <div className="min-w-0">
+                <p className="text-[12.5px] font-medium leading-relaxed text-foreground">{r.acao}</p>
+                {r.com_quem && (
+                  <p className="mt-0.5 text-[10.5px] text-muted-foreground">com {r.com_quem}</p>
+                )}
+              </div>
+            </div>
+          )}
         </div>
-      )}
 
-      {/* ---- os fatos: o que a IA recebeu, não o que ela escreveu ---- */}
-      {!editando && !!r.fatos.length && (
-        <details className="mt-2 group">
-          <summary className="cursor-pointer list-none text-[10.5px] text-muted-foreground hover:text-foreground">
-            <Sparkles className="mr-1 inline h-2.5 w-2.5" />
-            {r.texto_editado
-              ? "Reescrito por você · ver os números que geraram o sinal"
-              : <>Rascunho da IA{r.confianca && ` · confiança ${r.confianca}`} · ver os números que geraram o sinal</>}
-          </summary>
-          <ul className="mt-1.5 space-y-1 border-l-2 border-border pl-2.5">
-            {r.fatos.map((f, i) => (
-              <li key={i} className="text-[11px] leading-relaxed text-muted-foreground">{f}</li>
-            ))}
-          </ul>
-        </details>
-      )}
+        <div className="min-w-0">
+          <Serie serie={r.serie} />
+
+          {/* ---- os números, para conferir a frase ---- */}
+          <div className="mt-2 flex flex-wrap items-baseline gap-x-2 gap-y-0.5 text-[11.5px] text-muted-foreground">
+            <span className="num font-semibold text-foreground">{fmtBRL(Number(r.valor ?? 0))}</span>
+            <span>nesta fatura</span>
+            <span className="opacity-60">·</span>
+            <span>normal</span>
+            <span className="num font-medium text-foreground/80">{fmtBRL(Number(r.valor_referencia ?? 0))}</span>
+            {r.lancamentos ? <span className="opacity-70">· {r.lancamentos} lanç.</span> : null}
+          </div>
+
+          {/* ---- os fatos: o que a IA recebeu, não o que ela escreveu ---- */}
+          {!!r.fatos.length && (
+            <details className="mt-2">
+              <summary className="cursor-pointer list-none text-[10.5px] text-muted-foreground hover:text-foreground">
+                <Sparkles className="mr-1 inline h-2.5 w-2.5" />
+                {r.texto_editado
+                  ? "Reescrito por você · ver os números do sinal"
+                  : <>Rascunho da IA{r.confianca && ` · confiança ${r.confianca}`} · ver os números do sinal</>}
+              </summary>
+              <ul className="mt-1.5 space-y-1 border-l-2 border-border pl-2.5">
+                {r.fatos.map((f, i) => (
+                  <li key={i} className="text-[11px] leading-relaxed text-muted-foreground">{f}</li>
+                ))}
+              </ul>
+            </details>
+          )}
+        </div>
+      </div>
 
       {/* ---- ações ---- */}
       <div className="mt-3 flex flex-wrap items-center gap-1.5 border-t border-border/60 pt-2.5">
@@ -497,28 +583,38 @@ function Serie({ serie }: { serie: { m: string; v: number; n: number }[] }) {
   const max = Math.max(...serie.map((p) => Number(p.v) || 0), 1);
 
   return (
-    <div className="mt-2.5 flex h-9 items-end gap-[3px]">
-      {serie.map((p, i) => {
-        const v = Number(p.v) || 0;
-        const ultima = i === serie.length - 1;
-        return (
-          <div
-            key={p.m}
-            className="group/bar flex h-full flex-1 flex-col justify-end"
-            title={`${labelDeCompetencia(p.m)}: ${v > 0 ? fmtBRLStr(v) : "não veio"}`}
-          >
+    <div>
+      <div className="flex h-14 items-end gap-[3px]">
+        {serie.map((p, i) => {
+          const v = Number(p.v) || 0;
+          const ultima = i === serie.length - 1;
+          return (
             <div
-              className={cn(
-                "w-full rounded-t-[2px] transition-all",
-                v === 0
-                  ? "border-b-2 border-dashed border-muted-foreground/40"
-                  : ultima ? "bg-primary" : "bg-primary/25",
-              )}
-              style={{ height: v === 0 ? undefined : `${Math.max(4, (v / max) * 100)}%` }}
-            />
-          </div>
-        );
-      })}
+              key={p.m}
+              className="flex h-full flex-1 flex-col justify-end"
+              title={`${labelDeCompetencia(p.m)}: ${v > 0 ? fmtBRLStr(v) : "não veio"}`}
+            >
+              <div
+                className={cn(
+                  "w-full rounded-t-[2px] transition-all",
+                  v === 0
+                    // Fatura sem lançamento fica como base pontilhada, e não como
+                    // barra de altura zero: é a diferença entre "não veio" e
+                    // "veio pouco", e no sinal `ausente` é o fato inteiro.
+                    ? "border-b-2 border-dashed border-muted-foreground/50"
+                    : ultima ? "bg-primary" : "bg-primary/25",
+                )}
+                style={{ height: v === 0 ? undefined : `${Math.max(4, (v / max) * 100)}%` }}
+              />
+            </div>
+          );
+        })}
+      </div>
+      <div className="mt-1 flex items-baseline justify-between text-[10px] text-muted-foreground">
+        <span>{labelDeCompetencia(serie[0].m)}</span>
+        <span className="opacity-70">gasto por fatura · o valor no hover</span>
+        <span>{labelDeCompetencia(serie[serie.length - 1].m)}</span>
+      </div>
     </div>
   );
 }

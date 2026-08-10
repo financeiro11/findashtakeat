@@ -166,6 +166,12 @@ export function analisar(
   faturas: Fatura[],
   lancamentos: Lancamento[],
   marcacoes: Marcacao[] = [],
+  /* Estabelecimentos que JÁ têm recomendação consultiva na última fatura. Eles
+     saem dos destaques: o painel "O que fazer nesta fatura" diz a mesma coisa
+     com mais informação (o que o fornecedor é, com quem conferir), e ver o
+     mesmo fato duas vezes na mesma tela faz o leitor desconfiar de qual dos
+     dois está certo. */
+  cobertos: Set<string> = new Set(),
 ): Analise {
   const meses: Mes[] = [...faturas]
     .sort((a, b) => a.competencia.localeCompare(b.competencia))
@@ -223,7 +229,7 @@ export function analisar(
     leitura: [],
   };
 
-  analise.destaques = montarDestaques(analise, marcacoes);
+  analise.destaques = montarDestaques(analise, marcacoes, cobertos);
   analise.leitura = montarLeitura(analise);
   return analise;
 }
@@ -235,10 +241,14 @@ export function analisar(
  * lançamento e gasto fora da curva antes do fechamento, e para isso a regra
  * precisa ser a mesma todo mês.
  */
-function montarDestaques(a: Analise, marcacoes: Marcacao[]): Destaque[] {
+function montarDestaques(a: Analise, marcacoes: Marcacao[], cobertos: Set<string>): Destaque[] {
   const out: Destaque[] = [];
   const tagUlt = a.ultimo?.label ?? "período";
   const marcados = new Map(marcacoes.map((m) => [m.estabelecimento, m]));
+  /* A marca humana continua valendo mesmo com recomendação: alguém pediu para
+     olhar aquilo, e isso não é o mesmo fato que o sinal automático. O corte vale
+     para os itens 2–4, que são derivados dos mesmos números. */
+  const coberto = (chave: string) => cobertos.has(chave);
 
   // 1) As marcas humanas vêm primeiro — foi alguém que pediu para olhar.
   for (const linha of a.estabelecimentos) {
@@ -263,7 +273,7 @@ function montarDestaques(a: Analise, marcacoes: Marcacao[]): Destaque[] {
       .filter((l) => (subiu ? l.deltaPenultimo > 0 : l.deltaPenultimo < 0))
       .sort((x, y) => Math.abs(y.deltaPenultimo) - Math.abs(x.deltaPenultimo));
     const motor = candidatos[0];
-    if (motor) {
+    if (motor && !coberto(motor.chave)) {
       const peso = Math.abs(motor.deltaPenultimo) / Math.abs(a.deltaUltimo);
       if (peso >= 0.2) {
         out.push({
@@ -280,7 +290,7 @@ function montarDestaques(a: Analise, marcacoes: Marcacao[]): Destaque[] {
 
   // 3) Fornecedor que nunca tinha aparecido. É onde a skill mais erra a
   //    categoria (não há regra para ele ainda) e onde mora a cobrança indevida.
-  for (const linha of a.estabelecimentos.filter((l) => l.novo && !marcados.has(l.chave)).slice(0, 2)) {
+  for (const linha of a.estabelecimentos.filter((l) => l.novo && !marcados.has(l.chave) && !coberto(l.chave)).slice(0, 2)) {
     out.push({
       nivel: "atencao",
       titulo: `${linha.chave} apareceu pela primeira vez`,
@@ -294,7 +304,7 @@ function montarDestaques(a: Analise, marcacoes: Marcacao[]): Destaque[] {
   // 4) Assinatura que parou de vir. Some sem avisar quando o cartão é recusado —
   //    e aí o serviço cai dias depois.
   const sumidos = a.estabelecimentos
-    .filter((l) => l.sumiu && !marcados.has(l.chave) && Math.abs(l.deltaPenultimo) >= 500)
+    .filter((l) => l.sumiu && !marcados.has(l.chave) && !coberto(l.chave) && Math.abs(l.deltaPenultimo) >= 500)
     .slice(0, 2);
   for (const linha of sumidos) {
     out.push({

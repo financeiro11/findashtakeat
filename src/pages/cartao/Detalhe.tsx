@@ -10,7 +10,7 @@
  * gasto: somá-los na matriz zeraria o mês.
  */
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Search } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -27,10 +27,31 @@ function dataBR(d: string | null): string {
   return m ? `${m[3]}/${m[2]}/${m[1].slice(2)}` : d;
 }
 
-export function Detalhe({ lancamentos, meses }: { lancamentos: Lancamento[]; meses: Mes[] }) {
+/** De onde a tela pediu para abrir já filtrado. `pedidoEm` é o carimbo do clique. */
+export type FocoDetalhe = { estabelecimento: string; competencia: string; pedidoEm: number };
+
+export function Detalhe({
+  lancamentos, meses, foco,
+}: {
+  lancamentos: Lancamento[];
+  meses: Mes[];
+  /** Um clique em "Lançamentos" numa recomendação chega aqui. */
+  foco?: FocoDetalhe | null;
+}) {
   const [mes, setMes] = useState<string>(TODOS);
   const [busca, setBusca] = useState("");
   const [aba, setAba] = useState<"gasto" | "credito">("gasto");
+
+  /* O foco SEMEIA os filtros; não os prende. Depois de chegar aqui a pessoa
+     apaga a busca, troca o mês, faz o que quiser — e um novo clique lá em cima
+     volta a semear, porque `pedidoEm` muda mesmo quando é o mesmo
+     estabelecimento (é o caso de voltar para conferir a mesma linha). */
+  useEffect(() => {
+    if (!foco) return;
+    setAba("gasto");
+    setBusca(foco.estabelecimento);
+    setMes(meses.some((m) => m.competencia === foco.competencia) ? foco.competencia : TODOS);
+  }, [foco, meses]);
 
   const rotuloMes = useMemo(
     () => new Map(meses.map((m) => [m.competencia, m.label])),

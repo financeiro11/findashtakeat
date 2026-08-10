@@ -29,8 +29,9 @@ import { analisar, type Fatura, type Lancamento, type Marcacao } from "./cartao/
 import { abrevStr, fmtBRLStr, intStr, milStr, pctStr } from "./cartao/fmt";
 import { abrev, fmtBRL } from "./cartao/valores";
 import { Matriz, ORDENS, type Ordem, type Realce } from "./cartao/Matriz";
-import { Detalhe } from "./cartao/Detalhe";
+import { Detalhe, type FocoDetalhe } from "./cartao/Detalhe";
 import { Categorias } from "./cartao/Categorias";
+import { PainelRecomendacoes, useRecomendacoes } from "./cartao/Recomendacoes";
 
 /* As tabelas do cartão são novas e ainda não estão no types.ts gerado (que não
    se edita à mão). Este alias mantém o resto do arquivo tipado em vez de
@@ -70,6 +71,7 @@ export default function Cartao() {
   const [realce, setRealce] = useState<Realce>("penultimo");
   const [ordem, setOrdem] = useState<Ordem>("total");
   const [carregando, setCarregando] = useState(true);
+  const [foco, setFoco] = useState<FocoDetalhe | null>(null);
 
   /* ---------------------------------------------------------------- */
 
@@ -156,9 +158,26 @@ export default function Cartao() {
     [faturas, de, ate],
   );
 
+  /* As recomendações são da ÚLTIMA fatura do recorte, e não do período: elas
+     falam de uma fatura contra a história inteira do fornecedor (ver
+     Recomendacoes.tsx), então "período" não é uma âncora que exista para elas. */
+  const ultimaFatura = faturasNoPeriodo.length
+    ? faturasNoPeriodo[faturasNoPeriodo.length - 1].competencia
+    : null;
+  const {
+    recomendacoes, recarregarRecomendacoes, gerarRecomendacoes, gerando,
+  } = useRecomendacoes(ultimaFatura);
+
+  // Quem já tem recomendação sai dos destaques determinísticos — o painel
+  // consultivo diz o mesmo com mais informação.
+  const cobertos = useMemo(
+    () => new Set(recomendacoes.filter((r) => r.status !== "descartado").map((r) => r.estabelecimento)),
+    [recomendacoes],
+  );
+
   const analise = useMemo(
-    () => analisar(faturasNoPeriodo, lancamentos, marcacoes),
-    [faturasNoPeriodo, lancamentos, marcacoes],
+    () => analisar(faturasNoPeriodo, lancamentos, marcacoes, cobertos),
+    [faturasNoPeriodo, lancamentos, marcacoes, cobertos],
   );
 
   const mapaMarcacoes = useMemo(
@@ -177,6 +196,14 @@ export default function Cartao() {
         `Aba: ${ABAS.find(([v]) => v === aba)?.[1]}.` +
         (aba !== "detalhe" && ordem !== "total"
           ? ` Ordenado por ${ORDENS.find((o) => o.valor === ordem)?.rotulo}.`
+          : "") +
+        /* Só a CONTAGEM e os nomes, nunca o texto: quem responde sobre a fatura é
+           a consulta ao servidor, e é assim que a resposta continua tendo
+           procedência. Saber que existe recomendação para a Sympla é o que faz o
+           Assistente não repetir a análise do zero. */
+        (recomendacoes.length
+          ? ` Painel "O que fazer nesta fatura" com ${recomendacoes.length} recomendação(ões) ` +
+            `(${recomendacoes.map((r) => `${r.estabelecimento}: ${r.sinal}`).join("; ")}).`
           : "")
       : "Tela do cartão de crédito, sem fatura no período selecionado.",
   );
@@ -192,9 +219,15 @@ export default function Cartao() {
 
   const recarregar = useCallback(async () => {
     setCarregando(true);
-    await Promise.all([carregarFaturas(), carregarMarcacoes(), carregarLancamentos(de, ate)]);
+    await Promise.all([
+      carregarFaturas(), carregarMarcacoes(), carregarLancamentos(de, ate),
+      // Relê o que está gravado; NÃO regera. O botão é "atualizar a tela", e uma
+      // ida à IA escondida atrás dele seria cobrança surpresa — para reescrever
+      // existe o "Regerar" no próprio painel.
+      recarregarRecomendacoes(),
+    ]);
     setCarregando(false);
-  }, [carregarFaturas, carregarMarcacoes, carregarLancamentos, de, ate]);
+  }, [carregarFaturas, carregarMarcacoes, carregarLancamentos, recarregarRecomendacoes, de, ate]);
 
   /* ---- export ------------------------------------------------------
      Espelha as abas do Excel que a própria skill gera, para quem já usa
@@ -347,7 +380,10 @@ export default function Cartao() {
         <div className="card-surface flex flex-col overflow-hidden">
           <div className="flex items-center justify-between border-b border-border px-4 py-2.5">
             <span className="text-[13px] font-bold">Destaques da última fatura</span>
-            <span className="text-[10.5px] text-muted-foreground">gerado dos dados</span>
+            {/* A distinção importa: este painel é regra pura sobre a variação do
+                mês, o de baixo é leitura consultiva com IA. O que já virou
+                recomendação sai daqui (ver `cobertos`). */}
+            <span className="text-[10.5px] text-muted-foreground">das regras, sem IA</span>
           </div>
           <div className="flex-1 overflow-y-auto">
             {analise.destaques.length ? (
@@ -362,6 +398,25 @@ export default function Cartao() {
           </div>
         </div>
       </div>
+
+      {/* ---- o painel consultivo ----
+          Largura inteira, e logo abaixo do herói: é a primeira coisa acionável da
+          tela. O texto de cada card tem três frases mais a ação — na coluna
+          estreita dos destaques só caberiam dois cards antes de precisar rolar. */}
+      <PainelRecomendacoes
+        recomendacoes={recomendacoes}
+        competencia={ultimaFatura}
+        gerando={gerando}
+        onGerar={gerarRecomendacoes}
+        onMudou={recarregarRecomendacoes}
+        onMarcar={(estabelecimento, nota) => marcar(estabelecimento, true, nota)}
+        onVerLancamentos={(estabelecimento, competencia) => {
+          setAba("detalhe");
+          // `pedidoEm` faz o Detalhe re-semear os filtros mesmo quando é o mesmo
+          // estabelecimento de antes — é o caso de voltar para reconferir.
+          setFoco({ estabelecimento, competencia, pedidoEm: Date.now() });
+        }}
+      />
 
       <Categorias analise={analise} />
 
@@ -431,7 +486,7 @@ export default function Cartao() {
         </div>
 
         {aba === "detalhe" ? (
-          <Detalhe lancamentos={lancamentos} meses={analise.meses} />
+          <Detalhe lancamentos={lancamentos} meses={analise.meses} foco={foco} />
         ) : (
           <Matriz
             analise={analise}
@@ -466,7 +521,8 @@ export default function Cartao() {
 
       <p className="px-1 text-[11.5px] text-muted-foreground">
         Valores em milhares nas matrizes; o número cheio aparece ao passar o mouse e na aba de detalhe. A bandeirinha
-        marca o estabelecimento para revisão e o leva para os destaques.
+        marca o estabelecimento para revisão e o leva para os destaques. As recomendações lá em cima olham cada
+        fornecedor contra a história dele inteira — mudar o período não muda o que elas dizem.
       </p>
     </div>
   );

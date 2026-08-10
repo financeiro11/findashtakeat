@@ -4,13 +4,18 @@
 // mesmo selo de procedência: a tela SEMPRE diz se os números foram conferidos no banco ou
 // se a resposta é raciocínio sem garantia. Perder esse selo no celular seria pior do que
 // no desktop — é daqui que sai o print mandado no WhatsApp.
+//
+// O anexo de imagem é o botão que faz mais sentido justamente aqui: a nota fiscal, o
+// comprovante e o cardápio do concorrente estão na mão da pessoa, não no computador dela.
+// A câmera vem de graça no seletor do próprio sistema (`accept="image/*"`).
 
 import { useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import {
   Send, Loader2, Plus, MessageSquare, Trash2, ShieldCheck, AlertTriangle,
-  Database, RotateCcw, X,
+  Database, RotateCcw, X, ImagePlus, Eye,
 } from "lucide-react";
+import { toast } from "sonner";
 import { supabase } from "@/integrations/supabase/client";
 import { cn } from "@/lib/utils";
 import { Drawer, DrawerContent, DrawerTitle } from "@/components/ui/drawer";
@@ -20,6 +25,10 @@ import {
   ErroAssistente, TIMEOUT_MS, criarConversa, gravarMensagem, perguntarConferido, streamAiChat,
   type MsgAssistente, type NumeroConferido,
 } from "@/lib/assistente";
+import {
+  abrirImagens, anexarImagens, guardarImagens, prepararImagens, triarArquivos,
+  type ImagemAnexada, type ImagemMsg,
+} from "@/lib/assistente-imagens";
 
 type Conversa = { id: string; titulo: string; updated_at: string };
 type Msg = MsgAssistente & { numeros?: NumeroConferido[]; avisos?: string[] };
@@ -45,10 +54,15 @@ export default function MobileChat() {
   const [conversas, setConversas] = useState<Conversa[]>([]);
   const [historicoAberto, setHistoricoAberto] = useState(false);
   /** Última pergunta que falhou — o botão "Tentar novamente" a reenvia sem redigitar. */
-  const [falhou, setFalhou] = useState<{ texto: string; motivo: string } | null>(null);
+  const [falhou, setFalhou] = useState<{ texto: string; motivo: string; imagens: ImagemAnexada[] } | null>(null);
+  const [anexos, setAnexos] = useState<ImagemAnexada[]>([]);
+  const [preparando, setPreparando] = useState(false);
+  /** Imagem aberta em tela cheia — miniatura de nota fiscal não se lê. */
+  const [ampliada, setAmpliada] = useState<string | null>(null);
 
   const fim = useRef<HTMLDivElement>(null);
   const campo = useRef<HTMLTextAreaElement>(null);
+  const seletor = useRef<HTMLInputElement>(null);
   const mensagensRef = useRef<Msg[]>([]);
   useEffect(() => { mensagensRef.current = mensagens; }, [mensagens]);
   useEffect(() => { fim.current?.scrollIntoView({ behavior: "smooth" }); }, [mensagens, pensando]);
@@ -82,20 +96,51 @@ export default function MobileChat() {
     setFalhou(null);
     const { data, error } = await supabase
       .from("ai_messages" as any)
-      .select("role,content,created_at")
+      .select("role,content,imagens,created_at")
       .eq("conversation_id", id)
       .order("created_at", { ascending: true });
     // Conversa apagada em outro aparelho: o id guardado não vale mais.
     if (error || !data) { lembrarConversa(null); setMensagens([]); return; }
     // Conversa recarregada não traz a tabela de números: `ai_messages` guarda só o texto.
-    setMensagens((data as any[]).map((m: any) => ({ role: m.role, content: m.content })));
+    // As imagens voltam: o bucket é privado, cada caminho vira uma URL assinada.
+    const linhas = data as any[];
+    const abertas = await abrirImagens(
+      linhas.flatMap((m) => (Array.isArray(m.imagens) ? m.imagens : [])),
+    ).catch(() => new Map<string, ImagemMsg>());
+    setMensagens(linhas.map((m: any) => ({
+      role: m.role,
+      content: m.content,
+      imagens: (Array.isArray(m.imagens) ? m.imagens : [])
+        .map((p: string) => abertas.get(p))
+        .filter(Boolean) as ImagemMsg[],
+    })));
   }
 
   function novaConversa() {
     lembrarConversa(null);
     setMensagens([]);
+    setAnexos([]);
     setFalhou(null);
     setHistoricoAberto(false);
+  }
+
+  /** Escolher no seletor do sistema — que no celular já oferece a câmera. */
+  async function anexarArquivos(arquivos: File[]) {
+    if (arquivos.length === 0) return;
+    const { aceitas, recusadas } = triarArquivos(arquivos, anexos.length);
+    // Recusa vai em toast, não no bloco de falha: aquele bloco tem "Tentar novamente", e
+    // não há pergunta nenhuma para repetir aqui.
+    if (recusadas.length) toast.error("Imagem não anexada", { description: recusadas.join(" ") });
+    if (aceitas.length === 0) return;
+
+    setPreparando(true);
+    try {
+      const { prontas, erros } = await prepararImagens(aceitas);
+      if (erros.length) toast.error("Imagem não anexada", { description: erros.join(" ") });
+      if (prontas.length) setAnexos((prev) => [...prev, ...prontas]);
+    } finally {
+      setPreparando(false);
+    }
   }
 
   async function apagarConversa(id: string) {
@@ -105,25 +150,40 @@ export default function MobileChat() {
     carregarConversas();
   }
 
-  async function enviar(texto: string) {
+  async function enviar(texto: string, imagens: ImagemAnexada[] = anexos) {
     const pergunta = texto.trim();
-    if (!pergunta || pensando) return;
+    // Imagem sozinha é pergunta válida: a foto da nota já diz o que se quer saber.
+    if ((!pergunta && imagens.length === 0) || pensando) return;
 
     setFalhou(null);
     setEntrada("");
+    setAnexos([]);
     // O textarea cresce por `style.height` no onInput; limpar o valor não desfaz isso, e o
     // campo ficava alto e vazio depois de mandar uma pergunta longa.
     if (campo.current) campo.current.style.height = "auto";
     setPensando(true);
-    const comPergunta: Msg[] = [...mensagensRef.current, { role: "user", content: pergunta }];
+    const daPergunta: ImagemMsg[] = imagens.map((i) => ({ url: i.previa, base64: i.base64, mime: i.mime }));
+    const comPergunta: Msg[] = [
+      ...mensagensRef.current,
+      { role: "user", content: pergunta, imagens: daPergunta },
+    ];
     setMensagens(comPergunta);
 
     let cid = conversaId;
     if (!cid) {
-      cid = await criarConversa(pergunta);
+      cid = await criarConversa(pergunta || "Imagem");
       if (cid) lembrarConversa(cid);
     }
-    if (cid) gravarMensagem(cid, "user", pergunta);
+    // Gravar a imagem no bucket é efeito colateral: se falhar, a conversa segue e só o
+    // reabrir é que fica sem a figura.
+    if (cid) {
+      const gravada = gravarMensagem(cid, "user", pergunta);
+      if (imagens.length > 0) {
+        Promise.all([gravada, guardarImagens(imagens).catch(() => [] as string[])])
+          .then(([id, paths]) => id && anexarImagens(id, paths))
+          .catch(() => {});
+      }
+    }
 
     // Só pares do caminho CONFERIDO viram contexto: resposta sem procedência não pode
     // influenciar a interpretação de uma pergunta sobre números.
@@ -141,7 +201,11 @@ export default function MobileChat() {
     let relogio: ReturnType<typeof setTimeout> | undefined;
 
     try {
-      const conferida = await perguntarConferido(pergunta, contexto, cid).catch(() => null);
+      // Com imagem o roteador nem é consultado: nenhuma consulta nomeada lê figura, e
+      // chamá-lo só somaria segundos antes de cair no caminho geral do mesmo jeito.
+      const conferida = imagens.length > 0
+        ? null
+        : await perguntarConferido(pergunta, contexto, cid).catch(() => null);
 
       if (conferida) {
         const msg: Msg = {
@@ -161,7 +225,10 @@ export default function MobileChat() {
       // Caminho geral: a bolha do assistente nasce vazia e cresce com o streaming.
       let acumulado = "";
       relogio = setTimeout(() => controle.abort(), TIMEOUT_MS);
-      setMensagens((prev) => [...prev, { role: "assistant", content: "", verificado: false, provedor: "gemini" }]);
+      setMensagens((prev) => [
+        ...prev,
+        { role: "assistant", content: "", verificado: false, provedor: "gemini", leuImagem: imagens.length > 0 },
+      ]);
       acumulado = await streamAiChat(comPergunta, (pedaco) => {
         setMensagens((prev) =>
           prev.map((m, i) => (i === prev.length - 1 ? { ...m, content: m.content + pedaco } : m)),
@@ -177,7 +244,8 @@ export default function MobileChat() {
       // Tira a bolha vazia do assistente e marca a pergunta, que fica na tela para o botão
       // reenviar — nada digitado se perde. Regra e testes em lib/mobile/chat.ts.
       setMensagens(marcarFalha);
-      setFalhou({ texto: pergunta, motivo });
+      // As imagens voltam com a pergunta: reenviar sem elas mandaria outra pergunta.
+      setFalhou({ texto: pergunta, motivo, imagens });
     } finally {
       if (relogio) clearTimeout(relogio);
       setPensando(false);
@@ -186,11 +254,11 @@ export default function MobileChat() {
 
   async function tentarNovamente() {
     if (!falhou) return;
-    const texto = falhou.texto;
+    const { texto, imagens } = falhou;
     // Tira a pergunta que falhou antes de reenviar, para não duplicar a bolha.
     setMensagens(tirarPerguntaFalha);
     setFalhou(null);
-    setTimeout(() => enviar(texto), 0);
+    setTimeout(() => enviar(texto, imagens), 0);
   }
 
   return (
@@ -222,7 +290,8 @@ export default function MobileChat() {
           <div className="space-y-2.5">
             <p className="text-[13px] leading-relaxed text-muted-foreground">
               Pergunte sobre os números. Quando a resposta vier da base, você vê cada valor
-              com a fonte e a competência.
+              com a fonte e a competência. Pode também anexar uma foto — nota, comprovante,
+              print — e perguntar sobre ela.
             </p>
             {SUGESTOES.map((s) => (
               <button
@@ -240,11 +309,26 @@ export default function MobileChat() {
           {mensagens.map((m, i) => (
             <div key={i} className={m.role === "user" ? "flex justify-end" : ""}>
               {m.role === "user" ? (
-                <div className={cn(
-                  "max-w-[85%] rounded-2xl rounded-br-sm bg-primary px-3.5 py-2.5 text-[14px] leading-snug text-primary-foreground",
-                  m.erro && "opacity-60",
-                )}>
-                  <span className="whitespace-pre-wrap break-words">{m.content}</span>
+                <div className={cn("max-w-[85%] space-y-1.5", m.erro && "opacity-60")}>
+                  {(m.imagens?.length ?? 0) > 0 && (
+                    <div className="flex flex-wrap justify-end gap-1.5">
+                      {m.imagens!.map((img, j) => (
+                        <button
+                          key={j}
+                          onClick={() => setAmpliada(img.url)}
+                          aria-label="Ver imagem"
+                          className="overflow-hidden rounded-xl border border-border"
+                        >
+                          <img src={img.url} alt="" className="h-28 w-28 object-cover" />
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                  {m.content && (
+                    <div className="rounded-2xl rounded-br-sm bg-primary px-3.5 py-2.5 text-[14px] leading-snug text-primary-foreground">
+                      <span className="whitespace-pre-wrap break-words">{m.content}</span>
+                    </div>
+                  )}
                 </div>
               ) : (
                 <div className="max-w-[92%] space-y-2">
@@ -260,7 +344,7 @@ export default function MobileChat() {
                         {m.content || "…"}
                       </ReactMarkdown>
                     </div>
-                    <Selo verificado={m.verificado} nivel={m.nivel} provedor={m.provedor} />
+                    <Selo verificado={m.verificado} nivel={m.nivel} provedor={m.provedor} leuImagem={m.leuImagem} />
                   </div>
                   <BlocoNumeros numeros={m.numeros} avisos={m.avisos} />
                 </div>
@@ -293,10 +377,52 @@ export default function MobileChat() {
       </div>
 
       <div className="shrink-0 border-t border-border bg-card px-3 py-2.5">
+        {(anexos.length > 0 || preparando) && (
+          <div className="mb-2 flex flex-wrap items-center gap-2">
+            {anexos.map((a) => (
+              <div key={a.id} className="relative">
+                <img src={a.previa} alt={a.nome} className="h-16 w-16 rounded-lg border border-border object-cover" />
+                <button
+                  onClick={() => setAnexos((prev) => prev.filter((x) => x.id !== a.id))}
+                  aria-label={`Remover ${a.nome}`}
+                  // Alvo de 28px no canto: dedo em miniatura de 64px erra o X de 16px.
+                  className="absolute -right-2 -top-2 flex h-7 w-7 items-center justify-center rounded-full border border-border bg-card text-muted-foreground shadow-sm"
+                >
+                  <X className="h-3.5 w-3.5" />
+                </button>
+              </div>
+            ))}
+            {preparando && (
+              <span className="inline-flex items-center gap-1.5 text-[12px] text-muted-foreground">
+                <Loader2 className="h-3.5 w-3.5 animate-spin" /> preparando…
+              </span>
+            )}
+          </div>
+        )}
         <form
           onSubmit={(e) => { e.preventDefault(); enviar(entrada); }}
           className="flex items-end gap-2"
         >
+          <input
+            ref={seletor}
+            type="file"
+            accept="image/*"
+            multiple
+            className="hidden"
+            onChange={(e) => {
+              anexarArquivos(Array.from(e.target.files ?? []));
+              e.target.value = ""; // escolher a MESMA foto de novo tem que funcionar
+            }}
+          />
+          <button
+            type="button"
+            onClick={() => seletor.current?.click()}
+            disabled={pensando}
+            aria-label="Anexar imagem"
+            className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full border border-input text-muted-foreground disabled:opacity-40"
+          >
+            <ImagePlus className="h-5 w-5" />
+          </button>
           <textarea
             ref={campo}
             value={entrada}
@@ -313,7 +439,7 @@ export default function MobileChat() {
           />
           <button
             type="submit"
-            disabled={pensando || !entrada.trim()}
+            disabled={pensando || preparando || (!entrada.trim() && anexos.length === 0)}
             aria-label="Enviar"
             className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-primary text-primary-foreground disabled:opacity-40"
           >
@@ -321,6 +447,19 @@ export default function MobileChat() {
           </button>
         </form>
       </div>
+
+      {/* Miniatura de 112px não serve para conferir uma nota — tocar abre inteira. */}
+      {ampliada && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/90 p-3"
+          onClick={() => setAmpliada(null)}
+          role="button"
+          tabIndex={-1}
+          aria-label="Fechar imagem"
+        >
+          <img src={ampliada} alt="" className="max-h-full max-w-full rounded-lg object-contain" />
+        </div>
+      )}
 
       <Drawer open={historicoAberto} onOpenChange={setHistoricoAberto}>
         <DrawerContent className="max-h-[80dvh]">
@@ -359,14 +498,20 @@ export default function MobileChat() {
   );
 }
 
-/** Espelha o selo do painel do desktop: conferido / consultado / sem verificação. */
-function Selo({ verificado, nivel, provedor }: { verificado?: boolean; nivel?: "conferido" | "consultado"; provedor?: string }) {
+/** Espelha o selo do painel do desktop: conferido / consultado / lido da imagem / nada. */
+function Selo({ verificado, nivel, provedor, leuImagem }: {
+  verificado?: boolean; nivel?: "conferido" | "consultado"; provedor?: string; leuImagem?: boolean;
+}) {
   if (verificado === undefined) return null; // conversa recarregada do histórico
   const modelo = provedor === "openai" ? "GPT" : provedor === "gemini" ? "Gemini" : null;
 
   return (
     <span className="mt-1.5 inline-flex flex-wrap items-center gap-1 text-[10.5px]">
-      {!verificado ? (
+      {leuImagem ? (
+        <span className="inline-flex items-center gap-1 text-muted-foreground">
+          <Eye className="h-3 w-3" /> lido da imagem — não conferido
+        </span>
+      ) : !verificado ? (
         <span className="inline-flex items-center gap-1 text-muted-foreground">
           <AlertTriangle className="h-3 w-3" /> sem números verificados
         </span>

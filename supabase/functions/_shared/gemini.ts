@@ -16,7 +16,11 @@ export const corsHeaders = {
 export const DEFAULT_MODEL = "gemini-2.5-flash";
 
 export type ChatRole = "system" | "user" | "assistant";
-export interface ChatMessage { role: ChatRole; content: string }
+
+/** Imagem anexada a uma mensagem: base64 puro, sem o prefixo `data:...;base64,`. */
+export interface ChatImage { mimeType: string; data: string }
+
+export interface ChatMessage { role: ChatRole; content: string; imagens?: ChatImage[] }
 
 export class GeminiError extends Error {
   status: number;
@@ -41,10 +45,16 @@ function toContents(messages: ChatMessage[]): { systemInstruction?: any; content
     if (m.role === "system") {
       if (m.content) systemParts.push(m.content);
     } else {
-      contents.push({
-        role: m.role === "assistant" ? "model" : "user",
-        parts: [{ text: m.content ?? "" }],
-      });
+      // Imagem ANTES do texto: é a ordem que o Gemini recomenda — o modelo lê a figura e
+      // depois a pergunta sobre ela. Invertido, a pergunta chega sem o objeto.
+      const parts: any[] = [];
+      for (const img of m.imagens ?? []) {
+        if (img?.data) parts.push({ inlineData: { mimeType: img.mimeType || "image/jpeg", data: img.data } });
+      }
+      // Mensagem só com imagem não leva `text` vazio junto; sem imagem nenhuma, o texto
+      // (mesmo vazio) continua sendo a única parte, como sempre foi.
+      if (m.content || parts.length === 0) parts.push({ text: m.content ?? "" });
+      contents.push({ role: m.role === "assistant" ? "model" : "user", parts });
     }
   }
   return {

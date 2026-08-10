@@ -1,12 +1,87 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.0";
 import {
-  type ChatMessage, corsHeaders, errorResponse, handleCors,
+  type ChatImage, type ChatMessage, corsHeaders, errorResponse, handleCors,
   jsonResponse, streamAsOpenAISSE,
 } from "../_shared/gemini.ts";
 import { buildOrgContext } from "../_shared/org-context.ts";
 import { contextoAjustesEbitda } from "../_shared/ebitda-ajustado.ts";
 
 type Msg = ChatMessage;
+
+/* ---- Imagens anexadas -------------------------------------------------------------
+ * O que a IA lê de uma imagem NUNCA é número conferido — por isso imagem só entra por
+ * aqui, o caminho geral, e nunca pelo `assistente-responder`. A tela marca a resposta
+ * como "lido da imagem".
+ *
+ * Os tetos abaixo existem porque o custo e o tempo de resposta crescem com a imagem, não
+ * com a pergunta: uma conversa longa com print em toda mensagem reenviaria tudo a cada
+ * turno. Sobram as MAIS RECENTES, que é o que a pessoa está olhando. */
+const MIMES_ACEITOS = new Set(["image/jpeg", "image/png", "image/webp", "image/heic", "image/heif"]);
+const MAX_IMAGENS = 6;
+/** ~4,5 MB por imagem depois do base64. O cliente manda bem menos que isso. */
+const MAX_BASE64 = 6_000_000;
+
+/** Só entra no prompt quando há imagem — texto solto sobre imagem em conversa sem imagem
+ *  faz o modelo inventar que viu alguma coisa. */
+const INSTRUCAO_IMAGEM = `
+
+A pessoa anexou uma ou mais IMAGENS (print de tela, foto de nota/comprovante, gráfico,
+extrato, planilha). Leia o que está nelas e responda sobre o conteúdo delas.
+- Diga sempre o que veio DA IMAGEM e o que veio dos dados internos. São coisas diferentes:
+  número lido de imagem não é número conferido, e não pode ser apresentado como se fosse.
+- Se algo estiver ilegível, cortado ou ambíguo, diga exatamente o que não deu para ler em
+  vez de adivinhar o valor.
+- Quando a imagem contradiz os dados internos, aponte a divergência com os dois valores em
+  vez de escolher um.`;
+
+/* ---- A tela de onde a pergunta veio -----------------------------------------------
+ * O contexto amplo daqui é DRE, DFC, BP e histórico — e isso vira uma armadilha quando a
+ * pergunta é de outra área: perguntada sobre o salto da fatura do cartão, a IA varria os
+ * três anos de DRE e devolvia uma comparação de 2024 que ninguém pediu. Ter dado sobre
+ * OUTRA coisa não é ter a resposta.
+ *
+ * A tela chega do painel (src/lib/contexto-pagina.ts) sem valores: diz onde a pessoa está
+ * e qual é o recorte à vista. */
+type Pagina = { rota?: string; tela?: string; resumo?: string };
+
+function blocoTela(bruto: unknown): string {
+  if (!bruto || typeof bruto !== "object") return "";
+  const p = bruto as Pagina;
+  const tela = String(p.tela ?? "").trim().slice(0, 120);
+  const rota = String(p.rota ?? "").trim().slice(0, 120);
+  const resumo = String(p.resumo ?? "").trim().slice(0, 1200);
+  if (!tela && !rota) return "";
+
+  return `
+
+A PERGUNTA VEIO DESTA TELA: ${tela || rota}${rota && tela ? ` (${rota})` : ""}
+${resumo ? `O QUE ESTÁ À VISTA: ${resumo}` : ""}
+- Responda sobre a área DESTA tela. Quem pergunta "por que subiu?" olhando a fatura do
+  cartão está perguntando da fatura, não do EBITDA.
+- Se você não tem os dados desta área aqui, diga isso em UMA frase e ofereça o que tem.
+  NÃO troque a pergunta por uma fonte parecida: varrer DRE e DFC quando a pergunta era da
+  fatura do cartão não é meia resposta, é resposta errada.
+- Mês sem ano é o ano corrente (ou o do período à vista). Não compare anos diferentes a
+  menos que a pergunta peça isso com todas as letras.`;
+}
+
+function sanitizarImagens(messages: Msg[]): Msg[] {
+  let restantes = MAX_IMAGENS;
+  const invertido = [...messages].reverse().map((m) => {
+    const brutas = Array.isArray(m.imagens) ? m.imagens : [];
+    const validas: ChatImage[] = [];
+    for (const img of brutas) {
+      if (restantes <= 0) break;
+      const data = typeof img?.data === "string" ? img.data : "";
+      const mimeType = String(img?.mimeType ?? "");
+      if (!data || data.length > MAX_BASE64 || !MIMES_ACEITOS.has(mimeType)) continue;
+      validas.push({ mimeType, data });
+      restantes--;
+    }
+    return { role: m.role, content: String(m.content ?? ""), imagens: validas };
+  });
+  return invertido.reverse();
+}
 
 async function buildContext(supabase: any): Promise<string> {
   const parts: string[] = [];
@@ -65,14 +140,18 @@ Deno.serve(async (req) => {
     const { data: userData } = await supabase.auth.getUser();
     if (!userData?.user?.id) return jsonResponse({ error: "Unauthorized" }, 401);
 
-    const { messages } = await req.json() as { messages: Msg[] };
+    const { messages, pagina } = await req.json() as { messages: Msg[]; pagina?: unknown };
     if (!Array.isArray(messages) || messages.length === 0) return jsonResponse({ error: "messages obrigatório" }, 400);
 
+    const conversa = sanitizarImagens(messages);
+    const temImagem = conversa.some((m) => (m.imagens?.length ?? 0) > 0);
+    const hoje = new Date().toLocaleDateString("pt-BR", { timeZone: "America/Sao_Paulo" });
+
     const [ctx, org] = await Promise.all([buildContext(supabase), buildOrgContext(supabase)]);
-    const system = `Você é o assistente financeiro da Takeat. Responda em português brasileiro, direto, com números formatados em R$ e %. Use markdown e bullet points quando ajudar a leitura. Você tem acesso a TODOS os dados da empresa: DRE, DFC, Balancete, Balanço, BP Anual, Cenários, Histórico Financeiro, Editais, Base de Conhecimento e ao contexto organizacional (Biblioteca: colaboradores, departamentos, fornecedores, políticas). Baseie-se SEMPRE nos dados reais abaixo. Se a informação não estiver disponível, diga claramente.\n\n${org}\n\n=== DADOS FINANCEIROS ===\n${ctx}`;
+    const system = `Você é o assistente financeiro da Takeat. Hoje é ${hoje}. Responda em português brasileiro, direto, com números formatados em R$ e %. Use markdown e bullet points quando ajudar a leitura. Você tem acesso a TODOS os dados da empresa: DRE, DFC, Balancete, Balanço, BP Anual, Cenários, Histórico Financeiro, Editais, Base de Conhecimento e ao contexto organizacional (Biblioteca: colaboradores, departamentos, fornecedores, políticas). Baseie-se SEMPRE nos dados reais abaixo. Se a informação não estiver disponível, diga claramente.${blocoTela(pagina)}${temImagem ? INSTRUCAO_IMAGEM : ""}\n\n${org}\n\n=== DADOS FINANCEIROS ===\n${ctx}`;
 
     return await streamAsOpenAISSE({
-      messages: [{ role: "system", content: system }, ...messages],
+      messages: [{ role: "system", content: system }, ...conversa],
       temperature: 0.4,
     });
   } catch (e) {

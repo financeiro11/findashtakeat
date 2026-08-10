@@ -15,12 +15,17 @@
 // lançamentos. Trocar o chat inteiro por ele deixaria o time sem resposta para tudo que
 // não é essas cinco coisas, o que seria uma regressão. Conforme mais consultas nomeadas
 // forem escritas, o caminho geral vai sendo usado cada vez menos.
+//
+// IMAGEM anexada vai SEMPRE pelo caminho geral, sem passar pelo roteador: as consultas
+// nomeadas leem o banco, e nenhuma delas lê figura. A resposta é marcada como lida da
+// imagem — um valor que a IA enxergou num print não tem a mesma procedência de um que
+// veio do Omie, e a tela não pode deixar os dois parecerem a mesma coisa.
 
 import { useEffect, useRef, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useLocation } from "react-router-dom";
 import {
   Sparkles, X, Send, Loader2, Trash2, Plus, MessageSquare, Mic, Square,
-  Volume2, VolumeX, ShieldCheck, AlertTriangle, Brain, Database,
+  Volume2, VolumeX, ShieldCheck, AlertTriangle, Brain, Database, ImagePlus, Eye,
 } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import takeatSymbol from "@/assets/takeat-symbol-white.png";
@@ -30,6 +35,11 @@ import { Textarea } from "@/components/ui/textarea";
 import { toast } from "@/hooks/use-toast";
 import { falar, pararFala, suportaVoz } from "@/lib/voz";
 import { useMicrofone } from "@/hooks/useMicrofone";
+import {
+  abrirImagens, anexarImagens, comImagensLegiveis, guardarImagens, paraRequisicao,
+  prepararImagens, triarArquivos, type ImagemAnexada, type ImagemMsg,
+} from "@/lib/assistente-imagens";
+import { contextoDaPagina } from "@/lib/contexto-pagina";
 
 type Numero = {
   rotulo: string;
@@ -51,6 +61,10 @@ type Msg = {
   nivel?: "conferido" | "consultado";
   /** Qual modelo respondeu — "openai" ou "gemini". */
   provedor?: string;
+  /** Imagens da pergunta (role user) ou o que a resposta leu (role assistant). */
+  imagens?: ImagemMsg[];
+  /** Resposta escrita olhando para uma imagem: número lido não é número conferido. */
+  leuImagem?: boolean;
 };
 
 type Conv = { id: string; titulo: string; created_at: string; updated_at: string };
@@ -102,11 +116,25 @@ export function AIAssistant({ initialPrompt }: { initialPrompt?: string } = {}) 
     () => localStorage.getItem(SAUDACAO_ATIVA) === "1",
   );
   const [saudacao, setSaudacao] = useState<string | null>(null);
+  const [anexos, setAnexos] = useState<ImagemAnexada[]>([]);
+  const [preparando, setPreparando] = useState(false);
+  const [arrastando, setArrastando] = useState(false);
+  /** Imagem aberta em tamanho grande — print de DRE em miniatura não se lê. */
+  const [ampliada, setAmpliada] = useState<string | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const seletorRef = useRef<HTMLInputElement>(null);
+
+  // De onde a pergunta está sendo feita. Vai junto em todas as chamadas: quem pergunta
+  // "por que subiu?" olhando a fatura do cartão não está perguntando do EBITDA.
+  const { pathname } = useLocation();
 
   // `messages` congelaria no callback do microfone; a ref garante o estado atual.
   const messagesRef = useRef<Msg[]>([]);
   useEffect(() => { messagesRef.current = messages; }, [messages]);
+
+  // Mesma armadilha com os anexos: o microfone chama `enviar` sem argumentos.
+  const anexosRef = useRef<ImagemAnexada[]>([]);
+  useEffect(() => { anexosRef.current = anexos; }, [anexos]);
 
   const enviarRef = useRef<(t: string) => void>(() => {});
   const mic = useMicrofone((texto) => enviarRef.current(texto));
@@ -159,17 +187,28 @@ export function AIAssistant({ initialPrompt }: { initialPrompt?: string } = {}) 
     setShowHistory(false);
     const { data } = await supabase
       .from("ai_messages" as any)
-      .select("role,content,created_at")
+      .select("role,content,imagens,created_at")
       .eq("conversation_id", id)
       .order("created_at", { ascending: true });
     // Conversa recarregada não traz a tabela de números: `ai_messages` guarda só o texto.
     // O log completo, com os valores e as fontes, fica em `assistente_execucao`.
-    setMessages(((data as any) ?? []).map((m: any) => ({ role: m.role, content: m.content })));
+    const linhas = ((data as any[]) ?? []);
+    // As imagens voltam: o bucket é privado, então cada caminho vira uma URL assinada.
+    const caminhos = linhas.flatMap((m) => (Array.isArray(m.imagens) ? m.imagens : []));
+    const abertas = await abrirImagens(caminhos).catch(() => new Map<string, ImagemMsg>());
+    setMessages(linhas.map((m) => ({
+      role: m.role,
+      content: m.content,
+      imagens: (Array.isArray(m.imagens) ? m.imagens : [])
+        .map((p: string) => abertas.get(p))
+        .filter(Boolean) as ImagemMsg[],
+    })));
   }
 
   function newConversation() {
     setConvId(null);
     setMessages([]);
+    setAnexos([]);
     setShowHistory(false);
     pararFala();
   }
@@ -196,26 +235,66 @@ export function AIAssistant({ initialPrompt }: { initialPrompt?: string } = {}) 
     return (data as any).id;
   }
 
-  async function persistMessage(cid: string, role: "user" | "assistant", content: string) {
+  /** Devolve o id da linha gravada — é por ele que a imagem alcança a mensagem depois. */
+  async function persistMessage(
+    cid: string, role: "user" | "assistant", content: string,
+  ): Promise<string | null> {
     const { data: { user } } = await supabase.auth.getUser();
-    if (!user) return;
-    await supabase.from("ai_messages" as any).insert({
-      conversation_id: cid, user_id: user.id, role, content,
-    });
+    if (!user) return null;
+    const { data } = await supabase.from("ai_messages" as any)
+      .insert({ conversation_id: cid, user_id: user.id, role, content })
+      .select("id")
+      .single();
     await supabase.from("ai_conversations" as any).update({ updated_at: new Date().toISOString() }).eq("id", cid);
+    return (data as any)?.id ?? null;
   }
 
+  /* ---- Anexar imagem -------------------------------------------------------------
+   * Três formas de trazer a imagem, porque são três hábitos diferentes e todos existem
+   * aqui: colar o print recém-tirado (Ctrl+V), arrastar o arquivo para dentro do painel,
+   * ou escolher pelo botão. */
+  async function anexarArquivos(arquivos: File[]) {
+    if (arquivos.length === 0) return;
+    const { aceitas, recusadas } = triarArquivos(arquivos, anexosRef.current.length);
+    if (recusadas.length) {
+      toast({ title: "Imagem não anexada", description: recusadas.join(" "), variant: "destructive" });
+    }
+    if (aceitas.length === 0) return;
+
+    setPreparando(true);
+    try {
+      const { prontas, erros } = await prepararImagens(aceitas);
+      if (erros.length) {
+        toast({ title: "Imagem não anexada", description: erros.join(" "), variant: "destructive" });
+      }
+      if (prontas.length) setAnexos(prev => [...prev, ...prontas]);
+    } finally {
+      setPreparando(false);
+    }
+  }
+
+  const removerAnexo = (id: string) => setAnexos(prev => prev.filter(a => a.id !== id));
+
   /**
-   * Caminho geral (streaming). Só roda quando a pergunta não caiu numa consulta nomeada.
+   * Caminho geral (streaming). Roda quando a pergunta não caiu numa consulta nomeada —
+   * ou quando há imagem, que nenhuma consulta nomeada sabe ler.
    * Retorna o texto acumulado para persistência.
    */
-  async function responderGeral(historico: Msg[]): Promise<string> {
+  async function responderGeral(historico: Msg[], leuImagem = false): Promise<string> {
     const { data: { session } } = await supabase.auth.getSession();
     const url = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/ai-chat`;
+    // Só as imagens mais recentes seguem, e as reabertas do histórico voltam a ter bytes:
+    // sem isso, "e o total dessa nota?" chegaria a um modelo que não está vendo a nota.
+    const legivel = await comImagensLegiveis(historico);
     const resp = await fetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${session?.access_token}` },
-      body: JSON.stringify({ messages: historico.map(m => ({ role: m.role, content: m.content })) }),
+      body: JSON.stringify({
+        messages: legivel.map(m => ({
+          role: m.role, content: m.content, imagens: paraRequisicao(m.imagens),
+        })),
+        pagina: contextoDaPagina(pathname),
+      }),
     });
 
     if (!resp.ok || !resp.body) {
@@ -236,7 +315,7 @@ export function AIAssistant({ initialPrompt }: { initialPrompt?: string } = {}) 
         // O caminho geral é o `ai-chat`, que roda no Gemini (compartilhado com o Radar
         // de Editais). Marcar explicitamente evita que a ausência do rótulo seja lida
         // como "não sei qual modelo respondeu".
-        return [...prev, { role: "assistant", content: acumulado, verificado: false, provedor: "gemini" }];
+        return [...prev, { role: "assistant", content: acumulado, verificado: false, provedor: "gemini", leuImagem }];
       });
     };
 
@@ -269,20 +348,41 @@ export function AIAssistant({ initialPrompt }: { initialPrompt?: string } = {}) 
     return acumulado;
   }
 
-  async function enviar(texto: string) {
+  async function enviar(texto: string, imagens: ImagemAnexada[] = anexosRef.current) {
     const text = texto.trim();
-    if (!text || loading) return;
+    // Imagem sozinha é pergunta válida ("o que é isso?" está implícito no print).
+    if ((!text && imagens.length === 0) || loading) return;
 
-    const next: Msg[] = [...messagesRef.current, { role: "user", content: text }];
+    const daPergunta: ImagemMsg[] = imagens.map(i => ({ url: i.previa, base64: i.base64, mime: i.mime }));
+    const next: Msg[] = [...messagesRef.current, { role: "user", content: text, imagens: daPergunta }];
     setMessages(next);
     setInput("");
+    setAnexos([]);
     setLoading(true);
     pararFala();
 
-    const cid = await ensureConversation(text);
-    if (cid) persistMessage(cid, "user", text);
+    const cid = await ensureConversation(text || "Imagem");
+    // A gravação da imagem no bucket é efeito colateral: se falhar, a conversa continua
+    // (a imagem só não volta ao reabrir) e a pergunta segue para a IA do mesmo jeito.
+    if (cid) {
+      const gravada = persistMessage(cid, "user", text);
+      if (imagens.length > 0) {
+        Promise.all([gravada, guardarImagens(imagens).catch(() => [] as string[])])
+          .then(([id, paths]) => id && anexarImagens(id, paths))
+          .catch(() => {});
+      }
+    }
 
     try {
+      // Com imagem, o roteador nem é consultado: nenhuma consulta nomeada lê figura, e
+      // chamá-lo só somaria segundos antes de cair no caminho geral do mesmo jeito.
+      if (imagens.length > 0) {
+        const acumulado = await responderGeral(next, true);
+        if (cid && acumulado) { await persistMessage(cid, "assistant", acumulado); loadConversations(); }
+        if (vozLigada && acumulado) falar(acumulado);
+        return;
+      }
+
       // Contexto para o roteador entender "e no mês anterior?". Só pares (pergunta,
       // resposta) do caminho CONFERIDO: resposta do caminho geral não tem procedência e
       // não deve influenciar a interpretação de uma pergunta sobre números.
@@ -295,7 +395,12 @@ export function AIAssistant({ initialPrompt }: { initialPrompt?: string } = {}) 
       }
 
       const { data, error } = await supabase.functions.invoke("assistente-responder", {
-        body: { pergunta: text, historico: historico.slice(-4), conversa_id: cid },
+        body: {
+          pergunta: text,
+          historico: historico.slice(-4),
+          conversa_id: cid,
+          pagina: contextoDaPagina(pathname),
+        },
       });
 
       const resp = data as {
@@ -425,7 +530,30 @@ export function AIAssistant({ initialPrompt }: { initialPrompt?: string } = {}) 
       )}
 
       {open && (
-        <div className="fixed inset-y-0 right-0 z-50 flex w-full max-w-lg flex-col border-l border-border bg-card shadow-2xl">
+        <div
+          className="fixed inset-y-0 right-0 z-50 flex w-full max-w-lg flex-col border-l border-border bg-card shadow-2xl"
+          onDragOver={(e) => {
+            if (!e.dataTransfer.types.includes("Files")) return;
+            e.preventDefault();
+            setArrastando(true);
+          }}
+          onDragLeave={(e) => {
+            // Sair para um filho dispara dragleave no pai; sem esta guarda a moldura pisca.
+            if (e.currentTarget.contains(e.relatedTarget as Node | null)) return;
+            setArrastando(false);
+          }}
+          onDrop={(e) => {
+            if (!e.dataTransfer.types.includes("Files")) return;
+            e.preventDefault();
+            setArrastando(false);
+            anexarArquivos(Array.from(e.dataTransfer.files));
+          }}
+        >
+          {arrastando && (
+            <div className="pointer-events-none absolute inset-2 z-10 flex items-center justify-center rounded-lg border-2 border-dashed border-primary bg-background/85 text-[13px] font-medium text-primary">
+              Solte a imagem para anexar
+            </div>
+          )}
           <div className="flex items-center justify-between border-b border-border px-4 py-3">
             <div className="flex items-center gap-2">
               <div className="flex h-7 w-7 items-center justify-center rounded-md bg-takeat-soft text-primary">
@@ -487,7 +615,8 @@ export function AIAssistant({ initialPrompt }: { initialPrompt?: string } = {}) 
                 <div className="space-y-3 text-[12.5px]">
                   <p className="text-muted-foreground">
                     Pergunte sobre os números. Quando a resposta vier da base, você vê a
-                    tabela com cada valor, sua fonte e a competência.
+                    tabela com cada valor, sua fonte e a competência. Pode colar, arrastar
+                    ou anexar uma imagem — print, nota, extrato — e perguntar sobre ela.
                   </p>
                   {SUGESTOES.map(s => (
                     <button key={s} onClick={() => enviar(s)} className="block w-full rounded-md border border-border bg-secondary/40 px-3 py-2 text-left text-[12px] hover:bg-secondary">
@@ -500,8 +629,26 @@ export function AIAssistant({ initialPrompt }: { initialPrompt?: string } = {}) 
                 {messages.map((m, i) => (
                   <div key={i} className={m.role === "user" ? "flex justify-end" : ""}>
                     {m.role === "user" ? (
-                      <div className="max-w-[88%] rounded-lg bg-primary px-3 py-2 text-[12.5px] text-primary-foreground">
-                        <span className="whitespace-pre-wrap">{m.content}</span>
+                      <div className="max-w-[88%] space-y-1.5">
+                        {(m.imagens?.length ?? 0) > 0 && (
+                          <div className="flex flex-wrap justify-end gap-1.5">
+                            {m.imagens!.map((img, j) => (
+                              <button
+                                key={j}
+                                onClick={() => setAmpliada(img.url)}
+                                title="Ver em tamanho grande"
+                                className="overflow-hidden rounded-lg border border-border"
+                              >
+                                <img src={img.url} alt="" className="h-24 w-24 object-cover" />
+                              </button>
+                            ))}
+                          </div>
+                        )}
+                        {m.content && (
+                          <div className="rounded-lg bg-primary px-3 py-2 text-[12.5px] text-primary-foreground">
+                            <span className="whitespace-pre-wrap">{m.content}</span>
+                          </div>
+                        )}
                       </div>
                     ) : (
                       <div className="max-w-[92%] space-y-2">
@@ -510,7 +657,7 @@ export function AIAssistant({ initialPrompt }: { initialPrompt?: string } = {}) 
                             <ReactMarkdown>{m.content || "…"}</ReactMarkdown>
                           </div>
                           <div className="mt-1.5 flex items-center gap-2">
-                            <Selo verificado={m.verificado} nivel={m.nivel} provedor={m.provedor} />
+                            <Selo verificado={m.verificado} nivel={m.nivel} provedor={m.provedor} leuImagem={m.leuImagem} />
                             {suportaVoz() && m.content && (
                               <button
                                 onClick={() => falar(m.content)}
@@ -546,7 +693,53 @@ export function AIAssistant({ initialPrompt }: { initialPrompt?: string } = {}) 
           )}
 
           <div className="border-t border-border p-3">
+            {(anexos.length > 0 || preparando) && (
+              <div className="mb-2 flex flex-wrap items-center gap-2">
+                {anexos.map(a => (
+                  <div key={a.id} className="group relative">
+                    <img
+                      src={a.previa}
+                      alt={a.nome}
+                      title={a.nome}
+                      className="h-14 w-14 rounded-md border border-border object-cover"
+                    />
+                    <button
+                      onClick={() => removerAnexo(a.id)}
+                      aria-label={`Remover ${a.nome}`}
+                      className="absolute -right-1.5 -top-1.5 rounded-full border border-border bg-card p-0.5 text-muted-foreground shadow-sm hover:text-foreground"
+                    >
+                      <X className="h-3 w-3" />
+                    </button>
+                  </div>
+                ))}
+                {preparando && (
+                  <span className="inline-flex items-center gap-1.5 text-[11px] text-muted-foreground">
+                    <Loader2 className="h-3 w-3 animate-spin" /> preparando imagem…
+                  </span>
+                )}
+              </div>
+            )}
             <div className="flex items-end gap-2">
+              <input
+                ref={seletorRef}
+                type="file"
+                accept="image/*"
+                multiple
+                className="hidden"
+                onChange={(e) => {
+                  anexarArquivos(Array.from(e.target.files ?? []));
+                  e.target.value = ""; // escolher o MESMO arquivo de novo tem que funcionar
+                }}
+              />
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => seletorRef.current?.click()}
+                disabled={loading || ouvindo}
+                title="Anexar imagem (ou cole com Ctrl+V, ou arraste para cá)"
+              >
+                <ImagePlus className="h-4 w-4" />
+              </Button>
               {mic.suportado && (
                 <Button
                   size="sm"
@@ -563,12 +756,24 @@ export function AIAssistant({ initialPrompt }: { initialPrompt?: string } = {}) 
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
                 onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); enviar(input); } }}
+                onPaste={(e) => {
+                  // Print recém-tirado vem no clipboard como arquivo. Copiar texto continua
+                  // colando texto: só interceptamos quando há imagem de verdade.
+                  const imgs = Array.from(e.clipboardData.files).filter(f => f.type.startsWith("image/"));
+                  if (imgs.length === 0) return;
+                  e.preventDefault();
+                  anexarArquivos(imgs);
+                }}
                 placeholder={ouvindo ? "Falando…" : "Pergunte algo… (Enter envia, Shift+Enter quebra linha)"}
                 className="min-h-[44px] resize-none text-[12.5px]"
                 rows={2}
                 disabled={ouvindo}
               />
-              <Button size="sm" onClick={() => enviar(input)} disabled={loading || ouvindo || !input.trim()}>
+              <Button
+                size="sm"
+                onClick={() => enviar(input)}
+                disabled={loading || ouvindo || preparando || (!input.trim() && anexos.length === 0)}
+              >
                 {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
               </Button>
             </div>
@@ -600,6 +805,19 @@ export function AIAssistant({ initialPrompt }: { initialPrompt?: string } = {}) 
           </div>
         </div>
       )}
+
+      {/* Miniatura de 96px não serve para conferir um print de DRE — clicar abre inteiro. */}
+      {ampliada && (
+        <div
+          className="fixed inset-0 z-[60] flex items-center justify-center bg-black/80 p-6"
+          onClick={() => setAmpliada(null)}
+          role="button"
+          tabIndex={-1}
+          aria-label="Fechar imagem"
+        >
+          <img src={ampliada} alt="" className="max-h-full max-w-full rounded-lg object-contain" />
+        </div>
+      )}
     </>
   );
 }
@@ -624,8 +842,10 @@ export function AIAssistant({ initialPrompt }: { initialPrompt?: string } = {}) 
  * levantamento correto lido de forma errada continua sendo um número errado no slide.
  */
 function Selo({
-  verificado, nivel, provedor,
-}: { verificado?: boolean; nivel?: "conferido" | "consultado"; provedor?: string }) {
+  verificado, nivel, provedor, leuImagem,
+}: {
+  verificado?: boolean; nivel?: "conferido" | "consultado"; provedor?: string; leuImagem?: boolean;
+}) {
   if (verificado === undefined) return null; // conversa recarregada do histórico
 
   // O modelo aparece em TODA resposta porque a escolha do provedor é feita em tempo de
@@ -635,7 +855,14 @@ function Selo({
 
   return (
     <span className="inline-flex flex-wrap items-center gap-1 text-[10.5px]">
-      {!verificado ? (
+      {leuImagem ? (
+        // Dizer "lido da imagem" em vez de só "sem verificação": o que a IA enxergou num
+        // print não veio do banco, e a origem do valor é a imagem que está logo acima.
+        <span className="inline-flex items-center gap-1 text-muted-foreground">
+          <Eye className="h-3 w-3" />
+          lido da imagem — não conferido no banco
+        </span>
+      ) : !verificado ? (
         <span className="inline-flex items-center gap-1 text-muted-foreground">
           <AlertTriangle className="h-3 w-3" />
           sem números verificados — confira antes de usar

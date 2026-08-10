@@ -11,6 +11,7 @@
 // para mexer.
 
 import { supabase } from "@/integrations/supabase/client";
+import { comImagensLegiveis, paraRequisicao, type ImagemMsg } from "@/lib/assistente-imagens";
 
 export type PapelMsg = "user" | "assistant";
 export type MsgAssistente = {
@@ -21,6 +22,10 @@ export type MsgAssistente = {
   nivel?: "conferido" | "consultado";
   provedor?: string;
   erro?: boolean;
+  /** Imagens anexadas à pergunta. Só o caminho geral as recebe. */
+  imagens?: ImagemMsg[];
+  /** Resposta escrita olhando para uma imagem — número lido não é número conferido. */
+  leuImagem?: boolean;
 };
 
 export type NumeroConferido = {
@@ -88,12 +93,20 @@ export async function streamAiChat(
   const { data: { session } } = await supabase.auth.getSession();
   const url = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/ai-chat`;
 
+  // Só as imagens mais recentes seguem, e as reabertas do histórico voltam a ter bytes:
+  // sem isso, "e o total dessa nota?" chegaria a um modelo que não está vendo a nota.
+  const legivel = await comImagensLegiveis(historico);
+
   let resp: Response;
   try {
     resp = await fetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${session?.access_token}` },
-      body: JSON.stringify({ messages: historico.map((m) => ({ role: m.role, content: m.content })) }),
+      body: JSON.stringify({
+        messages: legivel.map((m) => ({
+          role: m.role, content: m.content, imagens: paraRequisicao(m.imagens),
+        })),
+      }),
       signal: sinal,
     });
   } catch (e) {
@@ -167,9 +180,16 @@ export async function criarConversa(primeiraPergunta: string): Promise<string | 
   return error || !data ? null : (data as any).id;
 }
 
-export async function gravarMensagem(conversaId: string, role: PapelMsg, content: string): Promise<void> {
+/** Devolve o id da linha — é por ele que a imagem alcança a mensagem depois do upload. */
+export async function gravarMensagem(
+  conversaId: string, role: PapelMsg, content: string,
+): Promise<string | null> {
   const { data: { user } } = await supabase.auth.getUser();
-  if (!user) return;
-  await supabase.from("ai_messages" as any).insert({ conversation_id: conversaId, user_id: user.id, role, content });
+  if (!user) return null;
+  const { data } = await supabase.from("ai_messages" as any)
+    .insert({ conversation_id: conversaId, user_id: user.id, role, content })
+    .select("id")
+    .single();
   await supabase.from("ai_conversations" as any).update({ updated_at: new Date().toISOString() }).eq("id", conversaId);
+  return (data as any)?.id ?? null;
 }

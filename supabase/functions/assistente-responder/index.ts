@@ -33,6 +33,7 @@ import {
   briefingDoDia, contrapartesComparadas, dreCompleta, orcamentoPorArea, pagamentosPrevistos,
   panoramaDFC, snapshotKpis,
 } from "../_shared/assistente/consultas-hub.ts";
+import { cartaoFatura } from "../_shared/assistente/consultas-cartao.ts";
 import { mesesFechados, estruturar } from "../_shared/assistente/dre.ts";
 import { catalogoParaPrompt } from "../_shared/assistente/catalogo.ts";
 import { blocoDeMemoria, memorizar, registrarExecucao } from "../_shared/assistente/memoria.ts";
@@ -42,7 +43,7 @@ const CONSULTAS = [
   "caixa_do_mes", "variacao_ebitda", "panorama_do_mes", "rubrica_do_mes",
   "lancamentos_da_rubrica", "radar", "dfc_do_mes", "orcamento_por_area",
   "pagamentos_previstos", "assinaturas", "churn", "investimentos", "briefing",
-  "dre_completa", "contrapartes", "explorar",
+  "dre_completa", "contrapartes", "cartao_fatura", "explorar",
 ] as const;
 type NomeConsulta = typeof CONSULTAS[number];
 
@@ -73,6 +74,13 @@ Consultas disponíveis:
 - "contrapartes": compara os fornecedores de uma rubrica entre dois meses e diz quem
   APARECEU, quem SUMIU e quem mudou de valor. Devolva "rubrica". Para "esse fornecedor é
   novo", "quem entrou", "isso já estava aqui mês passado", "o que mudou nos fornecedores".
+- "cartao_fatura": a fatura do CARTÃO DE CRÉDITO corporativo de um mês contra a anterior,
+  com a variação já atribuída por estabelecimento e por categoria (quem subiu, quem caiu,
+  quem é novo, quem sumiu). Para "por que a fatura do cartão subiu", "o que puxou o gasto
+  do cartão", "salto de julho para agosto no cartão", "quanto gastamos no cartão".
+  Devolva em "ano"/"mes" o mês MAIS RECENTE da comparação — "de julho para agosto" é
+  agosto. NÃO use DRE nem DFC para responder sobre a fatura do cartão: são medidas
+  diferentes.
 - "caixa_do_mes": saldo bancário e movimentação de entradas/saídas (Sicoob e Asaas).
 - "radar": varre TODAS as rubricas e devolve as que fogem do padrão, da tendência ou do
   plano, ordenadas por peso em reais. Para "o que eu preciso saber", "tem algo estranho",
@@ -105,6 +113,20 @@ COMO PLANEJAR:
 - Para DRE ou caixa, prefira sempre a consulta específica em vez de "explorar".
 - Se a pergunta não é sobre nenhuma dessas áreas, devolva a lista vazia.
 
+DE ONDE VEM A PERGUNTA: junto com ela pode chegar a TELA que a pessoa está olhando, com o
+período e os filtros à vista. Isso é contexto forte, não decoração — quem pergunta "por
+que subiu?" na tela do Cartão está perguntando da FATURA, e quem pergunta o mesmo na tela
+da DRE está perguntando do resultado. Regras:
+- A pergunta não citou outra área? Escolha a consulta da tela atual.
+- A pergunta não citou mês, mas a tela declara um período? Use o período da tela.
+- A pergunta citou outra área explicitamente? A pergunta manda, a tela é ignorada.
+- Nunca troque a área da tela por outra "parecida" só porque tem mais dado disponível:
+  responder sobre a DRE quem perguntou da fatura do cartão é errar a pergunta.
+
+ANO: quando a pergunta cita mês sem ano ("de julho para agosto"), é o ano CORRENTE de
+hoje ({HOJE}) — ou o ano do período da tela, se houver. Não compare meses de anos
+diferentes a menos que a pergunta peça isso com todas as letras.
+
 Se a pergunta citar um mês, devolva "ano" e "mes" na consulta a que se aplica.
 
 Responda SOMENTE com JSON:
@@ -119,8 +141,8 @@ quais consultas ainda faltam.
 
 Consultas disponíveis: panorama_do_mes, variacao_ebitda, rubrica_do_mes,
 lancamentos_da_rubrica (devolva "rubrica"), contrapartes (devolva "rubrica"), caixa_do_mes,
-dfc_do_mes, orcamento_por_area, pagamentos_previstos, radar, dre_completa, assinaturas,
-churn, investimentos, briefing, explorar (devolva "fonte").
+dfc_do_mes, orcamento_por_area, pagamentos_previstos, radar, dre_completa, cartao_fatura,
+assinaturas, churn, investimentos, briefing, explorar (devolva "fonte").
 
 FONTES para "explorar":
 {CATALOGO}
@@ -136,7 +158,10 @@ PEÇA MAIS quando:
 NÃO PEÇA MAIS quando:
 - a pergunta já está respondida pelo que veio;
 - o que falta não existe em nenhuma consulta da lista;
-- você pediria a mesma consulta já feita, só que com outro nome.
+- você pediria a mesma consulta já feita, só que com outro nome;
+- você pediria uma área "parecida" com a da pergunta só para ter mais dado. Quem
+  perguntou da fatura do cartão não perguntou do DRE; trazer o DRE troca a pergunta em
+  vez de respondê-la.
 
 Responda SOMENTE com JSON:
 {"suficiente": true|false, "lacuna": "o que falta, em uma frase", "consultas": [{"consulta":"...","rubrica":null,"fonte":null,"ano":null,"mes":null}]}`;
@@ -150,6 +175,9 @@ nada de memória nem de conversas anteriores. Se algo não está nos blocos, dig
 
 Como responder:
 - Comece pelo veredito em uma frase. Depois explique.
+- Quando vier uma TELA ATUAL, ela diz o que a pessoa está olhando enquanto pergunta.
+  Responda sobre AQUILO. É contexto para entender a pergunta e nunca fonte de número:
+  todo valor que você escrever continua tendo que estar nos blocos DADOS.
 - Quando houver MAIS DE UM bloco, conecte-os: é isso que a pessoa não conseguiria ver
   sozinha. Diga o que um número significa à luz do outro.
 - Use os números para sustentar, não para enfeitar. Duas ou três citações bastam.
@@ -175,6 +203,34 @@ Como responder:
   claramente qual ficou sem resposta e por quê. Responder metade em silêncio é pior que
   responder metade avisando: quem lê assume que foi tudo coberto.
 - Máximo 8 linhas.`;
+
+/**
+ * A tela de onde a pergunta saiu.
+ *
+ * Perguntar "por que subiu?" na frente da fatura do cartão e receber uma varredura do DRE
+ * é o modo de falha mais irritante do assistente: a pessoa está OLHANDO o número e ele vai
+ * procurar noutro lugar. O painel manda rota, nome da tela e o recorte à vista (período,
+ * aba, filtros) — nunca valores, porque número citado tem que vir de consulta conferida.
+ */
+type Pagina = { rota?: string; tela?: string; resumo?: string };
+
+function lerPagina(bruto: unknown): Pagina | null {
+  if (!bruto || typeof bruto !== "object") return null;
+  const p = bruto as Pagina;
+  const tela = String(p.tela ?? "").trim().slice(0, 120);
+  const rota = String(p.rota ?? "").trim().slice(0, 120);
+  const resumo = String(p.resumo ?? "").trim().slice(0, 1200);
+  if (!tela && !rota) return null;
+  return { tela, rota, resumo };
+}
+
+function blocoTela(pagina: Pagina | null): string {
+  if (!pagina) return "";
+  return [
+    `TELA ATUAL: ${pagina.tela || pagina.rota}${pagina.rota ? ` (${pagina.rota})` : ""}`,
+    pagina.resumo ? `O QUE ESTÁ À VISTA: ${pagina.resumo}` : "",
+  ].filter(Boolean).join("\n");
+}
 
 function normalizarCompetencia(ano: unknown, mes: unknown): Competencia | null {
   const a = Number(ano);
@@ -247,6 +303,8 @@ Deno.serve(async (req) => {
     if (!pergunta) return jsonResponse({ error: "Campo 'pergunta' é obrigatório." }, 400);
 
     const conversaId = typeof body?.conversa_id === "string" ? body.conversa_id : null;
+    const pagina = lerPagina(body?.pagina);
+    const tela = blocoTela(pagina);
     const historico: Turno[] = Array.isArray(body?.historico)
       ? body.historico
           .filter((t: unknown) => typeof (t as Turno)?.pergunta === "string")
@@ -278,10 +336,14 @@ Deno.serve(async (req) => {
           {
             role: "system",
             content: PROMPT_PLANEJADOR
-              .replace("{HOJE}", hoje)
+              .replaceAll("{HOJE}", hoje)
               .replace("{CATALOGO}", catalogoParaPrompt()),
           },
-          { role: "user", content: [blocoHistorico(historico), `PERGUNTA: ${pergunta}`].filter(Boolean).join("\n\n") },
+          {
+            role: "user",
+            content: [tela, blocoHistorico(historico), `PERGUNTA: ${pergunta}`]
+              .filter(Boolean).join("\n\n"),
+          },
         ],
       });
       plano = Array.isArray(resposta?.consultas) ? resposta.consultas : [];
@@ -362,6 +424,8 @@ Deno.serve(async (req) => {
           return await briefingDoDia(supabase);
         case "dre_completa":
           return await dreCompleta(supabase, pedida);
+        case "cartao_fatura":
+          return await cartaoFatura(supabase, pedida);
         case "contrapartes": {
           const rubrica = String(item?.rubrica ?? "").trim();
           if (!rubrica) return null;
@@ -451,6 +515,7 @@ Deno.serve(async (req) => {
             {
               role: "user",
               content: [
+                ...(tela ? [tela, ""] : []),
                 `PERGUNTA: ${pergunta}`,
                 "",
                 "JÁ COLETADO:",
@@ -516,6 +581,7 @@ Deno.serve(async (req) => {
         {
           role: "user",
           content: [
+            tela,
             blocoHistorico(historico),
             `PERGUNTA:\n${pergunta}`,
             `DADOS (${uteis.length} bloco(s)):\n${blocos}`,

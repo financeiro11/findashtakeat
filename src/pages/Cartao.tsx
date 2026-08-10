@@ -24,10 +24,11 @@ import { Button } from "@/components/ui/button";
 import { InsightCard } from "@/components/ui/insight-card";
 import { supabase } from "@/integrations/supabase/client";
 import { cn } from "@/lib/utils";
+import { useContextoDaPagina } from "@/lib/contexto-pagina";
 import { analisar, type Fatura, type Lancamento, type Marcacao } from "./cartao/analise";
 import { abrevStr, fmtBRLStr, intStr, milStr, pctStr } from "./cartao/fmt";
 import { abrev, fmtBRL } from "./cartao/valores";
-import { Matriz, type Realce } from "./cartao/Matriz";
+import { Matriz, ORDENS, type Ordem, type Realce } from "./cartao/Matriz";
 import { Detalhe } from "./cartao/Detalhe";
 import { Categorias } from "./cartao/Categorias";
 
@@ -53,6 +54,12 @@ const db = supabase as unknown as {
 
 type Aba = "estabelecimento" | "categoria" | "detalhe";
 
+const ABAS = [
+  ["estabelecimento", "Evolução por Estabelecimento", Building2],
+  ["categoria", "Evolução por Categoria", PieChart],
+  ["detalhe", "Detalhe dos lançamentos", ListOrdered],
+] as const;
+
 export default function Cartao() {
   const [faturas, setFaturas] = useState<Fatura[]>([]);
   const [lancamentos, setLancamentos] = useState<Lancamento[]>([]);
@@ -61,6 +68,7 @@ export default function Cartao() {
   const [ate, setAte] = useState<string>("");
   const [aba, setAba] = useState<Aba>("estabelecimento");
   const [realce, setRealce] = useState<Realce>("penultimo");
+  const [ordem, setOrdem] = useState<Ordem>("total");
   const [carregando, setCarregando] = useState(true);
 
   /* ---------------------------------------------------------------- */
@@ -156,6 +164,21 @@ export default function Cartao() {
   const mapaMarcacoes = useMemo(
     () => new Map(marcacoes.map((m) => [m.estabelecimento, m])),
     [marcacoes],
+  );
+
+  /* Diz ao Assistente o que está à vista aqui. Só o RECORTE — período, aba, ordem —,
+     nunca os valores: quem refaz a conta é a consulta `cartao_fatura` no servidor, e é
+     assim que o número da resposta continua tendo procedência. */
+  const meses = analise.meses;
+  useContextoDaPagina(
+    meses.length
+      ? `Faturas do cartão de crédito à vista: ${meses.map((m) => m.label).join(", ")} ` +
+        `(${meses.length}). Última fatura do recorte: ${meses[meses.length - 1].label}. ` +
+        `Aba: ${ABAS.find(([v]) => v === aba)?.[1]}.` +
+        (aba !== "detalhe" && ordem !== "total"
+          ? ` Ordenado por ${ORDENS.find((o) => o.valor === ordem)?.rotulo}.`
+          : "")
+      : "Tela do cartão de crédito, sem fatura no período selecionado.",
   );
 
   const marcar = useCallback(async (chave: string, marcado: boolean, nota: string) => {
@@ -346,11 +369,7 @@ export default function Cartao() {
       <div className="card-surface overflow-hidden">
         <div className="flex flex-wrap items-center gap-2 border-b border-border px-3 py-2.5">
           <div className="flex rounded-md border border-border bg-card p-0.5">
-            {([
-              ["estabelecimento", "Evolução por Estabelecimento", Building2],
-              ["categoria", "Evolução por Categoria", PieChart],
-              ["detalhe", "Detalhe dos lançamentos", ListOrdered],
-            ] as const).map(([v, rot, Icon]) => (
+            {ABAS.map(([v, rot, Icon]) => (
               <button
                 key={v}
                 onClick={() => setAba(v)}
@@ -365,16 +384,37 @@ export default function Cartao() {
           </div>
 
           {aba !== "detalhe" && analise.meses.length >= 2 && (
-            <div className="flex items-center gap-1.5">
-              <span className="text-[11px] text-muted-foreground">realce</span>
-              <Select value={realce} onValueChange={(v) => setRealce(v as Realce)}>
-                <SelectTrigger className="h-7 w-[135px] text-[11.5px]"><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="penultimo">Δ vs mês ant.</SelectItem>
-                  <SelectItem value="primeiro">Δ vs 1º mês</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
+            <>
+              <div className="flex items-center gap-1.5">
+                <span className="text-[11px] text-muted-foreground">realce</span>
+                <Select value={realce} onValueChange={(v) => setRealce(v as Realce)}>
+                  <SelectTrigger className="h-7 w-[135px] text-[11.5px]"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="penultimo">Δ vs mês ant.</SelectItem>
+                    <SelectItem value="primeiro">Δ vs 1º mês</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+
+              {/* Ordena pela coluna Δ realçada — por isso os dois controles ficam
+                  juntos: trocar o realce troca a variação que manda na ordem. */}
+              <div className="flex items-center gap-1.5">
+                <span className="text-[11px] text-muted-foreground">ordenar por</span>
+                <Select value={ordem} onValueChange={(v) => setOrdem(v as Ordem)}>
+                  <SelectTrigger
+                    className="h-7 w-[150px] text-[11.5px]"
+                    title="Maior variação usa o módulo: sobe quem mais mexeu, para cima ou para baixo"
+                  >
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {ORDENS.map((o) => (
+                      <SelectItem key={o.valor} value={o.valor}>{o.rotulo}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            </>
           )}
 
           <div className="ml-auto flex items-center gap-3 text-[11.5px] text-muted-foreground">
@@ -393,7 +433,14 @@ export default function Cartao() {
         {aba === "detalhe" ? (
           <Detalhe lancamentos={lancamentos} meses={analise.meses} />
         ) : (
-          <Matriz analise={analise} modo={aba} realce={realce} marcacoes={mapaMarcacoes} onMarcar={marcar} />
+          <Matriz
+            analise={analise}
+            modo={aba}
+            realce={realce}
+            ordem={ordem}
+            marcacoes={mapaMarcacoes}
+            onMarcar={marcar}
+          />
         )}
       </div>
 

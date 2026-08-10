@@ -12,7 +12,7 @@
  */
 
 import { Fragment, useState } from "react";
-import { ChevronRight, Flag } from "lucide-react";
+import { ArrowDown, ArrowUp, ArrowUpDown, ChevronRight, Flag } from "lucide-react";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Textarea } from "@/components/ui/textarea";
 import { Button } from "@/components/ui/button";
@@ -22,6 +22,41 @@ import { deltaMilStr, milStr, pctStr } from "./fmt";
 import { abrev, deltaMil, mil } from "./valores";
 
 export type Realce = "primeiro" | "penultimo";
+
+/**
+ * Ordem das linhas. O padrão é o tamanho do gasto, mas no fechamento a pergunta
+ * costuma ser outra — "o que se mexeu?" —, e aí o que interessa é a variação da
+ * coluna Δ realçada, seja para cima, para baixo ou nos dois sentidos.
+ */
+export type Ordem = "total" | "alta" | "queda" | "variacao";
+
+export const ORDENS: { valor: Ordem; rotulo: string }[] = [
+  { valor: "total", rotulo: "Maior gasto" },
+  { valor: "variacao", rotulo: "Maior variação" },
+  { valor: "alta", rotulo: "Maiores altas" },
+  { valor: "queda", rotulo: "Maiores quedas" },
+];
+
+/** A variação usada na ordenação é a da coluna realçada. */
+function deltaDe(l: LinhaMatriz, realce: Realce): number {
+  return realce === "primeiro" ? l.deltaPrimeiro : l.deltaPenultimo;
+}
+
+/** Setinha no cabeçalho da coluna que está mandando na ordem. */
+function SetaOrdem({ ordem }: { ordem: Ordem }) {
+  if (ordem === "total") return null;
+  const Icon = ordem === "alta" ? ArrowUp : ordem === "queda" ? ArrowDown : ArrowUpDown;
+  return <Icon className="ml-1 inline-block h-3 w-3 align-[-1px] text-foreground" />;
+}
+
+function ordenar(linhas: LinhaMatriz[], ordem: Ordem, realce: Realce): LinhaMatriz[] {
+  if (ordem === "total") return linhas; // já vem ordenado por total em analise.ts
+  const d = (l: LinhaMatriz) => deltaDe(l, realce);
+  const arr = [...linhas];
+  if (ordem === "alta") return arr.sort((a, b) => d(b) - d(a));
+  if (ordem === "queda") return arr.sort((a, b) => d(a) - d(b));
+  return arr.sort((a, b) => Math.abs(d(b)) - Math.abs(d(a)));
+}
 
 /** Em despesa, subir é ruim: vermelho sobe, verde cai. */
 function corDelta(n: number): string {
@@ -203,17 +238,19 @@ function Linha({
 }
 
 export function Matriz({
-  analise, modo, realce, marcacoes, onMarcar,
+  analise, modo, realce, ordem = "total", marcacoes, onMarcar,
 }: {
   analise: Analise;
   modo: "estabelecimento" | "categoria";
   realce: Realce;
+  ordem?: Ordem;
   marcacoes: Map<string, Marcacao>;
   onMarcar: (chave: string, marcado: boolean, nota: string) => void;
 }) {
   const [abertas, setAbertas] = useState<Set<string>>(new Set());
-  const linhas = modo === "estabelecimento" ? analise.estabelecimentos : analise.categorias;
+  const base = modo === "estabelecimento" ? analise.estabelecimentos : analise.categorias;
   const nMeses = analise.meses.length;
+  const linhas = ordenar(base, ordem, realce);
   const maxTotal = Math.max(0, ...linhas.map((l) => l.total));
   const totalGeral = analise.totalPeriodo;
 
@@ -247,6 +284,7 @@ export function Matriz({
               title="Última fatura contra a primeira do período"
             >
               Δ últ−1º
+              {realce === "primeiro" && <SetaOrdem ordem={ordem} />}
             </th>
             {nMeses >= 2 && (
               <th
@@ -257,6 +295,7 @@ export function Matriz({
                 title="Última fatura contra a anterior"
               >
                 Δ últ−pen
+                {realce === "penultimo" && <SetaOrdem ordem={ordem} />}
               </th>
             )}
             <th className="px-3 py-2.5 text-right font-semibold">Rev.</th>
@@ -270,7 +309,7 @@ export function Matriz({
             // compõem — é a pergunta imediata depois de ver a categoria subir.
             const filhas =
               modo === "categoria" && aberta
-                ? analise.estabelecimentos.filter((e) => e.sub === linha.chave)
+                ? ordenar(analise.estabelecimentos.filter((e) => e.sub === linha.chave), ordem, realce)
                 : [];
             return (
               <Fragment key={linha.chave}>

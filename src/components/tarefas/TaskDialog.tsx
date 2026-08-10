@@ -25,6 +25,11 @@ export type Tarefa = {
   id: string; ordem: number; titulo: string; responsavel: string | null;
   status: string; prioridade: string; prazo: string | null; observacao: string | null;
   created_at: string;
+  /* Contabilidade da idade, escrita pelo gatilho no banco a cada movimentação —
+     opcionais porque quem monta uma Tarefa "na mão" (Briefing) não tem esses campos.
+     A conta em si mora em src/lib/tarefas/idade.ts. */
+  status_desde?: string | null;
+  pausado_ms?: number | null;
   subtarefas: Subtarefa[];
 };
 

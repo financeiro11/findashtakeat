@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Plus, Trash2, ChevronDown, ChevronRight, Filter, X, LayoutGrid,
   Table as TableIcon, AlertTriangle, MoreHorizontal,
-  Search, GripVertical, Pencil, Palette, Check, CheckCircle2, Clock, ListChecks, Target, BarChart3, History,
+  Search, GripVertical, Pencil, Palette, Check, CheckCircle2, Clock, ListChecks, Target, BarChart3, History, Pause,
 } from "lucide-react";
 import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger,
@@ -34,6 +34,7 @@ import {
 } from "@/components/tarefas/TaskDialog";
 import { AnaliseSemanal } from "@/components/tarefas/AnaliseSemanal";
 import { HistoricoTarefas } from "@/components/tarefas/HistoricoTarefas";
+import { calcIdade, explicaIdade } from "@/lib/tarefas/idade";
 
 export type { Subtarefa } from "@/components/tarefas/TaskDialog";
 const COLUMNS_CFG_KEY = "tarefas.columns.cfg.v1";
@@ -88,6 +89,13 @@ function colorOf(col: string, meta: ColumnsCfg["meta"]) {
   return COLOR_PRESETS.find(p => p.id === id) || COLOR_PRESETS[0];
 }
 
+/* Regra de idade por coluna, compartilhada pelo time (ver a migração tarefas_idade_pausada).
+   A tabela é nova e o types.ts gerado ainda não a conhece — o cast fica só aqui, e o resto
+   do arquivo trabalha com ColunaCfg de verdade. */
+type ColunaCfg = { nome: string; pausa_idade: boolean };
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const tabelaColunas = () => (supabase as any).from("tarefas_colunas");
+
 const PRIO_DOT: Record<string, string> = {
   "Baixa": "bg-muted-foreground",
   "Média": "bg-yellow-500",
@@ -135,10 +143,6 @@ function describeChanges(old: Tarefa, patch: Partial<Tarefa>): string {
     else if (oldDone !== newDone) parts.push(`checklist: ${newDone}/${newSubs.length} concluídos`);
   }
   return parts.join(" · ");
-}
-function diasDesde(iso: string) {
-  const d = new Date(iso);
-  return Math.max(0, Math.floor((Date.now() - d.getTime()) / 86_400_000));
 }
 function initials(name: string | null) {
   if (!name) return "—";
@@ -234,6 +238,43 @@ export default function Tarefas() {
   const [creatingStatus, setCreatingStatus] = useState<string>("Backlog");
   const [colsCfg, setColsCfg] = useState<ColumnsCfg>(() => loadColumnsCfg());
   const COLUMNS = colsCfg.order;
+
+  /* Colunas que pausam o relógio da idade.
+     Ordem e cor são gosto de cada um e ficam no localStorage; isto aqui é regra do time e
+     mora no banco (`tarefas_colunas`) — todo mundo tem que ver o mesmo número, e o gatilho
+     que fecha a conta da pausa a cada movimentação precisa ler daí. */
+  const [pausaCols, setPausaCols] = useState<Set<string>>(new Set());
+  const pausaIdade = (col: string) => pausaCols.has(col);
+
+  const loadPausaCols = async () => {
+    const { data } = await tabelaColunas().select("nome, pausa_idade");
+    if (!data) return;
+    const linhas = data as ColunaCfg[];
+    setPausaCols(new Set(linhas.filter(l => l.pausa_idade).map(l => l.nome)));
+  };
+
+  const gravaPausa = (col: string, pausa_idade: boolean) =>
+    tabelaColunas().upsert(
+      { nome: col, pausa_idade, atualizado_em: new Date().toISOString() },
+      { onConflict: "nome" },
+    );
+
+  const togglePausaIdade = async (col: string) => {
+    const proximo = !pausaCols.has(col);
+    setPausaCols(s => {
+      const n = new Set(s);
+      if (proximo) n.add(col); else n.delete(col);
+      return n;
+    });
+    const { error } = await gravaPausa(col, proximo);
+    if (error) { toast.error(error.message); loadPausaCols(); return; }
+    /* Só o trecho aberto muda de lado na hora: o que já foi bancado em `pausado_ms` continua
+       como estava. Ligar a chave hoje não reescreve o histórico de quem passou pela coluna. */
+    toast.success(proximo
+      ? `"${col}" não conta mais idade`
+      : `"${col}" voltou a contar idade`);
+  };
+
   const persistCfg = (next: ColumnsCfg) => {
     setColsCfg(next);
     localStorage.setItem(COLUMNS_CFG_KEY, JSON.stringify(next));
@@ -258,6 +299,8 @@ export default function Tarefas() {
     const meta = { ...colsCfg.meta };
     delete meta[col];
     persistCfg({ order: colsCfg.order.filter(c => c !== col), meta });
+    await tabelaColunas().delete().eq("nome", col);
+    setPausaCols(s => { const n = new Set(s); n.delete(col); return n; });
   };
   const renameColumn = async (col: string, newName: string) => {
     const trimmed = newName.trim();
@@ -275,6 +318,12 @@ export default function Tarefas() {
     meta[trimmed] = meta[col] || { color: "muted" };
     delete meta[col];
     persistCfg({ order, meta });
+    // A regra da idade segue o nome, senão a coluna renomeada volta a contar sem ninguém pedir.
+    if (pausaCols.has(col)) {
+      await tabelaColunas().delete().eq("nome", col);
+      await gravaPausa(trimmed, true);
+      setPausaCols(s => { const n = new Set(s); n.delete(col); n.add(trimmed); return n; });
+    }
     toast.success("Coluna renomeada");
   };
   const recolorColumn = (col: string, color: ColorId) => {
@@ -319,7 +368,7 @@ export default function Tarefas() {
       setRows(mapped);
     }
   };
-  useEffect(() => { load(); }, []);
+  useEffect(() => { load(); loadPausaCols(); }, []);
 
   const normalizeResp = (v: string | null | undefined) => {
     const s = (v || "").trim().toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
@@ -399,11 +448,19 @@ export default function Tarefas() {
   const update = async (id: string, patch: Partial<Tarefa>, skipLog = false): Promise<boolean> => {
     const old = rows.find(r => r.id === id);
     setRows(rs => rs.map(r => r.id === id ? { ...r, ...patch } : r));
-    const { error } = await supabase.from("tarefas").update(patch as any).eq("id", id);
+    /* Quem fecha a conta da pausa é o gatilho no banco, então a resposta do update traz de
+       volta o que ele decidiu — sem isso a Idade ficaria com o valor velho até dar F5. */
+    const { data: gravada, error } = await supabase
+      .from("tarefas").update(patch as any).eq("id", id)
+      .select("status_desde, pausado_ms")
+      .maybeSingle<Pick<Tarefa, "status_desde" | "pausado_ms">>();
     if (error) {
       toast.error(error.message);
       load();   // desfaz o otimismo: a tela volta para o que o banco realmente tem
       return false;
+    }
+    if (gravada) {
+      setRows(rs => rs.map(r => r.id === id ? { ...r, ...gravada } : r));
     }
     if (old && !skipLog) {
       const descricao = describeChanges(old, patch);
@@ -606,6 +663,8 @@ export default function Tarefas() {
           onRecolorColumn={recolorColumn}
           onMoveColumn={moveColumn}
           isCustomColumn={(c) => !DEFAULT_COLUMNS.includes(c)}
+          pausaIdade={pausaIdade}
+          onTogglePausaIdade={togglePausaIdade}
         />
       ) : view === "tabela" ? (
         <TableView
@@ -618,6 +677,7 @@ export default function Tarefas() {
           responsaveis={responsaveis}
           onOpen={setEditing}
           onRemove={remove}
+          pausaIdade={pausaIdade}
         />
       ) : view === "analise" ? (
         <AnaliseSemanal />
@@ -712,6 +772,7 @@ function ChipSelect({ label, value, options, onChange }: {
 function KanbanView({
   columns, colsMeta, grouped, collapsed, onToggleConcluido, onOpen, onAdd, onMove, onRemove,
   onAddColumn, onRemoveColumn, onRenameColumn, onRecolorColumn, onMoveColumn, isCustomColumn,
+  pausaIdade, onTogglePausaIdade,
 }: {
   columns: string[];
   colsMeta: ColumnsCfg["meta"];
@@ -728,6 +789,8 @@ function KanbanView({
   onRecolorColumn: (col: string, color: ColorId) => void;
   onMoveColumn: (from: string, to: string) => void;
   isCustomColumn: (col: string) => boolean;
+  pausaIdade: (col: string) => boolean;
+  onTogglePausaIdade: (col: string) => void;
 }) {
   const [dragOver, setDragOver] = useState<string | null>(null);
   const [colDragOver, setColDragOver] = useState<string | null>(null);
@@ -864,6 +927,14 @@ function KanbanView({
                   </span>
                 )}
                 <span className="num rounded bg-secondary px-1.5 py-0.5 text-[10px] text-muted-foreground">{items.length}</span>
+                {pausaIdade(col) && (
+                  <span
+                    className="shrink-0 text-muted-foreground"
+                    title="Card parado aqui não envelhece: a idade só volta a contar quando ele sair"
+                  >
+                    <Pause className="h-2.5 w-2.5" />
+                  </span>
+                )}
                 {overdue > 0 && (
                   <span className="num flex items-center gap-0.5 text-[10px] font-semibold text-destructive">
                     <AlertTriangle className="h-2.5 w-2.5" />{overdue}
@@ -880,6 +951,8 @@ function KanbanView({
                   col={col}
                   currentColor={colorOf(col, colsMeta).id}
                   isCustom={isCustomColumn(col)}
+                  pausaIdade={pausaIdade(col)}
+                  onTogglePausaIdade={() => onTogglePausaIdade(col)}
                   onRename={() => setRenaming(col)}
                   onRecolor={(c) => onRecolorColumn(col, c)}
                   onAddTask={() => onAdd(col)}
@@ -1008,7 +1081,7 @@ function Avatar({ name, size = "xs" }: { name: string | null; size?: "xs" | "sm"
 function TableView({
   columns, colsMeta,
   rows, fStatus, setFStatus, fPrioridade, setFPrioridade, fResponsavel, setFResponsavel,
-  responsaveis, onOpen, onRemove,
+  responsaveis, onOpen, onRemove, pausaIdade,
 }: {
   columns: string[];
   colsMeta: ColumnsCfg["meta"];
@@ -1019,6 +1092,7 @@ function TableView({
   responsaveis: string[];
   onOpen: (t: Tarefa) => void;
   onRemove: (id: string) => void;
+  pausaIdade: (col: string) => boolean;
 }) {
   // Agrupa por status
   const groups = useMemo(() => {
@@ -1044,7 +1118,12 @@ function TableView({
             </TableHead>
             <TableHead className="w-[110px] text-[10px] font-bold uppercase tracking-wider">Prazo</TableHead>
             <TableHead className="w-[110px] text-[10px] font-bold uppercase tracking-wider">Criada</TableHead>
-            <TableHead className="w-[80px] text-[10px] font-bold uppercase tracking-wider">Idade</TableHead>
+            <TableHead
+              className="w-[80px] text-[10px] font-bold uppercase tracking-wider"
+              title="Dias desde a criação, sem contar o tempo em colunas marcadas como 'não conta idade'"
+            >
+              Idade
+            </TableHead>
             <TableHead className="w-10" />
           </TableRow>
         </TableHeader>
@@ -1079,7 +1158,7 @@ function TableView({
                 {g.items.map(t => {
                   const tags = tagsFor(t);
                   const overdueRow = isAtrasada(t);
-                  const idade = diasDesde(t.created_at);
+                  const idade = calcIdade(t, pausaIdade);
                   return (
                     <TableRow key={t.id} className="cursor-pointer text-xs" onClick={() => onOpen(t)}>
                       <TableCell onClick={(e) => e.stopPropagation()}>
@@ -1122,9 +1201,15 @@ function TableView({
                         {new Date(t.created_at).toLocaleDateString("pt-BR")}
                       </TableCell>
                       <TableCell className={cn("num text-xs",
-                        idade > 7 ? "text-destructive font-semibold" : idade > 3 ? "text-warning-foreground" : "text-muted-foreground"
+                        idade.pausada ? "text-muted-foreground"
+                          : idade.dias > 7 ? "text-destructive font-semibold"
+                          : idade.dias > 3 ? "text-warning-foreground"
+                          : "text-muted-foreground"
                       )}>
-                        {idade}d
+                        <span className="inline-flex items-center gap-1" title={explicaIdade(t, idade)}>
+                          {idade.pausada && <Pause className="h-2.5 w-2.5 shrink-0" />}
+                          {idade.dias}d
+                        </span>
                       </TableCell>
                       <TableCell onClick={(e) => e.stopPropagation()}>
                         <button onClick={() => { if (confirm("Arquivar esta tarefa? Ela sai do quadro, mas dá para restaurar.")) onRemove(t.id); }} className="rounded p-1 text-muted-foreground hover:bg-secondary hover:text-destructive">
@@ -1182,11 +1267,13 @@ function ColumnFilter({ label, options, value, onChange }: {
 
 /* --------------------------- Column Menu --------------------------- */
 function ColumnMenu({
-  col, currentColor, isCustom, onRename, onRecolor, onAddTask, onRemove,
+  col, currentColor, isCustom, pausaIdade, onTogglePausaIdade, onRename, onRecolor, onAddTask, onRemove,
 }: {
   col: string;
   currentColor: ColorId;
   isCustom: boolean;
+  pausaIdade: boolean;
+  onTogglePausaIdade: () => void;
   onRename: () => void;
   onRecolor: (c: ColorId) => void;
   onAddTask: () => void;
@@ -1212,6 +1299,19 @@ function ColumnMenu({
         <DropdownMenuItem onClick={onAddTask} className="text-xs">
           <Plus className="mr-2 h-3.5 w-3.5" /> Adicionar tarefa
         </DropdownMenuItem>
+        <DropdownMenuSeparator />
+        {/* Vale para todo mundo, não só para quem clicou: a idade é número de acompanhamento
+            do time e não pode mudar dependendo de quem abre a tela. */}
+        <DropdownMenuItem onClick={onTogglePausaIdade} className="text-xs">
+          <Pause className="mr-2 h-3.5 w-3.5" />
+          <span className="flex-1">Não contar idade</span>
+          {pausaIdade && <Check className="ml-2 h-3.5 w-3.5" />}
+        </DropdownMenuItem>
+        <p className="px-2 pb-1.5 text-[10px] leading-snug text-muted-foreground">
+          {pausaIdade
+            ? "Card parado aqui não envelhece."
+            : "Card parado aqui envelhece normalmente."}
+        </p>
         <DropdownMenuSeparator />
         <DropdownMenuLabel className="flex items-center gap-1.5 text-[10px] uppercase tracking-wider text-muted-foreground">
           <Palette className="h-3 w-3" /> Cor

@@ -7,7 +7,7 @@ import { useFinanceData } from "./dashboard/useFinanceData";
 import { fmtBRL as fmtBRLStr, fmtBRLShort as fmtBRLShortStr, fmtPct, fmtMeses } from "./dashboard/format";
 import { comValorExato } from "@/components/ValorExato";
 import { valorExato } from "@/lib/valor";
-import { calcMetricas, subMeses, periodoLabel, rankingCrescimento, serieDerivada, calcBridge, detectarAnomalias, GRUPOS } from "./dashboard/metrics";
+import { calcMetricas, subMeses, periodoLabel, rankingCrescimento, serieDerivada, calcCascataDRE, detectarAnomalias, GRUPOS } from "./dashboard/metrics";
 import { openFinanceAI } from "@/components/FinanceAIPanel";
 import { SectionCard } from "@/components/ui/section-card";
 import { ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip, CartesianGrid, ComposedChart, Line, Cell, Area, AreaChart, Legend, ReferenceLine, PieChart, Pie, RadialBarChart, RadialBar, PolarAngleAxis } from "recharts";
@@ -140,7 +140,7 @@ export default function Dashboard() {
       <HealthStrip
         metricas={m}
         onPlanoReducao={() => askAI("Liste sugestões priorizadas de cortes de despesas com impacto estimado em runway.")}
-        onAbrirBridge={() => document.getElementById("bridge-section")?.scrollIntoView({ behavior: "smooth", block: "start" })}
+        onAbrirCascata={() => document.getElementById("cascata-section")?.scrollIntoView({ behavior: "smooth", block: "start" })}
       />
 
       {/* KPI Row */}
@@ -225,27 +225,28 @@ export default function Dashboard() {
         );
       })()}
 
-      {/* Bridge placeholder */}
-      <div id="bridge-section" />
+      {/* Cascata da DRE placeholder */}
+      <div id="cascata-section" />
       <div className="grid grid-cols-1 lg:grid-cols-[2.2fr_1fr] gap-3">
         <SectionCard
-          title={`Bridge de Caixa · ${periodoLabel(m.periodo)}`}
-          subtitle="De onde veio e para onde foi o caixa este mês"
+          title={`Cascata da DRE · ${periodoLabel(m.periodo)}`}
+          subtitle="Como a receita bruta do mês virou resultado"
         >
-          <BridgeView rows={fd.rows} periodo={m.periodo} saldoInicial={fd.saldoInicial} />
+          <CascataDREView rows={fd.rows} periodo={m.periodo} />
           {(() => {
-            const steps = calcBridge(fd.rows, m.periodo, fd.saldoInicial);
+            const steps = calcCascataDRE(fd.rows, m.periodo);
             if (!steps.length) return null;
-            const inicio = steps[0];
-            const fim = steps[steps.length - 1];
-            const variacao = fim.acumulado - inicio.acumulado;
-            const movimentos = steps.filter((s) => s.tipo !== "anchor");
-            const maiorEntrada = movimentos.filter((s) => s.valor > 0).sort((a, b) => b.valor - a.valor)[0];
-            const maiorSaida = movimentos.filter((s) => s.valor < 0).sort((a, b) => a.valor - b.valor)[0];
-            const totalSaidas = movimentos.filter((s) => s.valor < 0).reduce((s, x) => s + x.valor, 0);
-            const concentracao = maiorSaida && totalSaidas ? (maiorSaida.valor / totalSaidas) * 100 : 0;
-            const tone = variacao < 0 ? "neg" : "pos";
-            const dotColor = tone === "neg" ? "hsl(var(--neg))" : "hsl(142 70% 38%)";
+            // Deduções entram na cascata como saída, mas não são despesa da operação.
+            const despesas = steps.filter((s) => s.tipo === "out" && s.key !== "deducoes");
+            const maiorDespesa = [...despesas].sort((a, b) => a.valor - b.valor)[0];
+            const totalDespesas = despesas.reduce((s, x) => s + x.valor, 0);
+            const concentracao = maiorDespesa && totalDespesas ? (maiorDespesa.valor / totalDespesas) * 100 : 0;
+            const pesoReceita = maiorDespesa && m.receitaLiquida > 0
+              ? (Math.abs(maiorDespesa.valor) / m.receitaLiquida) * 100
+              : 0;
+            const deducoesPct = m.receitaBruta > 0 ? ((m.receitaBruta - m.receitaLiquida) / m.receitaBruta) * 100 : 0;
+            const dEbitda = ma.ebitda ? ((m.ebitda - ma.ebitda) / Math.abs(ma.ebitda)) * 100 : 0;
+            const dotColor = m.ebitda < 0 ? "hsl(var(--neg))" : "hsl(142 70% 38%)";
             return (
               <div className="mt-3 pt-3 border-t border-border/60">
                 <div className="flex items-start gap-2">
@@ -255,22 +256,26 @@ export default function Dashboard() {
                       Comentário IA · {periodoLabel(m.periodo)}
                     </div>
                     <p className="text-[12px] leading-relaxed text-foreground/90">
-                      Caixa {variacao >= 0 ? "cresceu" : "reduziu"}{" "}
-                      <span className={`num font-semibold ${variacao < 0 ? "text-neg" : "text-pos"}`}>
-                        {fmtBRLShort(Math.abs(variacao))}
+                      Receita bruta de <span className="num font-semibold">{fmtBRLShort(m.receitaBruta)}</span>
+                      {deducoesPct > 0.5 && (
+                        <> virou <span className="num font-semibold">{fmtBRLShort(m.receitaLiquida)}</span> de líquida
+                        (deduções levaram {deducoesPct.toFixed(1).replace(".", ",")}%)</>
+                      )}
+                      .{" "}
+                      {maiorDespesa && (
+                        <>Maior despesa foi <span className="font-medium">{maiorDespesa.label}</span>{" "}
+                        (<span className="text-neg num font-semibold">{fmtBRLShort(maiorDespesa.valor)}</span>),{" "}
+                        {concentracao.toFixed(0)}% do total e {pesoReceita.toFixed(0)}% da receita líquida.{" "}</>
+                      )}
+                      EBITDA fechou em{" "}
+                      <span className={`num font-semibold ${m.ebitda < 0 ? "text-neg" : "text-pos"}`}>
+                        {fmtBRLShort(m.ebitda)}
                       </span>{" "}
-                      no mês, encerrando em{" "}
-                      <span className="num font-semibold">{fmtBRLShort(fim.acumulado)}</span>.{" "}
-                      {maiorEntrada && (
-                        <>Principal entrada veio de <span className="font-medium">{maiorEntrada.label}</span> ({fmtBRLShort(maiorEntrada.valor)}). </>
-                      )}
-                      {maiorSaida && (
-                        <>Maior saída foi <span className="font-medium">{maiorSaida.label}</span>{" "}
-                        (<span className="text-neg num font-semibold">{fmtBRLShort(maiorSaida.valor)}</span>), {concentracao.toFixed(0)}% do total de saídas.</>
-                      )}
+                      (margem {m.margemEbitda.toFixed(1).replace(".", ",")}%), {dEbitda >= 0 ? "+" : ""}
+                      {dEbitda.toFixed(0)}% vs {periodoLabel(ma.periodo)}.
                     </p>
                     <button
-                      onClick={() => askAI(`Analise o bridge de caixa de ${periodoLabel(m.periodo)}: explique os principais movimentos de entrada e saída e aponte riscos.`)}
+                      onClick={() => askAI(`Analise a DRE de ${periodoLabel(m.periodo)}: explique a formação do resultado da receita bruta até o EBITDA, o peso de cada grupo de despesa e aponte riscos.`)}
                       className="mt-1.5 text-[11px] text-primary hover:underline font-medium"
                     >
                       Aprofundar com IA →
@@ -469,9 +474,9 @@ export default function Dashboard() {
   );
 }
 
-// --- Bridge inline (waterfall em SVG) ----------------------------------------
-function BridgeView({ rows, periodo, saldoInicial }: { rows: any[]; periodo: any; saldoInicial: number }) {
-  const steps = calcBridge(rows, periodo, saldoInicial);
+// --- Cascata da DRE inline (waterfall em SVG) --------------------------------
+function CascataDREView({ rows, periodo }: { rows: any[]; periodo: any }) {
+  const steps = calcCascataDRE(rows, periodo);
 
   // Determina topo/base do "eixo" considerando saldo acumulado e tops/bottoms de cada barra
   const tops: number[] = [];
@@ -512,7 +517,7 @@ function BridgeView({ rows, periodo, saldoInicial }: { rows: any[]; periodo: any
         style={{ minWidth: W * 0.7, height: totalH * 0.95, maxHeight: 280 }}
         preserveAspectRatio="xMidYMid meet"
       >
-        <title>Bridge de caixa do período</title>
+        <title>Cascata da DRE do período</title>
         <line x1={PAD_X} x2={W - PAD_X} y1={zeroY} y2={zeroY} stroke="hsl(var(--border))" strokeWidth="1" />
 
         {steps.map((s, i) => {
@@ -524,17 +529,24 @@ function BridgeView({ rows, periodo, saldoInicial }: { rows: any[]; periodo: any
           const yTop = y(top);
           const yBot = y(bot);
           const h = Math.max(2, yBot - yTop);
+          // Subtotal no vermelho quando o resultado é negativo (EBITDA no prejuízo).
           const fill = isAnchor
-            ? "hsl(var(--foreground) / 0.85)"
+            ? s.acumulado < 0
+              ? "hsl(var(--neg))"
+              : "hsl(var(--foreground) / 0.85)"
             : s.tipo === "in"
             ? "hsl(var(--pos))"
             : "hsl(var(--neg))";
 
           const next = steps[i + 1];
           const yAcc = y(s.acumulado);
+          const valorColuna = isAnchor ? s.acumulado : s.valor;
 
           return (
             <g key={s.key}>
+              {/* dentro do SVG o hover é o <title> nativo — comValorExato devolve
+                  um <span>, que não renderiza em namespace SVG. */}
+              <title>{`${s.label}: ${valorExato(valorColuna)}`}</title>
               {next && (
                 <line
                   x1={xLeft + BAR}
@@ -556,7 +568,7 @@ function BridgeView({ rows, periodo, saldoInicial }: { rows: any[]; periodo: any
                 fill="hsl(var(--foreground))"
                 style={{ fontFamily: "ui-monospace, 'JetBrains Mono', monospace" }}
               >
-                {fmtBRLShort(isAnchor ? s.acumulado : s.valor)}
+                {fmtBRLShortStr(valorColuna)}
               </text>
               <text x={cx} y={PAD_T + H + 18} fontSize="11" fontWeight="500" textAnchor="middle" fill="hsl(var(--foreground))">
                 {s.label}

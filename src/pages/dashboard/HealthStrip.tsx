@@ -13,7 +13,7 @@ interface Props {
   headline?: string | null;
   subTexto?: string | null;
   onPlanoReducao: () => void;
-  onAbrirBridge: () => void;
+  onAbrirCascata: () => void;
 }
 
 const COLORS: Record<HealthStatus, { bar: string; pill: string; icon: typeof CheckCircle2; label: string }> = {
@@ -33,7 +33,7 @@ function Pulse({ label, valor, sub, tone }: { label: string; valor: React.ReactN
   );
 }
 
-export function HealthStrip({ metricas, headline, subTexto, onPlanoReducao, onAbrirBridge }: Props) {
+export function HealthStrip({ metricas, headline, subTexto, onPlanoReducao, onAbrirCascata }: Props) {
   const status = calcStatus(metricas);
   const { bar, pill, icon: Icon, label } = COLORS[status];
 
@@ -90,8 +90,8 @@ export function HealthStrip({ metricas, headline, subTexto, onPlanoReducao, onAb
           <Button size="sm" onClick={onPlanoReducao} className="gap-1.5">
             Plano de redução <ChevronRight className="h-3 w-3" />
           </Button>
-          <Button size="sm" variant="outline" onClick={onAbrirBridge}>
-            Abrir bridge
+          <Button size="sm" variant="outline" onClick={onAbrirCascata}>
+            Abrir DRE
           </Button>
         </div>
       </div>

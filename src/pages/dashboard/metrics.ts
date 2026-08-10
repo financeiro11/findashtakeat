@@ -233,50 +233,87 @@ export function calcStatus(m: DashboardMetricas): HealthStatus {
   return "verde";
 }
 
-// --- Bridge de caixa ---------------------------------------------------------
+// --- Cascata da DRE ----------------------------------------------------------
 
-export type BridgeStep = {
+export type CascataStep = {
   key: string;
   label: string;
-  subLabel: string; // "entrou" / "saiu" / "saldo"
-  valor: number;    // sinalizado (+/-)
-  acumulado: number; // saldo após o passo
+  subLabel: string;  // "faturado" / "saiu" / "margem X%"
+  valor: number;     // sinalizado (+/-)
+  acumulado: number; // subtotal depois do passo
   tipo: "anchor" | "in" | "out";
 };
 
-export function calcBridge(rows: HFRow[], periodo: Periodo, saldoInicial: number): BridgeStep[] {
-  const ant = subMeses(periodo, 1);
-  // saldo no fim do mês anterior
-  const todos = listarPeriodosDisponiveis(rows);
-  let saldoAnt = saldoInicial;
-  for (const p of todos) {
-    if (cmpPeriodo(p, ant) > 0) break;
-    saldoAnt += getMetrica(rows, p, "Fluxo de Caixa Livre");
+/**
+ * Cascata da DRE do mês (competência): como a Receita Bruta vira EBITDA.
+ * As âncoras são os subtotais da própria DRE — Receita Bruta, Receita Líquida
+ * e EBITDA — e entre elas entram as deduções e os grupos de despesa. Os
+ * números saem de calcMetricas, então a cascata bate com os KPIs do topo.
+ */
+export function calcCascataDRE(rows: HFRow[], periodo: Periodo): CascataStep[] {
+  const m = calcMetricas(rows, periodo);
+  if (!m.receitaBruta && !m.ebitda) return [];
+
+  const deducoes = Math.max(0, m.receitaBruta - m.receitaLiquida);
+  const steps: CascataStep[] = [];
+  let acc = m.receitaBruta;
+
+  steps.push({
+    key: "receita-bruta",
+    label: "Receita Bruta",
+    subLabel: "faturado",
+    valor: m.receitaBruta,
+    acumulado: acc,
+    tipo: "anchor",
+  });
+
+  const push = (key: string, label: string, valor: number, subLabel?: string) => {
+    acc += valor;
+    steps.push({
+      key,
+      label,
+      subLabel: subLabel ?? (valor >= 0 ? "entrou" : "saiu"),
+      valor,
+      acumulado: acc,
+      tipo: valor >= 0 ? "in" : "out",
+    });
+  };
+
+  // Sem deduções relevantes a coluna da líquida repetiria a bruta — pula as duas.
+  if (deducoes > m.receitaBruta * 0.005) {
+    push("deducoes", "Deduções", -deducoes, "impostos");
+    steps.push({
+      key: "receita-liquida",
+      label: "Receita Líq.",
+      subLabel: "base",
+      valor: m.receitaLiquida,
+      acumulado: m.receitaLiquida,
+      tipo: "anchor",
+    });
+    acc = m.receitaLiquida;
   }
 
-  const entradas = Math.abs(sumMetrica(rows, periodo, GRUPOS.receitaBruta));
-  const pessoal = -Math.abs(sumMetrica(rows, periodo, GRUPOS.pessoal));
-  const mkt = -Math.abs(sumMetrica(rows, periodo, GRUPOS.mktVendas));
-  const cop = -Math.abs(sumMetrica(rows, periodo, GRUPOS.custosOp));
-  const adm = -Math.abs(sumMetrica(rows, periodo, GRUPOS.admImpFin) - sumMetrica(rows, periodo, ["PIS", "COFINS", "ISS", "Devoluções"]));
-  const inv = getMetrica(rows, periodo, "Fluxo de Caixa de Investimentos");
-  const fin = getMetrica(rows, periodo, "Fluxo de Financiamento");
+  push("pessoal", "Pessoal", -m.pessoal);
+  push("mkt", "Mkt & Vendas", -m.mktVendas);
+  push("custos", "Custos op.", -m.custosOp);
+  push("adm", "Adm/Imp/Fin", -m.admImpFin);
 
-  const steps: BridgeStep[] = [];
-  let acc = saldoAnt;
-  steps.push({ key: "saldo-ant", label: `Saldo ${periodoLabel(ant)}`, subLabel: "início", valor: saldoAnt, acumulado: acc, tipo: "anchor" });
-  const push = (key: string, label: string, valor: number) => {
-    acc += valor;
-    steps.push({ key, label, subLabel: valor >= 0 ? "entrou" : "saiu", valor, acumulado: acc, tipo: valor >= 0 ? "in" : "out" });
-  };
-  push("entradas", "Entradas", entradas);
-  push("pessoal", "Pessoal", pessoal);
-  push("mkt", "Mkt & Vendas", mkt);
-  push("custos", "Custos op.", cop);
-  push("adm", "Adm/Imp/Fin", adm);
-  push("inv", "Investimento", inv);
-  push("fin", "Financiamento", fin);
-  steps.push({ key: "saldo-atual", label: `Saldo ${periodoLabel(periodo)}`, subLabel: "fim", valor: acc, acumulado: acc, tipo: "anchor" });
+  // O EBITDA da planilha pode não fechar com a soma dos grupos (linha fora dos
+  // grupos conhecidos); a diferença material vira uma coluna própria.
+  const residual = m.ebitda - acc;
+  if (Math.abs(residual) > Math.max(1000, Math.abs(m.receitaLiquida) * 0.005)) {
+    push("outros", "Outros", residual);
+  }
+
+  steps.push({
+    key: "ebitda",
+    label: "EBITDA",
+    subLabel: `margem ${m.margemEbitda.toFixed(1).replace(".", ",")}%`,
+    valor: m.ebitda,
+    acumulado: m.ebitda,
+    tipo: "anchor",
+  });
+
   return steps;
 }
 

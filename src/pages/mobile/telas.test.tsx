@@ -43,6 +43,7 @@ vi.mock("@/hooks/useAuth", () => ({
 
 import MobileInicio from "./Inicio";
 import MobileTarefas from "./Tarefas";
+import MobileExtratos from "./Extratos";
 import MobileNotas from "./Notas";
 import MobileChat from "./Chat";
 import MobilePerfil from "./Perfil";
@@ -69,15 +70,16 @@ beforeAll(() => {
 afterAll(() => { console.error = erroOriginal; });
 
 describe("shell", () => {
-  it("monta o layout com as cinco abas", () => {
+  it("monta o layout com as seis abas", () => {
     const html = monta(<MobileLayout />);
     for (const aba of ABAS) expect(html).toContain(`>${aba.curto}<`);
-    expect(ABAS).toHaveLength(5);
+    expect(ABAS).toHaveLength(6);
   });
 
   it("o título do cabeçalho segue a rota, inclusive nas rotas filhas", () => {
     expect(tituloDaAba("/")).toBe("Início");
     expect(tituloDaAba("/tarefas")).toBe("Tarefas");
+    expect(tituloDaAba("/extratos")).toBe("Extratos");
     expect(tituloDaAba("/notas/abc-123")).toBe("Notas");
     expect(tituloDaAba("/chat")).toBe("Assistente");
     expect(tituloDaAba("/perfil")).toBe("Perfil");
@@ -95,6 +97,7 @@ describe("abas", () => {
   const telas: [string, React.ReactElement, string][] = [
     ["Início", <MobileInicio />, "/"],
     ["Tarefas", <MobileTarefas />, "/tarefas"],
+    ["Extratos", <MobileExtratos />, "/extratos"],
     ["Notas", <MobileNotas />, "/notas"],
     ["Chat", <MobileChat />, "/chat"],
     ["Perfil", <MobilePerfil />, "/perfil"],
@@ -123,5 +126,13 @@ describe("abas", () => {
     expect(html).toContain(">Minhas<");
     expect(html).toContain(">Todas<");
     expect(html).toContain("Atrasadas");
+  });
+
+  it("Extratos abre nas três fontes, com busca", () => {
+    const html = monta(<MobileExtratos />, "/extratos");
+    expect(html).toContain(">Cartão<");
+    expect(html).toContain(">Sicoob<");
+    expect(html).toContain(">Asaas<");
+    expect(html).toContain('type="search"');
   });
 });

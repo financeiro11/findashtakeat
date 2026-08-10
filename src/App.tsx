@@ -70,6 +70,7 @@ import MobileLayout from "@/components/mobile/MobileLayout";
 import { DesktopOnly } from "@/components/mobile/DesktopOnly";
 import MobileInicio from "./pages/mobile/Inicio";
 import MobileTarefas from "./pages/mobile/Tarefas";
+import MobileExtratos from "./pages/mobile/Extratos";
 import MobileNotas from "./pages/mobile/Notas";
 import MobileNota from "./pages/mobile/Nota";
 import MobileChat from "./pages/mobile/Chat";
@@ -109,15 +110,20 @@ function Rotas() {
         <Route element={<MobileLayout />}>
           <Route path="/" element={<MobileInicio />} />
           <Route path="/tarefas" element={<MobileTarefas />} />
+          <Route path="/extratos" element={<MobileExtratos />} />
           <Route path="/notas" element={<MobileNotas />} />
           <Route path="/notas/:id" element={<MobileNota />} />
           <Route path="/chat" element={<MobileChat />} />
           <Route path="/perfil" element={<MobilePerfil />} />
-          {/* Atalhos: o que virou aba no celular redireciona em vez de dizer "abra no PC". */}
+          {/* Atalhos: o que virou aba no celular redireciona em vez de dizer "abra no PC".
+              Vale para link colado do desktop — /governanca/cartao abre a aba certa. */}
           <Route path="/briefing" element={<Navigate to="/" replace />} />
           <Route path="/playbook" element={<Navigate to="/notas" replace />} />
-          {/* Todo o resto do Hub — DRE, auditorias, extratos, orçamento, editais,
-              parceiros, facilities, recargas, admin — só no computador. */}
+          <Route path="/governanca/cartao" element={<Navigate to="/extratos?fonte=cartao" replace />} />
+          <Route path="/caixa/conta-corrente/sicoob" element={<Navigate to="/extratos?fonte=sicoob" replace />} />
+          <Route path="/caixa/conta-corrente/asaas" element={<Navigate to="/extratos?fonte=asaas" replace />} />
+          {/* Todo o resto do Hub — DRE, auditorias, orçamento, editais, parceiros,
+              facilities, recargas, admin — só no computador. */}
           <Route path="*" element={<DesktopOnly />} />
         </Route>
       </Routes>
@@ -182,6 +188,9 @@ function Rotas() {
               <Route path="/assinaturas" element={<Assinaturas />} />
               <Route path="/governanca/auditoria" element={<Auditoria />} />
               <Route path="/governanca/cartao" element={<Cartao />} />
+              {/* A aba Extratos existe só no celular; no computador cada fonte tem a sua
+                  página própria, e a do cartão é a mais parecida com ela. */}
+              <Route path="/extratos" element={<Navigate to="/governanca/cartao" replace />} />
               <Route path="/operacional/cartao" element={<CartaoOmie />} />
               <Route path="/operacional/reembolsos" element={<Reembolsos />} />
               <Route path="/operacional/estornos" element={<Estornos />} />

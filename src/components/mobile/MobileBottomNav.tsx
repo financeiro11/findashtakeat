@@ -1,11 +1,12 @@
 import { NavLink } from "react-router-dom";
-import { Home, CheckSquare, FileText, Sparkles, User } from "lucide-react";
+import { Home, CheckSquare, Receipt, FileText, Sparkles, User } from "lucide-react";
 import { cn } from "@/lib/utils";
 
-/** As cinco abas do app. A ordem aqui é a ordem na barra. */
+/** As seis abas do app. A ordem aqui é a ordem na barra. */
 export const ABAS = [
   { url: "/", titulo: "Início", curto: "Início", icone: Home },
   { url: "/tarefas", titulo: "Tarefas", curto: "Tarefas", icone: CheckSquare },
+  { url: "/extratos", titulo: "Extratos", curto: "Extratos", icone: Receipt },
   { url: "/notas", titulo: "Notas", curto: "Notas", icone: FileText },
   { url: "/chat", titulo: "Assistente", curto: "Chat", icone: Sparkles },
   { url: "/perfil", titulo: "Perfil", curto: "Perfil", icone: User },
@@ -38,8 +39,9 @@ export function MobileBottomNav() {
             >
               {({ isActive }) => (
                 <>
-                  <aba.icone className={cn("h-5 w-5", isActive && "stroke-[2.5]")} />
-                  <span>{aba.curto}</span>
+                  <aba.icone className={cn("h-5 w-5 shrink-0", isActive && "stroke-[2.5]")} />
+                  {/* Com seis células, "Extratos" encosta nas bordas num aparelho de 320px. */}
+                  <span className="w-full truncate px-0.5 text-center">{aba.curto}</span>
                 </>
               )}
             </NavLink>

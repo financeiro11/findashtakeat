@@ -15,6 +15,7 @@ import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuIte
 import { SyncOmieButtons } from "@/components/SyncOmieButtons";
 import RelatorioCaixaModal from "@/components/RelatorioCaixaModal";
 import { FONTES_CC } from "@/components/ContaCorrenteBancaria";
+import PontoEquilibrio from "@/components/caixa/PontoEquilibrio";
 
 /* ------------------------------ formatters ------------------------------ */
 /* O abreviado (R$ 1,23 M) esconde a ordem de grandeza real, então na tela ele
@@ -622,6 +623,11 @@ export default function Caixa() {
           </div>
         </div>
       )}
+
+      {/* ---------------- Ponto de equilíbrio ----------------
+          Par do card acima: capital de giro diz quanto SAI (caixa),
+          este diz quanto precisa ENTRAR (competência, via DRE). */}
+      <PontoEquilibrio />
 
       {/* ---------------- Calendário + Saldo por conta ---------------- */}
       <div className="grid grid-cols-1 gap-3 lg:grid-cols-3">

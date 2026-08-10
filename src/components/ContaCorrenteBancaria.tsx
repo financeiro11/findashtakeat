@@ -3,6 +3,7 @@ import { supabase } from "@/integrations/supabase/client";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import { Loader2, AlertTriangle, Search, RefreshCw } from "lucide-react";
+import { classificaSicoob, eCredito, ORDEM_SIC, SIC_META, type SicKey } from "@/lib/extratoNatureza";
 
 /* Extrato de conta corrente de um banco (Sicoob / Asaas), na página própria aberta
    pelo seletor do Caixa. Cada fonte tem duas tabelas de mesmo formato, populadas por
@@ -58,7 +59,6 @@ type FiltroTipo = "todos" | "credito" | "debito";
 type Periodo = "tudo" | "hoje" | "7d" | "30d" | "mes";
 
 const sb = supabase as any;
-const eCredito = (t: string | null) => (t ?? "").toLowerCase().startsWith("cred");
 
 // Categoria do lançamento (usada no ponto colorido e no acumulado de taxas).
 type CatKey = "cobranca" | "mensageria" | "pix" | "nf" | "outros";
@@ -78,32 +78,8 @@ const DOT: Record<CatKey, string> = {
   outros: "bg-muted-foreground/50",
 };
 
-/* --------- Classificação Sicoob (chips do topo + selo da tabela) --------- */
-type SicKey = "pix_in" | "ted_in" | "pix_out" | "boleto" | "folha" | "imposto" | "tarifa" | "outros_in" | "outros_out";
-const SIC_META: Record<SicKey, { rot: string; selo: string; dot: string; chip: string }> = {
-  pix_in:    { rot: "Pix recebido",       selo: "Pix recebido",  dot: "bg-emerald-500", chip: "border-emerald-500/40 text-emerald-700 dark:text-emerald-400" },
-  ted_in:    { rot: "TED recebida",       selo: "TED recebida",  dot: "bg-teal-500",    chip: "border-teal-500/40 text-teal-700 dark:text-teal-400" },
-  pix_out:   { rot: "Pix enviado",        selo: "Pix enviado",   dot: "bg-sky-500",     chip: "border-sky-500/40 text-sky-700 dark:text-sky-400" },
-  boleto:    { rot: "Boletos pagos",      selo: "Boleto pago",   dot: "bg-violet-500",  chip: "border-violet-500/40 text-violet-700 dark:text-violet-400" },
-  folha:     { rot: "Folha e benefícios", selo: "Folha",         dot: "bg-amber-500",   chip: "border-amber-500/40 text-amber-700 dark:text-amber-400" },
-  imposto:   { rot: "Impostos",           selo: "Imposto",       dot: "bg-red-500",     chip: "border-red-500/40 text-red-700 dark:text-red-400" },
-  tarifa:    { rot: "Tarifas bancárias",  selo: "Tarifa banc.",  dot: "bg-zinc-500",    chip: "border-zinc-400/50 text-muted-foreground" },
-  outros_in: { rot: "Outras entradas",    selo: "Entrada",       dot: "bg-emerald-400", chip: "border-emerald-400/40 text-emerald-700 dark:text-emerald-400" },
-  outros_out:{ rot: "Outras saídas",      selo: "Saída",         dot: "bg-muted-foreground/60", chip: "border-border text-muted-foreground" },
-};
-const ORDEM_SIC: SicKey[] = ["pix_in", "ted_in", "pix_out", "boleto", "folha", "imposto", "tarifa", "outros_in", "outros_out"];
-
-function classificaSicoob(h: string | null, credito: boolean): SicKey {
-  const s = (h ?? "").toLowerCase();
-  const tem = (...t: string[]) => t.some((x) => s.includes(x));
-  if (tem("tarifa", "pacote de serv", "cesta", "manutenção de conta", "manutencao de conta")) return "tarifa";
-  if (tem("imposto", "darf", "das ", "fgts", "inss", "iss", "tribut", "gps", "gare")) return "imposto";
-  if (tem("folha", "salário", "salario", "sal.", "vale", "benefíc", "benefic", "rescis", "13º", "adiantamento")) return "folha";
-  if (tem("boleto", "titulo", "título", "fatura", "cobrança bancária", "cobranca bancaria")) return "boleto";
-  if (tem("pix")) return credito ? "pix_in" : "pix_out";
-  if (tem("ted", "doc ", "transf")) return credito ? "ted_in" : "outros_out";
-  return credito ? "outros_in" : "outros_out";
-}
+/* Classificação Sicoob (chips do topo + selo da tabela) — mora em
+   src/lib/extratoNatureza.ts, compartilhada com a aba Extratos do celular. */
 
 const hojeISO = () => new Date().toLocaleDateString("en-CA");
 function menosDias(n: number) {

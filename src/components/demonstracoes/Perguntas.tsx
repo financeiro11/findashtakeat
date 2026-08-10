@@ -10,6 +10,8 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { chaveCelula } from "@/components/demonstracoes/Reclassificacoes";
 import { variacao } from "@/lib/demonstracoes-schema";
 import { perguntar, type PayloadPergunta, type Pergunta } from "@/lib/perguntas";
+import { usePessoasPJ } from "@/hooks/usePessoasPJ";
+import { pessoasNoTexto } from "@/lib/pessoasPJ";
 
 /* ---------------------------------------------------------------------------
  * Perguntar sobre um valor, na própria célula da DRE/DFC.
@@ -139,6 +141,11 @@ export function BlocoPerguntas({
   const [texto, setTexto] = useState("");
   const [enviando, setEnviando] = useState(false);
   const [ocupado, setOcupado] = useState<string | null>(null);
+  /* Respostas gravadas antes de o de-para existir (ou antes daquele nome entrar
+     nele) carregam a razão social. A troca acontece na leitura, então cadastrar
+     um nome corrige o fio inteiro na hora — sem repetir a pergunta. */
+  const mapaPessoas = usePessoasPJ();
+  const respostaDe = (q: Pergunta) => pessoasNoTexto(mapaPessoas, q.resposta);
 
   const enviar = async () => {
     const p = texto.trim();
@@ -203,7 +210,7 @@ export function BlocoPerguntas({
                 <span className="whitespace-pre-wrap">{q.pergunta}</span>
               </div>
               <p className="whitespace-pre-wrap pl-[18px] text-[12.5px] leading-relaxed text-foreground">
-                {q.resposta}
+                {respostaDe(q)}
               </p>
               <div className="flex flex-wrap items-center gap-x-2 gap-y-1 pl-[18px] text-[10px] text-muted-foreground">
                 <span className="inline-flex items-center gap-1">
@@ -214,7 +221,7 @@ export function BlocoPerguntas({
                 </span>
                 <span className="ml-auto flex items-center gap-1">
                   <button
-                    onClick={() => copiar(q.resposta, "Resposta")}
+                    onClick={() => copiar(respostaDe(q), "Resposta")}
                     className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 transition hover:bg-secondary"
                   >
                     <Copy className="h-2.5 w-2.5" /> Copiar

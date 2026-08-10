@@ -33,12 +33,16 @@
 //
 //   A chamada só chega aqui para MÊS TRAVADO — ver lib/justificativas.ts.
 
-import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+// Versão FIXA, como na `demonstracoes-perguntar` e no `_shared/auth.ts`: com `@2`
+// solto o bundler resolve a última do dia e já quebrou um deploy deste projeto.
+import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.0";
 import { requireUser } from "../_shared/auth.ts";
 // OpenAI, e não Gemini: a redação caía de 429 (cota) no meio do fechamento, que
 // é justamente quando ela é usada. Mesma superfície de `generateJSON`.
 import { generateJSON, handleCors, jsonResponse, errorResponse, DEFAULT_MODEL } from "../_shared/openai.ts";
 import { buildOrgContext } from "../_shared/org-context.ts";
+// O Omie guarda razão social; o comentário precisa sair com o nome da pessoa.
+import { carregarPessoasPJ, pessoaDe, pessoasNoTexto } from "../_shared/pessoas-pj.ts";
 
 /* Quantas células por chamada ao Gemini. Lotes grandes economizam tokens de
    contexto (o prompt de estilo é longo), mas pioram a qualidade: o modelo passa
@@ -65,6 +69,11 @@ type Celula = {
 
 type Driver = {
   contraparte: string;
+  /* A razão social que veio do Omie, quando `contraparte` acima é o nome da
+     pessoa que a substituiu. Fica gravada porque o driver existe para ser
+     CONFERIDO contra o Omie: trocar o nome sem deixar rastro tiraria de quem lê
+     justamente a string que ele usaria para procurar lá. */
+  razaoSocial?: string | null;
   categoria: string | null;
   atual: number;
   anterior: number;
@@ -164,7 +173,7 @@ REGRAS
  * ============================================================ */
 
 function montarDrivers(
-  porContraparte: Map<string, { atual: number; anterior: number; categoria: string | null }>,
+  porContraparte: Map<string, { atual: number; anterior: number; categoria: string | null; razaoSocial?: string | null }>,
   despesa: boolean,
 ): { drivers: Driver[]; deltaOmie: number } {
   // Em rubrica de despesa os lançamentos são negativos. Vira módulo para o texto
@@ -181,6 +190,7 @@ function montarDrivers(
     if (Math.abs(delta) < 1) continue; // centavo de arredondamento não é driver
     todos.push({
       contraparte,
+      razaoSocial: v.razaoSocial ?? null,
       categoria: v.categoria,
       atual, anterior, delta,
       movimento:
@@ -334,14 +344,21 @@ Deno.serve(async (req) => {
     }
 
     /* --- 2) Quem se mexeu, direto dos lançamentos do Omie ----------------- */
-    const { data: contras, error: contraErr } = await supabase.rpc("demonstracoes_contrapartes", {
-      p_tipo: tipo,
-      p_meses: [mesAnterior, mes],
-    });
+    const [{ data: contras, error: contraErr }, pessoas] = await Promise.all([
+      supabase.rpc("demonstracoes_contrapartes", {
+        p_tipo: tipo,
+        p_meses: [mesAnterior, mes],
+      }),
+      /* O de-para "razão social -> pessoa". Entra AQUI, antes de montar os
+         drivers, e não só na saída: assim o modelo nunca chega a ver a razão
+         social, e os drivers gravados ao lado do texto já mostram o nome que a
+         pessoa espera ler. */
+      carregarPessoasPJ(supabase),
+    ]);
     if (contraErr) throw contraErr;
 
     // rubrica -> contraparte -> { atual, anterior }
-    const porRubrica = new Map<string, Map<string, { atual: number; anterior: number; categoria: string | null }>>();
+    const porRubrica = new Map<string, Map<string, { atual: number; anterior: number; categoria: string | null; razaoSocial?: string | null }>>();
     for (const r of (contras ?? []) as any[]) {
       const rub = String(r.rubrica);
       if (!porRubrica.has(rub)) porRubrica.set(rub, new Map());
@@ -351,7 +368,19 @@ Deno.serve(async (req) => {
       if (nome === "Lancamento Fatura Cartao") {
         nome = String(r.categoria ?? nome);
       }
-      const atualBase = m.get(nome) ?? { atual: 0, anterior: 0, categoria: r.categoria ?? null };
+      /* A PJ de uma pessoa vira a pessoa. Aqui em cima, no ponto único onde o
+         nome nasce: tudo o que vem depois — drivers, sinais, prompt, o jsonb
+         gravado — herda o nome trocado sem precisar saber que a troca existe.
+         Duas razões sociais da MESMA pessoa passam a somar num driver só, que é
+         o que quem lê espera ver. */
+      const daOmie = nome;
+      nome = pessoaDe(pessoas, nome);
+      const atualBase = m.get(nome) ?? {
+        atual: 0,
+        anterior: 0,
+        categoria: r.categoria ?? null,
+        razaoSocial: nome === daOmie ? null : daOmie,
+      };
       if (r.mes === mes) atualBase.atual += Number(r.valor) || 0;
       else atualBase.anterior += Number(r.valor) || 0;
       m.set(nome, atualBase);
@@ -364,10 +393,10 @@ Deno.serve(async (req) => {
        explicaria nada sozinho. */
     const contrapartesDe = (c: Celula) => {
       const fontes = c.fontes?.length ? c.fontes : [c.rubrica];
-      const uniao = new Map<string, { atual: number; anterior: number; categoria: string | null }>();
+      const uniao = new Map<string, { atual: number; anterior: number; categoria: string | null; razaoSocial?: string | null }>();
       for (const f of fontes) {
         for (const [nome, v] of porRubrica.get(f) ?? new Map()) {
-          const acc = uniao.get(nome) ?? { atual: 0, anterior: 0, categoria: v.categoria };
+          const acc = uniao.get(nome) ?? { atual: 0, anterior: 0, categoria: v.categoria, razaoSocial: v.razaoSocial ?? null };
           acc.atual += v.atual;
           acc.anterior += v.anterior;
           uniao.set(nome, acc);
@@ -476,7 +505,10 @@ Deno.serve(async (req) => {
       for (const j of out?.justificativas ?? []) {
         if (j?.rubrica && j?.texto) {
           porRubricaTexto.set(String(j.rubrica), {
-            texto: String(j.texto).trim(),
+            /* Rede, não o caminho principal — os drivers já foram trocados na
+               entrada. Serve para a razão social que o modelo pescou na
+               Biblioteca ou reescreveu por conta própria. */
+            texto: pessoasNoTexto(pessoas, String(j.texto).trim()),
             confianca: ["alta", "media", "baixa"].includes(j.confianca) ? j.confianca : "media",
           });
         }

@@ -48,6 +48,8 @@ import { requireUser } from "../_shared/auth.ts";
 // é justamente quando ela é usada. Mesma superfície de `generateJSON`.
 import { generateJSON, handleCors, jsonResponse, errorResponse, DEFAULT_MODEL } from "../_shared/openai.ts";
 import { buildOrgContext } from "../_shared/org-context.ts";
+// O Omie guarda razão social; a resposta precisa sair com o nome da pessoa.
+import { carregarPessoasPJ, pessoaDe, pessoasNoTexto } from "../_shared/pessoas-pj.ts";
 
 /* Quanto do dossiê cabe no prompt.
  *
@@ -250,17 +252,23 @@ Deno.serve(async (req) => {
     const fio = ((fioData ?? []) as { pergunta: string; resposta: string }[]).slice(-MAX_FIO);
 
     /* --- 2) Quem se mexeu (mesmo insumo das justificativas) --------------- */
-    const { data: contras, error: contraErr } = await supabase.rpc("demonstracoes_contrapartes", {
-      p_tipo: tipo,
-      p_meses: meses,
-    });
+    const [{ data: contras, error: contraErr }, pessoas] = await Promise.all([
+      supabase.rpc("demonstracoes_contrapartes", {
+        p_tipo: tipo,
+        p_meses: meses,
+      }),
+      /* O de-para "razão social -> pessoa". Esta função é a que mais expõe nome:
+         40 contrapartes, 150 lançamentos e a observação CRUA do título. Por isso
+         ele entra nos três, e ainda varre a resposta pronta no fim. */
+      carregarPessoasPJ(supabase),
+    ]);
     if (contraErr) throw contraErr;
 
     const porFonte = new Set(fontes.map((f) => f.trim().toLowerCase()));
     const porContraparte = new Map<string, { atual: number; anterior: number; categoria: string | null; n: number }>();
     for (const r of (contras ?? []) as Record<string, unknown>[]) {
       if (!porFonte.has(String(r.rubrica ?? "").trim().toLowerCase())) continue;
-      const nome = String(r.contraparte ?? "Sem contraparte");
+      const nome = pessoaDe(pessoas, String(r.contraparte ?? "Sem contraparte"));
       const acc = porContraparte.get(nome) ?? { atual: 0, anterior: 0, categoria: (r.categoria as string) ?? null, n: 0 };
       const v = orient(Number(r.valor) || 0);
       if (String(r.mes) === mes) acc.atual += v; else acc.anterior += v;
@@ -324,11 +332,19 @@ Deno.serve(async (req) => {
         omitidos: linhas.length - mostradas.length,
         linhas: mostradas.map((l) => ({
           data: dataCurta(l.data as string),
-          contraparte: (l.contraparte as string) ?? "sem nome no cadastro",
+          contraparte: pessoaDe(pessoas, (l.contraparte as string) ?? "sem nome no cadastro"),
           rubrica: l.rubrica,
           categoriaNoOmie: l.categoria,
           valor: brl(orient(Number(l.valor) || 0)),
-          textoDoTitulo: memo(l.observacao as string),
+          /* O memo vai cru (é o que mantém esta resposta e a tela do cartão
+             falando do mesmo lojista), mas a razão social que for de uma pessoa
+             sai trocada: é justamente aqui que ela escapava da troca dos
+             drivers e reaparecia no texto. O `null` é preservado — vira "sem
+             observação" na leitura do modelo, e "" diria outra coisa. */
+          textoDoTitulo: (() => {
+            const m = memo(l.observacao as string);
+            return m == null ? null : pessoasNoTexto(pessoas, m);
+          })(),
         })),
       };
     });
@@ -424,9 +440,12 @@ Deno.serve(async (req) => {
       required: ["resposta", "confianca"],
     };
 
+    /* As respostas do fio foram gravadas antes de o de-para existir (ou antes
+       deste nome entrar nele) e carregam a razão social. Sem esta passada, o
+       modelo leria "DALBER NEGOCIOS" no próprio histórico e repetiria. */
     const historico = fio.length
       ? `\n\nJÁ FOI PERGUNTADO NESTA MESMA CÉLULA (mais antigo primeiro) — a pergunta de agora pode ser um repique disto:\n`
-        + fio.map((f, i) => `${i + 1}. P: ${f.pergunta}\n   R: ${f.resposta}`).join("\n")
+        + fio.map((f, i) => `${i + 1}. P: ${f.pergunta}\n   R: ${pessoasNoTexto(pessoas, f.resposta)}`).join("\n")
       : "";
 
     const redigir = () => generateJSON<{ resposta: string; confianca: string }>({
@@ -463,7 +482,10 @@ Deno.serve(async (req) => {
       }
     }
 
-    const resposta = String(out?.resposta ?? "").trim();
+    /* Rede, não o caminho principal — drivers, lançamentos e memo já foram
+       trocados na entrada. Serve para a razão social que o modelo pescou na
+       Biblioteca ou reescreveu por conta própria. */
+    const resposta = pessoasNoTexto(pessoas, String(out?.resposta ?? "").trim());
     if (!resposta) {
       return jsonResponse({ error: "A IA não devolveu resposta. Tente reformular a pergunta." }, 200);
     }

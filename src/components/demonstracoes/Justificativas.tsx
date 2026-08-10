@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   MessageSquareText, MessageSquareWarning, Copy, Check, Pencil, Trash2, RotateCcw, Sparkles, Loader2,
+  UserRound, X,
 } from "lucide-react";
 import { toast } from "sonner";
 import { supabase } from "@/integrations/supabase/client";
@@ -10,6 +11,8 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { chaveCelula } from "@/components/demonstracoes/Reclassificacoes";
 import { BlocoPerguntas, type Pergunta } from "@/components/demonstracoes/Perguntas";
 import type { PayloadPergunta } from "@/lib/perguntas";
+import { usePessoasPJ, salvarPessoaPJ } from "@/hooks/usePessoasPJ";
+import { pessoaDe, pessoasNoTexto, sugestaoDeNome, type MapaPessoas } from "@/lib/pessoasPJ";
 
 /* ---------------------------------------------------------------------------
  * Justificativa da variação, na célula da DRE/DFC.
@@ -26,6 +29,10 @@ import type { PayloadPergunta } from "@/lib/perguntas";
 
 export type DriverJustificativa = {
   contraparte: string;
+  /* A razão social do Omie, quando `contraparte` é o nome da pessoa que a
+     substituiu. Só vem nas gerações feitas depois do de-para existir; nas mais
+     antigas a troca acontece aqui, na exibição. */
+  razaoSocial?: string | null;
   categoria?: string | null;
   atual: number;
   anterior: number;
@@ -59,8 +66,16 @@ export type Justificativa = {
   gerado_em: string;
 };
 
-/** O que vale é o que a pessoa escreveu; o rascunho é o padrão. */
-export const textoFinal = (j: Justificativa) => (j.texto_editado?.trim() || j.texto || "").trim();
+/**
+ * O que vale é o que a pessoa escreveu; o rascunho é o padrão.
+ *
+ * Com `mapa`, a razão social que é a PJ de alguém sai trocada pelo nome da
+ * pessoa NA HORA DE LER — inclusive em comentário escrito antes de o de-para
+ * existir. É o que faz cadastrar um nome corrigir a grade inteira na hora, sem
+ * "Regerar" (que apagaria o que já foi conferido).
+ */
+export const textoFinal = (j: Justificativa, mapa?: MapaPessoas | null) =>
+  pessoasNoTexto(mapa, (j.texto_editado?.trim() || j.texto || "").trim());
 
 /* `types.ts` é gerado pelo Supabase CLI e ainda não conhece a tabela nem a
    função criadas na migration 20260804160000. Este atalho tipado evita `any`
@@ -164,6 +179,119 @@ function numeroMudou(j: Justificativa, valorCelula: number | null | undefined): 
   return Math.abs(valorCelula - escrito) > Math.max(1, Math.abs(escrito) * 0.005);
 }
 
+/* ============================================================
+ *  "Isso não é uma empresa, é uma pessoa"
+ * ============================================================
+ * O Omie guarda razão social, então o comentário sai dizendo "a saída de DALBER
+ * NEGOCIOS" onde quem lê esperava "a saída do Dalber" — e alguém corrige à mão
+ * antes de colar no tracker, toda vez.
+ *
+ * O cadastro fica AQUI, na lista de drivers, e não só numa tela de configuração:
+ * é lendo o comentário que a pessoa percebe o problema, e é com a razão social na
+ * frente dos olhos que ela sabe qual grafia cadastrar. Salvar corrige na hora
+ * todos os comentários da grade — o mapa é compartilhado e avisa os inscritos.
+ */
+function LinhaDriver({ d, mapa }: { d: DriverJustificativa; mapa: MapaPessoas }) {
+  const [cadastrando, setCadastrando] = useState(false);
+  const [nome, setNome] = useState("");
+  const [salvando, setSalvando] = useState(false);
+
+  /* `pessoaDe` é inerte para nome já trocado (a chave dele não está no mapa),
+     então a mesma chamada serve para o driver novo — que já veio trocado do
+     servidor — e para o antigo, gravado com a razão social. */
+  const exibido = pessoaDe(mapa, d.contraparte);
+  const razaoSocial = d.razaoSocial ?? (exibido !== d.contraparte ? d.contraparte : null);
+
+  const salvar = async () => {
+    const alvo = razaoSocial ?? d.contraparte;
+    setSalvando(true);
+    const { error } = await salvarPessoaPJ(alvo, nome);
+    setSalvando(false);
+    if (error) { toast.error(error); return; }
+    setCadastrando(false);
+    toast.success(`"${alvo}" agora aparece como ${nome.trim()} em todos os comentários.`);
+  };
+
+  if (cadastrando) {
+    return (
+      <tr>
+        <td colSpan={3} className="py-1">
+          <div className="rounded-md border border-sky-300 bg-sky-50/70 px-2 py-1.5">
+            <div className="mb-1 text-[9.5px] leading-snug text-sky-900">
+              No Omie: <b className="font-semibold">{razaoSocial ?? d.contraparte}</b>. Como escrever nos comentários?
+            </div>
+            <div className="flex items-center gap-1">
+              <input
+                value={nome}
+                onChange={(e) => setNome(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") salvar();
+                  if (e.key === "Escape") setCadastrando(false);
+                }}
+                autoFocus
+                placeholder="Nome da pessoa"
+                className="h-6 flex-1 rounded border border-input bg-background px-1.5 text-[11px] focus:outline-none focus:ring-1 focus:ring-ring"
+              />
+              <button
+                onClick={salvar}
+                disabled={salvando || nome.trim().length < 2}
+                className="inline-flex h-6 items-center gap-1 rounded bg-primary px-1.5 text-[10px] font-medium text-primary-foreground transition hover:opacity-90 disabled:opacity-50"
+              >
+                {salvando ? <Loader2 className="h-2.5 w-2.5 animate-spin" /> : <Check className="h-2.5 w-2.5" />}
+                Salvar
+              </button>
+              <button
+                onClick={() => setCadastrando(false)}
+                className="inline-flex h-6 w-6 items-center justify-center rounded text-muted-foreground transition hover:bg-secondary"
+              >
+                <X className="h-3 w-3" />
+              </button>
+            </div>
+          </div>
+        </td>
+      </tr>
+    );
+  }
+
+  return (
+    <tr className="group/driver align-baseline">
+      <td className="py-px pr-2 text-[11px] text-foreground/90">
+        {exibido}
+        {(d.movimento === "entrou" || d.movimento === "saiu") && (
+          <span className="ml-1 text-[9px] uppercase text-muted-foreground">{d.movimento}</span>
+        )}
+        {razaoSocial ? (
+          /* Sem este selo o nome trocado passaria por nome do Omie, e quem fosse
+             conferir lá procuraria por uma string que não existe no cadastro. */
+          <span
+            title={`No Omie está como "${razaoSocial}"`}
+            className="ml-1 inline-flex translate-y-px items-center text-muted-foreground/70"
+          >
+            <UserRound className="h-2.5 w-2.5" />
+          </span>
+        ) : (
+          <button
+            onClick={() => { setNome(sugestaoDeNome(d.contraparte)); setCadastrando(true); }}
+            title="É uma pessoa, não uma empresa — cadastrar o nome dela"
+            className="ml-1 hidden translate-y-px align-middle text-muted-foreground/70 transition hover:text-sky-700 group-hover/driver:inline-flex"
+          >
+            <UserRound className="h-2.5 w-2.5" />
+          </button>
+        )}
+      </td>
+      <td className="whitespace-nowrap py-px text-right text-[10.5px] num text-muted-foreground">
+        {d.fmtAnterior ?? valorExato(d.anterior)} → {d.fmtAtual ?? valorExato(d.atual)}
+      </td>
+      <td className={cn(
+        "whitespace-nowrap py-px pl-2 text-right text-[10.5px] num font-medium",
+        d.delta >= 0 ? "text-primary" : "text-emerald-700",
+      )}>
+        {d.fmtDelta ?? `${d.delta >= 0 ? "+" : ""}${Math.round(d.delta)}`}
+      </td>
+    </tr>
+  );
+}
+
 export function MarcaJustificativa({
   justificativa, onMudou, valorCelula, perguntas, montarPayload, onPerguntaMudou,
 }: {
@@ -180,8 +308,9 @@ export function MarcaJustificativa({
   onPerguntaMudou?: () => void | Promise<void>;
 }) {
   const j = justificativa;
+  const mapaPessoas = usePessoasPJ();
   const [editando, setEditando] = useState(false);
-  const [rascunho, setRascunho] = useState(textoFinal(j));
+  const [rascunho, setRascunho] = useState(textoFinal(j, mapaPessoas));
   const [salvando, setSalvando] = useState(false);
 
   const desatualizado = numeroMudou(j, valorCelula) && j.status !== "descartado";
@@ -205,7 +334,7 @@ export function MarcaJustificativa({
   const pct = j.delta_pct == null ? null : Number(j.delta_pct);
 
   return (
-    <Popover onOpenChange={(o) => { if (o) setRascunho(textoFinal(j)); setEditando(false); }}>
+    <Popover onOpenChange={(o) => { if (o) setRascunho(textoFinal(j, mapaPessoas)); setEditando(false); }}>
       <PopoverTrigger asChild>
         <button
           type="button"
@@ -288,7 +417,7 @@ export function MarcaJustificativa({
             />
           ) : (
             <p className="whitespace-pre-wrap text-[12.5px] leading-relaxed text-foreground">
-              {textoFinal(j) || "—"}
+              {textoFinal(j, mapaPessoas) || "—"}
             </p>
           )}
 
@@ -312,7 +441,11 @@ export function MarcaJustificativa({
             {j.sinais.map((s, i) => (
               <div key={i} className="flex items-start gap-1.5 text-[10.5px] leading-relaxed text-amber-900">
                 <MessageSquareWarning className="mt-0.5 h-3 w-3 shrink-0" />
-                <span>{s.detalhe}</span>
+                {/* O sinal é redigido no servidor com o nome da contraparte
+                    dentro da frase ("X sozinho responde por 80% da variação"):
+                    sem esta passada ele mostraria a razão social ao lado de um
+                    comentário que já fala da pessoa. */}
+                <span>{pessoasNoTexto(mapaPessoas, s.detalhe)}</span>
               </div>
             ))}
           </div>
@@ -327,23 +460,7 @@ export function MarcaJustificativa({
             <table className="w-full">
               <tbody>
                 {j.drivers.slice(0, 5).map((d, i) => (
-                  <tr key={i} className="align-baseline">
-                    <td className="py-px pr-2 text-[11px] text-foreground/90">
-                      {d.contraparte}
-                      {(d.movimento === "entrou" || d.movimento === "saiu") && (
-                        <span className="ml-1 text-[9px] uppercase text-muted-foreground">{d.movimento}</span>
-                      )}
-                    </td>
-                    <td className="whitespace-nowrap py-px text-right text-[10.5px] num text-muted-foreground">
-                      {d.fmtAnterior ?? valorExato(d.anterior)} → {d.fmtAtual ?? valorExato(d.atual)}
-                    </td>
-                    <td className={cn(
-                      "whitespace-nowrap py-px pl-2 text-right text-[10.5px] num font-medium",
-                      d.delta >= 0 ? "text-primary" : "text-emerald-700",
-                    )}>
-                      {d.fmtDelta ?? `${d.delta >= 0 ? "+" : ""}${Math.round(d.delta)}`}
-                    </td>
-                  </tr>
+                  <LinhaDriver key={i} d={d} mapa={mapaPessoas} />
                 ))}
               </tbody>
             </table>
@@ -367,7 +484,7 @@ export function MarcaJustificativa({
                 {salvando ? <Loader2 className="h-3 w-3 animate-spin" /> : <Check className="h-3 w-3" />} Salvar
               </button>
               <button
-                onClick={() => { setRascunho(textoFinal(j)); setEditando(false); }}
+                onClick={() => { setRascunho(textoFinal(j, mapaPessoas)); setEditando(false); }}
                 className="rounded-md border border-border px-2.5 py-1 text-[11px] text-muted-foreground transition hover:bg-secondary"
               >
                 Cancelar
@@ -386,7 +503,7 @@ export function MarcaJustificativa({
           ) : (
             <>
               <button
-                onClick={() => copiar(textoFinal(j), "Comentário")}
+                onClick={() => copiar(textoFinal(j, mapaPessoas), "Comentário")}
                 className="inline-flex items-center gap-1 rounded-md border border-border bg-card px-2.5 py-1 text-[11px] font-medium transition hover:bg-secondary"
               >
                 <Copy className="h-3 w-3" /> Copiar
@@ -460,6 +577,8 @@ export function ResumoJustificativas({
   apenasUltimoMes?: boolean;
   onApenasUltimoMesChange?: (v: boolean) => void;
 }) {
+  const mapaPessoas = usePessoasPJ();
+
   const visiveis = useMemo(() => {
     const cols = new Set(colunas);
     return [...mapa.values()].filter((j) => cols.has(j.mes) && j.status !== "descartado");
@@ -473,7 +592,9 @@ export function ResumoJustificativas({
     const ordem = new Map(colunas.map((c, i) => [c, i]));
     const txt = [...visiveis]
       .sort((a, b) => (ordem.get(a.mes)! - ordem.get(b.mes)!) || a.rubrica.localeCompare(b.rubrica))
-      .map((j) => `${rotuloMes(j.mes)} — ${j.rubrica}\n${textoFinal(j)}`)
+      // Este é o caminho que leva ao tracker de verdade — se a troca não valesse
+      // aqui, o recurso inteiro não teria efeito onde importa.
+      .map((j) => `${rotuloMes(j.mes)} — ${j.rubrica}\n${textoFinal(j, mapaPessoas)}`)
       .join("\n\n");
     if (!txt) { toast.info("Nada para copiar nos meses visíveis."); return; }
     copiar(txt, `${visiveis.length} comentários`);

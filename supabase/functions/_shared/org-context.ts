@@ -5,13 +5,15 @@
 //   const ctx = await buildOrgContext(supabase);
 //   const system = `${BASE_PROMPT}\n\n${ctx}`;
 
+import { carregarPessoasPJ, pessoaDe, blocoPessoasPJ } from "./pessoas-pj.ts";
+
 type SB = any;
 
 const cap = (s: string | null | undefined, n: number) =>
   !s ? "" : s.length > n ? s.slice(0, n - 1) + "…" : s;
 
 export async function buildOrgContext(supabase: SB): Promise<string> {
-  const [deps, cargos, ccs, colabs, forns, pols, notas] = await Promise.all([
+  const [deps, cargos, ccs, colabs, forns, pols, notas, pessoas] = await Promise.all([
     supabase.from("lib_departamentos").select("id,nome,descricao,gestor_id").order("nome"),
     supabase.from("lib_cargos").select("id,nome").order("nome"),
     supabase.from("lib_centros_custo").select("codigo,nome").order("nome"),
@@ -36,6 +38,7 @@ export async function buildOrgContext(supabase: SB): Promise<string> {
       .select("titulo,tipo,conteudo,created_at")
       .order("created_at", { ascending: false })
       .limit(80),
+    carregarPessoasPJ(supabase),
   ]);
 
   const depsRows = (deps.data || []) as any[];
@@ -105,11 +108,22 @@ export async function buildOrgContext(supabase: SB): Promise<string> {
         fornsRows
           .map((f) => {
             const meta = [f.categoria, f.documento].filter(Boolean).join(" · ");
-            return `- ${f.nome}${meta ? ` (${meta})` : ""}`;
+            // O fornecedor que é a PJ de alguém entra pelo nome da PESSOA. Deixar
+            // a razão social aqui daria ao modelo exatamente a string que ele não
+            // deve escrever — e ele copia o que lê.
+            return `- ${pessoaDe(pessoas, f.nome)}${meta ? ` (${meta})` : ""}`;
           })
           .join("\n"),
     );
   }
+
+  /* O de-para completo, com a razão social à mostra e a instrução ao lado.
+     A troca determinística já cobre o caminho principal (o nome chega no prompt
+     já trocado); esta seção existe para o que ela não alcança: a razão social
+     dentro da observação crua de um título, e a pergunta feita com ela na boca
+     ("quanto pagamos para a DALBER NEGOCIOS?"), que o modelo precisa entender. */
+  const blocoPessoas = blocoPessoasPJ(pessoas);
+  if (blocoPessoas) parts.push(blocoPessoas);
 
   if (polsRows.length) {
     parts.push(

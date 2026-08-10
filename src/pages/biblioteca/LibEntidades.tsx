@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import {
   Plus, Trash2, Pencil, Save, X, Search, SlidersHorizontal,
-  Users, Building2, Briefcase, Wallet, Truck, ScrollText,
+  Users, Building2, Briefcase, Wallet, Truck, ScrollText, UserRound,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -23,6 +23,7 @@ import { Label } from "@/components/ui/label";
 import { supabase } from "@/integrations/supabase/client";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
+import { recarregarPessoasPJ } from "@/hooks/usePessoasPJ";
 
 type Row = Record<string, any>;
 type FieldType = "text" | "textarea" | "select" | "tags" | "date";
@@ -41,6 +42,7 @@ const TABLES = {
   lib_cargos: "Cargos",
   lib_centros_custo: "Centros de Custo",
   lib_fornecedores: "Fornecedores",
+  contrapartes_pessoas: "Pessoas PJ",
   lib_politicas: "Políticas",
 } as const;
 
@@ -50,6 +52,7 @@ const TAB_ICONS: Record<keyof typeof TABLES, any> = {
   lib_cargos: Briefcase,
   lib_centros_custo: Wallet,
   lib_fornecedores: Truck,
+  contrapartes_pessoas: UserRound,
   lib_politicas: ScrollText,
 };
 
@@ -59,6 +62,7 @@ const SINGULAR: Record<keyof typeof TABLES, string> = {
   lib_cargos: "cargo",
   lib_centros_custo: "centro de custo",
   lib_fornecedores: "fornecedor",
+  contrapartes_pessoas: "pessoa PJ",
   lib_politicas: "política",
 };
 
@@ -107,6 +111,21 @@ const FIELDS_BY_TABLE: Record<keyof typeof TABLES, Field[]> = {
     { key: "tags", label: "Tags", type: "tags" },
     { key: "observacao", label: "Observação", type: "textarea" },
   ],
+  /* O de-para que faz a IA escrever "Dalber" onde o Omie diz "DALBER NEGOCIOS".
+     `nome` é a razão social COMO ELA VEM DO OMIE — é a chave de busca, então se
+     cola daqui, não se reescreve bonito. O cadastro do dia a dia é feito no
+     próprio comentário da DRE (o ícone de pessoa na lista "quem se mexeu"); esta
+     aba é para ver a lista inteira, corrigir e apagar. */
+  contrapartes_pessoas: [
+    { key: "nome", label: "Razão social (no Omie)" },
+    { key: "pessoa", label: "Nome da pessoa" },
+    { key: "documento", label: "CNPJ" },
+    {
+      key: "status", label: "Status", type: "select",
+      options: [{ value: "ativo", label: "Ativo" }, { value: "inativo", label: "Inativo" }],
+    },
+    { key: "observacao", label: "Observação", type: "textarea" },
+  ],
   lib_politicas: [
     { key: "titulo", label: "Título" },
     { key: "categoria", label: "Categoria" },
@@ -115,6 +134,15 @@ const FIELDS_BY_TABLE: Record<keyof typeof TABLES, Field[]> = {
     { key: "tags", label: "Tags", type: "tags" },
   ],
 };
+
+/**
+ * O de-para de pessoas vive num cache de m\u00f3dulo compartilhado com a DRE/DFC (\u00e9
+ * o que faz um bal\u00e3o n\u00e3o disparar uma busca por coment\u00e1rio na tela). Mexer aqui
+ * sem avisar deixaria a grade mostrando o nome antigo at\u00e9 o pr\u00f3ximo F5.
+ */
+function avisarPessoasPJ(table: keyof typeof TABLES) {
+  if (table === "contrapartes_pessoas") void recarregarPessoasPJ();
+}
 
 /* --------- helpers visuais --------- */
 const norm = (s: string) =>
@@ -352,7 +380,7 @@ function EntityCRUD({
       if (filtroTag !== "todas" && !(Array.isArray(r.tags) && r.tags.includes(filtroTag))) return false;
       if (!q) return true;
       const hay = [
-        r.nome, r.titulo, r.email, r.documento, r.telefone, r.categoria, r.codigo,
+        r.nome, r.titulo, r.email, r.documento, r.telefone, r.categoria, r.codigo, r.pessoa,
         refLabel("lib_departamentos", r.departamento_id),
         refLabel("lib_cargos", r.cargo_id),
         refLabel("lib_centros_custo", r.centro_custo_id),
@@ -378,14 +406,14 @@ function EntityCRUD({
       toast.success("Adicionado");
     }
     setEditing(null);
-    load(); loadRefs(); onChanged?.();
+    load(); loadRefs(); onChanged?.(); avisarPessoasPJ(table);
   };
 
   const remove = async (id: string) => {
     if (!confirm(`Excluir ${singular}?`)) return;
     const { error } = await supabase.from(table as any).delete().eq("id", id);
     if (error) toast.error(error.message);
-    else { toast.success("Removido"); load(); loadRefs(); onChanged?.(); }
+    else { toast.success("Removido"); load(); loadRefs(); onChanged?.(); avisarPessoasPJ(table); }
   };
 
   const hasStatus = fields.some((f) => f.key === "status");
@@ -399,6 +427,15 @@ function EntityCRUD({
         {table === "lib_cargos" && "Funções formais usadas em contratos e estrutura."}
         {table === "lib_centros_custo" && "Códigos para alocar despesas e investimentos."}
         {table === "lib_fornecedores" && "Empresas e prestadores recorrentes."}
+        {table === "contrapartes_pessoas" && (
+          <>
+            Razões sociais que são, na verdade, a PJ de uma pessoa. A IA escreve o nome da pessoa
+            no lugar da razão social nos comentários da DRE/DFC e nas respostas do assistente.
+            Cole a razão social <b>exatamente como ela aparece no Omie</b> — é por ela que o
+            casamento acontece. Dá para cadastrar sem vir aqui: no comentário da DRE, passe o mouse
+            na lista “quem se mexeu” e clique no ícone de pessoa.
+          </>
+        )}
         {table === "lib_politicas" && "Regras internas que a IA segue ao analisar dados."}
       </p>
 
@@ -640,6 +677,51 @@ function EntityTable({
                   {(Array.isArray(r.tags) ? r.tags : []).map((t: string) => <TagBadge key={t} tag={t} />)}
                 </div>
               </TableCell>
+              <TableCell className="text-right">
+                <div className="flex justify-end gap-1 opacity-0 group-hover:opacity-100">
+                  <Button size="icon" variant="ghost" className="h-7 w-7" onClick={() => onEdit(r)}>
+                    <Pencil className="h-3.5 w-3.5" />
+                  </Button>
+                  <Button size="icon" variant="ghost" className="h-7 w-7" onClick={() => onDelete(r.id)}>
+                    <Trash2 className="h-3.5 w-3.5" />
+                  </Button>
+                </div>
+              </TableCell>
+            </TableRow>
+          ))}
+        </TableBody>
+      </Table>
+    );
+  }
+
+  /* Pessoas PJ: a tabela genérica mostraria a razão social e uma coluna
+     "Descrição" vazia — escondendo exatamente o nome pelo qual a pessoa é
+     chamada, que é o conteúdo da linha. A seta diz o que a tabela faz. */
+  if (table === "contrapartes_pessoas") {
+    return (
+      <Table>
+        <TableHeader>
+          <TableRow>
+            <TableHead className="text-[10px] uppercase tracking-wider">Razão social (no Omie)</TableHead>
+            <TableHead className="w-8" />
+            <TableHead className="text-[10px] uppercase tracking-wider">A IA escreve</TableHead>
+            <TableHead className="text-[10px] uppercase tracking-wider">CNPJ</TableHead>
+            <TableHead className="w-20" />
+          </TableRow>
+        </TableHeader>
+        <TableBody>
+          {rows.map((r) => (
+            <TableRow key={r.id} className="group">
+              <TableCell className="text-xs text-muted-foreground">{r.nome || "—"}</TableCell>
+              <TableCell className="text-center text-muted-foreground">→</TableCell>
+              <TableCell className="flex items-center gap-1.5 text-sm font-medium">
+                <UserRound className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                {r.pessoa || "—"}
+                {(r.status || "ativo") !== "ativo" && (
+                  <Badge variant="secondary" className="ml-1 text-[9px]">inativo</Badge>
+                )}
+              </TableCell>
+              <TableCell className="font-mono text-xs text-muted-foreground">{r.documento || "—"}</TableCell>
               <TableCell className="text-right">
                 <div className="flex justify-end gap-1 opacity-0 group-hover:opacity-100">
                   <Button size="icon" variant="ghost" className="h-7 w-7" onClick={() => onEdit(r)}>

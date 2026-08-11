@@ -359,6 +359,27 @@ export function nomeDaPeca(peca: Peca, catalogo: ItemCatalogo[]): string {
 export const contarPecas = (roteiro: Roteiro) =>
   roteiro.folhas.reduce((s, f) => s + f.pecas.length, 0);
 
+/**
+ * Um nome que ainda não existe, a partir de uma base.
+ *
+ * `(mes, nome)` é único no banco, e a colisão é rotina: gerar o mesmo modelo
+ * duas vezes no mesmo trimestre, duplicar uma apresentação, criar a terceira do
+ * mês depois de excluir a segunda. Devolver o erro do banco para a pessoa
+ * ("duplicate key value violates...") seria pedir que ela adivinhe o conserto.
+ *
+ * O sufixo é " (2)", " (3)" — e não a hora ou um id — porque o nome vai para o
+ * seletor da reunião e alguém vai ter de ler.
+ */
+export function nomeLivre(base: string, usados: Iterable<string>): string {
+  const tomados = new Set(usados);
+  if (!tomados.has(base)) return base;
+  for (let n = 2; n < 500; n++) {
+    const tentativa = `${base} (${n})`;
+    if (!tomados.has(tentativa)) return tentativa;
+  }
+  return base;
+}
+
 /* ----------------------------------------------------------------- série -- */
 
 export type PontoSerie = { col: string; rotulo: string; valor: number | null };

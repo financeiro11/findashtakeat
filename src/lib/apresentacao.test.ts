@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   roteiroPadrao, sanear, foraDoRoteiro, removerPeca, inserirPeca, moverPeca,
   novaFolha, removerFolha, renomearFolha, moverFolha, aplicarComandos, contarPecas,
+  nomeLivre,
   type ItemCatalogo, type Roteiro, type Comando,
 } from "./apresentacao";
 
@@ -169,5 +170,29 @@ describe("aplicarComandos", () => {
     ], CATALOGO);
     const ids = r.roteiro.folhas.flatMap((f) => f.pecas.map((p) => p.id));
     expect(new Set(ids).size).toBe(ids.length);
+  });
+});
+
+describe("nomeLivre", () => {
+  it("devolve a base quando ela está livre", () => {
+    expect(nomeLivre("Conselho 3T26", ["Tracker CEO"])).toBe("Conselho 3T26");
+  });
+
+  it("numera a partir de 2, e não de 1", () => {
+    expect(nomeLivre("Conselho 3T26", ["Conselho 3T26"])).toBe("Conselho 3T26 (2)");
+  });
+
+  it("pula os números já tomados em vez de parar no primeiro", () => {
+    const usados = ["Conselho", "Conselho (2)", "Conselho (3)"];
+    expect(nomeLivre("Conselho", usados)).toBe("Conselho (4)");
+  });
+
+  it("não se confunde com um buraco no meio", () => {
+    // A (3) foi excluída: o próximo livre é ela, não o (4).
+    expect(nomeLivre("A", ["A", "A (2)", "A (4)"])).toBe("A (3)");
+  });
+
+  it("aceita qualquer iterável — Set inclusive", () => {
+    expect(nomeLivre("A", new Set(["A"]))).toBe("A (2)");
   });
 });

@@ -36,7 +36,7 @@ import {
 import {
   ChevronDown, ChevronLeft, ChevronRight, ChevronUp, Download, Loader2, Lock, LockOpen,
   Maximize2, Minimize2, Sparkles, AlertTriangle, Flame, TrendingUp, Target,
-  MessageSquareText, Check, Pencil, X, Info, RotateCcw, Layers, Plus, Send, Trash2,
+  MessageSquareText, Check, Pencil, X, Info, RotateCcw, Layers, Plus, Repeat, Send, Trash2,
 } from "lucide-react";
 import { toast } from "sonner";
 import { supabase } from "@/integrations/supabase/client";
@@ -47,9 +47,10 @@ import { ExportarRevisao } from "@/components/demonstracoes/ExportarRevisao";
 import { MontadorApresentacao } from "@/components/demonstracoes/MontadorApresentacao";
 import { CardSerie, CardTexto } from "@/components/demonstracoes/CardsApresentacao";
 import {
-  roteiroPadrao, sanear, serieDaRubrica, ROTEIRO_VAZIO,
+  nomeLivre, roteiroPadrao, sanear, serieDaRubrica, ROTEIRO_VAZIO,
   type ItemCatalogo, type Peca, type Roteiro,
 } from "@/lib/apresentacao";
+import { ModelosApresentacao } from "@/components/demonstracoes/ModelosApresentacao";
 import { REGISTRO_CARDS } from "@/lib/registroCards";
 import { resolverPeriodo, TIPOS, type Periodo, type TipoPeriodo } from "@/lib/periodo";
 import { valorExato } from "@/lib/valor";
@@ -551,12 +552,18 @@ export default function RevisaoMes() {
   const [statusApres, setStatusApres] = useState<"rascunho" | "publicada">("rascunho");
   const [congelado, setCongelado] = useState<Congelado | null>(null);
   const [montando, setMontando] = useState(false);
+  const [modelosAberto, setModelosAberto] = useState(false);
   const [salvandoApres, setSalvandoApres] = useState(false);
   /* O catálogo só existe depois que os blocos são montados, lá embaixo no
      render; os handlers ficam acima e o alcançam por aqui. */
   const catalogoRef = useRef<ItemCatalogo[]>([]);
   /** Só os cinco blocos — é deles que sai o roteiro de uma apresentação nova. */
   const catalogoPadraoRef = useRef<ItemCatalogo[]>([]);
+  /* Bilhetes entre a geração de um modelo e o efeito que reage à troca de mês:
+     qual apresentação abrir quando a carga terminar, e como abri-la (a função
+     é declarada mais abaixo, depois do efeito). */
+  const abrirDepoisRef = useRef<string | null>(null);
+  const abrirApresentacaoRef = useRef<((a: Apresentacao) => void) | null>(null);
   const palcoRef = useRef<HTMLDivElement>(null);
   const raizRef = useRef<HTMLDivElement>(null);
   const animando = useRef(false);
@@ -813,6 +820,12 @@ export default function RevisaoMes() {
 
   useEffect(() => {
     if (!mes) return;
+    /* Gerar de um modelo pode mudar o mês da tela. Sem este bilhete, o reset
+       abaixo fecharia a apresentação que acabou de nascer — ela seria criada,
+       aberta e some no mesmo quadro. */
+    const pendente = abrirDepoisRef.current;
+    abrirDepoisRef.current = null;
+
     setApresId(null);
     setRoteiro(ROTEIRO_VAZIO);
     setTextosApres({});
@@ -820,7 +833,14 @@ export default function RevisaoMes() {
     setStatusApres("rascunho");
     setNomeApres("");
     setPeriodoTipo("mes");
-    void carregarApresentacoes(mes);
+
+    void (async () => {
+      await carregarApresentacoes(mes);
+      if (!pendente) return;
+      const { data } = await sb
+        .from("demonstracoes_apresentacoes").select("*").eq("id", pendente).maybeSingle();
+      if (data) abrirApresentacaoRef.current?.(data as Apresentacao);
+    })();
   }, [mes, carregarApresentacoes]);
 
   const leitura = useMemo<Leitura>(() => aplicarEdicao(
@@ -958,6 +978,7 @@ export default function RevisaoMes() {
     setPeriodoTipo((a.periodo_tipo ?? "mes") as TipoPeriodo);
     setBloco(0);
   };
+  abrirApresentacaoRef.current = abrirApresentacao;
 
   /**
    * Devolve o id da apresentação em edição, CRIANDO-A se ainda não existir.
@@ -1060,38 +1081,60 @@ export default function RevisaoMes() {
   };
 
   /**
-   * Nasce uma apresentação nova, já com os cinco blocos montados.
+   * Cria uma apresentação e a abre. É o caminho único de "nova" e de "gerar do
+   * modelo" — as duas nascem do mesmo jeito, mudam só o roteiro e a janela.
    *
    * INSERÇÃO explícita (`p_id: null`), e não `garantirApresentacao`: aquela
-   * grava por cima da que está aberta, e "nova" com uma aberta gravaria a nova
-   * em cima da velha. O nome procura o primeiro número livre porque (mes, nome)
-   * é único — contar quantas existem daria colisão logo depois de uma exclusão.
+   * grava por cima da que está aberta, e criar com uma aberta gravaria a nova
+   * em cima da velha.
    */
-  const criarApresentacao = async () => {
-    if (!mes) return;
-    const usados = new Set(apresentacoes.map((a) => a.nome));
-    let n = apresentacoes.length + 1;
-    let nome = `Apresentação ${n} · ${mesPorExtenso(mes)}`;
-    while (usados.has(nome)) nome = `Apresentação ${++n} · ${mesPorExtenso(mes)}`;
-
-    const novo = roteiroPadrao(catalogoPadraoRef.current);
+  const criarApresentacao = async (opts: {
+    nome: string; roteiro: Roteiro; mes: string; tipo: TipoPeriodo;
+  }): Promise<boolean> => {
+    // `(mes, nome)` é único: gerar o mesmo modelo duas vezes no trimestre é
+    // rotina, e o erro do banco não ensinaria nada a quem clicou.
+    const nome = nomeLivre(opts.nome, apresentacoes.filter((a) => a.mes === opts.mes).map((a) => a.nome));
     setSalvandoApres(true);
     const { data, error } = await sb.rpc("apresentacao_salvar", {
-      p_mes: mes, p_nome: nome, p_roteiro: novo, p_textos: {}, p_id: null,
+      p_mes: opts.mes, p_nome: nome, p_roteiro: opts.roteiro, p_textos: {},
+      p_id: null, p_periodo_tipo: opts.tipo,
     });
     setSalvandoApres(false);
-    if (error) { toast.error("Não consegui criar: " + error.message); return; }
+    if (error) { toast.error("Não consegui criar: " + error.message); return false; }
+
+    /* Mês diferente: quem abre é o efeito da troca de mês, depois de os dados
+       do novo mês carregarem. Abrir aqui daria uma tela com o roteiro de outubro
+       e a DRE de julho por um quadro. */
+    if (opts.mes !== mes) {
+      abrirDepoisRef.current = data as string;
+      setMesEscolhido(opts.mes);
+      toast.success(`"${nome}" criada.`);
+      return true;
+    }
+
     setApresId(data as string);
     setNomeApres(nome);
-    setRoteiro(novo);
+    setRoteiro(opts.roteiro);
     setTextosApres({});
     setStatusApres("rascunho");
     setCongelado(null);
-    setPeriodoTipo("mes");
+    setPeriodoTipo(opts.tipo);
     setBloco(0);
-    setMontando(true);
-    await carregarApresentacoes(mes);
-    toast.success(`"${nome}" criada com os cinco blocos. Tire o que não for desta reunião.`);
+    await carregarApresentacoes(opts.mes);
+    toast.success(`"${nome}" criada.`);
+    return true;
+  };
+
+  /** O botão "+": uma apresentação com os cinco blocos, no mês da tela. */
+  const novaApresentacao = async () => {
+    if (!mes) return;
+    const ok = await criarApresentacao({
+      nome: `Apresentação · ${mesPorExtenso(mes)}`,
+      roteiro: roteiroPadrao(catalogoPadraoRef.current),
+      mes,
+      tipo: "mes",
+    });
+    if (ok) setMontando(true);
   };
 
   const duplicarApresentacao = async () => {
@@ -2496,11 +2539,18 @@ export default function RevisaoMes() {
             ))}
           </select>
           <button
-            onClick={criarApresentacao}
+            onClick={novaApresentacao}
             title="Nova apresentação, já com os cinco blocos montados"
             className="ghost-btn ghost-icone"
           >
             <Plus className="h-3.5 w-3.5" />
+          </button>
+          <button
+            onClick={() => setModelosAberto(true)}
+            title="Modelos: o deck que se repete a cada mês ou trimestre"
+            className="ghost-btn h-7 px-2 text-[11px]"
+          >
+            <Repeat className="h-3 w-3" /> Modelos
           </button>
           {emApresentacao && (
             <>
@@ -2646,6 +2696,18 @@ export default function RevisaoMes() {
       {/* O exportador não sabe o que é apresentação: ele lê as seções que estão
           no palco. Com uma apresentação aberta, as seções SÃO as folhas do
           roteiro — a exportação sai montada como a reunião foi armada. */}
+      <ModelosApresentacao
+        aberto={modelosAberto}
+        onOpenChange={setModelosAberto}
+        meses={comDado}
+        rotuloDoMes={mesPorExtenso}
+        catalogo={catalogo}
+        roteiroAtual={emApresentacao ? roteiro : null}
+        nomeAtual={nomeApres}
+        periodoAtual={periodoTipo}
+        onGerar={criarApresentacao}
+      />
+
       <ExportarRevisao
         aberto={exportando}
         onOpenChange={setExportando}

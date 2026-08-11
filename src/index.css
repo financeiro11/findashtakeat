@@ -6,7 +6,11 @@
 
 /* Map design tokens onto the shadcn HSL palette so all UI primitives stay on-brand */
 @layer base {
-  :root {
+  /* `.tema-claro` existe para um pedaço de árvore poder ser claro mesmo com o
+     Hub no escuro — é o caso da folha exportada, que vai para papel e projetor.
+     Fica no MESMO bloco do `:root` de propósito: duplicar a paleta noutro lugar
+     seria duas listas de cor para manter em dia. */
+  :root, .tema-claro {
     --background: 220 20% 99%;
     --foreground: 220 20% 9%;
 
@@ -151,6 +155,26 @@
   }
   .ghost-btn:hover { background: hsl(var(--secondary)); }
 
+  /* Botão de ícone: quadrado e sem padding lateral.
+   *
+   * Existe como CLASSE, e não como `px-0 w-7` na marcação, porque `.ghost-btn`
+   * está nesta camada e é emitida DEPOIS das utilities do Tailwind: `px-0` e
+   * `w-7` escritos no componente não vencem o `padding: 0 10px` daqui. O
+   * resultado media 2px de área útil e o ícone saía achatado num risquinho —
+   * botões que ninguém conseguia ler. (Medido: svg 2×14 dentro de botão 24×30.)
+   *
+   * O `flex: 0 0 auto` no filho é o par disto: sem ele, o SVG é um item flex com
+   * `shrink: 1` e encolhe de novo assim que o espaço aperta. */
+  .ghost-icone {
+    width: 28px;
+    height: 28px;
+    padding: 0;
+    justify-content: center;
+    flex: 0 0 auto;
+  }
+  .ghost-icone > svg { flex: 0 0 auto; }
+  .ghost-icone-sm { width: 24px; height: 24px; }
+
   .badge-live {
     display: inline-flex;
     align-items: center;
@@ -198,6 +222,60 @@
   .insight-tag.critico { color: hsl(var(--neg)); background: hsl(var(--neg) / 0.10); }
   .insight-tag.atencao { color: hsl(var(--warn)); background: hsl(var(--warn) / 0.12); }
   .insight-tag.info    { color: hsl(var(--info)); background: hsl(var(--info) / 0.10); }
+}
+
+/* ---------------------------------------------------------------------------
+ * Exportação da Revisão do Mês — o relatório que vai para a reunião.
+ *
+ * As folhas NÃO são a página com um CSS diferente: elas são montadas em
+ * `components/demonstracoes/ExportarRevisao.tsx`, já do tamanho do papel e com
+ * a quebra decidida, e ficam num envelope `[data-revisao-doc]` fora da tela.
+ * Deixar o navegador quebrar sozinho era o que partia card ao meio.
+ *
+ * Aqui só há duas coisas: tirar da folha o que é botão de tela, e — na hora do
+ * Ctrl+P — trocar o Hub pelo envelope. A marca `revisao-imprimindo` no <body>
+ * é o interruptor; sem ela, imprimir qualquer outra tela continua como sempre.
+ * ------------------------------------------------------------------------- */
+/* Lápis de editar, varinha da IA, slider de corte, alternador de granularidade:
+   papel não clica. `data-chrome` já é a marca do que é moldura de tela; o
+   `data-so-tela` marca os controles próprios desta página. */
+[data-revisao-doc] [data-chrome],
+[data-revisao-doc] [data-so-tela] { display: none !important; }
+
+@media print {
+  body.revisao-imprimindo { background: #fff; }
+
+  /* O #root inteiro sai de cena; fica só o envelope das folhas. */
+  body.revisao-imprimindo > *:not([data-revisao-doc]) { display: none !important; }
+
+  /* O envelope vive em `position:fixed; left:-200000px` para não piscar na tela
+     antes da caixa de impressão abrir. Trazê-lo de volta é papel DESTA regra,
+     não do JavaScript. */
+  body.revisao-imprimindo [data-revisao-doc] {
+    position: static !important;
+    left: auto !important;
+    top: auto !important;
+    width: auto !important;
+    height: auto !important;
+    overflow: visible !important;
+    z-index: auto !important;
+  }
+
+  @page { size: A4 landscape; margin: 0; }
+
+  body.revisao-imprimindo [data-revisao-folha] {
+    break-after: page;
+    page-break-after: always;
+    break-inside: avoid;
+  }
+  body.revisao-imprimindo [data-revisao-folha]:last-child {
+    break-after: auto;
+    page-break-after: auto;
+  }
+
+  /* Cor de fundo de chip, barra e linha de total é informação aqui, não enfeite. */
+  body.revisao-imprimindo,
+  body.revisao-imprimindo * { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
 }
 
 /* TipTap editor */

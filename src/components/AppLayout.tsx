@@ -32,10 +32,15 @@ export default function AppLayout() {
 
   return (
     <SidebarProvider style={{ "--sidebar-width": "212px", "--sidebar-width-icon": "212px" } as React.CSSProperties}>
+      {/* `data-chrome` marca o que é moldura do Hub, e não conteúdo da página.
+          Quem imprime (hoje, a Revisão do Mês) esconde tudo isso para o PDF sair
+          com o demonstrativo e nada em volta — ver o bloco @media print em
+          index.css. Marcar aqui evita que cada página que queira imprimir tenha
+          de conhecer a estrutura do layout por fora. */}
       <div className="flex min-h-screen w-full bg-background">
-        <AppSidebar />
+        <div data-chrome="sidebar" className="contents"><AppSidebar /></div>
         <div className="flex min-w-0 flex-1 flex-col">
-          <div className="sticky top-0 z-30 flex items-center border-b border-border bg-card/95 backdrop-blur">
+          <div data-chrome="header" className="sticky top-0 z-30 flex items-center border-b border-border bg-card/95 backdrop-blur">
             <div className="flex-1"><PageHeader /></div>
             <div className="px-3"><ProfileMenu /></div>
           </div>
@@ -43,7 +48,9 @@ export default function AppLayout() {
             <Outlet />
           </main>
         </div>
-        {!isParcerias && !emFacilities && <AIAssistant />}
+        {!isParcerias && !emFacilities && (
+          <div data-chrome="assistente" className="contents"><AIAssistant /></div>
+        )}
       </div>
     </SidebarProvider>
   );

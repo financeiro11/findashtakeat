@@ -203,8 +203,15 @@ export function montarComparativo(linhas: LinhaContraparte[], mes: string, meses
   };
 }
 
-/** O rótulo curto do chip. Sem valores — quem formata dinheiro é a tela. */
-export function rotuloSituacao(f: Fornecedor): string {
+/**
+ * O rótulo curto do chip. Sem valores — quem formata dinheiro é a tela.
+ *
+ * Recebe o mínimo de que precisa, e não o `Fornecedor` inteiro, porque a
+ * composição por categoria (`composicaoCategorias.ts`) usa o mesmo veredito e o
+ * mesmo chip: o rótulo tem de sair idêntico nos dois, sob pena de a mesma
+ * situação ser lida de dois jeitos na mesma tela.
+ */
+export function rotuloSituacao(f: Pick<Fornecedor, "situacao" | "visto" | "pct">): string {
   switch (f.situacao) {
     case "novo":   return "novo";
     case "voltou": return `voltou · ${f.visto ? mesCurto(f.visto) : "—"}`;

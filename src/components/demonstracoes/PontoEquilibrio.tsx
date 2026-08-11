@@ -1,6 +1,6 @@
 /* ============================================================
- *  Card "Ponto de equilíbrio" do /caixa — vizinho da necessidade
- *  de capital de giro.
+ *  Card "Ponto de equilíbrio" da aba Análises da DRE — vizinho da
+ *  necessidade de capital de giro.
  *
  *  Enquanto o card ao lado responde "quanto sai do caixa por mês",
  *  este responde "quanto precisa ENTRAR para as atividades se
@@ -9,6 +9,9 @@
  *
  *  Regime: COMPETÊNCIA (lê a DRE). O capital de giro ao lado é caixa.
  *  Os dois números divergem de propósito — a nota de rodapé avisa.
+ *
+ *  Morava em components/caixa/ e vinha do /caixa; mudou de casa junto
+ *  com o capital de giro quando as duas análises foram para a DRE.
  * ============================================================ */
 
 import { useEffect, useMemo, useState } from "react";

@@ -44,6 +44,10 @@ export const ROTAS: Record<string, { crumbs: string[]; context?: string }> = {
   "/editais/projetos-aprovados/config": { crumbs: ["Radar de Editais", "Projetos Aprovados", "Configurações"] },
   "/demonstracoes/dre": { crumbs: ["Demonstrações", "DRE"], context: "Demonstrativo de Resultado" },
   "/demonstracoes/dfc": { crumbs: ["Demonstrações", "DFC"], context: "Fluxo de Caixa" },
+  "/apresentacoes/revisao": { crumbs: ["Apresentações", "Revisão Mensal"], context: "Reunião de tracker com o CEO" },
+  "/apresentacoes/reportes": { crumbs: ["Apresentações", "Reportes"], context: "Materiais para Conselho e Investidores" },
+  // Rota antiga da Revisão: continua respondendo e redireciona (ver App.tsx).
+  "/demonstracoes/revisao": { crumbs: ["Apresentações", "Revisão Mensal"], context: "Reunião de tracker com o CEO" },
   "/demonstracoes/balancete": { crumbs: ["Demonstrações", "Balancete"] },
   "/demonstracoes/balanco": { crumbs: ["Demonstrações", "Balanço"] },
   "/bp/versoes": { crumbs: ["BP", "Histórico de versões"], context: "Planos importados por ano" },

@@ -17,6 +17,7 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.0";
 import { requireUser } from "../_shared/auth.ts";
 import { aplicarValoresManuais, type Dados, type ValorManual } from "../_shared/valores-manuais.ts";
 import { aplicarEbitdaAjustado } from "../_shared/ebitda-ajustado.ts";
+import { recalcularDerivadas } from "../_shared/derivadas.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -98,7 +99,10 @@ Deno.serve(async (req) => {
     const comManuais = await aplicarValoresManuais(supabase, tipo, bruto, new Set(), removidos);
     // Digitar depreciação derruba o EBITDA — e o EBITDA Ajustado, que sai dele,
     // tem que descer junto na mesma chamada.
-    const dados = await aplicarEbitdaAjustado(supabase, tipo, comManuais);
+    const comAjustado = await aplicarEbitdaAjustado(supabase, tipo, comManuais);
+    /* Linha de cálculo é calculada: o manual mexeu numa folha, os totais dela
+       saem dela. Só o mês da célula — digitar em Jul não pode reescrever Jun. */
+    const dados = recalcularDerivadas(tipo, comAjustado, new Set([colKey]));
 
     const { error: upErr } = await supabase.from("demonstracoes_contabeis")
       .upsert({ tipo, periodo: "completo", dados, pdf_path: null }, { onConflict: "tipo,periodo" });

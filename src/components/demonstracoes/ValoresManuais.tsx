@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Pencil, PencilLine, Loader2, Check, Trash2, ListTree } from "lucide-react";
+import { Pencil, PencilLine, Loader2, Check, Trash2, ListTree, RotateCcw } from "lucide-react";
 import { toast } from "sonner";
 import { supabase } from "@/integrations/supabase/client";
 import { cn } from "@/lib/utils";
@@ -273,12 +273,25 @@ export function EditorValorManual({
           </button>
           {manual && (
             <button
-              onClick={() => chamar({ remover: true }, `Valor manual removido de ${rubrica} · ${rotuloMes(col)}.`)}
+              onClick={() => chamar(
+                { remover: true },
+                automatico == null
+                  ? `Valor manual apagado de ${rubrica} · ${rotuloMes(col)}.`
+                  : `${rubrica} · ${rotuloMes(col)} voltou ao valor do Omie.`,
+              )}
               disabled={salvando}
-              title="Volta a valer o que vem do Omie/tracker"
-              className="ml-auto inline-flex items-center gap-1 rounded-md px-2 py-1 text-[10.5px] text-muted-foreground transition hover:bg-secondary disabled:opacity-50"
+              /* O que interessa saber antes de clicar não é que a linha some da
+                 tabela de manuais, é em que número a célula vai parar: o rótulo
+                 diz o destino e o hover diz o valor. Chamava-se "Remover", com
+                 lixeira, e parecia apagar a célula. */
+              title={automatico == null
+                ? "A rubrica não vem do Omie nem do tracker: a célula volta a ficar vazia."
+                : `A célula volta a valer ${valorExato(automatico)}, como veio do Omie/tracker.`}
+              className="ml-auto inline-flex items-center gap-1 rounded-md border border-border px-2 py-1 text-[10.5px] font-medium text-muted-foreground transition hover:bg-secondary hover:text-foreground disabled:opacity-50"
             >
-              <Trash2 className="h-2.5 w-2.5" /> Remover
+              {automatico == null
+                ? <><Trash2 className="h-2.5 w-2.5" /> Apagar valor</>
+                : <><RotateCcw className="h-2.5 w-2.5" /> Voltar ao Omie</>}
             </button>
           )}
         </div>
@@ -338,7 +351,7 @@ export function ResumoValoresManuais({
             ))}
           </div>
           <div className="border-t border-border px-3 py-2 text-[10.5px] leading-snug text-muted-foreground">
-            Para mudar ou tirar, clique no lápis roxo dentro da célula.
+            Para mudar, ou voltar ao valor do Omie, clique no lápis roxo dentro da célula.
           </div>
         </PopoverContent>
       </Popover>

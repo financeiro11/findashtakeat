@@ -1,7 +1,7 @@
 import { Fragment, useCallback, useEffect, useState } from "react";
 import {
   Loader2, TriangleAlert, Check, FileText, Users, Undo2, ArrowRightLeft, CreditCard,
-  ChevronDown, ArrowUp, ArrowDown, Equal, History,
+  ChevronDown,
 } from "lucide-react";
 import { toast } from "sonner";
 import { supabase } from "@/integrations/supabase/client";
@@ -14,12 +14,15 @@ import { BarraFiltros, CabecalhoValor } from "@/components/demonstracoes/FiltroL
 import { TrocarCategoriaLote } from "@/components/demonstracoes/TrocarCategoriaLote";
 import { podeTrocarCategoria, motivoNaoAlteravel, type ItemLote } from "@/lib/loteCategoria";
 import {
-  categoriasDaCelula, filtrarLancamentos, filtroInicial, type Filtro,
+  categoriasDaCelula, filtrarLancamentos, filtroInicial, filtroVazio, type Filtro,
 } from "@/lib/filtroLancamentos";
 import {
   janelaDeMeses, montarComparativo, rotuloSituacao, explicarFornecedor, resumoComparativo,
   type Comparativo, type Fornecedor, type LinhaContraparte,
 } from "@/lib/comparativoFornecedores";
+import { ChipSituacao } from "@/components/demonstracoes/ChipSituacao";
+import { ComposicaoCategorias } from "@/components/demonstracoes/ComposicaoCategorias";
+import { montarComposicao, type LinhaCategoriaMes } from "@/lib/composicaoCategorias";
 
 /* ---------------------------------------------------------------------------
  * Auditoria: os lançamentos do Omie por trás de uma célula da DRE/DFC.
@@ -138,34 +141,13 @@ function Caixinha({
  * frase inteira, com os dois meses, para o número do chip nunca ser lido como
  * se fosse o da linha. */
 function ChipFornecedor({ f, comp }: { f: Fornecedor; comp: Comparativo }) {
-  const Icone =
-    f.situacao === "subiu" ? ArrowUp
-    : f.situacao === "caiu" ? ArrowDown
-    : f.situacao === "igual" ? Equal
-    : f.situacao === "voltou" ? History
-    : null;
-
-  /* Verde/vermelho seguem o CAIXA, não o número: numa despesa, gastar menos é
-     verde mesmo com o valor "caindo". Novo e voltou não são bons nem ruins —
-     são fatos —, então ficam em cor própria em vez de julgar. */
-  const cor =
-    f.situacao === "novo"   ? "border-indigo-300 bg-indigo-100 text-indigo-900"
-    : f.situacao === "voltou" ? "border-sky-300 bg-sky-100 text-sky-900"
-    : f.situacao === "igual" || f.situacao === "sumiu" ? "border-border bg-muted text-muted-foreground"
-    : f.favoravel ? "border-emerald-300 bg-emerald-100 text-emerald-900"
-    : "border-rose-300 bg-rose-100 text-rose-900";
-
   return (
-    <span
-      title={explicarFornecedor(f, comp, moeda)}
-      className={cn(
-        "inline-flex shrink-0 items-center gap-0.5 whitespace-nowrap rounded-full border px-1.5 text-[9.5px] font-semibold leading-[15px]",
-        cor,
-      )}
-    >
-      {Icone && <Icone strokeWidth={3} className="h-2.5 w-2.5" />}
-      {rotuloSituacao(f)}
-    </span>
+    <ChipSituacao
+      situacao={f.situacao}
+      favoravel={f.favoravel}
+      rotulo={rotuloSituacao(f)}
+      titulo={explicarFornecedor(f, comp, moeda)}
+    />
   );
 }
 
@@ -261,6 +243,31 @@ export function LancamentosSheet({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [alvo?.tipo, alvo?.rubrica, alvo?.mes]);
 
+  /* ----- de que a linha é feita ----------------------------------------
+   * As categorias do mês em foco saem dos próprios lançamentos listados — não
+   * desta consulta. Ela traz só os meses ANTERIORES, para dizer o que é novo e
+   * o que sumiu da composição. Por isso, como o comparativo, carrega em
+   * paralelo e falha calada: sem ela a composição continua na tela, apenas sem
+   * as colunas de comparação. */
+  const [histCategorias, setHistCategorias] = useState<LinhaCategoriaMes[]>([]);
+  const [verComposicao, setVerComposicao] = useState(false);
+
+  /* Não limpa nada antes de buscar: quem zera o histórico e fecha a faixa é a
+     troca de CÉLULA (lá embaixo, junto com o filtro). Assim trocar a categoria
+     de um lançamento atualiza a composição sem fechá-la na cara de quem estava
+     lendo — e é justamente ali que se quer conferir o efeito da troca. */
+  const carregarCategorias = useCallback(async () => {
+    if (!alvo) return;
+    const { data, error } = await db.rpc("demonstracoes_categorias", {
+      p_tipo: alvo.tipo,
+      p_meses: janelaDeMeses(alvo.mes, MESES_DE_HISTORICO),
+      p_rubrica: alvo.rubrica,
+    });
+    if (error) return;
+    setHistCategorias((data as LinhaCategoriaMes[]) ?? []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [alvo?.tipo, alvo?.rubrica, alvo?.mes]);
+
   /** Alertas da célula, por lançamento. Isolado porque é recarregado sozinho a
    *  cada "ignorar" — a lista de lançamentos não muda nessa hora. */
   const carregarAlertas = useCallback(async () => {
@@ -353,6 +360,7 @@ export function LancamentosSheet({
   useEffect(() => { carregar(); }, [carregar]);
   useEffect(() => { carregarAlertas(); }, [carregarAlertas]);
   useEffect(() => { carregarComparativo(); }, [carregarComparativo]);
+  useEffect(() => { carregarCategorias(); }, [carregarCategorias]);
 
   /* Depois de trocar a categoria: a lista sai daqui (o lançamento foi para outra
      rubrica) e o alerta some sozinho — a detecção roda no gatilho do cache. Só
@@ -361,22 +369,32 @@ export function LancamentosSheet({
     await carregar();
     await carregarAlertas();
     // O lançamento saiu desta rubrica: o fornecedor pode ter saído junto, e o
-    // comparativo continuaria contando um gasto que já não está aqui.
+    // comparativo continuaria contando um gasto que já não está aqui. A
+    // composição por categoria muda pelo mesmo motivo — e é justamente o que
+    // uma troca de categoria mexe.
     await carregarComparativo();
+    await carregarCategorias();
     await onCategoriaTrocada?.();
-  }, [carregar, carregarAlertas, carregarComparativo, onCategoriaTrocada]);
+  }, [carregar, carregarAlertas, carregarComparativo, carregarCategorias, onCategoriaTrocada]);
 
-  /* escopo 'lancamento' cala só este; 'fornecedor' aceita o par de rubricas
-     para sempre — é o que resolve quem legitimamente cai nas duas linhas. */
+  /* escopo 'lancamento' cala só este lançamento; 'fornecedor' aceita o par de
+     rubricas para sempre — é o que resolve quem legitimamente cai nas duas
+     linhas. Nos dois casos a decisão vale na DRE e na DFC: o mesmo título rende
+     um alerta em cada demonstrativo, e a categoria que se discute é uma só
+     (migration 20260811173000). O contador devolvido diz em quantos deu, e é
+     ele que escolhe o texto — dizer "e na DFC" quando não havia gêmea seria
+     prometer um efeito que não houve. */
   const decidir = async (a: Alerta, escopo: "lancamento" | "fornecedor") => {
     setDecidindo(a.id);
-    const { error } = await supabase.rpc("reclassificacao_ignorar", { p_id: a.id, p_escopo: escopo });
+    const { data, error } = await supabase.rpc("reclassificacao_ignorar", { p_id: a.id, p_escopo: escopo });
     setDecidindo(null);
     if (error) { toast.error("Não consegui registrar: " + error.message); return; }
     setRecemDecididos((s) => new Set(s).add(a.cod_titulo));
     toast.success(escopo === "fornecedor"
       ? `As duas rubricas passam a ser normais para ${a.fornecedor ?? "este fornecedor"}.`
-      : "Lançamento marcado como correto.");
+      : Number(data) > 1
+        ? "Lançamento marcado como correto — na DRE e na DFC."
+        : "Lançamento marcado como correto.");
     await carregarAlertas();
   };
 
@@ -428,9 +446,21 @@ export function LancamentosSheet({
    * sim texto lido da observação do título — sem isso, procurar "Datadog" não
    * acharia nada numa célula cheia de "Lancamento Fatura Cartao". */
   const [filtro, setFiltro] = useState<Filtro>(filtroInicial);
-  useEffect(() => { setFiltro(filtroInicial()); }, [alvo?.tipo, alvo?.rubrica, alvo?.mes]);
+  /* Célula nova, tela nova: o filtro volta ao zero e a composição fecha com o
+     histórico da célula anterior fora do caminho — senão, no intervalo até a
+     RPC responder, as categorias do mês novo seriam comparadas com as do corte
+     velho e sairiam carimbadas de "nova". */
+  useEffect(() => {
+    setFiltro(filtroInicial());
+    setHistCategorias([]);
+    setVerComposicao(false);
+  }, [alvo?.tipo, alvo?.rubrica, alvo?.mes]);
 
   const categorias = categoriasDaCelula(linhas);
+  /* A composição sai da MESMA lista que está na tela — o histórico só entra
+     para os meses anteriores. É o que garante que a coluna do mês feche com a
+     soma do cabeçalho, e o que faz a tabela existir mesmo se a RPC falhar. */
+  const composicao = alvo ? montarComposicao(categorias, histCategorias, alvo.mes, MESES_DE_HISTORICO) : null;
   const visiveis = filtrarLancamentos(linhas, filtro, (l) => {
     const lida = lerObservacaoTitulo(l.cod_titulo ? textos.get(l.cod_titulo) : undefined);
     return lida ? `${lida.estabelecimento} ${lida.detalhe ?? ""}` : null;
@@ -603,6 +633,21 @@ export function LancamentosSheet({
               </div>
             )}
 
+            {/* ---------------- de que a linha é feita ---------------- */}
+            {/* Uma categoria sozinha não é composição: a linha É ela, e a faixa
+                só ocuparia a altura que a lista quer. */}
+            {!carregando && !erro && composicao && composicao.categorias.length > 1 && (
+              <ComposicaoCategorias
+                comp={composicao}
+                aberto={verComposicao}
+                onAberto={setVerComposicao}
+                marcadas={filtro.categorias}
+                onMarcadas={(c) => setFiltro({ ...filtro, categorias: c })}
+                moeda={moeda}
+                moedaSemCentavos={moedaSemCentavos}
+              />
+            )}
+
             {!carregando && !erro && (buscandoObs || cartoesSemObs.length > 0) && (
               <div className="flex shrink-0 flex-wrap items-center justify-between gap-2 border-b border-border bg-muted/50 px-5 py-2">
                 <span className="inline-flex items-center gap-1.5 text-[11.5px] text-muted-foreground">
@@ -642,8 +687,11 @@ export function LancamentosSheet({
             )}
 
             {/* Com meia dúzia de linhas o olho resolve, e a barra só tomaria a
-                altura que a lista quer. A partir daí, procurar é o trabalho. */}
-            {!carregando && !erro && linhas.length >= 6 && (
+                altura que a lista quer. A partir daí, procurar é o trabalho.
+                Com filtro em pé ela aparece de qualquer tamanho: clicar numa
+                categoria da composição filtra a lista, e some por onde voltar
+                seria deixar a pessoa presa num recorte. */}
+            {!carregando && !erro && (linhas.length >= 6 || !filtroVazio(filtro)) && (
               <BarraFiltros
                 filtro={filtro}
                 onFiltro={setFiltro}

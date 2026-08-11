@@ -21,6 +21,8 @@ import Balanco from "./pages/Balanco";
 import Balancete from "./pages/Balancete";
 import DRE from "./pages/DRE";
 import DFC from "./pages/DFC";
+import RevisaoMes from "./pages/RevisaoMes";
+import Reportes from "./pages/Reportes";
 import BPAnual from "./pages/BPAnual";
 import BP from "./pages/BP";
 import HistoricoVersoes from "./pages/bp/HistoricoVersoes";
@@ -172,6 +174,13 @@ function Rotas() {
               <Route path="/captable" element={<Captable />} />
               <Route path="/demonstracoes/dre" element={<DRE />} />
               <Route path="/demonstracoes/dfc" element={<DFC />} />
+              {/* Apresentações: o que sai do Hub para uma plateia. */}
+              <Route path="/apresentacoes/revisao" element={<RevisaoMes />} />
+              <Route path="/apresentacoes/reportes" element={<Reportes />} />
+              {/* A Revisão morava em Demonstrações. O link antigo continua valendo —
+                  está em favorito de gente, em histórico de navegador e no texto de
+                  outras telas; quebrar isso para arrumar um menu não vale. */}
+              <Route path="/demonstracoes/revisao" element={<Navigate to="/apresentacoes/revisao" replace />} />
               <Route path="/demonstracoes/balancete" element={<Balancete />} />
               <Route path="/demonstracoes/balanco" element={<Balanco />} />
               <Route path="/bp" element={<Navigate to={`/bp/${new Date().getFullYear()}`} replace />} />

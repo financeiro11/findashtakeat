@@ -11,6 +11,7 @@ import { supabase } from "@/integrations/supabase/client";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import { valorExato } from "@/lib/valor";
+import { lerBpAnual, normLabel, bestKey, type MapaMensal } from "@/lib/bpAnual";
 
 /* ============================================================
  *  Helpers
@@ -66,14 +67,8 @@ function tituloValor(v: number | null | undefined, pct = false): string | undefi
   if (v === null || v === undefined || isNaN(v as number)) return undefined;
   return pct ? `${valorExato(v * 100, { moeda: false, casas: 4 })}%` : valorExato(v);
 }
-function normLabel(s: string): string {
-  return s.toString().toLowerCase()
-    .normalize("NFD").replace(/[\u0300-\u036f]/g, "")
-    .replace(/^[\d\.\)\s\-\+]+/, "")            // strip "1.", "1.1.", "(-)" etc
-    .replace(/^[\(\)\+\-\s]+/, "")
-    .replace(/\s+/g, " ")
-    .trim();
-}
+/* normLabel / bestKey / o parser da planilha do BP moram em lib/bpAnual \u2014 a aba
+   An\u00e1lises da DRE l\u00ea o mesmo plano, e duas c\u00f3pias divergiriam. */
 
 /* ============================================================
  *  DRE schema (mesma da DRE)
@@ -129,7 +124,7 @@ const SCHEMA: Node[] = [
  *  Page
  * ============================================================ */
 
-type MonthlyMap = Record<string, (number | null)[]>; // labelNorm -> 12 months
+type MonthlyMap = MapaMensal; // labelNorm -> 12 months
 
 export default function BPAnual() {
   const navigate = useNavigate();
@@ -153,55 +148,9 @@ export default function BPAnual() {
     const { data } = await supabase.from("bp_anual" as any).select("dados").eq("ano", ano).maybeSingle();
     const arr = ((data as any)?.dados as any[]) || [];
     setBpRaw(arr);
-    const map: MonthlyMap = {};
-    const annual: Record<string, number> = {};
-    if (!arr.length) { setBp({}); setBpAnnual({}); return; }
-    // identifica colunas dos 12 meses (Mês 1..Mês 12) e total anual
-    const keys = Object.keys(arr[0] || {});
-    const labelKey = keys[0]; // "Imagem"
-    // procura linha "Mês Calendário" para localizar colunas dos meses
-    const monthRow = arr.find(r => normLabel(String(r[labelKey] ?? "")).startsWith("mes calendario"));
-    const monthCols: string[] = [];
-    if (monthRow) {
-      for (const k of keys) {
-        const v = monthRow[k];
-        const n = typeof v === "number" ? v : Number(v);
-        if (Number.isInteger(n) && n >= 1 && n <= 12) monthCols[n - 1] = k;
-      }
-    }
-    // fallback: pega primeiras 12 chaves numéricas após a label
-    if (monthCols.filter(Boolean).length < 12) {
-      const nums = keys.slice(1).filter(k => arr.some(r => typeof r[k] === "number"));
-      for (let i = 0; i < 12 && i < nums.length; i++) monthCols[i] = nums[i];
-    }
-    // total anual: heurística — coluna logo depois do mês 12 que tenha valores grandes
-    const m12 = monthCols[11];
-    const idx12 = m12 ? keys.indexOf(m12) : -1;
-    let totalKey: string | null = null;
-    for (let i = idx12 + 1; i < keys.length; i++) {
-      const k = keys[i];
-      if (arr.some(r => typeof r[k] === "number" && Math.abs(r[k]) > 1000)) { totalKey = k; break; }
-    }
-
-    for (const r of arr) {
-      const lab = String(r[labelKey] ?? "").trim();
-      if (!lab) continue;
-      const norm = normLabel(lab);
-      if (!norm) continue;
-      const months: (number | null)[] = monthCols.map(k => k ? toNum(r[k]) : null);
-      if (months.every(v => v == null)) continue;
-      // se já existe (varias linhas iguais), soma
-      if (!map[norm]) map[norm] = [null, null, null, null, null, null, null, null, null, null, null, null];
-      months.forEach((v, i) => {
-        if (v == null) return;
-        map[norm][i] = (map[norm][i] ?? 0) + v;
-      });
-      const t = totalKey ? toNum(r[totalKey]) : null;
-      const computed = months.reduce<number | null>((a, b) => b == null ? a : (a ?? 0) + b, null);
-      annual[norm] = (annual[norm] ?? 0) + (t ?? computed ?? 0);
-    }
-    setBp(map);
-    setBpAnnual(annual);
+    const lido = lerBpAnual(arr);
+    setBp(lido.porRubrica);
+    setBpAnnual(lido.anual);
   };
 
   /* ---------- Carrega Realizado (DRE) do ano ---------- */
@@ -235,23 +184,7 @@ export default function BPAnual() {
   const reload = async () => { setLoading(true); await Promise.all([loadBp(), loadReal()]); setLoading(false); };
   useEffect(() => { reload(); /* eslint-disable-next-line */ }, [ano]);
 
-  /* ---------- Lookup com matching flexível ---------- */
-  // Prefer exact match. Otherwise, choose the key that contains the target (or vice-versa)
-  // with the SMALLEST length difference — avoids matching short keys like "receita"
-  // when looking for "receita liquida". Also exclude percent-row labels when the
-  // target is not itself a percent row.
-  function bestKey(keys: string[], target: string): string | null {
-    if (keys.includes(target)) return target;
-    const targetIsPct = target.startsWith("%") || target.includes("margem");
-    const candidates = keys.filter(k => {
-      if (k === target) return true;
-      if (!targetIsPct && (k.startsWith("%") || k.includes("margem"))) return false;
-      return k.includes(target) || target.includes(k);
-    });
-    if (!candidates.length) return null;
-    candidates.sort((a, b) => Math.abs(a.length - target.length) - Math.abs(b.length - target.length));
-    return candidates[0];
-  }
+  /* ---------- Lookup com matching flexível (bestKey vem de lib/bpAnual) ---------- */
   function lookup(map: MonthlyMap, label: string): (number | null)[] {
     const target = normLabel(label);
     const k = bestKey(Object.keys(map), target);

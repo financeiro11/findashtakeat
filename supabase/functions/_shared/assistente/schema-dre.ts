@@ -86,8 +86,10 @@ export const DRE_SCHEMA: No[] = [
     ]},
   ]},
   { label: "EBITDA", kind: "total" },
+  // Irmã, não filha: o tracker soma depreciação e resultado financeiro em
+  // parcelas separadas. Ver o comentário em _shared/demonstracoes-schema.ts.
+  { label: "(-) Depreciação & Amortização", kind: "child" },
   { label: "(+/-) Resultado Financeiro", kind: "header", children: [
-    { label: "(-) Depreciação & Amortização", kind: "child" },
     { label: "(-) Juros", kind: "child" },
     { label: "(-) IOF", kind: "child" },
     { label: "(+) Receita financeira", kind: "child" },

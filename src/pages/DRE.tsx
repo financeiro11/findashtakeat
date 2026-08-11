@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { supabase } from "@/integrations/supabase/client";
 import { toast } from "sonner";
+import { mesesDeReferencia } from "@/lib/mesReferencia";
 import { cn } from "@/lib/utils";
 import { valorExato } from "@/lib/valor";
 import { OmieDeParaPanel } from "@/components/OmieDeParaPanel";
@@ -37,6 +38,12 @@ import {
   LINHAS_DO_AJUSTE, LINHA_AJUSTES, LINHA_EBITDA_AJUSTADO, precisaRecalcular,
 } from "@/lib/ebitdaAjustado";
 import { gerarJustificativas } from "@/lib/justificativas";
+import Analises from "@/components/demonstracoes/Analises";
+import { MarcaComposicao, tituloComposicao } from "@/components/demonstracoes/ComposicaoCelula";
+import {
+  composicaoDaCelula, temComposicao, noDaRubrica, type LeitorDaCelula,
+} from "@/lib/composicaoCelula";
+import { useFormatoNumero, SeletorFormato } from "@/components/demonstracoes/FormatoNumero";
 
 /* ============================================================
  *  Helpers
@@ -90,15 +97,6 @@ function fmtMoney(v: number | null | undefined): string {
   else if (abs >= 1_000) str = `R$ ${(v / 1_000).toFixed(1).replace(".", ",")} K`;
   else str = `R$ ${v.toFixed(0)}`;
   return str;
-}
-function fmtCompact(v: number | null | undefined): string {
-  if (v === null || v === undefined || isNaN(v as number)) return "—";
-  const abs = Math.abs(v);
-  let s: string;
-  if (abs >= 1_000_000) s = (v / 1_000_000).toFixed(2).replace(".", ",") + " M";
-  else if (abs >= 1_000) s = (v / 1_000).toFixed(1).replace(".", ",") + " K";
-  else s = v.toFixed(0);
-  return s;
 }
 function fmtPct(v: number | null | undefined): string {
   if (v === null || v === undefined || isNaN(v as number)) return "—";
@@ -158,7 +156,7 @@ export default function DRE() {
   const [importing, setImporting] = useState(false);
   const [syncing, setSyncing] = useState(false);
   const [view, setView] = useState<"dre" | "depara">("dre");
-  const [tab, setTab] = useState<"valores" | "mom" | "pct">("valores");
+  const [tab, setTab] = useState<"valores" | "mom" | "pct" | "analises">("valores");
   const [search, setSearch] = useState("");
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
   const [yearFilter, setYearFilter] = useState<string>("all");
@@ -175,6 +173,9 @@ export default function DRE() {
   const [gerandoJust, setGerandoJust] = useState(false);
   const [progressoJust, setProgressoJust] = useState<string | null>(null);
   const [apenasUltimoMes, setApenasUltimoMes] = useState(false);
+  /* Reduzido cabe o ano inteiro na tela; completo é o número que se confere
+     contra o Omie. Guardado por navegador e compartilhado com a DFC. */
+  const { formato, escolher: escolherFormato, fmtNum, largura } = useFormatoNumero();
   const fileRef = useRef<HTMLInputElement>(null);
 
   // Anos disponíveis a partir das colunas
@@ -194,7 +195,7 @@ export default function DRE() {
   const displayColumns = useMemo(() => {
     let cols = yearFilter === "all" ? columns : columns.filter(c => c.endsWith(`-${yearFilter}`));
     const temDado = (c: string) => rows.some((r) => {
-      const n = toNum((r as any)[c]);
+      const n = toNum(r[c]);
       return n !== null && n !== 0;
     });
     let fim = cols.length;
@@ -541,46 +542,15 @@ export default function DRE() {
     }
   };
 
-  /* ----- KPIs: compara sempre os DOIS ÚLTIMOS MESES FECHADOS (travados) -----
-   * Meses travados são meses fechados de verdade (tracker importado); o mês corrente
-   * (aberto, sincronizando com o Omie aos poucos) está sempre incompleto e comparar
-   * contra ele dava variações sem sentido (ex.: EBITDA +7000%). Se ainda não há pelo
-   * menos 2 meses travados (ex.: instalação nova, antes do 1º import), cai no heurístico
-   * antigo de "mês mais preenchido" para não deixar os KPIs vazios. */
-  const { lastCol, prevCol } = useMemo(() => {
-    const travadosOrdenados = columns.filter((c) => travados.has(c));
-    if (travadosOrdenados.length >= 2) {
-      return {
-        lastCol: travadosOrdenados[travadosOrdenados.length - 1],
-        prevCol: travadosOrdenados[travadosOrdenados.length - 2],
-      };
-    }
-
-    const populatedCounts = columns.map((col) => {
-      const count = rows.reduce((acc, row) => {
-        const raw = row?.[col];
-        if (raw === "" || raw === null || raw === undefined) return acc;
-        return toNum(raw) === null ? acc : acc + 1;
-      }, 0);
-
-      return { col, count };
-    });
-
-    const maxCount = Math.max(...populatedCounts.map(({ count }) => count), 0);
-    const minCountForValidMonth = maxCount > 0 ? Math.max(3, Math.ceil(maxCount * 0.25)) : 1;
-
-    const validMonths = populatedCounts
-      .filter(({ count }) => count >= minCountForValidMonth)
-      .map(({ col }) => col);
-
-    const last = validMonths[validMonths.length - 1] ?? columns[columns.length - 1];
-    const lastValidIdx = validMonths.indexOf(last);
-    const prev = lastValidIdx > 0
-      ? validMonths[lastValidIdx - 1]
-      : columns[Math.max(columns.indexOf(last) - 1, 0)];
-
-    return { lastCol: last, prevCol: prev };
-  }, [columns, rows, travados]);
+  /* ----- KPIs: o último mês com demonstração, contra o anterior -----
+   * Ver src/lib/mesReferencia.ts. Em resumo: "travado" NÃO quer dizer "fechado"
+   * — o import tranca toda coluna do arquivo, inclusive as futuras, e Ago/26
+   * chegou com 19 células e sem Receita Líquida. Sem âncora não há o que
+   * resumir num cartão. */
+  const { lastCol, prevCol } = useMemo(
+    () => mesesDeReferencia(columns, rows, travados, "dre"),
+    [columns, rows, travados],
+  );
 
   function kpi(label: string): { val: number | null; prev: number | null; delta: number | null } {
     const row = valuesFor(label);
@@ -632,19 +602,20 @@ export default function DRE() {
     return flat.filter(f => f.node.label.toLowerCase().includes(q));
   }, [flat, search]);
 
-  function getValueForRow(node: Node, col: string, prev?: string): number | null {
+  /* O numerador vem do `src` do esquema, não de adivinhação pelo rótulo. A régua
+     antiga testava `label.includes("EBITDA")` primeiro, e "% Margem EBITDA
+     Ajustado" caía nesse ramo: a linha mostrava a margem do EBITDA CONTÁBIL, com
+     o nome do ajustado em cima. E os dois lados são lidos com `valorDaLinha`,
+     que é o que a grade mostra — a margem passa a ser a divisão dos dois números
+     que estão à vista, não de outros dois parecidos. */
+  function getValueForRow(node: Node, col: string): number | null {
     if (node.kind === "percent" && node.pctOf) {
-      const num = valueAt(node.label.replace(/^%\s*/, ""), col) ?? 0;
-      // Try multiple bases for %
-      // For "% Margem EBITDA": numerator is EBITDA, denominator is Receita Líquida
-      const numerator =
-        node.label.includes("EBITDA") ? valueAt("EBITDA", col)
-        : node.label.includes("contribuição") ? valueAt("Margem de contribuição", col)
-        : node.label.includes("Líquida") ? valueAt("Lucro Líquido", col)
-        : num;
-      const den = valueAt(node.pctOf, col);
-      if (numerator == null || den == null || den === 0) return null;
-      return numerator / den;
+      // O `?? sem o "%"` nunca devolve o próprio rótulo — se devolvesse, ler o
+      // numerador chamaria esta função de novo e a pilha estouraria.
+      const numerador = valorDeRubrica(node.src ?? node.label.replace(/^%\s*/, ""), col);
+      const den = valorDeRubrica(node.pctOf, col);
+      if (numerador == null || den == null || den === 0) return null;
+      return numerador / den;
     }
     return valueAt(node.label, col);
   }
@@ -687,6 +658,23 @@ export default function DRE() {
      somando as equipes). Ler o pai do blob era o bug — some sempre. */
   const valorDaLinha = (node: Node, col: string): number | null =>
     node.children?.length ? sumChildren(node, col) : getValueForRow(node, col);
+
+  /* O mesmo, mas a partir do RÓTULO — é o que a conferência de célula precisa
+     para ler as parcelas com exatamente a regra da grade. Rubrica fora do
+     esquema (o blob tem rubricas órfãs do Omie) lê o blob direto. */
+  const valorDeRubrica = (rotulo: string, col: string): number | null => {
+    const no = noDaRubrica(rotulo, "dre");
+    return no ? valorDaLinha(no, col) : valueAt(rotulo, col);
+  };
+
+  /* Leitor da conferência, preso a um mês: `naTela` é o número que a grade
+     mostra; `guardado` é o número cru do blob. É a diferença entre os dois que
+     denuncia o total que ficou para trás. */
+  const lerCelula = (col: string): LeitorDaCelula => ({
+    tipo: "dre",
+    naTela: (rotulo) => valorDeRubrica(rotulo, col),
+    guardado: (rotulo) => valueAt(rotulo, col),
+  });
 
   /* Perguntar e promover mexem em DUAS tabelas: o fio da célula e — quando a
      resposta vira o comentário oficial — a justificativa. Recarregar só o fio
@@ -809,11 +797,11 @@ export default function DRE() {
                   </span>
                 )}
               </div>
-              <div className="mt-1 text-[10.5px] text-muted-foreground num">
-                Anterior · {prevLabel}
+              <div className="mt-1 text-[10.5px] font-medium text-foreground num">
+                {lastLabel}
               </div>
               <div className="text-[10.5px] text-muted-foreground num">
-                vs {lastLabel}
+                vs {prevLabel}
               </div>
             </div>
           );
@@ -827,6 +815,7 @@ export default function DRE() {
             { id: "valores", label: "Valores" },
             { id: "mom", label: "Variação MoM" },
             { id: "pct", label: "% sobre receita" },
+            { id: "analises", label: "Análises" },
           ].map(t => (
             <button
               key={t.id}
@@ -840,16 +829,20 @@ export default function DRE() {
             </button>
           ))}
         </div>
+        {/* Buscar conta e colapsar são da grade; a aba Análises não tem grade.
+            O filtro de ano fica: é ele que define a janela dos gráficos. */}
         <div className="flex items-center gap-2 pb-2">
-          <div className="relative">
-            <Search className="absolute left-2 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
-            <Input
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              placeholder="Buscar conta…"
-              className="h-8 w-[200px] pl-7 text-[12px]"
-            />
-          </div>
+          {tab !== "analises" && (
+            <div className="relative">
+              <Search className="absolute left-2 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
+              <Input
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                placeholder="Buscar conta…"
+                className="h-8 w-[200px] pl-7 text-[12px]"
+              />
+            </div>
+          )}
           <select
             value={yearFilter}
             onChange={(e) => setYearFilter(e.target.value)}
@@ -860,9 +853,16 @@ export default function DRE() {
               <option key={y} value={y}>20{y}</option>
             ))}
           </select>
-          <Button variant="ghost" size="sm" className="h-8 text-[12px] text-muted-foreground" onClick={() => allCollapsed ? expandAll() : collapseAll()}>
-            {allCollapsed ? "Expandir tudo" : "Colapsar tudo"}
-          </Button>
+          {/* Reduzido para ler a série; completo para conferir o número contra o
+              Omie. O hover com centavos continua nos dois. */}
+          {tab !== "analises" && (
+            <SeletorFormato formato={formato} onChange={escolherFormato} />
+          )}
+          {tab !== "analises" && (
+            <Button variant="ghost" size="sm" className="h-8 text-[12px] text-muted-foreground" onClick={() => allCollapsed ? expandAll() : collapseAll()}>
+              {allCollapsed ? "Expandir tudo" : "Colapsar tudo"}
+            </Button>
+          )}
         </div>
       </div>
 
@@ -874,6 +874,10 @@ export default function DRE() {
           <div className="py-16 text-center text-sm text-muted-foreground">
             Nenhum dado importado. Clique em <b>Importar Excel/CSV</b> para enviar o Tracker.
           </div>
+        ) : tab === "analises" ? (
+          /* A aba Análises não desenha a grade: recebe o mesmo blob que ela e
+             monta as leituras que não cabem em linha e coluna. */
+          <Analises rows={rows} columns={displayColumns} travados={travados} />
         ) : (
           <>
           {/* Só na aba "Valores": é onde as células estão marcadas. */}
@@ -902,15 +906,26 @@ export default function DRE() {
             />
           )}
           {tab === "valores" && <ResumoPerguntas mapa={perguntas} colunas={displayColumns} />}
-          <div className="mt-3 overflow-x-auto rounded-lg border border-border bg-card">
+          {/* A altura máxima é o que faz o cabeçalho grudar: `position: sticky`
+              se prende ao container que ROLA, e um container que só rola na
+              horizontal deixa o cabeçalho subir junto com a página. Com o teto,
+              a grade rola por dentro e o mês fica sempre à vista — junto com a
+              coluna de rubrica, que já era fixa. */}
+          <div className="mt-3 max-h-[calc(100vh-190px)] overflow-auto rounded-lg border border-border bg-card">
             <table className="border-collapse">
               <thead>
-                <tr className="border-b border-border bg-muted/40">
-                  <th className="sticky left-0 z-20 bg-muted px-3 py-2 text-left text-[10px] font-semibold tracking-[0.08em] text-muted-foreground w-[220px] min-w-[220px] shadow-[1px_0_0_0_hsl(var(--border))]">
+                <tr className="border-b border-border">
+                  <th className="sticky left-0 top-0 z-30 bg-muted px-3 py-2 text-left text-[10px] font-semibold tracking-[0.08em] text-muted-foreground w-[220px] min-w-[220px] shadow-[1px_0_0_0_hsl(var(--border)),0_1px_0_0_hsl(var(--border))]">
                     RUBRICA
                   </th>
                   {displayColumns.map(c => (
-                    <th key={c} className="group/col px-1.5 py-2 text-right text-[10px] font-semibold tracking-[0.06em] text-muted-foreground whitespace-nowrap num min-w-[64px]">
+                    <th
+                      key={c}
+                      className={cn(
+                        "group/col sticky top-0 z-20 bg-muted px-1.5 py-2 text-right text-[10px] font-semibold tracking-[0.06em] text-muted-foreground whitespace-nowrap num shadow-[0_1px_0_0_hsl(var(--border))]",
+                        largura,
+                      )}
+                    >
                       <span className="inline-flex items-center justify-end gap-1">
                         <CadeadoColuna
                           col={c}
@@ -999,7 +1014,14 @@ export default function DRE() {
                         const display =
                           isPercent || tab === "mom" || tab === "pct"
                             ? fmtPct(v)
-                            : (isNeg ? `(${fmtCompact(Math.abs(v ?? 0))})` : fmtCompact(v));
+                            : (isNeg ? `(${fmtNum(Math.abs(v ?? 0))})` : fmtNum(v));
+                        /* A conferência da célula de resultado — total, bloco e
+                           margem. Fora da aba "Valores" o número é derivado (Δ,
+                           % sobre receita) e não corresponde à conta do esquema,
+                           então a marca sairia mentindo. */
+                        const comp = tab === "valores" && temComposicao(node.label, "dre")
+                          ? composicaoDaCelula(node.label, lerCelula(c))
+                          : null;
                         /* Só folha abre auditoria: linha com filhos é soma, e total
                            e percentual são calculados — nenhuma delas vem de
                            lançamento, então não haveria o que listar. Fora da aba
@@ -1069,6 +1091,7 @@ export default function DRE() {
                             }
                             title={[
                               tituloValor(v, isPercent || tab === "mom" || tab === "pct"),
+                              tituloComposicao(comp),
                               manual ? tituloValorManual(manual) : null,
                               alerta ? tituloReclassificacao(alerta) : null,
                               tituloPerguntas(perguntasDaCelula),
@@ -1076,7 +1099,8 @@ export default function DRE() {
                               curavel ? tituloAjustes(ajustesDoMes ?? []) : null,
                             ].filter(Boolean).join(" · ") || undefined}
                             className={cn(
-                              "px-1.5 py-1.5 text-right text-[12px] num whitespace-nowrap min-w-[64px]",
+                              "px-1.5 py-1.5 text-right text-[12px] num whitespace-nowrap",
+                              largura,
                               v != null && "cursor-help",
                               isNeg && !isPercent ? "text-primary" : isTotal ? "text-emerald-800" : "text-foreground/90",
                               v == null && "text-muted-foreground/40",
@@ -1090,6 +1114,7 @@ export default function DRE() {
                               alerta ? fundoCelulaReclassificacao(alerta)
                                 : manual ? fundoCelulaManual()
                                 : temAjuste ? fundoCelulaAjuste()
+                                : comp?.divergente ? "bg-amber-100/70"
                                 : just && fundoCelulaJustificativa(just),
                             )}
                           >
@@ -1097,6 +1122,14 @@ export default function DRE() {
                                 caixa: antes o lápis era absoluto e pousava em cima
                                 do triângulo e do balão. */}
                             <span className="inline-flex items-center justify-end gap-1">
+                              {comp && v != null && (
+                                <MarcaComposicao
+                                  rubrica={node.label}
+                                  mesLabel={ptLabelFromKey(c).replace("/", " ")}
+                                  ler={lerCelula(c)}
+                                  divergente={comp.divergente}
+                                />
+                              )}
                               {editavel && (
                                 <EditorValorManual
                                   tipo="dre"

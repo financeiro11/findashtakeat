@@ -47,9 +47,17 @@ export function rotuloRegra(regra: string | null | undefined): string {
     case "esporadico": return "aparece raramente";
     case "salto": return "acima do próprio histórico";
     case "palavra": return "texto de evento único";
+    // Os mesmos três sinais, medidos no total do mês em vez de num lançamento.
+    case "grupo_novo": return "fornecedor novo";
+    case "grupo_esporadico": return "aparece raramente";
+    case "grupo_salto": return "acima do próprio histórico";
     default: return "sugerido";
   }
 }
+
+/** A sugestão veio de um conjunto de lançamentos, não de um só. */
+export const ehGrupo = (regra: string | null | undefined): boolean =>
+  typeof regra === "string" && regra.startsWith("grupo_");
 
 /**
  * O add-back de um lançamento: o que ele SOMA ao EBITDA.
@@ -115,6 +123,62 @@ export function erroDoAjuste(valorNoBlob: number | null, valor: number): string 
     return `O ajuste não pode passar de ${teto} — é o valor do lançamento inteiro.`;
   }
   return null;
+}
+
+/* ============================================================================
+ *  Grupos — o one-off que chega picado
+ *
+ *  O DATADOG de Jul-26 não veio numa cobrança de R$ 49 mil: veio em seis, de
+ *  R$ 4.941 a R$ 12.236, meses represados que caíram todos em julho. A INHIRE
+ *  veio em cinco licenças de R$ 990. Olhando um lançamento por vez nenhuma
+ *  delas é grande o bastante para ser sugerida — juntas são o que desajustou a
+ *  linha. `ebitda_ajuste_grupos` (migration 20260811190000) faz a soma; o que
+ *  fica aqui é a aritmética que a TELA ainda precisa refazer.
+ * ========================================================================== */
+
+export type ItemDoGrupo = {
+  cod_titulo: string;
+  data: string | null;
+  categoria: string | null;
+  /** como está no blob: despesa negativa */
+  valor: number;
+};
+
+/**
+ * O grupo depois de tirar dele os lançamentos que já foram decididos SOZINHOS.
+ *
+ * POR QUE A TELA REFAZ A CONTA. A RPC não conhece as decisões — ela sai do cache
+ * do Omie e se refaz a cada abertura. Se um dos seis títulos do Datadog já tiver
+ * sido aceito por conta própria (numa sessão anterior, com outro piso), oferecer
+ * o grupo inteiro contaria aquele lançamento duas vezes na linha. Então a tela
+ * tira o que já foi decidido e recalcula o resto.
+ *
+ * `null` quando o que sobrou não é mais um grupo: com um lançamento só a
+ * sugestão é a individual, e um add-back zerado não é ajuste nenhum.
+ *
+ * No `grupo_salto` o add-back continua sendo só o EXCESSO sobre a mediana
+ * mensal do fornecedor — o que ele custa todo mês tem que continuar no EBITDA,
+ * pela mesma razão que a competência de julho fica dentro da fatura atrasada.
+ */
+export function recomporGrupo(
+  itens: ItemDoGrupo[],
+  regra: string,
+  mediana: number | null,
+): { cods: string[]; lancamentos: number; valor_lancamento: number; valor: number } | null {
+  if (itens.length < 2) return null;
+
+  const valorLancamento = cent(itens.reduce((s, i) => s + (Number(i.valor) || 0), 0));
+  const cheio = addBack(valorLancamento);
+  const desconto = regra === "grupo_salto" && mediana != null ? Math.abs(mediana) : 0;
+  const valor = cent(Math.sign(cheio) * Math.max(0, Math.abs(cheio) - desconto));
+  if (valor === 0) return null;
+
+  return {
+    cods: itens.map((i) => i.cod_titulo),
+    lancamentos: itens.length,
+    valor_lancamento: valorLancamento,
+    valor,
+  };
 }
 
 /** O ajuste cobre o lançamento todo, ou só um pedaço dele? */

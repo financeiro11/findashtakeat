@@ -5,6 +5,7 @@ import {
   Percent, BookOpen, UserCog, Smartphone, Plane, Settings,
   FolderKanban, FileBarChart, FileText, Scale, TrendingUp, Brain, Target, Home, Search, Sparkles, Gavel, CheckSquare, ChevronDown, BookOpenCheck, PieChart, Handshake as HandshakeIcon, CheckCircle2, Receipt, Undo2, Wallet2, ShieldCheck, Landmark,
   LayoutDashboard, Kanban, FileSpreadsheet, Truck, History, FileSignature, Wrench, Star, Repeat,
+  Presentation, Building2,
 } from "lucide-react";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import takeatLogo from "@/assets/takeat-logo.png";
@@ -34,6 +35,15 @@ const timeFinanceiro: NavItem[] = [
   { title: "Tarefas", url: "/tarefas", icon: CheckSquare },
   { title: "Projetos", url: "/automacoes/projetos", icon: FolderKanban },
   { title: "Anotações", url: "/playbook", icon: BookOpenCheck },
+];
+
+/* Apresentações: o que sai do Hub para uma PLATEIA — a reunião de tracker com o
+   CEO, e os materiais de Conselho e Investidores. Ficam juntas porque o que elas
+   compartilham não é o dado (esse vem de Demonstrações, BP, Assinaturas…) e sim
+   o formato: roteiro de folhas, redação por cima do número e saída em PDF/PPTX. */
+const apresentacoes: NavItem[] = [
+  { title: "Revisão Mensal", url: "/apresentacoes/revisao", icon: Presentation },
+  { title: "Reportes", url: "/apresentacoes/reportes", icon: Building2 },
 ];
 
 const operacional: NavItem[] = [
@@ -71,6 +81,8 @@ const investimentos: NavItem[] = [
 const demonstracoes: NavItem[] = [
   { title: "DRE", url: "/demonstracoes/dre", icon: FileBarChart },
   { title: "DFC", url: "/demonstracoes/dfc", icon: TrendingUp },
+  // A Revisão do Mês mudou para o grupo "Apresentações" — ela é uma reunião, não
+  // um demonstrativo. A rota antiga continua respondendo, redirecionando.
   { title: "Balancete", url: "/demonstracoes/balancete", icon: FileText },
   { title: "Balanço", url: "/demonstracoes/balanco", icon: Scale },
 ];
@@ -266,6 +278,7 @@ export function AppSidebar() {
             <>
               <Group label="Início" items={inicio} pathname={pathname} favoritos={favoritos} onToggleFavorito={toggleFavorito} />
               <Group label="Time Financeiro" items={timeFinanceiro} pathname={pathname} favoritos={favoritos} onToggleFavorito={toggleFavorito} />
+              <Group label="Apresentações" items={apresentacoes} pathname={pathname} favoritos={favoritos} onToggleFavorito={toggleFavorito} />
               <Group label="Operacional" items={operacional} pathname={pathname} favoritos={favoritos} onToggleFavorito={toggleFavorito} />
               <Group label="Recargas" items={recargas} pathname={pathname} favoritos={favoritos} onToggleFavorito={toggleFavorito} />
               <Group label="Editais" items={editais} pathname={pathname} favoritos={favoritos} onToggleFavorito={toggleFavorito} />

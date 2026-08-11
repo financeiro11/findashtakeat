@@ -19,6 +19,7 @@
 
 import { aplicarValoresManuais } from "./valores-manuais.ts";
 import { aplicarEbitdaAjustado } from "./ebitda-ajustado.ts";
+import { recalcularDerivadas } from "./derivadas.ts";
 
 const EN = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
@@ -111,10 +112,27 @@ export async function salvarDemonstracao(
   const colunasAtualizadas = new Set(
     mesesNovos.filter((c) => opts.travar || !travadas.has(c)),
   );
-  const comManuais = await aplicarValoresManuais(supabase, tipo, bruto, colunasAtualizadas);
+  /* No import, o bloco acima apagou CÉLULA A CÉLULA e regravou do arquivo — não
+     existe célula que o escritor tenha pulado. O manual precisa saber disso: sem
+     essa distinção ele reconhecia a célula recém-importada como "intocada" e
+     ressomava aos totais a diferença contra um `valor_base` velho do Omie. Ver o
+     item 3 do cabeçalho de valores-manuais.ts. */
+  const colunasReescritas = new Set(opts.travar ? mesesNovos : []);
+  const comManuais = await aplicarValoresManuais(
+    supabase, tipo, bruto, colunasAtualizadas, [], colunasReescritas,
+  );
   // Depois dos manuais, nunca antes: o EBITDA Ajustado parte do EBITDA já
   // corrigido pela depreciação digitada à mão. Ver ebitda-ajustado.ts.
-  const dados = await aplicarEbitdaAjustado(supabase, tipo, comManuais);
+  const comAjustado = await aplicarEbitdaAjustado(supabase, tipo, comManuais);
+  /* Por último, sempre: linha de cálculo é calculada. Quem escreveu antes —
+     o arquivo do tracker, o Omie, o manual, o ajuste — mexeu nas FOLHAS; daqui
+     para a frente bloco, total e margem são a soma delas, e o que a base guarda
+     é o mesmo número que a tela mostra.
+     SÓ nas colunas desta escrita: no import são os meses do arquivo (reimportar
+     um mês fechado é o jeito de corrigi-lo, e é decisão de pessoa); no sync são
+     os meses abertos. Mês travado que ninguém mandou reescrever não se toca.
+     Ver derivadas.ts. */
+  const dados = recalcularDerivadas(tipo, comAjustado, colunasAtualizadas);
 
   const { error: upErr } = await supabase.from("demonstracoes_contabeis").upsert(
     { tipo, periodo: "completo", dados, pdf_path: null },

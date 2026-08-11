@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
-  Loader2, Check, X, Plus, Trash2, Sparkles, Undo2, ChevronDown, ChevronRight, Scale,
+  Loader2, Check, X, Plus, Trash2, Sparkles, Undo2, ChevronDown, ChevronRight, Scale, Search,
 } from "lucide-react";
 import { toast } from "sonner";
 import { supabase } from "@/integrations/supabase/client";
@@ -8,8 +8,10 @@ import { cn } from "@/lib/utils";
 import { valorExato } from "@/lib/valor";
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { paraCampo, paraNumero, rotuloMes } from "@/lib/valoresManuais";
+import { normalize } from "@/lib/normalize";
 import {
-  ehParcial, erroDoAjuste, repartirAjuste, rotuloRegra, rubricasDoEbitda, somaAjustes,
+  ehParcial, erroDoAjuste, recomporGrupo, repartirAjuste, rotuloRegra,
+  rubricasDoEbitda, somaAjustes, type ItemDoGrupo,
 } from "@/lib/ebitdaAjustado";
 
 /* ---------------------------------------------------------------------------
@@ -32,6 +34,10 @@ export type AjusteEbitda = {
   status: "aceito" | "recusado";
   origem: "sugestao" | "manual";
   cod_titulo: string | null;
+  /** chave do fornecedor quando a decisão é sobre um CONJUNTO de lançamentos */
+  grupo: string | null;
+  /** os títulos que o grupo consolida */
+  cods: string[] | null;
   rubrica: string | null;
   contraparte: string | null;
   data: string | null;
@@ -62,6 +68,57 @@ type Candidato = {
   hist_mediana: number | null;
 };
 
+/** Um fornecedor inteiro dentro do mês — ver `ebitda_ajuste_grupos`. */
+type Grupo = {
+  grupo: string;
+  contraparte: string | null;
+  rubrica: string;
+  categoria: string | null;
+  lancamentos: number;
+  primeira: string | null;
+  ultima: string | null;
+  do_cartao: boolean;
+  valor_lancamento: number;
+  valor: number;
+  regra: string;
+  motivo: string;
+  forca: "alta" | "media" | "baixa";
+  hist_meses: number;
+  hist_mediana: number | null;
+  cods: string[];
+  itens: ItemDoGrupo[];
+};
+
+/**
+ * O que a lista de sugestões mostra — um título solto ou um conjunto.
+ *
+ * Os dois viram a MESMA coisa aqui de propósito: "Valor todo / Só parte", a
+ * descrição obrigatória, o aceitar e o recusar valem igual para os R$ 60 mil de
+ * uma rescisão e para os R$ 49 mil que o Datadog trouxe em seis cobranças. Sem
+ * essa unificação seriam duas cópias da mesma mecânica, e a segunda começaria a
+ * divergir da primeira no dia seguinte.
+ */
+type Sugestao = {
+  /** identidade na tela: 't:<cod>' ou 'g:<chave>' */
+  chave: string;
+  cod_titulo: string | null;
+  grupo: string | null;
+  cods: string[] | null;
+  contraparte: string | null;
+  rubrica: string;
+  categoria: string | null;
+  data: string | null;
+  valor_lancamento: number;
+  valor: number;
+  regra: string;
+  motivo: string;
+  forca: "alta" | "media" | "baixa";
+  /** os lançamentos por trás do montante, quando é grupo */
+  itens: ItemDoGrupo[] | null;
+  /** "10/07 a 22/07", quando é grupo */
+  periodo: string | null;
+};
+
 /* `types.ts` é gerado pelo Supabase CLI e ainda não conhece a tabela criada na
    migration 20260806190000 — mesmo atalho tipado dos valores manuais. */
 const db = supabase as unknown as {
@@ -83,6 +140,8 @@ const linha = (r: Record<string, unknown>): AjusteEbitda => ({
   status: r.status === "recusado" ? "recusado" : "aceito",
   origem: r.origem === "manual" ? "manual" : "sugestao",
   cod_titulo: r.cod_titulo == null ? null : String(r.cod_titulo),
+  grupo: r.grupo == null ? null : String(r.grupo),
+  cods: Array.isArray(r.cods) ? (r.cods as unknown[]).map(String) : null,
   rubrica: r.rubrica == null ? null : String(r.rubrica),
   contraparte: r.contraparte == null ? null : String(r.contraparte),
   data: r.data == null ? null : String(r.data),
@@ -196,15 +255,21 @@ export function PainelAjustesEbitda({
   onMudou: () => void | Promise<void>;
 }) {
   const [candidatos, setCandidatos] = useState<Candidato[]>([]);
+  const [grupos, setGrupos] = useState<Grupo[]>([]);
   const [decididos, setDecididos] = useState<AjusteEbitda[]>([]);
   const [carregando, setCarregando] = useState(false);
   const [erro, setErro] = useState<string | null>(null);
   const [ocupado, setOcupado] = useState<string | null>(null);
   const [piso, setPiso] = useState(5000);
+  /* Busca por nome na lista de sugestões — ver `filtrados`, mais abaixo. Mora
+     aqui em cima com os outros estados porque o mês que fecha precisa limpá-la. */
+  const [busca, setBusca] = useState("");
   const [textos, setTextos] = useState<Map<string, string>>(new Map());
   const [verRecusados, setVerRecusados] = useState(false);
   const [novoValor, setNovoValor] = useState("");
   const [novaDescricao, setNovaDescricao] = useState("");
+  /** grupos com a lista de lançamentos aberta */
+  const [abertos, setAbertos] = useState<Set<string>>(new Set());
 
   /* Quanto de CADA candidato vira ajuste.
      `modos` guarda a escolha (o lançamento todo, ou um pedaço) e `partes` o que
@@ -223,16 +288,26 @@ export function PainelAjustesEbitda({
     setCarregando(true);
     setErro(null);
     try {
-      const [cand, dec] = await Promise.all([
+      const [cand, grup, dec] = await Promise.all([
         db.rpc("ebitda_ajuste_candidatos", { p_mes: alvo.col, p_rubricas: rubricas, p_piso: pisoAtual }),
+        db.rpc("ebitda_ajuste_grupos", { p_mes: alvo.col, p_rubricas: rubricas, p_piso: pisoAtual }),
         db.from("demonstracoes_ebitda_ajuste").select("*"),
       ]);
       if (cand.error) throw new Error(cand.error.message);
+      if (grup.error) throw new Error(grup.error.message);
       setCandidatos(((cand.data as Candidato[]) ?? []).map((c) => ({ ...c, valor: Number(c.valor) })));
+      setGrupos(((grup.data as Grupo[]) ?? []).map((g) => ({
+        ...g,
+        valor: Number(g.valor),
+        valor_lancamento: Number(g.valor_lancamento),
+        hist_mediana: g.hist_mediana == null ? null : Number(g.hist_mediana),
+        itens: (g.itens ?? []).map((i) => ({ ...i, valor: Number(i.valor) })),
+      })));
       setDecididos(((dec.data ?? []) as Record<string, unknown>[]).map(linha).filter((a) => a.col_key === alvo.col));
     } catch (e) {
       setErro(e instanceof Error ? e.message : String(e));
       setCandidatos([]);
+      setGrupos([]);
     } finally {
       setCarregando(false);
     }
@@ -241,8 +316,11 @@ export function PainelAjustesEbitda({
 
   useEffect(() => {
     if (!alvo) {
-      setCandidatos([]); setDecididos([]); setTextos(new Map()); setVerRecusados(false);
-      setModos(new Map()); setPartes(new Map()); setEditando(null);
+      setCandidatos([]); setGrupos([]); setDecididos([]); setTextos(new Map()); setVerRecusados(false);
+      setModos(new Map()); setPartes(new Map()); setEditando(null); setAbertos(new Set());
+      // Busca é da sessão de curadoria daquele mês: reabrir noutro mês com o
+      // termo velho mostraria "0 de 87" e pareceria que não há o que decidir.
+      setBusca("");
       return;
     }
     carregar(piso);
@@ -272,10 +350,94 @@ export function PainelAjustesEbitda({
     return m;
   }, [decididos]);
 
-  const pendentes = useMemo(
-    () => candidatos.filter((c) => !decididosPorTitulo.has(c.cod_titulo)),
-    [candidatos, decididosPorTitulo],
-  );
+  const decididosPorGrupo = useMemo(() => {
+    const m = new Map<string, AjusteEbitda>();
+    for (const d of decididos) if (d.grupo) m.set(d.grupo, d);
+    return m;
+  }, [decididos]);
+
+  /* Títulos que já estão dentro de um grupo DECIDIDO. Sem eles, aceitar o grupo
+     do Datadog e reabrir o painel traria as seis cobranças de volta como
+     sugestões soltas — e aceitar qualquer uma contaria o mesmo dinheiro duas
+     vezes na linha. */
+  const codsJaNoGrupo = useMemo(() => {
+    const s = new Set<string>();
+    for (const d of decididos) for (const c of d.cods ?? []) s.add(c);
+    return s;
+  }, [decididos]);
+
+  /**
+   * Os grupos que ainda esperam decisão, já sem o que foi decidido à parte.
+   *
+   * `recomporGrupo` devolve null quando o que sobrou não é mais um conjunto —
+   * aí o que restou volta a aparecer como sugestão individual, que é o certo.
+   */
+  const gruposPendentes = useMemo(() => {
+    const out: { g: Grupo; itens: ItemDoGrupo[]; cods: string[]; valor_lancamento: number; valor: number }[] = [];
+    for (const g of grupos) {
+      if (decididosPorGrupo.has(g.grupo)) continue;
+      const itens = g.itens.filter((i) => !decididosPorTitulo.has(i.cod_titulo));
+      const r = recomporGrupo(itens, g.regra, g.hist_mediana);
+      if (r) out.push({ g, itens, ...r });
+    }
+    return out;
+  }, [grupos, decididosPorGrupo, decididosPorTitulo]);
+
+  /* O grupo ABSORVE seus lançamentos: eles não aparecem também soltos na lista.
+     Um mesmo gasto oferecido em dois lugares é um convite a somá-lo duas vezes. */
+  const codsAgrupados = useMemo(() => {
+    const s = new Set(codsJaNoGrupo);
+    for (const p of gruposPendentes) for (const c of p.cods) s.add(c);
+    return s;
+  }, [codsJaNoGrupo, gruposPendentes]);
+
+  /** Grupo e título soltos na mesma lista, do maior add-back para o menor. */
+  const pendentes = useMemo<Sugestao[]>(() => {
+    const soltos: Sugestao[] = candidatos
+      .filter((c) => !decididosPorTitulo.has(c.cod_titulo) && !codsAgrupados.has(c.cod_titulo))
+      .map((c) => ({
+        chave: `t:${c.cod_titulo}`,
+        cod_titulo: c.cod_titulo, grupo: null, cods: null,
+        contraparte: c.contraparte, rubrica: c.rubrica, categoria: c.categoria, data: c.data,
+        valor_lancamento: c.valor_lancamento, valor: c.valor,
+        regra: c.regra, motivo: c.motivo, forca: c.forca,
+        itens: null, periodo: null,
+      }));
+
+    const juntos: Sugestao[] = gruposPendentes.map(({ g, itens, cods, valor_lancamento, valor }) => ({
+      chave: `g:${g.grupo}`,
+      cod_titulo: null, grupo: g.grupo, cods,
+      contraparte: g.contraparte, rubrica: g.rubrica, categoria: g.categoria,
+      // A data do ajuste é a primeira cobrança do conjunto — é o que a lista
+      // "no ajuste" mostra, e o que o tracker pergunta ("quando começou?").
+      data: itens[0]?.data ?? g.primeira,
+      valor_lancamento, valor,
+      regra: g.regra, motivo: g.motivo, forca: g.forca,
+      itens,
+      periodo: g.primeira && g.ultima && g.primeira !== g.ultima
+        ? `${dataCurta(g.primeira)} a ${dataCurta(g.ultima)}`
+        : null,
+    }));
+
+    return [...juntos, ...soltos].sort((a, b) => Math.abs(b.valor) - Math.abs(a.valor));
+  }, [candidatos, decididosPorTitulo, codsAgrupados, gruposPendentes]);
+
+  /* Busca por nome. O piso vai ao servidor e refaz o garimpo; isto é filtro de
+     vista, no que já está na tela — quem procura "Datadog" no meio de 123
+     sugestões quer o resultado no mesmo instante, não outra ida ao banco.
+     Casa também rubrica e categoria (é assim que se procura "tudo de ISS") e
+     usa o `normalize` do repo: quem digita "vitoria" acha "PREF MUN.VITORIA ES".
+     Cada palavra digitada tem que aparecer em algum campo — "alude aluguel"
+     acha a linha, e a ordem em que se digita não importa. */
+  const filtrados = useMemo(() => {
+    const termos = normalize(busca).split(" ").filter(Boolean);
+    if (!termos.length) return pendentes;
+    return pendentes.filter((s) => {
+      const alvo = normalize([s.contraparte, s.rubrica, s.categoria].filter(Boolean).join(" "));
+      return termos.every((t) => alvo.includes(t));
+    });
+  }, [pendentes, busca]);
+
   const naLinha = useMemo(() => decididos.filter((d) => d.status === "aceito"), [decididos]);
   const recusados = useMemo(() => decididos.filter((d) => d.status === "recusado"), [decididos]);
 
@@ -283,48 +445,53 @@ export function PainelAjustesEbitda({
   const ajustado = alvo?.ebitda == null ? null : alvo.ebitda + total;
 
   /** Descrição pré-escrita a partir do que a máquina viu — quem aceita edita. */
-  const descricaoDe = (c: Candidato) =>
-    textos.get(c.cod_titulo) ??
-    [c.contraparte, c.categoria].filter(Boolean).join(" · ") ??
+  const descricaoDe = (s: Sugestao) =>
+    textos.get(s.chave) ??
+    [s.contraparte, s.categoria].filter(Boolean).join(" · ") ??
     "";
 
   /* O "salto" já chega repartido pela RPC (ela sugere só o excesso sobre a
      mediana do fornecedor), então esse candidato abre em "Só parte" com o excesso
      preenchido. Os outros abrem em "Valor todo" — nada muda para quem só aceita. */
-  const modoDe = (c: Candidato): "tudo" | "parte" =>
-    modos.get(c.cod_titulo) ?? (ehParcial(c.valor_lancamento, c.valor) ? "parte" : "tudo");
+  const modoDe = (s: Sugestao): "tudo" | "parte" =>
+    modos.get(s.chave) ?? (ehParcial(s.valor_lancamento, s.valor) ? "parte" : "tudo");
 
   /**
-   * Quanto este candidato devolve ao EBITDA e quanto fica no mês, já com sinal.
+   * Quanto esta sugestão devolve ao EBITDA e quanto fica no mês, já com sinal.
    *
    * Em "Só parte" o número sai do que foi digitado — em QUALQUER um dos dois
    * campos, porque o outro é só o complemento. `repartirAjuste` põe o sinal e
-   * segura o teto, então nada aqui precisa saber que despesa mora negativa.
+   * segura o teto, então nada aqui precisa saber que despesa mora negativa. Num
+   * grupo o "inteiro" é a soma das cobranças, e a repartição é a mesma conta.
    */
-  const escolhaDe = (c: Candidato): { valor: number; fica: number } => {
-    const cheio = Number(c.valor_lancamento);
-    if (!Number.isFinite(cheio) || cheio === 0) return { valor: c.valor, fica: 0 };
-    if (modoDe(c) === "tudo") return repartirAjuste(cheio, cheio);
+  const escolhaDe = (s: Sugestao): { valor: number; fica: number } => {
+    const cheio = Number(s.valor_lancamento);
+    if (!Number.isFinite(cheio) || cheio === 0) return { valor: s.valor, fica: 0 };
+    if (modoDe(s) === "tudo") return repartirAjuste(cheio, cheio);
 
-    const p = partes.get(c.cod_titulo);
+    const p = partes.get(s.chave);
     // Sem nada digitado ainda, o campo já vem com a sugestão da máquina.
-    if (!p) return repartirAjuste(cheio, c.valor);
+    if (!p) return repartirAjuste(cheio, s.valor);
     const digitado = Math.abs(paraNumero(p.texto) ?? 0);
     return repartirAjuste(cheio, p.campo === "devolve" ? digitado : Math.abs(cheio) - digitado);
   };
 
-  const aceitar = (c: Candidato) => {
-    const descricao = descricaoDe(c).trim();
-    if (!descricao) { toast.error("Diga por que este lançamento não se repete."); return; }
-    const { valor } = escolhaDe(c);
-    const erro = erroDoAjuste(c.valor_lancamento, valor);
+  const aceitar = (s: Sugestao) => {
+    const descricao = descricaoDe(s).trim();
+    if (!descricao) {
+      toast.error(s.grupo ? "Diga por que estas cobranças não se repetem." : "Diga por que este lançamento não se repete.");
+      return;
+    }
+    const { valor } = escolhaDe(s);
+    const erro = erroDoAjuste(s.valor_lancamento, valor);
     if (erro) { toast.error(erro); return; }
     chamar({
-      acao: "decidir", col_key: alvo!.col, cod_titulo: c.cod_titulo, status: "aceito",
-      valor, valor_lancamento: c.valor_lancamento, rubrica: c.rubrica,
-      contraparte: c.contraparte, data: c.data, descricao,
-      regra: c.regra, motivo_sugestao: c.motivo,
-    }, "Entrou no EBITDA Ajustado.", c.cod_titulo);
+      acao: "decidir", col_key: alvo!.col, status: "aceito",
+      cod_titulo: s.cod_titulo, grupo: s.grupo, cods: s.cods,
+      valor, valor_lancamento: s.valor_lancamento, rubrica: s.rubrica,
+      contraparte: s.contraparte, data: s.data, descricao,
+      regra: s.regra, motivo_sugestao: s.motivo,
+    }, "Entrou no EBITDA Ajustado.", s.chave);
   };
 
   /** Reescreve o valor de um ajuste JÁ aceito — o "na verdade só parte disso". */
@@ -342,12 +509,13 @@ export function PainelAjustesEbitda({
       .then(() => setEditando(null));
   };
 
-  const recusar = (c: Candidato) => chamar({
-    acao: "decidir", col_key: alvo!.col, cod_titulo: c.cod_titulo, status: "recusado",
-    valor: 0, valor_lancamento: c.valor_lancamento, rubrica: c.rubrica,
-    contraparte: c.contraparte, data: c.data, descricao: "Não é ajuste",
-    regra: c.regra, motivo_sugestao: c.motivo,
-  }, "Marcado como recorrente — não volta a aparecer.", c.cod_titulo);
+  const recusar = (s: Sugestao) => chamar({
+    acao: "decidir", col_key: alvo!.col, status: "recusado",
+    cod_titulo: s.cod_titulo, grupo: s.grupo, cods: s.cods,
+    valor: 0, valor_lancamento: s.valor_lancamento, rubrica: s.rubrica,
+    contraparte: s.contraparte, data: s.data, descricao: "Não é ajuste",
+    regra: s.regra, motivo_sugestao: s.motivo,
+  }, "Marcado como recorrente — não volta a aparecer.", s.chave);
 
   const incluirManual = () => {
     const v = paraNumero(novoValor);
@@ -386,7 +554,8 @@ export function PainelAjustesEbitda({
               </div>
               <p className="mt-1 text-[11px] leading-snug text-muted-foreground">
                 Só entra o que já estava <b>dentro</b> do EBITDA — receita, custos e SG&amp;A. A linha é de memória:
-                não mexe no EBITDA nem no Lucro Líquido.
+                não mexe no EBITDA nem no Lucro Líquido. Fornecedor que veio em <b>várias cobranças</b> no mês
+                aparece somado, com os lançamentos abertos por baixo.
               </p>
             </SheetHeader>
 
@@ -410,13 +579,15 @@ export function PainelAjustesEbitda({
                             {[
                               a.origem === "manual" ? "avulso" : a.contraparte,
                               a.rubrica,
+                              a.cods?.length ? `${a.cods.length} lançamentos` : null,
                               a.data ? dataCurta(a.data) : null,
                               a.autor_email,
                             ].filter(Boolean).join(" · ")}
                           </div>
                           {ehParcial(a.valor_lancamento, a.valor) && (
                             <div className="mt-0.5 text-[10.5px] text-teal-800">
-                              Só uma parte: o lançamento inteiro foi {moeda(Math.abs(a.valor_lancamento!))} e
+                              Só uma parte: {a.grupo ? "as cobranças somaram" : "o lançamento inteiro foi"}{" "}
+                              {moeda(Math.abs(a.valor_lancamento!))} e
                               ficam {moeda(Math.abs(a.valor_lancamento! + a.valor))} em {alvo.colLabel}.
                             </div>
                           )}
@@ -475,19 +646,40 @@ export function PainelAjustesEbitda({
               <section>
                 <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
                   <h3 className="text-[11px] font-semibold tracking-[0.06em] text-muted-foreground">
-                    SUGESTÕES ({pendentes.length})
+                    SUGESTÕES ({busca.trim() ? `${filtrados.length} de ${pendentes.length}` : pendentes.length})
                   </h3>
-                  <label className="flex items-center gap-1.5 text-[10.5px] text-muted-foreground">
-                    A partir de R$
-                    <input
-                      value={piso}
-                      onChange={(e) => setPiso(Number(e.target.value.replace(/\D/g, "")) || 0)}
-                      onBlur={() => carregar(piso)}
-                      onKeyDown={(e) => { if (e.key === "Enter") carregar(piso); }}
-                      inputMode="numeric"
-                      className="num w-[72px] rounded border border-input bg-background px-1.5 py-0.5 text-right text-[11px]"
-                    />
-                  </label>
+                  <div className="flex items-center gap-2">
+                    <div className="relative">
+                      <Search className="pointer-events-none absolute left-2 top-1/2 h-3 w-3 -translate-y-1/2 text-muted-foreground" />
+                      <input
+                        value={busca}
+                        onChange={(e) => setBusca(e.target.value)}
+                        onKeyDown={(e) => { if (e.key === "Escape") setBusca(""); }}
+                        placeholder="Buscar fornecedor, rubrica…"
+                        className="h-6 w-[190px] rounded border border-input bg-background pl-6 pr-6 text-[11px] placeholder:text-muted-foreground/70 focus:outline-none focus:ring-1 focus:ring-ring"
+                      />
+                      {busca && (
+                        <button
+                          onClick={() => setBusca("")}
+                          title="Limpar busca"
+                          className="absolute right-1 top-1/2 inline-flex h-4 w-4 -translate-y-1/2 items-center justify-center rounded text-muted-foreground hover:bg-muted"
+                        >
+                          <X className="h-3 w-3" />
+                        </button>
+                      )}
+                    </div>
+                    <label className="flex items-center gap-1.5 text-[10.5px] text-muted-foreground">
+                      A partir de R$
+                      <input
+                        value={piso}
+                        onChange={(e) => setPiso(Number(e.target.value.replace(/\D/g, "")) || 0)}
+                        onBlur={() => carregar(piso)}
+                        onKeyDown={(e) => { if (e.key === "Enter") carregar(piso); }}
+                        inputMode="numeric"
+                        className="num w-[72px] rounded border border-input bg-background px-1.5 py-0.5 text-right text-[11px]"
+                      />
+                    </label>
+                  </div>
                 </div>
 
                 {carregando ? (
@@ -502,25 +694,37 @@ export function PainelAjustesEbitda({
                   <div className="rounded-md border border-dashed border-border px-3 py-4 text-center text-[12px] text-muted-foreground">
                     Nada fora do padrão acima de {moeda(piso)} neste mês. Baixe o piso para olhar mais fundo.
                   </div>
+                ) : !filtrados.length ? (
+                  /* Vazio de busca é diferente de vazio de mês: aqui as sugestões
+                     existem, só não casam com o que se digitou — e o piso é a
+                     outra razão possível para o fornecedor não estar na lista. */
+                  <div className="rounded-md border border-dashed border-border px-3 py-4 text-center text-[12px] text-muted-foreground">
+                    Nenhuma das {pendentes.length} sugestões casa com “{busca.trim()}”.{" "}
+                    <button onClick={() => setBusca("")} className="underline decoration-dotted underline-offset-2 hover:text-foreground">
+                      Limpar a busca
+                    </button>{" "}
+                    ou baixe o piso de {moeda(piso)}.
+                  </div>
                 ) : (
                   <div className="space-y-2">
-                    {pendentes.map((c) => {
+                    {filtrados.map((c) => {
                       const modo = modoDe(c);
                       const esc = escolhaDe(c);
-                      const p = partes.get(c.cod_titulo);
+                      const p = partes.get(c.chave);
                       const erroParte = erroDoAjuste(c.valor_lancamento, esc.valor);
                       const digitar = (campo: "devolve" | "fica", texto: string) =>
-                        setPartes((m) => new Map(m).set(c.cod_titulo, { campo, texto }));
+                        setPartes((m) => new Map(m).set(c.chave, { campo, texto }));
+                      const aberto = abertos.has(c.chave);
 
                       return (
-                      <div key={c.cod_titulo} className="rounded-md border border-border bg-card px-3 py-2.5">
+                      <div key={c.chave} className="rounded-md border border-border bg-card px-3 py-2.5">
                         <div className="flex items-start justify-between gap-2">
                           <div className="min-w-0">
                             <div className="truncate text-[12.5px] font-medium text-foreground">
                               {c.contraparte ?? "Contraparte não identificada"}
                             </div>
                             <div className="mt-0.5 text-[10.5px] text-muted-foreground">
-                              {[c.rubrica, dataCurta(c.data), c.categoria].filter(Boolean).join(" · ")}
+                              {[c.rubrica, c.periodo ?? dataCurta(c.data), c.categoria].filter(Boolean).join(" · ")}
                             </div>
                           </div>
                           <div className="shrink-0 text-right">
@@ -551,6 +755,42 @@ export function PainelAjustesEbitda({
                           {c.motivo}
                         </p>
 
+                        {/* De que o montante é feito. Sem abrir, o número grande
+                            é um pedido de fé; aberto, dá para ver que as seis
+                            cobranças do Datadog são a mesma assinatura chegando
+                            atrasada — e é isso que se leva para o tracker. */}
+                        {c.itens && (
+                          <div className="mt-1.5">
+                            <button
+                              onClick={() => setAbertos((s) => {
+                                const n = new Set(s);
+                                if (n.has(c.chave)) n.delete(c.chave); else n.add(c.chave);
+                                return n;
+                              })}
+                              className="inline-flex items-center gap-1 rounded px-1 py-0.5 text-[10.5px] font-medium text-teal-800 transition hover:bg-teal-50"
+                            >
+                              {aberto ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
+                              {c.itens.length} lançamentos somados
+                            </button>
+                            {aberto && (
+                              <div className="mt-1 max-h-52 overflow-y-auto rounded border border-border bg-muted/30">
+                                {c.itens.map((i) => (
+                                  <div
+                                    key={i.cod_titulo}
+                                    className="flex items-center gap-2 border-b border-border/60 px-2 py-1 text-[10.5px] text-muted-foreground last:border-b-0"
+                                  >
+                                    <span className="num w-[38px] shrink-0">{dataCurta(i.data)}</span>
+                                    <span className="min-w-0 flex-1 truncate">{i.categoria ?? "—"}</span>
+                                    <span className="num shrink-0 tabular-nums" title={valorExato(i.valor)}>
+                                      {moeda(Math.abs(i.valor))}
+                                    </span>
+                                  </div>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+                        )}
+
                         {/* Quanto do lançamento é ajuste.
                             Uma fatura atrasada não é one-off inteira: os R$ 40 mil
                             do Datadog em julho traziam meses anteriores, mas a
@@ -562,7 +802,7 @@ export function PainelAjustesEbitda({
                             {([["tudo", "Valor todo"], ["parte", "Só parte"]] as const).map(([m, rotulo]) => (
                               <button
                                 key={m}
-                                onClick={() => setModos((x) => new Map(x).set(c.cod_titulo, m))}
+                                onClick={() => setModos((x) => new Map(x).set(c.chave, m))}
                                 className={cn(
                                   "rounded px-2 py-0.5 text-[10.5px] font-medium transition",
                                   modo === m ? "bg-teal-700 text-white" : "text-muted-foreground hover:bg-secondary",
@@ -603,21 +843,21 @@ export function PainelAjustesEbitda({
                         <div className="mt-2 flex items-center gap-1.5">
                           <input
                             value={descricaoDe(c)}
-                            onChange={(e) => setTextos((m) => new Map(m).set(c.cod_titulo, e.target.value))}
+                            onChange={(e) => setTextos((m) => new Map(m).set(c.chave, e.target.value))}
                             placeholder="Por que não se repete? (fica na DRE e vai para a IA)"
                             className="min-w-0 flex-1 rounded-md border border-input bg-background px-2 py-1 text-[11.5px] focus:outline-none focus:ring-1 focus:ring-ring"
                           />
                           <button
                             onClick={() => aceitar(c)}
-                            disabled={ocupado === c.cod_titulo || !!erroParte}
+                            disabled={ocupado === c.chave || !!erroParte}
                             className="inline-flex shrink-0 items-center gap-1 rounded-md bg-teal-700 px-2 py-1 text-[11px] font-medium text-white transition hover:bg-teal-800 disabled:opacity-50"
                           >
-                            {ocupado === c.cod_titulo ? <Loader2 className="h-3 w-3 animate-spin" /> : <Check className="h-3 w-3" />}
+                            {ocupado === c.chave ? <Loader2 className="h-3 w-3 animate-spin" /> : <Check className="h-3 w-3" />}
                             É ajuste
                           </button>
                           <button
                             onClick={() => recusar(c)}
-                            disabled={ocupado === c.cod_titulo}
+                            disabled={ocupado === c.chave}
                             title="É gasto recorrente — não some ao EBITDA Ajustado"
                             className="inline-flex shrink-0 items-center gap-1 rounded-md border border-border px-2 py-1 text-[11px] text-muted-foreground transition hover:bg-secondary disabled:opacity-50"
                           >
@@ -647,6 +887,7 @@ export function PainelAjustesEbitda({
                         <div key={a.id} className="flex items-center gap-2 rounded-md border border-border px-3 py-1.5 text-[11.5px] text-muted-foreground">
                           <span className="min-w-0 flex-1 truncate">
                             {a.contraparte ?? "—"}
+                            {!!a.cods?.length && <span> · {a.cods.length} lançamentos</span>}
                             {a.valor_lancamento != null && <span className="num"> · {moeda(Math.abs(a.valor_lancamento))}</span>}
                           </span>
                           <button

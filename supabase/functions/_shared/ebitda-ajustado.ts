@@ -196,7 +196,7 @@ export async function contextoAjustesEbitda(
 ): Promise<string> {
   const { data, error } = await supabase
     .from("demonstracoes_ebitda_ajuste")
-    .select("col_key,valor,valor_lancamento,descricao,rubrica,contraparte")
+    .select("col_key,valor,valor_lancamento,descricao,rubrica,contraparte,cods")
     .eq("status", "aceito")
     .order("col_key", { ascending: true })
     .limit(200);
@@ -204,6 +204,9 @@ export async function contextoAjustesEbitda(
 
   const brl = (n: number) =>
     n.toLocaleString("pt-BR", { style: "currency", currency: "BRL", maximumFractionDigits: 2 });
+
+  /** Quantos lançamentos o ajuste consolida, ou 0 quando é um título só. */
+  const grupoDe = (r: Record<string, unknown>) => (Array.isArray(r.cods) ? r.cods.length : 0);
 
   const linhas = (data as Record<string, unknown>[]).map((r) => {
     const v = Number(r.valor ?? 0);
@@ -214,9 +217,13 @@ export async function contextoAjustesEbitda(
     const cheio = r.valor_lancamento == null ? null : Number(r.valor_lancamento);
     const resto = cheio == null ? null : Math.abs(cheio + v);
     const parcial = cheio != null && resto != null && Math.abs(Math.abs(v) - Math.abs(cheio)) > 0.01
-      ? ` [parcial: o lançamento foi ${brl(Math.abs(cheio))} e ${brl(resto)} continuam no EBITDA como gasto normal do mês]`
+      ? ` [parcial: ${grupoDe(r) ? "as cobranças somaram" : "o lançamento foi"} ${brl(Math.abs(cheio))} e ${brl(resto)} continuam no EBITDA como gasto normal do mês]`
       : "";
-    return `- ${r.col_key} · ${v > 0 ? "+" : ""}${brl(v)} · ${r.descricao}${onde ? ` (${onde})` : ""}${parcial}`;
+    /* O ajuste consolidado precisa se anunciar como consolidado: sem isto a IA
+       lê "+49,4k de Datadog" e procura UMA fatura de R$ 49 mil que não existe —
+       foram seis cobranças do mesmo fornecedor caindo no mesmo mês. */
+    const juntos = grupoDe(r) ? ` [${grupoDe(r)} lançamentos do mesmo fornecedor, somados]` : "";
+    return `- ${r.col_key} · ${v > 0 ? "+" : ""}${brl(v)} · ${r.descricao}${onde ? ` (${onde})` : ""}${juntos}${parcial}`;
   });
 
   return [

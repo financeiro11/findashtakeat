@@ -1,7 +1,8 @@
 import { describe, it, expect } from "vitest";
 import {
   rubricasDoEbitda, addBack, somaAjustes, precisaRecalcular, LINHAS_DO_AJUSTE,
-  repartirAjuste, erroDoAjuste, ehParcial,
+  repartirAjuste, erroDoAjuste, ehParcial, ehGrupo, recomporGrupo, rotuloRegra,
+  type ItemDoGrupo,
 } from "./ebitdaAjustado";
 import { DRE_SCHEMA } from "./demonstracoes-schema";
 import {
@@ -176,6 +177,97 @@ describe("ehParcial", () => {
 
   it("avulso não é parcial — não há inteiro do qual ser parte", () => {
     expect(ehParcial(null, 5000)).toBe(false);
+  });
+});
+
+/* --------------------------------------------------------------------------
+ * Grupos. Os números são os reais de Jul-26: o DATADOG entrou em seis cobranças
+ * somando R$ 49.443,10 e a LICENCA INHIRE em cinco de R$ 990.
+ * ------------------------------------------------------------------------ */
+
+const datadog = (): ItemDoGrupo[] => [
+  { cod_titulo: "5504196624", data: "2026-07-10", categoria: "Servidor", valor: -4941.75 },
+  { cod_titulo: "5504196712", data: "2026-07-15", categoria: "Servidor", valor: -7350.54 },
+  { cod_titulo: "5504196716", data: "2026-07-15", categoria: "Servidor", valor: -8493.96 },
+  { cod_titulo: "5504196718", data: "2026-07-15", categoria: "Servidor", valor: -11137.41 },
+  { cod_titulo: "5504196719", data: "2026-07-15", categoria: "Servidor", valor: -12236.59 },
+  { cod_titulo: "5504196830", data: "2026-07-22", categoria: "Servidor", valor: -5282.85 },
+];
+
+describe("recomporGrupo", () => {
+  it("soma as seis cobranças do Datadog num add-back só", () => {
+    const r = recomporGrupo(datadog(), "grupo_novo", null)!;
+    expect(r.lancamentos).toBe(6);
+    expect(r.valor_lancamento).toBe(-49443.1);
+    expect(r.valor).toBe(49443.1);        // despesa vira positivo
+    expect(r.cods).toHaveLength(6);
+  });
+
+  it("no salto devolve só o excesso sobre a mediana MENSAL do fornecedor", () => {
+    // a Inhire cobra R$ 990/mês e mandou cinco de uma vez: R$ 3.960 é o atraso,
+    // R$ 990 continuam sendo o custo normal do mês
+    const inhire: ItemDoGrupo[] = Array.from({ length: 5 }, (_, i) => ({
+      cod_titulo: `t${i}`, data: "2026-07-13", categoria: "Softwares", valor: -990,
+    }));
+    const r = recomporGrupo(inhire, "grupo_salto", 990)!;
+    expect(r.valor_lancamento).toBe(-4950);
+    expect(r.valor).toBe(3960);
+  });
+
+  it("tira o lançamento que já foi decidido sozinho, para não contar duas vezes", () => {
+    const semUm = datadog().filter((i) => i.cod_titulo !== "5504196719"); // -12.236,59
+    const r = recomporGrupo(semUm, "grupo_novo", null)!;
+    expect(r.lancamentos).toBe(5);
+    expect(r.valor).toBe(37206.51);       // 49.443,10 - 12.236,59
+    expect(r.cods).not.toContain("5504196719");
+  });
+
+  it("sobrou um lançamento só: não é mais grupo, volta a ser sugestão individual", () => {
+    expect(recomporGrupo(datadog().slice(0, 1), "grupo_novo", null)).toBeNull();
+    expect(recomporGrupo([], "grupo_novo", null)).toBeNull();
+  });
+
+  it("mediana que engole o grupo inteiro não vira ajuste de zero", () => {
+    // sem isto o painel ofereceria um "ajuste" de R$ 0,00, que a validação
+    // rejeitaria só depois do clique
+    expect(recomporGrupo(datadog(), "grupo_salto", 99999)).toBeNull();
+  });
+
+  it("a mediana só desconta no salto — no fornecedor novo o add-back é tudo", () => {
+    expect(recomporGrupo(datadog(), "grupo_novo", 4000)!.valor).toBe(49443.1);
+    expect(recomporGrupo(datadog(), "grupo_esporadico", 4000)!.valor).toBe(49443.1);
+  });
+
+  it("grupo de receita não recorrente sai do EBITDA em vez de entrar", () => {
+    const receita: ItemDoGrupo[] = [
+      { cod_titulo: "a", data: "2026-07-01", categoria: "Markup", valor: 8000 },
+      { cod_titulo: "b", data: "2026-07-09", categoria: "Markup", valor: 12000 },
+    ];
+    const r = recomporGrupo(receita, "grupo_novo", null)!;
+    expect(r.valor_lancamento).toBe(20000);
+    expect(r.valor).toBe(-20000);
+  });
+
+  it("o resultado passa pela mesma validação de um lançamento solto", () => {
+    const r = recomporGrupo(datadog(), "grupo_novo", null)!;
+    expect(erroDoAjuste(r.valor_lancamento, r.valor)).toBeNull();
+    // e o parcial em cima do grupo continua valendo
+    expect(repartirAjuste(r.valor_lancamento, 42943.1)).toEqual({ valor: 42943.1, fica: -6500 });
+  });
+});
+
+describe("ehGrupo e rotuloRegra", () => {
+  it("reconhece as regras de conjunto", () => {
+    expect(ehGrupo("grupo_novo")).toBe(true);
+    expect(ehGrupo("contraparte_nova")).toBe(false);
+    expect(ehGrupo(null)).toBe(false);
+  });
+
+  it("regra de grupo e regra de título dizem a mesma coisa na tela", () => {
+    // é o mesmo sinal, medido no total do mês em vez de num lançamento
+    expect(rotuloRegra("grupo_novo")).toBe(rotuloRegra("contraparte_nova"));
+    expect(rotuloRegra("grupo_esporadico")).toBe(rotuloRegra("esporadico"));
+    expect(rotuloRegra("grupo_salto")).toBe(rotuloRegra("salto"));
   });
 });
 

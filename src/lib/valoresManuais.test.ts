@@ -154,6 +154,42 @@ describe("aplicarManuaisNoBlob", () => {
     expect(celula(segunda, "Lucro Líquido", "May-26")).toBe(-446269); // não -447269
   });
 
+  /* O bug que fazia a Margem de contribuição nascer errada logo depois de
+     importar o tracker. O arquivo é a fonte de verdade: chega com a rubrica JÁ
+     no valor que alguém digitou à mão e com os totais já batendo com ela. Como a
+     célula coincidia com `valor_aplicado`, a heurística de "o sync não passou
+     aqui" ligava, a base virava o `valor_base` velho do Omie e o delta contra
+     ele era ressomado em cima de totais que já estavam certos. */
+  it("import de tracker não ressoma o delta nos totais que já vieram certos", () => {
+    const guardado = manual({ rubrica: "Servidor", valor: -100000, valor_base: -95366, valor_aplicado: -100000 });
+    // O tracker traz a rubrica no valor digitado e os totais coerentes com ela.
+    const doTracker = blob();
+    doTracker.rows[0]["May-26"] = -100000;
+    doTracker.rows[1]["May-26"] = -267891;  // (-) Custos Operacionais
+    doTracker.rows[3]["May-26"] = 745734;   // Margem de contribuição
+    doTracker.rows[4]["May-26"] = -495853;  // EBITDA
+
+    const { dados } = aplicarManuaisNoBlob(
+      "dre", doTracker, [guardado], new Set(["May-26"]), [], new Set(["May-26"]),
+    );
+
+    expect(celula(dados, "Servidor", "May-26")).toBe(-100000);
+    expect(celula(dados, "(-) Custos Operacionais", "May-26")).toBe(-267891);
+    expect(celula(dados, "Margem de contribuição", "May-26")).toBe(745734);
+    expect(celula(dados, "EBITDA", "May-26")).toBe(-495853);
+  });
+
+  it("import de tracker ainda aplica o manual que o arquivo não traz", () => {
+    // O tracker não tem "(-) Juros": o manual continua valendo e o total desce.
+    const guardado = manual({ valor_base: null, valor_aplicado: -1000 });
+    const { dados } = aplicarManuaisNoBlob(
+      "dre", blob(), [guardado], new Set(["May-26"]), [], new Set(["May-26"]),
+    );
+
+    expect(celula(dados, "(-) Juros", "May-26")).toBe(-1000);
+    expect(celula(dados, "Lucro Líquido", "May-26")).toBe(-446269);
+  });
+
   it("remover devolve a célula e o total ao automático", () => {
     const aplicado = aplicarManuaisNoBlob("dre", blob(), [manual()], new Set());
     const removido = manual({ valor_base: null, valor_aplicado: -1000 });
@@ -194,5 +230,74 @@ describe("aplicarManuaisNoBlob", () => {
 
     expect(dados.columns).toEqual(["Conta", "May-26", "Jun-26", "Jul-26"]);
     expect(celula(dados, "(-) Juros", "Jul-26")).toBe(-500);
+  });
+});
+
+/* --------------------------------------------------------------------------
+ * O caso real, com os números de Jul-26 que estavam no banco.
+ *
+ * Reproduz o import do "Tracker vOMIE Automática (Realizado)" com as dez linhas
+ * de `demonstracoes_valor_manual` que existiam para o mês. O primeiro teste
+ * congela o BUG (a Margem que apareceu na tela) para que, se a heurística
+ * voltar, a suíte diga exatamente qual número volta a sair errado.
+ * ------------------------------------------------------------------------ */
+
+const JUL = "Jul-26";
+const manualJul = (rubrica: string, valor: number, valor_base: number | null): ValorManual => ({
+  id: rubrica, tipo: "dre", rubrica, col_key: JUL, modo: "substitui", valor, valor_base, valor_aplicado: valor,
+});
+
+const MANUAIS_JUL26 = [
+  manualJul("Campanhas de Outros Canais", -13000, -13000),
+  manualJul("COFINS", -33238, -36587.87),
+  manualJul("Comissões Consultores / Parceiros", -4529, -6222.18),
+  manualJul("Devoluções", -23973, -2309),
+  manualJul("ISS", -22159, -24392.06),
+  manualJul("Meios de Pagamento", -20866.1, -20866),
+  manualJul("MGM", -1700, -400),
+  manualJul("Outros Custos", -257, null),
+  manualJul("PIS", -7202, -7927.37),
+  manualJul("Receita Markup", 19396, 16520.95),
+];
+
+/** Jul-26 como o arquivo do tracker manda — a demonstração fechada. */
+const doTracker = (): Dados => ({
+  columns: ["Conta", JUL],
+  rows: ([
+    ["Receita de Assinaturas", 1180342], ["Enterprise", 52588], ["Receita Recorrente", 1232930],
+    ["Receita com Materiais", 2113], ["Receita Markup", 19396], ["Receita Spot", 21509],
+    ["Receita Bruta", 1254439],
+    ["PIS", -7202], ["COFINS", -33238], ["ISS", -22159], ["Devoluções", -23973],
+    ["(-) Deduções da receita", -86572], ["Receita Líquida", 1167867],
+    ["Equipe Operacional", -72385], ["Premiações Operacionais", -22448], ["Meios de Pagamento", -20866],
+    ["CMV Materiais", -4063], ["Servidor", -140003], ["Softwares Operacionais", -53199], ["Outros Custos", -257],
+    ["(-) Custos Operacionais", -313222], ["Margem de contribuição", 854646],
+    ["Pessoal", -556067], ["Despesas Administrativas", -144086],
+    ["Campanhas de Outros Canais", -13000], ["Comissões Consultores / Parceiros", -4529], ["MGM", -1700],
+    ["Despesas Marketing & Vendas", -532824], ["(-) SG&A", -1232977],
+    ["EBITDA", -378331], ["Lucro Líquido", -357769],
+  ] as [string, number][]).map(([Conta, v]) => ({ Conta, [JUL]: v })),
+});
+
+describe("import do tracker · Jul-26 real", () => {
+  it("sem a marca de coluna reescrita, sai o mês errado que apareceu na tela", () => {
+    const { dados } = aplicarManuaisNoBlob("dre", doTracker(), MANUAIS_JUL26, new Set([JUL]));
+    expect(celula(dados, "Margem de contribuição", JUL)).toBe(841908.25);
+    expect(celula(dados, "EBITDA", JUL)).toBe(-390675.57);
+  });
+
+  it("com ela, o mês é o do tracker de ponta a ponta", () => {
+    const { dados } = aplicarManuaisNoBlob(
+      "dre", doTracker(), MANUAIS_JUL26, new Set([JUL]), [], new Set([JUL]),
+    );
+    expect(celula(dados, "Receita Bruta", JUL)).toBe(1254439);
+    expect(celula(dados, "(-) Deduções da receita", JUL)).toBe(-86572);
+    expect(celula(dados, "Receita Líquida", JUL)).toBe(1167867);
+    expect(celula(dados, "(-) SG&A", JUL)).toBe(-1232977);
+    // Os R$ 0,10 são o único manual que de fato diverge do arquivo: alguém
+    // digitou -20.866,10 em Meios de Pagamento e o tracker traz -20.866.
+    expect(celula(dados, "Margem de contribuição", JUL)).toBe(854645.9);
+    expect(celula(dados, "EBITDA", JUL)).toBe(-378331.1);
+    expect(celula(dados, "Lucro Líquido", JUL)).toBe(-357769.1);
   });
 });

@@ -1,5 +1,7 @@
 /* Central do Financeiro — Design tokens */
-:root {
+/* `.tema-claro` acompanha o `:root` para a folha exportada (ver index.css) poder
+   sair clara mesmo com o Hub no escuro. */
+:root, .tema-claro {
   /* Brand */
   --takeat-red: 0 78% 47%;
   --takeat-red-hover: 0 78% 40%;

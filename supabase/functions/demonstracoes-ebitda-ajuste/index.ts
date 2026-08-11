@@ -15,7 +15,8 @@
 // o cache muda; só a decisão é durável.
 //
 // Body:
-//   { acao: "decidir", col_key, cod_titulo, status: "aceito"|"recusado",
+//   { acao: "decidir", col_key, cod_titulo | (grupo + cods[]),
+//     status: "aceito"|"recusado",
 //     valor, descricao, valor_lancamento?, rubrica?, contraparte?, data?,
 //     regra?, motivo_sugestao? }
 //   { acao: "manual",   col_key, valor, descricao, rubrica? }
@@ -26,6 +27,7 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.0";
 import { requireUser } from "../_shared/auth.ts";
 import { aplicarEbitdaAjustado, erroDoAjuste, type Dados } from "../_shared/ebitda-ajustado.ts";
+import { recalcularDerivadas } from "../_shared/derivadas.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -75,19 +77,50 @@ Deno.serve(async (req) => {
     const autor = { autor: caller.userId, autor_email: caller.email ?? null };
     const agora = new Date().toISOString();
 
+    /* O mês que ESTA chamada mexeu. Só nele os derivados são refeitos: um ajuste
+       em Jul não pode reescrever o total de Jun, que já está fechado. Fica null
+       no "recalcular", que não decide nada — ali `aplicarEbitdaAjustado` já
+       reescreve as duas linhas dele e mais nada precisa mudar. */
+    let mesAfetado: string | null = null;
+    /** O mês de um ajuste já gravado — para "editar" e "remover", que vêm por id. */
+    const mesDoAjuste = async (id: string): Promise<string | null> => {
+      const { data } = await supabase
+        .from("demonstracoes_ebitda_ajuste").select("col_key").eq("id", id).maybeSingle();
+      return data?.col_key ? String(data.col_key) : null;
+    };
+
     if (acao === "decidir") {
       const colKey = String(body?.col_key ?? "").trim();
       const codTitulo = String(body?.cod_titulo ?? "").trim();
+      /* Decisão sobre um CONJUNTO de lançamentos: o Datadog que chegou em seis
+         cobranças, a Inhire em cinco licenças. Uma linha só, com `cods` dizendo
+         de que ela é feita — é o que impede a tela de oferecer o mesmo gasto
+         outra vez, agora solto. Ver a migration 20260811190000. */
+      const grupo = String(body?.grupo ?? "").trim();
+      const cods = Array.isArray(body?.cods)
+        ? (body.cods as unknown[]).map((c) => String(c).trim()).filter(Boolean)
+        : [];
       const status = body?.status === "recusado" ? "recusado" : "aceito";
       const descricao = String(body?.descricao ?? "").trim();
       const valor = Number(body?.valor);
 
       if (!mesValido(colKey)) return json({ error: `mês inválido: ${colKey}` }, 200);
-      if (!codTitulo) return json({ error: "cod_titulo obrigatório." }, 200);
+      mesAfetado = colKey;
+      if (!codTitulo && !grupo) return json({ error: "cod_titulo ou grupo obrigatório." }, 200);
+      if (codTitulo && grupo) return json({ error: "a decisão é sobre um título OU sobre um grupo, não os dois." }, 200);
+      // Grupo sem os títulos por trás seria um número sem origem — e a tela
+      // voltaria a oferecer os mesmos lançamentos soltos na abertura seguinte.
+      if (grupo && cods.length < 2) return json({ error: "um grupo precisa de pelo menos dois lançamentos." }, 200);
       // A descrição é o ajuste. Sem ela sobra um número que ninguém sabe
       // defender seis meses depois, que é exatamente o que a linha existe para
       // evitar. Recusar não precisa — "não é ajuste" já se explica.
-      if (status === "aceito" && !descricao) return json({ error: "diga por que este lançamento não se repete." }, 200);
+      if (status === "aceito" && !descricao) {
+        return json({
+          error: grupo
+            ? "diga por que estas cobranças não se repetem."
+            : "diga por que este lançamento não se repete.",
+        }, 200);
+      }
 
       const lancamento = Number.isFinite(Number(body?.valor_lancamento)) ? cent(Number(body.valor_lancamento)) : null;
       /* O ajuste pode ser só um PEDAÇO do lançamento — a fatura atrasada de R$ 40
@@ -101,13 +134,16 @@ Deno.serve(async (req) => {
         if (erro) return json({ error: erro }, 200);
       }
 
-      /* `onConflict` aponta para `demonstracoes_ebitda_ajuste_titulo_uk`, que
-         PRECISA ser um unique index CHEIO. Enquanto ele foi parcial
-         (`where cod_titulo is not null`) o Postgres se recusou a inferi-lo e
-         devolveu 42P10 em toda decisão — ver a migration 20260806220000. */
+      /* `onConflict` aponta para `demonstracoes_ebitda_ajuste_titulo_uk` (ou
+         `..._grupo_uk`), e os dois PRECISAM ser unique index CHEIOS. Enquanto o
+         de título foi parcial (`where cod_titulo is not null`) o Postgres se
+         recusou a inferi-lo e devolveu 42P10 em toda decisão — ver as migrations
+         20260806220000 e 20260811190000. */
       const { error } = await supabase.from("demonstracoes_ebitda_ajuste").upsert({
         col_key: colKey,
-        cod_titulo: codTitulo,
+        cod_titulo: codTitulo || null,
+        grupo: grupo || null,
+        cods: grupo ? cods : null,
         status,
         origem: "sugestao",
         rubrica: body?.rubrica ? String(body.rubrica) : null,
@@ -121,7 +157,7 @@ Deno.serve(async (req) => {
         ...autor,
         decidido_em: agora,
         atualizado_em: agora,
-      }, { onConflict: "col_key,cod_titulo" });
+      }, { onConflict: grupo ? "col_key,grupo" : "col_key,cod_titulo" });
       if (error) throw error;
 
     } else if (acao === "manual") {
@@ -130,6 +166,7 @@ Deno.serve(async (req) => {
       const valor = Number(body?.valor);
 
       if (!mesValido(colKey)) return json({ error: `mês inválido: ${colKey}` }, 200);
+      mesAfetado = colKey;
       if (!descricao) return json({ error: "descreva o ajuste." }, 200);
       if (!Number.isFinite(valor) || valor === 0) return json({ error: "valor do ajuste inválido." }, 200);
 
@@ -150,6 +187,7 @@ Deno.serve(async (req) => {
     } else if (acao === "editar") {
       const id = String(body?.id ?? "").trim();
       if (!id) return json({ error: "id obrigatório." }, 200);
+      mesAfetado = await mesDoAjuste(id);
       const patch: Record<string, unknown> = { ...autor, atualizado_em: agora };
       if (body?.descricao !== undefined) {
         const d = String(body.descricao).trim();
@@ -181,6 +219,7 @@ Deno.serve(async (req) => {
     } else if (acao === "remover") {
       const id = String(body?.id ?? "").trim();
       if (!id) return json({ error: "id obrigatório." }, 200);
+      mesAfetado = await mesDoAjuste(id); // antes de apagar, senão some com a linha
       const { error } = await supabase.from("demonstracoes_ebitda_ajuste").delete().eq("id", id);
       if (error) throw error;
 
@@ -204,7 +243,10 @@ Deno.serve(async (req) => {
     if (blobErr) throw blobErr;
 
     const bruto: Dados = (blobRow?.dados as Dados) ?? { columns: [], rows: [] };
-    const dados = await aplicarEbitdaAjustado(supabase, "dre", bruto);
+    const comAjustado = await aplicarEbitdaAjustado(supabase, "dre", bruto);
+    // A margem do EBITDA Ajustado sai da linha que acabou de mudar — só no mês
+    // desta decisão, nunca nos outros, que podem estar fechados.
+    const dados = recalcularDerivadas("dre", comAjustado, new Set(mesAfetado ? [mesAfetado] : []));
 
     const { error: upErr } = await supabase.from("demonstracoes_contabeis")
       .upsert({ tipo: "dre", periodo: "completo", dados, pdf_path: null }, { onConflict: "tipo,periodo" });

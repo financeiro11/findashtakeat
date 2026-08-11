@@ -47,7 +47,7 @@ import { ExportarRevisao } from "@/components/demonstracoes/ExportarRevisao";
 import { MontadorApresentacao } from "@/components/demonstracoes/MontadorApresentacao";
 import { CardSerie, CardTexto } from "@/components/demonstracoes/CardsApresentacao";
 import {
-  nomeLivre, roteiroPadrao, sanear, serieDaRubrica, ROTEIRO_VAZIO,
+  expandirGrupos, nomeLivre, roteiroPadrao, sanear, serieDaRubrica, ROTEIRO_VAZIO,
   type ItemCatalogo, type Peca, type Roteiro,
 } from "@/lib/apresentacao";
 import { ModelosApresentacao } from "@/components/demonstracoes/ModelosApresentacao";
@@ -168,8 +168,8 @@ type Congelado = {
 const CARDS_META: Record<string, { rotulo: string; grupo?: string; vazio?: boolean }> = {
   "resumo.cabecalho":       { rotulo: "Título · Resumo" },
   "resumo.veredicto":       { rotulo: "Veredicto do mês" },
-  "resumo.kpis-resultado":  { rotulo: "KPIs · receita, margem, EBITDA e SG&A" },
-  "resumo.kpis-base":       { rotulo: "KPIs · caixa, runway, clientes e churn" },
+  /* As duas fileiras de KPI do Resumo estão em `FILEIRAS`, logo abaixo: elas não
+     são card, são quatro cada uma. */
   "resumo.aviso-carteira":  { rotulo: "Aviso · carteira de outro mês", vazio: true },
   "resumo.destaques":       { rotulo: "Os três destaques" },
   "dre.cabecalho":          { rotulo: "Título · DRE" },
@@ -181,24 +181,92 @@ const CARDS_META: Record<string, { rotulo: string; grupo?: string; vazio?: boole
   "pareto.abaixo-do-corte": { rotulo: "Rubricas abaixo do corte", grupo: "pareto.rubricas" },
   "pareto.balanco":         { rotulo: "Amortecedores e a conta que fecha" },
   "caixa.cabecalho":        { rotulo: "Título · Caixa" },
-  "caixa.kpis":             { rotulo: "KPIs do caixa" },
   "caixa.dfc":              { rotulo: "DFC simplificada" },
   "metas.cabecalho":        { rotulo: "Título · Metas" },
   "metas.vazio":            { rotulo: "Aviso · sem mês seguinte", vazio: true },
-  "metas.kpis":             { rotulo: "KPIs das metas" },
   "metas.carteira":         { rotulo: "Carteira por porte", grupo: "metas.grid" },
   "metas.decisoes":         { rotulo: "Decisões e fecho", grupo: "metas.grid" },
 };
 
 /** O invólucro que devolve a vizinhança a cards que andam colados. */
-const GRUPOS: Record<string, { classe: string; pilha?: boolean }> = {
+const GRUPOS: Record<string, { classe: string; rotulo: string; pilha?: boolean }> = {
   // A lista de rubricas: gap menor que o do bloco e repartível entre páginas.
-  "pareto.rubricas": { classe: "flex flex-col gap-2", pilha: true },
-  "metas.grid": { classe: "grid grid-cols-1 gap-3 lg:grid-cols-[1.25fr_1fr]" },
+  "pareto.rubricas": { classe: "flex flex-col gap-2", rotulo: "Rubricas do Pareto", pilha: true },
+  "metas.grid": { classe: "grid grid-cols-1 gap-3 lg:grid-cols-[1.25fr_1fr]", rotulo: "Carteira e decisões" },
 };
 
+/* ============================================================
+ *  Cards que são uma FILEIRA de peças
+ * ============================================================
+ * "KPIs · receita, margem, EBITDA e SG&A" era um card só, e quem quisesse tirar
+ * o SG&A da folha tinha de tirar os quatro. Aqui a fileira continua sendo um
+ * `<div>` de grade no JSX — é ele que dá o alinhamento — mas cada filho vira uma
+ * peça de catálogo própria, com chave `<a chave da fileira>:<o membro>`.
+ *
+ * A CLASSE DA GRADE NÃO É COPIADA para cá: ela é lida do próprio invólucro no
+ * render. Duas verdades sobre a mesma grade dariam a fileira de quatro colunas
+ * numa tela e de três na outra, sem ninguém saber qual manda.
+ *
+ * Apresentação salva antes disto aponta para a chave da fileira; `expandirGrupos`
+ * (em `lib/apresentacao.ts`) troca a peça velha pelos membros na abertura.
+ */
+const FILEIRAS: Record<string, { rotulo: string; itens: Record<string, string> }> = {
+  "resumo.kpis-resultado": {
+    rotulo: "KPIs · resultado",
+    itens: {
+      receita: "Receita bruta",
+      margem: "Margem de contribuição",
+      ebitda: "EBITDA",
+      sga: "SG&A",
+    },
+  },
+  "resumo.kpis-base": {
+    rotulo: "KPIs · caixa e base",
+    itens: {
+      fco: "FCO · caixa operacional",
+      caixa: "Caixa hoje e runway",
+      clientes: "Clientes ativos",
+      churn: "Churn do mês",
+    },
+  },
+  "caixa.kpis": {
+    rotulo: "KPIs do caixa",
+    itens: {
+      saldo: "Saldo em caixa",
+      livre: "Fluxo livre do mês",
+      burn: "Burn médio 3m",
+      runway: "Runway",
+    },
+  },
+  "metas.kpis": {
+    rotulo: "KPIs das metas",
+    itens: {
+      receita: "Receita orçada",
+      ebitda: "EBITDA orçado",
+      sga: "SG&A alvo",
+      clientes: "Meta de clientes",
+      novos: "Novos necessários",
+    },
+  },
+};
+
+/**
+ * Desfaz o escape que o React faz na `key`.
+ *
+ * React troca ':' por '=2' e '=' por '=0' antes de guardar a key, então
+ * `key="rubrica:Servidor"` volta de `Children.toArray` como `rubrica=2Servidor`.
+ * Sem desfazer, o card do Pareto não casava com nada: perdia o rótulo ("Rubrica ·
+ * Servidor" virava a chave crua na lista do montador) e perdia o grupo, que é o
+ * que põe as rubricas empilhadas e permite tirá-las de uma vez.
+ */
+const desescaparKey = (key: string) => key.replace(/=([02])/g, (_, c) => (c === "2" ? ":" : "="));
+
 /** Um card pronto para desenhar: a chave do catálogo mais o nó de verdade. */
-type CardPronto = ItemCatalogo & { no: ReactNode };
+type CardPronto = ItemCatalogo & {
+  no: ReactNode;
+  /** A classe da grade, quando o card veio de uma fileira (ver `FILEIRAS`). */
+  grupoClasse?: string;
+};
 
 /**
  * Lê os cards de um bloco a partir do próprio JSX.
@@ -211,14 +279,38 @@ type CardPronto = ItemCatalogo & { no: ReactNode };
  */
 function cardsDoBloco(bloco: string, prefixo: string, node: ReactElement): CardPronto[] {
   const filhos = Children.toArray((node.props as { children?: ReactNode }).children);
-  return filhos.filter(isValidElement).map((filho) => {
+  return filhos.filter(isValidElement).flatMap((filho): CardPronto[] => {
     // `Children.toArray` prefixa a key: ".$cabecalho", ".2:$rubrica:Pessoal".
-    const key = String(filho.key ?? "").replace(/^.*\$/, "");
+    const key = desescaparKey(String(filho.key ?? "").replace(/^.*\$/, ""));
     const chave = `${prefixo}.${key}`;
+
+    /* Fileira: o invólucro não é card nenhum, os filhos dele é que são. A classe
+       da grade vai junto com cada membro para o desenho remontar a fileira. */
+    const fileira = FILEIRAS[chave];
+    if (fileira) {
+      const props = filho.props as { children?: ReactNode; className?: string };
+      return Children.toArray(props.children).filter(isValidElement).map((neto) => {
+        const item = String(neto.key ?? "").replace(/^.*\$/, "");
+        return {
+          chave: `${chave}:${item}`,
+          bloco,
+          rotulo: fileira.itens[item] ?? item,
+          grupo: chave,
+          grupoRotulo: fileira.rotulo,
+          grupoClasse: props.className,
+          no: neto,
+        };
+      });
+    }
+
     const meta = CARDS_META[chave] ?? (key.startsWith("rubrica:")
       ? { rotulo: `Rubrica · ${key.slice("rubrica:".length)}`, grupo: "pareto.rubricas" }
       : { rotulo: chave });
-    return { chave, bloco, rotulo: meta.rotulo, grupo: meta.grupo, vazio: meta.vazio, no: filho };
+    return [{
+      chave, bloco, rotulo: meta.rotulo, grupo: meta.grupo,
+      grupoRotulo: meta.grupo ? GRUPOS[meta.grupo]?.rotulo : undefined,
+      vazio: meta.vazio, no: filho,
+    }];
   });
 }
 
@@ -228,6 +320,11 @@ function cardsDoBloco(bloco: string, prefixo: string, node: ReactElement): CardP
  * Grupo com UM membro só não ganha invólucro: uma pauta sozinha numa grade de
  * duas colunas ficaria espremida na coluna da esquerda com metade da folha em
  * branco, que é o oposto do que a montagem existe para permitir.
+ *
+ * FILEIRA é o contrário e por isso guarda a classe (`grupoClasse`): um KPI
+ * sozinho tem de continuar do tamanho de um KPI, numa célula da grade de quatro
+ * colunas. Sem o invólucro ele esticaria pela folha inteira — que é justamente o
+ * que assusta quem tirou três dos quatro.
  */
 function desenharCards(cards: CardPronto[]): ReactNode[] {
   const saida: ReactNode[] = [];
@@ -237,14 +334,15 @@ function desenharCards(cards: CardPronto[]): ReactNode[] {
     let j = i + 1;
     if (grupo) while (j < cards.length && cards[j].grupo === grupo) j++;
     const trecho = cards.slice(i, j);
-    if (!grupo || trecho.length === 1) {
+    const meta = grupo ? GRUPOS[grupo] : undefined;
+    const classe = meta?.classe ?? trecho[0].grupoClasse;
+    if (!grupo || !classe || (trecho.length === 1 && !trecho[0].grupoClasse)) {
       for (const c of trecho) saida.push(<Peca key={c.chave} chave={c.chave}>{c.no}</Peca>);
     } else {
-      const meta = GRUPOS[grupo];
       saida.push(
         <div
           key={`${grupo}#${i}`}
-          className={meta?.classe}
+          className={classe}
           {...(meta?.pilha ? { "data-export-pilha": "" } : {})}
         >
           {trecho.map((c) => <Peca key={c.chave} chave={c.chave}>{c.no}</Peca>)}
@@ -564,6 +662,11 @@ export default function RevisaoMes() {
      é declarada mais abaixo, depois do efeito). */
   const abrirDepoisRef = useRef<string | null>(null);
   const abrirApresentacaoRef = useRef<((a: Apresentacao) => void) | null>(null);
+  /* A criação em voo. O montador grava a cada mexida e o campo de nome, a cada
+     tecla: com duas chamadas antes de o id voltar, as duas entrariam pelo INSERT
+     e o mês ganharia duas apresentações — ou o erro de chave única. A segunda
+     espera esta promessa e vira UPDATE. */
+  const nascendoRef = useRef<Promise<string | null> | null>(null);
   const palcoRef = useRef<HTMLDivElement>(null);
   const raizRef = useRef<HTMLDivElement>(null);
   const animando = useRef(false);
@@ -815,7 +918,11 @@ export default function RevisaoMes() {
       .select("*")
       .eq("mes", alvo)
       .order("atualizada_em", { ascending: false });
-    setApresentacoes((data ?? []) as Apresentacao[]);
+    const lista = (data ?? []) as Apresentacao[];
+    setApresentacoes(lista);
+    // Devolve a lista além de guardá-la: quem acabou de criar precisa ler o nome
+    // que a linha ficou tendo, e o estado só chega no quadro seguinte.
+    return lista;
   }, []);
 
   useEffect(() => {
@@ -962,8 +1069,14 @@ export default function RevisaoMes() {
     }
     /* `sanear` na ABERTURA, não na gravação: o roteiro é de julho e a tela pode
        estar em agosto, onde a rubrica "Servidor" não existe mais. Tirar na hora
-       de mostrar evita a folha com buraco e avisa quem abriu. */
-    const { roteiro: limpo, removidas } = sanear(a.roteiro ?? ROTEIRO_VAZIO, catalogoRef.current);
+       de mostrar evita a folha com buraco e avisa quem abriu.
+       `expandirGrupos` vem ANTES: a peça que aponta para uma fileira inteira
+       (os KPIs, antes de virarem peças soltas) vira os membros dela — se
+       corresse depois, `sanear` já a teria levado embora como card inexistente. */
+    const { roteiro: limpo, removidas } = sanear(
+      expandirGrupos(a.roteiro ?? ROTEIRO_VAZIO, catalogoRef.current),
+      catalogoRef.current,
+    );
     if (removidas.length) {
       toast.message(`${removidas.length} card(s) saíram: não existem mais neste mês.`, {
         description: removidas.join(", "),
@@ -980,6 +1093,33 @@ export default function RevisaoMes() {
   };
   abrirApresentacaoRef.current = abrirApresentacao;
 
+  /** O nome que a apresentação ganharia se nascesse agora — é o que o montador
+      mostra no cabeçalho enquanto nenhuma está aberta. */
+  const nomeDaProxima = useMemo(
+    () => (mes ? nomeLivre(`Revisão de ${mesPorExtenso(mes)}`, apresentacoes.map((a) => a.nome)) : ""),
+    [mes, apresentacoes],
+  );
+
+  /**
+   * O "Montar" mexe numa apresentação DE VERDADE.
+   *
+   * Aberto sem nenhuma escolhida, o montador mostrava o roteiro padrão com o
+   * nome que a apresentação teria — e quem tirasse um card ali estava, sem saber,
+   * mandando nascer uma segunda "Revisão de Julho/26". Se o mês já tem
+   * apresentação, o montador abre a mais recente: era essa que a pessoa pensava
+   * estar editando. Para começar outra do zero, o "+" continua ao lado.
+   */
+  const alternarMontador = () => {
+    if (montando) { setMontando(false); return; }
+    if (!apresId && apresentacoes.length) {
+      abrirApresentacao(apresentacoes[0]);
+      toast.message(`Montando "${apresentacoes[0].nome}".`, {
+        description: 'Para começar outra, use o "+" ao lado do seletor.',
+      });
+    }
+    setMontando(true);
+  };
+
   /**
    * Devolve o id da apresentação em edição, CRIANDO-A se ainda não existir.
    *
@@ -994,27 +1134,55 @@ export default function RevisaoMes() {
     tipo?: TipoPeriodo,
   ): Promise<string | null> => {
     if (!mes) return null;
-    const alvo = nome ?? nomeApres ?? "";
-    const { data, error } = await sb.rpc("apresentacao_salvar", {
-      p_mes: mes,
-      p_nome: alvo.trim() || `Revisão de ${mesPorExtenso(mes)}`,
-      p_roteiro: r ?? (roteiro.folhas.length ? roteiro : roteiroPadrao(catalogoPadraoRef.current)),
-      p_textos: textos ?? textosApres,
-      p_id: apresId,
-      p_periodo_tipo: tipo ?? periodoTipo,
-    });
-    if (error) { toast.error("Não consegui salvar a apresentação: " + error.message); return null; }
-    const id = data as string;
-    if (!apresId) {
-      setApresId(id);
-      if (!nomeApres) setNomeApres(`Revisão de ${mesPorExtenso(mes)}`);
-      if (!roteiro.folhas.length) setRoteiro(roteiroPadrao(catalogoPadraoRef.current));
-    }
-    setStatusApres("rascunho");
-    setCongelado(null);
-    await carregarApresentacoes(mes);
-    return id;
-  }, [mes, nomeApres, roteiro, textosApres, apresId, periodoTipo, carregarApresentacoes]);
+
+    /* Se uma criação está em voo, esta chamada é a SEGUNDA mexida da mesma
+       apresentação: espera o id e grava por cima, em vez de mandar outro INSERT. */
+    let id = apresId;
+    if (!id && nascendoRef.current) id = await nascendoRef.current;
+
+    const gravar = async (): Promise<string | null> => {
+      const base = (nome ?? nomeApres ?? "").trim() || `Revisão de ${mesPorExtenso(mes)}`;
+      /* Nascendo agora, o nome precisa ser um que ainda não exista: `(mes, nome)`
+         é único e "Revisão de Julho/26" costuma já estar tomada — é o nome que a
+         apresentação do mês ganhou na primeira vez. Sem isto, tirar um card da
+         tela de trabalho devolvia o erro cru do Postgres na cara de quem clicou. */
+      const alvo = id ? base : nomeLivre(base, apresentacoes.map((a) => a.nome));
+      const { data, error } = await sb.rpc("apresentacao_salvar", {
+        p_mes: mes,
+        p_nome: alvo,
+        p_roteiro: r ?? (roteiro.folhas.length ? roteiro : roteiroPadrao(catalogoPadraoRef.current)),
+        p_textos: textos ?? textosApres,
+        p_id: id,
+        p_periodo_tipo: tipo ?? periodoTipo,
+      });
+      if (error) { toast.error("Não consegui salvar a apresentação: " + error.message); return null; }
+      const novoId = data as string;
+      setStatusApres("rascunho");
+      setCongelado(null);
+      const lista = await carregarApresentacoes(mes);
+      if (!id) {
+        setApresId(novoId);
+        /* O nome de verdade vem da linha, não do que pedimos: o banco desempata
+           duas abas que colidam no mesmo instante. Quem está DIGITANDO o nome só
+           é corrigido quando o banco discordou — senão o campo saltaria para trás
+           a cada tecla. */
+        const criada = lista.find((a) => a.id === novoId);
+        const nomeReal = criada?.nome ?? alvo;
+        if (!nome || nomeReal !== base) setNomeApres(nomeReal);
+        /* `r` é o roteiro que acabou de ser gravado, e quem chamou já o pôs no
+           estado. Sobrescrever com o padrão desfaria na tela justamente a mexida
+           que o banco aceitou. */
+        if (!r && !roteiro.folhas.length) setRoteiro(roteiroPadrao(catalogoPadraoRef.current));
+        toast.message(`"${nomeReal}" criada — a apresentação nasceu com esta mudança.`);
+      }
+      return novoId;
+    };
+
+    if (id) return gravar();
+    const promessa = gravar();
+    nascendoRef.current = promessa;
+    try { return await promessa; } finally { nascendoRef.current = null; }
+  }, [mes, nomeApres, roteiro, textosApres, apresId, apresentacoes, periodoTipo, carregarApresentacoes]);
 
   /** Trocar o período é uma mudança da apresentação — grava e volta a rascunho. */
   const trocarPeriodo = async (tipo: TipoPeriodo) => {
@@ -1500,7 +1668,7 @@ export default function RevisaoMes() {
            porque é essa a conversa da reunião, e um card que só mostra o valor
            obriga quem lê a fazer a conta de cabeça. */}
       <div key="kpis-resultado" className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-        <Kpi eyebrow="Receita bruta" valor={brl(receita?.realizado)}>
+        <Kpi key="receita" eyebrow="Receita bruta" valor={brl(receita?.realizado)}>
           <Comparativos itens={[
             { rotulo: "vs mês ant.", texto: fracPct(receita?.mom), bom: sinalDe(receita?.mom) },
             { rotulo: "vs orçado", texto: fracPct(receita?.desvioPct), bom: sinalDe(receita?.impacto) },
@@ -1516,6 +1684,7 @@ export default function RevisaoMes() {
         </Kpi>
 
         <Kpi
+          key="margem"
           eyebrow="Margem de contribuição"
           valor={brl(margemContrib?.realizado)}
           tomValor={tom((margemContrib?.realizado ?? 0) >= 0)}
@@ -1529,7 +1698,7 @@ export default function RevisaoMes() {
           ]} />
         </Kpi>
 
-        <Kpi eyebrow="EBITDA" valor={brl(ebitda?.realizado)} tomValor={tom((ebitda?.realizado ?? 0) >= 0)}>
+        <Kpi key="ebitda" eyebrow="EBITDA" valor={brl(ebitda?.realizado)} tomValor={tom((ebitda?.realizado ?? 0) >= 0)}>
           <div className="num -mt-1 text-[12px] text-muted-foreground">
             margem {fracPct(margem)} · orçado {fracPct(margemOrcada)}
           </div>
@@ -1539,7 +1708,7 @@ export default function RevisaoMes() {
           ]} />
         </Kpi>
 
-        <Kpi eyebrow="SG&A" valor={brl(sga?.realizado)}>
+        <Kpi key="sga" eyebrow="SG&A" valor={brl(sga?.realizado)}>
           <div className="num -mt-1 text-[12px] text-muted-foreground">
             {pctDaRl(sga?.realizado)} da RL
             {sga?.orcado != null && rl?.orcado
@@ -1556,6 +1725,7 @@ export default function RevisaoMes() {
 
       <div key="kpis-base" className="grid grid-cols-2 gap-3 lg:grid-cols-4">
         <Kpi
+          key="fco"
           eyebrow="FCO · caixa operacional"
           valor={brl(caixa.fco)}
           tomValor={tom((caixa.fco ?? 0) >= 0)}
@@ -1578,6 +1748,7 @@ export default function RevisaoMes() {
         </Kpi>
 
         <Kpi
+          key="caixa"
           eyebrow={<>Caixa hoje{caixa.saldoEm ? ` · ${new Date(caixa.saldoEm).toLocaleDateString("pt-BR")}` : ""}</>}
           valor={brl(caixa.saldo)}
         >
@@ -1598,7 +1769,7 @@ export default function RevisaoMes() {
           </div>
         </Kpi>
 
-        <Kpi eyebrow="Clientes ativos" valor={inteiro(carteiraMes.valor?.clientes)}>
+        <Kpi key="clientes" eyebrow="Clientes ativos" valor={inteiro(carteiraMes.valor?.clientes)}>
           <div className="num -mt-1 text-[12px] text-muted-foreground">
             MRR {abreviado(carteiraMes.valor?.mrr)} · ticket {abreviado(carteiraMes.valor?.ticket)}
           </div>
@@ -1620,7 +1791,7 @@ export default function RevisaoMes() {
           ]} />
         </Kpi>
 
-        <Kpi eyebrow="Churn do mês" valor={inteiro(churnMes.valor?.qtd)} tomValor="text-neg">
+        <Kpi key="churn" eyebrow="Churn do mês" valor={inteiro(churnMes.valor?.qtd)} tomValor="text-neg">
           <div className="num -mt-1 text-[12px] text-muted-foreground">
             {abreviado(churnMes.valor?.valor)} de MRR
             {churnMes.valor?.pct ? ` · ${churnMes.valor.pct.toFixed(2).replace(".", ",")}% da receita` : ""}
@@ -2007,6 +2178,7 @@ export default function RevisaoMes() {
 
       <div key="kpis" className="grid grid-cols-2 gap-3 lg:grid-cols-4">
         <Kpi
+          key="saldo"
           eyebrow={<>Saldo em caixa{caixa.saldoEm ? ` · ${new Date(caixa.saldoEm).toLocaleDateString("pt-BR")}` : ""}</>}
           valor={brl(caixa.saldo)}
         >
@@ -2014,17 +2186,18 @@ export default function RevisaoMes() {
             Consolidado do Omie, foto de hoje — não é o fechamento de {rotuloMes(mes)}.
           </div>
         </Kpi>
-        <Kpi eyebrow="Fluxo livre do mês" valor={brl(caixa.livre)} tomValor={tom((caixa.livre ?? 0) >= 0)}>
+        <Kpi key="livre" eyebrow="Fluxo livre do mês" valor={brl(caixa.livre)} tomValor={tom((caixa.livre ?? 0) >= 0)}>
           <div className="text-[11px] text-muted-foreground">
             {caixa.livreOrcado == null ? "sem plano de DFC no BP" : <>orçado <span className="num">{brlCheio(caixa.livreOrcado)}</span></>}
           </div>
         </Kpi>
-        <Kpi eyebrow="Burn médio 3m" valor={brl(caixa.burn3m)} tomValor={tom((caixa.burn3m ?? 0) <= 0)}>
+        <Kpi key="burn" eyebrow="Burn médio 3m" valor={brl(caixa.burn3m)} tomValor={tom((caixa.burn3m ?? 0) <= 0)}>
           <div className="text-[11px] text-muted-foreground">
             {janela.slice(-3).map(rotuloMes).join(" · ") || "—"}
           </div>
         </Kpi>
         <Kpi
+          key="runway"
           eyebrow="Runway"
           valor={caixa.runway?.gerandoCaixa ? "gera caixa"
             : caixa.runway?.meses == null ? "—"
@@ -2111,7 +2284,7 @@ export default function RevisaoMes() {
 
       {prox && (
           <div key="kpis" className="grid grid-cols-2 gap-3 lg:grid-cols-5">
-            <Kpi eyebrow="Receita orçada" valor={brl(prox.receitaOrcada)}>
+            <Kpi key="receita" eyebrow="Receita orçada" valor={brl(prox.receitaOrcada)}>
               <div className="text-[11px] text-muted-foreground">
                 {rotuloMes(mes)} realizado <span className="num">{brlCheio(receita?.realizado)}</span>
               </div>
@@ -2128,7 +2301,7 @@ export default function RevisaoMes() {
               )}
             </Kpi>
 
-            <Kpi eyebrow="EBITDA orçado" valor={brl(prox.ebitdaOrcado)} tomValor={tom((prox.ebitdaOrcado ?? 0) >= 0)}>
+            <Kpi key="ebitda" eyebrow="EBITDA orçado" valor={brl(prox.ebitdaOrcado)} tomValor={tom((prox.ebitdaOrcado ?? 0) >= 0)}>
               <div className="text-[11px] text-muted-foreground">
                 margem {fracPct(prox.margemOrcada)} · {rotuloMes(mes)} {fracPct(margem)}
               </div>
@@ -2139,7 +2312,7 @@ export default function RevisaoMes() {
               )}
             </Kpi>
 
-            <Kpi eyebrow="SG&A alvo" valor={brl(prox.sgaOrcado)}>
+            <Kpi key="sga" eyebrow="SG&A alvo" valor={brl(prox.sgaOrcado)}>
               <div className="text-[11px] text-muted-foreground">
                 {prox.sgaPeso == null ? "—" : `${(prox.sgaPeso * 100).toFixed(1).replace(".", ",")}% da receita líquida orçada`}
               </div>
@@ -2159,7 +2332,7 @@ export default function RevisaoMes() {
               )}
             </Kpi>
 
-            <Kpi eyebrow="Meta de clientes · BP" valor={inteiro(prox.clientesMeta)}>
+            <Kpi key="clientes" eyebrow="Meta de clientes · BP" valor={inteiro(prox.clientesMeta)}>
               <div className="text-[11px] text-muted-foreground">
                 hoje <span className="num">{inteiro(prox.clientesHoje)}</span>
                 {prox.liquidosNecessarios != null && (
@@ -2177,7 +2350,7 @@ export default function RevisaoMes() {
               )}
             </Kpi>
 
-            <div className="card-surface flex flex-col gap-2.5 border-primary/35 p-4">
+            <div key="novos" className="card-surface flex flex-col gap-2.5 border-primary/35 p-4">
               <div className="eyebrow text-primary">Novos necessários</div>
               <div className="num text-[26px] font-semibold leading-none text-primary">
                 {inteiro(prox.novosNecessarios)}
@@ -2332,14 +2505,14 @@ export default function RevisaoMes() {
   }));
 
   const cards = [...cardsLocais, ...cardsDoRegistro];
-  const catalogo: ItemCatalogo[] = cards.map(({ chave, rotulo, bloco, grupo, vazio }) =>
-    ({ chave, rotulo, bloco, grupo, vazio }));
+  const catalogo: ItemCatalogo[] = cards.map(({ chave, rotulo, bloco, grupo, grupoRotulo, vazio }) =>
+    ({ chave, rotulo, bloco, grupo, grupoRotulo, vazio }));
   catalogoRef.current = catalogo;
   /* O roteiro PADRÃO é só dos cinco blocos: uma apresentação nova abre com a
      reunião de sempre, e o que vem de outras telas entra quando for chamado —
      senão toda apresentação nasceria com oito folhas que ninguém pediu. */
-  catalogoPadraoRef.current = cardsLocais.map(({ chave, rotulo, bloco, grupo, vazio }) =>
-    ({ chave, rotulo, bloco, grupo, vazio }));
+  catalogoPadraoRef.current = cardsLocais.map(({ chave, rotulo, bloco, grupo, grupoRotulo, vazio }) =>
+    ({ chave, rotulo, bloco, grupo, grupoRotulo, vazio }));
 
   /** Uma peça do roteiro virando card desenhável. */
   const pecaComoCard = (p: Peca): CardPronto => {
@@ -2465,7 +2638,7 @@ export default function RevisaoMes() {
           catalogo={catalogo}
           roteiro={emApresentacao ? roteiro : roteiroPadrao(catalogoPadraoRef.current)}
           onRoteiro={salvarRoteiro}
-          nome={nomeApres || `Revisão de ${mesPorExtenso(mes)}`}
+          nome={nomeApres || nomeDaProxima}
           onNome={renomearApresentacao}
           mes={mes}
           publicada={publicada}
@@ -2642,7 +2815,7 @@ export default function RevisaoMes() {
                 {temTexto ? "Regerar" : "Gerar leitura"}
               </button>
               <button
-                onClick={() => setMontando((v) => !v)}
+                onClick={alternarMontador}
                 className={cn("ghost-btn h-7 px-2.5 text-[11.5px]", montando && "border-primary/40 text-primary")}
                 title="Escolher o que entra em cada folha desta apresentação"
               >

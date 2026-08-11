@@ -1,8 +1,8 @@
 import { describe, it, expect } from "vitest";
 import {
-  roteiroPadrao, sanear, foraDoRoteiro, removerPeca, inserirPeca, moverPeca,
-  novaFolha, removerFolha, renomearFolha, moverFolha, aplicarComandos, contarPecas,
-  nomeLivre,
+  roteiroPadrao, sanear, foraDoRoteiro, removerPeca, removerPecas, inserirPeca,
+  inserirPecas, moverPeca, novaFolha, removerFolha, renomearFolha, moverFolha,
+  aplicarComandos, contarPecas, nomeLivre, novosIds, expandirGrupos,
   type ItemCatalogo, type Roteiro, type Comando,
 } from "./apresentacao";
 
@@ -194,5 +194,72 @@ describe("nomeLivre", () => {
 
   it("aceita qualquer iterável — Set inclusive", () => {
     expect(nomeLivre("A", new Set(["A"]))).toBe("A (2)");
+  });
+});
+
+/* ------------------------------------------------------------- fileiras -- */
+/* Os KPIs deixaram de ser um card só e viraram quatro peças, com chave
+   `<a chave velha>:<o membro>`. O que se testa aqui é a apresentação ANTIGA
+   continuar mostrando o que mostrava. */
+const CATALOGO_KPIS: ItemCatalogo[] = [
+  { chave: "resumo.cabecalho", rotulo: "Cabeçalho do Resumo", bloco: "Resumo" },
+  { chave: "resumo.kpis:receita", rotulo: "Receita bruta", bloco: "Resumo", grupo: "resumo.kpis", grupoRotulo: "KPIs" },
+  { chave: "resumo.kpis:ebitda", rotulo: "EBITDA", bloco: "Resumo", grupo: "resumo.kpis", grupoRotulo: "KPIs" },
+  { chave: "dre.cascata", rotulo: "Cascata do resultado", bloco: "DRE" },
+];
+
+describe("expandirGrupos", () => {
+  it("troca a peça da fileira velha pelos membros, no lugar dela", () => {
+    const r = expandirGrupos(roteiroPadrao(CATALOGO), CATALOGO_KPIS);
+    expect(chaves(r)[0][1]).toEqual([
+      "resumo.cabecalho", "resumo.veredicto", "resumo.kpis:receita", "resumo.kpis:ebitda",
+    ]);
+  });
+
+  it("dá id próprio a cada membro, sem repetir os que já existem", () => {
+    const r = expandirGrupos(roteiroPadrao(CATALOGO), CATALOGO_KPIS);
+    const ids = r.folhas.flatMap((f) => f.pecas.map((p) => p.id));
+    expect(new Set(ids).size).toBe(ids.length);
+  });
+
+  it("não mexe em card que continua existindo, nem em texto e série", () => {
+    const antes: Roteiro = { folhas: [{ id: "f1", titulo: "F", pecas: [
+      { id: "p1", tipo: "card", chave: "dre.cascata" },
+      { id: "p2", tipo: "texto", titulo: "Recado", corpo: "..." },
+    ] }] };
+    expect(expandirGrupos(antes, CATALOGO_KPIS)).toEqual(antes);
+  });
+
+  it("card que sumiu de vez (sem membros) fica para o sanear tirar", () => {
+    const antes: Roteiro = { folhas: [{ id: "f1", titulo: "F", pecas: [
+      { id: "p1", tipo: "card", chave: "pareto.rubrica:Servidor" },
+    ] }] };
+    expect(expandirGrupos(antes, CATALOGO_KPIS)).toEqual(antes);
+    expect(sanear(antes, CATALOGO_KPIS).removidas).toEqual(["pareto.rubrica:Servidor"]);
+  });
+});
+
+describe("remover e inserir em lote", () => {
+  const base = roteiroPadrao(CATALOGO);
+
+  it("tira as peças de uma vez e devolve roteiro novo", () => {
+    const ids = base.folhas[0].pecas.slice(0, 2).map((p) => p.id);
+    const novo = removerPecas(base, ids);
+    expect(chaves(novo)[0][1]).toEqual(["resumo.kpis"]);
+    expect(contarPecas(base)).toBe(6);
+  });
+
+  it("põe as peças juntas, na ordem em que vieram", () => {
+    const ids = novosIds("p", base, 2);
+    const novo = inserirPecas(base, base.folhas[1].id, 0, [
+      { id: ids[0], tipo: "card", chave: "caixa.dfc" },
+      { id: ids[1], tipo: "card", chave: "metas.decisoes" },
+    ]);
+    expect(chaves(novo)[1][1]).toEqual(["caixa.dfc", "metas.decisoes", "dre.cascata", "dre.tabela"]);
+  });
+
+  it("novosIds não repete o que já está no roteiro", () => {
+    const r = inserirPeca(base, base.folhas[0].id, 0, { id: "p7", tipo: "texto", titulo: "T", corpo: "" });
+    expect(novosIds("p", r, 3)).toEqual(["p8", "p9", "p10"]);
   });
 });

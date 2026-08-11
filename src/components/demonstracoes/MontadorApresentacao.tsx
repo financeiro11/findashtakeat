@@ -26,9 +26,9 @@ import { toast } from "sonner";
 import { supabase } from "@/integrations/supabase/client";
 import { cn } from "@/lib/utils";
 import {
-  aplicarComandos, contarPecas, foraDoRoteiro, inserirPeca, moverFolha, moverPeca,
-  nomeDaPeca, novaFolha, novoId, removerFolha, removerPeca, renomearFolha,
-  type Comando, type ItemCatalogo, type Roteiro,
+  aplicarComandos, contarPecas, foraDoRoteiro, inserirPeca, inserirPecas, moverFolha, moverPeca,
+  nomeDaPeca, novaFolha, novoId, novosIds, removerFolha, removerPeca, removerPecas, renomearFolha,
+  type Comando, type Folha, type ItemCatalogo, type Peca, type Roteiro,
 } from "@/lib/apresentacao";
 
 type Props = {
@@ -46,6 +46,60 @@ type Props = {
 
 type Proposta = { roteiro: Roteiro; aplicados: string[]; recusados: string[]; resumo: string };
 
+/* ------------------------------------------------------------- agrupar -- */
+/**
+ * As peças de uma folha em blocos: uma corrida de peças do mesmo grupo (os
+ * quatro KPIs, as rubricas do Pareto) vira um bloco com cabeçalho.
+ *
+ * O cabeçalho existe por causa do "tirar todos". Cada KPI é peça própria — é o
+ * que permite tirar o SG&A e deixar os outros três — mas quem quer a fileira
+ * inteira fora não deveria clicar quatro vezes e ver a apresentação gravar
+ * quatro vezes.
+ *
+ * Grupo com um membro só não vira bloco: um cabeçalho por cima de uma linha só
+ * é ruído, e a linha já se explica sozinha.
+ */
+type LinhaMontador =
+  | { tipo: "solta"; peca: Peca; i: number }
+  | { tipo: "grupo"; chave: string; rotulo: string; membros: { peca: Peca; i: number }[] };
+
+/** O mesmo agrupamento, para o catálogo de quem está fora da apresentação. */
+function emFileiras(itens: ItemCatalogo[]): { chave: string; rotulo: string | null; itens: ItemCatalogo[] }[] {
+  const saida: { chave: string; rotulo: string | null; itens: ItemCatalogo[] }[] = [];
+  for (const c of itens) {
+    const ultima = saida[saida.length - 1];
+    if (c.grupo && ultima?.chave === c.grupo) { ultima.itens.push(c); continue; }
+    saida.push({ chave: c.grupo ?? c.chave, rotulo: c.grupo ? c.grupoRotulo ?? c.grupo : null, itens: [c] });
+  }
+  // Fileira que sobrou com um membro só não merece cabeçalho nem "todos".
+  return saida.map((g) => (g.itens.length < 2 ? { ...g, rotulo: null } : g));
+}
+
+function emBlocos(pecas: Peca[], catalogo: ItemCatalogo[]): LinhaMontador[] {
+  const itemDe = (p: Peca) =>
+    p.tipo === "card" ? catalogo.find((c) => c.chave === p.chave) : undefined;
+  const saida: LinhaMontador[] = [];
+  let i = 0;
+  while (i < pecas.length) {
+    const grupo = itemDe(pecas[i])?.grupo;
+    let j = i;
+    if (grupo) while (j < pecas.length && itemDe(pecas[j])?.grupo === grupo) j++;
+    if (!grupo || j - i < 2) {
+      saida.push({ tipo: "solta", peca: pecas[i], i });
+      i += 1;
+      continue;
+    }
+    saida.push({
+      tipo: "grupo",
+      chave: grupo,
+      rotulo: itemDe(pecas[i])?.grupoRotulo ?? grupo,
+      membros: pecas.slice(i, j).map((peca, k) => ({ peca, i: i + k })),
+    });
+    i = j;
+  }
+  return saida;
+}
+
 export function MontadorApresentacao({
   catalogo, roteiro, onRoteiro, nome, onNome, mes, publicada, salvando, onFechar,
 }: Props) {
@@ -60,6 +114,19 @@ export function MontadorApresentacao({
   const fora = foraDoRoteiro(roteiro, catalogo);
 
   /* ---------------------------- linguagem ---------------------------- */
+  /** O `error` de uma Edge Function com o corpo já lido — ver o uso abaixo. */
+  const motivoReal = async (error: unknown): Promise<string> => {
+    const ctx = (error as { context?: { text?: () => Promise<string> } })?.context;
+    if (ctx && typeof ctx.text === "function") {
+      try {
+        const bruto = await ctx.text();
+        const corpo = JSON.parse(bruto) as { error?: string };
+        if (corpo?.error) return corpo.error;
+      } catch { /* corpo vazio ou não-JSON: fica com a mensagem do wrapper */ }
+    }
+    return (error as Error)?.message || String(error);
+  };
+
   const propor = async () => {
     if (!pedido.trim() || pensando) return;
     setPensando(true);
@@ -67,7 +134,11 @@ export function MontadorApresentacao({
       const { data, error } = await supabase.functions.invoke("demonstracoes-apresentacao", {
         body: { mes, pedido, roteiro, catalogo },
       });
-      if (error) throw error;
+      // supabase-js embrulha qualquer non-2xx num FunctionsHttpError cuja mensagem
+      // é sempre a mesma frase em inglês; o motivo de verdade está no corpo, em
+      // `error.context`. Sem desembrulhar, "a IA demorou demais" chega na tela
+      // como "Edge Function returned a non-2xx status code".
+      if (error) throw new Error(await motivoReal(error));
       const r = (data ?? {}) as { error?: string; comandos?: Comando[]; resumo?: string };
       if (r.error) throw new Error(r.error);
       const comandos = r.comandos ?? [];
@@ -100,11 +171,111 @@ export function MontadorApresentacao({
     onRoteiro(moverPeca(roteiro, id, folhaId, j), "peça movida");
   };
 
-  const adicionar = (chave: string) => {
-    if (!folhaAlvo) { toast.error("Crie uma folha antes."); return; }
+  /* O destino é o do seletor "Adicionar em", e cada card pode desviar do padrão
+     pelo seletor da própria linha — sem ter de trocar o de cima, pôr o card e
+     trocar de volta. `undefined` = vale o padrão. */
+  const adicionar = (chave: string, folhaId?: string) => {
+    const destino = roteiro.folhas.find((f) => f.id === folhaId) ?? folhaAlvo;
+    if (!destino) { toast.error("Crie uma folha antes."); return; }
     const peca = { id: novoId("p", roteiro), tipo: "card" as const, chave };
-    onRoteiro(inserirPeca(roteiro, folhaAlvo.id, folhaAlvo.pecas.length, peca), "card adicionado");
+    onRoteiro(
+      inserirPeca(roteiro, destino.id, destino.pecas.length, peca),
+      `card adicionado em "${destino.titulo}"`,
+    );
   };
+
+  /** Põe a fileira inteira de volta numa gravação só. */
+  const adicionarVarios = (chaves: string[], rotulo: string, folhaId?: string) => {
+    const destino = roteiro.folhas.find((f) => f.id === folhaId) ?? folhaAlvo;
+    if (!destino) { toast.error("Crie uma folha antes."); return; }
+    const ids = novosIds("p", roteiro, chaves.length);
+    const pecas: Peca[] = chaves.map((chave, k) => ({ id: ids[k], tipo: "card", chave }));
+    onRoteiro(
+      inserirPecas(roteiro, destino.id, destino.pecas.length, pecas),
+      `${rotulo}: ${chaves.length} cards em "${destino.titulo}"`,
+    );
+  };
+
+  /** O seletor de destino de uma linha do catálogo: "põe este em qual folha". */
+  const escolherFolha = (titulo: string, aoEscolher: (folhaId: string) => void) => (
+    <select
+      value=""
+      onChange={(e) => { if (e.target.value) aoEscolher(e.target.value); }}
+      title={`Pôr ${titulo} em outra folha (sem o seletor, vai para "${folhaAlvo?.titulo ?? "—"}")`}
+      aria-label="Escolher a folha de destino"
+      disabled={roteiro.folhas.length < 2}
+      className="h-6 w-[58px] shrink-0 rounded-md border border-border bg-card px-1 text-[10.5px] text-muted-foreground focus:outline-none focus:ring-1 focus:ring-ring disabled:opacity-25"
+    >
+      <option value="">em…</option>
+      {roteiro.folhas.map((f) => <option key={f.id} value={f.id}>{f.titulo}</option>)}
+    </select>
+  );
+
+  /** Tira a fileira inteira numa gravação só. */
+  const tirarGrupo = (rotulo: string, ids: string[]) => {
+    onRoteiro(removerPecas(roteiro, ids), `${rotulo} fora (${ids.length} peças)`);
+  };
+
+  /* A linha de uma peça. Sai daqui e não de dentro do laço porque a mesma linha
+     é desenhada solta e dentro de uma fileira — `dentro` só recua o texto, para
+     ler como membro sem perder nenhum dos botões. */
+  const linhaDaPeca = (folha: Folha, p: Peca, pi: number, dentro: boolean) => (
+    <li
+      key={p.id}
+      className={cn(
+        "flex items-center gap-1 border-b border-border/50 px-2 py-1.5 last:border-b-0 hover:bg-secondary/30",
+        dentro && "pl-5",
+      )}
+    >
+      <span className={cn(
+        "inline-flex h-4 shrink-0 items-center rounded px-1 text-[9px] font-bold tracking-wider",
+        p.tipo === "card" ? "bg-secondary text-muted-foreground"
+          : p.tipo === "texto" ? "bg-[hsl(var(--info)/0.12)] text-[hsl(var(--info))]"
+          : "bg-pos-soft text-pos",
+      )}>
+        {p.tipo === "card" ? "HUB" : p.tipo === "texto" ? "TXT" : "SÉR"}
+      </span>
+      <span className="min-w-0 flex-1 truncate text-[11.5px]" title={nomeDaPeca(p, catalogo)}>
+        {nomeDaPeca(p, catalogo)}
+      </span>
+      <button onClick={() => mover(folha.id, p.id, -1)} disabled={pi === 0}
+              title={`Subir "${nomeDaPeca(p, catalogo)}" nesta folha`} aria-label="Subir"
+              className="ghost-btn ghost-icone ghost-icone-sm disabled:opacity-25">
+        <ChevronUp className="h-3.5 w-3.5" />
+      </button>
+      <button onClick={() => mover(folha.id, p.id, 1)} disabled={pi === folha.pecas.length - 1}
+              title={`Descer "${nomeDaPeca(p, catalogo)}" nesta folha`} aria-label="Descer"
+              className="ghost-btn ghost-icone ghost-icone-sm disabled:opacity-25">
+        <ChevronDown className="h-3.5 w-3.5" />
+      </button>
+      {/* O seletor mostra "mover…", não a folha atual. Exibindo a folha em que a
+          peça já está, ele lia como um rótulo repetido em vez de uma ação. */}
+      <select
+        value=""
+        onChange={(e) => {
+          if (!e.target.value) return;
+          onRoteiro(moverPeca(roteiro, p.id, e.target.value, 99), "peça movida de folha");
+        }}
+        title="Mandar esta peça para outra folha"
+        aria-label="Mandar para outra folha"
+        disabled={roteiro.folhas.length < 2}
+        className="h-6 w-[64px] rounded-md border border-border bg-card px-1 text-[10.5px] text-muted-foreground focus:outline-none focus:ring-1 focus:ring-ring disabled:opacity-25"
+      >
+        <option value="">mover…</option>
+        {roteiro.folhas.filter((d) => d.id !== folha.id).map((d) => (
+          <option key={d.id} value={d.id}>{d.titulo}</option>
+        ))}
+      </select>
+      <button
+        onClick={() => onRoteiro(removerPeca(roteiro, p.id), `${nomeDaPeca(p, catalogo)} fora`)}
+        title={`Tirar "${nomeDaPeca(p, catalogo)}" desta apresentação (ela volta para o catálogo)`}
+        aria-label="Tirar da apresentação"
+        className="ghost-btn ghost-icone ghost-icone-sm text-muted-foreground hover:border-neg/40 hover:bg-neg-soft hover:text-neg"
+      >
+        <X className="h-3.5 w-3.5" />
+      </button>
+    </li>
+  );
 
   return (
     <aside
@@ -241,58 +412,27 @@ export function MontadorApresentacao({
                 </p>
               ) : (
                 <ul className="flex flex-col">
-                  {f.pecas.map((p, pi) => (
-                    <li key={p.id} className="flex items-center gap-1 border-b border-border/50 px-2 py-1.5 last:border-b-0 hover:bg-secondary/30">
-                      <span className={cn(
-                        "inline-flex h-4 shrink-0 items-center rounded px-1 text-[9px] font-bold tracking-wider",
-                        p.tipo === "card" ? "bg-secondary text-muted-foreground"
-                          : p.tipo === "texto" ? "bg-[hsl(var(--info)/0.12)] text-[hsl(var(--info))]"
-                          : "bg-pos-soft text-pos",
-                      )}>
-                        {p.tipo === "card" ? "HUB" : p.tipo === "texto" ? "TXT" : "SÉR"}
+                  {emBlocos(f.pecas, catalogo).flatMap((b) => b.tipo === "grupo" ? [
+                    /* -------- a fileira -------- */
+                    <li
+                      /* O índice entra na key: a mesma fileira pode aparecer em
+                         dois trechos da folha se alguém enfiou um texto no meio. */
+                      key={`g${b.chave}#${b.membros[0].i}`}
+                      className="flex items-center gap-1 border-b border-border/50 bg-secondary/25 px-2 py-1 last:border-b-0"
+                    >
+                      <span className="min-w-0 flex-1 truncate text-[10px] font-bold uppercase tracking-wider text-muted-foreground">
+                        {b.rotulo} · {b.membros.length}
                       </span>
-                      <span className="min-w-0 flex-1 truncate text-[11.5px]" title={nomeDaPeca(p, catalogo)}>
-                        {nomeDaPeca(p, catalogo)}
-                      </span>
-                      <button onClick={() => mover(f.id, p.id, -1)} disabled={pi === 0}
-                              title={`Subir "${nomeDaPeca(p, catalogo)}" nesta folha`} aria-label="Subir"
-                              className="ghost-btn ghost-icone ghost-icone-sm disabled:opacity-25">
-                        <ChevronUp className="h-3.5 w-3.5" />
-                      </button>
-                      <button onClick={() => mover(f.id, p.id, 1)} disabled={pi === f.pecas.length - 1}
-                              title={`Descer "${nomeDaPeca(p, catalogo)}" nesta folha`} aria-label="Descer"
-                              className="ghost-btn ghost-icone ghost-icone-sm disabled:opacity-25">
-                        <ChevronDown className="h-3.5 w-3.5" />
-                      </button>
-                      {/* O seletor mostra "mover…", não a folha atual. Exibindo a
-                          folha em que a peça já está, ele lia como um rótulo
-                          repetido em vez de uma ação. */}
-                      <select
-                        value=""
-                        onChange={(e) => {
-                          if (!e.target.value) return;
-                          onRoteiro(moverPeca(roteiro, p.id, e.target.value, 99), "peça movida de folha");
-                        }}
-                        title="Mandar esta peça para outra folha"
-                        aria-label="Mandar para outra folha"
-                        disabled={roteiro.folhas.length < 2}
-                        className="h-6 w-[64px] rounded-md border border-border bg-card px-1 text-[10.5px] text-muted-foreground focus:outline-none focus:ring-1 focus:ring-ring disabled:opacity-25"
-                      >
-                        <option value="">mover…</option>
-                        {roteiro.folhas.filter((d) => d.id !== f.id).map((d) => (
-                          <option key={d.id} value={d.id}>{d.titulo}</option>
-                        ))}
-                      </select>
                       <button
-                        onClick={() => onRoteiro(removerPeca(roteiro, p.id), `${nomeDaPeca(p, catalogo)} fora`)}
-                        title={`Tirar "${nomeDaPeca(p, catalogo)}" desta apresentação (ela volta para o catálogo)`}
-                        aria-label="Tirar da apresentação"
-                        className="ghost-btn ghost-icone ghost-icone-sm text-muted-foreground hover:border-neg/40 hover:bg-neg-soft hover:text-neg"
+                        onClick={() => tirarGrupo(b.rotulo, b.membros.map((m) => m.peca.id))}
+                        title={`Tirar as ${b.membros.length} peças de "${b.rotulo}" de uma vez`}
+                        className="ghost-btn h-6 px-1.5 text-[10.5px] text-muted-foreground hover:border-neg/40 hover:bg-neg-soft hover:text-neg"
                       >
-                        <X className="h-3.5 w-3.5" />
+                        <X className="h-3 w-3" /> todos
                       </button>
-                    </li>
-                  ))}
+                    </li>,
+                    ...b.membros.map((m) => linhaDaPeca(f, m.peca, m.i, true)),
+                  ] : [linhaDaPeca(f, b.peca, b.i, false)])}
                 </ul>
               )}
             </div>
@@ -306,6 +446,7 @@ export function MontadorApresentacao({
             <select
               value={folhaAlvo?.id ?? ""}
               onChange={(e) => setAlvo(e.target.value)}
+              title="A folha padrão de tudo o que se adiciona daqui para baixo: texto livre, série e os cards do catálogo. Cada linha do catálogo pode desviar disto no seletor dela."
               className="h-6 min-w-0 flex-1 rounded border border-border bg-card px-1.5 text-[11px] focus:outline-none"
             >
               {roteiro.folhas.map((f) => <option key={f.id} value={f.id}>{f.titulo}</option>)}
@@ -419,27 +560,60 @@ export function MontadorApresentacao({
           )}
 
           <div className="mt-3">
-            <span className="eyebrow">Cards fora da apresentação</span>
+            {/* O destino fica DITO aqui, e não só no seletor lá em cima: a lista
+                é longa e quem rola até ela já perdeu de vista onde o "+" põe. */}
+            <div className="flex items-baseline justify-between gap-2">
+              <span className="eyebrow">Cards fora da apresentação</span>
+              {folhaAlvo && (
+                <span className="min-w-0 truncate text-[10.5px] text-muted-foreground">
+                  o + põe em <b className="font-semibold text-foreground/80">{folhaAlvo.titulo}</b>
+                </span>
+              )}
+            </div>
             {fora.length === 0 ? (
               <p className="mt-1.5 text-[11px] text-muted-foreground">
                 Tudo o que o mês tem já está em alguma folha.
               </p>
             ) : (
               <ul className="mt-1.5 flex flex-col gap-1">
-                {fora.map((c) => (
-                  <li key={c.chave}>
-                    <button
-                      onClick={() => adicionar(c.chave)}
-                      disabled={!folhaAlvo}
-                      className="flex w-full items-center gap-1.5 rounded border border-dashed border-border px-2 py-1 text-left text-[11.5px] transition hover:border-primary/40 hover:bg-accent/50 disabled:opacity-50"
-                    >
-                      <Plus className="h-3 w-3 shrink-0 text-muted-foreground" />
-                      <span className="min-w-0 flex-1 truncate">{c.rotulo}</span>
-                      {c.vazio && <span className="shrink-0 text-[9.5px] text-amber-600">sem dado</span>}
-                      <span className="shrink-0 text-[9.5px] text-muted-foreground">{c.bloco}</span>
-                    </button>
-                  </li>
-                ))}
+                {/* Cada fileira ganha o "todos" antes dos membros: quem tirou os
+                    quatro KPIs de uma vez não deveria ter de recolocá-los um a um
+                    (e gravar quatro vezes) para desistir da ideia. */}
+                {emFileiras(fora).flatMap((g) => [
+                  ...(g.rotulo ? [
+                    <li key={`g${g.chave}`} className="mt-1 flex items-center justify-between gap-2">
+                      <span className="min-w-0 truncate text-[10px] font-bold uppercase tracking-wider text-muted-foreground">
+                        {g.rotulo}
+                      </span>
+                      <button
+                        onClick={() => adicionarVarios(g.itens.map((c) => c.chave), g.rotulo!)}
+                        disabled={!folhaAlvo}
+                        title={`Pôr as ${g.itens.length} peças de "${g.rotulo}" de uma vez`}
+                        className="ghost-btn h-6 shrink-0 px-1.5 text-[10.5px] disabled:opacity-50"
+                      >
+                        <Plus className="h-3 w-3" /> todos ({g.itens.length})
+                      </button>
+                      {escolherFolha(`as ${g.itens.length} peças de "${g.rotulo}"`, (folhaId) =>
+                        adicionarVarios(g.itens.map((c) => c.chave), g.rotulo!, folhaId))}
+                    </li>,
+                  ] : []),
+                  ...g.itens.map((c) => (
+                    <li key={c.chave} className={cn("flex items-center gap-1", g.rotulo && "pl-3")}>
+                      <button
+                        onClick={() => adicionar(c.chave)}
+                        disabled={!folhaAlvo}
+                        title={`Pôr "${c.rotulo}" em "${folhaAlvo?.titulo ?? "—"}"`}
+                        className="flex min-w-0 flex-1 items-center gap-1.5 rounded border border-dashed border-border px-2 py-1 text-left text-[11.5px] transition hover:border-primary/40 hover:bg-accent/50 disabled:opacity-50"
+                      >
+                        <Plus className="h-3 w-3 shrink-0 text-muted-foreground" />
+                        <span className="min-w-0 flex-1 truncate">{c.rotulo}</span>
+                        {c.vazio && <span className="shrink-0 text-[9.5px] text-amber-600">sem dado</span>}
+                        <span className="shrink-0 text-[9.5px] text-muted-foreground">{c.bloco}</span>
+                      </button>
+                      {escolherFolha(`"${c.rotulo}"`, (folhaId) => adicionar(c.chave, folhaId))}
+                    </li>
+                  )),
+                ])}
               </ul>
             )}
           </div>

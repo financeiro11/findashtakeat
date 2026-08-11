@@ -22,9 +22,15 @@
 import { requireUser } from "../_shared/auth.ts";
 import {
   generateJSON, handleCors, jsonResponse, errorResponse, DEFAULT_MODEL,
-} from "../_shared/gemini.ts";
+} from "../_shared/openai.ts";
 
-type ItemCatalogo = { chave: string; rotulo: string; bloco: string; vazio?: boolean };
+type ItemCatalogo = {
+  chave: string; rotulo: string; bloco: string; vazio?: boolean;
+  /* Cards que andam colados (os quatro KPIs do resultado, as rubricas do
+     Pareto). Cada um é peça própria — dá para tirar um e deixar os outros —,
+     então "tira os KPIs" é um comando POR MEMBRO, e não um só. */
+  grupo?: string; grupoRotulo?: string;
+};
 type Peca =
   | { id: string; tipo: "card"; chave: string }
   | { id: string; tipo: "texto"; titulo: string; corpo: string }
@@ -75,6 +81,9 @@ const ESTILO = [
   "· Não reordene, não renomeie e não remova nada que o pedido não tenha citado.",
   "· `posicao` é o índice na folha começando em 0; omita para jogar no fim.",
   "· 'depois da X' = posição logo após a peça X; se X está numa folha, use a folha de X.",
+  "· FILEIRA (os cards marcados com fileira \"...\"): cada membro é uma peça. Um pedido sobre a fileira",
+  "  inteira ('tira os KPIs do caixa') vira um comando POR MEMBRO; um pedido sobre um membro",
+  "  ('tira só o SG&A') mexe só nele e deixa os outros onde estão.",
   "· Peça de TEXTO: escreva o `corpo` você mesmo, em português, curto (1 a 3 frases), no tom de",
   "  quem apresenta resultado — sem enfeite e sem inventar número. Se o pedido não der o conteúdo,",
   "  escreva um rascunho curto que a pessoa possa corrigir.",
@@ -99,12 +108,26 @@ function descreverRoteiro(r: Roteiro, catalogo: ItemCatalogo[]): string {
     .join("\n");
 }
 
+/* Nenhum pedido de verdade mexe em vinte peças de uma vez. O teto existe contra
+   o caso patológico: com saída estruturada, um pedido composto pode fazer o
+   modelo entrar em loop enchendo o array até o limite de tokens — foi assim que
+   esta função ficou 150s pendurada e morreu de 504 em 11/08/26. */
+const TETO_COMANDOS = 20;
+
+/* Modo estrito da OpenAI devolve TODA chave do schema, com `null` no que não se
+   aplica: um "remover" vem com `rubrica: null`, `meses: null` e mais oito. O
+   cliente (`lib/apresentacao.ts`) foi escrito contra o Gemini, onde o campo
+   simplesmente não vinha — então o null morre aqui, e não lá. */
+function semNulos(c: Record<string, unknown>): Record<string, unknown> {
+  return Object.fromEntries(Object.entries(c).filter(([, v]) => v !== null && v !== undefined));
+}
+
 function descreverCatalogo(catalogo: ItemCatalogo[], roteiro: Roteiro): string {
   const dentro = new Set(
     roteiro.folhas.flatMap((f) => f.pecas.filter((p) => p.tipo === "card").map((p) => (p as { chave: string }).chave)),
   );
   const linha = (c: ItemCatalogo) =>
-    `· ${c.chave} — ${c.rotulo} (bloco ${c.bloco})`
+    `· ${c.chave} — ${c.rotulo} (bloco ${c.bloco}${c.grupoRotulo ? `, fileira "${c.grupoRotulo}"` : ""})`
     + (dentro.has(c.chave) ? " [JÁ ESTÁ na apresentação]" : "")
     + (c.vazio ? " [sem dado neste mês]" : "");
   return catalogo.map(linha).join("\n");
@@ -133,6 +156,7 @@ Deno.serve(async (req) => {
     const out = await generateJSON<{ resumo?: string; comandos?: unknown[] }>({
       temperature: 0.2,
       responseSchema: ESQUEMA,
+      maxTokens: 2000,
       messages: [
         { role: "system", content: ESTILO },
         {
@@ -153,13 +177,21 @@ Deno.serve(async (req) => {
       ],
     });
 
-    const comandos = Array.isArray(out?.comandos) ? out.comandos : [];
+    const brutos = Array.isArray(out?.comandos) ? out.comandos : [];
+    const comandos = brutos.slice(0, TETO_COMANDOS).map((c) => semNulos(c as Record<string, unknown>));
+    let resumo = String(out?.resumo ?? "").trim();
+    // Corte silencioso lê-se como "fiz tudo": se sobrou comando, quem confirma
+    // precisa saber que está vendo só o começo.
+    if (brutos.length > TETO_COMANDOS) {
+      resumo += ` (mostrando as ${TETO_COMANDOS} primeiras de ${brutos.length} mudanças — peça o resto em outro comando)`;
+    }
+
     return jsonResponse({
       ok: true,
       // Vazio é resposta legítima ("não entendi", "isso não existe"): o cliente
       // mostra o resumo em vez de fingir que aplicou alguma coisa.
       comandos,
-      resumo: String(out?.resumo ?? "").trim(),
+      resumo,
       modelo: DEFAULT_MODEL,
     });
   } catch (e) {

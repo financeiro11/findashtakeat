@@ -55,6 +55,8 @@ export type ItemCatalogo = {
   bloco: string;
   /** Cards vizinhos do mesmo grupo ficam lado a lado quando caem na mesma folha. */
   grupo?: string;
+  /** Como o grupo se chama para gente ("KPIs · resultado"), no cabeçalho da lista. */
+  grupoRotulo?: string;
   /** Card que não tem o que mostrar neste mês (sem BP, sem snapshot). */
   vazio?: boolean;
 };
@@ -71,6 +73,11 @@ export const ROTEIRO_VAZIO: Roteiro = { folhas: [] };
  * `diff` entre "antes" e "depois" acusa mudança onde não houve.
  */
 export function novoId(prefixo: string, roteiro: Roteiro): string {
+  return novosIds(prefixo, roteiro, 1)[0];
+}
+
+/** N ids novos de uma vez — para quem põe um grupo inteiro numa folha só. */
+export function novosIds(prefixo: string, roteiro: Roteiro, quantos: number): string[] {
   let maior = 0;
   for (const f of roteiro.folhas) {
     for (const p of [f as { id: string }, ...f.pecas]) {
@@ -78,7 +85,7 @@ export function novoId(prefixo: string, roteiro: Roteiro): string {
       if (m) maior = Math.max(maior, Number(m[1]));
     }
   }
-  return `${prefixo}${maior + 1}`;
+  return Array.from({ length: quantos }, (_, i) => `${prefixo}${maior + 1 + i}`);
 }
 
 /* -------------------------------------------------------------- montagem -- */
@@ -127,6 +134,46 @@ export function sanear(roteiro: Roteiro, catalogo: ItemCatalogo[]): { roteiro: R
   return { roteiro: { folhas }, removidas };
 }
 
+/**
+ * Troca a peça de um card que virou GRUPO pelos membros dele.
+ *
+ * Aconteceu com os KPIs: "KPIs · receita, margem, EBITDA e SG&A" era UM card, e
+ * quem quisesse tirar só o SG&A tinha de tirar os quatro. Cada KPI virou peça
+ * própria, com chave `<a chave velha>:<o membro>` — e as apresentações já
+ * montadas continuam apontando para a chave velha, que sumiu do catálogo.
+ *
+ * Sem isto, `sanear` levaria a peça embora e a folha perderia os quatro KPIs
+ * calada (com um aviso que ninguém pediu). Com isto, a apresentação de julho
+ * abre mostrando exatamente o que mostrava — só que agora com quatro peças
+ * separadas, que é o ponto.
+ *
+ * A regra é a chave, não uma tabela de-para: `resumo.kpis-base` casa com
+ * `resumo.kpis-base:fco` por prefixo, então um grupo novo não precisa lembrar de
+ * registrar nada aqui.
+ */
+export function expandirGrupos(roteiro: Roteiro, catalogo: ItemCatalogo[]): Roteiro {
+  const existe = new Set(catalogo.map((c) => c.chave));
+  /* Ids novos continuam o contador do roteiro, como em `novoId`: dois membros na
+     mesma folha não podem herdar o id da peça que os dois substituíram. */
+  let seq = 0;
+  for (const f of roteiro.folhas) {
+    for (const p of f.pecas) {
+      const m = /^p(\d+)$/.exec(p.id);
+      if (m) seq = Math.max(seq, Number(m[1]));
+    }
+  }
+  const folhas = roteiro.folhas.map((f) => ({
+    ...f,
+    pecas: f.pecas.flatMap((p): Peca[] => {
+      if (p.tipo !== "card" || existe.has(p.chave)) return [p];
+      const membros = catalogo.filter((c) => c.chave.startsWith(`${p.chave}:`));
+      if (!membros.length) return [p];
+      return membros.map((c) => ({ id: `p${++seq}`, tipo: "card", chave: c.chave }));
+    }),
+  }));
+  return { folhas };
+}
+
 /** Cards do catálogo que ainda não estão em folha nenhuma. */
 export function foraDoRoteiro(roteiro: Roteiro, catalogo: ItemCatalogo[]): ItemCatalogo[] {
   const dentro = new Set(
@@ -148,15 +195,32 @@ export const acharPeca = (roteiro: Roteiro, id: string): { folha: Folha; peca: P
    mutar no lugar tiraria isso de graça. */
 
 export function removerPeca(roteiro: Roteiro, id: string): Roteiro {
-  return { folhas: roteiro.folhas.map((f) => ({ ...f, pecas: f.pecas.filter((p) => p.id !== id) })) };
+  return removerPecas(roteiro, [id]);
+}
+
+/**
+ * Tira várias peças de uma vez — o "tirar todos" de um grupo.
+ *
+ * Uma chamada, e não `removerPeca` em laço: cada mexida do montador grava, e
+ * tirar os quatro KPIs em quatro gravações deixaria a apresentação passar por
+ * três estados que ninguém pediu (e o desfazer, por três degraus).
+ */
+export function removerPecas(roteiro: Roteiro, ids: string[]): Roteiro {
+  const fora = new Set(ids);
+  return { folhas: roteiro.folhas.map((f) => ({ ...f, pecas: f.pecas.filter((p) => !fora.has(p.id)) })) };
 }
 
 export function inserirPeca(roteiro: Roteiro, folhaId: string, indice: number, peca: Peca): Roteiro {
+  return inserirPecas(roteiro, folhaId, indice, [peca]);
+}
+
+/** Põe várias peças juntas, na ordem em que vieram — o "pôr todos" do grupo. */
+export function inserirPecas(roteiro: Roteiro, folhaId: string, indice: number, novas: Peca[]): Roteiro {
   return {
     folhas: roteiro.folhas.map((f) => {
       if (f.id !== folhaId) return f;
       const pecas = [...f.pecas];
-      pecas.splice(Math.max(0, Math.min(pecas.length, indice)), 0, peca);
+      pecas.splice(Math.max(0, Math.min(pecas.length, indice)), 0, ...novas);
       return { ...f, pecas };
     }),
   };

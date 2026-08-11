@@ -84,7 +84,10 @@ const DRE_SECOES = {
     "Ocupação & Escritório", "Assessorias & Consultorias", "Softwares Administrativos", "Viagens & Transportes Adm", "Outras despesas Adm",
     "Campanhas de Mídia Paga", "Campanhas de Outros Canais", "Comissões Consultores / Parceiros", "Premiações", "MGM", "Softwares Marketing & Vendas", "Agências & Consultorias", "Viagens & Transportes Mkt", "Eventos e Feiras", "Outras despesas Mkt",
   ],
-  resultadoFin: ["(-) Depreciação & Amortização", "(-) Juros", "(-) IOF", "(+) Receita financeira"],
+  // Irmã, não filha: o Lucro Líquido soma depreciação e resultado financeiro em
+  // parcelas separadas. Ver _shared/demonstracoes-schema.ts.
+  depreciacaoAmortizacao: ["(-) Depreciação & Amortização"],
+  resultadoFin: ["(-) Juros", "(-) IOF", "(+) Receita financeira"],
   resultadoNaoOp: ["Despesas Não Operacionais", "(-) Estorno de Compras"],
   impostos: ["IRPJ", "CSLL", "IRF"],
 };
@@ -280,7 +283,8 @@ Deno.serve(async (req) => {
         const rl = sumSecao(dreAgg, DRE_SECOES.receitaBruta, mes) + sumSecao(dreAgg, DRE_SECOES.deducoes, mes);
         const mc = rl + sumSecao(dreAgg, DRE_SECOES.custos, mes);
         const eb = mc + sumSecao(dreAgg, DRE_SECOES.sga, mes);
-        const ll = eb + sumSecao(dreAgg, DRE_SECOES.resultadoFin, mes) + sumSecao(dreAgg, DRE_SECOES.resultadoNaoOp, mes) + sumSecao(dreAgg, DRE_SECOES.impostos, mes);
+        // Depreciação é parcela separada no Lucro Líquido, não dentro do resultado financeiro
+        const ll = eb + sumSecao(dreAgg, DRE_SECOES.depreciacaoAmortizacao, mes) + sumSecao(dreAgg, DRE_SECOES.resultadoFin, mes) + sumSecao(dreAgg, DRE_SECOES.resultadoNaoOp, mes) + sumSecao(dreAgg, DRE_SECOES.impostos, mes);
         return { "Receita Líquida": rl, "Margem de contribuição": mc, "EBITDA": eb, "Lucro Líquido": ll };
       };
       const drePayload = buildPayload(dreAgg, dreTotais);
@@ -291,16 +295,18 @@ Deno.serve(async (req) => {
         return { "Fluxo de Caixa Operacional": fco, "Fluxo Livre": fl };
       };
       const dfcPayload = buildPayload(dfcAgg, dfcTotais);
-      // Cashburn 12M = soma móvel de 12 meses do Fluxo Livre
+      /* Cashburn = a queima do MÊS: fluxo livre menos a captação extraordinária.
+         Era soma móvel de 12 meses do fluxo livre, que somava os empréstimos
+         tomados no período — em jul/26 dava +309 mil, positivo, num mês que
+         queimou 511 mil. A régua mora no esquema (`cashburnDoMes`), a mesma do
+         tracker e do Dashboard. */
       {
         const cols = dfcPayload.columns.filter((c: string) => c !== "Conta");
-        const flByCol: Record<string, number> = {};
-        for (const c of cols) flByCol[c] = dfcTotais(c)["Fluxo Livre"];
-        const cashRow: Record<string, any> = { Conta: "Cashburn 12M" };
-        cols.forEach((c: string, i: number) => {
-          const janela = cols.slice(Math.max(0, i - 11), i + 1);
-          cashRow[c] = Math.round(janela.reduce((s, k) => s + (flByCol[k] ?? 0), 0) * 100) / 100;
-        });
+        const cashRow: Record<string, any> = { Conta: "Cashburn" };
+        for (const c of cols) {
+          const queima = dfcTotais(c)["Fluxo Livre"] - getVal(dfcAgg, "(+) Novos Empréstimos & Financiamentos", c);
+          cashRow[c] = Math.round(queima * 100) / 100;
+        }
         dfcPayload.rows.push(cashRow);
       }
 

@@ -110,7 +110,7 @@ export const CLASSIFICACAO_PADRAO: Record<string, Bucket> = {
 const LINHAS_NAO_CUSTO = new Set<string>([
   "Receita Líquida", "Margem de contribuição", "EBITDA", "Lucro Líquido",
   "(+) Ajustes de EBITDA", "EBITDA Ajustado", "% Margem EBITDA Ajustado",
-  "(+) Receita financeira", "Cashburn 12M", "Fluxo de Caixa Operacional", "Fluxo Livre",
+  "(+) Receita financeira", "Cashburn", "Fluxo de Caixa Operacional", "Fluxo Livre",
   ...RUBRICAS_RECEITA,
 ]);
 

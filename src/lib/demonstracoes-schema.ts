@@ -15,6 +15,13 @@ export type Node = {
   src?: string;
   /** em rubricas percentuais, divide pelo total deste rótulo */
   pctOf?: string;
+  /* Outros nomes sob os quais esta MESMA rubrica pode estar gravada no blob.
+     A DFC do tracker e o DE_PARA do Omie batizaram várias linhas de formas
+     diferentes ("Entradas" × "Entradas Operacionais", "Antecipação" ×
+     "Antecipação da Receita"), e o que não casa por rótulo some da tela. A
+     leitura tenta `label` primeiro e cai nos apelidos — nunca soma os dois,
+     senão o mês em que as duas grafias existem contaria em dobro. */
+  alias?: string[];
   children?: Node[];
 };
 
@@ -92,8 +99,14 @@ export const DRE_SCHEMA: Node[] = [
   { label: "(+) Ajustes de EBITDA", kind: "child" },
   { label: "EBITDA Ajustado", kind: "total" },
   { label: "% Margem EBITDA Ajustado", kind: "percent", src: "EBITDA Ajustado", pctOf: "Receita Líquida" },
+  /* D&A é IRMÃ do resultado financeiro, não filha dele. A fórmula do Lucro
+     Líquido no tracker soma as duas separadamente — `=SOMA(AJ74;AJ77:AJ78;…)`,
+     onde 77 é a depreciação e 78 é o resultado financeiro — e a linha gravada
+     de "Resultado Financeiro" é só Juros + IOF + Receita financeira (confere em
+     todos os meses de 2026). Aninhada, a tela somava a depreciação dentro dela e
+     mostrava R$ 6.617 onde o tracker diz R$ 12.105. */
+  { label: "(-) Depreciação & Amortização", kind: "child" },
   { label: "(+/-) Resultado Financeiro", kind: "header", children: [
-    { label: "(-) Depreciação & Amortização", kind: "child" },
     { label: "(-) Juros", kind: "child" },
     { label: "(-) IOF", kind: "child" },
     { label: "(+) Receita financeira", kind: "child" },
@@ -115,16 +128,19 @@ export const DRE_SCHEMA: Node[] = [
 // A ordem dos blocos de topo é fixa (usada pelos KPIs):
 //   Entradas · Saídas · FCO · Investimentos · Financiamento · Fluxo Livre · Cashburn
 export const DFC_SCHEMA: Node[] = [
-  { label: "Entradas Operacionais", kind: "header", children: [
+  { label: "Entradas Operacionais", kind: "header", alias: ["Entradas"], children: [
     { label: "Receita de Assinaturas", kind: "child" },
     { label: "Receita com Materiais", kind: "child" },
     { label: "Receita Markup", kind: "child" },
     { label: "Receita de Serviços", kind: "child" },
     { label: "Entrada de Receita", kind: "child" },
+    /* Antecipação de recebível entra e sai do CAIXA operacional — é onde o
+       tracker a lança. Antes morava em Financiamento com outro nome, e as
+       entradas de 2024 (R$ 26,7 mil + 50,3 mil + 93,3 mil) não apareciam. */
+    { label: "Antecipação da Receita", kind: "child", alias: ["Antecipação"] },
     { label: "(+) Receita financeira", kind: "child" },
-    { label: "(+) Resultado Não Operacional", kind: "child" },
   ]},
-  { label: "Saídas Operacionais", kind: "header", children: [
+  { label: "Saídas Operacionais", kind: "header", alias: ["Saídas"], children: [
     { label: "Impostos", kind: "child", children: [
       { label: "Simples Nacional", kind: "leaf" },
       { label: "PIS", kind: "leaf" },
@@ -142,6 +158,9 @@ export const DFC_SCHEMA: Node[] = [
       { label: "Equipe Tecnologia", kind: "leaf" },
       { label: "Equipe Operacional", kind: "leaf" },
       { label: "Equipe Onboarding", kind: "leaf" },
+      /* Existe no tracker desde sempre e faltava aqui: jan–mar/26 tinham
+         R$ 27,7 mil que não apareciam em lugar nenhum da DFC. */
+      { label: "Equipe Parcerias", kind: "leaf" },
       { label: "Premiações Operacionais", kind: "leaf" },
       { label: "Premiações", kind: "leaf" },
       { label: "Encargos sociais", kind: "leaf" },
@@ -178,27 +197,86 @@ export const DFC_SCHEMA: Node[] = [
       { label: "(-) Depesas Financeiras", kind: "leaf" },
     ]},
     { label: "Devoluções", kind: "child" },
+    /* "Atencipação" é typo do tracker, e é assim que a linha está gravada. */
+    { label: "Abatimento de Antecipação da Receita", kind: "child", alias: ["Abatimento de Atencipação"] },
   ]},
   { label: "Fluxo de Caixa Operacional", kind: "total" },
-  { label: "Investimentos", kind: "header", children: [
+  { label: "Investimentos", kind: "header", alias: ["Fluxo de Caixa de Investimentos"], children: [
+    /* O tracker lança o não operacional AQUI, não nas entradas. Estava do
+       outro lado e inflava o fluxo operacional (R$ 12,8 mil em jul/26). */
+    { label: "(+) Resultado Não Operacional", kind: "child" },
     { label: "(-) Compra de Equipamentos", kind: "child" },
     { label: "(-) Investimentos em Estrutura", kind: "child" },
     { label: "(-) Compra de Participação", kind: "child" },
     { label: "Depósitos e Caução", kind: "child" },
   ]},
-  { label: "Financiamento", kind: "header", children: [
+  { label: "Financiamento", kind: "header", alias: ["Fluxo de Financiamento"], children: [
     { label: "(+) Novos Empréstimos & Financiamentos", kind: "child" },
     { label: "(-) Amortização de Financiamentos", kind: "child" },
-    { label: "Antecipação da Receita", kind: "child" },
-    { label: "Abatimento de Antecipação da Receita", kind: "child" },
     { label: "(-) Rodada de Investimentos", kind: "child" },
   ]},
-  { label: "Fluxo Livre", kind: "total" },
-  { label: "Cashburn 12M", kind: "total" },
+  { label: "Fluxo Livre", kind: "total", alias: ["Fluxo de Caixa Livre"] },
+  /* Queima do MÊS, não janela de 12 meses: é o fluxo livre sem a captação
+     extraordinária. Ver o comentário de CASHBURN. */
+  { label: "Cashburn", kind: "total" },
 ];
 
 export const flattenLabels = (nodes: Node[]): string[] =>
   nodes.flatMap((n) => [n.label, ...(n.children ? flattenLabels(n.children) : [])]);
+
+/* ---------------------------------------------------------------------------
+ * A CASCATA — o que cada linha de TOTAL soma.
+ *
+ * Bloco (nó com filhos) já se sabe somar sozinho pela árvore. Total não tem
+ * filho: "EBITDA" é uma linha solta no esquema, e sem esta tabela ele seria um
+ * número que só existe porque alguém escreveu. Aqui está a conta.
+ *
+ * As parcelas entram com o SINAL que já têm no blob — "(-) Custos Operacionais"
+ * é negativo, então a margem é uma soma, não uma subtração. Mesma convenção do
+ * tracker, do omie-sync e de `TOTAIS_POR_BLOCO`.
+ *
+ * A PRIMEIRA parcela é a âncora: sem ela o total não existe (mês vazio não ganha
+ * um Lucro Líquido feito só de imposto). `derivadas.ts` aplica essa regra.
+ *
+ * ESPELHA supabase/functions/_shared/demonstracoes-schema.ts — `derivadas.test.ts`
+ * compara as duas cópias e quebra se alguém mexer só de um lado.
+ * ------------------------------------------------------------------------- */
+export const CASCATA: Record<"dre" | "dfc", Record<string, string[]>> = {
+  dre: {
+    "Receita Líquida": ["Receita Bruta", "(-) Deduções da receita"],
+    "Margem de contribuição": ["Receita Líquida", "(-) Custos Operacionais"],
+    "EBITDA": ["Margem de contribuição", "(-) SG&A"],
+    "EBITDA Ajustado": ["EBITDA", "(+) Ajustes de EBITDA"],
+    /* É literalmente a fórmula da célula no tracker — `=SOMA(AJ74; AJ77:AJ78;
+       AJ82:AJ85)`: EBITDA, depreciação, resultado financeiro e, no último
+       intervalo, o bloco não operacional inteiro mais a linha de impostos. */
+    "Lucro Líquido": [
+      "EBITDA",
+      "(-) Depreciação & Amortização",
+      "(+/-) Resultado Financeiro",
+      "(+/-) Resultado Não Operacional",
+      "(-) Impostos",
+    ],
+  },
+  dfc: {
+    "Fluxo de Caixa Operacional": ["Entradas Operacionais", "Saídas Operacionais"],
+    "Fluxo Livre": ["Fluxo de Caixa Operacional", "Investimentos", "Financiamento"],
+  },
+};
+
+/* A queima do MÊS: fluxo livre menos a captação extraordinária. Um mês em que
+   entrou R$ 1,6 M de empréstimo tem fluxo livre positivo e queima de meio
+   milhão — é a queima que diz quanto tempo o caixa aguenta. Régua do tracker
+   (confere nos 7 meses de 2026) e a mesma que o Dashboard já usava. Antes daqui
+   era soma móvel de 12 meses do fluxo livre, que somava os empréstimos e dava
+   jul/26 POSITIVO em +309 mil onde a queima do mês foi de 511 mil. */
+export const CASHBURN = "Cashburn";
+export const NOVOS_EMPRESTIMOS = "(+) Novos Empréstimos & Financiamentos";
+/** Fluxo livre − captação extraordinária, com a leitura de quem chama. */
+export const cashburnDoMes = (
+  fluxoLivre: number | null,
+  novosEmprestimos: number | null,
+): number | null => (fluxoLivre == null ? null : fluxoLivre - (novosEmprestimos ?? 0));
 
 /* --------------------------- colunas da base --------------------------- */
 const MES_ABBR = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
@@ -342,12 +420,28 @@ export function indexarCelulas(
   return map;
 }
 
+/** Todos os nomes sob os quais a rubrica pode estar gravada — o de verdade primeiro. */
+export const rotulosDoNo = (n: Node): string[] => [n.src ?? n.label, ...(n.alias ?? [])];
+
+/**
+ * Primeira leitura NÃO NULA entre os nomes do nó. Nunca soma dois nomes: num mês
+ * em que o tracker gravou "Entradas" e o omie-sync gravou "Entradas
+ * Operacionais", somar contaria a mesma coisa duas vezes.
+ */
+export function valorComAlias(node: Node, ler: (rotulo: string) => number | null): number | null {
+  for (const r of rotulosDoNo(node)) {
+    const v = ler(r);
+    if (v != null) return v;
+  }
+  return null;
+}
+
 /**
  * Valor de um nó numa coluna. Nó com filhos SOMA os filhos (mesma regra das
  * páginas DRE/DFC — se lesse a própria linha, os três ecrãs divergiriam).
  */
 export function valorDoNo(idx: Map<string, LinhaBase>, node: Node, col: string): number {
-  if (!node.children?.length) return valorBruto(idx, node.src ?? node.label, col);
+  if (!node.children?.length) return valorComAlias(node, (r) => valorBruto(idx, r, col)) ?? 0;
   return node.children.reduce((s, c) => s + valorDoNo(idx, c, col), 0);
 }
 

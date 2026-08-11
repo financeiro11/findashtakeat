@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   parseColuna, colunasDe, indexar, valorBruto, valorDoNo, valorNoPeriodo,
   ultimoMesFechado, variacao, rotulosDeDespesa, flattenLabels, chaveRubrica,
-  celulaNumero, indexarCelulas,
+  celulaNumero, indexarCelulas, valorComAlias,
   DRE_SCHEMA, DFC_SCHEMA, type LinhaBase, type Node,
 } from "./demonstracoes-schema";
 import {
@@ -358,5 +358,62 @@ describe("bloco Não Operacional", () => {
 
     const idx = indexar([{ Conta: "(+) Resultado Não Operacional", "Jan-24": 17043 }]);
     expect(valorDoNo(idx, bloco, "Jan-24")).toBe(17043);
+  });
+});
+
+/* ==========================================================================
+ *  A DFC segue o TRACKER — é a demonstração que a diretoria assina.
+ *
+ *  Cada caso aqui é uma diferença real que foi encontrada comparando o CSV do
+ *  Tracker vOMIE com a tela, em 11/08/2026. Sem estes testes, cada um deles
+ *  volta na próxima mexida no esquema — e volta calado.
+ * ======================================================================== */
+describe("DFC × tracker", () => {
+  const bloco = (label: string): Node =>
+    [...DFC_SCHEMA, ...DFC_SCHEMA.flatMap((n) => n.children ?? [])].find((n) => n.label === label)!;
+  const filhos = (label: string) => flattenLabels(bloco(label).children ?? []);
+
+  it("Equipe Parcerias existe no Pessoal — R$ 27,7 mil de jan–mar/26 não apareciam", () => {
+    expect(filhos("Pessoal")).toContain("Equipe Parcerias");
+  });
+
+  it("o não operacional entra em Investimentos, como no tracker", () => {
+    // Estava nas Entradas e inflava o fluxo operacional em R$ 12,8 mil (jul/26).
+    expect(filhos("Investimentos")).toContain("(+) Resultado Não Operacional");
+    expect(filhos("Entradas Operacionais")).not.toContain("(+) Resultado Não Operacional");
+  });
+
+  it("antecipação de recebível é caixa operacional, não financiamento", () => {
+    expect(filhos("Entradas Operacionais")).toContain("Antecipação da Receita");
+    expect(filhos("Financiamento")).not.toContain("Antecipação da Receita");
+    expect(filhos("Saídas Operacionais")).toContain("Abatimento de Antecipação da Receita");
+  });
+
+  it("os apelidos cobrem os nomes que o tracker usa", () => {
+    const apelido = (label: string) => bloco(label).alias ?? [];
+    expect(apelido("Entradas Operacionais")).toContain("Entradas");
+    expect(apelido("Saídas Operacionais")).toContain("Saídas");
+    expect(apelido("Investimentos")).toContain("Fluxo de Caixa de Investimentos");
+    expect(apelido("Financiamento")).toContain("Fluxo de Financiamento");
+    expect(DFC_SCHEMA.find((n) => n.label === "Fluxo Livre")!.alias)
+      .toContain("Fluxo de Caixa Livre");
+  });
+});
+
+describe("valorComAlias", () => {
+  const entradas = DFC_SCHEMA[0]; // "Entradas Operacionais", apelido "Entradas"
+
+  it("acha a linha pelo nome do tracker", () => {
+    expect(valorComAlias(entradas, (r) => (r === "Entradas" ? 1_061_185 : null))).toBe(1_061_185);
+  });
+
+  /* O mês em que as DUAS grafias existem — o tracker importou "Entradas" e o
+     omie-sync gravou "Entradas Operacionais" — contaria em dobro se somasse. */
+  it("nunca soma os dois nomes: o rótulo do esquema ganha", () => {
+    expect(valorComAlias(entradas, (r) => (r === "Entradas Operacionais" ? 7 : 10))).toBe(7);
+  });
+
+  it("sem nenhum dos nomes, devolve vazio — não zero", () => {
+    expect(valorComAlias(entradas, () => null)).toBeNull();
   });
 });

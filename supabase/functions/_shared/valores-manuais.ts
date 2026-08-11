@@ -27,6 +27,16 @@
  *     está lá — some de novo e o valor dobra a cada clique. Daí `valor_base` e
  *     `valor_aplicado` guardados por célula e o parâmetro `colunasAtualizadas`:
  *     quem escreveu sabe dizer quais colunas voltaram a ser automáticas.
+ *
+ *  3. IMPORT DE TRACKER NÃO TEM CÉLULA INTOCADA. `colunasAtualizadas` diz "a
+ *     coluna foi recalculada"; `colunasReescritas` diz algo mais forte — "toda
+ *     célula desta coluna foi apagada e regravada a partir do arquivo". Só o
+ *     import faz isso, e nele a heurística `intocada` (ver abaixo) tem que ficar
+ *     desligada: o tracker JÁ traz o valor digitado à mão, a célula bate com o
+ *     `valor_aplicado` por coincidência, e o código concluía "o sync não passou
+ *     aqui" e ressomava aos totais um delta contra um `valor_base` velho do
+ *     Omie. Era isso que fazia a Margem de contribuição de um mês recém-importado
+ *     nascer errada mesmo com todas as rubricas certas.
  * ========================================================================== */
 
 import { alvosDoAjuste, CASHBURN } from "./demonstracoes-schema.ts";
@@ -76,6 +86,9 @@ const chave = (s: string) => String(s ?? "").trim().toLowerCase();
  *   guardado — é o que impede o valor de dobrar em mês travado.
  * @param removidos manuais que acabaram de ser apagados: desfaz a célula e o
  *   total antes de aplicar o resto.
+ * @param colunasReescritas colunas em que TODA célula foi apagada e regravada da
+ *   fonte (import de tracker). Nelas não existe célula intocada: a base é o que
+ *   o arquivo trouxe, sempre. Ver o item 3 do cabeçalho.
  */
 export function aplicarManuaisNoBlob(
   tipo: "dre" | "dfc",
@@ -83,6 +96,7 @@ export function aplicarManuaisNoBlob(
   manuais: ValorManual[],
   colunasAtualizadas: Set<string>,
   removidos: ValorManual[] = [],
+  colunasReescritas: Set<string> = new Set(),
 ): { dados: Dados; updates: { id: string; valor_base: number | null; valor_aplicado: number }[] } {
   const rows = (dados.rows ?? []).map((r) => ({ ...r }));
   const columns = [...(dados.columns ?? [])];
@@ -149,8 +163,15 @@ export function aplicarManuaisNoBlob(
        Ler a célula devolveria o próprio manual como se fosse a base automática,
        o delta sairia zero e o total, que o sync RECALCULOU sem o manual, ficaria
        sem o ajuste para sempre. Se a célula é exatamente o que gravamos, o sync
-       não passou por ela: a base é a de antes, não ela mesma. */
-    const intocada = refrescada && m.valor_aplicado != null && naTela != null
+       não passou por ela: a base é a de antes, não ela mesma.
+
+       Salvo no IMPORT, onde a coluna inteira foi apagada e regravada do arquivo:
+       ali "a célula bate com o valor_aplicado" não é sinal de que ninguém passou
+       por ela — é o esperado, porque o tracker traz o mesmo número que se
+       digitou. Tratar isso como intocada ressomaria o delta contra um
+       `valor_base` velho e envenenaria todos os totais do mês. */
+    const reescrita = colunasReescritas.has(m.col_key);
+    const intocada = !reescrita && refrescada && m.valor_aplicado != null && naTela != null
       && cent(naTela) === cent(m.valor_aplicado);
 
     // Nunca aplicado ⇒ a célula ainda é automática, mesmo em coluna travada.
@@ -174,23 +195,18 @@ export function aplicarManuaisNoBlob(
 
   // 3) repercute nos blocos e totais — só onde a linha JÁ existe naquele mês.
   //    Somar delta em cima do nada viraria um "Lucro Líquido" feito só do ajuste.
-  const mesesOrdenados = columns.filter((c) => sortKey(c) >= 0).sort((a, b) => sortKey(a) - sortKey(b));
   for (const [col, alvos] of ajustes) {
     for (const [alvo, delta] of alvos) {
       const atual = ler(alvo, col);
       if (atual == null) continue;
       escrever(alvo, col, atual + delta);
 
-      // Cashburn é soma móvel de 12 meses do Fluxo Livre: um ajuste em maio pesa
-      // em maio e nos onze meses seguintes.
+      /* Cashburn é o fluxo livre DO MÊS menos a captação extraordinária, então
+         um ajuste em maio pesa só em maio. Enquanto ele foi soma móvel de 12
+         meses, este delta cascateava por onze meses à frente. */
       if (tipo === "dfc" && alvo === "Fluxo Livre") {
-        const i = mesesOrdenados.indexOf(col);
-        if (i >= 0) {
-          for (const c of mesesOrdenados.slice(i, i + 12)) {
-            const cb = ler(CASHBURN, c);
-            if (cb != null) escrever(CASHBURN, c, cb + delta);
-          }
-        }
+        const cb = ler(CASHBURN, col);
+        if (cb != null) escrever(CASHBURN, col, cb + delta);
       }
     }
   }
@@ -214,6 +230,7 @@ export async function aplicarValoresManuais(
   dados: Dados,
   colunasAtualizadas: Set<string>,
   removidos: ValorManual[] = [],
+  colunasReescritas: Set<string> = new Set(),
 ): Promise<Dados> {
   const { data, error } = await supabase
     .from("demonstracoes_valor_manual")
@@ -236,7 +253,7 @@ export async function aplicarValoresManuais(
   }));
   if (!manuais.length && !removidos.length) return dados;
 
-  const r = aplicarManuaisNoBlob(tipo, dados, manuais, colunasAtualizadas, removidos);
+  const r = aplicarManuaisNoBlob(tipo, dados, manuais, colunasAtualizadas, removidos, colunasReescritas);
 
   for (const u of r.updates) {
     const { error: upErr } = await supabase

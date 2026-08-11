@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { supabase } from "@/integrations/supabase/client";
 import { toast } from "sonner";
+import { mesesDeReferencia } from "@/lib/mesReferencia";
 import { cn } from "@/lib/utils";
 import { valorExato } from "@/lib/valor";
 import { OmieDeParaPanel } from "@/components/OmieDeParaPanel";
@@ -30,6 +31,11 @@ import {
 } from "@/components/demonstracoes/Perguntas";
 import { gerarJustificativas } from "@/lib/justificativas";
 import { montarPergunta } from "@/lib/perguntas";
+import { useFormatoNumero, SeletorFormato } from "@/components/demonstracoes/FormatoNumero";
+import { MarcaComposicao, tituloComposicao } from "@/components/demonstracoes/ComposicaoCelula";
+import {
+  composicaoDaCelula, temComposicao, noDaRubrica, type LeitorDaCelula,
+} from "@/lib/composicaoCelula";
 
 /* ============================================================
  *  Helpers
@@ -83,15 +89,6 @@ function fmtMoney(v: number | null | undefined): string {
   else str = `R$ ${v.toFixed(0)}`;
   return str;
 }
-function fmtCompact(v: number | null | undefined): string {
-  if (v === null || v === undefined || isNaN(v as number)) return "—";
-  const abs = Math.abs(v);
-  let s: string;
-  if (abs >= 1_000_000) s = (v / 1_000_000).toFixed(2).replace(".", ",") + " M";
-  else if (abs >= 1_000) s = (v / 1_000).toFixed(1).replace(".", ",") + " K";
-  else s = v.toFixed(0);
-  return s;
-}
 function fmtPct(v: number | null | undefined): string {
   if (v === null || v === undefined || isNaN(v as number)) return "—";
   return `${(v * 100).toFixed(1).replace(".", ",")}%`;
@@ -132,7 +129,8 @@ function colunasFechadas(rows: Record<string, any>[], colsOrdenadas: string[]): 
 // Esquema e cálculo vivem em lib/demonstracoes-schema — compartilhados com o
 // Histórico Multianual, para as três telas não divergirem.
 import {
-  DFC_SCHEMA, indexarCelulas, rotulosDeDespesa, type Kind, type Node,
+  DFC_SCHEMA, indexarCelulas, rotulosDeDespesa, valorComAlias,
+  CASHBURN, NOVOS_EMPRESTIMOS, cashburnDoMes, type Kind, type Node,
 } from "@/lib/demonstracoes-schema";
 
 const flattenLabels = (nodes: Node[]): string[] =>
@@ -174,6 +172,9 @@ export default function DFC() {
   const [gerandoJust, setGerandoJust] = useState(false);
   const [progressoJust, setProgressoJust] = useState<string | null>(null);
   const [apenasUltimoMes, setApenasUltimoMes] = useState(false);
+  /* Reduzido cabe o ano inteiro na tela; completo é o número que se confere
+     contra o Omie. Guardado por navegador e compartilhado com a DRE. */
+  const { formato, escolher: escolherFormato, fmtNum, largura } = useFormatoNumero();
   const fileRef = useRef<HTMLInputElement>(null);
 
   const availableYears = useMemo(() => {
@@ -185,10 +186,21 @@ export default function DFC() {
     return Array.from(ys).sort();
   }, [columns]);
 
+  /* Colunas visíveis após filtro de ano.
+     Meses futuros ainda não fechados vêm no cabeçalho da planilha mas sem nenhum
+     valor — apareciam como uma coluna zerada/em branco no fim da tabela. Cortamos
+     essas colunas vazias do FIM (as do meio ficam, pois indicam buraco real). */
   const displayColumns = useMemo(() => {
-    if (yearFilter === "all") return columns;
-    return columns.filter(c => c.endsWith(`-${yearFilter}`));
-  }, [columns, yearFilter]);
+    let cols = yearFilter === "all" ? columns : columns.filter(c => c.endsWith(`-${yearFilter}`));
+    const temDado = (c: string) => rows.some((r) => {
+      const n = toNum(r[c]);
+      return n !== null && n !== 0;
+    });
+    let fim = cols.length;
+    while (fim > 0 && !temDado(cols[fim - 1])) fim--;
+    if (fim > 0) cols = cols.slice(0, fim);
+    return cols;
+  }, [columns, yearFilter, rows]);
 
   useEffect(() => { document.title = "Demonstrações Financeiras · DFC"; }, []);
 
@@ -484,41 +496,14 @@ export default function DFC() {
     }
   };
 
-  /* ----- KPIs: compara sempre os DOIS ÚLTIMOS MESES FECHADOS (travados) -----
-   * Meses travados são meses fechados de verdade (tracker importado); o mês corrente
-   * (aberto, sincronizando com o Omie aos poucos) está sempre incompleto e comparar
-   * contra ele dava variações sem sentido. Se ainda não há pelo menos 2 meses travados
-   * (ex.: instalação nova, antes do 1º import), cai no heurístico antigo de "mês mais
-   * preenchido" para não deixar os KPIs vazios. */
-  const { lastCol, prevCol } = useMemo(() => {
-    const travadosOrdenados = columns.filter((c) => travados.has(c));
-    if (travadosOrdenados.length >= 2) {
-      return {
-        lastCol: travadosOrdenados[travadosOrdenados.length - 1],
-        prevCol: travadosOrdenados[travadosOrdenados.length - 2],
-      };
-    }
-
-    const populatedCounts = columns.map((col) => {
-      const count = rows.reduce((acc, row) => {
-        const raw = row?.[col];
-        if (raw === "" || raw === null || raw === undefined) return acc;
-        return toNum(raw) === null ? acc : acc + 1;
-      }, 0);
-      return { col, count };
-    });
-    const maxCount = Math.max(...populatedCounts.map(({ count }) => count), 0);
-    const minCountForValidMonth = maxCount > 0 ? Math.max(3, Math.ceil(maxCount * 0.25)) : 1;
-    const validMonths = populatedCounts
-      .filter(({ count }) => count >= minCountForValidMonth)
-      .map(({ col }) => col);
-    const last = validMonths[validMonths.length - 1] ?? columns[columns.length - 1];
-    const lastValidIdx = validMonths.indexOf(last);
-    const prev = lastValidIdx > 0
-      ? validMonths[lastValidIdx - 1]
-      : columns[Math.max(columns.indexOf(last) - 1, 0)];
-    return { lastCol: last, prevCol: prev };
-  }, [columns, rows, travados]);
+  /* ----- KPIs: o último mês com demonstração, contra o anterior -----
+   * Ver src/lib/mesReferencia.ts. "Travado" não quer dizer "fechado": o import
+   * tranca toda coluna do arquivo, inclusive os meses futuros que chegam quase
+   * vazios. Sem o fluxo operacional o mês não tem o que resumir num cartão. */
+  const { lastCol, prevCol } = useMemo(
+    () => mesesDeReferencia(columns, rows, travados, "dfc"),
+    [columns, rows, travados],
+  );
 
   // Default ano = ano mais recente com dados
   useEffect(() => {
@@ -537,36 +522,38 @@ export default function DFC() {
     return { val: v, prev: p, delta: d };
   }
 
-  // Cashburn 12M = soma dos últimos 12 meses do "Fluxo Livre" (ou Operacional, se não existir)
+  /* Quanto queimou nos últimos 12 meses — a soma da QUEIMA de cada mês, não do
+     fluxo livre. Somar o fluxo livre incluía os empréstimos tomados na janela:
+     com os R$ 1,07 M de jan e os R$ 1,67 M de abr, o cartão marcava +309 mil em
+     jul/26, como se a empresa tivesse gerado caixa no ano. */
   function cashburnKpi(): { val: number | null; prev: number | null; delta: number | null } {
-    const baseLabel = valueByLabel.has("fluxo livre")
-      ? "Fluxo Livre"
-      : valueByLabel.has("cashburn 12m")
-        ? "Cashburn 12M"
-        : "Fluxo de Caixa Operacional";
     if (!lastCol) return { val: null, prev: null, delta: null };
     const idx = columns.indexOf(lastCol);
     if (idx < 0) return { val: null, prev: null, delta: null };
     const window = columns.slice(Math.max(0, idx - 11), idx + 1);
     const prevWindow = columns.slice(Math.max(0, idx - 23), Math.max(0, idx - 11));
-    const sum = (cs: string[]) => cs.reduce((acc, c) => {
-      const v = valueAt(baseLabel, c);
-      return v == null ? acc : acc + v;
-    }, 0);
+    const sum = (cs: string[]) => cs.reduce((acc, c) => acc + (cashburnAt(c) ?? 0), 0);
     const v = sum(window);
     const p = prevWindow.length ? sum(prevWindow) : null;
     const d = v != null && p != null && p !== 0 ? (v - p) / Math.abs(p) : null;
     return { val: v, prev: p, delta: d };
   }
 
+  /* O valor GRAVADO para a rubrica, sob qualquer um dos nomes que ela tenha na
+     base. O tracker e o DE_PARA do Omie batizaram várias linhas da DFC
+     diferente ("Entradas" × "Entradas Operacionais", "Antecipação" ×
+     "Antecipação da Receita") e o que não casava por rótulo sumia da tela. */
+  const valorGravado = (node: Node, col: string): number | null =>
+    valorComAlias(node, (r) => valueAt(r, col));
+
   const sumChildren = (node: Node, col: string): number | null => {
-    if (!node.children?.length) return valueAt(node.label, col);
+    if (!node.children?.length) return valorGravado(node, col);
     let total: number | null = null;
     for (const c of node.children) {
-      const v = c.children?.length ? sumChildren(c, col) : valueAt(c.label, col);
+      const v = c.children?.length ? sumChildren(c, col) : valorGravado(c, col);
       if (v != null) total = (total ?? 0) + v;
     }
-    return total ?? valueAt(node.label, col);
+    return total ?? valorGravado(node, col);
   };
 
   /* QUALQUER linha com filhos é a soma dos filhos — não só as `header`. O número
@@ -575,6 +562,31 @@ export default function DFC() {
      destravado ele é lixo. Ler o pai do blob era o bug — some sempre. */
   const valorDaLinha = (node: Node, col: string): number | null =>
     node.children?.length ? sumChildren(node, col) : getValueForRow(node, col);
+
+  /* O mesmo, mas a partir do RÓTULO — é o que a conferência de célula precisa
+     para ler as parcelas com exatamente a regra da grade. Rubrica fora do
+     esquema (o blob tem rubricas órfãs do Omie) lê o blob direto. */
+  const valorDeRubrica = (rotulo: string, col: string): number | null => {
+    const no = noDaRubrica(rotulo, "dfc");
+    return no ? valorDaLinha(no, col) : valueAt(rotulo, col);
+  };
+
+  /* Leitor da conferência, preso a um mês: `naTela` é o número que a grade
+     mostra; `guardado` é o número cru do blob. É a diferença entre os dois que
+     denuncia o total que ficou para trás — e no fluxo de caixa esse total é
+     justamente o número que diz se o mês queimou ou gerou dinheiro. */
+  const lerCelula = (col: string): LeitorDaCelula => ({
+    tipo: "dfc",
+    naTela: (rotulo) => valorDeRubrica(rotulo, col),
+    /* Também pelo apelido: sem isso o Σ do Fluxo Livre ficava MUDO — a linha do
+       tracker se chama "Fluxo de Caixa Livre", o `guardado` vinha nulo e a
+       conferência não tinha com o que comparar justamente na linha que mais
+       importa da demonstração. */
+    guardado: (rotulo) => {
+      const no = noDaRubrica(rotulo, "dfc");
+      return no ? valorGravado(no, col) : valueAt(rotulo, col);
+    },
+  });
 
   /* Perguntar e promover mexem em DUAS tabelas: o fio da célula e — quando a
      resposta vira o comentário oficial — a justificativa. Recarregar só o fio
@@ -600,29 +612,33 @@ export default function DFC() {
       valorNaTela,
     });
 
-  // Cálculos derivados quando rótulos não existem na planilha
-  function entradasAt(col: string): number | null {
-    if (valueByLabel.has("entradas")) return valueAt("Entradas", col);
-    return sumChildren(DFC_SCHEMA[0], col);
-  }
-  function saidasAt(col: string): number | null {
-    if (valueByLabel.has("saídas")) return valueAt("Saídas", col);
-    if (valueByLabel.has("saidas")) return valueAt("Saidas", col);
-    return sumChildren(DFC_SCHEMA[1], col);
-  }
+  /* Derivados: o valor GRAVADO manda (é o que a diretoria assinou) e a soma só
+     entra quando não há gravado. O apelido resolve o nome que o tracker usa —
+     as três grafias à mão que havia aqui ("Entradas", "Saídas", "Saidas") viraram
+     `alias` no esquema. */
+  const entradasAt = (col: string): number | null => sumChildren(DFC_SCHEMA[0], col);
+  const saidasAt = (col: string): number | null => sumChildren(DFC_SCHEMA[1], col);
   function fluxoOpAt(col: string): number | null {
-    const v = valueAt("Fluxo de Caixa Operacional", col);
+    const v = valorGravado(DFC_SCHEMA[2], col);
     if (v != null) return v;
     const e = entradasAt(col); const s = saidasAt(col);
     return e != null || s != null ? (e ?? 0) + (s ?? 0) : null;
   }
   function fluxoLivreAt(col: string): number | null {
-    const v = valueAt("Fluxo Livre", col);
+    const v = valorGravado(DFC_SCHEMA[5], col);
     if (v != null) return v;
     const op = fluxoOpAt(col);
     const inv = sumChildren(DFC_SCHEMA[3], col) ?? 0;
     const fin = sumChildren(DFC_SCHEMA[4], col) ?? 0;
     return op != null ? op + inv + fin : null;
+  }
+  /* A queima do mês: fluxo livre menos a captação extraordinária. O mês em que
+     entrou empréstimo tem fluxo livre positivo e queima de meio milhão — é a
+     queima que diz quanto tempo o caixa aguenta. Ver `cashburnDoMes`. */
+  function cashburnAt(col: string): number | null {
+    const v = valorGravado(DFC_SCHEMA[6], col);
+    if (v != null) return v;
+    return cashburnDoMes(fluxoLivreAt(col), valueAt(NOVOS_EMPRESTIMOS, col));
   }
 
   const entradasKpi = useMemo(() => {
@@ -689,16 +705,8 @@ export default function DFC() {
   function getValueForRow(node: Node, col: string): number | null {
     if (node.label === "Fluxo de Caixa Operacional") return fluxoOpAt(col);
     if (node.label === "Fluxo Livre") return fluxoLivreAt(col);
-    if (node.label === "Cashburn 12M") {
-      const idx = columns.indexOf(col);
-      if (idx < 0) return null;
-      const w = columns.slice(Math.max(0, idx - 11), idx + 1);
-      return w.reduce<number | null>((acc, c) => {
-        const v = fluxoLivreAt(c);
-        return v == null ? acc : (acc ?? 0) + v;
-      }, null);
-    }
-    return valueAt(node.label, col);
+    if (node.label === CASHBURN) return cashburnAt(col);
+    return valorGravado(node, col);
   }
 
   function toggle(label: string) {
@@ -819,11 +827,11 @@ export default function DFC() {
                   </span>
                 )}
               </div>
-              <div className="mt-1 text-[10.5px] text-muted-foreground num">
-                Anterior · {prevLabel}
+              <div className="mt-1 text-[10.5px] font-medium text-foreground num">
+                {lastLabel}
               </div>
               <div className="text-[10.5px] text-muted-foreground num">
-                vs {lastLabel}
+                vs {prevLabel}
               </div>
             </div>
           );
@@ -870,6 +878,9 @@ export default function DFC() {
               <option key={y} value={y}>20{y}</option>
             ))}
           </select>
+          {/* Reduzido para ler a série; completo para conferir o número contra o
+              Omie. O hover com centavos continua nos dois. */}
+          <SeletorFormato formato={formato} onChange={escolherFormato} />
           <Button variant="ghost" size="sm" className="h-8 text-[12px] text-muted-foreground" onClick={() => allCollapsed ? expandAll() : collapseAll()}>
             {allCollapsed ? "Expandir tudo" : "Colapsar tudo"}
           </Button>
@@ -901,15 +912,26 @@ export default function DFC() {
             />
           )}
           {tab === "valores" && <ResumoPerguntas mapa={perguntas} colunas={displayColumns} />}
-          <div className="mt-3 overflow-x-auto rounded-lg border border-border bg-card">
+          {/* A altura máxima é o que faz o cabeçalho grudar: `position: sticky`
+              se prende ao container que ROLA, e um container que só rola na
+              horizontal deixa o cabeçalho subir junto com a página. Com o teto,
+              a grade rola por dentro e o mês fica sempre à vista — junto com a
+              coluna de rubrica, que já era fixa. */}
+          <div className="mt-3 max-h-[calc(100vh-190px)] overflow-auto rounded-lg border border-border bg-card">
             <table className="border-collapse">
               <thead>
-                <tr className="border-b border-border bg-muted/40">
-                  <th className="sticky left-0 z-20 bg-muted px-3 py-2 text-left text-[10px] font-semibold tracking-[0.08em] text-muted-foreground w-[220px] min-w-[220px] shadow-[1px_0_0_0_hsl(var(--border))]">
+                <tr className="border-b border-border">
+                  <th className="sticky left-0 top-0 z-30 bg-muted px-3 py-2 text-left text-[10px] font-semibold tracking-[0.08em] text-muted-foreground w-[220px] min-w-[220px] shadow-[1px_0_0_0_hsl(var(--border)),0_1px_0_0_hsl(var(--border))]">
                     RUBRICA
                   </th>
                   {displayColumns.map(c => (
-                    <th key={c} className="group/col px-1.5 py-2 text-right text-[10px] font-semibold tracking-[0.06em] text-muted-foreground whitespace-nowrap num min-w-[64px]">
+                    <th
+                      key={c}
+                      className={cn(
+                        "group/col sticky top-0 z-20 bg-muted px-1.5 py-2 text-right text-[10px] font-semibold tracking-[0.06em] text-muted-foreground whitespace-nowrap num shadow-[0_1px_0_0_hsl(var(--border))]",
+                        largura,
+                      )}
+                    >
                       <span className="inline-flex items-center justify-end gap-1">
                         <CadeadoColuna
                           col={c}
@@ -1001,7 +1023,14 @@ export default function DFC() {
                         const display =
                           tab === "mom"
                             ? fmtPct(v)
-                            : (isNeg ? `(${fmtCompact(Math.abs(v ?? 0))})` : fmtCompact(v));
+                            : (isNeg ? `(${fmtNum(Math.abs(v ?? 0))})` : fmtNum(v));
+                        /* A conferência da célula de resultado — o bloco e os
+                           dois fluxos. Fora da aba "Método direto" o número é
+                           derivado (Δ, acumulado) e não corresponde à conta do
+                           esquema, então a marca sairia mentindo. */
+                        const comp = tab === "valores" && temComposicao(node.label, "dfc")
+                          ? composicaoDaCelula(node.label, lerCelula(c))
+                          : null;
                         /* Só folha abre auditoria: linha com filhos é soma, e total
                            e percentual são calculados — nenhuma delas vem de
                            lançamento, então não haveria o que listar. Fora da aba
@@ -1049,13 +1078,15 @@ export default function DFC() {
                             }) : undefined}
                             title={[
                               tituloValor(v, tab === "mom"),
+                              tituloComposicao(comp),
                               manual ? tituloValorManual(manual) : null,
                               alerta ? tituloReclassificacao(alerta) : null,
                               tituloPerguntas(perguntasDaCelula),
                               auditavel ? "clique para ver os lançamentos" : null,
                             ].filter(Boolean).join(" · ") || undefined}
                             className={cn(
-                              "px-1.5 py-1.5 text-right text-[12px] num whitespace-nowrap min-w-[64px]",
+                              "px-1.5 py-1.5 text-right text-[12px] num whitespace-nowrap",
+                              largura,
                               v != null && "cursor-help",
                               isNeg ? "text-primary" : isTotal ? "text-emerald-800" : "text-foreground/90",
                               v == null && "text-muted-foreground/40",
@@ -1067,6 +1098,7 @@ export default function DFC() {
                               // número, não só o entendimento dele.
                               alerta ? fundoCelulaReclassificacao(alerta)
                                 : manual ? fundoCelulaManual()
+                                : comp?.divergente ? "bg-amber-100/70"
                                 : just && fundoCelulaJustificativa(just),
                             )}
                           >
@@ -1074,6 +1106,14 @@ export default function DFC() {
                                 caixa: antes o lápis era absoluto e pousava em cima
                                 do triângulo e do balão. */}
                             <span className="inline-flex items-center justify-end gap-1">
+                              {comp && v != null && (
+                                <MarcaComposicao
+                                  rubrica={node.label}
+                                  mesLabel={ptLabelFromKey(c).replace("/", " ")}
+                                  ler={lerCelula(c)}
+                                  divergente={comp.divergente}
+                                />
+                              )}
                               {editavel && (
                                 <EditorValorManual
                                   tipo="dfc"

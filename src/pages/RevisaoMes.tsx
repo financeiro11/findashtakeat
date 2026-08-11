@@ -51,8 +51,9 @@ import {
   type ItemCatalogo, type Peca, type Roteiro,
 } from "@/lib/apresentacao";
 import { REGISTRO_CARDS } from "@/lib/registroCards";
+import { resolverPeriodo, TIPOS, type Periodo, type TipoPeriodo } from "@/lib/periodo";
 import { valorExato } from "@/lib/valor";
-import { competenciaDe, lerDre, mesesComDado, rotuloMes, RL, EBITDA, SGA } from "@/lib/analisesDre";
+import { competenciaDe, lerBlobMensal, lerDre, mesesComDado, rotuloMes, RL, EBITDA, SGA } from "@/lib/analisesDre";
 import { lerBpAnual, type BpAnual } from "@/lib/bpAnual";
 import { parsearPlano, type LinhaBP } from "@/pages/bp/parse";
 import { parsearOperacao, type MesBP } from "@/pages/assinaturas/orcadoBp";
@@ -139,6 +140,7 @@ type Apresentacao = {
   roteiro: Roteiro;
   textos: Record<string, string>;
   status: "rascunho" | "publicada";
+  periodo_tipo: TipoPeriodo | null;
   congelado: Congelado | null;
   publicada_em: string | null;
 };
@@ -148,6 +150,8 @@ type Congelado = {
   html?: Record<string, string>;
   leitura?: Partial<Leitura>;
   sinal?: unknown;
+  /** A janela como estava — a ata precisa dizer de que período ela fala. */
+  periodo?: Periodo;
   em?: string;
 };
 
@@ -540,6 +544,10 @@ export default function RevisaoMes() {
   const [nomeApres, setNomeApres] = useState("");
   const [roteiro, setRoteiro] = useState<Roteiro>(ROTEIRO_VAZIO);
   const [textosApres, setTextosApres] = useState<Record<string, string>>({});
+  /* Só o TIPO é estado (e só o tipo vai ao banco): a janela de meses é derivada
+     na hora contra os meses que têm dado. Guardada, ela envelheceria — um 3T26
+     salvo em agosto continuaria com dois meses depois de setembro fechar. */
+  const [periodoTipo, setPeriodoTipo] = useState<TipoPeriodo>("mes");
   const [statusApres, setStatusApres] = useState<"rascunho" | "publicada">("rascunho");
   const [congelado, setCongelado] = useState<Congelado | null>(null);
   const [montando, setMontando] = useState(false);
@@ -571,30 +579,6 @@ export default function RevisaoMes() {
   }, [modoReuniao]);
 
   /* ---------------------------- carga ---------------------------- */
-  /* O blob vem em dois formatos: array cru (import antigo) ou
-     `{ columns, rows }`. Mesma leitura das páginas DRE/DFC. */
-  const lerBlob = (raw: unknown): Blob => {
-    let rows: Record<string, unknown>[] = [];
-    let cols: string[] = [];
-    if (Array.isArray(raw)) {
-      rows = raw as Record<string, unknown>[];
-      cols = Object.keys(rows[0] ?? {});
-    } else if (raw && typeof raw === "object") {
-      const envelope = raw as { rows?: Record<string, unknown>[]; columns?: string[] };
-      if (Array.isArray(envelope.rows)) {
-        rows = envelope.rows;
-        cols = envelope.columns ?? Object.keys(rows[0] ?? {});
-      }
-    }
-    const mensais = cols.filter((c) => /^[A-Za-z]{3}-\d{2}$/.test(c));
-    const ordem = (k: string) => {
-      const EN = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-      const m = /^([A-Za-z]{3})-(\d{2})$/.exec(k)!;
-      return (2000 + Number(m[2])) * 12 + EN.indexOf(m[1]);
-    };
-    return { rows, columns: mensais.sort((a, b) => ordem(a) - ordem(b)) };
-  };
-
   const carregar = useCallback(async () => {
     setCarregando(true);
     const [dreRes, dfcRes, travasRes, bpsRes, caixaRes, assinRes, churnRes] = await Promise.all([
@@ -612,8 +596,8 @@ export default function RevisaoMes() {
         .order("competencia", { ascending: true }),
     ]);
 
-    setDre(lerBlob(dreRes?.data?.dados));
-    setDfc(lerBlob(dfcRes?.data?.dados));
+    setDre(lerBlobMensal(dreRes?.data?.dados));
+    setDfc(lerBlobMensal(dfcRes?.data?.dados));
     setTravados(new Set(
       ((travasRes?.data ?? []) as { col_key: string }[]).map((t) => String(t.col_key)),
     ));
@@ -835,6 +819,7 @@ export default function RevisaoMes() {
     setCongelado(null);
     setStatusApres("rascunho");
     setNomeApres("");
+    setPeriodoTipo("mes");
     void carregarApresentacoes(mes);
   }, [mes, carregarApresentacoes]);
 
@@ -951,6 +936,7 @@ export default function RevisaoMes() {
       setCongelado(null);
       setStatusApres("rascunho");
       setNomeApres("");
+      setPeriodoTipo("mes");
       setMontando(false);
       return;
     }
@@ -969,6 +955,7 @@ export default function RevisaoMes() {
     setTextosApres(a.textos ?? {});
     setStatusApres(a.status);
     setCongelado(a.congelado ?? null);
+    setPeriodoTipo((a.periodo_tipo ?? "mes") as TipoPeriodo);
     setBloco(0);
   };
 
@@ -983,6 +970,7 @@ export default function RevisaoMes() {
     r?: Roteiro,
     textos?: Record<string, string>,
     nome?: string,
+    tipo?: TipoPeriodo,
   ): Promise<string | null> => {
     if (!mes) return null;
     const alvo = nome ?? nomeApres ?? "";
@@ -992,6 +980,7 @@ export default function RevisaoMes() {
       p_roteiro: r ?? (roteiro.folhas.length ? roteiro : roteiroPadrao(catalogoPadraoRef.current)),
       p_textos: textos ?? textosApres,
       p_id: apresId,
+      p_periodo_tipo: tipo ?? periodoTipo,
     });
     if (error) { toast.error("Não consegui salvar a apresentação: " + error.message); return null; }
     const id = data as string;
@@ -1004,7 +993,15 @@ export default function RevisaoMes() {
     setCongelado(null);
     await carregarApresentacoes(mes);
     return id;
-  }, [mes, nomeApres, roteiro, textosApres, apresId, carregarApresentacoes]);
+  }, [mes, nomeApres, roteiro, textosApres, apresId, periodoTipo, carregarApresentacoes]);
+
+  /** Trocar o período é uma mudança da apresentação — grava e volta a rascunho. */
+  const trocarPeriodo = async (tipo: TipoPeriodo) => {
+    setPeriodoTipo(tipo);
+    setSalvandoApres(true);
+    await garantirApresentacao(undefined, undefined, undefined, tipo);
+    setSalvandoApres(false);
+  };
 
   /** Grava o roteiro depois de qualquer mexida do montador. */
   const salvarRoteiro = useCallback(async (novo: Roteiro, descricao: string) => {
@@ -1046,13 +1043,13 @@ export default function RevisaoMes() {
         for (const botao of copia.querySelectorAll("[data-chrome]")) botao.remove();
         html[chave] = copia.innerHTML;
       }
-      const { error } = await sb.rpc("apresentacao_publicar", {
-        p_id: id,
-        p_congelado: { html, leitura, sinal, em: new Date().toISOString() },
-      });
+      // O período entra no congelado: a ata tem de dizer de QUE janela ela fala,
+      // e o tipo salvo na linha pode mudar depois sem alterar o que foi mostrado.
+      const gelo = { html, leitura, sinal, periodo, em: new Date().toISOString() };
+      const { error } = await sb.rpc("apresentacao_publicar", { p_id: id, p_congelado: gelo });
       if (error) throw new Error(error.message);
       setStatusApres("publicada");
-      setCongelado({ html, leitura, sinal, em: new Date().toISOString() });
+      setCongelado(gelo);
       await carregarApresentacoes(mes);
       toast.success("Apresentação publicada — os números ficaram congelados como estão agora.");
     } catch (e) {
@@ -1090,6 +1087,7 @@ export default function RevisaoMes() {
     setTextosApres({});
     setStatusApres("rascunho");
     setCongelado(null);
+    setPeriodoTipo("mes");
     setBloco(0);
     setMontando(true);
     await carregarApresentacoes(mes);
@@ -2264,6 +2262,13 @@ export default function RevisaoMes() {
    * redesenha nada, ela escolhe. É isso que faz o card do EBITDA na folha 2 do
    * "Board 3T" ser exatamente o mesmo que está na tela de trabalho, com o mesmo
    * número, sem uma segunda implementação para manter em dia. */
+  const emApresentacao = apresId != null;
+  const publicada = emApresentacao && statusApres === "publicada";
+  /* A janela é DERIVADA aqui, contra os meses que têm dado (ver `lib/periodo`).
+     Sem apresentação aberta a tela de trabalho é do mês e ponto: a reunião de
+     tracker é mensal, e um seletor de trimestre ali só confundiria. */
+  const periodo = resolverPeriodo(emApresentacao ? periodoTipo : "mes", mes, comDado);
+
   const cardsLocais = [
     ...cardsDoBloco("Resumo", "resumo", blocoResumo),
     ...cardsDoBloco("DRE", "dre", blocoDre),
@@ -2275,7 +2280,7 @@ export default function RevisaoMes() {
   /* Os cards que vêm de OUTRAS telas (ver `lib/registroCards`). Eles se viram
      sozinhos: recebem o mês e buscam o que precisam. É o que permite pôr o churn
      numa folha sem esta página saber o que é churn. */
-  const ctxCard = { mes, rotuloMes: mesPorExtenso(mes) };
+  const ctxCard = { periodo, mes: periodo.mesFoco, rotuloMes: mesPorExtenso(periodo.mesFoco) };
   const cardsDoRegistro: CardPronto[] = REGISTRO_CARDS.map((r) => ({
     chave: r.chave,
     rotulo: r.rotulo,
@@ -2292,9 +2297,6 @@ export default function RevisaoMes() {
      senão toda apresentação nasceria com oito folhas que ninguém pediu. */
   catalogoPadraoRef.current = cardsLocais.map(({ chave, rotulo, bloco, grupo, vazio }) =>
     ({ chave, rotulo, bloco, grupo, vazio }));
-
-  const emApresentacao = apresId != null;
-  const publicada = emApresentacao && statusApres === "publicada";
 
   /** Uma peça do roteiro virando card desenhável. */
   const pecaComoCard = (p: Peca): CardPronto => {
@@ -2338,7 +2340,10 @@ export default function RevisaoMes() {
             titulo={p.titulo}
             rubrica={p.rubrica}
             formato={p.formato}
-            pontos={serieDaRubrica(leitor, janela, p.rubrica, p.meses)}
+            /* A série tem os próprios meses (foi ela que a pessoa escolheu ao
+               criar o card); o período só entra como PISO, para uma folha de
+               trimestre nunca mostrar menos meses do que o trimestre tem. */
+            pontos={serieDaRubrica(leitor, janela, p.rubrica, Math.max(p.meses, periodo.meses.length))}
           />
         ),
       };
@@ -2499,6 +2504,27 @@ export default function RevisaoMes() {
           </button>
           {emApresentacao && (
             <>
+              {/* -------- o período ------------------------------------------
+                  Só aparece com uma apresentação aberta: a tela de trabalho é a
+                  reunião mensal, e um seletor de trimestre nela só confundiria.
+                  Os cards mensais (cascata, Pareto, DRE) continuam desenhando o
+                  MÊS DE FECHAMENTO da janela — daí o rótulo dizer os dois. */}
+              <select
+                value={periodoTipo}
+                onChange={(e) => trocarPeriodo(e.target.value as TipoPeriodo)}
+                title="A janela desta apresentação. Cards de fluxo somam o período; os de estoque valem no fechamento."
+                className="h-7 rounded-md border border-border bg-card px-2 text-[11.5px] focus:outline-none focus:ring-1 focus:ring-ring"
+              >
+                {TIPOS.map((t) => <option key={t.tipo} value={t.tipo}>{t.nome}</option>)}
+              </select>
+              {periodoTipo !== "mes" && (
+                <span
+                  className="chip whitespace-nowrap"
+                  title={`${periodo.meses.length} mês(es): ${periodo.meses.join(", ")}. Os cards de um mês só desenham ${mesPorExtenso(periodo.mesFoco)}.`}
+                >
+                  {periodo.rotulo}{periodo.parcial ? " · parcial" : ""}
+                </span>
+              )}
               <button onClick={duplicarApresentacao} title="Duplicar para outra plateia" className="ghost-btn h-7 px-2 text-[11px]">
                 cópia
               </button>
@@ -2624,7 +2650,9 @@ export default function RevisaoMes() {
         aberto={exportando}
         onOpenChange={setExportando}
         blocos={folhasDoPalco.map((f) => f.titulo)}
-        rotulo={mesPorExtenso(mes)}
+        /* O cabeçalho da folha exportada leva o PERÍODO, não o mês: um relatório
+           de trimestre com "Julho/26" no topo seria lido como sendo de julho. */
+        rotulo={periodo.tipo === "mes" ? mesPorExtenso(periodo.mesFoco) : periodo.rotulo}
         arquivo={emApresentacao
           ? `${nomeApres.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "")}-${mes}`
           : `revisao-do-mes-${mes}`}

@@ -158,6 +158,35 @@ export function mesesComDado(
 }
 
 /**
+ * Lê o blob de `demonstracoes_contabeis` nos DOIS formatos que existem.
+ *
+ * Import antigo gravou array cru; o novo grava `{ rows, columns }`. Quem lê tem
+ * de aguentar os dois — e já aguentava, em cópias separadas em cada tela. As
+ * colunas voltam só as MENSAIS e em ordem cronológica: "Conta", "Total" e afins
+ * não são mês, e a ordem alfabética poria Ago antes de Jul.
+ */
+export function lerBlobMensal(raw: unknown): { rows: LinhaBlob[]; columns: string[] } {
+  let rows: LinhaBlob[] = [];
+  let cols: string[] = [];
+  if (Array.isArray(raw)) {
+    rows = raw as LinhaBlob[];
+    cols = Object.keys(rows[0] ?? {});
+  } else if (raw && typeof raw === "object") {
+    const envelope = raw as { rows?: LinhaBlob[]; columns?: string[] };
+    if (Array.isArray(envelope.rows)) {
+      rows = envelope.rows;
+      cols = envelope.columns ?? Object.keys(rows[0] ?? {});
+    }
+  }
+  const mensais = cols.filter((c) => parseColuna(c) != null);
+  const ordem = (k: string) => {
+    const c = parseColuna(k)!;
+    return c.ano * 12 + c.mes;
+  };
+  return { rows, columns: mensais.sort((a, b) => ordem(a) - ordem(b)) };
+}
+
+/**
  * "Jul-26" → "2026-07", a chave de competência dos snapshots.
  *
  * A coluna do blob é o idioma da DRE; `assinaturas_snapshot`, `churn_snapshot` e

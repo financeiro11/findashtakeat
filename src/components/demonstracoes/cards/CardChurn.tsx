@@ -1,9 +1,12 @@
 /* Card de churn para apresentações — autossuficiente (ver `lib/registroCards`).
  *
- * Lê `churn_snapshot` no mês que a apresentação pediu e, quando aquele mês não
- * tem foto (a planilha da diretoria atrasa), cai no mais recente ANTERIOR e diz
- * de que mês veio. Silenciar isso seria mostrar o churn de agosto numa folha de
- * julho — o tipo de erro que ninguém percebe numa reunião. */
+ * Churn é FLUXO: soma a janela inteira do período. Num trimestre, os clientes
+ * que saíram são os dos três meses, e o MRR perdido é a soma — não a foto do
+ * último mês, que responderia outra pergunta.
+ *
+ * Mês da janela sem foto (a planilha da diretoria atrasa) fica FORA da soma e é
+ * declarado no rodapé. Emendar com o mês anterior inflaria o trimestre contando
+ * o mesmo mês duas vezes; silenciar daria um trimestre pequeno com cara de bom. */
 
 import { useEffect, useState } from "react";
 import { Info } from "lucide-react";
@@ -45,39 +48,49 @@ export function CardChurn({ ctx }: { ctx: ContextoCard }) {
     return () => { vivo = false; };
   }, []);
 
-  const alvo = competenciaDe(ctx.mes);
-  const ate = (c: string | null) =>
-    !c || !pontos ? null : [...pontos].reverse().find((p) => p.competencia <= c) ?? null;
-  const mes = ate(alvo);
-  const anterior = mes ? ate(mesAnterior(mes.competencia)) : null;
-  const defasado = !!mes && !!alvo && mes.competencia !== alvo;
+  const { periodo } = ctx;
+  const porMes = new Map((pontos ?? []).map((p) => [p.competencia, p]));
+  const naJanela = periodo.meses
+    .map((m) => { const c = competenciaDe(m); return c ? porMes.get(c) ?? null : null; });
+  const achados = naJanela.filter((p): p is Ponto => p != null);
+  const semFoto = periodo.meses.filter((_, i) => naJanela[i] == null);
 
-  const delta = mes && anterior ? mes.qtd - anterior.qtd : null;
+  const qtd = achados.reduce((s, p) => s + (p.qtd ?? 0), 0);
+  const valor = achados.reduce((s, p) => s + (p.valor ?? 0), 0);
+  const media = achados.length ? qtd / achados.length : null;
 
   return (
     <section className="card-surface overflow-hidden">
       <header className="flex items-start justify-between gap-4 border-b border-border p-3.5">
         <div>
-          <h3 className="text-[13.5px] font-semibold tracking-tight">Churn · {mes?.mesLabel || ctx.rotuloMes}</h3>
+          <h3 className="text-[13.5px] font-semibold tracking-tight">Churn · {periodo.rotulo}</h3>
           <p className="mt-0.5 text-[11.5px] text-muted-foreground">
-            Cancelamentos e MRR perdido — base do Asaas.
+            Cancelamentos e MRR perdido, base do Asaas
+            {achados.length > 1 && ` — somados nos ${achados.length} meses da janela`}.
           </p>
         </div>
       </header>
 
       {pontos == null ? (
         <p className="p-4 text-[12px] text-muted-foreground">Carregando…</p>
-      ) : !mes ? (
+      ) : achados.length === 0 ? (
         <p className="p-4 text-[12px] text-muted-foreground">
-          Não há snapshot de churn até {ctx.rotuloMes}. Ele aparece quando o <b>churn-sheet-sync</b> rodar.
+          Não há snapshot de churn em {periodo.rotulo}. Ele aparece quando o{" "}
+          <b>churn-sheet-sync</b> rodar.
         </p>
       ) : (
         <>
           <div className="grid grid-cols-3 gap-4 p-4">
             {[
-              { r: "Clientes que saíram", v: Math.round(mes.qtd).toLocaleString("pt-BR"), t: "text-neg" },
-              { r: "MRR perdido", v: abreviado(mes.valor), t: "text-neg", cheio: mes.valor },
-              { r: "% da receita", v: `${(mes.pct ?? 0).toFixed(2).replace(".", ",")}%`, t: "" },
+              { r: "Clientes que saíram", v: Math.round(qtd).toLocaleString("pt-BR"), t: "text-neg" },
+              { r: "MRR perdido", v: abreviado(valor), t: "text-neg", cheio: valor },
+              {
+                r: achados.length > 1 ? "Média por mês" : "% da receita",
+                v: achados.length > 1
+                  ? `${(media ?? 0).toFixed(1).replace(".", ",")}`
+                  : `${(achados[0].pct ?? 0).toFixed(2).replace(".", ",")}%`,
+                t: "",
+              },
             ].map((x) => (
               <div key={x.r} className="flex flex-col gap-1">
                 <div className="text-[10px] uppercase tracking-wider text-muted-foreground">{x.r}</div>
@@ -89,31 +102,26 @@ export function CardChurn({ ctx }: { ctx: ContextoCard }) {
             ))}
           </div>
 
-          {delta != null && (
-            <p className="border-t border-border/60 px-4 py-2.5 text-[11.5px] text-muted-foreground">
-              Contra {anterior!.mesLabel}:{" "}
-              {/* Menos gente saindo é melhor — o verde não segue o sinal do número. */}
-              <b className={cn("num", delta <= 0 ? "text-pos" : "text-neg")}>
-                {delta > 0 ? "+" : ""}{delta}
-              </b>{" "}
-              cliente(s).
-            </p>
+          {achados.length > 1 && (
+            <div className="flex flex-wrap gap-x-5 gap-y-1 border-t border-border/60 px-4 py-2.5 text-[11.5px] text-muted-foreground">
+              {achados.map((p) => (
+                <span key={p.competencia}>
+                  {p.mesLabel || p.competencia}{" "}
+                  <b className="num text-foreground">{Math.round(p.qtd)}</b>
+                </span>
+              ))}
+            </div>
           )}
 
-          {defasado && (
+          {semFoto.length > 0 && (
             <p className="flex items-start gap-1.5 border-t border-border/60 px-4 py-2.5 text-[10.5px] leading-snug text-muted-foreground">
               <Info className="mt-px h-3 w-3 shrink-0" />
-              Não há foto de churn para {ctx.rotuloMes}: os números acima são de <b>{mes.mesLabel}</b>.
+              {semFoto.length} mês(es) da janela ainda não têm foto de churn e ficaram{" "}
+              <b>fora da soma</b>: {semFoto.join(", ")}.
             </p>
           )}
         </>
       )}
     </section>
   );
-}
-
-/** "2026-07" → "2026-06" */
-function mesAnterior(c: string): string {
-  const [a, m] = c.split("-").map(Number);
-  return m > 1 ? `${a}-${String(m - 1).padStart(2, "0")}` : `${a - 1}-12`;
 }

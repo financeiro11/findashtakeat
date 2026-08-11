@@ -1,8 +1,11 @@
 /* Card de carteira por porte para apresentações — autossuficiente.
  *
- * Igual ao do bloco de Metas da Revisão no que mostra, mas SEM depender do mês
- * seguinte: aqui a carteira é do mês da apresentação, que é o que um material de
- * Conselho pede. Sem foto para o mês, cai na mais recente anterior e avisa. */
+ * Carteira é ESTOQUE, não fluxo: num trimestre ela vale no ÚLTIMO mês da janela,
+ * e não somada. Somar três meses contaria o mesmo cliente três vezes e devolveria
+ * uma base três vezes maior que a real — o erro mais fácil de cometer e o mais
+ * difícil de notar num slide.
+ *
+ * Sem foto para o mês de fechamento, cai na mais recente anterior e avisa. */
 
 import { useEffect, useState } from "react";
 import { Info } from "lucide-react";
@@ -60,6 +63,7 @@ export function CardCarteira({ ctx }: { ctx: ContextoCard }) {
           <h3 className="text-[13.5px] font-semibold tracking-tight">Carteira por porte</h3>
           <p className="mt-0.5 text-[11.5px] text-muted-foreground">
             Base do Asaas · {foto?.mesLabel || ctx.rotuloMes}
+            {ctx.periodo.meses.length > 1 && " · foto do fechamento, não somada no período"}
           </p>
         </div>
         {foto && (

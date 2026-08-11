@@ -29,13 +29,23 @@
  * ========================================================================== */
 
 import type { ComponentType } from "react";
+import type { Periodo } from "@/lib/periodo";
 import { CardCapitalGiro } from "@/components/demonstracoes/cards/CardCapitalGiro";
 import { CardCarteira } from "@/components/demonstracoes/cards/CardCarteira";
 import { CardChurn } from "@/components/demonstracoes/cards/CardChurn";
+import { CardResultadoPeriodo } from "@/components/demonstracoes/cards/CardResultadoPeriodo";
 
-/** O que a apresentação informa ao card. Cresce quando o período crescer. */
+/**
+ * O que a apresentação informa ao card.
+ *
+ * `periodo` é a janela inteira (ver `lib/periodo.ts`); `mes` é o fechamento
+ * dela. Card de FLUXO (churn, receita, EBITDA) soma a janela; card de ESTOQUE
+ * (carteira, caixa) vale no último mês — somar contaria o mesmo cliente três
+ * vezes. Cada card escolhe, e diz na tela o que escolheu.
+ */
 export type ContextoCard = {
-  /** Coluna do blob do mês em foco ("Jul-26"). */
+  periodo: Periodo;
+  /** Atalho para `periodo.mesFoco` — a coluna do blob do mês de fechamento. */
   mes: string;
   /** "Julho/26" — para o card escrever o próprio subtítulo. */
   rotuloMes: string;
@@ -58,8 +68,14 @@ export type CardRegistrado = {
  */
 export const REGISTRO_CARDS: CardRegistrado[] = [
   {
+    chave: "resultado.periodo",
+    rotulo: "Resultado do período (receita, EBITDA, margem)",
+    fonte: "DRE",
+    Card: CardResultadoPeriodo,
+  },
+  {
     chave: "churn.resumo",
-    rotulo: "Churn do mês",
+    rotulo: "Churn do período",
     fonte: "Assinaturas",
     Card: CardChurn,
   },

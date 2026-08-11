@@ -1,5 +1,5 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.0";
-import { errorResponse, generateJSON, handleCors, jsonResponse } from "../_shared/gemini.ts";
+import { errorResponse, generateJSON, handleCors, jsonResponse } from "../_shared/openai.ts";
 import { buildOrgContext } from "../_shared/org-context.ts";
 import { contextoAjustesEbitda } from "../_shared/ebitda-ajustado.ts";
 

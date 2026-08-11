@@ -43,6 +43,13 @@ function getKey(): string {
   return k;
 }
 
+/** Há motor configurado? Para quem decide ANTES de chamar se vale a pena tentar
+ *  — o sync das assinaturas roda no cron e prefere pular o insight a estourar.
+ *  Lê pelo `getKey` de propósito: uma grafia aceita lá vale aqui também. */
+export function temChave(): boolean {
+  try { getKey(); return true; } catch { return false; }
+}
+
 /**
  * Schema do Gemini -> schema `strict` da OpenAI.
  *
@@ -60,15 +67,42 @@ function paraStrict(node: unknown): unknown {
 
   if (o.type === "object" && o.properties && typeof o.properties === "object") {
     o.additionalProperties = false;
-    // Campo opcional não existe em modo estrito: ou está no `required`, ou a
-    // API recusa o schema inteiro. Nossos schemas já pedem tudo.
-    o.required = Object.keys(o.properties as Record<string, unknown>);
+    const props = o.properties as Record<string, unknown>;
+    // Campo opcional não existe em modo estrito: ou está no `required`, ou a API
+    // recusa o schema inteiro. O único jeito de dizer "pode não vir" é aceitar
+    // `null` — então TUDO entra no `required` e o que era opcional vira anulável.
+    // Sem isto, um schema como o da apresentação (só `acao` obrigatória, mais dez
+    // campos que dependem da ação) forçaria o modelo a inventar `rubrica` e
+    // `formato` num comando de remover. Schema sem `required` nenhum continua
+    // querendo dizer "exige tudo", que é como as funções já migradas escrevem.
+    const exigidas = new Set(Array.isArray(o.required) ? (o.required as string[]) : Object.keys(props));
+    for (const k of Object.keys(props)) if (!exigidas.has(k)) props[k] = anulavel(props[k]);
+    o.required = Object.keys(props);
   }
   return o;
 }
 
-/** Modelos de raciocínio (o*, gpt-5*) recusam `temperature`. */
-const semTemperatura = (model: string) => /^(o\d|gpt-5)/i.test(model);
+/** `{type:"string"}` -> `{type:["string","null"]}`. Enum precisa listar o null. */
+function anulavel(esquema: unknown): unknown {
+  if (!esquema || typeof esquema !== "object") return esquema;
+  const e = { ...(esquema as Record<string, unknown>) };
+  const t = e.type;
+  if (typeof t === "string" && t !== "null") e.type = [t, "null"];
+  else if (Array.isArray(t) && !t.includes("null")) e.type = [...t, "null"];
+  if (Array.isArray(e.enum) && !e.enum.includes(null)) e.enum = [...e.enum, null];
+  return e;
+}
+
+/** Famílias de raciocínio (o*, gpt-5*): recusam `temperature` e trocaram
+ *  `max_tokens` por `max_completion_tokens`. */
+const familiaRaciocinio = (model: string) => /^(o\d|gpt-5)/i.test(model);
+
+/* A Edge Function é morta aos 150s com um 504, e quem está na tela recebe
+   "Edge Function returned a non-2xx status code" depois de dois minutos e meio
+   de espera — sem saber se foi a IA, a rede ou o próprio pedido. Desistir antes
+   disso troca o mistério por uma frase legível, ainda com folga para o resto da
+   função responder. */
+const TIMEOUT_PADRAO = 90_000;
 
 interface GenerateOptions {
   model?: string;
@@ -76,6 +110,8 @@ interface GenerateOptions {
   temperature?: number;
   responseSchema?: unknown; // JSON schema (o mesmo que ia para o Gemini)
   json?: boolean;           // forçar JSON sem schema
+  maxTokens?: number;       // teto da resposta; sem ele, uma geração em loop só para no limite do modelo
+  timeoutMs?: number;       // padrão TIMEOUT_PADRAO
 }
 
 async function callChat(opts: GenerateOptions): Promise<Record<string, unknown>> {
@@ -86,7 +122,10 @@ async function callChat(opts: GenerateOptions): Promise<Record<string, unknown>>
     model,
     messages: opts.messages.map((m) => ({ role: m.role, content: m.content ?? "" })),
   };
-  if (!semTemperatura(model)) payload.temperature = opts.temperature ?? 0.4;
+  if (!familiaRaciocinio(model)) payload.temperature = opts.temperature ?? 0.4;
+  if (opts.maxTokens) {
+    payload[familiaRaciocinio(model) ? "max_completion_tokens" : "max_tokens"] = opts.maxTokens;
+  }
 
   if (opts.responseSchema) {
     payload.response_format = {
@@ -97,11 +136,21 @@ async function callChat(opts: GenerateOptions): Promise<Record<string, unknown>>
     payload.response_format = { type: "json_object" };
   }
 
-  const resp = await fetch("https://api.openai.com/v1/chat/completions", {
-    method: "POST",
-    headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` },
-    body: JSON.stringify(payload),
-  });
+  let resp: Response;
+  try {
+    resp = await fetch("https://api.openai.com/v1/chat/completions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` },
+      body: JSON.stringify(payload),
+      signal: AbortSignal.timeout(opts.timeoutMs ?? TIMEOUT_PADRAO),
+    });
+  } catch (e) {
+    const nome = (e as Error)?.name;
+    if (nome === "TimeoutError" || nome === "AbortError") {
+      throw new OpenAIError("A IA demorou demais para responder. Tente de novo em alguns segundos.", 504);
+    }
+    throw new OpenAIError("Não consegui falar com a IA", 502, String((e as Error)?.message ?? e));
+  }
 
   if (!resp.ok) {
     const detail = await resp.text();

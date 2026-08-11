@@ -1,5 +1,5 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.95.0";
-import { errorResponse, generateJSON, handleCors, jsonResponse } from "../_shared/gemini.ts";
+import { errorResponse, generateJSON, handleCors, jsonResponse } from "../_shared/openai.ts";
 
 Deno.serve(async (req) => {
   const pre = handleCors(req); if (pre) return pre;
@@ -36,8 +36,12 @@ Deno.serve(async (req) => {
     const systemPrompt = `Você é um analista FP&A sênior da Takeat. Receberá histórico de DRE/DFC, o Budget Plan (BP) anual, base de conhecimento da empresa e premissas de cenário. Cada premissa pode vir com frequência ("mensal" ou "anual"). Gere: (1) projeção mensal estruturada (${meses_projecao} meses), (2) sensibilidade por variável (±10% sobre EBITDA acumulado), (3) análise textual em markdown PT-BR, (4) lista de 3 a 6 gráficos sugeridos com os drivers mais relevantes.`;
     const userPrompt = `PREMISSAS:\n${JSON.stringify(premissas, null, 2)}\n\nCONTEXTO:\n${JSON.stringify(contexto).slice(0, 60000)}`;
 
+    /* Este call site pedia `gemini-2.5-pro` na mão — o tier grande, porque a
+       projeção é a conta mais pesada do Hub. Com o motor na OpenAI, o nome do
+       modelo do Google só daria 404, e o padrão (OPENAI_MODEL, hoje
+       gpt-4.1-mini) passa a valer. Para devolver o tier maior a ESTA tela sem
+       encarecer o resto, é `model: "gpt-4.1"` aqui. */
     const parsed = await generateJSON<any>({
-      model: "gemini-2.5-pro",
       temperature: 0.4,
       messages: [
         { role: "system", content: systemPrompt },

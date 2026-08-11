@@ -12,16 +12,19 @@
 // direita (cols P..AB) um bloco de TOTAIS do time (#Clientes/%Perfil/$MRR/$TM/
 // %Perfil Receita por nível + MRR, MRR Total, TM, Banestes, Aluguel). KPIs de
 // cabeçalho e mix por nível saem desse bloco (fonte oficial); mix por plano e top
-// contratos são computados da carteira. Insights de tendência: IA (Gemini) no mês
+// contratos são computados da carteira. Insights de tendência: IA (OpenAI) no mês
 // mais recente.
 //
 // Ações (body.action): "sync" (default, backfill de todas as abas) · "preview"
 // (lista as abas) · "probe" (testa só o download do binário do Drive).
 
-import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+// Versão FIXA: com `@2` solto o bundler do Deno resolve a última do dia e já
+// quebrou deploy aqui ("Module not found" num submódulo do postgrest). Ver
+// `_shared/auth.ts`, que carrega a mesma cicatriz.
+import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.0";
 import * as XLSX from "https://esm.sh/xlsx@0.18.5";
 import { requireUser } from "../_shared/auth.ts";
-import { generateJSON } from "../_shared/gemini.ts";
+import { generateJSON, temChave } from "../_shared/openai.ts";
 
 const FILE_ID = "110Vp0mA3r8OgGpODHxszllKIBsELSeqR";
 // O arquivo é um .xlsx compartilhado por link no Drive — o endpoint público de
@@ -203,7 +206,7 @@ function lerAba(bytes: Uint8Array, nome: string): any[][] {
 
 /* ------------------------- insights de tendência (IA) ------------------------- */
 async function gerarInsights(historico: { label: string; kpis: any }[]): Promise<any[] | null> {
-  if (!Deno.env.get("GEMINI_API_KEY") || historico.length < 2) return null;
+  if (!temChave() || historico.length < 2) return null;
   const serie = historico.map((h) => ({
     mes: h.label,
     mrr_core: Math.round(h.kpis.mrr_core),

@@ -1,7 +1,9 @@
-// Extrai texto de PDF e cria notas estruturadas na base_conhecimento via Gemini API
+// Extrai texto de PDF e cria notas estruturadas na base_conhecimento.
+// O texto é extraído aqui (unpdf) e só o TEXTO vai para a IA — PDF escaneado, que
+// precisa de OCR, é outro caminho (`parse-balancete-pdf`, que segue no Gemini).
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.0";
 import { extractText, getDocumentProxy } from "https://esm.sh/unpdf@0.12.1";
-import { generateJSON } from "../_shared/gemini.ts";
+import { generateJSON } from "../_shared/openai.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",

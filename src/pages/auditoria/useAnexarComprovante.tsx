@@ -3,7 +3,7 @@ import { toast } from "sonner";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import {
-  ANEXO_ACCEPT, anexarComprovante, lerBase64, validarArquivo,
+  ANEXO_ACCEPT, anexarComprovante, validarArquivo,
   type OrigemAnexo, type RespostaAnexo,
 } from "@/lib/anexarComprovante";
 
@@ -30,7 +30,7 @@ export function useAnexarComprovante(
   onOk: (r: { alvo: AlvoAnexo; storage_path: string; anexado_omie: boolean; arquivo: string }) => void,
 ) {
   const [enviando, setEnviando] = useState<string | null>(null);
-  const [perguntar, setPerguntar] = useState<{ alvo: AlvoAnexo; base64: string; nome: string; nomes: string[] } | null>(null);
+  const [perguntar, setPerguntar] = useState<{ alvo: AlvoAnexo; file: File; nomes: string[] } | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const alvoPendente = useRef<AlvoAnexo | null>(null);
 
@@ -39,18 +39,18 @@ export function useAnexarComprovante(
     fileRef.current?.click();
   };
 
-  const enviar = async (alvo: AlvoAnexo, nome: string, base64: string, modo?: "acrescentar" | "substituir") => {
+  const enviar = async (alvo: AlvoAnexo, file: File, modo?: "acrescentar" | "substituir") => {
     setEnviando(alvo.id_unico);
     try {
-      const r: RespostaAnexo = await anexarComprovante({ origem: alvo.origem, id_unico: alvo.id_unico, nome, base64, modo });
+      const r: RespostaAnexo = await anexarComprovante({ origem: alvo.origem, id_unico: alvo.id_unico, file, modo });
       if (r.ja_tem_anexo) {
-        setPerguntar({ alvo, base64, nome, nomes: r.nomes ?? [] });
+        setPerguntar({ alvo, file, nomes: r.nomes ?? [] });
         return;
       }
       if (r.anexado_omie) toast.success("Comprovante anexado e enviado ao Omie.");
       else toast.success("Comprovante anexado.");
       if (r.aviso && !r.anexado_omie) toast.message(r.aviso, { duration: 9000 });
-      onOk({ alvo, storage_path: r.storage_path ?? "", anexado_omie: !!r.anexado_omie, arquivo: r.arquivo ?? nome });
+      onOk({ alvo, storage_path: r.storage_path ?? "", anexado_omie: !!r.anexado_omie, arquivo: r.arquivo ?? file.name });
     } catch (e: any) {
       toast.error("Falha ao anexar: " + (e?.message ?? String(e)), { duration: 9000 });
     } finally {
@@ -69,20 +69,14 @@ export function useAnexarComprovante(
     if (erro) return void toast.error(erro);
 
     toast.message(`Enviando comprovante${alvo.rotulo ? ` de ${alvo.rotulo}` : ""}…`);
-    try {
-      const base64 = await lerBase64(file);
-      await enviar(alvo, file.name, base64);
-    } catch (err: any) {
-      toast.error("Falha ao ler o arquivo: " + (err?.message ?? String(err)));
-      setEnviando(null);
-    }
+    await enviar(alvo, file);
   };
 
   const confirmarModo = (modo: "acrescentar" | "substituir") => {
     const p = perguntar;
     if (!p) return;
     setPerguntar(null);
-    void enviar(p.alvo, p.nome, p.base64, modo);
+    void enviar(p.alvo, p.file, modo);
   };
 
   const elementos = (
@@ -96,7 +90,7 @@ export function useAnexarComprovante(
           <p className="text-sm text-muted-foreground">
             Já existe {perguntar?.nomes.length ?? 0} anexo(s) neste título
             {perguntar?.nomes.length ? `: ${perguntar.nomes.join(", ")}` : ""}.
-            {" "}O que deseja fazer com <b>{perguntar?.nome}</b>?
+            {" "}O que deseja fazer com <b>{perguntar?.file.name}</b>?
           </p>
           <DialogFooter className="gap-2 sm:gap-2">
             <Button variant="outline" onClick={() => confirmarModo("acrescentar")}>Acrescentar</Button>

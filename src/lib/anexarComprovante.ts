@@ -3,11 +3,23 @@ import { supabase } from "@/integrations/supabase/client";
 /**
  * Anexar comprovante/NF a um lançamento da Auditoria direto pelo Hub.
  *
- * O upload NÃO vai do browser para o bucket: `comprovantes-auditoria` é privado e
- * quem grava é a Edge Function `auditoria-anexar-comprovante` (service role). Ela
- * guarda o arquivo, escreve o CAMINHO em `link_comprovante` e — se o lançamento já
- * tem título casado no Omie — manda o anexo para o ERP na mesma chamada.
+ * São DOIS caminhos, nesta ordem:
+ *
+ *   1) Edge Function `auditoria-anexar-comprovante` — guarda o arquivo E, se o
+ *      lançamento já tem título casado, anexa no Omie na mesma chamada.
+ *   2) Upload direto do browser para o bucket — usado quando a função ainda não foi
+ *      publicada. Guarda o arquivo e grava o caminho na tabela; o envio ao Omie fica
+ *      para o botão "Enviar ao Omie", que já existe na tela.
+ *
+ * O caminho 2 existe porque o deploy da função depende do Lovable/Supabase e não pode
+ * segurar a funcionalidade: com ele, anexar passa a funcionar assim que o front sobe.
+ *
+ * Em ambos, `link_comprovante` guarda o CAMINHO no bucket (não uma URL) — é a mesma
+ * convenção que o n8n usa nos achados, e o front resolve com signed URL
+ * (src/lib/comprovante.ts).
  */
+
+const BUCKET = "comprovantes-auditoria";
 
 export type OrigemAnexo = "achado" | "cartao";
 
@@ -20,7 +32,8 @@ export type RespostaAnexo = {
   anexado_omie?: boolean;
   omie_cod_titulo?: string | null;
   arquivo?: string;
-  /** guardou o comprovante, mas o Omie não recebeu (sem título casado ou recusou). */
+  /** guardou o comprovante, mas o Omie não recebeu (sem título casado, recusou, ou
+   *  o anexo foi pelo caminho direto). */
   aviso?: string | null;
 };
 
@@ -52,13 +65,18 @@ const comoTexto = (v: any): string => {
   })();
 };
 
-export async function anexarComprovante(payload: {
-  origem: OrigemAnexo;
-  id_unico: string;
-  nome: string;
-  base64: string;
-  mime?: string;
-  modo?: "acrescentar" | "substituir";
+const tabelaDe = (origem: OrigemAnexo) => (origem === "achado" ? "auditoria" : "auditoria_cartao_lancamentos");
+
+/** "função não publicada" / rede — só nestes casos vale cair para o upload direto. */
+const funcaoIndisponivel = (msg: string) =>
+  /not found|não foi publicada|Failed to (send|fetch)|NetworkError|404/i.test(msg);
+
+/* ------------------------------------------------------------------ *
+ *  Caminho 1: Edge Function (guarda + anexa no Omie)
+ * ------------------------------------------------------------------ */
+async function viaFuncao(payload: {
+  origem: OrigemAnexo; id_unico: string; nome: string; base64: string;
+  mime?: string; modo?: "acrescentar" | "substituir";
 }): Promise<RespostaAnexo> {
   const { data, error } = await supabase.functions.invoke("auditoria-anexar-comprovante", { body: payload });
   if (error) {
@@ -69,11 +87,79 @@ export async function anexarComprovante(payload: {
     if (ctx && typeof ctx.text === "function") {
       try { const raw = await ctx.text(); detalhe = comoTexto(JSON.parse(raw)?.error) || raw || detalhe; } catch { /* keep */ }
     }
-    if (/not found|Failed to (send|fetch)/i.test(detalhe)) {
-      throw new Error("A função auditoria-anexar-comprovante ainda não foi publicada no Supabase (deploy pendente pelo Lovable).");
-    }
     throw new Error(detalhe || "Erro no backend.");
   }
   if ((data as any)?.error) throw new Error(comoTexto((data as any).error));
   return (data ?? {}) as RespostaAnexo;
+}
+
+/* ------------------------------------------------------------------ *
+ *  Caminho 2: upload direto do browser (sem Edge Function)
+ * ------------------------------------------------------------------ */
+async function viaUploadDireto(origem: OrigemAnexo, idUnico: string, file: File): Promise<RespostaAnexo> {
+  const seguro = file.name.replace(/[^a-zA-Z0-9._-]/g, "_");
+  const path = `hub/${idUnico}/${Date.now()}_${seguro}`;
+
+  const { error: upErr } = await supabase.storage.from(BUCKET).upload(path, file, {
+    contentType: file.type || undefined,
+    upsert: false,
+  });
+  if (upErr) throw new Error(`Não consegui guardar o arquivo no bucket: ${comoTexto(upErr)}`);
+
+  const tabela = tabelaDe(origem);
+  const agora = new Date().toISOString();
+  const patch: Record<string, unknown> = { link_comprovante: path, updated_at: agora };
+
+  if (origem === "cartao") {
+    patch.arquivo_comprovante = file.name;
+  } else {
+    // Trilha do achado: lê a atual e acrescenta o evento (a coluna é um array JSON).
+    const { data: atual } = await supabase.from("auditoria").select("trilha").eq("id_unico", idUnico).maybeSingle();
+    const trilha = Array.isArray((atual as any)?.trilha) ? (atual as any).trilha : [];
+    const { data: sessao } = await supabase.auth.getUser();
+    patch.trilha = [...trilha, {
+      em: agora,
+      por: sessao?.user?.email ?? "hub",
+      texto: `Comprovante anexado pelo Hub: ${file.name}`,
+      tipo: "comprovante_anexado",
+      arquivo: file.name,
+    }];
+  }
+
+  const { error: updErr } = await supabase.from(tabela as any).update(patch as any).eq("id_unico", idUnico);
+  if (updErr) {
+    // Não deixa arquivo órfão no bucket quando a linha não aceitou a gravação.
+    await supabase.storage.from(BUCKET).remove([path]).catch(() => {});
+    throw new Error(`Arquivo enviado, mas falhou ao gravar no lançamento: ${comoTexto(updErr)}`);
+  }
+
+  return {
+    ok: true,
+    storage_path: path,
+    anexado_omie: false,
+    arquivo: file.name,
+    aviso: "Comprovante guardado. Para mandar ao Omie, use o botão \"Enviar ao Omie\" (precisa de título casado).",
+  };
+}
+
+/**
+ * Anexa o comprovante. Tenta a Edge Function e, se ela ainda não estiver publicada,
+ * cai para o upload direto — sem que a pessoa precise saber de nada disso.
+ */
+export async function anexarComprovante(payload: {
+  origem: OrigemAnexo;
+  id_unico: string;
+  file: File;
+  modo?: "acrescentar" | "substituir";
+}): Promise<RespostaAnexo> {
+  const { origem, id_unico, file, modo } = payload;
+  try {
+    const base64 = await lerBase64(file);
+    return await viaFuncao({ origem, id_unico, nome: file.name, base64, mime: file.type, modo });
+  } catch (e: any) {
+    const msg = comoTexto(e?.message ?? e);
+    if (!funcaoIndisponivel(msg)) throw e instanceof Error ? e : new Error(msg);
+    console.info("[anexarComprovante] função indisponível, subindo direto para o bucket:", msg);
+    return await viaUploadDireto(origem, id_unico, file);
+  }
 }

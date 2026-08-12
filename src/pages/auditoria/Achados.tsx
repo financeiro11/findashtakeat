@@ -230,7 +230,9 @@ export default function Achados() {
   // Reflete na hora — link_comprovante e, quando o Omie aceitou, o carimbo do anexo —
   // para o ícone do comprovante e o botão "Enviar ao Omie" reagirem sem esperar o reload.
   const anexo = useAnexarComprovante(({ alvo, storage_path, anexado_omie }) => {
-    const patch: Partial<Row> = { link_comprovante: storage_path };
+    // A nota chegou: a linha deixa de ser "SEM NF" / "A CONFERIR" e vira COM NF —
+    // é o que o backend acabou de gravar (categoria no achado, status_nf no cartão).
+    const patch: Partial<Row> = { link_comprovante: storage_path, categoria: "COM NF" };
     if (anexado_omie) patch.omie_anexo_enviado_em = new Date().toISOString();
     setRows(rs => rs.map(r => (r.id_unico === alvo.id_unico ? { ...r, ...patch } : r)));
     setSelected(s => (s && s.id_unico === alvo.id_unico ? { ...s, ...patch } : s));

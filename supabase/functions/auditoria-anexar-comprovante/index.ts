@@ -92,9 +92,12 @@ Deno.serve(async (req) => {
     if (ehHtml(bytes)) return json({ error: "Isso é uma página HTML, não um comprovante. Envie o PDF ou a imagem." }, 200);
 
     const tabela = origem === "achado" ? "auditoria" : "auditoria_cartao_lancamentos";
+    const colunas = origem === "achado"
+      ? "id, id_unico, omie_cod_titulo, omie_anexo_enviado_em, link_comprovante, id_transacao"
+      : "id, id_unico, omie_cod_titulo, omie_anexo_enviado_em, link_comprovante";
     const { data: linha, error: selErr } = await supabase
       .from(tabela)
-      .select("id, id_unico, omie_cod_titulo, omie_anexo_enviado_em, link_comprovante")
+      .select(colunas)
       .eq("id_unico", idUnico)
       .maybeSingle();
     if (selErr) throw selErr;
@@ -155,22 +158,36 @@ Deno.serve(async (req) => {
     const patch: Record<string, unknown> = { link_comprovante: path, updated_at: agora };
     if (anexadoOmie) { patch.omie_anexo_enviado_em = agora; patch.omie_anexo_nome = nome; }
 
+    // Chegou a nota: o lançamento deixa de ser "SEM NF". Na base do cartão isso é
+    // status_nf = "OK"; no achado é a categoria "COM NF" (chips e KPIs da tela).
     if (origem === "achado") {
       const { data: atual } = await supabase.from("auditoria").select("trilha").eq("id", (linha as any).id).maybeSingle();
       const trilha = Array.isArray((atual as any)?.trilha) ? (atual as any).trilha : [];
+      patch.categoria = "COM NF";
       patch.trilha = [...trilha, {
         em: agora,
         por: caller.email ?? "hub",
-        texto: `Comprovante anexado pelo Hub: ${nome}${anexadoOmie ? " · anexado ao Omie" : ""}`,
+        texto: `Comprovante anexado pelo Hub: ${nome} · categoria → COM NF${anexadoOmie ? " · anexado ao Omie" : ""}`,
         tipo: "comprovante_anexado",
         arquivo: nome,
       }];
     } else {
       patch.arquivo_comprovante = nome;
+      patch.status_nf = "OK";
     }
 
     const { error: updErr } = await supabase.from(tabela).update(patch).eq("id", (linha as any).id);
     if (updErr) return json({ error: `Arquivo enviado, mas falhou ao gravar na tabela: ${updErr.message}` }, 200);
+
+    // O achado nasce de um lançamento do cartão: deixar aquele como "SEM NF" faria a
+    // Base do Cartão e a cobertura de NF contarem uma nota que já chegou.
+    const idTransacao = origem === "achado" ? ((linha as any).id_transacao ?? null) : null;
+    if (idTransacao) {
+      const { error } = await supabase.from("auditoria_cartao_lancamentos")
+        .update({ status_nf: "OK", link_comprovante: path, arquivo_comprovante: nome, updated_at: agora })
+        .eq("id_unico", idTransacao);
+      if (error) console.warn("origem no cartão não atualizada:", error.message);
+    }
 
     return json({
       ok: true,

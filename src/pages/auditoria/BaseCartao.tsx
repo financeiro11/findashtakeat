@@ -63,7 +63,13 @@ export default function BaseCartao() {
   // Anexar a NF/comprovante direto daqui: a função grava no bucket da auditoria e,
   // se o lançamento já tem título casado, manda o anexo ao Omie.
   const anexo = useAnexarComprovante(({ alvo, storage_path, arquivo }) => {
-    setRows(rs => rs.map(r => (r.id_unico === alvo.id_unico ? { ...r, link_comprovante: storage_path, arquivo_comprovante: arquivo } : r)));
+    // status_nf = "OK" é o que o backend gravou ao receber a nota — a linha sai do
+    // vermelho de "SEM NF" e entra na cobertura de NF sem esperar recarregar a página.
+    setRows(rs => rs.map(r => (
+      r.id_unico === alvo.id_unico
+        ? { ...r, link_comprovante: storage_path, arquivo_comprovante: arquivo, status_nf: "OK" }
+        : r
+    )));
   });
   const abrirAnexo = (r: Lanc) =>
     anexo.abrirSeletor({ origem: "cartao", id_unico: r.id_unico, rotulo: r.estabelecimento || r.descricao_original || "lançamento" });

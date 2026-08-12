@@ -110,17 +110,23 @@ async function viaUploadDireto(origem: OrigemAnexo, idUnico: string, file: File)
   const agora = new Date().toISOString();
   const patch: Record<string, unknown> = { link_comprovante: path, updated_at: agora };
 
+  // Chegou a nota: o lançamento deixa de ser "SEM NF". Na base do cartão isso é
+  // status_nf = "OK"; no achado é a categoria "COM NF" (que a tela usa nos chips e KPIs).
+  let idTransacao: string | null = null;
   if (origem === "cartao") {
     patch.arquivo_comprovante = file.name;
+    patch.status_nf = "OK";
   } else {
     // Trilha do achado: lê a atual e acrescenta o evento (a coluna é um array JSON).
-    const { data: atual } = await supabase.from("auditoria").select("trilha").eq("id_unico", idUnico).maybeSingle();
+    const { data: atual } = await supabase.from("auditoria").select("trilha, id_transacao").eq("id_unico", idUnico).maybeSingle();
     const trilha = Array.isArray((atual as any)?.trilha) ? (atual as any).trilha : [];
+    idTransacao = ((atual as any)?.id_transacao as string) ?? null;
     const { data: sessao } = await supabase.auth.getUser();
+    patch.categoria = "COM NF";
     patch.trilha = [...trilha, {
       em: agora,
       por: sessao?.user?.email ?? "hub",
-      texto: `Comprovante anexado pelo Hub: ${file.name}`,
+      texto: `Comprovante anexado pelo Hub: ${file.name} · categoria → COM NF`,
       tipo: "comprovante_anexado",
       arquivo: file.name,
     }];
@@ -131,6 +137,16 @@ async function viaUploadDireto(origem: OrigemAnexo, idUnico: string, file: File)
     // Não deixa arquivo órfão no bucket quando a linha não aceitou a gravação.
     await supabase.storage.from(BUCKET).remove([path]).catch(() => {});
     throw new Error(`Arquivo enviado, mas falhou ao gravar no lançamento: ${comoTexto(updErr)}`);
+  }
+
+  // O achado nasce de um lançamento do cartão: se aquele continua "SEM NF", a Base do
+  // Cartão e a cobertura de NF ficam contando uma nota que já chegou. Melhor-esforço —
+  // o anexo já está gravado e não deve cair por causa disto.
+  if (idTransacao) {
+    const { error } = await supabase.from("auditoria_cartao_lancamentos")
+      .update({ status_nf: "OK", link_comprovante: path, arquivo_comprovante: file.name, updated_at: agora })
+      .eq("id_unico", idTransacao);
+    if (error) console.warn("[anexarComprovante] não consegui atualizar o lançamento de origem no cartão:", error);
   }
 
   return {

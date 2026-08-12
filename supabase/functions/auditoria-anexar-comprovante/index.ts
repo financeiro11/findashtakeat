@@ -179,14 +179,20 @@ Deno.serve(async (req) => {
     const { error: updErr } = await supabase.from(tabela).update(patch).eq("id", (linha as any).id);
     if (updErr) return json({ error: `Arquivo enviado, mas falhou ao gravar na tabela: ${updErr.message}` }, 200);
 
-    // O achado nasce de um lançamento do cartão: deixar aquele como "SEM NF" faria a
-    // Base do Cartão e a cobertura de NF contarem uma nota que já chegou.
+    // Os dois lados da mesma nota: o achado e o lançamento do cartão que o originou.
+    // Atualizar só um deixa a outra tela cobrando uma NF que já chegou.
     const idTransacao = origem === "achado" ? ((linha as any).id_transacao ?? null) : null;
     if (idTransacao) {
       const { error } = await supabase.from("auditoria_cartao_lancamentos")
         .update({ status_nf: "OK", link_comprovante: path, arquivo_comprovante: nome, updated_at: agora })
         .eq("id_unico", idTransacao);
       if (error) console.warn("origem no cartão não atualizada:", error.message);
+    }
+    if (origem === "cartao") {
+      const { error } = await supabase.from("auditoria")
+        .update({ categoria: "COM NF", link_comprovante: path, updated_at: agora })
+        .eq("id_transacao", idUnico);
+      if (error) console.warn("achado vinculado não atualizado:", error.message);
     }
 
     return json({

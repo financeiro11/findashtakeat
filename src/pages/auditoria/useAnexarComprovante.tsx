@@ -47,8 +47,10 @@ export function useAnexarComprovante(
         setPerguntar({ alvo, file, nomes: r.nomes ?? [] });
         return;
       }
-      if (r.anexado_omie) toast.success("Comprovante anexado e enviado ao Omie.");
-      else toast.success("Comprovante anexado.");
+      // O texto diz o que mudou de fato — se o chip não acompanhar, dá para saber na
+      // hora se o problema foi a gravação ou a tela.
+      if (r.anexado_omie) toast.success("Comprovante anexado · agora COM NF · enviado ao Omie.");
+      else toast.success("Comprovante anexado · agora COM NF.");
       if (r.aviso && !r.anexado_omie) toast.message(r.aviso, { duration: 9000 });
       onOk({ alvo, storage_path: r.storage_path ?? "", anexado_omie: !!r.anexado_omie, arquivo: r.arquivo ?? file.name });
     } catch (e: any) {

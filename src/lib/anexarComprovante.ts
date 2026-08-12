@@ -132,21 +132,38 @@ async function viaUploadDireto(origem: OrigemAnexo, idUnico: string, file: File)
     }];
   }
 
-  const { error: updErr } = await supabase.from(tabela as any).update(patch as any).eq("id_unico", idUnico);
-  if (updErr) {
+  // `.select()` é o que revela a falha silenciosa: sob RLS, um UPDATE que não casa com
+  // a policy volta SEM erro e com zero linhas. Sem isto o Hub diz "anexado" e o chip
+  // continua SEM NF — exatamente o sintoma que não dá para diagnosticar depois.
+  const { data: alteradas, error: updErr } = await supabase
+    .from(tabela as any).update(patch as any).eq("id_unico", idUnico).select("id_unico");
+  if (updErr || !alteradas?.length) {
     // Não deixa arquivo órfão no bucket quando a linha não aceitou a gravação.
     await supabase.storage.from(BUCKET).remove([path]).catch(() => {});
-    throw new Error(`Arquivo enviado, mas falhou ao gravar no lançamento: ${comoTexto(updErr)}`);
+    throw new Error(
+      updErr
+        ? `Arquivo enviado, mas falhou ao gravar no lançamento: ${comoTexto(updErr)}`
+        : `Arquivo enviado, mas nenhuma linha de ${tabela} foi alterada (id_unico ${idUnico}). ` +
+          "O banco recusou a gravação em silêncio — quase sempre é a policy de UPDATE (RLS).",
+    );
   }
 
-  // O achado nasce de um lançamento do cartão: se aquele continua "SEM NF", a Base do
-  // Cartão e a cobertura de NF ficam contando uma nota que já chegou. Melhor-esforço —
+  // Os dois lados da mesma nota: o achado e o lançamento do cartão que o originou.
+  // Atualizar só um deixa a outra tela cobrando uma NF que já chegou. Melhor-esforço —
   // o anexo já está gravado e não deve cair por causa disto.
-  if (idTransacao) {
+  if (origem === "achado" && idTransacao) {
     const { error } = await supabase.from("auditoria_cartao_lancamentos")
       .update({ status_nf: "OK", link_comprovante: path, arquivo_comprovante: file.name, updated_at: agora })
       .eq("id_unico", idTransacao);
-    if (error) console.warn("[anexarComprovante] não consegui atualizar o lançamento de origem no cartão:", error);
+    if (error) console.warn("[anexarComprovante] origem no cartão não atualizada:", error);
+  }
+  if (origem === "cartao") {
+    // Caminho inverso: anexei na Base do Cartão, mas o achado gerado a partir dele
+    // continuaria SEM NF na aba Achados.
+    const { error } = await supabase.from("auditoria")
+      .update({ categoria: "COM NF", link_comprovante: path, updated_at: agora })
+      .eq("id_transacao", idUnico);
+    if (error) console.warn("[anexarComprovante] achado vinculado não atualizado:", error);
   }
 
   return {

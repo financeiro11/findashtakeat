@@ -5,8 +5,9 @@ import { cn } from "@/lib/utils";
 import { toast } from "sonner";
 import { brl, brlAbbr, fmtDateBR } from "./utils";
 import { comValorExato } from "@/components/ValorExato";
-import { Search, ExternalLink } from "lucide-react";
+import { Search, ExternalLink, Upload, Loader2 } from "lucide-react";
 import { ComprovanteLink } from "@/components/ComprovanteLink";
+import { useAnexarComprovante } from "./useAnexarComprovante";
 
 type Lanc = {
   id: number;
@@ -58,6 +59,14 @@ export default function BaseCartao() {
       setLoading(false);
     })();
   }, []);
+
+  // Anexar a NF/comprovante direto daqui: a função grava no bucket da auditoria e,
+  // se o lançamento já tem título casado, manda o anexo ao Omie.
+  const anexo = useAnexarComprovante(({ alvo, storage_path, arquivo }) => {
+    setRows(rs => rs.map(r => (r.id_unico === alvo.id_unico ? { ...r, link_comprovante: storage_path, arquivo_comprovante: arquivo } : r)));
+  });
+  const abrirAnexo = (r: Lanc) =>
+    anexo.abrirSeletor({ origem: "cartao", id_unico: r.id_unico, rotulo: r.estabelecimento || r.descricao_original || "lançamento" });
 
   const referencias = useMemo(
     () => Array.from(new Set(rows.map(r => r.referencia))).sort().reverse(),
@@ -126,11 +135,14 @@ export default function BaseCartao() {
 
   return (
     <div className="mx-auto max-w-[1400px] px-6 pt-3 pb-6 space-y-5">
+      {/* seletor de arquivo + diálogo "já tem anexo no Omie" do fluxo de anexar */}
+      {anexo.elementos}
+
       <div className="flex items-end justify-between gap-4 flex-wrap">
         <div>
           <div className="text-[11px] uppercase tracking-wider text-muted-foreground font-medium">Hub Financeiro · Governança</div>
           <h1 className="text-3xl font-bold tracking-tight mt-0.5">Base do Cartão</h1>
-          <p className="text-sm text-muted-foreground mt-1">Fatura completa do cartão corporativo · leitura.</p>
+          <p className="text-sm text-muted-foreground mt-1">Fatura completa do cartão corporativo · anexe a NF pelo ícone na coluna Status NF.</p>
         </div>
         <div className="flex items-center gap-2">
           <select
@@ -203,13 +215,13 @@ export default function BaseCartao() {
                   <div className="text-xs font-semibold">{time} <span className="text-muted-foreground font-normal">({list.length})</span></div>
                   <div className="text-xs num font-semibold">{brl(soma)}</div>
                 </div>
-                {list.map(r => <BaseRow key={r.id} r={r} />)}
+                {list.map(r => <BaseRow key={r.id} r={r} onAnexar={abrirAnexo} enviando={anexo.enviando === r.id_unico} />)}
               </div>
             );
           })
         ) : (
           <>
-            {paged.map(r => <BaseRow key={r.id} r={r} />)}
+            {paged.map(r => <BaseRow key={r.id} r={r} onAnexar={abrirAnexo} enviando={anexo.enviando === r.id_unico} />)}
             {totalPages > 1 && (
               <div className="flex items-center justify-between px-4 py-3 text-xs text-muted-foreground border-t border-border">
                 <div>Página {page} de {totalPages} · {filtered.length} lançamentos</div>
@@ -228,7 +240,7 @@ export default function BaseCartao() {
   );
 }
 
-function BaseRow({ r }: { r: Lanc }) {
+function BaseRow({ r, onAnexar, enviando }: { r: Lanc; onAnexar: (r: Lanc) => void; enviando: boolean }) {
   const bg =
     r.status_nf === "SEM NF" ? "bg-[hsl(0_80%_97%)]" :
     r.status_escopo === "FORA-JUSTIFICAR" ? "bg-[hsl(48_100%_96%)]" : "";
@@ -264,6 +276,16 @@ function BaseRow({ r }: { r: Lanc }) {
         >
           <ExternalLink className="h-3.5 w-3.5" />
         </ComprovanteLink>
+        {/* Anexar a NF direto no Hub — vai para o bucket da auditoria e, havendo
+            título casado, também para o Omie. */}
+        <button
+          onClick={() => onAnexar(r)}
+          disabled={enviando}
+          title={r.link_comprovante ? "Anexar outro comprovante" : "Anexar comprovante"}
+          className="text-muted-foreground hover:text-primary transition-colors shrink-0 disabled:opacity-50"
+        >
+          {enviando ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Upload className="h-3.5 w-3.5" />}
+        </button>
       </div>
       <div>
         {r.status_escopo && (

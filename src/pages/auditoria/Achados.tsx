@@ -6,7 +6,7 @@ import { Sheet, SheetContent } from "@/components/ui/sheet";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Textarea } from "@/components/ui/textarea";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Download, X, ChevronRight, Check, ExternalLink, Search, RefreshCw, Loader2, Paperclip, Copy } from "lucide-react";
+import { Download, X, ChevronRight, Check, ExternalLink, Search, RefreshCw, Loader2, Paperclip, Copy, Upload } from "lucide-react";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
@@ -18,6 +18,7 @@ import AjusteSolicitadoModal from "./AjusteSolicitadoModal";
 import SolicitarJustificativasModal from "./SolicitarJustificativasModal";
 import { enviarProntos, enviarUnitario } from "@/lib/omieAnexos";
 import { WhatsAppLogo, OmieLogo } from "@/components/brand-logos";
+import { useAnexarComprovante } from "./useAnexarComprovante";
 
 type Severidade = "Crítico" | "Alto" | "Médio" | "Baixo";
 type Status = "Pendente" | "Em análise" | "Aprovado" | "Reprovado" | "Ajuste solicitado";
@@ -224,6 +225,18 @@ export default function Achados() {
     setLoading(false);
   };
   useEffect(() => { load(); }, []);
+
+  // Anexar comprovante pelo próprio Hub (sem depender do link do WhatsApp / Drive).
+  // Reflete na hora — link_comprovante e, quando o Omie aceitou, o carimbo do anexo —
+  // para o ícone do comprovante e o botão "Enviar ao Omie" reagirem sem esperar o reload.
+  const anexo = useAnexarComprovante(({ alvo, storage_path, anexado_omie }) => {
+    const patch: Partial<Row> = { link_comprovante: storage_path };
+    if (anexado_omie) patch.omie_anexo_enviado_em = new Date().toISOString();
+    setRows(rs => rs.map(r => (r.id_unico === alvo.id_unico ? { ...r, ...patch } : r)));
+    setSelected(s => (s && s.id_unico === alvo.id_unico ? { ...s, ...patch } : s));
+    void load();
+  });
+  const alvoAnexo = (r: Row) => ({ origem: r._ro ? ("cartao" as const) : ("achado" as const), id_unico: r.id_unico, rotulo: r.titulo });
 
   const competencias = useMemo(() => {
     const set = new Set(rows.map(r => r.competencia));
@@ -492,6 +505,9 @@ export default function Achados() {
 
   return (
     <div className="mx-auto max-w-[1400px] px-6 pt-3 pb-6 space-y-5">
+      {/* seletor de arquivo + diálogo "já tem anexo no Omie" do fluxo de anexar */}
+      {anexo.elementos}
+
       {/* Header row */}
       <div className="flex items-end justify-between gap-4 flex-wrap">
         <div className="min-w-0">
@@ -705,8 +721,8 @@ export default function Achados() {
                     )}
                   </div>
                 </button>
-                {podeAbrirComprovante(r.link_comprovante) && (
-                  <TooltipProvider delayDuration={200}>
+                <TooltipProvider delayDuration={200}>
+                  {podeAbrirComprovante(r.link_comprovante) && (
                     <Tooltip>
                       <TooltipTrigger asChild>
                         <ComprovanteLink
@@ -718,8 +734,26 @@ export default function Achados() {
                       </TooltipTrigger>
                       <TooltipContent>Ver comprovante</TooltipContent>
                     </Tooltip>
-                  </TooltipProvider>
-                )}
+                  )}
+                  {/* Anexar direto pelo Hub: sobe o arquivo e, se o lançamento já tem
+                      título casado, o anexo vai ao Omie na mesma ação. */}
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <button
+                        onClick={() => anexo.abrirSeletor(alvoAnexo(r))}
+                        disabled={anexo.enviando === r.id_unico}
+                        className="text-muted-foreground hover:text-primary transition-colors shrink-0 mt-0.5 disabled:opacity-50"
+                      >
+                        {anexo.enviando === r.id_unico
+                          ? <Loader2 className="h-4 w-4 animate-spin" />
+                          : <Upload className="h-4 w-4" />}
+                      </button>
+                    </TooltipTrigger>
+                    <TooltipContent>
+                      {podeAbrirComprovante(r.link_comprovante) ? "Anexar outro comprovante" : "Anexar comprovante"}
+                    </TooltipContent>
+                  </Tooltip>
+                </TooltipProvider>
               </div>
               <div className="min-w-0" title={r.omie_categoria || ""}>
                 <div className="text-xs text-muted-foreground truncate">{r.omie_categoria || "—"}</div>
@@ -744,13 +778,13 @@ export default function Achados() {
 
 
       {/* Drawer */}
-      <Sheet open={!!selected && !ajusteOpen && !sheetHidden} onOpenChange={(o) => { if (!o && !ajusteOpen && !sheetHidden) setSelected(null); }}>
+      <Sheet open={!!selected && !ajusteOpen && !sheetHidden} onOpenChange={(o) => { if (!o && !ajusteOpen && !sheetHidden && !anexo.perguntando) setSelected(null); }}>
         <SheetContent
           side="right"
           className="w-full sm:max-w-[620px] p-0 flex flex-col"
-          onPointerDownOutside={(e) => { if (ajusteOpen) e.preventDefault(); }}
-          onInteractOutside={(e) => { if (ajusteOpen) e.preventDefault(); }}
-          onEscapeKeyDown={(e) => { if (ajusteOpen) e.preventDefault(); }}
+          onPointerDownOutside={(e) => { if (ajusteOpen || anexo.perguntando) e.preventDefault(); }}
+          onInteractOutside={(e) => { if (ajusteOpen || anexo.perguntando) e.preventDefault(); }}
+          onEscapeKeyDown={(e) => { if (ajusteOpen || anexo.perguntando) e.preventDefault(); }}
         >
           {selected && (
             <>
@@ -874,6 +908,23 @@ export default function Achados() {
                           : "—";
                       })()}
                     </div>
+                    {/* Anexar pelo Hub: o arquivo vai para o bucket da auditoria e, havendo
+                        título casado no Omie, já é anexado no ERP. */}
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => anexo.abrirSeletor(alvoAnexo(selected))}
+                      disabled={anexo.enviando === selected.id_unico}
+                      className="mt-2 h-8 text-[12px]"
+                    >
+                      {anexo.enviando === selected.id_unico
+                        ? <><Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> Enviando…</>
+                        : <><Upload className="mr-1.5 h-3.5 w-3.5" />
+                            {podeAbrirComprovante(selected.link_comprovante || origemCart?.link_comprovante)
+                              ? "Anexar outro comprovante"
+                              : "Anexar comprovante"}</>}
+                    </Button>
+                    <div className="text-[11px] text-muted-foreground mt-1">PDF, JPG, PNG ou WEBP · até 10 MB</div>
                     {/* Envio individual: manda SÓ o anexo deste lançamento para o título do Omie.
                         Só aparece com comprovante + título do Omie e enquanto não foi enviado. */}
                     {selected.link_comprovante && selected.omie_cod_titulo && !selected.omie_anexo_enviado_em && (

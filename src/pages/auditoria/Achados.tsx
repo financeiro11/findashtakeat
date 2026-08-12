@@ -188,6 +188,22 @@ export default function Achados() {
       return { ...r, categoria, omie_categoria, omie_match_confianca, omie_cod_titulo, link_comprovante } as Row;
     });
 
+    // Comprovante já anexado no Omie (o clipe da linha) e a categoria ainda dizendo
+    // SEM NF / A CONFERIR é contradição: a nota chegou e está no ERP. Aqui a tela
+    // corrige a exibição e grava a correção, para as duas pararem de divergir.
+    // FORA DE ESCOPO é preservado de propósito — aquilo é sobre escopo, não sobre nota.
+    const conserta = audRows.filter(r =>
+      r.omie_anexo_enviado_em && r.categoria !== "COM NF" && r.categoria !== "FORA DE ESCOPO");
+    if (conserta.length) {
+      conserta.forEach(r => { r.categoria = "COM NF"; });
+      const ids = conserta.map(r => r.id).filter(id => id > 0);
+      if (ids.length) {
+        const { data, error } = await supabase.from("auditoria").update({ categoria: "COM NF" }).in("id", ids).select("id");
+        if (error) console.warn("[auditoria] não consegui gravar COM NF nos já anexados:", error);
+        else if (data?.length) toast.message(`${data.length} lançamento(s) com comprovante no Omie passaram a COM NF.`);
+      }
+    }
+
     // Evita duplicar caso um achado já referencie o mesmo lançamento do cartão.
     const jaNaAuditoria = new Set(audRows.map(r => r.id_transacao).filter(Boolean) as string[]);
     const aprovadasDireto: Row[] = cartRows

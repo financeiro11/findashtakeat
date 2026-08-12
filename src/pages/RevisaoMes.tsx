@@ -37,6 +37,7 @@ import {
   ChevronDown, ChevronLeft, ChevronRight, ChevronUp, Download, Loader2, Lock, LockOpen,
   Maximize2, Minimize2, Sparkles, AlertTriangle, Flame, TrendingUp, Target,
   MessageSquareText, Check, Pencil, X, Info, RotateCcw, Layers, Plus, Repeat, Send, Trash2,
+  Copy,
 } from "lucide-react";
 import { toast } from "sonner";
 import { supabase } from "@/integrations/supabase/client";
@@ -677,15 +678,28 @@ export default function RevisaoMes() {
   /* A altura útil, MEDIDA em vez de estimada.
      O palco precisa de altura definida (é ele que rola, e é o scroll dele que o
      rail acompanha), e ela depende do cabeçalho do Hub, que esta página não
-     controla. Chutar `100vh - 49px` funciona até alguém mexer no header. */
+     controla. Chutar `100vh - 49px` funciona até alguém mexer no header.
+
+     A medida é contra o CABEÇALHO, e não contra a posição da raiz na tela. Com
+     `getBoundingClientRect().top` da raiz, quem já tivesse rolado a janela media
+     ~0 (o cabeçalho é sticky e continua por cima), a conta devolvia uma altura
+     MAIOR que a área útil e a barra de controles caía para fora da dobra — só
+     aparecia depois de rolar a página inteira, que é exatamente o que não pode
+     acontecer com a barra que comanda a tela. */
   useLayoutEffect(() => {
+    const cabecalho = () => document.querySelector<HTMLElement>('[data-chrome="header"]');
     const medir = () => {
-      const topo = raizRef.current?.getBoundingClientRect().top ?? 0;
-      setAlturaPalco(Math.max(320, window.innerHeight - topo));
+      const acima = modoReuniao ? 0 : cabecalho()?.getBoundingClientRect().height ?? 0;
+      setAlturaPalco(Math.max(320, window.innerHeight - acima));
     };
     medir();
     window.addEventListener("resize", medir);
-    return () => window.removeEventListener("resize", medir);
+    /* O cabeçalho muda de altura sozinho (o breadcrumb quebra em duas linhas em
+       tela estreita) e ninguém dispara `resize` por isso. */
+    const cab = cabecalho();
+    const ro = cab ? new ResizeObserver(medir) : null;
+    if (cab && ro) ro.observe(cab);
+    return () => { window.removeEventListener("resize", medir); ro?.disconnect(); };
   }, [modoReuniao]);
 
   /* ---------------------------- carga ---------------------------- */
@@ -1501,10 +1515,9 @@ export default function RevisaoMes() {
     /* Salto síncrono: `scroll-behavior: smooth` é cancelado pelo scroll-snap e
        deixaria o rail apontando um bloco e a tela mostrando outro. */
     animando.current = true;
-    // O bloco alto rola por dentro (ver a seção no render). Chegar nele pela
-    // seta e encontrar a metade de baixo, de onde a pessoa parou da última vez,
-    // seria começar o assunto pelo meio.
-    alvo.scrollTop = 0;
+    // Sempre no TOPO da folha: a rolagem é uma só (ver a seção no render), então
+    // chegar pela seta é chegar no começo do assunto, e não no meio de onde a
+    // pessoa parou da última vez.
     palco.scrollTop = alvo.offsetTop;
     window.setTimeout(() => { animando.current = false; }, 160);
   }, []);
@@ -2599,14 +2612,17 @@ export default function RevisaoMes() {
         ref={palcoRef}
         onScroll={aoRolar}
         data-revisao-palco
-        className="relative min-h-0 flex-1 overflow-y-auto"
+        className="relative min-h-0 flex-1 overflow-y-auto overscroll-contain"
         style={{ scrollSnapType: "y proximity" }}
       >
-        {/* Uma folha por tela, em TAMANHO NATURAL. A folha que não couber rola
-            por dentro e, quando chega ao fim, a rolagem passa para o palco e
-            cai na seguinte (encadeamento padrão do navegador).
+        {/* Uma folha por tela, em TAMANHO NATURAL, e UMA BARRA DE ROLAGEM SÓ.
+            A folha que não couber continua na mesma rolagem: `min-h-full` faz a
+            curta ocupar a tela inteira (o snap continua parando no topo de cada
+            uma) e deixa a comprida crescer.
 
-            Já foi o contrário: o bloco era medido e REDUZIDO com `transform`
+            Já foram duas barras — a folha rolava por dentro e o palco por fora,
+            uma coladinha na outra no canto direito, e ninguém sabia qual mexia
+            o quê. E já foi pior: o bloco era medido e REDUZIDO com `transform`
             até caber na altura da tela. Cabia — e o resultado era a reunião
             lendo um Resumo a 55%, com tarja em branco dos dois lados. Encolher
             o conteúdo para caber na moldura é resolver o problema errado. */}
@@ -2615,7 +2631,7 @@ export default function RevisaoMes() {
             key={`${f.titulo}#${i}`}
             data-revisao-bloco
             data-titulo={f.titulo}
-            className="h-full overflow-y-auto"
+            className="min-h-full"
             style={{ scrollSnapAlign: "start" }}
           >
             <div data-revisao-conteudo className="flex flex-col gap-3.5 px-6 py-5">
@@ -2675,52 +2691,68 @@ export default function RevisaoMes() {
         style={{ display: railAberto ? undefined : "none" }}
         className="flex flex-wrap items-center justify-between gap-3 border-t border-border bg-card/95 px-5 py-2.5 backdrop-blur"
       >
-        <div className="flex min-w-0 items-center gap-2.5">
+        {/* Cada controle com o NOME do que ele governa. Sem os rótulos, a barra
+            era "05/05 Metas" seguido de duas caixas e dois botões, e não havia
+            como saber que a primeira caixa é o mês da reunião e a segunda troca a
+            tela inteira pela apresentação — dava para descobrir clicando, que é
+            o tipo de descoberta que ninguém quer fazer na frente do CEO. */}
+        <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1.5">
           <span className="num text-[11px] font-semibold text-muted-foreground">
             {String(bloco + 1).padStart(2, "0")} / {String(folhasDoPalco.length).padStart(2, "0")}
           </span>
           <span className="truncate text-[12.5px] font-semibold">
             {folhasDoPalco[bloco]?.titulo ?? "—"}
           </span>
-          <select
-            value={mes}
-            onChange={(e) => setMesEscolhido(e.target.value)}
-            className="ml-2 h-7 rounded-md border border-border bg-card px-2 text-[11.5px] focus:outline-none focus:ring-1 focus:ring-ring"
-            title="Mês da reunião. Meses sem cadeado ainda podem mudar."
-          >
-            {[...comDado].reverse().map((c) => (
-              <option key={c} value={c}>
-                {mesPorExtenso(c)}{travados.has(c) ? " · travado" : " · aberto"}
-              </option>
-            ))}
-          </select>
+
+          <span className="mx-0.5 h-5 w-px shrink-0 bg-border" />
+
+          <label className="flex items-center gap-1.5">
+            <span className="eyebrow">Mês</span>
+            <select
+              value={mes}
+              onChange={(e) => setMesEscolhido(e.target.value)}
+              className="h-7 rounded-md border border-border bg-card px-2 text-[11.5px] focus:outline-none focus:ring-1 focus:ring-ring"
+              title="Mês da reunião. Meses sem cadeado ainda podem mudar."
+            >
+              {[...comDado].reverse().map((c) => (
+                <option key={c} value={c}>
+                  {mesPorExtenso(c)}{travados.has(c) ? " · travado" : " · aberto"}
+                </option>
+              ))}
+            </select>
+          </label>
+
+          <span className="mx-0.5 h-5 w-px shrink-0 bg-border" />
 
           {/* -------- qual apresentação ----------------------------------------
               "A tela" é a de trabalho, com os cinco blocos. Escolher uma
               apresentação troca o palco pelas folhas do roteiro dela. */}
-          <select
-            value={apresId ?? ""}
-            onChange={(e) => abrirApresentacao(apresentacoes.find((a) => a.id === e.target.value) ?? null)}
-            className="h-7 max-w-[190px] rounded-md border border-border bg-card px-2 text-[11.5px] focus:outline-none focus:ring-1 focus:ring-ring"
-            title="Qual apresentação está no palco"
-          >
-            <option value="">A tela de trabalho</option>
-            {apresentacoes.map((a) => (
-              <option key={a.id} value={a.id}>
-                {a.nome}{a.status === "publicada" ? " · publicada" : ""}
-              </option>
-            ))}
-          </select>
+          <label className="flex min-w-0 items-center gap-1.5">
+            <span className="eyebrow">Apresentação</span>
+            <select
+              value={apresId ?? ""}
+              onChange={(e) => abrirApresentacao(apresentacoes.find((a) => a.id === e.target.value) ?? null)}
+              className="h-7 max-w-[190px] rounded-md border border-border bg-card px-2 text-[11.5px] focus:outline-none focus:ring-1 focus:ring-ring"
+              title="O que está no palco: a tela de trabalho (os cinco blocos de sempre) ou uma apresentação montada"
+            >
+              <option value="">A tela de trabalho</option>
+              {apresentacoes.map((a) => (
+                <option key={a.id} value={a.id}>
+                  {a.nome}{a.status === "publicada" ? " · publicada" : ""}
+                </option>
+              ))}
+            </select>
+          </label>
           <button
             onClick={novaApresentacao}
-            title="Nova apresentação, já com os cinco blocos montados"
-            className="ghost-btn ghost-icone"
+            title="Cria uma apresentação nova neste mês, já com os cinco blocos montados"
+            className="ghost-btn h-7 px-2 text-[11px]"
           >
-            <Plus className="h-3.5 w-3.5" />
+            <Plus className="h-3 w-3" /> Nova
           </button>
           <button
             onClick={() => setModelosAberto(true)}
-            title="Modelos: o deck que se repete a cada mês ou trimestre"
+            title="Modelos: o deck que se repete a cada mês ou trimestre — salvar este como modelo ou gerar um novo a partir de um"
             className="ghost-btn h-7 px-2 text-[11px]"
           >
             <Repeat className="h-3 w-3" /> Modelos
@@ -2732,14 +2764,17 @@ export default function RevisaoMes() {
                   reunião mensal, e um seletor de trimestre nela só confundiria.
                   Os cards mensais (cascata, Pareto, DRE) continuam desenhando o
                   MÊS DE FECHAMENTO da janela — daí o rótulo dizer os dois. */}
-              <select
-                value={periodoTipo}
-                onChange={(e) => trocarPeriodo(e.target.value as TipoPeriodo)}
-                title="A janela desta apresentação. Cards de fluxo somam o período; os de estoque valem no fechamento."
-                className="h-7 rounded-md border border-border bg-card px-2 text-[11.5px] focus:outline-none focus:ring-1 focus:ring-ring"
-              >
-                {TIPOS.map((t) => <option key={t.tipo} value={t.tipo}>{t.nome}</option>)}
-              </select>
+              <label className="flex items-center gap-1.5">
+                <span className="eyebrow">Janela</span>
+                <select
+                  value={periodoTipo}
+                  onChange={(e) => trocarPeriodo(e.target.value as TipoPeriodo)}
+                  title="A janela desta apresentação. Cards de fluxo somam o período; os de estoque valem no fechamento."
+                  className="h-7 rounded-md border border-border bg-card px-2 text-[11.5px] focus:outline-none focus:ring-1 focus:ring-ring"
+                >
+                  {TIPOS.map((t) => <option key={t.tipo} value={t.tipo}>{t.nome}</option>)}
+                </select>
+              </label>
               {periodoTipo !== "mes" && (
                 <span
                   className="chip whitespace-nowrap"
@@ -2748,10 +2783,19 @@ export default function RevisaoMes() {
                   {periodo.rotulo}{periodo.parcial ? " · parcial" : ""}
                 </span>
               )}
-              <button onClick={duplicarApresentacao} title="Duplicar para outra plateia" className="ghost-btn h-7 px-2 text-[11px]">
-                cópia
+              <button
+                onClick={duplicarApresentacao}
+                title="Duplicar esta apresentação — monta-se uma e tira-se dela o que não interessa à outra plateia"
+                className="ghost-btn h-7 px-2 text-[11px]"
+              >
+                <Copy className="h-3 w-3" /> Duplicar
               </button>
-              <button onClick={excluirApresentacao} title="Excluir esta apresentação" className="ghost-btn ghost-icone hover:text-neg">
+              <button
+                onClick={excluirApresentacao}
+                title={`Excluir a apresentação "${nomeApres}"`}
+                aria-label="Excluir esta apresentação"
+                className="ghost-btn ghost-icone hover:text-neg"
+              >
                 <Trash2 className="h-3.5 w-3.5" />
               </button>
             </>

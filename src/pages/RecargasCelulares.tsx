@@ -410,18 +410,18 @@ export default function RecargasCelulares() {
     // outra pessoa, e o gasto continua tendo que apontar para quem recebeu.
     if (feita) {
       await supabase
-        .from("recargas_celulares_historico" as never)
+        .from("recargas_celulares_historico")
         .delete()
         .eq("linha_id", r.id)
         .eq("recarregado_em", r.ultima_recarga || "");
     } else {
-      await supabase.from("recargas_celulares_historico" as never).insert({
+      await supabase.from("recargas_celulares_historico").insert({
         linha_id: r.id,
         colaborador: r.proprietario,
         numero: r.numero,
         valor: Number(r.valor || 0),
         recarregado_em: patch.ultima_recarga,
-      } as never);
+      });
     }
     // Fecha o ciclo no TakeatOS. Sem isso, o pedido do colaborador ficaria "Pendente"
     // lá para sempre mesmo depois de atendido aqui. Vai por Edge Function porque o

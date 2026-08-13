@@ -9,6 +9,8 @@ import {
   explicarPeca, rotuloContagem, rotuloGrupo,
   type LancamentoDaPonte, type PecaDaPonte, type Ponte,
 } from "@/lib/ponteVariacao";
+import { CopiarBloco, CopiarPonte } from "@/components/demonstracoes/CopiarPonte";
+import type { BlocoCopia } from "@/lib/copiarPonte";
 
 /* ---------------------------------------------------------------------------
  * "Por que esta linha mudou?" — o detalhe do chip FORNECEDORES do painel.
@@ -240,6 +242,7 @@ function LinhaPeca({
 
 function Grupo({
   titulo, pecas, total, favoravel, ponte, comp, abertas, onAlternar, moeda, moedaSemCentavos, obsDe,
+  bloco, rubrica, mesLabel,
 }: {
   titulo: string;
   pecas: PecaDaPonte[];
@@ -253,6 +256,10 @@ function Grupo({
   moeda: (n: number) => string;
   moedaSemCentavos: (n: number) => string;
   obsDe: (cod: string | null) => string | null | undefined;
+  /** Qual recorte este bloco copia. null = não oferece cópia. */
+  bloco: BlocoCopia | null;
+  rubrica?: string | null;
+  mesLabel?: string | null;
 }) {
   if (!pecas.length) return null;
   const faixa = favoravel == null ? "border-border bg-muted/70"
@@ -270,6 +277,8 @@ function Grupo({
           <span className="ml-1.5 font-medium normal-case tracking-normal opacity-80">
             · {pecas.length} {pecas.length === 1 ? "fornecedor" : "fornecedores"}
           </span>
+          {/* O clipe do bloco: esta lista, num clique, no formato do tracker. */}
+          {bloco && <CopiarBloco ponte={ponte} bloco={bloco} rubrica={rubrica} mesLabel={mesLabel} />}
         </td>
         <td colSpan={2} className={cn("whitespace-nowrap px-5 py-1 text-right text-[11px] num font-bold", texto)}
           title={moeda(total)}>
@@ -295,9 +304,12 @@ function Grupo({
 
 export function PonteVariacao({
   ponte, comp, carregando, celula, celulaAnterior, travado, travadoAnterior,
-  moeda, moedaSemCentavos, obsDe,
+  moeda, moedaSemCentavos, obsDe, rubrica, mesLabel,
 }: {
   ponte: Ponte;
+  /** Rubrica e mês da célula — só o texto copiado usa, para dizer de onde saiu. */
+  rubrica?: string | null;
+  mesLabel?: string | null;
   /** O comparativo de 12 meses, quando já carregou — só refina "entrou" em "voltou". */
   comp: Comparativo | null;
   /** O mês anterior ainda está vindo do banco. */
@@ -413,6 +425,7 @@ export function PonteVariacao({
                     pecas={ponte.piora}
                     total={ponte.totalPiora}
                     favoravel={false}
+                    bloco="piora" rubrica={rubrica} mesLabel={mesLabel}
                     ponte={ponte} comp={comp} abertas={abertas} onAlternar={alternar}
                     moeda={moeda} moedaSemCentavos={moedaSemCentavos} obsDe={obsDe}
                   />
@@ -421,6 +434,7 @@ export function PonteVariacao({
                     pecas={ponte.melhora}
                     total={ponte.totalMelhora}
                     favoravel
+                    bloco="melhora" rubrica={rubrica} mesLabel={mesLabel}
                     ponte={ponte} comp={comp} abertas={abertas} onAlternar={alternar}
                     moeda={moeda} moedaSemCentavos={moedaSemCentavos} obsDe={obsDe}
                   />
@@ -433,6 +447,9 @@ export function PonteVariacao({
                       pecas={ponte.iguais}
                       total={0}
                       favoravel={null}
+                      /* Sem clipe: quem repetiu o valor não é uma lista que se
+                         manda para alguém — vai junto no "Tudo" da prévia. */
+                      bloco={null}
                       ponte={ponte} comp={comp} abertas={abertas} onAlternar={alternar}
                       moeda={moeda} moedaSemCentavos={moedaSemCentavos} obsDe={obsDe}
                     />
@@ -466,12 +483,17 @@ export function PonteVariacao({
               )}
             </span>
             {mexeu > 0 && (
-              <button
-                onClick={() => setAbertas(todasAbertas ? new Set() : new Set([...ponte.piora, ...ponte.melhora].map((p) => p.chave)))}
-                className="shrink-0 font-medium underline-offset-2 transition hover:underline"
-              >
-                {todasAbertas ? "fechar todos os lançamentos" : "abrir todos os lançamentos"}
-              </button>
+              <span className="flex shrink-0 items-center gap-3">
+                <button
+                  onClick={() => setAbertas(todasAbertas ? new Set() : new Set([...ponte.piora, ...ponte.melhora].map((p) => p.chave)))}
+                  className="font-medium underline-offset-2 transition hover:underline"
+                >
+                  {todasAbertas ? "fechar todos os lançamentos" : "abrir todos os lançamentos"}
+                </button>
+                {/* A prévia fica no rodapé, junto da frase que garante que a
+                    conta fecha: é o que o texto copiado vai afirmar por escrito. */}
+                <CopiarPonte ponte={ponte} rubrica={rubrica} mesLabel={mesLabel} />
+              </span>
             )}
           </div>
         </div>

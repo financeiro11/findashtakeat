@@ -1417,6 +1417,10 @@ export function LancamentosSheet({
                 ponte={ponte}
                 comp={comp}
                 carregando={carregandoAnteriores}
+                /* Só o texto copiado usa: é o que faz o comentário dizer de que
+                   linha e de que mês ele fala, longe desta tela. */
+                rubrica={alvo.rubrica}
+                mesLabel={alvo.mesLabel}
                 celula={alvo.celula}
                 celulaAnterior={alvo.celulaAnterior}
                 travado={alvo.travado}

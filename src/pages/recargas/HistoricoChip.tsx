@@ -71,12 +71,12 @@ export default function HistoricoChip({ linhaId, titulo, numero, onOpenChange }:
       setCarregando(true);
       const [h, t] = await Promise.all([
         supabase
-          .from("recargas_celulares_historico" as never)
+          .from("recargas_celulares_historico")
           .select("id, colaborador, valor, recarregado_em")
           .eq("linha_id", linhaId)
           .order("recarregado_em", { ascending: false }),
         supabase
-          .from("recargas_celulares_titulares" as never)
+          .from("recargas_celulares_titulares")
           .select("id, colaborador, de, ate")
           .eq("linha_id", linhaId)
           .order("de", { ascending: false }),

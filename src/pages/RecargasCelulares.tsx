@@ -41,6 +41,10 @@ type Row = {
   valor: number | null;
   verificado: string | null;
   solicitado_em?: string | null;
+  // Presentes só quando a linha É uma solicitação vinda do TakeatOS. A fila e o
+  // cadastro convivem na mesma lista, e estes campos distinguem uma da outra.
+  solicitacao_id?: string;
+  posicao_do_dia?: number | null;
 };
 
 // Situação é do CHIP (a linha está ativa na operadora?). O andamento da recarga
@@ -194,6 +198,31 @@ function statusRecarga(r: {
 // o campo era um só). Exibir "Feito" na coluna Situação repetiria o status da recarga
 // e não diria nada sobre o chip — então esses valores caem no padrão até a migração
 // de dados acertar a origem.
+// Busca e período valem igual para o cadastro e para a fila — extraídos para os dois
+// filtrarem pela mesma regra, em vez de duas cópias que divergem com o tempo.
+function termoBate(r: { proprietario?: string | null; numero?: string | null }, termo: string) {
+  const q = termo.trim().toLowerCase();
+  if (!q) return true;
+  return (
+    (r.proprietario || "").toLowerCase().includes(q) ||
+    (r.numero || "").toLowerCase().includes(q)
+  );
+}
+
+function noPeriodo(
+  r: { solicitado_em?: string | null; ultima_recarga?: string | null },
+  periodo: PeriodoValor,
+) {
+  if (!periodo.from && !periodo.to) return true;
+  const base = r.solicitado_em || (r.ultima_recarga ? `${r.ultima_recarga}T12:00:00` : null);
+  if (!base) return false;
+  const d = new Date(base);
+  if (isNaN(d.getTime())) return false;
+  if (periodo.from && d < periodo.from) return false;
+  if (periodo.to && d > periodo.to) return false;
+  return true;
+}
+
 function situacaoChip(situacao: string | null): string {
   if (!situacao || ROTULOS_DE_RECARGA.includes(situacao)) return "Ativo";
   return situacao;
@@ -228,6 +257,7 @@ const empty = {
 
 export default function RecargasCelulares() {
   const [rows, setRows] = useState<Row[]>([]);
+  const [solicitacoes, setSolicitacoes] = useState<Row[]>([]);
   const [open, setOpen] = useState(false);
   const [form, setForm] = useState({ ...empty });
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -246,10 +276,46 @@ export default function RecargasCelulares() {
   useEffect(() => { document.title = "Recargas · Celulares"; load(); }, []);
 
   const load = async () => {
-    const { data, error } = await supabase
-      .from("recargas_celulares").select("*").order("proprietario");
-    if (error) toast.error(error.message);
-    else setRows((data as Row[]) || []);
+    // A fila e o cadastro vêm juntos: o Financeiro trabalha a aba Pendentes, e o que
+    // chegou do TakeatOS tem de aparecer ali, não numa tela separada.
+    const [linhas, fila] = await Promise.all([
+      supabase.from("recargas_celulares").select("*").order("proprietario"),
+      supabase
+        .from("recargas_celulares_solicitacoes")
+        .select("id, colaborador, numero, operadora, setor, valor, solicitado_em, posicao_do_dia")
+        .eq("status", "Pendente")
+        .order("solicitado_em", { ascending: true }),
+    ]);
+
+    if (linhas.error) return toast.error(linhas.error.message);
+    setRows((linhas.data as Row[]) || []);
+
+    // A tabela pode não existir ainda em bancos onde a migration não rodou — nesse
+    // caso a tela segue funcionando só com o cadastro.
+    if (fila.error) {
+      if (fila.error.code !== "42P01" && fila.error.code !== "PGRST205") {
+        console.warn("[recargas] fila indisponível:", fila.error.message);
+      }
+      setSolicitacoes([]);
+      return;
+    }
+    setSolicitacoes(
+      (fila.data || []).map((f) => ({
+        id: `solic-${f.id}`,
+        solicitacao_id: f.id,
+        proprietario: f.colaborador,
+        numero: f.numero,
+        situacao: "Ativo",
+        setor: f.setor,
+        // Sem data de recarga: é isso que faz statusRecarga() devolver "Pendente".
+        ultima_recarga: null,
+        proxima_recarga: null,
+        valor: f.valor,
+        verificado: null,
+        solicitado_em: f.solicitado_em,
+        posicao_do_dia: f.posicao_do_dia,
+      })),
+    );
   };
 
   const setores = useMemo(() => {
@@ -268,30 +334,12 @@ export default function RecargasCelulares() {
   }, [rows]);
 
   const filtered = useMemo(() => {
-    const q = search.trim().toLowerCase();
-    // Sem período escolhido não filtramos por data: linhas nunca solicitadas
-    // (importadas de planilha, por exemplo) sumiriam da tela.
-    const noPeriodo = (r: Row) => {
-      if (!periodo.from && !periodo.to) return true;
-      // Data da solicitação quando existe; senão, a da recarga. Sem o fallback, linhas
-      // cadastradas à mão ou importadas de planilha — que nunca passaram por um pedido
-      // — sumiriam de qualquer recorte de data, e o filtro pareceria quebrado.
-      const base = r.solicitado_em || (r.ultima_recarga ? `${r.ultima_recarga}T12:00:00` : null);
-      if (!base) return false;
-      const d = new Date(base);
-      if (isNaN(d.getTime())) return false;
-      if (periodo.from && d < periodo.from) return false;
-      if (periodo.to && d > periodo.to) return false;
-      return true;
-    };
     return rows.filter((r) => {
       if (filtSit !== "__all" && situacaoChip(r.situacao) !== filtSit) return false;
       if (filtSetor !== "__all" && (r.setor || "") !== filtSetor) return false;
       if (filtVer !== "__all" && (r.verificado || "Não") !== filtVer) return false;
-      if (!noPeriodo(r)) return false;
-      if (!q) return true;
-      return (r.proprietario || "").toLowerCase().includes(q)
-        || (r.numero || "").toLowerCase().includes(q);
+      if (!noPeriodo(r, periodo)) return false;
+      return termoBate(r, search);
     });
   }, [rows, search, filtSit, filtSetor, filtVer, periodo]);
 
@@ -304,10 +352,29 @@ export default function RecargasCelulares() {
   // por cima disso, e os contadores mostram o resultado do MESMO recorte — senão o
   // número na aba não bate com a lista que ela abre.
   const porAba = useMemo(() => {
-    const pendentes = filtered.filter((r) => statusRecarga(r) === "Pendente");
+    // A fila entra na FRENTE de Pendentes, na ordem em que foi pedida — é a ordem em
+    // que o Financeiro atende. Só cabem ~40 por dia, então a sequência é o produto.
+    const daFila = solicitacoes.filter((s) => {
+      if (!termoBate(s, search)) return false;
+      if (filtSetor !== "__all" && (s.setor || "") !== filtSetor) return false;
+      return noPeriodo(s, periodo);
+    });
+
+    // A linha do mesmo número não se repete embaixo: o card da solicitação já a
+    // representa, e com mais informação (horário do pedido e posição na fila).
+    const naFila = new Set(
+      daFila.map((s) => String(s.numero || "").replace(/\D/g, "").slice(-8)).filter(Boolean),
+    );
+    const semDuplicar = (r: Row) =>
+      !naFila.has(String(r.numero || "").replace(/\D/g, "").slice(-8));
+
+    const pendentes = [
+      ...daFila,
+      ...filtered.filter((r) => statusRecarga(r) === "Pendente" && semDuplicar(r)),
+    ];
     const feitas = filtered.filter((r) => statusRecarga(r) === "Feito");
-    return { pendentes, feitas, todas: filtered };
-  }, [filtered]);
+    return { pendentes, feitas, todas: [...daFila, ...filtered.filter(semDuplicar)] };
+  }, [filtered, solicitacoes, search, filtSetor, periodo]);
 
   const visiveis = porAba[aba];
 
@@ -377,6 +444,23 @@ export default function RecargasCelulares() {
   // seria pior. Para o caso de erro de clique, o valor anterior fica guardado e volta
   // no desfazer, então um histórico legítimo não se perde.
   const anteriores = useRef<Record<string, { ultima: string | null; proxima: string | null }>>({});
+
+  // Card que veio da fila: concluir NAO e mexer na linha, e fechar o pedido — o que
+  // inclui avisar o TakeatOS. Por isso vai pela Edge Function, que guarda o segredo.
+  const concluirSolicitacao = async (r: Row) => {
+    const { data, error } = await supabase.functions.invoke("recargas-concluir", {
+      body: { solicitacao_id: r.solicitacao_id, status: "Concluída" },
+    });
+    if (error) return toast.error("Não consegui concluir: " + error.message);
+
+    setSolicitacoes((prev) => prev.filter((x) => x.solicitacao_id !== r.solicitacao_id));
+    // Só afirmamos que o TakeatOS soube quando ele de fato respondeu.
+    toast.success(
+      `Recarga de ${r.proprietario} concluída.` +
+        (data?.avisado ? " O TakeatOS foi avisado." : " (não consegui avisar o TakeatOS ainda)"),
+    );
+    load();
+  };
 
   const alternarFeita = async (r: Row) => {
     const feita = statusRecarga(r) === "Feito";
@@ -724,8 +808,19 @@ export default function RecargasCelulares() {
                       </div>
                     </div>
                   </div>
+                  {/* Veio da fila do TakeatOS: mostra a posição em vez do prazo, porque
+                      o que importa nesse card é a ordem de atendimento. */}
+                  {r.solicitacao_id && (
+                    <Badge
+                      variant="outline"
+                      className="h-5 shrink-0 gap-1 rounded-full border-rose-500/30 bg-rose-500/10 px-2 text-[10.5px] text-rose-600 dark:text-rose-400"
+                      title="Solicitação vinda do TakeatOS"
+                    >
+                      {r.posicao_do_dia ? `${r.posicao_do_dia}º da fila` : "Solicitada"}
+                    </Badge>
+                  )}
                   {/* Atrasada em vermelho: é a linha que o Financeiro tem de puxar primeiro. */}
-                  {dias !== null && (
+                  {!r.solicitacao_id && dias !== null && (
                     <Badge
                       variant="outline"
                       title={`Próxima recarga: ${fmtDataBR(r.proxima_recarga)}`}
@@ -826,7 +921,7 @@ export default function RecargasCelulares() {
                           ? "text-muted-foreground hover:text-foreground"
                           : "text-emerald-600 hover:text-emerald-700 dark:text-emerald-400",
                       )}
-                      onClick={() => alternarFeita(r)}
+                      onClick={() => (r.solicitacao_id ? concluirSolicitacao(r) : alternarFeita(r))}
                       title={
                         stRecarga === "Feito"
                           ? "Desfazer — voltar para pendente"
@@ -848,12 +943,16 @@ export default function RecargasCelulares() {
                     >
                       <ScrollText className="h-3.5 w-3.5" />
                     </Button>
-                    <Button size="icon" variant="ghost" className="h-7 w-7" onClick={() => abrirEdicao(r)} title="Editar">
-                      <Pencil className="h-3.5 w-3.5" />
-                    </Button>
-                    <Button size="icon" variant="ghost" className="h-7 w-7" onClick={() => remove(r.id)} title="Excluir">
-                      <Trash2 className="h-3.5 w-3.5" />
-                    </Button>
+                    {!r.solicitacao_id && (
+                      <>
+                        <Button size="icon" variant="ghost" className="h-7 w-7" onClick={() => abrirEdicao(r)} title="Editar">
+                          <Pencil className="h-3.5 w-3.5" />
+                        </Button>
+                        <Button size="icon" variant="ghost" className="h-7 w-7" onClick={() => remove(r.id)} title="Excluir">
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </Button>
+                      </>
+                    )}
                   </div>
                 </div>
               </div>
@@ -921,8 +1020,14 @@ export default function RecargasCelulares() {
                             size="icon"
                             variant="ghost"
                             className={cn("h-7 w-7", st === "Feito" ? "text-muted-foreground" : "text-emerald-600 dark:text-emerald-400")}
-                            onClick={() => alternarFeita(r)}
-                            title={st === "Feito" ? "Desfazer — voltar para pendente" : "Marcar recarga como feita hoje"}
+                            onClick={() => (r.solicitacao_id ? concluirSolicitacao(r) : alternarFeita(r))}
+                            title={
+                              r.solicitacao_id
+                                ? "Concluir a solicitação e avisar o TakeatOS"
+                                : st === "Feito"
+                                  ? "Desfazer — voltar para pendente"
+                                  : "Marcar recarga como feita hoje"
+                            }
                           >
                             {st === "Feito" ? <Undo2 className="h-3.5 w-3.5" /> : <CheckIcon className="h-3.5 w-3.5" />}
                           </Button>

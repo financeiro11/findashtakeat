@@ -1,12 +1,12 @@
 import { useEffect, useMemo, useState } from "react";
 import * as XLSX from "xlsx";
-import { Upload, Plus, Pencil, Trash2, Search, Filter, Settings2, Check, X } from "lucide-react";
+import {
+  Upload, Plus, Pencil, Trash2, Search, Filter, Settings2, Check, X,
+  Smartphone, Calendar as CalIcon, Clock, RefreshCw, CheckCircle2,
+} from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
-import {
-  Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
-} from "@/components/ui/table";
 import {
   Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle,
 } from "@/components/ui/dialog";
@@ -18,6 +18,9 @@ import { Label } from "@/components/ui/label";
 import { toast } from "sonner";
 import { supabase } from "@/integrations/supabase/client";
 import { normalize } from "@/lib/normalize";
+import { cn } from "@/lib/utils";
+import SolicitacoesKanban from "@/pages/recargas/SolicitacoesKanban";
+import { Badge } from "@/components/ui/badge";
 import { LibAutofillInput } from "@/components/LibAutofillInput";
 
 type Row = {
@@ -30,11 +33,56 @@ type Row = {
   proxima_recarga: string | null;
   valor: number | null;
   verificado: string | null;
+  solicitado_em?: string | null;
 };
 
 const SITUACAO_OPTS = ["Ativo", "Inativo", "Pendente", "Suspenso"];
 const SETOR_OPTS = ["Financeiro", "Comercial", "RPA", "TI", "Diretoria", "RH", "Marketing"];
 const VERIFICADO_OPTS = ["Sim", "Não"];
+
+// Cores da situação — mesma paleta de status da aba Viagens.
+const SITUACAO_CLS: Record<string, string> = {
+  Ativo: "bg-emerald-500/15 text-emerald-600 border-emerald-500/30 dark:text-emerald-400",
+  Pendente: "bg-amber-500/15 text-amber-600 border-amber-500/30 dark:text-amber-400",
+  Suspenso: "bg-rose-500/15 text-rose-600 border-rose-500/30 dark:text-rose-400",
+  Inativo: "bg-muted text-muted-foreground border-border",
+};
+
+const AVATAR_COLORS = [
+  "bg-rose-500", "bg-violet-500", "bg-emerald-500", "bg-sky-500",
+  "bg-amber-500", "bg-fuchsia-500", "bg-teal-500", "bg-orange-500",
+];
+// Hash do nome → cor estável: o mesmo colaborador mantém a cor entre sessões.
+const colorFor = (s: string) => {
+  let h = 0;
+  for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) >>> 0;
+  return AVATAR_COLORS[h % AVATAR_COLORS.length];
+};
+const initials = (name: string) =>
+  name.split(/\s+/).filter(Boolean).slice(0, 2)
+    .map((p) => p[0]?.toUpperCase() || "").join("") || "—";
+
+const fmtBRL = (n: number) =>
+  Number(n || 0).toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
+const fmtDataBR = (iso: string | null) =>
+  iso ? new Date(iso + "T00:00").toLocaleDateString("pt-BR") : "—";
+const fmtDataHoraBR = (iso: string | null | undefined) =>
+  iso
+    ? new Date(iso).toLocaleString("pt-BR", {
+        day: "2-digit", month: "2-digit", year: "numeric",
+        hour: "2-digit", minute: "2-digit", timeZone: "America/Sao_Paulo",
+      })
+    : "—";
+
+// Dias até a próxima recarga. Negativo = atrasada, e o card marca em vermelho.
+const diasAte = (iso: string | null) => {
+  if (!iso) return null;
+  const alvo = new Date(iso + "T00:00");
+  if (isNaN(alvo.getTime())) return null;
+  const hoje = new Date();
+  hoje.setHours(0, 0, 0, 0);
+  return Math.round((alvo.getTime() - hoje.getTime()) / 86400000);
+};
 
 const DAYS_KEY = "celulares_dias_proxima_recarga";
 const getDays = () => Number(localStorage.getItem(DAYS_KEY)) || 45;
@@ -56,11 +104,6 @@ export default function RecargasCelulares() {
   const [open, setOpen] = useState(false);
   const [form, setForm] = useState({ ...empty });
   const [editingId, setEditingId] = useState<string | null>(null);
-  const [draft, setDraft] = useState<Partial<Row>>({});
-  const [search, setSearch] = useState("");
-  const [filtSit, setFiltSit] = useState<string>("__all");
-  const [filtSetor, setFiltSetor] = useState<string>("__all");
-  const [filtVer, setFiltVer] = useState<string>("__all");
   const [days, setDays] = useState<number>(getDays());
 
   useEffect(() => { document.title = "Recargas · Celulares"; load(); }, []);
@@ -83,24 +126,12 @@ export default function RecargasCelulares() {
     return Array.from(s).sort();
   }, [rows]);
 
-  const filtered = useMemo(() => {
-    const q = search.trim().toLowerCase();
-    return rows.filter((r) => {
-      if (filtSit !== "__all" && (r.situacao || "") !== filtSit) return false;
-      if (filtSetor !== "__all" && (r.setor || "") !== filtSetor) return false;
-      if (filtVer !== "__all" && (r.verificado || "Não") !== filtVer) return false;
-      if (!q) return true;
-      return (r.proprietario || "").toLowerCase().includes(q)
-        || (r.numero || "").toLowerCase().includes(q);
-    });
-  }, [rows, search, filtSit, filtSetor, filtVer]);
-
   const saveDays = (n: number) => {
     setDays(n);
     localStorage.setItem(DAYS_KEY, String(n));
   };
 
-  const createNew = async () => {
+  const salvar = async () => {
     if (!form.proprietario.trim()) return toast.error("Proprietário obrigatório");
     const ultima = form.ultima_recarga || null;
     const payload = {
@@ -113,35 +144,32 @@ export default function RecargasCelulares() {
       valor: form.valor ? Number(form.valor) : 0,
       verificado: form.verificado || "Não",
     };
-    const { error } = await supabase.from("recargas_celulares").insert(payload);
+    // proxima_recarga é sempre derivada de ultima_recarga + dias — nunca digitada.
+    const { error } = editingId
+      ? await supabase.from("recargas_celulares").update(payload).eq("id", editingId)
+      : await supabase.from("recargas_celulares").insert(payload);
     if (error) return toast.error(error.message);
-    toast.success("Criado");
+    toast.success(editingId ? "Atualizado" : "Criado");
     setOpen(false);
+    setEditingId(null);
     setForm({ ...empty });
     load();
   };
 
-  const startEdit = (r: Row) => { setEditingId(r.id); setDraft({ ...r }); };
-  const cancelEdit = () => { setEditingId(null); setDraft({}); };
-
-  const saveEdit = async () => {
-    if (!editingId) return;
-    const ultima = (draft.ultima_recarga as string) || null;
-    const payload: any = {
-      proprietario: draft.proprietario || "",
-      numero: draft.numero || null,
-      situacao: draft.situacao || null,
-      setor: draft.setor || null,
-      ultima_recarga: ultima,
-      proxima_recarga: addDays(ultima, days),
-      valor: draft.valor != null ? Number(draft.valor) : 0,
-      verificado: (draft.verificado as string) || "Não",
-    };
-    const { error } = await supabase.from("recargas_celulares").update(payload).eq("id", editingId);
-    if (error) return toast.error(error.message);
-    toast.success("Atualizado");
-    cancelEdit();
-    load();
+  // Em card não cabe edição inline: o lápis abre o mesmo diálogo do "Novo",
+  // já preenchido.
+  const abrirEdicao = (r: Row) => {
+    setEditingId(r.id);
+    setForm({
+      proprietario: r.proprietario || "",
+      numero: r.numero || "",
+      situacao: r.situacao || "Ativo",
+      setor: r.setor || "",
+      ultima_recarga: r.ultima_recarga || "",
+      valor: r.valor != null ? String(r.valor) : "",
+      verificado: r.verificado || "Não",
+    });
+    setOpen(true);
   };
 
   const remove = async (id: string) => {
@@ -221,222 +249,60 @@ export default function RecargasCelulares() {
 
   return (
     <div className="space-y-6 p-5">
-      <div>
-        <h2 className="text-2xl font-bold tracking-tight">Recargas · Celulares</h2>
-        <p className="text-sm text-muted-foreground">Controle de recargas dos celulares corporativos.</p>
+      <div className="flex flex-wrap items-end justify-between gap-3">
+        <div>
+          <h2 className="text-2xl font-bold tracking-tight">
+            Recargas <span className="text-muted-foreground">·</span> Celulares
+          </h2>
+          <p className="text-sm text-muted-foreground">
+            Fila de solicitações dos colaboradores, por ordem de pedido
+          </p>
+        </div>
+        {/* Cadastro de linha continua acessível aqui — a tela é uma só, sem abas. */}
+        <div className="flex flex-wrap items-center gap-2">
+          <Button variant="outline" size="sm" onClick={() => { setEditingId(null); setForm({ ...empty }); setOpen(true); }}>
+            <Plus className="mr-1.5 h-4 w-4" /> Nova linha
+          </Button>
+          <Button variant="outline" size="sm" asChild>
+            <label className="cursor-pointer">
+              <Upload className="mr-1.5 h-4 w-4" /> Importar Excel
+              <input type="file" accept=".xlsx,.xls,.csv" hidden onChange={importExcel} />
+            </label>
+          </Button>
+          <Popover>
+            <PopoverTrigger asChild>
+              <Button variant="outline" size="sm">
+                <Settings2 className="mr-1.5 h-4 w-4" /> Próxima: {days}d
+              </Button>
+            </PopoverTrigger>
+            <PopoverContent className="w-72 space-y-3">
+              <Label>Dias para próxima recarga</Label>
+              <Input
+                type="number"
+                min={1}
+                value={days}
+                onChange={(e) => saveDays(Math.max(1, Number(e.target.value) || 1))}
+              />
+              <Button size="sm" className="w-full" onClick={recomputeAll}>
+                Recalcular para todos
+              </Button>
+            </PopoverContent>
+          </Popover>
+        </div>
       </div>
 
-      <Card>
-        <CardHeader className="space-y-3">
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <div className="flex flex-wrap gap-2">
-              <Button onClick={() => { setForm({ ...empty }); setOpen(true); }}>
-                <Plus className="mr-2 h-4 w-4" /> Novo
-              </Button>
-              <Button variant="outline" asChild>
-                <label className="cursor-pointer">
-                  <Upload className="mr-2 h-4 w-4" /> Importar Excel
-                  <input type="file" accept=".xlsx,.xls,.csv" hidden onChange={importExcel} />
-                </label>
-              </Button>
-              <Popover>
-                <PopoverTrigger asChild>
-                  <Button variant="outline"><Settings2 className="mr-2 h-4 w-4" /> Próxima recarga: {days}d</Button>
-                </PopoverTrigger>
-                <PopoverContent className="w-72 space-y-3">
-                  <Label>Dias para próxima recarga</Label>
-                  <Input type="number" min={1} value={days}
-                    onChange={(e) => saveDays(Math.max(1, Number(e.target.value) || 1))} />
-                  <Button size="sm" className="w-full" onClick={recomputeAll}>
-                    Recalcular para todos
-                  </Button>
-                </PopoverContent>
-              </Popover>
-            </div>
-            <span className="text-sm text-muted-foreground">{filtered.length} de {rows.length}</span>
-          </div>
-          <div className="flex flex-wrap items-center gap-2">
-            <div className="relative flex-1 min-w-[220px]">
-              <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
-              <Input placeholder="Buscar por nome ou número..." value={search}
-                onChange={(e) => setSearch(e.target.value)} className="pl-8" />
-            </div>
-            <Popover>
-              <PopoverTrigger asChild>
-                <Button variant="outline" size="sm">
-                  <Filter className="mr-2 h-4 w-4" /> Filtros
-                  {(filtSit !== "__all" || filtSetor !== "__all") && <span className="ml-1 rounded bg-primary/10 px-1.5 text-xs text-primary">on</span>}
-                </Button>
-              </PopoverTrigger>
-              <PopoverContent className="w-72 space-y-3">
-                <div>
-                  <Label>Situação</Label>
-                  <Select value={filtSit} onValueChange={setFiltSit}>
-                    <SelectTrigger><SelectValue /></SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="__all">Todas</SelectItem>
-                      {situacoes.map(s => <SelectItem key={s} value={s}>{s}</SelectItem>)}
-                    </SelectContent>
-                  </Select>
-                </div>
-                <div>
-                  <Label>Setor</Label>
-                  <Select value={filtSetor} onValueChange={setFiltSetor}>
-                    <SelectTrigger><SelectValue /></SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="__all">Todos</SelectItem>
-                      {setores.map(s => <SelectItem key={s} value={s}>{s}</SelectItem>)}
-                    </SelectContent>
-                  </Select>
-                </div>
-                <div>
-                  <Label>Verificado</Label>
-                  <Select value={filtVer} onValueChange={setFiltVer}>
-                    <SelectTrigger><SelectValue /></SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="__all">Todos</SelectItem>
-                      {VERIFICADO_OPTS.map(s => <SelectItem key={s} value={s}>{s}</SelectItem>)}
-                    </SelectContent>
-                  </Select>
-                </div>
-                <Button size="sm" variant="outline" className="w-full"
-                  onClick={() => { setFiltSit("__all"); setFiltSetor("__all"); setFiltVer("__all"); }}>Limpar filtros</Button>
-              </PopoverContent>
-            </Popover>
-          </div>
-        </CardHeader>
-        <CardContent className="p-0">
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead className="sticky left-0 z-20 bg-card border-r">Proprietário</TableHead>
-                <TableHead>Número</TableHead>
-                <TableHead>Situação</TableHead>
-                <TableHead>Setor</TableHead>
-                <TableHead>Última Recarga</TableHead>
-                <TableHead>Próxima Recarga</TableHead>
-                <TableHead className="text-right">Valor</TableHead>
-                <TableHead className="text-center">Verificado</TableHead>
-                <TableHead className="w-28 text-right">Ações</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {filtered.map((r) => {
-                const editing = editingId === r.id;
-                const d = editing ? draft : r;
-                return (
-                  <TableRow key={r.id}>
-                    <TableCell className="font-medium sticky left-0 z-10 bg-card border-r">
-                      {editing
-                        ? <LibAutofillInput
-                            compact
-                            value={(d.proprietario as string) || ""}
-                            onChange={(v) => setDraft({ ...draft, proprietario: v })}
-                            onMatch={(m) => { if (m && (m as any).setor && !draft.setor) setDraft((prev) => ({ ...prev, proprietario: m.nome, setor: (m as any).setor })); }}
-                            inputClassName="h-8"
-                          />
-                        : r.proprietario}
-                    </TableCell>
-                    <TableCell>
-                      {editing
-                        ? <Input value={(d.numero as string) || ""} onChange={(e) => setDraft({ ...draft, numero: e.target.value })} className="h-8" />
-                        : r.numero}
-                    </TableCell>
-                    <TableCell>
-                      <Select
-                        value={(d.situacao as string) || ""}
-                        onValueChange={async (v) => {
-                          if (editing) setDraft({ ...draft, situacao: v });
-                          else {
-                            await supabase.from("recargas_celulares").update({ situacao: v }).eq("id", r.id);
-                            load();
-                          }
-                        }}
-                      >
-                        <SelectTrigger className="h-8"><SelectValue placeholder="—" /></SelectTrigger>
-                        <SelectContent>
-                          {situacoes.map(s => <SelectItem key={s} value={s}>{s}</SelectItem>)}
-                        </SelectContent>
-                      </Select>
-                    </TableCell>
-                    <TableCell>
-                      <Select
-                        value={(d.setor as string) || ""}
-                        onValueChange={async (v) => {
-                          if (editing) setDraft({ ...draft, setor: v });
-                          else {
-                            await supabase.from("recargas_celulares").update({ setor: v }).eq("id", r.id);
-                            load();
-                          }
-                        }}
-                      >
-                        <SelectTrigger className="h-8"><SelectValue placeholder="—" /></SelectTrigger>
-                        <SelectContent>
-                          {setores.map(s => <SelectItem key={s} value={s}>{s}</SelectItem>)}
-                        </SelectContent>
-                      </Select>
-                    </TableCell>
-                    <TableCell>
-                      {editing
-                        ? <Input type="date" value={(d.ultima_recarga as string) || ""} onChange={(e) => setDraft({ ...draft, ultima_recarga: e.target.value })} className="h-8" />
-                        : r.ultima_recarga}
-                    </TableCell>
-                    <TableCell className="text-muted-foreground">
-                      {editing
-                        ? (addDays((draft.ultima_recarga as string) || null, days) || "—")
-                        : (r.proxima_recarga || "—")}
-                    </TableCell>
-                    <TableCell className="text-right font-mono">
-                      {editing
-                        ? <Input type="number" step="0.01" value={(d.valor as any) ?? ""} onChange={(e) => setDraft({ ...draft, valor: e.target.value as any })} className="h-8 text-right" />
-                        : Number(r.valor || 0).toLocaleString("pt-BR", { style: "currency", currency: "BRL" })}
-                    </TableCell>
-                    <TableCell className="text-center">
-                      <Select
-                        value={(d.verificado as string) || "Não"}
-                        onValueChange={async (v) => {
-                          if (editing) setDraft({ ...draft, verificado: v });
-                          else {
-                            await supabase.from("recargas_celulares").update({ verificado: v }).eq("id", r.id);
-                            load();
-                          }
-                        }}
-                      >
-                        <SelectTrigger className="h-8 w-24 mx-auto"><SelectValue /></SelectTrigger>
-                        <SelectContent>
-                          {VERIFICADO_OPTS.map(s => <SelectItem key={s} value={s}>{s}</SelectItem>)}
-                        </SelectContent>
-                      </Select>
-                    </TableCell>
-                    <TableCell>
-                      <div className="flex justify-end gap-1">
-                        {editing ? (
-                          <>
-                            <Button size="icon" variant="ghost" onClick={saveEdit} title="Salvar"><Check className="h-4 w-4 text-success" /></Button>
-                            <Button size="icon" variant="ghost" onClick={cancelEdit} title="Cancelar"><X className="h-4 w-4" /></Button>
-                          </>
-                        ) : (
-                          <>
-                            <Button size="icon" variant="ghost" onClick={() => startEdit(r)} title="Editar"><Pencil className="h-4 w-4" /></Button>
-                            <Button size="icon" variant="ghost" onClick={() => remove(r.id)} title="Excluir"><Trash2 className="h-4 w-4" /></Button>
-                          </>
-                        )}
-                      </div>
-                    </TableCell>
-                  </TableRow>
-                );
-              })}
-              {!filtered.length && (
-                <TableRow><TableCell colSpan={9} className="text-center py-8 text-muted-foreground">Sem registros</TableCell></TableRow>
-              )}
-            </TableBody>
-          </Table>
-        </CardContent>
-      </Card>
+      <SolicitacoesKanban />
 
-      <Dialog open={open} onOpenChange={setOpen}>
+
+
+      <Dialog
+        open={open}
+        onOpenChange={(v) => { setOpen(v); if (!v) setEditingId(null); }}
+      >
         <DialogContent>
-          <DialogHeader><DialogTitle>Novo celular</DialogTitle></DialogHeader>
+          <DialogHeader>
+            <DialogTitle>{editingId ? "Editar celular" : "Novo celular"}</DialogTitle>
+          </DialogHeader>
           <div className="grid grid-cols-2 gap-3">
             <div className="col-span-2">
               <Label>Proprietário</Label>
@@ -475,8 +341,8 @@ export default function RecargasCelulares() {
             </div>
           </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setOpen(false)}>Cancelar</Button>
-            <Button onClick={createNew}>Salvar</Button>
+            <Button variant="outline" onClick={() => { setOpen(false); setEditingId(null); }}>Cancelar</Button>
+            <Button onClick={salvar}>Salvar</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

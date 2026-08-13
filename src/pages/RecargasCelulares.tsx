@@ -282,8 +282,12 @@ export default function RecargasCelulares() {
       supabase.from("recargas_celulares").select("*").order("proprietario"),
       supabase
         .from("recargas_celulares_solicitacoes")
-        .select("id, colaborador, numero, operadora, setor, valor, solicitado_em, posicao_do_dia")
-        .eq("status", "Pendente")
+        .select(
+          "id, colaborador, numero, operadora, setor, valor, solicitado_em, posicao_do_dia, status, concluido_em",
+        )
+        // Concluídas entram junto: sem elas a aba Feitas nunca mostraria um pedido
+        // atendido, e o card sumiria da tela ao ser concluído.
+        .in("status", ["Pendente", "Concluída"])
         .order("solicitado_em", { ascending: true }),
     ]);
 
@@ -307,8 +311,10 @@ export default function RecargasCelulares() {
         numero: f.numero,
         situacao: "Ativo",
         setor: f.setor,
-        // Sem data de recarga: é isso que faz statusRecarga() devolver "Pendente".
-        ultima_recarga: null,
+        // O status vem da data, igual a qualquer linha: sem data de recarga o
+        // statusRecarga() devolve "Pendente"; com ela, "Feito". Assim o card
+        // concluído aparece na aba Feitas em vez de sumir.
+        ultima_recarga: f.concluido_em ? String(f.concluido_em).slice(0, 10) : null,
         proxima_recarga: null,
         valor: f.valor,
         verificado: null,
@@ -368,11 +374,20 @@ export default function RecargasCelulares() {
     const semDuplicar = (r: Row) =>
       !naFila.has(String(r.numero || "").replace(/\D/g, "").slice(-8));
 
+    // A fila tambem se divide por status: concluida vai para Feitas, igual a uma linha.
+    // Antes `daFila` entrava inteira em Pendentes, entao um pedido concluido continuava
+    // aparecendo la e nunca chegava em Feitas.
+    const filaPendente = daFila.filter((x) => statusRecarga(x) === "Pendente");
+    const filaFeita = daFila.filter((x) => statusRecarga(x) === "Feito");
+
     const pendentes = [
-      ...daFila,
+      ...filaPendente,
       ...filtered.filter((r) => statusRecarga(r) === "Pendente" && semDuplicar(r)),
     ];
-    const feitas = filtered.filter((r) => statusRecarga(r) === "Feito");
+    const feitas = [
+      ...filaFeita,
+      ...filtered.filter((r) => statusRecarga(r) === "Feito" && semDuplicar(r)),
+    ];
     return { pendentes, feitas, todas: [...daFila, ...filtered.filter(semDuplicar)] };
   }, [filtered, solicitacoes, search, filtSetor, periodo]);
 
@@ -447,19 +462,50 @@ export default function RecargasCelulares() {
 
   // Card que veio da fila: concluir NAO e mexer na linha, e fechar o pedido — o que
   // inclui avisar o TakeatOS. Por isso vai pela Edge Function, que guarda o segredo.
-  const concluirSolicitacao = async (r: Row) => {
-    const { data, error } = await supabase.functions.invoke("recargas-concluir", {
-      body: { solicitacao_id: r.solicitacao_id, status: "Concluída" },
-    });
-    if (error) return toast.error("Não consegui concluir: " + error.message);
+  const alternarSolicitacao = async (r: Row) => {
+    const feita = statusRecarga(r) === "Feito";
+    const novo = feita ? "Pendente" : "Concluída";
 
-    setSolicitacoes((prev) => prev.filter((x) => x.solicitacao_id !== r.solicitacao_id));
+    const { data, error } = await supabase.functions.invoke("recargas-concluir", {
+      body: { solicitacao_id: r.solicitacao_id, status: novo },
+    });
+    if (error) return toast.error("Não consegui alterar: " + error.message);
+
+    // Não removemos da lista: o `load()` abaixo a traz de volta com o status novo.
+    // Sumir da tela faria parecer que o registro se perdeu.
     // Só afirmamos que o TakeatOS soube quando ele de fato respondeu.
+    const aviso = data?.avisado ? " O TakeatOS foi avisado." : " (não consegui avisar o TakeatOS ainda)";
     toast.success(
-      `Recarga de ${r.proprietario} concluída.` +
-        (data?.avisado ? " O TakeatOS foi avisado." : " (não consegui avisar o TakeatOS ainda)"),
+      (feita
+        ? `Recarga de ${r.proprietario} voltou para pendente.`
+        : `Recarga de ${r.proprietario} concluída.`) + aviso,
     );
     load();
+  };
+
+  // Cancelar tira o pedido da fila sem apagar a linha do cadastro — são coisas
+  // diferentes, e apagar a linha por causa de um pedido seria destrutivo demais.
+  const cancelarSolicitacao = async (r: Row) => {
+    const { error } = await supabase
+      .from("recargas_celulares_solicitacoes")
+      .update({ status: "Cancelada" })
+      .eq("id", r.solicitacao_id!);
+    if (error) return toast.error(error.message);
+    toast.success(`Solicitação de ${r.proprietario} cancelada.`);
+    load();
+  };
+
+  // O lápis num card da fila edita a LINHA correspondente, não o pedido: um pedido
+  // é um fato registrado, o cadastro é que se corrige. Casa pelos dígitos do número.
+  const editarLinhaDaSolicitacao = (r: Row) => {
+    const digitos = String(r.numero || "").replace(/\D/g, "").slice(-8);
+    const linha = rows.find(
+      (x) => digitos && String(x.numero || "").replace(/\D/g, "").endsWith(digitos),
+    );
+    if (!linha) {
+      return toast.error("Esse número não tem linha cadastrada aqui. Cadastre em Nova linha.");
+    }
+    abrirEdicao(linha);
   };
 
   const alternarFeita = async (r: Row) => {
@@ -921,7 +967,7 @@ export default function RecargasCelulares() {
                           ? "text-muted-foreground hover:text-foreground"
                           : "text-emerald-600 hover:text-emerald-700 dark:text-emerald-400",
                       )}
-                      onClick={() => (r.solicitacao_id ? concluirSolicitacao(r) : alternarFeita(r))}
+                      onClick={() => (r.solicitacao_id ? alternarSolicitacao(r) : alternarFeita(r))}
                       title={
                         stRecarga === "Feito"
                           ? "Desfazer — voltar para pendente"
@@ -943,16 +989,24 @@ export default function RecargasCelulares() {
                     >
                       <ScrollText className="h-3.5 w-3.5" />
                     </Button>
-                    {!r.solicitacao_id && (
-                      <>
-                        <Button size="icon" variant="ghost" className="h-7 w-7" onClick={() => abrirEdicao(r)} title="Editar">
-                          <Pencil className="h-3.5 w-3.5" />
-                        </Button>
-                        <Button size="icon" variant="ghost" className="h-7 w-7" onClick={() => remove(r.id)} title="Excluir">
-                          <Trash2 className="h-3.5 w-3.5" />
-                        </Button>
-                      </>
-                    )}
+                    <Button
+                      size="icon"
+                      variant="ghost"
+                      className="h-7 w-7"
+                      onClick={() => (r.solicitacao_id ? editarLinhaDaSolicitacao(r) : abrirEdicao(r))}
+                      title={r.solicitacao_id ? "Editar a linha deste número" : "Editar"}
+                    >
+                      <Pencil className="h-3.5 w-3.5" />
+                    </Button>
+                    <Button
+                      size="icon"
+                      variant="ghost"
+                      className="h-7 w-7"
+                      onClick={() => (r.solicitacao_id ? cancelarSolicitacao(r) : remove(r.id))}
+                      title={r.solicitacao_id ? "Cancelar a solicitação" : "Excluir"}
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                    </Button>
                   </div>
                 </div>
               </div>
@@ -1020,10 +1074,12 @@ export default function RecargasCelulares() {
                             size="icon"
                             variant="ghost"
                             className={cn("h-7 w-7", st === "Feito" ? "text-muted-foreground" : "text-emerald-600 dark:text-emerald-400")}
-                            onClick={() => (r.solicitacao_id ? concluirSolicitacao(r) : alternarFeita(r))}
+                            onClick={() => (r.solicitacao_id ? alternarSolicitacao(r) : alternarFeita(r))}
                             title={
                               r.solicitacao_id
-                                ? "Concluir a solicitação e avisar o TakeatOS"
+                                ? st === "Feito"
+                                  ? "Voltar para pendente e avisar o TakeatOS"
+                                  : "Concluir a solicitação e avisar o TakeatOS"
                                 : st === "Feito"
                                   ? "Desfazer — voltar para pendente"
                                   : "Marcar recarga como feita hoje"
@@ -1040,10 +1096,22 @@ export default function RecargasCelulares() {
                           >
                             <ScrollText className="h-3.5 w-3.5" />
                           </Button>
-                          <Button size="icon" variant="ghost" className="h-7 w-7" onClick={() => abrirEdicao(r)} title="Editar">
+                          <Button
+                            size="icon"
+                            variant="ghost"
+                            className="h-7 w-7"
+                            onClick={() => (r.solicitacao_id ? editarLinhaDaSolicitacao(r) : abrirEdicao(r))}
+                            title={r.solicitacao_id ? "Editar a linha deste número" : "Editar"}
+                          >
                             <Pencil className="h-3.5 w-3.5" />
                           </Button>
-                          <Button size="icon" variant="ghost" className="h-7 w-7" onClick={() => remove(r.id)} title="Excluir">
+                          <Button
+                            size="icon"
+                            variant="ghost"
+                            className="h-7 w-7"
+                            onClick={() => (r.solicitacao_id ? cancelarSolicitacao(r) : remove(r.id))}
+                            title={r.solicitacao_id ? "Cancelar a solicitação" : "Excluir"}
+                          >
                             <Trash2 className="h-3.5 w-3.5" />
                           </Button>
                         </div>

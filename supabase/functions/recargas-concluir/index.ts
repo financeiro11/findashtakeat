@@ -34,6 +34,10 @@ type Solicitacao = {
   origem_id: string | null;
   callback_url: string | null;
   status: string;
+  numero?: string | null;
+  colaborador?: string | null;
+  operadora?: string | null;
+  valor?: number | null;
 };
 
 // Avisa o TakeatOS. Nunca lança: a conclusão aqui já está gravada, e uma falha de rede
@@ -82,7 +86,7 @@ async function acharSolicitacao(
 
   const { data: abertas } = await supabase
     .from("recargas_celulares_solicitacoes")
-    .select("id, origem, origem_id, callback_url, status, numero")
+    .select("id, origem, origem_id, callback_url, status, numero, colaborador, operadora, valor")
     .eq("status", "Pendente")
     .order("solicitado_em", { ascending: true });
 
@@ -116,7 +120,7 @@ Deno.serve(async (req) => {
   if (solicitacao_id) {
     const { data } = await supabase
       .from("recargas_celulares_solicitacoes")
-      .select("id, origem, origem_id, callback_url, status")
+      .select("id, origem, origem_id, callback_url, status, numero, colaborador, operadora, valor")
       .eq("id", solicitacao_id)
       .maybeSingle();
     solicitacao = (data as Solicitacao) ?? null;
@@ -137,6 +141,53 @@ Deno.serve(async (req) => {
     })
     .eq("id", solicitacao.id);
   if (upErr) return json({ error: upErr.message }, 500);
+
+  // Concluir o pedido e registrar a recarga sao a mesma coisa do ponto de vista do
+  // Financeiro. Sem isto, a linha no cadastro continuaria dizendo que nunca foi
+  // recarregada e o historico do chip nao teria a entrada — o pedido fecharia sem
+  // deixar rastro de gasto.
+  if (novoStatus === "Concluída") {
+    try {
+      const hoje = agora.slice(0, 10);
+      const digitos = String(solicitacao.numero || "").replace(/\D/g, "").slice(-8);
+      const { data: linhas } = await supabase
+        .from("recargas_celulares")
+        .select("id, numero, proprietario, valor");
+      const alvo = (linhas || []).find(
+        (l) => digitos && String(l.numero || "").replace(/\D/g, "").endsWith(digitos),
+      );
+
+      if (alvo) {
+        await supabase
+          .from("recargas_celulares")
+          .update({ ultima_recarga: hoje })
+          .eq("id", alvo.id);
+
+        // Nao duplica se a mesma linha ja tiver recarga registrada hoje.
+        const { data: jaTem } = await supabase
+          .from("recargas_celulares_historico")
+          .select("id")
+          .eq("linha_id", alvo.id)
+          .eq("recarregado_em", hoje)
+          .maybeSingle();
+
+        if (!jaTem) {
+          await supabase.from("recargas_celulares_historico").insert({
+            linha_id: alvo.id,
+            colaborador: solicitacao.colaborador ?? alvo.proprietario,
+            numero: solicitacao.numero ?? alvo.numero,
+            operadora: solicitacao.operadora ?? null,
+            valor: Number(solicitacao.valor ?? alvo.valor ?? 0),
+            recarregado_em: hoje,
+            solicitacao_id: solicitacao.id,
+          });
+        }
+      }
+    } catch (e) {
+      // O pedido ja esta concluido; o registro na linha e conveniencia.
+      console.warn("[recargas-concluir] registro na linha falhou", (e as Error)?.message);
+    }
+  }
 
   const aviso = await avisarOrigem(solicitacao, novoStatus);
 

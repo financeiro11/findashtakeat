@@ -282,8 +282,12 @@ export default function RecargasCelulares() {
       supabase.from("recargas_celulares").select("*").order("proprietario"),
       supabase
         .from("recargas_celulares_solicitacoes")
-        .select("id, colaborador, numero, operadora, setor, valor, solicitado_em, posicao_do_dia")
-        .eq("status", "Pendente")
+        .select(
+          "id, colaborador, numero, operadora, setor, valor, solicitado_em, posicao_do_dia, status, concluido_em",
+        )
+        // Concluídas entram junto: sem elas a aba Feitas nunca mostraria um pedido
+        // atendido, e o card sumiria da tela ao ser concluído.
+        .in("status", ["Pendente", "Concluída"])
         .order("solicitado_em", { ascending: true }),
     ]);
 
@@ -307,8 +311,10 @@ export default function RecargasCelulares() {
         numero: f.numero,
         situacao: "Ativo",
         setor: f.setor,
-        // Sem data de recarga: é isso que faz statusRecarga() devolver "Pendente".
-        ultima_recarga: null,
+        // O status vem da data, igual a qualquer linha: sem data de recarga o
+        // statusRecarga() devolve "Pendente"; com ela, "Feito". Assim o card
+        // concluído aparece na aba Feitas em vez de sumir.
+        ultima_recarga: f.concluido_em ? String(f.concluido_em).slice(0, 10) : null,
         proxima_recarga: null,
         valor: f.valor,
         verificado: null,
@@ -453,7 +459,8 @@ export default function RecargasCelulares() {
     });
     if (error) return toast.error("Não consegui concluir: " + error.message);
 
-    setSolicitacoes((prev) => prev.filter((x) => x.solicitacao_id !== r.solicitacao_id));
+    // Não removemos da lista: o `load()` abaixo a traz de volta já concluída, e ela
+    // aparece em Feitas. Sumir da tela faria parecer que o registro se perdeu.
     // Só afirmamos que o TakeatOS soube quando ele de fato respondeu.
     toast.success(
       `Recarga de ${r.proprietario} concluída.` +
@@ -922,6 +929,7 @@ export default function RecargasCelulares() {
                           : "text-emerald-600 hover:text-emerald-700 dark:text-emerald-400",
                       )}
                       onClick={() => (r.solicitacao_id ? concluirSolicitacao(r) : alternarFeita(r))}
+                      disabled={!!r.solicitacao_id && stRecarga === "Feito"}
                       title={
                         stRecarga === "Feito"
                           ? "Desfazer — voltar para pendente"

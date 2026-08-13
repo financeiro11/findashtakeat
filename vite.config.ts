@@ -47,13 +47,52 @@ export default defineConfig(({ mode }) => ({
         // silêncio e o app abriria sempre pela rede.
         maximumFileSizeToCacheInBytes: 8 * 1024 * 1024,
         cleanupOutdatedCaches: true,
-        navigateFallback: "/index.html",
+        /* `undefined` EXPLÍCITO, e não a ausência da chave: o vite-plugin-pwa
+         * tem `navigateFallback: "index.html"` no seu `defaultWorkbox` e faz
+         * `Object.assign({}, default, seu)` — omitir a chave herda o padrão, e a
+         * rota voltava. Passando a chave com `undefined`, o assign sobrescreve. */
+        navigateFallback: undefined,
+        /* SEM `navigateFallback` DE PROPÓSITO. Ele registra uma NavigationRoute
+         * servida pelo index.html do PRECACHE — e o Workbox a registra ANTES de
+         * qualquer `runtimeCaching`, então ela vencia sempre e não havia regra
+         * que a contornasse. Quem cuida da navegação agora é a regra "casca" lá
+         * embaixo, que busca na rede e cai no cache quando não há rede.
+         *
+         * O que se perde: link direto para uma tela funda (/demonstracoes/dre)
+         * aberto OFFLINE deixa de resolver — só a raiz fica guardada. É um preço
+         * pequeno num app em que toda tela lê o Supabase, que é NetworkOnly:
+         * offline ele não mostraria número nenhum de qualquer jeito. */
         runtimeCaching: [
           {
             // Supabase (REST, Auth, Realtime, Edge Functions) SEMPRE pela rede.
             // NetworkOnly não guarda nem a resposta nem a requisição.
             urlPattern: ({ url }) => url.hostname.endsWith(".supabase.co"),
             handler: "NetworkOnly",
+          },
+          {
+            /* A CASCA VEM DA REDE PRIMEIRO — e é isto que faz um deploy aparecer.
+             *
+             * Só o `navigateFallback` acima, a navegação era servida SEMPRE pelo
+             * index.html do precache, que aponta para os bundles com o hash
+             * ANTIGO. Na prática: a primeira visita depois de cada deploy abria
+             * garantidamente o código velho, e a nova só entrava na visita
+             * seguinte — se o precache (6 MB) tivesse terminado antes de a aba
+             * fechar. Quem recarregava e fechava rápido ficava preso na versão
+             * de semanas atrás sem nada acusar.
+             *
+             * O index.html tem 1 kB e o servidor já o manda com `no-cache`:
+             * buscá-lo na rede não custa nada e devolve sempre os hashes certos.
+             * O cache continua atrás, para o app abrir offline — e é por isso
+             * que é NetworkFirst e não NetworkOnly. */
+            urlPattern: ({ request }) => request.mode === "navigate",
+            handler: "NetworkFirst",
+            options: {
+              cacheName: "casca",
+              // Rede lenta não pode virar tela branca: passou disso, abre pelo
+              // cache e o service worker atualiza por baixo.
+              networkTimeoutSeconds: 4,
+              expiration: { maxEntries: 4 },
+            },
           },
         ],
       },

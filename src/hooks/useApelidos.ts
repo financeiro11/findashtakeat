@@ -220,6 +220,92 @@ export async function salvarApelido(
   return { error: null };
 }
 
+/**
+ * Grava vários apelidos de uma vez — o "o nome já serve" da fila.
+ *
+ * Não é um laço em cima de `salvarApelido`: aquele recarrega o cadastro INTEIRO
+ * ao fim de cada gravação, e marcar quarenta linhas viraria quarenta releituras
+ * da tabela com a tela piscando a cada uma. Aqui os que ainda não existem entram
+ * num `insert` só, os que já existem são atualizados em paralelo, e a releitura
+ * acontece uma vez, no fim.
+ *
+ * Só mexe no `apelido` de quem já está cadastrado: `o_que_e` e `dono_id` que
+ * alguém tenha escrito antes não são apagados por um gesto em lote.
+ *
+ * Espera a lista já resolvida por `planoNomeQueJaServe` — a dedução da grafia e o
+ * corte dos nomes curtos ficam do lado puro, que é onde dá para testar.
+ */
+export async function salvarApelidosEmLote(
+  itens: { nome: string; apelido: string; documento?: string | null; categoria?: string | null; origem?: string | null }[],
+): Promise<{ gravados: number; erros: string[] }> {
+  await garantirCarga();
+
+  const agora = new Date().toISOString();
+  const erros: string[] = [];
+  const novos: Record<string, unknown>[] = [];
+  const atualizacoes: { id: string; apelido: string }[] = [];
+  const aliases: Record<string, unknown>[] = [];
+
+  for (const it of itens ?? []) {
+    const nome = String(it?.nome ?? "").trim();
+    const apelido = String(it?.apelido ?? "").trim();
+    const chave = chaveContraparte(nome);
+    if (chave.length < MIN_CHAVE || apelido.length < 2) {
+      erros.push(`"${nome}": nome curto demais para casar com segurança.`);
+      continue;
+    }
+
+    const existente = acharExistente(nome, it.documento);
+    if (existente) {
+      atualizacoes.push({ id: existente.id, apelido });
+      // Mesma regra do caminho de uma linha só: grafia diferente da canônica
+      // vira alias, para o apelido valer nas duas formas.
+      if (chaveContraparte(existente.nome) !== chave
+        && !_grafias.some((g) => g.fornecedor_id === existente.id && chaveContraparte(g.alias) === chave)) {
+        aliases.push({
+          fornecedor_id: existente.id,
+          alias: nome,
+          fonte: it.origem ?? "manual",
+          documento_norm: soDigitos(it.documento) || null,
+          origem: "manual",
+        });
+      }
+    } else {
+      novos.push({
+        nome,
+        documento: it.documento?.trim() || null,
+        categoria: it.categoria?.trim() || null,
+        origem: it.origem ?? "manual",
+        apelido,
+        atualizado_em: agora,
+      });
+    }
+  }
+
+  let gravados = 0;
+
+  if (novos.length) {
+    const { error } = await db.from("lib_fornecedores").insert(novos);
+    if (error) erros.push(error.message);
+    else gravados += novos.length;
+  }
+
+  const respostas = await Promise.all(
+    atualizacoes.map(({ id, apelido }) =>
+      db.from("lib_fornecedores").update({ apelido, atualizado_em: agora }).eq("id", id)),
+  );
+  for (const r of respostas) {
+    if (r?.error) erros.push(r.error.message);
+    else gravados++;
+  }
+
+  // Alias é acessório: sem ele o apelido continua valendo pela chave canônica.
+  if (aliases.length) await db.from("contrapartes_alias").insert(aliases);
+
+  await recarregarApelidos();
+  return { gravados, erros };
+}
+
 /** Tira o apelido — o fornecedor continua no cadastro. */
 export async function removerApelido(id: string): Promise<{ error: string | null }> {
   const { error } = await db.from("lib_fornecedores")

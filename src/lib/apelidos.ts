@@ -199,6 +199,52 @@ export type Candidato = {
 };
 
 /* -------------------------------------------------------------------------
+ * "O nome já serve"
+ * ---------------------------------------------------------------------- */
+
+export type NomeQueJaServe = { candidato: Candidato; apelido: string };
+
+/**
+ * O que seria gravado ao dizer que o próprio nome do extrato já é o apelido.
+ *
+ * Boa parte da fila não abre debate: JUSBRASIL é o Jusbrasil, UBER é a Uber.
+ * Mandar cada uma dessas ao painel é cobrar digitação de quem já sabe a
+ * resposta — e era isso que fazia uma fila de 322 linhas parecer intransponível.
+ *
+ * A grafia gravada é a de `sugestaoDeApelido`, e não o nome cru: é este texto
+ * que a DRE passa a mostrar, e "JUSBRASIL" gritando no meio da linha não é o que
+ * se quer ler. O nome cru continua na linha de apoio, que é o que se procura no
+ * Omie.
+ *
+ * Devolve as três saídas porque as três importam na tela: quem grava, quem veio
+ * repetida na própria seleção (a mesma contraparte pelo cartão e pelo Omie —
+ * gravar as duas criaria dois cadastros com a mesma chave) e quem tem nome curto
+ * demais para casar sozinha. Essa última o `salvarApelido` recusaria uma a uma; em
+ * lote a recusa precisa ser dita antes, senão some no meio do gesto.
+ */
+export function planoNomeQueJaServe(candidatos: Candidato[]): {
+  gravar: NomeQueJaServe[];
+  repetidas: Candidato[];
+  curtas: Candidato[];
+} {
+  const gravar: NomeQueJaServe[] = [];
+  const repetidas: Candidato[] = [];
+  const curtas: Candidato[] = [];
+  const vistas = new Set<string>();
+
+  for (const c of candidatos ?? []) {
+    const chave = chaveContraparte(c?.nome);
+    const apelido = sugestaoDeApelido(c?.nome);
+    if (chave.length < MIN_CHAVE || apelido.trim().length < 2) { curtas.push(c); continue; }
+    if (vistas.has(chave)) { repetidas.push(c); continue; }
+    vistas.add(chave);
+    gravar.push({ candidato: c, apelido });
+  }
+
+  return { gravar, repetidas, curtas };
+}
+
+/* -------------------------------------------------------------------------
  * A janela de tempo
  * ---------------------------------------------------------------------- */
 

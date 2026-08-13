@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
-  Search, CreditCard, Building2, RefreshCw, Loader2, Check, Pencil, Tags, X,
+  Search, CreditCard, Building2, RefreshCw, Loader2, Check, Pencil, Tags, X, Equal,
 } from "lucide-react";
 import { toast } from "sonner";
 import { supabase } from "@/integrations/supabase/client";
@@ -8,16 +8,19 @@ import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { comValorExato } from "@/components/ValorExato";
 import { valorExato } from "@/lib/valor";
 import { normalize } from "@/lib/normalize";
 import {
   filaDeAnonimos, cobertura, apelidoDe, chaveContraparte,
-  intervaloDaJanela, rotuloMesFechado,
+  intervaloDaJanela, rotuloMesFechado, planoNomeQueJaServe, sugestaoDeApelido,
   type Candidato, type Janela,
 } from "@/lib/apelidos";
-import { useApelidos, useApelidosCadastro, salvarApelido } from "@/hooks/useApelidos";
+import {
+  useApelidos, useApelidosCadastro, salvarApelido, salvarApelidosEmLote,
+} from "@/hooks/useApelidos";
 import { PainelNomear, type Alvo } from "@/components/parametrizacao/PainelNomear";
 import {
   CabecalhoFiltravel, FaixaMeses, FaixaNumero, ListaMarcavel,
@@ -58,6 +61,9 @@ function brlCurtoStr(v: number | null | undefined): string {
   return `R$ ${n.toLocaleString("pt-BR", { maximumFractionDigits: 0 })}`;
 }
 const brlCurto = (v: number | null | undefined) => comValorExato(v ?? 0, brlCurtoStr(v), { casas: 2 });
+
+/** A identidade da linha na fila — a mesma chave que o React usa. */
+const chaveLinha = (c: Candidato) => `${c.origem}:${c.nome}`;
 
 const mesCurto = (d: string | null) =>
   d ? new Date(`${d}T12:00:00`).toLocaleDateString("pt-BR", { month: "short", year: "2-digit" }).replace(".", "") : "";
@@ -134,6 +140,9 @@ export default function Parametrizacao() {
   const [evidencias, setEvidencias] = useState<Map<string, Evidencia>>(new Map());
   const [sincronizando, setSincronizando] = useState(false);
   const [aceitando, setAceitando] = useState<string | null>(null);
+  /* As linhas cujo nome já serve como apelido, esperando o gesto em lote. */
+  const [marcadas, setMarcadas] = useState<Set<string>>(() => new Set());
+  const [nomeando, setNomeando] = useState(false);
 
   const carregarEvidencias = useCallback(async () => {
     const { data } = await db.from("parametrizacao_evidencias")
@@ -220,6 +229,100 @@ export default function Parametrizacao() {
     setFiltro((f) => ({ ...f, categorias: alternarNoSet(f.categorias, v) }));
   const alternarPlanilha = (v: string) =>
     setFiltro((f) => ({ ...f, planilha: alternarNoSet(f.planilha, v as EstadoPlanilha) }));
+
+  /* -------------------------------------------------------------------------
+   * "O nome já serve"
+   *
+   * Metade da fila não abre debate — JUSBRASIL é o Jusbrasil. O caminho normal
+   * (abrir o painel, ler os lançamentos, digitar) é o certo para "JIM.COM GRUPO
+   * SOUZA" e desproporcional para essas. Aqui elas são marcadas ao correr o olho
+   * e gravadas de uma vez.
+   *
+   * A marcação sai da FILA e não da lista visível: trocar um filtro no meio da
+   * varredura não pode jogar fora o que já foi marcado. O que some da fila
+   * (porque acabou de ganhar nome) desaparece da conta sozinho.
+   * ---------------------------------------------------------------------- */
+  const marcados = useMemo(
+    () => fila.filter((c) => marcadas.has(chaveLinha(c))),
+    [fila, marcadas],
+  );
+
+  /* O que vai ser gravado, escrito por extenso na barra. A grafia muda (a caixa
+     é arrumada e o LTDA sai), então mostrar o resultado antes evita a surpresa
+     de ver "Movida Locacao" onde se marcou "MOVIDA LOCACAO LTDA". */
+  const previaMarcadas = useMemo(() => {
+    const nomes = planoNomeQueJaServe(marcados).gravar.map((g) => `"${g.apelido}"`);
+    const primeiros = nomes.slice(0, 3).join(", ");
+    return nomes.length > 3 ? `${primeiros} e mais ${nomes.length - 3}` : primeiros;
+  }, [marcados]);
+
+  const alternarMarcada = (c: Candidato) =>
+    setMarcadas((s) => alternarNoSet(s, chaveLinha(c)));
+
+  const todasVisiveisMarcadas =
+    filaVisivel.length > 0 && filaVisivel.every((c) => marcadas.has(chaveLinha(c)));
+
+  /* O cabeçalho marca e desmarca o que está na tela, nunca a fila inteira: com
+     um filtro ligado, marcar 322 linhas de uma vez seria marcar o que não se
+     está vendo. */
+  const alternarTodasVisiveis = () =>
+    setMarcadas((s) => {
+      const n = new Set(s);
+      for (const c of filaVisivel) {
+        if (todasVisiveisMarcadas) n.delete(chaveLinha(c));
+        else n.add(chaveLinha(c));
+      }
+      return n;
+    });
+
+  const nomearComoOExtrato = async (alvos: Candidato[]) => {
+    const plano = planoNomeQueJaServe(alvos);
+    if (!plano.gravar.length) {
+      toast.error(
+        "Nome curto demais para casar com segurança. Abra a linha e junte-a a uma contraparte que já existe.",
+      );
+      return;
+    }
+
+    setNomeando(true);
+    const { gravados, erros } = await salvarApelidosEmLote(
+      plano.gravar.map(({ candidato, apelido }) => ({
+        nome: candidato.nome,
+        apelido,
+        documento: candidato.documento,
+        categoria: candidato.categoria,
+        origem: candidato.origem,
+      })),
+    );
+    setNomeando(false);
+
+    /* Desmarca só o que este gesto resolveu — as curtas continuam marcadas,
+       porque ainda pedem uma decisão, e o "=" de uma linha solta não pode levar
+       junto a seleção que alguém estava montando. */
+    const resolvidas = new Set([
+      ...plano.gravar.map((g) => chaveLinha(g.candidato)),
+      ...plano.repetidas.map(chaveLinha),
+    ]);
+    setMarcadas((s) => {
+      const n = new Set(s);
+      for (const k of resolvidas) n.delete(k);
+      return n;
+    });
+
+    if (gravados) {
+      toast.success(
+        gravados === 1
+          ? `"${plano.gravar[0].apelido}" agora é o nome que aparece na DRE e na DFC.`
+          : `${gravados} contrapartes passam a aparecer com o próprio nome.`,
+      );
+    }
+    if (plano.curtas.length) {
+      toast.warning(
+        `${plano.curtas.length} ${plano.curtas.length === 1 ? "ficou" : "ficaram"} de fora: nome curto demais para casar sozinho.`,
+      );
+    }
+    if (erros.length) toast.error(`Não gravou tudo: ${erros[0]}`);
+  };
 
   /* As nomeadas: o cadastro cruzado com o movimento, para mostrar quanto cada
      apelido está cobrindo de verdade. */
@@ -397,11 +500,13 @@ export default function Parametrizacao() {
         <TabsContent value="fila" className="mt-3">
           <Card className="overflow-hidden">
             <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border px-4 py-2.5">
-              <p className="text-[11.5px] text-muted-foreground">
+              <p className="max-w-3xl text-[11.5px] text-muted-foreground">
                 Primeiro <strong className="font-medium text-foreground">os nomes que não dizem o que são</strong> —
                 categoria genérica ou lojista cortado pelo extrato. Não é por valor: o maior gasto
                 costuma ser o mais óbvio. Transferência entre contas próprias e pagamento de fatura
-                já ficam de fora.
+                já ficam de fora.{" "}
+                <strong className="font-medium text-foreground">O que já se explica sozinho</strong> (Jusbrasil,
+                Uber) não precisa do painel: marque a caixinha e nomeie de uma vez pelo próprio nome.
               </p>
               <Button size="sm" variant="outline" className="h-7 gap-1.5 text-[11.5px]"
                 onClick={sincronizar} disabled={sincronizando}
@@ -457,7 +562,19 @@ export default function Parametrizacao() {
                     {/* Cada coluna carrega o próprio filtro; a de Contraparte
                         não precisa, a busca lá em cima é dela. */}
                     <tr className="border-b border-border text-left text-[10.5px] uppercase tracking-wide text-muted-foreground">
-                      <th className="px-4 py-2 font-medium">Contraparte</th>
+                      <th className="w-8 pl-4 pr-1 py-2">
+                        {/* Borda apagada, e não a vermelha do padrão: são 322
+                            caixinhas na tela ao mesmo tempo — acesa, a coluna
+                            grita mais que a lista. Marcada volta a ser da marca. */}
+                        <Checkbox
+                          checked={todasVisiveisMarcadas}
+                          onCheckedChange={alternarTodasVisiveis}
+                          aria-label="Marcar todas as que estão na tela"
+                          title="Marcar todas as que estão na tela"
+                          className="border-muted-foreground/40 data-[state=checked]:border-primary"
+                        />
+                      </th>
+                      <th className="px-2 py-2 font-medium">Contraparte</th>
                       <th className="px-2 py-2 font-medium">
                         <CabecalhoFiltravel
                           rotulo="Categoria" largura="w-80"
@@ -531,6 +648,8 @@ export default function Parametrizacao() {
                           />
                         </CabecalhoFiltravel>
                       </th>
+                      {/* O atalho de uma linha só — aparece no hover dela. */}
+                      <th className="w-8 px-2 py-2" />
                     </tr>
                   </thead>
                   <tbody>
@@ -539,11 +658,23 @@ export default function Parametrizacao() {
                       const Icone = c.origem === "cartao" ? CreditCard : Building2;
                       return (
                         <tr
-                          key={`${c.origem}:${c.nome}`}
-                          className="cursor-pointer border-b border-border/60 align-top last:border-0 hover:bg-muted/40"
+                          key={chaveLinha(c)}
+                          className="group cursor-pointer border-b border-border/60 align-top last:border-0 hover:bg-muted/40"
                           onClick={() => abrir(c)}
                         >
-                          <td className="px-4 py-2">
+                          {/* A caixinha não abre o painel: clicar nela é dizer
+                              "esta eu já sei", e o painel é o caminho de quem
+                              não sabe. */}
+                          <td className="py-2 pl-4 pr-1" onClick={(e) => e.stopPropagation()}>
+                            <Checkbox
+                              checked={marcadas.has(chaveLinha(c))}
+                              onCheckedChange={() => alternarMarcada(c)}
+                              aria-label={`O nome de ${c.nome} já serve`}
+                              title="O nome já serve como apelido"
+                              className="mt-0.5 border-muted-foreground/40 data-[state=checked]:border-primary"
+                            />
+                          </td>
+                          <td className="px-2 py-2">
                             <div className="flex items-start gap-1.5">
                               <Icone className="mt-0.5 h-3 w-3 shrink-0 text-muted-foreground" />
                               <div className="min-w-0">
@@ -619,6 +750,19 @@ export default function Parametrizacao() {
                               <span className="text-[11px] text-muted-foreground">Nomear…</span>
                             )}
                           </td>
+                          {/* Uma linha só, sem passar pela seleção: o "=" grava
+                              na hora o nome que já está escrito ao lado. */}
+                          <td className="px-2 py-2 text-right" onClick={(e) => e.stopPropagation()}>
+                            <Button
+                              size="sm" variant="ghost"
+                              className="ghost-icone ghost-icone-sm opacity-0 transition group-hover:opacity-100 focus-visible:opacity-100"
+                              title={`O nome já serve — nomear como "${sugestaoDeApelido(c.nome)}"`}
+                              disabled={nomeando}
+                              onClick={() => void nomearComoOExtrato([c])}
+                            >
+                              <Equal className="h-3.5 w-3.5" />
+                            </Button>
+                          </td>
                         </tr>
                       );
                     })}
@@ -684,6 +828,39 @@ export default function Parametrizacao() {
           </Card>
         </TabsContent>
       </Tabs>
+
+      {/* ---------------- a barra da seleção ----------------
+          Flutuante e presa ao rodapé da janela porque a fila tem 322 linhas: a
+          barra tem de continuar ao alcance depois de rolar meia lista. */}
+      {marcados.length > 0 && (
+        <div className="pointer-events-none fixed inset-x-0 bottom-5 z-40 flex justify-center px-4">
+          <div className="pointer-events-auto flex max-w-full items-center gap-3 rounded-full border border-border bg-background/95 py-1.5 pl-4 pr-2 shadow-lg backdrop-blur">
+            <span className="shrink-0 whitespace-nowrap text-[12px] font-medium">
+              {marcados.length} marcada{marcados.length === 1 ? "" : "s"}
+            </span>
+            {previaMarcadas && (
+              <span className="hidden min-w-0 truncate text-[11.5px] text-muted-foreground sm:block">
+                vira {previaMarcadas}
+              </span>
+            )}
+            <Button
+              size="sm" className="h-7 shrink-0 gap-1.5 text-[12px]"
+              disabled={nomeando}
+              onClick={() => void nomearComoOExtrato(marcados)}
+            >
+              {nomeando ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Equal className="h-3.5 w-3.5" />}
+              Nomear iguais ao extrato
+            </Button>
+            <Button
+              size="sm" variant="ghost" className="ghost-icone ghost-icone-sm shrink-0"
+              title="Desmarcar tudo"
+              onClick={() => setMarcadas(new Set())}
+            >
+              <X className="h-3.5 w-3.5" />
+            </Button>
+          </div>
+        </div>
+      )}
 
       <PainelNomear
         alvo={alvo}

@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   montarMapaApelidos, apelidoDe, nomeExibido, apelidosNoTexto, jaTemApelido,
   sugestaoDeApelido, enigmatica, presenca, filaDeAnonimos, cobertura,
-  intervaloDaJanela, rotuloMesFechado,
+  intervaloDaJanela, rotuloMesFechado, planoNomeQueJaServe,
   MAPA_APELIDOS_VAZIO, type Apelido, type Candidato,
 } from "@/lib/apelidos";
 
@@ -231,5 +231,39 @@ describe("cobertura", () => {
 
   it("não divide por zero sem candidatos", () => {
     expect(cobertura([], mapa).pct).toBe(0);
+  });
+});
+describe("o nome que já serve", () => {
+  const c = (nome: string, origem = "cartao"): Candidato => ({
+    origem, nome, documento: null, categoria: null, cidade: null,
+    lancamentos: 1, total: 100, primeira: null, ultima: null,
+  });
+
+  // A grafia gravada é a arrumada, não o berro do extrato: é este texto que a
+  // DRE vai mostrar.
+  it("grava com a caixa arrumada e sem sufixo societário", () => {
+    const p = planoNomeQueJaServe([c("JUSBRASIL"), c("MOVIDA LOCACAO LTDA", "omie")]);
+    expect(p.gravar.map((g) => g.apelido)).toEqual(["Jusbrasil", "Movida Locacao"]);
+  });
+
+  // A mesma contraparte pode vir duas vezes — uma linha do cartão e outra do
+  // Omie. Gravar as duas criaria dois cadastros com a mesma chave; a segunda sai
+  // da fila junto com a primeira, porque é a chave que a tira de lá.
+  it("grava uma vez só quando a mesma contraparte vem pelos dois lados", () => {
+    const p = planoNomeQueJaServe([c("UBER"), c("Uber Ltda", "omie")]);
+    expect(p.gravar).toHaveLength(1);
+    expect(p.repetidas).toHaveLength(1);
+  });
+
+  // Nome curto casaria palavra comum no meio de uma frase. Em lote a recusa
+  // precisa vir antes, senão some no meio do gesto.
+  it("separa o que é curto demais para casar sozinho", () => {
+    const p = planoNomeQueJaServe([c("DM"), c("JUSBRASIL")]);
+    expect(p.curtas.map((x) => x.nome)).toEqual(["DM"]);
+    expect(p.gravar.map((g) => g.apelido)).toEqual(["Jusbrasil"]);
+  });
+
+  it("não quebra com lista vazia", () => {
+    expect(planoNomeQueJaServe([])).toEqual({ gravar: [], repetidas: [], curtas: [] });
   });
 });

@@ -142,28 +142,24 @@ Deno.serve(async (req) => {
     .eq("id", solicitacao.id);
   if (upErr) return json({ error: upErr.message }, 500);
 
-  // Concluir o pedido e registrar a recarga sao a mesma coisa do ponto de vista do
-  // Financeiro. Sem isto, a linha no cadastro continuaria dizendo que nunca foi
-  // recarregada e o historico do chip nao teria a entrada — o pedido fecharia sem
-  // deixar rastro de gasto.
-  if (novoStatus === "Concluída") {
-    try {
-      const hoje = agora.slice(0, 10);
-      const digitos = String(solicitacao.numero || "").replace(/\D/g, "").slice(-8);
-      const { data: linhas } = await supabase
-        .from("recargas_celulares")
-        .select("id, numero, proprietario, valor");
-      const alvo = (linhas || []).find(
-        (l) => digitos && String(l.numero || "").replace(/\D/g, "").endsWith(digitos),
-      );
+  // A recarga acompanha o pedido nos DOIS sentidos. Concluir registra; reverter desfaz.
+  // Sem o segundo, a linha continuaria dizendo que foi recarregada e o histórico teria
+  // uma entrada de uma recarga que não aconteceu — o gasto apareceria em relatório.
+  try {
+    const { data: linhas } = await supabase
+      .from("recargas_celulares")
+      .select("id, numero, proprietario, valor");
+    const digitos = String(solicitacao.numero || "").replace(/\D/g, "").slice(-8);
+    const alvo = digitos
+      ? (linhas || []).find((l) => String(l.numero || "").replace(/\D/g, "").endsWith(digitos))
+      : null;
 
-      if (alvo) {
-        await supabase
-          .from("recargas_celulares")
-          .update({ ultima_recarga: hoje })
-          .eq("id", alvo.id);
+    if (alvo) {
+      if (novoStatus === "Concluída") {
+        const hoje = agora.slice(0, 10);
+        await supabase.from("recargas_celulares").update({ ultima_recarga: hoje }).eq("id", alvo.id);
 
-        // Nao duplica se a mesma linha ja tiver recarga registrada hoje.
+        // Não duplica se a mesma linha já tiver recarga registrada hoje.
         const { data: jaTem } = await supabase
           .from("recargas_celulares_historico")
           .select("id")
@@ -182,11 +178,31 @@ Deno.serve(async (req) => {
             solicitacao_id: solicitacao.id,
           });
         }
+      } else {
+        // Apaga só a entrada deste pedido — recargas anteriores da linha ficam.
+        await supabase
+          .from("recargas_celulares_historico")
+          .delete()
+          .eq("solicitacao_id", solicitacao.id);
+
+        // A data volta a ser a da recarga anterior, se houver; senão fica vazia.
+        const { data: anterior } = await supabase
+          .from("recargas_celulares_historico")
+          .select("recarregado_em")
+          .eq("linha_id", alvo.id)
+          .order("recarregado_em", { ascending: false })
+          .limit(1)
+          .maybeSingle();
+
+        await supabase
+          .from("recargas_celulares")
+          .update({ ultima_recarga: anterior?.recarregado_em ?? null })
+          .eq("id", alvo.id);
       }
-    } catch (e) {
-      // O pedido ja esta concluido; o registro na linha e conveniencia.
-      console.warn("[recargas-concluir] registro na linha falhou", (e as Error)?.message);
     }
+  } catch (e) {
+    // O status do pedido já está gravado; o registro na linha é conveniência.
+    console.warn("[recargas-concluir] registro na linha falhou", (e as Error)?.message);
   }
 
   const aviso = await avisarOrigem(solicitacao, novoStatus);

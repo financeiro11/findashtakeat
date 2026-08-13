@@ -13,6 +13,10 @@
  * OCR (aí sim com modelo) só entra na outra pasta, a das fotos do WhatsApp,
  * onde não existe texto nenhum para ancorar.
  *
+ * GÊMEO EM DENO de `src/lib/notaFiscal.ts`, cópia verbatim (o arquivo não
+ * importa nada). Quem tem teste é o original — 16 casos sobre o texto que o
+ * PRÓPRIO `unpdf` extrai das notas reais.
+ *
  * UM PDF PODE TER VÁRIAS NOTAS. Um pedido do Mercado Livre com dois vendedores
  * gera dois DANFEs no mesmo arquivo — `NF_compra_2000014180117577.pdf` tem a
  * MULTIMIX (R$ 135,50) e a DEPÓSITO DOS COPOS (R$ 26,00). Ler o arquivo como se

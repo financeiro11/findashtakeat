@@ -104,7 +104,7 @@ begin
 
   select nome into v_nome from public.profiles where user_id = auth.uid();
 
-  insert into public.demonstracoes_lancamento_nota
+  insert into public.demonstracoes_lancamento_nota as n
     (cod_titulo, texto, origem_tipo, origem_rubrica, origem_mes, contraparte, autor, autor_nome)
   values
     (p_cod_titulo, v_texto, p_tipo, p_rubrica, p_mes, p_contraparte, auth.uid(), v_nome)
@@ -112,10 +112,10 @@ begin
     set texto          = excluded.texto,
         -- A origem só é reescrita quando vem preenchida: editar a nota de outra
         -- tela não deve apagar de onde ela nasceu.
-        origem_tipo    = coalesce(excluded.origem_tipo,    public.demonstracoes_lancamento_nota.origem_tipo),
-        origem_rubrica = coalesce(excluded.origem_rubrica, public.demonstracoes_lancamento_nota.origem_rubrica),
-        origem_mes     = coalesce(excluded.origem_mes,     public.demonstracoes_lancamento_nota.origem_mes),
-        contraparte    = coalesce(excluded.contraparte,    public.demonstracoes_lancamento_nota.contraparte),
+        origem_tipo    = coalesce(excluded.origem_tipo,    n.origem_tipo),
+        origem_rubrica = coalesce(excluded.origem_rubrica, n.origem_rubrica),
+        origem_mes     = coalesce(excluded.origem_mes,     n.origem_mes),
+        contraparte    = coalesce(excluded.contraparte,    n.contraparte),
         autor          = excluded.autor,
         autor_nome     = excluded.autor_nome,
         atualizado_em  = now()
@@ -126,5 +126,9 @@ end;
 $$;
 
 -- Toda função nova em `public` nasce chamável pela anon key, que está no bundle
--- do front (ver 20260804160100). Esta escreve — fecha.
+-- do front (ver 20260804160100). Esta escreve — fecha. Os DOIS revokes: o
+-- primeiro tira o EXECUTE que toda função nova ganha para o pseudo-papel PUBLIC
+-- (é ele que fazia `has_function_privilege('anon', …)` continuar verdadeiro
+-- depois do segundo), o segundo tira o grant que o Supabase dá a `anon`.
+revoke execute on function public.lancamento_nota_salvar(text, text, text, text, text, text) from public;
 revoke execute on function public.lancamento_nota_salvar(text, text, text, text, text, text) from anon;

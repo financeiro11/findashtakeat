@@ -1,7 +1,7 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Loader2, TriangleAlert, Check, FileText, Users, Undo2, ArrowRightLeft, CreditCard, ChevronDown,
-  Paperclip,
+  Paperclip, MessageSquareText,
 } from "lucide-react";
 import { toast } from "sonner";
 import { supabase } from "@/integrations/supabase/client";
@@ -27,6 +27,7 @@ import { PonteVariacao } from "@/components/demonstracoes/PonteVariacao";
 import { montarPonte } from "@/lib/ponteVariacao";
 import { useApelidos } from "@/hooks/useApelidos";
 import { apelidoDe, apelidosNoTexto } from "@/lib/apelidos";
+import { BotaoNota, lerNotas, carimboNota, type NotaLancamento } from "@/components/demonstracoes/NotaLancamento";
 
 /* ---------------------------------------------------------------------------
  * Auditoria: os lançamentos do Omie por trás de uma célula da DRE/DFC.
@@ -336,6 +337,10 @@ export function LancamentosSheet({
   /* Os comprovantes do Drive já casados com estes títulos. Carrega junto com a
      lista, numa consulta só — a tabela é pequena e o índice é por cod_titulo. */
   const [comprovantes, setComprovantes] = useState<Map<string, Comprovante>>(new Map());
+  /* A justificativa escrita à mão para cada lançamento. O comprovante diz o que
+     foi comprado; esta diz por que — e só a pessoa sabe. Carrega junto com a
+     lista, pela mesma chave (`cod_titulo`). */
+  const [notas, setNotas] = useState<Map<string, NotaLancamento>>(new Map());
   const [buscandoObs, setBuscandoObs] = useState(false);
   /** Quanto já entrou, para a espera ter tamanho em vez de ser um giro sem fim. */
   const [obsProgresso, setObsProgresso] = useState<{ feitos: number; total: number } | null>(null);
@@ -524,6 +529,17 @@ export function LancamentosSheet({
     return () => { vivo = false; };
   }, [linhas]);
 
+  /* As justificativas destas linhas. Também falha calada: sem elas a lista fica
+     inteira, só sem as frases — e o botão continua abrindo para escrever. */
+  useEffect(() => {
+    const cods = [...new Set(linhas.map((l) => l.cod_titulo).filter(Boolean))] as string[];
+    if (!cods.length) { setNotas(new Map()); return; }
+
+    let vivo = true;
+    lerNotas(cods).then((m) => { if (vivo) setNotas(m); });
+    return () => { vivo = false; };
+  }, [linhas]);
+
   useEffect(() => { carregarAlertas(); }, [carregarAlertas]);
   useEffect(() => { carregarComparativo(); }, [carregarComparativo]);
   useEffect(() => { carregarCategorias(); }, [carregarCategorias]);
@@ -691,6 +707,9 @@ export function LancamentosSheet({
     return [
       lida ? `${lida.estabelecimento} ${lida.detalhe ?? ""}` : null,
       ap?.apelido, ap?.oQueE,
+      /* A justificativa entra na varredura da busca: ela está escrita NA linha,
+         e procurar por uma palavra que se vê na tela tem de achá-la. */
+      l.cod_titulo ? notas.get(l.cod_titulo)?.texto : null,
     ].filter(Boolean).join(" ") || null;
   });
 
@@ -1097,6 +1116,8 @@ export function LancamentosSheet({
                       /* A nota do Mercado Livre ou a foto do grupo do WhatsApp,
                          quando o sync achou par para esta linha. */
                       const cpv = l.cod_titulo ? comprovantes.get(l.cod_titulo) : undefined;
+                      /* A justificativa escrita à mão para esta linha. */
+                      const nota = l.cod_titulo ? notas.get(l.cod_titulo) : undefined;
                       /* Pelo código do título, não pelo nome: no cartão o nome
                          que está na tela vem da observação (que chega depois) e
                          o do comparativo vem do casamento com a fatura — casar
@@ -1121,8 +1142,11 @@ export function LancamentosSheet({
                           </td>
                         </tr>
                       )}
+                      {/* `group/linha`: é o hover DESTA linha que acende o botão
+                          de escrever a justificativa. Nomeado porque a linha
+                          inteira já é área de hover de outras coisas. */}
                       <tr className={cn(
-                        "align-top hover:bg-muted/30",
+                        "group/linha align-top hover:bg-muted/30",
                         aberto ? "border-b border-amber-300 bg-amber-100/60" : "border-b border-border/60",
                         marcado && "bg-primary/[0.06]",
                       )}>
@@ -1188,6 +1212,29 @@ export function LancamentosSheet({
                                 <Paperclip className="h-3 w-3" />
                               </a>
                             )}
+                            {/* Escrever o porquê desta linha. Fica junto do
+                                clipe: um responde "o que foi isso?", o outro
+                                "por que isso aconteceu?". Sem `cod_titulo` não
+                                há onde pendurar a nota (previsão de OS, perna
+                                bancária) — e aí o botão não aparece. */}
+                            {l.cod_titulo && (
+                              <BotaoNota
+                                codTitulo={l.cod_titulo}
+                                nota={nota}
+                                contexto={{
+                                  tipo: alvo.tipo,
+                                  rubrica: alvo.rubrica,
+                                  mes: alvo.mes,
+                                  contraparte: l.contraparte,
+                                  titulo: `${dataCurta(l.data)} · ${ap ? ap.apelido : cru} · ${moeda(Number(l.valor) || 0)}`,
+                                }}
+                                onSalvo={(n) => setNotas((m) => {
+                                  const novo = new Map(m);
+                                  if (n) novo.set(n.cod_titulo, n); else novo.delete(l.cod_titulo as string);
+                                  return novo;
+                                })}
+                              />
+                            )}
                           </div>
                           {(() => {
                             const apoio = [
@@ -1213,6 +1260,20 @@ export function LancamentosSheet({
                               </div>
                             );
                           })()}
+                          {/* A justificativa aparece na própria linha — escrever
+                              e não ver de novo seria escrever para ninguém.
+                              Uma linha só, cortada por reticências (o texto
+                              inteiro está no hover e na caixa): o teto de altura
+                              da lista é o que devolveu os lançamentos à tela. */}
+                          {nota && (
+                            <div
+                              className="mt-px flex items-center gap-1 truncate text-[10px] text-violet-700"
+                              title={`${nota.texto}${carimboNota(nota) ? `\n\n— ${carimboNota(nota)}` : ""}`}
+                            >
+                              <MessageSquareText className="h-2.5 w-2.5 shrink-0" />
+                              <span className="truncate">{nota.texto}</span>
+                            </div>
+                          )}
                         </td>
                         {/* O código é o que se corrige no Omie; a descrição é o que
                             o DE-PARA casa. Auditar categorização precisa dos dois.

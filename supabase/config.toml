@@ -4,3 +4,9 @@ project_id = "lgcxyxyidoirqmbdlldh"
 # guard interno requireUser, que também bloqueia o cargo "parcerias".
 [functions.delete-user]
 verify_jwt = true
+
+# Webhook do TakeatOS: quem prova a origem e a assinatura HMAC do corpo, nao o JWT
+# do gateway. Exigir JWT aqui obrigaria o TakeatOS a carregar tambem a anon key do
+# Hub, sem ganho de seguranca: a assinatura ja e o controle de acesso.
+[functions.recargas-takeatos-webhook]
+verify_jwt = false

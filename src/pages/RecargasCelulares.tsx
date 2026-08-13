@@ -1,8 +1,8 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import * as XLSX from "xlsx";
 import {
   Upload, Plus, Pencil, Trash2, Search, Filter, Settings2, Check, X,
-  Smartphone, Calendar as CalIcon, Clock, RefreshCw, CheckCircle2,
+  Smartphone, Calendar as CalIcon, Clock, RefreshCw, CheckCircle2, Check as CheckIcon, Undo2,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -14,12 +14,16 @@ import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from "@/components/ui/select";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import {
+  CalendarDateFuture,
+  type PeriodoValor,
+  type PresetPeriodo,
+} from "@/components/ui/calendar-date-future";
 import { Label } from "@/components/ui/label";
 import { toast } from "sonner";
 import { supabase } from "@/integrations/supabase/client";
 import { normalize } from "@/lib/normalize";
 import { cn } from "@/lib/utils";
-import SolicitacoesKanban from "@/pages/recargas/SolicitacoesKanban";
 import { Badge } from "@/components/ui/badge";
 import { LibAutofillInput } from "@/components/LibAutofillInput";
 
@@ -36,14 +40,27 @@ type Row = {
   solicitado_em?: string | null;
 };
 
-const SITUACAO_OPTS = ["Ativo", "Inativo", "Pendente", "Suspenso"];
+// Situação é do CHIP (a linha está ativa na operadora?). O andamento da recarga
+// é outra coisa e vive em STATUS_RECARGA — misturar os dois numa lista só fazia
+// "Pendente" competir com "Ativo", que não são alternativas entre si.
+const SITUACAO_OPTS = ["Ativo", "Inativo", "Suspenso"];
+
+const STATUS_RECARGA = ["Pendente", "Feito"] as const;
+// Rotulos herdados do banco que dizem respeito à RECARGA, não ao chip. Ficam fora
+// da lista de situação para não duplicarem o status do pedido.
+const ROTULOS_DE_RECARGA = ["Pendente", "Feito", "A fazer", "Feita", "Concluída"];
+type StatusRecarga = (typeof STATUS_RECARGA)[number];
+
+const STATUS_RECARGA_CLS: Record<StatusRecarga, string> = {
+  Pendente: "bg-amber-500/15 text-amber-600 border-amber-500/30 dark:text-amber-400",
+  Feito: "bg-emerald-500/15 text-emerald-600 border-emerald-500/30 dark:text-emerald-400",
+};
 const SETOR_OPTS = ["Financeiro", "Comercial", "RPA", "TI", "Diretoria", "RH", "Marketing"];
 const VERIFICADO_OPTS = ["Sim", "Não"];
 
 // Cores da situação — mesma paleta de status da aba Viagens.
 const SITUACAO_CLS: Record<string, string> = {
   Ativo: "bg-emerald-500/15 text-emerald-600 border-emerald-500/30 dark:text-emerald-400",
-  Pendente: "bg-amber-500/15 text-amber-600 border-amber-500/30 dark:text-amber-400",
   Suspenso: "bg-rose-500/15 text-rose-600 border-rose-500/30 dark:text-rose-400",
   Inativo: "bg-muted text-muted-foreground border-border",
 };
@@ -84,6 +101,74 @@ const diasAte = (iso: string | null) => {
   return Math.round((alvo.getTime() - hoje.getTime()) / 86400000);
 };
 
+// A data da solicitação é sempre passada, então os presets padrão do campo
+// (Amanhã, Semana que vem…) não filtrariam nada aqui. Estes olham para trás.
+const inicioDia = (d: Date) => new Date(d.getFullYear(), d.getMonth(), d.getDate());
+const fimDia = (d: Date) => {
+  const x = inicioDia(d);
+  x.setHours(23, 59, 59, 999);
+  return x;
+};
+
+const PRESETS_SOLICITACAO: PresetPeriodo[] = [
+  { id: "hoje", label: "Hoje", resolver: () => ({ from: inicioDia(new Date()), to: fimDia(new Date()) }) },
+  {
+    id: "ontem",
+    label: "Ontem",
+    resolver: () => {
+      const o = new Date();
+      o.setDate(o.getDate() - 1);
+      return { from: inicioDia(o), to: fimDia(o) };
+    },
+  },
+  {
+    id: "7d",
+    label: "Últimos 7 dias",
+    resolver: () => {
+      const f = new Date();
+      f.setDate(f.getDate() - 6);
+      return { from: inicioDia(f), to: fimDia(new Date()) };
+    },
+  },
+  {
+    id: "mes",
+    label: "Esse mês",
+    resolver: () => {
+      const h = new Date();
+      return { from: new Date(h.getFullYear(), h.getMonth(), 1), to: fimDia(new Date()) };
+    },
+  },
+  {
+    id: "mes_ant",
+    label: "Mês passado",
+    resolver: () => {
+      const h = new Date();
+      return {
+        from: new Date(h.getFullYear(), h.getMonth() - 1, 1),
+        to: fimDia(new Date(h.getFullYear(), h.getMonth(), 0)),
+      };
+    },
+  },
+  {
+    id: "ano",
+    label: "Esse ano",
+    resolver: () => {
+      const h = new Date();
+      return { from: new Date(h.getFullYear(), 0, 1), to: fimDia(new Date()) };
+    },
+  },
+];
+
+// Derivado das duas datas do card, em vez de uma coluna nova: marcar como feita
+// preenche `ultima_recarga`, e é exatamente isso que faz o status virar "Feito".
+// Guardar o status à parte abriria espaço para ele discordar das datas.
+function statusRecarga(r: { solicitado_em?: string | null; ultima_recarga: string | null }): StatusRecarga {
+  if (!r.ultima_recarga) return "Pendente";
+  if (!r.solicitado_em) return "Feito"; // nunca solicitada: a última recarga é o que há
+  // Recarga feita ANTES do pedido não atende o pedido — segue pendente.
+  return new Date(`${r.ultima_recarga}T23:59:59`) >= new Date(r.solicitado_em) ? "Feito" : "Pendente";
+}
+
 const DAYS_KEY = "celulares_dias_proxima_recarga";
 const getDays = () => Number(localStorage.getItem(DAYS_KEY)) || 45;
 const addDays = (iso: string | null, days: number) => {
@@ -105,6 +190,12 @@ export default function RecargasCelulares() {
   const [form, setForm] = useState({ ...empty });
   const [editingId, setEditingId] = useState<string | null>(null);
   const [days, setDays] = useState<number>(getDays());
+  const [search, setSearch] = useState("");
+  const [filtSit, setFiltSit] = useState<string>("__all");
+  const [filtSetor, setFiltSetor] = useState<string>("__all");
+  const [filtVer, setFiltVer] = useState<string>("__all");
+  const [filtStatus, setFiltStatus] = useState<string>("__all");
+  const [periodo, setPeriodo] = useState<PeriodoValor>({});
 
   useEffect(() => { document.title = "Recargas · Celulares"; load(); }, []);
 
@@ -122,9 +213,37 @@ export default function RecargasCelulares() {
   }, [rows]);
   const situacoes = useMemo(() => {
     const s = new Set<string>(SITUACAO_OPTS);
-    rows.forEach((r) => r.situacao && s.add(r.situacao));
+    // Valores herdados do banco entram na lista, MENOS os que descrevem a recarga:
+    // "Pendente"/"Feito" são status do pedido, não do chip.
+    rows.forEach((r) => {
+      if (r.situacao && !ROTULOS_DE_RECARGA.includes(r.situacao)) s.add(r.situacao);
+    });
     return Array.from(s).sort();
   }, [rows]);
+
+  const filtered = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    // Sem período escolhido não filtramos por data: linhas nunca solicitadas
+    // (importadas de planilha, por exemplo) sumiriam da tela.
+    const noPeriodo = (r: Row) => {
+      if (!periodo.from && !periodo.to) return true;
+      if (!r.solicitado_em) return false;
+      const d = new Date(r.solicitado_em);
+      if (periodo.from && d < periodo.from) return false;
+      if (periodo.to && d > periodo.to) return false;
+      return true;
+    };
+    return rows.filter((r) => {
+      if (filtSit !== "__all" && (r.situacao || "") !== filtSit) return false;
+      if (filtSetor !== "__all" && (r.setor || "") !== filtSetor) return false;
+      if (filtVer !== "__all" && (r.verificado || "Não") !== filtVer) return false;
+      if (filtStatus !== "__all" && statusRecarga(r) !== filtStatus) return false;
+      if (!noPeriodo(r)) return false;
+      if (!q) return true;
+      return (r.proprietario || "").toLowerCase().includes(q)
+        || (r.numero || "").toLowerCase().includes(q);
+    });
+  }, [rows, search, filtSit, filtSetor, filtVer, filtStatus, periodo]);
 
   const saveDays = (n: number) => {
     setDays(n);
@@ -170,6 +289,59 @@ export default function RecargasCelulares() {
       verificado: r.verificado || "Não",
     });
     setOpen(true);
+  };
+
+  // Troca só a situação, direto no card — ação frequente que não justifica diálogo.
+  // Atualização otimista para o select não "pular" enquanto o banco responde.
+  const mudarSituacao = async (r: Row, situacao: string) => {
+    setRows((prev) => prev.map((x) => (x.id === r.id ? { ...x, situacao } : x)));
+    const { error } = await supabase
+      .from("recargas_celulares")
+      .update({ situacao })
+      .eq("id", r.id);
+    if (error) {
+      setRows((prev) => prev.map((x) => (x.id === r.id ? { ...x, situacao: r.situacao } : x)));
+      toast.error(error.message);
+    }
+  };
+
+  // Alterna entre pendente e feita. Marcar preenche a data de hoje; desmarcar a
+  // remove, porque é a data que define o status — deixar as duas coisas discordarem
+  // seria pior. Para o caso de erro de clique, o valor anterior fica guardado e volta
+  // no desfazer, então um histórico legítimo não se perde.
+  const anteriores = useRef<Record<string, { ultima: string | null; proxima: string | null }>>({});
+
+  const alternarFeita = async (r: Row) => {
+    const feita = statusRecarga(r) === "Feito";
+    let patch: { ultima_recarga: string | null; proxima_recarga: string | null };
+
+    if (feita) {
+      const guardado = anteriores.current[r.id];
+      // A próxima recarga é preservada de propósito: o prazo no topo do card continua
+      // valendo mesmo com a recarga pendente — some-lo seria perder a informação de
+      // quando ela é esperada, que é justamente o que importa enquanto não foi feita.
+      patch = {
+        ultima_recarga: guardado ? guardado.ultima : null,
+        proxima_recarga: guardado?.proxima ?? r.proxima_recarga,
+      };
+      delete anteriores.current[r.id];
+    } else {
+      anteriores.current[r.id] = { ultima: r.ultima_recarga, proxima: r.proxima_recarga };
+      const hojeISO = new Date().toISOString().slice(0, 10);
+      patch = { ultima_recarga: hojeISO, proxima_recarga: addDays(hojeISO, days) };
+    }
+
+    setRows((prev) => prev.map((x) => (x.id === r.id ? { ...x, ...patch } : x)));
+    const { error } = await supabase.from("recargas_celulares").update(patch).eq("id", r.id);
+    if (error) {
+      setRows((prev) => prev.map((x) => (x.id === r.id ? r : x)));
+      return toast.error(error.message);
+    }
+    toast.success(
+      feita
+        ? `Recarga de ${r.proprietario} voltou para pendente.`
+        : `Recarga de ${r.proprietario} registrada em ${fmtDataBR(patch.ultima_recarga)}.`,
+    );
   };
 
   const remove = async (id: string) => {
@@ -291,7 +463,269 @@ export default function RecargasCelulares() {
         </div>
       </div>
 
-      <SolicitacoesKanban />
+      {/* Linhas cadastradas — o parque de celulares. Continua na mesma tela, abaixo
+          da fila: é consulta frequente e sumiria se virasse outra aba. */}
+      <div className="space-y-3">
+        <div className="flex flex-wrap items-center justify-between gap-2 border-t border-border pt-4">
+          <h3 className="text-sm font-semibold">
+            Linhas cadastradas{" "}
+            <span className="font-normal text-muted-foreground">
+              ({filtered.length} de {rows.length})
+            </span>
+          </h3>
+          <div className="flex flex-wrap items-center gap-2">
+            <div className="relative min-w-[220px]">
+              <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
+              <Input
+                placeholder="Buscar por nome ou número…"
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                className="h-9 pl-8"
+              />
+            </div>
+            <Popover>
+              <PopoverTrigger asChild>
+                <Button variant="outline" size="sm">
+                  <Filter className="mr-2 h-4 w-4" /> Filtros
+                  {(filtSit !== "__all" || filtSetor !== "__all" || filtVer !== "__all" || filtStatus !== "__all" || periodo.from || periodo.to) && (
+                    <span className="ml-1 rounded bg-primary/10 px-1.5 text-xs text-primary">on</span>
+                  )}
+                </Button>
+              </PopoverTrigger>
+              <PopoverContent className="w-72 space-y-3">
+                <div>
+                  <Label>Status da recarga</Label>
+                  <Select value={filtStatus} onValueChange={setFiltStatus}>
+                    <SelectTrigger><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="__all">Todos</SelectItem>
+                      {STATUS_RECARGA.map((x) => <SelectItem key={x} value={x}>{x}</SelectItem>)}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div>
+                  <Label>Situação do chip</Label>
+                  <Select value={filtSit} onValueChange={setFiltSit}>
+                    <SelectTrigger><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="__all">Todas</SelectItem>
+                      {situacoes.map((x) => <SelectItem key={x} value={x}>{x}</SelectItem>)}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div>
+                  <Label>Setor</Label>
+                  <Select value={filtSetor} onValueChange={setFiltSetor}>
+                    <SelectTrigger><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="__all">Todos</SelectItem>
+                      {setores.map((x) => <SelectItem key={x} value={x}>{x}</SelectItem>)}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div>
+                  <Label>Verificado</Label>
+                  <Select value={filtVer} onValueChange={setFiltVer}>
+                    <SelectTrigger><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="__all">Todos</SelectItem>
+                      {VERIFICADO_OPTS.map((x) => <SelectItem key={x} value={x}>{x}</SelectItem>)}
+                    </SelectContent>
+                  </Select>
+                </div>
+                {/* Período fica recolhido numa linha e só abre ao ser clicado. */}
+                <div className="border-t pt-4">
+                  <CalendarDateFuture
+                    dateLabel="Período da solicitação"
+                    value={periodo}
+                    onSelectDate={setPeriodo}
+                    presets={PRESETS_SOLICITACAO}
+                    placeholder="Qualquer data"
+                  />
+                </div>
+
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="w-full"
+                  onClick={() => {
+                    setFiltSit("__all");
+                    setFiltSetor("__all");
+                    setFiltVer("__all");
+                    setFiltStatus("__all");
+                    setPeriodo({});
+                  }}
+                >
+                  Limpar filtros
+                </Button>
+              </PopoverContent>
+            </Popover>
+          </div>
+        </div>
+
+        <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+          {filtered.map((r) => {
+            const sit = (r.situacao || "Ativo") as string;
+            const stRecarga = statusRecarga(r);
+            const dias = diasAte(r.proxima_recarga);
+            const verificado = (r.verificado || "Não") === "Sim";
+            return (
+              <div
+                key={r.id}
+                className="rounded-lg border border-border bg-card p-3.5 shadow-sm transition hover:shadow-md"
+              >
+                <div className="flex items-start justify-between gap-2">
+                  <div className="flex min-w-0 items-center gap-2.5">
+                    <div
+                      className={cn(
+                        "flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-[11px] font-semibold text-white",
+                        colorFor(r.proprietario || ""),
+                      )}
+                    >
+                      {initials(r.proprietario || "")}
+                    </div>
+                    <div className="min-w-0">
+                      <div className="truncate text-[13px] font-semibold leading-tight">
+                        {r.proprietario || "—"}
+                      </div>
+                      <div className="truncate text-[10.5px] text-muted-foreground">
+                        {r.setor || "Colaborador"}
+                      </div>
+                    </div>
+                  </div>
+                  {/* Atrasada em vermelho: é a linha que o Financeiro tem de puxar primeiro. */}
+                  {dias !== null && (
+                    <Badge
+                      variant="outline"
+                      title={`Próxima recarga: ${fmtDataBR(r.proxima_recarga)}`}
+                      className={cn(
+                        "h-5 shrink-0 gap-1 rounded-full px-2 text-[10.5px]",
+                        dias < 0 && "border-rose-500/30 bg-rose-500/15 text-rose-600 dark:text-rose-400",
+                      )}
+                    >
+                      <Clock className="h-3 w-3" />
+                      {dias < 0 ? `${Math.abs(dias)}d atrás` : `${dias}d`}
+                    </Badge>
+                  )}
+                </div>
+
+                <div className="mt-3 flex items-start gap-1.5">
+                  <Smartphone className="mt-0.5 h-3.5 w-3.5 shrink-0 text-rose-500" />
+                  <div className="min-w-0 flex-1">
+                    <div className="truncate font-mono text-[12.5px] font-medium leading-tight">
+                      {r.numero || "—"}
+                    </div>
+                    <div className="flex items-center gap-1 text-[11px] text-muted-foreground">
+                      {verificado ? (
+                        <><CheckCircle2 className="h-3 w-3 text-emerald-500" /> Verificado</>
+                      ) : (
+                        "Não verificado"
+                      )}
+                    </div>
+                  </div>
+                  {/* Situação do chip cola no número: é o estado daquela linha
+                      telefônica, não do pedido de recarga. */}
+                  <Select value={sit} onValueChange={(v) => mudarSituacao(r, v)}>
+                    <SelectTrigger
+                      className={cn(
+                        "h-6 w-[104px] shrink-0 rounded-full border px-2.5 text-[10.5px]",
+                        SITUACAO_CLS[sit] || SITUACAO_CLS.Ativo,
+                      )}
+                    >
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {situacoes.map((x) => <SelectItem key={x} value={x}>{x}</SelectItem>)}
+                    </SelectContent>
+                  </Select>
+                </div>
+
+                {/* As duas datas do card: quando pediram e quando a recarga foi feita.
+                    A da esquerda chega junto com a solicitação; a da direita só existe
+                    depois de marcada como feita. "Próxima recarga" vive no selo do topo. */}
+                <div className="mt-2.5 flex items-center gap-1.5">
+                  <div className="flex-1 rounded-md border border-border bg-background px-2 py-1">
+                    <div className="text-[9.5px] uppercase tracking-wide text-muted-foreground">
+                      Solicitada
+                    </div>
+                    <div className="flex items-center gap-1 text-[11.5px]">
+                      <CalIcon className="h-3 w-3 text-muted-foreground" />
+                      {r.solicitado_em ? fmtDataBR(String(r.solicitado_em).slice(0, 10)) : "—"}
+                    </div>
+                  </div>
+                  <span className="text-[10.5px] text-muted-foreground">→</span>
+                  <div className="flex-1 rounded-md border border-border bg-background px-2 py-1">
+                    <div className="text-[9.5px] uppercase tracking-wide text-muted-foreground">
+                      Feita
+                    </div>
+                    <div className="flex items-center gap-1 text-[11.5px]">
+                      <CalIcon className="h-3 w-3 text-muted-foreground" />
+                      {fmtDataBR(r.ultima_recarga)}
+                    </div>
+                  </div>
+                </div>
+
+                {r.solicitado_em && (
+                  <div className="mt-2 flex items-center gap-1.5 text-[11px] text-muted-foreground">
+                    <RefreshCw className="h-3 w-3" />
+                    Solicitado em {fmtDataHoraBR(r.solicitado_em)}
+                  </div>
+                )}
+
+                <div className="mt-3 flex items-center justify-between border-t border-border pt-2.5">
+                  <div>
+                    <div className="text-base font-bold leading-none">{fmtBRL(Number(r.valor || 0))}</div>
+                    <div className="mt-0.5 text-[10.5px] text-muted-foreground">por recarga</div>
+                  </div>
+                  <div className="flex items-center gap-1">
+                    {/* Status da recarga é consequência das datas, então é só leitura:
+                        quem o move é o botão de marcar como feita. */}
+                    <Badge
+                      variant="outline"
+                      className={cn("h-6 rounded-full px-2 text-[10.5px]", STATUS_RECARGA_CLS[stRecarga])}
+                    >
+                      {stRecarga}
+                    </Badge>
+                    <Button
+                      size="icon"
+                      variant="ghost"
+                      className={cn(
+                        "h-7 w-7",
+                        stRecarga === "Feito"
+                          ? "text-muted-foreground hover:text-foreground"
+                          : "text-emerald-600 hover:text-emerald-700 dark:text-emerald-400",
+                      )}
+                      onClick={() => alternarFeita(r)}
+                      title={
+                        stRecarga === "Feito"
+                          ? "Desfazer — voltar para pendente"
+                          : "Marcar recarga como feita hoje"
+                      }
+                    >
+                      {stRecarga === "Feito" ? (
+                        <Undo2 className="h-3.5 w-3.5" />
+                      ) : (
+                        <CheckIcon className="h-3.5 w-3.5" />
+                      )}
+                    </Button>
+                    <Button size="icon" variant="ghost" className="h-7 w-7" onClick={() => abrirEdicao(r)} title="Editar">
+                      <Pencil className="h-3.5 w-3.5" />
+                    </Button>
+                    <Button size="icon" variant="ghost" className="h-7 w-7" onClick={() => remove(r.id)} title="Excluir">
+                      <Trash2 className="h-3.5 w-3.5" />
+                    </Button>
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+          {!filtered.length && (
+            <p className="col-span-full py-10 text-center text-sm text-muted-foreground">
+              Nenhuma linha cadastrada.
+            </p>
+          )}
+        </div>
+      </div>
 
 
 

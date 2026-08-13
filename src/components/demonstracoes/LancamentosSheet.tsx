@@ -1,7 +1,7 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Loader2, TriangleAlert, Check, FileText, Users, Undo2, ArrowRightLeft, CreditCard, ChevronDown,
-  Paperclip, MessageSquareText,
+  Paperclip, MessageSquareText, ChevronRight,
 } from "lucide-react";
 import { toast } from "sonner";
 import { supabase } from "@/integrations/supabase/client";
@@ -10,12 +10,17 @@ import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sh
 import { CategoriaEditavel } from "@/components/demonstracoes/TrocarCategoria";
 import { ehCartao, lerGastoDeCartao } from "@/lib/observacaoTitulo";
 import { mesAtras, mesCurto } from "@/lib/demonstracoes-schema";
-import { BuscaLancamentos, CabecalhoValor, RodapeLista } from "@/components/demonstracoes/FiltroLancamentos";
+import {
+  BuscaLancamentos, CabecalhoContraparte, CabecalhoValor, RodapeLista,
+} from "@/components/demonstracoes/FiltroLancamentos";
 import { TrocarCategoriaLote } from "@/components/demonstracoes/TrocarCategoriaLote";
 import { podeTrocarCategoria, motivoNaoAlteravel, type ItemLote } from "@/lib/loteCategoria";
 import {
   categoriasDaCelula, filtrarLancamentos, filtroInicial, filtroVazio, type Filtro,
 } from "@/lib/filtroLancamentos";
+import {
+  agruparPorNome, linhasEconomizadas, periodoDoGrupo, type Grupo,
+} from "@/lib/agruparLancamentos";
 import {
   janelaDeMeses, montarComparativo, rotuloSituacao, explicarFornecedor,
   type Comparativo, type Fornecedor, type LinhaContraparte,
@@ -181,6 +186,26 @@ function resumoInicial(): ResumoAberto {
 function guardarResumo(v: ResumoAberto) {
   try { localStorage.setItem(CHAVE_RESUMO, v ?? "nenhum"); } catch { /* modo privado */ }
 }
+
+/* ----- agrupar por fornecedor -------------------------------------------
+ * Preferência de leitura, como o chip do resumo: quem confere fatura de cartão
+ * quer sempre a mesma vista, e trocar de célula não pode desfazer a escolha.
+ * Nasce LIGADA porque numa célula sem repetição agrupar não muda nada — um
+ * grupo de um lançamento é renderizado como a linha de sempre. */
+const CHAVE_AGRUPAR = "demonstracoes.painel.agrupar";
+
+function agruparInicial(): boolean {
+  try { return localStorage.getItem(CHAVE_AGRUPAR) !== "nao"; } catch { return true; }
+}
+function guardarAgrupar(v: boolean) {
+  try { localStorage.setItem(CHAVE_AGRUPAR, v ? "sim" : "nao"); } catch { /* modo privado */ }
+}
+
+/** O que a lista desenha, em ordem: faixas, lançamentos soltos e grupos. */
+type Bloco =
+  | { tipo: "cabecalho"; chave: string; texto: string; suspeito: boolean }
+  | { tipo: "linha"; chave: string; l: Lancamento }
+  | { tipo: "grupo"; chave: string; g: Grupo<Lancamento> };
 
 function ChipResumo({
   aberto, onClick, titulo, children,
@@ -637,6 +662,13 @@ export function LancamentosSheet({
     return cru || (l.cnpj_cpf ? doc(l.cnpj_cpf) : "") || "Sem contraparte";
   }, [textos, apelidos]);
 
+  /** O nome SEM apelido — o que se procura no Omie, e o que a linha de apoio
+   *  mostra quando o apelido assume a de cima. */
+  const nomeCru = useCallback((l: Lancamento): string => {
+    const lida = lerGastoDeCartao(l.contraparte, l.cod_titulo ? textos.get(l.cod_titulo) : undefined);
+    return lida ? lida.estabelecimento : (l.contraparte ?? doc(l.cnpj_cpf));
+  }, [textos]);
+
   /* ----- por que a linha mudou ------------------------------------------
    * A decomposição da variação contra o mês anterior, fornecedor a fornecedor.
    * Refaz quando as observações chegam: até elas entrarem, os gastos de cartão
@@ -764,20 +796,73 @@ export function LancamentosSheet({
     !!l.cod_titulo && (alertas.get(l.cod_titulo)?.status === "aberto" || recemDecididos.has(l.cod_titulo));
   const suspeitos = visiveis.filter(ehSuspeito);
   const demais = visiveis.filter((l) => !ehSuspeito(l));
+
+  /* ----- uma linha por fornecedor ---------------------------------------
+   * Quatro parcelas da LATAM, dezoito corridas de Uber e seis diárias de
+   * Airbnb são três coisas, não vinte e oito: a lista junta o que tem o mesmo
+   * nome NA TELA (já com apelido, e no cartão já com o lojista lido da
+   * observação), mostra a soma, e abre embaixo quando se quer ver a parcela.
+   *
+   * OS SUSPEITOS FICAM DE FORA. Cada alerta de reclassificação tem decisão
+   * própria e explicação em linha separada; enfiá-los dentro de um grupo
+   * fechado esconderia justamente o que fez a célula ser clicada.
+   *
+   * E agrupar não mexe em número nenhum: os grupos são um recorte da MESMA
+   * lista filtrada, então cabeçalho, rodapé e carimbo continuam contando
+   * lançamentos. */
+  const [agrupar, setAgrupar] = useState(agruparInicial);
+  /* Quais grupos estão abertos, pela chave (o nome normalizado) — por índice,
+     reordenar a lista abriria outro grupo. Zera na troca de célula. */
+  const [abertos, setAbertos] = useState<Set<string>>(new Set());
+  useEffect(() => { setAbertos(new Set()); }, [alvo?.tipo, alvo?.rubrica, alvo?.mes]);
+
+  const grupos = agruparPorNome(demais, {
+    nomeDe: nomeDoFornecedor,
+    valorDe: (l) => Number(l.valor) || 0,
+    ordem: filtro.ordem,
+  });
+  const economia = linhasEconomizadas(grupos);
+  /* Sem repetição, agrupar não muda nada — e uma casca a abrir em volta de um
+     lançamento só seria um clique a mais para ler o que já estava na tela. */
+  const agrupado = agrupar && economia > 0;
+
+  const alternarGrupo = (chave: string) => setAbertos((s) => {
+    const n = new Set(s);
+    if (n.has(chave)) n.delete(chave); else n.add(chave);
+    return n;
+  });
+
+  /** Marcar o grupo é marcar o que dele é marcável — o resto nem tem caixinha. */
+  const alternarSelecaoGrupo = (g: Grupo<Lancamento>) => setSelecionados((s) => {
+    const n = new Set(s);
+    const cods = g.itens.filter(selecionavel).map((l) => l.cod_titulo as string);
+    const todos = cods.length > 0 && cods.every((c) => n.has(c));
+    for (const c of cods) { if (todos) n.delete(c); else n.add(c); }
+    return n;
+  });
+
   /* Cabeçalho só quando há os dois blocos: sem alerta nenhum a lista continua
      sendo uma lista só, sem faixa explicando o óbvio. */
-  const ordenadas: { l: Lancamento; cabecalho: string | null }[] = [
-    ...suspeitos.map((l, i) => ({
-      l,
-      cabecalho: i === 0
-        ? `${suspeitos.length} ${suspeitos.length === 1 ? "lançamento fora do padrão do fornecedor" : "lançamentos fora do padrão do fornecedor"}`
-        : null,
-    })),
-    ...demais.map((l, i) => ({
-      l,
-      cabecalho: i === 0 && suspeitos.length > 0 ? `demais lançamentos (${demais.length})` : null,
-    })),
-  ];
+  const chaveLinha = (l: Lancamento, i: number) => `l-${l.cod_titulo ?? "s"}-${i}`;
+  const blocos: Bloco[] = [];
+  if (suspeitos.length) {
+    blocos.push({
+      tipo: "cabecalho", chave: "cab-suspeitos", suspeito: true,
+      texto: `${suspeitos.length} ${suspeitos.length === 1 ? "lançamento fora do padrão do fornecedor" : "lançamentos fora do padrão do fornecedor"}`,
+    });
+    suspeitos.forEach((l, i) => blocos.push({ tipo: "linha", chave: chaveLinha(l, i), l }));
+    if (demais.length) {
+      blocos.push({
+        tipo: "cabecalho", chave: "cab-demais", suspeito: false,
+        texto: `demais lançamentos (${demais.length})`,
+      });
+    }
+  }
+  if (agrupado) {
+    for (const g of grupos) blocos.push({ tipo: "grupo", chave: `g-${g.chave}`, g });
+  } else {
+    demais.forEach((l, i) => blocos.push({ tipo: "linha", chave: chaveLinha(l, suspeitos.length + i), l }));
+  }
 
   /* Sem nenhum mês anterior na janela não há o que comparar: a rubrica começou
      agora ou o cache do Omie não vai tão para trás. Calar é mais honesto do que
@@ -789,6 +874,402 @@ export function LancamentosSheet({
   const somaVisivel = visiveis.reduce((s, l) => s + (Number(l.valor) || 0), 0);
   const bate = alvo?.celula != null && Math.abs(soma - alvo.celula) < 0.5;
   const dataUsada = alvo?.tipo === "dre" ? "data de registro (competência)" : "data de pagamento (caixa)";
+
+  /* ----- a linha de um lançamento ---------------------------------------
+   * Função, e não componente: um componente declarado aqui dentro seria um
+   * TIPO novo a cada render e o React remontaria a lista inteira — com o
+   * seletor de categoria fechando na cara de quem o abriu. Como função, isto
+   * devolve elementos, e a reconciliação segue pela `key`.
+   *
+   * `dentro` é a mesma linha, só que aberta debaixo de um grupo: o nome ali em
+   * cima já foi dito, então ele recua para a cor de apoio e o chip do
+   * fornecedor (que fala do fornecedor, não da parcela) fica só no grupo. */
+  const renderLinha = (l: Lancamento, chave: string, dentro: boolean) => {
+    if (!alvo) return null;
+    const a = l.cod_titulo ? alertas.get(l.cod_titulo) : undefined;
+    const aberto = a?.status === "aberto";
+    const obs = l.cod_titulo ? textos.get(l.cod_titulo) : undefined;
+    const lida = lerGastoDeCartao(l.contraparte, obs);
+    /* O nome cru que identifica o gasto: o lojista, quando é cartão; a
+       contraparte do Omie, no resto. É por ele que se procura o apelido — e é
+       ele que sobra na linha de apoio quando o apelido assume a de cima. */
+    const cru = lida ? lida.estabelecimento : (l.contraparte ?? doc(l.cnpj_cpf));
+    const ap = apelidoDe(apelidos, cru, l.cnpj_cpf);
+    /* A nota do Mercado Livre ou a foto do grupo do WhatsApp, quando o sync
+       achou par para esta linha. */
+    const cpv = l.cod_titulo ? comprovantes.get(l.cod_titulo) : undefined;
+    /* A justificativa escrita à mão para esta linha. */
+    const nota = l.cod_titulo ? notas.get(l.cod_titulo) : undefined;
+    /* Pelo código do título, não pelo nome: no cartão o nome que está na tela
+       vem da observação (que chega depois) e o do comparativo vem do casamento
+       com a fatura — casar por texto deixaria justamente o Datadog sem chip. O
+       nome é só a rede de segurança de quem não tem código. */
+    const forn = dentro || !comp ? undefined
+      : (l.cod_titulo ? comp.porTitulo.get(l.cod_titulo) : undefined)
+        ?? (l.contraparte ? comp.porContraparte.get(l.contraparte) : undefined);
+    const marcado = !!l.cod_titulo && selecionados.has(l.cod_titulo);
+
+    return (
+      <Fragment key={chave}>
+        {/* `group/linha`: é o hover DESTA linha que acende o botão de escrever
+            a justificativa. Nomeado porque a linha inteira já é área de hover
+            de outras coisas. */}
+        <tr className={cn(
+          "group/linha align-top hover:bg-muted/30",
+          aberto ? "border-b border-amber-300 bg-amber-100/60" : "border-b border-border/60",
+          dentro && !aberto && "bg-muted/[0.15]",
+          marcado && "bg-primary/[0.06]",
+        )}>
+          {/* A caixinha some — não fica desabilitada — quando o lançamento não
+              tem categoria própria: caixinha morta é convite a clicar e não
+              entender por que nada acontece. O porquê fica no hover do traço. */}
+          <td className="w-7 py-2 pl-4 pr-0">
+            {selecionavel(l) ? (
+              <Caixinha
+                marcada={marcado}
+                onClick={() => alternar(l.cod_titulo as string)}
+                titulo={marcado ? "Tirar da seleção" : "Selecionar para trocar a categoria em lote"}
+              />
+            ) : (
+              <span className="block text-center text-[11px] text-muted-foreground/40" title={motivoNaoAlteravel(l.grupo)}>–</span>
+            )}
+          </td>
+          <td className="whitespace-nowrap px-2 py-2 text-[11.5px] num text-muted-foreground">
+            {dataCurta(l.data)}
+          </td>
+          {/* No cartão a contraparte é sempre o balde da fatura ("Lancamento
+              Fatura Cartao") e quem identifica o gasto é a observação do título
+              — então ela vem na frente, e o balde desce para a linha de apoio.
+              O texto cru fica no hover, porque é ele que se confere contra o
+              ERP.
+
+              Havendo apelido cadastrado (Configurações › Parametrização), é ELE
+              que ocupa a linha de cima e o nome do extrato desce junto com o
+              balde: o de cima responde "o que é isso?" e o de baixo continua
+              sendo a string que se procura no Omie. */}
+          {/* Numa coluna de largura fixa a linha de apoio não pode mais quebrar
+              em três: vira uma frase só, cortada por reticências, com o inteiro
+              no hover. Sem isso uma observação de cartão comprida decidia
+              sozinha a altura de todas as linhas da lista. */}
+          <td className={cn("overflow-hidden px-2 py-2 text-[11.5px]", dentro && "pl-5")}>
+            <div className={cn(
+              "flex items-center gap-1.5 whitespace-nowrap",
+              dentro ? "text-muted-foreground" : "text-foreground",
+            )}>
+              {aberto && <TriangleAlert strokeWidth={2.5} className="h-3.5 w-3.5 shrink-0 fill-amber-400 text-amber-800" />}
+              {lida && <CreditCard className="h-3 w-3 shrink-0 text-muted-foreground" />}
+              <span className="truncate" title={ap?.oQueE ?? obs ?? undefined}>
+                {ap ? ap.apelido : cru}
+              </span>
+              {forn && comp && <ChipFornecedor f={forn} comp={comp} />}
+              {/* O clipe abre o comprovante no Drive. Fica na linha de cima,
+                  junto do nome, porque é a resposta a "o que foi isso?" — não
+                  um detalhe de apoio. */}
+              {cpv && (
+                <a
+                  href={linkDoDrive(cpv.drive_id)}
+                  target="_blank" rel="noreferrer"
+                  onClick={(e) => e.stopPropagation()}
+                  className="shrink-0 text-muted-foreground transition hover:text-foreground"
+                  title={[
+                    cpv.descricao,
+                    cpv.emitente ? `vendedor: ${cpv.emitente}` : null,
+                    `casou por ${cpv.casamento === "soma_pedido" ? "soma do pedido"
+                      : cpv.casamento === "parcela" ? "valor da parcela" : "valor e data"}`,
+                    cpv.nome_arquivo,
+                  ].filter(Boolean).join(" · ")}
+                >
+                  <Paperclip className="h-3 w-3" />
+                </a>
+              )}
+              {/* Escrever o porquê desta linha. Fica junto do clipe: um responde
+                  "o que foi isso?", o outro "por que isso aconteceu?". Sem
+                  `cod_titulo` não há onde pendurar a nota (previsão de OS, perna
+                  bancária) — e aí o botão não aparece. */}
+              {l.cod_titulo && (
+                <BotaoNota
+                  codTitulo={l.cod_titulo}
+                  nota={nota}
+                  contexto={{
+                    tipo: alvo.tipo,
+                    rubrica: alvo.rubrica,
+                    mes: alvo.mes,
+                    contraparte: l.contraparte,
+                    titulo: `${dataCurta(l.data)} · ${ap ? ap.apelido : cru} · ${moeda(Number(l.valor) || 0)}`,
+                  }}
+                  onSalvo={(n) => setNotas((m) => {
+                    const novo = new Map(m);
+                    if (n) novo.set(n.cod_titulo, n); else novo.delete(l.cod_titulo as string);
+                    return novo;
+                  })}
+                />
+              )}
+            </div>
+            {(() => {
+              const apoio = [
+                // O que o comprovante diz vem PRIMEIRO: numa linha que corta por
+                // reticências, é o que não pode sumir.
+                cpv?.descricao ?? null,
+                ap ? cru : null,
+                lida ? (l.contraparte ?? doc(l.cnpj_cpf)) : null,
+                lida?.detalhe,
+                lida?.parcela ? `parcela ${lida.parcela}` : null,
+                l.titulo,
+                l.documento ? `NF ${l.documento}` : null,
+                l.status?.toUpperCase(),
+              ].filter(Boolean) as string[];
+              if (!apoio.length) return null;
+              return (
+                <div
+                  className="mt-px flex items-center gap-1 truncate text-[10px] text-muted-foreground"
+                  title={obs ?? apoio.join(" · ")}
+                >
+                  {l.titulo && <FileText className="h-2.5 w-2.5 shrink-0" />}
+                  <span className="truncate">{apoio.join(" · ")}</span>
+                </div>
+              );
+            })()}
+            {/* A justificativa aparece na própria linha — escrever e não ver de
+                novo seria escrever para ninguém. Uma linha só, cortada por
+                reticências (o texto inteiro está no hover e na caixa): o teto de
+                altura da lista é o que devolveu os lançamentos à tela. */}
+            {nota && (
+              <div
+                className="mt-px flex items-center gap-1 truncate text-[10px] text-violet-700"
+                title={`${nota.texto}${carimboNota(nota) ? `\n\n— ${carimboNota(nota)}` : ""}`}
+              >
+                <MessageSquareText className="h-2.5 w-2.5 shrink-0" />
+                <span className="truncate">{nota.texto}</span>
+              </div>
+            )}
+          </td>
+          {/* O código é o que se corrige no Omie; a descrição é o que o DE-PARA
+              casa. Auditar categorização precisa dos dois. Clicar troca a
+              categoria — no Omie e aqui. */}
+          <td className="overflow-hidden px-2 py-2 text-[11px]">
+            <CategoriaEditavel
+              codTitulo={l.cod_titulo}
+              codigo={l.categoria_codigo}
+              descricao={l.categoria_descricao}
+              contraparte={l.contraparte}
+              tipo={alvo.tipo}
+              mes={alvo.mes}
+              mesLabel={alvo.mesLabel}
+              travado={alvo.travado}
+              rubricaSugerida={aberto ? a?.rubrica_padrao : null}
+              aberto={!!l.cod_titulo && trocando === l.cod_titulo}
+              onAbertoChange={(o) => setTrocando(o ? l.cod_titulo : null)}
+              onTrocado={aposTroca}
+            />
+          </td>
+          <td className={cn(
+            "whitespace-nowrap px-3 py-2 text-right text-[11.5px] num font-medium",
+            (l.valor ?? 0) < 0 ? "text-primary" : "text-emerald-700",
+          )}>
+            {moeda(Number(l.valor) || 0)}
+          </td>
+        </tr>
+
+        {/* A explicação vai numa linha própria: o motivo e as duas decisões não
+            cabem nas colunas sem espremer o valor. */}
+        {a && (
+          <tr className={cn("border-b", aberto ? "border-amber-300 bg-amber-100/60" : "border-border/60 bg-muted/30")}>
+            <td colSpan={5} className="px-3 pb-2.5 pt-0">
+              <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-1.5 pl-[52px]">
+                <span className={cn("text-[11px] leading-relaxed", aberto ? "text-amber-900" : "text-muted-foreground")}>
+                  Vinha em <b>{a.rubrica_padrao}</b>
+                  {a.hist_no_padrao != null && a.hist_lancamentos != null && (
+                    <> ({a.hist_no_padrao} dos {a.hist_lancamentos} lançamentos anteriores)</>
+                  )}
+                  {a.valor_padrao != null && (
+                    <>
+                      {" · "}
+                      {a.severidade === "alta"
+                        ? <>mesmo valor de sempre, <b>{moeda(Number(a.valor_padrao))}</b></>
+                        : <>valor típico {moeda(Number(a.valor_padrao))}</>}
+                    </>
+                  )}
+                  {!aberto && a.status === "ignorado" && <> · <i>marcado como correto</i></>}
+                </span>
+
+                <span className="flex shrink-0 items-center gap-1.5">
+                  {aberto ? (
+                    <>
+                      {/* Abre o seletor da linha de cima, já com as categorias da
+                          rubrica de origem no topo. */}
+                      <button
+                        onClick={() => setTrocando(a.cod_titulo)}
+                        disabled={decidindo === a.id}
+                        className="inline-flex items-center gap-1 rounded-md border border-amber-400 bg-amber-200/70 px-2 py-1 text-[10.5px] font-semibold text-amber-950 transition hover:bg-amber-200 disabled:opacity-50"
+                        title={`Trocar a categoria no Omie — sugerindo as de "${a.rubrica_padrao}"`}
+                      >
+                        <ArrowRightLeft className="h-2.5 w-2.5" /> Trocar categoria…
+                      </button>
+                      <button
+                        onClick={() => decidir(a, "lancamento")}
+                        disabled={decidindo === a.id}
+                        className="rounded-md border border-amber-300 bg-card px-2 py-1 text-[10.5px] font-medium text-amber-900 transition hover:bg-amber-100 disabled:opacity-50"
+                      >
+                        Este está certo
+                      </button>
+                      <button
+                        onClick={() => decidir(a, "fornecedor")}
+                        disabled={decidindo === a.id}
+                        className="rounded-md border border-amber-300 bg-card px-2 py-1 text-[10.5px] font-medium text-amber-900 transition hover:bg-amber-100 disabled:opacity-50"
+                        title={`Não avisar mais quando ${a.fornecedor ?? "este fornecedor"} cair em "${a.rubrica_padrao}" ou nesta rubrica`}
+                      >
+                        Sempre pode cair nas duas
+                      </button>
+                    </>
+                  ) : (
+                    <button
+                      onClick={() => reabrir(a)}
+                      disabled={decidindo === a.id}
+                      className="inline-flex items-center gap-1 rounded-md border border-border bg-card px-2 py-1 text-[10.5px] font-medium text-muted-foreground transition hover:bg-secondary disabled:opacity-50"
+                    >
+                      <Undo2 className="h-2.5 w-2.5" /> Reabrir
+                    </button>
+                  )}
+                </span>
+              </div>
+            </td>
+          </tr>
+        )}
+      </Fragment>
+    );
+  };
+
+  /* ----- a linha de um grupo --------------------------------------------
+   * O que o grupo diz sem ser aberto: quem é, quantas cobranças, de quando a
+   * quando, em que categoria e quanto somou. É a linha que substitui as vinte
+   * e oito — e por isso ela precisa carregar o que se perderia ao juntá-las:
+   * o chip do fornecedor, a existência de comprovante e de justificativa, e o
+   * aviso de que ali dentro há mais de uma categoria. */
+  const renderGrupo = (g: Grupo<Lancamento>, chave: string) => {
+    if (!alvo) return null;
+    const abertoG = abertos.has(g.chave);
+    const cats = categoriasDaCelula(g.itens);
+    const { de, ate } = periodoDoGrupo(g.itens);
+    const marcaveis = g.itens.filter(selecionavel);
+    const marcados = marcaveis.filter((l) => selecionados.has(l.cod_titulo as string)).length;
+    const todos = marcaveis.length > 0 && marcados === marcaveis.length;
+    const cartao = g.itens.every((l) => ehCartao(l.contraparte));
+    const comNota = g.itens.filter((l) => l.cod_titulo && notas.has(l.cod_titulo)).length;
+    const comCpv = g.itens.filter((l) => l.cod_titulo && comprovantes.has(l.cod_titulo)).length;
+    /* O chip é do FORNECEDOR, então basta o primeiro item que o comparativo
+       souber casar — os outros devolveriam o mesmo veredito. */
+    let forn: Fornecedor | undefined;
+    if (comp) {
+      for (const l of g.itens) {
+        forn = (l.cod_titulo ? comp.porTitulo.get(l.cod_titulo) : undefined)
+          ?? (l.contraparte ? comp.porContraparte.get(l.contraparte) : undefined);
+        if (forn) break;
+      }
+    }
+    /* As grafias cruas que caíram neste grupo — é uma delas que se procura no
+       Omie. Quando é uma só e o apelido tomou a linha de cima, ela desce para a
+       de apoio, como na linha solta. */
+    const crus = [...new Set(g.itens.map(nomeCru).filter(Boolean))];
+
+    const apoio = [
+      `${g.itens.length} lançamentos`,
+      de && ate && de !== ate ? `${dataCurta(de)} a ${dataCurta(ate)}` : null,
+      crus.length === 1 ? (crus[0] !== g.nome ? crus[0] : null) : `${crus.length} grafias`,
+    ].filter(Boolean) as string[];
+
+    return (
+      <Fragment key={chave}>
+        <tr
+          onClick={() => alternarGrupo(g.chave)}
+          className={cn(
+            "cursor-pointer border-b align-top transition hover:bg-muted/40",
+            abertoG ? "border-border bg-muted/30" : "border-border/60",
+          )}
+        >
+          <td className="w-7 py-2 pl-4 pr-0" onClick={(e) => e.stopPropagation()}>
+            {marcaveis.length > 0 ? (
+              <Caixinha
+                marcada={todos}
+                parcial={marcados > 0 && !todos}
+                onClick={() => alternarSelecaoGrupo(g)}
+                titulo={todos
+                  ? `Tirar os ${marcaveis.length} da seleção`
+                  : `Selecionar os ${marcaveis.length} lançamentos de ${g.nome}`}
+              />
+            ) : (
+              <span className="block text-center text-[11px] text-muted-foreground/40">–</span>
+            )}
+          </td>
+          {/* A data do grupo é a da primeira cobrança; o intervalo inteiro está
+              na linha de apoio, que é onde ele cabe. */}
+          <td
+            className="whitespace-nowrap px-2 py-2 text-[11.5px] num text-muted-foreground"
+            title={de && ate && de !== ate ? `De ${dataCurta(de)} a ${dataCurta(ate)}` : undefined}
+          >
+            {dataCurta(de)}
+          </td>
+          <td className="overflow-hidden px-2 py-2 text-[11.5px]">
+            <div className="flex items-center gap-1.5 whitespace-nowrap text-foreground">
+              <ChevronRight className={cn(
+                "h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform",
+                abertoG && "rotate-90",
+              )} />
+              {cartao && <CreditCard className="h-3 w-3 shrink-0 text-muted-foreground" />}
+              <span className="truncate font-medium" title={g.nome}>{g.nome}</span>
+              <span
+                className="num shrink-0 rounded-full bg-muted px-1.5 py-px text-[10px] font-semibold text-muted-foreground"
+                title={`${g.itens.length} lançamentos somados nesta linha — clique para abrir`}
+              >
+                {g.itens.length}
+              </span>
+              {forn && comp && <ChipFornecedor f={forn} comp={comp} />}
+              {/* O que some ao juntar as linhas: que ali dentro há comprovante e
+                  justificativa. O ícone não abre nada — diz onde procurar. */}
+              {comCpv > 0 && (
+                <span className="inline-flex shrink-0 items-center gap-0.5 text-muted-foreground" title={`${comCpv} com comprovante no Drive`}>
+                  <Paperclip className="h-3 w-3" />
+                  {comCpv > 1 && <span className="num text-[10px]">{comCpv}</span>}
+                </span>
+              )}
+              {comNota > 0 && (
+                <span className="inline-flex shrink-0 items-center gap-0.5 text-violet-700" title={`${comNota} com justificativa escrita`}>
+                  <MessageSquareText className="h-3 w-3" />
+                  {comNota > 1 && <span className="num text-[10px]">{comNota}</span>}
+                </span>
+              )}
+            </div>
+            <div className="mt-px truncate text-[10px] text-muted-foreground" title={apoio.join(" · ")}>
+              {apoio.join(" · ")}
+            </div>
+          </td>
+          {/* Uma categoria é dita; mais de uma é avisada. Trocar continua sendo
+              coisa de lançamento (ou do lote, pela caixinha) — o grupo abre. */}
+          <td className="overflow-hidden px-2 py-2 text-[11px]">
+            {cats.length === 1 ? (
+              <>
+                <div className="truncate text-foreground/90" title={cats[0].descricao}>{cats[0].descricao}</div>
+                <div className="mt-px truncate font-mono text-[9.5px] text-muted-foreground">{cats[0].codigo ?? "—"}</div>
+              </>
+            ) : (
+              <span
+                className="text-muted-foreground"
+                title={cats.map((c) => `${c.descricao} · ${moeda(c.total)}`).join("\n")}
+              >
+                {cats.length} categorias
+              </span>
+            )}
+          </td>
+          <td className={cn(
+            "whitespace-nowrap px-3 py-2 text-right text-[11.5px] num font-semibold",
+            g.total < 0 ? "text-primary" : "text-emerald-700",
+          )}>
+            {moeda(g.total)}
+          </td>
+        </tr>
+        {abertoG && g.itens.map((l, i) => renderLinha(l, `${chave}-${l.cod_titulo ?? "s"}-${i}`, true))}
+      </Fragment>
+    );
+  };
 
   return (
     <Sheet open={!!alvo} onOpenChange={(o) => { if (!o) onClose(); }}>
@@ -1094,281 +1575,38 @@ export function LancamentosSheet({
                         )}
                       </th>
                       <th className="w-[46px] px-2 py-2 text-left">DATA</th>
-                      <th className="px-2 py-2 text-left">CONTRAPARTE</th>
+                      <th className="px-2 py-2 text-left">
+                        <CabecalhoContraparte
+                          agrupado={agrupado}
+                          onAgrupado={(v) => { setAgrupar(v); guardarAgrupar(v); }}
+                          fornecedores={grupos.length}
+                          economia={economia}
+                        />
+                      </th>
                       <th className="w-[124px] px-2 py-2 text-left">CATEGORIA</th>
                       <th className="w-[108px] px-3 py-2 text-right">
                         <CabecalhoValor ordem={filtro.ordem} onOrdem={(o) => setFiltro({ ...filtro, ordem: o })} /></th>
                     </tr>
                   </thead>
                   <tbody>
-                    {ordenadas.map(({ l, cabecalho }, i) => {
-                      const a = l.cod_titulo ? alertas.get(l.cod_titulo) : undefined;
-                      const aberto = a?.status === "aberto";
-                      const suspeito = ehSuspeito(l);
-                      const obs = l.cod_titulo ? textos.get(l.cod_titulo) : undefined;
-                      const lida = lerGastoDeCartao(l.contraparte, obs);
-                      /* O nome cru que identifica o gasto: o lojista, quando é
-                         cartão; a contraparte do Omie, no resto. É por ele que
-                         se procura o apelido — e é ele que sobra na linha de
-                         apoio quando o apelido assume a de cima. */
-                      const cru = lida ? lida.estabelecimento : (l.contraparte ?? doc(l.cnpj_cpf));
-                      const ap = apelidoDe(apelidos, cru, l.cnpj_cpf);
-                      /* A nota do Mercado Livre ou a foto do grupo do WhatsApp,
-                         quando o sync achou par para esta linha. */
-                      const cpv = l.cod_titulo ? comprovantes.get(l.cod_titulo) : undefined;
-                      /* A justificativa escrita à mão para esta linha. */
-                      const nota = l.cod_titulo ? notas.get(l.cod_titulo) : undefined;
-                      /* Pelo código do título, não pelo nome: no cartão o nome
-                         que está na tela vem da observação (que chega depois) e
-                         o do comparativo vem do casamento com a fatura — casar
-                         por texto deixaria justamente o Datadog sem chip. O
-                         nome é só a rede de segurança de quem não tem código. */
-                      const forn = !comp ? undefined
-                        : (l.cod_titulo ? comp.porTitulo.get(l.cod_titulo) : undefined)
-                          ?? (l.contraparte ? comp.porContraparte.get(l.contraparte) : undefined);
-                      const marcado = !!l.cod_titulo && selecionados.has(l.cod_titulo);
-                      return (
-                      <Fragment key={i}>
-                      {cabecalho && (
-                        <tr className={cn("border-b", suspeito ? "border-amber-300 bg-amber-100" : "border-border bg-muted/60")}>
-                          <td colSpan={5} className={cn(
-                            "px-3 py-1.5 text-[9.5px] font-bold uppercase tracking-[0.1em]",
-                            suspeito ? "text-amber-900" : "text-muted-foreground",
-                          )}>
-                            <span className="inline-flex items-center gap-1.5">
-                              {suspeito && <TriangleAlert strokeWidth={2.5} className="h-3 w-3 fill-amber-400 text-amber-800" />}
-                              {cabecalho}
-                            </span>
-                          </td>
-                        </tr>
-                      )}
-                      {/* `group/linha`: é o hover DESTA linha que acende o botão
-                          de escrever a justificativa. Nomeado porque a linha
-                          inteira já é área de hover de outras coisas. */}
-                      <tr className={cn(
-                        "group/linha align-top hover:bg-muted/30",
-                        aberto ? "border-b border-amber-300 bg-amber-100/60" : "border-b border-border/60",
-                        marcado && "bg-primary/[0.06]",
-                      )}>
-                        {/* A caixinha some — não fica desabilitada — quando o
-                            lançamento não tem categoria própria: caixinha morta
-                            é convite a clicar e não entender por que nada
-                            acontece. O porquê fica no hover do traço. */}
-                        <td className="w-7 py-2 pl-4 pr-0">
-                          {selecionavel(l) ? (
-                            <Caixinha
-                              marcada={marcado}
-                              onClick={() => alternar(l.cod_titulo as string)}
-                              titulo={marcado ? "Tirar da seleção" : "Selecionar para trocar a categoria em lote"}
-                            />
-                          ) : (
-                            <span className="block text-center text-[11px] text-muted-foreground/40" title={motivoNaoAlteravel(l.grupo)}>–</span>
-                          )}
-                        </td>
-                        <td className="whitespace-nowrap px-2 py-2 text-[11.5px] num text-muted-foreground">
-                          {dataCurta(l.data)}
-                        </td>
-                        {/* No cartão a contraparte é sempre o balde da fatura
-                            ("Lancamento Fatura Cartao") e quem identifica o gasto
-                            é a observação do título — então ela vem na frente, e
-                            o balde desce para a linha de apoio. O texto cru fica
-                            no hover, porque é ele que se confere contra o ERP.
-
-                            Havendo apelido cadastrado (Configurações ›
-                            Parametrização), é ELE que ocupa a linha de cima e o
-                            nome do extrato desce junto com o balde: o de cima
-                            responde "o que é isso?" e o de baixo continua sendo
-                            a string que se procura no Omie. */}
-                        {/* Numa coluna de largura fixa a linha de apoio não pode
-                            mais quebrar em três: vira uma frase só, cortada por
-                            reticências, com o inteiro no hover. Sem isso uma
-                            observação de cartão comprida decidia sozinha a
-                            altura de todas as linhas da lista. */}
-                        <td className="overflow-hidden px-2 py-2 text-[11.5px]">
-                          <div className="flex items-center gap-1.5 whitespace-nowrap text-foreground">
-                            {aberto && <TriangleAlert strokeWidth={2.5} className="h-3.5 w-3.5 shrink-0 fill-amber-400 text-amber-800" />}
-                            {lida && <CreditCard className="h-3 w-3 shrink-0 text-muted-foreground" />}
-                            <span className="truncate" title={ap?.oQueE ?? obs ?? undefined}>
-                              {ap ? ap.apelido : cru}
-                            </span>
-                            {forn && comp && <ChipFornecedor f={forn} comp={comp} />}
-                            {/* O clipe abre o comprovante no Drive. Fica na
-                                linha de cima, junto do nome, porque é a resposta
-                                a "o que foi isso?" — não um detalhe de apoio. */}
-                            {cpv && (
-                              <a
-                                href={linkDoDrive(cpv.drive_id)}
-                                target="_blank" rel="noreferrer"
-                                onClick={(e) => e.stopPropagation()}
-                                className="shrink-0 text-muted-foreground transition hover:text-foreground"
-                                title={[
-                                  cpv.descricao,
-                                  cpv.emitente ? `vendedor: ${cpv.emitente}` : null,
-                                  `casou por ${cpv.casamento === "soma_pedido" ? "soma do pedido"
-                                    : cpv.casamento === "parcela" ? "valor da parcela" : "valor e data"}`,
-                                  cpv.nome_arquivo,
-                                ].filter(Boolean).join(" · ")}
-                              >
-                                <Paperclip className="h-3 w-3" />
-                              </a>
-                            )}
-                            {/* Escrever o porquê desta linha. Fica junto do
-                                clipe: um responde "o que foi isso?", o outro
-                                "por que isso aconteceu?". Sem `cod_titulo` não
-                                há onde pendurar a nota (previsão de OS, perna
-                                bancária) — e aí o botão não aparece. */}
-                            {l.cod_titulo && (
-                              <BotaoNota
-                                codTitulo={l.cod_titulo}
-                                nota={nota}
-                                contexto={{
-                                  tipo: alvo.tipo,
-                                  rubrica: alvo.rubrica,
-                                  mes: alvo.mes,
-                                  contraparte: l.contraparte,
-                                  titulo: `${dataCurta(l.data)} · ${ap ? ap.apelido : cru} · ${moeda(Number(l.valor) || 0)}`,
-                                }}
-                                onSalvo={(n) => setNotas((m) => {
-                                  const novo = new Map(m);
-                                  if (n) novo.set(n.cod_titulo, n); else novo.delete(l.cod_titulo as string);
-                                  return novo;
-                                })}
-                              />
-                            )}
-                          </div>
-                          {(() => {
-                            const apoio = [
-                              // O que o comprovante diz vem PRIMEIRO: numa linha
-                              // que corta por reticências, é o que não pode sumir.
-                              cpv?.descricao ?? null,
-                              ap ? cru : null,
-                              lida ? (l.contraparte ?? doc(l.cnpj_cpf)) : null,
-                              lida?.detalhe,
-                              lida?.parcela ? `parcela ${lida.parcela}` : null,
-                              l.titulo,
-                              l.documento ? `NF ${l.documento}` : null,
-                              l.status?.toUpperCase(),
-                            ].filter(Boolean) as string[];
-                            if (!apoio.length) return null;
-                            return (
-                              <div
-                                className="mt-px flex items-center gap-1 truncate text-[10px] text-muted-foreground"
-                                title={obs ?? apoio.join(" · ")}
-                              >
-                                {l.titulo && <FileText className="h-2.5 w-2.5 shrink-0" />}
-                                <span className="truncate">{apoio.join(" · ")}</span>
-                              </div>
-                            );
-                          })()}
-                          {/* A justificativa aparece na própria linha — escrever
-                              e não ver de novo seria escrever para ninguém.
-                              Uma linha só, cortada por reticências (o texto
-                              inteiro está no hover e na caixa): o teto de altura
-                              da lista é o que devolveu os lançamentos à tela. */}
-                          {nota && (
-                            <div
-                              className="mt-px flex items-center gap-1 truncate text-[10px] text-violet-700"
-                              title={`${nota.texto}${carimboNota(nota) ? `\n\n— ${carimboNota(nota)}` : ""}`}
-                            >
-                              <MessageSquareText className="h-2.5 w-2.5 shrink-0" />
-                              <span className="truncate">{nota.texto}</span>
-                            </div>
-                          )}
-                        </td>
-                        {/* O código é o que se corrige no Omie; a descrição é o que
-                            o DE-PARA casa. Auditar categorização precisa dos dois.
-                            Clicar troca a categoria — no Omie e aqui. */}
-                        <td className="overflow-hidden px-2 py-2 text-[11px]">
-                          <CategoriaEditavel
-                            codTitulo={l.cod_titulo}
-                            codigo={l.categoria_codigo}
-                            descricao={l.categoria_descricao}
-                            contraparte={l.contraparte}
-                            tipo={alvo.tipo}
-                            mes={alvo.mes}
-                            mesLabel={alvo.mesLabel}
-                            travado={alvo.travado}
-                            rubricaSugerida={aberto ? a?.rubrica_padrao : null}
-                            aberto={!!l.cod_titulo && trocando === l.cod_titulo}
-                            onAbertoChange={(o) => setTrocando(o ? l.cod_titulo : null)}
-                            onTrocado={aposTroca}
-                          />
-                        </td>
-                        <td className={cn(
-                          "whitespace-nowrap px-3 py-2 text-right text-[11.5px] num font-medium",
-                          (l.valor ?? 0) < 0 ? "text-primary" : "text-emerald-700",
-                        )}>
-                          {moeda(Number(l.valor) || 0)}
-                        </td>
-                      </tr>
-
-                      {/* A explicação vai numa linha própria: o motivo e as duas
-                          decisões não cabem nas colunas sem espremer o valor. */}
-                      {a && (
-                        <tr className={cn("border-b", aberto ? "border-amber-300 bg-amber-100/60" : "border-border/60 bg-muted/30")}>
-                          <td colSpan={5} className="px-3 pb-2.5 pt-0">
-                            <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-1.5 pl-[52px]">
-                              <span className={cn("text-[11px] leading-relaxed", aberto ? "text-amber-900" : "text-muted-foreground")}>
-                                Vinha em <b>{a.rubrica_padrao}</b>
-                                {a.hist_no_padrao != null && a.hist_lancamentos != null && (
-                                  <> ({a.hist_no_padrao} dos {a.hist_lancamentos} lançamentos anteriores)</>
-                                )}
-                                {a.valor_padrao != null && (
-                                  <>
-                                    {" · "}
-                                    {a.severidade === "alta"
-                                      ? <>mesmo valor de sempre, <b>{moeda(Number(a.valor_padrao))}</b></>
-                                      : <>valor típico {moeda(Number(a.valor_padrao))}</>}
-                                  </>
-                                )}
-                                {!aberto && a.status === "ignorado" && <> · <i>marcado como correto</i></>}
+                    {blocos.map((b) => {
+                      if (b.tipo === "cabecalho") {
+                        return (
+                          <tr key={b.chave} className={cn("border-b", b.suspeito ? "border-amber-300 bg-amber-100" : "border-border bg-muted/60")}>
+                            <td colSpan={5} className={cn(
+                              "px-3 py-1.5 text-[9.5px] font-bold uppercase tracking-[0.1em]",
+                              b.suspeito ? "text-amber-900" : "text-muted-foreground",
+                            )}>
+                              <span className="inline-flex items-center gap-1.5">
+                                {b.suspeito && <TriangleAlert strokeWidth={2.5} className="h-3 w-3 fill-amber-400 text-amber-800" />}
+                                {b.texto}
                               </span>
-
-                              <span className="flex shrink-0 items-center gap-1.5">
-                                {aberto ? (
-                                  <>
-                                    {/* Abre o seletor da linha de cima, já com as
-                                        categorias da rubrica de origem no topo. */}
-                                    <button
-                                      onClick={() => setTrocando(a.cod_titulo)}
-                                      disabled={decidindo === a.id}
-                                      className="inline-flex items-center gap-1 rounded-md border border-amber-400 bg-amber-200/70 px-2 py-1 text-[10.5px] font-semibold text-amber-950 transition hover:bg-amber-200 disabled:opacity-50"
-                                      title={`Trocar a categoria no Omie — sugerindo as de "${a.rubrica_padrao}"`}
-                                    >
-                                      <ArrowRightLeft className="h-2.5 w-2.5" /> Trocar categoria…
-                                    </button>
-                                    <button
-                                      onClick={() => decidir(a, "lancamento")}
-                                      disabled={decidindo === a.id}
-                                      className="rounded-md border border-amber-300 bg-card px-2 py-1 text-[10.5px] font-medium text-amber-900 transition hover:bg-amber-100 disabled:opacity-50"
-                                    >
-                                      Este está certo
-                                    </button>
-                                    <button
-                                      onClick={() => decidir(a, "fornecedor")}
-                                      disabled={decidindo === a.id}
-                                      className="rounded-md border border-amber-300 bg-card px-2 py-1 text-[10.5px] font-medium text-amber-900 transition hover:bg-amber-100 disabled:opacity-50"
-                                      title={`Não avisar mais quando ${a.fornecedor ?? "este fornecedor"} cair em "${a.rubrica_padrao}" ou nesta rubrica`}
-                                    >
-                                      Sempre pode cair nas duas
-                                    </button>
-                                  </>
-                                ) : (
-                                  <button
-                                    onClick={() => reabrir(a)}
-                                    disabled={decidindo === a.id}
-                                    className="inline-flex items-center gap-1 rounded-md border border-border bg-card px-2 py-1 text-[10.5px] font-medium text-muted-foreground transition hover:bg-secondary disabled:opacity-50"
-                                  >
-                                    <Undo2 className="h-2.5 w-2.5" /> Reabrir
-                                  </button>
-                                )}
-                              </span>
-                            </div>
-                          </td>
-                        </tr>
-                      )}
-                      </Fragment>
-                      );
+                            </td>
+                          </tr>
+                        );
+                      }
+                      if (b.tipo === "grupo") return renderGrupo(b.g, b.chave);
+                      return renderLinha(b.l, b.chave, false);
                     })}
                   </tbody>
                 </table>
@@ -1388,6 +1626,11 @@ export function LancamentosSheet({
                 mostrados={visiveis.length}
                 somaMostrada={somaVisivel}
                 moeda={moeda}
+                /* Só quando a lista está de fato agrupada: dizer "em N
+                   fornecedores" com a lista aberta seria contar uma coisa que
+                   não está na tela. Os suspeitos ficam fora do agrupamento, e
+                   por isso entram na conta como uma linha cada. */
+                fornecedores={agrupado ? grupos.length + suspeitos.length : null}
               />
             )}
           </div>

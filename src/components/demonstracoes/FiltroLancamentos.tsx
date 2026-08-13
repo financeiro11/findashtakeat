@@ -1,4 +1,4 @@
-import { Search, X, ArrowDownWideNarrow, ArrowUpNarrowWide, ChevronsUpDown } from "lucide-react";
+import { Search, X, ArrowDownWideNarrow, ArrowUpNarrowWide, ChevronsUpDown, Layers } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { filtroVazio, filtroInicial, type Filtro, type Ordem } from "@/lib/filtroLancamentos";
 
@@ -56,7 +56,7 @@ export function BuscaLancamentos({
  * a lista não pula de tamanho a cada tecla digitada na busca.
  */
 export function RodapeLista({
-  filtro, onFiltro, total, mostrados, somaMostrada, moeda,
+  filtro, onFiltro, total, mostrados, somaMostrada, moeda, fornecedores,
 }: {
   filtro: Filtro;
   onFiltro: (f: Filtro) => void;
@@ -65,6 +65,8 @@ export function RodapeLista({
   mostrados: number;
   somaMostrada: number;
   moeda: (n: number) => string;
+  /** Em quantas linhas a lista está agrupada, quando está. */
+  fornecedores?: number | null;
 }) {
   const limpo = filtroVazio(filtro);
   const ordem = filtro.ordem === "maior" ? "Maior valor primeiro"
@@ -75,12 +77,20 @@ export function RodapeLista({
     <div className="flex shrink-0 items-center justify-between gap-3 border-t border-border bg-muted/30 px-5 py-1.5 text-[11px] text-muted-foreground">
       <span className="min-w-0 truncate">
         {limpo ? (
-          <>{total} {total === 1 ? "lançamento" : "lançamentos"} · nenhum filtro</>
+          <>
+            {total} {total === 1 ? "lançamento" : "lançamentos"}
+            {/* Com a lista agrupada, o número que o olho vê não é o número de
+                lançamentos — dizer os dois aqui é o que impede ler "38 linhas"
+                como "38 lançamentos". */}
+            {fornecedores != null && <> em <b className="text-foreground">{fornecedores} fornecedores</b></>}
+            {" · nenhum filtro"}
+          </>
         ) : mostrados === 0 ? (
           "Nenhum lançamento com esses filtros"
         ) : (
           <span title="Os números do topo continuam sendo os da célula inteira — são eles que conferem com a demonstração.">
             Mostrando <b className="text-foreground">{mostrados} de {total}</b>
+            {fornecedores != null && <> em {fornecedores} fornecedores</>}
             {" · soma "}<b className="num text-foreground">{moeda(somaMostrada)}</b>
           </span>
         )}
@@ -97,6 +107,47 @@ export function RodapeLista({
         <span>{ordem}</span>
       </span>
     </div>
+  );
+}
+
+/**
+ * O cabeçalho da coluna CONTRAPARTE, que agrupa.
+ *
+ * O controle mora no cabeçalho da coluna pelo mesmo motivo que o de ordenação
+ * mora no da coluna VALOR: quem manda na coluna é a coluna. Agrupar junta as
+ * linhas do mesmo fornecedor numa só, com a soma; desagrupar devolve lançamento
+ * a lançamento, que é como se confere contra o ERP.
+ *
+ * Só aparece quando há o que juntar — numa célula em que cada fornecedor
+ * aparece uma vez, o botão prometeria uma mudança que não aconteceria.
+ */
+export function CabecalhoContraparte({
+  agrupado, onAgrupado, fornecedores, economia,
+}: {
+  agrupado: boolean;
+  onAgrupado: (v: boolean) => void;
+  /** Em quantos grupos a lista cabe. */
+  fornecedores: number;
+  /** Quantas linhas somem ao agrupar. Zero esconde o botão. */
+  economia: number;
+}) {
+  if (economia <= 0) return <>CONTRAPARTE</>;
+
+  return (
+    <button
+      onClick={() => onAgrupado(!agrupado)}
+      title={agrupado
+        ? `Agrupado em ${fornecedores} fornecedores — clique para ver os lançamentos um por um`
+        : `Juntar o mesmo fornecedor numa linha só, com a soma (${economia} linhas a menos)`}
+      className={cn(
+        "inline-flex items-center gap-1 rounded px-1 py-0.5 transition hover:bg-background/60 hover:text-foreground",
+        agrupado && "text-foreground",
+      )}
+    >
+      CONTRAPARTE
+      <Layers className={cn("h-3 w-3", !agrupado && "opacity-40")} />
+      {agrupado && <span className="num font-normal opacity-70">{fornecedores}</span>}
+    </button>
   );
 }
 

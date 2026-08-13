@@ -41,9 +41,18 @@ export function NovaVersao() {
     };
     document.addEventListener("visibilitychange", procurar);
 
+    // E a aba que NUNCA é escondida? O navegador só relê o `sw.js` sozinho na navegação
+    // (ou depois de ~24h), então o Hub aberto a semana inteira na segunda tela ficava no
+    // código de segunda-feira sem nada acusar — voltar para ele não é "voltar para a
+    // tela" nenhuma, porque ele nunca saiu. Uma pergunta a cada quinze minutos custa
+    // alguns kB e fecha esse buraco.
+    procurar();
+    const relogio = window.setInterval(procurar, 15 * 60 * 1000);
+
     return () => {
       sw.removeEventListener("controllerchange", aoTrocar);
       document.removeEventListener("visibilitychange", procurar);
+      window.clearInterval(relogio);
     };
   }, []);
 

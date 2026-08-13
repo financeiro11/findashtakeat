@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
-  Search, CreditCard, Building2, RefreshCw, Loader2, Check, Pencil, Tags,
+  Search, CreditCard, Building2, RefreshCw, Loader2, Check, Pencil, Tags, X,
 } from "lucide-react";
 import { toast } from "sonner";
 import { supabase } from "@/integrations/supabase/client";
@@ -19,6 +19,15 @@ import {
 } from "@/lib/apelidos";
 import { useApelidos, useApelidosCadastro, salvarApelido } from "@/hooks/useApelidos";
 import { PainelNomear, type Alvo } from "@/components/parametrizacao/PainelNomear";
+import {
+  CabecalhoFiltravel, FaixaMeses, FaixaNumero, ListaMarcavel,
+} from "@/components/parametrizacao/FiltroCabecalho";
+import {
+  alternarNoSet, categoriaDaContraparte, categoriasDaFila, colunaFiltrada,
+  filtrarFila, filtroFilaInicial, limparColuna, mesesDaFila,
+  quantasColunasFiltradas, ROTULO_ESTADO_PLANILHA,
+  type ColunaFila, type EstadoPlanilha, type FiltroFila,
+} from "@/lib/filaParametrizacao";
 
 /* ---------------------------------------------------------------------------
  * Parametrização — o nome que a contraparte tem para nós.
@@ -117,6 +126,10 @@ export default function Parametrizacao() {
   /* Abre nos 3 meses e não em "Tudo": a fila serve para a próxima reunião, não
      para zerar o histórico. Quem quiser o retrato completo troca num clique. */
   const [janela, setJanela] = useState<Janela>("3m");
+  /* Os filtros de coluna. Note a diferença de natureza para a janela logo
+     acima: a janela vai para a RPC e muda o denominador da cobertura; estes
+     cortam só a LISTA. Ver o comentário de cabeçalho de `filaParametrizacao.ts`. */
+  const [filtro, setFiltro] = useState<FiltroFila>(filtroFilaInicial);
   const [alvo, setAlvo] = useState<Alvo | null>(null);
   const [evidencias, setEvidencias] = useState<Map<string, Evidencia>>(new Map());
   const [sincronizando, setSincronizando] = useState(false);
@@ -169,13 +182,44 @@ export default function Parametrizacao() {
   const fila = useMemo(() => filaDeAnonimos(porOrigem, mapa), [porOrigem, mapa]);
   const cob = useMemo(() => cobertura(porOrigem, mapa), [porOrigem, mapa]);
 
+  /* O que a coluna "O que a planilha diz" tem para cada contraparte — é por
+     isto que se filtra "só o que já veio respondido do formulário". */
+  const estadoPlanilha = useCallback((c: Candidato): EstadoPlanilha => {
+    const ev = evidencias.get(chaveContraparte(c.nome));
+    if (!ev) return "nada";
+    return ev.apelido ? "proposta" : "sem_nome";
+  }, [evidencias]);
+
+  /* As opções saem da fila INTEIRA, não da já filtrada: lista de opções que
+     encolhe a cada marcação impede marcar a segunda categoria. */
+  const opcoesCategoria = useMemo(() => categoriasDaFila(fila), [fila]);
+  const opcoesMeses = useMemo(() => mesesDaFila(fila), [fila]);
+  const opcoesPlanilha = useMemo(() => {
+    const n = new Map<EstadoPlanilha, number>();
+    for (const c of fila) {
+      const e = estadoPlanilha(c);
+      n.set(e, (n.get(e) ?? 0) + 1);
+    }
+    return (Object.keys(ROTULO_ESTADO_PLANILHA) as EstadoPlanilha[])
+      .map((e) => ({ valor: e, rotulo: ROTULO_ESTADO_PLANILHA[e], apoio: n.get(e) ?? 0 }));
+  }, [fila, estadoPlanilha]);
+
   /* Na fila só há nome cru para casar — apelido é justamente o que falta. Na
      aba das nomeadas a busca varre os dois: quem procura "café" tem de achar o
      Grupo Souza, e quem procura "JIM" também. */
   const filaVisivel = useMemo(() => {
     const q = normalize(busca).trim();
-    return q ? fila.filter((c) => normalize(c.nome).includes(q)) : fila;
-  }, [fila, busca]);
+    const porBusca = q ? fila.filter((c) => normalize(c.nome).includes(q)) : fila;
+    return filtrarFila(porBusca, filtro, estadoPlanilha);
+  }, [fila, busca, filtro, estadoPlanilha]);
+
+  const colunasFiltradas = quantasColunasFiltradas(filtro);
+
+  const limpar = (coluna: ColunaFila) => setFiltro((f) => limparColuna(f, coluna));
+  const alternarCategoria = (v: string) =>
+    setFiltro((f) => ({ ...f, categorias: alternarNoSet(f.categorias, v) }));
+  const alternarPlanilha = (v: string) =>
+    setFiltro((f) => ({ ...f, planilha: alternarNoSet(f.planilha, v as EstadoPlanilha) }));
 
   /* As nomeadas: o cadastro cruzado com o movimento, para mostrar quanto cada
      apelido está cobrindo de verdade. */
@@ -367,24 +411,126 @@ export default function Parametrizacao() {
               </Button>
             </div>
 
+            {/* Filtro ligado precisa se declarar: a barra é o que separa "a fila
+                acabou" de "eu esqueci um corte marcado". E ela diz em voz alta
+                que a cobertura lá em cima NÃO se mexeu — senão o próximo leitor
+                acha que a barra de progresso está quebrada. */}
+            {colunasFiltradas > 0 && (
+              <div className="flex flex-wrap items-center gap-x-2 gap-y-1 border-b border-border bg-muted/40 px-4 py-1.5 text-[11px]">
+                <span className="text-muted-foreground">
+                  Mostrando <strong className="font-medium text-foreground">{filaVisivel.length}</strong>
+                  {" de "}{fila.length} — o filtro corta a lista, não a cobertura lá em cima.
+                </span>
+                <Button
+                  size="sm" variant="ghost"
+                  className="ml-auto h-6 gap-1 px-1.5 text-[11px]"
+                  onClick={() => setFiltro(filtroFilaInicial())}
+                >
+                  <X className="h-3 w-3" />
+                  Limpar {colunasFiltradas === 1 ? "o filtro" : `os ${colunasFiltradas} filtros`}
+                </Button>
+              </div>
+            )}
+
             {candidatos === null ? (
               <div className="px-4 py-10 text-center text-[12.5px] text-muted-foreground">
                 <Loader2 className="mx-auto h-4 w-4 animate-spin" />
               </div>
             ) : filaVisivel.length === 0 ? (
               <div className="px-4 py-10 text-center text-[12.5px] text-muted-foreground">
-                {busca ? "Nada com esse termo." : "Todas as contrapartes desta lista já têm nome."}
+                {colunasFiltradas > 0 ? (
+                  <>
+                    Nenhuma contraparte passa por esses filtros.
+                    <Button
+                      size="sm" variant="ghost" className="ml-1 h-6 px-1.5 text-[12.5px]"
+                      onClick={() => setFiltro(filtroFilaInicial())}
+                    >
+                      Limpar
+                    </Button>
+                  </>
+                ) : busca ? "Nada com esse termo." : "Todas as contrapartes desta lista já têm nome."}
               </div>
             ) : (
               <div className="overflow-x-auto">
                 <table className="w-full text-[12px]">
                   <thead>
+                    {/* Cada coluna carrega o próprio filtro; a de Contraparte
+                        não precisa, a busca lá em cima é dela. */}
                     <tr className="border-b border-border text-left text-[10.5px] uppercase tracking-wide text-muted-foreground">
                       <th className="px-4 py-2 font-medium">Contraparte</th>
-                      <th className="px-2 py-2 text-right font-medium">Lçtos</th>
-                      <th className="px-2 py-2 text-right font-medium">Total</th>
-                      <th className="px-2 py-2 font-medium">Período</th>
-                      <th className="px-4 py-2 font-medium">O que a planilha diz</th>
+                      <th className="px-2 py-2 font-medium">
+                        <CabecalhoFiltravel
+                          rotulo="Categoria" largura="w-80"
+                          ativo={colunaFiltrada(filtro, "categoria")}
+                          onLimpar={() => limpar("categoria")}
+                          titulo="A rubrica do Omie nas linhas do Omie; nas de cartão, a categoria do próprio extrato"
+                        >
+                          <ListaMarcavel
+                            buscar="Buscar categoria…"
+                            opcoes={opcoesCategoria.map((o) => ({
+                              valor: o.valor, rotulo: o.valor, apoio: brlCurtoStr(o.total),
+                            }))}
+                            marcadas={filtro.categorias}
+                            onAlternar={alternarCategoria}
+                          />
+                        </CabecalhoFiltravel>
+                      </th>
+                      <th className="px-2 py-2 text-right font-medium">
+                        <CabecalhoFiltravel
+                          rotulo="Lçtos" alinhar="end" largura="w-60"
+                          ativo={colunaFiltrada(filtro, "lancamentos")}
+                          onLimpar={() => limpar("lancamentos")}
+                        >
+                          <FaixaNumero
+                            min={filtro.lctosMin} max={filtro.lctosMax}
+                            onMin={(v) => setFiltro((f) => ({ ...f, lctosMin: v }))}
+                            onMax={(v) => setFiltro((f) => ({ ...f, lctosMax: v }))}
+                            dica="Quantas vezes a contraparte apareceu na janela."
+                          />
+                        </CabecalhoFiltravel>
+                      </th>
+                      <th className="px-2 py-2 text-right font-medium">
+                        <CabecalhoFiltravel
+                          rotulo="Total" alinhar="end" largura="w-64"
+                          ativo={colunaFiltrada(filtro, "total")}
+                          onLimpar={() => limpar("total")}
+                        >
+                          <FaixaNumero
+                            prefixo="R$"
+                            min={filtro.totalMin} max={filtro.totalMax}
+                            onMin={(v) => setFiltro((f) => ({ ...f, totalMin: v }))}
+                            onMax={(v) => setFiltro((f) => ({ ...f, totalMax: v }))}
+                            dica="Pode escrever com ponto de milhar: 5.000."
+                          />
+                        </CabecalhoFiltravel>
+                      </th>
+                      <th className="px-2 py-2 font-medium">
+                        <CabecalhoFiltravel
+                          rotulo="Período" largura="w-72"
+                          ativo={colunaFiltrada(filtro, "periodo")}
+                          onLimpar={() => limpar("periodo")}
+                        >
+                          <FaixaMeses
+                            meses={opcoesMeses}
+                            de={filtro.mesDe} ate={filtro.mesAte}
+                            onDe={(v) => setFiltro((f) => ({ ...f, mesDe: v }))}
+                            onAte={(v) => setFiltro((f) => ({ ...f, mesAte: v }))}
+                          />
+                        </CabecalhoFiltravel>
+                      </th>
+                      <th className="px-4 py-2 font-medium">
+                        <CabecalhoFiltravel
+                          rotulo="O que a planilha diz" largura="w-60"
+                          ativo={colunaFiltrada(filtro, "planilha")}
+                          onLimpar={() => limpar("planilha")}
+                        >
+                          <ListaMarcavel
+                            opcoes={opcoesPlanilha}
+                            marcadas={filtro.planilha}
+                            onAlternar={alternarPlanilha}
+                          />
+                        </CabecalhoFiltravel>
+                      </th>
                     </tr>
                   </thead>
                   <tbody>
@@ -402,10 +548,24 @@ export default function Parametrizacao() {
                               <Icone className="mt-0.5 h-3 w-3 shrink-0 text-muted-foreground" />
                               <div className="min-w-0">
                                 <div className="break-all font-medium">{c.nome}</div>
-                                <div className="text-[10px] text-muted-foreground">
-                                  {[c.categoria, c.cidade].filter(Boolean).join(" · ") || "—"}
-                                </div>
+                                {c.cidade && (
+                                  <div className="text-[10px] text-muted-foreground">{c.cidade}</div>
+                                )}
                               </div>
+                            </div>
+                          </td>
+                          {/* A categoria saiu da linha de apoio do nome e virou
+                              coluna própria — é por ela que se corta a fila. O
+                              selo embaixo diz de onde ela vem: "3.1.5.1
+                              Softwares" é rubrica contábil do Omie, "Outros
+                              (diversos)" é o que o extrato do cartão chamou. Sem
+                              o selo, as duas lado a lado parecem de-para torto. */}
+                          <td className="px-2 py-2">
+                            <div className="max-w-[200px] leading-snug text-muted-foreground">
+                              {categoriaDaContraparte(c)}
+                            </div>
+                            <div className="text-[9.5px] uppercase tracking-wide text-muted-foreground/60">
+                              {c.origem === "cartao" ? "extrato" : "Omie"}
                             </div>
                           </td>
                           <td className="whitespace-nowrap px-2 py-2 text-right num text-muted-foreground">

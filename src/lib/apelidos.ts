@@ -239,12 +239,12 @@ export function intervaloDaJanela(
 /* Tabela explícita em vez de `toLocaleDateString`: o ICU do Node devolve
    "jul. de 26" e o do navegador "jul. de 26" ou "jul 26" conforme a versão — o
    rótulo do botão não pode depender de onde o código roda. */
-const MESES = ["Jan", "Fev", "Mar", "Abr", "Mai", "Jun", "Jul", "Ago", "Set", "Out", "Nov", "Dez"];
+export const MESES_CURTOS = ["Jan", "Fev", "Mar", "Abr", "Mai", "Jun", "Jul", "Ago", "Set", "Out", "Nov", "Dez"];
 
 /** "Jul 26" — o mês fechado, para o botão dizer qual é. */
 export function rotuloMesFechado(hoje: Date = new Date()): string {
   const m = new Date(hoje.getFullYear(), hoje.getMonth() - 1, 1);
-  return `${MESES[m.getMonth()]} ${String(m.getFullYear()).slice(-2)}`;
+  return `${MESES_CURTOS[m.getMonth()]} ${String(m.getFullYear()).slice(-2)}`;
 }
 
 /** Categorias que não dizem nada — quem cai nelas é justamente o que se pergunta. */

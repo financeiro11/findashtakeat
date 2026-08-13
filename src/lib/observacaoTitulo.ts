@@ -70,3 +70,27 @@ export function ehCartao(contraparte: string | null | undefined): boolean {
   const s = (contraparte ?? "").normalize("NFD").replace(/\p{Diacritic}/gu, "").toLowerCase();
   return /cartao/.test(s) && /(lancamento|fatura)/.test(s);
 }
+
+/**
+ * A observação vira nome SÓ quando o título é do cartão — e é por aqui que se
+ * pede, nunca por `lerObservacaoTitulo` solta.
+ *
+ * A trava mora nesta função, e não em cada tela, porque esquecê-la não dá erro:
+ * dá uma linha plausível e errada. A varredura diária guarda a observação de
+ * TODA conta a pagar, e num título comum esse texto é o que o fornecedor
+ * escreveu — "Link para visualizar a NFS-e: https://…", condição de pagamento,
+ * número do contrato. Lido como MEMO de fatura (que é posicional), o começo da
+ * frase vira "estabelecimento": a linha perde o nome do fornecedor, ganha um
+ * ícone de cartão que não é dela, e o mesmo lançamento passa a ter um nome na
+ * lista e outro na ponte — que agrupa pela regra travada.
+ *
+ * Devolve null quando não é cartão: a tela então mostra a contraparte do Omie,
+ * que nesses títulos é o nome de verdade.
+ */
+export function lerGastoDeCartao(
+  contraparte: string | null | undefined,
+  obs: string | null | undefined,
+): ObservacaoLida | null {
+  if (!ehCartao(contraparte)) return null;
+  return lerObservacaoTitulo(obs);
+}

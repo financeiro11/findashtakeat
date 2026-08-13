@@ -1,13 +1,14 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Loader2, TriangleAlert, Check, FileText, Users, Undo2, ArrowRightLeft, CreditCard, ChevronDown,
+  Paperclip,
 } from "lucide-react";
 import { toast } from "sonner";
 import { supabase } from "@/integrations/supabase/client";
 import { cn } from "@/lib/utils";
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { CategoriaEditavel } from "@/components/demonstracoes/TrocarCategoria";
-import { ehCartao, lerObservacaoTitulo } from "@/lib/observacaoTitulo";
+import { ehCartao, lerGastoDeCartao } from "@/lib/observacaoTitulo";
 import { mesAtras, mesCurto } from "@/lib/demonstracoes-schema";
 import { BuscaLancamentos, CabecalhoValor, RodapeLista } from "@/components/demonstracoes/FiltroLancamentos";
 import { TrocarCategoriaLote } from "@/components/demonstracoes/TrocarCategoriaLote";
@@ -102,11 +103,29 @@ const MESES_DE_HISTORICO = 12;
    argumentos de `demonstracoes_contrapartes` (migration 20260806200000). Mesmo
    atalho tipado dos ajustes de EBITDA — some quando os tipos forem regerados. */
 const db = supabase as unknown as {
+  from: (tabela: string) => any;
   rpc: (fn: string, args: Record<string, unknown>) => Promise<{
     data: unknown;
     error: { message: string } | null;
   }>;
 };
+
+/* ----- o comprovante que explica a linha ---------------------------------
+ * `comprovantes_drive` guarda a nota do Mercado Livre e a foto do grupo do
+ * WhatsApp já casadas com o lançamento (ver `comprovantes-drive-sync`). É o que
+ * transforma "MERCADO LIVRE R$ 45,60" em "pingadeira e tampa do purificador".
+ * O vínculo é `cod_titulo`, que a linha da DRE já tem na mão. */
+type Comprovante = {
+  cod_titulo: string;
+  descricao: string | null;
+  emitente: string | null;
+  casamento: string | null;
+  confianca: string | null;
+  drive_id: string;
+  nome_arquivo: string;
+};
+
+const linkDoDrive = (driveId: string) => `https://drive.google.com/file/d/${driveId}/view`;
 
 /** CNPJ/CPF só com dígitos fica ilegível numa coluna estreita. */
 const doc = (v: string | null) => {
@@ -314,6 +333,9 @@ export function LancamentosSheet({
    * recém-criado: poucos, e buscados sem que ninguém precise clicar. Ver a edge
    * function `omie-titulo-texto`. */
   const [textos, setTextos] = useState<Map<string, string | null>>(new Map());
+  /* Os comprovantes do Drive já casados com estes títulos. Carrega junto com a
+     lista, numa consulta só — a tabela é pequena e o índice é por cod_titulo. */
+  const [comprovantes, setComprovantes] = useState<Map<string, Comprovante>>(new Map());
   const [buscandoObs, setBuscandoObs] = useState(false);
   /** Quanto já entrou, para a espera ter tamanho em vez de ser um giro sem fim. */
   const [obsProgresso, setObsProgresso] = useState<{ feitos: number; total: number } | null>(null);
@@ -483,6 +505,25 @@ export function LancamentosSheet({
   }, [alvo?.tipo, alvo?.rubrica, alvo?.mes, lerTextos, buscarObs]);
 
   useEffect(() => { carregar(); }, [carregar]);
+
+  /* Os comprovantes desta célula. Roda depois da lista porque depende dos
+     `cod_titulo` dela, e falha calada: sem comprovante a linha continua inteira,
+     só sem a frase do que foi comprado. */
+  useEffect(() => {
+    const cods = [...new Set(linhas.map((l) => l.cod_titulo).filter(Boolean))] as string[];
+    if (!cods.length) { setComprovantes(new Map()); return; }
+
+    let vivo = true;
+    db.from("comprovantes_drive")
+      .select("cod_titulo,descricao,emitente,casamento,confianca,drive_id,nome_arquivo")
+      .in("cod_titulo", cods)
+      .then(({ data }: { data: Comprovante[] | null }) => {
+        if (!vivo) return;
+        setComprovantes(new Map((data ?? []).map((c) => [c.cod_titulo, c])));
+      });
+    return () => { vivo = false; };
+  }, [linhas]);
+
   useEffect(() => { carregarAlertas(); }, [carregarAlertas]);
   useEffect(() => { carregarComparativo(); }, [carregarComparativo]);
   useEffect(() => { carregarCategorias(); }, [carregarCategorias]);
@@ -565,16 +606,12 @@ export function LancamentosSheet({
   /* ----- o nome do fornecedor, uma regra só -----------------------------
    * No cartão a contraparte do título é o balde da fatura e quem identifica o
    * gasto é a observação — a MESMA leitura que a lista faz para escrever a
-   * linha. A observação só vale para o cartão de propósito: a varredura guarda
-   * o texto de toda conta a pagar, e um título comum com observação viraria um
-   * "fornecedor" com o começo da frase por nome, partindo em dois quem sempre
-   * foi um. */
+   * linha. Quem cuida de só ler observação de cartão é `lerGastoDeCartao`; ver
+   * lá por que a trava não pode ficar aqui. */
   const nomeDoFornecedor = useCallback((l: Lancamento): string => {
     let cru = l.contraparte?.trim() || "";
-    if (ehCartao(l.contraparte)) {
-      const lida = lerObservacaoTitulo(l.cod_titulo ? textos.get(l.cod_titulo) : undefined);
-      if (lida) cru = lida.estabelecimento;
-    }
+    const lida = lerGastoDeCartao(l.contraparte, l.cod_titulo ? textos.get(l.cod_titulo) : undefined);
+    if (lida) cru = lida.estabelecimento;
     /* O apelido entra aqui, e não só na linha da lista, porque este é o nome que
        a ponte de variação e o comparativo usam para AGRUPAR. Duas grafias do
        mesmo fornecedor apontando para o mesmo apelido passam a ser uma linha só
@@ -648,7 +685,7 @@ export function LancamentosSheet({
      trocar só a exibição faria a linha sumir do filtro pelo nome que está
      escrito na tela. */
   const visiveis = filtrarLancamentos(linhas, filtro, (l) => {
-    const lida = lerObservacaoTitulo(l.cod_titulo ? textos.get(l.cod_titulo) : undefined);
+    const lida = lerGastoDeCartao(l.contraparte, l.cod_titulo ? textos.get(l.cod_titulo) : undefined);
     const cru = lida ? lida.estabelecimento : l.contraparte;
     const ap = apelidoDe(apelidos, cru, l.cnpj_cpf);
     return [
@@ -1050,13 +1087,16 @@ export function LancamentosSheet({
                       const aberto = a?.status === "aberto";
                       const suspeito = ehSuspeito(l);
                       const obs = l.cod_titulo ? textos.get(l.cod_titulo) : undefined;
-                      const lida = lerObservacaoTitulo(obs);
+                      const lida = lerGastoDeCartao(l.contraparte, obs);
                       /* O nome cru que identifica o gasto: o lojista, quando é
                          cartão; a contraparte do Omie, no resto. É por ele que
                          se procura o apelido — e é ele que sobra na linha de
                          apoio quando o apelido assume a de cima. */
                       const cru = lida ? lida.estabelecimento : (l.contraparte ?? doc(l.cnpj_cpf));
                       const ap = apelidoDe(apelidos, cru, l.cnpj_cpf);
+                      /* A nota do Mercado Livre ou a foto do grupo do WhatsApp,
+                         quando o sync achou par para esta linha. */
+                      const cpv = l.cod_titulo ? comprovantes.get(l.cod_titulo) : undefined;
                       /* Pelo código do título, não pelo nome: no cartão o nome
                          que está na tela vem da observação (que chega depois) e
                          o do comparativo vem do casamento com a fatura — casar
@@ -1128,9 +1168,32 @@ export function LancamentosSheet({
                               {ap ? ap.apelido : cru}
                             </span>
                             {forn && comp && <ChipFornecedor f={forn} comp={comp} />}
+                            {/* O clipe abre o comprovante no Drive. Fica na
+                                linha de cima, junto do nome, porque é a resposta
+                                a "o que foi isso?" — não um detalhe de apoio. */}
+                            {cpv && (
+                              <a
+                                href={linkDoDrive(cpv.drive_id)}
+                                target="_blank" rel="noreferrer"
+                                onClick={(e) => e.stopPropagation()}
+                                className="shrink-0 text-muted-foreground transition hover:text-foreground"
+                                title={[
+                                  cpv.descricao,
+                                  cpv.emitente ? `vendedor: ${cpv.emitente}` : null,
+                                  `casou por ${cpv.casamento === "soma_pedido" ? "soma do pedido"
+                                    : cpv.casamento === "parcela" ? "valor da parcela" : "valor e data"}`,
+                                  cpv.nome_arquivo,
+                                ].filter(Boolean).join(" · ")}
+                              >
+                                <Paperclip className="h-3 w-3" />
+                              </a>
+                            )}
                           </div>
                           {(() => {
                             const apoio = [
+                              // O que o comprovante diz vem PRIMEIRO: numa linha
+                              // que corta por reticências, é o que não pode sumir.
+                              cpv?.descricao ?? null,
                               ap ? cru : null,
                               lida ? (l.contraparte ?? doc(l.cnpj_cpf)) : null,
                               lida?.detalhe,

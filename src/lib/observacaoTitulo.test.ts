@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { memoDaObservacao, lerObservacaoTitulo, ehCartao } from "./observacaoTitulo";
+import { memoDaObservacao, lerObservacaoTitulo, ehCartao, lerGastoDeCartao } from "./observacaoTitulo";
 
 /* Observações reais do Omie (cache contas_pagar, 05/08/2026) — o formato tem que
    ser lido como está lá, não como seria bonito. */
@@ -83,5 +83,32 @@ describe("ehCartao", () => {
     expect(ehCartao("Cartão de Todos Franquia")).toBe(false); // tem "cartão", não é balde
     expect(ehCartao(null)).toBe(false);
     expect(ehCartao("")).toBe(false);
+  });
+});
+
+/* A varredura diária guarda a observação de TODA conta a pagar, não só das do
+   cartão. Num título comum esse texto é o que o fornecedor escreveu, e lê-lo
+   como MEMO (que corta por posição) transformava o começo da frase no nome da
+   linha — foi assim que o GETDEMO virou "Link para visualizar a NFS-e:". */
+describe("lerGastoDeCartao", () => {
+  it("título comum não é lido pela regra do cartão, por mais texto que tenha", () => {
+    expect(lerGastoDeCartao(
+      "GETDEMO",
+      "Link para visualizar a NFS-e: https://www.nfse.gov.br/consulta/12345 - venc. 29/07",
+    )).toBeNull();
+  });
+
+  it("nem quando a observação por acaso tem o formato do MEMO", () => {
+    expect(lerGastoDeCartao("PLENUS SOLUCOES", PREFIXO + "APPLE.COM/BILL                SAO PAULO")).toBeNull();
+  });
+
+  it("no balde da fatura vale a observação — é ela que diz qual é o gasto", () => {
+    const r = lerGastoDeCartao("Lancamento Fatura Cartao", PREFIXO + "APPLE.COM/BILL                SAO PAULO")!;
+    expect(r.estabelecimento).toBe("APPLE.COM/BILL");
+    expect(r.detalhe).toBe("SAO PAULO");
+  });
+
+  it("cartão sem observação continua null — a tela mostra o que já mostrava", () => {
+    expect(lerGastoDeCartao("Lancamento Fatura Cartao", null)).toBeNull();
   });
 });

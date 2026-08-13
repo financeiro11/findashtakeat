@@ -49,8 +49,14 @@ const PASTAS: { pasta: "mercado_livre" | "whatsapp"; raiz: string }[] = [
 const DIAS_ANTES = 7;
 const DIAS_DEPOIS = 45;
 const TOLERANCIA = 0.02;
-/** Teto por rodada: cada foto é uma chamada de OCR, e o edge morre aos 150s. */
-const TETO_OCR = 40;
+/* Tetos por rodada. O edge morre aos 150s E tem memória curta: a primeira
+   tentativa de varrer as 107 fotos de uma vez caiu com WORKER_RESOURCE_LIMIT,
+   porque cada imagem vira base64 (um terço maior) para caber no corpo do OCR.
+   Loteia-se, e o cron diário come o resto — nada se perde, só demora. */
+const TETO_OCR = 18;
+const TETO_ARQUIVOS = 25;
+/** Acima disto o base64 não cabe na invocação. "NOTAS FESTA.pdf" tem 2,7 MB. */
+const MAX_BYTES_OCR = 4 * 1024 * 1024;
 
 type Arquivo = { id: string; name: string; mimeType: string; modifiedTime?: string };
 type LinhaCartao = {
@@ -112,17 +118,23 @@ type Lido = {
   notas: number;
 };
 
-const ESQUEMA_OCR = {
-  type: "object",
-  properties: {
-    emitente: { type: "string", description: "Nome do estabelecimento que emitiu. Vazio se ilegível." },
-    data: { type: "string", description: "Data do documento em AAAA-MM-DD. Vazio se ilegível." },
-    valor: { type: "number", description: "VALOR TOTAL pago. 0 se ilegível." },
-    descricao: { type: "string", description: "O que foi comprado, em até 90 caracteres." },
-    legivel: { type: "boolean", description: "false quando o documento não dá para ler." },
-  },
-  required: ["emitente", "data", "valor", "descricao", "legivel"],
-};
+/* O formato vai no PROMPT, não em `responseSchema`.
+ *
+ * O `responseSchema` do Gemini é mais restrito que o da OpenAI e recusava a
+ * chamada inteira — 24 de 25 arquivos morriam com "OCR não leu", sem motivo
+ * visível porque eu engolia o corpo do erro. O `parse-balancete-pdf`, que
+ * funciona há meses, manda só `responseMimeType: "application/json"` e descreve
+ * o formato no texto. É o caminho batido da casa. */
+const SISTEMA_OCR = `Você lê comprovantes de compra brasileiros (nota fiscal, cupom, recibo, print de PIX).
+
+Responda SOMENTE com um objeto JSON neste formato:
+{"emitente": string, "data": "AAAA-MM-DD", "valor": number, "descricao": string, "legivel": boolean}
+
+Devolve o que ESTÁ ESCRITO. Se um campo não der para ler, devolva "" (ou 0 no valor)
+e marque legivel=false — NUNCA estime. O valor e a data são usados para casar com o
+extrato do cartão: um número inventado gruda o comprovante no lançamento errado, e
+isso é pior do que não ter comprovante.
+Em "descricao", diga o que foi comprado em poucas palavras, sem repetir o valor.`;
 
 /**
  * OCR pelo Gemini — só onde não há texto para ancorar.
@@ -131,22 +143,18 @@ const ESQUEMA_OCR = {
  * manda dizer "não deu" em vez de inventar: um valor chutado aqui cola o
  * comprovante no lançamento errado, que é pior do que comprovante nenhum.
  */
+/** O último erro do OCR, para a resposta do sync dizer o motivo em vez de "não leu". */
+let ultimoErroOcr = "";
+
 async function ocr(bytes: Uint8Array, mime: string, dica: string, aiKey: string): Promise<Lido | null> {
+  if (!aiKey) { ultimoErroOcr = "GEMINI_API_KEY ausente"; return null; }
   const r = await fetch(
     `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent?key=${aiKey}`,
     {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        systemInstruction: {
-          parts: [{
-            text: `Você lê comprovantes de compra brasileiros (nota fiscal, cupom, recibo, print de PIX).
-Devolve o que ESTÁ ESCRITO. Se um campo não der para ler, devolva vazio ou 0 e marque legivel=false —
-NUNCA estime. O valor e a data são usados para casar com o extrato: um número inventado gruda o
-comprovante no lançamento errado, e isso é pior do que não ter comprovante.
-Na descrição, diga o que foi comprado em poucas palavras, sem repetir o valor.`,
-          }],
-        },
+        systemInstruction: { parts: [{ text: SISTEMA_OCR }] },
         contents: [{
           role: "user",
           parts: [
@@ -154,22 +162,21 @@ Na descrição, diga o que foi comprado em poucas palavras, sem repetir o valor.
             { inlineData: { mimeType: mime, data: base64(bytes) } },
           ],
         }],
-        generationConfig: {
-          responseMimeType: "application/json",
-          responseSchema: ESQUEMA_OCR,
-          temperature: 0,
-        },
+        generationConfig: { responseMimeType: "application/json", temperature: 0 },
       }),
       signal: AbortSignal.timeout(60_000),
     },
   );
-  if (!r.ok) return null;
+  if (!r.ok) {
+    ultimoErroOcr = `Gemini ${r.status}: ${(await r.text()).slice(0, 140)}`;
+    return null;
+  }
   const j = await r.json();
-  const txt = j?.candidates?.[0]?.content?.parts?.[0]?.text;
-  if (!txt) return null;
+  const txt = j?.candidates?.[0]?.content?.parts?.map((p: { text?: string }) => p.text ?? "").join("");
+  if (!txt) { ultimoErroOcr = "Gemini devolveu resposta vazia"; return null; }
 
   let d: Record<string, unknown>;
-  try { d = JSON.parse(txt); } catch { return null; }
+  try { d = JSON.parse(txt); } catch { ultimoErroOcr = `JSON inválido: ${txt.slice(0, 90)}`; return null; }
   const valor = Number(d.valor) || 0;
   const data = String(d.data ?? "").match(/^\d{4}-\d{2}-\d{2}$/) ? String(d.data) : null;
 
@@ -234,17 +241,19 @@ async function lerArquivo(
       };
     }
     if (!podeOcr) return { lido: null, erro: "fila de OCR cheia nesta rodada" };
+    if (bytes.length > MAX_BYTES_OCR) return { lido: null, erro: "arquivo grande demais para o OCR" };
     const l = await ocr(bytes, "application/pdf", doNome ?? a.name, aiKey);
     return l ? { lido: { ...l, descricao: doNome ?? l.descricao }, erro: null }
-             : { lido: null, erro: "OCR não leu o PDF" };
+             : { lido: null, erro: ultimoErroOcr || "OCR não leu o PDF" };
   }
 
   if (a.mimeType.startsWith("image/")) {
     if (!podeOcr) return { lido: null, erro: "fila de OCR cheia nesta rodada" };
+    if (bytes.length > MAX_BYTES_OCR) return { lido: null, erro: "arquivo grande demais para o OCR" };
     const l = await ocr(bytes, a.mimeType, doNome ?? a.name, aiKey);
     // O nome do arquivo ganha do OCR na descrição — foi uma pessoa que escreveu.
     return l ? { lido: { ...l, descricao: doNome ?? l.descricao }, erro: null }
-             : { lido: null, erro: "OCR não leu a imagem" };
+             : { lido: null, erro: ultimoErroOcr || "OCR não leu a imagem" };
   }
 
   return { lido: null, erro: `tipo não tratado: ${a.mimeType}` };
@@ -431,9 +440,14 @@ Deno.serve(async (req) => {
       }
     }
 
+    /* O que sobra fica para a próxima rodada — o cron é diário e a fila anda
+       sozinha. `restante` na resposta diz quanto falta. */
+    const aindaFaltam = Math.max(0, pendentes.length - TETO_ARQUIVOS);
+    pendentes.length = Math.min(pendentes.length, TETO_ARQUIVOS);
+
     if (previa) {
       return json({ ok: true, previa: true, chave_fonte: chaveFonte, chave_recusadas: recusas,
-        por_pasta: porPasta, a_processar: pendentes.length,
+        por_pasta: porPasta, a_processar: pendentes.length, na_fila: aindaFaltam,
         amostra: pendentes.slice(0, 10).map((p) => ({ pasta: p.pasta, mes: p.mes, nome: p.arq.name })) });
     }
 
@@ -526,7 +540,7 @@ Deno.serve(async (req) => {
       processados: pendentes.length, lidos, casados, ambiguos, falhas,
       ocr_usados: ocrsFeitos, ocr_teto: TETO_OCR,
       memos_resolvidos_em_titulo: comTitulo,
-      restante: Math.max(0, pendentes.length - lidos - falhas),
+      na_fila: aindaFaltam,
     });
   } catch (e) {
     console.error("comprovantes-drive-sync", e);

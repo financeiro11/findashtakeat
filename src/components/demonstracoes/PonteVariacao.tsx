@@ -3,7 +3,7 @@ import { ChevronDown, ChevronRight, Check, TriangleAlert, Loader2, CreditCard, F
 import { cn } from "@/lib/utils";
 import { mesCurto } from "@/lib/demonstracoes-schema";
 import { ChipSituacao } from "@/components/demonstracoes/ChipSituacao";
-import { lerObservacaoTitulo } from "@/lib/observacaoTitulo";
+import { lerGastoDeCartao } from "@/lib/observacaoTitulo";
 import { rotuloSituacao, type Comparativo, type Situacao } from "@/lib/comparativoFornecedores";
 import {
   explicarPeca, rotuloContagem, rotuloGrupo,
@@ -71,7 +71,7 @@ function LinhaLancamento({
   moeda: (n: number) => string;
 }) {
   const obs = obsDe(l.cod_titulo);
-  const lida = lerObservacaoTitulo(obs);
+  const lida = lerGastoDeCartao(l.contraparte, obs);
   const apoio = [
     lida?.detalhe,
     lida?.parcela ? `parcela ${lida.parcela}` : null,

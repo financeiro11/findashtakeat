@@ -147,8 +147,8 @@ export function CategoriaEditavel({
   if (!codTitulo) {
     return (
       <>
-        <div className="text-foreground/90">{descricao ?? "—"}</div>
-        <div className="mt-px font-mono text-[10px] text-muted-foreground">{codigo ?? "—"}</div>
+        <div className="truncate text-foreground/90" title={descricao ?? undefined}>{descricao ?? "—"}</div>
+        <div className="mt-px truncate font-mono text-[9.5px] text-muted-foreground">{codigo ?? "—"}</div>
       </>
     );
   }
@@ -162,13 +162,15 @@ export function CategoriaEditavel({
         <button
           type="button"
           title="Trocar a categoria deste lançamento no Omie"
-          className="group -mx-1 w-full rounded px-1 py-0.5 text-left transition hover:bg-secondary"
+          className="group -mx-1 w-full overflow-hidden rounded px-1 py-0.5 text-left transition hover:bg-secondary"
         >
-          <div className="flex items-center gap-1 text-foreground/90">
-            <span>{descricao ?? "—"}</span>
+          {/* Coluna de largura fixa: a descrição corta, e o texto inteiro fica
+              no hover junto com o convite a trocar. */}
+          <div className="flex items-center gap-1 text-foreground/90" title={descricao ?? undefined}>
+            <span className="truncate">{descricao ?? "—"}</span>
             <Pencil className="h-2.5 w-2.5 shrink-0 text-muted-foreground opacity-0 transition group-hover:opacity-100" />
           </div>
-          <div className="mt-px font-mono text-[10px] text-muted-foreground">{codigo ?? "—"}</div>
+          <div className="mt-px truncate font-mono text-[9.5px] text-muted-foreground">{codigo ?? "—"}</div>
         </button>
       </PopoverTrigger>
 

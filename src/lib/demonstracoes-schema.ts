@@ -125,80 +125,103 @@ export const DRE_SCHEMA: Node[] = [
   { label: "% Margem Líquida", kind: "percent", src: "Lucro Líquido", pctOf: "Receita Líquida" },
 ];
 
-// A ordem dos blocos de topo é fixa (usada pelos KPIs):
-//   Entradas · Saídas · FCO · Investimentos · Financiamento · Fluxo Livre · Cashburn
+/* ---------------------------------------------------------------------------
+ * A DFC é uma TRANSCRIÇÃO do tracker.
+ *
+ * Linha por linha, na ordem em que a diretoria lê a planilha ("Takeat - Tracker
+ * de Orçamento - vOMIE Automática"). A regra é dura de propósito: se a rubrica
+ * não está no tracker, ela não entra aqui — linha inventada aparece na tela como
+ * um "—" eterno que ninguém sabe explicar, e foi exatamente o que aconteceu com
+ * "Receita de Assinaturas" e "Receita com Materiais", que a DFC do tracker não
+ * tem (o recebimento inteiro cai em "Entrada de Receita").
+ *
+ * Os SEIS grupos das saídas são os blocos que a planilha separa por linha em
+ * branco — ela não os nomeia, nós nomeamos, e cada grupo contém exatamente o
+ * bloco dela, na ordem dela. Onde o nome do grupo mudou, o nome antigo virou
+ * `alias` para o valor já gravado no blob continuar sendo lido e reescrito na
+ * MESMA linha, em vez de nascer uma linha órfã ao lado.
+ *
+ * A ordem dos blocos de topo é fixa — a DFC.tsx lê `DFC_SCHEMA[0..6]` por
+ * índice: Entradas · Saídas · FCO · Investimentos · Financiamento · Fluxo Livre
+ * · Cashburn. Linha nova entra DEPOIS do Cashburn.
+ * ------------------------------------------------------------------------- */
 export const DFC_SCHEMA: Node[] = [
   { label: "Entradas Operacionais", kind: "header", alias: ["Entradas"], children: [
-    { label: "Receita de Assinaturas", kind: "child" },
-    { label: "Receita com Materiais", kind: "child" },
-    { label: "Receita Markup", kind: "child" },
-    { label: "Receita de Serviços", kind: "child" },
     { label: "Entrada de Receita", kind: "child" },
     /* Antecipação de recebível entra e sai do CAIXA operacional — é onde o
        tracker a lança. Antes morava em Financiamento com outro nome, e as
        entradas de 2024 (R$ 26,7 mil + 50,3 mil + 93,3 mil) não apareciam. */
     { label: "Antecipação da Receita", kind: "child", alias: ["Antecipação"] },
+    { label: "Receita de Serviços", kind: "child" },
+    { label: "Receita Markup", kind: "child" },
     { label: "(+) Receita financeira", kind: "child" },
   ]},
   { label: "Saídas Operacionais", kind: "header", alias: ["Saídas"], children: [
-    { label: "Impostos", kind: "child", children: [
+    /* Bloco 1 do tracker: não é só imposto — a devolução, a inadimplência e o
+       abatimento da antecipação estão dentro dele, entre as linhas de tributo. */
+    { label: "Impostos & Deduções", kind: "child", alias: ["Impostos"], children: [
       { label: "Simples Nacional", kind: "leaf" },
       { label: "PIS", kind: "leaf" },
       { label: "COFINS", kind: "leaf" },
       { label: "ISS", kind: "leaf" },
       { label: "ICMS", kind: "leaf" },
-      { label: "IRF", kind: "leaf" },
+      { label: "Inadimplência", kind: "leaf" },
+      /* "Atencipação" é typo do tracker, e é assim que a linha está gravada. */
+      { label: "Abatimento de Antecipação da Receita", kind: "leaf", alias: ["Abatimento de Atencipação"] },
       { label: "Parcelamento de Impostos", kind: "leaf" },
+      { label: "Devoluções", kind: "leaf" },
       { label: "Retenção de Contribuição", kind: "leaf" },
+    ]},
+    { label: "Custos de Operação", kind: "child", children: [
+      { label: "Equipe Operacional", kind: "leaf" },
+      { label: "CMV Materiais", kind: "leaf" },
+      { label: "Meios de Pagamento", kind: "leaf" },
+      { label: "Premiações Operacionais", kind: "leaf" },
+      { label: "Servidor", kind: "leaf" },
+      { label: "Softwares Operacionais", kind: "leaf" },
+      { label: "Outros Custos", kind: "leaf" },
     ]},
     { label: "Pessoal", kind: "child", children: [
       { label: "Equipe Administrativa", kind: "leaf" },
-      { label: "Equipe Comercial", kind: "leaf" },
       { label: "Equipe Marketing", kind: "leaf" },
-      { label: "Equipe Tecnologia", kind: "leaf" },
-      { label: "Equipe Operacional", kind: "leaf" },
-      { label: "Equipe Onboarding", kind: "leaf" },
       /* Existe no tracker desde sempre e faltava aqui: jan–mar/26 tinham
          R$ 27,7 mil que não apareciam em lugar nenhum da DFC. */
       { label: "Equipe Parcerias", kind: "leaf" },
-      { label: "Premiações Operacionais", kind: "leaf" },
-      { label: "Premiações", kind: "leaf" },
-      { label: "Encargos sociais", kind: "leaf" },
+      { label: "Equipe Comercial", kind: "leaf" },
+      { label: "Equipe Onboarding", kind: "leaf" },
+      { label: "Equipe Tecnologia", kind: "leaf" },
       { label: "Benefícios", kind: "leaf" },
-    ]},
-    { label: "Custos de Operação", kind: "child", children: [
-      { label: "CMV Materiais", kind: "leaf" },
-      { label: "Outros Custos", kind: "leaf" },
-      { label: "Meios de Pagamento", kind: "leaf" },
-      { label: "Servidor", kind: "leaf" },
-      { label: "Softwares Operacionais", kind: "leaf" },
-      { label: "MGM", kind: "leaf" },
+      { label: "Encargos Sociais", kind: "leaf" },
     ]},
     { label: "Despesas Administrativas", kind: "child", children: [
+      { label: "Ocupação & Escritório", kind: "leaf" },
       { label: "Assessorias & Consultorias", kind: "leaf" },
       { label: "Softwares Administrativos", kind: "leaf" },
-      { label: "Ocupação & Escritório", kind: "leaf" },
       { label: "Viagens & Transportes Adm", kind: "leaf" },
-      { label: "Outras Despesas Adm", kind: "leaf" },
+      { label: "Outras despesas Adm", kind: "leaf" },
     ]},
     { label: "Despesas Marketing & Vendas", kind: "child", children: [
-      { label: "Softwares Marketing & Vendas", kind: "leaf" },
-      { label: "Agências & Consultorias", kind: "leaf" },
       { label: "Campanhas de Mídia Paga", kind: "leaf" },
       { label: "Campanhas de Outros Canais", kind: "leaf" },
       { label: "Comissões Consultores / Parceiros", kind: "leaf" },
-      { label: "Eventos e Feiras", kind: "leaf" },
+      { label: "Premiações", kind: "leaf" },
+      { label: "MGM", kind: "leaf" },
+      { label: "Softwares Marketing & Vendas", kind: "leaf" },
+      { label: "Agências & Consultorias", kind: "leaf" },
       { label: "Viagens & Transportes Mkt", kind: "leaf" },
-      { label: "Outras Despesas Mkt", kind: "leaf" },
+      { label: "Eventos e Feiras", kind: "leaf" },
+      { label: "Outras despesas Mkt", kind: "leaf" },
     ]},
-    { label: "Financeiras", kind: "child", children: [
+    /* Último bloco do tracker: juros e IOF pagos, e logo abaixo IRPJ/CSLL. O
+       nome antigo era só "Financeiras" — o imposto sobre o lucro estava fora da
+       DFC e o "(-) Depesas Financeiras" que ocupava o lugar dele não existe na
+       planilha. */
+    { label: "Financeiras & Impostos sobre o Lucro", kind: "child", alias: ["Financeiras"], children: [
       { label: "(-) Juros", kind: "leaf" },
       { label: "(-) IOF", kind: "leaf" },
-      { label: "(-) Depesas Financeiras", kind: "leaf" },
+      { label: "IRPJ", kind: "leaf" },
+      { label: "CSLL", kind: "leaf" },
     ]},
-    { label: "Devoluções", kind: "child" },
-    /* "Atencipação" é typo do tracker, e é assim que a linha está gravada. */
-    { label: "Abatimento de Antecipação da Receita", kind: "child", alias: ["Abatimento de Atencipação"] },
   ]},
   { label: "Fluxo de Caixa Operacional", kind: "total" },
   { label: "Investimentos", kind: "header", alias: ["Fluxo de Caixa de Investimentos"], children: [
@@ -213,12 +236,18 @@ export const DFC_SCHEMA: Node[] = [
   { label: "Financiamento", kind: "header", alias: ["Fluxo de Financiamento"], children: [
     { label: "(+) Novos Empréstimos & Financiamentos", kind: "child" },
     { label: "(-) Amortização de Financiamentos", kind: "child" },
+    { label: "(-) Dividendos", kind: "child" },
     { label: "(-) Rodada de Investimentos", kind: "child" },
   ]},
   { label: "Fluxo Livre", kind: "total", alias: ["Fluxo de Caixa Livre"] },
   /* Queima do MÊS, não janela de 12 meses: é o fluxo livre sem a captação
      extraordinária. Ver o comentário de CASHBURN. */
   { label: "Cashburn", kind: "total" },
+  /* Conferência do tracker, abaixo da demonstração: o que o banco mostrou e o
+     quanto sobra de diferença. Não somam em nada — são `leaf` justamente para
+     não virarem um "total" sem fórmula (ver composicaoCelula.ts). */
+  { label: "Fluxo de Caixa Livre - Banco", kind: "leaf" },
+  { label: "Diferença de Saldos", kind: "leaf" },
 ];
 
 export const flattenLabels = (nodes: Node[]): string[] =>

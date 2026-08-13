@@ -4,6 +4,7 @@ import { AppSidebar } from "@/components/AppSidebar";
 import { PageHeader } from "@/components/PageHeader";
 import { ProfileMenu } from "@/components/ProfileMenu";
 import { AIAssistant } from "@/components/AIAssistant";
+import { NovaVersao } from "@/components/NovaVersao";
 import { useAuth } from "@/hooks/useAuth";
 import { moduleAccess, currentModule } from "@/lib/modules";
 
@@ -40,6 +41,9 @@ export default function AppLayout() {
       <div className="flex min-h-screen w-full bg-background">
         <div data-chrome="sidebar" className="contents"><AppSidebar /></div>
         <div className="flex min-w-0 flex-1 flex-col">
+          {/* Acima do cabeçalho e fora do `main`: o aviso não rola junto com a
+              página nem entra no PDF de quem imprime (ver `data-chrome`). */}
+          <div data-chrome="nova-versao" className="contents"><NovaVersao /></div>
           <div data-chrome="header" className="sticky top-0 z-30 flex items-center border-b border-border bg-card/95 backdrop-blur">
             <div className="flex-1"><PageHeader /></div>
             <div className="px-3"><ProfileMenu /></div>

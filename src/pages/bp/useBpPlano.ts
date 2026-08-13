@@ -46,11 +46,12 @@ export function useBpPlano(ano: number): PlanoBP {
       const [plano, dem] = await Promise.all([
         supabase.from("bp_anual" as any).select("dados, abas").eq("ano", ano).maybeSingle(),
         supabase
+          // periodo='completo': o registro em que o import/omie-sync escrevem — a tabela
+          // também guarda backups, e "o mais recente do tipo" pegava o backup.
           .from("demonstracoes_contabeis" as any)
           .select("dados")
           .eq("tipo", "dre")
-          .order("updated_at", { ascending: false })
-          .limit(1)
+          .eq("periodo", "completo")
           .maybeSingle(),
       ]);
       // `dados` é a aba Consolidado no formato antigo; `abas` traz a planilha

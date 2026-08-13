@@ -131,10 +131,12 @@ export default function DashboardLegacy() {
     document.title = "Início · Central do Financeiro";
     (async () => {
       const { data } = await supabase
+        // periodo='completo': o registro em que o import/omie-sync escrevem — a tabela
+        // também guarda backups, e "o mais recente do tipo" pegava o backup.
         .from("demonstracoes_contabeis" as any)
         .select("tipo,dados,updated_at,periodo")
         .in("tipo", ["dre", "dfc"])
-        .order("updated_at", { ascending: false });
+        .eq("periodo", "completo");
       const seen = new Set<string>();
       (data ?? []).forEach((d: any) => {
         if (seen.has(d.tipo)) return;

@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   lerDre, mesesComDado, alavancagem, pessoalSobreReceita, serieArr,
-  regraDos40, calcularRunway, ponteEbitda, mesmoMesAnoPassado, fluxoLivreDaDfc,
+  regraDos40, calcularRunway, ponteEbitda, mesmoMesAnoPassado, fluxoLivreDaDfc, cashburnDaDfc,
   RL, EBITDA, SGA, CUSTOS_OP, PESSOAL_SGA,
   type LinhaBlob,
 } from "@/lib/analisesDre";
@@ -211,8 +211,8 @@ describe("fluxo livre da DFC", () => {
   /* O blob da DFC que o omie-sync escreve: folhas preenchidas, linhas de total
      em branco. É o caso que fazia o runway sumir. */
   const DFC_SEM_TOTAIS: LinhaBlob[] = [
-    linha("Receita de Assinaturas", [1000, 1000, 1000, 1000]),   // Entradas Operacionais
-    linha("Simples Nacional", [-50, -50, -50, -50]),             // Saídas > Impostos
+    linha("Entrada de Receita", [1000, 1000, 1000, 1000]),       // Entradas Operacionais
+    linha("Simples Nacional", [-50, -50, -50, -50]),             // Saídas > Impostos & Deduções
     linha("Equipe Administrativa", [-700, -700, -700, -700]),    // Saídas > Pessoal
     linha("(-) Compra de Equipamentos", [-100, 0, 0, 0]),        // Investimentos
     linha("(+) Novos Empréstimos & Financiamentos", [0, 0, 500, 0]), // Financiamento
@@ -233,13 +233,44 @@ describe("fluxo livre da DFC", () => {
 
   it("alimenta o runway de ponta a ponta", () => {
     const gastando: LinhaBlob[] = [
-      linha("Receita de Assinaturas", [1000, 1000, 1000, 1000]),
+      linha("Entrada de Receita", [1000, 1000, 1000, 1000]),
       linha("Equipe Administrativa", [-1200, -1300, -1400, -1500]),
     ];
     const f = fluxoLivreDaDfc(gastando, COLS);
     const r = calcularRunway(3600, COLS.map((c) => f[c]), 3);
     expect(r.queima).toBeCloseTo(400, 6);   // média de 300, 400, 500
     expect(r.meses).toBeCloseTo(9, 6);
+  });
+
+  /* A mesma DFC lida como QUEIMA: o empréstimo de 500 em Jan-26 sai da conta. */
+  describe("cashburn", () => {
+    it("tira a captação do fluxo livre", () => {
+      const cb = cashburnDaDfc(DFC_SEM_TOTAIS, COLS);
+      expect(cb["Feb-25"]).toBe(250);          // mês sem empréstimo: igual ao livre
+      expect(cb["Jan-26"]).toBe(250);          // livre 750 − 500 de empréstimo
+    });
+
+    it("respeita a linha gravada — é o que a grade da DFC mostra", () => {
+      const comLinha = [...DFC_SEM_TOTAIS, linha("Cashburn", [-42, -42, -42, -42])];
+      expect(cashburnDaDfc(comLinha, COLS)["Jan-26"]).toBe(-42);
+    });
+
+    it("o empréstimo não pode virar runway: livre positivo, queima real", () => {
+      const comCaptacao: LinhaBlob[] = [
+        linha("Entrada de Receita", [1000, 1000, 1000, 1000]),
+        linha("Equipe Administrativa", [-1200, -1200, -1200, -1200]),
+        linha("(+) Novos Empréstimos & Financiamentos", [0, 0, 500, 0]),
+      ];
+      const livre = fluxoLivreDaDfc(comCaptacao, COLS);
+      const queima = cashburnDaDfc(comCaptacao, COLS);
+      expect(livre["Jan-26"]).toBe(300);       // positivo por causa da captação
+      expect(queima["Jan-26"]).toBe(-200);     // e o caixa queimou 200 assim mesmo
+
+      /* Mesmos 3.600 de saldo e a mesma janela de três meses: contando o
+         empréstimo o caixa "dura" nove anos; medindo a queima, um ano e meio. */
+      expect(calcularRunway(3600, COLS.map((c) => livre[c]), 3).meses).toBeCloseTo(108, 6);
+      expect(calcularRunway(3600, COLS.map((c) => queima[c]), 3).meses).toBeCloseTo(18, 6);
+    });
   });
 });
 

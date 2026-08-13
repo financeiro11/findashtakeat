@@ -231,13 +231,15 @@ describe("TOTAIS_DRE", () => {
     fecha quando as folhas ainda não vieram do Omie) — a leitura cai no valor
     gravado quando nenhum filho tem número. */
 const DFC_FECHADO: Record<string, number | null> = {
-  "Receita de Assinaturas": 1150000, "Receita com Materiais": 2100, "Receita Markup": 19400,
-  "Receita de Serviços": null, "Entrada de Receita": 21500,
-  "Antecipação da Receita": 45000, "(+) Receita financeira": 18067,
+  // O recebimento entra inteiro em "Entrada de Receita": a DFC do tracker não
+  // separa a receita por produto como a DRE separa.
+  "Entrada de Receita": 1173600, "Antecipação da Receita": 45000,
+  "Receita de Serviços": null, "Receita Markup": 19400,
+  "(+) Receita financeira": 18067,
   "Entradas Operacionais": 1256067,
-  "Impostos": -62599, "Pessoal": -557477, "Custos de Operação": -218388,
+  "Impostos & Deduções": -86572, "Custos de Operação": -218388, "Pessoal": -557477,
   "Despesas Administrativas": -84200, "Despesas Marketing & Vendas": -96310,
-  "Financeiras": -7251, "Devoluções": -23973,
+  "Financeiras & Impostos sobre o Lucro": -7251,
   "Saídas Operacionais": -1050198,
   "Fluxo de Caixa Operacional": 205869,
   "(+) Resultado Não Operacional": 10085, "(-) Compra de Equipamentos": -12400,
@@ -286,7 +288,7 @@ describe("composicaoDaCelula · DFC", () => {
     const c = composicaoDaCelula("Saídas Operacionais", leitor(DFC_FECHADO, "dfc"))!;
 
     expect(c.tipo).toBe("filhos");
-    expect(c.parcelas[0].rotulo).toBe("Impostos");
+    expect(c.parcelas[0].rotulo).toBe("Impostos & Deduções");
     expect(c.calculado).toBe(-1050198);
     expect(c.divergente).toBe(false);
   });

@@ -5,7 +5,7 @@ import {
   Percent, BookOpen, UserCog, Smartphone, Plane, Settings,
   FolderKanban, FileBarChart, FileText, Scale, TrendingUp, Brain, Target, Home, Search, Sparkles, Gavel, CheckSquare, ChevronDown, BookOpenCheck, PieChart, Handshake as HandshakeIcon, CheckCircle2, Receipt, Undo2, Wallet2, ShieldCheck, Landmark,
   LayoutDashboard, Kanban, FileSpreadsheet, Truck, History, FileSignature, Wrench, Star, Repeat,
-  Presentation, Building2,
+  Presentation, Building2, Tags,
 } from "lucide-react";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import takeatLogo from "@/assets/takeat-logo.png";
@@ -109,6 +109,7 @@ const governanca: NavItem[] = [
 ];
 
 const config: NavItem[] = [
+  { title: "Parametrização", url: "/configuracoes/parametrizacao", icon: Tags },
   { title: "Usuários", url: "/usuarios", icon: UserCog },
   { title: "Biblioteca", url: "/analise/conhecimento", icon: Brain },
 ];

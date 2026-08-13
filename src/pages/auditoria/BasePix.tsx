@@ -8,6 +8,8 @@ import { comValorExato } from "@/components/ValorExato";
 import { Search, RefreshCw, Loader2, ExternalLink, FileWarning, FileCheck2, Upload, CheckCircle2 } from "lucide-react";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
+import { useApelidos } from "@/hooks/useApelidos";
+import { apelidoDe } from "@/lib/apelidos";
 
 type Lanc = {
   id: number;
@@ -46,6 +48,7 @@ function ultimosMeses(n: number): string[] {
 }
 
 export default function BasePix() {
+  const apelidos = useApelidos();
   const [rows, setRows] = useState<Lanc[]>([]);
   const [loading, setLoading] = useState(true);
   const [syncing, setSyncing] = useState(false);
@@ -196,12 +199,15 @@ export default function BasePix() {
       if (fCompr === "com" && !r.tem_comprovante) return false;
       if (fCompr === "sem" && r.tem_comprovante) return false;
       if (q) {
-        const hay = `${r.favorecido ?? ""} ${r.cnpj_cpf ?? ""} ${r.descricao ?? ""} ${r.categoria ?? ""}`.toLowerCase();
+        // O apelido entra junto: procurar pelo nome que está na tela precisa
+        // funcionar tanto quanto procurar pelo favorecido do extrato.
+        const ap = apelidoDe(apelidos, r.favorecido, r.cnpj_cpf);
+        const hay = `${r.favorecido ?? ""} ${ap?.apelido ?? ""} ${ap?.oQueE ?? ""} ${r.cnpj_cpf ?? ""} ${r.descricao ?? ""} ${r.categoria ?? ""}`.toLowerCase();
         if (!hay.includes(q)) return false;
       }
       return true;
     });
-  }, [periodRows, fCat, fCompr, busca]);
+  }, [periodRows, fCat, fCompr, busca, apelidos]);
 
   useEffect(() => { setPage(1); }, [referencia, fCat, fCompr, busca]);
 
@@ -337,12 +343,20 @@ export default function BasePix() {
 }
 
 function PixRow({ r, onAnexar, uploading }: { r: Lanc; onAnexar: (r: Lanc) => void; uploading: boolean }) {
+  const ap = apelidoDe(useApelidos(), r.favorecido, r.cnpj_cpf);
   const bg = !r.tem_comprovante ? "bg-[hsl(0_80%_97%)]" : "";
   return (
     <div className={cn("grid grid-cols-[110px_1.6fr_1.6fr_150px_160px] gap-3 px-4 py-2.5 items-center border-b border-border last:border-0 text-sm", bg)}>
       <div className="text-muted-foreground">{fmtDateBR(r.data)}</div>
       <div className="min-w-0">
-        <div className="font-medium truncate">{r.favorecido || r.cnpj_cpf || r.descricao || "—"}</div>
+        {/* Apelido em cima (Configurações › Parametrização), favorecido do
+            extrato embaixo — é ele que se procura no banco e no Omie. */}
+        <div className="font-medium truncate" title={ap?.oQueE ?? undefined}>
+          {ap?.apelido ?? r.favorecido ?? r.cnpj_cpf ?? r.descricao ?? "—"}
+        </div>
+        {ap && r.favorecido && (
+          <div className="text-xs text-muted-foreground truncate">{r.favorecido}</div>
+        )}
         {r.descricao && r.descricao !== r.favorecido && (
           <div className="text-xs text-muted-foreground truncate">{r.descricao}</div>
         )}

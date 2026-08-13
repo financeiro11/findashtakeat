@@ -3,7 +3,7 @@ import { lerDre } from "@/lib/analisesDre";
 import {
   espinhaDre, cascata, pareto, acimaDoCorte, confrontar, ebitdaDoPlano,
   blocoCaixa, proximoMes, mesSeguinte, montarSinal, aplicarEdicao, sinalMudou,
-  rubricasDoPareto, lerDfc, planoDaDre,
+  rubricasDoPareto, lerDfc, planoDaDre, mesesDoAno, atingimento,
   RECEITA_BRUTA, RECEITA_RECORRENTE, PESSOAL, MKT, ADM, DEDUCOES,
   type Plano, type Leitura, type Sinal,
 } from "@/lib/revisaoMes";
@@ -125,6 +125,12 @@ describe("confrontar", () => {
     expect(c.orcado).toBe(688_000);
     expect(c.impacto).toBe(-54_300);          // gastou 54,3 mil a mais
     expect(c.desvioPct).toBeCloseTo(54_300 / 688_000, 8);  // positivo = gastou mais
+  });
+
+  it("sem janela de YTD as duas colunas ficam nulas, não zeradas", () => {
+    const c = confrontar(leitor, plano, PESSOAL, "despesa", MES, ANTERIOR);
+    expect(c.ytd).toBeNull();
+    expect(c.ytdOrcado).toBeNull();
   });
 
   it("despesa ABAIXO do plano soma ao EBITDA", () => {
@@ -388,11 +394,145 @@ describe("acimaDoCorte", () => {
 });
 
 /* ============================================================
+ *  YTD — o acumulado do ano na tabela do bloco 2
+ * ============================================================ */
+
+describe("mesesDoAno", () => {
+  it("recorta a janela no ano do mês em foco", () => {
+    const janela = ["Nov-25", "Dec-25", "May-26", "Jun-26", "Jul-26"];
+    expect(mesesDoAno(janela, "Jul-26")).toEqual(["May-26", "Jun-26", "Jul-26"]);
+  });
+
+  it("para NO mês da reunião — o acumulado não olha para a frente", () => {
+    const janela = ["May-26", "Jun-26", "Jul-26"];
+    expect(mesesDoAno(janela, "Jun-26")).toEqual(["May-26", "Jun-26"]);
+  });
+
+  it("em janeiro sobra o próprio mês, e isso é o YTD certo", () => {
+    expect(mesesDoAno(["Jan-26"], "Jan-26")).toEqual(["Jan-26"]);
+  });
+});
+
+describe("espinhaDre · YTD", () => {
+  const YTD = ["May-26", "Jun-26", "Jul-26"];
+  const linhaDe = (rubrica: string) =>
+    espinhaDre(leitor, plano, MES, ANTERIOR, YTD).find((l) => l.rubrica === rubrica)!;
+
+  it("soma o realizado dos meses da janela", () => {
+    // Assinaturas + Enterprise em mai · jun · jul.
+    expect(linhaDe(RECEITA_RECORRENTE).ytd).toBe(1_180_000 + 1_215_800 + 1_238_900);
+    // Despesa entra como magnitude positiva, mês a mês.
+    expect(linhaDe(PESSOAL).ytd).toBe(680_000 + 698_900 + 742_300);
+  });
+
+  it("o orçado acumula o plano dos mesmos meses", () => {
+    expect(linhaDe(PESSOAL).ytdOrcado).toBe(688_000 * 3);
+    expect(linhaDe(RECEITA_RECORRENTE).ytdOrcado).toBe(1_302_000 * 3);
+  });
+
+  it("o EBITDA acumula COM SINAL, e o orçado é derivado mês a mês", () => {
+    const ebitda = linhaDe(EBITDA);
+    expect(ebitda.ytd).toBe(-125_000 - 151_900 - 184_600);
+    expect(ebitda.ytdOrcado).toBe(-142_000 * 3);
+  });
+
+  it("o módulo da despesa é por mês — dois meses de sinal trocado não se cancelam", () => {
+    /* A planilha da diretoria escreve despesa ora negativa, ora positiva. Somar
+       antes de tirar o módulo zerava a rubrica no acumulado. */
+    const planoOscilante: Plano = (label, col) =>
+      label !== PESSOAL ? null : col === "May-26" ? -688_000 : col === "Jun-26" ? 688_000 : -688_000;
+    const l = espinhaDre(leitor, planoOscilante, MES, ANTERIOR, YTD)
+      .find((x) => x.rubrica === PESSOAL)!;
+    expect(l.ytdOrcado).toBe(688_000 * 3);
+  });
+
+  it("mês sem plano não zera o acumulado — soma o que existe", () => {
+    const planoFurado: Plano = (label, col) => (col === "May-26" ? null : plano(label, col));
+    const l = espinhaDre(leitor, planoFurado, MES, ANTERIOR, YTD)
+      .find((x) => x.rubrica === PESSOAL)!;
+    expect(l.ytdOrcado).toBe(688_000 * 2);
+  });
+
+  it("sem BP o acumulado orçado é nulo e o realizado continua de pé", () => {
+    const l = espinhaDre(leitor, semPlano, MES, ANTERIOR, YTD).find((x) => x.rubrica === PESSOAL)!;
+    expect(l.ytdOrcado).toBeNull();
+    expect(l.ytd).toBe(680_000 + 698_900 + 742_300);
+  });
+
+  it("o impacto do ano segue a mesma régua do mês", () => {
+    // Despesa acima do plano no acumulado: tirou do EBITDA.
+    const pessoal = linhaDe(PESSOAL);
+    expect(pessoal.impactoYtd).toBe(688_000 * 3 - (680_000 + 698_900 + 742_300));
+    expect(pessoal.impactoYtd!).toBeLessThan(0);
+    // Receita abaixo do plano no acumulado: também tirou.
+    expect(linhaDe(RECEITA_RECORRENTE).impactoYtd!).toBeLessThan(0);
+  });
+});
+
+/* ============================================================
+ *  A barra de atingimento do orçado
+ * ============================================================
+ * Números reais do acumulado Jan–Jul/26, que é o que a barra mostra hoje.
+ */
+describe("atingimento", () => {
+  /** Como a página chama: o impacto sai da natureza da rubrica. */
+  const daReceita = (ytd: number, orc: number) => atingimento(ytd, orc, ytd - orc);
+  const daDespesa = (ytd: number, orc: number) => atingimento(ytd, orc, orc - ytd);
+
+  it("despesa 2% acima do plano NÃO fica verde, mesmo mostrando 102%", () => {
+    const a = daDespesa(7_400_180, 7_248_501)!;   // SG&A do ano
+    expect(Math.round(a.fracao * 100)).toBe(102);
+    expect(a.faixa).toBe("amarelo");
+  });
+
+  it("despesa abaixo do plano é verde", () => {
+    const a = daDespesa(1_689_932, 1_735_469)!;   // Custos operacionais do ano
+    expect(Math.round(a.fracao * 100)).toBe(97);
+    expect(a.faixa).toBe("verde");
+  });
+
+  it("receita quase no plano é amarela; bem abaixo é vermelha", () => {
+    expect(daReceita(6_814_375, 6_977_734)!.faixa).toBe("amarelo");   // −2,3%
+    expect(daReceita(6_000_000, 6_977_734)!.faixa).toBe("vermelho");  // −14,0%
+  });
+
+  it("EBITDA pior que um plano já negativo é vermelho", () => {
+    const a = atingimento(-2_275_737, -2_006_236, -2_275_737 - -2_006_236)!;
+    expect(Math.round(a.fracao * 100)).toBe(113);   // queimou 13% a mais que o plano
+    expect(a.faixa).toBe("vermelho");
+  });
+
+  it("bater o plano em cima é verde, e a folga de 2% é dos dois lados", () => {
+    expect(daReceita(1_000_000, 1_000_000)!.faixa).toBe("verde");
+    expect(daReceita(1_100_000, 1_000_000)!.faixa).toBe("verde");   // superou
+    expect(daReceita(985_000, 1_000_000)!.faixa).toBe("verde");     // −1,5%, ruído
+    expect(daReceita(975_000, 1_000_000)!.faixa).toBe("amarelo");   // −2,5%
+  });
+
+  it("a barra não passa de cheia nem fica negativa", () => {
+    expect(daDespesa(2_000_000, 1_000_000)!.preenchimento).toBe(1);
+    // Realizado positivo contra orçado negativo: fração negativa, barra vazia.
+    const virou = atingimento(400_000, -1_000_000, 400_000 - -1_000_000)!;
+    expect(virou.fracao).toBeLessThan(0);
+    expect(virou.preenchimento).toBe(0);
+    expect(virou.faixa).toBe("verde");   // ficou MELHOR que o plano
+  });
+
+  it("sem plano não há barra — e orçado zero não vira divisão por zero", () => {
+    expect(atingimento(100, null, null)).toBeNull();
+    expect(atingimento(null, 100, null)).toBeNull();
+    expect(atingimento(100, 0, 100)).toBeNull();
+  });
+});
+
+/* ============================================================
  *  Caixa
  * ============================================================ */
 
 const DFC_ROWS = [
-  linha("Receita de Assinaturas", 1_300_000, 1_350_000, 1_412_100),
+  // Na DFC o recebimento entra inteiro em "Entrada de Receita" — o tracker não
+  // separa a receita por produto como a DRE separa.
+  linha("Entrada de Receita", 1_300_000, 1_350_000, 1_412_100),
   linha("Simples Nacional", -120_000, -125_000, -130_000),
   linha("Equipe Tecnologia", -300_000, -305_000, -342_300),
   linha("Servidor", -90_000, -95_000, -96_400),
@@ -451,6 +591,50 @@ describe("blocoCaixa", () => {
     });
     expect(emMaio.runway?.base).toBe(1);
   });
+
+  it("a linha de cashburn é o fluxo livre sem a captação", () => {
+    const cb = caixa.linhas.find((l) => l.rubrica.startsWith("Cashburn"))!;
+    expect(cb.realizado).toBe(543_500 - 176_000);
+    expect(caixa.cashburn).toBe(cb.realizado);
+    // Vem DEPOIS do fluxo livre, como na grade da DFC.
+    expect(caixa.linhas.at(-1)).toBe(cb);
+    expect(caixa.linhas.at(-2)!.rubrica).toBe("Fluxo livre do mês");
+  });
+
+  it("o orçado do cashburn é o do fluxo livre — o BP não orça captação", () => {
+    const cb = caixa.linhas.find((l) => l.rubrica.startsWith("Cashburn"))!;
+    expect(cb.orcado).toBe(-36_000);
+    expect(cb.orcado).toBe(caixa.livreOrcado);
+  });
+});
+
+/* O caso que motivou trocar a base do runway: o mês do empréstimo. É o Jul/26
+   real em escala menor — entrou captação, o fluxo livre virou positivo e o
+   caixa queimou do mesmo jeito. */
+describe("blocoCaixa · o mês do empréstimo", () => {
+  const DFC_CAPTACAO = [
+    linha("Entrada de Receita", 1_000_000, 1_000_000, 1_000_000),
+    linha("Equipe Tecnologia", -1_200_000, -1_200_000, -1_200_000),
+    linha("(+) Novos Empréstimos & Financiamentos", 0, 0, 500_000),
+  ];
+  const caixa = blocoCaixa({
+    dfcRows: DFC_CAPTACAO, dfcColumns: COLS, planoDfc: [],
+    mes: MES, mesesFechados: COLS, saldo: 3_600_000, saldoEm: null,
+  });
+
+  it("o fluxo livre fica positivo e a queima aparece embaixo dele", () => {
+    expect(caixa.livre).toBe(300_000);
+    expect(caixa.cashburn).toBe(-200_000);
+  });
+
+  it("o runway mede a queima, não a captação", () => {
+    // Pelo fluxo livre a média dos 3 meses seria −33,3 mil e o caixa "duraria"
+    // 108 meses. Pela queima, são 200 mil por mês e 18 meses de caixa.
+    expect(caixa.burn3m).toBe(200_000);
+    expect(caixa.runway?.queima).toBe(200_000);
+    expect(caixa.runway?.meses).toBeCloseTo(18, 6);
+    expect(caixa.runway?.gerandoCaixa).toBe(false);
+  });
 });
 
 describe("lerDfc", () => {
@@ -490,8 +674,11 @@ describe("proximoMes", () => {
       clientes_eop: 1_958,
       perdidos: 39,
       churn_pct: 2.0,
+      mrr_recorrente: 715_000,
+      // O GG sem linha de ticket é de propósito: é assim que algumas versões da
+      // aba vêm, e o ticket orçado tem de sair do próprio bloco.
       portes: [
-        { nivel: "P", clientes_eop: 640, mrr: 135_000 },
+        { nivel: "P", clientes_eop: 640, mrr: 135_000, ticket: 211 },
         { nivel: "GG", clientes_eop: 240, mrr: 580_000 },
       ],
     },
@@ -522,8 +709,24 @@ describe("proximoMes", () => {
     expect(xg?.mrrOrcado).toBe(580_000);
   });
 
+  it("o ticket orçado é o da planilha e, na falta dele, o do próprio bloco", () => {
+    expect(prox?.carteira.find((c) => c.nivel === "P")?.ticketOrcado).toBe(211);
+    expect(prox?.carteira.find((c) => c.nivel === "XG")?.ticketOrcado)
+      .toBeCloseTo(580_000 / 240, 6);
+  });
+
   it("o mix é sobre a carteira informada, e soma 1", () => {
     expect(prox?.carteira.reduce((s, c) => s + c.mix, 0)).toBeCloseTo(1, 8);
+  });
+
+  it("o mix orçado é a fatia do porte na carteira DO BP, não na de hoje", () => {
+    const xg = prox?.carteira.find((c) => c.nivel === "XG");
+    expect(xg?.mixOrcado).toBeCloseTo(240 / (640 + 240), 8);
+  });
+
+  it("o total tem alvo próprio: o MRR recorrente do BP e o ticket que ele implica", () => {
+    expect(prox?.mrrMeta).toBe(715_000);
+    expect(prox?.ticketMeta).toBeCloseTo(715_000 / 1_958, 6);
   });
 
   it("sem BP e sem snapshot, devolve as metas em null em vez de zero", () => {
@@ -531,6 +734,8 @@ describe("proximoMes", () => {
     expect(vazio?.receitaOrcada).toBeNull();
     expect(vazio?.gap).toBeNull();
     expect(vazio?.novosNecessarios).toBeNull();
+    expect(vazio?.mrrMeta).toBeNull();
+    expect(vazio?.ticketMeta).toBeNull();
     expect(vazio?.carteira).toEqual([]);
   });
 });
@@ -639,6 +844,25 @@ describe("aplicarEdicao", () => {
     expect(out.destaques[1].titulo).toBe("t2");        // não foi apagado
     expect(out.destaques[0].texto).toBe("x1");         // o vizinho não congelou
     expect(out.destaques[2].texto).toBe("x3");
+  });
+
+  /* O "por que aconteceu" não é escrito pela IA — ele vem do comentário da
+     célula da DRE, e o campo só existe aqui quando alguém trocou a frase. */
+  it("o 'por que' reescrito à mão sobrevive ao merge, sem tocar no resto", () => {
+    const out = aplicarEdicao(gerado, {
+      rubricas: [{ rubrica: PESSOAL, impacto: "", acao: "", porque: "46K atrasados no Datadog" }],
+    });
+    const pessoal = out.rubricas.find((r) => r.rubrica === PESSOAL)!;
+    expect(pessoal.porque).toBe("46K atrasados no Datadog");
+    expect(pessoal.impacto).toBe("impacto da máquina");
+    expect(pessoal.acao).toBe("ação da máquina");
+  });
+
+  it("'por que' vazio devolve o comentário da DRE — quem lê é a tela, e ela cai no fallback", () => {
+    const out = aplicarEdicao(gerado, {
+      rubricas: [{ rubrica: PESSOAL, impacto: "", acao: "", porque: "" }],
+    });
+    expect(out.rubricas.find((r) => r.rubrica === PESSOAL)?.porque).toBe("");
   });
 
   it("rubrica que só existe na edição entra na lista", () => {

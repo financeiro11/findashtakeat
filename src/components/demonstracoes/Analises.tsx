@@ -187,8 +187,10 @@ export default function Analises({ rows, columns, travados }: Props) {
   useEffect(() => {
     (async () => {
       const [dfc, caixa, bps] = await Promise.all([
+        // periodo='completo': o registro em que o import/omie-sync escrevem — a tabela
+        // também guarda backups, e "o mais recente do tipo" pegava o backup.
         sb.from("demonstracoes_contabeis").select("dados")
-          .eq("tipo", "dfc").order("updated_at", { ascending: false }).limit(1).maybeSingle(),
+          .eq("tipo", "dfc").eq("periodo", "completo").maybeSingle(),
         sb.from("omie_caixa_snapshot").select("dados")
           .order("gerado_em", { ascending: false }).limit(1).maybeSingle(),
         sb.from("bp_anual").select("ano,dados"),

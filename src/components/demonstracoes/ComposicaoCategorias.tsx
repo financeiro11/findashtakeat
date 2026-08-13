@@ -1,4 +1,4 @@
-import { ChevronDown, Filter } from "lucide-react";
+import { Filter } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { mesCurto } from "@/lib/demonstracoes-schema";
 import { ChipSituacao } from "@/components/demonstracoes/ChipSituacao";
@@ -16,14 +16,10 @@ import {
  * caíram ali e quanto cada uma pesou — e isso não estava à vista: estava
  * escondido dentro do menu de filtro, que ninguém abre para LER.
  *
- * Faixa recolhível, e não coluna nova na lista: a lista é conferida linha a
+ * Detalhe de um chip, e não coluna nova na lista: a lista é conferida linha a
  * linha contra o Omie, na ordem de data, e agrupá-la por categoria tiraria dela
  * exatamente o que a torna conferível. A composição é outra leitura, e ganha
- * espaço próprio logo acima.
- *
- * A TABELA NÃO OBEDECE AO FILTRO. Ela descreve a célula inteira — é isso que a
- * torna uma conferência. Filtrar a composição pelo filtro da lista faria as
- * fatias somarem 100% de um pedaço escolhido a dedo.
+ * espaço próprio logo acima — sob demanda, atrás do chip CATEGORIAS.
  * ------------------------------------------------------------------------- */
 
 /** Fatia pequena arredondada para "0%" pareceria zero; ela existe, só é miúda. */
@@ -112,12 +108,30 @@ function LinhaCategoria({
   );
 }
 
+/**
+ * O rótulo do chip CATEGORIAS da linha RESUMO — sem valores, que quem formata
+ * dinheiro é a tela. Fica junto da tabela para os dois dizerem a mesma coisa.
+ */
+export function resumoDaComposicao(comp: Composicao, marcadas: Set<string>): string {
+  const filtrando = comp.categorias.filter((c) => categoriaMarcada(c, marcadas)).length;
+  return filtrando > 0 ? `${filtrando} de ${comp.quantas}` : String(comp.quantas);
+}
+
+/**
+ * O detalhe do chip CATEGORIAS: de que a linha é feita.
+ *
+ * O cabeçalho recolhível saiu — quem abre e fecha é o chip da linha RESUMO, e
+ * só um detalhe fica aberto por vez. O teto de altura é o que impede esta
+ * tabela de empurrar a lista de lançamentos para fora da tela.
+ *
+ * A TABELA NÃO OBEDECE AO FILTRO. Ela descreve a célula inteira — é isso que a
+ * torna uma conferência. Filtrar a composição pelo filtro da lista faria as
+ * fatias somarem 100% de um pedaço escolhido a dedo.
+ */
 export function ComposicaoCategorias({
-  comp, aberto, onAberto, marcadas, onMarcadas, moeda, moedaSemCentavos,
+  comp, marcadas, onMarcadas, moeda, moedaSemCentavos,
 }: {
   comp: Composicao;
-  aberto: boolean;
-  onAberto: (v: boolean) => void;
   /** As chaves de categoria marcadas no filtro da lista. */
   marcadas: Set<string>;
   onMarcadas: (s: Set<string>) => void;
@@ -129,74 +143,63 @@ export function ComposicaoCategorias({
   const filtrando = comp.categorias.filter((c) => categoriaMarcada(c, marcadas)).length;
 
   return (
-    <div className="shrink-0 border-b border-border bg-muted/40">
-      <button
-        onClick={() => onAberto(!aberto)}
-        className="flex w-full items-center justify-between gap-3 px-5 py-2 text-left transition hover:bg-muted/70"
-        title="Quais categorias do Omie o DE-PARA jogou nesta rubrica, e quanto cada uma pesou"
-      >
-        <span className="text-[11.5px] leading-relaxed text-muted-foreground">
-          <b className="text-foreground">{resumoComposicao(comp)}</b>
-          {/* Uma categoria sozinha não tem "maior": a linha É ela. */}
-          {maior && comp.quantas > 1 && <> · {pctCurto(maior.peso)} em {maior.descricao}</>}
-          {filtrando > 0 && (
-            <span className="ml-1.5 text-primary">
-              · filtrando {filtrando === 1 ? "1 categoria" : `${filtrando} categorias`}
-            </span>
-          )}
+    <div className="flex max-h-[min(32%,260px)] shrink-0 flex-col overflow-hidden border-b border-border bg-muted/30">
+      <div className="shrink-0 bg-card px-5 py-2 text-[11.5px] text-muted-foreground">
+        <b className="text-foreground">{resumoComposicao(comp)}</b>
+        {/* Uma categoria sozinha não tem "maior": a linha É ela. */}
+        {maior && comp.quantas > 1 && <> · {pctCurto(maior.peso)} em {maior.descricao}</>}
+        {filtrando > 0 && (
+          <span className="ml-1.5 text-primary">
+            · filtrando {filtrando === 1 ? "1 categoria" : `${filtrando} categorias`}
+          </span>
+        )}
+      </div>
+
+      <div className="min-h-0 flex-1 overflow-auto border-t border-border">
+        <table className="w-full border-collapse">
+          <thead className="sticky top-0 bg-muted/95 backdrop-blur">
+            <tr className="border-b border-border text-[9px] font-semibold tracking-[0.06em] text-muted-foreground">
+              <th className="px-5 py-1.5 text-left">CATEGORIA NO OMIE</th>
+              {comp.temHistorico && (
+                <th className="px-2 py-1.5 text-right uppercase">{mesCurto(comp.mesAnterior)}</th>
+              )}
+              <th className="px-2 py-1.5 text-right uppercase">{mesCurto(comp.mes)}</th>
+              {comp.temHistorico && <th className="px-5 py-1.5 text-right">VARIAÇÃO</th>}
+            </tr>
+          </thead>
+          <tbody>
+            {comp.categorias.map((c) => (
+              <LinhaCategoria
+                key={c.descricao}
+                c={c}
+                comp={comp}
+                marcada={categoriaMarcada(c, marcadas)}
+                /* Quem sumiu não tem o que filtrar neste mês: clicar
+                   esvaziaria a lista sem dizer por quê. */
+                onClicar={c.chaves.length ? () => onMarcadas(alternarCategoriaNoFiltro(c, marcadas)) : null}
+                moeda={moeda}
+                moedaSemCentavos={moedaSemCentavos}
+              />
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      <div className="flex shrink-0 flex-wrap items-center justify-between gap-x-3 gap-y-1 border-t border-border bg-muted/40 px-5 py-1.5 text-[10px] text-muted-foreground">
+        <span>
+          {comp.temHistorico
+            ? `Percentuais sobre o movimento da célula inteira; comparação com os ${comp.janela.length - 1} meses anteriores no Omie.`
+            : "Percentuais sobre o movimento da célula inteira. Sem mês anterior no cache do Omie para comparar."}
         </span>
-        <ChevronDown
-          className={cn("h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform", aberto && "rotate-180")}
-        />
-      </button>
-
-      {aberto && (
-        <div className="max-h-[280px] overflow-auto border-t border-border">
-          <table className="w-full border-collapse">
-            <thead className="sticky top-0 bg-muted/95 backdrop-blur">
-              <tr className="border-b border-border text-[9px] font-semibold tracking-[0.06em] text-muted-foreground">
-                <th className="px-5 py-1.5 text-left">CATEGORIA NO OMIE</th>
-                {comp.temHistorico && (
-                  <th className="px-2 py-1.5 text-right uppercase">{mesCurto(comp.mesAnterior)}</th>
-                )}
-                <th className="px-2 py-1.5 text-right uppercase">{mesCurto(comp.mes)}</th>
-                {comp.temHistorico && <th className="px-5 py-1.5 text-right">VARIAÇÃO</th>}
-              </tr>
-            </thead>
-            <tbody>
-              {comp.categorias.map((c) => (
-                <LinhaCategoria
-                  key={c.descricao}
-                  c={c}
-                  comp={comp}
-                  marcada={categoriaMarcada(c, marcadas)}
-                  /* Quem sumiu não tem o que filtrar neste mês: clicar
-                     esvaziaria a lista sem dizer por quê. */
-                  onClicar={c.chaves.length ? () => onMarcadas(alternarCategoriaNoFiltro(c, marcadas)) : null}
-                  moeda={moeda}
-                  moedaSemCentavos={moedaSemCentavos}
-                />
-              ))}
-            </tbody>
-          </table>
-
-          <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 border-t border-border bg-muted/40 px-5 py-1.5 text-[10px] text-muted-foreground">
-            <span>
-              {comp.temHistorico
-                ? `Percentuais sobre o movimento da célula inteira; comparação com os lançamentos do Omie nos ${comp.janela.length - 1} meses anteriores.`
-                : "Percentuais sobre o movimento da célula inteira. Sem mês anterior no cache do Omie para comparar."}
-            </span>
-            {filtrando > 0 && (
-              <button
-                onClick={(e) => { e.stopPropagation(); onMarcadas(new Set()); }}
-                className="shrink-0 font-medium underline-offset-2 transition hover:text-foreground hover:underline"
-              >
-                ver todas na lista
-              </button>
-            )}
-          </div>
-        </div>
-      )}
+        {filtrando > 0 && (
+          <button
+            onClick={(e) => { e.stopPropagation(); onMarcadas(new Set()); }}
+            className="shrink-0 font-medium underline-offset-2 transition hover:text-foreground hover:underline"
+          >
+            ver todas na lista
+          </button>
+        )}
+      </div>
     </div>
   );
 }

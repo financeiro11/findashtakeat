@@ -36,10 +36,11 @@
  * ========================================================================== */
 
 import {
-  DRE_SCHEMA, DFC_SCHEMA, indexarCelulas, parseColuna, type Node,
+  DRE_SCHEMA, DFC_SCHEMA, indexarCelulas, parseColuna,
+  CASHBURN, NOVOS_EMPRESTIMOS, cashburnDoMes, type Node,
 } from "@/lib/demonstracoes-schema";
 import {
-  lerDre, fluxoLivreDaDfc, rotuloMes, calcularRunway,
+  lerDre, cashburnDaDfc, rotuloMes, calcularRunway,
   RL, EBITDA, SGA, CUSTOS_OP,
   type Leitor, type LinhaBlob, type Runway,
 } from "@/lib/analisesDre";
@@ -211,7 +212,94 @@ export type Confronto = {
   desvioPct: number | null;
   /** A mesma convenção, contra o mês anterior. */
   mom: number | null;
+  /** Acumulado do ano até o mês em foco. `null` quando não há janela de YTD. */
+  ytd: number | null;
+  /** O mesmo acumulado no plano do BP. */
+  ytdOrcado: number | null;
+  /** Efeito no EBITDA do ANO — mesma convenção de `impacto`. */
+  impactoYtd: number | null;
 };
+
+/* ------------------------------------------------------------------ *
+ *  Atingimento do orçado — a barra ao lado do YTD
+ * ------------------------------------------------------------------ */
+
+export type Faixa = "verde" | "amarelo" | "vermelho";
+
+export type Atingimento = {
+  /** Quanto do orçado o realizado alcançou. 1 = em cima do plano. */
+  fracao: number;
+  /** Quanto da barra pintar (0–1): o excedente não cresce para fora dela. */
+  preenchimento: number;
+  /** Distância do plano NA DIREÇÃO QUE IMPORTA — negativa = pior que o plano. */
+  desvio: number;
+  faixa: Faixa;
+};
+
+/**
+ * Os limiares da barra.
+ *
+ * Medidos sobre o IMPACTO, não sobre a razão crua: 102% do orçado é ótimo em
+ * receita e ruim em despesa, e uma barra que pintasse os dois de verde estaria
+ * mentindo em metade da tabela. `impactoYtd` já resolve isso — negativo é
+ * sempre "tirou do EBITDA", nas três naturezas —, então a régua é uma só.
+ *
+ * A folga de 2% existe porque o BP é mensal e o mês fecha em dias diferentes do
+ * plano; abaixo disso a diferença é ruído de calendário, não desvio. Os 10% são
+ * onde a conversa deixa de ser "acompanhar" e vira "explicar": no acumulado de
+ * Jul/26 é exatamente o que separa a receita (−2,3%, amarelo) do EBITDA
+ * (−13,4%, vermelho).
+ */
+export const LIMIAR_ATINGIMENTO = { verde: -0.02, amarelo: -0.10 };
+
+/** A barra ao lado do YTD orçado. `null` quando não há plano com que comparar. */
+export function atingimento(
+  ytd: number | null,
+  ytdOrcado: number | null,
+  impactoYtd: number | null,
+): Atingimento | null {
+  if (ytd == null || ytdOrcado == null || ytdOrcado === 0) return null;
+  const fracao = ytd / ytdOrcado;
+  const desvio = impactoYtd == null ? 0 : impactoYtd / Math.abs(ytdOrcado);
+  const faixa: Faixa =
+    desvio >= LIMIAR_ATINGIMENTO.verde ? "verde"
+    : desvio >= LIMIAR_ATINGIMENTO.amarelo ? "amarelo"
+    : "vermelho";
+  /* Fração negativa acontece de verdade — um EBITDA realizado positivo contra um
+     orçado negativo dá −40%, e "−40% da barra" não existe. Fica em zero, e o
+     rótulo em cima dela continua dizendo o número. */
+  return { fracao, preenchimento: Math.min(1, Math.max(0, fracao)), desvio, faixa };
+}
+
+/* ------------------------------------------------------------------ *
+ *  YTD
+ * ------------------------------------------------------------------ */
+
+/**
+ * Os meses que somam no acumulado do ano.
+ *
+ * Sai da MESMA janela que o resto da tela usa (meses travados até o mês em
+ * foco, mais o próprio mês), recortada no ano do mês em foco — um acumulado
+ * "do ano" que começasse em 2024 não seria YTD de coisa nenhuma.
+ *
+ * Mês aberto do meio do ano fica de fora junto com a janela, e é de propósito:
+ * o omie-sync ainda está preenchendo essas colunas e meio mês somado ao ano
+ * inteiro é pior do que um mês declaradamente ausente — por isso quem desenha
+ * mostra QUAIS meses entraram, em vez de só escrever "YTD".
+ */
+export function mesesDoAno(janela: string[], mes: string): string[] {
+  const ano = mes.slice(-2);
+  const ate = janela.indexOf(mes);
+  const ateAqui = ate >= 0 ? janela.slice(0, ate + 1) : janela;
+  return ateAqui.filter((c) => c.slice(-2) === ano);
+}
+
+/** Soma que devolve `null` quando NENHUM mês tinha valor (e não zero). */
+function somaOuNulo(valores: (number | null)[]): number | null {
+  let total: number | null = null;
+  for (const v of valores) if (v != null) total = (total ?? 0) + v;
+  return total;
+}
 
 /**
  * Realizado, orçado e as duas variações de UMA rubrica.
@@ -230,11 +318,24 @@ export function confrontar(
   mesAnterior: string | null,
   /** Sobrescreve a leitura do plano (o EBITDA do BP vem de `ebitdaDoPlano`). */
   orcadoDireto?: number | null,
+  /** Meses do acumulado do ano — ver `mesesDoAno`. Vazio = sem coluna de YTD. */
+  mesesYtd: string[] = [],
+  /** O mesmo `orcadoDireto`, mês a mês, para o YTD do plano. */
+  orcadoDiretoDe?: (col: string) => number | null,
 ): Confronto {
   const ler = (col: string): number | null =>
     natureza === "receita" ? leitor.receita(rubrica, col)
     : natureza === "despesa" ? leitor.custo(rubrica, col)
     : leitor.bruto(rubrica, col);
+
+  /* O módulo da receita e a magnitude da despesa são resolvidos POR MÊS, tanto
+     no realizado (`ler`, que descobre o sinal de cada mês) quanto no plano: a
+     planilha da diretoria troca o sinal da despesa de um mês para o outro, e
+     somar antes de tirar o módulo faria dois meses se cancelarem. */
+  const lerPlano = (col: string): number | null => {
+    const cru = plano ? plano(rubrica, col) : null;
+    return cru == null ? null : (natureza === "resultado" ? cru : Math.abs(cru));
+  };
 
   const realizado = ler(mes);
   const anterior = mesAnterior ? ler(mesAnterior) : null;
@@ -243,21 +344,24 @@ export function confrontar(
   if (orcadoDireto !== undefined) {
     orcado = orcadoDireto;
   } else {
-    const cru = plano ? plano(rubrica, mes) : null;
-    orcado = cru == null ? null : (natureza === "resultado" ? cru : Math.abs(cru));
+    orcado = lerPlano(mes);
   }
+
+  const ytd = mesesYtd.length ? somaOuNulo(mesesYtd.map(ler)) : null;
+  const ytdOrcado = !mesesYtd.length ? null
+    : somaOuNulo(mesesYtd.map((c) => (orcadoDiretoDe ? orcadoDiretoDe(c) : lerPlano(c))));
 
   const variacao = (base: number | null): number | null => {
     if (realizado == null || base == null || base === 0) return null;
     return (realizado - base) / Math.abs(base);
   };
 
-  const impacto =
-    realizado == null || orcado == null
-      ? null
-      : natureza === "despesa"
-        ? orcado - realizado
-        : realizado - orcado;
+  /* A mesma régua da decisão 1, aplicada ao mês e ao ano: negativo = tirou do
+     EBITDA, seja porque a receita ficou abaixo ou porque a despesa passou. */
+  const efeito = (real: number | null, plan: number | null): number | null =>
+    real == null || plan == null ? null
+    : natureza === "despesa" ? plan - real
+    : real - plan;
 
   return {
     rubrica,
@@ -265,9 +369,12 @@ export function confrontar(
     realizado,
     orcado,
     anterior,
-    impacto,
+    impacto: efeito(realizado, orcado),
     desvioPct: variacao(orcado),
     mom: variacao(anterior),
+    ytd,
+    ytdOrcado,
+    impactoYtd: efeito(ytd, ytdOrcado),
   };
 }
 
@@ -287,11 +394,20 @@ export function espinhaDre(
   plano: Plano | null,
   mes: string,
   mesAnterior: string | null,
+  /** Meses do acumulado do ano (ver `mesesDoAno`). Vazio = tabela sem YTD. */
+  mesesYtd: string[] = [],
 ): LinhaEspinha[] {
   return ESPINHA.map((e) => {
+    /* O EBITDA do BP não é uma linha do plano — é derivado (ver `ebitdaDoPlano`).
+       O YTD dele precisa ser derivado MÊS A MÊS pela mesma regra: somar os
+       orçados de receita, custo e SG&A do ano e derivar no fim daria o mesmo
+       número só enquanto nenhum mês tivesse buraco. */
+    const ebitda = e.label === EBITDA;
     const c = confrontar(
       leitor, plano, e.label, e.natureza, mes, mesAnterior,
-      e.label === EBITDA ? ebitdaDoPlano(plano, mes) : undefined,
+      ebitda ? ebitdaDoPlano(plano, mes) : undefined,
+      mesesYtd,
+      ebitda ? (col) => ebitdaDoPlano(plano, col) : undefined,
     );
     return { ...c, nivel: e.nivel, total: !!e.total };
   });
@@ -579,10 +695,12 @@ export type BlocoCaixa = {
   fcf: number | null;
   livre: number | null;
   livreOrcado: number | null;
+  /** Fluxo livre menos a captação extraordinária — a queima que o caixa sente. */
+  cashburn: number | null;
   /** Os mesmos dois no mês anterior, para o KPI do Resumo comparar. */
   fcoAnterior: number | null;
   livreAnterior: number | null;
-  /** Média dos últimos três meses fechados de fluxo livre (positiva = queima). */
+  /** Média dos últimos três meses fechados de CASHBURN (positiva = queima). */
   burn3m: number | null;
   runway: Runway | null;
 };
@@ -641,11 +759,24 @@ export function blocoCaixa(opts: {
     const fco = entradas == null && saidas == null ? null : (entradas ?? 0) + (saidas ?? 0);
     const fci = ler("Investimentos", col);
     const fcf = ler("Financiamento", col);
-    return { entradas, saidas, fco, fci, fcf, livre: fco == null ? null : fco + (fci ?? 0) + (fcf ?? 0) };
+    const livre = fco == null ? null : fco + (fci ?? 0) + (fcf ?? 0);
+    /* Mesma ordem da página da DFC: o valor gravado manda e a fórmula só entra
+       quando a linha não veio. Sem isso a Revisão e a grade da DFC podiam
+       mostrar duas queimas diferentes para o mesmo mês. */
+    const cashburn = ler(CASHBURN, col) ?? cashburnDoMes(livre, ler(NOVOS_EMPRESTIMOS, col));
+    return { entradas, saidas, fco, fci, fcf, livre, cashburn };
   };
 
-  const { entradas, saidas, fco, fci, fcf, livre } = fluxosDe(mes);
+  const { entradas, saidas, fco, fci, fcf, livre, cashburn } = fluxosDe(mes);
   const anterior = mesAnterior ? fluxosDe(mesAnterior) : null;
+
+  /* O BP não tem linha de cashburn, e não precisa ter: ele planeja ZERO captação
+     em todos os meses de 2026, e sem captação a queima orçada É o fluxo de caixa
+     livre orçado. Por isso a linha repete o mesmo orçado da linha de cima em vez
+     de derivar uma subtração que daria exatamente o mesmo número. Se algum BP
+     futuro passar a orçar empréstimo, esta igualdade deixa de valer e o orçado
+     daqui precisa virar `livreOrcado − novos empréstimos orçados`. */
+  const cashburnOrcado = doPlano("Fluxo Livre");
 
   const linhas: LinhaDfc[] = [
     { rubrica: "Entradas operacionais", nivel: 1, realizado: entradas, orcado: doPlano("Entradas Operacionais"), bloco: false },
@@ -654,16 +785,22 @@ export function blocoCaixa(opts: {
     { rubrica: "FCI · investimento", nivel: 0, realizado: fci, orcado: doPlano("Investimentos"), bloco: true },
     { rubrica: "FCF · financiamento", nivel: 0, realizado: fcf, orcado: doPlano("Financiamento"), bloco: true },
     { rubrica: "Fluxo livre do mês", nivel: 0, realizado: livre, orcado: doPlano("Fluxo Livre"), bloco: true },
+    /* Embaixo do fluxo livre, como na DFC: é a mesma linha menos a captação, e
+       lidas em sequência as duas contam a história do mês do empréstimo. */
+    { rubrica: "Cashburn · queima do mês", nivel: 0, realizado: cashburn, orcado: cashburnOrcado, bloco: true },
   ];
 
-  /* Runway pelo fluxo livre dos meses FECHADOS até o mês em foco, como na aba
-     Análises: um mês com 13º ou uma antecipação sozinha daria runway de mentira.
-     A janela para NO mês da reunião — usar meses posteriores faria a pauta de
-     julho falar do caixa de setembro. */
-  const serieLivre = fluxoLivreDaDfc(dfcRows, dfcColumns);
+  /* Runway pelo CASHBURN dos meses FECHADOS até o mês em foco. Média de três
+     porque um mês com 13º ou uma antecipação sozinha daria runway de mentira; e
+     a janela para NO mês da reunião — usar meses posteriores faria a pauta de
+     julho falar do caixa de setembro.
+     Era fluxo livre até aqui, e isso contava a captação como se fosse geração de
+     caixa: com o empréstimo de julho a média de 3 meses dava 440,7 mil de queima
+     onde a queima foi de 543,0 mil, esticando o runway em quase um quinto. */
+  const serieQueima = cashburnDaDfc(dfcRows, dfcColumns);
   const i = mesesFechados.indexOf(mes);
   const ateAqui = i >= 0 ? mesesFechados.slice(0, i + 1) : mesesFechados;
-  const ultimos = ateAqui.map((m) => serieLivre[m] ?? null);
+  const ultimos = ateAqui.map((m) => serieQueima[m] ?? null);
   const validos = ultimos.filter((v): v is number => v != null).slice(-3);
   const medio = validos.length ? validos.reduce((s, v) => s + v, 0) / validos.length : null;
 
@@ -677,6 +814,7 @@ export function blocoCaixa(opts: {
     fcf,
     livre,
     livreOrcado: doPlano("Fluxo Livre"),
+    cashburn,
     fcoAnterior: anterior?.fco ?? null,
     livreAnterior: anterior?.livre ?? null,
     burn3m: medio == null ? null : -medio,
@@ -717,13 +855,20 @@ export type CarteiraNivel = {
   mix: number;
   clientesOrcado: number | null;
   mrrOrcado: number | null;
+  ticketOrcado: number | null;
+  /** Fatia que o porte tem na carteira do BP, de 0 a 1. */
+  mixOrcado: number | null;
 };
 
 export type MetaOperacao = {
   clientes_eop: number;
   perdidos: number;
   churn_pct: number | null;
-  portes: { nivel: string; clientes_eop: number; mrr: number }[];
+  /** Soma dos quatro portes — o comparável do `mrr_core` do Asaas. */
+  mrr_recorrente?: number;
+  /** MRR recorrente sobre clientes EoP. */
+  ticket?: number;
+  portes: { nivel: string; clientes_eop: number; mrr: number; ticket?: number }[];
 };
 
 export type ProximoMes = {
@@ -744,7 +889,11 @@ export type ProximoMes = {
   novosNecessarios: number | null;
   carteira: CarteiraNivel[];
   mrr: number | null;
+  /** MRR recorrente que o BP pede no mês seguinte (soma dos portes). */
+  mrrMeta: number | null;
   ticket: number | null;
+  /** Ticket médio que o BP pede no mês seguinte. */
+  ticketMeta: number | null;
   churnMesQtd: number | null;
   churnMesValor: number | null;
   churnMesPct: number | null;
@@ -788,9 +937,21 @@ export function proximoMes(opts: {
   const churnEsperado = meta?.perdidos ?? null;
 
   const totalClientes = (opts.carteira ?? []).reduce((s, n) => s + n.clientes, 0);
+  const totalClientesBp = (meta?.portes ?? []).reduce((s, p) => s + p.clientes_eop, 0);
+  /* Zero aqui é "o BP não trouxe os portes", não uma meta de zero — daí tratar
+     o falsy como ausência em vez de usar `??`. */
+  const mrrMeta = meta?.mrr_recorrente || null;
+  const ticketMeta = meta?.ticket
+    || (mrrMeta && clientesMeta ? mrrMeta / clientesMeta : null);
   const carteira: CarteiraNivel[] = (opts.carteira ?? []).map((n) => {
     // O BP chama de "GG" o porte que a base do Asaas chama de "XG".
     const doBp = meta?.portes.find((p) => p.nivel === (n.nivel === "XG" ? "GG" : n.nivel));
+    /* O ticket orçado tem linha própria na planilha, mas ela falta em algumas
+       versões da aba — aí ele sai do próprio bloco (MRR ÷ clientes), que é
+       como o BP o calcula. */
+    const ticketOrcado = doBp
+      ? (doBp.ticket || (doBp.clientes_eop ? doBp.mrr / doBp.clientes_eop : null))
+      : null;
     return {
       nivel: n.nivel,
       clientes: n.clientes,
@@ -799,6 +960,8 @@ export function proximoMes(opts: {
       mix: totalClientes ? n.clientes / totalClientes : 0,
       clientesOrcado: doBp?.clientes_eop ?? null,
       mrrOrcado: doBp?.mrr ?? null,
+      ticketOrcado,
+      mixOrcado: doBp && totalClientesBp ? doBp.clientes_eop / totalClientesBp : null,
     };
   });
 
@@ -821,7 +984,9 @@ export function proximoMes(opts: {
     novosNecessarios: liquidos == null ? null : liquidos + (churnEsperado ?? 0),
     carteira,
     mrr: opts.mrr ?? null,
+    mrrMeta,
     ticket: opts.ticket ?? null,
+    ticketMeta: ticketMeta || null,
     churnMesQtd: opts.churn?.qtd ?? null,
     churnMesValor: opts.churn?.valor ?? null,
     churnMesPct: opts.churn?.pct ?? null,
@@ -867,6 +1032,10 @@ export type Sinal = {
   fmtFavoravel: string;
   fmtSaldoCaixa: string;
   fmtFluxoLivre: string;
+  /* Vai junto com o fluxo livre porque o runway sai DAQUI: sem esta linha o
+     texto lia "fluxo livre de −218 mil" ao lado de um runway calculado sobre
+     543 mil de queima, e a diferença — o empréstimo — ficava sem nome. */
+  fmtCashburn: string;
   fmtRunway: string;
   fmtGapProximoMes: string;
   fmtNovosClientes: string;
@@ -948,6 +1117,7 @@ export function montarSinal(opts: {
     fmtFavoravel: abreviado(p.favoravel),
     fmtSaldoCaixa: abreviado(caixa.saldo),
     fmtFluxoLivre: abreviado(caixa.livre),
+    fmtCashburn: abreviado(caixa.cashburn),
     fmtRunway:
       caixa.runway == null ? "—"
       : caixa.runway.gerandoCaixa ? "gera caixa"
@@ -966,7 +1136,20 @@ export function montarSinal(opts: {
  *  O texto gravado — o que a edge function devolve
  * ------------------------------------------------------------------ */
 
-export type TextoRubrica = { rubrica: string; impacto: string; acao: string };
+export type TextoRubrica = {
+  rubrica: string;
+  impacto: string;
+  acao: string;
+  /**
+   * O "por que aconteceu" reescrito à mão para ESTE mês.
+   *
+   * Diferente dos outros dois, não é a IA da revisão que o escreve: ele nasce do
+   * comentário da célula da DRE (`revisao_justificativas`) e só existe aqui
+   * quando alguém trocou a frase. Vazio = vale o comentário da DRE, que é o que
+   * faz apagar o texto devolver o original.
+   */
+  porque?: string;
+};
 export type Destaque = {
   nivel: "critico" | "atencao" | "info";
   area: string;
@@ -1026,6 +1209,10 @@ export function aplicarEdicao(
       rubrica: r.rubrica,
       impacto: texto(r.impacto, atual.impacto),
       acao: texto(r.acao, atual.acao),
+      /* O gerado nunca traz `porque` — a IA da revisão não escreve este campo.
+         Sai "" quando ninguém reescreveu, e é o vazio que devolve o comentário
+         da DRE na tela. */
+      porque: texto(r.porque, atual.porque ?? ""),
     });
   }
 

@@ -373,6 +373,72 @@ describe("DFC × tracker", () => {
     [...DFC_SCHEMA, ...DFC_SCHEMA.flatMap((n) => n.children ?? [])].find((n) => n.label === label)!;
   const filhos = (label: string) => flattenLabels(bloco(label).children ?? []);
 
+  /* A DFC do tracker, linha por linha e na ordem em que a diretoria a lê. As
+     folhas do esquema têm que ser ESTA lista — nem uma a mais (linha inventada
+     vira "—" eterno na tela) nem uma a menos (rubrica sem casa some da conta).
+     Copiado do CSV "Takeat - Tracker de Orçamento - vOMIE Automática". */
+  const TRACKER = [
+    // Entradas
+    "Entrada de Receita", "Antecipação da Receita", "Receita de Serviços",
+    "Receita Markup", "(+) Receita financeira",
+    // Saídas · impostos e deduções
+    "Simples Nacional", "PIS", "COFINS", "ISS", "ICMS", "Inadimplência",
+    "Abatimento de Antecipação da Receita", "Parcelamento de Impostos",
+    "Devoluções", "Retenção de Contribuição",
+    // Saídas · custos de operação
+    "Equipe Operacional", "CMV Materiais", "Meios de Pagamento",
+    "Premiações Operacionais", "Servidor", "Softwares Operacionais", "Outros Custos",
+    // Saídas · pessoal
+    "Equipe Administrativa", "Equipe Marketing", "Equipe Parcerias", "Equipe Comercial",
+    "Equipe Onboarding", "Equipe Tecnologia", "Benefícios", "Encargos Sociais",
+    // Saídas · administrativas
+    "Ocupação & Escritório", "Assessorias & Consultorias", "Softwares Administrativos",
+    "Viagens & Transportes Adm", "Outras despesas Adm",
+    // Saídas · marketing & vendas
+    "Campanhas de Mídia Paga", "Campanhas de Outros Canais",
+    "Comissões Consultores / Parceiros", "Premiações", "MGM",
+    "Softwares Marketing & Vendas", "Agências & Consultorias",
+    "Viagens & Transportes Mkt", "Eventos e Feiras", "Outras despesas Mkt",
+    // Saídas · financeiras e imposto sobre o lucro
+    "(-) Juros", "(-) IOF", "IRPJ", "CSLL",
+    // Investimentos
+    "(+) Resultado Não Operacional", "(-) Compra de Equipamentos",
+    "(-) Investimentos em Estrutura", "(-) Compra de Participação", "Depósitos e Caução",
+    // Financiamento
+    "(+) Novos Empréstimos & Financiamentos", "(-) Amortização de Financiamentos",
+    "(-) Dividendos", "(-) Rodada de Investimentos",
+    // Conferência do tracker, abaixo da demonstração
+    "Fluxo de Caixa Livre - Banco", "Diferença de Saldos",
+  ];
+
+  const folhas = (ns: Node[]): string[] =>
+    ns.flatMap((n) => (n.children?.length ? folhas(n.children) : n.label));
+
+  it("as folhas são exatamente as linhas do tracker, na ordem dele", () => {
+    // Fora as linhas de conta (Entradas/Saídas/FCO/Fluxo Livre/Cashburn…), que
+    // são somas e não rubricas.
+    const CALCULADAS = new Set([
+      "Fluxo de Caixa Operacional", "Fluxo Livre", "Cashburn",
+    ]);
+    expect(folhas(DFC_SCHEMA).filter((l) => !CALCULADAS.has(l))).toEqual(TRACKER);
+  });
+
+  /* As duas que motivaram o acerto: a DFC do tracker não separa o recebimento
+     por produto — assinatura e material entram inteiros em "Entrada de Receita".
+     Estavam no esquema e apareciam na tela como um "—" em todos os meses. */
+  it("não tem linha de receita que o tracker não tem", () => {
+    const todas = flattenLabels(DFC_SCHEMA);
+    expect(todas).not.toContain("Receita de Assinaturas");
+    expect(todas).not.toContain("Receita com Materiais");
+    expect(filhos("Entradas Operacionais")).toContain("Entrada de Receita");
+  });
+
+  it("nem rubrica de despesa inventada", () => {
+    const todas = flattenLabels(DFC_SCHEMA);
+    expect(todas).not.toContain("(-) Depesas Financeiras"); // typo que nunca existiu no tracker
+    expect(todas).not.toContain("IRF");                     // é linha da DRE, não da DFC
+  });
+
   it("Equipe Parcerias existe no Pessoal — R$ 27,7 mil de jan–mar/26 não apareciam", () => {
     expect(filhos("Pessoal")).toContain("Equipe Parcerias");
   });
@@ -397,6 +463,15 @@ describe("DFC × tracker", () => {
     expect(apelido("Financiamento")).toContain("Fluxo de Financiamento");
     expect(DFC_SCHEMA.find((n) => n.label === "Fluxo Livre")!.alias)
       .toContain("Fluxo de Caixa Livre");
+  });
+
+  /* Grupo renomeado guarda o nome antigo: o blob já tem as linhas "Impostos" e
+     "Financeiras" escritas pelo `derivadas`, e sem o apelido nasceria uma linha
+     nova ao lado da velha — duas somas para o mesmo bloco. */
+  it("grupo renomeado continua escrevendo na linha que já existe", () => {
+    const apelido = (label: string) => bloco(label).alias ?? [];
+    expect(apelido("Impostos & Deduções")).toContain("Impostos");
+    expect(apelido("Financeiras & Impostos sobre o Lucro")).toContain("Financeiras");
   });
 });
 

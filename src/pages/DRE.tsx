@@ -1,5 +1,4 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import * as XLSX from "xlsx";
 import {
   Upload, ChevronDown, ChevronRight, Search, Sparkles, Loader2, RefreshCw,
 } from "lucide-react";
@@ -20,8 +19,10 @@ import {
   MarcaReclassificacao, ResumoReclassificacoes, fundoCelulaReclassificacao,
 } from "@/components/demonstracoes/Reclassificacoes";
 import {
-  useJustificativas, MarcaJustificativa, ResumoJustificativas, fundoCelulaJustificativa,
+  useJustificativas, MarcaJustificativa, ResumoJustificativas, RegerarJustificativas,
+  fundoCelulaJustificativa,
 } from "@/components/demonstracoes/Justificativas";
+import { BarraStatus, rotuloPeriodo } from "@/components/demonstracoes/BarraStatus";
 import {
   usePerguntas, MarcaPerguntas, ResumoPerguntas, tituloPerguntas,
 } from "@/components/demonstracoes/Perguntas";
@@ -44,51 +45,16 @@ import {
   composicaoDaCelula, temComposicao, noDaRubrica, type LeitorDaCelula,
 } from "@/lib/composicaoCelula";
 import { useFormatoNumero, SeletorFormato } from "@/components/demonstracoes/FormatoNumero";
+import { EscopoImportDialog } from "@/components/demonstracoes/EscopoImport";
+import {
+  lerTracker, corpoDoImport, ptLabelFromKey, sortKey, toNum, resumoMeses,
+  type EscopoImport, type TrackerLido,
+} from "@/lib/importarTracker";
 
 /* ============================================================
  *  Helpers
  * ============================================================ */
 
-const MES_PT_TO_EN: Record<string, string> = {
-  jan: "Jan", fev: "Feb", mar: "Mar", abr: "Apr", mai: "May", jun: "Jun",
-  jul: "Jul", ago: "Aug", set: "Sep", out: "Oct", nov: "Nov", dez: "Dec",
-};
-const MES_PT_FULL = ["Jan", "Fev", "Mar", "Abr", "Mai", "Jun", "Jul", "Ago", "Set", "Out", "Nov", "Dez"];
-const EN_ORDER = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-
-function colKey(ptLabel: string): string | null {
-  // "jan/24" => "Jan-24"
-  const m = ptLabel?.toString().toLowerCase().trim().match(/^([a-zçãéê]{3,})[\s\/\-]+(\d{2,4})$/);
-  if (!m) return null;
-  const en = MES_PT_TO_EN[m[1].slice(0, 3)];
-  if (!en) return null;
-  const yy = m[2].length === 4 ? m[2].slice(-2) : m[2];
-  return `${en}-${yy}`;
-}
-function ptLabelFromKey(k: string): string {
-  const m = k.match(/^([A-Za-z]{3})-(\d{2})$/);
-  if (!m) return k;
-  const idx = EN_ORDER.indexOf(m[1]);
-  return idx >= 0 ? `${MES_PT_FULL[idx]}/${m[2]}` : k;
-}
-function sortKey(k: string): number {
-  const m = k.match(/^([A-Za-z]{3})-(\d{2})$/);
-  if (!m) return -1;
-  const i = EN_ORDER.indexOf(m[1]);
-  if (i < 0) return -1;
-  return (2000 + parseInt(m[2], 10)) * 12 + i;
-}
-function toNum(v: any): number | null {
-  if (v === null || v === undefined || v === "" || v === "-") return null;
-  if (typeof v === "number") return v;
-  let s = String(v).trim().replace(/\s/g, "").replace(/R\$/g, "");
-  const neg = /^\(.*\)$/.test(s);
-  s = s.replace(/[()]/g, "");
-  s = s.replace(/\./g, "").replace(",", ".").replace(/[^\d.\-]/g, "");
-  const n = parseFloat(s);
-  if (isNaN(n)) return null;
-  return neg ? -n : n;
-}
 function fmtMoney(v: number | null | undefined): string {
   if (v === null || v === undefined || isNaN(v as number)) return "—";
   const abs = Math.abs(v);
@@ -111,33 +77,13 @@ function tituloValor(v: number | null | undefined, pct: boolean): string | undef
     : valorExato(v);
 }
 
-// Corta as colunas do import nas que têm dado real e substancial — planilhas de tracker
-// costumam ter o ano inteiro (ou vários anos) de cabeçalho, mas só os meses já FECHADOS
-// vêm de fato preenchidos; os meses futuros ficam em branco ou com lixo esporádico
-// (ex.: uma fórmula do template deixando "1" numa célula). Sem esse corte, o import travava
-// e sobrescrevia meses que nem estavam fechados ainda — inclusive apagando o que o Omie já
-// tinha calculado pra eles. Mesmo critério do heurístico de lastCol/prevCol (linha populada
-// em pelo menos 25% do máximo, piso de 3), parando no primeiro mês que não bate o critério.
-function colunasFechadas(rows: Record<string, any>[], colsOrdenadas: string[]): string[] {
-  const counts = colsOrdenadas.map((col) => rows.reduce((acc, row) => (typeof row[col] === "number" ? acc + 1 : acc), 0));
-  const maxCount = Math.max(...counts, 0);
-  if (maxCount === 0) return [];
-  const minCount = Math.max(3, Math.ceil(maxCount * 0.25));
-  let ultimoIdx = -1;
-  for (let i = 0; i < counts.length; i++) {
-    if (counts[i] >= minCount) ultimoIdx = i;
-    else break;
-  }
-  return colsOrdenadas.slice(0, ultimoIdx + 1);
-}
-
 /* ============================================================
  *  DRE schema (hierarchy)
  * ============================================================ */
 
 // Esquema e cálculo vivem em lib/demonstracoes-schema — compartilhados com o
 // Histórico Multianual, para as três telas não divergirem.
-import { DRE_SCHEMA, indexarCelulas, rotulosDeDespesa, type Kind, type Node } from "@/lib/demonstracoes-schema";
+import { DRE_SCHEMA, indexarCelulas, mesAtras, rotulosDeDespesa, type Kind, type Node } from "@/lib/demonstracoes-schema";
 
 const flattenLabels = (nodes: Node[]): string[] =>
   nodes.flatMap((n) => [n.label, ...(n.children ? flattenLabels(n.children) : [])]);
@@ -154,6 +100,8 @@ export default function DRE() {
   const [columns, setColumns] = useState<string[]>([]);
   const [loading, setLoading] = useState(false);
   const [importing, setImporting] = useState(false);
+  /* Arquivo lido esperando a pessoa dizer quanto dele entra (ver EscopoImport). */
+  const [pendente, setPendente] = useState<TrackerLido | null>(null);
   const [syncing, setSyncing] = useState(false);
   const [view, setView] = useState<"dre" | "depara">("dre");
   const [tab, setTab] = useState<"valores" | "mom" | "pct" | "analises">("valores");
@@ -210,12 +158,16 @@ export default function DRE() {
   const load = async () => {
     setLoading(true);
     const [{ data }, { data: travasData }] = await Promise.all([
+      /* periodo='completo' é O registro da DRE — é nele que o import e o omie-sync
+         escrevem (ver _shared/demonstracoes.ts). A mesma tabela guarda backups e
+         placeholders sob outros períodos; sem este filtro, a tela pegava "a linha
+         mais recente do tipo" e um backup criado depois congelava o painel: o
+         import gravava certo em 'completo' e nada mudava. */
       supabase
         .from("demonstracoes_contabeis" as any)
         .select("dados,updated_at")
         .eq("tipo", "dre")
-        .order("updated_at", { ascending: false })
-        .limit(1)
+        .eq("periodo", "completo")
         .maybeSingle(),
       supabase.from("demonstracoes_mes_trancado" as any).select("col_key"),
     ]);
@@ -389,156 +341,69 @@ export default function DRE() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ajustesCarregados, rows, columns, ajustes]);
 
-  /* ----- Import (Tracker template) ----- */
+  /* ----- Import (Tracker template) -----
+   * Duas etapas: ler o arquivo (aqui) e, depois da pessoa escolher o escopo no
+   * diálogo, gravar (`gravarImport`). Ler não muda nada — a decisão de quanto do
+   * histórico entra é de quem importa. Ver lib/importarTracker.ts. */
   const onImport = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const f = e.target.files?.[0]; if (!f) return;
-    const ext = f.name.split(".").pop()?.toLowerCase();
-    if (!["xlsx", "xls", "csv"].includes(ext ?? "")) {
-      toast.error("Formato não suportado. Envie um arquivo .xlsx, .xls ou .csv.");
-      e.target.value = "";
-      return;
-    }
     setImporting(true);
     try {
-      let matrix: any[][] = [];
-      if (ext === "csv") {
-        // Detecta encoding e parseia manualmente (separador ; com vírgula decimal BR)
-        const buf = await f.arrayBuffer();
-        const bytes = new Uint8Array(buf);
-        let text: string;
-        try { text = new TextDecoder("utf-8", { fatal: true }).decode(bytes); }
-        catch { text = new TextDecoder("windows-1252").decode(bytes); }
-        // Detecta delimitador
-        const firstLines = text.split(/\r?\n/).slice(0, 5).join("\n");
-        const delim = (firstLines.match(/;/g)?.length ?? 0) > (firstLines.match(/,/g)?.length ?? 0) ? ";" : ",";
-        // Parser CSV simples com aspas
-        const parseCsv = (src: string, d: string): string[][] => {
-          const out: string[][] = [];
-          let row: string[] = [], cur = "", inQ = false;
-          for (let i = 0; i < src.length; i++) {
-            const ch = src[i];
-            if (inQ) {
-              if (ch === '"' && src[i + 1] === '"') { cur += '"'; i++; }
-              else if (ch === '"') inQ = false;
-              else cur += ch;
-            } else {
-              if (ch === '"') inQ = true;
-              else if (ch === d) { row.push(cur); cur = ""; }
-              else if (ch === "\n") { row.push(cur); out.push(row); row = []; cur = ""; }
-              else if (ch === "\r") { /* skip */ }
-              else cur += ch;
-            }
-          }
-          if (cur.length || row.length) { row.push(cur); out.push(row); }
-          return out;
-        };
-        matrix = parseCsv(text, delim);
-      } else {
-        const buf = await f.arrayBuffer();
-        const wb = XLSX.read(buf, { type: "array" });
-        const ws = wb.Sheets[wb.SheetNames[0]];
-        matrix = XLSX.utils.sheet_to_json(ws, { header: 1, defval: "", raw: true }) as any[][];
-      }
-
-      // Encontra a linha de cabeçalho (contém "jan/24" ou similar) e a coluna do rótulo
-      let headerRowIdx = -1;
-      let labelColIdx = 1;
-      for (let i = 0; i < Math.min(matrix.length, 20); i++) {
-        const row = matrix[i] || [];
-        if (row.some((c: any) => colKey(String(c ?? "")))) {
-          headerRowIdx = i;
-          // a coluna do rótulo costuma ser a que tem "Data"
-          const dataCol = row.findIndex((c: any) => String(c ?? "").trim().toLowerCase() === "data");
-          if (dataCol >= 0) labelColIdx = dataCol;
-          break;
-        }
-      }
-      if (headerRowIdx < 0) {
-        toast.error("Não consegui identificar o cabeçalho de meses");
+      const lido = await lerTracker(f);
+      if (!lido.fechadas.length) {
+        toast.error("Nenhum mês do arquivo veio preenchido o bastante para ser importado.");
         return;
       }
-
-      const headerRow = matrix[headerRowIdx];
-      const monthMap: { idx: number; key: string }[] = [];
-      headerRow.forEach((cell: any, idx: number) => {
-        const k = colKey(String(cell ?? ""));
-        if (k) monthMap.push({ idx, key: k });
-      });
-      // Ordena cronologicamente e dedupa
-      const seenKeys = new Set<string>();
-      const monthCols = monthMap
-        .sort((a, b) => sortKey(a.key) - sortKey(b.key))
-        .filter(m => { if (seenKeys.has(m.key)) return false; seenKeys.add(m.key); return true; });
-      const cols = monthCols.map(m => m.key);
-
-      // Localiza separadores das seções
-      let dreStart = -1, dfcStart = -1;
-      for (let i = headerRowIdx + 1; i < matrix.length; i++) {
-        const lab = String(matrix[i]?.[labelColIdx] ?? "").trim().toLowerCase();
-        if (!lab) continue;
-        if (dreStart < 0 && lab.includes("demonstrativo de resultado")) dreStart = i;
-        else if (dfcStart < 0 && (lab.includes("fluxo de caixa") || lab === "dfc")) { dfcStart = i; break; }
-      }
-      if (dreStart < 0) dreStart = headerRowIdx;
-      const dreEnd = dfcStart > 0 ? dfcStart : matrix.length;
-      const dfcEnd = matrix.length;
-
-      const buildRows = (from: number, to: number): Record<string, any>[] => {
-        const out: Record<string, any>[] = [];
-        for (let i = from + 1; i < to; i++) {
-          const row = matrix[i] || [];
-          const lab = String(row[labelColIdx] ?? "").trim();
-          if (!lab) continue;
-          const rec: Record<string, any> = { Conta: lab };
-          for (const m of monthCols) {
-            const v = toNum(row[m.idx]);
-            rec[m.key] = v === null ? "" : v;
-          }
-          out.push(rec);
-        }
-        return out;
-      };
-
-      const dreRows = buildRows(dreStart, dreEnd);
-      const dfcRows = dfcStart > 0 ? buildRows(dfcStart, dfcEnd) : [];
-
-      // Só considera "fechado" (grava + tranca) até o último mês com dado substancial em
-      // cada demonstrativo — meses além disso (template ainda não preenchido) ficam de fora
-      // e continuam sendo calculados normalmente pelo Sincronizar Omie.
-      const dreColsFechadas = colunasFechadas(dreRows, cols);
-      const dfcColsFechadas = colunasFechadas(dfcRows, cols);
-      const mesesTrancados = new Set([...dreColsFechadas, ...dfcColsFechadas]);
-      const colsIgnoradas = cols.filter((c) => !mesesTrancados.has(c));
-
-      // Grava via edge function: mescla célula a célula com o que já existe (não substitui
-      // o blob inteiro) e TRANCA os meses fechados deste arquivo — a partir de agora o
-      // Sincronizar Omie não sobrescreve mais esses meses, só os que ainda estiverem abertos.
-      const { data: impData, error: impErr } = await supabase.functions.invoke("demonstracoes-import", {
-        body: {
-          dre: dreColsFechadas.length ? { columns: ["Conta", ...dreColsFechadas], rows: dreRows } : undefined,
-          dfc: dfcRows.length && dfcColsFechadas.length ? { columns: ["Conta", ...dfcColsFechadas], rows: dfcRows } : undefined,
-        },
-      });
-      if (impErr) throw impErr;
-      if ((impData as any)?.error) throw new Error((impData as any).error);
-      toast.success(
-        `Importado e travado: ${dreRows.length} linhas DRE` + (dfcRows.length ? ` · ${dfcRows.length} linhas DFC` : "") +
-        ` · ${mesesTrancados.size} mês(es) trancado(s)` +
-        (colsIgnoradas.length ? ` · ${colsIgnoradas.length} ignorado(s) por dado incompleto (${colsIgnoradas.map(ptLabelFromKey).join(", ")})` : ""),
-        { duration: 8000 },
-      );
-      // Planilha nova = números novos: é exatamente aqui que os comentários do
-      // tracker eram reescritos à mão. Justifica só os meses que o arquivo trouxe
-      // — e são justamente os que ele acabou de travar, então entram na lista de
-      // travados à mão: o `load()` acima repovoa o estado, mas só no próximo render.
-      const base = await load();
-      await gerarJust(false, [...mesesTrancados], base, new Set([...travados, ...mesesTrancados]));
+      setPendente(lido);
     } catch (err: any) {
       toast.error("Falha: " + err.message);
     } finally {
       setImporting(false);
       if (fileRef.current) fileRef.current.value = "";
       e.target.value = "";
+    }
+  };
+
+  /* Grava só os meses escolhidos. A edge function mescla célula a célula com o que
+     já existe (não substitui o blob inteiro) e TRANCA os meses que recebeu — a partir
+     de agora o Sincronizar Omie não sobrescreve mais esses meses, só os abertos. */
+  const gravarImport = async (meses: string[], escopo: EscopoImport) => {
+    const t = pendente;
+    if (!t) return;
+    setImporting(true);
+    try {
+      const { body, meses: gravados, dreColunas } = corpoDoImport(t, meses);
+      if (!gravados.length) {
+        toast.error("Nada a gravar neste escopo.");
+        return;
+      }
+      const { data: impData, error: impErr } = await supabase.functions.invoke("demonstracoes-import", { body });
+      if (impErr) throw impErr;
+      if ((impData as any)?.error) throw new Error((impData as any).error);
+      setPendente(null);
+      const foraDoEscopo = t.fechadas.filter((c) => !gravados.includes(c));
+      toast.success(
+        `Importado e travado: ${dreColunas.length ? t.dreRows.length : 0} linhas DRE` +
+        (body.dfc ? ` · ${t.dfcRows.length} linhas DFC` : "") +
+        ` · ${resumoMeses(gravados)}` +
+        (escopo !== "todos" && foraDoEscopo.length
+          ? ` · ${foraDoEscopo.length} mês(es) do arquivo mantido(s) como estavam`
+          : "") +
+        (t.ignoradas.length
+          ? ` · ${t.ignoradas.length} ignorado(s) por dado incompleto (${t.ignoradas.map(ptLabelFromKey).join(", ")})`
+          : ""),
+        { duration: 8000 },
+      );
+      // Planilha nova = números novos: é exatamente aqui que os comentários do
+      // tracker eram reescritos à mão. Justifica só os meses que o arquivo gravou
+      // — e são justamente os que ele acabou de travar, então entram na lista de
+      // travados à mão: o `load()` acima repovoa o estado, mas só no próximo render.
+      const base = await load();
+      await gerarJust(false, gravados, base, new Set([...travados, ...gravados]));
+    } catch (err: any) {
+      toast.error("Falha: " + err.message);
+    } finally {
+      setImporting(false);
     }
   };
 
@@ -700,6 +565,16 @@ export default function DRE() {
       valorNaTela,
     });
 
+  /* A mesma célula um mês atrás, como está NA GRADE — é o que a ponte de
+     variação do painel usa para acusar quando a grade e o Omie discordam (mês
+     travado vem do tracker). Sai vazio quando o mês anterior não está no blob
+     carregado: melhor não confrontar do que confrontar com um nulo. */
+  const parAnterior = (label: string, col: string) => {
+    const ant = mesAtras(col);
+    if (!ant || !columns.includes(ant)) return {};
+    return { celulaAnterior: valueAt(label, ant), travadoAnterior: travados.has(ant) };
+  };
+
   /* ============================================================
    *  UI
    * ============================================================ */
@@ -765,6 +640,13 @@ export default function DRE() {
             Importar Excel/CSV
           </Button>
           <input ref={fileRef} type="file" accept=".xlsx,.xls,.csv" hidden onChange={onImport} />
+          <EscopoImportDialog
+            tracker={pendente}
+            travados={travados}
+            gravando={importing}
+            onCancelar={() => setPendente(null)}
+            onConfirmar={gravarImport}
+          />
         </div>
       </div>
 
@@ -880,32 +762,44 @@ export default function DRE() {
           <Analises rows={rows} columns={displayColumns} travados={travados} />
         ) : (
           <>
-          {/* Só na aba "Valores": é onde as células estão marcadas. */}
-          {tab === "valores" && <ResumoReclassificacoes mapa={reclassificacoes} />}
-          {tab === "valores" && <ResumoValoresManuais mapa={manuais} colunas={displayColumns} />}
+          {/* Só na aba "Valores": é onde as células estão marcadas.
+              Os cinco avisos que eram blocos empilhados de 200px agora são
+              segmentos de uma linha só; cada um some sozinho quando está zerado,
+              e a barra some junto quando não sobra nenhum. */}
           {tab === "valores" && (
-            <ResumoAjustesEbitda
-              mapa={ajustes}
-              colunas={displayColumns}
-              onAbrir={(col) => setAjustando({
-                col,
-                colLabel: ptLabelFromKey(col).replace("/", " "),
-                ebitda: valueAt("EBITDA", col),
-              })}
-            />
+            <BarraStatus
+              periodo={rotuloPeriodo(displayColumns)}
+              acoes={
+                <RegerarJustificativas
+                  gerando={gerandoJust}
+                  progresso={progressoJust}
+                  onGerar={(force) => gerarJust(force, displayColumns)}
+                />
+              }
+            >
+              <ResumoReclassificacoes mapa={reclassificacoes} />
+              <ResumoValoresManuais mapa={manuais} colunas={displayColumns} />
+              <ResumoAjustesEbitda
+                mapa={ajustes}
+                colunas={displayColumns}
+                onAbrir={(col) => setAjustando({
+                  col,
+                  colLabel: ptLabelFromKey(col).replace("/", " "),
+                  ebitda: valueAt("EBITDA", col),
+                })}
+              />
+              <ResumoJustificativas
+                mapa={justificativas}
+                colunas={displayColumns}
+                gerando={gerandoJust}
+                progresso={progressoJust}
+                onGerar={(force) => gerarJust(force, displayColumns)}
+                apenasUltimoMes={apenasUltimoMes}
+                onApenasUltimoMesChange={setApenasUltimoMes}
+              />
+              <ResumoPerguntas mapa={perguntas} colunas={displayColumns} />
+            </BarraStatus>
           )}
-          {tab === "valores" && (
-            <ResumoJustificativas
-              mapa={justificativas}
-              colunas={displayColumns}
-              gerando={gerandoJust}
-              progresso={progressoJust}
-              onGerar={(force) => gerarJust(force, displayColumns)}
-              apenasUltimoMes={apenasUltimoMes}
-              onApenasUltimoMesChange={setApenasUltimoMes}
-            />
-          )}
-          {tab === "valores" && <ResumoPerguntas mapa={perguntas} colunas={displayColumns} />}
           {/* A altura máxima é o que faz o cabeçalho grudar: `position: sticky`
               se prende ao container que ROLA, e um container que só rola na
               horizontal deixa o cabeçalho subir junto com a página. Com o teto,
@@ -1081,6 +975,7 @@ export default function DRE() {
                                 tipo: "dre", rubrica: node.label, mes: c,
                                 mesLabel: ptLabelFromKey(c).replace("/", " "),
                                 celula: v, travado: travados.has(c),
+                                ...parAnterior(node.label, c),
                               })
                               : curavel ? () => setAjustando({
                                 col: c,

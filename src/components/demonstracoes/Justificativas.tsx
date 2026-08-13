@@ -9,6 +9,9 @@ import { cn } from "@/lib/utils";
 import { valorExato } from "@/lib/valor";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { chaveCelula } from "@/components/demonstracoes/Reclassificacoes";
+import {
+  CLASSE_SEGMENTO, DetalheStatus, SegmentoStatus, SeloPendencia,
+} from "@/components/demonstracoes/BarraStatus";
 import { BlocoPerguntas, type Pergunta } from "@/components/demonstracoes/Perguntas";
 import type { PayloadPergunta } from "@/lib/perguntas";
 import { usePessoasPJ, salvarPessoaPJ } from "@/hooks/usePessoasPJ";
@@ -600,80 +603,100 @@ export function ResumoJustificativas({
     copiar(txt, `${visiveis.length} comentários`);
   };
 
+  /* Sem nenhum comentário não há segmento — mas o botão de gerar não pode sumir
+     junto, senão a primeira geração fica sem porta. Ele vira o próprio segmento,
+     e é o único caso em que a barra existe com um botão dentro. */
   if (!visiveis.length) {
     return (
-      <div className="mt-3 flex flex-wrap items-center justify-between gap-2 rounded-lg border border-dashed border-border px-3 py-2.5 text-[11.5px] text-muted-foreground">
-        <span>
-          Nenhuma justificativa gerada ainda. A cada importação de tracker ou sincronização com o Omie
-          elas saem sozinhas — ou gere agora para os meses já carregados.
-          {/* O "?" só aparece quando o mouse entra na linha: sem esta frase, um
-              recurso que responde pergunta em cima do número ficaria invisível
-              para quem não passa o mouse por cima à toa. */}
-          <span className="opacity-80">
-            {" "}Para uma dúvida específica (“teve reajuste, por que não subiu?”), passe o mouse na célula
-            e clique no “?”.
-          </span>
-        </span>
+      <span className={CLASSE_SEGMENTO}>
         <button
           onClick={() => onGerar(false)}
           disabled={gerando}
-          className="inline-flex shrink-0 items-center gap-1.5 rounded-md border border-border bg-card px-2.5 py-1 text-[11.5px] font-medium text-foreground transition hover:bg-secondary disabled:opacity-50"
+          title="A cada importação de tracker ou sincronização com o Omie os comentários saem sozinhos — ou gere agora para os meses já carregados."
+          className="inline-flex h-7 items-center gap-1.5 whitespace-nowrap rounded-md px-2.5 text-[12px] text-muted-foreground transition hover:bg-secondary hover:text-foreground disabled:opacity-50"
         >
           {gerando
             ? <><Loader2 className="h-3 w-3 animate-spin" /> {progresso ?? "Gerando…"}</>
-            : <><Sparkles className="h-3 w-3" /> Gerar justificativas</>}
+            : <><Sparkles className="h-3 w-3" /> Gerar comentários</>}
         </button>
-      </div>
+      </span>
     );
   }
 
   return (
-    <div className="mt-3 flex flex-wrap items-start justify-between gap-x-4 gap-y-2 rounded-lg border border-sky-300 bg-sky-50 px-3 py-2.5 text-[11.5px] leading-relaxed text-sky-900">
-      <span className="flex items-start gap-2">
-        <MessageSquareText strokeWidth={2.25} className="mt-0.5 h-4 w-4 shrink-0 text-sky-700" />
-        <span>
-          <b>{visiveis.length}</b> {visiveis.length === 1 ? "célula variou" : "células variaram"} mais de 5% e
-          {visiveis.length === 1 ? " ganhou" : " ganharam"} um comentário
-          {novos > 0 && <> — <b>{novos}</b> ainda sem conferir</>}
-          {comSinal > 0 && <>, <b>{comSinal}</b> com sinal de possível erro de lançamento</>}.
-          Clique no balão dentro da célula para ler, ajustar e copiar.
-          {/* Sem isto, "só N comentários" pareceria a conta toda. */}
-          <span className="opacity-80">
-            {" "}Só mês travado ganha comentário, e variação abaixo de 10% ou de R$ 1 mil não vira comentário —
-            nem célula cuja variação nenhum lançamento do Omie explica. Para perguntar sobre um valor
-            específico — inclusive numa célula sem comentário — clique no “?” dentro da célula.
-          </span>
-        </span>
-      </span>
-      <span className="flex shrink-0 items-center gap-2">
-        {onApenasUltimoMesChange && (
-          <label className="inline-flex items-center gap-1.5 rounded-md border border-sky-300 bg-card px-2.5 py-1 text-[11.5px] font-medium text-sky-900 transition hover:bg-sky-100 cursor-pointer">
-            <input
-              type="checkbox"
-              checked={apenasUltimoMes ?? false}
-              onChange={(e) => onApenasUltimoMesChange(e.target.checked)}
-              className="rounded"
-            />
-            Apenas mês recente
-          </label>
-        )}
-        <button
-          onClick={copiarTudo}
-          className="inline-flex items-center gap-1.5 rounded-md border border-sky-300 bg-card px-2.5 py-1 text-[11.5px] font-medium text-sky-900 transition hover:bg-sky-100"
+    <SegmentoStatus
+      icone={<MessageSquareText strokeWidth={2.2} className="h-[13px] w-[13px] text-sky-600" />}
+      valor={visiveis.length}
+      rotulo={visiveis.length === 1 ? "comentário" : "comentários"}
+      /* O ÚNICO lugar com cor forte na barra: é o que ainda dá trabalho. */
+      selo={novos > 0
+        ? <SeloPendencia titulo="Comentários que ninguém leu nem aceitou ainda.">{novos} a conferir</SeloPendencia>
+        : undefined}
+      titulo={`${visiveis.length} ${visiveis.length === 1 ? "célula variou" : "células variaram"} mais de 5% e ganharam um comentário${comSinal > 0 ? `; ${comSinal} com sinal de possível erro de lançamento` : ""}.`}
+      larguraDetalhe={400}
+      detalhe={
+        <DetalheStatus
+          titulo="Comentários de variação"
+          nota="Só mês travado ganha comentário, e variação abaixo de 10% ou de R$ 1 mil não vira comentário — nem célula cuja variação nenhum lançamento do Omie explica. Para perguntar sobre um valor específico — inclusive numa célula sem comentário — clique no “?” dentro da célula."
         >
-          <Copy className="h-3 w-3" /> Copiar todos
-        </button>
-        <button
-          onClick={() => onGerar(true)}
-          disabled={gerando}
-          title="Reescreve todos os comentários dos meses visíveis, inclusive os já conferidos"
-          className="inline-flex items-center gap-1.5 rounded-md border border-sky-300 bg-card px-2.5 py-1 text-[11.5px] font-medium text-sky-900 transition hover:bg-sky-100 disabled:opacity-50"
-        >
-          {gerando
-            ? <><Loader2 className="h-3 w-3 animate-spin" /> {progresso ?? "Gerando…"}</>
-            : <><Sparkles className="h-3 w-3" /> Regerar</>}
-        </button>
-      </span>
-    </div>
+          <div className="px-3 py-2 text-[11.5px] leading-relaxed text-foreground">
+            <b>{visiveis.length}</b> {visiveis.length === 1 ? "célula variou" : "células variaram"} mais de 5% e
+            {visiveis.length === 1 ? " ganhou" : " ganharam"} um comentário
+            {novos > 0 && <> — <b>{novos}</b> ainda sem conferir</>}
+            {comSinal > 0 && <>, <b>{comSinal}</b> com sinal de possível erro de lançamento</>}.
+            Clique no balão dentro da célula para ler, ajustar e copiar.
+          </div>
+          {/* "Copiar todos" e "Apenas mês recente" desceram da barra para cá: são
+              ações de quem já parou para trabalhar os comentários, não coisas a
+              ter na frente toda vez que a página abre. */}
+          <div className="flex flex-wrap items-center gap-2 border-t border-border px-3 py-2">
+            <button
+              onClick={copiarTudo}
+              className="inline-flex items-center gap-1.5 rounded-md border border-border bg-card px-2.5 py-1 text-[11.5px] font-medium text-foreground transition hover:bg-secondary"
+            >
+              <Copy className="h-3 w-3" /> Copiar todos
+            </button>
+            {onApenasUltimoMesChange && (
+              <label className="inline-flex cursor-pointer items-center gap-1.5 rounded-md border border-border bg-card px-2.5 py-1 text-[11.5px] font-medium text-foreground transition hover:bg-secondary">
+                <input
+                  type="checkbox"
+                  checked={apenasUltimoMes ?? false}
+                  onChange={(e) => onApenasUltimoMesChange(e.target.checked)}
+                  className="rounded"
+                />
+                Marcar só no mês recente
+              </label>
+            )}
+          </div>
+        </DetalheStatus>
+      }
+    />
+  );
+}
+
+/**
+ * O botão "Regerar" da barra de status — fora dos segmentos, à direita.
+ *
+ * Continua à mão porque reescrever comentário é decisão, não rotina; o que
+ * desceu para o detalhe foram as ações de quem já está trabalhando a lista.
+ */
+export function RegerarJustificativas({
+  gerando, progresso, onGerar,
+}: {
+  gerando: boolean;
+  progresso: string | null;
+  onGerar: (force: boolean) => void;
+}) {
+  return (
+    <button
+      onClick={() => onGerar(true)}
+      disabled={gerando}
+      title="Reescreve todos os comentários dos meses visíveis, inclusive os já conferidos"
+      className="inline-flex h-7 items-center gap-1.5 whitespace-nowrap rounded-md border border-border bg-card px-2.5 text-[11.5px] font-medium text-foreground transition hover:bg-secondary disabled:opacity-50"
+    >
+      {gerando
+        ? <><Loader2 className="h-3 w-3 animate-spin" /> {progresso ?? "Gerando…"}</>
+        : <><Sparkles className="h-3 w-3" /> Regerar</>}
+    </button>
   );
 }

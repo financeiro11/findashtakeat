@@ -18,6 +18,7 @@ import { listarCategorias, listarMovimentos } from "../_shared/omie.ts";
 import { lerMovimentos, lerCategorias } from "../_shared/omie-cache.ts";
 import { requireUser } from "../_shared/auth.ts";
 import { salvarDemonstracao } from "../_shared/demonstracoes.ts";
+import { DFC_SCHEMA, type Node } from "../_shared/demonstracoes-schema.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -92,28 +93,39 @@ const DRE_SECOES = {
   impostos: ["IRPJ", "CSLL", "IRF"],
 };
 
+/* As seções da DFC saem do PRÓPRIO esquema (_shared/demonstracoes-schema.ts).
+ *
+ * Elas eram uma segunda lista, escrita à mão aqui — e as duas divergiram: o
+ * resultado não operacional somava nas entradas (inflando o fluxo operacional),
+ * a antecipação de recebível somava no financiamento, e "IRF" e "(-) Depesas
+ * Financeiras", que a DFC do tracker não tem, somavam nas saídas. Arrumar o
+ * esquema não bastava: o sync seguinte reescrevia os totais pela lista velha.
+ * Agora há uma fonte só. */
+const folhas = (n: Node): string[] =>
+  n.children?.length ? n.children.flatMap(folhas) : [n.label];
+
+/* Mesma régua do `chaveRubrica` da tela: ignora acento e caixa, preserva os
+   sinais que distinguem rubrica. O DE_PARA grava "Outras Despesas Adm" e
+   "Encargos sociais"; o tracker, "Outras despesas Adm" e "Encargos Sociais". */
+const chaveRubrica = (s: string): string =>
+  (s || "")
+    .normalize("NFD").replace(/\p{Diacritic}/gu, "")
+    .toUpperCase()
+    .replace(/[^A-Z0-9%+-]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
 const DFC_SECOES = {
-  entradas: [
-    "Receita de Assinaturas", "Receita com Materiais", "Receita Markup", "Receita de Serviços",
-    "Entrada de Receita", "(+) Receita financeira", "(+) Resultado Não Operacional",
-  ],
-  saidas: [
-    // Impostos
-    "Simples Nacional", "PIS", "COFINS", "ISS", "ICMS", "IRF", "Parcelamento de Impostos", "Retenção de Contribuição",
-    // Pessoal
-    "Equipe Administrativa", "Equipe Comercial", "Equipe Marketing", "Equipe Tecnologia", "Equipe Operacional", "Equipe Onboarding", "Premiações Operacionais", "Premiações", "Encargos sociais", "Benefícios",
-    // Custos de operação
-    "CMV Materiais", "Outros Custos", "Meios de Pagamento", "Servidor", "Softwares Operacionais", "MGM",
-    // Administrativas
-    "Assessorias & Consultorias", "Softwares Administrativos", "Ocupação & Escritório", "Viagens & Transportes Adm", "Outras Despesas Adm",
-    // Marketing & Vendas
-    "Softwares Marketing & Vendas", "Agências & Consultorias", "Campanhas de Mídia Paga", "Campanhas de Outros Canais", "Comissões Consultores / Parceiros", "Eventos e Feiras", "Viagens & Transportes Mkt", "Outras Despesas Mkt",
-    // Financeiras + devoluções
-    "(-) Juros", "(-) IOF", "(-) Depesas Financeiras", "Devoluções",
-  ],
-  investimentos: ["(-) Compra de Equipamentos", "(-) Investimentos em Estrutura", "(-) Compra de Participação", "Depósitos e Caução"],
-  financiamento: ["(+) Novos Empréstimos & Financiamentos", "(-) Amortização de Financiamentos", "Antecipação da Receita", "Abatimento de Antecipação da Receita", "(-) Rodada de Investimentos"],
+  entradas: folhas(DFC_SCHEMA[0]),      // Entradas Operacionais
+  saidas: folhas(DFC_SCHEMA[1]),        // Saídas Operacionais
+  investimentos: folhas(DFC_SCHEMA[3]), // Investimentos
+  financiamento: folhas(DFC_SCHEMA[4]), // Financiamento
 };
+
+/** Toda rubrica que tem lugar na DFC — o que não está aqui não entra na conta. */
+const DFC_RUBRICAS = new Set(
+  Object.values(DFC_SECOES).flat().map((l) => chaveRubrica(l)),
+);
 
 type Agg = Map<string, Map<string, number>>; // rubrica → (mês → valor)
 
@@ -122,11 +134,21 @@ function addTo(agg: Agg, rubrica: string, mes: string, valor: number) {
   if (!byMes) { byMes = new Map(); agg.set(rubrica, byMes); }
   byMes.set(mes, (byMes.get(mes) ?? 0) + valor);
 }
+/* Somam TODAS as grafias da rubrica. O agregado é chaveado pelo texto que está
+   no DE_PARA ("Outras Despesas Adm", "Encargos sociais") e as seções, pelo texto
+   do esquema ("Outras despesas Adm", "Encargos Sociais") — comparar letra a
+   letra perdia a linha e o total saía sem ela. */
 function getVal(agg: Agg, rubrica: string, mes: string): number {
-  return agg.get(rubrica)?.get(mes) ?? 0;
+  const alvo = chaveRubrica(rubrica);
+  let total = 0;
+  for (const [r, byMes] of agg) if (chaveRubrica(r) === alvo) total += byMes.get(mes) ?? 0;
+  return total;
 }
 function sumSecao(agg: Agg, labels: string[], mes: string): number {
-  return labels.reduce((s, l) => s + getVal(agg, l, mes), 0);
+  const alvo = new Set(labels.map(chaveRubrica));
+  let total = 0;
+  for (const [r, byMes] of agg) if (alvo.has(chaveRubrica(r))) total += byMes.get(mes) ?? 0;
+  return total;
 }
 
 // Constrói o payload { columns, rows } a partir do agregado + linhas de total.
@@ -272,8 +294,15 @@ Deno.serve(async (req) => {
           }
           if (usaDfc) {
             const rub = mapaDfc.get(chave);
-            if (rub) addTo(dfcAgg, rub, monthKey(dataDfc!), valor);
-            else naoMapeadas.add(`${codigoOmie} :: ${descricao}`);
+            if (!rub) naoMapeadas.add(`${codigoOmie} :: ${descricao}`);
+            /* Rubrica mapeada que a DFC do tracker não tem — o DE_PARA ainda
+               mandava o recebimento de assinatura para "Receita de Assinaturas",
+               linha que não existe nesta demonstração. Agregar criaria no blob
+               uma linha que a tela não mostra e que nenhum total soma: dinheiro
+               sumindo calado. Vira aviso de DE_PARA, que é o que ela é. */
+            else if (!DFC_RUBRICAS.has(chaveRubrica(rub))) {
+              naoMapeadas.add(`${codigoOmie} :: ${descricao} → "${rub}" não é rubrica da DFC`);
+            } else addTo(dfcAgg, rub, monthKey(dataDfc!), valor);
           }
         }
       }

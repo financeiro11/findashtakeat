@@ -16,6 +16,7 @@ export const ROTAS: Record<string, { crumbs: string[]; context?: string }> = {
   "/operacional/cartao": { crumbs: ["Operacional", "Cartão → Omie"], context: "Importar a fatura · separar parcelas · provisionar" },
   "/de-para": { crumbs: ["Configurações", "DE_PARA"], context: "Mapeamento de classificações" },
   "/usuarios": { crumbs: ["Configurações", "Usuários"] },
+  "/configuracoes/parametrizacao": { crumbs: ["Configurações", "Parametrização"], context: "Apelido das contrapartes · o nome que o fornecedor tem para nós" },
   "/configuracoes/uso-ia": { crumbs: ["Configurações", "Uso IA"], context: "Custo estimado das chamadas à IA" },
   "/automacoes/proporcionais": { crumbs: ["Automações", "Proporcionais"], context: "Aprovação de salários proporcionais" },
   "/asaas": { crumbs: ["Operacional", "Asaas"], context: "Recebimentos · Assinaturas · NF-e" },

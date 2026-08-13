@@ -25,8 +25,12 @@ const TENTATIVAS = 5;
 /**
  * Erros do Omie que valem uma nova tentativa — nenhum deles é culpa do request:
  *
- *  • "Consumo redundante" (5020), HTTP 425, "processando", "bloqueada"
- *    → rate limit / concorrência: a mesma chamada já está rodando lá.
+ *  • "Consumo redundante" (5020), HTTP 425, "processando", "bloqueada",
+ *    "Já existe uma requisição desse método sendo executada"
+ *    → rate limit / concorrência: a mesma chamada já está rodando lá. O último é
+ *      a trava POR MÉTODO — duas consultas de títulos DIFERENTES ao mesmo tempo
+ *      esbarram nela do mesmo jeito (medido: 4 em voo, 3 recusadas). Esperar e
+ *      repetir é o único caminho.
  *
  *  • "SOAP-ERROR: Broken response from Application Server (BG)"
  *    → o servidor DELES quebrou ao montar a resposta. Aparece sobretudo em respostas
@@ -35,7 +39,7 @@ const TENTATIVAS = 5;
  *      quase sempre — por isso listarMovimentos reduz o lote quando esbarra nisso.
  */
 const ehTransitorio = (msg: unknown): boolean =>
-  /425|redundante|processando|5020|too many|bloqueada|soap-error|broken response|timeout|502|503|504/i
+  /425|redundante|processando|5020|too many|bloqueada|soap-error|broken response|timeout|502|503|504|existe uma requisi|tentar novamente/i
     .test(String(msg));
 
 /** Chamada quebrou porque a resposta era grande demais para o servidor do Omie montar? */

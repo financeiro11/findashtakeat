@@ -33,8 +33,10 @@ export function CardResultadoPeriodo({ ctx }: { ctx: ContextoCard }) {
     let vivo = true;
     (async () => {
       const { data } = await sb
+        // periodo='completo': o registro em que o import/omie-sync escrevem — a tabela
+        // também guarda backups, e "o mais recente do tipo" pegava o backup.
         .from("demonstracoes_contabeis").select("dados")
-        .eq("tipo", "dre").order("updated_at", { ascending: false }).limit(1).maybeSingle();
+        .eq("tipo", "dre").eq("periodo", "completo").maybeSingle();
       if (!vivo) return;
       const blob = lerBlobMensal(data?.dados);
       setLeitor(lerDre(blob.rows, blob.columns));

@@ -20,6 +20,8 @@ import { cn } from "@/lib/utils";
 import type { Analise, LinhaMatriz, Marcacao } from "./analise";
 import { deltaMilStr, milStr, pctStr } from "./fmt";
 import { abrev, deltaMil, mil } from "./valores";
+import { useApelidos } from "@/hooks/useApelidos";
+import { apelidoDe } from "@/lib/apelidos";
 
 export type Realce = "primeiro" | "penultimo";
 
@@ -172,6 +174,9 @@ function Linha({
   onToggle?: () => void;
   pctDoTotal?: number;
 }) {
+  /* A matriz agrupa por estabelecimento OU por categoria, conforme a visão —
+     nas linhas de categoria não há apelido a achar, e `apelidoDe` devolve null. */
+  const ap = apelidoDe(useApelidos(), linha.chave);
   const larguraBarra = maxTotal > 0 ? Math.max(2, (linha.total / maxTotal) * 100) : 0;
 
   return (
@@ -192,15 +197,22 @@ function Linha({
             />
           )}
           <div className="min-w-0">
-            <div className={cn("truncate text-[12.5px] font-semibold", filha && "font-medium")}>
-              {linha.chave}
+            <div className={cn("truncate text-[12.5px] font-semibold", filha && "font-medium")}
+              title={ap?.oQueE ?? undefined}>
+              {ap?.apelido ?? linha.chave}
               {linha.novo && (
                 <span className="ml-1.5 rounded bg-warn-soft px-1 py-px text-[9px] font-bold tracking-wider text-warn align-middle">
                   NOVO
                 </span>
               )}
             </div>
-            {linha.sub && <div className="truncate text-[11px] text-muted-foreground">{linha.sub}</div>}
+            {/* Com apelido em cima, o nome do OFX desce para cá — é ele que se
+                procura na fatura e no Omie. */}
+            {(ap || linha.sub) && (
+              <div className="truncate text-[11px] text-muted-foreground">
+                {[ap ? linha.chave : null, linha.sub].filter(Boolean).join(" · ")}
+              </div>
+            )}
           </div>
         </div>
       </td>

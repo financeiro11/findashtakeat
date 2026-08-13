@@ -18,6 +18,8 @@ import { cn } from "@/lib/utils";
 import type { Lancamento, Mes } from "./analise";
 import { fmtBRLStr } from "./fmt";
 import { fmtBRL } from "./valores";
+import { useApelidos } from "@/hooks/useApelidos";
+import { apelidoDe } from "@/lib/apelidos";
 
 const TODOS = "__todos__";
 
@@ -38,6 +40,7 @@ export function Detalhe({
   /** Um clique em "Lançamentos" numa recomendação chega aqui. */
   foco?: FocoDetalhe | null;
 }) {
+  const apelidos = useApelidos();
   const [mes, setMes] = useState<string>(TODOS);
   const [busca, setBusca] = useState("");
   const [aba, setAba] = useState<"gasto" | "credito">("gasto");
@@ -67,11 +70,13 @@ export function Detalhe({
         (l) =>
           !q ||
           l.estabelecimento.toLowerCase().includes(q) ||
+          // pelo apelido também: é o nome que está escrito na coluna
+          (apelidoDe(apelidos, l.estabelecimento)?.apelido ?? "").toLowerCase().includes(q) ||
           l.categoria.toLowerCase().includes(q) ||
           (l.descricao ?? "").toLowerCase().includes(q),
       )
       .sort((a, b) => (b.data ?? "").localeCompare(a.data ?? "") || b.valor - a.valor);
-  }, [lancamentos, aba, mes, busca]);
+  }, [lancamentos, aba, mes, busca, apelidos]);
 
   const total = filtrados.reduce((s, l) => s + l.valor, 0);
 
@@ -140,7 +145,12 @@ export function Detalhe({
                 <td className="whitespace-nowrap px-3 py-2 text-[12px] text-muted-foreground">
                   {rotuloMes.get(l.competencia) ?? l.competencia}
                 </td>
-                <td className="px-3 py-2 text-[12.5px] font-medium">{l.estabelecimento}</td>
+                {/* Apelido quando houver (Configurações › Parametrização); o
+                    nome do OFX fica no hover e na coluna "Descrição" ao lado. */}
+                <td className="px-3 py-2 text-[12.5px] font-medium"
+                  title={apelidoDe(apelidos, l.estabelecimento)?.oQueE ?? l.estabelecimento ?? undefined}>
+                  {apelidoDe(apelidos, l.estabelecimento)?.apelido ?? l.estabelecimento}
+                </td>
                 <td className="px-3 py-2 text-[12px] text-muted-foreground">{l.categoria}</td>
                 <td className="max-w-[280px] truncate px-3 py-2 font-mono text-[11px] text-muted-foreground/80" title={l.descricao ?? ""}>
                   {l.descricao ?? "—"}

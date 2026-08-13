@@ -46,6 +46,8 @@ import {
 import { bloqueioDeEnvio } from "@/lib/cartao/envio";
 import { fmtBRLStr, intStr } from "@/pages/cartao/fmt";
 import { fmtBRL } from "@/pages/cartao/valores";
+import { useApelidos } from "@/hooks/useApelidos";
+import { apelidoDe } from "@/lib/apelidos";
 
 /* As tabelas do cartão são novas e ainda não estão no types.ts gerado (que não
    se edita à mão). O cast fica confinado aqui. */
@@ -550,6 +552,7 @@ function TabelaGrupos({
   escolhaDe: (chave: string) => (Sugestao & { manual: boolean }) | null;
   onDefinir: (chave: string, c: CategoriaOmie) => void;
 }) {
+  const apelidos = useApelidos();
   const [aberto, setAberto] = useState<string | null>(null);
   const classifica = balde === "avista" || balde === "primeira";
 
@@ -582,7 +585,18 @@ function TabelaGrupos({
                       onClick={() => setAberto(expandido ? null : g.chave)}
                     >
                       <ChevronRight className={cn("h-3.5 w-3.5 shrink-0 text-muted-foreground transition", expandido && "rotate-90")} />
-                      <span className="font-medium">{g.estabelecimento}</span>
+                      {/* Apelido em cima, lojista do OFX embaixo (Configurações
+                          › Parametrização). Aqui o nome cru importa mais que em
+                          outras telas: é o que se confere contra a fatura. */}
+                      <span className="min-w-0">
+                        <span className="block font-medium"
+                          title={apelidoDe(apelidos, g.estabelecimento)?.oQueE ?? undefined}>
+                          {apelidoDe(apelidos, g.estabelecimento)?.apelido ?? g.estabelecimento}
+                        </span>
+                        {apelidoDe(apelidos, g.estabelecimento) && (
+                          <span className="block text-[10.5px] text-muted-foreground">{g.estabelecimento}</span>
+                        )}
+                      </span>
                     </button>
                   </td>
                   <td className="num px-3 py-2 text-right text-muted-foreground">{g.linhas.length}</td>

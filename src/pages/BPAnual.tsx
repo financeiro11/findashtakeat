@@ -156,11 +156,13 @@ export default function BPAnual() {
   /* ---------- Carrega Realizado (DRE) do ano ---------- */
   const loadReal = async () => {
     const { data } = await supabase
+      // periodo='completo': o registro em que o import/omie-sync escrevem — a tabela
+      // também guarda backups, e "o mais recente do tipo" pegava o backup.
       .from("demonstracoes_contabeis" as any)
       .select("dados")
       .eq("tipo", "dre")
-      .order("updated_at", { ascending: false })
-      .limit(1).maybeSingle();
+      .eq("periodo", "completo")
+      .maybeSingle();
     const raw: any = (data as any)?.dados;
     if (!raw) { setReal({}); return; }
     const rows: any[] = Array.isArray(raw) ? raw : (raw.rows || []);

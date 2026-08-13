@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
-  MessageCircleQuestion, Loader2, Copy, Trash2, ArrowUpToLine, Sparkles, CornerDownRight, ListTree,
+  MessageCircleQuestion, Loader2, Copy, Trash2, ArrowUpToLine, Sparkles, CornerDownRight,
 } from "lucide-react";
 import { toast } from "sonner";
 import { supabase } from "@/integrations/supabase/client";
@@ -8,6 +8,7 @@ import { cn } from "@/lib/utils";
 import { valorExato } from "@/lib/valor";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { chaveCelula } from "@/components/demonstracoes/Reclassificacoes";
+import { DetalheStatus, SegmentoStatus } from "@/components/demonstracoes/BarraStatus";
 import { variacao } from "@/lib/demonstracoes-schema";
 import { perguntar, type PayloadPergunta, type Pergunta } from "@/lib/perguntas";
 import { usePessoasPJ } from "@/hooks/usePessoasPJ";
@@ -377,25 +378,17 @@ export function ResumoPerguntas({
   if (!visiveis.length) return null;
 
   return (
-    <div className="mt-3 flex flex-wrap items-start justify-between gap-x-4 gap-y-2 rounded-lg border border-indigo-300 bg-indigo-50 px-3 py-2.5 text-[11.5px] leading-relaxed text-indigo-950">
-      <span className="flex items-start gap-2">
-        <MessageCircleQuestion strokeWidth={2.5} className="mt-0.5 h-4 w-4 shrink-0 text-indigo-700" />
-        <span>
-          <b>{visiveis.length}</b> {visiveis.length === 1 ? "pergunta respondida" : "perguntas respondidas"} nos meses
-          visíveis. Elas ficam na célula em que foram feitas e não somem no “Regerar” —
-          para levar uma ao tracker, use “Virar comentário”.
-        </span>
-      </span>
-      <Popover>
-        <PopoverTrigger asChild>
-          <button className="inline-flex shrink-0 items-center gap-1.5 rounded-md border border-indigo-300 bg-card px-2.5 py-1 text-[11.5px] font-medium text-indigo-900 transition hover:bg-indigo-100">
-            <ListTree className="h-3 w-3" /> Ver quais
-          </button>
-        </PopoverTrigger>
-        <PopoverContent align="end" className="w-[420px] p-0">
-          <div className="border-b border-border px-3 py-2 text-[12px] font-semibold text-foreground">
-            Perguntas nesta demonstração
-          </div>
+    <SegmentoStatus
+      icone={<MessageCircleQuestion strokeWidth={2.2} className="h-[13px] w-[13px] text-indigo-600" />}
+      valor={visiveis.length}
+      rotulo={visiveis.length === 1 ? "pergunta" : "perguntas"}
+      titulo="Perguntas respondidas nos meses visíveis. Ficam na célula em que foram feitas e não somem no “Regerar”."
+      larguraDetalhe={420}
+      detalhe={
+        <DetalheStatus
+          titulo="Perguntas nesta demonstração"
+          nota="Elas ficam na célula em que foram feitas e não somem no “Regerar”. Para ler a resposta, clique no “?” dentro da célula; para levar uma ao tracker, use “Virar comentário”."
+        >
           <div className="max-h-[320px] overflow-y-auto py-1">
             {visiveis.map((q) => (
               <div key={q.id} className="px-3 py-1.5 hover:bg-secondary/60">
@@ -407,11 +400,8 @@ export function ResumoPerguntas({
               </div>
             ))}
           </div>
-          <div className="border-t border-border px-3 py-2 text-[10.5px] leading-snug text-muted-foreground">
-            Para ler a resposta, clique no “?” dentro da célula.
-          </div>
-        </PopoverContent>
-      </Popover>
-    </div>
+        </DetalheStatus>
+      }
+    />
   );
 }

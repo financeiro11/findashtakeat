@@ -6,11 +6,14 @@ import { RefreshCw } from "lucide-react";
  *
  * O service worker é gerado com `skipWaiting` + `clientsClaim` (registerType "autoUpdate",
  * ver vite.config.ts): depois de um deploy ele ativa sozinho e assume o controle. O que
- * ele NÃO faz é trocar o JavaScript que já está na memória da aba. No navegador isso se
- * resolve sozinho, porque a pessoa recarrega a página o tempo todo; no app instalado, não
- * — o iOS e o Android suspendem o app em vez de fechá-lo, então quem instalou em julho
- * pode continuar em julho, e as correções simplesmente não chegam. É um jeito eficiente de
- * o app "estar bugado" mesmo com o bug já corrigido em produção.
+ * ele NÃO faz é trocar o JavaScript que já está na memória da aba. No app instalado isso
+ * é crônico — o iOS e o Android suspendem o app em vez de fechá-lo, então quem instalou em
+ * julho pode continuar em julho. E no desktop acontece o mesmo com a aba que fica aberta a
+ * semana inteira: o Hub é uma tela de trabalho, não uma página que se recarrega o tempo
+ * todo. Nos dois casos é um jeito eficiente de o app "estar bugado" com o bug já corrigido
+ * — e sem este aviso não há como distinguir "a tela está errada" de "esta aba está velha",
+ * que é a primeira pergunta a fazer quando alguém relata um bug que não reproduz. Por isso
+ * o aviso vale nas duas molduras: MobileShell e AppLayout.
  *
  * Aqui o aviso é explícito em vez de recarregar sozinho: recarga surpresa no meio de uma
  * pergunta ao assistente ou de uma nota aberta perde o que estava escrito.

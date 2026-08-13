@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { recalcularDerivadas, type Dados } from "../../supabase/functions/_shared/derivadas.ts";
+import { recalcularDerivadas, chaveCelula, type Dados } from "../../supabase/functions/_shared/derivadas.ts";
 import { CASCATA as CASCATA_SERVIDOR } from "../../supabase/functions/_shared/demonstracoes-schema.ts";
 import { CASCATA as CASCATA_CLIENTE } from "./demonstracoes-schema";
 
@@ -210,6 +210,147 @@ describe("recalcularDerivadas · DFC", () => {
     expect(cel(d, "Entradas", "Jul-26")).toBe(1000);
     expect(d.rows.find((r) => r.Conta === "Entradas Operacionais")).toBeUndefined();
     expect(cel(d, "Saídas", "Jul-26")).toBe(-100);
+  });
+});
+
+/* --------------------------------------------------------------------------
+ * O total que veio no arquivo.
+ *
+ * O tracker é a demonstração que a diretoria fecha. Quando ELE traz o total, é o
+ * número dele que vai à reunião — e as fórmulas do arquivo pulam parcela em
+ * vários meses (Fev/26 "Saídas" sem "Retenção de Contribuição"; Ago/26 um
+ * "Cashburn" que não sai de conta nenhuma). Recalcular por cima trocava esse
+ * número calado. Os valores abaixo são os do export de 12/08/26.
+ * ------------------------------------------------------------------------ */
+describe("no import, o total do arquivo manda", () => {
+  const fev = (): Dados => ({
+    columns: ["Conta", "Feb-26"],
+    rows: [
+      linha("Entrada de Receita", { "Feb-26": 779519 }),
+      linha("Receita Markup", { "Feb-26": 10865 }),
+      linha("(+) Receita financeira", { "Feb-26": 16264 }),
+      linha("Entradas", { "Feb-26": 806648 }),
+      linha("PIS", { "Feb-26": -7652 }),
+      linha("Retenção de Contribuição", { "Feb-26": -698 }),  // a parcela que a fórmula da planilha pula
+      linha("Saídas", { "Feb-26": -7652 }),                   // ...e por isso o total dela é 698 menor
+      linha("Fluxo de Caixa Operacional", { "Feb-26": 798996 }),
+      linha("Fluxo de Caixa Livre", { "Feb-26": 798996 }),    // o nome que o tracker usa
+      linha("Cashburn", { "Feb-26": 798996 }),
+    ],
+  });
+  const doArquivo = (d: Dados): Set<string> => {
+    const s = new Set<string>();
+    for (const r of d.rows) for (const c of d.columns) {
+      if (c !== "Conta" && r[c] !== undefined) s.add(chaveCelula(String(r.Conta), c));
+    }
+    return s;
+  };
+
+  it("mantém o total do arquivo mesmo divergindo das próprias parcelas", () => {
+    const base = fev();
+    const d = recalcularDerivadas("dfc", base, TODOS, doArquivo(base));
+    // A soma das parcelas é -8.350; o arquivo diz -7.652 e é o arquivo que vale.
+    expect(cel(d, "Saídas", "Feb-26")).toBe(-7652);
+    expect(cel(d, "Fluxo de Caixa Operacional", "Feb-26")).toBe(798996);
+    expect(cel(d, "Fluxo de Caixa Livre", "Feb-26")).toBe(798996);
+    expect(cel(d, "Cashburn", "Feb-26")).toBe(798996);
+  });
+
+  /* O caso que trouxe este bloco: o tracker escreve Cashburn 134 em Ago/26 e a
+     nossa conta dava 753.602. O número da planilha é o que vai à reunião. */
+  it("preserva o Cashburn do arquivo mesmo sem ele sair de conta nenhuma", () => {
+    const base: Dados = {
+      columns: ["Conta", "Aug-26"],
+      rows: [
+        linha("Entrada de Receita", { "Aug-26": 134 }),
+        linha("Fluxo de Caixa Livre", { "Aug-26": 753603 }),
+        linha("Cashburn", { "Aug-26": 134 }),
+      ],
+    };
+    const d = recalcularDerivadas("dfc", base, TODOS, doArquivo(base));
+    expect(cel(d, "Cashburn", "Aug-26")).toBe(134);
+    expect(cel(d, "Fluxo de Caixa Livre", "Aug-26")).toBe(753603);
+  });
+
+  it("o apelido conta: preservar 'Fluxo de Caixa Livre' preserva 'Fluxo Livre'", () => {
+    const base: Dados = {
+      columns: ["Conta", "Jul-26"],
+      rows: [
+        linha("Entrada de Receita", { "Jul-26": 1000 }),
+        linha("Fluxo de Caixa Livre", { "Jul-26": 12345 }),
+      ],
+    };
+    const d = recalcularDerivadas("dfc", base, TODOS, doArquivo(base));
+    expect(cel(d, "Fluxo de Caixa Livre", "Jul-26")).toBe(12345);
+    expect(d.rows.find((r) => r.Conta === "Fluxo Livre")).toBeUndefined();
+  });
+
+  /* O que o arquivo NÃO traz continua derivado — os blocos do esquema não
+     existem como linha no tracker e sem isso a grade ficaria sem eles. */
+  it("a linha que o arquivo não trouxe segue sendo calculada", () => {
+    const base = fev();
+    const d = recalcularDerivadas("dfc", base, TODOS, doArquivo(base));
+    // "Impostos & Deduções" não existe como linha no tracker: é bloco do esquema.
+    expect(cel(d, "Impostos & Deduções", "Feb-26")).toBe(-8350);
+  });
+
+  it("célula vazia no arquivo não conta como total do arquivo", () => {
+    const base: Dados = {
+      columns: ["Conta", "Jul-26"],
+      rows: [
+        linha("Receita Bruta", { "Jul-26": 1000 }),
+        linha("(-) Deduções da receita", { "Jul-26": -100 }),
+        { Conta: "Receita Líquida", "Jul-26": "" },
+      ],
+    };
+    // "" não entra no conjunto (é o que o import manda para mês em branco).
+    const d = recalcularDerivadas("dre", base, TODOS, new Set());
+    expect(cel(d, "Receita Líquida", "Jul-26")).toBe(900);
+  });
+
+  /* A exceção, e o arquivo é quem a justifica: a régua do Cashburn muda de ano
+     para ano na planilha. Em 2024 a célula não desconta a captação e Set/24 fica
+     com "queima" de +1.316.290 no mês do empréstimo de R$ 1,4 M. Quem monta o
+     conjunto (demonstracoes.ts) deixa o Cashburn de fora, e a conta é uma só:
+     fluxo livre DO ARQUIVO menos empréstimo novo. De 2026 isso devolve
+     exatamente o número da planilha. */
+  it("com o fluxo livre do arquivo, a conta do Cashburn reproduz a planilha", () => {
+    const base: Dados = {
+      columns: ["Conta", "Feb-26"],
+      rows: [
+        linha("Entrada de Receita", { "Feb-26": 779519 }),
+        linha("Fluxo de Caixa Livre", { "Feb-26": 483945 }),          // o total do arquivo
+        linha("(+) Novos Empréstimos & Financiamentos", { "Feb-26": 1048520 }),
+      ],
+    };
+    // O Cashburn NÃO entra em `preservadas` (é o que demonstracoes.ts faz).
+    const preservadas = new Set([chaveCelula("Fluxo de Caixa Livre", "Feb-26")]);
+    const d = recalcularDerivadas("dfc", base, TODOS, preservadas);
+    expect(cel(d, "Fluxo de Caixa Livre", "Feb-26")).toBe(483945);
+    expect(cel(d, "Cashburn", "Feb-26")).toBe(-564575); // o mesmo que a planilha diz
+  });
+
+  it("e no mês de empréstimo de 2024 a queima continua negativa", () => {
+    const base: Dados = {
+      columns: ["Conta", "Sep-24"],
+      rows: [
+        linha("Entrada de Receita", { "Sep-24": 361013 }),
+        linha("Fluxo de Caixa Livre", { "Sep-24": 1316290 }),
+        linha("(+) Novos Empréstimos & Financiamentos", { "Sep-24": 1405000 }),
+      ],
+    };
+    const d = recalcularDerivadas("dfc", base, TODOS, new Set([chaveCelula("Fluxo de Caixa Livre", "Sep-24")]));
+    // A planilha escreve 1.316.290 nesta célula; queima positiva de R$ 1,3 M no
+    // mês em que o dinheiro ENTROU é exatamente o que a linha não pode dizer.
+    expect(cel(d, "Cashburn", "Sep-24")).toBe(-88710);
+  });
+
+  it("sem o conjunto, nada muda — é o caminho do sync", () => {
+    const base = fev();
+    const comSet = recalcularDerivadas("dfc", base, TODOS, new Set());
+    const semSet = recalcularDerivadas("dfc", base, TODOS);
+    expect(comSet).toEqual(semSet);
+    expect(cel(semSet, "Saídas", "Feb-26")).toBe(-8350); // -7.652 + -698, a soma das parcelas
   });
 });
 

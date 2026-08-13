@@ -3,6 +3,7 @@ import { TriangleAlert } from "lucide-react";
 import { supabase } from "@/integrations/supabase/client";
 import { cn } from "@/lib/utils";
 import { valorExato } from "@/lib/valor";
+import { DetalheStatus, SegmentoStatus, SeloPendencia } from "@/components/demonstracoes/BarraStatus";
 
 /* ---------------------------------------------------------------------------
  * Alerta de reclassificação na célula da DRE/DFC.
@@ -98,17 +99,33 @@ export function ResumoReclassificacoes({ mapa }: { mapa: Map<string, AlertaCelul
   if (!mapa.size) return null;
   const total = [...mapa.values()].reduce((s, a) => s + a.alertas, 0);
   const fortes = [...mapa.values()].filter(a => a.severidade === "alta").length;
+
   return (
-    <div className="mt-3 flex items-start gap-2 rounded-lg border border-amber-300 bg-amber-100/70 px-3 py-2.5 text-[11.5px] leading-relaxed text-amber-900">
-      <TriangleAlert strokeWidth={2.5} className="mt-0.5 h-4 w-4 shrink-0 fill-amber-400 text-amber-800" />
-      <span>
-        <b>{total}</b> {total === 1 ? "lançamento caiu" : "lançamentos caíram"} numa rubrica diferente
-        da que o fornecedor vinha usando, em <b>{mapa.size}</b> {mapa.size === 1 ? "célula" : "células"}
-        {fortes > 0 && <> — {fortes} com valor igual ao de sempre, o sinal mais forte de classificação trocada</>}.
-        Clique na célula marcada para ver qual.
-        {/* Sem isto, "só 26 alertas" pareceria a conta toda. */}
-        <span className="opacity-80"> Só meses destravados entram: mês fechado se corrige no ERP.</span>
-      </span>
-    </div>
+    <SegmentoStatus
+      icone={<TriangleAlert strokeWidth={2.2} className="h-[13px] w-[13px] fill-amber-300 text-amber-700" />}
+      valor={total}
+      rotulo={total === 1 ? "fora do padrão" : "fora do padrão"}
+      selo={
+        fortes > 0
+          ? <SeloPendencia titulo="Mesmo valor de sempre numa rubrica diferente — o sinal mais forte de classificação trocada.">
+              {fortes} {fortes === 1 ? "forte" : "fortes"}
+            </SeloPendencia>
+          : undefined
+      }
+      titulo={`${total} ${total === 1 ? "lançamento caiu" : "lançamentos caíram"} numa rubrica diferente da que o fornecedor vinha usando, em ${mapa.size} ${mapa.size === 1 ? "célula" : "células"}.`}
+      larguraDetalhe={340}
+      detalhe={
+        <DetalheStatus
+          titulo="Lançamentos fora do padrão do fornecedor"
+          nota="Só meses destravados entram: mês fechado se corrige no ERP. Clique na célula marcada na grade para ver quais lançamentos são."
+        >
+          <div className="px-3 py-2 text-[11.5px] leading-relaxed text-foreground">
+            <b>{total}</b> {total === 1 ? "lançamento caiu" : "lançamentos caíram"} numa rubrica diferente
+            da que o fornecedor vinha usando, em <b>{mapa.size}</b> {mapa.size === 1 ? "célula" : "células"}
+            {fortes > 0 && <> — <b>{fortes}</b> com valor igual ao de sempre, o sinal mais forte de classificação trocada</>}.
+          </div>
+        </DetalheStatus>
+      }
+    />
   );
 }

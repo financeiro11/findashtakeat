@@ -72,8 +72,10 @@ export default function PontoEquilibrio() {
   useEffect(() => {
     (async () => {
       const [dre, travas, assinaturas, classif] = await Promise.all([
+        // periodo='completo': o registro em que o import/omie-sync escrevem — a tabela
+        // também guarda backups, e "o mais recente do tipo" pegava o backup.
         sb.from("demonstracoes_contabeis").select("dados,updated_at")
-          .eq("tipo", "dre").order("updated_at", { ascending: false }).limit(1).maybeSingle(),
+          .eq("tipo", "dre").eq("periodo", "completo").maybeSingle(),
         sb.from("demonstracoes_mes_trancado").select("col_key"),
         sb.from("assinaturas_snapshot").select("competencia,dados")
           .order("competencia", { ascending: false }).limit(1).maybeSingle(),

@@ -14,7 +14,7 @@ import {
 } from "recharts";
 import {
   ChevronLeft, ChevronRight, Loader2, TrendingDown, UserMinus, Ticket, Target,
-  Database, Check, AlertTriangle, ArrowRight,
+  Database, Check, AlertTriangle, ArrowRight, RefreshCw,
 } from "lucide-react";
 import { SeletorAba, KpiCard, VsOrcado } from "./comum";
 import {
@@ -72,17 +72,61 @@ export default function Churn({ aba, setAba }: { aba: Aba; setAba: (a: Aba) => v
   const [selIdx, setSelIdx] = useState(0);
   const [escopo, setEscopo] = useState<"geral" | "onboarding" | "sucesso">("geral");
   const [histView, setHistView] = useState<"mes" | "tend">("mes");
+  const [sincronizando, setSincronizando] = useState(false);
+
+  // `manterCompetencia` preserva o mês aberto: depois de um Atualizar manual o usuário
+  // continua olhando o mês que estava olhando, e não é jogado para o mais recente.
+  const carregarDados = async (manterCompetencia?: string) => {
+    const { data, error } = await sb
+      .from("churn_snapshot")
+      .select("competencia,mes_label,dados")
+      .order("competencia", { ascending: true });
+    if (error) {
+      toast.error("Falha ao carregar churn: " + error.message);
+      return;
+    }
+    const rows = (data ?? []) as Snap[];
+    const i = manterCompetencia ? rows.findIndex((r) => r.competencia === manterCompetencia) : -1;
+    setSnaps(rows);
+    setSelIdx(i >= 0 ? i : Math.max(0, rows.length - 1)); // sem o mês antigo, abre no mais recente
+  };
+
+  // Refaz o snapshot a partir da planilha da diretoria. Existe porque a planilha ainda
+  // recebe acertos na primeira semana do mês seguinte, depois do cron das 9h.
+  const sincronizar = async () => {
+    setSincronizando(true);
+    const aviso = toast.loading("Relendo a planilha da diretoria…");
+    try {
+      const { data, error } = await sb.functions.invoke("churn-sheet-sync", { body: { action: "sync" } });
+      // supabase-js embrulha qualquer non-2xx num FunctionsHttpError cuja mensagem é sempre
+      // "Edge Function returned a non-2xx status code". O motivo real — planilha sem
+      // compartilhamento, aba renomeada — está no corpo, em error.context.
+      if (error) {
+        let detalhe = error.message ?? String(error);
+        if (typeof error.context?.text === "function") {
+          try { const raw = await error.context.text(); detalhe = JSON.parse(raw)?.error || raw || detalhe; } catch { /* corpo não era JSON */ }
+        }
+        console.error("[churn-sheet-sync]", detalhe, error);
+        toast.error(detalhe, { id: aviso, duration: 12000 });
+        return;
+      }
+      const meses: string[] = data?.meses_processados ?? [];
+      await carregarDados(snaps[selIdx]?.competencia);
+      toast.success(
+        meses.length ? `Planilha lida — ${meses.length} meses atualizados (até ${meses[meses.length - 1]}).`
+                     : "Planilha lida, mas nenhum mês tinha base fechada.",
+        { id: aviso },
+      );
+    } catch (e) {
+      toast.error("Erro ao sincronizar: " + String(e), { id: aviso });
+    } finally {
+      setSincronizando(false);
+    }
+  };
 
   useEffect(() => {
     (async () => {
-      const { data, error } = await sb
-        .from("churn_snapshot")
-        .select("competencia,mes_label,dados")
-        .order("competencia", { ascending: true });
-      if (error) toast.error("Falha ao carregar churn: " + error.message);
-      const rows = (data ?? []) as Snap[];
-      setSnaps(rows);
-      setSelIdx(Math.max(0, rows.length - 1)); // abre no mês mais recente
+      await carregarDados();
       setLoading(false);
     })();
   }, []);
@@ -127,11 +171,12 @@ export default function Churn({ aba, setAba }: { aba: Aba; setAba: (a: Aba) => v
   if (!sel || !d || !k) {
     return (
       <div className="space-y-4 p-4 md:p-6">
-        <Cabecalho aba={aba} setAba={setAba} />
+        <Cabecalho aba={aba} setAba={setAba} sincronizar={sincronizar} sincronizando={sincronizando} />
         <div className="card-surface mx-auto mt-10 max-w-md p-8 text-center">
           <div className="mb-2 text-[15px] font-semibold">Nenhum dado de churn ainda</div>
           <p className="text-[12.5px] text-muted-foreground">
-            Os números vêm da planilha de churn da diretoria e são recalculados todo dia às 9h.
+            Os números vêm da planilha de churn da diretoria e são recalculados todo dia às 9h —
+            “Atualizar” relê a planilha na hora.
           </p>
         </div>
       </div>
@@ -147,6 +192,8 @@ export default function Churn({ aba, setAba }: { aba: Aba; setAba: (a: Aba) => v
       <Cabecalho
         aba={aba}
         setAba={setAba}
+        sincronizar={sincronizar}
+        sincronizando={sincronizando}
         nav={
           <>
             <span className="text-muted-foreground/40">·</span>
@@ -553,7 +600,10 @@ export default function Churn({ aba, setAba }: { aba: Aba; setAba: (a: Aba) => v
 }
 
 /* ------------------------------ subcomponentes ------------------------------ */
-function Cabecalho({ aba, setAba, nav }: { aba: Aba; setAba: (a: Aba) => void; nav?: React.ReactNode }) {
+function Cabecalho({ aba, setAba, nav, sincronizar, sincronizando }: {
+  aba: Aba; setAba: (a: Aba) => void; nav?: React.ReactNode;
+  sincronizar: () => void; sincronizando: boolean;
+}) {
   return (
     <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
       <div className="min-w-0">
@@ -566,6 +616,17 @@ function Cabecalho({ aba, setAba, nav }: { aba: Aba; setAba: (a: Aba) => void; n
 
       <div className="flex shrink-0 items-center gap-2 self-start">
         <SeletorAba aba={aba} setAba={setAba} />
+        <button
+          onClick={sincronizar}
+          disabled={sincronizando}
+          className="ghost-btn disabled:opacity-60"
+          title="Reler a planilha da diretoria agora, sem esperar o cron das 9h"
+        >
+          {sincronizando
+            ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            : <RefreshCw className="h-3.5 w-3.5" />}
+          {sincronizando ? "Sincronizando…" : "Atualizar"}
+        </button>
         <span className="inline-flex items-center gap-1.5 rounded-md bg-primary px-2.5 py-1 text-[10px] font-bold uppercase tracking-wider text-primary-foreground">
           <Database className="h-3 w-3" /> Planilha · Supabase
         </span>

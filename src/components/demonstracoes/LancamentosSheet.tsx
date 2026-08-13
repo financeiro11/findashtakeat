@@ -1,7 +1,6 @@
-import { Fragment, useCallback, useEffect, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  Loader2, TriangleAlert, Check, FileText, Users, Undo2, ArrowRightLeft, CreditCard,
-  ChevronDown,
+  Loader2, TriangleAlert, Check, FileText, Users, Undo2, ArrowRightLeft, CreditCard, ChevronDown,
 } from "lucide-react";
 import { toast } from "sonner";
 import { supabase } from "@/integrations/supabase/client";
@@ -9,20 +8,24 @@ import { cn } from "@/lib/utils";
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { CategoriaEditavel } from "@/components/demonstracoes/TrocarCategoria";
 import { ehCartao, lerObservacaoTitulo } from "@/lib/observacaoTitulo";
-import { mesCurto } from "@/lib/demonstracoes-schema";
-import { BarraFiltros, CabecalhoValor } from "@/components/demonstracoes/FiltroLancamentos";
+import { mesAtras, mesCurto } from "@/lib/demonstracoes-schema";
+import { BuscaLancamentos, CabecalhoValor, RodapeLista } from "@/components/demonstracoes/FiltroLancamentos";
 import { TrocarCategoriaLote } from "@/components/demonstracoes/TrocarCategoriaLote";
 import { podeTrocarCategoria, motivoNaoAlteravel, type ItemLote } from "@/lib/loteCategoria";
 import {
   categoriasDaCelula, filtrarLancamentos, filtroInicial, filtroVazio, type Filtro,
 } from "@/lib/filtroLancamentos";
 import {
-  janelaDeMeses, montarComparativo, rotuloSituacao, explicarFornecedor, resumoComparativo,
+  janelaDeMeses, montarComparativo, rotuloSituacao, explicarFornecedor,
   type Comparativo, type Fornecedor, type LinhaContraparte,
 } from "@/lib/comparativoFornecedores";
 import { ChipSituacao } from "@/components/demonstracoes/ChipSituacao";
-import { ComposicaoCategorias } from "@/components/demonstracoes/ComposicaoCategorias";
+import { ComposicaoCategorias, resumoDaComposicao } from "@/components/demonstracoes/ComposicaoCategorias";
 import { montarComposicao, type LinhaCategoriaMes } from "@/lib/composicaoCategorias";
+import { PonteVariacao } from "@/components/demonstracoes/PonteVariacao";
+import { montarPonte } from "@/lib/ponteVariacao";
+import { useApelidos } from "@/hooks/useApelidos";
+import { apelidoDe, apelidosNoTexto } from "@/lib/apelidos";
 
 /* ---------------------------------------------------------------------------
  * Auditoria: os lançamentos do Omie por trás de uma célula da DRE/DFC.
@@ -41,6 +44,13 @@ export type AlvoLancamentos = {
   mesLabel: string;   // "Jul 26"
   celula: number | null;
   travado: boolean;
+  /* O mesmo par um mês atrás, como está NA GRADE. A ponte de variação compara
+     Omie com Omie; isto entra só para acusar quando a grade discorda — em mês
+     travado ela vem do tracker, e sem o aviso a diferença seria lida como erro
+     da ponte. Opcional: quando o mês anterior não está no blob carregado, o
+     painel simplesmente não tem com o que confrontar. */
+  celulaAnterior?: number | null;
+  travadoAnterior?: boolean;
 };
 
 type Lancamento = {
@@ -134,6 +144,51 @@ function Caixinha({
   );
 }
 
+/* ----- o chip da linha RESUMO -------------------------------------------
+ * Aberto ele fica sólido (fundo escuro, texto branco) e a seta vira para cima:
+ * a mesma pílula diz o que traz e se está aberta, sem precisar de um segundo
+ * elemento na linha para marcar a aba ativa. */
+type ResumoAberto = "fornecedores" | "categorias" | null;
+
+const CHAVE_RESUMO = "demonstracoes.painel.resumo";
+
+function resumoInicial(): ResumoAberto {
+  try {
+    const v = localStorage.getItem(CHAVE_RESUMO);
+    return v === "categorias" ? "categorias" : v === "nenhum" ? null : "fornecedores";
+  } catch { return "fornecedores"; }
+}
+function guardarResumo(v: ResumoAberto) {
+  try { localStorage.setItem(CHAVE_RESUMO, v ?? "nenhum"); } catch { /* modo privado */ }
+}
+
+function ChipResumo({
+  aberto, onClick, titulo, children,
+}: {
+  aberto: boolean;
+  onClick: () => void;
+  titulo: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      title={titulo}
+      aria-expanded={aberto}
+      className={cn(
+        "inline-flex h-[26px] shrink-0 items-center gap-1.5 whitespace-nowrap rounded-full border px-2.5 text-[11.5px] transition",
+        aberto
+          ? "border-foreground bg-foreground text-background"
+          : "border-border bg-card text-foreground hover:bg-secondary",
+      )}
+    >
+      {children}
+      <ChevronDown className={cn("h-3 w-3 shrink-0 transition-transform", aberto ? "rotate-180" : "opacity-60")} />
+    </button>
+  );
+}
+
 /* ----- o veredito do fornecedor -----------------------------------------
  * O chip resume o FORNECEDOR na rubrica — não a linha em que está pousado. Um
  * fornecedor com seis lançamentos carrega o mesmo chip nos seis, porque a
@@ -141,62 +196,18 @@ function Caixinha({
  * frase inteira, com os dois meses, para o número do chip nunca ser lido como
  * se fosse o da linha. */
 function ChipFornecedor({ f, comp }: { f: Fornecedor; comp: Comparativo }) {
+  /* A frase do hover é montada com o nome cru lá em `explicarFornecedor`. Em vez
+     de fazer aquela função conhecer o cadastro, o nome é trocado DEPOIS, no
+     texto pronto — mesma varredura por janelas de palavras que os comentários da
+     IA usam, e que preserva o resto da frase intacto. */
+  const apelidos = useApelidos();
   return (
     <ChipSituacao
       situacao={f.situacao}
       favoravel={f.favoravel}
       rotulo={rotuloSituacao(f)}
-      titulo={explicarFornecedor(f, comp, moeda)}
+      titulo={apelidosNoTexto(apelidos, explicarFornecedor(f, comp, moeda))}
     />
-  );
-}
-
-/** A rubrica inteira lado a lado com o mês anterior — inclusive quem sumiu, que
- *  não tem linha na lista para pendurar um chip e mesmo assim explica a queda. */
-function TabelaComparativo({ comp }: { comp: Comparativo }) {
-  const celula = (v: number, tem: boolean) =>
-    tem ? <span title={moeda(v)}>{moedaSemCentavos(v)}</span> : <span className="text-muted-foreground/50">—</span>;
-
-  return (
-    <div className="max-h-[280px] overflow-auto border-t border-border">
-      <table className="w-full border-collapse">
-        <thead className="sticky top-0 bg-muted/95 backdrop-blur">
-          <tr className="border-b border-border text-[9px] font-semibold tracking-[0.06em] text-muted-foreground">
-            <th className="px-5 py-1.5 text-left">FORNECEDOR</th>
-            <th className="px-2 py-1.5 text-right uppercase">{mesCurto(comp.mesAnterior)}</th>
-            <th className="px-2 py-1.5 text-right uppercase">{mesCurto(comp.mes)}</th>
-            <th className="px-5 py-1.5 text-right">VARIAÇÃO</th>
-          </tr>
-        </thead>
-        <tbody>
-          {comp.fornecedores.map((f) => (
-            <tr key={f.contraparte} className="border-b border-border/50 last:border-0">
-              {/* O corte vai no div, não no td: em tabela de layout automático
-                  o `max-width` da célula é só uma sugestão, e o nome comprido
-                  empurraria as colunas de valor para fora do painel. */}
-              <td className="px-5 py-1.5 text-[11px] text-foreground">
-                <div className="max-w-[230px] truncate" title={f.contraparte}>{f.contraparte}</div>
-              </td>
-              <td className="whitespace-nowrap px-2 py-1.5 text-right text-[11px] num text-muted-foreground">
-                {celula(f.valorAnterior, f.situacao !== "novo" && f.situacao !== "voltou")}
-              </td>
-              <td className="whitespace-nowrap px-2 py-1.5 text-right text-[11px] num font-medium text-foreground">
-                {celula(f.valor, f.situacao !== "sumiu")}
-              </td>
-              <td className="px-5 py-1.5 text-right">
-                <ChipFornecedor f={f} comp={comp} />
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-      {/* Em mês travado a célula vem do tracker, mas fornecedor não existe no
-          tracker: esta comparação é sempre Omie contra Omie, e dizer isso evita
-          que a diferença com a célula seja lida como erro do comparativo. */}
-      <div className="border-t border-border bg-muted/40 px-5 py-1.5 text-[10px] text-muted-foreground">
-        Comparação feita sobre os lançamentos do Omie nesta rubrica, nos {comp.janela.length - 1} meses anteriores.
-      </div>
-    </div>
   );
 }
 
@@ -208,7 +219,16 @@ export function LancamentosSheet({
   /** Recalcular a demonstração depois da troca — quem sabe fazer isso é a página. */
   onCategoriaTrocada?: () => void | Promise<void>;
 }) {
+  /* O de-para de apelidos (Configurações › Parametrização). Cache compartilhado
+     em nível de módulo — dezenas de linhas na tela pedem o mesmo mapa. */
+  const apelidos = useApelidos();
   const [linhas, setLinhas] = useState<Lancamento[]>([]);
+  /* Os lançamentos da MESMA célula um mês atrás — a outra metade da ponte de
+     variação. Vêm da mesma RPC, disparada junto com a do mês em foco, mas o
+     painel não espera por eles: a lista (que é o que se veio conferir) aparece
+     assim que a primeira consulta responde, e a ponte se monta atrás. */
+  const [anteriores, setAnteriores] = useState<Lancamento[]>([]);
+  const [carregandoAnteriores, setCarregandoAnteriores] = useState(false);
   const [alertas, setAlertas] = useState<Map<string, Alerta>>(new Map());
   const [carregando, setCarregando] = useState(false);
   const [erro, setErro] = useState<string | null>(null);
@@ -225,14 +245,16 @@ export function LancamentosSheet({
    * Carrega em paralelo com a lista: é informação de apoio, e segurar o painel
    * por ela seria trocar a auditoria (o que se veio fazer aqui) por um adorno.
    * Falha caladamente pelo mesmo motivo — sem comparativo a lista continua
-   * inteira, só sem os chips. */
+   * inteira, só sem os chips.
+   *
+   * Doze meses, e não dois: é o que separa "novo" de "fornecedor trimestral", e
+   * é só isso que ele acrescenta à ponte de variação — que enxerga dois meses e,
+   * sozinha, só sabe dizer "entrou". */
   const [comparativo, setComparativo] = useState<Comparativo | null>(null);
-  const [verComparativo, setVerComparativo] = useState(false);
 
   const carregarComparativo = useCallback(async () => {
     if (!alvo) return;
     setComparativo(null);
-    setVerComparativo(false);
     const { data, error } = await db.rpc("demonstracoes_contrapartes", {
       p_tipo: alvo.tipo,
       p_meses: janelaDeMeses(alvo.mes, MESES_DE_HISTORICO),
@@ -250,10 +272,9 @@ export function LancamentosSheet({
    * paralelo e falha calada: sem ela a composição continua na tela, apenas sem
    * as colunas de comparação. */
   const [histCategorias, setHistCategorias] = useState<LinhaCategoriaMes[]>([]);
-  const [verComposicao, setVerComposicao] = useState(false);
 
-  /* Não limpa nada antes de buscar: quem zera o histórico e fecha a faixa é a
-     troca de CÉLULA (lá embaixo, junto com o filtro). Assim trocar a categoria
+  /* Não limpa nada antes de buscar: quem zera o histórico é a troca de CÉLULA
+     (lá embaixo, junto com o filtro). Assim trocar a categoria
      de um lançamento atualiza a composição sem fechá-la na cara de quem estava
      lendo — e é justamente ali que se quer conferir o efeito da troca. */
   const carregarCategorias = useCallback(async () => {
@@ -284,71 +305,175 @@ export function LancamentosSheet({
   /* ----- observação do título ------------------------------------------
    * Todo gasto de cartão chega aqui como "Lancamento Fatura Cartao" — é o
    * balde da fatura no ERP. O que cada linha É está na OBSERVAÇÃO do título,
-   * que o Omie só entrega em ConsultarContaPagar, um título por chamada. Por
-   * isso o texto é guardado em `omie_titulo_texto`: lido uma vez, vale sempre.
-   * Ver a edge function `omie-titulo-texto`. */
+   * guardada em `omie_titulo_texto`: lida uma vez, vale sempre.
+   *
+   * O CAMINHO NORMAL É O CACHE. Uma varredura diária (cron) traz a observação
+   * de TODAS as contas a pagar de uma vez — `ListarContasPagar` com
+   * `exibir_obs`, ~70 s para a empresa inteira —, então o painel abre com o
+   * texto já em casa. O que sobra aqui é o buraco entre a varredura e um título
+   * recém-criado: poucos, e buscados sem que ninguém precise clicar. Ver a edge
+   * function `omie-titulo-texto`. */
   const [textos, setTextos] = useState<Map<string, string | null>>(new Map());
   const [buscandoObs, setBuscandoObs] = useState(false);
+  /** Quanto já entrou, para a espera ter tamanho em vez de ser um giro sem fim. */
+  const [obsProgresso, setObsProgresso] = useState<{ feitos: number; total: number } | null>(null);
+  /* Cada abertura de célula tem um número. Uma busca só escreve na tela se o
+     número dela ainda for o da célula aberta — sem isso, a busca da célula
+     anterior (que pode levar minutos) despejaria observações de outra rubrica em
+     cima da lista que a pessoa está lendo agora. */
+  const geracao = useRef(0);
 
   const lerTextos = useCallback(async (cods: string[]): Promise<Map<string, string | null>> => {
     const m = new Map<string, string | null>();
     if (!cods.length) return m;
-    const { data } = await supabase
-      .from("omie_titulo_texto" as never)
-      .select("cod_titulo,observacao")
-      .in("cod_titulo", cods.map(Number));
-    for (const r of (data as unknown as { cod_titulo: number; observacao: string | null }[]) ?? []) {
-      m.set(String(r.cod_titulo), r.observacao);
+    /* Em blocos: a consulta vai por URL (`in`), e uma célula de fatura de cartão
+       tem centenas de títulos — a lista inteira de uma vez estoura o limite da
+       URL e a chamada volta vazia, que é indistinguível de "não tem texto". */
+    const BLOCO = 150;
+    const blocos: string[][] = [];
+    for (let i = 0; i < cods.length; i += BLOCO) blocos.push(cods.slice(i, i + BLOCO));
+    const respostas = await Promise.all(blocos.map((bloco) =>
+      supabase
+        .from("omie_titulo_texto" as never)
+        .select("cod_titulo,observacao")
+        .in("cod_titulo", bloco.map(Number))));
+    for (const { data } of respostas) {
+      for (const r of (data as unknown as { cod_titulo: number; observacao: string | null }[]) ?? []) {
+        m.set(String(r.cod_titulo), r.observacao);
+      }
     }
     return m;
   }, []);
 
-  /** Busca no Omie o texto que ainda não temos. Sequencial lá dentro (a API
-   *  recusa chamadas simultâneas do mesmo método), então vem com teto: o que
-   *  não couber é oferecido num botão em vez de segurar o painel. */
+  /** Quantas rodadas a busca insiste sozinha. Cada uma tem orçamento próprio na
+   *  função; o teto existe só para um erro que se repete não virar laço eterno. */
+  const RODADAS_OBS = 8;
+
+  /**
+   * Busca no Omie o texto que ainda não temos — e vai até o fim.
+   *
+   * A função tem orçamento de tempo por execução e devolve quantos títulos do
+   * pedido ainda estão sem texto; antes, o que não coubesse numa execução ficava
+   * esperando um clique no botão — era assim que a lista terminava pela metade.
+   * Agora cada rodada relê o cache (as linhas se preenchem à vista) e a seguinte
+   * pede só o que faltou, parando quando não sobra nada ou quando uma rodada não
+   * anda — insistir aí seria repetir o mesmo erro.
+   */
   const buscarObs = useCallback(async (cods: string[]) => {
     if (!cods.length) return;
+    const minha = geracao.current;
     setBuscandoObs(true);
+    setObsProgresso({ feitos: 0, total: cods.length });
     try {
-      const { data, error } = await supabase.functions.invoke("omie-titulo-texto", {
-        body: { cod_titulos: cods },
-      });
-      if (error) throw error;
-      if ((data as { error?: string })?.error) throw new Error((data as { error: string }).error);
-      // Relê o cache: quem entrou some da lista de pendentes sozinho, e o que
-      // não coube no teto da função continua lá para o botão.
-      const novos = await lerTextos(cods);
-      setTextos((antes) => new Map([...antes, ...novos]));
+      let faltam = cods;
+      for (let rodada = 0; rodada < RODADAS_OBS && faltam.length; rodada++) {
+        const { data, error } = await supabase.functions.invoke("omie-titulo-texto", {
+          body: {
+            cod_titulos: faltam,
+            max: 400,
+            orcamento_ms: 40_000,
+            /* A varredura (a busca em lote, que a função decide sozinha quando
+               falta muita coisa) só faz sentido uma vez: ela sempre recomeça do
+               título mais novo, e repeti-la a cada rodada seria reler o mesmo
+               pedaço. Da segunda em diante, título a título. */
+            sem_varredura: rodada > 0,
+          },
+        });
+        if (geracao.current !== minha) return;   // outra célula abriu no meio
+        if (error) throw error;
+        if ((data as { error?: string })?.error) throw new Error((data as { error: string }).error);
+
+        const novos = await lerTextos(cods);
+        if (geracao.current !== minha) return;
+        setTextos((antes) => new Map([...antes, ...novos]));
+
+        const antes = faltam.length;
+        faltam = cods.filter((c) => !novos.has(c));
+        setObsProgresso({ feitos: cods.length - faltam.length, total: cods.length });
+        if (faltam.length >= antes) break;      // rodada sem avanço: desiste
+      }
     } catch (e) {
       // Acessório: sem a observação a lista continua de pé, só sem o nome do
       // lojista. Não vale derrubar a auditoria por isso.
-      toast.error("Não consegui buscar as observações no Omie: " + (e instanceof Error ? e.message : String(e)));
+      if (geracao.current === minha) {
+        toast.error("Não consegui buscar as observações no Omie: " + (e instanceof Error ? e.message : String(e)));
+      }
     } finally {
-      setBuscandoObs(false);
+      if (geracao.current === minha) { setBuscandoObs(false); setObsProgresso(null); }
     }
   }, [lerTextos]);
 
   const carregar = useCallback(async () => {
     if (!alvo) return;
+    const minha = ++geracao.current;
     setCarregando(true);
     setErro(null);
     setRecemDecididos(new Set());
-    const { data, error } = await supabase
-      .rpc("demonstracoes_lancamentos", { p_tipo: alvo.tipo, p_rubrica: alvo.rubrica, p_mes: alvo.mes });
-    if (error) { setErro(error.message); setLinhas([]); setTextos(new Map()); setCarregando(false); return; }
+    /* A busca da célula anterior acabou de perder a vez (é o que o número novo
+       faz). Ela sai sem mexer na tela — inclusive sem apagar o próprio "buscando",
+       que ficaria girando para sempre. Quem apaga é aqui. */
+    setBuscandoObs(false);
+    setObsProgresso(null);
+
+    const mesAnterior = mesAtras(alvo.mes);
+    setAnteriores([]);
+    setCarregandoAnteriores(!!mesAnterior);
+
+    /* As duas consultas saem JUNTAS e só depois são esperadas em ordem: a do mês
+       anterior custa o mesmo que a do mês em foco, e enfileirá-las dobraria a
+       espera da lista para servir a faixa que fica acima dela. */
+    const pedido = (mes: string) => supabase.rpc("demonstracoes_lancamentos", {
+      p_tipo: alvo.tipo, p_rubrica: alvo.rubrica, p_mes: mes,
+    });
+    const pAtual = pedido(alvo.mes);
+    const pAnterior = mesAnterior ? pedido(mesAnterior) : null;
+
+    const { data, error } = await pAtual;
+    if (geracao.current !== minha) return;
+    if (error) {
+      setErro(error.message); setLinhas([]); setTextos(new Map());
+      setCarregando(false); setCarregandoAnteriores(false);
+      return;
+    }
 
     const rows = (data as Lancamento[]) ?? [];
+    /* A lista aparece assim que o Postgres responde. O texto do cartão vem
+       logo atrás e preenche as linhas onde estiverem: fazer a tabela esperar
+       pelo cache das observações era segurar a auditoria inteira por um nome. */
     setLinhas(rows);
+    setCarregando(false);
+
     const cods = rows.map((l) => l.cod_titulo).filter(Boolean) as string[];
     const cache = await lerTextos(cods);
+    if (geracao.current !== minha) return;
     setTextos(cache);
-    setCarregando(false);
+
+    /* O mês anterior entra depois, sem segurar nada. Falha calada: sem ele a
+       ponte não aparece e o resto do painel continua inteiro. */
+    let rowsAnteriores: Lancamento[] = [];
+    if (pAnterior) {
+      const r = await pAnterior;
+      if (geracao.current !== minha) return;
+      rowsAnteriores = (r.data as Lancamento[]) ?? [];
+      setAnteriores(rowsAnteriores);
+      setCarregandoAnteriores(false);
+
+      const codsAnteriores = rowsAnteriores.map((l) => l.cod_titulo).filter(Boolean) as string[];
+      const cacheAnterior = await lerTextos(codsAnteriores);
+      if (geracao.current !== minha) return;
+      for (const [k, v] of cacheAnterior) cache.set(k, v);
+      setTextos(new Map(cache));
+    }
 
     // Só o cartão puxa texto sozinho: é onde a contraparte não diz nada. Nas
     // demais linhas o nome do fornecedor já está na tela e a chamada não se
-    // pagaria. Sem await: a lista aparece na hora e as observações entram
+    // pagaria. Sem await: a lista já está de pé e as observações entram
     // depois, quando o Omie responder.
-    const faltam = rows
+    //
+    // Os DOIS meses: sem o lojista, todo gasto de cartão do mês anterior cai no
+    // balde da fatura e a ponte inventaria uma entrada por lojista deste mês e
+    // uma saída gigante do balde — a variação mais errada que ela poderia dar.
+    const faltam = [...rows, ...rowsAnteriores]
       .filter((l) => l.cod_titulo && ehCartao(l.contraparte) && !cache.has(l.cod_titulo))
       .map((l) => l.cod_titulo as string);
     if (faltam.length) void buscarObs(faltam);
@@ -430,10 +555,64 @@ export function LancamentosSheet({
 
   /* Gastos de cartão cujo texto ainda não foi lido do Omie. `textos` guarda a
      entrada mesmo quando a observação volta vazia, então "não tem no mapa" é
-     literalmente "ainda não perguntei" — e é isso que o botão resolve. */
-  const cartoesSemObs = linhas
+     literalmente "ainda não perguntei" — e é isso que o botão resolve.
+     Conta os dois meses: o do mês anterior não aparece na lista, mas é ele que
+     faz a ponte separar o lojista em vez de empilhar tudo no balde da fatura. */
+  const cartoesSemObs = [...linhas, ...anteriores]
     .filter((l) => l.cod_titulo && ehCartao(l.contraparte) && !textos.has(l.cod_titulo))
     .map((l) => l.cod_titulo as string);
+
+  /* ----- o nome do fornecedor, uma regra só -----------------------------
+   * No cartão a contraparte do título é o balde da fatura e quem identifica o
+   * gasto é a observação — a MESMA leitura que a lista faz para escrever a
+   * linha. A observação só vale para o cartão de propósito: a varredura guarda
+   * o texto de toda conta a pagar, e um título comum com observação viraria um
+   * "fornecedor" com o começo da frase por nome, partindo em dois quem sempre
+   * foi um. */
+  const nomeDoFornecedor = useCallback((l: Lancamento): string => {
+    let cru = l.contraparte?.trim() || "";
+    if (ehCartao(l.contraparte)) {
+      const lida = lerObservacaoTitulo(l.cod_titulo ? textos.get(l.cod_titulo) : undefined);
+      if (lida) cru = lida.estabelecimento;
+    }
+    /* O apelido entra aqui, e não só na linha da lista, porque este é o nome que
+       a ponte de variação e o comparativo usam para AGRUPAR. Duas grafias do
+       mesmo fornecedor apontando para o mesmo apelido passam a ser uma linha só
+       — que é justamente o que se quer de quem chega picado. */
+    const ap = apelidoDe(apelidos, cru, l.cnpj_cpf);
+    if (ap) return ap.apelido;
+    return cru || (l.cnpj_cpf ? doc(l.cnpj_cpf) : "") || "Sem contraparte";
+  }, [textos, apelidos]);
+
+  /* ----- por que a linha mudou ------------------------------------------
+   * A decomposição da variação contra o mês anterior, fornecedor a fornecedor.
+   * Refaz quando as observações chegam: até elas entrarem, os gastos de cartão
+   * dos dois meses estão todos sob o balde da fatura. */
+  const ponte = useMemo(() => {
+    const mesAnterior = alvo ? mesAtras(alvo.mes) : null;
+    if (!alvo || !mesAnterior) return null;
+    return montarPonte(linhas, anteriores, { mes: alvo.mes, mesAnterior, nomeDe: nomeDoFornecedor });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [alvo?.mes, linhas, anteriores, nomeDoFornecedor]);
+
+  /* Sem nenhum lançamento no mês anterior E sem histórico na janela de doze
+     meses, não dá para afirmar que tudo é novidade: pode ser só o cache do Omie
+     que não vai tão para trás. Calar é mais honesto do que carimbar a rubrica
+     inteira de "entrou". */
+  const temComparacao = anteriores.length > 0 || comparativo?.temHistorico === true;
+  const temPonte = !!ponte && temComparacao;
+
+  /* ----- qual detalhe do RESUMO está aberto -----------------------------
+   * UM SÓ POR VEZ, e é essa a regra que devolve a lista: com os dois abertos ao
+   * mesmo tempo não sobrava altura para lançamento nenhum. Clicar no chip aberto
+   * fecha; a escolha vale para as próximas células, porque quem confere fatura
+   * de cartão quer sempre a mesma leitura. */
+  const [resumo, setResumo] = useState<ResumoAberto>(resumoInicial);
+  const abrirResumo = (qual: Exclude<ResumoAberto, null>) => {
+    const novo = resumo === qual ? null : qual;
+    setResumo(novo);
+    guardarResumo(novo);
+  };
 
   /* ----- filtro e ordenação ---------------------------------------------
    * O filtro vale para a LISTA, nunca para os números do cabeçalho: eles são a
@@ -446,14 +625,14 @@ export function LancamentosSheet({
    * sim texto lido da observação do título — sem isso, procurar "Datadog" não
    * acharia nada numa célula cheia de "Lancamento Fatura Cartao". */
   const [filtro, setFiltro] = useState<Filtro>(filtroInicial);
-  /* Célula nova, tela nova: o filtro volta ao zero e a composição fecha com o
-     histórico da célula anterior fora do caminho — senão, no intervalo até a
-     RPC responder, as categorias do mês novo seriam comparadas com as do corte
-     velho e sairiam carimbadas de "nova". */
+  /* Célula nova, tela nova: o filtro volta ao zero e o histórico da célula
+     anterior sai da frente — senão, no intervalo até a RPC responder, as
+     categorias do mês novo seriam comparadas com as do corte velho e sairiam
+     carimbadas de "nova". O chip aberto NÃO se mexe: é preferência de leitura,
+     não estado da célula. */
   useEffect(() => {
     setFiltro(filtroInicial());
     setHistCategorias([]);
-    setVerComposicao(false);
   }, [alvo?.tipo, alvo?.rubrica, alvo?.mes]);
 
   const categorias = categoriasDaCelula(linhas);
@@ -461,9 +640,21 @@ export function LancamentosSheet({
      para os meses anteriores. É o que garante que a coluna do mês feche com a
      soma do cabeçalho, e o que faz a tabela existir mesmo se a RPC falhar. */
   const composicao = alvo ? montarComposicao(categorias, histCategorias, alvo.mes, MESES_DE_HISTORICO) : null;
+  /* Uma categoria sozinha não é composição: a linha É ela, e o chip só ofereceria
+     um clique para ler o que já está no cabeçalho. */
+  const temComposicao = !!composicao && composicao.categorias.length > 1;
+  /* O apelido entra no texto que a busca varre junto com o nome cru: quem
+     procura "café" precisa achar o Grupo Souza, e quem procura "JIM" também —
+     trocar só a exibição faria a linha sumir do filtro pelo nome que está
+     escrito na tela. */
   const visiveis = filtrarLancamentos(linhas, filtro, (l) => {
     const lida = lerObservacaoTitulo(l.cod_titulo ? textos.get(l.cod_titulo) : undefined);
-    return lida ? `${lida.estabelecimento} ${lida.detalhe ?? ""}` : null;
+    const cru = lida ? lida.estabelecimento : l.contraparte;
+    const ap = apelidoDe(apelidos, cru, l.cnpj_cpf);
+    return [
+      lida ? `${lida.estabelecimento} ${lida.detalhe ?? ""}` : null,
+      ap?.apelido, ap?.oQueE,
+    ].filter(Boolean).join(" ") || null;
   });
 
   /* ----- seleção para o lote --------------------------------------------
@@ -548,56 +739,70 @@ export function LancamentosSheet({
       <SheetContent side="right" className="w-full p-0 sm:max-w-[640px]">
         {alvo && (
           <div className="flex h-full flex-col">
-            {/* ---------------- cabeçalho ---------------- */}
-            <SheetHeader className="shrink-0 space-y-0 border-b border-border px-5 pb-3 pt-5 text-left">
+            {/* ---------------- cabeçalho ----------------
+                O CARIMBO VIRA O PRÓPRIO BLOCO DO NÚMERO. Antes eram três KPIs
+                soltos mais uma faixa colorida embaixo dizendo se batiam — quatro
+                linhas para uma informação só. Agora o bloco da direita É o
+                veredito: verde e "N lançamentos · confere" quando fecha, âmbar e
+                a diferença quando não. */}
+            <SheetHeader className="shrink-0 space-y-0 border-b border-border px-5 pb-3.5 pt-5 text-left">
               <SheetTitle className="text-[15px] font-semibold">
                 {alvo.rubrica} <span className="text-muted-foreground">· {alvo.mesLabel}</span>
               </SheetTitle>
-              <p className="pt-0.5 text-[11.5px] text-muted-foreground">
-                {alvo.tipo.toUpperCase()} · lançamentos do Omie por {dataUsada}
+              {/* Curto na tela, exato no hover: qual campo de data o corte usa
+                  é o que se confere contra o ERP, mas não precisa ocupar uma
+                  linha inteira do cabeçalho toda vez que o painel abre. */}
+              <p className="pt-0.5 text-[11px] text-muted-foreground" title={`Lançamentos do Omie por ${dataUsada}`}>
+                {alvo.tipo.toUpperCase()} · Omie por {alvo.tipo === "dre" ? "competência" : "caixa"}
               </p>
 
-              <div className="flex flex-wrap items-center gap-x-5 gap-y-1 pt-2.5">
-                <div>
-                  <div className="text-[9px] font-bold tracking-[0.14em] text-muted-foreground">NA TELA</div>
-                  <div className="num text-[15px] font-bold text-foreground">
+              <div className="mt-3 flex items-stretch overflow-hidden rounded-lg border border-border">
+                <div className="flex-1 px-3 py-2">
+                  <div className="text-[9px] font-bold tracking-[0.12em] text-muted-foreground">NA TELA</div>
+                  <div className="num mt-0.5 text-[15px] font-bold text-foreground">
                     {alvo.celula != null ? moeda(alvo.celula) : "—"}
                   </div>
                 </div>
-                <div>
-                  <div className="text-[9px] font-bold tracking-[0.14em] text-muted-foreground">SOMA DOS LANÇAMENTOS</div>
-                  <div className={cn("num text-[15px] font-bold", bate ? "text-emerald-600" : "text-foreground")}>
+                <div className="w-px bg-border" />
+                <div className={cn(
+                  "flex-1 px-3 py-2",
+                  carregando || erro ? "bg-muted/40" : bate ? "bg-emerald-50" : "bg-amber-50",
+                )}>
+                  <div className={cn(
+                    "flex items-center gap-1.5 text-[9px] font-bold tracking-[0.12em]",
+                    carregando || erro ? "text-muted-foreground" : bate ? "text-emerald-700" : "text-amber-800",
+                  )}>
+                    {carregando ? <Loader2 className="h-2.5 w-2.5 animate-spin" />
+                      : bate ? <Check strokeWidth={3.5} className="h-2.5 w-2.5" />
+                      : <TriangleAlert className="h-2.5 w-2.5" />}
+                    <span className="truncate">
+                      {carregando ? "SOMANDO…"
+                        : erro ? "SOMA DOS LANÇAMENTOS"
+                        : `${linhas.length} ${linhas.length === 1 ? "LANÇAMENTO" : "LANÇAMENTOS"}`}
+                      {!carregando && !erro && alvo.celula != null && (bate ? " · CONFERE" : " · DIFERE")}
+                    </span>
+                  </div>
+                  <div className={cn(
+                    "num mt-0.5 text-[15px] font-bold",
+                    carregando || erro ? "text-foreground" : bate ? "text-emerald-700" : "text-amber-900",
+                  )}>
                     {moeda(soma)}
                   </div>
                 </div>
-                <div>
-                  <div className="text-[9px] font-bold tracking-[0.14em] text-muted-foreground">QUANTIDADE</div>
-                  <div className="num text-[15px] font-bold text-foreground">{linhas.length}</div>
-                </div>
               </div>
-            </SheetHeader>
 
-            {/* Sem este aviso o painel mentiria: em mês travado a célula vem da
-                planilha e não tem por que casar com o que o Omie tem. */}
-            {!carregando && !erro && !bate && alvo.celula != null && (
-              <div className="shrink-0 border-b border-amber-200 bg-amber-50 px-5 py-2.5">
-                <div className="flex items-start gap-2 text-[11.5px] leading-relaxed text-amber-900">
-                  <TriangleAlert className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-                  <span>
-                    A soma difere da célula em <b className="num">{moeda(soma - alvo.celula)}</b>.
-                    {alvo.travado
-                      ? " Este mês está travado, então o valor na tela veio do tracker, não do Omie — a diferença é o quanto as duas fontes discordam."
-                      : " Pode ser lançamento fora da janela de sincronização ou mudança no DE-PARA depois do último recálculo."}
-                  </span>
-                </div>
-              </div>
-            )}
-            {!carregando && !erro && bate && (
-              <div className="shrink-0 border-b border-emerald-200 bg-emerald-50 px-5 py-2 text-[11.5px] text-emerald-800">
-                <Check className="mr-1 inline h-3.5 w-3.5" />
-                A soma dos lançamentos bate exatamente com o valor na tela.
-              </div>
-            )}
+              {/* A exceção explica a si mesma, e só ela ocupa linha: em mês
+                  travado a célula vem do tracker e não tem por que casar com o
+                  que o Omie tem. */}
+              {!carregando && !erro && !bate && alvo.celula != null && (
+                <p className="mt-1.5 text-[11px] leading-relaxed text-amber-900">
+                  Diferença de <b className="num">{moeda(soma - alvo.celula)}</b> —{" "}
+                  {alvo.travado
+                    ? "este mês está travado, então o valor na tela veio do tracker, não do Omie."
+                    : "pode ser lançamento fora da janela de sincronização ou mudança no DE-PARA depois do último recálculo."}
+                </p>
+              )}
+            </SheetHeader>
 
             {!carregando && !erro && alertasAbertos > 0 && (
               <div className="shrink-0 border-b border-amber-200 bg-amber-50 px-5 py-2.5">
@@ -613,34 +818,81 @@ export function LancamentosSheet({
               </div>
             )}
 
-            {/* ---------------- quem é novo, quem mexeu ---------------- */}
-            {!carregando && !erro && comp && comp.fornecedores.length > 0 && (
-              <div className="shrink-0 border-b border-border bg-muted/40">
-                <button
-                  onClick={() => setVerComparativo((v) => !v)}
-                  className="flex w-full items-center justify-between gap-3 px-5 py-2 text-left transition hover:bg-muted/70"
-                  title={`Cada fornecedor desta rubrica em ${mesCurto(comp.mes)} contra ${mesCurto(comp.mesAnterior)}`}
-                >
-                  <span className="text-[11.5px] leading-relaxed text-muted-foreground">
-                    <b className="text-foreground">{resumoComparativo(comp)}</b>
-                    {" "}· comparado com {mesCurto(comp.mesAnterior)}
-                  </span>
-                  <ChevronDown
-                    className={cn("h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform", verComparativo && "rotate-180")}
-                  />
-                </button>
-                {verComparativo && <TabelaComparativo comp={comp} />}
+            {/* ---------------- linha RESUMO ----------------
+                Comparativo e composição eram duas faixas empilhadas, cada uma
+                com seu cabeçalho recolhível; juntas comiam a lista. Viram dois
+                chips: SÓ UM ABRE POR VEZ, o detalhe tem teto de altura e a busca
+                sobe para cá — uma faixa a menos entre o cabeçalho e a lista. */}
+            {!carregando && !erro && (temPonte || temComposicao || linhas.length >= 6 || !filtroVazio(filtro)) && (
+              <div className="flex shrink-0 items-center gap-2 border-b border-border bg-card px-5 py-2">
+                {(temPonte || temComposicao) && (
+                  <span className="shrink-0 text-[10px] font-bold tracking-[0.1em] text-muted-foreground/80">RESUMO</span>
+                )}
+
+                {temPonte && ponte && (
+                  <ChipResumo
+                    aberto={resumo === "fornecedores"}
+                    onClick={() => abrirResumo("fornecedores")}
+                    titulo={carregandoAnteriores
+                      ? `Comparando com ${mesCurto(ponte.mesAnterior)}…`
+                      : `Cada real da diferença entre ${mesCurto(ponte.mesAnterior)} e ${mesCurto(ponte.mes)}, fornecedor a fornecedor`}
+                  >
+                    Fornecedores{" "}
+                    {carregandoAnteriores ? (
+                      <Loader2 className="h-3 w-3 animate-spin" />
+                    ) : Math.abs(ponte.delta) < 0.005 ? (
+                      <span className="text-muted-foreground">sem mudança</span>
+                    ) : (
+                      <>
+                        <span className={cn(
+                          "num font-semibold",
+                          resumo === "fornecedores" ? "" : ponte.delta < 0 ? "text-primary" : "text-emerald-700",
+                        )}>
+                          {moedaSemCentavos(ponte.delta)}
+                        </span>
+                        <span className={resumo === "fornecedores" ? "opacity-70" : "text-muted-foreground"}>
+                          vs {mesCurto(ponte.mesAnterior)}
+                        </span>
+                      </>
+                    )}
+                  </ChipResumo>
+                )}
+
+                {temComposicao && composicao && (
+                  <ChipResumo
+                    aberto={resumo === "categorias"}
+                    onClick={() => abrirResumo("categorias")}
+                    titulo="Quais categorias do Omie o DE-PARA jogou nesta rubrica, e quanto cada uma pesou"
+                  >
+                    Categorias{" "}
+                    <span className="num font-semibold">{resumoDaComposicao(composicao, filtro.categorias)}</span>
+                  </ChipResumo>
+                )}
+
+                <BuscaLancamentos filtro={filtro} onFiltro={setFiltro} className="ml-auto w-[190px] shrink-0" />
               </div>
             )}
 
-            {/* ---------------- de que a linha é feita ---------------- */}
-            {/* Uma categoria sozinha não é composição: a linha É ela, e a faixa
-                só ocuparia a altura que a lista quer. */}
-            {!carregando && !erro && composicao && composicao.categorias.length > 1 && (
+            {/* ---------------- o detalhe do chip aberto ---------------- */}
+            {!carregando && !erro && temPonte && ponte && resumo === "fornecedores" && (
+              <PonteVariacao
+                key={`${alvo.tipo}|${alvo.rubrica}|${alvo.mes}`}
+                ponte={ponte}
+                comp={comp}
+                carregando={carregandoAnteriores}
+                celula={alvo.celula}
+                celulaAnterior={alvo.celulaAnterior}
+                travado={alvo.travado}
+                travadoAnterior={alvo.travadoAnterior}
+                moeda={moeda}
+                moedaSemCentavos={moedaSemCentavos}
+                obsDe={(cod) => (cod ? textos.get(cod) : undefined)}
+              />
+            )}
+
+            {!carregando && !erro && temComposicao && composicao && resumo === "categorias" && (
               <ComposicaoCategorias
                 comp={composicao}
-                aberto={verComposicao}
-                onAberto={setVerComposicao}
                 marcadas={filtro.categorias}
                 onMarcadas={(c) => setFiltro({ ...filtro, categorias: c })}
                 moeda={moeda}
@@ -650,9 +902,18 @@ export function LancamentosSheet({
 
             {!carregando && !erro && (buscandoObs || cartoesSemObs.length > 0) && (
               <div className="flex shrink-0 flex-wrap items-center justify-between gap-2 border-b border-border bg-muted/50 px-5 py-2">
+                {/* A espera diz de quanto é: sem o contador, uma busca longa é
+                    indistinguível de uma travada — foi o que aconteceu numa
+                    célula com 236 gastos de cartão. */}
                 <span className="inline-flex items-center gap-1.5 text-[11.5px] text-muted-foreground">
                   {buscandoObs
-                    ? <><Loader2 className="h-3 w-3 animate-spin" /> Buscando a observação dos gastos de cartão no Omie…</>
+                    ? <>
+                        <Loader2 className="h-3 w-3 animate-spin" />
+                        Buscando a observação dos gastos de cartão no Omie…
+                        {obsProgresso && obsProgresso.total > 0 && (
+                          <span className="num">{obsProgresso.feitos} de {obsProgresso.total}</span>
+                        )}
+                      </>
                     : <><CreditCard className="h-3 w-3" /> {cartoesSemObs.length} gasto(s) de cartão sem a observação carregada.</>}
                 </span>
                 {!buscandoObs && (
@@ -684,23 +945,6 @@ export function LancamentosSheet({
                     : <><Users className="h-3 w-3" /> Buscar nomes no Omie</>}
                 </button>
               </div>
-            )}
-
-            {/* Com meia dúzia de linhas o olho resolve, e a barra só tomaria a
-                altura que a lista quer. A partir daí, procurar é o trabalho.
-                Com filtro em pé ela aparece de qualquer tamanho: clicar numa
-                categoria da composição filtra a lista, e some por onde voltar
-                seria deixar a pessoa presa num recorte. */}
-            {!carregando && !erro && (linhas.length >= 6 || !filtroVazio(filtro)) && (
-              <BarraFiltros
-                filtro={filtro}
-                onFiltro={setFiltro}
-                categorias={categorias}
-                total={linhas.length}
-                mostrados={visiveis.length}
-                somaMostrada={somaVisivel}
-                moeda={moeda}
-              />
             )}
 
             {/* ---------------- seleção em lote ---------------- */}
@@ -773,10 +1017,15 @@ export function LancamentosSheet({
                   </div>
                 </div>
               ) : (
-                <table className="w-full border-collapse">
+                /* `table-fixed`: com largura automática a CATEGORIA quebrava em
+                   quatro linhas de texto e empurrava a lista inteira para
+                   baixo — uma descrição comprida decidia a altura de todas as
+                   linhas. Agora cada coluna tem largura declarada e o que não
+                   cabe corta com reticências, com o texto inteiro no hover. */
+                <table className="w-full table-fixed border-collapse">
                   <thead className="sticky top-0 z-10 bg-muted/95 backdrop-blur">
                     <tr className="border-b border-border text-[9.5px] font-semibold tracking-[0.06em] text-muted-foreground">
-                      <th className="w-7 pl-4 pr-0 py-2 text-left">
+                      <th className="w-[26px] py-2 pl-4 pr-0 text-left">
                         {marcaveisAgora.length > 0 && (
                           <Caixinha
                             marcada={todosMarcados}
@@ -788,10 +1037,10 @@ export function LancamentosSheet({
                           />
                         )}
                       </th>
-                      <th className="px-3 py-2 text-left">DATA</th>
+                      <th className="w-[46px] px-2 py-2 text-left">DATA</th>
                       <th className="px-2 py-2 text-left">CONTRAPARTE</th>
-                      <th className="px-2 py-2 text-left">CATEGORIA NO OMIE</th>
-                      <th className="px-3 py-2 text-right">
+                      <th className="w-[124px] px-2 py-2 text-left">CATEGORIA</th>
+                      <th className="w-[108px] px-3 py-2 text-right">
                         <CabecalhoValor ordem={filtro.ordem} onOrdem={(o) => setFiltro({ ...filtro, ordem: o })} /></th>
                     </tr>
                   </thead>
@@ -802,6 +1051,12 @@ export function LancamentosSheet({
                       const suspeito = ehSuspeito(l);
                       const obs = l.cod_titulo ? textos.get(l.cod_titulo) : undefined;
                       const lida = lerObservacaoTitulo(obs);
+                      /* O nome cru que identifica o gasto: o lojista, quando é
+                         cartão; a contraparte do Omie, no resto. É por ele que
+                         se procura o apelido — e é ele que sobra na linha de
+                         apoio quando o apelido assume a de cima. */
+                      const cru = lida ? lida.estabelecimento : (l.contraparte ?? doc(l.cnpj_cpf));
+                      const ap = apelidoDe(apelidos, cru, l.cnpj_cpf);
                       /* Pelo código do título, não pelo nome: no cartão o nome
                          que está na tela vem da observação (que chega depois) e
                          o do comparativo vem do casamento com a fatura — casar
@@ -846,38 +1101,60 @@ export function LancamentosSheet({
                             <span className="block text-center text-[11px] text-muted-foreground/40" title={motivoNaoAlteravel(l.grupo)}>–</span>
                           )}
                         </td>
-                        <td className="whitespace-nowrap px-3 py-2 text-[11.5px] num text-muted-foreground">
+                        <td className="whitespace-nowrap px-2 py-2 text-[11.5px] num text-muted-foreground">
                           {dataCurta(l.data)}
                         </td>
                         {/* No cartão a contraparte é sempre o balde da fatura
                             ("Lancamento Fatura Cartao") e quem identifica o gasto
                             é a observação do título — então ela vem na frente, e
                             o balde desce para a linha de apoio. O texto cru fica
-                            no hover, porque é ele que se confere contra o ERP. */}
-                        <td className="px-2 py-2 text-[11.5px]">
-                          <div className="flex flex-wrap items-center gap-x-1.5 gap-y-1 text-foreground">
+                            no hover, porque é ele que se confere contra o ERP.
+
+                            Havendo apelido cadastrado (Configurações ›
+                            Parametrização), é ELE que ocupa a linha de cima e o
+                            nome do extrato desce junto com o balde: o de cima
+                            responde "o que é isso?" e o de baixo continua sendo
+                            a string que se procura no Omie. */}
+                        {/* Numa coluna de largura fixa a linha de apoio não pode
+                            mais quebrar em três: vira uma frase só, cortada por
+                            reticências, com o inteiro no hover. Sem isso uma
+                            observação de cartão comprida decidia sozinha a
+                            altura de todas as linhas da lista. */}
+                        <td className="overflow-hidden px-2 py-2 text-[11.5px]">
+                          <div className="flex items-center gap-1.5 whitespace-nowrap text-foreground">
                             {aberto && <TriangleAlert strokeWidth={2.5} className="h-3.5 w-3.5 shrink-0 fill-amber-400 text-amber-800" />}
-                            {lida ? (
-                              <span className="inline-flex items-center gap-1" title={obs ?? undefined}>
-                                <CreditCard className="h-3 w-3 shrink-0 text-muted-foreground" />
-                                {lida.estabelecimento}
-                              </span>
-                            ) : (l.contraparte ?? doc(l.cnpj_cpf))}
+                            {lida && <CreditCard className="h-3 w-3 shrink-0 text-muted-foreground" />}
+                            <span className="truncate" title={ap?.oQueE ?? obs ?? undefined}>
+                              {ap ? ap.apelido : cru}
+                            </span>
                             {forn && comp && <ChipFornecedor f={forn} comp={comp} />}
                           </div>
-                          <div className="mt-px flex flex-wrap items-center gap-x-1.5 text-[10px] text-muted-foreground">
-                            {lida && <span title={obs ?? undefined}>{l.contraparte ?? doc(l.cnpj_cpf)}</span>}
-                            {lida?.detalhe && <span>{lida.detalhe}</span>}
-                            {lida?.parcela && <span>parcela {lida.parcela}</span>}
-                            {l.titulo && <span className="inline-flex items-center gap-0.5"><FileText className="h-2.5 w-2.5" />{l.titulo}</span>}
-                            {l.documento && <span>NF {l.documento}</span>}
-                            {l.status && <span className="uppercase">{l.status}</span>}
-                          </div>
+                          {(() => {
+                            const apoio = [
+                              ap ? cru : null,
+                              lida ? (l.contraparte ?? doc(l.cnpj_cpf)) : null,
+                              lida?.detalhe,
+                              lida?.parcela ? `parcela ${lida.parcela}` : null,
+                              l.titulo,
+                              l.documento ? `NF ${l.documento}` : null,
+                              l.status?.toUpperCase(),
+                            ].filter(Boolean) as string[];
+                            if (!apoio.length) return null;
+                            return (
+                              <div
+                                className="mt-px flex items-center gap-1 truncate text-[10px] text-muted-foreground"
+                                title={obs ?? apoio.join(" · ")}
+                              >
+                                {l.titulo && <FileText className="h-2.5 w-2.5 shrink-0" />}
+                                <span className="truncate">{apoio.join(" · ")}</span>
+                              </div>
+                            );
+                          })()}
                         </td>
                         {/* O código é o que se corrige no Omie; a descrição é o que
                             o DE-PARA casa. Auditar categorização precisa dos dois.
                             Clicar troca a categoria — no Omie e aqui. */}
-                        <td className="px-2 py-2 text-[11.5px]">
+                        <td className="overflow-hidden px-2 py-2 text-[11px]">
                           <CategoriaEditavel
                             codTitulo={l.cod_titulo}
                             codigo={l.categoria_codigo}
@@ -973,6 +1250,22 @@ export function LancamentosSheet({
                 </table>
               )}
             </div>
+
+            {/* ---------------- rodapé ----------------
+                Fixo, e é isso que ele resolve: a contagem do filtro morava numa
+                linha que aparecia e sumia acima da lista, empurrando as linhas
+                para cima e para baixo no meio da leitura. Aqui embaixo ela tem
+                sempre a mesma altura. */}
+            {!carregando && !erro && !!linhas.length && (
+              <RodapeLista
+                filtro={filtro}
+                onFiltro={setFiltro}
+                total={linhas.length}
+                mostrados={visiveis.length}
+                somaMostrada={somaVisivel}
+                moeda={moeda}
+              />
+            )}
           </div>
         )}
       </SheetContent>

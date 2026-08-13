@@ -37,7 +37,7 @@ import {
   ChevronDown, ChevronLeft, ChevronRight, ChevronUp, Download, Loader2, Lock, LockOpen,
   Maximize2, Minimize2, Sparkles, AlertTriangle, Flame, TrendingUp, Target,
   MessageSquareText, Check, Pencil, X, Info, RotateCcw, Layers, Plus, Repeat, Send, Trash2,
-  Copy,
+  Copy, ArrowRight,
 } from "lucide-react";
 import { toast } from "sonner";
 import { supabase } from "@/integrations/supabase/client";
@@ -56,15 +56,18 @@ import { REGISTRO_CARDS } from "@/lib/registroCards";
 import { resolverPeriodo, TIPOS, type Periodo, type TipoPeriodo } from "@/lib/periodo";
 import { valorExato } from "@/lib/valor";
 import { competenciaDe, lerBlobMensal, lerDre, mesesComDado, rotuloMes, RL, EBITDA, SGA } from "@/lib/analisesDre";
+import { parseColuna } from "@/lib/demonstracoes-schema";
+import { useFormatoNumero, SeletorFormato, fmtCheio } from "@/components/demonstracoes/FormatoNumero";
 import { lerBpAnual, type BpAnual } from "@/lib/bpAnual";
 import { parsearPlano, type LinhaBP } from "@/pages/bp/parse";
 import { parsearOperacao, type MesBP } from "@/pages/assinaturas/orcadoBp";
 import { colunaDoMes } from "@/lib/pontoEquilibrio";
 import {
-  espinhaDre, cascata, pareto, acimaDoCorte, blocoCaixa, proximoMes, montarSinal,
+  espinhaDre, cascata, pareto, acimaDoCorte, blocoCaixa, proximoMes, montarSinal, mesesDoAno,
+  atingimento, type Atingimento,
   aplicarEdicao, sinalMudou, mesPorExtenso, mesSeguinte, abreviado, fracPct,
   planoDaDre, RECEITA_BRUTA, MARGEM_CONTRIB,
-  type Detalhe, type Leitura, type Ofensor, type Sinal, type LinhaEspinha,
+  type Detalhe, type Leitura, type Ofensor, type Sinal, type LinhaEspinha, type TextoRubrica,
 } from "@/lib/revisaoMes";
 
 const sb = supabase as any;
@@ -72,19 +75,38 @@ const sb = supabase as any;
 /* ------------------------------ formatação ------------------------------ */
 /* Abreviado na tela revela o valor cheio no hover (convenção do CLAUDE.md).
    A variante …Str existe para template literal e atributo `title`. */
-const brl = (n: number | null | undefined) => comValorExato(n, abreviado(n));
 const brlCheio = (n: number | null | undefined) =>
   n == null || !isFinite(n) ? "—" : valorExato(n, { casas: 0 });
 const inteiro = (n: number | null | undefined) =>
   n == null || !isFinite(n) ? "—" : Math.round(n).toLocaleString("pt-BR");
 
+/**
+ * Os formatadores da tela, resolvidos pelo seletor "1,25 M / 1.254.439".
+ *
+ * Fábrica, e não constantes de módulo, porque o formato é escolha de quem está
+ * olhando: `-R$ 378,3 k` é o que cabe na reunião e `-378.328` é o que se confere
+ * contra o Omie. A página desestrutura isto uma vez e o JSX inteiro segue
+ * chamando `brl()` e `num()` sem saber que existe um seletor.
+ *
+ * O SINAL MANDADO PARA A IA NÃO PASSA POR AQUI (`montarSinal` usa `abreviado`
+ * direto): ele é texto que vai para o prompt e fica gravado em `demonstracoes_
+ * revisao.sinal`, e `sinalMudou` compara essas strings — um clique no seletor
+ * marcaria toda leitura já escrita como envelhecida.
+ */
+function formatadores(cheio: boolean) {
+  const num = (n: number | null | undefined) =>
+    n == null || !isFinite(n) ? "—" : cheio ? fmtCheio(n) : abreviado(n);
+  return {
+    num,
+    brl: (n: number | null | undefined) => comValorExato(n, num(n)),
+    comSinal: (n: number | null | undefined) =>
+      n == null || !isFinite(n) ? "—" : `${n >= 0 ? "+" : ""}${num(n)}`,
+  };
+}
+
 /** Cor de um número pelo que ele significa, não pelo sinal aritmético. */
 const tom = (bom: boolean | null) =>
   bom == null ? "text-foreground" : bom ? "text-pos" : "text-neg";
-
-/** `+R$ 12,3 k` / `-R$ 4,0 k`, com o sinal explícito. */
-const comSinal = (n: number | null | undefined) =>
-  n == null || !isFinite(n) ? "—" : `${n >= 0 ? "+" : ""}${abreviado(n)}`;
 
 /** `+18` / `-7` clientes. */
 const contagem = (n: number | null | undefined) =>
@@ -439,6 +461,49 @@ function Comparativos({
   );
 }
 
+/**
+ * Célula "hoje → meta": o número de hoje em preto, o que o BP pede em verde e,
+ * embaixo, o que falta para lá chegar. Sem meta no BP a seta some e sobra o
+ * número de hoje — a coluna nunca fica com um "—" verde fingindo alvo.
+ */
+function Alvo({
+  hoje, meta, moeda = false, fmtMoeda = abreviado,
+}: {
+  hoje: number | null | undefined;
+  meta: number | null | undefined;
+  moeda?: boolean;
+  /** O formatador da página, para a célula seguir o seletor reduzido/cheio. */
+  fmtMoeda?: (v: number | null | undefined) => string;
+}) {
+  const num = (v: number | null | undefined) => (v == null || !isFinite(v) ? null : v);
+  const h = num(hoje);
+  const m = num(meta);
+  const fmt = (v: number) => (moeda ? fmtMoeda(v) : Math.round(v).toLocaleString("pt-BR"));
+  const tit = (v: number) => (moeda ? valorExato(v) : undefined);
+  const dif = h != null && m != null ? h - m : null;
+
+  return (
+    <div className="flex flex-col items-end gap-0.5">
+      <div className="flex items-baseline justify-end gap-1 whitespace-nowrap">
+        <span className="num text-[12px] text-foreground" title={h == null ? undefined : tit(h)}>
+          {h == null ? "—" : fmt(h)}
+        </span>
+        {m != null && (
+          <>
+            <ArrowRight className="h-3 w-3 shrink-0 self-center text-muted-foreground" />
+            <span className="num text-[12px] font-semibold text-pos" title={tit(m)}>{fmt(m)}</span>
+          </>
+        )}
+      </div>
+      {dif != null && (
+        <span className={cn("num text-[10px] leading-none", dif >= 0 ? "text-pos" : "text-neg")}>
+          {dif === 0 ? "no alvo" : dif > 0 ? `+${fmt(dif)} acima` : `faltam ${fmt(-dif)}`}
+        </span>
+      )}
+    </div>
+  );
+}
+
 /** Barrinha de progresso contra o orçado, como nos KPIs do dashboard. */
 function Barra({ pct, cor }: { pct: number; cor?: string }) {
   return (
@@ -447,6 +512,40 @@ function Barra({ pct, cor }: { pct: number; cor?: string }) {
         className={cn("h-full rounded-full", cor ?? "bg-primary")}
         style={{ width: `${Math.max(0, Math.min(100, pct))}%` }}
       />
+    </div>
+  );
+}
+
+/* As três cores da barra do YTD. Tons fixos em vez de token semântico: `text-pos`
+   e `text-neg` são dois estados, e aqui são três — o amarelo do meio não existe
+   na paleta da marca porque em lugar nenhum do Hub houve "quase". */
+const COR_FAIXA = {
+  verde: { barra: "bg-emerald-500", texto: "text-emerald-700 dark:text-emerald-400" },
+  amarelo: { barra: "bg-amber-500", texto: "text-amber-700 dark:text-amber-500" },
+  vermelho: { barra: "bg-primary", texto: "text-primary" },
+} as const;
+
+/**
+ * Quanto do orçado do ano o realizado alcançou.
+ *
+ * O RÓTULO é a razão crua (`fracao`) e a COR é o efeito no EBITDA: em despesa,
+ * 104% do orçado é gastar 4% a mais, e a barra fica vermelha mostrando 104%.
+ * Ler só a porcentagem levaria à conclusão contrária em metade das linhas.
+ */
+function BarraOrcado({ a }: { a: Atingimento | null }) {
+  if (!a) return <div className="text-right text-[11px] text-muted-foreground">—</div>;
+  const cor = COR_FAIXA[a.faixa];
+  return (
+    <div
+      className="flex min-w-[76px] flex-col gap-1"
+      title={`${fracPct(a.fracao - 1)} contra o plano do ano — ${
+        a.faixa === "verde" ? "dentro do orçado" : a.faixa === "amarelo" ? "perto do limite" : "fora do orçado"
+      }`}
+    >
+      <span className={cn("num text-right text-[11.5px] font-semibold leading-none", cor.texto)}>
+        {(a.fracao * 100).toFixed(0)}%
+      </span>
+      <Barra pct={a.preenchimento * 100} cor={cor.barra} />
     </div>
   );
 }
@@ -609,6 +708,15 @@ function CampoTexto({
 
 export default function RevisaoMes() {
   /* ---------------------------- estado ---------------------------- */
+  /* Reduzido ou cheio: a mesma preferência (e o mesmo seletor) da grade da DRE
+     e da DFC. Desestruturado uma vez aqui — o JSX abaixo chama `brl`, `num` e
+     `comSinal` como sempre chamou. */
+  const { formato, escolher: escolherFormato } = useFormatoNumero();
+  const { num, brl, comSinal } = useMemo(
+    () => formatadores(formato === "completo"),
+    [formato],
+  );
+
   const [dre, setDre] = useState<Blob>({ rows: [], columns: [] });
   const [dfc, setDfc] = useState<Blob>({ rows: [], columns: [] });
   const [travados, setTravados] = useState<Set<string>>(new Set());
@@ -629,8 +737,11 @@ export default function RevisaoMes() {
   const [salvando, setSalvando] = useState(false);
 
   const [mesEscolhido, setMesEscolhido] = useState<string | null>(null);
-  const [detalhe, setDetalhe] = useState<Detalhe>("bloco");
-  const [corte, setCorte] = useState(0.8);
+  const [detalhe] = useState<Detalhe>("rubrica");
+  const [corte, setCorte] = useState(() => {
+    const salvo = localStorage.getItem("revisao-corte-pareto");
+    return salvo ? Number(salvo) : 0.8;
+  });
   const [bloco, setBloco] = useState(0);
   const [modoReuniao, setModoReuniao] = useState(false);
   const [railAberto, setRailAberto] = useState(true);
@@ -674,6 +785,10 @@ export default function RevisaoMes() {
   const [alturaPalco, setAlturaPalco] = useState<number | null>(null);
 
   useEffect(() => { document.title = "Demonstrações · Revisão do Mês"; }, []);
+
+  useEffect(() => {
+    localStorage.setItem("revisao-corte-pareto", String(corte));
+  }, [corte]);
 
   /* A altura útil, MEDIDA em vez de estimada.
      O palco precisa de altura definida (é ele que rola, e é o scroll dele que o
@@ -825,9 +940,36 @@ export default function RevisaoMes() {
   const plano = useMemo(() => planoDaDre(bpPorAno), [bpPorAno]);
   const temBp = bpPorAno.size > 0;
 
+  /* O acumulado do ano sai da mesma janela do resto da tela, recortada no ano do
+     mês em foco. Em janeiro sobra um mês só — a coluna continua de pé e mostra o
+     próprio mês, que é a resposta certa para "até aqui no ano". */
+  const mesesYtd = useMemo(() => (mes ? mesesDoAno(janela, mes) : []), [janela, mes]);
+
+  /* O cabeçalho da coluna diz o intervalo, e o hover diz mês a mês — inclusive
+     quando algum mês do ano não entrou por não estar travado. Um "YTD" mudo
+     sobre uma soma incompleta é a diferença entre um acumulado e uma pegadinha. */
+  const rotuloYtd = useMemo(() => {
+    if (!mesesYtd.length) return "YTD";
+    const curto = (c: string) => rotuloMes(c).split("/")[0].toUpperCase();
+    const ini = curto(mesesYtd[0]);
+    const fim = curto(mesesYtd[mesesYtd.length - 1]);
+    const ano = mes ? mes.slice(-2) : "";
+    return `YTD · ${ini === fim ? ini : `${ini}–${fim}`}/${ano}`;
+  }, [mesesYtd, mes]);
+
+  const tituloYtd = useMemo(() => {
+    if (!mesesYtd.length) return undefined;
+    const doAno = parseColuna(mes ?? "")?.mes ?? mesesYtd.length;
+    const faltam = doAno - mesesYtd.length;
+    return `Acumulado de ${mesesYtd.map(rotuloMes).join(" · ")}`
+      + (faltam > 0
+        ? ` — ${faltam} ${faltam === 1 ? "mês do ano ficou de fora" : "meses do ano ficaram de fora"} por não estar${faltam === 1 ? "" : "em"} travado${faltam === 1 ? "" : "s"}.`
+        : ".");
+  }, [mesesYtd, mes]);
+
   const espinha = useMemo<LinhaEspinha[]>(
-    () => (mes ? espinhaDre(leitor, temBp ? plano : null, mes, mesAnterior) : []),
-    [leitor, plano, temBp, mes, mesAnterior],
+    () => (mes ? espinhaDre(leitor, temBp ? plano : null, mes, mesAnterior, mesesYtd) : []),
+    [leitor, plano, temBp, mes, mesAnterior, mesesYtd],
   );
 
   const degraus = useMemo(
@@ -1341,14 +1483,25 @@ export default function RevisaoMes() {
     toast.success("Apresentação excluída.");
   };
 
-  /* ---- o texto que é DESTA apresentação ----------------------------------
-     O "por que aconteceu" nasce do comentário da célula da DRE. Reescrever aqui
-     grava em `textos` da apresentação e NÃO volta para a DRE: a mesma rubrica
-     pode precisar de uma frase para o CEO e de outra para o board, e o
-     comentário do fechamento é da contabilidade, não da plateia. Apagar o texto
-     devolve o da DRE. */
+  /* ---- o "por que aconteceu", e onde a reescrita dele mora ----------------
+     O texto nasce do comentário da célula da DRE e NUNCA volta para lá: o
+     comentário do fechamento é da contabilidade, não da plateia. Mas ele tem
+     DOIS níveis de reescrita, e é o nível que decide onde grava:
+
+       · com apresentação aberta → `textos` DELA, porque a mesma rubrica pode
+         precisar de uma frase para o CEO e de outra para o board;
+       · na tela de trabalho     → o patch do MÊS, ao lado do impacto e da ação.
+
+     Antes ia sempre para a apresentação. Na tela de trabalho isso fazia nascer
+     uma "Revisão de Julho/26 (2)" que ninguém pediu, e o texto ficava gravado
+     num lugar que a tela não lê de volta: ao recarregar, a frase da DRE voltava
+     e a reescrita parecia perdida. Apagar o texto continua devolvendo o da DRE,
+     em qualquer um dos dois níveis. */
   const porQueDe = (rubrica: string): string | null =>
-    textosApres[`porque:${rubrica}`] ?? justificativas.get(rubrica) ?? null;
+    textosApres[`porque:${rubrica}`]
+    || leitura.rubricas.find((r) => r.rubrica === rubrica)?.porque
+    || justificativas.get(rubrica)
+    || null;
 
   const salvarTextoApres = async (chave: string, valor: string) => {
     const novos = { ...textosApres };
@@ -1359,35 +1512,52 @@ export default function RevisaoMes() {
     setSalvandoApres(false);
   };
 
-  const campoPorQue = (rubrica: string) => ({
-    rotulo: `Por que aconteceu · ${rubrica}`,
-    onSalvar: (v: string) => salvarTextoApres(`porque:${rubrica}`, v),
-    /* A IA reescreve com o MESMO dossiê dos outros campos, mas o resultado é
-       gravado na apresentação, não na leitura do mês. */
-    onIA: async (instrucao: string): Promise<string | null> => {
-      if (!mes || !sinal) return null;
-      try {
-        const { data, error } = await supabase.functions.invoke("demonstracoes-revisao", {
-          body: {
-            mes, sinal, detalhe,
-            campo: { rotulo: `Por que aconteceu · ${rubrica}`, atual: porQueDe(rubrica) ?? "", lista: false },
-            instrucao,
-          },
-        });
-        if (error) throw error;
-        const r = (data ?? {}) as { error?: string; texto?: string };
-        if (r.error) throw new Error(r.error);
-        const texto = (r.texto ?? "").trim();
-        if (!texto) throw new Error("a IA devolveu vazio");
-        await salvarTextoApres(`porque:${rubrica}`, texto);
-        toast.success("Reescrito só nesta apresentação — a DRE não mudou.");
-        return texto;
-      } catch (e) {
-        toast.error("Não consegui reescrever: " + (e instanceof Error ? e.message : String(e)));
-        return null;
-      }
-    },
-  });
+  const campoPorQue = (rubrica: string) => {
+    const rotulo = `Por que aconteceu · ${rubrica}`;
+    /* Mesmo formato de patch do impacto e da ação: por RUBRICA e campo a campo,
+       para o "Regerar" não levar a frase junto. */
+    const noPatch = (p: Partial<Leitura>, texto: string) => {
+      const lista = [...(p.rubricas ?? [])];
+      const i = lista.findIndex((r) => r.rubrica === rubrica);
+      const linha: TextoRubrica = i >= 0 ? { ...lista[i] } : { rubrica, impacto: "", acao: "" };
+      linha.porque = texto;
+      if (i >= 0) lista[i] = linha; else lista.push(linha);
+      return { ...p, rubricas: lista };
+    };
+
+    return {
+      rotulo,
+      onSalvar: (v: string) => (apresId
+        ? salvarTextoApres(`porque:${rubrica}`, v)
+        : salvarPatch((p) => noPatch(p, v))),
+      /* A IA reescreve com o MESMO dossiê dos outros campos; o que muda é o
+         destino, pela mesma regra do `onSalvar`. */
+      onIA: async (instrucao: string): Promise<string | null> => {
+        if (!apresId) return pedirIA(rotulo, porQueDe(rubrica) ?? "", instrucao, (p, t) => noPatch(p, t));
+        if (!mes || !sinal) return null;
+        try {
+          const { data, error } = await supabase.functions.invoke("demonstracoes-revisao", {
+            body: {
+              mes, sinal, detalhe,
+              campo: { rotulo, atual: porQueDe(rubrica) ?? "", lista: false },
+              instrucao,
+            },
+          });
+          if (error) throw error;
+          const r = (data ?? {}) as { error?: string; texto?: string };
+          if (r.error) throw new Error(r.error);
+          const texto = (r.texto ?? "").trim();
+          if (!texto) throw new Error("a IA devolveu vazio");
+          await salvarTextoApres(`porque:${rubrica}`, texto);
+          toast.success("Reescrito só nesta apresentação — a DRE não mudou.");
+          return texto;
+        } catch (e) {
+          toast.error("Não consegui reescrever: " + (e instanceof Error ? e.message : String(e)));
+          return null;
+        }
+      },
+    };
+  };
 
   /* ---- os campos, um por um ----
      Cada entrada diz como o texto entra no patch. Ficam juntas porque é a lista
@@ -1744,7 +1914,7 @@ export default function RevisaoMes() {
           tomValor={tom((caixa.fco ?? 0) >= 0)}
         >
           <div className="num -mt-1 text-[12px] text-muted-foreground">
-            fluxo livre {abreviado(caixa.livre)}
+            fluxo livre {num(caixa.livre)}
           </div>
           <Comparativos itens={[
             {
@@ -1766,7 +1936,7 @@ export default function RevisaoMes() {
           valor={brl(caixa.saldo)}
         >
           <div className="num -mt-1 text-[12px] text-muted-foreground">
-            burn 3m {abreviado(caixa.burn3m)}
+            burn 3m {num(caixa.burn3m)}
           </div>
           <div className="flex items-baseline gap-1.5 text-[11px] text-muted-foreground">
             <span>runway</span>
@@ -1784,7 +1954,7 @@ export default function RevisaoMes() {
 
         <Kpi key="clientes" eyebrow="Clientes ativos" valor={inteiro(carteiraMes.valor?.clientes)}>
           <div className="num -mt-1 text-[12px] text-muted-foreground">
-            MRR {abreviado(carteiraMes.valor?.mrr)} · ticket {abreviado(carteiraMes.valor?.ticket)}
+            MRR {num(carteiraMes.valor?.mrr)} · ticket {num(carteiraMes.valor?.ticket)}
           </div>
           <Comparativos itens={[
             {
@@ -1806,7 +1976,7 @@ export default function RevisaoMes() {
 
         <Kpi key="churn" eyebrow="Churn do mês" valor={inteiro(churnMes.valor?.qtd)} tomValor="text-neg">
           <div className="num -mt-1 text-[12px] text-muted-foreground">
-            {abreviado(churnMes.valor?.valor)} de MRR
+            {num(churnMes.valor?.valor)} de MRR
             {churnMes.valor?.pct ? ` · ${churnMes.valor.pct.toFixed(2).replace(".", ",")}% da receita` : ""}
           </div>
           <Comparativos itens={[
@@ -1911,7 +2081,7 @@ export default function RevisaoMes() {
                   className={cn("num text-[11px] font-semibold", d.valor < 0 ? "text-neg" : "text-foreground")}
                   title={valorExato(d.valor)}
                 >
-                  {abreviado(d.valor)}
+                  {num(d.valor)}
                 </span>
                 <div className="relative w-full flex-1">
                   <div
@@ -1952,10 +2122,25 @@ export default function RevisaoMes() {
         <table className="w-full border-collapse">
           <thead>
             <tr className="border-b border-border bg-secondary/40">
-              {["RUBRICA", `${rotuloMes(mes).toUpperCase()}`, "ORÇADO", "IMPACTO NO EBITDA", "DESVIO %", mesAnterior ? rotuloMes(mesAnterior).toUpperCase() : "—", "MoM"].map((h, i) => (
-                <th key={h + i} className={cn(
+              {[
+                { h: "RUBRICA" },
+                { h: rotuloMes(mes).toUpperCase() },
+                { h: "ORÇADO" },
+                { h: "IMPACTO NO EBITDA" },
+                { h: "DESVIO %" },
+                { h: mesAnterior ? rotuloMes(mesAnterior).toUpperCase() : "—" },
+                { h: "MoM" },
+                /* O cabeçalho DIZ quais meses somaram. "YTD" sozinho esconderia
+                   um mês que ficou de fora por não estar travado, e ninguém
+                   descobriria olhando um acumulado que parece o do ano todo. */
+                { h: rotuloYtd, t: tituloYtd, div: true },
+                { h: "YTD ORÇADO", t: tituloYtd },
+                { h: "% DO ORÇADO", t: "Quanto do orçado do ano o realizado alcançou. A cor é o efeito no EBITDA, não a razão crua: em despesa, passar do plano é vermelho." },
+              ].map(({ h, t, div }, i) => (
+                <th key={h + i} title={t} className={cn(
                   "px-3 py-2 text-[10px] font-bold tracking-wider text-muted-foreground",
                   i === 0 ? "text-left" : "text-right",
+                  div && "border-l border-border",
                 )}>
                   {h}
                 </th>
@@ -1975,19 +2160,19 @@ export default function RevisaoMes() {
                 </td>
                 <td className={cn("num px-3 py-[7px] text-right text-[12px]", l.total && "font-bold", (l.realizado ?? 0) < 0 && "text-neg")}
                     title={valorExato(l.realizado)}>
-                  {l.realizado == null ? "—" : abreviado(l.realizado)}
+                  {l.realizado == null ? "—" : num(l.realizado)}
                 </td>
                 <td className="num px-3 py-[7px] text-right text-[12px] text-muted-foreground" title={valorExato(l.orcado)}>
-                  {l.orcado == null ? "—" : abreviado(l.orcado)}
+                  {l.orcado == null ? "—" : num(l.orcado)}
                 </td>
                 <td className={cn("num px-3 py-[7px] text-right text-[12px] font-semibold", tom(l.impacto == null ? null : l.impacto >= 0))}>
-                  {l.impacto == null ? "—" : `${l.impacto >= 0 ? "+" : ""}${abreviado(l.impacto)}`}
+                  {l.impacto == null ? "—" : `${l.impacto >= 0 ? "+" : ""}${num(l.impacto)}`}
                 </td>
                 <td className={cn("num px-3 py-[7px] text-right text-[12px]", tom(l.impacto == null ? null : l.impacto >= 0))}>
                   {fracPct(l.desvioPct)}
                 </td>
                 <td className="num px-3 py-[7px] text-right text-[12px] text-muted-foreground" title={valorExato(l.anterior)}>
-                  {l.anterior == null ? "—" : abreviado(l.anterior)}
+                  {l.anterior == null ? "—" : num(l.anterior)}
                 </td>
                 <td className={cn(
                   "num px-3 py-[7px] text-right text-[12px]",
@@ -1995,6 +2180,18 @@ export default function RevisaoMes() {
                     : l.natureza === "despesa" ? tom(l.mom <= 0) : tom(l.mom >= 0),
                 )}>
                   {fracPct(l.mom)}
+                </td>
+                <td className={cn(
+                  "num border-l border-border px-3 py-[7px] text-right text-[12px]",
+                  l.total && "font-bold", (l.ytd ?? 0) < 0 && "text-neg",
+                )} title={valorExato(l.ytd)}>
+                  {l.ytd == null ? "—" : num(l.ytd)}
+                </td>
+                <td className="num px-3 py-[7px] text-right text-[12px] text-muted-foreground" title={valorExato(l.ytdOrcado)}>
+                  {l.ytdOrcado == null ? "—" : num(l.ytdOrcado)}
+                </td>
+                <td className="px-3 py-[7px]">
+                  <BarraOrcado a={atingimento(l.ytd, l.ytdOrcado, l.impactoYtd)} />
                 </td>
               </tr>
             ))}
@@ -2004,6 +2201,11 @@ export default function RevisaoMes() {
           <b>Impacto no EBITDA</b> é o efeito da rubrica no resultado, não o desvio bruto: em receita
           é realizado − orçado, em despesa é orçado − realizado. Nos dois, negativo quer dizer que
           tirou do EBITDA — é o que permite somar receita e despesa no Pareto do bloco seguinte.
+          {" "}<b>YTD</b> soma os meses fechados do ano até {rotuloMes(mes)}, realizado e orçado na
+          mesma janela — passe o mouse no cabeçalho para ver quais meses entraram. A barra mostra
+          quanto do orçado do ano o realizado alcançou; a cor é o efeito no EBITDA, e não a
+          porcentagem: verde é estar no plano ou melhor (folga de 2%), amarelo é até 10% pior,
+          vermelho é além disso. Por isso um SG&amp;A a 102% do orçado aparece em amarelo, não em verde.
           {!travado && " Mês sem cadeado: o omie-sync ainda mexe nas folhas e as linhas de total podem estar atrás delas."}
         </p>
       </div>
@@ -2018,23 +2220,8 @@ export default function RevisaoMes() {
         titulo="Pareto do desvio"
         direita={
           <>
-            {/* Alternador e slider são controles de TELA: na folha exportada eles
-                somem (o `data-so-tela` em index.css), porque o relatório mostra
-                o resultado da escolha, não o botão que a fez. */}
-            <div data-so-tela className="inline-flex items-center rounded-md border border-border p-0.5">
-              {(["bloco", "rubrica"] as const).map((d) => (
-                <button
-                  key={d}
-                  onClick={() => setDetalhe(d)}
-                  className={cn(
-                    "h-7 rounded px-2.5 text-[11.5px] font-medium transition-colors",
-                    detalhe === d ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground",
-                  )}
-                >
-                  {d === "bloco" ? "por bloco" : "por rubrica"}
-                </button>
-              ))}
-            </div>
+            {/* Slider é controle de TELA: na folha exportada ele some (o `data-so-tela`
+                em index.css), porque o relatório mostra o resultado da escolha. */}
             <label data-so-tela className="flex items-center gap-2 text-[11.5px] text-muted-foreground">
               corte
               <input
@@ -2045,8 +2232,8 @@ export default function RevisaoMes() {
               />
               <b className="num text-foreground">{Math.round(corte * 100)}%</b>
             </label>
-            <Chip tone="neg">Desfavorável {abreviado(par.desfavoravel)}</Chip>
-            <Chip tone="pos">Favorável {abreviado(par.favoravel)}</Chip>
+            <Chip tone="neg">Desfavorável {num(par.desfavoravel)}</Chip>
+            <Chip tone="pos">Favorável {num(par.favoravel)}</Chip>
           </>
         }
       />
@@ -2110,6 +2297,7 @@ export default function RevisaoMes() {
           campoImpacto={campoRubrica(o.rubrica, "impacto")}
           campoAcao={campoRubrica(o.rubrica, "acao")}
           campoPorQue={campoPorQue(o.rubrica)}
+          num={num}
         />
       ))}
 
@@ -2121,7 +2309,7 @@ export default function RevisaoMes() {
           <span>
             rubricas abaixo do corte de {Math.round(corte * 100)}%, somando{" "}
             <b className="num text-foreground">
-              {abreviado(abaixoDoCorte.reduce((s, o) => s + Math.abs(o.impacto ?? 0), 0))}
+              {num(abaixoDoCorte.reduce((s, o) => s + Math.abs(o.impacto ?? 0), 0))}
             </b>{" "}
             — a maior é {abaixoDoCorte[0].rubrica}. Elas continuam na conta do total;
             o corte só decide quem ganha parágrafo.
@@ -2142,7 +2330,7 @@ export default function RevisaoMes() {
                   <div key={o.rubrica} className="flex items-baseline justify-between gap-3 text-[12px]">
                     <span className="truncate">{o.rubrica}</span>
                     <span className="num shrink-0 font-semibold text-pos" title={valorExato(o.impacto)}>
-                      +{abreviado(o.impacto)}
+                      +{num(o.impacto)}
                     </span>
                   </div>
                 ))}
@@ -2154,16 +2342,16 @@ export default function RevisaoMes() {
                 <div className="flex justify-between gap-3">
                   <span className="text-muted-foreground">Gap do EBITDA</span>
                   <b className={cn("num", tom(par.gapEbitda == null ? null : par.gapEbitda >= 0))}>
-                    {par.gapEbitda == null ? "—" : `${par.gapEbitda >= 0 ? "+" : ""}${abreviado(par.gapEbitda)}`}
+                    {par.gapEbitda == null ? "—" : `${par.gapEbitda >= 0 ? "+" : ""}${num(par.gapEbitda)}`}
                   </b>
                 </div>
                 <div className="flex justify-between gap-3">
                   <span className="text-muted-foreground">Explicado pelas rubricas</span>
-                  <b className="num">{abreviado(par.favoravel - par.desfavoravel)}</b>
+                  <b className="num">{num(par.favoravel - par.desfavoravel)}</b>
                 </div>
                 <div className="flex justify-between gap-3">
                   <span className="text-muted-foreground">Não explicado</span>
-                  <b className="num">{par.residuo == null ? "—" : abreviado(par.residuo)}</b>
+                  <b className="num">{par.residuo == null ? "—" : num(par.residuo)}</b>
                 </div>
               </div>
               <p className="mt-2 text-[10.5px] leading-snug text-muted-foreground/80">
@@ -2206,7 +2394,7 @@ export default function RevisaoMes() {
         </Kpi>
         <Kpi key="burn" eyebrow="Burn médio 3m" valor={brl(caixa.burn3m)} tomValor={tom((caixa.burn3m ?? 0) <= 0)}>
           <div className="text-[11px] text-muted-foreground">
-            {janela.slice(-3).map(rotuloMes).join(" · ") || "—"}
+            cashburn de {janela.slice(-3).map(rotuloMes).join(" · ") || "—"}
           </div>
         </Kpi>
         <Kpi
@@ -2231,6 +2419,7 @@ export default function RevisaoMes() {
             <h3 className="text-[13.5px] font-semibold">DFC simplificada · {rotuloMes(mes)}</h3>
             <p className="mt-0.5 text-[11.5px] text-muted-foreground">
               FCO, FCI e FCF somados das folhas da DFC — a linha de total do blob quase nunca vem preenchida.
+              O cashburn é o fluxo livre sem a captação: é ele que diz o ritmo de queima.
             </p>
           </div>
           <span className="text-[11px] text-muted-foreground">Orçado do BP {anoDoMes}</span>
@@ -2255,13 +2444,13 @@ export default function RevisaoMes() {
                   </td>
                   <td className={cn("num px-4 py-2 text-right text-[12px]", l.bloco && "font-bold", (l.realizado ?? 0) < 0 && "text-neg")}
                       title={valorExato(l.realizado)}>
-                    {l.realizado == null ? "—" : abreviado(l.realizado)}
+                    {l.realizado == null ? "—" : num(l.realizado)}
                   </td>
                   <td className="num px-4 py-2 text-right text-[12px] text-muted-foreground" title={valorExato(l.orcado)}>
-                    {l.orcado == null ? "—" : abreviado(l.orcado)}
+                    {l.orcado == null ? "—" : num(l.orcado)}
                   </td>
                   <td className={cn("num px-4 py-2 text-right text-[12px] font-semibold", tom(desvio == null ? null : desvio >= 0))}>
-                    {desvio == null ? "—" : `${desvio >= 0 ? "+" : ""}${abreviado(desvio)}`}
+                    {desvio == null ? "—" : `${desvio >= 0 ? "+" : ""}${num(desvio)}`}
                   </td>
                 </tr>
               );
@@ -2306,7 +2495,7 @@ export default function RevisaoMes() {
                   <div className="flex justify-between text-[10.5px] text-muted-foreground">
                     <span>Falta</span>
                     <b className="num text-primary">
-                      {abreviado(prox.receitaOrcada - receita.realizado)} · {fracPct((prox.receitaOrcada - receita.realizado) / receita.realizado)}
+                      {num(prox.receitaOrcada - receita.realizado)} · {fracPct((prox.receitaOrcada - receita.realizado) / receita.realizado)}
                     </b>
                   </div>
                   <Barra pct={(receita.realizado / prox.receitaOrcada) * 100} />
@@ -2320,7 +2509,7 @@ export default function RevisaoMes() {
               </div>
               {prox.gap != null && (
                 <div className="text-[11.5px] leading-snug">
-                  Precisa melhorar <b className="num">{abreviado(prox.gap)}</b> em um mês.
+                  Precisa melhorar <b className="num">{num(prox.gap)}</b> em um mês.
                 </div>
               )}
             </Kpi>
@@ -2334,7 +2523,7 @@ export default function RevisaoMes() {
                   <div className="flex justify-between text-[10.5px] text-muted-foreground">
                     <span>{rotuloMes(mes)} {sga.realizado != null && rl?.realizado ? `${((sga.realizado / rl.realizado) * 100).toFixed(1).replace(".", ",")}%` : ""}</span>
                     <b className={cn("num", sga.realizado > prox.sgaOrcado ? "text-primary" : "text-pos")}>
-                      {sga.realizado > prox.sgaOrcado ? `cortar ${abreviado(sga.realizado - prox.sgaOrcado)}` : "dentro do alvo"}
+                      {sga.realizado > prox.sgaOrcado ? `cortar ${num(sga.realizado - prox.sgaOrcado)}` : "dentro do alvo"}
                     </b>
                   </div>
                   <Barra
@@ -2375,7 +2564,7 @@ export default function RevisaoMes() {
               {prox.churnMesQtd != null && (
                 <div className="text-[11.5px] leading-snug">
                   Churn de {rotuloMes(mes)}: <b className="num">{inteiro(prox.churnMesQtd)}</b> clientes
-                  {prox.churnMesValor ? <> · <span className="num">{abreviado(prox.churnMesValor)}</span> de MRR</> : null}
+                  {prox.churnMesValor ? <> · <span className="num">{num(prox.churnMesValor)}</span> de MRR</> : null}
                 </div>
               )}
             </div>
@@ -2392,13 +2581,19 @@ export default function RevisaoMes() {
               <header className="flex items-start justify-between gap-4 border-b border-border p-3.5">
                 <div>
                   <h3 className="text-[13.5px] font-semibold">Carteira hoje · por porte</h3>
+                  {/* O MRR e o ticket saíram daqui para a linha TOTAL: lá eles
+                      ganham a meta ao lado, que é o que a reunião discute. */}
                   <p className="mt-0.5 text-[11.5px] text-muted-foreground">
                     Base do Asaas · {inteiro(prox.clientesHoje)} clientes ativos
                   </p>
                 </div>
-                <span className="text-[11px] text-muted-foreground">
-                  MRR <b className="num text-foreground">{brlCheio(prox.mrr)}</b> · ticket{" "}
-                  <b className="num text-foreground">{brlCheio(prox.ticket)}</b>
+                {/* A legenda diz de uma vez o que as três colunas de número
+                    fazem — sem ela, o verde parece "está bom" em vez de "é
+                    para cá que a carteira tem de ir". */}
+                <span className="shrink-0 whitespace-nowrap text-[10.5px] text-muted-foreground">
+                  <b className="text-foreground">hoje</b>
+                  <ArrowRight className="mx-1 inline h-3 w-3 align-[-1px]" />
+                  <b className="text-pos">meta do BP · {prox.rotulo}</b>
                 </span>
               </header>
               {prox.carteira.length === 0 ? (
@@ -2410,8 +2605,8 @@ export default function RevisaoMes() {
                 <table className="w-full border-collapse">
                   <thead>
                     <tr className="border-b border-border bg-secondary/40">
-                      {["PORTE", "CLIENTES", "MIX", "MRR", "META BP"].map((h, i) => (
-                        <th key={h} className={cn("px-4 py-2 text-[10px] font-bold tracking-wider text-muted-foreground", i === 0 || i === 2 ? "text-left" : "text-right")}>
+                      {["PORTE", "CLIENTES", "MIX", "MRR", "TICKET MÉDIO"].map((h, i) => (
+                        <th key={h} className={cn("px-3 py-2 text-[10px] font-bold tracking-wider text-muted-foreground", i === 0 || i === 2 ? "text-left" : "text-right")}>
                           {h}
                         </th>
                       ))}
@@ -2420,28 +2615,44 @@ export default function RevisaoMes() {
                   <tbody>
                     {prox.carteira.map((n) => (
                       <tr key={n.nivel} className="border-b border-border/50">
-                        <td className="px-4 py-2">
+                        <td className="px-3 py-2">
                           <span className="inline-flex items-center rounded-full bg-secondary px-2 py-0.5 text-[11px] font-semibold">
                             {n.nivel}
                           </span>
                         </td>
-                        <td className="num px-4 py-2 text-right text-[12px]">{inteiro(n.clientes)}</td>
-                        <td className="px-4 py-2">
-                          <div className="h-1.5 w-full max-w-[180px] overflow-hidden rounded-full bg-secondary">
+                        <td className="px-3 py-2"><Alvo hoje={n.clientes} meta={n.clientesOrcado} /></td>
+                        <td className="px-3 py-2">
+                          {/* O risquinho é onde o BP põe este porte na carteira:
+                              a barra pode estar cheia e mesmo assim o porte
+                              estar pesando menos do que o plano pede. */}
+                          <div className="relative h-1.5 w-full min-w-[56px] max-w-[110px] overflow-hidden rounded-full bg-secondary">
                             <div className="h-full bg-primary/70" style={{ width: `${n.mix * 100}%` }} />
+                            {n.mixOrcado != null && (
+                              <span
+                                className="absolute inset-y-0 w-[2px] bg-foreground/50"
+                                style={{ left: `calc(${Math.min(Math.max(n.mixOrcado, 0), 1) * 100}% - 1px)` }}
+                                title={`Mix no BP: ${(n.mixOrcado * 100).toFixed(1).replace(".", ",")}%`}
+                              />
+                            )}
+                          </div>
+                          <div className="mt-1 text-[10px] leading-none text-muted-foreground">
+                            {(n.mix * 100).toFixed(1).replace(".", ",")}%
                           </div>
                         </td>
-                        <td className="num px-4 py-2 text-right text-[12px]" title={valorExato(n.mrr)}>{abreviado(n.mrr)}</td>
-                        <td className={cn(
-                          "num px-4 py-2 text-right text-[12px]",
-                          n.clientesOrcado == null ? "text-muted-foreground"
-                            : tom(n.clientes >= n.clientesOrcado),
-                        )}>
-                          {n.clientesOrcado == null ? "—" : `${inteiro(n.clientesOrcado)} (${n.clientes >= n.clientesOrcado ? "+" : ""}${n.clientes - n.clientesOrcado})`}
-                        </td>
+                        <td className="px-3 py-2"><Alvo hoje={n.mrr} meta={n.mrrOrcado} moeda fmtMoeda={num} /></td>
+                        <td className="px-3 py-2"><Alvo hoje={n.ticket} meta={n.ticketOrcado} moeda fmtMoeda={num} /></td>
                       </tr>
                     ))}
                   </tbody>
+                  <tfoot>
+                    <tr className="border-t border-border bg-secondary/40">
+                      <td className="px-3 py-2 text-[11px] font-semibold">TOTAL</td>
+                      <td className="px-3 py-2"><Alvo hoje={prox.clientesHoje} meta={prox.clientesMeta} /></td>
+                      <td className="px-3 py-2" />
+                      <td className="px-3 py-2"><Alvo hoje={prox.mrr} meta={prox.mrrMeta} moeda fmtMoeda={num} /></td>
+                      <td className="px-3 py-2"><Alvo hoje={prox.ticket} meta={prox.ticketMeta} moeda fmtMoeda={num} /></td>
+                    </tr>
+                  </tfoot>
                 </table>
               )}
             </div>
@@ -2858,6 +3069,10 @@ export default function RevisaoMes() {
                 {gerando ? <Loader2 className="h-3 w-3 animate-spin" /> : <Sparkles className="h-3 w-3" />}
                 {temTexto ? "Regerar" : "Gerar leitura"}
               </button>
+              {/* O mesmo seletor da grade da DRE e da DFC, e a mesma preferência:
+                  quem abriu o número cheio para conferir o fechamento não quer
+                  reabrir a cada tela. Na reunião o reduzido é o que cabe. */}
+              <SeletorFormato formato={formato} onChange={escolherFormato} />
               <button
                 onClick={alternarMontador}
                 className={cn("ghost-btn h-7 px-2.5 text-[11.5px]", montando && "border-primary/40 text-primary")}
@@ -2988,7 +3203,7 @@ export default function RevisaoMes() {
  * a diferença entre o que foi apurado e o que foi sugerido.
  */
 function LinhaOfensor({
-  o, porQue, texto, campoImpacto, campoAcao, campoPorQue,
+  o, porQue, texto, campoImpacto, campoAcao, campoPorQue, num,
 }: {
   o: Ofensor;
   porQue: string | null;
@@ -2997,6 +3212,11 @@ function LinhaOfensor({
   campoAcao: PropsCampo;
   /** Reescreve o "por que" SÓ nesta apresentação — a DRE fica como está. */
   campoPorQue: PropsCampo;
+  /* Vem da página, não daqui: `formatadores()` resolve o seletor "1,25 M /
+     1.254.439" e o estado dele mora no componente de cima. Chamar o hook aqui
+     dentro daria a esta linha uma cópia do formato que não acompanharia o
+     clique no seletor — e a mesma tela mostraria dois formatos. */
+  num: (n: number | null | undefined) => string;
 }) {
   const recorrente = o.mesesConferidos > 0 && o.mesesRuins >= Math.ceil(o.mesesConferidos / 2);
   return (
@@ -3018,7 +3238,7 @@ function LinhaOfensor({
             o.mesesConferidos === 0
               ? "Não há mês fechado anterior na janela para comparar."
               : `${o.mesesRuins} dos ${o.mesesConferidos} meses fechados anteriores também ficaram do lado ruim do plano: `
-                + o.historico.slice(0, -1).map((h) => `${h.rotulo} ${abreviado(h.impacto)}`).join(" · ")
+                + o.historico.slice(0, -1).map((h) => `${h.rotulo} ${num(h.impacto)}`).join(" · ")
           }
         >
           {o.mesesConferidos === 0 ? "sem histórico"
@@ -3027,9 +3247,9 @@ function LinhaOfensor({
         </span>
 
         <div className="ml-auto flex flex-wrap items-baseline gap-x-4 gap-y-1 text-[11px] text-muted-foreground">
-          <span>realizado <b className="num text-[12.5px] text-foreground" title={valorExato(o.realizado)}>{abreviado(o.realizado)}</b></span>
-          <span>orçado <span className="num text-[12.5px]" title={valorExato(o.orcado)}>{abreviado(o.orcado)}</span></span>
-          <span>no EBITDA <b className="num text-[12.5px] text-neg" title={valorExato(o.impacto)}>{abreviado(o.impacto)}</b></span>
+          <span>realizado <b className="num text-[12.5px] text-foreground" title={valorExato(o.realizado)}>{num(o.realizado)}</b></span>
+          <span>orçado <span className="num text-[12.5px]" title={valorExato(o.orcado)}>{num(o.orcado)}</span></span>
+          <span>no EBITDA <b className="num text-[12.5px] text-neg" title={valorExato(o.impacto)}>{num(o.impacto)}</b></span>
           <span>desvio <span className="num text-[12.5px]">{fracPct(o.desvioPct)}</span></span>
           <span>do gap <b className="num text-[12.5px] text-foreground">{(o.fatia * 100).toFixed(1).replace(".", ",")}%</b></span>
         </div>

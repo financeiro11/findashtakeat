@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Pencil, PencilLine, Loader2, Check, Trash2, ListTree, RotateCcw } from "lucide-react";
+import { Pencil, PencilLine, Loader2, Check, Trash2, RotateCcw } from "lucide-react";
 import { toast } from "sonner";
 import { supabase } from "@/integrations/supabase/client";
 import { cn } from "@/lib/utils";
 import { valorExato } from "@/lib/valor";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { chaveCelula } from "@/components/demonstracoes/Reclassificacoes";
+import { DetalheStatus, SegmentoStatus } from "@/components/demonstracoes/BarraStatus";
 import { paraCampo, paraNumero, rotuloMes } from "@/lib/valoresManuais";
 
 /* ---------------------------------------------------------------------------
@@ -318,25 +319,17 @@ export function ResumoValoresManuais({
   if (!visiveis.length) return null;
 
   return (
-    <div className="mt-3 flex flex-wrap items-start justify-between gap-x-4 gap-y-2 rounded-lg border border-violet-300 bg-violet-50 px-3 py-2.5 text-[11.5px] leading-relaxed text-violet-950">
-      <span className="flex items-start gap-2">
-        <PencilLine strokeWidth={2.5} className="mt-0.5 h-4 w-4 shrink-0 text-violet-700" />
-        <span>
-          <b>{visiveis.length}</b> {visiveis.length === 1 ? "célula tem valor" : "células têm valor"} digitado à mão
-          nos meses visíveis — {visiveis.length === 1 ? "ela entra" : "eles entram"} no total como qualquer outro
-          lançamento e {visiveis.length === 1 ? "sobrevive" : "sobrevivem"} à sincronização com o Omie.
-        </span>
-      </span>
-      <Popover>
-        <PopoverTrigger asChild>
-          <button className="inline-flex shrink-0 items-center gap-1.5 rounded-md border border-violet-300 bg-card px-2.5 py-1 text-[11.5px] font-medium text-violet-900 transition hover:bg-violet-100">
-            <ListTree className="h-3 w-3" /> Ver quais
-          </button>
-        </PopoverTrigger>
-        <PopoverContent align="end" className="w-[340px] p-0">
-          <div className="border-b border-border px-3 py-2 text-[12px] font-semibold text-foreground">
-            Valores digitados à mão
-          </div>
+    <SegmentoStatus
+      icone={<PencilLine strokeWidth={2.2} className="h-[13px] w-[13px] text-violet-600" />}
+      valor={visiveis.length}
+      rotulo={visiveis.length === 1 ? "valor manual" : "valores manuais"}
+      titulo="Células com valor digitado à mão: entram no total como qualquer outro lançamento e sobrevivem à sincronização com o Omie."
+      larguraDetalhe={340}
+      detalhe={
+        <DetalheStatus
+          titulo="Valores digitados à mão"
+          nota="Eles entram no total como qualquer outro lançamento e sobrevivem à sincronização com o Omie. Para mudar, ou voltar ao valor do Omie, clique no lápis roxo dentro da célula."
+        >
           <div className="max-h-[300px] overflow-y-auto py-1">
             {visiveis.map((m) => (
               <div key={m.id} className="flex items-baseline justify-between gap-2 px-3 py-1.5 hover:bg-secondary/60">
@@ -350,11 +343,8 @@ export function ResumoValoresManuais({
               </div>
             ))}
           </div>
-          <div className="border-t border-border px-3 py-2 text-[10.5px] leading-snug text-muted-foreground">
-            Para mudar, ou voltar ao valor do Omie, clique no lápis roxo dentro da célula.
-          </div>
-        </PopoverContent>
-      </Popover>
-    </div>
+        </DetalheStatus>
+      }
+    />
   );
 }

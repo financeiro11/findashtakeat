@@ -13,6 +13,7 @@ import ContaCorrente from "./pages/ContaCorrente";
 import Briefing from "./pages/Briefing";
 import Login from "./pages/Login";
 import Usuarios from "./pages/Usuarios";
+import Parametrizacao from "./pages/configuracoes/Parametrizacao";
 import AutomacoesProporcionais from "./pages/AutomacoesProporcionais";
 import RecargasCelulares from "./pages/RecargasCelulares";
 import RecargasViagens from "./pages/RecargasViagens";
@@ -144,6 +145,7 @@ function Rotas() {
               <Route path="/caixa/conta-corrente/:banco" element={<ContaCorrente />} />
               <Route path="/design-system" element={<DesignSystem />} />
               <Route path="/usuarios" element={<Usuarios />} />
+              <Route path="/configuracoes/parametrizacao" element={<Parametrizacao />} />
               <Route path="/automacoes/proporcionais" element={<AutomacoesProporcionais />} />
               <Route path="/recargas/celulares" element={<RecargasCelulares />} />
               <Route path="/recargas/viagens" element={<RecargasViagens />} />

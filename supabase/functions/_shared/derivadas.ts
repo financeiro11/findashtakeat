@@ -25,6 +25,14 @@
  *
  * O que NÃO é derivado, e por quê:
  *   • Folha — é o dado. Vem do Omie, do tracker ou da mão de alguém.
+ *   • A célula que o IMPORT trouxe escrita (`preservadas`). O arquivo do tracker é
+ *     a demonstração que a diretoria fecha e assina: quando ELE traz o total, é o
+ *     total dele que vale, mesmo divergindo da soma das próprias parcelas — e
+ *     diverge (em Fev/26 "Saídas" pula "Retenção de Contribuição"; em Jun/26
+ *     "Entradas" pula "Receita Markup"; em Ago/26 o "Cashburn" não sai de conta
+ *     nenhuma). Recalcular por cima trocava o número da reunião por outro sem
+ *     avisar. A divergência não fica escondida: o Σ da célula abre as parcelas e
+ *     mostra a diferença, que é onde ela tem que aparecer.
  *   • Rubrica fora do esquema — o blob acumula órfãs do Omie. Ficam intactas;
  *     também não entram em soma nenhuma, igual à tela.
  *   • "(+) Ajustes de EBITDA" — sai da tabela de decisões, não de outras linhas.
@@ -51,6 +59,9 @@ import {
 export type Dados = { columns: string[]; rows: Record<string, unknown>[] };
 
 const chave = (s: string) => (s ?? "").trim().toLowerCase();
+
+/** Chave de uma célula (rubrica × mês) para o conjunto `preservadas`. */
+export const chaveCelula = (conta: string, col: string) => `${chave(conta)}|${col}`;
 
 /** Centavos, para não deixar 0.1+0.2 virar 0.30000000000000004 no banco. */
 const cent = (n: number) => Math.round(n * 100) / 100;
@@ -92,12 +103,17 @@ function percentuais(nodes: Node[], acc: Node[] = []): Node[] {
  * passa o que não está travado. Um mês fechado só muda quando alguém
  * REIMPORTA aquele mês, que é uma decisão de pessoa.
  *
+ * `preservadas` são as células que ESTA escrita já trouxe prontas e não devem ser
+ * refeitas — na prática, os totais que vieram escritos no arquivo do tracker
+ * (ver `chaveCelula`). Vazio no sync: lá não existe fonte externa de total.
+ *
  * Devolve um blob novo — não muta o recebido.
  */
 export function recalcularDerivadas(
   tipo: "dre" | "dfc",
   dados: Dados,
   colunas: Set<string>,
+  preservadas?: Set<string>,
 ): Dados {
   const schema = tipo === "dre" ? DRE_SCHEMA : DFC_SCHEMA;
   const columns = [...(dados.columns ?? [])];
@@ -150,6 +166,10 @@ export function recalcularDerivadas(
   const escrever = (rotulo: string, col: string, valor: number | null) => {
     if (valor === null) return;
     const nomes = nomesDe(rotulo);
+    /* O arquivo já escreveu esta célula: quem manda é ele. Vale por QUALQUER
+       apelido — o tracker chama "Fluxo de Caixa Livre" o que o esquema chama
+       "Fluxo Livre", e comparar só pelo rótulo do esquema deixaria passar. */
+    if (preservadas?.size && nomes.some((n) => preservadas.has(chaveCelula(n, col)))) return;
     // Escreve na linha que JÁ EXISTE, sob qualquer um dos nomes. Criar
     // "Entradas Operacionais" ao lado de "Entradas" faria a tela mostrar duas
     // linhas para a mesma coisa e somar uma delas duas vezes.

@@ -4,7 +4,7 @@ import { WifiOff } from "lucide-react";
 import takeatSymbol from "@/assets/takeat-symbol-white.png";
 import { MobileBottomNav, tituloDaAba } from "./MobileBottomNav";
 import { InstalarBanner } from "./InstalarBanner";
-import { NovaVersao } from "./NovaVersao";
+import { NovaVersao } from "@/components/NovaVersao";
 
 /**
  * Moldura do app no celular: cabeçalho fino, conteúdo e a barra de cinco abas.

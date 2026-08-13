@@ -7,8 +7,11 @@ import { supabase } from "@/integrations/supabase/client";
 import { cn } from "@/lib/utils";
 import { valorExato } from "@/lib/valor";
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
+import { DetalheStatus, SegmentoStatus } from "@/components/demonstracoes/BarraStatus";
 import { paraCampo, paraNumero, rotuloMes } from "@/lib/valoresManuais";
 import { normalize } from "@/lib/normalize";
+import { useApelidos } from "@/hooks/useApelidos";
+import { apelidoDe } from "@/lib/apelidos";
 import {
   ehParcial, erroDoAjuste, recomporGrupo, repartirAjuste, rotuloRegra,
   rubricasDoEbitda, somaAjustes, type ItemDoGrupo,
@@ -254,6 +257,7 @@ export function PainelAjustesEbitda({
   /** recalcular a DRE — a linha ajustada mudou dentro do blob */
   onMudou: () => void | Promise<void>;
 }) {
+  const apelidos = useApelidos();
   const [candidatos, setCandidatos] = useState<Candidato[]>([]);
   const [grupos, setGrupos] = useState<Grupo[]>([]);
   const [decididos, setDecididos] = useState<AjusteEbitda[]>([]);
@@ -433,10 +437,13 @@ export function PainelAjustesEbitda({
     const termos = normalize(busca).split(" ").filter(Boolean);
     if (!termos.length) return pendentes;
     return pendentes.filter((s) => {
-      const alvo = normalize([s.contraparte, s.rubrica, s.categoria].filter(Boolean).join(" "));
+      // O apelido entra junto com o nome cru: buscar pelo nome que está na tela
+      // tem de funcionar tanto quanto buscar pelo que está no Omie.
+      const ap = apelidoDe(apelidos, s.contraparte);
+      const alvo = normalize([s.contraparte, ap?.apelido, ap?.oQueE, s.rubrica, s.categoria].filter(Boolean).join(" "));
       return termos.every((t) => alvo.includes(t));
     });
-  }, [pendentes, busca]);
+  }, [pendentes, busca, apelidos]);
 
   const naLinha = useMemo(() => decididos.filter((d) => d.status === "aceito"), [decididos]);
   const recusados = useMemo(() => decididos.filter((d) => d.status === "recusado"), [decididos]);
@@ -577,7 +584,8 @@ export function PainelAjustesEbitda({
                           <div className="text-[12.5px] font-medium leading-snug text-foreground">{a.descricao}</div>
                           <div className="mt-0.5 text-[10.5px] text-muted-foreground">
                             {[
-                              a.origem === "manual" ? "avulso" : a.contraparte,
+                              a.origem === "manual" ? "avulso"
+                                : (apelidoDe(apelidos, a.contraparte)?.apelido ?? a.contraparte),
                               a.rubrica,
                               a.cods?.length ? `${a.cods.length} lançamentos` : null,
                               a.data ? dataCurta(a.data) : null,
@@ -720,11 +728,18 @@ export function PainelAjustesEbitda({
                       <div key={c.chave} className="rounded-md border border-border bg-card px-3 py-2.5">
                         <div className="flex items-start justify-between gap-2">
                           <div className="min-w-0">
-                            <div className="truncate text-[12.5px] font-medium text-foreground">
-                              {c.contraparte ?? "Contraparte não identificada"}
+                            <div className="truncate text-[12.5px] font-medium text-foreground"
+                              title={apelidoDe(apelidos, c.contraparte)?.oQueE ?? undefined}>
+                              {apelidoDe(apelidos, c.contraparte)?.apelido
+                                ?? c.contraparte ?? "Contraparte não identificada"}
                             </div>
+                            {/* O nome do extrato desce para a linha de apoio quando há
+                                apelido: é por ele que se procura o título no Omie. */}
                             <div className="mt-0.5 text-[10.5px] text-muted-foreground">
-                              {[c.rubrica, c.periodo ?? dataCurta(c.data), c.categoria].filter(Boolean).join(" · ")}
+                              {[
+                                apelidoDe(apelidos, c.contraparte) ? c.contraparte : null,
+                                c.rubrica, c.periodo ?? dataCurta(c.data), c.categoria,
+                              ].filter(Boolean).join(" · ")}
                             </div>
                           </div>
                           <div className="shrink-0 text-right">
@@ -885,8 +900,8 @@ export function PainelAjustesEbitda({
                     <div className="mt-2 space-y-1">
                       {recusados.map((a) => (
                         <div key={a.id} className="flex items-center gap-2 rounded-md border border-border px-3 py-1.5 text-[11.5px] text-muted-foreground">
-                          <span className="min-w-0 flex-1 truncate">
-                            {a.contraparte ?? "—"}
+                          <span className="min-w-0 flex-1 truncate" title={a.contraparte ?? undefined}>
+                            {apelidoDe(apelidos, a.contraparte)?.apelido ?? a.contraparte ?? "—"}
                             {!!a.cods?.length && <span> · {a.cods.length} lançamentos</span>}
                             {a.valor_lancamento != null && <span className="num"> · {moeda(Math.abs(a.valor_lancamento))}</span>}
                           </span>
@@ -973,26 +988,39 @@ export function ResumoAjustesEbitda({
   const total = visiveis.reduce((s, [, lista]) => s + somaAjustes(aceitos(lista)), 0);
 
   return (
-    <div className="mt-3 flex flex-wrap items-start justify-between gap-x-4 gap-y-2 rounded-lg border border-teal-300 bg-teal-50 px-3 py-2.5 text-[11.5px] leading-relaxed text-teal-950">
-      <span className="flex items-start gap-2">
-        <Scale className="mt-0.5 h-4 w-4 shrink-0 text-teal-700" />
-        <span>
-          <b>{quantos}</b> {quantos === 1 ? "evento não recorrente devolve" : "eventos não recorrentes devolvem"}{" "}
-          <b className="num">{valorExato(total)}</b> ao EBITDA nos meses visíveis. A linha <b>EBITDA Ajustado</b> mostra
-          o resultado sem eles — o EBITDA e o Lucro Líquido continuam intactos.
-        </span>
-      </span>
-      <span className="flex shrink-0 flex-wrap gap-1">
-        {visiveis.map(([col, lista]) => (
-          <button
-            key={col}
-            onClick={() => onAbrir(col)}
-            className="rounded-md border border-teal-300 bg-card px-2 py-0.5 text-[11px] font-medium text-teal-900 transition hover:bg-teal-100"
-          >
-            {rotuloMes(col)} · {aceitos(lista).length}
-          </button>
-        ))}
-      </span>
-    </div>
+    <SegmentoStatus
+      icone={<Scale className="h-[13px] w-[13px] text-teal-600" />}
+      valor={quantos}
+      rotulo={quantos === 1 ? "não recorrente" : "não recorrentes"}
+      sufixo={<span className="num">{valorExato(total)}</span>}
+      titulo={`${quantos === 1 ? "Evento não recorrente devolve" : "Eventos não recorrentes devolvem"} ${valorExato(total)} ao EBITDA nos meses visíveis.`}
+      larguraDetalhe={320}
+      detalhe={
+        <DetalheStatus
+          titulo="Eventos não recorrentes"
+          nota="A linha EBITDA Ajustado mostra o resultado sem eles — o EBITDA e o Lucro Líquido continuam intactos. Clique num mês para curar a lista."
+        >
+          <div className="max-h-[300px] overflow-y-auto py-1">
+            {visiveis.map(([col, lista]) => (
+              <button
+                key={col}
+                onClick={() => onAbrir(col)}
+                className="flex w-full items-baseline justify-between gap-2 px-3 py-1.5 text-left transition hover:bg-secondary/60"
+              >
+                <span className="text-[11.5px] text-foreground">
+                  {rotuloMes(col)}
+                  <span className="text-muted-foreground">
+                    {" · "}{aceitos(lista).length} {aceitos(lista).length === 1 ? "evento" : "eventos"}
+                  </span>
+                </span>
+                <span className="num shrink-0 text-[11.5px] font-medium text-foreground">
+                  {valorExato(somaAjustes(aceitos(lista)))}
+                </span>
+              </button>
+            ))}
+          </div>
+        </DetalheStatus>
+      }
+    />
   );
 }

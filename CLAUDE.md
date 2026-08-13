@@ -15,9 +15,17 @@ npm run lint         # eslint over the repo
 npm run test         # vitest run (single pass)
 npm run test:watch   # vitest watch mode
 npx vitest run src/path/to/file.test.ts   # run one test file
+npm run typecheck    # tsc --noEmit -p tsconfig.app.json (~5 min)
 ```
 
-Both `bun.lockb` and `package-lock.json` are present; the scripts above assume npm. There is no typecheck script — rely on `npm run build` (uses `tsc` via Vite) and `npm run lint`.
+Both `bun.lockb` and `package-lock.json` are present; the scripts above assume npm.
+
+**`npm run build` NÃO checa tipos** — é só `vite build`, e o esbuild descarta os tipos sem
+validar. Um nome indefinido (`num is not defined`) passa no build inteiro e só aparece como
+tela branca no navegador. Use `npm run typecheck` antes de dar por pronto. E não rode
+`npx tsc --noEmit` solto: o `tsconfig.json` da raiz tem `"files": []` com project references,
+então esse comando **não checa arquivo nenhum e sai com sucesso** — é preciso apontar o
+projeto (`-p tsconfig.app.json`), que é o que o script faz.
 
 Supabase Edge Functions are Deno, not bundled by Vite. There's no local Supabase config for running them here beyond `supabase/config.toml`; they are deployed to the hosted project (`lgcxyxyidoirqmbdlldh`). Edit and deploy them through the Supabase CLI/dashboard.
 
@@ -52,3 +60,4 @@ Supabase Edge Functions are Deno, not bundled by Vite. There's no local Supabase
 - ESLint has `@typescript-eslint/no-unused-vars` turned **off** and `react-refresh/only-export-components` as a warning — don't be surprised by unused vars passing lint.
 - Text matching / fuzzy dedup of names uses [src/lib/normalize.ts](src/lib/normalize.ts) (`normalize`, `similarity`) on the client and `_shared/normalize.ts` on the server — reuse these instead of writing new normalizers.
 - **Valores abreviados/arredondados sempre mostram o número cheio no hover.** [src/lib/valor.ts](src/lib/valor.ts) (`valorExato`) devolve a string completa e [src/components/ValorExato.tsx](src/components/ValorExato.tsx) (`comValorExato`) embrulha o texto compacto num `<span title=...>`. Convenção nas páginas: o formatador "normal" (`fmtBRL`, `fmtBRLShort`, `brlAbbr`, `fmtCompacto`, ...) devolve **ReactNode** com o hover, e a variante `…Str` devolve **string pura** — use a `…Str` em template literal, `title=`, prompt de IA e `tickFormatter` do Recharts, senão sai `[object Object]`. Em tooltip de gráfico (que já flutua) mostre `valorExato` direto, não o compacto. Props de KPI que recebem valor são tipadas como `React.ReactNode`.
+- **Nome de contraparte na tela passa pelo apelido.** O extrato entrega "JIM.COM GRUPO SOUZA"; o cadastro em Configurações › Parametrização (`lib_fornecedores.apelido` + `contrapartes_alias`) devolve "Café dos eventos". Use `apelidoDe`/`nomeExibido` de [src/lib/apelidos.ts](src/lib/apelidos.ts) com o mapa do hook [src/hooks/useApelidos.ts](src/hooks/useApelidos.ts) (cache em nível de módulo — não busque por linha), e `apelidosNoTexto` para trocar nomes dentro de um texto já escrito. Padrão visual: **apelido na linha de cima, nome cru na linha de apoio** — é o nome cru que se procura no Omie. Ao trocar a exibição, **inclua o apelido no texto que a busca varre**, senão a linha some do filtro pelo nome que está escrito nela.

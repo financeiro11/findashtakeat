@@ -20,6 +20,7 @@
 
 import {
   DRE_SCHEMA, DFC_SCHEMA, indexarCelulas, rotulosDeDespesa, parseColuna, mesAtras, MES_PT,
+  CASHBURN, NOVOS_EMPRESTIMOS, cashburnDoMes,
   type Node,
 } from "@/lib/demonstracoes-schema";
 
@@ -503,16 +504,49 @@ export function fluxoLivreDaDfc(
 }
 
 /**
+ * Cashburn por mês a partir do blob da DFC — a queima que o caixa sente.
+ *
+ * É o fluxo livre SEM a captação extraordinária. Julho/26 é o exemplo que
+ * justifica a função existir: entrou um empréstimo de R$ 307,1 mil, o fluxo
+ * livre fechou em −218,3 mil e a queima real foi de 525,4 mil. Medir ritmo de
+ * queima pelo fluxo livre faz o mês do empréstimo parecer o melhor do semestre.
+ *
+ * A régua é a mesma do esquema (`cashburnDoMes`) e a ordem é a mesma da página
+ * da DFC: o valor GRAVADO manda — é o que o omie-sync escreve e o que a grade
+ * mostra —, e a fórmula só entra quando não há linha gravada.
+ */
+export function cashburnDaDfc(
+  rows: LinhaBlob[],
+  columns: string[],
+): Record<string, number | null> {
+  const celulas = indexarCelulas(rows as Record<string, unknown>[], columns);
+  const val = (label: string, col: string): number | null =>
+    celulas.get(label.toLowerCase())?.[col] ?? null;
+  const livre = fluxoLivreDaDfc(rows, columns);
+
+  const out: Record<string, number | null> = {};
+  for (const col of columns) {
+    out[col] = val(CASHBURN, col)
+      ?? cashburnDoMes(livre[col] ?? null, val(NOVOS_EMPRESTIMOS, col));
+  }
+  return out;
+}
+
+/**
  * Quantos meses o caixa aguenta no ritmo atual.
  *
- * A queima vem do FLUXO LIVRE da DFC (regime caixa, já líquido de
- * investimento e financiamento) e não da DRE — a pergunta é sobre dinheiro
- * saindo da conta, não sobre resultado por competência. Média dos últimos
- * meses fechados porque um mês com 13º ou uma antecipação sozinha daria um
- * runway de mentira.
+ * A queima vem da DFC (regime caixa, já líquido de investimento e
+ * financiamento) e não da DRE — a pergunta é sobre dinheiro saindo da conta,
+ * não sobre resultado por competência. Média dos últimos meses fechados porque
+ * um mês com 13º ou uma antecipação sozinha daria um runway de mentira.
  *
- * Fluxo livre médio positivo = está gerando caixa: runway não se aplica, e a
- * tela diz isso em vez de exibir um número absurdo.
+ * A SÉRIE É ESCOLHA DE QUEM CHAMA, e a escolha importa: `cashburnDaDfc` ignora
+ * a captação e responde "quanto tempo o caixa aguenta"; `fluxoLivreDaDfc`
+ * conta o empréstimo como se fosse geração de caixa e estica o runway no mês
+ * em que ele entra.
+ *
+ * Média positiva = está gerando caixa: runway não se aplica, e a tela diz isso
+ * em vez de exibir um número absurdo.
  */
 export function calcularRunway(
   saldo: number,

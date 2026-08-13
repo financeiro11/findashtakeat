@@ -7,7 +7,7 @@ import { useAuth } from "@/hooks/useAuth";
 import { moduleAccess } from "@/lib/modules";
 import {
   Wallet, CreditCard, Users, Handshake, Smartphone, Plane, Percent, BookOpen, FolderKanban,
-  FileBarChart, FileText, Scale, TrendingUp, Brain, Target, Home, ListTree, UserCog,
+  FileBarChart, FileText, Scale, TrendingUp, Brain, Target, Home, ListTree, UserCog, Tags,
   LayoutDashboard, Kanban, FileSpreadsheet, Truck, History, FileSignature,
 } from "lucide-react";
 
@@ -46,6 +46,7 @@ const ITEMS: { group: string; items: { title: string; url: string; icon: any }[]
     { title: "Biblioteca", url: "/analise/conhecimento", icon: Brain },
   ]},
   { group: "Configurações", items: [
+    { title: "Parametrização", url: "/configuracoes/parametrizacao", icon: Tags },
     { title: "DE_PARA", url: "/de-para", icon: ListTree },
     { title: "Usuários", url: "/usuarios", icon: UserCog },
   ]},

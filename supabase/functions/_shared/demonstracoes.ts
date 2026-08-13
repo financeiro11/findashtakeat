@@ -19,7 +19,8 @@
 
 import { aplicarValoresManuais } from "./valores-manuais.ts";
 import { aplicarEbitdaAjustado } from "./ebitda-ajustado.ts";
-import { recalcularDerivadas } from "./derivadas.ts";
+import { recalcularDerivadas, chaveCelula } from "./derivadas.ts";
+import { CASHBURN } from "./demonstracoes-schema.ts";
 
 const EN = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
@@ -118,6 +119,35 @@ export async function salvarDemonstracao(
      ressomava aos totais a diferença contra um `valor_base` velho do Omie. Ver o
      item 3 do cabeçalho de valores-manuais.ts. */
   const colunasReescritas = new Set(opts.travar ? mesesNovos : []);
+
+  /* IMPORT: o total que o arquivo trouxe É o total. O tracker é a demonstração
+     que a diretoria fecha; quando ele escreve "Cashburn" ou "Fluxo de Caixa
+     Livre" naquele mês, é esse número que vai à reunião — e recalcular por cima
+     trocava o número sem avisar (as fórmulas do arquivo pulam parcela em vários
+     meses: Fev/26 "Saídas" sem "Retenção de Contribuição", Jun/26 "Entradas"
+     sem "Receita Markup"). Continuam derivadas as linhas que o arquivo NÃO tem —
+     os blocos do esquema ("Pessoal", "Custos de Operação"…) e o EBITDA Ajustado.
+     No sync o conjunto é vazio: lá não existe total de fora, o Omie só dá folha. */
+  const totaisDoArquivo = new Set<string>();
+  if (opts.travar) {
+    for (const r of novo.rows ?? []) {
+      const conta = String((r as any)?.Conta ?? "").trim();
+      if (!conta) continue;
+      /* A ÚNICA exceção é o Cashburn, e é o próprio arquivo que a justifica: a
+         régua dele muda de ano para ano na planilha. Em 2024 a célula não
+         desconta a captação — Set/24 fica com "queima" de +1.316.290 no mês em
+         que entrou R$ 1,4 M de empréstimo, que é o oposto do que a linha diz. De
+         2026 a planilha desconta, e aí a nossa conta (fluxo livre do ARQUIVO
+         menos empréstimo novo) devolve exatamente o número dela, mês a mês. Uma
+         régua só, e ela bate com o tracker onde o tracker é coerente. */
+      if (conta.trim().toLowerCase() === CASHBURN.toLowerCase()) continue;
+      for (const col of mesesNovos) {
+        const v = (r as any)[col];
+        if (v !== undefined && v !== null && v !== "") totaisDoArquivo.add(chaveCelula(conta, col));
+      }
+    }
+  }
+
   const comManuais = await aplicarValoresManuais(
     supabase, tipo, bruto, colunasAtualizadas, [], colunasReescritas,
   );
@@ -132,7 +162,7 @@ export async function salvarDemonstracao(
      um mês fechado é o jeito de corrigi-lo, e é decisão de pessoa); no sync são
      os meses abertos. Mês travado que ninguém mandou reescrever não se toca.
      Ver derivadas.ts. */
-  const dados = recalcularDerivadas(tipo, comAjustado, colunasAtualizadas);
+  const dados = recalcularDerivadas(tipo, comAjustado, colunasAtualizadas, totaisDoArquivo);
 
   const { error: upErr } = await supabase.from("demonstracoes_contabeis").upsert(
     { tipo, periodo: "completo", dados, pdf_path: null },

@@ -3,6 +3,8 @@ import * as XLSX from "xlsx";
 import {
   Upload, Plus, Pencil, Trash2, Search, Filter, Settings2, Check, X,
   Smartphone, Calendar as CalIcon, Clock, RefreshCw, CheckCircle2, Check as CheckIcon, Undo2,
+  ScrollText,
+  LayoutGrid, List,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -24,6 +26,7 @@ import { toast } from "sonner";
 import { supabase } from "@/integrations/supabase/client";
 import { normalize } from "@/lib/normalize";
 import { cn } from "@/lib/utils";
+import HistoricoChip from "@/pages/recargas/HistoricoChip";
 import { Badge } from "@/components/ui/badge";
 import { LibAutofillInput } from "@/components/LibAutofillInput";
 
@@ -162,14 +165,53 @@ const PRESETS_SOLICITACAO: PresetPeriodo[] = [
 // Derivado das duas datas do card, em vez de uma coluna nova: marcar como feita
 // preenche `ultima_recarga`, e é exatamente isso que faz o status virar "Feito".
 // Guardar o status à parte abriria espaço para ele discordar das datas.
-function statusRecarga(r: { solicitado_em?: string | null; ultima_recarga: string | null }): StatusRecarga {
+function statusRecarga(r: {
+  solicitado_em?: string | null;
+  ultima_recarga: string | null;
+  proxima_recarga?: string | null;
+}): StatusRecarga {
+  // Nunca recarregada.
   if (!r.ultima_recarga) return "Pendente";
-  if (!r.solicitado_em) return "Feito"; // nunca solicitada: a última recarga é o que há
-  // Recarga feita ANTES do pedido não atende o pedido — segue pendente.
-  return new Date(`${r.ultima_recarga}T23:59:59`) >= new Date(r.solicitado_em) ? "Feito" : "Pendente";
+
+  // Recarga feita ANTES do pedido não atende aquele pedido.
+  if (r.solicitado_em && new Date(`${r.ultima_recarga}T23:59:59`) < new Date(r.solicitado_em)) {
+    return "Pendente";
+  }
+
+  // Vencimento reabre o ciclo: já ter sido recarregada em março não deixa a linha
+  // "feita" se a próxima venceu em abril. É por isso que uma data vermelha em
+  // "Próxima" nunca pode conviver com o selo Feito.
+  if (r.proxima_recarga) {
+    const hoje = new Date();
+    hoje.setHours(0, 0, 0, 0);
+    if (new Date(`${r.proxima_recarga}T00:00`) <= hoje) return "Pendente";
+  }
+
+  return "Feito";
+}
+
+// A situação do chip guarda rótulos de RECARGA em 52 das 67 linhas (herança de quando
+// o campo era um só). Exibir "Feito" na coluna Situação repetiria o status da recarga
+// e não diria nada sobre o chip — então esses valores caem no padrão até a migração
+// de dados acertar a origem.
+function situacaoChip(situacao: string | null): string {
+  if (!situacao || ROTULOS_DE_RECARGA.includes(situacao)) return "Ativo";
+  return situacao;
 }
 
 const DAYS_KEY = "celulares_dias_proxima_recarga";
+const VISAO_KEY = "celulares_visao";
+// Vazio com contexto: numa aba filtrada, "sem registros" não diz se a busca
+// não achou nada ou se simplesmente não há pendencia.
+const VAZIO: Record<"pendentes" | "feitas" | "todas", string> = {
+  pendentes: "Nenhuma recarga pendente.",
+  feitas: "Nenhuma recarga feita neste recorte.",
+  todas: "Nenhuma linha cadastrada.",
+};
+// A escolha entre card e lista é preferencia de quem usa, não do sistema:
+// sobrevive a recarregar a página.
+const getVisao = (): "cards" | "lista" =>
+  (localStorage.getItem(VISAO_KEY) as "cards" | "lista") || "cards";
 const getDays = () => Number(localStorage.getItem(DAYS_KEY)) || 45;
 const addDays = (iso: string | null, days: number) => {
   if (!iso) return null;
@@ -194,7 +236,11 @@ export default function RecargasCelulares() {
   const [filtSit, setFiltSit] = useState<string>("__all");
   const [filtSetor, setFiltSetor] = useState<string>("__all");
   const [filtVer, setFiltVer] = useState<string>("__all");
-  const [filtStatus, setFiltStatus] = useState<string>("__all");
+  // As abas SAO o filtro de status da recarga — ter também um select em Filtros
+  // criaria dois controles para a mesma coisa, livres para discordar.
+  const [aba, setAba] = useState<"pendentes" | "feitas" | "todas">("pendentes");
+  const [visao, setVisao] = useState<"cards" | "lista">(getVisao);
+  const [historico, setHistorico] = useState<Row | null>(null);
   const [periodo, setPeriodo] = useState<PeriodoValor>({});
 
   useEffect(() => { document.title = "Recargas · Celulares"; load(); }, []);
@@ -227,23 +273,44 @@ export default function RecargasCelulares() {
     // (importadas de planilha, por exemplo) sumiriam da tela.
     const noPeriodo = (r: Row) => {
       if (!periodo.from && !periodo.to) return true;
-      if (!r.solicitado_em) return false;
-      const d = new Date(r.solicitado_em);
+      // Data da solicitação quando existe; senão, a da recarga. Sem o fallback, linhas
+      // cadastradas à mão ou importadas de planilha — que nunca passaram por um pedido
+      // — sumiriam de qualquer recorte de data, e o filtro pareceria quebrado.
+      const base = r.solicitado_em || (r.ultima_recarga ? `${r.ultima_recarga}T12:00:00` : null);
+      if (!base) return false;
+      const d = new Date(base);
+      if (isNaN(d.getTime())) return false;
       if (periodo.from && d < periodo.from) return false;
       if (periodo.to && d > periodo.to) return false;
       return true;
     };
     return rows.filter((r) => {
-      if (filtSit !== "__all" && (r.situacao || "") !== filtSit) return false;
+      if (filtSit !== "__all" && situacaoChip(r.situacao) !== filtSit) return false;
       if (filtSetor !== "__all" && (r.setor || "") !== filtSetor) return false;
       if (filtVer !== "__all" && (r.verificado || "Não") !== filtVer) return false;
-      if (filtStatus !== "__all" && statusRecarga(r) !== filtStatus) return false;
       if (!noPeriodo(r)) return false;
       if (!q) return true;
       return (r.proprietario || "").toLowerCase().includes(q)
         || (r.numero || "").toLowerCase().includes(q);
     });
-  }, [rows, search, filtSit, filtSetor, filtVer, filtStatus, periodo]);
+  }, [rows, search, filtSit, filtSetor, filtVer, periodo]);
+
+  const salvarVisao = (v: "cards" | "lista") => {
+    setVisao(v);
+    localStorage.setItem(VISAO_KEY, v);
+  };
+
+  // `filtered` já aplicou busca, setor, verificação e período. As abas recortam
+  // por cima disso, e os contadores mostram o resultado do MESMO recorte — senão o
+  // número na aba não bate com a lista que ela abre.
+  const porAba = useMemo(() => {
+    const pendentes = filtered.filter((r) => statusRecarga(r) === "Pendente");
+    const feitas = filtered.filter((r) => statusRecarga(r) === "Feito");
+    return { pendentes, feitas, todas: filtered };
+  }, [filtered]);
+
+  const visiveis = porAba[aba];
+
 
   const saveDays = (n: number) => {
     setDays(n);
@@ -337,11 +404,43 @@ export default function RecargasCelulares() {
       setRows((prev) => prev.map((x) => (x.id === r.id ? r : x)));
       return toast.error(error.message);
     }
-    toast.success(
-      feita
-        ? `Recarga de ${r.proprietario} voltou para pendente.`
-        : `Recarga de ${r.proprietario} registrada em ${fmtDataBR(patch.ultima_recarga)}.`,
-    );
+
+    // O histórico é o registro permanente; `ultima_recarga` guarda só a última e é
+    // sobrescrita. Congela o titular do momento — daqui a um ano o chip pode ser de
+    // outra pessoa, e o gasto continua tendo que apontar para quem recebeu.
+    if (feita) {
+      await supabase
+        .from("recargas_celulares_historico" as never)
+        .delete()
+        .eq("linha_id", r.id)
+        .eq("recarregado_em", r.ultima_recarga || "");
+    } else {
+      await supabase.from("recargas_celulares_historico" as never).insert({
+        linha_id: r.id,
+        colaborador: r.proprietario,
+        numero: r.numero,
+        valor: Number(r.valor || 0),
+        recarregado_em: patch.ultima_recarga,
+      } as never);
+    }
+    // Fecha o ciclo no TakeatOS. Sem isso, o pedido do colaborador ficaria "Pendente"
+    // lá para sempre mesmo depois de atendido aqui. Vai por Edge Function porque o
+    // segredo do callback não pode viver no navegador.
+    const { data: aviso } = await supabase.functions.invoke("recargas-concluir", {
+      body: { linha_id: r.id, status: feita ? "Pendente" : "Concluída" },
+    });
+
+    const base = feita
+      ? `Recarga de ${r.proprietario} voltou para pendente.`
+      : `Recarga de ${r.proprietario} registrada em ${fmtDataBR(patch.ultima_recarga)}.`;
+    // Só dizemos que o TakeatOS soube quando ele de fato respondeu.
+    const sufixo =
+      aviso?.avisado === true
+        ? " O TakeatOS foi avisado."
+        : aviso?.motivo === "sem_solicitacao_aberta"
+          ? ""
+          : " (não consegui avisar o TakeatOS ainda)";
+    toast.success(base + sufixo);
   };
 
   const remove = async (id: string) => {
@@ -467,12 +566,34 @@ export default function RecargasCelulares() {
           da fila: é consulta frequente e sumiria se virasse outra aba. */}
       <div className="space-y-3">
         <div className="flex flex-wrap items-center justify-between gap-2 border-t border-border pt-4">
-          <h3 className="text-sm font-semibold">
-            Linhas cadastradas{" "}
-            <span className="font-normal text-muted-foreground">
-              ({filtered.length} de {rows.length})
-            </span>
-          </h3>
+          {/* As abas são o eixo principal do trabalho do Financeiro: começa em
+              Pendentes, que é a fila do dia. */}
+          <div className="flex items-center gap-1 rounded-full border border-border p-0.5">
+            {(
+              [
+                ["pendentes", "Pendentes", porAba.pendentes.length],
+                ["feitas", "Feitas", porAba.feitas.length],
+                ["todas", "Todas", porAba.todas.length],
+              ] as const
+            ).map(([id, rotulo, n]) => (
+              <button
+                key={id}
+                onClick={() => setAba(id)}
+                className={cn(
+                  "rounded-full px-3 py-1 text-xs font-medium transition",
+                  aba === id
+                    ? id === "pendentes"
+                      ? "bg-amber-500/15 text-amber-600 dark:text-amber-400"
+                      : id === "feitas"
+                        ? "bg-emerald-500/15 text-emerald-600 dark:text-emerald-400"
+                        : "bg-muted text-foreground"
+                    : "text-muted-foreground hover:text-foreground",
+                )}
+              >
+                {rotulo} <span className="tabular-nums opacity-70">{n}</span>
+              </button>
+            ))}
+          </div>
           <div className="flex flex-wrap items-center gap-2">
             <div className="relative min-w-[220px]">
               <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
@@ -483,26 +604,36 @@ export default function RecargasCelulares() {
                 className="h-9 pl-8"
               />
             </div>
+            <div className="flex items-center gap-0.5 rounded-md border border-border p-0.5">
+              {(
+                [
+                  ["cards", LayoutGrid, "Ver em cards"],
+                  ["lista", List, "Ver em lista"],
+                ] as const
+              ).map(([v, Icone, titulo]) => (
+                <button
+                  key={v}
+                  onClick={() => salvarVisao(v)}
+                  title={titulo}
+                  className={cn(
+                    "rounded p-1.5 transition",
+                    visao === v ? "bg-muted text-foreground" : "text-muted-foreground hover:text-foreground",
+                  )}
+                >
+                  <Icone className="h-4 w-4" />
+                </button>
+              ))}
+            </div>
             <Popover>
               <PopoverTrigger asChild>
                 <Button variant="outline" size="sm">
                   <Filter className="mr-2 h-4 w-4" /> Filtros
-                  {(filtSit !== "__all" || filtSetor !== "__all" || filtVer !== "__all" || filtStatus !== "__all" || periodo.from || periodo.to) && (
+                  {(filtSit !== "__all" || filtSetor !== "__all" || filtVer !== "__all" || periodo.from || periodo.to) && (
                     <span className="ml-1 rounded bg-primary/10 px-1.5 text-xs text-primary">on</span>
                   )}
                 </Button>
               </PopoverTrigger>
               <PopoverContent className="w-72 space-y-3">
-                <div>
-                  <Label>Status da recarga</Label>
-                  <Select value={filtStatus} onValueChange={setFiltStatus}>
-                    <SelectTrigger><SelectValue /></SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="__all">Todos</SelectItem>
-                      {STATUS_RECARGA.map((x) => <SelectItem key={x} value={x}>{x}</SelectItem>)}
-                    </SelectContent>
-                  </Select>
-                </div>
                 <div>
                   <Label>Situação do chip</Label>
                   <Select value={filtSit} onValueChange={setFiltSit}>
@@ -536,11 +667,11 @@ export default function RecargasCelulares() {
                 {/* Período fica recolhido numa linha e só abre ao ser clicado. */}
                 <div className="border-t pt-4">
                   <CalendarDateFuture
-                    dateLabel="Período da solicitação"
+                    dateLabel="Período"
                     value={periodo}
                     onSelectDate={setPeriodo}
                     presets={PRESETS_SOLICITACAO}
-                    placeholder="Qualquer data"
+                    placeholder="Solicitação ou recarga"
                   />
                 </div>
 
@@ -552,7 +683,6 @@ export default function RecargasCelulares() {
                     setFiltSit("__all");
                     setFiltSetor("__all");
                     setFiltVer("__all");
-                    setFiltStatus("__all");
                     setPeriodo({});
                   }}
                 >
@@ -563,9 +693,10 @@ export default function RecargasCelulares() {
           </div>
         </div>
 
+        {visao === "cards" && (
         <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
-          {filtered.map((r) => {
-            const sit = (r.situacao || "Ativo") as string;
+          {visiveis.map((r) => {
+            const sit = situacaoChip(r.situacao);
             const stRecarga = statusRecarga(r);
             const dias = diasAte(r.proxima_recarga);
             const verificado = (r.verificado || "Não") === "Sim";
@@ -708,6 +839,15 @@ export default function RecargasCelulares() {
                         <CheckIcon className="h-3.5 w-3.5" />
                       )}
                     </Button>
+                    <Button
+                      size="icon"
+                      variant="ghost"
+                      className="h-7 w-7"
+                      onClick={() => setHistorico(r)}
+                      title="Histórico de recargas e titulares"
+                    >
+                      <ScrollText className="h-3.5 w-3.5" />
+                    </Button>
                     <Button size="icon" variant="ghost" className="h-7 w-7" onClick={() => abrirEdicao(r)} title="Editar">
                       <Pencil className="h-3.5 w-3.5" />
                     </Button>
@@ -719,15 +859,114 @@ export default function RecargasCelulares() {
               </div>
             );
           })}
-          {!filtered.length && (
+          {!visiveis.length && (
             <p className="col-span-full py-10 text-center text-sm text-muted-foreground">
-              Nenhuma linha cadastrada.
+              {VAZIO[aba]}
             </p>
           )}
         </div>
+        )}
+
+        {visao === "lista" && (
+          <div className="overflow-x-auto rounded-lg border border-border">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-border bg-muted/40 text-left">
+                  <th className="px-3 py-2 font-medium">Colaborador</th>
+                  <th className="px-3 py-2 font-medium">Número</th>
+                  <th className="px-3 py-2 font-medium">Situação</th>
+                  <th className="px-3 py-2 font-medium">Setor</th>
+                  <th className="px-3 py-2 font-medium">Solicitada</th>
+                  <th className="px-3 py-2 font-medium">Feita</th>
+                  <th className="px-3 py-2 font-medium">Próxima</th>
+                  <th className="px-3 py-2 text-right font-medium">Valor</th>
+                  <th className="px-3 py-2 text-center font-medium">Recarga</th>
+                  <th className="px-3 py-2 text-right font-medium">Ações</th>
+                </tr>
+              </thead>
+              <tbody>
+                {visiveis.map((r) => {
+                  const st = statusRecarga(r);
+                  const d = diasAte(r.proxima_recarga);
+                  return (
+                    <tr key={r.id} className="border-b border-border last:border-0 hover:bg-muted/30">
+                      <td className="px-3 py-2 font-medium">{r.proprietario || "—"}</td>
+                      <td className="px-3 py-2 font-mono text-[13px]">{r.numero || "—"}</td>
+                      <td className="px-3 py-2">
+                        <Badge
+                          variant="outline"
+                          className={cn("rounded-full px-2 text-[10.5px]", SITUACAO_CLS[situacaoChip(r.situacao)] || SITUACAO_CLS.Ativo)}
+                        >
+                          {situacaoChip(r.situacao)}
+                        </Badge>
+                      </td>
+                      <td className="px-3 py-2 text-muted-foreground">{r.setor || "—"}</td>
+                      <td className="px-3 py-2 text-muted-foreground">
+                        {r.solicitado_em ? fmtDataBR(String(r.solicitado_em).slice(0, 10)) : "—"}
+                      </td>
+                      <td className="px-3 py-2 text-muted-foreground">{fmtDataBR(r.ultima_recarga)}</td>
+                      {/* Atrasada em vermelho, mesma regra do selo no card. */}
+                      <td className={cn("px-3 py-2", d !== null && d < 0 ? "font-medium text-rose-600 dark:text-rose-400" : "text-muted-foreground")}>
+                        {fmtDataBR(r.proxima_recarga)}
+                      </td>
+                      <td className="px-3 py-2 text-right font-mono">{fmtBRL(Number(r.valor || 0))}</td>
+                      <td className="px-3 py-2 text-center">
+                        <Badge variant="outline" className={cn("rounded-full px-2 text-[10.5px]", STATUS_RECARGA_CLS[st])}>
+                          {st}
+                        </Badge>
+                      </td>
+                      <td className="px-3 py-2">
+                        <div className="flex items-center justify-end gap-0.5">
+                          <Button
+                            size="icon"
+                            variant="ghost"
+                            className={cn("h-7 w-7", st === "Feito" ? "text-muted-foreground" : "text-emerald-600 dark:text-emerald-400")}
+                            onClick={() => alternarFeita(r)}
+                            title={st === "Feito" ? "Desfazer — voltar para pendente" : "Marcar recarga como feita hoje"}
+                          >
+                            {st === "Feito" ? <Undo2 className="h-3.5 w-3.5" /> : <CheckIcon className="h-3.5 w-3.5" />}
+                          </Button>
+                          <Button
+                            size="icon"
+                            variant="ghost"
+                            className="h-7 w-7"
+                            onClick={() => setHistorico(r)}
+                            title="Histórico de recargas e titulares"
+                          >
+                            <ScrollText className="h-3.5 w-3.5" />
+                          </Button>
+                          <Button size="icon" variant="ghost" className="h-7 w-7" onClick={() => abrirEdicao(r)} title="Editar">
+                            <Pencil className="h-3.5 w-3.5" />
+                          </Button>
+                          <Button size="icon" variant="ghost" className="h-7 w-7" onClick={() => remove(r.id)} title="Excluir">
+                            <Trash2 className="h-3.5 w-3.5" />
+                          </Button>
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
+                {!visiveis.length && (
+                  <tr>
+                    <td colSpan={10} className="py-10 text-center text-sm text-muted-foreground">
+                      {VAZIO[aba]}
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        )}
       </div>
 
 
+
+      <HistoricoChip
+        linhaId={historico?.id ?? null}
+        titulo={historico?.proprietario ?? undefined}
+        numero={historico?.numero ?? undefined}
+        onOpenChange={(v) => !v && setHistorico(null)}
+      />
 
       <Dialog
         open={open}

@@ -12,8 +12,11 @@ ALTER TABLE public.recargas_celulares
 COMMENT ON COLUMN public.recargas_celulares.origem_id IS
   'Id da linha no sistema de origem (TakeatOS). Chave de idempotência do webhook.';
 
--- Parcial: linhas cadastradas à mão aqui continuam com origem_id nulo, e várias
--- delas não podem colidir entre si num índice único comum.
+-- NÃO pode ser índice parcial: o Postgres só casa um ON CONFLICT com índice parcial
+-- se a própria instrução repetir o mesmo predicado, e o upsert do supabase-js não faz
+-- isso — o webhook falharia com "no unique or exclusion constraint matching".
+--
+-- O parcial também era desnecessário: em índice único o Postgres trata NULL como
+-- distinto, então as linhas cadastradas à mão (origem_id nulo) não colidem entre si.
 CREATE UNIQUE INDEX IF NOT EXISTS idx_recargas_celulares_origem
-  ON public.recargas_celulares (origem, origem_id)
-  WHERE origem_id IS NOT NULL;
+  ON public.recargas_celulares (origem, origem_id);

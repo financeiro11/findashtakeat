@@ -26,6 +26,7 @@ import { toast } from "sonner";
 import { supabase } from "@/integrations/supabase/client";
 import { normalize } from "@/lib/normalize";
 import { cn } from "@/lib/utils";
+import { useAoVoltar } from "@/hooks/useAoVoltar";
 import HistoricoChip from "@/pages/recargas/HistoricoChip";
 import { Badge } from "@/components/ui/badge";
 import { LibAutofillInput } from "@/components/LibAutofillInput";
@@ -274,6 +275,36 @@ export default function RecargasCelulares() {
   const [periodo, setPeriodo] = useState<PeriodoValor>({});
 
   useEffect(() => { document.title = "Recargas · Celulares"; load(); }, []);
+
+  // Quem solicita esta no TakeatOS; quem atende esta olhando esta tela. Sem isto o
+  // Financeiro so veria o pedido novo ao recarregar a pagina — e a fila de ~40 por dia
+  // e trabalhada de forma continua, com a aba aberta.
+  //
+  // Realtime e push: o Postgres avisa quando a linha entra. Nao e polling, entao nao
+  // custa uma consulta a cada X segundos so para descobrir que nada mudou.
+  useEffect(() => {
+    const canal = supabase
+      .channel("recargas-fila-rt")
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "recargas_celulares_solicitacoes" },
+        () => load(),
+      )
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "recargas_celulares" },
+        () => load(),
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(canal);
+    };
+  }, []);
+
+  // Rede caida ou aba dormindo derrubam o canal em silencio. Voltar para a tela
+  // rebusca, para o Financeiro nunca ficar olhando uma fila velha sem perceber.
+  useAoVoltar(() => load());
 
   const load = async () => {
     // A fila e o cadastro vêm juntos: o Financeiro trabalha a aba Pendentes, e o que

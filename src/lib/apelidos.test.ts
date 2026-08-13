@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   montarMapaApelidos, apelidoDe, nomeExibido, apelidosNoTexto, jaTemApelido,
   sugestaoDeApelido, enigmatica, presenca, filaDeAnonimos, cobertura,
+  intervaloDaJanela, rotuloMesFechado,
   MAPA_APELIDOS_VAZIO, type Apelido, type Candidato,
 } from "@/lib/apelidos";
 
@@ -181,6 +182,36 @@ describe("ordem da fila", () => {
 
   it("aguenta contraparte sem número", () => {
     expect(presenca(c("VAZIO", 0, 0))).toBe(0);
+  });
+});
+
+describe("janela de tempo", () => {
+  const emAgosto = new Date(2026, 7, 13);   // 13/08/2026
+
+  it("mês fechado é o mês anterior inteiro", () => {
+    expect(intervaloDaJanela("fechado", emAgosto)).toEqual({ de: "2026-07-01", ate: "2026-07-31" });
+    expect(rotuloMesFechado(emAgosto)).toBe("Jul 26");
+  });
+
+  // Dia 0 do mês corrente = último dia do anterior. Fevereiro e bissexto saem
+  // certos sem tabela de dias — é por isso que a conta é assim.
+  it("acerta fevereiro e ano bissexto", () => {
+    expect(intervaloDaJanela("fechado", new Date(2026, 2, 10))).toEqual({ de: "2026-02-01", ate: "2026-02-28" });
+    expect(intervaloDaJanela("fechado", new Date(2028, 2, 10))).toEqual({ de: "2028-02-01", ate: "2028-02-29" });
+  });
+
+  it("vira o ano para trás em janeiro", () => {
+    expect(intervaloDaJanela("fechado", new Date(2026, 0, 5))).toEqual({ de: "2025-12-01", ate: "2025-12-31" });
+    expect(rotuloMesFechado(new Date(2026, 0, 5))).toBe("Dez 25");
+  });
+
+  it("janela móvel conta para trás e fica aberta na frente", () => {
+    expect(intervaloDaJanela("3m", emAgosto)).toEqual({ de: "2026-05-13", ate: null });
+    expect(intervaloDaJanela("12m", emAgosto)).toEqual({ de: "2025-08-13", ate: null });
+  });
+
+  it("'tudo' não corta nada", () => {
+    expect(intervaloDaJanela("tudo", emAgosto)).toEqual({ de: null, ate: null });
   });
 });
 

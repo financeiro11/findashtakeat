@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
-  Search, CreditCard, Building2, Sparkles, Loader2, Check, Pencil, Tags,
+  Search, CreditCard, Building2, RefreshCw, Loader2, Check, Pencil, Tags,
 } from "lucide-react";
 import { toast } from "sonner";
 import { supabase } from "@/integrations/supabase/client";
@@ -14,7 +14,8 @@ import { valorExato } from "@/lib/valor";
 import { normalize } from "@/lib/normalize";
 import {
   filaDeAnonimos, cobertura, apelidoDe, chaveContraparte,
-  type Candidato,
+  intervaloDaJanela, rotuloMesFechado,
+  type Candidato, type Janela,
 } from "@/lib/apelidos";
 import { useApelidos, useApelidosCadastro, salvarApelido } from "@/hooks/useApelidos";
 import { PainelNomear, type Alvo } from "@/components/parametrizacao/PainelNomear";
@@ -34,6 +35,7 @@ import { PainelNomear, type Alvo } from "@/components/parametrizacao/PainelNomea
  * ------------------------------------------------------------------------- */
 
 const db = supabase as unknown as {
+  from: (t: string) => any;
   rpc: (n: string, a?: Record<string, unknown>) => any;
   functions: { invoke: (n: string, o?: { body?: unknown }) => any };
 };
@@ -58,10 +60,52 @@ const periodo = (c: Candidato) => {
   return a === b ? a : `${a} – ${b}`;
 };
 
-type Sugestao = { apelido: string; o_que_e?: string | null; confianca?: string | null };
+/* O que uma planilha de formulário diz sobre esta contraparte. Vem de
+   `parametrizacao_evidencias`, escrita pelo sync — não é palpite de modelo, é o
+   que alguém digitou no formulário quando fez o gasto. */
+type Evidencia = {
+  fonte: string;
+  chave: string;
+  chave_tipo: string;
+  confianca: string;
+  apelido: string | null;
+  o_que_e: string | null;
+  detalhe: string | null;
+  ocorrencias: number;
+  aplicado_em: string | null;
+};
 
-/** Quantas a IA olha por vez. Lote grande estoura o tempo da função. */
-const LOTE_SUGESTAO = 25;
+const ROTULO_FONTE: Record<string, string> = {
+  compras: "Compras",
+  reembolsos: "Reembolsos",
+  nfs_colaboradores: "NFs colaborador",
+  eventos: "Eventos & Parcerias",
+};
+
+const ROTULO_CHAVE: Record<string, string> = {
+  cnpj: "CNPJ",
+  valor_data: "valor + data",
+  nome: "nome",
+};
+
+/* Um fornecedor sem nome em março pesa menos do que um de julho, que acabou de
+   fechar. A janela não é filtro de tela: vai para a RPC, então o denominador da
+   cobertura é o dinheiro DO PERÍODO. */
+const JANELAS: { v: Janela; rotulo: string }[] = [
+  { v: "fechado", rotulo: rotuloMesFechado() },
+  { v: "3m", rotulo: "3 meses" },
+  { v: "6m", rotulo: "6 meses" },
+  { v: "12m", rotulo: "12 meses" },
+  { v: "tudo", rotulo: "Tudo" },
+];
+
+const DESCRICAO_JANELA: Record<Janela, string> = {
+  fechado: `do mês fechado (${rotuloMesFechado()})`,
+  "3m": "dos últimos 3 meses",
+  "6m": "dos últimos 6 meses",
+  "12m": "dos últimos 12 meses",
+  tudo: "de toda a base",
+};
 
 export default function Parametrizacao() {
   const mapa = useApelidos();
@@ -70,15 +114,42 @@ export default function Parametrizacao() {
   const [candidatos, setCandidatos] = useState<Candidato[] | null>(null);
   const [busca, setBusca] = useState("");
   const [origem, setOrigem] = useState<"todas" | "cartao" | "omie">("todas");
+  /* Abre nos 3 meses e não em "Tudo": a fila serve para a próxima reunião, não
+     para zerar o histórico. Quem quiser o retrato completo troca num clique. */
+  const [janela, setJanela] = useState<Janela>("3m");
   const [alvo, setAlvo] = useState<Alvo | null>(null);
-  const [sugestoes, setSugestoes] = useState<Map<string, Sugestao>>(new Map());
-  const [sugerindo, setSugerindo] = useState(false);
+  const [evidencias, setEvidencias] = useState<Map<string, Evidencia>>(new Map());
+  const [sincronizando, setSincronizando] = useState(false);
   const [aceitando, setAceitando] = useState<string | null>(null);
 
+  const carregarEvidencias = useCallback(async () => {
+    const { data } = await db.from("parametrizacao_evidencias")
+      .select("fonte,chave,chave_tipo,confianca,apelido,o_que_e,detalhe,ocorrencias,aplicado_em");
+    const m = new Map<string, Evidencia>();
+    // Uma contraparte pode ter evidência de mais de uma planilha; fica a de maior
+    // confiança, e no empate a que tem mais linhas por trás.
+    const peso = (e: Evidencia) => (e.confianca === "alta" ? 2 : e.confianca === "media" ? 1 : 0);
+    for (const e of (data ?? []) as Evidencia[]) {
+      const atual = m.get(e.chave);
+      if (!atual || peso(e) > peso(atual) || (peso(e) === peso(atual) && e.ocorrencias > atual.ocorrencias)) {
+        m.set(e.chave, e);
+      }
+    }
+    setEvidencias(m);
+  }, []);
+
+  useEffect(() => { document.title = "Configurações · Parametrização"; }, []);
+  useEffect(() => { void carregarEvidencias(); }, [carregarEvidencias]);
+
+  /* Recarrega a cada troca de janela — a RPC é quem corta o período, então os
+     números do cabeçalho mudam junto com a lista. */
   useEffect(() => {
-    document.title = "Configurações · Parametrização";
-    db.rpc("parametrizacao_contrapartes").then(
+    let vivo = true;
+    setCandidatos(null);
+    const { de, ate } = intervaloDaJanela(janela);
+    db.rpc("parametrizacao_contrapartes", { p_de: de, p_ate: ate }).then(
       ({ data, error }: { data: Candidato[] | null; error: { message?: string } | null }) => {
+        if (!vivo) return;
         if (error) {
           toast.error(`Não foi possível ler as contrapartes: ${error.message ?? "erro"}`);
           setCandidatos([]);
@@ -87,7 +158,8 @@ export default function Parametrizacao() {
         setCandidatos(data ?? []);
       },
     );
-  }, []);
+    return () => { vivo = false; };
+  }, [janela]);
 
   const porOrigem = useMemo(
     () => (candidatos ?? []).filter((c) => origem === "todas" || c.origem === origem),
@@ -127,60 +199,62 @@ export default function Parametrizacao() {
     ).sort((a, b) => Number(b.mov?.total ?? 0) - Number(a.mov?.total ?? 0));
   }, [cadastro, porOrigem, mapa, busca]);
 
-  const pedirSugestoes = async () => {
-    const lote = filaVisivel.slice(0, LOTE_SUGESTAO);
-    if (!lote.length) { toast.info("Não há contraparte sem nome nesta lista."); return; }
-
-    setSugerindo(true);
+  /**
+   * Relê as quatro planilhas de formulário e recruza com as contrapartes.
+   *
+   * O que vier por CNPJ é identidade e entra sozinho; o resto vira proposta na
+   * coluna ao lado. Roda também num cron semanal — este botão é para quando
+   * alguém acabou de preencher o formulário e não quer esperar.
+   */
+  const sincronizar = async () => {
+    setSincronizando(true);
     try {
-      const { data, error } = await db.functions.invoke("parametrizacao-sugerir", {
-        body: {
-          contrapartes: lote.map((c) => ({
-            nome: c.nome, origem: c.origem, categoria: c.categoria, cidade: c.cidade,
-            lancamentos: c.lancamentos, total: c.total, primeira: c.primeira, ultima: c.ultima,
-          })),
-        },
-      });
+      const { data, error } = await db.functions.invoke("parametrizacao-planilhas-sync", { body: {} });
       if (error) throw error;
+      if (!data?.ok) throw new Error(data?.error ?? "falhou");
 
-      const novas = new Map(sugestoes);
-      for (const s of data?.sugestoes ?? []) {
-        if (s?.nome && s?.apelido) novas.set(chaveContraparte(s.nome), s);
-      }
-      setSugestoes(novas);
+      const bloqueadas = Object.entries(data.fontes ?? {})
+        .filter(([, v]) => (v as { erro: string | null }).erro)
+        .map(([k]) => ROTULO_FONTE[k] ?? k);
 
-      const quantas = (data?.sugestoes ?? []).filter((s: Sugestao & { nome?: string }) => s?.apelido).length;
-      toast.success(`${quantas} de ${lote.length} com sugestão. Confira cada uma antes de aceitar.`);
+      await Promise.all([carregarEvidencias(), recarregar()]);
+      toast.success(
+        `${data.aplicados_por_cnpj} nomeadas pelo CNPJ e ${data.propostas} propostas a conferir.`
+        + (bloqueadas.length ? ` Sem acesso a: ${bloqueadas.join(", ")}.` : ""),
+      );
     } catch (e) {
-      toast.error((e as Error)?.message ?? "Não foi possível pedir as sugestões.");
+      toast.error((e as Error)?.message ?? "Não foi possível ler as planilhas.");
     } finally {
-      setSugerindo(false);
+      setSincronizando(false);
     }
   };
 
-  const aceitar = async (c: Candidato, s: Sugestao) => {
+  const aceitar = async (c: Candidato, e: Evidencia) => {
+    if (!e.apelido) return;
     setAceitando(c.nome);
     const { error } = await salvarApelido(c.nome, {
-      apelido: s.apelido,
-      oQueE: s.o_que_e ?? null,
+      apelido: e.apelido,
+      oQueE: e.o_que_e ?? null,
       documento: c.documento,
       categoria: c.categoria,
       origem: c.origem,
     });
     setAceitando(null);
     if (error) { toast.error(error); return; }
-    toast.success(`"${c.nome}" agora é "${s.apelido}".`);
+    toast.success(`"${c.nome}" agora é "${e.apelido}".`);
     await recarregar();
   };
 
   const abrir = (c: Candidato) => {
     const dono = apelidoDe(mapa, c.nome, c.documento);
     const cad = dono?.id ? cadastro.find((f) => f.id === dono.id) ?? null : null;
-    const s = sugestoes.get(chaveContraparte(c.nome));
+    const e = evidencias.get(chaveContraparte(c.nome));
     setAlvo({
       candidato: c,
       cadastro: cad,
-      rascunho: s ? { apelido: s.apelido, oQueE: s.o_que_e ?? null } : null,
+      // A proposta da planilha entra no painel como rascunho, para clicar na
+      // linha não jogar fora o que o formulário já respondeu.
+      rascunho: e?.apelido ? { apelido: e.apelido, oQueE: e.o_que_e ?? null } : null,
     });
   };
 
@@ -205,10 +279,26 @@ export default function Parametrizacao() {
 
         {/* A cobertura é medida em VALOR, não em contagem: nomear 300 lojistas
             de R$ 50 não muda uma reunião. */}
-        <div className="mt-4">
-          <div className="flex items-baseline justify-between text-[12px]">
+        {/* A janela fica JUNTO da barra, não na fileira de filtros: ela é o
+            denominador do número que está logo abaixo, e não um filtro de lista. */}
+        <div className="mt-4 flex flex-wrap items-center gap-1.5">
+          <span className="mr-1 text-[11.5px] text-muted-foreground">Cobrar nome de:</span>
+          {JANELAS.map((j) => (
+            <Button
+              key={j.v} size="sm"
+              variant={janela === j.v ? "secondary" : "ghost"}
+              className="h-6 px-2 text-[11.5px]"
+              onClick={() => setJanela(j.v)}
+            >
+              {j.rotulo}
+            </Button>
+          ))}
+        </div>
+
+        <div className="mt-2.5">
+          <div className="flex items-baseline justify-between gap-2 text-[12px]">
             <span className="font-medium">
-              {pct}% do valor já sabe dizer o próprio nome
+              {pct}% do valor {DESCRICAO_JANELA[janela]} já sabe dizer o próprio nome
             </span>
             <span className="text-muted-foreground">
               {cob.nomeadas} de {cob.total} contrapartes ·{" "}
@@ -270,9 +360,10 @@ export default function Parametrizacao() {
                 já ficam de fora.
               </p>
               <Button size="sm" variant="outline" className="h-7 gap-1.5 text-[11.5px]"
-                onClick={pedirSugestoes} disabled={sugerindo || !filaVisivel.length}>
-                {sugerindo ? <Loader2 className="h-3 w-3 animate-spin" /> : <Sparkles className="h-3 w-3" />}
-                Sugerir os {Math.min(LOTE_SUGESTAO, filaVisivel.length)} primeiros
+                onClick={sincronizar} disabled={sincronizando}
+                title="Relê Compras, Reembolsos, NFs de colaborador e Eventos & Parcerias">
+                {sincronizando ? <Loader2 className="h-3 w-3 animate-spin" /> : <RefreshCw className="h-3 w-3" />}
+                Atualizar das planilhas
               </Button>
             </div>
 
@@ -293,12 +384,12 @@ export default function Parametrizacao() {
                       <th className="px-2 py-2 text-right font-medium">Lçtos</th>
                       <th className="px-2 py-2 text-right font-medium">Total</th>
                       <th className="px-2 py-2 font-medium">Período</th>
-                      <th className="px-4 py-2 font-medium">Sugestão</th>
+                      <th className="px-4 py-2 font-medium">O que a planilha diz</th>
                     </tr>
                   </thead>
                   <tbody>
                     {filaVisivel.map((c) => {
-                      const s = sugestoes.get(chaveContraparte(c.nome));
+                      const ev = evidencias.get(chaveContraparte(c.nome));
                       const Icone = c.origem === "cartao" ? CreditCard : Building2;
                       return (
                         <tr
@@ -326,31 +417,43 @@ export default function Parametrizacao() {
                           <td className="whitespace-nowrap px-2 py-2 text-[11px] text-muted-foreground">
                             {periodo(c)}
                           </td>
+                          {/* Nada aqui é palpite: é o que alguém escreveu no
+                              formulário na hora de gastar. O rodapé diz de qual
+                              planilha veio e por qual chave casou — é o que
+                              permite conferir antes de aceitar. */}
                           <td className="px-4 py-2">
-                            {s ? (
+                            {ev ? (
                               <div className="flex items-start gap-1.5">
                                 <div className="min-w-0 flex-1">
-                                  <div className="font-medium">{s.apelido}</div>
-                                  {s.o_que_e && (
-                                    <div className="text-[10px] leading-snug text-muted-foreground">{s.o_que_e}</div>
+                                  {ev.apelido
+                                    ? <div className="font-medium">{ev.apelido}</div>
+                                    : <div className="italic text-muted-foreground">sem nome na planilha</div>}
+                                  {ev.o_que_e && (
+                                    <div className="text-[10px] leading-snug text-muted-foreground">{ev.o_que_e}</div>
                                   )}
-                                  {s.confianca && s.confianca !== "alta" && (
-                                    <Badge variant="outline" className="mt-0.5 h-4 px-1 text-[9px]">
-                                      {s.confianca === "media" ? "confiança média" : "incerto"}
+                                  <div className="mt-0.5 flex flex-wrap items-center gap-1">
+                                    <Badge variant="outline" className="h-4 px-1 text-[9px]" title={ev.detalhe ?? undefined}>
+                                      {ROTULO_FONTE[ev.fonte] ?? ev.fonte}
                                     </Badge>
-                                  )}
+                                    <span className="text-[9px] text-muted-foreground">
+                                      por {ROTULO_CHAVE[ev.chave_tipo] ?? ev.chave_tipo}
+                                      {ev.ocorrencias > 1 && ` · ${ev.ocorrencias} linhas`}
+                                    </span>
+                                  </div>
                                 </div>
-                                <Button
-                                  size="sm" variant="ghost"
-                                  className="ghost-icone ghost-icone-sm shrink-0"
-                                  title={`Aceitar "${s.apelido}"`}
-                                  disabled={aceitando === c.nome}
-                                  onClick={(e) => { e.stopPropagation(); void aceitar(c, s); }}
-                                >
-                                  {aceitando === c.nome
-                                    ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                                    : <Check className="h-3.5 w-3.5 text-emerald-600" />}
-                                </Button>
+                                {ev.apelido && (
+                                  <Button
+                                    size="sm" variant="ghost"
+                                    className="ghost-icone ghost-icone-sm shrink-0"
+                                    title={`Aceitar "${ev.apelido}"`}
+                                    disabled={aceitando === c.nome}
+                                    onClick={(e) => { e.stopPropagation(); void aceitar(c, ev); }}
+                                  >
+                                    {aceitando === c.nome
+                                      ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                                      : <Check className="h-3.5 w-3.5 text-emerald-600" />}
+                                  </Button>
+                                )}
                               </div>
                             ) : (
                               <span className="text-[11px] text-muted-foreground">Nomear…</span>

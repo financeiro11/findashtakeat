@@ -198,6 +198,55 @@ export type Candidato = {
   ultima: string | null;
 };
 
+/* -------------------------------------------------------------------------
+ * A janela de tempo
+ * ---------------------------------------------------------------------- */
+
+export type Janela = "fechado" | "3m" | "6m" | "12m" | "tudo";
+
+/**
+ * De quando até quando a fila deve olhar.
+ *
+ * Um fornecedor sem nome em março pesa menos do que um de julho, que acabou de
+ * fechar — e a barra de cobertura só quer dizer alguma coisa se o denominador
+ * for o dinheiro DA JANELA. Por isso o intervalo vai para a RPC e não é filtro
+ * de tela: filtrar só a lista deixaria "43% do valor" somando o que ficou fora.
+ *
+ * `hoje` é parâmetro para o teste não depender do dia em que roda.
+ */
+export function intervaloDaJanela(
+  janela: Janela,
+  hoje: Date = new Date(),
+): { de: string | null; ate: string | null } {
+  const iso = (d: Date) =>
+    `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+
+  if (janela === "tudo") return { de: null, ate: null };
+
+  if (janela === "fechado") {
+    // Dia 0 do mês corrente é o ÚLTIMO dia do mês passado — pega fevereiro e
+    // ano bissexto de graça, sem tabela de dias.
+    const fim = new Date(hoje.getFullYear(), hoje.getMonth(), 0);
+    const ini = new Date(hoje.getFullYear(), hoje.getMonth() - 1, 1);
+    return { de: iso(ini), ate: iso(fim) };
+  }
+
+  const meses = janela === "3m" ? 3 : janela === "6m" ? 6 : 12;
+  const ini = new Date(hoje.getFullYear(), hoje.getMonth() - meses, hoje.getDate());
+  return { de: iso(ini), ate: null };
+}
+
+/* Tabela explícita em vez de `toLocaleDateString`: o ICU do Node devolve
+   "jul. de 26" e o do navegador "jul. de 26" ou "jul 26" conforme a versão — o
+   rótulo do botão não pode depender de onde o código roda. */
+const MESES = ["Jan", "Fev", "Mar", "Abr", "Mai", "Jun", "Jul", "Ago", "Set", "Out", "Nov", "Dez"];
+
+/** "Jul 26" — o mês fechado, para o botão dizer qual é. */
+export function rotuloMesFechado(hoje: Date = new Date()): string {
+  const m = new Date(hoje.getFullYear(), hoje.getMonth() - 1, 1);
+  return `${MESES[m.getMonth()]} ${String(m.getFullYear()).slice(-2)}`;
+}
+
 /** Categorias que não dizem nada — quem cai nelas é justamente o que se pergunta. */
 const CATEGORIA_GENERICA = /^(outros|outras|diversos|diversas|sem categoria|n[ãa]o classificad)/i;
 

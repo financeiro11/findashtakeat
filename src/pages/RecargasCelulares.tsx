@@ -298,7 +298,10 @@ export default function RecargasCelulares() {
         // Concluídas entram junto: sem elas a aba Feitas nunca mostraria um pedido
         // atendido, e o card sumiria da tela ao ser concluído.
         .in("status", ["Pendente", "Concluída"])
-        .order("solicitado_em", { ascending: true }),
+        // Mais novo primeiro: quem acabou de pedir aparece no topo da tela. O selo
+        // "Nº da fila" continua dizendo a ordem de ATENDIMENTO do dia — a posição
+        // não muda com a exibição.
+        .order("solicitado_em", { ascending: false }),
     ]);
 
     if (linhas.error) return toast.error(linhas.error.message);
@@ -373,8 +376,8 @@ export default function RecargasCelulares() {
   // por cima disso, e os contadores mostram o resultado do MESMO recorte — senão o
   // número na aba não bate com a lista que ela abre.
   const porAba = useMemo(() => {
-    // A fila entra na FRENTE de Pendentes, na ordem em que foi pedida — é a ordem em
-    // que o Financeiro atende. Só cabem ~40 por dia, então a sequência é o produto.
+    // A fila entra na FRENTE de Pendentes, com o pedido mais novo no topo. A ordem
+    // de ATENDIMENTO continua sendo a do selo "Nº da fila" — só cabem ~40 por dia.
     const daFila = solicitacoes.filter((s) => {
       if (!termoBate(s, search)) return false;
       if (filtSetor !== "__all" && (s.setor || "") !== filtSetor) return false;

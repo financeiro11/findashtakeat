@@ -77,7 +77,7 @@ type PayloadSolicitacao = {
   evento: "recarga.solicitada";
   id: string;
   solicitado_em?: string;
-  fila?: { posicao_do_dia?: number | null; limite_diario?: number | null };
+  fila?: { posicao_do_dia?: number | null; limite_diario?: number | null; agendada_para?: string | null };
   colaborador?: { id?: string | null; nome?: string | null; email?: string | null };
   solicitante?: { nome?: string | null };
   linha?: {
@@ -188,6 +188,8 @@ async function registrarSolicitacao(supabase: SupabaseClient, p: PayloadSolicita
     solicitado_em: p.solicitado_em ?? new Date().toISOString(),
     posicao_do_dia: p.fila?.posicao_do_dia ?? null,
     limite_diario: p.fila?.limite_diario ?? null,
+    // Pedido pós-recarga: só entra na janela nesta data (última recarga + prazo).
+    agendada_para: p.fila?.agendada_para ?? null,
     callback_url: p.callback_url ?? null,
   };
 

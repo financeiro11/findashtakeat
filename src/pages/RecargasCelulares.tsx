@@ -51,6 +51,8 @@ type Row = {
   // cadastro convivem na mesma lista, e estes campos distinguem uma da outra.
   solicitacao_id?: string;
   posicao_do_dia?: number | null;
+  // Pedido pós-recarga: só entra na janela nesta data (última recarga + prazo).
+  agendada_para?: string | null;
 };
 
 // Situação é do CHIP (a linha está ativa na operadora?). O andamento da recarga
@@ -234,6 +236,8 @@ function situacaoChip(situacao: string | null): string {
   return situacao;
 }
 
+const hojeISO = () => new Date().toISOString().slice(0, 10);
+
 const DAYS_KEY = "celulares_dias_proxima_recarga";
 const VISAO_KEY = "celulares_visao";
 // Vazio com contexto: numa aba filtrada, "sem registros" não diz se a busca
@@ -289,7 +293,7 @@ export default function RecargasCelulares() {
       supabase
         .from("recargas_celulares_solicitacoes")
         .select(
-          "id, colaborador, numero, operadora, setor, valor, solicitado_em, posicao_do_dia, status, concluido_em",
+          "id, colaborador, numero, operadora, setor, valor, solicitado_em, posicao_do_dia, status, concluido_em, agendada_para",
         )
         // Concluídas entram junto: sem elas a aba Feitas nunca mostraria um pedido
         // atendido, e o card sumiria da tela ao ser concluído.
@@ -326,6 +330,7 @@ export default function RecargasCelulares() {
         verificado: null,
         solicitado_em: f.solicitado_em,
         posicao_do_dia: f.posicao_do_dia,
+        agendada_para: f.agendada_para,
       })),
     );
   };
@@ -876,15 +881,27 @@ export default function RecargasCelulares() {
                   </div>
                   {/* Veio da fila do TakeatOS: mostra a posição em vez do prazo, porque
                       o que importa nesse card é a ordem de atendimento. */}
-                  {r.solicitacao_id && (
-                    <Badge
-                      variant="outline"
-                      className="h-5 shrink-0 gap-1 rounded-full border-rose-500/30 bg-rose-500/10 px-2 text-[10.5px] text-rose-600 dark:text-rose-400"
-                      title="Solicitação vinda do TakeatOS"
-                    >
-                      {r.posicao_do_dia ? `${r.posicao_do_dia}º da fila` : "Solicitada"}
-                    </Badge>
-                  )}
+                  {r.solicitacao_id &&
+                    (r.agendada_para && !r.ultima_recarga && r.agendada_para > hojeISO() ? (
+                      // Pedido pós-recarga: não é para hoje — mostra a janela em vez
+                      // da posição, senão o chip seria recarregado duas vezes.
+                      <Badge
+                        variant="outline"
+                        className="h-5 shrink-0 gap-1 rounded-full border-amber-500/30 bg-amber-500/10 px-2 text-[10.5px] text-amber-600 dark:text-amber-400"
+                        title="Pedido para a próxima janela de recarga"
+                      >
+                        <Clock className="h-3 w-3" />
+                        Janela: {fmtDataBR(r.agendada_para)}
+                      </Badge>
+                    ) : (
+                      <Badge
+                        variant="outline"
+                        className="h-5 shrink-0 gap-1 rounded-full border-rose-500/30 bg-rose-500/10 px-2 text-[10.5px] text-rose-600 dark:text-rose-400"
+                        title="Solicitação vinda do TakeatOS"
+                      >
+                        {r.posicao_do_dia ? `${r.posicao_do_dia}º da fila` : "Solicitada"}
+                      </Badge>
+                    ))}
                   {/* Atrasada em vermelho: é a linha que o Financeiro tem de puxar primeiro. */}
                   {!r.solicitacao_id && dias !== null && (
                     <Badge

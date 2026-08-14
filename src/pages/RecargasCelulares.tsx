@@ -398,10 +398,11 @@ export default function RecargasCelulares() {
     const filaPendente = daFila.filter((x) => statusRecarga(x) === "Pendente");
     const filaFeita = daFila.filter((x) => statusRecarga(x) === "Feito");
 
-    const pendentes = [
-      ...filaPendente,
-      ...filtered.filter((r) => statusRecarga(r) === "Pendente" && semDuplicar(r)),
-    ];
+    // Pendentes é a fila de TRABALHO: só quem SOLICITOU e aguarda recarga. Linha
+    // cadastrada sem data de recarga não é pendência — é só um chip que nunca pediu;
+    // depois da carga inicial (~140 linhas) elas afogavam a fila. Ficam em Todas,
+    // com o selo vermelho de atraso quando a próxima venceu.
+    const pendentes = [...filaPendente];
     const feitas = [
       ...filaFeita,
       ...filtered.filter((r) => statusRecarga(r) === "Feito" && semDuplicar(r)),
@@ -737,7 +738,7 @@ export default function RecargasCelulares() {
               [
                 ["pendentes", "Pendentes", porAba.pendentes.length],
                 ["feitas", "Feitas", porAba.feitas.length],
-                ["todas", "Todas", porAba.todas.length],
+                ["todas", "Números cadastrados", porAba.todas.length],
               ] as const
             ).map(([id, rotulo, n]) => (
               <button

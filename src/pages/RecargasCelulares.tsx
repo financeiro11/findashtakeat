@@ -27,6 +27,7 @@ import { supabase } from "@/integrations/supabase/client";
 import { normalize } from "@/lib/normalize";
 import { cn } from "@/lib/utils";
 import HistoricoChip from "@/pages/recargas/HistoricoChip";
+import { InputMoeda } from "@/components/ui/input-moeda";
 import { Badge } from "@/components/ui/badge";
 import { LibAutofillInput } from "@/components/LibAutofillInput";
 
@@ -1173,7 +1174,7 @@ export default function RecargasCelulares() {
                 <SelectContent>{setores.map(s => <SelectItem key={s} value={s}>{s}</SelectItem>)}</SelectContent>
               </Select>
             </div>
-            <div><Label>Valor</Label><Input type="number" step="0.01" value={form.valor} onChange={(e) => setForm({ ...form, valor: e.target.value })} /></div>
+            <div><Label>Valor</Label><InputMoeda value={form.valor} onChange={(v) => setForm({ ...form, valor: v === "" ? "" : String(v) })} /></div>
             <div><Label>Última Recarga</Label><Input type="date" value={form.ultima_recarga} onChange={(e) => setForm({ ...form, ultima_recarga: e.target.value })} /></div>
             <div>
               <Label>Verificado</Label>

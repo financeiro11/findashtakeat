@@ -126,16 +126,46 @@ async function sincronizarLinha(supabase: SupabaseClient, p: PayloadLinha) {
     .eq("origem", ORIGEM)
     .eq("origem_id", l.id)
     .maybeSingle();
-  if (!existente) registro.situacao = "Ativo";
 
-  const { data, error } = await supabase
-    .from("recargas_celulares")
-    .upsert(registro, { onConflict: "origem,origem_id" })
-    .select("id")
-    .single();
+  // Sem vínculo pelo id, o mesmo chip pode já existir aqui cadastrado à mão — os
+  // sistemas gravam "(27) 99830-1143" e "27998301143" para o mesmo número, então o
+  // casamento é pelos 8 dígitos finais. Adotar o registro existente (e carimbar o
+  // vínculo) é o que impede o celular de aparecer duas vezes; foi exatamente assim
+  // que Arthur, Brittes e Julia viraram duplicata na primeira sincronização.
+  let adotada: string | null = existente?.id ?? null;
+  if (!adotada && l.numero) {
+    const digitos = String(l.numero).replace(/\D/g, "").slice(-8);
+    if (digitos.length === 8) {
+      const { data: todas } = await supabase
+        .from("recargas_celulares")
+        .select("id, numero, situacao")
+        .is("origem", null);
+      adotada =
+        (todas || []).find(
+          (x) =>
+            x.situacao !== "Descartado" &&
+            String(x.numero || "").replace(/\D/g, "").endsWith(digitos),
+        )?.id ?? null;
+    }
+  }
+
+  if (!existente && !adotada) registro.situacao = "Ativo";
+
+  const { data, error } = adotada
+    ? await supabase
+        .from("recargas_celulares")
+        .update(registro)
+        .eq("id", adotada)
+        .select("id")
+        .single()
+    : await supabase
+        .from("recargas_celulares")
+        .upsert(registro, { onConflict: "origem,origem_id" })
+        .select("id")
+        .single();
   if (error) return json({ error: error.message }, 500);
 
-  return json({ ok: true, acao: existente ? "atualizada" : "criada", card_id: data.id });
+  return json({ ok: true, acao: existente || adotada ? "atualizada" : "criada", card_id: data.id });
 }
 
 // ── recarga.solicitada ──────────────────────────────────────────────────────

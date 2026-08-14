@@ -486,12 +486,18 @@ export default function RecargasCelulares() {
   // Cancelar tira o pedido da fila sem apagar a linha do cadastro — são coisas
   // diferentes, e apagar a linha por causa de um pedido seria destrutivo demais.
   const cancelarSolicitacao = async (r: Row) => {
-    const { error } = await supabase
-      .from("recargas_celulares_solicitacoes")
-      .update({ status: "Cancelada" })
-      .eq("id", r.solicitacao_id!);
-    if (error) return toast.error(error.message);
-    toast.success(`Solicitação de ${r.proprietario} cancelada.`);
+    // Passa pela Edge Function, e não direto na tabela: é ela que avisa o TakeatOS.
+    // Escrever direto deixava o pedido cancelado aqui e ainda pendente lá — o
+    // colaborador continuaria esperando uma recarga que ninguém vai fazer.
+    const { data, error } = await supabase.functions.invoke("recargas-concluir", {
+      body: { solicitacao_id: r.solicitacao_id, status: "Cancelada" },
+    });
+    if (error) return toast.error("Não consegui cancelar: " + error.message);
+
+    toast.success(
+      `Solicitação de ${r.proprietario} cancelada.` +
+        (data?.avisado ? " O TakeatOS foi avisado." : " (não consegui avisar o TakeatOS ainda)"),
+    );
     load();
   };
 

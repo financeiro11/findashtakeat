@@ -10,7 +10,7 @@
 //   FINANCEIRO_CALLBACK_SECRET  mesmo valor da env de mesmo nome no TakeatOS
 //   SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY (injetados pela plataforma)
 //
-// Body: { linha_id?: uuid, solicitacao_id?: uuid, status: "Concluída" | "Pendente" }
+// Body: { linha_id?: uuid, solicitacao_id?: uuid, status: "Concluída" | "Pendente" | "Cancelada" }
 // Auth: JWT do usuário logado (o gateway já exige, verify_jwt fica no padrão).
 
 import { createClient, type SupabaseClient } from "npm:@supabase/supabase-js@2";
@@ -109,7 +109,11 @@ Deno.serve(async (req) => {
   if (!url || !serviceKey) return json({ error: "missing env" }, 500);
 
   const { linha_id, solicitacao_id, status } = await req.json().catch(() => ({}));
-  const novoStatus = status === "Pendente" ? "Pendente" : "Concluída";
+  // Três estados, não dois: cancelar é diferente de voltar para pendente. Antes
+  // qualquer coisa que não fosse "Pendente" virava "Concluída", então um cancelamento
+  // chegava aqui como conclusão.
+  const novoStatus =
+    status === "Pendente" ? "Pendente" : status === "Cancelada" ? "Cancelada" : "Concluída";
   if (!linha_id && !solicitacao_id) {
     return json({ error: "linha_id ou solicitacao_id é obrigatório" }, 400);
   }

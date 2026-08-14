@@ -28,6 +28,11 @@ import { normalize } from "@/lib/normalize";
 import { cn } from "@/lib/utils";
 import HistoricoChip from "@/pages/recargas/HistoricoChip";
 import { InputMoeda } from "@/components/ui/input-moeda";
+import ColaboradorTakeatOS, {
+  espelharNoTakeatOS,
+  limparCacheColaboradores,
+  removerNoTakeatOS,
+} from "@/pages/recargas/ColaboradorTakeatOS";
 import { Badge } from "@/components/ui/badge";
 import { LibAutofillInput } from "@/components/LibAutofillInput";
 
@@ -328,8 +333,12 @@ export default function RecargasCelulares() {
   const setores = useMemo(() => {
     const s = new Set<string>(SETOR_OPTS);
     rows.forEach((r) => r.setor && s.add(r.setor));
+    // O setor que veio junto do colaborador do TakeatOS pode não existir aqui ainda.
+    // Sem esta linha o Select ficaria vazio depois de escolher a pessoa, como se o
+    // setor não tivesse sido preenchido.
+    if (form.setor) s.add(form.setor);
     return Array.from(s).sort();
-  }, [rows]);
+  }, [rows, form.setor]);
   const situacoes = useMemo(() => {
     const s = new Set<string>(SITUACAO_OPTS);
     // Valores herdados do banco entram na lista, MENOS os que descrevem a recarga:
@@ -414,11 +423,19 @@ export default function RecargasCelulares() {
       verificado: form.verificado || "Não",
     };
     // proxima_recarga é sempre derivada de ultima_recarga + dias — nunca digitada.
-    const { error } = editingId
-      ? await supabase.from("recargas_celulares").update(payload).eq("id", editingId)
-      : await supabase.from("recargas_celulares").insert(payload);
+    const { data, error } = editingId
+      ? await supabase.from("recargas_celulares").update(payload).eq("id", editingId).select("id").single()
+      : await supabase.from("recargas_celulares").insert(payload).select("id").single();
     if (error) return toast.error(error.message);
-    toast.success(editingId ? "Atualizado" : "Criado");
+
+    // O celular passa a existir nos dois sistemas na mesma ação. Se o TakeatOS não
+    // responder, o cadastro daqui continua salvo — o aviso diz exatamente isso, em vez
+    // de deixar a pessoa achando que está espelhado.
+    const aviso = data?.id ? await espelharNoTakeatOS(data.id) : null;
+    toast.success(aviso || (editingId ? "Atualizado" : "Criado"));
+
+    // A lista de colaboradores acabou de mudar (alguém passou a ter linha).
+    limparCacheColaboradores();
     setOpen(false);
     setEditingId(null);
     setForm({ ...empty });
@@ -576,9 +593,11 @@ export default function RecargasCelulares() {
 
   const remove = async (id: string) => {
     if (!confirm("Excluir registro?")) return;
+    // Antes do delete: depois, a linha não existe mais para o TakeatOS saber qual é.
+    await removerNoTakeatOS(id);
     const { error } = await supabase.from("recargas_celulares").delete().eq("id", id);
     if (error) toast.error(error.message);
-    else { toast.success("Excluído"); load(); }
+    else { toast.success("Excluído"); limparCacheColaboradores(); load(); }
   };
 
   const recomputeAll = async () => {
@@ -1153,6 +1172,20 @@ export default function RecargasCelulares() {
           <div className="grid grid-cols-2 gap-3">
             <div className="col-span-2">
               <Label>Proprietário</Label>
+              {/* Escolher da lista do TakeatOS traz nome, número e setor prontos; quem
+                  não está lá continua podendo ser digitado no campo abaixo. */}
+              <div className="mb-1.5">
+                <ColaboradorTakeatOS
+                  onSelect={(c) =>
+                    setForm((f) => ({
+                      ...f,
+                      proprietario: c.nome,
+                      numero: c.numero || f.numero,
+                      setor: c.setor || f.setor,
+                    }))
+                  }
+                />
+              </div>
               <LibAutofillInput
                 value={form.proprietario}
                 onChange={(v) => setForm({ ...form, proprietario: v })}

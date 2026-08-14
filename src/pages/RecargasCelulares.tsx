@@ -27,6 +27,12 @@ import { supabase } from "@/integrations/supabase/client";
 import { normalize } from "@/lib/normalize";
 import { cn } from "@/lib/utils";
 import HistoricoChip from "@/pages/recargas/HistoricoChip";
+import { InputMoeda } from "@/components/ui/input-moeda";
+import ColaboradorTakeatOS, {
+  espelharNoTakeatOS,
+  limparCacheColaboradores,
+  removerNoTakeatOS,
+} from "@/pages/recargas/ColaboradorTakeatOS";
 import { Badge } from "@/components/ui/badge";
 import { LibAutofillInput } from "@/components/LibAutofillInput";
 
@@ -45,6 +51,8 @@ type Row = {
   // cadastro convivem na mesma lista, e estes campos distinguem uma da outra.
   solicitacao_id?: string;
   posicao_do_dia?: number | null;
+  // Pedido pós-recarga: só entra na janela nesta data (última recarga + prazo).
+  agendada_para?: string | null;
 };
 
 // Situação é do CHIP (a linha está ativa na operadora?). O andamento da recarga
@@ -228,6 +236,8 @@ function situacaoChip(situacao: string | null): string {
   return situacao;
 }
 
+const hojeISO = () => new Date().toISOString().slice(0, 10);
+
 const DAYS_KEY = "celulares_dias_proxima_recarga";
 const VISAO_KEY = "celulares_visao";
 // Vazio com contexto: numa aba filtrada, "sem registros" não diz se a busca
@@ -283,12 +293,15 @@ export default function RecargasCelulares() {
       supabase
         .from("recargas_celulares_solicitacoes")
         .select(
-          "id, colaborador, numero, operadora, setor, valor, solicitado_em, posicao_do_dia, status, concluido_em",
+          "id, colaborador, numero, operadora, setor, valor, solicitado_em, posicao_do_dia, status, concluido_em, agendada_para",
         )
         // Concluídas entram junto: sem elas a aba Feitas nunca mostraria um pedido
         // atendido, e o card sumiria da tela ao ser concluído.
         .in("status", ["Pendente", "Concluída"])
-        .order("solicitado_em", { ascending: true }),
+        // Mais novo primeiro: quem acabou de pedir aparece no topo da tela. O selo
+        // "Nº da fila" continua dizendo a ordem de ATENDIMENTO do dia — a posição
+        // não muda com a exibição.
+        .order("solicitado_em", { ascending: false }),
     ]);
 
     if (linhas.error) return toast.error(linhas.error.message);
@@ -320,6 +333,7 @@ export default function RecargasCelulares() {
         verificado: null,
         solicitado_em: f.solicitado_em,
         posicao_do_dia: f.posicao_do_dia,
+        agendada_para: f.agendada_para,
       })),
     );
   };
@@ -327,8 +341,12 @@ export default function RecargasCelulares() {
   const setores = useMemo(() => {
     const s = new Set<string>(SETOR_OPTS);
     rows.forEach((r) => r.setor && s.add(r.setor));
+    // O setor que veio junto do colaborador do TakeatOS pode não existir aqui ainda.
+    // Sem esta linha o Select ficaria vazio depois de escolher a pessoa, como se o
+    // setor não tivesse sido preenchido.
+    if (form.setor) s.add(form.setor);
     return Array.from(s).sort();
-  }, [rows]);
+  }, [rows, form.setor]);
   const situacoes = useMemo(() => {
     const s = new Set<string>(SITUACAO_OPTS);
     // Valores herdados do banco entram na lista, MENOS os que descrevem a recarga:
@@ -358,8 +376,8 @@ export default function RecargasCelulares() {
   // por cima disso, e os contadores mostram o resultado do MESMO recorte — senão o
   // número na aba não bate com a lista que ela abre.
   const porAba = useMemo(() => {
-    // A fila entra na FRENTE de Pendentes, na ordem em que foi pedida — é a ordem em
-    // que o Financeiro atende. Só cabem ~40 por dia, então a sequência é o produto.
+    // A fila entra na FRENTE de Pendentes, com o pedido mais novo no topo. A ordem
+    // de ATENDIMENTO continua sendo a do selo "Nº da fila" — só cabem ~40 por dia.
     const daFila = solicitacoes.filter((s) => {
       if (!termoBate(s, search)) return false;
       if (filtSetor !== "__all" && (s.setor || "") !== filtSetor) return false;
@@ -413,11 +431,19 @@ export default function RecargasCelulares() {
       verificado: form.verificado || "Não",
     };
     // proxima_recarga é sempre derivada de ultima_recarga + dias — nunca digitada.
-    const { error } = editingId
-      ? await supabase.from("recargas_celulares").update(payload).eq("id", editingId)
-      : await supabase.from("recargas_celulares").insert(payload);
+    const { data, error } = editingId
+      ? await supabase.from("recargas_celulares").update(payload).eq("id", editingId).select("id").single()
+      : await supabase.from("recargas_celulares").insert(payload).select("id").single();
     if (error) return toast.error(error.message);
-    toast.success(editingId ? "Atualizado" : "Criado");
+
+    // O celular passa a existir nos dois sistemas na mesma ação. Se o TakeatOS não
+    // responder, o cadastro daqui continua salvo — o aviso diz exatamente isso, em vez
+    // de deixar a pessoa achando que está espelhado.
+    const aviso = data?.id ? await espelharNoTakeatOS(data.id) : null;
+    toast.success(aviso || (editingId ? "Atualizado" : "Criado"));
+
+    // A lista de colaboradores acabou de mudar (alguém passou a ter linha).
+    limparCacheColaboradores();
     setOpen(false);
     setEditingId(null);
     setForm({ ...empty });
@@ -581,9 +607,11 @@ export default function RecargasCelulares() {
 
   const remove = async (id: string) => {
     if (!confirm("Excluir registro?")) return;
+    // Antes do delete: depois, a linha não existe mais para o TakeatOS saber qual é.
+    await removerNoTakeatOS(id);
     const { error } = await supabase.from("recargas_celulares").delete().eq("id", id);
     if (error) toast.error(error.message);
-    else { toast.success("Excluído"); load(); }
+    else { toast.success("Excluído"); limparCacheColaboradores(); load(); }
   };
 
   const recomputeAll = async () => {
@@ -862,15 +890,27 @@ export default function RecargasCelulares() {
                   </div>
                   {/* Veio da fila do TakeatOS: mostra a posição em vez do prazo, porque
                       o que importa nesse card é a ordem de atendimento. */}
-                  {r.solicitacao_id && (
-                    <Badge
-                      variant="outline"
-                      className="h-5 shrink-0 gap-1 rounded-full border-rose-500/30 bg-rose-500/10 px-2 text-[10.5px] text-rose-600 dark:text-rose-400"
-                      title="Solicitação vinda do TakeatOS"
-                    >
-                      {r.posicao_do_dia ? `${r.posicao_do_dia}º da fila` : "Solicitada"}
-                    </Badge>
-                  )}
+                  {r.solicitacao_id &&
+                    (r.agendada_para && !r.ultima_recarga && r.agendada_para > hojeISO() ? (
+                      // Pedido pós-recarga: não é para hoje — mostra a janela em vez
+                      // da posição, senão o chip seria recarregado duas vezes.
+                      <Badge
+                        variant="outline"
+                        className="h-5 shrink-0 gap-1 rounded-full border-amber-500/30 bg-amber-500/10 px-2 text-[10.5px] text-amber-600 dark:text-amber-400"
+                        title="Pedido para a próxima janela de recarga"
+                      >
+                        <Clock className="h-3 w-3" />
+                        Janela: {fmtDataBR(r.agendada_para)}
+                      </Badge>
+                    ) : (
+                      <Badge
+                        variant="outline"
+                        className="h-5 shrink-0 gap-1 rounded-full border-rose-500/30 bg-rose-500/10 px-2 text-[10.5px] text-rose-600 dark:text-rose-400"
+                        title="Solicitação vinda do TakeatOS"
+                      >
+                        {r.posicao_do_dia ? `${r.posicao_do_dia}º da fila` : "Solicitada"}
+                      </Badge>
+                    ))}
                   {/* Atrasada em vermelho: é a linha que o Financeiro tem de puxar primeiro. */}
                   {!r.solicitacao_id && dias !== null && (
                     <Badge
@@ -1158,6 +1198,20 @@ export default function RecargasCelulares() {
           <div className="grid grid-cols-2 gap-3">
             <div className="col-span-2">
               <Label>Proprietário</Label>
+              {/* Escolher da lista do TakeatOS traz nome, número e setor prontos; quem
+                  não está lá continua podendo ser digitado no campo abaixo. */}
+              <div className="mb-1.5">
+                <ColaboradorTakeatOS
+                  onSelect={(c) =>
+                    setForm((f) => ({
+                      ...f,
+                      proprietario: c.nome,
+                      numero: c.numero || f.numero,
+                      setor: c.setor || f.setor,
+                    }))
+                  }
+                />
+              </div>
               <LibAutofillInput
                 value={form.proprietario}
                 onChange={(v) => setForm({ ...form, proprietario: v })}
@@ -1179,7 +1233,7 @@ export default function RecargasCelulares() {
                 <SelectContent>{setores.map(s => <SelectItem key={s} value={s}>{s}</SelectItem>)}</SelectContent>
               </Select>
             </div>
-            <div><Label>Valor</Label><Input type="number" step="0.01" value={form.valor} onChange={(e) => setForm({ ...form, valor: e.target.value })} /></div>
+            <div><Label>Valor</Label><InputMoeda value={form.valor} onChange={(v) => setForm({ ...form, valor: v === "" ? "" : String(v) })} /></div>
             <div><Label>Última Recarga</Label><Input type="date" value={form.ultima_recarga} onChange={(e) => setForm({ ...form, ultima_recarga: e.target.value })} /></div>
             <div>
               <Label>Verificado</Label>

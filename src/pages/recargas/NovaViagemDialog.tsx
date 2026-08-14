@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import { InputMoeda } from "@/components/ui/input-moeda";
 import { Label } from "@/components/ui/label";
 import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
@@ -90,7 +91,7 @@ export default function NovaViagemDialog({ open, onOpenChange, onSaved }: Props)
             </div>
             <div>
               <Label className="text-xs">Valor total (R$)</Label>
-              <Input type="number" step="0.01" value={valor} onChange={(e) => setValor(e.target.value)} placeholder="0,00" />
+              <InputMoeda value={valor} onChange={(v) => setValor(v === "" ? "" : String(v))} />
             </div>
           </div>
         </div>

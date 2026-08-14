@@ -77,7 +77,7 @@ type PayloadSolicitacao = {
   evento: "recarga.solicitada";
   id: string;
   solicitado_em?: string;
-  fila?: { posicao_do_dia?: number | null; limite_diario?: number | null };
+  fila?: { posicao_do_dia?: number | null; limite_diario?: number | null; agendada_para?: string | null };
   colaborador?: { id?: string | null; nome?: string | null; email?: string | null };
   solicitante?: { nome?: string | null };
   linha?: {
@@ -126,16 +126,46 @@ async function sincronizarLinha(supabase: SupabaseClient, p: PayloadLinha) {
     .eq("origem", ORIGEM)
     .eq("origem_id", l.id)
     .maybeSingle();
-  if (!existente) registro.situacao = "Ativo";
 
-  const { data, error } = await supabase
-    .from("recargas_celulares")
-    .upsert(registro, { onConflict: "origem,origem_id" })
-    .select("id")
-    .single();
+  // Sem vínculo pelo id, o mesmo chip pode já existir aqui cadastrado à mão — os
+  // sistemas gravam "(27) 99830-1143" e "27998301143" para o mesmo número, então o
+  // casamento é pelos 8 dígitos finais. Adotar o registro existente (e carimbar o
+  // vínculo) é o que impede o celular de aparecer duas vezes; foi exatamente assim
+  // que Arthur, Brittes e Julia viraram duplicata na primeira sincronização.
+  let adotada: string | null = existente?.id ?? null;
+  if (!adotada && l.numero) {
+    const digitos = String(l.numero).replace(/\D/g, "").slice(-8);
+    if (digitos.length === 8) {
+      const { data: todas } = await supabase
+        .from("recargas_celulares")
+        .select("id, numero, situacao")
+        .is("origem", null);
+      adotada =
+        (todas || []).find(
+          (x) =>
+            x.situacao !== "Descartado" &&
+            String(x.numero || "").replace(/\D/g, "").endsWith(digitos),
+        )?.id ?? null;
+    }
+  }
+
+  if (!existente && !adotada) registro.situacao = "Ativo";
+
+  const { data, error } = adotada
+    ? await supabase
+        .from("recargas_celulares")
+        .update(registro)
+        .eq("id", adotada)
+        .select("id")
+        .single()
+    : await supabase
+        .from("recargas_celulares")
+        .upsert(registro, { onConflict: "origem,origem_id" })
+        .select("id")
+        .single();
   if (error) return json({ error: error.message }, 500);
 
-  return json({ ok: true, acao: existente ? "atualizada" : "criada", card_id: data.id });
+  return json({ ok: true, acao: existente || adotada ? "atualizada" : "criada", card_id: data.id });
 }
 
 // ── recarga.solicitada ──────────────────────────────────────────────────────
@@ -158,6 +188,8 @@ async function registrarSolicitacao(supabase: SupabaseClient, p: PayloadSolicita
     solicitado_em: p.solicitado_em ?? new Date().toISOString(),
     posicao_do_dia: p.fila?.posicao_do_dia ?? null,
     limite_diario: p.fila?.limite_diario ?? null,
+    // Pedido pós-recarga: só entra na janela nesta data (última recarga + prazo).
+    agendada_para: p.fila?.agendada_para ?? null,
     callback_url: p.callback_url ?? null,
   };
 

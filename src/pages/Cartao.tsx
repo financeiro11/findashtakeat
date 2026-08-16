@@ -31,6 +31,7 @@ import { abrev, fmtBRL } from "./cartao/valores";
 import { Matriz, ORDENS, type Ordem, type Realce } from "./cartao/Matriz";
 import { Detalhe, type FocoDetalhe } from "./cartao/Detalhe";
 import { Categorias } from "./cartao/Categorias";
+import { CopiarVariacao } from "./cartao/CopiarVariacao";
 import { PainelRecomendacoes, useRecomendacoes } from "./cartao/Recomendacoes";
 
 /* As tabelas do cartão são novas e ainda não estão no types.ts gerado (que não
@@ -356,6 +357,10 @@ export default function Cartao() {
                     {analise.deltaUltimo >= 0 ? "+" : "−"}
                     {fmtBRLStr(Math.abs(analise.deltaUltimo))} vs {analise.penultimo.label}
                   </span>
+                  {/* Onde a variação já está escrita é onde se pede para mandar
+                      a variação — o mesmo gesto do "copiar como texto" da DRE. */}
+                  <span className="text-muted-foreground/40">·</span>
+                  <CopiarVariacao analise={analise} />
                 </div>
               )}
             </div>

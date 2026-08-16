@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { RefreshCw, Loader2 } from "lucide-react";
+import { RefreshCw, Loader2, CloudDownload } from "lucide-react";
 import { supabase } from "@/integrations/supabase/client";
 import { toast } from "sonner";
 import { KpiCard } from "@/components/ui/kpi-card";
@@ -31,7 +31,7 @@ export default function Asaas() {
   const [dados, setDados] = useState<any>(null);
   const [geradoEm, setGeradoEm] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
-  const [syncing, setSyncing] = useState(false);
+  const [ocupado, setOcupado] = useState<"recalcular" | "atualizar" | null>(null);
 
   useEffect(() => { document.title = "Asaas · Receita"; }, []);
 
@@ -44,11 +44,19 @@ export default function Asaas() {
   };
   useEffect(() => { load(); /* eslint-disable-next-line */ }, [ref]);
 
-  const sync = async () => {
-    setSyncing(true);
-    toast.message(`Sincronizando ${mesLabel(ref)} com o Asaas…`);
+  /**
+   * "recalcular" soma o espelho local e não gasta uma requisição sequer no Asaas;
+   * "atualizar" é a única que fala com a API. A separação existe porque o botão
+   * antigo baixava o mês inteiro a cada clique (~115 requisições) e derrubava a
+   * conta no limite de 429.
+   */
+  const chamar = async (action: "recalcular" | "atualizar", completo = false) => {
+    setOcupado(action);
+    if (action === "atualizar") toast.message(`Buscando ${mesLabel(ref)} no Asaas…`);
     try {
-      const { data, error } = await supabase.functions.invoke("asaas-sync", { body: { action: "sync", referencia: ref } });
+      const { data, error } = await supabase.functions.invoke("asaas-sync", {
+        body: { action, referencia: ref, completo },
+      });
 
       // supabase-js embrulha respostas non-2xx num FunctionsHttpError cujo corpo real
       // fica em error.context (um Response). Extraímos pra saber o QUE falhou.
@@ -65,23 +73,26 @@ export default function Asaas() {
         }
         console.error("[asaas-sync] falhou", { status, detalhe, error });
         if (status === 404 || /not found|Failed to send|Failed to fetch/i.test(detalhe)) {
-          throw new Error("A função asaas-sync ainda não foi publicada no Supabase (deploy pendente pelo Lovable).");
+          throw new Error("A função asaas-sync ainda não foi publicada no Supabase.");
         }
         if (/ASAAS_API_KEY/i.test(detalhe)) {
           throw new Error("O secret ASAAS_API_KEY não está configurado nas Edge Functions do Supabase.");
         }
-        if (/IDLE_TIMEOUT|idle timeout|timeout/i.test(detalhe)) {
-          throw new Error("Demorou demais (muitos lançamentos no mês). Republique a asaas-sync com a versão nova — ela busca as páginas em paralelo.");
+        if (/429|Too Many Requests|RateLimit/i.test(detalhe)) {
+          throw new Error("O Asaas recusou por limite de requisições. Espere alguns minutos — o Recalcular continua funcionando, ele lê a cópia local.");
         }
         throw new Error(detalhe || "Erro desconhecido no backend.");
       }
       if ((data as any)?.error) throw new Error((data as any).error);
-      toast.success("Asaas sincronizado.");
+
+      const aviso = (data as any)?.aviso;
+      if (aviso) toast.warning(aviso, { duration: 7000 });
+      else toast.success(action === "atualizar" ? "Atualizado do Asaas." : "Números recalculados.");
       await load();
     } catch (e: any) {
       console.error("[asaas-sync] erro no handler", e);
-      toast.error("Falha ao sincronizar: " + e.message, { duration: 8000 });
-    } finally { setSyncing(false); }
+      toast.error("Falha: " + e.message, { duration: 8000 });
+    } finally { setOcupado(null); }
   };
 
   const r = dados?.recebimentos, a = dados?.assinaturas, n = dados?.nfe;
@@ -105,8 +116,21 @@ export default function Asaas() {
           >
             {ultimosMeses(12).map((m) => <option key={m} value={m}>{mesLabel(m)}</option>)}
           </select>
-          <button className="ghost-btn h-9" onClick={sync} disabled={syncing}>
-            {syncing ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />} Sincronizar
+          <button
+            className="ghost-btn h-9"
+            onClick={() => chamar("recalcular")}
+            disabled={ocupado !== null}
+            title="Refaz as contas a partir da cópia local — não consulta o Asaas."
+          >
+            {ocupado === "recalcular" ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />} Recalcular
+          </button>
+          <button
+            className="ghost-btn h-9"
+            onClick={() => chamar("atualizar")}
+            disabled={ocupado !== null}
+            title="Busca no Asaas o que mudou desde a última vez. Só esta ação consome requisições da conta."
+          >
+            {ocupado === "atualizar" ? <Loader2 className="h-4 w-4 animate-spin" /> : <CloudDownload className="h-4 w-4" />} Atualizar do Asaas
           </button>
         </div>
       </div>
@@ -117,7 +141,7 @@ export default function Asaas() {
         </div>
       ) : !dados ? (
         <div className="card-surface p-12 text-center text-sm text-muted-foreground">
-          Sem dados para {mesLabel(ref)}. Clique em <b>Sincronizar</b> para puxar do Asaas.
+          Sem dados para {mesLabel(ref)}. Clique em <b>Atualizar do Asaas</b> para puxar o mês.
         </div>
       ) : (
         <div className="space-y-6">

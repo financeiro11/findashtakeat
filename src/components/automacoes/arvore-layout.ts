@@ -130,20 +130,42 @@ export function bandasDe(niveis: Nivel[]) {
 export const nomeNivel = (niveis: Nivel[], n: number | null | undefined) =>
   n ? `N${n} · ${(niveis.find((x) => x.n === n)?.nome ?? "").toUpperCase()}` : "SEM NÍVEL";
 
-/* ----------------------------- geometria ----------------------------- */
-export const COL_W = 320;   // largura da trilha
-export const ROW_H = 128;   // altura de uma linha de nós
-export const DX = 74;       // deslocamento do nó em relação ao tronco
-export const PAD_X = 150;   // respiro lateral (rótulos das bandas moram aqui)
+/* ----------------------------- geometria -----------------------------
+ * O X do nó não é livre: cada trilha se divide em "lanes", e uma lane é uma
+ * CORRENTE de dependência. Um filho puxa a lane do pai, então uma corrente sobe
+ * reta e o galho que a liga é curto. Trilha larga = trilha com muitas correntes
+ * paralelas, não com muitos nós. */
+export const LANE_W = 200;    // distância entre duas correntes vizinhas
+export const MAX_LANES = 4;   // acima disso a banda empilha em sub-linhas
+export const TRILHA_GAP = 130;// respiro entre trilhas
+export const ROW_H = 128;     // altura de uma linha de nós
+export const PAD_X = 150;     // respiro lateral (rótulos das bandas moram aqui)
 const PAD_TOP = 90;
-const HUB_H = 190;          // espaço do hub abaixo da última linha
+const HUB_H = 190;            // espaço do hub abaixo da última linha
+const ANCORA_DY = 104;        // altura da âncora da trilha acima do hub
 
 export type NoPos = {
   r: Automacao; x: number; y: number; trilha: string; cor: string; tier: Tier;
   banda: number; fixo: boolean; // fixo = posição salva pelo usuário (arrastado)
+  lane: number; sub: number;
 };
 
 const ordemTier: Record<Tier, number> = { on: 0, wip: 1, todo: 2 };
+
+/** Primeiro slot livre da banda a partir da lane preferida (a do pai). */
+function alocarSlot(ocupado: Set<string>, lanes: number, pref: number) {
+  const alvo = Math.min(lanes - 1, Math.max(0, pref));
+  for (let sub = 0; ; sub++) {
+    for (let d = 0; d < lanes; d++) {
+      for (const s of d === 0 ? [1] : [-1, 1]) {
+        const lane = alvo + d * s;
+        if (lane < 0 || lane >= lanes) continue;
+        const k = `${lane}:${sub}`;
+        if (!ocupado.has(k)) { ocupado.add(k); return { lane, sub }; }
+      }
+    }
+  }
+}
 export const horasDe = (r: Automacao) => Number(r.horas_mes) || 0;
 /** nível válido do registro — 0 quando não há nível ou o nível não existe mais */
 export const bandaDe = (r: Automacao, niveis: Nivel[] = NIVEIS_PADRAO) =>
@@ -157,57 +179,93 @@ export const bandaDe = (r: Automacao, niveis: Nivel[] = NIVEIS_PADRAO) =>
 export function montarLayout(rows: Automacao[], niveis: Nivel[] = NIVEIS_PADRAO) {
   const BANDAS = bandasDe(niveis);
   const banda = (r: Automacao) => bandaDe(r, niveis); // liga o nível ao conjunto recebido
-  const trilhas = Array.from(new Set(rows.map((r) => trilhaDe(r.categoria)))).sort((a, b) => {
-    const ia = TRILHAS.findIndex((t) => t.nome === a), ib = TRILHAS.findIndex((t) => t.nome === b);
-    return (ia === -1 ? 99 : ia) - (ib === -1 ? 99 : ib) || a.localeCompare(b, "pt-BR");
-  });
+  const trilhas = ordenarTrilhas(Array.from(new Set(rows.map((r) => trilhaDe(r.categoria)))));
 
   // Só entram as bandas que têm alguma automação — evita canvas vazio.
+  // Vêm de baixo (N1) para cima, que é a ordem em que as lanes são atribuídas:
+  // quando um filho é posicionado, o pai (banda menor) já tem lane.
   const bandasPresentes = BANDAS.filter((b) => rows.some((r) => banda(r) === b.k));
 
-  // Altura de cada banda = maior "pilha" de uma trilha dentro dela (nós em ziguezague, 2 por linha).
-  const linhasPorBanda = bandasPresentes.map((b) => {
-    const maxNaBanda = Math.max(
-      1,
-      ...trilhas.map((t) => rows.filter((r) => trilhaDe(r.categoria) === t && banda(r) === b.k).length),
-    );
-    return Math.ceil(maxNaBanda / 2);
-  });
+  const porId = new Map(rows.map((r) => [r.id, r]));
+  // Só o pai da MESMA trilha dita a lane. A dependência que cruza trilha continua
+  // desenhada (é justamente a interessante), mas não arrasta o nó para longe da
+  // sua coluna — senão a trilha deixa de existir como coluna.
+  const paiLocal = (r: Automacao) => {
+    const p = r.depende_de ? porId.get(r.depende_de) : null;
+    return p && p.id !== r.id && trilhaDe(p.categoria) === trilhaDe(r.categoria) ? p : null;
+  };
 
-  const totalLinhas = linhasPorBanda.reduce((a, c) => a + c, 0);
-  let W = PAD_X * 2 + Math.max(1, trilhas.length) * COL_W;
-  let H = PAD_TOP + totalLinhas * ROW_H + HUB_H;
-  const hubY = H - HUB_H / 2;
-  const hubX = W / 2;
+  // ---- lanes: uma corrente de dependência por lane, dentro de cada trilha ----
+  const laneDe = new Map<string, number>();
+  const subDe = new Map<string, number>();
+  const lanesDaTrilha = new Map<string, number>();
+  const subsPorBanda = bandasPresentes.map(() => 1);
 
-  // y da 1ª linha de cada banda, contando de baixo para cima
-  const inicioBanda: number[] = [];
-  let acc = 0;
-  bandasPresentes.forEach((_, i) => { inicioBanda[i] = acc; acc += linhasPorBanda[i]; });
-  const yDaLinha = (linhaGlobal: number) => hubY - HUB_H / 2 - 30 - linhaGlobal * ROW_H;
+  trilhas.forEach((t) => {
+    const doT = rows.filter((r) => trilhaDe(r.categoria) === t);
+    const maxNaBanda = Math.max(1, ...bandasPresentes.map((b) => doT.filter((r) => banda(r) === b.k).length));
+    const lanes = Math.min(MAX_LANES, maxNaBanda);
+    lanesDaTrilha.set(t, lanes);
 
-  const nos: NoPos[] = [];
-  trilhas.forEach((t, ti) => {
-    const colX = PAD_X + ti * COL_W + COL_W / 2;
     bandasPresentes.forEach((b, bi) => {
-      const daCelula = rows
-        .filter((r) => trilhaDe(r.categoria) === t && banda(r) === b.k)
+      const daCelula = doT
+        .filter((r) => banda(r) === b.k)
         .sort((a, z) =>
           ordemTier[tierDe(a.status)] - ordemTier[tierDe(z.status)] ||
           (a.automacao || "").localeCompare(z.automacao || "", "pt-BR"),
         );
-      daCelula.forEach((r, k) => {
-        const linha = inicioBanda[bi] + Math.floor(k / 2);
-        // nó sozinho na linha fica centrado no tronco; em par, um de cada lado
-        const sozinho = k === daCelula.length - 1 && k % 2 === 0;
-        const lado = sozinho ? 0 : k % 2 === 0 ? -1 : 1;
-        const fixo = r.pos_x != null && r.pos_y != null;
-        nos.push({
-          r, trilha: t, cor: corTrilha(t), tier: tierDe(r.status), banda: b.k, fixo,
-          x: fixo ? (r.pos_x as number) : colX + lado * DX,
-          y: fixo ? (r.pos_y as number) : yDaLinha(linha),
-        });
+      // quem herda lane do pai escolhe primeiro; o resto preenche o que sobrou
+      const laneDoPai = (r: Automacao) => laneDe.get(paiLocal(r)?.id ?? "");
+      const comPai = daCelula.filter((r) => laneDoPai(r) != null);
+      const semPai = daCelula.filter((r) => laneDoPai(r) == null);
+      const ocupado = new Set<string>();
+      [...comPai, ...semPai].forEach((r, i) => {
+        const { lane, sub } = alocarSlot(ocupado, lanes, laneDoPai(r) ?? i);
+        laneDe.set(r.id, lane);
+        subDe.set(r.id, sub);
+        subsPorBanda[bi] = Math.max(subsPorBanda[bi], sub + 1);
       });
+    });
+  });
+
+  // ---- geometria: X pela lane, Y pela banda ----
+  const centroX = new Map<string, number>();
+  let cursor = PAD_X;
+  trilhas.forEach((t) => {
+    const larg = (lanesDaTrilha.get(t) ?? 1) * LANE_W;
+    centroX.set(t, cursor + larg / 2);
+    cursor += larg + TRILHA_GAP;
+  });
+
+  const totalLinhas = subsPorBanda.reduce((a, c) => a + c, 0);
+  let W = Math.max(PAD_X * 2 + LANE_W, cursor - TRILHA_GAP + PAD_X);
+  let H = PAD_TOP + totalLinhas * ROW_H + HUB_H;
+  const hubY = H - HUB_H / 2;
+  const hubX = W / 2;
+
+  // y da 1ª sub-linha de cada banda, contando de baixo para cima
+  const inicioBanda: number[] = [];
+  let acc = 0;
+  bandasPresentes.forEach((_, i) => { inicioBanda[i] = acc; acc += subsPorBanda[i]; });
+  const yDaLinha = (linhaGlobal: number) => hubY - HUB_H / 2 - 30 - linhaGlobal * ROW_H;
+
+  const nos: NoPos[] = [];
+  trilhas.forEach((t) => {
+    const lanes = lanesDaTrilha.get(t) ?? 1;
+    const cx = centroX.get(t) ?? PAD_X;
+    bandasPresentes.forEach((b, bi) => {
+      rows
+        .filter((r) => trilhaDe(r.categoria) === t && banda(r) === b.k)
+        .forEach((r) => {
+          const lane = laneDe.get(r.id) ?? 0;
+          const sub = subDe.get(r.id) ?? 0;
+          const fixo = r.pos_x != null && r.pos_y != null;
+          nos.push({
+            r, trilha: t, cor: corTrilha(t), tier: tierDe(r.status), banda: b.k, fixo, lane, sub,
+            x: fixo ? (r.pos_x as number) : cx + (lane - (lanes - 1) / 2) * LANE_W,
+            y: fixo ? (r.pos_y as number) : yDaLinha(inicioBanda[bi] + sub),
+          });
+        });
     });
   });
 
@@ -219,20 +277,28 @@ export function montarLayout(rows: Automacao[], niveis: Nivel[] = NIVEIS_PADRAO)
 
   // faixas horizontais das bandas (para o rótulo lateral)
   const faixas = bandasPresentes.map((b, i) => {
-    const topo = yDaLinha(inicioBanda[i] + linhasPorBanda[i] - 1) - ROW_H / 2;
+    const topo = yDaLinha(inicioBanda[i] + subsPorBanda[i] - 1) - ROW_H / 2;
     const base = yDaLinha(inicioBanda[i]) + ROW_H / 2;
     return { ...b, topo, base };
   });
 
-  // tronco de cada trilha: sobe do hub até o nó mais alto que ela tem
-  const troncos = trilhas.map((t, ti) => {
+  // Âncora da trilha: o ponto logo acima do hub de onde saem as raízes dela.
+  const troncos = trilhas.map((t) => {
     const meus = nos.filter((n) => n.trilha === t);
+    const x = centroX.get(t) ?? PAD_X;
     const topo = meus.length ? Math.min(...meus.map((n) => n.y)) : hubY - 160;
     const base = meus.length ? Math.max(...meus.map((n) => n.y)) : hubY - 160;
-    return { trilha: t, x: PAD_X + ti * COL_W + COL_W / 2, topo, base, cor: corTrilha(t) };
+    return { trilha: t, x, topo, base, cor: corTrilha(t), ancora: { x, y: hubY - ANCORA_DY } };
   });
 
   return { trilhas, nos, faixas, troncos, W, H, hubX, hubY };
+}
+
+function ordenarTrilhas(nomes: string[]) {
+  return [...nomes].sort((a, b) => {
+    const ia = TRILHAS.findIndex((t) => t.nome === a), ib = TRILHAS.findIndex((t) => t.nome === b);
+    return (ia === -1 ? 99 : ia) - (ib === -1 ? 99 : ib) || a.localeCompare(b, "pt-BR");
+  });
 }
 
 export type Faixa = ReturnType<typeof montarLayout>["faixas"][number];
@@ -240,30 +306,49 @@ export type Faixa = ReturnType<typeof montarLayout>["faixas"][number];
 export type Ponto = { x: number; y: number };
 
 /**
- * Fios de uma trilha: em vez de tronco reto com tocos perpendiculares, a linha
- * SOBE DO HUB COSTURANDO OS NÓS. Como a curva é definida pelas coordenadas dos
- * nós, arrastar um nó deforma o fio junto — é impossível o nó descolar.
+ * Fios de uma trilha. TODA linha desenhada aqui quer dizer alguma coisa:
  *
- * Trilha cheia vira mais de um fio (senão a linha ziguezagueia demais). A
- * repartição é gulosa pelo X: cada nó, de baixo para cima, entra no fio cuja
- * ponta está mais perto — assim os fios saem paralelos, sem se cruzar.
+ *   hub → âncora   = a trilha existe (é o tronco dela)
+ *   âncora → raiz  = essa automação não depende de nenhuma outra
+ *
+ * O que liga um nó a outro nó é a aresta de pré-requisito (`depende_de`),
+ * desenhada à parte. Aqui entram SÓ as raízes — a versão antiga costurava os nós
+ * pela proximidade no eixo X, o que produzia galho entre automações sem relação
+ * nenhuma e era a origem do espaguete.
  */
-export function fiosDaTrilha(nosDaTrilha: Ponto[], hub: Ponto): Ponto[][] {
-  if (!nosDaTrilha.length) return [];
-  const ordenados = [...nosDaTrilha].sort((a, b) => b.y - a.y); // de baixo para cima
-  const qtd = Math.min(3, Math.max(1, Math.ceil(ordenados.length / 4)));
-  const fios: Ponto[][] = Array.from({ length: qtd }, () => [hub]);
-  for (const p of ordenados) {
-    let melhor = 0, dist = Infinity;
-    fios.forEach((f, i) => {
-      const ponta = f[f.length - 1];
-      // desempata pelo fio mais curto, para não concentrar tudo num só
-      const d = Math.abs(ponta.x - p.x) + f.length * 6;
-      if (d < dist) { dist = d; melhor = i; }
-    });
-    fios[melhor].push(p);
-  }
-  return fios.filter((f) => f.length > 1);
+export function fiosDoTronco(raizes: Ponto[], ancora: Ponto, hub: Ponto): Ponto[][] {
+  const tronco: Ponto[] = [hub, { x: (hub.x + ancora.x) / 2, y: ancora.y + (hub.y - ancora.y) * 0.35 }, ancora];
+  if (!raizes.length) return [];
+  return [
+    tronco,
+    // sobe reto da âncora e só então se inclina até a raiz — dá o movimento de
+    // galho sem inventar ligação entre raízes vizinhas
+    ...[...raizes].sort((a, b) => b.y - a.y).map((p) => [
+      ancora,
+      { x: ancora.x + (p.x - ancora.x) * 0.18, y: ancora.y + (p.y - ancora.y) * 0.55 },
+      p,
+    ]),
+  ];
+}
+
+/**
+ * Arestas que DESCEM de nível: o pré-requisito está num nível maior que quem ele
+ * destrava, então a seta aponta para baixo. Ou o nível está errado, ou a
+ * dependência está invertida — de todo jeito é a árvore acusando dado incoerente,
+ * não um caso a esconder.
+ *
+ * Mesmo nível não conta: uma sequência dentro da mesma faixa de maturidade
+ * (categorizar → lançar no Omie → revisar o lançamento) é legítima e comum.
+ * Quem está sem nível de um dos lados também não entra — não dá para julgar.
+ */
+export function inversoesDe(rows: Automacao[], niveis: Nivel[] = NIVEIS_PADRAO) {
+  const porId = new Map(rows.map((r) => [r.id, r]));
+  return rows.flatMap((r) => {
+    const pai = r.depende_de ? porId.get(r.depende_de) : null;
+    if (!pai) return [];
+    const nf = bandaDe(r, niveis), np = bandaDe(pai, niveis);
+    return nf && np && nf < np ? [{ filho: r, pai }] : [];
+  });
 }
 
 /**

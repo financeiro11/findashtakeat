@@ -14,7 +14,7 @@ import {
 } from "lucide-react";
 import {
   montarLayout, correnteDe, destravadasPor, resumoTrilhas, alvosValidos, bandaNoY,
-  fiosDaTrilha, caminhoSuave,
+  fiosDoTronco, caminhoSuave, inversoesDe,
   corTrilha, trilhaDe, tierDe, horasDe, iniciaisDe,
   TIER_META, TRILHAS, NIVEIS_PADRAO, STATUS_OPTS, temUpgrade, IMPACTO_OPTS, ESFORCO_OPTS,
   type Automacao, type NoPos, type Nivel, type Faixa,
@@ -97,27 +97,31 @@ export default function ArvoreAutomacoes() {
   );
   const porId = useMemo(() => new Map(nos.map((n) => [n.r.id, n])), [nos]);
   // Fios calculados sobre as posições EM TELA (inclui o arraste em curso): a
-  // curva passa pelos nós, então o nó nunca descola do galho.
+  // curva passa pelos nós, então o nó nunca descola do galho. Só as RAÍZES
+  // penduram no tronco — quem tem pré-requisito é ligado ao pai, mais abaixo.
   const fios = useMemo(() => {
     const hub = { x: layout.hubX, y: layout.hubY };
     return layout.troncos.flatMap((tr) => {
-      const meus = nos.filter((n) => n.trilha === tr.trilha);
-      return fiosDaTrilha(meus.map((n) => ({ x: n.x, y: n.y })), hub)
+      const raizes = nos.filter(
+        (n) => n.trilha === tr.trilha && (!n.r.depende_de || !porId.has(n.r.depende_de)),
+      );
+      return fiosDoTronco(raizes.map((n) => ({ x: n.x, y: n.y })), tr.ancora, hub)
         .map((pontos, i) => ({ chave: `${tr.trilha}#${i}`, trilha: tr.trilha, cor: tr.cor, d: caminhoSuave(pontos) }));
     });
-  }, [layout.troncos, layout.hubX, layout.hubY, nos]);
+  }, [layout.troncos, layout.hubX, layout.hubY, nos, porId]);
 
-  // Etiqueta da trilha: fica logo acima do hub, na coluna da trilha.
+  // Etiqueta da trilha: entre o hub e a âncora de onde saem as raízes.
   const etiquetas = useMemo(
     () => layout.troncos
       .filter((tr) => nos.some((n) => n.trilha === tr.trilha))
-      .map((tr) => ({ ...tr, y: layout.hubY - 86 })),
+      .map((tr) => ({ ...tr, y: layout.hubY - 62 })),
     [layout.troncos, layout.hubY, nos],
   );
   const corrente = useMemo(() => correnteDe(rows, sel), [sel, rows]);
   const destrava = useMemo(() => destravadasPor(rows, sel), [sel, rows]);
   const trilhas = useMemo(() => resumoTrilhas(rows), [rows]);
   const temPrereq = useMemo(() => rows.some((r) => r.depende_de), [rows]);
+  const inversoes = useMemo(() => inversoesDe(rows, niveis), [rows, niveis]);
   const kpi = useMemo(() => {
     const on = rows.filter((r) => tierDe(r.status) === "on");
     return {
@@ -888,15 +892,24 @@ export default function ArvoreAutomacoes() {
       <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5 border-t border-white/[0.07] px-4 py-2 text-[10.5px] text-slate-400" style={{ background: "#080a10" }}>
         <span className="inline-flex items-center gap-1.5">
           <svg width="22" height="6"><line x1="0" y1="3" x2="22" y2="3" stroke="#94a3b8" strokeWidth="1.5" opacity=".35" /></svg>
-          tronco da trilha (andaime visual)
+          sai do tronco = não depende de ninguém
         </span>
         <span className="inline-flex items-center gap-1.5">
           <svg width="22" height="6"><line x1="0" y1="3" x2="22" y2="3" stroke="#f43f5e" strokeWidth="2.5" /></svg>
-          pré-requisito real (<span className="num">depende_de</span>)
+          liga dois nós = pré-requisito real (<span className="num">depende_de</span>)
         </span>
         {!temPrereq && (
           <span className="text-amber-400/80">
             Nenhum pré-requisito ligado ainda — abra um nó e use “Conectar” para acender as correntes.
+          </span>
+        )}
+        {inversoes.length > 0 && (
+          <span
+            className="text-amber-400/80"
+            title={inversoes.map((i) => `${i.filho.automacao} (N${i.filho.nivel}) depende de ${i.pai.automacao} (N${i.pai.nivel})`).join("\n")}
+          >
+            <b className="num">{inversoes.length}</b> {inversoes.length === 1 ? "corrente desce" : "correntes descem"} de nível —
+            o pré-requisito está num nível igual ou acima de quem ele destrava
           </span>
         )}
       </div>

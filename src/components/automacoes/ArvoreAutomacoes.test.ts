@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   montarLayout, correnteDe, destravadasPor, resumoTrilhas, alvosValidos, trilhaDe, bandaNoY,
-  fiosDaTrilha, caminhoSuave, temUpgrade, impactoDe,
+  fiosDoTronco, caminhoSuave, temUpgrade, impactoDe, inversoesDe, LANE_W,
   type Automacao,
 } from "./arvore-layout";
 import { iconeDe, nomeIconeDe, ICONES } from "./arvore-icones";
@@ -244,43 +244,101 @@ describe("iconeDe", () => {
   });
 });
 
-/* ---------- fios: a linha passa pelos nós, então nada descola ---------- */
-describe("fiosDaTrilha", () => {
+/* ---- fios: só a raiz pendura no tronco; nó com pai não é costurado aqui ---- */
+describe("fiosDoTronco", () => {
   const hub = { x: 500, y: 1000 };
-  const pts = (n: number) => Array.from({ length: n }, (_, i) => ({ x: 400 + (i % 3) * 90, y: 900 - i * 80 }));
+  const ancora = { x: 400, y: 880 };
+  const pts = (n: number) => Array.from({ length: n }, (_, i) => ({ x: 400 + (i % 3) * 90, y: 860 - i * 80 }));
 
-  it("todo nó entra em algum fio — nenhum fica de fora", () => {
-    const nos = pts(11);
-    const fios = fiosDaTrilha(nos, hub);
-    const dentro = fios.flatMap((f) => f.slice(1)); // tira o hub
-    expect(dentro).toHaveLength(nos.length);
-    for (const p of nos) expect(dentro).toContainEqual(p);
+  it("o primeiro fio é o tronco: sai do hub e chega na âncora", () => {
+    const [tronco] = fiosDoTronco(pts(3), ancora, hub);
+    expect(tronco[0]).toEqual(hub);
+    expect(tronco[tronco.length - 1]).toEqual(ancora);
   });
 
-  it("todo fio começa no hub", () => {
-    for (const f of fiosDaTrilha(pts(9), hub)) expect(f[0]).toEqual(hub);
+  it("cada raiz ganha um fio próprio, saindo da âncora e terminando nela mesma", () => {
+    const raizes = pts(5);
+    const fios = fiosDoTronco(raizes, ancora, hub);
+    expect(fios).toHaveLength(raizes.length + 1); // tronco + uma por raiz
+    const pontas = fios.slice(1).map((f) => f[f.length - 1]);
+    for (const p of raizes) expect(pontas).toContainEqual(p);
+    for (const f of fios.slice(1)) expect(f[0]).toEqual(ancora);
   });
 
-  it("sobe de baixo para cima", () => {
-    const f = fiosDaTrilha(pts(4), hub)[0];
-    const ys = f.map((p) => p.y);
-    for (let i = 1; i < ys.length; i++) expect(ys[i]).toBeLessThanOrEqual(ys[i - 1]);
+  it("nenhum fio liga uma raiz a outra — é o que gerava o espaguete", () => {
+    const raizes = pts(6);
+    const chave = (p: { x: number; y: number }) => `${p.x}|${p.y}`;
+    const raiz = new Set(raizes.map(chave));
+    for (const f of fiosDoTronco(raizes, ancora, hub)) {
+      // só o último ponto do fio pode ser uma raiz
+      expect(f.slice(0, -1).filter((p) => raiz.has(chave(p)))).toHaveLength(0);
+    }
   });
 
-  it("divide trilha cheia em mais de um fio e não passa de três", () => {
-    expect(fiosDaTrilha(pts(3), hub)).toHaveLength(1);
-    expect(fiosDaTrilha(pts(9), hub).length).toBeGreaterThan(1);
-    expect(fiosDaTrilha(pts(40), hub).length).toBeLessThanOrEqual(3);
-  });
-
-  it("nó arrastado para longe continua dentro do fio (não descola)", () => {
+  it("nó arrastado para longe continua na ponta do fio (não descola)", () => {
     const longe = { x: -9000, y: -9000 };
-    const fios = fiosDaTrilha([...pts(5), longe], hub);
-    expect(fios.flatMap((f) => f.slice(1))).toContainEqual(longe);
+    const fios = fiosDoTronco([...pts(4), longe], ancora, hub);
+    expect(fios.map((f) => f[f.length - 1])).toContainEqual(longe);
   });
 
-  it("trilha vazia não gera fio", () => {
-    expect(fiosDaTrilha([], hub)).toEqual([]);
+  it("trilha sem raiz não gera fio nenhum", () => {
+    expect(fiosDoTronco([], ancora, hub)).toEqual([]);
+  });
+});
+
+/* ------------- lanes: a corrente sobe reta, colada no pai ------------- */
+describe("montarLayout · correntes", () => {
+  it("o filho fica na mesma coluna do pai, um nível acima", () => {
+    const rows = [
+      auto({ id: "pai", nivel: 1 }),
+      auto({ id: "outro", nivel: 1 }),
+      auto({ id: "filho", nivel: 2, depende_de: "pai" }),
+    ];
+    const { nos } = montarLayout(rows);
+    const p = (id: string) => nos.find((n) => n.r.id === id)!;
+    expect(p("filho").x).toBe(p("pai").x);
+    expect(p("filho").y).toBeLessThan(p("pai").y); // y menor = mais alto
+    expect(p("outro").x).not.toBe(p("pai").x);
+  });
+
+  it("irmãos disputando a lane do pai se espalham sem colidir", () => {
+    const rows = [
+      auto({ id: "pai", nivel: 1 }),
+      ...Array.from({ length: 3 }, (_, i) => auto({ id: `f${i}`, nivel: 2, depende_de: "pai" })),
+    ];
+    const { nos } = montarLayout(rows);
+    const filhos = nos.filter((n) => n.r.depende_de === "pai");
+    expect(new Set(filhos.map((n) => `${n.x}|${n.y}`)).size).toBe(3);
+  });
+
+  it("pai em outra trilha não arrasta o nó para fora da coluna dele", () => {
+    const rows = [
+      auto({ id: "pai", categoria: "IA & Categorização", nivel: 1 }),
+      auto({ id: "filho", categoria: "Notas Fiscais", nivel: 2, depende_de: "pai" }),
+      auto({ id: "vizinho", categoria: "Notas Fiscais", nivel: 2 }),
+    ];
+    const { nos } = montarLayout(rows);
+    const p = (id: string) => nos.find((n) => n.r.id === id)!;
+    expect(p("filho").trilha).toBe("Pagamentos & Notas");
+    expect(Math.abs(p("filho").x - p("vizinho").x)).toBeLessThanOrEqual(LANE_W);
+  });
+});
+
+describe("inversoesDe", () => {
+  it("acusa só quem desce de nível — empatar na mesma faixa é legítimo", () => {
+    const rows = [
+      auto({ id: "alto", nivel: 5 }),
+      auto({ id: "baixo", nivel: 4, depende_de: "alto" }),  // desce: a seta aponta para baixo
+      auto({ id: "par", nivel: 5, depende_de: "alto" }),    // empata: sequência dentro da faixa
+      auto({ id: "ok", nivel: 1 }),
+      auto({ id: "sobe", nivel: 2, depende_de: "ok" }),     // correto
+    ];
+    expect(inversoesDe(rows).map((i) => i.filho.id)).toEqual(["baixo"]);
+  });
+
+  it("não julga quem está sem nível dos dois lados", () => {
+    const rows = [auto({ id: "raiz", nivel: null }), auto({ id: "f", nivel: 3, depende_de: "raiz" })];
+    expect(inversoesDe(rows)).toHaveLength(0);
   });
 });
 

@@ -4,6 +4,7 @@ import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import { Loader2, AlertTriangle, Search, RefreshCw } from "lucide-react";
 import { classificaSicoob, eCredito, ORDEM_SIC, SIC_META, type SicKey } from "@/lib/extratoNatureza";
+import { ASAAS_META, classificaAsaas, resumirAsaas } from "@/lib/extratoAsaas";
 
 /* Extrato de conta corrente de um banco (Sicoob / Asaas), na página própria aberta
    pelo seletor do Caixa. Cada fonte tem duas tabelas de mesmo formato, populadas por
@@ -60,26 +61,10 @@ type Periodo = "tudo" | "hoje" | "7d" | "30d" | "mes";
 
 const sb = supabase as any;
 
-// Categoria do lançamento (usada no ponto colorido e no acumulado de taxas).
-type CatKey = "cobranca" | "mensageria" | "pix" | "nf" | "outros";
-function categoria(h?: string | null): CatKey {
-  const s = (h ?? "").toLowerCase();
-  if (s.includes("mensageria")) return "mensageria";
-  if (s.includes("pix")) return "pix";
-  if (s.includes("nf") || s.includes("nota fiscal") || s.includes("serviço") || s.includes("servico")) return "nf";
-  if (s.includes("cobran") || s.includes("recebid")) return "cobranca";
-  return "outros";
-}
-const DOT: Record<CatKey, string> = {
-  cobranca: "bg-pos",
-  mensageria: "bg-amber-500",
-  pix: "bg-sky-500",
-  nf: "bg-violet-500",
-  outros: "bg-muted-foreground/50",
-};
-
 /* Classificação Sicoob (chips do topo + selo da tabela) — mora em
-   src/lib/extratoNatureza.ts, compartilhada com a aba Extratos do celular. */
+   src/lib/extratoNatureza.ts, compartilhada com a aba Extratos do celular.
+   A do Asaas (ponto colorido + acumulado de taxas) mora em
+   src/lib/extratoAsaas.ts. */
 
 const hojeISO = () => new Date().toLocaleDateString("en-CA");
 function menosDias(n: number) {
@@ -90,6 +75,35 @@ function menosDias(n: number) {
 
 const PAGINA = 30;
 const OPCOES_POR_PAGINA = [30, 50, 100, 200];
+
+/* O PostgREST devolve no máximo 1000 linhas por resposta — um `.limit(2000)`
+   volta 1000 calado. Como o Asaas fecha ~300 lançamentos por DIA (taxa de
+   mensageria, de Pix e de NF em cada cobrança), o extrato passa de mil linhas
+   em três dias, e o acumulado de taxas passava a ser o de um pedaço do
+   período, não o do período. Daí buscar em páginas. */
+const PAGINA_PG = 1000;
+const TETO_LANCAMENTOS = 20000;
+const COLUNAS_EXTRATO =
+  "id,id_transacao,data_movimento,tipo,valor,historico,contraparte_nome,contraparte_documento,numero_documento";
+
+async function lerExtrato(tabela: string): Promise<{ data: Lancamento[]; error: { message: string } | null }> {
+  const linhas: Lancamento[] = [];
+  for (let de = 0; de < TETO_LANCAMENTOS; de += PAGINA_PG) {
+    const { data, error } = await sb
+      .from(tabela)
+      .select(COLUNAS_EXTRATO)
+      // O desempate por id_transacao é o que impede uma linha de aparecer duas
+      // vezes (ou nenhuma) entre duas páginas: data_movimento é DATA, e há
+      // centenas de lançamentos no mesmo dia.
+      .order("data_movimento", { ascending: false })
+      .order("id_transacao", { ascending: false })
+      .range(de, de + PAGINA_PG - 1);
+    if (error) return { data: linhas, error };
+    linhas.push(...((data ?? []) as Lancamento[]));
+    if (!data || data.length < PAGINA_PG) break;
+  }
+  return { data: linhas, error: null };
+}
 
 function Paginador({
   pagina, totalPaginas, porPagina, onPagina, onPorPagina,
@@ -169,10 +183,7 @@ export default function ContaCorrenteBancaria({ banco }: { banco: FonteCCKey }) 
         .order("atualizado_em", { ascending: false })
         .limit(1)
         .maybeSingle(),
-      sb.from(fonte.tabelaExtrato)
-        .select("id,id_transacao,data_movimento,tipo,valor,historico,contraparte_nome,contraparte_documento,numero_documento")
-        .order("data_movimento", { ascending: false })
-        .limit(2000),
+      lerExtrato(fonte.tabelaExtrato),
     ]);
     if (saldoRes.error) toast.error(`Falha ao carregar o saldo ${fonte.nome}: ` + saldoRes.error.message);
     if (extratoRes.error) toast.error(`Falha ao carregar o extrato ${fonte.nome}: ` + extratoRes.error.message);
@@ -265,21 +276,7 @@ export default function ContaCorrenteBancaria({ banco }: { banco: FonteCCKey }) 
   const qtdDebitos = filtrado.length - qtdCreditos;
 
   // Acumulado por tipo de taxa (segue os filtros da tabela).
-  const taxas = useMemo(() => {
-    const base = { mensageria: { v: 0, q: 0 }, pix: { v: 0, q: 0 }, nf: { v: 0, q: 0 }, recebido: { v: 0, q: 0 } };
-    for (const m of filtrado) {
-      const cat = categoria(m.historico);
-      const v = m.valor ?? 0;
-      if (eCredito(m.tipo)) {
-        if (cat === "cobranca") { base.recebido.v += v; base.recebido.q++; }
-      } else if (cat === "mensageria" || cat === "pix" || cat === "nf") {
-        base[cat].v += v; base[cat].q++;
-      }
-    }
-    const totalTaxas = base.mensageria.v + base.pix.v + base.nf.v;
-    const qtdTaxas = base.mensageria.q + base.pix.q + base.nf.q;
-    return { ...base, totalTaxas, qtdTaxas, custoPct: base.recebido.v > 0 ? (totalTaxas / base.recebido.v) * 100 : 0 };
-  }, [filtrado]);
+  const taxas = useMemo(() => resumirAsaas(filtrado), [filtrado]);
 
   // Chips do Sicoob: acumulado por natureza do lançamento (segue os filtros).
   const chipsSicoob = useMemo(() => {
@@ -657,19 +654,22 @@ export default function ContaCorrenteBancaria({ banco }: { banco: FonteCCKey }) 
           </div>
 
           <div className="mt-3 grid grid-cols-2 gap-3 lg:grid-cols-4">
-            {([
-              ["Taxa de mensageria", taxas.mensageria],
-              ["Taxa do Pix", taxas.pix],
-              ["Emissão de NF de serviço", taxas.nf],
-              ["Total de taxas", { v: taxas.totalTaxas, q: taxas.qtdTaxas }],
-            ] as const).map(([rot, d]) => {
-              const share = taxas.totalTaxas > 0 ? Math.max(4, (d.v / taxas.totalTaxas) * 100) : 0;
+            {[
+              ...taxas.taxas.map((t) => ({ key: t.key as string, rot: t.rot, v: t.v, q: t.q, total: false })),
+              { key: "total", rot: "Total de taxas", v: taxas.totalTaxas, q: taxas.qtdTaxas, total: true },
+            ].map((d) => {
+              // Filtrando só créditos sobram os estornos de taxa: aí a "taxa" é
+              // dinheiro de volta e o cartão tem de mostrar sinal de entrada.
+              const devolveu = d.v < 0;
+              const share = taxas.totalTaxas > 0 ? Math.min(100, Math.max(4, (Math.abs(d.v) / taxas.totalTaxas) * 100)) : 0;
               return (
-                <div key={rot} className="rounded-md border border-border px-3 py-2.5">
-                  <div className="truncate text-[11.5px] text-muted-foreground" title={rot}>{rot}</div>
-                  <div className="num mt-1 text-[20px] font-semibold leading-none text-neg">−{fmtNum(d.v)}</div>
+                <div key={d.key} className={cn("rounded-md border border-border px-3 py-2.5", d.total && "bg-secondary/40")}>
+                  <div className="truncate text-[11.5px] text-muted-foreground" title={d.rot}>{d.rot}</div>
+                  <div className={cn("num mt-1 text-[20px] font-semibold leading-none", devolveu ? "text-pos" : "text-neg")}>
+                    {devolveu ? "+" : "−"}{fmtNum(Math.abs(d.v))}
+                  </div>
                   <div className="mt-2 h-[3px] w-full rounded-full bg-secondary">
-                    <div className="h-full rounded-full bg-neg" style={{ width: `${share}%` }} />
+                    <div className={cn("h-full rounded-full", devolveu ? "bg-pos" : "bg-neg")} style={{ width: `${share}%` }} />
                   </div>
                   <div className="num mt-1.5 text-[10.5px] text-muted-foreground">{d.q} cobranças</div>
                 </div>
@@ -682,6 +682,22 @@ export default function ContaCorrenteBancaria({ banco }: { banco: FonteCCKey }) 
             <span className="ml-auto text-muted-foreground">Custo total das taxas sobre o recebido</span>
             <b className="num text-neg">{taxas.custoPct.toFixed(2).replace(".", ",")}%</b>
           </div>
+
+          {/* Onde foi parar o resto do que saiu: a transferência do saldo para o
+              banco é a maior saída do extrato e não é custo nenhum. */}
+          {taxas.fora.length > 0 && (
+            <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 px-1 text-[11.5px] text-muted-foreground">
+              <span>Saídas que não são taxa</span>
+              {taxas.fora.map((f) => (
+                <span key={f.key} className="inline-flex items-center gap-1.5">
+                  <span className={cn("h-1.5 w-1.5 shrink-0 rounded-full", f.dot)} />
+                  {f.rot}
+                  <b className="num text-neg">−{fmtNum(f.v)}</b>
+                  <span className="num text-muted-foreground/70">({f.q})</span>
+                </span>
+              ))}
+            </div>
+          )}
         </div>
       </div>
 
@@ -708,7 +724,7 @@ export default function ContaCorrenteBancaria({ banco }: { banco: FonteCCKey }) 
             )}
             {!loading && pagina.map((m, i) => {
               const credito = eCredito(m.tipo);
-              const cat = categoria(m.historico);
+              const cat = classificaAsaas(m.historico);
               const novaData = i === 0 || pagina[i - 1].data_movimento !== m.data_movimento;
               return (
                 <tr key={m.id} className={cn("border-b border-border/50 hover:bg-secondary/40", novaData && i > 0 && "border-t border-border")}>
@@ -717,7 +733,7 @@ export default function ContaCorrenteBancaria({ banco }: { banco: FonteCCKey }) 
                   </td>
                   <td className="px-2 py-2">
                     <div className="flex items-center gap-2">
-                      <span className={cn("h-1.5 w-1.5 shrink-0 rounded-full", DOT[cat])} />
+                      <span className={cn("h-1.5 w-1.5 shrink-0 rounded-full", ASAAS_META[cat].dot)} title={ASAAS_META[cat].rot} />
                       <span className="truncate font-medium text-foreground">{m.historico || "Lançamento"}</span>
                     </div>
                     <div className="truncate pl-3.5 text-[11.5px] text-muted-foreground">

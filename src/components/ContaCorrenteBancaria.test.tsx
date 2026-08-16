@@ -26,6 +26,7 @@ vi.mock("@/integrations/supabase/client", () => {
       select: () => api,
       order: () => api,
       limit: () => api,
+      range: () => Promise.resolve({ data: lancamentos, error: null }),
       maybeSingle: () =>
         Promise.resolve({
           data: { conta: "Asaas", saldo: 1000, saldo_disponivel: 1000, saldo_bloqueado: 0, atualizado_em: new Date().toISOString() },

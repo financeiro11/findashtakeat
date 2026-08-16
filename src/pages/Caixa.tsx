@@ -1,12 +1,12 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { toast } from "sonner";
 import { SectionCard } from "@/components/ui/section-card";
 import { cn } from "@/lib/utils";
 import {
-  ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip, Cell,
+  ResponsiveContainer, ComposedChart, Bar, Line, XAxis, YAxis, Tooltip, Cell,
 } from "recharts";
-import { RefreshCw, Loader2, MessageCircle, Eye, EyeOff, Maximize2, Search, ChevronDown, Landmark, ArrowRight } from "lucide-react";
+import { RefreshCw, Loader2, MessageCircle, Eye, EyeOff, Maximize2, Search, ChevronDown, Landmark, ArrowRight, CreditCard } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { fmtBRLShort as fmtBRLShortStr, fmtPct } from "@/pages/dashboard/format";
 import { comValorExato } from "@/components/ValorExato";
@@ -15,6 +15,9 @@ import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuIte
 import { SyncOmieButtons } from "@/components/SyncOmieButtons";
 import RelatorioCaixaModal from "@/components/RelatorioCaixaModal";
 import { FONTES_CC } from "@/components/ContaCorrenteBancaria";
+import { useApelidos } from "@/hooks/useApelidos";
+import { apelidoDe, type MapaApelidos } from "@/lib/apelidos";
+import { ehCartao, lerGastoDeCartao } from "@/lib/observacaoTitulo";
 
 /* ------------------------------ formatters ------------------------------ */
 /* O abreviado (R$ 1,23 M) esconde a ordem de grandeza real, então na tela ele
@@ -46,7 +49,9 @@ type Periodo = {
   entradas_vs_media: number; saidas_vs_media: number; entradas_pct_fluxo: number; liquido_pct: number;
   gastos_categoria: { nome: string; valor: number; pct: number }[];
   fornecedores: { nome: string; categoria: string; valor: number }[];
-  movimentacoes: { data: string | null; descricao: string; categoria: string; conta: string; valor: number; natureza: string }[];
+  /* `cod_titulo`: a chave da observação do título no Omie. Só existe nos snapshots
+     gerados a partir de 15/08/26 — daí ser opcional. */
+  movimentacoes: { data: string | null; descricao: string; categoria: string; conta: string; valor: number; natureza: string; cod_titulo?: string | null }[];
   mov_total: number;
 };
 type Conta = { ncodcc: string; nome: string; banco: string; subtitulo: string; saldo: number; saldo_data?: string | null; pct: number; incluir: boolean };
@@ -58,13 +63,23 @@ type Snapshot = {
   n_contas: number;
   contas: Conta[];
   periodos: { ontem: Periodo; hoje: Periodo; semana: Periodo; mes: Periodo };
-  contas_a_pagar: { total: number; itens: { data: string; descricao: string; categoria: string; valor: number; dias: number }[] };
+  contas_a_pagar: { total: number; itens: { data: string; descricao: string; categoria: string; valor: number; dias: number; cod_titulo?: string | null }[] };
   calendario: { ano: number; mes: number; hoje: number; dias: DiaCal[] };
   calendario_anterior: { ano: number; mes: number; dias: { dia: number; entradas: number; saidas: number; recebido: number }[] };
   fluxo_projetado: {
     menor: { valor: number; data: string }; maior_desembolso: { valor: number; data: string };
     saldo_final: { data: string; saldo: number }; saldo_atual: number;
-    pontos: { data: string; saldo: number; entradas: number; saidas: number }[];
+    /* Cobranças do Asaas somadas ao fluxo — só existe nos snapshots gerados a partir
+       de 16/08/26; antes disso o gráfico era só o Omie, daí ser opcional. */
+    asaas?: {
+      total: number; a_vencer: number; confirmado: number; cobrancas: number;
+      origem: "espelho" | "vazio" | "erro"; atualizado_em: string | null;
+    };
+    pontos: {
+      data: string; saldo: number; entradas: number; saidas: number;
+      entradas_asaas?: number; asaas_a_vencer?: number; asaas_confirmado?: number; asaas_qtd?: number;
+      saldo_sem_asaas?: number;
+    }[];
   };
 };
 
@@ -74,8 +89,54 @@ type Snapshot = {
 
 const sb = supabase as any;
 
+/* ------------------------------ contraparte ------------------------------ */
+/* Quem é o fornecedor desta linha — em duas camadas, nesta ordem:
+ *
+ *   1. o NOME CRU. No cartão a contraparte do Omie é sempre o balde da fatura
+ *      ("Lancamento Fatura Cartao") e o lojista só existe na observação do
+ *      título; fora do cartão é a razão social ("53.371.030 MAURO SERGIO DE
+ *      ANDRADE"). Quem resolve isso é `gastoDe`, no componente.
+ *   2. o APELIDO, de Configurações › Parametrização — o nome pelo qual a empresa
+ *      chama a contraparte, que é o que se lê numa reunião.
+ *
+ * O nome cru não some: é a string que se procura no Omie. Onde há largura (o
+ * modal de "Expandir") desce para a linha de apoio; nas listas compactas, que já
+ * têm a segunda linha ocupada por categoria, fica no hover. */
+type Gasto = { nome: string; cartao: boolean };
+
+function Contraparte({ mapa, gasto, apoio = false }: { mapa: MapaApelidos; gasto: Gasto; apoio?: boolean }) {
+  const { nome, cartao } = gasto;
+  const ap = apelidoDe(mapa, nome);
+  const mostrarApoio = !!ap && apoio;
+  const oQueE = ap?.oQueE ?? null;
+  return (
+    <span className="block min-w-0">
+      <span className="flex items-center gap-1">
+        {/* O ícone diz de onde veio o nome: da fatura do cartão, e não da
+            contraparte do título — que ali é só o balde. O hover vai no <span>:
+            `title` em elemento SVG não vira tooltip. */}
+        {cartao && (
+          <span className="shrink-0" title="Lido da observação do título — gasto dentro da fatura de cartão">
+            <CreditCard className="h-3 w-3 text-muted-foreground" />
+          </span>
+        )}
+        {/* `min-w-0`: item de flex não encolhe abaixo do conteúdo por padrão, e
+            sem isso o `truncate` não corta — a linha estoura a coluna. */}
+        <span
+          className="block min-w-0 truncate"
+          title={!ap ? undefined : mostrarApoio ? (oQueE ?? undefined) : (oQueE ? `${oQueE} · ${nome}` : nome)}
+        >
+          {ap?.apelido ?? nome}
+        </span>
+      </span>
+      {mostrarApoio && <span className="block truncate text-[10.5px] text-muted-foreground">{nome}</span>}
+    </span>
+  );
+}
+
 export default function Caixa() {
   const navigate = useNavigate();
+  const apelidos = useApelidos();
   const [snap, setSnap] = useState<Snapshot | null>(null);
   const [loading, setLoading] = useState(true);
   const [syncing, setSyncing] = useState(false);
@@ -142,6 +203,59 @@ export default function Caixa() {
     });
   }
 
+  /* ---------- o lojista dos gastos de cartão ----------
+   * No Omie a fatura inteira entra sob uma contraparte-carimbo ("Lancamento
+   * Fatura Cartao"): oito linhas de R$ 14 mil, todas com o mesmo nome, e nenhuma
+   * dizendo em quem foi o dinheiro. Quem identifica cada gasto é a OBSERVAÇÃO do
+   * título, e ela já está em casa — uma varredura diária enche `omie_titulo_texto`
+   * e a DRE lê de lá.
+   *
+   * Esta tela faz o mesmo, com o MESMO parser (`lerGastoDeCartao`): duplicar a
+   * leitura faria o caixa e a DRE discordarem sobre o nome do mesmo lojista.
+   *
+   * Fica no cliente, e não no snapshot, porque a observação chega DEPOIS do
+   * sync — resolvida no servidor, a linha ficaria com o nome do balde até o
+   * próximo dia. Lendo aqui, o nome aparece assim que a varredura passa. */
+  const [obsCartao, setObsCartao] = useState<Map<string, string | null>>(new Map());
+  useEffect(() => {
+    const cods = new Set<string>();
+    for (const j of Object.values(snap?.periodos ?? {}) as Periodo[]) {
+      for (const mv of j?.movimentacoes ?? []) if (mv.cod_titulo && ehCartao(mv.descricao)) cods.add(String(mv.cod_titulo));
+    }
+    for (const c of snap?.contas_a_pagar?.itens ?? []) if (c.cod_titulo && ehCartao(c.descricao)) cods.add(String(c.cod_titulo));
+    if (!cods.size) { setObsCartao(new Map()); return; }
+
+    let vivo = true;
+    (async () => {
+      /* Em blocos: o `in` vai na URL e uma janela de mês tem centenas de gastos de
+         cartão — a lista inteira de uma vez estoura o limite e volta vazia, que é
+         indistinguível de "não tem texto". Mesmo corte do drill-down da DRE. */
+      const lista = [...cods];
+      const BLOCO = 150;
+      const blocos: string[][] = [];
+      for (let i = 0; i < lista.length; i += BLOCO) blocos.push(lista.slice(i, i + BLOCO));
+      const respostas = await Promise.all(blocos.map((b) =>
+        sb.from("omie_titulo_texto").select("cod_titulo,observacao").in("cod_titulo", b.map(Number))));
+      if (!vivo) return;
+      const m = new Map<string, string | null>();
+      for (const r of respostas) {
+        for (const t of (r?.data ?? []) as { cod_titulo: number; observacao: string | null }[]) {
+          m.set(String(t.cod_titulo), t.observacao);
+        }
+      }
+      setObsCartao(m);
+    })();
+    return () => { vivo = false; };
+  }, [snap]);
+
+  /* O nome cru que identifica o gasto: o lojista, quando é cartão; a contraparte
+     do Omie, no resto. Sem observação no cache (título recém-criado, antes da
+     varredura passar) devolve o que o snapshot trouxe — o balde. */
+  const gastoDe = useCallback((descricao: string, codTitulo?: string | null): Gasto => {
+    const lida = lerGastoDeCartao(descricao, codTitulo ? obsCartao.get(String(codTitulo)) : undefined);
+    return lida ? { nome: lida.estabelecimento, cartao: true } : { nome: descricao, cartao: false };
+  }, [obsCartao]);
+
   const p = snap?.periodos?.[janela];
 
   /* ---------- saldo consolidado recalculado no cliente (respeita ocultas) ---------- */
@@ -207,32 +321,76 @@ export default function Caixa() {
   }
 
   /* ---------- fluxo projetado deslocado pelo saldo consolidado visível ---------- */
+  /* Duas linhas do dia convivem aqui: `entradas` é o que vence no Omie e
+     `entradasAsaas` é o que o Asaas credita — o gráfico soma as duas no saldo e
+     guarda `saldoSemAsaas` para a linha de referência (onde o saldo estaria sem a
+     receita). Snapshot antigo não tem os campos do Asaas: cai em zero e as duas
+     séries se sobrepõem, que é exatamente o desenho de antes. */
   const projData = useMemo(() => {
     const pts = snap?.fluxo_projetado?.pontos ?? [];
     const atual = contasView.consolidado;
     const maiorData = snap?.fluxo_projetado?.maior_desembolso?.data;
     return pts.map((pt) => {
       const saldo = pt.saldo - contasView.delta;
+      const entradasAsaas = pt.entradas_asaas ?? 0;
+      const entradasTotal = pt.entradas + entradasAsaas;
       return {
         data: fmtDiaMes(pt.data), dataISO: pt.data, saldo,
-        entradas: pt.entradas, saidas: pt.saidas, liquido: pt.entradas - pt.saidas,
+        saldoSemAsaas: (pt.saldo_sem_asaas ?? pt.saldo) - contasView.delta,
+        entradas: pt.entradas, entradasAsaas, entradasTotal,
+        asaasAVencer: pt.asaas_a_vencer ?? 0, asaasConfirmado: pt.asaas_confirmado ?? 0, asaasQtd: pt.asaas_qtd ?? 0,
+        saidas: pt.saidas, liquido: entradasTotal - pt.saidas,
         cor: pt.data === maiorData && pt.saidas > 0 ? "maior" : saldo >= atual ? "acima" : "abaixo",
       };
     });
   }, [snap, contasView]);
-  const projMin = useMemo(() => (projData.length ? Math.min(...projData.map((x) => x.saldo)) : 0), [projData]);
+  /* O piso do eixo tem que caber nas DUAS séries: sem o Asaas o saldo desce mais, e
+     um domínio calculado só pelas barras cortaria a linha de referência.
+     A folga é `− 4% do módulo` e não `× 0,96`: com saldo negativo, multiplicar por
+     0,96 aproxima de zero — sobe o piso e corta justamente o dia mais baixo. */
+  const projMin = useMemo(
+    () => (projData.length ? Math.min(...projData.flatMap((x) => [x.saldo, x.saldoSemAsaas])) : 0),
+    [projData],
+  );
+  const projPiso = useMemo(() => projMin - Math.abs(projMin) * 0.04, [projMin]);
   const projTotais = useMemo(() => projData.reduce(
-    (a, d) => ({ entradas: a.entradas + d.entradas, saidas: a.saidas + d.saidas }),
-    { entradas: 0, saidas: 0 },
+    (a, d) => ({
+      entradas: a.entradas + d.entradas, saidas: a.saidas + d.saidas,
+      asaas: a.asaas + d.entradasAsaas, asaasQtd: a.asaasQtd + d.asaasQtd,
+    }),
+    { entradas: 0, saidas: 0, asaas: 0, asaasQtd: 0 },
   ), [projData]);
+
+  /* O gráfico só é honesto se disser quando NÃO conseguiu olhar o Asaas: sem esta
+     linha, um espelho vazio vira "não há nada a receber" — que é a leitura errada
+     mais cara desta tela. */
+  const avisoAsaas = useMemo(() => {
+    const a = snap?.fluxo_projetado?.asaas;
+    if (!a) return "Snapshot anterior ao cruzamento com o Asaas — sincronize o caixa para incluir as cobranças a receber.";
+    if (a.origem === "erro") return "Não foi possível ler as cobranças do Asaas: o gráfico está só com os títulos do Omie.";
+    if (a.origem === "vazio" || a.cobrancas === 0) return "Nenhuma cobrança do Asaas espelhada para os próximos 30 dias — atualize em Asaas › Atualizar do Asaas.";
+    const dias = a.atualizado_em ? (Date.now() - new Date(a.atualizado_em).getTime()) / 86_400_000 : null;
+    if (dias != null && dias > 2) {
+      return `Cobranças do Asaas lidas em ${new Date(a.atualizado_em!).toLocaleDateString("pt-BR")} — cobranças criadas depois disso não estão no gráfico.`;
+    }
+    return null;
+  }, [snap]);
 
   /* ---------- movimentações filtradas (modal "ver tudo") ---------- */
   const movFiltradas = useMemo(() => {
     const rows = p?.movimentacoes ?? [];
     const q = movFiltro.trim().toLowerCase();
     if (!q) return rows;
-    return rows.filter((m) => `${m.descricao} ${m.categoria} ${m.conta}`.toLowerCase().includes(q));
-  }, [p, movFiltro]);
+    /* A busca varre o que está ESCRITO na linha — o lojista do cartão e o apelido
+       —, e não só o que veio do snapshot. Procurar pelo nome que se está lendo não
+       pode devolver vazio. O balde ("Lancamento Fatura Cartao") continua na
+       varredura: quem digita isso quer ver a fatura inteira. */
+    return rows.filter((m) => {
+      const g = gastoDe(m.descricao, m.cod_titulo);
+      const ap = apelidoDe(apelidos, g.nome);
+      return `${ap?.apelido ?? ""} ${g.nome} ${m.descricao} ${m.categoria} ${m.conta}`.toLowerCase().includes(q);
+    });
+  }, [p, movFiltro, apelidos, gastoDe]);
   const movTotais = useMemo(() => movFiltradas.reduce(
     (a, m) => { if (m.natureza === "entrada") a.entradas += m.valor; else a.saidas += m.valor; return a; },
     { entradas: 0, saidas: 0 },
@@ -626,7 +784,9 @@ export default function Caixa() {
               <div key={i} className="flex items-center gap-3">
                 <span className="num w-5 shrink-0 text-[11px] font-semibold text-muted-foreground/70">{String(i + 1).padStart(2, "0")}</span>
                 <div className="min-w-0 flex-1">
-                  <div className="truncate text-[12.5px] font-medium text-foreground">{f.nome}</div>
+                  <div className="text-[12.5px] font-medium text-foreground">
+                    <Contraparte mapa={apelidos} gasto={{ nome: f.nome, cartao: false }} />
+                  </div>
                   <div className="truncate text-[11px] text-muted-foreground">{f.categoria}</div>
                 </div>
                 <span className="num shrink-0 text-[12.5px] font-semibold text-neg">-{fmtBRLShort(f.valor)}</span>
@@ -646,7 +806,9 @@ export default function Caixa() {
               <div key={i} className="flex items-start gap-3">
                 <span className="num w-9 shrink-0 pt-0.5 text-[11px] font-semibold text-muted-foreground">{fmtDiaMes(c.data)}</span>
                 <div className="min-w-0 flex-1">
-                  <div className="truncate text-[12.5px] font-medium text-foreground">{c.descricao}</div>
+                  <div className="text-[12.5px] font-medium text-foreground">
+                    <Contraparte mapa={apelidos} gasto={gastoDe(c.descricao, c.cod_titulo)} />
+                  </div>
                   <div className="truncate text-[11px] text-muted-foreground">
                     {c.categoria} · {c.dias === 0 ? "hoje" : c.dias === 1 ? "em 1 dia" : `em ${c.dias} dias`}
                   </div>
@@ -695,7 +857,9 @@ export default function Caixa() {
                 {p!.movimentacoes.slice(0, 60).map((m, i) => (
                   <tr key={i} className="border-b border-border/50 hover:bg-secondary/40">
                     <td className="num whitespace-nowrap px-4 py-1.5 text-muted-foreground">{m.data ? fmtDiaMes(m.data) : "—"}</td>
-                    <td className="max-w-[160px] truncate px-2 py-1.5 text-foreground">{m.descricao}</td>
+                    <td className="max-w-[160px] overflow-hidden px-2 py-1.5 text-foreground">
+                      <Contraparte mapa={apelidos} gasto={gastoDe(m.descricao, m.cod_titulo)} />
+                    </td>
                     <td className="max-w-[130px] truncate px-2 py-1.5 text-muted-foreground">{m.categoria}</td>
                     <td className="max-w-[110px] truncate px-2 py-1.5 text-muted-foreground">{m.conta}</td>
                     <td className={cn("num whitespace-nowrap px-4 py-1.5 text-right font-medium", m.natureza === "entrada" ? "text-pos" : "text-neg")}>
@@ -710,7 +874,7 @@ export default function Caixa() {
 
         <SectionCard
           title="Fluxo de caixa projetado · próximos 30 dias"
-          subtitle="Saldo diário estimado a partir dos títulos a pagar e a receber do Omie"
+          subtitle="Saldo diário estimado: títulos a pagar e a receber do Omie + cobranças a receber do Asaas"
           actions={
             <button
               onClick={() => setFluxoOpen(true)}
@@ -731,7 +895,12 @@ export default function Caixa() {
             <div className="flex gap-4">
               <div className="text-right">
                 <div className="eyebrow">Entradas 30d</div>
-                <div className="num text-[13px] font-semibold text-pos">+{fmtBRLShort(projTotais.entradas)}</div>
+                <div className="num text-[13px] font-semibold text-pos">+{fmtBRLShort(projTotais.entradas + projTotais.asaas)}</div>
+                {/* De onde vem cada real: o Omie mal tem receita a receber, e é justamente
+                    essa desproporção que o card precisa deixar à vista. */}
+                <div className="num text-[10px] text-muted-foreground">
+                  Omie {fmtBRLShort(projTotais.entradas)} · Asaas {fmtBRLShort(projTotais.asaas)}
+                </div>
               </div>
               <div className="text-right">
                 <div className="eyebrow">Saídas 30d</div>
@@ -741,29 +910,37 @@ export default function Caixa() {
           </div>
           <div className="h-[190px] w-full">
             <ResponsiveContainer width="100%" height="100%">
-              <BarChart data={projData} margin={{ top: 4, right: 4, left: 4, bottom: 0 }}>
+              <ComposedChart data={projData} margin={{ top: 4, right: 4, left: 4, bottom: 0 }}>
                 <XAxis dataKey="data" tick={{ fontSize: 9 }} interval={2} axisLine={false} tickLine={false} />
-                <YAxis domain={[projMin * 0.96, "dataMax"]} hide />
+                <YAxis domain={[projPiso, "dataMax"]} hide />
                 <Tooltip content={<FluxoTooltip />} cursor={{ fill: "hsl(var(--muted-foreground) / 0.08)" }} />
                 <Bar dataKey="saldo" radius={[2, 2, 0, 0]}>
                   {projData.map((d, i) => (
                     <Cell key={i} fill={d.cor === "maior" ? "hsl(var(--neg))" : d.cor === "acima" ? "hsl(var(--pos))" : "hsl(var(--muted-foreground) / 0.35)"} />
                   ))}
                 </Bar>
-              </BarChart>
+                {/* Onde o saldo estaria sem o Asaas — o gráfico de antes, virado régua.
+                    A distância entre a linha e o topo da barra É a receita do período. */}
+                <Line
+                  type="stepAfter" dataKey="saldoSemAsaas" dot={false} isAnimationActive={false}
+                  stroke="hsl(var(--neg))" strokeWidth={1.25} strokeDasharray="3 3"
+                />
+              </ComposedChart>
             </ResponsiveContainer>
           </div>
           <div className="mt-2 flex flex-wrap items-center gap-3 text-[10.5px] text-muted-foreground">
             <span className="flex items-center gap-1"><span className="h-2 w-2 rounded-full bg-pos" /> saldo acima do atual</span>
             <span className="flex items-center gap-1"><span className="h-2 w-2 rounded-full bg-muted-foreground/40" /> abaixo do atual</span>
             <span className="flex items-center gap-1"><span className="h-2 w-2 rounded-full bg-neg" /> maior desembolso</span>
+            <span className="flex items-center gap-1"><span className="h-px w-4 border-t border-dashed border-neg" /> sem o Asaas</span>
             <span className="ml-auto num">saldo em {fmtDiaMes(snap.fluxo_projetado.saldo_final.data)}: {fmtBRLShort(snap.fluxo_projetado.saldo_final.saldo - contasView.delta)}</span>
           </div>
+          {avisoAsaas && <Footnote>{avisoAsaas}</Footnote>}
         </SectionCard>
       </div>
 
       <div className="pt-1 text-center text-[11px] text-muted-foreground">
-        Dados sincronizados do Omie ERP às {fmtHora(snap.sincronizado_em)} · contas correntes, contas a pagar e contas a receber
+        Dados sincronizados do Omie ERP às {fmtHora(snap.sincronizado_em)} · contas correntes, contas a pagar e contas a receber · cobranças a receber do Asaas
       </div>
 
       {/* ---------------- Modal: Prévia do relatório (WhatsApp → Miguel) ---------------- */}
@@ -816,7 +993,9 @@ export default function Caixa() {
                 {movFiltradas.map((m, i) => (
                   <tr key={i} className="border-b border-border/50 hover:bg-secondary/40">
                     <td className="num whitespace-nowrap px-3 py-1.5 text-muted-foreground">{m.data ? fmtDiaMes(m.data) : "—"}</td>
-                    <td className="px-3 py-1.5 text-foreground">{m.descricao}</td>
+                    <td className="max-w-[280px] overflow-hidden px-3 py-1.5 text-foreground">
+                      <Contraparte mapa={apelidos} gasto={gastoDe(m.descricao, m.cod_titulo)} apoio />
+                    </td>
                     <td className="px-3 py-1.5 text-muted-foreground">{m.categoria}</td>
                     <td className="px-3 py-1.5 text-muted-foreground">{m.conta}</td>
                     <td className={cn("num whitespace-nowrap px-3 py-1.5 text-right font-medium", m.natureza === "entrada" ? "text-pos" : "text-neg")}>
@@ -839,24 +1018,34 @@ export default function Caixa() {
           <DialogHeader>
             <DialogTitle>Fluxo de caixa projetado · próximos 30 dias</DialogTitle>
           </DialogHeader>
-          <div className="mb-3 grid grid-cols-2 gap-3 sm:grid-cols-4">
+          <div className="mb-3 grid grid-cols-2 gap-3 sm:grid-cols-5">
             <MiniStat label="Saldo atual" value={fmtBRLShort(contasView.consolidado)} />
             <MiniStat label="Menor saldo" value={<>{fmtBRLShort(snap.fluxo_projetado.menor.valor - contasView.delta)} · {fmtDiaMes(snap.fluxo_projetado.menor.data)}</>} tone="neg" />
-            <MiniStat label="Entradas 30d" value={<>+{fmtBRLShort(projTotais.entradas)}</>} tone="pos" />
+            <MiniStat label="A receber Omie" value={<>+{fmtBRLShort(projTotais.entradas)}</>} tone="pos" />
+            <MiniStat
+              label="A receber Asaas"
+              value={<>+{fmtBRLShort(projTotais.asaas)}</>}
+              tone="pos"
+              apoio={projTotais.asaasQtd ? `${projTotais.asaasQtd} cobrança${projTotais.asaasQtd === 1 ? "" : "s"}` : undefined}
+            />
             <MiniStat label="Saídas 30d" value={<>-{fmtBRLShort(projTotais.saidas)}</>} tone="neg" />
           </div>
           <div className="h-[240px] w-full">
             <ResponsiveContainer width="100%" height="100%">
-              <BarChart data={projData} margin={{ top: 4, right: 4, left: 4, bottom: 0 }}>
+              <ComposedChart data={projData} margin={{ top: 4, right: 4, left: 4, bottom: 0 }}>
                 <XAxis dataKey="data" tick={{ fontSize: 9 }} interval={1} axisLine={false} tickLine={false} />
-                <YAxis domain={[projMin * 0.96, "dataMax"]} hide />
+                <YAxis domain={[projPiso, "dataMax"]} hide />
                 <Tooltip content={<FluxoTooltip />} cursor={{ fill: "hsl(var(--muted-foreground) / 0.08)" }} />
                 <Bar dataKey="saldo" radius={[2, 2, 0, 0]}>
                   {projData.map((d, i) => (
                     <Cell key={i} fill={d.cor === "maior" ? "hsl(var(--neg))" : d.cor === "acima" ? "hsl(var(--pos))" : "hsl(var(--muted-foreground) / 0.35)"} />
                   ))}
                 </Bar>
-              </BarChart>
+                <Line
+                  type="stepAfter" dataKey="saldoSemAsaas" dot={false} isAnimationActive={false}
+                  stroke="hsl(var(--neg))" strokeWidth={1.25} strokeDasharray="3 3"
+                />
+              </ComposedChart>
             </ResponsiveContainer>
           </div>
           <div className="mt-2 max-h-[38vh] overflow-auto rounded-md border border-border">
@@ -864,7 +1053,8 @@ export default function Caixa() {
               <thead className="sticky top-0 bg-card">
                 <tr className="border-b border-border text-left text-[10px] uppercase tracking-wider text-muted-foreground">
                   <th className="px-3 py-2 font-medium">Dia</th>
-                  <th className="px-3 py-2 text-right font-medium">Entradas</th>
+                  <th className="px-3 py-2 text-right font-medium">Entradas Omie</th>
+                  <th className="px-3 py-2 text-right font-medium">Entradas Asaas</th>
                   <th className="px-3 py-2 text-right font-medium">Saídas</th>
                   <th className="px-3 py-2 text-right font-medium">Líquido</th>
                   <th className="px-3 py-2 text-right font-medium">Saldo projetado</th>
@@ -872,7 +1062,7 @@ export default function Caixa() {
               </thead>
               <tbody>
                 {projData.map((d, i) => {
-                  const semMov = d.entradas === 0 && d.saidas === 0;
+                  const semMov = d.entradasTotal === 0 && d.saidas === 0;
                   const dow = DOW[new Date(d.dataISO + "T00:00:00").getDay()];
                   return (
                     <tr key={i} className={cn("border-b border-border/50", semMov ? "text-muted-foreground/60" : "hover:bg-secondary/40")}>
@@ -881,6 +1071,16 @@ export default function Caixa() {
                         {i === 0 && <span className="ml-1 rounded bg-secondary px-1 text-[9px] text-muted-foreground">hoje</span>}
                       </td>
                       <td className="num whitespace-nowrap px-3 py-1.5 text-right text-pos">{d.entradas > 0 ? `+${fmtBRL(d.entradas)}` : "—"}</td>
+                      {/* Quantas cobranças e quanto já está pago (só falta creditar) contam
+                          a confiança da linha: confirmado é dinheiro em trânsito, a vencer é promessa. */}
+                      <td
+                        className="num whitespace-nowrap px-3 py-1.5 text-right text-pos"
+                        title={d.entradasAsaas > 0
+                          ? `${d.asaasQtd} cobrança${d.asaasQtd === 1 ? "" : "s"} · a vencer ${fmtBRL(d.asaasAVencer)} · confirmado ${fmtBRL(d.asaasConfirmado)}`
+                          : undefined}
+                      >
+                        {d.entradasAsaas > 0 ? `+${fmtBRL(d.entradasAsaas)}` : "—"}
+                      </td>
                       <td className="num whitespace-nowrap px-3 py-1.5 text-right text-neg">{d.saidas > 0 ? `-${fmtBRL(d.saidas)}` : "—"}</td>
                       <td className={cn("num whitespace-nowrap px-3 py-1.5 text-right font-medium", d.liquido > 0 ? "text-pos" : d.liquido < 0 ? "text-neg" : "text-muted-foreground")}>
                         {semMov ? "—" : `${d.liquido >= 0 ? "+" : "-"}${fmtBRL(Math.abs(d.liquido))}`}
@@ -893,7 +1093,12 @@ export default function Caixa() {
             </table>
           </div>
           <p className="mt-1 text-[10.5px] text-muted-foreground">
-            Projeção pelos títulos em aberto do Omie (vencimento nos próximos 30 dias), partindo do saldo consolidado atual. Não inclui recorrências ainda não lançadas.
+            Parte do saldo consolidado atual e soma, dia a dia, os títulos em aberto do Omie (pelo vencimento) e as
+            cobranças do Asaas (pelo dia do <b>crédito</b>: Pix e boleto no dia seguinte ao vencimento, cartão em ~30 dias,
+            ou a data que o próprio Asaas informa). Do Asaas entram as cobranças a vencer e as já pagas que ainda não
+            foram creditadas, pelo valor líquido — cobranças <b>vencidas e não pagas</b> ficam de fora, assim como
+            recorrências que ainda não viraram cobrança.
+            {avisoAsaas && <span className="block pt-1 text-muted-foreground/80">{avisoAsaas}</span>}
           </p>
         </DialogContent>
       </Dialog>
@@ -901,26 +1106,45 @@ export default function Caixa() {
   );
 }
 
-/* Tooltip do gráfico de fluxo: entradas, saídas e saldo do dia. */
+/* Tooltip do gráfico de fluxo: entradas (separadas por origem), saídas e saldo do dia.
+   A linha "sem o Asaas" só aparece quando há Asaas no dia ou antes dele — repetir o
+   mesmo número duas vezes num dia parado só rouba a leitura. */
 function FluxoTooltip({ active, payload }: any) {
   if (!active || !payload?.length) return null;
   const d = payload[0].payload;
+  const temAsaas = Math.abs(d.saldo - d.saldoSemAsaas) > 0.005;
   return (
     <div className="rounded-lg border border-border bg-card px-3 py-2 text-[11px] shadow-md">
       <div className="mb-1 font-semibold text-foreground">{d.data}</div>
-      <div className="flex items-center justify-between gap-6"><span className="text-muted-foreground">Entradas</span><span className="num text-pos">+{fmtBRL(d.entradas)}</span></div>
+      <div className="flex items-center justify-between gap-6"><span className="text-muted-foreground">Entradas Omie</span><span className="num text-pos">+{fmtBRL(d.entradas)}</span></div>
+      <div className="flex items-center justify-between gap-6">
+        <span className="text-muted-foreground">
+          Entradas Asaas{d.asaasQtd > 0 && <span className="text-muted-foreground/70"> · {d.asaasQtd} cobr.</span>}
+        </span>
+        <span className="num text-pos">+{fmtBRL(d.entradasAsaas)}</span>
+      </div>
+      {d.asaasConfirmado > 0 && (
+        <div className="flex items-center justify-between gap-6 pl-2 text-[10px]">
+          <span className="text-muted-foreground/70">já pago, aguardando crédito</span>
+          <span className="num text-muted-foreground">{fmtBRL(d.asaasConfirmado)}</span>
+        </div>
+      )}
       <div className="flex items-center justify-between gap-6"><span className="text-muted-foreground">Saídas</span><span className="num text-neg">-{fmtBRL(d.saidas)}</span></div>
       <div className="mt-1 flex items-center justify-between gap-6 border-t border-border pt-1"><span className="text-muted-foreground">Saldo</span><span className="num font-semibold text-foreground">{fmtBRL(d.saldo)}</span></div>
+      {temAsaas && (
+        <div className="flex items-center justify-between gap-6"><span className="text-muted-foreground/70">sem o Asaas</span><span className="num text-neg">{fmtBRL(d.saldoSemAsaas)}</span></div>
+      )}
     </div>
   );
 }
 
 /* ------------------------------ subcomponentes ------------------------------ */
-function MiniStat({ label, value, tone }: { label: string; value: React.ReactNode; tone?: "pos" | "neg" }) {
+function MiniStat({ label, value, tone, apoio }: { label: string; value: React.ReactNode; tone?: "pos" | "neg"; apoio?: string }) {
   return (
     <div className="flex min-w-0 flex-col gap-0.5">
       <span className="truncate text-[9.5px] uppercase tracking-wider text-muted-foreground/80">{label}</span>
       <span className={cn("num truncate text-[12px] font-semibold", tone === "pos" ? "text-pos" : tone === "neg" ? "text-neg" : "text-foreground")}>{value}</span>
+      {apoio && <span className="num truncate text-[9.5px] text-muted-foreground">{apoio}</span>}
     </div>
   );
 }

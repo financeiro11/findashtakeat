@@ -16,7 +16,9 @@
 //   "preview" → diagnóstico: contas correntes cru + amostra de movimento + status.
 //   "sync"    → calcula todos os painéis e grava o snapshot (default).
 
-import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+// Versão fixa (e a MESMA de `_shared/auth.ts`): `@2` solto faz o bundler do
+// deploy resolver duas cópias da lib e quebrar.
+import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.0";
 import { listarCategorias, listarMovimentos, omieCall } from "../_shared/omie.ts";
 import { lerMovimentos, lerCategorias } from "../_shared/omie-cache.ts";
 import { requireUser } from "../_shared/auth.ts";
@@ -31,7 +33,10 @@ const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: { ...corsHeaders, "Content-Type": "application/json" } });
 
 /* ------------------------------- helpers ------------------------------- */
-const norm = (s: unknown) => String(s ?? "").normalize("NFD").replace(/[̀-ͯ]/g, "").toUpperCase().trim();
+// A faixa dos diacríticos vai por escape (U+0300 a U+036F) e não pelos
+// caracteres literais: escritos crus eles são invisíveis no editor, e qualquer
+// cópia do arquivo que os perca deixa o regex casando nada — calado.
+const norm = (s: unknown) => String(s ?? "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toUpperCase().trim();
 function toNum(v: unknown): number {
   if (typeof v === "number") return isNaN(v) ? 0 : v;
   const n = parseFloat(String(v ?? "").replace(/\./g, "").replace(",", "."));
@@ -272,6 +277,7 @@ Deno.serve(async (req) => {
     type Mov = {
       det: any; entrada: boolean; transfer: boolean; ncodcc: string; valor: number; aberto: number;
       dPago: Date | null; dVenc: Date | null; catCod: string; catDesc: string; codCliente: string | null; cnpj: string | null;
+      codTitulo: string | null;
       categorias: { cod: string; desc: string; valor: number }[];
     };
     const movs: Mov[] = [];
@@ -299,6 +305,10 @@ Deno.serve(async (req) => {
         catDesc: descCategoria(det.cCodCateg),
         codCliente: limpa(det.nCodCliente),
         cnpj: limpa(det.cCPFCNPJCliente ?? det.cCpfCnpjCliente ?? det.cCPFCNPJ),
+        // O código do título é a chave para a OBSERVAÇÃO do Omie (`omie_titulo_texto`).
+        // Num gasto de cartão a contraparte é sempre o balde da fatura, e o lojista
+        // só existe nesse texto — é o que a tela lê para escrever o nome da linha.
+        codTitulo: limpa(det.nCodTitulo),
         categorias: cats,
       });
     }
@@ -390,9 +400,9 @@ Deno.serve(async (req) => {
     // movimentações exibidas. Resolvendo só o que a UI realmente mostra (após agregar as 4
     // janelas), o conjunto de nomes a buscar fica pequeno e SEMPRE cobre o que é exibido.
     const dentro = (d: Date | null, de: Date, ate: Date) => !!d && d >= de && d <= ate;
-    type Identificado = { codCliente: string | null; cnpj: string | null; catDesc: string; nomeDireto: string | null };
+    type Identificado = { codCliente: string | null; cnpj: string | null; catDesc: string; nomeDireto: string | null; codTitulo: string | null };
     const identDe = (m: Mov): Identificado =>
-      ({ codCliente: m.codCliente, cnpj: m.cnpj, catDesc: m.catDesc, nomeDireto: limpa(m.det.cNomeCliente) });
+      ({ codCliente: m.codCliente, cnpj: m.cnpj, catDesc: m.catDesc, nomeDireto: limpa(m.det.cNomeCliente), codTitulo: m.codTitulo });
 
     function computeWindow(de: Date, ate: Date, dias: number) {
       let entradas = 0, saidas = 0, nRec = 0, nPag = 0;
@@ -507,13 +517,18 @@ Deno.serve(async (req) => {
 
     for (const janela of Object.values(periodos)) {
       (janela as any).fornecedores = janela.fornecedores.map((f: any) => ({ nome: nomeDe(f), categoria: f.catDesc, valor: f.valor }));
+      /* `cod_titulo` vai junto para a tela poder trocar o balde da fatura pelo
+         lojista (a observação do título, em `omie_titulo_texto`). Fica no lado do
+         cliente de propósito: a observação chega por uma varredura diária, e
+         congelá-la aqui deixaria a linha com o nome do balde até o próximo sync. */
       (janela as any).movimentacoes = janela.movimentacoes.map((mv: any) => ({
         data: mv.data, descricao: nomeDe(mv), categoria: mv.categoria, conta: mv.conta, valor: mv.valor, natureza: mv.natureza,
+        cod_titulo: mv.codTitulo,
       }));
     }
     const contas_a_pagar = {
       total: cap.reduce((s, c) => s + c.valor, 0),
-      itens: capTop.map((c) => ({ data: c.data, descricao: nomeDe(c), categoria: c.catDesc, valor: c.valor, dias: c.dias })),
+      itens: capTop.map((c) => ({ data: c.data, descricao: nomeDe(c), categoria: c.catDesc, valor: c.valor, dias: c.dias, cod_titulo: c.codTitulo })),
     };
 
     // 9) Calendário do mês corrente (realizado + projeção de pagamentos).
@@ -649,19 +664,70 @@ Deno.serve(async (req) => {
       const off = Math.round((startOfDay(m.dVenc).getTime() - hojeD.getTime()) / 86400000);
       if (off >= 0 && off <= projDias) { if (m.entrada) entAberto[off] += m.aberto; else saiAberto[off] += m.aberto; }
     }
+    // 10b) O QUE ENTRA PELO ASAAS. Pelo Omie quase não passa receita — o card mostrava
+    // "Entradas 30d +R$ 199" contra "-R$ 362,2 k" de saídas, e o menor saldo projetado
+    // era um susto sem lastro. As cobranças a vencer (e as já pagas cujo crédito ainda
+    // não caiu) vêm do espelho `asaas_cache`, somadas por DIA DE CRÉDITO na RPC
+    // asaas_entradas_projetadas — ver a migration para o recorte e os prazos.
+    //
+    // Espelho, não API: quem fala com o Asaas é a asaas-sync (action "janela"), que roda
+    // no cron 20 minutos antes desta. Se o espelho estiver vazio ou velho, o gráfico
+    // volta a ser só o Omie e a UI avisa — nunca inventa entrada.
+    const asaasProj = new Map<string, { valor: number; a_vencer: number; confirmado: number; qtd: number }>();
+    let asaasProjOrigem: "espelho" | "vazio" | "erro" = "espelho";
+    let asaasProjAtualizado: string | null = null;
+    try {
+      const [{ data: linhas, error: rpcErr }, { data: est }] = await Promise.all([
+        supabase.rpc("asaas_entradas_projetadas", { p_de: iso(hojeD), p_ate: iso(addDays(hojeD, projDias)) }),
+        supabase.from("asaas_sync_estado").select("ultima_completa").eq("escopo", "payment:janela").maybeSingle(),
+      ]);
+      if (rpcErr) throw rpcErr;
+      for (const l of (linhas ?? []) as any[]) {
+        asaasProj.set(String(l.data), {
+          valor: toNum(l.valor), a_vencer: toNum(l.a_vencer), confirmado: toNum(l.confirmado), qtd: Number(l.qtd) || 0,
+        });
+      }
+      asaasProjAtualizado = (est as any)?.ultima_completa ?? null;
+      if (!asaasProj.size) asaasProjOrigem = "vazio";
+    } catch (e) {
+      asaasProjOrigem = "erro";
+      console.warn("omie-caixa-sync: entradas projetadas do Asaas indisponíveis:", e instanceof Error ? e.message : String(e));
+    }
+
     let saldoRun = saldoConsolidado;
-    const pontos: { data: string; saldo: number; entradas: number; saidas: number }[] = [];
+    let saldoRunOmie = saldoConsolidado; // o mesmo caminho SEM o Asaas — é a linha de referência do gráfico
+    const pontos: {
+      data: string; saldo: number; entradas: number; saidas: number;
+      entradas_asaas: number; asaas_a_vencer: number; asaas_confirmado: number; asaas_qtd: number;
+      saldo_sem_asaas: number;
+    }[] = [];
     for (let off = 0; off <= projDias; off++) {
-      saldoRun += entAberto[off] - saiAberto[off];
-      pontos.push({ data: iso(addDays(hojeD, off)), saldo: saldoRun, entradas: entAberto[off], saidas: saiAberto[off] });
+      const dia = iso(addDays(hojeD, off));
+      const a = asaasProj.get(dia);
+      const entAsaas = a?.valor ?? 0;
+      saldoRun += entAberto[off] + entAsaas - saiAberto[off];
+      saldoRunOmie += entAberto[off] - saiAberto[off];
+      pontos.push({
+        data: dia, saldo: saldoRun, entradas: entAberto[off], saidas: saiAberto[off],
+        entradas_asaas: entAsaas, asaas_a_vencer: a?.a_vencer ?? 0, asaas_confirmado: a?.confirmado ?? 0, asaas_qtd: a?.qtd ?? 0,
+        saldo_sem_asaas: saldoRunOmie,
+      });
     }
     const menor = pontos.reduce((min, p) => (p.saldo < min.saldo ? p : min), pontos[0]);
     const maiorDesembolso = pontos.reduce((mx, p) => (p.saidas > mx.saidas ? p : mx), pontos[0]);
+    const somaAsaas = pontos.reduce(
+      (a, p) => ({
+        total: a.total + p.entradas_asaas, a_vencer: a.a_vencer + p.asaas_a_vencer,
+        confirmado: a.confirmado + p.asaas_confirmado, cobrancas: a.cobrancas + p.asaas_qtd,
+      }),
+      { total: 0, a_vencer: 0, confirmado: 0, cobrancas: 0 },
+    );
     const fluxo_projetado = {
       menor: { valor: menor.saldo, data: menor.data },
       maior_desembolso: { valor: maiorDesembolso.saidas, data: maiorDesembolso.data },
       saldo_final: pontos[pontos.length - 1],
       saldo_atual: saldoConsolidado,
+      asaas: { ...somaAsaas, origem: asaasProjOrigem, atualizado_em: asaasProjAtualizado },
       pontos,
     };
 
@@ -693,6 +759,7 @@ Deno.serve(async (req) => {
       saldo_consolidado: saldoConsolidado,
       contas_a_pagar_total: contas_a_pagar.total,
       asaas_extrato: { origem: asaasOrigem, dias: asaasPorDia.size, buscados: asaasBuscados },
+      asaas_projetado: { origem: asaasProjOrigem, dias: asaasProj.size, total: somaAsaas.total, cobrancas: somaAsaas.cobrancas },
       hoje: { entradas: periodos.hoje.entradas, saidas: periodos.hoje.saidas, resultado: periodos.hoje.resultado },
     });
   } catch (e) {

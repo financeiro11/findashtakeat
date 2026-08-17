@@ -171,8 +171,14 @@ async function marcar(supabase: any, escopo: string, campos: Record<string, unkn
  * e quem vence no mês). Depois, só o que pode ter mudado:
  *   • pagos desde a última sync (o grosso do movimento)
  *   • cobranças criadas desde a última sync que vencem no mês
- *   • os estornos do mês inteiro — são poucos e o estorno não mexe no paymentDate,
- *     então seria justamente o que um incremental por data deixaria passar
+ *
+ * Estorno NÃO é tratado aqui — ver puxarEstornos(). Havia uma terceira consulta neste
+ * Promise.all, `{ paymentDate[ge]: de, paymentDate[le]: ate, status: "REFUNDED" }`,
+ * escrita sob a premissa de que o paymentDate diria quando o estorno aconteceu. Não
+ * diz: medido no espelho em 17/08/26, das 162 cobranças REFUNDED, 153 estão com
+ * data_pagamento NULA (o Asaas limpa o campo ao estornar) e as 9 que sobram guardam a
+ * data do PAGAMENTO — pagas em julho, estornadas em agosto. A consulta portanto ou
+ * não devolvia a linha, ou a devolvia no mês em que o dinheiro tinha ENTRADO.
  */
 async function puxarPagamentos(supabase: any, ref: string, completo: boolean) {
   const { de, ate } = rangeMes(ref);
@@ -196,17 +202,63 @@ async function puxarPagamentos(supabase: any, ref: string, completo: boolean) {
     const marca = subDias(desde, OVERLAP_DIAS);
     const inicio = marca > de ? marca : de;
 
-    const [recemPagos, novas, estornos] = await Promise.all([
+    const [recemPagos, novas] = await Promise.all([
       asaasList("/payments", { "paymentDate[ge]": inicio, "paymentDate[le]": ate }),
       asaasList("/payments", { "dueDate[ge]": de, "dueDate[le]": ate, "dateCreated[ge]": inicio }),
-      asaasList("/payments", { "paymentDate[ge]": de, "paymentDate[le]": ate, status: "REFUNDED" }),
     ]);
-    linhas.push(...recemPagos, ...novas, ...estornos);
+    linhas.push(...recemPagos, ...novas);
     await marcar(supabase, escopo, { ultima_incremental: new Date().toISOString() });
   }
 
   const n = await gravar(supabase, linhas.map(mapPayment));
   return { modo: requisicoes, linhas: n };
+}
+
+/**
+ * OS ESTORNOS — varredura por STATUS, sem recorte de mês.
+ *
+ * POR QUE SEM MÊS: um estorno não tem mês próprio no recorte das outras puxadas. A
+ * cobrança de origem pode ser de qualquer mês passado, e o paymentDate não serve de
+ * âncora (ver puxarPagamentos: ou está vazio, ou é a data do pagamento) — então nem
+ * `paymentDate[ge]` nem o mês de referência alcançam a linha de forma confiável.
+ * A janela de vencimento (±45/31 dias) cobre só o passado recente: medido em
+ * 17/08/26, as cobranças com estorno PARCIAL no espelho vão de junho a setembro/26 e
+ * mais nada — exatamente o desenho da janela, e não a história real dos estornos.
+ * O resultado prático era um buraco permanente: estorno em agosto de uma cobrança de
+ * junho não voltava para o espelho nem em agosto nem em junho.
+ *
+ * O CUSTO: uma requisição por status + as páginas de quem tiver volume. Na ordem de
+ * ~8 requisições, contra a cota de 25.000/12h. Só roda em "atualizar".
+ *
+ * LIMITE CONHECIDO — ESTORNO PARCIAL. Ele não tem status próprio: a cobrança segue
+ * RECEIVED/CONFIRMED e o valor devolvido só existe dentro de `refunds[]`. Nenhuma
+ * varredura por status o encontra, e a API não expõe filtro por "tem refunds". Ele só
+ * chega ao espelho quando a linha é revisitada por outra puxada (vencimento no mês ou
+ * na janela). Para cobranças antigas parcialmente estornadas, o dado pode faltar — o
+ * fechamento definitivo é o webhook PAYMENT_PARTIALLY_REFUNDED, que ainda não existe.
+ */
+const STATUS_DEVOLUCAO = [
+  "REFUNDED",              // estorno total já concluído
+  "REFUND_REQUESTED",      // pedido registrado, dinheiro ainda não saiu
+  "REFUND_IN_PROGRESS",    // liquidação agendada, estorna depois de liquidar
+  "CHARGEBACK_REQUESTED",
+  "CHARGEBACK_DISPUTE",
+  "AWAITING_CHARGEBACK_REVERSAL",
+];
+
+async function puxarEstornos(supabase: any) {
+  const listas = await Promise.all(
+    STATUS_DEVOLUCAO.map((status) => asaasList("/payments", { status })),
+  );
+  const porStatus = Object.fromEntries(STATUS_DEVOLUCAO.map((s, i) => [s, listas[i].length]));
+  const n = await gravar(supabase, listas.flat().map(mapPayment));
+
+  await marcar(supabase, "payment:estornos", {
+    ultima_completa: new Date().toISOString(),
+    ultima_incremental: new Date().toISOString(),
+    detalhe: { por_status: porStatus, linhas: n },
+  });
+  return { linhas: n, por_status: porStatus };
 }
 
 /**
@@ -415,16 +467,19 @@ Deno.serve(async (req) => {
         });
       }
 
-      const [pagamentos, assinaturas, notas, janela] = await Promise.all([
+      const [pagamentos, assinaturas, notas, janela, estornos] = await Promise.all([
         puxarPagamentos(supabase, ref, completo),
         puxarAssinaturas(supabase, completo),
         puxarNotas(supabase, ref, completo),
         // A janela não tem mês — é sempre em torno de hoje. Só vale reatualizar quando
         // se está olhando o mês corrente.
         ref === mesAtual() ? puxarJanela(supabase) : Promise.resolve(null),
+        // Estornos também não têm mês, mas ao contrário da janela valem para QUALQUER
+        // referência: o estorno que interessa a julho pode ter sido feito hoje.
+        puxarEstornos(supabase),
       ]);
       const { dados } = await recalcular(supabase, ref);
-      return json({ ok: true, referencia: ref, origem: "asaas", detalhe: { pagamentos, assinaturas, notas, janela }, dados });
+      return json({ ok: true, referencia: ref, origem: "asaas", detalhe: { pagamentos, assinaturas, notas, janela, estornos }, dados });
     }
 
     /* ------------- RECALCULAR (padrão) — 0 requisições ------------- */

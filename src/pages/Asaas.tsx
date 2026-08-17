@@ -148,12 +148,51 @@ export default function Asaas() {
           {/* Recebimentos */}
           <section className="space-y-3">
             <h3 className="text-sm font-semibold text-foreground/90">Recebimentos</h3>
-            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-5">
-              <KpiCard label="Recebido no mês" value={brl(r?.recebido_valor)} valueTone="pos" subline={<>{int(r?.recebido_qtd)} cobranças · líq. {brl(r?.recebido_liquido)}</>} />
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+              <KpiCard
+                label="Recebido no mês"
+                value={brl(r?.recebido_valor)}
+                valueTone="pos"
+                subline={
+                  <>
+                    {int(r?.recebido_qtd)} cobranças · líq. {brl(r?.recebido_liquido)}
+                    {/* O bruto é o que entrou no banco; o estorno parcial devolve parte
+                        depois e NÃO abate o `value` da cobrança no Asaas. Sem esta
+                        linha o card afirmava um recebimento que já tinha voltado. */}
+                    {Number(r?.recebido_estornado) > 0 && (
+                      <> · −{brl(r?.recebido_estornado)} estornado</>
+                    )}
+                  </>
+                }
+              />
               <KpiCard label="A receber" value={brl(r?.a_receber_valor)} subline="pendentes que vencem no mês" />
               <KpiCard label="Conversão" value={pct(r?.conversao)} subline={`${int(r?.venc_pagos)}/${int(r?.venc_total)} vencidas → pagas`} />
               <KpiCard label="Dias até receber" value={r?.dias_ate_recebimento == null ? "—" : `${Math.round(r.dias_ate_recebimento)}d`} subline="ciclo médio (pagto − venc.)" />
-              <KpiCard label="Estornos" value={brl(r?.estornos_valor)} valueTone="neg" subline={`${int(r?.estornos_qtd)} no mês`} />
+              <KpiCard
+                label="Estornos"
+                value={brl(r?.estornos_valor)}
+                valueTone="neg"
+                subline={
+                  <>
+                    {int(r?.estornos_qtd)} no mês
+                    {Number(r?.estornos_parcial_valor) > 0 && (
+                      <> · {brl(r?.estornos_parcial_valor)} parciais</>
+                    )}
+                    {Number(r?.estornos_pendente_valor) > 0 && (
+                      <> · {brl(r?.estornos_pendente_valor)} a liquidar</>
+                    )}
+                  </>
+                }
+              />
+              {/* Retrato do AGORA, sem mês: são as cobranças em que o dinheiro entrou,
+                  está contestado e ainda não voltou. Antes elas sumiam da tela — não
+                  contam como recebidas nem como estornadas enquanto durar o limbo. */}
+              <KpiCard
+                label="Em disputa"
+                value={brl(r?.disputa_valor)}
+                valueTone={Number(r?.disputa_valor) > 0 ? "neg" : undefined}
+                subline={`${int(r?.disputa_qtd)} cobranças · estorno ou chargeback em curso`}
+              />
             </div>
           </section>
 

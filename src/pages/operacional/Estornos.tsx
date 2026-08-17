@@ -36,13 +36,30 @@ import {
 } from "recharts";
 import {
   Undo2, ChevronLeft, ChevronRight, Loader2, RefreshCw, ExternalLink, AlertTriangle,
-  Check, Search, TriangleAlert, Clock, Scissors, FileSpreadsheet, Table2,
+  Check, Search, TriangleAlert, Clock, Scissors, FileSpreadsheet, Table2, History,
 } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import SheetMirrorPage from "./SheetMirrorPage";
 
 const PLANILHA_ID = "10A9YnskShPPZ2Xz9d-kN2SHCv-qN-48-94rQBbCNWIo";
 const PLANILHA_URL = `https://docs.google.com/spreadsheets/d/${PLANILHA_ID}/edit?gid=1062579993`;
+
+/**
+ * A partir de quantos dias entre o estorno e o vencimento a linha vira "estorno antigo".
+ * Parcelamento no cartão é capturado à vista: o cliente que cancela em setembro tem as
+ * parcelas devolvidas de uma vez, cada uma guardando seu vencimento lá na frente. Com
+ * competência = vencimento isso é o esperado, mas faz o churn do mês carregar gente que
+ * saiu no ano passado — e sem este aviso ninguém enxerga.
+ * O mesmo 180 está na RPC `estornos_serie`; mudou aqui, mude lá.
+ */
+const DIAS_ESTORNO_ANTIGO = 180;
+
+const diasAteVencimento = (e: { data_estorno: string | null; data_vencimento: string | null }) =>
+  e.data_estorno && e.data_vencimento
+    ? Math.round((Date.parse(e.data_vencimento) - Date.parse(e.data_estorno)) / 86400000)
+    : null;
+const ehEstornoAntigo = (e: { data_estorno: string | null; data_vencimento: string | null }) =>
+  (diasAteVencimento(e) ?? 0) >= DIAS_ESTORNO_ANTIGO;
 
 const sb = supabase as any;
 
@@ -81,6 +98,8 @@ type LinhaSerie = {
   churn_real: number;
   nao_classificado: number; qtd_nao_classificado: number;
   pendente: number; qtd_pendente: number;
+  /** fatia do churn_real que veio de estorno executado há muito tempo */
+  antigo: number; qtd_antigo: number;
 };
 type Estorno = {
   id: string; id_pagamento: string;
@@ -174,7 +193,7 @@ function Conciliacao() {
   const [sincronizando, setSincronizando] = useState<"" | "recalcular" | "atualizar">("");
   const [incluirPendentes, setIncluirPendentes] = useState(false);
   const [busca, setBusca] = useState("");
-  const [filtro, setFiltro] = useState<"todos" | "indevida" | "sem_classificacao" | "parcial">("todos");
+  const [filtro, setFiltro] = useState<"todos" | "indevida" | "sem_classificacao" | "parcial" | "antigo">("todos");
 
   /* --------------------------- carga --------------------------- */
   async function carregarSerie(preservarMes = true) {
@@ -189,6 +208,7 @@ function Conciliacao() {
       competencia: String(r.competencia).slice(0, 10),
       estornado: Number(r.estornado), indevida: Number(r.indevida), churn_real: Number(r.churn_real),
       nao_classificado: Number(r.nao_classificado), pendente: Number(r.pendente),
+      antigo: Number(r.antigo),
     })) as LinhaSerie[];
     setSerie(linhasSerie);
     setEstado(est ?? null);
@@ -255,6 +275,7 @@ function Conciliacao() {
       if (filtro === "indevida" && !l.cobranca_indevida) return false;
       if (filtro === "sem_classificacao" && l.linha_planilha != null) return false;
       if (filtro === "parcial" && !l.parcial) return false;
+      if (filtro === "antigo" && !(ehEstornoAntigo(l) && !l.cobranca_indevida)) return false;
       if (!q) return true;
       // A busca varre também o motivo e a descrição — é por eles que se procura
       // quando o nome do cliente ainda não foi resolvido.
@@ -416,6 +437,21 @@ function Conciliacao() {
               <b className="num">{brlStr(atual!.pendente)}</b> ainda em processamento no Asaas (fora da conta)
             </span>
           )}
+          {(atual?.qtd_antigo ?? 0) > 0 && (
+            // O churn do mês carrega parcela de gente que saiu há muito tempo: no cartão
+            // parcelado o Asaas devolve tudo de uma vez e cada parcela guarda o vencimento
+            // dela lá na frente. É a competência funcionando, mas ler "churn de julho"
+            // como "quem saiu em julho" está errado nesta fatia — daí o aviso.
+            <button
+              onClick={() => setFiltro("antigo")}
+              className="inline-flex items-center gap-1.5 text-muted-foreground hover:text-foreground"
+              title="O estorno já tinha sido feito quando a parcela venceu. Clique para ver quais."
+            >
+              <History className="h-3.5 w-3.5" />
+              <b className="num">{brlStr(atual!.antigo)}</b> ({Math.round((atual!.antigo / Math.max(1, atual!.churn_real)) * 100)}%)
+              vêm de {inteiro(atual!.qtd_antigo)} estorno(s) feito(s) antes deste mês
+            </button>
+          )}
           {semNome > 0 && (
             <span className="text-muted-foreground">
               {inteiro(semNome)} sem nome de cliente — o cadastro se completa nas próximas atualizações
@@ -476,6 +512,7 @@ function Conciliacao() {
               ["indevida", `Erro de cobrança (${linhas.filter((l) => l.cobranca_indevida).length})`],
               ["sem_classificacao", `Sem linha na planilha (${linhas.filter((l) => l.linha_planilha == null).length})`],
               ["parcial", `Parciais (${linhas.filter((l) => l.parcial).length})`],
+              ["antigo", `Estorno antigo (${linhas.filter((l) => ehEstornoAntigo(l) && !l.cobranca_indevida).length})`],
             ] as const).map(([v, rotulo]) => (
               <button
                 key={v}
@@ -566,6 +603,11 @@ function Conciliacao() {
                     {dataCurta(l.data_estorno)}
                     {l.status_estorno === "PENDING" && (
                       <div className="text-[11px] text-muted-foreground">em processamento</div>
+                    )}
+                    {ehEstornoAntigo(l) && (
+                      <div className="text-[11px] text-muted-foreground">
+                        {Math.round((diasAteVencimento(l) ?? 0) / 30)} meses antes do vencimento
+                      </div>
                     )}
                   </td>
                   <td className="px-3 py-2 text-xs text-muted-foreground">{dataCurta(l.data_vencimento)}</td>

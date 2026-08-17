@@ -55,6 +55,7 @@ import Assinaturas from "./pages/Assinaturas";
 import Auditoria from "./pages/Auditoria";
 import Cartao from "./pages/Cartao";
 import CartaoOmie from "./pages/operacional/CartaoOmie";
+import PainelCAC from "./pages/governanca/PainelCAC";
 import Reembolsos from "./pages/operacional/Reembolsos";
 import Estornos from "./pages/operacional/Estornos";
 import Variavel from "./pages/operacional/Variavel";
@@ -199,6 +200,7 @@ function Rotas() {
               <Route path="/assinaturas" element={<Assinaturas />} />
               <Route path="/governanca/auditoria" element={<Auditoria />} />
               <Route path="/governanca/cartao" element={<Cartao />} />
+              <Route path="/governanca/cac" element={<PainelCAC />} />
               {/* A aba Extratos existe só no celular; no computador cada fonte tem a sua
                   página própria, e a do cartão é a mais parecida com ela. */}
               <Route path="/extratos" element={<Navigate to="/governanca/cartao" replace />} />

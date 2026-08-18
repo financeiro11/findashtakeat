@@ -392,6 +392,57 @@ export type Database = {
         }
         Relationships: []
       }
+      asaas_cache: {
+        Row: {
+          atualizado_em: string
+          ciclo: string | null
+          dados: Json
+          data_credito: string | null
+          data_criacao: string | null
+          data_efetiva: string | null
+          data_pagamento: string | null
+          data_vencimento: string | null
+          forma: string | null
+          id_asaas: string
+          status: string | null
+          tipo: string
+          valor: number | null
+          valor_liquido: number | null
+        }
+        Insert: {
+          atualizado_em?: string
+          ciclo?: string | null
+          dados: Json
+          data_credito?: string | null
+          data_criacao?: string | null
+          data_efetiva?: string | null
+          data_pagamento?: string | null
+          data_vencimento?: string | null
+          forma?: string | null
+          id_asaas: string
+          status?: string | null
+          tipo: string
+          valor?: number | null
+          valor_liquido?: number | null
+        }
+        Update: {
+          atualizado_em?: string
+          ciclo?: string | null
+          dados?: Json
+          data_credito?: string | null
+          data_criacao?: string | null
+          data_efetiva?: string | null
+          data_pagamento?: string | null
+          data_vencimento?: string | null
+          forma?: string | null
+          id_asaas?: string
+          status?: string | null
+          tipo?: string
+          valor?: number | null
+          valor_liquido?: number | null
+        }
+        Relationships: []
+      }
       asaas_extrato: {
         Row: {
           contraparte_documento: string | null
@@ -476,6 +527,27 @@ export type Database = {
           gerado_em?: string
           id?: string
           referencia?: string
+        }
+        Relationships: []
+      }
+      asaas_sync_estado: {
+        Row: {
+          detalhe: Json | null
+          escopo: string
+          ultima_completa: string | null
+          ultima_incremental: string | null
+        }
+        Insert: {
+          detalhe?: Json | null
+          escopo: string
+          ultima_completa?: string | null
+          ultima_incremental?: string | null
+        }
+        Update: {
+          detalhe?: Json | null
+          escopo?: string
+          ultima_completa?: string | null
+          ultima_incremental?: string | null
         }
         Relationships: []
       }
@@ -1058,6 +1130,131 @@ export type Database = {
           periodo_inicio?: string
         }
         Relationships: []
+      }
+      cac_linhas: {
+        Row: {
+          ativo: boolean
+          atualizado_em: string
+          categorias: string[]
+          criado_em: string
+          departamentos: string[]
+          grupo: string
+          id: string
+          ordem: number
+          regra_nota: string | null
+          rotulo: string
+        }
+        Insert: {
+          ativo?: boolean
+          atualizado_em?: string
+          categorias?: string[]
+          criado_em?: string
+          departamentos?: string[]
+          grupo: string
+          id?: string
+          ordem: number
+          regra_nota?: string | null
+          rotulo: string
+        }
+        Update: {
+          ativo?: boolean
+          atualizado_em?: string
+          categorias?: string[]
+          criado_em?: string
+          departamentos?: string[]
+          grupo?: string
+          id?: string
+          ordem?: number
+          regra_nota?: string | null
+          rotulo?: string
+        }
+        Relationships: []
+      }
+      cac_pessoas: {
+        Row: {
+          ativo: boolean
+          atualizado_em: string
+          categoria_omie: string | null
+          cnpj: string
+          criado_em: string
+          departamento: string
+          id: string
+          nome: string
+          observacao: string | null
+          planilha_comissao: string | null
+          remuneracao: number | null
+        }
+        Insert: {
+          ativo?: boolean
+          atualizado_em?: string
+          categoria_omie?: string | null
+          cnpj: string
+          criado_em?: string
+          departamento: string
+          id?: string
+          nome: string
+          observacao?: string | null
+          planilha_comissao?: string | null
+          remuneracao?: number | null
+        }
+        Update: {
+          ativo?: boolean
+          atualizado_em?: string
+          categoria_omie?: string | null
+          cnpj?: string
+          criado_em?: string
+          departamento?: string
+          id?: string
+          nome?: string
+          observacao?: string | null
+          planilha_comissao?: string | null
+          remuneracao?: number | null
+        }
+        Relationships: []
+      }
+      cac_valores_manuais: {
+        Row: {
+          ano: number
+          atualizado_em: string
+          autor: string | null
+          autor_nome: string | null
+          criado_em: string
+          linha_id: string
+          mes: number
+          nota: string | null
+          valor: number
+        }
+        Insert: {
+          ano: number
+          atualizado_em?: string
+          autor?: string | null
+          autor_nome?: string | null
+          criado_em?: string
+          linha_id: string
+          mes: number
+          nota?: string | null
+          valor: number
+        }
+        Update: {
+          ano?: number
+          atualizado_em?: string
+          autor?: string | null
+          autor_nome?: string | null
+          criado_em?: string
+          linha_id?: string
+          mes?: number
+          nota?: string | null
+          valor?: number
+        }
+        Relationships: [
+          {
+            foreignKeyName: "cac_valores_manuais_linha_id_fkey"
+            columns: ["linha_id"]
+            isOneToOne: false
+            referencedRelation: "cac_linhas"
+            referencedColumns: ["id"]
+          },
+        ]
       }
       calendario_financeiro: {
         Row: {
@@ -2560,6 +2757,162 @@ export type Database = {
         }
         Relationships: []
       }
+      estornos_asaas: {
+        Row: {
+          assinatura: string | null
+          atualizado_em: string
+          casamento: string | null
+          cliente_documento: string | null
+          cliente_id: string | null
+          cliente_nome: string | null
+          cobranca_indevida: boolean
+          competencia: string | null
+          comprovante_url: string | null
+          dados: Json | null
+          data_estorno: string | null
+          data_pagamento: string | null
+          data_vencimento: string | null
+          descarte_origem: string | null
+          descricao: string | null
+          forma: string | null
+          id: string
+          id_pagamento: string
+          indice: number
+          invoice_url: string | null
+          linha_planilha: number | null
+          motivo: string | null
+          parcial: boolean
+          status_cobranca: string | null
+          status_estorno: string | null
+          valor_cobranca: number
+          valor_estornado: number
+        }
+        Insert: {
+          assinatura?: string | null
+          atualizado_em?: string
+          casamento?: string | null
+          cliente_documento?: string | null
+          cliente_id?: string | null
+          cliente_nome?: string | null
+          cobranca_indevida?: boolean
+          competencia?: string | null
+          comprovante_url?: string | null
+          dados?: Json | null
+          data_estorno?: string | null
+          data_pagamento?: string | null
+          data_vencimento?: string | null
+          descarte_origem?: string | null
+          descricao?: string | null
+          forma?: string | null
+          id: string
+          id_pagamento: string
+          indice?: number
+          invoice_url?: string | null
+          linha_planilha?: number | null
+          motivo?: string | null
+          parcial?: boolean
+          status_cobranca?: string | null
+          status_estorno?: string | null
+          valor_cobranca?: number
+          valor_estornado?: number
+        }
+        Update: {
+          assinatura?: string | null
+          atualizado_em?: string
+          casamento?: string | null
+          cliente_documento?: string | null
+          cliente_id?: string | null
+          cliente_nome?: string | null
+          cobranca_indevida?: boolean
+          competencia?: string | null
+          comprovante_url?: string | null
+          dados?: Json | null
+          data_estorno?: string | null
+          data_pagamento?: string | null
+          data_vencimento?: string | null
+          descarte_origem?: string | null
+          descricao?: string | null
+          forma?: string | null
+          id?: string
+          id_pagamento?: string
+          indice?: number
+          invoice_url?: string | null
+          linha_planilha?: number | null
+          motivo?: string | null
+          parcial?: boolean
+          status_cobranca?: string | null
+          status_estorno?: string | null
+          valor_cobranca?: number
+          valor_estornado?: number
+        }
+        Relationships: []
+      }
+      estornos_planilha: {
+        Row: {
+          atualizado_em: string
+          cobranca_indevida: boolean
+          data_pagamento: string | null
+          data_realizada: string | null
+          data_solicitacao: string | null
+          estabelecimento: string | null
+          executor: string | null
+          forma: string | null
+          linha: number
+          links: string[] | null
+          mes: number | null
+          motivo: string | null
+          observacoes: string | null
+          periodo: string | null
+          responsavel: string | null
+          setor: string | null
+          status: string | null
+          valor_estornar: number | null
+          valor_pago: number | null
+        }
+        Insert: {
+          atualizado_em?: string
+          cobranca_indevida?: boolean
+          data_pagamento?: string | null
+          data_realizada?: string | null
+          data_solicitacao?: string | null
+          estabelecimento?: string | null
+          executor?: string | null
+          forma?: string | null
+          linha: number
+          links?: string[] | null
+          mes?: number | null
+          motivo?: string | null
+          observacoes?: string | null
+          periodo?: string | null
+          responsavel?: string | null
+          setor?: string | null
+          status?: string | null
+          valor_estornar?: number | null
+          valor_pago?: number | null
+        }
+        Update: {
+          atualizado_em?: string
+          cobranca_indevida?: boolean
+          data_pagamento?: string | null
+          data_realizada?: string | null
+          data_solicitacao?: string | null
+          estabelecimento?: string | null
+          executor?: string | null
+          forma?: string | null
+          linha?: number
+          links?: string[] | null
+          mes?: number | null
+          motivo?: string | null
+          observacoes?: string | null
+          periodo?: string | null
+          responsavel?: string | null
+          setor?: string | null
+          status?: string | null
+          valor_estornar?: number | null
+          valor_pago?: number | null
+        }
+        Relationships: []
+      }
       extratos_importados: {
         Row: {
           created_at: string
@@ -3329,7 +3682,7 @@ export type Database = {
           criado_em: string
           criado_por: string | null
           enviado_para: string | null
-          expira_em: string
+          expira_em: string | null
           id_unicos: Json
           ip_ultimo_acesso: string | null
           qtd_itens: number
@@ -3345,7 +3698,7 @@ export type Database = {
           criado_em?: string
           criado_por?: string | null
           enviado_para?: string | null
-          expira_em: string
+          expira_em?: string | null
           id_unicos?: Json
           ip_ultimo_acesso?: string | null
           qtd_itens?: number
@@ -3361,7 +3714,7 @@ export type Database = {
           criado_em?: string
           criado_por?: string | null
           enviado_para?: string | null
-          expira_em?: string
+          expira_em?: string | null
           id_unicos?: Json
           ip_ultimo_acesso?: string | null
           qtd_itens?: number
@@ -4957,6 +5310,7 @@ export type Database = {
       }
       recargas_celulares_solicitacoes: {
         Row: {
+          agendada_para: string | null
           callback_em: string | null
           callback_erro: string | null
           callback_status: string | null
@@ -4981,6 +5335,7 @@ export type Database = {
           valor: number
         }
         Insert: {
+          agendada_para?: string | null
           callback_em?: string | null
           callback_erro?: string | null
           callback_status?: string | null
@@ -5005,6 +5360,7 @@ export type Database = {
           valor?: number
         }
         Update: {
+          agendada_para?: string | null
           callback_em?: string | null
           callback_erro?: string | null
           callback_status?: string | null
@@ -5848,6 +6204,17 @@ export type Database = {
       }
     }
     Views: {
+      cac_pagamentos: {
+        Row: {
+          categoria: string | null
+          cnpj: string | null
+          cod_titulo: number | null
+          data_pagamento: string | null
+          valor: number | null
+          vencimento: string | null
+        }
+        Relationships: []
+      }
       contrapartes_pessoas: {
         Row: {
           documento: string | null
@@ -5973,6 +6340,56 @@ export type Database = {
             }
             Returns: string
           }
+      asaas_entradas_projetadas: {
+        Args: { p_ate: string; p_de: string }
+        Returns: {
+          a_vencer: number
+          confirmado: number
+          data: string
+          qtd: number
+          valor: number
+        }[]
+      }
+      asaas_metricas: { Args: { p_referencia: string }; Returns: Json }
+      asaas_prazo_credito: { Args: { p_forma: string }; Returns: number }
+      cac_celula: {
+        Args: { p_ano: number; p_linha_id: string; p_mes: number }
+        Returns: {
+          categoria: string
+          categoria_descricao: string
+          cnpj: string
+          cod_titulo: number
+          data_pagamento: string
+          departamento: string
+          favorecido: string
+          natureza: string
+          pessoa: string
+          tipo: string
+          valor: number
+        }[]
+      }
+      cac_linha_casa: {
+        Args: {
+          p_categoria: string
+          p_categorias: string[]
+          p_cnpj: string
+          p_departamentos: string[]
+        }
+        Returns: boolean
+      }
+      cac_painel: {
+        Args: { p_ano: number }
+        Returns: {
+          grupo: string
+          linha_id: string
+          mes: number
+          ordem: number
+          origem: string
+          regra_nota: string
+          rotulo: string
+          valor: number
+        }[]
+      }
       cartao_importar: { Args: { p_payload: Json }; Returns: Json }
       cartao_marcar: {
         Args: {
@@ -6118,6 +6535,41 @@ export type Database = {
           ultima: string
           valor: number
           valor_lancamento: number
+        }[]
+      }
+      estornos_chave: { Args: { t: string }; Returns: string }
+      estornos_conciliar: { Args: never; Returns: Json }
+      estornos_motivo_descarta: { Args: { t: string }; Returns: boolean }
+      estornos_nome: { Args: { t: string }; Returns: string }
+      estornos_planilha_orfas: {
+        Args: never
+        Returns: {
+          data_solicitacao: string
+          estabelecimento: string
+          forma: string
+          linha: number
+          mes: number
+          motivo: string
+          status: string
+          valor_estornar: number
+        }[]
+      }
+      estornos_serie: {
+        Args: { p_pendentes?: boolean }
+        Returns: {
+          antigo: number
+          churn_real: number
+          competencia: string
+          estornado: number
+          indevida: number
+          nao_classificado: number
+          pendente: number
+          qtd: number
+          qtd_antigo: number
+          qtd_indevida: number
+          qtd_nao_classificado: number
+          qtd_parciais: number
+          qtd_pendente: number
         }[]
       }
       fmt_brl: { Args: { v: number }; Returns: string }
@@ -6320,6 +6772,8 @@ export type Database = {
         Args: { p_id_unico: string; p_texto: string; p_token: string }
         Returns: Json
       }
+      show_limit: { Args: never; Returns: number }
+      show_trgm: { Args: { "": string }; Returns: string[] }
       titulos_por_memo: {
         Args: { p_memos: string[] }
         Returns: {

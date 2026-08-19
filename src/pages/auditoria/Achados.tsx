@@ -1,12 +1,14 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/hooks/useAuth";
+import { useApelidos } from "@/hooks/useApelidos";
+import { nomeContraparte, textoDaBusca, type MapaLojistas, type NomeContraparte } from "@/lib/lojistaCartao";
 import { Button } from "@/components/ui/button";
 import { Sheet, SheetContent } from "@/components/ui/sheet";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Textarea } from "@/components/ui/textarea";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Download, X, ChevronRight, Check, ExternalLink, Search, RefreshCw, Loader2, Paperclip, Copy, Upload } from "lucide-react";
+import { Download, X, ChevronRight, Check, ExternalLink, Search, RefreshCw, Loader2, Paperclip, Copy, Upload, Sparkles, AlertCircle } from "lucide-react";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
@@ -16,6 +18,7 @@ import { brl, brlAbbr, fmtDateBR, fmtDateTimeBR, fmtTrilha, compLabel, MESES_PT_
 import { comValorExato } from "@/components/ValorExato";
 import AjusteSolicitadoModal from "./AjusteSolicitadoModal";
 import SolicitarJustificativasModal from "./SolicitarJustificativasModal";
+import ConferenciaModal from "./ConferenciaModal";
 import { enviarProntos, enviarUnitario } from "@/lib/omieAnexos";
 import { WhatsAppLogo, OmieLogo } from "@/components/brand-logos";
 import { useAnexarComprovante } from "./useAnexarComprovante";
@@ -54,6 +57,16 @@ type Row = {
   omie_cod_titulo?: string | null;
   /** carimbo de quando o comprovante foi enviado ao Omie; !null = já enviado (esconde o botão). */
   omie_anexo_enviado_em?: string | null;
+  /* --- conferência do comprovante pela IA (auditoria-conferir-comprovante) --- */
+  /** "aprovar" = valor e fornecedor batem com o documento; "revisar" = fica com a pessoa. */
+  ia_veredito?: "aprovar" | "revisar" | null;
+  /** A frase que explica o veredito — é o que a linha e o drawer mostram. */
+  ia_motivo?: string | null;
+  /** A transcrição do documento (emitente, total, linhas). Ver `LeituraIA`. */
+  ia_leitura?: LeituraIA | null;
+  ia_conferido_em?: string | null;
+  /** Qual comprovante foi lido. Diferente do `link_comprovante` = leitura velha. */
+  ia_arquivo?: string | null;
   /** true = aprovado automaticamente (bate com a nota); vem da base do cartão, não da
    *  tabela `auditoria`, portanto é somente leitura (sem mudança de status). */
   _ro?: boolean;
@@ -61,7 +74,28 @@ type Row = {
 type Filtro = "todas" | Status;
 type FiltroCat = "todas" | Categoria;
 
+/** O que a IA transcreveu do comprovante. Espelha o schema da Edge Function. */
+type LeituraIA = {
+  legivel?: boolean;
+  tipo_documento?: string;
+  emitente_nome?: string;
+  emitente_cnpj?: string | null;
+  valor_total?: number;
+  valores?: { rotulo: string; valor: number }[];
+  data_documento?: string | null;
+  numero_documento?: string | null;
+  descricao?: string;
+  observacao?: string | null;
+};
+
 const ALL_CATEGORIAS: Categoria[] = ["COM NF", "SEM NF", "FORA DE ESCOPO", "A CONFERIR"];
+
+/* `types.ts` é gerado pelo Supabase CLI e ainda não conhece a RPC criada na
+   migration 20260819120000. Mesmo atalho do `useApelidos` — some quando os tipos
+   forem regerados. */
+const lerLojistas = (): PromiseLike<{ data: MapaLojistas | null; error: { message?: string } | null }> =>
+  (supabase as unknown as { rpc: (nome: string) => PromiseLike<{ data: MapaLojistas | null; error: { message?: string } | null }> })
+    .rpc("auditoria_lojistas");
 
 // Deriva a categoria de um achado quando o n8n não a preencheu, a partir dos sinais
 // reais da auditoria: a `regra` do achado + o status de NF/escopo da origem no cartão.
@@ -125,6 +159,8 @@ function statusStyle(s: Status) {
 
 export default function Achados() {
   const { user } = useAuth();
+  const apelidos = useApelidos();
+  const [lojistas, setLojistas] = useState<MapaLojistas>({});
   const [rows, setRows] = useState<Row[]>([]);
   const [loading, setLoading] = useState(true);
   const [competencia, setCompetencia] = useState<string>("");
@@ -147,16 +183,28 @@ export default function Achados() {
   const [cruzando, setCruzando] = useState(false);
   const [enviandoUm, setEnviandoUm] = useState(false);
   const [enviandoMassa, setEnviandoMassa] = useState(false);
+  const [conferenciaOpen, setConferenciaOpen] = useState(false);
 
   // Garante que o modal de "Ajuste solicitado" NUNCA venha aberto ao abrir/trocar de lançamento
   useEffect(() => { setAjusteOpen(false); }, [selected?.id]);
+
+  /* O MEMO da fatura ("LATAM AIR*0000V SAO PAULO") vira o nome limpo do módulo do
+     Cartão pelo casamento data + valor; daí em diante é o apelido da
+     Parametrização que manda. Acessório: sem o mapa a tela mostra o nome cru,
+     como sempre mostrou. */
+  useEffect(() => {
+    lerLojistas().then(({ data, error }) => {
+      if (error) { console.warn("[auditoria] sem o mapa de lojistas:", error); return; }
+      setLojistas(data ?? {});
+    });
+  }, []);
 
   const load = async () => {
     setLoading(true);
     const [audRes, cartRes] = await Promise.all([
       supabase
         .from("auditoria")
-        .select("id,id_unico,competencia,titulo,area,severidade,valor,responsavel,data_lancamento,descricao,regra,origem,id_transacao,status,trilha,categoria,link_comprovante,omie_categoria_descricao,omie_match_confianca,omie_cod_titulo,omie_anexo_enviado_em")
+        .select("id,id_unico,competencia,titulo,area,severidade,valor,responsavel,data_lancamento,descricao,regra,origem,id_transacao,status,trilha,categoria,link_comprovante,omie_categoria_descricao,omie_match_confianca,omie_cod_titulo,omie_anexo_enviado_em,ia_veredito,ia_motivo,ia_leitura,ia_conferido_em,ia_arquivo")
         .order("data_lancamento", { ascending: false }),
       // Base do cartão: usada para (a) trazer as "aprovadas direto" (status_nf = "OK") e
       // (b) derivar a categoria dos achados que o n8n não classificou (via status_nf/escopo).
@@ -254,7 +302,14 @@ export default function Achados() {
     setSelected(s => (s && s.id_unico === alvo.id_unico ? { ...s, ...patch } : s));
     void load();
   });
-  const alvoAnexo = (r: Row) => ({ origem: r._ro ? ("cartao" as const) : ("achado" as const), id_unico: r.id_unico, rotulo: r.titulo });
+  /** O nome que a linha escreve: apelido > lojista limpo > o título como veio. */
+  const nomeDaLinha = useCallback(
+    (r: Row): NomeContraparte =>
+      nomeContraparte(apelidos, lojistas, { nome: r.titulo, data: r.data_lancamento, valor: r.valor }),
+    [apelidos, lojistas],
+  );
+
+  const alvoAnexo = (r: Row) => ({ origem: r._ro ? ("cartao" as const) : ("achado" as const), id_unico: r.id_unico, rotulo: nomeDaLinha(r).exibido });
 
   const competencias = useMemo(() => {
     const set = new Set(rows.map(r => r.competencia));
@@ -268,6 +323,22 @@ export default function Achados() {
   const periodRows = useMemo(
     () => competencia ? rows.filter(r => r.competencia === competencia) : [],
     [rows, competencia]
+  );
+
+  /* A fila da conferência automática: achado ainda em aberto, com um comprovante
+     que dá para abrir. As linhas "aprovadas direto" da base do cartão (`_ro`)
+     ficam de fora — elas já vieram resolvidas e não têm status para mudar. */
+  const conferiveis = useMemo(
+    () => periodRows.filter(r =>
+      !r._ro
+      && podeAbrirComprovante(r.link_comprovante)
+      && r.status !== "Aprovado" && r.status !== "Reprovado"),
+    [periodRows],
+  );
+  /** Quantos desses ainda não foram lidos (ou foram lidos com outro arquivo). */
+  const porConferir = useMemo(
+    () => conferiveis.filter(r => !r.ia_veredito || r.ia_arquivo !== r.link_comprovante).length,
+    [conferiveis],
   );
 
   const areas = useMemo(() => Array.from(new Set(periodRows.map(r => r.area).filter(Boolean))).sort(), [periodRows]);
@@ -310,10 +381,12 @@ export default function Achados() {
       if (fResp !== "todas" && r.responsavel !== fResp) return false;
       if (fAnexo === "Anexado" && !r.omie_anexo_enviado_em) return false;
       if (fAnexo === "Não anexado" && r.omie_anexo_enviado_em) return false;
-      if (q && !(r.titulo || "").toLowerCase().includes(q)) return false;
+      // O apelido entra na varredura junto com o nome do extrato: procurar pelo
+      // nome que ESTÁ escrito na linha precisa achar a linha.
+      if (q && !textoDaBusca(nomeDaLinha(r)).includes(q)) return false;
       return true;
     });
-  }, [periodRows, filtro, fSev, fArea, fRegra, fCat, fResp, fAnexo, busca]);
+  }, [periodRows, filtro, fSev, fArea, fRegra, fCat, fResp, fAnexo, busca, nomeDaLinha]);
 
   // Envio em massa via webhook do n8n: manda TODOS os pendentes (base do cartão + achados)
   // do responsável selecionado — junho + julho, independente da fatura na tela (intencional).
@@ -466,12 +539,17 @@ export default function Achados() {
   };
 
   const exportCsv = () => {
-    const header = ["Título","Área","Severidade","Regra","Origem","Valor","Responsável","Data","Status"];
-    const lines = filtered.map(r => [
-      r.titulo, r.area, r.severidade, r.regra, r.origem,
-      brl(Number(r.valor || 0)), r.responsavel ?? "",
-      fmtDateBR(r.data_lancamento), r.status,
-    ].map(v => `"${String(v ?? "").replace(/"/g, '""')}"`).join(";"));
+    // Duas colunas de nome, pelo mesmo motivo da tela: o apelido é o que se lê na
+    // reunião, o nome do extrato é o que se procura no Omie.
+    const header = ["Contraparte","No extrato","Área","Severidade","Regra","Origem","Valor","Responsável","Data","Status"];
+    const lines = filtered.map(r => {
+      const n = nomeDaLinha(r);
+      return [
+        n.exibido, n.cru, r.area, r.severidade, r.regra, r.origem,
+        brl(Number(r.valor || 0)), r.responsavel ?? "",
+        fmtDateBR(r.data_lancamento), r.status,
+      ].map(v => `"${String(v ?? "").replace(/"/g, '""')}"`).join(";");
+    });
     const csv = "\uFEFF" + [header.join(";"), ...lines].join("\n");
     const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
     const url = URL.createObjectURL(blob);
@@ -588,6 +666,16 @@ export default function Achados() {
               {competencias.length === 0 && <option value="">—</option>}
             </select>
           </label>
+          <Button
+            variant="outline"
+            onClick={() => setConferenciaOpen(true)}
+            disabled={conferiveis.length === 0}
+            className="h-9"
+            title="Lê os comprovantes anexados e aprova os que batem em valor e fornecedor"
+          >
+            <Sparkles className="h-4 w-4 mr-2 text-[hsl(212_80%_45%)]" />
+            Conferir comprovantes{porConferir > 0 ? ` (${porConferir})` : ""}
+          </Button>
           <Button variant="outline" onClick={cruzarOmie} disabled={cruzando} className="h-9" title="Casa cada lançamento do cartão com o movimento do Omie (categoria contábil)">
             {cruzando ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <RefreshCw className="h-4 w-4 mr-2" />} Cruzar com Omie
           </Button>
@@ -719,6 +807,7 @@ export default function Achados() {
         ) : filtered.length === 0 ? (
           <div className="p-12 text-center text-sm text-muted-foreground">Nenhum lançamento em auditoria neste período</div>
         ) : filtered.map(r => {
+          const nome = nomeDaLinha(r);
           return (
             <div
               key={r.id}
@@ -726,7 +815,12 @@ export default function Achados() {
             >
               <div className="text-left min-w-0 flex items-start gap-1.5">
                 <button onClick={() => setSelected(r)} className="text-left min-w-0 flex-1">
-                  <div className="font-medium text-sm truncate">{r.titulo}</div>
+                  <div className="font-medium text-sm truncate" title={nome.oQueE ?? undefined}>{nome.exibido}</div>
+                  {/* Apelido da Parametrização em cima, nome da fatura embaixo —
+                      é o nome cru que se procura no extrato e no Omie. */}
+                  {nome.cru && nome.cru !== nome.exibido && (
+                    <div className="text-[11px] text-muted-foreground truncate">{nome.cru}</div>
+                  )}
                   <div className="flex items-center gap-1.5 mt-0.5 flex-wrap">
                     <span className="text-xs text-muted-foreground truncate">{r.responsavel || "—"}</span>
                     {r.categoria && (
@@ -737,6 +831,7 @@ export default function Achados() {
                         <Paperclip className="h-3 w-3 shrink-0 text-[hsl(152_60%_40%)]" />
                       </span>
                     )}
+                    <ChipIA r={r} />
                   </div>
                 </button>
                 <TooltipProvider delayDuration={200}>
@@ -809,7 +904,18 @@ export default function Achados() {
               <div className="flex items-start justify-between px-6 pt-6 pb-4">
                 <div className="min-w-0">
                   <div className="text-[11px] uppercase tracking-wider text-muted-foreground">{selected.area} · {selected.regra}</div>
-                  <h2 className="text-xl font-bold mt-1">{selected.titulo}</h2>
+                  {(() => {
+                    const nome = nomeDaLinha(selected);
+                    return (
+                      <>
+                        <h2 className="text-xl font-bold mt-1" title={nome.oQueE ?? undefined}>{nome.exibido}</h2>
+                        {nome.cru && nome.cru !== nome.exibido && (
+                          <div className="text-xs text-muted-foreground mt-0.5">{nome.cru}</div>
+                        )}
+                        {nome.oQueE && <p className="text-xs text-foreground/70 mt-1">{nome.oQueE}</p>}
+                      </>
+                    );
+                  })()}
                 </div>
                 <button onClick={() => setSelected(null)} className="p-1 rounded hover:bg-accent"><X className="h-4 w-4" /></button>
               </div>
@@ -968,12 +1074,21 @@ export default function Achados() {
                   </div>
                 </div>
 
+                <LeituraCard r={selected} />
+
                 {origemCart && (
                   <div className="rounded-xl border border-border p-4 bg-muted/30 space-y-3">
                     <div className="text-[11px] uppercase tracking-wider font-semibold text-muted-foreground">Lançamento de origem (Cartão)</div>
                     <div className="grid grid-cols-2 gap-3">
                       <MetaItem label="Data" value={fmtDateBR(origemCart.data)} />
-                      <MetaItem label="Estabelecimento" value={origemCart.estabelecimento || "—"} />
+                      <MetaItem
+                        label="Estabelecimento"
+                        value={nomeContraparte(apelidos, lojistas, {
+                          nome: origemCart.estabelecimento,
+                          data: origemCart.data,
+                          valor: origemCart.valor,
+                        }).exibido || "—"}
+                      />
                       <MetaItem label="Descrição" value={origemCart.descricao_original || "—"} full />
                       <MetaItem
                         label="Categoria Omie"
@@ -1070,6 +1185,14 @@ export default function Achados() {
         />
       )}
 
+      <ConferenciaModal
+        open={conferenciaOpen}
+        onClose={() => setConferenciaOpen(false)}
+        onMudou={load}
+        competencia={competencia}
+        totalComComprovante={conferiveis.length}
+      />
+
       {consolidadoOpen && fResp !== "todas" && (
         <SolicitarJustificativasModal
           open={consolidadoOpen}
@@ -1107,6 +1230,75 @@ function KpiCard({ label, value, legend, valueClass, breakdown }: { label: strin
       <div className={cn("mt-2 text-3xl font-bold num tracking-tight", valueClass)}>{value}</div>
       <div className="text-xs text-muted-foreground mt-1">{legend}</div>
       {breakdown}
+    </div>
+  );
+}
+
+/* A leitura da IA só vale para o arquivo que ela leu. Trocado o comprovante,
+   o veredito antigo some da tela em vez de continuar afirmando algo sobre um
+   documento que ninguém leu — é a mesma checagem que a função faz ao aprovar. */
+function leituraAtual(r: Row): boolean {
+  return !!r.ia_veredito && r.ia_arquivo === r.link_comprovante;
+}
+
+/** O selinho da linha: o veredito da conferência, com o motivo no hover. */
+function ChipIA({ r }: { r: Row }) {
+  if (!leituraAtual(r)) return null;
+  const ok = r.ia_veredito === "aprovar";
+  return (
+    <span
+      title={r.ia_motivo ?? undefined}
+      className={cn(
+        "inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium border",
+        ok
+          ? "bg-[hsl(152_55%_94%)] text-[hsl(152_60%_28%)] border-[hsl(152_55%_82%)]"
+          : "bg-[hsl(48_96%_92%)] text-[hsl(38_80%_32%)] border-[hsl(48_92%_80%)]",
+      )}
+    >
+      {ok ? <Check className="h-2.5 w-2.5" /> : <AlertCircle className="h-2.5 w-2.5" />}
+      {ok ? "bate com a nota" : "conferir"}
+    </span>
+  );
+}
+
+/** O que a IA leu no documento, para decidir sem reabrir o PDF. */
+function LeituraCard({ r }: { r: Row }) {
+  if (!leituraAtual(r)) return null;
+  const l = r.ia_leitura ?? {};
+  const ok = r.ia_veredito === "aprovar";
+  // Só as linhas que interessam: a que casou com a cobrança e o total. A lista
+  // inteira de uma NF-e tem onze valores de imposto e vira ruído.
+  const linhas = (l.valores ?? []).filter(v => Math.abs(Number(v.valor) - Number(r.valor)) < 0.005).slice(0, 3);
+  return (
+    <div className={cn(
+      "rounded-xl border p-4 space-y-3",
+      ok ? "border-[hsl(152_55%_82%)] bg-[hsl(152_55%_97%)]" : "border-[hsl(48_92%_80%)] bg-[hsl(48_96%_97%)]",
+    )}>
+      <div className="flex items-center gap-2">
+        <Sparkles className="h-3.5 w-3.5 text-[hsl(212_80%_45%)]" />
+        <span className="text-[11px] uppercase tracking-wider font-semibold text-muted-foreground">
+          Leitura do comprovante
+        </span>
+        {r.ia_conferido_em && (
+          <span className="text-[11px] text-muted-foreground">· {fmtDateTimeBR(r.ia_conferido_em)}</span>
+        )}
+      </div>
+      <p className="text-sm text-foreground/85 leading-relaxed">{r.ia_motivo}</p>
+      <div className="grid grid-cols-2 gap-3">
+        <MetaItem label="Emitente" value={l.emitente_nome || "—"} full />
+        <MetaItem label="CNPJ / CPF" value={l.emitente_cnpj || "—"} />
+        <MetaItem label="Documento" value={[l.tipo_documento, l.numero_documento && `nº ${l.numero_documento}`].filter(Boolean).join(" · ") || "—"} />
+        <MetaItem label="Total do documento" value={l.valor_total ? brl(Number(l.valor_total)) : "—"} />
+        <MetaItem label="Emitido em" value={l.data_documento ? fmtDateBR(l.data_documento) : "—"} />
+        {l.descricao && <MetaItem label="O que foi comprado" value={l.descricao} full />}
+        {linhas.length > 0 && (
+          <MetaItem
+            label="Linha que bate com a cobrança"
+            value={linhas.map(v => `${v.rotulo} · ${brl(Number(v.valor))}`).join(" | ")}
+            full
+          />
+        )}
+      </div>
     </div>
   );
 }

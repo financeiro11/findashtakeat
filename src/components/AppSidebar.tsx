@@ -110,6 +110,7 @@ const governanca: NavItem[] = [
 ];
 
 const config: NavItem[] = [
+  { title: "Colaboradores (RH)", url: "/operacional/colaboradores", icon: Users },
   { title: "Parametrização", url: "/configuracoes/parametrizacao", icon: Tags },
   { title: "Usuários", url: "/usuarios", icon: UserCog },
   { title: "Biblioteca", url: "/analise/conhecimento", icon: Brain },

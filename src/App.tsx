@@ -57,6 +57,7 @@ import Cartao from "./pages/Cartao";
 import CartaoOmie from "./pages/operacional/CartaoOmie";
 import PainelCAC from "./pages/governanca/PainelCAC";
 import Reembolsos from "./pages/operacional/Reembolsos";
+import ColaboradoresRH from "./pages/operacional/ColaboradoresRH";
 import Estornos from "./pages/operacional/Estornos";
 import Variavel from "./pages/operacional/Variavel";
 import FacilitiesDashboard from "./pages/facilities/FacilitiesDashboard";
@@ -206,6 +207,7 @@ function Rotas() {
               <Route path="/extratos" element={<Navigate to="/governanca/cartao" replace />} />
               <Route path="/operacional/cartao" element={<CartaoOmie />} />
               <Route path="/operacional/reembolsos" element={<Reembolsos />} />
+              <Route path="/operacional/colaboradores" element={<ColaboradoresRH />} />
               <Route path="/operacional/estornos" element={<Estornos />} />
               <Route path="/operacional/variavel" element={<Variavel />} />
               <Route path="/facilities" element={<FacilitiesDashboard />} />

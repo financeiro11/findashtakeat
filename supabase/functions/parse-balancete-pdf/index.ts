@@ -1,6 +1,7 @@
 // deno-lint-ignore-file no-explicit-any
 import { createClient } from "npm:@supabase/supabase-js@2";
 import { extractText, getDocumentProxy } from "npm:unpdf@0.12.1";
+import { MODELO_LITE } from "../_shared/gemini.ts";
 
 // EdgeRuntime.waitUntil permite continuar o processamento DEPOIS de responder
 // (essencial para PDFs escaneados grandes, cujo OCR pode passar de 2 min).
@@ -106,7 +107,7 @@ async function processar(supabase: any, tipo: string, periodo: string, pdf_path:
     const docLabel = tipo === "balanco" ? "balanço patrimonial" : "balancete";
     // flash-lite lê imagem/PDF (OCR) muito mais rápido — essencial para PDFs
     // escaneados grandes caberem no tempo de execução do edge.
-    const modelo = "gemini-2.5-flash-lite";
+    const modelo = MODELO_LITE;
     const userParts = temTexto
       ? [{ text: `Texto do ${docLabel} (período ${periodo}):\n\n${textoLimitado}` }]
       : [

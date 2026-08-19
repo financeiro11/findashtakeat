@@ -13,7 +13,22 @@ export const corsHeaders = {
   "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
 };
 
-export const DEFAULT_MODEL = "gemini-2.5-flash";
+/* Os nomes dos modelos moram AQUI, e não no call site.
+ *
+ * Em ago/26 a conta do Gemini passou a ser a do projeto "Hub Financeiro" e todo
+ * o 2.x morreu junto: `gemini-2.5-flash`, `-flash-lite`, `-pro` e `gemini-2.0-flash`
+ * respondem 404 "no longer available to new users" — é idade do projeto, não
+ * plano de faturamento, então não adianta assinar. Na época o nome estava escrito
+ * na mão em cinco funções e a troca teve de passar por todas.
+ *
+ * Por env var pelo mesmo motivo: o próximo 404 desses vira uma mudança de
+ * segredo, não um deploy. Mesmo padrão do OPENAI_MODEL em openai.ts. */
+export const DEFAULT_MODEL = Deno.env.get("GEMINI_MODEL") || "gemini-3.6-flash";
+/** O irmão barato e rápido — é o que aguenta OCR de PDF escaneado dentro do
+ *  tempo do edge. Sucessor do `gemini-2.5-flash-lite`. */
+export const MODELO_LITE = Deno.env.get("GEMINI_MODEL_LITE") || "gemini-3.5-flash-lite";
+/** Fila de escape para 503 ("high demand") e 429: tenta o próximo da lista. */
+export const MODELOS_CASCATA = [DEFAULT_MODEL, MODELO_LITE, "gemini-3.1-flash-lite"];
 
 export type ChatRole = "system" | "user" | "assistant";
 
@@ -102,7 +117,12 @@ async function callGenerate(opts: GenerateOptions, stream = false): Promise<Resp
 function extractTextFromResponse(data: any): string {
   const cands = data?.candidates ?? [];
   if (!cands.length) return "";
-  return cands[0]?.content?.parts?.map((p: any) => p?.text ?? "").join("") ?? "";
+  // `thought: true` são as partes de raciocínio dos modelos Gemini 3. Elas vêm no
+  // mesmo array das partes de resposta e, coladas junto, embaralham o JSON.
+  return (cands[0]?.content?.parts ?? [])
+    .filter((p: any) => p?.thought !== true)
+    .map((p: any) => p?.text ?? "")
+    .join("");
 }
 
 function tryParseJson(text: string): any | null {

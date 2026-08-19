@@ -3,6 +3,7 @@
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.0";
 import { buildOrgContext } from "../_shared/org-context.ts";
+import { MODELOS_CASCATA } from "../_shared/gemini.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -158,7 +159,7 @@ Deno.serve(async (req) => {
     };
 
     // Tenta sequencialmente modelos para contornar 503 (sobrecarga) / 429 (limite)
-    const models = ["gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-2.0-flash"];
+    const models = MODELOS_CASCATA;
     let resp: Response | null = null;
     let lastStatus = 0;
     let lastDetail = "";

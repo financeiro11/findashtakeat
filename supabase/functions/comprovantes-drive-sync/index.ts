@@ -29,6 +29,7 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.0";
 import { extractText, getDocumentProxy } from "npm:unpdf@0.12.1";
 import { requireUser } from "../_shared/auth.ts";
 import { lerDanfes, descricaoDaNota, type Danfe } from "../_shared/nota-fiscal.ts";
+import { MODELO_LITE } from "../_shared/gemini.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -149,7 +150,7 @@ let ultimoErroOcr = "";
 async function ocr(bytes: Uint8Array, mime: string, dica: string, aiKey: string): Promise<Lido | null> {
   if (!aiKey) { ultimoErroOcr = "GEMINI_API_KEY ausente"; return null; }
   const r = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent?key=${aiKey}`,
+    `https://generativelanguage.googleapis.com/v1beta/models/${MODELO_LITE}:generateContent?key=${aiKey}`,
     {
       method: "POST",
       headers: { "Content-Type": "application/json" },

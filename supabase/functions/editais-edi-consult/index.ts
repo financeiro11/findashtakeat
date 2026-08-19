@@ -2,6 +2,7 @@
 // Recebe uma pergunta + snapshot dos projetos/rubricas/compras e responde via Gemini.
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.0";
+import { MODELOS_CASCATA } from "../_shared/gemini.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -117,7 +118,7 @@ Deno.serve(async (req) => {
       generationConfig: { temperature: 0.3 },
     };
 
-    const models = ["gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-2.0-flash"];
+    const models = MODELOS_CASCATA;
     let text = "";
     let lastStatus = 0;
     let lastDetail = "";

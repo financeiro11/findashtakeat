@@ -57,6 +57,42 @@ const fmtCpf = (c: unknown) => {
 const txt = (v: unknown) => (v === null || v === undefined || v === "" ? "—" : String(v));
 const boolTxt = (v: unknown) => (v === true ? "Sim" : v === false ? "Não" : "—");
 
+/* ─────────────────────────── Cálculo proporcional ───────────────────────────
+   Regra: mês comercial de 30 dias. Dias trabalhados no mês do desligamento =
+   dia do desligamento (ou desde o início, se a pessoa entrou no mesmo mês).
+   Proporcional = (valor mensal / 30) × dias. Soma-se a liberalidade, se houver. */
+
+const parseISO = (s: unknown): Date | null => {
+  if (!s || typeof s !== "string") return null;
+  const [y, m, d] = s.slice(0, 10).split("-").map(Number);
+  return y && m && d ? new Date(y, m - 1, d) : null;
+};
+
+function tempoDeCasa(inicio: Date, fim: Date): string {
+  let meses = (fim.getFullYear() - inicio.getFullYear()) * 12 + (fim.getMonth() - inicio.getMonth());
+  if (fim.getDate() < inicio.getDate()) meses -= 1;
+  meses = Math.max(0, meses);
+  const anos = Math.floor(meses / 12);
+  const resto = meses % 12;
+  if (anos === 0) return `${meses} ${meses === 1 ? "mês" : "meses"}`;
+  return `${anos} ${anos === 1 ? "ano" : "anos"}${resto ? ` e ${resto} ${resto === 1 ? "mês" : "meses"}` : ""}`;
+}
+
+function calculoProporcional(c: Colaborador) {
+  const inicio = parseISO(c.inicio);
+  const desl = parseISO(c.datadesl);
+  const valor = Number(c.valor) || 0;
+  if (!desl || !valor) return null;
+  const mesmoMes =
+    inicio &&
+    inicio.getFullYear() === desl.getFullYear() &&
+    inicio.getMonth() === desl.getMonth();
+  const dias = Math.min(30, Math.max(1, mesmoMes ? desl.getDate() - inicio!.getDate() + 1 : desl.getDate()));
+  const proporcional = (valor / 30) * dias;
+  const liberalidade = Number(c.valor_liberalidade) || 0;
+  return { valor, dias, proporcional, liberalidade, total: proporcional + liberalidade };
+}
+
 /* ─────────────────────────── Catálogo de colunas ───────────────────────────
    Todas as colunas do espelho do RH, na ordem do painel de Dados PJ.
    `def: true` = visível por padrão; o resto fica disponível no seletor. */
@@ -145,6 +181,7 @@ export default function ColaboradoresRH() {
   const [busca, setBusca] = useState("");
   const [aba, setAba] = useState<"ativos" | "desligados" | "todos">("ativos");
   const [fotoAberta, setFotoAberta] = useState<{ url: string; nome: string } | null>(null);
+  const [selecionado, setSelecionado] = useState<Colaborador | null>(null);
   const [visiveis, setVisiveis] = useState<Set<string>>(() => {
     try {
       const saved = localStorage.getItem(STORAGE_KEY);
@@ -329,7 +366,11 @@ export default function ColaboradoresRH() {
               </TableRow>
             ) : (
               filtrados.map((c) => (
-                <TableRow key={c.id}>
+                <TableRow
+                  key={c.id}
+                  className="cursor-pointer"
+                  onClick={() => setSelecionado(c)}
+                >
                   <TableCell className="sticky left-0 bg-card z-10">
                     {ativo(c) ? (
                       <Badge className="bg-emerald-600/15 text-emerald-700 dark:text-emerald-400 hover:bg-emerald-600/15">
@@ -358,12 +399,13 @@ export default function ColaboradoresRH() {
                             loading="lazy"
                             title="Clique para ver a foto"
                             className="size-8 rounded-full object-cover bg-muted cursor-pointer hover:ring-2 hover:ring-primary transition-shadow"
-                            onClick={() =>
+                            onClick={(e) => {
+                              e.stopPropagation();
                               setFotoAberta({
                                 url: fotoUrls[String(c.foto_url)],
                                 nome: String(c.nome ?? ""),
-                              })
-                            }
+                              });
+                            }}
                             onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }}
                           />
                         ) : (
@@ -381,8 +423,156 @@ export default function ColaboradoresRH() {
         </Table>
       </div>
 
+      <Dialog open={!!selecionado} onOpenChange={(open) => !open && setSelecionado(null)}>
+        <DialogContent className="max-w-2xl max-h-[85vh] overflow-y-auto">
+          {selecionado && (() => {
+            const c = selecionado;
+            const eAtivo = ativo(c);
+            const inicio = parseISO(c.inicio);
+            const desl = parseISO(c.datadesl);
+            const calc = !eAtivo ? calculoProporcional(c) : null;
+            const fimRef = desl ?? new Date();
+            return (
+              <>
+                <DialogHeader>
+                  <div className="flex items-center gap-4">
+                    {c.foto_url && fotoUrls?.[String(c.foto_url)] ? (
+                      <img
+                        src={fotoUrls[String(c.foto_url)]}
+                        alt={String(c.nome ?? "")}
+                        className="size-16 rounded-full object-cover bg-muted"
+                      />
+                    ) : (
+                      <div className="size-16 rounded-full bg-muted grid place-items-center">
+                        <Users className="size-6 text-muted-foreground" />
+                      </div>
+                    )}
+                    <div>
+                      <DialogTitle className="flex items-center gap-2 flex-wrap">
+                        {String(c.nome ?? "—")}
+                        {eAtivo ? (
+                          <Badge className="bg-emerald-600/15 text-emerald-700 dark:text-emerald-400 hover:bg-emerald-600/15">Ativo</Badge>
+                        ) : (
+                          <Badge variant="destructive" className="bg-destructive/15 text-destructive hover:bg-destructive/15">Desligado</Badge>
+                        )}
+                      </DialogTitle>
+                      <p className="text-sm text-muted-foreground mt-0.5">
+                        {txt(c.codigo)} · {txt(c.cargo)} · {txt(c.setor)}
+                      </p>
+                    </div>
+                  </div>
+                </DialogHeader>
+
+                <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+                  <div className="rounded-lg border bg-muted/40 px-3 py-2">
+                    <p className="text-[11px] uppercase tracking-wider text-muted-foreground">Início</p>
+                    <p className="text-sm font-semibold">{fmtDate(c.inicio)}</p>
+                  </div>
+                  {!eAtivo && (
+                    <div className="rounded-lg border bg-destructive/5 border-destructive/30 px-3 py-2">
+                      <p className="text-[11px] uppercase tracking-wider text-muted-foreground">Desligamento</p>
+                      <p className="text-sm font-semibold">{fmtDate(c.datadesl)}</p>
+                    </div>
+                  )}
+                  {inicio && (
+                    <div className="rounded-lg border bg-muted/40 px-3 py-2">
+                      <p className="text-[11px] uppercase tracking-wider text-muted-foreground">Tempo de casa</p>
+                      <p className="text-sm font-semibold">{tempoDeCasa(inicio, fimRef)}</p>
+                    </div>
+                  )}
+                </div>
+
+                {calc && (
+                  <div className="rounded-lg border border-amber-500/40 bg-amber-500/5 p-3 space-y-1.5">
+                    <p className="text-xs font-semibold uppercase tracking-wider text-amber-700 dark:text-amber-400">
+                      Pagamento proporcional do desligamento
+                    </p>
+                    <div className="text-sm space-y-1">
+                      <div className="flex justify-between">
+                        <span className="text-muted-foreground">Valor mensal do contrato</span>
+                        <span className="tabular-nums">{BRL(calc.valor)}</span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span className="text-muted-foreground">
+                          Dias trabalhados no mês do desligamento
+                        </span>
+                        <span className="tabular-nums">{calc.dias} {calc.dias === 1 ? "dia" : "dias"}</span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span className="text-muted-foreground">
+                          Proporcional ({BRL(calc.valor)} ÷ 30 × {calc.dias})
+                        </span>
+                        <span className="tabular-nums font-medium">{BRL(calc.proporcional)}</span>
+                      </div>
+                      {calc.liberalidade > 0 && (
+                        <div className="flex justify-between">
+                          <span className="text-muted-foreground">Liberalidade</span>
+                          <span className="tabular-nums font-medium">{BRL(calc.liberalidade)}</span>
+                        </div>
+                      )}
+                      <div className="flex justify-between border-t pt-1.5 mt-1.5">
+                        <span className="font-semibold">Total a receber</span>
+                        <span className="tabular-nums font-bold text-base">{BRL(calc.total)}</span>
+                      </div>
+                    </div>
+                    <p className="text-[11px] text-muted-foreground">
+                      Estimativa em base comercial (mês de 30 dias) — confira antes de pagar.
+                    </p>
+                  </div>
+                )}
+
+                <Secao titulo="Contrato PJ">
+                  <Campo k="Razão social" v={txt(c.razao)} />
+                  <Campo k="CNPJ" v={fmtCnpj(c.cnpj)} />
+                  <Campo k="Modalidade" v={txt(c.modalidade)} />
+                  <Campo k="Modelo de remuneração" v={txt(c.modelo_remuneracao)} />
+                  <Campo k="Valor" v={BRL(c.valor)} />
+                  <Campo k="Flash" v={BRL(c.flash)} />
+                  <Campo k="Vencimento do contrato" v={fmtDate(c.vence)} />
+                </Secao>
+
+                <Secao titulo="Dados bancários">
+                  <Campo k="Banco" v={`${txt(c.banco)} (${txt(c.codbanco)})`} />
+                  <Campo k="Agência" v={txt(c.agencia)} />
+                  <Campo k="Conta" v={`${txt(c.conta)}${c.digito ? `-${c.digito}` : ""}`} />
+                  <Campo k="PIX" v={txt(c.pix)} />
+                </Secao>
+
+                <Secao titulo="Dados pessoais">
+                  <Campo k="CPF" v={fmtCpf(c.cpf)} />
+                  <Campo k="Nascimento" v={fmtDate(c.nascimento)} />
+                  <Campo k="E-mail corporativo" v={txt(c.emailcorp)} />
+                  <Campo k="E-mail pessoal" v={txt(c.emailpessoal)} />
+                  <Campo k="WhatsApp" v={txt(c.whatsapp)} />
+                  <Campo k="WhatsApp corporativo" v={txt(c.whatsappcorp)} />
+                </Secao>
+
+                <Secao titulo="Endereço">
+                  <Campo
+                    k="Endereço"
+                    v={[c.logradouro, c.numero, c.complemento, c.bairro]
+                      .filter(Boolean)
+                      .join(", ") || "—"}
+                  />
+                  <Campo k="Cidade/UF" v={c.cidade ? `${c.cidade}/${txt(c.estado)}` : "—"} />
+                  <Campo k="CEP" v={txt(c.cep)} />
+                </Secao>
+
+                {!eAtivo && (
+                  <Secao titulo="Desligamento">
+                    <Campo k="Tipo" v={txt(c.tipodesl)} />
+                    <Campo k="Motivo" v={txt(c.motivodesl)} />
+                    <Campo k="Observações" v={txt(c.obsdesl)} />
+                  </Secao>
+                )}
+              </>
+            );
+          })()}
+        </DialogContent>
+      </Dialog>
+
       <Dialog open={!!fotoAberta} onOpenChange={(open) => !open && setFotoAberta(null)}>
-        <DialogContent className="max-w-xs p-4">
+        <DialogContent className="max-w-xs p-4" onClick={(e) => e.stopPropagation()}>
           {fotoAberta && (
             <>
               <DialogHeader>
@@ -397,6 +587,24 @@ export default function ColaboradoresRH() {
           )}
         </DialogContent>
       </Dialog>
+    </div>
+  );
+}
+
+function Secao({ titulo, children }: { titulo: string; children: React.ReactNode }) {
+  return (
+    <div>
+      <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-2">{titulo}</h3>
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-1.5">{children}</div>
+    </div>
+  );
+}
+
+function Campo({ k, v }: { k: string; v: string }) {
+  return (
+    <div className="text-sm">
+      <span className="text-muted-foreground">{k}: </span>
+      <span className="font-medium break-words">{v}</span>
     </div>
   );
 }

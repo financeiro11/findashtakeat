@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { Outlet, Navigate, useLocation } from "react-router-dom";
 import { SidebarProvider } from "@/components/ui/sidebar";
 import { AppSidebar } from "@/components/AppSidebar";
@@ -8,9 +9,21 @@ import { NovaVersao } from "@/components/NovaVersao";
 import { useAuth } from "@/hooks/useAuth";
 import { moduleAccess, currentModule } from "@/lib/modules";
 
+// Menu lateral recolhido. Quem guarda é esta camada: o SidebarProvider escreve um
+// cookie que ele mesmo nunca lê de volta, então sem isto a escolha se perderia a cada
+// recarga — e o menu recolhido é uma preferência de quem está na tela, não da sessão.
+const MENU_KEY = "sidebar:recolhido";
+
 export default function AppLayout() {
   const { user, profile, loading } = useAuth();
   const { pathname } = useLocation();
+  const [menuAberto, setMenuAberto] = useState(() => {
+    try { return localStorage.getItem(MENU_KEY) !== "1"; } catch { return true; }
+  });
+  const trocarMenu = (aberto: boolean) => {
+    setMenuAberto(aberto);
+    try { localStorage.setItem(MENU_KEY, aberto ? "0" : "1"); } catch { /* localStorage indisponível */ }
+  };
   if (loading) return <div className="flex min-h-screen items-center justify-center text-sm text-muted-foreground">Carregando…</div>;
   if (!user) return <Navigate to="/login" replace />;
 
@@ -32,7 +45,11 @@ export default function AppLayout() {
   const emFacilities = access.facilitiesOnly || currentModule(pathname) === "facilities";
 
   return (
-    <SidebarProvider style={{ "--sidebar-width": "212px", "--sidebar-width-icon": "212px" } as React.CSSProperties}>
+    <SidebarProvider
+      open={menuAberto}
+      onOpenChange={trocarMenu}
+      style={{ "--sidebar-width": menuAberto ? "212px" : "56px", "--sidebar-width-icon": "56px" } as React.CSSProperties}
+    >
       {/* `data-chrome` marca o que é moldura do Hub, e não conteúdo da página.
           Quem imprime (hoje, a Revisão do Mês) esconde tudo isso para o PDF sair
           com o demonstrativo e nada em volta — ver o bloco @media print em

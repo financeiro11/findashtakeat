@@ -56,9 +56,11 @@ import Auditoria from "./pages/Auditoria";
 import Cartao from "./pages/Cartao";
 import CartaoOmie from "./pages/operacional/CartaoOmie";
 import PainelCAC from "./pages/governanca/PainelCAC";
+import Rescisoes from "./pages/governanca/Rescisoes";
 import Reembolsos from "./pages/operacional/Reembolsos";
 import ColaboradoresRH from "./pages/operacional/ColaboradoresRH";
 import Estornos from "./pages/operacional/Estornos";
+import NotasFiscais from "./pages/operacional/NotasFiscais";
 import Variavel from "./pages/operacional/Variavel";
 import FacilitiesDashboard from "./pages/facilities/FacilitiesDashboard";
 import FacilitiesSolicitacoes from "./pages/facilities/Solicitacoes";
@@ -84,9 +86,13 @@ import MobilePerfil from "./pages/mobile/Perfil";
 const queryClient = new QueryClient();
 
 /**
- * Abaixo de 768px o Hub monta um app próprio (cinco abas, ver MobileShell) em vez de
- * espremer o layout de desktop. Mesma URL, mesma sessão, mesmas policies — só a árvore de
- * telas muda. Com `isMobile` falso, o que é montado aqui é exatamente o que sempre foi.
+ * No celular o Hub monta um app próprio (cinco abas, ver MobileShell) em vez de espremer
+ * o layout de desktop. Mesma URL, mesma sessão, mesmas policies — só a árvore de telas
+ * muda. Com `isMobile` falso, o que é montado aqui é exatamente o que sempre foi.
+ *
+ * Quem decide é o ponteiro, não a largura (ver use-mobile): janela estreita no computador
+ * — meia tela, por exemplo — continua sendo o Hub. Para ver o app do celular no
+ * computador, `?mobile=1` na URL.
  */
 const App = () => (
   <QueryClientProvider client={queryClient}>
@@ -202,6 +208,7 @@ function Rotas() {
               <Route path="/governanca/auditoria" element={<Auditoria />} />
               <Route path="/governanca/cartao" element={<Cartao />} />
               <Route path="/governanca/cac" element={<PainelCAC />} />
+              <Route path="/governanca/rescisoes" element={<Rescisoes />} />
               {/* A aba Extratos existe só no celular; no computador cada fonte tem a sua
                   página própria, e a do cartão é a mais parecida com ela. */}
               <Route path="/extratos" element={<Navigate to="/governanca/cartao" replace />} />
@@ -209,6 +216,7 @@ function Rotas() {
               <Route path="/operacional/reembolsos" element={<Reembolsos />} />
               <Route path="/operacional/colaboradores" element={<ColaboradoresRH />} />
               <Route path="/operacional/estornos" element={<Estornos />} />
+              <Route path="/operacional/notas-fiscais" element={<NotasFiscais />} />
               <Route path="/operacional/variavel" element={<Variavel />} />
               <Route path="/facilities" element={<FacilitiesDashboard />} />
               <Route path="/facilities/solicitacoes" element={<FacilitiesSolicitacoes />} />

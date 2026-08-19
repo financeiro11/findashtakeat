@@ -1,120 +1,16 @@
 import { useState } from "react";
 import { NavLink, useLocation } from "react-router-dom";
-import {
-  Wallet, CreditCard, Users, Handshake, ListTree,
-  Percent, BookOpen, UserCog, Smartphone, Plane, Settings,
-  FolderKanban, FileBarChart, FileText, Scale, TrendingUp, Brain, Target, Home, Search, Sparkles, Gavel, CheckSquare, ChevronDown, BookOpenCheck, PieChart, Handshake as HandshakeIcon, CheckCircle2, Receipt, Undo2, Wallet2, ShieldCheck, Landmark,
-  LayoutDashboard, Kanban, FileSpreadsheet, Truck, History, FileSignature, Wrench, Star, Repeat,
-  Presentation, Building2, Tags, Megaphone,
-} from "lucide-react";
+import { Search, ChevronDown, Wrench, Star, PanelLeftClose, PanelLeftOpen } from "lucide-react";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import takeatLogo from "@/assets/takeat-logo.png";
 import { useAuth } from "@/hooks/useAuth";
-import { Sidebar, SidebarContent } from "@/components/ui/sidebar";
+import { Sidebar, SidebarContent, useSidebar } from "@/components/ui/sidebar";
 import { CommandMenu } from "@/components/CommandMenu";
 import { ModuleSwitcher } from "@/components/ModuleSwitcher";
 import { moduleAccess, currentModule } from "@/lib/modules";
-
-type NavItem = { title: string; url: string; icon: any; badge?: string };
-
-const inicio: NavItem[] = [
-  { title: "Dashboard", url: "/", icon: Home },
-  // O Assistente não tem item de menu de propósito: ele é a bolinha flutuante presente
-  // em toda página (AIAssistant, montado no AppLayout) — sempre a um clique, sem exigir
-  // que a pessoa saia de onde está para perguntar.
-  { title: "Briefing", url: "/briefing", icon: Sparkles },
-  { title: "Caixa", url: "/caixa", icon: Landmark, badge: "OMIE" },
-  { title: "Asaas", url: "/asaas", icon: CreditCard },
-  { title: "Assinaturas", url: "/assinaturas", icon: Repeat },
-  { title: "Parceiros", url: "/operacional/parceiros", icon: HandshakeIcon },
-];
-
-// Gestão do time financeiro — estrutura, tarefas e automações internas.
-const timeFinanceiro: NavItem[] = [
-  { title: "Visão do Time", url: "/time/visao", icon: Users },
-  { title: "Tarefas", url: "/tarefas", icon: CheckSquare },
-  { title: "Projetos", url: "/automacoes/projetos", icon: FolderKanban },
-  { title: "Anotações", url: "/playbook", icon: BookOpenCheck },
-];
-
-/* Apresentações: o que sai do Hub para uma PLATEIA — a reunião de tracker com o
-   CEO, e os materiais de Conselho e Investidores. Ficam juntas porque o que elas
-   compartilham não é o dado (esse vem de Demonstrações, BP, Assinaturas…) e sim
-   o formato: roteiro de folhas, redação por cima do número e saída em PDF/PPTX. */
-const apresentacoes: NavItem[] = [
-  { title: "Revisão Mensal", url: "/apresentacoes/revisao", icon: Presentation },
-  { title: "Reportes", url: "/apresentacoes/reportes", icon: Building2 },
-];
-
-const operacional: NavItem[] = [
-  { title: "Cartão → Omie", url: "/operacional/cartao", icon: CreditCard },
-  { title: "Variável", url: "/operacional/variavel", icon: Percent },
-  { title: "Reembolsos", url: "/operacional/reembolsos", icon: Receipt },
-  { title: "Estornos", url: "/operacional/estornos", icon: Undo2 },
-  { title: "Proporcionais", url: "/automacoes/proporcionais", icon: Percent },
-];
-
-const recargas: NavItem[] = [
-  { title: "Celulares", url: "/recargas/celulares", icon: Smartphone },
-  { title: "Viagens", url: "/recargas/viagens", icon: Plane },
-];
-
-const facilities: NavItem[] = [
-  { title: "Dashboard", url: "/facilities", icon: LayoutDashboard },
-  { title: "Solicitações", url: "/facilities/solicitacoes", icon: Kanban },
-  { title: "Cotações", url: "/facilities/cotacoes", icon: FileSpreadsheet },
-  { title: "Fornecedores", url: "/facilities/fornecedores", icon: Truck },
-  { title: "Histórico", url: "/facilities/historico", icon: History },
-  { title: "Contratos", url: "/facilities/contratos", icon: FileSignature },
-];
-
-const editais: NavItem[] = [
-  { title: "Radar de Editais", url: "/editais", icon: Gavel },
-  { title: "Projetos Aprovados", url: "/editais/projetos-aprovados", icon: CheckCircle2 },
-];
-
-const investimentos: NavItem[] = [
-  { title: "Captable", url: "/captable", icon: PieChart },
-  { title: "Takeat LTD/LLC", url: "/investimentos", icon: TrendingUp },
-];
-
-const demonstracoes: NavItem[] = [
-  { title: "DRE", url: "/demonstracoes/dre", icon: FileBarChart },
-  { title: "DFC", url: "/demonstracoes/dfc", icon: TrendingUp },
-  // A Revisão do Mês mudou para o grupo "Apresentações" — ela é uma reunião, não
-  // um demonstrativo. A rota antiga continua respondendo, redirecionando.
-  { title: "Balancete", url: "/demonstracoes/balancete", icon: FileText },
-  { title: "Balanço", url: "/demonstracoes/balanco", icon: Scale },
-];
-
-// Business Plan: o ano corrente é o plano vigente; o seguinte é o que está em
-// construção. Derivado da data pra não envelhecer na virada do ano.
-const ANO_BP = new Date().getFullYear();
-
-const bp: NavItem[] = [
-  { title: `BP ${ANO_BP}`, url: `/bp/${ANO_BP}`, icon: FileSpreadsheet },
-  { title: `BP ${ANO_BP + 1}`, url: `/bp/${ANO_BP + 1}`, icon: Sparkles, badge: "IA" },
-  { title: "Histórico de versões", url: "/bp/versoes", icon: History },
-];
-
-const analise: NavItem[] = [
-  { title: "Cenários", url: "/analise/cenarios", icon: Target },
-  { title: "Histórico Multianual", url: "/analise/historico", icon: TrendingUp },
-];
-
-const governanca: NavItem[] = [
-  { title: "Orçamento", url: "/orcamento", icon: Wallet2 },
-  { title: "Auditoria", url: "/governanca/auditoria", icon: ShieldCheck },
-  { title: "Cartão", url: "/governanca/cartao", icon: CreditCard, badge: "OFX" },
-  { title: "Painel CAC", url: "/governanca/cac", icon: Megaphone },
-];
-
-const config: NavItem[] = [
-  { title: "Colaboradores (RH)", url: "/operacional/colaboradores", icon: Users },
-  { title: "Parametrização", url: "/configuracoes/parametrizacao", icon: Tags },
-  { title: "Usuários", url: "/usuarios", icon: UserCog },
-  { title: "Biblioteca", url: "/analise/conhecimento", icon: Brain },
-];
+// Os itens de menu moram em @/lib/navegacao — a busca (⌘K) lê o MESMO catálogo.
+import { gruposVisiveis, itensDe, type NavGrupo, type NavItem } from "@/lib/navegacao";
 
 const FAVORITOS_KEY_PREFIX = "sidebar:favoritos:";
 
@@ -207,93 +103,221 @@ function Group({
   );
 }
 
+/**
+ * Menu recolhido: a linha vira só o ícone, e o nome — com o grupo na frente, porque
+ * fora do grupo "Cartão" pode ser três telas diferentes — vai para o tooltip. A estrela
+ * de favorito fica de fora: não cabe, e o que ela organiza (a ordem do menu) já está
+ * aplicado aqui, com os favoritos no topo.
+ */
+function RailItem({ grupo, item, active }: { grupo: string; item: NavItem; active: boolean }) {
+  return (
+    <li>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <NavLink
+            to={item.url}
+            className={`relative flex h-8 items-center justify-center rounded-md transition-colors ${
+              active
+                ? "bg-sidebar-accent text-sidebar-accent-foreground"
+                : "text-sidebar-foreground/75 hover:bg-sidebar-accent/60 hover:text-sidebar-accent-foreground"
+            }`}
+          >
+            {active && <span className="absolute left-0 top-1.5 h-[calc(100%-12px)] w-[2px] rounded-r bg-sidebar-primary" />}
+            <item.icon className="h-4 w-4 shrink-0" />
+            {/* O selo (OMIE, OFX, IA) não cabe escrito; vira um ponto que só diz "tem algo aqui". */}
+            {item.badge && <span className="absolute right-1.5 top-1.5 h-1.5 w-1.5 rounded-full bg-sidebar-primary" />}
+          </NavLink>
+        </TooltipTrigger>
+        <TooltipContent side="right" className="text-[12px]">
+          <span className="text-muted-foreground">{grupo} · </span>
+          {item.title}
+          {item.badge && <span className="ml-1 text-muted-foreground">({item.badge})</span>}
+        </TooltipContent>
+      </Tooltip>
+    </li>
+  );
+}
+
+function Rail({ blocos, pathname }: { blocos: NavGrupo[]; pathname: string }) {
+  return (
+    // Rola, mas sem barra à vista: numa tira de 56px ela come um sexto da largura.
+    <div className="flex-1 overflow-y-auto py-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+      {blocos.map((g, i) => (
+        <div key={g.label}>
+          {/* Sem o rótulo do grupo, é o filete que diz onde um assunto acaba e o outro começa. */}
+          {i > 0 && <div className="mx-3 my-1.5 h-px bg-sidebar-border" />}
+          <ul className="space-y-0.5 px-2">
+            {g.items.map((item) => (
+              <RailItem key={g.label + item.url} grupo={g.label} item={item} active={pathname === item.url} />
+            ))}
+          </ul>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function BotaoRecolher({ recolhido, onClick }: { recolhido: boolean; onClick: () => void }) {
+  const Icone = recolhido ? PanelLeftOpen : PanelLeftClose;
+  const texto = recolhido ? "Expandir menu" : "Recolher menu";
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <button
+          type="button"
+          onClick={onClick}
+          aria-label={texto}
+          className={`flex h-7 items-center justify-center rounded-md text-sidebar-foreground/60 transition-colors hover:bg-sidebar-accent/70 hover:text-sidebar-foreground ${
+            recolhido ? "w-full" : "ml-auto w-7 shrink-0"
+          }`}
+        >
+          <Icone className="h-4 w-4" />
+        </button>
+      </TooltipTrigger>
+      <TooltipContent side={recolhido ? "right" : "bottom"} className="text-[12px]">
+        {texto} <span className="text-muted-foreground">· ⌘B</span>
+      </TooltipContent>
+    </Tooltip>
+  );
+}
+
 export function AppSidebar() {
   const { pathname } = useLocation();
   const { user, profile } = useAuth();
   const [cmdOpen, setCmdOpen] = useState(false);
+  // O estado (e o atalho ⌘B) vêm do SidebarProvider; quem persiste é o AppLayout.
+  const { open, toggleSidebar } = useSidebar();
+  const recolhido = !open;
   const initials = profile?.nome.split(" ").map(p => p[0]).slice(0, 2).join("").toUpperCase() ?? "U";
 
   const access = moduleAccess(profile?.cargo);
   const mod = access.facilitiesOnly ? "facilities" : currentModule(pathname);
   const { favoritos, toggle: toggleFavorito } = useFavoritos(user?.id);
 
+  const grupos = gruposVisiveis(access, mod);
+
   // Pool de itens favoritáveis: só os do módulo/acesso atualmente visível, pra não
-  // listar (nem deixar favoritar) rotas que este usuário não enxerga no menu.
-  const pool: NavItem[] = access.parceriasOnly
-    ? []
-    : mod === "facilities"
-    ? facilities
-    : [...inicio, ...timeFinanceiro, ...operacional, ...recargas, ...editais, ...investimentos, ...demonstracoes, ...analise, ...governanca, ...config];
+  // listar (nem deixar favoritar) rotas que este usuário não enxerga no menu. Sai dos
+  // mesmos grupos que são renderizados — quando era uma lista à parte, estrelar
+  // "Revisão Mensal" ou um BP não fazia nada, porque esses dois grupos ficaram de fora.
+  const pool: NavItem[] = access.parceriasOnly ? [] : itensDe(grupos);
   const favoritosItems = pool.filter((i) => favoritos.has(i.url));
 
+  // Recolhido, a barra é uma tira de ícones — favoritos primeiro, depois os grupos na
+  // mesma ordem do menu aberto, para que o lugar de cada tela continue sendo o mesmo.
+  const blocosRail: NavGrupo[] = favoritosItems.length > 0
+    ? [{ label: "Favoritos", items: favoritosItems }, ...grupos]
+    : grupos;
+
   return (
-    <Sidebar collapsible="none" className="sticky top-0 h-screen border-r border-sidebar-border w-[212px] bg-sidebar text-sidebar-foreground">
+    <Sidebar
+      collapsible="none"
+      className={`sticky top-0 h-screen border-r border-sidebar-border bg-sidebar text-sidebar-foreground transition-[width] duration-200 ease-out ${
+        recolhido ? "w-[56px]" : "w-[212px]"
+      }`}
+    >
       <CommandMenu open={cmdOpen} onOpenChange={setCmdOpen} />
-      <SidebarContent className="flex flex-col bg-sidebar">
+      <SidebarContent className="flex flex-col bg-sidebar [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
         {/* Header */}
-        <div className="flex items-center gap-2 border-b border-sidebar-border px-3 py-3">
-          <img src={takeatLogo} alt="Takeat" className="h-6 w-auto object-contain brightness-0 invert" />
-          <span className="ml-1 text-[12.5px] font-medium text-sidebar-foreground/70">· Hub {mod === "facilities" ? "Facilities" : "Financeiro"}</span>
+        {/* Altura fixa: recolhida, a logo encolhe — a linha de baixo não pode subir junto. */}
+        <div className={`flex h-12 items-center border-b border-sidebar-border ${recolhido ? "justify-center px-2" : "gap-2 px-3"}`}>
+          <img
+            src={takeatLogo}
+            alt="Takeat"
+            className={`object-contain brightness-0 invert ${recolhido ? "h-5 w-full" : "h-6 w-auto"}`}
+          />
+          {!recolhido && (
+            <>
+              <span className="ml-1 truncate text-[12.5px] font-medium text-sidebar-foreground/70">· Hub {mod === "facilities" ? "Facilities" : "Financeiro"}</span>
+              <BotaoRecolher recolhido={false} onClick={toggleSidebar} />
+            </>
+          )}
         </div>
+
+        {/* Recolhido, o botão de expandir toma o lugar do seletor de módulo. */}
+        {recolhido && (
+          <div className="px-2 pt-2">
+            <BotaoRecolher recolhido onClick={toggleSidebar} />
+          </div>
+        )}
 
         {/* Seletor de módulo (admins) ou selo estático (usuário exclusivo de Facilities) */}
         {access.canSwitch ? (
           <div className="px-2 pt-2">
-            <ModuleSwitcher current={mod} access={access} />
+            <ModuleSwitcher current={mod} access={access} compacto={recolhido} />
           </div>
         ) : access.facilitiesOnly ? (
           <div className="px-2 pt-2">
-            <div className="flex items-center gap-2 rounded-md border border-sidebar-border bg-sidebar-accent/40 px-2.5 py-2 text-[12.5px] text-sidebar-foreground">
-              <Wrench className="h-4 w-4 text-sidebar-foreground/70" />
-              <span><span className="text-sidebar-foreground/60">Módulo · </span><span className="font-semibold">Facilities</span></span>
+            <div
+              className={`flex items-center rounded-md border border-sidebar-border bg-sidebar-accent/40 text-[12.5px] text-sidebar-foreground ${
+                recolhido ? "justify-center px-2 py-2" : "gap-2 px-2.5 py-2"
+              }`}
+              title={recolhido ? "Módulo · Facilities" : undefined}
+            >
+              <Wrench className="h-4 w-4 shrink-0 text-sidebar-foreground/70" />
+              {!recolhido && (
+                <span><span className="text-sidebar-foreground/60">Módulo · </span><span className="font-semibold">Facilities</span></span>
+              )}
             </div>
           </div>
         ) : null}
 
         {/* Search */}
         <div className="px-2 py-2">
-          <button
-            onClick={() => setCmdOpen(true)}
-            className="flex w-full items-center gap-2 rounded-md border border-sidebar-border bg-sidebar-accent/40 px-2 py-1.5 text-[12px] text-sidebar-foreground/70 transition-colors hover:bg-sidebar-accent/70 hover:text-sidebar-foreground"
-          >
-            <Search className="h-3.5 w-3.5" />
-            <span className="flex-1 truncate text-left">Buscar ou ir para…</span>
-            <kbd className="num rounded border border-sidebar-border bg-sidebar-accent/60 px-1 text-[10px]">⌘K</kbd>
-          </button>
+          {recolhido ? (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <button
+                  onClick={() => setCmdOpen(true)}
+                  aria-label="Buscar ou ir para…"
+                  className="flex h-8 w-full items-center justify-center rounded-md border border-sidebar-border bg-sidebar-accent/40 text-sidebar-foreground/70 transition-colors hover:bg-sidebar-accent/70 hover:text-sidebar-foreground"
+                >
+                  <Search className="h-3.5 w-3.5" />
+                </button>
+              </TooltipTrigger>
+              <TooltipContent side="right" className="text-[12px]">
+                Buscar ou ir para… <span className="text-muted-foreground">· ⌘K</span>
+              </TooltipContent>
+            </Tooltip>
+          ) : (
+            <button
+              onClick={() => setCmdOpen(true)}
+              className="flex w-full items-center gap-2 rounded-md border border-sidebar-border bg-sidebar-accent/40 px-2 py-1.5 text-[12px] text-sidebar-foreground/70 transition-colors hover:bg-sidebar-accent/70 hover:text-sidebar-foreground"
+            >
+              <Search className="h-3.5 w-3.5" />
+              <span className="flex-1 truncate text-left">Buscar ou ir para…</span>
+              <kbd className="num rounded border border-sidebar-border bg-sidebar-accent/60 px-1 text-[10px]">⌘K</kbd>
+            </button>
+          )}
         </div>
 
-        <div className="flex-1 overflow-y-auto pb-3">
-          {favoritosItems.length > 0 && (
-            <Group
-              label="Favoritos"
-              items={favoritosItems}
-              pathname={pathname}
-              favoritos={favoritos}
-              onToggleFavorito={toggleFavorito}
-              defaultOpen
-            />
-          )}
-          {access.parceriasOnly ? (
-            <Group label="Operacional" items={inicio.filter(i => i.url === "/operacional/parceiros")} pathname={pathname} />
-          ) : mod === "facilities" ? (
-            <Group label="Facilities" items={facilities} pathname={pathname} favoritos={favoritos} onToggleFavorito={toggleFavorito} />
-          ) : (
-            <>
-              <Group label="Início" items={inicio} pathname={pathname} favoritos={favoritos} onToggleFavorito={toggleFavorito} />
-              <Group label="Time Financeiro" items={timeFinanceiro} pathname={pathname} favoritos={favoritos} onToggleFavorito={toggleFavorito} />
-              <Group label="Apresentações" items={apresentacoes} pathname={pathname} favoritos={favoritos} onToggleFavorito={toggleFavorito} />
-              <Group label="Operacional" items={operacional} pathname={pathname} favoritos={favoritos} onToggleFavorito={toggleFavorito} />
-              <Group label="Recargas" items={recargas} pathname={pathname} favoritos={favoritos} onToggleFavorito={toggleFavorito} />
-              <Group label="Editais" items={editais} pathname={pathname} favoritos={favoritos} onToggleFavorito={toggleFavorito} />
-              <Group label="Investimentos" items={investimentos} pathname={pathname} favoritos={favoritos} onToggleFavorito={toggleFavorito} />
-              <Group label="Demonstrações" items={demonstracoes} pathname={pathname} favoritos={favoritos} onToggleFavorito={toggleFavorito} />
-              <Group label="BP" items={bp} pathname={pathname} favoritos={favoritos} onToggleFavorito={toggleFavorito} />
-              <Group label="Análise Preditiva" items={analise} pathname={pathname} favoritos={favoritos} onToggleFavorito={toggleFavorito} />
-              <Group label="Governança" items={governanca} pathname={pathname} favoritos={favoritos} onToggleFavorito={toggleFavorito} />
-              <Group label="Configurações" items={config} pathname={pathname} favoritos={favoritos} onToggleFavorito={toggleFavorito} />
-            </>
-          )}
-        </div>
+        {recolhido ? (
+          <Rail blocos={blocosRail} pathname={pathname} />
+        ) : (
+          <div className="flex-1 overflow-y-auto pb-3 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+            {favoritosItems.length > 0 && (
+              <Group
+                label="Favoritos"
+                items={favoritosItems}
+                pathname={pathname}
+                favoritos={favoritos}
+                onToggleFavorito={toggleFavorito}
+                defaultOpen
+              />
+            )}
+            {grupos.map((g) => (
+              <Group
+                key={g.label}
+                label={g.label}
+                items={g.items}
+                pathname={pathname}
+                // Quem só enxerga Parceiros não tem o que organizar: sem estrela.
+                favoritos={access.parceriasOnly ? undefined : favoritos}
+                onToggleFavorito={access.parceriasOnly ? undefined : toggleFavorito}
+              />
+            ))}
+          </div>
+        )}
 
       </SidebarContent>
     </Sidebar>

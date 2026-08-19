@@ -79,6 +79,10 @@ const SidebarProvider = React.forwardRef<
   React.useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === SIDEBAR_KEYBOARD_SHORTCUT && (event.metaKey || event.ctrlKey)) {
+        // ⌘B dentro de um editor é negrito (o playbook usa tiptap) e dentro de um
+        // campo de texto não é atalho de menu nenhum: ali o atalho não vale.
+        const alvo = event.target as HTMLElement | null;
+        if (alvo?.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(alvo?.tagName ?? "")) return;
         event.preventDefault();
         toggleSidebar();
       }

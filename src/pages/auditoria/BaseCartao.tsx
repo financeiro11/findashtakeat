@@ -1,5 +1,7 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
+import { useApelidos } from "@/hooks/useApelidos";
+import { nomeContraparte, textoDaBusca, type MapaLojistas, type NomeContraparte } from "@/lib/lojistaCartao";
 import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
@@ -35,7 +37,15 @@ type Lanc = {
 
 const PAGE_SIZE = 50;
 
+/* `types.ts` ainda não conhece a RPC criada na migration 20260819120000 — mesmo
+   atalho do `useApelidos`, some quando os tipos forem regerados. */
+const lerLojistas = (): PromiseLike<{ data: MapaLojistas | null; error: { message?: string } | null }> =>
+  (supabase as unknown as { rpc: (nome: string) => PromiseLike<{ data: MapaLojistas | null; error: { message?: string } | null }> })
+    .rpc("auditoria_lojistas");
+
 export default function BaseCartao() {
+  const apelidos = useApelidos();
+  const [lojistas, setLojistas] = useState<MapaLojistas>({});
   const [rows, setRows] = useState<Lanc[]>([]);
   const [loading, setLoading] = useState(true);
   const [referencia, setReferencia] = useState<string>("");
@@ -60,6 +70,22 @@ export default function BaseCartao() {
     })();
   }, []);
 
+  /* O MEMO da fatura vira o nome limpo do módulo do Cartão (casamento data +
+     valor) e daí ganha o apelido da Parametrização. Acessório: sem o mapa a
+     coluna mostra o estabelecimento como a esteira o gravou. */
+  useEffect(() => {
+    lerLojistas().then(({ data, error }) => {
+      if (error) { console.warn("[base do cartão] sem o mapa de lojistas:", error); return; }
+      setLojistas(data ?? {});
+    });
+  }, []);
+
+  const nomeDaLinha = useCallback(
+    (r: Lanc): NomeContraparte =>
+      nomeContraparte(apelidos, lojistas, { nome: r.estabelecimento, data: r.data, valor: r.valor }),
+    [apelidos, lojistas],
+  );
+
   // Anexar a NF/comprovante direto daqui: a função grava no bucket da auditoria e,
   // se o lançamento já tem título casado, manda o anexo ao Omie.
   const anexo = useAnexarComprovante(({ alvo, storage_path, arquivo }) => {
@@ -72,7 +98,7 @@ export default function BaseCartao() {
     )));
   });
   const abrirAnexo = (r: Lanc) =>
-    anexo.abrirSeletor({ origem: "cartao", id_unico: r.id_unico, rotulo: r.estabelecimento || r.descricao_original || "lançamento" });
+    anexo.abrirSeletor({ origem: "cartao", id_unico: r.id_unico, rotulo: nomeDaLinha(r).exibido || r.descricao_original || "lançamento" });
 
   const referencias = useMemo(
     () => Array.from(new Set(rows.map(r => r.referencia))).sort().reverse(),
@@ -98,12 +124,14 @@ export default function BaseCartao() {
       if (fNf !== "todos" && r.status_nf !== fNf) return false;
       if (fEscopo !== "todos" && r.status_escopo !== fEscopo) return false;
       if (q) {
-        const hay = `${r.estabelecimento ?? ""} ${r.descricao_original ?? ""}`.toLowerCase();
+        // O apelido entra na varredura: quem procura pelo nome que está na tela
+        // precisa achar a linha tanto quanto quem procura pelo nome da fatura.
+        const hay = `${textoDaBusca(nomeDaLinha(r))} ${r.descricao_original ?? ""}`.toLowerCase();
         if (!hay.includes(q)) return false;
       }
       return true;
     });
-  }, [periodRows, fTime, fNf, fEscopo, busca]);
+  }, [periodRows, fTime, fNf, fEscopo, busca, nomeDaLinha]);
 
   useEffect(() => { setPage(1); }, [referencia, fTime, fNf, fEscopo, busca, agrupar]);
 
@@ -221,13 +249,13 @@ export default function BaseCartao() {
                   <div className="text-xs font-semibold">{time} <span className="text-muted-foreground font-normal">({list.length})</span></div>
                   <div className="text-xs num font-semibold">{brl(soma)}</div>
                 </div>
-                {list.map(r => <BaseRow key={r.id} r={r} onAnexar={abrirAnexo} enviando={anexo.enviando === r.id_unico} />)}
+                {list.map(r => <BaseRow key={r.id} r={r} nome={nomeDaLinha(r)} onAnexar={abrirAnexo} enviando={anexo.enviando === r.id_unico} />)}
               </div>
             );
           })
         ) : (
           <>
-            {paged.map(r => <BaseRow key={r.id} r={r} onAnexar={abrirAnexo} enviando={anexo.enviando === r.id_unico} />)}
+            {paged.map(r => <BaseRow key={r.id} r={r} nome={nomeDaLinha(r)} onAnexar={abrirAnexo} enviando={anexo.enviando === r.id_unico} />)}
             {totalPages > 1 && (
               <div className="flex items-center justify-between px-4 py-3 text-xs text-muted-foreground border-t border-border">
                 <div>Página {page} de {totalPages} · {filtered.length} lançamentos</div>
@@ -246,7 +274,7 @@ export default function BaseCartao() {
   );
 }
 
-function BaseRow({ r, onAnexar, enviando }: { r: Lanc; onAnexar: (r: Lanc) => void; enviando: boolean }) {
+function BaseRow({ r, nome, onAnexar, enviando }: { r: Lanc; nome: NomeContraparte; onAnexar: (r: Lanc) => void; enviando: boolean }) {
   const bg =
     r.status_nf === "SEM NF" ? "bg-[hsl(0_80%_97%)]" :
     r.status_escopo === "FORA-JUSTIFICAR" ? "bg-[hsl(48_100%_96%)]" : "";
@@ -257,8 +285,13 @@ function BaseRow({ r, onAnexar, enviando }: { r: Lanc; onAnexar: (r: Lanc) => vo
       <div className="truncate text-foreground/80">{r.time || "—"}</div>
       <div className="text-xs text-muted-foreground">•••• {r.card_final || "—"}</div>
       <div className="min-w-0">
-        <div className="font-medium truncate">{r.estabelecimento || "—"}</div>
-        {r.descricao_original && r.descricao_original !== r.estabelecimento && (
+        {/* Apelido da Parametrização em cima; o que a fatura escreveu embaixo —
+            é esse texto que se procura no extrato e no Omie. */}
+        <div className="font-medium truncate" title={nome.oQueE ?? undefined}>{nome.exibido || "—"}</div>
+        {nome.cru && nome.cru !== nome.exibido && (
+          <div className="text-xs text-muted-foreground truncate">{nome.cru}</div>
+        )}
+        {r.descricao_original && r.descricao_original !== r.estabelecimento && r.descricao_original !== nome.cru && (
           <div className="text-xs text-muted-foreground truncate">{r.descricao_original}</div>
         )}
         {r.observacao && <div className="text-[11px] text-muted-foreground italic truncate">{r.observacao}</div>}

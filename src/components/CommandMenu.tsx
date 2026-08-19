@@ -1,64 +1,24 @@
-import { useEffect } from "react";
-import { useNavigate } from "react-router-dom";
+import { useEffect, useMemo } from "react";
+import { useLocation, useNavigate } from "react-router-dom";
 import {
   CommandDialog, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList, CommandSeparator,
 } from "@/components/ui/command";
 import { useAuth } from "@/hooks/useAuth";
-import { moduleAccess } from "@/lib/modules";
-import {
-  Wallet, CreditCard, Users, Handshake, Smartphone, Plane, Percent, BookOpen, FolderKanban,
-  FileBarChart, FileText, Scale, TrendingUp, Brain, Target, Home, ListTree, UserCog, Tags,
-  LayoutDashboard, Kanban, FileSpreadsheet, Truck, History, FileSignature,
-} from "lucide-react";
-
-const ITEMS: { group: string; items: { title: string; url: string; icon: any }[] }[] = [
-  { group: "Início", items: [{ title: "Dashboard", url: "/", icon: Home }] },
-  { group: "Facilities", items: [
-    { title: "Facilities · Dashboard", url: "/facilities", icon: LayoutDashboard },
-    { title: "Solicitações", url: "/facilities/solicitacoes", icon: Kanban },
-    { title: "Cotações", url: "/facilities/cotacoes", icon: FileSpreadsheet },
-    { title: "Fornecedores", url: "/facilities/fornecedores", icon: Truck },
-    { title: "Histórico de compras", url: "/facilities/historico", icon: History },
-    { title: "Contratos", url: "/facilities/contratos", icon: FileSignature },
-  ]},
-  { group: "Recargas", items: [
-    { title: "Celulares", url: "/recargas/celulares", icon: Smartphone },
-    { title: "Viagens", url: "/recargas/viagens", icon: Plane },
-  ]},
-  { group: "Automações", items: [
-    { title: "Proporcionais", url: "/automacoes/proporcionais", icon: Percent },
-    { title: "Catálogo", url: "/automacoes/catalogo", icon: BookOpen },
-    { title: "Projetos", url: "/automacoes/projetos", icon: FolderKanban },
-  ]},
-  { group: "Demonstrações", items: [
-    { title: "DRE", url: "/demonstracoes/dre", icon: FileBarChart },
-    { title: "DFC", url: "/demonstracoes/dfc", icon: TrendingUp },
-    { title: "Balancete", url: "/demonstracoes/balancete", icon: FileText },
-    { title: "Balanço", url: "/demonstracoes/balanco", icon: Scale },
-  ]},
-  { group: "BP", items: [
-    { title: `BP ${new Date().getFullYear()}`, url: `/bp/${new Date().getFullYear()}`, icon: FileBarChart },
-    { title: `BP ${new Date().getFullYear() + 1}`, url: `/bp/${new Date().getFullYear() + 1}`, icon: FileBarChart },
-    { title: "Histórico de versões", url: "/bp/versoes", icon: FileText },
-  ]},
-  { group: "Análise Preditiva", items: [
-    { title: "Cenários", url: "/analise/cenarios", icon: Target },
-    { title: "Biblioteca", url: "/analise/conhecimento", icon: Brain },
-  ]},
-  { group: "Configurações", items: [
-    { title: "Parametrização", url: "/configuracoes/parametrizacao", icon: Tags },
-    { title: "DE_PARA", url: "/de-para", icon: ListTree },
-    { title: "Usuários", url: "/usuarios", icon: UserCog },
-  ]},
-];
+import { moduleAccess, currentModule } from "@/lib/modules";
+import { GRUPO_BUSCA_EXTRA, gruposVisiveis, termosDeBusca } from "@/lib/navegacao";
 
 export function CommandMenu({ open, onOpenChange }: { open: boolean; onOpenChange: (v: boolean) => void }) {
   const nav = useNavigate();
+  const { pathname } = useLocation();
   const { profile } = useAuth();
-  const access = moduleAccess(profile?.cargo);
-  const items = ITEMS.filter((g) =>
-    g.group === "Facilities" ? access.modules.includes("facilities") : !access.facilitiesOnly,
-  );
+
+  const grupos = useMemo(() => {
+    const access = moduleAccess(profile?.cargo);
+    const mod = access.facilitiesOnly ? "facilities" : currentModule(pathname);
+    const doMenu = gruposVisiveis(access, mod);
+    // As telas sem item de menu só fazem sentido para quem enxerga o Hub inteiro.
+    return access.parceriasOnly || access.facilitiesOnly ? doMenu : [...doMenu, GRUPO_BUSCA_EXTRA];
+  }, [profile?.cargo, pathname]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -76,14 +36,15 @@ export function CommandMenu({ open, onOpenChange }: { open: boolean; onOpenChang
       <CommandInput placeholder="Buscar ou ir para…" />
       <CommandList>
         <CommandEmpty>Nada encontrado.</CommandEmpty>
-        {items.map((g, i) => (
-          <div key={g.group}>
+        {grupos.map((g, i) => (
+          <div key={g.label}>
             {i > 0 && <CommandSeparator />}
-            <CommandGroup heading={g.group}>
+            <CommandGroup heading={g.label}>
               {g.items.map((it) => (
                 <CommandItem
                   key={it.url}
-                  value={`${g.group} ${it.title}`}
+                  value={`${g.label} ${it.title}`}
+                  keywords={termosDeBusca(g.label, it)}
                   onSelect={() => { onOpenChange(false); nav(it.url); }}
                 >
                   <it.icon className="mr-2 h-4 w-4" />

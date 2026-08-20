@@ -440,7 +440,14 @@ export default function ColaboradoresRH() {
                       <img
                         src={fotoUrls[String(c.foto_url)]}
                         alt={String(c.nome ?? "")}
-                        className="size-16 rounded-full object-cover bg-muted"
+                        title="Clique para ampliar"
+                        className="size-16 rounded-full object-cover bg-muted cursor-pointer hover:ring-2 hover:ring-primary transition-shadow"
+                        onClick={() =>
+                          setFotoAberta({
+                            url: fotoUrls[String(c.foto_url)],
+                            nome: String(c.nome ?? ""),
+                          })
+                        }
                       />
                     ) : (
                       <div className="size-16 rounded-full bg-muted grid place-items-center">

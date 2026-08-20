@@ -90,9 +90,9 @@ const queryClient = new QueryClient();
  * o layout de desktop. Mesma URL, mesma sessão, mesmas policies — só a árvore de telas
  * muda. Com `isMobile` falso, o que é montado aqui é exatamente o que sempre foi.
  *
- * Quem decide é o ponteiro, não a largura (ver use-mobile): janela estreita no computador
- * — meia tela, por exemplo — continua sendo o Hub. Para ver o app do celular no
- * computador, `?mobile=1` na URL.
+ * Quem decide é a TELA do aparelho, não a janela (ver use-mobile): janela estreita no
+ * computador — meia tela, por exemplo — continua sendo o Hub. Para ver o app do celular
+ * no computador, `?mobile=1` na URL.
  */
 const App = () => (
   <QueryClientProvider client={queryClient}>

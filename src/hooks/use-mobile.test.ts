@@ -1,33 +1,74 @@
 import { describe, it, expect } from "vitest";
-import { ehSuperficieDeCelular, escolhaForcada } from "./use-mobile";
+import { ehSuperficieDeCelular, escolhaForcada, type Superficie } from "./use-mobile";
 
 // Este predicado decide, em App.tsx, se o que monta é o app das cinco abas ou o Hub de
-// desktop inteiro. Errar aqui não deixa a tela feia: troca o aplicativo no meio do uso.
-describe("ehSuperficieDeCelular", () => {
-  const TOQUE = true;
-  const MOUSE = false;
+// desktop inteiro. Errar aqui não deixa a tela feia: troca o aplicativo inteiro — já
+// aconteceu nos dois sentidos (note de tela dividida virando app de celular, celular
+// virando Hub espremido), e é por isso que cada aparelho abaixo tem um teste.
+const CELULAR: Superficie = {
+  telaLargura: 385, telaAltura: 854,
+  janelaLargura: 385, janelaAltura: 780,
+  toque: true, semHover: true,
+};
+const NOTE: Superficie = {
+  telaLargura: 1536, telaAltura: 864,
+  janelaLargura: 1536, janelaAltura: 760,
+  toque: false, semHover: false,
+};
 
+const com = (base: Superficie, mudanca: Partial<Superficie>): Superficie => ({ ...base, ...mudanca });
+
+describe("ehSuperficieDeCelular", () => {
   it("celular em pé é celular", () => {
-    expect(ehSuperficieDeCelular(390, 844, TOQUE)).toBe(true);
+    expect(ehSuperficieDeCelular(CELULAR)).toBe(true);
   });
 
   it("celular deitado continua celular — é o caso que trocava o app ao girar", () => {
-    expect(ehSuperficieDeCelular(844, 390, TOQUE)).toBe(true);
+    expect(ehSuperficieDeCelular(com(CELULAR, {
+      telaLargura: 854, telaAltura: 385, janelaLargura: 854, janelaAltura: 340,
+    }))).toBe(true);
+  });
+
+  it("celular com caneta continua celular — hover mentiroso não decide nada", () => {
+    // O Android com S Pen reporta hover/ponteiro fino e foi assim que o telefone caiu no
+    // Hub de desktop. O tamanho da tela não muda por causa da caneta.
+    expect(ehSuperficieDeCelular(com(CELULAR, { semHover: false }))).toBe(true);
   });
 
   it("tablet não vira celular em nenhuma orientação", () => {
-    expect(ehSuperficieDeCelular(768, 1024, TOQUE)).toBe(false);
-    expect(ehSuperficieDeCelular(1024, 768, TOQUE)).toBe(false);
+    const tablet = com(CELULAR, {
+      telaLargura: 834, telaAltura: 1194, janelaLargura: 834, janelaAltura: 1100,
+    });
+    expect(ehSuperficieDeCelular(tablet)).toBe(false);
+    expect(ehSuperficieDeCelular(com(tablet, {
+      telaLargura: 1194, telaAltura: 834, janelaLargura: 1194, janelaAltura: 780,
+    }))).toBe(false);
   });
 
   it("meia tela do note não vira celular — 1920 a 125% dá ~768px por metade", () => {
-    expect(ehSuperficieDeCelular(760, 980, MOUSE)).toBe(false);
+    expect(ehSuperficieDeCelular(com(NOTE, { janelaLargura: 748 }))).toBe(false);
   });
 
-  it("no computador nenhuma largura vira celular, por mais estreita que seja", () => {
-    expect(ehSuperficieDeCelular(500, 900, MOUSE)).toBe(false);
-    expect(ehSuperficieDeCelular(320, 900, MOUSE)).toBe(false);
-    expect(ehSuperficieDeCelular(1440, 900, MOUSE)).toBe(false);
+  it("nem meia tela de note COM tela de toque — a tela do aparelho é que conta", () => {
+    expect(ehSuperficieDeCelular(com(NOTE, { janelaLargura: 748, toque: true }))).toBe(false);
+  });
+
+  it("no computador nenhuma janela vira celular, por mais estreita que seja", () => {
+    expect(ehSuperficieDeCelular(com(NOTE, { janelaLargura: 320 }))).toBe(false);
+  });
+
+  it("celular que mente o tamanho da tela ainda é celular", () => {
+    // Navegador que devolve screen.width em pixels do aparelho (1080) e não em CSS (385):
+    // a janela estreita sem hover é o que sobra para reconhecê-lo.
+    expect(ehSuperficieDeCelular(com(CELULAR, {
+      telaLargura: 1080, telaAltura: 2400,
+    }))).toBe(true);
+  });
+
+  it("tela zerada não conta como tela minúscula", () => {
+    expect(ehSuperficieDeCelular(com(NOTE, {
+      telaLargura: 0, telaAltura: 0, janelaLargura: 748, toque: true,
+    }))).toBe(false);
   });
 });
 

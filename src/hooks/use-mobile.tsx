@@ -3,23 +3,52 @@ import * as React from "react";
 const MOBILE_BREAKPOINT = 768;
 const CHAVE_FORCAR = "mobile:forcado";
 
+export type Superficie = {
+  /** `screen.width`/`screen.height`: a TELA do aparelho, que não muda quando a janela muda. */
+  telaLargura: number;
+  telaAltura: number;
+  /** `innerWidth`/`innerHeight`: a janela. Só entra na rede de segurança lá embaixo. */
+  janelaLargura: number;
+  janelaAltura: number;
+  /** Existe dedo neste aparelho. */
+  toque: boolean;
+  /** Não existe hover — passar o ponteiro por cima não é um gesto possível. */
+  semHover: boolean;
+};
+
 /**
  * "É uma superfície de celular?" — o que decide, em App.tsx, montar o app das cinco abas
  * em vez do Hub de desktop.
  *
- * Quem manda é o ponteiro, não a largura. Enquanto a conta era só a largura da janela,
- * dividir a tela do note derrubava o Hub inteiro: metade de uma tela de 1920 com escala
- * de 125% dá ~768px de CSS, ou seja, o limite raspando por baixo — e no lugar do Hub
- * aparecia o app de celular espremido no meio do computador. No computador, janela
- * estreita é janela estreita: o layout se ajusta, o aplicativo não muda.
+ * Quem manda é o tamanho da TELA do aparelho, não o da janela. Duas coisas quebraram aqui,
+ * e o histórico das duas é o que justifica a regra:
  *
- * Num aparelho de toque a conta é sobre o MENOR lado da tela, não sobre a largura: um
- * iPhone deitado tem 844px de largura e passava a valer como desktop, então girar o
- * telefone no meio do uso trocava o app inteiro pelo Hub espremido — a tela some, a rota
- * some, o que estava sendo digitado some.
+ * 1. Enquanto valia a largura da JANELA, dividir a tela do note derrubava o Hub inteiro:
+ *    metade de uma tela de 1920 com escala de 125% dá ~768px de CSS, o limite raspando por
+ *    baixo, e no lugar do Hub aparecia o app de celular espremido no computador. A tela do
+ *    note continua sendo a mesma tela grande com a janela em qualquer tamanho — por isso
+ *    ela, e não a janela, é o que se mede.
+ * 2. Trocar isso por `(pointer: coarse) && (hover: none)` mandou o celular de verdade para
+ *    o Hub de desktop: em Android com caneta esses valores viram `fine`/`hover` e o
+ *    aparelho deixa de se declarar celular. Media query de ponteiro não serve de porteiro.
+ *
+ * Num aparelho de toque a conta é sobre o MENOR lado, não sobre a largura: um iPhone
+ * deitado tem 844px de largura e passava a valer como desktop, então girar o telefone no
+ * meio do uso trocava o app inteiro — a tela some, a rota some, o que estava sendo
+ * digitado some.
  */
-export function ehSuperficieDeCelular(largura: number, altura: number, toque: boolean): boolean {
-  return toque && Math.min(largura, altura) < MOBILE_BREAKPOINT;
+export function ehSuperficieDeCelular(s: Superficie): boolean {
+  // Sem dedo não é celular, e isso sozinho já tira qualquer computador da conta.
+  if (!s.toque) return false;
+
+  const menorLadoDaTela = Math.min(s.telaLargura, s.telaAltura);
+  if (menorLadoDaTela > 0 && menorLadoDaTela < MOBILE_BREAKPOINT) return true;
+
+  // Rede de segurança para o aparelho que mente o tamanho da tela (navegador antigo que
+  // devolve `screen.width` em pixels do aparelho, não em CSS: 1080 no lugar de 385). Aqui
+  // a janela volta a valer, mas só onde hover não existe — é o que impede o note de tela
+  // dividida, que tem trackpad e portanto tem hover, de cair de novo no app de celular.
+  return s.semHover && Math.min(s.janelaLargura, s.janelaAltura) < MOBILE_BREAKPOINT;
 }
 
 /**
@@ -46,21 +75,24 @@ function forcado(): boolean | null {
   }
 }
 
-function temToque(): boolean {
-  // `any-pointer: coarse` não serve: um note com tela sensível casa com ele e cairia no
-  // app de celular. O que interessa é o ponteiro PRINCIPAL ser o dedo — e, junto, não
-  // existir hover, que é justamente o que separa o celular do note com tela de toque.
-  return (
-    (window.matchMedia?.("(pointer: coarse)").matches ?? false) &&
-    (window.matchMedia?.("(hover: none)").matches ?? false)
-  );
-}
-
 function ehCelular(): boolean {
   if (typeof window === "undefined") return false;
   const forcar = forcado();
   if (forcar !== null) return forcar;
-  return ehSuperficieDeCelular(window.innerWidth, window.innerHeight, temToque());
+
+  return ehSuperficieDeCelular({
+    telaLargura: window.screen?.width ?? 0,
+    telaAltura: window.screen?.height ?? 0,
+    janelaLargura: window.innerWidth,
+    janelaAltura: window.innerHeight,
+    // `maxTouchPoints` primeiro: é um número, não uma media query, e nenhum celular o
+    // devolve zerado. `any-pointer` (não `pointer`) fica de reserva — vale se QUALQUER
+    // entrada for grossa, então caneta ou mouse pareado não apagam o dedo.
+    toque:
+      (navigator.maxTouchPoints ?? 0) > 0 ||
+      (window.matchMedia?.("(any-pointer: coarse)").matches ?? false),
+    semHover: window.matchMedia?.("(any-hover: none)").matches ?? false,
+  });
 }
 
 export function useIsMobile() {
@@ -70,8 +102,8 @@ export function useIsMobile() {
   const [isMobile, setIsMobile] = React.useState<boolean>(ehCelular);
 
   React.useEffect(() => {
-    // `resize` e não matchMedia: a conta depende da altura e da orientação, e girar o
-    // aparelho não muda nenhuma media query de largura mínima.
+    // Girar o aparelho troca largura por altura, e monitor externo troca a tela inteira.
+    // Nenhum dos dois muda media query de largura mínima, daí `resize` e não matchMedia.
     const onChange = () => setIsMobile(ehCelular());
     window.addEventListener("resize", onChange);
     window.addEventListener("orientationchange", onChange);

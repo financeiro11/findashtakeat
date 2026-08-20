@@ -403,12 +403,31 @@ async function espelhar(supabase: any, opts: { tetoStatus: number }) {
  *     o alcance de um `FaturarLoteOS`, que fatura a etapa INTEIRA;
  *   • os últimos lotes de faturamento e como terminaram.
  */
-async function etapasEFaturamento(opts: { lote?: number; os?: number } = {}) {
+async function etapasEFaturamento(opts: { lote?: number; os?: number; consultar?: boolean } = {}) {
   // Atalho: com `os`, só o status daquela OS — é a leitura que diz se a nota
   // nasceu, sem varrer as 1.200 OS.
   if (opts.os) {
     const s = await omieCall<any>("servicos/os", "StatusOS", { nCodOS: opts.os });
-    return { status_os: s, nfse: nfseDoStatus(s) };
+    // `consultar` traz a OS inteira como ela ficou gravada — é onde se lê o bloco
+    // Email, que decide se o Omie manda alguma coisa para o cliente.
+    const cadastro = opts.consultar
+      ? await omieCall<any>("servicos/os", "ConsultarOS", { nCodOS: opts.os }).catch((e) => ({ erro: mensagemDoOmie(e) }))
+      : undefined;
+    /* O e-mail que interessa é o do CADASTRO DO CLIENTE, não o da OS. O bloco
+     * Email da OS governa boleto/link/pix/recibo (e nasce todo "N", igual às OS
+     * históricas); quem recebe a NFS-e é o endereço do cliente no Omie. */
+    const nCodCli = Number(cadastro?.Cabecalho?.nCodCli ?? 0);
+    const cliente = nCodCli
+      ? await omieCall<any>("geral/clientes", "ConsultarCliente", { codigo_cliente_omie: nCodCli })
+          .then((c) => ({
+            codigo: c?.codigo_cliente_omie, razao: c?.razao_social, nome: c?.nome_fantasia,
+            email: c?.email, email_nfe: c?.dadosNFe?.email_nfe ?? null,
+            exibir_email_nfe: c?.dadosNFe?.exibir_email_nfe ?? null,
+            recebe_email: c?.recomendacoes?.email_fatura ?? null,
+          }))
+          .catch((e) => ({ erro: mensagemDoOmie(e) }))
+      : undefined;
+    return { status_os: s, nfse: nfseDoStatus(s), ...(cadastro ? { cadastro } : {}), ...(cliente ? { cliente } : {}) };
   }
   const etapas = await omieCall<any>("produtos/etapafat", "ListarEtapasFaturamento", {
     pagina: 1, registros_por_pagina: 50,
@@ -451,8 +470,8 @@ async function etapasEFaturamento(opts: { lote?: number; os?: number } = {}) {
  * existe responde CRÍTICA DE PARÂMETRO, e é por isso que o nCodOS vai como 0 —
  * nenhuma OS real pode ser tocada por engano.
  */
-async function sondarMetodos(): Promise<Record<string, string>> {
-  const alvos: Array<[string, string]> = [
+async function sondarMetodos(extras: Array<[string, string]> = []): Promise<Record<string, string>> {
+  const alvos: Array<[string, string]> = extras.length ? extras : [
     // Controles: dois que existem e um endpoint que não existe. Sem eles, a sonda
     // não prova nada — a primeira versão classificou TUDO como "EXISTE" porque a
     // recusa vem como `Method "X" not exists`, com o nome no meio da frase, e o
@@ -1135,13 +1154,17 @@ Deno.serve(async (req) => {
     }
 
     if (action === "sondar_metodos") {
-      return json({ ok: true, metodos: await sondarMetodos() });
+      const extras = Array.isArray(body?.alvos)
+        ? body.alvos.map((a: any) => [String(a?.[0] ?? ""), String(a?.[1] ?? "")] as [string, string])
+        : [];
+      return json({ ok: true, metodos: await sondarMetodos(extras) });
     }
 
     if (action === "etapas") {
       const r = await etapasEFaturamento({
         lote: body?.lote ? Number(body.lote) : undefined,
         os: body?.os ? Number(body.os) : undefined,
+        consultar: body?.consultar === true,
       });
       return json({ ok: true, ...r });
     }

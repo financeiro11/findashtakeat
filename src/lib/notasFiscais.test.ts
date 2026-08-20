@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import {
-  motivoBloqueio, podeEmitir, resumoLote, xmlAindaVale, formatarDoc, statusAsaas, foiPaga,
+  motivoBloqueio, motivoCurto, podeEmitir, resumoLote, xmlAindaVale, formatarDoc, statusAsaas, foiPaga,
   type LinhaNota, type Situacao,
 } from "./notasFiscais";
 
@@ -9,8 +9,31 @@ const linha = (over: Partial<LinhaNota> = {}): LinhaNota => ({
   cnpj_cpf: "37511891000150", valor: 249, data_vencimento: "2026-08-10", data_pagamento: "2026-08-10",
   status_asaas: "RECEIVED", estornado: false, nf_asaas_status: null, nf_asaas_numero: null,
   n_cod_os: null, os_etapa: null, os_faturada: null,
-  nfse_numero: null, nfse_status: null, nfse_xml: null, situacao: "falta",
+  nfse_numero: null, nfse_status: null, nfse_xml: null, nfse_mensagem: null, situacao: "falta",
   ...over,
+});
+
+describe("motivoCurto", () => {
+  // As frases são as que a prefeitura devolveu de verdade nas 277 OS presas.
+  it("reduz o E0240 ao que a pessoa precisa consertar", () => {
+    const m = motivoCurto("E0240 : O CEP informado para o endereço nacional do tomador do serviço não existe ou não pertence ao município do endereço do tomador.");
+    expect(m).toBe("CEP do tomador não confere com o município");
+  });
+
+  it("reconhece a recusa de conexão, que não é crítica da nota", () => {
+    expect(motivoCurto('A prefeitura respondeu "403 - Forbidden: Access is denied." (recusa do webservice, não crítica da nota).'))
+      .toMatch(/403/);
+  });
+
+  it("mensagem desconhecida volta sem o código, e não vazia", () => {
+    const m = motivoCurto("E0999 : Alguma crítica nova que ninguém mapeou ainda.");
+    expect(m).toBe("Alguma crítica nova que ninguém mapeou ainda.");
+  });
+
+  it("sem mensagem, nada a mostrar", () => {
+    expect(motivoCurto(null)).toBeNull();
+    expect(motivoCurto("")).toBeNull();
+  });
 });
 
 describe("motivoBloqueio", () => {

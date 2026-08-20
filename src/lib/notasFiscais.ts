@@ -38,7 +38,30 @@ export interface LinhaNota {
   nfse_numero: string | null;
   nfse_status: string | null;
   nfse_xml: string | null;
+  /** A recusa da prefeitura, em português. É o que diz o que consertar. */
+  nfse_mensagem: string | null;
   situacao: Situacao;
+}
+
+/**
+ * A recusa da prefeitura reduzida ao que se lê de relance.
+ *
+ * As mensagens vêm com o código colado na frase ("E0240 : O CEP informado para o
+ * endereço nacional do tomador do serviço não existe ou não pertence ao município
+ * do endereço do tomador.") — bom para agrupar, comprido demais para uma linha de
+ * tabela. O texto inteiro continua no `title`, que é a convenção do projeto para
+ * o que foi encurtado.
+ */
+export function motivoCurto(msg: string | null): string | null {
+  if (!msg) return null;
+  const s = msg.trim();
+  if (/E0240/.test(s)) return "CEP do tomador não confere com o município";
+  if (/E092[12]/.test(s)) return "Código do município do tomador";
+  if (/403|acesso negado|forbidden/i.test(s)) return "Prefeitura recusou a conexão (403)";
+  if (/nenhuma resposta/i.test(s)) return "Prefeitura não respondeu";
+  if (/e-?mail/i.test(s)) return "Cliente sem e-mail";
+  // Sem regra conhecida: mostra o começo da frase do Omie, sem o código.
+  return s.replace(/^E\d+\s*:\s*/, "").slice(0, 60);
 }
 
 /** Como cada situação se apresenta. `tom` casa com os tokens semânticos do tema. */
@@ -127,14 +150,20 @@ export const foiPaga = (s: string | null | undefined) =>
  * segunda via de algo que já tem nota — a primeira cria imposto sobre receita que
  * não existe.
  */
-export function motivoBloqueio(l: Pick<LinhaNota, "situacao" | "estornado" | "cnpj_cpf" | "valor" | "data_vencimento" | "data_pagamento">): string | null {
+export function motivoBloqueio(l: Pick<LinhaNota, "situacao" | "estornado" | "cnpj_cpf" | "valor" | "data_vencimento" | "data_pagamento"> & { nfse_mensagem?: string | null }): string | null {
   if (l.estornado) return "Cobrança estornada — emitir criaria imposto sobre receita devolvida.";
   if (l.situacao === "emitida_omie") return "Já tem NFS-e autorizada no Omie.";
   if (l.situacao === "emitida_asaas") return "Já tem nota autorizada no Asaas.";
   // Rejeitada NÃO libera emissão daqui: a OS já está faturada no Omie: emitir de
   // novo criaria uma segunda OS para a mesma cobrança. O conserto é reenviar o
   // RPS no Omie, corrigindo o que a prefeitura recusou.
-  if (l.situacao === "nota_rejeitada") return "A prefeitura rejeitou o RPS. Corrija e reenvie pelo Omie — emitir aqui duplicaria a OS.";
+  if (l.situacao === "nota_rejeitada") {
+    // Com o motivo em mãos, o bloqueio deixa de ser "não pode" e vira instrução.
+    const m = motivoCurto(l.nfse_mensagem ?? null);
+    return m
+      ? `${m}. Corrija o cadastro e reenvie pelo Omie — emitir aqui duplicaria a OS.`
+      : "A prefeitura rejeitou o RPS. Corrija e reenvie pelo Omie — emitir aqui duplicaria a OS.";
+  }
   if (l.situacao === "em_processamento") return "A OS já foi faturada; o RPS está a caminho.";
   if (l.situacao === "nao_exige") return "A cobrança não foi recebida.";
   if (!l.cnpj_cpf) return "Cliente sem CNPJ/CPF no Asaas — sem documento não há como achar o cadastro no Omie.";

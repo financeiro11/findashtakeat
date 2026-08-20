@@ -6,11 +6,14 @@
 //
 // ONDE A NOTA MORA NO OMIE. Dentro da ORDEM DE SERVIÇO, não num cadastro de notas:
 //
-//     OS na etapa 50  --TrocarEtapaOS(60)-->  faturada  ==>  NFS-e emitida
+//     OS na etapa 50  --FaturarLoteOS-->  faturada  ==>  NFS-e emitida
 //
 // Emitir, portanto, é faturar a OS — e quando a cobrança não tem OS (a maioria: são
 // 1.207 OS contra milhares de cobranças), é criar a OS e faturar. Quem faz isso é a
 // edge function `omie-nfse-sync`; esta tela só monta o lote e mostra o resultado.
+// (Trocar a etapa da OS NÃO fatura: o Omie aceita e não faz nada. E o `FaturarLoteOS`
+// fatura a etapa inteira, por isso a função isola a OS antes — está tudo explicado
+// lá, e é de lá que vem a diferença entre "emitida", "já tinha nota" e "no forno".)
 //
 // O CASAMENTO entre os dois lados é feito no Postgres (`notas_fiscais_painel`) em
 // duas camadas: o `cCodIntOS`, que o Hub carimba com o id da cobrança ao criar a OS
@@ -31,8 +34,9 @@ import {
   ChevronLeft, ChevronRight, CheckCircle2, Send, Info,
 } from "lucide-react";
 import { Input } from "@/components/ui/input";
+import NotasFiscaisLog from "./NotasFiscaisLog";
 import {
-  SITUACOES, motivoBloqueio, podeEmitir, resumoLote, xmlAindaVale, formatarDoc, statusAsaas,
+  SITUACOES, motivoBloqueio, motivoCurto, podeEmitir, resumoLote, xmlAindaVale, formatarDoc, statusAsaas,
   type LinhaNota, type Situacao,
 } from "@/lib/notasFiscais";
 
@@ -93,6 +97,7 @@ export default function NotasFiscais() {
   const [busca, setBusca] = useState("");
   const [filtro, setFiltro] = useState<Situacao | "todas">("todas");
   const [sel, setSel] = useState<Set<string>>(new Set());
+  const [aba, setAba] = useState<"painel" | "log">("painel");
 
   const periodo = useMemo(() => {
     const ult = new Date(ano, mes + 1, 0).getDate();
@@ -194,8 +199,27 @@ export default function NotasFiscais() {
       if (error) throw error;
       if (data?.erro) throw new Error(data.erro);
 
-      const falhas = (data.resultados ?? []).filter((r: any) => !r.ok);
+      /* Três desfechos, três avisos. "Em processamento" é o que mais importa
+       * separar: o faturamento do Omie é assíncrono e a nota costuma nascer
+       * minutos depois do disparo. Chamar isso de falha faz o operador mandar
+       * emitir de novo — e a segunda nota da mesma cobrança não se apaga. */
+      const emProcesso = (data.resultados ?? []).filter((r: any) => r.em_processamento);
+      const falhas = (data.resultados ?? []).filter((r: any) => !r.ok && !r.em_processamento);
+      const jaEmitidas = (data.resultados ?? []).filter((r: any) => r.ja_emitida);
+
       if (data.emitidas) toast.success(`${data.emitidas} nota(s) emitida(s) no Omie.`);
+      if (jaEmitidas.length) {
+        toast.info(`${jaEmitidas.length} já tinha(m) nota.`, {
+          description: jaEmitidas.slice(0, 3).map((r: any) => r.aviso).join(" · "),
+          duration: 10000,
+        });
+      }
+      if (emProcesso.length) {
+        toast.warning(`${emProcesso.length} ainda no forno do Omie.`, {
+          description: `${emProcesso.slice(0, 2).map((r: any) => r.erro).join(" · ")} Atualize em alguns minutos — não emita de novo.`,
+          duration: 15000,
+        });
+      }
       if (falhas.length) {
         toast.error(`${falhas.length} não saíram.`, {
           description: falhas.slice(0, 3).map((f: any) => f.erro).join(" · "),
@@ -243,6 +267,32 @@ export default function NotasFiscais() {
         </button>
       </div>
 
+      {/* --------------------------------- abas -------------------------------- */}
+      {/* Duas perguntas diferentes, e por isso duas abas: "o que falta emitir
+          neste mês" e "o que o processo fez, quando, e por quê". Misturar as duas
+          numa tela só foi o que deixou a emissão automática sem lugar onde ser
+          conferida. */}
+      <div className="flex items-center gap-1 border-b border-border">
+        {([["painel", "Painel do mês"], ["log", "Registro de emissões"]] as const).map(([k, r]) => (
+          <button
+            key={k}
+            onClick={() => setAba(k)}
+            className={cn(
+              "-mb-px border-b-2 px-3 py-1.5 text-xs font-medium",
+              aba === k
+                ? "border-primary text-primary"
+                : "border-transparent text-muted-foreground hover:text-foreground",
+            )}
+          >
+            {r}
+          </button>
+        ))}
+      </div>
+
+      {aba === "log" && <NotasFiscaisLog />}
+
+      {aba === "painel" && (
+      <>
       {/* ------------------------------- período ------------------------------- */}
       <div className="flex flex-wrap items-center gap-2 rounded-lg border border-border bg-card p-2">
         <button onClick={() => setAno((a) => Math.max(ANO_INICIAL, a - 1))} className="ghost-icone rounded p-1">
@@ -433,13 +483,26 @@ export default function NotasFiscais() {
                       </span>
                     ) : "—"}
                   </td>
-                  <td className="p-2">
+                  {/* A situação e, embaixo, POR QUE. O rótulo sozinho ("NFS-e
+                      rejeitada") manda abrir o Omie e procurar; o motivo — que o
+                      Omie sempre mandou e o Hub descartava — diz o que consertar.
+                      Curto na linha, inteiro no hover, que é a convenção daqui. */}
+                  <td className="max-w-[220px] p-2">
                     <span
                       className={cn("inline-block whitespace-nowrap rounded border px-1.5 py-0.5 text-[11px]", TOM[s.tom])}
                       title={s.ajuda}
                     >
                       {s.rotulo}
                     </span>
+                    {motivoCurto(l.nfse_mensagem) && (
+                      <div
+                        className="mt-0.5 flex items-start gap-1 text-[10px] leading-tight text-muted-foreground"
+                        title={l.nfse_mensagem ?? ""}
+                      >
+                        <AlertTriangle className="mt-px h-2.5 w-2.5 shrink-0" />
+                        <span className="line-clamp-2">{motivoCurto(l.nfse_mensagem)}</span>
+                      </div>
+                    )}
                   </td>
                 </tr>
               );
@@ -454,6 +517,8 @@ export default function NotasFiscais() {
           {visiveis.length.toLocaleString("pt-BR")} de {linhas.length.toLocaleString("pt-BR")} cobranças do mês.
           Emitir cria a Ordem de Serviço no Omie e a fatura — é isso que gera a NFS-e.
         </p>
+      )}
+      </>
       )}
     </div>
   );

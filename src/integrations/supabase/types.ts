@@ -3841,23 +3841,35 @@ export type Database = {
         Row: {
           atualizado_em: string
           data_corte: string
+          emissao_automatica: string
           etapa_faturamento: string
+          etapa_isolamento: string
           id: number
+          teto_dia: number
           teto_lote: number
+          teto_rodada: number
         }
         Insert: {
           atualizado_em?: string
           data_corte?: string
+          emissao_automatica?: string
           etapa_faturamento?: string
+          etapa_isolamento?: string
           id?: number
+          teto_dia?: number
           teto_lote?: number
+          teto_rodada?: number
         }
         Update: {
           atualizado_em?: string
           data_corte?: string
+          emissao_automatica?: string
           etapa_faturamento?: string
+          etapa_isolamento?: string
           id?: number
+          teto_dia?: number
           teto_lote?: number
+          teto_rodada?: number
         }
         Relationships: []
       }
@@ -3903,6 +3915,51 @@ export type Database = {
         }
         Relationships: []
       }
+      nf_execucoes: {
+        Row: {
+          concluida_em: string | null
+          detalhe: Json | null
+          emitidas: number
+          erro: string | null
+          falhas: number
+          fila: number
+          id: string
+          iniciada_em: string
+          lote: number | null
+          modo: string
+          origem: string
+          pulada: string | null
+        }
+        Insert: {
+          concluida_em?: string | null
+          detalhe?: Json | null
+          emitidas?: number
+          erro?: string | null
+          falhas?: number
+          fila?: number
+          id?: string
+          iniciada_em?: string
+          lote?: number | null
+          modo: string
+          origem: string
+          pulada?: string | null
+        }
+        Update: {
+          concluida_em?: string | null
+          detalhe?: Json | null
+          emitidas?: number
+          erro?: string | null
+          falhas?: number
+          fila?: number
+          id?: string
+          iniciada_em?: string
+          lote?: number | null
+          modo?: string
+          origem?: string
+          pulada?: string | null
+        }
+        Relationships: []
+      }
       nf_os_omie: {
         Row: {
           atualizado_em: string
@@ -3918,6 +3975,7 @@ export type Database = {
           n_cod_cli: number | null
           n_cod_os: number
           nfse_lote: number | null
+          nfse_mensagem: string | null
           nfse_numero: string | null
           nfse_rps: string | null
           nfse_status: string | null
@@ -3940,6 +3998,7 @@ export type Database = {
           n_cod_cli?: number | null
           n_cod_os: number
           nfse_lote?: number | null
+          nfse_mensagem?: string | null
           nfse_numero?: string | null
           nfse_rps?: string | null
           nfse_status?: string | null
@@ -3962,6 +4021,7 @@ export type Database = {
           n_cod_cli?: number | null
           n_cod_os?: number
           nfse_lote?: number | null
+          nfse_mensagem?: string | null
           nfse_numero?: string | null
           nfse_rps?: string | null
           nfse_status?: string | null
@@ -7252,6 +7312,36 @@ export type Database = {
           valor: number
         }[]
       }
+      notas_fiscais_emitidas_hoje: { Args: never; Returns: number }
+      notas_fiscais_fila_emissao: {
+        Args: { p_limite?: number }
+        Returns: {
+          cnpj_cpf: string
+          data_pagamento: string
+          data_vencimento: string
+          descricao: string
+          email: string
+          id_asaas: string
+          n_cod_cli: number
+          n_cod_os: number
+          valor: number
+        }[]
+      }
+      notas_fiscais_log: {
+        Args: { p_dias?: number; p_limite?: number }
+        Returns: {
+          acao: string
+          cliente: string
+          criado_em: string
+          id_asaas: string
+          motivo: string
+          n_cod_os: number
+          nfse_numero: string
+          operador: string
+          resultado: string
+          valor: number
+        }[]
+      }
       notas_fiscais_painel: {
         Args: { p_ate: string; p_de: string }
         Returns: {
@@ -7265,6 +7355,7 @@ export type Database = {
           n_cod_os: number
           nf_asaas_numero: string
           nf_asaas_status: string
+          nfse_mensagem: string
           nfse_numero: string
           nfse_status: string
           nfse_xml: string

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Plus, Trash2 } from "lucide-react";
+import { GripVertical, Plus, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -42,6 +42,19 @@ export function progressBarColor(p: number): string {
   return "bg-destructive";
 }
 
+/* Tipo próprio de arrasto: com "text/plain" o id vazaria como texto dentro do
+   <Input> da própria linha ao soltar. */
+const SUB_DRAG_TYPE = "application/x-subtarefa";
+
+/** Move um item de `from` para `to` dentro do array (a ordem da lista É a ordem gravada). */
+function moverItem<T>(lista: T[], from: number, to: number): T[] {
+  if (from < 0 || to < 0 || from >= lista.length || to >= lista.length || from === to) return lista;
+  const next = [...lista];
+  const [item] = next.splice(from, 1);
+  next.splice(to, 0, item);
+  return next;
+}
+
 /* --------------------------- DIALOG --------------------------- */
 export function TaskDialog({ columns, open, tarefa, defaultStatus, onClose, onSave, title }: {
   columns: string[];
@@ -57,6 +70,12 @@ export function TaskDialog({ columns, open, tarefa, defaultStatus, onClose, onSa
   const [subtarefas, setSubtarefas] = useState<Subtarefa[]>([]);
   const [newSubTitle, setNewSubTitle] = useState("");
   const [newSubResp, setNewSubResp] = useState("");
+  /* Arrasto das subtarefas. `grabId` é a linha liberada para arrastar: só o punho
+     (⠿) liga o draggable, senão arrastar para selecionar o texto do Input viraria
+     arrasto da linha. */
+  const [grabId, setGrabId] = useState<string | null>(null);
+  const [dragId, setDragId] = useState<string | null>(null);
+  const [overId, setOverId] = useState<string | null>(null);
 
   useEffect(() => {
     if (open) {
@@ -69,8 +88,20 @@ export function TaskDialog({ columns, open, tarefa, defaultStatus, onClose, onSa
       setSubtarefas(tarefa?.subtarefas ? [...tarefa.subtarefas] : []);
       setNewSubTitle("");
       setNewSubResp("");
+      setGrabId(null);
+      setDragId(null);
+      setOverId(null);
     }
   }, [open, tarefa, defaultStatus]);
+
+  /* Se soltar o botão do mouse sem chegar a arrastar, o mouseup pode cair fora do
+     punho — sem isso a linha continuaria arrastável. */
+  useEffect(() => {
+    if (!grabId) return;
+    const solta = () => setGrabId(null);
+    window.addEventListener("mouseup", solta);
+    return () => window.removeEventListener("mouseup", solta);
+  }, [grabId]);
 
   const addSub = () => {
     const t = newSubTitle.trim();
@@ -91,6 +122,20 @@ export function TaskDialog({ columns, open, tarefa, defaultStatus, onClose, onSa
     setSubtarefas(prev => prev.map(s => s.id === id ? { ...s, responsavel: resp || null } : s));
   const updateSubTitle = (id: string, titulo: string) =>
     setSubtarefas(prev => prev.map(s => s.id === id ? { ...s, titulo } : s));
+
+  /* Reordenar: solta em cima de uma linha e o arrastado assume o lugar dela. */
+  const soltarSub = (alvoId: string) => {
+    if (!dragId || dragId === alvoId) return;
+    setSubtarefas(prev => moverItem(prev, prev.findIndex(s => s.id === dragId), prev.findIndex(s => s.id === alvoId)));
+  };
+  /* Mesma reordenação pelo teclado, com o foco no punho (↑/↓). */
+  const moverSub = (id: string, delta: number) =>
+    setSubtarefas(prev => {
+      const i = prev.findIndex(s => s.id === id);
+      return i < 0 ? prev : moverItem(prev, i, i + delta);
+    });
+  const encerraArrasto = () => { setDragId(null); setOverId(null); setGrabId(null); };
+  const dragIdx = dragId ? subtarefas.findIndex(s => s.id === dragId) : -1;
 
   const subsDone = subtarefas.filter(s => s.done).length;
   const subsProgress = subtarefas.length ? Math.round((subsDone / subtarefas.length) * 100) : 0;
@@ -198,9 +243,60 @@ export function TaskDialog({ columns, open, tarefa, defaultStatus, onClose, onSa
               </div>
             )}
 
-            <div className="space-y-1.5">
-              {subtarefas.map(s => (
-                <div key={s.id} className="flex items-center gap-2 rounded border border-border bg-background px-2 py-1.5">
+            <div
+              className="space-y-1.5"
+              onDragLeave={(e) => {
+                if (!e.currentTarget.contains(e.relatedTarget as Node)) setOverId(null);
+              }}
+            >
+              {subtarefas.map((s, i) => (
+                <div
+                  key={s.id}
+                  draggable={grabId === s.id}
+                  onDragStart={(e) => {
+                    e.dataTransfer.effectAllowed = "move";
+                    e.dataTransfer.setData(SUB_DRAG_TYPE, s.id);
+                    setDragId(s.id);
+                  }}
+                  onDragEnd={encerraArrasto}
+                  onDragOver={(e) => {
+                    if (!dragId) return;   // arrasto de fora (arquivo, texto) não é nosso
+                    e.preventDefault();
+                    e.dataTransfer.dropEffect = "move";
+                    if (overId !== s.id) setOverId(s.id);
+                  }}
+                  onDrop={(e) => {
+                    if (!dragId) return;
+                    e.preventDefault();
+                    e.stopPropagation();
+                    soltarSub(s.id);
+                    encerraArrasto();
+                  }}
+                  className={cn(
+                    "flex items-center gap-2 rounded border border-border bg-background px-2 py-1.5 transition-opacity",
+                    dragId === s.id && "opacity-40",
+                    // fio de inserção do lado para onde a linha vai
+                    overId === s.id && dragId && dragId !== s.id && (
+                      i < dragIdx
+                        ? "shadow-[inset_0_2px_0_0_hsl(var(--primary))]"
+                        : "shadow-[inset_0_-2px_0_0_hsl(var(--primary))]"
+                    ),
+                  )}
+                >
+                  <button
+                    type="button"
+                    onMouseDown={() => setGrabId(s.id)}
+                    onMouseUp={() => setGrabId(null)}
+                    onKeyDown={(e) => {
+                      if (e.key === "ArrowUp") { e.preventDefault(); moverSub(s.id, -1); }
+                      if (e.key === "ArrowDown") { e.preventDefault(); moverSub(s.id, 1); }
+                    }}
+                    className="shrink-0 cursor-grab rounded p-0.5 text-muted-foreground/50 hover:text-muted-foreground active:cursor-grabbing"
+                    aria-label={`Reordenar "${s.titulo || "subtarefa"}"`}
+                    title="Arraste para reordenar (ou ↑ / ↓ com o foco aqui)"
+                  >
+                    <GripVertical className="h-3.5 w-3.5" />
+                  </button>
                   <Checkbox checked={s.done} onCheckedChange={() => toggleSub(s.id)} />
                   <Input
                     value={s.titulo}

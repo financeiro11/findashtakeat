@@ -141,6 +141,8 @@ function describeChanges(old: Tarefa, patch: Partial<Tarefa>): string {
     const newDone = newSubs.filter((s) => s.done).length;
     if (oldSubs.length !== newSubs.length) parts.push(`checklist: ${oldSubs.length} → ${newSubs.length} itens`);
     else if (oldDone !== newDone) parts.push(`checklist: ${newDone}/${newSubs.length} concluídos`);
+    // mesmos itens em outra ordem: sem isso, arrastar para reordenar não deixava rastro nenhum
+    else if (oldSubs.some((s, i) => s.id !== newSubs[i]?.id)) parts.push("reordenou o checklist");
   }
   return parts.join(" · ");
 }

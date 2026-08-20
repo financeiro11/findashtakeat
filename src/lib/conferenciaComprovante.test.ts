@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   conferir, centavos, rotuloNaoPagavel, chaveDocumento,
+  parcelaDoMemo, candidatosDaParcela, chaveDoParcelamento, carneDe, outraParcelaDoCarne,
   type Leitura, type Lancamento,
 } from "../../supabase/functions/_shared/conferencia-comprovante.ts";
 
@@ -25,7 +26,8 @@ const base: Leitura = {
   cobranca_explicada: "total",
 };
 const ler = (p: Partial<Leitura>): Leitura => ({ ...base, ...p });
-const gasto = (valor: number, titulo: string, data = "2026-07-15"): Lancamento => ({ titulo, valor, data });
+const gasto = (valor: number, titulo: string, data = "2026-07-15", extra: Partial<Lancamento> = {}): Lancamento =>
+  ({ titulo, valor, data, ...extra });
 
 describe("centavos", () => {
   it("compara dinheiro sem o erro do float", () => {
@@ -190,6 +192,247 @@ describe("aprova pela LINHA quando a fatura cobra só um pedaço do documento", 
   });
 });
 
+/* ---------------------------------------------------------------------------
+ * Parcelamento
+ *
+ * As duas leituras abaixo são as que estão gravadas em `auditoria.ia_leitura` dos
+ * achados 428 e 429 (fatura de agosto/26): duas compras na Central de Aviamentos
+ * feitas em 30/07, cada uma dividida em 2× pela maquininha. O MEMO das duas é
+ * "CENTRAL DE AVIAMENTO  01/02   VITORIA" — mesmo lojista, mesmo marcador, notas
+ * e valores diferentes. É o par que obriga o casamento a ser por VALOR, e não só
+ * por fornecedor.
+ * ------------------------------------------------------------------------- */
+
+const MEMO_AVIAMENTO = "CENTRAL DE AVIAMENTO  01/02   VITORIA";
+
+/** NF-e 178110 · R$ 251,31 · cobrada como 2× de R$ 125,66 / R$ 125,65. */
+const nf178110 = ler({
+  tipo_documento: "NF-E",
+  emitente_nome: "CENTRAL DE AVIAMENTOS LTDA",
+  emitente_cnpj: "32.424.350/0001-71",
+  numero_documento: "178110",
+  valor_total: 251.31,
+  valores: [
+    { rotulo: "BASE DE CÁLCULO DO ICMS", valor: 96.87 },
+    { rotulo: "VALOR DO ICMS", valor: 16.46 },
+    { rotulo: "VALOR TOTAL DOS PRODUTOS", valor: 253.03 },
+    { rotulo: "VALOR DO FRETE", valor: 16 },
+    { rotulo: "DESCONTO", valor: 17.72 },
+    { rotulo: "VALOR TOTAL DA NOTA", valor: 251.31 },
+  ],
+  data_documento: "2026-07-30",
+  descricao: "Compra de artigos de festa e decoração",
+  cobranca_explicada: "nao",
+  fornecedor_confere: "sim",
+});
+
+/** NF 178121 · R$ 78,25 · cobrada como 2× de R$ 39,13 / R$ 39,12. */
+const nf178121 = ler({
+  emitente_nome: "CENTRAL DE AVIAMENTOS LTDA",
+  emitente_cnpj: "32.424.350/0001-71",
+  numero_documento: "178121",
+  valor_total: 78.25,
+  valores: [
+    { rotulo: "VALOR TOTAL DOS PRODUTOS", valor: 84.14 },
+    { rotulo: "DESCONTO", valor: 5.89 },
+    { rotulo: "VALOR TOTAL DA NOTA", valor: 78.25 },
+  ],
+  data_documento: "2026-07-30",
+  cobranca_explicada: "nao",
+  fornecedor_confere: "sim",
+});
+
+const parc1 = (valor: number, memo = MEMO_AVIAMENTO, comp = "2026-08-01") =>
+  gasto(valor, "CENTRAL DE AVIAMENTO VITORIA", "2026-07-30", { memo, competencia: comp });
+
+describe("parcelaDoMemo — o marcador que o Sicoob mantém na fatura", () => {
+  it("lê os memos como eles chegam", () => {
+    expect(parcelaDoMemo(MEMO_AVIAMENTO)).toEqual({ n: 1, de: 2 });
+    expect(parcelaDoMemo("MP*MERCADOLIVREV      08/12   SAO PAULO")).toEqual({ n: 8, de: 12 });
+    // A anuidade traz o final do cartão antes do marcador.
+    expect(parcelaDoMemo("ANUIDADE VISA C      (3485) 08/12")).toEqual({ n: 8, de: 12 });
+    // Formato antigo do n8n, com a anotação concatenada depois da barra vertical.
+    expect(parcelaDoMemo("AIRBNB * HM894SYV 01/06 SAO PAULO | Tem comprovante, mas valor cheio x parcela")).toEqual({ n: 1, de: 6 });
+  });
+  it("o que não é parcela de cartão não vira parcela", () => {
+    expect(parcelaDoMemo("MERCADOLIVRE*MERCADO  SAO VICENTE")).toBeNull();
+    expect(parcelaDoMemo("COMPRA 30/07 VITORIA")).toBeNull();   // data: n > de
+    expect(parcelaDoMemo("PARCELADO 01/36 SAO PAULO")).toBeNull(); // acima do teto
+    expect(parcelaDoMemo("ALGO 01/01 VITORIA")).toBeNull();     // "1 de 1" é à vista
+    expect(parcelaDoMemo(null)).toBeNull();
+  });
+});
+
+describe("candidatosDaParcela — a sobra de centavos cai em algum lugar", () => {
+  it("251,31 em 2 vezes é 125,66 + 125,65", () => {
+    // Em 2× as duas convenções dão no mesmo: o centavo que sobra vai para a 1ª.
+    expect(candidatosDaParcela(25131, 2, 1)).toEqual([12566]);
+    expect(candidatosDaParcela(25131, 2, 2)).toEqual([12565]);
+  });
+  it("100,00 em 3 vezes: a última é a diferente", () => {
+    expect(candidatosDaParcela(10000, 3, 1)).toContain(3334);
+    expect(candidatosDaParcela(10000, 3, 3)).toContain(3332);
+  });
+  it("o que não é parcelamento não tem candidato", () => {
+    expect(candidatosDaParcela(10000, 1, 1)).toEqual([]);
+    expect(candidatosDaParcela(10000, 2, 3)).toEqual([]);
+    expect(candidatosDaParcela(0, 2, 1)).toEqual([]);
+  });
+});
+
+describe("aprova pela PARCELA quando a fatura cobra a nota em vezes", () => {
+  it("CENTRAL DE AVIAMENTOS · R$ 125,66 é metade da NF-e 178110 e a fatura marca 01/02", () => {
+    const v = conferir(parc1(125.66), nf178110);
+    expect(v.veredito).toBe("aprovar");
+    expect(v.como).toBe("parcela");
+    expect(v.parcela).toEqual({ n: 1, de: 2 });
+    expect(v.valor_casado).toBe(125.66);
+    expect(v.motivo).toContain("parcela 1/2");
+    expect(v.motivo).toContain("R$ 251,31");
+  });
+
+  it("a outra compra do mesmo dia, no mesmo lojista: R$ 39,13 da NF 178121", () => {
+    const v = conferir(parc1(39.13), nf178121);
+    expect(v.veredito).toBe("aprovar");
+    expect(v.como).toBe("parcela");
+  });
+
+  it("a 2ª parcela, que vem com o centavo a menos", () => {
+    const v = conferir(
+      gasto(125.65, "CENTRAL DE AVIAMENTO VITORIA", "2026-07-30", {
+        memo: "CENTRAL DE AVIAMENTO  02/02   VITORIA", competencia: "2026-09-01",
+      }),
+      nf178110,
+    );
+    expect(v.veredito).toBe("aprovar");
+    expect(v.parcela).toEqual({ n: 2, de: 2 });
+  });
+
+  it("quando o marcador não veio, o documento pode dizer de si mesmo", () => {
+    const v = conferir(
+      gasto(125.66, "CENTRAL DE AVIAMENTO VITORIA", "2026-07-30"),
+      { ...nf178110, parcelas_total: 2, cobranca_explicada: "parcela" },
+    );
+    expect(v.veredito).toBe("aprovar");
+    expect(v.como).toBe("parcela");
+  });
+
+  it("o modelo aponta 'total' e erra — a parcela é a rede embaixo", () => {
+    const v = conferir(parc1(125.66), { ...nf178110, cobranca_explicada: "total" });
+    expect(v.veredito).toBe("aprovar");
+    expect(v.como).toBe("parcela");
+  });
+
+  it("a nota inteira continua valendo pelo total, não pela parcela", () => {
+    // Marcador na fatura e cobrança do valor cheio: é o total que bate.
+    const v = conferir(
+      parc1(251.31),
+      { ...nf178110, cobranca_explicada: "total" },
+    );
+    expect(v.como).toBe("total");
+  });
+});
+
+describe("a parcela não afrouxa nenhuma das outras travas", () => {
+  it("a conta tem de fechar: R$ 90,00 em 2 vezes não dá R$ 251,31", () => {
+    const v = conferir(parc1(90), nf178110);
+    expect(v.veredito).toBe("revisar");
+    expect(v.motivo).toContain("2 vezes");
+    expect(v.motivo).toContain("R$ 251,31");
+  });
+
+  it("linha de imposto continua sendo imposto, mesmo com marcador de parcela", () => {
+    // R$ 16,46 é o ICMS destacado da 178110. A fatura marca 01/02, mas quem
+    // explica o caso é a linha apontada — não a conta de parcelas.
+    const v = conferir(parc1(16.46), { ...nf178110, cobranca_explicada: "item", item_rotulo: "VALOR DO ICMS" });
+    expect(v.veredito).toBe("revisar");
+    expect(v.motivo).toContain("imposto");
+  });
+
+  it("fornecedor que não se confirma derruba a parcela", () => {
+    const v = conferir(parc1(125.66), { ...nf178110, fornecedor_confere: "incerto" });
+    expect(v.veredito).toBe("revisar");
+    expect(v.motivo).toContain("fornecedor não se confirma");
+    // O que já casou fica registrado: a tela mostra a parcela conferida.
+    expect(v.como).toBe("parcela");
+    expect(v.valor_casado).toBe(125.66);
+  });
+
+  it("nota velha demais derruba a parcela", () => {
+    const v = conferir(
+      gasto(125.66, "CENTRAL DE AVIAMENTO VITORIA", "2026-07-30", { memo: MEMO_AVIAMENTO }),
+      { ...nf178110, data_documento: "2025-11-01" },
+    );
+    expect(v.veredito).toBe("revisar");
+    expect(v.motivo).toContain("2025-11-01");
+  });
+
+  it("print de tela não vira parcela", () => {
+    const v = conferir(parc1(125.66), { ...nf178110, legivel: false });
+    expect(v.veredito).toBe("revisar");
+    expect(v.motivo).toContain("não é um comprovante");
+  });
+});
+
+describe("o carnê — a nota da 1ª parcela resolve a fatura seguinte", () => {
+  const carne = carneDe(parc1(125.66), nf178110)!;
+  /** A 2ª parcela como ela chega na fatura de setembro. */
+  const setembro = (valor: number, memo = "CENTRAL DE AVIAMENTO  02/02   VITORIA", comp = "2026-09-01") =>
+    gasto(valor, "CENTRAL DE AVIAMENTO VITORIA", "2026-07-30", { memo, competencia: comp });
+
+  it("abre o carnê a partir da parcela conferida", () => {
+    expect(carne).not.toBeNull();
+    expect(carne.parcela).toEqual({ n: 1, de: 2 });
+    expect(carne.total_documento).toBe(251.31);
+    expect(carne.competencia).toBe("2026-08-01");
+    expect(chaveDoParcelamento(MEMO_AVIAMENTO, 2)).toBe("CENTRAL DE AVIAMENTO VITORIA|2");
+    // O marcador é o único pedaço que muda entre uma fatura e a seguinte.
+    expect(chaveDoParcelamento("CENTRAL DE AVIAMENTO  02/02   VITORIA", 2)).toBe(carne.chave);
+  });
+
+  it("reconhece a 2ª parcela na fatura seguinte, com o centavo a menos", () => {
+    expect(outraParcelaDoCarne(carne, setembro(125.65))).toEqual({ n: 2, de: 2 });
+  });
+
+  it("não pega a compra NOVA do mesmo lojista pelo mesmo valor", () => {
+    // Outubro, não setembro: a 2ª parcela vem UMA fatura depois da 1ª.
+    expect(outraParcelaDoCarne(carne, setembro(125.65, "CENTRAL DE AVIAMENTO  02/02   VITORIA", "2026-10-01"))).toBeNull();
+    // Mesmo lojista, mesma fatura, outro marcador de compra à vista.
+    expect(outraParcelaDoCarne(carne, setembro(125.65, "CENTRAL DE AVIAMENTO   VITORIA"))).toBeNull();
+    // Uma compra nova, também em 2×, mas de outro valor.
+    expect(outraParcelaDoCarne(carne, setembro(80))).toBeNull();
+    // A própria 1ª parcela não se resolve sozinha.
+    expect(outraParcelaDoCarne(carne, setembro(125.66, MEMO_AVIAMENTO, "2026-08-01"))).toBeNull();
+  });
+
+  it("não confunde os dois carnês do mesmo lojista e da mesma fatura", () => {
+    const outro = carneDe(parc1(39.13), nf178121)!;
+    expect(outro.chave).toBe(carne.chave);            // mesmo lojista, mesmo 01/02
+    expect(outraParcelaDoCarne(outro, setembro(125.65))).toBeNull();  // o valor separa
+    expect(outraParcelaDoCarne(outro, setembro(39.12))).toEqual({ n: 2, de: 2 });
+  });
+
+  it("sem memo ou sem competência não há carnê", () => {
+    expect(carneDe(gasto(125.66, "CENTRAL DE AVIAMENTO VITORIA", "2026-07-30"), nf178110)).toBeNull();
+    expect(carneDe(parc1(125.66, MEMO_AVIAMENTO, ""), nf178110)).toBeNull();
+    // Conferência que não casou por parcela não abre carnê nenhum.
+    expect(carneDe(parc1(251.31), { ...nf178110, cobranca_explicada: "total" })).toBeNull();
+  });
+
+  it("uma compra em 12× resolve as onze faturas seguintes, uma por mês", () => {
+    const memo = (n: number) => `MP*MERCADOLIVREV      ${String(n).padStart(2, "0")}/12   SAO PAULO`;
+    const doze = carneDe(
+      gasto(99.92, "MERCADOLIVREV SAO PAULO", "2026-07-13", { memo: memo(1), competencia: "2026-08-01" }),
+      ler({ emitente_nome: "MERCADO LIVRE", valor_total: 1199.04, valores: [{ rotulo: "Total", valor: 1199.04 }], data_documento: "2026-07-13", cobranca_explicada: "nao" }),
+    )!;
+    expect(doze.parcela.de).toBe(12);
+    expect(outraParcelaDoCarne(doze, gasto(99.92, "x", "2026-07-13", { memo: memo(2), competencia: "2026-09-01" }))).toEqual({ n: 2, de: 12 });
+    expect(outraParcelaDoCarne(doze, gasto(99.92, "x", "2026-07-13", { memo: memo(12), competencia: "2027-07-01" }))).toEqual({ n: 12, de: 12 });
+    // A 12ª parcela na fatura errada não passa.
+    expect(outraParcelaDoCarne(doze, gasto(99.92, "x", "2026-07-13", { memo: memo(12), competencia: "2027-06-01" }))).toBeNull();
+  });
+});
+
 describe("manda revisar quando o valor não fecha", () => {
   it("GOL LINHAS A*WOOSV · R$ 109,38 não está em lugar nenhum do recibo", () => {
     const v = conferir(
@@ -225,8 +468,10 @@ describe("manda revisar quando o valor não fecha", () => {
     expect(v.veredito).toBe("revisar");
   });
 
-  it("CENTRAL DE AVIAMENTOS · cobrança é quase a metade da nota, e quase não basta", () => {
-    // 39,13 × 2 = 78,26 e a nota é 78,25. Parcelamento provável, casamento nenhum.
+  it("CENTRAL DE AVIAMENTOS · metade da nota SEM nada dizer que foi parcelado", () => {
+    /* 39,13 × 2 = 78,26 e a nota é 78,25. A conta fecha, mas conta não é prova:
+       sem o marcador na fatura e sem parcela no documento, isto continua com a
+       pessoa — o que muda é que a frase agora diz o que foi visto. */
     const v = conferir(
       gasto(39.13, "CENTRAL DE AVIAMENTO VITORIA", "2026-07-30"),
       ler({
@@ -242,6 +487,8 @@ describe("manda revisar quando o valor não fecha", () => {
       }),
     );
     expect(v.veredito).toBe("revisar");
+    expect(v.motivo).toContain("1/2");
+    expect(v.motivo).toContain("nem a fatura nem o documento");
   });
 
   it("a IA afirma que o total bate, mas o total não bate — a conta é refeita aqui", () => {

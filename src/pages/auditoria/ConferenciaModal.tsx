@@ -10,13 +10,15 @@ import { brl, fmtDateBR } from "./utils";
 /* ---------------------------------------------------------------------------
  * "Conferir comprovantes": a tela da leitura automática.
  *
- * A conferência e a aprovação são dois passos porque a leitura custa cota da
- * chave do Gemini e a aprovação não custa nada: ler de novo por engano é caro,
- * aprovar é reversível pela trilha. A pessoa vê o que a IA achou, com o emitente
- * e o número que casou em cada linha, e só então manda aprovar as que bateram.
+ * O que bate com a nota SAI APROVADO na hora — a lista abaixo é o extrato do que
+ * aconteceu, não uma fila esperando um segundo clique. Aprovar era um botão à
+ * parte enquanto a regra estava em observação; ela se provou nas notas de ago/26
+ * e reconferir na mão o que a regra já conferiu virou trabalho por nada. Nada se
+ * perde: a trilha guarda o motivo escrito e o status volta como qualquer outro.
  *
- * O que a IA lê fica gravado no achado (`ia_leitura`), então este diálogo pode
- * reabrir uma conferência antiga sem gastar requisição nenhuma.
+ * O que continua sendo dois passos é a LEITURA: ela custa cota da chave do
+ * Gemini, então só sai quando alguém pede, em lotes. O que a IA lê fica gravado
+ * no achado (`ia_leitura`), e reabrir uma conferência antiga não gasta nada.
  * ------------------------------------------------------------------------- */
 
 export type ItemConferido = {
@@ -27,10 +29,15 @@ export type ItemConferido = {
   data: string;
   responsavel: string | null;
   veredito: "aprovar" | "revisar";
+  /** true = o status já virou "Aprovado" no banco nesta rodada. */
+  aprovado: boolean;
+  status: string;
   motivo: string;
-  como: "total" | "item" | "nenhum";
+  como: "total" | "item" | "parcela" | "nenhum";
   valor_casado: number | null;
   item_rotulo: string | null;
+  /** "1/2" quando a cobrança é uma parcela do documento; null nos outros casos. */
+  parcela: string | null;
   emitente: string;
   emitente_cnpj: string | null;
   tipo_documento: string;
@@ -42,7 +49,8 @@ export type ItemConferido = {
 
 type Resumo = {
   lidos: number;
-  aprovaveis: number;
+  /** Quantos desta rodada já foram para "Aprovado" no banco. */
+  aprovados: number;
   para_revisar: number;
   restantes: number;
   quota_esgotada: boolean;
@@ -70,7 +78,6 @@ const LOTE = 10;
 
 export default function ConferenciaModal({ open, onClose, onMudou, competencia, totalComComprovante }: Props) {
   const [lendo, setLendo] = useState(false);
-  const [aprovando, setAprovando] = useState(false);
   const [resumo, setResumo] = useState<Resumo | null>(null);
   const [erro, setErro] = useState<string | null>(null);
 
@@ -104,32 +111,20 @@ export default function ConferenciaModal({ open, onClose, onMudou, competencia, 
         lidos: ant.lidos + r.lidos,
       };
     });
+    if (r.aprovados > 0) {
+      toast.success(`${r.aprovados} lançamento${r.aprovados === 1 ? "" : "s"} aprovado${r.aprovados === 1 ? "" : "s"}: bate com a nota.`);
+    }
     onMudou();
-  };
-
-  const aprovar = async () => {
-    const ids = (resumo?.itens ?? []).filter((i) => i.veredito === "aprovar").map((i) => i.id);
-    if (!ids.length) return;
-    setAprovando(true);
-    const { data, error } = await supabase.functions.invoke("auditoria-conferir-comprovante", {
-      body: { action: "aplicar", ids },
-    });
-    setAprovando(false);
-    const falha = error?.message ?? (data as Falha)?.error;
-    if (falha) { toast.error("Falha ao aprovar: " + falha); return; }
-    const d = data as { aprovados: number; pulados: { titulo: string; motivo: string }[] };
-    toast.success(`${d.aprovados} lançamento${d.aprovados === 1 ? "" : "s"} aprovado${d.aprovados === 1 ? "" : "s"} pela conferência.`);
-    d.pulados?.forEach((p) => toast.message(`${p.titulo}: ${p.motivo}`));
-    onMudou();
-    onClose();
   };
 
   const itens = resumo?.itens ?? [];
-  const aprovaveis = itens.filter((i) => i.veredito === "aprovar");
-  const revisar = itens.filter((i) => i.veredito === "revisar");
+  /* Separa pelo que ACONTECEU, não pelo veredito: se a gravação do status falhou,
+     o item cai no bloco de baixo — que é onde alguém precisa olhar mesmo. */
+  const aprovados = itens.filter((i) => i.aprovado);
+  const revisar = itens.filter((i) => !i.aprovado);
 
   return (
-    <Dialog open={open} onOpenChange={(o) => { if (!o && !lendo && !aprovando) onClose(); }}>
+    <Dialog open={open} onOpenChange={(o) => { if (!o && !lendo) onClose(); }}>
       <DialogContent className="sm:max-w-[760px] max-h-[85vh] flex flex-col p-0">
         <DialogHeader className="px-6 pt-6 pb-3">
           <DialogTitle className="flex items-center gap-2">
@@ -137,9 +132,9 @@ export default function ConferenciaModal({ open, onClose, onMudou, competencia, 
             Conferir comprovantes
           </DialogTitle>
           <p className="text-sm text-muted-foreground mt-1">
-            A IA lê cada nota anexada e compara com a cobrança. Só entra em "bate com a nota" o
-            que tem o <strong>valor exato</strong> e o <strong>fornecedor confirmado</strong> —
-            o resto continua com você.
+            A IA lê cada nota anexada e compara com a cobrança. O que tem o{" "}
+            <strong>valor exato</strong> e o <strong>fornecedor confirmado</strong> vai direto
+            para <strong>Aprovado</strong> — o resto continua com você.
           </p>
         </DialogHeader>
 
@@ -151,8 +146,8 @@ export default function ConferenciaModal({ open, onClose, onMudou, competencia, 
                 {totalComComprovante} lançamento{totalComComprovante === 1 ? "" : "s"} com comprovante nesta fatura
               </div>
               <p className="text-muted-foreground mt-2">
-                A leitura sai em lotes de {LOTE}. Nada muda de status neste passo — a aprovação é
-                um botão depois, com a lista na tela.
+                A leitura sai em lotes de {LOTE}. O que bater com a nota já muda para Aprovado, com
+                o motivo escrito na trilha do lançamento.
               </p>
             </div>
           )}
@@ -180,11 +175,11 @@ export default function ConferenciaModal({ open, onClose, onMudou, competencia, 
             </div>
           )}
 
-          {aprovaveis.length > 0 && (
+          {aprovados.length > 0 && (
             <Secao
-              titulo={`Bate com a nota (${aprovaveis.length})`}
+              titulo={`Aprovados · bate com a nota (${aprovados.length})`}
               cor="verde"
-              itens={aprovaveis}
+              itens={aprovados}
             />
           )}
           {revisar.length > 0 && (
@@ -223,7 +218,13 @@ export default function ConferenciaModal({ open, onClose, onMudou, competencia, 
               : "Nenhuma leitura ainda"}
           </div>
           <div className="flex items-center gap-2">
-            <Button variant="outline" onClick={onClose} disabled={lendo || aprovando} className="h-9">
+            {aprovados.length > 0 && (
+              <span className="text-xs font-medium text-[hsl(152_60%_28%)] inline-flex items-center gap-1">
+                <Check className="h-3.5 w-3.5" />
+                {aprovados.length} aprovado{aprovados.length === 1 ? "" : "s"}
+              </span>
+            )}
+            <Button variant="outline" onClick={onClose} disabled={lendo} className="h-9">
               Fechar
             </Button>
             {/* Enquanto sobra fila, o botão lê o próximo lote. Com a fila zerada
@@ -232,25 +233,13 @@ export default function ConferenciaModal({ open, onClose, onMudou, competencia, 
             <Button
               variant="outline"
               onClick={() => conferir(!!resumo && resumo.restantes === 0)}
-              disabled={lendo || aprovando}
+              disabled={lendo}
               className="h-9"
               title={resumo && resumo.restantes === 0 ? "Lê os comprovantes de novo, gastando cota" : undefined}
             >
               {lendo ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <RefreshCw className="h-4 w-4 mr-2" />}
               {!resumo ? "Ler comprovantes" : resumo.restantes > 0 ? "Ler mais" : "Ler de novo"}
             </Button>
-            {aprovaveis.length > 0 && (
-              <Button
-                onClick={aprovar}
-                disabled={lendo || aprovando}
-                className="h-9 text-white"
-                style={{ backgroundColor: "hsl(152 60% 32%)" }}
-              >
-                {aprovando
-                  ? <><Loader2 className="h-4 w-4 mr-2 animate-spin" /> Aprovando…</>
-                  : <><Check className="h-4 w-4 mr-2" /> Aprovar {aprovaveis.length}</>}
-              </Button>
-            )}
           </div>
         </div>
       </DialogContent>
@@ -272,7 +261,14 @@ function Secao({ titulo, cor, itens }: { titulo: string; cor: "verde" | "ambar";
       {itens.map((i) => (
         <div key={i.id} className="px-4 py-3 border-b border-border last:border-0 space-y-1">
           <div className="flex items-baseline justify-between gap-3">
-            <div className="font-medium text-sm min-w-0 truncate">{i.titulo}</div>
+            <div className="font-medium text-sm min-w-0 truncate">
+              {i.titulo}
+              {/* Compra parcelada: o valor da linha é um pedaço do da nota, e a
+                  mesma nota volta a explicar a fatura do mês que vem. */}
+              {i.parcela && (
+                <span className="ml-1.5 text-[10px] font-medium text-[hsl(212_80%_35%)]">parcela {i.parcela}</span>
+              )}
+            </div>
             <div className="num text-sm font-medium shrink-0">{brl(i.valor)}</div>
           </div>
           <div className="text-xs text-muted-foreground">

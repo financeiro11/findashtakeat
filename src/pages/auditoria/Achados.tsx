@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/hooks/useAuth";
 import { useApelidos } from "@/hooks/useApelidos";
@@ -14,7 +14,7 @@ import { cn } from "@/lib/utils";
 import { toast } from "sonner";
 import { ComprovanteLink } from "@/components/ComprovanteLink";
 import { podeAbrirComprovante } from "@/lib/comprovante";
-import { brl, brlAbbr, fmtDateBR, fmtDateTimeBR, fmtTrilha, compLabel, MESES_PT_LONG } from "./utils";
+import { brl, brlAbbr, fmtDateBR, fmtDateTimeBR, fmtTrilha, compLabel, parcelaDoMemo, MESES_PT_LONG } from "./utils";
 import { comValorExato } from "@/components/ValorExato";
 import AjusteSolicitadoModal from "./AjusteSolicitadoModal";
 import SolicitarJustificativasModal from "./SolicitarJustificativasModal";
@@ -287,8 +287,114 @@ export default function Achados() {
 
     setRows([...audRows, ...aprovadasDireto]);
     setLoading(false);
+    void aprovarOsQueBatem(audRows);
+    void resolverParcelas(audRows);
   };
   useEffect(() => { load(); }, []);
+
+  /* O que bate com a nota não espera clique nenhum: quem tem o selo verde e
+     ainda está em aberto vai para "Aprovado" assim que a página abre.
+
+     A leitura de agora já sai aprovada da própria função; esta varredura é para
+     o que foi lido ANTES dessa mudança — e para o que a gravação do status não
+     pegou. Não custa cota: a função só relê o que está gravado (o veredito, e se
+     o arquivo lido ainda é o anexado) e muda o status, com o motivo na trilha.
+
+     Roda depois de a lista aparecer na tela, e só quando há candidato — sem isto
+     seria uma chamada de função a cada `load()` para não fazer nada. */
+  const aprovarOsQueBatem = async (linhas: Row[]) => {
+    const ids = linhas
+      .filter(r =>
+        r.id > 0
+        && r.ia_veredito === "aprovar"
+        && r.ia_arquivo === r.link_comprovante   // leitura velha não aprova nada
+        && r.status !== "Aprovado" && r.status !== "Reprovado")
+      .map(r => r.id);
+    if (!ids.length) return;
+
+    /* Manda a ação sem lista de ids: a varredura do servidor procura pelos
+       mesmos sinais (veredito "aprovar", status em aberto, arquivo lido = arquivo
+       anexado) e uma lista com centenas de ids viraria uma URL de PostgREST
+       longa demais. Os ids acima servem só para decidir se vale a chamada. */
+    const { data, error } = await supabase.functions.invoke("auditoria-conferir-comprovante", {
+      body: { action: "aplicar" },
+    });
+    const falha = error?.message ?? (data as { error?: string } | null)?.error;
+    if (falha) { console.warn("[auditoria] não consegui aprovar os que batem com a nota:", falha); return; }
+
+    const d = data as { itens?: { id: number }[]; pulados?: { titulo: string; motivo: string }[] } | null;
+    const feitos = new Set((d?.itens ?? []).map(i => i.id));
+    if (feitos.size) {
+      setRows(rs => rs.map(r => (feitos.has(r.id) ? { ...r, status: "Aprovado" as Status } : r)));
+      setSelected(s => (s && feitos.has(s.id) ? { ...s, status: "Aprovado" as Status } : s));
+      toast.success(`${feitos.size} lançamento${feitos.size === 1 ? "" : "s"} que bate${feitos.size === 1 ? "" : "m"} com a nota ${feitos.size === 1 ? "foi aprovado" : "foram aprovados"}.`);
+    }
+    d?.pulados?.forEach(p => toast.message(`${p.titulo}: ${p.motivo}`));
+  };
+
+  /* O carnê: a fatura nova chega com a 2ª parcela de uma compra cuja nota já foi
+     conferida no mês passado. É a mesma compra e a mesma nota — pedir o
+     comprovante de novo é pedir duas vezes o mesmo papel.
+
+     A varredura acha essas linhas pelo marcador da fatura ("02/02"), herda a nota
+     da parcela anterior e aprova, com o motivo escrito na trilha. Não custa cota:
+     não lê arquivo nenhum, só cruza o que já está gravado. Só é chamada quando há
+     parcela em aberto sem comprovante — sem isso seria uma ida ao servidor a cada
+     `load()` para não fazer nada. */
+  const varrendoParcelas = useRef(false);
+  const resolverParcelas = async (linhas: Row[]) => {
+    if (varrendoParcelas.current) return;
+    const temCandidato = linhas.some(r => {
+      if (r.id <= 0 || !parcelaDoMemo(r.descricao)) return false;
+      // A parcela seguinte, esperando a nota que já foi conferida no mês passado.
+      if (!r.link_comprovante && r.status !== "Aprovado" && r.status !== "Reprovado") return true;
+      /* Linha lida antes de a regra entender parcelamento: o veredito é "revisar"
+         e o motivo nem fala em parcela. Depois da varredura o texto muda, e é isso
+         que impede esta chamada de virar rotina em toda abertura de página. */
+      return !!r.link_comprovante && r.ia_veredito === "revisar" && !/parcela/i.test(r.ia_motivo ?? "");
+    });
+    if (!temCandidato) return;
+
+    varrendoParcelas.current = true;
+    try {
+      const { data, error } = await supabase.functions.invoke("auditoria-conferir-comprovante", {
+        body: { action: "parcelas" },
+      });
+      const falha = error?.message ?? (data as { error?: string } | null)?.error;
+      if (falha) { console.warn("[auditoria] varredura de parcelas:", falha); return; }
+
+      const d = data as {
+        resolvidos?: number;
+        recarimbados?: number;
+        reavaliados?: { aprovado: boolean }[];
+        itens?: { titulo: string; parcela: string; competencia: string }[];
+        pulados?: { titulo: string; motivo: string }[];
+      } | null;
+      if (d?.resolvidos) {
+        toast.success(
+          `${d.resolvidos} parcela${d.resolvidos === 1 ? "" : "s"} resolvida${d.resolvidos === 1 ? "" : "s"} ` +
+          `pela nota da fatura anterior.`,
+        );
+      }
+      // A conta refeita em cima do que já estava lido: a nota é do valor cheio e
+      // a fatura cobra em vezes. Não custou leitura nenhuma.
+      const aprovadosNaRevisao = (d?.reavaliados ?? []).filter(i => i.aprovado).length;
+      if (aprovadosNaRevisao) {
+        toast.success(
+          `${aprovadosNaRevisao} cobrança${aprovadosNaRevisao === 1 ? "" : "s"} reconhecida${aprovadosNaRevisao === 1 ? "" : "s"} ` +
+          `como parcela da nota já anexada.`,
+        );
+      }
+      if (d?.resolvidos || d?.recarimbados) {
+        // Recarrega para trazer o comprovante herdado e a leitura junto — a
+        // guarda acima impede que este `load()` dispare outra varredura.
+        await load();
+      }
+      d?.pulados?.forEach(p => toast.message(`${p.titulo}: ${p.motivo}`));
+    } finally {
+      varrendoParcelas.current = false;
+    }
+  };
 
   // Anexar comprovante pelo próprio Hub (sem depender do link do WhatsApp / Drive).
   // Reflete na hora — link_comprovante e, quando o Omie aceitou, o carimbo do anexo —
@@ -831,6 +937,7 @@ export default function Achados() {
                         <Paperclip className="h-3 w-3 shrink-0 text-[hsl(152_60%_40%)]" />
                       </span>
                     )}
+                    <ChipParcela r={r} />
                     <ChipIA r={r} />
                   </div>
                 </button>
@@ -949,6 +1056,16 @@ export default function Achados() {
                   <MetaItem label="Data do gasto" value={fmtDateBR(selected.data_lancamento)} />
                   <MetaItem label="Competência" value={compLabel(selected.competencia)} />
                   <MetaItem label="Regra" value={selected.regra} full />
+                  {(() => {
+                    const p = parcelaDoMemo(selected.descricao);
+                    return p ? (
+                      <MetaItem
+                        label="Parcela (fatura)"
+                        value={`${p.n} de ${p.de} — a nota é do valor cheio da compra`}
+                        full
+                      />
+                    ) : null;
+                  })()}
                   <MetaItem label="ID transação (cartão)" value={selected.id_transacao || "—"} />
 
                   {/* ID do lançamento no Omie (nCodTitulo) — número que a automação usa.
@@ -1241,6 +1358,24 @@ function leituraAtual(r: Row): boolean {
   return !!r.ia_veredito && r.ia_arquivo === r.link_comprovante;
 }
 
+/** "1/2" — a compra foi dividida em vezes e a nota é do valor CHEIO.
+ *
+ *  Vem do marcador do próprio extrato, não da IA: aparece com ou sem conferência
+ *  e é o que explica, à primeira vista, por que o valor da linha não é o valor da
+ *  nota — e por que a mesma compra volta na fatura do mês que vem. */
+function ChipParcela({ r }: { r: Row }) {
+  const p = parcelaDoMemo(r.descricao);
+  if (!p) return null;
+  return (
+    <span
+      title={`Compra parcelada em ${p.de}× — esta é a parcela ${p.n}. A nota é do valor cheio da compra.`}
+      className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium border bg-[hsl(212_80%_96%)] text-[hsl(212_80%_35%)] border-[hsl(212_80%_88%)] cursor-help"
+    >
+      parcela {p.n}/{p.de}
+    </span>
+  );
+}
+
 /** O selinho da linha: o veredito da conferência, com o motivo no hover. */
 function ChipIA({ r }: { r: Row }) {
   if (!leituraAtual(r)) return null;
@@ -1269,6 +1404,9 @@ function LeituraCard({ r }: { r: Row }) {
   // Só as linhas que interessam: a que casou com a cobrança e o total. A lista
   // inteira de uma NF-e tem onze valores de imposto e vira ruído.
   const linhas = (l.valores ?? []).filter(v => Math.abs(Number(v.valor) - Number(r.valor)) < 0.005).slice(0, 3);
+  // Em compra parcelada nenhuma linha vale a cobrança — o que explica o número é
+  // a divisão do total, e é isso que o quadro mostra no lugar.
+  const p = parcelaDoMemo(r.descricao);
   return (
     <div className={cn(
       "rounded-xl border p-4 space-y-3",
@@ -1298,6 +1436,13 @@ function LeituraCard({ r }: { r: Row }) {
             full
           />
         )}
+        {p && linhas.length === 0 && l.valor_total ? (
+          <MetaItem
+            label="Como a cobrança sai do documento"
+            value={`${brl(Number(l.valor_total))} em ${p.de}× = ${brl(Number(r.valor))} nesta fatura (parcela ${p.n}/${p.de})`}
+            full
+          />
+        ) : null}
       </div>
     </div>
   );

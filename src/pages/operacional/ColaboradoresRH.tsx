@@ -184,6 +184,100 @@ const DEFAULT_VISIVEIS = new Set(COLS.filter((c) => c.def).map((c) => c.key));
 
 const ativo = (c: Colaborador) => !c.datadesl;
 
+/* ─────────────────────────── Busca livre ───────────────────────────
+   "pedro" tem de trazer o Pedro, não quem mora na Rua São Pedro. A busca varre
+   primeiro o que identifica a pessoa (nome, código, documento, contato, cargo)
+   e só abre para as outras colunas se isso não devolver ninguém — e aí a tela
+   diz onde casou. Cada palavra digitada precisa bater, acento não conta e
+   documento casa por dígito, então "57.765" acha o CNPJ escrito na tela. */
+
+const CHAVES_PRINCIPAIS = [
+  "nome", "codigo", "razao", "cargo", "setor", "modalidade", "trabalho",
+  "cpf", "cnpj", "emailcorp", "emailpessoal", "whatsapp", "whatsappcorp", "pix",
+];
+
+// A busca ampliada pega o resto — menos o que só tem ruído (caminho da foto e id).
+const SEM_BUSCA = new Set(["foto_url", "id"]);
+const CHAVES_TODAS = COLS.map((c) => c.key).filter((k) => !SEM_BUSCA.has(k));
+
+const semAcento = (s: string) =>
+  s.normalize("NFD").replace(/\p{Diacritic}/gu, "").toLowerCase();
+
+const soDigitos = (s: string) => s.replace(/\D/g, "");
+
+const termosDe = (q: string) => semAcento(q.trim()).split(/\s+/).filter(Boolean);
+
+/** O termo começa uma palavra do valor? "faro" em "Mastelo Faro" sim, em "farofa" também. */
+function inicioDePalavra(valor: string, termo: string) {
+  for (let i = valor.indexOf(termo); i !== -1; i = valor.indexOf(termo, i + 1)) {
+    if (i === 0 || !/[a-z0-9]/.test(valor[i - 1])) return true;
+  }
+  return false;
+}
+
+/** Peso do termo nesta linha; 0 = não casou. Nome pesa mais que o resto. */
+function pontuaTermo(c: Colaborador, termo: string, chaves: string[]): number {
+  const digitos = soDigitos(termo);
+  let melhor = 0;
+  for (const key of chaves) {
+    const cru = c[key];
+    if (cru === null || cru === undefined || cru === "") continue;
+    const valor = semAcento(String(cru));
+    const peso = key === "nome" ? 6 : key === "codigo" || key === "razao" ? 4 : 2;
+    if (valor.includes(termo)) {
+      melhor = Math.max(
+        melhor,
+        peso + (inicioDePalavra(valor, termo) ? 2 : 0) + (valor.startsWith(termo) ? 1 : 0),
+      );
+    } else if (digitos.length >= 3 && soDigitos(valor).includes(digitos)) {
+      melhor = Math.max(melhor, peso);
+    }
+  }
+  return melhor;
+}
+
+/** Linhas em que TODOS os termos casaram, mais relevante primeiro. */
+function buscarEm(base: Colaborador[], termos: string[], chaves: string[]) {
+  const achados: { c: Colaborador; peso: number }[] = [];
+  for (const c of base) {
+    let peso = 0;
+    for (const t of termos) {
+      const p = pontuaTermo(c, t, chaves);
+      if (!p) { peso = 0; break; }
+      peso += p;
+    }
+    if (peso) achados.push({ c, peso });
+  }
+  achados.sort(
+    (a, b) =>
+      b.peso - a.peso ||
+      String(a.c.nome ?? "").localeCompare(String(b.c.nome ?? ""), "pt-BR"),
+  );
+  return achados.map((a) => a.c);
+}
+
+/** Busca com rede: se o essencial não achar ninguém, abre para todas as colunas. */
+function buscarComFallback(base: Colaborador[], termos: string[]) {
+  if (!termos.length) return { linhas: base, ampliada: false, colunas: [] as string[] };
+
+  const principal = buscarEm(base, termos, CHAVES_PRINCIPAIS);
+  if (principal.length) return { linhas: principal, ampliada: false, colunas: [] as string[] };
+
+  const amplo = buscarEm(base, termos, CHAVES_TODAS);
+  const colunas = COLS.filter(
+    (col) =>
+      !SEM_BUSCA.has(col.key) &&
+      amplo.some((c) => {
+        const v = c[col.key];
+        if (v === null || v === undefined || v === "") return false;
+        const valor = semAcento(String(v));
+        return termos.some((t) => valor.includes(t));
+      }),
+  ).map((col) => col.label);
+
+  return { linhas: amplo, ampliada: amplo.length > 0, colunas };
+}
+
 /* ─────────────────────────── Filtros por coluna ───────────────────────────
    Cada coluna guarda a lista de valores escolhidos (conjunto vazio = coluna
    sem filtro, mostra tudo). Colunas de dinheiro ganham também uma faixa
@@ -280,7 +374,7 @@ export default function ColaboradoresRH() {
     refetchIntervalInBackground: false,
   });
 
-  const todos = data ?? [];
+  const todos = useMemo(() => data ?? [], [data]);
 
   // Links assinados das fotos (válidos por 1h, renovados sozinhos): gerados
   // em lote com a sessão do usuário — quem não está logado não obtém nada.
@@ -311,14 +405,12 @@ export default function ColaboradoresRH() {
     [aba, ativos, desligados, todos],
   );
 
-  // Busca livre (todas as colunas) — os filtros de coluna entram depois dela.
-  const buscados = useMemo(() => {
-    const q = busca.trim().toLowerCase();
-    if (!q) return baseAba;
-    return baseAba.filter((c) =>
-      COLS.some(({ key }) => String(c[key] ?? "").toLowerCase().includes(q)),
-    );
-  }, [baseAba, busca]);
+  // Busca livre — os filtros de coluna entram depois dela.
+  const termos = useMemo(() => termosDe(busca), [busca]);
+  const { linhas: buscados, ampliada, colunas: colunasCasadas } = useMemo(
+    () => buscarComFallback(baseAba, termos),
+    [baseAba, termos],
+  );
 
   /* Uma linha passa nos filtros de coluna. `exceto` deixa uma coluna de fora —
      é o que faz a lista de opções de um funil continuar mostrando as outras
@@ -341,6 +433,17 @@ export default function ColaboradoresRH() {
   );
 
   const filtrados = useMemo(() => buscados.filter((c) => passaFiltros(c)), [buscados, passaFiltros]);
+
+  /* Quem a mesma busca acharia na outra aba. Sem isso, procurar alguém que já
+     saiu enquanto a aba "Ativos" está aberta devolve nada e parece cadastro
+     faltando — quando é só a aba errada. */
+  const foraDaAba = useMemo(() => {
+    if (!termos.length || aba === "todos") return 0;
+    const naTela = new Set(filtrados.map((c) => c.id));
+    return buscarComFallback(todos, termos).linhas.filter(
+      (c) => !naTela.has(c.id) && passaFiltros(c),
+    ).length;
+  }, [termos, aba, todos, filtrados, passaFiltros]);
 
   const colunasAtivas = COLS.filter((c) => visiveis.has(c.key));
 
@@ -431,7 +534,8 @@ export default function ColaboradoresRH() {
           <Input
             value={busca}
             onChange={(e) => setBusca(e.target.value)}
-            placeholder="Buscar em qualquer coluna…"
+            placeholder="Buscar por nome, código, cargo, documento…"
+            title="Procura primeiro nos dados da pessoa (nome, código, cargo, documento, contato). Se não achar ninguém, amplia para todas as colunas e avisa onde casou."
             className="pl-9"
           />
         </div>
@@ -476,6 +580,28 @@ export default function ColaboradoresRH() {
           {filtrados.length === 1 ? "colaborador" : "colaboradores"}
           {temFiltro && <span className="text-muted-foreground"> · {chips.length} {chips.length === 1 ? "filtro" : "filtros"} de coluna</span>}
         </span>
+
+        {ampliada && (
+          <Badge variant="outline" className="gap-1 font-normal text-muted-foreground">
+            <span>
+              Nada nos dados da pessoa — casou em{" "}
+              <span className="text-foreground">{colunasCasadas.slice(0, 3).join(", ")}</span>
+              {colunasCasadas.length > 3 && ` +${colunasCasadas.length - 3}`}
+            </span>
+          </Badge>
+        )}
+
+        {foraDaAba > 0 && (
+          <Button
+            variant="ghost"
+            size="sm"
+            className="h-7 gap-1.5 text-xs"
+            onClick={() => setAba("todos")}
+            title="Ver também quem está na outra aba"
+          >
+            +{foraDaAba} em {aba === "ativos" ? "Desligados" : "Ativos"}
+          </Button>
+        )}
 
         {chips.map((chip) => (
           <Badge key={chip.id} variant="secondary" className="gap-1 font-normal pr-1">
@@ -559,7 +685,9 @@ export default function ColaboradoresRH() {
                 <TableCell colSpan={colunasAtivas.length + 1} className="text-center text-muted-foreground py-8">
                   {todos.length === 0
                     ? "Nenhum dado sincronizado ainda — rode o script de integração no Supabase."
-                    : "Nenhum colaborador encontrado com esse filtro."}
+                    : busca.trim()
+                      ? `Ninguém encontrado para “${busca.trim()}” — nem nos dados da pessoa, nem nas outras colunas.`
+                      : "Nenhum colaborador encontrado com esse filtro."}
                 </TableCell>
               </TableRow>
             ) : (

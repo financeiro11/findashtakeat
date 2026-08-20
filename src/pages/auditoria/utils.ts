@@ -1,3 +1,10 @@
+/* O marcador de parcela da fatura ("CENTRAL DE AVIAMENTO  01/02   VITORIA") vem
+   da MESMA regra que a conferência usa no servidor, e não de uma cópia: quem
+   decide o que é parcela é `_shared/conferencia-comprovante.ts`, e a tela só
+   mostra. O módulo é TypeScript puro, sem nada de Deno — é o mesmo arquivo que os
+   testes de `src/lib/conferenciaComprovante.test.ts` importam. */
+export { parcelaDoMemo, type Parcela } from "../../../supabase/functions/_shared/conferencia-comprovante.ts";
+
 export const MESES_PT = ["jan","fev","mar","abr","mai","jun","jul","ago","set","out","nov","dez"];
 export const MESES_PT_LONG = ["janeiro","fevereiro","março","abril","maio","junho","julho","agosto","setembro","outubro","novembro","dezembro"];
 

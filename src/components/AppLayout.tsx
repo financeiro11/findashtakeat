@@ -6,6 +6,7 @@ import { PageHeader } from "@/components/PageHeader";
 import { ProfileMenu } from "@/components/ProfileMenu";
 import { AIAssistant } from "@/components/AIAssistant";
 import { NovaVersao } from "@/components/NovaVersao";
+import { AbrirNoCelular } from "@/components/AbrirNoCelular";
 import { useAuth } from "@/hooks/useAuth";
 import { moduleAccess, currentModule } from "@/lib/modules";
 
@@ -72,6 +73,8 @@ export default function AppLayout() {
         {!isParcerias && !emFacilities && (
           <div data-chrome="assistente" className="contents"><AIAssistant /></div>
         )}
+        {/* Só aparece quando este Hub montou numa janela de celular — ver AbrirNoCelular. */}
+        <AbrirNoCelular />
       </div>
     </SidebarProvider>
   );

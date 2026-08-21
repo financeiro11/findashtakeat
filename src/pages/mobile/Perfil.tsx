@@ -1,11 +1,12 @@
 // Aba Perfil — quem está logado, tema e sair.
 
 import { useState } from "react";
-import { LogOut, Sun, Moon, Smartphone, Check } from "lucide-react";
+import { LogOut, Sun, Moon, Smartphone, Check, Monitor } from "lucide-react";
 import { useAuth } from "@/hooks/useAuth";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { aplicarTema, lerTema, salvarTema, type Tema } from "@/lib/tema";
+import { definirModoCelular } from "@/hooks/use-mobile";
 
 const OPCOES: { id: Tema; rotulo: string; icone: typeof Sun }[] = [
   { id: "claro", rotulo: "Claro", icone: Sun },
@@ -61,6 +62,24 @@ export default function MobilePerfil() {
         </ul>
         <p className="mt-2 text-[11.5px] leading-snug text-muted-foreground">
           A escolha vale só neste aparelho.
+        </p>
+      </section>
+
+      <section>
+        <h2 className="mb-2 text-[11px] font-bold uppercase tracking-wider text-muted-foreground">Aparelho</h2>
+        <Button
+          variant="outline"
+          onClick={() => {
+            definirModoCelular(false);
+            window.location.reload();
+          }}
+          className="h-12 w-full justify-start gap-3 text-[14px]"
+        >
+          <Monitor className="h-4 w-4" /> Abrir o Hub de computador
+        </Button>
+        <p className="mt-2 text-[11.5px] leading-snug text-muted-foreground">
+          Para as telas grandes, mesmo apertadas. A barra no rodapé do Hub traz o app de
+          volta quando você quiser.
         </p>
       </section>
 

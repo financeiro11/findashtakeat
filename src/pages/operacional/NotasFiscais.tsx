@@ -35,6 +35,7 @@ import {
 } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import NotasFiscaisLog from "./NotasFiscaisLog";
+import NotasFiscaisAuditoria from "./NotasFiscaisAuditoria";
 import {
   SITUACOES, motivoBloqueio, motivoCurto, podeEmitir, resumoLote, xmlAindaVale, formatarDoc, statusAsaas,
   type LinhaNota, type Situacao,
@@ -97,7 +98,7 @@ export default function NotasFiscais() {
   const [busca, setBusca] = useState("");
   const [filtro, setFiltro] = useState<Situacao | "todas">("todas");
   const [sel, setSel] = useState<Set<string>>(new Set());
-  const [aba, setAba] = useState<"painel" | "log">("painel");
+  const [aba, setAba] = useState<"painel" | "auditoria" | "log">("painel");
 
   const periodo = useMemo(() => {
     const ult = new Date(ano, mes + 1, 0).getDate();
@@ -268,12 +269,16 @@ export default function NotasFiscais() {
       </div>
 
       {/* --------------------------------- abas -------------------------------- */}
-      {/* Duas perguntas diferentes, e por isso duas abas: "o que falta emitir
-          neste mês" e "o que o processo fez, quando, e por quê". Misturar as duas
-          numa tela só foi o que deixou a emissão automática sem lugar onde ser
-          conferida. */}
+      {/* Três perguntas diferentes, e por isso três abas:
+          • Painel      — "o que falta emitir neste mês"
+          • Auditoria   — "o que nunca vai virar nota, e por quê" (a fila descarta
+                          cliente sem cadastro no Omie em silêncio: nem erro, nem
+                          linha no registro — some)
+          • Registro    — "o que o processo fez, quando, e por quê"
+          Misturar as duas primeiras numa tela só é o que deixaria a falta
+          silenciosa parecendo ausência de problema. */}
       <div className="flex items-center gap-1 border-b border-border">
-        {([["painel", "Painel do mês"], ["log", "Registro de emissões"]] as const).map(([k, r]) => (
+        {([["painel", "Painel do mês"], ["auditoria", "Auditoria"], ["log", "Registro de emissões"]] as const).map(([k, r]) => (
           <button
             key={k}
             onClick={() => setAba(k)}
@@ -291,9 +296,12 @@ export default function NotasFiscais() {
 
       {aba === "log" && <NotasFiscaisLog />}
 
-      {aba === "painel" && (
-      <>
       {/* ------------------------------- período ------------------------------- */}
+      {/* Fora do bloco do painel de propósito: a auditoria olha o MESMO recorte, e
+          um seletor por aba faria a pessoa trocar o mês duas vezes para comparar
+          o que falta com o que nunca vai sair. O registro de emissões é o único
+          que não tem mês — ele é uma linha do tempo. */}
+      {aba !== "log" && (
       <div className="flex flex-wrap items-center gap-2 rounded-lg border border-border bg-card p-2">
         <button onClick={() => setAno((a) => Math.max(ANO_INICIAL, a - 1))} className="ghost-icone rounded p-1">
           <ChevronLeft className="h-4 w-4" />
@@ -320,7 +328,12 @@ export default function NotasFiscais() {
           ))}
         </div>
       </div>
+      )}
 
+      {aba === "auditoria" && <NotasFiscaisAuditoria de={periodo.de} ate={periodo.ate} />}
+
+      {aba === "painel" && (
+      <>
       {/* --------------------------------- KPIs -------------------------------- */}
       <div className="grid grid-cols-2 gap-2 md:grid-cols-3 lg:grid-cols-6">
         {kpis.map((k) => (

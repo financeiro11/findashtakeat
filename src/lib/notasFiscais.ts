@@ -218,3 +218,165 @@ export function formatarDoc(doc: string | null): string {
   if (d.length === 11) return d.replace(/^(\d{3})(\d{3})(\d{3})(\d{2})$/, "$1.$2.$3-$4");
   return doc ?? "";
 }
+
+/* ---------------------------------------------------------------------------
+ * AUDITORIA — a leitura do que a RPC `notas_fiscais_auditoria` devolve.
+ *
+ * A tela de auditoria existe porque a fila da emissão descarta em silêncio: os
+ * dois `join` que ligam cobrança → cliente do Asaas → cadastro do Omie não
+ * devolvem erro quando não casam, devolvem ausência. O que está aqui embaixo é
+ * como essa ausência vira frase em português — e a frase é o produto, porque o
+ * conserto (cadastrar, corrigir CNPJ) acontece no Omie, fora daqui.
+ * ------------------------------------------------------------------------- */
+
+export type Balde =
+  | "nota_omie" | "nota_asaas" | "nao_exige" | "estornada"
+  | "fila" | "aguardando_liquidar" | "em_processamento"
+  | "antes_do_corte" | "nota_rejeitada" | "nota_a_cancelar" | "sombra"
+  | "cadastro_divergente" | "sem_cadastro_omie" | "sem_documento" | "sem_cliente";
+
+export type ClasseProntidao = "ok" | "cadastro_divergente" | "sem_cadastro_omie" | "sem_documento" | "sem_cliente";
+
+export interface AuditoriaBalde { balde: Balde; cobrancas: number; valor: number }
+export interface AuditoriaProntidao { classe: ClasseProntidao; cobrancas: number; valor: number; clientes: number }
+
+export interface ClienteFaltante {
+  doc: string;
+  nome: string;
+  cobrancas: number;
+  valor: number;
+  ultima: string | null;
+  /** Quantas dessas cobranças JÁ estão sem nota hoje (o resto o Asaas cobriu). */
+  sem_nota_hoje: number;
+  classe: "cadastro_divergente" | "sem_cadastro_omie";
+  omie_nome: string | null;
+  omie_doc: string | null;
+  /** Força da semelhança de nome (0–1). Só existe quando o par veio por nome. */
+  forca: number | null;
+  /** Como o par foi achado: pela raiz do CNPJ (quase certeza) ou pelo nome (palpite). */
+  via: "raiz" | "nome" | null;
+}
+
+export interface AuditoriaMeta {
+  de: string; ate: string;
+  corte: string | null;
+  corte_vigente: boolean;
+  cadastro_omie_em: string | null;
+  cadastro_omie_qtd: number;
+  docs_duplicados: number;
+  total_cobrancas: number;
+  total_valor: number;
+}
+
+export interface Auditoria {
+  meta: AuditoriaMeta;
+  baldes: AuditoriaBalde[];
+  prontidao: AuditoriaProntidao[];
+  clientes: ClienteFaltante[];
+}
+
+/**
+ * Os baldes da partição, agrupados pelo que significam para quem audita.
+ *
+ * `grupo` é o que separa "está resolvido" de "vai dar problema": a tela mostra os
+ * três grupos em ordem invertida (o que trava primeiro), porque uma lista
+ * alfabética esconderia as 40 cobranças sem cadastro no meio de 2.400 resolvidas.
+ */
+export const BALDES: Record<Balde, { rotulo: string; tom: "ok" | "aviso" | "erro" | "neutro"; grupo: "resolvido" | "andamento" | "travado"; ajuda: string }> = {
+  nota_omie:        { rotulo: "Nota emitida no Omie", tom: "ok", grupo: "resolvido", ajuda: "NFS-e autorizada pela prefeitura." },
+  nota_asaas:       { rotulo: "Nota emitida no Asaas", tom: "ok", grupo: "resolvido", ajuda: "Nota autorizada pelo Asaas antes da data de corte." },
+  nao_exige:        { rotulo: "Não exige nota", tom: "neutro", grupo: "resolvido", ajuda: "Cobrança não recebida — pendente, vencida ou cancelada." },
+  estornada:        { rotulo: "Estornada", tom: "neutro", grupo: "resolvido", ajuda: "Dinheiro devolvido ao cliente; não há receita para tributar." },
+
+  fila:             { rotulo: "Na fila de emissão", tom: "ok", grupo: "andamento", ajuda: "Tem cliente no Omie e nada a bloqueia: a rodada diária emite." },
+  aguardando_liquidar: { rotulo: "Aguardando liquidar", tom: "aviso", grupo: "andamento", ajuda: "Cartão autorizado e ainda não liquidado. A emissão automática só pega o que entrou; entra sozinha na fila no dia em que liquidar." },
+  em_processamento: { rotulo: "No forno do Omie", tom: "aviso", grupo: "andamento", ajuda: "A OS foi faturada e o RPS ainda não voltou da prefeitura." },
+
+  antes_do_corte:   { rotulo: "Sem nota, antes do corte", tom: "erro", grupo: "travado", ajuda: "Recebida antes da data de corte e sem nota em sistema nenhum — o Asaas era quem devia ter emitido." },
+  nota_rejeitada:   { rotulo: "NFS-e rejeitada", tom: "erro", grupo: "travado", ajuda: "OS faturada e RPS recusado pela prefeitura: receita faturada sem nota válida. O reenvio é botão da tela do Omie." },
+  nota_a_cancelar:  { rotulo: "Nota a cancelar", tom: "erro", grupo: "travado", ajuda: "Cobrança estornada com a nota de pé." },
+  sombra:           { rotulo: "Barrada como duplicata", tom: "aviso", grupo: "travado", ajuda: "Já existe nota do mesmo documento, mesmo valor e mesmo mês. A guarda é frouxa de propósito: pode estar segurando emissão legítima — confira no Omie." },
+  cadastro_divergente: { rotulo: "Cadastro divergente no Omie", tom: "erro", grupo: "travado", ajuda: "O cliente existe no Omie com OUTRO documento. A fila não o encontra, e cadastrar de novo emitiria para o tomador errado." },
+  sem_cadastro_omie:{ rotulo: "Cliente não cadastrado no Omie", tom: "erro", grupo: "travado", ajuda: "Não há cadastro equivalente no Omie. A cobrança some da fila sem erro." },
+  sem_documento:    { rotulo: "Cliente sem CNPJ/CPF", tom: "erro", grupo: "travado", ajuda: "O cadastro no Asaas está sem documento — sem ele não há como achar o cliente no Omie." },
+  sem_cliente:      { rotulo: "Cliente fora do espelho", tom: "erro", grupo: "travado", ajuda: "A cobrança aponta para um cliente que a carga local do Asaas não tem. É buraco de espelho: rode a carga histórica de clientes." },
+};
+
+export const PRONTIDAO: Record<ClasseProntidao, { rotulo: string; tom: "ok" | "aviso" | "erro"; ajuda: string }> = {
+  ok:                  { rotulo: "Prontas para emitir", tom: "ok", ajuda: "O cliente tem cadastro no Omie com o mesmo documento do Asaas." },
+  cadastro_divergente: { rotulo: "Cadastro divergente", tom: "erro", ajuda: "Existe cadastro parecido no Omie com outro documento. Precisa de decisão humana: qual documento é o verdadeiro." },
+  sem_cadastro_omie:   { rotulo: "Sem cadastro no Omie", tom: "erro", ajuda: "Não há nada equivalente no Omie. Falta cadastrar o cliente." },
+  sem_documento:       { rotulo: "Sem CNPJ/CPF no Asaas", tom: "erro", ajuda: "Falta o documento no cadastro do Asaas." },
+  sem_cliente:         { rotulo: "Cliente fora do espelho", tom: "erro", ajuda: "A carga local do Asaas não tem esse cliente." },
+};
+
+/**
+ * A resposta em números: quantas cobranças do período NÃO sairiam se o Omie
+ * tivesse de emitir todas.
+ *
+ * Mede a prontidão e não os baldes porque enquanto o Asaas ainda emite, o buraco
+ * está tapado por fora — e o dia do corte destapa tudo de uma vez.
+ */
+export function vereditoProntidao(prontidao: AuditoriaProntidao[]) {
+  const bloqueio = prontidao.filter((p) => p.classe !== "ok");
+  const total = prontidao.reduce((s, p) => s + p.cobrancas, 0);
+  const cobrancas = bloqueio.reduce((s, p) => s + p.cobrancas, 0);
+  return {
+    total,
+    cobrancas,
+    valor: bloqueio.reduce((s, p) => s + Number(p.valor || 0), 0),
+    clientes: bloqueio.reduce((s, p) => s + p.clientes, 0),
+    pronto: cobrancas === 0,
+    /** Fração das cobranças do período que sairia sem intervenção. */
+    cobertura: total > 0 ? (total - cobrancas) / total : 1,
+  };
+}
+
+/**
+ * O que fazer com este cliente — instrução, não rótulo.
+ *
+ * A distinção entre `raiz` e `nome` é a que muda a ação, e por isso ela vem antes
+ * de tudo: raiz igual é a MESMA EMPRESA em outro estabelecimento, e nesse caso
+ * "cadastrar" é o conserto errado duas vezes (cria duplicado E emite na filial
+ * errada). Nome parecido é só coincidência a conferir.
+ */
+export function oQueFazer(c: Pick<ClienteFaltante, "classe" | "via" | "omie_nome" | "omie_doc">): string {
+  if (c.classe === "sem_cadastro_omie" || !c.omie_doc) {
+    return "Cadastrar o cliente no Omie com este CNPJ/CPF.";
+  }
+  if (c.via === "raiz") {
+    return `Mesma empresa, outro estabelecimento: o Omie tem "${c.omie_nome}" em ${formatarDoc(c.omie_doc)}. ` +
+      "Confirme qual filial presta o serviço — emitir contra o cadastro existente põe a nota no CNPJ errado.";
+  }
+  return `O Omie tem "${c.omie_nome}" em ${formatarDoc(c.omie_doc)}, com nome igual e documento diferente. ` +
+    "Um dos dois cadastros está com o documento errado; corrija na origem antes de emitir.";
+}
+
+/**
+ * Há quantos dias o cadastro de clientes do Omie foi lido.
+ *
+ * Importa porque o `omie-clientes-sync` roda semanalmente (segunda, 05h BRT) e a
+ * emissão roda todo dia: um cliente que entrou na terça só aparece no cadastro
+ * local na segunda seguinte, e até lá suas cobranças caem em "sem cadastro" sem
+ * que nada esteja errado no Omie. Sem este número, a auditoria acusaria o
+ * inocente.
+ */
+export function diasDoCadastro(iso: string | null, agora = Date.now()): number | null {
+  if (!iso) return null;
+  const t = Date.parse(iso);
+  if (Number.isNaN(t)) return null;
+  return Math.max(0, Math.floor((agora - t) / 86_400_000));
+}
+
+/** A lista dos faltantes em texto, para colar onde o conserto acontece. */
+export function clientesEmTexto(clientes: ClienteFaltante[]): string {
+  const linhas = clientes.map((c) => [
+    c.nome,
+    formatarDoc(c.doc),
+    c.classe === "cadastro_divergente" ? "cadastro divergente" : "sem cadastro",
+    c.omie_doc ? `${c.omie_nome} (${formatarDoc(c.omie_doc)})` : "",
+    String(c.cobrancas),
+    `R$ ${Number(c.valor || 0).toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`,
+  ].join("\t"));
+  return ["Cliente\tCNPJ/CPF no Asaas\tSituação\tCadastro parecido no Omie\tCobranças\tValor", ...linhas].join("\n");
+}

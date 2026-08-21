@@ -1,7 +1,8 @@
 import { describe, it, expect } from "vitest";
 import {
   motivoBloqueio, motivoCurto, podeEmitir, resumoLote, xmlAindaVale, formatarDoc, statusAsaas, foiPaga,
-  type LinhaNota, type Situacao,
+  vereditoProntidao, oQueFazer, diasDoCadastro, clientesEmTexto,
+  type LinhaNota, type Situacao, type ClienteFaltante,
 } from "./notasFiscais";
 
 const linha = (over: Partial<LinhaNota> = {}): LinhaNota => ({
@@ -185,5 +186,117 @@ describe("formatarDoc", () => {
   it("devolve o que veio quando não é nem um nem outro", () => {
     expect(formatarDoc("123")).toBe("123");
     expect(formatarDoc(null)).toBe("");
+  });
+});
+
+/* ---------------------------------------------------------------------------
+ * Auditoria
+ * ------------------------------------------------------------------------- */
+
+const faltante = (over: Partial<ClienteFaltante> = {}): ClienteFaltante => ({
+  doc: "37372287000271", nome: "Top Mix", cobrancas: 3, valor: 1393, ultima: "2026-07-28",
+  sem_nota_hoje: 1, classe: "cadastro_divergente",
+  omie_nome: "Top Mix", omie_doc: "37372287000190", forca: 1, via: "raiz",
+  ...over,
+});
+
+describe("vereditoProntidao", () => {
+  it("soma só o que NÃO está pronto, e conta clientes junto", () => {
+    const v = vereditoProntidao([
+      { classe: "ok", cobrancas: 3137, valor: 1349062.47, clientes: 2317 },
+      { classe: "cadastro_divergente", cobrancas: 53, valor: 20831.01, clientes: 35 },
+      { classe: "sem_cadastro_omie", cobrancas: 40, valor: 22040.6, clientes: 35 },
+    ]);
+    expect(v.total).toBe(3230);
+    expect(v.cobrancas).toBe(93);
+    expect(v.clientes).toBe(70);
+    expect(v.valor).toBeCloseTo(42871.61, 2);
+    expect(v.pronto).toBe(false);
+    // Cobertura em fração, não em porcentagem — quem formata é a tela.
+    expect(v.cobertura).toBeCloseTo(3137 / 3230, 6);
+  });
+
+  it("período inteiro cadastrado é `pronto`, e não 'zero de zero'", () => {
+    const v = vereditoProntidao([{ classe: "ok", cobrancas: 100, valor: 5000, clientes: 40 }]);
+    expect(v.pronto).toBe(true);
+    expect(v.cobertura).toBe(1);
+  });
+
+  // Sem cobranças no período a divisão da cobertura seria 0/0 = NaN, e NaN na
+  // tela vira "NaN%". Período vazio é período sem problema.
+  it("período sem cobrança nenhuma não vira NaN", () => {
+    const v = vereditoProntidao([]);
+    expect(v.total).toBe(0);
+    expect(v.pronto).toBe(true);
+    expect(v.cobertura).toBe(1);
+  });
+});
+
+describe("oQueFazer", () => {
+  // A distinção que muda a ação: raiz igual é a MESMA empresa noutro
+  // estabelecimento, e mandar cadastrar seria errado duas vezes.
+  it("raiz igual manda conferir a filial, nunca cadastrar", () => {
+    const t = oQueFazer(faltante());
+    expect(t).toMatch(/mesma empresa/i);
+    expect(t).toMatch(/37\.372\.287\/0001-90/);
+    expect(t).not.toMatch(/cadastrar o cliente/i);
+  });
+
+  it("nome parecido com documento sem relação manda corrigir na origem", () => {
+    const t = oQueFazer(faltante({ via: "nome", forca: 0.87, omie_nome: "Japamania - Vila Food", omie_doc: "52662815000130" }));
+    expect(t).toMatch(/documento diferente/i);
+    expect(t).toMatch(/corrija na origem/i);
+  });
+
+  it("sem nada equivalente no Omie, aí sim é cadastrar", () => {
+    expect(oQueFazer(faltante({ classe: "sem_cadastro_omie", omie_nome: null, omie_doc: null, via: null, forca: null })))
+      .toBe("Cadastrar o cliente no Omie com este CNPJ/CPF.");
+  });
+
+  // Guarda contra dado inconsistente: classe diz "divergente" mas o par não veio.
+  // Sem isto a frase sairia com "undefined" no meio.
+  it("classe divergente sem par vira a instrução de cadastrar", () => {
+    expect(oQueFazer({ classe: "cadastro_divergente", via: null, omie_nome: null, omie_doc: null }))
+      .toMatch(/^Cadastrar/);
+  });
+});
+
+describe("diasDoCadastro", () => {
+  const agora = Date.parse("2026-08-21T12:00:00Z");
+
+  it("conta os dias inteiros desde a leitura", () => {
+    expect(diasDoCadastro("2026-08-17T08:00:28.112+00:00", agora)).toBe(4);
+    expect(diasDoCadastro("2026-08-21T08:00:00Z", agora)).toBe(0);
+  });
+
+  it("cadastro nunca lido não inventa número", () => {
+    expect(diasDoCadastro(null, agora)).toBeNull();
+    expect(diasDoCadastro("qualquer coisa", agora)).toBeNull();
+  });
+
+  // Relógio do banco adiantado em relação ao do navegador daria dias negativos,
+  // que na frase viraria "lido há -1 dias".
+  it("leitura no futuro não devolve dia negativo", () => {
+    expect(diasDoCadastro("2026-08-22T08:00:00Z", agora)).toBe(0);
+  });
+});
+
+describe("clientesEmTexto", () => {
+  it("sai com cabeçalho e uma linha por cliente, separado por tabulação", () => {
+    const txt = clientesEmTexto([faltante(), faltante({ doc: "42580372000184", nome: "Maya", classe: "sem_cadastro_omie", omie_nome: null, omie_doc: null, via: null, cobrancas: 1, valor: 4000 })]);
+    const linhas = txt.split("\n");
+    expect(linhas).toHaveLength(3);
+    expect(linhas[0]).toMatch(/^Cliente\t/);
+    // O documento sai formatado: quem cola isto vai procurar no Omie, que mostra
+    // com pontuação.
+    expect(linhas[1]).toContain("37.372.287/0002-71");
+    expect(linhas[1]).toContain("Top Mix (37.372.287/0001-90)");
+    // Sem par no Omie, a coluna fica vazia em vez de "null".
+    expect(linhas[2].split("\t")[3]).toBe("");
+    expect(linhas[2]).toContain("R$ 4.000,00");
+  });
+
+  it("lista vazia devolve só o cabeçalho", () => {
+    expect(clientesEmTexto([]).split("\n")).toHaveLength(1);
   });
 });

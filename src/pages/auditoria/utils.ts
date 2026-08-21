@@ -4,6 +4,21 @@
    mostra. O módulo é TypeScript puro, sem nada de Deno — é o mesmo arquivo que os
    testes de `src/lib/conferenciaComprovante.test.ts` importam. */
 export { parcelaDoMemo, type Parcela } from "../../../supabase/functions/_shared/conferencia-comprovante.ts";
+/* Pelo mesmo motivo: a lista de itens da nota esconde as linhas que existem para
+   o fisco (ICMS, base de cálculo, desconto), e quem sabe quais são é a regra do
+   servidor — repetir a lista de tokens aqui seria criar uma segunda verdade. */
+export { rotuloNaoPagavel } from "../../../supabase/functions/_shared/conferencia-comprovante.ts";
+/* E de novo: QUAL valor do documento foi dividido em vezes (o total, ou só a
+   tarifa do bilhete) é conta da regra. A tela pergunta para escrever a frase
+   "R$ X em 3× = R$ Y" com o número certo — antes ela supunha o total e escrevia
+   uma conta que não fecha. */
+export { baseDaParcela } from "../../../supabase/functions/_shared/conferencia-comprovante.ts";
+/* E a regra inteira: a tela a roda para saber se o veredito GRAVADO ainda é o
+   que a regra diz hoje — quando mudou, chama a varredura do servidor para
+   regravar. Antes isso era adivinhado pelo texto do motivo, e a adivinhação
+   parou de funcionar no dia em que a frase mudou. Aqui não se decide nada: quem
+   grava veredito é a Edge Function, com a MESMA função. */
+export { conferir, type Leitura } from "../../../supabase/functions/_shared/conferencia-comprovante.ts";
 
 export const MESES_PT = ["jan","fev","mar","abr","mai","jun","jul","ago","set","out","nov","dez"];
 export const MESES_PT_LONG = ["janeiro","fevereiro","março","abril","maio","junho","julho","agosto","setembro","outubro","novembro","dezembro"];

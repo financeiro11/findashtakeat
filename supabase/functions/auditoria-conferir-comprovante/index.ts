@@ -9,9 +9,13 @@
 // ninguém precisa reconferir na mão o que a regra já conferiu. A trilha registra
 // a mudança com o motivo escrito, então continua reversível como qualquer outra.
 //
-// TRÊS AÇÕES:
+// QUATRO AÇÕES:
 //   • "conferir" — baixa o arquivo, manda para o Gemini, aplica a regra, grava a
 //     leitura + o veredito e, quando o veredito é "aprovar", aprova na hora.
+//   • "transcrever" — lê o documento e grava SÓ a transcrição, sem julgar nada.
+//     É a leitura dos achados que já foram decididos: a auditoria não precisa
+//     mais deles, mas o comprovante guarda o CNPJ e a razão social do emitente,
+//     que é a melhor fonte de nome que a casa tem para a Parametrização.
 //   • "aplicar"  — a varredura do que já foi lido: aprova os achados que ficaram
 //     com veredito "aprovar" de leituras antigas (as de antes desta mudança, ou
 //     as que a gravação do status não pegou). Não chama IA nenhuma — relê o que
@@ -31,7 +35,7 @@
 // `quota_esgotada: true` em vez de estourar, e o que já foi lido fica gravado.
 //
 // Body:
-//   { action?: "conferir" | "aplicar" | "parcelas",
+//   { action?: "conferir" | "transcrever" | "aplicar" | "parcelas",
 //     competencia?: "AAAA-MM-DD",   // a fatura da tela
 //     ids?: number[],               // achados específicos (drawer / seleção)
 //     limite?: number,              // teto da rodada (padrão 6, máx 10)
@@ -45,9 +49,9 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.0";
 import { requireUser } from "../_shared/auth.ts";
 import { generateJSON, GeminiError, DEFAULT_MODEL } from "../_shared/gemini.ts";
-import { ehHtml } from "../_shared/drive.ts";
+import { baixarDoDrive, driveConfigurado, ehHtml, extrairIdDrive } from "../_shared/drive.ts";
 import {
-  carneDe, chaveDocumento, conferir, outraParcelaDoCarne, parcelaDoMemo,
+  carneDe, chaveDocumento, conferir, outraParcelaDoCarne, parcelaDoMemo, pedacoUsado,
   type Carne, type Lancamento, type Leitura, type Veredito,
 } from "../_shared/conferencia-comprovante.ts";
 
@@ -88,6 +92,25 @@ const nomeDoPath = (p: string) => p.split("/").pop() || "comprovante";
 function mimeDe(nome: string): string | null {
   const ext = (nome.split("?")[0].split(".").pop() || "").toLowerCase();
   return MIMES[ext] ?? null;
+}
+
+const SUPORTADOS = new Set(Object.values(MIMES));
+
+/** O que o arquivo É, lido dos primeiros bytes.
+ *
+ *  Nem sempre há extensão para perguntar: o link do Drive termina em "/view" e o
+ *  download responde "application/octet-stream". Sem farejar, um PDF perfeito era
+ *  recusado com "não sei ler" antes de chegar ao modelo. A assinatura do arquivo
+ *  não mente — quando ela responde, ganha do nome e do cabeçalho. */
+function mimeDosBytes(b: Uint8Array): string | null {
+  const comeca = (...xs: number[]) => xs.length <= b.length && xs.every((x, i) => b[i] === x);
+  if (comeca(0x25, 0x50, 0x44, 0x46)) return "application/pdf";                    // %PDF
+  if (comeca(0xff, 0xd8, 0xff)) return "image/jpeg";
+  if (comeca(0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a)) return "image/png";
+  // RIFF????WEBP — o tamanho fica nos 4 bytes do meio, que não se conferem.
+  if (comeca(0x52, 0x49, 0x46, 0x46) && b.length >= 12 &&
+      [0x57, 0x45, 0x42, 0x50].every((x, i) => b[8 + i] === x)) return "image/webp";
+  return null;
 }
 
 function toBase64(bytes: Uint8Array): string {
@@ -209,19 +232,58 @@ class ErroCota extends Error {
  *  carimbar aqui seria condenar uma nota boa por causa de um soluço da Google. */
 class ErroServico extends Error {}
 
+/** O `content-type` da resposta, quando ele diz alguma coisa. "octet-stream" é o
+ *  jeito do Drive de dizer "é um arquivo" — não serve, e aí valem os bytes. */
+function mimeDaResposta(r: Response): string | null {
+  const ct = (r.headers.get("content-type") || "").split(";")[0].trim().toLowerCase();
+  return ct && ct !== "application/octet-stream" && ct !== "binary/octet-stream" ? ct : null;
+}
+
+/** Baixa o comprovante venha ele de onde vier: link do Drive, link solto ou o
+ *  bucket. `mime` é o que o servidor afirmou — pode ser nulo, e aí quem decide
+ *  são os bytes. */
 async function baixar(
   supabase: ReturnType<typeof createClient>,
   comprovante: string,
-): Promise<{ bytes: Uint8Array; nome: string }> {
+): Promise<{ bytes: Uint8Array; nome: string; mime: string | null }> {
+  /* O DRIVE PRECISA DE OUTRO ENDEREÇO. O link que a pessoa cola é o do
+     VISUALIZADOR (…/file/d/<ID>/view): baixar essa URL traz o HTML da tela do
+     Drive, nunca o PDF — foi o que reprovou 40 comprovantes de uma vez, com
+     "o arquivo é uma página HTML" e "respondeu 403", sem nenhum byte de nota
+     chegar ao modelo. O endereço do ARQUIVO é o de download, e o fetch segue
+     sozinho o 303 para drive.usercontent.google.com. */
+  const idDrive = extrairIdDrive(comprovante);
+  if (idDrive) {
+    const r = await fetch(`https://drive.google.com/uc?export=download&id=${idDrive}`);
+    const bytes = r.ok ? new Uint8Array(await r.arrayBuffer()) : new Uint8Array();
+    // Arquivo compartilhado por link resolve aqui, de graça e sem credencial.
+    if (bytes.length && !ehHtml(bytes)) {
+      return { bytes, nome: `drive-${idDrive}`, mime: mimeDaResposta(r) };
+    }
+    /* Só o que é restrito chega nesta linha: o Google devolve 200 com a tela de
+       login. Aí é caso para o conector — que entra como rede de segurança, não
+       como caminho principal, porque exige secret e o arquivo público não
+       precisa de nenhum. */
+    if (!driveConfigurado()) {
+      throw new Error(
+        r.ok
+          ? "o arquivo do Drive não está compartilhado por link (o Google devolveu a tela de login) — libere o compartilhamento ou configure o conector do Drive"
+          : `o link do Drive respondeu ${r.status}`,
+      );
+    }
+    const a = await baixarDoDrive(idDrive);
+    return { bytes: a.bytes, nome: a.nome, mime: a.mime || null };
+  }
+
   if (ehUrl(comprovante)) {
     const r = await fetch(comprovante);
     if (!r.ok) throw new Error(`o link do comprovante respondeu ${r.status}`);
     const bytes = new Uint8Array(await r.arrayBuffer());
-    return { bytes, nome: nomeDoPath(new URL(comprovante).pathname) };
+    return { bytes, nome: nomeDoPath(new URL(comprovante).pathname), mime: mimeDaResposta(r) };
   }
   const { data: blob, error } = await supabase.storage.from(BUCKET).download(comprovante.replace(/^\/+/, ""));
   if (error || !blob) throw new Error(`não consegui baixar o arquivo (${error?.message ?? "não encontrado"})`);
-  return { bytes: new Uint8Array(await blob.arrayBuffer()), nome: nomeDoPath(comprovante) };
+  return { bytes: new Uint8Array(await blob.arrayBuffer()), nome: nomeDoPath(comprovante), mime: null };
 }
 
 async function lerComprovante(
@@ -229,14 +291,20 @@ async function lerComprovante(
   comprovante: string,
   lanc: Lancamento,
 ): Promise<Leitura> {
-  const { bytes, nome } = await baixar(supabase, comprovante);
+  const { bytes, nome, mime: mimeDito } = await baixar(supabase, comprovante);
   if (!bytes.length) throw new Error("o arquivo está vazio");
   if (bytes.length > MAX_BYTES) throw new Error(`o arquivo tem ${(bytes.length / 1048576).toFixed(1)} MB — acima do que cabe na leitura`);
   // Página de erro do Drive salva como "comprovante.pdf" é o engano mais comum.
   if (ehHtml(bytes)) throw new Error("o arquivo é uma página HTML, não um comprovante");
 
-  const mime = mimeDe(nome) ?? mimeDe(comprovante);
-  if (!mime) throw new Error(`não sei ler "${nome}" (use PDF, JPG, PNG ou WEBP)`);
+  /* Os bytes primeiro: eles são o próprio arquivo. Depois o que o servidor disse,
+     e só por último a extensão do nome — que é palpite, e no link do Drive nem
+     existe. Mandar ao Gemini um mime que não bate com o conteúdo é erro na
+     chamada, então o que sobra fora da lista é recusado aqui. */
+  const mime = mimeDosBytes(bytes) ?? mimeDito ?? mimeDe(nome) ?? mimeDe(comprovante);
+  if (!mime || !SUPORTADOS.has(mime)) {
+    throw new Error(`não sei ler "${nome}"${mime ? ` (${mime})` : ""} — use PDF, JPG, PNG ou WEBP`);
+  }
 
   /* O marcador de parcela vai explícito no prompt. Ele está no MEMO cru, mas
      pedir ao modelo que ache "01/02" no meio de um texto de largura fixa é pedir
@@ -350,7 +418,7 @@ Deno.serve(async (req) => {
     const competencia = body?.competencia ? String(body.competencia) : null;
     const ids: number[] | null = Array.isArray(body?.ids) ? body.ids.map(Number).filter(Number.isFinite) : null;
 
-    if (acao !== "conferir" && acao !== "aplicar" && acao !== "parcelas") {
+    if (acao !== "conferir" && acao !== "transcrever" && acao !== "aplicar" && acao !== "parcelas") {
       return json({ error: `Ação desconhecida: ${acao}` }, 200);
     }
 
@@ -416,7 +484,13 @@ Deno.serve(async (req) => {
          Só vale para linha com marcador de parcela: é a população que esta
          mudança atinge, e recarimbar o resto seria mexer no que ninguém pediu. */
       const recarimbados: unknown[] = [];
-      const comMarcador = ((lidos ?? []) as any[]).filter((r) => !!parcelaDoMemo(r.descricao));
+      /* Leitura de transcrição fica de fora: ela foi gravada SEM veredito, só para
+         a Parametrização aproveitar o emitente. Deixá-la entrar aqui faria um
+         documento que ninguém conferiu recarimbar veredito e, pior, virar fonte de
+         carnê para aprovar as parcelas seguintes de outros lançamentos. */
+      const comMarcador = ((lidos ?? []) as any[]).filter(
+        (r) => !!parcelaDoMemo(r.descricao) && !(r.ia_leitura as Leitura | null)?.transcricao_apenas,
+      );
       for (const r of comMarcador) {
         if (!r.link_comprovante || r.ia_arquivo !== r.link_comprovante) continue;
         const v = conferir(lancDe(r), r.ia_leitura as Leitura);
@@ -531,6 +605,129 @@ Deno.serve(async (req) => {
       });
     }
 
+    /* ==================== TRANSCREVER ==================== */
+    /* Ler o documento sem julgar: grava a transcrição e mais nada.
+
+       POR QUE NÃO DÁ PARA USAR "conferir": ele só enxerga STATUS_ABERTOS, e dos 59
+       comprovantes anexados que nunca foram lidos, 57 já estão Aprovado (medido em
+       20/08/2026). O filtro de lá está certo e não é para afrouxar — `patchAprovacao`
+       roda sempre que o veredito sai "aprovar", então reler uma linha decidida
+       reescreveria a trilha e viraria Reprovado em Aprovado sem ninguém pedir.
+
+       PARA QUE SERVE ENTÃO: o comprovante traz o CNPJ e a razão social de quem
+       vendeu, e essa é a melhor fonte de nome que a casa tem para os lojistas de
+       cartão da fila da Parametrização — onde o extrato só entrega "JIM.COM GRUPO
+       SOUZA". A auditoria já não precisa desses documentos; a Parametrização precisa.
+       O CNPJ é a única chave que entra sozinha lá (migration 20260813120000).
+
+       O QUE NUNCA TOCA: status, ia_veredito, ia_motivo, trilha, categoria. A leitura
+       sai marcada com `transcricao_apenas` para o resto da função saber que atrás
+       dela não há veredito — é o que impede uma transcrição de aprovar parcela ou
+       trancar nota repetida. */
+    if (acao === "transcrever") {
+      if (!Deno.env.get("GEMINI_API_KEY")) {
+        return json({ error: "GEMINI_API_KEY não configurada nas variáveis da função." }, 200);
+      }
+
+      const limite = Math.min(Math.max(1, Number(body?.limite) || LIMITE_PADRAO), LIMITE_MAX);
+      const reler = body?.reler === true;
+
+      let q = supabase.from("auditoria")
+        .select("id, id_unico, titulo, valor, data_lancamento, competencia, descricao, responsavel, status, link_comprovante, ia_leitura, ia_arquivo")
+        .not("link_comprovante", "is", null)
+        // Sem filtro de status: é justamente o decidido que interessa aqui. Da
+        // fatura mais nova para trás e com teto, porque o PostgREST corta em 1000
+        // linhas calado e a ordem é o que decide quem fica de fora.
+        .order("data_lancamento", { ascending: false })
+        .limit(1000);
+      if (competencia) q = q.eq("competencia", competencia);
+      if (ids?.length) q = q.in("id", ids);
+      const { data, error } = await q;
+      if (error) throw error;
+
+      const abrivel = (v: string | null) => !!v && (ehUrl(v) || v.includes("/"));
+      const todos = ((data ?? []) as any[]).filter((r) => abrivel(r.link_comprovante));
+      /* A fila é "este arquivo aqui nunca foi tentado". `ia_arquivo` já é o carimbo
+         de qual anexo foi lido por último, então ele serve de fila sem campo novo:
+         quem foi lido sai, quem falhou também sai (o carimbo é gravado no erro), e
+         trocar o anexo devolve a linha para cá sozinha. O `!ia_leitura` protege as
+         leituras antigas — de antes de `ia_arquivo` existir — de serem relidas à toa. */
+      const fila = reler ? todos : todos.filter((r) => !r.ia_leitura && r.ia_arquivo !== r.link_comprovante);
+      const rodada = fila.slice(0, limite);
+
+      const itens: unknown[] = [];
+      const erros: unknown[] = [];
+      let quotaEsgotada = false;
+      let quotaPorDia = false;
+      let tempoEsgotado = false;
+      let lidos = 0;
+      const comecou = Date.now();
+
+      for (const r of rodada) {
+        // Mesmo freio de relógio do "conferir": o worker morre bem antes do que a
+        // conta ingênua sugere, e o que já foi gravado não se perde.
+        if (Date.now() - comecou > ORCAMENTO_MS) { tempoEsgotado = true; break; }
+        const agora = new Date().toISOString();
+        let leitura: Leitura;
+        try {
+          leitura = await lerComprovante(supabase, r.link_comprovante!, lancDe(r));
+          lidos++;
+        } catch (e) {
+          if (e instanceof ErroCota) { quotaEsgotada = true; quotaPorDia = e.porDia; break; }
+          const msg = e instanceof Error ? e.message : String(e);
+          console.error(`transcrição falhou · ${r.id_unico} · ${msg}`);
+          erros.push({ id: r.id, id_unico: r.id_unico, titulo: r.titulo, erro: msg, transitorio: e instanceof ErroServico });
+          /* Tropeço do serviço de IA continua na fila e tenta de novo. Documento
+             ruim sai dela carimbando SÓ o arquivo: o "revisar" que o `conferir`
+             escreveria é veredito de auditoria, e esta ação não emite veredito nem
+             para dizer que o PDF está quebrado. */
+          if (e instanceof ErroServico) continue;
+          await supabase.from("auditoria").update({
+            ia_arquivo: r.link_comprovante,
+            ia_conferido_em: agora,
+            updated_at: agora,
+          }).eq("id", r.id);
+          continue;
+        }
+
+        const { error: uErr } = await supabase.from("auditoria").update({
+          ia_leitura: { ...leitura, transcricao_apenas: true } as unknown as Record<string, unknown>,
+          ia_arquivo: r.link_comprovante,
+          ia_conferido_em: agora,
+          updated_at: agora,
+        }).eq("id", r.id);
+        if (uErr) { erros.push({ id: r.id, id_unico: r.id_unico, titulo: r.titulo, erro: uErr.message }); continue; }
+
+        itens.push({
+          id: r.id, id_unico: r.id_unico, titulo: r.titulo, valor: Number(r.valor ?? 0),
+          data: r.data_lancamento, competencia: r.competencia, status: r.status,
+          legivel: leitura.legivel !== false,
+          emitente: leitura.emitente_nome,
+          emitente_cnpj: leitura.emitente_cnpj ?? null,
+          tipo_documento: leitura.tipo_documento,
+          numero_documento: leitura.numero_documento ?? null,
+          valor_documento: leitura.valor_total,
+          descricao: leitura.descricao,
+        });
+      }
+
+      return json({
+        ok: true,
+        acao,
+        modelo: DEFAULT_MODEL,
+        lidos,
+        // É por este número que se decide se a fonte nova da Parametrização vale a
+        // migration: sem CNPJ, a evidência não entra sozinha e vira só proposta.
+        com_cnpj: itens.filter((i: any) => !!i.emitente_cnpj).length,
+        restantes: Math.max(0, fila.length - lidos - erros.filter((e: any) => !e.transitorio).length),
+        quota_esgotada: quotaEsgotada,
+        quota_por_dia: quotaPorDia,
+        tempo_esgotado: tempoEsgotado,
+        itens,
+        erros,
+      });
+    }
+
     /* ==================== CONFERIR ==================== */
     if (!Deno.env.get("GEMINI_API_KEY")) {
       return json({ error: "GEMINI_API_KEY não configurada nas variáveis da função." }, 200);
@@ -562,21 +759,29 @@ Deno.serve(async (req) => {
        existe para pegar. Quatro recibos de R$ 53,96 da GOL são quatro
        passageiros e têm números diferentes; a chave é emitente + número + total.
 
-       A EXCEÇÃO É O PARCELAMENTO: uma nota de R$ 251,31 cobrada em 2× explica
-       DUAS cobranças de propósito, uma por fatura. Por isso se guarda também a
-       parcela de quem usou a nota — parcelas diferentes da mesma compra não são
-       nota repetida. */
+       O QUE SE TRANCA É O PEDAÇO, NÃO O PAPEL. Uma nota de R$ 251,31 cobrada em
+       2× explica duas cobranças de propósito, uma por fatura; o bilhete da GOL
+       explica a taxa de embarque numa linha da fatura e a tarifa parcelada em
+       outra, no mesmo mês. Por isso a chave leva também qual parte do documento
+       cada cobrança consumiu (`pedacoUsado`) — repetir o pedaço é reaproveitar a
+       nota; usar outra parte dela não é. */
     const { data: jaUsadas } = await supabase.from("auditoria")
       .select("id, titulo, valor, data_lancamento, competencia, descricao, ia_leitura")
       .not("ia_leitura", "is", null)
       .eq("status", "Aprovado");
-    type Dono = { id: number; titulo: string; parcela: { n: number; de: number } | null };
+    type Dono = { id: number; titulo: string };
     const usadas = new Map<string, Dono>();
     for (const r of (jaUsadas ?? []) as any[]) {
+      /* Transcrição não tranca nota repetida. Ela enche `ia_leitura` de achados
+         antigos que ninguém conferiu, e um documento lido por esse caminho passaria
+         a bloquear a aprovação de outro gasto sem que exista veredito por trás.
+         Para a trava enxergar também os transcritos, é tirar esta linha — e aí a
+         checagem de nota repetida passa a valer para o histórico inteiro. */
+      if ((r.ia_leitura as Leitura | null)?.transcricao_apenas) continue;
       const k = r.ia_leitura ? chaveDocumento(r.ia_leitura as Leitura) : null;
-      if (k && !usadas.has(k)) {
-        usadas.set(k, { id: r.id, titulo: r.titulo, parcela: parcelaDoMemo(r.descricao) });
-      }
+      if (!k) continue;
+      const kk = `${k}|${pedacoUsado(lancDe(r), r.ia_leitura as Leitura)}`;
+      if (!usadas.has(kk)) usadas.set(kk, { id: r.id, titulo: r.titulo });
     }
 
     const itens: unknown[] = [];
@@ -624,22 +829,19 @@ Deno.serve(async (req) => {
 
       let v: Veredito = conferir(lanc, leitura);
 
-      // Nota já usada em outro gasto aprovado derruba a aprovação automática.
+      /* Documento já usado em outro gasto aprovado PARA A MESMA PARTE derruba a
+         aprovação automática. Parcelas diferentes da mesma compra e linhas
+         diferentes do mesmo bilhete são pedaços distintos e passam. */
       if (v.veredito === "aprovar") {
         const k = chaveDocumento(leitura);
-        const dono = k ? usadas.get(k) : undefined;
-        /* Duas parcelas da MESMA compra dividem a nota — é para isso que ela foi
-           dividida em vezes. O que continua proibido é a mesma parcela duas vezes
-           e a nota reaproveitada num gasto que nada tem a ver. */
-        const outraParcela =
-          !!v.parcela && !!dono?.parcela &&
-          dono.parcela.de === v.parcela.de && dono.parcela.n !== v.parcela.n;
-        if (dono && dono.id !== r.id && !outraParcela) {
+        const kk = k ? `${k}|${pedacoUsado(lanc, leitura, v)}` : null;
+        const dono = kk ? usadas.get(kk) : undefined;
+        if (dono && dono.id !== r.id) {
           v = { ...v, veredito: "revisar", motivo: `Este mesmo documento já foi aceito no lançamento "${dono.titulo}".` };
-        } else if (k && !dono) {
-          // Trava a nota dentro da própria rodada. Com parcelamento, quem chegou
-          // primeiro fica no mapa: as outras parcelas passam pela exceção acima.
-          usadas.set(k, { id: r.id, titulo: r.titulo, parcela: v.parcela });
+        } else if (kk && !dono) {
+          // Trava o pedaço dentro da própria rodada: quatro parcelas da mesma
+          // compra lidas de uma vez continuam passando, a mesma duas vezes não.
+          usadas.set(kk, { id: r.id, titulo: r.titulo });
         }
       }
 

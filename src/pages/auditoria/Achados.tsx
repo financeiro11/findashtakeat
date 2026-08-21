@@ -2,7 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/hooks/useAuth";
 import { useApelidos } from "@/hooks/useApelidos";
-import { nomeContraparte, textoDaBusca, type MapaLojistas, type NomeContraparte } from "@/lib/lojistaCartao";
+import { fraseDaNota, itensDaNota, nomeContraparte, textoDaBusca, type MapaLojistas, type NomeContraparte } from "@/lib/lojistaCartao";
+import { rotuloNaoPagavel } from "./utils";
 import { Button } from "@/components/ui/button";
 import { Sheet, SheetContent } from "@/components/ui/sheet";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -14,7 +15,7 @@ import { cn } from "@/lib/utils";
 import { toast } from "sonner";
 import { ComprovanteLink } from "@/components/ComprovanteLink";
 import { podeAbrirComprovante } from "@/lib/comprovante";
-import { brl, brlAbbr, fmtDateBR, fmtDateTimeBR, fmtTrilha, compLabel, parcelaDoMemo, MESES_PT_LONG } from "./utils";
+import { brl, brlAbbr, fmtDateBR, fmtDateTimeBR, fmtTrilha, compLabel, parcelaDoMemo, baseDaParcela, conferir, type Leitura, MESES_PT_LONG } from "./utils";
 import { comValorExato } from "@/components/ValorExato";
 import AjusteSolicitadoModal from "./AjusteSolicitadoModal";
 import SolicitarJustificativasModal from "./SolicitarJustificativasModal";
@@ -86,6 +87,8 @@ type LeituraIA = {
   numero_documento?: string | null;
   descricao?: string;
   observacao?: string | null;
+  /** Leitura gravada pela ação "transcrever": documento lido, nada julgado. */
+  transcricao_apenas?: boolean;
 };
 
 const ALL_CATEGORIAS: Categoria[] = ["COM NF", "SEM NF", "FORA DE ESCOPO", "A CONFERIR"];
@@ -348,10 +351,19 @@ export default function Achados() {
       if (r.id <= 0 || !parcelaDoMemo(r.descricao)) return false;
       // A parcela seguinte, esperando a nota que já foi conferida no mês passado.
       if (!r.link_comprovante && r.status !== "Aprovado" && r.status !== "Reprovado") return true;
-      /* Linha lida antes de a regra entender parcelamento: o veredito é "revisar"
-         e o motivo nem fala em parcela. Depois da varredura o texto muda, e é isso
-         que impede esta chamada de virar rotina em toda abertura de página. */
-      return !!r.link_comprovante && r.ia_veredito === "revisar" && !/parcela/i.test(r.ia_motivo ?? "");
+      /* Linha já lida cujo veredito GRAVADO não é mais o que a regra diz — é o
+         que a varredura vai regravar. A pergunta é feita rodando a própria regra
+         aqui, e não farejando o texto do motivo: a farejada dizia "não fala em
+         parcela" e emudeceu quando a frase da recusa passou a falar, deixando os
+         bilhetes parcelados da GOL parados na revisão humana para sempre.
+         Rodar a regra é conta pura sobre o que já está na memória, e ela se cala
+         sozinha assim que o servidor grava. */
+      if (!r.link_comprovante || r.ia_arquivo !== r.link_comprovante) return false;
+      if (!r.ia_leitura || r.ia_leitura.transcricao_apenas) return false;
+      return conferir(
+        { titulo: r.titulo, valor: r.valor, data: r.data_lancamento, memo: r.descricao, competencia: r.competencia },
+        r.ia_leitura as Leitura,
+      ).veredito !== r.ia_veredito;
     });
     if (!temCandidato) return;
 
@@ -411,7 +423,12 @@ export default function Achados() {
   /** O nome que a linha escreve: apelido > lojista limpo > o título como veio. */
   const nomeDaLinha = useCallback(
     (r: Row): NomeContraparte =>
-      nomeContraparte(apelidos, lojistas, { nome: r.titulo, data: r.data_lancamento, valor: r.valor }),
+      nomeContraparte(apelidos, lojistas, {
+        nome: r.titulo, data: r.data_lancamento, valor: r.valor,
+        // O que a nota diz que foi comprado entra aqui e não vira nome: o mesmo
+        // Mercado Livre continua sendo um fornecedor só.
+        compra: compraDaLinha(r),
+      }),
     [apelidos, lojistas],
   );
 
@@ -647,11 +664,11 @@ export default function Achados() {
   const exportCsv = () => {
     // Duas colunas de nome, pelo mesmo motivo da tela: o apelido é o que se lê na
     // reunião, o nome do extrato é o que se procura no Omie.
-    const header = ["Contraparte","No extrato","Área","Severidade","Regra","Origem","Valor","Responsável","Data","Status"];
+    const header = ["Contraparte","No extrato","O que foi comprado","Área","Severidade","Regra","Origem","Valor","Responsável","Data","Status"];
     const lines = filtered.map(r => {
       const n = nomeDaLinha(r);
       return [
-        n.exibido, n.cru, r.area, r.severidade, r.regra, r.origem,
+        n.exibido, n.cru, n.oQueComprou ?? "", r.area, r.severidade, r.regra, r.origem,
         brl(Number(r.valor || 0)), r.responsavel ?? "",
         fmtDateBR(r.data_lancamento), r.status,
       ].map(v => `"${String(v ?? "").replace(/"/g, '""')}"`).join(";");
@@ -926,6 +943,16 @@ export default function Achados() {
                       é o nome cru que se procura no extrato e no Omie. */}
                   {nome.cru && nome.cru !== nome.exibido && (
                     <div className="text-[11px] text-muted-foreground truncate">{nome.cru}</div>
+                  )}
+                  {/* Terceiro degrau: QUEM recebeu está acima, O QUE veio na caixa
+                      vem aqui. Só existe onde alguém anexou nota e a IA a leu. */}
+                  {nome.oQueComprou && (
+                    <div
+                      className="text-[11px] text-foreground/70 truncate italic"
+                      title={nome.oQueComprou}
+                    >
+                      {nome.oQueComprou}
+                    </div>
                   )}
                   <div className="flex items-center gap-1.5 mt-0.5 flex-wrap">
                     <span className="text-xs text-muted-foreground truncate">{r.responsavel || "—"}</span>
@@ -1352,10 +1379,23 @@ function KpiCard({ label, value, legend, valueClass, breakdown }: { label: strin
 }
 
 /* A leitura da IA só vale para o arquivo que ela leu. Trocado o comprovante,
-   o veredito antigo some da tela em vez de continuar afirmando algo sobre um
+   o que foi lido some da tela em vez de continuar afirmando algo sobre um
    documento que ninguém leu — é a mesma checagem que a função faz ao aprovar. */
+function leituraDoArquivo(r: Row): boolean {
+  return !!r.ia_leitura && r.ia_arquivo === r.link_comprovante;
+}
+
+/* Há leitura COM veredito? É o que autoriza o selinho e a frase de julgamento.
+   A ação "transcrever" grava leitura sem veredito de propósito (ela lê os
+   achados já decididos só para aproveitar o emitente), e essas transcrições
+   mostram o que o documento diz sem fingir que alguém as conferiu. */
 function leituraAtual(r: Row): boolean {
   return !!r.ia_veredito && r.ia_arquivo === r.link_comprovante;
+}
+
+/** O que a nota diz que foi comprado — vazio quando não há leitura válida. */
+function compraDaLinha(r: Row): string | null {
+  return leituraDoArquivo(r) ? fraseDaNota(r.ia_leitura) : null;
 }
 
 /** "1/2" — a compra foi dividida em vezes e a nota é do valor CHEIO.
@@ -1396,32 +1436,57 @@ function ChipIA({ r }: { r: Row }) {
   );
 }
 
-/** O que a IA leu no documento, para decidir sem reabrir o PDF. */
+/** O que a IA leu no documento, para decidir sem reabrir o PDF.
+ *
+ *  Aparece para QUALQUER leitura do arquivo anexado, tenha ela veredito ou não.
+ *  A ação "transcrever" lê achados já decididos e grava sem julgar — o card
+ *  mostra o que o documento diz e cala sobre conferência, porque não houve. */
 function LeituraCard({ r }: { r: Row }) {
-  if (!leituraAtual(r)) return null;
+  if (!leituraDoArquivo(r)) return null;
   const l = r.ia_leitura ?? {};
-  const ok = r.ia_veredito === "aprovar";
+  const conferido = leituraAtual(r);
+  const ok = conferido && r.ia_veredito === "aprovar";
   // Só as linhas que interessam: a que casou com a cobrança e o total. A lista
   // inteira de uma NF-e tem onze valores de imposto e vira ruído.
   const linhas = (l.valores ?? []).filter(v => Math.abs(Number(v.valor) - Number(r.valor)) < 0.005).slice(0, 3);
-  // Em compra parcelada nenhuma linha vale a cobrança — o que explica o número é
-  // a divisão do total, e é isso que o quadro mostra no lugar.
+  /* Em compra parcelada nenhuma linha vale a cobrança — o que explica o número é
+     uma divisão, e é isso que o quadro mostra no lugar. QUAL valor foi dividido
+     quem diz é a regra: no bilhete aéreo é a tarifa, não o total, e supor o total
+     escrevia aqui uma conta que não fecha ("R$ 601,10 em 3× = R$ 182,38"). */
   const p = parcelaDoMemo(r.descricao);
+  const base = p ? baseDaParcela(l, p.de, p.n, r.valor) : null;
+  /* A frase resume, a lista prova: é aqui que se vê que a compra de R$ 2.000 no
+     Mercado Livre foram uma cadeira e dois monitores, e não uma coisa só. Sem o
+     que é imposto/desconto e sem o total, que já tem casa própria acima. */
+  const itens = itensDaNota(l, rotuloNaoPagavel, l.valor_total);
+  const MAX_ITENS = 12;
   return (
     <div className={cn(
       "rounded-xl border p-4 space-y-3",
-      ok ? "border-[hsl(152_55%_82%)] bg-[hsl(152_55%_97%)]" : "border-[hsl(48_92%_80%)] bg-[hsl(48_96%_97%)]",
+      !conferido
+        ? "border-border bg-muted/30"
+        : ok
+          ? "border-[hsl(152_55%_82%)] bg-[hsl(152_55%_97%)]"
+          : "border-[hsl(48_92%_80%)] bg-[hsl(48_96%_97%)]",
     )}>
-      <div className="flex items-center gap-2">
+      <div className="flex items-center gap-2 flex-wrap">
         <Sparkles className="h-3.5 w-3.5 text-[hsl(212_80%_45%)]" />
         <span className="text-[11px] uppercase tracking-wider font-semibold text-muted-foreground">
           Leitura do comprovante
         </span>
+        {!conferido && (
+          <span
+            className="text-[10px] px-1.5 py-0.5 rounded border border-border text-muted-foreground"
+            title="O documento foi transcrito para aproveitar o emitente e o que foi comprado. Ninguém conferiu o valor contra a cobrança."
+          >
+            só transcrição
+          </span>
+        )}
         {r.ia_conferido_em && (
           <span className="text-[11px] text-muted-foreground">· {fmtDateTimeBR(r.ia_conferido_em)}</span>
         )}
       </div>
-      <p className="text-sm text-foreground/85 leading-relaxed">{r.ia_motivo}</p>
+      {conferido && <p className="text-sm text-foreground/85 leading-relaxed">{r.ia_motivo}</p>}
       <div className="grid grid-cols-2 gap-3">
         <MetaItem label="Emitente" value={l.emitente_nome || "—"} full />
         <MetaItem label="CNPJ / CPF" value={l.emitente_cnpj || "—"} />
@@ -1429,21 +1494,48 @@ function LeituraCard({ r }: { r: Row }) {
         <MetaItem label="Total do documento" value={l.valor_total ? brl(Number(l.valor_total)) : "—"} />
         <MetaItem label="Emitido em" value={l.data_documento ? fmtDateBR(l.data_documento) : "—"} />
         {l.descricao && <MetaItem label="O que foi comprado" value={l.descricao} full />}
-        {linhas.length > 0 && (
+        {conferido && linhas.length > 0 && (
           <MetaItem
             label="Linha que bate com a cobrança"
             value={linhas.map(v => `${v.rotulo} · ${brl(Number(v.valor))}`).join(" | ")}
             full
           />
         )}
-        {p && linhas.length === 0 && l.valor_total ? (
+        {conferido && p && linhas.length === 0 && (base || l.valor_total) ? (
           <MetaItem
             label="Como a cobrança sai do documento"
-            value={`${brl(Number(l.valor_total))} em ${p.de}× = ${brl(Number(r.valor))} nesta fatura (parcela ${p.n}/${p.de})`}
+            value={
+              base
+                ? `${brl(base.valor)}${base.rotulo ? ` (${base.rotulo})` : ""} em ${p.de}× = ${brl(Number(r.valor))} nesta fatura (parcela ${base.n}/${p.de})`
+                /* Nenhum número do papel dividido em p.de dá a cobrança: o quadro
+                   diz o que se sabe (o total e o marcador) sem fingir uma conta
+                   que não fecha — o motivo logo acima já explica o resto. */
+                : `${brl(Number(l.valor_total))} no documento · a fatura marca parcela ${p.n}/${p.de}`
+            }
             full
           />
         ) : null}
       </div>
+      {itens.length > 0 && (
+        <div>
+          <div className="text-[11px] uppercase tracking-wider text-muted-foreground font-medium">
+            Itens do documento
+          </div>
+          <ul className="mt-1 divide-y divide-border/60 rounded-lg border border-border/60 bg-background/60">
+            {itens.slice(0, MAX_ITENS).map((v, i) => (
+              <li key={`${v.rotulo}-${i}`} className="flex items-baseline justify-between gap-3 px-2.5 py-1.5">
+                <span className="text-[12.5px] text-foreground/85 break-words">{v.rotulo}</span>
+                <span className="num text-[12.5px] font-medium whitespace-nowrap">{brl(Number(v.valor))}</span>
+              </li>
+            ))}
+          </ul>
+          {itens.length > MAX_ITENS && (
+            <div className="text-[11px] text-muted-foreground mt-1">
+              + {itens.length - MAX_ITENS} {itens.length - MAX_ITENS === 1 ? "linha" : "linhas"} no documento
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }

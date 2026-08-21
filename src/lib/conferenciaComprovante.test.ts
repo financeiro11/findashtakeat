@@ -1,7 +1,8 @@
 import { describe, it, expect } from "vitest";
 import {
   conferir, centavos, rotuloNaoPagavel, chaveDocumento,
-  parcelaDoMemo, candidatosDaParcela, chaveDoParcelamento, carneDe, outraParcelaDoCarne,
+  parcelaDoMemo, candidatosDaParcela, baseDaParcela, chaveDoParcelamento,
+  carneDe, outraParcelaDoCarne, pedacoUsado,
   type Leitura, type Lancamento,
 } from "../../supabase/functions/_shared/conferencia-comprovante.ts";
 
@@ -280,6 +281,125 @@ describe("candidatosDaParcela — a sobra de centavos cai em algum lugar", () =>
   });
 });
 
+/* ---------------------------------------------------------------------------
+ * O bilhete aéreo parcelado
+ *
+ * Os três achados da fatura de agosto/26 (393, 394 e 396) que ficaram parados em
+ * "Em análise" com a frase "R$ 182,38 × 3 não dá o total do documento
+ * (R$ 601,10)". A GOL parcela a TARIFA e cobra a taxa de embarque à parte, no
+ * mesmo dia: 547,14 ÷ 3 = 182,38, e os R$ 53,96 viram outro lançamento — que já
+ * era aprovado sozinho, pela linha.
+ * ------------------------------------------------------------------------- */
+
+/** Recibo nº 1272309021809 · tarifa R$ 547,14 + taxa R$ 53,96 = R$ 601,10. */
+const bilheteGol = ler({
+  tipo_documento: "Bilhete Aéreo",
+  emitente_nome: "GOL Linhas Aéreas S.A",
+  emitente_cnpj: "07.575.651/0001-59",
+  numero_documento: "1272309021809",
+  valor_total: 601.1,
+  valores: [
+    { rotulo: "Tarifa", valor: 547.14 },
+    { rotulo: "Taxa de Embarque", valor: 53.96 },
+    { rotulo: "Tarifa total", valor: 601.1 },
+  ],
+  data_documento: "2026-07-31",
+  descricao: "Passagem aérea de Florianópolis para Vitória",
+  parcelas_total: 3,
+  cobranca_explicada: "parcela",
+});
+
+const MEMO_GOL = "GOL LINHAS A*GYVUV    01/03   SAO PAULO";
+const gol = (valor: number, memo = MEMO_GOL, comp = "2026-08-01") =>
+  gasto(valor, "GOL LINHAS A*GYVUV SAO PAULO", "2026-07-31", { memo, competencia: comp });
+
+describe("baseDaParcela — nem sempre é o total que foi dividido", () => {
+  it("acha a linha que fecha a conta quando o total não fecha", () => {
+    expect(baseDaParcela(bilheteGol, 3, 1, 182.38)).toEqual({ valor: 547.14, rotulo: "Tarifa", n: 1 });
+  });
+  it("o total continua vindo primeiro", () => {
+    expect(baseDaParcela(bilheteGol, 3, 1, 200.37)).toEqual({ valor: 601.1, rotulo: null, n: 1 });
+  });
+  it("a sobra de centavos cabe na folga: 839,14 em 3× = 279,72", () => {
+    const outro = ler({ valor_total: 893.1, valores: [{ rotulo: "Tarifa", valor: 839.14 }, { rotulo: "Taxa de embarque", valor: 53.96 }] });
+    expect(baseDaParcela(outro, 3, 1, 279.72)?.rotulo).toBe("Tarifa");
+  });
+  it("imposto e desconto não são base de parcelamento", () => {
+    // 16,46 é o ICMS destacado da NF-e 178110; 8,23 seria "metade do imposto".
+    expect(baseDaParcela(nf178110, 2, 1, 8.23)).toBeNull();
+  });
+  it("nada do papel dividido dá a cobrança", () => {
+    expect(baseDaParcela(bilheteGol, 3, 1, 99.9)).toBeNull();
+    expect(baseDaParcela(bilheteGol, 1, 1, 601.1)).toBeNull();  // "1 vez" não é parcelamento
+    expect(baseDaParcela(null, 3, 1, 182.38)).toBeNull();
+  });
+});
+
+describe("aprova a parcela de uma LINHA do documento", () => {
+  it("GOL · R$ 182,38 é a tarifa de R$ 547,14 em 3×, e a fatura marca 01/03", () => {
+    const v = conferir(gol(182.38), bilheteGol);
+    expect(v.veredito).toBe("aprovar");
+    expect(v.como).toBe("parcela");
+    expect(v.parcela).toEqual({ n: 1, de: 3 });
+    expect(v.parcela_base).toBe(547.14);
+    expect(v.item_rotulo).toBe("Tarifa");
+    // A frase tem de dizer QUE linha foi dividida — senão a conta não fecha na
+    // cabeça de quem lê: R$ 601,10 ÷ 3 é R$ 200,37, não R$ 182,38.
+    expect(v.motivo).toContain("Tarifa");
+    expect(v.motivo).toContain("R$ 547,14");
+    expect(v.motivo).toContain("parcela 1/3");
+  });
+
+  it("a taxa de embarque do MESMO bilhete continua aprovada pela linha", () => {
+    const v = conferir(
+      gasto(53.96, "TAXA DE EMBARQUE GOL SAO PAULO", "2026-07-31"),
+      { ...bilheteGol, cobranca_explicada: "item", item_rotulo: "Taxa de Embarque" },
+    );
+    expect(v.veredito).toBe("aprovar");
+    expect(v.como).toBe("item");
+  });
+
+  it("são pedaços diferentes do mesmo papel — a trava de nota repetida não pega", () => {
+    const taxa = gasto(53.96, "TAXA DE EMBARQUE GOL SAO PAULO", "2026-07-31");
+    const leituraTaxa: Leitura = { ...bilheteGol, cobranca_explicada: "item", item_rotulo: "Taxa de Embarque" };
+    // Para a trava é o mesmo papel: mesmo emitente, mesmo número, mesmo total.
+    expect(chaveDocumento(leituraTaxa)).toBe(chaveDocumento(bilheteGol));
+    // O que separa os dois lançamentos é a parte do documento que cada um gastou.
+    expect(pedacoUsado(taxa, leituraTaxa)).not.toBe(pedacoUsado(gol(182.38), bilheteGol));
+  });
+
+  it("o carnê leva a TARIFA, não o total: 02/03 chega em setembro por R$ 182,38", () => {
+    const carne = carneDe(gol(182.38), bilheteGol)!;
+    expect(carne.base).toBe(547.14);
+    const set = gol(182.38, "GOL LINHAS A*GYVUV    02/03   SAO PAULO", "2026-09-01");
+    expect(outraParcelaDoCarne(carne, set)).toEqual({ n: 2, de: 3 });
+    // Com o total no lugar da tarifa, a parcela de setembro seria R$ 200,37.
+    expect(outraParcelaDoCarne(carne, gol(200.37, "GOL LINHAS A*GYVUV    02/03   SAO PAULO", "2026-09-01"))).toBeNull();
+  });
+});
+
+describe("pedacoUsado — a mesma nota, partes diferentes", () => {
+  const taxa = gasto(53.96, "TAXA DE EMBARQUE GOL SAO PAULO", "2026-07-31");
+  it("nomeia o pedaço por como a cobrança casou", () => {
+    expect(pedacoUsado(gasto(100, "F"), ler({}))).toBe("total");
+    expect(pedacoUsado(taxa, ler({ ...bilheteGol, cobranca_explicada: "item", item_rotulo: "Taxa de Embarque" })))
+      .toBe("linha|TAXA DE EMBARQUE");
+    expect(pedacoUsado(gol(182.38), bilheteGol)).toBe("parcela|1/3|TARIFA");
+    expect(pedacoUsado(parc1(125.66), nf178110)).toBe("parcela|1/2");
+  });
+  it("parcelas diferentes da mesma compra são pedaços diferentes", () => {
+    const p2 = gasto(125.65, "CENTRAL DE AVIAMENTO VITORIA", "2026-07-30", {
+      memo: "CENTRAL DE AVIAMENTO  02/02   VITORIA", competencia: "2026-09-01",
+    });
+    expect(pedacoUsado(p2, nf178110)).toBe("parcela|2/2");
+  });
+  it("sem casamento nenhum, o pedaço é o valor cobrado — nota repetida continua trancada", () => {
+    const solto = ler({ valor_total: 500, valores: [{ rotulo: "Total", valor: 500 }], cobranca_explicada: "nao" });
+    expect(pedacoUsado(gasto(77, "F"), solto)).toBe("valor|7700");
+    expect(pedacoUsado(gasto(77, "OUTRO"), solto)).toBe("valor|7700");
+  });
+});
+
 describe("aprova pela PARCELA quando a fatura cobra a nota em vezes", () => {
   it("CENTRAL DE AVIAMENTOS · R$ 125,66 é metade da NF-e 178110 e a fatura marca 01/02", () => {
     const v = conferir(parc1(125.66), nf178110);
@@ -383,7 +503,7 @@ describe("o carnê — a nota da 1ª parcela resolve a fatura seguinte", () => {
   it("abre o carnê a partir da parcela conferida", () => {
     expect(carne).not.toBeNull();
     expect(carne.parcela).toEqual({ n: 1, de: 2 });
-    expect(carne.total_documento).toBe(251.31);
+    expect(carne.base).toBe(251.31);
     expect(carne.competencia).toBe("2026-08-01");
     expect(chaveDoParcelamento(MEMO_AVIAMENTO, 2)).toBe("CENTRAL DE AVIAMENTO VITORIA|2");
     // O marcador é o único pedaço que muda entre uma fatura e a seguinte.

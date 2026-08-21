@@ -60,6 +60,11 @@ export function useFinanceData() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [lastUpdate, setLastUpdate] = useState<Date | null>(null);
+  /* Saldo consolidado do Omie — a foto de HOJE, não o fechamento do mês. É o
+     que alimenta o runway; o saldo estimado (Σ FCL + semente) continua sendo
+     estimativa e fica no card de saldo, rotulado como tal. */
+  const [saldoReal, setSaldoReal] = useState<number | null>(null);
+  const [saldoRealEm, setSaldoRealEm] = useState<Date | null>(null);
   const [saldoInicial, setSaldoInicial] = useState<number>(() => {
     const raw = localStorage.getItem(SALDO_INICIAL_KEY);
     return raw ? Number(raw) : 0;
@@ -72,7 +77,7 @@ export function useFinanceData() {
       // Fonte canônica = mesmas tabelas que DRE/DFC consomem.
       // Mantemos também historico_financeiro como fallback para meses que
       // não estejam na planilha consolidada.
-      const [demRes, hfRes, bpRes] = await Promise.all([
+      const [demRes, hfRes, bpRes, caixaRes] = await Promise.all([
         supabase
           .from("demonstracoes_contabeis" as any)
           .select("tipo,periodo,dados,updated_at")
@@ -85,6 +90,12 @@ export function useFinanceData() {
           .order("mes", { ascending: false })
           .limit(20000),
         supabase.from("bp_anual").select("ano,dados").order("ano"),
+        supabase
+          .from("omie_caixa_snapshot" as any)
+          .select("dados,gerado_em")
+          .order("gerado_em", { ascending: false })
+          .limit(1)
+          .maybeSingle(),
       ]);
 
       // 1) Demonstrativos (preferir "periodo=completo"; cair p/ mais recente por tipo).
@@ -167,6 +178,31 @@ export function useFinanceData() {
         }
       }
       setBp(flat);
+
+      /* 4) Saldo real — as contas que compõem o caixa, somadas do snapshot.
+         Somamos as contas em vez de ler `saldo_consolidado` pronto por causa da
+         DATA: o Omie não expõe saldo vivo, e cada conta traz a posição
+         conciliada na sua `saldo_data` (só a do Asaas é de agora, lida na API).
+         `saldo_consolidado` é a mesma soma, mas sem dizer de quando ela é —
+         carimbar o runway com a data do sync fazia uma posição de fevereiro
+         passar por saldo de hoje. Quem entra é o flag `incluir`, o mesmo que
+         /caixa liga e desliga; aqui só se lê.
+         Acessório: sem snapshot, o runway cai para o saldo estimado em vez de
+         a tela inteira falhar. */
+      type ContaSnap = { saldo?: number; saldo_data?: string | null; incluir?: boolean };
+      const snap = (caixaRes as any)?.data as
+        { dados?: { saldo_consolidado?: number; contas?: ContaSnap[] }; gerado_em?: string } | null;
+      const incluidas = (snap?.dados?.contas ?? []).filter((c) => c.incluir !== false);
+      if (incluidas.length) {
+        setSaldoReal(incluidas.reduce((s, c) => s + Number(c.saldo ?? 0), 0));
+        const datas = incluidas.map((c) => c.saldo_data).filter((d): d is string => !!d).sort();
+        setSaldoRealEm(datas.length ? new Date(`${datas[0]}T12:00:00`) : null);
+      } else {
+        const consolidado = snap?.dados?.saldo_consolidado;
+        setSaldoReal(typeof consolidado === "number" ? consolidado : null);
+        setSaldoRealEm(null);
+      }
+
       setLastUpdate(new Date());
 
     } catch (e: any) {
@@ -291,16 +327,16 @@ export function useFinanceData() {
   };
 
   const metricas = useMemo(
-    () => (rows.length ? calcMetricas(rows, periodo, saldoInicial) : null),
-    [rows, periodo, saldoInicial],
+    () => (rows.length ? calcMetricas(rows, periodo, saldoInicial, saldoReal) : null),
+    [rows, periodo, saldoInicial, saldoReal],
   );
   const metricasAnt = useMemo(
-    () => (rows.length ? calcMetricas(rows, periodoCompare, saldoInicial) : null),
-    [rows, periodoCompare, saldoInicial],
+    () => (rows.length ? calcMetricas(rows, periodoCompare, saldoInicial, saldoReal) : null),
+    [rows, periodoCompare, saldoInicial, saldoReal],
   );
   const metricas12m = useMemo(
-    () => (rows.length ? calcMetricas(rows, subMeses(periodo, 12), saldoInicial) : null),
-    [rows, periodo, saldoInicial],
+    () => (rows.length ? calcMetricas(rows, subMeses(periodo, 12), saldoInicial, saldoReal) : null),
+    [rows, periodo, saldoInicial, saldoReal],
   );
 
   // Janela visível (últimos 12 meses até o período)
@@ -386,7 +422,7 @@ export function useFinanceData() {
   return {
     rows, bp, loading, error, lastUpdate, reload: load,
     periodosDisponiveis, periodo, periodoCompare, setPeriodo, ultimoPeriodo,
-    saldoInicial, setSaldoInicial: updateSaldoInicial,
+    saldoInicial, setSaldoInicial: updateSaldoInicial, saldoReal, saldoRealEm,
     metricas, metricasAnt, metricas12m, periodos12m,
     orcado,
   };

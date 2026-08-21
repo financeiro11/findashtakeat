@@ -66,6 +66,39 @@ export const GRUPOS = {
   receitaServ: ["Receita de Serviços", "Receita Markup"],
 };
 
+/* A DFC carrega DUAS linhas de fluxo livre: "Fluxo Livre" é o total canônico do
+   esquema (FCO + investimento + financiamento) e "Fluxo de Caixa Livre" é o
+   rótulo antigo, mantido como alias em DFC_SCHEMA. O blob guarda as duas lado a
+   lado, e a velha ficou para trás no mês do empréstimo — jul/26 tem −218,3 mil
+   na linha antiga contra +302,2 mil no total de verdade. Canônica primeiro. */
+const FLUXO_LIVRE = ["Fluxo Livre", "Fluxo de Caixa Livre"];
+const NOVOS_EMPRESTIMOS = [
+  "(+) Novos Empréstimos & Financiamentos",
+  "Novos Empréstimos & Instrumentos",
+  "(+) Novos Emprestimos & Financiamentos",
+];
+const CASHBURN = "Cashburn";
+
+/**
+ * A queima do mês: o fluxo livre SEM a captação extraordinária.
+ *
+ * O valor GRAVADO manda. A DFC mantém a linha "Cashburn" preenchida mês a mês
+ * (jan/24 até hoje) e é ela que a grade da DFC e a Revisão do Mês mostram — a
+ * fórmula só entra no mês que o blob ainda não trouxe. Mesma ordem de
+ * `cashburnDaDfc` em analisesDre.ts, para as três telas não contarem queimas
+ * diferentes para o mesmo mês.
+ *
+ * Derivar sempre era subtrair o empréstimo de um fluxo livre que já estava
+ * defasado, ou seja, descontar a captação duas vezes: jul/26 saía em −1,03
+ * milhão onde a queima foi de −512,8 mil.
+ */
+function cashburnDoPeriodo(rows: HFRow[], periodo: Periodo): number {
+  const gravado = getFirstMetrica(rows, periodo, [CASHBURN]);
+  if (gravado != null) return gravado;
+  const livre = getFirstMetrica(rows, periodo, FLUXO_LIVRE) ?? 0;
+  return livre - (getFirstMetrica(rows, periodo, NOVOS_EMPRESTIMOS) ?? 0);
+}
+
 export type DashboardMetricas = {
   periodo: Periodo;
   receitaBruta: number;
@@ -83,6 +116,10 @@ export type DashboardMetricas = {
   fcf: number; // Fluxo de Caixa Financiamento
   novosEmprestimos: number;
   saldoCaixa: number;
+  /** Saldo consolidado do Omie (foto de hoje), quando disponível. */
+  saldoReal: number | null;
+  /** O saldo que o runway usou: o real quando existe, senão o estimado. */
+  saldoRunway: number;
   cashburn: number; // negativo se queimando
   burnMedio3m: number;
   runwayMeses: number;
@@ -115,6 +152,11 @@ export function calcMetricas(
   rows: HFRow[],
   periodo: Periodo,
   saldoInicialJanela = 0,
+  /* Saldo consolidado do Omie. O runway sai DELE quando existe: o saldo
+     estimado aqui do lado é uma soma de fluxos livres em cima de uma semente
+     digitada à mão, e dividir a queima por ele dava meses de vida que o extrato
+     não sustenta. Mesma fonte que /caixa, a Revisão do Mês e o mobile leem. */
+  saldoReal: number | null = null,
 ): DashboardMetricas {
   // --- DRE (regime de competência) -----------------------------------------
   const receitaBrutaExp = getFirstMetrica(rows, periodo, ["Receita Bruta"]);
@@ -152,40 +194,29 @@ export function calcMetricas(
   const margemEbitda = receitaLiquida > 0 ? (ebitda / receitaLiquida) * 100 : 0;
 
   // --- DFC (regime de caixa) -----------------------------------------------
-  const fcl = getFirstMetrica(rows, periodo, ["Fluxo de Caixa Livre", "Fluxo Livre"]) ?? 0;
+  const fcl = getFirstMetrica(rows, periodo, FLUXO_LIVRE) ?? 0;
   const fco = getFirstMetrica(rows, periodo, ["Fluxo de Caixa Operacional"]) ?? 0;
   const fci = getFirstMetrica(rows, periodo, ["Fluxo de Caixa de Investimentos"]) ?? 0;
   const fcf = getFirstMetrica(rows, periodo, ["Fluxo de Financiamento"]) ?? 0;
-  const novosEmprestimos = getFirstMetrica(rows, periodo, [
-    "(+) Novos Empréstimos & Financiamentos",
-    "Novos Empréstimos & Instrumentos",
-    "(+) Novos Emprestimos & Financiamentos",
-  ]) ?? 0;
+  const novosEmprestimos = getFirstMetrica(rows, periodo, NOVOS_EMPRESTIMOS) ?? 0;
 
   // Saldo de caixa = saldo inicial + acumulado FCL até o período
   const todos = listarPeriodosDisponiveis(rows);
   let acumFcl = 0;
   for (const p of todos) {
     if (cmpPeriodo(p, periodo) > 0) break;
-    acumFcl += getFirstMetrica(rows, p, ["Fluxo de Caixa Livre", "Fluxo Livre"]) ?? 0;
+    acumFcl += getFirstMetrica(rows, p, FLUXO_LIVRE) ?? 0;
   }
   const saldoCaixa = saldoInicialJanela + acumFcl;
 
-  // Cashburn = FCL excluindo captação extraordinária (novos empréstimos)
-  const cashburn = fcl - novosEmprestimos;
+  // Cashburn = fluxo livre excluindo captação extraordinária (ver cashburnDoPeriodo)
+  const cashburn = cashburnDoPeriodo(rows, periodo);
 
-  // Burn médio 3 meses
+  // Burn médio 3 meses — a mesma queima, na janela que termina no período
   const ult3 = [0, 1, 2].map((i) => subMeses(periodo, i));
-  const burns = ult3.map((p) => {
-    const f = getFirstMetrica(rows, p, ["Fluxo de Caixa Livre", "Fluxo Livre"]) ?? 0;
-    const n = getFirstMetrica(rows, p, [
-      "(+) Novos Empréstimos & Financiamentos",
-      "Novos Empréstimos & Instrumentos",
-    ]) ?? 0;
-    return f - n;
-  });
-  const burnMedio3m = burns.reduce((s, x) => s + x, 0) / 3;
-  const runwayMeses = burnMedio3m < 0 ? saldoCaixa / Math.abs(burnMedio3m) : Infinity;
+  const burnMedio3m = ult3.reduce((s, p) => s + cashburnDoPeriodo(rows, p), 0) / 3;
+  const saldoRunway = saldoReal ?? saldoCaixa;
+  const runwayMeses = burnMedio3m < 0 ? saldoRunway / Math.abs(burnMedio3m) : Infinity;
 
   return {
     periodo,
@@ -204,6 +235,8 @@ export function calcMetricas(
     fcf,
     novosEmprestimos,
     saldoCaixa,
+    saldoReal,
+    saldoRunway,
     cashburn,
     burnMedio3m,
     runwayMeses,

@@ -213,13 +213,25 @@ export default function Dashboard() {
               footnote={<>Σ FCL + saldo inicial ({periodoLabel(startPeriodo)} = {fmtBRLShort(saldoInicio)})</>}
             />
             <KpiCard
-              label="Cashburn & Runway"
+              label={`Cashburn & Runway · ${periodoLabel(m.periodo)}`}
               value={fmtBRL(m.cashburn)}
               valueTone={m.cashburn < 0 ? "neg" : "pos"}
               spark={sparkBurn}
               sparkColor="hsl(var(--neg))"
               stats={burnStats}
-              footnote="Cashburn = FCL excluindo captação extraordinária"
+              /* De onde vem cada metade do card: a queima é a linha Cashburn da
+                 DFC e o runway divide o saldo que existe no banco por ela — não
+                 pelo saldo estimado do card ao lado, que é uma projeção. */
+              footnote={
+                m.saldoReal != null ? (
+                  <>
+                    Queima do mês (fluxo livre − captação) · runway sobre {fmtBRLShort(m.saldoReal)} em caixa
+                    {fd.saldoRealEm ? ` (posição mais antiga: ${fd.saldoRealEm.toLocaleDateString("pt-BR")})` : ""}
+                  </>
+                ) : (
+                  <>Queima do mês (fluxo livre − captação) · runway sobre o saldo estimado</>
+                )
+              }
             />
           </div>
         );

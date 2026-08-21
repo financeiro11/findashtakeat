@@ -2,7 +2,8 @@ import { describe, it, expect } from "vitest";
 import { montarMapaApelidos } from "@/lib/apelidos";
 import {
   chaveLojista, semValorNoFim, nomeContraparte, textoDaBusca,
-  type MapaLojistas,
+  fraseDaNota, compraDe, itensDaNota,
+  type MapaLojistas, type MapaCompras,
 } from "@/lib/lojistaCartao";
 
 const apelidos = montarMapaApelidos([
@@ -140,5 +141,91 @@ describe("textoDaBusca", () => {
     expect(hay).toContain("latam");
     expect(hay).toContain("latam air*0000v sao paulo");
     expect(hay).toContain("passagens do time");
+  });
+});
+
+/* ---------------------------------------------------------------------------
+ * O que foi comprado
+ *
+ * A frase da nota é por LANÇAMENTO. O teste que importa é o de baixo: seis
+ * compras no mesmo Mercado Livre continuam sendo um fornecedor só.
+ * ------------------------------------------------------------------------- */
+
+const compras: MapaCompras = {
+  "2026-08-03|200051": "Cadeira de escritório e 2 monitores",
+  "2026-08-11|17900": "Cabo HDMI",
+};
+
+describe("fraseDaNota", () => {
+  it("devolve a frase que a IA escreveu", () => {
+    expect(fraseDaNota({ descricao: "Cadeira de escritório" })).toBe("Cadeira de escritório");
+  });
+
+  it("sem leitura devolve null, não string vazia — é o null que some da tela", () => {
+    expect(fraseDaNota(null)).toBeNull();
+    expect(fraseDaNota(undefined)).toBeNull();
+    expect(fraseDaNota({ descricao: "   " })).toBeNull();
+  });
+});
+
+describe("compraDe", () => {
+  it("acha pela mesma chave data + centavos do lojista", () => {
+    expect(compraDe(compras, "2026-08-03", 2000.51)).toBe("Cadeira de escritório e 2 monitores");
+  });
+
+  it("linha sem nota lida devolve null — é a maioria, e está certo", () => {
+    expect(compraDe(compras, "2026-08-04", 2000.51)).toBeNull();
+    expect(compraDe(null, "2026-08-03", 2000.51)).toBeNull();
+  });
+});
+
+describe("a compra não vira nome", () => {
+  it("duas compras no mesmo lojista continuam UM fornecedor", () => {
+    const a = nomeContraparte(apelidos, lojistas, {
+      nome: "MERCADO LIVRE", data: "2026-08-03", valor: 2000.51,
+      compra: compraDe(compras, "2026-08-03", 2000.51),
+    });
+    const b = nomeContraparte(apelidos, lojistas, {
+      nome: "MERCADO LIVRE", data: "2026-08-11", valor: 179,
+      compra: compraDe(compras, "2026-08-11", 179),
+    });
+    // O que agrupa a DRE e o Pareto é `exibido`, e ele não se mexe.
+    expect(a.exibido).toBe(b.exibido);
+    // O que muda é só a linha de apoio.
+    expect(a.oQueComprou).toBe("Cadeira de escritório e 2 monitores");
+    expect(b.oQueComprou).toBe("Cabo HDMI");
+  });
+
+  it("a busca varre o que foi comprado", () => {
+    const n = nomeContraparte(apelidos, lojistas, {
+      nome: "MERCADO LIVRE", data: "2026-08-03", valor: 2000.51,
+      compra: compraDe(compras, "2026-08-03", 2000.51),
+    });
+    expect(textoDaBusca(n)).toContain("monitores");
+  });
+});
+
+describe("itensDaNota", () => {
+  const naoPagavel = (r: string) => /icms|base de calculo|desconto/i.test(r);
+
+  it("tira imposto, desconto e o total — sobra o que alguém comprou", () => {
+    const itens = itensDaNota(
+      {
+        valores: [
+          { rotulo: "Cadeira", valor: 1200 },
+          { rotulo: "Monitor", valor: 800.51 },
+          { rotulo: "Valor do ICMS", valor: 160.04 },
+          { rotulo: "Desconto", valor: 10 },
+          { rotulo: "Total", valor: 2000.51 },
+        ],
+      },
+      naoPagavel,
+      2000.51,
+    );
+    expect(itens.map((i) => i.rotulo)).toEqual(["Cadeira", "Monitor"]);
+  });
+
+  it("sem leitura devolve lista vazia", () => {
+    expect(itensDaNota(null, naoPagavel, 100)).toEqual([]);
   });
 });

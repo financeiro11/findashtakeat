@@ -11,7 +11,7 @@
  */
 
 import { useEffect, useMemo, useState } from "react";
-import { Search } from "lucide-react";
+import { Search, Sparkles } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { cn } from "@/lib/utils";
@@ -20,6 +20,8 @@ import { fmtBRLStr } from "./fmt";
 import { fmtBRL } from "./valores";
 import { useApelidos } from "@/hooks/useApelidos";
 import { apelidoDe } from "@/lib/apelidos";
+import { useCompras } from "@/hooks/useCompras";
+import { compraDe } from "@/lib/lojistaCartao";
 
 const TODOS = "__todos__";
 
@@ -41,6 +43,10 @@ export function Detalhe({
   foco?: FocoDetalhe | null;
 }) {
   const apelidos = useApelidos();
+  /* O que a nota anexada na Auditoria diz que foi comprado. Casa por data+valor
+     e cobre poucas linhas (só onde alguém mandou comprovante) — por isso é
+     linha de apoio, nunca coluna: uma coluna quase toda vazia é pior que nada. */
+  const compras = useCompras();
   const [mes, setMes] = useState<string>(TODOS);
   const [busca, setBusca] = useState("");
   const [aba, setAba] = useState<"gasto" | "credito">("gasto");
@@ -73,10 +79,13 @@ export function Detalhe({
           // pelo apelido também: é o nome que está escrito na coluna
           (apelidoDe(apelidos, l.estabelecimento)?.apelido ?? "").toLowerCase().includes(q) ||
           l.categoria.toLowerCase().includes(q) ||
-          (l.descricao ?? "").toLowerCase().includes(q),
+          (l.descricao ?? "").toLowerCase().includes(q) ||
+          // e pelo que foi comprado: procurar "monitor" tem de achar a linha que
+          // diz "monitor", senão o filtro esconde o que a leitura veio revelar.
+          (compraDe(compras, l.data, l.valor) ?? "").toLowerCase().includes(q),
       )
       .sort((a, b) => (b.data ?? "").localeCompare(a.data ?? "") || b.valor - a.valor);
-  }, [lancamentos, aba, mes, busca, apelidos]);
+  }, [lancamentos, aba, mes, busca, apelidos, compras]);
 
   const total = filtrados.reduce((s, l) => s + l.valor, 0);
 
@@ -149,7 +158,23 @@ export function Detalhe({
                     nome do OFX fica no hover e na coluna "Descrição" ao lado. */}
                 <td className="px-3 py-2 text-[12.5px] font-medium"
                   title={apelidoDe(apelidos, l.estabelecimento)?.oQueE ?? l.estabelecimento ?? undefined}>
-                  {apelidoDe(apelidos, l.estabelecimento)?.apelido ?? l.estabelecimento}
+                  <div>{apelidoDe(apelidos, l.estabelecimento)?.apelido ?? l.estabelecimento}</div>
+                  {/* O que a nota diz que veio na caixa — resolve o "seis
+                      Mercado Livre no mês e eu não sei o que é cada um". */}
+                  {(() => {
+                    const compra = compraDe(compras, l.data, l.valor);
+                    return compra ? (
+                      <div
+                        className="flex max-w-[220px] items-baseline gap-1 text-[11px] font-normal italic text-foreground/65"
+                        /* O selo de origem não é decoração: a frase foi escrita
+                           pela IA lendo a nota e ninguém a revisou. */
+                        title={`Lido da nota pela IA: ${compra}`}
+                      >
+                        <Sparkles className="h-2.5 w-2.5 shrink-0 translate-y-[1px] text-[hsl(212_80%_45%)]" />
+                        <span className="truncate">{compra}</span>
+                      </div>
+                    ) : null;
+                  })()}
                 </td>
                 <td className="px-3 py-2 text-[12px] text-muted-foreground">{l.categoria}</td>
                 <td className="max-w-[280px] truncate px-3 py-2 font-mono text-[11px] text-muted-foreground/80" title={l.descricao ?? ""}>

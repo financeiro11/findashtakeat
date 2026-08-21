@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { useApelidos } from "@/hooks/useApelidos";
-import { nomeContraparte, textoDaBusca, type MapaLojistas, type NomeContraparte } from "@/lib/lojistaCartao";
+import { compraDe, nomeContraparte, textoDaBusca, type MapaLojistas, type NomeContraparte } from "@/lib/lojistaCartao";
+import { useCompras } from "@/hooks/useCompras";
 import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
@@ -45,6 +46,7 @@ const lerLojistas = (): PromiseLike<{ data: MapaLojistas | null; error: { messag
 
 export default function BaseCartao() {
   const apelidos = useApelidos();
+  const compras = useCompras();
   const [lojistas, setLojistas] = useState<MapaLojistas>({});
   const [rows, setRows] = useState<Lanc[]>([]);
   const [loading, setLoading] = useState(true);
@@ -82,8 +84,13 @@ export default function BaseCartao() {
 
   const nomeDaLinha = useCallback(
     (r: Lanc): NomeContraparte =>
-      nomeContraparte(apelidos, lojistas, { nome: r.estabelecimento, data: r.data, valor: r.valor }),
-    [apelidos, lojistas],
+      nomeContraparte(apelidos, lojistas, {
+        nome: r.estabelecimento, data: r.data, valor: r.valor,
+        // A nota anexada na Auditoria diz o que veio na caixa; aqui ela chega
+        // pela mesma chave data+valor que traz o nome limpo do lojista.
+        compra: compraDe(compras, r.data, r.valor),
+      }),
+    [apelidos, lojistas, compras],
   );
 
   // Anexar a NF/comprovante direto daqui: a função grava no bucket da auditoria e,
@@ -293,6 +300,13 @@ function BaseRow({ r, nome, onAnexar, enviando }: { r: Lanc; nome: NomeContrapar
         )}
         {r.descricao_original && r.descricao_original !== r.estabelecimento && r.descricao_original !== nome.cru && (
           <div className="text-xs text-muted-foreground truncate">{r.descricao_original}</div>
+        )}
+        {/* O que a nota diz que veio na caixa. Quem recebeu o dinheiro está nas
+            linhas de cima; esta responde o que foi comprado. */}
+        {nome.oQueComprou && (
+          <div className="text-[11px] text-foreground/70 italic truncate" title={nome.oQueComprou}>
+            {nome.oQueComprou}
+          </div>
         )}
         {r.observacao && <div className="text-[11px] text-muted-foreground italic truncate">{r.observacao}</div>}
       </div>

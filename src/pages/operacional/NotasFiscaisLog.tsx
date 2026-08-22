@@ -14,15 +14,26 @@
 // "Em processamento" tem tom próprio de propósito. Ele não é falha: é nota a
 // caminho da prefeitura, e chamá-la de erro é o que faz alguém mandar emitir de
 // novo — e nota duplicada não se apaga, cancela-se com prazo e justificativa.
+//
+// DUAS COISAS QUE A TELA PLANA FAZIA MAL, e que esta versão desfaz:
+//
+//   • `resultado='ok'` NÃO quer dizer "saiu nota" — quer dizer "este passo deu
+//     certo". A OS criada é um passo. Lendo a coluna crua, ela vestia o selo
+//     "Emitida" e a contagem do dia inflava: quatro emitidas para duas notas.
+//     O desfecho da tela é derivado da ação junto com o resultado.
+//   • sendo o diário append-only e por passo, uma cobrança que tropeçou três
+//     vezes antes de sair rende cinco linhas soltas — e a história ficava para
+//     o leitor remontar de cabeça. A linha da tela é o CLIENTE, no estado em
+//     que a coisa parou; a sequência de passos fica um clique abaixo.
 
-import { useCallback, useEffect, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import { comValorExato } from "@/components/ValorExato";
 import {
   RefreshCw, Loader2, CheckCircle2, XCircle, Clock, FlaskConical,
-  PlayCircle, CalendarClock, Info, Power,
+  PlayCircle, CalendarClock, Info, Power, FileText, ChevronRight, ChevronDown, ShieldAlert,
 } from "lucide-react";
 
 const sb = supabase as any;
@@ -45,14 +56,70 @@ interface LinhaLog {
 
 interface Execucao {
   id: string; iniciada_em: string; concluida_em: string | null;
-  origem: string; modo: string; fila: number; emitidas: number; falhas: number;
+  origem: string; modo: string; fila: number; emitidas: number; falhas: number; bloqueadas: number;
   pulada: string | null; lote: number | null; erro: string | null;
 }
 
-const DESFECHO: Record<string, { rotulo: string; tom: string; Icone: typeof CheckCircle2 }> = {
-  ok:               { rotulo: "Emitida",         tom: "bg-emerald-500/10 text-emerald-600 border-emerald-500/20 dark:text-emerald-400", Icone: CheckCircle2 },
-  erro:             { rotulo: "Falhou",          tom: "bg-destructive/10 text-destructive border-destructive/20",                        Icone: XCircle },
-  em_processamento: { rotulo: "No forno",        tom: "bg-amber-500/10 text-amber-600 border-amber-500/20 dark:text-amber-400",          Icone: Clock },
+/* --------------------------- o desfecho de verdade ---------------------------
+ *
+ * `nf_emissoes.resultado` responde "este PASSO deu certo", não "saiu nota". A OS
+ * criada às 17:07 é um passo — a nota só nasce no faturamento, e pode nascer
+ * minutos depois ou nunca. Enquanto a tela lia a coluna crua, um `ok` de
+ * `criar_os` vestia o selo verde "Emitida" e inflava a contagem de emitidas do
+ * dia com passos intermediários: quatro selos verdes para duas notas.
+ *
+ * Por isso o desfecho é DERIVADO da ação junto com o resultado. Só faturamento
+ * concluído vira "Emitida"; criar OS vira "Sem nota", que é o que ela é.
+ */
+type EstadoKey = "emitida" | "no_forno" | "falhou" | "barrada" | "sem_nota" | "ensaio";
+
+const ESTADO: Record<EstadoKey, { rotulo: string; ajuda: string; tom: string; Icone: typeof CheckCircle2 }> = {
+  emitida:  {
+    rotulo: "Emitida", Icone: CheckCircle2,
+    ajuda: "O faturamento concluiu e a NFS-e foi autorizada pela prefeitura.",
+    tom: "bg-emerald-500/10 text-emerald-600 border-emerald-500/20 dark:text-emerald-400",
+  },
+  no_forno: {
+    rotulo: "No forno", Icone: Clock,
+    ajuda: "O lote foi disparado e a nota está a caminho da prefeitura. Não é falha — emitir de novo criaria a segunda nota do mesmo serviço.",
+    tom: "bg-amber-500/10 text-amber-600 border-amber-500/20 dark:text-amber-400",
+  },
+  falhou:   {
+    rotulo: "Falhou", Icone: XCircle,
+    ajuda: "O Omie recusou o passo. Nenhuma nota saiu; o motivo está ao lado.",
+    tom: "bg-destructive/10 text-destructive border-destructive/20",
+  },
+  /* Barrada ≠ falhou, e a diferença muda o que se faz depois: falhou é o Omie
+     recusando (conserta-se o cadastro e tenta de novo); barrada é o Hub se
+     recusando a mandar, porque a cobrança foi estornada ou o dinheiro ainda não
+     entrou. Aí não há nada a consertar — ou a cobrança muda de estado, ou aquela
+     nota não existe. */
+  barrada:  {
+    rotulo: "Barrada", Icone: ShieldAlert,
+    ajuda: "O Hub se recusou a emitir e NADA foi mandado ao Omie: a cobrança estava estornada, não recebida, ou o Asaas não confirmou o estado dela na hora.",
+    tom: "bg-orange-500/10 text-orange-600 border-orange-500/20 dark:text-orange-400",
+  },
+  sem_nota: {
+    rotulo: "Sem nota", Icone: FileText,
+    ajuda: "A Ordem de Serviço existe no Omie, mas deste passo não sai nota — quem emite é o faturamento.",
+    tom: "bg-muted text-muted-foreground border-border",
+  },
+  ensaio:   {
+    rotulo: "Ensaio", Icone: FlaskConical,
+    ajuda: "Modo ensaio: o processo registrou o que TERIA emitido, sem tocar no Omie.",
+    tom: "bg-sky-500/10 text-sky-600 border-sky-500/20 dark:text-sky-400",
+  },
+};
+
+const desfechoDe = (l: LinhaLog): EstadoKey => {
+  // Antes do ensaio: em modo `previa` a porta continua valendo, e uma cobrança
+  // barrada ali não é "teria emitido" — é "não emitiria nem se estivesse ligada".
+  if (l.resultado === "bloqueado") return "barrada";
+  if (l.acao === "previa") return "ensaio";
+  if (l.resultado === "erro") return "falhou";
+  if (l.resultado === "em_processamento") return "no_forno";
+  if (l.acao === "criar_os") return "sem_nota";   // 'ok' aqui é a OS, não a nota
+  return l.resultado === "ok" ? "emitida" : "sem_nota";
 };
 
 const ACAO: Record<string, string> = {
@@ -61,6 +128,86 @@ const ACAO: Record<string, string> = {
   criar_e_faturar: "Criar + faturar",
   previa: "Ensaio",
 };
+
+const Selo = ({ e }: { e: EstadoKey }) => {
+  const s = ESTADO[e];
+  return (
+    <span
+      className={cn("inline-flex items-center gap-1 whitespace-nowrap rounded border px-1.5 py-0.5 text-[11px]", s.tom)}
+      title={s.ajuda}
+    >
+      <s.Icone className="h-3 w-3" />
+      {s.rotulo}
+    </span>
+  );
+};
+
+/* ------------------------------ a cobrança inteira ---------------------------
+ *
+ * O diário é append-only e por passo: uma cobrança que tropeçou três vezes antes
+ * de sair rende cinco linhas soltas, e a tela plana obrigava a remontar a
+ * história na cabeça. Aqui a unidade da tela é o CLIENTE (com suas cobranças
+ * dentro), e a sequência de passos fica um clique abaixo.
+ */
+interface Cobranca {
+  id_asaas: string; n_cod_os: number | null; valor: number | null; eventos: LinhaLog[];
+}
+interface Grupo {
+  chave: string; cliente: string; cobrancas: Cobranca[]; eventos: LinhaLog[];
+  valor: number; estado: EstadoKey; nfse: string[]; ultimo: LinhaLog;
+}
+
+function agrupar(linhas: LinhaLog[]): Grupo[] {
+  const porCliente = new Map<string, LinhaLog[]>();
+  for (const l of linhas) {
+    // Cliente sem nome (o join do Asaas não achou) não pode virar um balde só:
+    // aí a chave volta a ser a cobrança, que é sempre dela mesma.
+    const chave = l.cliente && l.cliente !== "—" ? `cli:${l.cliente}` : `cob:${l.id_asaas}`;
+    const atual = porCliente.get(chave);
+    if (atual) atual.push(l);
+    else porCliente.set(chave, [l]);
+  }
+
+  const grupos: Grupo[] = [];
+  for (const [chave, todos] of porCliente) {
+    // Do mais antigo para o mais recente: o rastro é uma sequência, e sequência
+    // se lê para a frente. A RPC entrega ao contrário, para a lista de fora.
+    const eventos = [...todos].sort((a, b) => a.criado_em.localeCompare(b.criado_em));
+
+    const porCobranca = new Map<string, LinhaLog[]>();
+    for (const e of eventos) {
+      const atual = porCobranca.get(e.id_asaas);
+      if (atual) atual.push(e);
+      else porCobranca.set(e.id_asaas, [e]);
+    }
+    const cobrancas: Cobranca[] = [...porCobranca].map(([id_asaas, evs]) => ({
+      id_asaas,
+      n_cod_os: evs.find((e) => e.n_cod_os != null)?.n_cod_os ?? null,
+      valor: evs.find((e) => e.valor != null)?.valor ?? null,
+      eventos: evs,
+    }));
+
+    /* O estado do grupo é o do evento MAIS RECENTE — com uma exceção que é a
+     * regra do módulo: nota emitida gruda. Ela não se apaga, cancela-se com
+     * prazo e justificativa; um passo posterior que falhe não devolve a
+     * cobrança para "falta emitir". */
+    const ultimo = eventos[eventos.length - 1];
+    const temNota = eventos.some((e) => desfechoDe(e) === "emitida");
+    const estado: EstadoKey = temNota ? "emitida" : desfechoDe(ultimo);
+
+    grupos.push({
+      chave,
+      cliente: ultimo.cliente,
+      cobrancas,
+      eventos,
+      valor: cobrancas.reduce((s, c) => s + Number(c.valor ?? 0), 0),
+      estado,
+      nfse: [...new Set(eventos.map((e) => e.nfse_numero).filter(Boolean) as string[])],
+      ultimo,
+    });
+  }
+  return grupos.sort((a, b) => b.ultimo.criado_em.localeCompare(a.ultimo.criado_em));
+}
 
 /** Os três estados da emissão automática, do ponto de vista de quem decide. */
 const MODOS: Record<string, { rotulo: string; ajuda: string; tom: string }> = {
@@ -85,6 +232,35 @@ interface Config {
   emissao_automatica: string; teto_dia: number; teto_rodada: number; data_corte: string | null;
 }
 
+/* --------------------------- rodadas seguidas iguais -------------------------
+ *
+ * Junta rodadas CONSECUTIVAS que não fizeram nada pelo mesmo motivo, no mesmo
+ * dia — "nada a emitir" às 10h00, 10h10, 10h20… é um fato só, contado sete
+ * vezes. Rodada que emitiu, ou que deu erro, nunca entra num grupo: ela é a
+ * única coisa ali que alguém precisa ler linha a linha.
+ */
+interface GrupoRodada { id: string; n: number; primeira: Execucao; ultima: Execucao }
+
+const juntavel = (r: Execucao) => !r.erro && !!r.pulada;
+const chaveRodada = (r: Execucao) =>
+  [hora(r.iniciada_em).slice(0, 5), r.modo, r.origem, r.pulada].join("§");
+
+function agruparRodadas(rodadas: Execucao[]): GrupoRodada[] {
+  const grupos: GrupoRodada[] = [];
+  // A lista vem da mais recente para a mais antiga: `ultima` é a que abre o
+  // grupo e `primeira` vai recuando conforme as iguais vão sendo absorvidas.
+  for (const r of rodadas) {
+    const anterior = grupos[grupos.length - 1];
+    if (anterior && juntavel(r) && juntavel(anterior.ultima) && chaveRodada(r) === chaveRodada(anterior.ultima)) {
+      anterior.n += 1;
+      anterior.primeira = r;
+      continue;
+    }
+    grupos.push({ id: r.id, n: 1, primeira: r, ultima: r });
+  }
+  return grupos;
+}
+
 export default function NotasFiscaisLog() {
   const [linhas, setLinhas] = useState<LinhaLog[]>([]);
   const [rodadas, setRodadas] = useState<Execucao[]>([]);
@@ -93,7 +269,9 @@ export default function NotasFiscaisLog() {
   const [rodando, setRodando] = useState(false);
   const [salvandoModo, setSalvandoModo] = useState(false);
   const [dias, setDias] = useState(7);
-  const [filtro, setFiltro] = useState<"todas" | "ok" | "erro" | "em_processamento">("todas");
+  const [filtro, setFiltro] = useState<"todas" | EstadoKey>("todas");
+  const [abertos, setAbertos] = useState<Set<string>>(new Set());
+  const [rodadasAbertas, setRodadasAbertas] = useState(false);
 
   const carregar = useCallback(async () => {
     setCarregando(true);
@@ -163,7 +341,20 @@ export default function NotasFiscaisLog() {
     }
   };
 
-  const visiveis = filtro === "todas" ? linhas : linhas.filter((l) => l.resultado === filtro);
+  const grupos = useMemo(() => agrupar(linhas), [linhas]);
+  const ultima = rodadas[0] ?? null;
+  const gruposRodada = useMemo(() => agruparRodadas(rodadas), [rodadas]);
+  const visiveis = filtro === "todas" ? grupos : grupos.filter((g) => g.estado === filtro);
+
+  const alternar = (chave: string) =>
+    setAbertos((s) => {
+      const novo = new Set(s);
+      if (novo.has(chave)) novo.delete(chave);
+      else novo.add(chave);
+      return novo;
+    });
+
+  const tudoAberto = visiveis.length > 0 && visiveis.every((g) => abertos.has(g.chave));
 
   const modo = cfg?.emissao_automatica ?? "previa";
   const m = MODOS[modo] ?? MODOS.previa;
@@ -208,13 +399,44 @@ export default function NotasFiscaisLog() {
         </div>
       </div>
 
-      {/* ------------------------------ rodadas ------------------------------ */}
-      <div className="rounded-lg border border-border bg-card p-3">
-        <div className="mb-2 flex items-center justify-between gap-2">
-          <h3 className="flex items-center gap-1.5 text-xs font-semibold text-foreground">
-            <CalendarClock className="h-3.5 w-3.5" /> Rodadas da emissão
-          </h3>
-          <div className="flex items-center gap-1.5">
+      {/* ------------------------------ rodadas ------------------------------
+          O cron bate de 10 em 10 minutos e quase toda rodada não tem nada a
+          emitir — sete linhas iguais dizendo "nada a emitir" tomavam meia tela
+          para contar um fato só. Fechada, a barra é uma linha com a última
+          rodada; aberta, as rodadas seguidas de mesmo desfecho vêm juntas numa
+          linha só, com a faixa de horário. A rodada que fez alguma coisa tem
+          texto próprio e por isso nunca é engolida por um grupo. */}
+      <div className="rounded-lg border border-border bg-card">
+        <div className="flex items-center gap-2 px-3 py-2">
+          <button
+            onClick={() => setRodadasAbertas((v) => !v)}
+            className="flex min-w-0 flex-1 items-center gap-1.5 text-left"
+            title={rodadasAbertas ? "Recolher" : "Ver todas as rodadas"}
+          >
+            {rodadasAbertas
+              ? <ChevronDown className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+              : <ChevronRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />}
+            <CalendarClock className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+            <span className="shrink-0 text-xs font-semibold text-foreground">Rodadas</span>
+            {ultima && (
+              <span className="min-w-0 truncate text-[11px] text-muted-foreground">
+                <span className="num">{hora(ultima.iniciada_em)}</span>
+                {" · "}
+                {ultima.erro
+                  ? <span className="text-destructive">{ultima.erro}</span>
+                  : ultima.pulada ?? `fila ${ultima.fila} · ${ultima.emitidas} no lote${ultima.lote ? ` ${ultima.lote}` : ""}`}
+              </span>
+            )}
+            {!ultima && !carregando && (
+              <span className="text-[11px] text-muted-foreground">nenhuma rodada registrada ainda.</span>
+            )}
+            {rodadas.length > 1 && !rodadasAbertas && (
+              <span className="num shrink-0 text-[10px] text-muted-foreground" title={`mais ${rodadas.length - 1} rodada(s) registrada(s)`}>
+                +{rodadas.length - 1}
+              </span>
+            )}
+          </button>
+          <div className="flex shrink-0 items-center gap-1.5">
             <button
               onClick={rodarAgora}
               disabled={rodando}
@@ -230,59 +452,88 @@ export default function NotasFiscaisLog() {
           </div>
         </div>
 
-        {rodadas.length === 0 && !carregando && (
-          <p className="py-3 text-center text-[11px] text-muted-foreground">Nenhuma rodada registrada ainda.</p>
+        {rodadasAbertas && gruposRodada.length > 0 && (
+          <div className="max-h-56 space-y-1 overflow-y-auto border-t border-border px-3 py-2">
+            {gruposRodada.map((g) => {
+              const r = g.ultima;
+              return (
+                <div key={r.id} className="flex items-start gap-2 rounded border border-border/50 px-2 py-1.5 text-[11px]">
+                  <span className="num shrink-0 text-muted-foreground">
+                    {g.n > 1 ? `${hora(g.primeira.iniciada_em)} → ${hora(r.iniciada_em).slice(6)}` : hora(r.iniciada_em)}
+                  </span>
+                  <span className={cn(
+                    "shrink-0 rounded border px-1.5 text-[10px]",
+                    r.modo === "on" ? "border-emerald-500/20 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400"
+                    : r.modo === "previa" ? "border-sky-500/20 bg-sky-500/10 text-sky-600 dark:text-sky-400"
+                    : "border-border bg-muted text-muted-foreground",
+                  )}>
+                    {r.modo === "on" ? "emitindo" : r.modo === "previa" ? "ensaio" : "desligada"}
+                  </span>
+                  <span className="shrink-0 text-[10px] text-muted-foreground">{r.origem}</span>
+                  {g.n > 1 && (
+                    <span className="num shrink-0 rounded border border-border bg-muted px-1.5 text-[10px] text-muted-foreground">
+                      {g.n}×
+                    </span>
+                  )}
+                  <span className="flex-1">
+                    {r.erro ? (
+                      <span className="text-destructive">{r.erro}</span>
+                    ) : r.pulada ? (
+                      <span className="text-muted-foreground">{r.pulada}</span>
+                    ) : (
+                      <>
+                        fila {r.fila} · <strong className="text-foreground">{r.emitidas}</strong> no lote
+                        {r.lote ? ` ${r.lote}` : ""}
+                        {r.bloqueadas > 0 && (
+                          <span
+                            className="text-orange-600 dark:text-orange-400"
+                            title="Cobranças que a conferência com o Asaas recusou: estornadas, não recebidas, ou sem resposta do Asaas na hora. Nada foi mandado ao Omie por elas."
+                          > · {r.bloqueadas} barrada(s)</span>
+                        )}
+                        {r.falhas > 0 && <span className="text-destructive"> · {r.falhas} falha(s)</span>}
+                      </>
+                    )}
+                  </span>
+                </div>
+              );
+            })}
+          </div>
         )}
-
-        <div className="max-h-56 space-y-1 overflow-y-auto">
-          {rodadas.map((r) => (
-            <div key={r.id} className="flex items-start gap-2 rounded border border-border/50 px-2 py-1.5 text-[11px]">
-              <span className="num shrink-0 text-muted-foreground">{hora(r.iniciada_em)}</span>
-              <span className={cn(
-                "shrink-0 rounded border px-1.5 text-[10px]",
-                r.modo === "on" ? "border-emerald-500/20 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400"
-                : r.modo === "previa" ? "border-sky-500/20 bg-sky-500/10 text-sky-600 dark:text-sky-400"
-                : "border-border bg-muted text-muted-foreground",
-              )}>
-                {r.modo === "on" ? "emitindo" : r.modo === "previa" ? "ensaio" : "desligada"}
-              </span>
-              <span className="shrink-0 text-[10px] text-muted-foreground">{r.origem}</span>
-              <span className="flex-1">
-                {r.erro ? (
-                  <span className="text-destructive">{r.erro}</span>
-                ) : r.pulada ? (
-                  <span className="text-muted-foreground">{r.pulada}</span>
-                ) : (
-                  <>
-                    fila {r.fila} · <strong className="text-foreground">{r.emitidas}</strong> no lote
-                    {r.lote ? ` ${r.lote}` : ""}
-                    {r.falhas > 0 && <span className="text-destructive"> · {r.falhas} falha(s)</span>}
-                  </>
-                )}
-              </span>
-            </div>
-          ))}
-        </div>
       </div>
 
-      {/* ------------------------------- filtros ------------------------------ */}
+      {/* ------------------------------- filtros ------------------------------
+          A contagem é de CLIENTE, não de linha do diário: "Emitida 2" são duas
+          notas na rua. Contar linhas era o que fazia dois clientes virarem
+          quatro emitidas, somando o passo da OS ao faturamento que a emitiu. */}
       <div className="flex flex-wrap items-center gap-1.5">
-        {(["todas", "ok", "em_processamento", "erro"] as const).map((f) => (
-          <button
-            key={f}
-            onClick={() => setFiltro(f)}
-            className={cn(
-              "rounded border px-2 py-1 text-[11px]",
-              filtro === f ? "border-primary bg-primary/10 text-primary" : "border-border text-muted-foreground hover:bg-muted",
-            )}
-          >
-            {f === "todas" ? "Tudo" : DESFECHO[f].rotulo}
-            <span className="ml-1 opacity-60">
-              {f === "todas" ? linhas.length : linhas.filter((l) => l.resultado === f).length}
-            </span>
-          </button>
-        ))}
+        {(["todas", "emitida", "no_forno", "falhou", "barrada", "sem_nota", "ensaio"] as const).map((f) => {
+          const n = f === "todas" ? grupos.length : grupos.filter((g) => g.estado === f).length;
+          // Os estados de canto só aparecem quando existem — barra curta dia
+          // normal, completa no dia em que algo ficou pelo caminho.
+          if (n === 0 && (f === "sem_nota" || f === "ensaio" || f === "barrada")) return null;
+          return (
+            <button
+              key={f}
+              onClick={() => setFiltro(f)}
+              title={f === "todas" ? "Todos os clientes com movimento no recorte" : ESTADO[f].ajuda}
+              className={cn(
+                "rounded border px-2 py-1 text-[11px]",
+                filtro === f ? "border-primary bg-primary/10 text-primary" : "border-border text-muted-foreground hover:bg-muted",
+              )}
+            >
+              {f === "todas" ? "Tudo" : ESTADO[f].rotulo}
+              <span className="ml-1 opacity-60">{n}</span>
+            </button>
+          );
+        })}
         <div className="ml-auto flex items-center gap-1.5">
+          <button
+            onClick={() => setAbertos(tudoAberto ? new Set() : new Set(visiveis.map((g) => g.chave)))}
+            className="rounded border border-border px-2 py-1 text-[11px] text-muted-foreground hover:bg-muted"
+          >
+            {tudoAberto ? "Recolher tudo" : "Abrir tudo"}
+          </button>
+          <span className="mx-0.5 h-4 w-px bg-border" />
           {[1, 7, 30].map((d) => (
             <button
               key={d}
@@ -303,11 +554,11 @@ export default function NotasFiscaisLog() {
         <table className="w-full text-xs">
           <thead className="border-b border-border bg-muted/40">
             <tr className="text-left text-[11px] text-muted-foreground">
-              <th className="p-2">Quando</th>
+              <th className="p-2">Última ação</th>
               <th className="p-2">Cliente</th>
               <th className="p-2 text-right">Valor</th>
-              <th className="p-2">Ação</th>
-              <th className="p-2">Desfecho</th>
+              <th className="p-2">Passos</th>
+              <th className="p-2">Como está</th>
               <th className="p-2">Nota / motivo</th>
             </tr>
           </thead>
@@ -322,45 +573,116 @@ export default function NotasFiscaisLog() {
                 Nenhum registro neste recorte.
               </td></tr>
             )}
-            {!carregando && visiveis.map((l, i) => {
-              const d = DESFECHO[l.resultado] ?? { rotulo: l.resultado, tom: "bg-muted text-muted-foreground border-border", Icone: Info };
-              const ensaio = l.acao === "previa";
+            {!carregando && visiveis.map((g) => {
+              const aberto = abertos.has(g.chave);
+              const varias = g.cobrancas.length > 1;
               return (
-                <tr key={`${l.id_asaas}-${l.criado_em}-${i}`} className="border-b border-border/50 last:border-0 hover:bg-muted/30">
-                  <td className="num whitespace-nowrap p-2 text-muted-foreground">{hora(l.criado_em)}</td>
-                  <td className="max-w-[200px] p-2">
-                    <div className="truncate font-medium text-foreground">{l.cliente}</div>
-                    <div className="num truncate text-[10px] text-muted-foreground" title={l.id_asaas}>
-                      {l.n_cod_os ? `OS ${l.n_cod_os}` : l.id_asaas}
-                    </div>
-                  </td>
-                  <td className="num p-2 text-right">{l.valor != null ? brl(Number(l.valor)) : "—"}</td>
-                  <td className="whitespace-nowrap p-2 text-muted-foreground">
-                    {ensaio && <FlaskConical className="mr-1 inline h-3 w-3" />}
-                    {ACAO[l.acao] ?? l.acao}
-                  </td>
-                  <td className="p-2">
-                    <span className={cn("inline-flex items-center gap-1 whitespace-nowrap rounded border px-1.5 py-0.5 text-[11px]", ensaio ? "border-sky-500/20 bg-sky-500/10 text-sky-600 dark:text-sky-400" : d.tom)}>
-                      <d.Icone className="h-3 w-3" />
-                      {ensaio ? "Ensaio" : d.rotulo}
-                    </span>
-                  </td>
-                  {/* O número quando saiu; o motivo quando não saiu. Nunca os dois
-                      vazios — linha sem explicação é o que obriga a abrir o Omie. */}
-                  <td className="max-w-[380px] p-2">
-                    {l.nfse_numero && (
-                      <span className="num mr-1 rounded border border-emerald-500/20 bg-emerald-500/10 px-1.5 py-0.5 text-emerald-600 dark:text-emerald-400">
-                        NFS-e {l.nfse_numero}
-                      </span>
+                <Fragment key={g.chave}>
+                  {/* ---- o cliente: onde a cobrança PAROU, não o último passo ---- */}
+                  <tr
+                    onClick={() => alternar(g.chave)}
+                    className={cn(
+                      "cursor-pointer border-b border-border/50 last:border-0 hover:bg-muted/30",
+                      aberto && "bg-muted/20",
                     )}
-                    {l.motivo && (
-                      <span className="text-[11px] leading-tight text-muted-foreground" title={l.motivo}>
-                        <span className="line-clamp-2">{l.motivo}</span>
-                      </span>
-                    )}
-                    {!l.nfse_numero && !l.motivo && <span className="text-muted-foreground">—</span>}
-                  </td>
-                </tr>
+                  >
+                    <td className="num whitespace-nowrap p-2 align-top text-muted-foreground">
+                      {hora(g.ultimo.criado_em)}
+                    </td>
+                    <td className="max-w-[220px] p-2 align-top">
+                      <div className="flex items-start gap-1">
+                        {aberto
+                          ? <ChevronDown className="mt-0.5 h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                          : <ChevronRight className="mt-0.5 h-3.5 w-3.5 shrink-0 text-muted-foreground" />}
+                        <div className="min-w-0">
+                          <div className="truncate font-medium text-foreground">{g.cliente}</div>
+                          <div className="num truncate text-[10px] text-muted-foreground" title={g.cobrancas.map((c) => c.id_asaas).join(", ")}>
+                            {varias
+                              ? `${g.cobrancas.length} cobranças`
+                              : g.cobrancas[0].n_cod_os ? `OS ${g.cobrancas[0].n_cod_os}` : g.cobrancas[0].id_asaas}
+                          </div>
+                        </div>
+                      </div>
+                    </td>
+                    <td className="num p-2 text-right align-top">{g.valor ? brl(g.valor) : "—"}</td>
+                    <td className="whitespace-nowrap p-2 align-top text-muted-foreground">
+                      {g.eventos.length} {g.eventos.length === 1 ? "passo" : "passos"}
+                    </td>
+                    <td className="p-2 align-top"><Selo e={g.estado} /></td>
+                    <td className="max-w-[380px] p-2 align-top">
+                      {g.nfse.map((n) => (
+                        <span key={n} className="num mr-1 rounded border border-emerald-500/20 bg-emerald-500/10 px-1.5 py-0.5 text-emerald-600 dark:text-emerald-400">
+                          NFS-e {n}
+                        </span>
+                      ))}
+                      {/* Fechado, vale o motivo do passo mais recente: é ele que
+                          diz o que falta fazer agora. O resto está um clique abaixo. */}
+                      {!aberto && g.ultimo.motivo && (
+                        <span className="text-[11px] leading-tight text-muted-foreground" title={g.ultimo.motivo}>
+                          <span className="line-clamp-2">{g.ultimo.motivo}</span>
+                        </span>
+                      )}
+                      {g.nfse.length === 0 && (aberto || !g.ultimo.motivo) && (
+                        <span className="text-muted-foreground">—</span>
+                      )}
+                    </td>
+                  </tr>
+
+                  {/* ---- os passos, do primeiro ao último ---- */}
+                  {aberto && g.cobrancas.map((c) => (
+                    <Fragment key={c.id_asaas}>
+                      {varias && (
+                        <tr className="border-b border-border/50 bg-muted/30">
+                          <td colSpan={6} className="px-2 py-1 text-[10px] text-muted-foreground">
+                            <span className="num">{c.n_cod_os ? `OS ${c.n_cod_os}` : c.id_asaas}</span>
+                            {c.valor != null && <> · {brl(Number(c.valor))}</>}
+                            {c.n_cod_os && <span className="num"> · {c.id_asaas}</span>}
+                          </td>
+                        </tr>
+                      )}
+                      {c.eventos.map((l, i) => {
+                        const d = desfechoDe(l);
+                        return (
+                          <tr
+                            key={`${l.id_asaas}-${l.criado_em}-${i}`}
+                            className="border-b border-border/50 bg-muted/10 last:border-0 hover:bg-muted/30"
+                          >
+                            <td className="num whitespace-nowrap p-2 pl-6 align-top text-muted-foreground">{hora(l.criado_em)}</td>
+                            {/* Debaixo do cliente, quem mandou o passo — quando o
+                                registro sabe. Emissão pelo painel guarda o usuário,
+                                não o operador, e inventar "automático" aqui seria
+                                atribuir ao cron o que alguém fez à mão. */}
+                            <td className="max-w-[220px] p-2 align-top">
+                              {l.operador && (
+                                <span className="block truncate text-[10px] text-muted-foreground" title={l.operador}>
+                                  {l.operador}
+                                </span>
+                              )}
+                            </td>
+                            <td className="num p-2 text-right align-top">{l.valor != null ? brl(Number(l.valor)) : "—"}</td>
+                            <td className="whitespace-nowrap p-2 align-top text-muted-foreground">{ACAO[l.acao] ?? l.acao}</td>
+                            <td className="p-2 align-top"><Selo e={d} /></td>
+                            {/* O número quando saiu; o motivo quando não saiu. Nunca os dois
+                                vazios — linha sem explicação é o que obriga a abrir o Omie. */}
+                            <td className="max-w-[380px] p-2 align-top">
+                              {l.nfse_numero && (
+                                <span className="num mr-1 rounded border border-emerald-500/20 bg-emerald-500/10 px-1.5 py-0.5 text-emerald-600 dark:text-emerald-400">
+                                  NFS-e {l.nfse_numero}
+                                </span>
+                              )}
+                              {l.motivo && (
+                                <span className="text-[11px] leading-tight text-muted-foreground" title={l.motivo}>
+                                  <span className="line-clamp-2">{l.motivo}</span>
+                                </span>
+                              )}
+                              {!l.nfse_numero && !l.motivo && <span className="text-muted-foreground">—</span>}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </Fragment>
+                  ))}
+                </Fragment>
               );
             })}
           </tbody>
@@ -369,9 +691,11 @@ export default function NotasFiscaisLog() {
 
       <p className="flex items-start gap-1.5 text-[11px] text-muted-foreground">
         <Info className="mt-px h-3 w-3 shrink-0" />
-        O registro é append-only: a linha "no forno" continua ali depois que a nota nasce, com a
-        linha da nota ao lado. "No forno" não é falha — é nota a caminho da prefeitura, e emitir
-        de novo criaria a segunda nota do mesmo serviço.
+        Cada linha é um cliente, e a contagem lá em cima é de cliente: "Emitida 2" são duas notas
+        na rua. Abra para ver os passos, do primeiro ao último — o registro é append-only, então a
+        linha "no forno" continua ali depois que a nota nasce, com a linha da nota embaixo. "OS
+        criada" é passo, não nota: quem emite é o faturamento. E "no forno" não é falha — é nota a
+        caminho da prefeitura, e emitir de novo criaria a segunda nota do mesmo serviço.
       </p>
     </div>
   );

@@ -205,7 +205,8 @@ export default function NotasFiscais() {
        * minutos depois do disparo. Chamar isso de falha faz o operador mandar
        * emitir de novo — e a segunda nota da mesma cobrança não se apaga. */
       const emProcesso = (data.resultados ?? []).filter((r: any) => r.em_processamento);
-      const falhas = (data.resultados ?? []).filter((r: any) => !r.ok && !r.em_processamento);
+      const barradas = (data.resultados ?? []).filter((r: any) => r.bloqueado);
+      const falhas = (data.resultados ?? []).filter((r: any) => !r.ok && !r.em_processamento && !r.bloqueado);
       const jaEmitidas = (data.resultados ?? []).filter((r: any) => r.ja_emitida);
 
       if (data.emitidas) toast.success(`${data.emitidas} nota(s) emitida(s) no Omie.`);
@@ -221,10 +222,27 @@ export default function NotasFiscais() {
           duration: 15000,
         });
       }
+      /* Barrada não é falha, e misturar as duas mandaria o operador tentar de
+       * novo o que nunca vai passar. A conferência da porta lê o Asaas no
+       * instante da emissão: se ela barrou, a cobrança foi estornada ou o
+       * dinheiro ainda não entrou — e o espelho da tela pode estar mostrando o
+       * estado de ontem, por isso o recarregamento abaixo. */
+      if (barradas.length) {
+        toast.warning(`${barradas.length} barrada(s) na conferência com o Asaas.`, {
+          description: `${barradas.slice(0, 3).map((b: any) => b.erro).join(" · ")} Nada foi mandado ao Omie.`,
+          duration: 15000,
+        });
+      }
       if (falhas.length) {
         toast.error(`${falhas.length} não saíram.`, {
           description: falhas.slice(0, 3).map((f: any) => f.erro).join(" · "),
           duration: 12000,
+        });
+      }
+      if (data.nao_tentadas?.length) {
+        toast.info(`${data.nao_tentadas.length} não couberam nesta chamada.`, {
+          description: "Cada emissão espera o Omie faturar (~2 min) e a função tem 150s. Estas não foram tocadas — mande de novo.",
+          duration: 15000,
         });
       }
       await carregar();

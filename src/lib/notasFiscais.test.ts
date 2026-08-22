@@ -69,6 +69,35 @@ describe("motivoBloqueio", () => {
     expect(motivoBloqueio(linha({ situacao: "nao_exige", status_asaas: "PENDING" }))).toMatch(/não foi recebida/i);
   });
 
+  /* A confirmada é o caso que a tela deixava passar: o Asaas a dá como paga, o
+   * painel a classifica como "falta nota", e ela some no meio das recebidas. Só
+   * que autorização de cartão pode não liquidar — e a nota sobre ela é imposto
+   * sobre receita que nunca existiu, desfeito só com cancelamento. */
+  it("barra a confirmada: autorizada não é liquidada", () => {
+    const m = motivoBloqueio(linha({ status_asaas: "CONFIRMED", situacao: "falta" }));
+    expect(m).toMatch(/confirmada/i);
+    expect(m).toMatch(/liquid/i);
+    expect(podeEmitir(linha({ status_asaas: "CONFIRMED" }))).toBe(false);
+  });
+
+  it("recebida em dinheiro emite como recebida", () => {
+    expect(motivoBloqueio(linha({ status_asaas: "RECEIVED_IN_CASH" }))).toBeNull();
+  });
+
+  /* O estorno tem três caras. O parcial NÃO tem status próprio — a cobrança
+   * segue "RECEIVED" e o dinheiro devolvido só existe em refunds[] — e é a
+   * coluna `estornado` do painel que soma as três. */
+  it("as três caras do estorno barram, inclusive a parcial que segue recebida", () => {
+    expect(motivoBloqueio(linha({ status_asaas: "REFUNDED", estornado: true }))).toMatch(/estornada/i);
+    expect(motivoBloqueio(linha({ status_asaas: "RECEIVED", estornado: true }))).toMatch(/estornada/i);
+    expect(motivoBloqueio(linha({ status_asaas: "CHARGEBACK_REQUESTED", estornado: true }))).toMatch(/estornada/i);
+  });
+
+  // Status novo do Asaas que ninguém mapeou não pode virar nota por omissão.
+  it("status desconhecido não emite", () => {
+    expect(podeEmitir(linha({ status_asaas: "STATUS_NOVO_DO_ASAAS" }))).toBe(false);
+  });
+
   it("barra cliente sem documento — é ele que casa com o Omie", () => {
     expect(motivoBloqueio(linha({ cnpj_cpf: null }))).toMatch(/CNPJ/);
     expect(motivoBloqueio(linha({ cnpj_cpf: "" }))).toMatch(/CNPJ/);

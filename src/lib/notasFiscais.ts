@@ -112,15 +112,18 @@ export const SITUACOES: Record<Situacao, { rotulo: string; tom: "ok" | "aviso" |
  *
  * RECEBIDA E CONFIRMADA NÃO SÃO A MESMA COISA, e a diferença é dinheiro:
  * `CONFIRMED` é cartão autorizado cuja liquidação ainda não caiu na conta;
- * `RECEIVED` é o dinheiro já disponível. As duas exigem nota (o fato gerador é a
- * prestação do serviço, não a liquidação), por isso as duas entram no lote — mas
- * quem olha a tela para conferir caixa precisa enxergar qual é qual sem abrir o
- * Asaas. Daí tons diferentes para as duas.
+ * `RECEIVED` é o dinheiro já disponível. As duas EXIGEM nota — o fato gerador do
+ * ISS é a prestação do serviço, não a liquidação —, mas só a recebida ENTRA no
+ * lote: uma autorização pode não liquidar (chargeback, cancelamento, falha na
+ * captura), e a nota emitida sobre ela vira imposto sobre receita que nunca
+ * existiu, desfeito só por cancelamento com prazo e justificativa. Esperar
+ * alguns dias é barato; errar não. A confirmada volta sozinha à fila no dia em
+ * que o dinheiro entrar. Daí tons diferentes para as duas.
  */
 export const STATUS_ASAAS: Record<string, { rotulo: string; tom: "ok" | "aviso" | "erro" | "neutro"; ajuda: string }> = {
   RECEIVED:         { rotulo: "Recebida",   tom: "ok",     ajuda: "Dinheiro disponível na conta." },
   RECEIVED_IN_CASH: { rotulo: "Recebida",   tom: "ok",     ajuda: "Recebida em dinheiro, fora do Asaas." },
-  CONFIRMED:        { rotulo: "Confirmada", tom: "aviso",  ajuda: "Pagamento autorizado, liquidação ainda não caiu na conta. Exige nota do mesmo jeito." },
+  CONFIRMED:        { rotulo: "Confirmada", tom: "aviso",  ajuda: "Pagamento autorizado, liquidação ainda não caiu na conta. Exige nota, mas só depois de liquidar — entra na fila sozinha no dia em que o dinheiro entrar." },
   PENDING:          { rotulo: "Pendente",   tom: "neutro", ajuda: "Ainda não paga." },
   OVERDUE:          { rotulo: "Vencida",    tom: "erro",   ajuda: "Venceu sem pagamento." },
   AWAITING_RISK_ANALYSIS: { rotulo: "Em análise", tom: "neutro", ajuda: "Em análise de risco pelo Asaas." },
@@ -143,14 +146,28 @@ export const foiPaga = (s: string | null | undefined) =>
   ["RECEIVED", "CONFIRMED", "RECEIVED_IN_CASH"].includes(String(s ?? "").toUpperCase());
 
 /**
+ * Os status que podem virar nota. Note que `CONFIRMED` está fora e `foiPaga` o
+ * inclui: são perguntas diferentes — "esta cobrança foi paga?" (sim, autorizada)
+ * e "o dinheiro está na conta a ponto de virar imposto?" (ainda não).
+ */
+export const EMITIVEIS = ["RECEIVED", "RECEIVED_IN_CASH"];
+
+/**
  * Por que esta linha NÃO pode entrar num lote de emissão. `null` = pode.
  *
  * A ordem importa: o primeiro motivo é o que aparece na tela, e o mais grave tem
  * de vir primeiro. Emitir nota de cobrança estornada é pior do que emitir uma
  * segunda via de algo que já tem nota — a primeira cria imposto sobre receita que
  * não existe.
+ *
+ * ESTA FUNÇÃO NÃO É MAIS A ÚNICA GUARDA, e isso é uma correção e não um detalhe.
+ * Enquanto ela era, a regra valia só para quem passava pela tela: a Edge Function
+ * `omie-nfse-sync` recebia uma lista de ids e emitia sem perguntar o status. Hoje
+ * a mesma regra está no Postgres (`nfse_bloqueio_emissao`) e é conferida ao vivo
+ * contra o Asaas no instante da emissão. O que sobrou aqui é o papel que sempre
+ * foi o dela: explicar à pessoa, ANTES do clique, por que a caixa não marca.
  */
-export function motivoBloqueio(l: Pick<LinhaNota, "situacao" | "estornado" | "cnpj_cpf" | "valor" | "data_vencimento" | "data_pagamento"> & { nfse_mensagem?: string | null }): string | null {
+export function motivoBloqueio(l: Pick<LinhaNota, "situacao" | "estornado" | "status_asaas" | "cnpj_cpf" | "valor" | "data_vencimento" | "data_pagamento"> & { nfse_mensagem?: string | null }): string | null {
   if (l.estornado) return "Cobrança estornada — emitir criaria imposto sobre receita devolvida.";
   if (l.situacao === "emitida_omie") return "Já tem NFS-e autorizada no Omie.";
   if (l.situacao === "emitida_asaas") return "Já tem nota autorizada no Asaas.";
@@ -165,6 +182,14 @@ export function motivoBloqueio(l: Pick<LinhaNota, "situacao" | "estornado" | "cn
       : "A prefeitura rejeitou o RPS. Corrija e reenvie pelo Omie — emitir aqui duplicaria a OS.";
   }
   if (l.situacao === "em_processamento") return "A OS já foi faturada; o RPS está a caminho.";
+  /* O dinheiro, pelo STATUS e não pela situação: `nao_exige` só cobre quem nunca
+   * foi paga, e a confirmada é classificada como "falta" — ela é receita que
+   * ainda pode não acontecer, não receita ausente. */
+  const st = String(l.status_asaas ?? "").toUpperCase();
+  if (st === "CONFIRMED") {
+    return "Cobrança confirmada e ainda não liquidada — a nota sai sozinha no dia em que o dinheiro entrar.";
+  }
+  if (st && !EMITIVEIS.includes(st)) return "A cobrança não foi recebida.";
   if (l.situacao === "nao_exige") return "A cobrança não foi recebida.";
   if (!l.cnpj_cpf) return "Cliente sem CNPJ/CPF no Asaas — sem documento não há como achar o cadastro no Omie.";
   if (!(Number(l.valor) > 0)) return "Valor zerado ou negativo.";

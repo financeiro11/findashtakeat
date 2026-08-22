@@ -30,6 +30,12 @@
 // `faturarIsolada`). O raio da chamada é o que essa conferência disser, não o que
 // a intenção de quem chamou supunha.
 //
+// SÓ RECEBIDA VIRA NOTA, E ESTORNADA NUNCA. A regra mora no Postgres
+// (`nfse_bloqueio_emissao`, chamada pela fila e pelas candidatas) e é conferida
+// DE NOVO aqui contra o Asaas ao vivo, cobrança por cobrança, no instante da
+// emissão — ver `conferirNoAsaas`. Espelho é retrato de ontem; nota fiscal é
+// escrita de hoje que não se apaga.
+//
 // Ações (body.action):
 //   "espelhar" (default) → lista as OS e atualiza nf_os_omie. Consulta StatusOS só
 //                          de quem precisa (ver ehStatusPendente).
@@ -39,6 +45,7 @@
 // Auth: usuário logado OU cron (x-cron-token), no padrão do repo.
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.0";
+import { asaasGet } from "../_shared/asaas.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -501,6 +508,152 @@ async function sondarMetodos(extras: Array<[string, string]> = []): Promise<Reco
   return out;
 }
 
+/* --------------------------------- a porta -------------------------------- */
+
+/**
+ * A REGRA DO DINHEIRO, do lado de cá.
+ *
+ * Gêmea de `public.nfse_bloqueio_emissao` (migration 20260822130000) e existe
+ * porque a leitura ao vivo do Asaas não passa pelo Postgres: o que volta do
+ * `GET /payments/{id}` é um JSON solto, e é justamente esse JSON que tem a
+ * palavra final. As duas frases são as mesmas de propósito — o operador não
+ * deveria conseguir dizer qual das duas camadas o barrou.
+ *
+ * Estorno primeiro, sempre. Emitir sobre cobrança devolvida cria imposto sobre
+ * receita que não existe, e nota não se apaga: cancela-se, com prazo e
+ * justificativa. As três caras do estorno: o status (total), o `refunds[]`
+ * (parcial, que NÃO tem status próprio — a cobrança segue "RECEIVED") e a
+ * contestação (`CHARGEBACK_*`, dinheiro em disputa).
+ */
+const RECEBIDAS = ["RECEIVED", "RECEIVED_IN_CASH"];
+const ESTORNADAS = [
+  "REFUNDED", "REFUND_REQUESTED", "REFUND_IN_PROGRESS",
+  "CHARGEBACK_REQUESTED", "CHARGEBACK_DISPUTE", "AWAITING_CHARGEBACK_REVERSAL",
+];
+
+function bloqueioDeEmissao(status: unknown, cobranca: any, estornoRegistrado = false): string | null {
+  const st = String(status ?? "").toUpperCase();
+  const temRefunds = Array.isArray(cobranca?.refunds) && cobranca.refunds.length > 0;
+  if (estornoRegistrado || temRefunds || ESTORNADAS.includes(st)) {
+    return "Cobrança estornada — emitir criaria imposto sobre receita devolvida.";
+  }
+  if (st === "CONFIRMED") {
+    return "Cobrança confirmada e ainda não liquidada — a nota sai no dia em que o dinheiro entrar.";
+  }
+  if (!RECEBIDAS.includes(st)) return `Cobrança não recebida (${st || "sem status"}).`;
+  return null;
+}
+
+/**
+ * O espelho errou; conserta o espelho.
+ *
+ * Quando a leitura ao vivo discorda do que estava gravado, o desencontro não é
+ * só desta emissão: o painel do mês continuaria mostrando "recebida, falta
+ * nota" para uma cobrança devolvida, e alguém tentaria de novo amanhã. Grava-se
+ * o que o Asaas acabou de dizer.
+ *
+ * Só `status` e `dados` — a `data_pagamento` da coluna fica onde está. O Asaas
+ * LIMPA o paymentDate ao estornar, e copiar essa limpeza tiraria a linha do mês
+ * em que ela aparece na tela: some do painel exatamente a cobrança que alguém
+ * precisa ver para cancelar a nota que porventura já saiu.
+ */
+async function curarEspelho(supabase: any, idAsaas: string, cobranca: any) {
+  await supabase.from("asaas_cache")
+    .update({ status: String(cobranca?.status ?? ""), dados: cobranca, atualizado_em: new Date().toISOString() })
+    .eq("tipo", "payment").eq("id_asaas", idAsaas);
+}
+
+/**
+ * A CONFERÊNCIA DA PORTA — o estado da cobrança no Asaas AGORA.
+ *
+ * Por que não basta o espelho. A `asaas-sync` roda às 12:15 UTC e a emissão às
+ * 13h: um estorno registrado às 12:30 chega ao espelho só no dia seguinte, e
+ * nesse intervalo o banco diz "recebida" sobre dinheiro que já voltou. A janela
+ * é de horas, e o que cabe nela é uma nota fiscal que não se apaga.
+ *
+ * O custo é UMA requisição por cobrança — no máximo `teto_rodada` (20) por
+ * rodada, contra a cota de 25.000 por 12h do Asaas. É a requisição mais barata
+ * de todo o processo e a única que responde a pergunta que importa.
+ *
+ * FALHA FECHA A PORTA. Se o Asaas não responder, não se emite: a cobrança volta
+ * na próxima rodada intacta. O contrário — emitir no escuro — troca um atraso de
+ * horas por uma nota que se cancela com prazo e justificativa.
+ */
+async function conferirNoAsaas(
+  supabase: any, cobrancas: any[],
+): Promise<Map<string, string | null>> {
+  const veredito = new Map<string, string | null>();
+
+  await Promise.all(cobrancas.map(async (cob) => {
+    const id = String(cob.id_asaas);
+    // 1) O que o banco já sabia (calculado por nfse_bloqueio_emissao, que soma o
+    //    status, o refunds[] do espelho e o registro da estornos-sync).
+    if (cob.bloqueio) { veredito.set(id, String(cob.bloqueio)); return; }
+
+    // 2) O que o Asaas diz neste instante.
+    try {
+      const p = await asaasGet<any>(`/payments/${id}`);
+      const motivo = bloqueioDeEmissao(p?.status, p);
+      if (motivo) {
+        veredito.set(id, `${motivo} (lido no Asaas agora: ${String(p?.status ?? "?")})`);
+        await curarEspelho(supabase, id, p).catch(() => { /* o bloqueio já valeu */ });
+      } else {
+        veredito.set(id, null);
+      }
+    } catch (e) {
+      veredito.set(id, `Não deu para confirmar o estado da cobrança no Asaas (${
+        (e instanceof Error ? e.message : String(e)).slice(0, 120)
+      }). Nada foi emitido — a cobrança volta na próxima rodada.`);
+    }
+  }));
+
+  return veredito;
+}
+
+/**
+ * Separa quem passa de quem não passa, e registra no diário quem não passou.
+ *
+ * O registro é o ponto. Recusa que não deixa rastro é indistinguível de
+ * esquecimento: sem a linha `bloqueado`, a cobrança some da fila e ninguém
+ * consegue responder depois por que ela nunca virou nota.
+ */
+async function passarPelaPorta(
+  supabase: any, cobrancas: any[],
+  opts: { seco: boolean; usuario: string | null; operador: string | null },
+): Promise<{ liberadas: any[]; barradas: Array<{ id_asaas: string; motivo: string }> }> {
+  if (!cobrancas.length) return { liberadas: [], barradas: [] };
+
+  const veredito = await conferirNoAsaas(supabase, cobrancas);
+  const liberadas: any[] = [];
+  const barradas: Array<{ id_asaas: string; motivo: string; n_cod_os: number | null }> = [];
+
+  for (const cob of cobrancas) {
+    const motivo = veredito.get(String(cob.id_asaas)) ?? null;
+    if (motivo) {
+      barradas.push({
+        id_asaas: String(cob.id_asaas), motivo,
+        n_cod_os: cob.n_cod_os ? Number(cob.n_cod_os) : null,
+      });
+    } else liberadas.push(cob);
+  }
+
+  if (barradas.length && !opts.seco) {
+    await supabase.from("nf_emissoes").insert(barradas.map((b) => ({
+      id_asaas: b.id_asaas,
+      n_cod_os: b.n_cod_os,
+      // A ação é a que teria acontecido: cobrança com OS nossa esperando o
+      // faturamento não seria "criar e faturar", e o diário não deve inventar
+      // um passo que não existiria.
+      acao: b.n_cod_os ? "faturar" : "criar_e_faturar",
+      resultado: "bloqueado",
+      erro: b.motivo,
+      usuario: opts.usuario, operador: opts.operador,
+    })));
+  }
+
+  return { liberadas, barradas };
+}
+
 /* -------------------------------- emissão -------------------------------- */
 
 /**
@@ -767,6 +920,23 @@ async function emitirUma(
   };
 
   try {
+    /* 0. A REGRA DO DINHEIRO, de novo.
+     *
+     * Quem chega aqui já passou pela porta (`passarPelaPorta`), então esta
+     * conferência normalmente não barra nada — e é para ser assim. Ela existe
+     * porque esta função é chamável de outros lugares, e a guarda que só vale
+     * quando o caminho de sempre é usado não é guarda: foi exatamente assim que
+     * o estorno ficou barrado apenas no TypeScript da tela enquanto a Edge
+     * Function emitia normalmente para quem chamasse direto.
+     */
+    if (cob.bloqueio) {
+      await registrar(cob.n_cod_os ? "faturar" : "criar_e_faturar", "bloqueado", {
+        n_cod_os: cob.n_cod_os ? Number(cob.n_cod_os) : null,
+        erro: String(cob.bloqueio),
+      });
+      return { id_asaas: cob.id_asaas, ok: false, bloqueado: true, erro: String(cob.bloqueio) };
+    }
+
     // 1. Já tem OS? (carimbo primeiro, heurística depois — a mesma ordem da RPC)
     let nCodOS: number | null = cob.n_cod_os ? Number(cob.n_cod_os) : null;
     let acao: string = nCodOS ? "faturar" : "criar_e_faturar";
@@ -958,18 +1128,15 @@ async function emitirDia(
   try {
     if (modo === "off") return await fechar({ pulada: "emissão automática desligada em Configurações" });
 
-    /* Corredor livre? Uma OS esquecida na etapa de isolamento — lote anterior
-     * ainda em voo, rodada que morreu no meio — faria a conferência de raio
-     * abortar. Melhor não criar nada e dizer por quê. */
-    const ocupantes = await ocupantesDaEtapa(etapaIso);
-    if (ocupantes.length) {
-      return await fechar({
-        pulada: `a etapa de isolamento ${etapaIso} já tem ${ocupantes.length} OS (lote anterior ainda em andamento?). Nada foi criado.`,
-        detalhe: { ocupantes: ocupantes.slice(0, 20) },
-      });
-    }
-
-    // Teto do dia — o freio contra defeito que vire enxurrada fiscal.
+    /* A ORDEM AQUI É CUSTO, e por isso o barato vem primeiro.
+     *
+     * A conferência do corredor de isolamento custa `ListarOS` inteiro — 3
+     * páginas, 1.207 OS — e vinha ANTES de perguntar se havia algo a emitir. Com
+     * o cron rodando de 10 em 10 minutos e a fila vazia (o corte é 01/09/26),
+     * eram 6 varreduras completas do Omie por dia para descobrir seis vezes que
+     * não havia nada a fazer. A fila e o teto do dia são consultas ao Postgres,
+     * custam zero no Omie, e respondem a mesma pergunta antes.
+     */
     const { data: jaHoje } = await supabase.rpc("notas_fiscais_emitidas_hoje");
     const resta = tetoDia - Number(jaHoje ?? 0);
     if (resta <= 0) {
@@ -981,18 +1148,50 @@ async function emitirDia(
     if (erroFila) throw new Error(`fila: ${erroFila.message}`);
     if (!fila?.length) return await fechar({ fila: 0, pulada: "nada a emitir." });
 
+    /* A PORTA. A fila já vem filtrada pelo banco (só recebida, sem estorno), mas
+     * o banco é o espelho de 12:15 e isto aqui roda às 13h. Uma requisição por
+     * cobrança ao Asaas responde o que nenhum espelho responde: o dinheiro ainda
+     * está aqui AGORA? No ensaio a porta também vale — e registra —, senão o
+     * ensaio prometeria emitir o que a emissão de verdade recusaria. */
+    const { liberadas, barradas } = await passarPelaPorta(supabase, fila, {
+      seco: false, usuario: opts.usuario, operador: opts.operador,
+    });
+    if (!liberadas.length) {
+      return await fechar({
+        fila: fila.length, bloqueadas: barradas.length,
+        pulada: `as ${barradas.length} cobranças da fila foram barradas na conferência com o Asaas.`,
+        detalhe: { barradas: barradas.slice(0, 20) },
+      });
+    }
+
     /* O ENSAIO. `previa` existe porque o primeiro dia de um processo que emite
      * nota fiscal sozinho não deveria ser o dia em que se descobre o que ele
      * escolheria. Grava no diário exatamente as cobranças que teria emitido, com
      * hora, e não toca no Omie. */
     if (modo === "previa") {
-      await supabase.from("nf_emissoes").insert(fila.map((c: any) => ({
+      await supabase.from("nf_emissoes").insert(liberadas.map((c: any) => ({
         id_asaas: c.id_asaas, n_cod_os: c.n_cod_os ?? null,
         acao: "previa", resultado: "ok",
         erro: `Ensaio: teria emitido R$ ${Number(c.valor).toFixed(2)} (${c.descricao ?? "—"}).`,
         usuario: opts.usuario, operador: opts.operador,
       })));
-      return await fechar({ fila: fila.length, pulada: "modo ensaio (previa): nada foi emitido no Omie." });
+      return await fechar({
+        fila: fila.length, bloqueadas: barradas.length,
+        pulada: "modo ensaio (previa): nada foi emitido no Omie.",
+        ...(barradas.length ? { detalhe: { barradas: barradas.slice(0, 20) } } : {}),
+      });
+    }
+
+    /* Corredor livre? Uma OS esquecida na etapa de isolamento — lote anterior
+     * ainda em voo, rodada que morreu no meio — faria a conferência de raio
+     * abortar. Melhor não criar nada e dizer por quê. */
+    const ocupantes = await ocupantesDaEtapa(etapaIso);
+    if (ocupantes.length) {
+      return await fechar({
+        fila: fila.length, bloqueadas: barradas.length,
+        pulada: `a etapa de isolamento ${etapaIso} já tem ${ocupantes.length} OS (lote anterior ainda em andamento?). Nada foi criado.`,
+        detalhe: { ocupantes: ocupantes.slice(0, 20) },
+      });
     }
 
     // 1. Cria a OS de quem ainda não tem e leva todas para o corredor.
@@ -1000,7 +1199,7 @@ async function emitirDia(
     const naLeva: Array<{ cob: any; nCodOS: number; acao: string }> = [];
     const falhas: Array<{ id_asaas: string; erro: string }> = [];
 
-    for (const cob of fila) {
+    for (const cob of liberadas) {
       try {
         let nCodOS = cob.n_cod_os ? Number(cob.n_cod_os) : 0;
         const acao = nCodOS ? "faturar" : "criar_e_faturar";
@@ -1033,7 +1232,10 @@ async function emitirDia(
     }
 
     if (!naLeva.length) {
-      return await fechar({ fila: fila.length, falhas: falhas.length, pulada: "nenhuma OS chegou ao corredor.", detalhe: { falhas } });
+      return await fechar({
+        fila: fila.length, bloqueadas: barradas.length, falhas: falhas.length,
+        pulada: "nenhuma OS chegou ao corredor.", detalhe: { falhas },
+      });
     }
 
     // 2. A trava de raio, agora plural.
@@ -1045,7 +1247,7 @@ async function emitirDia(
         try { await omieCall<any>("servicos/os", "TrocarEtapaOS", { nCodOS, cEtapa: ETAPA_FILA }); } catch { /* segue */ }
       }
       return await fechar({
-        fila: fila.length, falhas: falhas.length,
+        fila: fila.length, bloqueadas: barradas.length, falhas: falhas.length,
         pulada: `a etapa ${etapaIso} tem ${intrusas.length} OS que esta rodada não criou. Faturar aqui emitiria nota delas — abortado.`,
         detalhe: { intrusas: intrusas.slice(0, 20) },
       });
@@ -1077,8 +1279,10 @@ async function emitirDia(
     })));
 
     return await fechar({
-      fila: fila.length, emitidas: entraram.length, falhas: falhas.length,
-      lote: nIdLoteFat, detalhe: { falhas: falhas.slice(0, 20) },
+      fila: fila.length, bloqueadas: barradas.length,
+      emitidas: entraram.length, falhas: falhas.length,
+      lote: nIdLoteFat,
+      detalhe: { falhas: falhas.slice(0, 20), ...(barradas.length ? { barradas: barradas.slice(0, 20) } : {}) },
     });
   } catch (e) {
     return await fechar({ erro: mensagemDoOmie(e).slice(0, 500) });
@@ -1090,6 +1294,37 @@ async function candidatas(supabase: any, ids: string[]) {
   const { data: linhas, error } = await supabase.rpc("notas_fiscais_candidatas", { p_ids: ids });
   if (error) throw new Error(`notas_fiscais_candidatas: ${error.message}`);
   return linhas ?? [];
+}
+
+/**
+ * Existe nota a caminho da prefeitura esperando desfecho?
+ *
+ * O `espelhar` que roda depois da emissão serve para uma coisa: descobrir o
+ * número da nota que nasceu e fechar no diário a linha `em_processamento`. Se
+ * não há nenhuma linha aberta e a rodada não emitiu nada, ele varre as 1.207 OS
+ * e consulta status para não fechar nada — e faz isso seis vezes por dia, que é
+ * o custo de um hábito, não de uma necessidade. O espelho completo continua
+ * garantido pelo cron das 18h (`nf-espelho-tarde`).
+ *
+ * Duas leituras locais, sem paginação: as linhas em processamento das últimas
+ * 48h e os desfechos do mesmo período. Aberta é a que não ganhou um `ok` depois.
+ */
+async function haNotaNoForno(supabase: any): Promise<boolean> {
+  const desde = new Date(Date.now() - 2 * 86_400_000).toISOString();
+  const [{ data: forno }, { data: fechadas }] = await Promise.all([
+    supabase.from("nf_emissoes").select("id_asaas, criado_em")
+      .eq("resultado", "em_processamento").gte("criado_em", desde),
+    supabase.from("nf_emissoes").select("id_asaas, criado_em")
+      .eq("resultado", "ok").gte("criado_em", desde),
+  ]);
+  if (!forno?.length) return false;
+
+  const ultimoOk = new Map<string, string>();
+  for (const f of fechadas ?? []) {
+    const atual = ultimoOk.get(f.id_asaas);
+    if (!atual || f.criado_em > atual) ultimoOk.set(f.id_asaas, f.criado_em);
+  }
+  return forno.some((f: any) => (ultimoOk.get(f.id_asaas) ?? "") < f.criado_em);
 }
 
 /* ---------------------------------- cron ---------------------------------- */
@@ -1146,10 +1381,17 @@ Deno.serve(async (req) => {
         operador: String(body?.operador ?? "").trim() || (ehCron ? "emissão automática (cron)" : null),
         usuario,
       });
-      // O sync logo em seguida fecha no diário as notas que nasceram desde a
-      // rodada anterior — é o que transforma "em processamento" em número.
-      const espelho = await espelhar(supabase, { tetoStatus: Math.min(Number(body?.teto_status ?? 40), 400) })
-        .catch((e) => ({ erro: mensagemDoOmie(e) }));
+      /* O sync logo em seguida fecha no diário as notas que nasceram desde a
+       * rodada anterior — é o que transforma "em processamento" em número. Só
+       * que ele custa um `ListarOS` inteiro mais uma consulta de status por OS,
+       * e não tem o que fechar quando nada foi emitido e nada está no forno. */
+      const precisaEspelhar = Number((r as any)?.emitidas ?? 0) > 0
+        || body?.espelhar === true
+        || await haNotaNoForno(supabase).catch(() => true);
+      const espelho = precisaEspelhar
+        ? await espelhar(supabase, { tetoStatus: Math.min(Number(body?.teto_status ?? 40), 400) })
+            .catch((e) => ({ erro: mensagemDoOmie(e) }))
+        : { pulado: "nenhuma nota emitida agora e nenhuma no forno — o espelho não teria o que fechar." };
       return json({ ok: true, ...r, espelho });
     }
 
@@ -1200,21 +1442,58 @@ Deno.serve(async (req) => {
 
       const linhas = await candidatas(supabase, ids);
       const seco = action === "previa";
-      const molde = await pegarMolde(supabase);
 
-      const resultados: unknown[] = [];
-      for (const cob of linhas) {
+      /* A PORTA, também no manual — e esta é a novidade que mais importa.
+       *
+       * A guarda contra estorno vivia só no `motivoBloqueio` do TypeScript da
+       * tela: ela não deixa marcar a caixa da cobrança devolvida, e por isso
+       * parecia resolvida. Só que a guarda da tela vale para quem passa pela
+       * tela. Chamar esta função com o id de uma cobrança estornada emitia a
+       * nota sem uma única pergunta — e chamar esta função é o que o cron faz, o
+       * que a skill faz, e o que qualquer script com o token faz.
+       *
+       * No ensaio (`previa`) a conferência acontece igual, mas não escreve no
+       * diário: prévia da tela é pergunta, e pergunta não vira rastro fiscal.
+       */
+      const { liberadas, barradas } = await passarPelaPorta(supabase, linhas, {
+        seco, usuario, operador: operador || null,
+      });
+
+      const resultados: unknown[] = barradas.map((b) => ({
+        id_asaas: b.id_asaas, ok: false, bloqueado: true, erro: b.motivo,
+      }));
+
+      /* O ORÇAMENTO DE TEMPO. Uma emissão inteira custa ~100 segundos (criar OS,
+       * isolar, conferir o raio, disparar o lote e esperar a prefeitura), e a
+       * Edge Function morre aos 150. Sem este relógio, um lote de 10 cobranças
+       * criava as 10 OS, faturava a primeira e MORRIA no meio da segunda: as
+       * outras oito ficavam com OS criada, sem nota, e sem ninguém saber. É
+       * melhor tratar duas e dizer "faltaram oito, chame de novo". */
+      const PRAZO_MS = 110_000;
+      const comecou = Date.now();
+      const naoTentadas: string[] = [];
+
+      const molde = liberadas.length ? await pegarMolde(supabase) : null;
+      for (const cob of liberadas) {
+        if (!seco && Date.now() - comecou > PRAZO_MS) { naoTentadas.push(cob.id_asaas); continue; }
         resultados.push(await emitirUma(supabase, molde, cob, cfg ?? {}, usuario, seco, operador || null));
       }
+
       // "Já estava emitida" não é emissão nem falha: contá-la como emitida faria a
       // tela anunciar nota nova onde nada saiu.
       const ok = resultados.filter((r: any) => r.ok).length;
       const jaEmitidas = resultados.filter((r: any) => r.ja_emitida).length;
       const emProcessamento = resultados.filter((r: any) => r.em_processamento).length;
+      const bloqueadas = resultados.filter((r: any) => r.bloqueado).length;
       return json({
         ok: true, seco, pedidas: ids.length, tratadas: resultados.length,
         emitidas: ok - jaEmitidas, ja_emitidas: jaEmitidas, em_processamento: emProcessamento,
-        falhas: resultados.length - ok,
+        bloqueadas,
+        falhas: resultados.length - ok - bloqueadas,
+        nao_tentadas: naoTentadas,
+        ...(naoTentadas.length
+          ? { aviso: `${naoTentadas.length} cobrança(s) não couberam na janela desta chamada e NÃO foram tocadas. Mande de novo para tratá-las.` }
+          : {}),
         molde_os: molde?.Cabecalho?.nCodOS ?? null,
         resultados,
       });

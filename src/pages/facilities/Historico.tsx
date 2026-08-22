@@ -9,8 +9,9 @@ import { CatDot } from "./components";
 import {
   db, fmtBRL as fmtBRLStr, fmtData, FORMA_PAGAMENTO_LABEL, MESES_PT,
   PAGAMENTO_STATUS_OPTS,
-  type Compra, type PagamentoStatus,
+  type Compra, type PagamentoStatus, type VinculoNf,
 } from "./lib";
+import { resolverComprovante } from "@/lib/comprovante";
 import { comValorExato } from "@/components/ValorExato";
 import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger,
@@ -19,24 +20,57 @@ import { ChevronDown } from "lucide-react";
 
 type Filtro = { key: string; label: string };
 
-const NF_BUCKET = "facilities-contratos"; // bucket público já existente
-
 function mesAtualKey() {
   const d = new Date();
   return `mes:${d.getFullYear()}-${d.getMonth()}`;
 }
 
+/** File → base64 puro (sem o prefixo `data:...;base64,`), que é o que a função espera. */
+function lerBase64(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const r = new FileReader();
+    r.onload = () => resolve(String(r.result).replace(/^data:[^;]+;base64,/, ""));
+    r.onerror = () => reject(new Error("Não consegui ler o arquivo."));
+    r.readAsDataURL(file);
+  });
+}
+
+/* O que dizer na coluna NF. O ponto da tela é ele conseguir ver, sem sair do Hub
+   dele, que a nota chegou na auditoria — é isso que faz o reenvio ser desnecessário. */
+function selo(c: Compra, v?: VinculoNf) {
+  if (!c.nf_arquivo && !c.nf_url) return null;
+  if (v?.status === "aplicado") {
+    return { txt: "na auditoria", cor: "text-emerald-600", dica: "A auditoria já aceitou esta nota como comprovante. Não precisa mandar de novo." };
+  }
+  if (v?.status === "proposto") {
+    return { txt: "em conferência", cor: "text-sky-600", dica: "A nota chegou. O Financeiro está confirmando a qual lançamento ela pertence." };
+  }
+  return { txt: "guardada", cor: "text-muted-foreground", dica: "Nota guardada. Ela entra na auditoria assim que o lançamento correspondente aparecer (a fatura do cartão costuma demorar)." };
+}
+
 export default function Historico() {
   const [loading, setLoading] = useState(true);
   const [compras, setCompras] = useState<Compra[]>([]);
+  const [vinculos, setVinculos] = useState<Map<string, VinculoNf>>(new Map());
   const [filtro, setFiltro] = useState<string>(mesAtualKey());
   const [uploadingId, setUploadingId] = useState<string | null>(null);
   const fileInputs = useRef<Record<string, HTMLInputElement | null>>({});
 
   const load = useCallback(async () => {
     setLoading(true);
-    const { data } = await db.from("facilities_compras").select("*").order("data", { ascending: false });
+    const [{ data }, { data: vinc }] = await Promise.all([
+      db.from("facilities_compras").select("*").order("data", { ascending: false }),
+      db.from("facilities_nf_auditoria").select("id,compra_id,alvo_tipo,alvo_id_unico,confianca,status,score")
+        .in("status", ["aplicado", "proposto"]),
+    ]);
     setCompras((data as Compra[]) ?? []);
+    // "aplicado" ganha de "proposto": é o desfecho, não a intenção.
+    const mapa = new Map<string, VinculoNf>();
+    for (const v of ((vinc as VinculoNf[]) ?? [])) {
+      const atual = mapa.get(v.compra_id);
+      if (!atual || (v.status === "aplicado" && atual.status !== "aplicado")) mapa.set(v.compra_id, v);
+    }
+    setVinculos(mapa);
     setLoading(false);
   }, []);
   useEffect(() => { load(); }, [load]);
@@ -74,7 +108,7 @@ export default function Historico() {
     // Só permite marcar manualmente como OK se já houver anexo.
     // Sem anexo, o toggle vira "pendente" (útil pra reverter).
     const novo = c.nf_status === "ok" ? "pendente" : "ok";
-    if (novo === "ok" && !c.nf_url) {
+    if (novo === "ok" && !c.nf_arquivo && !c.nf_url) {
       toast.error("Anexe a NF antes de marcar como OK.");
       return;
     }
@@ -91,28 +125,51 @@ export default function Historico() {
     toast.success("Status de pagamento atualizado.");
   };
 
+  /* A NF sobe pela Edge Function, não direto do browser: o bucket da auditoria é
+     privado e só tem policy de leitura — escrever exige service role. É o mesmo
+     caminho do uploader da auditoria (auditoria-anexar-comprovante).
+
+     A função guarda o arquivo, manda a IA transcrever a nota e já tenta casar com o
+     lançamento que a auditoria ainda cobra. Por isso o toast fala do desfecho: é o
+     retorno que diz a ele que a nota chegou lá e não precisa ser mandada de novo. */
   const anexarNf = async (c: Compra, file: File) => {
     setUploadingId(c.id);
     try {
-      const ext = file.name.split(".").pop() || "pdf";
-      const path = `nf/${c.id}-${Date.now()}.${ext}`;
-      const { error: upErr } = await supabase.storage
-        .from(NF_BUCKET)
-        .upload(path, file, { upsert: true, contentType: file.type || undefined });
-      if (upErr) throw upErr;
-      const { data: pub } = supabase.storage.from(NF_BUCKET).getPublicUrl(path);
-      const url = pub.publicUrl;
-      const { error: dbErr } = await db
-        .from("facilities_compras")
-        .update({ nf_url: url, nf_status: "ok" })
-        .eq("id", c.id);
-      if (dbErr) throw dbErr;
-      setCompras((prev) => prev.map((x) => x.id === c.id ? { ...x, nf_url: url, nf_status: "ok" } : x));
-      toast.success("NF anexada com sucesso.");
+      if (file.size > 10 * 1024 * 1024) throw new Error("Arquivo maior que 10 MB.");
+      const base64 = await lerBase64(file);
+
+      const { data, error } = await supabase.functions.invoke("facilities-nf-auditoria", {
+        body: { action: "anexar", compra_id: c.id, nome: file.name, base64, mime: file.type || undefined },
+      });
+      if (error) throw error;
+      if (data?.error) throw new Error(data.error);
+
+      await load();
+
+      const casa = data?.casamento;
+      if (casa?.aplicado) {
+        toast.success("NF anexada e já lançada na auditoria — não precisa mandar de novo.");
+      } else if (casa?.propostas > 0) {
+        toast.success(`NF anexada. ${casa.propostas} lançamento(s) parecido(s) — o Financeiro confirma qual é.`);
+      } else {
+        toast.success("NF anexada. Ainda não há lançamento correspondente; ela entra assim que a fatura chegar.");
+      }
+      if (data?.aviso) toast.warning(data.aviso);
     } catch (err: any) {
       toast.error(err?.message || "Falha ao anexar NF");
     } finally {
       setUploadingId(null);
+    }
+  };
+
+  /** Abre a NF: caminho no bucket privado vira link assinado na hora. */
+  const abrirNf = async (c: Compra) => {
+    const alvo = c.nf_arquivo || c.nf_url;
+    if (!alvo) return;
+    try {
+      window.open(await resolverComprovante(alvo), "_blank", "noopener");
+    } catch (err: any) {
+      toast.error(err?.message || "Não consegui abrir a NF.");
     }
   };
 
@@ -236,16 +293,23 @@ export default function Historico() {
                             <span className="text-[12px] text-amber-600">pendente</span>
                           )}
 
-                          {c.nf_url && (
-                            <a
-                              href={c.nf_url}
-                              target="_blank"
-                              rel="noreferrer"
+                          {(() => {
+                            const s = selo(c, vinculos.get(c.id));
+                            return s ? (
+                              <span className={cn("text-[11.5px]", s.cor)} title={s.dica}>
+                                {s.txt}
+                              </span>
+                            ) : null;
+                          })()}
+
+                          {(c.nf_arquivo || c.nf_url) && (
+                            <button
+                              onClick={() => abrirNf(c)}
                               className="inline-flex items-center gap-1 text-[11.5px] text-muted-foreground hover:text-foreground"
                               title="Abrir NF"
                             >
                               <ExternalLink className="h-3 w-3" /> abrir
-                            </a>
+                            </button>
                           )}
 
                           <input
@@ -263,12 +327,12 @@ export default function Historico() {
                             onClick={() => fileInputs.current[c.id]?.click()}
                             disabled={isUploading}
                             className="inline-flex items-center gap-1 rounded-md border border-border px-1.5 py-0.5 text-[11.5px] text-muted-foreground hover:bg-muted disabled:opacity-60"
-                            title={c.nf_url ? "Substituir NF" : "Anexar NF"}
+                            title={c.nf_arquivo || c.nf_url ? "Substituir NF" : "Anexar NF"}
                           >
                             {isUploading ? (
                               <><Loader2 className="h-3 w-3 animate-spin" /> enviando…</>
                             ) : (
-                              <><Paperclip className="h-3 w-3" /> {c.nf_url ? "trocar" : "anexar"}</>
+                              <><Paperclip className="h-3 w-3" /> {c.nf_arquivo || c.nf_url ? "trocar" : "anexar"}</>
                             )}
                           </button>
                         </div>

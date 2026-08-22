@@ -20,6 +20,7 @@ import { comValorExato } from "@/components/ValorExato";
 import AjusteSolicitadoModal from "./AjusteSolicitadoModal";
 import SolicitarJustificativasModal from "./SolicitarJustificativasModal";
 import ConferenciaModal from "./ConferenciaModal";
+import FacilitiesNfPropostas from "./FacilitiesNfPropostas";
 import { enviarProntos, enviarUnitario } from "@/lib/omieAnexos";
 import { WhatsAppLogo, OmieLogo } from "@/components/brand-logos";
 import { useAnexarComprovante } from "./useAnexarComprovante";
@@ -511,8 +512,9 @@ export default function Achados() {
     });
   }, [periodRows, filtro, fSev, fArea, fRegra, fCat, fResp, fAnexo, busca, nomeDaLinha]);
 
-  // Envio em massa via webhook do n8n: manda TODOS os pendentes (base do cartão + achados)
-  // do responsável selecionado — junho + julho, independente da fatura na tela (intencional).
+  // Envio em massa: manda TODOS os pendentes (base do cartão + achados) do responsável
+  // selecionado — junho + julho, independente da fatura na tela (intencional). O mesmo
+  // trabalho que o cron faz de madrugada; aqui é só o botão de "não quero esperar".
   const enviarMassaOmie = async () => {
     const responsavel = fResp === "todas" ? undefined : fResp;
     setEnviandoMassa(true);
@@ -525,7 +527,10 @@ export default function Achados() {
             : "Nenhum lançamento pendente para enviar (com comprovante + título do Omie).",
         );
       } else {
-        toast.success(`${resumo.enviados} enviados · ${resumo.jaEnviados} já enviados · ${resumo.erros} erros`);
+        toast.success(
+          `${resumo.enviados} enviados · ${resumo.erros} erros` +
+          (resumo.restam ? ` · ${resumo.restam} ficaram para a próxima rodada` : ""),
+        );
       }
       await load();
     } catch (e: any) {
@@ -548,9 +553,9 @@ export default function Achados() {
         omie_cod_titulo: row.omie_cod_titulo,
         link_comprovante: row.link_comprovante,
       });
-      toast.success(`${resumo.enviados} enviados · ${resumo.jaEnviados} já enviados · ${resumo.erros} erros`);
+      toast.success(`${resumo.enviados} enviados · ${resumo.erros} erros`);
       // Reflete localmente para o botão sumir sem esperar o reload (omie_anexo_enviado_em passa a ter valor).
-      if (resumo.enviados + resumo.jaEnviados > 0) {
+      if (resumo.enviados > 0) {
         const agora = new Date().toISOString();
         setSelected(s => s && s.id === row.id ? { ...s, omie_anexo_enviado_em: agora } : s);
       }
@@ -807,6 +812,9 @@ export default function Achados() {
           </Button>
         </div>
       </div>
+
+      {/* NFs que o Facilities mandou e o casamento não conseguiu decidir sozinho */}
+      <FacilitiesNfPropostas onAplicado={load} />
 
       {/* KPIs */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">

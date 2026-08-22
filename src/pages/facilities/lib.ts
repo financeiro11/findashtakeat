@@ -79,10 +79,32 @@ export interface Compra {
   categoria: string | null;
   forma_pagamento: "cartao_corporativo" | "pix_boleto" | "reembolso" | null;
   nf_status: "ok" | "pendente";
+  /** Legado: URL pública no bucket facilities-contratos. Novas NFs usam `nf_arquivo`. */
   nf_url: string | null;
+  /** Caminho no bucket PRIVADO comprovantes-auditoria — o mesmo que a auditoria lê. */
+  nf_arquivo: string | null;
+  nf_nome: string | null;
+  nf_enviada_em: string | null;
+  /** O que a IA transcreveu da nota: é o CNPJ daqui que deixa o casamento aplicar sozinho. */
+  nf_cnpj: string | null;
+  nf_numero: string | null;
+  nf_emissao: string | null;
+  nf_valor: number | null;
   valor: number;
   pagamento_status: PagamentoStatus;
   created_at: string;
+}
+
+/** Onde a NF desta compra parou do lado da Auditoria. */
+export type VinculoStatus = "proposto" | "aplicado" | "recusado" | "desfeito";
+export interface VinculoNf {
+  id: number;
+  compra_id: string;
+  alvo_tipo: "cartao" | "pix" | "achado";
+  alvo_id_unico: string;
+  confianca: "exata" | "alta" | "media" | "baixa";
+  status: VinculoStatus;
+  score: number | null;
 }
 
 export const PAGAMENTO_STATUS_OPTS: { key: PagamentoStatus; label: string; color: string; bg: string }[] = [

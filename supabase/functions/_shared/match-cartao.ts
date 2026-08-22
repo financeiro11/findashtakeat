@@ -1,4 +1,4 @@
-// Casamento lançamento do cartão ↔ movimento financeiro do Omie.
+﻿// Casamento lançamento do cartão ↔ movimento financeiro do Omie.
 //
 // Não existe id compartilhado entre a fatura do cartão e o Omie, então o casamento é
 // por VALOR (exato) + DATA (mais próxima, dentro de uma janela) e desempate por
@@ -10,7 +10,9 @@
 // título diferente daquele cuja categoria a tela está mostrando.
 
 export function normalize(s: string): string {
-  return (s || "").toString().normalize("NFD").replace(/[̀-ͯ]/g, "")
+  // \u0300-\u036f = os acentos que o NFD separou da letra. Escapado de propósito: escrito
+  // como caractere, é invisível no editor e some numa cópia desatenta do arquivo.
+  return (s || "").toString().normalize("NFD").replace(/[\u0300-\u036f]/g, "")
     .toUpperCase().replace(/[^A-Z0-9 ]/g, " ").replace(/\s+/g, " ").trim();
 }
 

@@ -203,6 +203,9 @@ async function semAcesso(): Promise<string> {
 export async function podeLerNoDrive(idOuUrl: string): Promise<{ ok: true } | { ok: false; erro: string }> {
   const id = extrairIdDrive(idOuUrl);
   if (!id) return { ok: false, erro: "O link não é um arquivo do Google Drive." };
+
+  if (!driveConfigurado()) return await podeLerPublico(id);
+
   try {
     const m = await metadados(id);
     if (m.mime.startsWith("application/vnd.google-apps")) {
@@ -210,9 +213,78 @@ export async function podeLerNoDrive(idOuUrl: string): Promise<{ ok: true } | { 
     }
     return { ok: true };
   } catch (e) {
+    const publico = await podeLerPublico(id);
+    if (publico.ok) return publico;
     if (e instanceof ErroDrive && e.status === 404) return { ok: false, erro: await semAcesso() };
     return { ok: false, erro: e instanceof Error ? e.message : String(e) };
   }
+}
+
+/**
+ * O link público abre? Pede só o primeiro KB — o bastante para saber se vem binário ou a
+ * página de "peça acesso". Barato o suficiente para rodar sobre a lista inteira do preview.
+ */
+export async function podeLerPublico(idOuUrl: string): Promise<{ ok: true } | { ok: false; erro: string }> {
+  const id = extrairIdDrive(idOuUrl) ?? String(idOuUrl).trim();
+  try {
+    const res = await fetch(
+      `https://drive.usercontent.google.com/download?id=${id}&export=download&confirm=t`,
+      { redirect: "follow", headers: { Range: "bytes=0-1023" } },
+    );
+    if (!res.ok && res.status !== 206) return { ok: false, erro: `Drive público respondeu ${res.status}.` };
+    const bytes = new Uint8Array(await res.arrayBuffer());
+    if (!bytes.length) return { ok: false, erro: "O Drive devolveu um arquivo vazio." };
+    if (ehHtml(bytes)) return { ok: false, erro: "O link não está compartilhado como \"qualquer pessoa com o link\"." };
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, erro: e instanceof Error ? e.message : String(e) };
+  }
+}
+
+/**
+ * Baixa pelo link PÚBLICO — sem conector, sem chave, sem conta conectada.
+ *
+ * Por que existe: os comprovantes que a auditoria recebe são links "qualquer pessoa com o
+ * link" (`/file/d/<ID>/view`) colados na planilha pelo próprio gestor. Para ESSES, o
+ * conector do Lovable é um intermediário caro que só atrapalha — enquanto ele não está
+ * configurado, o arquivo continua público e baixável. Foi assim que a transcrição dos 40
+ * comprovantes que faltavam rodou pelo navegador.
+ *
+ * O endpoint é o `drive.usercontent.google.com/download`, e não o velho `uc?export=download`:
+ * o antigo responde 200 com a PÁGINA de aviso de vírus para arquivos maiores, e teríamos
+ * que garimpar o token de confirmação no HTML. Com `confirm=t` o novo entrega o binário
+ * direto. Se ainda assim vier HTML, o arquivo não é público — e aí é erro de verdade.
+ */
+export async function baixarPublicoDoDrive(idOuUrl: string): Promise<ArquivoDrive> {
+  const id = extrairIdDrive(idOuUrl) ?? String(idOuUrl).trim();
+  if (!/^[a-zA-Z0-9_-]{10,}$/.test(id)) throw new Error("O link não é um arquivo do Google Drive.");
+
+  const res = await fetch(
+    `https://drive.usercontent.google.com/download?id=${id}&export=download&confirm=t`,
+    { redirect: "follow" },
+  );
+  if (!res.ok) {
+    throw new ErroDrive(res.status, "", `Drive público [${res.status}]: ${res.statusText}`);
+  }
+
+  const bytes = new Uint8Array(await res.arrayBuffer());
+  if (!bytes.length) throw new Error("O Drive devolveu um arquivo vazio.");
+  if (ehHtml(bytes)) {
+    throw new Error(
+      "O Drive devolveu uma página HTML em vez do arquivo — este link não está compartilhado " +
+      "como \"qualquer pessoa com o link\". Abra o arquivo no Drive e libere o acesso, ou " +
+      "configure o conector (GOOGLE_DRIVE_API_KEY).",
+    );
+  }
+
+  // O nome vem no content-disposition; o Google usa as duas formas (filename= e filename*=).
+  const cd = res.headers.get("content-disposition") ?? "";
+  const nome =
+    decodeURIComponent((cd.match(/filename\*=UTF-8''([^;]+)/i)?.[1] ?? "").trim()) ||
+    (cd.match(/filename="([^"]+)"/i)?.[1] ?? "").trim() ||
+    `comprovante-${id.slice(0, 8)}.pdf`;
+
+  return { bytes, nome, mime: (res.headers.get("content-type") ?? "application/octet-stream").split(";")[0] };
 }
 
 /**
@@ -220,18 +292,29 @@ export async function podeLerNoDrive(idOuUrl: string): Promise<{ ok: true } | { 
  *
  * `supportsAllDrives=true` é necessário quando o arquivo está num Drive compartilhado
  * (unidade de equipe) — sem isso o Google finge que ele não existe e devolve 404.
+ *
+ * Sem conector configurado (ou quando ele falha), cai no link público. A ordem é essa
+ * porque o conector é o único que enxerga arquivo restrito; o público é o que sempre
+ * funciona para o que já está compartilhado.
  */
 export async function baixarDoDrive(idOuUrl: string): Promise<ArquivoDrive> {
   const id = extrairIdDrive(idOuUrl) ?? idOuUrl;
+
+  if (!driveConfigurado()) return await baixarPublicoDoDrive(id);
 
   let meta: { nome: string; mime: string };
   try {
     meta = await metadados(id);
   } catch (e) {
     // Com a base já validada pela sonda, um 404 aqui é ACESSO, não rota: o Drive responde
-    // 404 (e não 403) para arquivo que a conta conectada não pode ver.
-    if (e instanceof ErroDrive && e.status === 404) throw new Error(await semAcesso());
-    throw e;
+    // 404 (e não 403) para arquivo que a conta conectada não pode ver. Antes de desistir,
+    // tenta o link público: "a conta conectada não vê" não quer dizer "ninguém vê".
+    try {
+      return await baixarPublicoDoDrive(id);
+    } catch (_) {
+      if (e instanceof ErroDrive && e.status === 404) throw new Error(await semAcesso());
+      throw e;
+    }
   }
 
   // Google Docs/Sheets/Slides nativos não têm binário — teriam que ser exportados. Um

@@ -104,21 +104,56 @@ export async function marcarEnviados(itens: ResItem[]): Promise<void> {
   }
 }
 
+/* ---------------------------------------------------------------------------
+ * O envio de verdade: a Edge Function `omie-anexar-comprovante`, ação "varredura".
+ *
+ * POR QUE SAIU DO n8n: o webhook recebe um LINK e vai buscar o arquivo. Isso funciona
+ * para o comprovante que veio do Drive, e só. Metade dos comprovantes de hoje foi subida
+ * pelo próprio Hub e mora no bucket PRIVADO (`link_comprovante` guarda o caminho, não uma
+ * URL) — o n8n recebia "hub/ACH-123/1787…_nota.pdf" e não tinha o que baixar. A função
+ * enxerga os dois casos, zipa como o Omie exige e CONFIRMA que o anexo colou antes de
+ * carimbar `omie_anexo_enviado_em`. O webhook fica aqui para o histórico e para diagnóstico.
+ * ------------------------------------------------------------------------- */
+
+type ResumoVarredura = {
+  ok?: boolean;
+  fila?: number;
+  enviados?: number;
+  falhas?: number;
+  /** quantos ficaram para a próxima rodada porque o worker tem tempo contado */
+  parou_por_tempo?: number;
+  detalhe_falhas?: { titulo: string; erro: string }[];
+  error?: string;
+};
+
+async function varrer(body: Record<string, unknown>) {
+  const { data, error } = await supabase.functions.invoke("omie-anexar-comprovante", {
+    body: { action: "varredura", ...body },
+  });
+  if (error) {
+    // FunctionsHttpError esconde a mensagem real no corpo — sem isto vira "non-2xx status".
+    const corpo = await (error as any)?.context?.text?.().catch(() => "");
+    throw new Error(corpo?.slice(0, 400) || error.message);
+  }
+  const r = data as ResumoVarredura;
+  if (r?.error) throw new Error(r.error);
+  if (r?.detalhe_falhas?.length) {
+    console.warn("[omieAnexos] falhas na varredura", r.detalhe_falhas);
+  }
+  return {
+    total: r?.fila ?? 0,
+    enviados: r?.enviados ?? 0,
+    restam: r?.parou_por_tempo ?? 0,
+    erros: r?.falhas ?? 0,
+  };
+}
+
 // Massa: por responsável (ou todos os pendentes se pessoa vazio).
 export async function enviarProntos(pessoa?: string) {
-  const items = await buscarProntos(pessoa);
-  const r = await enviarAoOmie(items);
-  await marcarEnviados(r.itens);
-  return r.resumo;
+  return await varrer({ responsavel: pessoa ?? null, limite: 120 });
 }
 
 // Unitário: a partir de uma linha já carregada na tela.
 export async function enviarUnitario(row: { id_unico: string; omie_cod_titulo: string | number; link_comprovante: string }) {
-  const r = await enviarAoOmie([{
-    idAuditoria: row.id_unico,
-    nId: Number(row.omie_cod_titulo),
-    driveLink: row.link_comprovante,
-  }]);
-  await marcarEnviados(r.itens);
-  return r.resumo;
+  return await varrer({ id_unico: row.id_unico, limite: 1 });
 }

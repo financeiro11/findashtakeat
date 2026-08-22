@@ -1,4 +1,4 @@
-// Cliente compartilhado da API do Omie.
+﻿// Cliente compartilhado da API do Omie.
 // A API do Omie é JSON estilo RPC: todo request é um POST com
 //   { call, app_key, app_secret, param: [ {...filtros...} ] }
 // As credenciais (par app_key + app_secret) vêm dos secrets do Supabase
@@ -125,14 +125,52 @@ async function md5Hex(data: Uint8Array | string): Promise<string> {
 const extDe = (nome: string) =>
   (nome.includes(".") ? nome.split(".").pop()! : "pdf").toLowerCase().replace(/[^a-z0-9]/g, "") || "pdf";
 
-/** Conta quantos anexos um título tem numa dada tabela (-1 se a tabela não for válida). */
+/** Extensões que o Omie tem cadastradas como tipo de anexo. Fora disto ele recusa. */
+const EXT_ANEXO: Record<string, string> = {
+  pdf: "pdf", jpg: "jpg", jpeg: "jpg", jfif: "jpg", png: "png",
+  xml: "xml", txt: "txt", doc: "doc", docx: "docx", xls: "xls", xlsx: "xlsx", zip: "zip",
+};
+
+/**
+ * O nome com que o arquivo entra no zip e na tag cNomeArquivo.
+ *
+ * DUAS RECUSAS REAIS do Omie, as duas resolvidas aqui:
+ *   • "O arquivo [X] não foi encontrado no arquivo zip encaminhado" — o unzip DELES não
+ *     acha a entrada quando o nome tem acento ou espaço ("Recibo do bilhete eletrônico,
+ *     29 Junho para FULANO.pdf"). O zip guarda em UTF-8; eles leem noutra tabela.
+ *   • "Tipo de Anexo não cadastrado para o Código [...]" — extensão fora da lista deles
+ *     (um .jpeg vindo do Drive, por exemplo).
+ * O nome bonito continua valendo no nosso lado: é o que gravamos em `omie_anexo_nome`.
+ */
+export function nomeSeguroParaOmie(nome: string): string {
+  const ext = EXT_ANEXO[extDe(nome)] ?? "pdf";
+  const base = String(nome ?? "")
+    .replace(/\.[^.]+$/, "")
+    .normalize("NFD").replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^A-Za-z0-9._-]+/g, "_")
+    .replace(/_+/g, "_")
+    .replace(/^[._-]+|[._-]+$/g, "")
+    .slice(0, 60) || "comprovante";
+  return `${base}.${ext}`;
+}
+
+/**
+ * Conta quantos anexos um título tem numa dada tabela.
+ *   >= 0  a contagem
+ *    -1   a tabela não vale para este registro (resposta de negócio do Omie)
+ *    -2   não deu para saber (rate limit / servidor deles) — NÃO é "tabela inválida"
+ *
+ * A distinção não é preciosismo: logo depois de um IncluirAnexo bem-sucedido, o Omie
+ * recusa a leitura seguinte por "consumo redundante". Tratar isso como tabela inválida
+ * fazia o anexo seguinte do MESMO título falhar com um diagnóstico mentiroso.
+ */
 async function contarAnexos(nId: number | string, cTabela: string): Promise<number> {
   try {
     const r = await omieCall<any>("geral/anexo", "ListarAnexo", { nId: Number(nId), cTabela, nPagina: 1, nRegPorPagina: 50 });
     const arr = r?.listaAnexos ?? r?.anexos ?? r?.arquivos ?? [];
     return Array.isArray(arr) ? arr.length : 0;
-  } catch {
-    return -1; // tabela inválida para este registro
+  } catch (e) {
+    return ehTransitorio(e instanceof Error ? e.message : String(e)) ? -2 : -1;
   }
 }
 
@@ -180,8 +218,9 @@ export async function incluirAnexo(opts: {
   //  • O sucesso é confirmado pela RESPOSTA (nIdAnexo), não por recontar via ListarAnexo —
   //    esse recontar sofria rate-limit e dava falso-negativo.
   // A doc pede zip; deixamos o arquivo cru como 2º recurso (contas antigas às vezes aceitam).
+  const nome = nomeSeguroParaOmie(opts.nome);
   const originalRaw = deBase64(opts.base64);
-  const zip = zipSync({ [opts.nome]: originalRaw }, { level: 6 });
+  const zip = zipSync({ [nome]: originalRaw }, { level: 6 });
   const zipB64 = toBase64(zip);
   const rawB64 = toBase64(originalRaw);
 
@@ -195,8 +234,11 @@ export async function incluirAnexo(opts: {
   let sufixo = 0;
 
   for (const cTabela of tabelas) {
-    const antes = await contarAnexos(opts.nId, cTabela);
-    if (antes < 0) { diagnostico.push(`${cTabela}: tabela inválida para este título`); continue; }
+    const contagem = await contarAnexos(opts.nId, cTabela);
+    if (contagem === -1) { diagnostico.push(`${cTabela}: tabela inválida para este título`); continue; }
+    // -2 = o Omie não deixou ler agora. Seguimos assim mesmo: quem confirma o envio é o
+    // nIdAnexo da resposta; a contagem é só o plano B.
+    const antes = contagem === -2 ? -2 : contagem;
 
     for (const v of variantes) {
       const cCodIntAnexo = `${baseCod}-${(sufixo++).toString(36)}`.slice(0, 20);
@@ -204,7 +246,7 @@ export async function incluirAnexo(opts: {
       try {
         resp = await omieCall<any>("geral/anexo", "IncluirAnexo", {
           cCodIntAnexo, cTabela, nId: Number(opts.nId),
-          cNomeArquivo: opts.nome, cTipoArquivo: extDe(opts.nome),
+          cNomeArquivo: nome, cTipoArquivo: extDe(nome),
           cArquivo: v.cArquivo, cMd5: v.cMd5,
         });
       } catch (e) {
@@ -224,6 +266,8 @@ export async function incluirAnexo(opts: {
 
       // Alguns tenants respondem nIdAnexo:0 mesmo gravando. Confirma pela contagem, com uma
       // folga p/ propagar (e poucas chamadas, p/ não cair no rate-limit que já nos enganou).
+      // Sem a contagem de antes (-2), não há o que comparar: não inventamos confirmação.
+      if (antes < 0) { diagnostico.push(`${cTabela}/${v.nome}: nIdAnexo=0 e sem leitura para confirmar`); continue; }
       await new Promise((r) => setTimeout(r, 1500));
       const depois = await contarAnexos(opts.nId, cTabela);
       if (depois > antes) return { cTabela, variante: v.nome, nIdAnexo: nIdAnexo || true };

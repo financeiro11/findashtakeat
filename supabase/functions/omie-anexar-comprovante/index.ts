@@ -8,7 +8,8 @@
 //     "Aprovado", mas ele NÃO existe em `auditoria` (é linha sintética do front).
 //
 // O comprovante pode estar no bucket `comprovantes-auditoria` (sempre legível) ou num
-// link do Google Drive (legível com o conector ligado E a conta com acesso ao arquivo).
+// link do Google Drive — este último pelo conector, quando configurado, e pelo link
+// público quando não (a maioria dos nossos é "qualquer pessoa com o link").
 //
 // O título do Omie é reencontrado por casamento (_shared/match-cartao.ts): valor exato +
 // data próxima + semelhança de texto. O anexo em si passa por _shared/omie.ts:incluirAnexo,
@@ -19,11 +20,19 @@
 //   "testar_drive"   → sonda o conector do Drive. NÃO toca no Omie.
 //   "enviar"         → envia. Params: { ids?: number[], escopo?: string[], todos?: bool }.
 //   "anexar_arquivo" → a pessoa sobe o arquivo e ele vai direto ao título. { id, nome, base64 }.
+//   "varredura"      → o cron: pega TODO comprovante que já tem título casado e ainda não
+//                      foi ao Omie e manda. Params: { limite?: number }. Header x-cron-token.
 //
 // `escopo` = id_transacao dos lançamentos visíveis com os filtros da tela (fatura +
 // responsável + busca…). Amarra o envio ao que está na tela; um único id = envio individual.
+//
+// POR QUE A VARREDURA NÃO PASSA PELO CASAMENTO: as ações da tela reencontram o título no
+// Omie listando movimentos e comparando valor/data/texto — caro e sujeito a "confiança
+// média" que ninguém confirma. Mas `omie_cod_titulo` JÁ ESTÁ GRAVADO nas duas tabelas (o
+// "Cruzar com Omie" gravou). Para o trabalho de fundo isso basta e é determinístico: quem
+// tem comprovante + título + nenhum carimbo de envio vai para o ERP.
 
-import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.0";
 import { incluirAnexo, listarCategorias, listarMovimentos, toBase64 } from "../_shared/omie.ts";
 import { casarComOmie, indexarMovimentos, MatchResult } from "../_shared/match-cartao.ts";
 import { baixarDoDrive, baseDoDrive, driveConfigurado, ehHtml, extrairIdDrive, podeLerNoDrive, sondarDrive, statusDrive } from "../_shared/drive.ts";
@@ -31,13 +40,17 @@ import { requireUser } from "../_shared/auth.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
+  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type, x-cron-token",
   "Access-Control-Allow-Methods": "POST, OPTIONS",
 };
 const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: { ...corsHeaders, "Content-Type": "application/json" } });
 
 const BUCKET = "comprovantes-auditoria";
+
+/** Teto por arquivo e teto de tempo por execução — os dois limites que o worker impõe. */
+const MAX_BYTES = 8 * 1024 * 1024;
+const ORCAMENTO_MS = 55_000;
 
 const nomeDoPath = (p: string) => {
   const base = p.split("/").pop() || "comprovante";
@@ -69,6 +82,231 @@ type Item = {
   detalhe?: string;     // mensagem específica do bloqueio
 };
 
+/* ============================================================================
+ *  Varredura — o trabalho de fundo
+ * ========================================================================== */
+
+type Pendente = {
+  origem: "achado" | "cartao";
+  id: number;
+  id_unico: string;
+  rotulo: string;
+  comprovante: string;
+  codTitulo: string;
+  id_transacao: string | null;
+};
+
+/** Baixa o comprovante, venha ele do bucket privado ou de um link do Drive. */
+async function baixarComprovante(
+  supabase: any,
+  comprovante: string,
+): Promise<{ bytes: Uint8Array; nome: string }> {
+  let bytes: Uint8Array;
+  let nome: string;
+
+  if (ehUrl(comprovante)) {
+    const arq = await baixarDoDrive(comprovante);
+    bytes = arq.bytes;
+    nome = arq.nome;
+  } else {
+    const { data: blob, error } = await supabase.storage.from(BUCKET).download(comprovante);
+    if (error || !blob) throw new Error(`Falha ao baixar do storage: ${error?.message ?? "arquivo não encontrado"}`);
+    bytes = new Uint8Array(await blob.arrayBuffer());
+    nome = nomeDoPath(comprovante);
+  }
+
+  if (!bytes.length) throw new Error("Arquivo vazio.");
+  if (ehHtml(bytes)) throw new Error("O arquivo baixado é uma página HTML, não um comprovante.");
+  // Zipar e converter para base64 faz umas três cópias do arquivo na memória do worker.
+  // Sem este corte, um PDF gordo derruba a execução INTEIRA (WORKER_RESOURCE_LIMIT) e leva
+  // junto os itens que ainda nem começaram. Melhor um item recusado com motivo.
+  if (bytes.length > MAX_BYTES) {
+    throw new Error(`Arquivo de ${(bytes.length / 1048576).toFixed(1)} MB — acima do limite de ${MAX_BYTES / 1048576} MB para anexar automaticamente.`);
+  }
+  return { bytes, nome };
+}
+
+/**
+ * Carimba o envio nos DOIS lados da mesma nota.
+ *
+ * Sem isto a varredura reenviaria tudo amanhã: a coluna `omie_anexo_enviado_em` é o único
+ * freio, e o caminho antigo só a escrevia no lançamento do cartão — os achados de julho em
+ * diante não têm lançamento de cartão (entram direto em `auditoria`), então ficavam para
+ * sempre "pendentes" mesmo depois de anexados.
+ */
+async function carimbar(supabase: any, opts: {
+  achadoId?: number | null;
+  cartaoId?: number | null;
+  cartaoIdUnico?: string | null;
+  idTransacao?: string | null;
+  codTitulo: string;
+  nome: string;
+  cTabela: string;
+  canal: string;
+}): Promise<void> {
+  const agora = new Date().toISOString();
+  const marca = { omie_anexo_enviado_em: agora, omie_anexo_nome: opts.nome, updated_at: agora };
+
+  if (opts.achadoId) {
+    const { data: atual } = await supabase.from("auditoria").select("trilha").eq("id", opts.achadoId).maybeSingle();
+    const trilha = Array.isArray(atual?.trilha) ? atual.trilha : [];
+    await supabase.from("auditoria").update({
+      ...marca,
+      omie_cod_titulo: String(opts.codTitulo),
+      trilha: [...trilha, {
+        em: agora,
+        por: opts.canal,
+        texto: `Comprovante anexado ao título ${opts.codTitulo} no Omie (${opts.nome}).`,
+        tipo: "comprovante_enviado_omie",
+        evento: "comprovante_enviado_omie",
+        canal: opts.canal,
+        omie_cod_titulo: String(opts.codTitulo),
+        cTabela: opts.cTabela,
+        arquivo: opts.nome,
+      }],
+    }).eq("id", opts.achadoId);
+  }
+
+  if (opts.cartaoId) {
+    await supabase.from("auditoria_cartao_lancamentos")
+      .update({ ...marca, omie_cod_titulo: String(opts.codTitulo) }).eq("id", opts.cartaoId);
+  }
+
+  // O outro lado da mesma nota, quando existe o vínculo.
+  if (opts.idTransacao && !opts.cartaoId) {
+    await supabase.from("auditoria_cartao_lancamentos").update(marca).eq("id_unico", opts.idTransacao);
+  }
+  if (opts.cartaoIdUnico && !opts.achadoId) {
+    await supabase.from("auditoria").update(marca).eq("id_transacao", opts.cartaoIdUnico);
+  }
+}
+
+export type FiltroVarredura = { responsavel?: string | null; idUnico?: string | null };
+
+/** Tudo que tem comprovante + título e ainda não foi ao Omie, dos dois lados. */
+async function pendentes(supabase: any, limite: number, filtro: FiltroVarredura = {}): Promise<Pendente[]> {
+  let qAch = supabase.from("auditoria")
+    .select("id, id_unico, titulo, link_comprovante, omie_cod_titulo, id_transacao")
+    .not("link_comprovante", "is", null).neq("link_comprovante", "")
+    .not("omie_cod_titulo", "is", null)
+    .is("omie_anexo_enviado_em", null);
+
+  let qCar = supabase.from("auditoria_cartao_lancamentos")
+    .select("id, id_unico, estabelecimento, descricao_original, link_comprovante, omie_cod_titulo")
+    .not("link_comprovante", "is", null).neq("link_comprovante", "")
+    .not("omie_cod_titulo", "is", null)
+    .is("omie_anexo_enviado_em", null);
+
+  // A tela filtra por pessoa — e a pessoa se chama `responsavel` no achado e `gestor` no
+  // lançamento do cartão. Enviar uma linha que não está na tela é o tipo de surpresa que
+  // faz alguém desconfiar do botão.
+  if (filtro.idUnico) {
+    qAch = qAch.eq("id_unico", filtro.idUnico);
+    qCar = qCar.eq("id_unico", filtro.idUnico);
+  } else if (filtro.responsavel) {
+    qAch = qAch.eq("responsavel", filtro.responsavel);
+    qCar = qCar.eq("gestor", filtro.responsavel);
+  }
+
+  const [ach, car] = await Promise.all([
+    qAch.order("data_lancamento", { ascending: false }).limit(limite),
+    qCar.order("data", { ascending: false }).limit(limite),
+  ]);
+  if (ach.error) throw ach.error;
+  if (car.error) throw car.error;
+
+  // UM ANEXO POR TÍTULO POR RODADA. Duas armadilhas, não uma:
+  //   • o achado e o lançamento do cartão que o originou apontam para o mesmo título; e
+  //   • DOIS achados diferentes podem apontar para o mesmo título (a fatura tem a tarifa e
+  //     a passagem no mesmo lançamento do Omie). Foi assim que a primeira execução tentou
+  //     anexar duas vezes no título 5504197016 — e a segunda voltou com um erro mentiroso,
+  //     porque o Omie recusa a leitura logo depois de uma escrita.
+  // O achado vem primeiro porque é ele que carrega a trilha da auditoria.
+  const titulos = new Set<string>();
+  const lista: Pendente[] = [];
+
+  for (const a of ach.data ?? []) {
+    const cod = String(a.omie_cod_titulo);
+    if (titulos.has(cod)) continue;
+    titulos.add(cod);
+    lista.push({
+      origem: "achado",
+      id: a.id,
+      id_unico: a.id_unico,
+      rotulo: a.titulo ?? a.id_unico,
+      comprovante: String(a.link_comprovante ?? ""),
+      codTitulo: cod,
+      id_transacao: a.id_transacao ?? null,
+    });
+  }
+
+  const vinculados = new Set(lista.map((p) => p.id_transacao).filter(Boolean));
+
+  for (const c of car.data ?? []) {
+    if (titulos.has(String(c.omie_cod_titulo)) || vinculados.has(c.id_unico)) continue;
+    titulos.add(String(c.omie_cod_titulo));
+    lista.push({
+      origem: "cartao",
+      id: c.id,
+      id_unico: c.id_unico,
+      rotulo: c.estabelecimento || c.descricao_original || c.id_unico,
+      comprovante: String(c.link_comprovante ?? ""),
+      codTitulo: String(c.omie_cod_titulo),
+      id_transacao: c.id_unico,
+    });
+  }
+
+  return lista.slice(0, limite);
+}
+
+async function varrer(supabase: any, cTabela: string, limite: number, canal: string, filtro: FiltroVarredura = {}) {
+  const fila = await pendentes(supabase, limite, filtro);
+  const enviados: any[] = [];
+  const falhas: any[] = [];
+  let parouPorTempo = 0;
+
+  // O worker é derrubado sem aviso quando estoura o orçamento dele, e quem morre no meio
+  // não devolve relatório nenhum. Preferimos parar por conta própria e deixar o resto para
+  // a próxima rodada do cron — a fila é a mesma consulta, então nada se perde.
+  const inicio = Date.now();
+
+  for (const [i, p] of fila.entries()) {
+    if (Date.now() - inicio > ORCAMENTO_MS) { parouPorTempo = fila.length - i; break; }
+    try {
+      const { bytes, nome } = await baixarComprovante(supabase, p.comprovante);
+
+      const { cTabela: cTabelaOk } = await incluirAnexo({
+        nId: p.codTitulo, cTabela, nome, base64: toBase64(bytes), codInt: codIntAnexo(p.id),
+      });
+
+      await carimbar(supabase, {
+        achadoId: p.origem === "achado" ? p.id : null,
+        cartaoId: p.origem === "cartao" ? p.id : null,
+        cartaoIdUnico: p.origem === "cartao" ? p.id_unico : null,
+        idTransacao: p.id_transacao,
+        codTitulo: p.codTitulo, nome, cTabela: cTabelaOk, canal,
+      });
+
+      console.log(`anexo OK · ${p.rotulo} · título ${p.codTitulo} · ${cTabelaOk}`);
+      enviados.push({ id_unico: p.id_unico, titulo: p.rotulo, omie_cod_titulo: p.codTitulo, arquivo: nome, cTabela: cTabelaOk });
+    } catch (err) {
+      const erro = err instanceof Error ? err.message : String(err);
+      console.error(`varredura falhou · ${p.rotulo} · título ${p.codTitulo} · ${erro}`);
+      falhas.push({ id_unico: p.id_unico, titulo: p.rotulo, omie_cod_titulo: p.codTitulo, erro });
+    }
+  }
+
+  return {
+    ok: true,
+    fila: fila.length,
+    enviados: enviados.length,
+    falhas: falhas.length,
+    parou_por_tempo: parouPorTempo,
+    detalhe_enviados: enviados,
+    detalhe_falhas: falhas,
+  };
+}
+
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
 
@@ -78,15 +316,33 @@ Deno.serve(async (req) => {
   );
 
   try {
-    await requireUser(req, { bloquearCargos: ["parcerias"] });
     const body = req.method === "POST" ? await req.json().catch(() => ({})) : {};
     const action = body?.action ?? "preview";
     const cTabela = String(body?.anexoTabela ?? "conta-pagar");
 
+    // Cron: token próprio, mesmo padrão da comprovantes-drive-sync. Fora isso, usuário logado.
+    const tok = req.headers.get("x-cron-token");
+    let ehCron = false;
+    if (tok) {
+      const { data } = await supabase.from("internal_cron_tokens")
+        .select("name").eq("name", "omie-anexar-comprovante").eq("token", tok).maybeSingle();
+      ehCron = !!data;
+    }
+    if (!ehCron) await requireUser(req, { bloquearCargos: ["parcerias"] });
+
+    /* -------- VARREDURA (cron ou botão "anexar tudo") -------- */
+    if (action === "varredura") {
+      const limite = Math.min(Math.max(Number(body?.limite ?? 40), 1), 120);
+      return json(await varrer(supabase, cTabela, limite, ehCron ? "cron" : "hub", {
+        responsavel: body?.responsavel ? String(body.responsavel) : null,
+        idUnico: body?.id_unico ? String(body.id_unico) : null,
+      }));
+    }
+
     /* -------- 1) Achados (tabela `auditoria`) Aprovados + com comprovante -------- */
     const { data: achados, error: achErr } = await supabase
       .from("auditoria")
-      .select("id, id_unico, titulo, valor, data_lancamento, status, link_comprovante, id_transacao")
+      .select("id, id_unico, titulo, valor, data_lancamento, status, link_comprovante, id_transacao, omie_cod_titulo, omie_anexo_enviado_em")
       .eq("status", "Aprovado")
       .not("link_comprovante", "is", null)
       .neq("link_comprovante", "");
@@ -95,7 +351,7 @@ Deno.serve(async (req) => {
     /* -------- 2) Lançamentos do cartão "aprovados direto" (status_nf=OK) + com comprovante -------- */
     const { data: cartoesOk, error: cOkErr } = await supabase
       .from("auditoria_cartao_lancamentos")
-      .select("id, id_unico, data, valor, estabelecimento, descricao_original, status_nf, link_comprovante, arquivo_comprovante, omie_anexo_enviado_em")
+      .select("id, id_unico, data, valor, estabelecimento, descricao_original, status_nf, link_comprovante, arquivo_comprovante, omie_cod_titulo, omie_anexo_enviado_em")
       .eq("status_nf", "OK")
       .not("link_comprovante", "is", null)
       .neq("link_comprovante", "");
@@ -105,7 +361,7 @@ Deno.serve(async (req) => {
     const idsTransacao = [...new Set((achados ?? []).map((a: any) => a.id_transacao).filter(Boolean))] as string[];
     const { data: cartoes, error: cartErr } = await supabase
       .from("auditoria_cartao_lancamentos")
-      .select("id, id_unico, data, valor, estabelecimento, descricao_original, omie_anexo_enviado_em")
+      .select("id, id_unico, data, valor, estabelecimento, descricao_original, omie_cod_titulo, omie_anexo_enviado_em")
       .in("id_unico", idsTransacao.length ? idsTransacao : ["__nenhum__"]);
     if (cartErr) throw cartErr;
     const cartaoPorId = new Map((cartoes ?? []).map((c: any) => [c.id_unico, c]));
@@ -122,12 +378,18 @@ Deno.serve(async (req) => {
 
     const comDrive = driveConfigurado();
 
+    // O título gravado vale mais que o recasado: o "Cruzar com Omie" já resolveu essa linha,
+    // e o casamento por valor/data pode devolver "média" para um título que já é certeza.
+    const doBanco = (cod: unknown): MatchResult | null =>
+      cod
+        ? { codigo: "", descricao: "título já casado na auditoria", codTitulo: String(cod), fornecedor: "", dataLabel: "", conf: "alta", dias: 0, sim: 1 }
+        : null;
+
     const motivo = (comprovante: string, match: MatchResult | null, jaEnviado: string | null): Motivo => {
       if (jaEnviado) return "ja_enviado";
       if (ehUrl(comprovante)) {
         const id = extrairIdDrive(comprovante);
         if (!id) return "comprovante_invalido";   // URL que não é do Drive
-        if (!comDrive) return "drive";
         return match?.codTitulo ? null : "sem_titulo";
       }
       if (!ehCaminhoStorage(comprovante)) return "comprovante_invalido"; // só o nome do arquivo
@@ -138,9 +400,11 @@ Deno.serve(async (req) => {
     const daAuditoria: Item[] = (achados ?? []).map((a: any) => {
       const c = a.id_transacao ? cartaoPorId.get(a.id_transacao) : null;
       const base = c ?? { valor: a.valor, data: a.data_lancamento, estabelecimento: a.titulo, descricao_original: null };
-      const match = casarComOmie(base as any, byValue, codToDesc);
+      const match = doBanco(a.omie_cod_titulo) ?? casarComOmie(base as any, byValue, codToDesc);
       const comprovante = String(a.link_comprovante ?? "");
-      const jaEnviado = c?.omie_anexo_enviado_em ?? null;
+      // O carimbo do PRÓPRIO achado conta: os achados de julho em diante não têm lançamento
+      // de cartão, e olhar só para `c` fazia o já-anexado voltar para a fila.
+      const jaEnviado = a.omie_anexo_enviado_em ?? c?.omie_anexo_enviado_em ?? null;
       return {
         achado_id: a.id,
         origem: "achado" as const,
@@ -163,7 +427,7 @@ Deno.serve(async (req) => {
     const doCartao: Item[] = (cartoesOk ?? [])
       .filter((c: any) => !jaCobertos.has(c.id_unico))
       .map((c: any) => {
-        const match = casarComOmie(c as any, byValue, codToDesc);
+        const match = doBanco(c.omie_cod_titulo) ?? casarComOmie(c as any, byValue, codToDesc);
         const comprovante = String(c.link_comprovante ?? "");
         return {
           achado_id: -c.id,
@@ -196,9 +460,9 @@ Deno.serve(async (req) => {
       elegiveis = elegiveis.filter((e) => (e.id_transacao && su.has(e.id_transacao)) || sa.has(e.achado_id));
     }
 
-    // Conector configurado NÃO significa arquivo legível. Antes de dizer que um item do Drive
-    // está pronto, conferimos que a conta conectada abre AQUELE arquivo. Só metadados.
-    if (comDrive) {
+    // Antes de dizer que um item do Drive está pronto, conferimos que o arquivo abre —
+    // pelo conector, se houver, ou pelo link público. Só o cabeçalho, não o arquivo inteiro.
+    {
       const doDrive = elegiveis.filter((e) => !e.bloqueio && ehUrl(e.comprovante));
       for (let i = 0; i < doDrive.length; i += 5) {
         await Promise.all(doDrive.slice(i, i + 5).map(async (e) => {
@@ -285,15 +549,16 @@ Deno.serve(async (req) => {
         return json({ error: err instanceof Error ? err.message : String(err) }, 200);
       }
 
-      const agora = new Date().toISOString();
-      if (item.cartao_id) {
-        await supabase.from("auditoria_cartao_lancamentos").update({ omie_cod_titulo: item.match.codTitulo, omie_anexo_enviado_em: agora, omie_anexo_nome: nomeArq, updated_at: agora }).eq("id", item.cartao_id);
-      }
-      if (item.origem === "achado") {
-        const { data: atual } = await supabase.from("auditoria").select("trilha").eq("id", item.achado_id).maybeSingle();
-        const trilha = Array.isArray((atual as any)?.trilha) ? (atual as any).trilha : [];
-        await supabase.from("auditoria").update({ trilha: [...trilha, { evento: "comprovante_enviado_omie", canal: "hub_upload", omie_cod_titulo: item.match.codTitulo, cTabela: cTabelaOk, arquivo: nomeArq, timestamp: agora }], updated_at: agora }).eq("id", item.achado_id);
-      }
+      await carimbar(supabase, {
+        achadoId: item.origem === "achado" ? item.achado_id : null,
+        cartaoId: item.cartao_id,
+        cartaoIdUnico: item.origem === "cartao" ? item.cartao_id_unico : null,
+        idTransacao: item.id_transacao,
+        codTitulo: item.match.codTitulo,
+        nome: nomeArq,
+        cTabela: cTabelaOk,
+        canal: "hub_upload",
+      });
 
       return json({ ok: true, anexado: true, omie_cod_titulo: item.match.codTitulo, cTabela: cTabelaOk, arquivo: nomeArq, storage_path: path });
     }
@@ -318,37 +583,22 @@ Deno.serve(async (req) => {
     for (const e of alvos) {
       try {
         // Busca o arquivo — do Drive ou do nosso bucket, conforme a origem.
-        let bytes: Uint8Array;
-        let nome: string;
-
-        if (ehUrl(e.comprovante)) {
-          const arq = await baixarDoDrive(e.comprovante);   // já recusa HTML e arquivo vazio
-          bytes = arq.bytes;
-          nome = arq.nome;
-        } else {
-          const { data: blob, error: dlErr } = await supabase.storage.from(BUCKET).download(e.comprovante);
-          if (dlErr || !blob) throw new Error(`Falha ao baixar do storage: ${dlErr?.message ?? "arquivo não encontrado"}`);
-          bytes = new Uint8Array(await blob.arrayBuffer());
-          nome = nomeDoPath(e.comprovante);
-        }
-
-        if (ehHtml(bytes)) throw new Error("O arquivo baixado é uma página HTML, não um comprovante.");
-        if (bytes.length === 0) throw new Error("Arquivo vazio.");
+        const { bytes, nome } = await baixarComprovante(supabase, e.comprovante);
 
         // incluirAnexo ZIPA, envia e CONFIRMA que o anexo colou (ou lança com diagnóstico).
         const { cTabela: cTabelaOk, variante } = await incluirAnexo({ nId: e.match!.codTitulo, cTabela, nome, base64: toBase64(bytes), codInt: codIntAnexo(e.achado_id) });
         console.log(`anexo OK · ${e.titulo} · título ${e.match!.codTitulo} · ${cTabelaOk} · ${variante}`);
 
-        const agora = new Date().toISOString();
-
-        if (e.cartao_id) {
-          await supabase.from("auditoria_cartao_lancamentos").update({ omie_cod_titulo: e.match!.codTitulo, omie_anexo_enviado_em: agora, omie_anexo_nome: nome, updated_at: agora }).eq("id", e.cartao_id);
-        }
-        if (e.origem === "achado") {
-          const { data: atual } = await supabase.from("auditoria").select("trilha").eq("id", e.achado_id).maybeSingle();
-          const trilha = Array.isArray((atual as any)?.trilha) ? (atual as any).trilha : [];
-          await supabase.from("auditoria").update({ trilha: [...trilha, { evento: "comprovante_enviado_omie", canal: "hub", omie_cod_titulo: e.match!.codTitulo, cTabela: cTabelaOk, arquivo: nome, timestamp: agora }], updated_at: agora }).eq("id", e.achado_id);
-        }
+        await carimbar(supabase, {
+          achadoId: e.origem === "achado" ? e.achado_id : null,
+          cartaoId: e.cartao_id,
+          cartaoIdUnico: e.origem === "cartao" ? e.cartao_id_unico : null,
+          idTransacao: e.id_transacao,
+          codTitulo: e.match!.codTitulo,
+          nome,
+          cTabela: cTabelaOk,
+          canal: "hub",
+        });
 
         enviados.push({ achado_id: e.achado_id, titulo: e.titulo, omie_cod_titulo: e.match!.codTitulo, cTabela: cTabelaOk, variante, arquivo: nome });
       } catch (err) {

@@ -3450,6 +3450,54 @@ export type Database = {
         }
         Relationships: []
       }
+      hub_novidades: {
+        Row: {
+          commits: Json
+          dia: string
+          gerado_em: string
+          itens: Json
+          n_commits: number
+          redigido_por: string
+          resumo: string | null
+        }
+        Insert: {
+          commits?: Json
+          dia: string
+          gerado_em?: string
+          itens?: Json
+          n_commits?: number
+          redigido_por?: string
+          resumo?: string | null
+        }
+        Update: {
+          commits?: Json
+          dia?: string
+          gerado_em?: string
+          itens?: Json
+          n_commits?: number
+          redigido_por?: string
+          resumo?: string | null
+        }
+        Relationships: []
+      }
+      hub_novidades_leitura: {
+        Row: {
+          atualizado_em: string
+          user_id: string
+          visto_ate: string
+        }
+        Insert: {
+          atualizado_em?: string
+          user_id: string
+          visto_ate: string
+        }
+        Update: {
+          atualizado_em?: string
+          user_id?: string
+          visto_ate?: string
+        }
+        Relationships: []
+      }
       internal_cron_tokens: {
         Row: {
           criado_em: string
@@ -4130,6 +4178,9 @@ export type Database = {
       }
       nf_os_omie: {
         Row: {
+          asaas_anexado_em: string | null
+          asaas_anexo_erro: string | null
+          asaas_anexos: Json
           atualizado_em: string
           c_cod_int_os: string | null
           c_num_os: string | null
@@ -4153,6 +4204,9 @@ export type Database = {
           valor: number | null
         }
         Insert: {
+          asaas_anexado_em?: string | null
+          asaas_anexo_erro?: string | null
+          asaas_anexos?: Json
           atualizado_em?: string
           c_cod_int_os?: string | null
           c_num_os?: string | null
@@ -4176,6 +4230,9 @@ export type Database = {
           valor?: number | null
         }
         Update: {
+          asaas_anexado_em?: string | null
+          asaas_anexo_erro?: string | null
+          asaas_anexos?: Json
           atualizado_em?: string
           c_cod_int_os?: string | null
           c_num_os?: string | null
@@ -4380,6 +4437,51 @@ export type Database = {
           rubrica_dre_de?: string | null
           rubrica_dre_para?: string | null
           valor?: number | null
+        }
+        Relationships: []
+      }
+      omie_clientes_criados: {
+        Row: {
+          atualizado_em: string
+          criado_em: string
+          doc: string
+          fonte_endereco: string | null
+          id_asaas: string | null
+          motivo: string | null
+          n_cod_cli: number | null
+          nome: string | null
+          origem: string | null
+          payload: Json | null
+          situacao: string
+          tentativas: number
+        }
+        Insert: {
+          atualizado_em?: string
+          criado_em?: string
+          doc: string
+          fonte_endereco?: string | null
+          id_asaas?: string | null
+          motivo?: string | null
+          n_cod_cli?: number | null
+          nome?: string | null
+          origem?: string | null
+          payload?: Json | null
+          situacao: string
+          tentativas?: number
+        }
+        Update: {
+          atualizado_em?: string
+          criado_em?: string
+          doc?: string
+          fonte_endereco?: string | null
+          id_asaas?: string | null
+          motivo?: string | null
+          n_cod_cli?: number | null
+          nome?: string | null
+          origem?: string | null
+          payload?: Json | null
+          situacao?: string
+          tentativas?: number
         }
         Relationships: []
       }
@@ -7474,6 +7576,7 @@ export type Database = {
           valor_padrao: number
         }[]
       }
+      doc_fiscal_valido: { Args: { p_doc: string }; Returns: boolean }
       ebitda_ajuste_candidatos: {
         Args: { p_mes: string; p_piso?: number; p_rubricas: string[] }
         Returns: {
@@ -7776,6 +7879,7 @@ export type Database = {
           id_asaas: string
           motivo: string
           n_cod_os: number
+          nfse_chave: string
           nfse_numero: string
           operador: string
           resultado: string
@@ -7795,6 +7899,7 @@ export type Database = {
           n_cod_os: number
           nf_asaas_numero: string
           nf_asaas_status: string
+          nfse_chave: string
           nfse_mensagem: string
           nfse_numero: string
           nfse_status: string
@@ -7828,6 +7933,35 @@ export type Database = {
           rubrica_dfc: string
           rubrica_dre: string
           usos: number
+        }[]
+      }
+      omie_clientes_a_criar: {
+        Args: { p_ate?: string; p_de?: string; p_limite?: number }
+        Returns: {
+          bairro: string
+          bloqueio: string
+          cep: string
+          cidade: string
+          cobrancas: number
+          complemento: string
+          doc: string
+          email: string
+          endereco: string
+          endereco_numero: string
+          estado: string
+          id_asaas: string
+          motivo_anterior: string
+          nome: string
+          omie_doc: string
+          omie_nome: string
+          pessoa_fisica: boolean
+          sem_nota_hoje: number
+          situacao_anterior: string
+          telefone: string
+          tentativas: number
+          ultima: string
+          valor: number
+          via: string
         }[]
       }
       omie_lancamento: {

@@ -41,6 +41,64 @@ import { comparaPrioridade } from "@/lib/tarefas/prioridade";
 export type { Subtarefa } from "@/components/tarefas/TaskDialog";
 const COLUMNS_CFG_KEY = "tarefas.columns.cfg.v1";
 const LEGACY_EXTRA_KEY = "tarefas.columns.extra.v1";
+const FILTROS_KEY = "tarefas.filtros.v1";
+
+/* O que a pessoa escolheu na barra de filtros sobrevive a sair da página e
+   voltar — inclusive a um F5. É escolha de quem olha, não estado da tela:
+   quem trabalha filtrado por "Henrique / atrasadas" perde o recorte a cada ida
+   ao DRE e refaz os quatro cliques.
+   Fica de fora a BUSCA por texto: ela é pergunta de um momento ("cadê a
+   fatura?"), e voltar dias depois com a lista cortada por uma palavra
+   esquecida esconde tarefa sem dizer por quê.
+   Os valores voltam validados contra as opções que existem hoje — período
+   inventado ou responsável que saiu do time viraria um filtro que não casa com
+   nada, e o quadro abriria vazio sem nenhum jeito de descobrir o motivo. */
+type FiltrosSalvos = {
+  view: "kanban" | "tabela" | "analise" | "historico";
+  periodo: string;
+  prio: string;
+  resp: string;
+  atrasadas: boolean;
+  fStatus: string[];
+  fPrioridade: string[];
+  fResponsavel: string[];
+};
+
+const FILTROS_PADRAO: FiltrosSalvos = {
+  view: "kanban",
+  periodo: "mes",
+  prio: "",
+  resp: "",
+  atrasadas: false,
+  fStatus: [],
+  fPrioridade: [],
+  fResponsavel: [],
+};
+
+const VIEWS_VALIDAS = ["kanban", "tabela", "analise", "historico"];
+const PERIODOS_VALIDOS = ["", "mes", "3m", "ano"];
+const RESPONSAVEIS = ["Henrique", "Júlia"];
+
+function loadFiltros(): FiltrosSalvos {
+  try {
+    const raw = localStorage.getItem(FILTROS_KEY);
+    if (!raw) return FILTROS_PADRAO;
+    const p = JSON.parse(raw) as Partial<FiltrosSalvos>;
+    const lista = (v: unknown) => (Array.isArray(v) ? v.filter(x => typeof x === "string") : []);
+    return {
+      view: VIEWS_VALIDAS.includes(p.view as string) ? (p.view as FiltrosSalvos["view"]) : FILTROS_PADRAO.view,
+      periodo: PERIODOS_VALIDOS.includes(p.periodo as string) ? (p.periodo as string) : FILTROS_PADRAO.periodo,
+      prio: PRIO_OPTS.includes(p.prio as string) ? (p.prio as string) : "",
+      resp: RESPONSAVEIS.includes(p.resp as string) ? (p.resp as string) : "",
+      atrasadas: p.atrasadas === true,
+      fStatus: lista(p.fStatus),
+      fPrioridade: lista(p.fPrioridade),
+      fResponsavel: lista(p.fResponsavel),
+    };
+  } catch {
+    return FILTROS_PADRAO;
+  }
+}
 
 type ColorId = "muted" | "warning" | "orange" | "blue" | "success" | "purple" | "pink" | "destructive";
 
@@ -262,7 +320,8 @@ function Sparkline({ data, color }: { data: number[]; color: string }) {
 export default function Tarefas() {
   const { user, profile } = useAuth();
   const [rows, setRows] = useState<Tarefa[]>([]);
-  const [view, setView] = useState<"kanban" | "tabela" | "analise" | "historico">("kanban");
+  const [filtrosIniciais] = useState(loadFiltros); // lê o localStorage uma vez, na montagem
+  const [view, setView] = useState<"kanban" | "tabela" | "analise" | "historico">(filtrosIniciais.view);
 
   // Registra uma ação num card no histórico (tarefas_log). Best-effort: nunca quebra a
   // ação principal — se a tabela ainda não existir, o erro é ignorado silenciosamente.
@@ -436,15 +495,27 @@ export default function Tarefas() {
   };
 
   // Filtros chips topo
-  const [chipPrio, setChipPrio] = useState<string>("");
-  const [chipResp, setChipResp] = useState<string>("");
-  const [chipAtrasadas, setChipAtrasadas] = useState(false);
-  const [chipPeriodo, setChipPeriodo] = useState<string>("mes"); // "", "mes", "3m", "ano"
+  const [chipPrio, setChipPrio] = useState<string>(filtrosIniciais.prio);
+  const [chipResp, setChipResp] = useState<string>(filtrosIniciais.resp);
+  const [chipAtrasadas, setChipAtrasadas] = useState(filtrosIniciais.atrasadas);
+  const [chipPeriodo, setChipPeriodo] = useState<string>(filtrosIniciais.periodo); // "", "mes", "3m", "ano"
 
   // Filtros tabela (header)
-  const [fStatus, setFStatus] = useState<string[]>([]);
-  const [fPrioridade, setFPrioridade] = useState<string[]>([]);
-  const [fResponsavel, setFResponsavel] = useState<string[]>([]);
+  const [fStatus, setFStatus] = useState<string[]>(filtrosIniciais.fStatus);
+  const [fPrioridade, setFPrioridade] = useState<string[]>(filtrosIniciais.fPrioridade);
+  const [fResponsavel, setFResponsavel] = useState<string[]>(filtrosIniciais.fResponsavel);
+
+  /* Grava a cada mudança, e não ao sair: a saída daqui costuma ser um clique na
+     sidebar, que desmonta a página sem passar por lugar nenhum onde dê para
+     salvar com garantia. */
+  useEffect(() => {
+    try {
+      localStorage.setItem(FILTROS_KEY, JSON.stringify({
+        view, periodo: chipPeriodo, prio: chipPrio, resp: chipResp,
+        atrasadas: chipAtrasadas, fStatus, fPrioridade, fResponsavel,
+      } satisfies FiltrosSalvos));
+    } catch { /* modo privado */ }
+  }, [view, chipPeriodo, chipPrio, chipResp, chipAtrasadas, fStatus, fPrioridade, fResponsavel]);
 
   const load = async () => {
     // Arquivada continua no banco (o histórico aponta para ela), mas fora do Kanban.
@@ -469,7 +540,7 @@ export default function Tarefas() {
     return v?.trim() || "—";
   };
 
-  const responsaveis = useMemo(() => ["Henrique", "Júlia"], []);
+  const responsaveis = useMemo(() => RESPONSAVEIS, []);
 
   const periodoMatch = (r: Tarefa) => {
     if (!chipPeriodo) return true;

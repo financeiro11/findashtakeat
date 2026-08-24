@@ -45,12 +45,32 @@ export type LinkPublico = {
  *  Endereços
  * ------------------------------------------------------------------ */
 
+/** Só a máquina de quem está desenvolvendo. */
+const EM_CASA = /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\]|192\.168\.|10\.)/;
+
+/**
+ * O domínio que vai DENTRO do link — e que não é necessariamente o da aba atual.
+ *
+ * Estes endereços existem para sair daqui: vão para o WhatsApp de alguém. Copiado de
+ * dentro do preview do Lovable, `window.location.origin` devolveria o domínio do
+ * preview — que quem está de fora não abre, e o link chegaria quebrado sem nada acusar.
+ * `VITE_HUB_URL` (o mesmo valor de `hub_base_url()` no banco) manda.
+ *
+ * Em localhost vale a própria máquina, senão não dá para testar a funcionalidade.
+ */
+export function baseDoHub(): string {
+  const atual = window.location.origin;
+  const canonico = (import.meta.env.VITE_HUB_URL as string | undefined)?.trim();
+  if (!canonico || EM_CASA.test(atual)) return atual;
+  return canonico.replace(/\/+$/, "");
+}
+
 export function urlDaNota(pageId: string): string {
-  return `${window.location.origin}/notas/${pageId}`;
+  return `${baseDoHub()}/notas/${pageId}`;
 }
 
 export function urlPublica(token: string): string {
-  return `${window.location.origin}/n/${token}`;
+  return `${baseDoHub()}/n/${token}`;
 }
 
 /**

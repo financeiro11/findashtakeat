@@ -8,6 +8,7 @@ import { openAIAssistant } from "@/components/AIAssistant";
 import { useAuth } from "@/hooks/useAuth";
 import { Link } from "react-router-dom";
 import { TaskDialog, DEFAULT_COLUMNS, type Tarefa } from "@/components/tarefas/TaskDialog";
+import { NovidadesResumo } from "@/components/briefing/NovidadesResumo";
 import { conciliarPagamentos, descreverTitulo, type Conciliacao, type Situacao, type TituloOmie } from "@/lib/pagamentos";
 import {
   Sparkles, RefreshCw, Loader2, CalendarDays, AlertTriangle, Mail,
@@ -554,6 +555,10 @@ function BriefingView({ b, vm, tarefas, meNome, titulosOmie, erroOmie, onAtualiz
           </button>
         </div>
       </div>
+
+      {/* ---------------- O que mudou no Hub (ontem) ----------------
+          Some sozinho quando não houve mudança nenhuma — ver NovidadesResumo. */}
+      <NovidadesResumo />
 
       {/* ---------------- Agenda + coluna lateral ---------------- */}
       {vm.temEstruturado ? (

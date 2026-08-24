@@ -11,6 +11,7 @@ import DashboardLegacy from "./pages/DashboardLegacy";
 import Caixa from "./pages/Caixa";
 import ContaCorrente from "./pages/ContaCorrente";
 import Briefing from "./pages/Briefing";
+import NovidadesHub from "./pages/NovidadesHub";
 import Login from "./pages/Login";
 import Usuarios from "./pages/Usuarios";
 import Parametrizacao from "./pages/configuracoes/Parametrizacao";
@@ -133,6 +134,7 @@ function Rotas() {
           {/* Atalhos: o que virou aba no celular redireciona em vez de dizer "abra no PC".
               Vale para link colado do desktop — /governanca/cartao abre a aba certa. */}
           <Route path="/briefing" element={<Navigate to="/" replace />} />
+          <Route path="/briefing/novidades" element={<Navigate to="/" replace />} />
           <Route path="/playbook" element={<Navigate to="/notas" replace />} />
           <Route path="/governanca/cartao" element={<Navigate to="/extratos?fonte=cartao" replace />} />
           <Route path="/caixa/conta-corrente/sicoob" element={<Navigate to="/extratos?fonte=sicoob" replace />} />
@@ -154,6 +156,9 @@ function Rotas() {
               <Route path="/" element={<Dashboard />} />
               <Route path="/dashboard-legacy" element={<DashboardLegacy />} />
               <Route path="/briefing" element={<Briefing />} />
+              {/* O que mudou no PRÓPRIO Hub. Mora debaixo do briefing porque é a
+                  mesma leitura de manhã — ver pages/NovidadesHub.tsx. */}
+              <Route path="/briefing/novidades" element={<NovidadesHub />} />
               <Route path="/caixa" element={<Caixa />} />
               <Route path="/caixa/conta-corrente/:banco" element={<ContaCorrente />} />
               <Route path="/design-system" element={<DesignSystem />} />

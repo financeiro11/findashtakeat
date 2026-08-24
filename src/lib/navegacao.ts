@@ -13,7 +13,7 @@ import {
   FileText, Smartphone, Plane, LayoutDashboard, Kanban, FileSpreadsheet, Truck,
   History, FileSignature, Gavel, CheckCircle2, PieChart, TrendingUp, FileBarChart,
   Scale, Target, Brain, Wallet2, ShieldCheck, Megaphone, UserMinus, UserCog, Tags,
-  Palette, Mic,
+  Palette, Mic, Rocket,
   type LucideIcon,
 } from "lucide-react";
 import type { ModuleAccess, ModuleId } from "./modules";
@@ -56,6 +56,7 @@ export const GRUPOS_FINANCEIRO: NavGrupo[] = [
     // em toda página (AIAssistant, montado no AppLayout) — sempre a um clique, sem exigir
     // que a pessoa saia de onde está para perguntar.
     { title: "Briefing", url: "/briefing", icon: Sparkles, busca: ["diário", "agenda", "e-mails", "notícias"] },
+    { title: "Novidades do Hub", url: "/briefing/novidades", icon: Rocket, busca: ["mudanças", "changelog", "o que mudou", "atualizações", "versão"] },
     { title: "Caixa", url: "/caixa", icon: Landmark, badge: "OMIE", busca: ["saldo", "banco", "capital de giro", "ponto de equilíbrio"] },
     { title: "Asaas", url: "/asaas", icon: CreditCard, busca: ["cobranças", "recebimentos", "estornos"] },
     { title: "Assinaturas", url: "/assinaturas", icon: Repeat, busca: ["mrr", "recorrência", "churn", "carteira"] },

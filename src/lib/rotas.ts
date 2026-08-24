@@ -11,6 +11,7 @@ export const ROTAS: Record<string, { crumbs: string[]; context?: string }> = {
   "/caixa/conta-corrente/sicoob": { crumbs: ["Início", "Caixa", "Conta Corrente"], context: "Extrato Sicoob" },
   "/caixa/conta-corrente/asaas": { crumbs: ["Início", "Caixa", "Conta Corrente"], context: "Extrato Asaas" },
   "/briefing": { crumbs: ["Início", "Briefing Diário"], context: "Resumo do dia · agenda · e-mails · notícias" },
+  "/briefing/novidades": { crumbs: ["Início", "Briefing Diário", "Novidades do Hub"], context: "O que mudou na própria ferramenta · lido dos commits publicados" },
   "/design-system": { crumbs: ["Início", "Design System"] },
   "/governanca/auditoria": { crumbs: ["Governança", "Auditoria"], context: "Achados do extrato · PIX e cartão" },
   "/governanca/cartao": { crumbs: ["Governança", "Cartão"], context: "Evolução da fatura · Sicoob" },

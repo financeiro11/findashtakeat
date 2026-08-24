@@ -13,7 +13,7 @@ import {
   FileText, Smartphone, Plane, LayoutDashboard, Kanban, FileSpreadsheet, Truck,
   History, FileSignature, Gavel, CheckCircle2, PieChart, TrendingUp, FileBarChart,
   Scale, Target, Brain, Wallet2, ShieldCheck, Megaphone, UserMinus, UserCog, Tags,
-  Palette, Mic, Rocket,
+  Palette, Mic, Rocket, Globe2,
   type LucideIcon,
 } from "lucide-react";
 import type { ModuleAccess, ModuleId } from "./modules";
@@ -93,7 +93,8 @@ export const GRUPOS_FINANCEIRO: NavGrupo[] = [
     { title: "Projetos Aprovados", url: "/editais/projetos-aprovados", icon: CheckCircle2, busca: ["prestação de contas"] },
   ]},
   { label: "Investimentos", items: [
-    { title: "Captable", url: "/captable", icon: PieChart, busca: ["sócios", "cap table", "equity"] },
+    { title: "Captable", url: "/captable", icon: PieChart, busca: ["sócios", "cap table", "equity", "diluição", "simulador", "pre-money"] },
+    { title: "O Flip", url: "/investimentos/flip", icon: Globe2, busca: ["cayman", "delaware", "series a", "holding", "rodada", "dgf", "seed", "spa"] },
     { title: "Takeat LTD/LLC", url: "/investimentos", icon: TrendingUp, busca: ["exterior", "financials"] },
   ]},
   { label: "Demonstrações", items: [

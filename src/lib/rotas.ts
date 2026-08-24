@@ -33,6 +33,7 @@ export const ROTAS: Record<string, { crumbs: string[]; context?: string }> = {
   "/operacional/estornos": { crumbs: ["Operacional", "Estornos"], context: "Estornado no Asaas × planilha de churn · churn real do mês" },
   "/operacional/notas-fiscais": { crumbs: ["Operacional", "Notas Fiscais"], context: "Cobranças do Asaas × NFS-e do Omie · emissão em lote pela Ordem de Serviço" },
   "/investimentos": { crumbs: ["Investimentos", "Takeat LTD/LLC"], context: "Financials LTD & LLC · export do contador" },
+  "/investimentos/flip": { crumbs: ["Investimentos", "O Flip"], context: "Reestruturação societária e Series A · fechamento em 22/dez/2025" },
   "/captable": { crumbs: ["Investimentos", "Captable"], context: "Sócios e participação" },
   "/playbook": { crumbs: ["Time Financeiro", "Anotações"], context: "Notas e playbook do time" },
   "/notas": { crumbs: ["Time Financeiro", "Anotações"], context: "Workspace · notas do time" },

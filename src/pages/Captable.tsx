@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import {
   Plus, Trash2, Pencil, Search, SlidersHorizontal, FileDown,
-  Calendar as CalendarIcon, ChevronRight,
+  Calendar as CalendarIcon, ChevronRight, Sparkles,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -12,6 +13,7 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import { comValorExato } from "@/components/ValorExato";
+import SimuladorTab from "./captable/SimuladorTab";
 
 /* ============== Tipos ============== */
 type Round = {
@@ -146,7 +148,10 @@ const ownershipBarColor = (id: string) => {
 export default function Captable() {
   const [state, setState] = useState<State>(SEED);
   const [yearFilter, setYearFilter] = useState<string>("all");
-  const [tab, setTab] = useState<string>("resumo");
+  // `?aba=simulador` — é o link que a página do flip usa para trazer alguém
+  // direto ao simulador, sem passar pelo Resumo.
+  const [params] = useSearchParams();
+  const [tab, setTab] = useState<string>(() => params.get("aba") || "resumo");
   const [search, setSearch] = useState("");
 
   const [editing, setEditing] = useState<{ sId: string; rId: string } | null>(null);
@@ -210,6 +215,17 @@ export default function Captable() {
     const q = search.toLowerCase();
     return linhas.filter(l => l.s.nome.toLowerCase().includes(q));
   }, [linhas, search]);
+
+  /* A base que o Simulador usa quando a pessoa escolhe "ledger desta tela":
+     o ownership consolidado, sem as rodadas — para simular o que vem DEPOIS,
+     só interessa quantas ações cada um tem hoje. O SOP é marcado como pool
+     porque é a única posição que o simulador trata de forma diferente. */
+  const baseParaSimulador = useMemo(
+    () => linhas
+      .filter(l => l.totShares > 0)
+      .map(l => ({ id: l.s.id, nome: l.s.nome, acoes: l.totShares, ehPool: isSOP(l.s.nome) })),
+    [linhas]
+  );
 
   /* Ordenação para o "Sumário de Ownership" — maiores primeiro */
   const linhasOrd = useMemo(
@@ -349,6 +365,9 @@ export default function Captable() {
               <TabsList className="h-8 bg-muted/60">
                 <TabsTrigger value="resumo" className="h-6 text-xs">Resumo</TabsTrigger>
                 <TabsTrigger value="diluicao" className="h-6 text-xs">Diluição</TabsTrigger>
+                <TabsTrigger value="simulador" className="h-6 gap-1 text-xs">
+                  <Sparkles className="h-3 w-3" /> Simulador
+                </TabsTrigger>
                 <TabsTrigger value="vesting" className="h-6 text-xs">Vesting</TabsTrigger>
                 <TabsTrigger value="documentos" className="h-6 text-xs">Documentos</TabsTrigger>
               </TabsList>
@@ -650,6 +669,14 @@ export default function Captable() {
         {/* ============ Diluição ============ */}
         <TabsContent value="diluicao" className="mt-0">
           <DiluicaoView state={state} />
+        </TabsContent>
+
+        {/* ============ Simulador ============ */}
+        {/* Diluição olha para trás (o que já aconteceu, rodada a rodada);
+            o Simulador olha para frente. Por isso são abas separadas e não
+            uma só com um botão de "modo". */}
+        <TabsContent value="simulador" className="mt-0">
+          <SimuladorTab baseLedger={baseParaSimulador} />
         </TabsContent>
 
         {/* ============ Vesting ============ */}

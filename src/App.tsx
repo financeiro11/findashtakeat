@@ -51,6 +51,7 @@ import Captable from "./pages/Captable";
 import Parceiros from "./pages/Parceiros";
 import Orcamento from "./pages/Orcamento";
 import Investimentos from "./pages/Investimentos";
+import Flip from "./pages/investimentos/Flip";
 import Asaas from "./pages/Asaas";
 import Assinaturas from "./pages/Assinaturas";
 import Auditoria from "./pages/Auditoria";
@@ -219,6 +220,10 @@ function Rotas() {
               <Route path="/operacional/parceiros" element={<Parceiros />} />
               <Route path="/orcamento" element={<Orcamento />} />
               <Route path="/investimentos" element={<Investimentos />} />
+              {/* O flip é história, não demonstração: mora ao lado dos financials
+                  porque é a mesma pergunta ("o que temos lá fora?"), mas numa rota
+                  própria — o texto dos quatro cadernos não cabe numa aba. */}
+              <Route path="/investimentos/flip" element={<Flip />} />
               <Route path="/asaas" element={<Asaas />} />
               <Route path="/assinaturas" element={<Assinaturas />} />
               <Route path="/governanca/auditoria" element={<Auditoria />} />

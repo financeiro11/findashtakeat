@@ -75,6 +75,20 @@ type ColumnsCfg = {
    para sempre, sugerindo um lugar onde nada mais chega. */
 const COLUNAS_APOSENTADAS = ["automações"];
 
+/* Colunas que o SISTEMA escreve, e por isso não se apagam.
+   Não é "coluna padrão" — "Em andamento" e "Tasks - RPA" também são padrão e
+   podem sumir sem consequência, porque ninguém grava nelas por código.
+   Estas duas são outra coisa:
+     Backlog  — é o default da coluna no Postgres e o destino de todo insert
+                automático (RPC do cartão, RPC das automações, gatilho do
+                Facilities, app do celular, planilha de viagens). Sem ela, tarefa
+                nova nasceria num lugar que não existe no quadro.
+     Concluído — não é coluna, é estado: `isAtrasada` a ignora, o contador de
+                concluídas a procura pelo nome, e a RPC das automações só
+                reabre tarefa que não esteja nela.
+   Apagar qualquer uma das duas não esconderia uma coluna — quebraria a regra. */
+const COLUNAS_ESTRUTURAIS = ["Backlog", "Concluído"];
+
 function loadColumnsCfg(): ColumnsCfg {
   try {
     const raw = localStorage.getItem(COLUMNS_CFG_KEY);
@@ -338,16 +352,46 @@ export default function Tarefas() {
     });
   };
   const removeColumn = async (col: string) => {
-    if (DEFAULT_COLUMNS.includes(col)) { toast.error("Coluna padrão não pode ser removida"); return; }
-    if (rows.some(r => r.status === col)) {
-      toast.error("Mova ou exclua as tarefas desta coluna antes de removê-la");
+    if (COLUNAS_ESTRUTURAIS.includes(col)) {
+      toast.error(`"${col}" não pode ser excluída — o sistema grava nela.`);
       return;
     }
+
+    /* As tarefas que estavam ali vão para o Backlog ANTES de a coluna sumir.
+       Deixá-las com o status antigo seria pior do que apagá-las: continuam no
+       banco e nos relatórios, mas o quadro só desenha as colunas configuradas —
+       somem da tela sem erro nenhum. Foi exatamente o que aconteceu com a coluna
+       "automações" (ver a migration 20260824120000).
+
+       Sem filtrar por `arquivada_em`, de propósito: tarefa arquivada não aparece
+       no quadro hoje, mas pode ser restaurada — e voltaria para uma coluna que
+       não existe mais, órfã do mesmo jeito. Por isso o número aqui vem do que o
+       banco REALMENTE mudou, e não de `rows`, que já exclui as arquivadas e
+       contaria menos do que aconteceu. */
+    const { data: movidas, error } = await supabase
+      .from("tarefas").update({ status: "Backlog" }).eq("status", col).select("id, titulo");
+    if (error) { toast.error(error.message); return; }
+
+    const n = movidas?.length ?? 0;
+    if (n) {
+      setRows(rs => rs.map(r => r.status === col ? { ...r, status: "Backlog" } : r));
+      // Uma linha por tarefa no histórico: amanhã ninguém lembra por que o card mudou de lugar.
+      await Promise.all((movidas ?? []).map(t => logTarefa({
+        tarefa_id: t.id, tarefa_titulo: t.titulo, acao: "movida",
+        descricao: `Movida para "Backlog": a coluna "${col}" foi excluída`,
+      })));
+    }
+
     const meta = { ...colsCfg.meta };
     delete meta[col];
     persistCfg({ order: colsCfg.order.filter(c => c !== col), meta });
     await tabelaColunas().delete().eq("nome", col);
-    setPausaCols(s => { const n = new Set(s); n.delete(col); return n; });
+    setPausaCols(s => { const n2 = new Set(s); n2.delete(col); return n2; });
+
+    toast.success(
+      n ? `Coluna "${col}" excluída — ${n} tarefa${n > 1 ? "s foram" : " foi"} para o Backlog.`
+        : `Coluna "${col}" excluída.`,
+    );
   };
   const renameColumn = async (col: string, newName: string) => {
     const trimmed = newName.trim();
@@ -709,7 +753,7 @@ export default function Tarefas() {
           onRenameColumn={renameColumn}
           onRecolorColumn={recolorColumn}
           onMoveColumn={moveColumn}
-          isCustomColumn={(c) => !DEFAULT_COLUMNS.includes(c)}
+          podeExcluirColuna={(c) => !COLUNAS_ESTRUTURAIS.includes(c)}
           pausaIdade={pausaIdade}
           onTogglePausaIdade={togglePausaIdade}
         />
@@ -818,7 +862,7 @@ function ChipSelect({ label, value, options, onChange }: {
 /* --------------------------- KANBAN --------------------------- */
 function KanbanView({
   columns, colsMeta, grouped, collapsed, onToggleConcluido, onOpen, onAdd, onMove, onRemove,
-  onAddColumn, onRemoveColumn, onRenameColumn, onRecolorColumn, onMoveColumn, isCustomColumn,
+  onAddColumn, onRemoveColumn, onRenameColumn, onRecolorColumn, onMoveColumn, podeExcluirColuna,
   pausaIdade, onTogglePausaIdade,
 }: {
   columns: string[];
@@ -835,7 +879,7 @@ function KanbanView({
   onRenameColumn: (col: string, newName: string) => void;
   onRecolorColumn: (col: string, color: ColorId) => void;
   onMoveColumn: (from: string, to: string) => void;
-  isCustomColumn: (col: string) => boolean;
+  podeExcluirColuna: (col: string) => boolean;
   pausaIdade: (col: string) => boolean;
   onTogglePausaIdade: (col: string) => void;
 }) {
@@ -997,14 +1041,21 @@ function KanbanView({
                 <ColumnMenu
                   col={col}
                   currentColor={colorOf(col, colsMeta).id}
-                  isCustom={isCustomColumn(col)}
+                  podeExcluir={podeExcluirColuna(col)}
                   pausaIdade={pausaIdade(col)}
                   onTogglePausaIdade={() => onTogglePausaIdade(col)}
                   onRename={() => setRenaming(col)}
                   onRecolor={(c) => onRecolorColumn(col, c)}
                   onAddTask={() => onAdd(col)}
                   onRemove={() => {
-                    if (confirm(`Remover a coluna "${col}"?`)) onRemoveColumn(col);
+                    // O aviso diz o destino das tarefas: "excluir" numa coluna cheia
+                    // parece que apaga o que está dentro, e não é isso que acontece.
+                    // Sem número: `items` só tem as visíveis, e as arquivadas desta
+                    // coluna também vão junto — prometer "3" e mexer em 10 seria mentir.
+                    const aviso = items.length
+                      ? `Excluir a coluna "${col}"?\n\nAs tarefas dela vão para o Backlog — nada é apagado.`
+                      : `Excluir a coluna "${col}"?`;
+                    if (confirm(aviso)) onRemoveColumn(col);
                   }}
                 />
               </div>
@@ -1326,11 +1377,14 @@ function ColumnFilter({ label, options, value, onChange }: {
 
 /* --------------------------- Column Menu --------------------------- */
 function ColumnMenu({
-  col, currentColor, isCustom, pausaIdade, onTogglePausaIdade, onRename, onRecolor, onAddTask, onRemove,
+  col, currentColor, podeExcluir, pausaIdade, onTogglePausaIdade, onRename, onRecolor, onAddTask, onRemove,
 }: {
   col: string;
   currentColor: ColorId;
-  isCustom: boolean;
+  /* Falso só nas colunas que o sistema escreve (Backlog, Concluído) — ver
+     COLUNAS_ESTRUTURAIS. Ser "coluna padrão" não impede mais: "Tasks - RPA" e
+     "Revisão" nasceram com o quadro, mas ninguém grava nelas por código. */
+  podeExcluir: boolean;
   pausaIdade: boolean;
   onTogglePausaIdade: () => void;
   onRename: () => void;
@@ -1392,7 +1446,7 @@ function ColumnMenu({
             </button>
           ))}
         </div>
-        {isCustom && (
+        {podeExcluir && (
           <>
             <DropdownMenuSeparator />
             <DropdownMenuItem

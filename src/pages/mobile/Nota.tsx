@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
-import { ArrowLeft, ChevronRight, Loader2, Pencil, Star, Lock, X, Check, Archive } from "lucide-react";
+import { ArrowLeft, ChevronRight, Loader2, Pencil, Star, Lock, X, Check, Archive, Share2 } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { toast } from "sonner";
 import { supabase } from "@/integrations/supabase/client";
@@ -10,7 +10,10 @@ import { cn } from "@/lib/utils";
 import { useAuth } from "@/hooks/useAuth";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
+import { Drawer, DrawerContent, DrawerTitle } from "@/components/ui/drawer";
 import { NotaConteudo } from "@/components/mobile/NotaConteudo";
+import { PainelCompartilhar } from "@/components/notas/CompartilharNota";
+import { ComentariosDaNota } from "@/components/notas/Comentarios";
 import { docParaTexto, podeEditarNoCelular, textoParaDoc } from "@/lib/mobile/notas";
 import { fmtData } from "@/lib/mobile/formato";
 import { carregarNota, type PaginaResumo, type PaginaWorkspace } from "@/lib/mobile/paginas";
@@ -29,6 +32,7 @@ export default function MobileNota() {
   const [editandoCabecalho, setEditandoCabecalho] = useState(false);
   const [tituloRascunho, setTituloRascunho] = useState("");
   const [iconeRascunho, setIconeRascunho] = useState("");
+  const [compartilhando, setCompartilhando] = useState(false);
 
   // A rota /notas/:id troca sem desmontar a tela (subpágina abre outra subpágina), então a
   // busca depende do `id` — sem isso a segunda nota abriria com o conteúdo da primeira.
@@ -144,7 +148,7 @@ export default function MobileNota() {
   if (!nota) {
     return (
       <div className="px-6 py-16 text-center">
-        <p className="text-[14px] text-muted-foreground">Nota não encontrada, arquivada ou oculta.</p>
+        <p className="text-[14px] text-muted-foreground">Nota não encontrada — pode ter sido excluída.</p>
         <Button asChild variant="outline" className="mt-4 h-11"><Link to="/notas">Voltar para Notas</Link></Button>
       </div>
     );
@@ -170,6 +174,13 @@ export default function MobileNota() {
           ))}
         </nav>
         <button
+          onClick={() => setCompartilhando(true)}
+          aria-label="Compartilhar nota"
+          className="flex h-11 w-11 shrink-0 items-center justify-center text-muted-foreground"
+        >
+          <Share2 className="h-5 w-5" />
+        </button>
+        <button
           onClick={alternarFavorita}
           aria-label={nota.is_favorite ? "Remover dos favoritos" : "Favoritar"}
           className="flex h-11 w-11 shrink-0 items-center justify-center text-muted-foreground"
@@ -177,6 +188,21 @@ export default function MobileNota() {
           <Star className={cn("h-5 w-5", nota.is_favorite && "fill-primary text-primary")} />
         </button>
       </div>
+
+      {/* Gaveta de baixo, e não popover: no toque, painel ancorado num ícone de 20px
+          fica meio fora da tela e o campo do endereço some atrás do teclado. */}
+      <Drawer open={compartilhando} onOpenChange={setCompartilhando}>
+        <DrawerContent className="px-4 pb-6">
+          <DrawerTitle className="sr-only">Compartilhar anotação</DrawerTitle>
+          <div className="mx-auto w-full max-w-[460px] pt-2">
+            <PainelCompartilhar
+              pageId={nota.id}
+              titulo={nota.title}
+              onFechar={() => setCompartilhando(false)}
+            />
+          </div>
+        </DrawerContent>
+      </Drawer>
 
       <div className="px-4 pt-4">
         {editandoCabecalho ? (
@@ -231,6 +257,15 @@ export default function MobileNota() {
           {nota.last_edited_by ? ` · ${nota.last_edited_by}` : ""}
         </div>
 
+        {/* Chegou por endereço apontado numa nota que saiu das listas — dizer isso evita
+            a pessoa achar que ela sumiu do Hub. */}
+        {(nota.archived || nota.oculta) && (
+          <div className="mt-3 rounded-lg border border-border bg-secondary/50 p-2.5 text-[11.5px] leading-snug text-muted-foreground">
+            Esta nota está {nota.archived ? "arquivada" : "oculta"} — ela não aparece nas listas,
+            mas o endereço continua abrindo.
+          </div>
+        )}
+
         {editando ? (
           <div className="mt-4">
             <Textarea
@@ -273,6 +308,14 @@ export default function MobileNota() {
               </div>
             )}
           </>
+        )}
+
+        {/* Comentários abertos por padrão aqui: no celular a nota costuma ser lida, não
+            escrita, e quem abriu pelo link comentou justamente para ser respondido. */}
+        {!editando && (
+          <div className="mt-8 border-t border-border pt-5">
+            <ComentariosDaNota key={nota.id} pageId={nota.id} compacto />
+          </div>
         )}
 
         {!editando && (

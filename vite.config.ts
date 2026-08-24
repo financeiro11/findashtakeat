@@ -29,6 +29,16 @@ export default defineConfig(({ mode }) => ({
         orientation: "portrait",
         start_url: "/",
         scope: "/",
+        /* Link compartilhado abre NO APP, não numa aba do navegador ao lado dele.
+         *
+         * `handle_links: "preferred"` pede ao sistema que endereços dentro do `scope`
+         * (é o caso de /notas/<id>) sejam entregues ao app instalado, e
+         * `navigate-existing` os abre na janela que já está aberta em vez de empilhar
+         * outra. Vale no Android/Chromium; o iOS ignora os dois e sempre abre o Safari —
+         * lá o link funciona igual, só não entra no ícone da tela inicial, e não há API
+         * que mude isso. */
+        handle_links: "preferred",
+        launch_handler: { client_mode: "navigate-existing" },
         background_color: "#D51A1A",
         theme_color: "#D51A1A",
         icons: [

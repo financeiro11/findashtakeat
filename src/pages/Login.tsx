@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { Navigate } from "react-router-dom";
+import { Navigate, useLocation } from "react-router-dom";
 import { Loader2, Lock, ArrowRight, Mail } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -11,6 +11,7 @@ import {
 } from "@/components/ui/dialog";
 import { useAuth } from "@/hooks/useAuth";
 import { useIsMobile } from "@/hooks/use-mobile";
+import { destinoSeguro, guardarDestino } from "@/lib/destinoLogin";
 import { toast } from "sonner";
 import { supabase } from "@/integrations/supabase/client";
 import takeatLogo from "@/assets/takeat-logo-white.png";
@@ -21,6 +22,7 @@ type UserOpt = { nome: string; email: string; cargo?: string | null };
 export default function Login() {
   const { user, loading, signIn } = useAuth();
   const isMobile = useIsMobile();
+  const location = useLocation();
   const [linkEnviado, setLinkEnviado] = useState(false);
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("123456");
@@ -51,7 +53,11 @@ export default function Login() {
   }, []);
 
   if (loading) return null;
-  if (user) return <Navigate to="/" replace />;
+  // Volta para onde a pessoa queria ir — o link de uma anotação, por exemplo. Este é o
+  // caminho da senha, em que o `state` da rota sobrevive; a volta do magic link não passa
+  // por aqui (o Supabase devolve na raiz) e quem cuida dela é o `useVoltarAoDestino` dos
+  // layouts. Só caminho de dentro do Hub passa no filtro — ver lib/destinoLogin.
+  if (user) return <Navigate to={destinoSeguro((location.state as any)?.destino)} replace />;
 
   const selected = users.find((u) => u.email === email);
   const initials = (selected?.nome || email || "??")
@@ -95,9 +101,14 @@ export default function Login() {
    */
   const enviarMagicLink = async () => {
     if (!email) return toast.error("Selecione seu usuário");
+    guardarDestino((location.state as any)?.destino);
     setBusy(true);
     const { error } = await supabase.auth.signInWithOtp({
       email,
+      // `emailRedirectTo` continua sendo a RAIZ de propósito: qualquer outro endereço
+      // precisa estar na allow-list de redirecionamento do projeto no Supabase, e um
+      // caminho novo ali derrubaria o login por magic link inteiro. Quem leva o destino
+      // até o outro lado é o `guardarDestino` abaixo — ver lib/destinoLogin.
       options: { emailRedirectTo: `${window.location.origin}/`, shouldCreateUser: false },
     });
     setBusy(false);

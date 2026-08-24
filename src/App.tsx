@@ -72,6 +72,7 @@ import AssistenteMemoria from "./pages/assistente/Memoria";
 import TesteVozes from "./pages/assistente/TesteVozes";
 import NotFound from "./pages/NotFound.tsx";
 import LinkPublico from "./pages/LinkPublico";
+import NotaPublica from "./pages/NotaPublica";
 import { useIsMobile } from "@/hooks/use-mobile";
 import MobileLayout from "@/components/mobile/MobileLayout";
 import { DesktopOnly } from "@/components/mobile/DesktopOnly";
@@ -118,6 +119,9 @@ function Rotas() {
       <Routes>
         <Route path="/login" element={<Login />} />
         <Route path="/l/:token" element={<LinkPublico />} />
+        {/* Anotação compartilhada com quem não tem conta. Fora do MobileLayout junto com
+            o /l/: são as duas telas que precisam abrir sem sessão nenhuma. */}
+        <Route path="/n/:token" element={<NotaPublica />} />
         <Route element={<MobileLayout />}>
           <Route path="/" element={<MobileInicio />} />
           <Route path="/tarefas" element={<MobileTarefas />} />
@@ -145,6 +149,7 @@ function Rotas() {
           <Routes>
             <Route path="/login" element={<Login />} />
             <Route path="/l/:token" element={<LinkPublico />} />
+            <Route path="/n/:token" element={<NotaPublica />} />
             <Route element={<AppLayout />}>
               <Route path="/" element={<Dashboard />} />
               <Route path="/dashboard-legacy" element={<DashboardLegacy />} />
@@ -181,6 +186,12 @@ function Rotas() {
               <Route path="/tarefas" element={<Tarefas />} />
               <Route path="/time/visao" element={<TimeFinanceiro />} />
               <Route path="/playbook" element={<Playbook />} />
+              {/* Endereço de uma anotação — o MESMO no computador e no celular (lá é
+                  MobileNota, aqui é o Workspace com ela aberta). É o link que se
+                  compartilha, então não pode existir um por aparelho.
+                  `:id?` numa rota só, e não duas: com duas Routes apontando para o mesmo
+                  elemento, ir da lista para a nota desmontaria o Hub inteiro e piscaria. */}
+              <Route path="/notas/:id?" element={<Playbook />} />
               <Route path="/captable" element={<Captable />} />
               <Route path="/demonstracoes/dre" element={<DRE />} />
               <Route path="/demonstracoes/dfc" element={<DFC />} />

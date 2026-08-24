@@ -1,7 +1,8 @@
 import { useEffect } from "react";
-import { Navigate } from "react-router-dom";
+import { Navigate, useLocation } from "react-router-dom";
 import { useAuth } from "@/hooks/useAuth";
 import { moduleAccess } from "@/lib/modules";
+import { destinoAtual, useVoltarAoDestino } from "@/lib/destinoLogin";
 import { observarTema } from "@/lib/tema";
 import { MobileShell } from "./MobileShell";
 import { DesktopOnly } from "./DesktopOnly";
@@ -17,8 +18,10 @@ import { DesktopOnly } from "./DesktopOnly";
  */
 export default function MobileLayout() {
   const { user, profile, loading } = useAuth();
+  const location = useLocation();
 
   useEffect(() => observarTema(), []);
+  useVoltarAoDestino(!!user);
 
   if (loading) {
     return (
@@ -27,7 +30,9 @@ export default function MobileLayout() {
       </div>
     );
   }
-  if (!user) return <Navigate to="/login" replace />;
+  // Com o destino junto — quem abre `/notas/<id>` no celular sem sessão volta NA nota
+  // depois de entrar, e não na aba Início (ver lib/destinoLogin).
+  if (!user) return <Navigate to="/login" replace state={{ destino: destinoAtual(location) }} />;
 
   const acesso = moduleAccess(profile?.cargo);
   if (acesso.parceriasOnly || acesso.facilitiesOnly) {

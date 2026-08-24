@@ -26,9 +26,23 @@ export type NavItem = {
   badge?: string;
   /** Termos que a busca também aceita — sinônimo, sigla, o nome do sistema de origem. */
   busca?: string[];
+  /**
+   * Outras rotas que são a MESMA tela e devem acender o mesmo item de menu.
+   *
+   * Anotações mora em `/playbook`, mas a aba Workspace vive em `/notas` — porque uma nota
+   * precisa de endereço próprio para ser compartilhada. Sem isto, abrir uma nota apagaria
+   * o destaque do menu e o Hub pareceria ter saído da tela em que está.
+   */
+  alias?: string[];
 };
 
 export type NavGrupo = { label: string; items: NavItem[] };
+
+/** A rota atual é este item — pela URL dele ou por um dos apelidos. */
+export function itemAtivo(item: NavItem, pathname: string): boolean {
+  if (pathname === item.url) return true;
+  return (item.alias ?? []).some((a) => pathname === a || pathname.startsWith(a + "/"));
+}
 
 // Business Plan: o ano corrente é o plano vigente; o seguinte é o que está em
 // construção. Derivado da data pra não envelhecer na virada do ano.
@@ -51,7 +65,7 @@ export const GRUPOS_FINANCEIRO: NavGrupo[] = [
     { title: "Visão do Time", url: "/time/visao", icon: Users, busca: ["estrutura", "cargos", "automações", "catálogo"] },
     { title: "Tarefas", url: "/tarefas", icon: CheckSquare, busca: ["kanban", "backlog"] },
     { title: "Projetos", url: "/automacoes/projetos", icon: FolderKanban },
-    { title: "Anotações", url: "/playbook", icon: BookOpenCheck, busca: ["playbook", "notas"] },
+    { title: "Anotações", url: "/playbook", icon: BookOpenCheck, busca: ["playbook", "notas"], alias: ["/notas"] },
   ]},
   /* Apresentações: o que sai do Hub para uma PLATEIA — a reunião de tracker com o
      CEO, e os materiais de Conselho e Investidores. Ficam juntas porque o que elas

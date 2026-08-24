@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useNavigate, useParams } from "react-router-dom";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/hooks/useAuth";
 import { Button } from "@/components/ui/button";
@@ -9,7 +10,7 @@ import {
   Plus, Search, Star, Archive, Trash2, Copy, ChevronRight, ChevronDown, ChevronUp,
   FileText, Loader2, Image as ImageIcon, MoreHorizontal, Clock, Sparkles, X,
   CheckCircle2, AlertTriangle, Tag, Pencil, Users, Share2, ChevronsUpDown,
-  Folder, FolderOpen, Home, ArrowLeft, Eye, EyeOff,
+  Folder, FolderOpen, Home, ArrowLeft, Eye, EyeOff, Globe, Link2,
 } from "lucide-react";
 import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger,
@@ -20,6 +21,11 @@ import {
 } from "@/components/ui/alert-dialog";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { WorkspaceEditor } from "./WorkspaceEditor";
+import { BotaoCompartilhar } from "@/components/notas/CompartilharNota";
+import { BotaoComentarios, ComentariosDaNota } from "@/components/notas/Comentarios";
+import {
+  comentariosAbertosPorNota, copiar, notasComLinkPublico, urlDaNota,
+} from "@/lib/notas/compartilhar";
 
 export type WorkspacePage = {
   id: string;
@@ -62,14 +68,27 @@ function dotFor(title: string) {
 
 export default function Workspace() {
   const { user, profile } = useAuth();
+  const navigate = useNavigate();
+  // Qual nota está aberta é a URL (/notas/<id>), não estado de tela. É o que dá endereço
+  // próprio a cada anotação — sem isso não há link para compartilhar, e o botão Voltar do
+  // navegador não fecharia a nota.
+  const { id: idNaUrl } = useParams<{ id: string }>();
+  const selectedId = idNaUrl ?? null;
+  const setSelectedId = useCallback(
+    (id: string | null) => navigate(id ? `/notas/${id}` : "/notas"),
+    [navigate],
+  );
   const [pages, setPages] = useState<WorkspacePage[]>([]);
   const [loading, setLoading] = useState(true);
-  const [selectedId, setSelectedId] = useState<string | null>(null);
   const [draft, setDraft] = useState<WorkspacePage | null>(null);
   const [search, setSearch] = useState("");
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [collapsedRoots, setCollapsedRoots] = useState<Set<string>>(new Set());
-  const [view, setView] = useState<"all" | "favorites" | "recents" | "archive" | "hidden">("all");
+  const [view, setView] = useState<"all" | "favorites" | "recents" | "archive" | "hidden" | "shared">("all");
+  /** Quais notas têm link público ativo e quantos comentários abertos cada uma tem. */
+  const [comLink, setComLink] = useState<Set<string>>(new Set());
+  const [comentariosAbertos, setComentariosAbertos] = useState<Map<string, number>>(new Map());
+  const [mostrarComentarios, setMostrarComentarios] = useState(false);
   const [saveState, setSaveState] = useState<"idle" | "saving" | "saved" | "error">("idle");
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [tagInput, setTagInput] = useState("");
@@ -107,11 +126,35 @@ export default function Workspace() {
   }
 
 
+  /** Duas consultas para a árvore inteira — uma por linha seriam 30 idas ao Supabase. */
+  const recarregarCompartilhamento = useCallback(async () => {
+    try {
+      const [links, abertos] = await Promise.all([
+        notasComLinkPublico(),
+        comentariosAbertosPorNota(),
+      ]);
+      setComLink(links);
+      setComentariosAbertos(abertos);
+    } catch {
+      // Selo de compartilhada e contagem de comentário são adorno: se falharem, a tela
+      // continua servindo. Barulho de erro aqui só atrapalharia quem veio escrever.
+    }
+  }, []);
+
   useEffect(() => { load(); }, []);
+  useEffect(() => { recarregarCompartilhamento(); }, [recarregarCompartilhamento]);
   useEffect(() => {
     const p = pages.find(p => p.id === selectedId) ?? null;
     setDraft(p);
+    setMostrarComentarios(false);
   }, [selectedId, pages]);
+
+  async function copiarLinkDaNota(p: WorkspacePage) {
+    const ok = await copiar(urlDaNota(p.id));
+    toast[ok ? "success" : "error"](
+      ok ? "Link copiado — quem tem login no Hub abre direto nela" : "Não deu para copiar",
+    );
+  }
 
   async function load() {
     setLoading(true);
@@ -242,6 +285,10 @@ export default function Workspace() {
     if (view === "favorites") arr = arr.filter(p => p.is_favorite);
     if (view === "hidden") arr = pages.filter(p => p.oculta && !p.archived);
     if (view === "archive") arr = pages.filter(p => p.archived);
+    // Compartilhadas: as que têm link público ATIVO. Inclui oculta e arquivada de
+    // propósito — arquivar uma nota não fecha a porta que o link abriu, e é exatamente
+    // aqui que se descobre isso.
+    if (view === "shared") arr = pages.filter(p => comLink.has(p.id));
     if (view === "recents") {
       arr = [...arr].sort((a, b) => b.updated_at.localeCompare(a.updated_at)).slice(0, 15);
     }
@@ -250,7 +297,7 @@ export default function Workspace() {
       arr = arr.filter(p => p.title.toLowerCase().includes(q) || JSON.stringify(p.content).toLowerCase().includes(q));
     }
     return arr;
-  }, [pages, view, search]);
+  }, [pages, view, search, comLink]);
 
   const folderCount = useMemo(() => pages.filter(p => !p.archived && pages.some(c => c.parent_id === p.id)).length, [pages]);
   const totalPages = useMemo(() => pages.filter(p => !p.archived).length, [pages]);
@@ -338,6 +385,16 @@ export default function Workspace() {
                     {p.title || "Sem título"}
                   </span>
                   {p.is_favorite && <Star className="h-3 w-3 text-amber-500 fill-amber-500 shrink-0" />}
+                  {/* Selo de porta aberta: sem ele não há como saber, olhando a lista,
+                      quais notas estão publicadas para fora. */}
+                  {comLink.has(p.id) && (
+                    <Globe className="h-3 w-3 shrink-0 text-violet-600" aria-label="Tem link público" />
+                  )}
+                  {(comentariosAbertos.get(p.id) ?? 0) > 0 && (
+                    <span className="num shrink-0 rounded-full bg-primary/10 px-1.5 text-[9.5px] font-semibold leading-[15px] text-primary">
+                      {comentariosAbertos.get(p.id)}
+                    </span>
+                  )}
                 </button>
                 {depth === 0 && hasChildren && (
                   <span className="text-[10.5px] text-muted-foreground tabular-nums px-1">{subs.length}</span>
@@ -350,6 +407,7 @@ export default function Workspace() {
                   </DropdownMenuTrigger>
                   <DropdownMenuContent align="end" className="w-48">
                     <DropdownMenuItem onClick={() => createPage(p.id)}><Plus className="h-3.5 w-3.5"/> Subpágina</DropdownMenuItem>
+                    <DropdownMenuItem onClick={() => copiarLinkDaNota(p)}><Link2 className="h-3.5 w-3.5"/> Copiar link</DropdownMenuItem>
                     <DropdownMenuItem onClick={() => toggleFavorite(p)}><Star className="h-3.5 w-3.5"/> {p.is_favorite ? "Remover favorito" : "Favoritar"}</DropdownMenuItem>
                     <DropdownMenuItem onClick={() => duplicate(p)}><Copy className="h-3.5 w-3.5"/> Duplicar</DropdownMenuItem>
                     <DropdownMenuItem onClick={() => toggleOculta(p)}>{p.oculta ? <Eye className="h-3.5 w-3.5"/> : <EyeOff className="h-3.5 w-3.5"/>} {p.oculta ? "Reexibir" : "Ocultar"}</DropdownMenuItem>
@@ -429,8 +487,19 @@ export default function Workspace() {
                   >
                     <ChevronUp className="h-4 w-4" /> Recolher topo
                   </Button>
-                  <Button variant="outline" size="sm" className="h-9 gap-2">
+                  <Button
+                    variant={view === "shared" ? "default" : "outline"}
+                    size="sm"
+                    className="h-9 gap-2"
+                    onClick={() => setView(view === "shared" ? "all" : "shared")}
+                    title="Notas com link público ativo"
+                  >
                     <Share2 className="h-3.5 w-3.5"/> Compartilhadas
+                    {comLink.size > 0 && (
+                      <span className="num rounded-full bg-background/25 px-1.5 text-[10.5px] font-semibold">
+                        {comLink.size}
+                      </span>
+                    )}
                   </Button>
                   <Button size="sm" className="h-9 gap-2 bg-red-600 hover:bg-red-700 text-white shadow-sm" onClick={() => createPage(null)}>
                     <Plus className="h-3.5 w-3.5"/> Nova página
@@ -540,6 +609,16 @@ export default function Workspace() {
                         <ImageIcon className="h-3 w-3"/> Capa
                       </Button>
                     )}
+                    <BotaoComentarios
+                      abertos={comentariosAbertos.get(draft.id) ?? 0}
+                      ativo={mostrarComentarios}
+                      onClick={() => setMostrarComentarios(v => !v)}
+                    />
+                    <BotaoCompartilhar
+                      pageId={draft.id}
+                      titulo={draft.title}
+                      onMudou={recarregarCompartilhamento}
+                    />
                     <Button size="sm" variant="ghost" className="h-7 text-[11.5px]" onClick={() => toggleFavorite(draft)}>
                       <Star className={cn("h-3 w-3", draft.is_favorite && "fill-amber-500 text-amber-500")}/>
                     </Button>
@@ -549,6 +628,7 @@ export default function Workspace() {
                       </DropdownMenuTrigger>
                       <DropdownMenuContent align="end" className="w-48">
                         <DropdownMenuItem onClick={() => createPage(draft.id)}><Plus className="h-3.5 w-3.5"/> Subpágina</DropdownMenuItem>
+                        <DropdownMenuItem onClick={() => copiarLinkDaNota(draft)}><Link2 className="h-3.5 w-3.5"/> Copiar link</DropdownMenuItem>
                         <DropdownMenuItem onClick={() => duplicate(draft)}><Copy className="h-3.5 w-3.5"/> Duplicar</DropdownMenuItem>
                         <DropdownMenuItem onClick={() => toggleOculta(draft)}>{draft.oculta ? <Eye className="h-3.5 w-3.5"/> : <EyeOff className="h-3.5 w-3.5"/>} {draft.oculta ? "Reexibir" : "Ocultar"}</DropdownMenuItem>
                         <DropdownMenuItem onClick={() => toggleArchive(draft)}><Archive className="h-3.5 w-3.5"/> {draft.archived ? "Restaurar" : "Arquivar"}</DropdownMenuItem>
@@ -614,6 +694,25 @@ export default function Workspace() {
                   pageId={draft.id}
                 />
               </div>
+
+              {/* Comentários abaixo do texto, e não numa gaveta lateral: é resposta ao
+                  que está escrito acima, e quem chega por link comentou lendo nesta
+                  mesma ordem. Fechado por padrão para não empurrar o editor para cima. */}
+              {mostrarComentarios && (
+                <div className="mt-10 border-t pt-6">
+                  <ComentariosDaNota
+                    key={draft.id}
+                    pageId={draft.id}
+                    aoMudarContagem={(abertos) =>
+                      setComentariosAbertos(prev => {
+                        const n = new Map(prev);
+                        if (abertos > 0) n.set(draft.id, abertos); else n.delete(draft.id);
+                        return n;
+                      })
+                    }
+                  />
+                </div>
+              )}
             </div>
           )}
         </section>

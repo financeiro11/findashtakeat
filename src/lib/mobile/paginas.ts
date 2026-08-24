@@ -54,8 +54,12 @@ export type NotaCompleta = {
  */
 export async function carregarNota(id: string): Promise<NotaCompleta> {
   const [pagina, filhos] = await Promise.all([
+    // Sem filtrar arquivada/oculta AQUI, ao contrário da lista: esta é a tela de um
+    // endereço apontado — link compartilhado, favorito, histórico do navegador. Uma nota
+    // arquivada depois de o link sair virava "não encontrada", que é indistinguível de
+    // link errado. Ela abre, com o aviso na tela, e quem some das listas continua sumindo.
     supabase.from("workspace_pages").select(CAMPOS_PAGINA)
-      .eq("id", id).eq("archived", false).eq("oculta", false).maybeSingle(),
+      .eq("id", id).maybeSingle(),
     supabase.from("workspace_pages").select(CAMPOS_RESUMO)
       .eq("parent_id", id).eq("archived", false).eq("oculta", false)
       .order("position").order("updated_at", { ascending: false }),

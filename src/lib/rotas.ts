@@ -34,6 +34,7 @@ export const ROTAS: Record<string, { crumbs: string[]; context?: string }> = {
   "/investimentos": { crumbs: ["Investimentos", "Takeat LTD/LLC"], context: "Financials LTD & LLC · export do contador" },
   "/captable": { crumbs: ["Investimentos", "Captable"], context: "Sócios e participação" },
   "/playbook": { crumbs: ["Time Financeiro", "Anotações"], context: "Notas e playbook do time" },
+  "/notas": { crumbs: ["Time Financeiro", "Anotações"], context: "Workspace · notas do time" },
   "/automacoes/catalogo": { crumbs: ["Automações", "Catálogo"] },
   "/automacoes/projetos": { crumbs: ["Automações", "Projetos"] },
   "/recargas/celulares": { crumbs: ["Recargas", "Celulares"] },
@@ -84,6 +85,11 @@ export const ROTAS: Record<string, { crumbs: string[]; context?: string }> = {
 export function resolverDinamica(pathname: string): { crumbs: string[]; context?: string } | null {
   const bp = pathname.match(/^\/bp\/(\d{4})$/);
   if (bp) return { crumbs: ["BP", `BP ${bp[1]}`] };
+  // /notas/<id> — o endereço de uma anotação. O título dela é o próprio cabeçalho da
+  // tela; aqui basta a trilha não virar o caminho cru.
+  if (/^\/notas\/[^/]+$/.test(pathname)) {
+    return { crumbs: ["Time Financeiro", "Anotações"], context: "Workspace · notas do time" };
+  }
   return null;
 }
 

@@ -10,7 +10,7 @@ import { CommandMenu } from "@/components/CommandMenu";
 import { ModuleSwitcher } from "@/components/ModuleSwitcher";
 import { moduleAccess, currentModule } from "@/lib/modules";
 // Os itens de menu moram em @/lib/navegacao — a busca (⌘K) lê o MESMO catálogo.
-import { gruposVisiveis, itensDe, type NavGrupo, type NavItem } from "@/lib/navegacao";
+import { gruposVisiveis, itemAtivo, itensDe, type NavGrupo, type NavItem } from "@/lib/navegacao";
 
 const FAVORITOS_KEY_PREFIX = "sidebar:favoritos:";
 
@@ -47,7 +47,7 @@ function Group({
   onToggleFavorito?: (url: string) => void;
   defaultOpen?: boolean;
 }) {
-  const hasActive = items.some(i => pathname === i.url || pathname.startsWith(i.url + "/"));
+  const hasActive = items.some(i => pathname.startsWith(i.url + "/") || itemAtivo(i, pathname));
   const [open, setOpen] = useState(defaultOpen ?? hasActive);
 
   return (
@@ -59,7 +59,7 @@ function Group({
       <CollapsibleContent className="overflow-hidden data-[state=closed]:animate-accordion-up data-[state=open]:animate-accordion-down">
         <ul className="space-y-0.5 mt-1">
           {items.map((item) => {
-            const active = pathname === item.url;
+            const active = itemAtivo(item, pathname);
             const isFav = favoritos?.has(item.url) ?? false;
             return (
               <li key={item.url} className="group/item relative">
@@ -148,7 +148,7 @@ function Rail({ blocos, pathname }: { blocos: NavGrupo[]; pathname: string }) {
           {i > 0 && <div className="mx-3 my-1.5 h-px bg-sidebar-border" />}
           <ul className="space-y-0.5 px-2">
             {g.items.map((item) => (
-              <RailItem key={g.label + item.url} grupo={g.label} item={item} active={pathname === item.url} />
+              <RailItem key={g.label + item.url} grupo={g.label} item={item} active={itemAtivo(item, pathname)} />
             ))}
           </ul>
         </div>

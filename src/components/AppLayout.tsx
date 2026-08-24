@@ -9,6 +9,7 @@ import { NovaVersao } from "@/components/NovaVersao";
 import { AbrirNoCelular } from "@/components/AbrirNoCelular";
 import { useAuth } from "@/hooks/useAuth";
 import { moduleAccess, currentModule } from "@/lib/modules";
+import { destinoAtual, useVoltarAoDestino } from "@/lib/destinoLogin";
 
 // Menu lateral recolhido. Quem guarda é esta camada: o SidebarProvider escreve um
 // cookie que ele mesmo nunca lê de volta, então sem isto a escolha se perderia a cada
@@ -17,7 +18,8 @@ const MENU_KEY = "sidebar:recolhido";
 
 export default function AppLayout() {
   const { user, profile, loading } = useAuth();
-  const { pathname } = useLocation();
+  const location = useLocation();
+  const { pathname } = location;
   const [menuAberto, setMenuAberto] = useState(() => {
     try { return localStorage.getItem(MENU_KEY) !== "1"; } catch { return true; }
   });
@@ -25,8 +27,12 @@ export default function AppLayout() {
     setMenuAberto(aberto);
     try { localStorage.setItem(MENU_KEY, aberto ? "0" : "1"); } catch { /* localStorage indisponível */ }
   };
+  useVoltarAoDestino(!!user);
   if (loading) return <div className="flex min-h-screen items-center justify-center text-sm text-muted-foreground">Carregando…</div>;
-  if (!user) return <Navigate to="/login" replace />;
+  // O destino vai junto: quem recebe o link de uma anotação e ainda não entrou tem de
+  // cair NELA depois do login, não na home. Sem isto, todo link compartilhado do Hub
+  // acaba no Dashboard e a pessoa precisa procurar a tela na mão.
+  if (!user) return <Navigate to="/login" replace state={{ destino: destinoAtual(location) }} />;
 
   const access = moduleAccess(profile?.cargo);
 

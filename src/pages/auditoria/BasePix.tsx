@@ -47,7 +47,7 @@ function ultimosMeses(n: number): string[] {
   return out;
 }
 
-export default function BasePix() {
+export default function BasePix({ abas }: { abas?: React.ReactNode }) {
   const apelidos = useApelidos();
   const [rows, setRows] = useState<Lanc[]>([]);
   const [loading, setLoading] = useState(true);
@@ -252,6 +252,8 @@ export default function BasePix() {
           </p>
         </div>
         <div className="flex items-center gap-2">
+          {abas}
+          {abas && <div className="h-6 w-px bg-border" />}
           <select
             value={referencia}
             onChange={e => setReferencia(e.target.value)}

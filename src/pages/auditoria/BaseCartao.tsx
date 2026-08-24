@@ -44,7 +44,7 @@ const lerLojistas = (): PromiseLike<{ data: MapaLojistas | null; error: { messag
   (supabase as unknown as { rpc: (nome: string) => PromiseLike<{ data: MapaLojistas | null; error: { message?: string } | null }> })
     .rpc("auditoria_lojistas");
 
-export default function BaseCartao() {
+export default function BaseCartao({ abas }: { abas?: React.ReactNode }) {
   const apelidos = useApelidos();
   const compras = useCompras();
   const [lojistas, setLojistas] = useState<MapaLojistas>({});
@@ -186,6 +186,8 @@ export default function BaseCartao() {
           <p className="text-sm text-muted-foreground mt-1">Fatura completa do cartão corporativo · anexe a NF pelo ícone na coluna Status NF.</p>
         </div>
         <div className="flex items-center gap-2">
+          {abas}
+          {abas && <div className="h-6 w-px bg-border" />}
           <select
             value={referencia}
             onChange={e => setReferencia(e.target.value)}

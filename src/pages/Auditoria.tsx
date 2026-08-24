@@ -20,24 +20,26 @@ export default function Auditoria() {
     document.title = TITLES[mode];
   }, [mode]);
 
+  /* As três visões deixaram de flutuar centralizadas acima da página: agora são
+     um seletor no canto do cabeçalho, ao lado das ações da tela — cada página
+     encaixa este nó no lugar onde o resto dos botões já mora. */
+  const abas = (
+    <div className="inline-flex items-center rounded-lg border border-border bg-card p-0.5">
+      <ModeBtn active={mode === "achados"} onClick={() => setMode("achados")} icon={<AlertTriangle className="h-3 w-3" />}>
+        Achados
+      </ModeBtn>
+      <ModeBtn active={mode === "base"} onClick={() => setMode("base")} icon={<CreditCard className="h-3 w-3" />}>
+        Base do Cartão
+      </ModeBtn>
+      <ModeBtn active={mode === "pix"} onClick={() => setMode("pix")} icon={<Zap className="h-3 w-3" />}>
+        PIX
+      </ModeBtn>
+    </div>
+  );
+
   return (
     <div className="min-h-screen bg-background">
-      {/* Sub-tabs (mesmo estilo do PlaybookHub) */}
-      <div className="flex justify-center pt-3 pb-1">
-        <div className="inline-flex items-center rounded-lg border bg-background/90 backdrop-blur p-0.5 shadow-sm">
-          <ModeBtn active={mode === "achados"} onClick={() => setMode("achados")} icon={<AlertTriangle className="h-3 w-3" />}>
-            Achados
-          </ModeBtn>
-          <ModeBtn active={mode === "base"} onClick={() => setMode("base")} icon={<CreditCard className="h-3 w-3" />}>
-            Base do Cartão
-          </ModeBtn>
-          <ModeBtn active={mode === "pix"} onClick={() => setMode("pix")} icon={<Zap className="h-3 w-3" />}>
-            PIX
-          </ModeBtn>
-        </div>
-      </div>
-
-      {mode === "achados" ? <Achados /> : mode === "base" ? <BaseCartao /> : <BasePix />}
+      {mode === "achados" ? <Achados abas={abas} /> : mode === "base" ? <BaseCartao abas={abas} /> : <BasePix abas={abas} />}
     </div>
   );
 }

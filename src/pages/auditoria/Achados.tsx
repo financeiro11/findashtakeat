@@ -9,8 +9,9 @@ import { Sheet, SheetContent } from "@/components/ui/sheet";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Textarea } from "@/components/ui/textarea";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Download, X, ChevronRight, Check, ExternalLink, Search, RefreshCw, Loader2, Paperclip, Copy, Upload, Sparkles, AlertCircle } from "lucide-react";
+import { Download, X, ChevronRight, Check, ExternalLink, Search, RefreshCw, Loader2, Paperclip, Copy, Upload, Sparkles, AlertCircle, SlidersHorizontal } from "lucide-react";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
 import { ComprovanteLink } from "@/components/ComprovanteLink";
@@ -73,8 +74,24 @@ type Row = {
    *  tabela `auditoria`, portanto é somente leitura (sem mudança de status). */
   _ro?: boolean;
 };
-type Filtro = "todas" | Status;
+/* As abas do topo agrupam pelo que se procura, não pelo que o banco guarda:
+   "Resolvidas" junta Aprovado + Reprovado numa aba só, exatamente como o KPI de
+   mesmo nome já contava. Quem precisa separar os dois usa o menu da linha. */
+type Filtro = "todas" | "Pendente" | "Em análise" | "Ajuste solicitado" | "resolvidas";
 type FiltroCat = "todas" | Categoria;
+
+const ABAS_STATUS: { k: Filtro; label: string }[] = [
+  { k: "todas", label: "Todas" },
+  { k: "Pendente", label: "Pendente" },
+  { k: "Em análise", label: "Em análise" },
+  { k: "Ajuste solicitado", label: "Ajuste" },
+  { k: "resolvidas", label: "Resolvidas" },
+];
+function casaAba(status: Status, f: Filtro) {
+  if (f === "todas") return true;
+  if (f === "resolvidas") return status === "Aprovado" || status === "Reprovado";
+  return status === f;
+}
 
 /** O que a IA transcreveu do comprovante. Espelha o schema da Edge Function. */
 type LeituraIA = {
@@ -92,7 +109,10 @@ type LeituraIA = {
   transcricao_apenas?: boolean;
 };
 
-const ALL_CATEGORIAS: Categoria[] = ["COM NF", "SEM NF", "FORA DE ESCOPO", "A CONFERIR"];
+const ALL_CATEGORIAS: Categoria[] = ["COM NF", "SEM NF", "A CONFERIR", "FORA DE ESCOPO"];
+
+/** Linhas por página na tabela de lançamentos. */
+const POR_PAGINA = 50;
 
 /* `types.ts` é gerado pelo Supabase CLI e ainda não conhece a RPC criada na
    migration 20260819120000. Mesmo atalho do `useApelidos` — some quando os tipos
@@ -113,6 +133,22 @@ function deriveCategoria(regra?: string | null, statusNf?: string | null, status
   if (nf === "OK") return "COM NF";
   if (nf.includes("SEM") || rg.includes("SEM NF")) return "SEM NF";
   return null;
+}
+/** Como a categoria é escrita nos botões — a base grita em caixa alta, a barra não. */
+const ROTULO_CAT: Record<Categoria, string> = {
+  "COM NF": "Com NF",
+  "SEM NF": "Sem NF",
+  "A CONFERIR": "A conferir",
+  "FORA DE ESCOPO": "Fora de escopo",
+};
+/** A bolinha e o texto do botão de categoria quando ele não está ativo. */
+function catDot(c: Categoria) {
+  switch (c) {
+    case "COM NF": return { dot: "bg-[hsl(152_60%_40%)]", texto: "text-[hsl(152_60%_28%)]" };
+    case "SEM NF": return { dot: "bg-[hsl(0_72%_48%)]", texto: "text-[hsl(0_72%_38%)]" };
+    case "A CONFERIR": return { dot: "bg-[hsl(38_92%_50%)]", texto: "text-[hsl(38_80%_32%)]" };
+    case "FORA DE ESCOPO": return { dot: "bg-[hsl(22_92%_52%)]", texto: "text-[hsl(22_85%_38%)]" };
+  }
 }
 function catStyle(c: string | null | undefined) {
   switch (c) {
@@ -135,7 +171,6 @@ type CartaoLanc = {
   omie_match_confianca: string | null;
 };
 
-const ALL_STATUS: Status[] = ["Pendente","Em análise","Aprovado","Reprovado","Ajuste solicitado"];
 const NEXT_STATUS: Record<Status, Status[]> = {
   "Pendente": ["Em análise","Aprovado","Reprovado","Ajuste solicitado"],
   "Em análise": ["Aprovado","Reprovado","Ajuste solicitado"],
@@ -161,7 +196,7 @@ function statusStyle(s: Status) {
   }
 }
 
-export default function Achados() {
+export default function Achados({ abas }: { abas?: React.ReactNode }) {
   const { user } = useAuth();
   const apelidos = useApelidos();
   const [lojistas, setLojistas] = useState<MapaLojistas>({});
@@ -188,6 +223,8 @@ export default function Achados() {
   const [enviandoUm, setEnviandoUm] = useState(false);
   const [enviandoMassa, setEnviandoMassa] = useState(false);
   const [conferenciaOpen, setConferenciaOpen] = useState(false);
+  const [filtrosOpen, setFiltrosOpen] = useState(false);
+  const [pagina, setPagina] = useState(1);
 
   // Garante que o modal de "Ajuste solicitado" NUNCA venha aberto ao abrir/trocar de lançamento
   useEffect(() => { setAjusteOpen(false); }, [selected?.id]);
@@ -474,15 +511,17 @@ export default function Achados() {
 
   const counts = useMemo(() => {
     const c: Record<string, number> = { todas: periodRows.length };
-    ALL_STATUS.forEach(s => c[s] = 0);
-    periodRows.forEach(r => { c[r.status] = (c[r.status] ?? 0) + 1; });
+    ABAS_STATUS.forEach(a => { if (a.k !== "todas") c[a.k] = 0; });
+    periodRows.forEach(r => {
+      ABAS_STATUS.forEach(a => { if (a.k !== "todas" && casaAba(r.status, a.k)) c[a.k] += 1; });
+    });
     return c;
   }, [periodRows]);
 
   const catCounts = useMemo(() => {
     // Categoria counts respect current status/sev/area/regra filters (but not fCat itself)
     const base = periodRows.filter(r => {
-      if (filtro !== "todas" && r.status !== filtro) return false;
+      if (!casaAba(r.status, filtro)) return false;
       if (fSev !== "todas" && r.severidade !== fSev) return false;
       if (fArea !== "todas" && r.area !== fArea) return false;
       if (fRegra !== "todas" && r.regra !== fRegra) return false;
@@ -497,7 +536,7 @@ export default function Achados() {
   const filtered = useMemo(() => {
     const q = busca.trim().toLowerCase();
     return periodRows.filter(r => {
-      if (filtro !== "todas" && r.status !== filtro) return false;
+      if (!casaAba(r.status, filtro)) return false;
       if (fSev !== "todas" && r.severidade !== fSev) return false;
       if (fArea !== "todas" && r.area !== fArea) return false;
       if (fRegra !== "todas" && r.regra !== fRegra) return false;
@@ -511,6 +550,43 @@ export default function Achados() {
       return true;
     });
   }, [periodRows, filtro, fSev, fArea, fRegra, fCat, fResp, fAnexo, busca, nomeDaLinha]);
+
+  /* A tabela passou a paginar: 171 linhas de uma vez é rolagem sem fim e o rodapé
+     ("mostrando X de Y") não queria dizer nada. Mexer em qualquer filtro volta
+     para a primeira página — senão a pessoa filtra e cai numa página vazia. */
+  const totalPaginas = Math.max(1, Math.ceil(filtered.length / POR_PAGINA));
+  const paginaAtual = Math.min(pagina, totalPaginas);
+  const visiveis = useMemo(
+    () => filtered.slice((paginaAtual - 1) * POR_PAGINA, paginaAtual * POR_PAGINA),
+    [filtered, paginaAtual],
+  );
+  useEffect(() => { setPagina(1); }, [filtro, fSev, fArea, fRegra, fCat, fResp, fAnexo, busca, competencia]);
+
+  /** Quantos filtros do popover estão valendo — é o número na bolinha do botão. */
+  const filtrosAtivos = [fSev, fArea, fRegra, fResp, fAnexo].filter(v => v !== "todas").length;
+  const limparFiltros = () => { setFSev("todas"); setFArea("todas"); setFRegra("todas"); setFResp("todas"); setFAnexo("todas"); };
+  /* O que está escondido dentro do popover volta a aparecer como etiqueta na
+     barra — filtro que não se vê é filtro que faz a lista mentir. */
+  const chipsAtivos = ([
+    { on: fResp !== "todas", rotulo: `Responsável: ${fResp}`, limpar: () => setFResp("todas") },
+    { on: fRegra !== "todas", rotulo: `Regra: ${fRegra}`, limpar: () => setFRegra("todas") },
+    { on: fSev !== "todas", rotulo: `Severidade: ${fSev}`, limpar: () => setFSev("todas") },
+    { on: fArea !== "todas", rotulo: `Área: ${fArea}`, limpar: () => setFArea("todas") },
+    { on: fAnexo !== "todas", rotulo: `Anexo Omie: ${fAnexo}`, limpar: () => setFAnexo("todas") },
+  ]).filter(c => c.on);
+
+  /* A faixa de ações fala do trabalho que sobrou, e cada número é o que o botão ao
+     lado dele faz: as pendências da fatura em foco (o WhatsApp pergunta por elas) e
+     os comprovantes prontos para o ERP em TODAS as faturas — que é o alcance real
+     do envio em massa, de propósito. */
+  const trabalhoDoResponsavel = useMemo(() => {
+    const doResp = (r: Row) => fResp === "todas" || r.responsavel === fResp;
+    return {
+      pendentes: periodRows.filter(r => doResp(r) && r.status === "Pendente").length,
+      prontosOmie: rows.filter(r =>
+        doResp(r) && r.link_comprovante && r.omie_cod_titulo && !r.omie_anexo_enviado_em).length,
+    };
+  }, [rows, periodRows, fResp]);
 
   // Envio em massa: manda TODOS os pendentes (base do cartão + achados) do responsável
   // selecionado — junho + julho, independente da fatura na tela (intencional). O mesmo
@@ -733,67 +809,18 @@ export default function Achados() {
       {anexo.elementos}
 
       {/* Header row */}
-      <div className="flex items-end justify-between gap-4 flex-wrap">
+      <div className="flex items-start justify-between gap-6 flex-wrap">
         <div className="min-w-0">
           <div className="text-[11px] uppercase tracking-wider text-muted-foreground font-medium">Hub Financeiro · Governança</div>
-          <div className="flex items-center gap-3 mt-0.5 flex-wrap">
-            <h1 className="text-3xl font-bold tracking-tight">Auditoria</h1>
-            <TooltipProvider delayDuration={200}>
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <span>
-                    <Button
-                      onClick={() => setConsolidadoOpen(true)}
-                      disabled={fResp === "todas"}
-                      className="h-9 text-white disabled:opacity-50"
-                      style={{ backgroundColor: "#0F6E56" }}
-                    >
-                      <WhatsAppLogo className="h-4 w-4 mr-2" />
-                      {fResp === "todas" ? "Solicitar Justificativas" : `Solicitar Justificativas (${fResp})`}
-                    </Button>
-                  </span>
-                </TooltipTrigger>
-                {fResp === "todas" && (
-                  <TooltipContent>Selecione um responsável para solicitar justificativas em lote</TooltipContent>
-                )}
-              </Tooltip>
-            </TooltipProvider>
-            <Button
-              onClick={enviarMassaOmie}
-              disabled={enviandoMassa}
-              className="h-9 text-white hover:opacity-90 disabled:opacity-60"
-              style={{ backgroundColor: "#1D63C7" }}
-              title="Envia ao Omie os comprovantes pendentes (base do cartão + achados) do responsável selecionado — todas as faturas"
-            >
-              {enviandoMassa
-                ? <><Loader2 className="h-4 w-4 mr-2 animate-spin" /> Enviando…</>
-                : <><OmieLogo className="h-4 w-4 mr-2" /> {fResp === "todas" ? "Enviar comprovantes ao Omie" : `Enviar comprovantes ao Omie (${fResp})`}</>}
-            </Button>
-          </div>
-          <p className="text-sm text-muted-foreground mt-1">Achados financeiros com workflow de análise e aprovação.</p>
+          <h1 className="text-3xl font-bold tracking-tight mt-0.5">Auditoria</h1>
+          <p className="text-sm text-muted-foreground mt-1">
+            Achados financeiros com workflow de análise e aprovação.{" "}
+            {competencia && <span className="num text-[12.5px] capitalize text-foreground">{compLabel(competencia)}</span>}
+          </p>
         </div>
-        <div className="flex items-center gap-2 flex-wrap">
-          <div className="relative">
-            <Search className="h-4 w-4 absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground pointer-events-none" />
-            <input
-              type="text"
-              value={busca}
-              onChange={e => setBusca(e.target.value)}
-              placeholder="Buscar lançamento..."
-              className="h-9 w-64 rounded-lg border border-border bg-card pl-9 pr-3 text-sm outline-none focus:ring-2 focus:ring-foreground/10"
-            />
-          </div>
-          <label className="inline-flex items-center gap-2 h-9 rounded-lg border border-border bg-card px-3">
-            <span className="text-[11px] uppercase tracking-wider text-muted-foreground font-medium">Fatura</span>
-            <select
-              value={competencia}
-              onChange={e => setCompetencia(e.target.value)}
-              className="text-sm font-medium bg-transparent outline-none capitalize"
-            >
-              {competencias.map(c => <option key={c} value={c} className="capitalize">{compLabel(c)}</option>)}
-              {competencias.length === 0 && <option value="">—</option>}
-            </select>
-          </label>
+        <div className="flex items-center gap-2.5 flex-wrap">
+          {abas}
+          {abas && <div className="h-6 w-px bg-border" />}
           <Button
             variant="outline"
             onClick={() => setConferenciaOpen(true)}
@@ -816,114 +843,327 @@ export default function Achados() {
       {/* NFs que o Facilities mandou e o casamento não conseguiu decidir sozinho */}
       <FacilitiesNfPropostas onAplicado={load} />
 
-      {/* KPIs */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-        {loading ? Array.from({ length: 4 }).map((_, i) => <Skeleton key={i} className="h-32 rounded-xl" />) : (
-          <>
-            <KpiCard
-              label="Pendentes"
-              value={String(kpis.pend)}
-              legend="aguardando ação"
-              breakdown={
+      {/* KPIs — uma faixa só, dividida por dentro; cada número traz a barra do
+          quanto ele representa do período e as fatias que o compõem. */}
+      {loading ? (
+        <div className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-4">
+          {Array.from({ length: 4 }).map((_, i) => <Skeleton key={i} className="h-32 rounded-xl" />)}
+        </div>
+      ) : (
+        <div className="grid grid-cols-1 overflow-hidden rounded-xl border border-border bg-card md:grid-cols-2 lg:grid-cols-4">
+          <KpiCard
+            className="border-b border-border md:border-r lg:border-b-0"
+            label="Pendentes"
+            value={String(kpis.pend)}
+            legend="aguardando ação"
+            bar={
+              <BarraKpi
+                total={periodRows.length}
+                fatias={[
+                  { peso: kpis.pendSemNf, cor: "bg-[hsl(0_72%_48%)]" },
+                  { peso: kpis.pendAConf, cor: "bg-[hsl(38_92%_50%)]" },
+                  { peso: kpis.pendFora, cor: "bg-[hsl(22_92%_52%)]" },
+                ]}
+              />
+            }
+            breakdown={
+              <div className="flex flex-wrap gap-1.5 mt-2">
+                <MiniChip cls={catStyle("SEM NF")} text={`SEM NF ${kpis.pendSemNf}`} />
+                <MiniChip cls={catStyle("A CONFERIR")} text={`A CONFERIR ${kpis.pendAConf}`} />
+                <MiniChip cls={catStyle("FORA DE ESCOPO")} text={`FORA ${kpis.pendFora}`} />
+              </div>
+            }
+          />
+          <KpiCard
+            className="border-b border-border lg:border-b-0 lg:border-r"
+            label="Em análise"
+            value={String(kpis.emAn)}
+            legend="em verificação"
+            valueClass="text-[hsl(212_80%_45%)]"
+            bar={<BarraKpi total={periodRows.length} fatias={[{ peso: kpis.emAn, cor: "bg-[hsl(212_80%_50%)]" }]} />}
+          />
+          <KpiCard
+            className="border-b border-border md:border-b-0 md:border-r"
+            label="Valor sob auditoria"
+            value={comValorExato(kpis.valorSob, brlAbbr(kpis.valorSob))}
+            legend={`em ${kpis.qtdSob} lançamento${kpis.qtdSob === 1 ? "" : "s"}`}
+            bar={
+              <BarraKpi
+                total={kpis.valorSob}
+                fatias={[
+                  { peso: kpis.sobComNf, cor: "bg-[hsl(152_60%_40%)]" },
+                  { peso: kpis.sobSemNf, cor: "bg-[hsl(0_72%_48%)]" },
+                  { peso: kpis.sobAConf, cor: "bg-[hsl(38_92%_50%)]" },
+                  { peso: kpis.sobFora, cor: "bg-[hsl(22_92%_52%)]" },
+                ]}
+              />
+            }
+            breakdown={
+              <div className="flex flex-wrap gap-1.5 mt-2">
+                {kpis.sobComNf > 0 && <MiniChip cls={catStyle("COM NF")} text={`COM NF ${brlAbbr(kpis.sobComNf)}`} titulo={brl(kpis.sobComNf)} />}
+                {kpis.sobSemNf > 0 && <MiniChip cls={catStyle("SEM NF")} text={`SEM NF ${brlAbbr(kpis.sobSemNf)}`} titulo={brl(kpis.sobSemNf)} />}
+                {kpis.sobAConf > 0 && <MiniChip cls={catStyle("A CONFERIR")} text={`A CONF. ${brlAbbr(kpis.sobAConf)}`} titulo={brl(kpis.sobAConf)} />}
+                {kpis.sobFora > 0 && <MiniChip cls={catStyle("FORA DE ESCOPO")} text={`FORA ${brlAbbr(kpis.sobFora)}`} titulo={brl(kpis.sobFora)} />}
+              </div>
+            }
+          />
+          <KpiCard
+            label="Resolvidas"
+            value={String(kpis.resolv)}
+            legend={`${kpis.aprov} aprovadas · ${kpis.repr} reprovadas`}
+            valueClass="text-[hsl(152_60%_36%)]"
+            bar={
+              <BarraKpi
+                total={periodRows.length}
+                fatias={[
+                  { peso: kpis.aprov, cor: "bg-[hsl(152_60%_40%)]" },
+                  { peso: kpis.repr, cor: "bg-[hsl(0_72%_48%)]" },
+                ]}
+              />
+            }
+            breakdown={
+              kpis.aprovComNf > 0 ? (
                 <div className="flex flex-wrap gap-1.5 mt-2">
-                  <MiniChip cls={catStyle("SEM NF")} text={`SEM NF ${kpis.pendSemNf}`} />
-                  <MiniChip cls={catStyle("A CONFERIR")} text={`A CONFERIR ${kpis.pendAConf}`} />
-                  <MiniChip cls={catStyle("FORA DE ESCOPO")} text={`FORA ${kpis.pendFora}`} />
+                  <MiniChip cls={catStyle("COM NF")} text={`COM NF ${kpis.aprovComNf} aprovadas`} />
                 </div>
-              }
-            />
-            <KpiCard label="Em análise" value={String(kpis.emAn)} legend="em verificação" valueClass="text-[hsl(212_80%_45%)]" />
-            <KpiCard
-              label="Valor sob auditoria"
-              value={comValorExato(kpis.valorSob, brlAbbr(kpis.valorSob))}
-              legend={`em ${kpis.qtdSob} lançamento${kpis.qtdSob === 1 ? "" : "s"}`}
-              breakdown={
-                <div className="flex flex-wrap gap-1.5 mt-2">
-                  {kpis.sobComNf > 0 && <MiniChip cls={catStyle("COM NF")} text={`COM NF ${brlAbbr(kpis.sobComNf)}`} titulo={brl(kpis.sobComNf)} />}
-                  {kpis.sobSemNf > 0 && <MiniChip cls={catStyle("SEM NF")} text={`SEM NF ${brlAbbr(kpis.sobSemNf)}`} titulo={brl(kpis.sobSemNf)} />}
-                  {kpis.sobFora > 0 && <MiniChip cls={catStyle("FORA DE ESCOPO")} text={`FORA ${brlAbbr(kpis.sobFora)}`} titulo={brl(kpis.sobFora)} />}
-                  {kpis.sobAConf > 0 && <MiniChip cls={catStyle("A CONFERIR")} text={`A CONF. ${brlAbbr(kpis.sobAConf)}`} titulo={brl(kpis.sobAConf)} />}
-                </div>
-              }
-            />
-            <KpiCard
-              label="Resolvidas"
-              value={String(kpis.resolv)}
-              legend={`${kpis.aprov} aprovadas · ${kpis.repr} reprovadas`}
-              valueClass="text-[hsl(152_60%_36%)]"
-              breakdown={
-                kpis.aprovComNf > 0 ? (
-                  <div className="flex flex-wrap gap-1.5 mt-2">
-                    <MiniChip cls={catStyle("COM NF")} text={`COM NF ${kpis.aprovComNf} aprovadas`} />
-                  </div>
-                ) : null
-              }
-            />
-          </>
-        )}
-      </div>
+              ) : null
+            }
+          />
+        </div>
+      )}
 
 
-      {/* Status tabs */}
-      <div className="flex flex-wrap gap-2">
-        {([
-          { k: "todas" as Filtro, label: `Todas (${counts.todas})` },
-          ...ALL_STATUS.map(s => ({ k: s as Filtro, label: `${s} (${counts[s] ?? 0})` })),
-        ]).map(f => (
-          <button
-            key={f.k}
-            onClick={() => setFiltro(f.k)}
-            className={cn(
-              "px-3.5 py-1.5 rounded-full text-xs font-medium border transition",
-              filtro === f.k ? "bg-foreground text-background border-foreground" : "bg-card text-foreground border-border hover:bg-accent"
-            )}
-          >{f.label}</button>
-        ))}
-      </div>
+      {/* Barra de controle: busca, abas de status, o resto dos filtros dobrado
+          num popover e a fatura — tudo numa linha só, no lugar das três
+          fileiras de pílulas que empurravam a tabela para baixo da dobra. */}
+      <div className="flex flex-wrap items-center gap-3 rounded-[10px] border border-border bg-card px-2.5 py-2">
+        <div className="relative flex min-w-[180px] flex-1 items-center">
+          <Search className="pointer-events-none absolute left-2.5 h-[15px] w-[15px] text-muted-foreground" />
+          <input
+            type="text"
+            value={busca}
+            onChange={e => setBusca(e.target.value)}
+            placeholder="Buscar lançamento, responsável ou valor"
+            className="h-8 w-full border-0 bg-transparent pl-8 pr-2 text-[13.5px] outline-none placeholder:text-muted-foreground"
+          />
+        </div>
 
-      {/* Categoria chips */}
-      <div className="flex flex-wrap gap-2">
-        {([
-          { k: "todas" as FiltroCat, label: `Todas (${catCounts.todas})`, cls: "" },
-          ...ALL_CATEGORIAS.map(c => ({ k: c as FiltroCat, label: `${c} (${catCounts[c] ?? 0})`, cls: catStyle(c) })),
-        ]).map(f => {
-          const count = f.k === "todas" ? catCounts.todas : (catCounts[f.k] ?? 0);
-          const disabled = f.k !== "todas" && count === 0;
-          const active = fCat === f.k;
-          return (
+        <div className="h-6 w-px bg-border" />
+
+        <div className="inline-flex items-center rounded-lg bg-muted p-0.5">
+          {ABAS_STATUS.map(a => (
             <button
-              key={f.k}
-              onClick={() => !disabled && setFCat(f.k)}
-              disabled={disabled}
+              key={a.k}
+              onClick={() => setFiltro(a.k)}
               className={cn(
-                "px-3.5 py-1.5 rounded-full text-xs font-medium border transition",
-                active
-                  ? (f.k === "todas" ? "bg-foreground text-background border-foreground" : cn(f.cls, "ring-2 ring-offset-1 ring-foreground/40"))
-                  : (f.k === "todas" ? "bg-card text-foreground border-border hover:bg-accent" : cn(f.cls, "opacity-90 hover:opacity-100")),
-                disabled && "opacity-40 cursor-not-allowed hover:opacity-40"
+                "inline-flex h-7 items-center gap-1.5 rounded-md px-3 text-[12.5px] transition",
+                filtro === a.k
+                  ? "bg-card font-semibold text-foreground shadow-sm"
+                  : "font-medium text-foreground/70 hover:text-foreground",
               )}
-            >{f.label}</button>
-          );
-        })}
+            >
+              {a.label}
+              <span className="num font-medium text-muted-foreground">{counts[a.k] ?? 0}</span>
+            </button>
+          ))}
+        </div>
+
+        <div className="h-6 w-px bg-border" />
+
+        <Popover open={filtrosOpen} onOpenChange={setFiltrosOpen}>
+          <PopoverTrigger asChild>
+            <button className="inline-flex h-8 items-center gap-2 rounded-lg border border-border bg-card px-3 text-[13px] font-medium hover:bg-accent">
+              <SlidersHorizontal className="h-[15px] w-[15px] text-muted-foreground" />
+              Filtros
+              {filtrosAtivos > 0 && (
+                <span className="num inline-flex h-[18px] min-w-[18px] items-center justify-center rounded-full bg-primary px-1.5 text-[11px] font-semibold text-primary-foreground">
+                  {filtrosAtivos}
+                </span>
+              )}
+            </button>
+          </PopoverTrigger>
+          <PopoverContent align="end" className="w-[300px] p-3.5">
+            <div className="flex flex-col gap-3">
+              <CampoFiltro label="Responsável" value={fResp} onChange={setFResp} options={responsaveisPendentes} />
+              <CampoFiltro label="Regra" value={fRegra} onChange={setFRegra} options={regras} />
+              <CampoFiltro label="Anexo Omie" value={fAnexo} onChange={setFAnexo} options={["Anexado", "Não anexado"]} />
+              <div className="h-px bg-border" />
+              <div className="flex flex-col gap-1.5">
+                <span className="text-[10.5px] font-semibold uppercase tracking-[0.06em] text-muted-foreground">Severidade</span>
+                <div className="grid grid-cols-4 gap-1.5">
+                  {(["Crítico", "Alto", "Médio", "Baixo"] as const).map(s => (
+                    <button
+                      key={s}
+                      onClick={() => setFSev(v => (v === s ? "todas" : s))}
+                      className={cn(
+                        "rounded-[7px] border py-1.5 text-center text-[11.5px] font-medium transition",
+                        fSev === s
+                          ? "border-foreground bg-foreground text-background"
+                          : "border-border text-foreground/80 hover:bg-accent",
+                      )}
+                    >{s}</button>
+                  ))}
+                </div>
+              </div>
+              <CampoFiltro label="Área" value={fArea} onChange={setFArea} options={areas} />
+              <div className="flex items-center justify-between pt-0.5">
+                <button
+                  onClick={limparFiltros}
+                  disabled={filtrosAtivos === 0}
+                  className="text-[12.5px] font-medium text-muted-foreground hover:text-foreground disabled:opacity-50"
+                >Limpar</button>
+                <button
+                  onClick={() => setFiltrosOpen(false)}
+                  className="h-[30px] rounded-lg bg-foreground px-3.5 text-[12.5px] font-medium text-background hover:bg-foreground/90"
+                >Aplicar</button>
+              </div>
+            </div>
+          </PopoverContent>
+        </Popover>
+
+        <label className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-border bg-card px-2.5">
+          <span className="text-[10.5px] font-semibold uppercase tracking-[0.06em] text-muted-foreground">Fatura</span>
+          <select
+            value={competencia}
+            onChange={e => setCompetencia(e.target.value)}
+            className="num bg-transparent text-[13px] font-medium capitalize outline-none"
+          >
+            {competencias.map(c => <option key={c} value={c} className="capitalize">{compLabel(c)}</option>)}
+            {competencias.length === 0 && <option value="">—</option>}
+          </select>
+        </label>
       </div>
 
-      {/* Filters row */}
-      <div className="flex flex-wrap gap-2 items-center">
-        <FilterSelect label="Severidade" value={fSev} onChange={setFSev} options={["Crítico","Alto","Médio","Baixo"]} />
-        <FilterSelect label="Área" value={fArea} onChange={setFArea} options={areas} />
-        <FilterSelect label="Regra" value={fRegra} onChange={setFRegra} options={regras} />
-        <FilterSelect label="Responsável" value={fResp} onChange={setFResp} options={responsaveisPendentes} />
-        <FilterSelect label="Anexo Omie" value={fAnexo} onChange={setFAnexo} options={["Anexado", "Não anexado"]} />
-        {(fSev !== "todas" || fArea !== "todas" || fRegra !== "todas" || fResp !== "todas" || fAnexo !== "todas") && (
-          <button onClick={() => { setFSev("todas"); setFArea("todas"); setFRegra("todas"); setFResp("todas"); setFAnexo("todas"); }} className="text-xs text-muted-foreground hover:text-foreground underline">
-            limpar filtros
-          </button>
+      {/* Nota fiscal: o corte que a auditoria mais usa fica fora do popover, com o
+          placar do que sobrou da filtragem à direita. */}
+      <div className="-mt-1.5 flex flex-wrap items-center justify-between gap-3 rounded-[10px] border border-border bg-muted px-3 py-1.5">
+        <div className="flex flex-wrap items-center gap-2.5">
+          <span className="text-[10.5px] font-semibold uppercase tracking-[0.08em] text-muted-foreground">Nota fiscal</span>
+          <div className="inline-flex flex-wrap items-center gap-0.5 rounded-lg border border-border bg-card p-0.5">
+            <button
+              onClick={() => setFCat("todas")}
+              className={cn(
+                "h-[26px] rounded-md px-2.5 text-xs transition",
+                fCat === "todas" ? "bg-foreground font-semibold text-background" : "font-medium text-foreground/80 hover:bg-accent",
+              )}
+            >
+              Todas <span className={cn("num font-medium", fCat === "todas" ? "opacity-70" : "text-muted-foreground")}>{catCounts.todas}</span>
+            </button>
+            {ALL_CATEGORIAS.map(c => {
+              const count = catCounts[c] ?? 0;
+              const ativo = fCat === c;
+              const { dot, texto } = catDot(c);
+              return (
+                <button
+                  key={c}
+                  onClick={() => count > 0 && setFCat(ativo ? "todas" : c)}
+                  disabled={count === 0}
+                  className={cn(
+                    "inline-flex h-[26px] items-center gap-1.5 rounded-md px-2.5 text-xs font-medium transition",
+                    ativo ? "bg-foreground text-background" : cn(texto, "hover:bg-accent"),
+                    count === 0 && "cursor-not-allowed text-muted-foreground/60 hover:bg-transparent",
+                  )}
+                >
+                  <span className={cn("h-1.5 w-1.5 rounded-full", count === 0 ? "bg-muted-foreground/40" : dot)} />
+                  {ROTULO_CAT[c]}
+                  <span className={cn("num", ativo ? "opacity-70" : "text-muted-foreground")}>{count}</span>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="text-xs text-muted-foreground">
+            <span className="num">{filtered.length}</span> de <span className="num">{periodRows.length}</span> lançamentos
+          </span>
+          {chipsAtivos.map(c => (
+            <button
+              key={c.rotulo}
+              onClick={c.limpar}
+              className="inline-flex items-center gap-1.5 rounded-full border border-border bg-card py-1 pl-2.5 pr-2 text-xs font-medium hover:bg-accent"
+              title="Remover este filtro"
+            >
+              {c.rotulo}
+              <X className="h-3 w-3 opacity-60" />
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* Faixa de ações: as duas ações pesadas saíram do cabeçalho e vieram para
+          onde se diz de quem é o trabalho — com responsável escolhido a faixa fica
+          vermelha e nominal; sem ele, continua servindo o envio geral ao Omie. */}
+      <div
+        className={cn(
+          "flex flex-wrap items-center justify-between gap-3 rounded-[10px] border px-3.5 py-2.5",
+          fResp === "todas" ? "border-border bg-muted/60" : "border-primary/35 bg-primary/5",
         )}
+      >
+        <div className="flex min-w-0 items-center gap-2.5">
+          <div className={cn(
+            "flex h-[26px] w-[26px] shrink-0 items-center justify-center rounded-full border bg-card text-[11px] font-semibold",
+            fResp === "todas" ? "border-border text-muted-foreground" : "border-primary/30 text-primary",
+          )}>
+            {fResp === "todas" ? <Paperclip className="h-3.5 w-3.5" /> : iniciais(fResp)}
+          </div>
+          <div className="text-[13.5px]">
+            {fResp === "todas" ? (
+              <>
+                <span className="font-semibold">Todos os responsáveis</span>
+                <span className="text-foreground/80">
+                  {" · "}<span className="num">{trabalhoDoResponsavel.pendentes}</span> pendentes nesta fatura ·{" "}
+                  <span className="num">{trabalhoDoResponsavel.prontosOmie}</span> comprovantes prontos para o Omie
+                </span>
+              </>
+            ) : (
+              <>
+                <span className="font-semibold">{fResp}</span>
+                <span className="text-foreground/80">
+                  {" · "}<span className="num">{trabalhoDoResponsavel.pendentes}</span> lançamentos pendentes de justificativa ·{" "}
+                  <span className="num">{trabalhoDoResponsavel.prontosOmie}</span> comprovantes ainda não anexados no Omie
+                </span>
+              </>
+            )}
+          </div>
+        </div>
+        <div className="flex shrink-0 flex-wrap items-center gap-2">
+          <TooltipProvider delayDuration={200}>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <span>
+                  <Button
+                    onClick={() => setConsolidadoOpen(true)}
+                    disabled={fResp === "todas"}
+                    className="h-[34px] text-[13.5px] text-white disabled:opacity-50"
+                    style={{ backgroundColor: "#0F6E56" }}
+                  >
+                    <WhatsAppLogo className="mr-2 h-4 w-4" />
+                    Solicitar justificativas
+                  </Button>
+                </span>
+              </TooltipTrigger>
+              {fResp === "todas" && (
+                <TooltipContent>Selecione um responsável (em Filtros) para solicitar justificativas em lote</TooltipContent>
+              )}
+            </Tooltip>
+          </TooltipProvider>
+          <Button
+            onClick={enviarMassaOmie}
+            disabled={enviandoMassa}
+            className="h-[34px] text-[13.5px] text-white hover:opacity-90 disabled:opacity-60"
+            style={{ backgroundColor: "#1D63C7" }}
+            title="Envia ao Omie os comprovantes pendentes (base do cartão + achados) do responsável selecionado — todas as faturas"
+          >
+            {enviandoMassa
+              ? <><Loader2 className="mr-2 h-4 w-4 animate-spin" /> Enviando…</>
+              : <><OmieLogo className="mr-2 h-4 w-4" /> Enviar comprovantes ao Omie</>}
+          </Button>
+        </div>
       </div>
 
       {/* Table */}
       <div className="rounded-xl border border-border bg-card overflow-hidden">
-        <div className="grid grid-cols-[minmax(240px,1.8fr)_210px_100px_120px_130px_130px_140px_40px] gap-3 px-4 py-3 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground border-b border-border">
+        <div className="grid grid-cols-[minmax(200px,1.8fr)_minmax(130px,1fr)_80px_110px_minmax(90px,0.8fr)_100px_140px_32px] gap-3 px-4 py-3 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground border-b border-border">
           <div>Lançamento</div>
           <div>Categoria Omie</div>
           <div>Origem</div>
@@ -935,14 +1175,14 @@ export default function Achados() {
         </div>
         {loading ? (
           <div className="p-5 space-y-3">{Array.from({ length: 5 }).map((_, i) => <Skeleton key={i} className="h-12 rounded" />)}</div>
-        ) : filtered.length === 0 ? (
+        ) : visiveis.length === 0 ? (
           <div className="p-12 text-center text-sm text-muted-foreground">Nenhum lançamento em auditoria neste período</div>
-        ) : filtered.map(r => {
+        ) : visiveis.map(r => {
           const nome = nomeDaLinha(r);
           return (
             <div
               key={r.id}
-              className="grid grid-cols-[minmax(240px,1.8fr)_210px_100px_120px_130px_130px_140px_40px] gap-3 px-4 py-3 items-center border-b border-border last:border-0 hover:bg-accent/40 transition"
+              className="grid grid-cols-[minmax(200px,1.8fr)_minmax(130px,1fr)_80px_110px_minmax(90px,0.8fr)_100px_140px_32px] gap-3 px-4 py-3 items-center border-b border-border last:border-0 hover:bg-accent/40 transition"
             >
               <div className="text-left min-w-0 flex items-start gap-1.5">
                 <button onClick={() => setSelected(r)} className="text-left min-w-0 flex-1">
@@ -1029,6 +1269,27 @@ export default function Achados() {
             </div>
           );
         })}
+
+        {!loading && filtered.length > 0 && (
+          <div className="flex flex-wrap items-center justify-between gap-3 border-t border-border bg-background px-4 py-2.5">
+            <span className="text-xs text-muted-foreground">
+              Mostrando <span className="num">{visiveis.length}</span> de <span className="num">{filtered.length}</span> lançamentos filtrados
+            </span>
+            <div className="flex items-center gap-1.5">
+              <button
+                onClick={() => setPagina(p => Math.max(1, p - 1))}
+                disabled={paginaAtual <= 1}
+                className="h-7 rounded-[7px] border border-border bg-card px-2.5 text-[12.5px] font-medium hover:bg-accent disabled:cursor-not-allowed disabled:text-muted-foreground/60 disabled:hover:bg-card"
+              >Anterior</button>
+              <span className="num px-1 text-xs text-muted-foreground">{paginaAtual} / {totalPaginas}</span>
+              <button
+                onClick={() => setPagina(p => Math.min(totalPaginas, p + 1))}
+                disabled={paginaAtual >= totalPaginas}
+                className="h-7 rounded-[7px] border border-border bg-card px-2.5 text-[12.5px] font-medium hover:bg-accent disabled:cursor-not-allowed disabled:text-muted-foreground/60 disabled:hover:bg-card"
+              >Próxima</button>
+            </div>
+          </div>
+        )}
       </div>
 
 
@@ -1375,15 +1636,43 @@ export default function Achados() {
   );
 }
 
-function KpiCard({ label, value, legend, valueClass, breakdown }: { label: string; value: React.ReactNode; legend: string; valueClass?: string; breakdown?: React.ReactNode }) {
+function KpiCard({ label, value, legend, valueClass, bar, breakdown, className }: {
+  label: string; value: React.ReactNode; legend: string;
+  valueClass?: string; bar?: React.ReactNode; breakdown?: React.ReactNode; className?: string;
+}) {
   return (
-    <div className="rounded-xl border border-border bg-card p-5">
-      <div className="text-xs font-medium text-muted-foreground">{label}</div>
-      <div className={cn("mt-2 text-3xl font-bold num tracking-tight", valueClass)}>{value}</div>
-      <div className="text-xs text-muted-foreground mt-1">{legend}</div>
+    <div className={cn("px-5 py-4", className)}>
+      <div className="text-[11px] font-semibold uppercase tracking-[0.06em] text-muted-foreground">{label}</div>
+      <div className="mt-1.5 flex flex-wrap items-baseline gap-2">
+        <div className={cn("num text-[26px] font-bold leading-none tracking-tight", valueClass)}>{value}</div>
+        <div className="text-xs text-muted-foreground">{legend}</div>
+      </div>
+      {bar}
       {breakdown}
     </div>
   );
+}
+
+/** A barra fina do KPI: cada fatia pesa o que vale dentro do `total` do período, e
+ *  o que sobra fica transparente — é o quanto daquele total o número representa.
+ *  Com `total` zerado sobra só o trilho cinza, que é a leitura certa: nada a medir. */
+function BarraKpi({ total, fatias }: { total: number; fatias: { peso: number; cor: string }[] }) {
+  const usadas = fatias.filter(f => f.peso > 0);
+  const soma = usadas.reduce((s, f) => s + f.peso, 0);
+  const resto = Math.max(0, total - soma);
+  return (
+    <div className="mt-2.5 flex h-[5px] items-center gap-[3px] overflow-hidden rounded-full bg-muted">
+      {usadas.map((f, i) => <span key={i} className={cn("h-full", f.cor)} style={{ flex: f.peso }} />)}
+      {resto > 0 && <span className="h-full" style={{ flex: resto }} />}
+    </div>
+  );
+}
+
+/** As iniciais do responsável no medalhão da faixa de ações ("Ana Duarte" → "AD"). */
+function iniciais(nome: string) {
+  const partes = nome.trim().split(/\s+/).filter(Boolean);
+  if (!partes.length) return "—";
+  return ((partes[0][0] ?? "") + (partes.length > 1 ? partes[partes.length - 1][0] ?? "" : "")).toUpperCase();
 }
 
 /* A leitura da IA só vale para o arquivo que ela leu. Trocado o comprovante,
@@ -1561,12 +1850,20 @@ function MetaItem({ label, value, full }: { label: string; value: string; full?:
   );
 }
 
-function FilterSelect({ label, value, onChange, options }: { label: string; value: string; onChange: (v: string) => void; options: string[] }) {
+/** Um campo do popover de filtros: rótulo em cima, seletor de largura cheia embaixo. */
+function CampoFiltro({ label, value, onChange, options }: { label: string; value: string; onChange: (v: string) => void; options: string[] }) {
   return (
-    <label className="inline-flex items-center gap-2 h-9 rounded-lg border border-border bg-card px-3">
-      <span className="text-[11px] uppercase tracking-wider text-muted-foreground font-medium">{label}</span>
-      <select value={value} onChange={e => onChange(e.target.value)} className="text-sm bg-transparent outline-none">
-        <option value="todas">todas</option>
+    <label className="flex flex-col gap-1.5">
+      <span className="text-[10.5px] font-semibold uppercase tracking-[0.06em] text-muted-foreground">{label}</span>
+      <select
+        value={value}
+        onChange={e => onChange(e.target.value)}
+        className={cn(
+          "h-8 w-full rounded-lg border border-border bg-card px-2.5 text-[13px] outline-none",
+          value === "todas" && "text-muted-foreground",
+        )}
+      >
+        <option value="todas">Todas</option>
         {options.map(o => <option key={o} value={o}>{o}</option>)}
       </select>
     </label>

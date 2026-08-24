@@ -36,6 +36,7 @@ import {
 import { AnaliseSemanal } from "@/components/tarefas/AnaliseSemanal";
 import { HistoricoTarefas } from "@/components/tarefas/HistoricoTarefas";
 import { calcIdade, explicaIdade } from "@/lib/tarefas/idade";
+import { comparaPrioridade } from "@/lib/tarefas/prioridade";
 
 export type { Subtarefa } from "@/components/tarefas/TaskDialog";
 const COLUMNS_CFG_KEY = "tarefas.columns.cfg.v1";
@@ -496,7 +497,11 @@ export default function Tarefas() {
       if (chipAtrasadas && !isAtrasada(r)) return false;
       if (!periodoMatch(r)) return false;
       return true;
-    });
+    /* Ordena aqui, e não em `grouped`, porque a Tabela também sai desta lista:
+       ordenado só no Kanban, o mesmo card apareceria em posições diferentes nas
+       duas abas da mesma página. `filter` já devolveu um array novo, então o
+       `sort` não mexe em `rows`. */
+    }).sort(comparaPrioridade);
   }, [rows, search, chipPrio, chipResp, chipAtrasadas, chipPeriodo]);
 
   const filteredTable = useMemo(() => filteredBase.filter(r => {

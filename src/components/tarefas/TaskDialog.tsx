@@ -34,7 +34,11 @@ export type Tarefa = {
 };
 
 export const DEFAULT_COLUMNS = ["Backlog", "Em andamento", "Acompanhamento", "Revisão", "Concluído", "Tasks - RPA"];
-export const PRIO_OPTS = ["Baixa", "Média", "Alta", "Urgente"];
+/* A escala mora em @/lib/tarefas/prioridade — é ela que ordena a coluna, e a
+   ordenação não pode divergir do seletor. Reexportado aqui para quem já
+   importava daqui não precisar mudar. */
+export { PRIO_OPTS } from "@/lib/tarefas/prioridade";
+import { PRIO_OPTS } from "@/lib/tarefas/prioridade";
 
 export function progressBarColor(p: number): string {
   if (p >= 100) return "bg-emerald-500";

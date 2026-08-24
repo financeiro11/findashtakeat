@@ -12,31 +12,6 @@ export type Database = {
   __InternalSupabase: {
     PostgrestVersion: "14.5"
   }
-  graphql_public: {
-    Tables: {
-      [_ in never]: never
-    }
-    Views: {
-      [_ in never]: never
-    }
-    Functions: {
-      graphql: {
-        Args: {
-          extensions?: Json
-          operationName?: string
-          query?: string
-          variables?: Json
-        }
-        Returns: Json
-      }
-    }
-    Enums: {
-      [_ in never]: never
-    }
-    CompositeTypes: {
-      [_ in never]: never
-    }
-  }
   public: {
     Tables: {
       agente_excecoes: {
@@ -229,6 +204,94 @@ export type Database = {
             columns: ["regra_id"]
             isOneToOne: false
             referencedRelation: "regras_decisao"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      agente_obrigacoes: {
+        Row: {
+          agente_id: string
+          atualizado_em: string
+          chave_nfe: string | null
+          cod_omie: string | null
+          codigo_integracao: string | null
+          criado_em: string
+          documento_norm: string
+          email_message_id: string | null
+          email_uid: string | null
+          estado: string
+          fornecedor_id: string | null
+          id: string
+          numero_documento: string | null
+          observacao: string | null
+          origem_cobranca: string | null
+          origem_nota: string | null
+          valor: number
+          vencimento: string
+          vinculado_em: string | null
+        }
+        Insert: {
+          agente_id: string
+          atualizado_em?: string
+          chave_nfe?: string | null
+          cod_omie?: string | null
+          codigo_integracao?: string | null
+          criado_em?: string
+          documento_norm: string
+          email_message_id?: string | null
+          email_uid?: string | null
+          estado?: string
+          fornecedor_id?: string | null
+          id?: string
+          numero_documento?: string | null
+          observacao?: string | null
+          origem_cobranca?: string | null
+          origem_nota?: string | null
+          valor: number
+          vencimento: string
+          vinculado_em?: string | null
+        }
+        Update: {
+          agente_id?: string
+          atualizado_em?: string
+          chave_nfe?: string | null
+          cod_omie?: string | null
+          codigo_integracao?: string | null
+          criado_em?: string
+          documento_norm?: string
+          email_message_id?: string | null
+          email_uid?: string | null
+          estado?: string
+          fornecedor_id?: string | null
+          id?: string
+          numero_documento?: string | null
+          observacao?: string | null
+          origem_cobranca?: string | null
+          origem_nota?: string | null
+          valor?: number
+          vencimento?: string
+          vinculado_em?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "agente_obrigacoes_agente_id_fkey"
+            columns: ["agente_id"]
+            isOneToOne: false
+            referencedRelation: "agentes"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "agente_obrigacoes_agente_id_fkey"
+            columns: ["agente_id"]
+            isOneToOne: false
+            referencedRelation: "vw_agente_saude"
+            referencedColumns: ["agente_id"]
+          },
+          {
+            foreignKeyName: "agente_obrigacoes_fornecedor_id_fkey"
+            columns: ["fornecedor_id"]
+            isOneToOne: false
+            referencedRelation: "lib_fornecedores"
             referencedColumns: ["id"]
           },
         ]
@@ -989,6 +1052,7 @@ export type Database = {
           responsavel: string | null
           solucao: string | null
           status: string
+          tarefa_id: string | null
           ultima_falha: string | null
           updated_at: string
           upgrade: string | null
@@ -1016,6 +1080,7 @@ export type Database = {
           responsavel?: string | null
           solucao?: string | null
           status?: string
+          tarefa_id?: string | null
           ultima_falha?: string | null
           updated_at?: string
           upgrade?: string | null
@@ -1043,6 +1108,7 @@ export type Database = {
           responsavel?: string | null
           solucao?: string | null
           status?: string
+          tarefa_id?: string | null
           ultima_falha?: string | null
           updated_at?: string
           upgrade?: string | null
@@ -1053,6 +1119,13 @@ export type Database = {
             columns: ["depende_de"]
             isOneToOne: false
             referencedRelation: "automacoes_catalogo"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "automacoes_catalogo_tarefa_id_fkey"
+            columns: ["tarefa_id"]
+            isOneToOne: false
+            referencedRelation: "tarefas"
             referencedColumns: ["id"]
           },
         ]
@@ -3005,8 +3078,19 @@ export type Database = {
           fornecedor_nome: string | null
           id: string
           item: string
+          nf_arquivo: string | null
+          nf_bucket: string | null
+          nf_cnpj: string | null
+          nf_emissao: string | null
+          nf_enviada_em: string | null
+          nf_enviada_por: string | null
+          nf_ia: Json | null
+          nf_ia_em: string | null
+          nf_nome: string | null
+          nf_numero: string | null
           nf_status: string
           nf_url: string | null
+          nf_valor: number | null
           pagamento_status: string
           solicitacao_id: string | null
           valor: number
@@ -3020,8 +3104,19 @@ export type Database = {
           fornecedor_nome?: string | null
           id?: string
           item: string
+          nf_arquivo?: string | null
+          nf_bucket?: string | null
+          nf_cnpj?: string | null
+          nf_emissao?: string | null
+          nf_enviada_em?: string | null
+          nf_enviada_por?: string | null
+          nf_ia?: Json | null
+          nf_ia_em?: string | null
+          nf_nome?: string | null
+          nf_numero?: string | null
           nf_status?: string
           nf_url?: string | null
+          nf_valor?: number | null
           pagamento_status?: string
           solicitacao_id?: string | null
           valor: number
@@ -3035,8 +3130,19 @@ export type Database = {
           fornecedor_nome?: string | null
           id?: string
           item?: string
+          nf_arquivo?: string | null
+          nf_bucket?: string | null
+          nf_cnpj?: string | null
+          nf_emissao?: string | null
+          nf_enviada_em?: string | null
+          nf_enviada_por?: string | null
+          nf_ia?: Json | null
+          nf_ia_em?: string | null
+          nf_nome?: string | null
+          nf_numero?: string | null
           nf_status?: string
           nf_url?: string | null
+          nf_valor?: number | null
           pagamento_status?: string
           solicitacao_id?: string | null
           valor?: number
@@ -3209,6 +3315,65 @@ export type Database = {
           updated_at?: string
         }
         Relationships: []
+      }
+      facilities_nf_auditoria: {
+        Row: {
+          alvo_id_unico: string
+          alvo_tipo: string
+          aplicado_em: string | null
+          aplicado_por: string | null
+          compra_id: string
+          confianca: string
+          created_at: string
+          criterio: Json
+          decidido_em: string | null
+          decidido_por: string | null
+          id: number
+          score: number | null
+          status: string
+          updated_at: string
+        }
+        Insert: {
+          alvo_id_unico: string
+          alvo_tipo: string
+          aplicado_em?: string | null
+          aplicado_por?: string | null
+          compra_id: string
+          confianca: string
+          created_at?: string
+          criterio?: Json
+          decidido_em?: string | null
+          decidido_por?: string | null
+          id?: number
+          score?: number | null
+          status?: string
+          updated_at?: string
+        }
+        Update: {
+          alvo_id_unico?: string
+          alvo_tipo?: string
+          aplicado_em?: string | null
+          aplicado_por?: string | null
+          compra_id?: string
+          confianca?: string
+          created_at?: string
+          criterio?: Json
+          decidido_em?: string | null
+          decidido_por?: string | null
+          id?: number
+          score?: number | null
+          status?: string
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "facilities_nf_auditoria_compra_id_fkey"
+            columns: ["compra_id"]
+            isOneToOne: false
+            referencedRelation: "facilities_compras"
+            referencedColumns: ["id"]
+          },
+        ]
       }
       facilities_solicitacoes: {
         Row: {
@@ -3917,6 +4082,7 @@ export type Database = {
       }
       nf_execucoes: {
         Row: {
+          bloqueadas: number
           concluida_em: string | null
           detalhe: Json | null
           emitidas: number
@@ -3931,6 +4097,7 @@ export type Database = {
           pulada: string | null
         }
         Insert: {
+          bloqueadas?: number
           concluida_em?: string | null
           detalhe?: Json | null
           emitidas?: number
@@ -3945,6 +4112,7 @@ export type Database = {
           pulada?: string | null
         }
         Update: {
+          bloqueadas?: number
           concluida_em?: string | null
           detalhe?: Json | null
           emitidas?: number
@@ -6796,6 +6964,107 @@ export type Database = {
         }
         Relationships: []
       }
+      workspace_comentarios: {
+        Row: {
+          autor_nome: string
+          autor_user_id: string | null
+          criado_em: string
+          id: string
+          link_id: string | null
+          origem: string
+          page_id: string
+          resolvido: boolean
+          texto: string
+        }
+        Insert: {
+          autor_nome: string
+          autor_user_id?: string | null
+          criado_em?: string
+          id?: string
+          link_id?: string | null
+          origem?: string
+          page_id: string
+          resolvido?: boolean
+          texto: string
+        }
+        Update: {
+          autor_nome?: string
+          autor_user_id?: string | null
+          criado_em?: string
+          id?: string
+          link_id?: string | null
+          origem?: string
+          page_id?: string
+          resolvido?: boolean
+          texto?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "workspace_comentarios_link_id_fkey"
+            columns: ["link_id"]
+            isOneToOne: false
+            referencedRelation: "workspace_links"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "workspace_comentarios_page_id_fkey"
+            columns: ["page_id"]
+            isOneToOne: false
+            referencedRelation: "workspace_pages"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      workspace_links: {
+        Row: {
+          acessos: number
+          criado_em: string
+          criado_por: string | null
+          criado_por_nome: string | null
+          expira_em: string | null
+          id: string
+          page_id: string
+          permite_comentario: boolean
+          revogado_em: string | null
+          token: string
+          ultimo_acesso: string | null
+        }
+        Insert: {
+          acessos?: number
+          criado_em?: string
+          criado_por?: string | null
+          criado_por_nome?: string | null
+          expira_em?: string | null
+          id?: string
+          page_id: string
+          permite_comentario?: boolean
+          revogado_em?: string | null
+          token: string
+          ultimo_acesso?: string | null
+        }
+        Update: {
+          acessos?: number
+          criado_em?: string
+          criado_por?: string | null
+          criado_por_nome?: string | null
+          expira_em?: string | null
+          id?: string
+          page_id?: string
+          permite_comentario?: boolean
+          revogado_em?: string | null
+          token?: string
+          ultimo_acesso?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "workspace_links_page_id_fkey"
+            columns: ["page_id"]
+            isOneToOne: false
+            referencedRelation: "workspace_pages"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       workspace_pages: {
         Row: {
           archived: boolean
@@ -6884,6 +7153,40 @@ export type Database = {
           status: string | null
         }
         Relationships: []
+      }
+      facilities_nf_auditoria_v: {
+        Row: {
+          alvo_id_unico: string | null
+          alvo_tipo: string | null
+          aplicado_em: string | null
+          aplicado_por: string | null
+          compra_data: string | null
+          compra_id: string | null
+          compra_item: string | null
+          compra_valor: number | null
+          confianca: string | null
+          created_at: string | null
+          criterio: Json | null
+          forma_pagamento: string | null
+          fornecedor_nome: string | null
+          id: number | null
+          nf_arquivo: string | null
+          nf_cnpj: string | null
+          nf_nome: string | null
+          nf_numero: string | null
+          nf_url: string | null
+          score: number | null
+          status: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "facilities_nf_auditoria_compra_id_fkey"
+            columns: ["compra_id"]
+            isOneToOne: false
+            referencedRelation: "facilities_compras"
+            referencedColumns: ["id"]
+          },
+        ]
       }
       vw_agente_saude: {
         Row: {
@@ -7011,7 +7314,17 @@ export type Database = {
       }
       asaas_metricas: { Args: { p_referencia: string }; Returns: Json }
       asaas_prazo_credito: { Args: { p_forma: string }; Returns: number }
+      auditoria_compras: { Args: never; Returns: Json }
       auditoria_lojistas: { Args: never; Returns: Json }
+      automacao_criar_tarefa: {
+        Args: {
+          p_id: string
+          p_prazo?: string
+          p_prioridade?: string
+          p_responsavel?: string
+        }
+        Returns: string
+      }
       cac_celula: {
         Args: { p_ano: number; p_linha_id: string; p_mes: number }
         Returns: {
@@ -7068,6 +7381,11 @@ export type Database = {
         Returns: string
       }
       cartao_series: { Args: never; Returns: Json }
+      chave_contraparte: { Args: { p: string }; Returns: string }
+      comentar_nota_publica: {
+        Args: { p_autor: string; p_texto: string; p_token: string }
+        Returns: Json
+      }
       criar_token_e_registrar: {
         Args: {
           p_colaborador_id?: string
@@ -7232,6 +7550,111 @@ export type Database = {
           qtd_pendente: number
         }[]
       }
+      facilities_nf_aplicar: {
+        Args: {
+          p_alvo_id_unico: string
+          p_alvo_tipo: string
+          p_compra_id: string
+          p_confianca?: string
+          p_criterio?: Json
+          p_por?: string
+          p_score?: number
+        }
+        Returns: {
+          alvo_id_unico: string
+          alvo_tipo: string
+          aplicado_em: string | null
+          aplicado_por: string | null
+          compra_id: string
+          confianca: string
+          created_at: string
+          criterio: Json
+          decidido_em: string | null
+          decidido_por: string | null
+          id: number
+          score: number | null
+          status: string
+          updated_at: string
+        }
+        SetofOptions: {
+          from: "*"
+          to: "facilities_nf_auditoria"
+          isOneToOne: true
+          isSetofReturn: false
+        }
+      }
+      facilities_nf_candidatos: {
+        Args: {
+          p_compra_id: string
+          p_dias_antes?: number
+          p_dias_depois?: number
+        }
+        Returns: {
+          alvo_data: string
+          alvo_descricao: string
+          alvo_id_unico: string
+          alvo_status: string
+          alvo_tipo: string
+          alvo_valor: number
+          confianca: string
+          criterio: Json
+          dias: number
+          documento_bate: boolean
+          grupo: string
+          nome_score: number
+          score: number
+        }[]
+      }
+      facilities_nf_desfazer: {
+        Args: { p_por?: string; p_vinculo_id: number }
+        Returns: {
+          alvo_id_unico: string
+          alvo_tipo: string
+          aplicado_em: string | null
+          aplicado_por: string | null
+          compra_id: string
+          confianca: string
+          created_at: string
+          criterio: Json
+          decidido_em: string | null
+          decidido_por: string | null
+          id: number
+          score: number | null
+          status: string
+          updated_at: string
+        }
+        SetofOptions: {
+          from: "*"
+          to: "facilities_nf_auditoria"
+          isOneToOne: true
+          isSetofReturn: false
+        }
+      }
+      facilities_nf_propostas: {
+        Args: never
+        Returns: {
+          alvo_data: string
+          alvo_descricao: string
+          alvo_id_unico: string
+          alvo_tipo: string
+          alvo_valor: number
+          compra_data: string
+          compra_id: string
+          compra_item: string
+          compra_valor: number
+          confianca: string
+          created_at: string
+          criterio: Json
+          forma_pagamento: string
+          fornecedor_nome: string
+          id: number
+          nf_arquivo: string
+          nf_cnpj: string
+          nf_nome: string
+          nf_numero: string
+          score: number
+        }[]
+      }
       fmt_brl: { Args: { v: number }; Returns: string }
       fn_classifica_texto: {
         Args: { p_texto: string }
@@ -7296,19 +7719,34 @@ export type Database = {
         }
         Returns: string
       }
+      nfse_bloqueio_emissao: {
+        Args: {
+          p_dados?: Json
+          p_estorno_registrado?: boolean
+          p_status: string
+        }
+        Returns: string
+      }
       normaliza_nome: { Args: { p_nome: string }; Returns: string }
+      notas_fiscais_auditoria: {
+        Args: { p_ate: string; p_de: string }
+        Returns: Json
+      }
       notas_fiscais_candidatas: {
         Args: { p_ids: string[] }
         Returns: {
+          bloqueio: string
           cnpj_cpf: string
           data_pagamento: string
           data_vencimento: string
           descricao: string
           email: string
+          estornado: boolean
           id_asaas: string
           ja_tem_nota: boolean
           n_cod_cli: number
           n_cod_os: number
+          status_asaas: string
           valor: number
         }[]
       }
@@ -7321,9 +7759,11 @@ export type Database = {
           data_vencimento: string
           descricao: string
           email: string
+          estornado: boolean
           id_asaas: string
           n_cod_cli: number
           n_cod_os: number
+          status_asaas: string
           valor: number
         }[]
       }
@@ -7447,6 +7887,7 @@ export type Database = {
           ultima: string
         }[]
       }
+      parametrizacao_evidencias_auditoria: { Args: never; Returns: Json }
       parametrizacao_lancamentos: {
         Args: { p_limite?: number; p_nome: string; p_origem: string }
         Returns: {
@@ -7516,6 +7957,7 @@ export type Database = {
           telefone: string
         }[]
       }
+      resolver_nota_publica: { Args: { p_token: string }; Returns: Json }
       resolver_token: {
         Args: { p_ip?: string; p_token: string }
         Returns: Json
@@ -7682,9 +8124,6 @@ export type CompositeTypes<
     : never
 
 export const Constants = {
-  graphql_public: {
-    Enums: {},
-  },
   public: {
     Enums: {},
   },

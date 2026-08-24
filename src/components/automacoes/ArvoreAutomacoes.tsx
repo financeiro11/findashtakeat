@@ -1,4 +1,5 @@
 ﻿import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { supabase } from "@/integrations/supabase/client";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
@@ -10,7 +11,7 @@ import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import {
   Zap, Minus, Plus, Maximize2, Sparkles, Loader2, X,
-  Link2, MousePointer2, ArrowUp, Layers, Maximize, Minimize, ChevronDown,
+  Link2, MousePointer2, ArrowUp, Layers, Maximize, Minimize, ChevronDown, Search,
 } from "lucide-react";
 import {
   montarLayout, correnteDe, destravadasPor, resumoTrilhas, alvosValidos, bandaNoY,
@@ -20,8 +21,12 @@ import {
   type Automacao, type NoPos, type Nivel, type Faixa,
 } from "./arvore-layout";
 import { iconeDe, ICONES, NOMES_ICONES, nomeIconeDe } from "./arvore-icones";
+import { buscarAutomacoes } from "./arvore-busca";
+import BuscaAutomacoes from "./BuscaAutomacoes";
 import FichaNo from "./FichaNo";
 import EsteiraAutomacoes from "./EsteiraAutomacoes";
+import { criarTarefaDaAutomacao } from "./criar-tarefa";
+import { canonResp, PESSOAS, AMBOS } from "@/lib/responsavel";
 import takeatSymbol from "@/assets/takeat-symbol-white.png";
 
 /* ============================================================================
@@ -41,11 +46,14 @@ import takeatSymbol from "@/assets/takeat-symbol-white.png";
  * sem sair da árvore.
  * ========================================================================== */
 
-const CAMPOS = "id,automacao,categoria,nivel,status,horas_mes,ferramentas,responsavel,impacto,esforco,dor,solucao,observacao,upgrade,depende_de,pos_x,pos_y,icone,ordem,esteira_ordem,esteira_upgrade";
+const CAMPOS = "id,automacao,categoria,nivel,status,horas_mes,ferramentas,responsavel,impacto,esforco,dor,solucao,observacao,upgrade,depende_de,pos_x,pos_y,icone,ordem,esteira_ordem,esteira_upgrade,tarefa_id";
 
 /* A escolha de recolher as trilhas fica salva por navegador — é preferência de
    quem está olhando, não dado do catálogo. */
 const LS_RECOLHIDO = "arvore.trilhas.recolhidas";
+/* Ir até um nó nunca aproxima menos que isto — de longe demais, "chegar" no nó
+   não mostra nada, e afastar quem já estava perto seria pior ainda. */
+const ZOOM_MIN_FOCO = 0.8;
 const lerRecolhido = () => { try { return localStorage.getItem(LS_RECOLHIDO) === "1"; } catch { return false; } };
 const salvarRecolhido = (v: boolean) => { try { localStorage.setItem(LS_RECOLHIDO, v ? "1" : "0"); } catch { /* modo privado */ } };
 
@@ -57,6 +65,7 @@ const vazia = (nivel: number | null): Automacao => ({
 });
 
 export default function ArvoreAutomacoes() {
+  const navigate = useNavigate();
   const [rows, setRows] = useState<Automacao[]>([]);
   const [niveis, setNiveis] = useState<Nivel[]>(NIVEIS_PADRAO);
   const [loading, setLoading] = useState(true);
@@ -72,6 +81,8 @@ export default function ArvoreAutomacoes() {
   const [bandaAlvo, setBandaAlvo] = useState<Faixa | null>(null); // banda sob o nó durante o arraste
   const [telaCheia, setTelaCheia] = useState(false);
   const [trilhasRecolhidas, setTrilhasRecolhidas] = useState(lerRecolhido);
+  const [termo, setTermo] = useState("");
+  const campoBusca = useRef<HTMLInputElement>(null);
 
   const carregar = useCallback(async () => {
     const [{ data, error }, { data: nv }] = await Promise.all([
@@ -84,6 +95,17 @@ export default function ArvoreAutomacoes() {
     setLoading(false);
   }, []);
   useEffect(() => { carregar(); }, [carregar]);
+
+  /* As opções do select de responsável: as duas pessoas, "Ambos", e o que mais
+     já estiver gravado ("RPA", "VPX"). Sem esta última parte, abrir uma
+     automação da RPA no editor mostraria o campo vazio — e salvar apagaria o
+     responsável sem ninguém pedir. */
+  const OPCOES_RESP = useMemo(() => {
+    const extras = rows
+      .map((r) => canonResp(r.responsavel))
+      .filter((v): v is string => !!v && v !== AMBOS && !(PESSOAS as readonly string[]).includes(v));
+    return [...PESSOAS, AMBOS, ...Array.from(new Set(extras)).sort((a, b) => a.localeCompare(b, "pt-BR"))];
+  }, [rows]);
 
   /* ----------------------------- layout ----------------------------- */
   const layout = useMemo(() => montarLayout(rows, niveis), [rows, niveis]);
@@ -133,6 +155,15 @@ export default function ArvoreAutomacoes() {
   const categorias = useMemo(
     () => Array.from(new Set([...TRILHAS.flatMap((t) => t.categorias), ...rows.map((r) => r.categoria || "").filter(Boolean)])).sort(),
     [rows],
+  );
+
+  /* ----------------------------- busca -----------------------------
+   * `null` quer dizer busca desligada (termo curto), o que é diferente de
+   * "não achou nada" — só o segundo caso apaga a árvore inteira. */
+  const achados = useMemo(() => buscarAutomacoes(rows, termo, niveis), [rows, termo, niveis]);
+  const idsAchados = useMemo(
+    () => (achados ? new Set(achados.map((a) => a.r.id)) : null),
+    [achados],
   );
 
   /* --------------------------- pan & zoom --------------------------- */
@@ -198,6 +229,40 @@ export default function ArvoreAutomacoes() {
       return kNovo;
     });
   };
+
+  /* --------------------------- ir até o nó ---------------------------
+   * O resultado da busca não serve de nada se ainda for preciso caçar o nó no
+   * desenho: escolher enquadra o nó no centro, seleciona e abre a ficha. Se ele
+   * estiver escondido por uma trilha isolada, o isolamento sai — senão a árvore
+   * "vai" para um nó invisível. */
+  const focarNo = useCallback((id: string) => {
+    const el = boxRef.current;
+    const n = porId.get(id);
+    if (!el || !n) return;
+    const kNovo = Math.max(k, ZOOM_MIN_FOCO);
+    setK(kNovo);
+    setT({ x: el.clientWidth / 2 - n.x * kNovo, y: el.clientHeight / 2 - n.y * kNovo });
+    setSel(id);
+    setSimular(false);
+    setConectando(null);
+    setTrilhaIso((iso) => (iso && iso !== n.trilha ? null : iso));
+  }, [porId, k]);
+
+  /* “/” põe o cursor na busca — o mesmo atalho de todo mapa navegável. Só vale
+     fora de campo de texto, para não roubar a barra de quem está escrevendo. */
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "/" || e.ctrlKey || e.metaKey || e.altKey) return;
+      const alvo = e.target as HTMLElement | null;
+      if (alvo?.closest("input, textarea, select, [contenteditable=true]")) return;
+      if (editando) return; // o editor está aberto por cima
+      e.preventDefault();
+      campoBusca.current?.focus();
+      campoBusca.current?.select();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [editando]);
 
   /* --------------------------- tela cheia ---------------------------
    * Overlay fixo em vez da Fullscreen API: o zoom/arraste continuam iguais, o
@@ -408,6 +473,7 @@ export default function ArvoreAutomacoes() {
 
   /* ------------------------- estado visual ------------------------- */
   const apagado = (n: NoPos) => {
+    if (idsAchados && !idsAchados.has(n.r.id)) return true;
     if (trilhaIso && n.trilha !== trilhaIso) return true;
     if (simular && sel) return !(n.r.id === sel || destrava.ids.has(n.r.id));
     if (corrente) return !corrente.has(n.r.id);
@@ -507,7 +573,7 @@ export default function ArvoreAutomacoes() {
 
       {/* ---------------- cartões de trilha ---------------- */}
       <div className="border-b border-white/[0.07] px-4 py-2.5" style={{ background: "#080a10" }}>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           <button
             onClick={() => setTrilhasRecolhidas((v) => { salvarRecolhido(!v); return !v; })}
             className="inline-flex items-center gap-1.5 text-[9px] font-bold tracking-[0.18em] text-slate-500 transition hover:text-slate-300"
@@ -533,6 +599,15 @@ export default function ArvoreAutomacoes() {
               <X className="h-2.5 w-2.5" />
             </button>
           )}
+          <BuscaAutomacoes
+            valor={termo}
+            onValor={setTermo}
+            achados={achados}
+            total={rows.length}
+            niveis={niveis}
+            onEscolher={focarNo}
+            campoRef={campoBusca}
+          />
         </div>
         <div className={cn("grid grid-cols-1 gap-2 sm:grid-cols-2 xl:grid-cols-4", trilhasRecolhidas ? "hidden" : "mt-2")}>
           {trilhas.map((tr) => {
@@ -696,6 +771,7 @@ export default function ArvoreAutomacoes() {
               const Icone = iconeDe(n.r);
               const ehSel = sel === n.r.id;
               const novo = simular && sel && destrava.ids.has(n.r.id);
+              const achado = !!idsAchados?.has(n.r.id); // casou com a busca
               const alvoConexao = conectando && conectando !== n.r.id;
               const ini = iniciaisDe(n.r.responsavel);
               return (
@@ -720,6 +796,9 @@ export default function ArvoreAutomacoes() {
                           ? `0 0 0 3px ${n.cor}55, 0 0 28px ${n.cor}cc`
                           : novo || (alvoConexao && hover === n.r.id)
                           ? `0 0 0 3px ${TIER_META.on.cor}66, 0 0 24px ${TIER_META.on.cor}aa`
+                          : achado
+                          // mesmo âmbar do grifo na lista de resultados
+                          ? "0 0 0 3px rgba(251,191,36,.45), 0 0 26px rgba(251,191,36,.6)"
                           : n.tier === "on"
                           ? `0 0 16px ${n.cor}66`
                           : n.tier === "wip"
@@ -785,6 +864,11 @@ export default function ArvoreAutomacoes() {
             onExcluir={() => excluir(selNo.r.id)}
             onFechar={() => setSel(null)}
             onEsteira={tierDe(selNo.r.status) === "on" ? () => alternarEsteira(selNo.r) : undefined}
+            onCriarTarefa={async (resp) => {
+              await criarTarefaDaAutomacao(selNo.r.id, resp);
+              await carregar();
+            }}
+            onVerTarefa={() => navigate(`/tarefas?tarefa=${selNo.r.tarefa_id}`)}
           />
         )}
 
@@ -815,6 +899,24 @@ export default function ArvoreAutomacoes() {
           </div>
         )}
 
+        {/* busca ativa — a lista pode estar fechada, e sem isto a árvore fica
+            apagada sem dizer por quê */}
+        {achados && (
+          <div className="absolute left-4 top-3 z-30 flex items-center gap-2 rounded-lg border border-amber-500/40 px-3 py-1.5 text-[11px] shadow-xl" style={{ background: "rgba(8,10,16,.94)" }}>
+            <Search className="h-3.5 w-3.5 text-amber-400" />
+            <span className="text-slate-300">
+              {achados.length === 0 ? (
+                <>Nada com <b className="text-white">“{termo}”</b></>
+              ) : (
+                <><b className="num text-amber-400">{achados.length}</b> de {rows.length} para <b className="text-white">“{termo}”</b></>
+              )}
+            </span>
+            <button onClick={() => setTermo("")} title="Limpar a busca" className="text-slate-500 transition hover:text-white">
+              <X className="h-3 w-3" />
+            </button>
+          </div>
+        )}
+
         {/* modo conectar */}
         {conectando && (
           <div className="absolute left-1/2 top-3 z-30 -translate-x-1/2 rounded-lg border border-primary/50 px-4 py-2 text-center shadow-xl" style={{ background: "rgba(8,10,16,.96)" }}>
@@ -828,7 +930,7 @@ export default function ArvoreAutomacoes() {
 
         {/* dica */}
         <div className="pointer-events-none absolute bottom-3 left-4 max-w-[330px] rounded-lg border border-white/[0.07] px-3 py-2 text-[10.5px] leading-relaxed text-slate-500" style={{ background: "rgba(8,10,16,.75)" }}>
-          Arraste o fundo para navegar · role para dar zoom · <b className="text-slate-400">arraste um nó para movê-lo</b> · clique num nó para abrir a ficha e editar.
+          Arraste o fundo para navegar · role para dar zoom · <b className="text-slate-400">arraste um nó para movê-lo</b> · clique num nó para abrir a ficha e editar · tecle <b className="text-slate-400">/</b> para buscar uma automação.
         </div>
 
         {/* legenda + controles */}
@@ -1031,7 +1133,19 @@ export default function ArvoreAutomacoes() {
               </div>
               <div>
                 <Label>Responsável</Label>
-                <Input value={editando.responsavel || ""} placeholder="Júlia" onChange={(e) => setEditando({ ...editando, responsavel: e.target.value })} />
+                {/* Select, e não texto livre: era daqui que saíam "Julia", "Julia "
+                    e "Júlia " convivendo no mesmo banco — e um filtro montado em
+                    cima disso escondia metade das automações de quem se procura. */}
+                <Select
+                  value={editando.responsavel || "__none"}
+                  onValueChange={(v) => setEditando({ ...editando, responsavel: v === "__none" ? "" : v })}
+                >
+                  <SelectTrigger><SelectValue placeholder="Selecione" /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="__none">—</SelectItem>
+                    {OPCOES_RESP.map((o) => <SelectItem key={o} value={o}>{o}</SelectItem>)}
+                  </SelectContent>
+                </Select>
               </div>
               <div className="col-span-2">
                 <Label>Ferramentas (separadas por vírgula)</Label>

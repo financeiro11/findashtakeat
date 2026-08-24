@@ -1,10 +1,11 @@
 import { useLayoutEffect, useRef, useState } from "react";
-import { ArrowUp, Link2, Unlink, Pencil, Maximize2, Trash2, X, ListPlus, ListChecks } from "lucide-react";
+import { ArrowUp, Link2, Unlink, Pencil, Maximize2, Trash2, X, ListPlus, ListChecks, ClipboardCheck, ClipboardPlus, Loader2 } from "lucide-react";
 import {
   TIER_META, nomeNivel, bandaDe, horasDe, listaFerramentas, temUpgrade, impactoDe, esforcoDe,
   type NoPos, type Nivel,
 } from "./arvore-layout";
 import { quadranteDe } from "./esteira";
+import { canonResp, PESSOAS, AMBOS } from "@/lib/responsavel";
 
 /* ---------------------------------------------------------------------------
  * Ficha do nó — o cartão que abre ao clicar, com as ações em cima do próprio nó.
@@ -15,6 +16,7 @@ import { quadranteDe } from "./esteira";
 export default function FichaNo({
   n, niveis, prereq, ancora, caixa,
   onEditar, onConectar, onDesligar, onSoltar, onExcluir, onFechar, onEsteira,
+  onCriarTarefa, onVerTarefa,
 }: {
   n: NoPos; niveis: Nivel[]; prereq: string | null;
   ancora: { x: number; y: number };   // posição do nó em coordenadas de tela
@@ -28,6 +30,9 @@ export default function FichaNo({
   onSoltar?: () => void;
   /** só quando faz sentido pôr/tirar o upgrade da linha de produção */
   onEsteira?: () => void;
+  /** abre a tarefa em /tarefas; recebe quem vai tocar */
+  onCriarTarefa?: (responsavel: string) => Promise<void>;
+  onVerTarefa?: () => void;
 }) {
   const meta = TIER_META[n.tier];
   const ferramentas = listaFerramentas(n.r.ferramentas);
@@ -36,6 +41,23 @@ export default function FichaNo({
   const esforco = esforcoDe(n.r);
   const quadrante = quadranteDe(n.r);
   const naEsteira = !!n.r.esteira_upgrade;
+
+  /* "Começar a fazer isto".
+     O dono já cadastrado resolve o caso comum num clique só. Quando ele é
+     "Ambos" (ou não existe), a tarefa não tem para quem ir — o quadro filtra por
+     pessoa — e aí, e SÓ aí, a ficha pergunta. Perguntar sempre seria um passo a
+     mais em 7 das 10 automações da fila, que já têm dono. */
+  const dono = canonResp(n.r.responsavel);
+  const donoServe = !!dono && dono !== AMBOS;
+  const [perguntando, setPerguntando] = useState(false);
+  const [criando, setCriando] = useState(false);
+
+  const criar = async (resp: string) => {
+    if (!onCriarTarefa) return;
+    setCriando(true);
+    try { await onCriarTarefa(resp); setPerguntando(false); }
+    finally { setCriando(false); }
+  };
 
   /* A ficha precisa da PRÓPRIA altura para caber: com um Upgrade longo ela passa
      de 600px, e a conta antiga assumia ~340px fixos — o rodapé com os botões
@@ -173,6 +195,55 @@ export default function FichaNo({
           </span>
         )}
       </div>
+
+      {/* --- vira trabalho no quadro --- */}
+      {(onCriarTarefa || onVerTarefa) && (
+        <div className="mt-2.5">
+          {n.r.tarefa_id ? (
+            <button
+              onClick={onVerTarefa}
+              className="inline-flex w-full items-center justify-center gap-1.5 rounded border border-sky-500/40 bg-sky-500/10 px-2 py-1.5 text-[10.5px] font-semibold text-sky-400 transition hover:bg-sky-500/20"
+            >
+              <ClipboardCheck className="h-3 w-3" /> Já está no quadro — ver a tarefa
+            </button>
+          ) : perguntando ? (
+            <div className="rounded-md border border-white/[0.12] bg-white/[0.03] p-2">
+              <div className="mb-1.5 text-[10px] text-slate-400">
+                {dono === AMBOS ? "Vocês dois tocam esta — quem abre a tarefa?" : "Quem vai tocar?"}
+              </div>
+              <div className="flex gap-1.5">
+                {PESSOAS.map((p) => (
+                  <button
+                    key={p}
+                    disabled={criando}
+                    onClick={() => criar(p)}
+                    className="flex-1 rounded border border-white/[0.14] px-2 py-1 text-[10.5px] font-semibold text-slate-200 transition hover:border-emerald-500/60 hover:bg-emerald-500/10 hover:text-emerald-400 disabled:opacity-50"
+                  >
+                    {p}
+                  </button>
+                ))}
+                <button
+                  disabled={criando}
+                  onClick={() => setPerguntando(false)}
+                  className="rounded border border-transparent px-1.5 text-[10.5px] text-slate-500 transition hover:text-slate-300 disabled:opacity-50"
+                >
+                  <X className="h-3 w-3" />
+                </button>
+              </div>
+            </div>
+          ) : (
+            <button
+              disabled={criando}
+              onClick={() => (donoServe ? criar(dono!) : setPerguntando(true))}
+              className="inline-flex w-full items-center justify-center gap-1.5 rounded border border-emerald-500/40 bg-emerald-500/10 px-2 py-1.5 text-[10.5px] font-semibold text-emerald-400 transition hover:bg-emerald-500/20 disabled:opacity-50"
+            >
+              {criando
+                ? <><Loader2 className="h-3 w-3 animate-spin" /> Abrindo…</>
+                : <><ClipboardPlus className="h-3 w-3" /> Começar — criar tarefa{donoServe ? ` para ${dono}` : ""}</>}
+            </button>
+          )}
+        </div>
+      )}
       </div>
 
       {/* ações fixas — nunca somem, por mais longo que seja o texto acima */}

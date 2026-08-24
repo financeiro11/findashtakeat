@@ -1,14 +1,26 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { GripVertical, Pin, PinOff, ArrowUp, Sparkles, ListChecks, RotateCcw } from "lucide-react";
+import { useNavigate } from "react-router-dom";
+import { GripVertical, Pin, PinOff, ArrowUp, Sparkles, ListChecks, RotateCcw, Lock } from "lucide-react";
 import { toast } from "sonner";
 import { supabase } from "@/integrations/supabase/client";
 import { cn } from "@/lib/utils";
+import { criarTarefaDaAutomacao } from "./criar-tarefa";
+import { respCobre, respExistentes, contarPorResp, canonResp, SEM_RESP } from "@/lib/responsavel";
 import {
-  nomeNivel, bandaDe, tierDe, TIER_META, impactoDe, esforcoDe,
+  nomeNivel, bandaDe, tierDe, TIER_META, impactoDe, esforcoDe, iniciaisDe,
   type Automacao, type Nivel, type NoPos,
 } from "./arvore-layout";
 import { ordenarEsteira, quadranteDe, resumoEsteira } from "./esteira";
 import FichaNo from "./FichaNo";
+
+/* Cor estável por pessoa, derivada do nome — quem entrar depois ganha a sua
+   sem precisar mexer aqui. Mesma ideia do corTrilha da árvore. */
+const CORES_RESP = ["#38bdf8", "#f472b6", "#a3e635", "#fbbf24", "#c084fc", "#2dd4bf"];
+function corResp(nome: string): string {
+  let h = 0;
+  for (let i = 0; i < nome.length; i++) h = (h * 31 + nome.charCodeAt(i)) >>> 0;
+  return CORES_RESP[h % CORES_RESP.length];
+}
 
 /* ---------------------------------------------------------------------------
  * Linha de produção — a árvore vira fila.
@@ -29,8 +41,35 @@ export default function EsteiraAutomacoes({
   onDesligar: (id: string) => void;
   onRecarregar: () => Promise<void> | void;
 }) {
+  const navigate = useNavigate();
   const itens = useMemo(() => ordenarEsteira(rows, niveis), [rows, niveis]);
   const resumo = useMemo(() => resumoEsteira(itens), [itens]);
+
+  /* Filtro por responsável. Só recorta o que se VÊ — a fila continua sendo a
+     mesma lista ordenada, com as mesmas posições. Ver `linhas` abaixo. */
+  const [filtroResp, setFiltroResp] = useState("");
+  const filtrando = filtroResp !== "";
+
+  const opcoesResp = useMemo(
+    () => respExistentes(itens.map((i) => i.r.responsavel)),
+    [itens],
+  );
+  const semDono = useMemo(
+    () => contarPorResp(itens.map((i) => i.r.responsavel), SEM_RESP),
+    [itens],
+  );
+
+  /* A posição é calculada ANTES de filtrar e viaja junto com o item.
+     Sem isso o número na tela viraria a posição dentro do recorte ("1" para o
+     primeiro item da Júlia, mesmo ele sendo o 4º da fila) e — pior — o
+     `soltarEm` gravaria esse índice recortado como se fosse o absoluto,
+     embaralhando a fila inteira em silêncio. Ver esteira.ts:74. */
+  const linhas = useMemo(
+    () => itens
+      .map((it, pos) => ({ it, pos }))
+      .filter(({ it }) => respCobre(it.r.responsavel, filtroResp)),
+    [itens, filtroResp],
+  );
 
   const [sel, setSel] = useState<{ id: string; y: number } | null>(null);
   const [arrastando, setArrastando] = useState<string | null>(null);
@@ -70,6 +109,10 @@ export default function EsteiraAutomacoes({
     const id = arrastando;
     setArrastando(null); setAlvo(null);
     if (!id) return;
+    // Cinto de segurança: com filtro ligado a lista tem buracos, e "soltar aqui"
+    // não quer dizer nada — entre duas linhas visíveis pode haver cinco escondidas.
+    // O arraste já vem desligado na marcação; isto é para o caso de escapar.
+    if (filtrando) return;
     const atual = itens.findIndex((i) => i.r.id === id);
     if (atual === destino) return;
     await gravar(id, { esteira_ordem: destino });
@@ -112,8 +155,12 @@ export default function EsteiraAutomacoes({
         </div>
         <div className="flex items-center gap-3">
           <div className="text-right">
-            <div className="num text-[20px] font-bold leading-none text-white">{resumo.total}</div>
-            <div className="text-[9px] font-bold tracking-[0.16em] text-slate-600">NA FILA</div>
+            <div className="num text-[20px] font-bold leading-none text-white">
+              {filtrando ? `${linhas.length}/${resumo.total}` : resumo.total}
+            </div>
+            <div className="text-[9px] font-bold tracking-[0.16em] text-slate-600">
+              {filtrando ? "DA FILA" : "NA FILA"}
+            </div>
           </div>
           {resumo.rapidos > 0 && (
             <>
@@ -146,6 +193,47 @@ export default function EsteiraAutomacoes({
         </div>
       </div>
 
+      {/* ---------------- filtro por responsável ----------------
+          Chips e não dropdown: são duas pessoas, e o número em cada chip já
+          responde "quanto tem na minha fila" sem precisar clicar. */}
+      {itens.length > 0 && (
+        <div className="flex flex-wrap items-center gap-1.5 border-b border-white/[0.07] px-4 py-2.5" style={{ background: "#080a10" }}>
+          <span className="mr-0.5 text-[9px] font-bold tracking-[0.16em] text-slate-600">QUEM TOCA</span>
+          <ChipResp ativo={!filtrando} onClick={() => setFiltroResp("")} n={itens.length}>
+            Todos
+          </ChipResp>
+          {opcoesResp.map((p) => {
+            const n = contarPorResp(itens.map((i) => i.r.responsavel), p);
+            return (
+              <ChipResp
+                key={p}
+                ativo={filtroResp === p}
+                cor={corResp(p)}
+                n={n}
+                onClick={() => setFiltroResp(filtroResp === p ? "" : p)}
+              >
+                {p}
+              </ChipResp>
+            );
+          })}
+          {semDono > 0 && (
+            <ChipResp
+              ativo={filtroResp === SEM_RESP}
+              n={semDono}
+              onClick={() => setFiltroResp(filtroResp === SEM_RESP ? "" : SEM_RESP)}
+            >
+              Sem dono
+            </ChipResp>
+          )}
+          {filtrando && (
+            <span className="ml-auto inline-flex items-center gap-1 text-[10px] text-slate-500">
+              <Lock className="h-3 w-3" />
+              arraste desligado — a ordem se muda com a fila inteira à vista
+            </span>
+          )}
+        </div>
+      )}
+
       {/* ---------------- fila ---------------- */}
       <div ref={boxRef} className="relative p-3">
         {itens.length === 0 ? (
@@ -155,24 +243,32 @@ export default function EsteiraAutomacoes({
               Para continuar evoluindo, abra uma automação com upgrade e clique em “Pôr este upgrade na linha de produção”.
             </div>
           </div>
+        ) : linhas.length === 0 ? (
+          <div className="px-2 py-8 text-center text-[12px] text-slate-500">
+            Nada na fila para esse filtro.
+            <div className="mt-1 text-[11px] text-slate-600">
+              A fila inteira continua com {resumo.total} item{resumo.total > 1 ? "s" : ""} — clique em “Todos” para ver.
+            </div>
+          </div>
         ) : (
           <ol className="space-y-1.5">
-            {itens.map((it, i) => {
+            {linhas.map(({ it, pos }) => {
               const imp = impactoDe(it.r);
               const esf = esforcoDe(it.r);
               const quad = quadranteDe(it.r);
               const no = porId.get(it.r.id);
               const meta = TIER_META[tierDe(it.r.status)];
               const aberto = sel?.id === it.r.id;
+              const dono = canonResp(it.r.responsavel);
 
               return (
                 <li
                   key={it.r.id}
-                  draggable
+                  draggable={!filtrando}
                   onDragStart={() => setArrastando(it.r.id)}
                   onDragEnd={() => { setArrastando(null); setAlvo(null); }}
-                  onDragOver={(e) => { e.preventDefault(); setAlvo(i); }}
-                  onDrop={(e) => { e.preventDefault(); soltarEm(i); }}
+                  onDragOver={(e) => { if (filtrando) return; e.preventDefault(); setAlvo(pos); }}
+                  onDrop={(e) => { e.preventDefault(); soltarEm(pos); }}
                   onClick={(e) => {
                     const box = boxRef.current?.getBoundingClientRect();
                     const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
@@ -181,21 +277,27 @@ export default function EsteiraAutomacoes({
                   className={cn(
                     "flex cursor-pointer items-center gap-3 rounded-lg border px-3 py-2.5 transition",
                     arrastando === it.r.id && "opacity-40",
-                    alvo === i && arrastando && arrastando !== it.r.id
+                    alvo === pos && arrastando && arrastando !== it.r.id
                       ? "border-emerald-500/70 bg-emerald-500/[0.08]"
                       : aberto
                         ? "border-white/25 bg-white/[0.07]"
                         : "border-white/[0.08] bg-white/[0.025] hover:border-white/20 hover:bg-white/[0.05]",
                   )}
                 >
-                  <GripVertical className="h-4 w-4 shrink-0 cursor-grab text-slate-700" />
+                  <GripVertical
+                    className={cn(
+                      "h-4 w-4 shrink-0 text-slate-700",
+                      filtrando ? "cursor-not-allowed opacity-30" : "cursor-grab",
+                    )}
+                  />
 
-                  {/* posição na fila */}
+                  {/* posição na fila — a de verdade, não a do recorte */}
                   <span
                     className="num flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-[12px] font-bold"
-                    style={{ color: i < 3 ? "#34d399" : "#64748b", background: i < 3 ? "#34d3991a" : "rgba(255,255,255,.04)" }}
+                    style={{ color: pos < 3 ? "#34d399" : "#64748b", background: pos < 3 ? "#34d3991a" : "rgba(255,255,255,.04)" }}
+                    title={filtrando ? `Posição ${pos + 1} na fila inteira` : undefined}
                   >
-                    {i + 1}
+                    {pos + 1}
                   </span>
 
                   {/* nome + contexto */}
@@ -247,6 +349,20 @@ export default function EsteiraAutomacoes({
                       style={{ background: meta.cor, boxShadow: tierDe(it.r.status) !== "todo" ? `0 0 8px ${meta.cor}` : undefined }}
                     />
                   </div>
+
+                  {/* quem toca — fora do bloco `sm:flex` de propósito: no
+                      celular some o impacto/esforço, mas o dono continua. */}
+                  <span
+                    className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-[9px] font-bold"
+                    title={dono ? `Responsável: ${it.r.responsavel}` : "Sem responsável"}
+                    style={
+                      dono
+                        ? { color: corResp(dono), background: `${corResp(dono)}1f`, border: `1px solid ${corResp(dono)}55` }
+                        : { color: "#475569", background: "rgba(255,255,255,.03)", border: "1px dashed rgba(255,255,255,.14)" }
+                    }
+                  >
+                    {dono ? iniciaisDe(dono)[0] : "?"}
+                  </span>
                 </li>
               );
             })}
@@ -265,6 +381,13 @@ export default function EsteiraAutomacoes({
             onDesligar={() => onDesligar(aberta.item.r.id)}
             onExcluir={() => { setSel(null); onExcluir(aberta.item.r.id); }}
             onFechar={() => setSel(null)}
+            onCriarTarefa={async (resp) => {
+              await criarTarefaDaAutomacao(aberta.item.r.id, resp);
+              // Recarrega mesmo quando dá erro: se a tarefa já existia, a RPC
+              // devolve a antiga e é o reload que troca o botão para "ver".
+              await onRecarregar();
+            }}
+            onVerTarefa={() => navigate(`/tarefas?tarefa=${aberta.item.r.tarefa_id}`)}
             onEsteira={
               tierDe(aberta.item.r.status) === "on"
                 ? () => gravar(aberta.item.r.id, { esteira_upgrade: false, esteira_ordem: null })
@@ -290,5 +413,37 @@ export default function EsteiraAutomacoes({
         </span>
       </div>
     </div>
+  );
+}
+
+/* Chip do filtro. O número não é enfeite: é ele que responde "quanto tem na
+   minha fila" sem precisar clicar em cada um. */
+function ChipResp({
+  children, ativo, n, cor, onClick,
+}: {
+  children: React.ReactNode;
+  ativo: boolean;
+  n: number;
+  cor?: string;
+  onClick: () => void;
+}) {
+  const c = cor || "#94a3b8";
+  return (
+    <button
+      onClick={onClick}
+      className={cn(
+        "inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] font-medium transition",
+        !ativo && "border-white/[0.1] text-slate-400 hover:border-white/25 hover:text-slate-200",
+      )}
+      style={ativo ? { color: c, background: `${c}1f`, borderColor: `${c}66` } : undefined}
+    >
+      {children}
+      <span
+        className="num rounded-full px-1.5 text-[9.5px] font-bold"
+        style={{ background: ativo ? `${c}2e` : "rgba(255,255,255,.06)", color: ativo ? c : "#64748b" }}
+      >
+        {n}
+      </span>
+    </button>
   );
 }

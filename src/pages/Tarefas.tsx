@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import {
   Plus, Trash2, ChevronDown, ChevronRight, Filter, X, LayoutGrid,
   Table as TableIcon, AlertTriangle, MoreHorizontal,
-  Search, GripVertical, Pencil, Palette, Check, CheckCircle2, Clock, ListChecks, Target, BarChart3, History, Pause,
+  Search, GripVertical, Pencil, Palette, Check, CheckCircle2, Clock, ListChecks, Target, BarChart3, History, Pause, Zap,
 } from "lucide-react";
 import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger,
@@ -67,12 +68,28 @@ type ColumnsCfg = {
   meta: Record<string, { color: ColorId }>;
 };
 
+/* Colunas aposentadas: saem da configuração salva na primeira vez que a página
+   abre. A "automações" foi esvaziada no banco (migration 20260824120000) — as
+   tarefas dela voltaram para o Backlog e passaram a se identificar pelo carimbo.
+   Sem esta limpeza a coluna continuaria no quadro de quem a criou, agora vazia
+   para sempre, sugerindo um lugar onde nada mais chega. */
+const COLUNAS_APOSENTADAS = ["automações"];
+
 function loadColumnsCfg(): ColumnsCfg {
   try {
     const raw = localStorage.getItem(COLUMNS_CFG_KEY);
     if (raw) {
       const parsed = JSON.parse(raw) as ColumnsCfg;
-      if (Array.isArray(parsed.order) && parsed.order.length) return parsed;
+      if (Array.isArray(parsed.order) && parsed.order.length) {
+        const order = parsed.order.filter(c => !COLUNAS_APOSENTADAS.includes(c));
+        if (order.length !== parsed.order.length) {
+          const limpo = { order, meta: parsed.meta || {} };
+          COLUNAS_APOSENTADAS.forEach(c => delete limpo.meta[c]);
+          try { localStorage.setItem(COLUMNS_CFG_KEY, JSON.stringify(limpo)); } catch { /* modo privado */ }
+          return limpo;
+        }
+        return parsed;
+      }
     }
   } catch {}
   // migrate from legacy extras
@@ -160,6 +177,18 @@ function progressFor(t: Tarefa): number {
   return Math.round((done / subs.length) * 100);
 }
 // Tags derivadas (TASK / RPA quando coluna RPA, ou primeira palavra do responsável como "cliente")
+/* Construir automação é trabalho de outra natureza — vale ver de longe numa
+   coluna cheia. A marca é o carimbo `cat_natureza`, e não a coluna: a coluna
+   "automações" que existia era do localStorage de um navegador só, e as tarefas
+   paradas nela eram invisíveis para todo mundo (ver a migration 20260824120000).
+
+   Faixa na borda em vez de chip: o card do quadro já gasta uma linha com os
+   chips TASK/RPA, e mais um rótulo estático empurraria prioridade e prazo para
+   fora do campo de visão numa coluna longa. */
+function ehAutomacao(t: Tarefa): boolean {
+  return (t as { cat_natureza?: string | null }).cat_natureza === "Automação";
+}
+
 function tagsFor(t: Tarefa): { label: string; cls: string }[] {
   const tags: { label: string; cls: string }[] = [];
   if (t.status === "Tasks - RPA") {
@@ -240,6 +269,22 @@ export default function Tarefas() {
   const [creatingStatus, setCreatingStatus] = useState<string>("Backlog");
   const [colsCfg, setColsCfg] = useState<ColumnsCfg>(() => loadColumnsCfg());
   const COLUMNS = colsCfg.order;
+
+  /* /tarefas?tarefa=<id> abre a tarefa direto.
+     É como a Linha de Produção volta para cá ("já está no quadro — ver a
+     tarefa"): cair no quadro com 26 cards no Backlog e ter que caçar o certo
+     não é ver a tarefa. O parâmetro se apaga depois de usado, senão um F5
+     reabriria o diálogo que a pessoa acabou de fechar. */
+  const [searchParams, setSearchParams] = useSearchParams();
+  const alvoUrl = searchParams.get("tarefa");
+  useEffect(() => {
+    if (!alvoUrl || !rows.length) return;
+    const achada = rows.find(r => r.id === alvoUrl);
+    if (achada) setEditing(achada);
+    else toast.error("Essa tarefa não está no quadro — pode ter sido concluída ou arquivada.");
+    searchParams.delete("tarefa");
+    setSearchParams(searchParams, { replace: true });
+  }, [alvoUrl, rows, searchParams, setSearchParams]);
 
   /* Colunas que pausam o relógio da idade.
      Ordem e cor são gosto de cada um e ficam no localStorage; isto aqui é regra do time e
@@ -1013,6 +1058,7 @@ function KanbanCard({ t, bar, onClick, onRemove }: { t: Tarefa; bar: string; onC
   const subsTotal = t.subtarefas?.length || 0;
   const subsDone = t.subtarefas?.filter(s => s.done).length || 0;
   const showProgress = subsTotal > 0;
+  const auto = ehAutomacao(t);
 
   return (
     <div
@@ -1022,7 +1068,10 @@ function KanbanCard({ t, bar, onClick, onRemove }: { t: Tarefa; bar: string; onC
         e.dataTransfer.setData("text/plain", t.id);
         e.dataTransfer.effectAllowed = "move";
       }}
-      className="group relative cursor-grab active:cursor-grabbing space-y-2 rounded-md border border-border bg-background p-2.5 shadow-sm transition-all hover:border-primary/40 hover:shadow"
+      className={cn(
+        "group relative cursor-grab active:cursor-grabbing space-y-2 rounded-md border border-border bg-background p-2.5 shadow-sm transition-all hover:border-primary/40 hover:shadow",
+        auto && "border-l-[3px] border-l-purple-500",
+      )}
     >
       <button
         onClick={(e) => { e.stopPropagation(); if (confirm("Arquivar esta tarefa? Ela sai do quadro, mas dá para restaurar.")) onRemove(); }}
@@ -1040,7 +1089,15 @@ function KanbanCard({ t, bar, onClick, onRemove }: { t: Tarefa; bar: string; onC
           ))}
         </div>
       )}
-      <div className="pr-5 text-xs font-semibold leading-snug text-foreground">{t.titulo}</div>
+      <div className="pr-5 text-xs font-semibold leading-snug text-foreground">
+        {auto && (
+          <Zap
+            className="mr-1 inline-block h-3 w-3 shrink-0 -translate-y-px fill-purple-500 text-purple-500"
+            aria-label="Automação"
+          />
+        )}
+        {t.titulo}
+      </div>
 
       {showProgress && (
         <div className="space-y-1">

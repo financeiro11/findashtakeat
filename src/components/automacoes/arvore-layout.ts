@@ -27,6 +27,8 @@ export type Automacao = {
   esteira_ordem?: number | null;
   /** automação que já roda e entrou na fila pelo upgrade dela (opt-in) */
   esteira_upgrade?: boolean | null;
+  /** tarefa aberta em /tarefas para construir isto — null enquanto ninguém começou */
+  tarefa_id?: string | null;
   depende_de?: string | null;
   pos_x?: number | null;
   pos_y?: number | null;

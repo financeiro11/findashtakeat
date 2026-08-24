@@ -13,6 +13,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { supabase } from "@/integrations/supabase/client";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
+import { canonResp, respCobre, respExistentes, PESSOAS, AMBOS } from "@/lib/responsavel";
 
 type Automacao = {
   id: string;
@@ -193,10 +194,18 @@ export default function AutomacoesCatalogo({ embedded = false }: { embedded?: bo
   };
   useEffect(() => { load(); }, []);
 
-  const responsaveis = useMemo(() => {
-    const s = new Set<string>();
-    rows.forEach((r) => r.responsavel && s.add(r.responsavel));
-    return Array.from(s).sort();
+  /* Opções do filtro pela grafia canônica: montado sobre o valor cru, este
+     select listava "Julia", "Julia ", "Júlia" e "Júlia " como quatro pessoas
+     diferentes — e escolher uma escondia as automações gravadas nas outras. */
+  const responsaveis = useMemo(() => respExistentes(rows.map((r) => r.responsavel)), [rows]);
+
+  /* No editor entram também "Ambos" e o que mais já estiver gravado, senão
+     abrir uma linha da RPA mostraria campo vazio e salvar apagaria o valor. */
+  const opcoesResp = useMemo(() => {
+    const extras = rows
+      .map((r) => canonResp(r.responsavel))
+      .filter((v): v is string => !!v && v !== AMBOS && !(PESSOAS as readonly string[]).includes(v));
+    return [...PESSOAS, AMBOS, ...Array.from(new Set(extras)).sort((a, b) => a.localeCompare(b, "pt-BR"))];
   }, [rows]);
 
   const tools = useMemo(() => {
@@ -210,7 +219,7 @@ export default function AutomacoesCatalogo({ embedded = false }: { embedded?: bo
     return rows.filter((r) => {
       if (filtCat !== "__all" && (r.categoria || "") !== filtCat) return false;
       if (filtImp !== "__all" && (r.impacto || "") !== filtImp) return false;
-      if (filtResp !== "__all" && (r.responsavel || "") !== filtResp) return false;
+      if (filtResp !== "__all" && !respCobre(r.responsavel, filtResp)) return false;
       if (filtTool !== "__all" && !parseTools(r.ferramentas).some((t) => t.name === filtTool)) return false;
       if (filtNivel !== "__all" && String(r.nivel ?? "") !== filtNivel) return false;
       if (!q) return true;
@@ -934,7 +943,18 @@ export default function AutomacoesCatalogo({ embedded = false }: { embedded?: bo
               </div>
               <div className="col-span-2">
                 <Label>Responsável</Label>
-                <Input value={editing.responsavel || ""} onChange={(e) => setEditing({ ...editing, responsavel: e.target.value })} />
+                {/* Select pelo mesmo motivo do editor da árvore: texto livre aqui
+                    era a fonte das sete grafias para duas pessoas. */}
+                <Select
+                  value={editing.responsavel || "__none"}
+                  onValueChange={(v) => setEditing({ ...editing, responsavel: v === "__none" ? "" : v })}
+                >
+                  <SelectTrigger><SelectValue placeholder="Selecione" /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="__none">—</SelectItem>
+                    {opcoesResp.map((o) => <SelectItem key={o} value={o}>{o}</SelectItem>)}
+                  </SelectContent>
+                </Select>
               </div>
               <div className="col-span-2">
                 <Label>Ferramentas (separadas por vírgula)</Label>

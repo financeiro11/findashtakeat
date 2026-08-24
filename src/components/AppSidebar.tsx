@@ -104,6 +104,29 @@ function Group({
 }
 
 /**
+ * A legenda de um ícone do menu recolhido.
+ *
+ * Chip INVERTIDO (`bg-foreground` / `text-background`), e não o balão claro padrão do
+ * componente: com o menu recolhido esta legenda é a única coisa que diz o que o ícone é,
+ * e ela nasce por cima do conteúdo da página. Branco sobre branco com um fio de borda
+ * ficava ilegível — dava para ler o texto da página ATRAVÉS dela, ainda mais durante o
+ * fade de entrada. Invertido, o contraste não depende do que está por baixo, e a mesma
+ * regra serve nos dois temas porque os dois tokens trocam de lugar no escuro.
+ *
+ * `border-transparent` cancela o fio do componente base, que num chip escuro vira um
+ * contorno claro fora de lugar. `duration-100` encurta o fade — o plugin de animação
+ * mapeia `duration-*` para `animation-duration`.
+ *
+ * Está aqui em cima, e não copiado nas três chamadas, porque são a mesma coisa vista em
+ * lugares diferentes: divergir uma delas é como o menu recolhido fica remendado.
+ */
+const LEGENDA_ICONE =
+  "border-transparent bg-foreground px-2.5 py-1.5 text-[12px] font-medium text-background shadow-lg duration-100";
+
+/** O atalho/complemento dentro da legenda — secundário, mas ainda legível no chip. */
+const LEGENDA_APOIO = "text-background/60";
+
+/**
  * Menu recolhido: a linha vira só o ícone, e o nome — com o grupo na frente, porque
  * fora do grupo "Cartão" pode ser três telas diferentes — vai para o tooltip. A estrela
  * de favorito fica de fora: não cabe, e o que ela organiza (a ordem do menu) já está
@@ -112,7 +135,10 @@ function Group({
 function RailItem({ grupo, item, active }: { grupo: string; item: NavItem; active: boolean }) {
   return (
     <li>
-      <Tooltip>
+      {/* 150ms, e não os 700ms padrão do Radix: com o menu aberto o tooltip é reforço do
+          que já está escrito e pode demorar; aqui ele é a legenda do ícone, e esperar
+          quase um segundo por cada um faz percorrer o menu de olho virar adivinhação. */}
+      <Tooltip delayDuration={150}>
         <TooltipTrigger asChild>
           <NavLink
             to={item.url}
@@ -128,10 +154,15 @@ function RailItem({ grupo, item, active }: { grupo: string; item: NavItem; activ
             {item.badge && <span className="absolute right-1.5 top-1.5 h-1.5 w-1.5 rounded-full bg-sidebar-primary" />}
           </NavLink>
         </TooltipTrigger>
-        <TooltipContent side="right" className="text-[12px]">
-          <span className="text-muted-foreground">{grupo} · </span>
+        <TooltipContent side="right" sideOffset={8} className={LEGENDA_ICONE}>
+          <span className="text-background/70">{grupo}</span>
+          <span className="mx-1 text-background/40">·</span>
           {item.title}
-          {item.badge && <span className="ml-1 text-muted-foreground">({item.badge})</span>}
+          {item.badge && (
+            <span className="ml-1.5 rounded bg-background/20 px-1 py-px text-[9.5px] font-semibold uppercase tracking-wider">
+              {item.badge}
+            </span>
+          )}
         </TooltipContent>
       </Tooltip>
     </li>
@@ -161,7 +192,7 @@ function BotaoRecolher({ recolhido, onClick }: { recolhido: boolean; onClick: ()
   const Icone = recolhido ? PanelLeftOpen : PanelLeftClose;
   const texto = recolhido ? "Expandir menu" : "Recolher menu";
   return (
-    <Tooltip>
+    <Tooltip delayDuration={150}>
       <TooltipTrigger asChild>
         <button
           type="button"
@@ -174,8 +205,8 @@ function BotaoRecolher({ recolhido, onClick }: { recolhido: boolean; onClick: ()
           <Icone className="h-4 w-4" />
         </button>
       </TooltipTrigger>
-      <TooltipContent side={recolhido ? "right" : "bottom"} className="text-[12px]">
-        {texto} <span className="text-muted-foreground">· ⌘B</span>
+      <TooltipContent side={recolhido ? "right" : "bottom"} sideOffset={8} className={LEGENDA_ICONE}>
+        {texto} <span className={LEGENDA_APOIO}>· ⌘B</span>
       </TooltipContent>
     </Tooltip>
   );
@@ -265,7 +296,7 @@ export function AppSidebar() {
         {/* Search */}
         <div className="px-2 py-2">
           {recolhido ? (
-            <Tooltip>
+            <Tooltip delayDuration={150}>
               <TooltipTrigger asChild>
                 <button
                   onClick={() => setCmdOpen(true)}
@@ -275,8 +306,8 @@ export function AppSidebar() {
                   <Search className="h-3.5 w-3.5" />
                 </button>
               </TooltipTrigger>
-              <TooltipContent side="right" className="text-[12px]">
-                Buscar ou ir para… <span className="text-muted-foreground">· ⌘K</span>
+              <TooltipContent side="right" sideOffset={8} className={LEGENDA_ICONE}>
+                Buscar ou ir para… <span className={LEGENDA_APOIO}>· ⌘K</span>
               </TooltipContent>
             </Tooltip>
           ) : (

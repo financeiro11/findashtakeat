@@ -45,7 +45,8 @@
 // Auth: usuário logado OU cron (x-cron-token), no padrão do repo.
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.0";
-import { asaasGet } from "../_shared/asaas.ts";
+import { asaasGet, asaasUpload } from "../_shared/asaas.ts";
+import { espelhoPdf, lerXmlNfse } from "../_shared/danfse.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -397,6 +398,312 @@ async function espelhar(supabase: any, opts: { tetoStatus: number }) {
   };
 }
 
+/* --------------------------- a nota no Asaas ------------------------------ */
+
+/**
+ * A NOTA, ANEXADA NA COBRANÇA.
+ *
+ * A pergunta que originou isto: "onde aparece no Asaas que a cobrança foi
+ * faturada e a nota emitida?". Em lugar nenhum — a integração era de mão única.
+ * O elo existia só do outro lado (a OS nasce com `cCodIntOS = id_asaas`) e aqui
+ * no Hub; do portal do Asaas, a cobrança recebida em julho e a cobrança recebida
+ * em julho que virou NFS-e em agosto eram indistinguíveis.
+ *
+ * O CAMINHO ÓBVIO NÃO EXISTE — MEDIDO, NÃO SUPOSTO. A primeira versão disto
+ * gravava o número da nota em `externalReference`, o campo do Asaas para "o
+ * identificador disto no seu sistema", vazio em toda a base. O `PUT` foi recusado
+ * na cobrança `pay_uw42beld2bddv6z5` (OS 1629, NFS-e 16902, RECEIVED) em
+ * 24/08/26, com o texto do próprio Asaas:
+ *
+ *     400 invalid_object — "Só é possível editar cobranças pendentes ou vencidas."
+ *
+ * E nota só se emite de cobrança RECEBIDA, que é exatamente o que a frase exclui:
+ * numa cobrança que virou nota, NENHUM campo é editável. O que sobra é o anexo —
+ * `POST /payments/{id}/documents` ACRESCENTA um arquivo à cobrança em vez de
+ * alterá-la, e por isso não esbarra na regra.
+ *
+ * O QUE ISSO SIGNIFICA PARA O CLIENTE. O anexo não é marca interna: o Asaas o
+ * publica na fatura e o pagador baixa. Foi escolha feita com essa consequência à
+ * vista — a NFS-e passa a chegar ao cliente pelo mesmo lugar onde ele pagou.
+ *
+ * O QUE É ANEXADO. O XML da NFS-e, que é o documento fiscal de verdade; o Omie
+ * não devolve PDF (o campo `danfe` do RPS vem vazio nesta prefeitura). O link do
+ * XML é assinado e MORRE EM ~24H, então anexar o link não serviria de nada: o
+ * arquivo é baixado e reenviado como bytes. O que fica na cobrança é a nota, não
+ * um endereço com prazo.
+ *
+ * ANEXO NÃO É CAMPO — MANDAR DUAS VEZES CRIA DOIS. Não existe upsert aqui. A
+ * defesa é dupla, e a que vale é a de fora: antes de subir, a lista de documentos
+ * da PRÓPRIA cobrança é lida e procurada pelo número da nota. A coluna
+ * `asaas_anexado_em` é só o atalho que poupa essa leitura na segunda passada.
+ */
+
+/**
+ * O nome do arquivo na cobrança, SEM extensão — os dois anexos da mesma nota (o
+ * PDF e o XML) compartilham esta base. É o que o cliente vê na fatura, e é por
+ * ele que a releitura reconhece o que já subiu.
+ */
+function nomeDoAnexo(numero: string, os: string): string {
+  return `NFS-e ${numero} - OS ${os}`;
+}
+
+/** Bytes → base64, para devolver o PDF na prévia sem depender de _shared/omie.ts. */
+function toBase64(bytes: Uint8Array): string {
+  let s = "";
+  for (let i = 0; i < bytes.length; i += 0x8000) {
+    s += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+  }
+  return btoa(s);
+}
+/** Id de cobrança do Asaas — o `_` do prefixo é literal, não curinga de LIKE. */
+const EH_ID_ASAAS = /^pay_[a-z0-9]+$/i;
+
+/**
+ * A URL assinada do Omie ainda vale? Gêmea de `xmlAindaVale` em
+ * [src/lib/notasFiscais.ts] — lá para não oferecer link morto na tela, aqui para
+ * não anexar um arquivo que não vai baixar.
+ */
+function linkAindaVale(url: string | null | undefined): boolean {
+  if (!url) return false;
+  const m = String(url).match(/[?&]Expires=(\d+)/);
+  if (!m) return true; // sem carimbo de validade: deixa tentar
+  return Number(m[1]) * 1000 > Date.now();
+}
+
+/**
+ * O XML da nota em bytes — renovando o link quando o do espelho já morreu.
+ *
+ * A renovação custa um `StatusOS` e devolve um link novo do CDN; de quebra, o
+ * espelho aproveita a leitura. É o mesmo motivo pelo qual a tela pergunta antes
+ * de oferecer o link: o endereço guardado ontem quase nunca serve hoje.
+ */
+async function xmlDaNota(supabase: any, linha: any): Promise<{ bytes: Uint8Array; renovado: boolean }> {
+  let url: string | null = (linha.nfse_xml as string | null) ?? null;
+  let renovado = false;
+
+  if (!linkAindaVale(url)) {
+    const s = await omieCall<any>("servicos/os", "StatusOS", { nCodOS: Number(linha.n_cod_os) });
+    const nfse = nfseDoStatus(s);
+    url = (nfse.nfse_xml as string | null) ?? null;
+    renovado = true;
+    await supabase.from("nf_os_omie")
+      .update({ ...nfse, status_lido_em: new Date().toISOString() })
+      .eq("n_cod_os", linha.n_cod_os);
+  }
+  if (!url) throw new Error("O Omie não devolveu o XML desta nota.");
+
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`O download do XML falhou [${res.status}].`);
+  const bytes = new Uint8Array(await res.arrayBuffer());
+
+  /* O CDN responde 200 com um XML de ERRO quando a assinatura expirou. Um
+   * "AccessDenied" de 243 bytes anexado como nota fiscal é pior que anexo
+   * nenhum: passa por documento na fatura do cliente e não é um. */
+  const inicio = new TextDecoder().decode(bytes.slice(0, 400));
+  if (/<Error>|AccessDenied|ExpiredToken|SignatureDoesNotMatch/i.test(inicio)) {
+    throw new Error("O CDN do Omie recusou o download do XML (link expirado ou assinatura inválida).");
+  }
+  if (bytes.byteLength < 500) {
+    throw new Error(`O XML veio com ${bytes.byteLength} bytes — pequeno demais para ser uma nota.`);
+  }
+  return { bytes, renovado };
+}
+
+/** Os documentos que a cobrança já tem. Uma leitura serve para as duas buscas. */
+async function documentosDa(id: string): Promise<any[]> {
+  const r = await asaasGet<any>(`/payments/${id}/documents`);
+  return Array.isArray(r?.data) ? r.data : [];
+}
+
+/**
+ * Este arquivo já está lá?
+ *
+ * A procura é no documento inteiro em texto, e não num campo nomeado: o que
+ * importa é reconhecer o arquivo onde quer que o Asaas guarde o nome dele. Campo
+ * que muda de lugar numa versão da API viraria anexo duplicado — e anexo
+ * duplicado é a fatura do cliente com duas notas iguais.
+ */
+function acharDoc(docs: any[], marca: string, extensao: string): string | null {
+  const achado = docs.find((d: any) => {
+    const s = JSON.stringify(d ?? {});
+    return s.includes(marca) && s.toLowerCase().includes(extensao);
+  });
+  return achado ? String(achado?.id ?? "sem-id") : null;
+}
+
+async function marcarAnexado(supabase: any, linha: any, anexos: unknown[], erro: string | null = null) {
+  await supabase.from("nf_os_omie").update({
+    asaas_anexos: anexos,
+    asaas_anexado_em: new Date().toISOString(),
+    asaas_anexo_erro: erro,
+  }).eq("n_cod_os", linha.n_cod_os);
+}
+async function falharAnexo(supabase: any, linha: any, erro: string) {
+  await supabase.from("nf_os_omie").update({ asaas_anexo_erro: erro.slice(0, 400) })
+    .eq("n_cod_os", linha.n_cod_os);
+}
+
+/**
+ * As OS com nota que ainda não têm a nota anexada na cobrança.
+ *
+ * O filtro por `c_cod_int_os` é o que dá honestidade ao alcance: só as OS que o
+ * Hub criou carregam o id da cobrança. As 406 OS do lote manual de junho não
+ * carregam — para elas o vínculo cobrança↔nota teria que ser adivinhado por CNPJ
+ * e valor, e adivinhação não vira arquivo na fatura de cliente.
+ */
+async function filaDoAnexo(supabase: any, limite: number, ids: string[]): Promise<any[]> {
+  let q = supabase
+    .from("nf_os_omie")
+    .select("n_cod_os, c_num_os, c_cod_int_os, nfse_numero, nfse_xml, asaas_anexos, asaas_anexado_em")
+    .eq("nfse_status", "004")
+    .not("nfse_numero", "is", null)
+    .like("c_cod_int_os", "pay%");
+
+  if (ids.length) q = q.in("c_cod_int_os", ids);
+  else q = q.is("asaas_anexado_em", null);
+
+  const { data, error } = await q.order("data_faturamento", { ascending: false }).limit(limite);
+  if (error) throw new Error(`fila do anexo: ${error.message}`);
+  return (data ?? []).filter((l: any) => EH_ID_ASAAS.test(String(l.c_cod_int_os ?? "")));
+}
+
+/** Um arquivo na cobrança. `type: INVOICE` é o que o Asaas rotula como nota fiscal. */
+async function subirDocumento(
+  id: string, nome: string, bytes: Uint8Array, tipoMime: string,
+): Promise<string> {
+  const form = new FormData();
+  form.append("availableAfterPayment", "true");
+  form.append("type", "INVOICE");
+  form.append("file", new Blob([bytes], { type: tipoMime }), nome);
+  const doc = await asaasUpload<any>(`/payments/${id}/documents`, form);
+  return String(doc?.id ?? "");
+}
+
+/**
+ * A nota na cobrança: o PDF para a pessoa, o XML para a contabilidade.
+ *
+ * A ORDEM IMPORTA e é esta: o XML é o documento fiscal e não depende de nada;
+ * o PDF é desenhado aqui a partir dele. Se o desenho falhar — fonte, campo
+ * faltando, XML de formato inesperado —, o XML sobe do mesmo jeito e a falha do
+ * PDF fica registrada. O contrário (deixar de anexar a nota porque o papel não
+ * saiu) seria trocar o essencial pelo enfeite.
+ *
+ * Os dois arquivos são conferidos SEPARADAMENTE contra a lista de documentos da
+ * cobrança, porque eles podem ter chegado lá em rodadas diferentes: as duas
+ * primeiras cobranças receberam só o XML, antes de o PDF existir.
+ */
+async function anexarUma(supabase: any, linha: any, seco: boolean, querBase64 = false) {
+  const id = String(linha.c_cod_int_os);
+  const numero = String(linha.nfse_numero);
+  const os = String(linha.c_num_os ?? "").trim() || String(linha.n_cod_os);
+  const nomeBase = nomeDoAnexo(numero, os);
+  const base = { id_asaas: id, os, nfse: numero, arquivo: nomeBase };
+
+  const docs = await documentosDa(id);
+  const jaPdf = acharDoc(docs, nomeBase, ".pdf");
+  const jaXml = acharDoc(docs, nomeBase, ".xml");
+  const anexos: Array<Record<string, unknown>> = [];
+  if (jaPdf) anexos.push({ tipo: "pdf", id: jaPdf, nome: `${nomeBase}.pdf` });
+  if (jaXml) anexos.push({ tipo: "xml", id: jaXml, nome: `${nomeBase}.xml` });
+
+  if (jaPdf && jaXml && !seco) {
+    await marcarAnexado(supabase, linha, anexos);
+    return { ...base, ok: true, ja_anexada: true, anexos };
+  }
+
+  // O ensaio baixa o XML e desenha o PDF de verdade: é a metade da operação que
+  // pode falhar sem deixar rastro no Asaas, e é justamente a que vale ensaiar.
+  let xml: Uint8Array, renovado: boolean;
+  try {
+    ({ bytes: xml, renovado } = await xmlDaNota(supabase, linha));
+  } catch (e) {
+    const erro = mensagemDoOmie(e);
+    await falharAnexo(supabase, linha, erro);
+    return { ...base, ok: false, erro };
+  }
+
+  let pdf: Uint8Array | null = null;
+  let erroPdf: string | null = null;
+  try {
+    pdf = await espelhoPdf(lerXmlNfse(new TextDecoder().decode(xml)));
+  } catch (e) {
+    erroPdf = `O espelho em PDF não foi gerado: ${(e instanceof Error ? e.message : String(e)).slice(0, 200)}`;
+  }
+
+  if (seco) {
+    return {
+      ...base, ok: true, seco: true,
+      ja_anexados: { pdf: jaPdf, xml: jaXml },
+      bytes_xml: xml.byteLength, bytes_pdf: pdf?.byteLength ?? null,
+      link_renovado: renovado,
+      ...(erroPdf ? { erro_pdf: erroPdf } : {}),
+      ...(querBase64 && pdf ? { pdf_base64: toBase64(pdf) } : {}),
+    };
+  }
+
+  const falhas: string[] = [];
+  if (!jaPdf && pdf) {
+    try {
+      anexos.unshift({ tipo: "pdf", id: await subirDocumento(id, `${nomeBase}.pdf`, pdf, "application/pdf"), nome: `${nomeBase}.pdf` });
+    } catch (e) { falhas.push(`PDF: ${(e instanceof Error ? e.message : String(e)).slice(0, 200)}`); }
+  }
+  if (!jaXml) {
+    try {
+      anexos.push({ tipo: "xml", id: await subirDocumento(id, `${nomeBase}.xml`, xml, "application/xml"), nome: `${nomeBase}.xml` });
+    } catch (e) { falhas.push(`XML: ${(e instanceof Error ? e.message : String(e)).slice(0, 200)}`); }
+  }
+
+  const problema = [erroPdf, ...falhas].filter(Boolean).join(" · ") || null;
+  // Só carimba como resolvido quando o XML — o que não pode faltar — está lá.
+  const temXml = anexos.some((a) => a.tipo === "xml");
+  if (temXml) await marcarAnexado(supabase, linha, anexos, problema);
+  else await falharAnexo(supabase, linha, problema ?? "Nada foi anexado.");
+
+  return { ...base, ok: temXml, anexos, ...(problema ? { aviso: problema } : {}) };
+}
+
+async function anexarNoAsaas(
+  supabase: any,
+  opts: { limite?: number; ids?: string[]; seco?: boolean; prazoMs?: number; base64?: boolean } = {},
+) {
+  const limite = Math.min(Math.max(Number(opts.limite ?? 20), 1), 200);
+  const seco = opts.seco === true;
+  const fila = await filaDoAnexo(supabase, limite, opts.ids ?? []);
+
+  /* Cada cobrança custa três idas à rede (listar documentos, baixar o XML,
+   * subir), e a Edge Function morre aos 150s. Melhor tratar as que cabem e dizer
+   * quantas ficaram do que morrer no meio de um upload.
+   *
+   * O prazo é parâmetro porque esta varredura tem dois donos com folgas bem
+   * diferentes: chamada sozinha, tem a função inteira para si; pendurada no fim
+   * do `espelhar`, entra quando o ListarOS e as consultas de status já gastaram a
+   * maior parte do relógio. */
+  const PRAZO_MS = Math.min(Math.max(Number(opts.prazoMs ?? 110_000), 5_000), 110_000);
+  const comecou = Date.now();
+  const resultados: any[] = [];
+  const naoTentadas: string[] = [];
+
+  for (const linha of fila) {
+    if (Date.now() - comecou > PRAZO_MS) { naoTentadas.push(String(linha.c_cod_int_os)); continue; }
+    resultados.push(await anexarUma(supabase, linha, seco, opts.base64 === true).catch((e) => ({
+      id_asaas: String(linha.c_cod_int_os), os: String(linha.c_num_os ?? ""),
+      ok: false, erro: (e instanceof Error ? e.message : String(e)).slice(0, 300),
+    })));
+  }
+
+  const ok = resultados.filter((r) => r.ok).length;
+  const jaAnexadas = resultados.filter((r) => r.ja_anexada).length;
+  return {
+    fila: fila.length,
+    anexadas: seco ? 0 : ok - jaAnexadas,
+    ja_anexadas: jaAnexadas,
+    falhas: resultados.length - ok,
+    nao_tentadas: naoTentadas,
+    seco,
+    resultados: resultados.slice(0, 30),
+  };
+}
+
 /* ------------------------------ diagnóstico ------------------------------- */
 
 /**
@@ -410,7 +717,32 @@ async function espelhar(supabase: any, opts: { tetoStatus: number }) {
  *     o alcance de um `FaturarLoteOS`, que fatura a etapa INTEIRA;
  *   • os últimos lotes de faturamento e como terminaram.
  */
-async function etapasEFaturamento(opts: { lote?: number; os?: number; consultar?: boolean } = {}) {
+/**
+ * O Omie guarda algum ARQUIVO da NFS-e junto da OS?
+ *
+ * A pergunta importa porque um DANFSE oficial anexado pelo próprio Omie seria
+ * melhor que qualquer representação que a gente desenhe. Os métodos de PDF não
+ * existem (`ObterDANFSE`, `ImprimirNFSe`, `ObterPDFNFSe`, todos sondados), mas
+ * `geral/anexo/ListarAnexo` existe — e se o PDF estivesse em algum lugar, seria
+ * ali. O nome da tabela do documento não está documentado para OS, então a sonda
+ * tenta as variantes plausíveis e devolve o que cada uma respondeu.
+ */
+async function anexosDaOS(nCodOS: number): Promise<Record<string, unknown>> {
+  const out: Record<string, unknown> = {};
+  for (const cTabela of ["os-servico", "ordem-servico", "os", "servico-os", "conta-receber"]) {
+    try {
+      const r = await omieCall<any>("geral/anexo", "ListarAnexo", {
+        cTabela, nId: Number(nCodOS), nPagina: 1, nRegPorPagina: 20,
+      }, { semRetentativa: true });
+      out[cTabela] = { total: r?.nTotRegistros ?? r?.total_de_registros ?? null, anexos: r?.listaAnexos ?? r };
+    } catch (e) {
+      out[cTabela] = mensagemDoOmie(e).slice(0, 160);
+    }
+  }
+  return out;
+}
+
+async function etapasEFaturamento(opts: { lote?: number; os?: number; consultar?: boolean; anexos?: boolean } = {}) {
   // Atalho: com `os`, só o status daquela OS — é a leitura que diz se a nota
   // nasceu, sem varrer as 1.200 OS.
   if (opts.os) {
@@ -434,7 +766,11 @@ async function etapasEFaturamento(opts: { lote?: number; os?: number; consultar?
           }))
           .catch((e) => ({ erro: mensagemDoOmie(e) }))
       : undefined;
-    return { status_os: s, nfse: nfseDoStatus(s), ...(cadastro ? { cadastro } : {}), ...(cliente ? { cliente } : {}) };
+    const anexos = opts.anexos ? await anexosDaOS(opts.os) : undefined;
+    return {
+      status_os: s, nfse: nfseDoStatus(s),
+      ...(cadastro ? { cadastro } : {}), ...(cliente ? { cliente } : {}), ...(anexos ? { anexos } : {}),
+    };
   }
   const etapas = await omieCall<any>("produtos/etapafat", "ListarEtapasFaturamento", {
     pagina: 1, registros_por_pagina: 50,
@@ -1371,7 +1707,25 @@ Deno.serve(async (req) => {
 
     if (action === "espelhar") {
       const r = await espelhar(supabase, { tetoStatus: Math.min(Number(body?.teto_status ?? 120), 400) });
-      return json({ ok: true, ...r });
+
+      /* O anexo mora aqui, e não no `emitir_dia`, por dois motivos.
+       *
+       * O primeiro é que só depois do espelho a nota TEM número: quem acabou de
+       * faturar tem um RPS em '001' a caminho da prefeitura, e anexar exige o
+       * arquivo que ainda não existe. O segundo é o relógio — a emissão já gasta
+       * ~100s dos 150s da Edge Function, e pendurar upload nela seria disputar o
+       * pouco que sobra com o que não pode ser interrompido.
+       *
+       * Na prática: o que sai às 13h é anexado às 18h, pelo cron do espelho. E se
+       * o anexo falhar, ele falha sozinho — `catch` aqui é o que garante que uma
+       * recusa do Asaas não apague o resultado do espelho, que é o trabalho
+       * principal desta chamada. */
+      const anexo = body?.anexar === false
+        ? { pulado: "anexo desligado nesta chamada (anexar: false)." }
+        : await anexarNoAsaas(supabase, { limite: Number(body?.limite_anexo ?? 5), prazoMs: 25_000 })
+            .catch((e) => ({ erro: mensagemDoOmie(e) }));
+
+      return json({ ok: true, ...r, anexo });
     }
 
     if (action === "emitir_dia") {
@@ -1395,6 +1749,24 @@ Deno.serve(async (req) => {
       return json({ ok: true, ...r, espelho });
     }
 
+    if (action === "anexar_nota") {
+      /* Escrita no Asaas, e por isso o mesmo desenho da emissão: `previa: true`
+       * baixa o XML e mostra o que subiria sem subir nada, `ids` estreita o
+       * alcance a cobranças nomeadas, e sem `ids` a varredura anda pela fila do
+       * mais recente para o mais antigo. Diferente da emissão, aqui o cron pode:
+       * anexar a nota já emitida não é ato fiscal, é entrega — e entrega que
+       * depende de alguém lembrar de clicar não acontece. */
+      const r = await anexarNoAsaas(supabase, {
+        limite: Number(body?.limite ?? 20),
+        ids: Array.isArray(body?.ids) ? body.ids.map(String) : [],
+        seco: body?.previa === true,
+        // Só na prévia, e só a pedido: é o PDF inteiro voltando pela resposta,
+        // para se poder OLHAR o papel antes de ele ir para a fatura de alguém.
+        base64: body?.previa === true && body?.pdf_base64 === true,
+      });
+      return json({ ok: true, ...r });
+    }
+
     if (action === "sondar_metodos") {
       const extras = Array.isArray(body?.alvos)
         ? body.alvos.map((a: any) => [String(a?.[0] ?? ""), String(a?.[1] ?? "")] as [string, string])
@@ -1407,6 +1779,7 @@ Deno.serve(async (req) => {
         lote: body?.lote ? Number(body.lote) : undefined,
         os: body?.os ? Number(body.os) : undefined,
         consultar: body?.consultar === true,
+        anexos: body?.anexos === true,
       });
       return json({ ok: true, ...r });
     }

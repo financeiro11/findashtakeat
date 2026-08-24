@@ -20,9 +20,12 @@
 //     exatamente um balde e a soma fecha com o total. É isso que faz disto
 //     auditoria e não relatório: não há resto.
 //
-// O CONSERTO NÃO ACONTECE AQUI. Cadastrar cliente e corrigir CNPJ é no Omie —
-// então o produto desta tela é a lista com o motivo e a instrução, mais o botão
-// que a copia. Botão que "resolve" daqui seria promessa falsa.
+// UMA METADE DO CONSERTO ACONTECE AQUI, e só uma. Cadastrar o cliente que falta
+// virou botão (`omie-clientes-criar`), porque isso é cópia de dados: o cadastro
+// sai do próprio Asaas, com endereço conferido na Receita e no CEP. Já o
+// `cadastro_divergente` continua sem botão em lote — ali a pergunta é "qual
+// documento é o verdadeiro?", e essa ninguém responde por cópia. Cada divergente
+// tem o seu "cadastrar mesmo assim", um a um, depois de olhar o par lado a lado.
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
@@ -31,11 +34,13 @@ import { cn } from "@/lib/utils";
 import { comValorExato } from "@/components/ValorExato";
 import {
   ShieldCheck, ShieldAlert, Loader2, Copy, Search, RefreshCw, Info, AlertTriangle, CheckCircle2,
+  UserPlus,
 } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import {
-  BALDES, PRONTIDAO, clientesEmTexto, diasDoCadastro, formatarDoc, oQueFazer, vereditoProntidao,
-  type Auditoria, type Balde, type ClasseProntidao, type ClienteFaltante,
+  BALDES, BLOQUEIOS_CADASTRO, PRONTIDAO, clientesEmTexto, diasDoCadastro, formatarDoc, oQueFazer,
+  recadoDoCadastro, vereditoProntidao,
+  type Auditoria, type Balde, type CadastroNoOmie, type ClasseProntidao, type ClienteFaltante,
 } from "@/lib/notasFiscais";
 
 const sb = supabase as any;
@@ -57,19 +62,33 @@ const GRUPOS = [
   ["resolvido", "Resolvido"],
 ] as const;
 
+/** Cliente que já tem cadastro no Omie — criado agora ou desde sempre. */
+const RESOLVIDO = ["criado", "ja_existia"];
+
 export default function NotasFiscaisAuditoria({ de, ate }: { de: string; ate: string }) {
   const [dados, setDados] = useState<Auditoria | null>(null);
+  const [cadastros, setCadastros] = useState<Map<string, CadastroNoOmie>>(new Map());
   const [carregando, setCarregando] = useState(true);
   const [atualizandoCadastro, setAtualizandoCadastro] = useState(false);
+  const [cadastrando, setCadastrando] = useState<string | null>(null);
   const [busca, setBusca] = useState("");
   const [classe, setClasse] = useState<"todas" | ClasseProntidao>("todas");
 
   const carregar = useCallback(async () => {
     setCarregando(true);
     try {
-      const { data, error } = await sb.rpc("notas_fiscais_auditoria", { p_de: de, p_ate: ate });
-      if (error) throw error;
-      setDados(data as Auditoria);
+      /* As duas leituras juntas: a auditoria diz quem falta e a tabela de
+       * cadastros diz o que já se tentou com cada um. Sem a segunda, um cliente
+       * bloqueado por CEP inexistente reapareceria a cada abertura da tela como
+       * se ninguém tivesse mexido nele. */
+      const [aud, criados] = await Promise.all([
+        sb.rpc("notas_fiscais_auditoria", { p_de: de, p_ate: ate }),
+        sb.from("omie_clientes_criados")
+          .select("doc, nome, n_cod_cli, situacao, motivo, fonte_endereco, tentativas, atualizado_em"),
+      ]);
+      if (aud.error) throw aud.error;
+      setDados(aud.data as Auditoria);
+      setCadastros(new Map(((criados.data ?? []) as CadastroNoOmie[]).map((c) => [c.doc, c])));
     } catch (e: any) {
       toast.error("Não foi possível auditar o período.", { description: e?.message });
     } finally {
@@ -96,6 +115,87 @@ export default function NotasFiscaisAuditoria({ de, ate }: { de: string; ate: st
       toast.error("Falha ao reler o cadastro do Omie.", { description: e?.message });
     } finally {
       setAtualizandoCadastro(false);
+    }
+  };
+
+  /* Quem o botão em lote pega — e é DE PROPÓSITO a mesma conta que o servidor
+   * faz quando a função é chamada sem `docs`: sem cadastro equivalente no Omie e
+   * ainda não resolvido. O bloqueado por endereço continua entrando, porque
+   * bloqueio se conserta no Asaas e a rodada seguinte tem de reaproveitar o
+   * conserto. Se as duas contas divergissem, o botão diria "cadastrar 5" e
+   * mexeria em 8. */
+  const livresParaCadastrar = useMemo(
+    () => (dados?.clientes ?? []).filter(
+      (c) => c.classe === "sem_cadastro_omie"
+        && !RESOLVIDO.includes(cadastros.get(c.doc)?.situacao ?? ""),
+    ),
+    [dados, cadastros],
+  );
+
+  /**
+   * Cadastrar no Omie — o conserto de verdade, e é escrita no ERP.
+   *
+   * `docs` vazio = a leva inteira dos que não têm bloqueio nenhum. `docs` com um
+   * documento e `forcar` = a decisão de quem olhou aquele par de cadastros e
+   * concluiu que são empresas diferentes. A função recusa `forcar` sem `docs`
+   * justamente para que não exista o botão "cadastrar todos os divergentes".
+   *
+   * O `teto` do lado de lá é 25 por rodada e a resposta devolve quantos ficaram
+   * — daí o aviso ao fim, em vez de uma barra de progresso que mentiria sobre um
+   * trabalho que roda no servidor.
+   */
+  const cadastrarNoOmie = async (docs?: string[], forcar = false) => {
+    const alvo = docs?.length ? "este cliente" : `${livresParaCadastrar.length} cliente(s)`;
+    const aviso =
+      `Cadastrar ${alvo} no Omie?\n\n` +
+      "O cadastro é criado com os dados do Asaas, endereço conferido na Receita Federal e no CEP. " +
+      (forcar
+        ? "\n\nATENÇÃO: este cliente tem cadastro parecido no Omie com outro documento. " +
+          "Se for a mesma empresa, isto cria um cadastro duplicado."
+        : "");
+    if (!window.confirm(aviso)) return;
+
+    setCadastrando(docs?.length ? docs[0] : "lote");
+    try {
+      const { data, error } = await sb.functions.invoke("omie-clientes-criar", {
+        body: { action: "criar", de, ate, docs, forcar },
+      });
+      if (error) throw error;
+      if (data?.erro) throw new Error(data.erro);
+
+      if (data.criados) toast.success(`${data.criados} cliente(s) cadastrado(s) no Omie.`);
+      if (data.ja_existiam) {
+        toast.info(`${data.ja_existiam} já estava(m) no Omie.`, {
+          description: "O cadastro existia e o espelho local é que estava velho — agora a emissão os enxerga.",
+        });
+      }
+      /* Bloqueado não é falha, e a diferença muda o que a pessoa faz depois:
+       * falha se tenta de novo, bloqueio se conserta o dado no Asaas. */
+      if (data.bloqueados) {
+        const motivos = [...new Set((data.resultados ?? [])
+          .filter((r: any) => r.situacao === "bloqueado")
+          .map((r: any) => BLOQUEIOS_CADASTRO[r.motivo] ?? r.motivo))];
+        toast.warning(`${data.bloqueados} não pôde(puderam) ser cadastrado(s).`, {
+          description: motivos.slice(0, 2).join(" · "),
+          duration: 15000,
+        });
+      }
+      if (data.falhas) {
+        toast.error(`${data.falhas} recusado(s) pelo Omie.`, {
+          description: (data.resultados ?? []).find((r: any) => r.situacao === "falhou")?.motivo,
+          duration: 15000,
+        });
+      }
+      if (data.restantes) {
+        toast.info(`Faltam ${data.restantes} — a rodada vai até 25 por vez.`, {
+          description: "Clique de novo para seguir, ou espere a rodada diária.",
+        });
+      }
+      await carregar();
+    } catch (e: any) {
+      toast.error("Falha ao cadastrar no Omie.", { description: e?.message });
+    } finally {
+      setCadastrando(null);
     }
   };
 
@@ -231,6 +331,21 @@ export default function NotasFiscaisAuditoria({ de, ate }: { de: string; ate: st
             <button onClick={copiar} className="ghost-btn flex items-center gap-1.5 rounded border border-border px-2 py-1 text-[11px]">
               <Copy className="h-3 w-3" /> Copiar lista
             </button>
+            {/* O botão só aparece quando há o que cadastrar sem decisão pendente.
+                Ele nunca pega os divergentes: aqueles têm o seu próprio, na linha. */}
+            {livresParaCadastrar.length > 0 && (
+              <button
+                onClick={() => void cadastrarNoOmie()}
+                disabled={!!cadastrando}
+                title="Cria no Omie o cadastro dos clientes que não têm nada equivalente por lá. Escreve no ERP."
+                className="flex items-center gap-1.5 rounded border border-primary bg-primary/10 px-2 py-1 text-[11px] font-medium text-primary transition-colors hover:bg-primary/20 disabled:opacity-50"
+              >
+                {cadastrando === "lote"
+                  ? <Loader2 className="h-3 w-3 animate-spin" />
+                  : <UserPlus className="h-3 w-3" />}
+                Cadastrar {livresParaCadastrar.length} no Omie
+              </button>
+            )}
           </div>
 
           <div className="overflow-x-auto rounded-lg border border-border bg-card">
@@ -250,7 +365,14 @@ export default function NotasFiscaisAuditoria({ de, ate }: { de: string; ate: st
                   <tr><td colSpan={6} className="p-8 text-center text-muted-foreground">Nenhum cliente neste recorte.</td></tr>
                 )}
                 {clientes.map((c) => (
-                  <LinhaCliente key={c.doc} c={c} />
+                  <LinhaCliente
+                    key={c.doc}
+                    c={c}
+                    cadastro={cadastros.get(c.doc) ?? null}
+                    ocupado={!!cadastrando}
+                    cadastrando={cadastrando === c.doc}
+                    aoCadastrar={() => void cadastrarNoOmie([c.doc], c.classe === "cadastro_divergente")}
+                  />
                 ))}
               </tbody>
             </table>
@@ -351,9 +473,23 @@ export default function NotasFiscaisAuditoria({ de, ate }: { de: string; ate: st
  * comparação lado a lado que faz o olho ver que "37.372.287/0002-71" e
  * "37.372.287/0001-90" são a mesma empresa em filiais diferentes — coisa que duas
  * telas separadas nunca mostram.
+ *
+ * A última coluna é a que mudou de natureza: era só instrução ("cadastre no
+ * Omie"), agora é instrução OU desfecho. Quando já se tentou, o que aparece é o
+ * que aconteceu — inclusive o bloqueio, que é a única forma de o dado ruim do
+ * Asaas virar uma frase que alguém consegue consertar.
  */
-function LinhaCliente({ c }: { c: ClienteFaltante }) {
+function LinhaCliente({
+  c, cadastro, ocupado, cadastrando, aoCadastrar,
+}: {
+  c: ClienteFaltante;
+  cadastro: CadastroNoOmie | null;
+  ocupado: boolean;
+  cadastrando: boolean;
+  aoCadastrar: () => void;
+}) {
   const d = PRONTIDAO[c.classe];
+  const recado = cadastro ? recadoDoCadastro(cadastro) : null;
   return (
     <tr className="border-b border-border/50 last:border-0 align-top hover:bg-muted/30">
       <td className="max-w-[220px] p-2">
@@ -397,7 +533,39 @@ function LinhaCliente({ c }: { c: ClienteFaltante }) {
       </td>
       <td className="num p-2 text-right">{brl(Number(c.valor))}</td>
       <td className="num p-2">{dataStr(c.ultima)}</td>
-      <td className="max-w-[300px] p-2 text-[11px] leading-tight text-muted-foreground">{oQueFazer(c)}</td>
+      <td className="max-w-[300px] p-2 text-[11px] leading-tight text-muted-foreground">
+        <div className="space-y-1">
+          {recado ? (
+            <>
+              <span className={cn("inline-block rounded border px-1.5 py-0.5 text-[10px]", TOM[recado.tom])}>
+                {recado.rotulo}
+              </span>
+              <p>{recado.ajuda}</p>
+            </>
+          ) : (
+            <p>{oQueFazer(c)}</p>
+          )}
+          {/* O botão some quando o cadastro está resolvido e VOLTA quando a
+              tentativa anterior esbarrou em dado ruim — o conserto é no Asaas e
+              quem consertou precisa de um lugar para dizer "agora vai".
+              O divergente tem botão desde o começo, mas só aqui e um a um: o
+              aviso do clique diz o que está em jogo, e quem decide é quem está
+              vendo os dois documentos na mesma linha. */}
+          {(!recado || recado.tom !== "ok") && (
+            <button
+              onClick={aoCadastrar}
+              disabled={ocupado}
+              title={c.classe === "cadastro_divergente"
+                ? "Cadastrar assim mesmo, tratando como empresa diferente da que já existe no Omie."
+                : "Criar o cadastro no Omie com este documento."}
+              className="ghost-btn flex items-center gap-1 rounded border border-border px-1.5 py-0.5 text-[10px] disabled:opacity-50"
+            >
+              {cadastrando ? <Loader2 className="h-3 w-3 animate-spin" /> : <UserPlus className="h-3 w-3" />}
+              {recado ? "Tentar de novo" : c.classe === "cadastro_divergente" ? "Cadastrar mesmo assim" : "Cadastrar no Omie"}
+            </button>
+          )}
+        </div>
+      </td>
     </tr>
   );
 }

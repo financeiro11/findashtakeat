@@ -1,8 +1,9 @@
 import { describe, it, expect } from "vitest";
 import {
   motivoBloqueio, motivoCurto, podeEmitir, resumoLote, xmlAindaVale, formatarDoc, statusAsaas, foiPaga,
-  vereditoProntidao, oQueFazer, diasDoCadastro, clientesEmTexto,
-  type LinhaNota, type Situacao, type ClienteFaltante,
+  vereditoProntidao, oQueFazer, diasDoCadastro, clientesEmTexto, recadoDoCadastro,
+  chaveNfseValida, linkPortalNacional, chaveEmBlocos,
+  type LinhaNota, type Situacao, type ClienteFaltante, type CadastroNoOmie,
 } from "./notasFiscais";
 
 const linha = (over: Partial<LinhaNota> = {}): LinhaNota => ({
@@ -10,7 +11,8 @@ const linha = (over: Partial<LinhaNota> = {}): LinhaNota => ({
   cnpj_cpf: "37511891000150", valor: 249, data_vencimento: "2026-08-10", data_pagamento: "2026-08-10",
   status_asaas: "RECEIVED", estornado: false, nf_asaas_status: null, nf_asaas_numero: null,
   n_cod_os: null, os_etapa: null, os_faturada: null,
-  nfse_numero: null, nfse_status: null, nfse_xml: null, nfse_mensagem: null, situacao: "falta",
+  nfse_numero: null, nfse_status: null, nfse_xml: null, nfse_chave: null,
+  nfse_mensagem: null, situacao: "falta",
   ...over,
 });
 
@@ -177,6 +179,51 @@ describe("xmlAindaVale", () => {
   });
 });
 
+describe("linkPortalNacional", () => {
+  // Chave real da NFS-e 16902, emitida em 20/08/26 (OS 5512255820). Ela se lê:
+  // 3205309 (Vitória/ES) · 2 · 2 · 37511891000150 (nosso CNPJ) · 0000000016902
+  // (o número da nota) · 2608 (a competência) · 794739071 · 0 (DV).
+  const CHAVE = "32053092237511891000150000000001690226087947390710";
+
+  it("os 50 dígitos abrem a nota, com a chave já preenchida", () => {
+    expect(linkPortalNacional(CHAVE))
+      .toBe(`https://www.nfse.gov.br/consultapublica/?tpc=1&chave=${CHAVE}`);
+  });
+
+  it("o código curto do padrão ABRASF antigo NÃO vira link", () => {
+    // O campo é o mesmo (`cCodVerif`); só no padrão nacional ele traz a chave.
+    // Oferecer link para "A1B2C3D4" levaria a pessoa a um formulário que recusa.
+    expect(linkPortalNacional("A1B2C3D4")).toBeNull();
+    expect(linkPortalNacional("123456789")).toBeNull();
+  });
+
+  it("chave com letra, ou com 49/51 dígitos, não vira link", () => {
+    expect(linkPortalNacional(CHAVE.slice(0, 49))).toBeNull();
+    expect(linkPortalNacional(CHAVE + "0")).toBeNull();
+    expect(linkPortalNacional(CHAVE.slice(0, 49) + "X")).toBeNull();
+  });
+
+  it("sem chave, sem link — nota antiga ou OS ainda não relida", () => {
+    expect(linkPortalNacional(null)).toBeNull();
+    expect(linkPortalNacional("")).toBeNull();
+    expect(linkPortalNacional(undefined)).toBeNull();
+  });
+
+  it("espaço em volta não invalida a chave", () => {
+    expect(linkPortalNacional(` ${CHAVE} `)).toContain(CHAVE);
+    expect(chaveNfseValida(` ${CHAVE} `)).toBe(true);
+  });
+
+  it("chaveEmBlocos deixa os 50 dígitos conferíveis a olho", () => {
+    const b = chaveEmBlocos(CHAVE);
+    expect(b.startsWith("3205 3092 2375")).toBe(true);
+    expect(b.replace(/ /g, "")).toBe(CHAVE);
+    // Sem espaço sobrando no fim: o último bloco tem 2 dígitos (50 = 12×4 + 2).
+    expect(b.endsWith("10")).toBe(true);
+    expect(chaveEmBlocos(null)).toBe("");
+  });
+});
+
 describe("statusAsaas", () => {
   it("separa recebida de confirmada — confirmada é dinheiro que ainda não caiu", () => {
     expect(statusAsaas("RECEIVED")).toMatchObject({ rotulo: "Recebida", tom: "ok" });
@@ -279,7 +326,7 @@ describe("oQueFazer", () => {
 
   it("sem nada equivalente no Omie, aí sim é cadastrar", () => {
     expect(oQueFazer(faltante({ classe: "sem_cadastro_omie", omie_nome: null, omie_doc: null, via: null, forca: null })))
-      .toBe("Cadastrar o cliente no Omie com este CNPJ/CPF.");
+      .toBe("Cadastrar o cliente no Omie com este CNPJ/CPF — é o que o botão faz.");
   });
 
   // Guarda contra dado inconsistente: classe diz "divergente" mas o par não veio.
@@ -287,6 +334,51 @@ describe("oQueFazer", () => {
   it("classe divergente sem par vira a instrução de cadastrar", () => {
     expect(oQueFazer({ classe: "cadastro_divergente", via: null, omie_nome: null, omie_doc: null }))
       .toMatch(/^Cadastrar/);
+  });
+});
+
+describe("recadoDoCadastro", () => {
+  const cad = (over: Partial<CadastroNoOmie> = {}): CadastroNoOmie => ({
+    doc: "42580372000184", nome: "Maya Tecsaúde", n_cod_cli: 5513230459,
+    situacao: "criado", motivo: null, fonte_endereco: "receita",
+    tentativas: 1, atualizado_em: "2026-08-24T17:00:00Z",
+    ...over,
+  });
+
+  it("criado diz de onde veio o endereço — é o que se confere quando a nota é recusada", () => {
+    const r = recadoDoCadastro(cad());
+    expect(r.tom).toBe("ok");
+    expect(r.ajuda).toMatch(/Receita Federal/);
+    expect(r.ajuda).toMatch(/5513230459/);
+  });
+
+  /* `ja_existia` é sucesso, não erro, e a distinção não é cosmética: ela diz que
+   * o cadastro sempre esteve no Omie e quem errou foi o espelho semanal. Tratar
+   * como falha mandaria alguém cadastrar de novo — e aí sim viria o duplicado. */
+  it("já existia é boa notícia, e a frase aponta o espelho e não o Omie", () => {
+    const r = recadoDoCadastro(cad({ situacao: "ja_existia", n_cod_cli: null }));
+    expect(r.tom).toBe("ok");
+    expect(r.ajuda).toMatch(/espelho local/i);
+  });
+
+  // Bloqueio é dado ruim do cliente, e a frase tem de dizer onde consertar —
+  // "tentar de novo" não conserta CEP que não existe.
+  it("bloqueio vira a instrução de conserto, não uma mensagem de erro", () => {
+    const r = recadoDoCadastro(cad({ situacao: "bloqueado", motivo: "cep_inexistente", fonte_endereco: null }));
+    expect(r.tom).toBe("aviso");
+    expect(r.ajuda).toMatch(/E0240/);
+    expect(r.ajuda).toMatch(/corrija o CEP no Asaas/i);
+  });
+
+  // Motivo que ainda não tem tradução não pode virar "undefined" na tela.
+  it("bloqueio desconhecido mostra o motivo cru em vez de sumir", () => {
+    expect(recadoDoCadastro(cad({ situacao: "bloqueado", motivo: "motivo_novo" })).ajuda).toBe("motivo_novo");
+  });
+
+  it("recusa do Omie é erro e mostra o que ele respondeu", () => {
+    const r = recadoDoCadastro(cad({ situacao: "falhou", motivo: "Omie IncluirCliente: campo inválido" }));
+    expect(r.tom).toBe("erro");
+    expect(r.ajuda).toMatch(/campo inválido/);
   });
 });
 

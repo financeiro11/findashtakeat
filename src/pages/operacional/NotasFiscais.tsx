@@ -30,7 +30,7 @@ import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import { comValorExato } from "@/components/ValorExato";
 import {
-  FileText, RefreshCw, Loader2, Search, ExternalLink, AlertTriangle,
+  FileText, RefreshCw, Loader2, Search, FileCode2, AlertTriangle,
   ChevronLeft, ChevronRight, CheckCircle2, Send, Info,
 } from "lucide-react";
 import { Input } from "@/components/ui/input";
@@ -38,6 +38,7 @@ import NotasFiscaisLog from "./NotasFiscaisLog";
 import NotasFiscaisAuditoria from "./NotasFiscaisAuditoria";
 import {
   SITUACOES, motivoBloqueio, motivoCurto, podeEmitir, resumoLote, xmlAindaVale, formatarDoc, statusAsaas,
+  linkPortalNacional, chaveEmBlocos,
   type LinhaNota, type Situacao,
 } from "@/lib/notasFiscais";
 
@@ -496,13 +497,42 @@ export default function NotasFiscais() {
                       </div>
                     )}
                   </td>
+                  {/* O NÚMERO É O LINK, e o link é o do Portal Nacional — não o do
+                      XML. Os dois abrem a mesma nota, mas o XML é uma URL assinada
+                      do CDN do Omie que morre em ~24h; a chave de acesso não morre
+                      nunca. Por isso o endereço permanente ficou no número, que é
+                      onde a pessoa clica, e o XML virou o ícone ao lado. */}
                   <td className="p-2">
                     {l.nfse_numero ? (
                       <span className="num flex items-center gap-1">
-                        {l.nfse_numero}
+                        {(() => {
+                          const portal = linkPortalNacional(l.nfse_chave);
+                          if (!portal) return <span title="Nota sem chave de acesso gravada — sincronize com o Omie">{l.nfse_numero}</span>;
+                          return (
+                            <a
+                              href={portal}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="text-primary underline-offset-2 hover:underline"
+                              title={
+                                `Abrir a NFS-e ${l.nfse_numero} no Portal Nacional da NFS-e.\n` +
+                                `Chave: ${chaveEmBlocos(l.nfse_chave)}\n` +
+                                "A chave já vai preenchida; o portal ainda pede o captcha."
+                              }
+                            >
+                              {l.nfse_numero}
+                            </a>
+                          );
+                        })()}
                         {xmlAindaVale(l.nfse_xml) && (
-                          <a href={l.nfse_xml!} target="_blank" rel="noreferrer" title="XML da NFS-e" className="text-primary">
-                            <ExternalLink className="h-3 w-3" />
+                          <a
+                            href={l.nfse_xml!}
+                            target="_blank"
+                            rel="noreferrer"
+                            title="XML da NFS-e (link do Omie — expira ~24h depois da última sincronização)"
+                            className="text-muted-foreground hover:text-primary"
+                          >
+                            <FileCode2 className="h-3 w-3" />
                           </a>
                         )}
                       </span>
@@ -543,10 +573,15 @@ export default function NotasFiscais() {
       </div>
 
       {!carregando && (
-        <p className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
-          <Info className="h-3 w-3" />
-          {visiveis.length.toLocaleString("pt-BR")} de {linhas.length.toLocaleString("pt-BR")} cobranças do mês.
-          Emitir cria a Ordem de Serviço no Omie e a fatura — é isso que gera a NFS-e.
+        <p className="flex items-start gap-1.5 text-[11px] leading-relaxed text-muted-foreground">
+          <Info className="mt-px h-3 w-3 shrink-0" />
+          <span>
+            {visiveis.length.toLocaleString("pt-BR")} de {linhas.length.toLocaleString("pt-BR")} cobranças do mês.
+            Emitir cria a Ordem de Serviço no Omie e a fatura — é isso que gera a NFS-e.
+            O número da nota abre ela no Portal Nacional da NFS-e, com a chave de acesso já
+            preenchida (o portal ainda pede o captcha); o ícone ao lado é o XML, e esse é um
+            link do Omie que expira em cerca de 24h.
+          </span>
         </p>
       )}
       </>

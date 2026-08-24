@@ -35,6 +35,7 @@ import {
   RefreshCw, Loader2, CheckCircle2, XCircle, Clock, FlaskConical,
   PlayCircle, CalendarClock, Info, Power, FileText, ChevronRight, ChevronDown, ShieldAlert,
 } from "lucide-react";
+import { linkPortalNacional, chaveEmBlocos } from "@/lib/notasFiscais";
 
 const sb = supabase as any;
 
@@ -51,8 +52,45 @@ const hora = (iso: string) =>
 interface LinhaLog {
   criado_em: string; id_asaas: string; cliente: string; valor: number | null;
   acao: string; resultado: string; nfse_numero: string | null;
+  /** A chave de acesso da nota do evento, quando ela nasceu. Ver `SeloNota`. */
+  nfse_chave: string | null;
   motivo: string | null; operador: string | null; n_cod_os: number | null;
 }
+
+/* --------------------------- o selo da nota emitida --------------------------
+ *
+ * "NFS-e 16902" era um número para copiar e ir procurar. Com a chave de acesso
+ * ele vira o endereço da nota no Portal Nacional — que é o único que não expira
+ * (o link do XML é uma URL assinada do Omie e morre em ~24h).
+ *
+ * O selo continua sendo selo quando não há chave: nota antiga, ou OS ainda não
+ * relida do Omie. Link que não leva a lugar nenhum seria pior do que o número.
+ */
+const SELO_NOTA =
+  "num mr-1 inline-block rounded border border-emerald-500/20 bg-emerald-500/10 px-1.5 py-0.5 text-emerald-600 dark:text-emerald-400";
+
+const SeloNota = ({ numero, chave }: { numero: string; chave: string | null }) => {
+  const portal = linkPortalNacional(chave);
+  if (!portal) return <span className={SELO_NOTA}>NFS-e {numero}</span>;
+  return (
+    <a
+      href={portal}
+      target="_blank"
+      rel="noreferrer"
+      // A linha do cliente abre/fecha no clique; sem isto, abrir a nota também
+      // sanfonava a linha por baixo.
+      onClick={(e) => e.stopPropagation()}
+      className={cn(SELO_NOTA, "underline-offset-2 hover:underline")}
+      title={
+        `Abrir a NFS-e ${numero} no Portal Nacional da NFS-e.\n` +
+        `Chave: ${chaveEmBlocos(chave)}\n` +
+        "A chave já vai preenchida; o portal ainda pede o captcha."
+      }
+    >
+      NFS-e {numero}
+    </a>
+  );
+};
 
 interface Execucao {
   id: string; iniciada_em: string; concluida_em: string | null;
@@ -154,7 +192,7 @@ interface Cobranca {
 }
 interface Grupo {
   chave: string; cliente: string; cobrancas: Cobranca[]; eventos: LinhaLog[];
-  valor: number; estado: EstadoKey; nfse: string[]; ultimo: LinhaLog;
+  valor: number; estado: EstadoKey; nfse: { numero: string; chave: string | null }[]; ultimo: LinhaLog;
 }
 
 function agrupar(linhas: LinhaLog[]): Grupo[] {
@@ -195,6 +233,16 @@ function agrupar(linhas: LinhaLog[]): Grupo[] {
     const temNota = eventos.some((e) => desfechoDe(e) === "emitida");
     const estado: EstadoKey = temNota ? "emitida" : desfechoDe(ultimo);
 
+    /* Uma nota por número, e a PRIMEIRA chave não-nula que aparecer para ele: o
+     * diário é append-only e o mesmo número reaparece em passos seguintes, nem
+     * todos com a chave em mãos. Guardar a última sobrescreveria a chave boa
+     * com o `null` de um passo posterior. */
+    const notas = new Map<string, string | null>();
+    for (const e of eventos) {
+      if (!e.nfse_numero) continue;
+      if (notas.get(e.nfse_numero) == null) notas.set(e.nfse_numero, e.nfse_chave ?? null);
+    }
+
     grupos.push({
       chave,
       cliente: ultimo.cliente,
@@ -202,7 +250,7 @@ function agrupar(linhas: LinhaLog[]): Grupo[] {
       eventos,
       valor: cobrancas.reduce((s, c) => s + Number(c.valor ?? 0), 0),
       estado,
-      nfse: [...new Set(eventos.map((e) => e.nfse_numero).filter(Boolean) as string[])],
+      nfse: [...notas].map(([numero, chave]) => ({ numero, chave })),
       ultimo,
     });
   }
@@ -610,11 +658,7 @@ export default function NotasFiscaisLog() {
                     </td>
                     <td className="p-2 align-top"><Selo e={g.estado} /></td>
                     <td className="max-w-[380px] p-2 align-top">
-                      {g.nfse.map((n) => (
-                        <span key={n} className="num mr-1 rounded border border-emerald-500/20 bg-emerald-500/10 px-1.5 py-0.5 text-emerald-600 dark:text-emerald-400">
-                          NFS-e {n}
-                        </span>
-                      ))}
+                      {g.nfse.map((n) => <SeloNota key={n.numero} numero={n.numero} chave={n.chave} />)}
                       {/* Fechado, vale o motivo do passo mais recente: é ele que
                           diz o que falta fazer agora. O resto está um clique abaixo. */}
                       {!aberto && g.ultimo.motivo && (
@@ -665,11 +709,7 @@ export default function NotasFiscaisLog() {
                             {/* O número quando saiu; o motivo quando não saiu. Nunca os dois
                                 vazios — linha sem explicação é o que obriga a abrir o Omie. */}
                             <td className="max-w-[380px] p-2 align-top">
-                              {l.nfse_numero && (
-                                <span className="num mr-1 rounded border border-emerald-500/20 bg-emerald-500/10 px-1.5 py-0.5 text-emerald-600 dark:text-emerald-400">
-                                  NFS-e {l.nfse_numero}
-                                </span>
-                              )}
+                              {l.nfse_numero && <SeloNota numero={l.nfse_numero} chave={l.nfse_chave} />}
                               {l.motivo && (
                                 <span className="text-[11px] leading-tight text-muted-foreground" title={l.motivo}>
                                   <span className="line-clamp-2">{l.motivo}</span>

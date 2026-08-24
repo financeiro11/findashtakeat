@@ -38,6 +38,8 @@ export interface LinhaNota {
   nfse_numero: string | null;
   nfse_status: string | null;
   nfse_xml: string | null;
+  /** Os 50 dígitos que abrem a nota no Portal Nacional — ver `linkPortalNacional`. */
+  nfse_chave: string | null;
   /** A recusa da prefeitura, em português. É o que diz o que consertar. */
   nfse_mensagem: string | null;
   situacao: Situacao;
@@ -236,6 +238,50 @@ export function xmlAindaVale(url: string | null, agora = Date.now()): boolean {
   return Number(m[1]) * 1000 > agora;
 }
 
+/* ---------------------------------------------------------------------------
+ * A NOTA NO PORTAL NACIONAL — o endereço que não expira.
+ *
+ * O link do XML acima é do CDN do Omie e morre em ~24h; passado um dia, a nota
+ * emitida não tinha endereço nenhum aqui dentro. A chave de acesso resolve isso
+ * porque não é um link: é a IDENTIDADE da nota, e o Portal Nacional da NFS-e
+ * (nfse.gov.br) abre qualquer NFS-e do país a partir dela, para sempre.
+ *
+ * DE ONDE VEM A CHAVE. Do campo que o Omie chama de `cCodVerif` e o Hub grava em
+ * `nf_os_omie.nfse_verificacao`. O nome engana: no padrão ABRASF antigo ele era
+ * um código curto de verificação, mas no padrão NACIONAL o que vem ali são os 50
+ * dígitos da chave — município (7) + ambiente (1) + tipo de inscrição (1) + CNPJ
+ * (14) + número da NFS-e (13) + AAMM (4) + código numérico (9) + DV (1).
+ *
+ * POR QUE SÓ O TAMANHO É CONFERIDO, e não o dígito verificador: a checagem que
+ * importa é distinguir a chave de 50 dígitos do código curto do padrão antigo —
+ * essa o `\d{50}` faz. Recalcular o DV para recusar a chave que o Omie mandou
+ * seria o Hub arbitrando contra a prefeitura: se a chave estiver torta, quem tem
+ * de dizer isso é o portal, e ele diz. O que não se pode é oferecer link para o
+ * que claramente não é chave.
+ * ------------------------------------------------------------------------- */
+
+/** A chave de acesso da NFS-e do padrão nacional: 50 dígitos, nada mais. */
+export const chaveNfseValida = (chave: string | null | undefined): boolean =>
+  /^\d{50}$/.test(String(chave ?? "").trim());
+
+/**
+ * O link da consulta pública. `tpc=1` é "por chave de acesso" e `chave` já chega
+ * preenchida no formulário — é o mesmo endereço que o QR Code do DANFSe carrega.
+ *
+ * O portal ainda pede o captcha antes de mostrar a nota, e isso não tem volta
+ * pelo link: é a proteção da consulta pública. O que o link poupa é o resto —
+ * achar o portal, escolher o tipo de consulta e digitar 50 dígitos sem errar.
+ */
+export function linkPortalNacional(chave: string | null | undefined): string | null {
+  const c = String(chave ?? "").trim();
+  if (!chaveNfseValida(c)) return null;
+  return `https://www.nfse.gov.br/consultapublica/?tpc=1&chave=${c}`;
+}
+
+/** "3205 3092 2375 …" — 50 dígitos seguidos ninguém confere a olho. */
+export const chaveEmBlocos = (chave: string | null | undefined): string =>
+  String(chave ?? "").trim().replace(/(\d{4})(?=\d)/g, "$1 ");
+
 /** "37511891000150" → "37.511.891/0001-50"; CPF de 11 → "064.191.081-95". */
 export function formatarDoc(doc: string | null): string {
   const d = (doc ?? "").replace(/\D/g, "");
@@ -367,7 +413,7 @@ export function vereditoProntidao(prontidao: AuditoriaProntidao[]) {
  */
 export function oQueFazer(c: Pick<ClienteFaltante, "classe" | "via" | "omie_nome" | "omie_doc">): string {
   if (c.classe === "sem_cadastro_omie" || !c.omie_doc) {
-    return "Cadastrar o cliente no Omie com este CNPJ/CPF.";
+    return "Cadastrar o cliente no Omie com este CNPJ/CPF — é o que o botão faz.";
   }
   if (c.via === "raiz") {
     return `Mesma empresa, outro estabelecimento: o Omie tem "${c.omie_nome}" em ${formatarDoc(c.omie_doc)}. ` +
@@ -391,6 +437,94 @@ export function diasDoCadastro(iso: string | null, agora = Date.now()): number |
   const t = Date.parse(iso);
   if (Number.isNaN(t)) return null;
   return Math.max(0, Math.floor((agora - t) / 86_400_000));
+}
+
+/* ---------------------------------------------------------------------------
+ * CADASTRO NO OMIE — o desfecho de quem a auditoria acusou.
+ *
+ * A aba nasceu só apontando o buraco ("o conserto acontece no Omie"). Agora o
+ * conserto tem botão: `omie-clientes-criar` cria o cadastro faltante a partir do
+ * cliente do Asaas. O que mora aqui é a leitura do resultado — o que a tabela
+ * `omie_clientes_criados` guarda vira frase em português.
+ *
+ * A DIFERENÇA QUE IMPORTA na leitura é `criado` × `ja_existia`: os dois são boa
+ * notícia (o cadastro está lá), mas o segundo quer dizer que o ERRO estava no
+ * espelho local, não no Omie — o cliente sempre esteve cadastrado e a leitura
+ * semanal é que não o tinha visto.
+ * ------------------------------------------------------------------------- */
+
+export type CadastroSituacao = "criado" | "ja_existia" | "bloqueado" | "falhou";
+
+export interface CadastroNoOmie {
+  doc: string;
+  nome: string | null;
+  n_cod_cli: number | null;
+  situacao: CadastroSituacao;
+  motivo: string | null;
+  /** De onde veio o endereço que foi cadastrado. */
+  fonte_endereco: "receita" | "cep" | "asaas" | null;
+  tentativas: number;
+  atualizado_em: string;
+}
+
+/**
+ * Por que o cadastro não foi criado — em português e com o que fazer junto.
+ *
+ * Nenhum destes é falha do Omie: são dados do cliente que não sustentam uma nota
+ * fiscal. Dizer "erro ao cadastrar" mandaria a pessoa tentar de novo, e tentar
+ * de novo não conserta um CEP que não existe.
+ */
+export const BLOQUEIOS_CADASTRO: Record<string, string> = {
+  cep_inexistente:
+    "O CEP do cliente não existe nos Correios. É o mesmo erro (E0240) que prende a nota na prefeitura — " +
+    "corrija o CEP no Asaas e tente de novo.",
+  cnpj_nao_encontrado_na_receita:
+    "O CNPJ fecha no dígito verificador mas a Receita não o conhece. Confira o número no cadastro do Asaas.",
+  endereco_incompleto:
+    "Falta endereço para montar o cadastro, e as consultas de CNPJ e CEP não responderam. Tente de novo mais tarde.",
+  documento_invalido:
+    "O CPF/CNPJ do Asaas não fecha no dígito verificador: é número errado, não decisão a tomar.",
+  cadastro_divergente:
+    "Existe cadastro parecido no Omie com outro documento. Cadastrar sem decidir criaria duplicado.",
+  sem_cliente_no_espelho:
+    "A carga local do Asaas não tem este cliente, então não há endereço para mandar.",
+};
+
+export const FONTE_ENDERECO: Record<string, string> = {
+  receita: "endereço e razão social da Receita Federal",
+  cep: "endereço do Asaas com cidade e UF conferidas pelo CEP",
+  asaas: "endereço do Asaas, sem conferência externa",
+};
+
+/** O selo de uma linha já trabalhada: o que aconteceu, e com que peso. */
+export function recadoDoCadastro(c: CadastroNoOmie): { rotulo: string; tom: "ok" | "aviso" | "erro"; ajuda: string } {
+  if (c.situacao === "criado") {
+    return {
+      rotulo: "Cadastrado no Omie",
+      tom: "ok",
+      ajuda: `Criado com ${FONTE_ENDERECO[c.fonte_endereco ?? "asaas"] ?? "os dados do Asaas"}` +
+        `${c.n_cod_cli ? ` — código ${c.n_cod_cli} no Omie` : ""}.`,
+    };
+  }
+  if (c.situacao === "ja_existia") {
+    return {
+      rotulo: "Já estava no Omie",
+      tom: "ok",
+      ajuda: "O Omie recusou por documento repetido: o cadastro existe e quem estava desatualizado era o espelho local.",
+    };
+  }
+  if (c.situacao === "bloqueado") {
+    return {
+      rotulo: "Não dá para cadastrar",
+      tom: "aviso",
+      ajuda: BLOQUEIOS_CADASTRO[c.motivo ?? ""] ?? c.motivo ?? "Bloqueado.",
+    };
+  }
+  return {
+    rotulo: "O Omie recusou",
+    tom: "erro",
+    ajuda: c.motivo ?? "Recusa sem mensagem.",
+  };
 }
 
 /** A lista dos faltantes em texto, para colar onde o conserto acontece. */

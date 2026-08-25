@@ -75,7 +75,10 @@ export function tipoRealDoArquivo(bytes: Uint8Array): string | null {
 
   // XML/SVG/HTML: BOM e espaço em branco antes do '<' são comuns em arquivo de
   // nota. Só olha o começo — decodificar o arquivo inteiro para farejar é caro.
-  const inicio = new TextDecoder().decode(b.subarray(0, 200)).replace(/^﻿/, "").trimStart();
+  // ﻿ = BOM. Escapado de propósito: escrito como caractere ele é invisível
+  // no editor e desaparece numa cópia do arquivo — e aí todo XML com BOM (que é
+  // a maioria dos que a prefeitura devolve) deixa de ser reconhecido.
+  const inicio = new TextDecoder().decode(b.subarray(0, 200)).replace(/^\uFEFF/, "").trimStart();
   if (inicio.startsWith("<?xml") || /^<[A-Za-z]/.test(inicio)) return "xml";
 
   return null;
@@ -155,7 +158,7 @@ export function nomeSeguroParaOmie(nome: string): string {
   const ext = EXT_ANEXO[extDe(nome)] ?? "pdf";
   const base = String(nome ?? "")
     .replace(/\.[^.]+$/, "")
-    .normalize("NFD").replace(/[̀-ͯ]/g, "")
+    .normalize("NFD").replace(/[\u0300-\u036f]/g, "")
     .replace(/[^A-Za-z0-9._-]+/g, "_")
     .replace(/_+/g, "_")
     .replace(/^[._-]+|[._-]+$/g, "")

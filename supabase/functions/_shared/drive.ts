@@ -179,12 +179,32 @@ export async function sondarDrive(): Promise<{ email: string; nome: string }> {
   }
 }
 
-/** Metadados (nome e tipo) — usados para nomear o anexo no Omie. */
-async function metadados(id: string): Promise<{ nome: string; mime: string }> {
-  const res = await gw(`/files/${id}?fields=name,mimeType&supportsAllDrives=true`);
+/**
+ * Metadados (nome, tipo e TAMANHO) — usados para nomear o anexo no Omie e para
+ * recusar o arquivo grande demais antes de baixá-lo.
+ *
+ * `size` vem do Drive como string de bytes e NÃO existe para documento Google
+ * nativo (que não tem binário) — por isso `tamanho` é `null` quando falta, e
+ * quem chama trata ausência como "não sei", nunca como zero.
+ */
+async function metadados(id: string): Promise<{ nome: string; mime: string; tamanho: number | null }> {
+  const res = await gw(`/files/${id}?fields=name,mimeType,size&supportsAllDrives=true`);
   const j = await res.json().catch(() => ({}));
-  return { nome: String(j?.name ?? "comprovante"), mime: String(j?.mimeType ?? "") };
+  const bruto = Number(j?.size ?? NaN);
+  return {
+    nome: String(j?.name ?? "comprovante"),
+    mime: String(j?.mimeType ?? ""),
+    tamanho: Number.isFinite(bruto) && bruto > 0 ? bruto : null,
+  };
 }
+
+/** A recusa por tamanho, escrita uma vez só — os dois caminhos do Drive usam. */
+export const erroDeTamanho = (bytes: number, teto: number): Error =>
+  new Error(
+    `Arquivo de ${(bytes / 1048576).toFixed(1)} MB — acima do limite de ${(teto / 1048576).toFixed(0)} MB ` +
+    "para anexar automaticamente. Costuma ser foto em resolução cheia: reenviar o comprovante " +
+    "como PDF (ou uma foto menor) resolve, e aí ele sobe na próxima rodada.",
+  );
 
 /** Mensagem de um 404 já com a base validada: é acesso ao arquivo, não rota. */
 async function semAcesso(): Promise<string> {
@@ -255,7 +275,10 @@ export async function podeLerPublico(idOuUrl: string): Promise<{ ok: true } | { 
  * que garimpar o token de confirmação no HTML. Com `confirm=t` o novo entrega o binário
  * direto. Se ainda assim vier HTML, o arquivo não é público — e aí é erro de verdade.
  */
-export async function baixarPublicoDoDrive(idOuUrl: string): Promise<ArquivoDrive> {
+export async function baixarPublicoDoDrive(
+  idOuUrl: string,
+  opts: { maxBytes?: number } = {},
+): Promise<ArquivoDrive> {
   const id = extrairIdDrive(idOuUrl) ?? String(idOuUrl).trim();
   if (!/^[a-zA-Z0-9_-]{10,}$/.test(id)) throw new Error("O link não é um arquivo do Google Drive.");
 
@@ -265,6 +288,15 @@ export async function baixarPublicoDoDrive(idOuUrl: string): Promise<ArquivoDriv
   );
   if (!res.ok) {
     throw new ErroDrive(res.status, "", `Drive público [${res.status}]: ${res.statusText}`);
+  }
+
+  // O content-length chega no cabeçalho, antes do corpo: dá para desistir sem
+  // ler os megabytes. Abandonar o corpo explicitamente evita deixar o stream
+  // pendurado no worker.
+  const declarado = Number(res.headers.get("content-length") ?? NaN);
+  if (opts.maxBytes && Number.isFinite(declarado) && declarado > opts.maxBytes) {
+    await res.body?.cancel().catch(() => {});
+    throw erroDeTamanho(declarado, opts.maxBytes);
   }
 
   const bytes = new Uint8Array(await res.arrayBuffer());
@@ -297,12 +329,15 @@ export async function baixarPublicoDoDrive(idOuUrl: string): Promise<ArquivoDriv
  * porque o conector é o único que enxerga arquivo restrito; o público é o que sempre
  * funciona para o que já está compartilhado.
  */
-export async function baixarDoDrive(idOuUrl: string): Promise<ArquivoDrive> {
+export async function baixarDoDrive(
+  idOuUrl: string,
+  opts: { maxBytes?: number } = {},
+): Promise<ArquivoDrive> {
   const id = extrairIdDrive(idOuUrl) ?? idOuUrl;
 
-  if (!driveConfigurado()) return await baixarPublicoDoDrive(id);
+  if (!driveConfigurado()) return await baixarPublicoDoDrive(id, opts);
 
-  let meta: { nome: string; mime: string };
+  let meta: { nome: string; mime: string; tamanho: number | null };
   try {
     meta = await metadados(id);
   } catch (e) {
@@ -310,7 +345,7 @@ export async function baixarDoDrive(idOuUrl: string): Promise<ArquivoDrive> {
     // 404 (e não 403) para arquivo que a conta conectada não pode ver. Antes de desistir,
     // tenta o link público: "a conta conectada não vê" não quer dizer "ninguém vê".
     try {
-      return await baixarPublicoDoDrive(id);
+      return await baixarPublicoDoDrive(id, opts);
     } catch (_) {
       if (e instanceof ErroDrive && e.status === 404) throw new Error(await semAcesso());
       throw e;
@@ -321,6 +356,22 @@ export async function baixarDoDrive(idOuUrl: string): Promise<ArquivoDrive> {
   // comprovante nunca deveria ser um desses; se for, é sinal de que o link está errado.
   if (meta.mime.startsWith("application/vnd.google-apps")) {
     throw new Error(`O link do Drive aponta para um documento Google (${meta.mime}), não para um arquivo anexável.`);
+  }
+
+  /* O TAMANHO VEM ANTES DOS BYTES.
+   *
+   * Medido em 25/08/2026: um comprovante de 9,7 MB na cabeça da fila derrubou
+   * CINCO rodadas seguidas do cron com "CPU Time exceeded". O arquivo era
+   * recusado — corretamente — pelo teto de quem chama, mas só DEPOIS de baixado
+   * e copiado para a memória do worker, e o que sobrava do orçamento não dava
+   * para o item seguinte. Um arquivo grande demais parava a fila inteira, e a
+   * fila não tinha como saber que era sempre o mesmo culpado.
+   *
+   * O Drive informa o tamanho no próprio metadado que já buscamos para saber o
+   * nome: a recusa passa a custar zero byte.
+   */
+  if (opts.maxBytes && meta.tamanho && meta.tamanho > opts.maxBytes) {
+    throw erroDeTamanho(meta.tamanho, opts.maxBytes);
   }
 
   const res = await gw(`/files/${id}?alt=media&supportsAllDrives=true`);

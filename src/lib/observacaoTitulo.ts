@@ -15,19 +15,16 @@
  * ------------------------------------------------------------------------- */
 
 import { lerMemo } from "@/lib/cartao/ofx";
+/* `memoDaObservacao`, `ehCartao` e `lojistaDoTitulo` desceram para `_shared/`
+   junto com o leitor de MEMO: a Edge Function que escreve o nome do lojista de
+   volta no Omie precisa exatamente das mesmas regras — inclusive a trava do
+   `ehCartao`, que é o que impede a observação de um fornecedor comum de ser
+   lida como MEMO. Aqui só se reexporta. */
+import {
+  ehCartao, lojistaDoTitulo, memoDaObservacao,
+} from "../../supabase/functions/_shared/cartao-memo";
 
-/**
- * O MEMO cru de dentro da observação, ou null quando não há texto.
- *
- * NÃO faz trim à esquerda: `lerMemo` corta por POSIÇÃO de coluna (22 e 30), e um
- * espaço a menos no começo desloca tudo — o estabelecimento sairia partido.
- */
-export function memoDaObservacao(obs: string | null | undefined): string | null {
-  if (!obs) return null;
-  const corte = obs.lastIndexOf("|");
-  const memo = corte >= 0 ? obs.slice(corte + 1) : obs;
-  return memo.trim() ? memo : null;
-}
+export { ehCartao, lojistaDoTitulo, memoDaObservacao };
 
 export type ObservacaoLida = {
   /** o lojista, já sem o ruído que a fatura acrescenta */
@@ -56,19 +53,6 @@ export function lerObservacaoTitulo(obs: string | null | undefined): ObservacaoL
     detalhe: detalhe?.trim() || null,
     parcela: m.parcela ? `${String(m.parcela.n).padStart(2, "0")}/${String(m.parcela.de).padStart(2, "0")}` : null,
   };
-}
-
-/**
- * Título do Omie que é gasto de cartão.
- *
- * A fatura entra no ERP com uma contraparte-carimbo — hoje "Lancamento Fatura
- * Cartao" (4.294 movimentos) e "Lancamento cartão itau" (19). É pelo nome mesmo
- * que dá para reconhecer: não existe campo no movimento dizendo "isto é cartão",
- * e o cadastro é criado justamente para servir de balde da fatura.
- */
-export function ehCartao(contraparte: string | null | undefined): boolean {
-  const s = (contraparte ?? "").normalize("NFD").replace(/\p{Diacritic}/gu, "").toLowerCase();
-  return /cartao/.test(s) && /(lancamento|fatura)/.test(s);
 }
 
 /**

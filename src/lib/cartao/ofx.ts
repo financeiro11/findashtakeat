@@ -24,20 +24,21 @@
  */
 
 import { normalize } from "@/lib/normalize";
+/* O leitor de MEMO mora em `supabase/functions/_shared/cartao-memo.ts`: o mesmo
+   texto precisa ser lido também numa Edge Function (para escrever o nome do
+   lojista de volta no Omie), e um segundo leitor faria as telas discordarem
+   sobre o nome do mesmo lojista. Aqui só se reexporta. */
+import {
+  COL_CAUDA, COL_PARCELA, lerMemo, limparNome, numeroBR,
+  type Exterior, type Memo,
+} from "../../../supabase/functions/_shared/cartao-memo";
+
+export { lerMemo, numeroBR };
+export type { Exterior, Memo };
 
 /* ------------------------------------------------------------------ */
 
 export type SinalLinha = "debito" | "credito";
-
-/** Compra internacional: a cauda do MEMO traz o câmbio da operação. */
-export type Exterior = {
-  /** "ANTHROPIC.COM" — o domínio é o nome mais estável que a fatura oferece. */
-  dominio: string;
-  /** Valor original cobrado pelo lojista, como veio ("R$ 550,00", "US$ 29,00"). */
-  originalTexto: string;
-  valorUsd: number | null;
-  cotacao: number | null;
-};
 
 export type LinhaOfx = {
   /** Id do OFX. É o que impede lançar a mesma compra duas vezes no Omie. */
@@ -118,20 +119,9 @@ function dataOfx(v: string | null): string | null {
 }
 
 /** "2.600,41" → 2600.41 · "5,0297" → 5.0297 */
-export function numeroBR(v: string): number | null {
-  const limpo = v.replace(/[^\d.,-]/g, "").replace(/\./g, "").replace(",", ".");
-  const n = Number(limpo);
-  return Number.isFinite(n) ? n : null;
-}
-
 /* ------------------------------------------------------------------
  * O MEMO
  * ------------------------------------------------------------------ */
-
-const COL_PARCELA = 22;
-const COL_CAUDA = 30;
-
-const ehParcela = (s: string) => /^\d{2}\/\d{2}$/.test(s);
 
 /**
  * Gateways e adquirentes que carimbam o próprio nome na frente do lojista.
@@ -153,26 +143,6 @@ const CODIGO_OPACO = /^(?=[A-Za-z0-9]*\d)(?=[A-Za-z0-9]*[A-Za-z])[A-Za-z0-9]{4,}
 
 const ehTarifa = (nome: string) =>
   /^(IOF|ANUIDADE|DESC ANUIDADE|TARIFA|JUROS|MULTA|ENCARGOS|SEGURO|MENSALIDADE)\b/i.test(nome.trim());
-
-/**
- * Nome de exibição: tira o que a fatura acrescenta e o lojista não tem.
- *
- *  • `(3485)` — final do cartão, só aparece na anuidade.
- *  • O "V" final ("SENTRYV", "NineComercioV", "AMERICANAS SAV") é marcador do
- *    emissor, não do lojista: convivem "ANTHROPICV" e "ANTHROPIC" na mesma
- *    fatura. Só cai quando está grudado numa palavra de 2+ letras, para não
- *    comer o nome de quem realmente termina em V.
- */
-function limparNome(bruto: string): string {
-  // O espaço em branco cai PRIMEIRO: o nome chega com o resto da coluna de 22
-  // caracteres, e "MP*MERCADOLIVREV      " não casa com um `V$`.
-  return bruto
-    .replace(/\s+/g, " ")
-    .trim()
-    .replace(/\s*\(\d{4}\)$/, "")
-    .replace(/(?<=[A-Za-z0-9]{2})V$/, "")
-    .trim();
-}
 
 /**
  * Chave de agrupamento do lojista.
@@ -217,65 +187,6 @@ export function chaveDe(nome: string): string {
   }
 
   return normalize(s);
-}
-
-type Memo = {
-  estabelecimento: string;
-  parcela: { n: number; de: number } | null;
-  cidade: string | null;
-  exterior: Exterior | null;
-};
-
-/** "ANTHROPIC.COM - R$ 550,00    U$ 109,35    V.DOL 5,0297" */
-function lerExterior(cauda: string): Exterior | null {
-  const m = cauda.match(
-    /^(.+?)\s+-\s+((?:R\$|US\$|EUR|€)\s*[\d.,]+)\s+U\$\s*([\d.,]+)\s+V\.DOL\s*([\d.,]+)/i,
-  );
-  if (!m) return null;
-  return {
-    dominio: m[1].trim(),
-    originalTexto: m[2].replace(/\s+/g, " ").trim(),
-    valorUsd: numeroBR(m[3]),
-    cotacao: numeroBR(m[4]),
-  };
-}
-
-export function lerMemo(memo: string): Memo {
-  const monta = (nomeBruto: string, cauda: string): Memo => {
-    const exterior = cauda ? lerExterior(cauda) : null;
-    return {
-      estabelecimento: limparNome(nomeBruto),
-      parcela: null,
-      cidade: exterior ? null : (cauda.trim() || null),
-      exterior,
-    };
-  };
-
-  const naColuna = memo.slice(COL_PARCELA, COL_PARCELA + 5);
-
-  // Caso normal: as colunas conferem (com parcela, ou com a faixa em branco).
-  if (ehParcela(naColuna) || (memo.length > COL_CAUDA && /^\s+$/.test(memo.slice(COL_PARCELA, COL_CAUDA)))) {
-    const r = monta(memo.slice(0, COL_PARCELA), memo.slice(COL_CAUDA));
-    if (ehParcela(naColuna)) {
-      const [n, de] = naColuna.split("/").map(Number);
-      r.parcela = { n, de };
-    }
-    return r;
-  }
-
-  // Fallback da anuidade: `ANUIDADE VISA C      (3485) 07/12`, parcela fora da
-  // coluna. Vale a ÚLTIMA ocorrência — o final do cartão pode parecer NN/NN.
-  const todas = [...memo.matchAll(/(\d{2})\/(\d{2})/g)];
-  const ultima = todas[todas.length - 1];
-  if (ultima?.index !== undefined) {
-    const r = monta(memo.slice(0, ultima.index), memo.slice(ultima.index + 5));
-    r.parcela = { n: Number(ultima[1]), de: Number(ultima[2]) };
-    return r;
-  }
-
-  // Descrição curta do próprio emissor ("IOF OPERACAO EXTERIOR",
-  // "PAGAMENTO-BOLETO BANCARIO"): não tem colunas, o MEMO inteiro é o nome.
-  return monta(memo, "");
 }
 
 /* ------------------------------------------------------------------

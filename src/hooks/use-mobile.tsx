@@ -66,7 +66,7 @@ export function menorLadoDaTelaEmCss(s: Superficie): number {
 }
 
 /**
- * "É uma superfície de celular?" — o que decide, em App.tsx, montar o app das cinco abas
+ * "É uma superfície de celular?" — o que decide, em App.tsx, montar o app das seis abas
  * em vez do Hub de desktop.
  *
  * Quem manda é o tamanho da TELA do aparelho, não o da janela. Três coisas quebraram aqui,

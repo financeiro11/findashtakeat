@@ -52,6 +52,7 @@ export default function MobileChat() {
   const [pensando, setPensando] = useState(false);
   const [conversaId, setConversaId] = useState<string | null>(null);
   const [conversas, setConversas] = useState<Conversa[]>([]);
+  const [erroHistorico, setErroHistorico] = useState<string | null>(null);
   const [historicoAberto, setHistoricoAberto] = useState(false);
   /** Última pergunta que falhou — o botão "Tentar novamente" a reenvia sem redigitar. */
   const [falhou, setFalhou] = useState<{ texto: string; motivo: string; imagens: ImagemAnexada[] } | null>(null);
@@ -68,11 +69,15 @@ export default function MobileChat() {
   useEffect(() => { fim.current?.scrollIntoView({ behavior: "smooth" }); }, [mensagens, pensando]);
 
   async function carregarConversas() {
-    const { data } = await supabase
+    const { data, error } = await supabase
       .from("ai_conversations" as any)
       .select("id,titulo,updated_at")
       .order("updated_at", { ascending: false })
       .limit(50);
+    // A consulta do Supabase não rejeita: sem olhar o `error`, uma policy negando vira
+    // "Nenhuma conversa ainda" — que afirma que a pessoa nunca perguntou nada.
+    if (error) { setErroHistorico(error.message); return; }
+    setErroHistorico(null);
     setConversas(((data as any) ?? []) as Conversa[]);
   }
 
@@ -143,10 +148,18 @@ export default function MobileChat() {
     }
   }
 
-  async function apagarConversa(id: string) {
-    await supabase.from("ai_messages" as any).delete().eq("conversation_id", id);
-    await supabase.from("ai_conversations" as any).delete().eq("id", id);
-    if (id === conversaId) novaConversa();
+  /**
+   * O botão de excluir fica encostado no de abrir, numa lista rolada com o polegar — e
+   * apagar conversa não tem desfazer (as mensagens saem de `ai_messages` de vez). A
+   * pergunta é a mesma que o resto do Hub faz antes de qualquer exclusão.
+   */
+  async function apagarConversa(c: Conversa) {
+    if (!confirm(`Excluir a conversa "${c.titulo}"? As mensagens não voltam.`)) return;
+    const msgs = await supabase.from("ai_messages" as any).delete().eq("conversation_id", c.id);
+    const conv = await supabase.from("ai_conversations" as any).delete().eq("id", c.id);
+    const erro = msgs.error ?? conv.error;
+    if (erro) { toast.error("Não deu para excluir: " + erro.message); return; }
+    if (c.id === conversaId) novaConversa();
     carregarConversas();
   }
 
@@ -470,7 +483,15 @@ export default function MobileChat() {
                 <X className="h-5 w-5" />
               </button>
             </div>
-            {conversas.length === 0 ? (
+            {erroHistorico ? (
+              <div className="mt-3 flex items-start gap-2 rounded-lg border border-destructive/30 bg-destructive/10 p-3 text-[12.5px] text-destructive">
+                <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                <span>
+                  Não deu para ler as conversas.
+                  <span className="mt-0.5 block text-[11.5px] opacity-80">{erroHistorico}</span>
+                </span>
+              </div>
+            ) : conversas.length === 0 ? (
               <p className="py-8 text-center text-[13px] text-muted-foreground">Nenhuma conversa ainda.</p>
             ) : (
               <ul className="mt-2 space-y-1.5">
@@ -481,7 +502,7 @@ export default function MobileChat() {
                       <div className="num mt-0.5 text-[11px] text-muted-foreground">{fmtDataHora(c.updated_at)}</div>
                     </button>
                     <button
-                      onClick={() => apagarConversa(c.id)}
+                      onClick={() => apagarConversa(c)}
                       aria-label={`Excluir ${c.titulo}`}
                       className="flex h-11 w-11 shrink-0 items-center justify-center text-muted-foreground"
                     >

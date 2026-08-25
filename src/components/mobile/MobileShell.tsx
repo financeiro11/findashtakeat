@@ -7,7 +7,7 @@ import { InstalarBanner } from "./InstalarBanner";
 import { NovaVersao } from "@/components/NovaVersao";
 
 /**
- * Moldura do app no celular: cabeçalho fino, conteúdo e a barra de cinco abas.
+ * Moldura do app no celular: cabeçalho fino, conteúdo e a barra de seis abas.
  *
  * A altura é `100dvh` (não `vh`) e a barra é um irmão do conteúdo em flex — não é
  * `position: fixed`. Assim a barra nunca cobre o final da lista, e quando o teclado sobe

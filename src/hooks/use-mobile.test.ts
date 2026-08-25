@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { ehSuperficieDeCelular, escolhaForcada, menorLadoDaTelaEmCss, type Superficie } from "./use-mobile";
 
-// Este predicado decide, em App.tsx, se o que monta é o app das cinco abas ou o Hub de
+// Este predicado decide, em App.tsx, se o que monta é o app das seis abas ou o Hub de
 // desktop inteiro. Errar aqui não deixa a tela feia: troca o aplicativo inteiro — já
 // aconteceu nos dois sentidos (note de tela dividida virando app de celular, celular
 // virando Hub espremido), e é por isso que cada aparelho abaixo tem um teste.

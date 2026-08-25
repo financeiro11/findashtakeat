@@ -12,7 +12,7 @@ import { DesktopOnly } from "./DesktopOnly";
  * sessão vai para /login — e aplica o tema escolhido na aba Perfil.
  *
  * Cargos travados num módulo (parcerias, facilities) não têm app: as telas deles são
- * justamente as que ficaram no computador, e as cinco abas daqui mostram briefing e KPIs
+ * justamente as que ficaram no computador, e as seis abas daqui mostram briefing e KPIs
  * do financeiro. Melhor dizer "abra no computador" do que abrir um app onde a única aba
  * útil é Perfil — ou, pior, mostrar número de caixa para quem não deveria ver.
  */

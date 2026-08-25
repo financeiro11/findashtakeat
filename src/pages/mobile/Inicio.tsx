@@ -6,8 +6,9 @@
 // o errado, porque não conhece as regras de exclusão que as syncs aplicam.
 
 import { useCallback, useEffect, useState } from "react";
+import { Link } from "react-router-dom";
 import ReactMarkdown from "react-markdown";
-import { ChevronDown, CalendarClock, Mail, Newspaper, Sparkles, Landmark, CreditCard, Wallet, Repeat, TrendingDown, AlertTriangle } from "lucide-react";
+import { ChevronDown, ChevronRight, CalendarClock, Mail, Newspaper, Sparkles, Landmark, CreditCard, Wallet, Repeat, TrendingDown, AlertTriangle } from "lucide-react";
 import { supabase } from "@/integrations/supabase/client";
 import { cn } from "@/lib/utils";
 import { useAoVoltar } from "@/hooks/useAoVoltar";
@@ -188,20 +189,16 @@ function CarrosselKpis({ kpis, carregando }: { kpis: CartaoKpi[]; carregando: bo
       {kpis.map((kpi) => {
         const velho = desatualizado(kpi.quando, kpi.janelaHoras);
         const Icone = ICONE_KPI[kpi.chave];
-        return (
-          <div
-            key={kpi.chave}
-            role="listitem"
-            // 78% deixa a borda do próximo card à mostra — é o que sinaliza que a lista rola.
-            className="w-[78%] shrink-0 snap-start rounded-xl border border-border bg-card p-3.5 shadow-sm"
-          >
+        const corpo = (
+          <>
             <div className="flex items-center gap-2">
               <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-primary/10 text-primary">
                 <Icone className="h-4 w-4" />
               </div>
-              <span className="truncate text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+              <span className="min-w-0 flex-1 truncate text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
                 {kpi.rotulo}
               </span>
+              {kpi.destino && <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground" />}
             </div>
             <div className="num mt-2 text-[22px] font-bold leading-none tracking-tight">{kpi.valor}</div>
             <div className="mt-1.5 truncate text-[11.5px] text-muted-foreground">{kpi.detalhe}</div>
@@ -213,6 +210,21 @@ function CarrosselKpis({ kpis, carregando }: { kpis: CartaoKpi[]; carregando: bo
                 </span>
               )}
             </div>
+          </>
+        );
+        // 78% deixa a borda do próximo card à mostra — é o que sinaliza que a lista rola.
+        const classe = "w-[78%] shrink-0 snap-start rounded-xl border border-border bg-card p-3.5 text-left shadow-sm";
+
+        // O saldo de banco leva ao extrato da conta: a pergunta seguinte a "quanto tem" é
+        // sempre "de onde veio". Os outros cartões não têm tela no celular, e por isso não
+        // ganham seta nem viram alvo de toque.
+        return kpi.destino ? (
+          <Link key={kpi.chave} role="listitem" to={kpi.destino} className={cn(classe, "active:bg-secondary/50")}>
+            {corpo}
+          </Link>
+        ) : (
+          <div key={kpi.chave} role="listitem" className={classe}>
+            {corpo}
           </div>
         );
       })}

@@ -1,12 +1,13 @@
 // Aba Notas — lista de `workspace_pages` (o "Anotações" do desktop) navegável por pasta.
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { ChevronRight, Star, Plus, Loader2, FileText, Home } from "lucide-react";
 import { toast } from "sonner";
 import { supabase } from "@/integrations/supabase/client";
 import { cn } from "@/lib/utils";
 import { useAuth } from "@/hooks/useAuth";
+import { useAoVoltar } from "@/hooks/useAoVoltar";
 import { Drawer, DrawerContent, DrawerTitle } from "@/components/ui/drawer";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
@@ -26,12 +27,19 @@ export default function MobileNotas() {
 
   const pastaId = params.get("pasta");
 
-  useEffect(() => {
-    carregarPaginas()
-      .then(setPaginas)
-      .catch((e) => toast.error("Erro ao carregar notas: " + e.message))
-      .finally(() => setCarregando(false));
-  }, []);
+  const buscar = useCallback(
+    () =>
+      carregarPaginas()
+        .then(setPaginas)
+        .catch((e) => toast.error("Erro ao carregar notas: " + e.message))
+        .finally(() => setCarregando(false)),
+    [],
+  );
+
+  useEffect(() => { buscar(); }, [buscar]);
+  // As notas são do time inteiro e mudam no computador enquanto o celular está no bolso —
+  // mesmo motivo de Tarefas e Extratos recarregarem ao voltar.
+  useAoVoltar(buscar);
 
   const porId = useMemo(() => new Map(paginas.map((p) => [p.id, p])), [paginas]);
   const filhos = useMemo(() => {

@@ -1,4 +1,4 @@
-// Fumaça das cinco abas: monta cada tela e confere que a árvore renderiza.
+// Fumaça das seis abas: monta cada tela e confere que a árvore renderiza.
 //
 // Não substitui abrir no celular — efeitos não rodam no renderToStaticMarkup, então o que
 // se vê aqui é o estado inicial. O que ele pega, e que já custou caro, é o erro estrutural:

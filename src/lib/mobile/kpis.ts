@@ -19,6 +19,12 @@ export type CartaoKpi = {
   quando: string | null;
   /** Horas até o dado ser considerado velho. */
   janelaHoras: number;
+  /**
+   * A aba do app que mostra de onde o número saiu, quando existe uma. Saldo de banco tem
+   * (o extrato da conta); caixa, MRR e churn não — as telas deles ficaram no computador, e
+   * um cartão que não leva a lugar nenhum não deve parecer clicável.
+   */
+  destino?: string;
 };
 
 /**
@@ -46,6 +52,7 @@ export function montarKpis({ sicoob, asaas, caixa, assinaturas, churn }: FontesK
       chave: "sicoob", rotulo: "Saldo Sicoob",
       valor: fmtBRL(sicoob.saldo), detalhe: sicoob.conta || "Conta corrente",
       quando: sicoob.atualizado_em ?? null, janelaHoras: JANELA_DIARIA,
+      destino: "/extratos?fonte=sicoob",
     });
   }
   if (asaas) {
@@ -53,6 +60,7 @@ export function montarKpis({ sicoob, asaas, caixa, assinaturas, churn }: FontesK
       chave: "asaas", rotulo: "Saldo Asaas",
       valor: fmtBRL(asaas.saldo), detalhe: asaas.conta || "Conta Asaas",
       quando: asaas.atualizado_em ?? null, janelaHoras: JANELA_DIARIA,
+      destino: "/extratos?fonte=asaas",
     });
   }
   if (caixa?.dados) {

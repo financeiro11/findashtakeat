@@ -53,6 +53,12 @@ export type Provisao = {
   integracao: string;
   estabelecimento: string;
   chave: string;
+  /**
+   * Data ORIGINAL da compra, repetida em todas as parcelas — é ela que o Omie
+   * grava em `data_entrada` e devolve como `dDtRegistro`, o campo de onde a DRE
+   * tira a competência. Ver `montarTitulo` em `_shared/cartao-envio.ts`.
+   */
+  dataCompra: string;
   /** 1º dia da fatura em que esta parcela cai. */
   competencia: string;
   vencimento: string;
@@ -224,9 +230,16 @@ export function vencimentoDe(
  * mês, a partir da fatura atual — é literalmente o "provisionar para frente" que
  * hoje se faz à mão.
  *
- * A COMPETÊNCIA de cada parcela é o mês da fatura em que ela cai, e não o mês da
- * compra. É a prática que já está no Omie para os meses fechados, e mudá-la aqui
- * faria o mês que vem discordar do que a analista lançou no mês passado.
+ * A COMPETÊNCIA de cada parcela é o mês da FATURA em que ela cai, e não o mês da
+ * compra. Ela serve para duas coisas — projetar o vencimento e dizer em que
+ * fatura a parcela aparece —, e NÃO é a competência contábil.
+ *
+ * A contábil é outra e mora no Omie: `data_entrada` (que ele devolve como
+ * `dDtRegistro`) é a data da COMPRA, igual em todas as parcelas, então uma
+ * compra em 12× reconhece o valor cheio na DRE do mês da compra. Conferido nos
+ * títulos reais em 24/08/2026 — os 47 lançamentos registrados em 31/07/2026 têm
+ * vencimento espalhado de 11/08/2026 a 11/01/2027. Quem monta isso é
+ * `montarTitulo` em `_shared/cartao-envio.ts`; aqui não se decide contabilidade.
  *
  * `vencimentoFatura` é o vencimento da fatura ATUAL (a do arquivo); as parcelas
  * seguintes mantêm o mesmo dia nos meses à frente.
@@ -251,6 +264,7 @@ export function expandir(
         integracao: `CARTAO-${l.fitid}-${String(k).padStart(2, "0")}`,
         estabelecimento: l.estabelecimento,
         chave: l.chave,
+        dataCompra: l.data,
         competencia,
         vencimento: vencimentoDe(competencia, vencimentoFatura, competenciaFatura),
         valor: l.valor,

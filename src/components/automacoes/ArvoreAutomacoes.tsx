@@ -25,7 +25,7 @@ import { buscarAutomacoes } from "./arvore-busca";
 import BuscaAutomacoes from "./BuscaAutomacoes";
 import FichaNo from "./FichaNo";
 import EsteiraAutomacoes from "./EsteiraAutomacoes";
-import { criarTarefaDaAutomacao } from "./criar-tarefa";
+import { criarTarefaDaAutomacao, EMBED_TAREFA } from "./criar-tarefa";
 import { canonResp, PESSOAS, AMBOS } from "@/lib/responsavel";
 import takeatSymbol from "@/assets/takeat-symbol-white.png";
 
@@ -46,7 +46,13 @@ import takeatSymbol from "@/assets/takeat-symbol-white.png";
  * sem sair da árvore.
  * ========================================================================== */
 
-const CAMPOS = "id,automacao,categoria,nivel,status,horas_mes,ferramentas,responsavel,impacto,esforco,dor,solucao,observacao,upgrade,depende_de,pos_x,pos_y,icone,ordem,esteira_ordem,esteira_upgrade,tarefa_id";
+/* O `EMBED_TAREFA` no fim traz a tarefa vinculada junto, numa viagem só: é o
+   ESTADO dela — e não a existência do `tarefa_id` — que diz se a automação já
+   tem trabalho aberto. Arquivar uma tarefa não apaga a linha, então sem isto a
+   ficha ofereceria "ver a tarefa" sobre algo que sumiu do quadro. */
+// Template literal e não `+`: concatenar com `+` devolve `string` solto e o
+// supabase-js para de conferir os nomes das colunas contra o types.ts.
+const CAMPOS = `id,automacao,categoria,nivel,status,horas_mes,ferramentas,responsavel,impacto,esforco,dor,solucao,observacao,upgrade,depende_de,pos_x,pos_y,icone,ordem,esteira_ordem,esteira_upgrade,tarefa_id,${EMBED_TAREFA}` as const;
 
 /* A escolha de recolher as trilhas fica salva por navegador — é preferência de
    quem está olhando, não dado do catálogo. */

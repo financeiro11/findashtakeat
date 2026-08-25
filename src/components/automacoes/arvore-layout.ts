@@ -6,6 +6,10 @@
  * testar sem montar o React. Ver ArvoreAutomacoes.test.ts.
  * ========================================================================== */
 
+// `import type` de propósito: apaga na compilação, então este módulo continua
+// puro — criar-tarefa.ts arrasta supabase e sonner, que não entram num teste.
+import type { TarefaVinculada } from "./criar-tarefa";
+
 export type Automacao = {
   id: string;
   automacao: string;
@@ -29,6 +33,13 @@ export type Automacao = {
   esteira_upgrade?: boolean | null;
   /** tarefa aberta em /tarefas para construir isto — null enquanto ninguém começou */
   tarefa_id?: string | null;
+  /**
+   * A tarefa em si, lida junto pelo `EMBED_TAREFA`. Quem responde "já tem
+   * trabalho aberto?" é ela, e não o `tarefa_id`: arquivar não apaga a linha, o
+   * `on delete set null` não dispara, e o id fica apontando para uma tarefa que
+   * já saiu do quadro. Ver `tarefaViva` em criar-tarefa.ts.
+   */
+  tarefa?: TarefaVinculada | TarefaVinculada[] | null;
   depende_de?: string | null;
   pos_x?: number | null;
   pos_y?: number | null;

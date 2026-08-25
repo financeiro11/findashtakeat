@@ -5,6 +5,7 @@ import {
   type NoPos, type Nivel,
 } from "./arvore-layout";
 import { quadranteDe } from "./esteira";
+import { tarefaDe, tarefaViva } from "./criar-tarefa";
 import { canonResp, PESSOAS, AMBOS } from "@/lib/responsavel";
 
 /* ---------------------------------------------------------------------------
@@ -51,6 +52,18 @@ export default function FichaNo({
   const donoServe = !!dono && dono !== AMBOS;
   const [perguntando, setPerguntando] = useState(false);
   const [criando, setCriando] = useState(false);
+
+  /* Tem trabalho aberto? Pergunta-se à TAREFA, não ao `tarefa_id`.
+     `/tarefas` arquiva em vez de apagar, então o vínculo sobrevive à tarefa
+     sair do quadro; quem apagou espera a automação de volta na fila, e é isso
+     que `tarefaViva` devolve — a mesma regra que a RPC já usava para gravar. */
+  const tarefa = tarefaDe(n.r);
+  const viva = tarefaViva(tarefa);
+  /* Houve uma tarefa e ela saiu do quadro. Dizer o que aconteceu evita a
+     pergunta "eu não tinha aberto isso já?" na frente do botão verde. */
+  const anterior = !viva && tarefa
+    ? tarefa.arquivada_em ? "arquivada" : "concluída"
+    : null;
 
   const criar = async (resp: string) => {
     if (!onCriarTarefa) return;
@@ -199,7 +212,7 @@ export default function FichaNo({
       {/* --- vira trabalho no quadro --- */}
       {(onCriarTarefa || onVerTarefa) && (
         <div className="mt-2.5">
-          {n.r.tarefa_id ? (
+          {viva ? (
             <button
               onClick={onVerTarefa}
               className="inline-flex w-full items-center justify-center gap-1.5 rounded border border-sky-500/40 bg-sky-500/10 px-2 py-1.5 text-[10.5px] font-semibold text-sky-400 transition hover:bg-sky-500/20"
@@ -232,15 +245,28 @@ export default function FichaNo({
               </div>
             </div>
           ) : (
-            <button
-              disabled={criando}
-              onClick={() => (donoServe ? criar(dono!) : setPerguntando(true))}
-              className="inline-flex w-full items-center justify-center gap-1.5 rounded border border-emerald-500/40 bg-emerald-500/10 px-2 py-1.5 text-[10.5px] font-semibold text-emerald-400 transition hover:bg-emerald-500/20 disabled:opacity-50"
-            >
-              {criando
-                ? <><Loader2 className="h-3 w-3 animate-spin" /> Abrindo…</>
-                : <><ClipboardPlus className="h-3 w-3" /> Começar — criar tarefa{donoServe ? ` para ${dono}` : ""}</>}
-            </button>
+            <>
+              <button
+                disabled={criando}
+                onClick={() => (donoServe ? criar(dono!) : setPerguntando(true))}
+                className="inline-flex w-full items-center justify-center gap-1.5 rounded border border-emerald-500/40 bg-emerald-500/10 px-2 py-1.5 text-[10.5px] font-semibold text-emerald-400 transition hover:bg-emerald-500/20 disabled:opacity-50"
+              >
+                {criando
+                  ? <><Loader2 className="h-3 w-3 animate-spin" /> Abrindo…</>
+                  : <><ClipboardPlus className="h-3 w-3" /> {anterior ? "Começar de novo" : "Começar"} — criar tarefa{donoServe ? ` para ${dono}` : ""}</>}
+              </button>
+              {anterior && (
+                <div className="mt-1 text-center text-[9.5px] leading-tight text-slate-600">
+                  A tarefa anterior foi {anterior}
+                  {/* Arquivada some das listas de /tarefas — mandar clicar num
+                      link que não acha nada seria pior que não oferecer. */}
+                  {anterior === "concluída" && onVerTarefa && (
+                    <> — <button onClick={onVerTarefa} className="underline decoration-dotted underline-offset-2 transition hover:text-slate-400">ver</button></>
+                  )}
+                  .
+                </div>
+              )}
+            </>
           )}
         </div>
       )}

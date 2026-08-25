@@ -20,14 +20,22 @@
  * ========================================================================== */
 
 import { normalize } from "@/lib/normalize";
-import { classificaSicoob, eCredito, lerContraparte, SIC_META } from "@/lib/extratoNatureza";
+import {
+  classificaSicoob, comNomeDoCadastro, eCredito, fmtDocumento, lerContraparte,
+  SIC_META, tituloDoExtrato,
+} from "@/lib/extratoNatureza";
+
+/* A formatação do documento mora com o parser que o extrai, e é reexportada
+   daqui porque a tela do celular sempre a importou deste módulo. */
+export { fmtDocumento };
 
 export type FonteKey = "cartao" | "sicoob" | "asaas";
 
-export const FONTES: { key: FonteKey; nome: string; tabela: string }[] = [
-  { key: "cartao", nome: "Cartão", tabela: "cartao_lancamentos" },
-  { key: "sicoob", nome: "Sicoob", tabela: "sicoob_extrato" },
-  { key: "asaas", nome: "Asaas", tabela: "asaas_extrato" },
+/** `saldo` é a tabela de saldo da conta — o cartão não tem uma (a fatura É o saldo). */
+export const FONTES: { key: FonteKey; nome: string; tabela: string; saldo: string | null }[] = [
+  { key: "cartao", nome: "Cartão", tabela: "cartao_lancamentos", saldo: null },
+  { key: "sicoob", nome: "Sicoob", tabela: "sicoob_extrato", saldo: "sicoob_saldo" },
+  { key: "asaas", nome: "Asaas", tabela: "asaas_extrato", saldo: "asaas_saldo" },
 ];
 
 export const ehFonte = (v: string | null | undefined): v is FonteKey =>
@@ -40,8 +48,10 @@ export type LinhaExtrato = {
   data: string | null;
   /** O nome que se procura: lojista no cartão, contraparte ou histórico no banco. */
   titulo: string;
-  /** A segunda linha do card — o texto cru de onde o título saiu, quando difere. */
+  /** A segunda linha do card — o texto cru que identifica a contraparte, quando difere. */
   detalhe: string | null;
+  /** CPF/CNPJ da contraparte, já formatado. É por ele que a Parametrização dá o nome. */
+  documento: string | null;
   /** Sempre >= 0. O sinal está em `entrada`. */
   valor: number;
   entrada: boolean;
@@ -159,6 +169,7 @@ export function normalizarCartao(l: LinhaCartao): LinhaExtrato {
     data: l.data,
     titulo: l.estabelecimento,
     detalhe,
+    documento: null, // o OFX não traz CNPJ: no cartão quem casa com o cadastro é o nome
     valor,
     entrada,
     cat: l.categoria,
@@ -188,6 +199,11 @@ export type LinhaBanco = {
  * financialTransactions não a traz), então lá o título é o próprio histórico; sem
  * esse fallback a lista inteira ficaria sem nome.
  *
+ * O rótulo da operação ("Pagamento Pix") vem ANTES do histórico na escada de fallback
+ * porque é o que a pessoa reconhece: o histórico do mesmo lançamento é "PIX EMITIDO OUTRA
+ * IF". Nos dois casos é um título que não diz quem recebeu — quem resolve isso é
+ * `nomearContrapartes`, pelo CNPJ.
+ *
  * A busca varre o texto CRU, não o desmontado: se o parser errar num caso que
  * ainda não vimos, o lançamento continua achável pelo que o banco escreveu.
  */
@@ -196,8 +212,8 @@ export function normalizarBanco(l: LinhaBanco): LinhaExtrato {
   const entrada = eCredito(l.tipo);
   const cat = classificaSicoob(l.historico, entrada);
   const cp = lerContraparte(l.contraparte_nome);
-  const titulo = (cp.nome || l.historico || cp.operacao || "Sem descrição").trim();
-  const documento = cp.documento || l.contraparte_documento;
+  const titulo = tituloDoExtrato(cp, l.historico) || "Sem descrição";
+  const documento = fmtDocumento(cp.documento || l.contraparte_documento);
 
   const campos: [string, string][] = [];
   if (l.data_movimento) campos.push(["Data", fmtDia(l.data_movimento)]);
@@ -213,9 +229,12 @@ export function normalizarBanco(l: LinhaBanco): LinhaExtrato {
     id: l.id,
     data: l.data_movimento,
     titulo,
-    // O histórico só vira segunda linha quando o título veio da contraparte —
-    // senão o card repetiria a mesma frase duas vezes (o caso do Asaas).
-    detalhe: cp.nome && l.historico ? l.historico : null,
+    // A linha de apoio é o que IDENTIFICA a contraparte, não o que já está no título: o
+    // CNPJ quando ele existe (é ele que se procura no Omie), e o histórico só quando não
+    // há CNPJ nem repetição do título — senão o card diria a mesma frase duas vezes, que
+    // é o caso do Asaas.
+    detalhe: documento ?? (l.historico && normalize(l.historico) !== normalize(titulo) ? l.historico : null),
+    documento,
     valor,
     entrada,
     cat,
@@ -223,10 +242,52 @@ export function normalizarBanco(l: LinhaBanco): LinhaExtrato {
     catDot: SIC_META[cat].dot,
     campos,
     busca: textoBusca(
-      [l.historico, l.contraparte_nome, cp.nome, documento, l.numero_documento, SIC_META[cat].rot],
+      [l.historico, l.contraparte_nome, cp.nome, cp.operacao, documento, l.numero_documento, SIC_META[cat].rot],
       valor,
     ),
   };
+}
+
+/* --------------------------- nome da contraparte --------------------------- */
+
+/**
+ * Põe o nome do cadastro (Configurações › Parametrização) no lugar do rótulo que o banco
+ * mandou.
+ *
+ * É a razão de a aba existir: no extrato do Sicoob 248 das 303 linhas de agosto são
+ * "Pagamento Pix", porque o banco manda o rótulo da operação e o CNPJ — nunca o nome. Quem
+ * sabe traduzir CNPJ em nome é o cadastro, que hoje cobre 155 dos 166 CNPJs que apareceram
+ * no extrato. No cartão o casamento é pelo nome, e as grafias alternativas resolvem os
+ * lojistas que o OFX corta em 20 caracteres.
+ *
+ * Fica FORA da normalização, num passo próprio, porque o cadastro chega assíncrono: as
+ * linhas já estão na tela quando o mapa termina de carregar, e refazer a normalização
+ * inteira só para trocar um nome custaria uma releitura do extrato a cada carga.
+ *
+ * A busca ganha o nome novo sem perder o velho — quem digita "Flash" e quem digita o CNPJ
+ * acham a mesma linha (a convenção do CLAUDE.md: incluir o apelido no texto que a busca
+ * varre, senão a linha some do filtro pelo nome que está escrito nela).
+ */
+export function nomearContrapartes(
+  linhas: LinhaExtrato[],
+  nomeDoCadastro: (nome: string, documento: string | null) => string | null,
+): LinhaExtrato[] {
+  return linhas.map((l) => {
+    // A regra dos dois degraus (apelido em cima, cru embaixo) mora em
+    // `extratoNatureza`, com a do desktop — duas cópias divergiriam no primeiro ajuste.
+    const { titulo, apoio, trocado } = comNomeDoCadastro(
+      l.titulo, l.detalhe, nomeDoCadastro(l.titulo, l.documento),
+    );
+    if (!trocado) return l;
+
+    return {
+      ...l,
+      titulo,
+      detalhe: apoio,
+      campos: [["Contraparte no cadastro", titulo], ...l.campos],
+      busca: `${l.busca} ${normalize(titulo)}`.trim(),
+    };
+  });
 }
 
 /* -------------------------------- filtro --------------------------------- */

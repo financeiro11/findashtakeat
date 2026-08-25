@@ -1,10 +1,18 @@
 import { Fragment, useEffect, useMemo, useState } from "react";
+import { Link } from "react-router-dom";
 import { supabase } from "@/integrations/supabase/client";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import { Loader2, AlertTriangle, Search, RefreshCw } from "lucide-react";
-import { classificaSicoob, eCredito, ORDEM_SIC, SIC_META, type SicKey } from "@/lib/extratoNatureza";
+import {
+  classificaSicoob, comNomeDoCadastro, eCredito, fmtDocumento, lerContraparte,
+  ORDEM_SIC, SIC_META, tituloDoExtrato, type SicKey,
+} from "@/lib/extratoNatureza";
 import { ASAAS_META, classificaAsaas, resumirAsaas } from "@/lib/extratoAsaas";
+import { normalize } from "@/lib/normalize";
+import { apelidoDe, nomeDoCadastro } from "@/lib/apelidos";
+import { useApelidos } from "@/hooks/useApelidos";
+import { useNomesContraparte, type FonteNome } from "@/hooks/useNomesContraparte";
 
 /* Extrato de conta corrente de um banco (Sicoob / Asaas), na página própria aberta
    pelo seletor do Caixa. Cada fonte tem duas tabelas de mesmo formato, populadas por
@@ -35,6 +43,10 @@ const diaSemana = (d?: string | null) => {
   const dt = new Date(d.slice(0, 10) + "T12:00:00");
   return dt.toLocaleDateString("pt-BR", { weekday: "long" });
 };
+/* O histórico só vale a linha de apoio quando diz outra coisa que o título —
+   senão o card repete a mesma frase duas vezes. */
+const outroTexto = (h?: string | null, titulo?: string) =>
+  h && normalize(h) !== normalize(titulo ?? "") ? h : null;
 
 /* ------------------------------ types (loose) ------------------------------ */
 type Saldo = {
@@ -54,6 +66,29 @@ type Lancamento = {
   contraparte_nome: string | null;
   contraparte_documento: string | null;
   numero_documento: string | null;
+};
+
+/** A linha depois de o pacote do banco ser desmontado e o cadastro opinar. */
+type LinhaNomeada = Lancamento & {
+  /** O que vai na linha de cima: o nome do cadastro, ou o que o banco escreveu. */
+  titulo: string;
+  /** A linha de apoio: o que identifica a contraparte no Omie. */
+  apoio: string | null;
+  /** CPF/CNPJ formatado, quando o pacote traz um. */
+  documento: string | null;
+  /** De onde veio o nome; `null` quando é o próprio extrato falando. */
+  fonte: FonteNome | null;
+  /** Casado pelos seis dígitos de um CPF mascarado — é um palpite, e a tela diz. */
+  aproximado: boolean;
+  /** Texto normalizado que a busca varre, pré-computado. */
+  busca: string;
+};
+
+/** Como cada cadastro se chama na tela e no CSV. */
+const ROTULO_FONTE: Record<FonteNome, string> = {
+  apelido: "apelido da Parametrização",
+  cadastro: "razão social do cadastro",
+  omie: "cadastro do Omie",
 };
 
 type FiltroTipo = "todos" | "credito" | "debito";
@@ -230,19 +265,95 @@ export default function ContaCorrenteBancaria({ banco }: { banco: FonteCCKey }) 
     return Date.now() - new Date(saldo.atualizado_em).getTime() > 24 * 60 * 60 * 1000;
   }, [saldo]);
 
+  /* ---------------------- quem está do outro lado ----------------------
+   * O Sicoob não manda o nome de quem recebeu: `contraparte_nome` vem
+   * "Pagamento Pix|@46.235.634 0001-24|@" — o rótulo da operação e o CNPJ, e
+   * nada mais, em 603 dos 746 débitos do extrato. Aqui o pacote é desmontado e o
+   * documento vira nome, por dois cadastros: o da Parametrização (que já está na
+   * memória do navegador) e o do Omie (que precisa de uma pergunta ao Postgres,
+   * porque mora em `omie_cache` e a tela não enxerga aquela tabela).
+   *
+   * Em DOIS PASSOS porque os dois cadastros chegam assíncronos: o extrato
+   * aparece com o nome que o banco mandou e as linhas trocam sozinhas quando o
+   * cadastro volta. Refazer a leitura do pacote junto seria varrer o extrato
+   * inteiro de novo só para trocar um texto.
+   */
+  const lidos = useMemo(
+    () =>
+      extrato.map((m) => {
+        const cp = lerContraparte(m.contraparte_nome);
+        return {
+          m,
+          documento: fmtDocumento(cp.documento || m.contraparte_documento),
+          cru: tituloDoExtrato(cp, m.historico) || "Lançamento",
+        };
+      }),
+    [extrato],
+  );
+
+  const documentos = useMemo(() => lidos.map((l) => l.documento), [lidos]);
+  const apelidos = useApelidos();
+  const doErp = useNomesContraparte(documentos);
+
+  const nomeados = useMemo<LinhaNomeada[]>(
+    () =>
+      lidos.map(({ m, documento, cru }) => {
+        // O cadastro local primeiro: é lá que está o APELIDO, o nome que a
+        // empresa usa. O Omie entra onde ele ainda não chegou — são ~300 linhas
+        // contra ~7.000, e contraparte nova aparece no ERP antes de alguém a
+        // nomear na Parametrização.
+        const local = nomeDoCadastro(apelidos, cru, documento);
+        const erp = documento ? doErp.get(documento) : undefined;
+        const { titulo, apoio, trocado } = comNomeDoCadastro(cru, null, local ?? erp?.nome ?? null);
+
+        const fonte: FonteNome | null = !trocado
+          ? null
+          : apelidoDe(apelidos, cru, documento)
+            ? "apelido"
+            : local
+              ? "cadastro"
+              : erp?.fonte ?? null;
+
+        return {
+          ...m,
+          titulo,
+          // A linha de apoio é o que IDENTIFICA a contraparte, não o que já está
+          // no título: o nome cru quando o título deixou de ser ele, o documento
+          // (é ele que se procura no Omie) e o histórico do banco.
+          apoio: [apoio, documento, outroTexto(m.historico, titulo)].filter(Boolean).join(" · ") || null,
+          documento,
+          fonte,
+          // Só marca o palpite quando ele É o que está escrito na linha.
+          aproximado: trocado && !local && !!erp?.aproximado,
+          // A busca varre o texto CRU junto com o nome novo — quem digita "Flash"
+          // e quem digita o CNPJ acham a mesma linha. Os dígitos do documento
+          // entram soltos porque `normalize` transforma a pontuação em espaço, e
+          // ninguém procura CNPJ em pedaços.
+          busca: [
+            normalize([titulo, apoio, m.historico, m.contraparte_nome, m.numero_documento, documento]
+              .filter(Boolean).join(" ")),
+            (documento ?? "").replace(/\D/g, ""),
+          ].filter(Boolean).join(" "),
+        };
+      }),
+    [lidos, apelidos, doErp],
+  );
+
   // Saldo corrido: o mais recente carrega o saldo atual da conta; os anteriores
   // são reconstruídos desfazendo cada lançamento.
   const comSaldo = useMemo(() => {
     let corrente = saldo?.saldo ?? 0;
-    return extrato.map((m) => {
+    return nomeados.map((m) => {
       const linha = { ...m, saldoApos: corrente };
       corrente -= (eCredito(m.tipo) ? 1 : -1) * (m.valor ?? 0);
       return linha;
     });
-  }, [extrato, saldo]);
+  }, [nomeados, saldo]);
 
   const filtrado = useMemo(() => {
-    const q = busca.trim().toLowerCase();
+    // Por TERMO, e não por trecho: quem procura de memória raramente acerta a
+    // ordem das palavras — a mesma regra do drill-down da DRE.
+    const termos = normalize(busca).split(" ").filter(Boolean);
     const de =
       periodo === "hoje" ? hojeISO()
       : periodo === "7d" ? menosDias(7)
@@ -254,7 +365,7 @@ export default function ContaCorrenteBancaria({ banco }: { banco: FonteCCKey }) 
       if (de && dm < de) return false;
       if (tipo === "credito" && !eCredito(m.tipo)) return false;
       if (tipo === "debito" && eCredito(m.tipo)) return false;
-      if (q && !`${m.historico ?? ""} ${m.contraparte_nome ?? ""} ${m.numero_documento ?? ""}`.toLowerCase().includes(q)) return false;
+      if (termos.length && !termos.every((t) => m.busca.includes(t))) return false;
       return true;
     });
   }, [comSaldo, periodo, tipo, busca]);
@@ -304,6 +415,21 @@ export default function ContaCorrenteBancaria({ banco }: { banco: FonteCCKey }) 
     return map;
   }, [filtrado]);
 
+  /* Quanto da lista já sabe dizer o próprio nome.
+     As três primeiras contam LANÇAMENTOS (é o que se vê na tela); a última conta
+     DOCUMENTOS DISTINTOS, porque é o tamanho do trabalho que falta — cadastrar
+     um CNPJ resolve todas as linhas dele de uma vez. */
+  const cobertura = useMemo(() => {
+    const c = { apelido: 0, cadastro: 0, omie: 0, semDocumento: 0 };
+    const faltando = new Set<string>();
+    for (const m of filtrado) {
+      if (m.fonte) c[m.fonte]++;
+      else if (m.documento) faltando.add(m.documento);
+      else c.semDocumento++;
+    }
+    return { ...c, faltando: faltando.size, nomeados: c.apelido + c.cadastro + c.omie };
+  }, [filtrado]);
+
   const totalPaginas = Math.max(1, Math.ceil(filtrado.length / porPagina));
   const pagAtual = Math.min(paginaAtual, totalPaginas);
   const inicio = (pagAtual - 1) * porPagina;
@@ -323,10 +449,14 @@ export default function ContaCorrenteBancaria({ banco }: { banco: FonteCCKey }) 
   }
 
   function exportarCSV() {
+    // O nome do cadastro vai numa coluna PRÓPRIA, ao lado do texto cru: a
+    // planilha é conferida contra o Omie, e lá o que se procura é o cru.
     const linhas = [
-      ["Data", "Lançamento", "Contraparte", "Documento", "Tipo", "Valor", "Saldo após"],
+      ["Data", "Lançamento", "Contraparte", "Origem do nome", "Contraparte (extrato)", "CPF/CNPJ", "Documento", "Tipo", "Valor", "Saldo após"],
       ...filtrado.map((m) => [
-        fmtData(m.data_movimento), m.historico ?? "", m.contraparte_nome ?? "", m.numero_documento ?? "",
+        fmtData(m.data_movimento), m.historico ?? "", m.titulo,
+        m.fonte ? ROTULO_FONTE[m.fonte] + (m.aproximado ? " (aproximado)" : "") : "extrato",
+        m.contraparte_nome ?? "", m.documento ?? "", m.numero_documento ?? "",
         eCredito(m.tipo) ? "Crédito" : "Débito", String(m.valor ?? 0), String(m.saldoApos ?? ""),
       ]),
     ];
@@ -475,6 +605,34 @@ export default function ContaCorrenteBancaria({ banco }: { banco: FonteCCKey }) 
 
         {barraFiltros}
 
+        {/* De onde saíram os nomes desta lista. Uma linha, porque a pergunta que
+            ela responde é "dá para confiar no que está escrito?" — e a resposta
+            útil é quantos documentos ainda não estão em cadastro nenhum. */}
+        {!loading && (cobertura.nomeados > 0 || cobertura.faltando > 0) && (
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-1 border-b border-border bg-secondary/30 px-4 py-1.5 text-[11px] text-muted-foreground">
+            <span className="text-foreground">
+              <b className="num">{cobertura.nomeados}</b> de{" "}
+              <span className="num">{filtrado.length}</span> lançamentos com nome de cadastro
+            </span>
+            {cobertura.apelido > 0 && <span><span className="num">{cobertura.apelido}</span> por apelido</span>}
+            {cobertura.cadastro > 0 && <span><span className="num">{cobertura.cadastro}</span> por razão social</span>}
+            {cobertura.omie > 0 && <span><span className="num">{cobertura.omie}</span> pelo cadastro do Omie</span>}
+            {cobertura.semDocumento > 0 && (
+              <span title="Boleto, tributo e débito em conta não trazem CPF/CNPJ — não há por onde casar.">
+                <span className="num">{cobertura.semDocumento}</span> sem documento no extrato
+              </span>
+            )}
+            {cobertura.faltando > 0 && (
+              <Link
+                to="/configuracoes/parametrizacao"
+                className="ml-auto underline decoration-dotted underline-offset-2 hover:text-foreground"
+              >
+                <span className="num">{cobertura.faltando}</span> CPF/CNPJ sem cadastro — nomear na Parametrização
+              </Link>
+            )}
+          </div>
+        )}
+
         {/* Feed */}
         <div className="max-h-[560px] overflow-auto">
           <table className="w-full text-[12.5px]">
@@ -524,9 +682,19 @@ export default function ContaCorrenteBancaria({ banco }: { banco: FonteCCKey }) 
                         </span>
                       </td>
                       <td className="px-2 py-2">
-                        <div className="truncate font-medium text-foreground">{m.contraparte_nome || m.historico || "Lançamento"}</div>
-                        {m.contraparte_nome && m.historico && (
-                          <div className="truncate text-[11.5px] text-muted-foreground">{m.historico}</div>
+                        <div className="flex items-center gap-1.5">
+                          <span className="truncate font-medium text-foreground" title={m.titulo}>{m.titulo}</span>
+                          {m.aproximado && (
+                            <span
+                              className="shrink-0 text-[11px] text-amber-600 dark:text-amber-400"
+                              title="Nome casado pelos seis dígitos visíveis do CPF — confira antes de usar."
+                            >
+                              ≈
+                            </span>
+                          )}
+                        </div>
+                        {m.apoio && (
+                          <div className="truncate text-[11.5px] text-muted-foreground" title={m.apoio}>{m.apoio}</div>
                         )}
                       </td>
                       <td className="num whitespace-nowrap px-2 py-2 text-[11.5px] text-muted-foreground">{m.numero_documento || "—"}</td>

@@ -14,15 +14,19 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "react-router-dom";
-import { AlertTriangle, Calendar, ChevronDown, Loader2, Search, X } from "lucide-react";
+import { AlertTriangle, Calendar, ChevronDown, Loader2, RefreshCw, Search, X } from "lucide-react";
 import { supabase } from "@/integrations/supabase/client";
 import { cn } from "@/lib/utils";
 import { useAoVoltar } from "@/hooks/useAoVoltar";
+import { useApelidos } from "@/hooks/useApelidos";
+import { useNomesContraparte } from "@/hooks/useNomesContraparte";
+import { nomeDoCadastro } from "@/lib/apelidos";
 import { Drawer, DrawerContent, DrawerTitle } from "@/components/ui/drawer";
-import { fmtBRL } from "@/lib/mobile/formato";
+import { desatualizado, fmtBRL, fmtDataHora } from "@/lib/mobile/formato";
 import {
   agruparPorDia, categoriasDe, ehFonte, filtrar, fmtDia, FONTES, limitesDoMes, mesAtual, mesDe,
-  normalizarBanco, normalizarCartao, rotuloDia, rotuloMes, rotuloMesLongo, totais, ultimosMeses,
+  nomearContrapartes, normalizarBanco, normalizarCartao, rotuloDia, rotuloMes, rotuloMesLongo,
+  totais, ultimosMeses,
   type FonteKey, type LinhaExtrato,
 } from "@/lib/mobile/extratos";
 
@@ -39,9 +43,11 @@ type Estado = {
   /** Data do lançamento mais novo da fonte inteira — denuncia sync parada. */
   ultimoDado: string | null;
   truncado: boolean;
+  /** Saldo ATUAL da conta, não o do mês em foco. Null no cartão. */
+  saldo: { valor: number; atualizado: string | null } | null;
 };
 
-const VAZIO: Estado = { linhas: [], meses: [], ultimoDado: null, truncado: false };
+const VAZIO: Estado = { linhas: [], meses: [], ultimoDado: null, truncado: false, saldo: null };
 
 export default function MobileExtratos() {
   const [params, setParams] = useSearchParams();
@@ -69,12 +75,12 @@ export default function MobileExtratos() {
     setCarregando(true);
     setErro(null);
     try {
-      const { meses, ultimoDado } = await carregarMeses(fonte);
+      const [{ meses, ultimoDado }, saldo] = await Promise.all([carregarMeses(fonte), carregarSaldo(fonte)]);
       // Sem `?mes=` a tela escolhe: o mais recente com dado, ou o mês corrente se a
       // fonte estiver vazia (aí o "nenhum lançamento" é a resposta certa).
       const mes = mesUrl || meses[0] || mesAtual();
       const { linhas, truncado } = await carregarLinhas(fonte, mes);
-      setEstado({ linhas, meses: meses.includes(mes) ? meses : [mes, ...meses], ultimoDado, truncado });
+      setEstado({ linhas, meses: meses.includes(mes) ? meses : [mes, ...meses], ultimoDado, truncado, saldo });
     } catch (e: any) {
       // Consulta do Supabase não rejeita sozinha — sem checar `error`, uma policy negando
       // vira "nenhum lançamento neste mês", que é mentira e ninguém investiga.
@@ -90,9 +96,22 @@ export default function MobileExtratos() {
 
   const mes = mesUrl || estado.meses[0] || mesAtual();
 
+  // O cadastro da Parametrização chega assíncrono e num cache de módulo: enquanto ele não
+  // volta, as linhas ficam com o nome que o banco mandou e trocam sozinhas quando chega.
+  // O do Omie vem pela RPC, e entra onde a Parametrização ainda não chegou — mesma ordem
+  // da conta corrente do desktop.
+  const apelidos = useApelidos();
+  const documentos = useMemo(() => estado.linhas.map((l) => l.documento), [estado.linhas]);
+  const doErp = useNomesContraparte(documentos);
+  const linhas = useMemo(
+    () => nomearContrapartes(estado.linhas, (nome, doc) =>
+      nomeDoCadastro(apelidos, nome, doc) ?? (doc ? doErp.get(doc)?.nome ?? null : null)),
+    [estado.linhas, apelidos, doErp],
+  );
+
   const porTipo = useMemo(
-    () => (tipo === "todos" ? estado.linhas : estado.linhas.filter((l) => l.entrada === (tipo === "entrada"))),
-    [estado.linhas, tipo],
+    () => (tipo === "todos" ? linhas : linhas.filter((l) => l.entrada === (tipo === "entrada"))),
+    [linhas, tipo],
   );
   // Os chips refletem a busca, mas não a si mesmos: filtrar por "Marketing" não pode
   // apagar os outros chips da faixa, senão não há como trocar de categoria sem limpar.
@@ -197,8 +216,11 @@ export default function MobileExtratos() {
             <div className="grid grid-cols-3 divide-x divide-border rounded-xl border border-border bg-card py-2.5">
               <Total rotulo={rotEntrada} valor={soma.entradas} classe="text-pos" />
               <Total rotulo={rotSaida} valor={soma.saidas} classe="text-neg" />
+              {/* "Resultado", e não "Saldo": este número é o do MÊS em foco, e o saldo da
+                  conta (que é o que a palavra sugere) é o da linha logo abaixo. Chamar os
+                  dois de saldo é como alguém lê −R$ 18 mil e acha que a conta está negativa. */}
               <Total
-                rotulo={fonte === "cartao" ? "Fatura" : "Saldo"}
+                rotulo={fonte === "cartao" ? "Fatura" : "Resultado"}
                 valor={fonte === "cartao" ? soma.saidas - soma.entradas : soma.saldo}
                 classe=""
               />
@@ -208,6 +230,25 @@ export default function MobileExtratos() {
               {estado.linhas.length === 1 ? "lançamento" : "lançamentos"} em {rotuloMesLongo(mes)}
               {filtrando ? "" : " · sem filtro"}
             </p>
+            {estado.saldo && (
+              <p className="mt-1 px-0.5 text-[11.5px] text-muted-foreground">
+                Saldo em conta{" "}
+                <b className={cn("num", estado.saldo.valor >= 0 ? "text-pos" : "text-neg")}>
+                  {fmtBRL(estado.saldo.valor)}
+                </b>
+                {/* Mesma janela de 48h do cartão de KPI da aba Início: saldo é cron
+                    diário, e um saldo de três dias atrás lido como o de hoje é pior do
+                    que não mostrar saldo nenhum. */}
+                <span
+                  className={cn(
+                    "num",
+                    desatualizado(estado.saldo.atualizado) && "text-amber-600 dark:text-amber-400",
+                  )}
+                >
+                  {" "}· {fmtDataHora(estado.saldo.atualizado)}
+                </span>
+              </p>
+            )}
           </div>
 
           {estado.truncado && (
@@ -217,7 +258,9 @@ export default function MobileExtratos() {
             </Aviso>
           )}
           {fonte !== "cartao" && estado.ultimoDado && diasAtras(estado.ultimoDado) > 2 && (
-            <Aviso tom="alerta">
+            // Tocável: no app instalado não existe F5, e um aviso de sync parada sem nenhum
+            // botão só serve para a pessoa fechar o app e abrir de novo.
+            <Aviso tom="alerta" onTocar={buscar}>
               Última movimentação registrada em {fmtDia(estado.ultimoDado)} — a sincronização parece parada.
             </Aviso>
           )}
@@ -259,9 +302,16 @@ export default function MobileExtratos() {
                         >
                           <span className="min-w-0 flex-1">
                             <span className="block truncate text-[14px] font-medium">{l.titulo}</span>
+                            {/* Natureza + o texto cru da contraparte. O cru é o que se
+                                procura no Omie, e é ele que some quando o apelido assume o
+                                título — por isso continua escrito aqui. */}
                             <span className="mt-0.5 flex items-center gap-1.5 text-[11.5px] text-muted-foreground">
                               {l.catDot && <span className={cn("h-1.5 w-1.5 shrink-0 rounded-full", l.catDot)} />}
-                              <span className="truncate">{l.catRotulo}</span>
+                              {/* Teto de 55%: a natureza do banco é curta ("Pix enviado"),
+                                  mas a categoria do cartão não, e sem o teto ela empurraria
+                                  o nome cru inteiro para fora da linha. */}
+                              <span className="max-w-[55%] shrink-0 truncate">{l.catRotulo}</span>
+                              {l.detalhe && <span className="min-w-0 truncate opacity-80">· {l.detalhe}</span>}
                             </span>
                           </span>
                           <span
@@ -324,6 +374,23 @@ async function carregarMeses(fonte: FonteKey): Promise<{ meses: string[]; ultimo
   ) as { data_movimento: string }[];
   const ultimoDado = dados?.[0]?.data_movimento ?? null;
   return { meses: ultimosMeses(ultimoDado ? mesDe(ultimoDado) : mesAtual(), MESES_BANCO), ultimoDado };
+}
+
+/**
+ * O saldo ATUAL da conta. É a primeira pergunta de quem abre um extrato no celular, e sem
+ * ele a tela só sabe dizer o resultado do mês — que não é a mesma coisa e nem tem o mesmo
+ * sinal.
+ *
+ * Falha aqui não derruba o extrato: o saldo é acessório, os lançamentos é que são a tela.
+ */
+async function carregarSaldo(fonte: FonteKey): Promise<Estado["saldo"]> {
+  const tabela = FONTES.find((f) => f.key === fonte)?.saldo;
+  if (!tabela) return null;
+  const { data, error } = await sb
+    .from(tabela).select("saldo,atualizado_em")
+    .order("atualizado_em", { ascending: false }).limit(1).maybeSingle();
+  if (error || !data) return null;
+  return { valor: Number(data.saldo) || 0, atualizado: data.atualizado_em ?? null };
 }
 
 async function carregarLinhas(
@@ -391,19 +458,33 @@ function Total({ rotulo, valor, classe }: { rotulo: string; valor: number; class
   );
 }
 
-function Aviso({ tom, children }: { tom: "erro" | "alerta"; children: React.ReactNode }) {
-  return (
-    <div
-      className={cn(
-        "mx-4 mt-3 flex items-start gap-2 rounded-lg border px-3 py-2 text-[12px]",
-        tom === "erro"
-          ? "border-destructive/30 bg-destructive/10 text-destructive"
-          : "border-amber-500/30 bg-amber-500/15 text-amber-700 dark:text-amber-400",
-      )}
-    >
+function Aviso({
+  tom, onTocar, children,
+}: {
+  tom: "erro" | "alerta";
+  /** Quando existe, o aviso vira botão de recarregar. */
+  onTocar?: () => void;
+  children: React.ReactNode;
+}) {
+  const classe = cn(
+    "mx-4 mt-3 flex w-[calc(100%-2rem)] items-start gap-2 rounded-lg border px-3 py-2 text-left text-[12px]",
+    tom === "erro"
+      ? "border-destructive/30 bg-destructive/10 text-destructive"
+      : "border-amber-500/30 bg-amber-500/15 text-amber-700 dark:text-amber-400",
+  );
+  const corpo = (
+    <>
       <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
       <span className="leading-snug">{children}</span>
-    </div>
+    </>
+  );
+
+  if (!onTocar) return <div className={classe}>{corpo}</div>;
+  return (
+    <button onClick={onTocar} className={cn(classe, "active:opacity-60")}>
+      {corpo}
+      <RefreshCw className="ml-auto mt-0.5 h-3.5 w-3.5 shrink-0" />
+    </button>
   );
 }
 

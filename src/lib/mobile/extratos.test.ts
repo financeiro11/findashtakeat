@@ -1,8 +1,8 @@
 import { describe, it, expect } from "vitest";
 import {
-  agruparPorDia, casaBusca, categoriasDe, filtrar, fmtDiaCurto, limitesDoMes,
-  mesDe, normalizarBanco, normalizarCartao, rotuloDia, rotuloMes, rotuloMesLongo,
-  somaMes, totais, ultimosMeses, type LinhaBanco, type LinhaCartao,
+  agruparPorDia, casaBusca, categoriasDe, filtrar, fmtDiaCurto, fmtDocumento, limitesDoMes,
+  mesDe, nomearContrapartes, normalizarBanco, normalizarCartao, rotuloDia, rotuloMes,
+  rotuloMesLongo, somaMes, totais, ultimosMeses, type LinhaBanco, type LinhaCartao,
 } from "./extratos";
 
 const cartao = (over: Partial<LinhaCartao> = {}): LinhaCartao => ({
@@ -81,7 +81,10 @@ describe("normalizarBanco", () => {
 
   it("o título é a contraparte; sem ela (Asaas) cai no histórico", () => {
     expect(normalizarBanco(banco()).titulo).toBe("INGRAM MICRO BRASIL LTDA");
-    const asaas = normalizarBanco(banco({ contraparte_nome: null, historico: "Taxa de mensageria" }));
+    // O Asaas não manda contraparte NEM documento — daí os dois nulos aqui.
+    const asaas = normalizarBanco(
+      banco({ contraparte_nome: null, contraparte_documento: null, historico: "Taxa de mensageria" }),
+    );
     expect(asaas.titulo).toBe("Taxa de mensageria");
     expect(asaas.detalhe).toBeNull(); // não repete o título embaixo dele
   });
@@ -95,18 +98,105 @@ describe("normalizarBanco", () => {
       }),
     );
     expect(l.titulo).toBe("coffe festa junina");
-    expect(l.detalhe).toBe("PIX EMITIDO OUTRA IF");
+    // A linha de apoio é o que identifica a contraparte, e aqui é o CNPJ — o histórico
+    // ("PIX EMITIDO OUTRA IF") só repetiria a natureza que já está no card.
+    expect(l.detalhe).toBe("08.335.789/0001-43");
     // O CNPJ estava escondido dentro do nome — a coluna própria vem nula.
-    expect(l.campos).toContainEqual(["CPF/CNPJ", "08.335.789 0001-43"]);
+    expect(l.campos).toContainEqual(["CPF/CNPJ", "08.335.789/0001-43"]);
     // A busca ainda varre o texto cru: se o parser errar, o lançamento continua achável.
     expect(casaBusca(l.busca, "08.335.789")).toBe(true);
     expect(casaBusca(l.busca, "coffe junina")).toBe(true);
+  });
+
+  it("Pix sem nome mostra o rótulo da operação, não o histórico do banco", () => {
+    const l = normalizarBanco(
+      banco({
+        contraparte_nome: "Pagamento Pix|@62.457.707 0001-89|@",
+        contraparte_documento: null,
+        historico: "PIX EMITIDO OUTRA IF",
+      }),
+    );
+    expect(l.titulo).toBe("Pagamento Pix");
+    expect(l.documento).toBe("62.457.707/0001-89");
+    expect(l.detalhe).toBe("62.457.707/0001-89");
+    // "Pagamento Pix" descreve a operação — não pode ser gravado como contraparte.
+    expect(l.campos).toContainEqual(["Operação", "Pagamento Pix"]);
+    expect(l.campos.map(([k]) => k)).not.toContain("Contraparte");
+  });
+
+  it("formata o CNPJ que o Sicoob manda com espaço no lugar da barra", () => {
+    expect(fmtDocumento("37.511.891 0001-50")).toBe("37.511.891/0001-50");
+    expect(fmtDocumento("11222333000144")).toBe("11.222.333/0001-44");
+    expect(fmtDocumento("12345678901")).toBe("123.456.789-01");
+    expect(fmtDocumento("***.866.877-**")).toBe("***.866.877-**"); // mascarado vai como veio
+    expect(fmtDocumento(null)).toBeNull();
   });
 
   it("classifica a natureza pelo histórico — imposto ganha de pix", () => {
     expect(normalizarBanco(banco({ historico: "PIX ENVIADO" })).cat).toBe("pix_out");
     expect(normalizarBanco(banco({ historico: "PAGAMENTO DARF VIA PIX" })).cat).toBe("imposto");
     expect(normalizarBanco(banco({ historico: "TARIFA PACOTE DE SERVICOS" })).cat).toBe("tarifa");
+  });
+});
+
+describe("nomearContrapartes", () => {
+  // Um cadastro de mentira: CNPJ (só dígitos) -> nome, como a Parametrização devolve.
+  const cadastro = (mapa: Record<string, string>) => (nome: string, doc: string | null) =>
+    mapa[(doc ?? "").replace(/\D/g, "")] ?? mapa[nome] ?? null;
+
+  const pixSemNome = () =>
+    normalizarBanco(
+      banco({
+        contraparte_nome: "Pagamento Pix|@32.223.020 0001-18|@",
+        contraparte_documento: null,
+        historico: "PIX EMITIDO OUTRA IF",
+      }),
+    );
+
+  it("dá nome ao Pix que só trouxe CNPJ, e o CNPJ continua na linha de apoio", () => {
+    const [l] = nomearContrapartes([pixSemNome()], cadastro({ "32223020000118": "Flash App" }));
+    expect(l.titulo).toBe("Flash App");
+    // O rótulo trocado não era nome de ninguém: quem identifica a linha segue sendo o CNPJ.
+    expect(l.detalhe).toBe("32.223.020/0001-18");
+    expect(l.campos[0]).toEqual(["Contraparte no cadastro", "Flash App"]);
+  });
+
+  it("o apelido entra no texto que a busca varre, sem tirar o que já estava lá", () => {
+    const [l] = nomearContrapartes([pixSemNome()], cadastro({ "32223020000118": "Flash App" }));
+    expect(casaBusca(l.busca, "flash")).toBe(true);
+    expect(casaBusca(l.busca, "32.223.020")).toBe(true);
+    expect(casaBusca(l.busca, "pagamento pix")).toBe(true);
+  });
+
+  it("com nome no extrato, o apelido sobe e o nome cru desce", () => {
+    const linha = normalizarBanco(
+      banco({
+        contraparte_nome: "Recebimento Pix|@ATTA TECNOLOGIA LTDA.|@02.568.314 0001-10|@",
+        contraparte_documento: null,
+        tipo: "credito",
+      }),
+    );
+    const [l] = nomearContrapartes([linha], cadastro({ "02568314000110": "Atta" }));
+    expect(l.titulo).toBe("Atta");
+    expect(l.detalhe).toBe("ATTA TECNOLOGIA LTDA.");
+  });
+
+  it("no cartão casa pelo nome, que é tudo o que o OFX manda", () => {
+    const [l] = nomearContrapartes(
+      [normalizarCartao(cartao({ estabelecimento: "COMARELLA PIZZA BURG" }))],
+      cadastro({ "COMARELLA PIZZA BURG": "Comarella" }),
+    );
+    expect(l.titulo).toBe("Comarella");
+    expect(l.detalhe).toBe("COMARELLA PIZZA BURG");
+  });
+
+  it("sem cadastro, ou com o mesmo nome, a linha não é mexida", () => {
+    const original = pixSemNome();
+    expect(nomearContrapartes([original], cadastro({}))[0]).toBe(original);
+
+    const nomeada = normalizarBanco(banco({ contraparte_documento: null }));
+    expect(nomearContrapartes([nomeada], cadastro({ "INGRAM MICRO BRASIL LTDA": "ingram micro brasil ltda" }))[0])
+      .toBe(nomeada);
   });
 });
 

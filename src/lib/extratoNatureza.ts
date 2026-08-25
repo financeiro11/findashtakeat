@@ -94,6 +94,10 @@ const ROTULOS_GENERICOS = new Set([
 
 const soDigitos = (s: string) => s.replace(/\D/g, "");
 
+/** "Pagamento Pix" descreve o que aconteceu, não quem recebeu. */
+export const ehRotuloGenerico = (s: string | null | undefined): boolean =>
+  ROTULOS_GENERICOS.has(normalize(s ?? ""));
+
 /** CNPJ ("37.511.891 0001-50"), CPF, ou o CPF mascarado que o banco devolve ("***.423.116-**"). */
 function ehDocumento(s: string): boolean {
   if (!/^[\d.*\-/ ]+$/.test(s)) return false;
@@ -143,14 +147,74 @@ export function lerContraparte(bruto: string | null | undefined): Contraparte {
     .map((p) => p.replace(/^FAV\.?:\s*/i, "").trim()) // "FAV.: FULANO LTDA" → "FULANO LTDA"
     .filter(Boolean);
 
-  // O rótulo só é descartado como título quando sobra outra coisa para pôr no lugar:
-  // em "Nayara Evangelista" a primeira parte É o nome, e engolir isso deixaria o card mudo.
+  // O rótulo genérico NUNCA é a contraparte, mesmo quando é a única coisa escrita — e é o
+  // caso mais comum do Sicoob: o Pix de saída vem "Pagamento Pix|@62.457.707 0001-89|@" e
+  // mais nada. Devolver "Pagamento Pix" como nome fazia a tela repetir o rótulo da
+  // operação em 248 linhas do mês, e escondia que quem identifica a contraparte ali é o
+  // CNPJ — que a Parametrização sabe traduzir. Quem lê o pacote continua com o rótulo em
+  // `operacao`, para o card não ficar mudo quando o CNPJ não estiver cadastrado.
+  //
+  // Em "Nayara Evangelista" a primeira parte É o nome: só sai daqui o que está na lista.
   let operacao: string | null = null;
   let resto = textos;
-  if (textos.length > 1 && ROTULOS_GENERICOS.has(normalize(textos[0]))) {
+  if (textos.length && ROTULOS_GENERICOS.has(normalize(textos[0]))) {
     operacao = textos[0];
     resto = textos.slice(1);
   }
 
   return { nome: resto.join(" · ") || null, operacao, documento };
+}
+
+/**
+ * O CPF/CNPJ como se escreve. O Sicoob manda "37.511.891 0001-50" — espaço no
+ * lugar da barra —, e é isso que ia parar na tela.
+ */
+export function fmtDocumento(doc: string | null | undefined): string | null {
+  const d = String(doc ?? "").trim();
+  if (!d) return null;
+  const n = soDigitos(d);
+  if (!d.includes("*") && n.length === 14) {
+    return `${n.slice(0, 2)}.${n.slice(2, 5)}.${n.slice(5, 8)}/${n.slice(8, 12)}-${n.slice(12)}`;
+  }
+  if (!d.includes("*") && n.length === 11) {
+    return `${n.slice(0, 3)}.${n.slice(3, 6)}.${n.slice(6, 9)}-${n.slice(9)}`;
+  }
+  return d; // CPF mascarado pelo banco ("***.423.116-**") vai como veio
+}
+
+/**
+ * O nome que a tela mostraria SEM cadastro nenhum.
+ *
+ * O rótulo da operação vem antes do histórico porque é o que a pessoa
+ * reconhece: o histórico do mesmo lançamento é "PIX EMITIDO OUTRA IF". O
+ * histórico fecha a escada porque o extrato do Asaas nunca traz contraparte, e
+ * sem ele a lista inteira ficaria muda.
+ *
+ * Devolve string vazia quando não há nada — o texto de último caso é escolha de
+ * cada tela ("Lançamento" no desktop, "Sem descrição" no celular).
+ */
+export function tituloDoExtrato(cp: Contraparte, historico?: string | null): string {
+  return (cp.nome || cp.operacao || historico || "").trim();
+}
+
+/**
+ * Troca o título pelo nome que o cadastro deu — a regra dos dois degraus da
+ * tela: **apelido na linha de cima, nome cru na linha de apoio**, porque é o
+ * cru que se procura no Omie.
+ *
+ * Quando o título era só o rótulo da operação ("Pagamento Pix") não há nome cru
+ * nenhum a preservar, e o que identifica a linha continua sendo o documento que
+ * a linha de apoio já carrega.
+ *
+ * Mora aqui, e não em cada tela, porque são duas telas mostrando o mesmo
+ * extrato: a conta corrente do desktop e a aba Extratos do celular.
+ */
+export function comNomeDoCadastro(
+  titulo: string,
+  apoio: string | null,
+  nome: string | null | undefined,
+): { titulo: string; apoio: string | null; trocado: boolean } {
+  const n = String(nome ?? "").trim();
+  if (!n || normalize(n) === normalize(titulo)) return { titulo, apoio, trocado: false };
+  return { titulo: n, apoio: ehRotuloGenerico(titulo) ? apoio : titulo, trocado: true };
 }

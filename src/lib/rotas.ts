@@ -14,6 +14,7 @@ export const ROTAS: Record<string, { crumbs: string[]; context?: string }> = {
   "/briefing/novidades": { crumbs: ["Início", "Briefing Diário", "Novidades do Hub"], context: "O que mudou na própria ferramenta · lido dos commits publicados" },
   "/design-system": { crumbs: ["Início", "Design System"] },
   "/governanca/auditoria": { crumbs: ["Governança", "Auditoria"], context: "Achados do extrato · PIX e cartão" },
+  "/governanca/notas-erp": { crumbs: ["Governança", "Notas no ERP"], context: "A nota do fornecedor está dentro do Omie? · lido título a título do próprio ERP" },
   "/governanca/cartao": { crumbs: ["Governança", "Cartão"], context: "Evolução da fatura · Sicoob" },
   "/orcamento": { crumbs: ["Governança", "Orçamento"], context: "Orçado × realizado · competência do Omie" },
   "/governanca/cac": { crumbs: ["Governança", "Painel CAC"], context: "Custo de aquisição por time · exporta para o sistema da controladoria" },

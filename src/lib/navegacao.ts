@@ -13,7 +13,7 @@ import {
   FileText, Smartphone, Plane, LayoutDashboard, Kanban, FileSpreadsheet, Truck,
   History, FileSignature, Gavel, CheckCircle2, PieChart, TrendingUp, FileBarChart,
   Scale, Target, Brain, Wallet2, ShieldCheck, Megaphone, UserMinus, UserCog, Tags,
-  Palette, Mic, Rocket, Globe2,
+  Palette, Mic, Rocket, Globe2, Paperclip,
   type LucideIcon,
 } from "lucide-react";
 import type { ModuleAccess, ModuleId } from "./modules";
@@ -117,6 +117,7 @@ export const GRUPOS_FINANCEIRO: NavGrupo[] = [
   { label: "Governança", items: [
     { title: "Orçamento", url: "/orcamento", icon: Wallet2, busca: ["realizado", "budget"] },
     { title: "Auditoria", url: "/governanca/auditoria", icon: ShieldCheck, busca: ["pix", "achados", "conciliação"] },
+    { title: "Notas no ERP", url: "/governanca/notas-erp", icon: Paperclip, busca: ["nota fiscal", "fornecedor", "anexo", "omie", "cobertura", "comprovante"] },
     { title: "Cartão", url: "/governanca/cartao", icon: CreditCard, badge: "OFX", busca: ["fatura", "ofx", "sicoob"] },
     { title: "Painel CAC", url: "/governanca/cac", icon: Megaphone, busca: ["aquisição", "marketing", "comercial"] },
     { title: "Rescisões", url: "/governanca/rescisoes", icon: UserMinus, busca: ["desligamento", "verbas", "pj"] },

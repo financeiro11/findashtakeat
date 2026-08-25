@@ -58,7 +58,10 @@ const nomeDoPath = (p: string) => {
 };
 
 // cCodIntAnexo aceita 20 caracteres; timestamp em base36 (o helper ainda trunca por garantia).
-const codIntAnexo = (id: number): string => `h${id}-${Date.now().toString(36)}`.slice(0, 20);
+// O id pode ser bigint (achado, cartão) ou uuid (compra de Facilities) — o uuid só
+// contribui com o começo, e é o timestamp que garante a unicidade por tentativa.
+const codIntAnexo = (id: number | string): string =>
+  `h${String(id).replace(/-/g, "").slice(0, 8)}-${Date.now().toString(36)}`.slice(0, 20);
 
 const ehUrl = (v: string) => /^https?:\/\//i.test(v.trim());
 const ehCaminhoStorage = (v: string) => !ehUrl(v) && v.includes("/");
@@ -87,14 +90,46 @@ type Item = {
  * ========================================================================== */
 
 type Pendente = {
-  origem: "achado" | "cartao";
-  id: number;
+  origem: "achado" | "cartao" | "facilities";
+  id: number | string;
   id_unico: string;
   rotulo: string;
   comprovante: string;
   codTitulo: string;
   id_transacao: string | null;
 };
+
+/**
+ * O DIÁRIO DO ENVIO — uma linha por tentativa, inclusive a que falhou.
+ *
+ * Até 25/08/2026 a varredura logava a falha no console do worker e devolvia na
+ * resposta HTTP. Quando quem chamava era o cron, ninguém lia nem uma coisa nem
+ * outra: a linha simplesmente continuava pendente amanhã, sem que existisse em
+ * lugar nenhum a frase "não subiu porque X". Recusa sem rastro é indistinguível
+ * de esquecimento — a mesma lição que o lado da receita já tinha aprendido.
+ *
+ * Nunca lança: registrar é auxiliar. Falhar ao anotar a falha derrubaria a
+ * rodada inteira por causa do diário.
+ */
+async function anotar(supabase: any, linha: {
+  origem: string;
+  ref_id: string;
+  rotulo?: string | null;
+  cod_titulo?: string | null;
+  arquivo?: string | null;
+  resultado: "ok" | "erro" | "bloqueado";
+  motivo?: string | null;
+  canal: string;
+}): Promise<void> {
+  try {
+    await supabase.from("omie_anexo_envio_log").insert({
+      ...linha,
+      motivo: linha.motivo ? String(linha.motivo).slice(0, 1000) : null,
+    });
+  } catch (e) {
+    console.error("omie_anexo_envio_log:", e instanceof Error ? e.message : e);
+  }
+}
 
 /** Baixa o comprovante, venha ele do bucket privado ou de um link do Drive. */
 async function baixarComprovante(
@@ -121,7 +156,11 @@ async function baixarComprovante(
   // Sem este corte, um PDF gordo derruba a execução INTEIRA (WORKER_RESOURCE_LIMIT) e leva
   // junto os itens que ainda nem começaram. Melhor um item recusado com motivo.
   if (bytes.length > MAX_BYTES) {
-    throw new Error(`Arquivo de ${(bytes.length / 1048576).toFixed(1)} MB — acima do limite de ${MAX_BYTES / 1048576} MB para anexar automaticamente.`);
+    throw new Error(
+      `Arquivo de ${(bytes.length / 1048576).toFixed(1)} MB — acima do limite de ${MAX_BYTES / 1048576} MB ` +
+      "para anexar automaticamente. Costuma ser foto em resolução cheia: reenviar o comprovante " +
+      "como PDF (ou uma foto menor) resolve, e aí ele sobe na próxima rodada.",
+    );
   }
   return { bytes, nome };
 }
@@ -138,6 +177,7 @@ async function carimbar(supabase: any, opts: {
   achadoId?: number | null;
   cartaoId?: number | null;
   cartaoIdUnico?: string | null;
+  facilitiesId?: string | null;
   idTransacao?: string | null;
   codTitulo: string;
   nome: string;
@@ -146,6 +186,24 @@ async function carimbar(supabase: any, opts: {
 }): Promise<void> {
   const agora = new Date().toISOString();
   const marca = { omie_anexo_enviado_em: agora, omie_anexo_nome: opts.nome, updated_at: agora };
+
+  /* A compra de Facilities não tem `updated_at`, e mandar a coluna faria o
+   * update inteiro falhar — junto com o carimbo, que é o freio da varredura.
+   * Sem o carimbo, a mesma nota subiria de novo amanhã e o título ficaria com
+   * dois anexos iguais.
+   *
+   * `nf_status` continua sendo só "ok" | "pendente": é o contrato que a tela do
+   * Facilities já usa para desenhar o selo, e inventar um terceiro valor aqui
+   * faria a compra que ACABOU de chegar ao ERP aparecer como pendente. Onde ela
+   * está é `omie_anexo_enviado_em` — coluna própria, sem ambiguidade. */
+  if (opts.facilitiesId) {
+    await supabase.from("facilities_compras").update({
+      omie_anexo_enviado_em: agora,
+      omie_anexo_nome: opts.nome,
+      omie_cod_titulo: String(opts.codTitulo),
+      nf_status: "ok",
+    }).eq("id", opts.facilitiesId);
+  }
 
   if (opts.achadoId) {
     const { data: atual } = await supabase.from("auditoria").select("trilha").eq("id", opts.achadoId).maybeSingle();
@@ -256,6 +314,42 @@ async function pendentes(supabase: any, limite: number, filtro: FiltroVarredura 
     });
   }
 
+  /* FACILITIES — a terceira origem, e a que estava sem caminho até 25/08/2026.
+   *
+   * A NF anexada numa compra de Facilities só chegava ao ERP se virasse evidência
+   * de um achado da auditoria; quando não havia achado correspondente — e não há,
+   * porque a compra costuma ser boleto ou PIX que ninguém auditou — a nota parava
+   * ali. Medido: 41 compras, R$ 46.240, zero notas no Omie.
+   *
+   * O arquivo mora no mesmo bucket privado do resto (`comprovantes-auditoria`),
+   * então `baixarComprovante` já sabe lê-lo sem nenhuma mudança.
+   */
+  if (!filtro.responsavel && !filtro.idUnico) {
+    const { data: fac, error: erroFac } = await supabase
+      .from("facilities_compras")
+      .select("id, item, fornecedor_nome, nf_arquivo, omie_cod_titulo")
+      .not("nf_arquivo", "is", null).neq("nf_arquivo", "")
+      .not("omie_cod_titulo", "is", null)
+      .is("omie_anexo_enviado_em", null)
+      .order("data", { ascending: false })
+      .limit(limite);
+    if (erroFac) throw erroFac;
+
+    for (const f of fac ?? []) {
+      if (titulos.has(String(f.omie_cod_titulo))) continue;
+      titulos.add(String(f.omie_cod_titulo));
+      lista.push({
+        origem: "facilities",
+        id: f.id,
+        id_unico: String(f.id),
+        rotulo: f.item || f.fornecedor_nome || String(f.id),
+        comprovante: String(f.nf_arquivo ?? ""),
+        codTitulo: String(f.omie_cod_titulo),
+        id_transacao: null,
+      });
+    }
+  }
+
   return lista.slice(0, limite);
 }
 
@@ -275,23 +369,42 @@ async function varrer(supabase: any, cTabela: string, limite: number, canal: str
     try {
       const { bytes, nome } = await baixarComprovante(supabase, p.comprovante);
 
-      const { cTabela: cTabelaOk } = await incluirAnexo({
+      // `incluirAnexo` normaliza o arquivo antes de subir (foto vira PDF,
+      // extensão mentirosa é corrigida pelos bytes) e devolve o nome final —
+      // é esse que tem de ser carimbado, senão o Hub grava um nome de arquivo
+      // que não existe do outro lado.
+      const { cTabela: cTabelaOk, nome: nomeFinal, conversao } = await incluirAnexo({
         nId: p.codTitulo, cTabela, nome, base64: toBase64(bytes), codInt: codIntAnexo(p.id),
       });
 
       await carimbar(supabase, {
-        achadoId: p.origem === "achado" ? p.id : null,
-        cartaoId: p.origem === "cartao" ? p.id : null,
+        achadoId: p.origem === "achado" ? Number(p.id) : null,
+        cartaoId: p.origem === "cartao" ? Number(p.id) : null,
         cartaoIdUnico: p.origem === "cartao" ? p.id_unico : null,
+        facilitiesId: p.origem === "facilities" ? String(p.id) : null,
         idTransacao: p.id_transacao,
-        codTitulo: p.codTitulo, nome, cTabela: cTabelaOk, canal,
+        codTitulo: p.codTitulo, nome: nomeFinal, cTabela: cTabelaOk, canal,
       });
 
-      console.log(`anexo OK · ${p.rotulo} · título ${p.codTitulo} · ${cTabelaOk}`);
-      enviados.push({ id_unico: p.id_unico, titulo: p.rotulo, omie_cod_titulo: p.codTitulo, arquivo: nome, cTabela: cTabelaOk });
+      await anotar(supabase, {
+        origem: p.origem, ref_id: String(p.id), rotulo: p.rotulo,
+        cod_titulo: p.codTitulo, arquivo: nomeFinal, resultado: "ok",
+        motivo: conversao === "imagem_para_pdf" ? "imagem convertida para PDF antes de subir" : null,
+        canal,
+      });
+
+      console.log(`anexo OK · ${p.rotulo} · título ${p.codTitulo} · ${cTabelaOk} · ${conversao}`);
+      enviados.push({
+        id_unico: p.id_unico, titulo: p.rotulo, omie_cod_titulo: p.codTitulo,
+        arquivo: nomeFinal, cTabela: cTabelaOk, conversao,
+      });
     } catch (err) {
       const erro = err instanceof Error ? err.message : String(err);
       console.error(`varredura falhou · ${p.rotulo} · título ${p.codTitulo} · ${erro}`);
+      await anotar(supabase, {
+        origem: p.origem, ref_id: String(p.id), rotulo: p.rotulo,
+        cod_titulo: p.codTitulo, resultado: "erro", motivo: erro, canal,
+      });
       falhas.push({ id_unico: p.id_unico, titulo: p.rotulo, omie_cod_titulo: p.codTitulo, erro });
     }
   }
@@ -585,9 +698,12 @@ Deno.serve(async (req) => {
         // Busca o arquivo — do Drive ou do nosso bucket, conforme a origem.
         const { bytes, nome } = await baixarComprovante(supabase, e.comprovante);
 
-        // incluirAnexo ZIPA, envia e CONFIRMA que o anexo colou (ou lança com diagnóstico).
-        const { cTabela: cTabelaOk, variante } = await incluirAnexo({ nId: e.match!.codTitulo, cTabela, nome, base64: toBase64(bytes), codInt: codIntAnexo(e.achado_id) });
-        console.log(`anexo OK · ${e.titulo} · título ${e.match!.codTitulo} · ${cTabelaOk} · ${variante}`);
+        // incluirAnexo NORMALIZA (foto vira PDF, extensão mentirosa é corrigida pelos
+        // bytes), ZIPA, envia e CONFIRMA que o anexo colou — ou lança com diagnóstico.
+        const { cTabela: cTabelaOk, variante, nome: nomeFinal, conversao } = await incluirAnexo({
+          nId: e.match!.codTitulo, cTabela, nome, base64: toBase64(bytes), codInt: codIntAnexo(e.achado_id),
+        });
+        console.log(`anexo OK · ${e.titulo} · título ${e.match!.codTitulo} · ${cTabelaOk} · ${variante} · ${conversao}`);
 
         await carimbar(supabase, {
           achadoId: e.origem === "achado" ? e.achado_id : null,
@@ -595,15 +711,28 @@ Deno.serve(async (req) => {
           cartaoIdUnico: e.origem === "cartao" ? e.cartao_id_unico : null,
           idTransacao: e.id_transacao,
           codTitulo: e.match!.codTitulo,
-          nome,
+          nome: nomeFinal,
           cTabela: cTabelaOk,
           canal: "hub",
         });
 
-        enviados.push({ achado_id: e.achado_id, titulo: e.titulo, omie_cod_titulo: e.match!.codTitulo, cTabela: cTabelaOk, variante, arquivo: nome });
+        await anotar(supabase, {
+          origem: e.origem === "achado" ? "auditoria" : "cartao",
+          ref_id: String(e.achado_id), rotulo: e.titulo,
+          cod_titulo: e.match!.codTitulo, arquivo: nomeFinal, resultado: "ok",
+          motivo: conversao === "imagem_para_pdf" ? "imagem convertida para PDF antes de subir" : null,
+          canal: "hub",
+        });
+
+        enviados.push({ achado_id: e.achado_id, titulo: e.titulo, omie_cod_titulo: e.match!.codTitulo, cTabela: cTabelaOk, variante, arquivo: nomeFinal, conversao });
       } catch (err) {
         const erro = err instanceof Error ? err.message : String(err);
         console.error(`envio falhou · ${e.titulo} · título ${e.match?.codTitulo} · ${erro}`);
+        await anotar(supabase, {
+          origem: e.origem === "achado" ? "auditoria" : "cartao",
+          ref_id: String(e.achado_id), rotulo: e.titulo,
+          cod_titulo: e.match?.codTitulo ?? null, resultado: "erro", motivo: erro, canal: "hub",
+        });
         falhas.push({ achado_id: e.achado_id, titulo: e.titulo, erro });
       }
     }

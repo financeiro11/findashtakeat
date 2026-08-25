@@ -1,0 +1,490 @@
+<title>Notas de Fornecedor no Omie</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Libre+Franklin:wght@400;500;600;700&family=Source+Serif+4:opsz,wght@8..60,400;8..60,600&family=JetBrains+Mono:wght@400;500;700&display=swap">
+
+<style>
+:root{
+  --ground:#EEF1EC; --surface:#FCFDFB; --surface-2:#E6EBE4;
+  --ink:#1A211B; --ink-2:#3E4A3F; --muted:#65735F;
+  --rule:#D2DACF; --rule-strong:#B7C2B4;
+  --crit:#B4302A; --crit-soft:#F2DEDB;
+  --warn:#916212; --warn-soft:#F1E6CC;
+  --good:#2A6349; --good-soft:#DBE9E0;
+  --info:#2A4A6B; --info-soft:#DCE5EE;
+  --unknown:#6B5E7A; --unknown-soft:#E7E1EE;
+  --shadow:0 1px 0 rgba(26,33,27,.05), 0 8px 24px -18px rgba(26,33,27,.5);
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --ground:#12160F; --surface:#191E17; --surface-2:#212719;
+    --ink:#E5EBE0; --ink-2:#C0CABB; --muted:#8C9985;
+    --rule:#2C3428; --rule-strong:#414B3C;
+    --crit:#E5726A; --crit-soft:#3A211F;
+    --warn:#D8A945; --warn-soft:#332A16;
+    --good:#68B08A; --good-soft:#1B2E23;
+    --info:#7BA6CD; --info-soft:#1B2733;
+    --unknown:#AC9BC0; --unknown-soft:#2A2333;
+    --shadow:0 1px 0 rgba(0,0,0,.4), 0 10px 26px -18px rgba(0,0,0,.9);
+  }
+}
+:root[data-theme="dark"]{
+  --ground:#12160F; --surface:#191E17; --surface-2:#212719;
+  --ink:#E5EBE0; --ink-2:#C0CABB; --muted:#8C9985;
+  --rule:#2C3428; --rule-strong:#414B3C;
+  --crit:#E5726A; --crit-soft:#3A211F;
+  --warn:#D8A945; --warn-soft:#332A16;
+  --good:#68B08A; --good-soft:#1B2E23;
+  --info:#7BA6CD; --info-soft:#1B2733;
+  --unknown:#AC9BC0; --unknown-soft:#2A2333;
+  --shadow:0 1px 0 rgba(0,0,0,.4), 0 10px 26px -18px rgba(0,0,0,.9);
+}
+
+*{box-sizing:border-box}
+body{margin:0;background:var(--ground);color:var(--ink);
+  font-family:"Source Serif 4",Georgia,"Times New Roman",serif;font-size:17px;line-height:1.62;-webkit-font-smoothing:antialiased}
+.wrap{max-width:1080px;margin:0 auto;padding:0 24px 96px}
+h1,h2,h3,h4,.ui{font-family:"Libre Franklin",Helvetica,Arial,sans-serif}
+.mono,code,.tag,.eyebrow{font-family:"JetBrains Mono","SF Mono",Menlo,monospace}
+code{font-size:.88em;background:var(--surface-2);padding:1px 4px;border-radius:2px}
+
+header.top{border-bottom:2px solid var(--ink);padding:56px 0 22px;margin-bottom:40px}
+.eyebrow{font-size:11.5px;letter-spacing:.14em;text-transform:uppercase;color:var(--muted);margin:0 0 18px}
+h1{font-size:clamp(34px,6vw,58px);line-height:1.03;letter-spacing:-.025em;font-weight:700;margin:0 0 18px;text-wrap:balance}
+.standfirst{font-size:clamp(18px,2.3vw,21px);line-height:1.5;color:var(--ink-2);max-width:64ch;margin:0}
+
+section{margin:0 0 60px}
+.sec-head{display:flex;align-items:baseline;gap:14px;flex-wrap:wrap;border-bottom:1px solid var(--rule-strong);padding-bottom:10px;margin-bottom:26px}
+h2{font-size:clamp(22px,3.2vw,30px);line-height:1.15;letter-spacing:-.018em;font-weight:700;margin:0}
+.sec-head .route{font-family:"JetBrains Mono",monospace;font-size:12px;color:var(--muted);margin-left:auto}
+h3{font-size:19px;font-weight:600;letter-spacing:-.008em;margin:34px 0 10px}
+p{margin:0 0 16px;max-width:70ch}
+.lead{font-size:18.5px;color:var(--ink-2)}
+strong{font-weight:600}
+em.hl{font-style:normal;background:var(--warn-soft);padding:0 3px;border-radius:2px}
+
+/* medidor de cobertura */
+.gauge{background:var(--surface);border:1px solid var(--rule-strong);border-radius:3px;padding:22px 22px 18px;box-shadow:var(--shadow);margin:0 0 26px}
+.gauge .top{display:flex;align-items:baseline;justify-content:space-between;gap:16px;flex-wrap:wrap;margin-bottom:14px}
+.gauge .tt{font-family:"Libre Franklin",sans-serif;font-size:12px;letter-spacing:.09em;text-transform:uppercase;color:var(--muted);font-weight:600}
+.gauge .amount{font-family:"JetBrains Mono",monospace;font-size:15px;font-variant-numeric:tabular-nums;color:var(--ink-2)}
+.gbar{display:flex;height:38px;border-radius:3px;overflow:hidden;border:1px solid var(--rule-strong)}
+.gbar span{display:flex;align-items:center;justify-content:center;font-family:"JetBrains Mono",monospace;font-size:12px;font-weight:700;color:#fff}
+.g-ok{background:var(--good)} .g-no{background:var(--crit)} .g-un{background:var(--unknown)}
+.gkeys{display:flex;gap:20px;flex-wrap:wrap;margin-top:14px;font-family:"Libre Franklin",sans-serif;font-size:13.5px;color:var(--ink-2)}
+.gkeys div{display:flex;gap:8px;align-items:flex-start;max-width:30ch}
+.gkeys i{display:block;width:12px;height:12px;border-radius:2px;margin-top:5px;flex:0 0 auto}
+.gkeys b{display:block;font-weight:600}
+.gkeys small{color:var(--muted);font-size:12.5px;line-height:1.35;display:block}
+
+.tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(196px,1fr));gap:14px;margin:0 0 30px}
+.tile{background:var(--surface);border:1px solid var(--rule);border-radius:3px;padding:16px;box-shadow:var(--shadow);border-top:3px solid var(--rule-strong)}
+.tile.crit{border-top-color:var(--crit)} .tile.warn{border-top-color:var(--warn)}
+.tile.good{border-top-color:var(--good)} .tile.info{border-top-color:var(--info)}
+.tile.unknown{border-top-color:var(--unknown)}
+.tile .k{font-family:"Libre Franklin",sans-serif;font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);margin:0 0 8px}
+.tile .v{font-family:"JetBrains Mono",monospace;font-variant-numeric:tabular-nums;font-size:25px;font-weight:700;line-height:1.05;letter-spacing:-.03em;margin:0 0 6px}
+.tile.crit .v{color:var(--crit)} .tile.good .v{color:var(--good)}
+.tile.warn .v{color:var(--warn)} .tile.unknown .v{color:var(--unknown)}
+.tile .d{font-size:13.5px;line-height:1.4;color:var(--muted);margin:0;font-family:"Libre Franklin",sans-serif}
+
+.tablewrap{overflow-x:auto;border:1px solid var(--rule);border-radius:3px;background:var(--surface);box-shadow:var(--shadow);margin:0 0 18px}
+table{border-collapse:collapse;width:100%;font-family:"Libre Franklin",sans-serif;font-size:14.5px}
+caption{caption-side:top;text-align:left;padding:13px 16px;border-bottom:1px solid var(--rule);font-size:12px;letter-spacing:.09em;text-transform:uppercase;color:var(--muted);font-weight:600}
+th,td{padding:9px 14px;text-align:left;border-bottom:1px solid var(--rule);vertical-align:top}
+thead th{font-size:11.5px;letter-spacing:.07em;text-transform:uppercase;color:var(--muted);font-weight:600;background:var(--surface-2);border-bottom:1px solid var(--rule-strong)}
+td.n,th.n{text-align:right;font-family:"JetBrains Mono",monospace;font-variant-numeric:tabular-nums;font-size:13.5px;white-space:nowrap}
+tbody tr:last-child td{border-bottom:none}
+tr.total td{font-weight:700;background:var(--surface-2);border-top:1px solid var(--rule-strong)}
+td.crit,.txt-crit{color:var(--crit);font-weight:600}
+td.good,.txt-good{color:var(--good);font-weight:600}
+td.unknown{color:var(--unknown);font-weight:600}
+td small{display:block;font-size:12.5px;color:var(--muted);font-weight:400;line-height:1.35;margin-top:2px}
+
+.tag{display:inline-block;font-size:11px;letter-spacing:.05em;text-transform:uppercase;padding:2px 7px;border-radius:2px;font-weight:500;white-space:nowrap}
+.tag.on{background:var(--good-soft);color:var(--good)}
+.tag.off{background:var(--crit-soft);color:var(--crit)}
+.tag.idle{background:var(--warn-soft);color:var(--warn)}
+.tag.blind{background:var(--unknown-soft);color:var(--unknown)}
+
+.pipes{display:flex;flex-direction:column;gap:10px}
+.pipe{display:grid;grid-template-columns:5px 1fr;background:var(--surface);border:1px solid var(--rule);border-radius:3px;overflow:hidden;box-shadow:var(--shadow)}
+.pipe .stripe{background:var(--rule-strong)}
+.pipe.p-crit .stripe{background:var(--crit)} .pipe.p-warn .stripe{background:var(--warn)}
+.pipe.p-good .stripe{background:var(--good)} .pipe.p-un .stripe{background:var(--unknown)}
+.pipe .body{padding:14px 18px}
+.pipe .row1{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;margin-bottom:5px}
+.pipe .name{font-family:"Libre Franklin",sans-serif;font-weight:600;font-size:16px}
+.pipe .path{font-family:"JetBrains Mono",monospace;font-size:12px;color:var(--muted)}
+.pipe .desc{font-size:15px;color:var(--ink-2);margin:0 0 6px;max-width:80ch}
+.pipe .fig{font-family:"JetBrains Mono",monospace;font-size:13px;color:var(--muted);font-variant-numeric:tabular-nums}
+
+.causes{display:flex;flex-direction:column;gap:14px}
+.cause{background:var(--surface);border:1px solid var(--rule);border-left:4px solid var(--crit);border-radius:3px;padding:16px 18px;box-shadow:var(--shadow)}
+.cause.c-warn{border-left-color:var(--warn)}
+.cause.c-info{border-left-color:var(--info)}
+.cause.c-un{border-left-color:var(--unknown)}
+.cause .ch{display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:7px}
+.cause .ct{font-family:"Libre Franklin",sans-serif;font-weight:600;font-size:17px;margin:0}
+.cause .cv{font-family:"JetBrains Mono",monospace;font-size:13px;font-weight:700;font-variant-numeric:tabular-nums;color:var(--crit);margin-left:auto;white-space:nowrap}
+.cause.c-warn .cv{color:var(--warn)} .cause.c-info .cv{color:var(--info)} .cause.c-un .cv{color:var(--unknown)}
+.cause p{margin:0 0 9px;font-size:15.5px;max-width:80ch}
+.cause p:last-child{margin-bottom:0}
+.cause .fix{font-family:"Libre Franklin",sans-serif;font-size:14.5px;color:var(--ink-2);border-top:1px dashed var(--rule);padding-top:9px;margin-top:11px}
+.cause .fix b{font-size:11px;letter-spacing:.09em;text-transform:uppercase;color:var(--muted);display:block;margin-bottom:3px}
+.quote{font-family:"JetBrains Mono",monospace;font-size:12.5px;line-height:1.5;background:var(--surface-2);border-left:2px solid var(--rule-strong);padding:8px 12px;margin:0 0 10px;color:var(--ink-2);overflow-x:auto}
+
+ol.gargalos{list-style:none;counter-reset:g;padding:0;margin:0;display:flex;flex-direction:column;gap:16px}
+ol.gargalos li{counter-increment:g;display:grid;grid-template-columns:36px 1fr;gap:16px;align-items:start}
+ol.gargalos li::before{content:counter(g);font-family:"JetBrains Mono",monospace;font-size:15px;font-weight:700;color:var(--surface);background:var(--ink);width:30px;height:30px;border-radius:50%;display:flex;align-items:center;justify-content:center;margin-top:2px}
+ol.gargalos h4{font-family:"Libre Franklin",sans-serif;font-size:16.5px;font-weight:600;margin:2px 0 6px}
+ol.gargalos p{margin:0 0 8px;font-size:15.5px}
+
+.plan{display:flex;flex-direction:column;gap:12px}
+.step{background:var(--surface);border:1px solid var(--rule);border-radius:3px;padding:16px 18px;box-shadow:var(--shadow);display:grid;grid-template-columns:auto 1fr;gap:16px;align-items:start}
+.step .when{font-family:"JetBrains Mono",monospace;font-size:11.5px;letter-spacing:.06em;text-transform:uppercase;color:var(--surface);background:var(--ink);padding:3px 9px;border-radius:2px;white-space:nowrap;margin-top:3px}
+.step h4{font-family:"Libre Franklin",sans-serif;font-size:16.5px;font-weight:600;margin:0 0 6px}
+.step p{margin:0;font-size:15.5px}
+
+.note{font-size:14.5px;color:var(--muted);border-top:1px solid var(--rule);padding-top:14px;margin-top:34px;font-family:"Libre Franklin",sans-serif;max-width:82ch}
+footer{border-top:2px solid var(--ink);margin-top:56px;padding-top:18px;font-family:"Libre Franklin",sans-serif;font-size:13px;color:var(--muted)}
+
+@media (max-width:640px){
+  body{font-size:16px}
+  .sec-head .route{margin-left:0;width:100%}
+  .step{grid-template-columns:1fr}
+  .gbar span{font-size:10px}
+}
+</style>
+
+<div class="wrap">
+
+<header class="top">
+  <p class="eyebrow">Hub Financeiro &amp; Hub Facilities &middot; levantamento de 25 de agosto de 2026</p>
+  <h1>Notas de Fornecedor no Omie</h1>
+  <p class="standfirst">Cada real que sai da Takeat precisa da nota do fornecedor anexada ao título no ERP. Este é o levantamento de quanto disso está lá, quanto comprovadamente não está, e — o número que mais incomoda — quanto ninguém nunca olhou.</p>
+</header>
+
+<!-- ============================================================ -->
+<section>
+  <div class="sec-head"><h2>A resposta curta</h2><span class="route">despesa liquidada 02/04 → 21/08/2026</span></div>
+
+  <p class="lead">Não, não está tudo no Omie. E o problema maior não é o que falta — é que <strong>o Hub só consegue responder por 37% da despesa</strong>. Dos R$ 7,61 milhões pagos a fornecedores no período, só R$ 2,85 milhões foram efetivamente conferidos contra o ERP. O resto nunca foi perguntado.</p>
+
+  <div class="gauge">
+    <div class="top">
+      <span class="tt">R$ 7.607.983 pagos a fornecedores &middot; 4.228 títulos</span>
+      <span class="amount">exclui transferência de saída</span>
+    </div>
+    <div class="gbar">
+      <span class="g-ok" style="width:23.3%">23,3%</span>
+      <span class="g-no" style="width:14.2%">14,2%</span>
+      <span class="g-un" style="width:62.5%">62,5%</span>
+    </div>
+    <div class="gkeys">
+      <div><i class="g-ok"></i><span><b>Nota confirmada no Omie</b><small>346 títulos &middot; R$ 1.776.184</small></span></div>
+      <div><i class="g-no"></i><span><b>Confirmado SEM nota</b><small>401 títulos &middot; R$ 1.077.051</small></span></div>
+      <div><i class="g-un"></i><span><b>Nunca verificado</b><small>3.481 títulos &middot; R$ 4.754.747 — ninguém olhou</small></span></div>
+    </div>
+  </div>
+
+  <p>A parte verde não é estimativa: veio de <code>ListarAnexo</code> chamado título a título no Omie, pela varredura que já existe. O problema é que essa varredura só aponta para <strong>uma conta</strong> — a corrente do Sicoob. O cartão de crédito, com <strong>2.136 títulos e R$ 1,3 milhão</strong>, nunca passou por ela. Nem o BTG, nem as contas de subvenção.</p>
+
+  <p><em class="hl">Se o seu chefe perguntar hoje "está tudo no ERP?", a resposta honesta é "não sei".</em> Isso é conserto de uma semana, não de um trimestre — o código que mede já está escrito e testado, só está apontado para o lugar errado.</p>
+
+  <div class="tiles">
+    <div class="tile good"><p class="k">Com nota no ERP</p><p class="v">R$ 1,78 mi</p><p class="d">346 títulos, medidos um a um contra o Omie.</p></div>
+    <div class="tile crit"><p class="k">Sem nota, confirmado</p><p class="v">R$ 1,08 mi</p><p class="d">401 títulos pagos, nenhum anexo no ERP.</p></div>
+    <div class="tile unknown"><p class="k">Nunca verificado</p><p class="v">R$ 4,75 mi</p><p class="d">3.481 títulos. O cartão inteiro está aqui.</p></div>
+    <div class="tile warn"><p class="k">Enviado pelo Hub</p><p class="v">82</p><p class="d">Anexos que o Hub subiu ao Omie desde julho. 81 pela Auditoria, 1 pelo cartão.</p></div>
+  </div>
+</section>
+
+<!-- ============================================================ -->
+<section>
+  <div class="sec-head"><h2>O que mudou em 25/08</h2><span class="route">construído e no ar</span></div>
+
+  <p class="lead">O diagnóstico acima é de manhã. À tarde, o gargalo número um deixou de existir: <strong>o Hub agora pergunta ao Omie, título a título, se a nota está lá</strong> — e a resposta virou tela.</p>
+
+  <div class="plan">
+    <div class="step">
+      <span class="when">no ar</span>
+      <div><h4>A régua: o que exige nota</h4>
+      <p>Cada categoria do plano de contas foi classificada em <b>exige</b>, <b>não exige</b> ou <b>depende</b>. Das 86 categorias de despesa, 49 não geram nota de fornecedor (transferência, folha, tributo, tarifa) e 9 são caso a caso (viagem, refeição). O denominador saiu de R$ 13,2 mi para <strong>R$ 3,68 milhões</strong> — que é a conta que se defende numa reunião.</p></div>
+    </div>
+    <div class="step">
+      <span class="when">no ar</span>
+      <div><h4>A varredura de anexos</h4>
+      <p>Nova função lê <code>ListarAnexo</code> no Omie, título a título, e guarda a contagem e o <b>nome</b> de cada arquivo. Roda de 20 em 20 minutos, é leitura pura e nunca escreve no ERP. Já leu <strong>1.133 títulos</strong>; faltam ~1.500, que caem nas próximas horas.</p></div>
+    </div>
+    <div class="step">
+      <span class="when">no ar</span>
+      <div><h4>A tela <code>/governanca/notas-erp</code></h4>
+      <p>Cobertura por mês, por conta e por categoria; a lista de quem deve nota por CNPJ; os títulos filtráveis por situação; e a régua editável. Mais a aba <b>“Falta um passo”</b>, que diz de cada nota parada exatamente o que falta nela.</p></div>
+    </div>
+    <div class="step">
+      <span class="when">falta 1 deploy</span>
+      <div><h4>Foto de comprovante vira PDF</h4>
+      <p>Descoberto no log da tarde: <strong>esta conta do Omie recusa JPG</strong> — <code>Tipo de Anexo não cadastrado para o Código [jpg]</code>. Toda foto que o Hub tentou anexar falhava em silêncio, em toda rodada do cron. O conserto está escrito e testado: o tipo real do arquivo passa a ser lido dos bytes, e imagem vira PDF antes de subir (sem perda — o PDF carrega o JPEG original).</p></div>
+    </div>
+  </div>
+
+  <div class="tiles" style="margin-top:22px">
+    <div class="tile good"><p class="k">Títulos já lidos no ERP</p><p class="v">1.133</p><p class="d">356 com anexo · 757 confirmadamente sem</p></div>
+    <div class="tile warn"><p class="k">Anexo que não parece nota</p><p class="v">89</p><p class="d">Nome como <code>nf_undefined_correta.pdf</code>. Tem arquivo; não se sabe se é a nota.</p></div>
+    <div class="tile unknown"><p class="k">Ainda na fila</p><p class="v">~1.500</p><p class="d">A varredura anda sozinha, 3 rodadas por hora.</p></div>
+    <div class="tile crit"><p class="k">Cobertura medida (piso)</p><p class="v">18,4%</p><p class="d">Sobe conforme a fila anda — nunca desce.</p></div>
+  </div>
+
+  <p class="note">A cobertura acima é um <strong>piso</strong>, e a tela diz isso com todas as letras enquanto houver título não verificado: R$ 1,87 milhão do período ainda não foi perguntado ao ERP. Um número de auditoria que promete precisão que o dado não tem perde a autoridade na primeira pergunta.</p>
+</section>
+
+<!-- ============================================================ -->
+<section>
+  <div class="sec-head"><h2>Onde está cada real</h2><span class="route">por conta de pagamento</span></div>
+
+  <div class="tablewrap">
+    <table>
+      <caption>Títulos a pagar liquidados entre 02/04 e 21/08/2026</caption>
+      <thead><tr>
+        <th>Conta</th><th class="n">Títulos</th><th class="n">Valor</th>
+        <th class="n">Com nota</th><th class="n">Sem nota</th><th class="n">Nunca verificado</th>
+      </tr></thead>
+      <tbody>
+        <tr><td>Sicoob — Conta Corrente<small>PIX e boleto. A única conta que a varredura cobre</small></td>
+          <td class="n">2.083</td><td class="n">8.351.959</td><td class="n good">1.777.184</td><td class="n crit">1.250.928</td><td class="n unknown">5.323.846</td></tr>
+        <tr><td>Sicoob — Cartão de Crédito<small>a fatura do cartão corporativo, provisionada à mão</small></td>
+          <td class="n">2.136</td><td class="n">1.297.877</td><td class="n">—</td><td class="n">—</td><td class="n unknown">1.297.877</td></tr>
+        <tr><td>BTG — Conta Corrente<small>9 títulos de valor alto</small></td>
+          <td class="n">9</td><td class="n">2.111.387</td><td class="n">—</td><td class="n">—</td><td class="n unknown">2.111.387</td></tr>
+        <tr><td>Sicoob — Aplicação RDC</td><td class="n">25</td><td class="n">1.367.834</td><td class="n">—</td><td class="n">—</td><td class="n unknown">1.367.834</td></tr>
+        <tr><td>Banestes Subvenção (Tecnova + BretA)<small>dinheiro de fomento — o que mais precisa de prestação de contas</small></td>
+          <td class="n">19</td><td class="n">95.352</td><td class="n">—</td><td class="n">—</td><td class="n unknown">95.352</td></tr>
+        <tr><td>BTG Aplicações + Itaú Mastercard</td><td class="n">14</td><td class="n">3.704</td><td class="n">—</td><td class="n">—</td><td class="n unknown">3.704</td></tr>
+        <tr class="total"><td>Total (com transferências)</td><td class="n">4.286</td><td class="n">13.228.113</td><td class="n">1.777.184</td><td class="n">1.250.928</td><td class="n">10.200.001</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p class="note">Valores em reais. A linha de total inclui R$ 5,45 mi de <strong>transferência de saída</strong> — movimentação entre contas próprias, que não tem nota de fornecedor e por isso sai do denominador do medidor acima. A janela começa em 02/04/2026 porque é onde começa o espelho de movimentos do Omie; antes disso não há como medir sem puxar tudo de novo do ERP.</p>
+
+  <h3>A cobertura da única conta medida, mês a mês</h3>
+  <div class="tablewrap">
+    <table>
+      <caption>Sicoob — Conta Corrente: nota anexada no Omie, medida por <code>ListarAnexo</code></caption>
+      <thead><tr><th>Mês</th><th class="n">Lançamentos</th><th class="n">Valor</th><th class="n">Com nota</th><th class="n">Valor com nota</th><th class="n">Cobertura</th></tr></thead>
+      <tbody>
+        <tr><td>mai/26 <small>verificação incompleta: 70 de 190 não foram lidos</small></td><td class="n">190</td><td class="n">815.463</td><td class="n">64</td><td class="n">391.159</td><td class="n">48,0%</td></tr>
+        <tr><td>jun/26</td><td class="n">249</td><td class="n">744.138</td><td class="n">75</td><td class="n">358.562</td><td class="n crit">48,2%</td></tr>
+        <tr><td>jul/26</td><td class="n">165</td><td class="n">711.141</td><td class="n">102</td><td class="n">498.648</td><td class="n warn">70,1%</td></tr>
+        <tr><td>ago/26</td><td class="n">153</td><td class="n">759.766</td><td class="n">107</td><td class="n">530.292</td><td class="n good">69,8%</td></tr>
+        <tr class="total"><td>jun–ago (verificação completa)</td><td class="n">567</td><td class="n">2.215.045</td><td class="n">284</td><td class="n">1.387.503</td><td class="n">62,6%</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p>A boa notícia está aqui: julho e agosto subiram de 48% para 70%. A esteira <strong>funciona</strong> quando é acionada. A má notícia é que, mesmo no melhor mês, <strong>R$ 229 mil de PIX saíram sem nota anexada</strong> — e esse é o único canal em que sabemos disso.</p>
+</section>
+
+<!-- ============================================================ -->
+<section>
+  <div class="sec-head"><h2>As esteiras, uma a uma</h2></div>
+
+  <div class="pipes">
+
+    <div class="pipe p-good">
+      <div class="stripe"></div>
+      <div class="body">
+        <div class="row1"><span class="name">Auditoria financeira → título do Omie</span><span class="path">/governanca/auditoria</span><span class="tag on">funcionando</span></div>
+        <p class="desc">Achado aprovado com comprovante sobe como anexo no título do contas a pagar. É a única esteira que escreve documento no ERP de forma rotineira — cron de 15 em 15 minutos.</p>
+        <p class="fig">336 achados &middot; 100 com comprovante &middot; 255 casados com título &middot; <strong>81 anexados</strong> &middot; 18 prontos e parados</p>
+      </div>
+    </div>
+
+    <div class="pipe p-good">
+      <div class="stripe"></div>
+      <div class="body">
+        <div class="row1"><span class="name">Varredura de anexos do PIX</span><span class="path">omie-pix-sync · ação "anexos"</span><span class="tag on">funciona, alcance curto</span></div>
+        <p class="desc">Lê o Omie título a título (<code>ListarAnexo</code>) e grava se existe anexo, com nome e link. <strong>É a única peça do Hub que mede a realidade do ERP em vez de supor.</strong> Só roda sobre a conta corrente do Sicoob, e não tem cron — precisa ser chamada à mão, em lotes.</p>
+        <p class="fig">757 lançamentos verificados &middot; 348 com anexo &middot; 70 de maio ainda não lidos &middot; 0 títulos de cartão cobertos</p>
+      </div>
+    </div>
+
+    <div class="pipe p-crit">
+      <div class="stripe"></div>
+      <div class="body">
+        <div class="row1"><span class="name">Fatura do cartão corporativo</span><span class="path">/governanca/cartao</span><span class="tag off">quase parado</span></div>
+        <p class="desc">A auditoria do cartão classifica cada lançamento em <code>OK</code>, <code>SEM NF</code>, <code>SEM NF-ESPERADO</code>, <code>ENCARGO</code> e afins — a régua está certa. O que não acontece é o passo seguinte: a nota chegar ao ERP.</p>
+        <p class="fig">862 lançamentos auditados (jun e ago) &middot; 48 com nota &middot; <strong class="txt-crit">1 anexado no Omie</strong> &middot; julho nunca foi carregado</p>
+      </div>
+    </div>
+
+    <div class="pipe p-crit">
+      <div class="stripe"></div>
+      <div class="body">
+        <div class="row1"><span class="name">Compras de Facilities</span><span class="path">/facilities</span><span class="tag off">sem insumo</span></div>
+        <p class="desc">Tela de anexar NF pronta, leitura por IA pronta, casamento com o lançamento auditado pronto, cron diário rodando desde 20/08. Falta o arquivo: ninguém anexou uma nota sequer.</p>
+        <p class="fig">41 compras &middot; R$ 46.240 &middot; <strong class="txt-crit">0 com NF</strong> &middot; 0 lidas por IA &middot; 0 vínculos</p>
+      </div>
+    </div>
+
+    <div class="pipe p-warn">
+      <div class="stripe"></div>
+      <div class="body">
+        <div class="row1"><span class="name">Comprovantes da pasta do Drive</span><span class="path">comprovantes-drive-sync</span><span class="tag idle">meia-boca</span></div>
+        <p class="desc">Varre a pasta, lê o documento com IA e tenta casar por valor e data. Alimenta a mesma fila da Auditoria — quando consegue identificar o título.</p>
+        <p class="fig">101 lidos &middot; 12 ilegíveis &middot; 45 casados &middot; <strong>15 chegaram a ter o título identificado</strong></p>
+      </div>
+    </div>
+
+    <div class="pipe p-un">
+      <div class="stripe"></div>
+      <div class="body">
+        <div class="row1"><span class="name">Todo o resto do contas a pagar</span><span class="path">—</span><span class="tag blind">ponto cego</span></div>
+        <p class="desc">Boletos pagos fora do fluxo de auditoria, BTG, contas de subvenção, aplicações. Não há esteira, não há medição, não há fila. Não aparecem como problema porque não aparecem.</p>
+        <p class="fig">3.481 títulos &middot; R$ 4.754.747 &middot; nenhum verificado</p>
+      </div>
+    </div>
+
+  </div>
+</section>
+
+<!-- ============================================================ -->
+<section>
+  <div class="sec-head"><h2>Por que a nota não chega ao Omie</h2><span class="route">seis causas</span></div>
+
+  <div class="causes">
+
+    <div class="cause c-un">
+      <div class="ch"><p class="ct">Ninguém pergunta ao ERP se a nota está lá</p><span class="cv">R$ 4,75 mi sem resposta</span></div>
+      <p>O Hub sabe o que <strong>ele</strong> mandou (82 anexos) e sabe o que o PIX tem (medido). Fora isso, é cego: um título com nota anexada à mão no Omie e um título sem nota nenhuma são indistinguíveis para o Hub. Como a pergunta nunca é feita, o buraco nunca aparece numa tela.</p>
+      <p>A peça que resolve <strong>já existe e está testada</strong> — a ação <code>anexos</code> da <code>omie-pix-sync</code>. Ela só nunca foi apontada para as outras contas nem posta num cron.</p>
+      <div class="fix"><b>O que destrava</b>Generalizar a varredura para todos os títulos a pagar e gravar o resultado numa tabela própria. É leitura pura no Omie: não escreve nada, não tem risco fiscal. Depois disso, "está tudo no ERP?" vira um número numa tela.</div>
+    </div>
+
+    <div class="cause">
+      <div class="ch"><p class="ct">O cartão nunca fecha o ciclo</p><span class="cv">2.136 títulos &middot; R$ 1,30 mi</span></div>
+      <p>É a maior massa de documento da empresa e a que menos tem nota. A auditoria do cartão já separa o que exige nota do que não exige — e mesmo no que exige, o resultado é magro: em junho e agosto somados, <strong>141 lançamentos marcados <code>SEM NF</code></strong> (R$ 44.836) e apenas 48 com comprovante. Um único anexo chegou ao ERP.</p>
+      <p>Some-se que <strong>a competência de julho não existe</strong> na base de auditoria do cartão: as faturas de junho e agosto foram carregadas, julho não. Um mês inteiro de cartão nunca foi auditado.</p>
+      <div class="fix"><b>O que destrava</b>Carregar julho, e a partir de setembro provisionar a fatura pelo Hub — o que já está construído e ligado desde 24/08, mas nunca usado: as oito faturas de 2026 estão marcadas <code>fora_do_hub</code>. Provisionar pelo Hub é o que amarra cada lançamento a um título com dono, que é o que torna a cobrança da nota possível.</div>
+    </div>
+
+    <div class="cause">
+      <div class="ch"><p class="ct">A fila do envio exige três coisas ao mesmo tempo — e some em silêncio</p><span class="cv">18 paradas hoje</span></div>
+      <p>Para um comprovante subir ao Omie a linha precisa, junta: estar <strong>Aprovada</strong>, ter <code>link_comprovante</code> e ter <code>omie_cod_titulo</code> casado. Faltando uma, ela simplesmente não entra na fila — sem erro, sem aviso, sem aparecer numa lista de pendências.</p>
+      <p>Hoje isso trava dois blocos visíveis: <strong>18 achados prontos</strong> que ainda não foram enviados, e <strong>todos os 79 achados de junho</strong>, que nunca foram casados com um título do Omie (julho e agosto foram).</p>
+      <div class="fix"><b>O que destrava</b>Uma lista de "quase lá" na tela da Auditoria, mostrando o que falta em cada linha. Recusa que não deixa rastro é indistinguível de esquecimento.</div>
+    </div>
+
+    <div class="cause">
+      <div class="ch"><p class="ct">Facilities: cano pronto, ninguém abre a torneira</p><span class="cv">41 compras &middot; R$ 46.240</span></div>
+      <p>Todas as 41 compras seguem com <code>nf_status = pendente</code> e nenhum arquivo. Não há erro registrado porque nada foi tentado. O valor é o menor da lista, mas é o caso mais fácil de resolver e o que mais depende só de combinar rotina.</p>
+      <div class="fix"><b>O que destrava</b>Tornar a NF obrigatória para fechar a compra e mostrar as pendentes no painel de Facilities. A partir de setembro, compra sem nota anexada fica visível para quem comprou.</div>
+    </div>
+
+    <div class="cause c-warn">
+      <div class="ch"><p class="ct">O que está anexado nem sempre é nota fiscal</p><span class="cv">qualidade do acervo</span></div>
+      <p>A varredura devolve o nome do arquivo que está no Omie, e ele conta a história. Um exemplo real, num título de agosto:</p>
+      <div class="quote">nf_undefined_correta.pdf</div>
+      <p>Do lado do Drive, 12 dos 101 documentos lidos vieram ilegíveis. E o campo <strong>"Nota Fiscal" do próprio título no Omie está quase sempre vazio</strong>: de 3.217 títulos lidos, só 951 têm número de NF ou documento preenchido — e é justamente esse campo que o contador procura primeiro.</p>
+      <div class="fix"><b>O que destrava</b>Quando a varredura geral rodar, o nome e a contagem de cada anexo ficam gravados. Aí dá para separar "tem anexo" de "tem a nota certa" sem abrir o ERP.</div>
+    </div>
+
+    <div class="cause c-info">
+      <div class="ch"><p class="ct">Nem toda despesa tem nota — e isso precisa estar escrito</p><span class="cv">R$ 5,45 mi fora do denominador</span></div>
+      <p>Transferência entre contas próprias (R$ 5,45 mi), folha e pró-labore, impostos, encargos de cartão, aplicações: nada disso gera nota de fornecedor. A auditoria do cartão já faz essa distinção bem, com <code>SEM NF-ESPERADO</code>, <code>ENCARGO</code> e <code>DISPENSADO (&lt;piso)</code>.</p>
+      <p>O que falta é essa régua existir para o <strong>contas a pagar inteiro</strong>. Sem ela, qualquer percentual de cobertura é discutível — e um número discutível não serve para levar ao chefe.</p>
+      <div class="fix"><b>O que destrava</b>Uma regra por categoria dizendo se aquela despesa exige nota. As categorias já estão no Omie e espelhadas no Hub; é preencher uma coluna, não construir um sistema.</div>
+    </div>
+
+  </div>
+</section>
+
+<!-- ============================================================ -->
+<section>
+  <div class="sec-head"><h2>Os gargalos, em ordem</h2></div>
+
+  <ol class="gargalos">
+    <li><div>
+      <h4>A medição não existe fora do PIX</h4>
+      <p>É o gargalo número um porque todos os outros ficam invisíveis sem ele. R$ 4,75 milhões de despesa em que ninguém sabe se há nota. E é o mais barato de resolver: o código está escrito, testado, e só precisa de alcance e de um cron.</p>
+    </div></li>
+    <li><div>
+      <h4>O cartão não passa pelo Hub</h4>
+      <p>R$ 4,42 milhões em oito faturas de 2026, todas provisionadas à mão no Omie. Enquanto o título nascer fora do Hub, o Hub não tem como saber de quem é a compra, nem cobrar a nota de ninguém.</p>
+    </div></li>
+    <li><div>
+      <h4>A fila conjuntiva e muda</h4>
+      <p>Três condições simultâneas para entrar na fila, nenhuma delas visível quando falta. Junho da Auditoria ficou inteiro de fora e ninguém percebeu até esta varredura.</p>
+    </div></li>
+    <li><div>
+      <h4>Um anexo por título, e o Omie se defende de si mesmo</h4>
+      <p>Mandar duas vezes cria dois anexos, e a leitura logo depois de incluir devolve "consumo redundante" — que já foi confundido com "tabela inválida" e fez o anexo seguinte do mesmo título falhar com um diagnóstico mentiroso. A esteira atual já trata isso, mas é uma restrição real do ritmo: a varredura anda em lotes, não de uma vez.</p>
+    </div></li>
+    <li><div>
+      <h4>A janela do espelho começa em abril</h4>
+      <p><code>omie_cache.movimentos</code> tem os movimentos a partir de 02/04/2026. Janeiro a março existem no Omie mas não no Hub — para medir aquele trimestre é preciso puxar de novo do ERP.</p>
+    </div></li>
+    <li><div>
+      <h4>Facilities depende de hábito</h4>
+      <p>Menor valor, maior facilidade, zero de execução. É o item que se resolve com uma regra de tela e uma conversa, não com código novo.</p>
+    </div></li>
+  </ol>
+</section>
+
+<!-- ============================================================ -->
+<section>
+  <div class="sec-head"><h2>O caminho até "está tudo no ERP"</h2></div>
+
+  <div class="plan">
+    <div class="step">
+      <span class="when">1º</span>
+      <div><h4>Varrer os anexos de todos os títulos a pagar</h4>
+      <p>Generalizar a varredura que hoje só olha o PIX, gravar contagem e nome do anexo por título, e pôr num cron. Só leitura no Omie — nada é escrito no ERP. É o que transforma R$ 4,75 milhões de "não sei" num número.</p></div>
+    </div>
+    <div class="step">
+      <span class="when">2º</span>
+      <div><h4>Marcar quais categorias exigem nota</h4>
+      <p>Transferência, folha, imposto e encargo saem do denominador. Sem isso o percentual de cobertura é sempre contestável — e o objetivo aqui é um número que resista a pergunta.</p></div>
+    </div>
+    <div class="step">
+      <span class="when">3º</span>
+      <div><h4>Uma tela que responde a pergunta do chefe</h4>
+      <p>Cobertura por mês, por conta e por categoria, com a lista do que falta e de quem é. O mesmo desenho da Auditoria, aplicado ao contas a pagar inteiro.</p></div>
+    </div>
+    <div class="step">
+      <span class="when">Set</span>
+      <div><h4>A fatura de agosto do cartão provisionada pelo Hub</h4>
+      <p>Primeira fatura a nascer dentro do Hub, com marcador por lançamento e dono definido. É o que permite cobrar a nota de quem gastou, em vez de descobrir a ausência três meses depois.</p></div>
+    </div>
+    <div class="step">
+      <span class="when">Set</span>
+      <div><h4>Facilities com NF obrigatória</h4>
+      <p>Compra não fecha sem nota anexada, e as pendentes aparecem no painel de quem comprou. Vale para as 41 que já estão abertas.</p></div>
+    </div>
+  </div>
+</section>
+
+<!-- ============================================================ -->
+<section>
+  <div class="sec-head"><h2>Onde conferir cada número</h2></div>
+  <div class="tablewrap">
+    <table>
+      <caption>Do painel à fonte</caption>
+      <thead><tr><th>Pergunta</th><th>Onde</th><th>Fonte</th></tr></thead>
+      <tbody>
+        <tr><td>Quais PIX saíram sem nota no Omie</td><td>/governanca/auditoria</td><td><code>auditoria_pix_lancamentos.tem_comprovante</code></td></tr>
+        <tr><td>Quais comprovantes o Hub já subiu ao ERP</td><td>/governanca/auditoria</td><td><code>auditoria.omie_anexo_enviado_em</code></td></tr>
+        <tr><td>O que a fatura do cartão exige de nota</td><td>/governanca/cartao</td><td><code>auditoria_cartao_lancamentos.status_nf</code></td></tr>
+        <tr><td>Quais compras de Facilities estão sem NF</td><td>/facilities</td><td><code>facilities_compras.nf_status</code></td></tr>
+        <tr><td>O universo de despesa e as contas</td><td>/caixa</td><td><code>omie_cache.movimentos</code>, <code>omie_caixa_conta</code></td></tr>
+        <tr><td>O texto e o nº de NF de cada título</td><td>drill-down da DRE</td><td><code>omie_titulo_texto</code></td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p class="note">Todos os números foram lidos do banco de produção em 25/08/2026, sem amostragem. A coluna verde — "nota confirmada no Omie" — é a única que vem de leitura direta do ERP; as demais são contagens do espelho. Onde a leitura tinha ressalva (maio incompleto, janela do cache começando em abril), a ressalva está escrita ao lado do número.</p>
+</section>
+
+<footer>
+  Central do Financeiro &middot; esteiras Hub → Omie, nota de fornecedor &middot; 25 de agosto de 2026
+</footer>
+
+</div>

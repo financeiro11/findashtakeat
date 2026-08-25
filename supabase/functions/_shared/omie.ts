@@ -6,90 +6,20 @@
 
 import { crypto as stdCrypto } from "https://deno.land/std@0.224.0/crypto/mod.ts";
 import { zipSync } from "https://esm.sh/fflate@0.8.2";
+import { PDFDocument } from "https://esm.sh/pdf-lib@1.17.1";
+import { extDe, nomeSeguroParaOmie, planoDeAnexo, tipoRealDoArquivo } from "./anexo-tipo.ts";
 
-const BASE = "https://app.omie.com.br/api/v1";
+export { nomeSeguroParaOmie, pareceNotaFiscal, tipoRealDoArquivo } from "./anexo-tipo.ts";
 
-function creds() {
-  const app_key = Deno.env.get("OMIE_APP_KEY");
-  const app_secret = Deno.env.get("OMIE_APP_SECRET");
-  if (!app_key || !app_secret) {
-    throw new Error(
-      "Credenciais do Omie ausentes. Configure OMIE_APP_KEY e OMIE_APP_SECRET nos secrets do Supabase (Edge Functions).",
-    );
-  }
-  return { app_key, app_secret };
-}
+import { contarAnexos, ehRespostaQuebrada, omieCall } from "./omie-rpc.ts";
 
-const TENTATIVAS = 5;
-
-/**
- * Erros do Omie que valem uma nova tentativa — nenhum deles é culpa do request:
- *
- *  • "Consumo redundante" (5020), HTTP 425, "processando", "bloqueada",
- *    "Já existe uma requisição desse método sendo executada"
- *    → rate limit / concorrência: a mesma chamada já está rodando lá. O último é
- *      a trava POR MÉTODO — duas consultas de títulos DIFERENTES ao mesmo tempo
- *      esbarram nela do mesmo jeito (medido: 4 em voo, 3 recusadas). Esperar e
- *      repetir é o único caminho.
- *
- *  • "SOAP-ERROR: Broken response from Application Server (BG)"
- *    → o servidor DELES quebrou ao montar a resposta. Aparece sobretudo em respostas
- *      grandes (ListarMovimentos sem filtro, 500 registros por página). É intermitente:
- *      a mesma chamada costuma passar na tentativa seguinte, e com página menor passa
- *      quase sempre — por isso listarMovimentos reduz o lote quando esbarra nisso.
- */
-const ehTransitorio = (msg: unknown): boolean =>
-  /425|redundante|processando|5020|too many|bloqueada|soap-error|broken response|timeout|502|503|504|existe uma requisi|tentar novamente/i
-    .test(String(msg));
-
-/** Chamada quebrou porque a resposta era grande demais para o servidor do Omie montar? */
-export const ehRespostaQuebrada = (e: unknown): boolean =>
-  /soap-error|broken response/i.test(e instanceof Error ? e.message : String(e));
-
-/**
- * Chamada genérica à API do Omie.
- * @param path  caminho do recurso, ex.: "geral/categorias" ou "financas/mf"
- * @param call  nome do método, ex.: "ListarCategorias"
- * @param param objeto de filtros (será embrulhado em `param: [ ... ]`)
- */
-export async function omieCall<T = any>(
-  path: string,
-  call: string,
-  param: Record<string, unknown> = {},
-): Promise<T> {
-  const { app_key, app_secret } = creds();
-  const url = `${BASE}/${path}/`;
-  let lastErr: unknown = null;
-
-  for (let attempt = 0; attempt < TENTATIVAS; attempt++) {
-    const res = await fetch(url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ call, app_key, app_secret, param: [param] }),
-    });
-    const text = await res.text();
-    let data: any;
-    try { data = text ? JSON.parse(text) : null; } catch { data = text; }
-
-    // Omie devolve erros de negócio com HTTP 500 + { faultstring, faultcode }
-    const fault = data && typeof data === "object" ? data.faultstring : null;
-    if (res.ok && !fault) return data as T;
-
-    const msg = fault || (typeof data === "string" ? data : JSON.stringify(data));
-    lastErr = new Error(`Omie ${call} [${res.status}]: ${msg}`);
-
-    if (ehTransitorio(msg) && attempt < TENTATIVAS - 1) {
-      // backoff exponencial: 1,2s · 2,4s · 4,8s · 9,6s
-      await new Promise((r) => setTimeout(r, 1200 * 2 ** attempt));
-      continue;
-    }
-    throw lastErr;
-  }
-  throw lastErr;
-}
+// Reexportado para não quebrar quem já importa daqui — a conversa crua mudou de
+// arquivo, não de endereço.
+export { contarAnexos, ehRespostaQuebrada, listarAnexos, omieCall } from "./omie-rpc.ts";
+export type { AnexoDoOmie, LeituraDeAnexos } from "./omie-rpc.ts";
 
 /* ============================================================
- *  Anexos (geral/anexo/IncluirAnexo)
+ *  Anexos (geral/anexo/IncluirAnexo) — o lado que ESCREVE
  * ============================================================ */
 
 /** Uint8Array → base64, em blocos (String.fromCharCode(...bytes) estoura a pilha em PDFs grandes). */
@@ -122,56 +52,97 @@ async function md5Hex(data: Uint8Array | string): Promise<string> {
   return [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 
-const extDe = (nome: string) =>
-  (nome.includes(".") ? nome.split(".").pop()! : "pdf").toLowerCase().replace(/[^a-z0-9]/g, "") || "pdf";
+/* ============================================================
+ *  Imagem vira PDF antes de subir
+ * ============================================================
+ * A REGRA de que arquivo é aceito, e o que fazer com cada um, mora em
+ * `_shared/anexo-tipo.ts` — puro, sem dependência, coberto por teste. Aqui fica
+ * só a EXECUÇÃO, que precisa do pdf-lib e por isso não dá para testar sem rede.
+ *
+ * Por que converter em vez de mandar a foto: o Omie aceita jpg e png, mas quem
+ * abre a pasta depois é o contador, e ele espera PDF. Para JPEG a conversão é
+ * LOSSLESS — o PDF suporta o fluxo JPEG nativo (DCTDecode), então `embedJpg`
+ * copia os bytes originais e só embrulha; não há recompressão nem perda.
+ */
 
-/** Extensões que o Omie tem cadastradas como tipo de anexo. Fora disto ele recusa. */
-const EXT_ANEXO: Record<string, string> = {
-  pdf: "pdf", jpg: "jpg", jpeg: "jpg", jfif: "jpg", png: "png",
-  xml: "xml", txt: "txt", doc: "doc", docx: "docx", xls: "xls", xlsx: "xlsx", zip: "zip",
+/**
+ * Uma imagem vira uma página PDF do tamanho dela.
+ *
+ * A página segue a proporção da foto em vez de forçar A4: comprovante de posto
+ * fotografado em retrato virava uma faixa perdida no meio de uma folha A4, e
+ * quem abre para conferir o valor tem de dar zoom. Teto de 2000pt por lado para
+ * o arquivo não ficar absurdo com foto de 12 megapixels.
+ */
+async function imagemParaPdf(bytes: Uint8Array, tipo: string): Promise<Uint8Array> {
+  const pdf = await PDFDocument.create();
+  const img = tipo === "png" ? await pdf.embedPng(bytes) : await pdf.embedJpg(bytes);
+
+  const MAX = 2000;
+  const escala = Math.min(1, MAX / Math.max(img.width, img.height));
+  const w = Math.max(1, Math.round(img.width * escala));
+  const h = Math.max(1, Math.round(img.height * escala));
+
+  const pagina = pdf.addPage([w, h]);
+  pagina.drawImage(img, { x: 0, y: 0, width: w, height: h });
+  pdf.setProducer("Central do Financeiro - Takeat");
+  pdf.setSubject("Comprovante fotografado, convertido para PDF para anexo no Omie");
+  return await pdf.save();
+}
+
+export type ArquivoNormalizado = {
+  bytes: Uint8Array;
+  /** nome final, com a extensão que corresponde ao CONTEÚDO */
+  nome: string;
+  tipo: string;
+  /** o que foi feito, para o rastro */
+  conversao: "nada" | "extensao" | "imagem_para_pdf";
 };
 
 /**
- * O nome com que o arquivo entra no zip e na tag cNomeArquivo.
+ * Deixa o arquivo do jeito que o Omie aceita — e do jeito que abre depois.
  *
- * DUAS RECUSAS REAIS do Omie, as duas resolvidas aqui:
- *   • "O arquivo [X] não foi encontrado no arquivo zip encaminhado" — o unzip DELES não
- *     acha a entrada quando o nome tem acento ou espaço ("Recibo do bilhete eletrônico,
- *     29 Junho para FULANO.pdf"). O zip guarda em UTF-8; eles leem noutra tabela.
- *   • "Tipo de Anexo não cadastrado para o Código [...]" — extensão fora da lista deles
- *     (um .jpeg vindo do Drive, por exemplo).
- * O nome bonito continua valendo no nosso lado: é o que gravamos em `omie_anexo_nome`.
+ * @param converterImagem  imagem vira PDF (padrão). Desligar só faz sentido em
+ *                         diagnóstico.
  */
-export function nomeSeguroParaOmie(nome: string): string {
-  const ext = EXT_ANEXO[extDe(nome)] ?? "pdf";
-  const base = String(nome ?? "")
-    .replace(/\.[^.]+$/, "")
-    .normalize("NFD").replace(/[\u0300-\u036f]/g, "")
-    .replace(/[^A-Za-z0-9._-]+/g, "_")
-    .replace(/_+/g, "_")
-    .replace(/^[._-]+|[._-]+$/g, "")
-    .slice(0, 60) || "comprovante";
-  return `${base}.${ext}`;
-}
+export async function normalizarAnexo(
+  bytes: Uint8Array,
+  nome: string,
+  opts: { converterImagem?: boolean } = {},
+): Promise<ArquivoNormalizado> {
+  const plano = planoDeAnexo(tipoRealDoArquivo(bytes), nome, opts);
+  const semExt = String(nome ?? "comprovante").replace(/\.[^.]+$/, "") || "comprovante";
 
-/**
- * Conta quantos anexos um título tem numa dada tabela.
- *   >= 0  a contagem
- *    -1   a tabela não vale para este registro (resposta de negócio do Omie)
- *    -2   não deu para saber (rate limit / servidor deles) — NÃO é "tabela inválida"
- *
- * A distinção não é preciosismo: logo depois de um IncluirAnexo bem-sucedido, o Omie
- * recusa a leitura seguinte por "consumo redundante". Tratar isso como tabela inválida
- * fazia o anexo seguinte do MESMO título falhar com um diagnóstico mentiroso.
- */
-async function contarAnexos(nId: number | string, cTabela: string): Promise<number> {
-  try {
-    const r = await omieCall<any>("geral/anexo", "ListarAnexo", { nId: Number(nId), cTabela, nPagina: 1, nRegPorPagina: 50 });
-    const arr = r?.listaAnexos ?? r?.anexos ?? r?.arquivos ?? [];
-    return Array.isArray(arr) ? arr.length : 0;
-  } catch (e) {
-    return ehTransitorio(e instanceof Error ? e.message : String(e)) ? -2 : -1;
+  if (plano.acao === "recusar") throw new Error(plano.motivo);
+
+  if (plano.acao === "converter_para_pdf") {
+    try {
+      return {
+        bytes: await imagemParaPdf(bytes, plano.tipoOrigem),
+        nome: `${semExt}.pdf`,
+        tipo: "pdf",
+        conversao: "imagem_para_pdf",
+      };
+    } catch (e) {
+      /* A conversão falhou (imagem corrompida, JPEG em CMYK que o pdf-lib recusa).
+       *
+       * A versão anterior caía de volta para "manda a imagem mesmo". Isso PARECIA
+       * generoso e era inútil: esta conta do Omie recusa jpg com "Tipo de Anexo
+       * não cadastrado para o Código [jpg]" (medido em 25/08/2026, nas duas notas
+       * de agosto que estavam paradas). O fallback trocava um erro claro por um
+       * erro obscuro três passos adiante. */
+      throw new Error(
+        `A imagem não pôde ser convertida para PDF (${e instanceof Error ? e.message : e}) e o Omie ` +
+        "não aceita imagem como anexo. Reenvie o comprovante em PDF.",
+      );
+    }
   }
+
+  return {
+    bytes,
+    nome: `${semExt}.${plano.tipoFinal}`,
+    tipo: plano.tipoFinal,
+    conversao: plano.corrigiuExtensao ? "extensao" : "nada",
+  };
 }
 
 // Valores de cTabela válidos para IncluirAnexo (documentação oficial). Para um título vindo
@@ -209,7 +180,9 @@ export async function incluirAnexo(opts: {
   base64: string;
   /** identificador interno; será truncado em 20 caracteres */
   codInt: string;
-}): Promise<{ cTabela: string; variante: string; nIdAnexo: unknown }> {
+  /** imagem vira PDF antes de subir (padrão true). Ver `normalizarAnexo`. */
+  converterImagem?: boolean;
+}): Promise<{ cTabela: string; variante: string; nIdAnexo: unknown; nome: string; conversao: string }> {
   const baseCod = opts.codInt.slice(0, 14);   // deixa espaço p/ sufixo único por tentativa
 
   // O que aprendemos com os erros do próprio Omie:
@@ -218,8 +191,16 @@ export async function incluirAnexo(opts: {
   //  • O sucesso é confirmado pela RESPOSTA (nIdAnexo), não por recontar via ListarAnexo —
   //    esse recontar sofria rate-limit e dava falso-negativo.
   // A doc pede zip; deixamos o arquivo cru como 2º recurso (contas antigas às vezes aceitam).
-  const nome = nomeSeguroParaOmie(opts.nome);
-  const originalRaw = deBase64(opts.base64);
+  //
+  // A NORMALIZAÇÃO VEM ANTES DE TUDO: é ela que garante que o que sobe abre do
+  // outro lado. Ver `normalizarAnexo` — foto vira PDF, extensão mentirosa é
+  // corrigida pelos bytes, e formato que o Omie não aceita é recusado AQUI, com
+  // instrução, em vez de virar um .pdf que não é PDF lá dentro.
+  const norm = await normalizarAnexo(deBase64(opts.base64), opts.nome, {
+    converterImagem: opts.converterImagem,
+  });
+  const nome = nomeSeguroParaOmie(norm.nome);
+  const originalRaw = norm.bytes;
   const zip = zipSync({ [nome]: originalRaw }, { level: 6 });
   const zipB64 = toBase64(zip);
   const rawB64 = toBase64(originalRaw);
@@ -262,7 +243,7 @@ export async function incluirAnexo(opts: {
 
       // Caminho rápido: o Omie devolveu um id de anexo real (> 0).
       const nIdAnexo = Number(resp?.nIdAnexo ?? resp?.nCodAnexo ?? 0);
-      if (nIdAnexo > 0) return { cTabela, variante: v.nome, nIdAnexo };
+      if (nIdAnexo > 0) return { cTabela, variante: v.nome, nIdAnexo, nome, conversao: norm.conversao };
 
       // Alguns tenants respondem nIdAnexo:0 mesmo gravando. Confirma pela contagem, com uma
       // folga p/ propagar (e poucas chamadas, p/ não cair no rate-limit que já nos enganou).
@@ -270,7 +251,7 @@ export async function incluirAnexo(opts: {
       if (antes < 0) { diagnostico.push(`${cTabela}/${v.nome}: nIdAnexo=0 e sem leitura para confirmar`); continue; }
       await new Promise((r) => setTimeout(r, 1500));
       const depois = await contarAnexos(opts.nId, cTabela);
-      if (depois > antes) return { cTabela, variante: v.nome, nIdAnexo: nIdAnexo || true };
+      if (depois > antes) return { cTabela, variante: v.nome, nIdAnexo: nIdAnexo || true, nome, conversao: norm.conversao };
 
       diagnostico.push(`${cTabela}/${v.nome}: nIdAnexo=0 e sem gravar (${antes}->${depois}) resp=${JSON.stringify(resp).slice(0, 220)}`);
     }
@@ -401,6 +382,101 @@ export async function trocarCategoriaTitulo(opts: {
     jaEstava: false,
     confirmacao: aceite || `lançamento ${resposta?.codigo_lancamento_omie}`,
   };
+}
+
+/* ============================================================
+ *  Criar e excluir conta a pagar
+ * ============================================================
+ * A ÚNICA porta de escrita de título no Omie deste repo. Está aqui, e não solta
+ * numa Edge Function, porque `src/lib/cartao/envio.test.ts` vigia quem pode
+ * chamar `IncluirContaPagar`: concentrar num lugar é o que torna a vigilância
+ * possível.
+ *
+ * `codigo_lancamento_integracao` é obrigatório e é a trava contra duplicidade —
+ * o Omie recusa uma integração repetida. Essa recusa NÃO é erro: significa "já
+ * está lá", e é assim que `incluirContaPagar` a devolve.
+ */
+
+export type InclusaoContaPagar = {
+  codTitulo: string;
+  integracao: string;
+  /** true quando o Omie recusou por já existir esta integração. */
+  jaExistia: boolean;
+};
+
+/** A recusa por integração repetida, que é resposta e não falha. */
+const ehIntegracaoRepetida = (msg: string): boolean =>
+  /integra(ç|c)(ã|a)o.*(j(á|a) (existe|cadastrad)|duplicad)|c(ó|o)digo de integra|j(á|a) (existe|foi) (um |uma )?(lan(ç|c)amento|t(í|i)tulo)/i
+    .test(msg);
+
+/**
+ * Cria uma conta a pagar. `param` sai pronto de `montarTitulo`
+ * (`_shared/cartao-envio.ts`) — esta função não decide nada de contabilidade,
+ * só fala com a API.
+ */
+export async function incluirContaPagar(
+  param: Record<string, unknown>,
+): Promise<InclusaoContaPagar> {
+  const integracao = String(param.codigo_lancamento_integracao ?? "");
+  try {
+    const r = await omieCall<any>("financas/contapagar", "IncluirContaPagar", param);
+    const cod = String(r?.codigo_lancamento_omie ?? "");
+    if (!cod || cod === "0") {
+      throw new Error(
+        "O Omie respondeu sem devolver o código do título: " + JSON.stringify(r ?? null).slice(0, 240),
+      );
+    }
+    return { codTitulo: cod, integracao, jaExistia: false };
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    if (!ehIntegracaoRepetida(msg)) throw e;
+
+    // Já existe: recupera o código do título que está lá, para o Hub registrar o
+    // vínculo em vez de deixar um envio "perdido" que ninguém consegue limpar.
+    let cod = "";
+    try {
+      const atual = await omieCall<any>("financas/contapagar", "ConsultarContaPagar", {
+        codigo_lancamento_integracao: integracao,
+      });
+      cod = String(atual?.codigo_lancamento_omie ?? "");
+    } catch { /* nada: a confirmação abaixo trata */ }
+
+    /*
+     * O CÓDIGO DEVOLVIDO PODE SER UM FANTASMA — medido em 24/08/2026.
+     *
+     * Depois de um `ExcluirContaPagar`, o Omie continua recusando aquela
+     * integração como repetida por perto de um minuto E devolve, na consulta
+     * por integração, o código do título que ele acabou de apagar. Consultar
+     * esse código responde "Lançamento não cadastrado". É a mesma janela de
+     * leitura velha documentada em `trocarCategoriaTitulo` (nota 3).
+     *
+     * Sem esta conferência, o Hub gravaria a linha como "enviado" apontando
+     * para um título que não existe: o pior desfecho possível, porque some da
+     * fila de reenvio E não aparece no ERP. Melhor devolver erro — a linha vai
+     * para `status='erro'`, que é justamente o que a próxima rodada retenta.
+     */
+    if (cod) {
+      try {
+        await omieCall<any>("financas/contapagar", "ConsultarContaPagar", {
+          codigo_lancamento_omie: Number(cod),
+        });
+        return { codTitulo: cod, integracao, jaExistia: true };
+      } catch { /* cai no erro abaixo */ }
+    }
+    throw new Error(
+      `O Omie recusou a integração ${integracao} como repetida, mas não confirmou o título ` +
+      "correspondente. Costuma ser o índice dele ainda não refletindo uma exclusão recente — " +
+      "tente de novo daqui a um minuto.",
+    );
+  }
+}
+
+/** Apaga uma conta a pagar. Usado só pela limpeza da fatura de teste. */
+export async function excluirContaPagar(codTitulo: number | string): Promise<string> {
+  const r = await omieCall<any>("financas/contapagar", "ExcluirContaPagar", {
+    codigo_lancamento_omie: Number(codTitulo),
+  });
+  return String(r?.descricao ?? r?.cDescricao ?? "excluído");
 }
 
 export interface OmieCategoria {

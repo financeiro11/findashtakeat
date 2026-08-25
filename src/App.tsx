@@ -59,6 +59,7 @@ import Cartao from "./pages/Cartao";
 import CartaoOmie from "./pages/operacional/CartaoOmie";
 import PainelCAC from "./pages/governanca/PainelCAC";
 import Rescisoes from "./pages/governanca/Rescisoes";
+import NotasERP from "./pages/governanca/NotasERP";
 import Reembolsos from "./pages/operacional/Reembolsos";
 import ColaboradoresRH from "./pages/operacional/ColaboradoresRH";
 import Estornos from "./pages/operacional/Estornos";
@@ -89,7 +90,7 @@ import MobilePerfil from "./pages/mobile/Perfil";
 const queryClient = new QueryClient();
 
 /**
- * No celular o Hub monta um app próprio (cinco abas, ver MobileShell) em vez de espremer
+ * No celular o Hub monta um app próprio (seis abas, ver MobileShell) em vez de espremer
  * o layout de desktop. Mesma URL, mesma sessão, mesmas policies — só a árvore de telas
  * muda. Com `isMobile` falso, o que é montado aqui é exatamente o que sempre foi.
  *
@@ -230,6 +231,10 @@ function Rotas() {
               <Route path="/governanca/cartao" element={<Cartao />} />
               <Route path="/governanca/cac" element={<PainelCAC />} />
               <Route path="/governanca/rescisoes" element={<Rescisoes />} />
+              {/* A cobertura de notas de fornecedor dentro do Omie. Mora na
+                  Governança e não na Auditoria porque a pergunta é do fechamento
+                  inteiro ("está tudo no ERP?"), não de um achado. */}
+              <Route path="/governanca/notas-erp" element={<NotasERP />} />
               {/* A aba Extratos existe só no celular; no computador cada fonte tem a sua
                   página própria, e a do cartão é a mais parecida com ela. */}
               <Route path="/extratos" element={<Navigate to="/governanca/cartao" replace />} />

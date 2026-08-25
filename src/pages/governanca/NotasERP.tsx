@@ -30,19 +30,60 @@ import { cn } from "@/lib/utils";
 import { comValorExato } from "@/components/ValorExato";
 import { Input } from "@/components/ui/input";
 import {
-  AlertTriangle, ArrowUpRight, CheckCircle2, ChevronLeft, ChevronRight, FileWarning,
-  Flame, Loader2, Paperclip, RefreshCw, Scale, Search, Send, ShieldQuestion,
-  ThumbsDown, ThumbsUp, Upload,
+  AlertTriangle, ArrowUpRight, CheckCircle2, ChevronLeft, ChevronRight, CreditCard,
+  FileWarning, Flame, Loader2, Paperclip, RefreshCw, Scale, Search, Send,
+  ShieldQuestion, ThumbsDown, ThumbsUp, Upload,
 } from "lucide-react";
 import {
   brlStr, categoriasCriticas, dataStr, fatias, formatarDoc, frasePanorama, mesCurto,
-  pctStr, periodoPadrao, GRAVIDADE, GRAVIDADES, REGRA, SITUACAO,
+  nomeDaLinha, pctStr, periodoPadrao, GRAVIDADE, GRAVIDADES, REGRA, SITUACAO,
   SITUACOES_EXIGIVEIS, SITUACOES_FALTANDO,
   type Gravidade, type LinhaTitulo, type Regra, type ResumoNotas, type SituacaoTitulo,
 } from "@/lib/notasErp";
+import { useApelidos } from "@/hooks/useApelidos";
+import { nomeExibido } from "@/lib/apelidos";
 
 const sb = supabase as any;
 const brl = (n: number) => comValorExato(n, brlStr(n));
+
+/**
+ * O nome de cada linha, com o apelido por cima — inclusive no gasto de cartão,
+ * cujo lojista só existe dentro da observação. Ver `nomeDaLinha`.
+ */
+function useNomeDaLinha() {
+  const mapa = useApelidos();
+  return useCallback(
+    (l: Pick<LinhaTitulo, "favorecido" | "favorecido_cru" | "observacao" | "doc">) =>
+      nomeDaLinha(l, (nome, doc) => nomeExibido(mapa, nome, doc ?? null)),
+    [mapa],
+  );
+}
+
+/** Favorecido em duas linhas: o nome que se lê, e o que se procura no Omie. */
+function Favorecido({ l, nomear }: {
+  l: LinhaTitulo;
+  nomear: ReturnType<typeof useNomeDaLinha>;
+}) {
+  const n = nomear(l);
+  return (
+    <>
+      <span className="block">
+        {n.nome}
+        {n.deCartao && (
+          <span className="ml-1.5 text-[11px] text-muted-foreground" title="Gasto de cartão: o lojista vem da observação do título">
+            cartão
+          </span>
+        )}
+      </span>
+      <span className="block font-mono text-[11px] text-muted-foreground">
+        {/* O nome CRU fica aqui porque é ele que se procura no Omie — e some do
+            filtro se não estiver escrito na linha (convenção do repo). */}
+        {n.cru !== n.nome ? `${n.cru} · ` : ""}
+        {formatarDoc(l.doc)} · título {l.cod_titulo}
+      </span>
+    </>
+  );
+}
 
 type Aba = "panorama" | "categorias" | "fornecedores" | "titulos" | "revisar" | "quase" | "regua";
 
@@ -485,14 +526,23 @@ function Categorias({ resumo }: { resumo: ResumoNotas | null }) {
 
 function Fornecedores({ resumo }: { resumo: ResumoNotas | null }) {
   const linhas = resumo?.fornecedores ?? [];
+  const cartaoTitulos = resumo?.meta?.cartao_titulos ?? 0;
   return (
     <div className="card-surface overflow-x-auto p-0">
       <div className="border-b border-border p-4 pb-3">
         <h3 className="text-sm font-semibold">Quem deve nota</h3>
-        <p className="mt-0.5 text-[12.5px] text-muted-foreground">
+        <p className="mt-0.5 max-w-3xl text-[12.5px] text-muted-foreground">
           A cobrança é por CNPJ, não por título: um fornecedor com oito títulos em aberto é um
           e-mail, não oito.
         </p>
+        {cartaoTitulos > 0 && (
+          <p className="mt-2 inline-flex items-center gap-1.5 rounded border border-amber-500/20 bg-amber-500/10 px-2 py-1 text-[12.5px] text-amber-700 dark:text-amber-400">
+            <CreditCard className="h-3.5 w-3.5" />
+            Fora desta lista: <b>{cartaoTitulos.toLocaleString("pt-BR")} gastos de cartão</b>
+            {" "}({brlStr(resumo?.meta?.cartao_valor ?? 0)}). A nota deles se cobra de quem gastou,
+            na Auditoria do cartão — não de um CNPJ. Continuam contando na cobertura.
+          </p>
+        )}
       </div>
       <table className="w-full text-[13px]">
         <thead>
@@ -536,6 +586,7 @@ function Titulos({ de, ate, gravidadeInicial }: {
   const [pagina, setPagina] = useState(0);
   const [linhas, setLinhas] = useState<LinhaTitulo[]>([]);
   const [carregando, setCarregando] = useState(true);
+  const nomear = useNomeDaLinha();
 
   // O clique no painel de gravidade troca o foco com a aba já aberta.
   useEffect(() => { setGravidades(gravidadeInicial); }, [gravidadeInicial]);
@@ -626,12 +677,7 @@ function Titulos({ de, ate, gravidadeInicial }: {
             )}
             {!carregando && linhas.map((l) => (
               <tr key={l.cod_titulo} className="border-b border-border/60 last:border-0 align-top">
-                <td className="px-4 py-2">
-                  <span className="block">{l.favorecido}</span>
-                  <span className="block font-mono text-[11px] text-muted-foreground">
-                    {formatarDoc(l.doc)} · título {l.cod_titulo}
-                  </span>
-                </td>
+                <td className="px-4 py-2"><Favorecido l={l} nomear={nomear} /></td>
                 <td className="px-3 py-2 text-[12.5px]">{l.categoria}</td>
                 <td className="px-3 py-2 text-[12.5px] text-muted-foreground">{l.conta}</td>
                 <td className="px-3 py-2 text-right font-medium tabular-nums">{brl(l.valor)}</td>
@@ -697,6 +743,7 @@ function Revisar({ de, ate, aoRevisar }: { de: string; ate: string; aoRevisar: (
   const [linhas, setLinhas] = useState<LinhaTitulo[]>([]);
   const [carregando, setCarregando] = useState(true);
   const [salvando, setSalvando] = useState<number | null>(null);
+  const nomear = useNomeDaLinha();
 
   const ler = useCallback(async () => {
     setCarregando(true);
@@ -762,12 +809,7 @@ function Revisar({ de, ate, aoRevisar }: { de: string; ate: string; aoRevisar: (
             )}
             {!carregando && linhas.map((l) => (
               <tr key={l.cod_titulo} className="border-b border-border/60 last:border-0 align-top">
-                <td className="px-4 py-2">
-                  <span className="block">{l.favorecido}</span>
-                  <span className="block font-mono text-[11px] text-muted-foreground">
-                    {l.categoria} · título {l.cod_titulo}
-                  </span>
-                </td>
+                <td className="px-4 py-2"><Favorecido l={l} nomear={nomear} /></td>
                 <td className="px-3 py-2">
                   {(l.anexos ?? []).map((a, i) => (
                     <span key={i} className="block break-all font-mono text-[11.5px]">{a.nome ?? "(sem nome)"}</span>

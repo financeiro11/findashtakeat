@@ -13,6 +13,8 @@
  * ficam de fora dos DOIS lados da conta.
  */
 
+import { lerGastoDeCartao } from "@/lib/observacaoTitulo";
+
 export type SituacaoTitulo =
   | "com_nota"
   | "anexo_suspeito"
@@ -34,7 +36,13 @@ export type Regra = "exige" | "dispensa" | "conferir";
 
 export type LinhaTitulo = {
   cod_titulo: number;
+  /** o nome que vai para a tela: apelido da Parametrização quando existe */
   favorecido: string;
+  /** a razão social como o Omie a escreve — é ela que se procura no ERP */
+  favorecido_cru: string;
+  tem_apelido: boolean;
+  /** a observação crua do título; é onde mora o lojista, no gasto de cartão */
+  observacao: string | null;
   doc: string | null;
   categoria: string;
   categoria_codigo: string | null;
@@ -67,6 +75,11 @@ export type ResumoNotas = {
     cobertura_valor: number | null; cobertura_titulos: number | null;
     nao_verificado_valor: number;
     a_revisar: number;
+    /* Quanto do que falta é gasto de cartão. Continua no denominador da
+       cobertura; sai só da lista de fornecedores, porque não se cobra nota de
+       um CNPJ que é o balde da fatura — cobra-se de quem gastou. */
+    cartao_titulos: number;
+    cartao_valor: number;
     atualizado_em: string | null;
   };
   gravidade: Array<{ gravidade: Gravidade; titulos: number; valor: number }>;
@@ -239,6 +252,40 @@ export function categoriasCriticas(r: ResumoNotas | null, minimo = 0): ResumoNot
   return r.categorias
     .filter((c) => c.valor_faltante > minimo)
     .sort((a, b) => b.valor_faltante - a.valor_faltante);
+}
+
+/**
+ * O NOME QUE A LINHA MOSTRA — e por que ele não sai pronto do banco.
+ *
+ * O servidor já resolve o favorecido contra o cadastro do Omie e aplica o
+ * apelido da Parametrização. Falta um caso, e é o mais comum da base: no cartão,
+ * TODA linha chega como "Lancamento Fatura Cartao" e o lojista de verdade está
+ * na observação, colado depois de um "|", com as MESMAS colunas posicionais do
+ * OFX.
+ *
+ * Esse texto é lido aqui, e não no Postgres, de propósito: o repositório tem UM
+ * parser de MEMO (`src/lib/cartao/ofx`, via `lerGastoDeCartao`), e um segundo
+ * escrito em SQL faria esta tela e a do Cartão discordarem sobre o nome do mesmo
+ * lojista. A trava do `ehCartao` vem junto — numa conta a pagar comum a
+ * observação é o que o fornecedor escreveu ("Link para visualizar a NFS-e…"), e
+ * lida como MEMO viraria um "estabelecimento" plausível e errado.
+ *
+ * O apelido é aplicado DE NOVO sobre o lojista extraído: "APPLE.COM/BILL" também
+ * merece virar "Apple" se alguém cadastrou isso.
+ */
+export function nomeDaLinha(
+  linha: Pick<LinhaTitulo, "favorecido" | "favorecido_cru" | "observacao" | "doc">,
+  aplicarApelido: (nome: string, doc?: string | null) => string,
+): { nome: string; cru: string; deCartao: boolean } {
+  const cartao = lerGastoDeCartao(linha.favorecido_cru, linha.observacao);
+  if (cartao?.estabelecimento) {
+    return {
+      nome: aplicarApelido(cartao.estabelecimento, null),
+      cru: cartao.estabelecimento,
+      deCartao: true,
+    };
+  }
+  return { nome: linha.favorecido, cru: linha.favorecido_cru, deCartao: false };
 }
 
 /** O período padrão da tela: os últimos `meses` meses fechados + o corrente. */

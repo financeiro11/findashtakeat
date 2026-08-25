@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   brlStr, categoriasCriticas, fatias, formatarDoc, frasePanorama, mesCurto,
-  pctStr, periodoPadrao, GRAVIDADE, GRAVIDADES,
+  pctStr, periodoPadrao, nomeDaLinha, GRAVIDADE, GRAVIDADES,
   SITUACOES_EXIGIVEIS, SITUACOES_FALTANDO, SITUACAO,
   type ResumoNotas,
 } from "./notasErp";
@@ -12,7 +12,7 @@ const resumo = (meta: Partial<ResumoNotas["meta"]>, extra: Partial<ResumoNotas> 
     limiares: { medio: 150, grave: 500, urgente: 1000 },
     titulos: 0, valor: 0, exigivel_titulos: 0, exigivel_valor: 0,
     cobertura_valor: null, cobertura_titulos: null, nao_verificado_valor: 0,
-    a_revisar: 0, atualizado_em: null, ...meta,
+    a_revisar: 0, cartao_titulos: 0, cartao_valor: 0, atualizado_em: null, ...meta,
   },
   gravidade: [], situacoes: [], meses: [], contas: [], categorias: [], fornecedores: [], ...extra,
 });
@@ -155,5 +155,66 @@ describe("periodoPadrao", () => {
     const p = periodoPadrao(new Date(Date.UTC(2026, 1, 10)), 6); // fev/2026
     expect(p.de).toBe("2025-09-01");
     expect(p.ate).toBe("2026-02-28");
+  });
+});
+
+describe("nomeDaLinha", () => {
+  const semApelido = (n: string) => n;
+  const OBS_CARTAO = "Conta a Pagar importada automaticamente em 04/08/2026 às 12:51.|";
+
+  const linha = (over: Partial<Parameters<typeof nomeDaLinha>[0]> = {}) => ({
+    favorecido: "Lancamento Fatura Cartao",
+    favorecido_cru: "Lancamento Fatura Cartao",
+    observacao: null as string | null,
+    doc: null as string | null,
+    ...over,
+  });
+
+  it("tira o lojista da observação quando o título é do cartão", () => {
+    const r = nomeDaLinha(
+      linha({ observacao: OBS_CARTAO + "Hubspot Inc.V                 888-48" }),
+      semApelido,
+    );
+    expect(r.deCartao).toBe(true);
+    expect(r.nome).toMatch(/Hubspot/i);
+  });
+
+  it("aplica o apelido SOBRE o lojista extraído", () => {
+    const r = nomeDaLinha(
+      linha({ observacao: OBS_CARTAO + "APPLE.COM/BILL                SAO PAULO" }),
+      (n) => (/apple/i.test(n) ? "Apple" : n),
+    );
+    expect(r.nome).toBe("Apple");
+    expect(r.cru).toMatch(/APPLE/i);   // o cru continua sendo o que está no ERP
+  });
+
+  it("NÃO lê a observação de um título comum — ela é do fornecedor, não da fatura", () => {
+    // A armadilha documentada em observacaoTitulo.ts: lida como MEMO posicional,
+    // "Link para visualizar a NFS-e…" viraria um estabelecimento plausível.
+    const r = nomeDaLinha(
+      linha({
+        favorecido: "Flash App",
+        favorecido_cru: "FLASH APP",
+        observacao: "Flash Beneficio agosto|Link para visualizar a NFS-e: https://www.nfse.gov.br",
+      }),
+      semApelido,
+    );
+    expect(r.deCartao).toBe(false);
+    expect(r.nome).toBe("Flash App");
+  });
+
+  it("usa o apelido que o servidor já resolveu quando não é cartão", () => {
+    const r = nomeDaLinha(
+      linha({ favorecido: "Ingram Micro Brasil", favorecido_cru: "INGRAM MICRO BRASIL LTDA" }),
+      semApelido,
+    );
+    expect(r.nome).toBe("Ingram Micro Brasil");
+    expect(r.cru).toBe("INGRAM MICRO BRASIL LTDA");
+  });
+
+  it("aguenta cartão sem observação — a tela mostra o que já mostrava", () => {
+    const r = nomeDaLinha(linha({ observacao: null }), semApelido);
+    expect(r.deCartao).toBe(false);
+    expect(r.nome).toBe("Lancamento Fatura Cartao");
   });
 });

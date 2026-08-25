@@ -1,6 +1,11 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { Search, Users, Columns3, Filter, FilterX, X } from "lucide-react";
+import {
+  Search, Users, Columns3, Filter, FilterX, X,
+  ChevronLeft, ChevronRight, Copy, Receipt, PanelRightOpen, Maximize2,
+  UserPlus, UserMinus, CalendarClock,
+} from "lucide-react";
+import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
@@ -180,9 +185,58 @@ const FOTOS_BUCKET = "rh-fotos";
 
 const STORAGE_KEY = "colabrh:colunas-visiveis";
 const FILTROS_KEY = "colabrh:filtros";
+const DENSIDADE_KEY = "colabrh:densidade";
 const DEFAULT_VISIVEIS = new Set(COLS.filter((c) => c.def).map((c) => c.key));
 
 const ativo = (c: Colaborador) => !c.datadesl;
+
+/* ─────────────────────────── Vocabulário visual ───────────────────────────
+   Que forma cada coluna toma na tabela. Documento, data e conta saem em
+   monoespaçada (o olho compara dígito com dígito); o que é categoria vira
+   etiqueta. Dinheiro não entra aqui: `col.num` já resolve. */
+
+const MONO_KEYS = new Set([
+  "codigo", "cpf", "cnpj", "rg", "cep", "pix", "conta", "agencia", "digito", "codbanco",
+  "whatsapp", "whatsappcorp", "nascimento", "inicio", "vence", "datadesl",
+  "contrato_enviado_em", "created_at", "updated_at", "aditivo_vigencia",
+]);
+
+const PILL_KEYS = new Set([
+  "modalidade", "setor", "trabalho", "estadocivil", "genero", "camisa",
+  "tipodesl", "modelo_remuneracao", "totalpass",
+]);
+
+/* Paleta categórica só do avatar de quem não tem foto. A cor sai do nome,
+   então a mesma pessoa é sempre da mesma cor — vira ponto de referência ao
+   correr a lista com o olho. */
+const CORES_AVATAR = [
+  "hsl(0 72% 30%)", "hsl(0 65% 22%)", "hsl(0 78% 47%)", "hsl(212 80% 45%)",
+  "hsl(152 60% 36%)", "hsl(38 92% 40%)", "hsl(220 12% 32%)", "hsl(0 78% 40%)",
+];
+
+const corDoNome = (nome: string) => {
+  let h = 0;
+  for (let i = 0; i < nome.length; i++) h = (h * 31 + nome.charCodeAt(i)) >>> 0;
+  return CORES_AVATAR[h % CORES_AVATAR.length];
+};
+
+const iniciaisDe = (nome: string) =>
+  nome.split(/\s+/).filter(Boolean).slice(0, 2).map((p) => p[0]).join("").toUpperCase() || "?";
+
+/* ─────────────────────────── Mês de referência ───────────────────────────
+   O espelho guarda o estado de hoje, não uma série histórica — por isso o mês
+   escolhido não recorta a tabela inteira, só responde três perguntas: quem
+   entrou, quem saiu e que contrato vence nele. */
+
+const MESES_CURTOS = [
+  "jan", "fev", "mar", "abr", "mai", "jun", "jul", "ago", "set", "out", "nov", "dez",
+];
+
+/** A data ISO cai no mês/ano de referência? */
+const noMes = (iso: unknown, ano: number, mes: number) => {
+  const d = parseISO(iso);
+  return !!d && d.getFullYear() === ano && d.getMonth() === mes;
+};
 
 /* ─────────────────────────── Busca livre ───────────────────────────
    "pedro" tem de trazer o Pedro, não quem mora na Rua São Pedro. A busca varre
@@ -337,6 +391,15 @@ export default function ColaboradoresRH() {
   const [aba, setAba] = useState<"ativos" | "desligados" | "todos">("ativos");
   const [fotoAberta, setFotoAberta] = useState<{ url: string; nome: string } | null>(null);
   const [selecionado, setSelecionado] = useState<Colaborador | null>(null);
+  const [fichaCheia, setFichaCheia] = useState(false);
+  const [densidade, setDensidade] = useState<"compacta" | "confortavel">(
+    () => (localStorage.getItem(DENSIDADE_KEY) === "compacta" ? "compacta" : "confortavel"),
+  );
+  const [mesRef, setMesRef] = useState(() => {
+    const hoje = new Date();
+    return { ano: hoje.getFullYear(), mes: hoje.getMonth() };
+  });
+  const [movFiltro, setMovFiltro] = useState<"entraram" | "sairam" | "vencendo" | null>(null);
   const [visiveis, setVisiveis] = useState<Set<string>>(() => {
     try {
       const saved = localStorage.getItem(STORAGE_KEY);
@@ -400,6 +463,60 @@ export default function ColaboradoresRH() {
   const ativos = useMemo(() => todos.filter(ativo), [todos]);
   const desligados = useMemo(() => todos.filter((c) => !ativo(c)), [todos]);
 
+  useEffect(() => {
+    localStorage.setItem(DENSIDADE_KEY, densidade);
+  }, [densidade]);
+
+  // Fechou a ficha lateral? A versão em tela cheia fecha junto.
+  useEffect(() => {
+    if (!selecionado) setFichaCheia(false);
+  }, [selecionado]);
+
+  /* ── Mês de referência ── */
+  const moverMes = (delta: number) =>
+    setMesRef(({ ano, mes }) => {
+      const d = new Date(ano, mes + delta, 1);
+      return { ano: d.getFullYear(), mes: d.getMonth() };
+    });
+
+  const rotuloMes = useMemo(
+    () => new Date(mesRef.ano, mesRef.mes, 1).toLocaleDateString("pt-BR", { month: "long", year: "numeric" }),
+    [mesRef],
+  );
+  const mesCurto = MESES_CURTOS[mesRef.mes];
+  const ehMesCorrente =
+    mesRef.ano === new Date().getFullYear() && mesRef.mes === new Date().getMonth();
+
+  /** O que a folha custa hoje: soma do valor mensal de quem está ativo. */
+  const folhaTotal = useMemo(
+    () => ativos.reduce((s, c) => s + (Number(c.valor) || 0), 0),
+    [ativos],
+  );
+
+  /** Quem entrou, quem saiu e que contrato vence no mês escolhido. */
+  const mov = useMemo(() => {
+    const entraram = new Set<string>();
+    const sairam = new Set<string>();
+    const vencendo = new Set<string>();
+    for (const c of todos) {
+      if (noMes(c.inicio, mesRef.ano, mesRef.mes)) entraram.add(c.id);
+      if (noMes(c.datadesl, mesRef.ano, mesRef.mes)) sairam.add(c.id);
+      if (ativo(c) && noMes(c.vence, mesRef.ano, mesRef.mes)) vencendo.add(c.id);
+    }
+    return { entraram, sairam, vencendo };
+  }, [todos, mesRef]);
+
+  const copiar = useCallback((valor: string, rotulo: string) => {
+    if (!valor || valor === "—") {
+      toast.error(`Sem ${rotulo} cadastrado`);
+      return;
+    }
+    navigator.clipboard.writeText(valor).then(
+      () => toast.success(`${rotulo} copiado`, { description: valor }),
+      () => toast.error(`Não deu para copiar o ${rotulo}`),
+    );
+  }, []);
+
   const baseAba = useMemo(
     () => (aba === "ativos" ? ativos : aba === "desligados" ? desligados : todos),
     [aba, ativos, desligados, todos],
@@ -432,7 +549,21 @@ export default function ColaboradoresRH() {
     [filtros, faixas],
   );
 
-  const filtrados = useMemo(() => buscados.filter((c) => passaFiltros(c)), [buscados, passaFiltros]);
+  const filtrados = useMemo(
+    () =>
+      buscados.filter(
+        (c) => passaFiltros(c) && (!movFiltro || mov[movFiltro].has(c.id)),
+      ),
+    [buscados, passaFiltros, movFiltro, mov],
+  );
+
+  /* Ligar "Saíram em ago" na aba Ativos não devolveria ninguém — o atalho
+     abre a aba Todos junto, senão ele parece quebrado. */
+  const alternarMov = (qual: "entraram" | "sairam" | "vencendo") => {
+    const ligando = movFiltro !== qual;
+    setMovFiltro(ligando ? qual : null);
+    if (ligando && qual === "sairam") setAba("todos");
+  };
 
   /* Quem a mesma busca acharia na outra aba. Sem isso, procurar alguém que já
      saiu enquanto a aba "Ativos" está aberta devolve nada e parece cadastro
@@ -474,12 +605,13 @@ export default function ColaboradoresRH() {
     return out;
   }, [filtros, faixas]);
 
-  const temFiltro = chips.length > 0 || busca.trim() !== "";
+  const temFiltro = chips.length > 0 || busca.trim() !== "" || movFiltro !== null;
 
   const limparTudo = () => {
     setFiltros({});
     setFaixas({});
     setBusca("");
+    setMovFiltro(null);
   };
 
   const toggleColuna = (key: string) =>
@@ -499,408 +631,442 @@ export default function ColaboradoresRH() {
       return { ...prev, [key]: next };
     });
 
+
+  const pad = densidade === "compacta" ? "py-1.5" : "py-[11px]";
+
   return (
-    <div className="p-6 space-y-4">
-      <div className="flex items-start justify-between gap-4 flex-wrap">
-        <div className="flex items-center gap-3">
-          <div className="size-10 rounded-lg bg-primary/10 grid place-items-center">
-            <Users className="size-5 text-primary" />
+    <div className="flex flex-col items-stretch gap-5 p-6 lg:flex-row lg:items-start">
+      <div className="flex min-w-0 flex-1 flex-col gap-3.5">
+
+        {/* ─── Cabeçalho: identidade da tela + mês de referência ─── */}
+        <div className="flex flex-wrap items-start justify-between gap-5">
+          <div className="flex items-center gap-3">
+            <div className="grid size-10 place-items-center rounded-lg bg-accent">
+              <Users className="size-5 text-primary" />
+            </div>
+            <div>
+              <h1 className="text-xl font-semibold tracking-tight">Colaboradores (Dados RH)</h1>
+              <p className="text-[13.5px] text-muted-foreground">
+                Espelho do painel Dados PJ do Portal RH — atualizado automaticamente; o que muda lá, muda aqui.
+              </p>
+            </div>
           </div>
+
+          <div className="flex items-center gap-2.5">
+            <div className="inline-flex h-9 items-center overflow-hidden rounded-lg border bg-card">
+              <button
+                onClick={() => moverMes(-1)}
+                title="Mês anterior"
+                className="grid h-full w-8 place-items-center text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+              >
+                <ChevronLeft className="size-4" />
+              </button>
+              <span className="flex h-full items-center gap-2 border-x px-3 text-[13.5px] font-semibold capitalize">
+                {rotuloMes}
+                {ehMesCorrente && (
+                  <span className="rounded bg-pos/15 px-1.5 py-0.5 text-[10.5px] font-bold uppercase tracking-[0.08em] text-pos">
+                    Mês corrente
+                  </span>
+                )}
+              </span>
+              <button
+                onClick={() => moverMes(1)}
+                title="Próximo mês"
+                className="grid h-full w-8 place-items-center text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+              >
+                <ChevronRight className="size-4" />
+              </button>
+            </div>
+            <span className="max-w-[200px] text-xs leading-snug text-muted-foreground">
+              entradas, saídas e contratos vencendo seguem este mês
+            </span>
+          </div>
+        </div>
+
+        {/* ─── Faixa de resumo: o tamanho da folha e o movimento do mês ─── */}
+        <div className="flex flex-wrap items-center gap-x-7 gap-y-4 rounded-xl border bg-card px-[18px] py-3.5">
           <div>
-            <h1 className="text-xl font-semibold">Colaboradores (Dados RH)</h1>
-            <p className="text-sm text-muted-foreground">
-              Espelho do painel Dados PJ do Portal RH — atualizado automaticamente; o que muda lá, muda aqui.
+            <p className="text-[10.5px] font-semibold uppercase tracking-[0.08em] text-muted-foreground">
+              Folha total mensal
+            </p>
+            <p
+              className="num mt-1 text-[28px] font-medium leading-none"
+              title={`Soma do valor mensal dos ${ativos.length} contratos ativos`}
+            >
+              {BRL(folhaTotal)}
             </p>
           </div>
-        </div>
-        <div className="flex items-center gap-3 text-sm text-muted-foreground">
-          <span>
-            <b className="text-foreground">{ativos.length}</b> ativos ·{" "}
-            <b className="text-foreground">{desligados.length}</b> desligados
-          </span>
-        </div>
-      </div>
 
-      <div className="flex items-center gap-3 flex-wrap">
-        <Tabs value={aba} onValueChange={(v) => setAba(v as typeof aba)}>
-          <TabsList>
-            <TabsTrigger value="ativos">Ativos</TabsTrigger>
-            <TabsTrigger value="desligados">Desligados</TabsTrigger>
-            <TabsTrigger value="todos">Todos</TabsTrigger>
-          </TabsList>
-        </Tabs>
-        <div className="relative max-w-sm flex-1 min-w-[220px]">
-          <Search className="size-4 absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
-          <Input
-            value={busca}
-            onChange={(e) => setBusca(e.target.value)}
-            placeholder="Buscar por nome, código, cargo, documento…"
-            title="Procura primeiro nos dados da pessoa (nome, código, cargo, documento, contato). Se não achar ninguém, amplia para todas as colunas e avisa onde casou."
-            className="pl-9"
-          />
+          <div className="hidden h-11 w-px bg-border sm:block" />
+
+          <div className="flex flex-wrap gap-x-6 gap-y-2 text-[13.5px]">
+            <Resumo rotulo="Ativos" valor={String(ativos.length)} />
+            <Resumo rotulo={`Entraram em ${mesCurto}`} valor={`+${mov.entraram.size}`} tom={mov.entraram.size ? "pos" : undefined} />
+            <Resumo rotulo={`Saíram em ${mesCurto}`} valor={`−${mov.sairam.size}`} tom={mov.sairam.size ? "neg" : undefined} />
+            <Resumo rotulo="Contratos vencendo" valor={String(mov.vencendo.size)} tom={mov.vencendo.size ? "warn" : undefined} />
+          </div>
+
+          {todos.length > 0 && (
+            <span className="ml-auto text-xs text-muted-foreground">
+              Sincronizado {fmtDateTime(todos[0].synced_at)}
+            </span>
+          )}
         </div>
-        <Popover>
-          <PopoverTrigger asChild>
-            <Button variant="outline" size="sm" className="gap-2">
-              <Columns3 className="size-4" />
-              Colunas ({colunasAtivas.length}/{COLS.length})
-            </Button>
-          </PopoverTrigger>
-          <PopoverContent align="end" className="w-72 p-0">
-            <div className="flex items-center justify-between px-3 py-2 border-b">
-              <span className="text-sm font-medium">Mostrar colunas</span>
-              <div className="flex gap-2 text-xs">
-                <button className="text-primary hover:underline" onClick={() => setVisiveis(new Set(COLS.map((c) => c.key)))}>
-                  Todas
-                </button>
-                <button className="text-primary hover:underline" onClick={() => setVisiveis(new Set(DEFAULT_VISIVEIS))}>
-                  Padrão
-                </button>
-              </div>
-            </div>
-            <div className="max-h-80 overflow-y-auto p-2 grid grid-cols-1 gap-0.5">
-              {COLS.map((c) => (
-                <label
-                  key={c.key}
-                  className="flex items-center gap-2 px-2 py-1 rounded hover:bg-accent cursor-pointer text-sm"
+
+        {/* ─── Barra de ferramentas ─── */}
+        <div className="flex flex-wrap items-center gap-2.5">
+          <Tabs value={aba} onValueChange={(v) => setAba(v as typeof aba)}>
+            <TabsList>
+              <TabsTrigger value="ativos">Ativos</TabsTrigger>
+              <TabsTrigger value="desligados">Desligados</TabsTrigger>
+              <TabsTrigger value="todos">Todos</TabsTrigger>
+            </TabsList>
+          </Tabs>
+
+          <div className="relative w-[300px] min-w-[220px] max-w-full">
+            <Search className="absolute left-3 top-1/2 size-[15px] -translate-y-1/2 text-muted-foreground" />
+            <Input
+              value={busca}
+              onChange={(e) => setBusca(e.target.value)}
+              placeholder="Buscar nome, código, documento…"
+              title="Procura primeiro nos dados da pessoa (nome, código, cargo, documento, contato). Se não achar ninguém, amplia para todas as colunas e avisa onde casou."
+              className="h-9 pl-9 text-[13.5px]"
+            />
+          </div>
+
+          <PilulaMov
+            ativa={movFiltro === "entraram"}
+            tom="pos"
+            icone={<UserPlus className="size-3.5" />}
+            rotulo={`Entraram em ${mesCurto}`}
+            n={mov.entraram.size}
+            onClick={() => alternarMov("entraram")}
+          />
+          <PilulaMov
+            ativa={movFiltro === "sairam"}
+            tom="neg"
+            icone={<UserMinus className="size-3.5" />}
+            rotulo={`Saíram em ${mesCurto}`}
+            n={mov.sairam.size}
+            onClick={() => alternarMov("sairam")}
+          />
+          <PilulaMov
+            ativa={movFiltro === "vencendo"}
+            tom="warn"
+            icone={<CalendarClock className="size-3.5" />}
+            rotulo="Contratos vencendo"
+            n={mov.vencendo.size}
+            onClick={() => alternarMov("vencendo")}
+          />
+
+          <div className="ml-auto flex items-center gap-2">
+            <div className="inline-flex items-center gap-0.5 rounded-lg bg-muted p-[3px]">
+              {(["compacta", "confortavel"] as const).map((d) => (
+                <button
+                  key={d}
+                  onClick={() => setDensidade(d)}
+                  title={d === "compacta" ? "Mais linhas na tela" : "Linhas mais espaçadas"}
+                  className={cn(
+                    "rounded-md px-2.5 py-1 text-[12.5px] transition-colors",
+                    densidade === d
+                      ? "bg-card font-medium text-foreground shadow-[var(--shadow-sm)]"
+                      : "text-muted-foreground hover:text-foreground",
+                  )}
                 >
-                  <Checkbox checked={visiveis.has(c.key)} onCheckedChange={() => toggleColuna(c.key)} />
-                  {c.label}
-                </label>
+                  {d === "compacta" ? "Compacta" : "Confortável"}
+                </button>
               ))}
             </div>
-          </PopoverContent>
-        </Popover>
-      </div>
 
-      <div className="flex items-center gap-2 flex-wrap text-sm">
-        <span className={cn("tabular-nums", temFiltro ? "text-foreground" : "text-muted-foreground")}>
-          <b className="text-foreground">{filtrados.length}</b>
-          {temFiltro && <span className="text-muted-foreground"> de {baseAba.length}</span>}{" "}
-          {filtrados.length === 1 ? "colaborador" : "colaboradores"}
-          {temFiltro && <span className="text-muted-foreground"> · {chips.length} {chips.length === 1 ? "filtro" : "filtros"} de coluna</span>}
-        </span>
-
-        {ampliada && (
-          <Badge variant="outline" className="gap-1 font-normal text-muted-foreground">
-            <span>
-              Nada nos dados da pessoa — casou em{" "}
-              <span className="text-foreground">{colunasCasadas.slice(0, 3).join(", ")}</span>
-              {colunasCasadas.length > 3 && ` +${colunasCasadas.length - 3}`}
-            </span>
-          </Badge>
-        )}
-
-        {foraDaAba > 0 && (
-          <Button
-            variant="ghost"
-            size="sm"
-            className="h-7 gap-1.5 text-xs"
-            onClick={() => setAba("todos")}
-            title="Ver também quem está na outra aba"
-          >
-            +{foraDaAba} em {aba === "ativos" ? "Desligados" : "Ativos"}
-          </Button>
-        )}
-
-        {chips.map((chip) => (
-          <Badge key={chip.id} variant="secondary" className="gap-1 font-normal pr-1">
-            <span className="text-muted-foreground">{chip.label}:</span>
-            <span className="max-w-[180px] truncate">{chip.resumo}</span>
-            <button
-              onClick={chip.limpar}
-              title={`Remover o filtro de ${chip.label}`}
-              className="rounded-sm p-0.5 hover:bg-background/70"
-            >
-              <X className="size-3" />
-            </button>
-          </Badge>
-        ))}
-
-        {temFiltro ? (
-          <Button variant="ghost" size="sm" className="h-7 gap-1.5 text-xs" onClick={limparTudo}>
-            <FilterX className="size-3.5" />
-            Limpar filtros
-          </Button>
-        ) : (
-          <span className="text-xs text-muted-foreground">
-            Clique no funil do cabeçalho para filtrar uma coluna.
-          </span>
-        )}
-      </div>
-
-      {error && (
-        <div className="text-sm text-destructive bg-destructive/10 border border-destructive/30 rounded-md px-3 py-2">
-          {error instanceof Error ? error.message : "Erro ao carregar colaboradores"}
-          <span className="block text-xs mt-1">
-            Se a tabela `rh_colaboradores` ainda não existe neste Supabase, rode o script de integração com o RH
-            (findash-integracao-rh.sql) no SQL Editor.
-          </span>
+            <Popover>
+              <PopoverTrigger asChild>
+                <Button variant="outline" size="sm" className="h-[34px] gap-2">
+                  <Columns3 className="size-[15px]" />
+                  Colunas ({colunasAtivas.length}/{COLS.length})
+                </Button>
+              </PopoverTrigger>
+              <PopoverContent align="end" className="w-72 p-0">
+                <div className="flex items-center justify-between border-b px-3 py-2">
+                  <span className="text-sm font-medium">Mostrar colunas</span>
+                  <div className="flex gap-2 text-xs">
+                    <button className="text-primary hover:underline" onClick={() => setVisiveis(new Set(COLS.map((c) => c.key)))}>
+                      Todas
+                    </button>
+                    <button className="text-primary hover:underline" onClick={() => setVisiveis(new Set(DEFAULT_VISIVEIS))}>
+                      Padrão
+                    </button>
+                  </div>
+                </div>
+                <div className="grid max-h-80 grid-cols-1 gap-0.5 overflow-y-auto p-2">
+                  {COLS.map((c) => (
+                    <label
+                      key={c.key}
+                      className="flex cursor-pointer items-center gap-2 rounded px-2 py-1 text-sm hover:bg-accent"
+                    >
+                      <Checkbox checked={visiveis.has(c.key)} onCheckedChange={() => toggleColuna(c.key)} />
+                      {c.label}
+                    </label>
+                  ))}
+                </div>
+              </PopoverContent>
+            </Popover>
+          </div>
         </div>
+
+        {/* ─── Contagem, etiquetas de filtro e avisos da busca ─── */}
+        <div className="flex flex-wrap items-center gap-2 text-sm">
+          <span className={cn("tabular-nums", temFiltro ? "text-foreground" : "text-muted-foreground")}>
+            <b className="text-foreground">{filtrados.length}</b>
+            {temFiltro && <span className="text-muted-foreground"> de {baseAba.length}</span>}{" "}
+            {filtrados.length === 1 ? "colaborador" : "colaboradores"}
+            {chips.length > 0 && (
+              <span className="text-muted-foreground"> · {chips.length} {chips.length === 1 ? "filtro" : "filtros"} de coluna</span>
+            )}
+          </span>
+
+          {ampliada && (
+            <Badge variant="outline" className="gap-1 font-normal text-muted-foreground">
+              <span>
+                Nada nos dados da pessoa — casou em{" "}
+                <span className="text-foreground">{colunasCasadas.slice(0, 3).join(", ")}</span>
+                {colunasCasadas.length > 3 && ` +${colunasCasadas.length - 3}`}
+              </span>
+            </Badge>
+          )}
+
+          {foraDaAba > 0 && (
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-7 gap-1.5 text-xs"
+              onClick={() => setAba("todos")}
+              title="Ver também quem está na outra aba"
+            >
+              +{foraDaAba} em {aba === "ativos" ? "Desligados" : "Ativos"}
+            </Button>
+          )}
+
+          {chips.map((chip) => (
+            <Badge key={chip.id} variant="secondary" className="gap-1 pr-1 font-normal">
+              <span className="text-muted-foreground">{chip.label}:</span>
+              <span className="max-w-[180px] truncate">{chip.resumo}</span>
+              <button
+                onClick={chip.limpar}
+                title={`Remover o filtro de ${chip.label}`}
+                className="rounded-sm p-0.5 hover:bg-background/70"
+              >
+                <X className="size-3" />
+              </button>
+            </Badge>
+          ))}
+
+          {temFiltro ? (
+            <Button variant="ghost" size="sm" className="h-7 gap-1.5 text-xs" onClick={limparTudo}>
+              <FilterX className="size-3.5" />
+              Limpar filtros
+            </Button>
+          ) : (
+            <span className="text-xs text-muted-foreground">
+              Clique no funil do cabeçalho para filtrar uma coluna.
+            </span>
+          )}
+        </div>
+
+        {error && (
+          <div className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+            {error instanceof Error ? error.message : "Erro ao carregar colaboradores"}
+            <span className="mt-1 block text-xs">
+              Se a tabela `rh_colaboradores` ainda não existe neste Supabase, rode o script de integração com o RH
+              (findash-integracao-rh.sql) no SQL Editor.
+            </span>
+          </div>
+        )}
+
+        {/* ─── Tabela ─── */}
+        <div className="overflow-x-auto rounded-xl border bg-card">
+          <Table>
+            <TableHeader>
+              <TableRow className="bg-secondary hover:bg-secondary">
+                <TableHead className="sticky left-0 z-10 h-auto bg-secondary px-4 py-2.5 text-[11px] font-semibold uppercase tracking-[0.06em] text-muted-foreground">
+                  Status
+                </TableHead>
+                {colunasAtivas.map((c) => (
+                  <TableHead
+                    key={c.key}
+                    className={cn(
+                      "h-auto whitespace-nowrap px-3.5 py-2.5 text-[11px] font-semibold uppercase tracking-[0.06em] text-muted-foreground",
+                      c.num && "text-right",
+                    )}
+                  >
+                    <div className={cn("flex items-center gap-0.5", c.num && "justify-end")}>
+                      <span>{c.label}</span>
+                      {!c.semFiltro && (
+                        <FiltroColuna
+                          col={c}
+                          base={buscados}
+                          passaFiltros={passaFiltros}
+                          selecionados={filtros[c.key]}
+                          faixa={faixas[c.key]}
+                          onToggleValor={(chave) => toggleValor(c.key, chave)}
+                          onSelecionar={(chaves) =>
+                            setFiltros((p) =>
+                              chaves.length ? { ...p, [c.key]: new Set(chaves) } : (() => { const { [c.key]: _, ...r } = p; return r; })(),
+                            )
+                          }
+                          onFaixa={(f) =>
+                            setFaixas((p) =>
+                              faixaVazia(f) ? (() => { const { [c.key]: _, ...r } = p; return r; })() : { ...p, [c.key]: f },
+                            )
+                          }
+                        />
+                      )}
+                    </div>
+                  </TableHead>
+                ))}
+                <TableHead className="h-auto w-px whitespace-nowrap px-4 py-2.5 text-right text-[11px] font-semibold uppercase tracking-[0.06em] text-muted-foreground">
+                  Ações
+                </TableHead>
+              </TableRow>
+            </TableHeader>
+
+            <TableBody>
+              {isLoading ? (
+                <TableRow>
+                  <TableCell colSpan={colunasAtivas.length + 2} className="py-10 text-center text-muted-foreground">
+                    Carregando…
+                  </TableCell>
+                </TableRow>
+              ) : filtrados.length === 0 ? (
+                <TableRow>
+                  <TableCell colSpan={colunasAtivas.length + 2} className="py-10 text-center text-muted-foreground">
+                    {todos.length === 0
+                      ? "Nenhum dado sincronizado ainda — rode o script de integração no Supabase."
+                      : busca.trim()
+                        ? `Ninguém encontrado para “${busca.trim()}” — nem nos dados da pessoa, nem nas outras colunas.`
+                        : "Nenhum colaborador encontrado com esse filtro."}
+                  </TableCell>
+                </TableRow>
+              ) : (
+                filtrados.map((c) => {
+                  const eAtivo = ativo(c);
+                  const selo = mov.entraram.has(c.id) ? "NOVO" : mov.sairam.has(c.id) ? "SAIU" : null;
+                  return (
+                    <TableRow
+                      key={c.id}
+                      onClick={() => setSelecionado(c)}
+                      data-selecionada={selecionado?.id === c.id ? "" : undefined}
+                      className="group cursor-pointer border-b-border/60 data-[selecionada]:bg-accent/60"
+                    >
+                      <TableCell
+                        className={cn(
+                          "sticky left-0 z-10 bg-card px-4 group-hover:bg-muted group-data-[selecionada]:bg-accent/60",
+                          pad,
+                        )}
+                      >
+                        {eAtivo ? (
+                          <span className="inline-flex h-[22px] items-center rounded-full bg-pos/15 px-2.5 text-[11.5px] font-semibold text-pos">
+                            Ativo
+                          </span>
+                        ) : (
+                          <span className="inline-flex h-[22px] items-center rounded-full bg-destructive/15 px-2.5 text-[11.5px] font-semibold text-destructive">
+                            Desligado
+                          </span>
+                        )}
+                      </TableCell>
+
+                      {colunasAtivas.map((col) => (
+                        <TableCell
+                          key={col.key}
+                          className={cn(
+                            "max-w-[320px] overflow-hidden text-ellipsis whitespace-nowrap px-3.5",
+                            pad,
+                            col.num && "text-right",
+                          )}
+                          title={col.key === "foto_url" ? undefined : String(c[col.key] ?? "")}
+                        >
+                          <Celula
+                            col={col}
+                            c={c}
+                            fotoUrl={fotoUrls?.[String(c.foto_url)]}
+                            selo={selo}
+                            onFoto={setFotoAberta}
+                          />
+                        </TableCell>
+                      ))}
+
+                      <TableCell className={cn("px-4", pad)}>
+                        <div className="flex justify-end gap-1.5">
+                          <BotaoIcone
+                            titulo="Copiar CNPJ"
+                            onClick={(e) => { e.stopPropagation(); copiar(fmtCnpj(c.cnpj), "CNPJ"); }}
+                          >
+                            <Copy className="size-3.5" />
+                          </BotaoIcone>
+                          <BotaoIcone
+                            titulo="Copiar PIX"
+                            onClick={(e) => { e.stopPropagation(); copiar(txt(c.pix), "PIX"); }}
+                          >
+                            <Receipt className="size-3.5" />
+                          </BotaoIcone>
+                          <BotaoIcone
+                            titulo="Abrir ficha completa"
+                            onClick={(e) => { e.stopPropagation(); setSelecionado(c); }}
+                          >
+                            <PanelRightOpen className="size-3.5" />
+                          </BotaoIcone>
+                        </div>
+                      </TableCell>
+                    </TableRow>
+                  );
+                })
+              )}
+            </TableBody>
+          </Table>
+        </div>
+      </div>
+
+      {/* ─── Ficha lateral: a mesma ficha de antes, agora sem tapar a tabela ─── */}
+      {selecionado && (
+        <aside className="w-full self-start overflow-hidden rounded-xl border bg-card lg:sticky lg:top-4 lg:w-[420px] lg:flex-none">
+          <div className="flex items-center justify-between border-b px-4 py-3">
+            <span className="text-[11px] font-semibold uppercase tracking-[0.08em] text-muted-foreground">
+              Ficha do colaborador
+            </span>
+            <div className="flex gap-1.5">
+              <BotaoIcone titulo="Abrir em tela cheia" onClick={() => setFichaCheia(true)}>
+                <Maximize2 className="size-3.5" />
+              </BotaoIcone>
+              <BotaoIcone titulo="Fechar" onClick={() => setSelecionado(null)}>
+                <X className="size-3.5" />
+              </BotaoIcone>
+            </div>
+          </div>
+          <div className="max-h-[calc(100vh-7.5rem)] overflow-y-auto p-4">
+            <FichaConteudo
+              c={selecionado}
+              fotoUrl={fotoUrls?.[String(selecionado.foto_url)]}
+              onFoto={setFotoAberta}
+              onCopiar={copiar}
+            />
+          </div>
+        </aside>
       )}
 
-      <div className="border rounded-xl overflow-x-auto bg-card">
-        <Table>
-          <TableHeader>
-            <TableRow>
-              <TableHead className="sticky left-0 bg-card z-10">Status</TableHead>
-              {colunasAtivas.map((c) => (
-                <TableHead key={c.key} className={cn("whitespace-nowrap", c.num && "text-right")}>
-                  <div className={cn("flex items-center gap-0.5", c.num && "justify-end")}>
-                    <span>{c.label}</span>
-                    {!c.semFiltro && (
-                      <FiltroColuna
-                        col={c}
-                        base={buscados}
-                        passaFiltros={passaFiltros}
-                        selecionados={filtros[c.key]}
-                        faixa={faixas[c.key]}
-                        onToggleValor={(chave) => toggleValor(c.key, chave)}
-                        onSelecionar={(chaves) =>
-                          setFiltros((p) =>
-                            chaves.length ? { ...p, [c.key]: new Set(chaves) } : (() => { const { [c.key]: _, ...r } = p; return r; })(),
-                          )
-                        }
-                        onFaixa={(f) =>
-                          setFaixas((p) =>
-                            faixaVazia(f) ? (() => { const { [c.key]: _, ...r } = p; return r; })() : { ...p, [c.key]: f },
-                          )
-                        }
-                      />
-                    )}
-                  </div>
-                </TableHead>
-              ))}
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {isLoading ? (
-              <TableRow>
-                <TableCell colSpan={colunasAtivas.length + 1} className="text-center text-muted-foreground py-8">
-                  Carregando…
-                </TableCell>
-              </TableRow>
-            ) : filtrados.length === 0 ? (
-              <TableRow>
-                <TableCell colSpan={colunasAtivas.length + 1} className="text-center text-muted-foreground py-8">
-                  {todos.length === 0
-                    ? "Nenhum dado sincronizado ainda — rode o script de integração no Supabase."
-                    : busca.trim()
-                      ? `Ninguém encontrado para “${busca.trim()}” — nem nos dados da pessoa, nem nas outras colunas.`
-                      : "Nenhum colaborador encontrado com esse filtro."}
-                </TableCell>
-              </TableRow>
-            ) : (
-              filtrados.map((c) => (
-                <TableRow
-                  key={c.id}
-                  className="cursor-pointer"
-                  onClick={() => setSelecionado(c)}
-                >
-                  <TableCell className="sticky left-0 bg-card z-10">
-                    {ativo(c) ? (
-                      <Badge className="bg-emerald-600/15 text-emerald-700 dark:text-emerald-400 hover:bg-emerald-600/15">
-                        Ativo
-                      </Badge>
-                    ) : (
-                      <Badge variant="destructive" className="bg-destructive/15 text-destructive hover:bg-destructive/15">
-                        Desligado
-                      </Badge>
-                    )}
-                  </TableCell>
-                  {colunasAtivas.map((col) => (
-                    <TableCell
-                      key={col.key}
-                      className={cn(
-                        "whitespace-nowrap max-w-[320px] overflow-hidden text-ellipsis",
-                        col.num && "text-right tabular-nums",
-                      )}
-                      title={String(c[col.key] ?? "")}
-                    >
-                      {col.key === "foto_url" ? (
-                        c.foto_url && fotoUrls?.[String(c.foto_url)] ? (
-                          <img
-                            src={fotoUrls[String(c.foto_url)]}
-                            alt={String(c.nome ?? "")}
-                            loading="lazy"
-                            title="Clique para ver a foto"
-                            className="size-8 rounded-full object-cover bg-muted cursor-pointer hover:ring-2 hover:ring-primary transition-shadow"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              setFotoAberta({
-                                url: fotoUrls[String(c.foto_url)],
-                                nome: String(c.nome ?? ""),
-                              });
-                            }}
-                            onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }}
-                          />
-                        ) : (
-                          "—"
-                        )
-                      ) : (
-                        (col.fmt ?? txt)(c[col.key])
-                      )}
-                    </TableCell>
-                  ))}
-                </TableRow>
-              ))
-            )}
-          </TableBody>
-        </Table>
-      </div>
-
-      <Dialog open={!!selecionado} onOpenChange={(open) => !open && setSelecionado(null)}>
-        <DialogContent className="max-w-2xl max-h-[85vh] overflow-y-auto">
-          {selecionado && (() => {
-            const c = selecionado;
-            const eAtivo = ativo(c);
-            const inicio = parseISO(c.inicio);
-            const desl = parseISO(c.datadesl);
-            const calc = !eAtivo ? calculoProporcional(c) : null;
-            const fimRef = desl ?? new Date();
-            return (
-              <>
-                <DialogHeader>
-                  <div className="flex items-center gap-4">
-                    {c.foto_url && fotoUrls?.[String(c.foto_url)] ? (
-                      <img
-                        src={fotoUrls[String(c.foto_url)]}
-                        alt={String(c.nome ?? "")}
-                        title="Clique para ampliar"
-                        className="size-16 rounded-full object-cover bg-muted cursor-pointer hover:ring-2 hover:ring-primary transition-shadow"
-                        onClick={() =>
-                          setFotoAberta({
-                            url: fotoUrls[String(c.foto_url)],
-                            nome: String(c.nome ?? ""),
-                          })
-                        }
-                      />
-                    ) : (
-                      <div className="size-16 rounded-full bg-muted grid place-items-center">
-                        <Users className="size-6 text-muted-foreground" />
-                      </div>
-                    )}
-                    <div>
-                      <DialogTitle className="flex items-center gap-2 flex-wrap">
-                        {String(c.nome ?? "—")}
-                        {eAtivo ? (
-                          <Badge className="bg-emerald-600/15 text-emerald-700 dark:text-emerald-400 hover:bg-emerald-600/15">Ativo</Badge>
-                        ) : (
-                          <Badge variant="destructive" className="bg-destructive/15 text-destructive hover:bg-destructive/15">Desligado</Badge>
-                        )}
-                      </DialogTitle>
-                      <p className="text-sm text-muted-foreground mt-0.5">
-                        {txt(c.codigo)} · {txt(c.cargo)} · {txt(c.setor)}
-                      </p>
-                    </div>
-                  </div>
-                </DialogHeader>
-
-                <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
-                  <div className="rounded-lg border bg-muted/40 px-3 py-2">
-                    <p className="text-[11px] uppercase tracking-wider text-muted-foreground">Início</p>
-                    <p className="text-sm font-semibold">{fmtDate(c.inicio)}</p>
-                  </div>
-                  {!eAtivo && (
-                    <div className="rounded-lg border bg-destructive/5 border-destructive/30 px-3 py-2">
-                      <p className="text-[11px] uppercase tracking-wider text-muted-foreground">Desligamento</p>
-                      <p className="text-sm font-semibold">{fmtDate(c.datadesl)}</p>
-                    </div>
-                  )}
-                  {inicio && (
-                    <div className="rounded-lg border bg-muted/40 px-3 py-2">
-                      <p className="text-[11px] uppercase tracking-wider text-muted-foreground">Tempo de casa</p>
-                      <p className="text-sm font-semibold">{tempoDeCasa(inicio, fimRef)}</p>
-                    </div>
-                  )}
-                </div>
-
-                {calc && (
-                  <div className="rounded-lg border border-amber-500/40 bg-amber-500/5 p-3 space-y-1.5">
-                    <p className="text-xs font-semibold uppercase tracking-wider text-amber-700 dark:text-amber-400">
-                      Pagamento proporcional do desligamento
-                    </p>
-                    <div className="text-sm space-y-1">
-                      <div className="flex justify-between">
-                        <span className="text-muted-foreground">Valor mensal do contrato</span>
-                        <span className="tabular-nums">{BRL(calc.valor)}</span>
-                      </div>
-                      <div className="flex justify-between">
-                        <span className="text-muted-foreground">
-                          Dias trabalhados no mês do desligamento
-                        </span>
-                        <span className="tabular-nums">{calc.dias} {calc.dias === 1 ? "dia" : "dias"}</span>
-                      </div>
-                      <div className="flex justify-between">
-                        <span className="text-muted-foreground">
-                          Proporcional ({BRL(calc.valor)} ÷ 30 × {calc.dias})
-                        </span>
-                        <span className="tabular-nums font-medium">{BRL(calc.proporcional)}</span>
-                      </div>
-                      {calc.liberalidade > 0 && (
-                        <div className="flex justify-between">
-                          <span className="text-muted-foreground">Liberalidade</span>
-                          <span className="tabular-nums font-medium">{BRL(calc.liberalidade)}</span>
-                        </div>
-                      )}
-                      <div className="flex justify-between border-t pt-1.5 mt-1.5">
-                        <span className="font-semibold">Total a receber</span>
-                        <span className="tabular-nums font-bold text-base">{BRL(calc.total)}</span>
-                      </div>
-                    </div>
-                    <p className="text-[11px] text-muted-foreground">
-                      Estimativa em base comercial (mês de 30 dias) — confira antes de pagar.
-                    </p>
-                  </div>
-                )}
-
-                <Secao titulo="Contrato PJ">
-                  <Campo k="Razão social" v={txt(c.razao)} />
-                  <Campo k="CNPJ" v={fmtCnpj(c.cnpj)} />
-                  <Campo k="Modalidade" v={txt(c.modalidade)} />
-                  <Campo k="Modelo de remuneração" v={txt(c.modelo_remuneracao)} />
-                  <Campo k="Valor" v={BRL(c.valor)} />
-                  <Campo k="Flash" v={BRL(c.flash)} />
-                  <Campo k="Vencimento do contrato" v={fmtDate(c.vence)} />
-                </Secao>
-
-                <Secao titulo="Dados bancários">
-                  <Campo k="Banco" v={`${txt(c.banco)} (${txt(c.codbanco)})`} />
-                  <Campo k="Agência" v={txt(c.agencia)} />
-                  <Campo k="Conta" v={`${txt(c.conta)}${c.digito ? `-${c.digito}` : ""}`} />
-                  <Campo k="PIX" v={txt(c.pix)} />
-                </Secao>
-
-                <Secao titulo="Dados pessoais">
-                  <Campo k="CPF" v={fmtCpf(c.cpf)} />
-                  <Campo k="Nascimento" v={fmtDate(c.nascimento)} />
-                  <Campo k="E-mail corporativo" v={txt(c.emailcorp)} />
-                  <Campo k="E-mail pessoal" v={txt(c.emailpessoal)} />
-                  <Campo k="WhatsApp" v={txt(c.whatsapp)} />
-                  <Campo k="WhatsApp corporativo" v={txt(c.whatsappcorp)} />
-                </Secao>
-
-                <Secao titulo="Endereço">
-                  <Campo
-                    k="Endereço"
-                    v={[c.logradouro, c.numero, c.complemento, c.bairro]
-                      .filter(Boolean)
-                      .join(", ") || "—"}
-                  />
-                  <Campo k="Cidade/UF" v={c.cidade ? `${c.cidade}/${txt(c.estado)}` : "—"} />
-                  <Campo k="CEP" v={txt(c.cep)} />
-                </Secao>
-
-                {!eAtivo && (
-                  <Secao titulo="Desligamento">
-                    <Campo k="Tipo" v={txt(c.tipodesl)} />
-                    <Campo k="Motivo" v={txt(c.motivodesl)} />
-                    <Campo k="Observações" v={txt(c.obsdesl)} />
-                  </Secao>
-                )}
-              </>
-            );
-          })()}
+      {/* A mesma ficha em tela cheia, para quem quer ler tudo de uma vez. */}
+      <Dialog open={fichaCheia && !!selecionado} onOpenChange={(open) => !open && setFichaCheia(false)}>
+        <DialogContent className="max-h-[85vh] max-w-2xl overflow-y-auto">
+          <DialogHeader className="sr-only">
+            <DialogTitle>{String(selecionado?.nome ?? "Ficha do colaborador")}</DialogTitle>
+          </DialogHeader>
+          {selecionado && (
+            <FichaConteudo
+              c={selecionado}
+              fotoUrl={fotoUrls?.[String(selecionado.foto_url)]}
+              onFoto={setFotoAberta}
+              onCopiar={copiar}
+              duasColunas
+            />
+          )}
         </DialogContent>
       </Dialog>
 
@@ -914,7 +1080,7 @@ export default function ColaboradoresRH() {
               <img
                 src={fotoAberta.url}
                 alt={fotoAberta.nome}
-                className="w-full max-h-[60vh] rounded-lg object-contain bg-muted"
+                className="max-h-[60vh] w-full rounded-lg bg-muted object-contain"
               />
             </>
           )}
@@ -1093,20 +1259,411 @@ function FiltroColuna({
   );
 }
 
-function Secao({ titulo, children }: { titulo: string; children: React.ReactNode }) {
+/* ─────────────────────────── Peças visuais ─────────────────────────── */
+
+const TOM = {
+  pos: {
+    texto: "text-pos",
+    pilula: "border-pos/25 bg-pos/10 text-pos",
+  },
+  neg: {
+    texto: "text-destructive",
+    pilula: "border-destructive/25 bg-destructive/10 text-destructive",
+  },
+  warn: {
+    texto: "text-amber-700 dark:text-amber-400",
+    pilula: "border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-400",
+  },
+} satisfies Record<string, { texto: string; pilula: string }>;
+
+type Tom = keyof typeof TOM;
+
+/** Número da faixa de resumo: rótulo apagado em cima, valor firme embaixo. */
+function Resumo({ rotulo, valor, tom }: { rotulo: string; valor: string; tom?: Tom }) {
   return (
     <div>
-      <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-2">{titulo}</h3>
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-1.5">{children}</div>
+      <p className="text-muted-foreground">{rotulo}</p>
+      <p className={cn("mt-0.5 font-semibold tabular-nums", tom ? TOM[tom].texto : "text-foreground")}>
+        {valor}
+      </p>
     </div>
   );
 }
 
-function Campo({ k, v }: { k: string; v: string }) {
+/** Atalho de filtro do mês. Sem ninguém no grupo, a pílula fica inerte. */
+function PilulaMov({
+  ativa, tom, icone, rotulo, n, onClick,
+}: {
+  ativa: boolean;
+  tom: Tom;
+  icone: React.ReactNode;
+  rotulo: string;
+  n: number;
+  onClick: () => void;
+}) {
   return (
-    <div className="text-sm">
-      <span className="text-muted-foreground">{k}: </span>
-      <span className="font-medium break-words">{v}</span>
+    <button
+      onClick={onClick}
+      disabled={n === 0}
+      title={n === 0 ? "Ninguém neste grupo no mês escolhido" : `Mostrar só: ${rotulo}`}
+      className={cn(
+        "inline-flex h-[30px] items-center gap-1.5 rounded-full border px-3 text-[12.5px] transition-colors",
+        n === 0 && "cursor-default opacity-45",
+        ativa
+          ? cn("font-semibold", TOM[tom].pilula)
+          : "border-border bg-card font-medium text-foreground hover:bg-muted",
+      )}
+    >
+      <span className={cn(ativa ? "" : "text-muted-foreground")}>{icone}</span>
+      {rotulo} · <span className="tabular-nums">{n}</span>
+    </button>
+  );
+}
+
+/** Botãozinho quadrado de ação — o mesmo em toda a tela. */
+function BotaoIcone({
+  titulo, onClick, children,
+}: {
+  titulo: string;
+  onClick: (e: React.MouseEvent) => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <button
+      title={titulo}
+      aria-label={titulo}
+      onClick={onClick}
+      className="grid size-7 place-items-center rounded-md border bg-card text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+    >
+      {children}
+    </button>
+  );
+}
+
+/** Foto do colaborador; sem foto, as iniciais num círculo de cor fixa. */
+function Avatar({
+  nome, url, tamanho = 34, onClick,
+}: {
+  nome: string;
+  url?: string;
+  tamanho?: number;
+  onClick?: (e: React.MouseEvent) => void;
+}) {
+  const estilo = { width: tamanho, height: tamanho } as React.CSSProperties;
+
+  if (url) {
+    return (
+      <img
+        src={url}
+        alt={nome}
+        loading="lazy"
+        title="Clique para ver a foto"
+        style={estilo}
+        onClick={onClick}
+        className={cn(
+          "flex-none rounded-full bg-muted object-cover",
+          onClick && "cursor-pointer transition-shadow hover:ring-2 hover:ring-primary",
+        )}
+        onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }}
+      />
+    );
+  }
+
+  return (
+    <span
+      style={{ ...estilo, background: corDoNome(nome) }}
+      className="grid flex-none place-items-center rounded-full font-semibold text-white"
+      aria-hidden
+    >
+      <span style={{ fontSize: tamanho * 0.34 }}>{iniciaisDe(nome)}</span>
+    </span>
+  );
+}
+
+/* ─────────────────────────── Célula da tabela ───────────────────────────
+   Cada coluna ganha a forma que o dado pede: foto vira avatar, documento e
+   data saem em monoespaçada, dinheiro alinha à direita em tabular, e o que
+   é categoria (setor, modalidade) vira etiqueta. O conteúdo é o mesmo de
+   sempre — só a apresentação muda. */
+
+function Celula({
+  col, c, fotoUrl, selo, onFoto,
+}: {
+  col: Col;
+  c: Colaborador;
+  fotoUrl?: string;
+  selo: string | null;
+  onFoto: (f: { url: string; nome: string } | null) => void;
+}) {
+  const nome = String(c.nome ?? "");
+  const cru = c[col.key];
+  const vazio = cru === null || cru === undefined || cru === "";
+
+  if (col.key === "foto_url") {
+    return (
+      <Avatar
+        nome={nome}
+        url={fotoUrl}
+        onClick={fotoUrl ? (e) => { e.stopPropagation(); onFoto({ url: fotoUrl, nome }); } : undefined}
+      />
+    );
+  }
+
+  if (col.key === "nome") {
+    return (
+      <span className="flex items-center gap-2">
+        <span className="text-sm font-medium">{txt(cru)}</span>
+        {selo && (
+          <span
+            className={cn(
+              "rounded px-1.5 py-0.5 text-[10.5px] font-bold uppercase tracking-[0.06em]",
+              selo === "NOVO" ? "bg-pos/15 text-pos" : "bg-destructive/15 text-destructive",
+            )}
+          >
+            {selo}
+          </span>
+        )}
+      </span>
+    );
+  }
+
+  if (vazio) return <span className="text-[13.5px] text-muted-foreground">—</span>;
+
+  // Início e desligamento carregam o tempo de casa embaixo — informação que
+  // já existe nos dados e que ninguém quer calcular de cabeça.
+  if (col.key === "inicio" || col.key === "datadesl") {
+    const inicio = parseISO(c.inicio);
+    const fim = parseISO(c.datadesl) ?? new Date();
+    return (
+      <span className="block leading-tight">
+        <span className="mono text-[12.5px]">{fmtDate(cru)}</span>
+        {inicio && (
+          <span className="block text-xs text-muted-foreground">{tempoDeCasa(inicio, fim)}</span>
+        )}
+      </span>
+    );
+  }
+
+  if (PILL_KEYS.has(col.key)) {
+    return (
+      <span className="inline-flex h-6 items-center rounded-full border bg-muted px-2.5 text-xs text-secondary-foreground">
+        {String((col.fmt ?? txt)(cru))}
+      </span>
+    );
+  }
+
+  if (col.num) {
+    return <span className="num text-[13.5px]">{String((col.fmt ?? txt)(cru))}</span>;
+  }
+
+  if (MONO_KEYS.has(col.key)) {
+    return <span className="mono text-[12.5px]">{String((col.fmt ?? txt)(cru))}</span>;
+  }
+
+  return <span className="text-[13.5px]">{String((col.fmt ?? txt)(cru))}</span>;
+}
+
+/* ─────────────────────────── Ficha do colaborador ─────────────────────────── */
+
+/** Cartão de um assunto da ficha: título e uma lista de rótulo → valor. */
+function Bloco({ titulo, campos }: { titulo: string; campos: { k: string; v: string }[] }) {
+  return (
+    <div className="overflow-hidden rounded-xl border">
+      <div className="border-b px-3.5 py-2.5 text-[12.5px] font-semibold">{titulo}</div>
+      <div className="px-3.5 pb-2.5 pt-1">
+        {campos.map((campo) => (
+          <div
+            key={campo.k}
+            className="flex items-baseline justify-between gap-4 border-b border-border/60 py-[7px] last:border-0"
+          >
+            <span className="flex-none text-[12.5px] text-muted-foreground">{campo.k}</span>
+            <span className="break-words text-right text-[13px]">{campo.v}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/** Número em destaque no topo da ficha. */
+function Ladrilho({ rotulo, valor, tom }: { rotulo: string; valor: string; tom?: Tom }) {
+  return (
+    <div className={cn("rounded-[10px] border px-3 py-2.5", tom === "neg" && "border-destructive/30 bg-destructive/5")}>
+      <p className="text-[10px] font-semibold uppercase tracking-[0.08em] text-muted-foreground">{rotulo}</p>
+      <p className={cn("mt-1 text-base font-medium", tom ? TOM[tom].texto : "")}>{valor}</p>
+    </div>
+  );
+}
+
+function FichaConteudo({
+  c, fotoUrl, onFoto, onCopiar, duasColunas,
+}: {
+  c: Colaborador;
+  fotoUrl?: string;
+  onFoto: (f: { url: string; nome: string } | null) => void;
+  onCopiar: (valor: string, rotulo: string) => void;
+  duasColunas?: boolean;
+}) {
+  const nome = String(c.nome ?? "—");
+  const eAtivo = ativo(c);
+  const inicio = parseISO(c.inicio);
+  const desl = parseISO(c.datadesl);
+  const calc = !eAtivo ? calculoProporcional(c) : null;
+  const fimRef = desl ?? new Date();
+
+  return (
+    <div className="flex flex-col gap-4">
+      {/* Quem é */}
+      <div className="flex items-center gap-3.5">
+        <Avatar
+          nome={nome}
+          url={fotoUrl}
+          tamanho={56}
+          onClick={fotoUrl ? () => onFoto({ url: fotoUrl, nome }) : undefined}
+        />
+        <div className="min-w-0">
+          <div className="flex flex-wrap items-center gap-2">
+            <h3 className="text-[17px] font-semibold">{nome}</h3>
+            {eAtivo ? (
+              <span className="inline-flex h-[21px] items-center rounded-full bg-pos/15 px-2.5 text-[11.5px] font-semibold text-pos">
+                Ativo
+              </span>
+            ) : (
+              <span className="inline-flex h-[21px] items-center rounded-full bg-destructive/15 px-2.5 text-[11.5px] font-semibold text-destructive">
+                Desligado
+              </span>
+            )}
+          </div>
+          <p className="mt-0.5 text-[12.5px] text-muted-foreground">
+            {txt(c.codigo)} · {txt(c.cargo)} · {txt(c.setor)}
+          </p>
+        </div>
+      </div>
+
+      {/* Os três números que se olha primeiro */}
+      <div className="grid grid-cols-2 gap-2.5">
+        <Ladrilho rotulo="Valor mensal" valor={BRL(c.valor)} />
+        <Ladrilho rotulo="Tempo de casa" valor={inicio ? tempoDeCasa(inicio, fimRef) : "—"} />
+        <Ladrilho rotulo="Início" valor={fmtDate(c.inicio)} />
+        {!eAtivo && <Ladrilho rotulo="Desligamento" valor={fmtDate(c.datadesl)} tom="neg" />}
+      </div>
+
+      {/* O que se copia para pagar */}
+      <div className="flex gap-2">
+        <button
+          onClick={() => onCopiar(fmtCnpj(c.cnpj), "CNPJ")}
+          className="inline-flex h-8 flex-1 items-center justify-center gap-1.5 rounded-lg border bg-card text-[12.5px] transition-colors hover:bg-muted"
+        >
+          <Copy className="size-3.5 text-muted-foreground" />
+          CNPJ
+        </button>
+        <button
+          onClick={() => onCopiar(txt(c.pix), "PIX")}
+          className="inline-flex h-8 flex-1 items-center justify-center gap-1.5 rounded-lg border bg-card text-[12.5px] transition-colors hover:bg-muted"
+        >
+          <Copy className="size-3.5 text-muted-foreground" />
+          PIX
+        </button>
+        <button
+          onClick={() => onCopiar(txt(c.emailcorp), "e-mail")}
+          className="inline-flex h-8 flex-1 items-center justify-center gap-1.5 rounded-lg border bg-card text-[12.5px] transition-colors hover:bg-muted"
+        >
+          <Copy className="size-3.5 text-muted-foreground" />
+          E-mail
+        </button>
+      </div>
+
+      {calc && (
+        <div className="space-y-1.5 rounded-xl border border-amber-500/40 bg-amber-500/5 p-3">
+          <p className="text-xs font-semibold uppercase tracking-wider text-amber-700 dark:text-amber-400">
+            Pagamento proporcional do desligamento
+          </p>
+          <div className="space-y-1 text-sm">
+            <div className="flex justify-between">
+              <span className="text-muted-foreground">Valor mensal do contrato</span>
+              <span className="tabular-nums">{BRL(calc.valor)}</span>
+            </div>
+            <div className="flex justify-between">
+              <span className="text-muted-foreground">Dias trabalhados no mês do desligamento</span>
+              <span className="tabular-nums">{calc.dias} {calc.dias === 1 ? "dia" : "dias"}</span>
+            </div>
+            <div className="flex justify-between gap-4">
+              <span className="text-muted-foreground">
+                Proporcional ({BRL(calc.valor)} ÷ 30 × {calc.dias})
+              </span>
+              <span className="whitespace-nowrap font-medium tabular-nums">{BRL(calc.proporcional)}</span>
+            </div>
+            {calc.liberalidade > 0 && (
+              <div className="flex justify-between">
+                <span className="text-muted-foreground">Liberalidade</span>
+                <span className="font-medium tabular-nums">{BRL(calc.liberalidade)}</span>
+              </div>
+            )}
+            <div className="mt-1.5 flex justify-between border-t pt-1.5">
+              <span className="font-semibold">Total a receber</span>
+              <span className="text-base font-bold tabular-nums">{BRL(calc.total)}</span>
+            </div>
+          </div>
+          <p className="text-[11px] text-muted-foreground">
+            Estimativa em base comercial (mês de 30 dias) — confira antes de pagar.
+          </p>
+        </div>
+      )}
+
+      <div className={cn("flex flex-col gap-3", duasColunas && "sm:grid sm:grid-cols-2 sm:items-start")}>
+        <Bloco
+          titulo="Contrato PJ"
+          campos={[
+            { k: "Razão social", v: txt(c.razao) },
+            { k: "CNPJ", v: fmtCnpj(c.cnpj) },
+            { k: "Modalidade", v: txt(c.modalidade) },
+            { k: "Modelo de remuneração", v: txt(c.modelo_remuneracao) },
+            { k: "Flash", v: BRL(c.flash) },
+            { k: "Vencimento do contrato", v: fmtDate(c.vence) },
+          ]}
+        />
+        <Bloco
+          titulo="Dados bancários"
+          campos={[
+            { k: "Banco", v: `${txt(c.banco)} (${txt(c.codbanco)})` },
+            { k: "Agência", v: txt(c.agencia) },
+            { k: "Conta", v: `${txt(c.conta)}${c.digito ? `-${c.digito}` : ""}` },
+            { k: "PIX", v: txt(c.pix) },
+          ]}
+        />
+        <Bloco
+          titulo="Dados pessoais"
+          campos={[
+            { k: "CPF", v: fmtCpf(c.cpf) },
+            { k: "Nascimento", v: fmtDate(c.nascimento) },
+            { k: "E-mail corporativo", v: txt(c.emailcorp) },
+            { k: "E-mail pessoal", v: txt(c.emailpessoal) },
+            { k: "WhatsApp", v: txt(c.whatsapp) },
+            { k: "WhatsApp corporativo", v: txt(c.whatsappcorp) },
+          ]}
+        />
+        <Bloco
+          titulo="Endereço"
+          campos={[
+            {
+              k: "Endereço",
+              v: [c.logradouro, c.numero, c.complemento, c.bairro].filter(Boolean).join(", ") || "—",
+            },
+            { k: "Cidade/UF", v: c.cidade ? `${c.cidade}/${txt(c.estado)}` : "—" },
+            { k: "CEP", v: txt(c.cep) },
+          ]}
+        />
+        {!eAtivo && (
+          <Bloco
+            titulo="Desligamento"
+            campos={[
+              { k: "Tipo", v: txt(c.tipodesl) },
+              { k: "Motivo", v: txt(c.motivodesl) },
+              { k: "Observações", v: txt(c.obsdesl) },
+            ]}
+          />
+        )}
+      </div>
     </div>
   );
 }

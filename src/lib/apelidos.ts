@@ -46,6 +46,14 @@ export type MapaApelidos = {
   porChave: Map<string, Apelido>;
   /** só dígitos do CNPJ/CPF -> o cadastro. Casa onde o nome falha. */
   porDocumento: Map<string, Apelido>;
+  /**
+   * só dígitos -> o melhor nome que o cadastro tem para esse documento, TENHA ELE APELIDO
+   * OU NÃO. O extrato do Sicoob manda Pix de saída sem nome nenhum, só o CNPJ: ali a
+   * alternativa a "TAKEAT.APP - GARCOM DIGITAL" não é um nome mais bonito, é "Pagamento
+   * Pix". Por isso este mapa é mais largo que `porDocumento` — que continua sendo só o
+   * dos apelidos, porque é dele que sai a fila e a cobertura da Parametrização.
+   */
+  porDocumentoNome: Map<string, string>;
   /** projeção para trocar nomes DENTRO de um texto corrido (comentário da IA) */
   paraTexto: MapaPessoas;
   lista: Apelido[];
@@ -54,6 +62,7 @@ export type MapaApelidos = {
 export const MAPA_APELIDOS_VAZIO: MapaApelidos = {
   porChave: new Map(),
   porDocumento: new Map(),
+  porDocumentoNome: new Map(),
   paraTexto: montarMapaPessoas([]),
   lista: [],
 };
@@ -70,6 +79,10 @@ export function soDigitos(s: string | null | undefined): string {
  * resolve os 41 lojistas que o extrato entrega cortados em exatos 20 caracteres
  * e os que viram só "DE", "DM", "MERC". Sem elas, cada corte pediria seu próprio
  * apelido.
+ *
+ * Aceita o cadastro INTEIRO, com apelido ou sem: quem ainda não tem apelido fica de fora
+ * de todos os mapas menos o `porDocumentoNome` (ver o tipo). Passar só quem tem apelido
+ * continua valendo — aí os dois mapas por documento saem iguais.
  */
 export function montarMapaApelidos(
   cadastro: Apelido[],
@@ -77,13 +90,29 @@ export function montarMapaApelidos(
 ): MapaApelidos {
   const porChave = new Map<string, Apelido>();
   const porDocumento = new Map<string, Apelido>();
+  const porDocumentoNome = new Map<string, string>();
+  const docComApelido = new Set<string>();
   const porId = new Map<string, Apelido>();
   const lista: Apelido[] = [];
 
   for (const c of cadastro ?? []) {
     const nome = String(c?.nome ?? "").trim();
     const apelido = String(c?.apelido ?? "").trim();
-    if (!nome || !apelido) continue;
+    if (!nome) continue;
+
+    const doc = soDigitos(c?.documento);
+    // Quem tem apelido ganha de quem não tem, venha na ordem que vier: dois cadastros com
+    // o mesmo CNPJ não podem fazer o nomeado perder para o anônimo. Entre iguais, o
+    // primeiro fica.
+    if (doc.length >= 11) {
+      if (apelido) {
+        if (!docComApelido.has(doc)) { porDocumentoNome.set(doc, apelido); docComApelido.add(doc); }
+      } else if (!porDocumentoNome.has(doc)) {
+        porDocumentoNome.set(doc, nome);
+      }
+    }
+
+    if (!apelido) continue;
 
     const item: Apelido = { ...c, nome, apelido };
     lista.push(item);
@@ -93,7 +122,6 @@ export function montarMapaApelidos(
     // Chave curta demais casaria palavra comum no meio de uma frase.
     if (chave.length >= MIN_CHAVE && !porChave.has(chave)) porChave.set(chave, item);
 
-    const doc = soDigitos(item.documento);
     if (doc.length >= 11 && !porDocumento.has(doc)) porDocumento.set(doc, item);
   }
 
@@ -114,7 +142,7 @@ export function montarMapaApelidos(
     if (dono) pares.push({ nome: String(a.alias ?? ""), pessoa: dono.apelido });
   }
 
-  return { porChave, porDocumento, paraTexto: montarMapaPessoas(pares), lista };
+  return { porChave, porDocumento, porDocumentoNome, paraTexto: montarMapaPessoas(pares), lista };
 }
 
 /**
@@ -139,6 +167,29 @@ export function apelidoDe(
   const n = String(nome ?? "");
   if (!n) return null;
   return mapa.porChave.get(chaveContraparte(n)) ?? null;
+}
+
+/**
+ * O nome que o CADASTRO dá a esta contraparte, ou `null` quando não a conhece.
+ *
+ * Diferente de `nomeExibido`, que devolve o nome cru quando não acha: aqui o `null` é a
+ * resposta útil, porque quem chama tem um título pior que o cru para substituir — o
+ * "Pagamento Pix" do extrato do Sicoob — e precisa saber se vale a troca.
+ *
+ * Também aceita quem ainda não ganhou apelido: entre "Pagamento Pix" e a razão social,
+ * a razão social é a resposta.
+ */
+export function nomeDoCadastro(
+  mapa: MapaApelidos | null | undefined,
+  nome: string | null | undefined,
+  documento?: string | null,
+): string | null {
+  const achado = apelidoDe(mapa, nome, documento);
+  if (achado) return achado.apelido;
+
+  const doc = soDigitos(documento);
+  if (doc.length >= 11) return mapa?.porDocumentoNome.get(doc) ?? null;
+  return null;
 }
 
 /** O que a tela escreve: o apelido quando existe, senão o nome como veio. */

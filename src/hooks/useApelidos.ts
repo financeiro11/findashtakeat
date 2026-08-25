@@ -28,6 +28,12 @@ const db = supabase as unknown as {
   rpc: (nome: string, args?: Record<string, unknown>) => any;
 };
 
+/** Quem está nomeando. `null` não impede gravar — a Base escreve "—". */
+async function quemSou(): Promise<string | null> {
+  const { data } = await supabase.auth.getUser();
+  return data?.user?.id ?? null;
+}
+
 export type FornecedorCadastro = {
   id: string;
   nome: string;
@@ -37,7 +43,16 @@ export type FornecedorCadastro = {
   dono_id: string | null;
   origem: string | null;
   categoria: string | null;
+  /* Quem nomeou e quando — a coluna "Quem nomeou" da Base. `apelido_em` é
+     separado de `atualizado_em` de propósito: o sync do Omie mexe no segundo, e
+     a Base passaria a dizer que todo mundo foi nomeado hoje de manhã. */
+  apelido_por: string | null;
+  apelido_em: string | null;
+  revisar: boolean;
 };
+
+const COLUNAS_CADASTRO =
+  "id,nome,documento,apelido,o_que_e,dono_id,origem,categoria,apelido_por,apelido_em,revisar";
 
 export type Grafia = { id: string; fornecedor_id: string; alias: string; fonte: string | null };
 
@@ -49,23 +64,26 @@ const _inscritos = new Set<() => void>();
 
 const avisar = () => { for (const fn of _inscritos) fn(); };
 
+/* O cadastro INTEIRO vai para o mapa, não só quem tem apelido: `montarMapaApelidos` usa
+   os sem apelido apenas no índice por documento (`porDocumentoNome`), que é o que dá nome
+   ao Pix do Sicoob — lá o extrato manda só o CNPJ, e a razão social do cadastro já é
+   infinitamente melhor do que "Pagamento Pix". Os outros mapas continuam só com apelido,
+   então a fila e a cobertura da Parametrização não mudam. */
 function remontar() {
-  const comApelido = (_cadastro ?? [])
-    .filter((f) => (f.apelido ?? "").trim())
-    .map((f) => ({
-      id: f.id,
-      nome: f.nome,
-      apelido: f.apelido as string,
-      oQueE: f.o_que_e,
-      documento: f.documento,
-      origem: f.origem,
-    }));
-  _mapa = montarMapaApelidos(comApelido, _grafias);
+  const todos = (_cadastro ?? []).map((f) => ({
+    id: f.id,
+    nome: f.nome,
+    apelido: (f.apelido ?? "").trim(),
+    oQueE: f.o_que_e,
+    documento: f.documento,
+    origem: f.origem,
+  }));
+  _mapa = montarMapaApelidos(todos, _grafias);
 }
 
 async function buscar(): Promise<void> {
   const [cad, ali] = await Promise.all([
-    db.from("lib_fornecedores").select("id,nome,documento,apelido,o_que_e,dono_id,origem,categoria").order("nome"),
+    db.from("lib_fornecedores").select(COLUNAS_CADASTRO).order("nome"),
     db.from("contrapartes_alias").select("id,fornecedor_id,alias,fonte"),
   ]);
 
@@ -181,12 +199,15 @@ export async function salvarApelido(
 
   await garantirCarga();
   const existente = acharExistente(n, campos.documento);
+  const agora = new Date().toISOString();
 
   const valores = {
     apelido,
     o_que_e: campos.oQueE?.trim() || null,
     dono_id: campos.donoId || null,
-    atualizado_em: new Date().toISOString(),
+    atualizado_em: agora,
+    apelido_por: await quemSou(),
+    apelido_em: agora,
   };
 
   if (existente) {
@@ -290,9 +311,12 @@ export async function salvarApelidosEmLote(
     else gravados += novos.length;
   }
 
+  const quem = await quemSou();
   const respostas = await Promise.all(
     atualizacoes.map(({ id, apelido }) =>
-      db.from("lib_fornecedores").update({ apelido, atualizado_em: agora }).eq("id", id)),
+      db.from("lib_fornecedores")
+        .update({ apelido, atualizado_em: agora, apelido_por: quem, apelido_em: agora })
+        .eq("id", id)),
   );
   for (const r of respostas) {
     if (r?.error) erros.push(r.error.message);
@@ -304,6 +328,158 @@ export async function salvarApelidosEmLote(
 
   await recarregarApelidos();
   return { gravados, erros };
+}
+
+/* -------------------------------------------------------------------------
+ * Confirmar um grupo inteiro
+ * ---------------------------------------------------------------------- */
+
+export type GrafiaParaGravar = {
+  nome: string;
+  documento?: string | null;
+  categoria?: string | null;
+  origem?: string | null;
+};
+
+export type GrupoParaGravar = {
+  apelido: string;
+  oQueE?: string | null;
+  /** Todas as grafias do grupo. A âncora sai daqui — ver abaixo. */
+  grafias: GrafiaParaGravar[];
+};
+
+/**
+ * Grava um nome interno para um GRUPO de grafias.
+ *
+ * A diferença para `salvarApelidosEmLote` não é o volume, é a forma: lá cada
+ * nome vira um cadastro; aqui um grupo vira UM cadastro e as outras grafias
+ * viram alias dele. É o que faz "FACEBK *ADS AB12X9" e "META PLATFORMS IRELAND"
+ * pararem de pedir a mesma resposta duas vezes.
+ *
+ * A âncora é a primeira grafia que JÁ EXISTE no cadastro — assim confirmar um
+ * grupo não cria um segundo fornecedor ao lado do que já estava lá. Se nenhuma
+ * existe, a primeira da lista entra como cadastro novo (a chamadora manda a
+ * principal na frente).
+ *
+ * Tudo em três idas ao banco, não uma por grupo: confirmar quarenta grupos de
+ * uma vez é o gesto normal desta tela.
+ */
+export async function salvarGruposApelido(
+  grupos: GrupoParaGravar[],
+): Promise<{ gravados: number; grafias: number; erros: string[] }> {
+  await garantirCarga();
+
+  const agora = new Date().toISOString();
+  const quem = await quemSou();
+  const erros: string[] = [];
+
+  type Pendente = { grupo: GrupoParaGravar; ancora: GrafiaParaGravar; resto: GrafiaParaGravar[] };
+  const emExistente: { id: string; p: Pendente }[] = [];
+  const emNovo: Pendente[] = [];
+
+  for (const g of grupos ?? []) {
+    const apelido = String(g?.apelido ?? "").trim();
+    const grafias = (g?.grafias ?? []).filter((x) => String(x?.nome ?? "").trim());
+    if (apelido.length < 2 || !grafias.length) continue;
+
+    const jaTem = grafias
+      .map((x) => ({ x, f: acharExistente(x.nome, x.documento) }))
+      .find((r) => r.f);
+
+    const ancora = jaTem?.x ?? grafias[0];
+    if (!jaTem && chaveContraparte(ancora.nome).length < MIN_CHAVE) {
+      erros.push(`"${ancora.nome}": nome curto demais para casar com segurança.`);
+      continue;
+    }
+
+    const resto = grafias.filter((x) => x !== ancora);
+    const p: Pendente = { grupo: { ...g, apelido }, ancora, resto };
+    if (jaTem?.f) emExistente.push({ id: jaTem.f.id, p });
+    else emNovo.push(p);
+  }
+
+  const carimbo = (p: Pendente) => ({
+    apelido: p.grupo.apelido,
+    o_que_e: p.grupo.oQueE?.trim() || null,
+    atualizado_em: agora,
+    apelido_por: quem,
+    apelido_em: agora,
+    revisar: false,
+  });
+
+  let gravados = 0;
+  const alias: Record<string, unknown>[] = [];
+
+  const juntarResto = (fornecedorId: string, p: Pendente) => {
+    for (const x of p.resto) {
+      const chave = chaveContraparte(x.nome);
+      if (chave.length < MIN_CHAVE) continue; // "DM", "IG": alias assim casaria qualquer coisa
+      if (chave === chaveContraparte(p.ancora.nome)) continue;
+      if (_grafias.some((gr) => gr.fornecedor_id === fornecedorId && chaveContraparte(gr.alias) === chave)) continue;
+      if (alias.some((a) => a.fornecedor_id === fornecedorId && chaveContraparte(String(a.alias)) === chave)) continue;
+      alias.push({
+        fornecedor_id: fornecedorId,
+        alias: x.nome,
+        fonte: x.origem ?? "manual",
+        documento_norm: soDigitos(x.documento) || null,
+        origem: "manual",
+      });
+    }
+  };
+
+  if (emNovo.length) {
+    const { data, error } = await db.from("lib_fornecedores").insert(
+      emNovo.map((p) => ({
+        nome: p.ancora.nome,
+        documento: p.ancora.documento?.trim() || null,
+        categoria: p.ancora.categoria?.trim() || null,
+        origem: p.ancora.origem ?? "manual",
+        ...carimbo(p),
+      })),
+    ).select("id,nome");
+    if (error) erros.push(error.message);
+    else {
+      const criados = (data ?? []) as { id: string; nome: string }[];
+      gravados += criados.length;
+      for (const p of emNovo) {
+        const novo = criados.find((f) => f.nome === p.ancora.nome);
+        if (novo) juntarResto(novo.id, p);
+      }
+    }
+  }
+
+  /* Em lotes, e não tudo de uma vez: "Marcar visíveis" com a fila inteira na
+     tela põe duzentos grupos neste gesto, e duzentas requisições paralelas
+     travam o navegador antes de chegarem ao PostgREST. */
+  const LOTE = 25;
+  for (let i = 0; i < emExistente.length; i += LOTE) {
+    const fatia = emExistente.slice(i, i + LOTE);
+    const respostas = await Promise.all(
+      fatia.map(({ id, p }) => db.from("lib_fornecedores").update(carimbo(p)).eq("id", id)),
+    );
+    respostas.forEach((r, k) => {
+      if (r?.error) erros.push(r.error.message);
+      else { gravados++; juntarResto(fatia[k].id, fatia[k].p); }
+    });
+  }
+
+  if (alias.length) {
+    const { error } = await db.from("contrapartes_alias").insert(alias);
+    // Sem o alias o nome do grupo continua valendo para a âncora; as outras
+    // grafias voltam para a fila. Vale avisar, não vale derrubar o gesto.
+    if (error) erros.push(`Grafias não juntadas: ${error.message}`);
+  }
+
+  await recarregarApelidos();
+  return { gravados, grafias: alias.length, erros };
+}
+
+/** "Reler depois" — o nome está lá, mas alguém duvidou dele. */
+export async function marcarRevisao(id: string, revisar: boolean): Promise<{ error: string | null }> {
+  const { error } = await db.from("lib_fornecedores").update({ revisar }).eq("id", id);
+  if (error) return { error: error.message };
+  await recarregarApelidos();
+  return { error: null };
 }
 
 /** Tira o apelido — o fornecedor continua no cadastro. */
@@ -377,6 +553,49 @@ export async function ignorarContraparte(
   if (error) return { error: error.message };
   await recarregarApelidos();
   return { error: null };
+}
+
+/**
+ * O mesmo gesto para o grupo inteiro — o "X" da fila.
+ *
+ * Descartar uma grafia e deixar as outras duas do mesmo grupo para trás faria o
+ * grupo voltar amanhã pela metade, que é pior do que não ter descartado.
+ */
+export async function ignorarContrapartes(
+  itens: { nome: string; documento?: string | null; origem?: string | null }[],
+): Promise<{ error: string | null }> {
+  await garantirCarga();
+
+  const agora = new Date().toISOString();
+  const ids: string[] = [];
+  const novos: Record<string, unknown>[] = [];
+
+  for (const it of itens ?? []) {
+    const n = String(it?.nome ?? "").trim();
+    if (!n) continue;
+    const existente = acharExistente(n, it.documento);
+    if (existente) ids.push(existente.id);
+    else novos.push({
+      nome: n,
+      documento: it.documento?.trim() || null,
+      origem: it.origem ?? "manual",
+      status: "ignorado",
+    });
+  }
+
+  const erros: string[] = [];
+  if (ids.length) {
+    const { error } = await db.from("lib_fornecedores")
+      .update({ status: "ignorado", atualizado_em: agora }).in("id", ids);
+    if (error) erros.push(error.message);
+  }
+  if (novos.length) {
+    const { error } = await db.from("lib_fornecedores").insert(novos);
+    if (error) erros.push(error.message);
+  }
+
+  await recarregarApelidos();
+  return { error: erros[0] ?? null };
 }
 
 export async function desfazerGrafia(id: string): Promise<{ error: string | null }> {

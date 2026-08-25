@@ -752,9 +752,11 @@ async function etapasEFaturamento(opts: { lote?: number; os?: number; consultar?
     const cadastro = opts.consultar
       ? await omieCall<any>("servicos/os", "ConsultarOS", { nCodOS: opts.os }).catch((e) => ({ erro: mensagemDoOmie(e) }))
       : undefined;
-    /* O e-mail que interessa é o do CADASTRO DO CLIENTE, não o da OS. O bloco
-     * Email da OS governa boleto/link/pix/recibo (e nasce todo "N", igual às OS
-     * históricas); quem recebe a NFS-e é o endereço do cliente no Omie. */
+    /* O bloco Email da OS governa boleto/link/pix/recibo. As OS históricas nasceram
+     * todas "N" — as do Hub nascem com `cEnvLink: "S"` (ver `montarOS`), então esta
+     * leitura serve para conferir se o interruptor foi mesmo gravado. Quem recebe é
+     * o `cEnviarPara` da OS quando preenchido e o e-mail do cadastro do cliente
+     * quando não — por isso o cadastro continua sendo lido logo abaixo. */
     const nCodCli = Number(cadastro?.Cabecalho?.nCodCli ?? 0);
     const cliente = nCodCli
       ? await omieCall<any>("geral/clientes", "ConsultarCliente", { codigo_cliente_omie: nCodCli })
@@ -1078,8 +1080,28 @@ function montarOS(molde: any, cob: {
       cCodCateg: molde.InformacoesAdicionais?.cCodCateg ?? "",
       nCodCC: molde.InformacoesAdicionais?.nCodCC ?? 0,
     },
+    /* O E-MAIL DA NOTA.
+     *
+     * Não existe endpoint de envio na API do Omie — nem para disparar, nem para ler
+     * os "Emails Enviados" da tela. O que existe é ESTE bloco, e ele é um
+     * interruptor lido no FATURAMENTO, não uma ação. Daí ele precisar nascer certo:
+     * depois que a OS fatura não há como mandar o e-mail por API, só pela tela.
+     *
+     * `cEnvLink` ligado é o e-mail "via Portal Omie" com o link da nota — o mesmo
+     * que sai ao clicar "NFS-e por e-mail" na OS faturada. O corpo é do Omie; não
+     * escolhemos texto nem anexo (o PDF só viaja junto se o cadastro do cliente
+     * estiver configurado para anexar).
+     *
+     * Os outros ficam em "N" de propósito: `cEnvRecibo` manda recibo NO LUGAR da
+     * nota, e boleto/pix são cobrança — quem cobra aqui é o Asaas, e a cobrança já
+     * está paga quando a nota sai.
+     *
+     * `cEnviarPara` vazio não impede o envio: o Omie cai no e-mail do cadastro do
+     * cliente. Preenchemos com o do Asaas porque é o endereço que o cliente usou
+     * para pagar — o mais provável de estar vivo.
+     */
     Email: {
-      cEnvBoleto: "N", cEnvLink: "N", cEnvPix: "N", cEnvRecibo: "N", cEnvViaUnica: "N",
+      cEnvBoleto: "N", cEnvLink: "S", cEnvPix: "N", cEnvRecibo: "N", cEnvViaUnica: "N",
       cEnviarPara: cob.email ?? "",
     },
     ServicosPrestados: [{

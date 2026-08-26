@@ -22,6 +22,7 @@ import CadastrarNoOmieDialog from "./CadastrarNoOmieDialog";
 import PreviaFolhaDialog from "./PreviaFolhaDialog";
 import { HoverCard, HoverCardContent, HoverCardTrigger } from "@/components/ui/hover-card";
 import { tabelaFolha } from "@/lib/folha/db";
+import { conferir, medianasPorDepartamento, type Achado } from "@/lib/folha/conferencia";
 import {
   montarLote, type ColaboradorDaFolha, type ResolveDePara,
 } from "../../../supabase/functions/_shared/folha-envio";
@@ -567,6 +568,41 @@ export default function ColaboradoresRH() {
     [lote],
   );
 
+  /* A conferência do que chega do Portal RH: documento válido, chave PIX que a
+     empresa aceita, salário que faz sentido no departamento.
+     Roda sobre TODO MUNDO ativo e não só sobre quem entrou agora — cadastro
+     antigo também é digitado por gente, e os defeitos achados em 26/08/2026
+     estavam espalhados por gente de todos os meses. */
+  const conferencia = useMemo(() => {
+    const comDep = ativos.map((c) => ({
+      departamento: dePara.get(String(c.codigo ?? ""))?.departamento ?? null,
+      valor: dePara.get(String(c.codigo ?? ""))?.valorAjustado ?? (Number(c.valor) || 0),
+    }));
+    const medianas = medianasPorDepartamento(comDep);
+
+    const m = new Map<string, Achado[]>();
+    for (const c of ativos) {
+      const d = dePara.get(String(c.codigo ?? ""));
+      const achados = conferir({
+        nome: String(c.nome ?? ""),
+        cargo: (c.cargo as string) ?? null,
+        // Confere o que o RH mandou, NÃO o que o Hub corrigiu: o objetivo é
+        // dizer o que está errado na origem, para o DH arrumar lá.
+        documento: (c.cnpj as string) ?? null,
+        pix: (c.pix as string) ?? null,
+        valor: Number(c.valor) || 0,
+        departamento: d?.departamento ?? null,
+      }, medianas);
+      if (achados.length) m.set(String(c.id), achados);
+    }
+    return m;
+  }, [ativos, dePara]);
+
+  const comErro = useMemo(
+    () => [...conferencia.values()].filter((a) => a.some((x) => x.gravidade === "erro")).length,
+    [conferencia],
+  );
+
   /* O que o Hub corrigiu por cima do espelho, por pessoa.
    *
    * Aparece na linha, em vermelho, para virar recado ao DH: o Hub segue com a
@@ -866,6 +902,39 @@ export default function ColaboradoresRH() {
             </Button>
           </div>
         </div>
+
+        {/* ─── Conferência do que chega do Portal RH ─── */}
+        {conferencia.size > 0 && (
+          <div className="rounded-xl border border-amber-500/40 bg-amber-500/5 px-3.5 py-2.5">
+            <p className="text-[12.5px] font-semibold text-amber-700 dark:text-amber-400">
+              {conferencia.size} cadastro(s) com algo a conferir
+              {comErro > 0 && <span className="text-destructive"> · {comErro} impedem o pagamento</span>}
+            </p>
+            <p className="mt-0.5 text-xs text-muted-foreground">
+              Documento inválido ou com o CNPJ da Takeat, chave PIX que a empresa não paga
+              (aleatória, ou CPF de quem não é estagiário) e salário fora da faixa do
+              departamento. Cada linha mostra o que está errado — <span className="text-destructive">✖</span> impede
+              pagar, <span className="text-amber-700 dark:text-amber-400">⚠</span> pede um olhar.
+            </p>
+            <button
+              className="mt-1.5 text-xs text-primary hover:underline"
+              onClick={() => {
+                const linhas = ativos
+                  .filter((c) => conferencia.has(String(c.id)))
+                  .map((c) => `• ${String(c.nome ?? "").trim()} (${txt(c.codigo)}): `
+                    + conferencia.get(String(c.id))!.map((a) => a.mensagem).join("; "));
+                const cabecalho =
+                  `Cadastros a corrigir no Portal RH (${new Date().toLocaleDateString("pt-BR")}):`;
+                navigator.clipboard.writeText([cabecalho, "", ...linhas].join("\n")).then(
+                  () => toast.success("Lista copiada — é só colar para o DH"),
+                  () => toast.error("Não deu para copiar"),
+                );
+              }}
+            >
+              Copiar a lista para mandar ao DH
+            </button>
+          </div>
+        )}
 
         {/* ─── O que o Hub corrige por cima do Portal RH ─── */}
         {divergencias.size > 0 && (
@@ -1192,6 +1261,7 @@ export default function ColaboradoresRH() {
                             selo={selo}
                             onFoto={setFotoAberta}
                             divergencias={divergencias.get(String(c.id))}
+                            achados={conferencia.get(String(c.id))}
                           />
                         </TableCell>
                       ))}
@@ -1613,7 +1683,7 @@ function Avatar({
    sempre — só a apresentação muda. */
 
 function Celula({
-  col, c, fotoUrl, selo, onFoto, divergencias,
+  col, c, fotoUrl, selo, onFoto, divergencias, achados,
 }: {
   col: Col;
   c: Colaborador;
@@ -1622,6 +1692,8 @@ function Celula({
   onFoto: (f: { url: string; nome: string } | null) => void;
   /** O que o Hub corrigiu por cima deste cadastro. Vira recado ao DH. */
   divergencias?: string[];
+  /** O que a conferência achou de errado no que veio do Portal RH. */
+  achados?: Achado[];
 }) {
   const nome = String(c.nome ?? "");
   const cru = c[col.key];
@@ -1658,6 +1730,19 @@ function Celula({
         {divergencias?.map((d) => (
           <span key={d} className="block whitespace-normal text-[11px] leading-snug text-destructive">
             ⚠ {d}
+          </span>
+        ))}
+        {/* Erro impede pagar; aviso pede um olhar. Cores diferentes porque
+            misturar os dois faz quem confere tratar tudo como ruído. */}
+        {achados?.map((a) => (
+          <span
+            key={a.campo + a.mensagem}
+            className={cn(
+              "block whitespace-normal text-[11px] leading-snug",
+              a.gravidade === "erro" ? "text-destructive" : "text-amber-700 dark:text-amber-400",
+            )}
+          >
+            {a.gravidade === "erro" ? "✖" : "⚠"} {a.mensagem}
           </span>
         ))}
       </span>

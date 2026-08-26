@@ -65,7 +65,15 @@ async function omieCall(call: string, param: Record<string, unknown>): Promise<a
     const msg = String(fault || texto);
     const transitorio = /425|redundante|processando|5020|too many|bloqueada|timeout|50[234]/i.test(msg);
     if (transitorio && tentativa < 3) {
-      await new Promise((r) => setTimeout(r, 1200 * 2 ** tentativa));
+      /* O Omie DIZ quanto esperar: "Aguarde 53 segundos para tentar novamente".
+         O backoff exponencial ia a 4,8s e desistia — e um título caía por um
+         problema que era só de ritmo. Quando ele informa o tempo, obedecer é o
+         que faz a tentativa valer; teto de 60s para a função não estourar. */
+      const pedido = msg.match(/aguarde\s+(\d+)\s*segundo/i);
+      const espera = pedido
+        ? Math.min(60_000, (Number(pedido[1]) + 1) * 1000)
+        : 1200 * 2 ** tentativa;
+      await new Promise((r) => setTimeout(r, espera));
       continue;
     }
     throw new Error(`Omie ${call}: ${msg}`);
@@ -177,6 +185,9 @@ Deno.serve(async (req) => {
       datadesl: (c.datadesl as string) ?? null,
     }));
     const pixPorCodigo = new Map(linhasRh.map((c) => [String(c.codigo), (c.pix as string) ?? null]));
+    const cargoPorCodigo = new Map(
+      linhasRh.map((c) => [String(c.codigo), (c.cargo as string) ?? null]),
+    );
     const estagioPorCodigo = new Map(
       linhasRh.map((c) => [String(c.codigo), /estagi/i.test(String(c.cargo ?? ""))]),
     );
@@ -257,6 +268,11 @@ Deno.serve(async (req) => {
         cnpj: i.cnpj,
         codigoFornecedor: fornecedorPorCnpj.get(i.cnpj) ?? null,
         codigoCategoria: i.categoria ? codCategoria(i.categoria) : null,
+        // A chave que VAI no título, já com a regra do estagiário aplicada.
+        chavePix: estagioPorCodigo.get(i.codigo) && i.cnpj.length === 11
+          ? i.cnpj
+          : (pixPorCodigo.get(i.codigo) ?? "") || i.cnpj,
+        cargo: cargoPorCodigo.get(i.codigo) ?? null,
       })),
     });
     if (recusa) return json({ status: "erro", erro: recusa }, 409);

@@ -165,6 +165,17 @@ export default function EnviarFolhaOmie({
           <p className="text-[12.5px] font-semibold text-destructive">
             {falhas.length} título(s) recusados pelo Omie
           </p>
+          <button
+            className="mt-1 text-xs text-primary hover:underline"
+            onClick={() => {
+              const linhas = falhas.map((f) => `• ${f.nome}: ${f.erro ?? "sem motivo"}`);
+              const texto = ["Títulos recusados pelo Omie:", "", ...linhas].join("\n");
+              navigator.clipboard.writeText(texto)
+                .then(() => toast.success("Lista copiada"), () => toast.error("Não deu para copiar"));
+            }}
+          >
+            Copiar a lista
+          </button>
           <ul className="mt-1.5 space-y-1">
             {falhas.map((f) => (
               <li key={f.integracao} className="text-xs">

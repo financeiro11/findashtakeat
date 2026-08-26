@@ -33,6 +33,10 @@
  * quatro pessoas dividirem um CNPJ e seis terem documento incompleto — dado
  * errado no RH, que nenhuma chave deveria destravar.
  */
+import { chavePermitida, ehEstagiario, tipoDeChavePix } from "./documento.ts";
+
+export { chavePermitida, ehEstagiario, tipoDeChavePix };
+
 export const ENVIO_FOLHA_LIBERADO = true;
 
 /** O que a tela diz enquanto o envio está desligado. `null` quando liberado. */
@@ -147,6 +151,7 @@ export const soDigitos = (s: unknown): string => String(s ?? "").replace(/\D/g, 
  * não tem.
  */
 export const documentoValido = (d: string): boolean => d.length === 14 || d.length === 11;
+
 
 /* ------------------------------------------------------------------
  * O mês comercial
@@ -524,6 +529,9 @@ export type EstadoDaFolha = "pendente" | "fora_do_hub" | "enviado" | null;
 export type PendenciaDoItem = {
   /** CNPJ só com dígitos — usado para achar o fornecedor e para flagrar repetição. */
   cnpj: string;
+  /** A chave PIX que VAI no título, e o cargo para saber se CPF vale. */
+  chavePix?: string | null;
+  cargo?: string | null;
   /** Fornecedor do Omie casado pelo CNPJ; `null` = não achou. */
   codigoFornecedor: number | null;
   /** Categoria da pessoa, vinda do de-para; vazio = sem categoria definida. */
@@ -601,6 +609,26 @@ export function pendenciasDoLote(itens: PendenciaDoItem[]): string | null {
   if (semCategoria) {
     return `${semCategoria} colaborador(es) sem categoria do Omie definida. `
       + "Defina a categoria de todos antes de enviar.";
+  }
+
+  /* Chave PIX conferida AQUI, e não só no Omie.
+   *
+   * Em 26/08/2026 dez títulos foram recusados um a um pelo ERP por chave
+   * inválida — CPF de quem não é estagiário, CNPJ truncado, CNPJ com dígito
+   * errado. A prévia já marcava os dez em vermelho; o envio não perguntava a
+   * ela. O resultado foram dez chamadas gastas para receber mensagens que
+   * ninguém liga à pessoa ("não parece ser um telefone válido", para um CPF).
+   *
+   * Conferir antes transforma isso em uma frase com nomes, antes de sair
+   * requisição nenhuma. */
+  const chaveRuim = itens.filter((i) => {
+    if (i.chavePix === undefined) return false; // quem não informou não é conferido
+    const tipo = tipoDeChavePix(String(i.chavePix ?? ""));
+    return !chavePermitida(tipo, ehEstagiario(i.cargo ?? ""));
+  }).length;
+  if (chaveRuim) {
+    return `${chaveRuim} colaborador(es) com chave PIX que o Omie recusa. `
+      + "A tela marca cada um em vermelho, com o motivo.";
   }
 
   return null;

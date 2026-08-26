@@ -202,8 +202,18 @@ Deno.serve(async (req) => {
       cargo: cargoPorCodigo.get(i.codigo) ?? null,
     }));
 
+    const pixPorCodigo = new Map(
+      ((rh.data ?? []) as Record<string, unknown>[])
+        .map((c) => [String(c.codigo), (c.pix as string) ?? null]),
+    );
     const paraChecar = linhas.map((l) => ({
-      cnpj: l.cnpj, codigoFornecedor: l.codigoFornecedor, codigoCategoria: l.codigoCategoria,
+      cnpj: l.cnpj,
+      codigoFornecedor: l.codigoFornecedor,
+      codigoCategoria: l.codigoCategoria,
+      chavePix: /estagi/i.test(String(l.cargo ?? "")) && l.cnpj.length === 11
+        ? l.cnpj
+        : (pixPorCodigo.get(l.codigo) ?? "") || l.cnpj,
+      cargo: l.cargo,
     }));
 
     return json({

@@ -100,7 +100,11 @@ export default function PreviaFolhaDialog({
   useEffect(() => {
     if (!aberto) return;
     let vivo = true;
-    setCarregando(true); setErro(null); setPrevia(null);
+    /* NÃO limpa `previa` ao recarregar. Limpar desmontava o rodapé inteiro, e
+       com ele a lista de títulos recusados — que era justamente o que a pessoa
+       precisava ler depois de um envio parcial. O conteúdo antigo fica na tela
+       enquanto o novo carrega. */
+    setCarregando(true); setErro(null);
 
     invocar<Previa>(supabase.functions.invoke("folha-previa", { body: { competencia } }))
       .then((r) => { if (vivo) setPrevia(r); })
@@ -147,10 +151,15 @@ export default function PreviaFolhaDialog({
           </DialogDescription>
         </DialogHeader>
 
-        {carregando && (
+        {carregando && !previa && (
           <div className="flex items-center gap-2 py-10 text-sm text-muted-foreground">
             <Loader2 className="size-4 animate-spin" /> Montando o lote…
           </div>
+        )}
+        {carregando && previa && (
+          <p className="flex items-center gap-2 text-xs text-muted-foreground">
+            <Loader2 className="size-3.5 animate-spin" /> Atualizando…
+          </p>
         )}
 
         {erro && (
@@ -159,7 +168,7 @@ export default function PreviaFolhaDialog({
           </div>
         )}
 
-        {!carregando && !erro && (
+        {previa && !erro && (
           <>
             <div className="flex flex-wrap items-center gap-x-7 gap-y-4 rounded-xl border bg-card px-[18px] py-3.5">
               <div>

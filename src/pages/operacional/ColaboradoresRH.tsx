@@ -24,6 +24,10 @@ import { HoverCard, HoverCardContent, HoverCardTrigger } from "@/components/ui/h
 import { tabelaFolha } from "@/lib/folha/db";
 import { conferir, medianasPorDepartamento, type Achado } from "@/lib/folha/conferencia";
 import {
+  compararChavePix, type ChaveDoOmie, type ComparacaoDeChave,
+} from "@/lib/folha/chaves-pix";
+import { invocar } from "@/lib/erroEdge";
+import {
   montarLote, type ColaboradorDaFolha, type ResolveDePara,
 } from "../../../supabase/functions/_shared/folha-envio";
 
@@ -476,6 +480,48 @@ export default function ColaboradoresRH() {
     },
   });
 
+  /* As chaves PIX como estão no cadastro de fornecedor do Omie.
+   *
+   * Vem de uma Edge Function e não de `omie_cache` direto porque essa tabela
+   * tem RLS sem policy nenhuma — nem o usuário logado a lê do navegador. E vem
+   * de cache e não do Omie ao vivo porque `ListarClientesResumido` (o que
+   * alimenta o cache de clientes) não traz `dadosBancarios`: a chave só sai
+   * numa consulta por documento, uma pessoa de cada vez. */
+  const {
+    data: chavesOmie, isFetching: buscandoChaves, refetch: rebuscarChaves,
+  } = useQuery({
+    queryKey: ["folha_chaves_pix"],
+    staleTime: 30 * 60_000,
+    queryFn: async () => {
+      const r = await invocar<{ atualizado_em: string | null; pessoas: Record<string, unknown>[] }>(
+        supabase.functions.invoke("omie-folha-cadastros-sync", { body: { action: "chaves_pix_status" } }),
+      );
+      const m = new Map<string, ChaveDoOmie>();
+      for (const p of r?.pessoas ?? []) {
+        m.set(String(p.codigo ?? ""), {
+          chaveOmie: String(p.chaveOmie ?? ""),
+          existe: !!p.existe,
+          erro: (p.erro as string) ?? null,
+        });
+      }
+      return { em: r?.atualizado_em ?? null, mapa: m };
+    },
+  });
+
+  /* Rebuscar é caro: uma chamada ao Omie por pessoa, com respiro entre elas
+     para não levar "too many requests". Perto de um minuto para o quadro
+     inteiro — por isso é botão, e não algo que acontece ao abrir a tela. */
+  const atualizarChaves = useCallback(async () => {
+    const t = toast.loading("Consultando o cadastro de cada fornecedor no Omie… leva cerca de um minuto");
+    try {
+      await invocar(supabase.functions.invoke("omie-folha-cadastros-sync", { body: { action: "chaves_pix" } }));
+      await rebuscarChaves();
+      toast.success("Chaves PIX do Omie atualizadas", { id: t });
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Não deu para consultar o Omie", { id: t });
+    }
+  }, [rebuscarChaves]);
+
   const ativos = useMemo(() => todos.filter(ativo), [todos]);
   const desligados = useMemo(() => todos.filter((c) => !ativo(c)), [todos]);
 
@@ -626,6 +672,30 @@ export default function ColaboradoresRH() {
     }
     return m;
   }, [todos, dePara]);
+
+  /* O RH contra o Omie, chave a chave.
+   *
+   * São duas verdades sobre o mesmo pagamento: o portal do RH é o que alguém
+   * digitou, o cadastro do Omie é o que o banco usa. Quando divergem, quem
+   * paga é o Omie — e essa era a informação que faltava aqui. Sem ela, seis
+   * pessoas apareciam com "chave PIX inválida" numa folha que ia sair
+   * certinha, porque o fornecedor no Omie já tinha o CNPJ correto. */
+  const chavesPix = useMemo(() => {
+    const m = new Map<string, ComparacaoDeChave>();
+    if (!chavesOmie?.mapa.size) return m;
+    for (const c of ativos) {
+      const noOmie = chavesOmie.mapa.get(String(c.codigo ?? ""));
+      if (!noOmie) continue;  // fora da folha, ou documento que a busca não cobre
+      const r = compararChavePix((c.pix as string) ?? null, noOmie);
+      if (!r.ok) m.set(String(c.id), r);
+    }
+    return m;
+  }, [ativos, chavesOmie]);
+
+  const chavesQueImpedem = useMemo(
+    () => [...chavesPix.values()].filter((r) => r.gravidade === "erro").length,
+    [chavesPix],
+  );
 
   /** Quem entrou, quem saiu e que contrato vence no mês escolhido. */
   const mov = useMemo(() => {
@@ -970,6 +1040,58 @@ export default function ColaboradoresRH() {
           </div>
         )}
 
+        {/* ─── O RH contra o cadastro de fornecedor do Omie ─── */}
+        {(chavesPix.size > 0 || chavesOmie?.em) && (
+          <div className="rounded-xl border border-sky-500/40 bg-sky-500/5 px-3.5 py-2.5">
+            <p className="text-[12.5px] font-semibold text-sky-700 dark:text-sky-400">
+              {chavesPix.size > 0
+                ? <>{chavesPix.size} chave(s) PIX diferem do cadastro no Omie
+                    {chavesQueImpedem > 0 && (
+                      <span className="text-destructive"> · {chavesQueImpedem} sem chave utilizável</span>
+                    )}</>
+                : <>Chaves PIX conferidas — todas batem com o Omie</>}
+            </p>
+            <p className="mt-0.5 text-xs text-muted-foreground">
+              O portal do RH é o que alguém digitou; o cadastro do Omie é o que o banco usa
+              quando o título vira pagamento. Divergiu, quem paga é o Omie — por isso boa parte
+              destas <span className="text-sky-700 dark:text-sky-400">⇄</span> é o Omie salvando
+              uma digitação do portal, e não um problema novo.
+              {chavesOmie?.em && (
+                <> Consultado em {new Date(chavesOmie.em).toLocaleString("pt-BR")}.</>
+              )}
+            </p>
+            <div className="mt-1.5 flex flex-wrap items-center gap-3">
+              {chavesPix.size > 0 && (
+                <button
+                  className="text-xs text-primary hover:underline"
+                  onClick={() => {
+                    const linhas = ativos
+                      .filter((c) => chavesPix.has(String(c.id)))
+                      .map((c) => `• ${String(c.nome ?? "").trim()} (${txt(c.codigo)}): `
+                        + chavesPix.get(String(c.id))!.mensagem);
+                    const cabecalho = "Chaves PIX que divergem entre o Portal RH e o Omie "
+                      + `(${new Date().toLocaleDateString("pt-BR")}):`;
+                    navigator.clipboard.writeText([cabecalho, "", ...linhas].join("\n")).then(
+                      () => toast.success("Lista copiada — é só colar para o DH"),
+                      () => toast.error("Não deu para copiar"),
+                    );
+                  }}
+                >
+                  Copiar a lista para mandar ao DH
+                </button>
+              )}
+              <button
+                className="text-xs text-muted-foreground hover:text-foreground hover:underline disabled:opacity-50"
+                disabled={buscandoChaves}
+                onClick={atualizarChaves}
+                title="Consulta o cadastro de fornecedor de cada pessoa no Omie, um a um. Leva cerca de um minuto."
+              >
+                {buscandoChaves ? "Consultando o Omie…" : "Reconsultar o Omie"}
+              </button>
+            </div>
+          </div>
+        )}
+
         {/* ─── Barra de ferramentas ─── */}
         <div className="flex flex-wrap items-center gap-2.5">
           <Tabs value={aba} onValueChange={(v) => setAba(v as typeof aba)}>
@@ -1262,6 +1384,7 @@ export default function ColaboradoresRH() {
                             onFoto={setFotoAberta}
                             divergencias={divergencias.get(String(c.id))}
                             achados={conferencia.get(String(c.id))}
+                            chavePix={chavesPix.get(String(c.id))}
                           />
                         </TableCell>
                       ))}
@@ -1683,7 +1806,7 @@ function Avatar({
    sempre — só a apresentação muda. */
 
 function Celula({
-  col, c, fotoUrl, selo, onFoto, divergencias, achados,
+  col, c, fotoUrl, selo, onFoto, divergencias, achados, chavePix,
 }: {
   col: Col;
   c: Colaborador;
@@ -1694,6 +1817,8 @@ function Celula({
   divergencias?: string[];
   /** O que a conferência achou de errado no que veio do Portal RH. */
   achados?: Achado[];
+  /** Em que a chave PIX do RH difere da cadastrada no fornecedor do Omie. */
+  chavePix?: ComparacaoDeChave;
 }) {
   const nome = String(c.nome ?? "");
   const cru = c[col.key];
@@ -1745,6 +1870,21 @@ function Celula({
             {a.gravidade === "erro" ? "✖" : "⚠"} {a.mensagem}
           </span>
         ))}
+        {/* Marcador próprio: isto não é defeito de um cadastro, é desacordo
+            entre dois. Misturar com o ✖ faria parecer que o pagamento não
+            sai — e na maioria das vezes sai, pela chave do Omie. */}
+        {chavePix && (
+          <span
+            className={cn(
+              "block whitespace-normal text-[11px] leading-snug",
+              chavePix.gravidade === "erro"
+                ? "text-destructive"
+                : "text-sky-700 dark:text-sky-400",
+            )}
+          >
+            ⇄ {chavePix.mensagem}
+          </span>
+        )}
       </span>
     );
   }

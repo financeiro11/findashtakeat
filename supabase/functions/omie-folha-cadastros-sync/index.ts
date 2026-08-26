@@ -233,6 +233,20 @@ Deno.serve(async (req) => {
       });
     }
 
+    /* Leitura do que já foi buscado. Existe porque `omie_cache` tem RLS sem
+       policy nenhuma: nem o usuário logado lê a tabela direto do navegador,
+       só o service_role daqui de dentro. */
+    if (body?.action === "chaves_pix_status") {
+      const { data } = await supabase
+        .from("omie_cache").select("dados, registros, atualizado_em")
+        .eq("chave", CHAVE_PIX_CACHE).maybeSingle();
+      return json({
+        status: "ok",
+        atualizado_em: data?.atualizado_em ?? null,
+        pessoas: (data?.dados ?? []) as unknown[],
+      });
+    }
+
     /* ---------- chaves PIX dos fornecedores da folha ---------- */
     if (body?.action === "chaves_pix") {
       const { data: pessoas } = await (supabase as any)

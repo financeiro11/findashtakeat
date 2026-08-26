@@ -101,9 +101,17 @@ describe("chavePermitida", () => {
     expect(chavePermitida("cpf", false)).toBe(false);
   });
 
+  it("telefone é aceito — recebe, mesmo não sendo o ideal", () => {
+    expect(chavePermitida("telefone", false)).toBe(true);
+  });
+
   it("aleatória nunca, nem para estagiário", () => {
     expect(chavePermitida("aleatoria", true)).toBe(false);
-    expect(chavePermitida("telefone", true)).toBe(false);
+  });
+
+  it("chave quebrada não é tipo de chave — não recebe", () => {
+    expect(chavePermitida("email_invalido", true)).toBe(false);
+    expect(chavePermitida("documento_incompleto", true)).toBe(false);
   });
 });
 
@@ -183,6 +191,18 @@ describe("conferir · chave PIX", () => {
   it("mostra o CPF na mensagem — quem cobra o DH precisa dizer qual é", () => {
     const a = erros(pessoa({ pix: "16146305774", cargo: "Coordenador" }));
     expect(a[0].mensagem).toContain("161.463.057-74");
+  });
+
+  /* Telefone recebe, então não pode impedir o pagamento. Mas é a única chave
+     PIX que troca de dono, então vale o empurrão para o CNPJ. */
+  it("telefone não impede pagar, mas pede a troca por CNPJ", () => {
+    const a = conferir(pessoa({ pix: "+5527998814130" }));
+    expect(a.filter((x) => x.gravidade === "erro")).toHaveLength(0);
+    expect(a.some((x) => x.gravidade === "aviso" && /ideal é usar o CNPJ/.test(x.mensagem))).toBe(true);
+  });
+
+  it("e-mail não vira ruído — é aceito e fica quieto", () => {
+    expect(conferir(pessoa({ pix: "amanda.takeat@gmail.com" }))).toHaveLength(0);
   });
 
   it("chave vazia é aviso, não erro — dá para pagar corrigindo antes", () => {

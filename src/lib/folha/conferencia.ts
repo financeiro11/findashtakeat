@@ -107,12 +107,26 @@ export function tipoDeChavePix(chave: string): TipoDeChave {
   return "desconhecida";
 }
 
-/** O que a empresa aceita pagar. CPF só para estagiário; aleatória, nunca. */
+/**
+ * O que a empresa aceita pagar, em ordem de preferência (26/08/2026):
+ *
+ *   CNPJ      preferido — é o documento da PJ que presta o serviço
+ *   e-mail    aceito
+ *   telefone  aceito, mas o ideal é trocar por CNPJ
+ *   CPF       só para estagiário
+ *   aleatória nunca
+ *
+ * `email_invalido` e `documento_incompleto` ficam de fora de propósito: são
+ * chave quebrada, não tipo de chave. Não recebem nada.
+ */
 export function chavePermitida(tipo: TipoDeChave, estagiario: boolean): boolean {
-  if (tipo === "cnpj" || tipo === "email") return true;
+  if (tipo === "cnpj" || tipo === "email" || tipo === "telefone") return true;
   if (tipo === "cpf") return estagiario;
   return false;
 }
+
+/** Aceita, mas dá para melhorar. Hoje só o telefone. */
+export const chaveMenosBoa = (tipo: TipoDeChave): boolean => tipo === "telefone";
 
 /** O cargo diz que é estágio? É o único caso em que CPF vale como chave. */
 export const ehEstagiario = (cargo: string): boolean =>
@@ -220,7 +234,7 @@ export function conferir(
     vazia: "sem chave PIX cadastrada",
     aleatoria: "chave PIX aleatória — a empresa não paga nesse tipo",
     cpf: "",  // montada abaixo, com o CPF à vista
-    telefone: "chave PIX é telefone — a empresa paga em CNPJ ou e-mail",
+    telefone: "",  // aceita; vira aviso de preferência, não erro
     email_invalido: `chave PIX "${String(p.pix ?? "").trim()}" não é um e-mail válido`,
     documento_incompleto: `chave PIX ${soDigitos(p.pix)} parece CNPJ com dígito faltando`,
     desconhecida: "chave PIX em formato não reconhecido",
@@ -237,6 +251,14 @@ export function conferir(
       campo: "pix",
       gravidade: tipo === "vazia" ? "aviso" : "erro",
       mensagem: comoPix[tipo]!,
+    });
+  } else if (chaveMenosBoa(tipo)) {
+    /* Telefone recebe, então não impede o pagamento. Mas a preferência da
+       empresa é CNPJ, e um aviso aqui é o que faz alguém trocar antes de o
+       número mudar de dono — telefone é a única chave PIX que troca de mãos. */
+    achados.push({
+      campo: "pix", gravidade: "aviso",
+      mensagem: "chave PIX é telefone — funciona, mas o ideal é usar o CNPJ",
     });
   } else if (tipo === "cnpj" && doc.length === 14 && soDigitos(p.pix) !== doc) {
     /* A empresa não paga em CNPJ de terceiro — confirmado pelo financeiro em

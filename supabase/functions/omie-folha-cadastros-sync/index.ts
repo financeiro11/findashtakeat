@@ -1,0 +1,239 @@
+// Edge Function: omie-folha-cadastros-sync
+//
+// Popula `omie_cache` (chave "folha_cadastros") com os três cadastros que o
+// provisionamento da folha precisa e que hoje não existem em lugar nenhum do
+// Hub: contas correntes, departamentos e categorias do Omie.
+//
+// POR QUE ISTO EXISTE: a planilha de importação da folha casa tudo por NOME
+// ("Sicoob - Conta Corrente", "Tecnologia", "3.1.1.4. Pessoal - Tecnologia"),
+// porque o importador do Omie resolve o nome por conta própria. A API não faz
+// isso — ela quer `id_conta_corrente` numérico, `cCodDep` e `codigo_categoria`.
+// Sem este sync, esses três valores seriam constantes digitadas à mão, e um
+// dígito errado põe cem títulos na conta ou na categoria errada.
+//
+// É SÓ LEITURA do Omie e escreve UMA linha de cache. Não cria, não altera e
+// não apaga nada no ERP.
+//
+// Segue o molde de `omie-clientes-sync`: mesmo envelope RPC, mesmo backoff,
+// mesma autenticação (usuário logado ou token de cron), mesma tabela de cache.
+// O envelope está reproduzido aqui em vez de importar `_shared/omie.ts` pelo
+// mesmo motivo que lá: aquele módulo carrega anexo/zip/MD5 que isto não usa.
+//
+// Ações (body.action):
+//   "sync" (default) → repuxa do Omie e grava no cache.
+//   "status"         → só informa o que já está em cache, sem chamar o Omie.
+
+import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { requireUser } from "../_shared/auth.ts";
+
+const corsHeaders = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type, x-cron-token",
+  "Access-Control-Allow-Methods": "POST, OPTIONS",
+};
+const json = (body: unknown, status = 200) =>
+  new Response(JSON.stringify(body), { status, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+
+const BASE = "https://app.omie.com.br/api/v1";
+const CHAVE_CACHE = "folha_cadastros";
+
+/** Envelope RPC do Omie, com o mesmo backoff de `omie-clientes-sync`. */
+async function omieCall(path: string, call: string, param: Record<string, unknown>): Promise<any> {
+  const app_key = Deno.env.get("OMIE_APP_KEY");
+  const app_secret = Deno.env.get("OMIE_APP_SECRET");
+  if (!app_key || !app_secret) {
+    throw new Error("Credenciais do Omie ausentes. Configure OMIE_APP_KEY e OMIE_APP_SECRET nos secrets.");
+  }
+  let ultimo: unknown = null;
+  for (let tentativa = 0; tentativa < 5; tentativa++) {
+    const res = await fetch(`${BASE}/${path}/`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ call, app_key, app_secret, param: [param] }),
+    });
+    const texto = await res.text();
+    let data: any;
+    try { data = texto ? JSON.parse(texto) : null; } catch { data = texto; }
+
+    // O Omie devolve erro de negócio com HTTP 500 + { faultstring }.
+    const fault = data && typeof data === "object" ? data.faultstring : null;
+    if (res.ok && !fault) return data;
+
+    const msg = fault || (typeof data === "string" ? data : JSON.stringify(data));
+    ultimo = new Error(`Omie ${call} [${res.status}]: ${msg}`);
+    const transitorio = /425|redundante|processando|5020|too many|bloqueada|soap-error|broken response|timeout|50[234]/i.test(String(msg));
+    if (transitorio && tentativa < 4) {
+      await new Promise((r) => setTimeout(r, 1200 * 2 ** tentativa));
+      continue;
+    }
+    throw ultimo;
+  }
+  throw ultimo;
+}
+
+/* ------------------------------------------------------------------
+ * Os três cadastros
+ * ------------------------------------------------------------------ */
+
+type ContaCorrente = { id: number; descricao: string; codigo: string | null; banco: string | null };
+type Departamento = { codigo: string; descricao: string; inativo: boolean };
+type Categoria = { codigo: string; descricao: string; conta_inativa: boolean };
+
+/**
+ * Contas correntes. É daqui que sai o `id_conta_corrente` de
+ * "Sicoob - Conta Corrente", a conta que paga a folha.
+ */
+async function listarContasCorrentes(): Promise<ContaCorrente[]> {
+  const out: ContaCorrente[] = [];
+  let pagina = 1;
+  let totalPaginas = 1;
+  do {
+    const r = await omieCall("geral/contacorrente", "ListarContasCorrentes", {
+      pagina,
+      registros_por_pagina: 100,
+      apenas_importado_api: "N",
+    });
+    for (const c of r?.ListarContasCorrentes ?? r?.conta_corrente_cadastro ?? []) {
+      const id = Number(c?.nCodCC ?? 0);
+      if (!id) continue;
+      out.push({
+        id,
+        descricao: String(c?.descricao ?? "").trim(),
+        codigo: String(c?.codigo ?? "").trim() || null,
+        banco: String(c?.codigo_banco ?? "").trim() || null,
+      });
+    }
+    totalPaginas = Number(r?.nTotPaginas ?? r?.total_de_paginas ?? 1);
+    pagina++;
+  } while (pagina <= totalPaginas);
+  return out;
+}
+
+/** Departamentos. Daqui sai o `cCodDep` de cada departamento da folha. */
+async function listarDepartamentos(): Promise<Departamento[]> {
+  const out: Departamento[] = [];
+  let pagina = 1;
+  let totalPaginas = 1;
+  do {
+    const r = await omieCall("geral/departamentos", "ListarDepartamentos", {
+      pagina,
+      registros_por_pagina: 100,
+    });
+    for (const d of r?.departamentos ?? []) {
+      const codigo = String(d?.codigo ?? "").trim();
+      if (!codigo) continue;
+      out.push({
+        codigo,
+        descricao: String(d?.descricao ?? "").trim(),
+        inativo: String(d?.inativo ?? "N").toUpperCase() === "S",
+      });
+    }
+    totalPaginas = Number(r?.total_de_paginas ?? 1);
+    pagina++;
+  } while (pagina <= totalPaginas);
+  return out;
+}
+
+/**
+ * Categorias. Serve para CONFERIR os códigos que hoje são deduzidos da
+ * descrição na planilha ("3.1.1.2. Pessoal - Comercial" → "3.1.1.2") — a
+ * dedução some assim que esta lista existir.
+ */
+async function listarCategorias(): Promise<Categoria[]> {
+  const out: Categoria[] = [];
+  let pagina = 1;
+  let totalPaginas = 1;
+  do {
+    const r = await omieCall("geral/categorias", "ListarCategorias", {
+      pagina,
+      registros_por_pagina: 500,
+    });
+    for (const c of r?.categoria_cadastro ?? []) {
+      const codigo = String(c?.codigo ?? "").trim();
+      if (!codigo) continue;
+      out.push({
+        codigo,
+        descricao: String(c?.descricao ?? "").trim(),
+        conta_inativa: String(c?.conta_inativa ?? "N").toUpperCase() === "S",
+      });
+    }
+    totalPaginas = Number(r?.total_de_paginas ?? 1);
+    pagina++;
+  } while (pagina <= totalPaginas);
+  return out;
+}
+
+// Chamada agendada (cron): mesmo esquema de `omie-clientes-sync`.
+async function chamadaDeCron(req: Request, supabase: any): Promise<boolean> {
+  const token = req.headers.get("x-cron-token");
+  if (!token) return false;
+  const { data } = await supabase
+    .from("internal_cron_tokens").select("name")
+    .eq("name", "omie-folha-cadastros-sync").eq("token", token).maybeSingle();
+  return !!data;
+}
+
+Deno.serve(async (req) => {
+  if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
+
+  const supabase = createClient(
+    Deno.env.get("SUPABASE_URL")!,
+    Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!,
+  );
+
+  try {
+    if (!(await chamadaDeCron(req, supabase))) {
+      await requireUser(req, { bloquearCargos: ["parcerias"] });
+    }
+
+    const body = await req.json().catch(() => ({}));
+
+    if (body?.action === "status") {
+      const { data } = await supabase
+        .from("omie_cache").select("registros, atualizado_em, dados").eq("chave", CHAVE_CACHE).maybeSingle();
+      const d = (data?.dados ?? {}) as Record<string, unknown[]>;
+      return json({
+        status: "ok",
+        atualizado_em: data?.atualizado_em ?? null,
+        contas_correntes: d.contas_correntes?.length ?? 0,
+        departamentos: d.departamentos?.length ?? 0,
+        categorias: d.categorias?.length ?? 0,
+      });
+    }
+
+    /* Em série, não em paralelo: o Omie derruba rajada com "too many
+       requests", e são três chamadas leves — não vale a corrida. */
+    const contas_correntes = await listarContasCorrentes();
+    const departamentos = await listarDepartamentos();
+    const categorias = await listarCategorias();
+
+    const dados = { contas_correntes, departamentos, categorias };
+    const registros = contas_correntes.length + departamentos.length + categorias.length;
+    const atualizado_em = new Date().toISOString();
+
+    const { error } = await supabase.from("omie_cache").upsert(
+      { chave: CHAVE_CACHE, dados, registros, atualizado_em },
+      { onConflict: "chave" },
+    );
+    if (error) throw new Error(`Falha ao gravar o cache: ${error.message}`);
+
+    return json({
+      status: "ok",
+      atualizado_em,
+      contas_correntes: contas_correntes.length,
+      departamentos: departamentos.length,
+      categorias: categorias.length,
+      // A amostra existe para conferir o formato na primeira execução, quando
+      // ainda não se sabe como o Omie desta empresa nomeia as coisas.
+      amostra: {
+        contas_correntes: contas_correntes.slice(0, 5),
+        departamentos: departamentos.slice(0, 5),
+        categorias: categorias.filter((c) => /pessoal|diretor/i.test(c.descricao)).slice(0, 12),
+      },
+    });
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    const status = /autentic|permiss/i.test(msg) ? 401 : 500;
+    return json({ status: "erro", erro: msg }, status);
+  }
+});

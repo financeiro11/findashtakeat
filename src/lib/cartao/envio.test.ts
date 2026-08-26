@@ -40,6 +40,12 @@ const AUTORIZADOS = [
   "supabase/functions/_shared/omie.ts",
   "supabase/functions/_shared/cartao-envio.ts",
   "supabase/functions/cartao-omie-enviar/index.ts",
+  // Folha → Omie, autorizado em 26/08/2026. Monta o payload do título de folha
+  // e carrega as MESMAS travas do cartão: marco de competência, chave de
+  // idempotência por pessoa e função de recusa compartilhada com a tela. A
+  // chave própria (`ENVIO_FOLHA_LIBERADO`) nasceu desligada, então hoje este
+  // arquivo sabe montar o título mas nada o envia.
+  "supabase/functions/_shared/folha-envio.ts",
 ];
 
 function arquivos(dir: string): string[] {
@@ -56,7 +62,11 @@ function arquivos(dir: string): string[] {
 const quemEscreveNoOmie = (): string[] =>
   [join(RAIZ, "src"), join(RAIZ, "supabase"), join(RAIZ, "scripts")]
     .flatMap((d) => { try { return arquivos(d); } catch { return []; } })
-    .filter((f) => f !== __filename)
+    // Teste DESCREVE quem escreve; não escreve. Este arquivo já se excluía por
+    // esse motivo, e a regra vale igual para o teste da folha, que cita
+    // `IncluirContaPagarPorLote` para prender o formato do lote. A suíte não
+    // vai para produção — o que se vigia aqui é o caminho de runtime.
+    .filter((f) => !/\.test\.[cm]?[jt]sx?$/.test(f))
     .filter((f) => ESCRITA_NO_OMIE.test(readFileSync(f, "utf8")))
     .map((f) => f.slice(RAIZ.length + 1).replace(/\\/g, "/"));
 

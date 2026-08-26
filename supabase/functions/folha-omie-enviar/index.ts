@@ -30,8 +30,8 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { requireUser } from "../_shared/auth.ts";
 import {
-  CONTA_CORRENTE_FOLHA, montarLote, montarTituloFolha,
-  recusaDaFolha, resolvedorDeCategoria, soDigitos,
+  CONTA_CORRENTE_FOLHA, chavePermitida, montarLote, montarTituloFolha,
+  recusaDaFolha, resolvedorDeCategoria, soDigitos, tipoDeChavePix,
   type ColaboradorDaFolha, type EstadoDaFolha, type ResolveDePara, type TituloDaFolha,
 } from "../_shared/folha-envio.ts";
 
@@ -45,13 +45,17 @@ const json = (body: unknown, status = 200) =>
 
 const BASE = "https://app.omie.com.br/api/v1";
 
-async function omieCall(call: string, param: Record<string, unknown>): Promise<any> {
+async function omieCall(
+  call: string,
+  param: Record<string, unknown>,
+  path = "financas/contapagar",
+): Promise<any> {
   const app_key = Deno.env.get("OMIE_APP_KEY");
   const app_secret = Deno.env.get("OMIE_APP_SECRET");
   if (!app_key || !app_secret) throw new Error("Credenciais do Omie ausentes nos secrets.");
 
   for (let tentativa = 0; tentativa < 4; tentativa++) {
-    const res = await fetch(`${BASE}/financas/contapagar/`, {
+    const res = await fetch(`${BASE}/${path}/`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ call, app_key, app_secret, param: [param] }),
@@ -79,6 +83,32 @@ async function omieCall(call: string, param: Record<string, unknown>): Promise<a
     throw new Error(`Omie ${call}: ${msg}`);
   }
   throw new Error(`Omie ${call}: sem resposta`);
+}
+
+/**
+ * A chave PIX que o FORNECEDOR tem cadastrada no Omie.
+ *
+ * É a chave que o ERP usaria se pudesse buscá-la sozinho — e ele não pode: com
+ * `finalidade_transferencia` "01.3" ele EXIGE `pix_qrcode` no título. Então o
+ * Hub busca e manda.
+ *
+ * Vale mais que a do espelho do RH: o cadastro do fornecedor é conferido quando
+ * a pessoa é criada, e o espelho é digitado a cada admissão. Em 26/08/2026 o
+ * espelho tinha CPF com cara de telefone, CNPJ truncado e CNPJ com dígito
+ * trocado — dez títulos recusados por causa disso.
+ */
+async function chavePixDoFornecedor(cnpj: string): Promise<string | null> {
+  const r = await omieCall("ListarClientes", {
+    pagina: 1,
+    registros_por_pagina: 20,
+    apenas_importado_api: "N",
+    clientesFiltro: { cnpj_cpf: cnpj },
+  }, "geral/clientes");
+  for (const c of r?.clientes_cadastro ?? []) {
+    const chave = String(c?.dadosBancarios?.cChavePix ?? "").trim();
+    if (chave) return chave;
+  }
+  return null;
 }
 
 Deno.serve(async (req) => {
@@ -214,6 +244,37 @@ Deno.serve(async (req) => {
 
     const titulos: TituloDaFolha[] = [];
     const semPreparo: { nome: string; falta: string }[] = [];
+
+    /* A chave de cada um, resolvida ANTES do envio.
+     *
+     * Ordem: a do espelho do RH quando é válida (foi assim que noventa títulos
+     * passaram), senão a do cadastro do fornecedor no Omie, senão o próprio
+     * documento. Só se nada disso valer é que a pessoa fica de fora — e aí com
+     * o motivo escrito, em vez de virar uma recusa do ERP que ninguém liga a
+     * ninguém. */
+    const chaveCache = new Map<string, string | null>();
+    const chaveParaPagar = async (
+      doc: string, pixRh: string | null, estagiario: boolean,
+    ): Promise<string | null> => {
+      const vale = (c: string) => !!c && chavePermitida(tipoDeChavePix(c), estagiario);
+
+      // Estagiário recebe no CPF, que é o documento dele.
+      if (estagiario && doc.length === 11) return doc;
+
+      const doRh = String(pixRh ?? "").trim();
+      if (vale(doRh)) return doRh;
+
+      if (!chaveCache.has(doc)) {
+        try { chaveCache.set(doc, await chavePixDoFornecedor(doc)); }
+        catch { chaveCache.set(doc, null); }
+      }
+      const doFornecedor = chaveCache.get(doc) ?? "";
+      if (vale(doFornecedor)) return doFornecedor;
+
+      // Último recurso: o próprio documento, se ele valer como chave.
+      return vale(doc) ? doc : null;
+    };
+
     for (const i of itens) {
       const fornecedor = fornecedorPorCnpj.get(i.cnpj) ?? 0;
       const categoria = i.categoria ? codCategoria(i.categoria) : null;
@@ -222,8 +283,11 @@ Deno.serve(async (req) => {
          então exigi-lo aqui barraria um envio por um campo que nem é enviado.
          Continua resolvido e devolvido, para a prévia e para o dia em que o
          Omie aceitar o campo. */
+      const estagiario = estagioPorCodigo.get(i.codigo) ?? false;
+      const chave = await chaveParaPagar(i.cnpj, pixPorCodigo.get(i.codigo) ?? null, estagiario);
       const falta = !fornecedor ? "fornecedor no Omie"
-        : !categoria ? "categoria" : null;
+        : !categoria ? "categoria"
+          : !chave ? "chave PIX válida (nem no RH nem no cadastro do fornecedor)" : null;
       if (falta) { semPreparo.push({ nome: i.nome, falta }); continue; }
       titulos.push({
         integracao: i.integracao,
@@ -236,8 +300,8 @@ Deno.serve(async (req) => {
         vencimento: lote.vencimento,
         previsao: lote.previsao,
         nome: i.nome,
-        chavePix: pixPorCodigo.get(i.codigo) ?? null,
-        estagiario: estagioPorCodigo.get(i.codigo) ?? false,
+        chavePix: chave,
+        estagiario,
         cnpj: i.cnpj,
         razao: i.razao,
       });

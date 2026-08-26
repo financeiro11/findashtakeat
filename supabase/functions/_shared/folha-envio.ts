@@ -746,21 +746,22 @@ export function montarTituloFolha(t: TituloDaFolha): Record<string, unknown> {
     // 240 é o limite do campo no Omie; nome de gente cabe folgado.
     observacao: t.nome.trim().slice(0, 240),
     // Sem `departamentos`: o Omie recusa a tag. Ver o bloco acima.
-    /* SÓ o tipo de transferência e a finalidade.
+    /* A chave PIX VAI no título, e é obrigatória.
      *
-     * A chave PIX NÃO vai no título: o fornecedor já a tem no cadastro do Omie
-     * (`dadosBancarios.cChavePix`), e o ERP a usa de lá. Repetir a chave dentro
-     * de cada título significava carregar, todo mês, um dado que já existe num
-     * lugar só — e foi o que derrubou dez títulos em 26/08/2026, porque o que
-     * o espelho do RH tinha como chave era CPF com cara de telefone, CNPJ
-     * truncado e CNPJ com dígito trocado.
+     * Tentamos omiti-la, para o Omie puxar do cadastro do fornecedor. Ele não
+     * puxa — responde: "É obrigatório o preenchimento da tag [pix_qrcode]
+     * quando o conteúdo da tag [finalidade_transferencia] for '01.3'".
      *
-     * Com a chave vindo do cadastro, corrigir uma pessoa passa a ser corrigir o
-     * FORNECEDOR — um lugar, que vale para todos os meses — em vez de corrigir
-     * o espelho antes de cada folha. */
+     * Mas a ideia continua valendo onde importa: a chave BOA é a do cadastro do
+     * fornecedor, não a do espelho do RH. Quem monta o título resolve isso
+     * antes e entrega em `chavePix` — ver `chaveParaPagar` na função de envio.
+     */
     cnab_integracao_bancaria: {
       codigo_forma_pagamento: FORMA_PAGAMENTO_FOLHA,
       finalidade_transferencia: FINALIDADE_PIX_FOLHA,
+      pix_qrcode: String(t.chavePix ?? "").trim(),
+      cpf_cnpj_transferencia: cnpj,
+      nome_transferencia: (t.razao ?? "").trim() || t.nome.trim(),
     },
   };
 }

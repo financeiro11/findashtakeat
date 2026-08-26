@@ -621,24 +621,26 @@ describe("montarTituloFolha", () => {
     expect(p.distribuicao).toBeUndefined();
   });
 
-  /* Só o tipo e a finalidade. A chave PIX vem do CADASTRO do fornecedor no
-     Omie, não do título — o ERP a busca de lá. Repetir a chave dentro de cada
-     título foi o que derrubou dez em 26/08/2026: o espelho do RH tinha CPF com
-     cara de telefone, CNPJ truncado e CNPJ com dígito trocado. */
-  it("manda só o tipo de transferência e a finalidade", () => {
-    const cnab = montarTituloFolha(TITULO).cnab_integracao_bancaria as Record<string, unknown>;
+  /* A chave é obrigatória: tentamos omiti-la para o Omie puxar do cadastro do
+     fornecedor, e ele respondeu "É obrigatório o preenchimento da tag
+     [pix_qrcode] quando [finalidade_transferencia] for '01.3'". Quem escolhe a
+     chave é o envio, que prefere a do fornecedor à do espelho do RH. */
+  it("manda o CNAB completo, com a chave que recebeu", () => {
+    const cnab = montarTituloFolha({ ...TITULO, chavePix: "66744328000120" })
+      .cnab_integracao_bancaria as Record<string, unknown>;
     expect(cnab).toEqual({
-      codigo_forma_pagamento: FORMA_PAGAMENTO_FOLHA,   // "Transferência Bancária"
-      finalidade_transferencia: FINALIDADE_PIX_FOLHA,  // "Transferência por Chave PIX"
+      codigo_forma_pagamento: FORMA_PAGAMENTO_FOLHA,
+      finalidade_transferencia: FINALIDADE_PIX_FOLHA,
+      pix_qrcode: "66744328000120",
+      cpf_cnpj_transferencia: "66744328000120",
+      nome_transferencia: "ADRIAN CORADINI SERVICOS LTDA",
     });
   });
 
-  it("NÃO repete a chave PIX no título — ela vive no cadastro do fornecedor", () => {
-    const cnab = montarTituloFolha({ ...TITULO, chavePix: "chave-qualquer" })
+  it("sem razão social, o titular da transferência é o nome da pessoa", () => {
+    const cnab = montarTituloFolha({ ...TITULO, razao: null })
       .cnab_integracao_bancaria as Record<string, unknown>;
-    expect(cnab.pix_qrcode).toBeUndefined();
-    expect(cnab.cpf_cnpj_transferencia).toBeUndefined();
-    expect(cnab.nome_transferencia).toBeUndefined();
+    expect(cnab.nome_transferencia).toBe("Ádrian Coradini da Silva");
   });
 
   it("arredonda o valor para centavos", () => {

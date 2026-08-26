@@ -68,6 +68,7 @@ import Variavel from "./pages/operacional/Variavel";
 import FacilitiesDashboard from "./pages/facilities/FacilitiesDashboard";
 import FacilitiesSolicitacoes from "./pages/facilities/Solicitacoes";
 import FacilitiesCotacoes from "./pages/facilities/Cotacoes";
+import FacilitiesRadar from "./pages/facilities/Radar";
 import FacilitiesFornecedores from "./pages/facilities/Fornecedores";
 import FacilitiesHistorico from "./pages/facilities/Historico";
 import FacilitiesContratos from "./pages/facilities/Contratos";
@@ -247,6 +248,7 @@ function Rotas() {
               <Route path="/facilities" element={<FacilitiesDashboard />} />
               <Route path="/facilities/solicitacoes" element={<FacilitiesSolicitacoes />} />
               <Route path="/facilities/cotacoes" element={<FacilitiesCotacoes />} />
+              <Route path="/facilities/radar" element={<FacilitiesRadar />} />
               <Route path="/facilities/fornecedores" element={<FacilitiesFornecedores />} />
               <Route path="/facilities/historico" element={<FacilitiesHistorico />} />
               <Route path="/facilities/contratos" element={<FacilitiesContratos />} />

@@ -13,7 +13,7 @@ import {
   FileText, Smartphone, Plane, LayoutDashboard, Kanban, FileSpreadsheet, Truck,
   History, FileSignature, Gavel, CheckCircle2, PieChart, TrendingUp, FileBarChart,
   Scale, Target, Brain, Wallet2, ShieldCheck, Megaphone, UserMinus, UserCog, Tags,
-  Palette, Mic, Rocket, Globe2, Paperclip,
+  Palette, Mic, Rocket, Globe2, Paperclip, Radar,
   type LucideIcon,
 } from "lucide-react";
 import type { ModuleAccess, ModuleId } from "./modules";
@@ -137,6 +137,7 @@ export const GRUPO_FACILITIES: NavGrupo = {
     { title: "Dashboard", url: "/facilities", icon: LayoutDashboard, busca: ["compras"] },
     { title: "Solicitações", url: "/facilities/solicitacoes", icon: Kanban, busca: ["pedido", "compra"] },
     { title: "Cotações", url: "/facilities/cotacoes", icon: FileSpreadsheet, busca: ["orçamento", "comparativo"] },
+    { title: "Radar de preços", url: "/facilities/radar", icon: Radar, busca: ["monitorar preço", "notebook", "equipamento", "promoção", "mercado livre", "oferta"] },
     { title: "Fornecedores", url: "/facilities/fornecedores", icon: Truck },
     { title: "Histórico", url: "/facilities/historico", icon: History, busca: ["compras realizadas"] },
     { title: "Contratos", url: "/facilities/contratos", icon: FileSignature, busca: ["recorrentes"] },

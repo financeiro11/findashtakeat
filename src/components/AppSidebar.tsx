@@ -1,10 +1,11 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { NavLink, useLocation } from "react-router-dom";
 import { Search, ChevronDown, Wrench, Star, PanelLeftClose, PanelLeftOpen } from "lucide-react";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import takeatLogo from "@/assets/takeat-logo.png";
 import { useAuth } from "@/hooks/useAuth";
+import { useRadarAlertas } from "@/hooks/useRadarAlertas";
 import { Sidebar, SidebarContent, useSidebar } from "@/components/ui/sidebar";
 import { CommandMenu } from "@/components/CommandMenu";
 import { ModuleSwitcher } from "@/components/ModuleSwitcher";
@@ -225,7 +226,20 @@ export function AppSidebar() {
   const mod = access.facilitiesOnly ? "facilities" : currentModule(pathname);
   const { favoritos, toggle: toggleFavorito } = useFavoritos(user?.id);
 
-  const grupos = gruposVisiveis(access, mod);
+  const gruposBase = gruposVisiveis(access, mod);
+
+  /* O selo do Radar é contagem viva, não rótulo fixo como "OMIE"/"OFX". Ele é
+     costurado aqui, na renderização, e não em navegacao.ts — aquele catálogo é
+     estático de propósito (o CommandMenu lê o mesmo objeto) e não pode depender
+     de rede. Só conta quando o Facilities está na tela. */
+  const radarNovos = useRadarAlertas(mod === "facilities");
+  const grupos = useMemo(() => {
+    if (!radarNovos) return gruposBase;
+    return gruposBase.map((g) => ({
+      ...g,
+      items: g.items.map((i) => (i.url === "/facilities/radar" ? { ...i, badge: String(radarNovos) } : i)),
+    }));
+  }, [gruposBase, radarNovos]);
 
   // Pool de itens favoritáveis: só os do módulo/acesso atualmente visível, pra não
   // listar (nem deixar favoritar) rotas que este usuário não enxerga no menu. Sai dos

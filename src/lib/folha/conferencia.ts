@@ -219,25 +219,42 @@ export function conferir(
   const comoPix: Partial<Record<TipoDeChave, string>> = {
     vazia: "sem chave PIX cadastrada",
     aleatoria: "chave PIX aleatória — a empresa não paga nesse tipo",
-    cpf: "chave PIX é CPF — só vale para estagiário",
+    cpf: "",  // montada abaixo, com o CPF à vista
     telefone: "chave PIX é telefone — a empresa paga em CNPJ ou e-mail",
     email_invalido: `chave PIX "${String(p.pix ?? "").trim()}" não é um e-mail válido`,
     documento_incompleto: `chave PIX ${soDigitos(p.pix)} parece CNPJ com dígito faltando`,
     desconhecida: "chave PIX em formato não reconhecido",
   };
-  if (!chavePermitida(tipo, estagiario) && comoPix[tipo]) {
+  if (tipo === "cpf" && !estagiario) {
+    // O CPF vai escrito na mensagem: quem for cobrar o DH precisa dizer QUAL
+    // chave está lá, não que "existe uma chave errada".
+    achados.push({
+      campo: "pix", gravidade: "erro",
+      mensagem: `chave PIX é o CPF ${formatarCpf(soDigitos(p.pix))} — só vale para estagiário`,
+    });
+  } else if (!chavePermitida(tipo, estagiario) && comoPix[tipo]) {
     achados.push({
       campo: "pix",
       gravidade: tipo === "vazia" ? "aviso" : "erro",
       mensagem: comoPix[tipo]!,
     });
   } else if (tipo === "cnpj" && doc.length === 14 && soDigitos(p.pix) !== doc) {
-    // Pagar no CNPJ de outra PJ não é erro de digitação óbvio; é dinheiro indo
-    // para outro CNPJ. Aviso, porque pode ser legítimo (holding, sócio).
-    achados.push({
-      campo: "pix", gravidade: "aviso",
-      mensagem: "chave PIX é de um CNPJ diferente do dela",
-    });
+    /* A empresa não paga em CNPJ de terceiro — confirmado pelo financeiro em
+       26/08/2026. Mas o MOTIVO muda o que fazer, então a mensagem distingue:
+
+       doc é o CNPJ da Takeat → é o documento que está errado, e o PIX é
+       provavelmente o CNPJ verdadeiro da pessoa. Foi o caso de duas, e a
+       planilha Dados Pessoal confirmou o PIX nas duas.
+
+       diferença de um dígito só → digitação, não outra empresa. Dizer "CNPJ
+       diferente" faria alguém procurar uma segunda PJ que não existe. */
+    const pixd = soDigitos(p.pix);
+    const mensagem = doc === CNPJ_TAKEAT
+      ? `documento é o CNPJ da Takeat; o PIX (${formatarCnpj(pixd)}) parece ser o CNPJ correto`
+      : distanciaDeUmDigito(doc, pixd)
+        ? `PIX ${formatarCnpj(pixd)} difere do documento em 1 dígito — provável digitação`
+        : `PIX é o CNPJ ${formatarCnpj(pixd)}, diferente do dela — a empresa não paga em CNPJ de terceiro`;
+    achados.push({ campo: "pix", gravidade: "erro", mensagem });
   }
 
   /* ---- salário ---- */
@@ -262,3 +279,26 @@ export function conferir(
 }
 
 const vezes = (n: number) => `${n.toFixed(1).replace(".", ",")}×`;
+
+/**
+ * Os dois documentos diferem em exatamente um caractere?
+ *
+ * Separa digitação de "é outra empresa". Só compara documentos do mesmo
+ * tamanho: um truncado difere em muita coisa e já é apontado por outra regra.
+ */
+export function distanciaDeUmDigito(a: string, b: string): boolean {
+  if (a.length !== b.length || a === b) return false;
+  let diferencas = 0;
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i] && ++diferencas > 1) return false;
+  return diferencas === 1;
+}
+
+export const formatarCnpj = (d: string) =>
+  d.length === 14
+    ? `${d.slice(0, 2)}.${d.slice(2, 5)}.${d.slice(5, 8)}/${d.slice(8, 12)}-${d.slice(12)}`
+    : d;
+
+export const formatarCpf = (d: string) =>
+  d.length === 11
+    ? `${d.slice(0, 3)}.${d.slice(3, 6)}.${d.slice(6, 9)}-${d.slice(9)}`
+    : d;

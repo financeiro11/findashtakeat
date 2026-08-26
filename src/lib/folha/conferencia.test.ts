@@ -8,8 +8,8 @@
 
 import { describe, expect, it } from "vitest";
 import {
-  CNPJ_TAKEAT, chavePermitida, cnpjValido, conferir, cpfValido, ehEstagiario,
-  medianasPorDepartamento, tipoDeChavePix,
+  CNPJ_TAKEAT, chavePermitida, cnpjValido, conferir, cpfValido, distanciaDeUmDigito,
+  ehEstagiario, medianasPorDepartamento, tipoDeChavePix,
   type PessoaParaConferir,
 } from "./conferencia";
 
@@ -119,8 +119,15 @@ describe("conferir · documento", () => {
   /* O caso que motivou tudo: quatro pessoas com o CNPJ da própria Takeat. */
   it("acusa quem está com o CNPJ da Takeat", () => {
     const a = erros(pessoa({ documento: CNPJ_TAKEAT }));
-    expect(a).toHaveLength(1);
-    expect(a[0].mensagem).toMatch(/CNPJ da Takeat/);
+    expect(a.some((x) => x.campo === "documento" && /CNPJ da Takeat/.test(x.mensagem))).toBe(true);
+  });
+
+  /* Kelly e Caio, no espelho real: o documento é o CNPJ da Takeat e o PIX é o
+     CNPJ verdadeiro delas — a planilha confirmou os dois. Dizer só "CNPJ
+     diferente" mandaria alguém procurar o documento certo que já está ali. */
+  it("quando o documento é o da Takeat, aponta o PIX como o CNPJ provável", () => {
+    const a = erros(pessoa({ documento: CNPJ_TAKEAT, pix: "29047247000145" }));
+    expect(a.some((x) => x.campo === "pix" && /parece ser o CNPJ correto/.test(x.mensagem))).toBe(true);
   });
 
   it("acusa documento inválido mesmo com 14 dígitos", () => {
@@ -159,10 +166,23 @@ describe("conferir · chave PIX", () => {
       .toMatch(/só vale para estagi/);
   });
 
-  it("avisa quando o PIX é de outro CNPJ", () => {
-    // Pode ser legítimo (holding, sócio), então avisa em vez de barrar.
-    const a = conferir(pessoa({ documento: "66744328000120", pix: "39988921000140" }));
-    expect(a.some((x) => x.gravidade === "aviso" && /CNPJ diferente/.test(x.mensagem))).toBe(true);
+  /* A empresa não paga em CNPJ de terceiro — confirmado em 26/08/2026. */
+  it("barra PIX de outro CNPJ", () => {
+    const a = erros(pessoa({ documento: "66744328000120", pix: "39988921000140" }));
+    expect(a.some((x) => /não paga em CNPJ de terceiro/.test(x.mensagem))).toBe(true);
+  });
+
+  /* Stheferson e Emanuelle, no espelho real: um dígito trocado. Chamar isso de
+     "CNPJ de terceiro" faria alguém procurar uma segunda empresa que não
+     existe. */
+  it("distingue digitação de CNPJ de terceiro", () => {
+    const a = erros(pessoa({ documento: "45026075000180", pix: "42026075000180" }));
+    expect(a.some((x) => /difere do documento em 1 dígito/.test(x.mensagem))).toBe(true);
+  });
+
+  it("mostra o CPF na mensagem — quem cobra o DH precisa dizer qual é", () => {
+    const a = erros(pessoa({ pix: "16146305774", cargo: "Coordenador" }));
+    expect(a[0].mensagem).toContain("161.463.057-74");
   });
 
   it("chave vazia é aviso, não erro — dá para pagar corrigindo antes", () => {
@@ -234,5 +254,21 @@ describe("conferir · salário", () => {
 
   it("sem mediana nenhuma, não inventa comparação", () => {
     expect(conferir(pessoa({ valor: 99999 }))).toHaveLength(0);
+  });
+});
+
+describe("distanciaDeUmDigito", () => {
+  it("reconhece os dois casos reais de digitação", () => {
+    expect(distanciaDeUmDigito("45026075000180", "42026075000180")).toBe(true);
+    expect(distanciaDeUmDigito("50562257000105", "50564257000105")).toBe(true);
+  });
+
+  it("dois documentos de empresas diferentes não são digitação", () => {
+    expect(distanciaDeUmDigito("66744328000120", "39988921000140")).toBe(false);
+  });
+
+  it("iguais não contam, e tamanhos diferentes não se comparam", () => {
+    expect(distanciaDeUmDigito("66744328000120", "66744328000120")).toBe(false);
+    expect(distanciaDeUmDigito("66744328000120", "6674432800012")).toBe(false);
   });
 });

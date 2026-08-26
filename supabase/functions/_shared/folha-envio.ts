@@ -638,7 +638,7 @@ export function montarTituloFolha(t: TituloDaFolha): Record<string, unknown> {
 export type CategoriaDoOmie = { codigo: string; descricao: string; conta_inativa?: boolean };
 
 const chaveDescricao = (s: string) =>
-  String(s ?? "").normalize("NFD").replace(/[̀-ͯ]/g, "")
+  String(s ?? "").normalize("NFD").replace(/[\u0300-\u036f]/g, "")
     .replace(/\s+/g, " ").trim().toUpperCase();
 
 /**

@@ -11,7 +11,7 @@
  * função de recusa que desabilita o botão recusa o request no servidor.
  */
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import {
   AlertTriangle, CalendarClock, Loader2, TrendingDown, TrendingUp, Users,
 } from "lucide-react";
@@ -21,11 +21,7 @@ import {
 } from "@/components/ui/dialog";
 import { supabase } from "@/integrations/supabase/client";
 import { cn } from "@/lib/utils";
-import {
-  bloqueioDaFolha, montarLote, pendenciasDoLote, previsaoDe, recusaDaFolha,
-  registroDa, resolvedorDeCategoria, soDigitos, vencimentoDa,
-  type ColaboradorDaFolha, type ItemDaFolha, type ResolveDePara,
-} from "../../../supabase/functions/_shared/folha-envio";
+import { bloqueioDaFolha, type ItemDaFolha } from "../../../supabase/functions/_shared/folha-envio";
 
 const BRL = (n: number) =>
   n.toLocaleString("pt-BR", { style: "currency", currency: "BRL", minimumFractionDigits: 2 });
@@ -42,36 +38,41 @@ const RATEIO: Record<string, string> = {
   admissao: "entrou no mês",
 };
 
-/* As tabelas do RH e da folha não estão no `types.ts` gerado, então o cliente
-   tipado do Supabase não as conhece. Em vez de espalhar `any` por cada
-   consulta, o formato de cada linha é declarado aqui e a fuga de tipo fica
-   num ponto só (`tabela`). */
-type LinhaRh = {
-  id: string; codigo: string | null; nome: string | null; cnpj: string | null;
-  razao: string | null; valor: number | null; inicio: string | null;
-  datadesl: string | null;
-};
-type LinhaDePara = {
-  codigo_rh: string; departamento: string | null;
-  categoria_descricao: string | null; valor_referencia: number | string | null;
-};
-type LinhaEnvio = { estado: string | null };
-type ClienteCache = { codigo: string | number; cnpj_cpf?: string | null };
-
-/** Uma consulta a tabela fora do `types.ts`. A fuga de tipo mora só aqui. */
-const tabela = (nome: string) =>
-  (supabase as unknown as {
-    from: (t: string) => {
-      select: (cols: string) => PromiseLike<{ data: unknown; error: { message: string } | null }> & {
-        eq: (c: string, v: string) => { maybeSingle: () => PromiseLike<{ data: unknown; error: unknown }> };
-      };
-    };
-  }).from(nome);
+/* A montagem inteira mora na Edge Function `folha-previa`, e NÃO aqui.
+ *
+ * O motivo é concreto: `omie_cache` tem RLS ligada e nenhuma policy, então o
+ * usuário autenticado não lê nada dela. A primeira versão desta tela montava
+ * tudo no navegador e saía com "sem fornecedor" e "categoria não achada" em
+ * todas as linhas — as consultas voltavam vazias e o código lia isso como
+ * "não existe". Ler cache que o chamador não enxerga é erro que não dá erro.
+ *
+ * De quebra, o servidor consegue conferir no Omie, por CNPJ, quem o cache não
+ * tem — coisa que o navegador não pode fazer (a credencial é secreta).
+ */
 
 type Linha = ItemDaFolha & {
   codigoFornecedor: number | null;
+  fornecedorConferidoNoOmie: boolean;
   codigoCategoria: string | null;
   codigoDepartamento: string | null;
+};
+
+type Previa = {
+  status: string;
+  erro?: string;
+  registro: string;
+  vencimento: string;
+  previsao: string;
+  linhas: Linha[];
+  fora: { nome: string; motivo: string }[];
+  total: number;
+  pendencia: string | null;
+  recusa: string | null;
+  cache: {
+    clientes_em: string | null;
+    consultas_diretas: number;
+    nao_conferidos: number;
+  };
 };
 
 export default function PreviaFolhaDialog({
@@ -84,90 +85,36 @@ export default function PreviaFolhaDialog({
 }) {
   const [carregando, setCarregando] = useState(false);
   const [erro, setErro] = useState<string | null>(null);
-  const [linhas, setLinhas] = useState<Linha[]>([]);
-  const [fora, setFora] = useState<{ nome: string; motivo: string }[]>([]);
-  const [estado, setEstado] = useState<string | null>(null);
+  const [previa, setPrevia] = useState<Previa | null>(null);
 
   useEffect(() => {
     if (!aberto) return;
     let vivo = true;
-    setCarregando(true); setErro(null);
+    setCarregando(true); setErro(null); setPrevia(null);
 
-    (async () => {
-      // Espelho do RH, de-para e catálogo do Omie: três leituras, nenhuma escrita.
-      const [rh, dep, cache, envio] = await Promise.all([
-        tabela("rh_colaboradores")
-          .select("id, codigo, nome, cnpj, razao, valor, inicio, datadesl"),
-        tabela("folha_depara")
-          .select("codigo_rh, departamento, categoria_descricao, valor_referencia"),
-        supabase.from("omie_cache").select("dados").eq("chave", "folha_cadastros").maybeSingle(),
-        tabela("folha_envios_omie")
-          .select("estado").eq("competencia", `${competencia}-01`).maybeSingle(),
-      ]);
-
-      if (!vivo) return;
-      if (rh.error) { setErro(rh.error.message); setCarregando(false); return; }
-
-      const cadastros = (cache.data?.dados ?? {}) as {
-        categorias?: { codigo: string; descricao: string; conta_inativa?: boolean }[];
-        departamentos?: { codigo: string; descricao: string }[];
-      };
-      const codCategoria = resolvedorDeCategoria(cadastros.categorias ?? []);
-      const codDepartamento = new Map(
-        (cadastros.departamentos ?? []).map((d) => [d.descricao, d.codigo]),
-      );
-
-      const porCodigo = new Map(
-        ((dep.data ?? []) as LinhaDePara[]).map((d) => [String(d.codigo_rh), d]),
-      );
-      const deParaDe: ResolveDePara = (codigo) => {
-        const d = porCodigo.get(codigo);
-        return d
-          ? {
-            departamento: d.departamento ?? "",
-            categoria: d.categoria_descricao ?? "",
-            valorReferencia: d.valor_referencia === null ? null : Number(d.valor_referencia),
-          }
-          : null;
-      };
-
-      const pessoas: ColaboradorDaFolha[] = ((rh.data ?? []) as LinhaRh[]).map((c) => ({
-        id: String(c.id), codigo: c.codigo ?? null, nome: String(c.nome ?? "").trim(),
-        cnpj: c.cnpj ?? null, razao: c.razao ?? null, valor: c.valor,
-        inicio: c.inicio ?? null, datadesl: c.datadesl ?? null,
-      }));
-
-      // O fornecedor sai do cache de clientes, casado pelo CNPJ.
-      const clientes = await supabase.from("omie_cache").select("dados").eq("chave", "clientes").maybeSingle();
-      const porCnpj = new Map<string, number>();
-      for (const c of (clientes.data?.dados ?? []) as ClienteCache[]) {
-        const k = soDigitos(c?.cnpj_cpf);
-        if (k && !porCnpj.has(k)) porCnpj.set(k, Number(c.codigo));
-      }
-
-      const lote = montarLote(pessoas, competencia, deParaDe);
-      if (!vivo) return;
-
-      setLinhas(lote.itens.map((i) => ({
-        ...i,
-        codigoFornecedor: porCnpj.get(i.cnpj) ?? null,
-        codigoCategoria: i.categoria ? codCategoria(i.categoria) : null,
-        codigoDepartamento: i.departamento ? codDepartamento.get(i.departamento) ?? null : null,
-      })));
-      setFora(lote.fora.map((f) => ({ nome: f.nome, motivo: f.motivo })));
-      setEstado((envio.data as LinhaEnvio | null)?.estado ?? null);
-      setCarregando(false);
-    })().catch((e) => {
-      if (vivo) { setErro(e instanceof Error ? e.message : String(e)); setCarregando(false); }
-    });
+    supabase.functions
+      .invoke("folha-previa", { body: { competencia } })
+      .then(({ data, error }) => {
+        if (!vivo) return;
+        if (error) throw new Error(error.message);
+        const r = data as Previa;
+        if (r?.status !== "ok") throw new Error(r?.erro || "Falha ao montar a prévia.");
+        setPrevia(r);
+      })
+      .catch((e) => { if (vivo) setErro(e instanceof Error ? e.message : String(e)); })
+      .finally(() => { if (vivo) setCarregando(false); });
 
     return () => { vivo = false; };
   }, [aberto, competencia]);
 
-  const registro = registroDa(competencia);
-  const vencimento = vencimentoDa(competencia);
-  const previsao = previsaoDe(vencimento);
-  const total = linhas.reduce((s, l) => s + l.valor, 0);
+  const linhas = previa?.linhas ?? [];
+  const fora = previa?.fora ?? [];
+  const total = previa?.total ?? 0;
+  const registro = previa?.registro ?? "";
+  const vencimento = previa?.vencimento ?? "";
+  const previsao = previa?.previsao ?? "";
+  const pendencia = previa?.pendencia ?? null;
+  const recusa = previa?.recusa ?? null;
 
   const marcadas = linhas.filter((l) => l.chamaAtencao);
   const rateadas = linhas.filter((l) => l.motivo !== "cheio");
@@ -175,24 +122,6 @@ export default function PreviaFolhaDialog({
      porque rescisão é paga em /governanca/rescisoes. A lista de fora do lote,
      mais abaixo, é onde ele fica visível. */
   const foraPorRescisao = fora.filter((f) => /rescis/i.test(f.motivo));
-
-  const pendencia = useMemo(
-    () => pendenciasDoLote(linhas.map((l) => ({
-      cnpj: l.cnpj, codigoFornecedor: l.codigoFornecedor, codigoCategoria: l.codigoCategoria,
-    }))),
-    [linhas],
-  );
-
-  const recusa = useMemo(
-    () => recusaDaFolha({
-      competencia,
-      estado: (estado as Parameters<typeof recusaDaFolha>[0]["estado"]) ?? null,
-      itens: linhas.map((l) => ({
-        cnpj: l.cnpj, codigoFornecedor: l.codigoFornecedor, codigoCategoria: l.codigoCategoria,
-      })),
-    }),
-    [competencia, estado, linhas],
-  );
 
   return (
     <Dialog open={aberto} onOpenChange={(o) => !o && onFechar()}>
@@ -288,8 +217,18 @@ export default function PreviaFolhaDialog({
                             </span>
                           )}
                           {!l.codigoFornecedor && (
-                            <span className="rounded bg-destructive/15 px-1.5 py-0.5 text-[10.5px] font-semibold text-destructive">
-                              sem fornecedor
+                            <span
+                              className={cn(
+                                "rounded px-1.5 py-0.5 text-[10.5px] font-semibold",
+                                l.fornecedorConferidoNoOmie
+                                  ? "bg-destructive/15 text-destructive"
+                                  : "bg-muted text-muted-foreground",
+                              )}
+                              title={l.fornecedorConferidoNoOmie
+                                ? "Conferido no Omie por CNPJ: não existe cadastro."
+                                : "Não deu para conferir agora — não é o mesmo que não existir."}
+                            >
+                              {l.fornecedorConferidoNoOmie ? "sem fornecedor" : "não conferido"}
                             </span>
                           )}
                         </div>
@@ -347,6 +286,13 @@ export default function PreviaFolhaDialog({
                   ))}
                 </ul>
               </div>
+            )}
+
+            {(previa?.cache.nao_conferidos ?? 0) > 0 && (
+              <Aviso tom="atencao" titulo={`${previa?.cache.nao_conferidos} não conferidos no Omie`}>
+                A consulta direta tem teto por abertura, para a tela não travar. Rode o sync de
+                clientes (`omie-clientes-sync`) e reabra — o cache resolve todos de uma vez.
+              </Aviso>
             )}
 
             <div className="flex items-center justify-between gap-3 pt-1">

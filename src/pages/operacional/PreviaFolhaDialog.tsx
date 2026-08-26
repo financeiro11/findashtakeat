@@ -374,10 +374,11 @@ export default function PreviaFolhaDialog({
                 nome: l.nome,
                 valor: l.valor,
                 cnpj: l.cnpj,
-                // "Pronto" é ter os três códigos do Omie resolvidos. Sem um
-                // deles o título nasceria incompleto, e num teste isso faria a
-                // recusa do Omie responder a pergunta errada.
-                pronto: !!l.codigoFornecedor && !!l.codigoCategoria && !!l.codigoDepartamento,
+                /* "Pronto" é ter o que o payload REALMENTE usa: fornecedor e
+                   categoria. Departamento ficou de fora porque o Omie recusa o
+                   campo — exigi-lo aqui tiraria gente do envio por causa de um
+                   dado que nem é mandado. */
+                pronto: !!l.codigoFornecedor && !!l.codigoCategoria,
               }))}
               onEnviado={() => setRecarga((n) => n + 1)}
             />

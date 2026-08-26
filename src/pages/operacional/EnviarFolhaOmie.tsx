@@ -219,11 +219,25 @@ export default function EnviarFolhaOmie({
         continua valendo, porque sai do de-para do Hub.
       </p>
 
+      {/* Botão desabilitado sem explicação à vista parece defeito. O motivo fica
+          em bloco, e não em texto miúdo cinza, para a diferença entre "travado"
+          e "quebrado" ser óbvia sem passar o mouse em nada. */}
+      {recusa && !parcial && (
+        <div className="rounded-xl border border-amber-500/40 bg-amber-500/5 px-3.5 py-2.5">
+          <p className="text-[12.5px] font-semibold text-amber-700 dark:text-amber-400">
+            O envio está travado — o botão não está quebrado
+          </p>
+          <p className="mt-0.5 text-xs text-muted-foreground">{recusa}</p>
+        </div>
+      )}
+
       <div className="flex items-center justify-between gap-3">
         <p className={cn("max-w-[55%] text-xs", recusa ? "text-amber-700 dark:text-amber-400" : "text-muted-foreground")}>
           {parcial
-            ? `${pendentes} pessoa(s) com cadastro incompleto ficam de fora. ${recusa}`
-            : recusa ?? "Lote em ordem. Nada é criado até você clicar."}
+            ? `${pendentes} pessoa(s) com cadastro incompleto ficam de fora — o resto vai.`
+            : recusa
+              ? "Resolva o que está acima para liberar."
+              : "Lote em ordem. Nada é criado até você clicar."}
         </p>
         <div className="flex gap-2">
           <Button

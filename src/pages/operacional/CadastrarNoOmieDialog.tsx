@@ -17,6 +17,7 @@ import {
   AlertTriangle, Building2, Check, KeyRound, Loader2, RefreshCw, UserPlus,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import {
   Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle,
 } from "@/components/ui/dialog";
@@ -94,39 +95,64 @@ export default function CadastrarNoOmieDialog({
   const [resposta, setResposta] = useState<Resposta | null>(null);
   const [erro, setErro] = useState<string | null>(null);
   const [executado, setExecutado] = useState(false);
+  /* Quem vai de fato ser cadastrado. Só linha acionável entra aqui — bloqueado
+     e "nada a fazer" não têm o que marcar. */
+  const [marcados, setMarcados] = useState<Set<string>>(new Set());
 
-  const chamar = useCallback(async (simular: boolean) => {
+  const chamar = useCallback(async (simular: boolean, quais: string[]) => {
     const { data, error } = await supabase.functions.invoke("omie-colaboradores-cadastrar", {
-      body: { codigos, simular },
+      body: { codigos: quais, simular },
     });
     if (error) throw new Error(error.message);
     const r = data as Resposta;
     if (r?.status !== "ok") throw new Error(r?.erro || "Falha ao falar com o Omie.");
     return r;
-  }, [codigos]);
+  }, []);
 
-  // Simula ao abrir. Reabrir sempre reconsulta: entre uma abertura e outra
-  // alguém pode ter cadastrado a pessoa direto no Omie.
-  useEffect(() => {
-    if (!aberto) return;
-    setResposta(null); setErro(null); setExecutado(false); setCarregando(true);
-    chamar(true)
-      .then(setResposta)
+  const acionavel = (a: Acao) => a === "criar" || a === "alterar_pix";
+
+  /** Simula com a lista inteira e marca, por padrão, tudo o que dá para fazer. */
+  const simular = useCallback(() => {
+    setErro(null); setExecutado(false); setCarregando(true);
+    chamar(true, codigos)
+      .then((r) => {
+        setResposta(r);
+        setMarcados(new Set((r.resultados ?? []).filter((x) => acionavel(x.acao)).map((x) => x.codigo)));
+      })
       .catch((e) => setErro(e instanceof Error ? e.message : String(e)))
       .finally(() => setCarregando(false));
-  }, [aberto, chamar]);
+  }, [chamar, codigos]);
+
+  // Reabrir sempre reconsulta: entre uma abertura e outra alguém pode ter
+  // cadastrado a pessoa direto no Omie.
+  useEffect(() => {
+    if (!aberto) return;
+    setResposta(null);
+    simular();
+  }, [aberto, simular]);
 
   const executar = async () => {
+    const quais = [...marcados];
+    if (!quais.length) return;
     setEnviando(true);
     try {
-      const r = await chamar(false);
-      setResposta(r);
+      const r = await chamar(false, quais);
+      /* Funde no que já estava na tela em vez de substituir: o request levou só
+         os marcados, e trocar a lista pela resposta faria quem ficou de fora
+         sumir do diálogo — como se nunca tivesse existido. */
+      const porCodigo = new Map((r.resultados ?? []).map((x) => [x.codigo, x]));
+      setResposta((antes) => ({
+        ...r,
+        resumo: antes?.resumo ?? r.resumo,
+        resultados: (antes?.resultados ?? []).map((x) => porCodigo.get(x.codigo) ?? x),
+      }));
       setExecutado(true);
+
       const feitos = r.resumo?.feitos ?? 0;
       const falhos = r.resumo?.com_erro ?? 0;
       if (feitos) toast.success(`${feitos} cadastrado(s) no Omie`);
       if (falhos) toast.error(`${falhos} não passaram — veja o motivo na lista`);
-      if (!feitos && !falhos) toast.info("Nada a fazer: todos já estavam cadastrados.");
+      if (!feitos && !falhos) toast.info("Nada a fazer com os que você marcou.");
       onConcluido?.();
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
@@ -140,7 +166,16 @@ export default function CadastrarNoOmieDialog({
   const resultados = [...(resposta?.resultados ?? [])].sort(
     (a, b) => ACOES[a.acao].ordem - ACOES[b.acao].ordem || a.nome.localeCompare(b.nome, "pt-BR"),
   );
-  const aFazer = (resposta?.resumo?.criar ?? 0) + (resposta?.resumo?.alterar_pix ?? 0);
+  const podemSer = resultados.filter((r) => acionavel(r.acao) && !r.feito);
+  const marcadosValidos = podemSer.filter((r) => marcados.has(r.codigo)).length;
+
+  const alternar = (codigo: string) =>
+    setMarcados((antes) => {
+      const proximo = new Set(antes);
+      if (proximo.has(codigo)) proximo.delete(codigo);
+      else proximo.add(codigo);
+      return proximo;
+    });
 
   return (
     <Dialog open={aberto} onOpenChange={(o) => !o && onFechar()}>
@@ -185,11 +220,51 @@ export default function CadastrarNoOmieDialog({
               })}
             </div>
 
+            {podemSer.length > 0 && !executado && (
+              <div className="flex items-center justify-between gap-3 text-xs">
+                <span className="text-muted-foreground">
+                  <b className="text-foreground tabular-nums">{marcadosValidos}</b> de {podemSer.length} marcados
+                </span>
+                <div className="flex gap-2">
+                  <button
+                    className="text-primary hover:underline"
+                    onClick={() => setMarcados(new Set(podemSer.map((r) => r.codigo)))}
+                  >
+                    Marcar todos
+                  </button>
+                  <span className="text-muted-foreground">·</span>
+                  <button className="text-primary hover:underline" onClick={() => setMarcados(new Set())}>
+                    Nenhum
+                  </button>
+                </div>
+              </div>
+            )}
+
             <div className="divide-y rounded-xl border">
               {resultados.map((r) => {
                 const { rotulo, desc, icone: Icone, classe } = ACOES[r.acao];
+                const podeMarcar = acionavel(r.acao) && !r.feito && !executado;
+                const marcado = marcados.has(r.codigo);
                 return (
-                  <div key={r.codigo} className="flex items-start gap-3 px-3.5 py-2.5">
+                  <label
+                    key={r.codigo}
+                    className={cn(
+                      "flex items-start gap-3 px-3.5 py-2.5",
+                      podeMarcar && "cursor-pointer hover:bg-muted/40",
+                      podeMarcar && !marcado && "opacity-55",
+                    )}
+                  >
+                    {/* A caixa fica no lugar mesmo quando não dá para marcar, senão as
+                        linhas desalinham e a lista fica difícil de correr com o olho. */}
+                    <span className="mt-0.5 grid size-4 flex-none place-items-center">
+                      {podeMarcar && (
+                        <Checkbox
+                          checked={marcado}
+                          onCheckedChange={() => alternar(r.codigo)}
+                          aria-label={`Cadastrar ${r.nome}`}
+                        />
+                      )}
+                    </span>
                     <span className={cn("mt-0.5 grid size-6 flex-none place-items-center rounded-full border", classe)}>
                       <Icone className="size-3.5" />
                     </span>
@@ -211,7 +286,7 @@ export default function CadastrarNoOmieDialog({
                       )}
                     </div>
                     <span className="mt-0.5 flex-none text-[11px] text-muted-foreground">{rotulo}</span>
-                  </div>
+                  </label>
                 );
               })}
               {resultados.length === 0 && (
@@ -230,24 +305,26 @@ export default function CadastrarNoOmieDialog({
             <div className="flex items-center justify-between gap-3 pt-1">
               <p className="text-xs text-muted-foreground">
                 {executado
-                  ? "Executado. Rode de novo para conferir o estado atual."
-                  : aFazer > 0
-                    ? `Nada foi criado ainda — isto é a prévia de ${aFazer} alteração(ões).`
-                    : "Nada a fazer: ninguém precisa de cadastro ou de chave PIX."}
+                  ? "Executado. Reconfira para ver o estado atual — quem você não marcou continua na lista."
+                  : podemSer.length === 0
+                    ? "Nada a fazer: ninguém precisa de cadastro ou de chave PIX."
+                    : marcadosValidos === 0
+                      ? "Marque quem deve ser cadastrado."
+                      : `Nada foi criado ainda — isto é a prévia de ${marcadosValidos} alteração(ões).`}
               </p>
               <div className="flex gap-2">
                 <Button variant="outline" onClick={onFechar} disabled={enviando}>
                   {executado ? "Fechar" : "Cancelar"}
                 </Button>
                 {executado ? (
-                  <Button variant="outline" onClick={() => { setExecutado(false); setCarregando(true); chamar(true).then(setResposta).finally(() => setCarregando(false)); }}>
+                  <Button variant="outline" onClick={simular}>
                     <RefreshCw className="size-4" />
                     Reconferir
                   </Button>
                 ) : (
-                  <Button onClick={executar} disabled={enviando || aFazer === 0}>
+                  <Button onClick={executar} disabled={enviando || marcadosValidos === 0}>
                     {enviando ? <Loader2 className="size-4 animate-spin" /> : <Building2 className="size-4" />}
-                    {enviando ? "Cadastrando…" : `Cadastrar ${aFazer} no Omie`}
+                    {enviando ? "Cadastrando…" : `Cadastrar ${marcadosValidos} no Omie`}
                   </Button>
                 )}
               </div>

@@ -215,13 +215,18 @@ export type ColaboradorDaFolha = {
   valor: number | null;
   /** 'AAAA-MM-DD' */
   inicio: string | null;
-  /** 'AAAA-MM-DD'; preenchido = desligado */
+  /** 'AAAA-MM-DD'; preenchido = desligado. Quem tem data não entra na folha. */
   datadesl: string | null;
-  valor_liberalidade?: number | null;
 };
 
-/** Por que o valor desta linha não é o salário cheio. */
-export type MotivoDoRateio = "cheio" | "admissao" | "rescisao" | "admissao_e_rescisao";
+/**
+ * Por que o valor desta linha não é o salário cheio.
+ *
+ * Só há dois: mês inteiro, ou rateado por admissão no meio do mês. NÃO existe
+ * rateio de rescisão aqui — quem foi desligado é pago pelo processo de
+ * rescisão, em /governanca/rescisoes, e não entra nesta folha.
+ */
+export type MotivoDoRateio = "cheio" | "admissao";
 
 /** Uma linha do lote, já conferida — é o que a prévia mostra e o que o envio consome. */
 export type ItemDaFolha = {
@@ -245,10 +250,7 @@ export type ItemDaFolha = {
   /** Dias trabalhados na competência, em base comercial de 30. */
   dias: number;
   motivo: MotivoDoRateio;
-  /** Rateio do salário, sem a liberalidade. */
-  proporcional: number;
-  liberalidade: number;
-  /** O que vai no `valor_documento`: proporcional + liberalidade. */
+  /** O que vai no `valor_documento`. Igual ao salário quando o mês é cheio. */
   valor: number;
   /** `codigo_lancamento_integracao` — a trava contra pagar duas vezes. */
   integracao: string;
@@ -277,31 +279,19 @@ export type Lote = {
 /**
  * Dias trabalhados na competência, em base comercial de 30.
  *
- * Quem atravessa o mês inteiro recebe 30. Admissão conta do dia da entrada até
- * o fim do mês; rescisão conta do começo do mês até o dia da saída; quem entrou
- * e saiu no mesmo mês conta o intervalo. Os dois extremos são inclusivos — é
- * assim que o RH conta, e é o que a ficha de desligamento já mostrava.
+ * Quem atravessa o mês inteiro recebe 30; quem foi admitido no meio conta do
+ * dia da entrada até o fim do mês, inclusive.
+ *
+ * Desligamento não aparece aqui de propósito: `montarLote` tira do lote quem
+ * saiu até o fim da competência, antes de chegar nesta conta.
  */
 export function diasTrabalhados(
   inicio: Date | null,
-  desligamento: Date | null,
   ano: number,
   mes: number,
 ): { dias: number; motivo: MotivoDoRateio } {
-  const entrou = noMesDe(inicio, ano, mes);
-  const saiu = noMesDe(desligamento, ano, mes);
-
-  if (entrou && saiu) {
-    const d = desligamento!.getDate() - inicio!.getDate() + 1;
-    return { dias: limita(d), motivo: "admissao_e_rescisao" };
-  }
-  if (entrou) {
-    return { dias: limita(DIAS_DO_MES_COMERCIAL - inicio!.getDate() + 1), motivo: "admissao" };
-  }
-  if (saiu) {
-    return { dias: limita(desligamento!.getDate()), motivo: "rescisao" };
-  }
-  return { dias: DIAS_DO_MES_COMERCIAL, motivo: "cheio" };
+  if (!noMesDe(inicio, ano, mes)) return { dias: DIAS_DO_MES_COMERCIAL, motivo: "cheio" };
+  return { dias: limita(DIAS_DO_MES_COMERCIAL - inicio!.getDate() + 1), motivo: "admissao" };
 }
 
 const limita = (d: number) => Math.max(0, Math.min(DIAS_DO_MES_COMERCIAL, d));
@@ -309,13 +299,13 @@ const limita = (d: number) => Math.max(0, Math.min(DIAS_DO_MES_COMERCIAL, d));
 /**
  * O lote de uma competência.
  *
- * Fica de fora quem ainda não tinha entrado, quem já tinha saído antes do mês,
- * quem não tem salário e quem, mesmo aparecendo, resulta em zero dia. Nada some
- * calado: cada exclusão vai para `fora` com o motivo escrito, porque uma pessoa
- * faltando na folha é um problema maior do que uma linha a mais na prévia.
+ * Só gente ATIVA na competência. Fica de fora quem ainda não tinha entrado,
+ * quem foi desligado até o fim do mês, quem não tem salário e quem resulta em
+ * zero dia.
  *
- * A liberalidade entra só na competência da rescisão — é verba de desligamento,
- * não parte do salário.
+ * Nada some calado: cada exclusão vai para `fora` com o motivo escrito, porque
+ * uma pessoa faltando na folha é um problema maior do que uma linha a mais na
+ * prévia — e mais difícil de notar.
  */
 export function montarLote(
   colaboradores: ColaboradorDaFolha[],
@@ -334,7 +324,6 @@ export function montarLote(
 
   const ano = ref.getFullYear();
   const mes = ref.getMonth();
-  const primeiroDia = new Date(ano, mes, 1);
   const ultimoDia = new Date(ano, mes + 1, 0);
 
   const itens: ItemDaFolha[] = [];
@@ -360,8 +349,22 @@ export function montarLote(
       fora.push({ colaboradorId: c.id, nome, motivo: "Entrou depois desta competência" });
       continue;
     }
-    if (desl && desl < primeiroDia) {
-      fora.push({ colaboradorId: c.id, nome, motivo: "Já estava desligado antes desta competência" });
+
+    /* Desligado NÃO entra na folha — é pago pelo processo de rescisão, em
+       /governanca/rescisoes, que calcula as parcelas e controla o pagamento.
+       Provisionar aqui também pagaria os mesmos dias duas vezes.
+       (Decidido com o financeiro em 26/08/2026.)
+
+       A comparação é com o FIM da competência, não com hoje: quem sai em
+       setembro trabalhou agosto inteiro, e a folha de agosto é dele. Cortar
+       por "tem data de desligamento" tiraria essa pessoa de um mês que ela
+       tem a receber. */
+    if (desl && desl <= ultimoDia) {
+      fora.push({
+        colaboradorId: c.id,
+        nome,
+        motivo: `Desligado em ${dataBR(String(c.datadesl))} — pago pela rescisão`,
+      });
       continue;
     }
 
@@ -376,7 +379,7 @@ export function montarLote(
        com uma pessoa a menos não dá erro em lugar nenhum. */
     const dePara = deParaDe(codigo);
 
-    const { dias, motivo } = diasTrabalhados(inicio, desl, ano, mes);
+    const { dias, motivo } = diasTrabalhados(inicio, ano, mes);
     if (dias <= 0) {
       fora.push({ colaboradorId: c.id, nome, motivo: "Nenhum dia trabalhado nesta competência" });
       continue;
@@ -389,12 +392,8 @@ export function montarLote(
     const referencia = Number.isFinite(ref) && ref > 0 ? ref : null;
     const variacao = referencia === null ? null : (valorBase - referencia) / referencia;
 
-    const proporcional =
+    const valor =
       motivo === "cheio" ? arred2(valorBase) : arred2((valorBase / DIAS_DO_MES_COMERCIAL) * dias);
-    const liberalidade =
-      motivo === "rescisao" || motivo === "admissao_e_rescisao"
-        ? arred2(Number(c.valor_liberalidade) || 0)
-        : 0;
 
     itens.push({
       colaboradorId: c.id,
@@ -410,9 +409,7 @@ export function montarLote(
       valorBase,
       dias,
       motivo,
-      proporcional,
-      liberalidade,
-      valor: arred2(proporcional + liberalidade),
+      valor,
       integracao: integracaoFolhaDe(codigo, competencia),
     });
   }

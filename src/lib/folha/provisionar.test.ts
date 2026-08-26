@@ -31,35 +31,24 @@ const pessoa = (over: Partial<ColaboradorDaFolha> = {}): ColaboradorDaFolha => (
   ...over,
 });
 
-const dias = (inicio: string | null, desl: string | null, comp = "2026-09") =>
-  diasTrabalhados(parseISO(inicio), parseISO(desl), Number(comp.slice(0, 4)), Number(comp.slice(5, 7)) - 1);
+const dias = (inicio: string | null, comp = "2026-09") =>
+  diasTrabalhados(parseISO(inicio), Number(comp.slice(0, 4)), Number(comp.slice(5, 7)) - 1);
 
 describe("diasTrabalhados", () => {
   it("quem atravessa o mês inteiro recebe os 30 dias comerciais", () => {
-    expect(dias("2025-03-12", null)).toEqual({ dias: 30, motivo: "cheio" });
+    expect(dias("2025-03-12")).toEqual({ dias: 30, motivo: "cheio" });
   });
 
   it("admissão conta do dia da entrada até o fim do mês, inclusive", () => {
     // Entrou dia 1 → mês cheio. Entrou dia 30 → um dia só.
-    expect(dias("2026-09-01", null)).toEqual({ dias: 30, motivo: "admissao" });
-    expect(dias("2026-09-11", null)).toEqual({ dias: 20, motivo: "admissao" });
-    expect(dias("2026-09-30", null)).toEqual({ dias: 1, motivo: "admissao" });
+    expect(dias("2026-09-01")).toEqual({ dias: 30, motivo: "admissao" });
+    expect(dias("2026-09-11")).toEqual({ dias: 20, motivo: "admissao" });
+    expect(dias("2026-09-30")).toEqual({ dias: 1, motivo: "admissao" });
   });
 
-  it("rescisão conta do começo do mês até o dia da saída, inclusive", () => {
-    expect(dias(null, "2026-09-10")).toEqual({ dias: 10, motivo: "rescisao" });
-    expect(dias("2020-01-01", "2026-09-10")).toEqual({ dias: 10, motivo: "rescisao" });
-  });
-
-  it("entrou e saiu no mesmo mês conta só o intervalo", () => {
-    expect(dias("2026-09-10", "2026-09-14")).toEqual({ dias: 5, motivo: "admissao_e_rescisao" });
-  });
-
-  it("nunca passa de 30 nem fica negativo", () => {
-    // Mês de 31 dias: sair no dia 31 ainda é mês cheio, não 31/30 avos.
-    expect(dias(null, "2026-10-31", "2026-10").dias).toBe(DIAS_DO_MES_COMERCIAL);
-    // Desligamento antes da admissão (erro de cadastro) não vira valor negativo.
-    expect(dias("2026-09-20", "2026-09-10").dias).toBe(0);
+  it("quem entrou em outro mês não é rateado", () => {
+    expect(dias("2026-08-31")).toEqual({ dias: 30, motivo: "cheio" });
+    expect(dias(null)).toEqual({ dias: 30, motivo: "cheio" });
   });
 });
 
@@ -108,7 +97,7 @@ describe("montarLote", () => {
   it("ativo de casa entra pelo salário cheio", () => {
     const { itens, total } = montarLote([pessoa()], "2026-09");
     expect(itens).toHaveLength(1);
-    expect(itens[0]).toMatchObject({ dias: 30, motivo: "cheio", proporcional: 7500, valor: 7500 });
+    expect(itens[0]).toMatchObject({ dias: 30, motivo: "cheio", valor: 7500 });
     expect(total).toBe(7500);
   });
 
@@ -118,20 +107,35 @@ describe("montarLote", () => {
     expect(itens[0]).toMatchObject({ dias: 20, motivo: "admissao", valor: 5000 });
   });
 
-  it("quem saiu leva o proporcional mais a liberalidade", () => {
-    const { itens } = montarLote(
-      [pessoa({ datadesl: "2026-09-10", valor_liberalidade: 1200 })],
+  /* Desligado é pago pelo processo de rescisão, em /governanca/rescisoes.
+     Decidido com o financeiro em 26/08/2026: provisionar aqui pagaria os
+     mesmos dias duas vezes. */
+  it("quem saiu no mês NÃO entra no lote", () => {
+    const { itens, fora } = montarLote(
+      [pessoa({ nome: "Pedro Henrique", inicio: "2026-09-03", datadesl: "2026-09-07" })],
       "2026-09",
     );
-    expect(itens[0]).toMatchObject({
-      dias: 10, motivo: "rescisao", proporcional: 2500, liberalidade: 1200, valor: 3700,
-    });
+    expect(itens).toHaveLength(0);
+    expect(fora[0].motivo).toMatch(/07\/09\/2026.*rescis/i);
   });
 
-  it("a liberalidade não vaza para quem continua na casa", () => {
-    const { itens } = montarLote([pessoa({ valor_liberalidade: 1200 })], "2026-09");
-    expect(itens[0].liberalidade).toBe(0);
-    expect(itens[0].valor).toBe(7500);
+  it("quem saiu ANTES da competência também fica de fora", () => {
+    const { itens, fora } = montarLote([pessoa({ datadesl: "2026-08-20" })], "2026-09");
+    expect(itens).toHaveLength(0);
+    expect(fora[0].motivo).toMatch(/rescis/i);
+  });
+
+  it("mas quem sai DEPOIS da competência recebe o mês cheio", () => {
+    // Trabalhou setembro inteiro e só saiu em outubro: a folha de setembro é
+    // dele. Cortar por "tem data de desligamento" tiraria um mês devido.
+    const { itens, fora } = montarLote([pessoa({ datadesl: "2026-10-05" })], "2026-09");
+    expect(fora).toHaveLength(0);
+    expect(itens[0]).toMatchObject({ dias: 30, motivo: "cheio", valor: 7500 });
+  });
+
+  it("sair no último dia da competência ainda é rescisão", () => {
+    const { itens } = montarLote([pessoa({ datadesl: "2026-09-30" })], "2026-09");
+    expect(itens).toHaveLength(0);
   });
 
   it("arredonda para centavos", () => {
@@ -154,17 +158,6 @@ describe("montarLote", () => {
     expect(itens.map((i) => i.nome)).toEqual(["Fica"]);
     expect(fora.map((f) => f.nome)).toEqual(["Entrou depois", "Saiu antes", "Sem início", "Sem salário"]);
     expect(fora.every((f) => f.motivo.length > 0)).toBe(true);
-  });
-
-  it("quem saiu no mês ainda é pago; quem saiu antes, não", () => {
-    const { itens } = montarLote(
-      [
-        pessoa({ id: "a", nome: "Saiu no mês", datadesl: "2026-09-05" }),
-        pessoa({ id: "b", nome: "Saiu no mês anterior", datadesl: "2026-08-29" }),
-      ],
-      "2026-09",
-    );
-    expect(itens.map((i) => i.nome)).toEqual(["Saiu no mês"]);
   });
 
   it("sai em ordem de nome, para conferir a prévia de cima a baixo", () => {

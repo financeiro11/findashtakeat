@@ -40,8 +40,6 @@ const pct = (v: number) => `${v > 0 ? "+" : ""}${(v * 100).toFixed(0)}%`;
 const RATEIO: Record<string, string> = {
   cheio: "",
   admissao: "entrou no mês",
-  rescisao: "saiu no mês",
-  admissao_e_rescisao: "entrou e saiu no mês",
 };
 
 /* As tabelas do RH e da folha não estão no `types.ts` gerado, então o cliente
@@ -51,7 +49,7 @@ const RATEIO: Record<string, string> = {
 type LinhaRh = {
   id: string; codigo: string | null; nome: string | null; cnpj: string | null;
   razao: string | null; valor: number | null; inicio: string | null;
-  datadesl: string | null; valor_liberalidade: number | null;
+  datadesl: string | null;
 };
 type LinhaDePara = {
   codigo_rh: string; departamento: string | null;
@@ -99,7 +97,7 @@ export default function PreviaFolhaDialog({
       // Espelho do RH, de-para e catálogo do Omie: três leituras, nenhuma escrita.
       const [rh, dep, cache, envio] = await Promise.all([
         tabela("rh_colaboradores")
-          .select("id, codigo, nome, cnpj, razao, valor, inicio, datadesl, valor_liberalidade"),
+          .select("id, codigo, nome, cnpj, razao, valor, inicio, datadesl"),
         tabela("folha_depara")
           .select("codigo_rh, departamento, categoria_descricao, valor_referencia"),
         supabase.from("omie_cache").select("dados").eq("chave", "folha_cadastros").maybeSingle(),
@@ -137,7 +135,6 @@ export default function PreviaFolhaDialog({
         id: String(c.id), codigo: c.codigo ?? null, nome: String(c.nome ?? "").trim(),
         cnpj: c.cnpj ?? null, razao: c.razao ?? null, valor: c.valor,
         inicio: c.inicio ?? null, datadesl: c.datadesl ?? null,
-        valor_liberalidade: c.valor_liberalidade ?? null,
       }));
 
       // O fornecedor sai do cache de clientes, casado pelo CNPJ.
@@ -174,15 +171,10 @@ export default function PreviaFolhaDialog({
 
   const marcadas = linhas.filter((l) => l.chamaAtencao);
   const rateadas = linhas.filter((l) => l.motivo !== "cheio");
-  /* Quem saiu no mês entra no lote pela regra combinada (proporcional dos dias
-     trabalhados). Mas a rescisão dessas pessoas é calculada e paga em
-     /governanca/rescisoes, parcela a parcela — e se aquele cálculo já incluir
-     os dias do mês, provisionar aqui paga a mesma coisa duas vezes. A tela não
-     decide por ninguém: mostra quem são e o quanto é. */
-  const desligados = linhas.filter(
-    (l) => l.motivo === "rescisao" || l.motivo === "admissao_e_rescisao",
-  );
-  const totalDesligados = desligados.reduce((s, l) => s + l.valor, 0);
+  /* Desligado não aparece aqui: `montarLote` o manda para `fora`, com o motivo,
+     porque rescisão é paga em /governanca/rescisoes. A lista de fora do lote,
+     mais abaixo, é onde ele fica visível. */
+  const foraPorRescisao = fora.filter((f) => /rescis/i.test(f.motivo));
 
   const pendencia = useMemo(
     () => pendenciasDoLote(linhas.map((l) => ({
@@ -259,15 +251,11 @@ export default function PreviaFolhaDialog({
               </Aviso>
             )}
 
-            {desligados.length > 0 && (
-              <Aviso
-                tom="atencao"
-                titulo={`${desligados.length} desligado(s) no lote · ${BRL(totalDesligados)}`}
-              >
-                Rescisão tem processo próprio em Governança › Rescisões, que calcula as
-                parcelas e controla o pagamento. Se o cálculo de lá já cobrir os dias
-                trabalhados no mês, provisionar aqui paga duas vezes. Confira antes de enviar:
-                {" "}{desligados.map((d) => d.nome).join(", ")}.
+            {foraPorRescisao.length > 0 && (
+              <Aviso tom="neutro" titulo={`${foraPorRescisao.length} desligado(s) fora da folha`}>
+                Rescisão é paga pelo processo próprio, em Governança › Rescisões — provisionar
+                aqui pagaria os mesmos dias duas vezes. Eles aparecem na lista "Fora do lote",
+                abaixo, com a data de saída.
               </Aviso>
             )}
 
@@ -336,11 +324,6 @@ export default function PreviaFolhaDialog({
                           >
                             {l.variacao > 0 ? <TrendingUp className="size-3" /> : <TrendingDown className="size-3" />}
                             {pct(l.variacao)} vs {BRL(l.valorReferencia ?? 0)}
-                          </span>
-                        )}
-                        {l.liberalidade > 0 && (
-                          <span className="block text-[11px] text-muted-foreground">
-                            inclui {BRL(l.liberalidade)} de liberalidade
                           </span>
                         )}
                       </td>

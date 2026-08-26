@@ -11,7 +11,7 @@ import { describe, expect, it } from "vitest";
 import {
   DIAS_DO_MES_COMERCIAL, ENVIO_FOLHA_LIBERADO, MARCO_FOLHA_FORA_DO_HUB, bloqueioDaFolha,
   FINALIDADE_PIX_FOLHA, FORMA_PAGAMENTO_FOLHA, VARIACAO_QUE_CHAMA_ATENCAO,
-  resolvedorDeCategoria, montarTituloFolha,
+  resolvedorDeCategoria, montarTituloFolha, documentoValido,
   diasTrabalhados, integracaoFolhaDe, montarLote, parseISO, pendenciasDoLote, previsaoDe, recusaDaFolha,
   type ResolveDePara, type TituloDaFolha,
   registroDa, vencimentoDa,
@@ -345,6 +345,69 @@ describe("valor ajustado no Hub", () => {
   it("arredonda o ajuste para centavos", () => {
     const { itens } = montarLote([pessoa()], "2026-09", ajuste(2777.7666));
     expect(itens[0].valorAjustado).toBe(2777.77);
+  });
+});
+
+/* Documento corrigido no Hub. O espelho lido em 26/08/2026 tinha quatro pessoas
+   dividindo o CNPJ 37.511.891/0001-50, três que perderam o zero à esquerda, um
+   truncado e um em branco — nenhum acha fornecedor no Omie. */
+describe("documento ajustado no Hub", () => {
+  const comDoc = (documentoAjustado: string | null): ResolveDePara => () => ({
+    departamento: "Inside Sales",
+    categoria: "3.1.1.2. Pessoal - Comercial",
+    documentoAjustado,
+  });
+
+  it("o documento corrigido manda, e o do RH continua visível", () => {
+    const { itens } = montarLote(
+      [pessoa({ cnpj: "37.511.891/0001-50" })], "2026-09", comDoc("62563437000190"),
+    );
+    expect(itens[0]).toMatchObject({
+      documentoRh: "37511891000150",
+      documentoAjustado: "62563437000190",
+      cnpj: "62563437000190",
+    });
+  });
+
+  it("desfaz o CNPJ compartilhado — cada um com o seu", () => {
+    // Os quatro do 37.511.891/0001-50, com os documentos reais da planilha.
+    const compartilhado = "37511891000150";
+    const certos = ["62563437000190", "66804297000156", "29047247000145", "65677373000147"];
+    const itens = certos.map((certo, i) => montarLote(
+      [pessoa({ codigo: `COL-00000${i}`, cnpj: compartilhado })], "2026-09", comDoc(certo),
+    ).itens[0]);
+    expect(new Set(itens.map((i) => i.cnpj)).size).toBe(4);
+  });
+
+  it("aceita CPF — há prestador cadastrado como pessoa física", () => {
+    const { itens } = montarLote([pessoa({ cnpj: "" })], "2026-09", comDoc("16146305774"));
+    expect(itens[0].cnpj).toBe("16146305774");
+    expect(documentoValido("16146305774")).toBe(true);
+  });
+
+  it("ajuste com documento inválido é ignorado — o do RH prevalece", () => {
+    // Corrigir para lixo não pode ser pior que não corrigir.
+    for (const lixo of ["123", "", null, "6500769400134"]) {
+      const { itens } = montarLote(
+        [pessoa({ cnpj: "66.744.328/0001-20" })], "2026-09", comDoc(lixo),
+      );
+      expect(itens[0].cnpj, String(lixo)).toBe("66744328000120");
+    }
+  });
+
+  it("sem ajuste, vale o documento do espelho", () => {
+    const { itens } = montarLote([pessoa()], "2026-09", comDoc(null));
+    expect(itens[0]).toMatchObject({ cnpj: "66744328000120", documentoAjustado: null });
+  });
+});
+
+describe("documentoValido", () => {
+  it("aceita CNPJ e CPF, recusa o resto", () => {
+    expect(documentoValido("66744328000120")).toBe(true);  // 14
+    expect(documentoValido("16146305774")).toBe(true);     // 11
+    for (const ruim of ["6500769400134", "58313176", "", "123456789012"]) {
+      expect(documentoValido(ruim), ruim).toBe(false);
+    }
   });
 });
 

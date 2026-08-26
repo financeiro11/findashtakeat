@@ -139,6 +139,15 @@ export const integracaoFolhaDe = (codigo: string, competencia: string): string =
 
 export const soDigitos = (s: unknown): string => String(s ?? "").replace(/\D/g, "");
 
+/**
+ * Documento de prestador: CNPJ (14) ou CPF (11).
+ *
+ * O CPF entra porque existe: uma das pessoas da folha é cadastrada como pessoa
+ * física no Omie. Exigir 14 dígitos a tiraria do lote por um problema que ela
+ * não tem.
+ */
+export const documentoValido = (d: string): boolean => d.length === 14 || d.length === 11;
+
 /* ------------------------------------------------------------------
  * O mês comercial
  * ------------------------------------------------------------------ */
@@ -199,6 +208,15 @@ export type DeParaDaPessoa = {
   valorAjustado?: number | null;
   /** Quanto o espelho dizia quando a correção foi feita. */
   valorRhNoAjuste?: number | null;
+  /**
+   * CNPJ ou CPF corrigido no Hub, só dígitos. Quando presente, MANDA.
+   *
+   * Mesmo motivo do salário: o espelho é reescrito a cada sync. E aqui o
+   * estrago é maior — documento errado não acha fornecedor, e sem fornecedor
+   * não existe título nenhum para a pessoa.
+   */
+  documentoAjustado?: string | null;
+  documentoRhNoAjuste?: string | null;
 };
 
 /**
@@ -265,6 +283,10 @@ export type ItemDaFolha = {
   variacao: number | null;
   /** A variação passou do limite? É o que a prévia marca em vermelho. */
   chamaAtencao: boolean;
+  /** O documento do espelho do RH, só dígitos. Pode estar errado. */
+  documentoRh: string;
+  /** O documento corrigido no Hub, se houver. */
+  documentoAjustado: string | null;
   /** Salário que a folha vai usar: o ajuste quando existe, senão o do espelho. */
   valorBase: number;
   /** O que o espelho do RH diz hoje. */
@@ -423,6 +445,13 @@ export function montarLote(
     /* O ajuste do Hub passa por cima do espelho. Zero é ajuste válido? Não:
        zerar alguém é tirá-lo da folha, e isso se faz pelo desligamento, não
        por um campo de valor. Ajuste tem de ser positivo para valer. */
+    /* O documento corrigido passa por cima do espelho. É por ele que se acha o
+       fornecedor no Omie, então errar aqui é a pessoa não ter título nenhum. */
+    const documentoRh = soDigitos(c.cnpj);
+    const ajusteDoc = soDigitos(dePara?.documentoAjustado);
+    const documentoAjustado = documentoValido(ajusteDoc) ? ajusteDoc : null;
+    const documento = documentoAjustado ?? documentoRh;
+
     const valorRh = Number(c.valor) || 0;
     const aj = Number(dePara?.valorAjustado ?? NaN);
     const valorAjustado = Number.isFinite(aj) && aj > 0 ? arred2(aj) : null;
@@ -453,7 +482,9 @@ export function montarLote(
       colaboradorId: c.id,
       codigo,
       nome,
-      cnpj: soDigitos(c.cnpj),
+      cnpj: documento,
+      documentoRh,
+      documentoAjustado,
       razao: c.razao ?? null,
       departamento: dePara?.departamento ?? "",
       categoria: dePara?.categoria ?? "",
@@ -554,10 +585,10 @@ export function pendenciasDoLote(itens: PendenciaDoItem[]): string | null {
   }
 
   // Cinco documentos truncados e dois em branco no mesmo espelho.
-  const semCnpj = itens.filter((i) => soDigitos(i.cnpj).length !== 14).length;
-  if (semCnpj) {
-    return `${semCnpj} colaborador(es) com CNPJ ausente ou incompleto. `
-      + "Sem documento válido não há fornecedor no Omie.";
+  const semDoc = itens.filter((i) => !documentoValido(soDigitos(i.cnpj))).length;
+  if (semDoc) {
+    return `${semDoc} colaborador(es) com documento ausente ou incompleto. `
+      + "Sem CNPJ ou CPF válido não há fornecedor no Omie.";
   }
 
   const semFornecedor = itens.filter((i) => !i.codigoFornecedor).length;

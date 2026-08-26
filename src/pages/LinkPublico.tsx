@@ -385,11 +385,25 @@ function ItemCard({ item, token, onRefresh }: { item: Item; token: string; onRef
     }
   };
 
+  // A `regra` vem do robô da auditoria como frase, não como código: "SEM NF (sem
+  // comprovante nas 6 bases varridas)". Vira etiqueta em caixa alta a parte de fora
+  // dos parênteses, e o que está dentro segue como texto normal — 90 caracteres
+  // gritando em maiúsculas não se leem.
+  const casaRegra = (item.regra || "").match(/^([^(]+?)\s*(?:\((.*)\)\s*)?$/);
+  const regraCodigo = (casaRegra?.[1] || item.regra || "").trim();
+  const regraDetalhe = (casaRegra?.[2] || "").trim() || null;
+
+  // A categoria quase sempre repete o código da regra ("SEM NF" nos dois) — mostrar
+  // as duas faz a linha parecer erro de montagem.
+  const categoria = item.categoria && item.categoria.trim().toUpperCase() !== regraCodigo.toUpperCase()
+    ? item.categoria
+    : null;
+
   const meta = [
     item.data,
     item.cartao_final ? `final ${item.cartao_final}` : null,
     item.parcela ? `parcela ${item.parcela}` : null,
-    item.categoria,
+    categoria,
   ].filter(Boolean).join(" · ");
 
   /* ---- Resolvida e recolhida: uma linha, sem ruído ---- */
@@ -438,18 +452,23 @@ function ItemCard({ item, token, onRefresh }: { item: Item; token: string; onRef
       </div>
 
       {/* Motivo da cobrança — é o que o líder precisa entender antes de agir */}
-      {item.regra && (
-        <div className="px-4 pt-3">
+      {regraCodigo && (
+        <div className="flex flex-wrap items-center gap-x-2 gap-y-1 px-4 pt-3">
           <span
-            className="inline-flex items-center rounded border px-1.5 py-0.5 text-[10.5px] font-semibold uppercase tracking-wider"
+            className="inline-flex shrink-0 items-center rounded border px-1.5 py-0.5 text-[10.5px] font-semibold uppercase tracking-wider"
             style={{
               borderColor: "hsl(var(--warn) / 0.35)",
               background: "hsl(var(--warn) / 0.10)",
-              color: "hsl(38 92% 32%)",
+              // O --warn (48% de luz) não tem contraste sobre o próprio fundo a 10%;
+              // é o mesmo tom escurecido só para o texto passar de 4.5:1.
+              color: "hsl(38 92% 30%)",
             }}
           >
-            {item.regra}
+            {regraCodigo}
           </span>
+          {regraDetalhe && (
+            <span className="text-[12px] leading-snug text-muted-foreground">{regraDetalhe}</span>
+          )}
         </div>
       )}
 

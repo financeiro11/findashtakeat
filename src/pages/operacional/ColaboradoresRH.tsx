@@ -412,7 +412,8 @@ export default function ColaboradoresRH() {
   /* O de-para traz departamento e o salário corrigido. Sem ele a faixa somaria
      o espelho cru do RH — que é o número errado desde que existem ajustes. */
   const [dePara, setDePara] = useState<Map<string, {
-    departamento: string; categoria: string; valorAjustado: number | null;
+    departamento: string; categoria: string;
+    valorAjustado: number | null; documentoAjustado: string | null;
   }>>(new Map());
   const [visiveis, setVisiveis] = useState<Set<string>>(() => {
     try {
@@ -484,16 +485,20 @@ export default function ColaboradoresRH() {
   useEffect(() => {
     let vivo = true;
     tabelaFolha("folha_depara")
-      .select("codigo_rh, departamento, categoria_descricao, valor_ajustado")
+      .select("codigo_rh, departamento, categoria_descricao, valor_ajustado, documento_ajustado")
       .then(({ data }) => {
         if (!vivo) return;
-        const m = new Map<string, { departamento: string; categoria: string; valorAjustado: number | null }>();
+        const m = new Map<string, {
+          departamento: string; categoria: string;
+          valorAjustado: number | null; documentoAjustado: string | null;
+        }>();
         for (const d of (data ?? []) as Record<string, unknown>[]) {
           m.set(String(d.codigo_rh), {
             departamento: String(d.departamento ?? ""),
             categoria: String(d.categoria_descricao ?? ""),
             valorAjustado: d.valor_ajustado === null || d.valor_ajustado === undefined
               ? null : Number(d.valor_ajustado),
+            documentoAjustado: (d.documento_ajustado as string) ?? null,
           });
         }
         setDePara(m);
@@ -561,6 +566,30 @@ export default function ColaboradoresRH() {
     () => lote.itens.filter((i) => i.valorAjustado !== null).length,
     [lote],
   );
+
+  /* O que o Hub corrigiu por cima do espelho, por pessoa.
+   *
+   * Aparece na linha, em vermelho, para virar recado ao DH: o Hub segue com a
+   * folha, mas o cadastro de origem continua errado e vai voltar errado no
+   * próximo sync. Sem isto, a correção do Hub esconde o problema em vez de
+   * resolvê-lo — e ninguém nunca arruma a base de lá. */
+  const divergencias = useMemo(() => {
+    const m = new Map<string, string[]>();
+    for (const c of todos) {
+      const d = dePara.get(String(c.codigo ?? ""));
+      if (!d) continue;
+      const avisos: string[] = [];
+      if (d.valorAjustado !== null && Number(c.valor) !== d.valorAjustado) {
+        avisos.push(`salário no RH ${BRL(Number(c.valor) || 0)}, correto ${BRL(d.valorAjustado)}`);
+      }
+      const docRh = String(c.cnpj ?? "").replace(/\D/g, "");
+      if (d.documentoAjustado && docRh !== d.documentoAjustado) {
+        avisos.push(`documento no RH ${docRh || "vazio"}, correto ${d.documentoAjustado}`);
+      }
+      if (avisos.length) m.set(String(c.id), avisos);
+    }
+    return m;
+  }, [todos, dePara]);
 
   /** Quem entrou, quem saiu e que contrato vence no mês escolhido. */
   const mov = useMemo(() => {
@@ -837,6 +866,40 @@ export default function ColaboradoresRH() {
             </Button>
           </div>
         </div>
+
+        {/* ─── O que o Hub corrige por cima do Portal RH ─── */}
+        {divergencias.size > 0 && (
+          <div className="rounded-xl border border-destructive/30 bg-destructive/5 px-3.5 py-2.5">
+            <p className="text-[12.5px] font-semibold text-destructive">
+              {divergencias.size} cadastro(s) divergem do Portal RH
+            </p>
+            <p className="mt-0.5 text-xs text-muted-foreground">
+              A folha usa o valor corrigido aqui, então o pagamento sai certo. Mas a base do RH
+              continua errada e volta assim no próximo sync — vale pedir ao DH para corrigir na
+              origem. Cada linha mostra o que está diferente.
+            </p>
+            <button
+              className="mt-1.5 text-xs text-primary hover:underline"
+              onClick={() => {
+                /* Texto pronto para colar numa mensagem. A lista existe para
+                   sair daqui e chegar em quem edita a base, não para ficar
+                   bonita na tela. */
+                const linhas = todos
+                  .filter((c) => divergencias.has(String(c.id)))
+                  .map((c) => `• ${String(c.nome ?? "").trim()} (${txt(c.codigo)}): `
+                    + divergencias.get(String(c.id))!.join("; "));
+                const cabecalho =
+                  `Divergências no cadastro do Portal RH (${new Date().toLocaleDateString("pt-BR")}):`;
+                navigator.clipboard.writeText([cabecalho, "", ...linhas].join("\n")).then(
+                  () => toast.success("Lista copiada — é só colar para o DH"),
+                  () => toast.error("Não deu para copiar"),
+                );
+              }}
+            >
+              Copiar a lista para mandar ao DH
+            </button>
+          </div>
+        )}
 
         {/* ─── Barra de ferramentas ─── */}
         <div className="flex flex-wrap items-center gap-2.5">
@@ -1128,6 +1191,7 @@ export default function ColaboradoresRH() {
                             fotoUrl={fotoUrls?.[String(c.foto_url)]}
                             selo={selo}
                             onFoto={setFotoAberta}
+                            divergencias={divergencias.get(String(c.id))}
                           />
                         </TableCell>
                       ))}
@@ -1549,13 +1613,15 @@ function Avatar({
    sempre — só a apresentação muda. */
 
 function Celula({
-  col, c, fotoUrl, selo, onFoto,
+  col, c, fotoUrl, selo, onFoto, divergencias,
 }: {
   col: Col;
   c: Colaborador;
   fotoUrl?: string;
   selo: string | null;
   onFoto: (f: { url: string; nome: string } | null) => void;
+  /** O que o Hub corrigiu por cima deste cadastro. Vira recado ao DH. */
+  divergencias?: string[];
 }) {
   const nome = String(c.nome ?? "");
   const cru = c[col.key];
@@ -1573,18 +1639,27 @@ function Celula({
 
   if (col.key === "nome") {
     return (
-      <span className="flex items-center gap-2">
-        <span className="text-sm font-medium">{txt(cru)}</span>
-        {selo && (
-          <span
-            className={cn(
-              "rounded px-1.5 py-0.5 text-[10.5px] font-bold uppercase tracking-[0.06em]",
-              selo === "NOVO" ? "bg-pos/15 text-pos" : "bg-destructive/15 text-destructive",
-            )}
-          >
-            {selo}
+      <span className="block leading-tight">
+        <span className="flex items-center gap-2">
+          <span className="text-sm font-medium">{txt(cru)}</span>
+          {selo && (
+            <span
+              className={cn(
+                "rounded px-1.5 py-0.5 text-[10.5px] font-bold uppercase tracking-[0.06em]",
+                selo === "NOVO" ? "bg-pos/15 text-pos" : "bg-destructive/15 text-destructive",
+              )}
+            >
+              {selo}
+            </span>
+          )}
+        </span>
+        {/* O recado para o DH. Fica embaixo do nome, na linha da pessoa, porque
+            é assim que quem varre a lista consegue anotar o que pedir. */}
+        {divergencias?.map((d) => (
+          <span key={d} className="block whitespace-normal text-[11px] leading-snug text-destructive">
+            ⚠ {d}
           </span>
-        )}
+        ))}
       </span>
     );
   }

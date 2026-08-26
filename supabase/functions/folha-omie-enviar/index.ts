@@ -123,7 +123,7 @@ Deno.serve(async (req) => {
       supabase.from("rh_colaboradores")
         .select("id, codigo, nome, cnpj, razao, valor, inicio, datadesl, pix"),
       supabase.from("folha_depara")
-        .select("codigo_rh, departamento, categoria_descricao, valor_referencia, valor_ajustado"),
+        .select("codigo_rh, departamento, categoria_descricao, valor_referencia, valor_ajustado, documento_ajustado"),
       supabase.from("omie_cache").select("dados").eq("chave", "folha_cadastros").maybeSingle(),
       supabase.from("omie_cache").select("dados").eq("chave", "clientes").maybeSingle(),
       supabase.from("folha_envios_omie").select("estado, previsao_ajustada").eq("competencia", `${competencia}-01`).maybeSingle(),
@@ -161,6 +161,7 @@ Deno.serve(async (req) => {
         categoria: String(d.categoria_descricao ?? ""),
         valorReferencia: num(d.valor_referencia),
         valorAjustado: num(d.valor_ajustado),
+        documentoAjustado: (d.documento_ajustado as string) ?? null,
       };
     };
 

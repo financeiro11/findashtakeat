@@ -611,25 +611,16 @@ export function pendenciasDoLote(itens: PendenciaDoItem[]): string | null {
       + "Defina a categoria de todos antes de enviar.";
   }
 
-  /* Chave PIX conferida AQUI, e não só no Omie.
+  /* A chave PIX NÃO é conferida aqui.
    *
-   * Em 26/08/2026 dez títulos foram recusados um a um pelo ERP por chave
-   * inválida — CPF de quem não é estagiário, CNPJ truncado, CNPJ com dígito
-   * errado. A prévia já marcava os dez em vermelho; o envio não perguntava a
-   * ela. O resultado foram dez chamadas gastas para receber mensagens que
-   * ninguém liga à pessoa ("não parece ser um telefone válido", para um CPF).
+   * Cheguei a barrar por ela, e estava errado: a chave não vai mais no título
+   * — vem do cadastro do fornecedor no Omie. Travar a folha por um campo que
+   * não é enviado seguraria gente por nada.
    *
-   * Conferir antes transforma isso em uma frase com nomes, antes de sair
-   * requisição nenhuma. */
-  const chaveRuim = itens.filter((i) => {
-    if (i.chavePix === undefined) return false; // quem não informou não é conferido
-    const tipo = tipoDeChavePix(String(i.chavePix ?? ""));
-    return !chavePermitida(tipo, ehEstagiario(i.cargo ?? ""));
-  }).length;
-  if (chaveRuim) {
-    return `${chaveRuim} colaborador(es) com chave PIX que o Omie recusa. `
-      + "A tela marca cada um em vermelho, com o motivo.";
-  }
+   * A conferência da tela continua apontando chave ruim, e continua valendo:
+   * é o que o `omie-colaboradores-cadastrar` grava no fornecedor, e é de lá
+   * que o ERP tira a chave na hora de pagar. O lugar de corrigir passou a ser
+   * o cadastro, não a folha. */
 
   return null;
 }
@@ -755,16 +746,21 @@ export function montarTituloFolha(t: TituloDaFolha): Record<string, unknown> {
     // 240 é o limite do campo no Omie; nome de gente cabe folgado.
     observacao: t.nome.trim().slice(0, 240),
     // Sem `departamentos`: o Omie recusa a tag. Ver o bloco acima.
+    /* SÓ o tipo de transferência e a finalidade.
+     *
+     * A chave PIX NÃO vai no título: o fornecedor já a tem no cadastro do Omie
+     * (`dadosBancarios.cChavePix`), e o ERP a usa de lá. Repetir a chave dentro
+     * de cada título significava carregar, todo mês, um dado que já existe num
+     * lugar só — e foi o que derrubou dez títulos em 26/08/2026, porque o que
+     * o espelho do RH tinha como chave era CPF com cara de telefone, CNPJ
+     * truncado e CNPJ com dígito trocado.
+     *
+     * Com a chave vindo do cadastro, corrigir uma pessoa passa a ser corrigir o
+     * FORNECEDOR — um lugar, que vale para todos os meses — em vez de corrigir
+     * o espelho antes de cada folha. */
     cnab_integracao_bancaria: {
       codigo_forma_pagamento: FORMA_PAGAMENTO_FOLHA,
       finalidade_transferencia: FINALIDADE_PIX_FOLHA,
-      // Estagiário: paga no CPF, que é o próprio documento. Um CNPJ no campo
-      // de PIX dele é engano de cadastro, e usá-lo pagaria a outra PJ.
-      pix_qrcode: t.estagiario && cnpj.length === 11
-        ? cnpj
-        : (t.chavePix ?? "").trim() || cnpj,
-      cpf_cnpj_transferencia: cnpj,
-      nome_transferencia: (t.razao ?? "").trim() || t.nome.trim(),
     },
   };
 }

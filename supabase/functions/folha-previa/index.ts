@@ -210,10 +210,6 @@ Deno.serve(async (req) => {
       cnpj: l.cnpj,
       codigoFornecedor: l.codigoFornecedor,
       codigoCategoria: l.codigoCategoria,
-      chavePix: /estagi/i.test(String(l.cargo ?? "")) && l.cnpj.length === 11
-        ? l.cnpj
-        : (pixPorCodigo.get(l.codigo) ?? "") || l.cnpj,
-      cargo: l.cargo,
     }));
 
     return json({

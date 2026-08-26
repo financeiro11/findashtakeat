@@ -268,11 +268,6 @@ Deno.serve(async (req) => {
         cnpj: i.cnpj,
         codigoFornecedor: fornecedorPorCnpj.get(i.cnpj) ?? null,
         codigoCategoria: i.categoria ? codCategoria(i.categoria) : null,
-        // A chave que VAI no título, já com a regra do estagiário aplicada.
-        chavePix: estagioPorCodigo.get(i.codigo) && i.cnpj.length === 11
-          ? i.cnpj
-          : (pixPorCodigo.get(i.codigo) ?? "") || i.cnpj,
-        cargo: cargoPorCodigo.get(i.codigo) ?? null,
       })),
     });
     if (recusa) return json({ status: "erro", erro: recusa }, 409);

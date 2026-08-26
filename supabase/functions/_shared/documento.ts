@@ -68,7 +68,8 @@ export function cpfValido(doc: string): boolean {
 
 export type TipoDeChave =
   | "cnpj" | "cpf" | "email" | "telefone" | "aleatoria"
-  | "email_invalido" | "documento_incompleto" | "vazia" | "desconhecida";
+  | "telefone_sem_ddi" | "email_invalido" | "documento_incompleto"
+  | "vazia" | "desconhecida";
 
 /**
  * Que tipo de chave é esta.
@@ -91,16 +92,29 @@ export function tipoDeChavePix(chave: string): TipoDeChave {
   }
 
   const d = soDigitos(t);
-  if (d.length === 14) return "cnpj";
+  /* CNPJ com dígito verificador conferido, não só com 14 dígitos.
+     O PIX 42.026.075/0001-80 tem o tamanho certo e é inválido — o Omie recusou
+     com "Esta não parece ser uma chave pix válida". Aceitar pelo tamanho faria
+     o Hub aprovar o que o ERP nega. */
+  if (d.length === 14) return cnpjValido(d) ? "cnpj" : "documento_incompleto";
+
+  /* Telefone SÓ vale com +55 na frente — é o que o Omie exige, e é o que ele
+     responde quando falta: "Ela deve iniciar com +55 e DDD (não use traços)".
+     Não é preciosismo de formato: onze dígitos soltos com cara de celular são
+     lidos como telefone pelo ERP, e recusados. */
+  if (/^\+55/.test(t.replace(/\s/g, "")) && (d.length === 12 || d.length === 13)) return "telefone";
+
   if (d.length === 11) {
-    // Celular brasileiro sem DDI: 11 dígitos começando por DDD + 9.
-    if (/^\+/.test(t) || /^[1-9]{2}9\d{8}$/.test(d)) return "telefone";
+    /* Onze dígitos sem DDI. O Omie desambigua pela FORMA: DDD + 9 + oito
+       dígitos ele lê como celular, mesmo sendo um CPF de verdade — foi o que
+       aconteceu com quatro chaves em 26/08/2026 (11957054393, 21992197625,
+       27998814130, 27992360017). Chamá-las de CPF aqui faria o Hub aprovar o
+       que o ERP recusa, que é o pior lugar para divergir. */
+    if (/^[1-9]{2}9\d{8}$/.test(d)) return "telefone_sem_ddi";
     return "cpf";
   }
-  if (d.length === 12 || d.length === 13) {
-    // 13 dígitos é quase sempre CNPJ sem o zero à esquerda.
-    return /^\+?55/.test(t) ? "telefone" : "documento_incompleto";
-  }
+  // 12 ou 13 dígitos sem o +55 é quase sempre CNPJ que perdeu um dígito.
+  if (d.length === 12 || d.length === 13) return "documento_incompleto";
   return "desconhecida";
 }
 
@@ -109,7 +123,7 @@ export function tipoDeChavePix(chave: string): TipoDeChave {
  *
  *   CNPJ      preferido — é o documento da PJ que presta o serviço
  *   e-mail    aceito
- *   telefone  aceito, mas o ideal é trocar por CNPJ
+ *   telefone  aceito SÓ com +55 na frente; o ideal é trocar por CNPJ
  *   CPF       só para estagiário
  *   aleatória nunca
  *

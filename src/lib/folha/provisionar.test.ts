@@ -621,43 +621,24 @@ describe("montarTituloFolha", () => {
     expect(p.distribuicao).toBeUndefined();
   });
 
-  it("manda o CNAB fixo das colunas AA e AJ", () => {
+  /* Só o tipo e a finalidade. A chave PIX vem do CADASTRO do fornecedor no
+     Omie, não do título — o ERP a busca de lá. Repetir a chave dentro de cada
+     título foi o que derrubou dez em 26/08/2026: o espelho do RH tinha CPF com
+     cara de telefone, CNPJ truncado e CNPJ com dígito trocado. */
+  it("manda só o tipo de transferência e a finalidade", () => {
     const cnab = montarTituloFolha(TITULO).cnab_integracao_bancaria as Record<string, unknown>;
-    expect(cnab.codigo_forma_pagamento).toBe(FORMA_PAGAMENTO_FOLHA);   // "Transferência Bancária"
-    expect(cnab.finalidade_transferencia).toBe(FINALIDADE_PIX_FOLHA);  // "Transferência por Chave PIX"
-    expect(cnab.cpf_cnpj_transferencia).toBe("66744328000120");
-    expect(cnab.nome_transferencia).toBe("ADRIAN CORADINI SERVICOS LTDA");
+    expect(cnab).toEqual({
+      codigo_forma_pagamento: FORMA_PAGAMENTO_FOLHA,   // "Transferência Bancária"
+      finalidade_transferencia: FINALIDADE_PIX_FOLHA,  // "Transferência por Chave PIX"
+    });
   });
 
-  /* Estagiário recebe no CPF, e o CPF é o documento dele. Um CNPJ no campo de
-     PIX é engano de cadastro, e usá-lo pagaria a outra PJ. */
-  it("estagiário paga no CPF, mesmo com CNPJ no campo de PIX", () => {
-    const cnab = montarTituloFolha({
-      ...TITULO, estagiario: true, cnpj: "161.463.057-74", chavePix: "66744328000120",
-    }).cnab_integracao_bancaria as Record<string, unknown>;
-    expect(cnab.pix_qrcode).toBe("16146305774");
-    expect(cnab.cpf_cnpj_transferencia).toBe("16146305774");
-  });
-
-  it("quem não é estagiário segue usando a chave do RH", () => {
-    const cnab = montarTituloFolha({
-      ...TITULO, estagiario: false, chavePix: "amanda.takeat@gmail.com",
-    }).cnab_integracao_bancaria as Record<string, unknown>;
-    expect(cnab.pix_qrcode).toBe("amanda.takeat@gmail.com");
-  });
-
-  it("sem chave PIX cadastrada, usa o CNPJ — como o fluxo de parceiro já faz", () => {
-    for (const pix of [null, "", "   "]) {
-      const cnab = montarTituloFolha({ ...TITULO, chavePix: pix })
-        .cnab_integracao_bancaria as Record<string, unknown>;
-      expect(cnab.pix_qrcode).toBe("66744328000120");
-    }
-  });
-
-  it("sem razão social, o titular da transferência é o nome da pessoa", () => {
-    const cnab = montarTituloFolha({ ...TITULO, razao: null })
+  it("NÃO repete a chave PIX no título — ela vive no cadastro do fornecedor", () => {
+    const cnab = montarTituloFolha({ ...TITULO, chavePix: "chave-qualquer" })
       .cnab_integracao_bancaria as Record<string, unknown>;
-    expect(cnab.nome_transferencia).toBe("Ádrian Coradini da Silva");
+    expect(cnab.pix_qrcode).toBeUndefined();
+    expect(cnab.cpf_cnpj_transferencia).toBeUndefined();
+    expect(cnab.nome_transferencia).toBeUndefined();
   });
 
   it("arredonda o valor para centavos", () => {

@@ -83,10 +83,34 @@ describe("tipoDeChavePix", () => {
     }
   });
 
-  it("celular de verdade é telefone, e não CPF", () => {
-    expect(tipoDeChavePix("27998814130")).toBe("telefone"); // DDD 27 + 9
+  /* 42.026.075/0001-80 tem 14 dígitos e é inválido — o Omie recusou. Aceitar
+     pelo tamanho faria o Hub aprovar o que o ERP nega. */
+  it("14 dígitos com dígito verificador errado não é CNPJ", () => {
+    expect(tipoDeChavePix("42026075000180")).toBe("documento_incompleto");
+    expect(tipoDeChavePix("50564257000105")).toBe("documento_incompleto");
+    expect(tipoDeChavePix("66744328000120")).toBe("cnpj");
+  });
+
+  /* O Omie só aceita telefone com +55 na frente, e responde exatamente isso
+     quando falta. Onze dígitos soltos com cara de celular ele lê como telefone
+     — mesmo sendo CPF de verdade. */
+  it("telefone só vale com +55", () => {
     expect(tipoDeChavePix("+5527998814130")).toBe("telefone");
-    expect(tipoDeChavePix("16146305774")).toBe("cpf");      // não começa com 9 depois do DDD
+    expect(tipoDeChavePix("+55 27 998814130")).toBe("telefone");
+    expect(tipoDeChavePix("27998814130")).toBe("telefone_sem_ddi");
+  });
+
+  /* Os quatro CPFs reais que o Omie recusou em 26/08/2026 dizendo "não parece
+     ser um telefone válido". Chamá-los de CPF aqui faria o Hub aprovar o que o
+     ERP recusa. */
+  it("CPF com forma de celular é tratado como o Omie trata: telefone sem DDI", () => {
+    for (const d of ["11957054393", "21992197625", "27998814130", "27992360017"]) {
+      expect(tipoDeChavePix(d), d).toBe("telefone_sem_ddi");
+    }
+  });
+
+  it("CPF que não tem forma de celular continua CPF", () => {
+    expect(tipoDeChavePix("16146305774")).toBe("cpf"); // terceiro dígito não é 9
   });
 });
 
@@ -107,6 +131,11 @@ describe("chavePermitida", () => {
 
   it("aleatória nunca, nem para estagiário", () => {
     expect(chavePermitida("aleatoria", true)).toBe(false);
+  });
+
+  it("telefone sem +55 não é aceito — o Omie recusa", () => {
+    expect(chavePermitida("telefone_sem_ddi", false)).toBe(false);
+    expect(chavePermitida("telefone_sem_ddi", true)).toBe(false);
   });
 
   it("chave quebrada não é tipo de chave — não recebe", () => {
@@ -215,7 +244,7 @@ describe("conferir · chave PIX", () => {
 
   /* Telefone recebe, então não pode impedir o pagamento. Mas é a única chave
      PIX que troca de dono, então vale o empurrão para o CNPJ. */
-  it("telefone não impede pagar, mas pede a troca por CNPJ", () => {
+  it("telefone com +55 não impede pagar, mas pede a troca por CNPJ", () => {
     const a = conferir(pessoa({ pix: "+5527998814130" }));
     expect(a.filter((x) => x.gravidade === "erro")).toHaveLength(0);
     expect(a.some((x) => x.gravidade === "aviso" && /ideal é usar o CNPJ/.test(x.mensagem))).toBe(true);

@@ -147,11 +147,32 @@ export function conferir(
     aleatoria: "chave PIX aleatória — a empresa não paga nesse tipo",
     cpf: "",  // montada abaixo, com o CPF à vista
     telefone: "",  // aceita; vira aviso de preferência, não erro
+    telefone_sem_ddi: "",  // montada abaixo, com o número à vista
     email_invalido: `chave PIX "${String(p.pix ?? "").trim()}" não é um e-mail válido`,
-    documento_incompleto: `chave PIX ${soDigitos(p.pix)} parece CNPJ com dígito faltando`,
+    documento_incompleto: `chave PIX ${soDigitos(p.pix)} não é um CNPJ válido `
+      + "— dígito faltando ou trocado",
     desconhecida: "chave PIX em formato não reconhecido",
   };
-  if (tipo === "cpf" && !estagiario) {
+  if (tipo === "documento_incompleto" && distanciaDeUmDigito(doc, soDigitos(p.pix))) {
+    /* Chave inválida que difere do documento em UM dígito é digitação, e dizer
+       isso poupa a busca por um erro que não existe. Stheferson e Emanuelle,
+       no espelho real. */
+    achados.push({
+      campo: "pix", gravidade: "erro",
+      mensagem: `chave PIX ${soDigitos(p.pix)} difere do documento em 1 dígito `
+        + "— provável digitação",
+    });
+  } else if (tipo === "telefone_sem_ddi") {
+    /* O Omie lê onze dígitos com cara de celular como telefone e exige o +55.
+       Vale tanto para telefone de verdade quanto para CPF que por acaso tem
+       essa forma — e o texto diz as duas saídas, porque quem confere não sabe
+       de antemão qual dos dois é. */
+    achados.push({
+      campo: "pix", gravidade: "erro",
+      mensagem: `chave PIX ${soDigitos(p.pix)} o Omie lê como telefone e recusa `
+        + "— use +55 na frente, ou troque pelo CNPJ",
+    });
+  } else if (tipo === "cpf" && !estagiario) {
     // O CPF vai escrito na mensagem: quem for cobrar o DH precisa dizer QUAL
     // chave está lá, não que "existe uma chave errada".
     achados.push({

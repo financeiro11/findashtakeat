@@ -22,6 +22,10 @@
 // Ações (body.action):
 //   "sync" (default) → repuxa do Omie e grava no cache.
 //   "status"         → só informa o que já está em cache, sem chamar o Omie.
+//   "chaves_pix"     → busca a chave PIX cadastrada em cada fornecedor da folha
+//                      e grava em `folha_chaves_pix`. Serve para comparar com o
+//                      que o espelho do RH diz: o cadastro do Omie é o que o
+//                      banco usa, e o espelho é o que alguém digitou.
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { requireUser } from "../_shared/auth.ts";
@@ -36,6 +40,7 @@ const json = (body: unknown, status = 200) =>
 
 const BASE = "https://app.omie.com.br/api/v1";
 const CHAVE_CACHE = "folha_cadastros";
+const CHAVE_PIX_CACHE = "folha_chaves_pix";
 
 /** Envelope RPC do Omie, com o mesmo backoff de `omie-clientes-sync`. */
 async function omieCall(path: string, call: string, param: Record<string, unknown>): Promise<any> {
@@ -163,6 +168,33 @@ async function listarCategorias(): Promise<Categoria[]> {
   return out;
 }
 
+/**
+ * A chave PIX de um fornecedor, pelo documento.
+ *
+ * `ListarClientesResumido` (que o cache de clientes usa) nao devolve
+ * `dadosBancarios` — por isso a busca e uma por documento, e por isso o
+ * resultado e cacheado em vez de refeito a cada tela.
+ */
+async function chavePixPorDocumento(doc: string): Promise<{ codigo: number; chave: string; nome: string } | null> {
+  const r = await omieCall("geral/clientes", "ListarClientes", {
+    pagina: 1,
+    registros_por_pagina: 20,
+    apenas_importado_api: "N",
+    clientesFiltro: { cnpj_cpf: doc },
+  });
+  const achados = r?.clientes_cadastro ?? [];
+  if (!achados.length) return null;
+  // Prefere o cadastro que TEM chave; sem nenhum, devolve o primeiro com chave
+  // vazia — "existe e esta sem chave" e uma resposta diferente de "nao existe".
+  const comChave = achados.find((c: any) => String(c?.dadosBancarios?.cChavePix ?? "").trim());
+  const c = comChave ?? achados[0];
+  return {
+    codigo: Number(c?.codigo_cliente_omie ?? 0),
+    chave: String(c?.dadosBancarios?.cChavePix ?? "").trim(),
+    nome: String(c?.razao_social ?? c?.nome_fantasia ?? "").trim(),
+  };
+}
+
 // Chamada agendada (cron): mesmo esquema de `omie-clientes-sync`.
 async function chamadaDeCron(req: Request, supabase: any): Promise<boolean> {
   const token = req.headers.get("x-cron-token");
@@ -199,6 +231,49 @@ Deno.serve(async (req) => {
         departamentos: d.departamentos?.length ?? 0,
         categorias: d.categorias?.length ?? 0,
       });
+    }
+
+    /* ---------- chaves PIX dos fornecedores da folha ---------- */
+    if (body?.action === "chaves_pix") {
+      const { data: pessoas } = await (supabase as any)
+        .from("rh_colaboradores")
+        .select("codigo, nome, cnpj, pix, datadesl");
+      const { data: depara } = await (supabase as any)
+        .from("folha_depara")
+        .select("codigo_rh, documento_ajustado");
+      const ajuste = new Map<string, string>(
+        (depara ?? []).map((d: any) => [String(d.codigo_rh), String(d.documento_ajustado ?? "")]),
+      );
+
+      const alvo = (pessoas ?? [])
+        .filter((p: any) => !String(p.datadesl ?? "").trim())
+        .map((p: any) => ({
+          codigo: String(p.codigo ?? ""),
+          nome: String(p.nome ?? "").trim(),
+          pixRh: String(p.pix ?? "").trim(),
+          doc: (ajuste.get(String(p.codigo ?? "")) || "").replace(/[^0-9]/g, "")
+            || String(p.cnpj ?? "").replace(/[^0-9]/g, ""),
+        }))
+        .filter((p: any) => p.doc.length === 11 || p.doc.length === 14);
+
+      const out: Record<string, unknown>[] = [];
+      for (const p of alvo) {
+        try {
+          const f = await chavePixPorDocumento(p.doc);
+          out.push({ ...p, existe: !!f, codigoOmie: f?.codigo ?? null, chaveOmie: f?.chave ?? "" });
+        } catch (e) {
+          out.push({ ...p, erro: e instanceof Error ? e.message : String(e) });
+        }
+        // Respiro: o Omie derruba rajada com "too many requests".
+        await new Promise((r) => setTimeout(r, 120));
+      }
+
+      const atualizado_em = new Date().toISOString();
+      await supabase.from("omie_cache").upsert(
+        { chave: CHAVE_PIX_CACHE, dados: out, registros: out.length, atualizado_em },
+        { onConflict: "chave" },
+      );
+      return json({ status: "ok", acao: "chaves_pix", pessoas: out.length, atualizado_em });
     }
 
     /* Em série, não em paralelo: o Omie derruba rajada com "too many

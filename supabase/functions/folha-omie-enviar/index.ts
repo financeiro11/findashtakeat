@@ -278,6 +278,10 @@ Deno.serve(async (req) => {
         const msg = e instanceof Error ? e.message : String(e);
         // Duplicado é sucesso: o título já existe com esta chave.
         const jaExiste = /duplicad|j.\s*existe|j.\s*cadastrad|integra..o.*utilizad/i.test(msg);
+        // Falha de título vai para o log TAMBÉM, e não só para a resposta: sem
+        // isto, um envio em que todos falham aparece como sucesso silencioso e
+        // o motivo morre junto com a aba do navegador.
+        if (!jaExiste) console.error(`folha-omie-enviar [${t.integracao}]:`, msg);
         resultados.push({
           integracao: t.integracao, nome: t.nome,
           criado: jaExiste, erro: jaExiste ? undefined : msg,

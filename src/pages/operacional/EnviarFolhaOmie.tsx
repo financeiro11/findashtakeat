@@ -26,13 +26,16 @@ const BRL = (n: number) =>
   n.toLocaleString("pt-BR", { style: "currency", currency: "BRL", minimumFractionDigits: 2 });
 
 /** O que `folha-omie-enviar` devolve, nas três ações. */
+type Resultado = { integracao: string; nome: string; criado: boolean; erro?: string };
+
 type Resposta = {
   status: string;
   erro?: string;
   titulos?: number;
+  falharam?: number;
   /** As chaves `FOLHA-…` criadas — é por elas que o teste é desfeito. */
   integracoes?: string[];
-  respostas?: unknown[];
+  resultados?: Resultado[];
 };
 
 export default function EnviarFolhaOmie({
@@ -47,6 +50,7 @@ export default function EnviarFolhaOmie({
 }) {
   const [ocupado, setOcupado] = useState<null | "teste" | "tudo" | "limpar">(null);
   const [criados, setCriados] = useState<string[]>([]);
+  const [falhas, setFalhas] = useState<Resultado[]>([]);
   const [confirmando, setConfirmando] = useState(false);
 
   const teste = doisParaTestar(candidatos);
@@ -60,14 +64,27 @@ export default function EnviarFolhaOmie({
 
   const enviarTeste = async () => {
     setOcupado("teste");
+    setFalhas([]);
     try {
       const r = await chamar({
         acao: "enviar", competencia, codigos: teste.map((t) => t.codigo),
       });
       setCriados(r.integracoes ?? []);
-      toast.success(`${r.titulos} título(s) criados no Omie`, {
-        description: "Confira no ERP se o departamento e o PIX chegaram.",
-      });
+      const ruins = (r.resultados ?? []).filter((x) => !x.criado);
+      setFalhas(ruins);
+
+      /* Zero criados NÃO é sucesso. A primeira versão disto mostrava
+         "0 título(s) criados no Omie" com ícone de certo — a tela dizia que
+         tinha dado tudo bem e o motivo real ficava só na resposta. */
+      if (ruins.length) {
+        toast.error(`${ruins.length} título(s) recusados pelo Omie`, {
+          description: ruins[0].erro?.slice(0, 160),
+        });
+      } else {
+        toast.success(`${r.titulos} título(s) criados no Omie`, {
+          description: "Confira no ERP se o departamento e o PIX chegaram.",
+        });
+      }
     } catch (e) {
       toast.error(e instanceof Error ? e.message : String(e));
     } finally {
@@ -92,7 +109,16 @@ export default function EnviarFolhaOmie({
     setOcupado("tudo");
     try {
       const r = await chamar({ acao: "enviar", competencia });
-      toast.success(`Folha de ${competencia} provisionada — ${r.titulos} títulos`);
+      const ruins = (r.resultados ?? []).filter((x) => !x.criado);
+      setFalhas(ruins);
+      setCriados(r.integracoes ?? []);
+      if (ruins.length) {
+        toast.error(`${r.titulos} criados, ${ruins.length} recusados`, {
+          description: "A competência NÃO foi marcada como enviada — reenvie depois de corrigir.",
+        });
+      } else {
+        toast.success(`Folha de ${competencia} provisionada — ${r.titulos} títulos`);
+      }
       setConfirmando(false);
       onEnviado();
     } catch (e) {
@@ -123,6 +149,23 @@ export default function EnviarFolhaOmie({
             {ocupado === "limpar" ? <Loader2 className="size-3.5 animate-spin" /> : <Trash2 className="size-3.5" />}
             Apagar os {criados.length} do Omie
           </Button>
+        </div>
+      )}
+
+      {falhas.length > 0 && (
+        <div className="rounded-xl border border-destructive/30 bg-destructive/5 px-3.5 py-2.5">
+          <p className="text-[12.5px] font-semibold text-destructive">
+            {falhas.length} título(s) recusados pelo Omie
+          </p>
+          <ul className="mt-1.5 space-y-1">
+            {falhas.map((f) => (
+              <li key={f.integracao} className="text-xs">
+                <span className="font-medium">{f.nome}</span>
+                <span className="mono ml-1.5 text-[11px] text-muted-foreground">{f.integracao}</span>
+                <span className="mt-0.5 block break-words text-muted-foreground">{f.erro}</span>
+              </li>
+            ))}
+          </ul>
         </div>
       )}
 

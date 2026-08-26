@@ -60,6 +60,7 @@ type Linha = ItemDaFolha & {
   codigoDepartamento: string | null;
   ajusteMotivo: string | null;
   ajustadoEm: string | null;
+  cargo: string | null;
 };
 
 type Previa = {
@@ -296,8 +297,9 @@ export default function PreviaFolhaDialog({
                       <td className="px-3.5 py-2 text-right">
                         <button
                           onClick={() => setAjustando({
-                            codigo: l.codigo, nome: l.nome,
+                            codigo: l.codigo, nome: l.nome, cargo: l.cargo ?? null,
                             valorRh: l.valorRh, valorAjustado: l.valorAjustado,
+                            documentoRh: l.documentoRh, documentoAjustado: l.documentoAjustado,
                           })}
                           title={l.valorAjustado !== null
                             ? `Corrigido no Hub. No espelho do RH: ${BRL(l.valorRh)}${l.ajusteMotivo ? ` · ${l.ajusteMotivo}` : ""}`

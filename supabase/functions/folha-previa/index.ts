@@ -105,7 +105,7 @@ Deno.serve(async (req) => {
 
     const [rh, dep, cadastrosCache, clientesCache, envio] = await Promise.all([
       supabase.from("rh_colaboradores")
-        .select("id, codigo, nome, cnpj, razao, valor, inicio, datadesl"),
+        .select("id, codigo, nome, cnpj, razao, valor, inicio, datadesl, cargo"),
       supabase.from("folha_depara")
         .select("codigo_rh, departamento, categoria_descricao, valor_referencia, valor_ajustado, valor_rh_no_ajuste, ajuste_motivo, ajustado_em, documento_ajustado, documento_motivo"),
       supabase.from("omie_cache").select("dados, atualizado_em").eq("chave", "folha_cadastros").maybeSingle(),
@@ -157,6 +157,11 @@ Deno.serve(async (req) => {
       datadesl: (c.datadesl as string) ?? null,
     }));
 
+    const cargoPorCodigo = new Map(
+      ((rh.data ?? []) as Record<string, unknown>[])
+        .map((c) => [String(c.codigo), (c.cargo as string) ?? null]),
+    );
+
     const lote = montarLote(
       pessoas, competencia, deParaDe,
       (envio.data?.previsao_ajustada as string) ?? null,
@@ -194,6 +199,7 @@ Deno.serve(async (req) => {
       codigoDepartamento: i.departamento ? codDepartamento.get(i.departamento) ?? null : null,
       ajusteMotivo: (porCodigo.get(i.codigo)?.ajuste_motivo as string) ?? null,
       ajustadoEm: (porCodigo.get(i.codigo)?.ajustado_em as string) ?? null,
+      cargo: cargoPorCodigo.get(i.codigo) ?? null,
     }));
 
     const paraChecar = linhas.map((l) => ({

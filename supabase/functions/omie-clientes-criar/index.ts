@@ -148,20 +148,30 @@ type Fonte = "receita" | "cep" | "asaas";
  *  presa num cliente. Devolve `null` na falha de rede/tempo e `404` explícito
  *  quando a base respondeu "não existe" — a diferença decide entre seguir com o
  *  que se tem e bloquear o cadastro. */
-async function buscaJSON(url: string, ms = 12000): Promise<{ ok: boolean; naoExiste: boolean; dados: any }> {
+async function buscaJSON(url: string, ms = 12000): Promise<{ ok: boolean; naoExiste: boolean; dados: any; status?: number }> {
   const ctrl = new AbortController();
   const t = setTimeout(() => ctrl.abort(), ms);
   try {
     const r = await fetch(url, { headers: { accept: "application/json" }, signal: ctrl.signal });
-    if (r.status === 404) return { ok: false, naoExiste: true, dados: null };
-    if (!r.ok) return { ok: false, naoExiste: false, dados: null };
-    return { ok: true, naoExiste: false, dados: await r.json() };
+    if (r.status === 404) return { ok: false, naoExiste: true, dados: null, status: 404 };
+    /* O STATUS SOBE JUNTO, e não é enfeite: "a Receita não respondeu" pode ser
+     * rede instável (passa em minutos) ou 429/403 de limite por IP (não passa —
+     * só o relógio resolve). Sem distinguir, a varredura insistiria contra uma
+     * parede achando que teve azar. Medido em 26/08/26: as primeiras ~250
+     * consultas passaram e as seguintes começaram a ser recusadas em bloco. */
+    if (!r.ok) return { ok: false, naoExiste: false, dados: null, status: r.status };
+    return { ok: true, naoExiste: false, dados: await r.json(), status: r.status };
   } catch {
     return { ok: false, naoExiste: false, dados: null };
   } finally {
     clearTimeout(t);
   }
 }
+
+/** O último status que a BrasilAPI devolveu — lido pela varredura para dizer, na
+ *  resposta, se foi limite de taxa ou intermitência. Módulo-nível porque
+ *  `montarCadastro` fica entre quem consulta e quem precisa saber. */
+let ultimoStatusBrasilAPI: number | null = null;
 
 interface Fila {
   id_asaas: string; doc: string; nome: string; pessoa_fisica: boolean;
@@ -216,6 +226,7 @@ async function montarCadastro(c: Fila): Promise<{ cadastro?: Cadastro; bloqueio?
   // 1. RECEITA — só PJ. Endereço oficial + razão social.
   if (!c.pessoa_fisica) {
     const r = await buscaJSON(`https://brasilapi.com.br/api/cnpj/v1/${c.doc}`);
+    ultimoStatusBrasilAPI = r.status ?? null;
     if (r.naoExiste) {
       // Passou no dígito verificador e a Receita não conhece: o número está
       // errado no Asaas. Cadastrar isso é criar lixo que vira nota recusada.
@@ -777,7 +788,20 @@ async function prepararCadastros(
   const saida: any[] = [];
   /** Quedas seguidas da Receita nesta passada — governa a espera. */
   let semReceita = 0;
+  /* O BLOCO SE MEDE EM TEMPO, NÃO EM CLIENTES.
+   *
+   * Um bloco de 20 custa entre 60s (tudo respondendo) e muito mais quando a
+   * BrasilAPI começa a recusar e a espera cresce. Medido: blocos de 20
+   * derrubaram a função com `IDLE_TIMEOUT (150s)` e `WORKER_RESOURCE_LIMIT`.
+   * Contar clientes não protege de nada porque o custo por cliente varia dez
+   * vezes; o relógio protege. A fila é retomável, então parar no meio não perde
+   * trabalho — perde só a vontade de terminar nesta invocação. */
+  const inicio = Date.now();
+  const PRAZO = 110_000;
+  let interrompido = false;
+
   for (const c of lista) {
+    if (Date.now() - inicio > PRAZO) { interrompido = true; break; }
     const dadosAsaas = dadosPor.get(c.id_customer) ?? {};
     const pj = String(c.doc).length === 14;
 
@@ -795,17 +819,23 @@ async function prepararCadastros(
       /* Fica PENDENTE de propósito: sem marcar, ele volta na próxima passada.
        * Escrever daqui gravaria "S/N" por cima de um número que a Receita
        * conhece — e o cliente sairia da fila carregando um endereço inventado. */
+      const limite = ultimoStatusBrasilAPI === 429 || ultimoStatusBrasilAPI === 403;
       saida.push({
         doc: c.doc, nome: c.nome, ok: false, pulado: true, falta: c.falta,
-        motivo: `A Receita não respondeu agora (caiu para "${cadastro.fonte}"). Pulado de propósito; volta na próxima passada.`,
+        http: ultimoStatusBrasilAPI,
+        motivo: limite
+          ? `A BrasilAPI recusou por limite de taxa (HTTP ${ultimoStatusBrasilAPI}). Pulado; só o relógio resolve — a varredura volta na próxima janela.`
+          : `A Receita não respondeu agora (caiu para "${cadastro.fonte}"). Pulado de propósito; volta na próxima passada.`,
       });
       semReceita++;
       /* A BrasilAPI limita por IP, e o sinal de que estamos batendo no limite é
        * justamente esta queda. Medido na primeira passada: 10 de 22 num bloco.
-       * Então a espera CRESCE com as quedas seguidas — passar mais rápido só
-       * gastaria as chamadas seguintes contra a mesma parede. Teto de 15s para o
-       * bloco ainda caber nos 150s da Edge Function. */
-      await dorme(Math.min(3000 * semReceita, 15000));
+       * A espera cresce com as quedas seguidas — passar mais rápido só gastaria
+       * as chamadas seguintes contra a mesma parede. E acima de três quedas
+       * seguidas não vale insistir dentro DESTE bloco: a parede não cai em
+       * segundos, e o prazo é melhor gasto devolvendo o controle. */
+      if (semReceita >= 3) { interrompido = true; break; }
+      await dorme(3000 * semReceita);
       continue;
     }
 
@@ -842,9 +872,14 @@ async function prepararCadastros(
 
   return {
     alvos: lista.length,
+    tratados: saida.length,
     corrigidos: saida.filter((s) => s.ok).length,
     pulados_sem_receita: saida.filter((s) => s.pulado).length,
-    precisam_de_gente: saida.filter((s) => s.precisa_de_gente).length,
+    // Só conta quem ficou de fato para gente: cadastro que bate com a Receita E
+    // continua incompleto. "Completo e igual" é serviço feito, não pendência.
+    precisam_de_gente: saida.filter((s) => s.precisa_de_gente && !s.ok).length,
+    interrompido,
+    segundos: Math.round((Date.now() - inicio) / 1000),
     resultados: saida,
   };
 }

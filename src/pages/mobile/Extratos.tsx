@@ -22,12 +22,12 @@ import { useApelidos } from "@/hooks/useApelidos";
 import { useNomesContraparte } from "@/hooks/useNomesContraparte";
 import { nomeDoCadastro } from "@/lib/apelidos";
 import { Drawer, DrawerContent, DrawerTitle } from "@/components/ui/drawer";
-import { desatualizado, fmtBRL, fmtDataHora } from "@/lib/mobile/formato";
+import { desatualizado, fmtBRL, fmtBRLCurto, fmtDataHora, fmtPct } from "@/lib/mobile/formato";
 import {
   agruparPorDia, categoriasDe, ehFonte, filtrar, fmtDia, FONTES, lerPaginado, limitesDoMes,
-  mesAtual, mesDe, nomearContrapartes, normalizarBanco, normalizarCartao, rotuloDia, rotuloMes,
-  rotuloMesLongo, TETO, totais, ultimosMeses,
-  type FonteKey, type LinhaExtrato,
+  mesAtual, mesDe, motivoSemComparativo, nomearContrapartes, normalizarBanco, normalizarCartao,
+  rotuloComparacao, rotuloDia, rotuloMes, rotuloMesLongo, TETO, totais, ultimosMeses, variacao,
+  type Comparativo, type FonteKey, type LinhaExtrato, type Variacao,
 } from "@/lib/mobile/extratos";
 
 const sb = supabase as any;
@@ -46,9 +46,13 @@ type Estado = {
   truncado: boolean;
   /** Saldo ATUAL da conta, não o do mês em foco. Null no cartão. */
   saldo: { valor: number; atualizado: string | null } | null;
+  /** O mês contra o mesmo período do anterior. Null quando a RPC falha (é acessório). */
+  comparativo: Comparativo | null;
 };
 
-const VAZIO: Estado = { linhas: [], meses: [], ultimoDado: null, truncado: false, saldo: null };
+const VAZIO: Estado = {
+  linhas: [], meses: [], ultimoDado: null, truncado: false, saldo: null, comparativo: null,
+};
 
 export default function MobileExtratos() {
   const [params, setParams] = useSearchParams();
@@ -85,8 +89,16 @@ export default function MobileExtratos() {
       // Sem `?mes=` a tela escolhe: o mais recente com dado, ou o mês corrente se a
       // fonte estiver vazia (aí o "nenhum lançamento" é a resposta certa).
       const mes = mesUrl || meses[0] || mesAtual();
-      const { linhas, truncado } = await carregarLinhas(fonte, mes);
-      setEstado({ linhas, meses: meses.includes(mes) ? meses : [mes, ...meses], ultimoDado, truncado, saldo });
+      // O comparativo sai JUNTO com os lançamentos, não depois: é uma RPC que devolve um
+      // `jsonb` de ~200 bytes, e em paralelo ela não custa nem um piscar a mais na tela.
+      const [{ linhas, truncado }, comparativo] = await Promise.all([
+        carregarLinhas(fonte, mes),
+        carregarComparativo(fonte, mes),
+      ]);
+      setEstado({
+        linhas, meses: meses.includes(mes) ? meses : [mes, ...meses],
+        ultimoDado, truncado, saldo, comparativo,
+      });
     } catch (e: any) {
       // Consulta do Supabase não rejeita sozinha — sem checar `error`, uma policy negando
       // vira "nenhum lançamento neste mês", que é mentira e ninguém investiga.
@@ -139,6 +151,27 @@ export default function MobileExtratos() {
   const rotEntrada = fonte === "cartao" ? "Créditos" : "Entradas";
   const rotSaida = fonte === "cartao" ? "Gastos" : "Saídas";
   const filtrando = busca.trim() !== "" || cats.size > 0 || tipo !== "todos";
+
+  // O comparativo é do mês INTEIRO, somado no banco; os totais do topo respondem aos
+  // filtros, que são todos client-side (a natureza é heurística sobre o histórico, a busca é
+  // texto). Com filtro ligado não há base equivalente do lado de lá, e confrontar um mês
+  // filtrado com um mês anterior inteiro daria uma queda que é só o filtro. Some, e a linha
+  // de apoio diz por quê — ausência sem explicação numa tela que compara nas outras abas se
+  // lê como defeito.
+  const comp = estado.comparativo;
+  const deltas = useMemo(() => {
+    if (!comp?.comparavel || filtrando) return null;
+    const ant = comp.anterior;
+    const saidaSentido = "sobe_ruim" as const;
+    return {
+      entradas: variacao(soma.entradas, ant.entradas, "sobe_bom"),
+      saidas: variacao(soma.saidas, ant.saidas, saidaSentido),
+      // No cartão a terceira coluna é a Fatura (saídas − créditos), e fatura maior é pior.
+      resultado: fonte === "cartao"
+        ? variacao(soma.saidas - soma.entradas, ant.saidas - ant.entradas, saidaSentido)
+        : variacao(soma.saldo, ant.entradas - ant.saidas, "sobe_bom"),
+    };
+  }, [comp, filtrando, soma, fonte]);
 
   return (
     <div className="pb-8">
@@ -222,8 +255,8 @@ export default function MobileExtratos() {
         <>
           <div className="px-4 pt-3">
             <div className="grid grid-cols-3 divide-x divide-border rounded-xl border border-border bg-card py-2.5">
-              <Total rotulo={rotEntrada} valor={soma.entradas} classe="text-pos" />
-              <Total rotulo={rotSaida} valor={soma.saidas} classe="text-neg" />
+              <Total rotulo={rotEntrada} valor={soma.entradas} classe="text-pos" variacao={deltas?.entradas} />
+              <Total rotulo={rotSaida} valor={soma.saidas} classe="text-neg" variacao={deltas?.saidas} />
               {/* "Resultado", e não "Saldo": este número é o do MÊS em foco, e o saldo da
                   conta (que é o que a palavra sugere) é o da linha logo abaixo. Chamar os
                   dois de saldo é como alguém lê −R$ 18 mil e acha que a conta está negativa. */}
@@ -231,8 +264,18 @@ export default function MobileExtratos() {
                 rotulo={fonte === "cartao" ? "Fatura" : "Resultado"}
                 valor={fonte === "cartao" ? soma.saidas - soma.entradas : soma.saldo}
                 classe=""
+                variacao={deltas?.resultado}
               />
             </div>
+            {comp && (
+              <p className="mt-1.5 px-0.5 text-[11px] text-muted-foreground">
+                {deltas
+                  ? rotuloComparacao(comp)
+                  : filtrando
+                    ? "Comparativo sai enquanto há filtro — os totais acima são só do que sobrou."
+                    : motivoSemComparativo(comp, FONTES.find((f) => f.key === fonte)!.nome)}
+              </p>
+            )}
             <p className="mt-1.5 px-0.5 text-[11px] text-muted-foreground">
               <span className="num">{soma.n}</span> de <span className="num">{estado.linhas.length}</span>{" "}
               {estado.linhas.length === 1 ? "lançamento" : "lançamentos"} em {rotuloMesLongo(mes)}
@@ -414,6 +457,23 @@ async function carregarSaldo(fonte: FonteKey): Promise<Estado["saldo"]> {
   return { valor: Number(data.saldo) || 0, atualizado: data.atualizado_em ?? null };
 }
 
+/**
+ * O mês contra o mesmo período do anterior — UMA requisição, ~200 bytes.
+ *
+ * A conta é feita no banco de propósito. Buscar o mês anterior inteiro pelo PostgREST
+ * custaria 4 requisições e ~190 KB só no Asaas (julho/26 tem 3.128 lançamentos) para
+ * produzir três números, e cresceria junto com o volume. O `jsonb` ainda escapa do teto de
+ * mil linhas, que é o defeito que esta tela acabou de corrigir.
+ *
+ * Falha aqui não derruba o extrato: o comparativo é acessório, os lançamentos é que são a
+ * tela — a mesma regra do saldo.
+ */
+async function carregarComparativo(fonte: FonteKey, mes: string): Promise<Comparativo | null> {
+  const { data, error } = await sb.rpc("extrato_comparativo", { p_fonte: fonte, p_mes: `${mes}-01` });
+  if (error || !data) return null;
+  return data as Comparativo;
+}
+
 async function carregarLinhas(
   fonte: FonteKey,
   mes: string,
@@ -473,11 +533,49 @@ function Chip({ ativo, onClick, children }: { ativo: boolean; onClick: () => voi
   );
 }
 
-function Total({ rotulo, valor, classe }: { rotulo: string; valor: number; classe: string }) {
+function Total({
+  rotulo, valor, classe, variacao: v,
+}: {
+  rotulo: string;
+  valor: number;
+  classe: string;
+  /** Ausente quando há filtro ou quando não há período anterior comparável. */
+  variacao?: Variacao | null;
+}) {
   return (
     <div className="px-2 text-center">
       <div className="text-[10.5px] uppercase tracking-wide text-muted-foreground">{rotulo}</div>
       <div className={cn("num mt-0.5 truncate text-[13px] font-semibold tabular-nums", classe)}>{fmtBRL(valor)}</div>
+      {v && <Delta v={v} />}
+    </div>
+  );
+}
+
+/**
+ * A variação contra o mesmo período do mês anterior.
+ *
+ * A cor vem do SENTIDO, não do sinal: gasto 27% maior é vermelho, ainda que "+27%" seja um
+ * número positivo. Pintar de verde tudo que sobe faria a tela comemorar uma alta de
+ * despesa, e é o erro que passa despercebido porque parece certo de longe.
+ *
+ * A seta acompanha a cor para quem não distingue as duas — cor sozinha não é sinal.
+ */
+function Delta({ v }: { v: Variacao }) {
+  if (v.bom === null) {
+    return <div className="mt-0.5 text-[10px] text-muted-foreground">sem mudança</div>;
+  }
+  const subiu = v.abs > 0;
+  return (
+    <div
+      className={cn(
+        "num mt-0.5 truncate text-[10.5px] font-medium tabular-nums",
+        v.bom ? "text-pos" : "text-neg",
+      )}
+    >
+      {subiu ? "▲" : "▼"}{" "}
+      {/* Sem porcentagem que se sustente (base zero, ou sinal trocado), vale o dinheiro:
+          "▲ R$ 105,8 mil" é sempre verdade, e "+447,9%" sobre base negativa não é. */}
+      {v.pct === null ? fmtBRLCurto(Math.abs(v.abs)) : fmtPct(Math.abs(v.pct))}
     </div>
   );
 }

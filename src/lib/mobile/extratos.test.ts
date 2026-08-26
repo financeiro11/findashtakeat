@@ -1,9 +1,10 @@
 import { describe, it, expect } from "vitest";
 import {
   agruparPorDia, casaBusca, categoriasDe, filtrar, fmtDiaCurto, fmtDocumento, lerPaginado,
-  limitesDoMes, mesDe, nomearContrapartes, normalizarBanco, normalizarCartao, PAGINA, rotuloDia,
-  rotuloMes, rotuloMesLongo, somaMes, TETO, totais, ultimosMeses,
-  type LinhaBanco, type LinhaCartao,
+  limitesDoMes, mesDe, motivoSemComparativo, nomearContrapartes, normalizarBanco, normalizarCartao,
+  PAGINA, rotuloComparacao, rotuloDia, rotuloMes, rotuloMesLongo, somaMes, TETO, totais,
+  ultimosMeses, variacao,
+  type Comparativo, type LinhaBanco, type LinhaCartao,
 } from "./extratos";
 
 const cartao = (over: Partial<LinhaCartao> = {}): LinhaCartao => ({
@@ -280,6 +281,83 @@ describe("totais e agrupamento", () => {
   it("lançamento sem data cai num grupo próprio em vez de sumir", () => {
     const dias = agruparPorDia([normalizarCartao(cartao({ id: "a", data: null }))]);
     expect(dias[0].dia).toBe("—");
+  });
+});
+
+describe("comparativo", () => {
+  const comp = (over: Partial<Comparativo> = {}): Comparativo => ({
+    mes: "2026-08", anterior_mes: "2026-07", ate_dia: 25, comparavel: true,
+    cobertura_desde: "2026-07-01",
+    atual: { entradas: 902117.68, saidas: 878048.81, n: 6017 },
+    anterior: { entradas: 820000, saidas: 800000, n: 3128 },
+    ...over,
+  });
+
+  it("sobe_bom e sobe_ruim leem a mesma alta de formas opostas", () => {
+    expect(variacao(110, 100, "sobe_bom").bom).toBe(true);
+    expect(variacao(110, 100, "sobe_ruim").bom).toBe(false); // gastar mais não é boa notícia
+    expect(variacao(90, 100, "sobe_ruim").bom).toBe(true);
+  });
+
+  it("a porcentagem divide pelo MÓDULO da base, senão o mês negativo se lê ao contrário", () => {
+    // Resultado saindo de −100 mil para −50 mil é melhora de 50%, não queda.
+    const v = variacao(-50000, -100000, "sobe_bom");
+    expect(v.pct).toBe(50);
+    expect(v.bom).toBe(true);
+
+    const piora = variacao(-150000, -100000, "sobe_bom");
+    expect(piora.pct).toBe(-50);
+    expect(piora.bom).toBe(false);
+  });
+
+  it("base zero não vira infinito", () => {
+    const v = variacao(900, 0, "sobe_bom");
+    expect(v.pct).toBeNull();
+    expect(v.abs).toBe(900);
+    expect(v.bom).toBe(true);
+  });
+
+  it("sinal trocado não vira porcentagem — o caso real da fatura de jul/26", () => {
+    // A fatura anterior fechou negativa (créditos passaram os gastos) e a nova deu +82,2 mil.
+    // "+447,9%" não descreve isso; a tela cai para os reais.
+    const v = variacao(82185.07, -23622.1, "sobe_ruim");
+    expect(v.pct).toBeNull();
+    expect(v.abs).toBeCloseTo(105807.17, 2);
+    expect(v.bom).toBe(false); // fatura que sobe é má notícia
+  });
+
+  it("cair a zero AINDA é −100%, não um caso sem porcentagem", () => {
+    const v = variacao(0, 100, "sobe_bom");
+    expect(v.pct).toBe(-100);
+    expect(v.bom).toBe(false);
+  });
+
+  it("sem mudança não tem sinal para dar", () => {
+    expect(variacao(100, 100, "sobe_bom").bom).toBeNull();
+  });
+
+  it("o rótulo diz o recorte, que muda o sentido do número", () => {
+    expect(rotuloComparacao(comp())).toBe("vs. 1–25 de jul/26");
+    // Mês fechado compara com o mês anterior inteiro, e aí o "1–31" só polui.
+    expect(rotuloComparacao(comp({ ate_dia: 31 }))).toBe("vs. jul/26");
+    // Cartão não tem janela: a fatura é o documento inteiro.
+    expect(rotuloComparacao(comp({ ate_dia: null }))).toBe("vs. fatura de jul/26");
+  });
+
+  it("explica a ausência em vez de só sumir — o caso real do Asaas", () => {
+    const asaas = comp({ comparavel: false, cobertura_desde: "2026-07-25" });
+    expect(motivoSemComparativo(asaas, "Asaas")).toContain("25/07/2026");
+    expect(motivoSemComparativo(asaas, "Asaas")).toContain("jul/26");
+  });
+
+  it("fatura anterior que não existe tem recado próprio", () => {
+    const semFatura = comp({ comparavel: false, ate_dia: null, cobertura_desde: null });
+    expect(motivoSemComparativo(semFatura, "Cartão")).toBe("Não há fatura de jul/26 para comparar.");
+  });
+
+  it("espelho que começa DENTRO do mês em foco não fala em mês anterior incompleto", () => {
+    const novo = comp({ comparavel: false, cobertura_desde: "2026-08-10" });
+    expect(motivoSemComparativo(novo, "Asaas")).toContain("não há mês anterior");
   });
 });
 

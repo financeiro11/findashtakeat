@@ -390,6 +390,94 @@ export function totais(linhas: LinhaExtrato[]): Totais {
   return { entradas, saidas, saldo: entradas - saidas, n: linhas.length };
 }
 
+/* ------------------------------ comparativo ------------------------------- */
+
+/** O que a RPC `extrato_comparativo` devolve (um `jsonb` só — ver a migration). */
+export type ResumoPeriodo = { entradas: number; saidas: number; n: number };
+
+export type Comparativo = {
+  mes: string;
+  anterior_mes: string;
+  /** Dia em que o dado do mês para. Nulo no cartão, que compara fatura inteira. */
+  ate_dia: number | null;
+  /** Falso quando o espelho não cobre a janela anterior — aí não há o que comparar. */
+  comparavel: boolean;
+  cobertura_desde: string | null;
+  atual: ResumoPeriodo;
+  anterior: ResumoPeriodo;
+};
+
+/** "sobe_ruim" é o caso das Saídas e da Fatura: crescer ali não é boa notícia. */
+export type Sentido = "sobe_bom" | "sobe_ruim";
+
+export type Variacao = {
+  /** Diferença em %. NULO quando a porcentagem mentiria — aí a tela mostra os reais. */
+  pct: number | null;
+  /** Diferença em reais, sempre com sinal. */
+  abs: number;
+  /** Nulo quando não houve mudança; senão, se a mudança é boa notícia OU não. */
+  bom: boolean | null;
+};
+
+/**
+ * Compara dois períodos.
+ *
+ * O denominador é o MÓDULO da base, e isso não é detalhe: a linha "Resultado" fica
+ * negativa em mês de aperto, e dividir por um número negativo inverte o sinal do percentual.
+ * Sair de −R$ 100 mil para −R$ 50 mil apareceria como queda de 50% quando é melhora de 50%
+ * — o tipo de erro que faz alguém ler a tela ao contrário justo no mês ruim.
+ *
+ * E há dois casos em que porcentagem nenhuma serve, então `pct` sai nulo e quem desenha
+ * mostra a diferença em reais:
+ *
+ *   * BASE ZERO — "de R$ 0 para R$ 900" não é "+∞%", é dinheiro que apareceu.
+ *   * TROCA DE SINAL — caso real: a fatura de jul/26 fechou NEGATIVA (−R$ 23,6 mil, os
+ *     créditos passaram os gastos) e a de ago/26 deu +R$ 82,2 mil. A fórmula cospe
+ *     "+447,9%", que não descreve nada; "▲ R$ 105,8 mil" descreve.
+ */
+export function variacao(atual: number, anterior: number, sentido: Sentido): Variacao {
+  const abs = atual - anterior;
+  const trocouSinal = atual !== 0 && anterior !== 0 && atual > 0 !== anterior > 0;
+  const pct = anterior === 0 || trocouSinal ? null : (abs / Math.abs(anterior)) * 100;
+  const bom = abs === 0 ? null : sentido === "sobe_bom" ? abs > 0 : abs < 0;
+  return { pct, abs, bom };
+}
+
+/** O último dia do mês, para saber se `ate_dia` fecha o mês ou o corta no meio. */
+const ultimoDiaDoMes = (mes: string): number => {
+  const [ano, m] = mes.split("-").map(Number);
+  return ano && m ? new Date(Date.UTC(ano, m, 0)).getUTCDate() : 31;
+};
+
+/**
+ * Contra o que a comparação é feita, escrito para caber numa linha de celular.
+ *
+ * O recorte precisa estar à vista: "+10%" contra o mês anterior INTEIRO e "+10%" contra os
+ * mesmos 25 dias são afirmações diferentes, e quem lê não tem como adivinhar qual é.
+ */
+export function rotuloComparacao(c: Comparativo): string {
+  const anterior = rotuloMes(c.anterior_mes);
+  if (c.ate_dia === null) return `vs. fatura de ${anterior}`;
+  if (c.ate_dia >= ultimoDiaDoMes(c.mes)) return `vs. ${anterior}`;
+  return `vs. 1–${c.ate_dia} de ${anterior}`;
+}
+
+/**
+ * Por que não há comparativo. Existe porque a ausência dele numa tela que o mostra nas
+ * outras abas se lê como defeito — e neste caso a razão é informação de verdade: o espelho
+ * do Asaas começa em 25/07/2026, então julho simplesmente não está inteiro no banco.
+ */
+export function motivoSemComparativo(c: Comparativo, fonteNome: string): string {
+  if (c.ate_dia === null) return `Não há fatura de ${rotuloMes(c.anterior_mes)} para comparar.`;
+  if (c.cobertura_desde && mesDe(c.cobertura_desde) >= c.mes) {
+    return `${fonteNome}: o espelho começa em ${fmtDia(c.cobertura_desde)}, então não há mês anterior.`;
+  }
+  if (c.cobertura_desde) {
+    return `${fonteNome}: o espelho começa em ${fmtDia(c.cobertura_desde)} — ${rotuloMes(c.anterior_mes)} não está inteiro.`;
+  }
+  return `Sem dado de ${rotuloMes(c.anterior_mes)} para comparar.`;
+}
+
 export type CategoriaResumo = { chave: string; rotulo: string; dot: string; n: number; total: number };
 
 /**

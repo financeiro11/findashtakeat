@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { desatualizado, emDias, fmtBRL, fmtData, fmtInt, fmtPct } from "./formato";
+import { desatualizado, emDias, fmtBRL, fmtBRLCurto, fmtData, fmtInt, fmtPct } from "./formato";
 
 /* O Intl separa "R$" do número com espaço fixo; aqui só o formato importa. */
 const espacos = (s: string) => s.replace(/\s/g, " ");
@@ -14,6 +14,16 @@ describe("moeda e números", () => {
   it("nulo vira zero em vez de NaN na tela", () => {
     expect(espacos(fmtBRL(null))).toBe("R$ 0,00");
     expect(fmtInt(undefined)).toBe("0");
+  });
+
+  it("valor curto abrevia só quando abreviar economiza espaço", () => {
+    expect(espacos(fmtBRLCurto(105807.17))).toBe("R$ 105,8 mil");
+    expect(espacos(fmtBRLCurto(1_240_000))).toBe("R$ 1,2 mi");
+    expect(espacos(fmtBRLCurto(-23622.1))).toBe("-R$ 23,6 mil");
+    // Abaixo de mil não há o que abreviar, e o centavo ainda importa.
+    expect(espacos(fmtBRLCurto(900))).toBe("R$ 900,00");
+    expect(espacos(fmtBRLCurto(4.5))).toBe("R$ 4,50");
+    expect(espacos(fmtBRLCurto(null))).toBe("R$ 0,00");
   });
 
   it("inteiro com separador de milhar e percentual com uma casa", () => {

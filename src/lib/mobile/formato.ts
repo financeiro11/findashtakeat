@@ -15,6 +15,23 @@ export const fmtBRL = (n: number | null | undefined): string =>
 export const fmtInt = (n: number | null | undefined): string =>
   Math.round(n ?? 0).toLocaleString("pt-BR");
 
+/**
+ * Valor curto, para caber onde "R$ 105.807,17" não cabe — um terço da largura do celular,
+ * no rodapé de um cartão de KPI. Abaixo de mil sai inteiro, com centavos, porque aí a
+ * abreviação não economiza nada e o centavo ainda importa.
+ */
+export function fmtBRLCurto(n: number | null | undefined): string {
+  const v = n ?? 0;
+  const mag = Math.abs(v);
+  // O sinal fica FORA do "R$", como o Intl faz em `fmtBRL` ("-R$ 98,70") — duas convenções
+  // de menos na mesma tela é o tipo de detalhe que faz o número parecer de outro sistema.
+  const curto = (div: number, sufixo: string) =>
+    `${v < 0 ? "-" : ""}R$ ${(mag / div).toLocaleString("pt-BR", { maximumFractionDigits: 1 })} ${sufixo}`;
+  if (mag >= 1_000_000) return curto(1_000_000, "mi");
+  if (mag >= 1_000) return curto(1_000, "mil");
+  return fmtBRL(v);
+}
+
 export const fmtPct = (n: number | null | undefined, casas = 1): string =>
   `${(n ?? 0).toLocaleString("pt-BR", { minimumFractionDigits: casas, maximumFractionDigits: casas })}%`;
 

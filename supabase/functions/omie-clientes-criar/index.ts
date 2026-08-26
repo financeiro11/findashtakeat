@@ -58,6 +58,11 @@
 //   "corrigir_cadastro"→ escreve o endereço no Omie e/ou no Asaas, um cliente por
 //                        chamada. Params: { doc, alvos[], ids[] }. É o caminho
 //                        para o cadastro ANTIGO — ver o bloco que o explica.
+//   "corrigir_recusados"→ a mesma escrita, sozinha, para TODO cliente cuja última
+//                        tentativa de faturamento o Omie ou a prefeitura recusou
+//                        por endereço. Roda dentro da `criar` (12:45 UTC, quinze
+//                        minutos antes da emissão) e é governada por
+//                        `nf_config.cadastro_auto`. Ver `corrigirRecusados`.
 //   "molde"            → o cadastro de um cliente que já emitiu nota, cru. É
 //                        diagnóstico: serve para conferir formato de campo do
 //                        Omie sem ter de adivinhar (ver `sondar_metodos` na
@@ -528,6 +533,177 @@ async function clientesTravados(supabase: any, ids: string[]) {
   return [...porDoc.values()];
 }
 
+/**
+ * A ESCRITA, num lugar só — porque agora ela tem dois chamadores.
+ *
+ * O diálogo (uma pessoa que leu o diff e clicou) e a rodada diária
+ * (`corrigir_recusados`) escrevem exatamente a mesma coisa, do mesmo jeito. Se
+ * fossem dois códigos, o automático seria o que ninguém revisa e o que aos poucos
+ * deixaria de ler o cadastro antes de escrever por cima dele.
+ *
+ * Devolve `{ feito, cadastro }`; `cadastro` é null quando nem houve o que propor.
+ */
+async function aplicarCorrecao(
+  supabase: any,
+  c: { doc: string; nome: string; n_cod_cli: number | null; id_customer: string; dadosAsaas: any },
+  opts: { alvos: string[]; ids: string[]; origem: "manual" | "automatico"; operador: string | null },
+): Promise<{ feito: Record<string, unknown>; cadastro: Cadastro | null; bloqueio?: string }> {
+  const { cadastro, bloqueio } = await montarCadastro(filaDoCliente(c.id_customer, c.doc, c.dadosAsaas));
+  const registrar = async (feito: Record<string, unknown>) => {
+    await supabase.from("nf_cadastro_correcoes").insert({
+      doc: c.doc, nome: c.nome, n_cod_cli: c.n_cod_cli, id_customer: c.id_customer,
+      alvos: opts.alvos, fonte: cadastro?.fonte ?? null, proposta: cadastro ?? null,
+      resultado: feito, ids_cobranca: opts.ids, operador: opts.operador, origem: opts.origem,
+    }).then(() => {}, () => { /* o conserto já foi feito; o log não o desfaz */ });
+  };
+
+  if (!cadastro) {
+    /* Registra a tentativa MESMO sem conseguir propor nada. É o que impede a
+     * rodada de reconsultar a Receita para o mesmo cliente todo dia, e é o que
+     * faz "a máquina olhou e não soube resolver" aparecer para uma pessoa. */
+    const feito = { omie: { ok: false, motivo: `Sem endereço confiável para escrever: ${bloqueio}.` } };
+    if (opts.origem === "automatico") await registrar(feito);
+    return { feito, cadastro: null, bloqueio };
+  }
+
+  const feito: Record<string, unknown> = {};
+
+  if (opts.alvos.includes("omie")) {
+    if (!c.n_cod_cli) {
+      feito.omie = { ok: false, motivo: "Este cliente não tem cadastro no Omie — use Cadastrar, não Corrigir." };
+    } else {
+      /* POR CIMA DO QUE EXISTE. Lê-se o cadastro atual e aplica-se só o endereço
+       * em cima dele. Remontar o payload do zero (o que a ação `corrigir` faz, e
+       * pode, porque lá o cadastro nasceu aqui) apagaria vendedor, observação e
+       * condição de pagamento de um cadastro alheio. */
+      const { cadastro: atual, erro: erroLeitura } = await cadastroOmie(c.n_cod_cli);
+      if (!atual) {
+        // Não se escreve às cegas: sem saber o que está lá, não há como afirmar
+        // que a escrita preenche buraco em vez de desfazer decisão.
+        feito.omie = {
+          ok: false,
+          motivo: `Não foi possível ler o cadastro atual no Omie${erroLeitura ? `: ${erroLeitura}` : ""}. Nada foi escrito — tente de novo em alguns segundos.`,
+        };
+      } else if (!diffCadastro(atual, cadastro).some((l) => l.muda)) {
+        /* NADA A PROPOR NÃO É SUCESSO NEM FALHA — é o caso que precisa de gente.
+         * O cadastro bate com a Receita/CEP e a nota foi recusada assim mesmo:
+         * ou o endereço está formalmente completo e materialmente errado (o
+         * logradouro preenchido com o nome da cidade, número "00"), ou a recusa
+         * não é de cadastro. Escrever de novo o que já está lá não muda nada. */
+        feito.omie = {
+          ok: false, nada_a_propor: true,
+          motivo: "O cadastro do Omie já bate com o que a Receita/CEP respondem, e a nota foi recusada mesmo assim. Isto precisa de conferência humana.",
+        };
+      } else {
+        const payload: Record<string, unknown> = {
+          codigo_cliente_omie: c.n_cod_cli,
+          endereco: cadastro.endereco.slice(0, 60),
+          endereco_numero: cadastro.endereco_numero.slice(0, 10),
+          bairro: cadastro.bairro.slice(0, 40),
+          cidade: `${semAcento(cadastro.cidade).toUpperCase()} (${cadastro.estado})`,
+          estado: cadastro.estado,
+          cep: cadastro.cep,
+        };
+        if (cadastro.cidade_ibge) payload.cidade_ibge = cadastro.cidade_ibge;
+        if (cadastro.complemento) payload.complemento = cadastro.complemento.slice(0, 40);
+        /* O e-mail entra porque o Omie o exige para a NFS-e ("falta preencher o
+         * Número do Endereço E O E-MAIL") — mas só quando está vazio lá: e-mail
+         * é contato, não endereço, e o do ERP pode ser o certo. */
+        const emailAsaas = limpo(c.dadosAsaas?.email);
+        if (!limpo(atual.email) && emailAsaas) payload.email = emailAsaas.slice(0, 100);
+        try {
+          await omieCall("geral/clientes", "AlterarCliente", payload);
+          feito.omie = { ok: true, escrito: payload, fonte: cadastro.fonte };
+        } catch (e) {
+          feito.omie = { ok: false, motivo: e instanceof Error ? e.message : String(e) };
+        }
+      }
+    }
+  }
+
+  if (opts.alvos.includes("asaas")) {
+    /* O Asaas é a ORIGEM do dado: sem consertar aqui, o mesmo cliente volta
+     * torto na próxima cobrança e o conserto no ERP vira rotina mensal. */
+    const corpo: Record<string, unknown> = {};
+    for (const campo of CAMPOS_ENDERECO) {
+      const alvo = NO_ASAAS[campo];
+      if (!alvo) continue;                       // cidade/estado o Asaas deriva do CEP
+      const v = limpo((cadastro as any)[campo]);
+      if (v) corpo[alvo] = v;
+    }
+    try {
+      await asaasPut(`/customers/${c.id_customer}`, corpo);
+      feito.asaas = { ok: true, escrito: corpo };
+    } catch (e) {
+      feito.asaas = { ok: false, motivo: e instanceof Error ? e.message : String(e) };
+    }
+  }
+
+  await registrar(feito);
+  return { feito, cadastro };
+}
+
+/**
+ * A RODADA: consertar sozinho o cadastro que a emissão acabou de recusar.
+ *
+ * Roda dentro da `criar`, que o cron chama às 12:45 UTC — quinze minutos antes da
+ * `nf-emissao-diaria`. A ordem não é acaso e vale para os dois: a fila de emissão
+ * lê o CADASTRO, então tanto o cliente novo quanto o endereço consertado precisam
+ * estar no Omie antes de as 13h chegarem. Consertado o endereço, a cobrança volta
+ * sozinha para a fila (ela nunca saiu: a OS não faturou, e `faturada is not true`
+ * a mantém lá) — não existe "reemitir" a chamar.
+ *
+ * Quem entra é decisão do Postgres (`nf_cadastros_a_corrigir`), que também
+ * carrega as três guardas: só a última palavra conta, não se repete o conserto
+ * depois da mesma recusa, e três tentativas encerram o assunto.
+ */
+async function corrigirRecusados(
+  supabase: any, cfg: any, opts: { operador: string | null },
+) {
+  const modo = String(cfg?.cadastro_auto ?? "omie");
+  if (modo === "off") return { modo, pulada: "conserto automático de cadastro desligado em Configurações." };
+
+  const teto = Number(cfg?.cadastro_auto_teto ?? 15);
+  const { data: lista, error } = await supabase.rpc("nf_cadastros_a_corrigir", { p_limite: teto });
+  if (error) return { modo, erro: `nf_cadastros_a_corrigir: ${error.message}` };
+  if (!lista?.length) return { modo, alvos: 0, corrigidos: 0 };
+
+  const alvos = modo === "omie_asaas" ? ["omie", "asaas"] : ["omie"];
+  const { data: cus } = await supabase
+    .from("asaas_cache").select("id_asaas, dados")
+    .eq("tipo", "customer").in("id_asaas", lista.map((c: any) => c.id_customer));
+  const dadosPor = new Map((cus ?? []).map((c: any) => [c.id_asaas, c.dados]));
+
+  const saida: any[] = [];
+  for (const c of lista) {
+    const { feito } = await aplicarCorrecao(supabase, {
+      doc: c.doc, nome: c.nome, n_cod_cli: c.n_cod_cli, id_customer: c.id_customer,
+      dadosAsaas: dadosPor.get(c.id_customer) ?? {},
+    }, { alvos, ids: c.ids ?? [], origem: "automatico", operador: opts.operador });
+
+    const om: any = (feito as any).omie ?? {};
+    saida.push({
+      doc: c.doc, nome: c.nome, ok: om.ok === true,
+      numero: om?.escrito?.endereco_numero ?? null,
+      precisa_de_gente: om.nada_a_propor === true,
+      motivo: om.motivo ?? null,
+      /* A OS já faturada não volta pela API (ver nfse-presas-cadastro-do-tomador):
+       * o conserto vale para as PRÓXIMAS notas deste cliente, e esta sai só pelo
+       * "Reenviar NFS-e" da tela do Omie. Dizer isso evita a espera silenciosa. */
+      nota_desta_os_nao_volta: c.os_faturada === true,
+      tentativa: Number(c.tentativas ?? 0) + 1,
+    });
+    await dorme(900);
+  }
+
+  return {
+    modo, alvos: lista.length,
+    corrigidos: saida.filter((s) => s.ok).length,
+    precisam_de_gente: saida.filter((s) => s.precisa_de_gente).length,
+    resultados: saida,
+  };
+}
+
 /* ------------------------------ cache local -------------------------------- */
 
 /**
@@ -650,81 +826,24 @@ Deno.serve(async (req) => {
       const c = clientes.find((x: any) => x.doc === doc);
       if (!c) return json({ status: "erro", erro: `Nenhuma das cobranças informadas é do documento ${doc}.` }, 400);
 
-      const { cadastro, bloqueio } = await montarCadastro(filaDoCliente(c.id_customer, c.doc, c._dados));
+      /* Mesma escrita da rodada automática, de propósito — ver `aplicarCorrecao`.
+       * Dois códigos para o mesmo ato virariam dois comportamentos, e o que
+       * ninguém revisa é sempre o automático. */
+      const { feito, cadastro, bloqueio } = await aplicarCorrecao(supabase, {
+        doc, nome: c.nome, n_cod_cli: c.n_cod_cli, id_customer: c.id_customer, dadosAsaas: c._dados,
+      }, { alvos, ids, origem: "manual", operador: body?.operador ?? null });
       if (!cadastro) return json({ status: "erro", erro: `Sem endereço confiável para escrever: ${bloqueio}.` }, 422);
 
-      const feito: Record<string, unknown> = {};
-
-      if (alvos.includes("omie")) {
-        if (!c.n_cod_cli) {
-          feito.omie = { ok: false, motivo: "Este cliente não tem cadastro no Omie — use Cadastrar, não Corrigir." };
-        } else {
-          /* POR CIMA DO QUE EXISTE. Lê-se o cadastro atual e aplica-se só o
-           * endereço em cima dele. Remontar o payload do zero (o que a ação
-           * `corrigir` faz, e pode, porque lá o cadastro nasceu aqui) apagaria
-           * vendedor, observação e condição de pagamento de um cadastro alheio. */
-          const { cadastro: atual, erro: erroLeitura } = await cadastroOmie(c.n_cod_cli);
-          if (!atual) {
-            // Não se escreve às cegas: sem saber o que está lá, não há como
-            // afirmar que a escrita preenche buraco em vez de desfazer decisão.
-            feito.omie = {
-              ok: false,
-              motivo: `Não foi possível ler o cadastro atual no Omie${erroLeitura ? `: ${erroLeitura}` : ""}. Nada foi escrito — tente de novo em alguns segundos.`,
-            };
-          } else {
-            const payload: Record<string, unknown> = {
-              codigo_cliente_omie: c.n_cod_cli,
-              endereco: cadastro.endereco.slice(0, 60),
-              endereco_numero: cadastro.endereco_numero.slice(0, 10),
-              bairro: cadastro.bairro.slice(0, 40),
-              cidade: `${semAcento(cadastro.cidade).toUpperCase()} (${cadastro.estado})`,
-              estado: cadastro.estado,
-              cep: cadastro.cep,
-            };
-            if (cadastro.cidade_ibge) payload.cidade_ibge = cadastro.cidade_ibge;
-            if (cadastro.complemento) payload.complemento = cadastro.complemento.slice(0, 40);
-            /* O e-mail entra porque o Omie o exige para a NFS-e ("falta preencher
-             * o Número do Endereço E O E-MAIL") — mas só quando está vazio lá:
-             * e-mail é contato, não endereço, e o do ERP pode ser o certo. */
-            if (!limpo(atual.email) && c.asaas.email) payload.email = String(c.asaas.email).slice(0, 100);
-            try {
-              await omieCall("geral/clientes", "AlterarCliente", payload);
-              feito.omie = { ok: true, escrito: payload, fonte: cadastro.fonte };
-            } catch (e) {
-              feito.omie = { ok: false, motivo: e instanceof Error ? e.message : String(e) };
-            }
-          }
-        }
-      }
-
-      if (alvos.includes("asaas")) {
-        /* O Asaas é a ORIGEM do dado: sem consertar aqui, o mesmo cliente volta
-         * torto na próxima cobrança e o conserto no ERP vira rotina mensal. */
-        const corpo: Record<string, unknown> = {};
-        for (const campo of CAMPOS_ENDERECO) {
-          const alvo = NO_ASAAS[campo];
-          if (!alvo) continue;                     // cidade/estado o Asaas deriva do CEP
-          const v = limpo((cadastro as any)[campo]);
-          if (v) corpo[alvo] = v;
-        }
-        try {
-          await asaasPut(`/customers/${c.id_customer}`, corpo);
-          feito.asaas = { ok: true, escrito: corpo };
-        } catch (e) {
-          feito.asaas = { ok: false, motivo: e instanceof Error ? e.message : String(e) };
-        }
-      }
-
-      /* O registro. Escrita em cadastro de terceiro sem rastro é o tipo de coisa
-       * que ninguém consegue explicar três meses depois — e aqui se escreve em
-       * DOIS sistemas de uma vez. */
-      await supabase.from("nf_cadastro_correcoes").insert({
-        doc, nome: c.nome, n_cod_cli: c.n_cod_cli, id_customer: c.id_customer,
-        alvos, fonte: cadastro.fonte, proposta: cadastro, resultado: feito,
-        ids_cobranca: ids, operador: body?.operador ?? null,
-      }).then(() => {}, () => { /* o conserto já foi feito; o log não o desfaz */ });
-
       return json({ status: "ok", doc, fonte: cadastro.fonte, resultado: feito });
+    }
+
+    /* --------------------------- corrigir_recusados ------------------------ */
+    /* A rodada, chamável à mão para conferir sem esperar as 12:45 UTC. */
+    if (action === "corrigir_recusados") {
+      const { data: cfg } = await supabase
+        .from("nf_config").select("cadastro_auto, cadastro_auto_teto").eq("id", 1).maybeSingle();
+      const r = await corrigirRecusados(supabase, cfg, { operador: body?.operador ?? "cron" });
+      return json({ status: "ok", ...r });
     }
 
     /* ------------------------------- corrigir ------------------------------ */
@@ -892,6 +1011,21 @@ Deno.serve(async (req) => {
 
     await apendarNoEspelho(supabase, novosNoEspelho);
 
+    /* O SEGUNDO DEVER DESTA RODADA: o cadastro que a emissão de ontem recusou.
+     *
+     * Está aqui, e não numa rodada própria, porque é o mesmo recado — "deixe o
+     * cadastro do Omie pronto para as 13h" — e porque o horário já é o certo:
+     * 12:45 UTC, quinze minutos antes da `nf-emissao-diaria`. Criar o cliente que
+     * falta e consertar o endereço que travou são a mesma errança; separá-las em
+     * dois crons só criaria uma segunda ordem para alguém manter.
+     *
+     * Não derruba a criação se falhar: são dois deveres independentes, e o
+     * cliente novo não pode deixar de existir porque a Receita ficou fora do ar. */
+    const { data: cfgAuto } = await supabase
+      .from("nf_config").select("cadastro_auto, cadastro_auto_teto").eq("id", 1).maybeSingle();
+    const recusados = await corrigirRecusados(supabase, cfgAuto, { operador: origem })
+      .catch((e) => ({ erro: e instanceof Error ? e.message : String(e) }));
+
     const conta = (s: string) => resultados.filter((r) => r.situacao === s).length;
     return json({
       status: "ok",
@@ -901,6 +1035,7 @@ Deno.serve(async (req) => {
       falhas: conta("falhou"),
       restantes,
       resultados,
+      recusados,
     });
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);

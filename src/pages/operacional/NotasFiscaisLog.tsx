@@ -323,7 +323,33 @@ const MODOS: Record<string, { rotulo: string; ajuda: string; tom: string }> = {
 
 interface Config {
   emissao_automatica: string; teto_dia: number; teto_rodada: number; data_corte: string | null;
+  cadastro_auto: string | null;
 }
+
+/* Os três graus do conserto automático de cadastro.
+ *
+ * Nasce em "Só no Omie" e não em "Desligado" porque o gatilho já é a recusa: só
+ * entra cliente cujo faturamento o Omie ou a prefeitura acabou de rejeitar por
+ * endereço, e sobre esse cadastro o Hub tem, sim, o que dizer. O Asaas fica
+ * opt-in por ser o cadastro que o CLIENTE vê na cobrança — corrigir lá evita a
+ * recaída no mês seguinte, e é uma escrita de raio maior. */
+const CADASTRO_AUTO: Record<string, { rotulo: string; ajuda: string; tom: string }> = {
+  off: {
+    rotulo: "Desligado",
+    ajuda: "A recusa por endereço fica no Registro esperando alguém abrir o \"Corrigir cadastro\". Nada é escrito sozinho.",
+    tom: "border-border bg-muted text-muted-foreground",
+  },
+  omie: {
+    rotulo: "Só no Omie",
+    ajuda: "Todo dia às 12h45, quinze minutos antes da emissão, o Hub busca na Receita o endereço de quem foi recusado e corrige o cadastro do Omie. A cobrança volta sozinha para a fila das 13h — ela nunca saiu de lá.",
+    tom: "border-primary/30 bg-primary/10 text-primary",
+  },
+  omie_asaas: {
+    rotulo: "Omie e Asaas",
+    ajuda: "O mesmo, e também corrige o cadastro no Asaas — que é a ORIGEM do dado. Sem isso o mesmo cliente volta torto na próxima cobrança e o conserto vira rotina mensal. É o cadastro que o cliente vê na fatura.",
+    tom: "border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-400",
+  },
+};
 
 /* --------------------------- rodadas seguidas iguais -------------------------
  *
@@ -372,7 +398,7 @@ export default function NotasFiscaisLog() {
       const [log, exec, conf] = await Promise.all([
         sb.rpc("notas_fiscais_log", { p_dias: dias, p_limite: 400 }),
         sb.from("nf_execucoes").select("*").order("iniciada_em", { ascending: false }).limit(30),
-        sb.from("nf_config").select("emissao_automatica, teto_dia, teto_rodada, data_corte").eq("id", 1).maybeSingle(),
+        sb.from("nf_config").select("emissao_automatica, teto_dia, teto_rodada, data_corte, cadastro_auto").eq("id", 1).maybeSingle(),
       ]);
       if (log.error) throw log.error;
       if (exec.error) throw exec.error;
@@ -407,6 +433,29 @@ export default function NotasFiscaisLog() {
       if (error) throw error;
       setCfg((c) => (c ? { ...c, emissao_automatica: novo } : c));
       toast.success(`Emissão automática: ${MODOS[novo]?.rotulo ?? novo}.`);
+    } catch (e: any) {
+      toast.error("Não foi possível mudar o modo.", { description: e?.message });
+    } finally {
+      setSalvandoModo(false);
+    }
+  };
+
+  /* Ligar o Asaas pede confirmação; o resto, não. Mesma assimetria da emissão:
+     o cadastro do Asaas é o que o CLIENTE vê na fatura, e escrever nele sozinho
+     é raio maior do que corrigir o ERP. Desligar nunca é o erro caro. */
+  const trocarCadastroAuto = async (novo: string) => {
+    if (novo === "omie_asaas" && !window.confirm(
+      "Corrigir também o cadastro no Asaas?\n\n" +
+      "O endereço da Receita passa a ser escrito também no cliente do Asaas, sozinho, " +
+      "sempre que uma emissão for recusada por endereço. É o cadastro que o cliente vê na fatura.\n\n" +
+      "A favor: sem isso o mesmo cliente volta torto na próxima cobrança.",
+    )) return;
+    setSalvandoModo(true);
+    try {
+      const { error } = await sb.from("nf_config").update({ cadastro_auto: novo }).eq("id", 1);
+      if (error) throw error;
+      setCfg((c) => (c ? { ...c, cadastro_auto: novo } : c));
+      toast.success(`Conserto do cadastro: ${CADASTRO_AUTO[novo]?.rotulo ?? novo}.`);
     } catch (e: any) {
       toast.error("Não foi possível mudar o modo.", { description: e?.message });
     } finally {
@@ -486,6 +535,7 @@ export default function NotasFiscaisLog() {
 
   const modo = cfg?.emissao_automatica ?? "previa";
   const m = MODOS[modo] ?? MODOS.previa;
+  const modoCad = cfg?.cadastro_auto ?? "omie";
 
   return (
     <div className="space-y-4">
@@ -521,6 +571,47 @@ export default function NotasFiscaisLog() {
                 title={MODOS[k].ajuda}
               >
                 {MODOS[k].rotulo}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {/* --------------------- o conserto que vem antes ---------------------
+            Segunda chave, e não outra caixa, porque é a mesma esteira: às 12h45
+            UTC o Hub arruma o cadastro; às 13h ele emite. Quase toda emissão que
+            morre morre por endereço do cliente, e esperar alguém reparar foi o
+            desenho que produziu 12h de silêncio sobre R$ 6.257. */}
+        <div className="mt-3 flex flex-wrap items-start justify-between gap-3 border-t border-border pt-3">
+          <div className="min-w-[240px] flex-1">
+            <h3 className="flex items-center gap-1.5 text-xs font-semibold text-foreground">
+              <Building2 className="h-3.5 w-3.5" /> Conserto do cadastro
+              <span className={cn("rounded border px-1.5 py-0.5 text-[10px] font-medium", CADASTRO_AUTO[modoCad]?.tom)}>
+                {CADASTRO_AUTO[modoCad]?.rotulo}
+              </span>
+            </h3>
+            <p className="mt-1 text-[11px] leading-relaxed text-muted-foreground">
+              {CADASTRO_AUTO[modoCad]?.ajuda}
+            </p>
+            <p className="mt-1 text-[11px] text-muted-foreground">
+              Entra só quem a última tentativa de faturamento recusou por endereço, o endereço vem da{" "}
+              <strong className="text-foreground">Receita</strong> (ou do CEP), e o mesmo cliente não é
+              reescrito duas vezes pela mesma recusa — três tentativas encerram e a linha fica para
+              conferência humana.
+            </p>
+          </div>
+          <div className="flex items-center gap-1">
+            {(["off", "omie", "omie_asaas"] as const).map((k) => (
+              <button
+                key={k}
+                onClick={() => trocarCadastroAuto(k)}
+                disabled={salvandoModo || modoCad === k}
+                className={cn(
+                  "rounded border px-2.5 py-1 text-[11px] font-medium disabled:cursor-default",
+                  modoCad === k ? CADASTRO_AUTO[k].tom : "border-border text-muted-foreground hover:bg-muted",
+                )}
+                title={CADASTRO_AUTO[k].ajuda}
+              >
+                {CADASTRO_AUTO[k].rotulo}
               </button>
             ))}
           </div>

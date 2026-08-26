@@ -13,7 +13,7 @@
 
 import { useEffect, useState } from "react";
 import {
-  AlertTriangle, CalendarClock, Loader2, TrendingDown, TrendingUp, Users,
+  AlertTriangle, CalendarClock, Loader2, PencilLine, TrendingDown, TrendingUp, Users,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
@@ -122,6 +122,13 @@ export default function PreviaFolhaDialog({
   const recusa = previa?.recusa ?? null;
 
   const marcadas = linhas.filter((l) => l.chamaAtencao);
+  const ajustadas = linhas.filter((l) => l.valorAjustado !== null && !l.ajusteRedundante);
+  const redundantes = linhas.filter((l) => l.ajusteRedundante);
+  /* Ajuste que PAGA MENOS do que o espelho do RH é o que merece um segundo
+     olhar: se o RH estiver certo (um aumento recente que a referência não
+     tem), a pessoa recebe a menos — e quem recebe a menos reclama, enquanto
+     quem recebe a mais fica quieto. */
+  const ajustesQuePagamMenos = ajustadas.filter((l) => (l.valorAjustado ?? 0) < l.valorRh);
   const rateadas = linhas.filter((l) => l.motivo !== "cheio");
   /* Desligado não aparece aqui: `montarLote` o manda para `fora`, com o motivo,
      porque rescisão é paga em /governanca/rescisoes. A lista de fora do lote,
@@ -171,6 +178,11 @@ export default function PreviaFolhaDialog({
                   tom={marcadas.length ? "atencao" : undefined}
                 />
                 <Numero
+                  rotulo="Ajustados"
+                  valor={String(ajustadas.length)}
+                  icone={PencilLine}
+                />
+                <Numero
                   rotulo="Fora do lote"
                   valor={String(fora.length)}
                   tom={fora.length ? "atencao" : undefined}
@@ -182,6 +194,31 @@ export default function PreviaFolhaDialog({
               <Aviso tom="atencao" titulo={`${marcadas.length} salário(s) mudaram desde a última folha`}>
                 Aumento é rotina; dígito a mais também. Confira antes de enviar — o total da folha
                 pode empatar mesmo com erros dentro, porque eles se cancelam.
+              </Aviso>
+            )}
+
+            {ajustadas.length > 0 && (
+              <Aviso
+                tom={ajustesQuePagamMenos.length > 0 ? "atencao" : "neutro"}
+                titulo={`${ajustadas.length} salário(s) corrigidos no Hub`}
+              >
+                O espelho do RH está desatualizado nessas linhas; a folha usa o valor corrigido.
+                Cada uma mostra ao lado o que o RH diz.
+                {ajustesQuePagamMenos.length > 0 && (
+                  <>
+                    {" "}<b>{ajustesQuePagamMenos.length} paga(m) MENOS que o RH</b> —
+                    se o RH estiver certo, essas pessoas recebem a menos:{" "}
+                    {ajustesQuePagamMenos.map((l) => l.nome).join(", ")}.
+                  </>
+                )}
+              </Aviso>
+            )}
+
+            {redundantes.length > 0 && (
+              <Aviso tom="neutro" titulo={`${redundantes.length} ajuste(s) já batem com o RH`}>
+                O Portal RH se corrigiu nessas linhas. Dá para remover a correção — clique no
+                valor e deixe o campo vazio. Manter não muda o pagamento, só carrega um número
+                fixo que ninguém vai lembrar por que existe.
               </Aviso>
             )}
 

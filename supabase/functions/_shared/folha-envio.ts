@@ -588,6 +588,17 @@ export const FINALIDADE_PIX_FOLHA = "01.3";
 /** Percentual do departamento no título — a coluna é "Departamento (100%)". */
 export const PERCENTUAL_DEPARTAMENTO = 100;
 
+/**
+ * A conta que paga a folha, pelo NOME do cadastro do Omie.
+ *
+ * Fica pelo nome e não pelo id numérico de propósito: o id (5455988727 em
+ * 26/08/2026) só existe no cadastro do ERP, e um número solto no código é algo
+ * que ninguém consegue conferir lendo. O nome é o mesmo que a planilha de
+ * importação usava na coluna "Conta Corrente", então dá para bater as duas
+ * coisas a olho. O id sai do cache `folha_cadastros`.
+ */
+export const CONTA_CORRENTE_FOLHA = "Sicoob - Conta Corrente";
+
 /** Um título de folha a criar, já conferido na prévia. */
 export type TituloDaFolha = {
   /** `codigo_lancamento_integracao` — a trava contra pagar duas vezes. */

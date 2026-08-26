@@ -46,6 +46,12 @@ const AUTORIZADOS = [
   // chave própria (`ENVIO_FOLHA_LIBERADO`) nasceu desligada, então hoje este
   // arquivo sabe montar o título mas nada o envia.
   "supabase/functions/_shared/folha-envio.ts",
+  // O único caminho de escrita da folha, autorizado em 26/08/2026. Carrega o
+  // marco, a idempotência por pessoa e o registro em `folha_envios_omie` — as
+  // mesmas travas do cartão. Também sabe EXCLUIR, e só o que tem chave
+  // `FOLHA-`: o primeiro envio real é um teste de dois títulos, e teste sem
+  // desfazer é aposta.
+  "supabase/functions/folha-omie-enviar/index.ts",
 ];
 
 function arquivos(dir: string): string[] {

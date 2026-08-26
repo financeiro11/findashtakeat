@@ -756,7 +756,7 @@ export default function ColaboradoresRH() {
             n={mov.entraram.size}
             onClick={() => alternarMov("entraram")}
           />
-          {mov.entraram.size > 0 && (
+          {todos.some((c) => mov.entraram.has(c.id) && ativo(c)) && (
             <Button
               variant="outline"
               size="sm"
@@ -1109,9 +1109,14 @@ export default function ColaboradoresRH() {
         rotuloDoMes={rotuloMes}
         /* `todos`, e não `filtrados`: o botão diz "quem entrou no mês", e uma
            busca digitada na tela não pode encolher em silêncio o que vai ser
-           cadastrado. */
+           cadastrado.
+
+           Mas quem já saiu fica de fora: entrou e saiu no mesmo mês continua
+           sendo "entrou em ago" na lista, e não faz sentido criar fornecedor
+           para quem foi embora — rescisão é processo à parte. O servidor
+           bloqueia de novo, por via das dúvidas. */
         codigos={todos
-          .filter((c) => mov.entraram.has(c.id))
+          .filter((c) => mov.entraram.has(c.id) && ativo(c))
           .map((c) => String(c.codigo ?? ""))
           .filter(Boolean)}
       />

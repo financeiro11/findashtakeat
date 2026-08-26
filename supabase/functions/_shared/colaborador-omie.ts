@@ -38,6 +38,8 @@ export type ColaboradorParaOmie = {
   razao: string | null;
   /** Chave PIX como o RH cadastrou: pode ser CNPJ, CPF, e-mail ou telefone. */
   pix: string | null;
+  /** Data de desligamento ('AAAA-MM-DD'); vazio ou nulo = ativo. */
+  datadesl?: string | null;
 };
 
 /** Um cadastro do Omie, como `ListarClientes` devolve (só o que importa aqui). */
@@ -103,6 +105,26 @@ export function decidirCadastro(
 ): DecisaoDeCadastro {
   const base = { codigo: p.codigo, nome: p.nome };
   const cnpj = soDigitos(p.cnpj);
+
+  /* Quem já saiu não vira fornecedor.
+   *
+   * Vale inclusive para quem entrou E saiu no mesmo mês — o caso do Pedro
+   * Henrique, que entrou em 03/08/2026 e saiu em 07/08. Ele aparece em
+   * "entraram em ago" porque de fato entrou, mas criar cadastro para alguém
+   * que já foi embora só enche o Omie de fornecedor morto.
+   *
+   * O que ele tem a receber não some: rescisão é processo à parte, em
+   * /governanca/rescisoes, que calcula as parcelas e controla o pagamento.
+   * Esta trava tira a pessoa do CADASTRO da folha, não do dinheiro dela.
+   */
+  if (String(p.datadesl ?? "").trim()) {
+    return {
+      ...base,
+      acao: "bloqueado",
+      motivo: `Desligado em ${String(p.datadesl).slice(0, 10).split("-").reverse().join("/")}`
+        + " — rescisão é tratada em Governança › Rescisões.",
+    };
+  }
 
   // Sem documento válido não há o que cadastrar — e um CNPJ truncado criaria
   // um fornecedor lixo que depois ninguém liga a ninguém.

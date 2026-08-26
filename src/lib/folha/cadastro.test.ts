@@ -104,6 +104,32 @@ describe("decidirCadastro", () => {
     expect(d).toMatchObject({ acao: "ja_ok", codigoClienteOmie: 222 });
   });
 
+  /* Caso real: Pedro Henrique Aderne Colodette entrou em 03/08/2026 e saiu em
+     07/08. Ele aparece em "entraram em ago" porque de fato entrou. */
+  it("quem já saiu não vira fornecedor, mesmo tendo entrado no mesmo mês", () => {
+    const d = decidirCadastro(
+      pessoa({ codigo: "COL-233071", nome: "Pedro Henrique Aderne Colodette", datadesl: "2026-08-07" }),
+      [],
+    );
+    expect(d.acao).toBe("bloqueado");
+    expect(d.motivo).toMatch(/07\/08\/2026/);
+    expect(d.motivo).toMatch(/Rescis/i);
+  });
+
+  it("o desligamento bloqueia ANTES de qualquer outra checagem", () => {
+    // Mesmo já cadastrado no Omie e com tudo em ordem, não há o que fazer.
+    const d = decidirCadastro(pessoa({ datadesl: "2026-08-07" }), [noOmie()]);
+    expect(d.acao).toBe("bloqueado");
+    expect(d.motivo).toMatch(/Desligado/);
+  });
+
+  it("campo de desligamento vazio é gente ativa, não desligada", () => {
+    // O espelho grava '' e não NULL para quem está na casa.
+    for (const vazio of ["", "   ", null, undefined]) {
+      expect(decidirCadastro(pessoa({ datadesl: vazio }), []).acao).toBe("criar");
+    }
+  });
+
   it("CNPJ truncado ou vazio bloqueia — os casos reais do espelho", () => {
     for (const [cnpj, esperado] of [
       ["61107569", /incompleto/i],

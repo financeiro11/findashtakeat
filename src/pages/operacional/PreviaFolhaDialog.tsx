@@ -174,6 +174,15 @@ export default function PreviaFolhaDialog({
 
   const marcadas = linhas.filter((l) => l.chamaAtencao);
   const rateadas = linhas.filter((l) => l.motivo !== "cheio");
+  /* Quem saiu no mês entra no lote pela regra combinada (proporcional dos dias
+     trabalhados). Mas a rescisão dessas pessoas é calculada e paga em
+     /governanca/rescisoes, parcela a parcela — e se aquele cálculo já incluir
+     os dias do mês, provisionar aqui paga a mesma coisa duas vezes. A tela não
+     decide por ninguém: mostra quem são e o quanto é. */
+  const desligados = linhas.filter(
+    (l) => l.motivo === "rescisao" || l.motivo === "admissao_e_rescisao",
+  );
+  const totalDesligados = desligados.reduce((s, l) => s + l.valor, 0);
 
   const pendencia = useMemo(
     () => pendenciasDoLote(linhas.map((l) => ({
@@ -247,6 +256,18 @@ export default function PreviaFolhaDialog({
               <Aviso tom="atencao" titulo={`${marcadas.length} salário(s) mudaram desde a última folha`}>
                 Aumento é rotina; dígito a mais também. Confira antes de enviar — o total da folha
                 pode empatar mesmo com erros dentro, porque eles se cancelam.
+              </Aviso>
+            )}
+
+            {desligados.length > 0 && (
+              <Aviso
+                tom="atencao"
+                titulo={`${desligados.length} desligado(s) no lote · ${BRL(totalDesligados)}`}
+              >
+                Rescisão tem processo próprio em Governança › Rescisões, que calcula as
+                parcelas e controla o pagamento. Se o cálculo de lá já cobrir os dias
+                trabalhados no mês, provisionar aqui paga duas vezes. Confira antes de enviar:
+                {" "}{desligados.map((d) => d.nome).join(", ")}.
               </Aviso>
             )}
 

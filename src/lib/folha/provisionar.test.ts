@@ -10,7 +10,8 @@
 import { describe, expect, it } from "vitest";
 import {
   DIAS_DO_MES_COMERCIAL, ENVIO_FOLHA_LIBERADO, MARCO_FOLHA_FORA_DO_HUB, bloqueioDaFolha,
-  FINALIDADE_PIX_FOLHA, FORMA_PAGAMENTO_FOLHA, TITULOS_POR_LOTE, resolvedorDeCategoria,
+  FINALIDADE_PIX_FOLHA, FORMA_PAGAMENTO_FOLHA, TITULOS_POR_LOTE, VARIACAO_QUE_CHAMA_ATENCAO,
+  resolvedorDeCategoria,
   fatiarEmLotes, montarLoteParaOmie, montarTituloFolha,
   diasTrabalhados, integracaoFolhaDe, montarLote, parseISO, pendenciasDoLote, previsaoDe, recusaDaFolha,
   type ResolveDePara, type TituloDaFolha,
@@ -208,6 +209,58 @@ describe("os dois de-para", () => {
   it("sem de-para nenhum, o lote inteiro fica pendente", () => {
     const { itens } = montarLote([pessoa()], "2026-09");
     expect(itens[0].categoria).toBe("");
+  });
+});
+
+/* A trava que existe por causa do caso real: o espelho do RH trazia R$ 24.000
+   para quem a folha de julho pagou R$ 2.400. */
+describe("variação contra o valor de referência", () => {
+  const comRef = (valorReferencia: number | null): ResolveDePara => () => ({
+    departamento: "Onboarding e Setup",
+    categoria: "3.2.7.1. Pessoal - Onboarding",
+    valorReferencia,
+  });
+
+  it("marca o dígito a mais — 2.400 virando 24.000", () => {
+    const { itens } = montarLote([pessoa({ valor: 24000 })], "2026-09", comRef(2400));
+    expect(itens[0]).toMatchObject({ valorReferencia: 2400, chamaAtencao: true });
+    expect(itens[0].variacao).toBeCloseTo(9, 5); // +900%
+  });
+
+  it("deixa passar reajuste pequeno", () => {
+    const { itens } = montarLote([pessoa({ valor: 2500 })], "2026-09", comRef(2400));
+    expect(itens[0].chamaAtencao).toBe(false);
+    expect(itens[0].variacao).toBeCloseTo(0.041666, 4);
+  });
+
+  it("marca nos dois sentidos — corte também é erro em potencial", () => {
+    expect(montarLote([pessoa({ valor: 2000 })], "2026-09", comRef(2400)).itens[0].chamaAtencao).toBe(true);
+    expect(montarLote([pessoa({ valor: 2900 })], "2026-09", comRef(2400)).itens[0].chamaAtencao).toBe(true);
+  });
+
+  it("o limite é inclusivo", () => {
+    const noLimite = 2400 * (1 + VARIACAO_QUE_CHAMA_ATENCAO);
+    expect(montarLote([pessoa({ valor: noLimite })], "2026-09", comRef(2400)).itens[0].chamaAtencao).toBe(true);
+  });
+
+  it("quem nunca entrou numa folha não é marcado", () => {
+    // Admitido em agosto: não há contra o que comparar, e marcar todo mundo
+    // novo faria a marcação virar ruído.
+    for (const semRef of [null, 0]) {
+      const { itens } = montarLote([pessoa({ valor: 9999 })], "2026-09", comRef(semRef));
+      expect(itens[0]).toMatchObject({ valorReferencia: null, variacao: null, chamaAtencao: false });
+    }
+  });
+
+  it("compara o salário CHEIO, não o rateado", () => {
+    // Entrou dia 21 e recebe um terço. Comparar o terço com o mês inteiro
+    // marcaria toda admissão como suspeita.
+    const { itens } = montarLote(
+      [pessoa({ valor: 2400, inicio: "2026-09-21" })], "2026-09", comRef(2400),
+    );
+    expect(itens[0].dias).toBe(10);
+    expect(itens[0].valor).toBe(800);
+    expect(itens[0].chamaAtencao).toBe(false);
   });
 });
 

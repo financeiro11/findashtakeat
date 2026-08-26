@@ -3,7 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import {
   Search, Users, Columns3, Filter, FilterX, X,
   ChevronLeft, ChevronRight, Copy, Receipt, PanelRightOpen, Maximize2,
-  UserPlus, UserMinus, CalendarClock, Building2,
+  UserPlus, UserMinus, CalendarClock, Building2, FileSpreadsheet,
 } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -19,6 +19,7 @@ import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { cn } from "@/lib/utils";
 import { supabase } from "@/integrations/supabase/client";
 import CadastrarNoOmieDialog from "./CadastrarNoOmieDialog";
+import PreviaFolhaDialog from "./PreviaFolhaDialog";
 
 /* ─────────────────────────── Tipos ───────────────────────────
    Espelho somente-leitura da tabela `rh_colaboradores`, sincronizada
@@ -402,6 +403,7 @@ export default function ColaboradoresRH() {
   });
   const [movFiltro, setMovFiltro] = useState<"entraram" | "sairam" | "vencendo" | null>(null);
   const [cadastrarOmie, setCadastrarOmie] = useState(false);
+  const [previaFolha, setPreviaFolha] = useState(false);
   const [visiveis, setVisiveis] = useState<Set<string>>(() => {
     try {
       const saved = localStorage.getItem(STORAGE_KEY);
@@ -708,11 +710,21 @@ export default function ColaboradoresRH() {
             <Resumo rotulo="Contratos vencendo" valor={String(mov.vencendo.size)} tom={mov.vencendo.size ? "warn" : undefined} />
           </div>
 
-          {todos.length > 0 && (
-            <span className="ml-auto text-xs text-muted-foreground">
-              Sincronizado {fmtDateTime(todos[0].synced_at)}
-            </span>
-          )}
+          <div className="ml-auto flex items-center gap-3">
+            {todos.length > 0 && (
+              <span className="text-xs text-muted-foreground">
+                Sincronizado {fmtDateTime(todos[0].synced_at)}
+              </span>
+            )}
+            <Button
+              className="h-[38px] gap-2"
+              onClick={() => setPreviaFolha(true)}
+              title="Monta o lote da competência escolhida e mostra título a título. Nada é criado no Omie por esta tela."
+            >
+              <FileSpreadsheet className="size-4" />
+              Provisionar folha
+            </Button>
+          </div>
         </div>
 
         {/* ─── Barra de ferramentas ─── */}
@@ -1084,6 +1096,12 @@ export default function ColaboradoresRH() {
           )}
         </DialogContent>
       </Dialog>
+
+      <PreviaFolhaDialog
+        aberto={previaFolha}
+        onFechar={() => setPreviaFolha(false)}
+        competencia={`${mesRef.ano}-${String(mesRef.mes + 1).padStart(2, "0")}`}
+      />
 
       <CadastrarNoOmieDialog
         aberto={cadastrarOmie}

@@ -177,7 +177,24 @@ export type DeParaDaPessoa = {
   departamento: string;
   /** `codigo_categoria` do Omie — fixo por departamento, salvo exceção da pessoa. */
   categoria: string;
+  /** Último valor efetivamente provisionado. `null` para quem nunca entrou numa folha. */
+  valorReferencia?: number | null;
 };
+
+/**
+ * A partir de quanta variação a linha é marcada na prévia.
+ *
+ * Não bloqueia o envio — chama atenção. A diferença entre marcar e barrar é
+ * que aumento de salário é rotina e erro de digitação também: quem decide qual
+ * é qual é quem confere.
+ *
+ * O número saiu de um caso real. Em 26/08/2026 o espelho do RH trazia
+ * R$ 24.000 para quem a folha de julho pagou R$ 2.400 — um dígito a mais. Eram
+ * 23 divergências, e o TOTAL das duas folhas quase empatava (490.294 contra
+ * 489.460), porque os erros se cancelavam. Conferir o total não pega nada
+ * disso; conferir linha a linha, sim.
+ */
+export const VARIACAO_QUE_CHAMA_ATENCAO = 0.10;
 
 /** Resolve o de-para de uma pessoa pelo código do RH. `null` = ainda não mapeada. */
 export type ResolveDePara = (codigo: string) => DeParaDaPessoa | null;
@@ -217,6 +234,12 @@ export type ItemDaFolha = {
   departamento: string;
   /** `codigo_categoria` do Omie. Vazio = pendência; nunca chuta. */
   categoria: string;
+  /** Último valor provisionado, para comparar. `null` = primeira folha da pessoa. */
+  valorReferencia: number | null;
+  /** Variação do salário contra a referência (0.1 = +10%). `null` sem referência. */
+  variacao: number | null;
+  /** A variação passou do limite? É o que a prévia marca em vermelho. */
+  chamaAtencao: boolean;
   /** Salário mensal do contrato, antes do rateio. */
   valorBase: number;
   /** Dias trabalhados na competência, em base comercial de 30. */
@@ -359,6 +382,13 @@ export function montarLote(
       continue;
     }
 
+    /* A comparação é do salário CHEIO contra o cheio de referência, nunca do
+       rateado: quem entrou dia 20 recebe um terço, e comparar o terço com o
+       mês inteiro marcaria toda admissão como suspeita. */
+    const ref = Number(dePara?.valorReferencia ?? NaN);
+    const referencia = Number.isFinite(ref) && ref > 0 ? ref : null;
+    const variacao = referencia === null ? null : (valorBase - referencia) / referencia;
+
     const proporcional =
       motivo === "cheio" ? arred2(valorBase) : arred2((valorBase / DIAS_DO_MES_COMERCIAL) * dias);
     const liberalidade =
@@ -374,6 +404,9 @@ export function montarLote(
       razao: c.razao ?? null,
       departamento: dePara?.departamento ?? "",
       categoria: dePara?.categoria ?? "",
+      valorReferencia: referencia,
+      variacao,
+      chamaAtencao: variacao !== null && Math.abs(variacao) >= VARIACAO_QUE_CHAMA_ATENCAO,
       valorBase,
       dias,
       motivo,

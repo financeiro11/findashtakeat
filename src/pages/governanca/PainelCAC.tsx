@@ -198,7 +198,9 @@ export default function PainelCAC() {
   }
 
   return (
-    <div className="space-y-3.5">
+    /* O `main` do AppLayout não tem padding — cada página põe o seu. Sem isto a
+       coluna cola na barra vermelha da sidebar. */
+    <div className="space-y-3.5 px-5 pb-7 pt-3.5">
       {/* ---------------- Cabeçalho ---------------- */}
       <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
         <div className="min-w-0">

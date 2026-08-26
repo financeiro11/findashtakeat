@@ -27,7 +27,24 @@ tela branca no navegador. Use `npm run typecheck` antes de dar por pronto. E nã
 então esse comando **não checa arquivo nenhum e sai com sucesso** — é preciso apontar o
 projeto (`-p tsconfig.app.json`), que é o que o script faz.
 
-Supabase Edge Functions are Deno, not bundled by Vite. There's no local Supabase config for running them here beyond `supabase/config.toml`; they are deployed to the hosted project (`lgcxyxyidoirqmbdlldh`). Edit and deploy them through the Supabase CLI/dashboard.
+Supabase Edge Functions are Deno, not bundled by Vite. There's no local Supabase config for running them here beyond `supabase/config.toml`; they are deployed to the hosted project (`lgcxyxyidoirqmbdlldh`).
+
+```bash
+npm run functions:deploy -- <nome-da-funcao>   # deploy de UMA função
+npm run functions:deploy:folha                 # as três da folha, de uma vez
+npm run types:gen                              # regenera src/integrations/supabase/types.ts
+```
+
+**Deploy SEMPRE pelo CLI, nunca colando o código noutra ferramenta.** O CLI lê o
+disco e sobe `supabase/functions/_shared/*` junto, resolvendo os imports
+relativos sozinho. Publicar por um caminho que não lê o disco obriga a colar uma
+cópia do módulo compartilhado — e a cópia diverge do repo na primeira vez que
+alguém editar o original e esquecer de repetir a colagem. Foi o que aconteceu em
+26/08/2026 com `_shared/folha-envio.ts`, e o sintoma não é erro de build: é a
+tela mostrando um número diferente do que o servidor calcula.
+
+O CLI não precisa de `supabase link` (o `--project-ref` está no script) nem de
+Docker para publicar; o aviso "Docker is not running" é inofensivo.
 
 ## Architecture
 

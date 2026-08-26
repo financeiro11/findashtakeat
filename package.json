@@ -12,6 +12,9 @@
     "preview": "vite preview",
     "cartao:ofx": "vite-node scripts/cartao-ofx.ts",
     "cartao:teste": "vite-node scripts/cartao-teste.ts",
+    "functions:deploy": "npx --yes supabase functions deploy --project-ref lgcxyxyidoirqmbdlldh",
+    "functions:deploy:folha": "npm run functions:deploy -- folha-previa && npm run functions:deploy -- omie-colaboradores-cadastrar && npm run functions:deploy -- omie-folha-cadastros-sync",
+    "types:gen": "npx --yes supabase gen types typescript --project-id lgcxyxyidoirqmbdlldh > src/integrations/supabase/types.ts",
     "test": "vitest run",
     "test:watch": "vitest"
   },

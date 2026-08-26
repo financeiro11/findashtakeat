@@ -729,44 +729,27 @@ export function resolvedorDeCategoria(
 }
 
 /* ------------------------------------------------------------------
- * O lote
+ * Por que NÃO existe envio em lote
  * ------------------------------------------------------------------
- * `IncluirContaPagarPorLote` embrulha os títulos em `conta_pagar_cadastro`,
- * com um número de lote. Cem títulos numa chamada em vez de cem chamadas —
- * menos rate limit e menos chance de parar no meio com metade da folha criada.
+ * O `IncluirContaPagarPorLote` parecia o caminho óbvio: cem títulos numa
+ * chamada em vez de cem chamadas. Testado em 26/08/2026 com dois títulos
+ * reais, e o Omie recusou:
  *
- * ATENÇÃO, ainda não verificado: o exemplo da documentação do lote mostra
- * só os campos simples (fornecedor, vencimento, valor, categoria, conta
- * corrente). Ele NÃO mostra `departamentos` nem `cnab_integracao_bancaria`, e
- * departamento é uma das nove colunas que a importação manual preenche. Se o
- * endpoint em lote ignorar os blocos aninhados, o título nasce sem
- * departamento e sem os dados do PIX — e isso não dá erro, só sai errado.
+ *   ERROR: Tag [DEPARTAMENTOS] não faz parte da estrutura do tipo complexo
+ *   [conta_pagar_cadastro]!
  *
- * Por isso o primeiro envio de verdade deve ser um lote de UM ou DOIS títulos,
- * conferidos no Omie campo a campo, antes dos cem. Se os blocos não passarem,
- * o caminho é `IncluirContaPagar` um a um, que o fluxo de parceiro já prova
- * aceitar o `cnab_integracao_bancaria`.
+ * O `conta_pagar_cadastro` do lote é uma estrutura REDUZIDA — aceita
+ * fornecedor, vencimento, valor, categoria e conta corrente, e mais nada. O
+ * exemplo da documentação mostra só esses campos justamente porque são os
+ * únicos, e não por brevidade.
+ *
+ * Departamento é uma das nove colunas que a importação manual preenche, então
+ * abrir mão dele não era opção: o título nasceria sem centro de custo e a DRE
+ * por área ficaria furada. O envio é um a um, por `IncluirContaPagar`, que é o
+ * mesmo endpoint que o fluxo n8n de conta a pagar de parceiro já usa em
+ * produção.
+ *
+ * NÃO TENTE O LOTE DE NOVO sem antes conferir se o Omie mudou a estrutura.
+ * Este comentário existe para poupar a próxima pessoa de descobrir isso com
+ * cem títulos.
  */
-
-/** Quantos títulos o Omie aceita por chamada. */
-export const TITULOS_POR_LOTE = 100;
-
-/** O `param` do `IncluirContaPagarPorLote`. */
-export function montarLoteParaOmie(
-  titulos: TituloDaFolha[],
-  numeroDoLote: number,
-): Record<string, unknown> {
-  return {
-    lote: numeroDoLote,
-    conta_pagar_cadastro: titulos.map(montarTituloFolha),
-  };
-}
-
-/** Fatia os títulos em lotes do tamanho que o Omie aceita. */
-export function fatiarEmLotes(titulos: TituloDaFolha[]): TituloDaFolha[][] {
-  const out: TituloDaFolha[][] = [];
-  for (let i = 0; i < titulos.length; i += TITULOS_POR_LOTE) {
-    out.push(titulos.slice(i, i + TITULOS_POR_LOTE));
-  }
-  return out;
-}

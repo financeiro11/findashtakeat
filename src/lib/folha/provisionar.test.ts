@@ -10,9 +10,8 @@
 import { describe, expect, it } from "vitest";
 import {
   DIAS_DO_MES_COMERCIAL, ENVIO_FOLHA_LIBERADO, MARCO_FOLHA_FORA_DO_HUB, bloqueioDaFolha,
-  FINALIDADE_PIX_FOLHA, FORMA_PAGAMENTO_FOLHA, TITULOS_POR_LOTE, VARIACAO_QUE_CHAMA_ATENCAO,
-  resolvedorDeCategoria,
-  fatiarEmLotes, montarLoteParaOmie, montarTituloFolha,
+  FINALIDADE_PIX_FOLHA, FORMA_PAGAMENTO_FOLHA, VARIACAO_QUE_CHAMA_ATENCAO,
+  resolvedorDeCategoria, montarTituloFolha,
   diasTrabalhados, integracaoFolhaDe, montarLote, parseISO, pendenciasDoLote, previsaoDe, recusaDaFolha,
   type ResolveDePara, type TituloDaFolha,
   registroDa, vencimentoDa,
@@ -649,32 +648,6 @@ describe("resolvedorDeCategoria", () => {
   });
 });
 
-describe("o lote", () => {
-  it("embrulha os títulos como o IncluirContaPagarPorLote espera", () => {
-    const lote = montarLoteParaOmie([TITULO, { ...TITULO, integracao: "FOLHA-COL-000001-2026-07" }], 7);
-    expect(lote.lote).toBe(7);
-    const itens = lote.conta_pagar_cadastro as Record<string, unknown>[];
-    expect(itens).toHaveLength(2);
-    expect(itens[0].codigo_lancamento_integracao).toBe("FOLHA-COL-592355-2026-07");
-    expect(itens[1].codigo_lancamento_integracao).toBe("FOLHA-COL-000001-2026-07");
-  });
-
-  it("cada item do lote é o MESMO payload do título avulso", () => {
-    const lote = montarLoteParaOmie([TITULO], 1);
-    expect((lote.conta_pagar_cadastro as unknown[])[0]).toEqual(montarTituloFolha(TITULO));
-  });
-
-  it("fatia a folha inteira em lotes do tamanho aceito", () => {
-    const muitos = Array.from({ length: 103 }, (_, i) => ({ ...TITULO, integracao: `FOLHA-X-${i}` }));
-    const lotes = fatiarEmLotes(muitos);
-    expect(lotes.map((l) => l.length)).toEqual([TITULOS_POR_LOTE, 3]);
-    // Ninguém pode sumir nem aparecer duas vezes no fatiamento.
-    const chaves = lotes.flat().map((t) => t.integracao);
-    expect(chaves).toHaveLength(103);
-    expect(new Set(chaves).size).toBe(103);
-  });
-
-  it("lote vazio não vira chamada", () => {
-    expect(fatiarEmLotes([])).toEqual([]);
-  });
-});
+/* NÃO existe mais envio em lote. Testado com dois títulos reais em 26/08/2026:
+   o Omie recusou com "Tag [DEPARTAMENTOS] não faz parte da estrutura do tipo
+   complexo [conta_pagar_cadastro]". O envio é um a um, por IncluirContaPagar. */

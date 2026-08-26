@@ -1,7 +1,11 @@
 // Edge Function: folha-omie-enviar
 //
-// Cria os títulos da folha no Omie, em lote. É o único caminho de escrita da
+// Cria os títulos da folha no Omie, UM A UM. É o único caminho de escrita da
 // folha, e por isso está na lista de autorizados de `src/lib/cartao/envio.test.ts`.
+//
+// Um a um, e não em lote, porque o `IncluirContaPagarPorLote` recusa
+// `departamentos` — testado com dois títulos reais em 26/08/2026. O detalhe
+// está no topo de `_shared/folha-envio.ts`.
 //
 // TRÊS AÇÕES (body.acao):
 //
@@ -14,7 +18,8 @@
 //              e teste sem desfazer não é teste — é aposta.
 //
 // `codigos` restringe a um subconjunto de pessoas. É o que permite o teste
-// pequeno antes dos cem: sem ele, vai a competência inteira.
+// pequeno antes dos cem — e também deixa a tela mandar em pedaços, para uma
+// folha de cem não depender de uma única requisição sobreviver inteira.
 //
 // O REGISTRO em `folha_envios_omie` só é gravado quando a competência vai
 // INTEIRA. Um teste de duas pessoas não pode marcar o mês como enviado — no
@@ -25,7 +30,7 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { requireUser } from "../_shared/auth.ts";
 import {
-  CONTA_CORRENTE_FOLHA, fatiarEmLotes, montarLote, montarLoteParaOmie,
+  CONTA_CORRENTE_FOLHA, montarLote, montarTituloFolha,
   recusaDaFolha, resolvedorDeCategoria, soDigitos,
   type ColaboradorDaFolha, type EstadoDaFolha, type ResolveDePara, type TituloDaFolha,
 } from "../_shared/folha-envio.ts";
@@ -219,7 +224,6 @@ Deno.serve(async (req) => {
       });
     }
 
-    const lotes = fatiarEmLotes(titulos).map((t, n) => montarLoteParaOmie(t, n + 1));
 
     /* ---------- simular ---------- */
     if (acao !== "enviar") {
@@ -231,10 +235,9 @@ Deno.serve(async (req) => {
         titulos: titulos.length,
         sem_preparo: semPreparo,
         contaCorrente: { nome: CONTA_CORRENTE_FOLHA, id: idContaCorrente },
-        // O payload inteiro do primeiro lote: é ele que se confere campo a
-        // campo contra a planilha de importação antes de qualquer envio.
-        payload: lotes[0] ?? null,
-        lotes: lotes.length,
+        // O payload do primeiro título: é ele que se confere campo a campo
+        // contra a planilha de importação antes de qualquer envio.
+        payload: titulos[0] ? montarTituloFolha(titulos[0]) : null,
       });
     }
 
@@ -256,11 +259,40 @@ Deno.serve(async (req) => {
       }, 409);
     }
 
-    const respostas: unknown[] = [];
-    for (const l of lotes) respostas.push(await omieCall("IncluirContaPagarPorLote", l));
+    /* UM A UM, e não em lote.
+     *
+     * O `IncluirContaPagarPorLote` recusa `departamentos` — testado em
+     * 26/08/2026, ver o comentário no topo de `_shared/folha-envio.ts`. Aqui a
+     * chamada é `IncluirContaPagar`, a mesma que o fluxo n8n de parceiro usa.
+     *
+     * Uma falha NÃO derruba as outras: quem passou, passou, e o relatório diz
+     * exatamente quem ficou. Reenviar depois é seguro porque o
+     * `codigo_lancamento_integracao` faz o Omie recusar o duplicado — e essa
+     * recusa é lida como "já criado", não como erro. */
+    const resultados: { integracao: string; nome: string; criado: boolean; erro?: string }[] = [];
+    for (const t of titulos) {
+      try {
+        await omieCall("IncluirContaPagar", montarTituloFolha(t));
+        resultados.push({ integracao: t.integracao, nome: t.nome, criado: true });
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        // Duplicado é sucesso: o título já existe com esta chave.
+        const jaExiste = /duplicad|j.\s*existe|j.\s*cadastrad|integra..o.*utilizad/i.test(msg);
+        resultados.push({
+          integracao: t.integracao, nome: t.nome,
+          criado: jaExiste, erro: jaExiste ? undefined : msg,
+        });
+      }
+      // Respiro entre chamadas: o Omie derruba rajada com "too many requests".
+      await new Promise((r) => setTimeout(r, 150));
+    }
 
-    /* Só a competência INTEIRA marca o mês como enviado. Ver o cabeçalho. */
-    if (!parcial) {
+    const criados = resultados.filter((r) => r.criado);
+    const falharam = resultados.filter((r) => !r.criado);
+
+    /* Só a competência INTEIRA marca o mês como enviado, e só se TUDO passou.
+       Marcar com falhas dentro faria os que ficaram nunca serem reenviados. */
+    if (!parcial && falharam.length === 0) {
       await supabase.from("folha_envios_omie").upsert({
         competencia: `${competencia}-01`,
         estado: "enviado",
@@ -268,7 +300,7 @@ Deno.serve(async (req) => {
         valor_total: titulos.reduce((s, t) => s + t.valor, 0),
         enviado_em: new Date().toISOString(),
         enviado_por: quem.userId,
-        resposta: respostas,
+        resposta: resultados,
       }, { onConflict: "competencia" });
 
       /* A referência de cada pessoa passa a ser o que ACABOU de ser pago, para
@@ -285,9 +317,11 @@ Deno.serve(async (req) => {
       acao: "enviar",
       competencia,
       parcial,
-      titulos: titulos.length,
-      integracoes: titulos.map((t) => t.integracao),
-      respostas,
+      titulos: criados.length,
+      falharam: falharam.length,
+      // Só as chaves criadas: são elas que o botão de desfazer apaga.
+      integracoes: criados.map((r) => r.integracao),
+      resultados,
     });
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);

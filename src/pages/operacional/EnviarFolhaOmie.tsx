@@ -51,9 +51,15 @@ export default function EnviarFolhaOmie({
   const [ocupado, setOcupado] = useState<null | "teste" | "tudo" | "limpar">(null);
   const [criados, setCriados] = useState<string[]>([]);
   const [falhas, setFalhas] = useState<Resultado[]>([]);
-  const [confirmando, setConfirmando] = useState(false);
+  const [confirmando, setConfirmando] = useState<null | "tudo" | "prontos">(null);
 
   const teste = doisParaTestar(candidatos);
+  /* Quem já dá para enviar. Existe porque a alternativa a "tudo ou nada" não é
+     desligar a trava — é mandar quem está pronto e deixar o resto pendente.
+     Uma pessoa com cadastro errado não pode segurar a folha de outras cem. */
+  const prontos = candidatos.filter((c) => c.pronto);
+  const pendentes = candidatos.length - prontos.length;
+  const parcial = !!recusa && prontos.length > 0 && pendentes > 0;
 
   /* `invocar` desembrulha o corpo do erro. Sem ele, qualquer recusa do Omie
      chega como "Edge Function returned a non-2xx status code" — uma frase com
@@ -105,10 +111,12 @@ export default function EnviarFolhaOmie({
     }
   };
 
-  const enviarTudo = async () => {
+  const enviarTudo = async (somenteProntos: boolean) => {
     setOcupado("tudo");
     try {
-      const r = await chamar({ acao: "enviar", competencia });
+      const r = await chamar(somenteProntos
+        ? { acao: "enviar", competencia, codigos: prontos.map((p) => p.codigo) }
+        : { acao: "enviar", competencia });
       const ruins = (r.resultados ?? []).filter((x) => !x.criado);
       setFalhas(ruins);
       setCriados(r.integracoes ?? []);
@@ -119,7 +127,7 @@ export default function EnviarFolhaOmie({
       } else {
         toast.success(`Folha de ${competencia} provisionada — ${r.titulos} títulos`);
       }
-      setConfirmando(false);
+      setConfirmando(null);
       onEnviado();
     } catch (e) {
       toast.error(e instanceof Error ? e.message : String(e));
@@ -172,17 +180,28 @@ export default function EnviarFolhaOmie({
       {confirmando && (
         <div className="rounded-xl border border-destructive/30 bg-destructive/5 px-3.5 py-2.5">
           <p className="text-[12.5px] font-semibold text-destructive">
-            Criar {candidatos.length} títulos de {BRL(totalDoLote)} no Omie?
+            {confirmando === "prontos"
+              ? `Criar ${prontos.length} títulos no Omie, deixando ${pendentes} de fora?`
+              : `Criar ${candidatos.length} títulos de ${BRL(totalDoLote)} no Omie?`}
           </p>
           <p className="mt-0.5 text-xs text-muted-foreground">
-            Isto marca a competência {competencia} como enviada e passa a recusar um segundo
-            envio. Desfazer depois é apagar título por título no ERP.
+            {confirmando === "prontos"
+              ? `A competência ${competencia} NÃO será marcada como enviada — o que ficou de fora `
+                + "pode ser mandado depois, e quem já foi criado é recusado por duplicidade em vez "
+                + "de virar título repetido."
+              : `Isto marca a competência ${competencia} como enviada e passa a recusar um segundo `
+                + "envio. Desfazer depois é apagar título por título no ERP."}
           </p>
           <div className="mt-2 flex gap-2">
-            <Button variant="outline" size="sm" onClick={() => setConfirmando(false)} disabled={ocupado !== null}>
+            <Button variant="outline" size="sm" onClick={() => setConfirmando(null)} disabled={ocupado !== null}>
               Cancelar
             </Button>
-            <Button size="sm" onClick={enviarTudo} disabled={ocupado !== null} className="gap-1.5">
+            <Button
+              size="sm"
+              onClick={() => enviarTudo(confirmando === "prontos")}
+              disabled={ocupado !== null}
+              className="gap-1.5"
+            >
               {ocupado === "tudo" && <Loader2 className="size-3.5 animate-spin" />}
               Confirmo, provisionar
             </Button>
@@ -202,7 +221,9 @@ export default function EnviarFolhaOmie({
 
       <div className="flex items-center justify-between gap-3">
         <p className={cn("max-w-[55%] text-xs", recusa ? "text-amber-700 dark:text-amber-400" : "text-muted-foreground")}>
-          {recusa ?? "Lote em ordem. Nada é criado até você clicar."}
+          {parcial
+            ? `${pendentes} pessoa(s) com cadastro incompleto ficam de fora. ${recusa}`
+            : recusa ?? "Lote em ordem. Nada é criado até você clicar."}
         </p>
         <div className="flex gap-2">
           <Button
@@ -217,15 +238,28 @@ export default function EnviarFolhaOmie({
             {ocupado === "teste" ? <Loader2 className="size-4 animate-spin" /> : <FlaskConical className="size-4" />}
             Testar com {teste.length}
           </Button>
-          <Button
-            onClick={() => setConfirmando(true)}
-            disabled={ocupado !== null || !!recusa || confirmando}
-            title={recusa ?? undefined}
-            className="gap-1.5"
-          >
-            <Send className="size-4" />
-            Provisionar {candidatos.length} no Omie
-          </Button>
+          {parcial ? (
+            <Button
+              onClick={() => setConfirmando("prontos")}
+              disabled={ocupado !== null || confirmando !== null}
+              title={`Manda os ${prontos.length} com cadastro completo. Os ${pendentes} pendentes `
+                + "ficam para quando o cadastro for corrigido."}
+              className="gap-1.5"
+            >
+              <Send className="size-4" />
+              Provisionar os {prontos.length} prontos
+            </Button>
+          ) : (
+            <Button
+              onClick={() => setConfirmando("tudo")}
+              disabled={ocupado !== null || !!recusa || confirmando !== null}
+              title={recusa ?? undefined}
+              className="gap-1.5"
+            >
+              <Send className="size-4" />
+              Provisionar {candidatos.length} no Omie
+            </Button>
+          )}
         </div>
       </div>
     </div>

@@ -585,14 +585,22 @@ async function aplicarCorrecao(
           motivo: `Não foi possível ler o cadastro atual no Omie${erroLeitura ? `: ${erroLeitura}` : ""}. Nada foi escrito — tente de novo em alguns segundos.`,
         };
       } else if (!diffCadastro(atual, cadastro).some((l) => l.muda)) {
-        /* NADA A PROPOR NÃO É SUCESSO NEM FALHA — é o caso que precisa de gente.
-         * O cadastro bate com a Receita/CEP e a nota foi recusada assim mesmo:
-         * ou o endereço está formalmente completo e materialmente errado (o
-         * logradouro preenchido com o nome da cidade, número "00"), ou a recusa
-         * não é de cadastro. Escrever de novo o que já está lá não muda nada. */
+        /* NADA A PROPOR TEM DOIS SENTIDOS, e confundi-los rotulava de "caso
+         * humano" o cliente que alguém acabou de consertar. Decide o estado do
+         * cadastro que está lá AGORA:
+         *
+         *  • completo  → não há o que fazer, e nunca houve problema (ou ele já
+         *    foi resolvido e a lista de trabalho é que estava velha);
+         *  • incompleto → o cadastro bate com a Receita E MESMO ASSIM não emite:
+         *    endereço formalmente completo e materialmente errado (logradouro
+         *    preenchido com o nome da cidade, número "00"). Isso é gente. */
+        const completo = [atual.endereco, atual.endereco_numero, atual.cep, atual.email]
+          .every((v) => limpo(v) !== "");
         feito.omie = {
-          ok: false, nada_a_propor: true,
-          motivo: "O cadastro do Omie já bate com o que a Receita/CEP respondem, e a nota foi recusada mesmo assim. Isto precisa de conferência humana.",
+          ok: false, nada_a_propor: true, completo,
+          motivo: completo
+            ? "O cadastro do Omie já está completo e igual ao da Receita — nada a corrigir."
+            : "O cadastro do Omie já bate com o que a Receita/CEP respondem e continua incompleto. Isto precisa de conferência humana.",
         };
       } else {
         const payload: Record<string, unknown> = {
@@ -614,6 +622,18 @@ async function aplicarCorrecao(
         try {
           await omieCall("geral/clientes", "AlterarCliente", payload);
           feito.omie = { ok: true, escrito: payload, fonte: cadastro.fonte };
+          /* O ESPELHO ACOMPANHA A ESCRITA. `omie_clientes_endereco` é lido por
+           * semana; sem isto ele passa a mentir no instante em que consertamos
+           * algo — e foi exatamente o que rotulou de "caso humano" seis clientes
+           * que tinham acabado de ser arrumados. */
+          await supabase.from("omie_clientes_endereco").upsert({
+            codigo: c.n_cod_cli, cnpj_cpf: c.doc, nome: c.nome,
+            endereco: cadastro.endereco, endereco_numero: cadastro.endereco_numero,
+            complemento: cadastro.complemento || null, bairro: cadastro.bairro,
+            cidade: cadastro.cidade, estado: cadastro.estado, cep: cadastro.cep,
+            email: limpo(atual.email) || limpo(c.dadosAsaas?.email) || null,
+            lido_em: new Date().toISOString(),
+          }, { onConflict: "codigo" }).then(() => {}, () => { /* espelho não desfaz escrita */ });
         } catch (e) {
           feito.omie = { ok: false, motivo: e instanceof Error ? e.message : String(e) };
         }
@@ -699,6 +719,131 @@ async function corrigirRecusados(
   return {
     modo, alvos: lista.length,
     corrigidos: saida.filter((s) => s.ok).length,
+    precisam_de_gente: saida.filter((s) => s.precisa_de_gente).length,
+    resultados: saida,
+  };
+}
+
+/**
+ * O PRÉ-VOO: consertar antes do corte, em vez de descobrir falhando.
+ *
+ * `corrigirRecusados` fecha o ciclo depois que a nota morre — é a rede embaixo.
+ * Isto é a rede em cima: com `omie_clientes_endereco` preenchido, dá para
+ * perguntar QUEM não emite sem tentar emitir. Medido em 26/08/26: dos 2.552
+ * clientes ativos com cadastro no Omie, **564 (22,1%) não emitem** — 556 sem
+ * número do endereço. Sem o pré-voo, são 564 recusas no primeiro dia de setembro,
+ * cada uma consumindo uma OS criada e um lugar no teto do dia.
+ *
+ * NENHUMA CHAMADA AO ASAAS. Só Omie (ler + escrever o cadastro) e BrasilAPI (a
+ * Receita). O `id_customer` vem do espelho local, não da API do Asaas.
+ *
+ * A RECEITA É EXIGIDA PARA CNPJ, e este é o ponto que separa o pré-voo do
+ * conserto de emergência. `montarCadastro` cai para o CEP quando a Receita não
+ * responde, e o caminho do CEP escreve `"S/N"` quando ninguém sabe o número. Numa
+ * emergência isso é melhor do que nada; aqui não é: gravaríamos um número
+ * inventado sobre um cadastro cujo número real existe na Receita — e o cliente
+ * ficaria marcado como "já tentado", saindo da fila para sempre. Sem Receita,
+ * pula e tenta de novo depois. Não há pressa: isto roda ANTES do corte.
+ */
+async function prepararCadastros(
+  supabase: any, opts: { teto: number; alvos: string[]; operador: string | null; desde?: string | null },
+) {
+  /* A fila vem MATERIALIZADA (`nfse_preparo_fila`). A primeira versão a montava
+   * na hora — varrendo 59 mil pagamentos — e era chamada uma vez por bloco de 25:
+   * estourou o statement timeout no segundo bloco. E estourou calada, porque o
+   * erro vinha dentro de um `{"status":"ok"}` e o laço seguia fazendo nada. */
+  const { data: lista, error } = await supabase
+    .from("nfse_preparo_fila")
+    .select("doc, codigo, nome, id_customer, falta, valor, cobrancas, tentativas")
+    .eq("situacao", "pendente")
+    .order("valor", { ascending: false })
+    .limit(Math.max(1, Math.min(opts.teto, 40)));
+  if (error) return { erro: `nfse_preparo_fila: ${error.message}` };
+  if (!lista?.length) return { alvos: 0, corrigidos: 0, resultados: [] };
+
+  /** O desfecho de cada cliente volta para a fila — é o que a faz andar. */
+  const marcar = async (doc: string, situacao: string, motivo: string | null, tentativas: number) => {
+    await supabase.from("nfse_preparo_fila").update({
+      situacao, motivo: motivo ? motivo.slice(0, 400) : null,
+      tentativas: tentativas + 1, tratada_em: new Date().toISOString(),
+    }).eq("doc", doc);
+  };
+
+  const { data: cus } = await supabase
+    .from("asaas_cache").select("id_asaas, dados")
+    .eq("tipo", "customer").in("id_asaas", lista.map((c: any) => c.id_customer));
+  const dadosPor = new Map((cus ?? []).map((c: any) => [c.id_asaas, c.dados]));
+
+  const saida: any[] = [];
+  /** Quedas seguidas da Receita nesta passada — governa a espera. */
+  let semReceita = 0;
+  for (const c of lista) {
+    const dadosAsaas = dadosPor.get(c.id_customer) ?? {};
+    const pj = String(c.doc).length === 14;
+
+    // Espia a proposta antes de escrever, só para poder EXIGIR a Receita no CNPJ.
+    const { cadastro, bloqueio } = await montarCadastro(filaDoCliente(c.id_customer, c.doc, dadosAsaas));
+    if (!cadastro) {
+      // Resposta definitiva (CNPJ que a Receita não conhece, CEP inexistente):
+      // sai da fila e vira caso humano. Insistir não muda o que a base sabe.
+      saida.push({ doc: c.doc, nome: c.nome, ok: false, pulado: false, motivo: bloqueio, falta: c.falta });
+      await marcar(c.doc, "bloqueado", `Sem endereço confiável: ${bloqueio}.`, c.tentativas ?? 0);
+      await dorme(900);
+      continue;
+    }
+    if (pj && cadastro.fonte !== "receita") {
+      /* Fica PENDENTE de propósito: sem marcar, ele volta na próxima passada.
+       * Escrever daqui gravaria "S/N" por cima de um número que a Receita
+       * conhece — e o cliente sairia da fila carregando um endereço inventado. */
+      saida.push({
+        doc: c.doc, nome: c.nome, ok: false, pulado: true, falta: c.falta,
+        motivo: `A Receita não respondeu agora (caiu para "${cadastro.fonte}"). Pulado de propósito; volta na próxima passada.`,
+      });
+      semReceita++;
+      /* A BrasilAPI limita por IP, e o sinal de que estamos batendo no limite é
+       * justamente esta queda. Medido na primeira passada: 10 de 22 num bloco.
+       * Então a espera CRESCE com as quedas seguidas — passar mais rápido só
+       * gastaria as chamadas seguintes contra a mesma parede. Teto de 15s para o
+       * bloco ainda caber nos 150s da Edge Function. */
+      await dorme(Math.min(3000 * semReceita, 15000));
+      continue;
+    }
+
+    const { feito } = await aplicarCorrecao(supabase, {
+      doc: c.doc, nome: c.nome, n_cod_cli: c.codigo, id_customer: c.id_customer, dadosAsaas,
+    }, { alvos: opts.alvos, ids: [], origem: "preventivo", operador: opts.operador });
+
+    const om: any = (feito as any).omie ?? {};
+    saida.push({
+      doc: c.doc, nome: c.nome, ok: om.ok === true, pulado: false, falta: c.falta,
+      numero: om?.escrito?.endereco_numero ?? null, fonte: cadastro.fonte,
+      precisa_de_gente: om.nada_a_propor === true,
+      motivo: om.motivo ?? null,
+      valor: c.valor,
+    });
+    /* O teto de tentativas não é zelo: a fila é ordenada por VALOR, e um cliente
+     * que falha sempre é o maior deles — sem teto ele fica na cabeça para
+     * sempre e as 568 linhas abaixo nunca são alcançadas. Três tentativas e ele
+     * sai para a pilha humana, que é onde uma falha repetida pertence. */
+    const tentativas = Number(c.tentativas ?? 0);
+    const situacao = om.ok === true ? "corrigido"
+      // "Nada a propor" com o cadastro COMPLETO é serviço já feito, não caso
+      // humano — a lista de trabalho é que estava velha.
+      : om.nada_a_propor === true ? (om.completo === true ? "corrigido" : "humano")
+      : tentativas + 1 >= 3 ? "humano"
+      : "pendente";
+    await marcar(c.doc, situacao, om.motivo ?? null, tentativas);
+    /* 900ms entre clientes: cada volta são três chamadas externas (Consultar e
+     * Alterar no Omie, mais a Receita). O Omie tranca por método e a BrasilAPI
+     * tem limite por IP — o custo de ir devagar aqui é tempo, e tempo é o que
+     * mais sobra antes do corte. */
+    await dorme(900);
+  }
+
+  return {
+    alvos: lista.length,
+    corrigidos: saida.filter((s) => s.ok).length,
+    pulados_sem_receita: saida.filter((s) => s.pulado).length,
     precisam_de_gente: saida.filter((s) => s.precisa_de_gente).length,
     resultados: saida,
   };
@@ -835,6 +980,20 @@ Deno.serve(async (req) => {
       if (!cadastro) return json({ status: "erro", erro: `Sem endereço confiável para escrever: ${bloqueio}.` }, 422);
 
       return json({ status: "ok", doc, fonte: cadastro.fonte, resultado: feito });
+    }
+
+    /* ----------------------------- preparar -------------------------------- */
+    /* O pré-voo: conserta quem AINDA NÃO falhou, mas vai. Chamável em bloco até
+     * a fila zerar; cada chamada anda `teto` clientes, do maior valor para o
+     * menor. Só Omie e Receita — nenhuma chamada ao Asaas. */
+    if (action === "preparar") {
+      const r = await prepararCadastros(supabase, {
+        teto: Number(body?.teto ?? 30),
+        alvos: Array.isArray(body?.alvos) && body.alvos.length ? body.alvos.map(String) : ["omie"],
+        operador: body?.operador ?? "preventivo",
+        desde: body?.desde ?? null,
+      });
+      return json({ status: "ok", ...r });
     }
 
     /* --------------------------- corrigir_recusados ------------------------ */

@@ -37,6 +37,7 @@ const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: { ...corsHeaders, "Content-Type": "application/json" } });
 
 const BASE = "https://app.omie.com.br/api/v1";
+const dorme = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 /** Envelope RPC do Omie, com o mesmo backoff de `_shared/omie.ts` para o rate limit. */
 async function omieCall(path: string, call: string, param: Record<string, unknown>): Promise<any> {
@@ -104,6 +105,123 @@ async function listarClientes(): Promise<ClienteCache[]> {
   return out;
 }
 
+/* ------------------------- o endereço, para o pré-voo ----------------------- */
+/**
+ * A LEITURA COMPLETA — a que responde "este cadastro emite?" antes de emitir.
+ *
+ * `ListarClientesResumido` (acima) devolve três campos e é o que a fila de
+ * emissão precisa. Só que a NFS-e é recusada por ENDEREÇO — o Omie exige o
+ * Número, a prefeitura confere CEP × município — e nada disso vem no resumido.
+ * Sem esta leitura, o único jeito de descobrir que um cadastro não emite é
+ * tentando emitir e lendo a recusa do lote. Medido em amostra de 24 clientes
+ * ativos: 12,5% sem número do endereço.
+ *
+ * DUAS DIFERENÇAS EM RELAÇÃO AO RESUMIDO, e as duas são por causa do tamanho:
+ *
+ *   • `ListarClientes` completo aceita no máximo **50 por página** (o resumido
+ *     aceita 500), então são ~141 páginas para 7 mil clientes;
+ *   • uma Edge Function tem 150s. Por isso a varredura é RETOMÁVEL: guarda a
+ *     página em `omie_clientes_endereco_cursor`, faz um teto por invocação e
+ *     volta de onde parou. Recomeçar do zero a cada chamada nunca terminaria.
+ *
+ * O ritmo é do Omie e só dele: nenhuma chamada ao Asaas acontece aqui.
+ */
+interface ClienteEndereco {
+  codigo: number; cnpj_cpf: string | null; nome: string | null;
+  endereco: string | null; endereco_numero: string | null; complemento: string | null;
+  bairro: string | null; cidade: string | null; estado: string | null;
+  cep: string | null; email: string | null; lido_em: string;
+}
+
+async function varrerEnderecos(
+  supabase: any, opts: { paginas: number; reiniciar: boolean },
+): Promise<Record<string, unknown>> {
+  const { data: cursor } = await supabase
+    .from("omie_clientes_endereco_cursor")
+    .select("pagina, total_paginas, concluido_em").eq("id", 1).maybeSingle();
+
+  /* Volta recente, nada a fazer. O cron tem várias janelas (141 páginas não
+   * cabem numa invocação de 150s) e a última delas costuma pegar a varredura já
+   * terminada: sem esta guarda ela recomeçaria do zero, varrendo o cadastro
+   * inteiro duas ou três vezes por semana contra o limite do Omie. */
+  const horasDaVolta = cursor?.concluido_em
+    ? (Date.now() - new Date(cursor.concluido_em).getTime()) / 3.6e6
+    : Infinity;
+  if (!opts.reiniciar && Number(cursor?.pagina ?? 1) <= 1 && horasDaVolta < 20) {
+    return {
+      paginas_lidas: 0, gravados: 0, terminou: true,
+      pulada: `a volta completa terminou há ${horasDaVolta.toFixed(1)}h; nada a reler.`,
+    };
+  }
+
+  let pagina = opts.reiniciar ? 1 : Math.max(1, Number(cursor?.pagina ?? 1));
+  let totalPaginas = Number(cursor?.total_paginas ?? 0) || 0;
+  let lidas = 0, gravados = 0;
+  const limpo = (v: unknown) => {
+    const s = String(v ?? "").trim();
+    return s ? s : null;
+  };
+
+  for (let i = 0; i < Math.max(1, opts.paginas); i++) {
+    const r = await omieCall("geral/clientes", "ListarClientes", {
+      pagina,
+      registros_por_pagina: 50,
+      apenas_importado_api: "N",
+    });
+    totalPaginas = Number(r?.total_de_paginas ?? totalPaginas ?? 1);
+    const lote = r?.clientes_cadastro ?? r?.clientes_cadastro_resumido ?? [];
+
+    const linhas: ClienteEndereco[] = [];
+    for (const c of lote) {
+      const codigo = Number(c?.codigo_cliente_omie ?? c?.codigo_cliente ?? 0);
+      if (!codigo) continue;
+      linhas.push({
+        codigo,
+        cnpj_cpf: limpo(String(c?.cnpj_cpf ?? "").replace(/\D/g, "")),
+        nome: limpo(c?.nome_fantasia) ?? limpo(c?.razao_social),
+        endereco: limpo(c?.endereco),
+        endereco_numero: limpo(c?.endereco_numero),
+        complemento: limpo(c?.complemento),
+        bairro: limpo(c?.bairro),
+        cidade: limpo(c?.cidade),
+        estado: limpo(c?.estado),
+        cep: limpo(String(c?.cep ?? "").replace(/\D/g, "")),
+        email: limpo(c?.email),
+        lido_em: new Date().toISOString(),
+      });
+    }
+    if (linhas.length) {
+      const { error } = await supabase
+        .from("omie_clientes_endereco").upsert(linhas, { onConflict: "codigo" });
+      if (error) throw new Error(`omie_clientes_endereco upsert: ${error.message}`);
+      gravados += linhas.length;
+    }
+    lidas++;
+    pagina++;
+    if (pagina > totalPaginas) break;
+    /* O Omie tranca por MÉTODO. Duas `ListarClientes` coladas viram "consumo
+     * redundante" e queimam as retentativas do backoff sem necessidade. */
+    await dorme(700);
+  }
+
+  const terminou = totalPaginas > 0 && pagina > totalPaginas;
+  await supabase.from("omie_clientes_endereco_cursor").upsert({
+    id: 1,
+    // Terminou: volta para 1, para a próxima varredura recomeçar o ciclo.
+    pagina: terminou ? 1 : pagina,
+    total_paginas: totalPaginas,
+    atualizado_em: new Date().toISOString(),
+    ...(terminou ? { concluido_em: new Date().toISOString() } : {}),
+  }, { onConflict: "id" });
+
+  return {
+    paginas_lidas: lidas, gravados,
+    proxima_pagina: terminou ? 1 : pagina,
+    total_paginas: totalPaginas,
+    terminou,
+  };
+}
+
 // Chamada agendada (cron): o header `x-cron-token` casa com a linha da tabela
 // `internal_cron_tokens` (só service_role lê), o que permite disparar sem expor
 // a service key nem afrouxar o requireUser para a anon key.
@@ -135,6 +253,44 @@ Deno.serve(async (req) => {
       const { data } = await supabase
         .from("omie_cache").select("registros, atualizado_em").eq("chave", "clientes").maybeSingle();
       return json({ status: "ok", em_cache: data?.registros ?? 0, atualizado_em: data?.atualizado_em ?? null });
+    }
+
+    /* A varredura de endereço, retomável. Separada da sync normal porque é 141
+     * páginas contra 15, e porque ninguém precisa dela para emitir — ela serve
+     * para saber em quem mexer ANTES de emitir. Só Omie: nada de Asaas aqui. */
+    /* Diagnóstico: o registro CRU de uma página da listagem. Existe porque
+     * adivinhar o nome do campo do Omie é como se descobre, uma semana depois,
+     * que o espelho inteiro está gravando `null` num campo que existe. */
+    if (body?.action === "listar_bruto") {
+      const r = await omieCall("geral/clientes", "ListarClientes", {
+        pagina: Number(body?.pagina ?? 1),
+        registros_por_pagina: Number(body?.n ?? 1),
+        apenas_importado_api: "N",
+        ...(body?.codigo ? { clientesFiltro: { codigo_cliente_omie: Number(body.codigo) } } : {}),
+      });
+      const lote = r?.clientes_cadastro ?? r?.clientes_cadastro_resumido ?? [];
+      const preenchido = (v: unknown) => String(v ?? "").trim() !== "";
+      const primeiro = lote[0] ?? null;
+      return json({
+        status: "ok",
+        registros: lote.length,
+        // A contagem é o que responde "o Omie devolve isto nesta página?" — um
+        // registro só não diz nada, porque pode ser um cadastro genuinamente vazio.
+        com_endereco: lote.filter((c: any) => preenchido(c?.endereco)).length,
+        com_numero: lote.filter((c: any) => preenchido(c?.endereco_numero)).length,
+        com_email: lote.filter((c: any) => preenchido(c?.email)).length,
+        com_cep: lote.filter((c: any) => preenchido(c?.cep)).length,
+        chaves: primeiro ? Object.keys(primeiro) : [],
+        registro: body?.cru === true ? primeiro : undefined,
+      });
+    }
+
+    if (body?.action === "enderecos") {
+      const r = await varrerEnderecos(supabase, {
+        paginas: Math.max(1, Math.min(Number(body?.paginas ?? 40), 120)),
+        reiniciar: body?.reiniciar === true,
+      });
+      return json({ status: "ok", ...r });
     }
 
     const clientes = await listarClientes();

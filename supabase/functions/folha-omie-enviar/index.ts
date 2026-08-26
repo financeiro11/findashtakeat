@@ -203,16 +203,19 @@ Deno.serve(async (req) => {
       const fornecedor = fornecedorPorCnpj.get(i.cnpj) ?? 0;
       const categoria = i.categoria ? codCategoria(i.categoria) : null;
       const departamento = i.departamento ? codDepartamento.get(i.departamento) ?? null : null;
+      /* Departamento NÃO entra na conta de "pronto": ele não vai no payload,
+         então exigi-lo aqui barraria um envio por um campo que nem é enviado.
+         Continua resolvido e devolvido, para a prévia e para o dia em que o
+         Omie aceitar o campo. */
       const falta = !fornecedor ? "fornecedor no Omie"
-        : !categoria ? "categoria"
-          : !departamento ? "departamento" : null;
+        : !categoria ? "categoria" : null;
       if (falta) { semPreparo.push({ nome: i.nome, falta }); continue; }
       titulos.push({
         integracao: i.integracao,
         codigoFornecedor: fornecedor,
         idContaCorrente,
         codigoCategoria: categoria!,
-        codigoDepartamento: departamento!,
+        codigoDepartamento: departamento ?? "",
         valor: i.valor,
         registro: lote.registro,
         vencimento: lote.vencimento,

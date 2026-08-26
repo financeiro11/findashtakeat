@@ -190,6 +190,16 @@ export default function EnviarFolhaOmie({
         </div>
       )}
 
+      {/* Escrito na tela, e não só no código: os títulos vão sem centro de
+          custo, e quem confere a DRE por área precisa saber disso ANTES de
+          estranhar o buraco. */}
+      <p className="rounded-lg border bg-muted/40 px-3 py-2 text-[11px] text-muted-foreground">
+        Os títulos vão <b>sem departamento</b> — o Omie recusa esse campo na API
+        (<span className="mono">Tag [DEPARTAMENTOS] não faz parte da estrutura</span>). A
+        distribuição por área tem de ser feita no ERP depois. A folha por área desta tela
+        continua valendo, porque sai do de-para do Hub.
+      </p>
+
       <div className="flex items-center justify-between gap-3">
         <p className={cn("max-w-[55%] text-xs", recusa ? "text-amber-700 dark:text-amber-400" : "text-muted-foreground")}>
           {recusa ?? "Lote em ordem. Nada é criado até você clicar."}

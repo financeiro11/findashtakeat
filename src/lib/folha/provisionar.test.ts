@@ -549,8 +549,13 @@ describe("montarTituloFolha", () => {
     expect(montarTituloFolha(TITULO).observacao).toBe("Ádrian Coradini da Silva");
   });
 
-  it("distribui 100% num departamento só — col. AX 'Departamento (100%)'", () => {
-    expect(montarTituloFolha(TITULO).departamentos).toEqual([{ cCodDep: "TEC", nPerc: 100 }]);
+  /* O Omie recusa a tag, tanto no lote quanto no um a um. Testado com títulos
+     reais em 26/08/2026: "Tag [DEPARTAMENTOS] não faz parte da estrutura do
+     tipo complexo [conta_pagar_cadastro]". Mandar de novo é recusar de novo. */
+  it("NÃO manda departamento — o Omie recusa a tag", () => {
+    const p = montarTituloFolha(TITULO);
+    expect(p.departamentos).toBeUndefined();
+    expect(p.distribuicao).toBeUndefined();
   });
 
   it("manda o CNAB fixo das colunas AA e AJ", () => {

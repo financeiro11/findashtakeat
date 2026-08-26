@@ -612,8 +612,27 @@ export const FORMA_PAGAMENTO_FOLHA = "TRA";
 /** "Transferência por Chave PIX" na planilha. */
 export const FINALIDADE_PIX_FOLHA = "01.3";
 
-/** Percentual do departamento no título — a coluna é "Departamento (100%)". */
-export const PERCENTUAL_DEPARTAMENTO = 100;
+/* ------------------------------------------------------------------
+ * O departamento NÃO vai no título
+ * ------------------------------------------------------------------
+ * A planilha de importação preenche "Departamento (100%)" na coluna AX, e a
+ * intenção era mandar o mesmo pela API. Não deu: o Omie recusa a tag, tanto no
+ * envio em lote quanto no um a um. Testado com títulos reais em 26/08/2026:
+ *
+ *   ERROR: Tag [DEPARTAMENTOS] não faz parte da estrutura do tipo complexo
+ *   [conta_pagar_cadastro]!
+ *
+ * `departamentos` é o nome errado, e o certo não foi descoberto — o importador
+ * de planilha resolve a coluna por conta própria, o que não diz nada sobre
+ * como a API o chama. Decidido com o financeiro em 26/08/2026: enviar SEM o
+ * campo, porque a folha não pode esperar por isso.
+ *
+ * O QUE ISSO CUSTA, para ficar escrito: os títulos nascem sem centro de custo,
+ * e a distribuição por área precisa ser feita no Omie depois — ou por outra
+ * chamada, quando alguém achar o nome certo do campo. O departamento continua
+ * no de-para e na prévia (é dele que sai a folha por área na faixa), então
+ * quando o campo aparecer é só voltar a montá-lo aqui.
+ */
 
 /**
  * A conta que paga a folha, pelo NOME do cadastro do Omie.
@@ -635,7 +654,11 @@ export type TituloDaFolha = {
   /** Conta corrente que paga a folha ("Sicoob - Conta Corrente"). */
   idContaCorrente: number;
   codigoCategoria: string;
-  /** Código do departamento no Omie, do de-para. */
+  /**
+   * Código do departamento no Omie. NÃO vai no payload — o Omie recusa a tag.
+   * Fica no tipo porque a prévia mostra e porque, no dia em que o nome certo
+   * do campo aparecer, ele já está resolvido aqui.
+   */
   codigoDepartamento: string;
   valor: number;
   /** Último dia da competência — vira `data_entrada`/`dDtRegistro`. */
@@ -666,10 +689,7 @@ export function montarTituloFolha(t: TituloDaFolha): Record<string, unknown> {
     data_previsao: dataBR(t.previsao),
     // 240 é o limite do campo no Omie; nome de gente cabe folgado.
     observacao: t.nome.trim().slice(0, 240),
-    departamentos: [{
-      cCodDep: t.codigoDepartamento,
-      nPerc: PERCENTUAL_DEPARTAMENTO,
-    }],
+    // Sem `departamentos`: o Omie recusa a tag. Ver o bloco acima.
     cnab_integracao_bancaria: {
       codigo_forma_pagamento: FORMA_PAGAMENTO_FOLHA,
       finalidade_transferencia: FINALIDADE_PIX_FOLHA,

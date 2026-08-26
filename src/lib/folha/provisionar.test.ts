@@ -82,6 +82,37 @@ describe("as três datas do título", () => {
     expect(previsaoDe("2026-08-05")).toBe("2026-08-05");
   });
 
+  /* Mês de exceção existe. Setembro/2026 antecipou o pagamento da segunda para
+     a sexta anterior — e isso NÃO pode virar regra no código. */
+  it("a exceção da competência substitui a previsão da regra", () => {
+    const lote = montarLote([pessoa()], "2026-08", () => null, "2026-09-04");
+    expect(lote).toMatchObject({
+      vencimento: "2026-09-05",   // o vencimento NÃO muda
+      previsaoRegra: "2026-09-07", // o que a regra daria
+      previsao: "2026-09-04",      // o que vai valer
+      previsaoExcepcional: true,
+    });
+  });
+
+  it("sem exceção, previsão e regra são a mesma coisa", () => {
+    const lote = montarLote([pessoa()], "2026-08");
+    expect(lote.previsao).toBe(lote.previsaoRegra);
+    expect(lote.previsaoExcepcional).toBe(false);
+  });
+
+  it("exceção igual à regra não é exceção", () => {
+    // Registrar 07/09 quando a regra já dá 07/09 não pode acender o aviso.
+    const lote = montarLote([pessoa()], "2026-08", () => null, "2026-09-07");
+    expect(lote.previsaoExcepcional).toBe(false);
+  });
+
+  it("data inválida na exceção é ignorada — a regra prevalece", () => {
+    for (const lixo of ["", "amanhã", null]) {
+      const lote = montarLote([pessoa()], "2026-08", () => null, lixo);
+      expect(lote.previsao, String(lixo)).toBe("2026-09-07");
+    }
+  });
+
   it("o lote carrega as três datas prontas para a prévia", () => {
     const lote = montarLote([pessoa()], "2026-08");
     expect(lote).toMatchObject({

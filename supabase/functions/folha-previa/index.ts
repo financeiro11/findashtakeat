@@ -20,8 +20,7 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { requireUser } from "../_shared/auth.ts";
 import {
-  montarLote, pendenciasDoLote, previsaoDe, recusaDaFolha, registroDa,
-  resolvedorDeCategoria, soDigitos, vencimentoDa,
+  montarLote, pendenciasDoLote, recusaDaFolha, resolvedorDeCategoria, soDigitos,
   type ColaboradorDaFolha, type EstadoDaFolha, type ResolveDePara,
 } from "../_shared/folha-envio.ts";
 
@@ -111,7 +110,7 @@ Deno.serve(async (req) => {
         .select("codigo_rh, departamento, categoria_descricao, valor_referencia, valor_ajustado, valor_rh_no_ajuste, ajuste_motivo, ajustado_em"),
       supabase.from("omie_cache").select("dados, atualizado_em").eq("chave", "folha_cadastros").maybeSingle(),
       supabase.from("omie_cache").select("dados, atualizado_em").eq("chave", "clientes").maybeSingle(),
-      supabase.from("folha_envios_omie").select("estado").eq("competencia", `${competencia}-01`).maybeSingle(),
+      supabase.from("folha_envios_omie").select("estado, previsao_ajustada").eq("competencia", `${competencia}-01`).maybeSingle(),
     ]);
     if (rh.error) throw new Error(`Espelho do RH: ${rh.error.message}`);
 
@@ -157,7 +156,10 @@ Deno.serve(async (req) => {
       datadesl: (c.datadesl as string) ?? null,
     }));
 
-    const lote = montarLote(pessoas, competencia, deParaDe);
+    const lote = montarLote(
+      pessoas, competencia, deParaDe,
+      (envio.data?.previsao_ajustada as string) ?? null,
+    );
 
     /* Fornecedor, passada 1: o cache. */
     const doCache = new Map<string, number>();
@@ -200,9 +202,11 @@ Deno.serve(async (req) => {
     return json({
       status: "ok",
       competencia,
-      registro: registroDa(competencia),
-      vencimento: vencimentoDa(competencia),
-      previsao: previsaoDe(vencimentoDa(competencia)),
+      registro: lote.registro,
+      vencimento: lote.vencimento,
+      previsao: lote.previsao,
+      previsaoRegra: lote.previsaoRegra,
+      previsaoExcepcional: lote.previsaoExcepcional,
       linhas,
       fora: lote.fora,
       total: lote.total,

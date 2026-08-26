@@ -121,7 +121,7 @@ Deno.serve(async (req) => {
         .select("codigo_rh, departamento, categoria_descricao, valor_referencia, valor_ajustado"),
       supabase.from("omie_cache").select("dados").eq("chave", "folha_cadastros").maybeSingle(),
       supabase.from("omie_cache").select("dados").eq("chave", "clientes").maybeSingle(),
-      supabase.from("folha_envios_omie").select("estado").eq("competencia", `${competencia}-01`).maybeSingle(),
+      supabase.from("folha_envios_omie").select("estado, previsao_ajustada").eq("competencia", `${competencia}-01`).maybeSingle(),
     ]);
     if (rh.error) throw new Error(`Espelho do RH: ${rh.error.message}`);
 
@@ -172,7 +172,10 @@ Deno.serve(async (req) => {
     }));
     const pixPorCodigo = new Map(linhasRh.map((c) => [String(c.codigo), (c.pix as string) ?? null]));
 
-    const lote = montarLote(pessoas, competencia, deParaDe);
+    const lote = montarLote(
+      pessoas, competencia, deParaDe,
+      (envio.data?.previsao_ajustada as string) ?? null,
+    );
 
     /* Subconjunto explícito, para o teste pequeno antes dos cem. */
     const so: string[] = Array.isArray(body?.codigos)

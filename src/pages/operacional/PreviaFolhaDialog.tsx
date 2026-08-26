@@ -66,6 +66,8 @@ type Previa = {
   registro: string;
   vencimento: string;
   previsao: string;
+  previsaoRegra: string;
+  previsaoExcepcional: boolean;
   linhas: Linha[];
   fora: { nome: string; motivo: string }[];
   total: number;
@@ -142,7 +144,10 @@ export default function PreviaFolhaDialog({
           <DialogTitle>Prévia da folha · competência {competencia}</DialogTitle>
           <DialogDescription>
             Registro {dataBR(registro)} · vencimento {dataBR(vencimento)}
-            {previsao !== vencimento && <> · previsão {dataBR(previsao)} (o dia 5 caiu no fim de semana)</>}
+            {previsao !== vencimento && <> · previsão {dataBR(previsao)}</>}
+            {previa?.previsaoExcepcional
+              ? <> — <b>exceção deste mês</b>; a regra daria {dataBR(previa.previsaoRegra)}</>
+              : previsao !== vencimento && <> (o dia 5 caiu no fim de semana)</>}
           </DialogDescription>
         </DialogHeader>
 

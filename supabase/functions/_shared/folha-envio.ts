@@ -289,8 +289,12 @@ export type Lote = {
   registro: string;
   /** Dia 5 do mês seguinte — `data_vencimento`. */
   vencimento: string;
-  /** O vencimento, adiado para segunda se cair no fim de semana — `data_previsao`. */
+  /** A data que VAI valer: a exceção da competência quando existe, senão a regra. */
   previsao: string;
+  /** O que a regra daria, sem exceção. Igual a `previsao` quando não há exceção. */
+  previsaoRegra: string;
+  /** Há exceção nesta competência? A prévia mostra as duas datas quando sim. */
+  previsaoExcepcional: boolean;
   itens: ItemDaFolha[];
   fora: ForaDoLote[];
   total: number;
@@ -331,14 +335,27 @@ export function montarLote(
   colaboradores: ColaboradorDaFolha[],
   competencia: string,
   deParaDe: ResolveDePara = () => null,
+  /**
+   * Data de pagamento que substitui a da regra NESTA competência.
+   *
+   * Existe porque mês de exceção existe — setembro/2026 antecipou o pagamento
+   * da segunda para a sexta anterior. Mexer em `previsaoDe` para acomodar isso
+   * transformaria a exceção de um mês na regra de todos os meses seguintes, e
+   * ninguém lembraria de desfazer.
+   */
+  previsaoManual: string | null = null,
 ): Lote {
   const comp = String(competencia).slice(0, 7);
   const ref = parseISO(`${comp}-01`);
   const vencimento = ref ? vencimentoDa(comp) : "";
+  const previsaoRegra = ref ? previsaoDe(vencimento) : "";
+  const excecao = parseISO(previsaoManual) ? String(previsaoManual).slice(0, 10) : "";
   const datas = {
     registro: ref ? registroDa(comp) : "",
     vencimento,
-    previsao: ref ? previsaoDe(vencimento) : "",
+    previsao: excecao || previsaoRegra,
+    previsaoRegra,
+    previsaoExcepcional: !!excecao && excecao !== previsaoRegra,
   };
   if (!ref) return { competencia, ...datas, itens: [], fora: [], total: 0 };
 

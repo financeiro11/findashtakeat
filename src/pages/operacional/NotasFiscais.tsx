@@ -154,6 +154,9 @@ export default function NotasFiscais() {
       toast.success(
         `${data.os_listadas} ordens de serviço no Omie`,
         { description: `${data.status_lidos} status conferidos · ${data.com_nota} com nota autorizada` +
+            // Emissão que MORREU também é desfecho, e é o que some se ninguém conta:
+            // ela some do "com nota" sem aparecer em lugar nenhum. Ver `fecharRecusadas`.
+            (Number(data?.recusas?.fechadas ?? 0) ? ` · ${data.recusas.fechadas} emissão(ões) sem nota, fechadas com o motivo` : "") +
             (data.status_pendentes > data.status_lidos ? ` · faltam ${data.status_pendentes - data.status_lidos}, rode de novo` : "") },
       );
       await carregar();

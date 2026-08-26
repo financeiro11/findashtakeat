@@ -52,6 +52,12 @@
 //   "criar"            → cadastra de verdade. Params: { de, ate, teto, docs[], forcar }
 //   "corrigir"         → remonta o endereço de cadastros QUE ESTA FUNÇÃO CRIOU.
 //                        Params: { docs[] }. Não toca em cadastro alheio.
+//   "diagnostico"      → por que a nota destas cobranças não sai, com o cadastro
+//                        do Omie, o do Asaas e a proposta da Receita lado a lado.
+//                        Params: { ids: ["pay_…"] }. Não escreve nada.
+//   "corrigir_cadastro"→ escreve o endereço no Omie e/ou no Asaas, um cliente por
+//                        chamada. Params: { doc, alvos[], ids[] }. É o caminho
+//                        para o cadastro ANTIGO — ver o bloco que o explica.
 //   "molde"            → o cadastro de um cliente que já emitiu nota, cru. É
 //                        diagnóstico: serve para conferir formato de campo do
 //                        Omie sem ter de adivinhar (ver `sondar_metodos` na
@@ -61,6 +67,7 @@
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.0";
 import { requireUser } from "../_shared/auth.ts";
+import { asaasPut } from "../_shared/asaas.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -335,6 +342,192 @@ function payloadOmie(c: Fila, cad: Cadastro): Record<string, unknown> {
   return p;
 }
 
+/* ------------------ o cadastro que trava a nota, nos dois lados ------------- */
+/**
+ * DIAGNOSTICAR E CONSERTAR O CADASTRO DE UM CLIENTE QUE JÁ EXISTE NO ERP.
+ *
+ * A regra "esta função não mexe no endereço de cliente que já existe no Omie"
+ * (ver o cabeçalho e a ação `corrigir`) tinha um pressuposto que a produção
+ * desmentiu: o de que o cadastro antigo estava certo. Em 26/08/26, 15 emissões
+ * morreram no `FaturarLoteOS` com "Para emitir a NFS-e falta preencher o Número
+ * do Endereço" — R$ 6.083 de receita recebida sem nota, e nenhum desses 15
+ * cadastros tinha nascido aqui. A regra protegia o cadastro alheio de escrita
+ * cega, e isso continua certo; o que faltava era o caminho da escrita NÃO cega.
+ *
+ * As três diferenças em relação à criação em lote, e são elas que autorizam
+ * mexer no cadastro de terceiro:
+ *
+ *   1. **É um a um, nomeado.** Nada aqui aceita "conserte todos". Quem chama
+ *      passa o documento de um cliente cuja emissão está travada.
+ *   2. **O diff é mostrado antes.** `diagnostico` devolve campo a campo o que
+ *      está lá, o que a Receita diz e o que mudaria. Escrita fiscal que ninguém
+ *      leu antes é como se fabricam as filas de nota presa.
+ *   3. **Escreve por cima do que existe, não no lugar.** O payload é o cadastro
+ *      ATUAL lido do Omie com a proposta aplicada em cima — só os campos de
+ *      endereço, e só os que a proposta tem preenchidos. Um `AlterarCliente` com
+ *      payload remontado do zero apagaria o que estivesse certo lá e não fosse
+ *      assunto nosso (vendedor, observação, condição de pagamento).
+ *
+ * E ARRUMA OS DOIS LADOS. O Asaas é a origem do dado e o Omie é quem emite: se
+ * só o ERP for corrigido, o mesmo cliente volta torto na próxima cobrança e o
+ * conserto vira rotina mensal. Os dois são opcionais e independentes — dá para
+ * corrigir só o que está errado.
+ */
+
+/** Os campos de endereço, e só eles. O nome do cliente não se mexe daqui: no
+ *  Asaas ele é o fantasia que a equipe reconhece, e trocá-lo por razão social
+ *  faria a cobrança ficar irreconhecível na tela de quem cobra. */
+const CAMPOS_ENDERECO = [
+  "endereco", "endereco_numero", "complemento", "bairro", "cidade", "estado", "cep",
+] as const;
+
+/** Como o campo se chama de cada lado da ponte. */
+const NO_ASAAS: Record<string, string> = {
+  endereco: "address", endereco_numero: "addressNumber", complemento: "complement",
+  bairro: "province", cep: "postalCode",
+};
+
+/**
+ * O cadastro do cliente no Omie — e a falha de leitura DITA, nunca engolida.
+ *
+ * A primeira versão fazia `.catch(() => null)`, e isso custou caro no primeiro
+ * teste com os 16 clientes: o Omie barrou uma das leituras por ritmo, o `null`
+ * virou "não há cadastro atual", o diff saiu VAZIO e a tela teria dito "não há
+ * nada a corrigir" justamente sobre o cliente cuja nota não sai. Erro de leitura
+ * e ausência de dado parecem iguais e não são: um pede repetir, o outro pede
+ * cadastrar. Devolver os dois como a mesma coisa é o defeito clássico deste
+ * módulo (ver o INNER JOIN que fazia a cobrança sumir em silêncio).
+ */
+async function cadastroOmie(codigo: number): Promise<{ cadastro: any | null; erro: string | null }> {
+  try {
+    return { cadastro: await omieCall("geral/clientes", "ConsultarCliente", { codigo_cliente_omie: codigo }), erro: null };
+  } catch (e) {
+    return { cadastro: null, erro: e instanceof Error ? e.message : String(e) };
+  }
+}
+
+/**
+ * O que muda, campo a campo — e o que está VAZIO hoje, que é o diagnóstico.
+ *
+ * "vazio" é a coluna que responde a pergunta do Omie: a recusa não é "o número
+ * está errado", é "falta preencher o Número do Endereço". Separar vazio de
+ * divergente muda o risco de aplicar: preencher buraco não desfaz decisão de
+ * ninguém; sobrescrever valor diferente pode.
+ */
+function diffCadastro(atual: any, prop: Cadastro) {
+  const linhas: Array<{ campo: string; de: string; para: string; vazio: boolean; muda: boolean }> = [];
+  for (const campo of CAMPOS_ENDERECO) {
+    const de = limpo(atual?.[campo]);
+    // A cidade do Omie vem "VITORIA (ES)"; a proposta traz "Vitória" e a UF à
+    // parte. Comparar cru acusaria diferença em todo cliente do mundo.
+    const para = campo === "cidade"
+      ? `${semAcento(prop.cidade).toUpperCase()} (${prop.estado})`
+      : limpo((prop as any)[campo]);
+    if (!para) continue;                       // a proposta não sabe: não propõe
+    const vazio = !de;
+    const muda = semAcento(de).toUpperCase() !== semAcento(para).toUpperCase();
+    linhas.push({ campo, de: de || "(vazio)", para, vazio, muda });
+  }
+  return linhas;
+}
+
+/** O `Fila` que `montarCadastro` espera, montado do espelho do Asaas. */
+function filaDoCliente(id_asaas: string, doc: string, d: any): Fila {
+  return {
+    id_asaas, doc, nome: limpo(d?.name) || limpo(d?.company),
+    pessoa_fisica: doc.length === 11,
+    email: d?.email ?? null, telefone: d?.mobilePhone ?? d?.phone ?? null,
+    endereco: d?.address ?? null, endereco_numero: d?.addressNumber ?? null,
+    complemento: d?.complement ?? null, bairro: d?.province ?? null,
+    cidade: d?.cityName ?? null, estado: d?.state ?? null, cep: d?.postalCode ?? null,
+    cobrancas: 0, valor: 0, ultima: null, sem_nota_hoje: 0,
+    bloqueio: null, omie_nome: null, omie_doc: null, via: null,
+    situacao_anterior: null, motivo_anterior: null, tentativas: 0,
+  };
+}
+
+/**
+ * Cobranças → clientes, com o motivo pelo qual a emissão parou.
+ *
+ * A entrada é o id da COBRANÇA porque é o que a tela tem na mão (o Registro de
+ * emissões e o Painel do mês falam em cobrança, não em documento). O documento
+ * aparece dois joins depois, e o mesmo cliente pode ter várias cobranças
+ * travadas — daí a saída ser por cliente, com as cobranças dentro.
+ */
+async function clientesTravados(supabase: any, ids: string[]) {
+  const { data: pags } = await supabase
+    .from("asaas_cache").select("id_asaas, valor, dados")
+    .eq("tipo", "payment").in("id_asaas", ids);
+
+  const cusIds = [...new Set((pags ?? []).map((p: any) => p?.dados?.customer).filter(Boolean))] as string[];
+  const { data: cus } = await supabase
+    .from("asaas_cache").select("id_asaas, dados").eq("tipo", "customer").in("id_asaas", cusIds);
+  const clientePor = new Map((cus ?? []).map((c: any) => [c.id_asaas, c.dados]));
+
+  // O cadastro do Omie: o MENOR código do documento, que é o mesmo critério da
+  // fila de emissão (`min(codigo)`). Escolher outro aqui consertaria um cadastro
+  // e emitiria pelo outro.
+  const { data: cache } = await supabase.from("omie_cache").select("dados").eq("chave", "clientes").maybeSingle();
+  const codigoPor = new Map<string, number>();
+  for (const c of ((cache?.dados as any[]) ?? [])) {
+    const d = soDigitos(c?.cnpj_cpf);
+    if (!d || !c?.codigo) continue;
+    const atual = codigoPor.get(d);
+    if (atual == null || Number(c.codigo) < atual) codigoPor.set(d, Number(c.codigo));
+  }
+
+  // Por que parou: a última palavra do diário e o estado da OS.
+  const { data: diario } = await supabase
+    .from("nf_emissoes").select("id_asaas, n_cod_os, resultado, erro, criado_em")
+    .in("id_asaas", ids).order("criado_em", { ascending: false }).range(0, 999);
+  const motivoPor = new Map<string, any>();
+  for (const l of diario ?? []) if (!motivoPor.has(l.id_asaas)) motivoPor.set(l.id_asaas, l);
+
+  const { data: oss } = await supabase
+    .from("nf_os_omie").select("n_cod_os, c_num_os, c_cod_int_os, etapa, faturada, nfse_status, nfse_numero, nfse_mensagem")
+    .in("c_cod_int_os", ids);
+  const osPor = new Map((oss ?? []).map((o: any) => [o.c_cod_int_os, o]));
+
+  const porDoc = new Map<string, any>();
+  for (const p of pags ?? []) {
+    const cusId = p?.dados?.customer;
+    const d = clientePor.get(cusId) ?? {};
+    const doc = soDigitos(d?.cpfCnpj);
+    if (!doc) continue;
+    const chave = doc;
+    if (!porDoc.has(chave)) {
+      porDoc.set(chave, {
+        doc, id_customer: cusId, nome: limpo(d?.name) || limpo(d?.company),
+        pessoa_fisica: doc.length === 11,
+        n_cod_cli: codigoPor.get(doc) ?? null,
+        asaas: {
+          endereco: d?.address ?? null, endereco_numero: d?.addressNumber ?? null,
+          complemento: d?.complement ?? null, bairro: d?.province ?? null,
+          cidade: d?.cityName ?? null, estado: d?.state ?? null, cep: d?.postalCode ?? null,
+          email: d?.email ?? null,
+        },
+        _dados: d,
+        cobrancas: [] as any[],
+      });
+    }
+    const os = osPor.get(p.id_asaas) ?? null;
+    porDoc.get(chave).cobrancas.push({
+      id_asaas: p.id_asaas, valor: Number(p.valor ?? 0),
+      status: p?.dados?.status ?? null,
+      n_cod_os: os?.n_cod_os ?? null, c_num_os: os?.c_num_os ?? null,
+      etapa: os?.etapa ?? null, faturada: os?.faturada ?? null,
+      nfse_status: os?.nfse_status ?? null, nfse_numero: os?.nfse_numero ?? null,
+      /* Faturada sem nota válida é o único caso que ESTA função não destrava: a
+       * OS já saiu do nosso alcance (o Omie só a deixa ir para a etapa 60) e não
+       * existe reenvio pela API — é o botão "Reenviar NFS-e" da tela do Omie. */
+      reemitivel: !(os?.faturada === true),
+      motivo: motivoPor.get(p.id_asaas)?.erro ?? null,
+      resultado: motivoPor.get(p.id_asaas)?.resultado ?? null,
+    });
+  }
+  return [...porDoc.values()];
+}
+
 /* ------------------------------ cache local -------------------------------- */
 
 /**
@@ -394,6 +587,144 @@ Deno.serve(async (req) => {
       if (!cod) return json({ status: "erro", erro: "Informe { codigo } de um cliente do Omie." }, 400);
       const r = await omieCall("geral/clientes", "ConsultarCliente", { codigo_cliente_omie: cod });
       return json({ status: "ok", cadastro: r });
+    }
+
+    /* ------------------------------ diagnostico ---------------------------- */
+    /* O que trava a nota destas cobranças, e o que a Receita propõe no lugar.
+     * NÃO ESCREVE NADA — nem no Omie, nem no Asaas, nem aqui. É a tela de
+     * conferência que precede a escrita fiscal. */
+    if (action === "diagnostico") {
+      const ids: string[] = (Array.isArray(body?.ids) ? body.ids : []).map(String).filter(Boolean);
+      if (!ids.length) return json({ status: "erro", erro: "Informe { ids: [\"pay_…\"] }." }, 400);
+
+      const clientes = await clientesTravados(supabase, ids.slice(0, 60));
+      const saida: any[] = [];
+      for (const c of clientes) {
+        const lido = c.n_cod_cli ? await cadastroOmie(c.n_cod_cli) : { cadastro: null, erro: null };
+        const atual = lido.cadastro;
+        const { cadastro, bloqueio } = await montarCadastro(filaDoCliente(c.id_customer, c.doc, c._dados));
+        saida.push({
+          doc: c.doc, nome: c.nome, id_customer: c.id_customer, n_cod_cli: c.n_cod_cli,
+          pessoa_fisica: c.pessoa_fisica,
+          cobrancas: c.cobrancas,
+          /* Sem cadastro no Omie é outro problema (e outra ferramenta: a ação
+           * `criar`). Dizer isso é melhor do que devolver um diff vazio. */
+          sem_cadastro_omie: !c.n_cod_cli,
+          // Leitura que falhou NÃO vira diff vazio: quem consome tem de saber que
+          // a comparação não aconteceu, em vez de ler "não há o que mudar".
+          erro_leitura_omie: lido.erro,
+          omie: atual ? Object.fromEntries(
+            [...CAMPOS_ENDERECO, "razao_social", "nome_fantasia", "email"].map((k) => [k, limpo(atual[k])]),
+          ) : null,
+          asaas: c.asaas,
+          proposta: cadastro ?? null,
+          bloqueio: bloqueio ?? null,
+          diff: cadastro && atual ? diffCadastro(atual, cadastro) : [],
+          // O que mudaria no Asaas — o mesmo cadastro, campos com outro nome.
+          diff_asaas: cadastro ? diffCadastro({
+            endereco: c.asaas.endereco, endereco_numero: c.asaas.endereco_numero,
+            complemento: c.asaas.complemento, bairro: c.asaas.bairro,
+            cidade: c.asaas.cidade ? `${semAcento(limpo(c.asaas.cidade)).toUpperCase()} (${limpo(c.asaas.estado)})` : "",
+            estado: c.asaas.estado, cep: c.asaas.cep,
+          }, cadastro) : [],
+        });
+        /* 700ms, não 300. Cada volta são DUAS chamadas externas (ConsultarCliente
+         * no Omie + Receita/CEP na BrasilAPI); com 300ms os 16 clientes do
+         * primeiro teste esbarraram no ritmo do Omie e uma leitura voltou vazia. */
+        await dorme(700);
+      }
+      return json({ status: "ok", clientes: saida });
+    }
+
+    /* --------------------------- corrigir_cadastro ------------------------- */
+    /* A escrita. Um cliente por chamada, nomeado, com os alvos explícitos. */
+    if (action === "corrigir_cadastro") {
+      const doc = soDigitos(body?.doc);
+      const alvos: string[] = Array.isArray(body?.alvos) ? body.alvos.map(String) : [];
+      const ids: string[] = (Array.isArray(body?.ids) ? body.ids : []).map(String).filter(Boolean);
+      if (!doc) return json({ status: "erro", erro: "Informe { doc }." }, 400);
+      if (!alvos.length) return json({ status: "erro", erro: 'Informe { alvos: ["omie"] } e/ou "asaas".' }, 400);
+      if (!ids.length) return json({ status: "erro", erro: "Informe { ids } das cobranças que este conserto destrava." }, 400);
+
+      const clientes = await clientesTravados(supabase, ids.slice(0, 60));
+      const c = clientes.find((x: any) => x.doc === doc);
+      if (!c) return json({ status: "erro", erro: `Nenhuma das cobranças informadas é do documento ${doc}.` }, 400);
+
+      const { cadastro, bloqueio } = await montarCadastro(filaDoCliente(c.id_customer, c.doc, c._dados));
+      if (!cadastro) return json({ status: "erro", erro: `Sem endereço confiável para escrever: ${bloqueio}.` }, 422);
+
+      const feito: Record<string, unknown> = {};
+
+      if (alvos.includes("omie")) {
+        if (!c.n_cod_cli) {
+          feito.omie = { ok: false, motivo: "Este cliente não tem cadastro no Omie — use Cadastrar, não Corrigir." };
+        } else {
+          /* POR CIMA DO QUE EXISTE. Lê-se o cadastro atual e aplica-se só o
+           * endereço em cima dele. Remontar o payload do zero (o que a ação
+           * `corrigir` faz, e pode, porque lá o cadastro nasceu aqui) apagaria
+           * vendedor, observação e condição de pagamento de um cadastro alheio. */
+          const { cadastro: atual, erro: erroLeitura } = await cadastroOmie(c.n_cod_cli);
+          if (!atual) {
+            // Não se escreve às cegas: sem saber o que está lá, não há como
+            // afirmar que a escrita preenche buraco em vez de desfazer decisão.
+            feito.omie = {
+              ok: false,
+              motivo: `Não foi possível ler o cadastro atual no Omie${erroLeitura ? `: ${erroLeitura}` : ""}. Nada foi escrito — tente de novo em alguns segundos.`,
+            };
+          } else {
+            const payload: Record<string, unknown> = {
+              codigo_cliente_omie: c.n_cod_cli,
+              endereco: cadastro.endereco.slice(0, 60),
+              endereco_numero: cadastro.endereco_numero.slice(0, 10),
+              bairro: cadastro.bairro.slice(0, 40),
+              cidade: `${semAcento(cadastro.cidade).toUpperCase()} (${cadastro.estado})`,
+              estado: cadastro.estado,
+              cep: cadastro.cep,
+            };
+            if (cadastro.cidade_ibge) payload.cidade_ibge = cadastro.cidade_ibge;
+            if (cadastro.complemento) payload.complemento = cadastro.complemento.slice(0, 40);
+            /* O e-mail entra porque o Omie o exige para a NFS-e ("falta preencher
+             * o Número do Endereço E O E-MAIL") — mas só quando está vazio lá:
+             * e-mail é contato, não endereço, e o do ERP pode ser o certo. */
+            if (!limpo(atual.email) && c.asaas.email) payload.email = String(c.asaas.email).slice(0, 100);
+            try {
+              await omieCall("geral/clientes", "AlterarCliente", payload);
+              feito.omie = { ok: true, escrito: payload, fonte: cadastro.fonte };
+            } catch (e) {
+              feito.omie = { ok: false, motivo: e instanceof Error ? e.message : String(e) };
+            }
+          }
+        }
+      }
+
+      if (alvos.includes("asaas")) {
+        /* O Asaas é a ORIGEM do dado: sem consertar aqui, o mesmo cliente volta
+         * torto na próxima cobrança e o conserto no ERP vira rotina mensal. */
+        const corpo: Record<string, unknown> = {};
+        for (const campo of CAMPOS_ENDERECO) {
+          const alvo = NO_ASAAS[campo];
+          if (!alvo) continue;                     // cidade/estado o Asaas deriva do CEP
+          const v = limpo((cadastro as any)[campo]);
+          if (v) corpo[alvo] = v;
+        }
+        try {
+          await asaasPut(`/customers/${c.id_customer}`, corpo);
+          feito.asaas = { ok: true, escrito: corpo };
+        } catch (e) {
+          feito.asaas = { ok: false, motivo: e instanceof Error ? e.message : String(e) };
+        }
+      }
+
+      /* O registro. Escrita em cadastro de terceiro sem rastro é o tipo de coisa
+       * que ninguém consegue explicar três meses depois — e aqui se escreve em
+       * DOIS sistemas de uma vez. */
+      await supabase.from("nf_cadastro_correcoes").insert({
+        doc, nome: c.nome, n_cod_cli: c.n_cod_cli, id_customer: c.id_customer,
+        alvos, fonte: cadastro.fonte, proposta: cadastro, resultado: feito,
+        ids_cobranca: ids, operador: body?.operador ?? null,
+      }).then(() => {}, () => { /* o conserto já foi feito; o log não o desfaz */ });
+
+      return json({ status: "ok", doc, fonte: cadastro.fonte, resultado: feito });
     }
 
     /* ------------------------------- corrigir ------------------------------ */

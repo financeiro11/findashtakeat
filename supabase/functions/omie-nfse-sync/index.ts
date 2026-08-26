@@ -288,15 +288,30 @@ async function lerEspelho(supabase: any): Promise<any[]> {
  * Quem fecha é o sync, que é justamente quem descobre o desfecho.
  */
 async function fecharEmProcessamento(supabase: any, nCodOS: number, numero: string | null) {
-  const { data: aberta } = await supabase
+  /* A CONDIÇÃO É "O DIÁRIO DISCORDA DA REALIDADE", não "a última palavra foi
+   * em_processamento" — e essa distinção custou uma rodada.
+   *
+   * Em 26/08/26, 14 OS foram faturadas por um lote que a função deu como
+   * fracassado (a listagem da etapa atrasou; ver `emitirDia`). Como ela achou
+   * que nada tinha sido despachado, não gravou linha `em_processamento` nenhuma
+   * — e o fechamento, que procurava só por essas, não tinha o que fechar. As 14
+   * notas nasceram e o Registro seguiu mostrando "Falhou", que é a mesma mentira
+   * do "No forno" eterno, virada do avesso.
+   *
+   * Então: pega-se o último passo de FATURAMENTO da OS, qualquer que tenha sido
+   * o resultado, e fecha-se se ele ainda não é o `ok` desta nota. */
+  const { data: ultimos } = await supabase
     .from("nf_emissoes")
-    .select("id, id_asaas, acao, operador, usuario")
+    .select("id, id_asaas, acao, operador, usuario, resultado, nfse_numero")
     .eq("n_cod_os", nCodOS)
-    .eq("resultado", "em_processamento")
+    .in("acao", ["faturar", "criar_e_faturar"])
     .order("criado_em", { ascending: false })
-    .limit(1)
-    .maybeSingle();
+    .limit(5);
+  const aberta = (ultimos ?? [])[0] ?? null;
   if (!aberta) return;
+  // Já fechado com ESTA nota: nada a acrescentar. (Sem esta guarda, cada sync
+  // acrescentaria uma linha `ok` idêntica à anterior, todo dia, para sempre.)
+  if ((ultimos ?? []).some((l: any) => l.resultado === "ok" && l.nfse_numero && l.nfse_numero === numero)) return;
 
   // Uma linha nova, não um UPDATE: o diário é append-only, e o "estava em
   // processamento às 17:08" é verdade que aconteceu e não se apaga.
@@ -335,6 +350,175 @@ async function fecharEmProcessamento(supabase: any, nCodOS: number, numero: stri
       erro: `O Omie disparou o e-mail com o link da NFS-e ${numero ?? "?"} para ${os.email_destino || "o e-mail do cadastro do cliente no Omie"}.`,
     });
   }
+}
+
+/**
+ * O DESFECHO RUIM, QUE NINGUÉM VOLTAVA PARA CONTAR.
+ *
+ * `fecharEmProcessamento` só era chamada com o RPS autorizado (`004`). Ou seja:
+ * dos três desfechos possíveis de um lote, o diário fechava UM. Os outros dois
+ * ficavam com "em processamento" como última palavra, para sempre:
+ *
+ *   • a OS que o **Omie** recusou no próprio faturamento — "Para emitir a NFS-e
+ *     falta preencher o Número do Endereço". Ela nunca virou RPS, então
+ *     `nfse_status` fica nulo e o `StatusOS` não tem o que contar: a razão existe
+ *     só no `detalhes[]` do lote, que ninguém relia depois do disparo;
+ *   • a OS faturada cujo RPS a **prefeitura** recusou (`003`). Essa o espelho até
+ *     lia — a mensagem estava gravada em `nf_os_omie.nfse_mensagem` —, mas o
+ *     diário não ficava sabendo.
+ *
+ * Medido em 26/08/26: 16 cobranças (R$ 6.257) com o selo "No forno" havia 12h,
+ * 15 delas recusadas pelo Omie por endereço incompleto do cliente. Nenhuma ia
+ * sair, e a tela dizia que estavam saindo. "No forno" que não expira é pior do
+ * que "falhou": é a única fila que ninguém revisita, porque a tela promete que o
+ * tempo resolve.
+ *
+ * Quem fecha continua sendo o sync — é ele quem descobre o desfecho. O que muda é
+ * que agora ele descobre os três.
+ */
+
+/** O lote de faturamento gravado com a linha "em processamento". */
+function loteDaLinha(l: { payload?: any; erro?: string | null }): number {
+  const doPayload = Number(l?.payload?.lote ?? 0);
+  if (doPayload) return doPayload;
+  /* As linhas anteriores a esta versão só têm o número dentro da frase — e a
+   * frase é nossa, escrita em `emitirDia` ("Lote 5513639532 disparado com…").
+   * Ler dali é feio, e é o que permite fechar o que JÁ está aberto em vez de só
+   * acertar daqui para frente. */
+  const m = /lote\s+(\d{6,})/i.exec(String(l?.erro ?? ""));
+  return m ? Number(m[1]) : 0;
+}
+
+/** Quantas horas essa linha está em aberto. */
+const horasDesde = (iso: string) => (Date.now() - new Date(iso).getTime()) / 3.6e6;
+
+async function fecharRecusadas(supabase: any): Promise<Record<string, unknown>> {
+  // 1. As linhas em aberto. A janela é generosa de propósito: o custo é uma
+  //    leitura do Postgres e o que se procura é justamente o que ficou esquecido.
+  const desde = new Date(Date.now() - 30 * 864e5).toISOString();
+  const { data: abertas } = await supabase
+    .from("nf_emissoes")
+    .select("id_asaas, n_cod_os, acao, usuario, operador, criado_em, erro, payload")
+    .eq("resultado", "em_processamento")
+    .gte("criado_em", desde)
+    .not("n_cod_os", "is", null)
+    .order("criado_em", { ascending: false })
+    .range(0, 499);
+  if (!abertas?.length) return { abertas: 0, fechadas: 0 };
+
+  // Uma por OS, a mais recente: a mesma OS pode ter sido disparada mais de uma vez.
+  const porOS = new Map<number, any>();
+  for (const a of abertas) if (!porOS.has(Number(a.n_cod_os))) porOS.set(Number(a.n_cod_os), a);
+
+  /* Quem já ganhou desfecho DEPOIS não está em aberto. Só `faturar` e
+   * `criar_e_faturar` contam: `criar_os` é passo anterior e `email` é posterior à
+   * nota — nenhum dos dois responde "esta emissão terminou". */
+  const { data: desfechos } = await supabase
+    .from("nf_emissoes")
+    .select("n_cod_os, criado_em")
+    .in("n_cod_os", [...porOS.keys()])
+    .in("acao", ["faturar", "criar_e_faturar"])
+    .neq("resultado", "em_processamento")
+    .order("criado_em", { ascending: false })
+    .range(0, 999);
+  const fechadoEm = new Map<number, string>();
+  for (const d of desfechos ?? []) {
+    const k = Number(d.n_cod_os);
+    if (!fechadoEm.has(k)) fechadoEm.set(k, String(d.criado_em));
+  }
+  for (const [os, a] of [...porOS]) {
+    const q = fechadoEm.get(os);
+    if (q && q > String(a.criado_em)) porOS.delete(os);
+  }
+  if (!porOS.size) return { abertas: 0, fechadas: 0 };
+
+  // 2. O espelho da OS diz o que a PREFEITURA respondeu; o lote diz o que o OMIE
+  //    respondeu antes dela. Os dois desfechos ruins moram em lugares diferentes.
+  const { data: espelho } = await supabase
+    .from("nf_os_omie")
+    .select("n_cod_os, c_num_os, faturada, nfse_status, nfse_numero, nfse_mensagem")
+    .in("n_cod_os", [...porOS.keys()]);
+  const osPor = new Map<number, any>();
+  for (const o of espelho ?? []) osPor.set(Number(o.n_cod_os), o);
+
+  /* Um `ListarLotesOS` por lote, ESPAÇADO. A trava do Omie é por método: duas
+   * leituras coladas devolvem "Consumo redundante detectado. Aguarde N segundos"
+   * e derrubam o resto da rodada. Na prática são zero, um ou dois lotes. */
+  const lotes = new Map<number, number[]>();
+  for (const [os, a] of porOS) {
+    const lote = loteDaLinha(a);
+    if (!lote) continue;
+    const atual = lotes.get(lote);
+    if (atual) atual.push(os); else lotes.set(lote, [os]);
+  }
+  const veredito = new Map<number, { status: string; mensagem: string }>();
+  let primeiro = true;
+  for (const lote of lotes.keys()) {
+    if (!primeiro) await dorme(5000);
+    primeiro = false;
+    const r = await omieCall<any>("servicos/oslote", "ListarLotesOS", {
+      nPagina: 1, nRegistros: 5, nIdLoteFat: lote, cExibirDetalhes: "S",
+    }).catch(() => null);
+    const reg = (r?.lotes ?? []).find((l: any) => Number(l?.nIdLoteFat) === lote) ?? null;
+    // Lote ainda rodando: "no forno" continua sendo a verdade. Não se fecha.
+    if (!reg || String(reg.cStatus ?? "") === "RUNNING") continue;
+    for (const d of (reg.detalhes ?? [])) {
+      const nCodOS = Number(d?.nIdPedido ?? d?.nCodOS ?? 0);
+      if (nCodOS) {
+        veredito.set(nCodOS, {
+          status: String(d?.cStatus ?? ""),
+          mensagem: textoDaMensagem(d?.cMensagem ?? d?.cDesStatus ?? ""),
+        });
+      }
+    }
+  }
+
+  // 3. A linha de encerramento — append-only, como todo o resto do diário.
+  const novas: any[] = [];
+  const encerrar = (a: any, erro: string) => novas.push({
+    id_asaas: a.id_asaas, n_cod_os: a.n_cod_os, acao: a.acao, resultado: "erro",
+    usuario: a.usuario ?? null, operador: a.operador ?? null,
+    payload: a.payload ?? null, erro: erro.slice(0, 500),
+  });
+
+  for (const [os, a] of porOS) {
+    const esp = osPor.get(os) ?? {};
+    const nome = `OS ${esp.c_num_os ?? os}`;
+    const v = veredito.get(os) ?? null;
+
+    // a) O Omie recusou no faturamento: a OS nem chegou a virar RPS.
+    if (v && v.status === "ERROR") {
+      encerrar(a, `O Omie recusou o faturamento da ${nome}: ${v.mensagem} ` +
+        "Nenhuma nota foi emitida e o tempo não resolve — isto é cadastro do cliente no Omie.");
+      continue;
+    }
+    // b) A prefeitura recusou o RPS. Receita faturada sem nota válida.
+    if (String(esp.nfse_status ?? "") === "003") {
+      encerrar(a, `A prefeitura recusou o RPS da ${nome}` +
+        (esp.nfse_mensagem ? `: ${textoDaMensagem(esp.nfse_mensagem)}` : ".") +
+        ' A OS consta faturada e não existe nota válida. Não há reenvio pela API — é o botão "Reenviar NFS-e" da tela do Omie.');
+      continue;
+    }
+    // c) A nota nasceu e o `004` escapou do teto de status desta rodada.
+    if (String(esp.nfse_status ?? "") === "004" && esp.nfse_numero) {
+      await fecharEmProcessamento(supabase, os, String(esp.nfse_numero));
+      continue;
+    }
+    /* d) Sem veredito do lote e sem faturamento: nada afirma que falhou, e nada
+     *    sustenta mais que esteja saindo. A emissão tem dois tempos assíncronos e
+     *    leva MINUTOS; depois de 6h, "no forno" deixou de ser uma leitura
+     *    possível do mesmo dado. Fecha dizendo exatamente o que se sabe. */
+    if (!v && esp.faturada !== true && horasDesde(a.criado_em) >= 6) {
+      const lote = loteDaLinha(a);
+      encerrar(a, `${nome}: passaram-se ${Math.floor(horasDesde(a.criado_em))}h desde o disparo e a OS ` +
+        `continua sem faturamento no Omie` +
+        (lote ? ` (o lote ${lote} não devolveu detalhe para ela)` : "") +
+        ". Nenhuma nota foi emitida.");
+    }
+  }
+
+  if (novas.length) await supabase.from("nf_emissoes").insert(novas);
+  return { abertas: porOS.size, fechadas: novas.length, lotes_lidos: lotes.size };
 }
 
 async function espelhar(supabase: any, opts: { tetoStatus: number }) {
@@ -419,11 +603,18 @@ async function espelhar(supabase: any, opts: { tetoStatus: number }) {
     }
   }
 
+  /* O desfecho ruim, DEPOIS do laço de status — é ele quem acabou de trazer da
+   * prefeitura o `003` e a mensagem que explica a recusa. E `.catch`: fechar o
+   * diário é conserto, não pode derrubar o espelho que já foi gravado. */
+  const recusas = await fecharRecusadas(supabase)
+    .catch((e) => ({ erro: mensagemDoOmie(e).slice(0, 200) }));
+
   return {
     os_listadas: linhas.length,
     status_pendentes: paraStatus.length,
     status_lidos: lidos,
     com_nota: comNota,
+    recusas,
     erros: erros.slice(0, 5),
   };
 }
@@ -1547,7 +1738,10 @@ async function emitirUma(
       // Lote em voo não é erro de emissão — é nota a caminho. O diário registra
       // as duas coisas com nomes diferentes para que "o que falta emitir" não
       // engorde com nota que já está na prefeitura.
-      await registrar(acao, loteEncerrado ? "erro" : "em_processamento", { n_cod_os: nCodOS, erro });
+      await registrar(acao, loteEncerrado ? "erro" : "em_processamento", {
+        n_cod_os: nCodOS, erro,
+        ...(fat.lote?.nIdLoteFat ? { payload: { lote: Number(fat.lote.nIdLoteFat) } } : {}),
+      });
       return {
         id_asaas: cob.id_asaas, ok: false, n_cod_os: nCodOS, erro,
         em_processamento: !loteEncerrado, lote: fat.lote ?? null, status_bruto: s,
@@ -1830,12 +2024,51 @@ async function emitirDia(
         });
       }
     }
-    const faltando = naLeva.filter((x) => !agora.includes(x.nCodOS));
+    /* A LISTAGEM ATRASA EM RELAÇÃO À TROCA DE ETAPA — e uma vez só não basta.
+     *
+     * Medido em 26/08/26, reemitindo 14 OS: as 14 `TrocarEtapaOS` foram aceitas,
+     * o `ListarOS` logo depois devolveu a etapa VAZIA, e a função reportou "14
+     * falhas, 0 despachadas" — enquanto o Omie, dois minutos depois, faturava as
+     * 14. O Hub disse que nada saiu e nasceram 14 notas: a pior das duas mentiras,
+     * porque manda emitir de novo o que já foi emitido.
+     *
+     * A releitura tem de esperar. `ocupantesDaEtapa` é `ListarOS`, e dois colados
+     * batem na trava por método ("Consumo redundante detectado. Aguarde N
+     * segundos") — os 6s são a pausa que a trava pede E o tempo que o Omie leva
+     * para a listagem alcançar as escritas.
+     */
+    let faltando = naLeva.filter((x) => !agora.includes(x.nCodOS));
+    if (faltando.length) {
+      await dorme(6000);
+      const relista = await ocupantesDaEtapa(etapaIso).catch(() => [] as number[]);
+      // Só os nossos entram na segunda leitura: intrusa já foi tratada acima, e
+      // aceitar de volta o que a varredura removeu desfaria a trava de raio.
+      agora = [...new Set([...agora, ...relista.filter((n) => meus.has(n))])];
+      faltando = naLeva.filter((x) => !agora.includes(x.nCodOS));
+    }
     if (faltando.length) {
       // O Omie engole troca de etapa em silêncio; quem não chegou não vai no lote.
       for (const f of faltando) {
         falhas.push({ id_asaas: f.cob.id_asaas, erro: `A OS ${f.nCodOS} não chegou na etapa ${etapaIso}.` });
       }
+    }
+
+    /* NENHUMA CONFIRMADA, NENHUM DISPARO.
+     *
+     * `FaturarLoteOS` fatura a ETAPA, não uma lista — disparar "sem ninguém
+     * dentro" não é inofensivo: entre a listagem e o processamento do lote, o
+     * que estiver na etapa entra. Foi exatamente o que aconteceu no lote
+     * 5513872150. Se a leitura não confirma ninguém, a resposta certa é não
+     * disparar e deixar o corredor para a varredura da próxima rodada. */
+    const entraram = naLeva.filter((x) => agora.includes(x.nCodOS));
+    if (!entraram.length) {
+      return await fechar({
+        fila: fila.length, bloqueadas: barradas.length, falhas: falhas.length,
+        pulada: `nenhuma das ${naLeva.length} OS foi confirmada na etapa ${etapaIso} depois de duas leituras. ` +
+          "Nada foi faturado — as OS podem estar no corredor, e a próxima rodada varre antes de disparar.",
+        detalhe: { falhas: falhas.slice(0, 20), ...(varridas.length ? { varridas } : {}) },
+        ...(manual ? { resultados: falhas.map((f) => ({ id_asaas: f.id_asaas, ok: false, erro: f.erro })) } : {}),
+      });
     }
 
     // 3. UM lote para a leva inteira.
@@ -1849,10 +2082,12 @@ async function emitirDia(
     if (!nIdLoteFat) throw new Error("FaturarLoteOS não devolveu nIdLoteFat.");
 
     // 4. Registra a intenção por cobrança. O desfecho é do `espelhar`.
-    const entraram = naLeva.filter((x) => agora.includes(x.nCodOS));
     await supabase.from("nf_emissoes").insert(entraram.map((x) => ({
       id_asaas: x.cob.id_asaas, n_cod_os: x.nCodOS, acao: x.acao, resultado: "em_processamento",
       erro: `Lote ${nIdLoteFat} disparado com ${entraram.length} OS. A nota nasce em alguns minutos; o próximo sync grava o número.`,
+      // O lote em coluna e não só na frase: é por ele que o `fecharRecusadas` vai
+      // reler o `detalhes[]` e descobrir quem o Omie recusou no faturamento.
+      payload: { lote: nIdLoteFat },
       usuario: opts.usuario, operador: opts.operador,
     })));
 

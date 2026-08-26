@@ -34,8 +34,10 @@ import { comValorExato } from "@/components/ValorExato";
 import {
   RefreshCw, Loader2, CheckCircle2, XCircle, Clock, FlaskConical,
   PlayCircle, CalendarClock, Info, Power, FileText, ChevronRight, ChevronDown, ShieldAlert, Mail,
+  AlertTriangle, Building2,
 } from "lucide-react";
 import { linkPortalNacional, chaveEmBlocos } from "@/lib/notasFiscais";
+import { CorrigirCadastro } from "@/components/notas/CorrigirCadastro";
 
 const sb = supabase as any;
 
@@ -109,7 +111,25 @@ interface Execucao {
  * Por isso o desfecho é DERIVADO da ação junto com o resultado. Só faturamento
  * concluído vira "Emitida"; criar OS vira "Sem nota", que é o que ela é.
  */
-type EstadoKey = "emitida" | "email" | "no_forno" | "falhou" | "barrada" | "sem_nota" | "ensaio";
+type EstadoKey = "emitida" | "email" | "no_forno" | "travada" | "falhou" | "barrada" | "sem_nota" | "ensaio";
+
+/* "NO FORNO" TEM PRAZO — e o prazo é a correção que faltava.
+ *
+ * A emissão tem dois tempos assíncronos e os dois são de MINUTOS: o lote fecha em
+ * ~2min e o RPS vira nota autorizada em mais ~1min. Passadas horas, "está saindo"
+ * deixou de ser uma leitura possível do mesmo dado — e era a leitura que a tela
+ * continuava fazendo, em âmbar, para sempre. Em 26/08/26 havia 16 cobranças
+ * (R$ 6.257) com o selo "No forno" desde a véspera; 15 tinham sido recusadas pelo
+ * Omie no próprio faturamento, por endereço incompleto do cliente, e nenhuma delas
+ * ia sair nunca.
+ *
+ * Quem descobre o motivo é o `omie-nfse-sync` (`fecharRecusadas`), que relê o
+ * `detalhes[]` do lote e fecha a linha com a frase do Omie. Este prazo é a rede
+ * embaixo: enquanto ninguém releu — porque o sync não rodou, porque o lote sumiu
+ * da listagem —, o selo para de prometer. Errar para o lado de "confira isto" é
+ * barato; errar para o lado de "está saindo" é a fila que ninguém revisita.
+ */
+const HORAS_NO_FORNO = 2;
 
 const ESTADO: Record<EstadoKey, { rotulo: string; ajuda: string; tom: string; Icone: typeof CheckCircle2 }> = {
   emitida:  {
@@ -130,6 +150,15 @@ const ESTADO: Record<EstadoKey, { rotulo: string; ajuda: string; tom: string; Ic
     rotulo: "No forno", Icone: Clock,
     ajuda: "O lote foi disparado e a nota está a caminho da prefeitura. Não é falha — emitir de novo criaria a segunda nota do mesmo serviço.",
     tom: "bg-amber-500/10 text-amber-600 border-amber-500/20 dark:text-amber-400",
+  },
+  /* Travada ≠ no forno, e a diferença é a única que importa nesta tela: no forno
+     é esperar, travada é agir. O selo é vermelho porque a cobrança está recebida,
+     a receita está registrada e a nota fiscal NÃO existe — e ninguém ia descobrir
+     isso enquanto o rótulo dissesse que era só demora. */
+  travada:  {
+    rotulo: "Parou no forno", Icone: AlertTriangle,
+    ajuda: `O lote foi disparado há mais de ${HORAS_NO_FORNO}h e nenhuma nota nasceu. Isso não é lentidão da prefeitura: a emissão morreu no meio. Na quase totalidade dos casos é cadastro do cliente no Omie (endereço sem número, e-mail em branco), que o lote recusa antes de virar RPS. Abra os passos — o "Atualizar do Omie" traz a frase do Omie para cá.`,
+    tom: "bg-destructive/10 text-destructive border-destructive/20",
   },
   falhou:   {
     rotulo: "Falhou", Icone: XCircle,
@@ -158,7 +187,7 @@ const ESTADO: Record<EstadoKey, { rotulo: string; ajuda: string; tom: string; Ic
   },
 };
 
-const desfechoDe = (l: LinhaLog): EstadoKey => {
+const desfechoDe = (l: LinhaLog, agora = Date.now()): EstadoKey => {
   // Antes do ensaio: em modo `previa` a porta continua valendo, e uma cobrança
   // barrada ali não é "teria emitido" — é "não emitiria nem se estivesse ligada".
   if (l.resultado === "bloqueado") return "barrada";
@@ -167,7 +196,10 @@ const desfechoDe = (l: LinhaLog): EstadoKey => {
   // sem esta linha ele vestiria o selo verde e contaria como uma segunda nota.
   if (l.acao === "email") return "email";
   if (l.resultado === "erro") return "falhou";
-  if (l.resultado === "em_processamento") return "no_forno";
+  if (l.resultado === "em_processamento") {
+    const horas = (agora - new Date(l.criado_em).getTime()) / 3.6e6;
+    return horas >= HORAS_NO_FORNO ? "travada" : "no_forno";
+  }
   if (l.acao === "criar_os") return "sem_nota";   // 'ok' aqui é a OS, não a nota
   return l.resultado === "ok" ? "emitida" : "sem_nota";
 };
@@ -402,7 +434,42 @@ export default function NotasFiscaisLog() {
     }
   };
 
+  /* Conferir no Omie é o MESMO `espelhar` do botão do cabeçalho — é ele quem relê
+     o `detalhes[]` do lote e fecha no diário a linha que o Omie recusou. Está
+     repetido aqui porque a faixa é o lugar onde a pessoa descobre o problema, e
+     mandá-la procurar o botão lá em cima é onde a correção se perde. */
+  const [conferindo, setConferindo] = useState(false);
+  /* As cobranças que o diálogo de cadastro vai diagnosticar. Vazio = fechado.
+     Guardar os IDS (e não o grupo) é o que permite abrir o mesmo diálogo da
+     faixa (a leva inteira) e de uma linha só, sem dois caminhos de código. */
+  const [aCorrigir, setACorrigir] = useState<string[]>([]);
+  const conferirNoOmie = async () => {
+    setConferindo(true);
+    try {
+      const { data, error } = await sb.functions.invoke("omie-nfse-sync", { body: { action: "espelhar" } });
+      if (error) throw error;
+      if (data?.erro) throw new Error(data.erro);
+      const f = Number(data?.recusas?.fechadas ?? 0);
+      toast.success(
+        f ? `${f} emissão(ões) fechada(s) com o motivo do Omie.` : "Nada novo a fechar.",
+        { description: `${data?.status_lidos ?? 0} status conferidos no Omie.` },
+      );
+      await carregar();
+    } catch (e: any) {
+      toast.error("Falha ao conferir no Omie.", { description: e?.message });
+    } finally {
+      setConferindo(false);
+    }
+  };
+
   const grupos = useMemo(() => agrupar(linhas), [linhas]);
+  /* O que parou. `travada` já é o estado do grupo (ver `desfechoDe`); aqui só se
+     conta e se soma, porque "16 clientes" sem o valor não dimensiona nada. */
+  const travadas = useMemo(() => grupos.filter((g) => g.estado === "travada"), [grupos]);
+  const valorTravado = travadas.reduce((s, g) => s + g.valor, 0);
+  // Quantas ainda estão com "em processamento" como última palavra — essas são as
+  // que precisam de uma leitura do Omie para ganhar motivo.
+  const semMotivo = travadas.filter((g) => g.ultimo.resultado === "em_processamento").length;
   const ultima = rodadas[0] ?? null;
   const gruposRodada = useMemo(() => agruparRodadas(rodadas), [rodadas]);
   const visiveis = filtro === "todas" ? grupos : grupos.filter((g) => g.estado === filtro);
@@ -562,16 +629,71 @@ export default function NotasFiscaisLog() {
         )}
       </div>
 
+      {/* ---------------------- o que parou e ninguém viu ----------------------
+          A sinalização por FILTRO não é sinalização: quem não desconfia não
+          clica em "Parou no forno", e o que trava aqui é receita já recebida sem
+          nota fiscal. Esta faixa só existe quando existe o problema, e diz as
+          três coisas que decidem o que fazer: quantas, quanto, e se o motivo já
+          foi lido do Omie ou ainda precisa ser buscado. */}
+      {travadas.length > 0 && (
+        <div className="rounded-lg border border-destructive/30 bg-destructive/5 p-3">
+          <div className="flex flex-wrap items-start gap-3">
+            <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-destructive" />
+            <div className="min-w-[260px] flex-1 space-y-1">
+              <p className="text-xs font-semibold text-destructive">
+                {travadas.length} {travadas.length === 1 ? "cliente parou" : "clientes pararam"} no meio da emissão
+                {" · "}{brl(valorTravado)} recebidos sem nota
+              </p>
+              <p className="text-[11px] leading-relaxed text-muted-foreground">
+                O lote foi disparado há mais de {HORAS_NO_FORNO}h e a nota não nasceu. Isso não se resolve
+                esperando: o Omie recusa o faturamento antes de virar RPS quando o cadastro do cliente está
+                incompleto — endereço sem número, e-mail em branco — e a prefeitura recusa o RPS quando o
+                CEP não bate com o município.{" "}
+                {semMotivo > 0
+                  ? <><strong className="text-foreground">{semMotivo}</strong> {semMotivo === 1 ? "ainda está" : "ainda estão"} sem o motivo lido do Omie — "Conferir no Omie" busca a frase do lote e a grava aqui.</>
+                  : "O motivo de cada uma está na coluna ao lado."}
+              </p>
+            </div>
+            <div className="flex shrink-0 flex-wrap items-center gap-1.5">
+              {/* O conserto no mesmo lugar onde o problema aparece. Quase toda
+                  emissão que para aqui para por cadastro do cliente, e mandar a
+                  pessoa para o Omie é onde o conserto se perdia. */}
+              <button
+                onClick={() => setACorrigir(travadas.flatMap((g) => g.cobrancas.map((c) => c.id_asaas)))}
+                className="flex items-center gap-1.5 rounded border border-destructive/30 bg-destructive/10 px-2 py-1 text-[11px] font-medium text-destructive hover:bg-destructive/20"
+              >
+                <Building2 className="h-3 w-3" />
+                Corrigir cadastro e reemitir
+              </button>
+              <button
+                onClick={() => setFiltro("travada")}
+                className="rounded border border-destructive/30 px-2 py-1 text-[11px] text-destructive hover:bg-destructive/10"
+              >
+                Ver as {travadas.length}
+              </button>
+              <button
+                onClick={conferirNoOmie}
+                disabled={conferindo}
+                className="flex items-center gap-1.5 rounded border border-border bg-card px-2 py-1 text-[11px] text-muted-foreground hover:bg-muted"
+              >
+                {conferindo ? <Loader2 className="h-3 w-3 animate-spin" /> : <RefreshCw className="h-3 w-3" />}
+                Conferir no Omie
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* ------------------------------- filtros ------------------------------
           A contagem é de CLIENTE, não de linha do diário: "Emitida 2" são duas
           notas na rua. Contar linhas era o que fazia dois clientes virarem
           quatro emitidas, somando o passo da OS ao faturamento que a emitiu. */}
       <div className="flex flex-wrap items-center gap-1.5">
-        {(["todas", "emitida", "no_forno", "falhou", "barrada", "sem_nota", "ensaio"] as const).map((f) => {
+        {(["todas", "emitida", "no_forno", "travada", "falhou", "barrada", "sem_nota", "ensaio"] as const).map((f) => {
           const n = f === "todas" ? grupos.length : grupos.filter((g) => g.estado === f).length;
           // Os estados de canto só aparecem quando existem — barra curta dia
           // normal, completa no dia em que algo ficou pelo caminho.
-          if (n === 0 && (f === "sem_nota" || f === "ensaio" || f === "barrada")) return null;
+          if (n === 0 && (f === "sem_nota" || f === "ensaio" || f === "barrada" || f === "travada")) return null;
           return (
             <button
               key={f}
@@ -669,7 +791,21 @@ export default function NotasFiscaisLog() {
                     <td className="whitespace-nowrap p-2 align-top text-muted-foreground">
                       {g.eventos.length} {g.eventos.length === 1 ? "passo" : "passos"}
                     </td>
-                    <td className="p-2 align-top"><Selo e={g.estado} /></td>
+                    <td className="p-2 align-top">
+                      <Selo e={g.estado} />
+                      {/* Cadastro é a causa da quase totalidade do que para aqui.
+                          O atalho fica na linha porque é onde a pessoa está
+                          olhando quando entende que aquela nota não vai sair. */}
+                      {(g.estado === "travada" || g.estado === "falhou") && (
+                        <button
+                          onClick={(e) => { e.stopPropagation(); setACorrigir(g.cobrancas.map((c) => c.id_asaas)); }}
+                          className="mt-1 block whitespace-nowrap rounded border border-border px-1.5 py-0.5 text-[10px] text-muted-foreground hover:bg-muted"
+                          title="Ver o cadastro deste cliente no Omie, no Asaas e na Receita — e corrigir sem sair do Hub."
+                        >
+                          Corrigir cadastro
+                        </button>
+                      )}
+                    </td>
                     <td className="max-w-[380px] p-2 align-top">
                       {g.nfse.map((n) => <SeloNota key={n.numero} numero={n.numero} chave={n.chave} />)}
                       {/* O e-mail ao lado do número da nota. "O cliente recebeu?"
@@ -769,6 +905,13 @@ export default function NotasFiscaisLog() {
         criada" é passo, não nota: quem emite é o faturamento. E "no forno" não é falha — é nota a
         caminho da prefeitura, e emitir de novo criaria a segunda nota do mesmo serviço.
       </p>
+
+      <CorrigirCadastro
+        ids={aCorrigir}
+        aberto={aCorrigir.length > 0}
+        onFechar={() => setACorrigir([])}
+        onFeito={carregar}
+      />
     </div>
   );
 }

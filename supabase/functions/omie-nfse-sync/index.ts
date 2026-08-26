@@ -1139,7 +1139,7 @@ async function curarEspelho(supabase: any, idAsaas: string, cobranca: any) {
  * horas por uma nota que se cancela com prazo e justificativa.
  */
 async function conferirNoAsaas(
-  supabase: any, cobrancas: any[],
+  supabase: any, cobrancas: any[], paralelo: boolean,
 ): Promise<Map<string, string | null>> {
   const veredito = new Map<string, string | null>();
 
@@ -1156,9 +1156,30 @@ async function conferirNoAsaas(
       if (motivo) {
         veredito.set(id, `${motivo} (lido no Asaas agora: ${String(p?.status ?? "?")})`);
         await curarEspelho(supabase, id, p).catch(() => { /* o bloqueio já valeu */ });
-      } else {
-        veredito.set(id, null);
+        return;
       }
+
+      /* 3) A NOTA DO ASAAS, AO VIVO — a trava do período de paralelo.
+       *
+       * A fila já exclui quem é do Asaas pela configuração da assinatura, e já
+       * exclui quem tem nota no espelho. Mas o espelho de invoices é diário
+       * (12:15 UTC) e a emissão roda às 13h: uma nota que o Asaas agendou às
+       * 12:30 não estaria lá. Quarenta e cinco minutos é janela curta e mesmo
+       * assim é janela — e o que cabe nela é uma segunda nota fiscal do mesmo
+       * serviço, que não se apaga, cancela-se com prazo e justificativa.
+       *
+       * Custa UMA leitura por cobrança. Falha de leitura FECHA a porta, como o
+       * resto deste bloco: no escuro não se emite. */
+      if (paralelo) {
+        const inv = await asaasGet<any>("/invoices", { payment: id, limit: 1 });
+        const quantas = Number(inv?.totalCount ?? (inv?.data?.length ?? 0));
+        if (quantas > 0) {
+          const st = String(inv?.data?.[0]?.status ?? "?");
+          veredito.set(id, `O Asaas já tem nota para esta cobrança (${st}), lido agora. Enquanto os dois emitem, a nota é dele.`);
+          return;
+        }
+      }
+      veredito.set(id, null);
     } catch (e) {
       veredito.set(id, `Não deu para confirmar o estado da cobrança no Asaas (${
         (e instanceof Error ? e.message : String(e)).slice(0, 120)
@@ -1182,7 +1203,12 @@ async function passarPelaPorta(
 ): Promise<{ liberadas: any[]; barradas: Array<{ id_asaas: string; motivo: string }> }> {
   if (!cobrancas.length) return { liberadas: [], barradas: [] };
 
-  const veredito = await conferirNoAsaas(supabase, cobrancas);
+  /* `paralelo_asaas` liga a conferência da nota do Asaas ao vivo. Lido aqui e
+   * não no chamador porque a porta é uma só, e as duas rotas que a atravessam
+   * (rodada e emissão manual) têm de fechar com o mesmo critério. */
+  const { data: cfgPar } = await supabase
+    .from("nf_config").select("paralelo_asaas").eq("id", 1).maybeSingle();
+  const veredito = await conferirNoAsaas(supabase, cobrancas, cfgPar?.paralelo_asaas !== false);
   const liberadas: any[] = [];
   const barradas: Array<{ id_asaas: string; motivo: string; n_cod_os: number | null }> = [];
 
@@ -2260,6 +2286,91 @@ Deno.serve(async (req) => {
         base64: body?.previa === true && body?.pdf_base64 === true,
       });
       return json({ ok: true, ...r });
+    }
+
+    /* Sonda de LEITURA no Asaas — mesma ideia do `sondar_metodos` do Omie.
+     *
+     * A pergunta que ela existe para responder: "o Asaas pretende emitir esta
+     * nota?". O objeto `invoice` só nasce quando ele decide emitir, e ele decide
+     * com até 29 dias de atraso (medido: p90 de 21 dias) — então a AUSÊNCIA de
+     * invoice não prova nada. A configuração de nota fiscal da assinatura, se
+     * for legível, prova. */
+    if (action === "sondar_asaas") {
+      const caminho = String(body?.path ?? "");
+      if (!/^\/[A-Za-z0-9_\/-]+$/.test(caminho)) {
+        return json({ ok: false, erro: "Informe { path: \"/subscriptions/…\" } — só leitura." }, 400);
+      }
+      try {
+        const r = await asaasGet<any>(caminho, body?.params ?? {});
+        return json({ ok: true, path: caminho, resposta: r });
+      } catch (e) {
+        return json({ ok: false, path: caminho, erro: e instanceof Error ? e.message : String(e) });
+      }
+    }
+
+    /* ---------------------- de quem é a nota: sonda ----------------------- */
+    /* Pergunta ao Asaas, assinatura por assinatura, se ELE emite. 200 = dele,
+     * 404 = nosso. Ver a migration `asaas_nf_config` para por que este é o único
+     * sinal que vale, e por que ele não existe para cobrança avulsa.
+     *
+     * O custo no Asaas é UMA leitura por assinatura, uma vez — não por cobrança,
+     * não por dia. ~1.100 assinaturas ativas contra a cota de 25.000 por 12h. */
+    if (action === "sondar_nf_asaas") {
+      const teto = Math.max(1, Math.min(Number(body?.teto ?? 80), 200));
+      const { data: alvos, error } = await supabase.rpc("asaas_assinaturas_a_sondar", { p_limite: teto });
+      if (error) return json({ ok: false, erro: `asaas_assinaturas_a_sondar: ${error.message}` }, 500);
+      if (!alvos?.length) return json({ ok: true, sondadas: 0, restam: 0 });
+
+      const inicio = Date.now();
+      const linhas: any[] = [];
+      let doAsaas = 0, doHub = 0, falhas = 0;
+      for (const a of alvos) {
+        if (Date.now() - inicio > 110_000) break;   // o bloco se mede em tempo
+        try {
+          const r = await asaasGet<any>(`/subscriptions/${a.assinatura}/invoiceSettings`);
+          linhas.push({
+            assinatura: a.assinatura, tem_config: true,
+            periodo: String(r?.invoiceCreationPeriod ?? "") || null,
+            lido_em: new Date().toISOString(), erro: null,
+          });
+          doAsaas++;
+        } catch (e) {
+          const msg = e instanceof Error ? e.message : String(e);
+          /* 404 é RESPOSTA, não falha: quer dizer "esta assinatura não tem
+           * configuração de nota fiscal", que é exatamente o que se perguntou.
+           * Qualquer outro erro fica `tem_config = null` — e null não emite. */
+          if (/\[404\]/.test(msg)) {
+            linhas.push({
+              assinatura: a.assinatura, tem_config: false, periodo: null,
+              lido_em: new Date().toISOString(), erro: null,
+            });
+            doHub++;
+          } else {
+            linhas.push({
+              assinatura: a.assinatura, tem_config: null, periodo: null,
+              lido_em: new Date().toISOString(), erro: msg.slice(0, 200),
+            });
+            falhas++;
+          }
+        }
+        await dorme(250);   // o Asaas tem vaga e backoff próprios; isto é folga
+      }
+      if (linhas.length) {
+        await supabase.from("asaas_nf_config").upsert(linhas, { onConflict: "assinatura" });
+      }
+      /* Quantas faltam vem por CONTAGEM, não por contar as linhas devolvidas: o
+       * PostgREST corta a resposta em 1.000 sem avisar, e o "restam: 1000" que
+       * ele produzia era o teto, não o resto — a sonda parecia não andar. Mesma
+       * armadilha do `.limit(2000)` da classificação do Asaas. */
+      const { count: restam } = await supabase
+        .from("asaas_nf_config").select("assinatura", { count: "exact", head: true })
+        .is("tem_config", null);
+      return json({
+        ok: true, sondadas: linhas.length,
+        do_asaas: doAsaas, do_hub: doHub, sem_resposta: falhas,
+        sem_config_ainda: restam ?? null,
+        segundos: Math.round((Date.now() - inicio) / 1000),
+      });
     }
 
     if (action === "sondar_metodos") {

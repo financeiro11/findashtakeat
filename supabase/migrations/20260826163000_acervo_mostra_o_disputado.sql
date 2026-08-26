@@ -1,0 +1,35 @@
+-- REVERTIDA. Esta migration recriou uma sobrecarga que outra frente já tinha
+-- eliminado de propósito, e o efeito foi quebrar a função para todo mundo.
+--
+-- O QUE ACONTECEU. Em 26/08/2026 duas frentes mexeram em
+-- `notas_externas_acervo` ao mesmo tempo. A outra evoluiu a assinatura de 6 para
+-- 11 argumentos (período, ordem, faixa de valor, `arquivo_bucket`) e fechou com
+-- `drop function if exists` das versões antigas — certíssimo, porque argumento
+-- com DEFAULT torna as duas elegíveis para a mesma chamada. Esta migration, que
+-- ainda falava a assinatura de 6, recriou a versão curta:
+--
+--   ERROR 42725: function public.notas_externas_acervo(...) is not unique
+--   HINT: Could not choose a best candidate function.
+--
+-- Não é conflito de merge — o arquivo aplica limpo. É o BANCO que fica com duas
+-- funções de mesmo nome, ambas alcançáveis, e toda chamada de 6 argumentos
+-- passa a falhar. Some da revisão de código e aparece na tela.
+--
+-- O QUE ESTA MIGRATION FAZ AGORA: só derruba a sobrecarga curta, deixando a de
+-- 11 argumentos como única. Nada além disso.
+--
+-- O QUE SE PERDEU, e onde continua valendo: a parte de CASAMENTO desta leva está
+-- inteira e não passa por aqui — `notas_externas_casar` v3 (peso da
+-- reivindicação), `notas_externas_marcar_copias` e a guarda `parece_nota` na
+-- fila, nas migrations 160000/161000/162000. Foi ela que levou a disputa de 601
+-- para 317.
+--
+-- O que ficou de fora é a metade de TELA: mostrar, na linha disputada, QUAL
+-- lançamento está em jogo (`proposta_tipo` / `proposta_id` vindos de
+-- `candidatos->'alvos'->0`), para `notas_externas_definir_alvo` resolver em um
+-- clique. Sem isso a nota disputada aparece dizendo "3 documentos disputam o
+-- mesmo lançamento" sem dizer qual — e decisão que a tela não deixa tomar não é
+-- ambiguidade, é trabalho parado. Isso precisa ser refeito sobre a assinatura de
+-- 11 argumentos, e não por cima dela.
+
+drop function if exists public.notas_externas_acervo(text, text, text, text, integer, integer);

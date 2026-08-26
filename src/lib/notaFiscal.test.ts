@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   chaveDeAcesso, chaveValida, dadosDaChave, descricaoDaNota, lerCorpoDeEmail,
-  lerDanfes, lerNomeDeArquivo, lerXmlFiscal, tipoDoDocumento,
+  ehAvisoDeCobranca, lerDanfes, lerNomeDeArquivo, lerXmlFiscal, tipoDoDocumento,
 } from "@/lib/notaFiscal";
 
 /* ---------------------------------------------------------------------------
@@ -195,6 +195,34 @@ describe("tipo do documento", () => {
     expect(tipoDoDocumento("99Receipt - 23Jul2026 - R$57,00 - Pop - Vitória.pdf")).toBe("recibo");
     expect(tipoDoDocumento("Cópia de ClientStatements_082426.pdf")).toBe("extrato");
     expect(tipoDoDocumento("2026-08-04_Junho_2026.pdf")).toBe("outro");
+  });
+});
+
+describe("aviso de cobrança não é o documento", () => {
+  /* Assuntos REAIS da caixa financeiro@, das 489 linhas que chegaram sem anexo
+     e estavam todas gravadas como tipo_documento='nota'. */
+  it("pega o recado sobre a nota", () => {
+    expect(ehAvisoDeCobranca("VICTORIA PARTNERS - Aviso de Vencimento do Pix da NFS-e nº 1234")).toBe(true);
+    expect(ehAvisoDeCobranca("VICTORIA PARTNERS - Lembrete de Vencimento do Boleto da NFS-e")).toBe(true);
+    expect(ehAvisoDeCobranca("Focus NFe - Lembrete de Fatura vencendo hoje")).toBe(true);
+    expect(ehAvisoDeCobranca("Focus NFe - Sua fatura mensal com vencimento em 10/08/2026")).toBe(true);
+    expect(ehAvisoDeCobranca("Acras Sistemas | Recebemos seu pagamento!")).toBe(true);
+    expect(ehAvisoDeCobranca("Seu pagamento foi confirmado - Fatura 867429394")).toBe(true);
+    expect(ehAvisoDeCobranca("Sua nota fiscal do Google Ads está pronta")).toBe(true);
+    expect(ehAvisoDeCobranca("O boleto da BuzzLead vence hoje")).toBe(true);
+    expect(ehAvisoDeCobranca("Financeiro Acras - Fatura com atraso de 5 dias")).toBe(true);
+  });
+
+  it("não confunde ENTREGA com recado", () => {
+    // Estes trazem (ou tentam trazer) o documento. Se o anexo falhar, ainda é
+    // uma nota faltando — e alguém precisa ir atrás.
+    expect(ehAvisoDeCobranca("Envio da NFS-e - N.Doc 000035651 - Série 001")).toBe(false);
+    expect(ehAvisoDeCobranca("Nota Fiscal Eletrônica")).toBe(false);
+    expect(ehAvisoDeCobranca("Sua fatura e nota fiscal")).toBe(false);
+    expect(ehAvisoDeCobranca("Nota Fiscal + Boleto Os. 1-0453")).toBe(false);
+    expect(ehAvisoDeCobranca("CONFIRMAÇÃO DE FATURAMENTO DO DOCUMENTO 000000230234-NF-001")).toBe(false);
+    expect(ehAvisoDeCobranca("")).toBe(false);
+    expect(ehAvisoDeCobranca(null)).toBe(false);
   });
 });
 

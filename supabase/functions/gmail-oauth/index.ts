@@ -37,19 +37,72 @@ const json = (body: unknown, status = 200) =>
 
 const PROJETO = "lgcxyxyidoirqmbdlldh";
 const REDIRECT = `https://${PROJETO}.supabase.co/functions/v1/gmail-oauth`;
-const ESCOPO = "https://www.googleapis.com/auth/gmail.readonly";
+/* DOIS ESCOPOS, E OS DOIS SÃO SOMENTE LEITURA.
+ *
+ * `gmail.readonly` é o original: ler a caixa e extrair a nota que chega por
+ * e-mail.
+ *
+ * `drive.readonly` entrou em 26/08/2026, e o motivo é concreto. As notas que as
+ * cinco planilhas de formulário recolhem NÃO SÃO DA EMPRESA: o upload fica no
+ * Drive de quem preencheu, e o `financeiro@` só recebe compartilhamento. Um
+ * exemplo real da fila — "uber golburger dia 19-11-2024 - Franco Passos.pdf",
+ * `owner: joaoesteves.takeat@gmail.com`, um Gmail PESSOAL, `sharedWithMeTime`
+ * de 19/11/2024. Se essa pessoa sair, mover ou apagar, a nota some e a empresa
+ * nunca a teve.
+ *
+ * Chave de API não serve para copiar isso: ela só abre arquivo público, e
+ * responde `404 File not found` para o que é compartilhado com uma conta
+ * específica — que é o caso de 2.335 notas. Só o consentimento do próprio
+ * `financeiro@` alcança o que foi compartilhado com ele.
+ *
+ * Somar escopo OBRIGA A RECONSENTIR: o refresh token antigo vale só para o
+ * escopo antigo, e o Google não amplia token existente. Por isso a `url` tem de
+ * ser aberta de novo depois desta mudança — o `prompt=consent` já garante que
+ * volte refresh token novo. */
+const ESCOPO = [
+  "https://www.googleapis.com/auth/gmail.readonly",
+  "https://www.googleapis.com/auth/drive.readonly",
+].join(" ");
 
 /** Página simples para quem chega pelo navegador — é uma pessoa do outro lado. */
+/* O ESQUELETO COMPLETO, e o corpo em BYTES.
+ *
+ * Em 26/08/2026 esta página chegou ao navegador como TEXTO CRU, com os acentos
+ * quebrados ("jÃ¡", "âœ…") — sintoma clássico de UTF-8 lido como latin-1.
+ * Conferido na resposta: o cabeçalho sai certo, `text/html; charset=utf-8`.
+ * Não reproduzi, então não sei a causa e não vou fingir que sei.
+ *
+ * O que dá para fazer sem chutar é tirar as duas variáveis mais prováveis:
+ * a página era um FRAGMENTO (sem `<html>`, `<head>` e `<body>`), o que deixa o
+ * navegador decidir; e a string ia como texto, deixando a codificação por conta
+ * de quem serializa. Agora vai documento inteiro, e em bytes UTF-8 explícitos.
+ * Se voltar a acontecer, o problema está fora daqui. */
 const pagina = (titulo: string, texto: string, ok: boolean) =>
   new Response(
-    `<!doctype html><meta charset="utf-8"><title>${titulo}</title>
-     <div style="font:16px/1.6 system-ui;max-width:34rem;margin:12vh auto;padding:0 1.5rem">
-       <div style="font-size:2rem">${ok ? "✅" : "⚠️"}</div>
-       <h1 style="font-size:1.3rem;margin:.6rem 0">${titulo}</h1>
-       <p style="color:#555">${texto}</p>
-       <p style="color:#888;font-size:.9rem">Pode fechar esta aba.</p>
-     </div>`,
-    { status: ok ? 200 : 400, headers: { "Content-Type": "text/html; charset=utf-8" } },
+    new TextEncoder().encode(
+      `<!doctype html>
+<html lang="pt-BR">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>${titulo}</title></head>
+<body style="margin:0">
+  <div style="font:16px/1.6 system-ui,-apple-system,Segoe UI,sans-serif;max-width:34rem;margin:12vh auto;padding:0 1.5rem">
+    <div style="font-size:2rem">${ok ? "&#9989;" : "&#9888;&#65039;"}</div>
+    <h1 style="font-size:1.3rem;margin:.6rem 0">${titulo}</h1>
+    <p style="color:#555">${texto}</p>
+    <p style="color:#888;font-size:.9rem">Pode fechar esta aba.</p>
+  </div>
+</body>
+</html>`,
+    ),
+    {
+      status: ok ? 200 : 400,
+      headers: {
+        "Content-Type": "text/html; charset=utf-8",
+        // Sem isto, um proxy que "adivinha" o tipo pode servir como texto.
+        "X-Content-Type-Options": "nosniff",
+        "Cache-Control": "no-store",
+      },
+    },
   );
 
 async function guardar(supabase: any, nome: string, valor: string, observacao: string) {

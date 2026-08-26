@@ -282,6 +282,43 @@ export function dadosDaChave(chave: string | null | undefined): DadosDaChave | n
 export type TipoDocumento = "nota" | "boleto" | "recibo" | "extrato" | "outro";
 
 /**
+ * O e-mail é o DOCUMENTO, ou é um recado SOBRE o documento?
+ *
+ * `tipoDoDocumento` foi feito para nome de arquivo, onde "NFe" no nome quer
+ * dizer que o arquivo é a nota. Em ASSUNTO DE E-MAIL isso deixa de valer: um
+ * aviso de vencimento também escreve "NFS-e" no assunto, e o classificador o
+ * chamava de nota.
+ *
+ * Medido em 26/08/2026, nas 489 linhas que chegaram sem anexo: TODAS estavam
+ * gravadas como `tipo_documento = 'nota'`, e pelo menos 101 são declaradamente
+ * recado — "VICTORIA PARTNERS - Aviso de Vencimento do Pix da NFS-e nº…" (58),
+ * "Focus NFe - Lembrete de Fatura vencendo hoje" (32), "Recebemos seu
+ * pagamento!" (10). Isso inflava a biblioteca com 489 documentos que não
+ * existem, e mandava alguém procurar arquivo onde nunca houve arquivo.
+ *
+ * A distinção é de TEMPO, não de vocabulário: "sua nota fiscal está pronta",
+ * "vence hoje", "recebemos seu pagamento" falam de um evento no calendário. A
+ * nota em si não avisa nada — ela é.
+ *
+ * O que NÃO entra aqui, de propósito: "Envio da NFS-e", "Segue nota fiscal",
+ * "Nota Fiscal Eletrônica". Esses são entrega, mesmo quando o anexo falhou.
+ */
+export function ehAvisoDeCobranca(assunto: string | null | undefined): boolean {
+  const s = String(assunto ?? "").toLowerCase().replace(/[_]+/g, " ");
+  if (!s) return false;
+  /* "atraso" solto, e não "em atraso": o real é "Fatura com atraso de 5 dias". */
+  return /\b(aviso|lembrete|vencendo|vence hoje|vence amanh|a vencer|atraso|atrasad)/.test(s)
+    /* "vencimento do Pix", "vencimento em 10/08". NÃO é só `/vencimento/`:
+       "NFS-e + Boleto Nº 891 - vencimento 10/08" ENTREGA o documento e apenas
+       menciona a data. O que denuncia o recado é a data sendo anunciada. */
+    || /vencimento (d[oae]|em|:)/.test(s)
+    || /\b(recebemos|confirma[cç][aã]o d[eo] pagamento|pagamento (foi )?confirmado)/.test(s)
+    || /est[aá] pronta\b/.test(s)
+    || /\bacesse\b.*\b(fatura|nota)/.test(s);
+}
+
+
+/**
  * Nota, boleto ou recibo — pelo nome do arquivo.
  *
  * Metade do que chega por e-mail NÃO é nota fiscal: na pasta de agosto há

@@ -32,8 +32,9 @@
 // Cron: header `x-cron-token`.
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.0";
-import { extractText, getDocumentProxy } from "npm:unpdf@0.12.1";
 import { requireUser } from "../_shared/auth.ts";
+import { tipoQueVale } from "../_shared/mime.ts";
+import { textoDePdf } from "../_shared/pdf.ts";
 import {
   descricaoDaNota, lerDanfes, lerNomeDeArquivo, lerXmlFiscal, tipoDoDocumento,
   type Danfe, type TipoDocumento,
@@ -226,6 +227,60 @@ async function ocr(bytes: Uint8Array, mime: string, dica: string, aiKey: string)
 }
 
 /**
+ * O mesmo pedido do OCR, mas sobre o TEXTO que o `unpdf` já extraiu.
+ *
+ * POR QUE PRECISOU EXISTIR: o `ocr()` manda os BYTES do arquivo. Para um PDF
+ * com senha isso é garantia de fracasso — o Gemini não abre o documento e
+ * devolve `400 INVALID_ARGUMENT`, que parece defeito de OCR e não é. Com a
+ * senha certa o texto já veio inteiro (1.798 caracteres no boleto da INFORMA
+ * MARKETS, 2.264 na fatura da VERISURE, medido em 26/08/2026); mandar esse
+ * texto é mais barato, mais fiel e não depende de o modelo abrir arquivo.
+ *
+ * Não substitui o OCR: boleto e fatura têm texto, foto de comprovante não tem.
+ */
+async function lerPeloTexto(texto: string, dica: string, aiKey: string): Promise<Lido | null> {
+  if (!aiKey) { ultimoErroOcr = "GEMINI_API_KEY ausente"; return null; }
+  const r = await fetch(
+    `https://generativelanguage.googleapis.com/v1beta/models/${MODELO_LITE}:generateContent?key=${aiKey}`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        systemInstruction: { parts: [{ text: SISTEMA_OCR }] },
+        contents: [{
+          role: "user",
+          parts: [{
+            text: `Texto extraído de um comprovante em PDF. Contexto do nome do arquivo: "${dica}".\n\n` +
+              texto.slice(0, 12_000),
+          }],
+        }],
+        generationConfig: { responseMimeType: "application/json", temperature: 0 },
+      }),
+      signal: AbortSignal.timeout(60_000),
+    },
+  );
+  if (!r.ok) { ultimoErroOcr = `Gemini ${r.status}: ${(await r.text()).slice(0, 140)}`; return null; }
+  const j = await r.json();
+  const txt = j?.candidates?.[0]?.content?.parts?.map((p: { text?: string }) => p.text ?? "").join("");
+  if (!txt) { ultimoErroOcr = "Gemini devolveu resposta vazia"; return null; }
+  let d: Record<string, unknown>;
+  try { d = JSON.parse(txt); } catch { ultimoErroOcr = `JSON inválido: ${txt.slice(0, 90)}`; return null; }
+  const valor = Number(d.valor) || 0;
+  return {
+    lido_como: "texto",
+    emitente: String(d.emitente ?? "").trim() || null,
+    cnpj_norm: null,
+    data: String(d.data ?? "").match(/^\d{4}-\d{2}-\d{2}$/) ? String(d.data) : null,
+    valores: valor > 0 ? [Math.round(valor * 100) / 100] : [],
+    descricao: String(d.descricao ?? "").trim() || null,
+    itens: [],
+    notas: 0,
+    chave: null,
+    tipo: "outro",
+  };
+}
+
+/**
  * O nome do arquivo costuma ser a melhor descrição que existe.
  *
  * "Valor da comida HH copa, 18 pessoas" e "Kelven Silva - Reparo de Notebooks"
@@ -249,13 +304,24 @@ async function lerArquivo(
   const nome = lerNomeDeArquivo(a.name);
   const tipo = tipoDoDocumento(a.name);
 
+  /* O TIPO VEM DOS BYTES, NÃO DO PALPITE DO DRIVE.
+     Quando o arquivo é salvo sem extensão, o Drive chuta — e chuta mal. Em
+     26/08/2026 um arquivo chamado "HH", de 128 KB, foi tipado como `text/x-c`
+     e morreu aqui em "tipo não tratado". Era uma NFC-e boa: Extrabom Praia do
+     Suá, R$ 336,68, 31/03/2026, paga no cartão corporativo em 2 vezes — um
+     gasto que a auditoria seguia cobrando enquanto o comprovante estava no
+     Drive o tempo todo.
+     A assinatura dos bytes ganha do rótulo; quando ela se cala (XML é texto e
+     não tem assinatura), fica valendo o que o Drive disse. */
+  const mime = tipoQueVale(a.name, a.mimeType, bytes) ?? a.mimeType;
+
   /* O XML É A MELHOR FONTE QUE EXISTE, e a mais barata.
    *
    * Vários fornecedores anexam o XML junto do PDF, e nele CNPJ, valor, data e
    * chave estão em campo próprio — sem layout, sem OCR, sem ambiguidade. Até
    * 25/08/2026 ele caía em "tipo não tratado" e era jogado fora enquanto o PDF
    * ao lado ia para o OCR. */
-  if (a.mimeType.includes("xml") || /\.xml$/i.test(a.name)) {
+  if (mime.includes("xml") || /\.xml$/i.test(a.name)) {
     /* A NFS-e municipal ainda sai em ISO-8859-1 em várias prefeituras. Decodar
        tudo como UTF-8 não atrapalha CNPJ nem valor (são dígitos), mas entrega
        "FRACALOSSI MATERIAL EL�TRICO" para a tela — e é esse nome que a pessoa
@@ -282,12 +348,16 @@ async function lerArquivo(
     };
   }
 
-  if (a.mimeType === "application/pdf") {
-    let texto = "";
-    try {
-      const pdf = await getDocumentProxy(bytes);
-      texto = (await extractText(pdf, { mergePages: true })).text ?? "";
-    } catch { /* PDF quebrado ou só imagem — cai no OCR */ }
+  if (mime === "application/pdf") {
+    /* PDF quebrado ou só imagem cai no OCR, como sempre caiu. O que mudou é que
+       PDF COM SENHA agora é tentado com as senhas conhecidas antes disso — ver
+       `_shared/pdf.ts`. Sem isso ele ia para o Gemini, que respondia 400 e
+       ninguém entendia por quê. */
+    const lidoPdf = await textoDePdf(bytes);
+    const texto = lidoPdf.texto;
+    /* Senha que não abriu é resposta FINAL: mandar para o OCR só queima cota
+       para receber o mesmo 400. O erro diz o que é, e a linha para de mentir. */
+    if (lidoPdf.erro?.startsWith("PDF com senha")) return { lido: null, erro: lidoPdf.erro };
 
     const danfes: Danfe[] = lerDanfes(texto);
     if (danfes.length) {
@@ -317,21 +387,38 @@ async function lerArquivo(
 
        Já o arquivo grande demais NÃO tem próxima chance: esse sim vale pelo que
        o nome entrega. */
+    /* PDF QUE SÓ ABRIU COM SENHA NÃO VAI PARA O OCR.
+       O `ocr()` manda os bytes, e esses bytes seguem cifrados — o Gemini
+       responde `400 INVALID_ARGUMENT` toda vez. Era o que prendia os cinco
+       arquivos da INFORMA MARKETS e da VERISURE na fila: o texto certo já
+       estava extraído e era jogado fora porque boleto não tem DANFE, que é a
+       única coisa que o caminho de texto sabia procurar. */
+    if (lidoPdf.senha && texto.trim().length > 80) {
+      const l = await lerPeloTexto(texto, doNome ?? a.name, aiKey);
+      if (l) return { lido: comONome({ ...l, descricao: doNome ?? l.descricao }, nome, tipo), erro: null };
+      return { lido: null, erro: `${ultimoErroOcr || "não deu para ler o texto"} (pdf aberto com senha)` };
+    }
+
     if (!podeOcr) return { lido: null, erro: "fila de OCR cheia nesta rodada" };
     if (bytes.length > MAX_BYTES_OCR) {
       return nome.chave || doNome
         ? { lido: peloNome(a, nome, tipo, doNome), erro: null }
         : { lido: null, erro: "arquivo grande demais para o OCR" };
     }
+    /* O QUE O LEITOR DE PDF DISSE VAI JUNTO DO ERRO DO OCR.
+       Sem isto, um PDF que o `unpdf` recusou por senha chegava aqui, o Gemini
+       respondia `400 INVALID_ARGUMENT`, e a linha guardava só o 400 — que faz
+       parecer defeito de OCR quando o problema é que o arquivo nem abriu. */
     const l = await ocr(bytes, "application/pdf", doNome ?? a.name, aiKey);
+    const pistaPdf = lidoPdf.erro ? ` (pdf: ${lidoPdf.erro})` : texto ? "" : " (pdf: sem texto e sem erro)";
     return l ? { lido: comONome({ ...l, descricao: doNome ?? l.descricao }, nome, tipo), erro: null }
-             : { lido: null, erro: ultimoErroOcr || "OCR não leu o PDF" };
+             : { lido: null, erro: `${ultimoErroOcr || "OCR não leu o PDF"}${pistaPdf}` };
   }
 
-  if (a.mimeType.startsWith("image/")) {
+  if (mime.startsWith("image/")) {
     if (!podeOcr) return { lido: null, erro: "fila de OCR cheia nesta rodada" };
     if (bytes.length > MAX_BYTES_OCR) return { lido: null, erro: "arquivo grande demais para o OCR" };
-    const l = await ocr(bytes, a.mimeType, doNome ?? a.name, aiKey);
+    const l = await ocr(bytes, mime, doNome ?? a.name, aiKey);
     // O nome do arquivo ganha do OCR na descrição — foi uma pessoa que escreveu.
     return l ? { lido: comONome({ ...l, descricao: doNome ?? l.descricao }, nome, tipo), erro: null }
              : { lido: null, erro: ultimoErroOcr || "OCR não leu a imagem" };
@@ -341,7 +428,14 @@ async function lerArquivo(
   // para casar pelo CNPJ. É o caso do anexo que veio em .zip ou .p7s.
   if (nome.chave) return { lido: peloNome(a, nome, tipo, doNome), erro: null };
 
-  return { lido: null, erro: `tipo não tratado: ${a.mimeType}` };
+  /* Diz os DOIS tipos: o que o Drive alegou e o que os bytes disseram. Com um
+     só, "tipo não tratado: text/x-c" não deixa ninguém desconfiar do rótulo. */
+  return {
+    lido: null,
+    erro: mime === a.mimeType
+      ? `tipo não tratado: ${a.mimeType}`
+      : `tipo não tratado: ${mime} (o Drive dizia ${a.mimeType})`,
+  };
 }
 
 /**
@@ -549,7 +643,7 @@ Deno.serve(async (req) => {
     }
 
     /* ---------- 2. varrer o Drive ---------- */
-    type Pendente = { arq: Arquivo; pasta: string; mes: string };
+    type Pendente = { arq: Arquivo; pasta: string; mes: string; retentativa: boolean };
     const pendentes: Pendente[] = [];
     const porPasta: Record<string, { arquivos: number; novos: number }> = {};
 
@@ -564,12 +658,13 @@ Deno.serve(async (req) => {
          "2026-08-10T16:36:46+00:00" — em string o "Z" é maior que o "+" e
          TUDO parecia modificado, o que fazia a rodada semanal reprocessar
          a pasta inteira. */
-      const mudou = !visto || visto.lido === null
+      const jaFalhou = !!visto && visto.lido === null;
+      const mudou = !visto || jaFalhou
         || (!!a.modifiedTime && !!visto.mod
             && new Date(a.modifiedTime).getTime() > new Date(visto.mod).getTime());
       if (!releitura && !mudou) return;
       porPasta[pasta].novos++;
-      pendentes.push({ arq: a, pasta, mes });
+      pendentes.push({ arq: a, pasta, mes, retentativa: jaFalhou });
     };
 
     for (const p of PASTAS) {
@@ -600,6 +695,26 @@ Deno.serve(async (req) => {
       }
     }
 
+    /* QUEM JÁ FALHOU VAI PARA O FIM DA FILA.
+       Reler o que falhou é proposital — o erro costuma ser o Gemini fora do ar,
+       e a rodada seguinte resolve. Só que a regra não tinha teto, e a fila é
+       lida na ordem do Drive: um arquivo que NUNCA vai dar certo volta todo dia
+       para a mesma posição e come o orçamento da rodada.
+       Em 26/08/2026 isso parou a drenagem da pasta "0. Gmail" pela metade.
+       Eram exatamente cinco — quatro boletos que o Gemini recusa com 400
+       INVALID_ARGUMENT e um arquivo "HH" de tipo text/x-c — contra um teto de
+       cinco por rodada. Trinta e oito rodadas seguidas leram os mesmos cinco,
+       falharam nos mesmos cinco, e `na_fila` ficou cravado em 62 sem que nada
+       no retorno dissesse que a fila tinha parado de andar.
+       `sort` é estável no V8, então dentro de cada grupo a ordem do Drive fica
+       de pé; o que muda é só que arquivo novo passa na frente de retentativa.
+       Assim o veneno só é bebido quando não há mais nada fresco para ler. */
+    pendentes.sort((a, b) => Number(a.retentativa) - Number(b.retentativa));
+
+    /* E vai no retorno: `na_fila` sozinho não distingue "faltam 62 para ler" de
+       "faltam 62 e a rodada só releu lixo". Quem drena precisa ver isso. */
+    const retentativas = pendentes.filter((p) => p.retentativa).length;
+
     /* O que sobra fica para a próxima rodada — o cron é diário e a fila anda
        sozinha. `restante` na resposta diz quanto falta. */
     const aindaFaltam = Math.max(0, pendentes.length - teto);
@@ -608,6 +723,7 @@ Deno.serve(async (req) => {
     if (previa) {
       return json({ ok: true, previa: true, chave_fonte: chaveFonte, chave_recusadas: recusas,
         por_pasta: porPasta, a_processar: pendentes.length, na_fila: aindaFaltam,
+        retentativas,
         amostra: pendentes.slice(0, 10).map((p) => ({ pasta: p.pasta, mes: p.mes, nome: p.arq.name })) });
     }
 
@@ -735,7 +851,7 @@ Deno.serve(async (req) => {
       ocr_usados: ocrsFeitos, ocr_teto: TETO_OCR,
       memos_resolvidos_em_titulo: comTitulo,
       notas_externas: paraNotas, notas_externas_erro: erroNotas,
-      na_fila: aindaFaltam,
+      na_fila: aindaFaltam, retentativas,
     });
   } catch (e) {
     console.error("comprovantes-drive-sync", e);

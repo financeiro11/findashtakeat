@@ -30,11 +30,13 @@ import { cn } from "@/lib/utils";
 import { comValorExato } from "@/components/ValorExato";
 import { Input } from "@/components/ui/input";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
+import { Tooltip, TooltipTrigger, TooltipContent } from "@/components/ui/tooltip";
 import {
   AlertTriangle, ArrowUpRight, CheckCircle2, ChevronLeft, ChevronRight, CreditCard,
   ExternalLink, Eye, FileWarning, FilterX, Flame, Loader2, Paperclip, RefreshCw, Scale,
-  Search, Send, ShieldQuestion, ThumbsDown, ThumbsUp, Upload,
+  Search, Send, ShieldAlert, ShieldCheck, ShieldQuestion, ThumbsDown, ThumbsUp, Upload,
 } from "lucide-react";
+import { resolverComprovante } from "@/lib/comprovante";
 import {
   brlStr, categoriasCriticas, dataStr, fatias, formatarDoc, frasePanorama, mesCurto,
   nomeDaLinha, ondeAbrir, pctStr, periodoPadrao, resumoDoCorte, urlParaEmbutir,
@@ -55,6 +57,25 @@ import {
 
 const sb = supabase as any;
 const brl = (n: number) => comValorExato(n, brlStr(n));
+
+/* O bucket é PRIVADO: o caminho não abre sozinho, precisa de URL assinada.
+   `resolverComprovante` é o mesmo resolvedor que a auditoria já usa — dois
+   jeitos de abrir o mesmo bucket seria dois jeitos de quebrar. */
+async function abrirCopia(caminho: string) {
+  try {
+    window.open(await resolverComprovante(caminho), "_blank", "noopener");
+  } catch (e: any) {
+    toast.error(`Não deu para abrir a cópia: ${e?.message ?? e}`);
+  }
+}
+
+/** CNPJ só com dígitos não se confere de olho — e é por ele que se procura. */
+const cnpjBonito = (v: string | null) => {
+  const d = (v ?? "").replace(/\D/g, "");
+  if (d.length === 14) return d.replace(/(\d{2})(\d{3})(\d{3})(\d{4})(\d{2})/, "$1.$2.$3/$4-$5");
+  if (d.length === 11) return d.replace(/(\d{3})(\d{3})(\d{3})(\d{2})/, "$1.$2.$3-$4");
+  return v ?? "";
+};
 
 /**
  * O valor com atraso, para o que dispara consulta.
@@ -179,7 +200,27 @@ function useArquivoDoTitulo(cod: number | null, onde: OndeAbrir) {
  * trabalho — olhar e responder no mesmo lugar, com o próximo da fila a um clique
  * — e na aba Títulos ele é só uma conferida.
  */
-function VisorAnexo({ linha, onde, nomear, aoFechar, aoDecidir, salvando, fila }: {
+/* O PRÓXIMO DA FILA, BUSCADO ENQUANTO SE OLHA O ATUAL.
+ *
+ * Quem confere anexo anda em linha reta: 2/32, 3/32, 4/32. O link do próximo
+ * pode ser pedido durante os segundos em que a pessoa olha o de agora — e
+ * quando ela clica em "Próximo", ele já está guardado.
+ *
+ * Não guarda nada em memória de propósito: o resultado vai para
+ * `omie_anexo_link` no servidor, e é de lá que o clique seguinte lê. Assim o
+ * trabalho aproveita também para quem abrir a mesma fila depois. */
+function usePreBuscar(cod: number | null | undefined, onde: OndeAbrir) {
+  useEffect(() => {
+    if (!cod || onde !== "erp") return;
+    const t = setTimeout(() => {
+      void sb.functions.invoke("omie-anexo-abrir", { body: { action: "erp", cod_titulo: cod } })
+        .catch(() => {});
+    }, 400); // o suficiente para não disparar em cada tecla de navegação rápida
+    return () => clearTimeout(t);
+  }, [cod, onde]);
+}
+
+function VisorAnexo({ linha, onde, nomear, aoFechar, aoDecidir, salvando, fila, proximoCod }: {
   linha: LinhaTitulo;
   onde: Exclude<OndeAbrir, null>;
   nomear: ReturnType<typeof useNomeDaLinha>;
@@ -187,8 +228,11 @@ function VisorAnexo({ linha, onde, nomear, aoFechar, aoDecidir, salvando, fila }
   aoDecidir?: (veredito: "nota" | "nao_e_nota") => void;
   salvando?: boolean;
   fila?: { indice: number; total: number; ir: (passo: 1 | -1) => void };
+  /** O título que vem depois na fila, para buscar o link antes do clique. */
+  proximoCod?: number | null;
 }) {
   const { arquivo, carregando, erro } = useArquivoDoTitulo(linha.cod_titulo, onde);
+  usePreBuscar(proximoCod, onde);
   const n = nomear(linha);
   const ehImagem = /^image\//i.test(arquivo?.tipo ?? "") || /\.(png|jpe?g|webp|gif)$/i.test(arquivo?.nome ?? "");
 
@@ -279,13 +323,14 @@ function BotaoAbrir({ l, onAbrir }: { l: LinhaTitulo; onAbrir: (onde: Exclude<On
   );
 }
 
-type Aba = "panorama" | "categorias" | "fornecedores" | "titulos" | "revisar" | "quase" | "regua";
+type Aba = "panorama" | "categorias" | "fornecedores" | "titulos" | "acervo" | "revisar" | "quase" | "regua";
 
 const ABAS: Array<{ id: Aba; rotulo: string }> = [
   { id: "panorama", rotulo: "Panorama" },
   { id: "categorias", rotulo: "Categorias" },
   { id: "fornecedores", rotulo: "Quem deve nota" },
   { id: "titulos", rotulo: "Títulos" },
+  { id: "acervo", rotulo: "Acervo de notas" },
   { id: "revisar", rotulo: "Anexo a conferir" },
   { id: "quase", rotulo: "Falta um passo" },
   { id: "regua", rotulo: "Régua" },
@@ -669,6 +714,7 @@ export default function NotasERP() {
       {aba === "titulos" && (
         <Titulos de={de} ate={ate} gravidadeInicial={gravidadeFoco} situacaoInicial={situacaoFoco} />
       )}
+      {aba === "acervo" && <Acervo aoMudar={carregar} />}
       {aba === "revisar" && <Revisar de={de} ate={ate} aoRevisar={carregar} />}
       {aba === "quase" && <QuaseLa />}
       {aba === "regua" && <Regua aoMudar={carregar} />}
@@ -1262,6 +1308,46 @@ function Revisar({ de, ate, aoRevisar }: { de: string; ate: string; aoRevisar: (
 
   useEffect(() => { void ler(); }, [ler]);
 
+  /* O QUE A IA JÁ LEU NESTES ARQUIVOS.
+   *
+   * Consulta à parte, e não uma coluna nova em `cap_notas_titulos`: aquela RPC
+   * serve quatro abas e abre o `omie_cache` inteiro (880 ms). Esta é um `in`
+   * sobre a chave primária de `omie_titulo_anexo`, custa nada e só carrega os
+   * títulos que estão na tela.
+   *
+   * Só chega aqui quem a triagem NÃO decidiu — o que ela decidiu saiu da fila.
+   * Então o que se lê abaixo é sempre "por que ela não quis decidir sozinha",
+   * que é justamente o atalho de quem vai decidir. */
+  const [leituraIa, setLeituraIa] = useState<Record<number, { veredito: string; motivo: string }>>({});
+  useEffect(() => {
+    if (!linhas.length) return;
+    let vivo = true;
+    (async () => {
+      const { data } = await sb.from("omie_titulo_anexo")
+        .select("cod_titulo, ia_veredito, ia_motivo")
+        .in("cod_titulo", linhas.map((l) => l.cod_titulo))
+        .not("ia_veredito", "is", null);
+      if (!vivo) return;
+      const mapa: Record<number, { veredito: string; motivo: string }> = {};
+      for (const r of (data ?? []) as any[]) {
+        mapa[Number(r.cod_titulo)] = { veredito: String(r.ia_veredito), motivo: String(r.ia_motivo ?? "") };
+      }
+      setLeituraIa(mapa);
+    })();
+    return () => { vivo = false; };
+  }, [linhas]);
+
+  /* Aquecer a fila ao abrir a aba.
+   *
+   * O cron já mantém o cache cheio, mas ele roda de 10 em 10 minutos e um anexo
+   * que a varredura acabou de descobrir chega frio. Isto é disparo e esquece —
+   * não bloqueia a tela, não mostra erro: se falhar, o clique volta a pagar o
+   * Omie uma vez, que é exatamente como era antes. */
+  useEffect(() => {
+    void sb.functions.invoke("omie-anexo-abrir", { body: { action: "aquecer", limite: 8 } })
+      .catch(() => {});
+  }, []);
+
   const decidir = async (cod: number, veredito: "nota" | "nao_e_nota") => {
     setSalvando(cod);
     const { error } = await sb.rpc("cap_anexo_revisar", { p_cod_titulo: cod, p_veredito: veredito });
@@ -1338,6 +1424,14 @@ function Revisar({ de, ate, aoRevisar }: { de: string; ate: string; aoRevisar: (
                     ))}
                     {!l.anexos?.length && <span className="text-muted-foreground">—</span>}
                   </button>
+                  {/* O QUE A IA LEU. Quem chega aqui é o que ela NÃO quis decidir
+                      sozinha — então esta linha é sempre o porquê, e é ela que
+                      transforma "abrir e adivinhar" em "confirmar ou recusar". */}
+                  {leituraIa[l.cod_titulo] && (
+                    <span className="mt-1 block text-[11.5px] text-amber-700 dark:text-amber-400">
+                      a IA leu: {leituraIa[l.cod_titulo].motivo}
+                    </span>
+                  )}
                 </td>
                 <td className="px-3 py-2 text-right font-medium tabular-nums">{brl(l.valor)}</td>
                 <td className="px-3 py-2 tabular-nums text-muted-foreground">{dataStr(l.competencia)}</td>
@@ -1379,6 +1473,9 @@ function Revisar({ de, ate, aoRevisar }: { de: string; ate: string; aoRevisar: (
           aoFechar={() => setIndice(null)}
           aoDecidir={(v) => decidir(linhas[indice].cod_titulo, v)}
           salvando={salvando === linhas[indice].cod_titulo}
+          /* A fila é circular, então o "próximo" do último é o primeiro — e é
+             ele que vale buscar, não `indice + 1` fora do array. */
+          proximoCod={linhas[(indice + 1) % linhas.length]?.cod_titulo ?? null}
           fila={{
             indice, total: linhas.length,
             ir: (passo) => setIndice((i) => {
@@ -1473,6 +1570,635 @@ function QuaseLa() {
         </table>
       </div>
     </div>
+  );
+}
+
+/* ================================ Acervo ================================ */
+/**
+ * O LUGAR ONDE AS QUATRO PARTES SE ENCONTRAM.
+ *
+ * As abas de cima perguntam "cadê a nota?" olhando o ERP. Esta responde olhando
+ * o OUTRO lado: os 3.789 arquivos que o Hub já tem guardados — as cinco planilhas
+ * de formulário, as três pastas do Drive e a caixa do `financeiro@` — e a que
+ * lançamento cada um pertence.
+ *
+ * Antes de 26/08/2026 esse acervo era medição pura. O casamento só mirava PIX e
+ * cartão, então tudo o que a empresa paga por boleto ou transferência não tinha
+ * contra o que casar; e `fila_erp` estava em `false` nas 4.183 linhas, porque a
+ * única porta para a fila era um botão na aba PIX da Auditoria, mês a mês — e o
+ * lado do cartão não tinha tela nenhuma.
+ *
+ * A LINHA QUE SEPARA MÁQUINA DE GENTE É A CONFIANÇA, e ela está escrita nos dois
+ * primeiros recortes. `exata`/`alta` casaram por CNPJ — isso é identidade, e sobe
+ * no cron das :30 sem perguntar. `media` casou por valor+data ou nome parecido:
+ * numa fatura de 3.768 linhas, coincidência de valor é rotina, então essa espera
+ * alguém olhar o lado de lá e dizer que sim.
+ */
+
+type LinhaAcervo = {
+  id: number;
+  fonte: string; linha: number | null; nome: string | null; o_que_e: string | null;
+  detalhe: string | null; valor: number | null; enviado_em: string | null;
+  competencia: string | null; link: string; tem_arquivo: boolean; parece_nota: boolean;
+  tipo_documento: string | null; cnpj: string | null; chave_fiscal: string | null;
+  diz_anexado: boolean; status_planilha: string | null;
+  alvo_tipo: "pix" | "cartao" | "erp" | null;
+  alvo_id_unico: string | null; alvo_manual: boolean;
+  casamento: string | null; confianca: "exata" | "alta" | "media" | null;
+  conferencia: string | null; candidatos: any;
+  fila_erp: boolean; enviado_erp_em: string | null; erro_erp: string | null;
+  alvo_nome: string | null; alvo_valor: number | null; alvo_data: string | null;
+  alvo_categoria: string | null; alvo_situacao: string | null; alvo_cod_titulo: string | null;
+  /** Caminho da cópia no bucket do projeto. NULL = só existe no Drive de quem subiu. */
+  arquivo_bucket: string | null;
+  total: number;
+};
+
+/* Os cinco primeiros são a PARTIÇÃO (somam `arquivos`); o resto é recorte de
+   dentro dela ou dimensão à parte. Ver o comentário do RECORTES. */
+type ResumoAcervo = {
+  sem_alvo: number; ambiguas: number; falta_anexar: number;
+  promessa_falsa: number; confere: number;
+  so_no_drive: number; com_copia: number;
+  tudo: number; arquivos: number; notas: number; sem_arquivo: number;
+  falta_no_erp: number; sobe_sozinha: number;
+  espera_gente: number; na_fila: number; no_erp: number; com_erro: number;
+  por_alvo: Record<string, number>; por_fonte: Record<string, number>;
+};
+
+/* NÍVEL 1 — ONDE ESTÁ CADA ARQUIVO. É uma PARTIÇÃO: os cinco somam 3.794, que é
+   o total de arquivos guardados. Nenhum documento aparece em dois.
+
+   Antes eram oito cartões, e três deles eram cópias: "Hub tem, ERP não" (246)
+   era exatamente "Sobe sozinha" (96) + "Espera você" (150); "Diz que anexou"
+   (57) estava inteiro dentro dele; e "Na fila" (96) era o MESMO conjunto de
+   "Sobe sozinha", linha por linha. Pior: "Sem alvo" contava só quem tem arquivo
+   e "Empate" contava todo mundo — dois números lado a lado que não se
+   comparavam. Quem olhava não sabia somar nada, e com razão. */
+const RECORTES: Array<{ id: string; rotulo: string; chave: keyof ResumoAcervo; tom: string; ajuda: string }> = [
+  { id: "sem_alvo", rotulo: "Sem alvo", chave: "sem_alvo", tom: "fora",
+    ajuda: "Nenhum lançamento bate com este documento. Quase sempre é nota de um mês que a auditoria ainda não cobre, ou documento que não é despesa nossa. Não há o que fazer aqui até a janela abrir." },
+  { id: "ambiguas", rotulo: "Empate", chave: "ambiguas", tom: "fora",
+    ajuda: "Mais de um lançamento cabe, ou mais de uma linha disputa o mesmo lançamento. Empate não casa de propósito: chutar gruda a nota no lançamento errado, que é pior do que não ter nota." },
+  { id: "falta_anexar", rotulo: "Falta anexar", chave: "falta_anexar", tom: "falta",
+    ajuda: "Sabemos a que lançamento pertence e o título do Omie está sem anexo. É o trabalho de verdade desta aba — e o que o segundo nível, abaixo, detalha." },
+  { id: "promessa_falsa", rotulo: "Diz que anexou", chave: "promessa_falsa", tom: "falta",
+    ajuda: "A planilha registra \"Anexado!\" e o título do Omie está vazio. Promessa não é prova — por isso fica separado do \"Falta anexar\": aqui alguém já acha que resolveu." },
+  { id: "confere", rotulo: "O ERP tem", chave: "confere", tom: "ok",
+    ajuda: "O anexo está no título do Omie, conferido pelo próprio ERP. Fim da linha — venha de onde vier o arquivo." },
+];
+
+/* NÍVEL 2 — O CAMINHO ATÉ O ERP. Não compete com o nível 1: é um recorte de
+   DENTRO de "Falta anexar" + "Diz que anexou", mostrando quem decide e onde a
+   nota está no percurso. Por isso são chips e não cartões. */
+const RECORTES_FILA: Array<{ id: string; rotulo: string; chave: keyof ResumoAcervo; ajuda: string }> = [
+  { id: "falta_no_erp", rotulo: "Tudo que falta", chave: "falta_no_erp",
+    ajuda: "A soma dos dois vermelhos acima. É o guarda-chuva dos dois próximos chips." },
+  { id: "sobe_sozinha", rotulo: "Sobe sozinha", chave: "sobe_sozinha",
+    ajuda: "Casou por CNPJ — isso é identidade, não coincidência — ou alguém escolheu o alvo à mão. O cron das :30 põe na fila sem perguntar." },
+  { id: "espera_gente", rotulo: "Espera você", chave: "espera_gente",
+    ajuda: "Casou por valor+data ou nome parecido. Numa fatura de milhares de linhas, coincidir valor é rotina: confira o lado de lá e confirme antes de mandar." },
+  { id: "na_fila", rotulo: "Na fila", chave: "na_fila",
+    ajuda: "Já marcada para subir; a varredura leva ao Omie de 15 em 15 minutos. Hoje é o mesmo conjunto de \"Sobe sozinha\" — só difere quando alguém enfileira à mão uma de confiança média." },
+  { id: "no_erp", rotulo: "Mandadas pelo Hub", chave: "no_erp",
+    ajuda: "Destas o Hub tem o carimbo de envio. Estão dentro de \"O ERP tem\", que conta também as que alguém anexou direto no Omie." },
+];
+
+/* OS RECORTES DE CONSULTA, que respondem a OUTRA pergunta.
+   Os oito de cima olham para o que falta fazer. Estes dois olham para o que
+   existe — é a aba virando biblioteca, para quando alguém pede "a nota da
+   FRACALOSSI de junho". Ficam separados de propósito: misturar "o que devo
+   fazer" com "o que eu tenho" é o jeito mais rápido de ninguém confiar em
+   nenhum dos dois números. */
+const RECORTES_CONSULTA: Array<{ id: string; rotulo: string; chave: keyof ResumoAcervo; ajuda: string }> = [
+  { id: "biblioteca", rotulo: "Notas fiscais", chave: "notas",
+    ajuda: "Só o que é nota fiscal e tem arquivo para abrir. É o que se entrega a quem pediu — boleto e recibo ficam de fora." },
+  { id: "com_arquivo", rotulo: "Todo arquivo guardado", chave: "arquivos",
+    ajuda: "Tudo que dá para abrir, boleto e recibo incluídos. É a soma exata dos cinco cartões acima." },
+  { id: "sem_arquivo", rotulo: "Só registro, sem arquivo", chave: "sem_arquivo",
+    ajuda: "O e-mail avisou que a nota existe (CNPJ, valor, às vezes a chave) mas não mandou o arquivo — o Bling é o caso típico, manda só um link. Existe a linha, não existe o documento." },
+  { id: "tudo", rotulo: "Tudo que o Hub sabe", chave: "tudo",
+    ajuda: "Os arquivos guardados mais os registros sem arquivo. É o acervo inteiro." },
+  { id: "so_no_drive", rotulo: "Sem cópia da empresa", chave: "so_no_drive",
+    ajuda: "O arquivo existe só no Drive de quem preencheu o formulário — um caso real da fila tem dono num Gmail pessoal, compartilhado com o financeiro@ desde 2024. Se a pessoa sair, mover ou apagar, a nota some e a empresa nunca a teve. A notas-arquivar copia para o bucket do projeto e esta fila encolhe." },
+];
+
+const EH_CONSULTA = (id: string) => RECORTES_CONSULTA.some((r) => r.id === id);
+
+/** O balão do Hub, com o texto de cada recorte. */
+function ComBalao({ texto, children }: { texto: string; children: React.ReactNode }) {
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>{children}</TooltipTrigger>
+      <TooltipContent side="bottom" className="max-w-[22rem] text-[12px] leading-relaxed">
+        {texto}
+      </TooltipContent>
+    </Tooltip>
+  );
+}
+
+const ALVO_ROTULO: Record<string, string> = { pix: "PIX", cartao: "Cartão", erp: "Contas a pagar" };
+
+const CONFIANCA_TOM: Record<string, string> = {
+  exata: "bg-emerald-500/10 text-emerald-600 border-emerald-500/20 dark:text-emerald-400",
+  alta: "bg-emerald-500/10 text-emerald-600 border-emerald-500/20 dark:text-emerald-400",
+  media: "bg-amber-500/10 text-amber-700 border-amber-500/20 dark:text-amber-400",
+};
+
+function Acervo({ aoMudar }: { aoMudar: () => void }) {
+  const [resumo, setResumo] = useState<ResumoAcervo | null>(null);
+  const [linhas, setLinhas] = useState<LinhaAcervo[]>([]);
+  const [recorte, setRecorte] = useState("falta_no_erp");
+  const [alvo, setAlvo] = useState<string | null>(null);
+  const [busca, setBusca] = useState("");
+  /* Período e faixa de valor. Só aparecem nos recortes de consulta: na fila de
+     trabalho eles não ajudam (o que falta anexar, falta em qualquer mês) e
+     cada campo a mais na tela é um a mais para ninguém usar. */
+  const [de, setDe] = useState("");
+  const [ate, setAte] = useState("");
+  const [valorMin, setValorMin] = useState("");
+  const [valorMax, setValorMax] = useState("");
+  const [pag, setPag] = useState(1);
+  const [carregando, setCarregando] = useState(true);
+  const [trabalhando, setTrabalhando] = useState<"casar" | "enfileirar" | null>(null);
+  const [marcadas, setMarcadas] = useState<Set<number>>(new Set());
+  const buscaLenta = useComAtraso(busca, 350);
+  const POR_PAGINA = 60;
+
+  const lerResumo = useCallback(async () => {
+    const { data, error } = await sb.rpc("notas_externas_acervo_resumo");
+    if (error) { toast.error(`Não deu para ler o acervo: ${error.message}`); return; }
+    setResumo(data as ResumoAcervo);
+  }, []);
+
+  const consulta = EH_CONSULTA(recorte);
+
+  const lerLista = useCallback(async () => {
+    setCarregando(true);
+    /* A ORDEM VEM DO RECORTE, e não de um seletor à parte. Quem está na fila
+       quer a pior notícia primeiro; quem está procurando um documento quer o
+       mais recente. São duas perguntas, não uma preferência. */
+    const { data, error } = await sb.rpc("notas_externas_acervo", {
+      p_situacao: recorte, p_alvo: alvo, p_fonte: null,
+      p_busca: buscaLenta || null, p_limite: POR_PAGINA, p_offset: (pag - 1) * POR_PAGINA,
+      p_de: consulta && de ? de : null,
+      p_ate: consulta && ate ? ate : null,
+      p_ordem: consulta ? "recente" : "trabalho",
+      p_valor_min: consulta && valorMin !== "" ? Number(valorMin) : null,
+      p_valor_max: consulta && valorMax !== "" ? Number(valorMax) : null,
+    });
+    if (error) toast.error(`Não deu para ler a lista: ${error.message}`);
+    setLinhas((data as LinhaAcervo[]) ?? []);
+    setCarregando(false);
+  }, [recorte, alvo, buscaLenta, pag, consulta, de, ate, valorMin, valorMax]);
+
+  useEffect(() => { void lerResumo(); }, [lerResumo]);
+  useEffect(() => { void lerLista(); }, [lerLista]);
+  useEffect(() => {
+    setPag(1); setMarcadas(new Set());
+  }, [recorte, alvo, buscaLenta, de, ate, valorMin, valorMax]);
+
+  /* Recasar é caro (~3 s: abre o contas a pagar inteiro) e o cron já faz de hora
+     em hora. O botão existe para quem acabou de subir planilha e não quer esperar. */
+  const recasar = async () => {
+    setTrabalhando("casar");
+    try {
+      const { data, error } = await sb.rpc("notas_externas_casar");
+      if (error) throw error;
+      const r = (data ?? {}) as any;
+      toast.success(
+        `Acervo recasado · ${r.em_erp ?? 0} no contas a pagar · ${r.em_pix ?? 0} no PIX · ${r.em_cartao ?? 0} no cartão`,
+      );
+      await Promise.all([lerResumo(), lerLista()]);
+      aoMudar();
+    } catch (e: any) {
+      toast.error(`Não deu para recasar: ${e?.message ?? e}`);
+    } finally { setTrabalhando(null); }
+  };
+
+  /* Mandar as marcadas. `notas_externas_enfileirar` é a MESMA porta do cron —
+     ela é que sabe as travas (tem arquivo, tem alvo, o ERP ainda não tem), e
+     duas portas para a mesma fila é como não ter trava nenhuma. */
+  const mandar = async (ids: number[]) => {
+    if (!ids.length) return;
+    setTrabalhando("enfileirar");
+    try {
+      const { data: n, error } = await sb.rpc("notas_externas_enfileirar", { p_ids: ids });
+      if (error) throw error;
+      if (!n) { toast.message("Nada a enviar: o ERP já tem essas notas."); return; }
+      toast.message(`${n} nota(s) na fila. Subindo ao Omie…`);
+      // Lote pequeno: o teto do worker é de CPU (zip + base64 do arquivo).
+      const d = await invocar<{ enviados?: number; falhas?: number }>(
+        sb.functions.invoke("omie-anexar-comprovante", { body: { action: "varredura", limite: 6 } }),
+      );
+      const { enviados = 0, falhas = 0 } = d ?? {};
+      toast.success(
+        `${enviados} anexada(s) no Omie` + (falhas ? ` · ${falhas} falharam` : "") +
+        (n > enviados ? ` · ${n - enviados} seguem na fila, o cron leva de 15 em 15 min` : ""),
+      );
+      setMarcadas(new Set());
+      await Promise.all([lerResumo(), lerLista()]);
+      aoMudar();
+    } catch (e: any) {
+      toast.error(`O envio falhou: ${e?.message ?? e}`);
+    } finally { setTrabalhando(null); }
+  };
+
+  /* "Sim, é este." Carimba `alvo_manual` sem mexer no alvo nem na confiança — a
+     origem do casamento continua legível depois. O carimbo já vale como
+     identidade na fila automática, então confirmar é, na prática, soltar. */
+  const confirmar = async (ids: number[]) => {
+    if (!ids.length) return;
+    setTrabalhando("enfileirar");
+    try {
+      const { data: n, error } = await sb.rpc("notas_externas_confirmar", { p_ids: ids });
+      if (error) throw error;
+      toast.success(
+        `${n ?? 0} casamento(s) confirmado(s). O cron das :30 leva ao ERP — ou use "Mandar ao ERP" para não esperar.`,
+      );
+      setMarcadas(new Set());
+      await Promise.all([lerResumo(), lerLista()]);
+    } catch (e: any) {
+      toast.error(`Não deu para confirmar: ${e?.message ?? e}`);
+    } finally { setTrabalhando(null); }
+  };
+
+  const total = linhas[0]?.total ?? 0;
+  const paginas = Math.max(1, Math.ceil(total / POR_PAGINA));
+  const marcaveis = linhas.filter((l) => l.tem_arquivo && !l.enviado_erp_em && l.alvo_tipo && !l.fila_erp);
+  const ajudaDoRecorte = [...RECORTES, ...RECORTES_FILA, ...RECORTES_CONSULTA]
+    .find((r) => r.id === recorte)?.ajuda ?? "";
+  /* Confirmar só faz sentido no que ainda não foi olhado por gente. */
+  const confirmaveis = linhas.filter((l) => l.alvo_tipo && !l.alvo_manual && !l.enviado_erp_em && marcadas.has(l.id));
+
+  return (
+    <div className="space-y-3">
+      {/* ---------------------- o que o Hub tem na mão ---------------------- */}
+      <div className="card-surface p-4">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <h3 className="text-sm font-semibold">O acervo de notas do Hub</h3>
+            <p className="mt-0.5 max-w-3xl text-[12.5px] text-muted-foreground">
+              {resumo
+                ? <>
+                    <b>{resumo.arquivos.toLocaleString("pt-BR")}</b> arquivos guardados de nove origens —
+                    as cinco planilhas, as três pastas do Drive e a caixa do <code>financeiro@</code>.
+                    Esta aba diz a que lançamento cada um pertence e leva ao ERP o que falta lá dentro.
+                  </>
+                : "Lendo o acervo…"}
+            </p>
+          </div>
+          <div className="flex flex-wrap items-center gap-1.5">
+            <button className="chip" onClick={recasar} disabled={!!trabalhando} title="Refaz o casamento contra PIX, cartão e o contas a pagar inteiro. O cron já faz isso de hora em hora, aos :30.">
+              {trabalhando === "casar" ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
+              Recasar agora
+            </button>
+            <button
+              className="chip disabled:opacity-50"
+              disabled={!!trabalhando || !confirmaveis.length}
+              onClick={() => confirmar(confirmaveis.map((l) => l.id))}
+              title="Carimba que uma pessoa olhou e concordou. O casamento confirmado passa a subir sozinho, como se fosse por CNPJ."
+            >
+              <ThumbsUp className="h-3.5 w-3.5" />
+              Confirmar {confirmaveis.length ? `${confirmaveis.length}` : ""}
+            </button>
+            <button
+              className="chip border-primary text-primary disabled:opacity-50"
+              disabled={!!trabalhando || !marcadas.size}
+              onClick={() => mandar([...marcadas])}
+              title="Põe as marcadas na fila e roda uma leva de envio."
+            >
+              {trabalhando === "enfileirar" ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Send className="h-3.5 w-3.5" />}
+              Mandar {marcadas.size ? `${marcadas.size} ao ERP` : "ao ERP"}
+            </button>
+          </div>
+        </div>
+
+        {/* ---- nível 1: onde está cada arquivo (soma o total guardado) ---- */}
+        <p className="mb-2 mt-4 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+          Onde está cada arquivo
+          {resumo && <span className="ml-1.5 normal-case opacity-70">
+            — os cinco somam {resumo.arquivos.toLocaleString("pt-BR")}, nenhum aparece em dois
+          </span>}
+        </p>
+        <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-5">
+          {RECORTES.map((r) => (
+            <ComBalao key={r.id} texto={r.ajuda}>
+              <button
+                className={cn(
+                  "rounded-md border p-3 text-left transition hover:brightness-105",
+                  TOM[r.tom], recorte === r.id && "ring-1 ring-primary",
+                )}
+                onClick={() => setRecorte(r.id)}
+              >
+                <span className="block text-[11px] font-medium uppercase tracking-wide">{r.rotulo}</span>
+                <span className="mt-1 block text-lg font-semibold tabular-nums">
+                  {(resumo?.[r.chave] as number ?? 0).toLocaleString("pt-BR")}
+                </span>
+              </button>
+            </ComBalao>
+          ))}
+        </div>
+
+        {/* ---- nível 2: o caminho até o ERP (recorte de dentro do vermelho) ---- */}
+        <div className="mt-3 border-t border-border/60 pt-3">
+          <p className="mb-2 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+            O caminho até o ERP
+            <span className="ml-1.5 normal-case opacity-70">— quem decide, e onde a nota está no percurso</span>
+          </p>
+          <div className="flex flex-wrap gap-1.5">
+            {RECORTES_FILA.map((r) => (
+              <ComBalao key={r.id} texto={r.ajuda}>
+                <button
+                  className={cn("chip", recorte === r.id && "border-primary text-primary")}
+                  onClick={() => setRecorte(r.id)}
+                >
+                  {r.rotulo}
+                  <span className="ml-1 opacity-60 tabular-nums">
+                    {(resumo?.[r.chave] as number ?? 0).toLocaleString("pt-BR")}
+                  </span>
+                </button>
+              </ComBalao>
+            ))}
+          </div>
+        </div>
+
+        {/* ---- nível 3: procurar, que é outra pergunta ---- */}
+        <div className="mt-3 border-t border-border/60 pt-3">
+          <p className="mb-2 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+            Procurar um documento
+            <span className="ml-1.5 normal-case opacity-70">— busca por fornecedor, CNPJ, período e valor</span>
+          </p>
+          <div className="flex flex-wrap gap-1.5">
+            {RECORTES_CONSULTA.map((r) => (
+              <ComBalao key={r.id} texto={r.ajuda}>
+                <button
+                  className={cn("chip", recorte === r.id && "border-primary text-primary")}
+                  onClick={() => setRecorte(r.id)}
+                >
+                  {r.rotulo}
+                  <span className="ml-1 opacity-60 tabular-nums">
+                    {(resumo?.[r.chave] as number ?? 0).toLocaleString("pt-BR")}
+                  </span>
+                </button>
+              </ComBalao>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      {/* ------------------------------ filtros ------------------------------ */}
+      <div className="flex flex-wrap items-center gap-1.5">
+        <button className={cn("chip", !alvo && "border-primary text-primary")} onClick={() => setAlvo(null)}>
+          Todos os lados
+        </button>
+        {(["erp", "pix", "cartao"] as const).map((t) => (
+          <button key={t} className={cn("chip", alvo === t && "border-primary text-primary")} onClick={() => setAlvo(t)}>
+            {ALVO_ROTULO[t]}
+            {resumo?.por_alvo?.[t] ? <span className="ml-1 opacity-60">{resumo.por_alvo[t]}</span> : null}
+          </button>
+        ))}
+        <label className="ml-auto inline-flex h-9 min-w-[260px] flex-1 max-w-[380px] items-center gap-2 rounded-lg border border-border bg-card px-3">
+          <Search className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+          <input
+            className="w-full bg-transparent text-[13px] outline-none"
+            placeholder="fornecedor, CNPJ, chave de acesso, código do título…"
+            value={busca}
+            onChange={(e) => setBusca(e.target.value)}
+            title="Aceita nome do fornecedor, o que é, detalhe e código do título. Com 6 dígitos ou mais, procura também no CNPJ e na chave de acesso — com ou sem pontuação."
+          />
+          {!!busca && <button onClick={() => setBusca("")} title="limpar"><FilterX className="h-3.5 w-3.5 text-muted-foreground" /></button>}
+        </label>
+      </div>
+
+      {/* Período e valor: só na consulta — ver o comentário do estado. */}
+      {consulta && (
+        <div className="flex flex-wrap items-center gap-1.5 text-[12.5px]">
+          <span className="text-muted-foreground">De</span>
+          <input type="date" className="h-8 rounded-lg border border-border bg-card px-2 outline-none"
+                 value={de} onChange={(e) => setDe(e.target.value)} />
+          <span className="text-muted-foreground">até</span>
+          <input type="date" className="h-8 rounded-lg border border-border bg-card px-2 outline-none"
+                 value={ate} onChange={(e) => setAte(e.target.value)} />
+          <span className="ml-2 text-muted-foreground">Valor de</span>
+          <input type="number" inputMode="decimal" placeholder="—"
+                 className="h-8 w-24 rounded-lg border border-border bg-card px-2 tabular-nums outline-none"
+                 value={valorMin} onChange={(e) => setValorMin(e.target.value)} />
+          <span className="text-muted-foreground">a</span>
+          <input type="number" inputMode="decimal" placeholder="—"
+                 className="h-8 w-24 rounded-lg border border-border bg-card px-2 tabular-nums outline-none"
+                 value={valorMax} onChange={(e) => setValorMax(e.target.value)} />
+          {(de || ate || valorMin || valorMax) && (
+            <button className="chip" onClick={() => { setDe(""); setAte(""); setValorMin(""); setValorMax(""); }}>
+              <FilterX className="h-3.5 w-3.5" /> Limpar
+            </button>
+          )}
+          {(valorMin || valorMax) && (
+            /* Honestidade sobre o recorte: filtrar por faixa exclui o que não tem
+               valor lido, e sem dizer isso a lista parece menor do que o acervo é. */
+            <span className="text-muted-foreground">· nota sem valor lido fica de fora</span>
+          )}
+        </div>
+      )}
+
+      {!!ajudaDoRecorte && (
+        <p className="text-[12.5px] text-muted-foreground">{ajudaDoRecorte}</p>
+      )}
+
+      {/* ------------------------------- lista ------------------------------- */}
+      <div className="card-surface overflow-x-auto p-0">
+        <table className="w-full text-[13px]">
+          <thead>
+            <tr className="border-b border-border text-left text-[11px] uppercase tracking-wide text-muted-foreground">
+              <th className="px-3 py-2 font-medium">
+                {!!marcaveis.length && (
+                  <input
+                    type="checkbox"
+                    checked={marcaveis.length > 0 && marcaveis.every((l) => marcadas.has(l.id))}
+                    onChange={(e) => setMarcadas(e.target.checked ? new Set(marcaveis.map((l) => l.id)) : new Set())}
+                    title="marcar os desta página que podem subir"
+                  />
+                )}
+              </th>
+              <th className="px-3 py-2 font-medium">A nota</th>
+              <th className="px-3 py-2 text-right font-medium">Valor</th>
+              <th className="px-3 py-2 font-medium">Casou com</th>
+              <th className="px-3 py-2 font-medium">Como</th>
+              <th className="px-3 py-2 font-medium">No ERP</th>
+              <th className="px-3 py-2 font-medium" />
+            </tr>
+          </thead>
+          <tbody>
+            {carregando && (
+              <tr><td colSpan={7} className="px-4 py-8 text-center text-muted-foreground">
+                <Loader2 className="mx-auto h-4 w-4 animate-spin" />
+              </td></tr>
+            )}
+            {!carregando && !linhas.length && (
+              <tr><td colSpan={7} className="px-4 py-8 text-center text-muted-foreground">
+                Nada neste recorte.
+              </td></tr>
+            )}
+            {!carregando && linhas.map((l) => (
+              <LinhaDoAcervo
+                key={l.id} l={l}
+                marcada={marcadas.has(l.id)}
+                aoMarcar={(v) => setMarcadas((s) => {
+                  const n = new Set(s); if (v) n.add(l.id); else n.delete(l.id); return n;
+                })}
+                aoMandar={() => mandar([l.id])}
+                ocupado={!!trabalhando}
+              />
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      {paginas > 1 && (
+        <div className="flex items-center justify-between text-[12.5px] text-muted-foreground">
+          <span>{total.toLocaleString("pt-BR")} nota(s) · página {pag} de {paginas}</span>
+          <span className="flex items-center gap-1">
+            <button className="chip" disabled={pag <= 1} onClick={() => setPag((p) => p - 1)}>
+              <ChevronLeft className="h-3.5 w-3.5" />
+            </button>
+            <button className="chip" disabled={pag >= paginas} onClick={() => setPag((p) => p + 1)}>
+              <ChevronRight className="h-3.5 w-3.5" />
+            </button>
+          </span>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function LinhaDoAcervo({
+  l, marcada, aoMarcar, aoMandar, ocupado,
+}: {
+  l: LinhaAcervo; marcada: boolean; aoMarcar: (v: boolean) => void;
+  aoMandar: () => void; ocupado: boolean;
+}) {
+  const podeSubir = l.tem_arquivo && !l.enviado_erp_em && !!l.alvo_tipo && !l.fila_erp;
+  /* O valor do lançamento só aparece quando DISCORDA do da nota. Repetir o mesmo
+     número duas vezes na mesma linha é ruído; a diferença é a informação — nota
+     cheia contra parcela, retenção, desconto. */
+  const valorDiverge = l.valor != null && l.alvo_valor != null
+    && Math.abs(Number(l.valor) - Number(l.alvo_valor)) > 0.02;
+
+  return (
+    <tr className="border-b border-border/60 last:border-0 align-top">
+      <td className="px-3 py-2">
+        {podeSubir && (
+          <input type="checkbox" checked={marcada} onChange={(e) => aoMarcar(e.target.checked)} />
+        )}
+      </td>
+
+      <td className="px-3 py-2">
+        <span className="block font-medium">{l.nome || l.o_que_e || "(sem nome)"}</span>
+        <span className="block text-[11.5px] text-muted-foreground">
+          {l.fonte}{l.linha ? ` · linha ${l.linha}` : ""}
+          {l.enviado_em ? ` · ${dataStr(l.enviado_em)}` : ""}
+          {l.tipo_documento && l.tipo_documento !== "nota" ? ` · ${l.tipo_documento}` : ""}
+          {!l.tem_arquivo && " · só link, sem arquivo"}
+        </span>
+        {/* O CNPJ na linha é o que prova que duas grafias são a mesma empresa:
+            27.250.919/0001-90 aparece como "FRACALOSSI MATERIAL ELETRICO LTDA"
+            em 11 documentos e como "FRAVEN" em 7. Quem procurou pelo CNPJ
+            precisa ver, na linha, por que aquele nome estranho veio junto. */}
+        {!!l.cnpj && (
+          <span className="block text-[11px] tabular-nums text-muted-foreground/80" title="CNPJ lido no documento">
+            {cnpjBonito(l.cnpj)}
+            {l.chave_fiscal ? " · tem chave de acesso" : ""}
+          </span>
+        )}
+      </td>
+
+      <td className="px-3 py-2 text-right tabular-nums">{l.valor != null ? brl(Number(l.valor)) : "—"}</td>
+
+      <td className="px-3 py-2">
+        {l.alvo_tipo ? (
+          <>
+            <span className="block">{l.alvo_nome || "(lançamento sem nome)"}</span>
+            <span className="block text-[11.5px] text-muted-foreground">
+              {ALVO_ROTULO[l.alvo_tipo]}
+              {l.alvo_cod_titulo ? ` · título ${l.alvo_cod_titulo}` : ""}
+              {l.alvo_data ? ` · ${dataStr(l.alvo_data)}` : ""}
+              {valorDiverge ? <> · lançamento {brlStr(Number(l.alvo_valor))}</> : ""}
+            </span>
+          </>
+        ) : (
+          <span className="text-[12.5px] text-muted-foreground">
+            {l.candidatos?.motivo === "varios_alvos"
+              ? `${l.candidatos.quantos} lançamentos cabem — empate não casa`
+              : l.candidatos?.motivo === "alvo_disputado"
+                ? `${l.candidatos.linhas_disputando} linhas disputam o mesmo lançamento`
+                : "nenhum lançamento bate"}
+          </span>
+        )}
+      </td>
+
+      <td className="px-3 py-2">
+        {l.confianca && (
+          <span className={cn("inline-block rounded border px-1.5 py-0.5 text-[11px]", CONFIANCA_TOM[l.confianca])}
+                title={l.casamento === "cnpj_valor" ? "CNPJ do documento + valor ao centavo. É identidade."
+                     : l.casamento === "cnpj_data" ? "Mesmo CNPJ dentro da janela de datas."
+                     : l.casamento === "valor_data" ? "Valor e data próximos — pode ser coincidência."
+                     : "Nome parecido + valor."}>
+            {l.confianca}
+          </span>
+        )}
+        {l.alvo_manual && <span className="ml-1 text-[11px] text-muted-foreground">à mão</span>}
+      </td>
+
+      <td className="px-3 py-2 text-[12.5px]">
+        {l.enviado_erp_em ? (
+          <span className="text-emerald-600 dark:text-emerald-400">anexada · {dataStr(l.enviado_erp_em)}</span>
+        ) : l.fila_erp ? (
+          <span className="text-amber-700 dark:text-amber-400">na fila</span>
+        ) : l.conferencia === "promessa_falsa" ? (
+          <span className="text-red-600 dark:text-red-400" title={`A planilha registra "${l.status_planilha ?? "anexado"}" e o título não tem anexo.`}>
+            diz que anexou
+          </span>
+        ) : l.conferencia === "confere" ? (
+          <span className="text-emerald-600 dark:text-emerald-400">o ERP tem</span>
+        ) : l.conferencia === "falta_anexar" ? (
+          <span className="text-muted-foreground">falta anexar</span>
+        ) : <span className="text-muted-foreground">—</span>}
+        {l.erro_erp && <span className="block text-[11px] text-red-600 dark:text-red-400">{l.erro_erp}</span>}
+      </td>
+
+      <td className="px-3 py-2 text-right">
+        <span className="inline-flex items-center gap-1">
+          {/* A CÓPIA DA EMPRESA VEM PRIMEIRO, quando existe: é a que não depende
+              da conta de ninguém. O link da origem continua ao lado, porque é
+              por ele que quem subiu reencontra o arquivo. */}
+          {!!l.arquivo_bucket && (
+            <ComBalao texto="Abrir a cópia guardada pelo Hub. Esta não depende do Drive de ninguém.">
+              <button className="ghost-icone" onClick={() => void abrirCopia(l.arquivo_bucket!)}>
+                <ShieldCheck className="h-3.5 w-3.5 text-emerald-600 dark:text-emerald-400" />
+              </button>
+            </ComBalao>
+          )}
+          {!l.arquivo_bucket && l.tem_arquivo && (
+            <ComBalao texto="Sem cópia da empresa: este arquivo só existe no Drive de quem o subiu. Se a conta sumir, a nota some junto.">
+              <span className="ghost-icone cursor-default">
+                <ShieldAlert className="h-3.5 w-3.5 text-amber-600 dark:text-amber-400" />
+              </span>
+            </ComBalao>
+          )}
+          {!!l.link && (
+            <a className="ghost-icone" href={l.link.startsWith("http") ? l.link : undefined}
+               target="_blank" rel="noreferrer" title="abrir o documento na origem">
+              <ExternalLink className="h-3.5 w-3.5" />
+            </a>
+          )}
+          {podeSubir && (
+            <button className="ghost-icone" onClick={aoMandar} disabled={ocupado} title="mandar esta ao Omie agora">
+              <Send className="h-3.5 w-3.5" />
+            </button>
+          )}
+        </span>
+      </td>
+    </tr>
   );
 }
 

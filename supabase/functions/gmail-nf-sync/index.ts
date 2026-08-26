@@ -24,11 +24,12 @@
 // Cron: header `x-cron-token`.
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.0";
-import { extractText, getDocumentProxy } from "npm:unpdf@0.12.1";
 import { requireUser } from "../_shared/auth.ts";
 import { baixarAnexo, listar, mensagem, segredosDoGmail, tokenDeAcesso, type Anexo, type Mensagem } from "../_shared/gmail.ts";
+import { tipoQueVale } from "../_shared/mime.ts";
+import { textoDePdf } from "../_shared/pdf.ts";
 import {
-  chaveDeAcesso, dadosDaChave, descricaoDaNota, lerCorpoDeEmail, lerDanfes,
+  chaveDeAcesso, dadosDaChave, descricaoDaNota, ehAvisoDeCobranca, lerCorpoDeEmail, lerDanfes,
   lerNomeDeArquivo, lerXmlFiscal, tipoDoDocumento, type TipoDocumento,
 } from "../_shared/nota-fiscal.ts";
 
@@ -109,11 +110,9 @@ async function lerAnexo(a: Anexo, bytes: Uint8Array): Promise<Achado> {
   }
 
   if (a.mime === "application/pdf" || /\.pdf$/i.test(a.nome)) {
-    let texto = "";
-    try {
-      const pdf = await getDocumentProxy(bytes);
-      texto = (await extractText(pdf, { mergePages: true })).text ?? "";
-    } catch { /* PDF escaneado ou quebrado — sobra o nome e o corpo do e-mail */ }
+    /* PDF escaneado ou quebrado — sobra o nome e o corpo do e-mail. PDF com
+       senha é tentado com as conhecidas primeiro; ver `_shared/pdf.ts`. */
+    const texto = (await textoDePdf(bytes)).texto;
     const danfes = lerDanfes(texto);
     if (danfes.length) {
       return {
@@ -266,7 +265,18 @@ Deno.serve(async (req) => {
             o_que_e: m.assunto, detalhe: `${m.remetenteEmail} · sem arquivo anexado`,
             status_planilha: null, diz_anexado: false,
             drive_id: null, link: linkDoEmail(m.id),
-            chave_fiscal: corpo.chave, tipo_documento: "nota", tem_arquivo: false,
+            /* O TIPO NÃO É "nota" POR DECRETO.
+               Estava fixo aqui, e o resultado foi 489 linhas sem arquivo TODAS
+               gravadas como nota — inflando a biblioteca com 489 documentos que
+               não existem. Pelo menos 101 são recado puro: "Aviso de Vencimento
+               do Pix da NFS-e", "Lembrete de Fatura vencendo hoje", "Recebemos
+               seu pagamento!". Não há arquivo para buscar porque nunca houve.
+               `ehAvisoDeCobranca` separa o recado da entrega; o que sobra segue
+               como nota faltando, que é o caso do Bling — e esse alguém precisa
+               mesmo ir atrás. */
+            chave_fiscal: corpo.chave,
+            tipo_documento: ehAvisoDeCobranca(m.assunto) ? "outro" : "nota",
+            tem_arquivo: false,
             visto_em: agora, atualizado_em: agora,
           });
           continue;
@@ -280,8 +290,20 @@ Deno.serve(async (req) => {
              já usa — é de lá que a `omie-anexar-comprovante` sabe baixar, sem
              precisar de conector nenhum. */
           const caminho = `email/${(m.data ?? agora).slice(0, 7)}/${m.id}_${a.nome.replace(/[^\w.\- ]+/g, "_")}`;
+
+          /* O TIPO VEM DO ARQUIVO, NÃO DO QUE O GMAIL DISSE.
+             O bucket tem allowlist de mime, e o remetente escolhe o rótulo: o
+             MESMO XML de NFS-e chegava ora como `text/xml`, ora como
+             `application/xml`, ora como `application/octet-stream`, conforme o
+             cliente de e-mail de quem mandou. Como o upload lança, a mensagem
+             inteira morria por causa do rótulo — e não do conteúdo.
+             Medido em 26/08/2026, na primeira leitura do histórico da caixa:
+             234 mensagens recusadas, 104 delas sem gerar nota nenhuma, sendo
+             196 anexos XML — justamente o documento de melhor qualidade que
+             esta esteira tem, o único onde CNPJ, valor, data e chave vêm em
+             campo próprio, sem OCR e sem palpite. */
           const { error: erroUp } = await supabase.storage.from(BUCKET)
-            .upload(caminho, bytes, { contentType: a.mime, upsert: true });
+            .upload(caminho, bytes, { contentType: tipoQueVale(a.nome, a.mime, bytes) ?? a.mime, upsert: true });
           if (erroUp) throw new Error(`storage: ${erroUp.message}`);
 
           linhasNota.push({

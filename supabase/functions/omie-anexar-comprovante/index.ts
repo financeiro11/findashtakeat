@@ -522,7 +522,10 @@ async function pendentes(supabase: any, limite: number, filtro: FiltroVarredura 
       .limit(limite);
     if (erroNotas) throw erroNotas;
 
-    // O cartão guarda o título numa coluna própria; o PIX é o próprio id.
+    /* O cartão guarda o título numa coluna própria; o PIX é o próprio id — e o
+       'erp' também, por construção: lá o alvo É um título do contas a pagar, e
+       `alvo_id_unico` guarda o `nCodTitulo`. Por isso os dois caem no mesmo
+       ramo, e só o cartão precisa da tradução. */
     const doCartao = (notas ?? []).filter((n: any) => n.alvo_tipo === "cartao").map((n: any) => n.alvo_id_unico);
     const titulosDoCartao = new Map<string, string>();
     if (doCartao.length) {
@@ -533,7 +536,7 @@ async function pendentes(supabase: any, limite: number, filtro: FiltroVarredura 
     }
 
     for (const n of notas ?? []) {
-      const cod = n.alvo_tipo === "pix"
+      const cod = (n.alvo_tipo === "pix" || n.alvo_tipo === "erp")
         ? String(n.alvo_id_unico ?? "")
         : (titulosDoCartao.get(String(n.alvo_id_unico)) ?? "");
       // Sem título no Omie não há onde anexar. Não é erro: é o "Cruzar com

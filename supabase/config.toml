@@ -19,3 +19,8 @@ verify_jwt = false
 # demais acoes da funcao (montar o link, diagnosticar) exigem usuario logado.
 [functions.gmail-oauth]
 verify_jwt = false
+
+# Tem caminho de cron por `x-cron-token` (sem JWT). Sem esta linha a CLI sobe
+# com verify_jwt = true e o cron passa a ser recusado no gateway, calado.
+[functions.notas-arquivar]
+verify_jwt = false

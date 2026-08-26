@@ -20,6 +20,11 @@ import { cn } from "@/lib/utils";
 import { supabase } from "@/integrations/supabase/client";
 import CadastrarNoOmieDialog from "./CadastrarNoOmieDialog";
 import PreviaFolhaDialog from "./PreviaFolhaDialog";
+import { HoverCard, HoverCardContent, HoverCardTrigger } from "@/components/ui/hover-card";
+import { tabelaFolha } from "@/lib/folha/db";
+import {
+  montarLote, type ColaboradorDaFolha, type ResolveDePara,
+} from "../../../supabase/functions/_shared/folha-envio";
 
 /* ─────────────────────────── Tipos ───────────────────────────
    Espelho somente-leitura da tabela `rh_colaboradores`, sincronizada
@@ -404,6 +409,11 @@ export default function ColaboradoresRH() {
   const [movFiltro, setMovFiltro] = useState<"entraram" | "sairam" | "vencendo" | null>(null);
   const [cadastrarOmie, setCadastrarOmie] = useState(false);
   const [previaFolha, setPreviaFolha] = useState(false);
+  /* O de-para traz departamento e o salário corrigido. Sem ele a faixa somaria
+     o espelho cru do RH — que é o número errado desde que existem ajustes. */
+  const [dePara, setDePara] = useState<Map<string, {
+    departamento: string; categoria: string; valorAjustado: number | null;
+  }>>(new Map());
   const [visiveis, setVisiveis] = useState<Set<string>>(() => {
     try {
       const saved = localStorage.getItem(STORAGE_KEY);
@@ -471,6 +481,26 @@ export default function ColaboradoresRH() {
     localStorage.setItem(DENSIDADE_KEY, densidade);
   }, [densidade]);
 
+  useEffect(() => {
+    let vivo = true;
+    tabelaFolha("folha_depara")
+      .select("codigo_rh, departamento, categoria_descricao, valor_ajustado")
+      .then(({ data }) => {
+        if (!vivo) return;
+        const m = new Map<string, { departamento: string; categoria: string; valorAjustado: number | null }>();
+        for (const d of (data ?? []) as Record<string, unknown>[]) {
+          m.set(String(d.codigo_rh), {
+            departamento: String(d.departamento ?? ""),
+            categoria: String(d.categoria_descricao ?? ""),
+            valorAjustado: d.valor_ajustado === null || d.valor_ajustado === undefined
+              ? null : Number(d.valor_ajustado),
+          });
+        }
+        setDePara(m);
+      });
+    return () => { vivo = false; };
+  }, []);
+
   // Fechou a ficha lateral? A versão em tela cheia fecha junto.
   useEffect(() => {
     if (!selecionado) setFichaCheia(false);
@@ -491,10 +521,45 @@ export default function ColaboradoresRH() {
   const ehMesCorrente =
     mesRef.ano === new Date().getFullYear() && mesRef.mes === new Date().getMonth();
 
-  /** O que a folha custa hoje: soma do valor mensal de quem está ativo. */
+  /* O lote da competência escolhida, com a MESMA regra do provisionamento:
+     salário corrigido quando existe, desligado fora, admissão rateada. Somar o
+     espelho cru aqui daria um número que não bate com a prévia — e é a faixa
+     que as pessoas olham de relance. */
+  const lote = useMemo(() => {
+    const pessoas: ColaboradorDaFolha[] = todos.map((c) => ({
+      id: String(c.id),
+      codigo: (c.codigo as string) ?? null,
+      nome: String(c.nome ?? "").trim(),
+      cnpj: (c.cnpj as string) ?? null,
+      razao: (c.razao as string) ?? null,
+      valor: Number(c.valor) || 0,
+      inicio: (c.inicio as string) ?? null,
+      datadesl: (c.datadesl as string) ?? null,
+    }));
+    const resolve: ResolveDePara = (codigo) => dePara.get(codigo) ?? null;
+    return montarLote(pessoas, `${mesRef.ano}-${String(mesRef.mes + 1).padStart(2, "0")}`, resolve);
+  }, [todos, dePara, mesRef]);
+
+  /** O custo cheio do time hoje: salário integral de quem está no lote. */
   const folhaTotal = useMemo(
-    () => ativos.reduce((s, c) => s + (Number(c.valor) || 0), 0),
-    [ativos],
+    () => lote.itens.reduce((s, i) => s + i.valorBase, 0),
+    [lote],
+  );
+
+  /** Quanto vai por área, com quantas pessoas. Ordenado do maior para o menor. */
+  const porArea = useMemo(() => {
+    const m = new Map<string, { valor: number; n: number }>();
+    for (const i of lote.itens) {
+      const area = i.departamento || "(sem departamento)";
+      const atual = m.get(area) ?? { valor: 0, n: 0 };
+      m.set(area, { valor: atual.valor + i.valor, n: atual.n + 1 });
+    }
+    return [...m.entries()].sort((a, b) => b[1].valor - a[1].valor);
+  }, [lote]);
+
+  const ajustados = useMemo(
+    () => lote.itens.filter((i) => i.valorAjustado !== null).length,
+    [lote],
   );
 
   /** Quem entrou, quem saiu e que contrato vence no mês escolhido. */
@@ -695,7 +760,8 @@ export default function ColaboradoresRH() {
             </p>
             <p
               className="num mt-1 text-[28px] font-medium leading-none"
-              title={`Soma do valor mensal dos ${ativos.length} contratos ativos`}
+              title={`Salário integral das ${lote.itens.length} pessoas da folha`
+                + (ajustados ? `, com ${ajustados} valor(es) corrigido(s) no Hub` : "")}
             >
               {BRL(folhaTotal)}
             </p>
@@ -707,7 +773,52 @@ export default function ColaboradoresRH() {
             <Resumo rotulo="Ativos" valor={String(ativos.length)} />
             <Resumo rotulo={`Entraram em ${mesCurto}`} valor={`+${mov.entraram.size}`} tom={mov.entraram.size ? "pos" : undefined} />
             <Resumo rotulo={`Saíram em ${mesCurto}`} valor={`−${mov.sairam.size}`} tom={mov.sairam.size ? "neg" : undefined} />
-            <Resumo rotulo="Contratos vencendo" valor={String(mov.vencendo.size)} tom={mov.vencendo.size ? "warn" : undefined} />
+            <HoverCard openDelay={120}>
+              <HoverCardTrigger asChild>
+                <div className="cursor-help">
+                  <p className="text-muted-foreground underline decoration-dotted underline-offset-4">
+                    Provisionar em {mesCurto}
+                  </p>
+                  <p className="num mt-0.5 font-semibold">{BRL(lote.total)}</p>
+                </div>
+              </HoverCardTrigger>
+              <HoverCardContent align="start" className="w-80 p-0">
+                <div className="flex items-baseline justify-between border-b px-3.5 py-2.5">
+                  <span className="text-[12.5px] font-semibold">Folha por área</span>
+                  <span className="text-[11px] text-muted-foreground">
+                    competência {mesCurto}
+                  </span>
+                </div>
+                <div className="max-h-72 overflow-y-auto">
+                  {porArea.map(([area, { valor, n }]) => (
+                    <div key={area} className="flex items-baseline justify-between gap-3 px-3.5 py-1.5">
+                      <span className="truncate text-[12.5px]">
+                        {area}
+                        <span className="ml-1.5 text-[11px] text-muted-foreground">{n}</span>
+                      </span>
+                      <span className="num flex-none text-[12.5px]">{BRL(valor)}</span>
+                    </div>
+                  ))}
+                  {porArea.length === 0 && (
+                    <p className="px-3.5 py-4 text-center text-xs text-muted-foreground">
+                      Nada nesta competência.
+                    </p>
+                  )}
+                </div>
+                <div className="flex items-baseline justify-between border-t px-3.5 py-2">
+                  <span className="text-[12.5px] font-semibold">Total</span>
+                  <span className="num text-[13px] font-semibold">{BRL(lote.total)}</span>
+                </div>
+                {/* O total já desconta desligado e rateia admissão do meio do
+                    mês, então ele é MENOR que o salário integral do time. */}
+                {lote.total !== folhaTotal && (
+                  <p className="border-t px-3.5 py-2 text-[11px] text-muted-foreground">
+                    Menor que o salário integral porque quem entrou no meio do mês entra rateado
+                    e quem saiu não entra — rescisão é paga à parte.
+                  </p>
+                )}
+              </HoverCardContent>
+            </HoverCard>
           </div>
 
           <div className="ml-auto flex items-center gap-3">

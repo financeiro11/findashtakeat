@@ -20,6 +20,7 @@ import {
   Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle,
 } from "@/components/ui/dialog";
 import { supabase } from "@/integrations/supabase/client";
+import AjustarSalarioDialog, { type AlvoDoAjuste } from "./AjustarSalarioDialog";
 import { cn } from "@/lib/utils";
 import { bloqueioDaFolha, type ItemDaFolha } from "../../../supabase/functions/_shared/folha-envio";
 
@@ -55,6 +56,8 @@ type Linha = ItemDaFolha & {
   fornecedorConferidoNoOmie: boolean;
   codigoCategoria: string | null;
   codigoDepartamento: string | null;
+  ajusteMotivo: string | null;
+  ajustadoEm: string | null;
 };
 
 type Previa = {
@@ -86,6 +89,8 @@ export default function PreviaFolhaDialog({
   const [carregando, setCarregando] = useState(false);
   const [erro, setErro] = useState<string | null>(null);
   const [previa, setPrevia] = useState<Previa | null>(null);
+  const [ajustando, setAjustando] = useState<AlvoDoAjuste | null>(null);
+  const [recarga, setRecarga] = useState(0);
 
   useEffect(() => {
     if (!aberto) return;
@@ -105,7 +110,7 @@ export default function PreviaFolhaDialog({
       .finally(() => { if (vivo) setCarregando(false); });
 
     return () => { vivo = false; };
-  }, [aberto, competencia]);
+  }, [aberto, competencia, recarga]);
 
   const linhas = previa?.linhas ?? [];
   const fora = previa?.fora ?? [];
@@ -202,7 +207,7 @@ export default function PreviaFolhaDialog({
                     <th className="px-3 py-2.5 text-left font-semibold">Departamento</th>
                     <th className="px-3 py-2.5 text-left font-semibold">Categoria</th>
                     <th className="px-3 py-2.5 text-right font-semibold">Dias</th>
-                    <th className="px-3.5 py-2.5 text-right font-semibold">Valor</th>
+                    <th className="px-3.5 py-2.5 text-right font-semibold" title="Clique num valor para corrigir">Valor</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -252,7 +257,33 @@ export default function PreviaFolhaDialog({
                         {l.dias < 30 ? `${l.dias}/30` : "—"}
                       </td>
                       <td className="px-3.5 py-2 text-right">
-                        <span className="num text-[13.5px]">{BRL(l.valor)}</span>
+                        <button
+                          onClick={() => setAjustando({
+                            codigo: l.codigo, nome: l.nome,
+                            valorRh: l.valorRh, valorAjustado: l.valorAjustado,
+                          })}
+                          title={l.valorAjustado !== null
+                            ? `Corrigido no Hub. No espelho do RH: ${BRL(l.valorRh)}${l.ajusteMotivo ? ` · ${l.ajusteMotivo}` : ""}`
+                            : "Clique para corrigir o salário desta pessoa"}
+                          className={cn(
+                            "num rounded px-1.5 py-0.5 text-[13.5px] transition-colors hover:bg-muted",
+                            l.valorAjustado !== null && "underline decoration-dotted underline-offset-4",
+                          )}
+                        >
+                          {BRL(l.valor)}
+                        </button>
+                        {l.valorAjustado !== null && (
+                          <span
+                            className={cn(
+                              "block text-[11px]",
+                              l.ajusteRedundante ? "text-muted-foreground" : "text-[hsl(var(--info))]",
+                            )}
+                          >
+                            {l.ajusteRedundante
+                              ? "ajuste já bate com o RH"
+                              : <>corrigido · RH diz <span className="num">{BRL(l.valorRh)}</span></>}
+                          </span>
+                        )}
                         {l.chamaAtencao && l.variacao !== null && (
                           <span
                             className={cn(
@@ -309,6 +340,12 @@ export default function PreviaFolhaDialog({
           </>
         )}
       </DialogContent>
+
+      <AjustarSalarioDialog
+        alvo={ajustando}
+        onFechar={() => setAjustando(null)}
+        onSalvo={() => setRecarga((n) => n + 1)}
+      />
     </Dialog>
   );
 }

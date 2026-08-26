@@ -179,6 +179,16 @@ export type DeParaDaPessoa = {
   categoria: string;
   /** Último valor efetivamente provisionado. `null` para quem nunca entrou numa folha. */
   valorReferencia?: number | null;
+  /**
+   * Salário corrigido no Hub. Quando presente, MANDA na folha.
+   *
+   * O espelho do RH é reescrito a cada sync, então a correção não pode morar
+   * lá — duraria até o próximo ciclo e sumiria calada. Mora no de-para e passa
+   * por cima do espelho aqui.
+   */
+  valorAjustado?: number | null;
+  /** Quanto o espelho dizia quando a correção foi feita. */
+  valorRhNoAjuste?: number | null;
 };
 
 /**
@@ -245,8 +255,18 @@ export type ItemDaFolha = {
   variacao: number | null;
   /** A variação passou do limite? É o que a prévia marca em vermelho. */
   chamaAtencao: boolean;
-  /** Salário mensal do contrato, antes do rateio. */
+  /** Salário que a folha vai usar: o ajuste quando existe, senão o do espelho. */
   valorBase: number;
+  /** O que o espelho do RH diz hoje. */
+  valorRh: number;
+  /** O ajuste feito no Hub, se houver. `null` = a folha está usando o espelho. */
+  valorAjustado: number | null;
+  /**
+   * O ajuste virou redundante: o espelho do RH já chegou no mesmo valor.
+   * Vale mostrar para alguém poder limpar em vez de carregar para sempre um
+   * valor fixo que ninguém lembra por que existe.
+   */
+  ajusteRedundante: boolean;
   /** Dias trabalhados na competência, em base comercial de 30. */
   dias: number;
   motivo: MotivoDoRateio;
@@ -368,16 +388,23 @@ export function montarLote(
       continue;
     }
 
-    const valorBase = Number(c.valor) || 0;
-    if (valorBase <= 0) {
-      fora.push({ colaboradorId: c.id, nome, motivo: "Sem valor mensal no cadastro do RH" });
-      continue;
-    }
-
     /* Sem de-para a pessoa NÃO sai do lote: ela aparece na prévia com o campo
        vazio, e `pendenciasDoLote` barra o envio. Some daqui seria pior — folha
        com uma pessoa a menos não dá erro em lugar nenhum. */
     const dePara = deParaDe(codigo);
+
+    /* O ajuste do Hub passa por cima do espelho. Zero é ajuste válido? Não:
+       zerar alguém é tirá-lo da folha, e isso se faz pelo desligamento, não
+       por um campo de valor. Ajuste tem de ser positivo para valer. */
+    const valorRh = Number(c.valor) || 0;
+    const aj = Number(dePara?.valorAjustado ?? NaN);
+    const valorAjustado = Number.isFinite(aj) && aj > 0 ? arred2(aj) : null;
+    const valorBase = valorAjustado ?? valorRh;
+
+    if (valorBase <= 0) {
+      fora.push({ colaboradorId: c.id, nome, motivo: "Sem valor mensal no cadastro do RH" });
+      continue;
+    }
 
     const { dias, motivo } = diasTrabalhados(inicio, ano, mes);
     if (dias <= 0) {
@@ -388,8 +415,8 @@ export function montarLote(
     /* A comparação é do salário CHEIO contra o cheio de referência, nunca do
        rateado: quem entrou dia 20 recebe um terço, e comparar o terço com o
        mês inteiro marcaria toda admissão como suspeita. */
-    const ref = Number(dePara?.valorReferencia ?? NaN);
-    const referencia = Number.isFinite(ref) && ref > 0 ? ref : null;
+    const refBruta = Number(dePara?.valorReferencia ?? NaN);
+    const referencia = Number.isFinite(refBruta) && refBruta > 0 ? refBruta : null;
     const variacao = referencia === null ? null : (valorBase - referencia) / referencia;
 
     const valor =
@@ -407,6 +434,9 @@ export function montarLote(
       variacao,
       chamaAtencao: variacao !== null && Math.abs(variacao) >= VARIACAO_QUE_CHAMA_ATENCAO,
       valorBase,
+      valorRh,
+      valorAjustado,
+      ajusteRedundante: valorAjustado !== null && arred2(valorRh) === valorAjustado,
       dias,
       motivo,
       valor,

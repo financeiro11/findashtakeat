@@ -108,7 +108,7 @@ Deno.serve(async (req) => {
       supabase.from("rh_colaboradores")
         .select("id, codigo, nome, cnpj, razao, valor, inicio, datadesl"),
       supabase.from("folha_depara")
-        .select("codigo_rh, departamento, categoria_descricao, valor_referencia"),
+        .select("codigo_rh, departamento, categoria_descricao, valor_referencia, valor_ajustado, valor_rh_no_ajuste, ajuste_motivo, ajustado_em"),
       supabase.from("omie_cache").select("dados, atualizado_em").eq("chave", "folha_cadastros").maybeSingle(),
       supabase.from("omie_cache").select("dados, atualizado_em").eq("chave", "clientes").maybeSingle(),
       supabase.from("folha_envios_omie").select("estado").eq("competencia", `${competencia}-01`).maybeSingle(),
@@ -136,11 +136,13 @@ Deno.serve(async (req) => {
     const deParaDe: ResolveDePara = (codigo) => {
       const d = porCodigo.get(codigo);
       if (!d) return null;
-      const ref = d.valor_referencia;
+      const num = (v: unknown) => (v === null || v === undefined ? null : Number(v));
       return {
         departamento: String(d.departamento ?? ""),
         categoria: String(d.categoria_descricao ?? ""),
-        valorReferencia: ref === null || ref === undefined ? null : Number(ref),
+        valorReferencia: num(d.valor_referencia),
+        valorAjustado: num(d.valor_ajustado),
+        valorRhNoAjuste: num(d.valor_rh_no_ajuste),
       };
     };
 
@@ -187,6 +189,8 @@ Deno.serve(async (req) => {
       fornecedorConferidoNoOmie: doCache.has(i.cnpj) || direto.has(i.cnpj),
       codigoCategoria: i.categoria ? codCategoria(i.categoria) : null,
       codigoDepartamento: i.departamento ? codDepartamento.get(i.departamento) ?? null : null,
+      ajusteMotivo: (porCodigo.get(i.codigo)?.ajuste_motivo as string) ?? null,
+      ajustadoEm: (porCodigo.get(i.codigo)?.ajustado_em as string) ?? null,
     }));
 
     const paraChecar = linhas.map((l) => ({

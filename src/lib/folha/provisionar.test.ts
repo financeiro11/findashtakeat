@@ -257,6 +257,67 @@ describe("variação contra o valor de referência", () => {
   });
 });
 
+/* Correção de salário feita no Hub, por cima do espelho do RH. O espelho é
+   reescrito a cada sync, então a correção não pode morar lá. */
+describe("valor ajustado no Hub", () => {
+  const ajuste = (valorAjustado: number | null, valorReferencia: number | null = 2400): ResolveDePara =>
+    () => ({
+      departamento: "Onboarding e Setup",
+      categoria: "3.2.7.1. Pessoal - Onboarding",
+      valorReferencia,
+      valorAjustado,
+    });
+
+  it("o ajuste manda na folha, e o valor do RH continua visível", () => {
+    // O caso real: o espelho trazia 24.000 para quem ganha 2.400.
+    const { itens } = montarLote([pessoa({ valor: 24000 })], "2026-09", ajuste(2400));
+    expect(itens[0]).toMatchObject({ valorRh: 24000, valorAjustado: 2400, valorBase: 2400, valor: 2400 });
+  });
+
+  it("sem ajuste, vale o espelho", () => {
+    const { itens } = montarLote([pessoa({ valor: 7500 })], "2026-09", ajuste(null, 7500));
+    expect(itens[0]).toMatchObject({ valorRh: 7500, valorAjustado: null, valorBase: 7500 });
+  });
+
+  it("a variação compara o valor QUE VAI SER PAGO, não o do espelho", () => {
+    // Corrigir 24.000 para 2.400 tem de APAGAR a marcação, não mantê-la.
+    const { itens } = montarLote([pessoa({ valor: 24000 })], "2026-09", ajuste(2400, 2400));
+    expect(itens[0].chamaAtencao).toBe(false);
+    expect(itens[0].variacao).toBe(0);
+  });
+
+  it("o rateio de quem entrou no mês usa o valor ajustado", () => {
+    const { itens } = montarLote(
+      [pessoa({ valor: 24000, inicio: "2026-09-21" })], "2026-09", ajuste(2400),
+    );
+    expect(itens[0]).toMatchObject({ dias: 10, valor: 800 });
+  });
+
+  it("marca como redundante quando o RH já se corrigiu", () => {
+    const { itens } = montarLote([pessoa({ valor: 2400 })], "2026-09", ajuste(2400));
+    expect(itens[0].ajusteRedundante).toBe(true);
+  });
+
+  it("ajuste zero ou negativo é ignorado — tirar da folha se faz pelo desligamento", () => {
+    for (const invalido of [0, -100, null]) {
+      const { itens } = montarLote([pessoa({ valor: 7500 })], "2026-09", ajuste(invalido));
+      expect(itens[0], String(invalido)).toMatchObject({ valorAjustado: null, valorBase: 7500 });
+    }
+  });
+
+  it("ajuste salva quem o espelho zerou", () => {
+    // Sem ajuste sairia do lote por "sem valor mensal".
+    const { itens, fora } = montarLote([pessoa({ valor: 0 })], "2026-09", ajuste(3000));
+    expect(fora).toHaveLength(0);
+    expect(itens[0]).toMatchObject({ valorRh: 0, valorAjustado: 3000, valor: 3000 });
+  });
+
+  it("arredonda o ajuste para centavos", () => {
+    const { itens } = montarLote([pessoa()], "2026-09", ajuste(2777.7666));
+    expect(itens[0].valorAjustado).toBe(2777.77);
+  });
+});
+
 describe("integracaoFolhaDe", () => {
   it("a chave é o código do RH, e sobrevive a espaço e caixa", () => {
     const a = integracaoFolhaDe("COL-003057", "2026-09");

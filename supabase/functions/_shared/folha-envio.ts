@@ -16,14 +16,24 @@
  * ------------------------------------------------------------------
  * A CHAVE
  * ------------------------------------------------------------------
- * Começa DESLIGADA. Enquanto for `false`, a tela mostra a prévia completa e o
- * lote inteiro conferido, mas nada é criado no ERP. Ligar é um commit — com
- * diff, com autor, e com os códigos fixos (conta corrente, categorias por
- * setor, tipo de documento) já preenchidos e conferidos contra um título de
- * folha lançado à mão. Uma flag em variável de ambiente pode ser virada por
- * engano de madrugada no meio de um fechamento; esta, não.
+ * Nasceu DESLIGADA. Enquanto era `false`, a tela mostrava a prévia completa e o
+ * lote inteiro conferido, mas nada era criado no ERP. Ligar é um commit — com
+ * diff, com autor. Uma flag em variável de ambiente pode ser virada por engano
+ * de madrugada no meio de um fechamento; esta, não.
+ *
+ * LIGADA EM 26/08/2026, por autorização direta, para o primeiro envio real:
+ * dois títulos de teste antes dos cento e dois. O que autorizou o passo foi o
+ * payload ter sido conferido campo a campo contra a planilha de importação de
+ * julho/2026 e contra o fluxo n8n de conta a pagar que já roda em produção.
+ *
+ * LIGAR NÃO LIBERA A FOLHA INTEIRA, e isso é o ponto. As outras travas seguem
+ * de pé e são independentes: o marco (competências até julho recusadas), o
+ * estado em `folha_envios_omie` (mês já enviado recusado) e as pendências de
+ * cadastro. Na data em que foi ligada, o envio dos 102 continuava barrado por
+ * quatro pessoas dividirem um CNPJ e seis terem documento incompleto — dado
+ * errado no RH, que nenhuma chave deveria destravar.
  */
-export const ENVIO_FOLHA_LIBERADO = false;
+export const ENVIO_FOLHA_LIBERADO = true;
 
 /** O que a tela diz enquanto o envio está desligado. `null` quando liberado. */
 export function bloqueioDaFolha(): string | null {

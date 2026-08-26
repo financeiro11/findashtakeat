@@ -21,6 +21,7 @@ import {
 } from "@/components/ui/dialog";
 import { supabase } from "@/integrations/supabase/client";
 import AjustarSalarioDialog, { type AlvoDoAjuste } from "./AjustarSalarioDialog";
+import EnviarFolhaOmie from "./EnviarFolhaOmie";
 import { cn } from "@/lib/utils";
 import { bloqueioDaFolha, type ItemDaFolha } from "../../../supabase/functions/_shared/folha-envio";
 
@@ -368,17 +369,22 @@ export default function PreviaFolhaDialog({
               </Aviso>
             )}
 
-            <div className="flex items-center justify-between gap-3 pt-1">
-              <p className="max-w-[60%] text-xs text-muted-foreground">
-                {recusa ?? "Lote em ordem. Nada foi criado no Omie por esta tela."}
-              </p>
-              <div className="flex gap-2">
-                <Button variant="outline" onClick={onFechar}>Fechar</Button>
-                <Button disabled title={recusa ?? undefined}>
-                  Provisionar {linhas.length} no Omie
-                </Button>
-              </div>
-            </div>
+            <EnviarFolhaOmie
+              competencia={competencia}
+              totalDoLote={total}
+              recusa={recusa}
+              candidatos={linhas.map((l) => ({
+                codigo: l.codigo,
+                nome: l.nome,
+                valor: l.valor,
+                cnpj: l.cnpj,
+                // "Pronto" é ter os três códigos do Omie resolvidos. Sem um
+                // deles o título nasceria incompleto, e num teste isso faria a
+                // recusa do Omie responder a pergunta errada.
+                pronto: !!l.codigoFornecedor && !!l.codigoCategoria && !!l.codigoDepartamento,
+              }))}
+              onEnviado={() => setRecarga((n) => n + 1)}
+            />
           </>
         )}
       </DialogContent>

@@ -14,6 +14,7 @@ import { ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip, CartesianGri
 import { Loader2, Sparkles, RefreshCw, ChevronDown } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import { supabase } from "@/integrations/supabase/client";
+import { urlDaFuncao } from "@/lib/urlFuncao";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 
 /* Na tela o valor sai arredondado (fmtBRL) ou abreviado (fmtBRLShort); o número
@@ -628,7 +629,7 @@ function InsightsView({ rows: _rows, periodo: _periodo, onAsk }: { rows: any[]; 
     if (detail[i]) return;
     setDetailLoading(i);
     try {
-      const url = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/ask-finance-ai`;
+      const url = urlDaFuncao("ask-finance-ai");
       const message = `Aprofunde este insight sobre os dados financeiros (DRE, DFC, BP Anual) da Takeat:\n\n"${it.titulo}: ${it.texto}"\n\nDê 1) explicação detalhada com números, 2) causas prováveis, 3) 2 ações práticas.`;
       const resp = await fetch(url, {
         method: "POST",

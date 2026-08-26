@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
-  Search, CreditCard, Building2, RefreshCw, Loader2, Check, CheckCircle2, CheckSquare,
-  ChevronRight, Flag, X,
+  Search, CalendarClock, CreditCard, Building2, RefreshCw, Loader2, Check, CheckCircle2,
+  CheckSquare, ChevronRight, Filter, Flag, X,
 } from "lucide-react";
 import { toast } from "sonner";
 import { supabase } from "@/integrations/supabase/client";
@@ -11,12 +11,12 @@ import { cn } from "@/lib/utils";
 import { comValorExato } from "@/components/ValorExato";
 import { normalize } from "@/lib/normalize";
 import {
-  filaDeAnonimos, apelidoDe, chaveContraparte, intervaloDaJanela,
+  filaDeAnonimos, apelidoDe, chaveContraparte, intervaloDaJanela, sugestaoDeApelido,
   type Candidato, type Janela,
 } from "@/lib/apelidos";
 import {
-  agruparGrafias, chaveGrafia, ordenarGrupos, totalDoGrupo,
-  type Confianca, type GrupoDeGrafias, type Proposta,
+  agruparGrafias, chaveGrafia, comparadorDeGrupos, ordenarGrupos, totalDoGrupo,
+  type Confianca, type GrupoDeGrafias, type OrdemFila, type Proposta,
 } from "@/lib/clustersParametrizacao";
 import {
   useApelidos, useApelidosCadastro, salvarGruposApelido,
@@ -24,6 +24,13 @@ import {
   type FornecedorCadastro, type Grafia,
 } from "@/hooks/useApelidos";
 import { PainelNomear, type Alvo } from "@/components/parametrizacao/PainelNomear";
+import {
+  BotaoFiltravel, CabecalhoFiltravel, ListaMarcavel,
+} from "@/components/parametrizacao/FiltroCabecalho";
+import {
+  categoriaDaContraparte, categoriasDaFila, FAIXA_PADRAO, FAIXAS_RECENTES, haQuantoTempo,
+  recenciaDe, recenciasDaFila, ROTULO_RECENCIA, type FaixaRecencia,
+} from "@/lib/filaParametrizacao";
 
 /* ---------------------------------------------------------------------------
  * Parametrização — o nome que a contraparte tem para nós.
@@ -47,6 +54,25 @@ import { PainelNomear, type Alvo } from "@/components/parametrizacao/PainelNomea
  * A janela é fixa em 12 meses. A barra de cobertura ("43% do valor já sabe dizer
  * o próprio nome") saiu junto com o seletor de janela: o que a tira de números
  * responde agora é "quanto falta e por onde começar", não "quanto já andamos".
+ *
+ * TEMPO É PRIORIDADE, E A TELA ABRE NO MÊS PASSADO. Dentro da janela de 12 meses
+ * nem tudo pesa igual: contraparte sem nome que se mexeu no mês que está sendo
+ * fechado volta na DRE da reunião desta semana; a que parou em maio já passou por
+ * todas elas sem ninguém reclamar. Então a fila NASCE FILTRADA em "mês passado"
+ * (`FAIXA_PADRAO`) — e é justamente por nascer filtrada que o controle dele não
+ * mora no funil do cabeçalho, como o de Categoria, e sim num botão da barra com o
+ * corte escrito por extenso: filtro ligado que não se vê é lista que mente. O
+ * funil da coluna continua lá, mexendo no mesmo estado, para quem já está com o
+ * olho na tabela.
+ *
+ * Junto vieram duas ordens — "maior valor", para varrer tudo, e "mais recente",
+ * para quem tem uma hora. As faixas ficam em `filaParametrizacao.ts`; as ordens,
+ * em `clustersParametrizacao.ts`.
+ *
+ * O que obedece ao corte e o que não obedece: a LISTA e os números do segmentado
+ * de confiança obedecem (é o que se está vendo); a tira de números lá em cima,
+ * não (é "quanto falta no total"). Misturar os dois faria "Sem nome" despencar
+ * quando alguém marca um mês, sem ninguém ter nomeado nada.
  * ------------------------------------------------------------------------- */
 
 const db = supabase as unknown as {
@@ -70,8 +96,14 @@ const brlCurto = (v: number | null | undefined) => comValorExato(v ?? 0, brlCurt
 const mesCurto = (d: string | null) =>
   d ? new Date(`${d}T12:00:00`).toLocaleDateString("pt-BR", { month: "short", year: "2-digit" }).replace(".", "") : "";
 
-const dataCurta = (d: string | null) =>
-  d ? new Date(`${d}T12:00:00`).toLocaleDateString("pt-BR", { day: "2-digit", month: "short", year: "2-digit" }).replace(".", "") : "";
+/** "19 ago 26" — sem os "de", que numa coluna de 96px só ocupam lugar. */
+const dataMini = (d: string | null) =>
+  d
+    ? new Date(`${d}T12:00:00`)
+      .toLocaleDateString("pt-BR", { day: "2-digit", month: "short", year: "2-digit" })
+      .replace(/\./g, "")
+      .replace(/ de /g, " ")
+    : "—";
 
 /** "hoje, 09:12" enquanto for hoje; depois vira data. Nomear é trabalho de sessão
  *  — dentro dela a hora é o que localiza; uma semana depois, não. */
@@ -94,6 +126,19 @@ const CONF: Record<Confianca, { chip: string; faixa: string }> = {
   alta: { chip: "bg-emerald-500/10 text-emerald-700 dark:text-emerald-400", faixa: "border-l-emerald-500" },
   media: { chip: "bg-amber-500/15 text-amber-700 dark:text-amber-400", faixa: "border-l-amber-400" },
   baixa: { chip: "bg-violet-500/10 text-violet-700 dark:text-violet-400", faixa: "border-l-violet-400" },
+};
+
+/* O tempo NÃO ganha cor própria: verde, âmbar e roxo já são a confiança nesta
+   tela, e uma segunda escala de cor no mesmo olhar vira semáforo sem sentido. O
+   que envelhece perde peso — a linha parada fica mais apagada que a viva, e é o
+   texto ("há 7 meses") que diz o quanto. */
+const TOM_RECENCIA: Record<FaixaRecencia, string> = {
+  mes: "text-foreground",
+  passado: "text-foreground/85",
+  trimestre: "text-muted-foreground",
+  semestre: "text-muted-foreground/70",
+  parado: "text-muted-foreground/55",
+  sem_data: "text-muted-foreground/55",
 };
 
 const ORIGEM: Record<string, { rotulo: string; classe: string; Icone: typeof CreditCard }> = {
@@ -123,7 +168,7 @@ type Evidencia = {
 /* As colunas moram numa constante porque a linha aberta REPETE a grade: sem o
    mesmo template, a grafia de dentro não fica embaixo da coluna de fora e a
    tabela deixa de ser tabela. */
-const GRADE_FILA = "34px minmax(140px,1fr) minmax(0,124px) 54px minmax(0,104px) minmax(0,244px) 30px";
+const GRADE_FILA = "34px minmax(140px,1fr) minmax(0,124px) minmax(0,148px) minmax(0,96px) 54px minmax(0,104px) minmax(0,244px) 30px";
 const GRADE_BASE = "minmax(150px,1.1fr) minmax(120px,1fr) 60px 54px minmax(0,104px) minmax(0,150px) 30px";
 
 /** O segmentado do desenho — abas e filtros usam a mesma peça. */
@@ -164,6 +209,69 @@ function SeloOrigem({ origem }: { origem: string | null | undefined }) {
   );
 }
 
+/** Uma célula da tira de números. Vira botão quando tem para onde levar. */
+function Metrica({
+  rotulo, valor, destaque, classe, titulo, onClick,
+}: {
+  rotulo: string;
+  valor: string;
+  destaque?: boolean;
+  classe?: string;
+  titulo?: string;
+  onClick?: () => void;
+}) {
+  const corpo = (
+    <>
+      <span className={cn(
+        "text-[10px] font-semibold uppercase tracking-wider",
+        destaque ? "text-primary/80" : "text-muted-foreground",
+      )}>
+        {rotulo}
+      </span>
+      <span className={cn("num text-[14px] font-medium", destaque ? "text-primary" : classe)}>
+        {valor}
+      </span>
+    </>
+  );
+  const classes = cn(
+    "flex min-w-[118px] flex-col gap-px border-r border-border px-4 py-2",
+    destaque && "bg-primary/[0.04]",
+  );
+
+  return onClick ? (
+    <button type="button" onClick={onClick} title={titulo} className={cn(classes, "text-left transition hover:bg-muted/60")}>
+      {corpo}
+    </button>
+  ) : (
+    <div title={titulo} className={classes}>{corpo}</div>
+  );
+}
+
+/** O aviso de que um corte está ligado, com o botão de desligar. */
+function ChipFiltro({
+  rotulo, titulo, dica, onLimpar,
+}: {
+  rotulo: string;
+  titulo?: string;
+  dica: string;
+  onLimpar: () => void;
+}) {
+  return (
+    <span className="inline-flex items-center gap-1.5 rounded-md border border-primary/30 bg-primary/[0.06] px-2 py-[5px] text-[12px] text-primary">
+      <Filter className="h-3 w-3 shrink-0" />
+      <span className="max-w-[220px] truncate" title={titulo}>{rotulo}</span>
+      <button
+        type="button"
+        onClick={onLimpar}
+        title={dica}
+        className="text-primary/70 transition hover:text-primary"
+      >
+        <X className="h-3 w-3" />
+      </button>
+    </span>
+  );
+}
+
 function Vazio({ children }: { children: React.ReactNode }) {
   return <div className="px-4 py-8 text-center text-[12.5px] text-muted-foreground">{children}</div>;
 }
@@ -179,6 +287,14 @@ export default function Parametrizacao() {
   const [aba, setAba] = useState<"fila" | "base">("fila");
   const [busca, setBusca] = useState("");
   const [filtro, setFiltro] = useState<"todos" | "alta" | "revisar">("todos");
+  /* Categorias marcadas. Vazio = todas, e não "nenhuma". */
+  const [cats, setCats] = useState<Set<string>>(() => new Set());
+  /* Faixas de recência marcadas — mesma regra: vazio é a fila inteira.
+     Único filtro da tela que NASCE LIGADO: abre no mês que está sendo fechado,
+     que é de onde vem a DRE da reunião. Por vir ligado, ele não pode morar só no
+     funil do cabeçalho — o botão da barra escreve o corte por extenso. */
+  const [recs, setRecs] = useState<Set<FaixaRecencia>>(() => new Set([FAIXA_PADRAO]));
+  const [ordem, setOrdem] = useState<OrdemFila>("valor");
   const [buscaBase, setBuscaBase] = useState("");
   const [filtroBase, setFiltroBase] = useState<"todas" | "multiplas" | "revisar">("todas");
 
@@ -192,6 +308,11 @@ export default function Parametrizacao() {
      confirmar quarenta e ver quarenta linhas sumirem de uma vez é perder o fio
      de onde se estava. */
   const [feitos, setFeitos] = useState<Map<string, { apelido: string; grupo: GrupoDeGrafias }>>(() => new Map());
+
+  /* Congelado na abertura da tela: se fosse `new Date()` a cada render, "há 3
+     meses" poderia virar "há 4 meses" no meio de uma sessão de nomeação e a
+     linha mudaria de faixa debaixo do filtro que a segurava. */
+  const [hoje] = useState(() => new Date());
 
   const [sincronizando, setSincronizando] = useState(false);
   const [gravando, setGravando] = useState(false);
@@ -275,29 +396,85 @@ export default function Parametrizacao() {
   const valorNaFila = grupos.reduce((t, g) => t + somaDo(g).total, 0);
   const nomeadosHoje = cadastro.filter((f) => (f.apelido ?? "").trim() && ehHoje(f.apelido_em)).length;
 
-  const visiveis = useMemo(() => {
-    const q = normalize(busca).trim();
-    const lista = grupos.filter((g) => {
-      if (filtro === "alta" && g.conf !== "alta") return false;
-      if (filtro === "revisar" && g.conf === "alta") return false;
-      if (q && !g.grafias.some((c) => normalize(c.nome).includes(q))) return false;
-      return true;
-    });
-    return ordenarGrupos(lista, (g) => somaDo(g).total);
-  }, [grupos, busca, filtro, somaDo]);
+  /* As categorias que a fila toca, da que mais pesa para a que menos pesa. Saem da
+     fila INTEIRA e não da lista já cortada: lista de opções que encolhe a cada
+     marcação torna impossível marcar a segunda categoria. */
+  const opcoesCategoria = useMemo(() => categoriasDaFila(fila), [fila]);
+
+  /* As faixas de tempo saem dos GRUPOS, e não da fila de grafias: a última
+     movimentação de uma contraparte é a mais nova das suas grafias — o Omie pode
+     ter parado em maio e o cartão ter passado ontem, e o grupo está vivo. */
+  const opcoesRecencia = useMemo(() => recenciasDaFila(grupos, hoje), [grupos, hoje]);
+
+  /** Quantos grupos se mexeram nos últimos três meses — o que a reunião vai ver. */
+  const nRecentes = useMemo(
+    () => opcoesRecencia
+      .filter((o) => o.valor === "mes" || o.valor === "trimestre")
+      .reduce((t, o) => t + o.itens, 0),
+    [opcoesRecencia],
+  );
+
+  /* O corte é por grupo, e o grupo casa pela grafia. "AFIXCODE SOLU" pelo cartão e
+     "AFIXCODE SOLUCOES" pelo Omie viraram uma pergunta só, cada uma com a
+     categoria da sua origem — basta uma bater para o grupo ficar. Exigir que todas
+     batessem esconderia justamente quem se procura. */
+  const casaCategoria = useCallback(
+    (g: GrupoDeGrafias) => !cats.size || g.grafias.some((c) => cats.has(categoriaDaContraparte(c))),
+    [cats],
+  );
+
+  /* Aqui o corte é do GRUPO e não da grafia: `g.ultima` já é a mais nova de todas
+     elas. Perguntar grafia a grafia deixaria o grupo entrar em "há mais de 6
+     meses" por causa da linha do Omie que parou, mesmo com o cartão passando
+     ontem — e é justamente o que está vivo que se procura. */
+  const casaRecencia = useCallback(
+    (g: GrupoDeGrafias) => !recs.size || recs.has(recenciaDe(g.ultima, hoje)),
+    [recs, hoje],
+  );
+
+  const casaBusca = useCallback(
+    (g: GrupoDeGrafias) => {
+      const q = normalize(busca).trim();
+      return !q || g.grafias.some((c) => normalize(c.nome).includes(q));
+    },
+    [busca],
+  );
+
+  /**
+   * O que sobrou de TODOS os cortes menos o da confiança.
+   *
+   * É desta lista que saem os números do segmentado "Todos / Alta confiança /
+   * Precisa ler". Contá-los sobre a fila inteira era defensável enquanto nenhum
+   * filtro vinha ligado; com o mês passado ligado na abertura, "Todos 396" ao
+   * lado de quarenta linhas na tela vira o próprio contra-exemplo do que a tela
+   * prega. A tira de números lá em cima continua global — ela responde "quanto
+   * falta", não "o que estou vendo".
+   */
+  const elegiveis = useMemo(
+    () => grupos.filter((g) => casaCategoria(g) && casaRecencia(g) && casaBusca(g)),
+    [grupos, casaCategoria, casaRecencia, casaBusca],
+  );
+
+  const nAltaElegivel = elegiveis.filter((g) => g.conf === "alta").length;
+
+  const porConfianca = useCallback(
+    (g: GrupoDeGrafias) =>
+      filtro === "todos" || (filtro === "alta" ? g.conf === "alta" : g.conf !== "alta"),
+    [filtro],
+  );
+
+  const visiveis = useMemo(
+    () => ordenarGrupos(elegiveis.filter(porConfianca), (g) => somaDo(g).total, ordem),
+    [elegiveis, porConfianca, ordem, somaDo],
+  );
 
   /* Os recém-nomeados voltam para a lista NO LUGAR onde estavam — mesma ordem,
      mesmos filtros. Se subissem para o topo, confirmar uma linha do meio da tela
      jogaria a rolagem para longe do ponto em que se estava lendo. */
   const linhasDaFila = useMemo(() => {
-    const q = normalize(busca).trim();
-    const ordem: Record<Confianca, number> = { alta: 0, media: 1, baixa: 2 };
     const prontos = [...feitos.values()]
-      .filter(({ grupo }) => {
-        if (filtro === "alta" && grupo.conf !== "alta") return false;
-        if (filtro === "revisar" && grupo.conf === "alta") return false;
-        return !q || grupo.grafias.some((c) => normalize(c.nome).includes(q));
-      })
+      .filter(({ grupo }) =>
+        porConfianca(grupo) && casaCategoria(grupo) && casaRecencia(grupo) && casaBusca(grupo))
       .map(({ grupo, apelido }) => ({ g: grupo, apelido }));
 
     const jaProntos = new Set(prontos.map((p) => p.g.id));
@@ -305,10 +482,11 @@ export default function Parametrizacao() {
       .filter((g) => !jaProntos.has(g.id))
       .map((g) => ({ g, apelido: "" }));
 
-    return [...prontos, ...pendentes].sort(
-      (a, b) => ordem[a.g.conf] - ordem[b.g.conf] || somaDo(b.g).total - somaDo(a.g).total,
-    );
-  }, [visiveis, feitos, busca, filtro, somaDo]);
+    /* A MESMA ordem da lista de cima — é o que faz o recém-nomeado voltar ao
+       lugar onde estava, em vez de saltar para o topo. */
+    const comparar = comparadorDeGrupos(ordem, (g) => somaDo(g).total);
+    return [...prontos, ...pendentes].sort((a, b) => comparar(a.g, b.g));
+  }, [visiveis, feitos, porConfianca, casaCategoria, casaRecencia, casaBusca, ordem, somaDo]);
 
   const marcados = useMemo(
     () => visiveis.filter((g) => sel.has(g.id)),
@@ -322,11 +500,60 @@ export default function Parametrizacao() {
     return n;
   };
 
+  /* O nome cru, com a caixa arrumada: "WALICHAT" vira "Walichat". Não é apelido —
+     é o nome como já está escrito, só apresentável. */
+  const nomeCru = useCallback(
+    (g: GrupoDeGrafias) => sugestaoDeApelido((somaDo(g).grafias[0] ?? g.grafias[0])?.nome ?? ""),
+    [somaDo],
+  );
+
+  /**
+   * Marcar uma linha sem sugestão É dizer "o nome que está aí serve".
+   *
+   * Estas linhas ficam em branco de propósito — a fila não propõe nome para quem
+   * não se explica sozinho. Mas quem marca já leu e decidiu, então o campo se
+   * preenche com o nome cru na hora da marca: dá para ver o que vai ser gravado e
+   * ainda dá para reescrever antes de confirmar. Desmarcar devolve o branco, a
+   * menos que alguém tenha digitado por cima — aí o que foi escrito fica.
+   */
+  const nomearOsCrus = (lista: GrupoDeGrafias[], marcando: boolean) => {
+    setNomes((n) => {
+      const novo = { ...n };
+      let mudou = false;
+      for (const g of lista) {
+        const cru = nomeCru(g);
+        if (!cru) continue;
+        const atual = novo[g.id] !== undefined ? novo[g.id] : g.sugestao;
+        if (marcando) {
+          if (!atual.trim()) { novo[g.id] = cru; mudou = true; }
+        } else if (novo[g.id] === cru) {
+          delete novo[g.id]; mudou = true;
+        }
+      }
+      return mudou ? novo : n;
+    });
+  };
+
+  const marcar = (g: GrupoDeGrafias) => {
+    const marcando = !sel.has(g.id);
+    setSel((s) => alternar(s, g.id));
+    nomearOsCrus([g], marcando);
+  };
+
   /* Trocar de filtro ou de aba é começar outra varredura: as linhas verdes do
      "acabei de nomear" ficam para trás, senão a lista vai acumulando o que já
      não faz parte do trabalho. */
   const trocarFiltro = (v: typeof filtro) => { setFiltro(v); setFeitos(new Map()); };
   const trocarAba = (v: typeof aba) => { setAba(v); setFeitos(new Map()); };
+  const trocarCategoria = (v: string) => { setCats((s) => alternar(s, v)); setFeitos(new Map()); };
+  const trocarRecencia = (v: string) => {
+    setRecs((s) => alternar(s, v as FaixaRecencia));
+    setFeitos(new Map());
+  };
+  const limparTempo = () => { setRecs(new Set()); setFeitos(new Map()); };
+  /* Trocar a ordem não é filtro — não some com linha nenhuma —, mas embaralha a
+     lista inteira debaixo do olho; as verdes ficam para trás pelo mesmo motivo. */
+  const trocarOrdem = (v: OrdemFila) => { setOrdem(v); setFeitos(new Map()); };
 
   const confirmar = async (lista: GrupoDeGrafias[]) => {
     const paraGravar = lista
@@ -555,16 +782,72 @@ export default function Parametrizacao() {
   const somaMarcada = marcados.reduce((t, g) => t + somaDo(g).total, 0);
   const lctosMarcados = marcados.reduce((t, g) => t + somaDo(g).lancamentos, 0);
 
+  /* "Marcar visíveis" pega também linha sem nome escrito, e essa não tem o que
+     gravar. O botão conta as que vão de fato e a barra diz quantas ficam — senão
+     o número promete mais do que o clique cumpre. */
+  const prontosMarcados = marcados.filter(
+    (g) => (nomeDo(g) || "").trim().length >= 2 && somaDo(g).grafias.length > 0,
+  );
+  const semNomeMarcados = marcados.length - prontosMarcados.length;
+  const barraDeSelecao = aba === "fila" && marcados.length > 0;
+
+  /* O atalho da tira: "mostra só o que ainda está acontecendo". Clicar de novo
+     devolve a fila inteira — o mesmo botão liga e desliga. */
+  const soRecentes = recs.size === FAIXAS_RECENTES.length && FAIXAS_RECENTES.every((f) => recs.has(f));
+  const verRecentes = () => {
+    setRecs(soRecentes ? new Set() : new Set(FAIXAS_RECENTES));
+    setFeitos(new Map());
+  };
+
+  /* O corte de tempo em palavras — é o que o botão da barra mostra sem abrir. */
+  const resumoRecencia = recs.size === 0
+    ? "qualquer mês"
+    : recs.size === 1
+      ? ROTULO_RECENCIA[[...recs][0]].toLowerCase()
+      : soRecentes
+        ? "últimos 3 meses"
+        : `${recs.size} faixas`;
+
+  /* A mesma lista serve o botão da barra e o funil da coluna: um estado só, dois
+     lugares de chegar nele. */
+  const listaDeRecencia = (
+    <ListaMarcavel
+      opcoes={opcoesRecencia.map((o) => ({
+        valor: o.valor,
+        rotulo: o.rotulo,
+        /* Quantos grupos e quanto dinheiro — nesta ordem, porque o que se escolhe
+           aqui é tamanho de tarefa antes de peso. */
+        apoio: (
+          <span title={`${o.itens} ${o.itens === 1 ? "grupo" : "grupos"} · ${brlCurtoStr(o.total)} em 12 meses`}>
+            {o.itens} · {brlCurtoStr(o.total)}
+          </span>
+        ),
+      }))}
+      marcadas={recs}
+      onAlternar={trocarRecencia}
+      vazio="A fila não tem movimento nenhum."
+    />
+  );
+
   const tira = [
     { rotulo: "Sem nome", valor: String(fila.length), destaque: true },
     { rotulo: "Grupos na fila", valor: String(grupos.length), destaque: true },
+    {
+      rotulo: "Mexeu em 3 m",
+      valor: String(nRecentes),
+      titulo: soRecentes
+        ? "Mostrando só quem se mexeu nos últimos 3 meses — clique para ver a fila inteira"
+        : "Grupos com movimento nos últimos 3 meses. Clique para ver só eles.",
+      /* Zero não vira botão: o clique levaria a uma lista vazia. */
+      onClick: nRecentes || soRecentes ? verRecentes : undefined,
+    },
     { rotulo: "Valor 12 m", valor: brlCurtoStr(valorNaFila) },
     { rotulo: "Alta confiança", valor: String(nAlta), classe: "text-emerald-700 dark:text-emerald-400" },
     { rotulo: "Nomeados hoje", valor: String(nomeadosHoje), classe: "text-sky-700 dark:text-sky-400" },
   ];
 
   return (
-    <div className="p-4 md:p-5">
+    <div className={cn("p-4 md:p-5", barraDeSelecao && "pb-[76px]")}>
       <div className="grid max-w-[1320px] gap-3">
 
         {/* ---------------------- título e abas ---------------------- */}
@@ -599,25 +882,7 @@ export default function Parametrizacao() {
             começar". "Sem nome" conta grafias; "Grupos na fila" conta perguntas
             — a distância entre os dois é o que o agrupamento poupou. */}
         <div className="flex flex-wrap items-stretch rounded-md border border-border bg-card">
-          {tira.map((m) => (
-            <div
-              key={m.rotulo}
-              className={cn(
-                "flex min-w-[118px] flex-col gap-px border-r border-border px-4 py-2",
-                m.destaque && "bg-primary/[0.04]",
-              )}
-            >
-              <span className={cn(
-                "text-[10px] font-semibold uppercase tracking-wider",
-                m.destaque ? "text-primary/80" : "text-muted-foreground",
-              )}>
-                {m.rotulo}
-              </span>
-              <span className={cn("num text-[14px] font-medium", m.destaque ? "text-primary" : m.classe)}>
-                {m.valor}
-              </span>
-            </div>
-          ))}
+          {tira.map((m) => <Metrica key={m.rotulo} {...m} />)}
           <p className="min-w-[120px] flex-1 px-4 py-2 text-[11.5px] leading-snug text-muted-foreground">
             {nAlta > 0
               ? `${nAlta} ${nAlta === 1 ? "grupo tem" : "grupos têm"} nome de que dá para ir em bloco. O resto precisa de leitura.`
@@ -637,21 +902,72 @@ export default function Parametrizacao() {
                   className="h-[30px] pl-8 text-[12.5px]"
                 />
               </div>
+              {/* Os números são do que os OUTROS cortes deixaram passar — ver
+                  `elegiveis`. Com o mês passado ligado na abertura, contá-los
+                  sobre a fila inteira poria "Todos 396" em cima de quarenta
+                  linhas. */}
               <Segmentado
                 valor={filtro} onEscolher={trocarFiltro}
                 opcoes={[
-                  { v: "todos", rotulo: "Todos", n: grupos.length },
-                  { v: "alta", rotulo: "Alta confiança", n: nAlta },
-                  { v: "revisar", rotulo: "Precisa ler", n: grupos.length - nAlta },
+                  { v: "todos", rotulo: "Todos", n: elegiveis.length },
+                  { v: "alta", rotulo: "Alta confiança", n: nAltaElegivel },
+                  { v: "revisar", rotulo: "Precisa ler", n: elegiveis.length - nAltaElegivel },
                 ]}
               />
+
+              {/* O corte de tempo mora AQUI, e não só no funil da coluna: ele vem
+                  ligado, e filtro ligado que não se vê é lista que mente. */}
+              <BotaoFiltravel
+                rotulo="Último"
+                resumo={resumoRecencia}
+                ativo={recs.size > 0}
+                Icone={CalendarClock}
+                largura="w-[264px]"
+                titulo="Quando a contraparte se mexeu pela última vez. A tela abre no mês passado — é dele que sai a DRE que está sendo fechada."
+                onLimpar={limparTempo}
+              >
+                {listaDeRecencia}
+              </BotaoFiltravel>
+
+              {/* A Categoria nasce desligada, então o funil dela pode ficar
+                  discreto no cabeçalho da coluna; aqui fica só o aviso de que
+                  está ligada — a coluna pode estar fora da tela na rolagem
+                  lateral, e filtro esquecido ligado é lista que mente. O corte é
+                  da LISTA e nunca da tira de números lá em cima: se mexesse
+                  nela, marcar uma categoria faria "Sem nome" despencar sem
+                  ninguém ter nomeado nada. */}
+              {cats.size > 0 && (
+                <ChipFiltro
+                  rotulo={cats.size === 1 ? [...cats][0] : `${cats.size} categorias`}
+                  titulo={[...cats].join(" · ")}
+                  dica="Ver a fila inteira de novo"
+                  onLimpar={() => { setCats(new Set()); setFeitos(new Map()); }}
+                />
+              )}
               <div className="flex-1" />
+
+              {/* A ordem não esconde nada — diz por onde começar. "Mais recente"
+                  é a leitura de quem tem uma hora: o que se mexeu esta semana
+                  vai voltar na próxima reunião, o que parou em maio não. */}
+              <div className="flex items-center gap-1.5">
+                <span className="text-[11.5px] text-muted-foreground">Ordem</span>
+                <Segmentado
+                  valor={ordem} onEscolher={trocarOrdem}
+                  opcoes={[
+                    { v: "valor", rotulo: "Maior valor" },
+                    { v: "recente", rotulo: "Mais recente" },
+                  ]}
+                />
+              </div>
+
               <Button
                 size="sm" variant="outline" className="h-[30px] gap-1.5 text-[12px]"
                 disabled={!visiveis.length}
-                onClick={() => setSel(todosMarcados
-                  ? new Set()
-                  : new Set(visiveis.map((g) => g.id)))}
+                onClick={() => {
+                  const marcando = !todosMarcados;
+                  setSel(marcando ? new Set(visiveis.map((g) => g.id)) : new Set());
+                  nomearOsCrus(visiveis, marcando);
+                }}
               >
                 <CheckSquare className="h-3.5 w-3.5" />
                 {todosMarcados ? "Desmarcar" : "Marcar visíveis"}
@@ -660,7 +976,7 @@ export default function Parametrizacao() {
 
             <div className="overflow-x-auto rounded-md border border-border bg-card">
               <div
-                className="grid min-w-[1024px] items-center gap-2 border-b border-border bg-muted/50 px-3 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground"
+                className="grid min-w-[1276px] items-center gap-2 border-b border-border bg-muted/50 px-3 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground"
                 style={{ gridTemplateColumns: GRADE_FILA, height: 32 }}
               >
                 <span />
@@ -668,6 +984,40 @@ export default function Parametrizacao() {
                 <span title="Por que estas grafias vieram juntas. Sozinha na fila, diz o que sustenta o nome proposto.">
                   Por que juntou
                 </span>
+                {/* O filtro mora no cabeçalho da coluna que ele corta — ver
+                    FiltroCabecalho.tsx. As opções saem da fila inteira, com o valor
+                    de 12 meses ao lado para dizer por onde começa quem vai
+                    trabalhar uma categoria de cada vez. */}
+                <CabecalhoFiltravel
+                  rotulo="Categoria"
+                  ativo={cats.size > 0}
+                  largura="w-[280px]"
+                  titulo="A rubrica do Omie — no cartão, a categoria do próprio extrato"
+                  onLimpar={() => { setCats(new Set()); setFeitos(new Map()); }}
+                >
+                  <ListaMarcavel
+                    opcoes={opcoesCategoria.map((o) => ({
+                      valor: o.valor,
+                      rotulo: o.valor,
+                      apoio: brlCurtoStr(o.total),
+                    }))}
+                    marcadas={cats}
+                    onAlternar={trocarCategoria}
+                    buscar="Buscar categoria"
+                    vazio="Nenhuma categoria com esse termo."
+                  />
+                </CabecalhoFiltravel>
+                {/* O mesmo corte de tempo do botão da barra — quem está com o
+                    olho na coluna acha aqui, quem chegou na tela leu lá em cima. */}
+                <CabecalhoFiltravel
+                  rotulo="Último"
+                  ativo={recs.size > 0}
+                  largura="w-[264px]"
+                  titulo="Quando esta contraparte se mexeu pela última vez, dentro da janela de 12 meses"
+                  onLimpar={limparTempo}
+                >
+                  {listaDeRecencia}
+                </CabecalhoFiltravel>
                 <span className="text-right">Lctos</span>
                 <span className="text-right">Valor 12 m</span>
                 <span>Nome interno</span>
@@ -678,9 +1028,22 @@ export default function Parametrizacao() {
                 <Vazio><Loader2 className="mx-auto h-4 w-4 animate-spin" /></Vazio>
               ) : linhasDaFila.length === 0 ? (
                 <Vazio>
-                  {busca || filtro !== "todos"
-                    ? "Nada neste filtro."
-                    : "Todas as contrapartes dos últimos 12 meses já têm nome."}
+                  {!(busca || filtro !== "todos" || cats.size || recs.size) ? (
+                    "Todas as contrapartes dos últimos 12 meses já têm nome."
+                  ) : recs.size && grupos.length ? (
+                    /* O caso que o padrão cria: a fila tem trabalho, só não neste
+                       mês. Dizer "nada" e parar aí faria a tela parecer vazia
+                       quando o que está vazio é o recorte. */
+                    <>
+                      Nada em <strong className="font-medium">{resumoRecencia}</strong>.{" "}
+                      A fila inteira tem {grupos.length} {grupos.length === 1 ? "grupo" : "grupos"} —{" "}
+                      <button type="button" onClick={limparTempo} className="underline hover:text-foreground">
+                        ver todos os meses
+                      </button>.
+                    </>
+                  ) : (
+                    "Nada neste filtro."
+                  )}
                 </Vazio>
               ) : linhasDaFila.map(({ g, apelido }) => {
                 const feito = !!apelido;
@@ -690,7 +1053,14 @@ export default function Parametrizacao() {
                 const aberto = abertos.has(g.id);
                 const nome = feito ? apelido : nomeDo(g);
                 const temNome = nome.trim().length >= 2;
-                const principal = (t.grafias[0] ?? g.grafias[0]).nome;
+                const lider = t.grafias[0] ?? g.grafias[0];
+                const principal = lider.nome;
+                /* A categoria do grupo é a da grafia que lidera; as outras entram
+                   no "+n" e no hover, porque grupo com duas origens tem duas
+                   réguas de categoria e fingir uma só seria de-para inventado. */
+                const categorias = [...new Set(g.grafias.map(categoriaDaContraparte))];
+                const IconeOrigem = origemDe(lider.origem).Icone;
+                const rec = recenciaDe(g.ultima, hoje);
 
                 return (
                   <div
@@ -702,13 +1072,13 @@ export default function Parametrizacao() {
                     )}
                   >
                     <div
-                      className="grid min-w-[1024px] items-center gap-2 px-3 py-1.5"
+                      className="grid min-w-[1276px] items-center gap-2 px-3 py-1.5"
                       style={{ gridTemplateColumns: GRADE_FILA, minHeight: 42 }}
                     >
                       <button
                         type="button"
                         disabled={feito}
-                        onClick={() => setSel((s) => alternar(s, g.id))}
+                        onClick={() => marcar(g)}
                         aria-label={`Marcar ${principal}`}
                         className={cn(
                           "flex h-4 w-4 items-center justify-center rounded border transition",
@@ -753,7 +1123,6 @@ export default function Parametrizacao() {
                           </div>
                           <div className="truncate text-[11px] text-muted-foreground">
                             {g.grafias.length} {g.grafias.length === 1 ? "grafia" : "grafias"}
-                            {g.ultima ? ` · último ${dataCurta(g.ultima)}` : ""}
                           </div>
                         </div>
                       </div>
@@ -766,6 +1135,27 @@ export default function Parametrizacao() {
                           <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-current" />
                           <span className="truncate">{g.motivo}</span>
                         </span>
+                      </div>
+
+                      <div
+                        className="flex min-w-0 items-center gap-1 text-[11.5px] text-muted-foreground"
+                        title={`${origemDe(lider.origem).rotulo}: ${categorias.join(" · ")}`}
+                      >
+                        <IconeOrigem className="h-3 w-3 shrink-0 opacity-70" />
+                        <span className="truncate">{categoriaDaContraparte(lider)}</span>
+                        {categorias.length > 1 && (
+                          <span className="shrink-0 opacity-70">+{categorias.length - 1}</span>
+                        )}
+                      </div>
+
+                      {/* A data é a da grafia mais recente do grupo — o Omie pode
+                          ter parado e o cartão continuar passando. */}
+                      <div
+                        className={cn("flex min-w-0 flex-col justify-center leading-tight", TOM_RECENCIA[rec])}
+                        title={`Última movimentação do grupo${g.ultima ? `: ${dataMini(g.ultima)}` : " — sem data"}`}
+                      >
+                        <span className="num truncate text-[11.5px]">{dataMini(g.ultima)}</span>
+                        <span className="truncate text-[10.5px] opacity-80">{haQuantoTempo(g.ultima, hoje)}</span>
                       </div>
 
                       <span className="num text-right text-[12px] text-muted-foreground">{t.lancamentos}</span>
@@ -791,7 +1181,8 @@ export default function Parametrizacao() {
                             onKeyDown={(e) => {
                               if (e.key === "Enter") { e.preventDefault(); void confirmar([g]); }
                             }}
-                            placeholder={g.conf === "baixa" ? "sem sugestão — escreva" : "nome interno"}
+                            placeholder={g.conf === "baixa" ? "escreva ou marque" : "nome interno"}
+                            title="Marcar a linha grava o nome como está escrito. Escreva aqui para trocar."
                             className={cn("h-7 px-2 text-[12.5px]", !temNome && "border-amber-400/70")}
                           />
                           <Button
@@ -822,7 +1213,7 @@ export default function Parametrizacao() {
                           return (
                             <div
                               key={chave}
-                              className="grid min-w-[1000px] items-center gap-2"
+                              className="grid min-w-[1252px] items-center gap-2"
                               style={{ gridTemplateColumns: GRADE_FILA, minHeight: 32 }}
                             >
                               <span />
@@ -835,8 +1226,23 @@ export default function Parametrizacao() {
                                   {c.nome}
                                 </span>
                               </div>
-                              <span className="truncate text-[11px] text-muted-foreground">
-                                {c.ultima ? `último ${dataCurta(c.ultima)}` : "—"}
+                              <span />
+                              {/* Aqui a categoria é a da grafia, não a do grupo: é
+                                  onde se vê que a linha do cartão e a do Omie
+                                  chegaram por réguas diferentes. */}
+                              <span
+                                className="truncate text-[11px] text-muted-foreground"
+                                title={`${origemDe(c.origem).rotulo}: ${categoriaDaContraparte(c)}`}
+                              >
+                                {categoriaDaContraparte(c)}
+                              </span>
+                              {/* E aqui a data é a DESTA grafia: é onde se descobre
+                                  que o grupo está vivo pelo cartão e parado no Omie. */}
+                              <span
+                                className={cn("num truncate text-[11px]", TOM_RECENCIA[recenciaDe(c.ultima, hoje)])}
+                                title={`Última movimentação desta grafia — ${haQuantoTempo(c.ultima, hoje)}`}
+                              >
+                                {dataMini(c.ultima)}
                               </span>
                               <span className="num text-right text-[11.5px] text-muted-foreground">{c.lancamentos}</span>
                               <span className="num text-right text-[11.5px] text-muted-foreground">{brlCurto(c.total)}</span>
@@ -1010,27 +1416,40 @@ export default function Parametrizacao() {
       </div>
 
       {/* ---------------- a barra da seleção ----------------
-          Presa ao rodapé enquanto a fila rola: são centenas de linhas, e a barra
-          tem de continuar ao alcance depois de meia lista. */}
-      {aba === "fila" && marcados.length > 0 && (
-        <div className="sticky bottom-0 z-40 -mx-4 mt-3 flex flex-wrap items-center gap-3 border-t border-border bg-background/95 px-4 py-2.5 shadow-[0_-2px_8px_hsl(var(--foreground)/0.05)] backdrop-blur md:-mx-5 md:px-5">
+          Presa ao rodapé DA JANELA, não ao fim da página. `sticky` não servia: o
+          `main` do AppLayout é caixa de overflow que nunca rola (quem rola é o
+          documento), então a barra ficava ancorada no fim do conteúdo e só
+          aparecia depois de rolar as centenas de linhas da fila — marcar no meio
+          da lista não tinha onde confirmar. `fixed` recorta a coluna de conteúdo
+          pela largura do menu e deixa o canto direito livre para o botão do
+          assistente. */}
+      {barraDeSelecao && (
+        <div className="fixed inset-x-0 bottom-0 z-40 flex flex-wrap items-center gap-3 border-t border-border bg-background/95 px-4 py-2.5 shadow-[0_-2px_8px_hsl(var(--foreground)/0.05)] backdrop-blur md:left-[--sidebar-width] md:px-5 md:pr-[76px]">
           <span className="text-[12.5px] font-medium">
             {marcados.length} {marcados.length === 1 ? "grupo marcado" : "grupos marcados"}
           </span>
           <span className="text-[12px] text-muted-foreground">
             {lctosMarcados} lançamentos · {brlCurtoStr(somaMarcada)}
           </span>
+          {semNomeMarcados > 0 && (
+            <span className="text-[12px] text-amber-700 dark:text-amber-400">
+              {semNomeMarcados} sem nome {semNomeMarcados === 1 ? "fica" : "ficam"} de fora
+            </span>
+          )}
           <div className="flex-1" />
-          <Button size="sm" variant="outline" className="h-[30px] text-[12.5px]" onClick={() => setSel(new Set())}>
+          <Button
+            size="sm" variant="outline" className="h-[30px] text-[12.5px]"
+            onClick={() => { nomearOsCrus(marcados, false); setSel(new Set()); }}
+          >
             Limpar
           </Button>
           <Button
             size="sm" className="h-[30px] gap-1.5 text-[12.5px]"
-            disabled={gravando}
+            disabled={gravando || prontosMarcados.length === 0}
             onClick={() => void confirmar(marcados)}
           >
             {gravando ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Check className="h-3.5 w-3.5" />}
-            Confirmar {marcados.length}
+            Confirmar {prontosMarcados.length}
           </Button>
         </div>
       )}

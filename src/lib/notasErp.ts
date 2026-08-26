@@ -19,6 +19,7 @@ export type SituacaoTitulo =
   | "com_nota"
   | "anexo_suspeito"
   | "pronta_para_enviar"
+  | "enviado_aguardando"
   | "sem_nota"
   | "erro_leitura"
   | "nao_verificado"
@@ -105,6 +106,28 @@ export type ResumoNotas = {
   }>;
 };
 
+/**
+ * AS OPÇÕES DE CADA FILTRO DE COLUNA, e por que elas não saem do resultado.
+ *
+ * Vêm de `cap_notas_facetas`, que lê o PERÍODO INTEIRO — não o recorte já
+ * filtrado. Se saíssem do resultado corrente, marcar "Softwares" apagaria todas
+ * as outras categorias da lista e não haveria como trocar de ideia sem limpar o
+ * filtro: um filtro que se fecha sozinho.
+ *
+ * `valor` é o código (`categoria_codigo`, `conta_codigo`), `rotulo` é o nome que
+ * se lê. O corte é pelo código porque o nome da conta vem do cadastro do Omie e
+ * muda quando alguém a renomeia lá.
+ */
+export type OpcaoFaceta = { valor: string; rotulo: string; titulos: number };
+
+export type FacetasNotas = {
+  categorias: OpcaoFaceta[];
+  contas: OpcaoFaceta[];
+  /** Só os meses que a lista realmente toca — mês vazio é um clique em branco. */
+  meses: string[];
+  valor: { min: number; max: number };
+};
+
 /** Como cada situação se chama e se lê na tela. `tom` é a cor semântica. */
 export const SITUACAO: Record<SituacaoTitulo, {
   rotulo: string;
@@ -121,7 +144,11 @@ export const SITUACAO: Record<SituacaoTitulo, {
   },
   pronta_para_enviar: {
     rotulo: "Pronta para subir", tom: "atencao",
-    ajuda: "O Hub TEM o arquivo da nota e o ERP não. É falha nossa — e a mais fácil de corrigir, porque o arquivo já está na mão.",
+    ajuda: "O Hub TEM o arquivo da nota e o ERP não. Não é tarefa de ninguém: a varredura de envio roda de 15 em 15 minutos e leva. Se uma linha ficar parada aqui, o motivo está em \"Falta um passo\".",
+  },
+  enviado_aguardando: {
+    rotulo: "Subiu — conferindo no ERP", tom: "neutro",
+    ajuda: "O Hub já mandou o arquivo e o Omie ainda não foi perguntado depois disso. Não conta como cobertura (só o ERP confirma) e não é tarefa de ninguém: a próxima varredura resolve.",
   },
   sem_nota: {
     rotulo: "Sem nota", tom: "falta",
@@ -157,11 +184,50 @@ export const GRAVIDADES: Gravidade[] = ["urgente", "grave", "medio", "irrelevant
 
 /** As situações que entram na conta de cobertura. */
 export const SITUACOES_EXIGIVEIS: SituacaoTitulo[] = [
-  "com_nota", "anexo_suspeito", "pronta_para_enviar", "sem_nota", "erro_leitura", "nao_verificado",
+  "com_nota", "anexo_suspeito", "pronta_para_enviar", "enviado_aguardando",
+  "sem_nota", "erro_leitura", "nao_verificado",
 ];
 
-/** O que conta como "falta nota" para efeito de cobrança. */
-export const SITUACOES_FALTANDO: SituacaoTitulo[] = ["sem_nota", "anexo_suspeito", "pronta_para_enviar"];
+/**
+ * O QUE UMA PESSOA PRECISA OLHAR — e é com isto que a aba Títulos nasce.
+ *
+ * `pronta_para_enviar` e `enviado_aguardando` saíram daqui em 26/08/2026. Os
+ * dois são trabalho de máquina: o arquivo já está na mão do Hub e a varredura o
+ * leva sozinha. Deixá-los no filtro inicial fazia a aba abrir com dezenas de
+ * linhas que ninguém deveria tocar — e, pior, misturava as duas coisas: quem
+ * clicava no cartão "Pronta para subir" caía numa lista majoritariamente de
+ * "Sem nota", porque o cartão trocava de aba sem trocar o filtro.
+ *
+ * Continuam visíveis: como cartão no painel, como filtro que se pode marcar, e
+ * em "Falta um passo" quando emperram.
+ */
+export const SITUACOES_FALTANDO: SituacaoTitulo[] = ["sem_nota", "anexo_suspeito"];
+
+/**
+ * O que é nosso e anda sozinho — a fila de envio e a releitura do ERP. Existe
+ * para a tela poder dizer "isto não é com você" numa frase só.
+ */
+export const SITUACOES_NOSSAS: SituacaoTitulo[] = ["pronta_para_enviar", "enviado_aguardando"];
+
+/**
+ * O corte escrito no botão da barra: "todas", o nome quando é um só, a contagem
+ * quando são vários.
+ *
+ * Existe porque um botão que diz só "Situação" não informa nada — e o filtro de
+ * situação NASCE LIGADO nesta tela (três das seis marcadas). Quem chega precisa
+ * ler o recorte antes de ler a lista, senão conta linhas e acha que o número
+ * encolheu sozinho.
+ */
+export function resumoDoCorte(
+  marcados: readonly string[],
+  rotuloDe: (v: string) => string,
+  tudo: string,
+  plural: string,
+): string {
+  if (!marcados.length) return tudo;
+  if (marcados.length === 1) return rotuloDe(marcados[0]);
+  return `${marcados.length} ${plural}`;
+}
 
 export const REGRA: Record<Regra, { rotulo: string; ajuda: string }> = {
   exige: { rotulo: "Exige nota", ajuda: "Entra na conta de cobertura e vira cobrança quando falta." },
@@ -286,6 +352,41 @@ export function nomeDaLinha(
     };
   }
   return { nome: linha.favorecido, cru: linha.favorecido_cru, deCartao: false };
+}
+
+/* ------------------------------ abrir o arquivo ------------------------------ */
+
+/**
+ * DE ONDE VEM O ARQUIVO DESTA LINHA — e por que a pergunta não é "qual botão".
+ *
+ * O arquivo mora em dois lugares e a pessoa não deveria ter de saber em qual:
+ * se o Omie tem anexo, é ele que se abre (é o que está valendo no ERP); se não
+ * tem e o Hub tem, abre-se o do Hub, que é o que vai subir. Quando não há
+ * nenhum dos dois não há nada para ver — e é justamente esse o caso de "Sem
+ * nota", em que o trabalho é cobrar, não conferir.
+ */
+export type OndeAbrir = "erp" | "hub" | null;
+
+export function ondeAbrir(
+  l: Pick<LinhaTitulo, "anexos_no_erp" | "nota_no_hub">,
+): OndeAbrir {
+  if ((l.anexos_no_erp ?? 0) > 0) return "erp";
+  if (l.nota_no_hub) return "hub";
+  return null;
+}
+
+/**
+ * O endereço que dá para EMBUTIR — que não é sempre o que dá para abrir.
+ *
+ * O link do Drive que o Hub guarda é o `/view`, e ele recusa ser carregado
+ * dentro de um iframe (X-Frame-Options): quem clicasse veria um quadro branco e
+ * concluiria que o arquivo sumiu. O `/preview` é a mesma pasta, o mesmo arquivo
+ * e a mesma permissão — só a versão que aceita moldura. Para abrir em nova aba
+ * continua valendo o `/view`, que é o que a pessoa reconhece.
+ */
+export function urlParaEmbutir(url: string): string {
+  const m = String(url ?? "").match(/^(https:\/\/drive\.google\.com\/file\/d\/[^/]+)\/(?:view|edit)\b/i);
+  return m ? `${m[1]}/preview` : url;
 }
 
 /** O período padrão da tela: os últimos `meses` meses fechados + o corrente. */

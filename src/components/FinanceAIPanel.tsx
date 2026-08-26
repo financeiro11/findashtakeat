@@ -4,6 +4,7 @@ import ReactMarkdown from "react-markdown";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { toast } from "@/hooks/use-toast";
+import { urlDaFuncao } from "@/lib/urlFuncao";
 
 type AIResponse = {
   answer: string;
@@ -62,7 +63,7 @@ export function FinanceAIPanel({
     setLoading(true);
 
     try {
-      const url = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/ask-finance-ai`;
+      const url = urlDaFuncao("ask-finance-ai");
       const resp = await fetch(url, {
         method: "POST",
         headers: {

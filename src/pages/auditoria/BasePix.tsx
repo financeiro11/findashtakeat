@@ -1,15 +1,16 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
 import { brl, brlAbbr, fmtDateBR } from "./utils";
 import { comValorExato } from "@/components/ValorExato";
-import { Search, RefreshCw, Loader2, ExternalLink, FileWarning, FileCheck2, Upload, CheckCircle2 } from "lucide-react";
+import { Search, RefreshCw, Loader2, ExternalLink, FileWarning, FileCheck2, FileSearch, Upload, CheckCircle2 } from "lucide-react";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { useApelidos } from "@/hooks/useApelidos";
 import { apelidoDe } from "@/lib/apelidos";
+import { ComprovanteLink } from "@/components/ComprovanteLink";
 
 type Lanc = {
   id: number;
@@ -29,6 +30,59 @@ type Lanc = {
   status: string;
   observacao: string | null;
 };
+
+/* A nota que chegou de fora do ERP — das cinco planilhas de formulário ou das
+   duas pastas de comprovante do Drive — já casada com este lançamento. */
+type NotaExterna = {
+  alvo_id_unico: string;
+  nota_id: number;
+  fonte: string;
+  link: string;
+  nome: string | null;
+  o_que_e: string | null;
+  detalhe: string | null;
+  valor: number | null;
+  enviado_em: string | null;
+  competencia: string | null;
+  casamento: string | null;
+  confianca: "exata" | "alta" | "media" | null;
+  conferencia: "confere" | "falta_anexar" | "promessa_falsa" | "ambiguo" | "sem_alvo" | null;
+  diz_anexado: boolean;
+  status_planilha: string | null;
+  erp_anexos: number | null;
+  fila_erp: boolean;
+  enviado_erp_em: string | null;
+  erro_erp: string | null;
+  /** nota | boleto | recibo | extrato | outro — pelo nome do arquivo */
+  tipo_documento: string | null;
+  /** falso quando é boleto ou extrato: existe arquivo, mas não é documento fiscal */
+  parece_nota: boolean;
+  chave_fiscal: string | null;
+  /** falso quando a origem só APONTOU a nota (e-mail com link, sem anexo) */
+  tem_arquivo: boolean;
+};
+
+const FONTE_ROTULO: Record<string, string> = {
+  compras: "Compras",
+  reembolsos: "Reembolsos",
+  nfs_colaboradores: "NFS-e colaboradores",
+  eventos: "Eventos & Parcerias",
+  parceiros: "Parceiros",
+  drive_mercado_livre: "Drive · Mercado Livre",
+  drive_whatsapp: "Drive · WhatsApp",
+  // A pasta do Drive é o depósito de anexos feito por fora; `email` é o Hub
+  // lendo a caixa. Nomes distintos porque, quando a de fora parar de novo, tem
+  // de dar para ver na tela qual das duas trouxe a nota.
+  drive_gmail: "E-mail (pasta)",
+  email: "E-mail",
+};
+
+/* `types.ts` é gerado pelo Supabase CLI e ainda não conhece as RPCs desta
+   migration — mesmo atalho do `useApelidos`, some quando os tipos forem
+   regerados. */
+const chamar = <T,>(nome: string, args?: Record<string, unknown>): PromiseLike<{ data: T | null; error: { message?: string } | null }> =>
+  (supabase as unknown as { rpc: (n: string, a?: Record<string, unknown>) => PromiseLike<{ data: T | null; error: { message?: string } | null }> })
+    .rpc(nome, args);
 
 const STATUS = ["Pendente", "Em análise", "Aprovado", "Reprovado"] as const;
 const PAGE_SIZE = 50;
@@ -55,8 +109,12 @@ export default function BasePix({ abas }: { abas?: React.ReactNode }) {
   const [referencia, setReferencia] = useState<string>(mesAtual());
   const [fCat, setFCat] = useState("todas");
   const [fCompr, setFCompr] = useState<"todos" | "com" | "sem">("todos");
+  const [fNota, setFNota] = useState<"todas" | "com" | "sem" | "falta_anexar" | "promessa_falsa">("todas");
   const [busca, setBusca] = useState("");
   const [page, setPage] = useState(1);
+  const [notas, setNotas] = useState<Record<string, NotaExterna[]>>({});
+  const [cruzando, setCruzando] = useState(false);
+  const [enviandoErp, setEnviandoErp] = useState(false);
   const [uploadingId, setUploadingId] = useState<number | null>(null);
   const [askReplace, setAskReplace] = useState<{ row: Lanc; base64: string; nome: string; nomes: string[] } | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
@@ -75,6 +133,31 @@ export default function BasePix({ abas }: { abas?: React.ReactNode }) {
   };
   useEffect(() => { load(); }, []);
 
+  /* As notas das planilhas e do Drive, agrupadas pelo lançamento que explicam.
+     Uma leitura só para a tabela inteira — a lição do `useApelidos`: 50 linhas
+     na tela viram 50 requisições idênticas se cada uma buscar a sua.
+
+     ACESSÓRIO POR CONSTRUÇÃO: se a RPC falhar (migration ainda não aplicada, por
+     exemplo), o mapa fica vazio e a tela mostra o que sempre mostrou. */
+  const carregarNotas = useCallback(async () => {
+    if (!referencia) return;
+    /* Pelo MÊS, e não tudo de uma vez: o PostgREST devolve no máximo 1000 linhas
+       e não avisa quando corta — a tela ficaria não incompleta, e sim errada,
+       com lançamentos sem nota que na verdade têm uma. E é só do mês em foco
+       que os KPIs e a tabela precisam. */
+    const { data, error } = await chamar<NotaExterna[]>("notas_externas_por_alvo", {
+      p_alvo_tipo: "pix", p_referencia: referencia,
+    });
+    if (error) { console.warn("[pix] sem as notas externas:", error); return; }
+    const mapa: Record<string, NotaExterna[]> = {};
+    for (const n of data ?? []) {
+      if (!n.alvo_id_unico) continue;
+      (mapa[n.alvo_id_unico] ??= []).push(n);
+    }
+    setNotas(mapa);
+  }, [referencia]);
+  useEffect(() => { carregarNotas(); }, [carregarNotas]);
+
   // Garante string legível de qualquer erro (objeto, PostgrestError, etc.).
   const comoTexto = (v: any): string => {
     if (v == null) return "";
@@ -83,16 +166,19 @@ export default function BasePix({ abas }: { abas?: React.ReactNode }) {
   };
 
   // Invoca a função e extrai o erro real do FunctionsHttpError (corpo em error.context).
-  const invocar = async (payload: Record<string, unknown>) => {
-    const { data, error } = await supabase.functions.invoke("omie-pix-sync", { body: payload });
+  const invocar = async (payload: Record<string, unknown>, fn = "omie-pix-sync") => {
+    const { data, error } = await supabase.functions.invoke(fn, { body: payload });
     if (error) {
       let detalhe = comoTexto(error.message) || "";
       const ctx: any = (error as any).context;
       if (ctx && typeof ctx.text === "function") {
         try { const raw = await ctx.text(); const p = JSON.parse(raw); detalhe = comoTexto(p?.error) || raw || detalhe; } catch { /* keep */ }
       }
-      console.error("[omie-pix-sync]", detalhe, error);
-      if (/not found|Failed to (send|fetch)/i.test(detalhe)) throw new Error("A função omie-pix-sync ainda não foi publicada no Supabase (deploy pendente pelo Lovable).");
+      // O nome da função entra no texto: desde que esta tela passou a chamar
+      // três funções, "omie-pix-sync não publicada" mandaria conferir o deploy
+      // errado.
+      console.error(`[${fn}]`, detalhe, error);
+      if (/not found|Failed to (send|fetch)/i.test(detalhe)) throw new Error(`A função ${fn} ainda não foi publicada no Supabase (deploy pendente).`);
       if (/OMIE_APP_KEY|OMIE_APP_SECRET|Credenciais do Omie/i.test(detalhe)) throw new Error("Faltam os secrets OMIE_APP_KEY / OMIE_APP_SECRET no Supabase.");
       if (/cod_cliente|cnpj_cpf|column .* does not exist/i.test(detalhe)) throw new Error("A migration nova (colunas cod_cliente/cnpj_cpf) ainda não foi aplicada no Supabase.");
       throw new Error(detalhe || "Erro no backend.");
@@ -131,6 +217,72 @@ export default function BasePix({ abas }: { abas?: React.ReactNode }) {
     } catch (e: any) {
       toast.error("Falha ao sincronizar PIX: " + e.message, { duration: 8000 });
     } finally { setSyncing(false); }
+  };
+
+  /* Puxa as cinco planilhas de formulário, casa com os lançamentos e confere
+     contra o anexo do ERP. É a mesma NF que já foi enviada uma vez — o que
+     mudou é que agora ela é procurada, em vez de esperada. */
+  const cruzar = async () => {
+    setCruzando(true);
+    toast.message("Lendo as planilhas, as pastas do Drive e a caixa de e-mail…");
+    try {
+      /* A CAIXA PRIMEIRO, e o fracasso dela não derruba o resto: enquanto o
+         consentimento do Google não estiver feito, a `gmail-nf-sync` responde
+         erro — e as planilhas, que não dependem de nada disso, têm de continuar
+         cruzando normalmente. */
+      let doEmail = 0;
+      let erroEmail: string | null = null;
+      try {
+        const g = await invocar({ action: "sync", dias: 30, limite: 12 }, "gmail-nf-sync");
+        doEmail = Number(g?.notas ?? 0);
+      } catch (e) {
+        erroEmail = e instanceof Error ? e.message : String(e);
+        console.warn("[pix] caixa de e-mail:", erroEmail);
+      }
+
+      const d = await invocar({ action: "sync" }, "planilhas-nf-sync");
+      const r = d?.resumo ?? {};
+      const conf = r.conferencia ?? {};
+      await carregarNotas();
+      toast.success(
+        `${d.gravadas ?? 0} notas lidas · ${doEmail} do e-mail · ${r.em_pix ?? 0} casadas com PIX` +
+        (conf.promessa_falsa ? ` · ${conf.promessa_falsa} dizem "anexado" e o ERP não tem` : ""),
+        { duration: 9000 },
+      );
+      if (erroEmail) {
+        toast.warning("A caixa de e-mail não respondeu: " + erroEmail, { duration: 9000 });
+      }
+    } catch (e) {
+      toast.error("Falha ao cruzar as planilhas: " + (e instanceof Error ? e.message : String(e)), { duration: 8000 });
+    } finally { setCruzando(false); }
+  };
+
+  /* Manda ao Omie as notas que faltam. Duas etapas de propósito: a fila é do
+     Postgres (com a guarda de não reenviar o que o ERP já tem) e o envio é da
+     varredura que já existe — a mesma que serve achado, cartão e Facilities. */
+  const enviarAoErp = async (ids: number[]) => {
+    if (!ids.length) return;
+    setEnviandoErp(true);
+    try {
+      const { data: n, error } = await chamar<number>("notas_externas_enfileirar", { p_ids: ids });
+      if (error) throw new Error(error.message ?? "não deu para enfileirar");
+      if (!n) { toast.message("Nada a enviar: o ERP já tem essas notas."); return; }
+      toast.message(`${n} nota(s) na fila. Subindo ao Omie…`);
+      // Lote pequeno: o teto do worker é de CPU (zip + base64), e rodadas em
+      // sequência dividem o mesmo orçamento.
+      const d = await invocar({ action: "varredura", limite: 6 }, "omie-anexar-comprovante");
+      await Promise.all([load(), carregarNotas()]);
+      const restante = Math.max(0, n - Number(d.enviados ?? 0));
+      toast.success(
+        `${d.enviados ?? 0} anexo(s) no Omie` +
+        (d.falhas ? ` · ${d.falhas} falha(s)` : "") +
+        // A fila não se perde: o cron da varredura passa de 15 em 15 minutos.
+        (restante ? ` · ${restante} na fila, o cron leva o resto` : ""),
+        { duration: 8000 },
+      );
+    } catch (e) {
+      toast.error("Falha ao enviar ao Omie: " + (e instanceof Error ? e.message : String(e)), { duration: 8000 });
+    } finally { setEnviandoErp(false); }
   };
 
   // Opções de mês: últimos 18 + qualquer mês que já tenha dados (mesmo mais antigo).
@@ -198,18 +350,30 @@ export default function BasePix({ abas }: { abas?: React.ReactNode }) {
       if (fCat !== "todas" && r.categoria !== fCat) return false;
       if (fCompr === "com" && !r.tem_comprovante) return false;
       if (fCompr === "sem" && r.tem_comprovante) return false;
+
+      const doLancamento = notas[r.id_unico] ?? [];
+      // "com nota" quer dizer documento FISCAL: um boleto anexado não responde
+      // a pergunta que esta tela faz.
+      const comNota = doLancamento.some(n => n.parece_nota);
+      if (fNota === "com" && !comNota) return false;
+      if (fNota === "sem" && comNota) return false;
+      if ((fNota === "falta_anexar" || fNota === "promessa_falsa")
+          && !doLancamento.some(n => n.conferencia === fNota)) return false;
+
       if (q) {
         // O apelido entra junto: procurar pelo nome que está na tela precisa
-        // funcionar tanto quanto procurar pelo favorecido do extrato.
+        // funcionar tanto quanto procurar pelo favorecido do extrato. A nota
+        // encontrada entra pela MESMA razão — ela está escrita na linha.
         const ap = apelidoDe(apelidos, r.favorecido, r.cnpj_cpf);
-        const hay = `${r.favorecido ?? ""} ${ap?.apelido ?? ""} ${ap?.oQueE ?? ""} ${r.cnpj_cpf ?? ""} ${r.descricao ?? ""} ${r.categoria ?? ""}`.toLowerCase();
+        const daNota = doLancamento.map(n => `${n.nome ?? ""} ${n.o_que_e ?? ""} ${FONTE_ROTULO[n.fonte] ?? n.fonte}`).join(" ");
+        const hay = `${r.favorecido ?? ""} ${ap?.apelido ?? ""} ${ap?.oQueE ?? ""} ${r.cnpj_cpf ?? ""} ${r.descricao ?? ""} ${r.categoria ?? ""} ${daNota}`.toLowerCase();
         if (!hay.includes(q)) return false;
       }
       return true;
     });
-  }, [periodRows, fCat, fCompr, busca, apelidos]);
+  }, [periodRows, fCat, fCompr, fNota, busca, apelidos, notas]);
 
-  useEffect(() => { setPage(1); }, [referencia, fCat, fCompr, busca]);
+  useEffect(() => { setPage(1); }, [referencia, fCat, fCompr, fNota, busca]);
 
   const kpis = useMemo(() => {
     const total = periodRows.length;
@@ -217,8 +381,30 @@ export default function BasePix({ abas }: { abas?: React.ReactNode }) {
     const semCompr = periodRows.filter(r => !r.tem_comprovante).length;
     const comCompr = total - semCompr;
     const cobertura = total > 0 ? (comCompr / total) * 100 : 0;
-    return { total, soma, semCompr, comCompr, cobertura };
-  }, [periodRows]);
+
+    /* A nota que está fora do ERP. Conta-se por LANÇAMENTO e não por nota: dois
+       arquivos do mesmo reembolso são uma linha só na tela.
+
+       E só conta o que é DOCUMENTO FISCAL: metade do que chega por e-mail é
+       boleto, e boleto não responde "cadê a nota". */
+    const doPeriodo = periodRows.map(r => (notas[r.id_unico] ?? []).filter(n => n.parece_nota));
+    const comNota = doPeriodo.filter(ns => ns.length).length;
+    const falta = doPeriodo.filter(ns => ns.some(n => n.conferencia === "falta_anexar")).length;
+    const promessa = doPeriodo.filter(ns => ns.some(n => n.conferencia === "promessa_falsa")).length;
+    // O que a nota resolve: sem comprovante no ERP, mas com a NF já enviada.
+    const resolviveis = periodRows.filter(
+      (r, i) => !r.tem_comprovante && doPeriodo[i].some(n => n.conferencia === "falta_anexar" || n.conferencia === "promessa_falsa"),
+    ).length;
+    /* O envio em lote leva só nota COM ARQUIVO: boleto sobe um a um, com alguém
+       decidindo, e a nota "por link" (o e-mail do Bling, que aponta a DANFE sem
+       anexar nada) não tem o que subir. */
+    const idsParaErp = doPeriodo.flat()
+      .filter(n => n.tem_arquivo && !n.enviado_erp_em
+        && (n.conferencia === "falta_anexar" || n.conferencia === "promessa_falsa"))
+      .map(n => n.nota_id);
+
+    return { total, soma, semCompr, comCompr, cobertura, comNota, falta, promessa, resolviveis, idsParaErp };
+  }, [periodRows, notas]);
 
   const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
   const paged = useMemo(() => filtered.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE), [filtered, page]);
@@ -263,6 +449,14 @@ export default function BasePix({ abas }: { abas?: React.ReactNode }) {
             {referencias.length === 0 && <option value="">—</option>}
           </select>
           <button
+            onClick={cruzar}
+            disabled={cruzando}
+            title="Lê as cinco planilhas de NF e as pastas do Drive, casa com os lançamentos e confere contra o anexo do Omie"
+            className="inline-flex items-center gap-2 h-9 rounded-lg border border-border bg-card px-3 text-sm font-medium hover:bg-accent disabled:opacity-60"
+          >
+            {cruzando ? <Loader2 className="h-4 w-4 animate-spin" /> : <FileSearch className="h-4 w-4" />} Cruzar notas
+          </button>
+          <button
             onClick={sync}
             disabled={syncing}
             className="inline-flex items-center gap-2 h-9 rounded-lg bg-primary px-3 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-60"
@@ -278,22 +472,68 @@ export default function BasePix({ abas }: { abas?: React.ReactNode }) {
           <>
             <Kpi label="Lançamentos PIX" value={String(kpis.total)} />
             <Kpi label="Valor total" value={comValorExato(kpis.soma, brlAbbr(kpis.soma))} />
-            <Kpi label="Sem comprovante" value={String(kpis.semCompr)} valueClass="text-[hsl(0_72%_45%)]" />
-            <Kpi label="Com comprovante" value={String(kpis.comCompr)} valueClass="text-[hsl(152_60%_36%)]" />
+            <Kpi label="Sem anexo no Omie" value={String(kpis.semCompr)} valueClass="text-[hsl(0_72%_45%)]" />
+            <Kpi label="Com anexo no Omie" value={String(kpis.comCompr)} valueClass="text-[hsl(152_60%_36%)]" />
             <Kpi label="Cobertura" value={`${kpis.cobertura.toFixed(1)}%`} valueClass="text-[hsl(152_60%_36%)]" />
           </>
         )}
       </div>
 
+      {/* O DOUBLE CHECK, numa faixa só. Só aparece depois de cruzar — antes
+          disso não há o que dizer, e uma faixa vazia é ruído. */}
+      {!loading && kpis.comNota > 0 && (
+        <div className="flex flex-wrap items-center gap-x-6 gap-y-2 rounded-xl border border-border bg-card px-5 py-3 text-sm">
+          <div className="flex items-center gap-2">
+            <FileSearch className="h-4 w-4 text-muted-foreground" />
+            <span className="text-muted-foreground">Notas encontradas fora do ERP</span>
+            <b className="num">{kpis.comNota}</b>
+          </div>
+          {kpis.promessa > 0 && (
+            <div className="flex items-center gap-2" title='A planilha registra "Anexado!" mas o título não tem anexo nenhum no Omie'>
+              <FileWarning className="h-4 w-4 text-[hsl(0_72%_45%)]" />
+              <span className="text-muted-foreground">A planilha diz que anexou, o Omie não tem</span>
+              <b className="num text-[hsl(0_72%_45%)]">{kpis.promessa}</b>
+            </div>
+          )}
+          {kpis.falta > 0 && (
+            <div className="flex items-center gap-2">
+              <FileCheck2 className="h-4 w-4 text-[hsl(35_92%_40%)]" />
+              <span className="text-muted-foreground">Nota achada, falta anexar</span>
+              <b className="num text-[hsl(35_92%_40%)]">{kpis.falta}</b>
+            </div>
+          )}
+          {kpis.idsParaErp.length > 0 && (
+            <button
+              onClick={() => enviarAoErp(kpis.idsParaErp)}
+              disabled={enviandoErp}
+              className="ml-auto inline-flex items-center gap-2 h-8 rounded-lg bg-primary px-3 text-xs font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-60"
+            >
+              {enviandoErp ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Upload className="h-3.5 w-3.5" />}
+              Anexar {kpis.idsParaErp.length} no Omie
+            </button>
+          )}
+        </div>
+      )}
+
       {/* Filters */}
       <div className="flex flex-wrap gap-2 items-center">
         <FilterSelect label="Categoria" value={fCat} onChange={setFCat} options={categorias} allLabel="todas" />
         <label className="inline-flex items-center gap-2 h-9 rounded-lg border border-border bg-card px-3">
-          <span className="text-[11px] uppercase tracking-wider text-muted-foreground font-medium">Comprovante</span>
+          <span className="text-[11px] uppercase tracking-wider text-muted-foreground font-medium">Anexo no Omie</span>
           <select value={fCompr} onChange={e => setFCompr(e.target.value as any)} className="text-sm bg-transparent outline-none">
             <option value="todos">todos</option>
-            <option value="com">com comprovante</option>
-            <option value="sem">sem comprovante</option>
+            <option value="com">com anexo</option>
+            <option value="sem">sem anexo</option>
+          </select>
+        </label>
+        <label className="inline-flex items-center gap-2 h-9 rounded-lg border border-border bg-card px-3">
+          <span className="text-[11px] uppercase tracking-wider text-muted-foreground font-medium">Nota fora do ERP</span>
+          <select value={fNota} onChange={e => setFNota(e.target.value as typeof fNota)} className="text-sm bg-transparent outline-none">
+            <option value="todas">todas</option>
+            <option value="com">com nota achada</option>
+            <option value="sem">sem nota achada</option>
+            <option value="falta_anexar">falta anexar</option>
+            <option value="promessa_falsa">diz que anexou</option>
           </select>
         </label>
         <label className="inline-flex items-center gap-2 h-9 rounded-lg border border-border bg-card px-3 min-w-[240px] flex-1 max-w-[360px]">
@@ -308,12 +548,15 @@ export default function BasePix({ abas }: { abas?: React.ReactNode }) {
 
       {/* Table */}
       <div className="rounded-xl border border-border bg-card overflow-hidden">
-        <div className="grid grid-cols-[110px_1.6fr_1.6fr_150px_160px] gap-3 px-4 py-3 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground border-b border-border">
+        <div className="grid grid-cols-[100px_1.5fr_1.1fr_130px_1.3fr_150px] gap-3 px-4 py-3 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground border-b border-border">
           <div>Data</div>
           <div>Favorecido / Descrição</div>
           <div>Categoria Omie</div>
           <div className="text-right">Valor</div>
-          <div>Comprovante</div>
+          {/* As duas verdades, lado a lado e sem se misturarem: onde a nota
+              está e o que o ERP tem de fato. */}
+          <div>Nota fora do ERP</div>
+          <div>Anexo no Omie</div>
         </div>
         {loading ? (
           <div className="p-5 space-y-3">{Array.from({ length: 6 }).map((_, i) => <Skeleton key={i} className="h-10 rounded" />)}</div>
@@ -325,7 +568,13 @@ export default function BasePix({ abas }: { abas?: React.ReactNode }) {
           <div className="p-12 text-center text-sm text-muted-foreground">Nenhum lançamento com esses filtros.</div>
         ) : (
           <>
-            {paged.map(r => <PixRow key={r.id} r={r} onAnexar={abrirSeletor} uploading={uploadingId === r.id} />)}
+            {paged.map(r => (
+              <PixRow
+                key={r.id} r={r} onAnexar={abrirSeletor} uploading={uploadingId === r.id}
+                notas={notas[r.id_unico] ?? []}
+                onEnviarErp={enviarAoErp} enviandoErp={enviandoErp}
+              />
+            ))}
             {totalPages > 1 && (
               <div className="flex items-center justify-between px-4 py-3 text-xs text-muted-foreground border-t border-border">
                 <div>Página {page} de {totalPages} · {filtered.length} lançamentos</div>
@@ -344,11 +593,20 @@ export default function BasePix({ abas }: { abas?: React.ReactNode }) {
   );
 }
 
-function PixRow({ r, onAnexar, uploading }: { r: Lanc; onAnexar: (r: Lanc) => void; uploading: boolean }) {
+function PixRow({ r, onAnexar, uploading, notas, onEnviarErp, enviandoErp }: {
+  r: Lanc; onAnexar: (r: Lanc) => void; uploading: boolean;
+  notas: NotaExterna[]; onEnviarErp: (ids: number[]) => void; enviandoErp: boolean;
+}) {
   const ap = apelidoDe(useApelidos(), r.favorecido, r.cnpj_cpf);
-  const bg = !r.tem_comprovante ? "bg-[hsl(0_80%_97%)]" : "";
+  /* O vermelho é de COBRANÇA, e cobrar nota que já apareceu numa planilha é
+     justamente o que esta esteira veio acabar. Sem anexo e sem nota segue
+     vermelho; sem anexo mas com nota achada vira âmbar — é trabalho a fazer,
+     não documento a caçar. Boleto não tira do vermelho: ele não é a nota. */
+  const bg = r.tem_comprovante ? ""
+    : notas.some(n => n.parece_nota) ? "bg-[hsl(35_92%_97%)]"
+    : "bg-[hsl(0_80%_97%)]";
   return (
-    <div className={cn("grid grid-cols-[110px_1.6fr_1.6fr_150px_160px] gap-3 px-4 py-2.5 items-center border-b border-border last:border-0 text-sm", bg)}>
+    <div className={cn("grid grid-cols-[100px_1.5fr_1.1fr_130px_1.3fr_150px] gap-3 px-4 py-2.5 items-center border-b border-border last:border-0 text-sm", bg)}>
       <div className="text-muted-foreground">{fmtDateBR(r.data)}</div>
       <div className="min-w-0">
         {/* Apelido em cima (Configurações › Parametrização), favorecido do
@@ -365,6 +623,9 @@ function PixRow({ r, onAnexar, uploading }: { r: Lanc; onAnexar: (r: Lanc) => vo
       </div>
       <div className="text-xs truncate" title={r.categoria || ""}>{r.categoria || "—"}</div>
       <div className="text-right num font-medium">{brl(Number(r.valor || 0))}</div>
+
+      <NotaCelula notas={notas} onEnviarErp={onEnviarErp} enviando={enviandoErp} />
+
       <div>
         {r.tem_comprovante ? (
           <div className="flex items-center gap-1.5">
@@ -399,6 +660,109 @@ function PixRow({ r, onAnexar, uploading }: { r: Lanc; onAnexar: (r: Lanc) => vo
           >
             {uploading ? <Loader2 className="h-3 w-3 animate-spin" /> : <Upload className="h-3 w-3" />}
             {uploading ? "enviando…" : "anexar"}
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * A nota que existe fora do ERP, e em que pé ela está.
+ *
+ * Uma linha pode ter mais de uma (dois arquivos no mesmo reembolso). Mostra-se a
+ * primeira e o resto vira "+N", porque é a existência que importa na varredura
+ * visual — o detalhe está no hover.
+ */
+function NotaCelula({ notas, onEnviarErp, enviando }: {
+  notas: NotaExterna[]; onEnviarErp: (ids: number[]) => void; enviando: boolean;
+}) {
+  if (!notas.length) return <div className="text-xs text-muted-foreground">—</div>;
+
+  /* Duas ordens, nesta ordem: a NOTA vem antes do boleto (é ela que a auditoria
+     cobra) e, entre notas, a pior notícia primeiro — uma promessa falsa não
+     pode ficar escondida atrás de uma nota irmã que já conferiu. */
+  const ordem = { promessa_falsa: 0, falta_anexar: 1, confere: 2 } as Record<string, number>;
+  const [n, ...resto] = [...notas].sort(
+    (a, b) => Number(b.parece_nota) - Number(a.parece_nota)
+      || (ordem[a.conferencia ?? ""] ?? 9) - (ordem[b.conferencia ?? ""] ?? 9),
+  );
+  const pendentes = notas.filter(x => !x.enviado_erp_em
+    && (x.conferencia === "falta_anexar" || x.conferencia === "promessa_falsa"));
+
+  const selo =
+    n.conferencia === "promessa_falsa"
+      ? { txt: "diz que anexou", cls: "bg-[hsl(0_80%_96%)] text-[hsl(0_72%_38%)] border-[hsl(0_80%_88%)]",
+          dica: `A planilha registra "${n.status_planilha ?? "anexado"}" — o título não tem anexo no Omie.` }
+    : n.conferencia === "falta_anexar"
+      ? { txt: "falta anexar", cls: "bg-[hsl(35_92%_95%)] text-[hsl(35_92%_32%)] border-[hsl(35_92%_82%)]",
+          dica: "A nota existe na origem e o título do Omie está sem anexo." }
+    : { txt: "confere", cls: "bg-[hsl(152_55%_94%)] text-[hsl(152_60%_28%)] border-[hsl(152_55%_82%)]",
+        dica: "A nota existe na origem e o ERP tem o anexo." };
+
+  const comoCasou = `${n.casamento ?? "—"} · confiança ${n.confianca ?? "—"}`;
+
+  const rotulo = FONTE_ROTULO[n.fonte] ?? n.fonte;
+  const dica = [rotulo, n.o_que_e, n.detalhe, comoCasou].filter(Boolean).join(" · ");
+
+  return (
+    <div className="min-w-0">
+      <div className="flex items-center gap-1.5 min-w-0">
+        {/* O link tanto pode ser URL (Drive, Gmail) quanto caminho no bucket
+            privado, que precisa de signed URL — `ComprovanteLink` sabe os dois.
+            Um <a href> cru abriria "email/2026-08/…" como caminho do site. */}
+        <ComprovanteLink
+          valor={n.link}
+          title={dica}
+          className="text-xs font-medium truncate hover:underline"
+        >
+          {rotulo}
+        </ComprovanteLink>
+        <ExternalLink className="h-2.5 w-2.5 shrink-0 text-muted-foreground" />
+        {/* Boleto e extrato ficam com o nome à mostra: existe arquivo, mas ele
+            não é o documento fiscal que a auditoria está cobrando. */}
+        {!n.parece_nota && n.tipo_documento && (
+          <span className="text-[10px] uppercase tracking-wide text-muted-foreground shrink-0"
+            title="Existe arquivo, mas não é documento fiscal">
+            {n.tipo_documento}
+          </span>
+        )}
+        {/* O contrário: é nota, mas ninguém mandou o arquivo — o e-mail só
+            apontou. O link abre a mensagem; baixar de lá continua sendo gesto
+            de gente, e por isso ela não entra na fila do ERP. */}
+        {!n.tem_arquivo && (
+          <span className="text-[10px] uppercase tracking-wide text-[hsl(35_92%_38%)] shrink-0"
+            title="O e-mail informa a nota mas não anexou o arquivo — abra para baixar">
+            só link
+          </span>
+        )}
+        {resto.length > 0 && (
+          <span className="text-[10px] text-muted-foreground shrink-0" title={`${resto.length} arquivo(s) a mais nesta nota`}>
+            +{resto.length}
+          </span>
+        )}
+      </div>
+      <div className="flex items-center gap-1.5 mt-0.5">
+        <span title={selo.dica}
+          className={cn("inline-flex items-center px-1.5 py-0 rounded-full text-[10px] font-semibold border", selo.cls)}>
+          {selo.txt}
+        </span>
+        {n.enviado_erp_em && (
+          <span className="text-[10px] text-muted-foreground" title={`Enviado ao Omie em ${fmtDateBR(n.enviado_erp_em.slice(0, 10))}`}>
+            enviado
+          </span>
+        )}
+        {n.erro_erp && (
+          <span className="text-[10px] text-[hsl(0_72%_45%)] truncate" title={n.erro_erp}>falhou</span>
+        )}
+        {pendentes.some(x => x.tem_arquivo) && !n.erro_erp && (
+          <button
+            onClick={() => onEnviarErp(pendentes.filter(x => x.tem_arquivo).map(x => x.nota_id))}
+            disabled={enviando}
+            title="Subir esta nota para o título no Omie"
+            className="inline-flex items-center justify-center h-4 w-4 rounded-full border border-border text-muted-foreground hover:bg-accent disabled:opacity-60"
+          >
+            {enviando ? <Loader2 className="h-2.5 w-2.5 animate-spin" /> : <Upload className="h-2.5 w-2.5" />}
           </button>
         )}
       </div>

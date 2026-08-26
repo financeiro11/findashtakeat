@@ -10,3 +10,12 @@ verify_jwt = true
 # Hub, sem ganho de seguranca: a assinatura ja e o controle de acesso.
 [functions.recargas-takeatos-webhook]
 verify_jwt = false
+
+# Volta do consentimento do Google: quem chega aqui e o NAVEGADOR da pessoa,
+# redirecionado pelo Google, sem a anon key do Supabase. Com verify_jwt ligado a
+# chamada morre em 401 no gateway e o refresh token nunca e gravado.
+# Quem protege este passo e o `state` — um valor aleatorio que a propria funcao
+# gerou e guardou em internal_secrets; sem ele, a troca do codigo e recusada. As
+# demais acoes da funcao (montar o link, diagnosticar) exigem usuario logado.
+[functions.gmail-oauth]
+verify_jwt = false

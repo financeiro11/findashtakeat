@@ -33,7 +33,7 @@ import { cn } from "@/lib/utils";
 import { comValorExato } from "@/components/ValorExato";
 import {
   RefreshCw, Loader2, CheckCircle2, XCircle, Clock, FlaskConical,
-  PlayCircle, CalendarClock, Info, Power, FileText, ChevronRight, ChevronDown, ShieldAlert,
+  PlayCircle, CalendarClock, Info, Power, FileText, ChevronRight, ChevronDown, ShieldAlert, Mail,
 } from "lucide-react";
 import { linkPortalNacional, chaveEmBlocos } from "@/lib/notasFiscais";
 
@@ -109,13 +109,22 @@ interface Execucao {
  * Por isso o desfecho é DERIVADO da ação junto com o resultado. Só faturamento
  * concluído vira "Emitida"; criar OS vira "Sem nota", que é o que ela é.
  */
-type EstadoKey = "emitida" | "no_forno" | "falhou" | "barrada" | "sem_nota" | "ensaio";
+type EstadoKey = "emitida" | "email" | "no_forno" | "falhou" | "barrada" | "sem_nota" | "ensaio";
 
 const ESTADO: Record<EstadoKey, { rotulo: string; ajuda: string; tom: string; Icone: typeof CheckCircle2 }> = {
   emitida:  {
     rotulo: "Emitida", Icone: CheckCircle2,
     ajuda: "O faturamento concluiu e a NFS-e foi autorizada pela prefeitura.",
     tom: "bg-emerald-500/10 text-emerald-600 border-emerald-500/20 dark:text-emerald-400",
+  },
+  /* "Disparado", e não "entregue" — a diferença não é preciosismo. O Omie não tem
+     API de e-mail nenhuma: o que este selo afirma é que a OS foi gravada com o
+     envio ligado e que a nota foi autorizada, que é o instante em que o ERP
+     dispara. Se chegou na caixa do cliente, ninguém consegue provar por API. */
+  email: {
+    rotulo: "E-mail disparado", Icone: Mail,
+    ajuda: "A OS foi criada com o envio ligado (cEnvLink) e a nota foi autorizada — é neste instante que o Omie manda o link ao cliente. Entrega não se confirma por API; o comprovante fica na aba \"Emails Enviados\" da OS.",
+    tom: "bg-violet-500/10 text-violet-600 border-violet-500/20 dark:text-violet-400",
   },
   no_forno: {
     rotulo: "No forno", Icone: Clock,
@@ -154,6 +163,9 @@ const desfechoDe = (l: LinhaLog): EstadoKey => {
   // barrada ali não é "teria emitido" — é "não emitiria nem se estivesse ligada".
   if (l.resultado === "bloqueado") return "barrada";
   if (l.acao === "previa") return "ensaio";
+  // Antes do `ok` genérico: o passo do e-mail é um `ok` que NÃO é nota emitida, e
+  // sem esta linha ele vestiria o selo verde e contaria como uma segunda nota.
+  if (l.acao === "email") return "email";
   if (l.resultado === "erro") return "falhou";
   if (l.resultado === "em_processamento") return "no_forno";
   if (l.acao === "criar_os") return "sem_nota";   // 'ok' aqui é a OS, não a nota
@@ -165,6 +177,7 @@ const ACAO: Record<string, string> = {
   faturar: "Faturamento",
   criar_e_faturar: "Criar + faturar",
   previa: "Ensaio",
+  email: "E-mail da nota",
 };
 
 const Selo = ({ e }: { e: EstadoKey }) => {
@@ -659,6 +672,25 @@ export default function NotasFiscaisLog() {
                     <td className="p-2 align-top"><Selo e={g.estado} /></td>
                     <td className="max-w-[380px] p-2 align-top">
                       {g.nfse.map((n) => <SeloNota key={n.numero} numero={n.numero} chave={n.chave} />)}
+                      {/* O e-mail ao lado do número da nota. "O cliente recebeu?"
+                          é justamente a pergunta que fazia abrir o Omie — e ela
+                          se responde aqui, sem precisar expandir os passos.
+                          Ícone, não selo: o desfecho da linha continua sendo a
+                          nota; o envio é uma nota de rodapé dela. */}
+                      {(() => {
+                        const enviados = g.eventos.filter((e) => e.acao === "email");
+                        if (!enviados.length) return null;
+                        return (
+                          <span
+                            className="ml-1 inline-flex items-center gap-0.5 align-middle text-[11px] text-violet-600 dark:text-violet-400"
+                            title={enviados.map((e) => e.motivo).filter(Boolean).join(" · ")
+                              || "O Omie disparou o e-mail com o link da nota."}
+                          >
+                            <Mail className="h-3 w-3" />
+                            {enviados.length > 1 ? enviados.length : null}
+                          </span>
+                        );
+                      })()}
                       {/* Fechado, vale o motivo do passo mais recente: é ele que
                           diz o que falta fazer agora. O resto está um clique abaixo. */}
                       {!aberto && g.ultimo.motivo && (

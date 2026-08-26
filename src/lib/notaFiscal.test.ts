@@ -1,5 +1,8 @@
 import { describe, it, expect } from "vitest";
-import { lerDanfes, descricaoDaNota } from "@/lib/notaFiscal";
+import {
+  chaveDeAcesso, chaveValida, dadosDaChave, descricaoDaNota, lerCorpoDeEmail,
+  lerDanfes, lerNomeDeArquivo, lerXmlFiscal, tipoDoDocumento,
+} from "@/lib/notaFiscal";
 
 /* ---------------------------------------------------------------------------
  * ESTES RECORTES SAÍRAM DO `unpdf`, e isso é o ponto.
@@ -118,5 +121,232 @@ describe("entrada ruim", () => {
     const [nf] = lerDanfes("RECEBEMOS DE FULANO LTDA OS PRODUTOS CONSTANTES DA NOTA");
     expect(nf.itens).toEqual([]);
     expect(descricaoDaNota(nf)).toBe("FULANO LTDA");
+  });
+});
+
+/* ---------------------------------------------------------------------------
+ * A NOTA SEM ABRIR O ARQUIVO
+ *
+ * As chaves daqui são REAIS, copiadas dos arquivos da pasta "0. Gmail" do
+ * Drive, e conferidas contra o e-mail que as trouxe: a chave que termina em
+ * ...058314 é a NF 130941 da FRACALOSSI (CNPJ 27.250.919/0001-90), e o e-mail
+ * dela diz exatamente esse número e esse CNPJ. É essa conferência cruzada que
+ * dá confiança no DV — não o algoritmo estar bonito.
+ * ------------------------------------------------------------------------- */
+
+const FRACALOSSI = "32260827250919000190550000001309411003058314";
+const EXCLUSIVE = "32260836977317000120550010000937351584821609";
+
+describe("chave de acesso", () => {
+  it("aceita chave real", () => {
+    expect(chaveValida(FRACALOSSI)).toBe(true);
+    expect(chaveValida(EXCLUSIVE)).toBe(true);
+    expect(chaveValida("32260815056118000109550030000023821082212052")).toBe(true);
+  });
+
+  it("recusa 44 dígitos que não são chave", () => {
+    // Um dígito trocado no meio: o DV denuncia.
+    expect(chaveValida("32260827250919000190550000001309411003058315")).toBe(false);
+    expect(chaveValida("00000000026855605451000000404512345678901234")).toBe(false);
+    expect(chaveValida("123")).toBe(false);
+    expect(chaveValida("")).toBe(false);
+  });
+
+  it("acha a chave grudada em outro texto", () => {
+    expect(chaveDeAcesso(`2026-08-10_${FRACALOSSI}-nfe.pdf`)).toBe(FRACALOSSI);
+    expect(chaveDeAcesso(`DANFE_${FRACALOSSI}_v4.00`)).toBe(FRACALOSSI);
+    expect(chaveDeAcesso(`Chave de acesso: ${EXCLUSIVE}`)).toBe(EXCLUSIVE);
+  });
+
+  it("não inventa chave onde não há", () => {
+    // Nome real de arquivo da pasta, com dois números compridos e nenhuma chave.
+    expect(chaveDeAcesso("ESCEFATELBT06_00000000026855605451_0000004045A")).toBeNull();
+    expect(chaveDeAcesso("2026-08-03_BOLETO - 4535")).toBeNull();
+    expect(chaveDeAcesso(null)).toBeNull();
+  });
+
+  it("desmonta a chave em CNPJ, competência e número", () => {
+    expect(dadosDaChave(FRACALOSSI)).toEqual({
+      cnpj: "27250919000190", competencia: "2026-08", numero: "130941",
+    });
+    // O e-mail da Exclusive dizia "Número: 000093735" — bate.
+    expect(dadosDaChave(EXCLUSIVE)?.numero).toBe("93735");
+    expect(dadosDaChave("123")).toBeNull();
+  });
+});
+
+describe("tipo do documento", () => {
+  it("boleto ganha de nota quando os dois nomes aparecem", () => {
+    // Nome real: contém "Serviço" e "Boletos". Marcar como nota faria a
+    // auditoria dar por resolvido um lançamento que segue sem documento fiscal.
+    expect(tipoDoDocumento("Boletos 3x Serviço Os. 1-453 Tekeat App.pdf")).toBe("boleto");
+    expect(tipoDoDocumento("2026-08-03_BOLETO - 4535.pdf")).toBe("boleto");
+  });
+
+  it("reconhece a nota nas grafias que chegam", () => {
+    expect(tipoDoDocumento("notafiscal_998_10418.pdf")).toBe("nota");
+    expect(tipoDoDocumento("2026-08-01_DANFE_32260815056118000109550030000023821082212052_v4.00.pdf")).toBe("nota");
+    expect(tipoDoDocumento("NFSE Os. 1-453 Tekeat App.pdf")).toBe("nota");
+    expect(tipoDoDocumento("NF Kingbier (Chopp HH + Festa junina).pdf")).toBe("nota");
+  });
+
+  it("separa recibo e extrato do resto", () => {
+    expect(tipoDoDocumento("2026-08-05_Alude_Recibo-Aluguel_Takeat.pdf")).toBe("recibo");
+    expect(tipoDoDocumento("99Receipt - 23Jul2026 - R$57,00 - Pop - Vitória.pdf")).toBe("recibo");
+    expect(tipoDoDocumento("Cópia de ClientStatements_082426.pdf")).toBe("extrato");
+    expect(tipoDoDocumento("2026-08-04_Junho_2026.pdf")).toBe("outro");
+  });
+});
+
+describe("nome do arquivo", () => {
+  it("lê o carimbo de data e a chave — os dois de graça", () => {
+    const n = lerNomeDeArquivo(`2026-08-10_${FRACALOSSI}-nfe.pdf`);
+    expect(n.data).toBe("2026-08-10");
+    expect(n.chave).toBe(FRACALOSSI);
+    expect(n.cnpj).toBe("27250919000190");
+    expect(n.competencia).toBe("2026-08");   // da chave, não da pasta
+    expect(n.tipo).toBe("nota");
+  });
+
+  it("aceita o carimbo sem hífen", () => {
+    const n = lerNomeDeArquivo("20260817_Takeat - 0003198.pdf");
+    expect(n.data).toBe("2026-08-17");
+    expect(n.descricao).toBe("Takeat - 0003198");
+    expect(n.chave).toBeNull();
+  });
+
+  it("pega o valor quando ele está escrito no nome", () => {
+    const n = lerNomeDeArquivo("2026-08-05_TAKEAT TECNOLOGIA LTDA; ORION; NFSe; 012888; R$ 870,00.pdf");
+    expect(n.data).toBe("2026-08-05");
+    expect(n.valor).toBe(870);
+    expect(n.tipo).toBe("nota");
+    expect(n.descricao).toContain("ORION");
+  });
+
+  it("não confunde número de nota com dinheiro", () => {
+    // "0003198" é número de nota. Sem o "R$" à frente, não é valor.
+    expect(lerNomeDeArquivo("20260817_Takeat - 0003198.pdf").valor).toBeNull();
+    expect(lerNomeDeArquivo("2026-08-03_4535 - TAKEAT.pdf").valor).toBeNull();
+  });
+
+  it("nome sem carimbo nenhum não quebra", () => {
+    const n = lerNomeDeArquivo("verisure.pdf");
+    expect(n.data).toBeNull();
+    expect(n.descricao).toBe("verisure");
+    expect(lerNomeDeArquivo("").descricao).toBeNull();
+  });
+});
+
+const XML_NFE = `<?xml version="1.0"?>
+<nfeProc versao="4.00"><NFe><infNFe Id="NFe${FRACALOSSI}" versao="4.00">
+<ide><cUF>32</cUF><nNF>130941</nNF><dhEmi>2026-08-10T10:42:00-03:00</dhEmi></ide>
+<emit><CNPJ>27250919000190</CNPJ><xNome>FRACALOSSI MATERIAL ELETRICO LTDA</xNome></emit>
+<dest><CNPJ>37511891000150</CNPJ><xNome>TAKEAT TECNOLOGIA LTDA</xNome></dest>
+<total><ICMSTot><vProd>2135.74</vProd><vNF>2135.74</vNF></ICMSTot></total>
+</infNFe></NFe></nfeProc>`;
+
+const XML_NFSE = `<?xml version="1.0"?>
+<CompNfse><Nfse><InfNfse><Numero>012888</Numero><DataEmissao>2026-08-05T00:00:00</DataEmissao>
+<ValoresNfse><ValorLiquidoNfse>870.00</ValorLiquidoNfse></ValoresNfse>
+<PrestadorServico><IdentificacaoPrestador><Cnpj>09.352.984/0001-01</Cnpj></IdentificacaoPrestador>
+<RazaoSocial>ORION TELECOM LTDA</RazaoSocial></PrestadorServico>
+</InfNfse></Nfse></CompNfse>`;
+
+describe("XML fiscal", () => {
+  it("lê a NF-e sem OCR e sem layout", () => {
+    const x = lerXmlFiscal(XML_NFE)!;
+    expect(x.cnpj).toBe("27250919000190");        // o emitente, não o destinatário
+    expect(x.emitente).toBe("FRACALOSSI MATERIAL ELETRICO LTDA");
+    expect(x.valor).toBe(2135.74);                 // ponto decimal, não pt-BR
+    expect(x.data).toBe("2026-08-10");
+    expect(x.chave).toBe(FRACALOSSI);
+    expect(x.numero).toBe("130941");
+  });
+
+  it("não confunde o destinatário com quem emitiu", () => {
+    // Nós somos o `dest`. Ler o CNPJ errado casaria a nota com a Takeat.
+    expect(lerXmlFiscal(XML_NFE)!.cnpj).not.toBe("37511891000150");
+  });
+
+  it("lê a NFS-e municipal, que não tem padrão nacional", () => {
+    const x = lerXmlFiscal(XML_NFSE)!;
+    expect(x.cnpj).toBe("09352984000101");
+    expect(x.emitente).toBe("ORION TELECOM LTDA");
+    expect(x.valor).toBe(870);
+    expect(x.data).toBe("2026-08-05");
+    expect(x.numero).toBe("012888");
+  });
+
+  it("o que não é XML fiscal devolve nulo", () => {
+    expect(lerXmlFiscal("<html><body>oi</body></html>")).toBeNull();
+    expect(lerXmlFiscal("")).toBeNull();
+    expect(lerXmlFiscal(null)).toBeNull();
+  });
+});
+
+/* ---------------------------------------------------------------------------
+ * O CORPO DO E-MAIL
+ *
+ * Todos os textos abaixo são REAIS, copiados da caixa `financeiro@takeat.app`
+ * em 25/08/2026. Três deles são de e-mails cuja nota NÃO estava no Drive — a
+ * automação que salva anexos tinha parado quinze dias antes, e é exatamente
+ * essa a fatia que ler o corpo recupera.
+ * ------------------------------------------------------------------------- */
+
+const NOSSO = "37511891000150";
+
+describe("corpo do e-mail", () => {
+  it("pega o CNPJ do FORNECEDOR quando o nosso está ao lado", () => {
+    // O texto tem os dois CNPJs. Pegar "o primeiro" casaria a nota com a Takeat.
+    const c = lerCorpoDeEmail(
+      "Fornecedor/Prestador FRACALOSSI MATERIAL ELETRICO LTDA CNPJ: 27.250.919/0001-90 " +
+      "Cliente/Tomador TAKEAT TECNOLOGIA LTDA CNPJ: 37.511.891/0001-50 " +
+      "Data de emissão: Ago 21 2026 02:49 PM Valor: R$275,80", NOSSO);
+    expect(c.cnpj).toBe("27250919000190");
+    expect(c.valor).toBe(275.8);
+  });
+
+  it("lê número, data e valor da frase corrida", () => {
+    const c = lerCorpoDeEmail(
+      "Prezado TAKEAT, Segue em anexo a Nota Fiscal nº 000001296, série 1, " +
+      "emitida em 20/08/2026, no valor de R$ 797,70.", NOSSO);
+    expect(c.numero).toBe("1296");
+    expect(c.data).toBe("2026-08-20");
+    expect(c.valor).toBe(797.7);
+  });
+
+  it("a chave de acesso no corpo entrega o emitente sozinha", () => {
+    const c = lerCorpoDeEmail(
+      "Seguem dados da NF-e em anexo. Autorizado o uso da NF-e Chave de acesso: " +
+      "32260836977317000120550010000937351584821609 Dados da NF-e Número: 000093735 " +
+      "Série: 1 Data de Emissão: 21/08/2026", NOSSO);
+    expect(c.chave).toBe("32260836977317000120550010000937351584821609");
+    expect(c.cnpj).toBe("36977317000120");
+    expect(c.data).toBe("2026-08-21");
+  });
+
+  it("não confunde vencimento com emissão", () => {
+    // O vencimento é outro dia e jogaria a janela do casamento para o mês seguinte.
+    const c = lerCorpoDeEmail(
+      "identificamos o pagamento de aluguel com vencimento em 20/08/2026. " +
+      "Recebemos o pagamento de aluguel + encargos no valor de R$ 1.444,41", NOSSO);
+    expect(c.data).toBeNull();
+    expect(c.valor).toBe(1444.41);
+  });
+
+  it("dólar não é real", () => {
+    const c = lerCorpoDeEmail("O valor da fatura é US$ 0,00, com vencimento em 19 de Ago", NOSSO);
+    expect(c.valor).toBeNull();
+  });
+
+  it("e-mail sem nada fiscal devolve tudo nulo", () => {
+    const c = lerCorpoDeEmail("Clarity digest: Your weekly recap for auto.takeat", NOSSO);
+    expect(c).toEqual({ chave: null, cnpj: null, valor: null, data: null, numero: null });
+    expect(lerCorpoDeEmail(null, NOSSO).cnpj).toBeNull();
+  });
+
+  it("só o nosso CNPJ no texto não vira fornecedor", () => {
+    const c = lerCorpoDeEmail("TAKEAT TECNOLOGIA LTDA CNPJ 37.511.891/0001-50 segue anexo", NOSSO);
+    expect(c.cnpj).toBeNull();
   });
 });

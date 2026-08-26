@@ -4,12 +4,18 @@
 // ela explica — para a linha "MERCADO LIVRE R$ 45,60" da DRE passar a dizer
 // "pingadeira e tampa do purificador, da Pure Water".
 //
-// DUAS PASTAS, DOIS CAMINHOS:
+// TRÊS PASTAS, TRÊS CAMINHOS:
 //   • Mercado Livre — NF-e em PDF de TEXTO. `unpdf` extrai e `lerDanfes` lê.
 //     Sem modelo: os rótulos do DANFE são fixos por lei, e valor e data são a
 //     chave do casamento, onde um palpite cola o comprovante na linha errada.
 //   • WhatsApp — foto e scan. Não há texto para ancorar, então aqui o OCR do
 //     Gemini é inevitável. Mesmo caminho do `parse-balancete-pdf`.
+//   • Gmail — o depósito dos anexos que chegam por e-mail, e a mais barata das
+//     três: o NOME do arquivo já traz a data do e-mail e a chave de acesso da
+//     NF-e, que carrega o CNPJ do emitente. Muitos vêm com o XML junto, que é
+//     leitura de campo — nem OCR, nem layout. Esta pasta NÃO passa pelo
+//     casamento daqui (ver `casar`): ela casa no Postgres, contra PIX e cartão,
+//     pelo CNPJ.
 //
 // TRÊS TENTATIVAS DE CASAMENTO, cada uma nascida de um caso real:
 //   1. valor da nota + data
@@ -28,7 +34,10 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.0";
 import { extractText, getDocumentProxy } from "npm:unpdf@0.12.1";
 import { requireUser } from "../_shared/auth.ts";
-import { lerDanfes, descricaoDaNota, type Danfe } from "../_shared/nota-fiscal.ts";
+import {
+  descricaoDaNota, lerDanfes, lerNomeDeArquivo, lerXmlFiscal, tipoDoDocumento,
+  type Danfe, type TipoDocumento,
+} from "../_shared/nota-fiscal.ts";
 import { MODELO_LITE } from "../_shared/gemini.ts";
 
 const corsHeaders = {
@@ -39,10 +48,27 @@ const corsHeaders = {
 const json = (b: unknown, s = 200) =>
   new Response(JSON.stringify(b), { status: s, headers: { ...corsHeaders, "Content-Type": "application/json" } });
 
-const PASTAS: { pasta: "mercado_livre" | "whatsapp"; raiz: string }[] = [
+/* AS TRÊS PASTAS SÃO IRMÃS, dentro de "06. Notas Fiscais 2026" no Drive.
+ *
+ * A do Gmail entrou em 25/08/2026 e é a mais barata das três: uma automação que
+ * já rodava na caixa `financeiro@` (rótulo `anexos-salvos`, 455 mensagens)
+ * despeja ali o anexo de cada e-mail, e o NOME DO ARQUIVO já vem carimbado com
+ * a data do e-mail e, quase sempre, com a chave de acesso da NF-e:
+ *
+ *   2026-08-10_32260827250919000190550000001309411003058314-nfe.pdf
+ *
+ * Aqueles 44 dígitos carregam o CNPJ do emitente. Isso é identidade de graça —
+ * sem baixar o arquivo, sem OCR, sem modelo. */
+const PASTAS: { pasta: "mercado_livre" | "whatsapp" | "gmail"; raiz: string }[] = [
   { pasta: "mercado_livre", raiz: "1hx5HAbBx9YFZ6lUGBUOcy60s0O62D7l3" },
   { pasta: "whatsapp", raiz: "12JpImM1UDV_ELNNUGrF_Ri2MG6ilvi8a" },
+  { pasta: "gmail", raiz: "1vUGZbVQdderKmvwUUSsU4ooqoQpqAigs" },
 ];
+
+const PASTA_MIME = "application/vnd.google-apps.folder";
+
+/** O CNPJ da casa. Nota emitida por ele é receita nossa, não despesa a casar. */
+const CNPJ_TAKEAT = "37511891000150";
 
 /* Janela do casamento. A compra do fim do mês cai na fatura seguinte, e a
    primeira parcela pode demorar ainda mais — os mesmos números do sync das
@@ -108,7 +134,7 @@ function base64(b: Uint8Array): string {
  * ---------------------------------------------------------------------- */
 
 type Lido = {
-  lido_como: "danfe" | "ocr" | "nome_arquivo";
+  lido_como: "danfe" | "ocr" | "nome_arquivo" | "xml" | "nome_chave";
   emitente: string | null;
   cnpj_norm: string | null;
   data: string | null;
@@ -117,6 +143,10 @@ type Lido = {
   descricao: string | null;
   itens: string[];
   notas: number;
+  /** os 44 dígitos, quando o arquivo (ou o nome dele) os entrega */
+  chave: string | null;
+  /** nota | boleto | recibo | extrato | outro — pelo nome do arquivo */
+  tipo: TipoDocumento;
 };
 
 /* O formato vai no PROMPT, não em `responseSchema`.
@@ -190,6 +220,8 @@ async function ocr(bytes: Uint8Array, mime: string, dica: string, aiKey: string)
     descricao: String(d.descricao ?? "").trim() || null,
     itens: [],
     notas: 0,
+    chave: null,
+    tipo: "outro",
   };
 }
 
@@ -214,6 +246,41 @@ async function lerArquivo(
   a: Arquivo, bytes: Uint8Array, aiKey: string, podeOcr: boolean,
 ): Promise<{ lido: Lido | null; erro: string | null }> {
   const doNome = descricaoDoNome(a.name);
+  const nome = lerNomeDeArquivo(a.name);
+  const tipo = tipoDoDocumento(a.name);
+
+  /* O XML É A MELHOR FONTE QUE EXISTE, e a mais barata.
+   *
+   * Vários fornecedores anexam o XML junto do PDF, e nele CNPJ, valor, data e
+   * chave estão em campo próprio — sem layout, sem OCR, sem ambiguidade. Até
+   * 25/08/2026 ele caía em "tipo não tratado" e era jogado fora enquanto o PDF
+   * ao lado ia para o OCR. */
+  if (a.mimeType.includes("xml") || /\.xml$/i.test(a.name)) {
+    /* A NFS-e municipal ainda sai em ISO-8859-1 em várias prefeituras. Decodar
+       tudo como UTF-8 não atrapalha CNPJ nem valor (são dígitos), mas entrega
+       "FRACALOSSI MATERIAL EL�TRICO" para a tela — e é esse nome que a pessoa
+       procura. O próprio arquivo declara a codificação na primeira linha. */
+    const inicio = new TextDecoder("utf-8", { fatal: false }).decode(bytes.subarray(0, 120));
+    const latin = /encoding\s*=\s*["'](?:iso-8859-1|latin1|windows-1252)["']/i.test(inicio);
+    const texto = new TextDecoder(latin ? "iso-8859-1" : "utf-8").decode(bytes);
+    const x = lerXmlFiscal(texto, CNPJ_TAKEAT);
+    if (!x) return { lido: null, erro: "XML não é de nota fiscal" };
+    return {
+      lido: {
+        lido_como: "xml",
+        emitente: x.emitente,
+        cnpj_norm: x.cnpj,
+        data: x.data,
+        valores: x.valor ? [x.valor] : [],
+        descricao: [x.emitente, x.numero ? `NF ${x.numero}` : null].filter(Boolean).join(" · ") || doNome,
+        itens: [],
+        notas: 1,
+        chave: x.chave,
+        tipo: "nota",
+      },
+      erro: null,
+    };
+  }
 
   if (a.mimeType === "application/pdf") {
     let texto = "";
@@ -225,26 +292,39 @@ async function lerArquivo(
     const danfes: Danfe[] = lerDanfes(texto);
     if (danfes.length) {
       const valores = danfes.map((d) => d.valor).filter((v): v is number => !!v);
-      return {
-        lido: {
-          lido_como: "danfe",
-          emitente: danfes.map((d) => d.emitente).join(" + "),
-          cnpj_norm: danfes[0].cnpjEmitente,
-          data: danfes.find((d) => d.data)?.data ?? null,
-          valores,
-          // A nota descreve melhor que o nome do arquivo aqui: "NF_2000017..."
-          // não diz nada, e a DANFE lista o produto.
-          descricao: danfes.map((d) => descricaoDaNota(d, 60)).join(" · ").slice(0, 180),
-          itens: danfes.flatMap((d) => d.itens),
-          notas: danfes.length,
-        },
-        erro: null,
+      const lido: Lido = {
+        lido_como: "danfe",
+        emitente: danfes.map((d) => d.emitente).join(" + "),
+        cnpj_norm: danfes[0].cnpjEmitente,
+        data: danfes.find((d) => d.data)?.data ?? null,
+        valores,
+        // A nota descreve melhor que o nome do arquivo aqui: "NF_2000017..."
+        // não diz nada, e a DANFE lista o produto.
+        descricao: danfes.map((d) => descricaoDaNota(d, 60)).join(" · ").slice(0, 180),
+        itens: danfes.flatMap((d) => d.itens),
+        notas: danfes.length,
+        chave: danfes[0].chave,
+        tipo,
       };
+      // O nome só completa o que a nota não disse — a chave dele tem DV, mas a
+      // da própria nota é a da nota.
+      return { lido: comONome(lido, nome, tipo), erro: null };
     }
+    /* "Fila cheia" e "OCR falhou" devolvem ERRO de propósito, mesmo quando o
+       nome traria a chave: `lido_como` nulo é o que faz a rodada seguinte tentar
+       de novo. Gravar pelo nome aqui marcaria o arquivo como lido e ele nunca
+       mais voltaria para o OCR — trocaria o valor da nota por pressa.
+
+       Já o arquivo grande demais NÃO tem próxima chance: esse sim vale pelo que
+       o nome entrega. */
     if (!podeOcr) return { lido: null, erro: "fila de OCR cheia nesta rodada" };
-    if (bytes.length > MAX_BYTES_OCR) return { lido: null, erro: "arquivo grande demais para o OCR" };
+    if (bytes.length > MAX_BYTES_OCR) {
+      return nome.chave || doNome
+        ? { lido: peloNome(a, nome, tipo, doNome), erro: null }
+        : { lido: null, erro: "arquivo grande demais para o OCR" };
+    }
     const l = await ocr(bytes, "application/pdf", doNome ?? a.name, aiKey);
-    return l ? { lido: { ...l, descricao: doNome ?? l.descricao }, erro: null }
+    return l ? { lido: comONome({ ...l, descricao: doNome ?? l.descricao }, nome, tipo), erro: null }
              : { lido: null, erro: ultimoErroOcr || "OCR não leu o PDF" };
   }
 
@@ -253,11 +333,58 @@ async function lerArquivo(
     if (bytes.length > MAX_BYTES_OCR) return { lido: null, erro: "arquivo grande demais para o OCR" };
     const l = await ocr(bytes, a.mimeType, doNome ?? a.name, aiKey);
     // O nome do arquivo ganha do OCR na descrição — foi uma pessoa que escreveu.
-    return l ? { lido: { ...l, descricao: doNome ?? l.descricao }, erro: null }
+    return l ? { lido: comONome({ ...l, descricao: doNome ?? l.descricao }, nome, tipo), erro: null }
              : { lido: null, erro: ultimoErroOcr || "OCR não leu a imagem" };
   }
 
+  // Nem PDF, nem imagem, nem XML — mas se o nome traz a chave, já é o bastante
+  // para casar pelo CNPJ. É o caso do anexo que veio em .zip ou .p7s.
+  if (nome.chave) return { lido: peloNome(a, nome, tipo, doNome), erro: null };
+
   return { lido: null, erro: `tipo não tratado: ${a.mimeType}` };
+}
+
+/**
+ * A nota lida SÓ pelo nome do arquivo.
+ *
+ * Não é consolo: a chave de acesso no nome dá CNPJ do emitente e mês de
+ * emissão, que é a chave FORTE do casamento. Um arquivo cujo PDF não abriu, mas
+ * que se chama `2026-08-10_3226...058314-nfe.pdf`, ainda casa por identidade —
+ * só não traz o valor.
+ */
+function peloNome(
+  a: Arquivo, nome: ReturnType<typeof lerNomeDeArquivo>, tipo: TipoDocumento, doNome: string | null,
+): Lido {
+  return {
+    lido_como: "nome_chave",
+    emitente: null,
+    cnpj_norm: nome.cnpj,
+    data: nome.data,
+    valores: nome.valor ? [nome.valor] : [],
+    descricao: doNome ?? nome.descricao ?? a.name,
+    itens: [],
+    notas: 0,
+    chave: nome.chave,
+    tipo,
+  };
+}
+
+/**
+ * O que o documento não disse, o nome do arquivo completa — nunca o contrário.
+ *
+ * O OCR erra data e valor; a chave de acesso no nome não erra, porque tem
+ * dígito verificador. Então CNPJ e data do nome só entram onde a leitura veio
+ * vazia, e o valor do nome nunca sobrescreve um valor lido.
+ */
+function comONome(l: Lido, nome: ReturnType<typeof lerNomeDeArquivo>, tipo: TipoDocumento): Lido {
+  return {
+    ...l,
+    cnpj_norm: l.cnpj_norm ?? nome.cnpj,
+    data: l.data ?? nome.data,
+    valores: l.valores.length ? l.valores : (nome.valor ? [nome.valor] : []),
+    chave: l.chave ?? nome.chave,
+    tipo: l.tipo === "outro" ? tipo : l.tipo,
+  };
 }
 
 /* -------------------------------------------------------------------------
@@ -366,6 +493,17 @@ Deno.serve(async (req) => {
     const soPasta = body?.pasta as string | undefined;
     const releitura = body?.releitura === true;
 
+    /* O teto por rodada, com escape pelo corpo.
+       A pasta "0. Gmail" entrou em 25/08/2026 com 200 arquivos e derrubou a
+       rodada com WORKER_RESOURCE_LIMIT — inclusive sozinha, com `pasta:"gmail"`.
+       O que ela tem de diferente das outras duas é o TIPO: são DANFEs em PDF, e
+       o `unpdf` carrega o documento inteiro na memória para extrair o texto,
+       enquanto a foto do WhatsApp só vira base64 e vai embora. Vinte e cinco PDFs
+       não cabem no worker.
+       O default segue 25, então o cron não muda de comportamento; quem está
+       drenando uma fila nova passa `limite` menor e roda mais vezes. */
+    const teto = Math.max(1, Math.min(Number(body?.limite) || TETO_ARQUIVOS, TETO_ARQUIVOS));
+
     /* A chave da Drive API pode vir de dois lugares, e a que vale é a que
        FUNCIONA — não a que tem precedência no papel.
        Aprendido na marra: a primeira versão preferia a env var e levou "API key
@@ -415,36 +553,57 @@ Deno.serve(async (req) => {
     const pendentes: Pendente[] = [];
     const porPasta: Record<string, { arquivos: number; novos: number }> = {};
 
+    const considerar = (a: Arquivo, pasta: string, mes: string) => {
+      if (a.mimeType === PASTA_MIME) return;
+      porPasta[pasta].arquivos++;
+      const visto = conhecidos.get(a.id);
+      /* Relê só o que mudou (ou o que falhou antes): cada foto é uma
+         chamada de OCR, e são 107.
+         Compara como DATA e não como texto: o Drive manda
+         "2026-08-10T16:36:46Z" e o Postgres devolve
+         "2026-08-10T16:36:46+00:00" — em string o "Z" é maior que o "+" e
+         TUDO parecia modificado, o que fazia a rodada semanal reprocessar
+         a pasta inteira. */
+      const mudou = !visto || visto.lido === null
+        || (!!a.modifiedTime && !!visto.mod
+            && new Date(a.modifiedTime).getTime() > new Date(visto.mod).getTime());
+      if (!releitura && !mudou) return;
+      porPasta[pasta].novos++;
+      pendentes.push({ arq: a, pasta, mes });
+    };
+
     for (const p of PASTAS) {
       if (soPasta && soPasta !== p.pasta) continue;
       porPasta[p.pasta] = { arquivos: 0, novos: 0 };
-      const meses = await listar(p.raiz, driveKey);
-      for (const m of meses.filter((x) => x.mimeType === "application/vnd.google-apps.folder")) {
-        for (const a of await listar(m.id, driveKey)) {
-          if (a.mimeType === "application/vnd.google-apps.folder") continue;
-          porPasta[p.pasta].arquivos++;
-          const visto = conhecidos.get(a.id);
-          /* Relê só o que mudou (ou o que falhou antes): cada foto é uma
-             chamada de OCR, e são 107.
-             Compara como DATA e não como texto: o Drive manda
-             "2026-08-10T16:36:46Z" e o Postgres devolve
-             "2026-08-10T16:36:46+00:00" — em string o "Z" é maior que o "+" e
-             TUDO parecia modificado, o que fazia a rodada semanal reprocessar
-             a pasta inteira. */
-          const mudou = !visto || visto.lido === null
-            || (!!a.modifiedTime && !!visto.mod
-                && new Date(a.modifiedTime).getTime() > new Date(visto.mod).getTime());
-          if (!releitura && !mudou) continue;
-          porPasta[p.pasta].novos++;
-          pendentes.push({ arq: a, pasta: p.pasta, mes: m.name });
+      const naRaiz = await listar(p.raiz, driveKey);
+
+      /* ARQUIVO SOLTO NA RAIZ TAMBÉM CONTA. Até 25/08/2026 o varredor só descia
+         nas pastas de mês, e quem largava a nota na raiz ficava invisível —
+         havia meia dúzia lá ("NF Kingbier", "NF Central de Aviamentos 1/2/3"),
+         todas de gasto que a auditoria seguia cobrando. */
+      for (const a of naRaiz) considerar(a, p.pasta, "(raiz)");
+
+      for (const m of naRaiz.filter((x) => x.mimeType === PASTA_MIME)) {
+        const dentro = await listar(m.id, driveKey);
+        for (const a of dentro) considerar(a, p.pasta, m.name);
+
+        /* UMA CAMADA A MAIS. O depósito do Gmail tem `_revisar/AAAA-MM/` — a
+           própria automação separa ali o que não soube arquivar. Sem descer,
+           esses arquivos sumiam: pasta dentro de pasta de mês era ignorada.
+           Eles entram normalmente: o casamento é por CNPJ e valor, e a dúvida
+           de quem arquivou não diz nada sobre o documento. */
+        for (const sub of dentro.filter((x) => x.mimeType === PASTA_MIME)) {
+          for (const a of await listar(sub.id, driveKey)) {
+            considerar(a, p.pasta, `${m.name}/${sub.name}`);
+          }
         }
       }
     }
 
     /* O que sobra fica para a próxima rodada — o cron é diário e a fila anda
        sozinha. `restante` na resposta diz quanto falta. */
-    const aindaFaltam = Math.max(0, pendentes.length - TETO_ARQUIVOS);
-    pendentes.length = Math.min(pendentes.length, TETO_ARQUIVOS);
+    const aindaFaltam = Math.max(0, pendentes.length - teto);
+    pendentes.length = Math.min(pendentes.length, teto);
 
     if (previa) {
       return json({ ok: true, previa: true, chave_fonte: chaveFonte, chave_recusadas: recusas,
@@ -487,12 +646,21 @@ Deno.serve(async (req) => {
         if (!lido) { linhas.push({ ...base, erro: erro ?? "não deu para ler" }); falhas++; continue; }
         lidos++;
 
-        const c = casar(lido, cartao, p.pasta);
+        /* O CASAMENTO DAQUI É O DO CARTÃO, e a pasta do Gmail não passa por ele.
+         *
+         * Não é economia: `cartao_lancamentos` não tem CNPJ, então este casador
+         * só sabe comparar valor e data — e foi exatamente assim que um PDF com
+         * 16 notas de bebida grudou num lançamento do "99". A nota do e-mail
+         * traz CNPJ (pela chave de acesso ou pelo XML), e quem sabe usar isso é
+         * a `notas_externas_casar`, no Postgres, contra PIX e cartão ao mesmo
+         * tempo. Dois casadores, cada um com a chave que tem. */
+        const c = p.pasta === "gmail" ? null : casar(lido, cartao, p.pasta);
         const comum = {
           ...base, erro: null,
           lido_como: lido.lido_como, emitente: lido.emitente, cnpj_norm: lido.cnpj_norm,
           data: lido.data, valor: lido.valores[0] ?? null, descricao: lido.descricao,
           itens: lido.itens, notas: lido.notas, lido_em: agora,
+          chave_fiscal: lido.chave, tipo_documento: lido.tipo,
         };
 
         if (c && "linha" in c) {
@@ -536,11 +704,37 @@ Deno.serve(async (req) => {
       }
     }
 
+    /* ---------- 7. do Drive para a auditoria do PIX ----------
+       O casamento acima é o do CARTÃO, e continua sendo: lá o memo do OFX é o
+       desempate, e o memo só existe lá. O PIX não tem memo — tem CNPJ, que é
+       chave melhor — e por isso quem casa daquele lado é o Postgres.
+
+       Aqui só se ENTREGA o que já foi lido: `notas_externas_do_drive` copia a
+       leitura (emitente, CNPJ, valor, data, link) e `notas_externas_casar`
+       aplica as mesmas quatro regras que as cinco planilhas usam. Sem isto, as
+       144 notas destas pastas seguiam invisíveis para a aba de PIX.
+
+       Acessório por construção: se falhar, a rodada do cartão não cai junto —
+       ela já gravou tudo o que tinha para gravar. */
+    let paraNotas = 0;
+    let erroNotas: string | null = null;
+    try {
+      const { data, error } = await supabase.rpc("notas_externas_do_drive");
+      if (error) throw new Error(error.message);
+      paraNotas = Number(data ?? 0);
+      const { error: erroCasar } = await supabase.rpc("notas_externas_casar");
+      if (erroCasar) throw new Error(erroCasar.message);
+    } catch (e) {
+      erroNotas = String((e as Error)?.message ?? e).slice(0, 200);
+      console.error("notas_externas:", erroNotas);
+    }
+
     return json({
       ok: true, por_pasta: porPasta,
       processados: pendentes.length, lidos, casados, ambiguos, falhas,
       ocr_usados: ocrsFeitos, ocr_teto: TETO_OCR,
       memos_resolvidos_em_titulo: comTitulo,
+      notas_externas: paraNotas, notas_externas_erro: erroNotas,
       na_fila: aindaFaltam,
     });
   } catch (e) {

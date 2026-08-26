@@ -9,7 +9,7 @@ import { MESES_CURTOS } from "@/lib/apelidos";
  * quem passou de R$ 5 mil", "só o que apareceu em julho", "só o que a planilha
  * já respondeu". Sem os cortes a resposta é rolar a lista inteira com o olho.
  *
- * TRÊS DECISÕES QUE VALEM O ARQUIVO:
+ * QUATRO DECISÕES QUE VALEM O ARQUIVO:
  *
  * 1. O FILTRO CORTA A LISTA, NUNCA A COBERTURA. É o oposto da janela de tempo
  *    (migration 20260813150000), e a diferença é de propósito: a janela diz
@@ -29,6 +29,18 @@ import { MESES_CURTOS } from "@/lib/apelidos";
  * 3. "SEM CATEGORIA" É UM BALDE FILTRÁVEL, não um buraco. Contraparte sem
  *    categoria é candidata de primeira classe a precisar de nome — deixá-la
  *    fora da lista de opções esconderia exatamente quem se procura.
+ *
+ * 4. RECÊNCIA É PRIORIDADE, NÃO CURIOSIDADE. Contraparte sem nome que se mexeu
+ *    no mês que está sendo fechado volta a aparecer na DRE da reunião desta
+ *    semana; a que parou em maio já passou por todas elas sem ninguém reclamar.
+ *    Por isso a recência é corte próprio, com faixas DISJUNTAS e multi-marcáveis:
+ *    dá para pedir "só o que está vivo" e também "só o que parou" — este último
+ *    é como se tira da fila, em bloco, o que não vai voltar. O corte é pela
+ *    ÚLTIMA movimentação (item 2 é outro filtro, o de sobreposição de intervalo,
+ *    e responde outra pergunta: "quem apareceu em julho"). É o ÚNICO filtro
+ *    desta tela que nasce ligado — `FAIXA_PADRAO` —, e por isso o controle dele
+ *    mora na barra, escrito por extenso: filtro ligado que não se vê é lista que
+ *    mente, e o padrão faz dele a regra em vez da exceção.
  *
  * Puro de propósito: dá para testar sem React e sem Supabase.
  * ========================================================================== */
@@ -187,6 +199,98 @@ export function mesesDaFila(fila: Candidato[]): string[] {
     if (b) s.add(b);
   }
   return [...s].sort();
+}
+
+/* -------------------------------------------------------------------------
+ * Recência — há quanto tempo esta contraparte se mexeu pela última vez
+ * ---------------------------------------------------------------------- */
+
+export type FaixaRecencia = "mes" | "passado" | "trimestre" | "semestre" | "parado" | "sem_data";
+
+/** Da mais quente para a mais fria — é a ordem em que a lista de opções aparece. */
+export const FAIXAS_RECENCIA: FaixaRecencia[] =
+  ["mes", "passado", "trimestre", "semestre", "parado", "sem_data"];
+
+export const ROTULO_RECENCIA: Record<FaixaRecencia, string> = {
+  mes: "Este mês",
+  passado: "Mês passado",
+  trimestre: "Há 2 a 3 meses",
+  semestre: "Há 4 a 6 meses",
+  parado: "Há mais de 6 meses",
+  sem_data: "Sem data",
+};
+
+/**
+ * O mês passado é faixa SOZINHA, e não "1 a 3 meses" como nasceu.
+ *
+ * É por ele que a tela abre: o mês que acabou é o que está sendo fechado, e é a
+ * DRE dele que vai para a reunião — nomear contraparte que apareceu nele é
+ * trabalho de agora. O mês corrente ainda está acontecendo e pode esperar; três
+ * meses atrás já passou por duas reuniões sem ninguém reclamar. Faixa própria
+ * porque um padrão só é honesto se dá para desligá-lo em um clique.
+ */
+export const FAIXA_PADRAO: FaixaRecencia = "passado";
+
+/** O que "mexeu nos últimos 3 meses" quer dizer, em faixas. */
+export const FAIXAS_RECENTES: FaixaRecencia[] = ["mes", "passado", "trimestre"];
+
+/**
+ * Quantos meses de CALENDÁRIO separam a data de hoje. Julho é 1 em agosto, e é
+ * 1 no dia 1º como no dia 31.
+ *
+ * Meses e não dias porque o calendário desta casa é mensal: quem olha a fila
+ * pensa "isso é de julho", não "isso tem 34 dias". Contar em dias faria a mesma
+ * contraparte trocar de faixa no meio da semana sem nada ter acontecido.
+ */
+export function mesesDesde(d: string | null | undefined, hoje: Date = new Date()): number | null {
+  const ym = mesDaData(d);
+  if (!ym) return null;
+  return (hoje.getFullYear() - Number(ym.slice(0, 4))) * 12 + (hoje.getMonth() + 1 - Number(ym.slice(5, 7)));
+}
+
+/** A faixa em que a última movimentação cai. Sem data é balde, não buraco. */
+export function recenciaDe(d: string | null | undefined, hoje: Date = new Date()): FaixaRecencia {
+  const n = mesesDesde(d, hoje);
+  if (n === null) return "sem_data";
+  if (n <= 0) return "mes";
+  if (n === 1) return "passado";
+  if (n <= 3) return "trimestre";
+  if (n <= 6) return "semestre";
+  return "parado";
+}
+
+/** "este mês", "mês passado", "há 4 meses" — o que a linha diz em voz alta. */
+export function haQuantoTempo(d: string | null | undefined, hoje: Date = new Date()): string {
+  const n = mesesDesde(d, hoje);
+  if (n === null) return "sem data";
+  if (n <= 0) return "este mês";
+  if (n === 1) return "mês passado";
+  return `há ${n} meses`;
+}
+
+export type OpcaoRecencia = { valor: FaixaRecencia; rotulo: string; itens: number; total: number };
+
+/**
+ * As faixas presentes na fila, com quanto cada uma pesa.
+ *
+ * Recebe `{ ultima, total }` e não `Candidato` porque quem se filtra na tela é o
+ * GRUPO de grafias — a última movimentação dele é a mais nova das suas grafias, e
+ * essa conta é de quem agrupa. Faixa vazia não entra: opção que devolve tela em
+ * branco é clique desperdiçado.
+ */
+export function recenciasDaFila(
+  itens: readonly { ultima: string | null; total: number }[],
+  hoje: Date = new Date(),
+): OpcaoRecencia[] {
+  const m = new Map<FaixaRecencia, OpcaoRecencia>();
+  for (const i of itens ?? []) {
+    const valor = recenciaDe(i?.ultima, hoje);
+    let o = m.get(valor);
+    if (!o) { o = { valor, rotulo: ROTULO_RECENCIA[valor], itens: 0, total: 0 }; m.set(valor, o); }
+    o.itens += 1;
+    o.total += Math.max(0, Number(i?.total) || 0);
+  }
+  return FAIXAS_RECENCIA.filter((f) => m.has(f)).map((f) => m.get(f)!);
 }
 
 /* -------------------------------------------------------------------------

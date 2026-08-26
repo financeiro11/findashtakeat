@@ -1,5 +1,5 @@
 import { useEffect, useState, type ReactNode } from "react";
-import { Check, Filter } from "lucide-react";
+import { Check, ChevronDown, Filter, type LucideIcon } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import {
@@ -23,6 +23,33 @@ import { lerNumero, rotuloMes } from "@/lib/filaParametrizacao";
  * até o hover): filtro que só aparece no hover é filtro que ninguém acha, e pior,
  * filtro esquecido ligado é uma lista que mente.
  * ------------------------------------------------------------------------- */
+
+/** O miolo do popover — o mesmo para os dois gatilhos. */
+function CorpoFiltro({
+  rotulo, ativo, onLimpar, children,
+}: {
+  rotulo: string;
+  ativo: boolean;
+  onLimpar: () => void;
+  children: ReactNode;
+}) {
+  return (
+    <>
+      <div className="flex items-center justify-between gap-2 border-b border-border px-3 py-2">
+        <span className="text-[11.5px] font-medium normal-case">{rotulo}</span>
+        <button
+          type="button"
+          disabled={!ativo}
+          onClick={onLimpar}
+          className="text-[11px] text-muted-foreground transition hover:text-foreground disabled:pointer-events-none disabled:opacity-40"
+        >
+          Limpar
+        </button>
+      </div>
+      {children}
+    </>
+  );
+}
 
 export function CabecalhoFiltravel({
   rotulo, ativo, alinhar = "start", largura = "w-64", titulo, onLimpar, children,
@@ -56,18 +83,60 @@ export function CabecalhoFiltravel({
       </PopoverTrigger>
 
       <PopoverContent align={alinhar} className={cn("p-0", largura)}>
-        <div className="flex items-center justify-between gap-2 border-b border-border px-3 py-2">
-          <span className="text-[11.5px] font-medium normal-case">{rotulo}</span>
-          <button
-            type="button"
-            disabled={!ativo}
-            onClick={onLimpar}
-            className="text-[11px] text-muted-foreground transition hover:text-foreground disabled:pointer-events-none disabled:opacity-40"
-          >
-            Limpar
-          </button>
-        </div>
-        {children}
+        <CorpoFiltro rotulo={rotulo} ativo={ativo} onLimpar={onLimpar}>{children}</CorpoFiltro>
+      </PopoverContent>
+    </Popover>
+  );
+}
+
+/* ----- o mesmo filtro, agora na barra ---------------------------------------
+ * O funil preso ao `<th>` é discreto de propósito, e isso o torna invisível para
+ * quem não sabe que ele existe — mais ainda num rótulo de 10px em opacidade 30%.
+ * Serve para o filtro que NASCE DESLIGADO: quem procura, acha; quem não procura,
+ * não é atrapalhado.
+ *
+ * Filtro que nasce LIGADO precisa do contrário: um botão na barra, com o corte
+ * escrito por extenso ("Último: mês passado"). O `<th>` continua funcionando —
+ * é o mesmo estado —, mas quem chega na tela lê o recorte antes de ler a lista,
+ * em vez de contar linhas e achar que a fila encolheu sozinha.
+ * ------------------------------------------------------------------------- */
+export function BotaoFiltravel({
+  rotulo, resumo, ativo, largura = "w-64", titulo, Icone, onLimpar, children,
+}: {
+  rotulo: string;
+  /** O corte em palavras — é ele que fica no botão. */
+  resumo: string;
+  ativo: boolean;
+  largura?: string;
+  titulo?: string;
+  Icone?: LucideIcon;
+  onLimpar: () => void;
+  children: ReactNode;
+}) {
+  const [aberto, setAberto] = useState(false);
+
+  return (
+    <Popover open={aberto} onOpenChange={setAberto}>
+      <PopoverTrigger asChild>
+        <button
+          type="button"
+          title={titulo}
+          className={cn(
+            "inline-flex h-[30px] max-w-[260px] items-center gap-1.5 rounded-md border px-2.5 text-[12px] transition",
+            ativo
+              ? "border-primary/40 bg-primary/[0.06] text-primary hover:bg-primary/10"
+              : "border-input bg-background text-foreground hover:bg-muted",
+          )}
+        >
+          {Icone && <Icone className="h-3.5 w-3.5 shrink-0 opacity-80" />}
+          <span className="shrink-0 text-muted-foreground">{rotulo}</span>
+          <span className={cn("truncate font-medium", !ativo && "text-muted-foreground")}>{resumo}</span>
+          <ChevronDown className="h-3 w-3 shrink-0 opacity-60" />
+        </button>
+      </PopoverTrigger>
+
+      <PopoverContent align="start" className={cn("p-0", largura)}>
+        <CorpoFiltro rotulo={rotulo} ativo={ativo} onLimpar={onLimpar}>{children}</CorpoFiltro>
       </PopoverContent>
     </Popover>
   );
@@ -184,13 +253,20 @@ export function FaixaNumero({
 const TODOS = "__todos__";
 
 export function FaixaMeses({
-  meses, de, ate, onDe, onAte,
+  meses, de, ate, onDe, onAte, dica,
 }: {
   meses: string[];
   de: string | null;
   ate: string | null;
   onDe: (v: string | null) => void;
   onAte: (v: string | null) => void;
+  /**
+   * O que "mês" significa NAQUELA lista, e o padrão é o caso da fila da
+   * Parametrização: lá cada linha ocupa um intervalo (primeira × última
+   * aparição), então o corte é por interseção. Numa lista onde cada linha tem UM
+   * mês — a de títulos, por exemplo — essa frase estaria simplesmente errada.
+   */
+  dica?: ReactNode;
 }) {
   return (
     <div className="p-2.5">
@@ -216,8 +292,12 @@ export function FaixaMeses({
         </Select>
       </div>
       <p className="mt-1.5 text-[10.5px] leading-snug text-muted-foreground">
-        Quem <strong className="font-medium">apareceu</strong> no intervalo — o fornecedor de mai–jul
-        entra num corte de julho.
+        {dica ?? (
+          <>
+            Quem <strong className="font-medium">apareceu</strong> no intervalo — o fornecedor de mai–jul
+            entra num corte de julho.
+          </>
+        )}
       </p>
     </div>
   );

@@ -272,4 +272,26 @@ describe("ordenarGrupos", () => {
     const ordem = ordenarGrupos(grupos, (g) => g.total).map((g) => g.grafias[0].nome);
     expect(ordem).toEqual(["CANVA", "ADOBE", "1CALLWAY"]);
   });
+
+  it('em "recente", a última movimentação manda e a confiança sai do critério', () => {
+    // 1CALLWAY é a que menos se explica (vinha por último em "valor"), mas é a
+    // que apareceu na semana passada — é ela que volta na DRE da reunião.
+    const grupos = agruparGrafias([
+      c({ nome: "1CALLWAY", total: 90_000, ultima: "2026-08-19" }),
+      c({ nome: "ADOBE", categoria: "Software / SaaS", total: 5_000, ultima: "2026-05-02" }),
+      c({ nome: "CANVA", categoria: "Software / SaaS", total: 9_000, ultima: "2026-07-30" }),
+    ]);
+    const ordem = ordenarGrupos(grupos, (g) => g.total, "recente").map((g) => g.grafias[0].nome);
+    expect(ordem).toEqual(["1CALLWAY", "CANVA", "ADOBE"]);
+  });
+
+  it('em "recente", quem não tem data vai para o fim e o empate se desfaz pelo dinheiro', () => {
+    const grupos = agruparGrafias([
+      c({ nome: "ADOBE", total: 5_000, ultima: null }),
+      c({ nome: "CANVA", total: 9_000, ultima: "2026-07-30" }),
+      c({ nome: "KABUM", total: 20_000, ultima: "2026-07-30" }),
+    ]);
+    const ordem = ordenarGrupos(grupos, (g) => g.total, "recente").map((g) => g.grafias[0].nome);
+    expect(ordem).toEqual(["KABUM", "CANVA", "ADOBE"]);
+  });
 });

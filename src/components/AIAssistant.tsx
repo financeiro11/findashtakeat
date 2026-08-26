@@ -40,6 +40,7 @@ import {
   prepararImagens, triarArquivos, type ImagemAnexada, type ImagemMsg,
 } from "@/lib/assistente-imagens";
 import { contextoDaPagina } from "@/lib/contexto-pagina";
+import { urlDaFuncao } from "@/lib/urlFuncao";
 
 type Numero = {
   rotulo: string;
@@ -282,7 +283,7 @@ export function AIAssistant({ initialPrompt }: { initialPrompt?: string } = {}) 
    */
   async function responderGeral(historico: Msg[], leuImagem = false): Promise<string> {
     const { data: { session } } = await supabase.auth.getSession();
-    const url = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/ai-chat`;
+    const url = urlDaFuncao("ai-chat");
     // Só as imagens mais recentes seguem, e as reabertas do histórico voltam a ter bytes:
     // sem isso, "e o total dessa nota?" chegaria a um modelo que não está vendo a nota.
     const legivel = await comImagensLegiveis(historico);
@@ -300,7 +301,8 @@ export function AIAssistant({ initialPrompt }: { initialPrompt?: string } = {}) 
     if (!resp.ok || !resp.body) {
       if (resp.status === 429) toast({ title: "Muitas requisições", description: "Aguarde alguns segundos e tente novamente.", variant: "destructive" });
       else if (resp.status === 402) toast({ title: "Sem créditos de IA", description: "Adicione saldo em Configurações da workspace.", variant: "destructive" });
-      else toast({ title: "Erro", description: "Não foi possível obter resposta.", variant: "destructive" });
+      // O status na frase: sem ele, um 401 de endereço errado passa por "a IA engasgou".
+      else toast({ title: "Erro", description: `Não foi possível obter resposta (erro ${resp.status}).`, variant: "destructive" });
       return "";
     }
 

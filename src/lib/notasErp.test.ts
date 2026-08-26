@@ -1,9 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
   brlStr, categoriasCriticas, fatias, formatarDoc, frasePanorama, mesCurto,
-  pctStr, periodoPadrao, nomeDaLinha, GRAVIDADE, GRAVIDADES,
-  SITUACOES_EXIGIVEIS, SITUACOES_FALTANDO, SITUACAO,
-  type ResumoNotas,
+  ondeAbrir, pctStr, periodoPadrao, nomeDaLinha, urlParaEmbutir, GRAVIDADE, GRAVIDADES,
+  SITUACOES_EXIGIVEIS, SITUACOES_FALTANDO, SITUACOES_NOSSAS, SITUACAO,
+  type LinhaTitulo, type ResumoNotas,
 } from "./notasErp";
 
 const resumo = (meta: Partial<ResumoNotas["meta"]>, extra: Partial<ResumoNotas> = {}): ResumoNotas => ({
@@ -216,5 +216,54 @@ describe("nomeDaLinha", () => {
     const r = nomeDaLinha(linha({ observacao: null }), semApelido);
     expect(r.deCartao).toBe(false);
     expect(r.nome).toBe("Lancamento Fatura Cartao");
+  });
+});
+
+describe("o que é da máquina não é do humano", () => {
+  it("a aba Títulos abre só pelo que precisa de gente", () => {
+    // O Hub tem o arquivo e a varredura o leva sozinha: pôr isso no recorte de
+    // abertura era pedir atenção para trabalho que ninguém faz.
+    expect(SITUACOES_FALTANDO).toEqual(["sem_nota", "anexo_suspeito"]);
+    for (const s of SITUACOES_NOSSAS) expect(SITUACOES_FALTANDO).not.toContain(s);
+  });
+
+  it("mas os dois estados nossos continuam contando na cobertura", () => {
+    for (const s of SITUACOES_NOSSAS) expect(SITUACOES_EXIGIVEIS).toContain(s);
+  });
+
+  it("\"subiu, conferindo\" não é verde: só o ERP confirma", () => {
+    expect(SITUACAO.enviado_aguardando.tom).not.toBe("ok");
+  });
+});
+
+describe("ondeAbrir", () => {
+  const l = (p: Partial<LinhaTitulo>) =>
+    ({ anexos_no_erp: null, nota_no_hub: null, ...p }) as LinhaTitulo;
+
+  it("o anexo do ERP vence o arquivo do Hub — é o que está valendo lá", () => {
+    expect(ondeAbrir(l({ anexos_no_erp: 1, nota_no_hub: "drive" }))).toBe("erp");
+  });
+
+  it("sem anexo no ERP, abre o que o Hub tem — é o que vai subir", () => {
+    expect(ondeAbrir(l({ anexos_no_erp: 0, nota_no_hub: "cartao" }))).toBe("hub");
+  });
+
+  it("sem nenhum dos dois não há o que ver: o trabalho é cobrar", () => {
+    expect(ondeAbrir(l({ anexos_no_erp: 0 }))).toBeNull();
+    expect(ondeAbrir(l({}))).toBeNull();
+  });
+});
+
+describe("urlParaEmbutir", () => {
+  it("troca o /view do Drive pelo /preview, que aceita moldura", () => {
+    expect(urlParaEmbutir("https://drive.google.com/file/d/1kxGd7pw/view"))
+      .toBe("https://drive.google.com/file/d/1kxGd7pw/preview");
+    expect(urlParaEmbutir("https://drive.google.com/file/d/1kxGd7pw/view?usp=sharing"))
+      .toBe("https://drive.google.com/file/d/1kxGd7pw/preview");
+  });
+
+  it("não mexe no que já abre em iframe", () => {
+    const cdn = "https://cdn.omie.com.br/attach/abc/nota.pdf?Signature=x";
+    expect(urlParaEmbutir(cdn)).toBe(cdn);
   });
 });

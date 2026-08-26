@@ -41,6 +41,11 @@
 //                          de quem precisa (ver ehStatusPendente).
 //   "previa"             → o que a emissão MANDARIA, sem mandar nada.
 //   "emitir"             → cria/fatura de verdade. Escrita fiscal irreversível.
+//                          Desde 25/08/26 usa o MESMO motor de lote da rodada
+//                          diária (`emitirDia` com `ids`): a leva inteira entra na
+//                          etapa de isolamento e sai UM `FaturarLoteOS`. Por isso
+//                          ninguém volta com número de nota na mão — todas voltam
+//                          "em processamento" e o `espelhar` grava o número.
 //
 // Auth: usuário logado OU cron (x-cron-token), no padrão do repo.
 
@@ -305,6 +310,31 @@ async function fecharEmProcessamento(supabase: any, nCodOS: number, numero: stri
     operador: aberta.operador ?? null,
     erro: `Desfecho lido pelo sync: o lote concluiu e a NFS-e ${numero ?? "?"} foi autorizada.`,
   });
+
+  /* O E-MAIL, no diário, para ninguém ter de abrir o Omie.
+   *
+   * Não existe API de e-mail no Omie (sondado com controle — ver a migration
+   * `nf_os_email_da_nota`), então isto não é a leitura de um log de envio: é o
+   * registro do GATILHO, que é determinístico. A OS foi gravada com `cEnvLink=S`
+   * e um destinatário, e o instante em que o Omie dispara é este — a autorização
+   * da nota. Nota recusada (003) não gera esta linha, porque não gera e-mail.
+   *
+   * A linha diz "disparado", nunca "entregue": entrega ninguém prova por API, e
+   * prometer isso na tela seria o tipo de mentira que este módulo evita. */
+  const { data: os } = await supabase
+    .from("nf_os_omie").select("email_envio, email_destino").eq("n_cod_os", nCodOS).maybeSingle();
+  if (os?.email_envio) {
+    await supabase.from("nf_emissoes").insert({
+      id_asaas: aberta.id_asaas,
+      n_cod_os: nCodOS,
+      acao: "email",
+      resultado: "ok",
+      nfse_numero: numero,
+      usuario: aberta.usuario ?? null,
+      operador: aberta.operador ?? null,
+      erro: `O Omie disparou o e-mail com o link da NFS-e ${numero ?? "?"} para ${os.email_destino || "o e-mail do cadastro do cliente no Omie"}.`,
+    });
+  }
 }
 
 async function espelhar(supabase: any, opts: { tetoStatus: number }) {
@@ -1144,6 +1174,98 @@ async function ocupantesDaEtapa(etapa: string): Promise<number[]> {
   return out;
 }
 
+/**
+ * Trocar etapa, tratando o "já está lá" como o que ele é: sucesso.
+ *
+ * `TrocarEtapaOS` responde "Ordem de Serviço já se encontra na Etapa solicitada!"
+ * com status de ERRO quando a OS já está no destino. O caminho da emissão tomava
+ * isso por falha e devolvia sem faturar — deixando a OS parada no corredor, que
+ * então travava todas as outras. Foi o que prendeu a OS 1642 em 25/08/26. Mesmo
+ * destino pedido, alcançado antes: não há nada a corrigir.
+ */
+async function trocarEtapa(nCodOS: number, cEtapa: string): Promise<void> {
+  try {
+    await omieCall<any>("servicos/os", "TrocarEtapaOS", { nCodOS, cEtapa });
+  } catch (e) {
+    if (!/j[áa]\s+se\s+encontra\s+na\s+Etapa/i.test(mensagemDoOmie(e))) throw e;
+  }
+}
+
+/**
+ * O corredor pode ter sobra — e sobra não pode parar a esteira.
+ *
+ * Uma OS esquecida na etapa de isolamento (lote que morreu no meio, rodada
+ * interrompida, troca de etapa recusada por já estar lá) fazia TODA emissão
+ * seguinte abortar na trava de raio. A etapa nunca voltava a ficar limpa sozinha:
+ * o módulo inteiro parava até alguém abrir o Omie e mover a OS na mão. Em
+ * 25/08/26 duas OS presas assim seguraram as 42 cobranças que vinham atrás.
+ *
+ * A varredura devolve o corredor ao estado de corredor, e só mexe no que é NOSSO:
+ * OS com o carimbo `cCodIntOS` do Asaas e ainda não faturada. O que não for nosso
+ * continua restando — e restando, aborta o lote, que é o comportamento certo:
+ * faturar a etapa emitiria nota de terceiro.
+ */
+async function limparCorredor(
+  etapa: string,
+  exceto: number[] = [],
+): Promise<{ removidas: number[]; restantes: number[]; lote_em_voo?: number }> {
+  const poupar = new Set(exceto.map(Number));
+
+  // Quem está lá, com o que decide o destino de cada um.
+  const ocupantes: Array<{ nCodOS: number; nosso: boolean; faturada: boolean }> = [];
+  for (const os of await listarOS()) {
+    const cab = os?.Cabecalho ?? {};
+    const info = os?.InfoCadastro ?? {};
+    if (String(info.cCancelada ?? "N") === "S") continue;
+    if (String(cab.cEtapa ?? "") !== etapa) continue;
+    const nCodOS = Number(cab.nCodOS);
+    if (poupar.has(nCodOS)) continue;
+    ocupantes.push({
+      nCodOS,
+      // Nosso = criado pelo Hub a partir de uma cobrança do Asaas.
+      nosso: /^pay_/i.test(String(cab.cCodIntOS ?? "")),
+      faturada: String(info.cFaturada ?? "N") === "S",
+    });
+  }
+  if (!ocupantes.length) return { removidas: [], restantes: [] };
+
+  /* LOTE EM VOO NÃO SE DESMONTA.
+   *
+   * Tirar a OS da etapa no meio do faturamento é exatamente o que emperrou o
+   * lote 5511522270 em 0/1: o faturamento foi procurar na etapa uma OS que já
+   * tinha saído. Se há lote rodando, a varredura não toca em nada e devolve
+   * todo mundo como restante — o chamador espera, que é o certo, em vez de
+   * "consertar" o que só precisava de tempo.
+   */
+  const emVoo = await loteEmVoo();
+  if (emVoo) {
+    return { removidas: [], restantes: ocupantes.map((o) => o.nCodOS), lote_em_voo: emVoo };
+  }
+
+  const removidas: number[] = [];
+  const restantes: number[] = [];
+  for (const o of ocupantes) {
+    // Faturada não se move (o Omie recusa) e não se fatura de novo — mas continua
+    // ocupando, então vira "restante" e o lote aborta com o motivo à mostra.
+    if (!o.nosso || o.faturada) { restantes.push(o.nCodOS); continue; }
+    try {
+      await trocarEtapa(o.nCodOS, ETAPA_FILA);
+      removidas.push(o.nCodOS);
+    } catch {
+      restantes.push(o.nCodOS);
+    }
+  }
+  return { removidas, restantes };
+}
+
+/** Há lote de faturamento ainda rodando? Devolve o id, ou 0. */
+async function loteEmVoo(): Promise<number> {
+  const r = await omieCall<any>("servicos/oslote", "ListarLotesOS", { nPagina: 1, nRegistros: 20, cExibirDetalhes: "N" })
+    .catch(() => null);
+  const rodando = (r?.lotes ?? []).find((l: any) => String(l?.cStatus ?? "") === "RUNNING");
+  return Number(rodando?.nIdLoteFat ?? 0);
+}
+
 /** O lote mais recente que veio pela API — o efeito de um disparo que se perdeu. */
 async function ultimoLoteDaApi(): Promise<number> {
   const r = await omieCall<any>("servicos/oslote", "ListarLotesOS", { nPagina: 1, nRegistros: 20, cExibirDetalhes: "N" })
@@ -1184,20 +1306,33 @@ async function faturarIsolada(nCodOS: number, etapaIsolamento: string): Promise<
   ok: boolean; erro?: string; lote?: any; mensagem_omie?: string | null;
 }> {
   const voltarParaFila = async () => {
-    try { await omieCall<any>("servicos/os", "TrocarEtapaOS", { nCodOS, cEtapa: ETAPA_FILA }); } catch { /* não piora nada */ }
+    try { await trocarEtapa(nCodOS, ETAPA_FILA); } catch { /* não piora nada */ }
   };
 
-  await omieCall<any>("servicos/os", "TrocarEtapaOS", { nCodOS, cEtapa: etapaIsolamento });
+  await trocarEtapa(nCodOS, etapaIsolamento);
 
-  const ocupantes = await ocupantesDaEtapa(etapaIsolamento);
+  let ocupantes = await ocupantesDaEtapa(etapaIsolamento);
   if (!ocupantes.includes(nCodOS)) {
     await voltarParaFila();
     return { ok: false, erro: `A OS ${nCodOS} não chegou na etapa de isolamento ${etapaIsolamento} (o Omie aceitou a troca e não moveu). Nada foi faturado.` };
   }
   if (ocupantes.length !== 1) {
-    const outras = ocupantes.filter((n) => n !== nCodOS);
-    await voltarParaFila();
-    return { ok: false, erro: `A etapa de isolamento ${etapaIsolamento} tem ${ocupantes.length} OS (${outras.slice(0, 5).join(", ")}…). Faturar aqui emitiria nota delas também — abortado.` };
+    /* Corredor sujo não desiste na primeira: varre a sobra NOSSA (poupando esta
+     * OS) e reconfere. Antes daqui, uma OS esquecida por uma rodada anterior
+     * abortava esta e todas as seguintes, para sempre. */
+    const limpeza = await limparCorredor(etapaIsolamento, [nCodOS]);
+    if (limpeza.restantes.length) {
+      await voltarParaFila();
+      return {
+        ok: false,
+        erro: limpeza.lote_em_voo
+          ? `O lote ${limpeza.lote_em_voo} ainda está em processamento com ${limpeza.restantes.length} OS na etapa ${etapaIsolamento}. Nada foi faturado — tente de novo em alguns minutos.`
+          : `A etapa de isolamento ${etapaIsolamento} tem ${limpeza.restantes.length} OS que não são desta emissão (${limpeza.restantes.slice(0, 5).join(", ")}…) e não saíram. Faturar aqui emitiria nota delas também — abortado.`,
+      };
+    }
+    // Sem re-listar: a varredura poupou só a nossa e removeu o resto. Repetir o
+    // `ListarOS` aqui esbarraria na trava por método do Omie.
+    ocupantes = [nCodOS];
   }
 
   /* O DISPARO. Uma tentativa só, e o erro se investiga em vez de se repetir.
@@ -1437,12 +1572,12 @@ async function emitirUma(
 /* ----------------------------- rodada diária ----------------------------- */
 
 /**
- * A EMISSÃO DO DIA — e por que ela não é o laço da emissão manual repetido.
+ * O MOTOR DE LOTE — da rodada diária e, desde 25/08/26, também da emissão manual.
  *
- * O caminho manual faz, por cobrança: varre as 1.208 OS para conferir o raio,
- * dispara um lote e espera a prefeitura. São ~3 minutos cada. Para as ~100 notas
- * por dia que vêm depois do corte, isso é meio dia de relógio e não cabe nos 150s
- * da Edge Function nem de longe.
+ * O caminho antigo fazia, por cobrança: varria as 1.208 OS para conferir o raio,
+ * disparava um lote e esperava a prefeitura. Eram ~2min30s cada — 50 notas em duas
+ * horas, e não cabia nos 150s da Edge Function nem de longe. Pior: bastava uma OS
+ * presa no corredor para as seguintes pararem todas.
  *
  * Aqui a conta muda de forma: TODAS as OS da leva entram na etapa de isolamento e
  * sai UM lote para todas. As 211 OS do lote manual de junho levaram 3 minutos —
@@ -1460,9 +1595,15 @@ async function emitirUma(
 async function emitirDia(
   supabase: any,
   cfg: any,
-  opts: { origem: string; operador: string | null; usuario: string | null },
+  opts: { origem: string; operador: string | null; usuario: string | null; ids?: string[] },
 ) {
-  const modo = String(cfg?.emissao_automatica ?? "previa");
+  /* `emissao_automatica` governa o CRON, não a pessoa.
+   *
+   * Com `ids` na mão foi alguém que mandou emitir, e quem quer ensaio pede
+   * `previa` — que é uma ação própria. Deixar o modo do cron calar a emissão
+   * manual faria a tela devolver "modo ensaio" para quem clicou em emitir. */
+  const manual = Array.isArray(opts.ids) && opts.ids.length > 0;
+  const modo = manual ? "manual" : String(cfg?.emissao_automatica ?? "previa");
   const etapaIso = String(cfg?.etapa_isolamento ?? ETAPA_ISOLAMENTO_PADRAO);
   const tetoDia = Number(cfg?.teto_dia ?? 120);
   const tetoRodada = Number(cfg?.teto_rodada ?? 20);
@@ -1501,10 +1642,52 @@ async function emitirDia(
       return await fechar({ pulada: `teto do dia atingido (${jaHoje}/${tetoDia}).` });
     }
 
-    const limite = Math.max(0, Math.min(tetoRodada, resta));
-    const { data: fila, error: erroFila } = await supabase.rpc("notas_fiscais_fila_emissao", { p_limite: limite });
-    if (erroFila) throw new Error(`fila: ${erroFila.message}`);
-    if (!fila?.length) return await fechar({ fila: 0, pulada: "nada a emitir." });
+    /* DE ONDE VEM A LEVA — e por que a emissão manual passa a entrar por aqui.
+     *
+     * Sem `ids`, é a fila do dia: o caminho do cron, como sempre foi. Com `ids`,
+     * são as cobranças que uma pessoa escolheu — e o que elas ganham é ESTE
+     * motor, o do lote único. O caminho manual antigo (`emitirUma`, uma por
+     * chamada) varre as 1.200 OS, dispara um lote e espera a prefeitura PARA
+     * CADA NOTA: ~2min30s cada, duas horas para 50. Aqui o lote é um só para a
+     * leva inteira, e o custo dele é o mesmo para 1 ou para 50.
+     *
+     * O que não muda: a porta do dinheiro, a trava de raio e o diário. Muda o
+     * número de lotes, não o rigor.
+     */
+    const tetoLote = Number(cfg?.teto_lote ?? 50);
+    const limite = Math.max(0, Math.min(manual ? tetoLote : tetoRodada, resta));
+
+    let fila: any[];
+    let jaComNota: any[] = [];
+    if (manual) {
+      // `candidatas` traz `ja_tem_nota` — quem já tem nota não entra no lote de
+      // jeito nenhum: é a trava contra a segunda nota da mesma cobrança. Elas não
+      // somem da resposta, porém: voltam marcadas, senão a tela anunciaria menos
+      // cobranças tratadas do que o operador mandou e ninguém saberia por quê.
+      const linhas = await candidatas(supabase, opts.ids!.slice(0, limite));
+      jaComNota = (linhas ?? []).filter((c: any) => c.ja_tem_nota);
+      fila = (linhas ?? []).filter((c: any) => !c.ja_tem_nota);
+    } else {
+      const { data, error: erroFila } = await supabase.rpc("notas_fiscais_fila_emissao", { p_limite: limite });
+      if (erroFila) throw new Error(`fila: ${erroFila.message}`);
+      fila = data ?? [];
+    }
+    /** A linha da cobrança que já tinha nota, no formato que a tela lê. */
+    const linhaJaEmitida = (c: any) => ({
+      id_asaas: c.id_asaas, ok: true, ja_emitida: true,
+      n_cod_os: c.n_cod_os ?? null,
+      aviso: `A cobrança ${c.id_asaas} já tem nota. Nada foi emitido agora.`,
+    });
+
+    if (!fila.length) {
+      return await fechar({
+        fila: 0,
+        pulada: jaComNota.length
+          ? `as ${jaComNota.length} cobranças informadas já têm nota.`
+          : "nada a emitir.",
+        ...(manual ? { resultados: jaComNota.map(linhaJaEmitida) } : {}),
+      });
+    }
 
     /* A PORTA. A fila já vem filtrada pelo banco (só recebida, sem estorno), mas
      * o banco é o espelho de 12:15 e isto aqui roda às 13h. Uma requisição por
@@ -1540,16 +1723,30 @@ async function emitirDia(
       });
     }
 
-    /* Corredor livre? Uma OS esquecida na etapa de isolamento — lote anterior
-     * ainda em voo, rodada que morreu no meio — faria a conferência de raio
-     * abortar. Melhor não criar nada e dizer por quê. */
-    const ocupantes = await ocupantesDaEtapa(etapaIso);
-    if (ocupantes.length) {
-      return await fechar({
-        fila: fila.length, bloqueadas: barradas.length,
-        pulada: `a etapa de isolamento ${etapaIso} já tem ${ocupantes.length} OS (lote anterior ainda em andamento?). Nada foi criado.`,
-        detalhe: { ocupantes: ocupantes.slice(0, 20) },
-      });
+    /* Corredor livre? Se não estiver, VARRE antes de desistir.
+     *
+     * Uma OS esquecida na etapa de isolamento — lote anterior em voo, rodada que
+     * morreu no meio — abortava esta rodada e todas as seguintes: o corredor não
+     * se limpava sozinho, e a esteira ficava parada até alguém mover a OS na mão
+     * no Omie. Agora a sobra nossa volta para a fila e o dia segue; só OS de
+     * terceiro (ou já faturada, que não se move) ainda interrompe. */
+    let varridas: number[] = [];
+    {
+      /* Uma varredura só. `limparCorredor` já lista as OS — perguntar antes com
+       * `ocupantesDaEtapa` era um `ListarOS` inteiro a mais, colado no dele, e a
+       * trava do Omie é POR MÉTODO: as duas seguidas devolvem "Consumo redundante
+       * detectado. Aguarde 11 segundos". */
+      const limpeza = await limparCorredor(etapaIso);
+      varridas = limpeza.removidas;
+      if (limpeza.restantes.length) {
+        return await fechar({
+          fila: fila.length, bloqueadas: barradas.length,
+          pulada: limpeza.lote_em_voo
+            ? `o lote ${limpeza.lote_em_voo} ainda está em processamento no Omie, com ${limpeza.restantes.length} OS na etapa ${etapaIso}. Nada foi criado — chame de novo em alguns minutos.`
+            : `a etapa de isolamento ${etapaIso} tem ${limpeza.restantes.length} OS que não saíram (já faturadas, ou de fora do Hub). Nada foi criado.`,
+          detalhe: { restantes: limpeza.restantes.slice(0, 20), varridas, ...(limpeza.lote_em_voo ? { lote_em_voo: limpeza.lote_em_voo } : {}) },
+        });
+      }
     }
 
     // 1. Cria a OS de quem ainda não tem e leva todas para o corredor.
@@ -1576,8 +1773,21 @@ async function emitirDia(
             id_asaas: cob.id_asaas, n_cod_os: nCodOS, acao: "criar_os", resultado: "ok",
             usuario: opts.usuario, operador: opts.operador,
           });
+          /* O destinatário fica gravado no NASCIMENTO da OS, não depois.
+           *
+           * É aqui que se sabe o que foi para `cEnviarPara` — reconstituir isso
+           * mais tarde custaria um `ConsultarOS` por nota. O espelho preenche o
+           * resto da linha; o upsert por `n_cod_os` não apaga o que já existe. */
+          await supabase.from("nf_os_omie").upsert({
+            n_cod_os: nCodOS,
+            c_cod_int_os: cob.id_asaas,
+            valor: Number(cob.valor),
+            email_envio: true,
+            email_destino: cob.email ?? null,
+            atualizado_em: new Date().toISOString(),
+          }, { onConflict: "n_cod_os" });
         }
-        await omieCall<any>("servicos/os", "TrocarEtapaOS", { nCodOS, cEtapa: etapaIso });
+        await trocarEtapa(nCodOS, etapaIso);
         naLeva.push({ cob, nCodOS, acao });
       } catch (e) {
         const erro = mensagemDoOmie(e).slice(0, 400);
@@ -1596,19 +1806,29 @@ async function emitirDia(
       });
     }
 
-    // 2. A trava de raio, agora plural.
-    const agora = await ocupantesDaEtapa(etapaIso);
+    // 2. A trava de raio, agora plural — e com uma chance de limpeza antes de desistir.
+    let agora = await ocupantesDaEtapa(etapaIso);
     const meus = new Set(naLeva.map((x) => x.nCodOS));
-    const intrusas = agora.filter((n) => !meus.has(n));
-    if (intrusas.length) {
-      for (const { nCodOS } of naLeva) {
-        try { await omieCall<any>("servicos/os", "TrocarEtapaOS", { nCodOS, cEtapa: ETAPA_FILA }); } catch { /* segue */ }
+    if (agora.some((n) => !meus.has(n))) {
+      const limpeza = await limparCorredor(etapaIso, [...meus]);
+      varridas = varridas.concat(limpeza.removidas);
+      /* Sem re-listar: quem sobra no corredor é `restantes` mais a leva poupada.
+       * Um `ListarOS` colado no que `limparCorredor` acabou de fazer bate na trava
+       * por método do Omie e derruba a rodada inteira por excesso de zelo. */
+      const intrusas = limpeza.restantes;
+      agora = agora.filter((n) => meus.has(n));
+      if (intrusas.length) {
+        // Aqui SIM desiste: sobrou OS que esta rodada não criou e que não saiu.
+        // Faturar a etapa emitiria nota dela — e nota não se apaga.
+        for (const { nCodOS } of naLeva) {
+          try { await trocarEtapa(nCodOS, ETAPA_FILA); } catch { /* segue */ }
+        }
+        return await fechar({
+          fila: fila.length, bloqueadas: barradas.length, falhas: falhas.length,
+          pulada: `a etapa ${etapaIso} tem ${intrusas.length} OS que esta rodada não criou e não saíram. Faturar aqui emitiria nota delas — abortado.`,
+          detalhe: { intrusas: intrusas.slice(0, 20), varridas },
+        });
       }
-      return await fechar({
-        fila: fila.length, bloqueadas: barradas.length, falhas: falhas.length,
-        pulada: `a etapa ${etapaIso} tem ${intrusas.length} OS que esta rodada não criou. Faturar aqui emitiria nota delas — abortado.`,
-        detalhe: { intrusas: intrusas.slice(0, 20) },
-      });
     }
     const faltando = naLeva.filter((x) => !agora.includes(x.nCodOS));
     if (faltando.length) {
@@ -1640,7 +1860,25 @@ async function emitirDia(
       fila: fila.length, bloqueadas: barradas.length,
       emitidas: entraram.length, falhas: falhas.length,
       lote: nIdLoteFat,
-      detalhe: { falhas: falhas.slice(0, 20), ...(barradas.length ? { barradas: barradas.slice(0, 20) } : {}) },
+      detalhe: {
+        falhas: falhas.slice(0, 20),
+        ...(barradas.length ? { barradas: barradas.slice(0, 20) } : {}),
+        ...(varridas.length ? { varridas } : {}),
+      },
+      /* A lista por cobrança, que é o que a tela sabe ler: três estados, três
+       * avisos diferentes. Só no caminho manual — a rodada do cron não tem tela
+       * para quem contar, e a lista inteira num log de execução é ruído. */
+      ...(manual ? {
+        resultados: [
+          ...jaComNota.map(linhaJaEmitida),
+          ...barradas.map((b) => ({ id_asaas: b.id_asaas, ok: false, bloqueado: true, erro: b.motivo })),
+          ...falhas.map((f) => ({ id_asaas: f.id_asaas, ok: false, erro: f.erro })),
+          ...entraram.map((x) => ({
+            id_asaas: x.cob.id_asaas, ok: false, em_processamento: true, n_cod_os: x.nCodOS,
+            erro: `Lote ${nIdLoteFat} disparado com ${entraram.length} OS. A nota nasce em alguns minutos; o próximo sync grava o número.`,
+          })),
+        ],
+      } : {}),
     });
   } catch (e) {
     return await fechar({ erro: mensagemDoOmie(e).slice(0, 500) });
@@ -1817,13 +2055,10 @@ Deno.serve(async (req) => {
        * o diário no lugar do usuário logado.
        */
       const operador = String(body?.operador ?? "").trim();
-      if (action === "emitir" && ehCron) {
-        const n = Array.isArray(body?.ids) ? body.ids.length : 0;
-        if (n !== 1 || !operador) {
-          return json({
-            erro: "Emissão por token de sistema só é aceita com uma única cobrança e o campo `operador` preenchido.",
-          }, 403);
-        }
+      if (action === "emitir" && ehCron && !operador) {
+        return json({
+          erro: "Emissão por token de sistema exige o campo `operador` preenchido — é ele que assina no diário quem mandou.",
+        }, 403);
       }
 
       const ids: string[] = Array.isArray(body?.ids) ? body.ids.map(String) : [];
@@ -1835,8 +2070,52 @@ Deno.serve(async (req) => {
         return json({ erro: `O lote tem ${ids.length} cobranças e o teto é ${teto}. Ajuste em Configurações ou divida o lote.` }, 400);
       }
 
+      /* EMITIR AGORA VAI PELO MOTOR DE LOTE — o mesmo da rodada diária.
+       *
+       * O caminho antigo tratava cobrança por cobrança: para cada uma, varria as
+       * 1.200 OS, disparava um lote e esperava a prefeitura. Deu ~2min30s por
+       * nota, e 50 notas viraram duas horas — com o agravante de que uma OS presa
+       * no corredor parava todas as seguintes. O motor de lote põe a leva inteira
+       * na etapa de isolamento e dispara UM `FaturarLoteOS`, que custa o mesmo
+       * para 1 ou para 50.
+       *
+       * O que muda para quem chama: ninguém volta com número de nota na mão. O
+       * lote é assíncrono — todas voltam "em processamento" e quem grava o número
+       * é o `espelhar`, minutos depois. É a mesma verdade de antes, dita na hora
+       * certa em vez de esperada no telefone.
+       *
+       * `previa` continua no caminho de uma em uma: ela não toca no Omie, e o que
+       * ela precisa mostrar é justamente o payload cobrança a cobrança.
+       */
+      if (action === "emitir") {
+        const r = await emitirDia(supabase, cfg ?? {}, {
+          origem: ehCron ? "cron" : "tela",
+          operador: operador || (ehCron ? "emissão por token de sistema" : null),
+          usuario,
+          ids,
+        });
+        const despachadas = Number((r as any)?.emitidas ?? 0);
+        /* Rodada que não produziu nada precisa DIZER. Sem isto, uma recusa do
+         * corredor ("tem OS de terceiro, nada foi criado") voltava como sucesso
+         * silencioso: a tela não mostrava aviso nenhum e o operador ficava
+         * olhando para uma lista que não tinha andado. */
+        const resultados = ((r as any)?.resultados ?? []) as unknown[];
+        const semNada = despachadas === 0 && resultados.length === 0;
+        // `emitidas: 0` é literal: o lote foi disparado, a nota ainda não nasceu.
+        // Anunciar emissão aqui seria o erro que este módulo mais teme — dizer
+        // "pronto" para o que ainda pode voltar recusado pela prefeitura.
+        return json({
+          ok: true, ...r, emitidas: 0, despachadas,
+          ...(semNada && (r as any)?.pulada ? { erro: String((r as any).pulada) } : {}),
+        });
+      }
+
       const linhas = await candidatas(supabase, ids);
-      const seco = action === "previa";
+      /* Daqui para baixo só passa `previa`. `emitir` saiu para o motor de lote,
+       * acima; o ensaio fica aqui de propósito, cobrança a cobrança, porque é
+       * exatamente isso que ele precisa mostrar — o payload de cada uma — e
+       * porque não tocando no Omie ele não paga o preço de ser serial. */
+      const seco = true;
 
       /* A PORTA, também no manual — e esta é a novidade que mais importa.
        *
@@ -1858,19 +2137,8 @@ Deno.serve(async (req) => {
         id_asaas: b.id_asaas, ok: false, bloqueado: true, erro: b.motivo,
       }));
 
-      /* O ORÇAMENTO DE TEMPO. Uma emissão inteira custa ~100 segundos (criar OS,
-       * isolar, conferir o raio, disparar o lote e esperar a prefeitura), e a
-       * Edge Function morre aos 150. Sem este relógio, um lote de 10 cobranças
-       * criava as 10 OS, faturava a primeira e MORRIA no meio da segunda: as
-       * outras oito ficavam com OS criada, sem nota, e sem ninguém saber. É
-       * melhor tratar duas e dizer "faltaram oito, chame de novo". */
-      const PRAZO_MS = 110_000;
-      const comecou = Date.now();
-      const naoTentadas: string[] = [];
-
       const molde = liberadas.length ? await pegarMolde(supabase) : null;
       for (const cob of liberadas) {
-        if (!seco && Date.now() - comecou > PRAZO_MS) { naoTentadas.push(cob.id_asaas); continue; }
         resultados.push(await emitirUma(supabase, molde, cob, cfg ?? {}, usuario, seco, operador || null));
       }
 
@@ -1885,10 +2153,6 @@ Deno.serve(async (req) => {
         emitidas: ok - jaEmitidas, ja_emitidas: jaEmitidas, em_processamento: emProcessamento,
         bloqueadas,
         falhas: resultados.length - ok - bloqueadas,
-        nao_tentadas: naoTentadas,
-        ...(naoTentadas.length
-          ? { aviso: `${naoTentadas.length} cobrança(s) não couberam na janela desta chamada e NÃO foram tocadas. Mande de novo para tratá-las.` }
-          : {}),
         molde_os: molde?.Cabecalho?.nCodOS ?? null,
         resultados,
       });

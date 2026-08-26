@@ -12,6 +12,7 @@
 
 import { supabase } from "@/integrations/supabase/client";
 import { comImagensLegiveis, paraRequisicao, type ImagemMsg } from "@/lib/assistente-imagens";
+import { urlDaFuncao } from "@/lib/urlFuncao";
 
 export type PapelMsg = "user" | "assistant";
 export type MsgAssistente = {
@@ -91,7 +92,7 @@ export async function streamAiChat(
   sinal?: AbortSignal,
 ): Promise<string> {
   const { data: { session } } = await supabase.auth.getSession();
-  const url = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/ai-chat`;
+  const url = urlDaFuncao("ai-chat");
 
   // Só as imagens mais recentes seguem, e as reabertas do histórico voltam a ter bytes:
   // sem isso, "e o total dessa nota?" chegaria a um modelo que não está vendo a nota.
@@ -115,10 +116,15 @@ export async function streamAiChat(
   }
 
   if (!resp.ok || !resp.body) {
+    // O status vai junto na frase genérica. Sem ele, um 401 vindo do endereço errado
+    // ficava indistinguível de a IA ter engasgado, e o print mandado no WhatsApp não
+    // permitia investigar nada — foi o que aconteceu em 25/08/26.
     const motivo =
       resp.status === 429 ? "Muitas perguntas seguidas. Espere alguns segundos."
       : resp.status === 402 ? "Sem créditos de IA."
-      : "O assistente não conseguiu responder agora.";
+      : resp.status === 401 || resp.status === 403
+        ? "Sua sessão expirou. Saia e entre de novo."
+        : `O assistente não conseguiu responder agora (erro ${resp.status}).`;
     throw new ErroAssistente(motivo, "servidor");
   }
 

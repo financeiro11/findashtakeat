@@ -47,6 +47,63 @@ const json = (body: unknown, status = 200) =>
  * então nada se perde e nada é lido duas vezes. */
 const ORCAMENTO_MS = 100_000;
 
+/**
+ * O QUE DERRUBOU A VARREDURA EM 25/08/2026, e por que a mensagem não ajudava.
+ *
+ * O clique em "Varrer o ERP" devolveu 500 e a tela mostrou "Edge Function
+ * returned a non-2xx status code". No log do worker estava o motivo de verdade:
+ *
+ *     cap_anexos_fila: <!DOCTYPE html> … <title>supabase.co | 520</title>
+ *
+ * Não foi o Postgres — a mesma consulta roda em 390 ms. Foi o PostgREST/gateway
+ * devolvendo uma PÁGINA DE ERRO DA CLOUDFLARE depois de 36 segundos, com o banco
+ * ocupado pelas outras varreduras. Duas coisas erradas de uma vez:
+ *
+ *   • um soluço de infraestrutura abortava a rodada inteira, inclusive quando ele
+ *     acontecia no upsert — aí 100 segundos de leitura do Omie iam fora e os
+ *     mesmos títulos eram lidos de novo na rodada seguinte, de graça;
+ *   • 4 KB de HTML viravam a "mensagem de erro" que alguém teria de ler na tela.
+ *
+ * `comRepeticao` cobre o primeiro, e `mensagemLimpa` o segundo.
+ */
+const ehSolucoDeRede = (msg: string) =>
+  /<!DOCTYPE|<html|\b(50[02348]|429|520|521|522|524)\b|fetch failed|timeout|timed out|connection|socket|ECONN|network/i
+    .test(msg);
+
+/** Uma página de erro HTML não é mensagem. Reduz ao que dá para ler numa linha. */
+function mensagemLimpa(msg: string): string {
+  const bruta = String(msg ?? "").trim();
+  if (!/<!DOCTYPE|<html/i.test(bruta)) return bruta.slice(0, 300);
+  const titulo = bruta.match(/<title>([\s\S]*?)<\/title>/i)?.[1]?.trim();
+  return titulo
+    ? `o gateway do Supabase respondeu "${titulo.slice(0, 120)}" — costuma passar sozinho na próxima rodada`
+    : "o gateway do Supabase devolveu uma página de erro em vez da resposta";
+}
+
+/**
+ * Repete o que falhou por rede, e só isso.
+ *
+ * Erro de negócio (coluna que não existe, função que sumiu) não melhora com
+ * repetição — repetir ali seria transformar um erro legível em três esperas e o
+ * mesmo erro. Por isso o filtro é explícito.
+ */
+async function comRepeticao<T>(
+  rotulo: string,
+  fn: () => Promise<{ data: T; error: any }>,
+  tentativas = 3,
+): Promise<T> {
+  let ultima = "";
+  for (let i = 0; i < tentativas; i++) {
+    const { data, error } = await fn();
+    if (!error) return data;
+    ultima = String(error?.message ?? error);
+    if (!ehSolucoDeRede(ultima) || i === tentativas - 1) break;
+    console.warn(`${rotulo}: tentativa ${i + 1} falhou (${mensagemLimpa(ultima)}), repetindo…`);
+    await new Promise((r) => setTimeout(r, 1500 * 2 ** i)); // 1,5s · 3s
+  }
+  throw new Error(`${rotulo}: ${mensagemLimpa(ultima)}`);
+}
+
 /** Um título do contas a pagar. `conta-receber` existe mas não é o caso aqui. */
 const TABELA = "conta-pagar";
 
@@ -151,8 +208,10 @@ async function lerTitulo(cod: number): Promise<Linha> {
 }
 
 async function varrer(supabase: any, limite: number) {
-  const { data: fila, error } = await supabase.rpc("cap_anexos_fila", { p_limite: limite });
-  if (error) throw new Error(`cap_anexos_fila: ${error.message}`);
+  const fila = await comRepeticao<any[]>(
+    "cap_anexos_fila",
+    () => supabase.rpc("cap_anexos_fila", { p_limite: limite }),
+  );
   if (!fila?.length) return { fila: 0, lidos: 0, com_anexo: 0, sem_anexo: 0, falhas: 0, restantes: 0 };
 
   const inicio = Date.now();
@@ -177,16 +236,29 @@ async function varrer(supabase: any, limite: number) {
   }
 
   if (linhas.length) {
-    // Upsert em lote: a leitura vale por título, e reler depois só sobrescreve.
-    const { error: erroGrava } = await supabase
-      .from("omie_titulo_anexo")
-      .upsert(linhas, { onConflict: "cod_titulo" });
-    if (erroGrava) throw new Error(`omie_titulo_anexo upsert: ${erroGrava.message}`);
+    /* Upsert em lote: a leitura vale por título, e reler depois só sobrescreve.
+     * Com repetição porque aqui já se gastou até 100 segundos de conversa com o
+     * Omie — perder isso para um 520 do gateway é pagar a mesma leitura duas
+     * vezes na rodada seguinte, e é justamente a chamada ao Omie que se quer
+     * economizar. */
+    await comRepeticao(
+      "omie_titulo_anexo upsert",
+      () => supabase.from("omie_titulo_anexo").upsert(linhas, { onConflict: "cod_titulo" }),
+    );
   }
 
   const comAnexo = linhas.filter((l) => !l.erro && l.qtd > 0).length;
   const semAnexo = linhas.filter((l) => !l.erro && l.qtd === 0).length;
   const falhas = linhas.filter((l) => l.erro).length;
+
+  /* Quanto sobrou DEPOIS de gravar. É o que a tela usa para dizer "restam 594"
+   * em vez de deixar quem clicou adivinhar se a rodada resolveu tudo. Falha aqui
+   * não derruba a rodada: o trabalho já está gravado, isto é só o placar. */
+  let restantes: number | null = null;
+  try {
+    const { data } = await supabase.rpc("cap_anexos_fila_total");
+    restantes = typeof data === "number" ? data : Number(data ?? 0);
+  } catch { /* placar é opcional */ }
 
   return {
     fila: fila.length,
@@ -194,6 +266,7 @@ async function varrer(supabase: any, limite: number) {
     com_anexo: comAnexo,
     sem_anexo: semAnexo,
     falhas,
+    restantes,
     parou_por_tempo: parouPorTempo,
     ...(parouPorBloqueio ? { parou_por_bloqueio: parouPorBloqueio } : {}),
     // O que continua duvidoso: nome que o sistema gerou sozinho, sem sinal de nota.
@@ -210,14 +283,15 @@ async function resumo(supabase: any) {
     supabase.from("omie_titulo_anexo").select("cod_titulo", { count: "exact", head: true }),
     supabase.from("omie_titulo_anexo").select("cod_titulo", { count: "exact", head: true }).gt("qtd", 0),
     supabase.from("omie_titulo_anexo").select("cod_titulo", { count: "exact", head: true }).not("erro", "is", null),
-    // O teto alto responde "quanto ainda falta" sem uma consulta própria.
-    supabase.rpc("cap_anexos_fila", { p_limite: 100000 }),
+    // Só o número: a versão antiga trazia as ~1.700 linhas da fila inteira pela
+    // rede para depois fazer `fila.length`, e isto aqui é uma tela de placar.
+    supabase.rpc("cap_anexos_fila_total"),
   ]);
   return {
     titulos_lidos: lidos ?? 0,
     com_anexo: comAnexo ?? 0,
     com_erro_de_leitura: comErro ?? 0,
-    na_fila: Array.isArray(fila) ? fila.length : 0,
+    na_fila: Number(fila ?? 0),
   };
 }
 
@@ -266,7 +340,7 @@ Deno.serve(async (req) => {
 
     return json({ erro: `Ação desconhecida: ${action}` }, 400);
   } catch (e) {
-    const msg = e instanceof Error ? e.message : String(e);
+    const msg = mensagemLimpa(e instanceof Error ? e.message : String(e));
     console.error("omie-anexos-varredura:", msg);
     return json({ erro: msg }, 500);
   }

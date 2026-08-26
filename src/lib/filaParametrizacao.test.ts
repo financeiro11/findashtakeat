@@ -2,8 +2,9 @@ import { describe, expect, it } from "vitest";
 import type { Candidato } from "@/lib/apelidos";
 import {
   alternarNoSet, categoriaDaContraparte, categoriasDaFila, colunaFiltrada,
-  filtrarFila, filtroFilaInicial, lerNumero, limparColuna, mesesDaFila,
-  quantasColunasFiltradas, rotuloMes, SEM_CATEGORIA,
+  FAIXA_PADRAO, FAIXAS_RECENTES, filtrarFila, filtroFilaInicial, haQuantoTempo,
+  lerNumero, limparColuna, mesesDaFila, mesesDesde, quantasColunasFiltradas,
+  recenciaDe, recenciasDaFila, rotuloMes, SEM_CATEGORIA,
   type EstadoPlanilha, type FiltroFila,
 } from "@/lib/filaParametrizacao";
 
@@ -168,5 +169,82 @@ describe("rotuloMes", () => {
   it("escreve o mês como a coluna Período escreve", () => {
     expect(rotuloMes("2026-07")).toBe("jul 26");
     expect(rotuloMes("2026-01")).toBe("jan 26");
+  });
+});
+
+/* 25 de agosto de 2026 — o dia em que a coluna "Último" foi ao ar. */
+const HOJE = new Date(2026, 7, 25);
+
+describe("recência", () => {
+  it("conta meses de calendário, não dias", () => {
+    // O dia do mês não pode mudar a faixa: 31 de julho e 1º de julho são ambos
+    // "mês passado" olhando de agosto.
+    expect(mesesDesde("2026-08-01", HOJE)).toBe(0);
+    expect(mesesDesde("2026-07-31", HOJE)).toBe(1);
+    expect(mesesDesde("2026-07-01", HOJE)).toBe(1);
+    expect(mesesDesde("2025-08-30", HOJE)).toBe(12);
+    expect(mesesDesde(null, HOJE)).toBeNull();
+  });
+
+  it("as faixas são disjuntas e cobrem a janela inteira", () => {
+    expect(recenciaDe("2026-08-19", HOJE)).toBe("mes");
+    expect(recenciaDe("2026-07-31", HOJE)).toBe("passado");
+    expect(recenciaDe("2026-07-01", HOJE)).toBe("passado");
+    expect(recenciaDe("2026-06-30", HOJE)).toBe("trimestre");
+    expect(recenciaDe("2026-05-10", HOJE)).toBe("trimestre");
+    expect(recenciaDe("2026-04-30", HOJE)).toBe("semestre");
+    expect(recenciaDe("2026-02-01", HOJE)).toBe("semestre");
+    expect(recenciaDe("2026-01-31", HOJE)).toBe("parado");
+  });
+
+  it("o mês passado tem faixa só dele — é por onde a tela abre", () => {
+    // Se ele voltasse a morar dentro de "1 a 3 meses", o padrão da tela traria
+    // maio junto e a fila do fechamento deixaria de ser a fila do fechamento.
+    expect(FAIXA_PADRAO).toBe("passado");
+    expect(recenciaDe("2026-07-20", HOJE)).toBe(FAIXA_PADRAO);
+    expect(recenciaDe("2026-05-20", HOJE)).not.toBe(FAIXA_PADRAO);
+    expect(FAIXAS_RECENTES).toEqual(["mes", "passado", "trimestre"]);
+  });
+
+  it("sem data é balde, não buraco", () => {
+    expect(recenciaDe(null, HOJE)).toBe("sem_data");
+    expect(recenciaDe("", HOJE)).toBe("sem_data");
+  });
+
+  it("data no futuro conta como este mês", () => {
+    // O extrato adianta lançamento programado; a linha está viva, não no ano que vem.
+    expect(recenciaDe("2026-09-10", HOJE)).toBe("mes");
+  });
+
+  it("escreve o tempo como se fala", () => {
+    expect(haQuantoTempo("2026-08-19", HOJE)).toBe("este mês");
+    expect(haQuantoTempo("2026-07-01", HOJE)).toBe("mês passado");
+    expect(haQuantoTempo("2026-04-30", HOJE)).toBe("há 4 meses");
+    expect(haQuantoTempo(null, HOJE)).toBe("sem data");
+  });
+});
+
+describe("recenciasDaFila", () => {
+  const itens = [
+    { ultima: "2026-08-19", total: 200 },
+    { ultima: "2026-08-02", total: 100 },
+    { ultima: "2026-07-15", total: 400 },
+    { ultima: "2026-06-30", total: 900 },
+    { ultima: "2025-11-04", total: 50 },
+  ];
+
+  it("vem da mais quente para a mais fria, com o peso de cada uma", () => {
+    expect(recenciasDaFila(itens, HOJE)).toEqual([
+      { valor: "mes", rotulo: "Este mês", itens: 2, total: 300 },
+      { valor: "passado", rotulo: "Mês passado", itens: 1, total: 400 },
+      { valor: "trimestre", rotulo: "Há 2 a 3 meses", itens: 1, total: 900 },
+      { valor: "parado", rotulo: "Há mais de 6 meses", itens: 1, total: 50 },
+    ]);
+  });
+
+  it("faixa vazia não vira opção", () => {
+    // "Há 4 a 6 meses" não tem ninguém aqui — oferecer o clique seria prometer
+    // uma lista que volta em branco.
+    expect(recenciasDaFila(itens, HOJE).map((o) => o.valor)).not.toContain("semestre");
   });
 });

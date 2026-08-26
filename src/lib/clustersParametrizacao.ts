@@ -350,11 +350,41 @@ export function totalDoGrupo(
   };
 }
 
-/** Alta primeiro, e dentro de cada faixa o dinheiro maior — mesma ordem da fila
- *  antiga, agora por grupo. */
+/**
+ * Por onde começar.
+ *
+ *   • "valor"   — alta confiança primeiro e, dentro de cada faixa, o dinheiro
+ *                 maior. É a ordem de quem vai varrer a fila inteira: as que dá
+ *                 para confirmar em bloco vêm juntas, no topo.
+ *   • "recente" — a última movimentação primeiro, confiança nenhuma no meio.
+ *                 É a ordem de quem tem uma hora: contraparte sem nome que se
+ *                 mexeu este mês volta na DRE desta semana, e a que parou em
+ *                 maio já passou por todas as reuniões sem incomodar ninguém.
+ *                 Ordenar por recência COM a confiança na frente devolveria a
+ *                 ordem antiga com outro nome — por isso ela sai do critério.
+ */
+export type OrdemFila = "valor" | "recente";
+
+export function comparadorDeGrupos(
+  ordem: OrdemFila,
+  totais: (g: GrupoDeGrafias) => number,
+): (a: GrupoDeGrafias, b: GrupoDeGrafias) => number {
+  if (ordem === "recente") {
+    return (a, b) => {
+      // Data ISO ordena como string; sem data vai para o fim.
+      const da = a.ultima ?? "";
+      const dbb = b.ultima ?? "";
+      if (da !== dbb) return da < dbb ? 1 : -1;
+      return totais(b) - totais(a);
+    };
+  }
+  return (a, b) => PESO[a.conf] - PESO[b.conf] || totais(b) - totais(a);
+}
+
 export function ordenarGrupos(
   grupos: GrupoDeGrafias[],
   totais: (g: GrupoDeGrafias) => number,
+  ordem: OrdemFila = "valor",
 ): GrupoDeGrafias[] {
-  return [...grupos].sort((a, b) => PESO[a.conf] - PESO[b.conf] || totais(b) - totais(a));
+  return [...grupos].sort(comparadorDeGrupos(ordem, totais));
 }

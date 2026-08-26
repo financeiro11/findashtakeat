@@ -52,6 +52,22 @@ const BUCKET = "comprovantes-auditoria";
 const MAX_BYTES = 8 * 1024 * 1024;
 const ORCAMENTO_MS = 55_000;
 
+/**
+ * Quantas fotos podem virar PDF na MESMA rodada.
+ *
+ * O limite do worker que morde primeiro não é o relógio, é a CPU — e o relógio
+ * (ORCAMENTO_MS) não a enxerga. Medido em 25/08/2026: a rodada das 18:35
+ * converteu três comprovantes com folga, começou o quarto e foi morta com
+ * "CPU Time exceeded"; morrer assim não devolve relatório nenhum, e o que já
+ * tinha subido só apareceu no log porque o carimbo é gravado item a item.
+ *
+ * Converter imagem é o único passo caro aqui (o pdf-lib redesenha a página);
+ * PDF que já chega PDF quase não custa, e por isso não entra nesta conta. Três
+ * é o que a medição mostrou caber — o resto fica para a próxima rodada, que é
+ * daqui a 15 minutos e começa exatamente de onde esta parou.
+ */
+const CONVERSOES_POR_RODADA = 3;
+
 const nomeDoPath = (p: string) => {
   const base = p.split("/").pop() || "comprovante";
   return base.replace(/^\d{10,}_/, "");   // o upload prefixa com timestamp
@@ -90,7 +106,7 @@ type Item = {
  * ========================================================================== */
 
 type Pendente = {
-  origem: "achado" | "cartao" | "facilities";
+  origem: "achado" | "cartao" | "facilities" | "pix" | "planilha" | "drive";
   id: number | string;
   id_unico: string;
   rotulo: string;
@@ -117,7 +133,7 @@ async function anotar(supabase: any, linha: {
   rotulo?: string | null;
   cod_titulo?: string | null;
   arquivo?: string | null;
-  resultado: "ok" | "erro" | "bloqueado";
+  resultado: "ok" | "erro" | "bloqueado" | "tentando";
   motivo?: string | null;
   canal: string;
 }): Promise<void> {
@@ -140,7 +156,10 @@ async function baixarComprovante(
   let nome: string;
 
   if (ehUrl(comprovante)) {
-    const arq = await baixarDoDrive(comprovante);
+    // O teto vai JUNTO: assim o Drive recusa pelo metadado e não gastamos o
+    // orçamento do worker baixando o que já se sabe grande demais. Ver a nota
+    // em `_shared/drive.ts` — foi um arquivo de 9,7 MB que parou a fila inteira.
+    const arq = await baixarDoDrive(comprovante, { maxBytes: MAX_BYTES });
     bytes = arq.bytes;
     nome = arq.nome;
   } else {
@@ -178,6 +197,9 @@ async function carimbar(supabase: any, opts: {
   cartaoId?: number | null;
   cartaoIdUnico?: string | null;
   facilitiesId?: string | null;
+  pixIdUnico?: string | null;
+  driveId?: string | null;
+  notaId?: number | null;
   idTransacao?: string | null;
   codTitulo: string;
   nome: string;
@@ -230,6 +252,46 @@ async function carimbar(supabase: any, opts: {
       .update({ ...marca, omie_cod_titulo: String(opts.codTitulo) }).eq("id", opts.cartaoId);
   }
 
+  /* PIX — a quarta origem, e a que faltava desde sempre.
+   *
+   * A auditoria de PIX é a única das quatro cujo `tem_comprovante` significa "o
+   * ERP tem o arquivo": ele nasceu do `ListarAnexo`. Por isso NÃO se escreve
+   * `comprovante_url` aqui — quem responde essa coluna é a `omie-pix-sync`, na
+   * releitura. O que se carimba é só o que este envio sabe: que subiu, quando e
+   * com que nome. Sem esse carimbo a mesma nota subiria de novo amanhã e o
+   * título ficaria com dois anexos iguais. */
+  if (opts.pixIdUnico) {
+    await supabase.from("auditoria_pix_lancamentos").update({
+      omie_anexo_enviado_em: agora,
+      omie_anexo_nome: opts.nome,
+      // A releitura do ERP vai confirmar; até lá, a verdade já mudou.
+      anexo_verificado: false,
+      updated_at: agora,
+    }).eq("id_unico", opts.pixIdUnico);
+  }
+
+  /* DRIVE — a origem que a cobertura já contava e o envio não conhecia.
+   *
+   * `cap_titulos` conta `comprovantes_drive` como "o Hub tem a nota" desde que
+   * ela existe; `pendentes()` nunca leu essa tabela. O resultado, medido em
+   * 25/08/2026: dois títulos parados em "Pronta para subir" desde junho, à
+   * espera de uma fila que jamais passaria por eles. Sem este carimbo o
+   * problema vira o oposto — o mesmo arquivo subindo a cada rodada. */
+  if (opts.driveId) {
+    await supabase.from("comprovantes_drive").update({
+      omie_anexo_enviado_em: agora,
+      omie_anexo_nome: opts.nome,
+      atualizado_em: agora,
+    }).eq("id", opts.driveId);
+  }
+
+  if (opts.notaId) {
+    await supabase.from("notas_externas").update({
+      enviado_erp_em: agora, erro_erp: null, fila_erp: false,
+      conferencia: "confere", atualizado_em: agora,
+    }).eq("id", opts.notaId);
+  }
+
   // O outro lado da mesma nota, quando existe o vínculo.
   if (opts.idTransacao && !opts.cartaoId) {
     await supabase.from("auditoria_cartao_lancamentos").update(marca).eq("id_unico", opts.idTransacao);
@@ -280,7 +342,16 @@ async function pendentes(supabase: any, limite: number, filtro: FiltroVarredura 
   //     anexar duas vezes no título 5504197016 — e a segunda voltou com um erro mentiroso,
   //     porque o Omie recusa a leitura logo depois de uma escrita.
   // O achado vem primeiro porque é ele que carrega a trilha da auditoria.
-  const titulos = new Set<string>();
+  //
+  // A QUARENTENA ENTRA JUNTO COM OS TÍTULOS JÁ VISTOS, e por um motivo: as duas
+  // são a mesma pergunta — "este título já está resolvido para esta rodada?".
+  // Quem derrubou o worker três vezes seguidas sem deixar erro entra aqui e
+  // deixa a fila andar; o que ele precisa (um comprovante menor, ou acesso ao
+  // arquivo no Drive) não é coisa que a próxima tentativa resolva sozinha.
+  const { data: quarentena } = await supabase
+    .from("omie_anexo_quarentena")
+    .select("cod_titulo");
+  const titulos = new Set<string>((quarentena ?? []).map((q: any) => String(q.cod_titulo)));
   const lista: Pendente[] = [];
 
   for (const a of ach.data ?? []) {
@@ -350,6 +421,137 @@ async function pendentes(supabase: any, limite: number, filtro: FiltroVarredura 
     }
   }
 
+  /* PIX — a quarta origem, e a que estava sem caminho nenhum.
+   *
+   * A auditoria de PIX nunca teve varredura: quando a NF do Hub de Facilities
+   * era aplicada num PIX, ela pintava a linha de verde ("anexado no Omie") sem
+   * que nada tivesse chegado ao ERP. O contador abria o título e não achava.
+   *
+   * O filtro é estreito de propósito. `comprovante_url` da maioria das linhas é
+   * o link do ANEXO DO PRÓPRIO OMIE (veio do ListarAnexo) — reenviar aquilo
+   * duplicaria o arquivo que já está lá. Só sobe o que foi o Hub que pôs: o
+   * bucket privado da auditoria ou um link do Drive.
+   *
+   * `id_unico` do PIX É o `nCodTitulo` — é assim que a semente da varredura de
+   * anexos já o converteu (migration 20260825140000). O `~ '^\d+$'` fica de
+   * guarda porque um id não numérico viraria chamada inválida no Omie. */
+  if (!filtro.responsavel && !filtro.idUnico) {
+    const { data: pix, error: erroPix } = await supabase
+      .from("auditoria_pix_lancamentos")
+      .select("id, id_unico, favorecido, descricao, comprovante_url")
+      .not("comprovante_url", "is", null).neq("comprovante_url", "")
+      .is("omie_anexo_enviado_em", null)
+      .or("comprovante_url.ilike.%comprovantes-auditoria%,comprovante_url.ilike.%drive.google.com%")
+      .order("data", { ascending: false })
+      .limit(limite);
+    if (erroPix) throw erroPix;
+
+    for (const p of pix ?? []) {
+      const cod = String(p.id_unico ?? "");
+      if (!/^\d+$/.test(cod) || titulos.has(cod)) continue;
+      titulos.add(cod);
+      lista.push({
+        origem: "pix",
+        id: p.id,
+        id_unico: cod,
+        rotulo: p.favorecido || p.descricao || cod,
+        comprovante: String(p.comprovante_url ?? ""),
+        codTitulo: cod,
+        id_transacao: null,
+      });
+    }
+  }
+
+  /* DRIVE — a nota que a varredura das pastas achou e casou sozinha.
+   *
+   * A view `cap_titulos` conta `comprovantes_drive` como "o Hub tem a nota"
+   * desde o primeiro dia; esta função nunca leu a tabela. Dois títulos de junho
+   * estavam parados em "Pronta para subir" esperando uma fila que não passava
+   * por eles — e ficariam para sempre, porque nada mais no caminho olha para o
+   * Drive.
+   *
+   * SÓ CONFIANÇA ALTA SOBE. O casamento por parcela ("média") é palpite bom o
+   * bastante para uma pessoa confirmar e ruim demais para virar documento fiscal
+   * dentro do ERP: anexo errado no título errado é pior que anexo nenhum, porque
+   * o próximo a olhar vai acreditar nele. Confiança média fica na tela, para
+   * alguém decidir.
+   *
+   * O arquivo mora no Drive e `baixarComprovante` já sabe abrir link de lá —
+   * por isso o `comprovante` é o link montado, e não o `drive_id` cru. */
+  if (!filtro.responsavel && !filtro.idUnico) {
+    const { data: dri, error: erroDri } = await supabase
+      .from("comprovantes_drive")
+      .select("id, drive_id, nome_arquivo, emitente, cod_titulo")
+      .not("drive_id", "is", null).neq("drive_id", "")
+      .not("cod_titulo", "is", null).neq("cod_titulo", "")
+      .eq("confianca", "alta")
+      .is("omie_anexo_enviado_em", null)
+      .order("data", { ascending: false })
+      .limit(limite);
+    if (erroDri) throw erroDri;
+
+    for (const d of dri ?? []) {
+      const cod = String(d.cod_titulo ?? "");
+      if (!/^\d+$/.test(cod) || titulos.has(cod)) continue;
+      titulos.add(cod);
+      lista.push({
+        origem: "drive",
+        id: String(d.id),
+        id_unico: String(d.id),
+        rotulo: d.emitente || d.nome_arquivo || String(d.id),
+        comprovante: `https://drive.google.com/file/d/${d.drive_id}/view`,
+        codTitulo: cod,
+        id_transacao: null,
+      });
+    }
+  }
+
+  /* PLANILHAS — a nota que alguém já tinha mandado pelo formulário.
+   *
+   * Aqui não se decide nada: `notas_externas_casar` casou e alguém clicou, o
+   * que ligou `fila_erp`. Esta função só carrega o arquivo. É a mesma divisão
+   * do "Cruzar com Omie" do cartão — quem casa não envia, quem envia não casa.
+   */
+  if (!filtro.responsavel && !filtro.idUnico) {
+    const { data: notas, error: erroNotas } = await supabase
+      .from("notas_externas")
+      .select("id, fonte, linha, nome, o_que_e, link, alvo_tipo, alvo_id_unico")
+      .eq("fila_erp", true)
+      .is("enviado_erp_em", null)
+      .not("alvo_tipo", "is", null)
+      .limit(limite);
+    if (erroNotas) throw erroNotas;
+
+    // O cartão guarda o título numa coluna própria; o PIX é o próprio id.
+    const doCartao = (notas ?? []).filter((n: any) => n.alvo_tipo === "cartao").map((n: any) => n.alvo_id_unico);
+    const titulosDoCartao = new Map<string, string>();
+    if (doCartao.length) {
+      const { data: cars } = await supabase.from("auditoria_cartao_lancamentos")
+        .select("id_unico, omie_cod_titulo").in("id_unico", doCartao)
+        .not("omie_cod_titulo", "is", null);
+      for (const c of cars ?? []) titulosDoCartao.set(String(c.id_unico), String(c.omie_cod_titulo));
+    }
+
+    for (const n of notas ?? []) {
+      const cod = n.alvo_tipo === "pix"
+        ? String(n.alvo_id_unico ?? "")
+        : (titulosDoCartao.get(String(n.alvo_id_unico)) ?? "");
+      // Sem título no Omie não há onde anexar. Não é erro: é o "Cruzar com
+      // Omie" que ainda não passou por aquele lançamento.
+      if (!/^\d+$/.test(cod) || titulos.has(cod)) continue;
+      titulos.add(cod);
+      lista.push({
+        origem: "planilha",
+        id: n.id,
+        id_unico: String(n.alvo_id_unico ?? n.id),
+        rotulo: `${n.nome || n.o_que_e || "nota"} · ${n.fonte} linha ${n.linha}`,
+        comprovante: String(n.link ?? ""),
+        codTitulo: cod,
+        id_transacao: n.alvo_tipo === "cartao" ? String(n.alvo_id_unico) : null,
+      });
+    }
+  }
+
   return lista.slice(0, limite);
 }
 
@@ -363,10 +565,30 @@ async function varrer(supabase: any, cTabela: string, limite: number, canal: str
   // não devolve relatório nenhum. Preferimos parar por conta própria e deixar o resto para
   // a próxima rodada do cron — a fila é a mesma consulta, então nada se perde.
   const inicio = Date.now();
+  let convertidas = 0;
 
   for (const [i, p] of fila.entries()) {
     if (Date.now() - inicio > ORCAMENTO_MS) { parouPorTempo = fila.length - i; break; }
+    // O mesmo raciocínio do relógio, para a CPU: parar de propósito devolve
+    // relatório; ser morto no meio não devolve nada. Ver CONVERSOES_POR_RODADA.
+    if (convertidas >= CONVERSOES_POR_RODADA) { parouPorTempo = fila.length - i; break; }
     try {
+      /* A TENTATIVA É REGISTRADA ANTES DE TENTAR.
+       *
+       * O catch abaixo cobre erro; não cobre MORTE. Quando o worker estoura a
+       * CPU, o runtime o mata: o catch não roda, nada é gravado, e o item volta
+       * igual na próxima rodada — para sempre, porque ele é o primeiro da fila.
+       * Foi assim que 64 notas ficaram paradas atrás de um comprovante só.
+       *
+       * Esta linha é o rastro que sobrevive à morte. Se ela ficar órfã três
+       * vezes (sem 'ok' e sem 'erro' depois), `omie_anexo_quarentena` passa a
+       * apontar o título e a fila para de bater a cabeça nele.
+       */
+      await anotar(supabase, {
+        origem: p.origem, ref_id: String(p.id), rotulo: p.rotulo,
+        cod_titulo: p.codTitulo, resultado: "tentando", canal,
+      });
+
       const { bytes, nome } = await baixarComprovante(supabase, p.comprovante);
 
       // `incluirAnexo` normaliza o arquivo antes de subir (foto vira PDF,
@@ -376,12 +598,17 @@ async function varrer(supabase: any, cTabela: string, limite: number, canal: str
       const { cTabela: cTabelaOk, nome: nomeFinal, conversao } = await incluirAnexo({
         nId: p.codTitulo, cTabela, nome, base64: toBase64(bytes), codInt: codIntAnexo(p.id),
       });
+      if (conversao === "imagem_para_pdf") convertidas++;
 
       await carimbar(supabase, {
         achadoId: p.origem === "achado" ? Number(p.id) : null,
         cartaoId: p.origem === "cartao" ? Number(p.id) : null,
         cartaoIdUnico: p.origem === "cartao" ? p.id_unico : null,
         facilitiesId: p.origem === "facilities" ? String(p.id) : null,
+        pixIdUnico: p.origem === "pix" ? p.id_unico
+                  : (p.origem === "planilha" && !p.id_transacao ? p.id_unico : null),
+        driveId: p.origem === "drive" ? String(p.id) : null,
+        notaId: p.origem === "planilha" ? Number(p.id) : null,
         idTransacao: p.id_transacao,
         codTitulo: p.codTitulo, nome: nomeFinal, cTabela: cTabelaOk, canal,
       });
@@ -405,6 +632,15 @@ async function varrer(supabase: any, cTabela: string, limite: number, canal: str
         origem: p.origem, ref_id: String(p.id), rotulo: p.rotulo,
         cod_titulo: p.codTitulo, resultado: "erro", motivo: erro, canal,
       });
+      /* A nota sai da fila com o motivo escrito NELA, e não só no diário: é na
+         linha da nota que a pessoa vai olhar, e uma fila que retenta sozinha
+         para sempre é como o "Documento não cadastrado" prendeu a varredura de
+         anexos do CAP. Recolocar na fila é um clique. */
+      if (p.origem === "planilha") {
+        await supabase.from("notas_externas")
+          .update({ fila_erp: false, erro_erp: erro.slice(0, 500), atualizado_em: new Date().toISOString() })
+          .eq("id", Number(p.id));
+      }
       falhas.push({ id_unico: p.id_unico, titulo: p.rotulo, omie_cod_titulo: p.codTitulo, erro });
     }
   }

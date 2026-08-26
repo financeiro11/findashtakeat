@@ -25,6 +25,15 @@
 //     mesma compra nas faturas seguintes, sem pedir comprovante de novo e sem
 //     chamar IA. Ver _shared/conferencia-comprovante.ts.
 //
+// LÊ VÁRIOS AO MESMO TEMPO, DECIDE UM DE CADA VEZ. Ler um comprovante é quase
+// tudo espera de rede — baixar o arquivo e aguardar o Gemini. Em fila indiana,
+// uma fatura de doze notas custava três minutos de relógio e quatro chamadas
+// encadeadas pela tela. Hoje `LARGURA` documentos ficam no ar ao mesmo tempo e a
+// mesma fatura cabe numa rodada só. O que NÃO virou paralelo é o veredito: ele
+// consulta e alimenta o mapa de notas já usadas, e decidir duas cobranças ao
+// mesmo tempo abriria a porta para as duas aceitarem o mesmo pedaço do mesmo
+// documento. Ver `emParalelo`.
+//
 // QUEM APROVA É A REGRA, NÃO A IA. O veredito do modelo vale como ponteiro
 // ("o que foi cobrado é o total" / "é a linha Taxa de Embarque") e a conta é
 // refeita em _shared/conferencia-comprovante.ts em cima do que ele mesmo
@@ -38,7 +47,7 @@
 //   { action?: "conferir" | "transcrever" | "aplicar" | "parcelas",
 //     competencia?: "AAAA-MM-DD",   // a fatura da tela
 //     ids?: number[],               // achados específicos (drawer / seleção)
-//     limite?: number,              // teto da rodada (padrão 6, máx 10)
+//     limite?: number,              // teto da rodada (padrão 12, máx 40)
 //     reler?: boolean,              // relê mesmo o que já tem leitura
 //     simular?: boolean }           // só em "parcelas": diz o que faria, sem gravar
 //
@@ -68,18 +77,37 @@ const BUCKET = "comprovantes-auditoria";
 /** Status em que ainda faz sentido conferir. Aprovado/Reprovado já foi decidido. */
 const STATUS_ABERTOS = ["Pendente", "Em análise", "Ajuste solicitado"];
 
-/* Cada leitura leva de 10 a 15 segundos e o worker é derrubado com
-   WORKER_RESOURCE_LIMIT bem antes do que a conta ingênua sugere: uma rodada de
-   dez documentos morreu aos ~100s, no sétimo. Por isso são DOIS freios, e o
-   relógio é o que manda — documento pesado gasta mais que documento leve, e
-   contar cabeças não protege de nada.
+/* O worker é derrubado com WORKER_RESOURCE_LIMIT bem antes do que a conta ingênua
+   sugere: uma rodada de dez documentos morreu aos ~100s, no sétimo. Por isso são
+   DOIS freios, e o relógio é o que manda — documento pesado gasta mais que
+   documento leve, e contar cabeças não protege de nada.
 
    Nada se perde quando a rodada acaba no meio: cada leitura é gravada assim que
-   sai, e o que sobrou continua na fila para o próximo "Ler mais". */
-const LIMITE_PADRAO = 6;
-const LIMITE_MAX = 10;
+   sai, e o que sobrou continua na fila para o próximo "Ler mais".
+
+   O TETO DE CABEÇAS SUBIU PORQUE A RODADA FICOU LARGA. Enquanto a leitura era uma
+   de cada vez, dez era otimismo: o relógio parava a rodada no terceiro documento
+   e a tela tinha de encadear quatro chamadas para uma fatura de doze notas. Com
+   `LARGURA` leituras no ar ao mesmo tempo, os mesmos 75 segundos cobrem a fatura
+   inteira — e o teto de cabeças volta a ser o que sempre deveria ter sido: uma
+   trava contra pedido absurdo, não o limitador do dia a dia. */
+const LIMITE_PADRAO = 12;
+const LIMITE_MAX = 40;
 const ORCAMENTO_MS = 75_000;
 const MAX_BYTES = 8 * 1024 * 1024; // acima disto o base64 não cabe na chamada
+
+/* Quantos documentos ficam no ar ao mesmo tempo.
+ *
+ *  Ler um comprovante é ESPERAR: o download do Drive e o Gemini respondendo são
+ *  dez a quinze segundos em que o worker não faz nada além de olhar a rede. Em
+ *  fila indiana, uma fatura de doze notas custava três minutos de relógio para
+ *  poucos segundos de trabalho de verdade.
+ *
+ *  Quatro, e não quarenta, porque o freio aqui é memória: cada documento no ar
+ *  segura os bytes crus (até 8 MB) mais o base64 deles. Quatro é o que cabe com
+ *  folga nos 256 MB do worker mesmo no pior caso de PDFs pesados; a partir daí o
+ *  ganho é pequeno e o risco de morrer no meio da rodada, não. */
+const LARGURA = Math.max(1, Number(Deno.env.get("CONFERENCIA_LARGURA")) || 4);
 
 const MIMES: Record<string, string> = {
   pdf: "application/pdf", jpg: "image/jpeg", jpeg: "image/jpeg",
@@ -114,6 +142,14 @@ function mimeDosBytes(b: Uint8Array): string | null {
 }
 
 function toBase64(bytes: Uint8Array): string {
+  /* O caminho nativo faz em C++ o mesmo que o laço abaixo faz em JavaScript. Num
+     PDF de alguns MB isso é segundos de CPU por documento — e CPU do worker é
+     justamente o recurso que derruba a rodada no meio, então economizar aqui vale
+     mais do que parece. Detectado em vez de assumido: é proposta nova de
+     linguagem e o Deno da hospedagem pode ser mais velho que ela. */
+  const nativo = (bytes as unknown as { toBase64?: () => string }).toBase64;
+  if (typeof nativo === "function") return nativo.call(bytes);
+
   // Em pedaços: `String.fromCharCode(...bytes)` de um PDF de 2 MB estoura a pilha.
   let bin = "";
   const passo = 0x8000;
@@ -121,6 +157,62 @@ function toBase64(bytes: Uint8Array): string {
     bin += String.fromCharCode(...bytes.subarray(i, i + passo));
   }
   return btoa(bin);
+}
+
+/* -------------------------------------------------------------------------
+ * Ler vários ao mesmo tempo, decidir um de cada vez
+ * ---------------------------------------------------------------------- */
+
+/* O `ok` existe para o TypeScript: `erro` é `unknown`, e testar a verdade dele não
+   estreita união nenhuma — sem a etiqueta, `valor` chegaria a quem consome como
+   "pode ser undefined" mesmo no caminho em que ele nunca é. */
+type Resultado<T, R> = { item: T; ok: true; valor: R } | { item: T; ok: false; erro: unknown };
+
+/** Roda `trabalho` sobre a fila com `largura` itens no ar e devolve os resultados
+ *  NA ORDEM DA FILA.
+ *
+ *  A ordem não é preciosismo: o veredito consulta e alimenta o mapa de notas já
+ *  usadas, e duas cobranças decididas ao mesmo tempo poderiam aceitar o mesmo
+ *  pedaço do mesmo documento — exatamente o que a trava existe para pegar. Então
+ *  o que vira paralelo é só a ESPERA (baixar o arquivo, aguardar o Gemini); a
+ *  decisão e a gravação continuam uma de cada vez, na mesma sequência de antes.
+ *
+ *  `continuar` é o freio de mão: enquanto ele disser não, nenhuma leitura NOVA
+ *  começa. As que já estão no ar são consumidas até o fim de propósito — a cota
+ *  delas já foi gasta, e jogar a resposta fora seria pagar duas vezes pelo mesmo
+ *  documento no próximo "Ler mais".
+ *
+ *  Erro não interrompe nada: ele vem embrulhado no resultado, no lugar do valor,
+ *  para quem consome decidir o que fazer com aquele documento. */
+async function* emParalelo<T, R>(
+  fila: T[],
+  largura: number,
+  trabalho: (t: T) => Promise<R>,
+  continuar: () => boolean,
+): AsyncGenerator<Resultado<T, R>> {
+  const prontos: Promise<Resultado<T, R>>[] = [];
+  let proximo = 0;
+  let noAr = 0;
+
+  const encher = () => {
+    while (noAr < largura && proximo < fila.length && continuar()) {
+      const item = fila[proximo++];
+      noAr++;
+      prontos.push(
+        trabalho(item)
+          .then((valor): Resultado<T, R> => ({ item, ok: true, valor }), (erro): Resultado<T, R> => ({ item, ok: false, erro }))
+          // A vaga é reposta no instante em que ESTE item termina, não quando
+          // chega a vez dele de ser consumido — senão um documento lento no
+          // começo da fila deixaria três vagas paradas até alguém olhar para ele.
+          .then((r) => { noAr--; encher(); return r; }),
+      );
+    }
+  };
+  encher();
+
+  // `prontos` cresce enquanto se caminha por ele: cada resultado consumido já
+  // repôs a vaga (a reposição roda antes de o `await` aqui voltar).
+  for (let i = 0; i < prontos.length; i++) yield await prontos[i];
 }
 
 /* -------------------------------------------------------------------------
@@ -323,6 +415,14 @@ async function lerComprovante(
   const chamar = () => generateJSON<Leitura>({
     model: DEFAULT_MODEL,
     temperature: 0,
+    /* Este trabalho é TRANSCREVER, não deliberar: copiar do papel para um schema
+       fechado, com a conta do valor refeita depois em TypeScript, onde ela não
+       depende de opinião nenhuma. O raciocínio alto do modelo, que é o padrão
+       dele, era a maior fatia do tempo de cada nota — e o texto dele ia inteiro
+       para o lixo (o `extractTextFromResponse` descarta as partes `thought`).
+       Se algum dia o julgamento do fornecedor piorar com isto, é aqui que se
+       volta para "high" — e só aqui. */
+    thinking: "low",
     responseSchema: SCHEMA,
     messages: [
       { role: "system", content: SISTEMA },
@@ -663,17 +763,29 @@ Deno.serve(async (req) => {
       let lidos = 0;
       const comecou = Date.now();
 
-      for (const r of rodada) {
-        // Mesmo freio de relógio do "conferir": o worker morre bem antes do que a
-        // conta ingênua sugere, e o que já foi gravado não se perde.
-        if (Date.now() - comecou > ORCAMENTO_MS) { tempoEsgotado = true; break; }
+      /* Mesmo freio de relógio do "conferir": o worker morre bem antes do que a
+         conta ingênua sugere, e o que já foi gravado não se perde. O freio vale
+         para COMEÇAR leitura nova — o que já está no ar é consumido até o fim. */
+      const podeComecar = () => {
+        if (quotaEsgotada) return false;
+        if (Date.now() - comecou > ORCAMENTO_MS) { tempoEsgotado = true; return false; }
+        return true;
+      };
+
+      for await (const res of emParalelo(
+        rodada, LARGURA, (r: any) => lerComprovante(supabase, r.link_comprovante!, lancDe(r)), podeComecar,
+      )) {
+        const r = res.item;
         const agora = new Date().toISOString();
         let leitura: Leitura;
-        try {
-          leitura = await lerComprovante(supabase, r.link_comprovante!, lancDe(r));
+        if (res.ok) {
+          leitura = res.valor;
           lidos++;
-        } catch (e) {
-          if (e instanceof ErroCota) { quotaEsgotada = true; quotaPorDia = e.porDia; break; }
+        } else {
+          const e = res.erro;
+          // Cota estourada só fecha a torneira: as leituras que já estavam no ar
+          // continuam sendo gravadas, porque elas já foram pagas.
+          if (e instanceof ErroCota) { quotaEsgotada = true; quotaPorDia = e.porDia; continue; }
           const msg = e instanceof Error ? e.message : String(e);
           console.error(`transcrição falhou · ${r.id_unico} · ${msg}`);
           erros.push({ id: r.id, id_unico: r.id_unico, titulo: r.titulo, erro: msg, transitorio: e instanceof ErroServico });
@@ -764,25 +876,40 @@ Deno.serve(async (req) => {
        explica a taxa de embarque numa linha da fatura e a tarifa parcelada em
        outra, no mesmo mês. Por isso a chave leva também qual parte do documento
        cada cobrança consumiu (`pedacoUsado`) — repetir o pedaço é reaproveitar a
-       nota; usar outra parte dela não é. */
-    const { data: jaUsadas } = await supabase.from("auditoria")
-      .select("id, titulo, valor, data_lancamento, competencia, descricao, ia_leitura")
-      .not("ia_leitura", "is", null)
-      .eq("status", "Aprovado");
+       nota; usar outra parte dela não é.
+
+       DISPARADA AGORA, ESPERADA DEPOIS. São até mil linhas com o JSON da leitura
+       inteira dentro, e o mapa só faz falta na hora do primeiro VEREDITO — que é
+       segundos depois, quando a primeira nota volta do Gemini. Esperando por ela
+       aqui, a consulta era tempo morto somado a cada rodada; disparada aqui e
+       aguardada lá embaixo, ela acontece enquanto os documentos baixam. */
     type Dono = { id: number; titulo: string };
-    const usadas = new Map<string, Dono>();
-    for (const r of (jaUsadas ?? []) as any[]) {
-      /* Transcrição não tranca nota repetida. Ela enche `ia_leitura` de achados
-         antigos que ninguém conferiu, e um documento lido por esse caminho passaria
-         a bloquear a aprovação de outro gasto sem que exista veredito por trás.
-         Para a trava enxergar também os transcritos, é tirar esta linha — e aí a
-         checagem de nota repetida passa a valer para o histórico inteiro. */
-      if ((r.ia_leitura as Leitura | null)?.transcricao_apenas) continue;
-      const k = r.ia_leitura ? chaveDocumento(r.ia_leitura as Leitura) : null;
-      if (!k) continue;
-      const kk = `${k}|${pedacoUsado(lancDe(r), r.ia_leitura as Leitura)}`;
-      if (!usadas.has(kk)) usadas.set(kk, { id: r.id, titulo: r.titulo });
-    }
+    const usadasP: Promise<Map<string, Dono>> = (async () => {
+      const { data: jaUsadas } = await supabase.from("auditoria")
+        .select("id, titulo, valor, data_lancamento, competencia, descricao, ia_leitura")
+        .not("ia_leitura", "is", null)
+        .eq("status", "Aprovado");
+      const m = new Map<string, Dono>();
+      for (const r of (jaUsadas ?? []) as any[]) {
+        /* Transcrição não tranca nota repetida. Ela enche `ia_leitura` de achados
+           antigos que ninguém conferiu, e um documento lido por esse caminho passaria
+           a bloquear a aprovação de outro gasto sem que exista veredito por trás.
+           Para a trava enxergar também os transcritos, é tirar esta linha — e aí a
+           checagem de nota repetida passa a valer para o histórico inteiro. */
+        if ((r.ia_leitura as Leitura | null)?.transcricao_apenas) continue;
+        const k = r.ia_leitura ? chaveDocumento(r.ia_leitura as Leitura) : null;
+        if (!k) continue;
+        const kk = `${k}|${pedacoUsado(lancDe(r), r.ia_leitura as Leitura)}`;
+        if (!m.has(kk)) m.set(kk, { id: r.id, titulo: r.titulo });
+      }
+      return m;
+    })();
+    /* Sem este ouvinte, uma rodada em que NENHUM veredito sai "aprovar" nunca
+       aguarda a promessa — e uma falha de rede nela viraria "unhandled rejection",
+       que no Deno derruba o worker inteiro. O `await` lá embaixo continua
+       levantando o erro normalmente quando a promessa é de fato usada. */
+    usadasP.catch(() => {});
+    let usadas: Map<string, Dono> | null = null;
 
     const itens: unknown[] = [];
     const erros: unknown[] = [];
@@ -792,17 +919,30 @@ Deno.serve(async (req) => {
     let tempoEsgotado = false;
     const comecou = Date.now();
 
-    for (const r of rodada) {
-      // Não começa o que não dá tempo de terminar: o worker morto no meio de uma
-      // leitura devolve erro de infra, e a tela fica sem o resumo do que já saiu.
-      if (Date.now() - comecou > ORCAMENTO_MS) { tempoEsgotado = true; break; }
+    /* Não começa o que não dá tempo de terminar: o worker morto no meio de uma
+       leitura devolve erro de infra, e a tela fica sem o resumo do que já saiu.
+       O freio vale para COMEÇAR — o que já está no ar segue até o fim, porque a
+       cota dele já foi gasta e a leitura ainda vai ser gravada. */
+    const podeComecar = () => {
+      if (quotaEsgotada) return false;
+      if (Date.now() - comecou > ORCAMENTO_MS) { tempoEsgotado = true; return false; }
+      return true;
+    };
+
+    for await (const res of emParalelo(
+      rodada, LARGURA, (r: Achado) => lerComprovante(supabase, r.link_comprovante!, lancDe(r)), podeComecar,
+    )) {
+      const r = res.item;
       const lanc = lancDe(r);
       let leitura: Leitura;
-      try {
-        leitura = await lerComprovante(supabase, r.link_comprovante!, lanc);
+      if (res.ok) {
+        leitura = res.valor;
         lidos++;
-      } catch (e) {
-        if (e instanceof ErroCota) { quotaEsgotada = true; quotaPorDia = e.porDia; break; }
+      } else {
+        const e = res.erro;
+        // Cota estourada fecha a torneira e pronto: o que já voltou do Gemini
+        // continua sendo julgado e gravado, porque já foi pago.
+        if (e instanceof ErroCota) { quotaEsgotada = true; quotaPorDia = e.porDia; continue; }
         const msg = e instanceof Error ? e.message : String(e);
         console.error(`conferência falhou · ${r.id_unico} · ${msg}`);
         erros.push({ id: r.id, id_unico: r.id_unico, titulo: r.titulo, erro: msg, transitorio: e instanceof ErroServico });
@@ -833,6 +973,9 @@ Deno.serve(async (req) => {
          aprovação automática. Parcelas diferentes da mesma compra e linhas
          diferentes do mesmo bilhete são pedaços distintos e passam. */
       if (v.veredito === "aprovar") {
+        // Aqui é onde o mapa disparado lá em cima faz falta pela primeira vez —
+        // a esta altura ele já chegou, e esperar por ele não custa nada.
+        usadas ??= await usadasP;
         const k = chaveDocumento(leitura);
         const kk = k ? `${k}|${pedacoUsado(lanc, leitura, v)}` : null;
         const dono = kk ? usadas.get(kk) : undefined;

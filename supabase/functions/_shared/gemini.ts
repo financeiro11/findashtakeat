@@ -84,7 +84,23 @@ interface GenerateOptions {
   temperature?: number;
   responseSchema?: any; // JSON schema (Gemini-compatible subset)
   json?: boolean;       // forçar responseMimeType=application/json
+  /** Quanto o modelo raciocina antes de responder (Gemini 3: `thinkingLevel`).
+   *
+   *  Sem isto o modelo pensa no nível alto, que é o padrão dele, e o raciocínio é
+   *  a MAIOR parte do tempo de uma chamada — as partes `thought: true` que o
+   *  `extractTextFromResponse` joga fora custaram os mesmos segundos das que
+   *  ficaram. Vale "high" quando a resposta é uma análise; vale "low" quando o
+   *  trabalho é transcrever um documento para um schema fechado, que é leitura,
+   *  não deliberação. Só peça o que a tarefa precisa. */
+  thinking?: "low" | "high";
 }
+
+/* Nem todo modelo aceita `thinkingLevel` — os 2.x nunca aceitaram, e o próximo
+   nome de modelo pode não aceitar também. Em vez de fixar uma lista que envelhece
+   (foi o que fez o 404 do 2.x passar por cinco funções), o primeiro 400 que
+   reclamar do campo desliga o pedido para o resto da vida do worker e a chamada é
+   refeita sem ele. Perde-se uma requisição, uma vez, e nada quebra. */
+let aceitaThinking = true;
 
 async function callGenerate(opts: GenerateOptions, stream = false): Promise<Response> {
   const key = getKey();
@@ -93,21 +109,37 @@ async function callGenerate(opts: GenerateOptions, stream = false): Promise<Resp
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:${path}${key}`;
 
   const { systemInstruction, contents } = toContents(opts.messages);
-  const generationConfig: Record<string, any> = { temperature: opts.temperature ?? 0.4 };
-  if (opts.json || opts.responseSchema) generationConfig.responseMimeType = "application/json";
-  if (opts.responseSchema) generationConfig.responseSchema = opts.responseSchema;
 
-  const payload: any = { contents, generationConfig };
-  if (systemInstruction) payload.systemInstruction = systemInstruction;
+  const disparar = async (comThinking: boolean): Promise<Response> => {
+    const generationConfig: Record<string, any> = { temperature: opts.temperature ?? 0.4 };
+    if (opts.json || opts.responseSchema) generationConfig.responseMimeType = "application/json";
+    if (opts.responseSchema) generationConfig.responseSchema = opts.responseSchema;
+    if (comThinking) generationConfig.thinkingLevel = opts.thinking;
 
-  const resp = await fetch(url, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload),
-  });
+    const payload: any = { contents, generationConfig };
+    if (systemInstruction) payload.systemInstruction = systemInstruction;
+
+    return await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+  };
+
+  const pedindoThinking = !!opts.thinking && aceitaThinking;
+  let resp = await disparar(pedindoThinking);
 
   if (!resp.ok) {
     const detail = await resp.text();
+    if (pedindoThinking && resp.status === 400 && /thinking/i.test(detail)) {
+      console.warn(`Gemini: ${model} não aceita thinkingLevel — seguindo sem ele`);
+      aceitaThinking = false;
+      resp = await disparar(false);
+      if (resp.ok) return resp;
+      const d2 = await resp.text();
+      console.error("Gemini error", resp.status, d2);
+      throw new GeminiError("Falha ao consultar a IA", resp.status === 429 ? 429 : 502, d2);
+    }
     console.error("Gemini error", resp.status, detail);
     throw new GeminiError("Falha ao consultar a IA", resp.status === 429 ? 429 : 502, detail);
   }

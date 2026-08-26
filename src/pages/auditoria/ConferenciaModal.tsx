@@ -32,11 +32,12 @@ import { brl, fmtDateBR } from "./utils";
  *
  * UM CLIQUE LÊ A FATURA INTEIRA. Quem manda na rodada do servidor não é o lote
  * pedido, é o relógio: ela para no orçamento de 75 segundos para não ser morta
- * pelo limite de recurso do worker, e com PDF pesado isso dá TRÊS documentos por
- * chamada. Pedir 10 e receber 3 fazia a pessoa clicar "Ler mais" quatro vezes
- * para uma fatura de doze notas. Então quem encadeia é esta tela: chamada nova é
- * worker novo, com 75 segundos novos e memória limpa, e ela repete até a fila
- * zerar. O botão "Ler mais" continua ali para o que sobrar de cota ou de parada.
+ * pelo limite de recurso do worker. Enquanto a leitura era um documento de cada
+ * vez, isso dava TRÊS por chamada, e uma fatura de doze notas custava quatro
+ * "Ler mais". Hoje o servidor lê vários ao mesmo tempo e o lote costuma sair
+ * inteiro na primeira chamada — mas o encadeamento fica: chamada nova é worker
+ * novo, com 75 segundos novos e memória limpa, e ela repete até a fila zerar.
+ * O botão "Ler mais" continua ali para o que sobrar de cota ou de parada.
  * ------------------------------------------------------------------------- */
 
 export type ItemConferido = {
@@ -98,7 +99,11 @@ type Props = {
   totalComComprovante: number;
 };
 
-const LOTE = 10;
+/* O teto que a rodada do servidor aceita. Não é promessa de quantos vão sair: lá
+   quem manda é o relógio de 75 segundos, e o que não couber volta como fila para
+   a próxima chamada. Pedir alto é o certo justamente por isso — pedir baixo era
+   o que obrigava a encadear chamadas para uma fatura de tamanho normal. */
+const LOTE = 40;
 /* Trava de segurança do encadeamento. Não existe fatura com cem comprovantes:
    se chegar aqui, alguma coisa está andando em círculo e é melhor devolver o
    controle para a pessoa do que ficar gastando cota sozinho. */
@@ -296,11 +301,14 @@ export default function ConferenciaModal({ open, onClose, onMudou, competencia, 
                 Lendo os comprovantes…
                 {rodada > 1 && ` ${rodada}ª leva`}
               </span>
-              {/* Sem isto, o silêncio de quatro minutos parece travamento. */}
+              {/* Sem isto, o silêncio parece travamento. O que NÃO se promete
+                  mais é tempo por nota: o servidor lê várias ao mesmo tempo, e
+                  "uns 20 segundos cada" virava uma conta que a pessoa fazia de
+                  cabeça e que a tela não cumpria. */}
               <span className="text-xs">
                 {resumo
-                  ? `${resumo.lidos} lido${resumo.lidos === 1 ? "" : "s"}, ${resumo.restantes} na fila · cada nota leva uns 20 segundos`
-                  : "cada nota leva uns 20 segundos"}
+                  ? `${resumo.lidos} lido${resumo.lidos === 1 ? "" : "s"}, ${resumo.restantes} na fila`
+                  : "lendo várias ao mesmo tempo"}
               </span>
             </div>
           )}

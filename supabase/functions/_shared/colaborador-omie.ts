@@ -29,6 +29,14 @@
 
 export const soDigitos = (s: unknown): string => String(s ?? "").replace(/\D/g, "");
 
+/**
+ * É estágio? Estagiário é cadastrado por CPF, não por CNPJ — decidido com o
+ * financeiro em 26/08/2026. Vale para o cadastro no Omie, para a chave PIX e
+ * para o provisionamento.
+ */
+export const ehEstagiario = (cargo: unknown): boolean =>
+  /estagi/i.test(String(cargo ?? ""));
+
 /** O que o cadastro precisa saber de um colaborador. Espelha `rh_colaboradores`. */
 export type ColaboradorParaOmie = {
   /** `codigo` do RH ("COL-003057") — a identidade estável da pessoa. */
@@ -38,6 +46,8 @@ export type ColaboradorParaOmie = {
   razao: string | null;
   /** Chave PIX como o RH cadastrou: pode ser CNPJ, CPF, e-mail ou telefone. */
   pix: string | null;
+  /** Cargo. Só serve para saber se é estágio — estagiário usa CPF, não CNPJ. */
+  cargo?: string | null;
   /** Data de desligamento ('AAAA-MM-DD'); vazio ou nulo = ativo. */
   datadesl?: string | null;
 };
@@ -67,13 +77,23 @@ export type DecisaoDeCadastro = {
 /**
  * A chave PIX que vale para esta pessoa.
  *
+ * Para estagiário, o padrão é o CPF — é o documento dele, e é nele que a
+ * empresa paga.
+ *
  * A do RH primeiro; o CNPJ só quando não há nada. Note que NÃO normaliza para
  * dígitos: e-mail e chave aleatória são chaves válidas e morreriam nesse
  * filtro. Quem compara chaves para ver se divergem usa `mesmaChavePix`.
  */
 export function chavePixDe(p: ColaboradorParaOmie): string {
+  const doc = soDigitos(p.cnpj);
+  /* Estagiário recebe no CPF, e o CPF é o documento dele. Se o RH tiver posto
+     um CNPJ na chave, é engano de cadastro — usar aquilo mandaria o pagamento
+     para uma PJ que não é dele. A conferência aponta o engano na tela; aqui o
+     que importa é não pagar errado enquanto ninguém arruma. */
+  if (ehEstagiario(p.cargo) && doc.length === 11) return doc;
+
   const doRh = String(p.pix ?? "").trim();
-  return doRh || soDigitos(p.cnpj);
+  return doRh || doc;
 }
 
 /**
@@ -126,13 +146,27 @@ export function decidirCadastro(
     };
   }
 
-  // Sem documento válido não há o que cadastrar — e um CNPJ truncado criaria
-  // um fornecedor lixo que depois ninguém liga a ninguém.
-  if (cnpj.length !== 14) {
+  /* Documento válido é CNPJ de 14, ou CPF de 11 QUANDO é estagiário.
+   *
+   * Sem esta distinção o estagiário nunca seria cadastrado: ele não tem CNPJ,
+   * e a checagem de 14 dígitos o barrava sem dizer por quê. Já um CPF de quem
+   * não é estagiário é o contrário — a pessoa deveria ter PJ, e cadastrar por
+   * CPF esconderia isso. */
+  const estagiario = ehEstagiario(p.cargo);
+  if (cnpj.length === 11 && !estagiario) {
     return {
       ...base,
       acao: "bloqueado",
-      motivo: cnpj ? `CNPJ incompleto (${cnpj.length} dígitos)` : "Sem CNPJ no cadastro do RH",
+      motivo: "Documento é CPF, e a pessoa não é estagiária — prestador PJ precisa de CNPJ",
+    };
+  }
+  if (!(cnpj.length === 14 || (cnpj.length === 11 && estagiario))) {
+    return {
+      ...base,
+      acao: "bloqueado",
+      motivo: cnpj
+        ? `Documento incompleto (${cnpj.length} dígitos)`
+        : "Sem CNPJ nem CPF no cadastro do RH",
     };
   }
 
@@ -174,7 +208,9 @@ export function cnpjsRepetidos(pessoas: ColaboradorParaOmie[]): string[] {
   const conta = new Map<string, number>();
   for (const p of pessoas) {
     const c = soDigitos(p.cnpj);
-    if (c.length === 14) conta.set(c, (conta.get(c) ?? 0) + 1);
+    // CPF entra na conta também: dois estagiários com o mesmo CPF é o mesmo
+    // problema, e o Omie recusaria o segundo cadastro igual.
+    if (c.length === 14 || c.length === 11) conta.set(c, (conta.get(c) ?? 0) + 1);
   }
   return [...conta.entries()].filter(([, n]) => n > 1).map(([c]) => c);
 }

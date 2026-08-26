@@ -146,6 +146,26 @@ describe("conferir · documento", () => {
     expect(erros(pessoa({ documento: "58313176" }))[0].mensagem).toMatch(/8 dígitos/);
   });
 
+  /* Estagiário não presta serviço como PJ: cadastro, chave PIX e título saem
+     no CPF. Um CNPJ ali é vínculo errado, não só campo errado. */
+  it("estagiário com CNPJ é erro, nos dois campos", () => {
+    const a = erros(pessoa({
+      cargo: "Estagiário Dev Fullstack",
+      documento: "66744328000120",
+      pix: "66744328000120",
+    }));
+    expect(a.some((x) => x.campo === "documento" && /deve ser o CPF/.test(x.mensagem))).toBe(true);
+    expect(a.some((x) => x.campo === "pix" && /deve ser o CPF/.test(x.mensagem))).toBe(true);
+  });
+
+  it("estagiário com CPF nos dois campos não gera achado nenhum", () => {
+    expect(conferir(pessoa({
+      cargo: "Estagiário Dev Fullstack",
+      documento: "16146305774",
+      pix: "16146305774",
+    }))).toHaveLength(0);
+  });
+
   it("CPF de estagiário passa; de não-estagiário vira aviso", () => {
     const estag = conferir(pessoa({
       documento: "16146305774", pix: "16146305774", cargo: "Estagiário Dev Fullstack",

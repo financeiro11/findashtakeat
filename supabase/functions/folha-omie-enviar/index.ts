@@ -121,7 +121,7 @@ Deno.serve(async (req) => {
     /* ---------- montar o lote ---------- */
     const [rh, dep, cadastros, clientes, envio] = await Promise.all([
       supabase.from("rh_colaboradores")
-        .select("id, codigo, nome, cnpj, razao, valor, inicio, datadesl, pix"),
+        .select("id, codigo, nome, cnpj, razao, valor, inicio, datadesl, pix, cargo"),
       supabase.from("folha_depara")
         .select("codigo_rh, departamento, categoria_descricao, valor_referencia, valor_ajustado, documento_ajustado"),
       supabase.from("omie_cache").select("dados").eq("chave", "folha_cadastros").maybeSingle(),
@@ -177,6 +177,9 @@ Deno.serve(async (req) => {
       datadesl: (c.datadesl as string) ?? null,
     }));
     const pixPorCodigo = new Map(linhasRh.map((c) => [String(c.codigo), (c.pix as string) ?? null]));
+    const estagioPorCodigo = new Map(
+      linhasRh.map((c) => [String(c.codigo), /estagi/i.test(String(c.cargo ?? ""))]),
+    );
 
     const lote = montarLote(
       pessoas, competencia, deParaDe,
@@ -223,6 +226,7 @@ Deno.serve(async (req) => {
         previsao: lote.previsao,
         nome: i.nome,
         chavePix: pixPorCodigo.get(i.codigo) ?? null,
+        estagiario: estagioPorCodigo.get(i.codigo) ?? false,
         cnpj: i.cnpj,
         razao: i.razao,
       });

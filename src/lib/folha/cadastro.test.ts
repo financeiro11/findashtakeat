@@ -23,6 +23,7 @@ const pessoa = (over: Partial<ColaboradorParaOmie> = {}): ColaboradorParaOmie =>
   cnpj: "66.744.328/0001-20",
   razao: "ADRIAN CORADINI SERVICOS LTDA",
   pix: "66.744.328/0001-20",
+  cargo: "Dev FullStack",
   ...over,
 });
 
@@ -128,6 +129,31 @@ describe("decidirCadastro", () => {
     for (const vazio of ["", "   ", null, undefined]) {
       expect(decidirCadastro(pessoa({ datadesl: vazio }), []).acao).toBe("criar");
     }
+  });
+
+  /* Estagiário é cadastrado por CPF. Antes desta regra, a checagem de 14
+     dígitos o barrava sem dizer por quê — e ele nunca virava fornecedor. */
+  it("estagiário com CPF é criado normalmente", () => {
+    const d = decidirCadastro(
+      pessoa({ cnpj: "161.463.057-74", pix: "16146305774", cargo: "Estagiário Dev Fullstack" }),
+      [],
+    );
+    expect(d.acao).toBe("criar");
+    expect(d.chavePix).toBe("16146305774");
+  });
+
+  it("CPF de quem NÃO é estagiário bloqueia — prestador PJ precisa de CNPJ", () => {
+    const d = decidirCadastro(pessoa({ cnpj: "161.463.057-74", cargo: "Coordenador" }), []);
+    expect(d.acao).toBe("bloqueado");
+    expect(d.motivo).toMatch(/precisa de CNPJ/);
+  });
+
+  it("o payload do estagiário leva o CPF em cnpj_cpf", () => {
+    const p = montarIncluirCliente(
+      pessoa({ cnpj: "161.463.057-74", pix: "16146305774", cargo: "Estagiário" }),
+    );
+    expect(p.cnpj_cpf).toBe("16146305774");
+    expect(p.codigo_cliente_integracao).toBe("COLAB-16146305774");
   });
 
   it("CNPJ truncado ou vazio bloqueia — os casos reais do espelho", () => {

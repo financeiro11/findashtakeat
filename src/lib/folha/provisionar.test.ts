@@ -629,6 +629,23 @@ describe("montarTituloFolha", () => {
     expect(cnab.nome_transferencia).toBe("ADRIAN CORADINI SERVICOS LTDA");
   });
 
+  /* Estagiário recebe no CPF, e o CPF é o documento dele. Um CNPJ no campo de
+     PIX é engano de cadastro, e usá-lo pagaria a outra PJ. */
+  it("estagiário paga no CPF, mesmo com CNPJ no campo de PIX", () => {
+    const cnab = montarTituloFolha({
+      ...TITULO, estagiario: true, cnpj: "161.463.057-74", chavePix: "66744328000120",
+    }).cnab_integracao_bancaria as Record<string, unknown>;
+    expect(cnab.pix_qrcode).toBe("16146305774");
+    expect(cnab.cpf_cnpj_transferencia).toBe("16146305774");
+  });
+
+  it("quem não é estagiário segue usando a chave do RH", () => {
+    const cnab = montarTituloFolha({
+      ...TITULO, estagiario: false, chavePix: "amanda.takeat@gmail.com",
+    }).cnab_integracao_bancaria as Record<string, unknown>;
+    expect(cnab.pix_qrcode).toBe("amanda.takeat@gmail.com");
+  });
+
   it("sem chave PIX cadastrada, usa o CNPJ — como o fluxo de parceiro já faz", () => {
     for (const pix of [null, "", "   "]) {
       const cnab = montarTituloFolha({ ...TITULO, chavePix: pix })

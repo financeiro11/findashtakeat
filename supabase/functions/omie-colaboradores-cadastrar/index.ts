@@ -111,7 +111,7 @@ Deno.serve(async (req) => {
     // com CNPJ inventado mandando um payload à mão.
     const { data: linhas, error } = await (supabase as any)
       .from("rh_colaboradores")
-      .select("codigo, nome, cnpj, razao, pix, datadesl")
+      .select("codigo, nome, cnpj, razao, pix, datadesl, cargo")
       .in("codigo", codigos);
     if (error) throw new Error(`Falha ao ler o espelho do RH: ${error.message}`);
 
@@ -122,6 +122,7 @@ Deno.serve(async (req) => {
       razao: l.razao ?? null,
       pix: l.pix ?? null,
       datadesl: l.datadesl ?? null,
+      cargo: l.cargo ?? null,
     }));
 
     const achados = new Set(pessoas.map((p) => p.codigo));

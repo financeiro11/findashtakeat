@@ -211,14 +211,25 @@ export function conferir(
   } else if (doc.length === 14) {
     if (!cnpjValido(doc)) {
       achados.push({ campo: "documento", gravidade: "erro", mensagem: `CNPJ ${doc} é inválido` });
+    } else if (estagiario) {
+      /* Estagiário não presta serviço como PJ: o cadastro, a chave PIX e o
+         título saem no CPF. Um CNPJ aqui é vínculo errado, não só campo
+         errado — decidido com o financeiro em 26/08/2026. */
+      achados.push({
+        campo: "documento", gravidade: "erro",
+        mensagem: "estagiário cadastrado com CNPJ — deve ser o CPF",
+      });
     }
   } else if (doc.length === 11) {
     if (!cpfValido(doc)) {
       achados.push({ campo: "documento", gravidade: "erro", mensagem: `CPF ${doc} é inválido` });
     } else if (!estagiario) {
+      /* O contrário do caso acima: quem não é estagiário deveria ter PJ.
+         Aviso e não erro porque existe gente pagando assim hoje, e barrar
+         tiraria da folha quem já vem recebendo. */
       achados.push({
         campo: "documento", gravidade: "aviso",
-        mensagem: "cadastrado por CPF sem ser estagiário",
+        mensagem: "cadastrado por CPF sem ser estagiário — prestador PJ deveria ter CNPJ",
       });
     }
   } else {
@@ -245,6 +256,11 @@ export function conferir(
     achados.push({
       campo: "pix", gravidade: "erro",
       mensagem: `chave PIX é o CPF ${formatarCpf(soDigitos(p.pix))} — só vale para estagiário`,
+    });
+  } else if (estagiario && tipo === "cnpj") {
+    achados.push({
+      campo: "pix", gravidade: "erro",
+      mensagem: "estagiário com chave PIX de CNPJ — deve ser o CPF",
     });
   } else if (!chavePermitida(tipo, estagiario) && comoPix[tipo]) {
     achados.push({

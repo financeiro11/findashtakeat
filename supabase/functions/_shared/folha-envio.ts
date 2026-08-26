@@ -698,9 +698,15 @@ export type TituloDaFolha = {
   previsao: string;                    // 'AAAA-MM-DD'
   /** Vai cru na observação: é por ele que se sabe de quem é o título. */
   nome: string;
-  /** Chave PIX do fornecedor; sem ela, o CNPJ (é o que o fluxo de parceiro faz). */
+  /** Chave PIX do fornecedor; sem ela, o documento (é o que o fluxo de parceiro faz). */
   chavePix: string | null;
   cnpj: string;
+  /**
+   * É estágio? Estagiário recebe no CPF, e o CPF é o documento dele — então a
+   * chave do título é o documento, ignorando o que estiver no campo de PIX.
+   * Decidido com o financeiro em 26/08/2026.
+   */
+  estagiario?: boolean;
   /** Razão social — `nome_transferencia` do CNAB. */
   razao: string | null;
 };
@@ -724,7 +730,11 @@ export function montarTituloFolha(t: TituloDaFolha): Record<string, unknown> {
     cnab_integracao_bancaria: {
       codigo_forma_pagamento: FORMA_PAGAMENTO_FOLHA,
       finalidade_transferencia: FINALIDADE_PIX_FOLHA,
-      pix_qrcode: (t.chavePix ?? "").trim() || cnpj,
+      // Estagiário: paga no CPF, que é o próprio documento. Um CNPJ no campo
+      // de PIX dele é engano de cadastro, e usá-lo pagaria a outra PJ.
+      pix_qrcode: t.estagiario && cnpj.length === 11
+        ? cnpj
+        : (t.chavePix ?? "").trim() || cnpj,
       cpf_cnpj_transferencia: cnpj,
       nome_transferencia: (t.razao ?? "").trim() || t.nome.trim(),
     },

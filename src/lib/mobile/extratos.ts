@@ -66,6 +66,76 @@ export type LinhaExtrato = {
   busca: string;
 };
 
+/* ------------------------------- paginação -------------------------------- */
+
+/* O PostgREST devolve no máximo 1.000 linhas por resposta, e um `.limit(4001)` volta 1.000
+   CALADO — sem erro, sem flag. Era o que fazia agosto/26 do Asaas (6.017 lançamentos) somar
+   R$ 152.940,70 de entrada em vez de R$ 902.117,68: a tela lia o primeiro milheiro, e como
+   1.000 é menos que o teto ela ainda se declarava inteira ("1000 de 1000 · sem filtro"). */
+export const PAGINA = 1000;
+
+/** Teto de segurança: nenhum mês real chega perto (o pior hoje é o Asaas, ~6 mil). */
+export const TETO = 20000;
+
+export type Pagina<T> = {
+  data: T[] | null;
+  error: { message: string } | null;
+  count?: number | null;
+};
+
+/**
+ * Lê o recorte inteiro em páginas de mil.
+ *
+ * A primeira página vem com a contagem exata, e é ela que diz quantas faltam — assim as
+ * outras saem TODAS de uma vez, em vez de uma ida ao servidor por página. Para o cartão e o
+ * Sicoob (que não passam de 700 linhas por mês) isso continua sendo uma consulta só.
+ *
+ * As linhas repetidas são descartadas por `id`: as páginas são lidas em paralelo sobre uma
+ * tabela que a sync pode estar escrevendo, e um lançamento novo empurra a janela para baixo,
+ * o que faria uma linha vir duas vezes. Contada duas vezes, ela mente no total — que é
+ * exatamente o que esta função existe para não fazer.
+ *
+ * Erro vira exceção em vez de lista curta: uma policy negando é indistinguível de um mês
+ * calmo quando o retorno é `[]`, e "nenhum lançamento" é uma mentira que ninguém investiga.
+ */
+export async function lerPaginado<T extends { id: string }>(
+  consulta: (de: number, ate: number) => PromiseLike<Pagina<T>>,
+): Promise<{ dados: T[]; truncado: boolean }> {
+  const primeira = await consulta(0, PAGINA - 1);
+  if (primeira.error) throw new Error(primeira.error.message);
+
+  const paginas: T[][] = [primeira.data ?? []];
+  // Sem `count` (fonte que não o peça) o que se sabe é só o que veio: uma página cheia
+  // vira "leia a próxima", e o laço anda de mil em mil até vir uma página incompleta.
+  const total = primeira.count ?? null;
+
+  if (total === null) {
+    for (let de = PAGINA; de < TETO && paginas[paginas.length - 1].length === PAGINA; de += PAGINA) {
+      const p = await consulta(de, de + PAGINA - 1);
+      if (p.error) throw new Error(p.error.message);
+      paginas.push(p.data ?? []);
+    }
+  } else {
+    const restantes: PromiseLike<Pagina<T>>[] = [];
+    for (let de = PAGINA; de < Math.min(total, TETO); de += PAGINA) {
+      restantes.push(consulta(de, de + PAGINA - 1));
+    }
+    for (const p of await Promise.all(restantes)) {
+      if (p.error) throw new Error(p.error.message);
+      paginas.push(p.data ?? []);
+    }
+  }
+
+  const vistos = new Set<string>();
+  const dados: T[] = [];
+  for (const linha of paginas.flat()) {
+    if (vistos.has(linha.id)) continue;
+    vistos.add(linha.id);
+    dados.push(linha);
+  }
+  return { dados: dados.slice(0, TETO), truncado: (total ?? dados.length) > TETO };
+}
+
 /* --------------------------------- meses --------------------------------- */
 
 const MESES_CURTOS = ["jan", "fev", "mar", "abr", "mai", "jun", "jul", "ago", "set", "out", "nov", "dez"];

@@ -24,16 +24,17 @@ import { nomeDoCadastro } from "@/lib/apelidos";
 import { Drawer, DrawerContent, DrawerTitle } from "@/components/ui/drawer";
 import { desatualizado, fmtBRL, fmtDataHora } from "@/lib/mobile/formato";
 import {
-  agruparPorDia, categoriasDe, ehFonte, filtrar, fmtDia, FONTES, limitesDoMes, mesAtual, mesDe,
-  nomearContrapartes, normalizarBanco, normalizarCartao, rotuloDia, rotuloMes, rotuloMesLongo,
-  totais, ultimosMeses,
+  agruparPorDia, categoriasDe, ehFonte, filtrar, fmtDia, FONTES, lerPaginado, limitesDoMes,
+  mesAtual, mesDe, nomearContrapartes, normalizarBanco, normalizarCartao, rotuloDia, rotuloMes,
+  rotuloMesLongo, TETO, totais, ultimosMeses,
   type FonteKey, type LinhaExtrato,
 } from "@/lib/mobile/extratos";
 
 const sb = supabase as any;
 
-/** Nenhum mês passa disso hoje; o teto existe para uma fonte que cresça não travar o app. */
-const TETO = 4000;
+/** Quantas linhas a lista DESENHA de uma vez. Os totais são sempre do mês inteiro. */
+const LOTE_TELA = 300;
+
 /** Quantos meses o seletor oferece nas fontes bancárias (o cartão lista as faturas reais). */
 const MESES_BANCO = 18;
 
@@ -62,6 +63,11 @@ export default function MobileExtratos() {
   const [tipo, setTipo] = useState<"todos" | "entrada" | "saida">("todos");
   const [aberta, setAberta] = useState<LinhaExtrato | null>(null);
   const [trocandoMes, setTrocandoMes] = useState(false);
+  const [mostrar, setMostrar] = useState(LOTE_TELA);
+
+  // Todo filtro (e toda troca de mês/fonte) recomeça a lista do topo — continuar no lote 12
+  // depois de digitar uma busca mostraria o fim de uma lista que a pessoa nunca percorreu.
+  useEffect(() => { setMostrar(LOTE_TELA); }, [busca, cats, tipo, fonte, mesUrl]);
 
   const trocarFonte = (f: FonteKey) => {
     setBusca("");
@@ -117,8 +123,10 @@ export default function MobileExtratos() {
   // apagar os outros chips da faixa, senão não há como trocar de categoria sem limpar.
   const categorias = useMemo(() => categoriasDe(filtrar(porTipo, busca, new Set())), [porTipo, busca]);
   const visiveis = useMemo(() => filtrar(porTipo, busca, cats), [porTipo, busca, cats]);
+  // Os totais são do mês FILTRADO INTEIRO, não do pedaço desenhado: o número do topo é a
+  // razão de a tela existir, e ele não pode depender de quanto a pessoa rolou.
   const soma = useMemo(() => totais(visiveis), [visiveis]);
-  const dias = useMemo(() => agruparPorDia(visiveis), [visiveis]);
+  const dias = useMemo(() => agruparPorDia(visiveis.slice(0, mostrar)), [visiveis, mostrar]);
 
   const alternarCat = (chave: string) =>
     setCats((atual) => {
@@ -329,6 +337,19 @@ export default function MobileExtratos() {
                   </ul>
                 </section>
               ))}
+              {visiveis.length > mostrar && (
+                <div className="px-4">
+                  <button
+                    onClick={() => setMostrar((n) => n + LOTE_TELA)}
+                    className="min-h-[44px] w-full rounded-xl border border-border bg-card text-[13px] font-medium text-primary active:opacity-60"
+                  >
+                    Mostrar mais{" "}
+                    <span className="num text-muted-foreground">
+                      ({mostrar.toLocaleString("pt-BR")} de {visiveis.length.toLocaleString("pt-BR")})
+                    </span>
+                  </button>
+                </div>
+              )}
             </div>
           )}
         </>
@@ -398,33 +419,36 @@ async function carregarLinhas(
   mes: string,
 ): Promise<{ linhas: LinhaExtrato[]; truncado: boolean }> {
   if (fonte === "cartao") {
-    const dados = conferir(
-      await sb
+    const { dados, truncado } = await lerPaginado((de, ate) =>
+      sb
         .from("cartao_lancamentos")
-        .select("id,data,estabelecimento,categoria,descricao,parcela,cidade,valor,tipo")
+        .select("id,data,estabelecimento,categoria,descricao,parcela,cidade,valor,tipo", { count: "exact" })
         .eq("competencia", `${mes}-01`)
         // Desempate por `id`: ordenar só por `data` é ordem parcial, e o Postgres não
         // promete estabilidade — no desktop isso já duplicou e sumiu linha na paginação.
         .order("data", { ascending: false })
         .order("id")
-        .limit(TETO + 1),
-    ) as any[];
-    return { linhas: (dados ?? []).slice(0, TETO).map(normalizarCartao), truncado: (dados?.length ?? 0) > TETO };
+        .range(de, ate),
+    );
+    return { linhas: dados.map(normalizarCartao), truncado };
   }
 
   const tabela = FONTES.find((f) => f.key === fonte)!.tabela;
   const { de, ate } = limitesDoMes(mes);
-  const dados = conferir(
-    await sb
+  const { dados, truncado } = await lerPaginado((inicio, fim) =>
+    sb
       .from(tabela)
-      .select("id,id_transacao,data_movimento,tipo,valor,historico,contraparte_nome,contraparte_documento,numero_documento")
+      .select(
+        "id,id_transacao,data_movimento,tipo,valor,historico,contraparte_nome,contraparte_documento,numero_documento",
+        { count: "exact" },
+      )
       .gte("data_movimento", de)
       .lte("data_movimento", ate)
       .order("data_movimento", { ascending: false })
       .order("id")
-      .limit(TETO + 1),
-  ) as any[];
-  return { linhas: (dados ?? []).slice(0, TETO).map(normalizarBanco), truncado: (dados?.length ?? 0) > TETO };
+      .range(inicio, fim),
+  );
+  return { linhas: dados.map(normalizarBanco), truncado };
 }
 
 function diasAtras(data: string): number {

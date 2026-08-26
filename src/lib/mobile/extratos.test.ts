@@ -1,8 +1,9 @@
 import { describe, it, expect } from "vitest";
 import {
-  agruparPorDia, casaBusca, categoriasDe, filtrar, fmtDiaCurto, fmtDocumento, limitesDoMes,
-  mesDe, nomearContrapartes, normalizarBanco, normalizarCartao, rotuloDia, rotuloMes,
-  rotuloMesLongo, somaMes, totais, ultimosMeses, type LinhaBanco, type LinhaCartao,
+  agruparPorDia, casaBusca, categoriasDe, filtrar, fmtDiaCurto, fmtDocumento, lerPaginado,
+  limitesDoMes, mesDe, nomearContrapartes, normalizarBanco, normalizarCartao, PAGINA, rotuloDia,
+  rotuloMes, rotuloMesLongo, somaMes, TETO, totais, ultimosMeses,
+  type LinhaBanco, type LinhaCartao,
 } from "./extratos";
 
 const cartao = (over: Partial<LinhaCartao> = {}): LinhaCartao => ({
@@ -279,5 +280,85 @@ describe("totais e agrupamento", () => {
   it("lançamento sem data cai num grupo próprio em vez de sumir", () => {
     const dias = agruparPorDia([normalizarCartao(cartao({ id: "a", data: null }))]);
     expect(dias[0].dia).toBe("—");
+  });
+});
+
+describe("lerPaginado", () => {
+  /** Uma tabela de `n` linhas que responde a `.range()` como o PostgREST responde. */
+  const tabela = (n: number, opts: { count?: boolean } = { count: true }) => {
+    const todas = Array.from({ length: n }, (_, i) => ({ id: `l${i}` }));
+    const chamadas: [number, number][] = [];
+    const consulta = async (de: number, ate: number) => {
+      chamadas.push([de, ate]);
+      // O teto de mil é do servidor: ele corta a fatia pedida, não importa o que se peça.
+      return {
+        data: todas.slice(de, Math.min(ate + 1, de + PAGINA)),
+        error: null,
+        count: opts.count ? n : undefined,
+      };
+    };
+    return { consulta, chamadas };
+  };
+
+  it("traz o mês inteiro, e não o primeiro milheiro — o bug de agosto/26 do Asaas", async () => {
+    const { consulta } = tabela(6017);
+    const { dados, truncado } = await lerPaginado(consulta);
+    expect(dados.length).toBe(6017);
+    expect(truncado).toBe(false);
+  });
+
+  it("um mês que cabe numa página faz UMA consulta só", async () => {
+    const { consulta, chamadas } = tabela(640); // uma fatura de cartão real
+    expect((await lerPaginado(consulta)).dados.length).toBe(640);
+    expect(chamadas).toEqual([[0, PAGINA - 1]]);
+  });
+
+  it("as páginas voltam na ordem pedida, mesmo saindo em paralelo", async () => {
+    const { dados } = await lerPaginado(tabela(2500).consulta);
+    expect(dados.map((l) => l.id)).toEqual(Array.from({ length: 2500 }, (_, i) => `l${i}`));
+  });
+
+  it("linha repetida entre páginas é contada uma vez só", async () => {
+    // O que acontece quando a sync insere durante a leitura: a janela inteira desliza um
+    // degrau, e a última linha da página anterior reaparece na seguinte. Contada duas
+    // vezes ela infla o total — o defeito que esta tela existe para não ter.
+    const linha = (i: number) => ({ id: `l${i}` });
+    const { dados } = await lerPaginado(async (de) =>
+      de === 0
+        ? { data: Array.from({ length: PAGINA }, (_, i) => linha(i)), error: null, count: 1500 }
+        // desloca em 1: `l999` volta na segunda página
+        : { data: Array.from({ length: 500 }, (_, i) => linha(de - 1 + i)), error: null, count: 1500 },
+    );
+    expect(dados.length).toBe(1499);
+    expect(new Set(dados.map((l) => l.id)).size).toBe(1499);
+  });
+
+  it("erro estoura em vez de virar 'nenhum lançamento'", async () => {
+    await expect(
+      lerPaginado(async () => ({ data: null, error: { message: "permission denied" } })),
+    ).rejects.toThrow("permission denied");
+  });
+
+  it("erro numa página do meio também estoura", async () => {
+    await expect(
+      lerPaginado(async (de) =>
+        de === 0
+          ? { data: Array.from({ length: PAGINA }, (_, i) => ({ id: `l${i}` })), error: null, count: 2500 }
+          : { data: null, error: { message: "timeout" } },
+      ),
+    ).rejects.toThrow("timeout");
+  });
+
+  it("sem contagem, anda de página em página até vir uma incompleta", async () => {
+    const { consulta, chamadas } = tabela(2500, { count: false });
+    const { dados } = await lerPaginado(consulta);
+    expect(dados.length).toBe(2500);
+    expect(chamadas.length).toBe(3);
+  });
+
+  it("passar do teto corta a lista e avisa, em vez de fingir que coube", async () => {
+    const { dados, truncado } = await lerPaginado(tabela(TETO + 500).consulta);
+    expect(dados.length).toBe(TETO);
+    expect(truncado).toBe(true);
   });
 });

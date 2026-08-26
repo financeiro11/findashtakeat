@@ -4,13 +4,13 @@ import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
-import { Loader2, Search, Pencil, Check, X, AlertTriangle } from "lucide-react";
+import { Loader2, Search, Pencil, Check, AlertTriangle } from "lucide-react";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import { comValorExato } from "@/components/ValorExato";
-import type { Linha, Pessoa } from "@/lib/cac";
+import { seloDaLinha, type Linha, type Pessoa } from "@/lib/cac";
+import { SeloRegra } from "./SeloRegra";
 
 const db = supabase as unknown as {
   from: (t: string) => any;
@@ -23,6 +23,11 @@ function brl(n: number | null | undefined) {
   return v.toLocaleString("pt-BR", { style: "currency", currency: "BRL", minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
+/** Compacto no KPI; o valor cheio fica no hover, como no resto do Hub. */
+function milStr(n: number) {
+  return "R$ " + (n / 1000).toLocaleString("pt-BR", { minimumFractionDigits: 1, maximumFractionDigits: 1 }) + " mil";
+}
+
 /** Só dígitos — a mesma normalização que a coluna `cnpj` exige no banco. */
 const soDigitos = (s: string) => String(s ?? "").replace(/[^0-9]/g, "");
 
@@ -32,11 +37,18 @@ function fmtCNPJ(d: string) {
   return d;
 }
 
-export function CadastroCAC({ onMudou }: { onMudou: () => void }) {
+export function CadastroCAC({ onMudou, totaisPorLinha }: {
+  onMudou: () => void;
+  /** Total do ano por linha, vindo da matriz — é o que separa "zero" de "ok". */
+  totaisPorLinha?: Map<string, number>;
+}) {
   const [pessoas, setPessoas] = useState<Pessoa[]>([]);
   const [linhas, setLinhas] = useState<Linha[]>([]);
   const [categorias, setCategorias] = useState<{ codigo: string; descricao: string }[]>([]);
   const [loading, setLoading] = useState(true);
+  const [busca, setBusca] = useState("");
+  const [editandoPessoa, setEditandoPessoa] = useState<Pessoa | null>(null);
+  const [editandoLinha, setEditandoLinha] = useState<Linha | null>(null);
 
   const carregar = useCallback(async () => {
     setLoading(true);
@@ -55,66 +67,100 @@ export function CadastroCAC({ onMudou }: { onMudou: () => void }) {
 
   useEffect(() => { void carregar(); }, [carregar]);
 
-  if (loading) {
-    return <div className="flex justify-center py-12"><Loader2 className="h-5 w-5 animate-spin text-muted-foreground" /></div>;
-  }
+  const recarregar = () => { void carregar(); onMudou(); };
 
-  return (
-    <Tabs defaultValue="pessoas">
-      <TabsList className="h-8">
-        <TabsTrigger value="pessoas" className="text-[12.5px]">Pessoas ({pessoas.length})</TabsTrigger>
-        <TabsTrigger value="linhas" className="text-[12.5px]">Regras das linhas ({linhas.length})</TabsTrigger>
-      </TabsList>
-
-      <TabsContent value="pessoas" className="mt-3">
-        <AbaPessoas pessoas={pessoas} linhas={linhas} onSalvou={() => { void carregar(); onMudou(); }} />
-      </TabsContent>
-
-      <TabsContent value="linhas" className="mt-3">
-        <AbaLinhas
-          linhas={linhas}
-          pessoas={pessoas}
-          categorias={categorias}
-          onSalvou={() => { void carregar(); onMudou(); }}
-        />
-      </TabsContent>
-    </Tabs>
-  );
-}
-
-/* ==========================================================================
- * Pessoas
- * ======================================================================== */
-
-function AbaPessoas({ pessoas, linhas, onSalvou }: {
-  pessoas: Pessoa[]; linhas: Linha[]; onSalvou: () => void;
-}) {
-  const [busca, setBusca] = useState("");
-  const [editando, setEditando] = useState<Pessoa | null>(null);
+  /* Em qual célula da matriz cada departamento cai. É a pergunta que a aba
+     inteira existe para responder: a pessoa está cadastrada, mas o número dela
+     aparece ONDE? Sem essa coluna, descobrir isso é ler regra por regra. */
+  const linhaDoDepto = useMemo(() => {
+    const m = new Map<string, Linha>();
+    for (const l of linhas) for (const d of l.departamentos ?? []) if (!m.has(d)) m.set(d, l);
+    return m;
+  }, [linhas]);
 
   /* Departamentos que NENHUMA linha do painel aponta. Uma pessoa aí não some da
      tela nem entra em nenhuma célula — fica invisível no total, que é o tipo de
      buraco que só aparece quando o número não fecha e ninguém sabe por quê. */
   const orfaos = useMemo(() => {
-    const apontados = new Set(linhas.flatMap((l) => l.departamentos ?? []));
     const conta = new Map<string, number>();
     for (const p of pessoas) {
-      if (!p.ativo || apontados.has(p.departamento)) continue;
+      if (!p.ativo || linhaDoDepto.has(p.departamento)) continue;
       conta.set(p.departamento, (conta.get(p.departamento) ?? 0) + 1);
     }
     return [...conta.entries()].sort((a, b) => b[1] - a[1]);
-  }, [pessoas, linhas]);
+  }, [pessoas, linhaDoDepto]);
+
+  const dentro = useMemo(
+    () => pessoas.filter((p) => linhaDoDepto.has(p.departamento)),
+    [pessoas, linhaDoDepto],
+  );
+  const folhaDentro = useMemo(
+    () => dentro.reduce((a, p) => a + (Number(p.remuneracao) || 0), 0),
+    [dentro],
+  );
+
+  const selos = useMemo(() => {
+    const m = new Map<string, ReturnType<typeof seloDaLinha>>();
+    for (const l of linhas) {
+      m.set(l.id, seloDaLinha(
+        l.regra_nota,
+        !!(l.departamentos?.length || l.categorias?.length),
+        totaisPorLinha?.get(l.id) ?? 1,
+      ));
+    }
+    return m;
+  }, [linhas, totaisPorLinha]);
+
+  const aConferir = useMemo(
+    () => [...selos.values()].filter((s) => s !== "ok").length,
+    [selos],
+  );
+
+  const porDepto = useMemo(() => {
+    const m = new Map<string, number>();
+    for (const p of pessoas) if (p.ativo) m.set(p.departamento, (m.get(p.departamento) ?? 0) + 1);
+    return m;
+  }, [pessoas]);
 
   const filtradas = useMemo(() => {
     const q = busca.trim().toLowerCase();
     if (!q) return pessoas;
-    return pessoas.filter((p) =>
-      [p.nome, p.cnpj, p.departamento, p.categoria_omie ?? "", p.planilha_comissao ?? ""]
-        .join(" ").toLowerCase().includes(q));
-  }, [pessoas, busca]);
+    return pessoas.filter((p) => {
+      const l = linhaDoDepto.get(p.departamento);
+      /* A busca varre também o rótulo da linha: quem procura "Franquia" está
+         atrás de quem cai naquela célula, e a pessoa marcada como "Franquias"
+         sumiria do filtro pelo nome que está escrito na linha dela. */
+      return [
+        p.nome, p.cnpj, p.departamento, p.categoria_omie ?? "", p.planilha_comissao ?? "",
+        l ? `${l.grupo} ${l.rotulo}` : "fora do painel",
+      ].join(" ").toLowerCase().includes(q);
+    });
+  }, [pessoas, busca, linhaDoDepto]);
+
+  if (loading) {
+    return <div className="flex justify-center py-12"><Loader2 className="h-5 w-5 animate-spin text-muted-foreground" /></div>;
+  }
 
   return (
     <div className="space-y-3">
+      <div className="grid gap-3 sm:grid-cols-3">
+        <Kpi
+          rotulo="Pessoas na planilha"
+          valor={String(pessoas.length)}
+          sub={`${dentro.length} entram em alguma célula`}
+        />
+        <Kpi
+          rotulo="Folha dentro do painel"
+          valor={comValorExato(folhaDentro, milStr(folhaDentro))}
+          sub="remuneração cadastrada · base do confronto com o Omie"
+        />
+        <Kpi
+          rotulo="Regras a conferir"
+          valor={String(aConferir)}
+          sub={`de ${linhas.length} linhas do painel`}
+        />
+      </div>
+
       {orfaos.length > 0 && (
         <div className="rounded-md border border-warn/40 bg-warn/5 px-3 py-2 text-[12px]">
           <p className="flex items-center gap-1.5 font-medium text-warn">
@@ -129,53 +175,160 @@ function AbaPessoas({ pessoas, linhas, onSalvou }: {
         </div>
       )}
 
-      <div className="relative">
-        <Search className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
-        <Input value={busca} onChange={(e) => setBusca(e.target.value)}
-          placeholder="Buscar por nome, CNPJ, departamento…" className="h-8 pl-8 text-[12.5px]" />
-      </div>
-
       <Card className="overflow-hidden">
-        <div className="max-h-[60vh] overflow-y-auto">
+        <div className="flex flex-wrap items-center gap-2.5 border-b border-border px-3.5 py-2.5">
+          <div className="relative max-w-[340px] flex-1">
+            <Search className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+            <Input value={busca} onChange={(e) => setBusca(e.target.value)}
+              placeholder="Buscar por nome, CNPJ, departamento…" className="h-8 pl-8 text-[12.5px]" />
+          </div>
+          <span className="text-[11.5px] text-muted-foreground">
+            Coluna “Linha do painel” diz em qual célula cada pessoa cai
+          </span>
+        </div>
+
+        <div className="max-h-[420px] overflow-y-auto">
           <table className="w-full text-[12.5px]">
-            <thead className="sticky top-0 bg-muted/60 text-muted-foreground">
+            <thead className="sticky top-0 z-10 bg-muted text-muted-foreground">
               <tr>
-                <th className="px-3 py-2 text-left font-semibold">Pessoa</th>
+                <th className="px-3.5 py-2 text-left font-semibold">Pessoa</th>
                 <th className="px-3 py-2 text-left font-semibold">Departamento</th>
+                <th className="px-3 py-2 text-left font-semibold">Linha do painel</th>
                 <th className="px-3 py-2 text-left font-semibold">Planilha</th>
-                <th className="px-3 py-2 text-right font-semibold">Remuneração</th>
+                <th className="w-[130px] px-3.5 py-2 text-right font-semibold">Remuneração</th>
                 <th className="w-10" />
               </tr>
             </thead>
             <tbody>
-              {filtradas.map((p) => (
-                <tr key={p.id} className={cn("border-t border-border hover:bg-muted/20", !p.ativo && "opacity-50")}>
-                  <td className="px-3 py-1.5">
-                    <span className="block">{p.nome}</span>
-                    <span className="block text-[11px] text-muted-foreground">{fmtCNPJ(p.cnpj)}</span>
-                  </td>
-                  <td className="px-3 py-1.5">{p.departamento}</td>
-                  <td className="px-3 py-1.5 text-muted-foreground">{p.planilha_comissao ?? "—"}</td>
-                  <td className="px-3 py-1.5 text-right num">{comValorExato(p.remuneracao, brl(p.remuneracao))}</td>
-                  <td className="px-1 py-1.5">
-                    <Button size="icon" variant="ghost" className="ghost-icone h-6 w-6" onClick={() => setEditando(p)}>
-                      <Pencil className="h-3 w-3" />
-                    </Button>
-                  </td>
-                </tr>
-              ))}
+              {filtradas.map((p) => {
+                const l = linhaDoDepto.get(p.departamento);
+                return (
+                  <tr key={p.id} className={cn("border-t border-border hover:bg-muted/20", !p.ativo && "opacity-50")}>
+                    <td className="px-3.5 py-1.5">
+                      <span className="block">{p.nome}</span>
+                      <span className="num block text-[11px] text-muted-foreground">{fmtCNPJ(p.cnpj)}</span>
+                    </td>
+                    <td className="px-3 py-1.5">{p.departamento}</td>
+                    <td className="px-3 py-1.5">
+                      <span className={cn(
+                        "inline-flex items-center rounded-full px-1.5 py-0.5 text-[11px] font-semibold",
+                        l ? "bg-muted text-foreground" : "bg-warn-soft text-warn",
+                      )}>
+                        {l ? `${l.grupo} › ${l.rotulo}` : "fora do painel"}
+                      </span>
+                    </td>
+                    <td className="px-3 py-1.5 text-muted-foreground">{p.planilha_comissao ?? "—"}</td>
+                    <td className="num px-3.5 py-1.5 text-right">{comValorExato(p.remuneracao, brl(p.remuneracao))}</td>
+                    <td className="px-1 py-1.5">
+                      <Button size="icon" variant="ghost" className="ghost-icone h-6 w-6" onClick={() => setEditandoPessoa(p)}>
+                        <Pencil className="h-3 w-3" />
+                      </Button>
+                    </td>
+                  </tr>
+                );
+              })}
               {!filtradas.length && (
-                <tr><td colSpan={5} className="px-3 py-8 text-center text-muted-foreground">Nada encontrado.</td></tr>
+                <tr><td colSpan={6} className="px-3 py-8 text-center text-muted-foreground">Nada encontrado.</td></tr>
               )}
             </tbody>
           </table>
         </div>
       </Card>
 
-      <PessoaDialog pessoa={editando} onClose={() => setEditando(null)} onSalvou={() => { setEditando(null); onSalvou(); }} />
+      <Card className="overflow-hidden">
+        <div className="border-b border-border px-3.5 py-2.5">
+          <p className="text-[13px] font-semibold">Regras das linhas</p>
+          <p className="mt-0.5 text-[11.5px] text-muted-foreground">
+            O selo é o mesmo que aparece na matriz — conferido, a conferir ou sem regra
+          </p>
+        </div>
+
+        <table className="w-full text-[12.5px]">
+          <thead className="bg-muted text-muted-foreground">
+            <tr>
+              <th className="px-3.5 py-2 text-left font-semibold">Linha</th>
+              <th className="px-3 py-2 text-left font-semibold">Departamentos</th>
+              <th className="px-3 py-2 text-left font-semibold">Categorias</th>
+              <th className="px-3 py-2 text-left font-semibold">Nota da regra</th>
+              <th className="w-10" />
+            </tr>
+          </thead>
+          <tbody>
+            {linhas.map((l) => {
+              const selo = selos.get(l.id) ?? "ok";
+              const conferir = (l.regra_nota ?? "").startsWith("CONFERIR");
+              const cats = l.categorias ?? [];
+              return (
+                <tr key={l.id} className="border-t border-border align-top hover:bg-muted/20">
+                  <td className="px-3.5 py-2">
+                    <span className="flex items-center gap-1.5">
+                      <span>{l.grupo} › {l.rotulo}</span>
+                      <SeloRegra selo={selo} longo />
+                    </span>
+                  </td>
+                  <td className="px-3 py-2">
+                    {l.departamentos?.length ? (
+                      <span className="flex flex-wrap gap-1">
+                        {l.departamentos.map((d) => (
+                          <Badge key={d} variant="outline" className="text-[10.5px]"
+                            title={`${porDepto.get(d) ?? 0} pessoa(s) ativa(s)`}>
+                            {d}
+                            {!porDepto.get(d) && <span className="ml-1 text-warn">·0</span>}
+                          </Badge>
+                        ))}
+                      </span>
+                    ) : <span className="text-muted-foreground">—</span>}
+                  </td>
+                  {/* Até duas categorias cabem por extenso, e o código é o que
+                      se procura no Omie. Acima disso vira contagem. */}
+                  <td className="num px-3 py-2 text-[11.5px] text-muted-foreground">
+                    {!cats.length ? "—" : cats.length <= 2 ? cats.join(" · ") : `${cats.length} cats`}
+                  </td>
+                  <td className={cn("px-3 py-2 text-[11.5px] leading-relaxed", conferir ? "text-warn" : "text-muted-foreground")}>
+                    {l.regra_nota ?? "—"}
+                  </td>
+                  <td className="px-1 py-2">
+                    <Button size="icon" variant="ghost" className="ghost-icone h-6 w-6" onClick={() => setEditandoLinha(l)}>
+                      <Pencil className="h-3 w-3" />
+                    </Button>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </Card>
+
+      <PessoaDialog
+        pessoa={editandoPessoa}
+        onClose={() => setEditandoPessoa(null)}
+        onSalvou={() => { setEditandoPessoa(null); recarregar(); }}
+      />
+
+      <LinhaDialog
+        linha={editandoLinha}
+        departamentos={[...porDepto.keys()].sort((a, b) => a.localeCompare(b, "pt-BR"))}
+        categorias={categorias}
+        onClose={() => setEditandoLinha(null)}
+        onSalvou={() => { setEditandoLinha(null); recarregar(); }}
+      />
     </div>
   );
 }
+
+function Kpi({ rotulo, valor, sub }: { rotulo: string; valor: React.ReactNode; sub: string }) {
+  return (
+    <Card className="flex flex-col gap-1 px-3.5 py-3">
+      <span className="eyebrow">{rotulo}</span>
+      <span className="num text-[20px] font-semibold tracking-tight">{valor}</span>
+      <span className="text-[11.5px] text-muted-foreground">{sub}</span>
+    </Card>
+  );
+}
+
+/* ==========================================================================
+ * Pessoa
+ * ======================================================================== */
 
 function PessoaDialog({ pessoa, onClose, onSalvou }: {
   pessoa: Pessoa | null; onClose: () => void; onSalvou: () => void;
@@ -249,97 +402,8 @@ function PessoaDialog({ pessoa, onClose, onSalvou }: {
 }
 
 /* ==========================================================================
- * Regras das linhas
+ * Regra da linha
  * ======================================================================== */
-
-function AbaLinhas({ linhas, pessoas, categorias, onSalvou }: {
-  linhas: Linha[];
-  pessoas: Pessoa[];
-  categorias: { codigo: string; descricao: string }[];
-  onSalvou: () => void;
-}) {
-  const [editando, setEditando] = useState<Linha | null>(null);
-
-  const porDepto = useMemo(() => {
-    const m = new Map<string, number>();
-    for (const p of pessoas) if (p.ativo) m.set(p.departamento, (m.get(p.departamento) ?? 0) + 1);
-    return m;
-  }, [pessoas]);
-
-  return (
-    <div className="space-y-3">
-      <p className="text-[12px] text-muted-foreground">
-        Cada linha do painel soma pagamentos do Omie. Quando os dois filtros estão preenchidos eles
-        se combinam com <strong>E</strong>: pagamento a alguém <em>daquele departamento</em> <em>e</em> numa
-        <em> daquelas categorias</em>. Uma linha sem nenhum dos dois vale zero.
-      </p>
-
-      <Card className="overflow-hidden">
-        <table className="w-full text-[12.5px]">
-          <thead className="bg-muted/60 text-muted-foreground">
-            <tr>
-              <th className="px-3 py-2 text-left font-semibold">Linha</th>
-              <th className="px-3 py-2 text-left font-semibold">Departamentos</th>
-              <th className="px-3 py-2 text-left font-semibold">Categorias</th>
-              <th className="w-10" />
-            </tr>
-          </thead>
-          <tbody>
-            {linhas.map((l) => {
-              const semRegra = !(l.departamentos?.length) && !(l.categorias?.length);
-              const conferir = (l.regra_nota ?? "").startsWith("CONFERIR");
-              return (
-                <tr key={l.id} className="border-t border-border hover:bg-muted/20">
-                  <td className="px-3 py-1.5">
-                    <span className="block">{l.rotulo}</span>
-                    <span className="block text-[11px] text-muted-foreground">{l.grupo}</span>
-                  </td>
-                  <td className="px-3 py-1.5">
-                    {l.departamentos?.length ? (
-                      <span className="flex flex-wrap gap-1">
-                        {l.departamentos.map((d) => (
-                          <Badge key={d} variant="outline" className="text-[10.5px]"
-                            title={`${porDepto.get(d) ?? 0} pessoa(s) ativa(s)`}>
-                            {d}
-                            {!porDepto.get(d) && <span className="ml-1 text-warn">·0</span>}
-                          </Badge>
-                        ))}
-                      </span>
-                    ) : <span className="text-muted-foreground">—</span>}
-                  </td>
-                  <td className="px-3 py-1.5">
-                    {l.categorias?.length
-                      ? <span className="text-muted-foreground">{l.categorias.length} categoria(s)</span>
-                      : <span className="text-muted-foreground">—</span>}
-                    {(semRegra || conferir) && (
-                      <Badge variant="outline" className="ml-1.5 gap-1 border-warn/50 text-[10.5px] text-warn">
-                        <AlertTriangle className="h-2.5 w-2.5" />
-                        {semRegra ? "sem regra" : "conferir"}
-                      </Badge>
-                    )}
-                  </td>
-                  <td className="px-1 py-1.5">
-                    <Button size="icon" variant="ghost" className="ghost-icone h-6 w-6" onClick={() => setEditando(l)}>
-                      <Pencil className="h-3 w-3" />
-                    </Button>
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
-      </Card>
-
-      <LinhaDialog
-        linha={editando}
-        departamentos={[...porDepto.keys()].sort((a, b) => a.localeCompare(b, "pt-BR"))}
-        categorias={categorias}
-        onClose={() => setEditando(null)}
-        onSalvou={() => { setEditando(null); onSalvou(); }}
-      />
-    </div>
-  );
-}
 
 function LinhaDialog({ linha, departamentos, categorias, onClose, onSalvou }: {
   linha: Linha | null;
@@ -397,6 +461,11 @@ function LinhaDialog({ linha, departamentos, categorias, onClose, onSalvou }: {
         </DialogHeader>
 
         <div className="space-y-3">
+          <p className="text-[12px] text-muted-foreground">
+            Quando os dois filtros estão preenchidos eles se combinam com <strong>E</strong>: pagamento
+            a alguém <em>daquele departamento</em> <em>e</em> numa <em>daquelas categorias</em>.
+          </p>
+
           {vazia && (
             <p className="rounded-md border border-warn/40 bg-warn/5 px-3 py-2 text-[12px] text-warn">
               Sem nenhum filtro, esta linha vale zero — ela não soma tudo.
@@ -442,7 +511,7 @@ function LinhaDialog({ linha, departamentos, categorias, onClose, onSalvou }: {
             </div>
           </div>
 
-          <Campo rotulo="Nota" ajuda="Aparece no “i” ao lado da linha e dentro do drill-down.">
+          <Campo rotulo="Nota" ajuda="Aparece no hover do selo, na coluna “Nota da regra” e dentro do drill-down. Começar com “CONFERIR” marca a linha como não validada.">
             <Input value={nota} onChange={(e) => setNota(e.target.value)} className="h-8 text-[12.5px]" />
           </Campo>
         </div>

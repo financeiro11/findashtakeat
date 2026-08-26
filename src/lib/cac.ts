@@ -454,3 +454,85 @@ export function conferir(
 
   return out.sort((a, b) => Math.abs(b.delta) - Math.abs(a.delta));
 }
+
+/* --------------------------------------------------------------------------
+ * Período, desvio e selo.
+ *
+ * A matriz deixou de ser "os 12 meses e o total do ano": ela recorta o período,
+ * compara cada célula com a média dos 3 meses anteriores e diz, linha a linha,
+ * se a regra que produziu aquele número já foi conferida. Nada disso depende de
+ * React, então mora aqui — e por isso tem teste.
+ * ------------------------------------------------------------------------ */
+
+export type Periodo = "12m" | "tri" | "mes";
+
+/**
+ * O índice (0 = janeiro) do último mês FECHADO do ano pedido.
+ *
+ * O mês corrente não está fechado: em 26/08 o Omie ainda vai receber pagamento
+ * de agosto, e comparar um agosto pela metade com a média dos meses inteiros
+ * acusaria uma queda que não existe. Ano passado fecha em dezembro; ano que vem
+ * não tem mês fechado nenhum, e devolve -1.
+ */
+export function ultimoMesFechado(ano: number, hoje = new Date()): number {
+  const anoAtual = hoje.getFullYear();
+  if (ano < anoAtual) return 11;
+  if (ano > anoAtual) return -1;
+  return hoje.getMonth() - 1;
+}
+
+/** Quais colunas de mês o período mostra. Sem mês fechado, cai no ano cheio. */
+export function mesesDoPeriodo(periodo: Periodo, fechado: number): number[] {
+  const ano = Array.from({ length: 12 }, (_, i) => i);
+  if (periodo === "12m" || fechado < 0) return ano;
+  if (periodo === "mes") return [fechado];
+  return ano.slice(Math.max(0, fechado - 2), fechado + 1);
+}
+
+export type Desvio = {
+  /** Média dos meses anteriores que tiveram valor. */
+  media: number;
+  /** Fração: 0,12 = 12% acima da média. */
+  desvio: number;
+};
+
+/**
+ * Compara o mês `i` com a média dos `janela` meses anteriores.
+ *
+ * Só entram na média os meses com valor: uma linha que começou em abril tem
+ * jan–mar zerados, e incluí-los faria a média cair pela metade e todo mês
+ * seguinte parecer uma explosão de custo. Abaixo de dois meses de base não há
+ * comparação — devolve null, e a tela mostra "—" em vez de um número inventado.
+ */
+export function desvioVsMedia(meses: number[], i: number, janela = 3): Desvio | null {
+  const anteriores: number[] = [];
+  for (let k = i - janela; k < i; k++) if (k >= 0 && meses[k] > 0) anteriores.push(meses[k]);
+  if (anteriores.length < 2) return null;
+  if (!meses[i]) return null;
+
+  const media = anteriores.reduce((a, b) => a + b, 0) / anteriores.length;
+  if (!media) return null;
+  return { media, desvio: (meses[i] - media) / media };
+}
+
+export type Selo = "ok" | "conferir" | "semregra" | "zero";
+
+/**
+ * Quanto se pode confiar no número daquela linha.
+ *
+ * A ordem importa: uma linha SEM regra vale zero por construção, e chamá-la de
+ * "zero" esconderia que o problema é a regra em branco, não a ausência de
+ * pagamento. Por isso "sem regra" vem antes de "zero", e o "CONFERIR" da nota
+ * — que é como a migration marca uma regra apontada por semelhança de nome e
+ * ainda não batida contra o painel antigo — vem antes dos dois.
+ */
+export function seloDaLinha(
+  regra_nota: string | null | undefined,
+  temRegra: boolean,
+  total: number,
+): Selo {
+  if (!temRegra) return "semregra";
+  if ((regra_nota ?? "").startsWith("CONFERIR")) return "conferir";
+  if (!total) return "zero";
+  return "ok";
+}

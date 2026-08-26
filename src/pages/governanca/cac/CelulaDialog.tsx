@@ -12,7 +12,7 @@ import { comValorExato } from "@/components/ValorExato";
 import { useApelidos } from "@/hooks/useApelidos";
 import { nomeExibido } from "@/lib/apelidos";
 import {
-  MESES, agruparPorPessoa, resumirCelula,
+  MESES, agruparPorPessoa, resumirCelula, desvioVsMedia,
   type Lancamento, type LinhaMatriz,
 } from "@/lib/cac";
 
@@ -25,6 +25,9 @@ function brl(n: number | null | undefined) {
   if (n == null || !isFinite(v)) return "—";
   return v.toLocaleString("pt-BR", { style: "currency", currency: "BRL", minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
+
+const pctStr = (v: number) =>
+  (v > 0 ? "+" : "") + (v * 100).toLocaleString("pt-BR", { minimumFractionDigits: 1, maximumFractionDigits: 1 }) + "%";
 
 export function CelulaDialog({
   ano, linha, mes, onClose,
@@ -69,6 +72,14 @@ export function CelulaDialog({
   const resumo = useMemo(() => resumirCelula(lancs), [lancs]);
   const pessoas = useMemo(() => agruparPorPessoa(lancs), [lancs]);
 
+  /* O mesmo desvio que pinta a célula na matriz. Quem clicou clicou POR CAUSA
+     da cor — a explicação tem de estar aqui dentro, não só no hover que ficou
+     para trás. */
+  const dv = useMemo(
+    () => (linha && mes ? desvioVsMedia(linha.meses, mes - 1) : null),
+    [linha, mes],
+  );
+
   /* A busca varre o apelido junto com o nome cru e o CNPJ. Se varresse só o
      que o Omie escreveu, procurar pelo nome que está ESCRITO na linha não
      acharia nada — a lição da Parametrização. */
@@ -94,6 +105,12 @@ export function CelulaDialog({
           <DialogTitle className="text-[15px]">
             {linha?.rotulo} · {mes ? MESES[mes - 1] : ""}/{String(ano).slice(2)}
           </DialogTitle>
+          <p className="text-[11.5px] text-muted-foreground">
+            {linha?.grupo}
+            {" · "}
+            {dv ? `${pctStr(dv.desvio)} vs média 3m (${brl(dv.media)})` : "sem base de comparação"}
+            {!loading && ` · ${pessoas.length} pessoa(s) na regra`}
+          </p>
         </DialogHeader>
 
         {loading ? (
@@ -104,10 +121,19 @@ export function CelulaDialog({
           <div className="space-y-3">
             {/* Folha × comissão: em Inside Sales mais da metade da célula é
                 variável, e sem separar isso o número não conta a história. */}
-            <div className="grid grid-cols-3 gap-2">
+            <div className="grid grid-cols-4 gap-2">
               <Resumo rotulo="Folha" valor={resumo.folha} total={resumo.total} />
               <Resumo rotulo="Comissão" valor={resumo.comissao} total={resumo.total} />
               <Resumo rotulo="Total" valor={resumo.total} total={resumo.total} destaque />
+              <div className="rounded-md border border-border px-3 py-2">
+                <p className="text-[11px] uppercase tracking-wide text-muted-foreground">Desvio 3m</p>
+                <p className={cn("num text-[14px] font-semibold", dv && (dv.desvio > 0 ? "text-neg" : "text-pos"))}>
+                  {dv ? pctStr(dv.desvio) : "—"}
+                </p>
+                <p className="text-[11px] text-muted-foreground">
+                  {dv ? `média ${brl(dv.media)}` : "sem base"}
+                </p>
+              </div>
             </div>
 
             {resumo.semPagamento.length > 0 && (

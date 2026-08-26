@@ -157,6 +157,21 @@ export default function PainelCAC() {
     return m;
   }, [grupos]);
 
+  /* O subtítulo do cabeçalho carrega o fato vivo da tela, como no Caixa: não
+     "o que é o painel" — isso o breadcrumb já diz — mas quanto dele dá para
+     acreditar hoje. Uma regra a conferir é a diferença entre um número e um
+     palpite, e quem abre a tela tem de saber disso antes de rolar. */
+  const aConferir = useMemo(
+    () => [...selos.values()].filter((s) => s !== "ok").length,
+    [selos],
+  );
+  const totalLinhas = selos.size;
+  const subtitulo = !totalLinhas
+    ? ""
+    : aConferir
+      ? ` · ${totalLinhas} linhas, ${aConferir} a conferir`
+      : ` · ${totalLinhas} linhas, todas conferidas`;
+
   const emAndamento = fechado >= 0 && fechado < 11 ? MESES[fechado + 1] : null;
   const compacto = periodo === "12m";
   const fmtStr = compacto ? fmtMilStr : fmtBRLStr;
@@ -184,7 +199,47 @@ export default function PainelCAC() {
 
   return (
     <div className="space-y-3.5">
-      <div className="flex flex-wrap items-center justify-between gap-3">
+      {/* ---------------- Cabeçalho ---------------- */}
+      <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+        <div className="min-w-0">
+          <div className="flex items-center gap-2">
+            <h1 className="text-[22px] font-semibold tracking-tight text-foreground">Painel CAC</h1>
+            <span className="inline-flex items-center gap-1 rounded-full bg-primary/10 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider text-primary">
+              <span className="h-1.5 w-1.5 rounded-full bg-primary" /> Omie
+            </span>
+          </div>
+          <p className="mt-0.5 text-[12.5px] text-muted-foreground">
+            Folha, verba e comissão de quem traz cliente novo{subtitulo}
+          </p>
+        </div>
+
+        <div className="flex flex-wrap items-center gap-2 lg:shrink-0 lg:self-start">
+          <Button
+            size="sm"
+            variant="outline"
+            className="h-8 gap-1.5 text-[12px]"
+            aria-pressed={heatmap}
+            onClick={() => setHeatmap((v) => !v)}
+          >
+            <Thermometer className={cn("h-3.5 w-3.5", heatmap && "text-primary")} />
+            {heatmap ? "Heatmap ligado" : "Heatmap desligado"}
+          </Button>
+          {manuais > 0 && (
+            <Badge variant="outline" className="gap-1 text-[11.5px]">
+              <Pencil className="h-3 w-3" />
+              {manuais} {manuais === 1 ? "célula digitada" : "células digitadas"}
+            </Badge>
+          )}
+          <Button size="sm" variant="outline" className="h-8 gap-1.5 text-[12.5px]" onClick={() => setImportando(true)}>
+            <Upload className="h-3.5 w-3.5" /> Importar
+          </Button>
+          <Button size="sm" variant="outline" className="h-8 gap-1.5 text-[12.5px]" onClick={exportar} disabled={loading || !grupos.length}>
+            <Download className="h-3.5 w-3.5" /> Exportar
+          </Button>
+        </div>
+      </div>
+
+      <div className="flex flex-wrap items-center gap-3">
         <div className="flex items-center gap-2.5">
           <Select value={String(ano)} onValueChange={(v) => setAno(Number(v))}>
             <SelectTrigger className="num h-8 w-[104px] text-[12.5px]"><SelectValue /></SelectTrigger>
@@ -215,31 +270,6 @@ export default function PainelCAC() {
 
           <span className="text-[11.5px] text-muted-foreground">{periodoNota}</span>
           {loading && <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />}
-        </div>
-
-        <div className="flex items-center gap-2">
-          <Button
-            size="sm"
-            variant="outline"
-            className="h-8 gap-1.5 text-[12px]"
-            aria-pressed={heatmap}
-            onClick={() => setHeatmap((v) => !v)}
-          >
-            <Thermometer className={cn("h-3.5 w-3.5", heatmap && "text-primary")} />
-            {heatmap ? "Heatmap ligado" : "Heatmap desligado"}
-          </Button>
-          {manuais > 0 && (
-            <Badge variant="outline" className="gap-1 text-[11.5px]">
-              <Pencil className="h-3 w-3" />
-              {manuais} {manuais === 1 ? "célula digitada" : "células digitadas"}
-            </Badge>
-          )}
-          <Button size="sm" variant="outline" className="h-8 gap-1.5 text-[12.5px]" onClick={() => setImportando(true)}>
-            <Upload className="h-3.5 w-3.5" /> Importar
-          </Button>
-          <Button size="sm" variant="outline" className="h-8 gap-1.5 text-[12.5px]" onClick={exportar} disabled={loading || !grupos.length}>
-            <Download className="h-3.5 w-3.5" /> Exportar
-          </Button>
         </div>
       </div>
 

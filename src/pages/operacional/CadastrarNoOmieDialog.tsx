@@ -22,6 +22,7 @@ import {
   Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle,
 } from "@/components/ui/dialog";
 import { supabase } from "@/integrations/supabase/client";
+import { invocar } from "@/lib/erroEdge";
 import { cn } from "@/lib/utils";
 
 type Acao = "criar" | "alterar_pix" | "ja_ok" | "bloqueado";
@@ -99,15 +100,14 @@ export default function CadastrarNoOmieDialog({
      e "nada a fazer" não têm o que marcar. */
   const [marcados, setMarcados] = useState<Set<string>>(new Set());
 
-  const chamar = useCallback(async (simular: boolean, quais: string[]) => {
-    const { data, error } = await supabase.functions.invoke("omie-colaboradores-cadastrar", {
-      body: { codigos: quais, simular },
-    });
-    if (error) throw new Error(error.message);
-    const r = data as Resposta;
-    if (r?.status !== "ok") throw new Error(r?.erro || "Falha ao falar com o Omie.");
-    return r;
-  }, []);
+  const chamar = useCallback(
+    (simular: boolean, quais: string[]) => invocar<Resposta>(
+      supabase.functions.invoke("omie-colaboradores-cadastrar", {
+        body: { codigos: quais, simular },
+      }),
+    ),
+    [],
+  );
 
   const acionavel = (a: Acao) => a === "criar" || a === "alterar_pix";
 

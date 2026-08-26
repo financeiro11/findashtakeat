@@ -291,6 +291,10 @@ Deno.serve(async (req) => {
     });
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
+    /* Vai para os logs da função além do corpo da resposta. O corpo serve a
+       quem clicou; o log serve a quem investiga depois, quando a tela já
+       fechou e a única pergunta é "por que aquele envio falhou?". */
+    console.error("folha-omie-enviar:", msg);
     const status = /autentic|permiss/i.test(msg) ? 401 : 500;
     return json({ status: "erro", erro: msg }, status);
   }

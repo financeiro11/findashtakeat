@@ -20,6 +20,7 @@ import {
   Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle,
 } from "@/components/ui/dialog";
 import { supabase } from "@/integrations/supabase/client";
+import { invocar } from "@/lib/erroEdge";
 import AjustarSalarioDialog, { type AlvoDoAjuste } from "./AjustarSalarioDialog";
 import EnviarFolhaOmie from "./EnviarFolhaOmie";
 import { cn } from "@/lib/utils";
@@ -100,15 +101,8 @@ export default function PreviaFolhaDialog({
     let vivo = true;
     setCarregando(true); setErro(null); setPrevia(null);
 
-    supabase.functions
-      .invoke("folha-previa", { body: { competencia } })
-      .then(({ data, error }) => {
-        if (!vivo) return;
-        if (error) throw new Error(error.message);
-        const r = data as Previa;
-        if (r?.status !== "ok") throw new Error(r?.erro || "Falha ao montar a prévia.");
-        setPrevia(r);
-      })
+    invocar<Previa>(supabase.functions.invoke("folha-previa", { body: { competencia } }))
+      .then((r) => { if (vivo) setPrevia(r); })
       .catch((e) => { if (vivo) setErro(e instanceof Error ? e.message : String(e)); })
       .finally(() => { if (vivo) setCarregando(false); });
 

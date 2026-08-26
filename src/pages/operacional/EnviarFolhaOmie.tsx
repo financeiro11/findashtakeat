@@ -18,6 +18,7 @@ import { toast } from "sonner";
 import { FlaskConical, Loader2, Send, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { supabase } from "@/integrations/supabase/client";
+import { invocar } from "@/lib/erroEdge";
 import { cn } from "@/lib/utils";
 import { doisParaTestar, type Candidato } from "@/lib/folha/teste";
 
@@ -50,13 +51,12 @@ export default function EnviarFolhaOmie({
 
   const teste = doisParaTestar(candidatos);
 
-  const chamar = async (body: Record<string, unknown>): Promise<Resposta> => {
-    const { data, error } = await supabase.functions.invoke("folha-omie-enviar", { body });
-    if (error) throw new Error(error.message);
-    const r = data as Resposta;
-    if (r?.status !== "ok") throw new Error(r?.erro || "Falha ao falar com o Omie.");
-    return r;
-  };
+  /* `invocar` desembrulha o corpo do erro. Sem ele, qualquer recusa do Omie
+     chega como "Edge Function returned a non-2xx status code" — uma frase com
+     a qual não dá para fazer nada: não se sabe se é para tentar de novo, se o
+     payload está errado ou se o mês está fechado no ERP. */
+  const chamar = async (body: Record<string, unknown>): Promise<Resposta> =>
+    invocar<Resposta>(supabase.functions.invoke("folha-omie-enviar", { body }));
 
   const enviarTeste = async () => {
     setOcupado("teste");

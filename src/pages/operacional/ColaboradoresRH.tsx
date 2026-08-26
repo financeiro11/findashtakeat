@@ -3,7 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import {
   Search, Users, Columns3, Filter, FilterX, X,
   ChevronLeft, ChevronRight, Copy, Receipt, PanelRightOpen, Maximize2,
-  UserPlus, UserMinus, CalendarClock,
+  UserPlus, UserMinus, CalendarClock, Building2,
 } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -18,6 +18,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/u
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { cn } from "@/lib/utils";
 import { supabase } from "@/integrations/supabase/client";
+import CadastrarNoOmieDialog from "./CadastrarNoOmieDialog";
 
 /* ─────────────────────────── Tipos ───────────────────────────
    Espelho somente-leitura da tabela `rh_colaboradores`, sincronizada
@@ -400,6 +401,7 @@ export default function ColaboradoresRH() {
     return { ano: hoje.getFullYear(), mes: hoje.getMonth() };
   });
   const [movFiltro, setMovFiltro] = useState<"entraram" | "sairam" | "vencendo" | null>(null);
+  const [cadastrarOmie, setCadastrarOmie] = useState(false);
   const [visiveis, setVisiveis] = useState<Set<string>>(() => {
     try {
       const saved = localStorage.getItem(STORAGE_KEY);
@@ -742,6 +744,19 @@ export default function ColaboradoresRH() {
             n={mov.entraram.size}
             onClick={() => alternarMov("entraram")}
           />
+          {mov.entraram.size > 0 && (
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-[30px] gap-1.5 rounded-full text-[12.5px]"
+              onClick={() => setCadastrarOmie(true)}
+              title={`Criar no Omie o fornecedor de quem entrou em ${mesCurto}, e gravar a chave PIX de quem estiver sem. Mostra a prévia antes de criar nada.`}
+            >
+              <Building2 className="size-3.5 text-muted-foreground" />
+              Cadastrar no Omie
+            </Button>
+          )}
+
           <PilulaMov
             ativa={movFiltro === "sairam"}
             tom="neg"
@@ -1069,6 +1084,19 @@ export default function ColaboradoresRH() {
           )}
         </DialogContent>
       </Dialog>
+
+      <CadastrarNoOmieDialog
+        aberto={cadastrarOmie}
+        onFechar={() => setCadastrarOmie(false)}
+        rotuloDoMes={rotuloMes}
+        /* `todos`, e não `filtrados`: o botão diz "quem entrou no mês", e uma
+           busca digitada na tela não pode encolher em silêncio o que vai ser
+           cadastrado. */
+        codigos={todos
+          .filter((c) => mov.entraram.has(c.id))
+          .map((c) => String(c.codigo ?? ""))
+          .filter(Boolean)}
+      />
 
       <Dialog open={!!fotoAberta} onOpenChange={(open) => !open && setFotoAberta(null)}>
         <DialogContent className="max-w-xs p-4" onClick={(e) => e.stopPropagation()}>

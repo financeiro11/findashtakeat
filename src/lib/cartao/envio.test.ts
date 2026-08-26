@@ -59,6 +59,26 @@ function arquivos(dir: string): string[] {
   return out;
 }
 
+/**
+ * Tira comentários antes de procurar a chamada.
+ *
+ * Citar `IncluirContaPagar` explicando POR QUE um fornecedor precisa existir
+ * não é criar título — e é o que os módulos de cadastro de colaborador fazem.
+ * Sem isto, o guarda pega prosa e a saída é reescrever o comentário para
+ * escapar, que é justamente o falso negativo que ele não deve ensinar.
+ *
+ * Só remove linhas que COMEÇAM com `//` ou `*` e os blocos `/* ... *\/`. Um
+ * `//` no meio de uma linha fica — assim `"https://app.omie.com.br"` não é
+ * mutilado, e uma chamada de verdade nunca some.
+ */
+function semComentarios(src: string): string {
+  return src
+    .replace(/\/\*[\s\S]*?\*\//g, " ")
+    .split(/\r?\n/)
+    .filter((l) => !/^\s*(\/\/|\*)/.test(l))
+    .join("\n");
+}
+
 const quemEscreveNoOmie = (): string[] =>
   [join(RAIZ, "src"), join(RAIZ, "supabase"), join(RAIZ, "scripts")]
     .flatMap((d) => { try { return arquivos(d); } catch { return []; } })
@@ -67,7 +87,7 @@ const quemEscreveNoOmie = (): string[] =>
     // `IncluirContaPagarPorLote` para prender o formato do lote. A suíte não
     // vai para produção — o que se vigia aqui é o caminho de runtime.
     .filter((f) => !/\.test\.[cm]?[jt]sx?$/.test(f))
-    .filter((f) => ESCRITA_NO_OMIE.test(readFileSync(f, "utf8")))
+    .filter((f) => ESCRITA_NO_OMIE.test(semComentarios(readFileSync(f, "utf8"))))
     .map((f) => f.slice(RAIZ.length + 1).replace(/\\/g, "/"));
 
 describe("chave de envio ao Omie", () => {

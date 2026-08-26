@@ -61,6 +61,12 @@ type Linha = ItemDaFolha & {
   ajusteMotivo: string | null;
   ajustadoEm: string | null;
   cargo: string | null;
+  /** A chave que o título vai levar — a do cadastro do fornecedor, literal. */
+  chavePix: string | null;
+  /** Por que a chave do cadastro não serve; `null` = serve. */
+  chavePixBloqueio: string | null;
+  /** A varredura de chaves cobriu esta pessoa? */
+  chavePixConferida: boolean;
 };
 
 type Previa = {
@@ -80,6 +86,8 @@ type Previa = {
     clientes_em: string | null;
     consultas_diretas: number;
     nao_conferidos: number;
+    chaves_pix_em: string | null;
+    chaves_pix_nao_conferidas: number;
   };
 };
 
@@ -285,6 +293,25 @@ export default function PreviaFolhaDialog({
                           )}
                         </div>
                         <span className="mono text-[11px] text-muted-foreground">{l.codigo}</span>
+                        {/* A chave sai do cadastro do fornecedor, e é o cadastro
+                            que se corrige quando ela não serve — trocar por
+                            outra aqui é o que trava o pagamento em lote. */}
+                        {l.chavePixBloqueio ? (
+                          <span className="block whitespace-normal text-[11px] leading-snug text-destructive">
+                            ✖ {l.chavePixBloqueio}
+                          </span>
+                        ) : l.chavePix ? (
+                          <span
+                            className="mono block truncate text-[11px] text-muted-foreground"
+                            title={`Chave PIX do cadastro no Omie — é ela que vai no título: ${l.chavePix}`}
+                          >
+                            PIX {l.chavePix}
+                          </span>
+                        ) : !l.chavePixConferida && (
+                          <span className="block text-[11px] text-muted-foreground">
+                            chave PIX não conferida
+                          </span>
+                        )}
                       </td>
                       <td className="px-3 py-2 text-[13px]">
                         {l.departamento || <span className="text-destructive">—</span>}
@@ -374,6 +401,19 @@ export default function PreviaFolhaDialog({
               </Aviso>
             )}
 
+            {(previa?.cache.chaves_pix_nao_conferidas ?? 0) > 0 && (
+              <Aviso
+                tom="atencao"
+                titulo={`${previa?.cache.chaves_pix_nao_conferidas} sem a chave PIX do Omie conferida`}
+              >
+                A chave de cada título sai do cadastro do fornecedor no Omie, e a última varredura
+                {previa?.cache.chaves_pix_em
+                  ? ` (${new Date(previa.cache.chaves_pix_em).toLocaleString("pt-BR")})`
+                  : ""} não cobriu essas pessoas. O envio relê do Omie ao vivo e decide — mas para
+                ver aqui antes, use “Reconsultar o Omie” na tela de Colaboradores.
+              </Aviso>
+            )}
+
             <EnviarFolhaOmie
               competencia={competencia}
               totalDoLote={total}
@@ -383,11 +423,13 @@ export default function PreviaFolhaDialog({
                 nome: l.nome,
                 valor: l.valor,
                 cnpj: l.cnpj,
-                /* "Pronto" é ter o que o payload REALMENTE usa: fornecedor e
-                   categoria. Departamento ficou de fora porque o Omie recusa o
-                   campo — exigi-lo aqui tiraria gente do envio por causa de um
-                   dado que nem é mandado. */
-                pronto: !!l.codigoFornecedor && !!l.codigoCategoria,
+                /* "Pronto" é ter o que o payload REALMENTE usa: fornecedor,
+                   categoria e a chave PIX do cadastro. Departamento ficou de
+                   fora porque o Omie recusa o campo — exigi-lo aqui tiraria
+                   gente do envio por causa de um dado que nem é mandado.
+                   A chave entra porque sem ela o título é recusado um a um, e
+                   com a chave errada ele trava o pagamento do lote inteiro. */
+                pronto: !!l.codigoFornecedor && !!l.codigoCategoria && !l.chavePixBloqueio,
               }))}
               onEnviado={() => setRecarga((n) => n + 1)}
             />

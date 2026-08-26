@@ -33,7 +33,7 @@
  * quatro pessoas dividirem um CNPJ e seis terem documento incompleto — dado
  * errado no RH, que nenhuma chave deveria destravar.
  */
-import { chavePermitida, ehEstagiario, tipoDeChavePix } from "./documento.ts";
+import { chavePermitida, ehEstagiario, soDigitos as digitos, tipoDeChavePix } from "./documento.ts";
 
 export { chavePermitida, ehEstagiario, tipoDeChavePix };
 
@@ -532,6 +532,8 @@ export type PendenciaDoItem = {
   /** A chave PIX que VAI no título, e o cargo para saber se CPF vale. */
   chavePix?: string | null;
   cargo?: string | null;
+  /** Por que a chave do cadastro no Omie não serve; vazio = serve. */
+  chavePixBloqueio?: string | null;
   /** Fornecedor do Omie casado pelo CNPJ; `null` = não achou. */
   codigoFornecedor: number | null;
   /** Categoria da pessoa, vinda do de-para; vazio = sem categoria definida. */
@@ -611,7 +613,17 @@ export function pendenciasDoLote(itens: PendenciaDoItem[]): string | null {
       + "Defina a categoria de todos antes de enviar.";
   }
 
-  /* A chave PIX NÃO é conferida aqui.
+  /* Chave PIX que o cadastro do Omie não fornece. Vem por último de propósito:
+     documento, fornecedor e categoria são pré-requisitos dela — sem fornecedor
+     não há cadastro de onde tirar chave, e apontar "sem chave" antes de "sem
+     fornecedor" manda a pessoa procurar no lugar errado. */
+  const semChave = itens.filter((i) => i.chavePixBloqueio).length;
+  if (semChave) {
+    return `${semChave} colaborador(es) com a chave PIX do cadastro no Omie impedindo o pagamento. `
+      + "Corrija a chave no cadastro do fornecedor, no Omie — é de lá que o título tira a chave.";
+  }
+
+  /* A chave PIX do RH NÃO é conferida aqui.
    *
    * Cheguei a barrar por ela, e estava errado: a chave não vai mais no título
    * — vem do cadastro do fornecedor no Omie. Travar a folha por um campo que
@@ -839,3 +851,99 @@ export function resolvedorDeCategoria(
  * Este comentário existe para poupar a próxima pessoa de descobrir isso com
  * cem títulos.
  */
+
+
+/* ------------------------------------------------------------------
+ * A chave PIX do título
+ * ------------------------------------------------------------------ */
+
+/** O cadastro do fornecedor no Omie, do ponto de vista da chave PIX. */
+export type CadastroDoFornecedor = {
+  /** A chave como está lá. Vazio = fornecedor existe, sem chave preenchida. */
+  chave: string;
+  /** Achou o fornecedor por este documento? */
+  existe: boolean;
+};
+
+export type ChaveDoTitulo =
+  /** A chave a mandar no título, LITERAL como está no cadastro. */
+  | { chave: string; bloqueio?: undefined }
+  /** Por que esta pessoa não pode ser provisionada agora. */
+  | { chave?: undefined; bloqueio: string };
+
+/**
+ * Qual chave PIX vai no título — e ela é SEMPRE a do cadastro do fornecedor.
+ *
+ * Não é preferência, é requisito do pagamento em lote. O Omie casa o título
+ * com o cadastro na hora de montar a remessa; título com uma chave e cadastro
+ * com outra vira divergência, e a divergência não segura só aquele título —
+ * ela impede o lote inteiro de ser pago. Foi o que o financeiro relatou em
+ * 26/08/2026, e é por isso que o espelho do RH deixou de ser fonte da chave.
+ *
+ * Vale LITERAL, sem normalizar: `+5527998814130` vai com o `+55`, e um CNPJ
+ * gravado com pontuação vai com a pontuação. Qualquer "arrumada" aqui recria
+ * exatamente a divergência que a regra existe para evitar.
+ *
+ * O espelho do RH continua sendo conferido — mas para virar recado ao DH sobre
+ * o cadastro de origem, nunca para escolher em que conta se paga.
+ *
+ * Quando o cadastro do Omie está errado, isto BLOQUEIA em vez de substituir por
+ * uma chave melhor: substituir é justamente criar a divergência. O conserto é
+ * no fornecedor, no Omie, e a mensagem diz isso.
+ */
+export function chaveDoTitulo(args: {
+  /** Documento da pessoa, só dígitos — o mesmo que acha o fornecedor. */
+  documento: string;
+  /** O cadastro achado no Omie; `null` quando a consulta não achou nada. */
+  cadastro: CadastroDoFornecedor | null;
+  estagiario: boolean;
+}): ChaveDoTitulo {
+  const { cadastro, estagiario } = args;
+  const doc = digitos(args.documento);
+
+  if (!cadastro || !cadastro.existe) {
+    return { bloqueio: "não tem fornecedor cadastrado no Omie" };
+  }
+
+  const chave = String(cadastro.chave ?? "").trim();
+  if (!chave) {
+    return { bloqueio: "fornecedor no Omie está sem chave PIX — cadastre a chave lá antes de provisionar" };
+  }
+
+  const tipo = tipoDeChavePix(chave);
+
+  /* Estagiário recebe no CPF: é assim que o vínculo é registrado, e o cadastro
+     do Omie tem de refletir isso antes de o título sair. */
+  if (estagiario && tipo === "cnpj") {
+    return { bloqueio: `cadastro no Omie está com chave de CNPJ (${chave}) — estagiário recebe no CPF` };
+  }
+  if (tipo === "cpf" && !estagiario) {
+    return { bloqueio: `cadastro no Omie está com chave de CPF (${chave}) — só estagiário recebe em CPF` };
+  }
+
+  /* Chave de documento que não é o documento da pessoa paga outra gente. A
+     empresa não paga em CNPJ de terceiro — confirmado com o financeiro em
+     26/08/2026. */
+  if ((tipo === "cnpj" || tipo === "cpf") && doc && digitos(chave) !== doc) {
+    return {
+      bloqueio: `cadastro no Omie paga em ${chave}, que não é o documento dela `
+        + "— a empresa não paga em documento de terceiro",
+    };
+  }
+
+  if (!chavePermitida(tipo, estagiario)) {
+    const porque: Partial<Record<typeof tipo, string>> = {
+      aleatoria: "chave aleatória, que a empresa não paga",
+      telefone_sem_ddi: `telefone ${chave} sem o +55, que o Omie recusa`,
+      email_invalido: `"${chave}", que não é um e-mail válido`,
+      documento_incompleto: `${chave}, que não é um documento válido`,
+      desconhecida: `"${chave}", em formato não reconhecido`,
+    };
+    return {
+      bloqueio: `cadastro no Omie está com ${porque[tipo] ?? `"${chave}"`} `
+        + "— troque a chave no fornecedor, de preferência para o CNPJ",
+    };
+  }
+
+  return { chave };
+}

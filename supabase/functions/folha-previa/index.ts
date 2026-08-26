@@ -16,13 +16,19 @@
 // cadastrado depois apareceria como pendência sem ser. A busca é sempre por
 // CNPJ, nunca por nome: nome de PJ de uma pessoa só é escrito de vários jeitos
 // entre o RH e o ERP, e casar por nome erra para os dois lados.
+//
+// A CHAVE PIX que cada título vai levar é a do CADASTRO do fornecedor, e a
+// prévia a lê do cache `folha_chaves_pix` — só para MOSTRAR. Quem manda é o
+// envio, que relê do Omie ao vivo. A prévia diz de quando é a foto justamente
+// porque as duas podem discordar quando alguém acabou de corrigir no ERP.
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { requireUser } from "../_shared/auth.ts";
 import {
-  montarLote, pendenciasDoLote, recusaDaFolha, resolvedorDeCategoria, soDigitos,
-  type ColaboradorDaFolha, type EstadoDaFolha, type ResolveDePara,
+  chaveDoTitulo, montarLote, pendenciasDoLote, recusaDaFolha, resolvedorDeCategoria, soDigitos,
+  type CadastroDoFornecedor, type ColaboradorDaFolha, type EstadoDaFolha, type ResolveDePara,
 } from "../_shared/folha-envio.ts";
+import { ehEstagiario } from "../_shared/documento.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -103,13 +109,14 @@ Deno.serve(async (req) => {
       return json({ status: "erro", erro: "Competência inválida." }, 400);
     }
 
-    const [rh, dep, cadastrosCache, clientesCache, envio] = await Promise.all([
+    const [rh, dep, cadastrosCache, clientesCache, chavesCache, envio] = await Promise.all([
       supabase.from("rh_colaboradores")
         .select("id, codigo, nome, cnpj, razao, valor, inicio, datadesl, cargo"),
       supabase.from("folha_depara")
         .select("codigo_rh, departamento, categoria_descricao, valor_referencia, valor_ajustado, valor_rh_no_ajuste, ajuste_motivo, ajustado_em, documento_ajustado, documento_motivo"),
       supabase.from("omie_cache").select("dados, atualizado_em").eq("chave", "folha_cadastros").maybeSingle(),
       supabase.from("omie_cache").select("dados, atualizado_em").eq("chave", "clientes").maybeSingle(),
+      supabase.from("omie_cache").select("dados, atualizado_em").eq("chave", "folha_chaves_pix").maybeSingle(),
       supabase.from("folha_envios_omie").select("estado, previsao_ajustada").eq("competencia", `${competencia}-01`).maybeSingle(),
     ]);
     if (rh.error) throw new Error(`Espelho do RH: ${rh.error.message}`);
@@ -191,25 +198,46 @@ Deno.serve(async (req) => {
       }
     }
 
-    const linhas = lote.itens.map((i) => ({
-      ...i,
-      codigoFornecedor: doCache.get(i.cnpj) ?? direto.get(i.cnpj) ?? null,
-      fornecedorConferidoNoOmie: doCache.has(i.cnpj) || direto.has(i.cnpj),
-      codigoCategoria: i.categoria ? codCategoria(i.categoria) : null,
-      codigoDepartamento: i.departamento ? codDepartamento.get(i.departamento) ?? null : null,
-      ajusteMotivo: (porCodigo.get(i.codigo)?.ajuste_motivo as string) ?? null,
-      ajustadoEm: (porCodigo.get(i.codigo)?.ajustado_em as string) ?? null,
-      cargo: cargoPorCodigo.get(i.codigo) ?? null,
-    }));
+    /* A chave PIX do cadastro do fornecedor, da última varredura. Chaveada por
+       código do RH, que é o que a varredura guarda. */
+    const chaveNoOmie = new Map<string, CadastroDoFornecedor>();
+    for (const c of (chavesCache.data?.dados ?? []) as Record<string, unknown>[]) {
+      chaveNoOmie.set(String(c.codigo ?? ""), {
+        chave: String(c.chaveOmie ?? ""),
+        existe: !!c.existe,
+      });
+    }
 
-    const pixPorCodigo = new Map(
-      ((rh.data ?? []) as Record<string, unknown>[])
-        .map((c) => [String(c.codigo), (c.pix as string) ?? null]),
-    );
+    const linhas = lote.itens.map((i) => {
+      const cargo = cargoPorCodigo.get(i.codigo) ?? null;
+      /* Quem a varredura não cobre fica `undefined`, e não `{existe:false}`:
+         "ainda não conferi" não é "não existe". A linha avisa, e o envio —
+         que relê ao vivo — é quem decide. */
+      const cadastro = chaveNoOmie.get(i.codigo);
+      const daChave = cadastro
+        ? chaveDoTitulo({ documento: i.cnpj, cadastro, estagiario: ehEstagiario(cargo ?? "") })
+        : null;
+      return {
+        ...i,
+        codigoFornecedor: doCache.get(i.cnpj) ?? direto.get(i.cnpj) ?? null,
+        fornecedorConferidoNoOmie: doCache.has(i.cnpj) || direto.has(i.cnpj),
+        codigoCategoria: i.categoria ? codCategoria(i.categoria) : null,
+        codigoDepartamento: i.departamento ? codDepartamento.get(i.departamento) ?? null : null,
+        ajusteMotivo: (porCodigo.get(i.codigo)?.ajuste_motivo as string) ?? null,
+        ajustadoEm: (porCodigo.get(i.codigo)?.ajustado_em as string) ?? null,
+        cargo,
+        /** A chave que o título vai levar — a do cadastro, literal. */
+        chavePix: daChave?.chave ?? null,
+        chavePixBloqueio: daChave?.bloqueio ?? null,
+        chavePixConferida: !!cadastro,
+      };
+    });
+
     const paraChecar = linhas.map((l) => ({
       cnpj: l.cnpj,
       codigoFornecedor: l.codigoFornecedor,
       codigoCategoria: l.codigoCategoria,
+      chavePixBloqueio: l.chavePixBloqueio,
     }));
 
     return json({
@@ -231,6 +259,8 @@ Deno.serve(async (req) => {
       }),
       cache: {
         clientes_em: clientesCache.data?.atualizado_em ?? null,
+        chaves_pix_em: chavesCache.data?.atualizado_em ?? null,
+        chaves_pix_nao_conferidas: linhas.filter((l) => !l.chavePixConferida).length,
         cadastros_em: cadastrosCache.data?.atualizado_em ?? null,
         consultas_diretas: consultados.length,
         nao_conferidos: naoConferidos,

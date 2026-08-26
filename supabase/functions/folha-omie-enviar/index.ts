@@ -30,8 +30,9 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { requireUser } from "../_shared/auth.ts";
 import {
-  CONTA_CORRENTE_FOLHA, chavePermitida, montarLote, montarTituloFolha,
-  recusaDaFolha, resolvedorDeCategoria, soDigitos, tipoDeChavePix,
+  CONTA_CORRENTE_FOLHA, chaveDoTitulo, montarLote, montarTituloFolha,
+  recusaDaFolha, resolvedorDeCategoria, soDigitos,
+  type CadastroDoFornecedor,
   type ColaboradorDaFolha, type EstadoDaFolha, type ResolveDePara, type TituloDaFolha,
 } from "../_shared/folha-envio.ts";
 
@@ -97,18 +98,20 @@ async function omieCall(
  * espelho tinha CPF com cara de telefone, CNPJ truncado e CNPJ com dígito
  * trocado — dez títulos recusados por causa disso.
  */
-async function chavePixDoFornecedor(cnpj: string): Promise<string | null> {
+async function cadastroDoFornecedor(cnpj: string): Promise<CadastroDoFornecedor> {
   const r = await omieCall("ListarClientes", {
     pagina: 1,
     registros_por_pagina: 20,
     apenas_importado_api: "N",
     clientesFiltro: { cnpj_cpf: cnpj },
   }, "geral/clientes");
-  for (const c of r?.clientes_cadastro ?? []) {
-    const chave = String(c?.dadosBancarios?.cChavePix ?? "").trim();
-    if (chave) return chave;
-  }
-  return null;
+  const achados = r?.clientes_cadastro ?? [];
+  if (!achados.length) return { chave: "", existe: false };
+  /* Prefere o cadastro que TEM chave: o mesmo documento às vezes aparece em
+     mais de um registro, e o que interessa é o que consegue pagar. */
+  const comChave = achados.find((c: any) => String(c?.dadosBancarios?.cChavePix ?? "").trim());
+  const c = comChave ?? achados[0];
+  return { chave: String(c?.dadosBancarios?.cChavePix ?? "").trim(), existe: true };
 }
 
 Deno.serve(async (req) => {
@@ -214,7 +217,6 @@ Deno.serve(async (req) => {
       inicio: (c.inicio as string) ?? null,
       datadesl: (c.datadesl as string) ?? null,
     }));
-    const pixPorCodigo = new Map(linhasRh.map((c) => [String(c.codigo), (c.pix as string) ?? null]));
     const cargoPorCodigo = new Map(
       linhasRh.map((c) => [String(c.codigo), (c.cargo as string) ?? null]),
     );
@@ -245,34 +247,25 @@ Deno.serve(async (req) => {
     const titulos: TituloDaFolha[] = [];
     const semPreparo: { nome: string; falta: string }[] = [];
 
-    /* A chave de cada um, resolvida ANTES do envio.
+    /* A chave de cada um, lida do CADASTRO do fornecedor, ao vivo.
      *
-     * Ordem: a do espelho do RH quando é válida (foi assim que noventa títulos
-     * passaram), senão a do cadastro do fornecedor no Omie, senão o próprio
-     * documento. Só se nada disso valer é que a pessoa fica de fora — e aí com
-     * o motivo escrito, em vez de virar uma recusa do ERP que ninguém liga a
-     * ninguém. */
-    const chaveCache = new Map<string, string | null>();
-    const chaveParaPagar = async (
-      doc: string, pixRh: string | null, estagiario: boolean,
-    ): Promise<string | null> => {
-      const vale = (c: string) => !!c && chavePermitida(tipoDeChavePix(c), estagiario);
-
-      // Estagiário recebe no CPF, que é o documento dele.
-      if (estagiario && doc.length === 11) return doc;
-
-      const doRh = String(pixRh ?? "").trim();
-      if (vale(doRh)) return doRh;
-
-      if (!chaveCache.has(doc)) {
-        try { chaveCache.set(doc, await chavePixDoFornecedor(doc)); }
-        catch { chaveCache.set(doc, null); }
+     * Ao vivo, e não do cache `folha_chaves_pix`: se alguém acabou de corrigir
+     * a chave no Omie, um cache de ontem mandaria a antiga — e título com uma
+     * chave e cadastro com outra é exatamente a divergência que trava o
+     * pagamento em lote inteiro.
+     *
+     * O espelho do RH não entra aqui. Ele era a primeira opção até 26/08/2026,
+     * e é por isso que noventa títulos saíram com uma chave que o cadastro não
+     * confirmava. Continua conferido na tela, para o DH arrumar a origem. */
+    const cadastroCache = new Map<string, CadastroDoFornecedor | null>();
+    const cadastroDe = async (doc: string): Promise<CadastroDoFornecedor | null> => {
+      if (!cadastroCache.has(doc)) {
+        // Falha de rede não é "não existe": vira null, e a pessoa fica de fora
+        // com o motivo escrito em vez de ir com uma chave inventada.
+        try { cadastroCache.set(doc, await cadastroDoFornecedor(doc)); }
+        catch { cadastroCache.set(doc, null); }
       }
-      const doFornecedor = chaveCache.get(doc) ?? "";
-      if (vale(doFornecedor)) return doFornecedor;
-
-      // Último recurso: o próprio documento, se ele valer como chave.
-      return vale(doc) ? doc : null;
+      return cadastroCache.get(doc) ?? null;
     };
 
     for (const i of itens) {
@@ -284,10 +277,14 @@ Deno.serve(async (req) => {
          Continua resolvido e devolvido, para a prévia e para o dia em que o
          Omie aceitar o campo. */
       const estagiario = estagioPorCodigo.get(i.codigo) ?? false;
-      const chave = await chaveParaPagar(i.cnpj, pixPorCodigo.get(i.codigo) ?? null, estagiario);
+      const daChave = chaveDoTitulo({
+        documento: i.cnpj,
+        cadastro: await cadastroDe(i.cnpj),
+        estagiario,
+      });
       const falta = !fornecedor ? "fornecedor no Omie"
         : !categoria ? "categoria"
-          : !chave ? "chave PIX válida (nem no RH nem no cadastro do fornecedor)" : null;
+          : daChave.bloqueio ?? null;
       if (falta) { semPreparo.push({ nome: i.nome, falta }); continue; }
       titulos.push({
         integracao: i.integracao,
@@ -300,7 +297,7 @@ Deno.serve(async (req) => {
         vencimento: lote.vencimento,
         previsao: lote.previsao,
         nome: i.nome,
-        chavePix: chave,
+        chavePix: daChave.chave!,
         estagiario,
         cnpj: i.cnpj,
         razao: i.razao,

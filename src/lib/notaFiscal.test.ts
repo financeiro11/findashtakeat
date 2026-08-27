@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   chaveDeAcesso, chaveValida, dadosDaChave, descricaoDaNota, lerCorpoDeEmail,
-  ehAvisoDeCobranca, lerDanfes, lerNomeDeArquivo, lerXmlFiscal, linksDeNota, tipoDoDocumento,
+  ehAvisoDeCobranca, lerDanfes, lerNomeDeArquivo, lerXmlFiscal, linksDeNota, tipoDoDocumento, valorComMoeda,
 } from "@/lib/notaFiscal";
 
 /* ---------------------------------------------------------------------------
@@ -427,5 +427,58 @@ describe("linksDeNota", () => {
     expect(linksDeNota("a nota: https://prefeitura.gov.br/emissor/nfse/123.pdf."))
       .toEqual(["https://prefeitura.gov.br/emissor/nfse/123.pdf"]);
     expect(linksDeNota("sem link nenhum aqui")).toEqual([]);
+  });
+});
+
+/* A FATURA QUE NÃO É EM REAL.
+ *
+ * HubSpot, Datadog e Campbells mandam invoice em dólar e nunca escrevem "R$".
+ * Elas entravam no acervo com valor NULO, e sem valor nenhuma regra do casador
+ * alcança — 483 notas com arquivo e sem valor, medidas em 27/08/2026. */
+describe("valorComMoeda", () => {
+  it("lê o total em dólar da invoice", () => {
+    expect(valorComMoeda("HubSpot Inc. Invoice 793472891 Amount Due: $5,693.73"))
+      .toEqual({ valor: 5693.73, moeda: "USD" });
+    expect(valorComMoeda("Total Due USD 1,047.00")).toEqual({ valor: 1047, moeda: "USD" });
+  });
+
+  /* "5,693.73" lido pelo parser brasileiro vira R$ 5,69 — mil vezes menor, sem
+     erro nenhum, e não casa com nada. */
+  it("não confunde a vírgula de milhar com decimal", () => {
+    expect(valorComMoeda("$5,693.73")?.valor).toBe(5693.73);
+  });
+
+  it("o real ganha de tudo, mesmo quando o documento cita dólar", () => {
+    expect(valorComMoeda("Valor: R$ 2.135,74 (equivalente a US$ 410.00)"))
+      .toEqual({ valor: 2135.74, moeda: "BRL" });
+    // Documento em real cujo número não saiu não vira dólar por descuido.
+    expect(valorComMoeda("Total R$ (a definir) $99.00")).toBeNull();
+  });
+
+  it("prefere o total ao primeiro número da invoice", () => {
+    const t = "Line item 1 $12.00 Line item 2 $30.00 Amount due $342.00";
+    expect(valorComMoeda(t)?.valor).toBe(342);
+  });
+
+  /* A ARMADILHA QUE ISTO EXISTE PARA PEGAR, tirada da fatura real do HubSpot:
+     moeda americana com pontuação brasileira. O parser en-US lia "5.693,73" e
+     devolvia 5,69 — mil vezes menor, sem erro nenhum, e casando com um título
+     de R$ 10,30. */
+  it("dólar com pontuação brasileira", () => {
+    expect(valorComMoeda("Valor pago (USD) US$ 5.693,73"))
+      .toEqual({ valor: 5693.73, moeda: "USD" });
+    expect(valorComMoeda("Seu VISA que termina em 5884 foi cobrado com US$ 5.693,73")?.valor)
+      .toBe(5693.73);
+  });
+
+  it("não confunde quantidade com dinheiro", () => {
+    // "2.000 Contatos de marketing" está na mesma fatura e não é valor.
+    expect(valorComMoeda("Total US$ 1.234,56 · 2.000 Contatos de marketing")?.valor).toBe(1234.56);
+  });
+
+  it("euro também, e texto sem dinheiro nenhum devolve nulo", () => {
+    expect(valorComMoeda("Total: EUR 1.00")).toEqual({ valor: 1, moeda: "EUR" });
+    expect(valorComMoeda("obrigado pela preferência")).toBeNull();
+    expect(valorComMoeda(null)).toBeNull();
   });
 });

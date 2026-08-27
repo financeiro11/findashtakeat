@@ -70,6 +70,29 @@ function valorBate(nota: number, titulo: number): boolean {
   return Math.abs(cents(nota) - cents(titulo)) <= folga;
 }
 
+/**
+ * QUEM NÃO EMITE NOTA POR CORRIDA, e por isso o recibo vale.
+ *
+ * Uber e 99 não mandam NFS-e por viagem: o que existe é o recibo do app, e é
+ * ele que a pessoa printa e anexa. Recusar esse print como "não é documento
+ * fiscal" está tecnicamente certo e operacionalmente errado — manda alguém
+ * procurar um documento que o fornecedor não emite.
+ *
+ * Decisão do financeiro em 27/08/2026. A lista é de MOBILIDADE por aplicativo,
+ * e curta de propósito: cada nome aqui é uma exceção à regra de que nota é
+ * nota, e a exceção só se justifica onde a nota realmente não existe.
+ *
+ * Casa pelo favorecido porque é o que se tem — no cartão esses lançamentos não
+ * trazem CNPJ. As grafias vêm do extrato real: "UBER *TRIP", "DL*UberRides",
+ * "99*V", "UBER * PENDING".
+ */
+const ACEITA_RECIBO = /\buber\b|uberrides|uber ?\*|^99[ *]|\b99 ?\(app\)|99app|cabify|indriver/i;
+
+/** O print da corrida serve para estes; para todo o resto, não. */
+export function aceitaRecibo(favorecido: string | null | undefined): boolean {
+  return ACEITA_RECIBO.test(String(favorecido ?? ""));
+}
+
 export function triar(l: LeituraAnexo, t: ContextoTitulo): Triagem {
   const tipo = String(l?.tipo ?? "").trim().toLowerCase();
 
@@ -77,6 +100,16 @@ export function triar(l: LeituraAnexo, t: ContextoTitulo): Triagem {
      confiável — aceitar o `tipo` dele aqui seria decidir por um chute. */
   if (l?.legivel === false) {
     return { veredito: "revisar", motivo: "o modelo não conseguiu ler o documento" };
+  }
+
+  /* A EXCEÇÃO DA MOBILIDADE vem antes da recusa, e depois do "ilegível": o
+     print só vale se o modelo conseguiu LER o valor nele. Sem valor conferido
+     isto viraria "aceita qualquer print de Uber", que é outra coisa. */
+  if (aceitaRecibo(t?.favorecido) && (tipo === "recibo" || tipo === "print_de_tela" || tipo === "comprovante_pagamento")) {
+    if (l?.valor_total != null && valorBate(Number(l.valor_total), t.valor)) {
+      return { veredito: "nota", motivo: "recibo da corrida — Uber e 99 não emitem nota por viagem" };
+    }
+    return { veredito: "revisar", motivo: "recibo de corrida, mas o valor não confere com o título" };
   }
 
   if (NAO_SAO.has(tipo)) {

@@ -23,7 +23,7 @@
  * de perder a autoridade do painel inteiro.
  */
 
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
@@ -34,6 +34,7 @@ import { Tooltip, TooltipTrigger, TooltipContent } from "@/components/ui/tooltip
 import {
   AlertTriangle, ArrowUpRight, CheckCircle2, ChevronLeft, ChevronRight, CreditCard,
   ExternalLink, Eye, FileWarning, FilterX, Flame, Loader2, Paperclip, RefreshCw, Scale,
+  Maximize2, Minus, Plus,
   Search, Send, ShieldAlert, ShieldCheck, ShieldQuestion, ThumbsDown, ThumbsUp, Upload,
 } from "lucide-react";
 import { resolverComprovante } from "@/lib/comprovante";
@@ -298,12 +299,113 @@ function VisorAnexo({ linha, onde, nomear, aoFechar, aoDecidir, salvando, fila, 
           )}
           {!carregando && !erro && arquivo?.url && (
             ehImagem
-              ? <img src={arquivo.url} alt={arquivo.nome} className="mx-auto max-h-full" />
+              ? <ImagemComZoom url={arquivo.url} nome={arquivo.nome} />
               : <iframe src={urlParaEmbutir(arquivo.url)} title={arquivo.nome} className="h-full w-full border-0" />
           )}
         </div>
       </DialogContent>
     </Dialog>
+  );
+}
+
+/**
+ * A NOTA FOTOGRAFADA, com zoom que dá para usar.
+ *
+ * Metade do acervo é foto de cupom tirada de cima da bancada — o número da nota
+ * e o CNPJ saem com 8 px de altura. Encaixada na janela, a imagem é bonita e
+ * ilegível; e "abrir em nova aba" tira a pessoa da fila de conferência, que é
+ * justamente o fluxo que se quer manter.
+ *
+ * TRÊS GESTOS, e nenhum deles é um botão que se procura:
+ *   • roda do mouse amplia NO PONTO em que o cursor está (é assim que todo
+ *     visor de imagem funciona, e é o que a mão já espera);
+ *   • arrastar move, e só quando há o que mover — arrastar em zoom 1 não deve
+ *     descolar a imagem do centro;
+ *   • duplo clique alterna entre encaixar e 2×, que resolve o caso comum sem
+ *     ninguém precisar mirar.
+ *
+ * `touch-none` é obrigatório: sem ele o navegador trata o arraste como rolagem
+ * da página e o gesto some no celular.
+ *
+ * Trocar de arquivo REINICIA o zoom (`key` no `<img>` pelo url). Herdar o zoom
+ * do documento anterior faz o próximo abrir cortado num canto qualquer, e a
+ * pessoa acha que veio em branco.
+ */
+function ImagemComZoom({ url, nome }: { url: string; nome: string }) {
+  const [escala, setEscala] = useState(1);
+  const [pos, setPos] = useState({ x: 0, y: 0 });
+  const arrastando = useRef<{ x: number; y: number } | null>(null);
+
+  useEffect(() => { setEscala(1); setPos({ x: 0, y: 0 }); }, [url]);
+
+  const limitar = (n: number) => Math.min(8, Math.max(1, n));
+
+  function naRoda(e: React.WheelEvent) {
+    e.preventDefault();
+    const caixa = e.currentTarget.getBoundingClientRect();
+    // O ponto sob o cursor, em coordenadas da imagem — é ele que fica parado.
+    const cx = e.clientX - caixa.left - caixa.width / 2;
+    const cy = e.clientY - caixa.top - caixa.height / 2;
+    setEscala((s) => {
+      const novo = limitar(s * (e.deltaY < 0 ? 1.15 : 1 / 1.15));
+      if (novo === 1) { setPos({ x: 0, y: 0 }); return 1; }
+      setPos((p) => ({
+        x: cx - ((cx - p.x) * novo) / s,
+        y: cy - ((cy - p.y) * novo) / s,
+      }));
+      return novo;
+    });
+  }
+
+  return (
+    <div
+      className="relative h-full w-full touch-none overflow-hidden"
+      onWheel={naRoda}
+      onPointerDown={(e) => {
+        if (escala <= 1) return;
+        arrastando.current = { x: e.clientX - pos.x, y: e.clientY - pos.y };
+        e.currentTarget.setPointerCapture(e.pointerId);
+      }}
+      onPointerMove={(e) => {
+        if (!arrastando.current) return;
+        setPos({ x: e.clientX - arrastando.current.x, y: e.clientY - arrastando.current.y });
+      }}
+      onPointerUp={() => { arrastando.current = null; }}
+      onDoubleClick={() => {
+        setEscala((s) => (s > 1 ? 1 : 2));
+        setPos({ x: 0, y: 0 });
+      }}
+      style={{ cursor: escala > 1 ? (arrastando.current ? "grabbing" : "grab") : "zoom-in" }}
+    >
+      <img
+        key={url}
+        src={url}
+        alt={nome}
+        draggable={false}
+        className="absolute left-1/2 top-1/2 max-h-full max-w-full select-none"
+        style={{
+          transform: `translate(-50%, -50%) translate(${pos.x}px, ${pos.y}px) scale(${escala})`,
+          transformOrigin: "center",
+        }}
+      />
+      <div className="absolute bottom-2 right-2 flex items-center gap-1 rounded border border-border bg-background/90 px-1 py-0.5 text-[11px] shadow-sm">
+        <button className="ghost-icone" onClick={() => setEscala((s) => limitar(s / 1.4))} aria-label="Diminuir">
+          <Minus className="h-3.5 w-3.5" />
+        </button>
+        <span className="w-10 text-center tabular-nums">{Math.round(escala * 100)}%</span>
+        <button className="ghost-icone" onClick={() => setEscala((s) => limitar(s * 1.4))} aria-label="Ampliar">
+          <Plus className="h-3.5 w-3.5" />
+        </button>
+        <button
+          className="ghost-icone"
+          onClick={() => { setEscala(1); setPos({ x: 0, y: 0 }); }}
+          aria-label="Encaixar na janela"
+          title="Encaixar na janela"
+        >
+          <Maximize2 className="h-3.5 w-3.5" />
+        </button>
+      </div>
+    </div>
   );
 }
 

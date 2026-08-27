@@ -577,6 +577,99 @@ export function linksDeNota(texto: string | null | undefined): string[] {
   return achados;
 }
 
+/**
+ * "5,693.73" — o número escrito à americana.
+ *
+ * `valorBR` faria disso R$ 5,69: para ele o ponto é milhar e a vírgula é
+ * decimal, exatamente ao contrário. Ler a fatura do HubSpot com o parser
+ * errado não devolve erro — devolve um valor mil vezes menor, que não casa com
+ * nada e não acusa nada.
+ */
+function valorEN(s: string): number | null {
+  const n = Number(s.replace(/,/g, ""));
+  return isFinite(n) ? n : null;
+}
+
+/**
+ * O número quando NÃO SE SABE de que país ele é.
+ *
+ * "US$ 5.693,73" é uma frase real da fatura do HubSpot: moeda americana,
+ * pontuação brasileira — a empresa emite em dólar e localiza o documento para
+ * o cliente. Assumir formato pelo símbolo da moeda foi o erro que isto conserta:
+ * o parser americano leu "5.693,73" e devolveu **5,69**, mil vezes menor. Não
+ * deu erro, não ficou nulo; casou com um título de R$ 10,30 e ninguém veria.
+ *
+ * A regra que funciona sem saber o país: **o ÚLTIMO separador é o decimal**.
+ * "5.693,73" e "5,693.73" dão os dois 5693.73; o que vier antes é milhar, seja
+ * ponto ou vírgula.
+ *
+ * Exigir DUAS casas depois do último separador é o que separa dinheiro de
+ * quantidade: "2.000 Contatos de marketing" está na mesma fatura e não é valor.
+ */
+function numeroDeQualquerLugar(s: string): number | null {
+  const t = s.trim();
+  const ultimo = Math.max(t.lastIndexOf(","), t.lastIndexOf("."));
+  if (ultimo < 0) return null;
+  if (t.length - ultimo - 1 !== 2) return null;
+  const n = Number(`${t.slice(0, ultimo).replace(/[.,]/g, "")}.${t.slice(ultimo + 1)}`);
+  return isFinite(n) ? n : null;
+}
+
+/** Dinheiro com centavos, em qualquer das duas pontuações. */
+const DINHEIRO = String.raw`\d{1,3}(?:[.,]\d{3})*[.,]\d{2}|\d+[.,]\d{2}`;
+
+export type ValorComMoeda = { valor: number; moeda: "BRL" | "USD" | "EUR" };
+
+/**
+ * O VALOR E A MOEDA, quando o documento não é brasileiro.
+ *
+ * HubSpot, Datadog e Campbells mandam invoice em dólar, e o corpo delas nunca
+ * escreve "R$". Como `lerCorpoDeEmail` só procurava por "R$", as invoices
+ * entravam no acervo com valor NULO — e sem valor nenhuma regra do casador
+ * alcança. Medido em 27/08/2026: 483 notas com arquivo e sem valor.
+ *
+ * A ORDEM IMPORTA e é o cuidado central: "R$" ganha de tudo. Uma NFS-e
+ * brasileira que cite "US$" numa observação continua sendo lida em reais; só o
+ * documento SEM real nenhum é lido como estrangeiro.
+ *
+ * "$" sozinho só vale na ausência de "R$" no texto inteiro — senão o cifrão de
+ * "R$ 1.000,00" seria lido como dólar em todo boleto do país.
+ *
+ * Prefere o número que vem depois de um rótulo de total ("Amount due", "Total",
+ * "Balance"): a invoice tem o valor de cada linha antes do total, e o primeiro
+ * número que aparece costuma ser o menor deles.
+ */
+export function valorComMoeda(texto: string | null | undefined): ValorComMoeda | null {
+  const t = String(texto ?? "").replace(/\s+/g, " ");
+  if (!t) return null;
+
+  const emReais = t.match(/valor[^\d]{0,20}R\$\s*([\d.]+,\d{2})/i) ?? t.match(/R\$\s*([\d.]+,\d{2})/);
+  if (emReais) {
+    const v = valorBR(emReais[1]);
+    if (v !== null) return { valor: v, moeda: "BRL" };
+  }
+  if (/R\$/.test(t)) return null;   // é documento em real e o número não saiu
+
+  /* O TOTAL ROTULADO GANHA DO PRIMEIRO NÚMERO: a invoice lista cada item antes
+     de somar, e o primeiro que aparece costuma ser o menor deles. O rótulo vem
+     nos dois idiomas porque o MESMO emissor manda os dois — a fatura do HubSpot
+     chega em português ("Valor pago (USD)") com o total em dólar.
+
+     A marca da moeda é OBRIGATÓRIA nas duas tentativas: sem ela não há como
+     saber se "1,00" é dólar, euro ou um número solto qualquer. */
+  const MARCA = String.raw`US\$|USD|EUR|€|\$`;
+  const ROTULO = String.raw`valor\s+(?:pago|total|da\s+fatura)|amount\s+(?:due|paid)|total\s+(?:due|paid)|balance\s+due|invoice\s+total|grand\s+total|total|amount`;
+  const achado =
+    t.match(new RegExp(String.raw`(?:${ROTULO})[^\d]{0,40}(${MARCA})\s*(${DINHEIRO})`, "i"))
+    ?? t.match(new RegExp(String.raw`(${MARCA})\s*(${DINHEIRO})`, "i"));
+  if (!achado) return null;
+
+  const v = numeroDeQualquerLugar(achado[2]);
+  if (v === null || v <= 0) return null;
+  const marca = achado[1].toUpperCase();
+  return { valor: v, moeda: marca.includes("EUR") || marca.includes("€") ? "EUR" : "USD" };
+}
+
 export type CorpoDeEmail = {
   chave: string | null;
   cnpj: string | null;

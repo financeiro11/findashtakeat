@@ -78,6 +78,16 @@ export default function EnviarFolhaOmie({
   const pendentes = candidatos.length - prontos.length;
   const parcial = !!recusa && prontos.length > 0 && pendentes > 0;
 
+  /* Quem FALTA criar, e quem já está lá.
+   *
+   * A tela não sabia essa diferença: "provisionar" mandava os cem toda vez e
+   * colhia noventa recusas por duplicidade, que o código lia como sucesso e
+   * ninguém enxergava. Agora criar mira quem falta e corrigir mira quem subiu
+   * — que é o que faz esta tela servir em qualquer mês, e não só num que
+   * começou vazio. */
+  const faltamCriar = prontos.filter((c) => !c.noOmie);
+  const jaNoOmie = candidatos.filter((c) => c.noOmie);
+
   /* `invocar` desembrulha o corpo do erro. Sem ele, qualquer recusa do Omie
      chega como "Edge Function returned a non-2xx status code" — uma frase com
      a qual não dá para fazer nada: não se sabe se é para tentar de novo, se o
@@ -185,10 +195,13 @@ export default function EnviarFolhaOmie({
   const corrigir = async (somenteUm: boolean) => {
     setOcupado("corrigir");
     try {
-      const alvo = somenteUm ? candidatos.slice(0, 1).map((c) => c.codigo) : undefined;
-      const r = await chamar(alvo
-        ? { acao: "corrigir", competencia, codigos: alvo }
-        : { acao: "corrigir", competencia });
+      /* Só quem JÁ está no Omie: corrigir quem não existe devolve "não
+         encontrado" para cada um e enche a lista de ruído. */
+      const alvos = (jaNoOmie.length ? jaNoOmie : candidatos).map((c) => c.codigo);
+      const r = await chamar({
+        acao: "corrigir", competencia,
+        codigos: somenteUm ? alvos.slice(0, 1) : alvos,
+      });
       const ruins = (r.resultados ?? []).filter((x) => !x.criado && x.erro);
       setFalhas(ruins as Resultado[]);
       if (somenteUm) {
@@ -209,11 +222,14 @@ export default function EnviarFolhaOmie({
     }
   };
 
-  const enviarTudo = async (somenteProntos: boolean) => {
+  const enviarTudo = async () => {
     setOcupado("tudo");
     setConfirmando(null);
     try {
-      let pendentesCodigos: string[] | null = somenteProntos ? prontos.map((p) => p.codigo) : null;
+      /* SEMPRE por códigos, e sempre os que faltam. Mandar a competência
+         inteira reenviava quem já estava lá para colher recusa por
+         duplicidade — barulho que escondia as falhas de verdade. */
+      let pendentesCodigos: string[] | null = faltamCriar.map((p) => p.codigo);
       let totalCriados = 0;
       const todosRuins: Resultado[] = [];
       const todasChaves: string[] = [];
@@ -323,8 +339,8 @@ export default function EnviarFolhaOmie({
             {confirmando === "apagarTudo"
               ? `Apagar do Omie TODOS os títulos da folha de ${competencia}?`
               : confirmando === "prontos"
-                ? `Criar ${prontos.length} títulos no Omie, deixando ${pendentes} de fora?`
-                : `Criar ${candidatos.length} títulos de ${BRL(totalDoLote)} no Omie?`}
+                ? `Criar ${faltamCriar.length} títulos no Omie, deixando ${pendentes} de fora?`
+                : `Criar ${faltamCriar.length} títulos de ${BRL(totalDoLote)} no Omie?`}
           </p>
           <p className="mt-0.5 text-xs text-muted-foreground">
             {confirmando === "apagarTudo"
@@ -353,7 +369,7 @@ export default function EnviarFolhaOmie({
             ) : (
               <Button
                 size="sm"
-                onClick={() => enviarTudo(confirmando === "prontos")}
+                onClick={enviarTudo}
                 disabled={ocupado !== null}
                 className="gap-1.5"
               >
@@ -389,11 +405,13 @@ export default function EnviarFolhaOmie({
 
       <div className="flex items-center justify-between gap-3">
         <p className={cn("max-w-[55%] text-xs", recusa ? "text-amber-700 dark:text-amber-400" : "text-muted-foreground")}>
-          {parcial
-            ? `${pendentes} pessoa(s) com cadastro incompleto ficam de fora — o resto vai.`
-            : recusa
-              ? "Resolva o que está acima para liberar."
-              : "Lote em ordem. Nada é criado até você clicar."}
+          {faltamCriar.length === 0 && jaNoOmie.length > 0
+            ? `Os ${jaNoOmie.length} títulos desta competência já estão no Omie.`
+            : parcial
+              ? `${pendentes} pessoa(s) com cadastro incompleto ficam de fora — o resto vai.`
+              : recusa
+                ? "Resolva o que está acima para liberar."
+                : "Lote em ordem. Nada é criado até você clicar."}
         </p>
         <div className="flex gap-2">
           {/* Discreto de propósito: apagar a folha inteira não é operação de
@@ -410,26 +428,33 @@ export default function EnviarFolhaOmie({
             <Trash2 className="size-4" />
             Apagar a folha de {competencia}
           </Button>
-          <Button
-            variant="ghost"
-            onClick={() => corrigir(true)}
-            disabled={ocupado !== null || candidatos.length === 0}
-            title={"Conserta títulos que JÁ estão no Omie: preenche o Nº Documento e regrava a "
-              + "chave PIX do cadastro. Começa por um, para você conferir no ERP antes do resto."}
-            className="gap-1.5 text-muted-foreground"
-          >
-            {ocupado === "corrigir" ? <Loader2 className="size-4 animate-spin" /> : <Wrench className="size-4" />}
-            Corrigir 1
-          </Button>
-          <Button
-            variant="ghost"
-            onClick={() => corrigir(false)}
-            disabled={ocupado !== null || candidatos.length === 0}
-            title="Só depois de conferir o primeiro no Omie."
-            className="gap-1.5 text-muted-foreground"
-          >
-            Corrigir todos
-          </Button>
+          {jaNoOmie.length > 0 && (
+            <>
+              <Button
+                variant="ghost"
+                onClick={() => corrigir(true)}
+                disabled={ocupado !== null}
+                title={"Conserta um título que JÁ está no Omie: regrava o Nº Documento e a chave "
+                  + "PIX do cadastro, sem recriar. Comece por um e confira no ERP."}
+                className="gap-1.5 text-muted-foreground"
+              >
+                {ocupado === "corrigir"
+                  ? <Loader2 className="size-4 animate-spin" />
+                  : <Wrench className="size-4" />}
+                Corrigir 1
+              </Button>
+              <Button
+                variant="ghost"
+                onClick={() => corrigir(false)}
+                disabled={ocupado !== null}
+                title={`Regrava os ${jaNoOmie.length} que já estão no Omie. `
+                  + "Só depois de conferir o primeiro."}
+                className="gap-1.5 text-muted-foreground"
+              >
+                Corrigir os {jaNoOmie.length}
+              </Button>
+            </>
+          )}
           <Button
             variant="outline"
             onClick={enviarTeste}
@@ -442,28 +467,28 @@ export default function EnviarFolhaOmie({
             {ocupado === "teste" ? <Loader2 className="size-4 animate-spin" /> : <FlaskConical className="size-4" />}
             Testar com {teste.length}
           </Button>
-          {parcial ? (
-            <Button
-              onClick={() => setConfirmando("prontos")}
-              disabled={ocupado !== null || confirmando !== null}
-              title={`Manda os ${prontos.length} com cadastro completo. Os ${pendentes} pendentes `
-                + "ficam para quando o cadastro for corrigido."}
-              className="gap-1.5"
-            >
-              <Send className="size-4" />
-              Provisionar os {prontos.length} prontos
-            </Button>
-          ) : (
-            <Button
-              onClick={() => setConfirmando("tudo")}
-              disabled={ocupado !== null || !!recusa || confirmando !== null}
-              title={recusa ?? undefined}
-              className="gap-1.5"
-            >
-              <Send className="size-4" />
-              Provisionar {candidatos.length} no Omie
-            </Button>
-          )}
+          {/* O botão fala de quem FALTA, e não do tamanho da folha: com 101 de
+              102 já no ERP, "Provisionar 102" é a frase errada — dá a entender
+              que vai criar tudo de novo. */}
+          <Button
+            onClick={() => setConfirmando(parcial ? "prontos" : "tudo")}
+            disabled={
+              ocupado !== null || confirmando !== null
+              || faltamCriar.length === 0 || (!parcial && !!recusa)
+            }
+            title={faltamCriar.length === 0
+              ? "Todo mundo que dá para criar já está no Omie."
+              : parcial
+                ? `Manda os ${faltamCriar.length} que faltam e estão com o cadastro completo. `
+                  + `Os ${pendentes} pendentes ficam para quando o cadastro for corrigido.`
+                : recusa ?? `Cria os ${faltamCriar.length} que ainda não existem no ERP.`}
+            className="gap-1.5"
+          >
+            <Send className="size-4" />
+            {faltamCriar.length === 0
+              ? "Nada a criar"
+              : `Provisionar ${faltamCriar.length} no Omie`}
+          </Button>
         </div>
       </div>
     </div>

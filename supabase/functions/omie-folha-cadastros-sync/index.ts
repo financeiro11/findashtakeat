@@ -362,8 +362,37 @@ Deno.serve(async (req) => {
     if (body?.action === "chaves_pix_pendentes") {
       const { data: cacheAtual } = await supabase
         .from("omie_cache").select("dados, atualizado_em").eq("chave", CHAVE_PIX_CACHE).maybeSingle();
-      const atual = ((cacheAtual?.dados ?? []) as Record<string, unknown>[]);
+      let atual = ((cacheAtual?.dados ?? []) as Record<string, unknown>[]);
       if (!atual.length) return json({ status: "ok", acao: "chaves_pix_pendentes", reconferidos: 0 });
+
+      /* Quem foi ADMITIDO depois da última varredura não está no cache — e,
+         sem isto, nunca estaria: a reconferência só relia quem já constava.
+         O primeiro contratado de setembro cairia na folha como "chave não
+         conferida" e ninguém saberia por quê. Entram como pendentes, que é o
+         que são: nunca foram perguntados ao Omie. */
+      const { data: ativosRh } = await (supabase as any)
+        .from("rh_colaboradores").select("codigo, nome, cnpj, pix, datadesl");
+      const conhecidos = new Set(atual.map((c) => String(c.codigo ?? "")));
+      const ajustes = await (supabase as any)
+        .from("folha_depara").select("codigo_rh, documento_ajustado");
+      const docAjustado = new Map<string, string>(
+        ((ajustes.data ?? []) as Record<string, unknown>[])
+          .map((d) => [String(d.codigo_rh), String(d.documento_ajustado ?? "")]),
+      );
+      const novos = ((ativosRh ?? []) as Record<string, unknown>[])
+        .filter((p) => !String(p.datadesl ?? "").trim())
+        .filter((p) => String(p.codigo ?? "").trim() && !conhecidos.has(String(p.codigo)))
+        .map((p) => ({
+          codigo: String(p.codigo),
+          nome: String(p.nome ?? "").trim(),
+          pixRh: String(p.pix ?? "").trim(),
+          doc: (docAjustado.get(String(p.codigo)) || "").replace(/[^0-9]/g, "")
+            || String(p.cnpj ?? "").replace(/[^0-9]/g, ""),
+          existe: false,
+          chaveOmie: "",
+        }))
+        .filter((p) => p.doc.length === 11 || p.doc.length === 14);
+      if (novos.length) atual = [...atual, ...novos];
 
       /* Pendente = o que faria o título não sair, pela MESMA regra do envio.
        *
@@ -421,6 +450,7 @@ Deno.serve(async (req) => {
       return json({
         status: "ok",
         acao: "chaves_pix_pendentes",
+        novos: novos.length,
         reconferidos: alvos.length,
         resolvidos,
         ainda_pendentes: novo.filter(pendente).length,

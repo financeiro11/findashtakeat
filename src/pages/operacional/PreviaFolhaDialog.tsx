@@ -13,7 +13,7 @@
 
 import { useEffect, useState } from "react";
 import {
-  AlertTriangle, CalendarClock, Loader2, PencilLine, TrendingDown, TrendingUp, Users,
+  AlertTriangle, CalendarClock, Check, Loader2, PencilLine, TrendingDown, TrendingUp, Users,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
@@ -69,6 +69,10 @@ type Linha = ItemDaFolha & {
   chavePixBloqueio: string | null;
   /** A varredura de chaves cobriu esta pessoa? */
   chavePixConferida: boolean;
+  /** Já existe no Omie? É o que separa "falta criar" de "já está lá". */
+  noOmie: boolean;
+  /** O Nº Documento como o ERP guardou. Vazio nos títulos criados até 27/08. */
+  numeroDocumento: string;
 };
 
 /** Uma pessoa que não entrou no Omie, como está gravada em `folha_recusas`. */
@@ -111,6 +115,8 @@ type Previa = {
     nao_conferidos: number;
     chaves_pix_em: string | null;
     chaves_pix_nao_conferidas: number;
+    /** A consulta ao ERP respondeu? `false` = a tela não sabe o que já entrou. */
+    conferido_no_omie: boolean;
   };
 };
 
@@ -174,6 +180,16 @@ export default function PreviaFolhaDialog({
   const pendencia = previa?.pendencia ?? null;
   const recusa = previa?.recusa ?? null;
 
+  /* O estado REAL da competência, que é o que faz esta tela servir todo mês:
+     quem já está no ERP, quem falta criar e quem está travado. */
+  const noOmie = linhas.filter((l) => l.noOmie);
+  const aCriar = linhas.filter((l) => !l.noOmie && !l.chavePixBloqueio);
+  const travadas = linhas.filter((l) => !l.noOmie && l.chavePixBloqueio);
+  /* Títulos antigos, criados antes de o Nº Documento existir: são eles que não
+     aparecem quando se procura "FOLHA" na tela do Omie. */
+  const semNumeroDoc = noOmie.filter((l) => !l.numeroDocumento);
+  const conferido = previa?.cache.conferido_no_omie ?? false;
+
   const marcadas = linhas.filter((l) => l.chamaAtencao);
   const ajustadas = linhas.filter((l) => l.valorAjustado !== null && !l.ajusteRedundante);
   const redundantes = linhas.filter((l) => l.ajusteRedundante);
@@ -221,34 +237,98 @@ export default function PreviaFolhaDialog({
 
         {previa && !erro && (
           <>
-            <div className="flex flex-wrap items-center gap-x-7 gap-y-4 rounded-xl border bg-card px-[18px] py-3.5">
-              <div>
-                <p className="text-[10.5px] font-semibold uppercase tracking-[0.08em] text-muted-foreground">
-                  Total a provisionar
-                </p>
-                <p className="num mt-1 text-[26px] font-medium leading-none">{BRL(total)}</p>
+            {/* ─── Onde a competência está ───
+                Primeiro do que tudo, e de propósito: a pergunta que se abre
+                esta tela para responder é "esta folha já foi?". Até 27/08/2026
+                a resposta só existia lendo log de Edge Function no painel do
+                Supabase. */}
+            <div className="rounded-xl border bg-card px-[18px] py-4">
+              <div className="flex flex-wrap items-end justify-between gap-x-8 gap-y-3">
+                <div>
+                  <p className="text-[10.5px] font-semibold uppercase tracking-[0.08em] text-muted-foreground">
+                    Total a provisionar
+                  </p>
+                  <p className="num mt-1 text-[28px] font-medium leading-none">{BRL(total)}</p>
+                  <p className="mt-1.5 text-xs text-muted-foreground">
+                    {linhas.length} título(s)
+                    {rateadas.length > 0 && <> · {rateadas.length} rateado(s)</>}
+                    {fora.length > 0 && <> · {fora.length} fora do lote</>}
+                  </p>
+                </div>
+
+                <div className="min-w-[240px] flex-1">
+                  {conferido ? (
+                    <>
+                      <div className="flex items-baseline justify-between gap-3">
+                        <p className="text-[10.5px] font-semibold uppercase tracking-[0.08em] text-muted-foreground">
+                          No Omie
+                        </p>
+                        <p className="text-[13px] tabular-nums">
+                          <span className={cn(
+                            "font-semibold",
+                            noOmie.length === linhas.length ? "text-pos" : "text-foreground",
+                          )}>
+                            {noOmie.length}
+                          </span>
+                          <span className="text-muted-foreground"> de {linhas.length}</span>
+                        </p>
+                      </div>
+                      {/* Barra e não só o número: "101 de 102" e "36 de 102" lidos
+                          de relance são a mesma frase; a barra não deixa. */}
+                      <div className="mt-1.5 h-2 overflow-hidden rounded-full bg-muted">
+                        <div
+                          className={cn(
+                            "h-full rounded-full transition-all",
+                            noOmie.length === linhas.length ? "bg-pos" : "bg-primary",
+                          )}
+                          style={{
+                            width: `${linhas.length ? (noOmie.length / linhas.length) * 100 : 0}%`,
+                          }}
+                        />
+                      </div>
+                      <div className="mt-2 flex flex-wrap gap-x-5 gap-y-1 text-xs">
+                        {aCriar.length > 0 && (
+                          <span className="text-muted-foreground">
+                            <b className="text-foreground tabular-nums">{aCriar.length}</b> a criar
+                          </span>
+                        )}
+                        {travadas.length > 0 && (
+                          <span className="text-destructive">
+                            <b className="tabular-nums">{travadas.length}</b> travado(s) no cadastro
+                          </span>
+                        )}
+                        {semNumeroDoc.length > 0 && (
+                          <span className="text-amber-700 dark:text-amber-400">
+                            <b className="tabular-nums">{semNumeroDoc.length}</b> sem Nº Documento
+                          </span>
+                        )}
+                        {noOmie.length === linhas.length && !semNumeroDoc.length && (
+                          <span className="text-pos">Folha completa no ERP.</span>
+                        )}
+                      </div>
+                    </>
+                  ) : (
+                    <p className="text-xs text-muted-foreground">
+                      Não deu para conferir o que já está no Omie agora. Os números abaixo são o
+                      que o Hub pretende mandar, não o que o ERP tem.
+                    </p>
+                  )}
+                </div>
               </div>
-              <div className="hidden h-11 w-px bg-border sm:block" />
-              <div className="flex flex-wrap gap-x-6 gap-y-2 text-[13.5px]">
-                <Numero rotulo="Títulos" valor={String(linhas.length)} icone={Users} />
-                <Numero rotulo="Rateados" valor={String(rateadas.length)} icone={CalendarClock} />
-                <Numero
-                  rotulo="Valor mudou"
-                  valor={String(marcadas.length)}
-                  icone={AlertTriangle}
-                  tom={marcadas.length ? "atencao" : undefined}
-                />
-                <Numero
-                  rotulo="Ajustados"
-                  valor={String(ajustadas.length)}
-                  icone={PencilLine}
-                />
-                <Numero
-                  rotulo="Fora do lote"
-                  valor={String(fora.length)}
-                  tom={fora.length ? "atencao" : undefined}
-                />
-              </div>
+
+              {(marcadas.length > 0 || ajustadas.length > 0) && (
+                <div className="mt-3.5 flex flex-wrap gap-x-6 gap-y-2 border-t pt-3 text-[13.5px]">
+                  <Numero
+                    rotulo="Valor mudou"
+                    valor={String(marcadas.length)}
+                    icone={AlertTriangle}
+                    tom={marcadas.length ? "atencao" : undefined}
+                  />
+                  <Numero rotulo="Ajustados" valor={String(ajustadas.length)} icone={PencilLine} />
+                  <Numero rotulo="Rateados" valor={String(rateadas.length)} icone={CalendarClock} />
+                  <Numero rotulo="Títulos" valor={String(linhas.length)} icone={Users} />
+                </div>
+              )}
             </div>
 
             {marcadas.length > 0 && (
@@ -345,6 +425,7 @@ export default function PreviaFolhaDialog({
               <table className="w-full text-sm">
                 <thead>
                   <tr className="border-b bg-secondary text-[11px] uppercase tracking-[0.06em] text-muted-foreground">
+                    <th className="w-[86px] px-3.5 py-2.5 text-left font-semibold">Situação</th>
                     <th className="px-3.5 py-2.5 text-left font-semibold">Colaborador</th>
                     <th className="px-3 py-2.5 text-left font-semibold">Departamento</th>
                     <th className="px-3 py-2.5 text-left font-semibold">Categoria</th>
@@ -355,6 +436,31 @@ export default function PreviaFolhaDialog({
                 <tbody>
                   {linhas.map((l) => (
                     <tr key={l.codigo} className="border-b border-border/60 hover:bg-muted/40">
+                      {/* A situação de CADA UM, e não só o total da faixa: numa
+                          lista de cem, saber que faltam seis não diz quais. */}
+                      <td className="px-3.5 py-2 align-top">
+                        {!conferido ? (
+                          <span className="text-[11px] text-muted-foreground">—</span>
+                        ) : l.noOmie ? (
+                          <span
+                            className="inline-flex items-center gap-1 rounded bg-pos/15 px-1.5 py-0.5 text-[10.5px] font-semibold text-pos"
+                            title={l.numeroDocumento
+                              ? `No Omie como "${l.numeroDocumento}"`
+                              : "No Omie, mas sem Nº Documento — não aparece ao procurar FOLHA na tela do ERP."}
+                          >
+                            <Check className="size-3" />
+                            {l.numeroDocumento ? "no Omie" : "sem nº"}
+                          </span>
+                        ) : l.chavePixBloqueio ? (
+                          <span className="inline-flex items-center gap-1 rounded bg-destructive/15 px-1.5 py-0.5 text-[10.5px] font-semibold text-destructive">
+                            travado
+                          </span>
+                        ) : (
+                          <span className="inline-flex items-center gap-1 rounded bg-muted px-1.5 py-0.5 text-[10.5px] font-semibold text-muted-foreground">
+                            a criar
+                          </span>
+                        )}
+                      </td>
                       <td className="px-3.5 py-2">
                         <div className="flex items-center gap-2">
                           <span className="font-medium">{l.nome}</span>
@@ -517,6 +623,10 @@ export default function PreviaFolhaDialog({
                    A chave entra porque sem ela o título é recusado um a um, e
                    com a chave errada ele trava o pagamento do lote inteiro. */
                 pronto: !!l.codigoFornecedor && !!l.codigoCategoria && !l.chavePixBloqueio,
+                /* Quem já está no ERP não é candidato a criar — é candidato a
+                   corrigir. Sem esta separação o botão "provisionar" reenviava
+                   cem títulos para colher cem recusas por duplicidade. */
+                noOmie: l.noOmie,
               }))}
               onEnviado={() => setRecarga((n) => n + 1)}
             />

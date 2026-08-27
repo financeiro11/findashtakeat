@@ -16,6 +16,8 @@ export type Candidato = {
   cnpj: string;
   /** Fornecedor, categoria e departamento resolvidos no Omie. */
   pronto: boolean;
+  /** Já existe como título no Omie? Separa "criar" de "corrigir". */
+  noOmie?: boolean;
 };
 
 /**
@@ -31,6 +33,10 @@ export function doisParaTestar(candidatos: Candidato[], quantos = 2): Candidato[
   const vezes = new Map<string, number>();
   for (const c of candidatos) vezes.set(c.cnpj, (vezes.get(c.cnpj) ?? 0) + 1);
   return candidatos
+    /* Quem já está no Omie está fora: o ERP recusaria por duplicidade e a
+       recusa seria lida como defeito do payload — o teste responderia a
+       pergunta errada, que é exatamente o que ele existe para evitar. */
+    .filter((c) => !c.noOmie)
     .filter((c) => c.pronto && c.cnpj.length === 14 && vezes.get(c.cnpj) === 1)
     .slice(0, quantos);
 }

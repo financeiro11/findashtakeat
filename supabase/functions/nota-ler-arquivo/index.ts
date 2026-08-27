@@ -100,7 +100,7 @@ Deno.serve(async (req) => {
 
     let q = supabase
       .from("notas_externas")
-      .select("id, link, arquivo_bucket, enviado_em, vencimento, cnpj, valor, chave_fiscal, nome")
+      .select("id, link, arquivo_bucket, enviado_em, vencimento, cnpj, valor, chave_fiscal, nome, tipo_documento")
       .eq("tem_arquivo", true)
       .is("ignorado_em", null)
       .limit(limite);
@@ -178,6 +178,16 @@ Deno.serve(async (req) => {
           if (vm) {
             marca.moeda = vm.moeda;
             marca.valor_moeda = vm.valor;
+            /* FORNECEDOR DE FORA NÃO EMITE NFS-E, e o recibo dele é o
+               documento. Decisão do financeiro em 27/08/2026, e o mesmo
+               raciocínio de Uber/99: recusar o papel que o fornecedor emite,
+               porque não é uma nota brasileira, manda alguém procurar o que não
+               existe. Só `recibo` sobe — `outro` fica de fora porque ali moram
+               o CREDIT_MEMO (que é devolução, não despesa) e o Order. */
+            if (vm.moeda !== "BRL" && marca.tipo_documento === undefined
+                && String((n as any).tipo_documento ?? "") === "recibo") {
+              marca.tipo_documento = "nota";
+            }
             if (vm.moeda === "BRL") {
               marca.valor = vm.valor;
               comValor++;

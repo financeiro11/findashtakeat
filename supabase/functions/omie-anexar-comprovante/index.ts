@@ -37,6 +37,7 @@ import { incluirAnexo, listarCategorias, listarMovimentos, toBase64 } from "../_
 import { casarComOmie, indexarMovimentos, MatchResult } from "../_shared/match-cartao.ts";
 import { baixarDoDrive, baseDoDrive, driveConfigurado, ehHtml, extrairIdDrive, podeLerNoDrive, sondarDrive, statusDrive } from "../_shared/drive.ts";
 import { requireUser } from "../_shared/auth.ts";
+import { acharIrmas, fitidDoCartao, lerParcela, type TituloOmie } from "../_shared/parcelas.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -558,6 +559,80 @@ async function pendentes(supabase: any, limite: number, filtro: FiltroVarredura 
   return lista.slice(0, limite);
 }
 
+
+/* ==================================================== nota em todas as parcelas */
+
+/** Meses para trás e para a frente na leitura única dos movimentos. */
+const JANELA_IRMAS_MESES = 12;
+
+const isoMes = (d: Date) => d.toISOString().slice(0, 10);
+const somaMeses = (base: Date, meses: number) =>
+  new Date(Date.UTC(base.getUTCFullYear(), base.getUTCMonth() + meses, base.getUTCDate()));
+const brDeIso = (iso: string) => iso.split("-").reverse().join("/");
+
+/**
+ * Lê os títulos a pagar de uma janela larga, UMA vez.
+ *
+ * A alternativa seria perguntar ao Omie as irmãs de cada compra: 167 janelas de
+ * treze meses, uma por compra parcelada. Uma leitura só, indexada em memória,
+ * responde a todas — e o Omie recusa chamadas paralelas do mesmo método, então
+ * a versão cara também seria a lenta.
+ */
+async function lerTitulosDaJanela(de: string, ate: string): Promise<TituloOmie[]> {
+  const movs = await listarMovimentos({ dDtVencDe: brDeIso(de), dDtVencAte: brDeIso(ate) }, 60);
+  const out: TituloOmie[] = [];
+  for (const m of movs) {
+    const d = m?.detalhes ?? {};
+    if (d?.cGrupo !== "CONTA_A_PAGAR") continue;
+    if (d?.nValorTitulo == null) continue;   // perna de conta corrente do mesmo título
+    const cod = Number(d?.nCodTitulo ?? 0);
+    if (!cod) continue;
+    const venc = String(d?.dDtVenc ?? "").split("/").reverse().join("-") || null;
+    out.push({
+      cod,
+      parc: String(d?.cNumParcela ?? "") || null,
+      cli: String(d?.nCodCliente ?? "") || null,
+      valor: Math.abs(Number(d.nValorTitulo)),
+      venc,
+      integracao: String(d?.cCodIntegracao ?? "") || null,
+    });
+  }
+  return out;
+}
+
+/** Os títulos que JÁ receberam a nota pelo Hub, com de onde veio o arquivo. */
+async function origensComNota(supabase: any, limite: number): Promise<Array<{ cod: number; comprovante: string; rotulo: string }>> {
+  const out: Array<{ cod: number; comprovante: string; rotulo: string }> = [];
+  const visto = new Set<number>();
+  const junta = (linhas: any[], campoArquivo: string, campoRotulo: string) => {
+    for (const l of linhas ?? []) {
+      const cod = Number(l.omie_cod_titulo);
+      const arq = l[campoArquivo] ?? l.link_comprovante ?? null;
+      if (!cod || !arq || visto.has(cod)) continue;
+      visto.add(cod);
+      out.push({ cod, comprovante: String(arq), rotulo: String(l[campoRotulo] ?? cod) });
+    }
+  };
+
+  const [a, c, f] = await Promise.all([
+    supabase.from("auditoria")
+      .select("omie_cod_titulo, link_comprovante, titulo")
+      .not("omie_cod_titulo", "is", null).not("omie_anexo_enviado_em", "is", null)
+      .not("link_comprovante", "is", null).limit(limite),
+    supabase.from("auditoria_cartao_lancamentos")
+      .select("omie_cod_titulo, link_comprovante, arquivo_comprovante, estabelecimento")
+      .not("omie_cod_titulo", "is", null).not("omie_anexo_enviado_em", "is", null).limit(limite),
+    supabase.from("facilities_compras")
+      .select("omie_cod_titulo, nf_arquivo, item")
+      .not("omie_cod_titulo", "is", null).not("nf_arquivo", "is", null).limit(limite),
+  ]);
+
+  junta(a.data, "link_comprovante", "titulo");
+  junta(c.data, "arquivo_comprovante", "estabelecimento");
+  junta(f.data, "nf_arquivo", "item");
+  return out;
+}
+
 async function varrer(supabase: any, cTabela: string, limite: number, canal: string, filtro: FiltroVarredura = {}) {
   const fila = await pendentes(supabase, limite, filtro);
   const enviados: any[] = [];
@@ -681,6 +756,134 @@ Deno.serve(async (req) => {
       ehCron = !!data;
     }
     if (!ehCron) await requireUser(req, { bloquearCargos: ["parcerias"] });
+
+    const canal = ehCron ? "cron" : "hub";
+
+    /* ------------------------------------------ nota em todas as parcelas */
+    /* Compra parcelada tem N títulos no Omie e a nota ficava só no que casou —
+       quem abrisse a parcela 5/8 não encontrava nada. Esta ação acha as irmãs e
+       leva o MESMO documento para todas.
+
+       SIMULA POR PADRÃO. `simular: false` é escolha explícita de quem chama:
+       são escritas no ERP, e escrita no ERP não se desfaz com um clique. */
+    if (action === "parcelas") {
+      const simular = body?.simular !== false;
+      const limite = Math.min(Math.max(Number(body?.limite ?? 40), 1), 200);
+
+      const origens = await origensComNota(supabase, 500);
+      if (!origens.length) return json({ ok: true, simulado: simular, origens: 0, mensagem: "Nenhum título com nota anexada pelo Hub." });
+
+      const hoje = new Date();
+      const janela = { de: isoMes(somaMeses(hoje, -JANELA_IRMAS_MESES)), ate: isoMes(somaMeses(hoje, JANELA_IRMAS_MESES)) };
+      const universo = await lerTitulosDaJanela(janela.de, janela.ate);
+      const porCod = new Map(universo.map((t) => [t.cod, t]));
+
+      /* Quem já tem a nota não entra na fila: nem as origens, nem o que esta
+         própria fila já anexou ou já foi recusado por uma pessoa. Sem isto a
+         varredura proporia os mesmos pares todo dia. */
+      const jaResolvido = new Set<number>(origens.map((o) => o.cod));
+      const { data: decididos } = await supabase
+        .from("omie_parcela_anexo").select("cod_titulo, status")
+        .in("status", ["anexado", "recusado"]);
+      for (const d of decididos ?? []) jaResolvido.add(Number(d.cod_titulo));
+
+      const relatorio: any[] = [];
+      const propostas: any[] = [];
+      let semJanela = 0, aVista = 0;
+
+      for (const o of origens) {
+        const alvo = porCod.get(o.cod);
+        if (!alvo) { semJanela++; continue; }
+        if (!lerParcela(alvo.parc)) { aVista++; continue; }
+
+        const g = acharIrmas(alvo, universo);
+        const faltam = g.irmas.filter((t) => t.cod !== o.cod && !jaResolvido.has(t.cod));
+        if (!faltam.length) continue;
+
+        const origem = fitidDoCartao(alvo.integracao) ? "cartao" : "evidencia";
+        relatorio.push({
+          cod_titulo_origem: o.cod, rotulo: o.rotulo, parcela: alvo.parc,
+          confianca: g.confianca, origem, motivo: g.motivo,
+          irmas_sem_nota: faltam.map((t) => ({ cod: t.cod, parcela: t.parc, venc: t.venc })),
+        });
+        for (const t of faltam) {
+          propostas.push({
+            cod_titulo_origem: o.cod, cod_titulo: t.cod, parcela: t.parc,
+            origem, confianca: g.confianca, motivo: g.motivo,
+            // Ambígua nasce esperando gente; o resto já nasce liberado.
+            status: g.confianca === "ambigua" ? "proposto" : "confirmado",
+          });
+        }
+      }
+
+      if (!simular && propostas.length) {
+        // `ignoreDuplicates` porque a chave (origem, irmã) é única de propósito:
+        // rodar de novo não pode duplicar a fila nem reabrir o que foi recusado.
+        await supabase.from("omie_parcela_anexo")
+          .upsert(propostas, { onConflict: "cod_titulo_origem,cod_titulo", ignoreDuplicates: true });
+      }
+
+      /* O ANEXO EM SI é limitado por rodada, pelo mesmo motivo da varredura: o
+         teto do worker é de CPU (zip + base64), e quem morre no meio não devolve
+         relatório. O que não couber fica na fila para a rodada seguinte. */
+      const enviados: any[] = [];
+      const falhas: any[] = [];
+      if (!simular) {
+        const inicio = Date.now();
+        const { data: fila } = await supabase
+          .from("omie_parcela_anexo").select("*")
+          .eq("status", "confirmado").order("created_at").limit(limite);
+
+        const arquivoDe = new Map(origens.map((o) => [o.cod, o.comprovante]));
+        for (const item of fila ?? []) {
+          if (Date.now() - inicio > ORCAMENTO_MS) break;
+          const comprovante = arquivoDe.get(Number(item.cod_titulo_origem));
+          if (!comprovante) {
+            falhas.push({ cod: item.cod_titulo, erro: "a origem já não tem comprovante legível" });
+            continue;
+          }
+          try {
+            const { bytes, nome } = await baixarComprovante(supabase, comprovante);
+            const r = await incluirAnexo({
+              nId: String(item.cod_titulo), cTabela: "conta-pagar",
+              nome, base64: toBase64(bytes), codInt: codIntAnexo(item.cod_titulo),
+            });
+            await supabase.from("omie_parcela_anexo")
+              .update({ status: "anexado", anexado_em: new Date().toISOString(), erro: null })
+              .eq("id", item.id);
+            await anotar(supabase, {
+              origem: "parcela", ref_id: String(item.id), rotulo: `parcela ${item.parcela}`,
+              cod_titulo: String(item.cod_titulo), arquivo: r?.nome ?? nome, resultado: "ok", canal,
+            });
+            enviados.push({ cod: item.cod_titulo, parcela: item.parcela });
+          } catch (e) {
+            const erro = e instanceof Error ? e.message : String(e);
+            await supabase.from("omie_parcela_anexo").update({ erro }).eq("id", item.id);
+            await anotar(supabase, {
+              origem: "parcela", ref_id: String(item.id), cod_titulo: String(item.cod_titulo),
+              resultado: "erro", motivo: erro, canal,
+            });
+            falhas.push({ cod: item.cod_titulo, erro });
+          }
+        }
+      }
+
+      return json({
+        ok: true,
+        simulado: simular,
+        janela,
+        titulos_lidos: universo.length,
+        origens_com_nota: origens.length,
+        origens_fora_da_janela: semJanela,
+        origens_a_vista: aVista,
+        compras_parceladas_com_irma_sem_nota: relatorio.length,
+        parcelas_a_receber: propostas.length,
+        para_revisao: propostas.filter((p) => p.status === "proposto").length,
+        anexados: enviados.length,
+        falhas,
+        detalhe: relatorio.slice(0, 25),
+      });
+    }
 
     /* -------- VARREDURA (cron ou botão "anexar tudo") -------- */
     if (action === "varredura") {

@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
-  brlStr, categoriasCriticas, fatias, formatarDoc, frasePanorama, mesCurto,
+  brlStr, categoriasCriticas, fatias, fonteDaNota, formatarDoc, frasePanorama, mesCurto,
   ondeAbrir, pctStr, periodoPadrao, nomeDaLinha, urlParaEmbutir, GRAVIDADE, GRAVIDADES,
-  SITUACOES_EXIGIVEIS, SITUACOES_FALTANDO, SITUACOES_NOSSAS, SITUACAO,
+  SITUACOES_COBERTAS, SITUACOES_EXIGIVEIS, SITUACOES_FALTANDO, SITUACOES_NOSSAS, SITUACAO,
   type LinhaTitulo, type ResumoNotas,
 } from "./notasErp";
 
@@ -52,13 +52,13 @@ describe("frasePanorama", () => {
 
 describe("fatias", () => {
   it("reparte a barra em percentuais que somam 100", () => {
-    const f = fatias({ com_nota: 20, pronta: 20, espera: 20, sem_nota: 20, nao_verificado: 20, total: 100 });
-    expect(f).toEqual({ com_nota: 20, pronta: 20, espera: 20, sem_nota: 20, nao_verificado: 20 });
+    const f = fatias({ com_nota: 20, pronta: 20, espera: 20, comprovante: 20, sem_nota: 10, nao_verificado: 10, total: 100 });
+    expect(f).toEqual({ com_nota: 20, pronta: 20, espera: 20, comprovante: 20, sem_nota: 10, nao_verificado: 10 });
   });
 
   it("não divide por zero", () => {
-    expect(fatias({ com_nota: 0, pronta: 0, espera: 0, sem_nota: 0, nao_verificado: 0, total: 0 }))
-      .toEqual({ com_nota: 0, pronta: 0, espera: 0, sem_nota: 0, nao_verificado: 0 });
+    expect(fatias({ com_nota: 0, pronta: 0, espera: 0, comprovante: 0, sem_nota: 0, nao_verificado: 0, total: 0 }))
+      .toEqual({ com_nota: 0, pronta: 0, espera: 0, comprovante: 0, sem_nota: 0, nao_verificado: 0 });
   });
 
   /* `espera` nasceu depois das outras quatro; quem chama sem ela não deve ver a
@@ -130,9 +130,19 @@ describe("o vocabulário das situações", () => {
     expect(GRAVIDADE.urgente.ordem).toBeLessThan(GRAVIDADE.irrelevante.ordem);
   });
 
-  it("com_nota é o único estado verde", () => {
+  /* Era um só até 27/08/2026. `comprovante_aceito` é o segundo e o último: o
+     fornecedor não emite nota, o recibo dele É o documento, e não há o que
+     cobrar. Verde tem de significar "resolvido" e não "tem algum papel" — por
+     isso `so_comprovante` fica de fora, e por isso este teste existe. */
+  it("só é verde o que está resolvido", () => {
     const verdes = Object.entries(SITUACAO).filter(([, v]) => v.tom === "ok").map(([k]) => k);
-    expect(verdes).toEqual(["com_nota"]);
+    expect(verdes.sort()).toEqual(["com_nota", "comprovante_aceito"]);
+    expect(SITUACAO.so_comprovante.tom).not.toBe("ok");
+  });
+
+  it("o verde da tela é a mesma régua da cobertura do banco", () => {
+    const verdes = Object.entries(SITUACAO).filter(([, v]) => v.tom === "ok").map(([k]) => k);
+    expect([...SITUACOES_COBERTAS].sort()).toEqual(verdes.sort());
   });
 
   it("toda situação tem rótulo e explicação", () => {
@@ -250,7 +260,7 @@ describe("o que é da máquina não é do humano", () => {
     //
     // `espera_confirmacao` entra pelo motivo inverso: ali a varredura NÃO leva,
     // e a nota fica achada e parada até alguém clicar.
-    expect(SITUACOES_FALTANDO).toEqual(["sem_nota", "anexo_suspeito", "espera_confirmacao"]);
+    expect(SITUACOES_FALTANDO).toEqual(["sem_nota", "anexo_suspeito", "espera_confirmacao", "so_comprovante"]);
     for (const s of SITUACOES_NOSSAS) expect(SITUACOES_FALTANDO).not.toContain(s);
   });
 
@@ -278,6 +288,29 @@ describe("ondeAbrir", () => {
   it("sem nenhum dos dois não há o que ver: o trabalho é cobrar", () => {
     expect(ondeAbrir(l({ anexos_no_erp: 0 }))).toBeNull();
     expect(ondeAbrir(l({}))).toBeNull();
+  });
+});
+
+describe("fonteDaNota", () => {
+  it("o nome do enum vira frase — a tela mostrava \"acervo_a_confirmar\"", () => {
+    expect(fonteDaNota("acervo_a_confirmar")).toBe("no acervo");
+    expect(fonteDaNota("cartao")).toBe("na base do cartão");
+  });
+
+  it("duas fontes viram uma frase só", () => {
+    expect(fonteDaNota("cartao+drive")).toBe("na base do cartão e nas pastas do Drive");
+  });
+
+  it("as duas faces do acervo são o mesmo lugar, e não se repetem", () => {
+    expect(fonteDaNota("acervo+acervo_a_confirmar")).toBe("no acervo");
+  });
+
+  it("fonte sem tradução sai crua: nome feio é melhor que campo vazio", () => {
+    expect(fonteDaNota("fonte_nova")).toBe("fonte_nova");
+  });
+
+  it("sem fonte, nada a dizer", () => {
+    expect(fonteDaNota(null)).toBeNull();
   });
 });
 

@@ -17,6 +17,8 @@ import { lerGastoDeCartao } from "@/lib/observacaoTitulo";
 
 export type SituacaoTitulo =
   | "com_nota"
+  | "comprovante_aceito"
+  | "so_comprovante"
   | "anexo_suspeito"
   | "pronta_para_enviar"
   | "espera_confirmacao"
@@ -26,6 +28,17 @@ export type SituacaoTitulo =
   | "nao_verificado"
   | "dispensa"
   | "conferir";
+
+/**
+ * O QUE ESTÁ PENDURADO NO TÍTULO, na resposta do banco.
+ *
+ * `indefinido` é o estado mais comum hoje e não é falha: dos 758 títulos com
+ * anexo no ERP, 702 nunca foram lidos por dentro. A varredura de triagem os
+ * resolve com o tempo, e até lá eles contam como antes — transformar "não sei"
+ * em "não tem" faria centenas de títulos saírem do verde por uma mudança de
+ * leitura, não de fato.
+ */
+export type DocumentoClasse = "nota" | "comprovante" | "nao_documento" | "indefinido";
 
 /**
  * A ordem de cobrança. NÃO dispensa nada — tudo continua exigindo nota; o que
@@ -59,6 +72,12 @@ export type LinhaTitulo = {
   anexos: Array<{ id: string | null; nome: string | null; tipo: string | null }> | null;
   anexo_classe: "nota" | "duvidoso" | "indefinido" | null;
   anexo_revisao: "nota" | "nao_e_nota" | null;
+  /** O que o Hub sabe que está pendurado: nota, comprovante, nao_documento… */
+  documento_classe: DocumentoClasse | null;
+  /** `false` quando o fornecedor está no cadastro de quem não emite NF. */
+  fornecedor_emite_nf: boolean | null;
+  /** O tipo que a IA leu no papel — "recibo", "boleto", "cupom_fiscal". */
+  anexo_tipo_lido: string | null;
   nota_no_hub: string | null;
   enviado_em: string | null;
   nf_no_campo: string | null;
@@ -143,6 +162,17 @@ export const SITUACAO: Record<SituacaoTitulo, {
     rotulo: "Anexo a conferir", tom: "atencao",
     ajuda: "Tem arquivo no ERP, mas o nome não identifica documento nenhum (\"nf_undefined_correta.pdf\", foto solta). Alguém precisa abrir e dizer se é a nota.",
   },
+  /* OS DOIS ESTADOS DE COMPROVANTE, e a diferença entre eles é quem emitiu.
+     Onde o fornecedor não emite nota, o recibo É o documento e o título está
+     resolvido; onde ele emite, o recibo prova o gasto e não substitui a nota. */
+  comprovante_aceito: {
+    rotulo: "Recibo aceito", tom: "ok",
+    ajuda: "Este fornecedor não emite nota fiscal — Uber, 99, fornecedor de fora — e o recibo dele É o documento. Conta como coberto, e não há o que cobrar. A lista de quem não emite fica em Configurações e você pode editá-la.",
+  },
+  so_comprovante: {
+    rotulo: "Só comprovante — falta a NF", tom: "atencao",
+    ajuda: "Tem papel pendurado no título (recibo, boleto, comprovante de pagamento), e não é a nota fiscal. O gasto está provado, então não é vermelho; mas o fornecedor EMITE nota e ela ainda falta. Quando ela chegar, entra neste mesmo título — o Hub avisa que se resolveu.",
+  },
   pronta_para_enviar: {
     rotulo: "Pronta para subir", tom: "atencao",
     ajuda: "O Hub TEM o arquivo da nota e o ERP não. Não é tarefa de ninguém: a varredura de envio roda de 15 em 15 minutos e leva. Se uma linha ficar parada aqui, o motivo está em \"Falta um passo\".",
@@ -189,9 +219,20 @@ export const GRAVIDADES: Gravidade[] = ["urgente", "grave", "medio", "irrelevant
 
 /** As situações que entram na conta de cobertura. */
 export const SITUACOES_EXIGIVEIS: SituacaoTitulo[] = [
-  "com_nota", "anexo_suspeito", "pronta_para_enviar", "espera_confirmacao",
-  "enviado_aguardando", "sem_nota", "erro_leitura", "nao_verificado",
+  "com_nota", "comprovante_aceito", "so_comprovante", "anexo_suspeito",
+  "pronta_para_enviar", "espera_confirmacao", "enviado_aguardando",
+  "sem_nota", "erro_leitura", "nao_verificado",
 ];
+
+/**
+ * As que contam como COBERTAS.
+ *
+ * `comprovante_aceito` entra porque ali o recibo é o documento que dá para ter —
+ * e esta lista precisa ser a mesma régua que a `cap_notas_resumo` usa no banco.
+ * Se as duas divergirem, o cartão de cima e a soma das linhas param de bater, e
+ * ninguém consegue dizer qual dos dois está certo.
+ */
+export const SITUACOES_COBERTAS: SituacaoTitulo[] = ["com_nota", "comprovante_aceito"];
 
 /**
  * O QUE UMA PESSOA PRECISA OLHAR — e é com isto que a aba Títulos nasce.
@@ -212,7 +253,7 @@ export const SITUACOES_EXIGIVEIS: SituacaoTitulo[] = [
  * coisa que escondê-la para sempre.
  */
 export const SITUACOES_FALTANDO: SituacaoTitulo[] = [
-  "sem_nota", "anexo_suspeito", "espera_confirmacao",
+  "sem_nota", "anexo_suspeito", "espera_confirmacao", "so_comprovante",
 ];
 
 /**
@@ -305,15 +346,24 @@ export function frasePanorama(r: ResumoNotas | null): string {
  * Usada na barra do mês e na do total — a mesma conta nos dois lugares.
  */
 export function fatias(v: {
-  com_nota: number; pronta: number; espera?: number; sem_nota: number;
-  nao_verificado: number; total: number;
-}): { com_nota: number; pronta: number; espera: number; sem_nota: number; nao_verificado: number } {
+  com_nota: number; pronta: number; espera?: number; comprovante?: number;
+  sem_nota: number; nao_verificado: number; total: number;
+}): {
+  com_nota: number; pronta: number; espera: number; comprovante: number;
+  sem_nota: number; nao_verificado: number;
+} {
   const t = v.total || 0;
-  if (t <= 0) return { com_nota: 0, pronta: 0, espera: 0, sem_nota: 0, nao_verificado: 0 };
+  if (t <= 0) {
+    return { com_nota: 0, pronta: 0, espera: 0, comprovante: 0, sem_nota: 0, nao_verificado: 0 };
+  }
   const p = (n: number) => (100 * (n || 0)) / t;
   return {
     com_nota: p(v.com_nota),
     pronta: p(v.pronta),
+    /* O GASTO ESTÁ PROVADO E A NOTA NÃO CHEGOU. Fatia própria porque não é
+       nenhuma das outras duas coisas: no vermelho seria dizer que ninguém tem
+       nada, e no verde seria dizer que está resolvido. */
+    comprovante: p(v.comprovante ?? 0),
     /* Fatia própria porque é o único pedaço da barra que depende de uma PESSOA.
        Somada à amarela ("o Hub leva sozinho") ela ficaria escondida atrás de uma
        promessa que ninguém vai cumprir — a nota está achada e parada. */
@@ -390,6 +440,32 @@ export function ondeAbrir(
   if ((l.anexos_no_erp ?? 0) > 0) return "erp";
   if (l.nota_no_hub) return "hub";
   return null;
+}
+
+/**
+ * ONDE O HUB VIU A NOTA, dito em português.
+ *
+ * `nota_no_hub` é a coluna que a view monta com `string_agg` das fontes, e ela
+ * chega crua: `acervo_a_confirmar`, `drive+cartao`. A tabela mostrava esse texto
+ * do jeito que vinha, ao lado do clipe — cinco linhas escritas
+ * "📎 acervo_a_confirmar" numa tela que o financeiro abre todo dia. Nome de
+ * enum não é frase, e quem lê a tela não tem por que saber o que é um acervo.
+ */
+const FONTE_DA_NOTA: Record<string, string> = {
+  acervo: "no acervo",
+  acervo_a_confirmar: "no acervo",
+  auditoria: "na auditoria",
+  cartao: "na base do cartão",
+  drive: "nas pastas do Drive",
+  facilities: "no Facilities",
+};
+
+export function fonteDaNota(nota_no_hub: string | null): string | null {
+  if (!nota_no_hub) return null;
+  const partes = nota_no_hub.split("+").map((f) => FONTE_DA_NOTA[f]).filter(Boolean);
+  // Fonte nova que ainda não tem tradução: melhor o nome cru do que nada.
+  if (!partes.length) return nota_no_hub;
+  return [...new Set(partes)].join(" e ");
 }
 
 /**

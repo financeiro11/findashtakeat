@@ -23,23 +23,26 @@
  * de perder a autoridade do painel inteiro.
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { Link } from "react-router-dom";
 import { supabase } from "@/integrations/supabase/client";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import { comValorExato } from "@/components/ValorExato";
+import { CaixaDeNotas } from "@/components/notas/CaixaDeNotas";
+import { SoComprovante } from "@/components/notas/SoComprovante";
 import { Input } from "@/components/ui/input";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 import { Tooltip, TooltipTrigger, TooltipContent } from "@/components/ui/tooltip";
 import {
-  AlertTriangle, ArrowUpRight, CheckCircle2, ChevronLeft, ChevronRight, CreditCard,
+  AlertTriangle, Archive, ArrowUpRight, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, CreditCard,
   ExternalLink, Eye, FileWarning, FilterX, Flame, Loader2, Paperclip, RefreshCw, Scale,
   Maximize2, Minus, Plus,
-  Search, Send, ShieldAlert, ShieldCheck, ShieldQuestion, ThumbsDown, ThumbsUp, Upload,
+  Search, Send, ShieldAlert, ShieldCheck, ShieldQuestion, Target, ThumbsDown, ThumbsUp, Upload, Zap,
 } from "lucide-react";
 import { resolverComprovante } from "@/lib/comprovante";
 import {
-  brlStr, categoriasCriticas, dataStr, fatias, formatarDoc, frasePanorama, mesCurto,
+  brlStr, categoriasCriticas, dataStr, fatias, fonteDaNota, formatarDoc, frasePanorama, mesCurto,
   nomeDaLinha, ondeAbrir, pctStr, periodoPadrao, resumoDoCorte, urlParaEmbutir,
   GRAVIDADE, GRAVIDADES, REGRA, SITUACAO,
   SITUACOES_EXIGIVEIS, SITUACOES_FALTANDO, SITUACOES_NOSSAS,
@@ -49,7 +52,12 @@ import {
 import { useApelidos } from "@/hooks/useApelidos";
 import { nomeExibido } from "@/lib/apelidos";
 import { invocar } from "@/lib/erroEdge";
+import {
+  fraseDaJanela, totalParado, MOTIVO, MOTIVOS_PARADOS,
+  type MotivoParada, type PorQueParou,
+} from "@/lib/acervoNotas";
 import { Parcelas } from "./notas-erp/Parcelas";
+import { EscolherTitulo, type NotaEmEscolha } from "./notas-erp/EscolherTitulo";
 /* O filtro-de-coluna do Hub. Nasceu na Parametrização e continua morando lá —
    é genérico (cabeçalho, botão de barra, lista marcável, faixa de número, faixa
    de meses) e não sabe nada daquela tela. */
@@ -501,10 +509,195 @@ function BotaoAbrir({ l, onAbrir }: { l: LinhaTitulo; onAbrir: (onde: Exclude<On
   );
 }
 
-type Aba = "panorama" | "diagnostico" | "categorias" | "fornecedores" | "titulos" | "acervo" | "revisar" | "parcelas" | "quase" | "regua";
+/* ---------------------- "Achada — falta você confirmar" ----------------------
+ *
+ * O QUADRO PEDIA UM CLIQUE QUE NÃO EXISTIA. O cartão diz, em cima de cinco
+ * títulos e R$ 49.438, *um clique resolve* — e a aba "Títulos", que é para onde
+ * ele leva, não tinha botão nenhum. Confirmar morava na aba "Acervo de notas",
+ * atrás de marcar linha por linha ali, e ninguém liga uma tela à outra sozinho.
+ *
+ * O BOTÃO VAI NA COLUNA QUE FAZ O PEDIDO, pela mesma razão que o olho e o clipe
+ * foram para lá: é a coluna "Situação" que AFIRMA que falta confirmar, então é
+ * dela a obrigação de oferecer o gesto. Três ícones, três respostas — ver
+ * (`BotaoAbrir`), confirmar (aqui) e anexar outra coisa (`BotaoAnexar`).
+ */
+
+/** O que o acervo achou para um título, o suficiente para decidir sem sair da linha. */
+type AchadoDoAcervo = {
+  ids: number[];
+  /** o que o papel é: 'nota' | 'boleto' | 'recibo' | 'extrato' | 'outro' | null */
+  tipo: string | null;
+  pareceNota: boolean;
+  /** o leitor de arquivo já abriu o PDF, ou o palpite ainda vem só do nome? */
+  lido: boolean;
+  comoSeChama: string | null;
+};
+
+/** Como dizer, em duas palavras, o que está pendurado na linha. */
+function rotuloDoPapel(a: AchadoDoAcervo): string {
+  if (a.pareceNota) return "nota";
+  if (a.tipo && a.tipo !== "outro") return a.tipo;
+  return a.lido ? "documento" : "não lido";
+}
+
+/**
+ * O QUE O ACERVO ACHOU PARA AS LINHAS QUE ESTÃO NA TELA.
+ *
+ * Consulta à parte, e não uma coluna nova em `cap_notas_titulos`: aquela RPC
+ * serve quatro abas e abre o `omie_cache` inteiro (880 ms). Esta é um `in` sobre
+ * `alvo_id_unico` restrito aos títulos que pedem confirmação — quase sempre um
+ * punhado — e é a mesma divisão que a fila de "Anexo a conferir" já usa para a
+ * leitura da IA.
+ *
+ * Só busca o que a pessoa pode decidir. Um título "com nota" não tem pergunta
+ * pendente, e carregar o acervo dele seria trabalho para não mostrar nada.
+ */
+function useAchadosDoAcervo(linhas: LinhaTitulo[], releitura: number) {
+  const [achados, setAchados] = useState<Record<number, AchadoDoAcervo>>({});
+
+  const alvos = useMemo(
+    () => linhas.filter((l) => l.situacao === "espera_confirmacao").map((l) => l.cod_titulo),
+    [linhas],
+  );
+  /* A chave em texto, e não o array: `alvos` é um objeto novo a cada leitura da
+     lista, e o efeito rodaria de novo mesmo quando os títulos são os mesmos. */
+  const chave = alvos.join(",");
+
+  useEffect(() => {
+    if (!alvos.length) { setAchados({}); return; }
+    let vivo = true;
+    (async () => {
+      const { data, error } = await sb.from("notas_externas")
+        .select("id, alvo_id_unico, tipo_documento, parece_nota, o_que_e, lido_do_arquivo_em")
+        .in("alvo_id_unico", alvos.map(String))
+        .in("alvo_tipo", ["pix", "erp"])
+        .eq("tem_arquivo", true)
+        .is("copia_de", null)
+        .is("ignorado_em", null)
+        .is("enviado_erp_em", null);
+      if (!vivo) return;
+      if (error) {
+        /* Sem toast: isto é enfeite da linha, não a linha. Um aviso vermelho por
+           causa do rótulo do papel assustaria por algo que não impede nada — o
+           botão simplesmente não aparece, e o clipe continua ali. */
+        console.warn("acervo da linha", error.message);
+        setAchados({});
+        return;
+      }
+      const mapa: Record<number, AchadoDoAcervo> = {};
+      for (const n of (data ?? []) as any[]) {
+        const cod = Number(String(n.alvo_id_unico).replace(/\D/g, ""));
+        if (!cod) continue;
+        const antes = mapa[cod];
+        mapa[cod] = {
+          ids: [...(antes?.ids ?? []), n.id as number],
+          /* Com mais de um documento no mesmo título, o rótulo fica com o mais
+             forte: dizer "boleto" quando há um boleto E a nota faria a pessoa
+             recusar o que ela queria aceitar. */
+          tipo: antes?.pareceNota ? antes.tipo : (n.tipo_documento ?? antes?.tipo ?? null),
+          pareceNota: !!antes?.pareceNota || !!n.parece_nota,
+          lido: !!antes?.lido || !!n.lido_do_arquivo_em,
+          comoSeChama: antes?.comoSeChama ?? n.o_que_e ?? null,
+        };
+      }
+      setAchados(mapa);
+    })();
+    return () => { vivo = false; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [chave, releitura]);
+
+  return achados;
+}
+
+/**
+ * "SIM, É ESTA" — e o que exatamente esse clique afirma.
+ *
+ * Carimba `alvo_manual` (a mesma `notas_externas_confirmar` da aba Acervo, para
+ * não haver duas portas com regras diferentes), põe na fila e acorda uma leva de
+ * envio, em vez de esperar o cron de 15 em 15 minutos. As três coisas juntas
+ * porque a frase do cartão é "um clique resolve", e resolver quer dizer estar no
+ * Omie — não estar carimbado.
+ *
+ * O RÓTULO DO PAPEL VEM ANTES DO BOTÃO de propósito. O que espera confirmação
+ * quase nunca é uma nota óbvia: é o boleto que o casador achou pelo valor, o
+ * recibo do café, o PDF cujo nome não diz nada. Confirmar um boleto é uma
+ * decisão legítima — o `parece_nota` deixou de barrar quem confirma à mão, ver a
+ * migração `20260827460000` —, mas é uma decisão, e quem decide precisa ler a
+ * palavra "boleto" antes de apertar, não depois.
+ */
+function BotaoConfirmar({ l, achado, onPronto }: {
+  l: LinhaTitulo; achado: AchadoDoAcervo | undefined; onPronto: () => void;
+}) {
+  const [indo, setIndo] = useState(false);
+  if (!achado?.ids.length) return null;
+
+  const papel = rotuloDoPapel(achado);
+
+  async function confirmar() {
+    if (!achado) return;
+    setIndo(true);
+    try {
+      const { error: eConf } = await sb.rpc("notas_externas_confirmar", { p_ids: achado.ids });
+      if (eConf) throw eConf;
+      const { data: n, error: eFila } = await sb.rpc("notas_externas_enfileirar", { p_ids: achado.ids });
+      if (eFila) throw eFila;
+      if (!n) {
+        /* Zero aqui não é erro, e calar seria pior: a porta da fila também
+           recusa o que o Omie JÁ tem. Dizer qual dos dois aconteceu evita o
+           clique repetido. */
+        toast.message("Confirmado — mas nada entrou na fila. O Omie já tem anexo neste título.");
+        onPronto();
+        return;
+      }
+      const d = await invocar<{ enviados?: number; falhas?: number }>(
+        sb.functions.invoke("omie-anexar-comprovante", { body: { action: "varredura", limite: 6 } }),
+      );
+      const { enviados = 0 } = d ?? {};
+      toast.success(
+        enviados
+          ? `Confirmado e anexado no Omie (título ${l.cod_titulo}).`
+          : "Confirmado e na fila. A varredura leva ao Omie em até 15 minutos.",
+      );
+      onPronto();
+    } catch (e: any) {
+      toast.error(`Não deu para confirmar: ${e?.message ?? e}`);
+    } finally {
+      setIndo(false);
+    }
+  }
+
+  return (
+    <span className="inline-flex items-center gap-1">
+      <span
+        className="rounded border border-border px-1 text-[10.5px] text-muted-foreground"
+        title={achado.comoSeChama ?? undefined}
+      >
+        {papel}
+      </span>
+      <button
+        className={cn("ghost-icone text-emerald-600 dark:text-emerald-400", indo && "pointer-events-none opacity-60")}
+        onClick={confirmar}
+        title={
+          achado.pareceNota
+            ? "É esta a nota deste título — confirma, entra na fila e sobe ao Omie"
+            : `O que o Hub achou é um ${papel}. Confirmar anexa este documento no Omie mesmo assim.`
+        }
+        aria-label="Confirmar que é esta"
+      >
+        {indo ? <Loader2 className="h-4 w-4 animate-spin" /> : <ThumbsUp className="h-4 w-4" />}
+      </button>
+    </span>
+  );
+}
+
+type Aba = "panorama" | "caixa" | "diagnostico" | "categorias" | "fornecedores" | "titulos" | "acervo" | "revisar" | "parcelas" | "quase" | "regua";
 
 const ABAS: Array<{ id: Aba; rotulo: string }> = [
   { id: "panorama", rotulo: "Panorama" },
+  /* A CAIXA VEM CEDO na barra porque é a única aba onde se ENTREGA alguma coisa;
+     todas as outras são leitura. Quem baixou dez notas do portal do fornecedor
+     abre esta tela para descarregá-las, não para conferir cobertura. */
+  { id: "caixa", rotulo: "Caixa de notas" },
   { id: "diagnostico", rotulo: "Por que falta" },
   { id: "categorias", rotulo: "Categorias" },
   { id: "fornecedores", rotulo: "Quem deve nota" },
@@ -552,6 +745,24 @@ const CARTOES: Array<{
       "o que já subiu espera só a releitura do ERP. Ninguém precisa fazer nada — e se uma " +
       "linha travar, ela aparece em \"Falta um passo\" com o motivo.",
   },
+  /* AO LADO do "Hub leva sozinho" de propósito: os dois dizem "a nota está
+     aqui", e a diferença inteira é quem move. Separados na tela, a pessoa lê
+     "achou" e vai embora achando que a máquina resolve — e este é justamente o
+     monte que a máquina não toca. */
+  {
+    id: "so_comprovante", rotulo: SITUACAO.so_comprovante.rotulo, tom: "atencao",
+    icone: <ShieldQuestion className="h-3.5 w-3.5" />,
+    situacoes: ["so_comprovante"], aba: "titulos",
+    rodape: "cobrar a NF",
+    ajuda: SITUACAO.so_comprovante.ajuda,
+  },
+  {
+    id: "espera_confirmacao", rotulo: SITUACAO.espera_confirmacao.rotulo, tom: "atencao",
+    icone: <CheckCircle2 className="h-3.5 w-3.5" />,
+    situacoes: ["espera_confirmacao"], aba: "titulos",
+    rodape: "um clique resolve",
+    ajuda: SITUACAO.espera_confirmacao.ajuda,
+  },
   {
     id: "anexo_suspeito", rotulo: SITUACAO.anexo_suspeito.rotulo, tom: "atencao",
     icone: <ShieldQuestion className="h-3.5 w-3.5" />,
@@ -577,6 +788,8 @@ const CARTOES: Array<{
 const BARRA: Record<string, string> = {
   com_nota: "bg-emerald-500",
   pronta: "bg-amber-500",
+  espera: "bg-sky-500",
+  comprovante: "bg-orange-400",
   sem_nota: "bg-red-500",
   nao_verificado: "bg-violet-400/70",
 };
@@ -597,13 +810,13 @@ function faixaDe(g: Gravidade, lim?: { medio: number; grave: number; urgente: nu
 }
 
 function BarraCobertura({ v, total }: {
-  v: { com_nota: number; pronta: number; sem_nota: number; nao_verificado: number };
+  v: { com_nota: number; pronta: number; espera: number; comprovante: number; sem_nota: number; nao_verificado: number };
   total: number;
 }) {
   const f = fatias({ ...v, total });
   return (
     <div className="flex h-2.5 w-full overflow-hidden rounded-full bg-muted" role="presentation">
-      {(["com_nota", "pronta", "sem_nota", "nao_verificado"] as const).map((k) =>
+      {(["com_nota", "pronta", "espera", "comprovante", "sem_nota", "nao_verificado"] as const).map((k) =>
         f[k] > 0 ? <div key={k} className={BARRA[k]} style={{ width: `${f[k]}%` }} /> : null,
       )}
     </div>
@@ -616,6 +829,8 @@ function Legenda() {
       {([
         ["com_nota", "com nota no ERP"],
         ["pronta", "o Hub leva sozinho"],
+        ["espera", "achada — falta confirmar"],
+        ["comprovante", "só comprovante"],
         ["sem_nota", "sem nota"],
         ["nao_verificado", "não verificado"],
       ] as const).map(([k, t]) => (
@@ -768,6 +983,17 @@ export default function NotasERP() {
             {trabalhando === "subir" ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Upload className="h-3.5 w-3.5" />}
             Subir o que está pronto
           </button>
+          {/* Os dois botões acima fazem AGORA o que o cron faz sozinho. Quem
+              chega aqui querendo saber se está andando sem apertar nada tem de
+              achar o caminho a partir desta tela — era onde a pergunta nascia. */}
+          <Link
+            to="/automacoes/painel"
+            className="chip"
+            title="Os crons desta esteira: quando rodam de novo, o que responderam e quanto está parado em cada fila."
+          >
+            <Zap className="h-3.5 w-3.5" />
+            A esteira está rodando?
+          </Link>
         </div>
       </div>
 
@@ -803,6 +1029,11 @@ export default function NotasERP() {
               // A fatia amarela é "nossa": o que vai subir e o que já subiu e
               // espera confirmação. Sem os dois, a barra não fecha os 100%.
               pronta: val("pronta_para_enviar") + val("enviado_aguardando"),
+              // A azul é a única que depende de gente: a nota está achada e
+              // parada até alguém dizer "é esta".
+              espera: val("espera_confirmacao"),
+              // A laranja: o gasto está provado e a nota fiscal ainda falta.
+              comprovante: val("so_comprovante"),
               sem_nota: val("sem_nota") + val("erro_leitura"), nao_verificado: val("nao_verificado"),
             }}
             total={m?.exigivel_valor ?? 0}
@@ -889,9 +1120,10 @@ export default function NotasERP() {
       </div>
 
       {aba === "panorama" && <Panorama resumo={resumo} />}
+      {aba === "caixa" && <CaixaDeNotas />}
       {aba === "diagnostico" && <PorQueFalta de={de} ate={ate} />}
       {aba === "categorias" && <Categorias resumo={resumo} />}
-      {aba === "fornecedores" && <Fornecedores resumo={resumo} />}
+      {aba === "fornecedores" && <Fornecedores resumo={resumo} de={de} ate={ate} />}
       {aba === "titulos" && (
         <Titulos de={de} ate={ate} gravidadeInicial={gravidadeFoco} situacaoInicial={situacaoFoco} />
       )}
@@ -919,7 +1151,10 @@ function Panorama({ resumo }: { resumo: ResumoNotas | null }) {
               <span className="text-[12px] tabular-nums text-muted-foreground">{mesCurto(mm.mes)}</span>
               <BarraCobertura
                 v={{
-                  com_nota: mm.valor_com_nota, pronta: 0,
+                  // O mês a mês só traz dois números do banco; o resto da barra
+                  // vira "não verificado" e as duas fatias intermediárias ficam
+                  // zeradas de propósito.
+                  com_nota: mm.valor_com_nota, pronta: 0, espera: 0, comprovante: 0,
                   sem_nota: mm.valor_sem_nota,
                   nao_verificado: Math.max(0, mm.valor - mm.valor_com_nota - mm.valor_sem_nota),
                 }}
@@ -1089,6 +1324,115 @@ type TextoIA = {
   modelo: string | null;
 };
 
+/* ------------------------- Onde o Hub viu a nota -------------------------
+ *
+ * "Sabe-se onde está" é uma frase inútil sem o endereço. O pedido veio assim:
+ * *"se achou mas não consegue pegar, pelo menos tenho que saber onde achou para
+ * ir atrás"* — e o Hub sabia: o id da mensagem do Gmail mora dentro de
+ * `notas_externas.chave` desde a primeira ingestão, guardado como chave de
+ * deduplicação e nunca lido como endereço.
+ *
+ * A LISTA NÃO REPETE A CLASSIFICAÇÃO dos cartões acima. Ela responde outra
+ * pergunta — "de tudo que falta, sobre o que eu sei dizer onde está?" — e por
+ * isso pode não bater linha a linha com o cartão "Achou e não consegue pegar".
+ * Duas cópias da mesma regra seriam uma para desatualizar. */
+
+type Pista = {
+  cod_titulo: number;
+  favorecido: string;
+  valor: number;
+  competencia: string | null;
+  fonte: string | null;
+  quando: string | null;
+  o_que_e: string | null;
+  detalhe: string | null;
+  tem_arquivo: boolean;
+  pistas: Array<{ tipo: string; rotulo: string; url: string }>;
+  bloqueio: { fornecedor: string; motivo: string; acao: string; onde: string | null } | null;
+};
+
+function OndeEsta({ de, ate }: { de: string; ate: string }) {
+  const [linhas, setLinhas] = useState<Pista[] | null>(null);
+  const [tudo, setTudo] = useState(false);
+
+  useEffect(() => {
+    let vivo = true;
+    (async () => {
+      const { data, error } = await sb.rpc("cap_notas_pistas", { p_de: de, p_ate: ate, p_limite: 200 });
+      if (!vivo) return;
+      if (error) { setLinhas([]); return; }
+      setLinhas((data as Pista[]) ?? []);
+    })();
+    return () => { vivo = false; };
+  }, [de, ate]);
+
+  if (!linhas?.length) return null;
+  const mostrar = tudo ? linhas : linhas.slice(0, 12);
+  const comEndereco = linhas.filter((l) => l.pistas?.length).length;
+
+  return (
+    <div className="card-surface p-4">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h3 className="text-sm font-semibold">Onde o Hub viu cada uma</h3>
+          <p className="mt-0.5 max-w-3xl text-[12.5px] text-muted-foreground">
+            O endereço para ir atrás: a mensagem que trouxe o registro, o link do
+            fornecedor, a pasta. {comEndereco} de {linhas.length} têm um link direto.
+          </p>
+        </div>
+        <span className="text-[12.5px] text-muted-foreground">
+          {linhas.length} títulos · {brl(linhas.reduce((s, l) => s + Number(l.valor || 0), 0))}
+        </span>
+      </div>
+
+      <div className="mt-3 divide-y divide-border">
+        {mostrar.map((l) => (
+          <div key={l.cod_titulo} className="flex flex-wrap items-baseline gap-x-3 gap-y-1 py-2">
+            <span className="min-w-0 flex-1 truncate text-[12.5px] font-medium">{l.favorecido}</span>
+            <span className="shrink-0 text-[12px] tabular-nums text-muted-foreground">
+              {brlStr(Number(l.valor))} · {dataStr(l.competencia)}
+            </span>
+            <div className="flex w-full flex-wrap items-center gap-1.5">
+              {/* O QUE VEIO JUNTO importa tanto quanto o link: remetente e
+                  assunto são o que se digita na busca quando o link falha. */}
+              {(l.detalhe || l.o_que_e) && (
+                <span className="min-w-0 max-w-full truncate text-[11.5px] text-muted-foreground">
+                  {l.detalhe || l.o_que_e}
+                </span>
+              )}
+              {l.pistas?.map((p, i) => (
+                <a key={i} className="chip shrink-0" href={p.url} target="_blank" rel="noreferrer">
+                  <ExternalLink className="h-3 w-3" /> {p.rotulo}
+                </a>
+              ))}
+              {!l.pistas?.length && l.bloqueio && (
+                <span
+                  className="shrink-0 rounded border border-border px-1.5 py-0.5 text-[11px] text-muted-foreground"
+                  title={`${l.bloqueio.motivo}\n\nO que destrava: ${l.bloqueio.acao}`}
+                >
+                  {l.bloqueio.onde || "fora do alcance do Hub — ver \"o que trava\""}
+                </span>
+              )}
+              {l.tem_arquivo && (
+                <span className="shrink-0 text-[11px] text-emerald-700 dark:text-emerald-400">
+                  o arquivo já está no Hub
+                </span>
+              )}
+            </div>
+          </div>
+        ))}
+      </div>
+
+      {linhas.length > 12 && (
+        <button className="mt-2 text-[12.5px] text-muted-foreground hover:text-foreground"
+                onClick={() => setTudo((v) => !v)}>
+          {tudo ? "mostrar menos" : `ver as outras ${linhas.length - 12}`}
+        </button>
+      )}
+    </div>
+  );
+}
+
 function PorQueFalta({ de, ate }: { de: string; ate: string }) {
   const [sinal, setSinal] = useState<Diagnostico | null>(null);
   const [texto, setTexto] = useState<TextoIA | null>(null);
@@ -1219,6 +1563,12 @@ function PorQueFalta({ de, ate }: { de: string; ate: string }) {
         </div>
       )}
 
+      {/* ------- o que tem papel e não tem nota, e de quem se cobra ------- */}
+      <SoComprovante de={de} ate={ate} />
+
+      {/* ------- o endereço de cada uma, que é o que se faz com a lista ------- */}
+      <OndeEsta de={de} ate={ate} />
+
       {/* ---------------- o texto, que é o acabamento ---------------- */}
       <div className="card-surface p-4">
         <div className="flex flex-wrap items-start justify-between gap-3">
@@ -1309,18 +1659,123 @@ function PorQueFalta({ de, ate }: { de: string; ate: string }) {
   );
 }
 
-/* ============================ Fornecedores ============================ */
+/* ============================ Fornecedores ============================
+ *
+ * O AGRUPADO COBRA, O DETALHE CONFERE. A linha por CNPJ é o e-mail que se
+ * manda; mas quem vai ATRÁS da nota abre o Omie título a título, e para isso
+ * precisa do número e da data de cada um. Por isso a linha abre.
+ *
+ * O detalhe vem de `cap_notas_titulos` com o MESMO recorte que montou o grupo
+ * — período do cabeçalho, situação em ('sem_nota', 'anexo_suspeito') — e é
+ * filtrado no cliente por favorecido + documento, que é exatamente o `group by`
+ * do resumo. Sem isso, um CNPJ escrito de dois jeitos apareceria duas vezes na
+ * lista de cima e as duas abririam o mesmo conjunto.
+ */
 
-function Fornecedores({ resumo }: { resumo: ResumoNotas | null }) {
+/** O que falta de UM fornecedor, título a título — em ordem de data. */
+function TitulosDoFornecedor({ de, ate, favorecido, doc, esperados }: {
+  de: string; ate: string; favorecido: string; doc: string | null; esperados: number;
+}) {
+  const [linhas, setLinhas] = useState<LinhaTitulo[] | null>(null);
+  const [erro, setErro] = useState<string | null>(null);
+
+  useEffect(() => {
+    let vivo = true;
+    (async () => {
+      setLinhas(null); setErro(null);
+      const { data, error } = await sb.rpc("cap_notas_titulos", {
+        p_de: de, p_ate: ate,
+        p_situacoes: ["sem_nota", "anexo_suspeito"],
+        /* A busca aceita CNPJ (a partir de 4 dígitos) ou nome. Fornecedor sem
+           documento só se acha pelo nome — é o caso do favorecido avulso. */
+        p_busca: doc || favorecido,
+        p_limite: 300,
+      });
+      if (!vivo) return;
+      if (error) { setErro(error.message); setLinhas([]); return; }
+      const digitos = (v: string | null) => (v ?? "").replace(/\D/g, "");
+      const doGrupo = ((data as LinhaTitulo[]) ?? []).filter(
+        (l) => l.favorecido === favorecido && digitos(l.doc) === digitos(doc),
+      );
+      // Data crescente: quem confere no ERP anda pelo extrato, não pelo valor.
+      doGrupo.sort((a, b) =>
+        (a.competencia ?? a.vencimento ?? "").localeCompare(b.competencia ?? b.vencimento ?? ""));
+      setLinhas(doGrupo);
+    })();
+    return () => { vivo = false; };
+  }, [de, ate, favorecido, doc]);
+
+  if (erro) {
+    return <p className="px-4 py-3 text-[12.5px] text-destructive">Não deu para listar: {erro}</p>;
+  }
+  if (!linhas) {
+    return (
+      <p className="px-4 py-3 text-[12.5px] text-muted-foreground">
+        <Loader2 className="inline h-3.5 w-3.5 animate-spin" /> abrindo os títulos…
+      </p>
+    );
+  }
+  if (!linhas.length) {
+    return <p className="px-4 py-3 text-[12.5px] text-muted-foreground">Nenhum título para abrir aqui.</p>;
+  }
+
+  return (
+    <div className="px-4 pb-3 pt-1">
+      <table className="w-full text-[12.5px]">
+        <thead>
+          <tr className="text-left text-[10.5px] uppercase tracking-wide text-muted-foreground">
+            <th className="py-1 pr-3 font-medium">Título</th>
+            <th className="py-1 pr-3 font-medium">Competência</th>
+            <th className="py-1 pr-3 font-medium">Vencimento</th>
+            <th className="py-1 pr-3 font-medium">Categoria</th>
+            <th className="py-1 pr-3 font-medium">Situação</th>
+            <th className="py-1 text-right font-medium">Valor</th>
+          </tr>
+        </thead>
+        <tbody>
+          {linhas.map((l) => (
+            <tr key={l.cod_titulo} className="border-t border-border/40">
+              {/* O número do título é o que se cola na busca do Omie. */}
+              <td className="py-1.5 pr-3 font-mono text-[12px]">{l.cod_titulo}</td>
+              <td className="py-1.5 pr-3 tabular-nums">{dataStr(l.competencia)}</td>
+              <td className="py-1.5 pr-3 tabular-nums text-muted-foreground">{dataStr(l.vencimento)}</td>
+              <td className="py-1.5 pr-3 text-muted-foreground">{l.categoria || "—"}</td>
+              <td className="py-1.5 pr-3">
+                <span
+                  className={cn("inline-block rounded border px-1.5 py-0.5 text-[10.5px]", TOM[SITUACAO[l.situacao].tom])}
+                  title={SITUACAO[l.situacao].ajuda}
+                >
+                  {SITUACAO[l.situacao].rotulo}
+                </span>
+              </td>
+              <td className="py-1.5 text-right font-medium tabular-nums">{brl(l.valor)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      {/* Contagem só quando ela DISCORDA do agrupado — número que não bate e
+          ninguém avisa é o jeito de perder a confiança na tela inteira. */}
+      {linhas.length !== esperados && (
+        <p className="mt-1.5 text-[11.5px] text-amber-600 dark:text-amber-400">
+          {linhas.length} títulos abertos aqui, {esperados} contados na linha de cima.
+        </p>
+      )}
+    </div>
+  );
+}
+
+function Fornecedores({ resumo, de, ate }: { resumo: ResumoNotas | null; de: string; ate: string }) {
   const linhas = resumo?.fornecedores ?? [];
   const cartaoTitulos = resumo?.meta?.cartao_titulos ?? 0;
+  const [aberto, setAberto] = useState<string | null>(null);
   return (
     <div className="card-surface overflow-x-auto p-0">
       <div className="border-b border-border p-4 pb-3">
         <h3 className="text-sm font-semibold">Quem deve nota</h3>
         <p className="mt-0.5 max-w-3xl text-[12.5px] text-muted-foreground">
           A cobrança é por CNPJ, não por título: um fornecedor com oito títulos em aberto é um
-          e-mail, não oito.
+          e-mail, não oito. <strong className="font-medium text-foreground">Clique no nome</strong> para
+          abrir os oito, com número e data — é assim que se procura um a um no Omie.
         </p>
         {cartaoTitulos > 0 && (
           <p className="mt-2 inline-flex items-center gap-1.5 rounded border border-amber-500/20 bg-amber-500/10 px-2 py-1 text-[12.5px] text-amber-700 dark:text-amber-400">
@@ -1346,14 +1801,42 @@ function Fornecedores({ resumo }: { resumo: ResumoNotas | null }) {
               Ninguém devendo nota no período.
             </td></tr>
           )}
-          {linhas.map((f, i) => (
-            <tr key={`${f.doc}-${i}`} className="border-b border-border/60 last:border-0">
-              <td className="px-4 py-2">{f.favorecido || "—"}</td>
-              <td className="px-3 py-2 font-mono text-[12px] text-muted-foreground">{formatarDoc(f.doc)}</td>
-              <td className="px-3 py-2 text-right tabular-nums">{f.titulos}</td>
-              <td className="px-4 py-2 text-right font-medium tabular-nums">{brl(f.valor_faltante)}</td>
-            </tr>
-          ))}
+          {linhas.map((f, i) => {
+            const chave = `${f.doc ?? ""}|${f.favorecido}|${i}`;
+            const eh = aberto === chave;
+            return (
+              <Fragment key={chave}>
+                <tr className={cn("border-b border-border/60 last:border-0", eh && "bg-muted/40")}>
+                  <td className="px-4 py-2">
+                    <button
+                      className="flex w-full items-center gap-1.5 text-left hover:text-primary"
+                      onClick={() => setAberto(eh ? null : chave)}
+                      title="Abrir os títulos deste fornecedor, com número e data"
+                    >
+                      {eh
+                        ? <ChevronDown className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                        : <ChevronRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />}
+                      {f.favorecido || "—"}
+                    </button>
+                  </td>
+                  <td className="px-3 py-2 font-mono text-[12px] text-muted-foreground">{formatarDoc(f.doc)}</td>
+                  <td className="px-3 py-2 text-right tabular-nums">{f.titulos}</td>
+                  <td className="px-4 py-2 text-right font-medium tabular-nums">{brl(f.valor_faltante)}</td>
+                </tr>
+                {eh && (
+                  <tr className="border-b border-border/60 bg-muted/20 last:border-0">
+                    <td colSpan={4} className="p-0">
+                      <TitulosDoFornecedor
+                        de={de} ate={ate}
+                        favorecido={f.favorecido} doc={f.doc}
+                        esperados={f.titulos}
+                      />
+                    </td>
+                  </tr>
+                )}
+              </Fragment>
+            );
+          })}
         </tbody>
       </table>
     </div>
@@ -1407,6 +1890,9 @@ function Titulos({ de, ate, gravidadeInicial, situacaoInicial }: {
      cliente é escrever a mesma regra duas vezes, em dois lugares que divergem. */
   const [releitura, setReleitura] = useState(0);
   const nomear = useNomeDaLinha();
+  /* O acervo das linhas que pedem confirmação — é ele que dá o rótulo do papel
+     ("boleto", "recibo", "não lido") e os ids que o ✓ vai carimbar. */
+  const achados = useAchadosDoAcervo(linhas, releitura);
 
   // O que a pessoa digitou fica no input; o que vai ao banco espera ela parar.
   const buscaFirme = useComAtraso(busca);
@@ -1701,7 +2187,7 @@ function Titulos({ de, ate, gravidadeInicial, situacaoInicial }: {
                     </span>
                     {l.nota_no_hub && l.situacao !== "com_nota" && (
                       <span className="inline-flex items-center gap-1 text-[11px] text-amber-600 dark:text-amber-400">
-                        <Paperclip className="h-3 w-3" /> {l.nota_no_hub}
+                        <Paperclip className="h-3 w-3" /> {fonteDaNota(l.nota_no_hub)}
                       </span>
                     )}
                     {l.nf_no_campo && (
@@ -1712,7 +2198,16 @@ function Titulos({ de, ate, gravidadeInicial, situacaoInicial }: {
                         afirmação conferível, e não um rótulo em que se acredita. */}
                     <BotaoAbrir l={l} onAbrir={(onde) => setAberto({ linha: l, onde })} />
                     {/* E o clipe ao lado do olho, pela mesma razão: a coluna que
-                        AFIRMA que falta nota é a que tem de oferecer o remédio. */}
+                        AFIRMA que falta nota é a que tem de oferecer o remédio.
+                        O ✓ entra na mesma companhia quando a afirmação é "falta
+                        você confirmar" — era o único pedido da tela sem gesto. */}
+                    {l.situacao === "espera_confirmacao" && (
+                      <BotaoConfirmar
+                        l={l}
+                        achado={achados[l.cod_titulo]}
+                        onPronto={() => setReleitura((n) => n + 1)}
+                      />
+                    )}
                     <BotaoAnexar l={l} onPronto={() => setReleitura((n) => n + 1)} />
                   </span>
                 </td>
@@ -2084,7 +2579,21 @@ type LinhaAcervo = {
   alvo_categoria: string | null; alvo_situacao: string | null; alvo_cod_titulo: string | null;
   /** Caminho da cópia no bucket do projeto. NULL = só existe no Drive de quem subiu. */
   arquivo_bucket: string | null;
+  /** A data que importa: o vencimento declarado ganha do carimbo do formulário. */
+  vencimento: string | null;
+  /** Por que este documento parou — vem de `notas_externas_parada`. */
+  motivo: MotivoParada;
+  ignorado_em: string | null;
+  ignorado_motivo: string | null;
   total: number;
+};
+
+/** As opções de cada filtro, do acervo inteiro — nunca do resultado corrente. */
+type FacetasAcervo = {
+  fontes: Array<{ valor: string; quantos: number }>;
+  tipos: Array<{ valor: string; quantos: number }>;
+  meses: Array<{ valor: string; quantos: number }>;
+  valor: { min: number | null; max: number | null } | null;
 };
 
 /* Os cinco primeiros são a PARTIÇÃO (somam `arquivos`); o resto é recorte de
@@ -2180,28 +2689,46 @@ const CONFIANCA_TOM: Record<string, string> = {
 
 function Acervo({ aoMudar }: { aoMudar: () => void }) {
   const [resumo, setResumo] = useState<ResumoAcervo | null>(null);
+  const [porque, setPorque] = useState<PorQueParou | null>(null);
+  const [facetas, setFacetas] = useState<FacetasAcervo | null>(null);
   const [linhas, setLinhas] = useState<LinhaAcervo[]>([]);
   const [recorte, setRecorte] = useState("falta_no_erp");
+  /* O CORTE POR MOTIVO DE PARADA — a pergunta que faz alguém trabalhar a fila.
+     Vive separado do `recorte` porque as duas perguntas se cruzam: "o que ainda
+     está parado" (recorte) e "parado POR QUÊ" (motivo). Ver `acervoNotas.ts`. */
+  const [motivo, setMotivo] = useState<MotivoParada | null>(null);
   const [alvo, setAlvo] = useState<string | null>(null);
+  const [fonte, setFonte] = useState<string | null>(null);
   const [busca, setBusca] = useState("");
-  /* Período e faixa de valor. Só aparecem nos recortes de consulta: na fila de
-     trabalho eles não ajudam (o que falta anexar, falta em qualquer mês) e
-     cada campo a mais na tela é um a mais para ninguém usar. */
+  /* PERÍODO E VALOR VALEM EM QUALQUER RECORTE desde 27/08/2026. A ideia antiga
+     — "na fila de trabalho o mês não ajuda" — não sobreviveu ao acervo chegar a
+     2.750 paradas: com fila desse tamanho, "o que ainda falta de julho" é
+     exatamente como o trabalho é dividido. */
   const [de, setDe] = useState("");
   const [ate, setAte] = useState("");
   const [valorMin, setValorMin] = useState("");
   const [valorMax, setValorMax] = useState("");
   const [pag, setPag] = useState(1);
   const [carregando, setCarregando] = useState(true);
-  const [trabalhando, setTrabalhando] = useState<"casar" | "enfileirar" | null>(null);
+  const [trabalhando, setTrabalhando] = useState<"casar" | "enfileirar" | "arquivar" | null>(null);
   const [marcadas, setMarcadas] = useState<Set<number>>(new Set());
+  const [escolhendo, setEscolhendo] = useState<NotaEmEscolha | null>(null);
   const buscaLenta = useComAtraso(busca, 350);
   const POR_PAGINA = 60;
 
   const lerResumo = useCallback(async () => {
-    const { data, error } = await sb.rpc("notas_externas_acervo_resumo");
-    if (error) { toast.error(`Não deu para ler o acervo: ${error.message}`); return; }
-    setResumo(data as ResumoAcervo);
+    const [r1, r2, r3] = await Promise.all([
+      sb.rpc("notas_externas_acervo_resumo"),
+      sb.rpc("notas_externas_por_que_parou"),
+      sb.rpc("notas_externas_facetas"),
+    ]);
+    if (r1.error) { toast.error(`Não deu para ler o acervo: ${r1.error.message}`); return; }
+    setResumo(r1.data as ResumoAcervo);
+    /* Os dois de baixo são enfeite informativo: se falharem, a aba continua
+       inteira sem os cartões de motivo. Um toast vermelho por causa da faceta
+       de um filtro assusta por algo que não impede nada. */
+    if (!r2.error) setPorque(r2.data as PorQueParou);
+    if (!r3.error) setFacetas(r3.data as FacetasAcervo);
   }, []);
 
   const consulta = EH_CONSULTA(recorte);
@@ -2212,24 +2739,25 @@ function Acervo({ aoMudar }: { aoMudar: () => void }) {
        quer a pior notícia primeiro; quem está procurando um documento quer o
        mais recente. São duas perguntas, não uma preferência. */
     const { data, error } = await sb.rpc("notas_externas_acervo", {
-      p_situacao: recorte, p_alvo: alvo, p_fonte: null,
+      p_situacao: recorte, p_alvo: alvo, p_fonte: fonte,
       p_busca: buscaLenta || null, p_limite: POR_PAGINA, p_offset: (pag - 1) * POR_PAGINA,
-      p_de: consulta && de ? de : null,
-      p_ate: consulta && ate ? ate : null,
+      p_de: de || null,
+      p_ate: ate || null,
       p_ordem: consulta ? "recente" : "trabalho",
-      p_valor_min: consulta && valorMin !== "" ? Number(valorMin) : null,
-      p_valor_max: consulta && valorMax !== "" ? Number(valorMax) : null,
+      p_valor_min: valorMin !== "" ? Number(valorMin) : null,
+      p_valor_max: valorMax !== "" ? Number(valorMax) : null,
+      p_motivo: motivo,
     });
     if (error) toast.error(`Não deu para ler a lista: ${error.message}`);
     setLinhas((data as LinhaAcervo[]) ?? []);
     setCarregando(false);
-  }, [recorte, alvo, buscaLenta, pag, consulta, de, ate, valorMin, valorMax]);
+  }, [recorte, alvo, fonte, buscaLenta, pag, consulta, de, ate, valorMin, valorMax, motivo]);
 
   useEffect(() => { void lerResumo(); }, [lerResumo]);
   useEffect(() => { void lerLista(); }, [lerLista]);
   useEffect(() => {
     setPag(1); setMarcadas(new Set());
-  }, [recorte, alvo, buscaLenta, de, ate, valorMin, valorMax]);
+  }, [recorte, alvo, fonte, buscaLenta, de, ate, valorMin, valorMax, motivo]);
 
   /* Recasar é caro (~3 s: abre o contas a pagar inteiro) e o cron já faz de hora
      em hora. O botão existe para quem acabou de subir planilha e não quer esperar. */
@@ -2258,7 +2786,16 @@ function Acervo({ aoMudar }: { aoMudar: () => void }) {
     try {
       const { data: n, error } = await sb.rpc("notas_externas_enfileirar", { p_ids: ids });
       if (error) throw error;
-      if (!n) { toast.message("Nada a enviar: o ERP já tem essas notas."); return; }
+      /* Zero tem DUAS causas, e dizer só uma delas manda a pessoa procurar no
+         lugar errado: ou o Omie já tem o anexo, ou o papel não parece nota e
+         ninguém confirmou ainda (o "Confirmar" é que abre essa porta — ver a
+         migração `20260827470000`). */
+      if (!n) {
+        toast.message(
+          "Nada entrou na fila: ou o Omie já tem essas notas, ou o documento não parece nota — nesse caso, use \"Confirmar\" primeiro.",
+        );
+        return;
+      }
       toast.message(`${n} nota(s) na fila. Subindo ao Omie…`);
       // Lote pequeno: o teto do worker é de CPU (zip + base64 do arquivo).
       const d = await invocar<{ enviados?: number; falhas?: number }>(
@@ -2296,9 +2833,57 @@ function Acervo({ aoMudar }: { aoMudar: () => void }) {
     } finally { setTrabalhando(null); }
   };
 
+  /* TROCAR DE RECORTE LIMPA O MOTIVO — e isto não é detalhe.
+     Os dois cortes se multiplicam: "Falta anexar" (conferência) com "Dois
+     documentos, um título" (motivo de parada) são conjuntos disjuntos, e a
+     lista voltaria VAZIA com os dois botões acesos. Um filtro invisível que
+     esvazia a tela é o jeito mais rápido de alguém concluir que a aba quebrou. */
+  const trocarRecorte = (id: string) => { setRecorte(id); setMotivo(null); };
+
+  /* ARQUIVAR EM LOTE — e por que o motivo é obrigatório.
+     Arquivar tira da fila; sem motivo escrito não há como desfazer em lote nem
+     como saber, daqui a três meses, por que 300 documentos sumiram. A RPC
+     recusa motivo vazio de propósito, e a tela oferece os três da faxina mais
+     um livre, para o caso que a faxina não prevê. */
+  const arquivar = async (ids: number[], porQue: string) => {
+    if (!ids.length) return;
+    setTrabalhando("arquivar");
+    try {
+      const { data: n, error } = await sb.rpc("notas_externas_arquivar_lote", {
+        p_ids: ids, p_motivo: porQue,
+      });
+      if (error) throw error;
+      toast.success(`${n ?? 0} documento(s) arquivado(s) — "${porQue}". Dá para devolver à fila pelo recorte "Arquivado".`);
+      setMarcadas(new Set());
+      await Promise.all([lerResumo(), lerLista()]);
+      aoMudar();
+    } catch (e: any) {
+      toast.error(`Não deu para arquivar: ${e?.message ?? e}`);
+    } finally { setTrabalhando(null); }
+  };
+
+  const desarquivar = async (ids: number[]) => {
+    if (!ids.length) return;
+    setTrabalhando("arquivar");
+    try {
+      const { data: n, error } = await sb.rpc("notas_externas_desarquivar_lote", { p_ids: ids });
+      if (error) throw error;
+      toast.success(`${n ?? 0} de volta à fila. O casador das :00 e :30 tenta encaixar de novo.`);
+      setMarcadas(new Set());
+      await Promise.all([lerResumo(), lerLista()]);
+      aoMudar();
+    } catch (e: any) {
+      toast.error(`Não deu para desarquivar: ${e?.message ?? e}`);
+    } finally { setTrabalhando(null); }
+  };
+
   const total = linhas[0]?.total ?? 0;
   const paginas = Math.max(1, Math.ceil(total / POR_PAGINA));
   const marcaveis = linhas.filter((l) => l.tem_arquivo && !l.enviado_erp_em && l.alvo_tipo && !l.fila_erp);
+  /* No recorte "Arquivado" marca-se qualquer linha: o gesto ali é devolver à
+     fila, e nenhuma delas tem alvo (é por isso que foram arquivadas). */
+  const noArquivo = recorte === "arquivado";
+  const marcaveisAqui = noArquivo ? linhas : marcaveis;
   const ajudaDoRecorte = [...RECORTES, ...RECORTES_FILA, ...RECORTES_CONSULTA]
     .find((r) => r.id === recorte)?.ajuda ?? "";
   /* Confirmar só faz sentido no que ainda não foi olhado por gente. */
@@ -2362,7 +2947,7 @@ function Acervo({ aoMudar }: { aoMudar: () => void }) {
                   "rounded-md border p-3 text-left transition hover:brightness-105",
                   TOM[r.tom], recorte === r.id && "ring-1 ring-primary",
                 )}
-                onClick={() => setRecorte(r.id)}
+                onClick={() => trocarRecorte(r.id)}
               >
                 <span className="block text-[11px] font-medium uppercase tracking-wide">{r.rotulo}</span>
                 <span className="mt-1 block text-lg font-semibold tabular-nums">
@@ -2372,6 +2957,82 @@ function Acervo({ aoMudar }: { aoMudar: () => void }) {
             </ComBalao>
           ))}
         </div>
+
+        {/* ---- nível 1½: POR QUE PAROU ----
+            O nível que faltava, e a razão de a fila ter chegado a 2.750. Os
+            outros respondem "onde está o arquivo" e "quem decide"; nenhum
+            respondia "por que este documento não chegou ao ERP" — e sem isso
+            "Sem alvo" era um monte com uma ajuda que dizia que não havia o que
+            fazer. Aqui cada cartão tem gesto, e o VALOR ao lado da contagem: é
+            o dinheiro que decide por onde começar, e ele nunca esteve na tela. */}
+        {porque && (
+          <div className="mt-3 border-t border-border/60 pt-3">
+            <p className="mb-2 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+              Por que parou
+              <span className="ml-1.5 normal-case opacity-70">
+                — {totalParado(porque).docs.toLocaleString("pt-BR")} documentos pedem gente,
+                {" "}{brlStr(totalParado(porque).valor)}
+              </span>
+            </p>
+            <div className="grid gap-2 sm:grid-cols-3">
+              {MOTIVOS_PARADOS.map((m) => {
+                const b = porque.motivos[m];
+                const d = MOTIVO[m];
+                return (
+                  <ComBalao key={m} texto={d.ajuda}>
+                    <button
+                      className={cn(
+                        "rounded-md border p-3 text-left transition hover:brightness-105",
+                        TOM[d.tom], motivo === m && "ring-1 ring-primary",
+                      )}
+                      onClick={() => {
+                        /* Clicar num motivo TROCA o recorte para "parado": os
+                           cartões de cima cortam por conferência, e um motivo
+                           dentro de "Falta anexar" devolveria zero linhas. Um
+                           cartão que mostra 398 e abre uma lista vazia é o jeito
+                           mais rápido de ninguém clicar de novo. */
+                        setRecorte("parado");
+                        setMotivo((v) => (v === m ? null : m));
+                      }}
+                    >
+                      <span className="block text-[11px] font-medium uppercase tracking-wide">{d.rotulo}</span>
+                      <span className="mt-1 block text-lg font-semibold tabular-nums">
+                        {(b?.docs ?? 0).toLocaleString("pt-BR")}
+                      </span>
+                      <span className="block text-[11.5px] tabular-nums opacity-80">
+                        {brlStr(Number(b?.valor ?? 0))}
+                      </span>
+                    </button>
+                  </ComBalao>
+                );
+              })}
+            </div>
+
+            {/* O que a faxina tirou, e por quê. Arquivar sem mostrar o que foi
+                arquivado é apagar com outro nome. */}
+            <div className="mt-2 flex flex-wrap items-center gap-1.5">
+              <ComBalao texto={MOTIVO.arquivado.ajuda}>
+                <button
+                  className={cn("chip", recorte === "arquivado" && "border-primary text-primary")}
+                  onClick={() => { setRecorte("arquivado"); setMotivo(null); }}
+                >
+                  Arquivado
+                  <span className="ml-1 opacity-60 tabular-nums">
+                    {(porque.motivos.arquivado?.docs ?? 0).toLocaleString("pt-BR")}
+                  </span>
+                </button>
+              </ComBalao>
+              {Object.entries(porque.arquivado_por).map(([m, b]) => (
+                <span key={m} className="text-[11.5px] text-muted-foreground">
+                  · {m}: <b className="font-medium tabular-nums">{b.docs.toLocaleString("pt-BR")}</b>
+                </span>
+              ))}
+            </div>
+            {!!fraseDaJanela(porque.janela_erp) && (
+              <p className="mt-1.5 text-[11.5px] text-muted-foreground">{fraseDaJanela(porque.janela_erp)}</p>
+            )}
+          </div>
+        )}
 
         {/* ---- nível 2: o caminho até o ERP (recorte de dentro do vermelho) ---- */}
         <div className="mt-3 border-t border-border/60 pt-3">
@@ -2384,7 +3045,7 @@ function Acervo({ aoMudar }: { aoMudar: () => void }) {
               <ComBalao key={r.id} texto={r.ajuda}>
                 <button
                   className={cn("chip", recorte === r.id && "border-primary text-primary")}
-                  onClick={() => setRecorte(r.id)}
+                  onClick={() => trocarRecorte(r.id)}
                 >
                   {r.rotulo}
                   <span className="ml-1 opacity-60 tabular-nums">
@@ -2407,7 +3068,7 @@ function Acervo({ aoMudar }: { aoMudar: () => void }) {
               <ComBalao key={r.id} texto={r.ajuda}>
                 <button
                   className={cn("chip", recorte === r.id && "border-primary text-primary")}
-                  onClick={() => setRecorte(r.id)}
+                  onClick={() => trocarRecorte(r.id)}
                 >
                   {r.rotulo}
                   <span className="ml-1 opacity-60 tabular-nums">
@@ -2444,9 +3105,32 @@ function Acervo({ aoMudar }: { aoMudar: () => void }) {
         </label>
       </div>
 
-      {/* Período e valor: só na consulta — ver o comentário do estado. */}
-      {consulta && (
-        <div className="flex flex-wrap items-center gap-1.5 text-[12.5px]">
+      {/* A FONTE, que é o corte mais útil da fila e não existia.
+          Os nove depósitos não são a mesma coisa: `reembolsos` é despesa de
+          colaborador que quase nunca vira conta a pagar, `nfs_colaboradores` é
+          PJ com CNPJ que sempre vira, `email` é o saco de tudo. Trabalhar a fila
+          é trabalhar uma fonte de cada vez, e sem este filtro os nove ficavam
+          embaralhados em 2.750 linhas. */}
+      {!!facetas?.fontes?.length && (
+        <div className="flex flex-wrap items-center gap-1.5">
+          <button className={cn("chip", !fonte && "border-primary text-primary")} onClick={() => setFonte(null)}>
+            Todas as origens
+          </button>
+          {facetas.fontes.map((f) => (
+            <button
+              key={f.valor}
+              className={cn("chip", fonte === f.valor && "border-primary text-primary")}
+              onClick={() => setFonte((v) => (v === f.valor ? null : f.valor))}
+            >
+              {f.valor}
+              <span className="ml-1 opacity-60 tabular-nums">{f.quantos}</span>
+            </button>
+          ))}
+        </div>
+      )}
+
+      {/* Período e faixa de valor, agora em qualquer recorte — ver o estado. */}
+      <div className="flex flex-wrap items-center gap-1.5 text-[12.5px]">
           <span className="text-muted-foreground">De</span>
           <input type="date" className="h-8 rounded-lg border border-border bg-card px-2 outline-none"
                  value={de} onChange={(e) => setDe(e.target.value)} />
@@ -2471,11 +3155,50 @@ function Acervo({ aoMudar }: { aoMudar: () => void }) {
                valor lido, e sem dizer isso a lista parece menor do que o acervo é. */
             <span className="text-muted-foreground">· nota sem valor lido fica de fora</span>
           )}
-        </div>
-      )}
+      </div>
 
-      {!!ajudaDoRecorte && (
-        <p className="text-[12.5px] text-muted-foreground">{ajudaDoRecorte}</p>
+      {/* A ajuda do recorte OU a do motivo, quando há motivo: quem clicou num
+          cartão de "por que parou" quer ler sobre aquilo, não sobre o
+          guarda-chuva que o clique abriu junto. */}
+      <p className="text-[12.5px] text-muted-foreground">
+        {motivo
+          ? MOTIVO[motivo].ajuda
+          : recorte === "arquivado"
+            ? MOTIVO.arquivado.ajuda
+            : recorte === "parado"
+              ? "Tudo que ainda pede gente: nenhum título bate, mais de um cabe, ou dois documentos " +
+                "querem o mesmo. Clique num dos três cartões acima para separar por motivo."
+              : ajudaDoRecorte}
+      </p>
+
+      {/* AS AÇÕES DO LOTE, e por que elas só aparecem com linha marcada.
+          Um "Arquivar 300" permanente na barra é um botão que alguém clica sem
+          querer; com marcação obrigatória, o número no rótulo é sempre o que a
+          pessoa acabou de escolher. */}
+      {!!marcadas.size && (
+        <div className="flex flex-wrap items-center gap-1.5 rounded-lg border border-border bg-muted/30 px-3 py-2 text-[12.5px]">
+          <span className="text-muted-foreground">{marcadas.size} marcada(s):</span>
+          {noArquivo ? (
+            <button className="chip border-primary text-primary" disabled={!!trabalhando}
+                    onClick={() => desarquivar([...marcadas])}>
+              {trabalhando === "arquivar" ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
+              Devolver à fila
+            </button>
+          ) : (
+            <>
+              {["nao e despesa nossa", "nao passa pelo contas a pagar", "duplicado"].map((m) => (
+                <button key={m} className="chip" disabled={!!trabalhando}
+                        onClick={() => arquivar([...marcadas], m)}
+                        title={`Arquiva as marcadas com o motivo "${m}". Dá para devolver depois, em lote, pelo motivo.`}>
+                  <Archive className="h-3.5 w-3.5" /> {m}
+                </button>
+              ))}
+            </>
+          )}
+          <button className="chip" onClick={() => setMarcadas(new Set())}>
+            <FilterX className="h-3.5 w-3.5" /> desmarcar
+          </button>
+        </div>
       )}
 
       {/* ------------------------------- lista ------------------------------- */}
@@ -2484,12 +3207,12 @@ function Acervo({ aoMudar }: { aoMudar: () => void }) {
           <thead>
             <tr className="border-b border-border text-left text-[11px] uppercase tracking-wide text-muted-foreground">
               <th className="px-3 py-2 font-medium">
-                {!!marcaveis.length && (
+                {!!marcaveisAqui.length && (
                   <input
                     type="checkbox"
-                    checked={marcaveis.length > 0 && marcaveis.every((l) => marcadas.has(l.id))}
-                    onChange={(e) => setMarcadas(e.target.checked ? new Set(marcaveis.map((l) => l.id)) : new Set())}
-                    title="marcar os desta página que podem subir"
+                    checked={marcaveisAqui.length > 0 && marcaveisAqui.every((l) => marcadas.has(l.id))}
+                    onChange={(e) => setMarcadas(e.target.checked ? new Set(marcaveisAqui.map((l) => l.id)) : new Set())}
+                    title={noArquivo ? "marcar os desta página para devolver à fila" : "marcar os desta página"}
                   />
                 )}
               </th>
@@ -2516,16 +3239,30 @@ function Acervo({ aoMudar }: { aoMudar: () => void }) {
               <LinhaDoAcervo
                 key={l.id} l={l}
                 marcada={marcadas.has(l.id)}
+                marcavel={noArquivo || (l.tem_arquivo && !l.enviado_erp_em && !l.fila_erp)}
                 aoMarcar={(v) => setMarcadas((s) => {
                   const n = new Set(s); if (v) n.add(l.id); else n.delete(l.id); return n;
                 })}
                 aoMandar={() => mandar([l.id])}
+                aoEscolher={() => setEscolhendo({
+                  id: l.id, nome: l.nome, o_que_e: l.o_que_e,
+                  valor: l.valor == null ? null : Number(l.valor),
+                  data: l.vencimento ?? l.enviado_em,
+                })}
                 ocupado={!!trabalhando}
               />
             ))}
           </tbody>
         </table>
       </div>
+
+      {escolhendo && (
+        <EscolherTitulo
+          nota={escolhendo}
+          aoFechar={() => setEscolhendo(null)}
+          aoEscolher={() => { void lerResumo(); void lerLista(); aoMudar(); }}
+        />
+      )}
 
       {paginas > 1 && (
         <div className="flex items-center justify-between text-[12.5px] text-muted-foreground">
@@ -2545,12 +3282,16 @@ function Acervo({ aoMudar }: { aoMudar: () => void }) {
 }
 
 function LinhaDoAcervo({
-  l, marcada, aoMarcar, aoMandar, ocupado,
+  l, marcada, marcavel, aoMarcar, aoMandar, aoEscolher, ocupado,
 }: {
-  l: LinhaAcervo; marcada: boolean; aoMarcar: (v: boolean) => void;
-  aoMandar: () => void; ocupado: boolean;
+  l: LinhaAcervo; marcada: boolean; marcavel: boolean; aoMarcar: (v: boolean) => void;
+  aoMandar: () => void; aoEscolher: () => void; ocupado: boolean;
 }) {
   const podeSubir = l.tem_arquivo && !l.enviado_erp_em && !!l.alvo_tipo && !l.fila_erp;
+  /* Empate tem saída desde 27/08/2026. Antes o único caminho era esperar o
+     casador mudar de ideia — e ele é determinístico, então o que empatou hoje
+     empata amanhã. Ver `EscolherTitulo.tsx`. */
+  const podeEscolher = !l.alvo_tipo && !l.enviado_erp_em && !!l.candidatos?.motivo;
   /* O valor do lançamento só aparece quando DISCORDA do da nota. Repetir o mesmo
      número duas vezes na mesma linha é ruído; a diferença é a informação — nota
      cheia contra parcela, retenção, desconto. */
@@ -2560,7 +3301,7 @@ function LinhaDoAcervo({
   return (
     <tr className="border-b border-border/60 last:border-0 align-top">
       <td className="px-3 py-2">
-        {podeSubir && (
+        {marcavel && (
           <input type="checkbox" checked={marcada} onChange={(e) => aoMarcar(e.target.checked)} />
         )}
       </td>
@@ -2663,6 +3404,12 @@ function LinhaDoAcervo({
                target="_blank" rel="noreferrer" title="abrir o documento na origem">
               <ExternalLink className="h-3.5 w-3.5" />
             </a>
+          )}
+          {podeEscolher && (
+            <button className="ghost-icone text-primary" onClick={aoEscolher} disabled={ocupado}
+                    title="Escolher de qual lançamento é esta nota — mostra os candidatos com valor, data e se já têm nota">
+              <Target className="h-3.5 w-3.5" />
+            </button>
           )}
           {podeSubir && (
             <button className="ghost-icone" onClick={aoMandar} disabled={ocupado} title="mandar esta ao Omie agora">

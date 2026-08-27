@@ -293,6 +293,42 @@ async function acharNoHub(supabase: any, codTitulo: number): Promise<NoHub | nul
       nome: dri.nome_arquivo ?? null,
     };
   }
+
+  /* O ACERVO DE NOTAS — a quinta origem, e a que faltava.
+   *
+   * Em 27/08/2026 a `cap_titulos` passou a contar o acervo como "o Hub tem a
+   * nota" (`nota_no_hub = 'acervo'` / `'acervo_a_confirmar'`), e este arquivo
+   * não acompanhou. O resultado era a pior combinação possível: a tela dizia
+   * "Achada — falta você confirmar", a pessoa clicava para olhar, e o visor
+   * respondia "O Hub não tem arquivo para este título". Duas telas do mesmo Hub
+   * discordando sobre um fato — e o comentário aqui em cima prometia
+   * explicitamente que as origens eram as MESMAS da view.
+   *
+   * `arquivo_bucket` antes de `link` pela mesma razão da `nota-ler-arquivo`: o
+   * que veio do Drive tem `link` de URL e a CÓPIA no bucket noutra coluna. E o
+   * `link` do que veio por e-mail já É caminho de bucket, não URL — por isso o
+   * `ehUrl` lá embaixo decide, em vez de este trecho supor. */
+  const { data: acv } = await supabase
+    .from("notas_externas")
+    .select("arquivo_bucket, link, o_que_e, detalhe, fila_erp, id")
+    .in("alvo_tipo", ["pix", "erp"])
+    .eq("alvo_id_unico", cod)
+    .eq("tem_arquivo", true)
+    .is("copia_de", null)
+    .is("ignorado_em", null)
+    // A que já está na fila é a que vai subir — se há de aparecer uma, é ela.
+    .order("fila_erp", { ascending: false })
+    .order("arquivo_bucket", { ascending: false, nullsFirst: false })
+    .order("id", { ascending: false })
+    .limit(1).maybeSingle();
+  const caminhoAcervo = String(acv?.arquivo_bucket || acv?.link || "");
+  if (caminhoAcervo) {
+    return {
+      fonte: "acervo",
+      caminho: caminhoAcervo,
+      nome: acv?.o_que_e || acv?.detalhe || null,
+    };
+  }
   return null;
 }
 

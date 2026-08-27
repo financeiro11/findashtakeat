@@ -397,13 +397,33 @@ export function lerNomeDeArquivo(nome: string | null | undefined): NomeDeArquivo
     .replace(/^[\s;,-]+|[\s;,-]+$/g, "")
     .trim() || null;
 
+  /* CHAVE DE ACESSO É PROVA DE QUE O PAPEL É NOTA, e vence o palpite do nome.
+   *
+   * `tipoDoDocumento` só sabe ler a palavra escrita no nome do arquivo, e há
+   * emissor que não escreve nenhuma: o Bling despeja
+   * "2026-08-05_9ada7958b5996e981676d96d3870e660.pdf" — um MD5 — e a
+   * PrimeAcesso inteira caía como "outro". Só que o arquivo TEM os 44 dígitos
+   * dentro, com DV conferido, e 44 dígitos com DV válido são a identidade de um
+   * documento fiscal: não existe boleto com chave de acesso.
+   *
+   * Medido em 26/08/2026: 53 linhas com chave e `parece_nota = false`, 44 delas
+   * com arquivo. Cada uma era uma nota que a regra 2 do casador (mesmo CNPJ na
+   * janela) não alcançava — ela exige `parece_nota` — e que a fila do ERP
+   * recusava pelo mesmo motivo.
+   *
+   * O que a chave NÃO derruba é a palavra explícita: "boleto", "recibo" e
+   * "extrato" no nome continuam ganhando. Boleto que cita a NF no nome existe
+   * ("Boleto NF 11064 - Parcela 1"), e ali quem está certo é a palavra. */
+  const tipoDoNome = tipoDoDocumento(bruto);
+  const tipo = chave && tipoDoNome === "outro" ? "nota" : tipoDoNome;
+
   return {
     data,
     chave,
     cnpj: daChave?.cnpj ?? null,
     competencia: daChave?.competencia ?? null,
     valor,
-    tipo: tipoDoDocumento(bruto),
+    tipo,
     descricao,
   };
 }
@@ -513,6 +533,46 @@ function cnpjsEm(texto: string): string[] {
     if (/\d/.test(texto[i - 1] ?? "") || /\d/.test(texto[i + m[0].length] ?? "")) continue;
     const d = soDigitos(m[0]);
     if (d.length === 14 && !visto.has(d)) { visto.add(d); achados.push(d); }
+  }
+  return achados;
+}
+
+/**
+ * O LINK QUE É A NOTA — para o e-mail que não anexa nada.
+ *
+ * Metade dos emissores de NFS-e não manda arquivo: manda endereço. O Bling
+ * escreve "Visualizar DANFE"; a Davam, que fatura a BuzzLead, escreve "Segue o
+ * Link da Nota Fiscal" e um `/pdf/nfse/<id>/<id>`. Conferido em 27/08/2026: o
+ * link da BuzzLead responde 200 com `application/pdf`, 40 KB, sem login. A nota
+ * estava a um GET de distância e o acervo a registrava como "sem arquivo".
+ *
+ * O QUE ENTRA, e por que a lista é curta: só o que já se anuncia como documento
+ * — termina em `.pdf`/`.xml`, ou tem `nfe|nfse|danfe|nota` no CAMINHO da URL.
+ * Um e-mail de cobrança é cheio de link (rastreio, descadastro, "acesse o
+ * portal", logotipo), e baixar tudo encheria o bucket de HTML.
+ *
+ * O QUE SAI SEMPRE: o próprio Gmail (o `link` da linha já é isso) e os
+ * encurtadores de rastreio, que respondem 200 para qualquer coisa e devolvem
+ * uma página. `ehHtml` ainda segura no download, mas gastar a requisição para
+ * descobrir isso é desperdício por e-mail.
+ */
+const LINK_FORA = /mail\.google\.com|googleusercontent|list-manage|sendgrid|mailchimp|hubspotlinks|doubleclick|unsubscribe|descadastr/i;
+/* O segmento tem de FECHAR: `/nfse/` vale, "conferencia" não. Sem isso "nfe"
+   casa dentro de qualquer palavra e o varredor baixa o rodapé do e-mail. */
+const LINK_DOCUMENTO = /\.(pdf|xml)(?:$|[?#])|\/(?:nfe|nfse|nfs-e|danfe|notafiscal|nota-fiscal|nota)(?:[/.?#-]|$)/i;
+
+export function linksDeNota(texto: string | null | undefined): string[] {
+  const achados: string[] = [];
+  const vistos = new Set<string>();
+  for (const m of String(texto ?? "").matchAll(/https?:\/\/[^\s"'<>)\]]+/g)) {
+    // Pontuação de fim de frase gruda na URL quando ela fecha o parágrafo.
+    const url = m[0].replace(/[.,;:]+$/, "");
+    if (url.length > 900 || vistos.has(url)) continue;
+    if (LINK_FORA.test(url)) continue;
+    if (!LINK_DOCUMENTO.test(url)) continue;
+    vistos.add(url);
+    achados.push(url);
+    if (achados.length >= 5) break;
   }
   return achados;
 }

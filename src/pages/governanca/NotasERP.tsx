@@ -307,6 +307,81 @@ function VisorAnexo({ linha, onde, nomear, aoFechar, aoDecidir, salvando, fila, 
   );
 }
 
+/**
+ * ANEXAR A NOTA AQUI, na linha que a cobra.
+ *
+ * Era o buraco no meio da esteira: o Hub sabia dizer quem devia nota por quatro
+ * caminhos automáticos e nenhum servia para o caso mais comum — a nota chegou
+ * por fora (WhatsApp, portal do fornecedor, link no corpo do e-mail) e a pessoa
+ * está com ela na mão, olhando para a linha. O caminho existente era abrir o
+ * Omie noutra aba, achar o título e anexar lá — e aí o Hub só ficava sabendo na
+ * varredura seguinte, sem nunca registrar de onde veio.
+ *
+ * Um clique põe o arquivo no acervo, espalha para as outras listas que cobram o
+ * mesmo gasto e enfileira para o ERP. Ver `nota-anexar-titulo`.
+ *
+ * O `<input>` é recriado a cada anexo (`key`): sem isso, escolher o MESMO
+ * arquivo duas vezes não dispara `onChange` — o valor não mudou — e o segundo
+ * clique parece que não fez nada.
+ */
+function BotaoAnexar({ l, onPronto }: { l: LinhaTitulo; onPronto: () => void }) {
+  const [enviando, setEnviando] = useState(false);
+  const [rodada, setRodada] = useState(0);
+
+  async function enviar(arquivo: File) {
+    if (arquivo.size > 10 * 1024 * 1024) {
+      toast.error("Arquivo maior que 10 MB.");
+      return;
+    }
+    setEnviando(true);
+    try {
+      const base64 = await new Promise<string>((ok, falhou) => {
+        const r = new FileReader();
+        r.onload = () => ok(String(r.result ?? "").split(",")[1] ?? "");
+        r.onerror = () => falhou(new Error("não deu para ler o arquivo"));
+        r.readAsDataURL(arquivo);
+      });
+      /* `invocar` desembrulha o erro que a função devolve DENTRO de um 200 —
+         padrão desta casa, e sem ele um "Formato inválido" passaria como
+         sucesso silencioso. Ver `erroEdge.ts`. */
+      const r = await invocar<any>(sb.functions.invoke("nota-anexar-titulo", {
+        body: { cod_titulo: l.cod_titulo, nome: arquivo.name, base64, mime: arquivo.type || null },
+      }));
+      toast.success(
+        r?.enviando
+          ? "Nota anexada e a caminho do Omie."
+          : "Nota anexada. Ela sobe ao Omie na próxima rodada (a cada 15 min).",
+      );
+      onPronto();
+    } catch (e: any) {
+      toast.error(`Não deu para anexar: ${e?.message ?? e}`);
+    } finally {
+      setEnviando(false);
+      setRodada((n) => n + 1);
+    }
+  }
+
+  return (
+    <label
+      className={cn("ghost-icone cursor-pointer", enviando && "pointer-events-none opacity-60")}
+      title={`Anexar a nota deste título (${l.cod_titulo}) — vai para o acervo, para as outras listas e para o Omie`}
+    >
+      {enviando ? <Loader2 className="h-4 w-4 animate-spin" /> : <Paperclip className="h-4 w-4" />}
+      <span className="sr-only">Anexar a nota</span>
+      <input
+        key={rodada}
+        type="file"
+        className="hidden"
+        accept=".pdf,.xml,.jpg,.jpeg,.png,.webp"
+        onChange={(e) => {
+          const f = e.target.files?.[0];
+          if (f) void enviar(f);
+        }}
+      />
+    </label>
+  );
+}
+
 /** O botão que abre o visor — some quando não há arquivo nenhum para ver. */
 function BotaoAbrir({ l, onAbrir }: { l: LinhaTitulo; onAbrir: (onde: Exclude<OndeAbrir, null>) => void }) {
   const onde = ondeAbrir(l);
@@ -936,6 +1011,10 @@ function Titulos({ de, ate, gravidadeInicial, situacaoInicial }: {
   const [linhas, setLinhas] = useState<LinhaTitulo[]>([]);
   const [carregando, setCarregando] = useState(true);
   const [facetas, setFacetas] = useState<FacetasNotas | null>(null);
+  /* Releitura sob demanda. Depois de anexar, a linha PRECISA voltar do banco —
+     a situação dela muda ("Sem nota" → "Pronta para enviar") e adivinhar isso no
+     cliente é escrever a mesma regra duas vezes, em dois lugares que divergem. */
+  const [releitura, setReleitura] = useState(0);
   const nomear = useNomeDaLinha();
 
   // O que a pessoa digitou fica no input; o que vai ao banco espera ela parar.
@@ -994,7 +1073,7 @@ function Titulos({ de, ate, gravidadeInicial, situacaoInicial }: {
       setCarregando(false);
     })();
     return () => { vivo = false; };
-  }, [de, ate, situacoes, gravidades, categorias, contas, faixaFirme, mesDe, mesAte, buscaFirme, pagina]);
+  }, [de, ate, situacoes, gravidades, categorias, contas, faixaFirme, mesDe, mesAte, buscaFirme, pagina, releitura]);
 
   const total = linhas[0]?.total_geral ?? 0;
   const paginas = Math.max(1, Math.ceil(total / PAGINA));
@@ -1241,6 +1320,9 @@ function Titulos({ de, ate, gravidadeInicial, situacaoInicial }: {
                         responde: "com nota" e "pronta para subir" viram uma
                         afirmação conferível, e não um rótulo em que se acredita. */}
                     <BotaoAbrir l={l} onAbrir={(onde) => setAberto({ linha: l, onde })} />
+                    {/* E o clipe ao lado do olho, pela mesma razão: a coluna que
+                        AFIRMA que falta nota é a que tem de oferecer o remédio. */}
+                    <BotaoAnexar l={l} onPronto={() => setReleitura((n) => n + 1)} />
                   </span>
                 </td>
               </tr>

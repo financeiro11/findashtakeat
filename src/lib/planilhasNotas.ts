@@ -63,6 +63,17 @@ export type NotaPlanilha = {
   chave: string;
   /** quando o formulário foi enviado (ISO) — NÃO é a data do pagamento */
   enviadoEm: string | null;
+  /**
+   * A data de vencimento que a própria planilha declara, quando existe.
+   *
+   * Só a aba de Eventos tem essa coluna, e ela é a diferença entre casar e não
+   * casar quem paga em parcelas. As seis parcelas de "ABF CON" (R$ 7.142,85
+   * cada) foram enviadas AO MESMO TEMPO, em 09/04/2026, com vencimentos de
+   * 20/04 a 20/09. Pelo carimbo do formulário as seis são indistinguíveis —
+   * mesmo valor, mesmo dia — e as seis ficavam `ambiguo`. Pelo vencimento, cada
+   * uma acha o seu mês.
+   */
+  vencimento: string | null;
   nome: string | null;
   /** CNPJ de quem emitiu, 14 dígitos */
   cnpj: string | null;
@@ -132,6 +143,10 @@ export function ordemDasDatas(valores: (string | null | undefined)[]): (s: strin
     const ordem = p.temHora ? comHora : semHora;
     const [d, mes] = ordem === "dmy" ? [p.a, p.b] : [p.b, p.a];
     if (mes < 1 || mes > 12 || d < 1 || d > 31) return null;
+    /* Ano digitado à mão erra: a coluna de vencimento tem "2/27/0206". Sem esta
+       guarda ele vira o ano 206 e a nota passa a ter uma data que nenhuma
+       janela alcança — pior que não ter data, porque parece uma. */
+    if (Number(p.ano) < 2000) return null;
     return `${p.ano}-${String(mes).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
   };
 }
@@ -260,6 +275,8 @@ type Mapa = {
   oQueE: string[];
   detalhe: string[];
   status: string[];
+  /** só a aba de Eventos pergunta o vencimento; nas outras fica VAZIO */
+  vencimento: string[];
 };
 
 const VAZIO: string[] = [];
@@ -283,6 +300,7 @@ const MAPAS: Record<FonteNota, Mapa> = {
     oQueE: ["tipo de compra"],
     detalhe: ["justificativa", "site em que"],
     status: VAZIO,
+    vencimento: VAZIO,
   },
   reembolsos: {
     nome: ["nome completo"],
@@ -295,6 +313,7 @@ const MAPAS: Record<FonteNota, Mapa> = {
     oQueE: ["motivo do reembolso"],
     detalhe: ["descrição do reembolso"],
     status: ["status auto"],
+    vencimento: VAZIO,
   },
   nfs_colaboradores: {
     nome: ["nome completo"],
@@ -307,6 +326,7 @@ const MAPAS: Record<FonteNota, Mapa> = {
     oQueE: ["a nota se refere"],
     detalhe: ["desabafar"],
     status: ["status automa"],
+    vencimento: VAZIO,
   },
   eventos: {
     nome: ["nome da consultoria"],
@@ -319,6 +339,7 @@ const MAPAS: Record<FonteNota, Mapa> = {
     oQueE: ["canal", "beneficiário"],
     detalhe: ["observações"],
     status: VAZIO,
+    vencimento: ["informe a data de vencimento", "data de vencimento"],
   },
   parceiros: {
     nome: ["nome do parceiro"],
@@ -334,6 +355,7 @@ const MAPAS: Record<FonteNota, Mapa> = {
     oQueE: ["categoria"],
     detalhe: ["detalhamento", "observações"],
     status: ["status automa"],
+    vencimento: VAZIO,
   },
 };
 
@@ -375,10 +397,19 @@ export function notasDaPlanilha(fonte: FonteNota, csv: string): NotaPlanilha[] {
     competencia: coluna(cabecalho, ...mapa.competencia),
     oQueE: coluna(cabecalho, ...mapa.oQueE),
     status: coluna(cabecalho, ...mapa.status),
+    vencimento: coluna(cabecalho, ...mapa.vencimento),
   };
   const cDetalhe = mapa.detalhe.map((p) => coluna(cabecalho, p)).filter(Boolean);
 
   const lerData = ordemDasDatas(regs.map((r) => r[cData]));
+  /* A coluna de vencimento tem ordem PRÓPRIA e precisa da sua própria votação:
+     é digitada à mão, sem hora, e a planilha de Eventos está em locale
+     americano — 54 linhas provam `mm/dd` contra 2 que provam `dd/mm`. As duas
+     perdedoras saem como `null` em vez de virar mês errado, que é o que
+     `ordemDasDatas` faz quando o mês passa de 12. */
+  const lerVencimento = c.vencimento
+    ? ordemDasDatas(regs.map((r) => r[c.vencimento]))
+    : () => null;
 
   const out: NotaPlanilha[] = [];
   regs.forEach((r, i) => {
@@ -386,6 +417,7 @@ export function notasDaPlanilha(fonte: FonteNota, csv: string): NotaPlanilha[] {
     if (!arquivos.length) return; // linha sem anexo não é nota — é só um pedido
 
     const enviadoEm = lerData(r[cData]);
+    const vencimento = c.vencimento ? lerVencimento(r[c.vencimento]) : null;
     const valor = numeroBR(r[c.valor]);
     const parcela = c.parcela ? numeroBR(r[c.parcela]) : null;
     const status = c.status ? (r[c.status] || null) : null;
@@ -407,6 +439,7 @@ export function notasDaPlanilha(fonte: FonteNota, csv: string): NotaPlanilha[] {
         ordem: ordem + 1,
         chave: `${fonte}|${i + 2}|${driveId}`,
         enviadoEm,
+        vencimento,
         nome,
         cnpj,
         documento: doDocumento && doDocumento !== cnpj ? doDocumento : null,

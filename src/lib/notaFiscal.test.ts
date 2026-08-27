@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   chaveDeAcesso, chaveValida, dadosDaChave, descricaoDaNota, lerCorpoDeEmail,
-  ehAvisoDeCobranca, lerDanfes, lerNomeDeArquivo, lerXmlFiscal, tipoDoDocumento,
+  ehAvisoDeCobranca, lerDanfes, lerNomeDeArquivo, lerXmlFiscal, linksDeNota, tipoDoDocumento,
 } from "@/lib/notaFiscal";
 
 /* ---------------------------------------------------------------------------
@@ -263,6 +263,22 @@ describe("nome do arquivo", () => {
     expect(n.descricao).toBe("verisure");
     expect(lerNomeDeArquivo("").descricao).toBeNull();
   });
+
+  /* A CHAVE DECIDE QUANDO O NOME NÃO DIZ NADA.
+     O Bling nomeia o anexo com um MD5 e a NF-e da PrimeAcesso inteira caía como
+     "outro" — fora da regra 2 do casador e fora da fila do ERP, que exigem
+     `parece_nota`. Os 44 dígitos com DV válido não deixam dúvida sobre o que o
+     papel é. */
+  it("chave de acesso no nome faz do arquivo uma nota, mesmo sem a palavra", () => {
+    expect(lerNomeDeArquivo(`2026-08-05_${FRACALOSSI}.pdf`).tipo).toBe("nota");
+    expect(lerNomeDeArquivo("2026-08-05_9ada7958b5996e981676d96d3870e660.pdf").tipo).toBe("outro");
+  });
+
+  it("mas a palavra escrita continua ganhando da chave", () => {
+    // Boleto que cita a NF existe, e ali quem sabe mais é quem nomeou o arquivo.
+    expect(lerNomeDeArquivo(`boleto_${FRACALOSSI}.pdf`).tipo).toBe("boleto");
+    expect(lerNomeDeArquivo(`recibo ${FRACALOSSI}.pdf`).tipo).toBe("recibo");
+  });
 });
 
 const XML_NFE = `<?xml version="1.0"?>
@@ -376,5 +392,40 @@ describe("corpo do e-mail", () => {
   it("só o nosso CNPJ no texto não vira fornecedor", () => {
     const c = lerCorpoDeEmail("TAKEAT TECNOLOGIA LTDA CNPJ 37.511.891/0001-50 segue anexo", NOSSO);
     expect(c.cnpj).toBeNull();
+  });
+});
+
+/* O E-MAIL QUE NÃO ANEXA NADA, e manda o endereço.
+ *
+ * Recortado do e-mail real da Davam, que fatura a BuzzLead. Conferido em
+ * 27/08/2026: aquele link responde 200 com `application/pdf`, 40 KB, sem login —
+ * a nota estava a um GET de distância enquanto o acervo a contava como "sem
+ * arquivo". */
+const CORPO_BUZZLEAD = `Olá , TAKEAT.APP - GARCOM DIGITAL
+Este e-mail é pra lembrar que o boleto emitido pela BuzzLead irá vencer no dia 10/04/2026.
+Segue o link do Boleto:
+https://app.davam.com.br/#/payment/ILQJm7CPbKP2n9A-vZHdORwYe1XJCuuWcykbIfH0YExcAYwDFDRVriBdt9Sf13ACdREaQtiQk
+Segue o Link da Nota Fiscal:
+https://app.davam.com.br/pdf/nfse/6369725576c37840b0b2ed10/69d321bc505fc24da163563a
+Efetue o pagamento e risque isso da sua lista de tarefas :)
+Descadastrar: https://app.davam.com.br/unsubscribe/abc.pdf`;
+
+describe("linksDeNota", () => {
+  it("acha o link da nota e ignora o do boleto", () => {
+    const l = linksDeNota(CORPO_BUZZLEAD);
+    expect(l).toContain("https://app.davam.com.br/pdf/nfse/6369725576c37840b0b2ed10/69d321bc505fc24da163563a");
+    // O link de pagamento não tem `.pdf` nem `nfse` no caminho — e não é a nota.
+    expect(l.some((u) => u.includes("#/payment/"))).toBe(false);
+  });
+
+  it("não segue rastreio nem descadastro, mesmo terminando em .pdf", () => {
+    expect(linksDeNota(CORPO_BUZZLEAD).some((u) => u.includes("unsubscribe"))).toBe(false);
+    expect(linksDeNota("veja em https://mail.google.com/mail/u/0/nota.pdf")).toEqual([]);
+  });
+
+  it("aceita o link direto para o arquivo, e tira a pontuação da frase", () => {
+    expect(linksDeNota("a nota: https://prefeitura.gov.br/emissor/nfse/123.pdf."))
+      .toEqual(["https://prefeitura.gov.br/emissor/nfse/123.pdf"]);
+    expect(linksDeNota("sem link nenhum aqui")).toEqual([]);
   });
 });

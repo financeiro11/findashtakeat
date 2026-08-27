@@ -82,6 +82,10 @@ function paraOBanco(n: NotaPlanilha, agora: string) {
     linha: n.linha,
     ordem: n.ordem,
     enviado_em: n.enviadoEm,
+    // O vencimento que a planilha declara. Vai como `null` nas fontes que não
+    // perguntam — e TEM de ir, porque o upsert em lote unifica as colunas de
+    // todos os objetos e o campo ausente num apagaria o dos outros.
+    vencimento: n.vencimento,
     nome: n.nome,
     cnpj: n.cnpj,
     documento: n.documento,

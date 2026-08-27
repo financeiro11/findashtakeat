@@ -20,7 +20,8 @@
 // O QUE ELE NÃO FAZ: escrever na caixa. O escopo é `gmail.readonly` — não
 // marca, não move, não apaga. O rastro do que foi lido é `email_mensagens`.
 //
-// Body: { action?: 'sync' | 'previa', dias?: number, limite?: number, consulta?: string }
+// Body: { action?: 'sync' | 'previa', dias?: number, limite?: number, consulta?: string,
+//         reler?: boolean }
 // Cron: header `x-cron-token`.
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.0";
@@ -29,7 +30,7 @@ import { baixarAnexo, listar, mensagem, segredosDoGmail, tokenDeAcesso, type Ane
 import { tipoQueVale } from "../_shared/mime.ts";
 import { textoDePdf } from "../_shared/pdf.ts";
 import {
-  chaveDeAcesso, dadosDaChave, descricaoDaNota, ehAvisoDeCobranca, lerCorpoDeEmail, lerDanfes,
+  chaveDeAcesso, dadosDaChave, descricaoDaNota, ehAvisoDeCobranca, lerCorpoDeEmail, lerDanfes, linksDeNota,
   lerNomeDeArquivo, lerXmlFiscal, tipoDoDocumento, type TipoDocumento,
 } from "../_shared/nota-fiscal.ts";
 
@@ -65,7 +66,11 @@ const linkDoEmail = (id: string) => `https://mail.google.com/mail/u/0/#all/${id}
  * Três provas, em ordem de força:
  *   1. chave de acesso (no corpo ou no nome do anexo) — identidade, com DV;
  *   2. CNPJ de terceiro + valor em reais no corpo;
- *   3. o nome do anexo dizendo que é nota/boleto/recibo.
+ *   3. o nome do anexo dizendo que é nota/boleto/recibo;
+ *   4. um LINK de documento no corpo — quem manda "Segue o Link da Nota
+ *      Fiscal" está entregando a nota, só que por endereço. Sem esta prova o
+ *      e-mail da Davam (que fatura a BuzzLead) era descartado como recado, e
+ *      com ele a nota de nove títulos abertos.
  *
  * Sem nenhuma delas, a mensagem fica registrada em `email_mensagens` com
  * `fiscal = false` — visível, e fora da auditoria. Registrar o descarte é o que
@@ -74,6 +79,7 @@ const linkDoEmail = (id: string) => `https://mail.google.com/mail/u/0/#all/${id}
 function ehFiscal(m: Mensagem, corpo: ReturnType<typeof lerCorpoDeEmail>): boolean {
   if (corpo.chave) return true;
   if (corpo.cnpj && corpo.valor) return true;
+  if (linksDeNota(m.corpo).length) return true;
   const nomes = m.anexos.map((a) => a.nome).join(" ");
   if (m.anexos.some((a) => chaveDeAcesso(a.nome))) return true;
   const tipo = tipoDoDocumento(`${nomes} ${m.assunto}`);
@@ -215,7 +221,12 @@ Deno.serve(async (req) => {
         .select("gmail_id").in("gmail_id", unicos.slice(i, i + 300));
       for (const r of data ?? []) conhecidos.add(r.gmail_id as string);
     }
-    const novos = unicos.filter((id) => !conhecidos.has(id));
+    /* `reler` existe para quando a LEITURA muda, não a caixa: ao ensinar o
+       varredor a enxergar algo novo no corpo (foi o caso do link da nota), as
+       mensagens já lidas continuariam com a leitura velha para sempre, porque
+       elas nunca mais voltam para a fila. */
+    const reler = body?.reler === true;
+    const novos = reler ? unicos : unicos.filter((id) => !conhecidos.has(id));
 
     if (previa) {
       return json({
@@ -277,6 +288,13 @@ Deno.serve(async (req) => {
             chave_fiscal: corpo.chave,
             tipo_documento: ehAvisoDeCobranca(m.assunto) ? "outro" : "nota",
             tem_arquivo: false,
+            /* O ENDEREÇO DA NOTA, quando o e-mail manda link em vez de arquivo.
+               É a metade que faltava do parágrafo acima: "esse alguém precisa
+               mesmo ir atrás" virava trabalho de gente para algo que é um GET.
+               A Davam (que fatura a BuzzLead) escreve "Segue o Link da Nota
+               Fiscal" e o link responde 200 com PDF, sem login. Quem baixa é a
+               `nota-baixar-link`; aqui só se guarda o endereço. */
+            link_documento: linksDeNota(m.corpo)[0] ?? null,
             visto_em: agora, atualizado_em: agora,
           });
           continue;

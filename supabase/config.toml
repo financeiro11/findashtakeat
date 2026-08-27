@@ -24,3 +24,9 @@ verify_jwt = false
 # com verify_jwt = true e o cron passa a ser recusado no gateway, calado.
 [functions.notas-arquivar]
 verify_jwt = false
+
+# Mesma razao: roda de cron (:40) com `x-cron-token`. Sem esta linha o gateway
+# devolve UNAUTHORIZED_NO_AUTH_HEADER antes de a funcao existir — e o cron
+# falharia sem nada no log da funcao, que e o jeito mais lento de descobrir.
+[functions.nota-baixar-link]
+verify_jwt = false

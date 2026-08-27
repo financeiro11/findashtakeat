@@ -243,6 +243,45 @@ describe("notasDaPlanilha · eventos", () => {
   });
 });
 
+/* AS SEIS PARCELAS DA ABF, tiradas das linhas 343-348 da planilha real.
+ *
+ * Todas enviadas no mesmo minuto, todas de R$ 7.142,85, com vencimentos de
+ * 20/04 a 20/09. Pelo carimbo do formulário são seis notas idênticas, e as seis
+ * ficavam `ambiguo` no casador. É o caso que a coluna de vencimento resolve. */
+const CSV_EVENTOS_PARCELAS = [
+  `Timestamp,Nome da consultoria/Cliente/Garçom,Canal,Valor da NF (apenas número e vírgula),Beneficiário,"Caso tenha escolhido ""Eventos"", informe a data de vencimento do pagamento (Ex.: 13/02/2026)",User do Instagram,Insira aqui a NF (Formato .pdf),Observações (Opcional),Mes de referência`,
+  `4/9/2026 12:43:50,ABF CON (2/7),,"7.142,85",,4/20/2026,,https://drive.google.com/open?id=1TlAT4Tv7jNP3Wi2wn0Xopdxqfys3THzy,,ABRIL`,
+  `4/9/2026 12:44:28,ABF CON 3/7,,"7.142,85",,5/20/2026,,https://drive.google.com/open?id=11wYw7PJO48s2EqQt98c3Cj4VTS2M2d00,,MAIO`,
+  `4/9/2026 12:46:49,ABF CON 7/7,,"7.142,85",,9/20/2026,,https://drive.google.com/open?id=1OSvxPhmO2ZAXDFnNbnYrvyYeuAERDlPv,,SETEMBRO`,
+  `2/26/2026 15:41:09,ABF - Taxa Associação,,"100,00",,2/27/0206,,https://drive.google.com/open?id=1j2h6vgDKQH5IAGl0q6IGUKwW5ITgoKcL,,Março`,
+].join("\n");
+
+describe("notasDaPlanilha · vencimento declarado", () => {
+  const notas = notasDaPlanilha("eventos", CSV_EVENTOS_PARCELAS);
+
+  it("separa parcelas que o carimbo do formulário não separa", () => {
+    // As três primeiras chegaram no mesmo dia, com o mesmo valor.
+    expect(notas[0].enviadoEm).toBe("2026-04-09");
+    expect(notas[1].enviadoEm).toBe("2026-04-09");
+    expect(notas[0].valor).toBe(7142.85);
+    expect(notas[1].valor).toBe(7142.85);
+    // E só o vencimento diz de qual mês cada uma é.
+    expect(notas[0].vencimento).toBe("2026-04-20");
+    expect(notas[1].vencimento).toBe("2026-05-20");
+    expect(notas[2].vencimento).toBe("2026-09-20");
+  });
+
+  it("recusa o ano digitado errado em vez de inventar uma data", () => {
+    // "2/27/0206" está na planilha de verdade.
+    expect(notas[3].vencimento).toBeNull();
+    expect(notas[3].enviadoEm).toBe("2026-02-26");
+  });
+
+  it("as outras planilhas não têm a coluna, e isso não quebra nada", () => {
+    expect(notasDaPlanilha("parceiros", CSV_PARCEIROS)[0].vencimento).toBeNull();
+  });
+});
+
 const CSV_PARCEIROS = [
   `Carimbo de data/hora,Nome do Parceiro(a),CNPJ,Categoria,Valor (somente números e vírgula),Chave PIX CNPJ,Status Automação,Detalhamento,Envie sua NF,Observações ,Competencia`,
   `10/06/2026 19:17:05,Orgânica Delivery,65568361000184,Consultor ou Influenciador,"R$ 350,00",65568361000184,,,https://drive.google.com/open?id=1L0wbQByK4TFEcX5ZRTfCOMRuTQg25rMq,,`,

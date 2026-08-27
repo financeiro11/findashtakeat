@@ -27,7 +27,8 @@
 // AMBÍGUO NÃO CASA. Dois lançamentos com o mesmo valor na janela viram
 // `candidatos` e ninguém é escolhido.
 //
-// Body: { action?: 'sync' | 'previa', pasta?: 'mercado_livre' | 'whatsapp',
+// Body: { action?: 'sync' | 'previa',
+//         pasta?: 'mercado_livre' | 'whatsapp' | 'gmail',
 //         releitura?: boolean }
 // Cron: header `x-cron-token`.
 
@@ -60,6 +61,23 @@ const json = (b: unknown, s = 200) =>
  *
  * Aqueles 44 dígitos carregam o CNPJ do emitente. Isso é identidade de graça —
  * sem baixar o arquivo, sem OCR, sem modelo. */
+/* A QUARTA IRMÃ NÃO ENTRA AQUI, e vale saber por quê (27/08/2026).
+ *
+ * "Notas Obra" (15Vofsr0UBMlsN7RlRf2vh4CitDMg0SHW) é irmã destas três dentro de
+ * "06. Notas Fiscais 2026", e a tentação de somá-la ao array é imediata: a obra
+ * da sede é a maior rubrica sem nota do contas a pagar (175 títulos,
+ * R$ 283.533). Só que os 258 arquivos dela JÁ ESTÃO no acervo, por outra porta:
+ * `notas_externas` tem `fonte = 'obra'`, chave `obra|1..258`, com CNPJ em 258 e
+ * valor em 257 — leitura melhor do que a que este varredor faria.
+ *
+ * Somá-la aqui criaria um SEGUNDO registro por documento com outro `drive_id`,
+ * e `copia_de` só colapsa quem divide chave fiscal — o que foi lido por OCR ou
+ * por nome de arquivo não divide. O resultado seria 258 pretendentes gêmeos
+ * disputando os mesmos títulos, que é exatamente o ruído que a disputa por
+ * documento existe para matar.
+ *
+ * Se um dia a origem de `fonte='obra'` sair do ar, o caminho é reativá-la — não
+ * duplicar a pasta por aqui. */
 const PASTAS: { pasta: "mercado_livre" | "whatsapp" | "gmail"; raiz: string }[] = [
   { pasta: "mercado_livre", raiz: "1hx5HAbBx9YFZ6lUGBUOcy60s0O62D7l3" },
   { pasta: "whatsapp", raiz: "12JpImM1UDV_ELNNUGrF_Ri2MG6ilvi8a" },

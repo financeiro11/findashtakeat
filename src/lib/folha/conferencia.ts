@@ -144,7 +144,7 @@ export function conferir(
   const tipo = tipoDeChavePix(p.pix ?? "");
   const comoPix: Partial<Record<TipoDeChave, string>> = {
     vazia: "sem chave PIX cadastrada",
-    aleatoria: "chave PIX aleatória — a empresa não paga nesse tipo",
+    aleatoria: "chave PIX aleatória — funciona, mas o ideal é usar o CNPJ",
     cpf: "",  // montada abaixo, com o CPF à vista
     telefone: "",  // aceita; vira aviso de preferência, não erro
     telefone_sem_ddi: "",  // montada abaixo, com o número à vista
@@ -185,9 +185,13 @@ export function conferir(
       mensagem: "estagiário com chave PIX de CNPJ — deve ser o CPF",
     });
   } else if (!chavePermitida(tipo, estagiario) && comoPix[tipo]) {
+    /* Aleatória deixou de impedir o pagamento em 27/08/2026: a chave do título
+       vem do cadastro do Omie, que é curado, e uma EVP paga igual a qualquer
+       outra. Vira preferência, como o telefone — o aviso existe para alguém
+       trocar por CNPJ um dia, não para segurar a folha. */
     achados.push({
       campo: "pix",
-      gravidade: tipo === "vazia" ? "aviso" : "erro",
+      gravidade: tipo === "vazia" || tipo === "aleatoria" ? "aviso" : "erro",
       mensagem: comoPix[tipo]!,
     });
   } else if (chaveMenosBoa(tipo)) {

@@ -209,9 +209,14 @@ describe("conferir · documento", () => {
 });
 
 describe("conferir · chave PIX", () => {
-  it("barra a chave aleatória — são duas no cadastro", () => {
-    const a = erros(pessoa({ pix: "93c94e57-d72a-4513-b2f0-ed195fcd1ff2" }));
-    expect(a[0].mensagem).toMatch(/aleatória/);
+  /* Deixou de barrar em 27/08/2026: a chave do título vem do cadastro do Omie,
+     que é curado, e uma EVP paga igual às outras. Vira preferência — o aviso
+     existe para alguém trocar por CNPJ um dia, não para segurar a folha. */
+  it("avisa da chave aleatória, mas não impede pagar", () => {
+    const a = conferir(pessoa({ pix: "93c94e57-d72a-4513-b2f0-ed195fcd1ff2" }));
+    const achado = a.find((x) => /aleatória/.test(x.mensagem));
+    expect(achado).toBeDefined();
+    expect(achado!.gravidade).toBe("aviso");
   });
 
   it("barra o e-mail sem TLD", () => {

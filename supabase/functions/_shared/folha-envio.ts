@@ -934,9 +934,21 @@ export function chaveDoTitulo(args: {
     };
   }
 
+  /* Chave aleatória PASSA quando está no cadastro do Omie.
+   *
+   * A regra "aleatória não pode" nasceu para o espelho do RH, onde a chave era
+   * digitada por gente diferente a cada admissão e ninguém conferia. O cadastro
+   * do fornecedor é outra coisa: alguém do financeiro o abriu e escreveu ali.
+   * Uma EVP paga igual a qualquer outra no banco — o que não podia era pagar em
+   * chave que ninguém tinha olhado. Decidido com o financeiro em 27/08/2026,
+   * a propósito do Jonas Fraga Loureiro.
+   *
+   * A preferência por CNPJ continua, e a tela continua dizendo isso. Ela só
+   * deixou de segurar o pagamento. */
+  if (tipo === "aleatoria") return { chave };
+
   if (!chavePermitida(tipo, estagiario)) {
     const porque: Partial<Record<typeof tipo, string>> = {
-      aleatoria: "chave aleatória, que a empresa não paga",
       telefone_sem_ddi: `telefone ${chave} sem o +55, que o Omie recusa`,
       email_invalido: `"${chave}", que não é um e-mail válido`,
       documento_incompleto: `${chave}, que não é um documento válido`,

@@ -31,6 +31,19 @@ describe("chaveDoTitulo — a chave é sempre a do cadastro do Omie", () => {
     expect(r.chave).toBe("arturevangelistaoliveira@gmail.com");
   });
 
+  /* A regra "aleatória não pode" era do espelho do RH, onde a chave é digitada
+     por gente diferente a cada admissão. No cadastro do fornecedor alguém do
+     financeiro escreveu ali de propósito, e uma EVP paga igual às outras.
+     Decidido em 27/08/2026, a propósito do Jonas. */
+  it("chave aleatória do cadastro paga — o cadastro é curado", () => {
+    const evp = "93c94e57-d72a-4513-b2f0-ed195fcd1ff2";
+    const r = chaveDoTitulo({
+      documento: "65522549000191", cadastro: cad(evp), estagiario: false,
+    });
+    expect(r.chave).toBe(evp);
+    expect(r.bloqueio).toBeUndefined();
+  });
+
   it("estagiário paga no CPF do cadastro", () => {
     const r = chaveDoTitulo({
       documento: "16146305774", cadastro: cad("16146305774"), estagiario: true,
@@ -54,15 +67,6 @@ describe("chaveDoTitulo — bloqueia em vez de substituir", () => {
     const r = chaveDoTitulo({ documento: CNPJ, cadastro: cad(""), estagiario: false });
     expect(r.bloqueio).toContain("sem chave PIX");
     expect(r.chave).toBeUndefined();
-  });
-
-  it("chave aleatória no cadastro bloqueia — a empresa não paga nesse tipo", () => {
-    const r = chaveDoTitulo({
-      documento: "65522549000191",
-      cadastro: cad("93c94e57-d72a-4513-b2f0-ed195fcd1ff2"),
-      estagiario: false,
-    });
-    expect(r.bloqueio).toContain("aleatória");
   });
 
   it("NÃO cai para o documento quando a chave cadastrada é ruim", () => {
@@ -108,7 +112,7 @@ describe("chaveDoTitulo — bloqueia em vez de substituir", () => {
   });
 
   it("a mensagem sempre aponta para o cadastro do Omie, não para o RH", () => {
-    for (const chave of ["", "93c94e57-fbb4-4d31-b740-2b0c2a38fb07", "11957054393", "x@y"]) {
+    for (const chave of ["", "11957054393", "x@y"]) {
       const r = chaveDoTitulo({ documento: CNPJ, cadastro: cad(chave), estagiario: false });
       expect(r.bloqueio?.toLowerCase()).toContain("omie");
     }

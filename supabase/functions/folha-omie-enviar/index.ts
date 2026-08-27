@@ -347,6 +347,19 @@ Deno.serve(async (req) => {
       const k = soDigitos(c?.cnpj_cpf);
       if (k && !fornecedorPorCnpj.has(k)) fornecedorPorCnpj.set(k, Number(c.codigo));
     }
+    /* Segunda fonte: a varredura de chaves PIX, que já guarda o
+       `codigo_cliente_omie` de cada um e é MUITO mais nova que o cache de
+       clientes (7040 registros, sincronizado de vez em quando).
+     *
+     * Sem isto, o fornecedor do Sérgio — criado no Omie em 27/08/2026, com o
+     * cache de clientes de 26/08 16:01 — aparecia como inexistente, e a recusa
+     * "1 colaborador sem fornecedor" derrubava os cento e dois. Não custa
+     * chamada nenhuma: o dado já está aqui. */
+    for (const c of (chavesCache.data?.dados ?? []) as Record<string, unknown>[]) {
+      const k = soDigitos(c?.doc);
+      const cod = Number(c?.codigoOmie ?? 0);
+      if (k && cod && !fornecedorPorCnpj.has(k)) fornecedorPorCnpj.set(k, cod);
+    }
 
     const titulos: TituloDaFolha[] = [];
     const semPreparo: { codigo: string; nome: string; integracao: string; falta: string }[] = [];
@@ -514,6 +527,8 @@ Deno.serve(async (req) => {
     };
 
     /* ---------- enviar ---------- */
+    /* Olha o MÊS (marco, estado, chave do código) e o CNPJ repetido — não o
+     * preparo de cada um, que virou `semPreparo` e é anotado e pulado. */
     const recusa = recusaDaFolha({
       competencia,
       estado: ((envio.data?.estado as EstadoDaFolha) ?? null),

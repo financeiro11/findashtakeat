@@ -491,7 +491,12 @@ describe("recusaDaFolha", () => {
     expect(recusaDaFolha({ ...ok, estado: "pendente" })).toBeNull();
   });
 
-  it("ligada, barra colaborador sem fornecedor no Omie, dizendo quantos", () => {
+  /* Quem está sem fornecedor NÃO derruba mais o mês — é anotado em
+     `folha_recusas` e pulado. Em 27/08/2026 o Sérgio, sozinho, devolveu 409 e
+     nenhum dos cento e dois títulos foi criado: o fornecedor dele tinha sido
+     criado no Omie naquela manhã e ainda não estava no cache de clientes. A
+     folha de cem não espera pelo cadastro de um. */
+  it("ligada, NÃO barra o mês por quem está sem fornecedor", () => {
     if (!ENVIO_FOLHA_LIBERADO) return;
     const r = recusaDaFolha({
       ...ok,
@@ -501,7 +506,21 @@ describe("recusaDaFolha", () => {
         { cnpj: "33333333000133", codigoFornecedor: null, codigoCategoria: "2.01.01" },
       ],
     });
-    expect(r).toMatch(/^2 colaborador/);
+    expect(r).toBeNull();
+  });
+
+  /* O CNPJ repetido continua derrubando, e é o único que continua: o defeito
+     está no PAR, e mandar metade é escolher qual dos dois fica errado. */
+  it("ligada, barra o mês quando dois colaboradores dividem o CNPJ", () => {
+    if (!ENVIO_FOLHA_LIBERADO) return;
+    const r = recusaDaFolha({
+      ...ok,
+      itens: [
+        { cnpj: "11111111000111", codigoFornecedor: 1, codigoCategoria: "2.01.01" },
+        { cnpj: "11111111000111", codigoFornecedor: 1, codigoCategoria: "2.01.01" },
+      ],
+    });
+    expect(r).toMatch(/mais de um colaborador/);
   });
 
   it("ligada, exige competência e repassa as pendências das linhas", () => {

@@ -1,9 +1,27 @@
 // Edge Function: facilities-radar
 //
-// O radar de preços do Facilities. Duas coisas, só:
+// O radar de preços do Facilities.
 //
-//   { action: "interpretar", pedido, link_ref? }  → traduz o texto livre em specs
-//   { action: "varrer", alvo_id?, limite?, fontes? } → sai atrás de preço
+//   { action: "interpretar", pedido, link_ref? }     → texto livre vira specs
+//   { action: "varrer",  alvo_id?, limite?, fontes? } → sai atrás de preço
+//   { action: "confirmar", alvo_id?, limite? }        → abre o anúncio e checa
+//
+// VARRER E CONFIRMAR SÃO DUAS METADES, e essa separação é o coração da coisa.
+// A varredura lê PÁGINAS DE BUSCA, que são baratas e mentem: mostram produto
+// esgotado com o último preço praticado — que fica bonito justamente por não
+// estar mais à venda. Por isso o achado nasce em quarentena (`a_confirmar`) e
+// não aparece na tela. A confirmação abre O ANÚNCIO, um a um, e só então ele
+// vira aviso: com estoque conferido e com o frete somado ao preço.
+//
+// Confirmar os ~76 candidatos de uma rodada seriam 76 créditos por alvo por dia.
+// Confirmar os três que virariam aviso custa três — e são exatamente os três em
+// que alguém vai clicar. Filtro barato em tudo, conferência cara só no que vira
+// ação.
+//
+// O FRETE ENTRA NA CONTA. O teto é quanto o Facilities aceita GASTAR, e um
+// notebook de R$ 2.980 com R$ 140 de frete não cabe num teto de R$ 3.000. Teto,
+// ranking, alerta e economia são todos medidos pelo total. Frete que a página
+// não informa fica `null`, nunca zero: somar zero afirmaria "é grátis".
 //
 // COMO A IA E A REGRA SE DIVIDEM. A IA entra UMA vez, na `interpretar`: lê
 // "notebook i5 16GB SSD 512 até 3 mil" (e, se houver, o anúncio de referência) e
@@ -25,11 +43,16 @@
 // aqui, com a URL correta, porque o dia em que houver um token de usuário
 // autorizado (fluxo authorization_code) ou um proxy que passe, é só religar.
 //
-// O QUE ESTÁ MEDIDO E FUNCIONANDO (26/08/2026): Kabum (36 anúncios), Terabyte
-// (18), Buscapé (30) e Zoom (24). Os dois agregadores puxam muita loja de uma
-// vez e foram a melhor surpresa do teste. Amazon e Magalu abriram a página e não
-// renderam nada — ficam selecionáveis, mas o card do alvo diz que vieram vazias
-// em vez de fingir sucesso. Uma fonte que cai NÃO derruba a rodada.
+// DOZE FONTES, EM RODÍZIO. Comprovadas em 26/08/2026: Kabum (36 anúncios),
+// Buscapé (30), Zoom (24) e Terabyte (18) — os agregadores puxam muita loja de
+// uma vez e foram a melhor surpresa. Amazon, Magalu e ML abriram a página e não
+// renderam nada. As demais (Bondfaro, Pichau, Balão, Americanas, Casas Bahia,
+// Carrefour, Fast Shop) entraram para SEREM MEDIDAS, não porque eu suponho que
+// funcionam — a que vier vazia diz isso no card e sai da lista padrão.
+//
+// Como seis fontes cabem numa rodada e são doze, as comprovadas vão sempre e as
+// outras giram. Cortar só pelas primeiras da fila deixaria as últimas ligadas na
+// tela e mudas na prática. Uma fonte que cai NÃO derruba a rodada.
 //
 // O ORÇAMENTO É DE RELÓGIO, NÃO DE CONTAGEM. O worker morre aos ~150s sem
 // devolver relatório. A rodada para aos 55s e informa `restante`, para o cron do
@@ -41,7 +64,7 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.0";
 import { requireUser } from "../_shared/auth.ts";
 import { generateJSON } from "../_shared/gemini.ts";
 import {
-  avaliar, classificar, condicaoDoTitulo, norm, pisoDePreco,
+  avaliar, chaveDoProduto, classificar, condicaoDoTitulo, disponibilidade, economiaDe, norm, pisoDePreco, totalDaOferta,
   type AlvoSpecs, type OfertaBruta,
 } from "../_shared/radar-precos.ts";
 
@@ -60,6 +83,14 @@ const ORCAMENTO_MS = 55_000;
  * numa mensagem de WhatsApp sem rolar.
  */
 const MAX_ALERTAS_POR_ALVO = 3;
+/**
+ * Quantas fontes por alvo por rodada. Cada uma custa um crédito de Firecrawl,
+ * uma chamada de IA e ~40s de espera — e são doze cadastradas. Seis cabem numa
+ * onda paralela dentro do orçamento; as outras entram no rodízio.
+ */
+const MAX_FONTES_POR_RODADA = 6;
+/** Até esta prioridade a fonte é consultada SEMPRE (as comprovadas). */
+const FIXAS_ATE = 4;
 
 /* =========================================================== Mercado Livre */
 
@@ -161,21 +192,32 @@ const LOJAS: Record<string, {
 
   /* --- agregadores: cobrem muita loja de uma vez, e o link leva ao comparador,
          não à loja. Quem compra escolhe a loja lá dentro. --- */
-  zoom:    { prioridade: 3, nome: "Zoom",    reputacao: null, waitFor: 4000, busca: (t) => `https://www.zoom.com.br/search?q=${encodeURIComponent(t)}` },
-  buscape: { prioridade: 4, nome: "Buscapé", reputacao: null, waitFor: 4000, busca: (t) => `https://www.buscape.com.br/search?q=${encodeURIComponent(t)}` },
+  zoom:     { prioridade: 3, nome: "Zoom",     reputacao: null, waitFor: 4000, busca: (t) => `https://www.zoom.com.br/search?q=${encodeURIComponent(t)}` },
+  buscape:  { prioridade: 4, nome: "Buscapé",  reputacao: null, waitFor: 4000, busca: (t) => `https://www.buscape.com.br/search?q=${encodeURIComponent(t)}` },
+  bondfaro: { prioridade: 5, nome: "Bondfaro", reputacao: null, waitFor: 4000, busca: (t) => `https://www.bondfaro.com.br/search?q=${encodeURIComponent(t)}` },
+
+  /* --- candidatas: entram na roda para serem MEDIDAS, não porque eu suponho
+         que funcionam. A que vier vazia diz isso no card e sai da lista
+         padrão. Lojas de TI primeiro, porque é onde o Facilities compra. --- */
+  pichau:      { prioridade: 6,  nome: "Pichau",       reputacao: 0.9,  waitFor: 3000, busca: (t) => `https://www.pichau.com.br/search?q=${encodeURIComponent(t)}` },
+  balao:       { prioridade: 7,  nome: "Balão da Informática", reputacao: 0.85, waitFor: 3000, busca: (t) => `https://www.balaodainformatica.com.br/busca?q=${encodeURIComponent(t)}` },
+  americanas:  { prioridade: 8,  nome: "Americanas",   reputacao: 0.8,  waitFor: 3500, busca: (t) => `https://www.americanas.com.br/busca/${encodeURIComponent(t)}` },
+  casasbahia:  { prioridade: 9,  nome: "Casas Bahia",  reputacao: 0.8,  waitFor: 3500, busca: (t) => `https://www.casasbahia.com.br/${encodeURIComponent(t).replace(/%20/g, "-")}/b` },
+  carrefour:   { prioridade: 10, nome: "Carrefour",    reputacao: 0.8,  waitFor: 3500, busca: (t) => `https://www.carrefour.com.br/busca/${encodeURIComponent(t)}` },
+  fastshop:    { prioridade: 11, nome: "Fast Shop",    reputacao: 0.85, waitFor: 3500, busca: (t) => `https://site.fastshop.com.br/web/busca?searchTerm=${encodeURIComponent(t)}` },
 
   /* --- abriram a página e não renderam nada; ficam por último para não comerem
          o relógio das que funcionam --- */
   // Sem o filtro `p_36`: com ele a Amazon devolveu ZERO anúncio e nenhum erro.
   // Sem ele também. É bloqueio de robô, não parâmetro errado.
-  amazon: { prioridade: 5, nome: "Amazon", reputacao: 0.85, waitFor: 3000, busca: (t) => `https://www.amazon.com.br/s?k=${encodeURIComponent(t)}` },
-  magalu: { prioridade: 6, nome: "Magalu", reputacao: 0.85, waitFor: 3000, busca: (t) => `https://www.magazineluiza.com.br/busca/${encodeURIComponent(t)}/` },
+  amazon: { prioridade: 90, nome: "Amazon", reputacao: 0.85, waitFor: 3000, busca: (t) => `https://www.amazon.com.br/s?k=${encodeURIComponent(t)}` },
+  magalu: { prioridade: 91, nome: "Magalu", reputacao: 0.85, waitFor: 3000, busca: (t) => `https://www.magazineluiza.com.br/busca/${encodeURIComponent(t)}/` },
 
   // A lista pública do ML é o que sobrou depois de a API de busca fechar (403) —
   // e ela também barra robô. A URL está certa (o `_NoIndex_True` evita a página
   // canônica de categoria); fica pronta para o dia em que der para passar.
   mercado_livre: {
-    prioridade: 7, nome: "Mercado Livre", reputacao: null, waitFor: 3500,
+    prioridade: 92, nome: "Mercado Livre", reputacao: null, waitFor: 3500,
     busca: (t, piso, teto) =>
       `https://lista.mercadolivre.com.br/${encodeURIComponent(t).replace(/%20/g, "-")}` +
       `_PriceRange_${Math.round(piso)}-${Math.round(teto)}_OrderId_PRICE_NoIndex_True`,
@@ -232,12 +274,30 @@ const SCHEMA_ANUNCIOS = {
           titulo: { type: "string" },
           preco: { type: "number", description: "Preço à vista em reais, só o número" },
           url: { type: "string", description: "Link absoluto do produto" },
+          disponivel: { type: "boolean", description: "false SÓ se a página disser que está esgotado/indisponível. Omita se não falar." },
+          frete_gratis: { type: "boolean", description: "true SÓ se a página disser frete grátis. Omita se não falar." },
+          frete_valor: { type: "number", description: "Valor do frete em reais, se a página mostrar um número. Omita se não mostrar." },
+          frete_texto: { type: "string", description: "O que a página escreveu sobre frete, literalmente" },
         },
         required: ["titulo", "preco"],
       },
     },
   },
   required: ["itens"],
+};
+
+/** O que se lê ABRINDO o anúncio: é aqui que estoque e frete costumam aparecer. */
+const SCHEMA_CONFIRMACAO = {
+  type: "object",
+  properties: {
+    disponivel: { type: "boolean", description: "O produto pode ser comprado agora? false se houver 'esgotado', 'indisponível', 'avise-me quando chegar'." },
+    preco: { type: "number", description: "Preço à vista/PIX atual em reais" },
+    frete_gratis: { type: "boolean" },
+    frete_valor: { type: "number", description: "Valor do frete em reais, se a página mostrar. Omita se exigir CEP e não houver número na tela." },
+    frete_texto: { type: "string", description: "O que a página diz sobre frete, literalmente" },
+    observacao: { type: "string", description: "Algo que desaconselhe a compra (pré-venda, entrega em 30 dias, vendedor sem reputação)" },
+  },
+  required: ["disponivel"],
 };
 
 /**
@@ -250,7 +310,12 @@ async function extrairDaLoja(markdown: string, baseUrl: string, loja: string): P
   if (!markdown || markdown.length < 100) return [];
   const trecho = markdown.length > 22000 ? markdown.slice(0, 22000) : markdown;
   try {
-    const out = await generateJSON<{ itens: Array<{ titulo: string; preco: number; url?: string }> }>({
+    const out = await generateJSON<{
+      itens: Array<{
+        titulo: string; preco: number; url?: string;
+        disponivel?: boolean; frete_gratis?: boolean; frete_valor?: number; frete_texto?: string;
+      }>;
+    }>({
       messages: [
         {
           role: "system",
@@ -258,7 +323,11 @@ async function extrairDaLoja(markdown: string, baseUrl: string, loja: string): P
             "Você extrai produtos de uma página de resultados de busca de loja brasileira. " +
             "Retorne SOMENTE produtos com preço visível. Ignore banners, categorias, filtros, " +
             "'produtos vistos recentemente' e sugestões. O preço é o à vista/PIX em reais. " +
-            "Se não houver produtos, retorne lista vazia.",
+            "Se não houver produtos, retorne lista vazia.\n" +
+            "NUNCA CHUTE disponibilidade nem frete: preencha `disponivel` e os campos de frete " +
+            "SOMENTE quando a página disser. Omitir é o certo quando ela não diz — quem lê a sua " +
+            "resposta trata campo ausente como 'não sei' e vai conferir, mas trata um `true` " +
+            "inventado como fato.",
         },
         { role: "user", content: `Loja: ${loja}\nURL base: ${baseUrl}\n\n${trecho}` },
       ],
@@ -295,13 +364,167 @@ async function extrairDaLoja(markdown: string, baseUrl: string, loja: string): P
           preco: Number(i.preco),
           vendedor: LOJAS[loja]?.nome ?? loja,
           reputacao: LOJAS[loja]?.reputacao ?? null,
-          frete_gratis: null,
           condicao: condicaoDoTitulo(String(i.titulo)),
+          /* `disponibilidade` cruza o que a IA leu com as palavras do próprio
+             título. A regra vence a IA no lado do "não": se o título grita
+             ESGOTADO, não importa que a extração tenha dito que estava tudo bem. */
+          disponivel: disponibilidade(String(i.titulo), i.frete_texto ?? null, i.disponivel ?? null),
+          frete_gratis: i.frete_gratis ?? null,
+          frete_valor: typeof i.frete_valor === "number" ? i.frete_valor : null,
+          frete_texto: i.frete_texto ?? null,
         };
       });
   } catch (e) {
     console.error("extrairDaLoja", loja, e);
     return [];
+  }
+}
+
+/* ============================================== confirmação no próprio anúncio */
+
+export interface Confirmacao {
+  /** A loja de verdade por trás do link do agregador ("Magazine Luiza"), quando dá para saber. */
+  loja?: string | null;
+  disponivel: boolean | null;
+  preco: number | null;
+  frete_valor: number | null;
+  frete_texto: string | null;
+  observacao: string | null;
+  erro: string | null;
+}
+
+/**
+ * Abre O ANÚNCIO (não a busca) e confere o que a página de resultados quase
+ * nunca conta: se tem estoque e quanto custa o frete.
+ *
+ * POR QUE NÃO DÁ PARA CONFIAR NA PÁGINA DE BUSCA. Ela mostra o produto mesmo
+ * esgotado, e mostra o ÚLTIMO PREÇO PRATICADO — que fica bonito justamente por
+ * não estar mais à venda. Um radar que avisa a partir da busca vai, mais cedo ou
+ * mais tarde, mandar a pessoa correr atrás de um preço que não existe mais.
+ * Da segunda vez que isso acontecer, ela para de abrir os links.
+ *
+ * POR QUE SÓ NOS FINALISTAS. Confirmar os 76 candidatos de uma rodada seriam 76
+ * créditos de Firecrawl e 76 chamadas de IA por alvo, por dia. Confirmar os três
+ * que virariam aviso custa três — e são exatamente os três em que alguém vai
+ * clicar. Filtro barato em tudo, conferência cara só no que vira ação.
+ *
+ * SOBRE O FRETE: o que dá para ler é o que a página DECLARA ("frete grátis",
+ * "frete a partir de R$ 24,90"). Loja que só calcula frete depois de digitar o
+ * CEP não entrega número nenhum para uma leitura de página, e nesse caso o
+ * campo fica null e a tela diz "frete não informado". Preferir isso a inventar
+ * um zero.
+ */
+/**
+ * O link do agregador não é o anúncio: é um redirecionador de clique.
+ *
+ * Buscapé, Zoom e Bondfaro apontam para `/lead?oid=1578116400&channel=86&...`,
+ * que só existe para contar o clique e mandar a pessoa à loja. O Firecrawl não
+ * raspa isso — "All scraping engines failed" — e o resultado, na medição de
+ * 26/08/2026, era que TODO achado dos três agregadores ficava preso na
+ * quarentena para sempre e nunca chegava à tela. Justamente as três fontes de
+ * maior volume.
+ *
+ * Seguir o redirecionamento é barato (não gasta crédito de Firecrawl) e resolve
+ * duas coisas de uma vez: dá uma página de loja que dá para conferir, e faz o
+ * aviso apontar para a loja de verdade em vez de para o comparador.
+ */
+const UA_NAVEGADOR = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36";
+
+async function resolverLink(url: string): Promise<{ url: string; loja: string | null }> {
+  if (!/\/lead\?|\/go\/|\/redirect|\/r\/|\/click/i.test(url)) return { url, loja: null };
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), 20_000);
+  try {
+    /* SALTO 1. O `/lead?` responde 200 com uma página do Next.js, não com um
+       301 — por isso seguir redirecionamento sozinho não sai do lugar. O que
+       interessa está no `__NEXT_DATA__`: `urlToRedirect` (o segundo salto, esse
+       sim com `logAndRedirect=1`) e `merchantName`, que é a LOJA DE VERDADE. */
+    const r1 = await fetch(url, { signal: ctrl.signal, headers: { "User-Agent": UA_NAVEGADOR } });
+    const html = await r1.text();
+    const bruto = html.match(/id="__NEXT_DATA__"[^>]*>([\s\S]{0,20000}?)<\/script>/);
+    if (!bruto) return { url, loja: null };
+
+    let dados: any = null;
+    try { dados = JSON.parse(bruto[1]); } catch { return { url, loja: null }; }
+    const pp = dados?.props?.pageProps ?? {};
+    const loja: string | null = pp.rawName ?? pp.dataLayer?.[0]?.merchantName ?? null;
+    const segundo: string | undefined = pp.urlToRedirect;
+    if (!segundo) return { url, loja };
+
+    /* SALTO 2. Esse devolve 301 para o endereço do produto na loja. O `fetch`
+       segue e `r2.url` traz o destino — inclusive quando a loja responde 403
+       para robô, que é o caso da Magalu. E tudo bem: o link certo vale por si,
+       mesmo que a confirmação depois não consiga abrir a página. */
+    const r2 = await fetch(segundo, { redirect: "follow", signal: ctrl.signal, headers: { "User-Agent": UA_NAVEGADOR } });
+    const final = r2.url && !/\/lead\?/i.test(r2.url) ? r2.url : url;
+    return { url: final, loja };
+  } catch {
+    return { url, loja: null };
+  } finally { clearTimeout(t); }
+}
+
+async function confirmarNoAnuncio(urlOriginal: string): Promise<Confirmacao & { url: string }> {
+  const { url, loja } = await resolverLink(urlOriginal);
+  const vazio: Confirmacao & { url: string } = { url, loja, disponivel: null, preco: null, frete_valor: null, frete_texto: null, observacao: null, erro: null };
+  const { markdown, erro } = await firecrawl(url, 3000);
+  if (erro) return { ...vazio, erro };
+  if (!markdown || markdown.length < 100) return { ...vazio, erro: "a página do anúncio abriu vazia" };
+
+  /* AUSÊNCIA DE EVIDÊNCIA NÃO É EVIDÊNCIA DE AUSÊNCIA — e aqui isso é a
+     diferença entre um radar honesto e um que joga achado bom no lixo.
+     A página de bloqueio da Magalu tem 1 KB e diz "não é possível acessar a
+     página (erro 403)". Perguntada "dá para comprar agora?", a IA olha uma
+     página sem botão de compra e responde `false`. O achado seria arquivado
+     como "esgotado", com toda a cara de conclusão legítima, e ninguém jamais
+     saberia que o produto estava lá à venda o tempo todo.
+     Então antes de acreditar num "não", exige-se prova de que a página é MESMO
+     um anúncio: ou tem preço, ou diz com todas as letras que acabou. */
+  const temPreco = /r\$\s?\d/i.test(markdown);
+  const dizEsgotado = disponibilidade(markdown.slice(0, 4000)) === false;
+  if (!temPreco && !dizEsgotado) {
+    return { ...vazio, erro: "a página não parece um anúncio (provável bloqueio de robô)" };
+  }
+
+  try {
+    const out = await generateJSON<any>({
+      messages: [
+        {
+          role: "system",
+          content:
+            "Você lê a página de UM produto em loja brasileira e responde se dá para comprar agora.\n" +
+            "`disponivel` = false quando houver 'esgotado', 'indisponível', 'produto indisponível', " +
+            "'avise-me quando chegar', 'sem estoque', ou quando não houver botão de compra.\n" +
+            "NÃO invente frete: só preencha `frete_valor` se houver um número na página. " +
+            "Loja que só calcula frete depois do CEP não tem valor — deixe em branco.",
+        },
+        { role: "user", content: markdown.slice(0, 18000) },
+      ],
+      responseSchema: SCHEMA_CONFIRMACAO,
+      temperature: 0,
+    });
+
+    /* Três degraus, do mais confiável ao menos:
+       1. a página ESCREVE que acabou → false, e não se discute;
+       2. a IA diz que acabou E a página tem preço (logo, é anúncio de verdade
+          que carregou) → false;
+       3. a IA diz que dá para comprar → true.
+       Fora disso, `null`: a tela pede para conferir em vez de decidir no chute. */
+    const disp: boolean | null =
+      dizEsgotado ? false
+      : (out?.disponivel === false && temPreco) ? false
+      : out?.disponivel === true ? true
+      : null;
+    return {
+      url,
+      disponivel: disp,
+      preco: typeof out?.preco === "number" && out.preco > 0 ? out.preco : null,
+      frete_valor: out?.frete_gratis === true ? 0 : (typeof out?.frete_valor === "number" ? out.frete_valor : null),
+      frete_texto: out?.frete_texto ?? (out?.frete_gratis === true ? "Frete grátis" : null),
+      observacao: out?.observacao ?? null,
+      erro: null,
+    };
+  } catch (e) {
+    return { ...vazio, erro: String(e) };
   }
 }
 
@@ -391,6 +614,8 @@ interface ResultadoAlvo {
   aprovadas: number;
   recusadas: number;
   alertas: number;
+  /** Avisos suprimidos por serem o mesmo produto vindo de outra fonte. */
+  repetidos: number;
   fontes: Record<string, string>;   // fonte → "12 anúncios" ou o erro
   top_recusas: string[];
 }
@@ -407,7 +632,7 @@ async function varrerAlvo(
   const fontes: string[] = (fontesPedidas ?? alvo.fontes ?? []).filter(Boolean);
 
   const res: ResultadoAlvo = {
-    alvo_id: alvo.id, titulo: alvo.titulo, buscadas: 0, aprovadas: 0, recusadas: 0, alertas: 0,
+    alvo_id: alvo.id, titulo: alvo.titulo, buscadas: 0, aprovadas: 0, recusadas: 0, alertas: 0, repetidos: 0,
     fontes: {}, top_recusas: [],
   };
 
@@ -418,7 +643,25 @@ async function varrerAlvo(
   // frente. Mandá-lo na URL faz a loja já não devolver o acessório.
   const piso = pisoDePreco(precoAlvo);
 
-  const naOrdem = fontes.filter((f) => f in LOJAS).sort((a, b) => LOJAS[a].prioridade - LOJAS[b].prioridade);
+  /* RODÍZIO DE FONTES. São doze agora, e chamar as doze toda rodada estoura o
+     relógio e o crédito. Cortar simplesmente pelas primeiras seria pior: a
+     fila é sempre ordenada por prioridade, então as últimas NUNCA seriam
+     consultadas — estariam ligadas na tela e mudas na prática.
+     Então as comprovadas (prioridade <= FIXAS_ATE) vão sempre, e as demais
+     entram em roda, avançando uma posição a cada varredura. Em poucas rodadas
+     todas foram consultadas, e nenhuma fica órfã para sempre. */
+  const escolhidas = fontes.filter((f) => f in LOJAS).sort((a, b) => LOJAS[a].prioridade - LOJAS[b].prioridade);
+  const fixas = escolhidas.filter((f) => LOJAS[f].prioridade <= FIXAS_ATE);
+  const roda = escolhidas.filter((f) => LOJAS[f].prioridade > FIXAS_ATE);
+  const vagas = Math.max(0, MAX_FONTES_POR_RODADA - fixas.length);
+  const giro = roda.length ? (Number(alvo.rodadas ?? 0) * vagas) % roda.length : 0;
+  const naOrdem = [
+    ...fixas,
+    ...Array.from({ length: Math.min(vagas, roda.length) }, (_, i) => roda[(giro + i) % roda.length]),
+  ];
+  for (const f of escolhidas) {
+    if (!naOrdem.includes(f)) res.fontes[f] = "fora do rodízio desta rodada — entra na próxima";
+  }
 
   /* AS FONTES VÃO EM PARALELO — é o que torna o radar viável. Cada fonte é
      ~35-50s de espera (o `waitFor` do Firecrawl mais a extração pela IA), e em
@@ -490,13 +733,16 @@ async function varrerAlvo(
   res.aprovadas = aprovadas.length;
   res.top_recusas = [...recusas.entries()].sort((a, b) => b[1] - a[1]).slice(0, 5).map(([m, n]) => `${n}× ${m}`);
 
-  aprovadas.sort((a, b) => a.o.preco - b.o.preco || b.av.score - a.av.score);
+  // Ordena pelo TOTAL (produto + frete): o mais barato de verdade, não o de
+  // etiqueta menor. Entre dois totais iguais, ganha quem tem mais confirmado.
+  aprovadas.sort((a, b) => a.av.total - b.av.total || b.av.score - a.av.score);
 
   /* Gravação: a oferta é atualizada (não reinserida) e o preço vira linha nova. */
   const idsVivos: number[] = [];
-  const candidatos: Array<{ ofertaId: number; preco: number; classe: { tipo: string; texto: string } }> = [];
+  const candidatos: Array<{ ofertaId: number; titulo: string; total: number; frete: number | null; classe: { tipo: string; texto: string } }> = [];
 
   for (const { o, av } of aprovadas) {
+    const { frete } = totalDaOferta(o);
     const { data: linha, error } = await supabase
       .from("facilities_radar_ofertas")
       .upsert({
@@ -509,7 +755,11 @@ async function varrerAlvo(
         vendedor: o.vendedor ?? null,
         condicao: condicaoDoTitulo(o.titulo, o.condicao),
         preco: o.preco,
-        frete_gratis: !!o.frete_gratis,
+        preco_total: av.total,
+        frete_gratis: frete === 0,
+        frete_valor: frete,
+        frete_texto: o.frete_texto ?? null,
+        disponivel: o.disponivel ?? null,
         score: av.score,
         motivos: av.motivos,
         conferir: av.conferir,
@@ -531,15 +781,15 @@ async function varrerAlvo(
       .order("coletado_em", { ascending: true })
       .limit(200);
 
-    await supabase.from("facilities_radar_precos").insert({ oferta_id: linha.id, preco: o.preco });
+    await supabase.from("facilities_radar_precos").insert({ oferta_id: linha.id, preco: av.total });
 
     const minAntes = linha.preco_min != null ? Number(linha.preco_min) : null;
-    if (minAntes == null || o.preco < minAntes) {
-      await supabase.from("facilities_radar_ofertas").update({ preco_min: o.preco }).eq("id", linha.id);
+    if (minAntes == null || av.total < minAntes) {
+      await supabase.from("facilities_radar_ofertas").update({ preco_min: av.total }).eq("id", linha.id);
     }
 
-    const classe = classificar(o.preco, precoAlvo, (hist ?? []) as any);
-    if (classe) candidatos.push({ ofertaId: linha.id, preco: o.preco, classe });
+    const classe = classificar(av.total, precoAlvo, (hist ?? []) as any);
+    if (classe) candidatos.push({ ofertaId: linha.id, titulo: o.titulo, total: av.total, frete, classe });
   }
 
   /* Anúncio que sumiu da busca não é apagado: perde o `ativo` e mantém o
@@ -550,13 +800,36 @@ async function varrerAlvo(
       .not("id", "in", `(${idsVivos.join(",")})`);
   }
 
-  /* Alertas: mínimo histórico na frente, e no máximo três. */
+  /* O ACHADO NASCE EM QUARENTENA. `a_confirmar` não aparece na tela: antes de
+     virar aviso, a ação `confirmar` abre o anúncio e checa se tem estoque e
+     quanto é o frete. A página de BUSCA mostra produto esgotado com o último
+     preço praticado — que fica bonito justamente por não estar mais à venda —,
+     então avisar direto dela é prometer uma compra que pode não existir.
+     Máximo de três, mínimo histórico na frente. */
   const ordem: Record<string, number> = { minimo_historico: 0, queda_forte: 1, alvo_batido: 2 };
-  candidatos.sort((a, b) => (ordem[a.classe.tipo] ?? 9) - (ordem[b.classe.tipo] ?? 9) || a.preco - b.preco);
-  for (const c of candidatos.slice(0, MAX_ALERTAS_POR_ALVO)) {
+  candidatos.sort((a, b) => (ordem[a.classe.tipo] ?? 9) - (ordem[b.classe.tipo] ?? 9) || a.total - b.total);
+
+  /* UM PRODUTO, UM AVISO. Buscapé, Zoom e Bondfaro são do mesmo grupo e
+     listaram o MESMO notebook a R$ 2.969,10 — três avisos idênticos na tela,
+     que é o começo do fim da confiança na aba. As três OFERTAS continuam
+     gravadas (o histórico de preço de cada fonte é legítimo); o que não se
+     repete é o aviso. */
+  const vistos = new Set<string>();
+  const unicos = candidatos.filter((c) => {
+    const k = chaveDoProduto(c.titulo, c.total);
+    if (vistos.has(k)) return false;
+    vistos.add(k);
+    return true;
+  });
+  res.repetidos = candidatos.length - unicos.length;
+
+  for (const c of unicos.slice(0, MAX_ALERTAS_POR_ALVO)) {
     const { error } = await supabase.from("facilities_radar_alertas").insert({
       alvo_id: alvo.id, oferta_id: c.ofertaId, tipo: c.classe.tipo,
-      texto: c.classe.texto, preco: c.preco, preco_alvo: precoAlvo,
+      texto: c.classe.texto, preco: c.total, preco_total: c.total,
+      frete_valor: c.frete, preco_alvo: precoAlvo,
+      economia: economiaDe(precoAlvo, c.total, alvo.quantidade ?? 1),
+      status: "a_confirmar",
     });
     // 23505 = já existe alerta deste anúncio por este preço. É o comportamento
     // desejado (não repetir), não um erro.
@@ -564,10 +837,15 @@ async function varrerAlvo(
     else if (error.code !== "23505") console.error("insert alerta", error.message);
   }
 
-  const houveErro = Object.values(res.fontes).some((v) => !/^\d+ anúncios$/.test(v));
+  /* "fora do rodízio" não é problema — é o desenho. Só entra em `ultimo_erro`
+     o que de fato falhou, senão o card do alvo ficaria amarelo para sempre e o
+     aviso deixaria de significar alguma coisa. */
+  const ehOk = (v: string) => /^\d+ anúncios/.test(v) || v.startsWith("fora do rodízio");
+  const falhas = Object.entries(res.fontes).filter(([, v]) => !ehOk(v));
   await supabase.from("facilities_radar_alvos").update({
     ultima_varredura: new Date().toISOString(),
-    ultimo_erro: houveErro ? Object.entries(res.fontes).filter(([, v]) => !/^\d+ anúncios$/.test(v)).map(([k, v]) => `${k}: ${v}`).join(" | ") : null,
+    ultimo_erro: falhas.length ? falhas.map(([k, v]) => `${k}: ${v}`).join(" | ") : null,
+    rodadas: Number(alvo.rodadas ?? 0) + 1,
     updated_at: new Date().toISOString(),
   }).eq("id", alvo.id);
 
@@ -624,6 +902,131 @@ Deno.serve(async (req) => {
       return json({ ok: true, ...out, leu_referencia: !!referencia, duracao_ms: Date.now() - t0 });
     }
 
+    /* ------------------------------------------------------ confirmar */
+    /* A segunda metade do radar: tira o achado da quarentena.
+       Cada alerta em `a_confirmar` tem o anúncio ABERTO um a um. Só vira aviso
+       (`novo`) o que ainda tem estoque e ainda cabe no teto COM o frete. O que
+       não passa vira `indisponivel`/`descartado` e nunca chega à tela — mas fica
+       gravado, porque "sumiu antes de eu ver" é informação sobre o mercado. */
+    if (action === "confirmar") {
+      /* Seis por rodada, não doze: com nove em paralelo, sete deram erro de leitura
+         na medição de 26/08/2026 — o Firecrawl não gosta de rajada. Quem não
+         couber fica na fila e é pego na rodada seguinte. */
+      const limite = Number(body?.limite ?? 6);
+      let q = supabase
+        .from("facilities_radar_alertas")
+        .select("id, alvo_id, oferta_id, preco_alvo, texto, tipo, facilities_radar_ofertas(id,url,titulo,preco,conferir), facilities_radar_alvos(quantidade)")
+        .eq("status", "a_confirmar")
+        .order("created_at", { ascending: true })
+        .limit(limite);
+      if (body?.alvo_id) q = q.eq("alvo_id", body.alvo_id);
+
+      /* QUARENTENA TEM PRAZO. Um anúncio cuja página nunca abre ficaria em
+         `a_confirmar` para sempre, e a fila encheria de zumbi — cada rodada
+         gastando crédito nos mesmos links mortos e empurrando os achados novos
+         para o fim. Dois dias de tentativa é generoso: são quatro rodadas de
+         cron. Depois disso vira `descartado`, com o motivo escrito. */
+      const limiteIdade = new Date(Date.now() - 48 * 3600 * 1000).toISOString();
+      const { data: velhos } = await supabase.from("facilities_radar_alertas")
+        .update({ status: "descartado", texto: "não consegui abrir o anúncio em 48h de tentativas" })
+        .eq("status", "a_confirmar").lt("created_at", limiteIdade)
+        .select("id");
+
+      const { data: fila, error: erroFila } = await q;
+      if (erroFila) throw new Error(erroFila.message);
+      if (!fila?.length) {
+        return json({ ok: true, confirmados: 0, desistidos: velhos?.length ?? 0, mensagem: "Nada na fila de confirmação." });
+      }
+
+      // Em paralelo, pelo mesmo motivo das fontes: é espera de rede.
+      const saidas = await Promise.all(fila.map(async (al: any) => {
+        const of = al.facilities_radar_ofertas;
+        if (!of?.url) return { id: al.id, desfecho: "sem link" };
+
+        const c = await confirmarNoAnuncio(of.url);
+        if (c.erro) {
+          /* Erro de leitura NÃO condena o anúncio. Fica na fila e tenta de novo
+             na próxima rodada — descartar por falha nossa jogaria fora achado
+             bom toda vez que o Firecrawl tossisse. */
+          return { id: al.id, desfecho: `erro: ${c.erro.slice(0, 80)}` };
+        }
+
+        if (c.disponivel === false) {
+          await supabase.from("facilities_radar_alertas")
+            .update({ status: "indisponivel", texto: al.texto + " · esgotado quando fomos conferir" })
+            .eq("id", al.id);
+          await supabase.from("facilities_radar_ofertas")
+            .update({ disponivel: false, ativo: false, confirmado_em: new Date().toISOString() })
+            .eq("id", of.id);
+          return { id: al.id, desfecho: "esgotado" };
+        }
+
+        // O preço da página do anúncio vale mais que o da busca: é o que a
+        // pessoa vai encontrar ao clicar.
+        const preco = c.preco ?? Number(of.preco);
+        const total = preco + (c.frete_valor ?? 0);
+        const qtd = Number(al.facilities_radar_alvos?.quantidade ?? 1);
+        const teto = Number(al.preco_alvo);
+
+        const conferir = (of.conferir ?? []).filter((x: string) => x !== "se está em estoque" && (c.frete_valor == null || x !== "valor do frete"));
+
+        await supabase.from("facilities_radar_ofertas").update({
+          preco, preco_total: total,
+          frete_valor: c.frete_valor, frete_texto: c.frete_texto,
+          frete_gratis: c.frete_valor === 0,
+          disponivel: c.disponivel ?? null,
+          conferir,
+          // Guarda o endereço RESOLVIDO: o aviso passa a levar direto à loja,
+          // e não ao redirecionador do comparador. E o vendedor deixa de ser
+          // "Buscapé" (que não vende nada) para ser quem realmente vende.
+          url: c.url || of.url,
+          ...(c.loja ? { vendedor: c.loja } : {}),
+          confirmado_em: new Date().toISOString(),
+        }).eq("id", of.id);
+
+        if (total > teto) {
+          await supabase.from("facilities_radar_alertas").update({
+            status: "descartado",
+            texto: `no anúncio saiu R$ ${total.toFixed(0)}${c.frete_valor ? ` (com R$ ${c.frete_valor.toFixed(0)} de frete)` : ""}, acima do teto`,
+          }).eq("id", al.id);
+          return { id: al.id, desfecho: "passou do teto ao conferir" };
+        }
+
+        await supabase.from("facilities_radar_alertas").update({
+          status: "novo",
+          preco: total, preco_total: total, frete_valor: c.frete_valor,
+          economia: economiaDe(teto, total, qtd),
+          texto: al.texto + (c.observacao ? ` · ${c.observacao}` : ""),
+        }).eq("id", al.id);
+        return { id: al.id, desfecho: "confirmado" };
+      }));
+
+      /* O RELATÓRIO CARREGA O ERRO INTEIRO, não só a contagem. "erro: 7" não
+         diz se foi bloqueio de robô, página fora do ar ou crédito acabado — e
+         são três problemas com três soluções diferentes. Agrupar sem a
+         mensagem é o mesmo pecado do "0 anúncios" que passa por sucesso. */
+      const conta: Record<string, number> = {};
+      const erros: Record<string, number> = {};
+      for (const s of saidas as any[]) {
+        const chave = s.desfecho.startsWith("erro:") ? "erro" : s.desfecho;
+        conta[chave] = (conta[chave] ?? 0) + 1;
+        if (chave === "erro") {
+          const msg = s.desfecho.slice(6).trim();
+          erros[msg] = (erros[msg] ?? 0) + 1;
+        }
+      }
+      return json({
+        ok: true,
+        confirmados: conta["confirmado"] ?? 0,
+        fila: fila.length,
+        desfechos: conta,
+        // Quem errou continua em `a_confirmar` e é retentado — falha nossa não
+        // condena o anúncio.
+        erros: Object.entries(erros).map(([m, n]) => `${n}× ${m}`),
+        duracao_ms: Date.now() - t0,
+      });
+    }
+
     /* --------------------------------------------------------- varrer */
     if (action !== "varrer") return json({ ok: false, erro: `Ação desconhecida: ${action}` }, 400);
 
@@ -650,7 +1053,7 @@ Deno.serve(async (req) => {
         console.error("varrerAlvo", alvo.id, e);
         resultados.push({
           alvo_id: alvo.id, titulo: alvo.titulo, buscadas: 0, aprovadas: 0, recusadas: 0,
-          alertas: 0, fontes: { erro: String(e) }, top_recusas: [],
+          alertas: 0, repetidos: 0, fontes: { erro: String(e) }, top_recusas: [],
         });
         await supabase.from("facilities_radar_alvos")
           .update({ ultimo_erro: String(e).slice(0, 500), ultima_varredura: new Date().toISOString() })

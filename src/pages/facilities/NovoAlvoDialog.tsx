@@ -21,9 +21,16 @@ const FONTES: { id: string; nota: string | null; ok: boolean }[] = [
   { id: "terabyte", nota: null, ok: true },
   { id: "buscape", nota: "várias lojas", ok: true },
   { id: "zoom", nota: "várias lojas", ok: true },
-  { id: "amazon", nota: "veio vazia no teste", ok: false },
-  { id: "magalu", nota: "veio vazia no teste", ok: false },
-  { id: "mercado_livre", nota: "bloqueado hoje", ok: false },
+  { id: "bondfaro", nota: "várias lojas", ok: true },
+  { id: "pichau", nota: null, ok: true },
+  { id: "americanas", nota: null, ok: true },
+  { id: "casasbahia", nota: null, ok: true },
+  { id: "carrefour", nota: null, ok: true },
+  { id: "balao", nota: "veio vazia no teste", ok: false },
+  { id: "fastshop", nota: "veio vazia no teste", ok: false },
+  { id: "amazon", nota: "bloqueia robô", ok: false },
+  { id: "magalu", nota: "bloqueia robô", ok: false },
+  { id: "mercado_livre", nota: "bloqueia robô", ok: false },
 ];
 
 /** O que um alvo novo já vem marcando: só o que está medido e trazendo resultado. */
@@ -252,11 +259,13 @@ export function NovoAlvoDialog({ alvo, open, onOpenChange, onSaved }: Props) {
               })}
             </div>
             <p className="mt-1 text-[11.5px] text-muted-foreground">
-              <span className="font-medium text-foreground">Kabum, Terabyte, Buscapé e Zoom estão medidas e trazendo resultado</span> —
-              os dois últimos são comparadores e cobrem várias lojas de uma vez. Amazon e Magalu abrem a página mas não renderam nada
-              no teste, e o Mercado Livre bloqueia robô (a API de busca dele fechou para aplicações). As três seguem selecionáveis: se
-              voltarem a funcionar, funcionam sozinhas — e enquanto não funcionarem o card do alvo diz isso, em vez de fingir que
-              simplesmente não há promoção.
+              <span className="font-medium text-foreground">Nove fontes medidas e trazendo resultado.</span> Buscapé, Zoom e Bondfaro
+              são comparadores: cobrem várias lojas de uma vez, e o radar segue o link até descobrir de qual loja é a oferta.
+              As cinco marcadas em âmbar não renderam nada no teste — seguem selecionáveis e, se voltarem, funcionam sozinhas.
+            </p>
+            <p className="mt-1 text-[11.5px] text-muted-foreground">
+              Cada varredura consulta até seis, em rodízio: as comprovadas vão sempre e as demais giram, para nenhuma ficar ligada
+              aqui e muda na prática.
             </p>
           </div>
 

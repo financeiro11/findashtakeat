@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   AlertTriangle, ArrowDownRight, ChevronDown, ChevronRight, Copy, ExternalLink,
-  Loader2, Pause, Play, Plus, Radar as RadarIcon, RefreshCw, Sparkles, Trash2, TrendingDown,
+  Loader2, PackageCheck, Pause, PiggyBank, Play, Plus, Radar as RadarIcon, RefreshCw, Sparkles, Trash2, TrendingDown,
 } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -13,7 +13,7 @@ import { comValorExato } from "@/components/ValorExato";
 import { CatDot } from "./components";
 import { NovoAlvoDialog, type AlvoRow } from "./NovoAlvoDialog";
 import { db, fmtBRL as fmtBRLStr, fmtData } from "./lib";
-import { resumoDoAlvo, fonteLabel, textoWhats } from "@/lib/radarPrecos";
+import { resumoDoAlvo, fonteLabel, textoFrete, textoWhats } from "@/lib/radarPrecos";
 import { invalidarRadarAlertas } from "@/hooks/useRadarAlertas";
 
 /* Valor compacto na tela, número cheio no hover — convenção do Hub.
@@ -23,14 +23,17 @@ const fmtBRL = (v: number | null | undefined) => comValorExato(v, fmtBRLStr(v));
 interface Oferta {
   id: number; alvo_id: string; fonte: string; titulo: string; url: string;
   imagem_url: string | null; vendedor: string | null; condicao: string;
-  preco: number; preco_min: number | null; frete_gratis: boolean;
+  preco: number; preco_total: number | null; preco_min: number | null;
+  frete_gratis: boolean; frete_valor: number | null; frete_texto: string | null;
+  disponivel: boolean | null; confirmado_em: string | null;
   score: number; motivos: string[]; conferir: string[];
   visto_em: string; primeiro_visto_em: string;
 }
 
 interface Alerta {
   id: number; alvo_id: string; oferta_id: number; tipo: string; texto: string;
-  preco: number; preco_alvo: number; status: string; created_at: string;
+  preco: number; preco_total: number | null; frete_valor: number | null;
+  economia: number | null; preco_alvo: number; status: string; created_at: string;
   oferta: Oferta | null;
   alvo: { titulo: string; preco_alvo: number; quantidade: number } | null;
 }
@@ -40,6 +43,8 @@ interface PainelLinha {
   alertas_novos: number;
   ofertas_ativas: number;
   melhor: Oferta | null;
+  economia_aberta: number;
+  economia_realizada: number;
 }
 
 const TIPO_STYLE: Record<string, { label: string; cls: string; Icon: typeof TrendingDown }> = {
@@ -81,7 +86,8 @@ export default function Radar() {
     if (ofertas[id]) return;
     const { data } = await db.from("facilities_radar_ofertas")
       .select("*").eq("alvo_id", id).eq("ativo", true)
-      .order("preco", { ascending: true }).limit(60);
+      // Pelo TOTAL: o mais barato de verdade, não o de etiqueta menor.
+      .order("preco_total", { ascending: true }).limit(60);
     setOfertas((p) => ({ ...p, [id]: (data as Oferta[]) ?? [] }));
   }
 
@@ -91,8 +97,27 @@ export default function Radar() {
       const r = await invocar<any>(supabase.functions.invoke("facilities-radar", {
         body: alvoId ? { action: "varrer", alvo_id: alvoId } : { action: "varrer" },
       }));
+
+      /* O clique manual encadeia as DUAS metades. No cron elas são separadas
+         (varrer 08:45, confirmar 09:15) para caber no orçamento de relógio; aqui
+         a pessoa está esperando, e um achado que só aparece meia hora depois
+         seria indistinguível de "não achei nada". */
+      let confirmados = 0;
+      if (r.alertas) {
+        try {
+          const c = await invocar<any>(supabase.functions.invoke("facilities-radar", {
+            body: alvoId ? { action: "confirmar", alvo_id: alvoId } : { action: "confirmar" },
+          }));
+          confirmados = c.confirmados ?? 0;
+          if (c.desfechos?.esgotado) {
+            toast.info(`${c.desfechos.esgotado} achado(s) já estavam esgotados ao conferir — por isso não aparecem.`);
+          }
+        } catch { /* a confirmação sozinha não derruba o resultado da varredura */ }
+      }
+
       const partes = [`${r.ofertas} anúncio(s) dentro dos filtros`];
-      if (r.alertas) partes.push(`${r.alertas} novo(s) achado(s)`);
+      if (confirmados) partes.push(`${confirmados} confirmado(s) com estoque`);
+      else if (r.alertas) partes.push(`${r.alertas} em conferência`);
       if (r.restante) partes.push(`${r.restante} alvo(s) ficaram para a próxima rodada`);
       toast.success(partes.join(" · "));
 
@@ -101,7 +126,11 @@ export default function Radar() {
       const falhas: string[] = [];
       for (const pa of r.por_alvo ?? []) {
         for (const [fonte, txt] of Object.entries(pa.fontes ?? {})) {
-          if (!/^\d+ anúncios$/.test(String(txt))) falhas.push(`${fonteLabel(fonte)}: ${txt}`);
+          const s = String(txt);
+          // "fora do rodízio" é desenho, não falha — avisar disso ensinaria a
+          // pessoa a ignorar o aviso amarelo, que é onde moram os problemas reais.
+          if (/^\d+ anúncios/.test(s) || s.startsWith("fora do rodízio")) continue;
+          falhas.push(`${fonteLabel(fonte)}: ${s}`);
         }
       }
       if (falhas.length) toast.warning([...new Set(falhas)].join("\n"), { duration: 10000 });
@@ -143,14 +172,17 @@ export default function Radar() {
     }
   }
 
-  function copiar(lista: Alerta[], tituloAlvo: string, precoAlvo: number) {
+  function copiar(lista: Alerta[], tituloAlvo: string, precoAlvo: number, quantidade = 1) {
     const txt = textoWhats({
       alvo_titulo: tituloAlvo,
       preco_alvo: precoAlvo,
+      quantidade,
       ofertas: lista.filter((a) => a.oferta).map((a) => ({
-        titulo: a.oferta!.titulo, preco: Number(a.preco), url: a.oferta!.url,
+        // `preco` aqui é o do PRODUTO; o texto soma o frete e mostra a conta.
+        titulo: a.oferta!.titulo, preco: Number(a.oferta!.preco), url: a.oferta!.url,
         fonte: fonteLabel(a.oferta!.fonte), vendedor: a.oferta!.vendedor,
         motivo: a.texto, conferir: a.oferta!.conferir ?? [],
+        frete_valor: a.frete_valor, frete_texto: a.oferta!.frete_texto,
       })),
     });
     navigator.clipboard.writeText(txt)
@@ -187,6 +219,20 @@ export default function Radar() {
 
   const totalNovos = alertas.filter((a) => a.status === "novo").length;
 
+  /* A ECONOMIA VEM EM DOIS NÚMEROS, e separá-los é o ponto.
+     `realizada` é o que já virou cotação — dinheiro que o radar de fato poupou,
+     e o único que serve para prestar contas. `aberta` é o que está na mesa
+     agora, esperando alguém decidir. Somar os dois num "total economizado"
+     inflaria o resultado com achados que ninguém comprou, e seria justamente o
+     número que alguém levaria para uma reunião. */
+  const economia = useMemo(() => painel.reduce(
+    (a, l) => ({
+      realizada: a.realizada + Number(l.economia_realizada ?? 0),
+      aberta: a.aberta + Number(l.economia_aberta ?? 0),
+    }),
+    { realizada: 0, aberta: 0 },
+  ), [painel]);
+
   return (
     <div className="space-y-4 p-5">
       <div className="flex flex-wrap items-start justify-between gap-3">
@@ -212,6 +258,43 @@ export default function Radar() {
         <Skeleton className="h-80 rounded-lg" />
       ) : (
         <>
+          {/* ----------------------------------------------------- economia */}
+          {(economia.realizada > 0 || economia.aberta > 0) && (
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+              <div className="card-surface border-emerald-200 bg-emerald-50/50 p-4 dark:border-emerald-900 dark:bg-emerald-950/20">
+                <div className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-emerald-700 dark:text-emerald-400">
+                  <PiggyBank className="h-3.5 w-3.5" /> Economizado
+                </div>
+                <div className="num mt-1 text-[30px] font-semibold leading-none text-emerald-700 dark:text-emerald-400">
+                  {fmtBRL(economia.realizada)}
+                </div>
+                <div className="mt-1.5 text-[11.5px] text-muted-foreground">
+                  Diferença entre o teto e o que foi pago, nos achados que viraram cotação.
+                </div>
+              </div>
+
+              <div className="card-surface p-4">
+                <div className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+                  <Sparkles className="h-3.5 w-3.5" /> Na mesa agora
+                </div>
+                <div className="num mt-1 text-[30px] font-semibold leading-none text-foreground">
+                  {fmtBRL(economia.aberta)}
+                </div>
+                <div className="mt-1.5 text-[11.5px] text-muted-foreground">
+                  O que dá para economizar nos {alertas.length} achado(s) esperando decisão.
+                </div>
+              </div>
+
+              <div className="card-surface p-4">
+                <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Como a conta é feita</div>
+                <div className="mt-1.5 text-[11.5px] leading-relaxed text-muted-foreground">
+                  Economia é <span className="font-medium text-foreground">teto − (produto + frete)</span>, vezes a quantidade. O frete
+                  entra porque é gasto igual. Onde a loja só calcula frete depois do CEP, a conta sai só com o produto e o card avisa.
+                </div>
+              </div>
+            </div>
+          )}
+
           {/* ------------------------------------------------------ achados */}
           {alertas.length > 0 && (
             <div className="space-y-3">
@@ -234,7 +317,7 @@ export default function Radar() {
                         <span className="text-[13px] font-medium text-foreground">{tituloAlvo}</span>
                         <span className="text-[11.5px] text-muted-foreground">teto {fmtBRL(teto)}</span>
                       </div>
-                      <Button size="sm" variant="ghost" onClick={() => copiar(lista, tituloAlvo, teto)}>
+                      <Button size="sm" variant="ghost" onClick={() => copiar(lista, tituloAlvo, teto, linha?.alvo.quantidade ?? 1)}>
                         <Copy className="mr-1.5 h-3.5 w-3.5" /> Copiar p/ WhatsApp
                       </Button>
                     </div>
@@ -264,11 +347,20 @@ export default function Radar() {
                                 {o?.titulo ?? "—"}
                               </div>
                               <div className="text-[11.5px] text-muted-foreground">
-                                {fonteLabel(o?.fonte)}{o?.vendedor ? ` · ${o.vendedor}` : ""}
-                                {o?.frete_gratis ? " · frete grátis" : ""}
+                                {/* O vendedor vem na frente da fonte: quando o achado veio de um
+                                    comparador, quem vende é a loja, e é ela que interessa. */}
+                                {o?.vendedor ?? fonteLabel(o?.fonte)}
+                                {o?.vendedor && o.vendedor !== fonteLabel(o.fonte) ? ` · via ${fonteLabel(o.fonte)}` : ""}
                                 {o?.condicao && o.condicao !== "novo" ? ` · ${o.condicao}` : ""}
                               </div>
-                              <div className="mt-1 text-[12px] text-muted-foreground">{al.texto}</div>
+                              <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-[12px] text-muted-foreground">
+                                {o?.disponivel === true && (
+                                  <span className="inline-flex items-center gap-1 rounded bg-emerald-50 px-1.5 py-0.5 text-[10.5px] font-medium text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-400">
+                                    <PackageCheck className="h-3 w-3" /> em estoque
+                                  </span>
+                                )}
+                                <span>{al.texto}</span>
+                              </div>
 
                               {!!o?.conferir?.length && (
                                 <div className="mt-1.5 flex items-start gap-1.5 text-[11.5px] text-amber-700 dark:text-amber-400">
@@ -278,11 +370,20 @@ export default function Radar() {
                               )}
                             </div>
 
-                            <div className="flex shrink-0 flex-col items-end gap-1.5">
-                              <div className="num text-[18px] font-semibold text-foreground">{fmtBRL(Number(al.preco))}</div>
-                              <div className="text-[11px] text-muted-foreground">
-                                {Math.round(((Number(al.preco_alvo) - Number(al.preco)) / Number(al.preco_alvo)) * 100)}% abaixo do teto
+                            <div className="flex shrink-0 flex-col items-end gap-1">
+                              {/* O TOTAL na frente, e o desmembramento embaixo: é o total que
+                                  decide a compra, e um preço sem o frete é meia conta. */}
+                              <div className="num text-[18px] font-semibold text-foreground">
+                                {fmtBRL(Number(al.preco_total ?? al.preco))}
                               </div>
+                              <div className="text-right text-[11px] text-muted-foreground">
+                                {fmtBRLStr(Number(o?.preco ?? al.preco))} {textoFrete(al.frete_valor, o?.frete_texto)}
+                              </div>
+                              {Number(al.economia ?? 0) > 0 && (
+                                <div className="num rounded bg-emerald-50 px-1.5 py-0.5 text-[11.5px] font-semibold text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-400">
+                                  economiza {fmtBRL(Number(al.economia))}
+                                </div>
+                              )}
                               <div className="mt-1 flex items-center gap-1">
                                 {o?.url && (
                                   <a href={o.url} target="_blank" rel="noreferrer">
@@ -326,7 +427,8 @@ export default function Radar() {
               {painel.map((l) => {
                 const expandido = aberto === l.alvo.id;
                 const melhor = l.melhor;
-                const folga = melhor ? (Number(l.alvo.preco_alvo) - Number(melhor.preco)) / Number(l.alvo.preco_alvo) : null;
+                const melhorTotal = melhor ? Number(melhor.preco_total ?? melhor.preco) : null;
+                const folga = melhorTotal != null ? (Number(l.alvo.preco_alvo) - melhorTotal) / Number(l.alvo.preco_alvo) : null;
                 return (
                   <div key={l.alvo.id} className={cn("card-surface", !l.alvo.ativo && "opacity-60")}>
                     <div className="flex flex-wrap items-center gap-3 p-4">
@@ -357,7 +459,7 @@ export default function Radar() {
                         <div className="text-[10.5px] uppercase tracking-wide text-muted-foreground">Melhor agora</div>
                         {melhor ? (
                           <div className="num text-[13px] font-semibold text-emerald-700 dark:text-emerald-400">
-                            {fmtBRL(Number(melhor.preco))}
+                            {fmtBRL(melhorTotal)}
                             {folga != null && <span className="ml-1 text-[11px] font-normal text-muted-foreground">−{Math.round(folga * 100)}%</span>}
                           </div>
                         ) : (
@@ -410,8 +512,9 @@ export default function Radar() {
                                 <tr className="text-left text-[10.5px] uppercase tracking-wide text-muted-foreground">
                                   <th className="px-4 py-2 font-semibold">Anúncio</th>
                                   <th className="px-3 py-2 font-semibold">Onde</th>
+                                  <th className="px-3 py-2 font-semibold">Frete</th>
                                   <th className="px-3 py-2 text-right font-semibold">Mín. visto</th>
-                                  <th className="px-3 py-2 text-right font-semibold">Preço</th>
+                                  <th className="px-3 py-2 text-right font-semibold">Total</th>
                                   <th className="px-3 py-2" />
                                 </tr>
                               </thead>
@@ -428,14 +531,28 @@ export default function Radar() {
                                       </div>
                                     </td>
                                     <td className="px-3 py-2 text-[11.5px] text-muted-foreground">
-                                      {fonteLabel(o.fonte)}
-                                      {o.vendedor && <div className="max-w-[140px] truncate" title={o.vendedor}>{o.vendedor}</div>}
+                                      {o.vendedor ?? fonteLabel(o.fonte)}
+                                      {o.vendedor && o.vendedor !== fonteLabel(o.fonte) && (
+                                        <div className="text-[10.5px]">via {fonteLabel(o.fonte)}</div>
+                                      )}
+                                    </td>
+                                    <td className="px-3 py-2 text-[11.5px] text-muted-foreground">
+                                      {o.frete_valor === 0
+                                        ? <span className="text-emerald-700 dark:text-emerald-400">grátis</span>
+                                        : o.frete_valor != null
+                                          ? <span className="num">{fmtBRL(Number(o.frete_valor))}</span>
+                                          : <span className="text-muted-foreground/70" title={o.frete_texto ?? "a loja só calcula com o CEP"}>a calcular</span>}
                                     </td>
                                     <td className="num px-3 py-2 text-right text-[12px] text-muted-foreground">
                                       {o.preco_min != null ? fmtBRL(Number(o.preco_min)) : "—"}
                                     </td>
-                                    <td className="num px-3 py-2 text-right text-[13px] font-semibold text-foreground">
-                                      {fmtBRL(Number(o.preco))}
+                                    <td className="px-3 py-2 text-right">
+                                      <div className="num text-[13px] font-semibold text-foreground">
+                                        {fmtBRL(Number(o.preco_total ?? o.preco))}
+                                      </div>
+                                      {o.frete_valor != null && o.frete_valor > 0 && (
+                                        <div className="num text-[10.5px] text-muted-foreground">{fmtBRLStr(Number(o.preco))} + frete</div>
+                                      )}
                                     </td>
                                     <td className="px-3 py-2 text-right">
                                       <a href={o.url} target="_blank" rel="noreferrer" className="text-muted-foreground hover:text-foreground">

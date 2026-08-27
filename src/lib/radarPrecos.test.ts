@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   lerSpecs, avaliar, classificar, pisoDePreco, condicaoDoTitulo, textoWhats, resumoDoAlvo,
+  disponibilidade, totalDaOferta, economiaDe,
   type AlvoSpecs, type OfertaBruta,
 } from "./radarPrecos";
 
@@ -149,11 +150,13 @@ describe("avaliar — o que NÃO pode passar", () => {
 describe("avaliar — o que TEM de passar", () => {
   it("aprova o anúncio certo e explica por quê", () => {
     const r = avaliar(ALVO, TETO, oferta("Notebook Lenovo IdeaPad i5-1235U 16GB RAM 512GB SSD", 2590, {
-      reputacao: 0.9, frete_gratis: true, vendas: 300, condicao: "novo",
+      reputacao: 0.9, frete_gratis: true, vendas: 300, condicao: "novo", disponivel: true,
     }));
     expect(r.aprovado).toBe(true);
     expect(r.recusa).toBeNull();
     expect(r.motivos.join(" ")).toMatch(/abaixo do teto/);
+    expect(r.motivos.join(" ")).toMatch(/frete grátis/);
+    expect(r.conferir).toHaveLength(0); // nada pendente: estoque e frete confirmados
     expect(r.score).toBeGreaterThan(70);
   });
 
@@ -199,6 +202,95 @@ describe("avaliar — o que TEM de passar", () => {
     const r = avaliar({ ...ALVO, condicoes: ["novo", "recondicionado"] }, TETO,
       oferta("Notebook Dell i5 16GB RAM 512GB SSD Recondicionado", 1900));
     expect(r.aprovado).toBe(true);
+  });
+});
+
+describe("disponibilidade — produto esgotado não é achado", () => {
+  it("recusa o que a fonte marcou como indisponível", () => {
+    const r = avaliar(ALVO, TETO, oferta("Notebook Lenovo i5 16GB RAM 512GB SSD", 2400, { disponivel: false }));
+    expect(r.aprovado).toBe(false);
+    expect(r.recusa).toMatch(/indispon|esgotad/i);
+  });
+
+  it("lê 'esgotado' do próprio texto quando a fonte não diz nada", () => {
+    expect(disponibilidade("Notebook Dell i5 - PRODUTO ESGOTADO")).toBe(false);
+    expect(disponibilidade("Notebook Dell i5", "Avise-me quando chegar")).toBe(false);
+    expect(disponibilidade("Notebook Dell i5", "Sem estoque no momento")).toBe(false);
+  });
+
+  it("NÃO confunde o selo 'mais vendido' com produto vendido", () => {
+    // Selo de destaque em quase toda loja — barrá-lo mataria justamente os bons.
+    expect(disponibilidade("Notebook Lenovo i5 16GB | MAIS VENDIDO")).not.toBe(false);
+  });
+
+  it("não inventa disponibilidade: silêncio vira 'conferir', não recusa", () => {
+    expect(disponibilidade("Notebook Dell i5 16GB")).toBeNull();
+    const r = avaliar(ALVO, TETO, oferta("Notebook Dell i5 16GB RAM 512GB SSD", 2400));
+    expect(r.aprovado).toBe(true);
+    expect(r.conferir).toContain("se está em estoque");
+  });
+
+  it("estoque confirmado pontua mais que estoque desconhecido", () => {
+    const base = { condicao: "novo" as const, reputacao: 0.9, frete_gratis: true };
+    const confirmado = avaliar(ALVO, TETO, oferta("Notebook Dell i5 16GB RAM 512GB SSD", 2400, { ...base, disponivel: true }));
+    const incerto = avaliar(ALVO, TETO, oferta("Notebook Dell i5 16GB RAM 512GB SSD", 2400, base));
+    expect(confirmado.score).toBeGreaterThan(incerto.score);
+  });
+});
+
+describe("frete — entra na conta, e desconhecido não vira zero", () => {
+  it("soma o frete no total", () => {
+    const { total, frete, frete_conhecido } = totalDaOferta(oferta("x", 2400, { frete_valor: 120 }));
+    expect(total).toBe(2520);
+    expect(frete).toBe(120);
+    expect(frete_conhecido).toBe(true);
+  });
+
+  it("frete grátis é zero de verdade", () => {
+    const r = totalDaOferta(oferta("x", 2400, { frete_gratis: true }));
+    expect(r.total).toBe(2400);
+    expect(r.frete).toBe(0);
+    expect(r.frete_conhecido).toBe(true);
+  });
+
+  it("frete desconhecido NÃO é somado como zero", () => {
+    const r = totalDaOferta(oferta("x", 2400));
+    expect(r.total).toBe(2400);
+    expect(r.frete).toBeNull();
+    expect(r.frete_conhecido).toBe(false); // o total é só o produto, e a tela precisa saber
+  });
+
+  it("recusa quando é o frete que estoura o teto", () => {
+    const r = avaliar(ALVO, TETO, oferta("Notebook Dell i5 16GB RAM 512GB SSD", 2980, { frete_valor: 140, disponivel: true }));
+    expect(r.aprovado).toBe(false);
+    expect(r.recusa).toMatch(/frete/);
+    expect(r.recusa).toMatch(/2980/);
+  });
+
+  it("o mesmo produto mais barato porém com frete caro perde do mais caro com frete grátis", () => {
+    const comFrete = avaliar(ALVO, TETO, oferta("Notebook Dell i5 16GB RAM 512GB SSD", 2400, { frete_valor: 300, disponivel: true, reputacao: 0.8 }));
+    const semFrete = avaliar(ALVO, TETO, oferta("Notebook Dell i5 16GB RAM 512GB SSD", 2550, { frete_gratis: true, disponivel: true, reputacao: 0.8 }));
+    expect(comFrete.total).toBe(2700);
+    expect(semFrete.total).toBe(2550);
+    expect(semFrete.score).toBeGreaterThan(comFrete.score);
+  });
+
+  it("frete desconhecido vai para 'conferir'", () => {
+    const r = avaliar(ALVO, TETO, oferta("Notebook Dell i5 16GB RAM 512GB SSD", 2400, { disponivel: true }));
+    expect(r.conferir).toContain("valor do frete");
+  });
+});
+
+describe("economiaDe", () => {
+  it("é o que sobra do teto, vezes a quantidade", () => {
+    expect(economiaDe(3000, 2590)).toBe(410);
+    expect(economiaDe(3000, 2590, 4)).toBe(1640);
+  });
+  it("nunca é negativa", () => {
+    expect(economiaDe(3000, 3200)).toBe(0);
+  });
+  it("conta o frete, porque o total já vem com ele", () => {
+    expect(economiaDe(3000, 2590 + 200)).toBe(210);
   });
 });
 

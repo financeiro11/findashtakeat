@@ -82,8 +82,17 @@ export interface OfertaBruta {
   /** Reputação normalizada do vendedor, 0..1. null quando a fonte não informa. */
   reputacao?: number | null;
   vendas?: number | null;
-  frete_gratis?: boolean | null;
   condicao?: Condicao | null;
+  /**
+   * `false` reprova o anúncio. `null` = a fonte não disse, e aí o radar não
+   * inventa: segue, mas manda conferir.
+   */
+  disponivel?: boolean | null;
+  frete_gratis?: boolean | null;
+  /** Frete em reais. `0` é frete grátis; `null` é frete desconhecido — não são a mesma coisa. */
+  frete_valor?: number | null;
+  /** O que a página escreveu sobre frete, para a tela poder mostrar em vez de sumir. */
+  frete_texto?: string | null;
 }
 
 export interface Avaliacao {
@@ -97,6 +106,10 @@ export interface Avaliacao {
   /** Specs que o anúncio não informou e alguém precisa conferir no link. */
   conferir: string[];
   lidas: SpecsLidas;
+  /** Preço + frete. É por ELE que o teto, o ranking e a economia são medidos. */
+  total: number;
+  /** `false` quando o frete não é conhecido e o `total` é só o preço do produto. */
+  frete_conhecido: boolean;
 }
 
 /* ------------------------------------------------------------- normalização */
@@ -326,6 +339,65 @@ const SUCATA =
 /** "para notebook", "compatível com" — quase sempre é peça de reposição. */
 const PARA_ALGO = /\b(para|p\/|compativel com|substituicao)\s+(notebook|macbook|monitor|celular|impressora|cadeira|desktop|pc)\b/;
 
+/**
+ * "Está esgotado" dito de todas as formas que as lojas brasileiras dizem.
+ *
+ * PRODUTO INDISPONÍVEL NO RADAR É PIOR QUE RADAR VAZIO. A pessoa larga o que
+ * está fazendo, abre o link e descobre um botão "avise-me quando chegar" — e da
+ * segunda vez que isso acontece ela para de clicar. Pior: página de produto
+ * esgotado costuma manter o último preço praticado, que fica *bonito* justamente
+ * por não estar mais à venda. É o achado mais convincente e mais inútil possível.
+ *
+ * "vendido" NÃO entra nesta lista: "mais vendido" é selo de destaque em quase
+ * toda loja, e barraria justamente os anúncios bons.
+ */
+const INDISPONIVEL =
+  /\b(indisponivel|esgotado|sem estoque|fora de estoque|estoque esgotado|avise[- ]?me|me avise|anuncio encerrado|produto encerrado|nao disponivel|indispon|sob consulta|descontinuado|fora de linha)\b/;
+
+/** A fonte disse que está esgotado? `null` quando ela não falou do assunto. */
+export function disponibilidade(titulo: string, texto?: string | null, informada?: boolean | null): boolean | null {
+  if (informada === false) return false;
+  if (INDISPONIVEL.test(norm(titulo)) || INDISPONIVEL.test(norm(texto))) return false;
+  return informada === true ? true : null;
+}
+
+/**
+ * Preço + frete. O teto do Facilities é quanto ele aceita GASTAR, e frete é
+ * gasto: um notebook de R$ 2.980 com R$ 140 de frete estoura um teto de
+ * R$ 3.000, e o radar que ignora isso avisa sobre uma compra que não cabe.
+ *
+ * Frete desconhecido NÃO vira zero. Somar zero é afirmar "é grátis", e o
+ * anúncio nunca disse isso — o total sai só com o produto e `frete_conhecido`
+ * fica falso, para a tela poder avisar em vez de mentir por omissão.
+ */
+export function totalDaOferta(o: OfertaBruta): { total: number; frete: number | null; frete_conhecido: boolean } {
+  const frete = o.frete_gratis ? 0 : (typeof o.frete_valor === "number" && o.frete_valor >= 0 ? o.frete_valor : null);
+  return { total: o.preco + (frete ?? 0), frete, frete_conhecido: frete != null };
+}
+
+/** Quanto se deixa de gastar comprando por este total em vez de gastar o teto. */
+export function economiaDe(precoAlvo: number, total: number, quantidade = 1): number {
+  // Arredonda em centavos: sem isto sai "R$ 770,8999999999996" no banco e na
+  // tela, que é o tipo de número que faz a pessoa duvidar do resto da conta.
+  return Math.round(Math.max(0, (precoAlvo - total) * Math.max(quantidade, 1)) * 100) / 100;
+}
+
+/**
+ * A identidade do PRODUTO, atravessando as fontes.
+ *
+ * Buscapé, Zoom e Bondfaro são do mesmo grupo e listam a mesma oferta. Como a
+ * chave da oferta inclui a fonte (e deve incluir — o histórico de preço de cada
+ * uma é legítimo), o MESMO notebook a R$ 2.969,10 virava três avisos idênticos.
+ * Três linhas do mesmo produto é o começo do fim da confiança na aba: parece
+ * que o radar está com defeito, e não está.
+ *
+ * Título normalizado + total arredondado basta, porque é justamente quando os
+ * dois batem que se trata do mesmo anúncio replicado.
+ */
+export function chaveDoProduto(titulo: string, total: number): string {
+  return `${norm(titulo).slice(0, 80)}|${Math.round(total)}`;
+}
+
 /** Palavras que indicam produto usado/recondicionado, quando a fonte não informa a condição. */
 const USADO_TEXTO = /\b(usado|seminovo|semi-novo|recondicionado|refurbished|revisado|vitrine|open box|remanufaturado)\b/;
 
@@ -372,10 +444,15 @@ export function avaliar(alvo: AlvoSpecs, precoAlvo: number, o: OfertaBruta): Ava
   const lidas = lerSpecs(o.titulo);
   const conferir: string[] = [];
   const motivos: string[] = [];
+  const { total, frete, frete_conhecido } = totalDaOferta(o);
 
-  const nao = (recusa: string): Avaliacao => ({ aprovado: false, score: 0, recusa, motivos: [], conferir: [], lidas });
+  const nao = (recusa: string): Avaliacao =>
+    ({ aprovado: false, score: 0, recusa, motivos: [], conferir: [], lidas, total, frete_conhecido });
 
   if (!o.titulo || !o.url || !(o.preco > 0)) return nao("anúncio sem título, link ou preço");
+
+  // Esgotado sai antes de tudo: não interessa o quanto as specs batem.
+  if (o.disponivel === false) return nao("o anúncio está indisponível/esgotado");
 
   // 1. Sucata e peça de reposição — o motivo mais comum de preço bom demais
   if (SUCATA.test(t)) return nao("anúncio de produto com defeito ou para peças");
@@ -394,12 +471,19 @@ export function avaliar(alvo: AlvoSpecs, precoAlvo: number, o: OfertaBruta): Ava
     if (ob && !t.includes(norm(ob))) return nao(`não menciona “${ob}”`);
   }
 
-  // 3. Preço
+  // 3. Preço — medido pelo TOTAL, porque frete é gasto igual
   const piso = pisoDePreco(precoAlvo);
   if (o.preco < piso) {
     return nao(`R$ ${o.preco.toFixed(0)} está abaixo do piso de R$ ${piso} — provável acessório ou anúncio isca`);
   }
-  if (o.preco > precoAlvo) return nao(`acima do teto (R$ ${precoAlvo.toFixed(0)})`);
+  if (total > precoAlvo) {
+    return nao(frete && frete > 0
+      ? `R$ ${o.preco.toFixed(0)} + R$ ${frete.toFixed(0)} de frete passa do teto (R$ ${precoAlvo.toFixed(0)})`
+      : `acima do teto (R$ ${precoAlvo.toFixed(0)})`);
+  }
+  if (frete === 0) motivos.push("frete grátis");
+  else if (frete && frete > 0) motivos.push(`+ R$ ${frete.toFixed(0)} de frete`);
+  else conferir.push("valor do frete");
 
   // 4. Condição
   const condicoes = alvo.condicoes?.length ? alvo.condicoes : (["novo"] as Condicao[]);
@@ -455,18 +539,21 @@ export function avaliar(alvo: AlvoSpecs, precoAlvo: number, o: OfertaBruta): Ava
      A reputação do vendedor vem logo atrás porque o Facilities compra de
      verdade — um preço 8% melhor num vendedor sem histórico não compensa. */
   let score = 50;
-  const folga = (precoAlvo - o.preco) / precoAlvo; // 0..1
+  const folga = (precoAlvo - total) / precoAlvo; // 0..1, já com frete
   score += Math.round(Math.min(folga, 0.5) * 60); // até +30
   if (o.reputacao != null) score += Math.round(o.reputacao * 12);
   else conferir.push("reputação do vendedor");
   if ((o.vendas ?? 0) >= 50) score += 3;
-  if (o.frete_gratis) { score += 3; motivos.push("frete grátis"); }
-  score -= conferir.length * 4; // cada spec não confirmada tira confiança
+  // Disponibilidade confirmada na página do produto vale ponto: é a diferença
+  // entre "o anúncio existe" e "dá para comprar agora".
+  if (o.disponivel === true) score += 5;
+  else conferir.push("se está em estoque");
+  score -= conferir.length * 4; // cada coisa não confirmada tira confiança
   score = Math.max(1, Math.min(100, score));
 
   if (folga >= 0.10) motivos.unshift(`${Math.round(folga * 100)}% abaixo do teto`);
 
-  return { aprovado: true, score, recusa: null, motivos, conferir, lidas };
+  return { aprovado: true, score, recusa: null, motivos, conferir, lidas, total, frete_conhecido };
 }
 
 /* ------------------------------------------------------- leitura do histórico */
@@ -481,6 +568,7 @@ export interface Historico { preco: number; coletado_em: string }
  * e avisar mesmo assim treina o Facilities a ignorar o radar. O que merece
  * empurrão é mínimo histórico e queda de verdade.
  */
+/** `preco` aqui é o TOTAL (produto + frete) — é o que a pessoa vai gastar. */
 export function classificar(preco: number, precoAlvo: number, historico: Historico[]): { tipo: TipoAlerta; texto: string } | null {
   if (preco > precoAlvo) return null;
   const antes = historico.map((h) => Number(h.preco)).filter((p) => p > 0);
@@ -510,7 +598,12 @@ const brl = (v: number) => "R$ " + v.toLocaleString("pt-BR", { minimumFractionDi
 export interface ParaWhats {
   alvo_titulo: string;
   preco_alvo: number;
-  ofertas: Array<{ titulo: string; preco: number; url: string; fonte: string; vendedor?: string | null; motivo?: string | null; conferir?: string[] }>;
+  quantidade?: number;
+  ofertas: Array<{
+    titulo: string; preco: number; url: string; fonte: string;
+    vendedor?: string | null; motivo?: string | null; conferir?: string[];
+    frete_valor?: number | null; frete_texto?: string | null;
+  }>;
 }
 
 /**
@@ -519,15 +612,28 @@ export interface ParaWhats {
  * existe neste projeto.
  */
 export function textoWhats(p: ParaWhats): string {
+  const qtd = Math.max(p.quantidade ?? 1, 1);
   const linhas: string[] = [];
   linhas.push(`*Radar de preços — ${p.alvo_titulo}*`);
-  linhas.push(`Teto: ${brl(p.preco_alvo)}`);
+  linhas.push(`Teto: ${brl(p.preco_alvo)}${qtd > 1 ? ` · ${qtd} unidades` : ""}`);
   linhas.push("");
   for (const o of p.ofertas) {
-    linhas.push(`• *${brl(o.preco)}* — ${o.titulo}`);
+    const frete = o.frete_valor;
+    const total = o.preco + (frete ?? 0);
+    // O total vem na frente porque é ele que decide a compra. O preço sozinho,
+    // sem o frete, é a metade da conta que faz a pessoa escolher errado.
+    linhas.push(`• *${brl(total)}* — ${o.titulo}`);
+    const detalhe = frete === 0
+      ? `${brl(o.preco)} + frete grátis`
+      : frete && frete > 0
+        ? `${brl(o.preco)} + ${brl(frete)} de frete`
+        : `${brl(o.preco)} + frete não informado`;
+    linhas.push(`  ${detalhe}`);
     const rodape = [o.fonte, o.vendedor || null].filter(Boolean).join(" · ");
     if (rodape) linhas.push(`  ${rodape}`);
     if (o.motivo) linhas.push(`  ${o.motivo}`);
+    const economia = economiaDe(p.preco_alvo, total, qtd);
+    if (economia > 0) linhas.push(`  💰 economia de ${brl(economia)}${qtd > 1 ? ` (${qtd} un.)` : ""}`);
     if (o.conferir?.length) linhas.push(`  ⚠ conferir no anúncio: ${o.conferir.join(", ")}`);
     linhas.push(`  ${o.url}`);
     linhas.push("");

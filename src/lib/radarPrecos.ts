@@ -34,10 +34,29 @@ export const FONTE_LABEL: Record<string, string> = {
   terabyte: "Terabyte",
   zoom: "Zoom",
   buscape: "Buscapé",
+  bondfaro: "Bondfaro",
+  pichau: "Pichau",
+  balao: "Balão da Informática",
+  americanas: "Americanas",
+  casasbahia: "Casas Bahia",
+  carrefour: "Carrefour",
+  fastshop: "Fast Shop",
   amazon: "Amazon",
   magalu: "Magalu",
   mercado_livre: "Mercado Livre",
 };
+
+/** "R$ 2.590 + R$ 120 de frete" — a conta inteira, do jeito que decide a compra. */
+export function textoFrete(frete: number | null | undefined, texto?: string | null): string {
+  if (frete === 0) return "frete grátis";
+  if (typeof frete === "number" && frete > 0) {
+    return `+ ${frete.toLocaleString("pt-BR", { style: "currency", currency: "BRL", maximumFractionDigits: 0 })} de frete`;
+  }
+  // A loja que só calcula frete depois do CEP não entrega número nenhum para uma
+  // leitura de página. Dizer isso é melhor que deixar o campo em branco, que a
+  // pessoa leria como "sem frete".
+  return texto ? `frete: ${texto.toLowerCase()}` : "frete não informado";
+}
 
 export function fonteLabel(f: string | null | undefined): string {
   if (!f) return "—";

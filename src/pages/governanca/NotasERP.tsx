@@ -49,6 +49,7 @@ import {
 import { useApelidos } from "@/hooks/useApelidos";
 import { nomeExibido } from "@/lib/apelidos";
 import { invocar } from "@/lib/erroEdge";
+import { Parcelas } from "./notas-erp/Parcelas";
 /* O filtro-de-coluna do Hub. Nasceu na Parametrização e continua morando lá —
    é genérico (cabeçalho, botão de barra, lista marcável, faixa de número, faixa
    de meses) e não sabe nada daquela tela. */
@@ -500,7 +501,7 @@ function BotaoAbrir({ l, onAbrir }: { l: LinhaTitulo; onAbrir: (onde: Exclude<On
   );
 }
 
-type Aba = "panorama" | "diagnostico" | "categorias" | "fornecedores" | "titulos" | "acervo" | "revisar" | "quase" | "regua";
+type Aba = "panorama" | "diagnostico" | "categorias" | "fornecedores" | "titulos" | "acervo" | "revisar" | "parcelas" | "quase" | "regua";
 
 const ABAS: Array<{ id: Aba; rotulo: string }> = [
   { id: "panorama", rotulo: "Panorama" },
@@ -510,6 +511,7 @@ const ABAS: Array<{ id: Aba; rotulo: string }> = [
   { id: "titulos", rotulo: "Títulos" },
   { id: "acervo", rotulo: "Acervo de notas" },
   { id: "revisar", rotulo: "Anexo a conferir" },
+  { id: "parcelas", rotulo: "Parcelas" },
   { id: "quase", rotulo: "Falta um passo" },
   { id: "regua", rotulo: "Régua" },
 ];
@@ -895,6 +897,7 @@ export default function NotasERP() {
       )}
       {aba === "acervo" && <Acervo aoMudar={carregar} />}
       {aba === "revisar" && <Revisar de={de} ate={ate} aoRevisar={carregar} />}
+      {aba === "parcelas" && <Parcelas />}
       {aba === "quase" && <QuaseLa />}
       {aba === "regua" && <Regua aoMudar={carregar} />}
     </div>

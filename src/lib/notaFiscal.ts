@@ -627,39 +627,59 @@ export type ValorComMoeda = { valor: number; moeda: "BRL" | "USD" | "EUR" };
  * "$" sozinho só vale na ausência de "R$" no texto inteiro — senão o cifrão de
  * "R$ 1.000,00" seria lido como dólar em todo boleto do país.
  *
- * Prefere o número que vem depois de um rótulo de total ("Amount due", "Total",
- * "Balance"): a invoice tem o valor de cada linha antes do total, e o primeiro
- * número que aparece costuma ser o menor deles.
+ * OS RÓTULOS VÊM EM ORDEM DE PREFERÊNCIA, e o zero NÃO conta. Este é o ponto
+ * que custou caro: a fatura do HubSpot já paga escreve
+ *
+ *     Total devido US$ 0,00     Valor pago (USD) US$ 5.693,73
+ *
+ * Procurar "total" primeiro e aceitar o que vier devolve **zero** — e zero vira
+ * `null`, então a nota entra muda no acervo com o valor impresso na cara dela.
+ * Por isso a busca percorre os rótulos em ordem e PULA os que derem zero: numa
+ * fatura paga o número é o "valor pago"; numa em aberto, o "total devido".
  */
 export function valorComMoeda(texto: string | null | undefined): ValorComMoeda | null {
   const t = String(texto ?? "").replace(/\s+/g, " ");
   if (!t) return null;
 
-  const emReais = t.match(/valor[^\d]{0,20}R\$\s*([\d.]+,\d{2})/i) ?? t.match(/R\$\s*([\d.]+,\d{2})/);
-  if (emReais) {
-    const v = valorBR(emReais[1]);
-    if (v !== null) return { valor: v, moeda: "BRL" };
+  /* A marca da moeda é obrigatória: sem ela não há como saber se "1,00" é real,
+     dólar ou um número solto. `R$` é opcional só no ramo brasileiro, onde a
+     ausência de qualquer outra marca já responde a pergunta. */
+  const MARCA = String.raw`R\$|US\$|USD|EUR|€|\$`;
+  const ROTULOS = [
+    String.raw`valor\s+pago|amount\s+paid|total\s+paid|valor\s+l[íi]quido`,
+    String.raw`total\s+devido|amount\s+due|total\s+due|balance\s+due`,
+    String.raw`invoice\s+total|grand\s+total|valor\s+total|valor\s+da\s+fatura|total|valor`,
+  ];
+
+  /* DOCUMENTO QUE TEM "R$" É DOCUMENTO EM REAL, e nele só vale número marcado
+     com R$. Sem esta guarda, "Total R$ (a definir) $99.00" — nota brasileira
+     cujo total não saiu — seria lida como R$ 9.900 pelo cifrão solto adiante. */
+  const emReal = /R\$/.test(t);
+  const decidir = (bruto: string, marca: string): ValorComMoeda | null => {
+    const m = marca.toUpperCase();
+    const ehReal = m.includes("R$");
+    if (emReal && !ehReal) return null;
+    const v = ehReal ? valorBR(bruto) : numeroDeQualquerLugar(bruto);
+    if (v === null || v <= 0) return null;
+    if (ehReal) return { valor: v, moeda: "BRL" };
+    return { valor: v, moeda: m.includes("EUR") || m.includes("€") ? "EUR" : "USD" };
+  };
+
+  for (const rot of ROTULOS) {
+    const re = new RegExp(String.raw`(?:${rot})[^\d]{0,40}(${MARCA})\s*(${DINHEIRO})`, "gi");
+    for (const m of t.matchAll(re)) {
+      const achado = decidir(m[2], m[1]);
+      if (achado) return achado;
+    }
   }
-  if (/R\$/.test(t)) return null;   // é documento em real e o número não saiu
 
-  /* O TOTAL ROTULADO GANHA DO PRIMEIRO NÚMERO: a invoice lista cada item antes
-     de somar, e o primeiro que aparece costuma ser o menor deles. O rótulo vem
-     nos dois idiomas porque o MESMO emissor manda os dois — a fatura do HubSpot
-     chega em português ("Valor pago (USD)") com o total em dólar.
-
-     A marca da moeda é OBRIGATÓRIA nas duas tentativas: sem ela não há como
-     saber se "1,00" é dólar, euro ou um número solto qualquer. */
-  const MARCA = String.raw`US\$|USD|EUR|€|\$`;
-  const ROTULO = String.raw`valor\s+(?:pago|total|da\s+fatura)|amount\s+(?:due|paid)|total\s+(?:due|paid)|balance\s+due|invoice\s+total|grand\s+total|total|amount`;
-  const achado =
-    t.match(new RegExp(String.raw`(?:${ROTULO})[^\d]{0,40}(${MARCA})\s*(${DINHEIRO})`, "i"))
-    ?? t.match(new RegExp(String.raw`(${MARCA})\s*(${DINHEIRO})`, "i"));
-  if (!achado) return null;
-
-  const v = numeroDeQualquerLugar(achado[2]);
-  if (v === null || v <= 0) return null;
-  const marca = achado[1].toUpperCase();
-  return { valor: v, moeda: marca.includes("EUR") || marca.includes("€") ? "EUR" : "USD" };
+  /* Sem rótulo nenhum: o primeiro valor com marca. É o caso do recibo curto
+     ("foi cobrado com US$ 5.693,73"), que não tem tabela nem total. */
+  for (const m of t.matchAll(new RegExp(String.raw`(${MARCA})\s*(${DINHEIRO})`, "gi"))) {
+    const achado = decidir(m[2], m[1]);
+    if (achado) return achado;
+  }
+  return null;
 }
 
 export type CorpoDeEmail = {

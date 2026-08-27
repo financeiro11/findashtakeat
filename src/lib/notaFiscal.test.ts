@@ -476,6 +476,20 @@ describe("valorComMoeda", () => {
     expect(valorComMoeda("Total US$ 1.234,56 · 2.000 Contatos de marketing")?.valor).toBe(1234.56);
   });
 
+  /* A ARMADILHA MAIS CARA DESTA FUNÇÃO, tirada da fatura real do HubSpot já
+     paga: "Total devido US$ 0,00" vem ANTES de "Valor pago (USD) US$ 5.693,73".
+     Pegar o primeiro rótulo de total devolve zero — e zero vira nulo, então a
+     nota entra muda no acervo com o valor impresso na cara dela. */
+  it("pula o total zerado da fatura já paga", () => {
+    const t = "Fatura nº:809245709 Total devido US$ 0,00 Valor pago (USD) US$ 5.693,73 " +
+      "ITEM Marketing Hub Professional US$ 195,80";
+    expect(valorComMoeda(t)).toEqual({ valor: 5693.73, moeda: "USD" });
+  });
+
+  it("a fatura em aberto usa o total devido", () => {
+    expect(valorComMoeda("Total devido US$ 1.200,00 Valor pago (USD) US$ 0,00")?.valor).toBe(1200);
+  });
+
   it("euro também, e texto sem dinheiro nenhum devolve nulo", () => {
     expect(valorComMoeda("Total: EUR 1.00")).toEqual({ valor: 1, moeda: "EUR" });
     expect(valorComMoeda("obrigado pela preferência")).toBeNull();

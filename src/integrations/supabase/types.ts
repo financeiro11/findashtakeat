@@ -10,7 +10,32 @@ export type Database = {
   // Allows to automatically instantiate createClient with right options
   // instead of createClient<Database, { PostgrestVersion: 'XX' }>(URL, KEY)
   __InternalSupabase: {
-    PostgrestVersion: "14.5"
+    PostgrestVersion: "14.17"
+  }
+  graphql_public: {
+    Tables: {
+      [_ in never]: never
+    }
+    Views: {
+      [_ in never]: never
+    }
+    Functions: {
+      graphql: {
+        Args: {
+          extensions?: Json
+          operationName?: string
+          query?: string
+          variables?: Json
+        }
+        Returns: Json
+      }
+    }
+    Enums: {
+      [_ in never]: never
+    }
+    CompositeTypes: {
+      [_ in never]: never
+    }
   }
   public: {
     Tables: {
@@ -482,51 +507,81 @@ export type Database = {
       }
       asaas_cache: {
         Row: {
+          assinatura_ref: string | null
           atualizado_em: string
           ciclo: string | null
+          cliente_ref: string | null
+          confirmado_em: string | null
           dados: Json
           data_credito: string | null
           data_criacao: string | null
           data_efetiva: string | null
           data_pagamento: string | null
           data_vencimento: string | null
+          descricao: string | null
+          documento: string | null
+          email: string | null
+          estornos: number | null
           forma: string | null
           id_asaas: string
+          nome: string | null
+          nota_numero: string | null
           pagamento_ref: string | null
+          pago_cliente_em: string | null
           status: string | null
           tipo: string
           valor: number | null
           valor_liquido: number | null
         }
         Insert: {
+          assinatura_ref?: string | null
           atualizado_em?: string
           ciclo?: string | null
+          cliente_ref?: string | null
+          confirmado_em?: string | null
           dados: Json
           data_credito?: string | null
           data_criacao?: string | null
           data_efetiva?: string | null
           data_pagamento?: string | null
           data_vencimento?: string | null
+          descricao?: string | null
+          documento?: string | null
+          email?: string | null
+          estornos?: number | null
           forma?: string | null
           id_asaas: string
+          nome?: string | null
+          nota_numero?: string | null
           pagamento_ref?: string | null
+          pago_cliente_em?: string | null
           status?: string | null
           tipo: string
           valor?: number | null
           valor_liquido?: number | null
         }
         Update: {
+          assinatura_ref?: string | null
           atualizado_em?: string
           ciclo?: string | null
+          cliente_ref?: string | null
+          confirmado_em?: string | null
           dados?: Json
           data_credito?: string | null
           data_criacao?: string | null
           data_efetiva?: string | null
           data_pagamento?: string | null
           data_vencimento?: string | null
+          descricao?: string | null
+          documento?: string | null
+          email?: string | null
+          estornos?: number | null
           forma?: string | null
           id_asaas?: string
+          nome?: string | null
+          nota_numero?: string | null
           pagamento_ref?: string | null
+          pago_cliente_em?: string | null
           status?: string | null
           tipo?: string
           valor?: number | null
@@ -570,6 +625,30 @@ export type Database = {
           numero_documento?: string | null
           tipo?: string | null
           valor?: number | null
+        }
+        Relationships: []
+      }
+      asaas_nf_config: {
+        Row: {
+          assinatura: string
+          erro: string | null
+          lido_em: string
+          periodo: string | null
+          tem_config: boolean | null
+        }
+        Insert: {
+          assinatura: string
+          erro?: string | null
+          lido_em?: string
+          periodo?: string | null
+          tem_config?: boolean | null
+        }
+        Update: {
+          assinatura?: string
+          erro?: string | null
+          lido_em?: string
+          periodo?: string | null
+          tem_config?: boolean | null
         }
         Relationships: []
       }
@@ -974,6 +1053,8 @@ export type Database = {
           id: number
           id_unico: string
           observacao: string | null
+          omie_anexo_enviado_em: string | null
+          omie_anexo_nome: string | null
           referencia: string
           status: string
           tem_comprovante: boolean
@@ -997,6 +1078,8 @@ export type Database = {
           id?: never
           id_unico: string
           observacao?: string | null
+          omie_anexo_enviado_em?: string | null
+          omie_anexo_nome?: string | null
           referencia: string
           status?: string
           tem_comprovante?: boolean
@@ -1020,6 +1103,8 @@ export type Database = {
           id?: never
           id_unico?: string
           observacao?: string | null
+          omie_anexo_enviado_em?: string | null
+          omie_anexo_nome?: string | null
           referencia?: string
           status?: string
           tem_comprovante?: boolean
@@ -1435,6 +1520,156 @@ export type Database = {
           },
         ]
       }
+      cambio_dia: {
+        Row: {
+          data: string
+          fonte: string
+          lido_em: string
+          moeda: string
+          venda: number
+        }
+        Insert: {
+          data: string
+          fonte?: string
+          lido_em?: string
+          moeda: string
+          venda: number
+        }
+        Update: {
+          data?: string
+          fonte?: string
+          lido_em?: string
+          moeda?: string
+          venda?: number
+        }
+        Relationships: []
+      }
+      cap_notas_config: {
+        Row: {
+          atualizado_em: string
+          atualizado_por: string | null
+          id: number
+          limiar_grave: number
+          limiar_medio: number
+          limiar_urgente: number
+          releitura_dias: number
+          releitura_max_dias: number
+        }
+        Insert: {
+          atualizado_em?: string
+          atualizado_por?: string | null
+          id?: number
+          limiar_grave?: number
+          limiar_medio?: number
+          limiar_urgente?: number
+          releitura_dias?: number
+          releitura_max_dias?: number
+        }
+        Update: {
+          atualizado_em?: string
+          atualizado_por?: string | null
+          id?: number
+          limiar_grave?: number
+          limiar_medio?: number
+          limiar_urgente?: number
+          releitura_dias?: number
+          releitura_max_dias?: number
+        }
+        Relationships: []
+      }
+      cap_notas_diagnostico_texto: {
+        Row: {
+          ate: string | null
+          de: string | null
+          gerado_em: string
+          gerado_por: string | null
+          id: number
+          modelo: string | null
+          planos: Json
+          resumo: string
+          sinal: Json
+        }
+        Insert: {
+          ate?: string | null
+          de?: string | null
+          gerado_em?: string
+          gerado_por?: string | null
+          id?: number
+          modelo?: string | null
+          planos?: Json
+          resumo: string
+          sinal: Json
+        }
+        Update: {
+          ate?: string | null
+          de?: string | null
+          gerado_em?: string
+          gerado_por?: string | null
+          id?: number
+          modelo?: string | null
+          planos?: Json
+          resumo?: string
+          sinal?: Json
+        }
+        Relationships: []
+      }
+      cartao_envios_omie: {
+        Row: {
+          chave: string | null
+          cod_titulo: string | null
+          codigo_categoria: string | null
+          competencia: string
+          competencia_fatura: string
+          enviado_em: string
+          enviado_por: string | null
+          erro: string | null
+          estabelecimento: string | null
+          fitid: string
+          integracao: string
+          parcela_de: number | null
+          parcela_n: number | null
+          status: string
+          valor: number
+          vencimento: string | null
+        }
+        Insert: {
+          chave?: string | null
+          cod_titulo?: string | null
+          codigo_categoria?: string | null
+          competencia: string
+          competencia_fatura: string
+          enviado_em?: string
+          enviado_por?: string | null
+          erro?: string | null
+          estabelecimento?: string | null
+          fitid: string
+          integracao: string
+          parcela_de?: number | null
+          parcela_n?: number | null
+          status?: string
+          valor: number
+          vencimento?: string | null
+        }
+        Update: {
+          chave?: string | null
+          cod_titulo?: string | null
+          codigo_categoria?: string | null
+          competencia?: string
+          competencia_fatura?: string
+          enviado_em?: string
+          enviado_por?: string | null
+          erro?: string | null
+          estabelecimento?: string | null
+          fitid?: string
+          integracao?: string
+          parcela_de?: number | null
+          parcela_n?: number | null
+          status?: string
+          valor?: number
+          vencimento?: string | null
+        }
+        Relationships: []
+      }
       cartao_faturas: {
         Row: {
           arquivo: string | null
@@ -1443,6 +1678,7 @@ export type Database = {
           importado_em: string
           importado_por: string | null
           mes_label: string
+          provisionamento: string
         }
         Insert: {
           arquivo?: string | null
@@ -1451,6 +1687,7 @@ export type Database = {
           importado_em?: string
           importado_por?: string | null
           mes_label: string
+          provisionamento?: string
         }
         Update: {
           arquivo?: string | null
@@ -1459,6 +1696,7 @@ export type Database = {
           importado_em?: string
           importado_por?: string | null
           mes_label?: string
+          provisionamento?: string
         }
         Relationships: []
       }
@@ -1530,6 +1768,42 @@ export type Database = {
           marcado_em?: string
           marcado_por?: string | null
           nota?: string | null
+        }
+        Relationships: []
+      }
+      cartao_omie_map: {
+        Row: {
+          atualizado_em: string
+          atualizado_por: string | null
+          chave: string
+          codigo_categoria: string
+          descricao_categoria: string | null
+          examinados: number
+          exemplos: string[]
+          origem: string
+          votos: number
+        }
+        Insert: {
+          atualizado_em?: string
+          atualizado_por?: string | null
+          chave: string
+          codigo_categoria: string
+          descricao_categoria?: string | null
+          examinados?: number
+          exemplos?: string[]
+          origem?: string
+          votos?: number
+        }
+        Update: {
+          atualizado_em?: string
+          atualizado_por?: string | null
+          chave?: string
+          codigo_categoria?: string
+          descricao_categoria?: string | null
+          examinados?: number
+          exemplos?: string[]
+          origem?: string
+          votos?: number
         }
         Relationships: []
       }
@@ -1708,6 +1982,7 @@ export type Database = {
           cartao_valor: number | null
           casado_em: string | null
           casamento: string | null
+          chave_fiscal: string | null
           cnpj_norm: string | null
           cod_titulo: string | null
           confianca: string | null
@@ -1726,7 +2001,10 @@ export type Database = {
           mime: string | null
           nome_arquivo: string
           notas: number | null
+          omie_anexo_enviado_em: string | null
+          omie_anexo_nome: string | null
           pasta: string
+          tipo_documento: string | null
           valor: number | null
         }
         Insert: {
@@ -1738,6 +2016,7 @@ export type Database = {
           cartao_valor?: number | null
           casado_em?: string | null
           casamento?: string | null
+          chave_fiscal?: string | null
           cnpj_norm?: string | null
           cod_titulo?: string | null
           confianca?: string | null
@@ -1756,7 +2035,10 @@ export type Database = {
           mime?: string | null
           nome_arquivo: string
           notas?: number | null
+          omie_anexo_enviado_em?: string | null
+          omie_anexo_nome?: string | null
           pasta: string
+          tipo_documento?: string | null
           valor?: number | null
         }
         Update: {
@@ -1768,6 +2050,7 @@ export type Database = {
           cartao_valor?: number | null
           casado_em?: string | null
           casamento?: string | null
+          chave_fiscal?: string | null
           cnpj_norm?: string | null
           cod_titulo?: string | null
           confianca?: string | null
@@ -1786,7 +2069,10 @@ export type Database = {
           mime?: string | null
           nome_arquivo?: string
           notas?: number | null
+          omie_anexo_enviado_em?: string | null
+          omie_anexo_nome?: string | null
           pasta?: string
+          tipo_documento?: string | null
           valor?: number | null
         }
         Relationships: []
@@ -2843,6 +3129,57 @@ export type Database = {
         }
         Relationships: []
       }
+      email_mensagens: {
+        Row: {
+          anexos: Json
+          assunto: string | null
+          corpo_chave: string | null
+          corpo_cnpj: string | null
+          corpo_data: string | null
+          corpo_valor: number | null
+          data: string | null
+          erro: string | null
+          fiscal: boolean | null
+          gmail_id: string
+          lido_em: string
+          remetente: string | null
+          remetente_email: string | null
+          thread_id: string | null
+        }
+        Insert: {
+          anexos?: Json
+          assunto?: string | null
+          corpo_chave?: string | null
+          corpo_cnpj?: string | null
+          corpo_data?: string | null
+          corpo_valor?: number | null
+          data?: string | null
+          erro?: string | null
+          fiscal?: boolean | null
+          gmail_id: string
+          lido_em?: string
+          remetente?: string | null
+          remetente_email?: string | null
+          thread_id?: string | null
+        }
+        Update: {
+          anexos?: Json
+          assunto?: string | null
+          corpo_chave?: string | null
+          corpo_cnpj?: string | null
+          corpo_data?: string | null
+          corpo_valor?: number | null
+          data?: string | null
+          erro?: string | null
+          fiscal?: boolean | null
+          gmail_id?: string
+          lido_em?: string
+          remetente?: string | null
+          remetente_email?: string | null
+          thread_id?: string | null
+        }
+        Relationships: []
+      }
       embaixador_valores_calculados: {
         Row: {
           bonificacao_total: number
@@ -3091,6 +3428,11 @@ export type Database = {
           nf_status: string
           nf_url: string | null
           nf_valor: number | null
+          omie_anexo_enviado_em: string | null
+          omie_anexo_nome: string | null
+          omie_cod_titulo: string | null
+          omie_match_confianca: string | null
+          omie_matched_em: string | null
           pagamento_status: string
           solicitacao_id: string | null
           valor: number
@@ -3117,6 +3459,11 @@ export type Database = {
           nf_status?: string
           nf_url?: string | null
           nf_valor?: number | null
+          omie_anexo_enviado_em?: string | null
+          omie_anexo_nome?: string | null
+          omie_cod_titulo?: string | null
+          omie_match_confianca?: string | null
+          omie_matched_em?: string | null
           pagamento_status?: string
           solicitacao_id?: string | null
           valor: number
@@ -3143,6 +3490,11 @@ export type Database = {
           nf_status?: string
           nf_url?: string | null
           nf_valor?: number | null
+          omie_anexo_enviado_em?: string | null
+          omie_anexo_nome?: string | null
+          omie_cod_titulo?: string | null
+          omie_match_confianca?: string | null
+          omie_matched_em?: string | null
           pagamento_status?: string
           solicitacao_id?: string | null
           valor?: number
@@ -3375,6 +3727,303 @@ export type Database = {
           },
         ]
       }
+      facilities_radar_alertas: {
+        Row: {
+          alvo_id: string
+          cotacao_id: string | null
+          created_at: string
+          economia: number | null
+          frete_valor: number | null
+          id: number
+          oferta_id: number
+          preco: number
+          preco_alvo: number
+          preco_total: number | null
+          status: string
+          texto: string
+          tipo: string
+          visto_em: string | null
+          visto_por: string | null
+        }
+        Insert: {
+          alvo_id: string
+          cotacao_id?: string | null
+          created_at?: string
+          economia?: number | null
+          frete_valor?: number | null
+          id?: number
+          oferta_id: number
+          preco: number
+          preco_alvo: number
+          preco_total?: number | null
+          status?: string
+          texto: string
+          tipo: string
+          visto_em?: string | null
+          visto_por?: string | null
+        }
+        Update: {
+          alvo_id?: string
+          cotacao_id?: string | null
+          created_at?: string
+          economia?: number | null
+          frete_valor?: number | null
+          id?: number
+          oferta_id?: number
+          preco?: number
+          preco_alvo?: number
+          preco_total?: number | null
+          status?: string
+          texto?: string
+          tipo?: string
+          visto_em?: string | null
+          visto_por?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "facilities_radar_alertas_alvo_id_fkey"
+            columns: ["alvo_id"]
+            isOneToOne: false
+            referencedRelation: "facilities_radar_alvos"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "facilities_radar_alertas_oferta_id_fkey"
+            columns: ["oferta_id"]
+            isOneToOne: false
+            referencedRelation: "facilities_radar_ofertas"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      facilities_radar_alvos: {
+        Row: {
+          ativo: boolean
+          categoria: string
+          created_at: string
+          criado_por: string | null
+          favorito: boolean
+          fontes: string[]
+          id: string
+          link_ref: string | null
+          pedido: string
+          preco_alvo: number
+          quantidade: number
+          rodadas: number
+          solicitacao_id: string | null
+          specs: Json
+          titulo: string
+          ultima_varredura: string | null
+          ultimo_erro: string | null
+          updated_at: string
+        }
+        Insert: {
+          ativo?: boolean
+          categoria?: string
+          created_at?: string
+          criado_por?: string | null
+          favorito?: boolean
+          fontes?: string[]
+          id?: string
+          link_ref?: string | null
+          pedido: string
+          preco_alvo: number
+          quantidade?: number
+          rodadas?: number
+          solicitacao_id?: string | null
+          specs?: Json
+          titulo: string
+          ultima_varredura?: string | null
+          ultimo_erro?: string | null
+          updated_at?: string
+        }
+        Update: {
+          ativo?: boolean
+          categoria?: string
+          created_at?: string
+          criado_por?: string | null
+          favorito?: boolean
+          fontes?: string[]
+          id?: string
+          link_ref?: string | null
+          pedido?: string
+          preco_alvo?: number
+          quantidade?: number
+          rodadas?: number
+          solicitacao_id?: string | null
+          specs?: Json
+          titulo?: string
+          ultima_varredura?: string | null
+          ultimo_erro?: string | null
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "facilities_radar_alvos_solicitacao_id_fkey"
+            columns: ["solicitacao_id"]
+            isOneToOne: false
+            referencedRelation: "facilities_solicitacoes"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      facilities_radar_execucoes: {
+        Row: {
+          alertas: number
+          alvos: number
+          detalhe: Json
+          id: number
+          iniciado_em: string
+          ofertas: number
+          terminado_em: string | null
+        }
+        Insert: {
+          alertas?: number
+          alvos?: number
+          detalhe?: Json
+          id?: number
+          iniciado_em?: string
+          ofertas?: number
+          terminado_em?: string | null
+        }
+        Update: {
+          alertas?: number
+          alvos?: number
+          detalhe?: Json
+          id?: number
+          iniciado_em?: string
+          ofertas?: number
+          terminado_em?: string | null
+        }
+        Relationships: []
+      }
+      facilities_radar_ofertas: {
+        Row: {
+          alvo_id: string
+          ativo: boolean
+          avaliacao: number | null
+          avaliacoes: number | null
+          condicao: string
+          conferir: string[]
+          confirmado_em: string | null
+          dentro_do_teto: boolean
+          disponivel: boolean | null
+          fonte: string
+          frete_gratis: boolean
+          frete_texto: string | null
+          frete_valor: number | null
+          id: number
+          id_externo: string
+          imagem_url: string | null
+          motivos: string[]
+          preco: number
+          preco_min: number | null
+          preco_total: number | null
+          primeiro_visto_em: string
+          score: number
+          specs_lidas: Json
+          titulo: string
+          url: string
+          vendedor: string | null
+          visto_em: string
+        }
+        Insert: {
+          alvo_id: string
+          ativo?: boolean
+          avaliacao?: number | null
+          avaliacoes?: number | null
+          condicao?: string
+          conferir?: string[]
+          confirmado_em?: string | null
+          dentro_do_teto?: boolean
+          disponivel?: boolean | null
+          fonte: string
+          frete_gratis?: boolean
+          frete_texto?: string | null
+          frete_valor?: number | null
+          id?: number
+          id_externo: string
+          imagem_url?: string | null
+          motivos?: string[]
+          preco: number
+          preco_min?: number | null
+          preco_total?: number | null
+          primeiro_visto_em?: string
+          score?: number
+          specs_lidas?: Json
+          titulo: string
+          url: string
+          vendedor?: string | null
+          visto_em?: string
+        }
+        Update: {
+          alvo_id?: string
+          ativo?: boolean
+          avaliacao?: number | null
+          avaliacoes?: number | null
+          condicao?: string
+          conferir?: string[]
+          confirmado_em?: string | null
+          dentro_do_teto?: boolean
+          disponivel?: boolean | null
+          fonte?: string
+          frete_gratis?: boolean
+          frete_texto?: string | null
+          frete_valor?: number | null
+          id?: number
+          id_externo?: string
+          imagem_url?: string | null
+          motivos?: string[]
+          preco?: number
+          preco_min?: number | null
+          preco_total?: number | null
+          primeiro_visto_em?: string
+          score?: number
+          specs_lidas?: Json
+          titulo?: string
+          url?: string
+          vendedor?: string | null
+          visto_em?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "facilities_radar_ofertas_alvo_id_fkey"
+            columns: ["alvo_id"]
+            isOneToOne: false
+            referencedRelation: "facilities_radar_alvos"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      facilities_radar_precos: {
+        Row: {
+          coletado_em: string
+          id: number
+          oferta_id: number
+          preco: number
+        }
+        Insert: {
+          coletado_em?: string
+          id?: number
+          oferta_id: number
+          preco: number
+        }
+        Update: {
+          coletado_em?: string
+          id?: number
+          oferta_id?: number
+          preco?: number
+        }
+        Relationships: [
+          {
+            foreignKeyName: "facilities_radar_precos_oferta_id_fkey"
+            columns: ["oferta_id"]
+            isOneToOne: false
+            referencedRelation: "facilities_radar_ofertas"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       facilities_solicitacoes: {
         Row: {
           categoria: string | null
@@ -3414,6 +4063,195 @@ export type Database = {
           titulo?: string
           updated_at?: string
           valor?: number | null
+        }
+        Relationships: []
+      }
+      folha_ajustes_log: {
+        Row: {
+          campo: string
+          codigo_rh: string
+          de: number | null
+          de_texto: string | null
+          feito_em: string
+          feito_por: string | null
+          id: number
+          motivo: string | null
+          nome: string | null
+          para: number | null
+          para_texto: string | null
+          valor_rh: number | null
+        }
+        Insert: {
+          campo?: string
+          codigo_rh: string
+          de?: number | null
+          de_texto?: string | null
+          feito_em?: string
+          feito_por?: string | null
+          id?: number
+          motivo?: string | null
+          nome?: string | null
+          para?: number | null
+          para_texto?: string | null
+          valor_rh?: number | null
+        }
+        Update: {
+          campo?: string
+          codigo_rh?: string
+          de?: number | null
+          de_texto?: string | null
+          feito_em?: string
+          feito_por?: string | null
+          id?: number
+          motivo?: string | null
+          nome?: string | null
+          para?: number | null
+          para_texto?: string | null
+          valor_rh?: number | null
+        }
+        Relationships: []
+      }
+      folha_depara: {
+        Row: {
+          ajustado_em: string | null
+          ajustado_por: string | null
+          ajuste_motivo: string | null
+          atualizado_em: string
+          categoria_descricao: string | null
+          codigo_rh: string
+          confirmado_em: string | null
+          confirmado_por: string | null
+          criado_em: string
+          departamento: string | null
+          documento_ajustado: string | null
+          documento_ajustado_em: string | null
+          documento_motivo: string | null
+          documento_rh_no_ajuste: string | null
+          justificativa_ia: string | null
+          nome: string
+          origem: string
+          valor_ajustado: number | null
+          valor_referencia: number | null
+          valor_referencia_competencia: string | null
+          valor_rh_no_ajuste: number | null
+        }
+        Insert: {
+          ajustado_em?: string | null
+          ajustado_por?: string | null
+          ajuste_motivo?: string | null
+          atualizado_em?: string
+          categoria_descricao?: string | null
+          codigo_rh: string
+          confirmado_em?: string | null
+          confirmado_por?: string | null
+          criado_em?: string
+          departamento?: string | null
+          documento_ajustado?: string | null
+          documento_ajustado_em?: string | null
+          documento_motivo?: string | null
+          documento_rh_no_ajuste?: string | null
+          justificativa_ia?: string | null
+          nome: string
+          origem?: string
+          valor_ajustado?: number | null
+          valor_referencia?: number | null
+          valor_referencia_competencia?: string | null
+          valor_rh_no_ajuste?: number | null
+        }
+        Update: {
+          ajustado_em?: string | null
+          ajustado_por?: string | null
+          ajuste_motivo?: string | null
+          atualizado_em?: string
+          categoria_descricao?: string | null
+          codigo_rh?: string
+          confirmado_em?: string | null
+          confirmado_por?: string | null
+          criado_em?: string
+          departamento?: string | null
+          documento_ajustado?: string | null
+          documento_ajustado_em?: string | null
+          documento_motivo?: string | null
+          documento_rh_no_ajuste?: string | null
+          justificativa_ia?: string | null
+          nome?: string
+          origem?: string
+          valor_ajustado?: number | null
+          valor_referencia?: number | null
+          valor_referencia_competencia?: string | null
+          valor_rh_no_ajuste?: number | null
+        }
+        Relationships: []
+      }
+      folha_envios_omie: {
+        Row: {
+          atualizado_em: string
+          competencia: string
+          criado_em: string
+          enviado_em: string | null
+          enviado_por: string | null
+          estado: string
+          previsao_ajustada: string | null
+          previsao_motivo: string | null
+          resposta: Json | null
+          titulos: number
+          valor_total: number
+        }
+        Insert: {
+          atualizado_em?: string
+          competencia: string
+          criado_em?: string
+          enviado_em?: string | null
+          enviado_por?: string | null
+          estado?: string
+          previsao_ajustada?: string | null
+          previsao_motivo?: string | null
+          resposta?: Json | null
+          titulos?: number
+          valor_total?: number
+        }
+        Update: {
+          atualizado_em?: string
+          competencia?: string
+          criado_em?: string
+          enviado_em?: string | null
+          enviado_por?: string | null
+          estado?: string
+          previsao_ajustada?: string | null
+          previsao_motivo?: string | null
+          resposta?: Json | null
+          titulos?: number
+          valor_total?: number
+        }
+        Relationships: []
+      }
+      fornecedor_regra_nota: {
+        Row: {
+          criado_em: string
+          criado_por: string | null
+          doc: string
+          meses_depois: number
+          nome: string | null
+          observacao: string | null
+          regra: string
+        }
+        Insert: {
+          criado_em?: string
+          criado_por?: string | null
+          doc: string
+          meses_depois?: number
+          nome?: string | null
+          observacao?: string | null
+          regra: string
+        }
+        Update: {
+          criado_em?: string
+          criado_por?: string | null
+          doc?: string
+          meses_depois?: number
+          nome?: string | null
+          observacao?: string | null
+          regra?: string
         }
         Relationships: []
       }
@@ -3747,6 +4585,8 @@ export type Database = {
       lib_fornecedores: {
         Row: {
           apelido: string | null
+          apelido_em: string | null
+          apelido_por: string | null
           atualizado_em: string
           categoria: string | null
           categoria_omie_codigo: string | null
@@ -3772,6 +4612,7 @@ export type Database = {
           periodicidade: string | null
           permite_auto_lancamento: boolean
           prazo_pagamento_dias: number | null
+          revisar: boolean
           status: string
           tags: string[]
           updated_at: string
@@ -3780,6 +4621,8 @@ export type Database = {
         }
         Insert: {
           apelido?: string | null
+          apelido_em?: string | null
+          apelido_por?: string | null
           atualizado_em?: string
           categoria?: string | null
           categoria_omie_codigo?: string | null
@@ -3805,6 +4648,7 @@ export type Database = {
           periodicidade?: string | null
           permite_auto_lancamento?: boolean
           prazo_pagamento_dias?: number | null
+          revisar?: boolean
           status?: string
           tags?: string[]
           updated_at?: string
@@ -3813,6 +4657,8 @@ export type Database = {
         }
         Update: {
           apelido?: string | null
+          apelido_em?: string | null
+          apelido_por?: string | null
           atualizado_em?: string
           categoria?: string | null
           categoria_omie_codigo?: string | null
@@ -3838,6 +4684,7 @@ export type Database = {
           periodicidade?: string | null
           permite_auto_lancamento?: boolean
           prazo_pagamento_dias?: number | null
+          revisar?: boolean
           status?: string
           tags?: string[]
           updated_at?: string
@@ -4050,36 +4897,93 @@ export type Database = {
         }
         Relationships: []
       }
+      nf_cadastro_correcoes: {
+        Row: {
+          alvos: string[]
+          criado_em: string
+          doc: string
+          fonte: string | null
+          id: string
+          id_customer: string | null
+          ids_cobranca: string[] | null
+          n_cod_cli: number | null
+          nome: string | null
+          operador: string | null
+          origem: string
+          proposta: Json | null
+          resultado: Json | null
+        }
+        Insert: {
+          alvos: string[]
+          criado_em?: string
+          doc: string
+          fonte?: string | null
+          id?: string
+          id_customer?: string | null
+          ids_cobranca?: string[] | null
+          n_cod_cli?: number | null
+          nome?: string | null
+          operador?: string | null
+          origem?: string
+          proposta?: Json | null
+          resultado?: Json | null
+        }
+        Update: {
+          alvos?: string[]
+          criado_em?: string
+          doc?: string
+          fonte?: string | null
+          id?: string
+          id_customer?: string | null
+          ids_cobranca?: string[] | null
+          n_cod_cli?: number | null
+          nome?: string | null
+          operador?: string | null
+          origem?: string
+          proposta?: Json | null
+          resultado?: Json | null
+        }
+        Relationships: []
+      }
       nf_config: {
         Row: {
           atualizado_em: string
+          cadastro_auto: string
+          cadastro_auto_teto: number
           data_corte: string
           emissao_automatica: string
           etapa_faturamento: string
           etapa_isolamento: string
           id: number
+          paralelo_asaas: boolean
           teto_dia: number
           teto_lote: number
           teto_rodada: number
         }
         Insert: {
           atualizado_em?: string
+          cadastro_auto?: string
+          cadastro_auto_teto?: number
           data_corte?: string
           emissao_automatica?: string
           etapa_faturamento?: string
           etapa_isolamento?: string
           id?: number
+          paralelo_asaas?: boolean
           teto_dia?: number
           teto_lote?: number
           teto_rodada?: number
         }
         Update: {
           atualizado_em?: string
+          cadastro_auto?: string
+          cadastro_auto_teto?: number
           data_corte?: string
           emissao_automatica?: string
           etapa_faturamento?: string
           etapa_isolamento?: string
           id?: number
+          paralelo_asaas?: boolean
           teto_dia?: number
           teto_lote?: number
           teto_rodada?: number
@@ -4189,6 +5093,8 @@ export type Database = {
           dados: Json | null
           data_faturamento: string | null
           data_previsao: string | null
+          email_destino: string | null
+          email_envio: boolean | null
           etapa: string | null
           faturada: boolean
           n_cod_cli: number | null
@@ -4215,6 +5121,8 @@ export type Database = {
           dados?: Json | null
           data_faturamento?: string | null
           data_previsao?: string | null
+          email_destino?: string | null
+          email_envio?: boolean | null
           etapa?: string | null
           faturada?: boolean
           n_cod_cli?: number | null
@@ -4241,6 +5149,8 @@ export type Database = {
           dados?: Json | null
           data_faturamento?: string | null
           data_previsao?: string | null
+          email_destino?: string | null
+          email_envio?: boolean | null
           etapa?: string | null
           faturada?: boolean
           n_cod_cli?: number | null
@@ -4254,6 +5164,434 @@ export type Database = {
           nfse_xml?: string | null
           status_lido_em?: string | null
           valor?: number | null
+        }
+        Relationships: []
+      }
+      nfse_preparo_fila: {
+        Row: {
+          cobrancas: number | null
+          codigo: number | null
+          doc: string
+          falta: string | null
+          id_customer: string | null
+          montada_em: string
+          motivo: string | null
+          nome: string | null
+          situacao: string
+          tentativas: number
+          tratada_em: string | null
+          valor: number | null
+        }
+        Insert: {
+          cobrancas?: number | null
+          codigo?: number | null
+          doc: string
+          falta?: string | null
+          id_customer?: string | null
+          montada_em?: string
+          motivo?: string | null
+          nome?: string | null
+          situacao?: string
+          tentativas?: number
+          tratada_em?: string | null
+          valor?: number | null
+        }
+        Update: {
+          cobrancas?: number | null
+          codigo?: number | null
+          doc?: string
+          falta?: string | null
+          id_customer?: string | null
+          montada_em?: string
+          motivo?: string | null
+          nome?: string | null
+          situacao?: string
+          tentativas?: number
+          tratada_em?: string | null
+          valor?: number | null
+        }
+        Relationships: []
+      }
+      nota_fonte_bloqueada: {
+        Row: {
+          acao: string
+          criado_em: string
+          id: number
+          motivo: string
+          padrao_nome: string
+          resolvido_em: string | null
+        }
+        Insert: {
+          acao: string
+          criado_em?: string
+          id?: number
+          motivo: string
+          padrao_nome: string
+          resolvido_em?: string | null
+        }
+        Update: {
+          acao?: string
+          criado_em?: string
+          id?: number
+          motivo?: string
+          padrao_nome?: string
+          resolvido_em?: string | null
+        }
+        Relationships: []
+      }
+      notas_externas: {
+        Row: {
+          alvo_id_unico: string | null
+          alvo_manual: boolean
+          alvo_tipo: string | null
+          arquivo_bucket: string | null
+          arquivo_bytes: number | null
+          arquivo_em: string | null
+          arquivo_erro: string | null
+          atualizado_em: string
+          candidatos: Json | null
+          casamento: string | null
+          chave: string
+          chave_fiscal: string | null
+          cnpj: string | null
+          competencia: string | null
+          conferencia: string | null
+          conferido_em: string | null
+          confianca: string | null
+          copia_de: number | null
+          detalhe: string | null
+          diz_anexado: boolean
+          documento: string | null
+          drive_id: string | null
+          enviado_em: string | null
+          enviado_erp_em: string | null
+          erp_anexos: number | null
+          erro_erp: string | null
+          fila_erp: boolean
+          fonte: string
+          forma_pagamento: string | null
+          id: number
+          ignorado_em: string | null
+          ignorado_motivo: string | null
+          leitura_erro: string | null
+          lido_do_arquivo_em: string | null
+          linha: number | null
+          link: string
+          link_documento: string | null
+          moeda: string | null
+          nome: string | null
+          o_que_e: string | null
+          ordem: number
+          parece_nota: boolean | null
+          status_planilha: string | null
+          tem_arquivo: boolean
+          tipo_documento: string | null
+          valor: number | null
+          valor_moeda: number | null
+          valor_parcela: number | null
+          vencimento: string | null
+          visto_em: string
+        }
+        Insert: {
+          alvo_id_unico?: string | null
+          alvo_manual?: boolean
+          alvo_tipo?: string | null
+          arquivo_bucket?: string | null
+          arquivo_bytes?: number | null
+          arquivo_em?: string | null
+          arquivo_erro?: string | null
+          atualizado_em?: string
+          candidatos?: Json | null
+          casamento?: string | null
+          chave: string
+          chave_fiscal?: string | null
+          cnpj?: string | null
+          competencia?: string | null
+          conferencia?: string | null
+          conferido_em?: string | null
+          confianca?: string | null
+          copia_de?: number | null
+          detalhe?: string | null
+          diz_anexado?: boolean
+          documento?: string | null
+          drive_id?: string | null
+          enviado_em?: string | null
+          enviado_erp_em?: string | null
+          erp_anexos?: number | null
+          erro_erp?: string | null
+          fila_erp?: boolean
+          fonte: string
+          forma_pagamento?: string | null
+          id?: never
+          ignorado_em?: string | null
+          ignorado_motivo?: string | null
+          leitura_erro?: string | null
+          lido_do_arquivo_em?: string | null
+          linha?: number | null
+          link: string
+          link_documento?: string | null
+          moeda?: string | null
+          nome?: string | null
+          o_que_e?: string | null
+          ordem?: number
+          parece_nota?: boolean | null
+          status_planilha?: string | null
+          tem_arquivo?: boolean
+          tipo_documento?: string | null
+          valor?: number | null
+          valor_moeda?: number | null
+          valor_parcela?: number | null
+          vencimento?: string | null
+          visto_em?: string
+        }
+        Update: {
+          alvo_id_unico?: string | null
+          alvo_manual?: boolean
+          alvo_tipo?: string | null
+          arquivo_bucket?: string | null
+          arquivo_bytes?: number | null
+          arquivo_em?: string | null
+          arquivo_erro?: string | null
+          atualizado_em?: string
+          candidatos?: Json | null
+          casamento?: string | null
+          chave?: string
+          chave_fiscal?: string | null
+          cnpj?: string | null
+          competencia?: string | null
+          conferencia?: string | null
+          conferido_em?: string | null
+          confianca?: string | null
+          copia_de?: number | null
+          detalhe?: string | null
+          diz_anexado?: boolean
+          documento?: string | null
+          drive_id?: string | null
+          enviado_em?: string | null
+          enviado_erp_em?: string | null
+          erp_anexos?: number | null
+          erro_erp?: string | null
+          fila_erp?: boolean
+          fonte?: string
+          forma_pagamento?: string | null
+          id?: never
+          ignorado_em?: string | null
+          ignorado_motivo?: string | null
+          leitura_erro?: string | null
+          lido_do_arquivo_em?: string | null
+          linha?: number | null
+          link?: string
+          link_documento?: string | null
+          moeda?: string | null
+          nome?: string | null
+          o_que_e?: string | null
+          ordem?: number
+          parece_nota?: boolean | null
+          status_planilha?: string | null
+          tem_arquivo?: boolean
+          tipo_documento?: string | null
+          valor?: number | null
+          valor_moeda?: number | null
+          valor_parcela?: number | null
+          vencimento?: string | null
+          visto_em?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "notas_externas_copia_de_fkey"
+            columns: ["copia_de"]
+            isOneToOne: false
+            referencedRelation: "notas_externas"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      obra_match: {
+        Row: {
+          anexo_classe: string | null
+          anexos: number | null
+          categoria_codigo: string | null
+          cod_titulo: number | null
+          confianca: string | null
+          data_titulo: string | null
+          dif_dias: number | null
+          dif_valor: number | null
+          eh_cartao: boolean | null
+          escolhido: boolean | null
+          favorecido: string | null
+          motivo: string | null
+          n: number | null
+          prio: number | null
+          regra: string | null
+          sim_nome: number | null
+          valor_bate: boolean | null
+          valor_titulo: number | null
+          veredito: string | null
+        }
+        Insert: {
+          anexo_classe?: string | null
+          anexos?: number | null
+          categoria_codigo?: string | null
+          cod_titulo?: number | null
+          confianca?: string | null
+          data_titulo?: string | null
+          dif_dias?: number | null
+          dif_valor?: number | null
+          eh_cartao?: boolean | null
+          escolhido?: boolean | null
+          favorecido?: string | null
+          motivo?: string | null
+          n?: number | null
+          prio?: number | null
+          regra?: string | null
+          sim_nome?: number | null
+          valor_bate?: boolean | null
+          valor_titulo?: number | null
+          veredito?: string | null
+        }
+        Update: {
+          anexo_classe?: string | null
+          anexos?: number | null
+          categoria_codigo?: string | null
+          cod_titulo?: number | null
+          confianca?: string | null
+          data_titulo?: string | null
+          dif_dias?: number | null
+          dif_valor?: number | null
+          eh_cartao?: boolean | null
+          escolhido?: boolean | null
+          favorecido?: string | null
+          motivo?: string | null
+          n?: number | null
+          prio?: number | null
+          regra?: string | null
+          sim_nome?: number | null
+          valor_bate?: boolean | null
+          valor_titulo?: number | null
+          veredito?: string | null
+        }
+        Relationships: []
+      }
+      obra_notas_stage: {
+        Row: {
+          bytes: number | null
+          chave_fiscal: string | null
+          cnpj: string | null
+          copia_de: string | null
+          data: string | null
+          drive_id: string | null
+          drive_nome: string | null
+          drive_regra: string | null
+          emitente: string | null
+          lido_por: string | null
+          n: number
+          pasta_mes: string | null
+          rel: string | null
+          tipo: string | null
+          valor: number | null
+        }
+        Insert: {
+          bytes?: number | null
+          chave_fiscal?: string | null
+          cnpj?: string | null
+          copia_de?: string | null
+          data?: string | null
+          drive_id?: string | null
+          drive_nome?: string | null
+          drive_regra?: string | null
+          emitente?: string | null
+          lido_por?: string | null
+          n: number
+          pasta_mes?: string | null
+          rel?: string | null
+          tipo?: string | null
+          valor?: number | null
+        }
+        Update: {
+          bytes?: number | null
+          chave_fiscal?: string | null
+          cnpj?: string | null
+          copia_de?: string | null
+          data?: string | null
+          drive_id?: string | null
+          drive_nome?: string | null
+          drive_regra?: string | null
+          emitente?: string | null
+          lido_por?: string | null
+          n?: number
+          pasta_mes?: string | null
+          rel?: string | null
+          tipo?: string | null
+          valor?: number | null
+        }
+        Relationships: []
+      }
+      omie_anexo_envio_log: {
+        Row: {
+          arquivo: string | null
+          canal: string | null
+          cod_titulo: string | null
+          criado_em: string
+          id: number
+          motivo: string | null
+          origem: string
+          ref_id: string
+          resultado: string
+          rotulo: string | null
+        }
+        Insert: {
+          arquivo?: string | null
+          canal?: string | null
+          cod_titulo?: string | null
+          criado_em?: string
+          id?: number
+          motivo?: string | null
+          origem: string
+          ref_id: string
+          resultado: string
+          rotulo?: string | null
+        }
+        Update: {
+          arquivo?: string | null
+          canal?: string | null
+          cod_titulo?: string | null
+          criado_em?: string
+          id?: number
+          motivo?: string | null
+          origem?: string
+          ref_id?: string
+          resultado?: string
+          rotulo?: string | null
+        }
+        Relationships: []
+      }
+      omie_anexo_link: {
+        Row: {
+          cod_titulo: number
+          expira_em: string
+          id_anexo: string
+          lido_em: string
+          nome: string | null
+          tipo: string | null
+          url: string
+        }
+        Insert: {
+          cod_titulo: number
+          expira_em: string
+          id_anexo?: string
+          lido_em?: string
+          nome?: string | null
+          tipo?: string | null
+          url: string
+        }
+        Update: {
+          cod_titulo?: number
+          expira_em?: string
+          id_anexo?: string
+          lido_em?: string
+          nome?: string | null
+          tipo?: string | null
+          url?: string
         }
         Relationships: []
       }
@@ -4440,6 +5778,36 @@ export type Database = {
         }
         Relationships: []
       }
+      omie_categoria_regra: {
+        Row: {
+          atualizado_em: string
+          codigo: string
+          definido_por: string | null
+          descricao: string | null
+          motivo: string | null
+          origem: string
+          regra: string
+        }
+        Insert: {
+          atualizado_em?: string
+          codigo: string
+          definido_por?: string | null
+          descricao?: string | null
+          motivo?: string | null
+          origem?: string
+          regra?: string
+        }
+        Update: {
+          atualizado_em?: string
+          codigo?: string
+          definido_por?: string | null
+          descricao?: string | null
+          motivo?: string | null
+          origem?: string
+          regra?: string
+        }
+        Relationships: []
+      }
       omie_clientes_criados: {
         Row: {
           atualizado_em: string
@@ -4482,6 +5850,78 @@ export type Database = {
           payload?: Json | null
           situacao?: string
           tentativas?: number
+        }
+        Relationships: []
+      }
+      omie_clientes_endereco: {
+        Row: {
+          bairro: string | null
+          cep: string | null
+          cidade: string | null
+          cnpj_cpf: string | null
+          codigo: number
+          complemento: string | null
+          email: string | null
+          emitivel: boolean | null
+          endereco: string | null
+          endereco_numero: string | null
+          estado: string | null
+          lido_em: string
+          nome: string | null
+        }
+        Insert: {
+          bairro?: string | null
+          cep?: string | null
+          cidade?: string | null
+          cnpj_cpf?: string | null
+          codigo: number
+          complemento?: string | null
+          email?: string | null
+          emitivel?: boolean | null
+          endereco?: string | null
+          endereco_numero?: string | null
+          estado?: string | null
+          lido_em?: string
+          nome?: string | null
+        }
+        Update: {
+          bairro?: string | null
+          cep?: string | null
+          cidade?: string | null
+          cnpj_cpf?: string | null
+          codigo?: number
+          complemento?: string | null
+          email?: string | null
+          emitivel?: boolean | null
+          endereco?: string | null
+          endereco_numero?: string | null
+          estado?: string | null
+          lido_em?: string
+          nome?: string | null
+        }
+        Relationships: []
+      }
+      omie_clientes_endereco_cursor: {
+        Row: {
+          atualizado_em: string
+          concluido_em: string | null
+          id: number
+          pagina: number
+          total_paginas: number | null
+        }
+        Insert: {
+          atualizado_em?: string
+          concluido_em?: string | null
+          id?: number
+          pagina?: number
+          total_paginas?: number | null
+        }
+        Update: {
+          atualizado_em?: string
+          concluido_em?: string | null
+          id?: number
+          pagina?: number
+          total_paginas?: number | null
         }
         Relationships: []
       }
@@ -4698,6 +6138,99 @@ export type Database = {
           periodo_ate?: string | null
           periodo_de?: string | null
           status?: string
+        }
+        Relationships: []
+      }
+      omie_titulo_anexo: {
+        Row: {
+          anexos: Json
+          c_tabela: string | null
+          classe: string | null
+          cod_titulo: number
+          erro: string | null
+          ia_arquivo: string | null
+          ia_conferido_em: string | null
+          ia_leitura: Json | null
+          ia_motivo: string | null
+          ia_veredito: string | null
+          lido_em: string
+          parece_nota: boolean | null
+          qtd: number
+          retentar: boolean
+          revisado_em: string | null
+          revisado_por: string | null
+          revisao: string | null
+        }
+        Insert: {
+          anexos?: Json
+          c_tabela?: string | null
+          classe?: string | null
+          cod_titulo: number
+          erro?: string | null
+          ia_arquivo?: string | null
+          ia_conferido_em?: string | null
+          ia_leitura?: Json | null
+          ia_motivo?: string | null
+          ia_veredito?: string | null
+          lido_em?: string
+          parece_nota?: boolean | null
+          qtd?: number
+          retentar?: boolean
+          revisado_em?: string | null
+          revisado_por?: string | null
+          revisao?: string | null
+        }
+        Update: {
+          anexos?: Json
+          c_tabela?: string | null
+          classe?: string | null
+          cod_titulo?: number
+          erro?: string | null
+          ia_arquivo?: string | null
+          ia_conferido_em?: string | null
+          ia_leitura?: Json | null
+          ia_motivo?: string | null
+          ia_veredito?: string | null
+          lido_em?: string
+          parece_nota?: boolean | null
+          qtd?: number
+          retentar?: boolean
+          revisado_em?: string | null
+          revisado_por?: string | null
+          revisao?: string | null
+        }
+        Relationships: []
+      }
+      omie_titulo_nome_cartao: {
+        Row: {
+          atualizado_em: string
+          cod_titulo: number
+          documento: string | null
+          erro: string | null
+          escrito_em: string | null
+          lojista: string | null
+          origem: string | null
+          tentativas: number
+        }
+        Insert: {
+          atualizado_em?: string
+          cod_titulo: number
+          documento?: string | null
+          erro?: string | null
+          escrito_em?: string | null
+          lojista?: string | null
+          origem?: string | null
+          tentativas?: number
+        }
+        Update: {
+          atualizado_em?: string
+          cod_titulo?: number
+          documento?: string | null
+          erro?: string | null
+          escrito_em?: string | null
+          lojista?: string | null
+          origem?: string | null
+          tentativas?: number
         }
         Relationships: []
       }
@@ -7245,6 +8778,50 @@ export type Database = {
         }
         Relationships: []
       }
+      cap_titulos: {
+        Row: {
+          anexo_classe: string | null
+          anexo_lido_em: string | null
+          anexo_revisao: string | null
+          anexos: Json | null
+          anexos_no_erp: number | null
+          categoria: string | null
+          categoria_codigo: string | null
+          cod_cliente: string | null
+          cod_titulo: number | null
+          competencia: string | null
+          conta: string | null
+          conta_codigo: string | null
+          doc: string | null
+          documento: string | null
+          emissao: string | null
+          enviado_em: string | null
+          erro_leitura: string | null
+          favorecido: string | null
+          favorecido_cru: string | null
+          gravidade: string | null
+          nf_no_campo: string | null
+          nota_no_hub: string | null
+          pagamento: string | null
+          parcela: string | null
+          regra: string | null
+          situacao: string | null
+          status: string | null
+          tem_apelido: boolean | null
+          valor: number | null
+          vencimento: string | null
+        }
+        Relationships: []
+      }
+      contraparte_apelido: {
+        Row: {
+          apelido: string | null
+          chave: string | null
+          nome: string | null
+          via: string | null
+        }
+        Relationships: []
+      }
       contrapartes_pessoas: {
         Row: {
           documento: string | null
@@ -7289,6 +8866,16 @@ export type Database = {
             referencedColumns: ["id"]
           },
         ]
+      }
+      omie_anexo_quarentena: {
+        Row: {
+          cod_titulo: string | null
+          erros: number | null
+          tentativas: number | null
+          ultima_tentativa: string | null
+          ultimo_motivo: string | null
+        }
+        Relationships: []
       }
       vw_agente_saude: {
         Row: {
@@ -7361,6 +8948,33 @@ export type Database = {
       }
     }
     Functions: {
+      aceita_recibo_do_app: { Args: { nome: string }; Returns: boolean }
+      anexo_classe: { Args: { p_nome: string }; Returns: string }
+      anexo_triagem_desfazer: { Args: { p_desde?: string }; Returns: number }
+      anexo_triagem_fila: {
+        Args: { p_limite?: number }
+        Returns: {
+          c_tabela: string
+          categoria: string
+          cod_titulo: number
+          competencia: string
+          favorecido: string
+          id_anexo: string
+          nome: string
+          valor: number
+        }[]
+      }
+      anexo_triagem_fila_total: { Args: never; Returns: number }
+      anexo_triagem_gravar: {
+        Args: {
+          p_arquivo: string
+          p_cod_titulo: number
+          p_leitura: Json
+          p_motivo: string
+          p_veredito: string
+        }
+        Returns: undefined
+      }
       append_trilha_e_status: {
         Args: { p_evento: Json; p_id_unico: string; p_status: string }
         Returns: undefined
@@ -7404,6 +9018,14 @@ export type Database = {
             }
             Returns: string
           }
+      asaas_assinaturas_a_sondar: {
+        Args: { p_limite?: number }
+        Returns: {
+          assinatura: string
+          cobrancas: number
+          ultima: string
+        }[]
+      }
       asaas_entradas_projetadas: {
         Args: { p_ate: string; p_de: string }
         Returns: {
@@ -7417,6 +9039,20 @@ export type Database = {
       asaas_metricas: { Args: { p_referencia: string }; Returns: Json }
       asaas_prazo_credito: { Args: { p_forma: string }; Returns: number }
       auditoria_compras: { Args: never; Returns: Json }
+      auditoria_envio_quase_la: {
+        Args: { p_limite?: number }
+        Returns: {
+          competencia: string
+          falta: string
+          ja_enviado: boolean
+          origem: string
+          ref_id: string
+          rotulo: string
+          tem_comprovante: boolean
+          tem_titulo: boolean
+          valor: number
+        }[]
+      }
       auditoria_lojistas: { Args: never; Returns: Json }
       automacao_criar_tarefa: {
         Args: {
@@ -7465,6 +9101,85 @@ export type Database = {
           valor: number
         }[]
       }
+      cambio_do_dia: {
+        Args: { p_data: string; p_moeda?: string }
+        Returns: number
+      }
+      cap_anexo_revisar: {
+        Args: { p_cod_titulo: number; p_veredito: string }
+        Returns: string
+      }
+      cap_anexos_fila: {
+        Args: { p_limite?: number }
+        Returns: {
+          cod_titulo: number
+          competencia: string
+          situacao: string
+          valor: number
+        }[]
+      }
+      cap_anexos_fila_total: { Args: never; Returns: number }
+      cap_gravidade: { Args: { p_valor: number }; Returns: string }
+      cap_notas_diagnostico: {
+        Args: { p_ate?: string; p_de?: string }
+        Returns: Json
+      }
+      cap_notas_facetas: {
+        Args: { p_ate: string; p_de: string }
+        Returns: Json
+      }
+      cap_notas_resumo: { Args: { p_ate: string; p_de: string }; Returns: Json }
+      cap_notas_titulos: {
+        Args: {
+          p_ate: string
+          p_busca?: string
+          p_categoria?: string
+          p_categorias?: string[]
+          p_conta?: string
+          p_contas?: string[]
+          p_de: string
+          p_gravidades?: string[]
+          p_limite?: number
+          p_mes_ate?: string
+          p_mes_de?: string
+          p_offset?: number
+          p_situacoes?: string[]
+          p_valor_max?: number
+          p_valor_min?: number
+        }
+        Returns: {
+          anexo_classe: string
+          anexo_lido_em: string
+          anexo_revisao: string
+          anexos: Json
+          anexos_no_erp: number
+          categoria: string
+          categoria_codigo: string
+          cod_titulo: number
+          competencia: string
+          conta: string
+          doc: string
+          documento: string
+          enviado_em: string
+          erro_leitura: string
+          favorecido: string
+          favorecido_cru: string
+          gravidade: string
+          nf_no_campo: string
+          nota_no_hub: string
+          observacao: string
+          pagamento: string
+          situacao: string
+          tem_apelido: boolean
+          total_geral: number
+          valor: number
+          vencimento: string
+        }[]
+      }
+      cap_regra_sugerida: {
+        Args: { p_codigo: string; p_descricao: string }
+        Returns: string
+      }
       cartao_importar: { Args: { p_payload: Json }; Returns: Json }
       cartao_marcar: {
         Args: {
@@ -7473,6 +9188,30 @@ export type Database = {
           p_nota?: string
         }
         Returns: undefined
+      }
+      cartao_nome_fila: {
+        Args: { p_limite?: number }
+        Returns: {
+          cod_titulo: number
+          competencia: string
+          documento_atual: string
+          favorecido_cru: string
+          observacao: string
+          valor: number
+        }[]
+      }
+      cartao_omie_map_gravar: { Args: { p_itens: Json }; Returns: Json }
+      cartao_omie_titulos: {
+        Args: { p_ate: string; p_de: string }
+        Returns: {
+          cod_titulo: string
+          codigo_categoria: string
+          contraparte: string
+          data: string
+          descricao_categoria: string
+          documento: string
+          valor: number
+        }[]
       }
       cartao_recomendacao_decidir: {
         Args: { p_id: string; p_status?: string; p_texto?: string }
@@ -7487,6 +9226,23 @@ export type Database = {
       comentar_nota_publica: {
         Args: { p_autor: string; p_texto: string; p_token: string }
         Returns: Json
+      }
+      contraparte_apelido_de: {
+        Args: { p_nomes: string[] }
+        Returns: {
+          apelido: string
+          nome: string
+        }[]
+      }
+      contraparte_chave: { Args: { p_nome: string }; Returns: string }
+      contrapartes_por_documento: {
+        Args: { p_docs: string[] }
+        Returns: {
+          aproximado: boolean
+          doc: string
+          fonte: string
+          nome: string
+        }[]
       }
       criar_token_e_registrar: {
         Args: {
@@ -7618,6 +9374,7 @@ export type Database = {
           valor_lancamento: number
         }[]
       }
+      eh_cartao: { Args: { p_contraparte: string }; Returns: boolean }
       estornos_chave: { Args: { t: string }; Returns: string }
       estornos_conciliar: { Args: never; Returns: Json }
       estornos_motivo_descarta: { Args: { t: string }; Returns: boolean }
@@ -7651,6 +9408,27 @@ export type Database = {
           qtd_nao_classificado: number
           qtd_parciais: number
           qtd_pendente: number
+        }[]
+      }
+      extrato_comparativo: {
+        Args: { p_fonte: string; p_mes: string }
+        Returns: Json
+      }
+      facilities_aplicar_titulo: {
+        Args: { p_compra_id?: string; p_limite?: number; p_so_exata?: boolean }
+        Returns: number
+      }
+      facilities_casar_titulo: {
+        Args: { p_compra_id?: string; p_limite?: number }
+        Returns: {
+          candidatos: number
+          cod_titulo: number
+          compra_id: string
+          confianca: string
+          data: string
+          favorecido: string
+          item: string
+          valor: number
         }[]
       }
       facilities_nf_aplicar: {
@@ -7758,6 +9536,48 @@ export type Database = {
           score: number
         }[]
       }
+      facilities_radar_agenda: {
+        Args: never
+        Returns: {
+          acao: string
+          job: string
+          proxima: string
+        }[]
+      }
+      facilities_radar_historico: {
+        Args: { p_alvo_id: string; p_dias?: number }
+        Returns: {
+          dia: string
+          mediana: number
+          menor: number
+          menor_no_teto: number
+          ofertas: number
+        }[]
+      }
+      facilities_radar_historico_oferta: {
+        Args: { p_dias?: number; p_oferta_id: number }
+        Returns: {
+          dia: string
+          preco: number
+        }[]
+      }
+      facilities_radar_painel: {
+        Args: never
+        Returns: {
+          alertas_novos: number
+          alvo: Json
+          economia_aberta: number
+          economia_realizada: number
+          melhor: Json
+          menor_fora_do_teto: number
+          ofertas_ativas: number
+          pontos_historico: number
+        }[]
+      }
+      facilities_radar_virar_cotacao: {
+        Args: { p_alerta_id: number; p_quem?: string }
+        Returns: Json
+      }
       fmt_brl: { Args: { v: number }; Returns: string }
       fn_classifica_texto: {
         Args: { p_texto: string }
@@ -7822,6 +9642,20 @@ export type Database = {
         }
         Returns: string
       }
+      nf_cadastros_a_corrigir: {
+        Args: { p_limite?: number }
+        Returns: {
+          doc: string
+          id_customer: string
+          ids: string[]
+          motivo: string
+          n_cod_cli: number
+          nome: string
+          os_faturada: boolean
+          tentativas: number
+          ultima_recusa: string
+        }[]
+      }
       nfse_bloqueio_emissao: {
         Args: {
           p_dados?: Json
@@ -7830,7 +9664,169 @@ export type Database = {
         }
         Returns: string
       }
+      nfse_cadastros_a_preparar: {
+        Args: { p_desde?: string; p_limite?: number }
+        Returns: {
+          cobrancas: number
+          codigo: number
+          doc: string
+          falta: string
+          id_customer: string
+          nome: string
+          valor_ultimos_meses: number
+        }[]
+      }
+      nfse_preparo_montar: { Args: { p_desde?: string }; Returns: number }
       normaliza_nome: { Args: { p_nome: string }; Returns: string }
+      nota_fonte_do_titulo: {
+        Args: { p_cod: string }
+        Returns: {
+          fonte: string
+          link: string
+          nome: string
+        }[]
+      }
+      nota_propagar: { Args: { p_cod: string }; Returns: Json }
+      nota_propagar_tudo: { Args: { p_limite?: number }; Returns: Json }
+      notas_externas_acervo: {
+        Args: {
+          p_alvo?: string
+          p_ate?: string
+          p_busca?: string
+          p_de?: string
+          p_fonte?: string
+          p_limite?: number
+          p_offset?: number
+          p_ordem?: string
+          p_situacao?: string
+          p_valor_max?: number
+          p_valor_min?: number
+        }
+        Returns: {
+          alvo_categoria: string
+          alvo_cod_titulo: string
+          alvo_data: string
+          alvo_id_unico: string
+          alvo_manual: boolean
+          alvo_nome: string
+          alvo_situacao: string
+          alvo_tipo: string
+          alvo_valor: number
+          arquivo_bucket: string
+          candidatos: Json
+          casamento: string
+          chave_fiscal: string
+          cnpj: string
+          competencia: string
+          conferencia: string
+          confianca: string
+          detalhe: string
+          diz_anexado: boolean
+          enviado_em: string
+          enviado_erp_em: string
+          erro_erp: string
+          fila_erp: boolean
+          fonte: string
+          id: number
+          linha: number
+          link: string
+          nome: string
+          o_que_e: string
+          parece_nota: boolean
+          status_planilha: string
+          tem_arquivo: boolean
+          tipo_documento: string
+          total: number
+          valor: number
+        }[]
+      }
+      notas_externas_acervo_resumo: { Args: never; Returns: Json }
+      notas_externas_achados: {
+        Args: { p_conferencia?: string; p_limite?: number }
+        Returns: {
+          alvo_data: string
+          alvo_favorecido: string
+          alvo_id_unico: string
+          alvo_tipo: string
+          alvo_valor: number
+          candidatos: Json
+          casamento: string
+          cnpj: string
+          competencia: string
+          conferencia: string
+          confianca: string
+          diz_anexado: boolean
+          enviado_em: string
+          enviado_erp_em: string
+          erro_erp: string
+          fila_erp: boolean
+          fonte: string
+          id: number
+          linha: number
+          link: string
+          nome: string
+          o_que_e: string
+          status_planilha: string
+          valor: number
+        }[]
+      }
+      notas_externas_arquivo_resumo: { Args: never; Returns: Json }
+      notas_externas_casar: { Args: never; Returns: Json }
+      notas_externas_confirmar: { Args: { p_ids: number[] }; Returns: number }
+      notas_externas_definir_alvo: {
+        Args: { p_alvo_id_unico: string; p_alvo_tipo: string; p_id: number }
+        Returns: undefined
+      }
+      notas_externas_do_drive: { Args: never; Returns: number }
+      notas_externas_enfileirar: { Args: { p_ids: number[] }; Returns: number }
+      notas_externas_enfileirar_automatico: {
+        Args: { p_limite?: number }
+        Returns: Json
+      }
+      notas_externas_ignorar: {
+        Args: { p_id: number; p_motivo?: string }
+        Returns: undefined
+      }
+      notas_externas_marcar_copias: { Args: never; Returns: number }
+      notas_externas_para_arquivar: {
+        Args: { p_limite?: number }
+        Returns: {
+          enviado_em: string
+          fonte: string
+          id: number
+          link: string
+          nome: string
+        }[]
+      }
+      notas_externas_por_alvo: {
+        Args: { p_alvo_tipo?: string; p_referencia?: string }
+        Returns: {
+          alvo_id_unico: string
+          casamento: string
+          chave_fiscal: string
+          competencia: string
+          conferencia: string
+          confianca: string
+          detalhe: string
+          diz_anexado: boolean
+          drive_id: string
+          enviado_em: string
+          enviado_erp_em: string
+          erp_anexos: number
+          erro_erp: string
+          fila_erp: boolean
+          fonte: string
+          link: string
+          nome: string
+          nota_id: number
+          o_que_e: string
+          parece_nota: boolean
+          status_planilha: string
+          tem_arquivo: boolean
+          tipo_documento: string
+          valor: number
+        }[]
+      }
       notas_fiscais_auditoria: {
         Args: { p_ate: string; p_de: string }
         Returns: Json
@@ -7918,6 +9914,15 @@ export type Database = {
       notas_fiscais_resumo: {
         Args: { p_ate: string; p_de: string }
         Returns: Json
+      }
+      omie_anexo_link_fila: {
+        Args: { p_limite?: number }
+        Returns: {
+          c_tabela: string
+          cod_titulo: number
+          id_anexo: string
+          nome: string
+        }[]
       }
       omie_cache_trocar_categoria: {
         Args: { p_cod_titulo: string; p_codigo: string }
@@ -8125,6 +10130,7 @@ export type Database = {
           memo: string
         }[]
       }
+      token_forte_em_comum: { Args: { a: string; b: string }; Returns: boolean }
       unaccent: { Args: { "": string }; Returns: string }
       validar_token_para_id_unico: {
         Args: { p_id_unico: string; p_token: string }
@@ -8258,6 +10264,9 @@ export type CompositeTypes<
     : never
 
 export const Constants = {
+  graphql_public: {
+    Enums: {},
+  },
   public: {
     Enums: {},
   },

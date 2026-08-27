@@ -600,21 +600,31 @@ async function lerTitulosDaJanela(de: string, ate: string): Promise<TituloOmie[]
   return out;
 }
 
-/** Os títulos que JÁ receberam a nota pelo Hub, com de onde veio o arquivo. */
+/**
+ * Os títulos que JÁ receberam a nota pelo Hub, com de onde veio o arquivo.
+ *
+ * SÃO CINCO ORIGENS, E ESQUECER UMA É INVISÍVEL. A primeira versão desta função
+ * olhava só Auditoria, Cartão e Facilities, e a varredura devolveu 186 títulos
+ * com ar de resposta completa. Faltavam 370: o acervo do Drive (17) e as notas
+ * de planilha (353) — e destas, 183 são `alvo_tipo = 'erp'`, que é justamente o
+ * módulo Notas no ERP. Nada acusava a falta: a rodada terminava "ok".
+ *
+ * A lista aqui espelha, de propósito, as mesmas origens que `pendentes()` já
+ * varre logo acima. Quando uma nova fonte de nota entrar lá, tem de entrar aqui
+ * — senão as parcelas daquela fonte ficam sem documento e ninguém percebe.
+ */
 async function origensComNota(supabase: any, limite: number): Promise<Array<{ cod: number; comprovante: string; rotulo: string }>> {
   const out: Array<{ cod: number; comprovante: string; rotulo: string }> = [];
   const visto = new Set<number>();
-  const junta = (linhas: any[], campoArquivo: string, campoRotulo: string) => {
-    for (const l of linhas ?? []) {
-      const cod = Number(l.omie_cod_titulo);
-      const arq = l[campoArquivo] ?? l.link_comprovante ?? null;
-      if (!cod || !arq || visto.has(cod)) continue;
-      visto.add(cod);
-      out.push({ cod, comprovante: String(arq), rotulo: String(l[campoRotulo] ?? cod) });
-    }
+  const juntar = (cod: unknown, arquivo: unknown, rotulo: unknown) => {
+    const n = Number(cod);
+    const arq = String(arquivo ?? "").trim();
+    if (!n || !arq || visto.has(n)) return;
+    visto.add(n);
+    out.push({ cod: n, comprovante: arq, rotulo: String(rotulo ?? n) });
   };
 
-  const [a, c, f] = await Promise.all([
+  const [a, c, f, d, p] = await Promise.all([
     supabase.from("auditoria")
       .select("omie_cod_titulo, link_comprovante, titulo")
       .not("omie_cod_titulo", "is", null).not("omie_anexo_enviado_em", "is", null)
@@ -625,11 +635,43 @@ async function origensComNota(supabase: any, limite: number): Promise<Array<{ co
     supabase.from("facilities_compras")
       .select("omie_cod_titulo, nf_arquivo, item")
       .not("omie_cod_titulo", "is", null).not("nf_arquivo", "is", null).limit(limite),
+    supabase.from("comprovantes_drive")
+      .select("drive_id, nome_arquivo, emitente, cod_titulo")
+      .not("cod_titulo", "is", null).neq("cod_titulo", "")
+      .not("omie_anexo_enviado_em", "is", null).limit(limite),
+    supabase.from("notas_externas")
+      .select("id, fonte, linha, nome, o_que_e, link, alvo_tipo, alvo_id_unico")
+      .not("enviado_erp_em", "is", null).not("alvo_tipo", "is", null)
+      .not("link", "is", null).limit(limite),
   ]);
 
-  junta(a.data, "link_comprovante", "titulo");
-  junta(c.data, "arquivo_comprovante", "estabelecimento");
-  junta(f.data, "nf_arquivo", "item");
+  for (const l of a.data ?? []) juntar(l.omie_cod_titulo, l.link_comprovante, l.titulo);
+  for (const l of c.data ?? []) juntar(l.omie_cod_titulo, l.arquivo_comprovante ?? l.link_comprovante, l.estabelecimento);
+  for (const l of f.data ?? []) juntar(l.omie_cod_titulo, l.nf_arquivo, l.item);
+  for (const l of d.data ?? []) {
+    juntar(l.cod_titulo, `https://drive.google.com/file/d/${l.drive_id}/view`, l.emitente || l.nome_arquivo);
+  }
+
+  /* Nas notas de planilha, o título só é o `alvo_id_unico` quando o alvo é
+     'erp' ou 'pix' — lá o alvo JÁ É um título do contas a pagar. No 'cartao' o
+     id é do lançamento e precisa da tradução, exatamente como em `pendentes()`. */
+  const notas = p.data ?? [];
+  const doCartao = notas.filter((n: any) => n.alvo_tipo === "cartao").map((n: any) => n.alvo_id_unico);
+  const titulosDoCartao = new Map<string, string>();
+  if (doCartao.length) {
+    const { data: cars } = await supabase.from("auditoria_cartao_lancamentos")
+      .select("id_unico, omie_cod_titulo").in("id_unico", doCartao)
+      .not("omie_cod_titulo", "is", null);
+    for (const cc of cars ?? []) titulosDoCartao.set(String(cc.id_unico), String(cc.omie_cod_titulo));
+  }
+  for (const n of notas) {
+    const cod = (n.alvo_tipo === "pix" || n.alvo_tipo === "erp")
+      ? String(n.alvo_id_unico ?? "")
+      : (titulosDoCartao.get(String(n.alvo_id_unico)) ?? "");
+    if (!/^\d+$/.test(cod)) continue;
+    juntar(cod, n.link, `${n.nome || n.o_que_e || "nota"} · ${n.fonte}`);
+  }
+
   return out;
 }
 

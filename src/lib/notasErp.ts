@@ -19,6 +19,7 @@ export type SituacaoTitulo =
   | "com_nota"
   | "anexo_suspeito"
   | "pronta_para_enviar"
+  | "espera_confirmacao"
   | "enviado_aguardando"
   | "sem_nota"
   | "erro_leitura"
@@ -146,6 +147,10 @@ export const SITUACAO: Record<SituacaoTitulo, {
     rotulo: "Pronta para subir", tom: "atencao",
     ajuda: "O Hub TEM o arquivo da nota e o ERP não. Não é tarefa de ninguém: a varredura de envio roda de 15 em 15 minutos e leva. Se uma linha ficar parada aqui, o motivo está em \"Falta um passo\".",
   },
+  espera_confirmacao: {
+    rotulo: "Achada — falta você confirmar", tom: "atencao",
+    ajuda: "O Hub encontrou a nota e ligou a este título por evidência média — valor e data batem, mas o CNPJ não estava no papel para provar. Ela NÃO sobe sozinha: um clique em \"é esta\" a manda ao ERP. É o único estado em que a nota existe e está parada esperando gente.",
+  },
   enviado_aguardando: {
     rotulo: "Subiu — conferindo no ERP", tom: "neutro",
     ajuda: "O Hub já mandou o arquivo e o Omie ainda não foi perguntado depois disso. Não conta como cobertura (só o ERP confirma) e não é tarefa de ninguém: a próxima varredura resolve.",
@@ -184,8 +189,8 @@ export const GRAVIDADES: Gravidade[] = ["urgente", "grave", "medio", "irrelevant
 
 /** As situações que entram na conta de cobertura. */
 export const SITUACOES_EXIGIVEIS: SituacaoTitulo[] = [
-  "com_nota", "anexo_suspeito", "pronta_para_enviar", "enviado_aguardando",
-  "sem_nota", "erro_leitura", "nao_verificado",
+  "com_nota", "anexo_suspeito", "pronta_para_enviar", "espera_confirmacao",
+  "enviado_aguardando", "sem_nota", "erro_leitura", "nao_verificado",
 ];
 
 /**
@@ -200,8 +205,15 @@ export const SITUACOES_EXIGIVEIS: SituacaoTitulo[] = [
  *
  * Continuam visíveis: como cartão no painel, como filtro que se pode marcar, e
  * em "Falta um passo" quando emperram.
+ *
+ * `espera_confirmacao` ENTRA aqui, e pelo motivo oposto ao dos dois de cima: a
+ * nota existe, está na mão do Hub, e nenhuma varredura vai levá-la — ela espera
+ * um clique de gente e mais nada. Deixá-la fora do filtro inicial seria a mesma
+ * coisa que escondê-la para sempre.
  */
-export const SITUACOES_FALTANDO: SituacaoTitulo[] = ["sem_nota", "anexo_suspeito"];
+export const SITUACOES_FALTANDO: SituacaoTitulo[] = [
+  "sem_nota", "anexo_suspeito", "espera_confirmacao",
+];
 
 /**
  * O que é nosso e anda sozinho — a fila de envio e a releitura do ERP. Existe
@@ -293,14 +305,19 @@ export function frasePanorama(r: ResumoNotas | null): string {
  * Usada na barra do mês e na do total — a mesma conta nos dois lugares.
  */
 export function fatias(v: {
-  com_nota: number; pronta: number; sem_nota: number; nao_verificado: number; total: number;
-}): { com_nota: number; pronta: number; sem_nota: number; nao_verificado: number } {
+  com_nota: number; pronta: number; espera?: number; sem_nota: number;
+  nao_verificado: number; total: number;
+}): { com_nota: number; pronta: number; espera: number; sem_nota: number; nao_verificado: number } {
   const t = v.total || 0;
-  if (t <= 0) return { com_nota: 0, pronta: 0, sem_nota: 0, nao_verificado: 0 };
+  if (t <= 0) return { com_nota: 0, pronta: 0, espera: 0, sem_nota: 0, nao_verificado: 0 };
   const p = (n: number) => (100 * (n || 0)) / t;
   return {
     com_nota: p(v.com_nota),
     pronta: p(v.pronta),
+    /* Fatia própria porque é o único pedaço da barra que depende de uma PESSOA.
+       Somada à amarela ("o Hub leva sozinho") ela ficaria escondida atrás de uma
+       promessa que ninguém vai cumprir — a nota está achada e parada. */
+    espera: p(v.espera ?? 0),
     sem_nota: p(v.sem_nota),
     nao_verificado: p(v.nao_verificado),
   };

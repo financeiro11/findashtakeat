@@ -63,6 +63,22 @@ function prompt(sinal: Record<string, unknown>): string {
     "`acervo_sem_dono` é o outro lado do problema: nota com arquivo que não achou",
     "título. `leitura` mostra o que a esteira ainda não conseguiu ler.",
     "",
+    /* A COTAÇÃO DO LOTE precisa de tradução, senão vira número solto no texto.
+       O leitor não quer saber que existe uma taxa de 5,0742; quer saber que os
+       seis títulos são uma fatura de cartão só e que por isso as invoices de
+       meses diferentes puderam ser separadas uma a uma. */
+    "`cambio_lote` é como o Hub separou invoice estrangeira de título quando",
+    "várias caíram na MESMA fatura de cartão: a fatura converte tudo pela mesma",
+    "cotação, então `título ÷ invoice` dá o mesmo número para todos os pares",
+    "certos. `titulos_corroborando` é quantos títulos concordam com aquela",
+    "cotação e `espalhamento_pct` é a distância entre o maior e o menor — abaixo",
+    "de 0,1% é praticamente prova. `por_soma_de_duas` conta as NOTAS que só",
+    "fecharam somando DUAS invoices, que é o pagamento atrasado juntando dois",
+    "meses; essas NÃO sobem sozinhas e esperam alguém confirmar.",
+    "Quando houver lote, diga em uma frase quantos títulos ele explicou, e o",
+    "número para isso é `titulos_explicados` — `notas_casadas` conta NOTAS, e um",
+    "título pode ter fechado com duas.",
+    "",
     "JSON:",
     JSON.stringify(sinal),
   ].join("\n");

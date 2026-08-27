@@ -52,13 +52,37 @@ describe("frasePanorama", () => {
 
 describe("fatias", () => {
   it("reparte a barra em percentuais que somam 100", () => {
-    const f = fatias({ com_nota: 25, pronta: 25, sem_nota: 25, nao_verificado: 25, total: 100 });
-    expect(f).toEqual({ com_nota: 25, pronta: 25, sem_nota: 25, nao_verificado: 25 });
+    const f = fatias({ com_nota: 20, pronta: 20, espera: 20, sem_nota: 20, nao_verificado: 20, total: 100 });
+    expect(f).toEqual({ com_nota: 20, pronta: 20, espera: 20, sem_nota: 20, nao_verificado: 20 });
   });
 
   it("não divide por zero", () => {
-    expect(fatias({ com_nota: 0, pronta: 0, sem_nota: 0, nao_verificado: 0, total: 0 }))
-      .toEqual({ com_nota: 0, pronta: 0, sem_nota: 0, nao_verificado: 0 });
+    expect(fatias({ com_nota: 0, pronta: 0, espera: 0, sem_nota: 0, nao_verificado: 0, total: 0 }))
+      .toEqual({ com_nota: 0, pronta: 0, espera: 0, sem_nota: 0, nao_verificado: 0 });
+  });
+
+  /* `espera` nasceu depois das outras quatro; quem chama sem ela não deve ver a
+     barra encolher. */
+  it("aceita chamada sem a fatia nova", () => {
+    const f = fatias({ com_nota: 50, pronta: 25, sem_nota: 25, nao_verificado: 0, total: 100 });
+    expect(f.espera).toBe(0);
+    expect(f.com_nota + f.pronta + f.sem_nota).toBe(100);
+  });
+});
+
+describe("vocabulário das situações", () => {
+  /* Uma situação que o banco devolve e a tela não conhece vira `undefined` no
+     `SITUACAO[...]` e derruba a linha inteira. */
+  it("toda situação exigível tem rótulo e ajuda", () => {
+    for (const s of SITUACOES_EXIGIVEIS) {
+      expect(SITUACAO[s]?.rotulo, s).toBeTruthy();
+      expect(SITUACAO[s]?.ajuda, s).toBeTruthy();
+    }
+  });
+
+  it("espera_confirmacao é trabalho de gente, não da varredura", () => {
+    expect(SITUACOES_FALTANDO).toContain("espera_confirmacao");
+    expect(SITUACOES_NOSSAS).not.toContain("espera_confirmacao");
   });
 });
 
@@ -223,7 +247,10 @@ describe("o que é da máquina não é do humano", () => {
   it("a aba Títulos abre só pelo que precisa de gente", () => {
     // O Hub tem o arquivo e a varredura o leva sozinha: pôr isso no recorte de
     // abertura era pedir atenção para trabalho que ninguém faz.
-    expect(SITUACOES_FALTANDO).toEqual(["sem_nota", "anexo_suspeito"]);
+    //
+    // `espera_confirmacao` entra pelo motivo inverso: ali a varredura NÃO leva,
+    // e a nota fica achada e parada até alguém clicar.
+    expect(SITUACOES_FALTANDO).toEqual(["sem_nota", "anexo_suspeito", "espera_confirmacao"]);
     for (const s of SITUACOES_NOSSAS) expect(SITUACOES_FALTANDO).not.toContain(s);
   });
 

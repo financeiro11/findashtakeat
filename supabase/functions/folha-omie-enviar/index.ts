@@ -349,7 +349,7 @@ Deno.serve(async (req) => {
     }
 
     const titulos: TituloDaFolha[] = [];
-    const semPreparo: { nome: string; falta: string }[] = [];
+    const semPreparo: { codigo: string; nome: string; integracao: string; falta: string }[] = [];
 
     /* A chave de cada um, lida do CADASTRO do fornecedor, ao vivo.
      *
@@ -419,7 +419,10 @@ Deno.serve(async (req) => {
       const falta = !fornecedor ? "fornecedor no Omie"
         : !categoria ? "categoria"
           : daChave.bloqueio ?? null;
-      if (falta) { semPreparo.push({ nome: i.nome, falta }); continue; }
+      if (falta) {
+        semPreparo.push({ codigo: i.codigo, nome: i.nome, integracao: i.integracao, falta });
+        continue;
+      }
       titulos.push({
         codigo: i.codigo,
         integracao: i.integracao,
@@ -456,6 +459,55 @@ Deno.serve(async (req) => {
       });
     }
 
+    /* ---------- o que NÃO entrou, gravado ---------- */
+
+    /**
+     * Registra (ou atualiza) uma recusa, para ela sobreviver ao fechar da aba.
+     *
+     * `tentativas` é somado à mão porque o upsert do supabase-js substitui a
+     * linha inteira; ler antes é o preço de saber que alguém travou três vezes
+     * seguidas — que é justamente o sinal de que o problema não é o envio, é o
+     * cadastro.
+     */
+    const gravarRecusas = async (
+      linhas: { codigo: string; nome: string; integracao: string; origem: string; motivo: string }[],
+    ) => {
+      if (!linhas.length) return;
+      const { data: antes } = await supabase.from("folha_recusas")
+        .select("codigo_rh, tentativas")
+        .eq("competencia", `${competencia}-01`)
+        .in("codigo_rh", linhas.map((l) => l.codigo));
+      const vezes = new Map(
+        ((antes ?? []) as Record<string, unknown>[]).map((r) => [String(r.codigo_rh), Number(r.tentativas) || 0]),
+      );
+      await supabase.from("folha_recusas").upsert(
+        linhas.map((l) => ({
+          competencia: `${competencia}-01`,
+          codigo_rh: l.codigo,
+          nome: l.nome,
+          integracao: l.integracao,
+          origem: l.origem,
+          motivo: l.motivo,
+          tentativas: (vezes.get(l.codigo) ?? 0) + 1,
+          tentado_em: new Date().toISOString(),
+          tentado_por: quem.userId,
+          // Reabre: a pessoa voltou a falhar depois de já ter sido resolvida.
+          resolvido_em: null,
+        })),
+        { onConflict: "competencia,codigo_rh" },
+      );
+    };
+
+    /** Quem entrou agora deixa de constar como pendência. */
+    const marcarResolvidos = async (codigos: string[]) => {
+      if (!codigos.length) return;
+      await supabase.from("folha_recusas")
+        .update({ resolvido_em: new Date().toISOString() })
+        .eq("competencia", `${competencia}-01`)
+        .in("codigo_rh", codigos)
+        .is("resolvido_em", null);
+    };
+
     /* ---------- enviar ---------- */
     const recusa = recusaDaFolha({
       competencia,
@@ -467,10 +519,25 @@ Deno.serve(async (req) => {
       })),
     });
     if (recusa) return json({ status: "erro", erro: recusa }, 409);
-    if (semPreparo.length) {
+    /* Quem não está preparado é ANOTADO e pulado — não derruba o lote.
+     *
+     * Antes isto devolvia 409 e ninguém era criado: uma pessoa com o cadastro
+     * errado segurava a folha de outras cem, que é exatamente o contrário do
+     * que a tela promete no botão "Provisionar os N prontos". A trava que
+     * importa continua de pé: a competência só é marcada como enviada se nada
+     * ficou para trás. */
+    await gravarRecusas(semPreparo.map((p) => ({
+      codigo: p.codigo, nome: p.nome, integracao: p.integracao,
+      origem: "preparo", motivo: p.falta,
+    })));
+    if (!titulos.length) {
       return json({
         status: "erro",
-        erro: `${semPreparo.length} título(s) sem preparo: ` + semPreparo.map((s) => `${s.nome} (${s.falta})`).join(", "),
+        erro: semPreparo.length
+          ? `Ninguém está pronto para enviar. ${semPreparo.length} pendência(s): `
+            + semPreparo.slice(0, 5).map((s) => `${s.nome} (${s.falta})`).join(", ")
+            + (semPreparo.length > 5 ? "…" : "")
+          : "Não há ninguém no lote desta competência.",
       }, 409);
     }
 
@@ -533,6 +600,27 @@ Deno.serve(async (req) => {
 
     const criados = resultados.filter((r) => r.criado);
     const falharam = resultados.filter((r) => !r.criado);
+
+    /* O registro do que aconteceu, para sobreviver ao fechar da aba. */
+    const porIntegracao = new Map(titulos.map((t) => [t.integracao, t]));
+    await gravarRecusas(falharam.map((r) => ({
+      codigo: porIntegracao.get(r.integracao)?.codigo ?? "",
+      nome: r.nome,
+      integracao: r.integracao,
+      origem: "omie",
+      motivo: r.erro ?? "recusado sem motivo informado",
+    })).filter((l) => l.codigo));
+    await gravarRecusas(restantes.map((t) => ({
+      codigo: t.codigo, nome: t.nome, integracao: t.integracao,
+      origem: interrompido?.motivo === "bloqueio" ? "bloqueio" : "tempo",
+      motivo: interrompido?.motivo === "bloqueio"
+        ? `o Omie bloqueou a API por consumo — tente de novo em `
+          + `${Math.ceil((interrompido.segundos ?? 0) / 60)} minuto(s)`
+        : "o lote parou no teto de tempo antes de chegar nesta pessoa — reenvie",
+    })));
+    await marcarResolvidos(
+      criados.map((r) => porIntegracao.get(r.integracao)?.codigo ?? "").filter(Boolean),
+    );
 
     /* Só a competência INTEIRA marca o mês como enviado, e só se TUDO passou.
        Marcar com falhas dentro faria os que ficaram nunca serem reenviados. */

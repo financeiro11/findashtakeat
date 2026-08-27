@@ -522,6 +522,25 @@ export default function ColaboradoresRH() {
     }
   }, [rebuscarChaves]);
 
+  /* Quem não entrou no Omie na competência escolhida.
+   *
+   * Vem gravado de `folha_recusas`, e não do estado da tela: até 27/08/2026 a
+   * lista de recusados morria ao recarregar a página, e descobrir quem faltava
+   * exigia ler o log da Edge Function no painel do Supabase. */
+  const { data: recusas } = useQuery({
+    queryKey: ["folha_recusas", mesRef.ano, mesRef.mes],
+    queryFn: async () => {
+      const comp = `${mesRef.ano}-${String(mesRef.mes + 1).padStart(2, "0")}-01`;
+      const { data } = await tabelaFolha("folha_recusas")
+        .select("codigo_rh, nome, motivo, origem, tentativas")
+        .eq("competencia", comp)
+        .is("resolvido_em", null);
+      return (data ?? []) as unknown as {
+        codigo_rh: string; nome: string; motivo: string; origem: string; tentativas: number;
+      }[];
+    },
+  });
+
   const ativos = useMemo(() => todos.filter(ativo), [todos]);
   const desligados = useMemo(() => todos.filter((c) => !ativo(c)), [todos]);
 
@@ -695,6 +714,11 @@ export default function ColaboradoresRH() {
   const chavesQueImpedem = useMemo(
     () => [...chavesPix.values()].filter((r) => r.gravidade === "erro").length,
     [chavesPix],
+  );
+
+  const recusaPorCodigo = useMemo(
+    () => new Map((recusas ?? []).map((r) => [r.codigo_rh, r])),
+    [recusas],
   );
 
   /** Quem entrou, quem saiu e que contrato vence no mês escolhido. */
@@ -1036,6 +1060,34 @@ export default function ColaboradoresRH() {
               }}
             >
               Copiar a lista para mandar ao DH
+            </button>
+          </div>
+        )}
+
+        {/* ─── O que não entrou no Omie ─── */}
+        {(recusas?.length ?? 0) > 0 && (
+          <div className="rounded-xl border border-destructive/30 bg-destructive/5 px-3.5 py-2.5">
+            <p className="text-[12.5px] font-semibold text-destructive">
+              {recusas!.length} pessoa(s) não entraram no Omie na folha de{" "}
+              {MESES_CURTOS[mesRef.mes]}/{mesRef.ano}
+            </p>
+            <p className="mt-0.5 text-xs text-muted-foreground">
+              Fica gravado até o título entrar — recarregar a página não apaga, e quem entrar
+              some daqui sozinho. O motivo de cada um aparece na linha da pessoa.
+            </p>
+            <button
+              className="mt-1.5 text-xs text-primary hover:underline"
+              onClick={() => {
+                const linhas = recusas!.map((r) => `• ${r.nome}: ${r.motivo}`);
+                const cabecalho = `Folha de ${MESES_CURTOS[mesRef.mes]}/${mesRef.ano} — não entraram `
+                  + `no Omie (${new Date().toLocaleDateString("pt-BR")}):`;
+                navigator.clipboard.writeText([cabecalho, "", ...linhas].join(String.fromCharCode(10))).then(
+                  () => toast.success("Lista copiada"),
+                  () => toast.error("Não deu para copiar"),
+                );
+              }}
+            >
+              Copiar a lista
             </button>
           </div>
         )}
@@ -1385,6 +1437,7 @@ export default function ColaboradoresRH() {
                             divergencias={divergencias.get(String(c.id))}
                             achados={conferencia.get(String(c.id))}
                             chavePix={chavesPix.get(String(c.id))}
+                            recusa={recusaPorCodigo.get(String(c.codigo ?? ""))?.motivo}
                           />
                         </TableCell>
                       ))}
@@ -1806,7 +1859,7 @@ function Avatar({
    sempre — só a apresentação muda. */
 
 function Celula({
-  col, c, fotoUrl, selo, onFoto, divergencias, achados, chavePix,
+  col, c, fotoUrl, selo, onFoto, divergencias, achados, chavePix, recusa,
 }: {
   col: Col;
   c: Colaborador;
@@ -1819,6 +1872,8 @@ function Celula({
   achados?: Achado[];
   /** Em que a chave PIX do RH difere da cadastrada no fornecedor do Omie. */
   chavePix?: ComparacaoDeChave;
+  /** Por que esta pessoa não entrou no Omie na competência escolhida. */
+  recusa?: string;
 }) {
   const nome = String(c.nome ?? "");
   const cru = c[col.key];
@@ -1883,6 +1938,13 @@ function Celula({
             )}
           >
             ⇄ {chavePix.mensagem}
+          </span>
+        )}
+        {/* O que o ERP respondeu, na linha de quem ele recusou. É o único
+            lugar em que quem varre a lista liga o nome ao motivo. */}
+        {recusa && (
+          <span className="block whitespace-normal text-[11px] leading-snug text-destructive">
+            ⊘ não entrou no Omie: {recusa}
           </span>
         )}
       </span>

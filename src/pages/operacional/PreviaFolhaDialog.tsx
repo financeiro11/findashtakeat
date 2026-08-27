@@ -21,6 +21,8 @@ import {
 } from "@/components/ui/dialog";
 import { supabase } from "@/integrations/supabase/client";
 import { invocar } from "@/lib/erroEdge";
+import { tabelaFolha } from "@/lib/folha/db";
+import { toast } from "sonner";
 import AjustarSalarioDialog, { type AlvoDoAjuste } from "./AjustarSalarioDialog";
 import EnviarFolhaOmie from "./EnviarFolhaOmie";
 import { cn } from "@/lib/utils";
@@ -69,6 +71,27 @@ type Linha = ItemDaFolha & {
   chavePixConferida: boolean;
 };
 
+/** Uma pessoa que não entrou no Omie, como está gravada em `folha_recusas`. */
+type Recusa = {
+  codigo_rh: string;
+  nome: string;
+  integracao: string;
+  origem: "preparo" | "omie" | "bloqueio" | "tempo";
+  motivo: string;
+  tentativas: number;
+  tentado_em: string;
+};
+
+/* O que fazer em cada caso. A origem existe porque a AÇÃO é diferente: cadastro
+   errado não se resolve reenviando, e bloqueio do Omie não se resolve mexendo
+   em cadastro nenhum. */
+const O_QUE_FAZER: Record<Recusa["origem"], string> = {
+  preparo: "Corrija o cadastro (Omie ou RH) — reenviar sem isso repete o mesmo.",
+  omie: "O ERP recusou o título. O motivo está escrito ao lado.",
+  bloqueio: "O Omie trancou a API por consumo. Espere o tempo pedido e reenvie.",
+  tempo: "O lote parou no teto de tempo antes de chegar aqui. É só reenviar.",
+};
+
 type Previa = {
   status: string;
   erro?: string;
@@ -104,6 +127,7 @@ export default function PreviaFolhaDialog({
   const [previa, setPrevia] = useState<Previa | null>(null);
   const [ajustando, setAjustando] = useState<AlvoDoAjuste | null>(null);
   const [recarga, setRecarga] = useState(0);
+  const [recusas, setRecusas] = useState<Recusa[]>([]);
 
   useEffect(() => {
     if (!aberto) return;
@@ -119,6 +143,25 @@ export default function PreviaFolhaDialog({
       .catch((e) => { if (vivo) setErro(e instanceof Error ? e.message : String(e)); })
       .finally(() => { if (vivo) setCarregando(false); });
 
+    return () => { vivo = false; };
+  }, [aberto, competencia, recarga]);
+
+  /* As recusas GRAVADAS, e não as da sessão.
+   *
+   * Sem isto, quem não entrou no Omie sumia ao recarregar a página — e em
+   * 27/08/2026 a única forma de descobrir quem faltava foi ler o log da Edge
+   * Function pelo painel do Supabase, que não é coisa que o financeiro faça. */
+  useEffect(() => {
+    if (!aberto) return;
+    let vivo = true;
+    tabelaFolha("folha_recusas")
+      .select("codigo_rh, nome, integracao, origem, motivo, tentativas, tentado_em")
+      .eq("competencia", `${competencia}-01`)
+      .is("resolvido_em", null)
+      .order("nome", { ascending: true })
+      .then(({ data }) => {
+        if (vivo) setRecusas((data ?? []) as unknown as Recusa[]);
+      });
     return () => { vivo = false; };
   }, [aberto, competencia, recarga]);
 
@@ -249,6 +292,50 @@ export default function PreviaFolhaDialog({
             )}
 
             {pendencia && <Aviso tom="erro" titulo="Pendência que impede o envio">{pendencia}</Aviso>}
+
+            {/* ─── O que NÃO entrou no Omie ─── */}
+            {recusas.length > 0 && (
+              <div className="rounded-xl border border-destructive/30 bg-destructive/5 px-3.5 py-2.5">
+                <p className="text-[12.5px] font-semibold text-destructive">
+                  {recusas.length} pessoa(s) não entraram no Omie nesta competência
+                </p>
+                <p className="mt-0.5 text-xs text-muted-foreground">
+                  Fica gravado até o título entrar — recarregar a página não apaga. Quem já
+                  entrou some daqui sozinho no próximo envio.
+                </p>
+                <ul className="mt-2 space-y-1.5">
+                  {recusas.map((r) => (
+                    <li key={r.codigo_rh} className="text-xs leading-snug">
+                      <span className="font-medium">{r.nome}</span>
+                      <span className="mono ml-1.5 text-[11px] text-muted-foreground">{r.integracao}</span>
+                      {r.tentativas > 1 && (
+                        <span className="ml-1.5 rounded bg-destructive/15 px-1.5 py-0.5 text-[10.5px] font-semibold text-destructive">
+                          {r.tentativas}ª tentativa
+                        </span>
+                      )}
+                      <span className="mt-0.5 block break-words text-muted-foreground">{r.motivo}</span>
+                      <span className="block text-[11px] text-muted-foreground/80">
+                        {O_QUE_FAZER[r.origem]}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+                <button
+                  className="mt-2 text-xs text-primary hover:underline"
+                  onClick={() => {
+                    const linhas = recusas.map((r) => `• ${r.nome}: ${r.motivo}`);
+                    const cabecalho = `Folha ${competencia} — não entraram no Omie `
+                      + `(${new Date().toLocaleDateString("pt-BR")}):`;
+                    navigator.clipboard.writeText([cabecalho, "", ...linhas].join("\n")).then(
+                      () => toast.success("Lista copiada"),
+                      () => toast.error("Não deu para copiar"),
+                    );
+                  }}
+                >
+                  Copiar a lista
+                </button>
+              </div>
+            )}
 
             {bloqueioDaFolha() && (
               <Aviso tom="neutro" titulo="Envio desligado no código">{bloqueioDaFolha()}</Aviso>

@@ -3,6 +3,7 @@ import { Outlet, Navigate, useLocation } from "react-router-dom";
 import { SidebarProvider } from "@/components/ui/sidebar";
 import { AppSidebar } from "@/components/AppSidebar";
 import { PageHeader } from "@/components/PageHeader";
+import { FaixaEsteira } from "@/components/FaixaEsteira";
 import { ProfileMenu } from "@/components/ProfileMenu";
 import { AIAssistant } from "@/components/AIAssistant";
 import { NovaVersao } from "@/components/NovaVersao";
@@ -70,6 +71,11 @@ export default function AppLayout() {
           <div data-chrome="nova-versao" className="contents"><NovaVersao /></div>
           <div data-chrome="header" className="sticky top-0 z-30 flex items-center border-b border-border bg-card/95 backdrop-blur">
             <div className="flex-1"><PageHeader /></div>
+            {/* A faixa das automações fica ANTES do menu de perfil e dentro do
+                `data-chrome="header"`: ela acompanha a pessoa em toda página
+                (é onde a pergunta "está rodando?" aparece) e some do PDF de
+                quem imprime, junto com o resto da moldura. */}
+            {!isParcerias && <div className="hidden px-1 sm:block"><FaixaEsteira /></div>}
             <div className="px-3"><ProfileMenu /></div>
           </div>
           <main className="flex-1 overflow-auto">

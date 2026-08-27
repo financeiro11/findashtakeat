@@ -565,7 +565,35 @@ export function recusaDaFolha(opts: {
   if (opts.estado === "fora_do_hub") return "Esta competência está marcada como lançada fora do Hub.";
   if (opts.estado === "enviado") return "A folha desta competência já foi enviada ao Omie pelo Hub.";
 
-  return pendenciasDoLote(opts.itens);
+  if (!opts.itens.length) return "Não há ninguém no lote desta competência.";
+
+  /* A ÚNICA pendência de linha que ainda derruba o mês inteiro.
+   *
+   * Ela é diferente das outras: com dois colaboradores no mesmo CNPJ, os dois
+   * títulos vão para o MESMO fornecedor no Omie, e quem conferir o extrato do
+   * prestador vê dois salários juntos. Não dá para "pular um e seguir" — o
+   * defeito está no par, e mandar metade é escolher qual dos dois fica errado.
+   *
+   * As demais (sem fornecedor, sem categoria, sem chave) saíram daqui em
+   * 27/08/2026. Uma pessoa devolvia 409 e nenhum dos cento e dois era criado:
+   * o Sérgio, cujo fornecedor tinha sido criado no Omie naquela manhã e ainda
+   * não estava no cache de clientes. Agora elas são anotadas em
+   * `folha_recusas` e a pessoa é pulada — a folha das outras cem não espera
+   * pelo cadastro de uma. */
+  return cnpjRepetidoNoLote(opts.itens);
+}
+
+/** Quantos CNPJs aparecem em mais de um colaborador — e o recado, se houver. */
+export function cnpjRepetidoNoLote(itens: PendenciaDoItem[]): string | null {
+  const porCnpj = new Map<string, number>();
+  for (const i of itens) {
+    const c = soDigitos(i.cnpj);
+    if (c) porCnpj.set(c, (porCnpj.get(c) ?? 0) + 1);
+  }
+  const repetidos = [...porCnpj.values()].filter((n) => n > 1).length;
+  if (!repetidos) return null;
+  return `${repetidos} CNPJ(s) aparecem em mais de um colaborador do lote. `
+    + "Os títulos iriam todos para o mesmo fornecedor no Omie. Corrija o cadastro antes de enviar.";
 }
 
 /**
@@ -583,16 +611,8 @@ export function pendenciasDoLote(itens: PendenciaDoItem[]): string | null {
      títulos vão todos para o MESMO fornecedor no Omie, e quem conferir o
      extrato do prestador vê o valor de quatro salários juntos. No espelho lido
      em 26/08/2026 eram quatro pessoas no CNPJ 37.511.891/0001-50. */
-  const porCnpj = new Map<string, number>();
-  for (const i of itens) {
-    const c = soDigitos(i.cnpj);
-    if (c) porCnpj.set(c, (porCnpj.get(c) ?? 0) + 1);
-  }
-  const repetidos = [...porCnpj.values()].filter((n) => n > 1).length;
-  if (repetidos) {
-    return `${repetidos} CNPJ(s) aparecem em mais de um colaborador do lote. `
-      + "Os títulos iriam todos para o mesmo fornecedor no Omie. Corrija o cadastro antes de enviar.";
-  }
+  const repetido = cnpjRepetidoNoLote(itens);
+  if (repetido) return repetido;
 
   // Cinco documentos truncados e dois em branco no mesmo espelho.
   const semDoc = itens.filter((i) => !documentoValido(soDigitos(i.cnpj))).length;
@@ -746,6 +766,17 @@ export type TituloDaFolha = {
 };
 
 /** O `param` do `IncluirContaPagar`. */
+/**
+ * O "Nº Documento" da folha: `FOLHA 2026-08`.
+ *
+ * Vinte caracteres é o limite do campo, e a escolha entre pôr a competência ou
+ * o código da pessoa é a diferença entre achar a folha do mês e achar uma
+ * linha. Procurar "FOLHA" traz todas; "FOLHA 2026-08" traz o mês. Quem é quem
+ * sai na observação, que não tem esse aperto.
+ */
+export const numeroDocumentoDaFolha = (registro: string): string =>
+  `FOLHA ${String(registro).slice(0, 7)}`;
+
 export function montarTituloFolha(t: TituloDaFolha): Record<string, unknown> {
   const cnpj = soDigitos(t.cnpj);
   return {
@@ -754,6 +785,18 @@ export function montarTituloFolha(t: TituloDaFolha): Record<string, unknown> {
     id_conta_corrente: t.idContaCorrente,
     codigo_categoria: t.codigoCategoria,
     valor_documento: Number(t.valor.toFixed(2)),
+    /* O que se procura na TELA do Omie.
+     *
+     * `codigo_lancamento_integracao` é identificador de API: o ERP guarda, mas
+     * a tela de Contas a Pagar não o oferece na busca. Sem `numero_documento`,
+     * procurar "FOLHA" no Omie não devolvia nada — cem títulos sem nenhum jeito
+     * de achá-los juntos. Cabem 20 caracteres, então vai a competência e não o
+     * código da pessoa; quem é quem está na observação. */
+    numero_documento: numeroDocumentoDaFolha(t.registro),
+    /* Sem isto o Omie assume a data corrente, e dois títulos da MESMA folha
+       criados em dias diferentes saem com emissões diferentes. A folha tem uma
+       emissão só: o fechamento da competência. */
+    data_emissao: dataBR(t.registro),
     // A âncora contábil: último dia da competência, não o dia do pagamento.
     data_entrada: dataBR(t.registro),
     data_vencimento: dataBR(t.vencimento),

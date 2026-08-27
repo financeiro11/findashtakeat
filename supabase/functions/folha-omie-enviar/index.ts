@@ -16,6 +16,12 @@
 //   "excluir"  apaga títulos criados por aqui, pelo `codigo_lancamento_integracao`.
 //              Existe porque o primeiro envio real é um teste de 1 ou 2 títulos,
 //              e teste sem desfazer não é teste — é aposta.
+//   "corrigir"  conserta títulos que JÁ existem, sem recriá-los. Manda só o que
+//              é nosso — número do documento e o bloco do PIX — porque a
+//              documentação do Omie NÃO diz se `AlterarContaPagar` é parcial ou
+//              substitui o registro, e alguns títulos já têm NFS-e anexada por
+//              gente. Por isso também aceita `codigos`: dá para corrigir UM e
+//              conferir antes de mexer nos cem.
 //   "excluir_competencia"  apaga a folha INTEIRA de uma competência.
 //              A tela só sabe desfazer o que ela mesma criou na sessão; quem
 //              recarregou a página perdeu a lista e ficaria apagando cem
@@ -37,6 +43,7 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { requireUser } from "../_shared/auth.ts";
 import {
   CONTA_CORRENTE_FOLHA, chaveDoTitulo, integracaoFolhaDe, montarLote, montarTituloFolha,
+  numeroDocumentoDaFolha, registroDa,
   recusaDaFolha, resolvedorDeCategoria, soDigitos,
   type CadastroDoFornecedor,
   type ColaboradorDaFolha, type EstadoDaFolha, type ResolveDePara, type TituloDaFolha,
@@ -347,6 +354,19 @@ Deno.serve(async (req) => {
       const k = soDigitos(c?.cnpj_cpf);
       if (k && !fornecedorPorCnpj.has(k)) fornecedorPorCnpj.set(k, Number(c.codigo));
     }
+    /* Segunda fonte: a varredura de chaves PIX, que já guarda o
+       `codigo_cliente_omie` de cada um e é MUITO mais nova que o cache de
+       clientes (7040 registros, sincronizado de vez em quando).
+     *
+     * Sem isto, o fornecedor do Sérgio — criado no Omie em 27/08/2026, com o
+     * cache de clientes de 26/08 16:01 — aparecia como inexistente, e a recusa
+     * "1 colaborador sem fornecedor" derrubava os cento e dois. Não custa
+     * chamada nenhuma: o dado já está aqui. */
+    for (const c of (chavesCache.data?.dados ?? []) as Record<string, unknown>[]) {
+      const k = soDigitos(c?.doc);
+      const cod = Number(c?.codigoOmie ?? 0);
+      if (k && cod && !fornecedorPorCnpj.has(k)) fornecedorPorCnpj.set(k, cod);
+    }
 
     const titulos: TituloDaFolha[] = [];
     const semPreparo: { codigo: string; nome: string; integracao: string; falta: string }[] = [];
@@ -449,7 +469,9 @@ Deno.serve(async (req) => {
 
 
     /* ---------- simular ---------- */
-    if (acao !== "enviar") {
+    // `corrigir` segue adiante: ele mexe em título que já existe, e a
+    // simulação o devolveria antes de chegar lá.
+    if (acao !== "enviar" && acao !== "corrigir") {
       return json({
         status: "ok",
         acao: "simular",
@@ -513,7 +535,60 @@ Deno.serve(async (req) => {
         .is("resolvido_em", null);
     };
 
+    /* ---------- corrigir o que já está lá ---------- */
+
+    /* Conserta título que JÁ existe, sem recriá-lo.
+     *
+     * Existe por dois defeitos dos títulos criados até 27/08/2026: saíram sem
+     * `numero_documento` (e por isso procurar "FOLHA" na tela do Omie não
+     * devolvia nada) e com a chave PIX do espelho do RH, que difere da do
+     * cadastro na PONTUAÇÃO — `48.521.982/0001-93` contra `48521982000193`. É
+     * a mesma chave para quem lê, e é divergência para quem compara literal.
+     *
+     * Recriar resolveria os dois, mas alguns desses títulos já têm NFS-e
+     * anexada à mão por gente do financeiro, e apagar levaria isso junto.
+     *
+     * O bloco CNAB vai INTEIRO, e não só o campo torto: a documentação do Omie
+     * não diz se `AlterarContaPagar` mescla ou substitui, e um bloco pela
+     * metade pode zerar o resto dele. Fora do CNAB não vai nada — nem valor,
+     * nem data, nem categoria —, que é o que limita o estrago se a semântica
+     * for a que eu não espero. Por isso também aceita `codigos`: corrija UM,
+     * confira no ERP, depois mande os cem. */
+    if (acao === "corrigir") {
+      const resultados: Record<string, unknown>[] = [];
+      for (const t of titulos) {
+        const payload = montarTituloFolha(t);
+        try {
+          await omieCall("AlterarContaPagar", {
+            codigo_lancamento_integracao: t.integracao,
+            numero_documento: payload.numero_documento,
+            cnab_integracao_bancaria: payload.cnab_integracao_bancaria,
+          });
+          resultados.push({ integracao: t.integracao, nome: t.nome, corrigido: true });
+        } catch (e) {
+          const msg = e instanceof Error ? e.message : String(e);
+          /* "não existe" aqui é normal: corrigir roda sobre o lote inteiro, e
+             quem ainda não foi criado não tem o que corrigir. */
+          const naoExiste = /não\s*(existe|foi\s*encontrad)|inexistente|not\s*found/i.test(msg);
+          if (!naoExiste) console.error(`folha-omie-enviar corrigir [${t.integracao}]:`, msg);
+          resultados.push({
+            integracao: t.integracao, nome: t.nome,
+            corrigido: false, ausente: naoExiste, erro: naoExiste ? undefined : msg,
+          });
+        }
+        await new Promise((r) => setTimeout(r, 150));
+      }
+      return json({
+        status: "ok", acao, competencia,
+        corrigidos: resultados.filter((r) => r.corrigido).length,
+        ausentes: resultados.filter((r) => r.ausente).length,
+        resultados: resultados.filter((r) => !r.ausente),
+      });
+    }
+
     /* ---------- enviar ---------- */
+    /* Olha o MÊS (marco, estado, chave do código) e o CNPJ repetido — não o
+     * preparo de cada um, que virou `semPreparo` e é anotado e pulado. */
     const recusa = recusaDaFolha({
       competencia,
       estado: ((envio.data?.estado as EstadoDaFolha) ?? null),

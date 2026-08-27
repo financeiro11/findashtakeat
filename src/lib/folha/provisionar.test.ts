@@ -491,7 +491,12 @@ describe("recusaDaFolha", () => {
     expect(recusaDaFolha({ ...ok, estado: "pendente" })).toBeNull();
   });
 
-  it("ligada, barra colaborador sem fornecedor no Omie, dizendo quantos", () => {
+  /* Quem está sem fornecedor NÃO derruba mais o mês — é anotado em
+     `folha_recusas` e pulado. Em 27/08/2026 o Sérgio, sozinho, devolveu 409 e
+     nenhum dos cento e dois títulos foi criado: o fornecedor dele tinha sido
+     criado no Omie naquela manhã e ainda não estava no cache de clientes. A
+     folha de cem não espera pelo cadastro de um. */
+  it("ligada, NÃO barra o mês por quem está sem fornecedor", () => {
     if (!ENVIO_FOLHA_LIBERADO) return;
     const r = recusaDaFolha({
       ...ok,
@@ -501,7 +506,21 @@ describe("recusaDaFolha", () => {
         { cnpj: "33333333000133", codigoFornecedor: null, codigoCategoria: "2.01.01" },
       ],
     });
-    expect(r).toMatch(/^2 colaborador/);
+    expect(r).toBeNull();
+  });
+
+  /* O CNPJ repetido continua derrubando, e é o único que continua: o defeito
+     está no PAR, e mandar metade é escolher qual dos dois fica errado. */
+  it("ligada, barra o mês quando dois colaboradores dividem o CNPJ", () => {
+    if (!ENVIO_FOLHA_LIBERADO) return;
+    const r = recusaDaFolha({
+      ...ok,
+      itens: [
+        { cnpj: "11111111000111", codigoFornecedor: 1, codigoCategoria: "2.01.01" },
+        { cnpj: "11111111000111", codigoFornecedor: 1, codigoCategoria: "2.01.01" },
+      ],
+    });
+    expect(r).toMatch(/mais de um colaborador/);
   });
 
   it("ligada, exige competência e repassa as pendências das linhas", () => {
@@ -655,13 +674,35 @@ describe("montarTituloFolha", () => {
 
   it("não manda o que ficava em branco nas 103 linhas da planilha", () => {
     const p = montarTituloFolha(TITULO);
-    // Folha não tem nota fiscal: nada de tipo/número de documento nem parcela.
     for (const campo of [
-      "codigo_tipo_documento", "numero_documento", "numero_parcela",
-      "data_emissao", "data_pagamento", "valor_pagamento",
+      "codigo_tipo_documento", "numero_parcela", "data_pagamento", "valor_pagamento",
     ]) {
       expect(p[campo], `${campo} deveria ficar de fora`).toBeUndefined();
     }
+  });
+
+  /* `numero_documento` e `data_emissao` saíram desta lista em 27/08/2026.
+   *
+   * Ficavam de fora por uma premissa que os dados desmentiram: "folha não tem
+   * nota fiscal". Tem — os títulos reais no Omie trazem `numero_documento_fiscal`
+   * e o bloco `servico_tomado` com a NFS-e do prestador.
+   *
+   * O que decidiu foi outra coisa, porém: `codigo_lancamento_integracao` é
+   * identificador de API e a TELA do Omie não o oferece na busca. Sem
+   * `numero_documento`, procurar "FOLHA" no ERP não devolvia nada — cem títulos
+   * sem nenhum jeito de achá-los juntos. */
+  it("manda o número do documento, que é o que se procura na tela do Omie", () => {
+    expect(montarTituloFolha(TITULO).numero_documento).toBe("FOLHA 2026-07");
+  });
+
+  it("o número do documento cabe nos 20 caracteres do campo", () => {
+    expect(String(montarTituloFolha(TITULO).numero_documento).length).toBeLessThanOrEqual(20);
+  });
+
+  /* Sem `data_emissao` o Omie assume a data corrente, e dois títulos da MESMA
+     folha criados em dias diferentes saem com emissões diferentes. */
+  it("fixa a emissão no fechamento da competência, não no dia do envio", () => {
+    expect(montarTituloFolha(TITULO).data_emissao).toBe("31/07/2026");
   });
 });
 

@@ -508,9 +508,39 @@ export default function ColaboradoresRH() {
     },
   });
 
-  /* Rebuscar é caro: uma chamada ao Omie por pessoa, com respiro entre elas
-     para não levar "too many requests". Perto de um minuto para o quadro
-     inteiro — por isso é botão, e não algo que acontece ao abrir a tela. */
+  /* Ao ABRIR a tela, reconfere só quem está pendente.
+   *
+   * A queixa era concreta: alguém corrigia o cadastro no Omie e o Hub seguia
+   * mostrando a pendência, porque a foto era da última varredura manual. Uma
+   * varredura inteira a cada visita seriam ~101 chamadas ao Omie — foi o que
+   * trancou a API por consumo em 27/08/2026. Os pendentes são um punhado, e
+   * relê-los é barato. Quem já está certo não precisa ser perguntado de novo. */
+  useEffect(() => {
+    let vivo = true;
+    invocar<{ reconferidos: number; resolvidos: number }>(
+      supabase.functions.invoke("omie-folha-cadastros-sync", {
+        body: { action: "chaves_pix_pendentes" },
+      }),
+    )
+      .then((r) => {
+        if (!vivo || !r?.reconferidos) return;
+        // Só recarrega a tela se alguma coisa mudou de fato.
+        if (r.resolvidos) {
+          toast.success(`${r.resolvidos} cadastro(s) resolvidos no Omie`);
+          rebuscarChaves();
+        }
+      })
+      // Silencioso de propósito: é conferência de fundo, não pedido de ninguém.
+      // Falhar aqui não pode virar toast de erro em cima de quem só abriu a tela.
+      .catch(() => { /* a tela segue com a foto que tem */ });
+    return () => { vivo = false; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  /* Rebuscar TUDO é caro: uma chamada ao Omie por pessoa, com respiro entre
+     elas para não levar "too many requests". Perto de um minuto para o quadro
+     inteiro — por isso a varredura completa é botão, e o que roda sozinho ao
+     abrir é só a reconferência dos pendentes. */
   const atualizarChaves = useCallback(async () => {
     const t = toast.loading("Consultando o cadastro de cada fornecedor no Omie… leva cerca de um minuto");
     try {

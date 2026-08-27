@@ -370,16 +370,21 @@ Deno.serve(async (req) => {
      * e o Omie ainda trancou a API por consumo. A varredura já fez esse
      * trabalho uma vez, e o caminho normal é reconsultar na tela e provisionar
      * logo em seguida. */
-    const chavesEm = chavesCache.data?.atualizado_em
+    /* A validade é POR PESSOA, e não da varredura inteira.
+     *
+     * A tela reconfere só quem está pendente a cada abertura; quem foi
+     * corrigido no Omie há dois minutos tem carimbo novo mesmo que a varredura
+     * completa seja de ontem. Julgar pela linha do cache faria essa correção
+     * ser ignorada — que é exatamente a queixa que originou isto. */
+    const daVarredura = chavesCache.data?.atualizado_em
       ? new Date(String(chavesCache.data.atualizado_em)).getTime()
       : 0;
-    const chavesFrescas = chavesEm > 0 && (Date.now() - chavesEm) < CHAVES_FRESCAS_MS;
-    if (chavesFrescas) {
-      for (const c of (chavesCache.data?.dados ?? []) as Record<string, unknown>[]) {
-        const doc = soDigitos(c?.doc);
-        if (doc && !cadastroCache.has(doc)) {
-          cadastroCache.set(doc, { chave: String(c.chaveOmie ?? ""), existe: !!c.existe });
-        }
+    for (const c of (chavesCache.data?.dados ?? []) as Record<string, unknown>[]) {
+      const doc = soDigitos(c?.doc);
+      if (!doc || cadastroCache.has(doc)) continue;
+      const em = c?.em ? new Date(String(c.em)).getTime() : daVarredura;
+      if (em > 0 && (Date.now() - em) < CHAVES_FRESCAS_MS) {
+        cadastroCache.set(doc, { chave: String(c.chaveOmie ?? ""), existe: !!c.existe });
       }
     }
 

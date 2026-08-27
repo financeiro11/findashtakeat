@@ -22,6 +22,11 @@
 // Ações (body.action):
 //   "sync" (default) → repuxa do Omie e grava no cache.
 //   "status"         → só informa o que já está em cache, sem chamar o Omie.
+//   "chaves_pix_pendentes" → reconfere SÓ quem está com problema. É o que roda
+//                      ao abrir a tela: uma varredura inteira são ~101 chamadas
+//                      ao Omie e foi o que trancou a API por consumo em
+//                      27/08/2026. Quem já está certo não precisa ser
+//                      perguntado de novo; quem está pendente é um punhado.
 //   "chaves_pix"     → busca a chave PIX cadastrada em cada fornecedor da folha
 //                      e grava em `folha_chaves_pix`. Serve para comparar com o
 //                      que o espelho do RH diz: o cadastro do Omie é o que o
@@ -29,6 +34,8 @@
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { requireUser } from "../_shared/auth.ts";
+import { chaveDoTitulo } from "../_shared/folha-envio.ts";
+import { ehEstagiario } from "../_shared/documento.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -41,6 +48,15 @@ const json = (body: unknown, status = 200) =>
 const BASE = "https://app.omie.com.br/api/v1";
 const CHAVE_CACHE = "folha_cadastros";
 const CHAVE_PIX_CACHE = "folha_chaves_pix";
+
+/**
+ * Teto da reconferência ao abrir a tela.
+ *
+ * Ela roda a cada visita, então precisa ser barata. Se a lista de pendentes
+ * crescer para além disto, o certo é rodar a varredura completa uma vez, não
+ * transformar a abertura da tela em cem chamadas ao Omie.
+ */
+const MAX_RECONFERIDOS = 25;
 
 /** Envelope RPC do Omie, com o mesmo backoff de `omie-clientes-sync`. */
 async function omieCall(path: string, call: string, param: Record<string, unknown>): Promise<any> {
@@ -247,6 +263,75 @@ Deno.serve(async (req) => {
       });
     }
 
+    /* ---------- reconferir só quem está pendente ---------- */
+    if (body?.action === "chaves_pix_pendentes") {
+      const { data: cacheAtual } = await supabase
+        .from("omie_cache").select("dados, atualizado_em").eq("chave", CHAVE_PIX_CACHE).maybeSingle();
+      const atual = ((cacheAtual?.dados ?? []) as Record<string, unknown>[]);
+      if (!atual.length) return json({ status: "ok", acao: "chaves_pix_pendentes", reconferidos: 0 });
+
+      /* Pendente = o que faria o título não sair, pela MESMA regra do envio.
+       *
+       * A primeira versão perguntava só "tem chave?", e com isso o Jonas nunca
+       * era reconferido: a chave dele existe, só é aleatória — que a empresa
+       * não paga. Um atalho aqui vira gente presa para sempre na lista de
+       * pendências, porque a correção no Omie nunca é relida. */
+      const { data: cargos } = await (supabase as any)
+        .from("rh_colaboradores").select("codigo, cargo");
+      const cargoDe = new Map<string, string>(
+        ((cargos ?? []) as Record<string, unknown>[])
+          .map((c) => [String(c.codigo ?? ""), String(c.cargo ?? "")]),
+      );
+      const pendente = (c: Record<string, unknown>) => {
+        if (c.erro) return true;
+        return !!chaveDoTitulo({
+          documento: String(c.doc ?? ""),
+          cadastro: { chave: String(c.chaveOmie ?? ""), existe: !!c.existe },
+          estagiario: ehEstagiario(cargoDe.get(String(c.codigo ?? "")) ?? ""),
+        }).bloqueio;
+      };
+
+      const alvos = atual.filter(pendente).slice(0, MAX_RECONFERIDOS);
+      const porCodigo = new Map(alvos.map((a) => [String(a.codigo), a]));
+
+      for (const a of alvos) {
+        try {
+          const f = await chavePixPorDocumento(String(a.doc ?? ""));
+          porCodigo.set(String(a.codigo), {
+            ...a, existe: !!f, codigoOmie: f?.codigo ?? null, chaveOmie: f?.chave ?? "",
+            erro: null, em: new Date().toISOString(),
+          });
+        } catch (e) {
+          porCodigo.set(String(a.codigo), {
+            ...a, erro: e instanceof Error ? e.message : String(e), em: new Date().toISOString(),
+          });
+        }
+        await new Promise((r) => setTimeout(r, 120));
+      }
+
+      const novo = atual.map((c) => porCodigo.get(String(c.codigo)) ?? c);
+      // Resolvido = deixou de ser pendente pela mesma regra, não "ganhou chave".
+      const resolvidos = alvos.filter((a) => {
+        const d = porCodigo.get(String(a.codigo));
+        return d && !pendente(d);
+      }).length;
+
+      /* `atualizado_em` da LINHA fica como está: ela marca a última varredura
+         COMPLETA, e é nisso que o envio se apoia. Mexer aqui faria uma
+         reconferência de cinco pessoas passar por varredura de cem. */
+      await supabase.from("omie_cache")
+        .update({ dados: novo })
+        .eq("chave", CHAVE_PIX_CACHE);
+
+      return json({
+        status: "ok",
+        acao: "chaves_pix_pendentes",
+        reconferidos: alvos.length,
+        resolvidos,
+        ainda_pendentes: novo.filter(pendente).length,
+      });
+    }
+
     /* ---------- chaves PIX dos fornecedores da folha ---------- */
     if (body?.action === "chaves_pix") {
       const { data: pessoas } = await (supabase as any)
@@ -274,7 +359,15 @@ Deno.serve(async (req) => {
       for (const p of alvo) {
         try {
           const f = await chavePixPorDocumento(p.doc);
-          out.push({ ...p, existe: !!f, codigoOmie: f?.codigo ?? null, chaveOmie: f?.chave ?? "" });
+          /* Carimbo POR PESSOA, e não só na linha do cache.
+             A reconferência parcial atualiza umas poucas entradas; se ela
+             mexesse no `atualizado_em` da linha, o envio leria "varredura de
+             agora" e confiaria em cem registros dos quais só cinco foram
+             relidos. O `em` de cada um é o que diz a verdade. */
+          out.push({
+            ...p, existe: !!f, codigoOmie: f?.codigo ?? null, chaveOmie: f?.chave ?? "",
+            em: new Date().toISOString(),
+          });
         } catch (e) {
           out.push({ ...p, erro: e instanceof Error ? e.message : String(e) });
         }

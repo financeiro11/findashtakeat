@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   AlertTriangle, ArrowDownRight, ChevronDown, ChevronRight, Copy, ExternalLink,
-  Loader2, PackageCheck, Pause, PiggyBank, Play, Plus, Radar as RadarIcon, RefreshCw, Sparkles, Trash2, TrendingDown,
+  Loader2, PackageCheck, Pause, PiggyBank, Play, Plus, Radar as RadarIcon, RefreshCw, Sparkles, Star, Trash2, TrendingDown,
 } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -13,7 +13,7 @@ import { comValorExato } from "@/components/ValorExato";
 import { CatDot } from "./components";
 import { NovoAlvoDialog, type AlvoRow } from "./NovoAlvoDialog";
 import { db, fmtBRL as fmtBRLStr, fmtData } from "./lib";
-import { resumoDoAlvo, fonteLabel, textoFrete, textoWhats } from "@/lib/radarPrecos";
+import { resumoDoAlvo, fonteLabel, textoFrete, textoNota, textoWhats } from "@/lib/radarPrecos";
 import { invalidarRadarAlertas } from "@/hooks/useRadarAlertas";
 
 /* Valor compacto na tela, número cheio no hover — convenção do Hub.
@@ -26,6 +26,7 @@ interface Oferta {
   preco: number; preco_total: number | null; preco_min: number | null;
   frete_gratis: boolean; frete_valor: number | null; frete_texto: string | null;
   disponivel: boolean | null; confirmado_em: string | null;
+  avaliacao: number | null; avaliacoes: number | null;
   score: number; motivos: string[]; conferir: string[];
   visto_em: string; primeiro_visto_em: string;
 }
@@ -328,10 +329,23 @@ export default function Radar() {
                         const o = al.oferta;
                         return (
                           <div key={al.id} className="flex gap-3 p-4">
+                            {/* A foto é grande o bastante para reconhecer o produto sem abrir o
+                                link — que é o ponto de ter foto. `onError` derruba a imagem
+                                quebrada em vez de deixar o ícone cinza de arquivo faltando. */}
                             {o?.imagem_url ? (
-                              <img src={o.imagem_url} alt="" className="h-16 w-16 shrink-0 rounded-md border border-border object-contain" />
+                              <a href={o.url} target="_blank" rel="noreferrer" className="shrink-0">
+                                <img
+                                  src={o.imagem_url}
+                                  alt={o.titulo}
+                                  loading="lazy"
+                                  onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = "none"; }}
+                                  className="h-24 w-24 rounded-md border border-border bg-white object-contain p-1"
+                                />
+                              </a>
                             ) : (
-                              <div className="h-16 w-16 shrink-0 rounded-md border border-dashed border-border" />
+                              <div className="flex h-24 w-24 shrink-0 items-center justify-center rounded-md border border-dashed border-border text-[10px] text-muted-foreground/60">
+                                sem foto
+                              </div>
                             )}
 
                             <div className="min-w-0 flex-1">
@@ -357,6 +371,22 @@ export default function Radar() {
                                 {o?.disponivel === true && (
                                   <span className="inline-flex items-center gap-1 rounded bg-emerald-50 px-1.5 py-0.5 text-[10.5px] font-medium text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-400">
                                     <PackageCheck className="h-3 w-3" /> em estoque
+                                  </span>
+                                )}
+                                {/* A nota NUNCA aparece sem a contagem: 5,0 com duas avaliações
+                                    engana mais do que informa. Poucas avaliações ficam em cinza
+                                    para a pessoa ver que a nota não tem lastro. */}
+                                {o?.avaliacao != null && (
+                                  <span
+                                    className={cn(
+                                      "inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10.5px] font-medium",
+                                      (o.avaliacoes ?? 0) >= 5
+                                        ? "bg-amber-50 text-amber-800 dark:bg-amber-950/40 dark:text-amber-300"
+                                        : "bg-muted text-muted-foreground",
+                                    )}
+                                    title={(o.avaliacoes ?? 0) >= 5 ? undefined : "poucas avaliações — a nota não tem lastro"}
+                                  >
+                                    <Star className="h-3 w-3" /> {textoNota(o.avaliacao, o.avaliacoes)}
                                   </span>
                                 )}
                                 <span>{al.texto}</span>
@@ -522,12 +552,30 @@ export default function Radar() {
                                 {ofertas[l.alvo.id].map((o) => (
                                   <tr key={o.id} className="border-t border-border/60">
                                     <td className="px-4 py-2">
-                                      <div className="max-w-[420px] truncate text-[12.5px] text-foreground" title={o.titulo}>{o.titulo}</div>
-                                      <div className="text-[11px] text-muted-foreground">
-                                        {o.motivos?.slice(0, 3).join(" · ") || "—"}
-                                        {!!o.conferir?.length && (
-                                          <span className="text-amber-700 dark:text-amber-400"> · conferir: {o.conferir.join(", ")}</span>
+                                      <div className="flex items-start gap-2">
+                                        {o.imagem_url && (
+                                          <img
+                                            src={o.imagem_url}
+                                            alt=""
+                                            loading="lazy"
+                                            onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = "none"; }}
+                                            className="h-10 w-10 shrink-0 rounded border border-border bg-white object-contain p-0.5"
+                                          />
                                         )}
+                                        <div className="min-w-0">
+                                          <div className="max-w-[380px] truncate text-[12.5px] text-foreground" title={o.titulo}>{o.titulo}</div>
+                                          <div className="text-[11px] text-muted-foreground">
+                                            {o.avaliacao != null && (
+                                              <span className={cn("mr-1", (o.avaliacoes ?? 0) >= 5 ? "text-amber-700 dark:text-amber-400" : "")}>
+                                                {textoNota(o.avaliacao, o.avaliacoes)} ·
+                                              </span>
+                                            )}
+                                            {o.motivos?.slice(0, 3).join(" · ") || "—"}
+                                            {!!o.conferir?.length && (
+                                              <span className="text-amber-700 dark:text-amber-400"> · conferir: {o.conferir.join(", ")}</span>
+                                            )}
+                                          </div>
+                                        </div>
                                       </div>
                                     </td>
                                     <td className="px-3 py-2 text-[11.5px] text-muted-foreground">

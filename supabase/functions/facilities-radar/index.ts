@@ -64,7 +64,7 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.0";
 import { requireUser } from "../_shared/auth.ts";
 import { generateJSON } from "../_shared/gemini.ts";
 import {
-  avaliar, chaveDoProduto, classificar, condicaoDoTitulo, disponibilidade, economiaDe, norm, pisoDePreco, totalDaOferta,
+  avaliar, chaveDoProduto, classificar, condicaoDoTitulo, disponibilidade, economiaDe, emCentavos, norm, pisoDePreco, totalDaOferta,
   type AlvoSpecs, type OfertaBruta,
 } from "../_shared/radar-precos.ts";
 
@@ -235,11 +235,48 @@ const LOJAS: Record<string, {
  * a URL está malformada, se o site bloqueou ou se o crédito acabou — três
  * problemas com três soluções diferentes.
  */
-async function firecrawl(url: string, waitFor?: number): Promise<{ markdown: string; erro: string | null }> {
+/**
+ * O CEP do escritório. Sem ele, nenhuma loja brasileira mostra frete: todas
+ * pedem "informe seu CEP" antes de calcular. É por isso que, até aqui, o frete
+ * só aparecia quando era grátis e estava escrito na vitrine.
+ */
+const CEP_DESTINO = (Deno.env.get("RADAR_CEP") ?? "29050780").replace(/\D/g, "");
+
+/**
+ * Digitar o CEP na página, com UM seletor para todas as lojas.
+ *
+ * A tentação é escrever um seletor por loja — e é a decisão errada. Seriam nove
+ * seletores para manter, cada um quebrando calado na primeira reforma de layout
+ * do site, e o sintoma seria "frete não informado", que é indistinguível do
+ * comportamento normal. Um seletor genérico com o casamento por atributo do CSS
+ * (`i` = ignora maiúscula) pega o padrão que as lojas brasileiras repetem:
+ * um input cujo id, nome ou placeholder tem "cep".
+ *
+ * Se não achar, a ação falha e a leitura é refeita sem ela — custa uma segunda
+ * raspagem, e só nos poucos anúncios que chegam à confirmação.
+ */
+const ACOES_CEP = [
+  { type: "wait", milliseconds: 1500 },
+  { type: "click", selector: 'input[id*="cep" i], input[name*="cep" i], input[placeholder*="cep" i]' },
+  { type: "write", text: CEP_DESTINO },
+  { type: "press", key: "Enter" },
+  { type: "wait", milliseconds: 3500 },
+];
+
+async function firecrawl(
+  url: string,
+  waitFor?: number,
+  opts: { comCep?: boolean } = {},
+): Promise<{ markdown: string; erro: string | null }> {
   const key = Deno.env.get("CHAVE_API_FIRCRAWL") ?? Deno.env.get("FIRECRAWL_API_KEY");
   if (!key) return { markdown: "", erro: "CHAVE_API_FIRCRAWL não configurada" };
   const ctrl = new AbortController();
-  const t = setTimeout(() => ctrl.abort(), 60_000);
+  /* O TETO DE ESPERA É POR TIPO DE LEITURA, e essa distinção custou uma
+     varredura de 139s: subi o timeout para 90s por causa das ações do CEP e,
+     como as fontes rodam em paralelo, a rodada inteira passou a poder esperar
+     90s + extração. Busca é leitura simples e tem de ser rápida; só a
+     confirmação com CEP — que digita e espera a loja recalcular — merece folga. */
+  const t = setTimeout(() => ctrl.abort(), opts.comCep ? 75_000 : 45_000);
   try {
     const r = await fetch("https://api.firecrawl.dev/v2/scrape", {
       method: "POST",
@@ -251,6 +288,7 @@ async function firecrawl(url: string, waitFor?: number): Promise<{ markdown: str
         proxy: "auto",
         location: { country: "BR", languages: ["pt-BR"] },
         ...(waitFor ? { waitFor } : {}),
+        ...(opts.comCep ? { actions: ACOES_CEP } : {}),
       }),
       signal: ctrl.signal,
     });
@@ -274,6 +312,9 @@ const SCHEMA_ANUNCIOS = {
           titulo: { type: "string" },
           preco: { type: "number", description: "Preço à vista em reais, só o número" },
           url: { type: "string", description: "Link absoluto do produto" },
+          imagem_url: { type: "string", description: "Link absoluto da FOTO do produto. Ignore ícones, logos e banners." },
+          avaliacao: { type: "number", description: "Nota do produto de 0 a 5, se a página mostrar" },
+          avaliacoes: { type: "number", description: "Quantas pessoas avaliaram, se a página mostrar" },
           disponivel: { type: "boolean", description: "false SÓ se a página disser que está esgotado/indisponível. Omita se não falar." },
           frete_gratis: { type: "boolean", description: "true SÓ se a página disser frete grátis. Omita se não falar." },
           frete_valor: { type: "number", description: "Valor do frete em reais, se a página mostrar um número. Omita se não mostrar." },
@@ -295,6 +336,9 @@ const SCHEMA_CONFIRMACAO = {
     frete_gratis: { type: "boolean" },
     frete_valor: { type: "number", description: "Valor do frete em reais, se a página mostrar. Omita se exigir CEP e não houver número na tela." },
     frete_texto: { type: "string", description: "O que a página diz sobre frete, literalmente" },
+    avaliacao: { type: "number", description: "Nota do produto de 0 a 5, se a página mostrar" },
+    avaliacoes: { type: "number", description: "Quantas pessoas avaliaram" },
+    imagem_url: { type: "string", description: "Link absoluto da foto principal do produto" },
     observacao: { type: "string", description: "Algo que desaconselhe a compra (pré-venda, entrega em 30 dias, vendedor sem reputação)" },
   },
   required: ["disponivel"],
@@ -308,11 +352,12 @@ const SCHEMA_CONFIRMACAO = {
  */
 async function extrairDaLoja(markdown: string, baseUrl: string, loja: string): Promise<OfertaBruta[]> {
   if (!markdown || markdown.length < 100) return [];
-  const trecho = markdown.length > 22000 ? markdown.slice(0, 22000) : markdown;
+  const trecho = markdown.length > 16000 ? markdown.slice(0, 16000) : markdown;
   try {
     const out = await generateJSON<{
       itens: Array<{
-        titulo: string; preco: number; url?: string;
+        titulo: string; preco: number; url?: string; imagem_url?: string;
+        avaliacao?: number; avaliacoes?: number;
         disponivel?: boolean; frete_gratis?: boolean; frete_valor?: number; frete_texto?: string;
       }>;
     }>({
@@ -361,7 +406,13 @@ async function extrairDaLoja(markdown: string, baseUrl: string, loja: string): P
               : `t:${norm(String(i.titulo)).slice(0, 160)}`,
           titulo: String(i.titulo),
           url,
+          /* A foto vem resolvida contra a URL da busca porque metade das lojas
+             devolve caminho relativo, e `<img src="/img/x.jpg">` na tela do Hub
+             não carrega nada — quebraria em silêncio, com o alt vazio. */
+          imagem_url: i.imagem_url ? (() => { try { return new URL(i.imagem_url!, baseUrl).toString(); } catch { return null; } })() : null,
           preco: Number(i.preco),
+          avaliacao: typeof i.avaliacao === "number" && i.avaliacao > 0 && i.avaliacao <= 5 ? i.avaliacao : null,
+          avaliacoes: typeof i.avaliacoes === "number" && i.avaliacoes > 0 ? Math.round(i.avaliacoes) : null,
           vendedor: LOJAS[loja]?.nome ?? loja,
           reputacao: LOJAS[loja]?.reputacao ?? null,
           condicao: condicaoDoTitulo(String(i.titulo)),
@@ -389,6 +440,9 @@ export interface Confirmacao {
   preco: number | null;
   frete_valor: number | null;
   frete_texto: string | null;
+  avaliacao: number | null;
+  avaliacoes: number | null;
+  imagem_url: string | null;
   observacao: string | null;
   erro: string | null;
 }
@@ -465,8 +519,18 @@ async function resolverLink(url: string): Promise<{ url: string; loja: string | 
 
 async function confirmarNoAnuncio(urlOriginal: string): Promise<Confirmacao & { url: string }> {
   const { url, loja } = await resolverLink(urlOriginal);
-  const vazio: Confirmacao & { url: string } = { url, loja, disponivel: null, preco: null, frete_valor: null, frete_texto: null, observacao: null, erro: null };
-  const { markdown, erro } = await firecrawl(url, 3000);
+  const vazio: Confirmacao & { url: string } = { url, loja, disponivel: null, preco: null, frete_valor: null, frete_texto: null, avaliacao: null, avaliacoes: null, imagem_url: null, observacao: null, erro: null };
+
+  /* Primeiro com o CEP digitado, que é a única forma de a loja mostrar frete.
+     Se a ação falhar — input com outro nome, página que não carregou a tempo —,
+     relê sem ela: melhor um anúncio confirmado sem frete do que anúncio nenhum.
+     A segunda leitura só acontece nos poucos que chegam à confirmação. */
+  let { markdown, erro } = await firecrawl(url, 3000, { comCep: true });
+  let comCep = !erro && !!markdown;
+  if (!comCep) {
+    ({ markdown, erro } = await firecrawl(url, 3000));
+    comCep = false;
+  }
   if (erro) return { ...vazio, erro };
   if (!markdown || markdown.length < 100) return { ...vazio, erro: "a página do anúncio abriu vazia" };
 
@@ -494,10 +558,17 @@ async function confirmarNoAnuncio(urlOriginal: string): Promise<Confirmacao & { 
             "Você lê a página de UM produto em loja brasileira e responde se dá para comprar agora.\n" +
             "`disponivel` = false quando houver 'esgotado', 'indisponível', 'produto indisponível', " +
             "'avise-me quando chegar', 'sem estoque', ou quando não houver botão de compra.\n" +
+            (comCep
+              ? `O CEP ${CEP_DESTINO} JÁ FOI DIGITADO nesta página: se houver uma tabela ou lista de ` +
+                "opções de entrega, pegue o MENOR valor de frete e ponha em `frete_valor` " +
+                "(0 se disser grátis). Ignore retirada em loja, que não é frete.\n"
+              : "") +
             "NÃO invente frete: só preencha `frete_valor` se houver um número na página. " +
-            "Loja que só calcula frete depois do CEP não tem valor — deixe em branco.",
+            "Loja que só calcula frete depois do CEP não tem valor — deixe em branco.\n" +
+            "Preencha `avaliacao` (0 a 5) e `avaliacoes` (quantidade) só se a página mostrar, " +
+            "e `imagem_url` com a foto principal do produto.",
         },
-        { role: "user", content: markdown.slice(0, 18000) },
+        { role: "user", content: markdown.slice(0, 14000) },
       ],
       responseSchema: SCHEMA_CONFIRMACAO,
       temperature: 0,
@@ -515,11 +586,14 @@ async function confirmarNoAnuncio(urlOriginal: string): Promise<Confirmacao & { 
       : out?.disponivel === true ? true
       : null;
     return {
-      url,
+      url, loja,
       disponivel: disp,
       preco: typeof out?.preco === "number" && out.preco > 0 ? out.preco : null,
       frete_valor: out?.frete_gratis === true ? 0 : (typeof out?.frete_valor === "number" ? out.frete_valor : null),
       frete_texto: out?.frete_texto ?? (out?.frete_gratis === true ? "Frete grátis" : null),
+      avaliacao: typeof out?.avaliacao === "number" && out.avaliacao > 0 && out.avaliacao <= 5 ? out.avaliacao : null,
+      avaliacoes: typeof out?.avaliacoes === "number" && out.avaliacoes > 0 ? Math.round(out.avaliacoes) : null,
+      imagem_url: out?.imagem_url ?? null,
       observacao: out?.observacao ?? null,
       erro: null,
     };
@@ -756,6 +830,8 @@ async function varrerAlvo(
         condicao: condicaoDoTitulo(o.titulo, o.condicao),
         preco: o.preco,
         preco_total: av.total,
+        avaliacao: o.avaliacao ?? null,
+        avaliacoes: o.avaliacoes ?? null,
         frete_gratis: frete === 0,
         frete_valor: frete,
         frete_texto: o.frete_texto ?? null,
@@ -912,7 +988,7 @@ Deno.serve(async (req) => {
       /* Seis por rodada, não doze: com nove em paralelo, sete deram erro de leitura
          na medição de 26/08/2026 — o Firecrawl não gosta de rajada. Quem não
          couber fica na fila e é pego na rodada seguinte. */
-      const limite = Number(body?.limite ?? 6);
+      const limite = Number(body?.limite ?? 4);
       let q = supabase
         .from("facilities_radar_alertas")
         .select("id, alvo_id, oferta_id, preco_alvo, texto, tipo, facilities_radar_ofertas(id,url,titulo,preco,conferir), facilities_radar_alvos(quantidade)")
@@ -938,8 +1014,15 @@ Deno.serve(async (req) => {
         return json({ ok: true, confirmados: 0, desistidos: velhos?.length ?? 0, mensagem: "Nada na fila de confirmação." });
       }
 
-      // Em paralelo, pelo mesmo motivo das fontes: é espera de rede.
-      const saidas = await Promise.all(fila.map(async (al: any) => {
+      /* EM LEVAS DE DOIS, e não tudo de uma vez. Confirmar seis em paralelo
+         matou o worker com WORKER_RESOURCE_LIMIT: cada uma pode fazer DUAS
+         raspagens (com CEP e, se falhar, sem) e segura o markdown inteiro na
+         memória enquanto a IA lê. Paralelismo aqui não economiza tanto quanto
+         nas fontes — são páginas menores — e o custo de errar é a rodada toda
+         morrer sem devolver relatório. */
+      const saidas: any[] = [];
+      const LEVA = 2;
+      const confirmarUm = async (al: any) => {
         const of = al.facilities_radar_ofertas;
         if (!of?.url) return { id: al.id, desfecho: "sem link" };
 
@@ -975,6 +1058,12 @@ Deno.serve(async (req) => {
           frete_valor: c.frete_valor, frete_texto: c.frete_texto,
           frete_gratis: c.frete_valor === 0,
           disponivel: c.disponivel ?? null,
+          /* A confirmação COMPLETA o que a busca leu, não apaga. Foto e nota às
+             vezes vêm melhor da página de busca, às vezes da do produto —
+             sobrescrever com null perderia o que já estava certo. */
+          ...(c.avaliacao != null ? { avaliacao: c.avaliacao } : {}),
+          ...(c.avaliacoes != null ? { avaliacoes: c.avaliacoes } : {}),
+          ...(c.imagem_url ? { imagem_url: c.imagem_url } : {}),
           conferir,
           // Guarda o endereço RESOLVIDO: o aviso passa a levar direto à loja,
           // e não ao redirecionador do comparador. E o vendedor deixa de ser
@@ -999,7 +1088,13 @@ Deno.serve(async (req) => {
           texto: al.texto + (c.observacao ? ` · ${c.observacao}` : ""),
         }).eq("id", al.id);
         return { id: al.id, desfecho: "confirmado" };
-      }));
+      };
+
+      for (let i = 0; i < fila.length; i += LEVA) {
+        // O relógio manda: o que não couber fica na fila e é pego na próxima.
+        if (Date.now() - t0 > ORCAMENTO_MS) break;
+        saidas.push(...await Promise.all(fila.slice(i, i + LEVA).map(confirmarUm)));
+      }
 
       /* O RELATÓRIO CARREGA O ERRO INTEIRO, não só a contagem. "erro: 7" não
          diz se foi bloqueio de robô, página fora do ar ou crédito acabado — e

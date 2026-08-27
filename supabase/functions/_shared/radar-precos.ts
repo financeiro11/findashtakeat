@@ -83,6 +83,10 @@ export interface OfertaBruta {
   reputacao?: number | null;
   vendas?: number | null;
   condicao?: Condicao | null;
+  /** Nota do produto, 0 a 5. Só vale lida junto de `avaliacoes`. */
+  avaliacao?: number | null;
+  /** Quantas pessoas avaliaram. É o que dá peso à nota. */
+  avaliacoes?: number | null;
   /**
    * `false` reprova o anúncio. `null` = a fonte não disse, e aí o radar não
    * inventa: segue, mas manda conferir.
@@ -372,7 +376,40 @@ export function disponibilidade(titulo: string, texto?: string | null, informada
  */
 export function totalDaOferta(o: OfertaBruta): { total: number; frete: number | null; frete_conhecido: boolean } {
   const frete = o.frete_gratis ? 0 : (typeof o.frete_valor === "number" && o.frete_valor >= 0 ? o.frete_valor : null);
-  return { total: o.preco + (frete ?? 0), frete, frete_conhecido: frete != null };
+  // Em centavos: sem o arredondamento sai "R$ 3.899,0000000000005" no banco e
+  // na tela — número que faz a pessoa duvidar do resto da conta.
+  return { total: emCentavos(o.preco + (frete ?? 0)), frete, frete_conhecido: frete != null };
+}
+
+/** Arredonda dinheiro para duas casas, de uma vez por todas. */
+export function emCentavos(v: number): number {
+  return Math.round(v * 100) / 100;
+}
+
+/**
+ * Abaixo disto a nota do produto não conta.
+ *
+ * "5,0 estrelas" com duas avaliações não é melhor que 4,6 com mil — é só uma
+ * amostra pequena demais, e vendedor sabe disso. Nota sem massa é ruído com
+ * cara de sinal, e sinal falso é o que o radar menos pode produzir.
+ */
+export const MIN_AVALIACOES = 5;
+
+/** O que a nota diz sobre o produto: `null` quando ela não diz nada de útil. */
+export function pesoDaNota(avaliacao?: number | null, avaliacoes?: number | null): number | null {
+  if (avaliacao == null || !(avaliacoes ?? 0) || (avaliacoes ?? 0) < MIN_AVALIACOES) return null;
+  if (avaliacao >= 4.5) return 6;
+  if (avaliacao >= 4.0) return 3;
+  if (avaliacao >= 3.0) return 0;
+  return -8; // produto mal avaliado com massa de avaliações é aviso, não detalhe
+}
+
+/** "4,6 ★ (1.842)" — a nota nunca aparece sem a contagem ao lado. */
+export function textoNota(avaliacao?: number | null, avaliacoes?: number | null): string | null {
+  if (avaliacao == null) return null;
+  const n = avaliacao.toLocaleString("pt-BR", { minimumFractionDigits: 1, maximumFractionDigits: 1 });
+  if (!avaliacoes) return `${n} ★ (sem contagem)`;
+  return `${n} ★ (${avaliacoes.toLocaleString("pt-BR")})`;
 }
 
 /** Quanto se deixa de gastar comprando por este total em vez de gastar o teto. */
@@ -548,6 +585,17 @@ export function avaliar(alvo: AlvoSpecs, precoAlvo: number, o: OfertaBruta): Ava
   // entre "o anúncio existe" e "dá para comprar agora".
   if (o.disponivel === true) score += 5;
   else conferir.push("se está em estoque");
+
+  /* A nota do produto entra com peso próprio — e com o freio da amostra. Um
+     notebook 4,7 com 1.800 avaliações merece subir na frente de um sem
+     histórico nenhum; um 2,8 com 400 avaliações é aviso, não detalhe. */
+  const peso = pesoDaNota(o.avaliacao, o.avaliacoes);
+  if (peso == null) conferir.push("avaliações do produto");
+  else {
+    score += peso;
+    if (peso > 0) motivos.push(`${textoNota(o.avaliacao, o.avaliacoes)}`);
+    if (peso < 0) motivos.push(`⚠ mal avaliado: ${textoNota(o.avaliacao, o.avaliacoes)}`);
+  }
   score -= conferir.length * 4; // cada coisa não confirmada tira confiança
   score = Math.max(1, Math.min(100, score));
 

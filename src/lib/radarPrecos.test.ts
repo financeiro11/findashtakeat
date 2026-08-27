@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   lerSpecs, avaliar, classificar, pisoDePreco, condicaoDoTitulo, textoWhats, resumoDoAlvo,
-  disponibilidade, totalDaOferta, economiaDe,
+  disponibilidade, totalDaOferta, economiaDe, pesoDaNota, textoNota,
   type AlvoSpecs, type OfertaBruta,
 } from "./radarPrecos";
 
@@ -151,12 +151,15 @@ describe("avaliar — o que TEM de passar", () => {
   it("aprova o anúncio certo e explica por quê", () => {
     const r = avaliar(ALVO, TETO, oferta("Notebook Lenovo IdeaPad i5-1235U 16GB RAM 512GB SSD", 2590, {
       reputacao: 0.9, frete_gratis: true, vendas: 300, condicao: "novo", disponivel: true,
+      avaliacao: 4.6, avaliacoes: 1842,
     }));
     expect(r.aprovado).toBe(true);
     expect(r.recusa).toBeNull();
     expect(r.motivos.join(" ")).toMatch(/abaixo do teto/);
     expect(r.motivos.join(" ")).toMatch(/frete grátis/);
-    expect(r.conferir).toHaveLength(0); // nada pendente: estoque e frete confirmados
+    expect(r.motivos.join(" ")).toMatch(/4,6 ★/);
+    // Nada pendente: specs, estoque, frete e avaliações, tudo confirmado.
+    expect(r.conferir).toHaveLength(0);
     expect(r.score).toBeGreaterThan(70);
   });
 
@@ -278,6 +281,50 @@ describe("frete — entra na conta, e desconhecido não vira zero", () => {
   it("frete desconhecido vai para 'conferir'", () => {
     const r = avaliar(ALVO, TETO, oferta("Notebook Dell i5 16GB RAM 512GB SSD", 2400, { disponivel: true }));
     expect(r.conferir).toContain("valor do frete");
+  });
+});
+
+describe("nota do produto — só vale com massa de avaliações", () => {
+  it("ignora nota alta com amostra minúscula", () => {
+    // "5,0 estrelas" com duas avaliações é ruído com cara de sinal.
+    expect(pesoDaNota(5.0, 2)).toBeNull();
+    expect(pesoDaNota(4.9, 4)).toBeNull();
+  });
+
+  it("premia nota alta com massa", () => {
+    expect(pesoDaNota(4.7, 1800)).toBe(6);
+    expect(pesoDaNota(4.2, 300)).toBe(3);
+  });
+
+  it("penaliza produto mal avaliado com massa — é aviso, não detalhe", () => {
+    expect(pesoDaNota(2.8, 400)).toBe(-8);
+  });
+
+  it("nota ausente não é zero: é 'não sei'", () => {
+    expect(pesoDaNota(null, 900)).toBeNull();
+    expect(pesoDaNota(4.8, null)).toBeNull();
+  });
+
+  it("a nota nunca aparece na tela sem a contagem ao lado", () => {
+    expect(textoNota(4.6, 1842)).toBe("4,6 ★ (1.842)");
+    expect(textoNota(5, 0)).toBe("5,0 ★ (sem contagem)");
+    expect(textoNota(null, 10)).toBeNull();
+  });
+
+  it("bem avaliado ganha de sem avaliação, tudo o mais igual", () => {
+    const base = { condicao: "novo" as const, reputacao: 0.8, frete_gratis: true, disponivel: true };
+    const bom = avaliar(ALVO, TETO, oferta("Notebook Dell i5 16GB RAM 512GB SSD", 2500, { ...base, avaliacao: 4.7, avaliacoes: 1800 }));
+    const mudo = avaliar(ALVO, TETO, oferta("Notebook Dell i5 16GB RAM 512GB SSD", 2500, base));
+    expect(bom.score).toBeGreaterThan(mudo.score);
+    expect(mudo.conferir).toContain("avaliações do produto");
+  });
+
+  it("mal avaliado perde para quem não tem nota nenhuma", () => {
+    const base = { condicao: "novo" as const, reputacao: 0.8, frete_gratis: true, disponivel: true };
+    const ruim = avaliar(ALVO, TETO, oferta("Notebook Dell i5 16GB RAM 512GB SSD", 2500, { ...base, avaliacao: 2.5, avaliacoes: 400 }));
+    const mudo = avaliar(ALVO, TETO, oferta("Notebook Dell i5 16GB RAM 512GB SSD", 2500, base));
+    expect(ruim.score).toBeLessThan(mudo.score);
+    expect(ruim.motivos.join(" ")).toMatch(/mal avaliado/);
   });
 });
 

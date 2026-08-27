@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Loader2, Sparkles, Wand2 } from "lucide-react";
+import { Loader2, Search, Sparkles, TrendingDown, Wand2 } from "lucide-react";
 import { toast } from "sonner";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
@@ -8,6 +8,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/hooks/useAuth";
+import { cn } from "@/lib/utils";
 import { invocar } from "@/lib/erroEdge";
 import { db, parseValor, fmtBRL, CATEGORIAS, type Solicitacao } from "./lib";
 import { resumoDoAlvo, fonteLabel, pisoDePreco, type AlvoSpecs } from "@/lib/radarPrecos";
@@ -58,10 +59,31 @@ interface Props {
   open: boolean;
   onOpenChange: (v: boolean) => void;
   onSaved: () => void;
+  /** Roda varredura + conferência já para este alvo, e só volta quando terminam. */
+  onBuscarAgora?: (alvoId: string) => Promise<void>;
 }
 
-export function NovoAlvoDialog({ alvo, open, onOpenChange, onSaved }: Props) {
+interface Sugestao {
+  pode: boolean;
+  dias: number;
+  minimo: number;
+  tipico: number;
+  teto: number;
+  veredito: "abaixo_do_minimo" | "apertado" | "bom" | "folgado" | null;
+  texto: string;
+}
+
+const VEREDITO_ESTILO: Record<string, string> = {
+  abaixo_do_minimo: "border-rose-200 bg-rose-50/60 text-rose-800 dark:border-rose-900 dark:bg-rose-950/30 dark:text-rose-300",
+  apertado: "border-amber-200 bg-amber-50/60 text-amber-800 dark:border-amber-900 dark:bg-amber-950/30 dark:text-amber-300",
+  bom: "border-emerald-200 bg-emerald-50/60 text-emerald-800 dark:border-emerald-900 dark:bg-emerald-950/30 dark:text-emerald-300",
+  folgado: "border-amber-200 bg-amber-50/60 text-amber-800 dark:border-amber-900 dark:bg-amber-950/30 dark:text-amber-300",
+};
+
+export function NovoAlvoDialog({ alvo, open, onOpenChange, onSaved, onBuscarAgora }: Props) {
   const { profile } = useAuth();
+  const [sugestao, setSugestao] = useState<Sugestao | null>(null);
+  const [buscando, setBuscando] = useState(false);
   const [pedido, setPedido] = useState("");
   const [linkRef, setLinkRef] = useState("");
   const [titulo, setTitulo] = useState("");
@@ -101,6 +123,23 @@ export function NovoAlvoDialog({ alvo, open, onOpenChange, onSaved }: Props) {
 
   const preco = parseValor(precoTxt);
 
+  /* A CURVA OPINA SOBRE O TETO — mas só num alvo que já existe, porque só ele
+     tem histórico. Roda ao abrir e de novo quando o valor digitado muda: o
+     Facilities precisa ver na hora que "R$ 3.000" nunca vai disparar, não
+     descobrir isso três semanas depois olhando uma aba vazia. */
+  useEffect(() => {
+    if (!open || !alvo) { setSugestao(null); return; }
+    let vivo = true;
+    const t = setTimeout(() => {
+      invocar<any>(supabase.functions.invoke("facilities-radar", {
+        body: { action: "sugerir_teto", alvo_id: alvo.id, preco_alvo: preco || undefined },
+      }))
+        .then((r) => { if (vivo) setSugestao(r as Sugestao); })
+        .catch(() => { /* sugestão é ajuda, não requisito: falhou, some */ });
+    }, 500); // espera a digitação parar
+    return () => { vivo = false; clearTimeout(t); };
+  }, [open, alvo, preco]);
+
   async function interpretar() {
     if (!pedido.trim()) { toast.error("Escreva o que você quer monitorar."); return; }
     setLendo(true);
@@ -119,7 +158,16 @@ export function NovoAlvoDialog({ alvo, open, onOpenChange, onSaved }: Props) {
     } finally { setLendo(false); }
   }
 
-  async function salvar() {
+  /**
+   * Salva e, opcionalmente, já sai buscando.
+   *
+   * O "buscar agora" existe para o caso real: alguém chega na mesa do Facilities
+   * e pergunta quanto custa um monitor. Esperar o cron das 08:45 não serve — ele
+   * precisa de uma primeira noção na hora. A varredura já roda encadeada com a
+   * conferência, então em torno de dois minutos ele tem preço com estoque
+   * confirmado, não só uma lista de anúncios.
+   */
+  async function salvar(buscarDepois = false) {
     if (!specs) { toast.error("Interprete o pedido antes de salvar — é dele que saem os filtros."); return; }
     if (!preco || preco <= 0) { toast.error("Defina o preço-teto."); return; }
     if (!fontes.length) { toast.error("Escolha pelo menos uma fonte."); return; }
@@ -135,11 +183,23 @@ export function NovoAlvoDialog({ alvo, open, onOpenChange, onSaved }: Props) {
          transfere a autoria para quem passou por ali. */
       ...(alvo ? {} : { criado_por: profile?.nome ?? null }),
     };
-    const { error } = alvo
-      ? await db.from("facilities_radar_alvos").update(linha).eq("id", alvo.id)
-      : await db.from("facilities_radar_alvos").insert(linha);
+    const { data, error } = alvo
+      ? await db.from("facilities_radar_alvos").update(linha).eq("id", alvo.id).select("id").single()
+      : await db.from("facilities_radar_alvos").insert(linha).select("id").single();
     setSalvando(false);
     if (error) { toast.error(error.message); return; }
+
+    if (buscarDepois && onBuscarAgora && data?.id) {
+      /* O diálogo fecha ANTES da busca: são ~2 minutos, e travar o formulário
+         aberto todo esse tempo faria parecer que emperrou. A tela de trás mostra
+         o progresso e recarrega sozinha. */
+      onOpenChange(false);
+      onSaved();
+      setBuscando(true);
+      try { await onBuscarAgora(data.id); } finally { setBuscando(false); }
+      return;
+    }
+
     toast.success(alvo ? "Alvo atualizado." : "Alvo criado. O radar começa a olhar na próxima varredura.");
     onOpenChange(false);
     onSaved();
@@ -240,6 +300,39 @@ export function NovoAlvoDialog({ alvo, open, onOpenChange, onSaved }: Props) {
                   é acessório ou anúncio isca.
                 </p>
               )}
+
+              {sugestao && (
+                <div className={cn(
+                  "mt-2 rounded-md border p-2.5 text-[11.5px]",
+                  sugestao.veredito ? VEREDITO_ESTILO[sugestao.veredito] : "border-border bg-muted/40 text-muted-foreground",
+                )}>
+                  <div className="flex items-start gap-1.5">
+                    <TrendingDown className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                    <div className="min-w-0">
+                      <div>{sugestao.texto}</div>
+                      {sugestao.pode && (
+                        <div className="mt-1.5 flex flex-wrap items-center gap-2">
+                          <span className="text-[11px] opacity-80">
+                            {sugestao.dias} dia(s) medidos · menor {fmtBRL(sugestao.minimo)} · típico {fmtBRL(sugestao.tipico)}
+                          </span>
+                          {/* Sugere, não impõe: o botão preenche o campo e quem
+                              confirma é ele. A IA nunca decide o número — o
+                              número vem da regra, e a decisão vem da pessoa. */}
+                          {Math.round(sugestao.teto) !== Math.round(preco ?? 0) && (
+                            <button
+                              type="button"
+                              onClick={() => setPrecoTxt(String(sugestao.teto))}
+                              className="rounded border border-current/30 px-1.5 py-0.5 text-[11px] font-medium hover:bg-current/10"
+                            >
+                              usar {fmtBRL(sugestao.teto)}
+                            </button>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              )}
             </div>
             <div>
               <Label htmlFor="qtd">Quantidade</Label>
@@ -296,12 +389,19 @@ export function NovoAlvoDialog({ alvo, open, onOpenChange, onSaved }: Props) {
           </div>
         </div>
 
-        <DialogFooter>
+        <DialogFooter className="gap-2 sm:justify-between">
           <Button variant="ghost" onClick={() => onOpenChange(false)}>Cancelar</Button>
-          <Button onClick={salvar} disabled={salvando || !specs}>
-            {salvando && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-            {alvo ? "Salvar" : "Criar alvo"}
-          </Button>
+          <div className="flex flex-wrap items-center gap-2">
+            <Button variant="outline" onClick={() => salvar(false)} disabled={salvando || buscando || !specs}>
+              {salvando && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+              {alvo ? "Salvar" : "Criar e esperar o horário"}
+            </Button>
+            {/* O caminho de quem foi perguntado agora e precisa responder agora. */}
+            <Button onClick={() => salvar(true)} disabled={salvando || buscando || !specs}>
+              {(salvando || buscando) ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Search className="mr-2 h-4 w-4" />}
+              {alvo ? "Salvar e buscar agora" : "Criar e buscar agora"}
+            </Button>
+          </div>
         </DialogFooter>
       </DialogContent>
     </Dialog>

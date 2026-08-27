@@ -658,6 +658,116 @@ export function jaAvisado(preco: number, avisados: number[]): boolean {
   return avisados.some((p) => Math.abs(p - preco) < 0.01);
 }
 
+/* ------------------------------------------------------ sugestão de teto */
+
+/** Um dia da curva, como `facilities_radar_historico` devolve. */
+export interface PontoHistorico { dia: string; menor: number; mediana: number; ofertas: number }
+
+/**
+ * Antes disto a curva ainda é um chute com cara de dado.
+ *
+ * Duas semanas são ~28 varreduras: pegam fim de semana e meio de semana, e já
+ * mostram se o preço se mexe ou está parado. Com sete dias, um único dia
+ * atípico — uma Black Friday, um erro de precificação — arrasta o mínimo e a
+ * sugestão sai torta com toda a autoridade de um número.
+ */
+export const DIAS_PARA_SUGERIR = 14;
+
+/** Folga sobre o menor preço já visto. Ver `sugerirTeto`. */
+export const FOLGA_SUGESTAO = 0.05;
+
+export type VereditoTeto = "abaixo_do_minimo" | "apertado" | "bom" | "folgado";
+
+export interface SugestaoTeto {
+  /** Há histórico suficiente para opinar? */
+  pode: boolean;
+  dias: number;
+  /** Menor total já visto no período. */
+  minimo: number;
+  /** Preço típico: mediana das medianas diárias. */
+  tipico: number;
+  /** O teto que o radar sugere. */
+  teto: number;
+  /** Como o teto digitado se sai. `null` quando não há teto digitado. */
+  veredito: VereditoTeto | null;
+  /** Frase curta e determinística. A IA reescreve; o conteúdo é este. */
+  resumo: string;
+}
+
+/** Arredonda para cima na dezena de 50 — teto quebrado (R$ 4.063) não convence ninguém. */
+function ate50(v: number): number {
+  return Math.ceil(v / 50) * 50;
+}
+
+function medianaDe(nums: number[]): number {
+  if (!nums.length) return 0;
+  const o = [...nums].sort((a, b) => a - b);
+  const m = Math.floor(o.length / 2);
+  return o.length % 2 ? o[m] : (o[m - 1] + o[m]) / 2;
+}
+
+/**
+ * O que o histórico diz sobre quanto vale a pena pagar.
+ *
+ * ANCORADO NO MÍNIMO, NÃO NA MEDIANA. Um teto na mediana é o mesmo que não ter
+ * teto: metade dos dias bate, o Facilities recebe aviso todo dia e para de
+ * olhar. Ancorar no menor já visto e somar 5% dá um alvo que se sabe
+ * alcançável — já aconteceu — sem exigir que a melhor promoção do período se
+ * repita exatamente.
+ *
+ * ESTA FUNÇÃO NÃO CHAMA IA, e é de propósito: o número precisa ser o mesmo toda
+ * vez e precisa poder ser testado. A IA só transforma este `resumo` em frase.
+ */
+export function sugerirTeto(dados: PontoHistorico[], digitado?: number | null): SugestaoTeto {
+  const dias = dados.length;
+  if (dias === 0) {
+    return { pode: false, dias: 0, minimo: 0, tipico: 0, teto: 0, veredito: null, resumo: "sem histórico ainda" };
+  }
+
+  const menores = dados.map((d) => Number(d.menor)).filter((n) => n > 0);
+  const minimo = emCentavos(Math.min(...menores));
+  const tipico = emCentavos(medianaDe(dados.map((d) => Number(d.mediana)).filter((n) => n > 0)));
+  const teto = ate50(minimo * (1 + FOLGA_SUGESTAO));
+  const pode = dias >= DIAS_PARA_SUGERIR;
+
+  let veredito: VereditoTeto | null = null;
+  let resumo: string;
+
+  /* O TOPO DA FAIXA BOA NUNCA PODE FICAR ABAIXO DO TETO QUE A GENTE MESMO
+     SUGERE. Quando o alvo tem poucos anúncios por dia, a mediana diária cola no
+     mínimo e o "típico" fica ABAIXO do sugerido — e a regra passava a chamar de
+     "folgado" exatamente o valor que ela acabara de recomendar. Foi o que
+     apareceu no teste: sugeria R$ 4.000 e reprovava R$ 4.100. */
+  const limiteBom = Math.max(tipico, teto);
+
+  if (digitado && digitado > 0) {
+    if (digitado < minimo) veredito = "abaixo_do_minimo";
+    else if (digitado < teto) veredito = "apertado";
+    else if (digitado <= limiteBom) veredito = "bom";
+    else veredito = "folgado";
+  }
+
+  switch (veredito) {
+    case "abaixo_do_minimo":
+      // O erro mais caro de todos: o radar fica mudo e parece quebrado.
+      resumo = `teto de R$ ${digitado!.toFixed(0)} está abaixo do menor preço já visto (R$ ${minimo.toFixed(0)}) em ${dias} dia(s) — nesse valor o radar nunca vai avisar`;
+      break;
+    case "apertado":
+      resumo = `teto de R$ ${digitado!.toFixed(0)} só bate se a melhor promoção do período (R$ ${minimo.toFixed(0)}) se repetir; R$ ${teto.toFixed(0)} deixa uma folga de ${Math.round(FOLGA_SUGESTAO * 100)}%`;
+      break;
+    case "bom":
+      resumo = `teto de R$ ${digitado!.toFixed(0)} está na faixa certa: acima do menor preço já visto (R$ ${minimo.toFixed(0)}) e sem passar do típico (R$ ${tipico.toFixed(0)}) — avisa sem virar ruído`;
+      break;
+    case "folgado":
+      resumo = `teto de R$ ${digitado!.toFixed(0)} está acima do preço típico (R$ ${tipico.toFixed(0)}): mais da metade dos dias bate, e aviso todo dia é o mesmo que aviso nenhum`;
+      break;
+    default:
+      resumo = `em ${dias} dia(s), o menor preço foi R$ ${minimo.toFixed(0)} e o típico R$ ${tipico.toFixed(0)}`;
+  }
+
+  return { pode, dias, minimo, tipico, teto, veredito, resumo };
+}
+
 /* ---------------------------------------------- texto pronto para o WhatsApp */
 
 const brl = (v: number) => "R$ " + v.toLocaleString("pt-BR", { minimumFractionDigits: 0, maximumFractionDigits: 0 });

@@ -5,6 +5,7 @@
 //   { action: "interpretar", pedido, link_ref? }     → texto livre vira specs
 //   { action: "varrer",  alvo_id?, limite?, fontes? } → sai atrás de preço
 //   { action: "confirmar", alvo_id?, limite? }        → abre o anúncio e checa
+//   { action: "sugerir_teto", alvo_id, preco_alvo? }  → o que a curva diz do teto
 //
 // VARRER E CONFIRMAR SÃO DUAS METADES, e essa separação é o coração da coisa.
 // A varredura lê PÁGINAS DE BUSCA, que são baratas e mentem: mostram produto
@@ -62,9 +63,9 @@
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.0";
 import { requireUser } from "../_shared/auth.ts";
-import { generateJSON } from "../_shared/gemini.ts";
+import { generateJSON, generateText } from "../_shared/gemini.ts";
 import {
-  avaliar, chaveDoProduto, classificar, condicaoDoTitulo, disponibilidade, economiaDe, emCentavos, norm, pisoDePreco, totalDaOferta,
+  avaliar, chaveDoProduto, classificar, condicaoDoTitulo, disponibilidade, DIAS_PARA_SUGERIR, economiaDe, emCentavos, norm, pisoDePreco, sugerirTeto, totalDaOferta,
   type AlvoSpecs, type OfertaBruta,
 } from "../_shared/radar-precos.ts";
 
@@ -993,6 +994,50 @@ Deno.serve(async (req) => {
 
       const out = await interpretar(pedido, referencia);
       return json({ ok: true, ...out, leu_referencia: !!referencia, duracao_ms: Date.now() - t0 });
+    }
+
+    /* --------------------------------------------------- sugerir teto */
+    /* Os NÚMEROS saem da regra (`sugerirTeto`, testada, sempre igual); a IA só
+       transforma o `resumo` em uma frase que uma pessoa lê sem esforço. É o
+       mesmo desenho do Cartão e da Ponte: a IA nunca decide valor. Um teto que
+       varia entre chamadas seria impossível de defender numa reunião. */
+    if (action === "sugerir_teto") {
+      const alvoId = String(body?.alvo_id ?? "");
+      if (!alvoId) return json({ ok: false, erro: "Informe o alvo." }, 400);
+      const digitado = Number(body?.preco_alvo) || null;
+
+      const { data: hist, error: erroHist } = await supabase
+        .rpc("facilities_radar_historico", { p_alvo_id: alvoId, p_dias: 90 });
+      if (erroHist) throw new Error(erroHist.message);
+
+      const s = sugerirTeto((hist ?? []) as any, digitado);
+      if (!s.pode) {
+        return json({
+          ok: true, ...s,
+          texto: s.dias === 0
+            ? "Ainda não há histórico deste alvo. Depois de algumas varreduras eu consigo dizer se o teto está no lugar certo."
+            : `Só ${s.dias} dia(s) medidos — a partir de ${DIAS_PARA_SUGERIR} eu consigo sugerir um teto com base na curva.`,
+        });
+      }
+
+      let texto = s.resumo;
+      try {
+        texto = (await generateText({
+          messages: [
+            {
+              role: "system",
+              content:
+                "Você escreve UMA frase curta, em português do Brasil, para quem cuida de compras num escritório. " +
+                "Direto e sem jargão. NÃO invente número nenhum: use exatamente os que receber. " +
+                "Não repita 'segundo o histórico' nem comece com 'Com base em'.",
+            },
+            { role: "user", content: `Reescreva de forma natural, em uma frase: ${s.resumo}` },
+          ],
+          temperature: 0.3,
+        })).trim();
+      } catch { /* a frase é enfeite; os números é que decidem */ }
+
+      return json({ ok: true, ...s, texto, duracao_ms: Date.now() - t0 });
     }
 
     /* ------------------------------------------------------ confirmar */

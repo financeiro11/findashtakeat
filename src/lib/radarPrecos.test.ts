@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   lerSpecs, avaliar, classificar, pisoDePreco, condicaoDoTitulo, textoWhats, resumoDoAlvo,
-  disponibilidade, totalDaOferta, economiaDe, pesoDaNota, textoNota,
+  disponibilidade, totalDaOferta, economiaDe, pesoDaNota, textoNota, sugerirTeto,
   type AlvoSpecs, type OfertaBruta,
 } from "./radarPrecos";
 
@@ -394,6 +394,80 @@ describe("classificar — só avisa o que merece aviso", () => {
     const h = [{ preco: 2400, coletado_em: "2026-08-01" }, { preco: 2900, coletado_em: "2026-08-20" }];
     const r = classificar(2550, 3000, h);
     expect(r?.tipo).toBe("queda_forte");
+  });
+});
+
+describe("sugerirTeto — o número é regra, não opinião", () => {
+  /** 20 dias com mínimo 3.800 e típico ~4.200. */
+  const curva = Array.from({ length: 20 }, (_, i) => ({
+    dia: `2026-08-${String(i + 1).padStart(2, "0")}`,
+    menor: i === 7 ? 3800 : 3950 + i * 10,
+    mediana: 4200,
+    ofertas: 6,
+  }));
+
+  it("não opina com pouco histórico, mas já devolve os números", () => {
+    const s = sugerirTeto(curva.slice(0, 5));
+    expect(s.pode).toBe(false);
+    expect(s.dias).toBe(5);
+    expect(s.minimo).toBeGreaterThan(0);
+  });
+
+  it("libera a opinião a partir de 14 dias", () => {
+    expect(sugerirTeto(curva.slice(0, 13)).pode).toBe(false);
+    expect(sugerirTeto(curva.slice(0, 14)).pode).toBe(true);
+  });
+
+  it("ancora no menor preço + 5%, arredondado para cima", () => {
+    const s = sugerirTeto(curva);
+    expect(s.minimo).toBe(3800);
+    // 3800 × 1,05 = 3990 → sobe para os 50 seguintes
+    expect(s.teto).toBe(4000);
+  });
+
+  it("acusa o teto que nunca vai disparar — o erro mais caro", () => {
+    const s = sugerirTeto(curva, 3000);
+    expect(s.veredito).toBe("abaixo_do_minimo");
+    expect(s.resumo).toMatch(/nunca vai avisar/);
+  });
+
+  it("acusa o teto apertado, que só bate repetindo a melhor promoção", () => {
+    expect(sugerirTeto(curva, 3850).veredito).toBe("apertado");
+  });
+
+  it("aprova o teto na faixa entre o mínimo e o típico", () => {
+    expect(sugerirTeto(curva, 4100).veredito).toBe("bom");
+  });
+
+  it("acusa o teto folgado, que avisaria todo dia", () => {
+    const s = sugerirTeto(curva, 5000);
+    expect(s.veredito).toBe("folgado");
+    expect(s.resumo).toMatch(/aviso nenhum/);
+  });
+
+  it("o teto que a própria regra sugere jamais é reprovado por ela", () => {
+    // Parece óbvio e não era: com poucos anúncios por dia a mediana diária cola
+    // no mínimo, o "típico" fica ABAIXO do sugerido, e a regra passava a chamar
+    // de folgado justamente o valor que acabara de recomendar.
+    // Preço quase parado (~3.820) com um dia de queda: o mínimo puxa o teto
+    // sugerido para R$ 4.000, mas o típico fica em R$ 3.820.
+    const rala = Array.from({ length: 20 }, (_, i) => ({
+      dia: `2026-08-${String(i + 1).padStart(2, "0")}`,
+      menor: i === 8 ? 3800 : 3820,
+      mediana: i === 8 ? 3800 : 3820, // um anúncio por dia: mediana = menor
+      ofertas: 1,
+    }));
+    const s = sugerirTeto(rala);
+    expect(s.teto).toBe(4000);
+    expect(s.tipico).toBeLessThan(s.teto); // a faixa colapsou
+    expect(sugerirTeto(rala, s.teto).veredito).toBe("bom");
+  });
+
+  it("sem histórico não inventa número nenhum", () => {
+    const s = sugerirTeto([]);
+    expect(s.pode).toBe(false);
+    expect(s.teto).toBe(0);
+    expect(s.veredito).toBeNull();
   });
 });
 

@@ -50,6 +50,8 @@ interface PainelLinha {
   economia_realizada: number;
   /** Dias distintos com preço medido. Zero = a curva ainda é um ponto solto. */
   pontos_historico: number;
+  /** Menor total entre os que NÃO couberam no teto. Null quando algum coube. */
+  menor_fora_do_teto: number | null;
 }
 
 const TIPO_STYLE: Record<string, { label: string; cls: string; Icon: typeof TrendingDown }> = {
@@ -224,6 +226,10 @@ export default function Radar() {
 
   /* Alertas agrupados por alvo — é assim que a pessoa lê ("o que apareceu do
      notebook?"), e é assim que o texto do WhatsApp sai em uma mensagem só. */
+  /* SEMPRE DO MAIS BARATO PARA O MAIS CARO — dentro de cada alvo e entre os
+     alvos. É por preço que se decide a compra, então é a ordem em que a lista
+     tem de chegar; ordenar por data faria a pessoa ler tudo para achar o que
+     interessa. Compara pelo TOTAL (com frete), não pela etiqueta. */
   const porAlvo = useMemo(() => {
     const m = new Map<string, Alerta[]>();
     for (const a of alertas) {
@@ -231,7 +237,10 @@ export default function Radar() {
       arr.push(a);
       m.set(a.alvo_id, arr);
     }
-    return m;
+    const total = (a: Alerta) => Number(a.preco_total ?? a.preco);
+    for (const arr of m.values()) arr.sort((x, y) => total(x) - total(y));
+    // Os grupos também: o alvo com o achado mais barato aparece primeiro.
+    return new Map([...m.entries()].sort((a, b) => total(a[1][0]) - total(b[1][0])));
   }, [alertas]);
 
   const totalNovos = alertas.filter((a) => a.status === "novo").length;
@@ -520,6 +529,14 @@ export default function Radar() {
                             {fmtBRL(melhorTotal)}
                             {folga != null && <span className="ml-1 text-[11px] font-normal text-muted-foreground">−{Math.round(folga * 100)}%</span>}
                           </div>
+                        ) : l.menor_fora_do_teto ? (
+                          /* "Nada dentro dos filtros" faz a pessoa achar que o radar
+                             está quebrado. Dizer o preço do mais barato que apareceu
+                             muda o diagnóstico: o radar achou — o teto é que não
+                             alcança o mercado. */
+                          <div className="text-[12px] text-amber-700 dark:text-amber-400">
+                            nada no teto · menor: <span className="num font-semibold">{fmtBRL(Number(l.menor_fora_do_teto))}</span>
+                          </div>
                         ) : (
                           <div className="text-[12px] text-muted-foreground">nada dentro dos filtros</div>
                         )}
@@ -665,6 +682,7 @@ export default function Radar() {
         open={dialogAberto}
         onOpenChange={setDialogAberto}
         onSaved={() => { setOfertas({}); load(); }}
+        onBuscarAgora={varrer}
       />
     </div>
   );

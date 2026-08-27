@@ -16,6 +16,12 @@
 //   "excluir"  apaga títulos criados por aqui, pelo `codigo_lancamento_integracao`.
 //              Existe porque o primeiro envio real é um teste de 1 ou 2 títulos,
 //              e teste sem desfazer não é teste — é aposta.
+//   "excluir_competencia"  apaga a folha INTEIRA de uma competência.
+//              A tela só sabe desfazer o que ela mesma criou na sessão; quem
+//              recarregou a página perdeu a lista e ficaria apagando cem
+//              títulos à mão no ERP. As chaves são determinísticas
+//              (`FOLHA-<codigo>-<AAAA-MM>`), então dá para remontá-las a partir
+//              do espelho do RH sem depender de ter guardado nada.
 //
 // `codigos` restringe a um subconjunto de pessoas. É o que permite o teste
 // pequeno antes dos cem — e também deixa a tela mandar em pedaços, para uma
@@ -30,7 +36,7 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { requireUser } from "../_shared/auth.ts";
 import {
-  CONTA_CORRENTE_FOLHA, chaveDoTitulo, montarLote, montarTituloFolha,
+  CONTA_CORRENTE_FOLHA, chaveDoTitulo, integracaoFolhaDe, montarLote, montarTituloFolha,
   recusaDaFolha, resolvedorDeCategoria, soDigitos,
   type CadastroDoFornecedor,
   type ColaboradorDaFolha, type EstadoDaFolha, type ResolveDePara, type TituloDaFolha,
@@ -157,6 +163,61 @@ Deno.serve(async (req) => {
 
     if (!/^\d{4}-\d{2}$/.test(competencia)) {
       return json({ status: "erro", erro: "Competência inválida." }, 400);
+    }
+
+    /* ---------- excluir a competência inteira ---------- */
+    if (acao === "excluir_competencia") {
+      /* Varre TODO o espelho, não só o lote desta competência: quem foi
+         provisionado e depois desligado saiu do lote, mas o título dele
+         continua lá. Chave que não existe no Omie volta como "não encontrado",
+         que é resposta e não erro — e é separada na saída para a tela não
+         parecer um desastre quando na verdade não havia nada para apagar. */
+      const { data: pessoas } = await supabase.from("rh_colaboradores").select("codigo, nome");
+      const alvos = ((pessoas ?? []) as Record<string, unknown>[])
+        // Código vazio geraria "FOLHA--2026-08", que é truthy e não é chave de
+        // ninguém — filtra ANTES de montar, não depois.
+        .filter((p) => String(p.codigo ?? "").trim())
+        .map((p) => ({
+          nome: String(p.nome ?? "").trim(),
+          integracao: integracaoFolhaDe(String(p.codigo), competencia),
+        }));
+
+      const excluidos: string[] = [];
+      const naoEncontrados: string[] = [];
+      const recusados: { integracao: string; nome: string; erro: string }[] = [];
+
+      for (const a of alvos) {
+        try {
+          await omieCall("ExcluirContaPagar", { codigo_lancamento_integracao: a.integracao });
+          excluidos.push(a.integracao);
+        } catch (e) {
+          const msg = e instanceof Error ? e.message : String(e);
+          // "não existe" é o caso normal de quem nunca foi provisionado.
+          if (/não\s*(existe|foi\s*encontrad)|inexistente|not\s*found/i.test(msg)) {
+            naoEncontrados.push(a.integracao);
+          } else {
+            recusados.push({ integracao: a.integracao, nome: a.nome, erro: msg });
+            console.error(`ExcluirContaPagar ${a.integracao} (${a.nome}): ${msg}`);
+          }
+        }
+      }
+
+      /* A competência volta a "pendente": ela deixou de estar no ERP, e deixar
+         "enviada" faria a próxima pessoa ver "já foi" sobre uma folha vazia. */
+      if (excluidos.length) {
+        await supabase.from("folha_envios_omie")
+          .update({ estado: "pendente" })
+          .eq("competencia", `${competencia}-01`);
+      }
+
+      return json({
+        status: "ok",
+        acao,
+        competencia,
+        excluidos: excluidos.length,
+        nao_encontrados: naoEncontrados.length,
+        recusados,
+      });
     }
 
     /* ---------- montar o lote ---------- */

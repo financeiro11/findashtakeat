@@ -11,6 +11,11 @@
  *
  * Por isso o teste devolve as chaves criadas e um botão para apagá-las. Teste
  * sem desfazer é aposta.
+ *
+ * O desfazer da SESSÃO só alcança o que esta aba criou. Quem recarregou a
+ * página perdeu a lista e ficaria apagando cem títulos à mão no ERP — daí o
+ * "apagar a competência inteira", que remonta as chaves `FOLHA-` a partir do
+ * espelho do RH em vez de depender de tê-las guardado.
  */
 
 import { useState } from "react";
@@ -36,6 +41,10 @@ type Resposta = {
   /** As chaves `FOLHA-…` criadas — é por elas que o teste é desfeito. */
   integracoes?: string[];
   resultados?: Resultado[];
+  /** Só de `excluir_competencia`. */
+  excluidos?: number;
+  nao_encontrados?: number;
+  recusados?: { integracao: string; nome: string; erro: string }[];
 };
 
 export default function EnviarFolhaOmie({
@@ -48,10 +57,10 @@ export default function EnviarFolhaOmie({
   recusa: string | null;
   onEnviado: () => void;
 }) {
-  const [ocupado, setOcupado] = useState<null | "teste" | "tudo" | "limpar">(null);
+  const [ocupado, setOcupado] = useState<null | "teste" | "tudo" | "limpar" | "apagarTudo">(null);
   const [criados, setCriados] = useState<string[]>([]);
   const [falhas, setFalhas] = useState<Resultado[]>([]);
-  const [confirmando, setConfirmando] = useState<null | "tudo" | "prontos">(null);
+  const [confirmando, setConfirmando] = useState<null | "tudo" | "prontos" | "apagarTudo">(null);
 
   const teste = doisParaTestar(candidatos);
   /* Quem já dá para enviar. Existe porque a alternativa a "tudo ou nada" não é
@@ -104,6 +113,38 @@ export default function EnviarFolhaOmie({
       await chamar({ acao: "excluir", integracoes: criados });
       setCriados([]);
       toast.success("Títulos de teste apagados do Omie");
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : String(e));
+    } finally {
+      setOcupado(null);
+    }
+  };
+
+  /* Apaga a folha inteira da competência no Omie.
+   *
+   * As chaves não vêm de lugar nenhum guardado: são remontadas do espelho do
+   * RH, porque `FOLHA-<codigo>-<AAAA-MM>` é determinístico. Quem nunca foi
+   * provisionado volta como "não encontrado", que é resposta e não erro. */
+  const apagarCompetencia = async () => {
+    setOcupado("apagarTudo");
+    try {
+      const r = await chamar({ acao: "excluir_competencia", competencia });
+      setCriados([]);
+      setFalhas([]);
+      setConfirmando(null);
+      const recusados = r.recusados ?? [];
+      if (recusados.length) {
+        /* Título já baixado ou conciliado o Omie não deixa excluir — e isso é
+           o certo, não uma falha nossa. Vai escrito para ninguém tentar de
+           novo achando que foi problema de rede. */
+        setFalhas(recusados.map((x) => ({ ...x, criado: false })));
+        toast.error(`${r.excluidos ?? 0} apagados, ${recusados.length} o Omie recusou`, {
+          description: "Título já baixado ou conciliado não pode ser excluído pela API.",
+        });
+      } else {
+        toast.success(`${r.excluidos ?? 0} título(s) de ${competencia} apagados do Omie`);
+      }
+      onEnviado();
     } catch (e) {
       toast.error(e instanceof Error ? e.message : String(e));
     } finally {
@@ -191,31 +232,47 @@ export default function EnviarFolhaOmie({
       {confirmando && (
         <div className="rounded-xl border border-destructive/30 bg-destructive/5 px-3.5 py-2.5">
           <p className="text-[12.5px] font-semibold text-destructive">
-            {confirmando === "prontos"
-              ? `Criar ${prontos.length} títulos no Omie, deixando ${pendentes} de fora?`
-              : `Criar ${candidatos.length} títulos de ${BRL(totalDoLote)} no Omie?`}
+            {confirmando === "apagarTudo"
+              ? `Apagar do Omie TODOS os títulos da folha de ${competencia}?`
+              : confirmando === "prontos"
+                ? `Criar ${prontos.length} títulos no Omie, deixando ${pendentes} de fora?`
+                : `Criar ${candidatos.length} títulos de ${BRL(totalDoLote)} no Omie?`}
           </p>
           <p className="mt-0.5 text-xs text-muted-foreground">
-            {confirmando === "prontos"
-              ? `A competência ${competencia} NÃO será marcada como enviada — o que ficou de fora `
-                + "pode ser mandado depois, e quem já foi criado é recusado por duplicidade em vez "
-                + "de virar título repetido."
-              : `Isto marca a competência ${competencia} como enviada e passa a recusar um segundo `
-                + "envio. Desfazer depois é apagar título por título no ERP."}
+            {confirmando === "apagarTudo"
+              ? "Só apaga o que tem chave FOLHA- desta competência — nenhum outro título do ERP é "
+                + "tocado. Título já baixado ou conciliado o Omie recusa, e o motivo vem escrito. "
+                + "A competência volta a 'pendente' e pode ser provisionada de novo."
+              : confirmando === "prontos"
+                ? `A competência ${competencia} NÃO será marcada como enviada — o que ficou de fora `
+                  + "pode ser mandado depois, e quem já foi criado é recusado por duplicidade em vez "
+                  + "de virar título repetido."
+                : `Isto marca a competência ${competencia} como enviada e passa a recusar um segundo `
+                  + "envio. Desfazer depois é apagar título por título no ERP."}
           </p>
           <div className="mt-2 flex gap-2">
             <Button variant="outline" size="sm" onClick={() => setConfirmando(null)} disabled={ocupado !== null}>
               Cancelar
             </Button>
-            <Button
-              size="sm"
-              onClick={() => enviarTudo(confirmando === "prontos")}
-              disabled={ocupado !== null}
-              className="gap-1.5"
-            >
-              {ocupado === "tudo" && <Loader2 className="size-3.5 animate-spin" />}
-              Confirmo, provisionar
-            </Button>
+            {confirmando === "apagarTudo" ? (
+              <Button
+                size="sm" variant="destructive" className="gap-1.5"
+                onClick={apagarCompetencia} disabled={ocupado !== null}
+              >
+                {ocupado === "apagarTudo" && <Loader2 className="size-3.5 animate-spin" />}
+                Confirmo, apagar tudo
+              </Button>
+            ) : (
+              <Button
+                size="sm"
+                onClick={() => enviarTudo(confirmando === "prontos")}
+                disabled={ocupado !== null}
+                className="gap-1.5"
+              >
+                {ocupado === "tudo" && <Loader2 className="size-3.5 animate-spin" />}
+                Confirmo, provisionar
+              </Button>
+            )}
           </div>
         </div>
       )}
@@ -251,6 +308,20 @@ export default function EnviarFolhaOmie({
               : "Lote em ordem. Nada é criado até você clicar."}
         </p>
         <div className="flex gap-2">
+          {/* Discreto de propósito: apagar a folha inteira não é operação de
+              rotina, mas é a única saída para quem recarregou a página e perdeu
+              a lista da sessão. A confirmação diz o que vai acontecer. */}
+          <Button
+            variant="ghost"
+            onClick={() => setConfirmando("apagarTudo")}
+            disabled={ocupado !== null || confirmando !== null}
+            title={`Apaga do Omie os títulos com chave FOLHA- de ${competencia}. `
+              + "Nenhum outro título do ERP é tocado."}
+            className="gap-1.5 text-muted-foreground hover:text-destructive"
+          >
+            <Trash2 className="size-4" />
+            Apagar a folha de {competencia}
+          </Button>
           <Button
             variant="outline"
             onClick={enviarTeste}

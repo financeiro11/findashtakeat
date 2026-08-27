@@ -72,3 +72,22 @@ describe("doisParaTestar", () => {
     expect(doisParaTestar(muitos, 3)).toHaveLength(3);
   });
 });
+
+describe("doisParaTestar · quem já está no Omie", () => {
+  const base = { pronto: true, valor: 100 };
+  it("pula quem já tem título no ERP — seria recusa por duplicidade", () => {
+    const r = doisParaTestar([
+      { ...base, codigo: "COL-1", nome: "Ana", cnpj: "11111111000191", noOmie: true },
+      { ...base, codigo: "COL-2", nome: "Bia", cnpj: "22222222000181" },
+      { ...base, codigo: "COL-3", nome: "Caio", cnpj: "33333333000171" },
+    ]);
+    expect(r.map((c) => c.nome)).toEqual(["Bia", "Caio"]);
+  });
+
+  it("sem ninguém fora do Omie, não devolve nada em vez de devolver duplicata", () => {
+    const r = doisParaTestar([
+      { ...base, codigo: "COL-1", nome: "Ana", cnpj: "11111111000191", noOmie: true },
+    ]);
+    expect(r).toEqual([]);
+  });
+});

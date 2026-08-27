@@ -80,6 +80,45 @@ async function omieCall(path: string, call: string, param: Record<string, unknow
   return null;
 }
 
+/**
+ * Quais títulos desta competência JÁ existem no Omie.
+ *
+ * A prévia dizia o que o Hub PRETENDE mandar; o que o ERP tem era outra
+ * história, e as duas divergiram feio em 27/08/2026 (a função morria no meio e
+ * ninguém sabia quantos tinham entrado). Descobrir isso exigia ler log de Edge
+ * Function no painel do Supabase.
+ *
+ * `ListarContasPagar` não filtra por código de integração, mas a folha inteira
+ * divide a MESMA data de registro — o último dia da competência —, e é por ela
+ * que dá para pescar o lote de uma vez. Com 500 por página, são uma ou duas
+ * chamadas para o mês inteiro.
+ */
+async function jaNoOmie(registro: string): Promise<Map<string, { numeroDocumento: string }>> {
+  const [a, m, d] = [registro.slice(0, 4), registro.slice(5, 7), registro.slice(8, 10)];
+  const registroBR = `${d}/${m}/${a}`;
+  const out = new Map<string, { numeroDocumento: string }>();
+  let pagina = 1;
+  let totalPaginas = 1;
+  do {
+    const r = await omieCall("financas/contapagar", "ListarContasPagar", {
+      pagina,
+      registros_por_pagina: 500,
+      apenas_importado_api: "N",
+      filtrar_por_registro_de: registroBR,
+      filtrar_por_registro_ate: registroBR,
+    });
+    for (const c of r?.conta_pagar_cadastro ?? []) {
+      const k = String(c?.codigo_lancamento_integracao ?? "").trim();
+      if (k.startsWith("FOLHA-")) {
+        out.set(k, { numeroDocumento: String(c?.numero_documento ?? "").trim() });
+      }
+    }
+    totalPaginas = Number(r?.total_de_paginas ?? 1);
+    pagina++;
+  } while (pagina <= totalPaginas && pagina <= 5);
+  return out;
+}
+
 /** O fornecedor deste CNPJ no Omie, ou `null`. Busca por documento, nunca por nome. */
 async function fornecedorPorCnpj(cnpj: string): Promise<number | null> {
   const r = await omieCall("geral/clientes", "ListarClientes", {
@@ -208,6 +247,13 @@ Deno.serve(async (req) => {
       });
     }
 
+    /* O que o ERP já tem. Falha aqui NÃO derruba a prévia: sem a conferência a
+       tela ainda serve, só não sabe dizer quem já entrou. */
+    let noOmie = new Map<string, { numeroDocumento: string }>();
+    let conferidoNoOmie = true;
+    try { noOmie = await jaNoOmie(lote.registro); }
+    catch { conferidoNoOmie = false; }
+
     const linhas = lote.itens.map((i) => {
       const cargo = cargoPorCodigo.get(i.codigo) ?? null;
       /* Quem a varredura não cobre fica `undefined`, e não `{existe:false}`:
@@ -230,6 +276,9 @@ Deno.serve(async (req) => {
         chavePix: daChave?.chave ?? null,
         chavePixBloqueio: daChave?.bloqueio ?? null,
         chavePixConferida: !!cadastro,
+        /** Já existe no Omie? E com o Nº Documento que a busca do ERP usa? */
+        noOmie: noOmie.has(i.integracao),
+        numeroDocumento: noOmie.get(i.integracao)?.numeroDocumento ?? "",
       };
     });
 
@@ -260,6 +309,7 @@ Deno.serve(async (req) => {
       cache: {
         clientes_em: clientesCache.data?.atualizado_em ?? null,
         chaves_pix_em: chavesCache.data?.atualizado_em ?? null,
+        conferido_no_omie: conferidoNoOmie,
         chaves_pix_nao_conferidas: linhas.filter((l) => !l.chavePixConferida).length,
         cadastros_em: cadastrosCache.data?.atualizado_em ?? null,
         consultas_diretas: consultados.length,

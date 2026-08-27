@@ -4,6 +4,7 @@ import {
   Search, Users, Columns3, Filter, FilterX, X,
   ChevronLeft, ChevronRight, Copy, Receipt, PanelRightOpen, Maximize2,
   UserPlus, UserMinus, CalendarClock, Building2, FileSpreadsheet,
+  AlertTriangle, ChevronDown,
 } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -14,6 +15,9 @@ import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from "@/components/ui/table";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import {
+  Collapsible, CollapsibleContent, CollapsibleTrigger,
+} from "@/components/ui/collapsible";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { cn } from "@/lib/utils";
@@ -404,6 +408,9 @@ export default function ColaboradoresRH() {
   const [fotoAberta, setFotoAberta] = useState<{ url: string; nome: string } | null>(null);
   const [selecionado, setSelecionado] = useState<Colaborador | null>(null);
   const [fichaCheia, setFichaCheia] = useState(false);
+  /* Fechado por padrão: são avisos de manutenção de cadastro, e quem abre a
+     tela na maioria das vezes quer a lista, não a lista de defeitos dela. */
+  const [avisosAbertos, setAvisosAbertos] = useState(false);
   const [densidade, setDensidade] = useState<"compacta" | "confortavel">(
     () => (localStorage.getItem(DENSIDADE_KEY) === "compacta" ? "compacta" : "confortavel"),
   );
@@ -741,6 +748,15 @@ export default function ColaboradoresRH() {
     return m;
   }, [ativos, chavesOmie]);
 
+  /* Pessoas DISTINTAS, e não a soma dos três avisos: a mesma pessoa costuma
+     aparecer nos três (documento torto no RH, corrigido pelo Hub, e chave PIX
+     divergente são o mesmo defeito visto de três ângulos), e somar daria um
+     número que assusta sem informar. */
+  const aConferir = useMemo(
+    () => new Set([...conferencia.keys(), ...divergencias.keys(), ...chavesPix.keys()]).size,
+    [conferencia, divergencias, chavesPix],
+  );
+
   const chavesQueImpedem = useMemo(
     () => [...chavesPix.values()].filter((r) => r.gravidade === "erro").length,
     [chavesPix],
@@ -1027,73 +1043,6 @@ export default function ColaboradoresRH() {
           </div>
         </div>
 
-        {/* ─── Conferência do que chega do Portal RH ─── */}
-        {conferencia.size > 0 && (
-          <div className="rounded-xl border border-amber-500/40 bg-amber-500/5 px-3.5 py-2.5">
-            <p className="text-[12.5px] font-semibold text-amber-700 dark:text-amber-400">
-              {conferencia.size} cadastro(s) com algo a conferir
-              {comErro > 0 && <span className="text-destructive"> · {comErro} impedem o pagamento</span>}
-            </p>
-            <p className="mt-0.5 text-xs text-muted-foreground">
-              Documento inválido ou com o CNPJ da Takeat, chave PIX que a empresa não paga
-              (aleatória, ou CPF de quem não é estagiário) e salário fora da faixa do
-              departamento. Cada linha mostra o que está errado — <span className="text-destructive">✖</span> impede
-              pagar, <span className="text-amber-700 dark:text-amber-400">⚠</span> pede um olhar.
-            </p>
-            <button
-              className="mt-1.5 text-xs text-primary hover:underline"
-              onClick={() => {
-                const linhas = ativos
-                  .filter((c) => conferencia.has(String(c.id)))
-                  .map((c) => `• ${String(c.nome ?? "").trim()} (${txt(c.codigo)}): `
-                    + conferencia.get(String(c.id))!.map((a) => a.mensagem).join("; "));
-                const cabecalho =
-                  `Cadastros a corrigir no Portal RH (${new Date().toLocaleDateString("pt-BR")}):`;
-                navigator.clipboard.writeText([cabecalho, "", ...linhas].join("\n")).then(
-                  () => toast.success("Lista copiada — é só colar para o DH"),
-                  () => toast.error("Não deu para copiar"),
-                );
-              }}
-            >
-              Copiar a lista para mandar ao DH
-            </button>
-          </div>
-        )}
-
-        {/* ─── O que o Hub corrige por cima do Portal RH ─── */}
-        {divergencias.size > 0 && (
-          <div className="rounded-xl border border-destructive/30 bg-destructive/5 px-3.5 py-2.5">
-            <p className="text-[12.5px] font-semibold text-destructive">
-              {divergencias.size} cadastro(s) divergem do Portal RH
-            </p>
-            <p className="mt-0.5 text-xs text-muted-foreground">
-              A folha usa o valor corrigido aqui, então o pagamento sai certo. Mas a base do RH
-              continua errada e volta assim no próximo sync — vale pedir ao DH para corrigir na
-              origem. Cada linha mostra o que está diferente.
-            </p>
-            <button
-              className="mt-1.5 text-xs text-primary hover:underline"
-              onClick={() => {
-                /* Texto pronto para colar numa mensagem. A lista existe para
-                   sair daqui e chegar em quem edita a base, não para ficar
-                   bonita na tela. */
-                const linhas = todos
-                  .filter((c) => divergencias.has(String(c.id)))
-                  .map((c) => `• ${String(c.nome ?? "").trim()} (${txt(c.codigo)}): `
-                    + divergencias.get(String(c.id))!.join("; "));
-                const cabecalho =
-                  `Divergências no cadastro do Portal RH (${new Date().toLocaleDateString("pt-BR")}):`;
-                navigator.clipboard.writeText([cabecalho, "", ...linhas].join("\n")).then(
-                  () => toast.success("Lista copiada — é só colar para o DH"),
-                  () => toast.error("Não deu para copiar"),
-                );
-              }}
-            >
-              Copiar a lista para mandar ao DH
-            </button>
-          </div>
-        )}
-
         {/* ─── O que não entrou no Omie ─── */}
         {(recusas?.length ?? 0) > 0 && (
           <div className="rounded-xl border border-destructive/30 bg-destructive/5 px-3.5 py-2.5">
@@ -1122,37 +1071,62 @@ export default function ColaboradoresRH() {
           </div>
         )}
 
-        {/* ─── O RH contra o cadastro de fornecedor do Omie ─── */}
-        {(chavesPix.size > 0 || chavesOmie?.em) && (
-          <div className="rounded-xl border border-sky-500/40 bg-sky-500/5 px-3.5 py-2.5">
-            <p className="text-[12.5px] font-semibold text-sky-700 dark:text-sky-400">
-              {chavesPix.size > 0
-                ? <>{chavesPix.size} chave(s) PIX diferem do cadastro no Omie
-                    {chavesQueImpedem > 0 && (
-                      <span className="text-destructive"> · {chavesQueImpedem} sem chave utilizável</span>
-                    )}</>
-                : <>Chaves PIX conferidas — todas batem com o Omie</>}
-            </p>
-            <p className="mt-0.5 text-xs text-muted-foreground">
-              O portal do RH é o que alguém digitou; o cadastro do Omie é o que o banco usa
-              quando o título vira pagamento. Divergiu, quem paga é o Omie — por isso boa parte
-              destas <span className="text-sky-700 dark:text-sky-400">⇄</span> é o Omie salvando
-              uma digitação do portal, e não um problema novo.
-              {chavesOmie?.em && (
-                <> Consultado em {new Date(chavesOmie.em).toLocaleString("pt-BR")}.</>
-              )}
-            </p>
-            <div className="mt-1.5 flex flex-wrap items-center gap-3">
-              {chavesPix.size > 0 && (
+        {/* ─── O que há para conferir nos cadastros ───
+            Três avisos separados (conferência do RH, o que o Hub corrigiu por
+            cima, e o RH contra o cadastro do Omie) ocupavam meia tela todo dia.
+            São informação de manutenção: importam quando alguém vai arrumar
+            cadastro, não quando alguém abre a lista para trabalhar. Ficam atrás
+            de um resumo de uma linha — e o que NÃO entrou na folha continua
+            fora daqui, à vista, porque esse é o que segura pagamento. */}
+        {(conferencia.size > 0 || divergencias.size > 0 || chavesPix.size > 0) && (
+          <Collapsible open={avisosAbertos} onOpenChange={setAvisosAbertos}>
+            <CollapsibleTrigger asChild>
+              <button className="flex w-full items-center gap-2.5 rounded-xl border border-amber-500/40 bg-amber-500/5 px-3.5 py-2.5 text-left transition-colors hover:bg-amber-500/10">
+                <AlertTriangle className="size-4 shrink-0 text-amber-700 dark:text-amber-400" />
+                <span className="flex-1 text-[12.5px] font-semibold text-amber-700 dark:text-amber-400">
+                  {aConferir} cadastro(s) com algo a conferir
+                  {comErro > 0 && (
+                    <span className="text-destructive"> · {comErro} impedem o pagamento</span>
+                  )}
+                </span>
+                <span className="hidden text-xs text-muted-foreground sm:inline">
+                  {[
+                    conferencia.size && `${conferencia.size} no Portal RH`,
+                    divergencias.size && `${divergencias.size} corrigidos pelo Hub`,
+                    chavesPix.size && `${chavesPix.size} chaves PIX`,
+                  ].filter(Boolean).join(" · ")}
+                </span>
+                <ChevronDown
+                  className={cn(
+                    "size-4 shrink-0 text-muted-foreground transition-transform",
+                    avisosAbertos && "rotate-180",
+                  )}
+                />
+              </button>
+            </CollapsibleTrigger>
+            <CollapsibleContent className="mt-2 space-y-2">
+            {/* ─── Conferência do que chega do Portal RH ─── */}
+            {conferencia.size > 0 && (
+              <div className="rounded-xl border border-amber-500/40 bg-amber-500/5 px-3.5 py-2.5">
+                <p className="text-[12.5px] font-semibold text-amber-700 dark:text-amber-400">
+                  {conferencia.size} com defeito no cadastro do Portal RH
+                  {comErro > 0 && <span className="text-destructive"> · {comErro} impedem o pagamento</span>}
+                </p>
+                <p className="mt-0.5 text-xs text-muted-foreground">
+                  Documento inválido ou com o CNPJ da Takeat, chave PIX que a empresa não paga
+                  (aleatória, ou CPF de quem não é estagiário) e salário fora da faixa do
+                  departamento. Cada linha mostra o que está errado — <span className="text-destructive">✖</span> impede
+                  pagar, <span className="text-amber-700 dark:text-amber-400">⚠</span> pede um olhar.
+                </p>
                 <button
-                  className="text-xs text-primary hover:underline"
+                  className="mt-1.5 text-xs text-primary hover:underline"
                   onClick={() => {
                     const linhas = ativos
-                      .filter((c) => chavesPix.has(String(c.id)))
+                      .filter((c) => conferencia.has(String(c.id)))
                       .map((c) => `• ${String(c.nome ?? "").trim()} (${txt(c.codigo)}): `
-                        + chavesPix.get(String(c.id))!.mensagem);
-                    const cabecalho = "Chaves PIX que divergem entre o Portal RH e o Omie "
-                      + `(${new Date().toLocaleDateString("pt-BR")}):`;
+                        + conferencia.get(String(c.id))!.map((a) => a.mensagem).join("; "));
+                    const cabecalho =
+                      `Cadastros a corrigir no Portal RH (${new Date().toLocaleDateString("pt-BR")}):`;
                     navigator.clipboard.writeText([cabecalho, "", ...linhas].join("\n")).then(
                       () => toast.success("Lista copiada — é só colar para o DH"),
                       () => toast.error("Não deu para copiar"),
@@ -1161,17 +1135,95 @@ export default function ColaboradoresRH() {
                 >
                   Copiar a lista para mandar ao DH
                 </button>
-              )}
-              <button
-                className="text-xs text-muted-foreground hover:text-foreground hover:underline disabled:opacity-50"
-                disabled={buscandoChaves}
-                onClick={atualizarChaves}
-                title="Consulta o cadastro de fornecedor de cada pessoa no Omie, um a um. Leva cerca de um minuto."
-              >
-                {buscandoChaves ? "Consultando o Omie…" : "Reconsultar o Omie"}
-              </button>
-            </div>
-          </div>
+              </div>
+            )}
+
+            {/* ─── O que o Hub corrige por cima do Portal RH ─── */}
+            {divergencias.size > 0 && (
+              <div className="rounded-xl border border-destructive/30 bg-destructive/5 px-3.5 py-2.5">
+                <p className="text-[12.5px] font-semibold text-destructive">
+                  {divergencias.size} corrigidos pelo Hub, ainda errados na origem
+                </p>
+                <p className="mt-0.5 text-xs text-muted-foreground">
+                  A folha usa o valor corrigido aqui, então o pagamento sai certo. Mas a base do RH
+                  continua errada e volta assim no próximo sync — vale pedir ao DH para corrigir na
+                  origem. Cada linha mostra o que está diferente.
+                </p>
+                <button
+                  className="mt-1.5 text-xs text-primary hover:underline"
+                  onClick={() => {
+                    /* Texto pronto para colar numa mensagem. A lista existe para
+                       sair daqui e chegar em quem edita a base, não para ficar
+                       bonita na tela. */
+                    const linhas = todos
+                      .filter((c) => divergencias.has(String(c.id)))
+                      .map((c) => `• ${String(c.nome ?? "").trim()} (${txt(c.codigo)}): `
+                        + divergencias.get(String(c.id))!.join("; "));
+                    const cabecalho =
+                      `Divergências no cadastro do Portal RH (${new Date().toLocaleDateString("pt-BR")}):`;
+                    navigator.clipboard.writeText([cabecalho, "", ...linhas].join("\n")).then(
+                      () => toast.success("Lista copiada — é só colar para o DH"),
+                      () => toast.error("Não deu para copiar"),
+                    );
+                  }}
+                >
+                  Copiar a lista para mandar ao DH
+                </button>
+              </div>
+            )}
+            {/* ─── O RH contra o cadastro de fornecedor do Omie ─── */}
+            {(chavesPix.size > 0 || chavesOmie?.em) && (
+              <div className="rounded-xl border border-sky-500/40 bg-sky-500/5 px-3.5 py-2.5">
+                <p className="text-[12.5px] font-semibold text-sky-700 dark:text-sky-400">
+                  {chavesPix.size > 0
+                    ? <>{chavesPix.size} chave(s) PIX diferem do cadastro no Omie
+                        {chavesQueImpedem > 0 && (
+                          <span className="text-destructive"> · {chavesQueImpedem} sem chave utilizável</span>
+                        )}</>
+                    : <>Chaves PIX conferidas — todas batem com o Omie</>}
+                </p>
+                <p className="mt-0.5 text-xs text-muted-foreground">
+                  O portal do RH é o que alguém digitou; o cadastro do Omie é o que o banco usa
+                  quando o título vira pagamento. Divergiu, quem paga é o Omie — por isso boa parte
+                  destas <span className="text-sky-700 dark:text-sky-400">⇄</span> é o Omie salvando
+                  uma digitação do portal, e não um problema novo.
+                  {chavesOmie?.em && (
+                    <> Consultado em {new Date(chavesOmie.em).toLocaleString("pt-BR")}.</>
+                  )}
+                </p>
+                <div className="mt-1.5 flex flex-wrap items-center gap-3">
+                  {chavesPix.size > 0 && (
+                    <button
+                      className="text-xs text-primary hover:underline"
+                      onClick={() => {
+                        const linhas = ativos
+                          .filter((c) => chavesPix.has(String(c.id)))
+                          .map((c) => `• ${String(c.nome ?? "").trim()} (${txt(c.codigo)}): `
+                            + chavesPix.get(String(c.id))!.mensagem);
+                        const cabecalho = "Chaves PIX que divergem entre o Portal RH e o Omie "
+                          + `(${new Date().toLocaleDateString("pt-BR")}):`;
+                        navigator.clipboard.writeText([cabecalho, "", ...linhas].join("\n")).then(
+                          () => toast.success("Lista copiada — é só colar para o DH"),
+                          () => toast.error("Não deu para copiar"),
+                        );
+                      }}
+                    >
+                      Copiar a lista para mandar ao DH
+                    </button>
+                  )}
+                  <button
+                    className="text-xs text-muted-foreground hover:text-foreground hover:underline disabled:opacity-50"
+                    disabled={buscandoChaves}
+                    onClick={atualizarChaves}
+                    title="Consulta o cadastro de fornecedor de cada pessoa no Omie, um a um. Leva cerca de um minuto."
+                  >
+                    {buscandoChaves ? "Consultando o Omie…" : "Reconsultar o Omie"}
+                  </button>
+                </div>
+              </div>
+            )}
+            </CollapsibleContent>
+          </Collapsible>
         )}
 
         {/* ─── Barra de ferramentas ─── */}

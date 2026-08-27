@@ -35,3 +35,7 @@ verify_jwt = false
 # o gateway devolve UNAUTHORIZED_NO_AUTH_HEADER antes de a funcao existir.
 [functions.nota-ler-arquivo]
 verify_jwt = false
+
+# Tem caminho de cron (7h) para escrever o diagnostico da manha.
+[functions.notas-diagnostico]
+verify_jwt = false

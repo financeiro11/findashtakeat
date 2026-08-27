@@ -500,10 +500,11 @@ function BotaoAbrir({ l, onAbrir }: { l: LinhaTitulo; onAbrir: (onde: Exclude<On
   );
 }
 
-type Aba = "panorama" | "categorias" | "fornecedores" | "titulos" | "acervo" | "revisar" | "quase" | "regua";
+type Aba = "panorama" | "diagnostico" | "categorias" | "fornecedores" | "titulos" | "acervo" | "revisar" | "quase" | "regua";
 
 const ABAS: Array<{ id: Aba; rotulo: string }> = [
   { id: "panorama", rotulo: "Panorama" },
+  { id: "diagnostico", rotulo: "Por que falta" },
   { id: "categorias", rotulo: "Categorias" },
   { id: "fornecedores", rotulo: "Quem deve nota" },
   { id: "titulos", rotulo: "Títulos" },
@@ -886,6 +887,7 @@ export default function NotasERP() {
       </div>
 
       {aba === "panorama" && <Panorama resumo={resumo} />}
+      {aba === "diagnostico" && <PorQueFalta de={de} ate={ate} />}
       {aba === "categorias" && <Categorias resumo={resumo} />}
       {aba === "fornecedores" && <Fornecedores resumo={resumo} />}
       {aba === "titulos" && (
@@ -1016,6 +1018,290 @@ function Categorias({ resumo }: { resumo: ResumoNotas | null }) {
           ))}
         </tbody>
       </table>
+    </div>
+  );
+}
+
+/* ============================ Por que falta ============================
+ *
+ * A tela sabia dizer QUANTO falta. Esta aba diz POR QUE — que é a única coisa
+ * que muda o que alguém faz na segunda-feira. Cobrar o fornecedor, clicar em
+ * confirmar, pedir acesso a uma caixa de e-mail e aceitar que a nota não existe
+ * são quatro trabalhos diferentes, e estavam todos no mesmo balde de
+ * "R$ 2,4 milhões sem nota".
+ *
+ * OS NÚMEROS SÃO DO POSTGRES, O TEXTO É DA IA — e a ordem na tela diz isso: os
+ * cartões de estágio aparecem sempre, com ou sem modelo; o resumo escrito vem
+ * DEPOIS e com a data de quando foi escrito. Se a chave da IA cair, esta aba
+ * continua respondendo a pergunta.
+ *
+ * O texto NÃO se regera sozinho ao abrir. Uma chamada por olhada custaria caro
+ * e faria a redação mudar sem o dado ter mudado — o que faz quem lê duas vezes
+ * parar de confiar. Regera quando alguém pede.
+ */
+
+const ESTAGIO: Record<string, { rotulo: string; ajuda: string; tom: string }> = {
+  pronta_para_subir: {
+    rotulo: "O Hub leva sozinho",
+    ajuda: "O arquivo já está aqui e o título já está identificado. A varredura sobe em minutos — ninguém precisa fazer nada.",
+    tom: "ok",
+  },
+  espera_um_clique: {
+    rotulo: "Espera um clique",
+    ajuda: "O Hub achou candidata e não teve certeza sozinho. É o trabalho mais barato desta tela: abrir, olhar e decidir.",
+    tom: "atencao",
+  },
+  achou_mas_nao_abre: {
+    rotulo: "Achou e não consegue pegar",
+    ajuda: "Sabe-se onde a nota está — caixa de outra pessoa, portal com login — e o Hub não alcança. Isto é pedido de acesso, não é procurar.",
+    tom: "neutro",
+  },
+  nunca_apareceu: {
+    rotulo: "Nunca apareceu",
+    ajuda: "Nenhuma fonte trouxe documento deste fornecedor. Aqui é cobrança ao fornecedor.",
+    tom: "falta",
+  },
+  fornecedor_nao_emite: {
+    rotulo: "Não existe nota",
+    ajuda: "Uber, 99 e afins não emitem nota por corrida. O recibo do app é o documento, e a triagem já o aceita.",
+    tom: "fora",
+  },
+};
+
+type Diagnostico = {
+  total: { titulos: number; valor: number };
+  estagios: Array<{
+    estagio: string; titulos: number; valor: number;
+    maiores: Array<{ favorecido: string; titulos: number; valor: number }>;
+  }>;
+  bloqueios: Array<{ fornecedor: string; motivo: string; acao: string; titulos: number; valor: number }>;
+  acervo_sem_dono: { notas: number; com_valor: number };
+  leitura: { sem_valor_com_arquivo: number; pdf_sem_texto: number; em_moeda_estrangeira: number };
+};
+
+type TextoIA = {
+  resumo: string;
+  planos: Array<{ titulo: string; estagio: string; porque: string; passos: string[]; quem: string }>;
+  gerado_em: string;
+  modelo: string | null;
+};
+
+function PorQueFalta({ de, ate }: { de: string; ate: string }) {
+  const [sinal, setSinal] = useState<Diagnostico | null>(null);
+  const [texto, setTexto] = useState<TextoIA | null>(null);
+  const [carregando, setCarregando] = useState(true);
+  const [gerando, setGerando] = useState(false);
+  const [aviso, setAviso] = useState<string | null>(null);
+
+  const ler = useCallback(async () => {
+    setCarregando(true);
+    try {
+      const r = await invocar<any>(sb.functions.invoke("notas-diagnostico", {
+        body: { action: "ler", de, ate },
+      }));
+      setSinal(r?.sinal ?? null);
+      setTexto(r?.texto ?? null);
+      setAviso(r?.aviso ?? null);
+    } catch (e: any) {
+      toast.error(`Não deu para ler o diagnóstico: ${e?.message ?? e}`);
+    } finally {
+      setCarregando(false);
+    }
+  }, [de, ate]);
+
+  useEffect(() => { void ler(); }, [ler]);
+
+  async function gerar() {
+    setGerando(true);
+    try {
+      const r = await invocar<any>(sb.functions.invoke("notas-diagnostico", {
+        body: { action: "gerar", de, ate },
+      }));
+      setSinal(r?.sinal ?? sinal);
+      setTexto(r?.texto ?? null);
+      setAviso(r?.aviso ?? null);
+      if (r?.texto) toast.success("Diagnóstico reescrito.");
+    } catch (e: any) {
+      toast.error(`A IA não respondeu: ${e?.message ?? e}`);
+    } finally {
+      setGerando(false);
+    }
+  }
+
+  if (carregando) {
+    return (
+      <div className="card-surface flex items-center justify-center gap-2 p-10 text-sm text-muted-foreground">
+        <Loader2 className="h-4 w-4 animate-spin" /> Lendo o diagnóstico…
+      </div>
+    );
+  }
+  if (!sinal) {
+    return <div className="card-surface p-6 text-sm text-muted-foreground">Nada a diagnosticar no período.</div>;
+  }
+
+  const emFalta = sinal.estagios.filter((e) => e.estagio !== "fornecedor_nao_emite");
+  const totalEmFalta = emFalta.reduce((s, e) => s + Number(e.valor || 0), 0);
+  const titulosEmFalta = emFalta.reduce((s, e) => s + Number(e.titulos || 0), 0);
+  const travados = (sinal.bloqueios ?? []).filter((b) => b.titulos > 0);
+
+  return (
+    <div className="space-y-4">
+      {/* ---------------- os estágios, que são o dado ---------------- */}
+      <div className="card-surface p-4">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <h3 className="text-sm font-semibold">Em que estágio a falta está</h3>
+            <p className="mt-0.5 max-w-3xl text-[12.5px] text-muted-foreground">
+              Cada estágio é um trabalho diferente. Os números vêm do banco; o texto
+              mais abaixo é escrito por cima deles.
+            </p>
+          </div>
+          <span className="text-[12.5px] text-muted-foreground">
+            {titulosEmFalta.toLocaleString("pt-BR")} títulos · {brl(totalEmFalta)}
+          </span>
+        </div>
+
+        <div className="mt-3 grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
+          {sinal.estagios.map((e) => {
+            const meta = ESTAGIO[e.estagio] ?? { rotulo: e.estagio, ajuda: "", tom: "neutro" };
+            return (
+              <div key={e.estagio} className={cn("rounded border p-3", TOM[meta.tom])}>
+                <div className="flex items-baseline justify-between gap-2">
+                  <span className="text-[12.5px] font-medium">{meta.rotulo}</span>
+                  <span className="text-[11px] opacity-80">
+                    {Number(e.titulos).toLocaleString("pt-BR")} títulos
+                  </span>
+                </div>
+                <p className="mt-0.5 text-lg font-semibold tabular-nums">{brl(Number(e.valor))}</p>
+                <p className="mt-1 text-[11.5px] leading-snug opacity-90">{meta.ajuda}</p>
+                {!!e.maiores?.length && (
+                  <ul className="mt-2 space-y-0.5 text-[11.5px] opacity-90">
+                    {e.maiores.slice(0, 4).map((m, i) => (
+                      <li key={i} className="flex justify-between gap-2">
+                        <span className="truncate">{m.favorecido}</span>
+                        <span className="shrink-0 tabular-nums">{brlStr(Number(m.valor))}</span>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* ---------------- o que trava, com a ação já apurada ---------------- */}
+      {!!travados.length && (
+        <div className="card-surface p-4">
+          <h3 className="text-sm font-semibold">O que trava, e o pedido que destrava</h3>
+          <p className="mt-0.5 text-[12.5px] text-muted-foreground">
+            Estes não se resolvem procurando melhor — a nota existe e está fora do alcance do Hub.
+          </p>
+          <div className="mt-3 space-y-2">
+            {travados.map((b, i) => (
+              <div key={i} className="rounded border border-border p-3">
+                <div className="flex flex-wrap items-baseline justify-between gap-2">
+                  <span className="text-[13px] font-medium">{b.fornecedor}</span>
+                  <span className="text-[12px] text-muted-foreground">
+                    {b.titulos} títulos · {brlStr(Number(b.valor))}
+                  </span>
+                </div>
+                <p className="mt-1 text-[12.5px] text-muted-foreground">{b.motivo}</p>
+                <p className="mt-1.5 text-[12.5px]">
+                  <span className="font-medium">O que destrava: </span>{b.acao}
+                </p>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* ---------------- o texto, que é o acabamento ---------------- */}
+      <div className="card-surface p-4">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <h3 className="text-sm font-semibold">Leitura e planos de ação</h3>
+            <p className="mt-0.5 text-[12.5px] text-muted-foreground">
+              {texto
+                ? `Escrito em ${dataStr(texto.gerado_em)}${texto.modelo ? ` · ${texto.modelo}` : ""} sobre os números acima.`
+                : "Ainda não foi escrito para este período."}
+            </p>
+          </div>
+          <button className="chip" onClick={() => void gerar()} disabled={gerando}>
+            {gerando ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
+            {texto ? "Reescrever" : "Escrever agora"}
+          </button>
+        </div>
+
+        {aviso && (
+          <p className="mt-3 rounded border border-amber-500/20 bg-amber-500/10 px-2 py-1 text-[12.5px] text-amber-700 dark:text-amber-400">
+            {aviso}
+          </p>
+        )}
+
+        {texto?.resumo && (
+          <p className="mt-3 whitespace-pre-wrap text-[13px] leading-relaxed">{texto.resumo}</p>
+        )}
+
+        {!!texto?.planos?.length && (
+          <div className="mt-4 space-y-3">
+            {texto.planos.map((p, i) => {
+              const meta = ESTAGIO[p.estagio];
+              return (
+                <div key={i} className="rounded border border-border p-3">
+                  <div className="flex flex-wrap items-baseline gap-2">
+                    <span className="text-[13px] font-medium">{p.titulo}</span>
+                    {meta && (
+                      <span className={cn("rounded border px-1.5 py-0.5 text-[11px]", TOM[meta.tom])}>
+                        {meta.rotulo}
+                      </span>
+                    )}
+                    {p.quem && <span className="text-[11.5px] text-muted-foreground">· {p.quem}</span>}
+                  </div>
+                  {p.porque && <p className="mt-1 text-[12.5px] text-muted-foreground">{p.porque}</p>}
+                  {!!p.passos?.length && (
+                    <ol className="mt-1.5 list-decimal space-y-0.5 pl-5 text-[12.5px]">
+                      {p.passos.map((s, j) => <li key={j}>{s}</li>)}
+                    </ol>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+
+      {/* ---------------- o outro lado: nota sem dono ---------------- */}
+      <div className="card-surface p-4">
+        <h3 className="text-sm font-semibold">O outro lado do problema</h3>
+        <div className="mt-2 grid gap-3 sm:grid-cols-3">
+          <div>
+            <p className="text-lg font-semibold tabular-nums">
+              {sinal.acervo_sem_dono.notas.toLocaleString("pt-BR")}
+            </p>
+            <p className="text-[12px] text-muted-foreground">
+              notas com arquivo que não acharam título. Nota sobrando enquanto título falta.
+            </p>
+          </div>
+          <div>
+            <p className="text-lg font-semibold tabular-nums">
+              {sinal.leitura.sem_valor_com_arquivo.toLocaleString("pt-BR")}
+            </p>
+            <p className="text-[12px] text-muted-foreground">
+              com arquivo e sem valor lido — dessas, {sinal.leitura.pdf_sem_texto} são PDF de imagem,
+              que só o OCR resolve.
+            </p>
+          </div>
+          <div>
+            <p className="text-lg font-semibold tabular-nums">
+              {sinal.leitura.em_moeda_estrangeira.toLocaleString("pt-BR")}
+            </p>
+            <p className="text-[12px] text-muted-foreground">
+              em moeda estrangeira, convertidas pela PTAX do dia da nota.
+            </p>
+          </div>
+        </div>
+      </div>
     </div>
   );
 }

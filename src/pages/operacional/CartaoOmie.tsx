@@ -32,18 +32,23 @@ import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Checkbox } from "@/components/ui/checkbox";
+import {
+  Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle,
+} from "@/components/ui/dialog";
 import {
   Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList,
 } from "@/components/ui/command";
 import { supabase } from "@/integrations/supabase/client";
 import { cn } from "@/lib/utils";
 import { useCategoriasOmie, type CategoriaOmie } from "@/components/demonstracoes/TrocarCategoria";
-import { chaveDe, lerMemo, parseOfx, rotuloMes, type FaturaOfx } from "@/lib/cartao/ofx";
+import { parseOfx, rotuloMes, type FaturaOfx } from "@/lib/cartao/ofx";
 import {
   agrupar, expandir, separar, type Balde, type Grupo, type Separacao,
 } from "@/lib/cartao/provisionar";
 import {
-  aprender, casar, cobertura, sugerir, type LinhaHistorico, type Mapa, type Sugestao, type TituloOmie,
+  aprenderVotos, cobertura, comparar, sugerir, votosDoOmie,
+  type Mapa, type Mudanca, type Previa, type Sugestao, type TituloComTexto,
 } from "@/lib/cartao/depara";
 import {
   bloqueioDeEnvio, ehTeste, recusaDoEnvio, titulosDaFatura, type EstadoDaFatura,
@@ -55,6 +60,7 @@ import { fmtBRLStr, intStr } from "@/pages/cartao/fmt";
 import { fmtBRL } from "@/pages/cartao/valores";
 import { useApelidos } from "@/hooks/useApelidos";
 import { apelidoDe } from "@/lib/apelidos";
+import { normalize } from "@/lib/normalize";
 
 /* As tabelas do cartão são novas e ainda não estão no types.ts gerado (que não
    se edita à mão). O cast fica confinado aqui. */
@@ -64,6 +70,9 @@ const db = supabase as any;
 /* ------------------------------------------------------------------ */
 
 type Escolha = { codigo: string; descricao: string | null };
+
+/** Uma proposta da IA, já casada com a categoria real do Omie. */
+type SugestaoIA = { codigo: string; descricao: string | null; motivo: string };
 
 /** O que a Edge Function devolve a cada lote. */
 type Resultado = {
@@ -109,6 +118,20 @@ export default function CartaoOmie() {
   const [mapa, setMapa] = useState<Mapa>(new Map());
   const [escolhas, setEscolhas] = useState<Map<string, Escolha>>(new Map());
   const [aprendendo, setAprendendo] = useState(false);
+  /** O aprendizado computado e ainda NÃO gravado. Ver `aprenderDoHistorico`. */
+  const [previa, setPrevia] = useState<
+    { p: Previa; novo: Mapa; titulos: number; votos: number } | null
+  >(null);
+  const [gravandoPrevia, setGravandoPrevia] = useState(false);
+  /**
+   * Propostas da IA para lojista sem histórico. NÃO são de-para: ficam só aqui,
+   * na memória da tela, até alguém aceitar uma — e aceitar grava como `manual`,
+   * porque foi uma pessoa que decidiu. Enquanto não se aceita, o lojista continua
+   * contando como "sem categoria" e a fatura continua travada. Ver a Edge
+   * Function `cartao-omie-sugerir`.
+   */
+  const [sugestoesIA, setSugestoesIA] = useState<Map<string, SugestaoIA>>(new Map());
+  const [sugerindo, setSugerindo] = useState(false);
   const [estadoDaFatura, setEstadoDaFatura] = useState<EstadoDaFatura>(null);
   const [envios, setEnvios] = useState<Envio[]>([]);
   const [enviando, setEnviando] = useState<string | null>(null);
@@ -259,106 +282,162 @@ export default function CartaoOmie() {
   /**
    * Lê o que a empresa já classificou e transforma em de-para.
    *
-   * Tudo vem do banco: os lançamentos das faturas já importadas e os títulos do
-   * `omie_cache`. NENHUMA chamada ao Omie — dá para rodar em pleno fechamento.
+   * A FONTE MUDOU EM 27/08/2026. Antes daqui saíam duas listas — os lançamentos
+   * das faturas importadas e os títulos do `omie_cache` — e `casar()` tentava
+   * juntá-las por VALOR + data próxima, porque o movimento do Omie não traz nome
+   * de lojista (a contraparte de todo gasto de cartão é o carimbo "Lancamento
+   * Fatura Cartao"). Adivinhação, e adivinhação que errava calado: o de-para em
+   * produção dizia que Google Ads era "Pessoal - Onboarding" com 4 de 7 votos,
+   * quando os 59 títulos de Google Ads lançados à mão estão todos em
+   * "Adsense - Marketing".
+   *
+   * O nome sempre esteve legível na OBSERVAÇÃO do título — é o MEMO cru da
+   * fatura, guardado em `omie_titulo_texto`. `cartao_omie_lojistas` devolve isso,
+   * e `votosDoOmie` lê o lojista pelo mesmo parser da tela. Ler, não inferir:
+   * 2.6 mil títulos ensinam de uma vez, sem empate para desfazer.
+   *
+   * NENHUMA chamada ao Omie — tudo do cache. Dá para rodar em pleno fechamento.
+   *
+   * Não grava nada: entrega a PRÉVIA. Ver `PainelPrevia`.
    */
   const aprenderDoHistorico = useCallback(async () => {
     setAprendendo(true);
     try {
-      // O client corta em 1000 linhas por consulta e são ~3.400 lançamentos.
-      // Desempate por `id` obrigatório: `data` sozinha empata às dezenas (uma
-      // fatura fecha tudo no mesmo dia) e, sem ordem total, a fronteira entre
-      // duas páginas repete uma linha e engole outra — o de-para aprenderia com
-      // um histórico furado.
-      const lancamentos: LinhaHistorico[] = [];
+      // A API corta consultas grandes e são ~2,6 mil títulos. Ordem total por
+      // `cod_titulo` (garantida na RPC): sem ela a fronteira entre duas páginas
+      // repete uma linha e engole outra, e o de-para aprende com voto furado.
+      const titulos: TituloComTexto[] = [];
       for (let pagina = 0; ; pagina++) {
-        const { data, error } = await db
-          .from("cartao_lancamentos")
-          .select("data, estabelecimento, descricao, valor, tipo")
-          .eq("tipo", "gasto")
-          .order("data").order("id")
-          .range(pagina * 1000, pagina * 1000 + 999);
+        const { data, error } = await db.rpc("cartao_omie_lojistas", {
+          p_offset: pagina * 1000, p_limite: 1000,
+        });
         if (error) throw new Error(error.message);
-        const linhas = data ?? [];
-        for (const l of linhas) {
-          if (!l.data) continue;
-          // A chave sai do MEMO original quando ele existe: é ele que carrega as
-          // variantes que `chaveDe` sabe fundir.
-          const nome = l.descricao ? lerMemo(l.descricao).estabelecimento : l.estabelecimento;
-          lancamentos.push({
-            chave: chaveDe(nome),
-            estabelecimento: nome,
-            data: l.data,
-            valor: Number(l.valor),
+        const linhas = (data ?? []) as Record<string, unknown>[];
+        for (const t of linhas) {
+          titulos.push({
+            codTitulo: String(t.cod_titulo),
+            data: (t.data as string) ?? null,
+            codigoCategoria: (t.codigo_categoria as string) ?? null,
+            descricaoCategoria: (t.descricao_categoria as string) ?? null,
+            contraparte: (t.contraparte as string) ?? null,
+            observacao: (t.observacao as string) ?? null,
           });
         }
         if (linhas.length < 1000) break;
       }
 
-      if (!lancamentos.length) {
-        toast.error("Não há faturas importadas para aprender. Importe o histórico na tela de Cartão.");
+      if (!titulos.length) {
+        toast.error(
+          "Não há título de cartão com observação no cache do Omie. "
+          + "O sync de contas a pagar já rodou?",
+        );
         return;
       }
 
-      const datas = lancamentos.map((l) => l.data).sort();
-      const { data: brutos, error } = await db.rpc("cartao_omie_titulos", {
-        p_de: recuar(datas[0], 60),
-        p_ate: recuar(datas[datas.length - 1], -120),
-      });
-      if (error) throw new Error(error.message);
-
-      const titulos: TituloOmie[] = (brutos ?? [])
-        .filter((t: { data: string | null }) => t.data)
-        .map((t: Record<string, unknown>) => ({
-          codTitulo: String(t.cod_titulo),
-          data: String(t.data),
-          valor: Number(t.valor),
-          codigoCategoria: (t.codigo_categoria as string) ?? null,
-          descricaoCategoria: (t.descricao_categoria as string) ?? null,
-        }));
-
-      const aprendido = aprender(casar(lancamentos, titulos));
+      const votos = votosDoOmie(titulos);
+      const aprendido = aprenderVotos(votos);
       if (!aprendido.size) {
-        toast.error("Nenhum lançamento casou com título do Omie. O cache do Omie está atualizado?");
+        toast.error(
+          `Li ${intStr(titulos.length)} títulos e não consegui o nome do lojista em nenhum. `
+          + "A observação do título mudou de formato?",
+        );
         return;
       }
 
-      const { error: erroGravar } = await db.rpc("cartao_omie_map_gravar", {
-        p_itens: [...aprendido.values()].map((e) => ({
-          chave: e.chave,
-          codigo_categoria: e.codigoCategoria,
-          descricao_categoria: e.descricaoCategoria,
-          origem: "historico",
-          votos: e.votos,
-          examinados: e.examinados,
-          exemplos: e.exemplos,
-        })),
+      // A gravação fica para o botão da prévia. Uma troca de categoria aqui é
+      // uma troca de rubrica na DRE do mês que vem, e "83 chaves viraram outra
+      // coisa" não é frase para se ler depois de acontecer.
+      setPrevia({
+        p: comparar(mapa, aprendido),
+        novo: aprendido,
+        titulos: titulos.length,
+        votos: votos.length,
       });
-      if (erroGravar) throw new Error(erroGravar.message);
-
-      await carregarMapa();
-      toast.success(
-        `${aprendido.size} lojistas aprendidos de ${intStr(lancamentos.length)} lançamentos já classificados no Omie.`,
-      );
     } catch (e) {
       toast.error("Não consegui aprender do histórico: " + (e instanceof Error ? e.message : String(e)));
     } finally {
       setAprendendo(false);
     }
-  }, [carregarMapa]);
+  }, [mapa]);
+
+  /** Grava o que a prévia mostrou. É o único caminho de escrita do aprendizado. */
+  const gravarPrevia = useCallback(async () => {
+    if (!previa) return;
+    setGravandoPrevia(true);
+    try {
+      const itens = [...previa.novo.values()].map((e) => ({
+        chave: e.chave,
+        codigo_categoria: e.codigoCategoria,
+        descricao_categoria: e.descricaoCategoria,
+        origem: "historico",
+        votos: e.votos,
+        examinados: e.examinados,
+        exemplos: e.exemplos,
+      }));
+      // A RPC recebe tudo de uma vez; são ~200 itens, não os 2,6 mil títulos.
+      const { error } = await db.rpc("cartao_omie_map_gravar", { p_itens: itens });
+      if (error) throw new Error(error.message);
+
+      await carregarMapa();
+      const { novas, trocam } = previa.p;
+      toast.success(
+        `De-para atualizado: ${intStr(novas.length)} lojista(s) novo(s), `
+        + `${intStr(trocam.length)} com categoria trocada.`,
+      );
+      setPrevia(null);
+    } catch (e) {
+      toast.error("Não consegui gravar o de-para: " + (e instanceof Error ? e.message : String(e)));
+    } finally {
+      setGravandoPrevia(false);
+    }
+  }, [previa, carregarMapa]);
 
   /* ---- escolher categoria de um lojista --------------------------- */
 
-  const definir = useCallback(async (chave: string, c: CategoriaOmie) => {
-    setEscolhas((m) => new Map(m).set(chave, { codigo: c.codigo, descricao: c.descricao }));
+  /**
+   * Grava a categoria de um ou vários lojistas — sempre como escolha MANUAL.
+   *
+   * Em lote de propósito: a cauda da fatura tem dezenas de lojistas que caem na
+   * mesma rubrica (cinco companhias aéreas em "Viagens"), e decidir isso cinco
+   * vezes é o mesmo trabalho repetido cinco vezes. A RPC já recebe uma lista;
+   * era a tela que só sabia mandar de um em um.
+   *
+   * Recebe só o par código+descrição, e não a `CategoriaOmie` inteira, porque é
+   * tudo que a gravação usa — e porque a proposta aceita da IA entra por aqui
+   * sem ter as demais colunas do plano de contas.
+   */
+  const definirVarios = useCallback(async (
+    chaves: string[],
+    c: Pick<CategoriaOmie, "codigo" | "descricao">,
+  ) => {
+    if (!chaves.length) return;
+    setEscolhas((m) => {
+      const n = new Map(m);
+      for (const chave of chaves) n.set(chave, { codigo: c.codigo, descricao: c.descricao });
+      return n;
+    });
+    // Decidido à mão, a proposta da IA para aquele lojista não tem mais o que
+    // dizer — some junto, seja ela a escolhida ou não.
+    setSugestoesIA((m) => {
+      const n = new Map(m);
+      for (const chave of chaves) n.delete(chave);
+      return n;
+    });
+
     const { error } = await db.rpc("cartao_omie_map_gravar", {
-      p_itens: [{
+      p_itens: chaves.map((chave) => ({
         chave, codigo_categoria: c.codigo, descricao_categoria: c.descricao, origem: "manual",
-      }],
+      })),
     });
     if (error) { toast.error("Não consegui salvar a escolha: " + error.message); return; }
+    if (chaves.length > 1) toast.success(`${intStr(chaves.length)} lojistas categorizados.`);
     carregarMapa();
   }, [carregarMapa]);
+
+  const definir = useCallback(
+    (chave: string, c: Pick<CategoriaOmie, "codigo" | "descricao">) => definirVarios([chave], c),
+    [definirVarios],
+  );
 
   /* ---- o que a tela mostra ---------------------------------------- */
 
@@ -383,6 +462,84 @@ export default function CartaoOmie() {
     const s = sugerir(mapa, chave);
     return s ? { ...s, manual: false } : null;
   }, [escolhas, mapa]);
+
+  /* ---- sugestão de IA para o lojista sem histórico ----------------
+     A cauda da fatura é onde o tempo se perde: o de-para responde por quem já
+     apareceu, e o resto obriga a procurar na árvore de 133 categorias do Omie o
+     que "MP*JDMTECH" pode ser. A IA adianta essa procura — e só isso: a proposta
+     não vira de-para sozinha. */
+
+  /** O que a tela sabe de cada lojista, para descrever à IA. Só os dois baldes
+      que geram título; o resto não vai ao Omie e não precisa de categoria. */
+  const lojistasDaFatura = useMemo(() => {
+    if (!separacao) return new Map<string, Grupo>();
+    return new Map(
+      agrupar([...separacao.porBalde.avista, ...separacao.porBalde.primeira])
+        .map((g) => [g.chave, g]),
+    );
+  }, [separacao]);
+
+  const sugerirComIA = useCallback(async (chaves: string[]) => {
+    if (!chaves.length) return;
+    setSugerindo(true);
+    try {
+      const lojistas = chaves.map((chave) => {
+        const g = lojistasDaFatura.get(chave);
+        return {
+          chave,
+          // Grafias distintas do mesmo lojista: é nelas que costuma estar a
+          // pista ("MERCADOLIVRE*PUREWAT" diz o que "MP*MERCADOLIVREV" esconde).
+          exemplos: [...new Set((g?.linhas ?? []).map((l) => l.estabelecimento))].slice(0, 5),
+          // O MEMO cru leva cidade e, no exterior, domínio e câmbio.
+          memos: (g?.linhas ?? []).slice(0, 3).map((l) => l.memo),
+          linhas: g?.linhas.length ?? 0,
+          total: g?.total ?? 0,
+        };
+      });
+
+      const { data, error } = await supabase.functions.invoke("cartao-omie-sugerir", {
+        body: { lojistas },
+      });
+      if (error) throw new Error(error.message);
+      const r = data as {
+        status: string; erro?: string;
+        sugestoes?: { chave: string; codigo_categoria: string; motivo: string }[];
+        sem_sugestao?: string[];
+      };
+      if (r.status === "erro") { toast.error(r.erro ?? "Não consegui sugerir."); return; }
+
+      // A descrição vem da lista de categorias que a tela já tem: a função
+      // devolve código, e é o código que o Omie aceita — a descrição é só o que
+      // a pessoa lê para decidir.
+      const porCodigo = new Map(categorias.map((c) => [c.codigo, c]));
+      const novas = new Map(sugestoesIA);
+      let aproveitadas = 0;
+      for (const s of r.sugestoes ?? []) {
+        const cat = porCodigo.get(s.codigo_categoria);
+        if (!cat) continue;
+        novas.set(s.chave, { codigo: cat.codigo, descricao: cat.descricao, motivo: s.motivo });
+        aproveitadas++;
+      }
+      setSugestoesIA(novas);
+
+      const sobraram = (r.sem_sugestao ?? []).length;
+      toast.success(
+        `${intStr(aproveitadas)} proposta(s) da IA — confira e aceite uma a uma.`
+        + (sobraram ? ` ${intStr(sobraram)} lojista(s) ficaram sem proposta.` : ""),
+      );
+    } catch (e) {
+      toast.error("Não consegui sugerir: " + (e instanceof Error ? e.message : String(e)));
+    } finally {
+      setSugerindo(false);
+    }
+  }, [lojistasDaFatura, categorias, sugestoesIA]);
+
+  /** Aceitar uma proposta é uma escolha manual — e é gravada como tal. */
+  const aceitarSugestao = useCallback((chave: string) => {
+    const s = sugestoesIA.get(chave);
+    if (!s) return;
+    definir(chave, { codigo: s.codigo, descricao: s.descricao ?? "" });
+  }, [sugestoesIA, definir]);
 
   const provisoes = useMemo(
     () => (separacao && competencia && vencimento
@@ -558,15 +715,29 @@ export default function CartaoOmie() {
 
   /* ---------------------------------------------------------------- */
 
+  /* A prévia do aprendizado vale nas duas telas: com fatura aberta e sem. É por
+     ela que se pode arrumar o de-para antes mesmo de a fatura chegar. */
+  const painelPrevia = (
+    <PainelPrevia
+      previa={previa}
+      gravando={gravandoPrevia}
+      onGravar={gravarPrevia}
+      onFechar={() => setPrevia(null)}
+    />
+  );
+
   if (!fatura || !separacao) {
     return (
-      <SemFatura
-        onArquivo={abrirArquivo}
-        inputRef={inputRef}
-        aprendidos={mapa.size}
-        aprendendo={aprendendo}
-        onAprender={aprenderDoHistorico}
-      />
+      <>
+        <SemFatura
+          onArquivo={abrirArquivo}
+          inputRef={inputRef}
+          aprendidos={mapa.size}
+          aprendendo={aprendendo}
+          onAprender={aprenderDoHistorico}
+        />
+        {painelPrevia}
+      </>
     );
   }
 
@@ -723,7 +894,13 @@ export default function CartaoOmie() {
 
       {/* ---- cobertura do de-para ---- */}
       {(aba === "avista" || aba === "primeira") && (
-        <Cobertura cob={cob} aprendidos={mapa.size} />
+        <Cobertura
+          cob={cob}
+          aprendidos={mapa.size}
+          sugerindo={sugerindo}
+          jaSugeridos={[...sugestoesIA.keys()].filter((c) => cob.faltando.includes(c)).length}
+          onSugerir={() => sugerirComIA(cob.faltando.filter((c) => !sugestoesIA.has(c)))}
+        />
       )}
 
       {/* ---- o envio ---- */}
@@ -769,6 +946,9 @@ export default function CartaoOmie() {
               categorias={categorias}
               escolhaDe={escolhaDe}
               onDefinir={definir}
+              onDefinirVarios={definirVarios}
+              sugestoesIA={sugestoesIA}
+              onAceitarIA={aceitarSugestao}
             />
           </div>
         )}
@@ -779,6 +959,8 @@ export default function CartaoOmie() {
         da fatura na observação — é dele que a DRE tira o lojista. A despesa é reconhecida na data da COMPRA, então
         uma compra parcelada entra inteira no mês em que foi feita e só o vencimento anda mês a mês.
       </p>
+
+      {painelPrevia}
     </div>
   );
 }
@@ -786,13 +968,6 @@ export default function CartaoOmie() {
 /* ------------------------------------------------------------------
  * Peças
  * ------------------------------------------------------------------ */
-
-/** Desloca uma data ISO em dias, sem passar pelo fuso local. */
-function recuar(iso: string, dias: number): string {
-  const d = new Date(`${iso}T00:00:00Z`);
-  d.setUTCDate(d.getUTCDate() - dias);
-  return d.toISOString().slice(0, 10);
-}
 
 function Campo({
   rotulo, dica, alerta, children,
@@ -982,10 +1157,165 @@ function PainelEnvio({
   );
 }
 
+/* ------------------------------------------------------------------
+ * A prévia do aprendizado
+ * ------------------------------------------------------------------ */
+
+/**
+ * O que gravar o aprendizado mudaria — mostrado ANTES de gravar.
+ *
+ * Uma passada do aprendizado reescreve o de-para inteiro de uma vez. Cada troca
+ * de categoria aqui é uma troca de rubrica na DRE do mês que vem, e a lista de
+ * trocas vem ordenada por volume: a que mais pesa é a primeira a ser lida.
+ *
+ * O que NÃO está nesta lista é tão importante quanto o que está — por isso os
+ * três rodapés: o que só confirma, o que a escolha manual protege e o que o
+ * aprendizado não alcança (e continua valendo, porque a gravação é upsert).
+ */
+function PainelPrevia({
+  previa, gravando, onGravar, onFechar,
+}: {
+  previa: { p: Previa; novo: Mapa; titulos: number; votos: number } | null;
+  gravando: boolean;
+  onGravar: () => void;
+  onFechar: () => void;
+}) {
+  if (!previa) return null;
+  const { p, titulos, votos } = previa;
+  const nada = p.novas.length === 0 && p.trocam.length === 0;
+
+  return (
+    <Dialog open onOpenChange={(v) => { if (!v && !gravando) onFechar(); }}>
+      <DialogContent className="max-w-3xl">
+        <DialogHeader>
+          <DialogTitle>Aprendizado do histórico — prévia</DialogTitle>
+          <DialogDescription>
+            {intStr(votos)} títulos com lojista legível, de {intStr(titulos)} lidos do Omie.
+            Nada foi gravado ainda.
+          </DialogDescription>
+        </DialogHeader>
+
+        <div className="grid grid-cols-3 gap-3">
+          <Resumo rotulo="Lojistas novos" valor={p.novas.length} />
+          <Resumo rotulo="Trocam de categoria" valor={p.trocam.length} alerta={p.trocam.length > 0} />
+          <Resumo rotulo="Confirmam o que já havia" valor={p.iguais} />
+        </div>
+
+        <div className="max-h-[45vh] space-y-4 overflow-auto">
+          {p.trocam.length > 0 && (
+            <ListaMudancas
+              titulo="Trocam de categoria"
+              nota="A rubrica destes lojistas muda na próxima fatura. Confira antes de gravar."
+              mudancas={p.trocam}
+            />
+          )}
+          {p.novas.length > 0 && (
+            <ListaMudancas
+              titulo="Lojistas novos no de-para"
+              nota="Não tinham categoria; passam a ter."
+              mudancas={p.novas}
+            />
+          )}
+          {nada && (
+            <p className="py-6 text-center text-[12.5px] text-muted-foreground">
+              O aprendizado concorda com o de-para que já está gravado. Nada a mudar.
+            </p>
+          )}
+        </div>
+
+        <div className="space-y-1 border-t border-border pt-3 text-[11.5px] text-muted-foreground">
+          {p.manuaisPreservadas > 0 && (
+            <p>
+              {intStr(p.manuaisPreservadas)} escolha(s) manual(is) preservada(s) — o aprendizado
+              nunca sobrescreve quem já discordou dele na tela.
+            </p>
+          )}
+          {p.intocadas.length > 0 && (
+            <p>
+              {intStr(p.intocadas.length)} chave(s) do de-para sem título legível no Omie continuam
+              como estão: {p.intocadas.slice(0, 5).join(", ")}
+              {p.intocadas.length > 5 && ` e mais ${p.intocadas.length - 5}`}.
+            </p>
+          )}
+        </div>
+
+        <DialogFooter>
+          <Button variant="ghost" onClick={onFechar} disabled={gravando}>Cancelar</Button>
+          <Button onClick={onGravar} disabled={gravando || nada}>
+            {gravando ? <Loader2 className="h-4 w-4 animate-spin" /> : <Check className="h-4 w-4" />}
+            Gravar de-para
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function Resumo({ rotulo, valor, alerta }: { rotulo: string; valor: number; alerta?: boolean }) {
+  return (
+    <div className="card-surface p-3">
+      <div className="eyebrow">{rotulo}</div>
+      <div className={cn("num text-[22px] font-bold leading-tight", alerta && "text-destructive")}>
+        {intStr(valor)}
+      </div>
+    </div>
+  );
+}
+
+function ListaMudancas({
+  titulo, nota, mudancas,
+}: { titulo: string; nota: string; mudancas: Mudanca[] }) {
+  return (
+    <div>
+      <div className="mb-1.5">
+        <div className="text-[12.5px] font-bold">{titulo}</div>
+        <div className="text-[11px] text-muted-foreground">{nota}</div>
+      </div>
+      <div className="overflow-hidden rounded border border-border">
+        <table className="w-full text-[11.5px]">
+          <tbody>
+            {mudancas.map((m) => (
+              <tr key={m.chave} className="border-b border-border/50 last:border-0">
+                <td className="px-3 py-1.5 font-medium">{m.chave}</td>
+                <td className="px-3 py-1.5 text-muted-foreground">
+                  {/* O volume é o que distingue "40 títulos concordam" de "1
+                      título disse isso uma vez". Sem ele a lista é só uma lista. */}
+                  {m.votos === m.examinados
+                    ? `${intStr(m.votos)} título(s), unânime`
+                    : `${intStr(m.votos)} de ${intStr(m.examinados)} título(s)`}
+                </td>
+                <td className="px-3 py-1.5 text-right">
+                  {m.de && (
+                    <>
+                      <span className="text-muted-foreground line-through">
+                        {m.de.descricao ?? m.de.codigo}
+                      </span>
+                      <span className="mx-1.5 text-muted-foreground">→</span>
+                    </>
+                  )}
+                  <span className="font-medium">{m.para.descricao ?? m.para.codigo}</span>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
 function Cobertura({
-  cob, aprendidos,
-}: { cob: { total: number; cobertas: number; faltando: string[] }; aprendidos: number }) {
+  cob, aprendidos, sugerindo, jaSugeridos, onSugerir,
+}: {
+  cob: { total: number; cobertas: number; faltando: string[] };
+  aprendidos: number;
+  sugerindo: boolean;
+  /** Quantos dos que faltam já receberam proposta e esperam aceite. */
+  jaSugeridos: number;
+  onSugerir: () => void;
+}) {
   const pronto = cob.total > 0 && cob.cobertas === cob.total;
+  const semProposta = cob.faltando.length - jaSugeridos;
   return (
     <div className={cn(
       "flex flex-wrap items-center gap-x-4 gap-y-2 rounded-lg border p-3 text-[12.5px]",
@@ -1001,6 +1331,20 @@ function Cobertura({
           faltam: {cob.faltando.slice(0, 6).join(", ")}
           {cob.faltando.length > 6 && ` e mais ${cob.faltando.length - 6}`}
         </span>
+      )}
+      {jaSugeridos > 0 && (
+        <span className="text-primary">{intStr(jaSugeridos)} com proposta esperando aceite</span>
+      )}
+      {/* Só o que ainda não tem proposta — repetir a chamada para quem já tem
+          gastaria IA para reescrever a mesma frase. */}
+      {semProposta > 0 && (
+        <Button
+          variant="outline" size="sm" className="ml-auto h-7"
+          onClick={onSugerir} disabled={sugerindo}
+        >
+          {sugerindo ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Sparkles className="h-3.5 w-3.5" />}
+          Sugerir {intStr(semProposta)} com IA
+        </Button>
       )}
     </div>
   );
@@ -1226,28 +1570,132 @@ function PainelAuditoria({ auditoria }: { auditoria: Auditoria }) {
   );
 }
 
+/**
+ * A lista de lojistas — e o lugar onde a fatura e efetivamente conferida.
+ *
+ * O QUE ESTA TELA OTIMIZA. A tabela e ordenada por valor, que e a ordem certa
+ * para LER a fatura e a errada para TRABALHAR nela: o trabalho e definido pelo
+ * que falta, e o que falta e justamente a cauda barata, la embaixo. Dai o filtro
+ * "so sem categoria" — ele nao esconde informacao, ele poe a fila de trabalho na
+ * frente.
+ *
+ * E dai a selecao multipla: categoria e decisao por FORNECEDOR, mas varios
+ * fornecedores caem na mesma rubrica (cinco companhias aereas em "Viagens").
+ * Sem lote, isso e a mesma decisao tomada cinco vezes.
+ */
 function TabelaGrupos({
-  grupos, balde, categorias, escolhaDe, onDefinir,
+  grupos, balde, categorias, escolhaDe, onDefinir, onDefinirVarios, sugestoesIA, onAceitarIA,
 }: {
   grupos: Grupo[];
   balde: Balde;
   categorias: CategoriaOmie[];
   escolhaDe: (chave: string) => (Sugestao & { manual: boolean }) | null;
-  onDefinir: (chave: string, c: CategoriaOmie) => void;
+  onDefinir: (chave: string, c: Pick<CategoriaOmie, "codigo" | "descricao">) => void;
+  onDefinirVarios: (chaves: string[], c: Pick<CategoriaOmie, "codigo" | "descricao">) => void;
+  sugestoesIA: Map<string, SugestaoIA>;
+  onAceitarIA: (chave: string) => void;
 }) {
   const apelidos = useApelidos();
   const [aberto, setAberto] = useState<string | null>(null);
+  const [busca, setBusca] = useState("");
+  const [soFaltando, setSoFaltando] = useState(false);
+  const [selecao, setSelecao] = useState<Set<string>>(new Set());
   const classifica = balde === "avista" || balde === "primeira";
+
+  const faltando = useMemo(
+    () => (classifica ? grupos.filter((g) => !escolhaDe(g.chave)).length : 0),
+    [grupos, escolhaDe, classifica],
+  );
+
+  const visiveis = useMemo(() => {
+    const alvo = normalize(busca.trim());
+    return grupos.filter((g) => {
+      if (soFaltando && escolhaDe(g.chave)) return false;
+      if (!alvo) return true;
+      // O apelido entra no texto que a busca varre: e ele que esta escrito na
+      // linha, e procurar pelo nome que se le tem de achar a linha que se ve.
+      const apelido = apelidoDe(apelidos, g.estabelecimento)?.apelido ?? "";
+      return normalize(`${g.estabelecimento} ${apelido} ${g.chave}`).includes(alvo);
+    });
+  }, [grupos, busca, soFaltando, escolhaDe, apelidos]);
+
+  /* A selecao acompanha o que esta a vista: aplicar categoria a um lojista que
+     o filtro escondeu seria uma edicao que ninguem viu acontecer. */
+  const selecionadas = useMemo(
+    () => visiveis.filter((g) => selecao.has(g.chave)).map((g) => g.chave),
+    [visiveis, selecao],
+  );
+
+  const alternar = useCallback((chave: string) => {
+    setSelecao((s) => {
+      const n = new Set(s);
+      if (n.has(chave)) n.delete(chave); else n.add(chave);
+      return n;
+    });
+  }, []);
+
+  const todasVisiveisMarcadas = visiveis.length > 0 && selecionadas.length === visiveis.length;
 
   if (!grupos.length) {
     return <p className="px-4 py-10 text-center text-[12.5px] text-muted-foreground">Nada neste balde.</p>;
   }
 
   return (
-    <div className="max-h-[560px] overflow-auto">
+    <>
+      {classifica && (
+        <div className="flex flex-wrap items-center gap-2 border-b border-border bg-muted/30 px-4 py-2">
+          <Input
+            value={busca}
+            onChange={(e) => setBusca(e.target.value)}
+            placeholder="Procurar lojista…"
+            className="h-8 w-[220px] text-[12px]"
+          />
+          <Button
+            variant={soFaltando ? "default" : "outline"}
+            size="sm" className="h-8"
+            onClick={() => setSoFaltando((v) => !v)}
+            disabled={faltando === 0 && !soFaltando}
+          >
+            <AlertTriangle className="h-3.5 w-3.5" />
+            Só sem categoria ({intStr(faltando)})
+          </Button>
+
+          {selecionadas.length > 0 && (
+            <div className="ml-auto flex items-center gap-2">
+              <span className="text-[11.5px] text-muted-foreground">
+                {intStr(selecionadas.length)} selecionado(s)
+              </span>
+              <PickerCategoria
+                categorias={categorias}
+                onEscolher={(c) => { onDefinirVarios(selecionadas, c); setSelecao(new Set()); }}
+              >
+                <Button size="sm" className="h-8">
+                  Aplicar categoria aos {intStr(selecionadas.length)}
+                </Button>
+              </PickerCategoria>
+              <Button variant="ghost" size="sm" className="h-8" onClick={() => setSelecao(new Set())}>
+                Limpar
+              </Button>
+            </div>
+          )}
+        </div>
+      )}
+
+      <div className="max-h-[560px] overflow-auto">
       <table className="w-full text-[12.5px]">
         <thead className="sticky top-0 z-10 bg-card">
           <tr className="border-b border-border text-left text-[11px] uppercase tracking-wider text-muted-foreground">
+            {classifica && (
+              <th className="w-8 px-3 py-2">
+                <Checkbox
+                  checked={todasVisiveisMarcadas}
+                  onCheckedChange={() => setSelecao(
+                    todasVisiveisMarcadas ? new Set() : new Set(visiveis.map((g) => g.chave)),
+                  )}
+                  aria-label="Selecionar todos os visíveis"
+                />
+              </th>
+            )}
             <th className="px-4 py-2 font-medium">Lojista</th>
             <th className="px-3 py-2 text-right font-medium">Linhas</th>
             <th className="px-3 py-2 text-right font-medium">Títulos</th>
@@ -1256,12 +1704,21 @@ function TabelaGrupos({
           </tr>
         </thead>
         <tbody>
-          {grupos.map((g) => {
+          {visiveis.map((g) => {
             const e = escolhaDe(g.chave);
             const expandido = aberto === g.chave;
             return (
               <Fragment key={g.chave}>
                 <tr className="border-b border-border/50 hover:bg-muted/40">
+                  {classifica && (
+                    <td className="px-3 py-2 align-top">
+                      <Checkbox
+                        checked={selecao.has(g.chave)}
+                        onCheckedChange={() => alternar(g.chave)}
+                        aria-label={`Selecionar ${g.estabelecimento}`}
+                      />
+                    </td>
+                  )}
                   <td className="px-4 py-2">
                     <button
                       className="flex items-center gap-1.5 text-left"
@@ -1294,12 +1751,21 @@ function TabelaGrupos({
                         categorias={categorias}
                         onEscolher={(c) => onDefinir(g.chave, c)}
                       />
+                      {/* A proposta só aparece onde ainda não há decisão. Ela
+                          NÃO preenche o seletor: enquanto não for aceita, este
+                          lojista continua sem categoria e a fatura, travada. */}
+                      {!e && sugestoesIA.get(g.chave) && (
+                        <PropostaIA
+                          sugestao={sugestoesIA.get(g.chave)!}
+                          onAceitar={() => onAceitarIA(g.chave)}
+                        />
+                      )}
                     </td>
                   )}
                 </tr>
                 {expandido && (
                   <tr className="bg-muted/30">
-                    <td colSpan={classifica ? 5 : 4} className="px-4 py-2">
+                    <td colSpan={classifica ? 6 : 4} className="px-4 py-2">
                       <div className="max-h-56 overflow-auto rounded border border-border/60 bg-card">
                         <table className="w-full text-[11.5px]">
                           <tbody>
@@ -1322,6 +1788,45 @@ function TabelaGrupos({
           })}
         </tbody>
       </table>
+      {visiveis.length === 0 && (
+        <p className="px-4 py-10 text-center text-[12.5px] text-muted-foreground">
+          {soFaltando
+            ? "Nenhum lojista sem categoria por aqui."
+            : "Nada corresponde à busca."}
+        </p>
+      )}
+      </div>
+    </>
+  );
+}
+
+/**
+ * A proposta da IA para um lojista sem histórico.
+ *
+ * Mostra o MOTIVO junto, e não só a categoria, porque é ele que permite discordar
+ * com conhecimento de causa — "provavelmente é praça de ingresso" e "não deu para
+ * saber o que é" pedem conferências diferentes, e uma etiqueta de confiança não
+ * distinguiria as duas.
+ */
+function PropostaIA({ sugestao, onAceitar }: { sugestao: SugestaoIA; onAceitar: () => void }) {
+  return (
+    <div className="mt-1.5 max-w-[340px] rounded border border-primary/30 bg-primary/5 px-2 py-1.5">
+      <div className="flex items-start justify-between gap-2">
+        <div className="min-w-0">
+          <div className="flex items-center gap-1 text-[10px] font-bold uppercase tracking-wide text-primary">
+            <Sparkles className="h-3 w-3" /> Sugestão da IA
+          </div>
+          <div className="mt-0.5 truncate text-[11.5px] font-medium">
+            {sugestao.descricao ?? sugestao.codigo}
+          </div>
+        </div>
+        <Button size="sm" variant="outline" className="h-6 shrink-0 px-2 text-[11px]" onClick={onAceitar}>
+          Aceitar
+        </Button>
+      </div>
+      {sugestao.motivo && (
+        <p className="mt-1 text-[10.5px] leading-snug text-muted-foreground">{sugestao.motivo}</p>
+      )}
     </div>
   );
 }
@@ -1339,29 +1844,48 @@ function SeletorCategoria({
   categorias: CategoriaOmie[];
   onEscolher: (c: CategoriaOmie) => void;
 }) {
+  return (
+    <PickerCategoria categorias={categorias} onEscolher={onEscolher}>
+      <button
+        className={cn(
+          "flex w-full max-w-[340px] items-center justify-between gap-2 rounded border px-2 py-1 text-left transition hover:bg-muted",
+          atual ? "border-border" : "border-destructive/50 bg-destructive/5",
+        )}
+      >
+        <span className="truncate">
+          {atual
+            ? (atual.descricaoCategoria ?? atual.codigoCategoria)
+            : <span className="text-destructive">sem categoria</span>}
+        </span>
+        {atual && (
+          <span className={cn("shrink-0 text-[10px] uppercase tracking-wide", CORES_CONFIANCA[atual.confianca])}>
+            {atual.manual ? "escolhida" : atual.origem === "historico" ? atual.confianca : atual.origem}
+          </span>
+        )}
+      </button>
+    </PickerCategoria>
+  );
+}
+
+/**
+ * A lista de categorias do Omie, com o gatilho que quem chama quiser.
+ *
+ * Vale para uma linha e para o lote, e é a MESMA lista nos dois — a ordem já vem
+ * do banco por uso decrescente (`omie_categorias_disponiveis`), então a rubrica
+ * que a casa mais usa é a primeira antes de qualquer digitação.
+ */
+function PickerCategoria({
+  categorias, onEscolher, children,
+}: {
+  categorias: CategoriaOmie[];
+  onEscolher: (c: CategoriaOmie) => void;
+  children: React.ReactNode;
+}) {
   const [aberto, setAberto] = useState(false);
 
   return (
     <Popover open={aberto} onOpenChange={setAberto}>
-      <PopoverTrigger asChild>
-        <button
-          className={cn(
-            "flex w-full max-w-[340px] items-center justify-between gap-2 rounded border px-2 py-1 text-left transition hover:bg-muted",
-            atual ? "border-border" : "border-destructive/50 bg-destructive/5",
-          )}
-        >
-          <span className="truncate">
-            {atual
-              ? (atual.descricaoCategoria ?? atual.codigoCategoria)
-              : <span className="text-destructive">sem categoria</span>}
-          </span>
-          {atual && (
-            <span className={cn("shrink-0 text-[10px] uppercase tracking-wide", CORES_CONFIANCA[atual.confianca])}>
-              {atual.manual ? "escolhida" : atual.origem === "historico" ? atual.confianca : atual.origem}
-            </span>
-          )}
-        </button>
-      </PopoverTrigger>
+      <PopoverTrigger asChild>{children}</PopoverTrigger>
       <PopoverContent className="w-[420px] p-0" align="start">
         <Command>
           <CommandInput placeholder="Buscar categoria do Omie…" />
@@ -1457,8 +1981,8 @@ function SemFatura({
             <div className="font-semibold">De-para de categoria</div>
             <p className="text-muted-foreground">
               {aprendidos > 0
-                ? `${aprendidos} lojistas já mapeados. Rodar de novo reaprende com as faturas mais recentes.`
-                : "Ainda vazio. O Hub aprende sozinho: casa as faturas já importadas com os títulos do Omie e vê em que categoria cada lojista foi lançado."}
+                ? `${aprendidos} lojistas já mapeados. Rodar de novo reaprende com os títulos mais recentes — e mostra o que mudaria antes de gravar.`
+                : "Ainda vazio. O Hub aprende sozinho: lê o lojista na observação de cada título de cartão do Omie e vê em que categoria a empresa o lançou."}
             </p>
           </div>
         </div>

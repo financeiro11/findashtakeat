@@ -110,10 +110,27 @@ describe("avaliar — o que NÃO pode passar", () => {
     expect(r.recusa).toMatch(/piso/i);
   });
 
-  it("recusa acima do teto", () => {
+  it("recusa acima do teto, mas marca que é o produto certo (vale histórico)", () => {
     const r = avaliar(ALVO, TETO, oferta("Notebook Lenovo i5 16GB RAM 512GB SSD", 3400));
     expect(r.aprovado).toBe(false);
     expect(r.recusa).toMatch(/teto/i);
+    // É o produto certo pelo preço errado: guardar a linha é o que permite
+    // dizer, depois, "R$ 2.900 é o menor preço em 90 dias".
+    expect(r.apenas_preco).toBe(true);
+  });
+
+  it("recusa que NÃO é de preço não entra no histórico", () => {
+    // Acessório, sucata e spec abaixo do pedido não são histórico de nada.
+    expect(avaliar(ALVO, TETO, oferta("Carregador Para Notebook Dell 65W", 2000)).apenas_preco).toBe(false);
+    expect(avaliar(ALVO, TETO, oferta("Notebook Lenovo i5 8GB RAM 512GB SSD", 2400)).apenas_preco).toBe(false);
+    expect(avaliar(ALVO, TETO, oferta("Notebook Lenovo i5 16GB 512GB SSD Seminovo", 2000)).apenas_preco).toBe(false);
+  });
+
+  it("o frete pode ser o que joga o produto certo para fora do teto", () => {
+    const r = avaliar(ALVO, TETO, oferta("Notebook Dell i5 16GB RAM 512GB SSD", 2950, { frete_valor: 120 }));
+    expect(r.aprovado).toBe(false);
+    expect(r.apenas_preco).toBe(true);
+    expect(r.total).toBe(3070);
   });
 
   it("recusa spec declarada abaixo do pedido", () => {

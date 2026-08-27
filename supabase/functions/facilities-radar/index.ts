@@ -690,6 +690,8 @@ interface ResultadoAlvo {
   alertas: number;
   /** Avisos suprimidos por serem o mesmo produto vindo de outra fonte. */
   repetidos: number;
+  /** Produto certo, preço acima do teto: guardado só para alimentar a curva. */
+  historico: number;
   fontes: Record<string, string>;   // fonte → "12 anúncios" ou o erro
   top_recusas: string[];
 }
@@ -706,7 +708,7 @@ async function varrerAlvo(
   const fontes: string[] = (fontesPedidas ?? alvo.fontes ?? []).filter(Boolean);
 
   const res: ResultadoAlvo = {
-    alvo_id: alvo.id, titulo: alvo.titulo, buscadas: 0, aprovadas: 0, recusadas: 0, alertas: 0, repetidos: 0,
+    alvo_id: alvo.id, titulo: alvo.titulo, buscadas: 0, aprovadas: 0, recusadas: 0, alertas: 0, repetidos: 0, historico: 0,
     fontes: {}, top_recusas: [],
   };
 
@@ -794,16 +796,24 @@ async function varrerAlvo(
   /* Avaliação — regra pura, sem rede. */
   const recusas = new Map<string, number>();
   const aprovadas: Array<{ o: OfertaBruta; av: ReturnType<typeof avaliar> }> = [];
+  /* O PRODUTO CERTO PELO PREÇO ERRADO TAMBÉM É GUARDADO. Ele não vira alerta e
+     não conta como oferta ativa, mas entra na tabela de preços — é dele que sai
+     a frase "R$ 3.900 é o menor preço em 90 dias". Antes, o notebook de
+     R$ 4.500 parado há três meses era descartado, e quando enfim caísse não
+     haveria com o que comparar. */
+  const soPreco: Array<{ o: OfertaBruta; av: ReturnType<typeof avaliar> }> = [];
   for (const o of brutas.values()) {
     const av = avaliar(specs, precoAlvo, o);
     if (!av.aprovado) {
       res.recusadas++;
+      if (av.apenas_preco) soPreco.push({ o, av });
       const chave = (av.recusa ?? "sem motivo").replace(/“[^”]*”/g, "…").replace(/R\$ ?[\d.,]+/g, "R$ …");
       recusas.set(chave, (recusas.get(chave) ?? 0) + 1);
       continue;
     }
     aprovadas.push({ o, av });
   }
+  res.historico = soPreco.length;
   res.aprovadas = aprovadas.length;
   res.top_recusas = [...recusas.entries()].sort((a, b) => b[1] - a[1]).slice(0, 5).map(([m, n]) => `${n}× ${m}`);
 
@@ -815,11 +825,16 @@ async function varrerAlvo(
   const idsVivos: number[] = [];
   const candidatos: Array<{ ofertaId: number; titulo: string; total: number; frete: number | null; classe: { tipo: string; texto: string } }> = [];
 
-  for (const { o, av } of aprovadas) {
+  /* Os "só preço" entram na MESMA gravação, marcados. A alternativa seria um
+     segundo laço quase idêntico — e duas cópias da mesma escrita divergem na
+     primeira coluna nova que alguém acrescentar em um só dos dois. */
+  for (const { o, av } of [...aprovadas, ...soPreco]) {
+    const dentroDoTeto = av.aprovado;
     const { frete } = totalDaOferta(o);
     const { data: linha, error } = await supabase
       .from("facilities_radar_ofertas")
       .upsert({
+        dentro_do_teto: dentroDoTeto,
         alvo_id: alvo.id,
         fonte: o.fonte,
         id_externo: o.id_externo,
@@ -864,6 +879,8 @@ async function varrerAlvo(
       await supabase.from("facilities_radar_ofertas").update({ preco_min: av.total }).eq("id", linha.id);
     }
 
+    // Só quem cabe no teto pode virar aviso. O resto só alimenta a curva.
+    if (!dentroDoTeto) continue;
     const classe = classificar(av.total, precoAlvo, (hist ?? []) as any);
     if (classe) candidatos.push({ ofertaId: linha.id, titulo: o.titulo, total: av.total, frete, classe });
   }
@@ -1129,7 +1146,12 @@ Deno.serve(async (req) => {
 
     let q = supabase.from("facilities_radar_alvos").select("*").eq("ativo", true);
     if (body?.alvo_id) q = q.eq("id", body.alvo_id);
-    else q = q.order("ultima_varredura", { ascending: true, nullsFirst: true }).limit(Number(body?.limite ?? 20));
+    else q = q
+        // Favorito na frente: é o que a empresa compra sempre, e é o que não
+        // pode ficar para a próxima rodada quando o relógio apertar.
+        .order("favorito", { ascending: false })
+        .order("ultima_varredura", { ascending: true, nullsFirst: true })
+        .limit(Number(body?.limite ?? 20));
 
     const { data: alvos, error } = await q;
     if (error) throw new Error(error.message);
@@ -1148,7 +1170,7 @@ Deno.serve(async (req) => {
         console.error("varrerAlvo", alvo.id, e);
         resultados.push({
           alvo_id: alvo.id, titulo: alvo.titulo, buscadas: 0, aprovadas: 0, recusadas: 0,
-          alertas: 0, repetidos: 0, fontes: { erro: String(e) }, top_recusas: [],
+          alertas: 0, repetidos: 0, historico: 0, fontes: { erro: String(e) }, top_recusas: [],
         });
         await supabase.from("facilities_radar_alvos")
           .update({ ultimo_erro: String(e).slice(0, 500), ultima_varredura: new Date().toISOString() })

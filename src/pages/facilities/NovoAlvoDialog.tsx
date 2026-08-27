@@ -7,6 +7,7 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import { supabase } from "@/integrations/supabase/client";
+import { useAuth } from "@/hooks/useAuth";
 import { invocar } from "@/lib/erroEdge";
 import { db, parseValor, fmtBRL, CATEGORIAS, type Solicitacao } from "./lib";
 import { resumoDoAlvo, fonteLabel, pisoDePreco, type AlvoSpecs } from "@/lib/radarPrecos";
@@ -48,6 +49,8 @@ export interface AlvoRow {
   solicitacao_id: string | null;
   fontes: string[];
   ativo: boolean;
+  /** Equipamento que a empresa compra sempre: fixa no topo e entra primeiro na varredura. */
+  favorito: boolean;
 }
 
 interface Props {
@@ -58,6 +61,7 @@ interface Props {
 }
 
 export function NovoAlvoDialog({ alvo, open, onOpenChange, onSaved }: Props) {
+  const { profile } = useAuth();
   const [pedido, setPedido] = useState("");
   const [linkRef, setLinkRef] = useState("");
   const [titulo, setTitulo] = useState("");
@@ -125,6 +129,11 @@ export function NovoAlvoDialog({ alvo, open, onOpenChange, onSaved }: Props) {
       pedido, link_ref: linkRef || null, categoria,
       specs, preco_alvo: preco, quantidade: Number(quantidade) || 1,
       solicitacao_id: solicId || null, fontes, updated_at: new Date().toISOString(),
+      /* Quem cadastrou vira o solicitante quando o achado virar cotação — é o
+         que `facilities_radar_virar_cotacao` usa. Sem isso a solicitação nasce
+         órfã e ninguém sabe a quem perguntar. Só na criação: editar um alvo não
+         transfere a autoria para quem passou por ali. */
+      ...(alvo ? {} : { criado_por: profile?.nome ?? null }),
     };
     const { error } = alvo
       ? await db.from("facilities_radar_alvos").update(linha).eq("id", alvo.id)

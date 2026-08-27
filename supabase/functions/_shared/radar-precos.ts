@@ -114,6 +114,14 @@ export interface Avaliacao {
   total: number;
   /** `false` quando o frete não é conhecido e o `total` é só o preço do produto. */
   frete_conhecido: boolean;
+  /**
+   * Passou em TUDO e só não coube no teto.
+   *
+   * É o produto certo pelo preço errado — e é a matéria-prima do histórico:
+   * sem guardar o notebook de R$ 4.500 que ficou parado três meses, não há
+   * como dizer que R$ 3.900 é o menor preço em 90 dias. Não vira alerta.
+   */
+  apenas_preco: boolean;
 }
 
 /* ------------------------------------------------------------- normalização */
@@ -483,8 +491,8 @@ export function avaliar(alvo: AlvoSpecs, precoAlvo: number, o: OfertaBruta): Ava
   const motivos: string[] = [];
   const { total, frete, frete_conhecido } = totalDaOferta(o);
 
-  const nao = (recusa: string): Avaliacao =>
-    ({ aprovado: false, score: 0, recusa, motivos: [], conferir: [], lidas, total, frete_conhecido });
+  const nao = (recusa: string, apenas_preco = false): Avaliacao =>
+    ({ aprovado: false, score: 0, recusa, motivos: [], conferir: [], lidas, total, frete_conhecido, apenas_preco });
 
   if (!o.titulo || !o.url || !(o.preco > 0)) return nao("anúncio sem título, link ou preço");
 
@@ -508,15 +516,14 @@ export function avaliar(alvo: AlvoSpecs, precoAlvo: number, o: OfertaBruta): Ava
     if (ob && !t.includes(norm(ob))) return nao(`não menciona “${ob}”`);
   }
 
-  // 3. Preço — medido pelo TOTAL, porque frete é gasto igual
+  /* 3. Piso — guarda de acessório, e por isso continua cedo: não adianta olhar
+     spec de uma coisa que custa um décimo do produto. O TETO, ao contrário, foi
+     para o fim de propósito: só depois de o anúncio passar por todo o resto é
+     que dá para afirmar "é o produto certo, caro demais" — que é o que alimenta
+     o histórico. */
   const piso = pisoDePreco(precoAlvo);
   if (o.preco < piso) {
     return nao(`R$ ${o.preco.toFixed(0)} está abaixo do piso de R$ ${piso} — provável acessório ou anúncio isca`);
-  }
-  if (total > precoAlvo) {
-    return nao(frete && frete > 0
-      ? `R$ ${o.preco.toFixed(0)} + R$ ${frete.toFixed(0)} de frete passa do teto (R$ ${precoAlvo.toFixed(0)})`
-      : `acima do teto (R$ ${precoAlvo.toFixed(0)})`);
   }
   if (frete === 0) motivos.push("frete grátis");
   else if (frete && frete > 0) motivos.push(`+ R$ ${frete.toFixed(0)} de frete`);
@@ -571,6 +578,18 @@ export function avaliar(alvo: AlvoSpecs, precoAlvo: number, o: OfertaBruta): Ava
   }
   if ((alvo.tela_pol_min != null || alvo.tela_pol_max != null) && lidas.tela_pol == null) conferir.push("tamanho da tela");
 
+  /* AGORA O TETO. Chegou aqui: é o produto certo, com as specs certas, novo e
+     disponível. Se não couber no preço, a recusa sai marcada como `apenas_preco`
+     — o chamador guarda a linha para o histórico em vez de jogá-la fora. */
+  if (total > precoAlvo) {
+    return nao(
+      frete && frete > 0
+        ? `R$ ${o.preco.toFixed(0)} + R$ ${frete.toFixed(0)} de frete passa do teto (R$ ${precoAlvo.toFixed(0)})`
+        : `acima do teto (R$ ${precoAlvo.toFixed(0)})`,
+      true,
+    );
+  }
+
   /* Pontuação. Começa em 50 e sobe com o que dá confiança. O peso maior é da
      folga de preço: entre dois anúncios que atendem, o mais barato é a resposta.
      A reputação do vendedor vem logo atrás porque o Facilities compra de
@@ -601,7 +620,7 @@ export function avaliar(alvo: AlvoSpecs, precoAlvo: number, o: OfertaBruta): Ava
 
   if (folga >= 0.10) motivos.unshift(`${Math.round(folga * 100)}% abaixo do teto`);
 
-  return { aprovado: true, score, recusa: null, motivos, conferir, lidas, total, frete_conhecido };
+  return { aprovado: true, score, recusa: null, motivos, conferir, lidas, total, frete_conhecido, apenas_preco: false };
 }
 
 /* ------------------------------------------------------- leitura do histórico */

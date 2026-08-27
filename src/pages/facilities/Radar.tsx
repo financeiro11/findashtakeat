@@ -15,6 +15,8 @@ import { NovoAlvoDialog, type AlvoRow } from "./NovoAlvoDialog";
 import { db, fmtBRL as fmtBRLStr, fmtData } from "./lib";
 import { resumoDoAlvo, fonteLabel, textoFrete, textoNota, textoWhats } from "@/lib/radarPrecos";
 import { invalidarRadarAlertas } from "@/hooks/useRadarAlertas";
+import { ProximaVarredura } from "./ProximaVarredura";
+import { HistoricoPreco } from "./HistoricoPreco";
 
 /* Valor compacto na tela, número cheio no hover — convenção do Hub.
    Onde precisa ser string mesmo (toast, title, template), use fmtBRLStr. */
@@ -46,6 +48,8 @@ interface PainelLinha {
   melhor: Oferta | null;
   economia_aberta: number;
   economia_realizada: number;
+  /** Dias distintos com preço medido. Zero = a curva ainda é um ponto solto. */
+  pontos_historico: number;
 }
 
 const TIPO_STYLE: Record<string, { label: string; cls: string; Icon: typeof TrendingDown }> = {
@@ -191,6 +195,18 @@ export default function Radar() {
       .catch(() => toast.error("Não consegui copiar."));
   }
 
+  /* Favoritar não é só fixar no topo: o alvo passa à frente na FILA da
+     varredura (a Edge Function ordena por favorito primeiro). Equipamento que a
+     empresa compra sempre não pode ser o que sobra quando o relógio aperta. */
+  async function alternarFavorito(l: PainelLinha) {
+    const novo = !l.alvo.favorito;
+    setPainel((p) => p.map((x) => (x.alvo.id === l.alvo.id ? { ...x, alvo: { ...x.alvo, favorito: novo } } : x)));
+    const { error } = await db.from("facilities_radar_alvos")
+      .update({ favorito: novo, updated_at: new Date().toISOString() }).eq("id", l.alvo.id);
+    if (error) { toast.error(error.message); load(); return; }
+    toast.success(novo ? "Marcado como padrão da casa — entra primeiro na varredura." : "Deixou de ser padrão.");
+  }
+
   async function alternarAtivo(l: PainelLinha) {
     const { error } = await db.from("facilities_radar_alvos")
       .update({ ativo: !l.alvo.ativo, updated_at: new Date().toISOString() }).eq("id", l.alvo.id);
@@ -240,9 +256,12 @@ export default function Radar() {
         <div>
           <h1 className="text-[28px] font-semibold tracking-tight text-foreground">Radar de preços</h1>
           <p className="mt-1 max-w-2xl text-[14px] text-muted-foreground">
-            Registre o equipamento e o quanto vale a pena pagar. O Hub fica olhando Mercado Livre e lojas de TI e avisa quando o preço
-            aparecer — com o histórico do anúncio, para você saber se é promoção de verdade.
+            Registre o equipamento e o quanto vale a pena pagar. O Hub fica olhando as lojas e os comparadores e avisa quando o preço
+            aparecer — com o histórico, para você saber se é promoção de verdade.
           </p>
+          <div className="mt-2">
+            <ProximaVarredura />
+          </div>
         </div>
         <div className="flex items-center gap-2">
           <Button variant="outline" onClick={() => varrer()} disabled={!!varrendo}>
@@ -466,6 +485,15 @@ export default function Radar() {
                         {expandido ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
                       </button>
 
+                      <button
+                        type="button"
+                        onClick={() => alternarFavorito(l)}
+                        title={l.alvo.favorito ? "Padrão da casa — clique para desmarcar" : "Marcar como padrão da casa"}
+                        className={cn("ghost-icone", l.alvo.favorito ? "text-amber-500" : "text-muted-foreground/40 hover:text-amber-500")}
+                      >
+                        <Star className={cn("h-4 w-4", l.alvo.favorito && "fill-current")} />
+                      </button>
+
                       <div className="min-w-[220px] flex-1">
                         <div className="flex items-center gap-2">
                           <CatDot cat={l.alvo.categoria} />
@@ -528,6 +556,15 @@ export default function Radar() {
 
                     {expandido && (
                       <div className="border-t border-border">
+                        {/* A curva vem ANTES da lista: a pergunta é "esse preço é bom?",
+                            e a resposta está na linha do tempo, não no anúncio de hoje. */}
+                        <div className="border-b border-border p-4">
+                          <HistoricoPreco
+                            alvoId={l.alvo.id}
+                            precoAlvo={Number(l.alvo.preco_alvo)}
+                            pontos={l.pontos_historico ?? 0}
+                          />
+                        </div>
                         {!ofertas[l.alvo.id] ? (
                           <div className="p-4"><Skeleton className="h-24 rounded" /></div>
                         ) : ofertas[l.alvo.id].length === 0 ? (

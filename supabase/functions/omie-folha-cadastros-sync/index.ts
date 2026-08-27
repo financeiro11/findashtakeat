@@ -34,7 +34,7 @@
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { requireUser } from "../_shared/auth.ts";
-import { chaveDoTitulo } from "../_shared/folha-envio.ts";
+import { chaveDoTitulo, integracaoFolhaDe, registroDa } from "../_shared/folha-envio.ts";
 import { ehEstagiario } from "../_shared/documento.ts";
 
 const corsHeaders = {
@@ -260,6 +260,101 @@ Deno.serve(async (req) => {
         status: "ok",
         atualizado_em: data?.atualizado_em ?? null,
         pessoas: (data?.dados ?? []) as unknown[],
+      });
+    }
+
+    /* ---------- conferir o que REALMENTE está no Omie ---------- */
+
+    /* A pergunta "quem não foi lançado?" só tinha resposta pelo que o Hub
+       ACHA que mandou. Se a função morreu no meio (aconteceu duas vezes em
+       27/08/2026), o que o Hub acha e o que o ERP tem são coisas diferentes —
+       e a única fonte confiável é perguntar ao ERP.
+
+       `ListarContasPagar` não filtra por código de integração, mas todos os
+       títulos da folha dividem a MESMA data de registro (o último dia da
+       competência), e é por ela que dá para pescar o lote inteiro. */
+    if (body?.action === "conferir_folha") {
+      const competencia = String(body?.competencia ?? "").slice(0, 7);
+      if (!/^\d{4}-\d{2}$/.test(competencia)) {
+        return json({ status: "erro", erro: "Competência inválida." }, 400);
+      }
+      const registro = registroDa(competencia);           // 'AAAA-MM-DD'
+      const [a, m, d] = [registro.slice(0, 4), registro.slice(5, 7), registro.slice(8, 10)];
+      const registroBR = `${d}/${m}/${a}`;
+
+      const achados = new Map<string, Record<string, unknown>>();
+      let pagina = 1;
+      let totalPaginas = 1;
+      do {
+        const r = await omieCall("financas/contapagar", "ListarContasPagar", {
+          pagina,
+          registros_por_pagina: 500,
+          apenas_importado_api: "N",
+          filtrar_por_registro_de: registroBR,
+          filtrar_por_registro_ate: registroBR,
+          // Sem isto a observação volta vazia e parece que não foi gravada.
+          exibir_obs: "S",
+        });
+        for (const c of r?.conta_pagar_cadastro ?? []) {
+          const k = String(c?.codigo_lancamento_integracao ?? "").trim();
+          if (k) achados.set(k, {
+            integracao: k,
+            codigo_omie: c?.codigo_lancamento_omie ?? null,
+            numero_documento: String(c?.numero_documento ?? ""),
+            valor: c?.valor_documento ?? null,
+            observacao: String(c?.observacao ?? ""),
+          });
+        }
+        totalPaginas = Number(r?.total_de_paginas ?? 1);
+        pagina++;
+        await new Promise((r) => setTimeout(r, 150));
+      } while (pagina <= totalPaginas && pagina <= 10);
+
+      /* O esperado sai do espelho do RH: quem estava ativo na competência.
+         Sem desligado, que é pago à parte. */
+      const { data: pessoas } = await (supabase as any)
+        .from("rh_colaboradores").select("codigo, nome, datadesl");
+      const ultimoDia = registro;
+      const esperados = ((pessoas ?? []) as Record<string, unknown>[])
+        .filter((p) => {
+          const dl = String(p.datadesl ?? "").trim();
+          return !dl || dl.slice(0, 10) > ultimoDia;
+        })
+        .filter((p) => String(p.codigo ?? "").trim())
+        .map((p) => ({
+          codigo: String(p.codigo),
+          nome: String(p.nome ?? "").trim(),
+          integracao: integracaoFolhaDe(String(p.codigo), competencia),
+        }));
+
+      const faltando = esperados.filter((e) => !achados.has(e.integracao));
+      const presentes = esperados
+        .filter((e) => achados.has(e.integracao))
+        .map((e) => ({ ...e, ...achados.get(e.integracao) }));
+      const esperadas = new Set(esperados.map((e) => e.integracao));
+      const sobrando = [...achados.values()].filter((a) => !esperadas.has(String(a.integracao)));
+
+      return json({
+        status: "ok",
+        acao: "conferir_folha",
+        competencia,
+        registro: registroBR,
+        no_omie: achados.size,
+        esperados: esperados.length,
+        faltando,
+        presentes,
+        sobrando,
+        /* Uma amostra do que o ERP guardou, para conferir se o número do
+           documento e a observação chegaram como o esperado. */
+        amostra: [...achados.values()].slice(0, 3),
+        /* Um título INTEIRO, como o Omie o devolve. É a única forma de saber
+           se os blocos aninhados (o CNAB com os dados do PIX) chegaram — a
+           listagem não os traz, e o Omie aceita o envio sem reclamar. */
+        cru: achados.size
+          ? await omieCall("financas/contapagar", "ConsultarContaPagar", {
+            codigo_lancamento_integracao: [...achados.keys()][0],
+          }).catch((e: unknown) => ({ erro: e instanceof Error ? e.message : String(e) }))
+          : null,
       });
     }
 

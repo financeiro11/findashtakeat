@@ -766,6 +766,17 @@ export type TituloDaFolha = {
 };
 
 /** O `param` do `IncluirContaPagar`. */
+/**
+ * O "Nº Documento" da folha: `FOLHA 2026-08`.
+ *
+ * Vinte caracteres é o limite do campo, e a escolha entre pôr a competência ou
+ * o código da pessoa é a diferença entre achar a folha do mês e achar uma
+ * linha. Procurar "FOLHA" traz todas; "FOLHA 2026-08" traz o mês. Quem é quem
+ * sai na observação, que não tem esse aperto.
+ */
+export const numeroDocumentoDaFolha = (registro: string): string =>
+  `FOLHA ${String(registro).slice(0, 7)}`;
+
 export function montarTituloFolha(t: TituloDaFolha): Record<string, unknown> {
   const cnpj = soDigitos(t.cnpj);
   return {
@@ -774,6 +785,18 @@ export function montarTituloFolha(t: TituloDaFolha): Record<string, unknown> {
     id_conta_corrente: t.idContaCorrente,
     codigo_categoria: t.codigoCategoria,
     valor_documento: Number(t.valor.toFixed(2)),
+    /* O que se procura na TELA do Omie.
+     *
+     * `codigo_lancamento_integracao` é identificador de API: o ERP guarda, mas
+     * a tela de Contas a Pagar não o oferece na busca. Sem `numero_documento`,
+     * procurar "FOLHA" no Omie não devolvia nada — cem títulos sem nenhum jeito
+     * de achá-los juntos. Cabem 20 caracteres, então vai a competência e não o
+     * código da pessoa; quem é quem está na observação. */
+    numero_documento: numeroDocumentoDaFolha(t.registro),
+    /* Sem isto o Omie assume a data corrente, e dois títulos da MESMA folha
+       criados em dias diferentes saem com emissões diferentes. A folha tem uma
+       emissão só: o fechamento da competência. */
+    data_emissao: dataBR(t.registro),
     // A âncora contábil: último dia da competência, não o dia do pagamento.
     data_entrada: dataBR(t.registro),
     data_vencimento: dataBR(t.vencimento),

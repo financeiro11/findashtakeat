@@ -20,7 +20,7 @@
 
 import { useState } from "react";
 import { toast } from "sonner";
-import { FlaskConical, Loader2, Send, Trash2 } from "lucide-react";
+import { FlaskConical, Loader2, Send, Trash2, Wrench } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { supabase } from "@/integrations/supabase/client";
 import { invocar } from "@/lib/erroEdge";
@@ -49,6 +49,9 @@ type Resposta = {
   restantes?: number;
   restantes_codigos?: string[];
   interrompido?: { motivo: string; segundos?: number } | null;
+  /** Só de `corrigir`. */
+  corrigidos?: number;
+  ausentes?: number;
 };
 
 export default function EnviarFolhaOmie({
@@ -61,7 +64,8 @@ export default function EnviarFolhaOmie({
   recusa: string | null;
   onEnviado: () => void;
 }) {
-  const [ocupado, setOcupado] = useState<null | "teste" | "tudo" | "limpar" | "apagarTudo">(null);
+  const [ocupado, setOcupado] =
+    useState<null | "teste" | "tudo" | "limpar" | "apagarTudo" | "corrigir">(null);
   const [criados, setCriados] = useState<string[]>([]);
   const [falhas, setFalhas] = useState<Resultado[]>([]);
   const [confirmando, setConfirmando] = useState<null | "tudo" | "prontos" | "apagarTudo">(null);
@@ -167,6 +171,43 @@ export default function EnviarFolhaOmie({
    * gente chama de novo com esses. O laço tem teto de rodadas para um servidor
    * que não avançasse não virar chamada infinita. */
   const MAX_RODADAS = 12;
+
+  /* Conserta título que já está no Omie, sem recriá-lo.
+   *
+   * Os criados até 27/08/2026 saíram sem `numero_documento` — e por isso
+   * procurar "FOLHA" na tela do Omie não devolvia nada — e com a chave PIX do
+   * espelho do RH, que difere da do cadastro na pontuação. Recriar resolveria,
+   * mas alguns já têm NFS-e anexada à mão e apagar levaria isso junto.
+   *
+   * Em UM primeiro, de propósito: a documentação do Omie não diz se
+   * `AlterarContaPagar` mescla ou substitui o registro. Conferir um no ERP
+   * custa um clique; descobrir no centésimo custa a folha. */
+  const corrigir = async (somenteUm: boolean) => {
+    setOcupado("corrigir");
+    try {
+      const alvo = somenteUm ? candidatos.slice(0, 1).map((c) => c.codigo) : undefined;
+      const r = await chamar(alvo
+        ? { acao: "corrigir", competencia, codigos: alvo }
+        : { acao: "corrigir", competencia });
+      const ruins = (r.resultados ?? []).filter((x) => !x.criado && x.erro);
+      setFalhas(ruins as Resultado[]);
+      if (somenteUm) {
+        toast.success(`${r.corrigidos ?? 0} título corrigido`, {
+          description: "Abra no Omie e confira: o Nº Documento deve estar preenchido e a "
+            + "NFS-e (se havia) deve continuar lá. Só então corrija o resto.",
+          duration: 12_000,
+        });
+      } else {
+        toast.success(`${r.corrigidos ?? 0} título(s) corrigidos no Omie`, {
+          description: `${r.ausentes ?? 0} ainda não existem no ERP — esses entram no envio.`,
+        });
+      }
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : String(e));
+    } finally {
+      setOcupado(null);
+    }
+  };
 
   const enviarTudo = async (somenteProntos: boolean) => {
     setOcupado("tudo");
@@ -368,6 +409,26 @@ export default function EnviarFolhaOmie({
           >
             <Trash2 className="size-4" />
             Apagar a folha de {competencia}
+          </Button>
+          <Button
+            variant="ghost"
+            onClick={() => corrigir(true)}
+            disabled={ocupado !== null || candidatos.length === 0}
+            title={"Conserta títulos que JÁ estão no Omie: preenche o Nº Documento e regrava a "
+              + "chave PIX do cadastro. Começa por um, para você conferir no ERP antes do resto."}
+            className="gap-1.5 text-muted-foreground"
+          >
+            {ocupado === "corrigir" ? <Loader2 className="size-4 animate-spin" /> : <Wrench className="size-4" />}
+            Corrigir 1
+          </Button>
+          <Button
+            variant="ghost"
+            onClick={() => corrigir(false)}
+            disabled={ocupado !== null || candidatos.length === 0}
+            title="Só depois de conferir o primeiro no Omie."
+            className="gap-1.5 text-muted-foreground"
+          >
+            Corrigir todos
           </Button>
           <Button
             variant="outline"

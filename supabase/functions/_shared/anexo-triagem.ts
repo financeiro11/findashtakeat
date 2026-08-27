@@ -169,6 +169,27 @@ export function perguntaDaTriagem(t: ContextoTitulo, nomeArquivo: string): strin
   );
 }
 
+/**
+ * A MESMA TRANSCRIÇÃO, SEM TÍTULO NENHUM PARA COMPARAR.
+ *
+ * A Caixa de notas recebe o arquivo antes de saber a que lançamento ele
+ * pertence — é justamente o que ela vai descobrir depois, e com regra
+ * determinística. Dar contexto aqui seria pior do que não ter: o modelo lê
+ * "título de R$ 1.200" e passa a enxergar 1.200 no papel.
+ *
+ * Reaproveita `SISTEMA_TRIAGEM` e `SCHEMA_TRIAGEM` de propósito: dois contratos
+ * de transcrição no mesmo repo divergem no primeiro conserto, e aí o mesmo PDF
+ * passa a ser lido de dois jeitos dependendo da porta por onde entrou.
+ */
+export function perguntaSemTitulo(nomeArquivo: string): string {
+  return (
+    `Arquivo recebido solto, sem lançamento associado — é o que vamos descobrir depois.\n` +
+    `- nome do arquivo: ${nomeArquivo}\n` +
+    `\nTranscreva o documento anexo. Não julgue se ele "serve" para nada: só diga o ` +
+    `que está escrito nele. Se não for um documento, diga isso em "tipo".`
+  );
+}
+
 export const SISTEMA_TRIAGEM =
   `Você lê documentos anexados a contas a pagar de uma empresa brasileira e TRANSCREVE o que está neles.\n` +
   `\n` +

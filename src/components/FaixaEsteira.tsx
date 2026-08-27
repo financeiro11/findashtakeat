@@ -76,11 +76,37 @@ export function FaixaEsteira() {
   const [aberto, setAberto] = useState(false);
   const [lendo, setLendo] = useState(false);
 
+  /**
+   * O QUE VOLTOU DO BANCO PRECISA SER CONFERIDO ANTES DE SER LIDO — e isto não é
+   * paranoia de tipo, é a moldura inteira do Hub.
+   *
+   * Esta faixa mora no header, dentro do `AppLayout`, acima de TODAS as páginas.
+   * Um `estado.filas` ausente quebra o `useMemo`, o React derruba a árvore e o
+   * usuário vê "Algo deu errado" em cima de qualquer tela que abrir — porque o
+   * marcador de status falhou. Um painel de saúde que consegue matar o paciente
+   * é pior do que não ter painel.
+   *
+   * E não é hipótese: pegou na primeira conferência no navegador. Basta a RPC
+   * responder outra coisa — função ausente depois de uma migração, permissão
+   * revogada, versão antiga sem `filas` — para `data` não ter o formato que o
+   * tipo promete. `as Estado` é uma afirmação minha, não uma verificação.
+   */
   const ler = useCallback(async () => {
     setLendo(true);
     const { data, error } = await sb.rpc("hub_automacoes");
-    if (error) setErro(error.message);
-    else { setEstado(data as Estado); setErro(null); }
+    const d = data as Partial<Estado> | null;
+    if (error) { setErro(error.message); setEstado(null); }
+    else if (!d || Array.isArray(d) || !Array.isArray(d.automacoes)) {
+      setErro("a resposta de hub_automacoes não tem o formato esperado");
+      setEstado(null);
+    } else {
+      setEstado({
+        automacoes: d.automacoes,
+        filas: Array.isArray(d.filas) ? d.filas : [],
+        gerado_em: d.gerado_em ?? "",
+      });
+      setErro(null);
+    }
     setLendo(false);
   }, []);
 
@@ -101,7 +127,7 @@ export function FaixaEsteira() {
 
     const daEsteira = comProximo.filter((x) => DA_ESTEIRA.has(x.a.jobname));
     const ruins = autos.filter(falhou);
-    const filaOmie = estado?.filas.find((f) => f.chave === "anexo_erp")?.quantos ?? 0;
+    const filaOmie = (estado?.filas ?? []).find((f) => f.chave === "anexo_erp")?.quantos ?? 0;
 
     return {
       autos, comProximo,
@@ -140,7 +166,13 @@ export function FaixaEsteira() {
               temFalha ? "bg-red-500" : "bg-emerald-500",
             )}
           />
-          {temFalha ? (
+          {/* NÃO CONSEGUIR LER É DIFERENTE DE NADA ESTAR QUEBRADO, e a faixa
+              chegou a dizer "0 automação falhando" — em vermelho — quando o que
+              tinha falhado era a própria leitura. Frase que se contradiz sozinha
+              é o jeito mais rápido de um painel perder o crédito. */}
+          {erro ? (
+            <span className="font-medium">não deu para ler as automações</span>
+          ) : temFalha ? (
             <span className="font-medium">
               {calc.ruins.length} automação{calc.ruins.length > 1 ? "ões" : ""} falhando
             </span>

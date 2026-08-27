@@ -52,6 +52,36 @@ const json = (body: unknown, status = 200) =>
 
 const BASE = "https://app.omie.com.br/api/v1";
 
+/**
+ * Quando o laço de criação para por conta própria.
+ *
+ * A Edge Function é MORTA aos 150s e a resposta se perde inteira — foi o que
+ * aconteceu com a folha de agosto/2026 duas vezes: 96 títulos entraram no ERP
+ * e o navegador só viu "non-2xx", sem saber de nenhum deles. Parando antes, a
+ * resposta chega dizendo quem entrou e quem falta.
+ */
+const TETO_DE_TEMPO_MS = 110_000;
+
+/**
+ * Idade máxima da varredura de chaves PIX para ela valer sem reconsulta.
+ *
+ * A chave TEM de ser a do cadastro do Omie (título e cadastro divergentes
+ * travam o pagamento em lote). Mas reler as cem ao vivo dobrava as chamadas e
+ * foi o que estourou o tempo e trancou a API por consumo. Meia hora é o
+ * bastante para cobrir o caminho normal — reconsultar na tela e provisionar em
+ * seguida — e curto o bastante para uma correção feita hoje de manhã não
+ * passar despercebida.
+ */
+const CHAVES_FRESCAS_MS = 30 * 60_000;
+
+/** O Omie trancou a API por consumo. Carrega quanto falta para destrancar. */
+class BloqueioDoOmie extends Error {
+  constructor(public readonly segundos: number, mensagem: string) {
+    super(mensagem);
+    this.name = "BloqueioDoOmie";
+  }
+}
+
 async function omieCall(
   call: string,
   param: Record<string, unknown>,
@@ -74,7 +104,18 @@ async function omieCall(
     if (res.ok && !fault) return data;
 
     const msg = String(fault || texto);
-    const transitorio = /425|redundante|processando|5020|too many|bloqueada|timeout|50[234]/i.test(msg);
+
+    /* Bloqueio por consumo NÃO é transitório: o Omie devolve "Tente novamente
+       em 1748 segundos" — vinte e nove minutos. Insistir com backoff de 4,8s
+       gastava mais quatro chamadas por pessoa contra uma porta trancada, o que
+       só aprofunda o bloqueio. Sai na hora, com o tempo à vista, para o
+       chamador poder abortar o lote inteiro em vez de repetir cem vezes. */
+    const bloqueio = msg.match(/bloqueada por consumo[\s\S]*?(\d+)\s*segundo/i);
+    if (bloqueio) {
+      throw new BloqueioDoOmie(Number(bloqueio[1]) || 0, `Omie ${call}: ${msg}`);
+    }
+
+    const transitorio = /425|redundante|processando|5020|too many|timeout|50[234]/i.test(msg);
     if (transitorio && tentativa < 3) {
       /* O Omie DIZ quanto esperar: "Aguarde 53 segundos para tentar novamente".
          O backoff exponencial ia a 4,8s e desistia — e um título caía por um
@@ -221,13 +262,15 @@ Deno.serve(async (req) => {
     }
 
     /* ---------- montar o lote ---------- */
-    const [rh, dep, cadastros, clientes, envio] = await Promise.all([
+    const comecou = Date.now();
+    const [rh, dep, cadastros, clientes, chavesCache, envio] = await Promise.all([
       supabase.from("rh_colaboradores")
         .select("id, codigo, nome, cnpj, razao, valor, inicio, datadesl, pix, cargo"),
       supabase.from("folha_depara")
         .select("codigo_rh, departamento, categoria_descricao, valor_referencia, valor_ajustado, documento_ajustado"),
       supabase.from("omie_cache").select("dados").eq("chave", "folha_cadastros").maybeSingle(),
       supabase.from("omie_cache").select("dados").eq("chave", "clientes").maybeSingle(),
+      supabase.from("omie_cache").select("dados, atualizado_em").eq("chave", "folha_chaves_pix").maybeSingle(),
       supabase.from("folha_envios_omie").select("estado, previsao_ajustada").eq("competencia", `${competencia}-01`).maybeSingle(),
     ]);
     if (rh.error) throw new Error(`Espelho do RH: ${rh.error.message}`);
@@ -319,13 +362,43 @@ Deno.serve(async (req) => {
      * e é por isso que noventa títulos saíram com uma chave que o cadastro não
      * confirmava. Continua conferido na tela, para o DH arrumar a origem. */
     const cadastroCache = new Map<string, CadastroDoFornecedor | null>();
-    const cadastroDe = async (doc: string): Promise<CadastroDoFornecedor | null> => {
-      if (!cadastroCache.has(doc)) {
-        // Falha de rede não é "não existe": vira null, e a pessoa fica de fora
-        // com o motivo escrito em vez de ir com uma chave inventada.
-        try { cadastroCache.set(doc, await cadastroDoFornecedor(doc)); }
-        catch { cadastroCache.set(doc, null); }
+
+    /* Passada 1: a varredura `folha_chaves_pix`, se for recente.
+     *
+     * Ler as cem ao vivo era o certo em teoria e desastroso na prática:
+     * dobrava as chamadas ao Omie, o conjunto passou dos 150s da Edge Function
+     * e o Omie ainda trancou a API por consumo. A varredura já fez esse
+     * trabalho uma vez, e o caminho normal é reconsultar na tela e provisionar
+     * logo em seguida. */
+    const chavesEm = chavesCache.data?.atualizado_em
+      ? new Date(String(chavesCache.data.atualizado_em)).getTime()
+      : 0;
+    const chavesFrescas = chavesEm > 0 && (Date.now() - chavesEm) < CHAVES_FRESCAS_MS;
+    if (chavesFrescas) {
+      for (const c of (chavesCache.data?.dados ?? []) as Record<string, unknown>[]) {
+        const doc = soDigitos(c?.doc);
+        if (doc && !cadastroCache.has(doc)) {
+          cadastroCache.set(doc, { chave: String(c.chaveOmie ?? ""), existe: !!c.existe });
+        }
       }
+    }
+
+    let doCache = 0;
+    let doOmie = 0;
+
+    /* Passada 2: quem a varredura não cobre (ou varredura velha) vai ao Omie,
+       um a um. Sem teto de tempo aqui: `TETO_DE_TEMPO_MS` no laço de criação é
+       quem garante que a função responde. */
+    const cadastroDe = async (doc: string): Promise<CadastroDoFornecedor | null> => {
+      if (cadastroCache.has(doc)) { doCache++; return cadastroCache.get(doc) ?? null; }
+      // Falha de rede não é "não existe": vira null, e a pessoa fica de fora
+      // com o motivo escrito em vez de ir com uma chave inventada.
+      try { cadastroCache.set(doc, await cadastroDoFornecedor(doc)); }
+      catch (e) {
+        if (e instanceof BloqueioDoOmie) throw e;  // trancou: não adianta seguir
+        cadastroCache.set(doc, null);
+      }
+      doOmie++;
       return cadastroCache.get(doc) ?? null;
     };
 
@@ -348,6 +421,7 @@ Deno.serve(async (req) => {
           : daChave.bloqueio ?? null;
       if (falta) { semPreparo.push({ nome: i.nome, falta }); continue; }
       titulos.push({
+        codigo: i.codigo,
         integracao: i.integracao,
         codigoFornecedor: fornecedor,
         idContaCorrente,
@@ -411,11 +485,33 @@ Deno.serve(async (req) => {
      * `codigo_lancamento_integracao` faz o Omie recusar o duplicado — e essa
      * recusa é lida como "já criado", não como erro. */
     const resultados: { integracao: string; nome: string; criado: boolean; erro?: string }[] = [];
+    /* Quem nem chegou a ser tentado, e por quê. A folha de agosto/2026 morreu
+       calada duas vezes por não ter isto: a função era MORTA aos 151s e o
+       navegador só via "non-2xx", sem saber que 96 tinham entrado. */
+    let interrompido: { motivo: string; segundos?: number } | null = null;
+
     for (const t of titulos) {
+      /* Teto de tempo, e não o teto do Supabase.
+         A Edge Function é morta aos 150s sem devolver nada — a resposta se
+         perde junto com os títulos que já foram criados, e quem clicou não
+         descobre quantos entraram. Parar por conta própria antes disso é o que
+         transforma "morreu" em "faltam estes, continue". */
+      if (Date.now() - comecou > TETO_DE_TEMPO_MS) {
+        interrompido = { motivo: "tempo" };
+        break;
+      }
       try {
         await omieCall("IncluirContaPagar", montarTituloFolha(t));
         resultados.push({ integracao: t.integracao, nome: t.nome, criado: true });
       } catch (e) {
+        /* Bloqueio por consumo não é falha DESTA pessoa: é a API inteira
+           trancada por meia hora. Continuar o laço só produziria cem linhas de
+           erro iguais e afundaria mais o bloqueio. */
+        if (e instanceof BloqueioDoOmie) {
+          interrompido = { motivo: "bloqueio", segundos: e.segundos };
+          console.error(`folha-omie-enviar: Omie bloqueou a API por ${e.segundos}s`);
+          break;
+        }
         const msg = e instanceof Error ? e.message : String(e);
         // Duplicado é sucesso: o título já existe com esta chave.
         const jaExiste = /duplicad|j.\s*existe|j.\s*cadastrad|integra..o.*utilizad/i.test(msg);
@@ -432,12 +528,15 @@ Deno.serve(async (req) => {
       await new Promise((r) => setTimeout(r, 150));
     }
 
+    const tentados = new Set(resultados.map((r) => r.integracao));
+    const restantes = titulos.filter((t) => !tentados.has(t.integracao));
+
     const criados = resultados.filter((r) => r.criado);
     const falharam = resultados.filter((r) => !r.criado);
 
     /* Só a competência INTEIRA marca o mês como enviado, e só se TUDO passou.
        Marcar com falhas dentro faria os que ficaram nunca serem reenviados. */
-    if (!parcial && falharam.length === 0) {
+    if (!parcial && falharam.length === 0 && restantes.length === 0) {
       await supabase.from("folha_envios_omie").upsert({
         competencia: `${competencia}-01`,
         estado: "enviado",
@@ -467,8 +566,29 @@ Deno.serve(async (req) => {
       // Só as chaves criadas: são elas que o botão de desfazer apaga.
       integracoes: criados.map((r) => r.integracao),
       resultados,
+      /* Quem não foi tentado. A tela usa isto para continuar de onde parou,
+         em vez de mandar tudo de novo e depender da recusa por duplicidade. */
+      restantes: restantes.length,
+      restantes_codigos: restantes.map((t) => t.codigo),
+      interrompido,
+      /* De onde saiu a chave PIX de cada um. Fica na resposta porque "o Omie
+         está bloqueado" e "o cache estava velho" pedem ações diferentes. */
+      chaves: { do_cache: doCache, do_omie: doOmie },
     });
   } catch (e) {
+    /* Bloqueio por consumo tem resposta própria: o que resolve é ESPERAR, e
+       dizer quantos minutos é a diferença entre a pessoa tentar de novo agora
+       (afundando o bloqueio) e voltar depois do almoço. */
+    if (e instanceof BloqueioDoOmie) {
+      console.error("folha-omie-enviar: Omie bloqueou a API por", e.segundos, "s");
+      const min = Math.ceil(e.segundos / 60);
+      return json({
+        status: "erro",
+        erro: `O Omie bloqueou a API por consumo. Nada foi criado nesta tentativa. `
+          + `Tente de novo em ${min} minuto(s).`,
+        bloqueio_segundos: e.segundos,
+      }, 429);
+    }
     const msg = e instanceof Error ? e.message : String(e);
     /* Vai para os logs da função além do corpo da resposta. O corpo serve a
        quem clicou; o log serve a quem investiga depois, quando a tela já

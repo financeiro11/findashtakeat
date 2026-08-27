@@ -577,6 +577,7 @@ function proximaCompetencia(comp: string): string {
  */
 
 const TITULO: TituloDaFolha = {
+  codigo: "COL-592355",
   integracao: "FOLHA-COL-592355-2026-07",
   codigoFornecedor: 5470888220,
   idContaCorrente: 1234567890,

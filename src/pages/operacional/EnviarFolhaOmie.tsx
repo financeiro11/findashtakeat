@@ -45,6 +45,10 @@ type Resposta = {
   excluidos?: number;
   nao_encontrados?: number;
   recusados?: { integracao: string; nome: string; erro: string }[];
+  /** Quem não chegou a ser tentado, para a próxima rodada continuar daí. */
+  restantes?: number;
+  restantes_codigos?: string[];
+  interrompido?: { motivo: string; segundos?: number } | null;
 };
 
 export default function EnviarFolhaOmie({
@@ -152,25 +156,68 @@ export default function EnviarFolhaOmie({
     }
   };
 
+  /* Manda em rodadas, continuando de quem o servidor não alcançou.
+   *
+   * A Edge Function é morta aos 150s. Numa folha de cem, a chamada única
+   * morria no meio: os títulos entravam no ERP e a resposta se perdia, então a
+   * tela dizia "non-2xx" sobre um envio que tinha funcionado pela metade. Foi
+   * o que aconteceu em 27/08/2026, duas vezes seguidas.
+   *
+   * Agora o servidor para sozinho antes do teto e devolve quem faltou; aqui a
+   * gente chama de novo com esses. O laço tem teto de rodadas para um servidor
+   * que não avançasse não virar chamada infinita. */
+  const MAX_RODADAS = 12;
+
   const enviarTudo = async (somenteProntos: boolean) => {
     setOcupado("tudo");
+    setConfirmando(null);
     try {
-      const r = await chamar(somenteProntos
-        ? { acao: "enviar", competencia, codigos: prontos.map((p) => p.codigo) }
-        : { acao: "enviar", competencia });
-      const ruins = (r.resultados ?? []).filter((x) => !x.criado);
-      setFalhas(ruins);
-      setCriados(r.integracoes ?? []);
-      if (ruins.length) {
-        toast.error(`${r.titulos} criados, ${ruins.length} recusados`, {
+      let pendentesCodigos: string[] | null = somenteProntos ? prontos.map((p) => p.codigo) : null;
+      let totalCriados = 0;
+      const todosRuins: Resultado[] = [];
+      const todasChaves: string[] = [];
+      let ultimo: Resposta | null = null;
+
+      for (let rodada = 0; rodada < MAX_RODADAS; rodada++) {
+        const r: Resposta = await chamar(pendentesCodigos
+          ? { acao: "enviar", competencia, codigos: pendentesCodigos }
+          : { acao: "enviar", competencia });
+        ultimo = r;
+        totalCriados += r.titulos ?? 0;
+        todosRuins.push(...(r.resultados ?? []).filter((x) => !x.criado));
+        todasChaves.push(...(r.integracoes ?? []));
+
+        const faltam = r.restantes_codigos ?? [];
+        if (!faltam.length) break;
+        // Servidor que não avançou nada: parar em vez de repetir a mesma coisa.
+        if (!r.titulos && !(r.resultados ?? []).length) break;
+        if (r.interrompido?.motivo === "bloqueio") break;
+
+        pendentesCodigos = faltam;
+        toast.loading(`${totalCriados} criados — continuando com ${faltam.length}…`, { id: "folha-envio" });
+      }
+      toast.dismiss("folha-envio");
+
+      setFalhas(todosRuins);
+      setCriados(todasChaves);
+
+      const bloqueio = ultimo?.interrompido?.motivo === "bloqueio";
+      const faltaram = ultimo?.restantes_codigos?.length ?? 0;
+      if (bloqueio) {
+        const min = Math.ceil((ultimo?.interrompido?.segundos ?? 0) / 60);
+        toast.error(`${totalCriados} criados — o Omie bloqueou a API por consumo`, {
+          description: `Faltam ${faltaram}. Tente de novo em ${min} minuto(s); os que já entraram não repetem.`,
+        });
+      } else if (todosRuins.length || faltaram) {
+        toast.error(`${totalCriados} criados, ${todosRuins.length} recusados, ${faltaram} não tentados`, {
           description: "A competência NÃO foi marcada como enviada — reenvie depois de corrigir.",
         });
       } else {
-        toast.success(`Folha de ${competencia} provisionada — ${r.titulos} títulos`);
+        toast.success(`Folha de ${competencia} provisionada — ${totalCriados} títulos`);
       }
-      setConfirmando(null);
       onEnviado();
     } catch (e) {
+      toast.dismiss("folha-envio");
       toast.error(e instanceof Error ? e.message : String(e));
     } finally {
       setOcupado(null);

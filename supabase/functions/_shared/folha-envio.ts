@@ -709,6 +709,9 @@ export const CONTA_CORRENTE_FOLHA = "Sicoob - Conta Corrente";
 
 /** Um título de folha a criar, já conferido na prévia. */
 export type TituloDaFolha = {
+  /** `codigo` do RH ("COL-003057"). Não vai no payload; serve para a tela
+   *  poder retomar um envio interrompido pelas pessoas que faltaram. */
+  codigo: string;
   /** `codigo_lancamento_integracao` — a trava contra pagar duas vezes. */
   integracao: string;
   /** Fornecedor no Omie, achado pelo CNPJ. */

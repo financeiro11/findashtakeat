@@ -174,6 +174,9 @@ const mensagemDoOmie = (e: unknown): string =>
  *
  * Quem só precisa saber quem está NUMA etapa deve passar `etapa` e pagar
  * O(ocupantes) em vez de O(acervo). */
+/** Páginas de 500 que a varredura aceita ler. Acima disso ela estoura — ver abaixo. */
+const TETO_PAGINAS_OS = 40;
+
 async function listarOS(opts: { etapa?: string } = {}): Promise<any[]> {
   const out: any[] = [];
   let pagina = 1, totalPaginas = 1;
@@ -191,8 +194,38 @@ async function listarOS(opts: { etapa?: string } = {}): Promise<any[]> {
     if (!r) break;
     out.push(...(r?.osCadastro ?? []));
     totalPaginas = Number(r?.total_de_paginas ?? 1);
+
+    /* TRUNCAMENTO NÃO PASSA CALADO — e este é o modo de falha mais perigoso
+     * desta função inteira.
+     *
+     * Sem esta guarda, passar de `TETO_PAGINAS_OS` devolvia uma lista CORTADA com
+     * cara de lista completa. Quem chama não tem como perceber: `limparCorredor`
+     * e `ocupantesDaEtapa` leriam um corredor que não viram inteiro, concluiriam
+     * "não há mais ninguém aqui" e o `FaturarLoteOS` seguinte fatura a ETAPA —
+     * emitindo nota de OS que não é nossa. Nota não se apaga: cancela-se, com
+     * prazo e justificativa, e a de terceiro nem isso.
+     *
+     * Por isso ela ESTOURA em vez de devolver o que deu. A esteira parar é
+     * recuperável e barulhento; a esteira decidir sobre meia lista, não. E vale
+     * para todos os chamadores, inclusive o espelho: espelhar 20.000 de 25.000 OS
+     * marcaria `faturada` errado e a fila voltaria a servir cobrança que já virou
+     * nota — que foi exatamente o acidente de 27/08.
+     *
+     * Hoje são 3 páginas (1.287 OS), então esta condição não tem como disparar.
+     * Ela é seguro para o dia em que o acervo dobrar algumas vezes — e a saída
+     * desse dia está escrita na mensagem, não numa investigação. */
+    if (totalPaginas > TETO_PAGINAS_OS) {
+      throw new Error(
+        `ListarOS devolveu ${totalPaginas} páginas de 500 (~${totalPaginas * 500} OS) e o teto desta função é ` +
+        `${TETO_PAGINAS_OS}. Nada foi lido pela metade de propósito: uma lista cortada faria a trava de raio ` +
+        `decidir sobre um corredor que ela não viu inteiro, e faturar a etapa emitiria nota de OS de terceiro. ` +
+        `A saída é parar de varrer o acervo: passe \`{ etapa }\` em \`listarOS\` nos chamadores do corredor ` +
+        `(\`ocupantesDaEtapa\` e \`limparCorredor\`) — o Omie aceita \`filtrar_por_etapa\`, conferido em 28/08/2026 ` +
+        `com \`action: "sondar_listaros"\`, e aí a varredura passa a custar os ocupantes em vez do acervo.`,
+      );
+    }
     pagina++;
-  } while (pagina <= totalPaginas && pagina <= 40);
+  } while (pagina <= totalPaginas && pagina <= TETO_PAGINAS_OS);
   return out;
 }
 

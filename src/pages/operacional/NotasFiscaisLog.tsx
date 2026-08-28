@@ -57,6 +57,17 @@ interface LinhaLog {
   /** A chave de acesso da nota do evento, quando ela nasceu. Ver `SeloNota`. */
   nfse_chave: string | null;
   motivo: string | null; operador: string | null; n_cod_os: number | null;
+  /**
+   * O passo saiu sob a régua larga da emissão AVULSA — que aceita cobrança
+   * confirmada, ainda não liquidada, além da recebida.
+   *
+   * É a coluna que responde, meses depois, à pergunta que um contador faz: esta
+   * nota saiu antes de o dinheiro entrar? O `motivo` da linha guarda junto o
+   * status exato no instante do disparo, porque `asaas_cache` MUDA — a
+   * confirmada de hoje é a recebida de amanhã, e perguntar depois não
+   * reconstitui nada.
+   */
+  avulsa: boolean | null;
 }
 
 /* --------------------------- o selo da nota emitida --------------------------
@@ -963,7 +974,21 @@ export default function NotasFiscaisLog() {
                               )}
                             </td>
                             <td className="num p-2 text-right align-top">{l.valor != null ? brl(Number(l.valor)) : "—"}</td>
-                            <td className="whitespace-nowrap p-2 align-top text-muted-foreground">{ACAO[l.acao] ?? l.acao}</td>
+                            {/* A ação diz o que foi feito no Omie; o selo âmbar,
+                                sob que régua. São coisas diferentes e por isso
+                                convivem na mesma célula: "criar e faturar" é o
+                                mesmo passo na rodada e na avulsa. */}
+                            <td className="whitespace-nowrap p-2 align-top text-muted-foreground">
+                              {ACAO[l.acao] ?? l.acao}
+                              {l.avulsa && (
+                                <span
+                                  className="ml-1 inline-block rounded border border-amber-500/30 bg-amber-500/10 px-1 py-px text-[10px] font-medium text-amber-600 dark:text-amber-400"
+                                  title="Emissão avulsa: a régua larga, que aceita cobrança confirmada e ainda não liquidada. O status no instante do disparo está no motivo, ao lado."
+                                >
+                                  avulsa
+                                </span>
+                              )}
+                            </td>
                             <td className="p-2 align-top"><Selo e={d} /></td>
                             {/* O número quando saiu; o motivo quando não saiu. Nunca os dois
                                 vazios — linha sem explicação é o que obriga a abrir o Omie. */}

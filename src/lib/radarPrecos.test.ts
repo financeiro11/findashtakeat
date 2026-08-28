@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   lerSpecs, avaliar, classificar, pisoDePreco, condicaoDoTitulo, textoWhats, resumoDoAlvo,
-  disponibilidade, totalDaOferta, economiaDe, pesoDaNota, textoNota, sugerirTeto,
+  disponibilidade, totalDaOferta, economiaDe, pesoDaNota, textoNota, sugerirTeto, lerEmbalagem,
   type AlvoSpecs, type OfertaBruta,
 } from "./radarPrecos";
 
@@ -497,5 +497,117 @@ describe("resumoDoAlvo", () => {
   });
   it("mostra a condição quando não é só novo", () => {
     expect(resumoDoAlvo({ ...ALVO, condicoes: ["novo", "recondicionado"] })).toMatch(/recondicionado/);
+  });
+});
+
+/* ================================================== compra recorrente ==== */
+
+/** Café para a copa: o teto é POR QUILO, que é como se compra consumível. */
+const CAFE: AlvoSpecs = {
+  categoria: "consumivel",
+  unidade: "kg",
+  termos_obrigatorios: ["cafe"],
+  condicoes: ["novo"],
+};
+const TETO_KG = 60;
+
+describe("lerEmbalagem — quanto vem no pacote", () => {
+  it("lê peso e converte para quilo", () => {
+    expect(lerEmbalagem("Café Pilão Torrado e Moído 500g")).toEqual({ quantidade: 0.5, unidade: "kg", texto: "500g" });
+    expect(lerEmbalagem("Sabão em pó OMO 1,6kg")).toEqual({ quantidade: 1.6, unidade: "kg", texto: "1,6kg" });
+  });
+
+  it("lê volume e converte para litro", () => {
+    expect(lerEmbalagem("Detergente Ypê Neutro 500ml")?.quantidade).toBe(0.5);
+    expect(lerEmbalagem("Água Sanitária Qboa 2 litros")?.quantidade).toBe(2);
+  });
+
+  it("o fardo é o multiplicador, não a garrafa", () => {
+    // Sem isto, um fardo de seis litros passaria por uma garrafa de um.
+    expect(lerEmbalagem("Água Mineral Crystal 6x1,5L")).toEqual({ quantidade: 9, unidade: "l", texto: "6x1,5l" });
+    expect(lerEmbalagem("Leite Integral Italac 12 x 1L")?.quantidade).toBe(12);
+  });
+
+  it("conta peças quando não há peso nem volume", () => {
+    expect(lerEmbalagem("Papel Higiênico Neve Folha Dupla 12 rolos")).toEqual({ quantidade: 12, unidade: "un", texto: "12 rolos" });
+    // O "200ml" é o tamanho de UM copo, não do pacote. Quem compra copo compra
+    // peça — e é por isso que a unidade pedida decide a leitura.
+    expect(lerEmbalagem("Copo Descartável 200ml c/ 100 unidades", "un")).toEqual({ quantidade: 100, unidade: "un", texto: "100 unidades" });
+    /* Pedido em LITRO, o mesmo anúncio não responde em litro: os 200 ml são o
+       tamanho de UM copo, e não há como saber se o pacote são 100 deles.
+       Devolver 0,2 L daria um R$/L calculado sobre um copo — número errado com
+       cara de certo. O que volta é a leitura honesta, em peça, e é `avaliar`
+       quem recusa dizendo que a unidade não bate. */
+    expect(lerEmbalagem("Copo Descartável 200ml c/ 100 unidades", "l")).toEqual({
+      quantidade: 100, unidade: "un", texto: "100 unidades",
+    });
+  });
+
+  it("GRAMATURA NÃO É EMBALAGEM — a resma são as folhas, não os 75g/m²", () => {
+    const e = lerEmbalagem("Papel Sulfite A4 75g/m² Chamex 500 folhas");
+    expect(e).toEqual({ quantidade: 500, unidade: "un", texto: "500 folhas" });
+  });
+
+  it("CONTINENTE multiplica, PEÇA não — a diferença entre um kit e uma caixa de cápsulas", () => {
+    // "5 pacotes DE 250g": cada pacote tem 250 g → 1,25 kg.
+    expect(lerEmbalagem("Café Pilão Torrado E Moído Tradicional 5 Pacotes De 250g", "kg")?.quantidade).toBeCloseTo(1.25);
+    // "10 unidades 170g": dez cápsulas que JUNTAS pesam 170 g → 0,17 kg.
+    // Lido como multiplicação, a caixa de R$ 20 virava café a R$ 11 o quilo.
+    expect(lerEmbalagem("Café em Cápsula KitKat Nescafé Dolce Gusto 10 Unidades 170g", "kg")?.quantidade).toBeCloseTo(0.17);
+    // O continente também conta quando vem depois: "500g Kit 5".
+    expect(lerEmbalagem("Café Melitta Torrado E Moído Extra Forte 500g Kit 5", "kg")?.quantidade).toBeCloseTo(2.5);
+    // E a peça multiplica quando o título escreve a ligação.
+    expect(lerEmbalagem("Café solúvel 10 sachês de 50g", "kg")?.quantidade).toBeCloseTo(0.5);
+  });
+
+  it("devolve null quando o título não diz o tamanho", () => {
+    expect(lerEmbalagem("Cafeteira Elétrica Mondial Inox")).toBeNull();
+  });
+});
+
+describe("avaliar — consumível se compara por unidade, não por etiqueta", () => {
+  it("aprova o pacote grande e recusa o pequeno que parecia mais barato", () => {
+    // O de 500g custa MENOS na etiqueta e MAIS por quilo. É a armadilha inteira.
+    const grande = avaliar(CAFE, TETO_KG, oferta("Café Pilão Torrado e Moído 1kg", 52));
+    const pequeno = avaliar(CAFE, TETO_KG, oferta("Café Pilão Torrado e Moído 500g", 34));
+
+    expect(grande.aprovado).toBe(true);
+    expect(grande.comparavel).toBe(52);
+    expect(pequeno.aprovado).toBe(false);
+    expect(pequeno.comparavel).toBe(68);
+    expect(pequeno.recusa).toMatch(/passa do teto/);
+    // A recusa mostra a conta, senão parece que o radar recusou R$ 34 num teto de R$ 60.
+    expect(pequeno.recusa).toMatch(/500g/);
+  });
+
+  it("o total continua sendo o que se paga", () => {
+    const a = avaliar(CAFE, TETO_KG, oferta("Café em grãos 250g", 12, { frete_valor: 3 }));
+    expect(a.total).toBe(15);        // o que sai do caixa
+    expect(a.comparavel).toBe(60);   // R$ 60/kg, com frete rateado
+    expect(a.aprovado).toBe(true);   // exatamente no teto
+  });
+
+  it("recusa o que não diz o tamanho — inclusive a cafeteira", () => {
+    const a = avaliar(CAFE, TETO_KG, oferta("Cafeteira Elétrica Mondial 30 xícaras", 189));
+    expect(a.aprovado).toBe(false);
+    expect(a.recusa).toMatch(/tamanho da embalagem/);
+  });
+
+  it("recusa quando a embalagem está em OUTRA unidade — e diz qual", () => {
+    // Medido numa varredura real: "filtro de café c/ 30 unidades" devolvia 30
+    // peças, e dividir o preço por 30 num alvo por quilo dava R$ 0,50/kg —
+    // número absurdo recusado pelo motivo errado ("abaixo do piso").
+    const a = avaliar(CAFE, TETO_KG, oferta("Filtro de Papel para Café 103 c/ 30 unidades", 9));
+    expect(a.aprovado).toBe(false);
+    expect(a.recusa).toMatch(/mede em un/);
+    expect(a.recusa).toMatch(/teto é por kg/);
+    expect(a.comparavel).toBe(a.total); // sem embalagem válida, não se inventa unitário
+  });
+
+  it("não confunde memória com peso em alvo de equipamento", () => {
+    // A leitura de embalagem nem acorda fora do consumível — "16GB" não é peso.
+    const a = avaliar(ALVO, TETO, oferta("Notebook Lenovo i5-1235U 16GB RAM 512GB SSD", 2890));
+    expect(a.embalagem).toBeNull();
+    expect(a.comparavel).toBe(a.total);
   });
 });

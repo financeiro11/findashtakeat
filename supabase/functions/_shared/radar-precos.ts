@@ -29,7 +29,30 @@ export type Condicao = "novo" | "usado" | "recondicionado";
 /** Categoria com regra embutida de acessório. Fora desta lista, vale só o que a IA escreveu. */
 export type CategoriaRadar =
   | "notebook" | "monitor" | "celular" | "tablet" | "impressora"
-  | "cadeira" | "desktop" | "outro";
+  | "cadeira" | "desktop" | "consumivel" | "outro";
+
+/**
+ * A unidade em que se compara o preço de uma compra RECORRENTE.
+ *
+ * EQUIPAMENTO SE COMPARA PELO PREÇO; CONSUMÍVEL, PELO PREÇO POR UNIDADE. Um
+ * notebook é um notebook, mas "café a R$ 20" não quer dizer nada até saber se o
+ * pacote tem 250 g ou 1 kg — e as duas embalagens aparecem lado a lado na mesma
+ * busca, com o pacote pequeno sempre parecendo mais barato. Um radar que compara
+ * etiqueta com etiqueta em consumível não erra às vezes: erra sistematicamente,
+ * sempre a favor da embalagem menor.
+ */
+export type UnidadeBase = "kg" | "l" | "un";
+
+export const UNIDADE_LABEL: Record<UnidadeBase, string> = { kg: "kg", l: "L", un: "un" };
+
+/** O que o título disse sobre o tamanho do que está sendo vendido. */
+export interface Embalagem {
+  /** Já convertido para a unidade base: gramas viram kg, ml viram L. */
+  quantidade: number;
+  unidade: UnidadeBase;
+  /** Como estava escrito, para a tela poder mostrar "pacote de 500 g". */
+  texto: string;
+}
 
 /** O que o Facilities quer — saída da interpretação por IA, guardada em `specs`. */
 export interface AlvoSpecs {
@@ -54,6 +77,15 @@ export interface AlvoSpecs {
   condicoes?: Condicao[];
   /** Termos de busca sugeridos pela IA, um por consulta. */
   buscas?: string[];
+  /**
+   * Presente = alvo de compra RECORRENTE, e o `preco_alvo` passa a ser lido
+   * como teto POR ESTA UNIDADE (R$/kg, R$/L, R$/un) em vez de teto do pacote.
+   *
+   * É a diferença entre "quero pagar até R$ 40 no café" — que depende do
+   * tamanho do pacote e por isso não quer dizer nada — e "até R$ 40 o quilo",
+   * que é o que a pessoa realmente quis dizer.
+   */
+  unidade?: UnidadeBase | null;
 }
 
 /** O que deu para ler do título de um anúncio. `null` = o anúncio não diz. */
@@ -110,8 +142,19 @@ export interface Avaliacao {
   /** Specs que o anúncio não informou e alguém precisa conferir no link. */
   conferir: string[];
   lidas: SpecsLidas;
-  /** Preço + frete. É por ELE que o teto, o ranking e a economia são medidos. */
+  /** Preço + frete. É o que se PAGA. */
   total: number;
+  /**
+   * O que o teto, o ranking e a curva comparam.
+   *
+   * Igual ao `total` em equipamento; o preço POR UNIDADE quando o alvo é
+   * recorrente. Existe como campo próprio — em vez de o `total` mudar de
+   * significado — porque as duas perguntas convivem na mesma tela: "quanto sai
+   * o pacote" e "está caro o quilo?".
+   */
+  comparavel: number;
+  /** O tamanho do pacote lido no título. `null` fora de alvo recorrente. */
+  embalagem: Embalagem | null;
   /** `false` quando o frete não é conhecido e o `total` é só o preço do produto. */
   frete_conhecido: boolean;
   /**
@@ -260,6 +303,155 @@ function memorias(t: string): { ram: number | null; disco: number | null; tipo: 
   return { ram, disco, tipo };
 }
 
+/* ------------------------------------------------ embalagem (consumíveis) */
+
+/** g → kg, ml → L. O que já está na unidade base passa direto. */
+const PARA_BASE: Record<string, { fator: number; unidade: UnidadeBase }> = {
+  mg: { fator: 1e-6, unidade: "kg" },
+  g: { fator: 0.001, unidade: "kg" },
+  gr: { fator: 0.001, unidade: "kg" },
+  kg: { fator: 1, unidade: "kg" },
+  quilo: { fator: 1, unidade: "kg" },
+  quilos: { fator: 1, unidade: "kg" },
+  ml: { fator: 0.001, unidade: "l" },
+  l: { fator: 1, unidade: "l" },
+  lt: { fator: 1, unidade: "l" },
+  litro: { fator: 1, unidade: "l" },
+  litros: { fator: 1, unidade: "l" },
+};
+
+const MEDIDA = "mg|gr|g|kg|quilos?|ml|lt|litros?|l";
+
+/**
+ * As palavras que contam PEÇAS. "12 rolos", "com 24", "caixa com 100 folhas".
+ * Cada uma saiu de um anúncio real de copa, limpeza ou papelaria.
+ */
+/**
+ * CONTINENTE × PEÇA — e é esta distinção que decide se a conta multiplica.
+ *
+ * "5 pacotes de 250g" é um quilo e um quarto: cada pacote TEM 250 g. Já
+ * "10 unidades 170g" são cento e setenta gramas no total — dez cápsulas que
+ * JUNTAS pesam isso. As duas frases têm a mesma forma (número, palavra, medida)
+ * e significados opostos; ler a segunda como a primeira transforma uma caixa de
+ * Dolce Gusto de R$ 20 em café a R$ 11 o quilo. Foi o que apareceu na primeira
+ * varredura real de café, em 27/08/2026: quatro "achados dentro do teto" que
+ * eram caixas de cápsula.
+ *
+ * Continente multiplica; peça só multiplica quando o título escreve a ligação
+ * ("10 sachês DE 50g").
+ */
+const CONTINENTE = "pacotes?|fardos?|caixas?|sach[eê]s?|sacos?|refis|refil|kits?|d[uú]zias?";
+const PECA = "unidades?|unid|un|rolos?|folhas?|c[aá]psulas?|pares?|pe[çc]as?|copos?|pratos?|guardanapos?|saquinhos?|luvas?|m[aá]scaras?|canetas?|l[aá]pis|envelopes?|pastas?";
+
+const CONTAGEM = new RegExp(
+  `\\b(?:c\\/|com|leve|contendo|pacote com|fardo com|caixa com|embalagem com)?\\s*(\\d{1,4})\\s*(${CONTINENTE}|${PECA})\\b`,
+);
+
+/**
+ * Quanto vem no pacote — a peça que falta para comparar consumível.
+ *
+ * A ORDEM DE LEITURA É A ORDEM DA CONFIANÇA:
+ *   1. o multiplicador ("6x1L", "4 x 500g") — é o formato do fardo, e ignorá-lo
+ *      faria um fardo de seis litros passar por uma garrafa;
+ *   2. peso ou volume ("500 g", "1,5 kg", "2 litros");
+ *   3. contagem de peças ("12 rolos", "com 24").
+ *
+ * A GRAMATURA NÃO É EMBALAGEM, e essa exceção não é um detalhe: papel sulfite
+ * se anuncia como "Papel A4 75g/m² 500 folhas". Lido de forma ingênua, o "75g"
+ * vira "pacote de 75 gramas" e o radar passa a dizer que a resma custa
+ * R$ 320 o quilo. O que interessa ali são as 500 folhas — por isso qualquer
+ * medida seguida de "/m" é descartada antes de tudo.
+ */
+export function lerEmbalagem(titulo: string, preferida?: UnidadeBase | null): Embalagem | null {
+  /* A gramatura sai ANTES do `norm`, porque é o "/" que a denuncia — e o `norm`
+     transforma "/" em espaço, deixando "75g m2" indistinguível de um peso
+     seguido de outra palavra. Depois disso não haveria como saber. */
+  const cru = String(titulo || "")
+    .replace(/(\d+[.,]?\d*)\s*(?:g|gr|gramas?)\s*\/\s*m[²2]?/gi, " ")
+    .replace(/\b\d+\s*gsm\b/gi, " ");
+  // `norm` mantém vírgula e ponto de propósito: é o que separa "1,5 kg" de "15 kg".
+  const t = norm(cru);
+  const num = (s: string) => Number(s.replace(",", "."));
+  /* Peso absurdo é leitura errada, e preço por unidade calculado sobre leitura
+     errada não dá erro: dá um achado espetacular e falso. */
+  const plausivel = (q: number) => q > 0.001 && q < 500;
+
+  const mult = t.match(new RegExp(`\\b(\\d{1,3})\\s*x\\s*(\\d+[.,]?\\d*)\\s*(${MEDIDA})\\b`));
+  const medida = t.match(new RegExp(`\\b(\\d+[.,]?\\d*)\\s*(${MEDIDA})\\b`));
+  const cont = t.match(CONTAGEM);
+  const conv = medida ? PARA_BASE[medida[2]] : null;
+  const qMedida = conv ? num(medida![1]) * conv.fator : null;
+  const nCont = cont ? Number(cont[1]) : null;
+  const contagemOk = nCont != null && nCont > 0 && nCont <= 5000;
+
+  // 1. O FARDO. "6x1,5L" são nove litros; lido como garrafa, seria um e meio.
+  if (mult) {
+    const c = PARA_BASE[mult[3]];
+    const q = c ? num(mult[1]) * num(mult[2]) * c.fator : 0;
+    if (c && plausivel(q)) return { quantidade: q, unidade: c.unidade, texto: `${mult[1]}x${mult[2]}${mult[3]}` };
+  }
+
+  /* 2. QUANDO O ALVO PEDE PEÇA, A CONTAGEM MANDA — e é aqui que mora a segunda
+     armadilha do consumível. "Copo descartável 200ml com 100 unidades" tem uma
+     medida (200 ml) que NÃO é o tamanho do pacote: é o tamanho de UM copo. Quem
+     compra copo compra peça, e é a contagem que responde. */
+  if (preferida === "un" && contagemOk) {
+    return { quantidade: nCont!, unidade: "un", texto: `${cont![1]} ${cont![2]}` };
+  }
+
+  /* 3. Contagem VEZES medida — o fardo escrito por extenso: "5 pacotes de
+     250g", "10 sachês de 50g", "Café 500g kit 5".
+     SÓ MULTIPLICA COM LICENÇA EXPLÍCITA: ou a palavra é um continente (pacote,
+     caixa, kit — cada um TEM a medida), ou o título escreve a ligação com "de".
+     Sem isso, "10 unidades 170g" — dez cápsulas pesando 170 g no total — viraria
+     1,7 kg, e a caixa de Dolce Gusto entraria na tela como café barato. */
+  const ehContinente = cont ? new RegExp(`^(?:${CONTINENTE})$`).test(cont[2]) : false;
+  const ligaComDe = cont && medida
+    ? new RegExp(`${cont[1]}\\s*(?:${CONTINENTE}|${PECA})\\s+(?:de|c\\/|com)\\s+${medida[1].replace(".", "\\.")}`).test(t)
+    : false;
+  const kitDepois = t.match(/\b(?:kit|leve|pack)\s*(\d{1,3})\b/);
+
+  if (contagemOk && qMedida != null && conv && (ehContinente || ligaComDe) && (!preferida || preferida === conv.unidade)) {
+    const q = nCont! * qMedida;
+    if (plausivel(q)) {
+      return { quantidade: q, unidade: conv.unidade, texto: `${cont![1]}x${medida![1]}${medida![2]}` };
+    }
+  }
+
+  /* 3b. O continente que vem DEPOIS da medida: "Café Melitta 500g Kit 5". A
+     forma é invertida e o significado é o mesmo — cinco embalagens de 500 g. */
+  if (kitDepois && qMedida != null && conv && (!preferida || preferida === conv.unidade)) {
+    const q = Number(kitDepois[1]) * qMedida;
+    if (Number(kitDepois[1]) > 1 && plausivel(q)) {
+      return { quantidade: q, unidade: conv.unidade, texto: `${kitDepois[1]}x${medida![1]}${medida![2]}` };
+    }
+  }
+
+  /* 4. Peso ou volume solto — e a ORDEM DAS PALAVRAS decide se ele vale.
+     "10 unidades 170g": a medida vem DEPOIS da contagem e é o peso líquido do
+     conjunto — vale, e vale como total. "Copo 200ml c/ 100 unidades": a medida
+     vem ANTES e é o tamanho de UMA peça — os 200 ml não são o pacote, e usá-los
+     daria R$/L sobre o volume de um copo.
+     Nesse segundo caso o radar não sabe, e não inventa: devolve `null`, e a
+     recusa diz que o título não informa o tamanho. Quem quiser comprar copo
+     cadastra o alvo em `un`, que é como copo se compra — e aí a regra 2 já
+     respondeu lá em cima. */
+  const medidaDepoisDaContagem = !cont || (medida != null && t.indexOf(medida[0]) > t.indexOf(cont[0]));
+  if (conv && qMedida != null && plausivel(qMedida) && medidaDepoisDaContagem) {
+    return { quantidade: qMedida, unidade: conv.unidade, texto: `${medida![1]}${medida![2]}` };
+  }
+
+  // 5. contagem solta
+  if (contagemOk) return { quantidade: nCont!, unidade: "un", texto: `${cont![1]} ${cont![2]}` };
+
+  return null;
+}
+
+/** "R$ 32,90/kg" — como o preço de consumível se lê. */
+export function textoUnitario(valor: number, unidade: UnidadeBase): string {
+  return `R$ ${valor.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}/${UNIDADE_LABEL[unidade]}`;
+}
+
 function polegadas(t: string): number | null {
   const m = t.match(/(\d{2}(?:[.,]\d)?)\s*(?:"|''|pol\b|polegadas?\b|inch\b)/);
   if (m) {
@@ -320,6 +512,13 @@ const ACESSORIOS: Record<string, RegExp> = {
   impressora: /\b(toner|cartucho|refil|tinta|cabo|papel|cilindro|fusor)\b/,
   cadeira: /\b(capa|rodizio|rodinha|pistao|cilindro|apoio|almofada|braco|base|kit reparo)\b/,
   desktop: /\b(gabinete|fonte|placa mae|memoria|cooler|cabo|suporte|placa de video)\b/,
+  /* CONSUMÍVEL NÃO TEM LISTA DE ACESSÓRIO, e não é esquecimento. O que polui a
+     busca aqui é o utensílio — "café" traz cafeteira, xícara e porta-filtro —,
+     e qualquer lista dessas erraria nos dois sentidos: "balde" e "vassoura" são
+     acessório na copa e produto na limpeza. Quem filtra é a exigência de
+     embalagem: utensílio não traz peso líquido no título e cai sozinho, com um
+     motivo em português que a pessoa entende. */
+  consumivel: /(?!)/,
   outro: /(?!)/,
 };
 
@@ -336,6 +535,10 @@ const PRODUTO: Record<string, RegExp> = {
   impressora: /\b(impressora|multifuncional)\b/,
   cadeira: /\b(cadeira|poltrona)\b/,
   desktop: /\b(desktop|computador|pc\b|all in one|mini pc)\b/,
+  /* O substantivo do consumível é o que a pessoa pediu — café, papel toalha,
+     detergente —, e isso já chega em `termos_obrigatorios`. Fixar uma lista
+     aqui seria tentar prever o catálogo de copa e limpeza de uma empresa. */
+  consumivel: /(?:)/,
   outro: /(?:)/,
 };
 
@@ -456,6 +659,37 @@ export function condicaoDoTitulo(titulo: string, informada?: Condicao | null): C
 }
 
 /**
+ * O FREIO DE CRÉDITO DE RASPAGEM, em um lugar só.
+ *
+ * Mora aqui — e não na Edge Function — porque a tela precisa do MESMO número
+ * para dizer "a varredura está suspensa". Duas cópias divergem na primeira vez
+ * que alguém ajusta o limiar no servidor, e o sintoma seria a tela jurando que
+ * está tudo bem enquanto o radar não varre há uma semana.
+ *
+ * Abaixo disto a varredura para e a conferência continua: procurar achado novo
+ * pode esperar o ciclo virar; dizer se o que está na tela ainda existe, não —
+ * parar isso é deixar fantasma no lugar, que é pior que não ter radar. E a
+ * mesma chave serve o radar de editais: um radar guloso não fica só mudo, leva
+ * o vizinho junto.
+ */
+/* Calibrado para o plano de 5.000/mês assinado em 27/08/2026, com consumo
+   medido de ~95/dia (seis varreduras e quatro conferências). 500 é a reserva de
+   uns cinco dias — o bastante para o ciclo virar sem que a conferência pare e
+   sem derrubar os editais junto.
+
+   ESTE NÚMERO TEM UM GÊMEO NO BANCO: `firecrawl_orcamento.piso_saldo` da linha
+   `radar_varrer`, que é quem de fato freia a rodada desde que o Firecrawl ganhou
+   cinco consumidores no Hub. Os dois PRECISAM andar juntos — é exatamente a
+   divergência que o comentário acima descreve, agora entre a tela e a tabela:
+   com o piso do banco em 400 e este em 500, haveria uma faixa de cem créditos
+   em que a tela anuncia "varredura suspensa" e o servidor continua varrendo
+   alegremente. Ao mexer aqui, mexa lá. */
+export const SALDO_MINIMO_RASPAGEM = 500;
+
+/** Daqui para baixo a tela já avisa: ~10 dias de operação, tempo de reagir. */
+export const SALDO_ATENCAO_RASPAGEM = 1000;
+
+/**
  * Piso de preço: abaixo disto o anúncio não é o produto, é outra coisa com o
  * nome dele. 25% do teto é folgado o bastante para uma promoção de verdade
  * (um notebook de teto R$ 3.000 por R$ 750 seria a promoção do século) e
@@ -491,10 +725,46 @@ export function avaliar(alvo: AlvoSpecs, precoAlvo: number, o: OfertaBruta): Ava
   const motivos: string[] = [];
   const { total, frete, frete_conhecido } = totalDaOferta(o);
 
+  /* A EMBALAGEM SÓ É LIDA EM ALVO RECORRENTE, e essa guarda é deliberada: os
+     títulos de equipamento estão cheios de "16GB" e "1TB" que a leitura de
+     embalagem interpretaria como peso. Fora do consumível, esta peça nem
+     acorda. */
+  /* E A EMBALAGEM LIDA TEM DE ESTAR NA UNIDADE DO ALVO. Medido em 27/08/2026
+     numa varredura real de café: onze anúncios foram recusados "abaixo do piso"
+     porque o título só trazia contagem de peças — "filtro de café c/ 30
+     unidades" devolvia uma embalagem de 30 `un`, e dividir o preço por 30 num
+     alvo medido em quilo dava R$ 0,50/kg. O número saía absurdo e o motivo saía
+     errado, culpando o preço quando o problema era a unidade.
+     Unidade trocada é o mesmo caso de "o título não diz o tamanho": não dá para
+     comparar, e é isso que a recusa passa a dizer. */
+  const lida = alvo.unidade ? lerEmbalagem(o.titulo, alvo.unidade) : null;
+  const embalagem = lida && lida.unidade === alvo.unidade ? lida : null;
+  const comparavel = alvo.unidade && embalagem ? emCentavos(total / embalagem.quantidade) : total;
+
   const nao = (recusa: string, apenas_preco = false): Avaliacao =>
-    ({ aprovado: false, score: 0, recusa, motivos: [], conferir: [], lidas, total, frete_conhecido, apenas_preco });
+    ({ aprovado: false, score: 0, recusa, motivos: [], conferir: [], lidas, total, comparavel, embalagem, frete_conhecido, apenas_preco });
 
   if (!o.titulo || !o.url || !(o.preco > 0)) return nao("anúncio sem título, link ou preço");
+
+  /* SEM O TAMANHO DO PACOTE NÃO HÁ COMO COMPARAR — e aqui, ao contrário das
+     specs de equipamento, a omissão REPROVA. A regra do módulo é não reprovar
+     por aquilo que o anúncio não diz, mandando conferir no link; mas isso vale
+     para detalhe (a geração do processador, o tamanho da tela). O tamanho da
+     embalagem não é detalhe num alvo medido por quilo: comparar R$ 20 com um
+     teto de R$ 40/kg sem saber se o pacote tem 250 g ou 1 kg não é uma resposta
+     parcial, é uma resposta errada — e erra sempre para o mesmo lado, o da
+     embalagem pequena, que é a que parece barata.
+     De quebra, é o que separa o café da cafeteira: utensílio não traz peso
+     líquido no título, e cai aqui sem precisar de lista de palavras proibidas. */
+  if (alvo.unidade && !embalagem) {
+    return nao(
+      lida
+        // Diz O QUE leu, senão a pessoa abre o anúncio, vê "30 unidades"
+        // escrito lá e conclui que o radar não sabe ler.
+        ? `o título mede em ${UNIDADE_LABEL[lida.unidade]} (${lida.texto}) e o teto é por ${UNIDADE_LABEL[alvo.unidade]}`
+        : `o título não diz o tamanho da embalagem, e o teto é por ${UNIDADE_LABEL[alvo.unidade]}`,
+    );
+  }
 
   // Esgotado sai antes de tudo: não interessa o quanto as specs batem.
   if (o.disponivel === false) return nao("o anúncio está indisponível/esgotado");
@@ -522,8 +792,16 @@ export function avaliar(alvo: AlvoSpecs, precoAlvo: number, o: OfertaBruta): Ava
      que dá para afirmar "é o produto certo, caro demais" — que é o que alimenta
      o histórico. */
   const piso = pisoDePreco(precoAlvo);
-  if (o.preco < piso) {
-    return nao(`R$ ${o.preco.toFixed(0)} está abaixo do piso de R$ ${piso} — provável acessório ou anúncio isca`);
+  /* No alvo recorrente o piso também é POR UNIDADE — senão ele barraria o
+     pacote pequeno legítimo (um café de 250 g custa menos que um quarto do
+     teto do quilo, e não tem nada de errado com ele). */
+  const precoDoPiso = alvo.unidade && embalagem ? comparavel : o.preco;
+  if (precoDoPiso < piso) {
+    return nao(
+      alvo.unidade
+        ? `${textoUnitario(precoDoPiso, alvo.unidade)} está abaixo do piso de R$ ${piso}/${UNIDADE_LABEL[alvo.unidade]} — provável leitura errada da embalagem ou anúncio isca`
+        : `R$ ${o.preco.toFixed(0)} está abaixo do piso de R$ ${piso} — provável acessório ou anúncio isca`,
+    );
   }
   if (frete === 0) motivos.push("frete grátis");
   else if (frete && frete > 0) motivos.push(`+ R$ ${frete.toFixed(0)} de frete`);
@@ -581,11 +859,16 @@ export function avaliar(alvo: AlvoSpecs, precoAlvo: number, o: OfertaBruta): Ava
   /* AGORA O TETO. Chegou aqui: é o produto certo, com as specs certas, novo e
      disponível. Se não couber no preço, a recusa sai marcada como `apenas_preco`
      — o chamador guarda a linha para o histórico em vez de jogá-la fora. */
-  if (total > precoAlvo) {
+  if (comparavel > precoAlvo) {
     return nao(
-      frete && frete > 0
-        ? `R$ ${o.preco.toFixed(0)} + R$ ${frete.toFixed(0)} de frete passa do teto (R$ ${precoAlvo.toFixed(0)})`
-        : `acima do teto (R$ ${precoAlvo.toFixed(0)})`,
+      alvo.unidade
+        // O pacote entra na frase inteira: "R$ 24 o pacote de 500g dá R$ 48/kg"
+        // é o que faz a pessoa entender por que um anúncio de R$ 24 foi recusado
+        // por um teto de R$ 40.
+        ? `${textoUnitario(comparavel, alvo.unidade)} (R$ ${total.toFixed(0)} o ${embalagem!.texto}) passa do teto de ${textoUnitario(precoAlvo, alvo.unidade)}`
+        : frete && frete > 0
+          ? `R$ ${o.preco.toFixed(0)} + R$ ${frete.toFixed(0)} de frete passa do teto (R$ ${precoAlvo.toFixed(0)})`
+          : `acima do teto (R$ ${precoAlvo.toFixed(0)})`,
       true,
     );
   }
@@ -595,7 +878,8 @@ export function avaliar(alvo: AlvoSpecs, precoAlvo: number, o: OfertaBruta): Ava
      A reputação do vendedor vem logo atrás porque o Facilities compra de
      verdade — um preço 8% melhor num vendedor sem histórico não compensa. */
   let score = 50;
-  const folga = (precoAlvo - total) / precoAlvo; // 0..1, já com frete
+  // Pela mesma medida do teto: em consumível, folga é folga no preço do quilo.
+  const folga = (precoAlvo - comparavel) / precoAlvo; // 0..1, já com frete
   score += Math.round(Math.min(folga, 0.5) * 60); // até +30
   if (o.reputacao != null) score += Math.round(o.reputacao * 12);
   else conferir.push("reputação do vendedor");
@@ -619,8 +903,13 @@ export function avaliar(alvo: AlvoSpecs, precoAlvo: number, o: OfertaBruta): Ava
   score = Math.max(1, Math.min(100, score));
 
   if (folga >= 0.10) motivos.unshift(`${Math.round(folga * 100)}% abaixo do teto`);
+  /* O preço unitário vai na FRENTE dos motivos em alvo recorrente: é o número
+     que decide a compra, e o da etiqueta é o que engana. */
+  if (alvo.unidade && embalagem) {
+    motivos.unshift(`${textoUnitario(comparavel, alvo.unidade)} · ${embalagem.texto}`);
+  }
 
-  return { aprovado: true, score, recusa: null, motivos, conferir, lidas, total, frete_conhecido, apenas_preco: false };
+  return { aprovado: true, score, recusa: null, motivos, conferir, lidas, total, comparavel, embalagem, frete_conhecido, apenas_preco: false };
 }
 
 /* ------------------------------------------------------- leitura do histórico */

@@ -11,7 +11,7 @@ import { useAuth } from "@/hooks/useAuth";
 import { cn } from "@/lib/utils";
 import { invocar } from "@/lib/erroEdge";
 import { db, parseValor, fmtBRL, CATEGORIAS, type Solicitacao } from "./lib";
-import { resumoDoAlvo, fonteLabel, pisoDePreco, type AlvoSpecs } from "@/lib/radarPrecos";
+import { resumoDoAlvo, fonteLabel, pisoDePreco, UNIDADE_LABEL, type AlvoSpecs } from "@/lib/radarPrecos";
 
 /**
  * As fontes, com o estado REAL de cada uma medido em 26/08/2026 — não a lista
@@ -52,6 +52,8 @@ export interface AlvoRow {
   ativo: boolean;
   /** Equipamento que a empresa compra sempre: fixa no topo e entra primeiro na varredura. */
   favorito: boolean;
+  /** Dias mínimos entre varreduras. 0 = toda rodada; 7 = o consumível semanal. */
+  cadencia_dias: number;
 }
 
 interface Props {
@@ -90,6 +92,9 @@ export function NovoAlvoDialog({ alvo, open, onOpenChange, onSaved, onBuscarAgor
   const [categoria, setCategoria] = useState<string>("TI");
   const [precoTxt, setPrecoTxt] = useState("");
   const [quantidade, setQuantidade] = useState("1");
+  /* De quantos em quantos dias vale olhar. Zero é "toda rodada", que é o
+     equipamento; o consumível nasce em 7 pela mão da interpretação. */
+  const [cadencia, setCadencia] = useState(0);
   const [fontes, setFontes] = useState<string[]>(FONTES_PADRAO);
   const [specs, setSpecs] = useState<AlvoSpecs | null>(null);
   const [solicId, setSolicId] = useState<string>("");
@@ -113,15 +118,20 @@ export function NovoAlvoDialog({ alvo, open, onOpenChange, onSaved, onBuscarAgor
       setPedido(alvo.pedido); setLinkRef(alvo.link_ref ?? ""); setTitulo(alvo.titulo);
       setCategoria(alvo.categoria); setPrecoTxt(String(alvo.preco_alvo));
       setQuantidade(String(alvo.quantidade)); setFontes(alvo.fontes ?? []);
+      setCadencia(Number(alvo.cadencia_dias ?? 0));
       setSpecs(alvo.specs ?? null); setSolicId(alvo.solicitacao_id ?? "");
     } else {
       setPedido(""); setLinkRef(""); setTitulo(""); setCategoria("TI"); setPrecoTxt("");
-      setQuantidade("1"); setFontes(FONTES_PADRAO);
+      setQuantidade("1"); setFontes(FONTES_PADRAO); setCadencia(0);
       setSpecs(null); setSolicId("");
     }
   }, [open, alvo]);
 
   const preco = parseValor(precoTxt);
+  /* Quem manda no modo recorrente é a interpretação: `unidade` presente = o teto
+     é por quilo/litro/peça. Não há interruptor manual de propósito — o modo tem
+     de bater com o que a regra do servidor vai aplicar, e ela lê daqui. */
+  const unidade = specs?.unidade ?? null;
 
   /* A CURVA OPINA SOBRE O TETO — mas só num alvo que já existe, porque só ele
      tem histórico. Roda ao abrir e de novo quando o valor digitado muda: o
@@ -152,6 +162,7 @@ export function NovoAlvoDialog({ alvo, open, onOpenChange, onSaved, onBuscarAgor
       if (r.categoria_facilities) setCategoria(r.categoria_facilities);
       if (r.preco_alvo && !precoTxt) setPrecoTxt(String(r.preco_alvo));
       if (r.quantidade) setQuantidade(String(r.quantidade));
+      if (Number.isFinite(r.cadencia_dias)) setCadencia(r.cadencia_dias);
       toast.success(r.leu_referencia ? "Li o pedido e o anúncio de referência." : "Pedido interpretado.");
     } catch (e: any) {
       toast.error(e.message ?? "Não consegui interpretar o pedido.");
@@ -176,6 +187,7 @@ export function NovoAlvoDialog({ alvo, open, onOpenChange, onSaved, onBuscarAgor
       titulo: titulo.trim() || pedido.slice(0, 80),
       pedido, link_ref: linkRef || null, categoria,
       specs, preco_alvo: preco, quantidade: Number(quantidade) || 1,
+      cadencia_dias: cadencia,
       solicitacao_id: solicId || null, fontes, updated_at: new Date().toISOString(),
       /* Quem cadastrou vira o solicitante quando o achado virar cotação — é o
          que `facilities_radar_virar_cotacao` usa. Sem isso a solicitação nasce
@@ -292,12 +304,29 @@ export function NovoAlvoDialog({ alvo, open, onOpenChange, onSaved, onBuscarAgor
 
           <div className="grid grid-cols-2 gap-3">
             <div>
-              <Label htmlFor="preco">Preço-teto (por unidade)</Label>
-              <Input id="preco" value={precoTxt} onChange={(e) => setPrecoTxt(e.target.value)} placeholder="3.000" />
+              {/* EM CONSUMÍVEL O TETO É POR QUILO/LITRO/PEÇA, e o rótulo tem
+                  de gritar isso. "R$ 40" num alvo de café significa coisas
+                  opostas conforme a leitura: por pacote, é generoso; por quilo,
+                  é apertado. Quem digita precisa saber qual das duas está
+                  escrevendo ANTES de salvar. */}
+              <Label htmlFor="preco">
+                {unidade ? `Preço-teto por ${UNIDADE_LABEL[unidade]}` : "Preço-teto (por unidade)"}
+              </Label>
+              <Input id="preco" value={precoTxt} onChange={(e) => setPrecoTxt(e.target.value)} placeholder={unidade ? "40,00" : "3.000"} />
               {!!preco && (
                 <p className="mt-1 text-[11.5px] text-muted-foreground">
-                  Avisa em até {fmtBRL(preco)}. Abaixo de {fmtBRL(pisoDePreco(preco))} o radar ignora — nesse preço não é o produto,
-                  é acessório ou anúncio isca.
+                  {unidade ? (
+                    <>
+                      Avisa em até {fmtBRL(preco)} por {UNIDADE_LABEL[unidade]} — o pacote inteiro pode custar mais que isso,
+                      desde que a conta por {UNIDADE_LABEL[unidade]} feche. Anúncio que não diz o tamanho da embalagem é recusado,
+                      porque sem ele não há como comparar.
+                    </>
+                  ) : (
+                    <>
+                      Avisa em até {fmtBRL(preco)}. Abaixo de {fmtBRL(pisoDePreco(preco))} o radar ignora — nesse preço não é o produto,
+                      é acessório ou anúncio isca.
+                    </>
+                  )}
                 </p>
               )}
 
@@ -335,8 +364,29 @@ export function NovoAlvoDialog({ alvo, open, onOpenChange, onSaved, onBuscarAgor
               )}
             </div>
             <div>
-              <Label htmlFor="qtd">Quantidade</Label>
+              <Label htmlFor="qtd">{unidade ? `Quanto se compra (${UNIDADE_LABEL[unidade]})` : "Quantidade"}</Label>
               <Input id="qtd" type="number" min={1} value={quantidade} onChange={(e) => setQuantidade(e.target.value)} />
+              {/* A cadência é a peça que faz o consumível caber no orçamento de
+                  raspagem: preço de café não se mexe entre a manhã e a tarde. */}
+              <div className="mt-3">
+                <Label htmlFor="cad">De quanto em quanto tempo olhar</Label>
+                <select
+                  id="cad"
+                  value={cadencia}
+                  onChange={(e) => setCadencia(Number(e.target.value))}
+                  className="mt-1 h-9 w-full rounded-md border border-input bg-background px-2 text-[13px]"
+                >
+                  <option value={0}>Toda rodada (2x ao dia)</option>
+                  <option value={1}>Uma vez por dia</option>
+                  <option value={7}>Uma vez por semana</option>
+                  <option value={15}>A cada 15 dias</option>
+                </select>
+                <p className="mt-1 text-[11.5px] text-muted-foreground">
+                  {cadencia >= 7
+                    ? "Consumível não muda de preço todo dia — e cada varredura consome crédito de raspagem."
+                    : "Equipamento vale olhar sempre: o preço se mexe e a compra é grande."}
+                </p>
+              </div>
             </div>
           </div>
 

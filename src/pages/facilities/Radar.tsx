@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   AlertTriangle, ArrowDownRight, ChevronDown, ChevronRight, Copy, ExternalLink,
-  Loader2, PackageCheck, Pause, PiggyBank, Play, Plus, Radar as RadarIcon, RefreshCw, Sparkles, Star, Trash2, TrendingDown,
+  Loader2, PackageCheck, PackageX, Pause, PiggyBank, Play, Plus, Radar as RadarIcon, RefreshCw, Sparkles, Star, Trash2, TrendingDown,
 } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -16,6 +16,7 @@ import { db, fmtBRL as fmtBRLStr, fmtData } from "./lib";
 import { resumoDoAlvo, fonteLabel, textoFrete, textoNota, textoWhats } from "@/lib/radarPrecos";
 import { invalidarRadarAlertas } from "@/hooks/useRadarAlertas";
 import { ProximaVarredura } from "./ProximaVarredura";
+import { SaldoRaspagem } from "./SaldoRaspagem";
 import { HistoricoPreco } from "./HistoricoPreco";
 
 /* Valor compacto na tela, número cheio no hover — convenção do Hub.
@@ -28,6 +29,12 @@ interface Oferta {
   preco: number; preco_total: number | null; preco_min: number | null;
   frete_gratis: boolean; frete_valor: number | null; frete_texto: string | null;
   disponivel: boolean | null; confirmado_em: string | null;
+  /* Compra recorrente: o preço na unidade do alvo, e o pacote de onde ele saiu.
+     Null em equipamento — e é o `??` com `preco_total` que faz as duas
+     naturezas conviverem na mesma linha da tela. */
+  preco_unitario: number | null;
+  embalagem_unidade: string | null;
+  embalagem_texto: string | null;
   avaliacao: number | null; avaliacoes: number | null;
   score: number; motivos: string[]; conferir: string[];
   visto_em: string; primeiro_visto_em: string;
@@ -93,9 +100,37 @@ export default function Radar() {
     if (ofertas[id]) return;
     const { data } = await db.from("facilities_radar_ofertas")
       .select("*").eq("alvo_id", id).eq("ativo", true)
+      /* Esgotado apurado não entra na lista. `not.is.false` e não `neq`: o
+         estoque desconhecido é `null` — o caso normal de quem ainda não foi
+         conferido —, e `neq(false)` derrubaria esses junto. */
+      .not("disponivel", "is", false)
       // Pelo TOTAL: o mais barato de verdade, não o de etiqueta menor.
       .order("preco_total", { ascending: true }).limit(60);
     setOfertas((p) => ({ ...p, [id]: (data as Oferta[]) ?? [] }));
+  }
+
+  /* A metade que confere. Vive separada porque roda nos DOIS caminhos: depois
+     de uma varredura normal e também quando a varredura foi freada por falta de
+     crédito — é justamente aí que ela mais importa, porque é o que impede a tela
+     de ficar exibindo achado que já morreu. */
+  async function conferir(alvoId?: string): Promise<number> {
+    try {
+      const c = await invocar<any>(supabase.functions.invoke("facilities-radar", {
+        body: alvoId ? { action: "confirmar", alvo_id: alvoId } : { action: "confirmar" },
+      }));
+      if (c.desfechos?.esgotado) {
+        toast.info(`${c.desfechos.esgotado} achado(s) já estavam esgotados ao conferir — por isso não aparecem.`);
+      }
+      if (c.sumiram) {
+        toast.info(`${c.sumiram} achado(s) saíram da lista: o produto acabou depois de aparecer aqui.`);
+      }
+      if (c.desfechos?.["subiu de preço"]) {
+        toast.info(`${c.desfechos["subiu de preço"]} achado(s) saíram da lista: o preço subiu acima do teto.`);
+      }
+      return c.confirmados ?? 0;
+    } catch {
+      return 0; // a confirmação sozinha não derruba o resultado da varredura
+    }
   }
 
   async function varrer(alvoId?: string) {
@@ -105,22 +140,29 @@ export default function Radar() {
         body: alvoId ? { action: "varrer", alvo_id: alvoId } : { action: "varrer" },
       }));
 
+      /* O FREIO DE CRÉDITO NÃO PODE PARECER "NÃO ACHEI NADA". São diagnósticos
+         opostos: um diz que o mercado não tem preço bom, o outro que o radar
+         nem olhou. Sem esta saída, a rodada freada devolveria "0 anúncio dentro
+         dos filtros" e ninguém entenderia por que o teto nunca bate.
+         A conferência roda mesmo assim — é a metade barata e a que sustenta a
+         verdade do que já está na tela. */
+      if (r.freado) {
+        toast.warning(r.mensagem ?? "Varredura suspensa por falta de crédito de raspagem.", { duration: 12000 });
+        await conferir(alvoId);
+        setOfertas({});
+        await load();
+        return;
+      }
+
       /* O clique manual encadeia as DUAS metades. No cron elas são separadas
          (varrer 08:45, confirmar 09:15) para caber no orçamento de relógio; aqui
          a pessoa está esperando, e um achado que só aparece meia hora depois
-         seria indistinguível de "não achei nada". */
-      let confirmados = 0;
-      if (r.alertas) {
-        try {
-          const c = await invocar<any>(supabase.functions.invoke("facilities-radar", {
-            body: alvoId ? { action: "confirmar", alvo_id: alvoId } : { action: "confirmar" },
-          }));
-          confirmados = c.confirmados ?? 0;
-          if (c.desfechos?.esgotado) {
-            toast.info(`${c.desfechos.esgotado} achado(s) já estavam esgotados ao conferir — por isso não aparecem.`);
-          }
-        } catch { /* a confirmação sozinha não derruba o resultado da varredura */ }
-      }
+         seria indistinguível de "não achei nada".
+         E CHAMA A CONFIRMAÇÃO MESMO SEM ACHADO NOVO: é ela que reconfere o que
+         já está na tela, e é justamente quando a varredura não traz nada que a
+         pessoa fica olhando para os avisos antigos. Sem fila, a chamada custa
+         duas consultas e volta na hora — não é rodada de raspagem. */
+      const confirmados = await conferir(alvoId);
 
       const partes = [`${r.ofertas} anúncio(s) dentro dos filtros`];
       if (confirmados) partes.push(`${confirmados} confirmado(s) com estoque`);
@@ -268,8 +310,12 @@ export default function Radar() {
             Registre o equipamento e o quanto vale a pena pagar. O Hub fica olhando as lojas e os comparadores e avisa quando o preço
             aparecer — com o histórico, para você saber se é promoção de verdade.
           </p>
-          <div className="mt-2">
+          {/* Quando o radar age, e com quanto ele ainda pode agir. As duas
+              respostas moram na mesma linha porque é a mesma pergunta: dá para
+              contar com ele hoje? */}
+          <div className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1">
             <ProximaVarredura />
+            <SaldoRaspagem />
           </div>
         </div>
         <div className="flex items-center gap-2">
@@ -401,6 +447,17 @@ export default function Radar() {
                                     <PackageCheck className="h-3 w-3" /> em estoque
                                   </span>
                                 )}
+                                {/* Não deveria aparecer — o esgotado sai da lista na
+                                    reconferência. Se aparecer, a tela DIZ, em vez de
+                                    mostrar um preço bonito de coisa que não se compra. */}
+                                {o?.disponivel === false && (
+                                  <span
+                                    className="inline-flex items-center gap-1 rounded bg-amber-50 px-1.5 py-0.5 text-[10.5px] font-medium text-amber-800 dark:bg-amber-950/40 dark:text-amber-300"
+                                    title="a última conferência não encontrou o produto à venda"
+                                  >
+                                    <PackageX className="h-3 w-3" /> esgotado ao conferir
+                                  </span>
+                                )}
                                 {/* A nota NUNCA aparece sem a contagem: 5,0 com duas avaliações
                                     engana mais do que informa. Poucas avaliações ficam em cinza
                                     para a pessoa ver que a nota não tem lastro. */}
@@ -431,11 +488,21 @@ export default function Radar() {
                             <div className="flex shrink-0 flex-col items-end gap-1">
                               {/* O TOTAL na frente, e o desmembramento embaixo: é o total que
                                   decide a compra, e um preço sem o frete é meia conta. */}
+                              {/* EM CONSUMÍVEL O NÚMERO GRANDE É O DA UNIDADE.
+                                  É ele que decide a compra: "R$ 34 o pacote" não
+                                  se compara com nada, "R$ 68/kg" se compara com
+                                  o teto e com o mês passado. O preço do pacote
+                                  desce para a linha de apoio, onde continua
+                                  sendo o que se paga no caixa. */}
                               <div className="num text-[18px] font-semibold text-foreground">
-                                {fmtBRL(Number(al.preco_total ?? al.preco))}
+                                {o?.preco_unitario != null
+                                  ? <>{fmtBRL(Number(o.preco_unitario))}<span className="text-[12px] font-normal text-muted-foreground">/{o.embalagem_unidade === "l" ? "L" : o.embalagem_unidade ?? "un"}</span></>
+                                  : fmtBRL(Number(al.preco_total ?? al.preco))}
                               </div>
                               <div className="text-right text-[11px] text-muted-foreground">
-                                {fmtBRLStr(Number(o?.preco ?? al.preco))} {textoFrete(al.frete_valor, o?.frete_texto)}
+                                {o?.preco_unitario != null && o.embalagem_texto
+                                  ? `${fmtBRLStr(Number(al.preco_total ?? al.preco))} · ${o.embalagem_texto}`
+                                  : <>{fmtBRLStr(Number(o?.preco ?? al.preco))} {textoFrete(al.frete_valor, o?.frete_texto)}</>}
                               </div>
                               {Number(al.economia ?? 0) > 0 && (
                                 <div className="num rounded bg-emerald-50 px-1.5 py-0.5 text-[11.5px] font-semibold text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-400">
@@ -485,7 +552,19 @@ export default function Radar() {
               {painel.map((l) => {
                 const expandido = aberto === l.alvo.id;
                 const melhor = l.melhor;
-                const melhorTotal = melhor ? Number(melhor.preco_total ?? melhor.preco) : null;
+                /* O MESMO COMPARÁVEL DO SERVIDOR: unitário quando existe. Se a
+                   tela mostrasse o preço do pacote e o painel tivesse escolhido
+                   o melhor pelo preço do quilo, o card exibiria um número que
+                   não explica a própria escolha. */
+                const melhorTotal = melhor ? Number(melhor.preco_unitario ?? melhor.preco_total ?? melhor.preco) : null;
+                const melhorUn = melhor?.preco_unitario != null
+                  ? (melhor.embalagem_unidade === "l" ? "L" : melhor.embalagem_unidade ?? "un")
+                  : null;
+                /* A unidade do ALVO (não a da oferta): é ela que dá sentido ao
+                   teto e ao "menor fora do teto", que existem mesmo quando não
+                   há nenhuma oferta para tirar a unidade de dentro. */
+                const uAlvo = (l.alvo.specs as any)?.unidade as string | undefined;
+                const unidadeDoAlvo = uAlvo ? (uAlvo === "l" ? "L" : uAlvo) : null;
                 const folga = melhorTotal != null ? (Number(l.alvo.preco_alvo) - melhorTotal) / Number(l.alvo.preco_alvo) : null;
                 return (
                   <div key={l.alvo.id} className={cn("card-surface", !l.alvo.ativo && "opacity-60")}>
@@ -526,7 +605,7 @@ export default function Radar() {
                         <div className="text-[10.5px] uppercase tracking-wide text-muted-foreground">Melhor agora</div>
                         {melhor ? (
                           <div className="num text-[13px] font-semibold text-emerald-700 dark:text-emerald-400">
-                            {fmtBRL(melhorTotal)}
+                            {fmtBRL(melhorTotal)}{melhorUn && <span className="text-[12px] font-normal text-muted-foreground">/{melhorUn}</span>}
                             {folga != null && <span className="ml-1 text-[11px] font-normal text-muted-foreground">−{Math.round(folga * 100)}%</span>}
                           </div>
                         ) : l.menor_fora_do_teto ? (
@@ -535,7 +614,13 @@ export default function Radar() {
                              muda o diagnóstico: o radar achou — o teto é que não
                              alcança o mercado. */
                           <div className="text-[12px] text-amber-700 dark:text-amber-400">
-                            nada no teto · menor: <span className="num font-semibold">{fmtBRL(Number(l.menor_fora_do_teto))}</span>
+                            nada no teto · menor: <span className="num font-semibold">
+                              {fmtBRL(Number(l.menor_fora_do_teto))}
+                              {/* Sem o "/kg" o número mente por omissão: R$ 59,60
+                                  parece caber num teto de "R$ 45" até se lembrar
+                                  de que os dois são por quilo. */}
+                              {unidadeDoAlvo && <span className="font-normal">/{unidadeDoAlvo}</span>}
+                            </span>
                           </div>
                         ) : (
                           <div className="text-[12px] text-muted-foreground">nada dentro dos filtros</div>

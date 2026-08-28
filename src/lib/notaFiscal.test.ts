@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   chaveDeAcesso, chaveNfse, chaveValida, dadosDaChave, descricaoDaNota, lerCorpoDeEmail,
   ehAvisoDeCobranca, lerDanfes, lerEmailOmie, lerNomeDeArquivo, lerXmlFiscal, linksDeNota,
+  nomeDoEmitente,
   tipoDoDocumento, valorComMoeda,
 } from "@/lib/notaFiscal";
 
@@ -412,13 +413,66 @@ describe("corpo do e-mail", () => {
 
   it("e-mail sem nada fiscal devolve tudo nulo", () => {
     const c = lerCorpoDeEmail("Clarity digest: Your weekly recap for auto.takeat", NOSSO);
-    expect(c).toEqual({ chave: null, cnpj: null, valor: null, data: null, numero: null });
+    expect(c).toEqual({ chave: null, cnpj: null, valor: null, data: null, numero: null, nome: null });
     expect(lerCorpoDeEmail(null, NOSSO).cnpj).toBeNull();
   });
 
   it("só o nosso CNPJ no texto não vira fornecedor", () => {
     const c = lerCorpoDeEmail("TAKEAT TECNOLOGIA LTDA CNPJ 37.511.891/0001-50 segue anexo", NOSSO);
     expect(c.cnpj).toBeNull();
+  });
+});
+
+/* ---------------------------------------------------------------------------
+ * QUEM EMITIU, quando quem manda o e-mail é o gateway.
+ *
+ * Os seis primeiros textos são recortes reais dos e-mails do eNotas na caixa
+ * `financeiro@`, conferidos em 28/08/2026. Em todos eles o remetente é "Nota
+ * Gateway" ou "eNotas" — e era esse o nome que ia parar no acervo. O nome de
+ * verdade está sempre colado no CNPJ, com o NOSSO escrito logo antes.
+ * ------------------------------------------------------------------------- */
+describe("nomeDoEmitente", () => {
+  const casos: [string, string, string][] = [
+    ["Para TAKEAT TECNOLOGIA LTDA GETDEMO TECNOLOGIA LTDA 52.874.118/0001-42 NFS-e No. 1789",
+      "52874118000142", "GETDEMO TECNOLOGIA LTDA"],
+    ["Para TAKEAT TECNOLOGIA LTDA - EPP ZAPSIGN PROCESSAMENTO DE DADOS LTDA 37.058.073/0001-44 NFS-e No. 240105",
+      "37058073000144", "ZAPSIGN PROCESSAMENTO DE DADOS LTDA"],
+    ["Para TAKEAT TECNOLOGIA LTDA CONTAAZUL SOFTWARE LTDA 05.206.246/0001-38 NFS-e No. 202600002949285",
+      "05206246000138", "CONTAAZUL SOFTWARE LTDA"],
+    ["Para TAKEAT TECNOLOGIA LTDA NALK LTDA 34.882.885/0001-11 NFS-e No. 1114",
+      "34882885000111", "NALK LTDA"],
+    ["Para MIGUEL MACEDO DE CARVALHO FILHO TECNOLOGIA DA INFORMACAO LTDA " +
+     "HULT CONTABILIDADE LTDA 23.340.742/0001-61 NFS-e No. 385",
+      "23340742000161", "HULT CONTABILIDADE LTDA"],
+    // "SOLUCOES PARA INTERNET" tem "para" no meio do nome, e o sufixo é "LTDA - ME".
+    ["Para Takeat Tecnologia Ltda REPORTEI DADOS, TECNOLOGIA E SOLUCOES PARA INTERNET LTDA - ME 27.133.918/0001-65",
+      "27133918000165", "REPORTEI DADOS, TECNOLOGIA E SOLUCOES PARA INTERNET LTDA - ME"],
+    // O rótulo do formulário fecha o nome pela esquerda.
+    ["Fornecedor/Prestador FRACALOSSI MATERIAL ELETRICO LTDA CNPJ: 27.250.919/0001-90",
+      "27250919000190", "FRACALOSSI MATERIAL ELETRICO LTDA"],
+  ];
+  for (const [texto, cnpj, esperado] of casos) {
+    it(`lê "${esperado}"`, () => expect(nomeDoEmitente(texto, cnpj)).toBe(esperado));
+  }
+
+  it("sem sufixo societário devolve nulo — nome errado é pior que remetente", () => {
+    expect(nomeDoEmitente("Segue a nota do fornecedor 52.874.118/0001-42", "52874118000142")).toBeNull();
+    // O CNPJ pedido não está no texto.
+    expect(nomeDoEmitente("GETDEMO TECNOLOGIA LTDA 52.874.118/0001-42", "37511891000150")).toBeNull();
+    expect(nomeDoEmitente(null, "52874118000142")).toBeNull();
+  });
+
+  it("o conector não abre a razão social", () => {
+    expect(nomeDoEmitente("Nota fiscal da ACME SOLUCOES LTDA 52.874.118/0001-42", "52874118000142"))
+      .toBe("ACME SOLUCOES LTDA");
+  });
+
+  it("chega inteiro pelo corpo do e-mail", () => {
+    const c = lerCorpoDeEmail(CORPO_GETDEMO, NOSSO);
+    expect(c.nome).toBe("GETDEMO TECNOLOGIA LTDA");
+    expect(c.cnpj).toBe("52874118000142");
+    expect(c.valor).toBe(1428.87);
+    expect(c.numero).toBe("1789");
   });
 });
 
@@ -454,6 +508,60 @@ describe("linksDeNota", () => {
     expect(linksDeNota("a nota: https://prefeitura.gov.br/emissor/nfse/123.pdf."))
       .toEqual(["https://prefeitura.gov.br/emissor/nfse/123.pdf"]);
     expect(linksDeNota("sem link nenhum aqui")).toEqual([]);
+  });
+});
+
+/* ---------------------------------------------------------------------------
+ * O E-MAIL DO GATEWAY, COMO O VARREDOR O RECEBE.
+ *
+ * `CORPO_GETDEMO` é a mensagem `19f17076c241eae0` da caixa `financeiro@`
+ * ([GETDEMO] Sua Nota Fiscal está disponível, No. 1789) depois de passar por
+ * `semTags` — sem tag e sem endereço nenhum, porque o e-mail é só HTML e os
+ * dois links moram dentro de um `<a href=…>`. É EXATAMENTE por isso que os
+ * endereços chegam por fora, em `extras`.
+ *
+ * Os dois `HREF_GETDEMO` foram conferidos em 28/08/2026: 200, `application/pdf`
+ * (34 KB) e `application/xml` (10 KB), sem login, dois meses depois do e-mail.
+ * ------------------------------------------------------------------------- */
+const CORPO_GETDEMO =
+  "Nota Fiscal Eletrônica de Serviço Para TAKEAT TECNOLOGIA LTDA " +
+  "GETDEMO TECNOLOGIA LTDA 52.874.118/0001-42 NFS-e No. 1789 " +
+  "Verificação: 42054072252874118000142000000000178926069328548314 30/06/2026 " +
+  "1 Plataforma de Demonstrações Interativas de Produto. 1.428,87 R$ 1428,87 " +
+  "Visualizar PDF - Baixar XML " +
+  "Este e-mail foi enviado automaticamente pela plataforma Nota Gateway. " +
+  "Para dúvidas sobre esta nota, entre em contato com: " +
+  "GETDEMO TECNOLOGIA LTDA CNPJ: 52.874.118/0001-42";
+
+const HREF_GETDEMO = [
+  "https://api.enotasgw.com.br/file/f9c082df-8d92-4ebf-9fce-6794bdc20100/c7d3469a-1b31-4661-a8d9-441e865c0a00/cb5ac3dd-c4b2-47b9-b9a6-1672fce20c00/pdf",
+  "https://api.enotasgw.com.br/file/f9c082df-8d92-4ebf-9fce-6794bdc20100/c7d3469a-1b31-4661-a8d9-441e865c0a00/cb5ac3dd-c4b2-47b9-b9a6-1672fce20c00/xml",
+];
+
+describe("linksDeNota: o formato no último segmento", () => {
+  it("o corpo sozinho não tem endereço nenhum — o e-mail é só HTML", () => {
+    expect(linksDeNota(CORPO_GETDEMO)).toEqual([]);
+  });
+
+  it("com os href por fora, acha o PDF e o XML — nessa ordem", () => {
+    expect(linksDeNota(CORPO_GETDEMO, HREF_GETDEMO)).toEqual(HREF_GETDEMO);
+  });
+
+  it("vale para o outro domínio do mesmo gateway", () => {
+    const zap = "https://gw-api.enotas.com.br/file/aa3e1752-461f-4be8-972e-550dbf470100/" +
+      "d16f7629-2b90-47f8-b286-761bc7550600/32f63eaa-108a-44df-9ced-7a308f0d0d00/pdf";
+    expect(linksDeNota("", [zap])).toEqual([zap]);
+  });
+
+  it("o último segmento tem de ser o formato, e o rastreio continua fora", () => {
+    // "/pdfs/" e "/pdf/algo" não são o arquivo — é caminho de portal.
+    expect(linksDeNota("", ["https://portal.exemplo.com/pdfs/relatorio"])).toEqual([]);
+    expect(linksDeNota("", ["https://track.list-manage.com/file/1/pdf"])).toEqual([]);
+    expect(linksDeNota("", ["nao-e-url/pdf", "", null as unknown as string])).toEqual([]);
+  });
+
+  it("não repete o que já veio pelo texto", () => {
+    expect(linksDeNota(`veja ${HREF_GETDEMO[0]}`, HREF_GETDEMO)).toEqual(HREF_GETDEMO);
   });
 });
 

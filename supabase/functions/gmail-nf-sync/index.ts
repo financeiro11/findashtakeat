@@ -89,10 +89,12 @@ const linkDoEmail = (id: string) => `https://mail.google.com/mail/u/0/#all/${id}
  *   1. chave de acesso (no corpo ou no nome do anexo) — identidade, com DV;
  *   2. CNPJ de terceiro + valor em reais no corpo;
  *   3. o nome do anexo dizendo que é nota/boleto/recibo;
- *   4. um LINK de documento no corpo — quem manda "Segue o Link da Nota
- *      Fiscal" está entregando a nota, só que por endereço. Sem esta prova o
- *      e-mail da Davam (que fatura a BuzzLead) era descartado como recado, e
- *      com ele a nota de nove títulos abertos.
+ *   4. um LINK de documento no corpo OU nos `href` do HTML — quem manda "Segue
+ *      o Link da Nota Fiscal" está entregando a nota, só que por endereço. Sem
+ *      esta prova o e-mail da Davam (que fatura a BuzzLead) era descartado como
+ *      recado, e com ele a nota de nove títulos abertos. Os `href` entram junto
+ *      porque num e-mail só de HTML o endereço não está no corpo limpo — ver
+ *      `hrefsDe` em `_shared/gmail.ts`.
  *   5. o QUADRO do e-mail de emissão do Omie, que é a nota escrita em texto.
  *      Ele não deixa link nem anexo, e a prova nº 2 não o alcança porque o
  *      valor vem à americana (`Valor da Nota R$ 12000.00`) — ver `lerEmailOmie`.
@@ -105,7 +107,7 @@ function ehFiscal(m: Mensagem, corpo: ReturnType<typeof lerCorpoDeEmail>): boole
   if (corpo.chave) return true;
   if (lerEmailOmie(m.corpo)) return true;
   if (corpo.cnpj && corpo.valor) return true;
-  if (linksDeNota(m.corpo).length) return true;
+  if (linksDeNota(m.corpo, m.links).length) return true;
   const nomes = m.anexos.map((a) => a.nome).join(" ");
   if (m.anexos.some((a) => chaveDeAcesso(a.nome))) return true;
   const tipo = tipoDoDocumento(`${nomes} ${m.assunto}`);
@@ -185,8 +187,10 @@ function juntar(a: Achado, corpo: ReturnType<typeof lerCorpoDeEmail>, m: Mensage
     cnpj: a.cnpj ?? corpo.cnpj ?? daChave?.cnpj ?? null,
     valor: a.valor ?? corpo.valor,
     data: a.data ?? corpo.data ?? m.data,
-    // Quem emitiu, quando o documento diz; senão quem mandou o e-mail.
-    nome: a.nome ?? m.remetente,
+    /* Quem emitiu, na ordem em que se confia: o documento (XML e DANFE trazem
+       o nome em campo próprio), depois o quadro do e-mail, e só então quem
+       mandou a mensagem — que num gateway é "Nota Gateway", não o fornecedor. */
+    nome: a.nome ?? corpo.nome ?? m.remetente,
     descricao: a.descricao ?? m.assunto,
   };
 }
@@ -383,8 +387,16 @@ Deno.serve(async (req) => {
           linhasEmail.push(base);
           linhasNota.push({
             chave: `email|${m.id}`, fonte: "email", linha: null, ordem: 1,
-            enviado_em: corpo.data ?? m.data, nome: m.remetente, cnpj: corpo.cnpj,
-            documento: null, valor: corpo.valor, valor_parcela: null, forma_pagamento: null,
+            enviado_em: corpo.data ?? m.data,
+            /* O REMETENTE NÃO É O FORNECEDOR quando a nota vem por gateway.
+               As 39 notas do eNotas entraram no acervo assinadas por "Nota
+               Gateway" e "eNotas" — GetDemo, ZapSign, ContaAzul, NALK, Hult e
+               Reportei viravam todas a mesma empresa na linha do ERP e na busca
+               por fornecedor. O nome está escrito no e-mail, colado no CNPJ. */
+            nome: corpo.nome ?? m.remetente, cnpj: corpo.cnpj,
+            /* O número da NFS-e, que o quadro escreve ("NFS-e No. 1789"). É o
+               que alguém digita para achar a nota no portal do emissor. */
+            documento: corpo.numero, valor: corpo.valor, valor_parcela: null, forma_pagamento: null,
             competencia: dadosDaChave(corpo.chave)?.competencia ?? null,
             o_que_e: m.assunto, detalhe: `${m.remetenteEmail} · sem arquivo anexado`,
             status_planilha: null, diz_anexado: false,
@@ -406,8 +418,11 @@ Deno.serve(async (req) => {
                mesmo ir atrás" virava trabalho de gente para algo que é um GET.
                A Davam (que fatura a BuzzLead) escreve "Segue o Link da Nota
                Fiscal" e o link responde 200 com PDF, sem login. Quem baixa é a
-               `nota-baixar-link`; aqui só se guarda o endereço. */
-            link_documento: linksDeNota(m.corpo)[0] ?? null,
+               `nota-baixar-link`; aqui só se guarda o endereço.
+               OS `href` VÊM JUNTO desde 28/08/2026: o e-mail do eNotas é só
+               HTML, e o endereço do PDF morria dentro da tag antes de qualquer
+               regex vê-lo. Eram 39 notas a um GET de distância. */
+            link_documento: linksDeNota(m.corpo, m.links)[0] ?? null,
             visto_em: agora, atualizado_em: agora,
           });
           continue;
@@ -464,6 +479,37 @@ Deno.serve(async (req) => {
       }
     }
 
+    /* ---------- 3.5 quem já tem arquivo não volta a ser "sem arquivo" ----------
+     *
+     * `reler` reescreve a linha inteira pela chave, e a linha sem arquivo diz
+     * `tem_arquivo = false` com o `link` apontando para a mensagem no Gmail.
+     * Numa releitura isso APAGARIA o arquivo que a `nota-baixar-link` já tinha
+     * baixado e guardado no bucket: o acervo perderia o papel sem erro nenhum,
+     * o título voltaria a dever nota, e a única pista seria o número da tela
+     * mudando sozinho. Quem já tem arquivo mantém o que tem — o que a releitura
+     * acrescenta é o `link_documento`, que é o motivo de ela existir.
+     */
+    const jaTemArquivo = new Map<string, string | null>();
+    const chavesNota = linhasNota
+      .filter((l) => l.tem_arquivo !== true)
+      .map((l) => String(l.chave));
+    for (let i = 0; i < chavesNota.length; i += 200) {
+      const { data } = await supabase.from("notas_externas")
+        .select("chave, link")
+        .in("chave", chavesNota.slice(i, i + 200))
+        .eq("tem_arquivo", true);
+      for (const r of data ?? []) jaTemArquivo.set(r.chave as string, (r.link as string) ?? null);
+    }
+    let preservadas = 0;
+    for (const l of linhasNota) {
+      if (l.tem_arquivo === true) continue;
+      const link = jaTemArquivo.get(String(l.chave));
+      if (link === undefined) continue;
+      l.tem_arquivo = true;
+      l.link = link;
+      preservadas++;
+    }
+
     /* ---------- 4. gravar ---------- */
     for (let i = 0; i < linhasEmail.length; i += 100) {
       const { error } = await supabase.from("email_mensagens")
@@ -499,6 +545,8 @@ Deno.serve(async (req) => {
     return json({
       ok: true, na_caixa: unicos.length, novos: novos.length,
       lidas, notas: comNota, sem_arquivo: semArquivo, ignoradas, falhas,
+      com_link: linhasNota.filter((l) => l.link_documento).length,
+      arquivo_preservado: preservadas,
       restante: Math.max(0, novos.length - lidas), parou_por_tempo: parou,
       casar: linhasNota.length ? "o casador das :00 e :30 pega" : "nada novo para casar",
     });

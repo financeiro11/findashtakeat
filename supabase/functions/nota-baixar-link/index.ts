@@ -19,7 +19,8 @@
 //   • o tipo vem dos BYTES, não do `content-type` — o mesmo motivo pelo qual o
 //     bucket recusou 196 XMLs em 26/08/2026.
 //
-// Body: { limite?: number, id?: number }   ·   Cron: header `x-cron-token`.
+// Body: { limite?: number, id?: number, retentar?: boolean }
+// Cron: header `x-cron-token`.
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.0";
 import { requireUser } from "../_shared/auth.ts";
@@ -44,11 +45,27 @@ const MAX_BYTES = 10 * 1024 * 1024;
 /** O worker morre aos 150 s; parar antes devolve relatório em vez de nada. */
 const ORCAMENTO_MS = 55_000;
 
-/** O nome do arquivo a partir da URL, quando ela não termina em um. */
-function nomeDoLink(url: string, tipo: string | null): string {
+/**
+ * O nome do arquivo, quando a URL não traz um.
+ *
+ * ESTE NOME NÃO É DETALHE DE BUCKET: é o que a `omie-anexar-comprovante` manda
+ * ao ERP (ela usa o último pedaço do caminho), e portanto é o que o contador lê
+ * na lista de anexos do título. O último segmento do link do eNotas é a palavra
+ * "pdf" — o arquivo virava `32461_pdf.pdf`, que não diz de quem é a nota nem
+ * qual é. Quando a URL não nomeia, quem nomeia é o que já se sabe da nota.
+ */
+function nomeDoLink(url: string, tipo: string | null, nota: { nome?: string | null; documento?: string | null }): string {
+  const ext = tipo?.includes("xml") ? "xml" : "pdf";
   const fim = (url.split("?")[0].split("/").pop() ?? "").replace(/[^\w.\- ]+/g, "_");
   if (/\.(pdf|xml)$/i.test(fim)) return fim;
-  const ext = tipo?.includes("xml") ? "xml" : "pdf";
+
+  /* O segmento é só o formato ("…/pdf") — não nomeia nada. */
+  const seguro = (s: string) => s.replace(/[^\w.\- ]+/g, " ").replace(/\s+/g, " ").trim();
+  const partes = [
+    nota.documento ? `NFSe ${seguro(String(nota.documento))}` : null,
+    nota.nome ? seguro(String(nota.nome)).slice(0, 60) : null,
+  ].filter(Boolean);
+  if (partes.length) return `${partes.join(" - ").slice(0, 90)}.${ext}`;
   return `${(fim || "nota").slice(0, 60)}.${ext}`;
 }
 
@@ -73,14 +90,29 @@ Deno.serve(async (req) => {
     const body = req.method === "POST" ? await req.json().catch(() => ({})) : {};
     const limite = Math.min(Math.max(Number(body?.limite ?? 20), 1), 60);
     const soId = Number(body?.id ?? 0) || null;
+    /* O que já falhou volta só quando alguém MANDA. Ver a guarda abaixo. */
+    const retentar = body?.retentar === true;
 
     let q = supabase
       .from("notas_externas")
-      .select("id, link_documento, nome, o_que_e, enviado_em, cnpj, valor, chave_fiscal")
+      .select("id, link_documento, nome, documento, o_que_e, enviado_em, cnpj, valor, chave_fiscal")
       .not("link_documento", "is", null)
       .eq("tem_arquivo", false)
       .is("ignorado_em", null)
       .limit(limite);
+    /* O ERRO GRAVADO TAMBÉM TEM DE SER LIDO.
+     *
+     * Ele era escrito no fim de cada falha — e a consulta nunca o consultava.
+     * Resultado medido em 28/08/2026: 23 links de portal de prefeitura (São
+     * Paulo e Barueri, que exigem sessão e devolvem `Connection reset` ou a
+     * página de login) voltavam em TODA rodada, gastavam os 55 s inteiros e
+     * empurravam para fora da fila os links que teriam funcionado. Oito
+     * rodadas seguidas com `baixadas: 0` e as mesmas 23 candidatas.
+     *
+     * Quem falhou espera alguém pedir de novo — `retentar: true`, ou o `id`
+     * direto, que é como se conserta um link específico depois de arrumar a
+     * causa. */
+    if (!retentar && !soId) q = q.is("arquivo_erro", null);
     if (soId) q = q.eq("id", soId);
     const { data: pendentes, error } = await q;
     if (error) throw error;
@@ -104,7 +136,7 @@ Deno.serve(async (req) => {
         if (tipo && !/pdf|xml/i.test(tipo)) throw new Error(`tipo inesperado (${tipo})`);
 
         const mes = String((n as any).enviado_em ?? "").slice(0, 7) || "sem-data";
-        const caminho = `link/${mes}/${(n as any).id}_${nomeDoLink(url, tipo)}`;
+        const caminho = `link/${mes}/${(n as any).id}_${nomeDoLink(url, tipo, n as any)}`;
         const { error: upErr } = await supabase.storage.from(BUCKET)
           .upload(caminho, bytes, { contentType: tipo ?? undefined, upsert: true });
         if (upErr) throw new Error(upErr.message);

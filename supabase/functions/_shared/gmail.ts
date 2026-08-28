@@ -113,6 +113,8 @@ export type Mensagem = {
   remetenteEmail: string;
   assunto: string;
   corpo: string;
+  /** os `href` do HTML, que a limpeza de tags apagaria — ver `hrefsDe` */
+  links: string[];
   anexos: Anexo[];
   rotulos: string[];
 };
@@ -173,6 +175,45 @@ const semTags = (html: string): string =>
     .replace(/\s+/g, " ")
     .trim();
 
+/**
+ * OS ENDEREÇOS QUE A LIMPEZA DO HTML APAGA.
+ *
+ * `semTags` tira a tag inteira — e o endereço mora DENTRO dela, no `href`. Num
+ * e-mail só de HTML, que é o normal de quem emite por gateway, o corpo limpo
+ * diz "Visualizar PDF - Baixar XML" e não diz para onde: quando o varredor de
+ * links chega, não há mais nada para achar. Medido em 28/08/2026:
+ * `link_documento` estava preenchido em 4 linhas de 306 no acervo, e as únicas
+ * quatro vinham do e-mail da Davam — o raro que manda `text/plain`.
+ *
+ * POR QUE NÃO BASTA DEVOLVÊ-LOS DENTRO DO `corpo`, que seria uma linha só:
+ * porque o corpo é lido por `lerCorpoDeEmail`, que procura CNPJ e valor nele.
+ * Uma URL com catorze dígitos seguidos vira CNPJ (a guarda de fronteira só
+ * recusa dígito colado em dígito, e `/file/12345678901234/` passa), e o
+ * fornecedor da nota passaria a ser uma empresa que não existe. O endereço vai
+ * por FORA, e cabe a quem lê decidir o que fazer com ele.
+ *
+ * O TETO DE 80 é contra o e-mail de marketing, que tem centenas de links. Quem
+ * separa nota de rastreio é `linksDeNota`; aqui só se recolhe.
+ */
+function hrefsDe(html: string): string[] {
+  const achados: string[] = [];
+  const vistos = new Set<string>();
+  for (const m of html.matchAll(/<a\b[^>]*?\bhref\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s">]+))/gi)) {
+    /* `&amp;` EM LAÇO, e não uma passada só: o e-mail da prefeitura de São
+       Paulo escreve `?ccm=…&amp;amp;nf=…` — a entidade codificada duas vezes.
+       Uma substituição deixa `&amp;` no meio da URL, e o servidor recebe um
+       parâmetro chamado "amp;nf". */
+    let url = (m[1] ?? m[2] ?? m[3] ?? "").trim();
+    for (let i = 0; i < 3 && /&amp;/i.test(url); i++) url = url.replace(/&amp;/gi, "&");
+    url = url.replace(/&#(\d+);/g, (_, d) => String.fromCharCode(Number(d)));
+    if (!/^https?:\/\//i.test(url) || url.length > 900 || vistos.has(url)) continue;
+    vistos.add(url);
+    achados.push(url);
+    if (achados.length >= 80) break;
+  }
+  return achados;
+}
+
 export async function mensagem(token: string, id: string): Promise<Mensagem> {
   const j = await api(token, `messages/${id}?format=full`);
   const h = (j.payload?.headers ?? []) as { name: string; value: string }[];
@@ -193,6 +234,10 @@ export async function mensagem(token: string, id: string): Promise<Mensagem> {
     assunto: cabecalho(h, "Subject"),
     // O texto puro manda; o HTML é o que sobra quando não há.
     corpo: (alvo.texto.trim() || semTags(alvo.html)).slice(0, 20_000),
+    /* Os href saem SEMPRE do HTML, mesmo quando existe texto puro: os dois
+       lados do e-mail não são obrigados a trazer os mesmos links, e o que se
+       perde aqui não volta. */
+    links: hrefsDe(alvo.html),
     anexos: alvo.anexos,
     rotulos: (j.labelIds ?? []) as string[],
   };

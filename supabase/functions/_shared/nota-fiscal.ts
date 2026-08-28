@@ -19,7 +19,7 @@
  * fosse uma nota só casaria o valor errado, então a quebra vem antes de tudo.
  *
  * GÊMEO EM DENO de `src/lib/notaFiscal.ts`, cópia verbatim (o arquivo não
- * importa nada). Quem tem teste é o original — 65 casos sobre o texto que o
+ * importa nada). Quem tem teste é o original — 80 casos sobre o texto que o
  * PRÓPRIO `unpdf` extrai das notas reais, sobre chaves de acesso conferidas
  * contra o e-mail que as trouxe, sobre nomes de arquivo da pasta do Gmail e
  * sobre corpos de e-mail copiados da caixa `financeiro@`.
@@ -593,6 +593,29 @@ function cnpjsEm(texto: string): string[] {
  * Um e-mail de cobrança é cheio de link (rastreio, descadastro, "acesse o
  * portal", logotipo), e baixar tudo encheria o bucket de HTML.
  *
+ * A EXTENSÃO PODE ESTAR NO CAMINHO, e não no fim do nome. O eNotas — o gateway
+ * por onde GetDemo, ZapSign, ContaAzul, NALK, Hult e Reportei emitem — serve a
+ * MESMA nota em dois endereços que só diferem no último segmento:
+ *
+ *   https://api.enotasgw.com.br/file/<id>/<id>/<id>/pdf   ← "Visualizar PDF"
+ *   https://api.enotasgw.com.br/file/<id>/<id>/<id>/xml   ← "Baixar XML"
+ *
+ * Não há ponto em lugar nenhum, e o caminho não diz "nota": exigir `.pdf` no
+ * fim descartava os dois. Medido em 28/08/2026: os dois respondem 200 com o
+ * documento, sem login, dois meses depois do e-mail — e eram 39 notas de seis
+ * fornecedores que o acervo contava como "sem arquivo", 14 delas com o título
+ * já casado esperando só o papel.
+ *
+ * O PDF VEM NA FRENTE porque é a ordem do e-mail ("Visualizar PDF - Baixar
+ * XML"), e é ele que alguém abre no ERP. O XML entra logo atrás e serve de
+ * segunda tentativa se o primeiro falhar.
+ *
+ * `extras` É A OUTRA METADE, e sem ela nada disto adianta. Um e-mail só de
+ * HTML — o normal de quem emite por gateway — escreve o endereço DENTRO da
+ * tag, e o varredor de texto lê "Visualizar PDF" sem ler para onde. Quem
+ * separa os `href` é `_shared/gmail.ts`, e os entrega por aqui. Medido:
+ * `link_documento` estava preenchido em 4 linhas de 306 no acervo inteiro.
+ *
  * O QUE SAI SEMPRE: o próprio Gmail (o `link` da linha já é isso) e os
  * encurtadores de rastreio, que respondem 200 para qualquer coisa e devolvem
  * uma página. `ehHtml` ainda segura no download, mas gastar a requisição para
@@ -600,15 +623,22 @@ function cnpjsEm(texto: string): string[] {
  */
 const LINK_FORA = /mail\.google\.com|googleusercontent|list-manage|sendgrid|mailchimp|hubspotlinks|doubleclick|unsubscribe|descadastr/i;
 /* O segmento tem de FECHAR: `/nfse/` vale, "conferencia" não. Sem isso "nfe"
-   casa dentro de qualquer palavra e o varredor baixa o rodapé do e-mail. */
-const LINK_DOCUMENTO = /\.(pdf|xml)(?:$|[?#])|\/(?:nfe|nfse|nfs-e|danfe|notafiscal|nota-fiscal|nota)(?:[/.?#-]|$)/i;
+   casa dentro de qualquer palavra e o varredor baixa o rodapé do e-mail.
+   `[/.]` no primeiro ramo aceita as duas grafias do formato: `nota.pdf` (o
+   nome do arquivo) e `/…/pdf` (o formato como último segmento, que é o eNotas). */
+const LINK_DOCUMENTO = /[/.](?:pdf|xml)(?:$|[?#])|\/(?:nfe|nfse|nfs-e|danfe|notafiscal|nota-fiscal|nota)(?:[/.?#-]|$)/i;
 
-export function linksDeNota(texto: string | null | undefined): string[] {
+export function linksDeNota(
+  texto: string | null | undefined,
+  extras?: readonly string[] | null,
+): string[] {
+  const doTexto = [...String(texto ?? "").matchAll(/https?:\/\/[^\s"'<>)\]]+/g)].map((m) => m[0]);
   const achados: string[] = [];
   const vistos = new Set<string>();
-  for (const m of String(texto ?? "").matchAll(/https?:\/\/[^\s"'<>)\]]+/g)) {
+  for (const bruto of [...doTexto, ...(extras ?? [])]) {
     // Pontuação de fim de frase gruda na URL quando ela fecha o parágrafo.
-    const url = m[0].replace(/[.,;:]+$/, "");
+    const url = String(bruto ?? "").trim().replace(/[.,;:]+$/, "");
+    if (!/^https?:\/\//i.test(url)) continue;
     if (url.length > 900 || vistos.has(url)) continue;
     if (LINK_FORA.test(url)) continue;
     if (!LINK_DOCUMENTO.test(url)) continue;
@@ -738,7 +768,94 @@ export type CorpoDeEmail = {
   valor: number | null;
   data: string | null;
   numero: string | null;
+  /** a razão social escrita ao lado do CNPJ do fornecedor — ver `nomeDoEmitente` */
+  nome: string | null;
 };
+
+/** Palavra que FECHA uma razão social. É ela que diz onde o nome termina. */
+const SUFIXO_SOCIETARIO = /^(?:ltda|eireli|epp|mei|me|s\/a|s\.?a\.?|inc\.?|llc)$/i;
+
+/**
+ * Rótulo do quadro — quem vem antes dele não faz parte do nome.
+ * Testado pedaço a pedaço porque o formulário escreve "Fornecedor/Prestador".
+ */
+const ROTULO_DO_QUADRO =
+  /^(?:emitente|prestador|fornecedor|cliente|tomador|remetente|destinat[áa]rio|raz[ãa]o|social|nome|cnpj|cpf|nota|fiscal|eletr[ôo]nica|nfe|nfse|nfs-?e|danfe)$/i;
+
+/** Conector não abre razão social: "da ACME LTDA" é "ACME LTDA". */
+const CONECTOR = /^(?:de|da|do|das|dos|e|a|o|em|para|pela|pelo|por|com)$/i;
+
+/**
+ * QUEM EMITIU, quando o e-mail vem por gateway.
+ *
+ * O remetente do e-mail não é o fornecedor: as 39 notas do eNotas chegaram
+ * assinadas por "Nota Gateway" e "eNotas", e era esse o nome que ia para o
+ * acervo — para a linha do ERP, para a busca por fornecedor e para quem
+ * precisa achar o título no Omie. O nome de verdade está escrito no e-mail,
+ * colado no CNPJ:
+ *
+ *   Para TAKEAT TECNOLOGIA LTDA   GETDEMO TECNOLOGIA LTDA 52.874.118/0001-42
+ *                                 └──────── isto ────────┘
+ *
+ * O NOME TERMINA NO SUFIXO SOCIETÁRIO, e é só por isso que dá para saber onde
+ * ele COMEÇA: anda-se para trás a partir do "LTDA" que fecha, e para-se no
+ * rótulo do quadro ou no sufixo do nome ANTERIOR — que é o nosso, escrito ali
+ * do lado em todo e-mail de nota. Sem esse freio, "Para TAKEAT TECNOLOGIA LTDA
+ * GETDEMO TECNOLOGIA LTDA" viraria um nome só.
+ *
+ * SEM SUFIXO, DEVOLVE NULO. Um nome errado é pior do que o remetente: ele tem
+ * cara de certo e carimba a nota com um fornecedor que não existe.
+ *
+ * O QUE ELE NÃO SABE FAZER: separar prosa do nome. "…emitida pela ACME LTDA"
+ * volta com o "emitida pela" grudado, porque nada ali diz onde a frase acaba e
+ * o nome começa. Isto foi escrito para o QUADRO — o formulário e o template de
+ * gateway, onde o nome vem depois de um rótulo ou depois do nosso —, que é de
+ * onde vêm as 39 notas que motivaram a função. Quem chama trata o resultado
+ * como palpite melhor que o remetente, não como verdade do documento: o XML e
+ * o DANFE continuam ganhando dele em `gmail-nf-sync`.
+ */
+export function nomeDoEmitente(texto: string | null | undefined, cnpj: string | null | undefined): string | null {
+  const t = String(texto ?? "").replace(/\s+/g, " ");
+  const doc = String(cnpj ?? "").replace(/\D/g, "");
+  if (!t || doc.length !== 14) return null;
+
+  // Onde ESTE CNPJ está escrito: o nome é o que vem imediatamente antes dele.
+  let pos = -1;
+  for (const m of t.matchAll(/\d{2}[.\s]?\d{3}[.\s]?\d{3}[/\s]?\d{4}[-\s]?\d{2}/g)) {
+    if (soDigitos(m[0]) === doc) { pos = m.index ?? -1; break; }
+  }
+  if (pos < 0) return null;
+
+  const antes = t.slice(Math.max(0, pos - 200), pos)
+    .replace(/\b(?:cnpj|cpf)\b\s*[:.-]?\s*$/i, "")
+    .trim();
+  const palavras = antes.split(" ").filter(Boolean);
+  const limpo = (i: number) => palavras[i].replace(/^[-–|(]+|[-–|),;:.]+$/g, "");
+
+  let fim = palavras.length - 1;
+  while (fim >= 0 && !limpo(fim)) fim--;
+  if (fim < 0 || !SUFIXO_SOCIETARIO.test(limpo(fim))) return null;
+
+  /* O bloco que fecha o nome pode ser mais de uma palavra: "LTDA - ME" é o
+     mesmo nome, e a Reportei assina exatamente assim. */
+  let bloco = fim;
+  while (bloco - 1 >= 0 && (!limpo(bloco - 1) || SUFIXO_SOCIETARIO.test(limpo(bloco - 1)))) bloco--;
+
+  let ini = bloco;
+  for (let k = bloco - 1; k >= 0 && bloco - k <= 8; k--) {
+    const p = limpo(k);
+    if (!p) continue;                                             // separador solto
+    if (p.split(/[/|]/).some((x) => ROTULO_DO_QUADRO.test(x))) break;
+    if (SUFIXO_SOCIETARIO.test(p)) break;                         // acabou o nome ANTERIOR
+    if (!/^[\p{L}\p{N}&.,'/-]+$/u.test(p)) break;
+    ini = k;
+  }
+  while (ini < bloco && CONECTOR.test(limpo(ini))) ini++;
+  if (ini >= bloco) return null;                                  // só sufixo, sem nome
+
+  const nome = palavras.slice(ini, fim + 1).join(" ").replace(/^[\s,;-]+|[\s,;-]+$/g, "");
+  return nome.length >= 4 ? nome.slice(0, 120) : null;
+}
 
 /**
  * O CORPO DO E-MAIL — a fonte que o depósito de anexos no Drive nunca teve.
@@ -802,6 +919,9 @@ export function lerCorpoDeEmail(texto: string | null | undefined, cnpjProprio: s
     valor,
     data,
     numero: numero ?? daChave?.numero ?? null,
+    /* Só o nome escrito ao lado DESTE CNPJ. O da chave de acesso não serve
+       aqui: a chave prova quem emitiu, mas não escreve o nome em lugar nenhum. */
+    nome: nomeDoEmitente(t, cnpj),
   };
 }
 

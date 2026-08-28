@@ -69,9 +69,26 @@ const EXT_OK = /\.(pdf|xml|jpe?g|png|webp)$/i;
  * qualquer jeito; se o nome tiver os 44 dígitos com DV válido, é nota e entra —
  * a mesma inversão que `_shared/nota-fiscal.ts` já faz para o Bling, que despeja
  * um MD5 como nome de arquivo.
+ *
+ * O SUFIXO NÃO É HEXADECIMAL, e exigir que fosse deixava o furo aberto. A regra
+ * era `[0-9a-f]*`, e o Outlook não numera: ele sorteia. Medido em 28/08/2026,
+ * ainda vivas no acervo, 24 linhas com R$ 3.928 de valor fantasma herdado do
+ * corpo — `outlook-zy0juylv.png`, `outlook-rhhv4kdy.png`, `outlook-a blue
+ * squ….png`. Nenhuma delas casa com `[0-9a-f]*`; a do meio nem sem espaço é.
+ *
+ * SÃO DUAS LISTAS, E A SEPARAÇÃO IMPORTA. `outlook`, `inline`, `signature` e
+ * `image001` são nomes que a MÁQUINA inventa — depois deles pode vir qualquer
+ * coisa, inclusive espaço, porque ninguém escolheu aquilo. `logo`, `assinatura`
+ * e `banner` são palavras que GENTE escreve, e aí o nome tem de terminar ali:
+ * "Imagem da nota 12345.jpg" é a foto de um documento de verdade, e afogá-la
+ * junto com a assinatura seria trocar um erro pelo seu contrário.
  */
-const DECORACAO = /^(image|imagem|logo(tipo|marca)?|assinatura|signature|outlook|inline)[-_ ]?[0-9a-f]*\.(jpe?g|png|webp|gif)$/i;
-const ehDecoracao = (nome: string) => DECORACAO.test(nome.trim()) && !chaveDeAcesso(nome);
+const DECORACAO_AUTO = /^(outlook|inline|signature|oledata|image0*\d+|imagem0*\d+)[-_ ]?[\w.\- ]*\.(jpe?g|png|webp|gif|emz|wmz)$/i;
+const DECORACAO_NOME = /^(logo(tipo|marca)?|assinatura|banner|icone?)\d*\.(jpe?g|png|webp|gif)$/i;
+const ehDecoracao = (nome: string) => {
+  const n = nome.trim();
+  return (DECORACAO_AUTO.test(n) || DECORACAO_NOME.test(n)) && !chaveDeAcesso(n);
+};
 
 /** O link que abre a mensagem na caixa — serve quando não há arquivo nenhum. */
 const linkDoEmail = (id: string) => `https://mail.google.com/mail/u/0/#all/${id}`;
@@ -98,16 +115,47 @@ const linkDoEmail = (id: string) => `https://mail.google.com/mail/u/0/#all/${id}
  *   5. o QUADRO do e-mail de emissão do Omie, que é a nota escrita em texto.
  *      Ele não deixa link nem anexo, e a prova nº 2 não o alcança porque o
  *      valor vem à americana (`Valor da Nota R$ 12000.00`) — ver `lerEmailOmie`.
+ *   6. um anexo `.xml`. Ver `temXml` logo abaixo.
  *
  * Sem nenhuma delas, a mensagem fica registrada em `email_mensagens` com
  * `fiscal = false` — visível, e fora da auditoria. Registrar o descarte é o que
  * permite descobrir, depois, o fornecedor cujo formato ninguém previu.
  */
+
+/**
+ * UM ANEXO `.xml` JÁ É MOTIVO PARA ABRIR A MENSAGEM.
+ *
+ * A conta de luz da EDP chega assim, todo mês, com dois anexos:
+ *
+ *   ESCEFATELBT08_00000000026855605451_0000004070A.pdf
+ *   ESCEFATELBT08_256003120341.xml      ← a NF-e de energia, em campo próprio
+ *
+ * E as cinco provas acima erravam TODAS: o assunto é "EDP - FATURAS" (e
+ * `tipoDoDocumento` não conhece "fatura", de propósito — ver o cabeçalho dela);
+ * os nomes de arquivo são código interno, sem chave de acesso com DV; o corpo
+ * escreve "Valor 160,19" sem "R$" e sem CNPJ de terceiro. Resultado medido em
+ * 28/08/2026: 13 mensagens da EDP, TODAS com XML dentro, TODAS descartadas como
+ * não fiscais — e o XML é justamente o melhor documento que esta esteira recebe,
+ * o único onde CNPJ, valor, data e chave vêm sem OCR e sem palpite.
+ *
+ * A GUARDA É QUE A DECISÃO NÃO É AQUI. Esta prova só diz "vale a pena abrir";
+ * quem classifica é `lerAnexo`, que roda `lerXmlFiscal` no conteúdo. XML que não
+ * for documento fiscal volta como `tipo: "outro"`, `parece_nota = false`, e fica
+ * fora da fila do ERP sozinho. O custo de errar é um download; o de não abrir é
+ * a nota que ninguém acha.
+ *
+ * Medido no mesmo dia, em todo o descarte com anexo: só a EDP tem XML — 13 de
+ * 13. Não é uma porta larga, é a porta certa.
+ */
+const temXml = (m: Mensagem): boolean =>
+  m.anexos.some((a) => /\.xml$/i.test(a.nome) || a.mime.includes("xml"));
+
 function ehFiscal(m: Mensagem, corpo: ReturnType<typeof lerCorpoDeEmail>): boolean {
   if (corpo.chave) return true;
   if (lerEmailOmie(m.corpo)) return true;
   if (corpo.cnpj && corpo.valor) return true;
   if (linksDeNota(m.corpo, m.links).length) return true;
+  if (temXml(m)) return true;
   const nomes = m.anexos.map((a) => a.nome).join(" ");
   if (m.anexos.some((a) => chaveDeAcesso(a.nome))) return true;
   const tipo = tipoDoDocumento(`${nomes} ${m.assunto}`);
@@ -453,7 +501,21 @@ Deno.serve(async (req) => {
           if (erroUp) throw new Error(`storage: ${erroUp.message}`);
 
           linhasNota.push({
-            chave: `email|${m.id}|${a.id.slice(0, 24)}`, fonte: "email",
+            /* A CHAVE NÃO PODE SAIR DO `attachmentId`, e isso foi medido em
+             * 28/08/2026: ele NÃO é estável entre chamadas. A mesma mensagem
+             * lida duas vezes devolve ids diferentes para o mesmo anexo, e como
+             * a chave era feita dele, cada releitura inseria uma linha nova em
+             * vez de atualizar a que existia. Nove releituras dos e-mails da EDP
+             * geraram oito cópias de cada conta de luz; no acervo inteiro eram
+             * 210 linhas a mais em 1.276.
+             *
+             * O que É estável: o id da MENSAGEM (imutável no Gmail) e a POSIÇÃO
+             * do anexo dentro dela — a árvore MIME de uma mensagem entregue não
+             * muda. Uma nota de rodapé para quem for mexer aqui: mudar este
+             * formato de novo órfã tudo que já foi gravado, e a linha órfã não
+             * some sozinha; a migração `20260828…_chave_anexo_estavel` fez a
+             * ponte do formato antigo para este. */
+            chave: `email|${m.id}|${ordem + 1}`, fonte: "email",
             linha: null, ordem: ordem + 1,
             enviado_em: achado.data, nome: achado.nome ?? m.remetente, cnpj: achado.cnpj,
             documento: null, valor: achado.valor, valor_parcela: null, forma_pagamento: null,

@@ -463,6 +463,30 @@ export function lerNomeDeArquivo(nome: string | null | undefined): NomeDeArquivo
   };
 }
 
+/**
+ * Os dois dígitos verificadores do CNPJ — módulo 11, pesos 2..9 ciclando.
+ *
+ * Serve para o mesmo que `chaveValida` serve à chave de acesso: separar um
+ * número que É identidade de uma corrida de dígitos que só tem o comprimento
+ * certo. Um número de instalação da concessionária tem catorze dígitos e não
+ * fecha o DV; um CNPJ fecha.
+ */
+export function cnpjValido(bruto: string | null | undefined): boolean {
+  const c = String(bruto ?? "").replace(/\D/g, "");
+  if (c.length !== 14 || /^(\d)\1{13}$/.test(c)) return false;
+  const dv = (ate: number): number => {
+    let soma = 0;
+    let peso = 2;
+    for (let i = ate - 1; i >= 0; i--) {
+      soma += Number(c[i]) * peso;
+      peso = peso === 9 ? 2 : peso + 1;
+    }
+    const r = soma % 11;
+    return r < 2 ? 0 : 11 - r;
+  };
+  return dv(12) === Number(c[12]) && dv(13) === Number(c[13]);
+}
+
 export type XmlFiscal = {
   emitente: string | null;
   cnpj: string | null;
@@ -504,12 +528,30 @@ const bloco = (xml: string, ...nomes: string[]): string => {
  *
  * ATENÇÃO AO SEPARADOR: no XML o valor é sempre "2135.74", ponto decimal. Ler
  * como pt-BR faria R$ 2.135,74 virar R$ 213.574,00.
+ *
+ * A LISTA DE RAÍZES ERA A PORTA, E ELA ESTAVA FECHADA DEMAIS.
+ *
+ * Existem mais modelos fiscais do que NF-e e NFS-e, e cada um tem sua própria
+ * tag de topo: a conta de luz é NF3e (modelo 66), o transporte é CT-e, a
+ * telefonia é NFCom. A conta da EDP chega todo mês em
+ * `ESCEFATELBT08_256003120341.xml` — e era recusada na primeira linha, antes de
+ * qualquer campo ser lido, porque o nome da raiz dela não estava na lista.
+ *
+ * Enumerar modelos é uma corrida que não se ganha: o próximo fornecedor traz o
+ * próximo. O que NÃO muda entre eles são os campos, que a SEFAZ padronizou —
+ * `emit`, `CNPJ`, `xNome`, `vNF`, `dhEmi` — e a chave de acesso de 44 dígitos
+ * com dígito verificador. Então a porta passa a ser: é XML, e no fim saiu ou um
+ * CNPJ de terceiro ou uma chave válida. Sem nenhum dos dois, devolve nulo como
+ * antes — um `pom.xml` continua não sendo nota.
+ *
+ * A CHAVE É PROCURADA NO DOCUMENTO INTEIRO (até 20 KB) e não só nos primeiros
+ * 4 KB: fora da NF-e ela não fica no atributo `Id` do começo.
  */
 export function lerXmlFiscal(texto: string | null | undefined, cnpjProprio?: string): XmlFiscal | null {
   const xml = String(texto ?? "");
-  if (!/<\s*(?:\w+:)?(?:nfe|NFe|infNFe|CompNfse|Nfse|InfNfse|nfeProc)/i.test(xml)) return null;
+  if (!/<\s*(?:\w+:)?[A-Za-z]/.test(xml)) return null;
 
-  const chave = chaveDeAcesso((xml.match(/Id\s*=\s*"[^"]*"/i)?.[0] ?? "") + " " + xml.slice(0, 4000));
+  const chave = chaveDeAcesso((xml.match(/Id\s*=\s*"[^"]*"/i)?.[0] ?? "") + " " + xml.slice(0, 20_000));
 
   // NF-e: o emitente é `emit`; o `dest` somos nós.
   const emit = bloco(xml, "emit", "PrestadorServico", "Prestador");
@@ -517,11 +559,18 @@ export function lerXmlFiscal(texto: string | null | undefined, cnpjProprio?: str
   if (cnpj.length !== 14) cnpj = "";
   const emitente = emit ? tag(emit, "xNome", "RazaoSocial", "xFant", "NomeFantasia") : null;
 
-  // Genérico: o primeiro CNPJ que não é o nosso. Vale para o XML municipal que
-  // não usa nenhum dos nomes conhecidos.
+  /* Genérico: o primeiro CNPJ que não é o nosso. Vale para o XML municipal que
+     não usa nenhum dos nomes conhecidos.
+     O DÍGITO VERIFICADOR VIROU OBRIGATÓRIO AQUI. Enquanto a porta de entrada
+     era a lista de raízes, este laço só via XML de nota; agora ele vê qualquer
+     XML, e uma corrida de catorze dígitos existe aos montes — código de barras,
+     número de instalação, protocolo. Um CNPJ inventado é o pior resultado
+     possível: ele casa a nota com um fornecedor que não existe, e faz isso com
+     cara de certeza. `<CNPJ>` de tag continua valendo sem conferência: ali quem
+     escreveu foi o emissor, e é campo, não coincidência. */
   if (!cnpj && cnpjProprio) {
     for (const m of xml.matchAll(/\b\d{14}\b/g)) {
-      if (m[0] !== cnpjProprio) { cnpj = m[0]; break; }
+      if (m[0] !== cnpjProprio && cnpjValido(m[0])) { cnpj = m[0]; break; }
     }
   }
 
@@ -535,6 +584,13 @@ export function lerXmlFiscal(texto: string | null | undefined, cnpjProprio?: str
   const numero = tag(xml, "nNF", "Numero", "NumeroNfse");
 
   const daChave = dadosDaChave(chave);
+
+  /* A PORTA DE SAÍDA, agora que a de entrada abriu: sem CNPJ de terceiro e sem
+     chave válida, não se sabe de quem é o papel — e um XML anônimo no acervo é
+     ruído, não nota. Devolver nulo aqui deixa quem chamou seguir para o nome do
+     arquivo, que é o que ele já fazia antes. */
+  if (!cnpj && !daChave) return null;
+
   return {
     emitente: emitente ?? null,
     cnpj: cnpj || daChave?.cnpj || null,

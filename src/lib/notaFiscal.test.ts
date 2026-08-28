@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   chaveDeAcesso, chaveNfse, chaveValida, dadosDaChave, descricaoDaNota, lerCorpoDeEmail,
   ehAvisoDeCobranca, lerDanfes, lerEmailOmie, lerNomeDeArquivo, lerXmlFiscal, linksDeNota,
-  nomeDoEmitente,
+  nomeDoEmitente, cnpjValido,
   tipoDoDocumento, valorComMoeda,
 } from "@/lib/notaFiscal";
 
@@ -353,6 +353,48 @@ describe("XML fiscal", () => {
     expect(lerXmlFiscal("<html><body>oi</body></html>")).toBeNull();
     expect(lerXmlFiscal("")).toBeNull();
     expect(lerXmlFiscal(null)).toBeNull();
+  });
+
+  /* A RAIZ NÃO É MAIS A PORTA.
+   *
+   * Existem mais modelos do que NF-e e NFS-e: a conta de luz é NF3e (modelo 66),
+   * o transporte é CT-e, a telefonia é NFCom. Enumerar raízes é uma corrida que
+   * não se ganha; os CAMPOS da SEFAZ, esses, se repetem. */
+  const XML_NF3E = `<?xml version="1.0"?>
+<nf3eProc versao="1.00"><NF3e><infNF3e Id="NF3e${FRACALOSSI}" versao="1.00">
+<ide><mod>66</mod><nNF>4070</nNF><dhEmi>2026-08-27T00:00:00-03:00</dhEmi></ide>
+<emit><CNPJ>27250919000190</CNPJ><xNome>EDP ESPIRITO SANTO DISTRIBUICAO DE ENERGIA SA</xNome></emit>
+<dest><CNPJ>37511891000150</CNPJ></dest>
+<total><vNF>4085.19</vNF></total>
+</infNF3e></NF3e></nf3eProc>`;
+
+  it("lê o modelo que a lista de raízes não previa", () => {
+    const x = lerXmlFiscal(XML_NF3E, "37511891000150")!;
+    expect(x.cnpj).toBe("27250919000190");
+    expect(x.emitente).toBe("EDP ESPIRITO SANTO DISTRIBUICAO DE ENERGIA SA");
+    expect(x.valor).toBe(4085.19);
+    expect(x.data).toBe("2026-08-27");
+    expect(x.chave).toBe(FRACALOSSI);
+  });
+
+  it("XML sem identidade nenhuma continua fora — abrir a porta não é aceitar tudo", () => {
+    // Configuração, não documento: nenhum CNPJ, nenhuma chave.
+    expect(lerXmlFiscal(`<project><modelVersion>4.0.0</modelVersion></project>`, "37511891000150"))
+      .toBeNull();
+    // Catorze dígitos que não são CNPJ: número de instalação da concessionária.
+    expect(lerXmlFiscal(`<fatura><instalacao>00000000268556</instalacao></fatura>`, "37511891000150"))
+      .toBeNull();
+    // Só o NOSSO CNPJ não faz de ninguém fornecedor.
+    expect(lerXmlFiscal(`<doc><CNPJ>37511891000150</CNPJ></doc>`, "37511891000150")).toBeNull();
+  });
+
+  it("o dígito verificador é o que separa CNPJ de corrida de dígitos", () => {
+    expect(cnpjValido("27250919000190")).toBe(true);
+    expect(cnpjValido("37.511.891/0001-50")).toBe(true);
+    expect(cnpjValido("00000000268556")).toBe(false);
+    expect(cnpjValido("11111111111111")).toBe(false);
+    expect(cnpjValido("2725091900019")).toBe(false);
+    expect(cnpjValido(null)).toBe(false);
   });
 });
 

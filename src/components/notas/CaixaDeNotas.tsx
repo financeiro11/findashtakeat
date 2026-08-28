@@ -64,6 +64,16 @@ type LinhaCaixa = {
   estado: Estado;
 };
 
+/** O balanço de uma leva, congelado no instante em que ela parou de andar. */
+type Desfecho = {
+  quando: string;
+  /** Quantos arquivos a pessoa mandou, contando os que a porta recusou. */
+  pedidos: number;
+  linhas: LinhaCaixa[];
+  recusados: { nome: string; erro: string }[];
+  contagem: Map<Estado, number>;
+};
+
 const ESTADO: Record<Estado, { rotulo: string; ajuda: string; tom: string; ordem: number }> = {
   sem_dono: {
     rotulo: "Sem dono", ordem: 1,
@@ -202,12 +212,34 @@ export function CaixaDeNotas() {
   const [arrastando, setArrastando] = useState(false);
   const [mostrarEmail, setMostrarEmail] = useState(false);
   const [abrindo, setAbrindo] = useState<number | null>(null);
+  const [falhou, setFalhou] = useState<string | null>(null);
+  /* A leva EM ANDAMENTO (o que acabou de ser jogado aqui) e o BALANÇO dela, já
+     congelado. São dois estados e não um porque a pergunta muda: enquanto anda,
+     a tela precisa saber quais linhas observar; depois que para, precisa de uma
+     foto que não se desfaça quando a lista seguir mudando por outros motivos. */
+  const [leva, setLeva] = useState<{ ids: number[]; recusados: { nome: string; erro: string }[] } | null>(null);
+  const [desfecho, setDesfecho] = useState<Desfecho | null>(null);
   const entrada = useRef<HTMLInputElement>(null);
 
-  const ler = useCallback(async () => {
-    const { data, error } = await sb.rpc("caixa_notas_lista", { p_dias: 7, p_limite: 200 });
-    if (error) { toast.error(`Não deu para ler a caixa: ${error.message}`); return; }
-    setLinhas((data as LinhaCaixa[]) ?? []);
+  /* NÃO GRITA QUANDO FALHA. Esta leitura roda sozinha em segundo plano; um
+     `toast.error` aqui vira um erro vermelho a cada volta do relógio, e foi
+     assim que uma subida que DEU CERTO — onze arquivos gravados, a leitura
+     andando — apareceu na tela como se não tivesse funcionado. A falha vira uma
+     tarja discreta, e as linhas que já estavam continuam onde estavam. */
+  const ler = useCallback(async (): Promise<boolean> => {
+    /* O `catch` segura a queda de rede, que NÃO volta como `error` e sim como
+       exceção: sem ele, uma falha dessas rebentaria o relógio lá embaixo e a
+       tela ficaria parada para sempre sem dizer nada. */
+    try {
+      const { data, error } = await sb.rpc("caixa_notas_lista", { p_dias: 7, p_limite: 200 });
+      if (error) { setFalhou(error.message); return false; }
+      setFalhou(null);
+      setLinhas((data as LinhaCaixa[]) ?? []);
+      return true;
+    } catch (e: any) {
+      setFalhou(e?.message ?? String(e));
+      return false;
+    }
   }, []);
 
   useEffect(() => { void ler(); }, [ler]);
@@ -215,19 +247,39 @@ export function CaixaDeNotas() {
   /* ENQUANTO HOUVER "LENDO", RELÊ SOZINHA. A leitura por IA leva ~25s por
      arquivo e a pessoa fica olhando a tela — sem isto ela apertaria F5 para
      descobrir se acabou. Para quando não há mais nada em movimento, porque um
-     `setInterval` eterno numa aba aberta o dia todo é uma chamada por minuto
-     para sempre. */
+     relógio eterno numa aba aberta o dia todo é uma chamada por minuto para
+     sempre.
+     UMA DE CADA VEZ, E ESPERANDO MAIS A CADA TROPEÇO. Com `setInterval` de 6s a
+     tela dispara a próxima leitura sem saber se a anterior voltou: em 28/08/2026
+     onze notas entrando puseram chamadas de 2,4s em fila de 6 em 6 segundos, em
+     cima do casador que leva ~25s, e o banco parou de aceitar conexão. O relógio
+     agora só começa quando a resposta chega, e a espera dobra até um minuto
+     enquanto der erro — insistir no mesmo ritmo é o que mantém o banco apertado. */
   const emMovimento = (linhas ?? []).some((l) => l.estado === "lendo" || l.estado === "subindo");
   useEffect(() => {
     if (!emMovimento) return;
-    const t = setInterval(() => void ler(), 6000);
-    return () => clearInterval(t);
+    let vivo = true;
+    let espera = 8000;
+    let relogio: ReturnType<typeof setTimeout>;
+    const daquiA = (ms: number) => { relogio = setTimeout(volta, ms); };
+    const volta = async () => {
+      const ok = await ler();
+      if (!vivo) return;
+      espera = ok ? 8000 : Math.min(espera * 2, 60000);
+      daquiA(espera);
+    };
+    daquiA(espera);
+    return () => { vivo = false; clearTimeout(relogio); };
   }, [emMovimento, ler]);
 
   async function enviar(arquivos: File[]) {
     const bons = arquivos.filter((f) => f.size > 0);
     if (!bons.length) return;
     setSubindo({ feitos: 0, total: bons.length });
+    setDesfecho(null);
+
+    const ids: number[] = [];
+    const recusados: { nome: string; erro: string }[] = [];
 
     /* EM LEVAS, e em série. Um POST com vinte PDF em base64 passa dos limites do
        gateway; e o servidor lê os arquivos na mesma chamada, então mandar tudo
@@ -243,17 +295,70 @@ export function CaixaDeNotas() {
         const r = await invocar<any>(sb.functions.invoke("nota-caixa", {
           body: { action: "subir", arquivos: payload },
         }));
-        for (const ruim of r?.recusados ?? []) toast.error(`${ruim.nome}: ${ruim.erro}`);
+        for (const ruim of r?.recusados ?? []) recusados.push(ruim);
+        for (const ok of r?.aceitos ?? []) ids.push(Number(ok.id));
         setSubindo({ feitos: Math.min(i + leva.length, bons.length), total: bons.length });
         await ler();
       } catch (e: any) {
+        recusados.push({ nome: `${leva.length} arquivo(s) desta leva`, erro: String(e?.message ?? e) });
         toast.error(`Não deu para enviar: ${e?.message ?? e}`);
         break;
       }
     }
     setSubindo(null);
+    /* O RECUSADO NÃO VIRA MAIS SÓ UM TOAST. Ele some em cinco segundos, e quem
+       jogou doze arquivos e saiu para o café volta sem saber que dois foram
+       rejeitados na porta. Agora ele entra no balanço, que fica na tela. */
+    setLeva({ ids, recusados });
     void ler();
   }
+
+  /* ---------------- QUANDO A ESTEIRA PARA, ALGUÉM TEM DE AVISAR ----------------
+   *
+   * Pedido de 28/08/2026: *"depois que terminar a análise da caixa, tem que ter
+   * uma forma do resultado ser avisado. Quando termina eu não sei se foi aceito,
+   * se deu erro, para onde foi..."*
+   *
+   * A tela mostrava o estado de cada linha o tempo todo e mesmo assim não
+   * respondia a pergunta, porque a pergunta é sobre a LEVA — "os doze que eu
+   * joguei, em que deram?" — e a lista mistura essas doze com o que entrou por
+   * e-mail nos últimos sete dias. Ler o desfecho ali é contar linha por linha.
+   *
+   * PAROU quando nenhuma das linhas desta leva está mais `lendo` nem `subindo`.
+   * Só esses dois estados andam sozinhos; `sem_dono` e `esperando` esperam
+   * gente, e `no_omie`/`nao_deu` são finais. A leitura por IA leva ~25s por
+   * arquivo e a rodada do servidor corta em 80s, então doze arquivos terminam
+   * pelo cron de 5 em 5 minutos — muito depois de a pessoa ter olhado para
+   * outra coisa. Por isso o balanço FICA na tela em vez de ser um toast.
+   *
+   * A foto é congelada (`desfecho`): a lista continua viva e mudando, e um
+   * resumo que se recalculasse sozinho deixaria de descrever a leva assim que a
+   * primeira nota fosse apontada na mão. */
+  useEffect(() => {
+    if (!leva || !linhas) return;
+    const daLeva = linhas.filter((l) => leva.ids.includes(l.id));
+    // Ainda chegando na lista: `enviar` relê, mas a linha pode demorar uma volta.
+    if (leva.ids.length && !daLeva.length) return;
+    if (daLeva.some((l) => l.estado === "lendo" || l.estado === "subindo")) return;
+
+    const contagem = new Map<Estado, number>();
+    for (const l of daLeva) contagem.set(l.estado, (contagem.get(l.estado) ?? 0) + 1);
+    setDesfecho({
+      quando: new Date().toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" }),
+      pedidos: leva.ids.length + leva.recusados.length,
+      linhas: daLeva,
+      recusados: leva.recusados,
+      contagem,
+    });
+    setLeva(null);
+
+    const noOmie = contagem.get("no_omie") ?? 0;
+    const pedeGente = (contagem.get("sem_dono") ?? 0) + (contagem.get("esperando") ?? 0);
+    const ruins = (contagem.get("nao_deu") ?? 0) + leva.recusados.length;
+    if (ruins && !noOmie && !pedeGente) toast.error("A leva terminou sem nenhuma nota aproveitada.");
+    else if (pedeGente) toast.warning(`Leva pronta: ${pedeGente} ${pedeGente === 1 ? "nota espera" : "notas esperam"} você.`);
+    else toast.success(`Leva pronta: ${noOmie} no Omie.`);
+  }, [leva, linhas]);
 
   async function apontar(id: number, cod: number) {
     const { data, error } = await sb.rpc("caixa_nota_apontar", { p_id: id, p_cod_titulo: cod });
@@ -352,6 +457,8 @@ export function CaixaDeNotas() {
         )}
       </div>
 
+      {desfecho && <BalancoDaLeva d={desfecho} aoFechar={() => setDesfecho(null)} />}
+
       {/* ------------------------- o que está nela ------------------------- */}
       <div className="card-surface p-4">
         <div className="flex flex-wrap items-center justify-between gap-3">
@@ -367,7 +474,9 @@ export function CaixaDeNotas() {
               ))}
             {!visiveis.length && (
               <span className="text-[12.5px] text-muted-foreground">
-                A caixa está vazia. Jogue os arquivos aí em cima.
+                {falhou
+                  ? "Ainda não deu para mostrar o que está na caixa."
+                  : "A caixa está vazia. Jogue os arquivos aí em cima."}
               </span>
             )}
           </div>
@@ -376,6 +485,21 @@ export function CaixaDeNotas() {
             mostrar o que entrou por e-mail ({doEmail.length} em 7 dias)
           </label>
         </div>
+
+        {/* A TARJA, E NÃO O ERRO VERMELHO. O que quebrou foi a LEITURA da lista —
+            o arquivo já está no bucket e a esteira anda com esta aba fechada.
+            Dizer "não deu para subir" seria mentira, e é a mentira que faz
+            alguém jogar os mesmos onze arquivos de novo. */}
+        {falhou && (
+          <p className="mt-2 flex items-start gap-1.5 rounded border border-amber-500/30 bg-amber-500/10 px-2 py-1.5 text-[11.5px] text-amber-800 dark:text-amber-300">
+            <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+            <span>
+              Não deu para atualizar a lista agora ({falhou}). <b>O que você jogou
+              está guardado</b> — a leitura e o envio ao Omie seguem sozinhos. A tela
+              tenta de novo em instantes.
+            </span>
+          </p>
+        )}
 
         <div className="mt-3 divide-y divide-border">
           {visiveis.map((l) => {
@@ -467,6 +591,100 @@ export function CaixaDeNotas() {
           valor e data pedem um clique. A IA aqui só TRANSCREVE o papel: ela nunca escolhe
           o título.
         </p>
+      </div>
+    </div>
+  );
+}
+
+/* ============================ o balanço da leva ============================
+ *
+ * O QUE ACONTECEU COM O QUE VOCÊ ACABOU DE JOGAR AQUI — e só com isso.
+ *
+ * A lista lá embaixo mistura esta leva com sete dias de e-mail, e responder
+ * "em que deram os doze?" ali é contar linha por linha. Aqui os doze estão
+ * separados, agrupados pelo que cada um exige de gente.
+ *
+ * A ORDEM É A DA DÍVIDA, e não a do estado: primeiro o que espera VOCÊ, depois
+ * o que deu errado, e por último o que andou sozinho. Um balanço que abre pelas
+ * boas notícias faz a pessoa fechar antes de chegar no trabalho que sobrou.
+ */
+function BalancoDaLeva({ d, aoFechar }: { d: Desfecho; aoFechar: () => void }) {
+  const doEstado = (e: Estado) => d.linhas.filter((l) => l.estado === e);
+  const noOmie = doEstado("no_omie").length;
+  const grupos: { chave: string; rotulo: string; tom: string; itens: { nome: string; nota: string }[] }[] = [
+    {
+      chave: "sem_dono", rotulo: "Sem dono — aponte o lançamento", tom: ESTADO.sem_dono.tom,
+      itens: doEstado("sem_dono").map((l) => ({
+        nome: l.arquivo,
+        nota: [l.nome, l.cnpj ? formatarDoc(l.cnpj) : null, l.valor != null ? brlStr(Number(l.valor)) : null]
+          .filter(Boolean).join(" · ") || "nada foi extraído do papel",
+      })),
+    },
+    {
+      chave: "esperando", rotulo: "Achou — falta seu clique", tom: ESTADO.esperando.tom,
+      itens: doEstado("esperando").map((l) => ({
+        nome: l.arquivo,
+        nota: `casou com ${l.alvo_favorecido ?? `título ${l.alvo_id_unico}`}`
+          + (l.alvo_valor != null ? ` · ${brlStr(Number(l.alvo_valor))}` : ""),
+      })),
+    },
+    {
+      chave: "nao_deu", rotulo: "Não deu para ler", tom: ESTADO.nao_deu.tom,
+      itens: doEstado("nao_deu").map((l) => ({
+        nome: l.arquivo, nota: l.leitura_erro || "a leitura não tirou nada do arquivo",
+      })),
+    },
+    {
+      chave: "recusado", rotulo: "Nem entrou", tom: ESTADO.nao_deu.tom,
+      itens: d.recusados.map((r) => ({ nome: r.nome, nota: r.erro })),
+    },
+    {
+      chave: "no_omie", rotulo: "Anexadas no Omie", tom: ESTADO.no_omie.tom,
+      itens: doEstado("no_omie").map((l) => ({
+        nome: l.arquivo,
+        nota: `no título ${l.alvo_id_unico ?? "?"}`
+          + (l.alvo_favorecido ? ` · ${l.alvo_favorecido}` : ""),
+      })),
+    },
+  ].filter((g) => g.itens.length);
+
+  return (
+    <div className="card-surface p-4">
+      <div className="flex flex-wrap items-baseline justify-between gap-2">
+        <div className="min-w-0">
+          <h4 className="flex items-center gap-1.5 text-[13.5px] font-semibold">
+            <CheckCircle2 className="h-4 w-4 text-emerald-600" />
+            A leva das {d.quando} terminou
+          </h4>
+          <p className="mt-0.5 text-[12px] text-muted-foreground">
+            {d.pedidos} {d.pedidos === 1 ? "arquivo enviado" : "arquivos enviados"} ·{" "}
+            {noOmie} {noOmie === 1 ? "já no Omie" : "já no Omie"}
+            {d.linhas.some((l) => l.estado === "sem_dono" || l.estado === "esperando")
+              ? " · o que está em amarelo abaixo espera você, e as linhas com o gesto estão logo adiante"
+              : ""}
+          </p>
+        </div>
+        <button className="ghost-icone shrink-0" onClick={aoFechar} title="Fechar o balanço">
+          <X className="h-4 w-4" />
+        </button>
+      </div>
+
+      <div className="mt-3 space-y-2.5">
+        {grupos.map((g) => (
+          <div key={g.chave}>
+            <span className={cn("inline-block rounded border px-1.5 py-0.5 text-[11px]", g.tom)}>
+              {g.itens.length} · {g.rotulo}
+            </span>
+            <ul className="mt-1 space-y-0.5">
+              {g.itens.map((it, i) => (
+                <li key={`${it.nome}|${i}`} className="flex flex-wrap items-baseline gap-x-1.5 text-[11.5px]">
+                  <span className="min-w-0 max-w-md truncate font-medium">{it.nome}</span>
+                  <span className="text-muted-foreground">{it.nota}</span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        ))}
       </div>
     </div>
   );

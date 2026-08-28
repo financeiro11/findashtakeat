@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import ReactMarkdown from "react-markdown";
-import { ChevronLeft, ChevronRight, RefreshCw, Loader2, Sparkles, BarChart3, Clock, ListChecks } from "lucide-react";
+import { ChevronLeft, ChevronRight, RefreshCw, Loader2, Sparkles, BarChart3, Clock, ListChecks, Repeat } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { supabase } from "@/integrations/supabase/client";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
+import { NATUREZA_COR, corDaArea } from "@/lib/tarefas/classificacao";
 
 // A skill "analise-tarefas-semana" (rodada em chat, via Supabase MCP) lê a tabela
 // resumo_tarefas_semana e traduz o payload numérico em leitura executiva. Esta tela só
@@ -17,14 +18,19 @@ import { cn } from "@/lib/utils";
 
 type Natureza = "Operacional" | "Estratégico" | "Automação" | string;
 
-interface PorNatureza { natureza: Natureza; n: number; lead_mediana: number; peso_medio: number; }
-interface PorArea { area: string; n: number; lead_mediana: number; peso_medio: number; }
-interface PorPessoa { pessoa: string; n: number; peso_total: number; }
-interface TopItem { titulo: string; pessoa: string; area: string; lead_dias: number; peso?: number; }
-interface Recorrente { familia: string; n: number; }
+interface PorNatureza { natureza: Natureza; n: number; lead_mediana: number; peso_medio: number; rotinas?: number; }
+interface PorArea { area: string; n: number; lead_mediana: number; peso_medio: number; rotinas?: number; peso_rotina?: number; }
+interface PorPessoa { pessoa: string; n: number; peso_total: number; rotinas?: number; }
+interface TopItem { titulo: string; pessoa: string; area: string; lead_dias: number; peso?: number; rotina?: boolean; }
+interface Recorrente { familia: string; n: number; peso_total?: number; area?: string; }
 
 interface Payload {
-  totais: { concluidas: number; lead_mediana: number; pct_operacional: number; pct_estrategico: number; pct_automacao: number };
+  /* `pct_rotina` e companhia só existem em semanas recalculadas depois de
+     27/08/2026 — as anteriores foram gravadas antes de a coluna existir. Por
+     isso são opcionais: a tela mostra o bloco de rotina só quando ele foi
+     medido, em vez de desenhar "0%" para uma semana que nunca contou. */
+  totais: { concluidas: number; lead_mediana: number; pct_operacional: number; pct_estrategico: number; pct_automacao: number;
+            pct_rotina?: number; rotinas?: number; peso_rotina?: number; peso_total?: number };
   por_natureza: PorNatureza[];
   por_area: PorArea[];
   por_pessoa: PorPessoa[];
@@ -44,12 +50,9 @@ interface Semana {
   leitura_gerado_em: string | null;
 }
 
-const NATUREZA_COLOR: Record<string, string> = {
-  "Operacional": "#3b82f6",
-  "Estratégico": "#8b5cf6",
-  "Automação": "#22c55e",
-};
-const AREA_PALETTE = ["#3b82f6", "#14b8a6", "#8b5cf6", "#22c55e", "#f59e0b", "#f43f5e", "#64748b", "#0ea5e9"];
+/* As cores vêm de @/lib/tarefas/classificacao — as mesmas que o card do quadro
+   usa no ponto ao lado da área. Quando a paleta morava aqui, a mesma área tinha
+   uma cor no Kanban e outra no gráfico, e o olho tinha de reler o rótulo. */
 
 function fmtCurta(iso: string): string {
   const [y, m, d] = iso.split("-");
@@ -207,8 +210,10 @@ export function AnaliseSemanal() {
         </div>
       ) : (
         <>
-          {/* Stats + mix */}
-          <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
+          {/* Stats + mix. Quatro colunas no telão porque o card de rotina entrou
+              ao lado dos outros três — em md eles quebram de dois em dois, e o
+              mix (que é o mais largo) fica com uma fileira inteira. */}
+          <div className="grid grid-cols-1 gap-3 md:grid-cols-2 lg:grid-cols-4">
             <StatCard icon={ListChecks} label="Tarefas concluídas" value={String(p.totais.concluidas)} />
             <StatCard
               icon={Clock}
@@ -216,17 +221,34 @@ export function AnaliseSemanal() {
               value={`${p.totais.lead_mediana}d`}
               hint="tempo aberto no board — sinal de arrasto, não de esforço"
             />
+            {/* O eixo que faltava. "Operacional 70%" não decide nada; "70%
+                operacional, e metade disso é rotina que volta todo mês" aponta
+                para o que automatizar. Mostra o PESO, e não só a contagem: é ele
+                que ordena a fila lá embaixo. */}
+            {p.totais.pct_rotina != null && (
+              <StatCard
+                icon={Repeat}
+                label="Rotina"
+                value={`${p.totais.pct_rotina}%`}
+                hint={
+                  p.totais.rotinas != null && p.totais.peso_rotina != null && p.totais.peso_total
+                    ? `${p.totais.rotinas} tarefa${p.totais.rotinas === 1 ? "" : "s"} que volta sozinha · `
+                      + `${Math.round((p.totais.peso_rotina / p.totais.peso_total) * 100)}% do esforço da semana`
+                    : "trabalho que volta sozinho toda semana/mês"
+                }
+              />
+            )}
             <div className="card-surface p-4">
               <div className="eyebrow mb-2">Mix por natureza</div>
               <div className="flex h-2.5 w-full overflow-hidden rounded-full bg-muted">
                 {mix.map((m) => (
-                  <div key={m.natureza} style={{ width: `${m.pct}%`, background: NATUREZA_COLOR[m.natureza] ?? "#64748b" }} />
+                  <div key={m.natureza} style={{ width: `${m.pct}%`, background: NATUREZA_COR[m.natureza] ?? "#64748b" }} />
                 ))}
               </div>
               <div className="mt-2.5 flex flex-wrap gap-x-4 gap-y-1">
                 {mix.map((m) => (
                   <span key={m.natureza} className="flex items-center gap-1.5 text-[11.5px] text-muted-foreground">
-                    <span className="h-2 w-2 rounded-full" style={{ background: NATUREZA_COLOR[m.natureza] ?? "#64748b" }} />
+                    <span className="h-2 w-2 rounded-full" style={{ background: NATUREZA_COR[m.natureza] ?? "#64748b" }} />
                     {m.natureza} <span className="num font-medium text-foreground">{m.pct}%</span>
                   </span>
                 ))}
@@ -239,12 +261,14 @@ export function AnaliseSemanal() {
             <div className="card-surface p-4">
               <div className="eyebrow mb-3">Por área</div>
               <BarList
-                items={p.por_area.map((a, i) => ({
+                items={p.por_area.map((a) => ({
                   key: a.area,
                   label: a.area,
-                  sub: `${a.n} tarefa${a.n === 1 ? "" : "s"} · lead mediana ${a.lead_mediana}d`,
+                  sub: a.rotinas
+                    ? `${a.n} tarefa${a.n === 1 ? "" : "s"} · ${a.rotinas} de rotina · lead ${a.lead_mediana}d`
+                    : `${a.n} tarefa${a.n === 1 ? "" : "s"} · lead mediana ${a.lead_mediana}d`,
                   value: a.n,
-                  color: AREA_PALETTE[i % AREA_PALETTE.length],
+                  color: corDaArea(a.area),
                 }))}
               />
             </div>
@@ -275,16 +299,40 @@ export function AnaliseSemanal() {
             <TopList title="Mais complexas (peso estimado)" items={p.top_pesadas} metric="peso" />
           </div>
 
-          {/* Recorrentes */}
+          {/* Fila de automação — o que se repetiu, em ordem de custo.
+              Era "Recorrentes na semana": uma nuvem de chips que dizia o QUE
+              voltou, mas não em que ordem mexer. Ordenar por peso somado é o que
+              transforma a lista em fila: quatro execuções leves custam menos que
+              duas pesadas, e é o custo que decide o que vale automatizar. */}
           {p.recorrentes.length > 0 && (
             <div className="card-surface p-4">
-              <div className="eyebrow mb-3">Recorrentes na semana</div>
-              <div className="flex flex-wrap gap-2">
+              <div className="mb-1 flex items-baseline justify-between gap-3">
+                <div className="eyebrow">Fila de automação</div>
+                <span className="text-[11px] text-muted-foreground">
+                  o que voltou nesta semana, do mais caro para o mais barato
+                </span>
+              </div>
+              <div className="mt-3 space-y-2">
                 {p.recorrentes.map((r) => (
-                  <span key={r.familia} className="inline-flex items-center gap-1.5 rounded-full border border-border bg-muted/40 px-3 py-1 text-[12px] text-foreground">
-                    {r.familia || "(sem título)"}
-                    <span className="num rounded-full bg-primary/15 px-1.5 text-[10.5px] font-semibold text-primary">{r.n}×</span>
-                  </span>
+                  <div key={r.familia} className="flex items-center justify-between gap-3 rounded-md border border-border/70 px-3 py-2">
+                    <div className="flex min-w-0 items-center gap-2">
+                      {r.area && (
+                        <span className="h-2 w-2 shrink-0 rounded-full" style={{ background: corDaArea(r.area) }} />
+                      )}
+                      <span className="truncate text-[12.5px] font-medium text-foreground">
+                        {r.familia || "(sem título)"}
+                      </span>
+                      {r.area && <span className="shrink-0 text-[11px] text-muted-foreground">{r.area}</span>}
+                    </div>
+                    <div className="flex shrink-0 items-center gap-2">
+                      <span className="num rounded-full bg-primary/15 px-1.5 text-[10.5px] font-semibold text-primary">{r.n}×</span>
+                      {r.peso_total != null && (
+                        <span className="num rounded-md bg-violet-50 px-2 py-1 text-[12px] font-semibold text-violet-700 dark:bg-violet-500/15 dark:text-violet-400">
+                          {r.peso_total}
+                        </span>
+                      )}
+                    </div>
+                  </div>
                 ))}
               </div>
             </div>

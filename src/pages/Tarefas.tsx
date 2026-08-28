@@ -3,7 +3,7 @@ import { useSearchParams } from "react-router-dom";
 import {
   Plus, Trash2, ChevronDown, ChevronRight, Filter, X, LayoutGrid,
   Table as TableIcon, AlertTriangle, MoreHorizontal,
-  Search, GripVertical, Pencil, Palette, Check, CheckCircle2, Clock, ListChecks, Target, BarChart3, History, Pause, Zap,
+  Search, GripVertical, Pencil, Palette, Check, CheckCircle2, Clock, ListChecks, Target, BarChart3, History, Pause, Zap, Tags,
 } from "lucide-react";
 import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger,
@@ -37,6 +37,8 @@ import { AnaliseSemanal } from "@/components/tarefas/AnaliseSemanal";
 import { HistoricoTarefas } from "@/components/tarefas/HistoricoTarefas";
 import { calcIdade, explicaIdade } from "@/lib/tarefas/idade";
 import { comparaPrioridade } from "@/lib/tarefas/prioridade";
+import { AREAS, AREA_NAO_CLASSIFICADA, corDaArea, rotuloClassificacao } from "@/lib/tarefas/classificacao";
+import { RevisaoClassificacao } from "@/components/tarefas/RevisaoClassificacao";
 
 export type { Subtarefa } from "@/components/tarefas/TaskDialog";
 const COLUMNS_CFG_KEY = "tarefas.columns.cfg.v1";
@@ -57,6 +59,7 @@ type FiltrosSalvos = {
   view: "kanban" | "tabela" | "analise" | "historico";
   periodo: string;
   prio: string;
+  area: string;
   resp: string;
   atrasadas: boolean;
   fStatus: string[];
@@ -68,6 +71,7 @@ const FILTROS_PADRAO: FiltrosSalvos = {
   view: "kanban",
   periodo: "mes",
   prio: "",
+  area: "",
   resp: "",
   atrasadas: false,
   fStatus: [],
@@ -89,6 +93,7 @@ function loadFiltros(): FiltrosSalvos {
       view: VIEWS_VALIDAS.includes(p.view as string) ? (p.view as FiltrosSalvos["view"]) : FILTROS_PADRAO.view,
       periodo: PERIODOS_VALIDOS.includes(p.periodo as string) ? (p.periodo as string) : FILTROS_PADRAO.periodo,
       prio: PRIO_OPTS.includes(p.prio as string) ? (p.prio as string) : "",
+      area: (AREAS as readonly string[]).includes(p.area as string) ? (p.area as string) : "",
       resp: RESPONSAVEIS.includes(p.resp as string) ? (p.resp as string) : "",
       atrasadas: p.atrasadas === true,
       fStatus: lista(p.fStatus),
@@ -224,6 +229,12 @@ function describeChanges(old: Tarefa, patch: Partial<Tarefa>): string {
     parts.push(`título: "${old.titulo}" → "${patch.titulo}"`);
   if ("observacao" in patch && (patch.observacao ?? "") !== (old.observacao ?? ""))
     parts.push("editou a observação");
+  if ("cat_area" in patch && (patch.cat_area ?? "") !== (old.cat_area ?? ""))
+    parts.push(`área: ${old.cat_area || "—"} → ${patch.cat_area || "—"}`);
+  if ("cat_natureza" in patch && (patch.cat_natureza ?? "") !== (old.cat_natureza ?? ""))
+    parts.push(`natureza: ${old.cat_natureza || "—"} → ${patch.cat_natureza || "—"}`);
+  if ("rotina" in patch && !!patch.rotina !== !!old.rotina)
+    parts.push(patch.rotina ? "marcou como rotina" : "deixou de ser rotina");
   if ("subtarefas" in patch) {
     const oldSubs = old.subtarefas || [];
     const newSubs = (patch.subtarefas as Subtarefa[]) || [];
@@ -269,6 +280,16 @@ function tagsFor(t: Tarefa): { label: string; cls: string }[] {
     tags.push({ label: "RPA", cls: "bg-destructive/15 text-destructive" });
   }
   return tags;
+}
+
+/* A área vai como um ponto colorido + texto miúdo no rodapé do card, e não como
+   mais um chip lá em cima: os chips já ocupam uma linha inteira, e a área não é
+   urgente de ler — ela existe para dar o mesmo nome à coisa no card e no gráfico
+   da aba Análise. "Outros" não aparece: nomear o que não foi classificado só
+   gasta pixel. */
+function areaVisivel(t: Tarefa): string | null {
+  const a = t.cat_area;
+  return a && a !== AREA_NAO_CLASSIFICADA ? a : null;
 }
 
 // Extrai "evento" da observação ("Evento: XXX") ou do título "Recarga de viagem - {evento}"
@@ -340,6 +361,7 @@ export default function Tarefas() {
   const [concluidoCollapsed, setConcluidoCollapsed] = useState(true);
   const [editing, setEditing] = useState<Tarefa | null>(null);
   const [creating, setCreating] = useState(false);
+  const [revisando, setRevisando] = useState(false);
   const [creatingStatus, setCreatingStatus] = useState<string>("Backlog");
   const [colsCfg, setColsCfg] = useState<ColumnsCfg>(() => loadColumnsCfg());
   const COLUMNS = colsCfg.order;
@@ -496,6 +518,7 @@ export default function Tarefas() {
 
   // Filtros chips topo
   const [chipPrio, setChipPrio] = useState<string>(filtrosIniciais.prio);
+  const [chipArea, setChipArea] = useState<string>(filtrosIniciais.area);
   const [chipResp, setChipResp] = useState<string>(filtrosIniciais.resp);
   const [chipAtrasadas, setChipAtrasadas] = useState(filtrosIniciais.atrasadas);
   const [chipPeriodo, setChipPeriodo] = useState<string>(filtrosIniciais.periodo); // "", "mes", "3m", "ano"
@@ -511,11 +534,11 @@ export default function Tarefas() {
   useEffect(() => {
     try {
       localStorage.setItem(FILTROS_KEY, JSON.stringify({
-        view, periodo: chipPeriodo, prio: chipPrio, resp: chipResp,
+        view, periodo: chipPeriodo, prio: chipPrio, area: chipArea, resp: chipResp,
         atrasadas: chipAtrasadas, fStatus, fPrioridade, fResponsavel,
       } satisfies FiltrosSalvos));
     } catch { /* modo privado */ }
-  }, [view, chipPeriodo, chipPrio, chipResp, chipAtrasadas, fStatus, fPrioridade, fResponsavel]);
+  }, [view, chipPeriodo, chipPrio, chipArea, chipResp, chipAtrasadas, fStatus, fPrioridade, fResponsavel]);
 
   const load = async () => {
     // Arquivada continua no banco (o histórico aponta para ela), mas fora do Kanban.
@@ -562,8 +585,15 @@ export default function Tarefas() {
   const filteredBase = useMemo(() => {
     const q = search.trim().toLowerCase();
     return rows.filter(r => {
-      if (q && !r.titulo.toLowerCase().includes(q) && !(r.responsavel || "").toLowerCase().includes(q)) return false;
+      /* A classificação entra no que a busca varre porque ela está ESCRITA no
+         card: procurar por "Tesouraria" e não achar a linha que exibe a palavra
+         "Tesouraria" é a busca contradizendo a tela. */
+      if (q
+        && !r.titulo.toLowerCase().includes(q)
+        && !(r.responsavel || "").toLowerCase().includes(q)
+        && !rotuloClassificacao(r).toLowerCase().includes(q)) return false;
       if (chipPrio && r.prioridade !== chipPrio) return false;
+      if (chipArea && (r.cat_area || AREA_NAO_CLASSIFICADA) !== chipArea) return false;
       if (chipResp && normalizeResp(r.responsavel) !== chipResp) return false;
       if (chipAtrasadas && !isAtrasada(r)) return false;
       if (!periodoMatch(r)) return false;
@@ -573,7 +603,7 @@ export default function Tarefas() {
        duas abas da mesma página. `filter` já devolveu um array novo, então o
        `sort` não mexe em `rows`. */
     }).sort(comparaPrioridade);
-  }, [rows, search, chipPrio, chipResp, chipAtrasadas, chipPeriodo]);
+  }, [rows, search, chipPrio, chipArea, chipResp, chipAtrasadas, chipPeriodo]);
 
   const filteredTable = useMemo(() => filteredBase.filter(r => {
     if (fStatus.length && !fStatus.includes(r.status)) return false;
@@ -587,13 +617,27 @@ export default function Tarefas() {
   const baseForCounts = useMemo(() => {
     const q = search.trim().toLowerCase();
     return rows.filter(r => {
-      if (q && !r.titulo.toLowerCase().includes(q) && !(r.responsavel || "").toLowerCase().includes(q)) return false;
+      /* A classificação entra no que a busca varre porque ela está ESCRITA no
+         card: procurar por "Tesouraria" e não achar a linha que exibe a palavra
+         "Tesouraria" é a busca contradizendo a tela. */
+      if (q
+        && !r.titulo.toLowerCase().includes(q)
+        && !(r.responsavel || "").toLowerCase().includes(q)
+        && !rotuloClassificacao(r).toLowerCase().includes(q)) return false;
       if (chipPrio && r.prioridade !== chipPrio) return false;
+      if (chipArea && (r.cat_area || AREA_NAO_CLASSIFICADA) !== chipArea) return false;
       if (chipResp && normalizeResp(r.responsavel) !== chipResp) return false;
       if (!periodoMatch(r)) return false;
       return true;
     });
-  }, [rows, search, chipPrio, chipResp, chipPeriodo]);
+  }, [rows, search, chipPrio, chipArea, chipResp, chipPeriodo]);
+
+  /* Quantas ainda esperam classificação — a fila que o botão "sem área" abre. */
+  const semArea = useMemo(
+    () => rows.filter(r => (r.cat_origem ?? "auto") !== "manual"
+      && (!r.cat_area || r.cat_area === AREA_NAO_CLASSIFICADA)).length,
+    [rows],
+  );
 
   const total = baseForCounts.length;
   const emAnd = baseForCounts.filter(r => ["Em andamento", "Acompanhamento", "Revisão", "Tasks - RPA"].includes(r.status)).length;
@@ -682,6 +726,18 @@ export default function Tarefas() {
       status, prioridade: t.prioridade || "Média",
       prazo: t.prazo, observacao: t.observacao || null,
       subtarefas: (t.subtarefas || []) as any,
+      /* Só vai o que a pessoa escolheu no diálogo. Omitir os campos é o que deixa
+         o gatilho `fn_tarefa_autoclassifica` carimbar pelo título — mandar
+         `cat_area: null` explicitamente daria no mesmo, mas mandar "" não: o
+         gatilho só preenche o que está NULO. */
+      ...(t.cat_origem === "manual"
+        ? {
+            cat_natureza: t.cat_natureza || null,
+            cat_area: t.cat_area || null,
+            rotina: !!t.rotina,
+            cat_origem: "manual",
+          }
+        : {}),
     }).select("id").single();
     if (error) toast.error(error.message);
     else {
@@ -761,6 +817,12 @@ export default function Tarefas() {
               onChange={setChipPrio}
             />
             <ChipSelect
+              label="Todas as áreas"
+              value={chipArea}
+              options={AREAS as unknown as string[]}
+              onChange={setChipArea}
+            />
+            <ChipSelect
               label="Todos responsáveis"
               value={chipResp}
               options={responsaveis}
@@ -778,6 +840,21 @@ export default function Tarefas() {
               <AlertTriangle className="h-3 w-3" />
               Atrasadas ({atras})
             </button>
+            {/* Só aparece quando há o que revisar. Um botão permanente dizendo
+                "0 sem área" seria ruído fixo; assim, o botão sumir É o sinal de
+                que o quadro está classificado. Conta sobre `rows` (o quadro
+                inteiro), e não sobre o filtrado: a fila de revisão não muda
+                porque alguém filtrou por responsável. */}
+            {semArea > 0 && (
+              <button
+                onClick={() => setRevisando(true)}
+                className="flex items-center gap-1.5 rounded-md border border-border bg-card px-2.5 py-1 text-xs text-muted-foreground transition-colors hover:border-primary/40 hover:text-foreground"
+                title="Classificar as tarefas que o carimbo automático não conseguiu ler pelo título"
+              >
+                <Tags className="h-3 w-3" />
+                {semArea} sem área
+              </button>
+            )}
           </>
         )}
         <div className="ml-auto flex items-center gap-0.5 rounded-md border-2 border-destructive bg-destructive p-0.5 shadow-sm">
@@ -851,6 +928,13 @@ export default function Tarefas() {
       ) : (
         <HistoricoTarefas />
       )}
+
+      <RevisaoClassificacao
+        open={revisando}
+        tarefas={rows}
+        onClose={() => setRevisando(false)}
+        onAplicado={load}
+      />
 
       <TaskDialog
         columns={COLUMNS}
@@ -1186,6 +1270,7 @@ function KanbanCard({ t, bar, onClick, onRemove }: { t: Tarefa; bar: string; onC
   const subsDone = t.subtarefas?.filter(s => s.done).length || 0;
   const showProgress = subsTotal > 0;
   const auto = ehAutomacao(t);
+  const area = areaVisivel(t);
 
   return (
     <div
@@ -1235,6 +1320,21 @@ function KanbanCard({ t, bar, onClick, onRemove }: { t: Tarefa; bar: string; onC
           <div className="h-1 w-full overflow-hidden rounded-full bg-secondary">
             <div className={cn("h-full rounded-full transition-all", progressBarColor(progress))} style={{ width: `${progress}%` }} />
           </div>
+        </div>
+      )}
+
+      {area && (
+        <div className="flex items-center gap-1.5 text-[10px] text-muted-foreground">
+          <span className="h-1.5 w-1.5 shrink-0 rounded-full" style={{ background: corDaArea(area) }} />
+          <span className="truncate">{area}</span>
+          {t.rotina && (
+            <span
+              className="ml-auto shrink-0 rounded bg-secondary px-1 py-px text-[9px] font-semibold uppercase tracking-wider text-muted-foreground"
+              title="Rotina: volta sozinha toda semana/mês — entra na fila de automação"
+            >
+              rotina
+            </span>
+          )}
         </div>
       )}
 

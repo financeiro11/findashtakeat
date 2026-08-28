@@ -12,6 +12,7 @@ import {
 } from "@/components/ui/dialog";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
+import { AREAS, NATUREZAS } from "@/lib/tarefas/classificacao";
 
 /* Tipos e helpers de Tarefas compartilhados entre a página Tarefas e o Briefing. */
 export type Subtarefa = {
@@ -30,6 +31,13 @@ export type Tarefa = {
      A conta em si mora em src/lib/tarefas/idade.ts. */
   status_desde?: string | null;
   pausado_ms?: number | null;
+  /* Classificação. O gatilho no banco carimba pelo título; quando alguém mexe
+     aqui, `cat_origem` vira "manual" e o gatilho não encosta mais nessa linha.
+     Opcionais pelo mesmo motivo dos campos de idade. */
+  cat_natureza?: string | null;
+  cat_area?: string | null;
+  cat_origem?: string | null;
+  rotina?: boolean | null;
   subtarefas: Subtarefa[];
 };
 
@@ -71,6 +79,14 @@ export function TaskDialog({ columns, open, tarefa, defaultStatus, onClose, onSa
   const [prioridade, setPrioridade] = useState("Média");
   const [prazo, setPrazo] = useState("");
   const [observacao, setObservacao] = useState("");
+  const [natureza, setNatureza] = useState<string>("");
+  const [area, setArea] = useState<string>("");
+  const [rotina, setRotina] = useState(false);
+  /* Só marca `cat_origem: "manual"` se a pessoa realmente mexeu na classificação.
+     Sem isso, abrir uma tarefa para trocar o prazo e salvar congelaria o carimbo
+     automático dela para sempre — e o backfill de uma revisão de vocabulário
+     futura passaria por cima sem tocar justamente nas mais mexidas. */
+  const [classifTocada, setClassifTocada] = useState(false);
   const [subtarefas, setSubtarefas] = useState<Subtarefa[]>([]);
   const [newSubTitle, setNewSubTitle] = useState("");
   const [newSubResp, setNewSubResp] = useState("");
@@ -89,6 +105,10 @@ export function TaskDialog({ columns, open, tarefa, defaultStatus, onClose, onSa
       setPrioridade(tarefa?.prioridade || "Média");
       setPrazo(tarefa?.prazo || "");
       setObservacao(tarefa?.observacao || "");
+      setNatureza(tarefa?.cat_natureza || "");
+      setArea(tarefa?.cat_area || "");
+      setRotina(!!tarefa?.rotina);
+      setClassifTocada(false);
       setSubtarefas(tarefa?.subtarefas ? [...tarefa.subtarefas] : []);
       setNewSubTitle("");
       setNewSubResp("");
@@ -141,6 +161,8 @@ export function TaskDialog({ columns, open, tarefa, defaultStatus, onClose, onSa
   const encerraArrasto = () => { setDragId(null); setOverId(null); setGrabId(null); };
   const dragIdx = dragId ? subtarefas.findIndex(s => s.id === dragId) : -1;
 
+  const origemAtual = tarefa?.cat_origem ?? "auto";
+
   const subsDone = subtarefas.filter(s => s.done).length;
   const subsProgress = subtarefas.length ? Math.round((subsDone / subtarefas.length) * 100) : 0;
 
@@ -160,6 +182,17 @@ export function TaskDialog({ columns, open, tarefa, defaultStatus, onClose, onSa
       prazo: prazo || null,
       observacao: observacao || null,
       subtarefas,
+      /* Numa tarefa NOVA os três campos vão vazios de propósito: quem carimba é o
+         gatilho, a partir do título, e mandar `cat_natureza: null` é exatamente o
+         que ele espera para preencher. Só vai valor daqui se a pessoa escolheu. */
+      ...(classifTocada
+        ? {
+            cat_natureza: natureza || null,
+            cat_area: area || null,
+            rotina,
+            cat_origem: "manual",
+          }
+        : {}),
     });
   };
 
@@ -221,6 +254,63 @@ export function TaskDialog({ columns, open, tarefa, defaultStatus, onClose, onSa
               </Select>
             </div>
           </div>
+          {/* Classificação. Fica recolhida numa moldura discreta porque não é o
+              que se preenche ao criar — o gatilho carimba sozinho pelo título, e
+              este bloco existe para CORRIGIR quando ele erra. Mexer aqui é o que
+              faz a aba Análise parar de mentir. */}
+          <div className="space-y-2 rounded-md border border-border p-3">
+            <div className="flex items-center justify-between">
+              <Label className="text-sm font-semibold">Classificação</Label>
+              <span className="text-[11px] text-muted-foreground">
+                {classifTocada
+                  ? "corrigida à mão — o carimbo automático não mexe mais"
+                  : origemAtual === "manual"
+                    ? "corrigida à mão anteriormente"
+                    : "carimbada pelo título"}
+              </span>
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <Label className="text-xs text-muted-foreground">Natureza</Label>
+                <Select
+                  value={natureza || "__none"}
+                  onValueChange={(v) => { setNatureza(v === "__none" ? "" : v); setClassifTocada(true); }}
+                >
+                  <SelectTrigger className="h-8 text-xs"><SelectValue placeholder="—" /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="__none">—</SelectItem>
+                    {NATUREZAS.map(n => <SelectItem key={n} value={n}>{n}</SelectItem>)}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div>
+                <Label className="text-xs text-muted-foreground">Área</Label>
+                <Select
+                  value={area || "__none"}
+                  onValueChange={(v) => { setArea(v === "__none" ? "" : v); setClassifTocada(true); }}
+                >
+                  <SelectTrigger className="h-8 text-xs"><SelectValue placeholder="—" /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="__none">—</SelectItem>
+                    {AREAS.map(a => <SelectItem key={a} value={a}>{a}</SelectItem>)}
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+            <label className="flex cursor-pointer items-start gap-2 pt-1">
+              <Checkbox
+                checked={rotina}
+                onCheckedChange={(c) => { setRotina(c === true); setClassifTocada(true); }}
+                className="mt-0.5"
+              />
+              <span className="text-xs">
+                <span className="font-medium text-foreground">É rotina</span>
+                <span className="text-muted-foreground"> — volta sozinha toda semana/mês. É o que a
+                Análise soma para montar a fila de automação em ordem de custo.</span>
+              </span>
+            </label>
+          </div>
+
           <div>
             <Label>Observação</Label>
             <textarea

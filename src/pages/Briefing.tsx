@@ -9,10 +9,11 @@ import { useAuth } from "@/hooks/useAuth";
 import { Link } from "react-router-dom";
 import { TaskDialog, DEFAULT_COLUMNS, type Tarefa } from "@/components/tarefas/TaskDialog";
 import { NovidadesResumo } from "@/components/briefing/NovidadesResumo";
+import { PainelNoticias } from "@/components/briefing/PainelNoticias";
 import { conciliarPagamentos, descreverTitulo, type Conciliacao, type Situacao, type TituloOmie } from "@/lib/pagamentos";
 import {
   Sparkles, RefreshCw, Loader2, CalendarDays, AlertTriangle, Mail,
-  ArrowRight, Newspaper, CalendarClock, ListChecks, CheckCircle2, Pencil, Wallet,
+  ArrowRight, CalendarClock, ListChecks, CheckCircle2, Pencil, Wallet,
 } from "lucide-react";
 
 /* ============================================================================
@@ -560,28 +561,31 @@ function BriefingView({ b, vm, tarefas, meNome, titulosOmie, erroOmie, onAtualiz
           Some sozinho quando não houve mudança nenhuma — ver NovidadesResumo. */}
       <NovidadesResumo />
 
+      {/* ---------------- Notícias ----------------
+          FORA do `temEstruturado`: os itens vêm da função `briefing-noticias`,
+          que roda no cron e não depende de a skill ter rodado. Se dependesse, o
+          painel sumiria justamente na manhã em que a skill falhou — que é
+          quando ele é a única coisa nova da tela. A prosa da skill (macro e
+          setor) entra como rodapé quando existe. */}
+      <PainelNoticias
+        janela={vm.janelaNoticias}
+        prosa={vm.temas.length > 0 ? (
+          <div className="space-y-4">
+            {vm.temas.map((t, i) => (
+              <div key={i} className="border-l-2 border-sky-500/60 pl-3">
+                <div className="mb-0.5 text-[10.5px] font-bold uppercase tracking-wider text-muted-foreground/80">{t.titulo}</div>
+                <div className="text-[12.5px] leading-relaxed text-foreground [&_a]:text-primary [&_a]:underline-offset-2 hover:[&_a]:underline">
+                  <ReactMarkdown components={mdComponents}>{t.resumo}</ReactMarkdown>
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : undefined}
+      />
+
       {/* ---------------- Agenda + coluna lateral ---------------- */}
       {vm.temEstruturado ? (
         <>
-          {/* ---------------- Notícias ---------------- */}
-          {vm.temas.length > 0 && (
-            <SectionCard
-              title={<span className="flex items-center gap-2"><Newspaper className="h-4 w-4 text-muted-foreground" /> Notícias</span>}
-              subtitle={vm.janelaNoticias ? `janela ${vm.janelaNoticias}` : undefined}
-            >
-              <div className="space-y-4">
-                {vm.temas.map((t, i) => (
-                  <div key={i} className="border-l-2 border-sky-500/60 pl-3">
-                    <div className="mb-0.5 text-[10.5px] font-bold uppercase tracking-wider text-muted-foreground/80">{t.titulo}</div>
-                    <div className="text-[12.5px] leading-relaxed text-foreground [&_a]:text-primary [&_a]:underline-offset-2 hover:[&_a]:underline">
-                      <ReactMarkdown components={mdComponents}>{t.resumo}</ReactMarkdown>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </SectionCard>
-          )}
-
           <div className="grid grid-cols-1 gap-3 lg:grid-cols-3">
             {/* Agenda */}
             <div className="lg:col-span-2">

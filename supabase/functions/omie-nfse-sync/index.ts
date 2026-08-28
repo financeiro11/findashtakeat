@@ -157,14 +157,38 @@ const mensagemDoOmie = (e: unknown): string =>
 
 /* ------------------------------- espelhar -------------------------------- */
 
-/** Todas as OS, paginadas. `ListarOS` só aceita `pagina`/`registros_por_pagina`. */
-async function listarOS(): Promise<any[]> {
+/* Todas as OS, paginadas.
+ *
+ * CUIDADO — ESTA FUNÇÃO CUSTA O ACERVO INTEIRO, NÃO O TRABALHO DO DIA. São 500 OS
+ * por página, e ela roda de 2 a 4 vezes por rodada de emissão (`limparCorredor` e
+ * `ocupantesDaEtapa`) mais uma no espelho. Com 1.287 OS são 3 páginas e ninguém
+ * sente; o custo dobra sozinho a cada poucos meses porque cresce com o total de
+ * OS já criadas. O teto de 40 páginas (20.000 OS) TRUNCA EM SILÊNCIO — e a trava
+ * de raio, que é o que impede faturar OS de terceiro, ficaria cega.
+ *
+ * O comentário que estava aqui dizia que `ListarOS` só aceita paginação. ESTÁ
+ * ERRADO — sondado em 28/08/2026 (`action: "sondar_listaros"`): `filtrar_por_etapa`
+ * funciona (etapa 50 → 523 OS, etapa 60 → 763, etapa 20 → vazia, e a primeira OS
+ * de cada resposta traz a etapa pedida), e `filtrar_por_data_de` também
+ * (1.287 → 81). `etapa` solto é recusado como tag inválida, que é o controle.
+ *
+ * Quem só precisa saber quem está NUMA etapa deve passar `etapa` e pagar
+ * O(ocupantes) em vez de O(acervo). */
+async function listarOS(opts: { etapa?: string } = {}): Promise<any[]> {
   const out: any[] = [];
   let pagina = 1, totalPaginas = 1;
   do {
     const r = await omieCall<any>("servicos/os", "ListarOS", {
       pagina, registros_por_pagina: 500, apenas_importado_api: "N",
+      ...(opts.etapa ? { filtrar_por_etapa: opts.etapa } : {}),
+    }).catch((e) => {
+      /* Etapa vazia não é erro: o Omie responde "Não existem registros para a
+         página [1]!" quando o filtro não casa com nada, e para o corredor de
+         isolamento vazio essa é a resposta BOA — a mais comum, aliás. */
+      if (opts.etapa && /não existem registros|nao existem registros/i.test(mensagemDoOmie(e))) return null;
+      throw e;
     });
+    if (!r) break;
     out.push(...(r?.osCadastro ?? []));
     totalPaginas = Number(r?.total_de_paginas ?? 1);
     pagina++;
@@ -2479,6 +2503,44 @@ Deno.serve(async (req) => {
         ? body.alvos.map((a: any) => [String(a?.[0] ?? ""), String(a?.[1] ?? "")] as [string, string])
         : [];
       return json({ ok: true, metodos: await sondarMetodos(extras) });
+    }
+
+    /* SONDA DE PARÂMETROS DO `ListarOS` — leitura pura, e a pergunta que ela
+     * responde vale a esteira inteira.
+     *
+     * `listarOS()` varre TODAS as OS (500 por página, teto de 40 páginas) e roda
+     * 2 a 4 vezes por rodada de emissão. Com 1.287 OS são 3 páginas e ninguém
+     * sente; o custo cresce com o ACERVO, não com o trabalho do dia, então ele
+     * dobra sozinho a cada poucos meses. Se o Omie aceitar um filtro por etapa,
+     * a varredura vira O(ocupantes do corredor) e o problema desaparece.
+     *
+     * Como se prova sem confiar na documentação: compara-se `total_de_registros`
+     * do filtrado com o do cru. Parâmetro ignorado devolve o mesmo total. */
+    if (action === "sondar_listaros") {
+      const base = { pagina: 1, registros_por_pagina: 1, apenas_importado_api: "N" };
+      const testes: Array<[string, Record<string, unknown>]> = [
+        ["cru (referência)", {}],
+        ["etapa 20 (corredor)", { filtrar_por_etapa: "20" }],
+        ["etapa 50 (a faturar)", { filtrar_por_etapa: "50" }],
+        ["etapa 60 (faturada)", { filtrar_por_etapa: "60" }],
+      ];
+      const out: Record<string, unknown> = {};
+      for (const [nome, extra] of testes) {
+        try {
+          const r = await omieCall<any>("servicos/os", "ListarOS", { ...base, ...extra });
+          out[nome] = {
+            total_de_registros: r?.total_de_registros ?? null,
+            total_de_paginas: r?.total_de_paginas ?? null,
+            primeira_os: r?.osCadastro?.[0]?.Cabecalho?.nCodOS ?? null,
+            etapa_da_primeira: r?.osCadastro?.[0]?.Cabecalho?.cEtapa ?? null,
+          };
+        } catch (e) {
+          out[nome] = { erro: mensagemDoOmie(e).slice(0, 160) };
+        }
+        // A trava do Omie é por MÉTODO: seis ListarOS colados batem nela.
+        await dorme(12_000);
+      }
+      return json({ ok: true, listaros: out });
     }
 
     if (action === "etapas") {

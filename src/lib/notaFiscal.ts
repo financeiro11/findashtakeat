@@ -236,6 +236,36 @@ export function chaveValida(chave: string): boolean {
   return dv === Number(chave[43]);
 }
 
+/**
+ * A CHAVE DA NFS-e NACIONAL TEM 50 DÍGITOS, e não é chave de NF-e.
+ *
+ * O e-mail de emissão do Omie escreve o "Código de Verificação" da NFS-e —
+ * `32053092246235634000124000000000063526087655914941` — e a janela deslizante
+ * de 44 dígitos logo abaixo acha, DENTRO dele, uma sequência cujo dígito
+ * verificador fecha por acaso. Foi o que gravou `9224623563400012400…` como
+ * chave de acesso nas notas que chegam por essa caixa: um número que não
+ * identifica documento nenhum, num campo cujo nome promete identidade.
+ *
+ * O que separa uma da outra sem chutar: as 7 primeiras casas da chave de NFS-e
+ * são o código IBGE do município emissor, e todo município brasileiro começa
+ * por 1 a 5 (3205309 = Vitória/ES, de onde vem a nota da Victoria Partners).
+ * Só o bloco de exatamente 50 com IBGE plausível sai da disputa — um nome de
+ * arquivo que grude 50 dígitos por outro motivo continua sendo varrido.
+ */
+const ehChaveNfse = (bloco: string): boolean => {
+  if (bloco.length !== 50) return false;
+  const ibge = Number(bloco.slice(0, 7));
+  return ibge >= 1100000 && ibge <= 5399999;
+};
+
+/** O Código de Verificação da NFS-e nacional, quando ele está escrito no texto. */
+export function chaveNfse(texto: string | null | undefined): string | null {
+  for (const m of String(texto ?? "").matchAll(/\d{50}/g)) {
+    if (ehChaveNfse(m[0])) return m[0];
+  }
+  return null;
+}
+
 /** A primeira chave de acesso VÁLIDA que aparecer no texto. */
 export function chaveDeAcesso(texto: string | null | undefined): string | null {
   const s = String(texto ?? "");
@@ -243,6 +273,7 @@ export function chaveDeAcesso(texto: string | null | undefined): string | null {
   // chave costuma vir grudada em outro número no nome do arquivo.
   for (const m of s.matchAll(/\d{44,}/g)) {
     const bloco = m[0];
+    if (ehChaveNfse(bloco)) continue;
     for (let i = 0; i + 44 <= bloco.length; i++) {
       const candidata = bloco.slice(i, i + 44);
       if (chaveValida(candidata)) return candidata;
@@ -330,7 +361,19 @@ export function tipoDoDocumento(nome: string | null | undefined): TipoDocumento 
   if (!s) return "outro";
   if (/\bboleto/.test(s)) return "boleto";
   if (/\bextrato|statement/.test(s)) return "extrato";
-  if (/\bnfe?\b|\bnfs-?e\b|danfe|nota[\s_-]*fiscal|notafiscal|\bnf[\s_-]?\d|invoice/.test(s)) return "nota";
+  /* "nota" SEGUIDA DO NÚMERO vale, e não só "nota fiscal". O arquivo
+     "2026-05-11_nota-0041742026-1778505996222-4179.pdf" — a NFS-e da F. Dutra,
+     com o nome que o portal do emissor dá — caía em "outro" porque depois de
+     "nota" vem um hífen e um número, não a palavra "fiscal". E "outro" não é
+     rótulo inofensivo: `parece_nota` é coluna gerada de `tipo_documento`, e sem
+     ela a nota perde as regras fortes do casador e todo o peso na disputa por
+     um título.
+     `\d` LOGO DEPOIS, e não `\bnota\b` solto, porque esta função também é
+     chamada com ASSUNTO DE E-MAIL em `gmail-nf-sync` — e ali "sua nota está
+     pronta" é recado, não documento (é a lição das 489 linhas sem anexo de
+     26/08/2026). Nome de arquivo numera; recado não.
+     Continua atrás de `boleto`, testado antes: "Boleto NF 11064" é boleto. */
+  if (/\bnfe?\b|\bnfs-?e\b|danfe|nota[\s_-]*fiscal|notafiscal|\bnota[\s_.-]*\d|\bnf[\s_-]?\d|invoice/.test(s)) return "nota";
   if (/recibo|receipt|comprovante/.test(s)) return "recibo";
   return "outro";
 }
@@ -752,6 +795,111 @@ export function lerCorpoDeEmail(texto: string | null | undefined, cnpjProprio: s
     valor,
     data,
     numero: numero ?? daChave?.numero ?? null,
+  };
+}
+
+export type ParcelaDaNota = { numero: number; vencimento: string | null; valor: number | null };
+
+export type NotaDeEmailOmie = {
+  emitente: string | null;
+  cnpj: string | null;
+  /** sem os zeros à esquerda — o e-mail escreve "0000000000635" */
+  numero: string | null;
+  /** os 50 dígitos do Código de Verificação, quando o município usa o padrão nacional */
+  chave: string | null;
+  /** ISO, da emissão */
+  emissao: string | null;
+  /** o VALOR DA NOTA, que é o bruto */
+  valor: number | null;
+  inscricaoMunicipal: string | null;
+  rps: string | null;
+  ordemServico: string | null;
+  parcelas: ParcelaDaNota[];
+  /**
+   * ESTE E-MAIL ENTREGA A NOTA, ou fala dela?
+   *
+   * O quadro NÃO responde isso: o aviso de vencimento e o lembrete repetem o
+   * mesmo quadro, campo por campo, com o mesmo código de verificação. Foi o que
+   * gerou seis "documentos" para a NFS-e 927 numa primeira rodada — seis papéis
+   * idênticos disputando um título só.
+   *
+   * Quem responde é a primeira frase, que o próprio Omie escreve: a entrega diz
+   * "Este e-mail é um comprovante da emissão da NFS-e Nº 635"; o recado diz "é
+   * um aviso de que o pix … vencerá hoje" ou "Gostaríamos de lembrar".
+   */
+  entrega: boolean;
+};
+
+/**
+ * O E-MAIL DE EMISSÃO DO OMIE É A NOTA ESCRITA EM TEXTO.
+ *
+ * Todo fornecedor que emite pelo Omie manda o mesmo e-mail — "Este e-mail é um
+ * comprovante da emissão da NFS-e Nº 635" — e nele um quadro rotulado com
+ * emitente, CNPJ, número, valor, código de verificação, data de emissão e a
+ * tabela de parcelas. Não vem anexo: vem um botão para o Portal Omie.
+ *
+ * E O BOTÃO NÃO LEVA A ARQUIVO NENHUM, medido em 28/08/2026: `portal.omie.com.br
+ * /view/…` é uma página vazia que monta em JavaScript, e a API dela
+ * (`portalapi.omie.com.br/api/portal/payment/<data>/<hash>`) responde
+ * `403 recaptcha_challenge_required`. O outro link do e-mail vai para
+ * `nfse.gov.br/ConsultaPublica?chave=…`, que pede hCaptcha. Os dois caminhos até
+ * o PDF estão atrás de captcha — então o que se pode ler é este texto aqui.
+ *
+ * POR QUE `lerCorpoDeEmail` NÃO BASTAVA, e o estrago era silencioso:
+ *   • o valor. O Omie escreve `Valor da Nota R$ 12000.00` — rótulo separado do
+ *     número por uma célula, e pontuação americana. O varredor genérico procura
+ *     `R$ 12.000,00` e voltava NULO: a nota de agosto da Victoria Partners
+ *     entrou no acervo muda, com o valor impresso na cara dela;
+ *   • o casamento errado. Quem tinha "R$ 11.262,00" escrito à brasileira era o
+ *     AVISO DE VENCIMENTO, mandado dias depois. Resultado: o recado casou com o
+ *     título e a nota não — nove títulos da Victoria Partners, R$ 101.358, com
+ *     um anexo só entre eles;
+ *   • a chave. Ver `ehChaveNfse` acima.
+ *
+ * O RETORNO É NULO quando o e-mail não é esse: só se lê o quadro quando o
+ * quadro existe, e a leitura genérica continua respondendo por todo o resto.
+ */
+export function lerEmailOmie(texto: string | null | undefined): NotaDeEmailOmie | null {
+  const t = String(texto ?? "").replace(/\s+/g, " ");
+  /* A assinatura do template, e não a palavra "NFS-e": o aviso de vencimento e o
+     lembrete falam de NFS-e o tempo todo e não trazem quadro nenhum. */
+  if (!/Emitente\s/i.test(t) || !/N[úu]mero da Nota\s/i.test(t)) return null;
+
+  const campo = (rotulo: string, valor: string): string | null =>
+    t.match(new RegExp(`${rotulo}\\s+(${valor})`, "i"))?.[1]?.trim() ?? null;
+
+  /* O emitente vai até o rótulo seguinte: no quadro ele é a única célula de
+     linha inteira, e o que vem depois é sempre "CNPJ". */
+  const emitente = t.match(/Emitente\s+(.{2,120}?)\s+CNPJ\b/i)?.[1]?.trim() ?? null;
+
+  const numeroCru = campo(String.raw`N[úu]mero da Nota`, String.raw`\d{1,15}`);
+  const valorCru = campo(String.raw`Valor da Nota\s*R\$`, DINHEIRO);
+  const emissao = campo(String.raw`Data de Emiss[ãa]o`, String.raw`\d{2}/\d{2}/\d{4}`);
+
+  /* A TABELA DE PARCELAS é o vencimento e o LÍQUIDO — na nota com ISS retido os
+     dois valores são diferentes e os dois estão certos (R$ 12.000,00 de serviço,
+     R$ 11.262,00 a pagar). Guardar os dois é o que deixa o casador escolher: o
+     título no contas a pagar nasce pelo líquido. */
+  const parcelas: ParcelaDaNota[] = [];
+  const tabela = t.match(/Parcela\s+Vencimento\s+Valor[^\d]{0,12}(.*)$/i)?.[1] ?? "";
+  const linha = new RegExp(String.raw`\b(\d{1,3})\s+(\d{2}/\d{2}/\d{4})\s+(${DINHEIRO})`, "g");
+  for (const m of tabela.matchAll(linha)) {
+    parcelas.push({ numero: Number(m[1]), vencimento: dataISO(m[2]), valor: numeroDeQualquerLugar(m[3]) });
+    if (parcelas.length >= 60) break;
+  }
+
+  return {
+    emitente,
+    cnpj: campo("CNPJ", String.raw`[\d./-]{14,18}`)?.replace(/\D/g, "") ?? null,
+    numero: numeroCru ? String(Number(numeroCru)) : null,
+    chave: chaveNfse(t),
+    emissao: emissao ? dataISO(emissao) : null,
+    valor: valorCru ? numeroDeQualquerLugar(valorCru) : null,
+    inscricaoMunicipal: campo(String.raw`Inscri[çc][ãa]o Municipal`, String.raw`[\w.\-/]{1,20}`),
+    rps: campo(String.raw`N[ºo°.]{1,2}\s*da RPS`, String.raw`\d{1,15}`),
+    ordemServico: campo(String.raw`Ordem de Servi[çc]o`, String.raw`\d{1,15}`),
+    parcelas,
+    entrega: /comprovante d[ae] emiss[ãa]o/i.test(t),
   };
 }
 

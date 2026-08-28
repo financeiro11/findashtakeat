@@ -30,9 +30,10 @@ import { baixarAnexo, listar, mensagem, segredosDoGmail, tokenDeAcesso, type Ane
 import { tipoQueVale } from "../_shared/mime.ts";
 import { textoDePdf } from "../_shared/pdf.ts";
 import {
-  chaveDeAcesso, dadosDaChave, descricaoDaNota, ehAvisoDeCobranca, lerCorpoDeEmail, lerDanfes, linksDeNota,
-  lerNomeDeArquivo, lerXmlFiscal, tipoDoDocumento, type TipoDocumento,
+  chaveDeAcesso, dadosDaChave, descricaoDaNota, ehAvisoDeCobranca, lerCorpoDeEmail, lerDanfes, lerEmailOmie,
+  linksDeNota, lerNomeDeArquivo, lerXmlFiscal, tipoDoDocumento, type TipoDocumento,
 } from "../_shared/nota-fiscal.ts";
+import { comprovanteEmailPdf } from "../_shared/danfse.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -50,6 +51,27 @@ const ORCAMENTO_MS = 55_000;
 const MAX_ANEXO = 10 * 1024 * 1024;
 
 const EXT_OK = /\.(pdf|xml|jpe?g|png|webp)$/i;
+
+/**
+ * A ASSINATURA DO REMETENTE NÃO É UM DOCUMENTO.
+ *
+ * O Outlook e o Gmail mandam as imagens embutidas na assinatura como anexos de
+ * verdade, com os nomes que eles mesmos inventam: `image001.png`, `logotipo.jpg`,
+ * `outlook-abc123.png`. Elas passavam por `EXT_OK` (são png), viravam linha em
+ * `notas_externas` e — o pior — HERDAVAM O VALOR lido no corpo da mensagem.
+ *
+ * Medido em 27/08/2026: 250 documentos assim no acervo, R$ 1,43 M de valor
+ * fantasma. Os R$ 2,17 M que fevereiro exibia eram doze cópias do mesmo e-mail
+ * da Baptista Luz, seis delas logotipos de R$ 102.000 cada — e ninguém percebeu
+ * porque o acervo contava documentos, nunca dinheiro.
+ *
+ * A GUARDA É A CHAVE DE ACESSO. Um emissor pode, em tese, nomear a nota de
+ * qualquer jeito; se o nome tiver os 44 dígitos com DV válido, é nota e entra —
+ * a mesma inversão que `_shared/nota-fiscal.ts` já faz para o Bling, que despeja
+ * um MD5 como nome de arquivo.
+ */
+const DECORACAO = /^(image|imagem|logo(tipo|marca)?|assinatura|signature|outlook|inline)[-_ ]?[0-9a-f]*\.(jpe?g|png|webp|gif)$/i;
+const ehDecoracao = (nome: string) => DECORACAO.test(nome.trim()) && !chaveDeAcesso(nome);
 
 /** O link que abre a mensagem na caixa — serve quando não há arquivo nenhum. */
 const linkDoEmail = (id: string) => `https://mail.google.com/mail/u/0/#all/${id}`;
@@ -71,6 +93,9 @@ const linkDoEmail = (id: string) => `https://mail.google.com/mail/u/0/#all/${id}
  *      Fiscal" está entregando a nota, só que por endereço. Sem esta prova o
  *      e-mail da Davam (que fatura a BuzzLead) era descartado como recado, e
  *      com ele a nota de nove títulos abertos.
+ *   5. o QUADRO do e-mail de emissão do Omie, que é a nota escrita em texto.
+ *      Ele não deixa link nem anexo, e a prova nº 2 não o alcança porque o
+ *      valor vem à americana (`Valor da Nota R$ 12000.00`) — ver `lerEmailOmie`.
  *
  * Sem nenhuma delas, a mensagem fica registrada em `email_mensagens` com
  * `fiscal = false` — visível, e fora da auditoria. Registrar o descarte é o que
@@ -78,6 +103,7 @@ const linkDoEmail = (id: string) => `https://mail.google.com/mail/u/0/#all/${id}
  */
 function ehFiscal(m: Mensagem, corpo: ReturnType<typeof lerCorpoDeEmail>): boolean {
   if (corpo.chave) return true;
+  if (lerEmailOmie(m.corpo)) return true;
   if (corpo.cnpj && corpo.valor) return true;
   if (linksDeNota(m.corpo).length) return true;
   const nomes = m.anexos.map((a) => a.nome).join(" ");
@@ -260,8 +286,95 @@ Deno.serve(async (req) => {
 
         if (!fiscal) { linhasEmail.push(base); ignoradas++; continue; }
 
-        const uteis = m.anexos.filter((a) => EXT_OK.test(a.nome) && a.tamanho <= MAX_ANEXO);
+        const uteis = m.anexos.filter(
+          (a) => EXT_OK.test(a.nome) && a.tamanho <= MAX_ANEXO && !ehDecoracao(a.nome),
+        );
         if (!uteis.length) {
+          /* A NOTA QUE VEIO COMO QUADRO, E NÃO COMO ARQUIVO.
+           *
+           * O e-mail de emissão do Omie — o mesmo template para todo fornecedor
+           * que emite por lá — traz emitente, CNPJ, número, valor, código de
+           * verificação, emissão e parcelas em texto rotulado, e manda um botão
+           * para o Portal Omie no lugar do anexo.
+           *
+           * O BOTÃO NÃO DÁ ARQUIVO, e isso foi MEDIDO em 28/08/2026, não suposto:
+           *   • `portal.omie.com.br/view/…` devolve 3 KB de HTML vazio — é uma
+           *     SPA — e a API dela, `portalapi.omie.com.br/api/portal/payment/
+           *     <data>/<hash>`, responde 403 `recaptcha_challenge_required`;
+           *   • aberta num navegador de verdade (Firecrawl, 7 créditos gastos
+           *     entre proxy de datacenter e residencial), a página renderiza
+           *     "reCAPTCHA requer verificação" nos DOIS casos, e atrás disso
+           *     ainda pede "os 5 primeiros dígitos do CNPJ do destinatário";
+           *   • o outro link do e-mail vai a `nfse.gov.br/ConsultaPublica?chave=`,
+           *     que pede hCaptcha, e a API do ADN exige certificado (403/496 —
+           *     já registrado no cabeçalho de `_shared/danfse.ts`).
+           * São freios antiautomação de terceiro, e a resposta a eles é parar.
+           * O caminho que RESOLVE de vez é humano: pedir a estes cinco
+           * fornecedores que anexem o PDF/XML ao e-mail — esta função já lê
+           * anexo, e o XML é o melhor documento que a esteira recebe.
+           *
+           * Então o papel se desenha do que o e-mail escreveu — e se chama pelo
+           * que é, comprovante de emissão, com a chave e o QR que levam à nota
+           * na fonte. Ver `_shared/danfse.ts`. São 101 mensagens paradas assim
+           * na caixa, de cinco fornecedores; a Victoria Partners sozinha tem
+           * nove títulos e R$ 101.358 com um anexo só entre eles.
+           *
+           * SÓ A ENTREGA VIRA PAPEL. O aviso de vencimento e o lembrete repetem
+           * o MESMO quadro, campo por campo — e sem esta guarda a primeira
+           * rodada gerou 97 comprovantes para ~30 notas, seis deles idênticos
+           * para a NFS-e 927, todos disputando um título só. O recado segue pelo
+           * caminho de baixo, sem arquivo, como sempre foi. */
+          const omie = lerEmailOmie(m.corpo);
+          if (omie?.entrega && omie.numero && omie.cnpj) {
+            const parcela = omie.parcelas[0] ?? null;
+            const emitente = omie.emitente ?? m.remetente;
+            const bytes = await comprovanteEmailPdf({
+              emitente, cnpj: omie.cnpj, numero: omie.numero, chave: omie.chave,
+              emissao: omie.emissao, valor: omie.valor,
+              inscricaoMunicipal: omie.inscricaoMunicipal, rps: omie.rps,
+              ordemServico: omie.ordemServico, parcelas: omie.parcelas,
+              tomador: { nome: "TAKEAT TECNOLOGIA LTDA", cnpj: CNPJ_TAKEAT },
+              origem:
+                `Reproduzido pela Central do Financeiro a partir do e-mail "${m.assunto}", ` +
+                `enviado por ${m.remetenteEmail} em ${m.data ?? "data desconhecida"} para financeiro@takeat.app. ` +
+                `O emitente nao anexou arquivo: o link do e-mail leva ao Portal Omie, que exige captcha.`,
+            });
+            /* O CAMINHO É DA NOTA, não da mensagem: se o Omie reenviar a mesma
+               emissão, o papel é reescrito no lugar em vez de virar um segundo
+               arquivo com o mesmo conteúdo. */
+            const caminho = `email/${(omie.emissao ?? m.data ?? agora).slice(0, 7)}/nfse-${omie.cnpj}-${omie.numero}.pdf`;
+            const { error: erroUp } = await supabase.storage.from(BUCKET)
+              .upload(caminho, bytes, { contentType: "application/pdf", upsert: true });
+            if (erroUp) throw new Error(`storage: ${erroUp.message}`);
+
+            linhasEmail.push(base);
+            linhasNota.push({
+              chave: `email|${m.id}`, fonte: "email", linha: null, ordem: 1,
+              /* A EMISSÃO, e não a data do e-mail: o aviso de vencimento chega
+                 três semanas depois e jogaria a janela do casador para o mês
+                 seguinte. */
+              enviado_em: omie.emissao ?? m.data,
+              nome: emitente, cnpj: omie.cnpj, documento: omie.numero,
+              /* OS DOIS VALORES, e os dois estão certos: R$ 12.000,00 de
+                 serviço e R$ 11.262,00 a pagar, quando há imposto retido. O
+                 casador tenta os dois (`unnest(array[valor, valor_parcela])`) e
+                 é o líquido que vira título no contas a pagar. */
+              valor: omie.valor, valor_parcela: parcela?.valor ?? null,
+              vencimento: parcela?.vencimento ?? null,
+              forma_pagamento: null,
+              competencia: omie.emissao?.slice(0, 7) ?? null,
+              o_que_e: `NFS-e ${omie.numero} · ${emitente}`,
+              detalhe: `${m.remetenteEmail} · comprovante de emissão lido do corpo do e-mail`,
+              status_planilha: null, diz_anexado: false,
+              drive_id: null, link: caminho, link_documento: null,
+              chave_fiscal: omie.chave, tipo_documento: "nota", tem_arquivo: true,
+              arquivo_bytes: bytes.length, arquivo_em: agora, arquivo_erro: null,
+              visto_em: agora, atualizado_em: agora,
+            });
+            comNota++;
+            continue;
+          }
+
           /* NOTA SEM ARQUIVO. O e-mail diz que a nota existe (chave, CNPJ,
              valor) mas não a manda — é o caso do Bling. Vale registrar assim
              mesmo: casa com o lançamento e diz onde está. `tem_arquivo=false`
@@ -363,19 +476,31 @@ Deno.serve(async (req) => {
       if (error) throw new Error(`notas_externas: ${error.message}`);
     }
 
-    /* ---------- 5. casar e conferir ---------- */
-    let resumo: unknown = null;
-    if (linhasNota.length) {
-      const { data, error } = await supabase.rpc("notas_externas_casar");
-      if (error) throw new Error(`casar: ${error.message}`);
-      resumo = data;
-    }
-
+    /* ---------- 5. quem casa é o cron, e não cabia aqui ----------
+     *
+     * Esta função chamava `notas_externas_casar()` no fim, e era ela quem
+     * pintava a faixa do header de vermelho todo dia: HTTP 500 com
+     * `casar: canceling statement due to statement timeout`. O casador demora
+     * 20 a 27 segundos (medido em `cron.job_run_details` do job 55) e o teto do
+     * PostgREST é de 8 — o papel de `authenticator` traz `statement_timeout=8s`
+     * e o `service_role` não o levanta.
+     *
+     * O estrago não era o casamento: `notas-acervo-casar` roda às :00 e às :30
+     * direto no Postgres, sem teto nenhum, e refaz o alvo de TUDO que ainda não
+     * subiu — inclusive o que acabou de chegar aqui. O estrago era o 500 em
+     * cima de um sync que já tinha gravado tudo no passo 4: a leitura da caixa
+     * dava certo e a tela dizia que tinha falhado.
+     *
+     * Insistir custaria 8 segundos de espera e uma consulta pesada abortada a
+     * cada hora, para nada. A esteira inteira é assim — cada etapa tem cron
+     * próprio e a nota espera a vez —, e esta passa a ser só o que o nome diz:
+     * trazer o e-mail para dentro. Ver `_shared/` e o painel /automacoes/painel.
+     */
     return json({
       ok: true, na_caixa: unicos.length, novos: novos.length,
       lidas, notas: comNota, sem_arquivo: semArquivo, ignoradas, falhas,
       restante: Math.max(0, novos.length - lidas), parou_por_tempo: parou,
-      resumo,
+      casar: linhasNota.length ? "o casador das :00 e :30 pega" : "nada novo para casar",
     });
   } catch (e) {
     console.error("gmail-nf-sync", e);

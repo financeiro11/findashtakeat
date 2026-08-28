@@ -1,4 +1,11 @@
-// O espelho da NFS-e em PDF, desenhado a partir do XML oficial.
+// O papel da NFS-e, desenhado aqui porque não há PDF para baixar.
+//
+// São DOIS, e a diferença entre eles é quanto documento existe por trás:
+//   • `espelhoPdf` — a NOSSA nota, desenhada do XML assinado. Tem cara de
+//     DANFSe porque todo campo do formulário tem origem no documento.
+//   • `comprovanteEmailPdf` — a nota de FORNECEDOR que só chegou por e-mail.
+//     Sem endereço, sem discriminação do serviço, sem alíquota; então não imita
+//     o formulário, e diz no título que é comprovante de emissão.
 //
 // POR QUE DESENHAR EM VEZ DE BAIXAR. Não existe PDF da nota para pegar em lugar
 // nenhum, e isso foi medido, não suposto:
@@ -171,6 +178,58 @@ function quebrar(texto: string, fonte: any, tamanho: number, largura: number): s
   return linhas;
 }
 
+/**
+ * O QR Code, desenhado por FAIXAS e não por módulo.
+ *
+ * Um retângulo por módulo escuro custa ~100 bytes de caminho no content stream
+ * e um QR tem ~1.000 deles — eram 170 KB de fluxo para um quadrado de 76
+ * pontos. Juntar os módulos escuros vizinhos da mesma linha num retângulo só dá
+ * o mesmo desenho por uma fração do arquivo.
+ */
+function desenharQr(pagina: any, url: string, x: number, y: number, lado: number): void {
+  const qr = qrcode(0, "M");
+  qr.addData(url);
+  qr.make();
+  const modulos = qr.getModuleCount();
+  const passo = lado / modulos;
+  for (let linha = 0; linha < modulos; linha++) {
+    let inicio = -1;
+    for (let col = 0; col <= modulos; col++) {
+      const escuro = col < modulos && qr.isDark(linha, col);
+      if (escuro && inicio < 0) inicio = col;
+      if (!escuro && inicio >= 0) {
+        pagina.drawRectangle({
+          x: x + inicio * passo,
+          y: y + (modulos - 1 - linha) * passo,
+          width: (col - inicio) * passo, height: passo, color: TINTA,
+        });
+        inicio = -1;
+      }
+    }
+  }
+}
+
+/**
+ * O endereço vai clicável de verdade: além do texto, uma anotação de link na
+ * mesma área. Um endereço de 90 caracteres para digitar à mão não é um link, é
+ * um castigo — e o QR ao lado resolve para quem está no celular.
+ */
+function linkClicavel(pdf: any, pagina: any, url: string, x: number, y: number, largura: number): void {
+  const anotacao = pdf.context.register(
+    pdf.context.obj({
+      Type: "Annot", Subtype: "Link",
+      Rect: [x - 2, y - 3, x + largura + 2, y + 10],
+      Border: [0, 0, 0],
+      /* `PDFString.of`, e não `context.obj`: para uma string JS o `obj` devolve um
+       * NAME do PDF, e o endereço saía gravado como `/https:#2F#2Fwww...` — um
+       * link que o leitor mostra sublinhado e que não abre lugar nenhum. URI é
+       * string, e string tem que ser dita com todas as letras. */
+      A: pdf.context.obj({ Type: "Action", S: "URI", URI: PDFString.of(url) }),
+    }),
+  );
+  pagina.node.set(pdf.context.obj("Annots"), pdf.context.obj([anotacao]));
+}
+
 export async function espelhoPdf(nota: NotaLida): Promise<Uint8Array> {
   const pdf = await PDFDocument.create();
   pdf.setTitle(`NFS-e ${nota.numero}`);
@@ -266,34 +325,9 @@ export async function espelhoPdf(nota: NotaLida): Promise<Uint8Array> {
   caixa(MARGEM, y - altChave, util, altChave);
   const url = linkPortalNacional(nota.chave);
 
-  const qr = qrcode(0, "M");
-  qr.addData(url);
-  qr.make();
-  const modulos = qr.getModuleCount();
   const ladoQr = 76;
-  const passo = ladoQr / modulos;
   const qrX = MARGEM + 14;
-  const qrY = y - altChave + (altChave - ladoQr) / 2;
-  /* Desenhado por FAIXAS, não por módulo. Um retângulo por módulo escuro custa
-   * ~100 bytes de caminho no content stream e um QR tem ~1.000 deles — eram
-   * 170 KB de fluxo para um quadrado de 76 pontos. Juntar os módulos escuros
-   * vizinhos da mesma linha num retângulo só dá o mesmo desenho por uma fração
-   * do arquivo. */
-  for (let linha = 0; linha < modulos; linha++) {
-    let inicio = -1;
-    for (let col = 0; col <= modulos; col++) {
-      const escuro = col < modulos && qr.isDark(linha, col);
-      if (escuro && inicio < 0) inicio = col;
-      if (!escuro && inicio >= 0) {
-        pagina.drawRectangle({
-          x: qrX + inicio * passo,
-          y: qrY + (modulos - 1 - linha) * passo,
-          width: (col - inicio) * passo, height: passo, color: TINTA,
-        });
-        inicio = -1;
-      }
-    }
-  }
+  desenharQr(pagina, url, qrX, y - altChave + (altChave - ladoQr) / 2, ladoQr);
 
   const xTexto = qrX + ladoQr + 16;
   let yc = y - 24;
@@ -304,24 +338,8 @@ export async function espelhoPdf(nota: NotaLida): Promise<Uint8Array> {
   yc -= 4;
   escrever("Confira esta nota no Portal Nacional da NFS-e:", xTexto, yc, 7.5, regular, APOIO); yc -= 11;
 
-  /* O link é clicável de verdade: além do texto, vai uma anotação de link na
-   * mesma área. Um endereço de 90 caracteres para digitar à mão não é um link,
-   * é um castigo — e o QR ao lado resolve para quem está no celular. */
-  const larguraUrl = regular.widthOfTextAtSize(winAnsi(url), 7.5);
   escrever(url, xTexto, yc, 7.5, regular, rgb(0.11, 0.36, 0.75));
-  const anotacao = pdf.context.register(
-    pdf.context.obj({
-      Type: "Annot", Subtype: "Link",
-      Rect: [xTexto - 2, yc - 3, xTexto + larguraUrl + 2, yc + 10],
-      Border: [0, 0, 0],
-      /* `PDFString.of`, e não `context.obj`: para uma string JS o `obj` devolve um
-       * NAME do PDF, e o endereço saía gravado como `/https:#2F#2Fwww...` — um
-       * link que o leitor mostra sublinhado e que não abre lugar nenhum. URI é
-       * string, e string tem que ser dita com todas as letras. */
-      A: pdf.context.obj({ Type: "Action", S: "URI", URI: PDFString.of(url) }),
-    }),
-  );
-  pagina.node.set(pdf.context.obj("Annots"), pdf.context.obj([anotacao]));
+  linkClicavel(pdf, pagina, url, xTexto, yc, regular.widthOfTextAtSize(winAnsi(url), 7.5));
 
   /* Rodapé — de onde veio este papel */
   escrever(
@@ -331,6 +349,168 @@ export async function espelhoPdf(nota: NotaLida): Promise<Uint8Array> {
   escrever(
     "Nao substitui o DANFSe emitido pela prefeitura; a nota se confere pela chave de acesso acima.",
     MARGEM, MARGEM + 2, 7, regular, APOIO,
+  );
+
+  return await pdf.save();
+}
+
+/* ===========================================================================
+ * A NOTA QUE CHEGOU SÓ POR E-MAIL
+ * ======================================================================== */
+
+export type ParcelaDoComprovante = { numero: number; vencimento: string | null; valor: number | null };
+
+export type ComprovanteDeEmail = {
+  emitente: string;
+  cnpj: string;
+  numero: string;
+  /** os 50 dígitos do Código de Verificação; nulo quando o município usa outro */
+  chave: string | null;
+  /** ISO */
+  emissao: string | null;
+  valor: number | null;
+  inscricaoMunicipal: string | null;
+  rps: string | null;
+  ordemServico: string | null;
+  parcelas: ParcelaDoComprovante[];
+  tomador: { nome: string; cnpj: string };
+  /** a frase do rodapé: de que e-mail, de quem e de quando este papel saiu */
+  origem: string;
+};
+
+/**
+ * O PAPEL DA NOTA DE FORNECEDOR QUE NÃO VEM COMO ARQUIVO.
+ *
+ * O `espelhoPdf` acima desenha a NOSSA nota a partir do XML assinado, e por
+ * isso pode ter cara de DANFSe: todo campo do formulário tem origem no
+ * documento. Aqui não. O e-mail de emissão do Omie traz emitente, CNPJ, número,
+ * valor, código de verificação, emissão e parcelas — e NÃO traz endereço,
+ * município, discriminação do serviço nem alíquota de ISS.
+ *
+ * Desenhar o mesmo formulário com metade dos campos em branco seria pior do que
+ * não desenhar: pareceria a nota, e não é. Então este papel é outra coisa e diz
+ * o que é já no título — um COMPROVANTE DE EMISSÃO, que reproduz o que o ERP do
+ * emitente mandou e aponta para a fonte.
+ *
+ * O QUE O TORNA ÚTIL É A CHAVE, como no espelho: com os 50 dígitos qualquer um
+ * confere a nota no Portal Nacional, e o QR leva direto. O papel é conveniência
+ * para o título no contas a pagar; a prova continua sendo a chave.
+ */
+export async function comprovanteEmailPdf(c: ComprovanteDeEmail): Promise<Uint8Array> {
+  const pdf = await PDFDocument.create();
+  pdf.setTitle(`Comprovante de emissao NFS-e ${c.numero} - ${c.emitente}`);
+  pdf.setSubject(c.chave ? `NFS-e ${c.numero} - chave ${c.chave}` : `NFS-e ${c.numero}`);
+  pdf.setProducer("Central do Financeiro - Takeat");
+
+  const pagina = pdf.addPage(A4);
+  const [L, A] = A4;
+  const regular = await pdf.embedFont(StandardFonts.Helvetica);
+  const negrito = await pdf.embedFont(StandardFonts.HelveticaBold);
+  const util = L - MARGEM * 2;
+
+  const escrever = (t: string, x: number, y: number, tam = 9, fonte = regular, cor = TINTA) =>
+    pagina.drawText(winAnsi(t), { x, y, size: tam, font: fonte, color: cor });
+  const aDireita = (t: string, dir: number, y: number, tam: number, fonte = regular, cor = TINTA) =>
+    escrever(t, dir - fonte.widthOfTextAtSize(winAnsi(t), tam), y, tam, fonte, cor);
+  const caixa = (x: number, y: number, w: number, h: number, preenchida = false) =>
+    pagina.drawRectangle({
+      x, y, width: w, height: h,
+      borderColor: LINHA, borderWidth: 0.7,
+      ...(preenchida ? { color: FUNDO } : {}),
+    });
+
+  let y = A - MARGEM;
+
+  /* Cabeçalho — o título diz o que o papel é, para ninguém confundir com a nota */
+  caixa(MARGEM, y - 58, util, 58, true);
+  escrever("COMPROVANTE DE EMISSAO DA NFS-e", MARGEM + 14, y - 24, 14, negrito);
+  escrever("Reproduzido do e-mail do emitente - nao e o DANFSe", MARGEM + 14, y - 40, 9, regular, APOIO);
+  aDireita(`Nº ${c.numero}`, L - MARGEM - 14, y - 26, 18, negrito);
+  if (c.emissao) aDireita(`Emitida em ${dataBR(c.emissao)}`, L - MARGEM - 14, y - 42, 9, regular, APOIO);
+  y -= 58 + 14;
+
+  /* Emitente e tomador */
+  const meia = (util - 10) / 2;
+  const altPartes = 62;
+  caixa(MARGEM, y - altPartes, meia, altPartes);
+  caixa(MARGEM + meia + 10, y - altPartes, meia, altPartes);
+  const parte = (x: number, titulo: string, nome: string, cnpj: string) => {
+    let yy = y - 18;
+    escrever(titulo, x + 12, yy, 7.5, negrito, APOIO);
+    yy -= 16;
+    for (const linha of quebrar(nome, negrito, 10, meia - 24).slice(0, 2)) {
+      escrever(linha, x + 12, yy, 10, negrito); yy -= 13;
+    }
+    escrever(`CNPJ ${fmtDoc(cnpj)}`, x + 12, yy, 8.5, regular, APOIO);
+  };
+  parte(MARGEM, "EMITENTE (PRESTADOR)", c.emitente, c.cnpj);
+  parte(MARGEM + meia + 10, "TOMADOR", c.tomador.nome, c.tomador.cnpj);
+  y -= altPartes + 14;
+
+  /* O quadro do e-mail, campo a campo — só o que o e-mail escreveu */
+  const altQuadro = 62;
+  caixa(MARGEM, y - altQuadro, util, altQuadro, true);
+  const campos: Array<[string, string]> = [
+    ["INSCRICAO MUNICIPAL", c.inscricaoMunicipal || "-"],
+    ["Nº DA RPS", c.rps || "-"],
+    ["ORDEM DE SERVICO", c.ordemServico || "-"],
+  ];
+  campos.forEach(([rotulo, valor], i) => {
+    const x = MARGEM + 14 + i * ((util - 190) / 3);
+    escrever(rotulo, x, y - 20, 7, negrito, APOIO);
+    escrever(valor, x, y - 38, 11, regular);
+  });
+  aDireita("VALOR DA NOTA", L - MARGEM - 14, y - 20, 7, negrito, APOIO);
+  aDireita(c.valor === null ? "-" : brl(c.valor), L - MARGEM - 14, y - 41, 16, negrito);
+  y -= altQuadro + 14;
+
+  /* As parcelas — é por elas que o título nasce no contas a pagar, e numa nota
+     com imposto retido o valor delas NÃO é o valor da nota. Mostrar os dois é o
+     que evita a conversa de "o valor não bate". */
+  if (c.parcelas.length) {
+    const altLinha = 18;
+    const altTab = 34 + c.parcelas.length * altLinha;
+    caixa(MARGEM, y - altTab, util, altTab);
+    escrever("VENCIMENTOS", MARGEM + 14, y - 18, 7.5, negrito, APOIO);
+    let yp = y - 34;
+    for (const p of c.parcelas.slice(0, 24)) {
+      escrever(`Parcela ${p.numero}`, MARGEM + 14, yp, 9.5, regular);
+      escrever(p.vencimento ? dataBR(p.vencimento) : "-", MARGEM + 110, yp, 9.5, regular);
+      aDireita(p.valor === null ? "-" : brl(p.valor), L - MARGEM - 14, yp, 9.5, negrito);
+      yp -= altLinha;
+    }
+    y -= altTab + 14;
+  }
+
+  /* Chave + QR — a parte que permite conferir a nota na fonte */
+  if (c.chave) {
+    const altChave = 104;
+    caixa(MARGEM, y - altChave, util, altChave);
+    const url = linkPortalNacional(c.chave);
+    const ladoQr = 76;
+    const qrX = MARGEM + 14;
+    desenharQr(pagina, url, qrX, y - altChave + (altChave - ladoQr) / 2, ladoQr);
+
+    const xTexto = qrX + ladoQr + 16;
+    let yc = y - 24;
+    escrever("CHAVE DE ACESSO", xTexto, yc, 7.5, negrito, APOIO); yc -= 15;
+    for (const linha of quebrar(chaveEmBlocos(c.chave), regular, 10, util - (xTexto - MARGEM) - 20)) {
+      escrever(linha, xTexto, yc, 10, regular); yc -= 13;
+    }
+    yc -= 4;
+    escrever("Confira esta nota no Portal Nacional da NFS-e:", xTexto, yc, 7.5, regular, APOIO); yc -= 11;
+    escrever(url, xTexto, yc, 7.5, regular, rgb(0.11, 0.36, 0.75));
+    linkClicavel(pdf, pagina, url, xTexto, yc, regular.widthOfTextAtSize(winAnsi(url), 7.5));
+  }
+
+  /* Rodapé — de onde veio este papel. A frase é montada por quem chama porque é
+     ela que responde "onde está a nota de verdade" quando alguém perguntar. */
+  for (const [i, linha] of quebrar(c.origem, regular, 7, util).slice(0, 2).entries()) {
+    escrever(linha, MARGEM, MARGEM + 12 - i * 10, 7, regular, APOIO);
+  }
+  escrever(
+    "Nao substitui o DANFSe emitido pela prefeitura.",
+    MARGEM, MARGEM - 8, 7, regular, APOIO,
   );
 
   return await pdf.save();

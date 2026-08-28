@@ -1,7 +1,8 @@
 import { describe, it, expect } from "vitest";
 import {
-  chaveDeAcesso, chaveValida, dadosDaChave, descricaoDaNota, lerCorpoDeEmail,
-  ehAvisoDeCobranca, lerDanfes, lerNomeDeArquivo, lerXmlFiscal, linksDeNota, tipoDoDocumento, valorComMoeda,
+  chaveDeAcesso, chaveNfse, chaveValida, dadosDaChave, descricaoDaNota, lerCorpoDeEmail,
+  ehAvisoDeCobranca, lerDanfes, lerEmailOmie, lerNomeDeArquivo, lerXmlFiscal, linksDeNota,
+  tipoDoDocumento, valorComMoeda,
 } from "@/lib/notaFiscal";
 
 /* ---------------------------------------------------------------------------
@@ -165,6 +166,19 @@ describe("chave de acesso", () => {
     expect(chaveDeAcesso(null)).toBeNull();
   });
 
+  it("não pica o código de verificação da NFS-e num 44 falso", () => {
+    // Os 50 dígitos do e-mail do Omie. A janela deslizante achava DENTRO deles
+    // uma sequência com DV bom, e ela ia parar no campo `chave_fiscal`.
+    expect(chaveDeAcesso(`Código de Verificação ${COD_VERIF_635} Data de Emissão`)).toBeNull();
+    expect(chaveNfse(`Código de Verificação ${COD_VERIF_635} Data`)).toBe(COD_VERIF_635);
+    // E a guarda é ESTREITA: ela só vale para 50 dígitos que ABREM com código
+    // de município (1 a 5). Um bloco de 50 por outro motivo segue sendo varrido
+    // — e a prova de que essa varredura acha falso positivo é o próprio bloco
+    // abaixo, onde o DV fecha por acaso seis casas antes da chave de verdade.
+    expect(chaveNfse(`990000${FRACALOSSI}`)).toBeNull();
+    expect(chaveDeAcesso(`990000${FRACALOSSI}`)).not.toBeNull();
+  });
+
   it("desmonta a chave em CNPJ, competência e número", () => {
     expect(dadosDaChave(FRACALOSSI)).toEqual({
       cnpj: "27250919000190", competencia: "2026-08", numero: "130941",
@@ -188,6 +202,19 @@ describe("tipo do documento", () => {
     expect(tipoDoDocumento("2026-08-01_DANFE_32260815056118000109550030000023821082212052_v4.00.pdf")).toBe("nota");
     expect(tipoDoDocumento("NFSE Os. 1-453 Tekeat App.pdf")).toBe("nota");
     expect(tipoDoDocumento("NF Kingbier (Chopp HH + Festa junina).pdf")).toBe("nota");
+    /* O nome que o portal do emissor dá: "nota" e o número, sem "fiscal". Duas
+       NFS-e da F. Dutra caíam em "outro" por isso — e "outro" zera
+       `parece_nota`, que é o que dá peso à nota na disputa por um título. */
+    expect(tipoDoDocumento("2026-05-11_nota-0041742026-1778505996222-4179.pdf")).toBe("nota");
+    expect(tipoDoDocumento("nota 4231.pdf")).toBe("nota");
+  });
+
+  it("“nota” em recado de e-mail continua não sendo documento", () => {
+    /* `tipoDoDocumento` também recebe ASSUNTO em `gmail-nf-sync`. O número é o
+       que separa o nome de arquivo do recado — por isso a regra é "nota" mais
+       dígito, e não "nota" solta. */
+    expect(tipoDoDocumento("Sua nota está pronta para download")).toBe("outro");
+    expect(tipoDoDocumento("Recebemos seu pagamento, a nota segue em breve")).toBe("outro");
   });
 
   it("separa recibo e extrato do resto", () => {
@@ -427,6 +454,87 @@ describe("linksDeNota", () => {
     expect(linksDeNota("a nota: https://prefeitura.gov.br/emissor/nfse/123.pdf."))
       .toEqual(["https://prefeitura.gov.br/emissor/nfse/123.pdf"]);
     expect(linksDeNota("sem link nenhum aqui")).toEqual([]);
+  });
+});
+
+/* ---------------------------------------------------------------------------
+ * O E-MAIL DE EMISSÃO DO OMIE, COMO O VARREDOR O RECEBE.
+ *
+ * Este recorte não foi escrito à mão: é a mensagem `19fc982627058312` da caixa
+ * `financeiro@` (VICTORIA PARTNERS - NFS-e + PIX Nº 635, 03/08/2026) depois de
+ * passar pelo `semTags` de `_shared/gmail.ts` — o e-mail é SÓ HTML, então o
+ * corpo chega achatado numa linha só, com os rótulos do quadro colados nos
+ * valores e nenhum `href` (as tags saem inteiras, e os links com elas).
+ *
+ * Testar o parser contra um texto arrumado seria testar outra coisa: é
+ * justamente o achatamento que separa "Valor da Nota R$" do número.
+ * ------------------------------------------------------------------------- */
+const COD_VERIF_635 = "32053092246235634000124000000000063526087655914941";
+const EMAIL_OMIE_635 = `Olá, TAKEAT.APP - GARCOM DIGITAL. Este e-mail é um comprovante da emissão da Nota Fiscal de Serviço Eletrônica (NFS-e) Nº 635. Abaixo o link para visualizar a NFS-e emitida pela prefeitura. Neste link você também vai encontrar o PIX para pagamento. Visualizar o Documento no Portal Omie Consultar NFS-e Nº 0000000000635 Emitente VICTORIA PARTNERS LTDA CNPJ 46235634000124 Inscrição Municipal 0 Número da Nota 0000000000635 Valor da Nota R$ 12000.00 Código de Verificação ${COD_VERIF_635} Data de Emissão 03/08/2026 Nº da RPS 656 Ordem de Serviço 2885 Contrato 2023/00002 Vencimento da NFS-e de № 635 (A Vista) Parcela Vencimento Valor (R$) 1 25/08/2026 11.262,00 Atenciosamente, VICTORIA PARTNERS Aumente em até 90% a produtividade da sua empresa com o sistema Omie. Faça o teste grátis! Acesse: https://www.omie.com.br/sistema-erp/`;
+
+describe("e-mail de emissão do Omie", () => {
+  const nota = lerEmailOmie(EMAIL_OMIE_635)!;
+
+  it("lê o quadro inteiro", () => {
+    expect(nota.emitente).toBe("VICTORIA PARTNERS LTDA");
+    expect(nota.cnpj).toBe("46235634000124");
+    expect(nota.numero).toBe("635");
+    expect(nota.emissao).toBe("2026-08-03");
+    expect(nota.chave).toBe(COD_VERIF_635);
+    expect(nota.rps).toBe("656");
+    expect(nota.ordemServico).toBe("2885");
+  });
+
+  /* O NÚMERO QUE O VARREDOR GENÉRICO PERDIA. O Omie escreve `12000.00` — sem
+     milhar e com ponto decimal — e `lerCorpoDeEmail` procura `R$ 12.000,00`. */
+  it("lê o valor da nota escrito à americana", () => {
+    expect(nota.valor).toBe(12000);
+    expect(lerCorpoDeEmail(EMAIL_OMIE_635, "37511891000150").valor).toBeNull();
+  });
+
+  /* BRUTO E LÍQUIDO SÃO OS DOIS CERTOS: R$ 12.000,00 de serviço, R$ 11.262,00 a
+     pagar (ISS retido). É o líquido que vira título no contas a pagar. */
+  it("separa o vencimento e o líquido da parcela", () => {
+    expect(nota.parcelas).toEqual([{ numero: 1, vencimento: "2026-08-25", valor: 11262 }]);
+  });
+
+  it("não confunde o código de verificação com chave de acesso", () => {
+    expect(lerCorpoDeEmail(EMAIL_OMIE_635, "37511891000150").chave).toBeNull();
+  });
+
+  it("sabe que este e-mail ENTREGA a nota", () => {
+    expect(nota.entrega).toBe(true);
+  });
+
+  it("não lê quadro onde não há", () => {
+    expect(lerEmailOmie("Segue em anexo a nota fiscal de agosto. Abraço.")).toBeNull();
+    expect(lerEmailOmie("")).toBeNull();
+    expect(lerEmailOmie(null)).toBeNull();
+  });
+
+  /* O AVISO REPETE O QUADRO INTEIRO — e foi isto que passou batido.
+   *
+   * A primeira versão deste teste conferia a recusa contra um TRECHO escrito à
+   * mão ("Olá, Takeat. Este e-mail é um aviso…"), que de fato não tinha quadro.
+   * O corpo de verdade tem: mesmo emitente, mesmo CNPJ, mesmo número, mesmo
+   * código de verificação. Rodando assim em 28/08/2026 saíram 97 comprovantes
+   * para ~30 notas — seis papéis idênticos para a NFS-e 927, todos disputando o
+   * mesmo título.
+   *
+   * O recorte abaixo é a mensagem `1a0386be950f54f6` ("Aviso de Vencimento do
+   * Pix da NFS-e nº 635"), achatada como o varredor a recebe. */
+  const AVISO_OMIE_635 = `Olá, Takeat. Este e-mail é um aviso de que o pix da NFS-e nº 635 vencerá hoje, dia 25/08/26. Aqui está o link para visualizar o pix e todo histórico financeiro: Visualizar o Documento no Portal Omie Algumas informações sobre o pix: Emitido por: VICTORIA PARTNERS LTDA (46.***.*34/0001-**) Emitido para: TAKEAT TECNOLOGIA LTDA (37.***.*91/0001-**) Vencimento: 25/08/2026 Número do Pix: 661840349169197 Valor: R$ 11.262,00 Consultar NFS-e Nº 0000000000635 Emitente VICTORIA PARTNERS LTDA CNPJ 46235634000124 Inscrição Municipal 0 Número da Nota 0000000000635 Valor da Nota R$ 12000.00 Código de Verificação ${COD_VERIF_635} Data de Emissão 03/08/2026 Nº da RPS 656 Ordem de Serviço 2885 Contrato 2023/00002 Resumo da Nota Fiscal de Serviço Eletrônica NFS-e Nº 635 Código de Verificação ${COD_VERIF_635} CNPJ 46.235.634/0001-24 Inscrição Municipal 0 Data de Emissão 03/08/2026 RPS Nº 656 Ordem de Serviço Nº 2885 Se você já efetuou o pagamento, por favor desconsidere este e-mail. Muito obrigado, VICTORIA PARTNERS`;
+
+  it("lê o quadro do aviso, e diz que ele NÃO entrega a nota", () => {
+    const aviso = lerEmailOmie(AVISO_OMIE_635)!;
+    // O quadro é o mesmo — por isso a recusa não pode vir dele.
+    expect(aviso.numero).toBe("635");
+    expect(aviso.chave).toBe(COD_VERIF_635);
+    expect(aviso.entrega).toBe(false);
+    expect(nota.entrega).toBe(true);
+    // E o assunto concorda com o corpo, pelo caminho que já existia.
+    expect(ehAvisoDeCobranca("VICTORIA PARTNERS - Aviso de Vencimento do Pix da NFS-e nº 635 - Hoje")).toBe(true);
+    expect(ehAvisoDeCobranca("VICTORIA PARTNERS - NFS-e  + PIX Nº 635")).toBe(false);
   });
 });
 

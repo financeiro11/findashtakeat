@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
-  brlStr, categoriasCriticas, fatias, fonteDaNota, formatarDoc, frasePanorama, mesCurto,
+  brlStr, categoriasCriticas, coberturaEmValor, fatias, fonteDaNota, formatarDoc, frasePanorama, mesCurto,
   ondeAbrir, pctStr, periodoPadrao, nomeDaLinha, urlParaEmbutir, GRAVIDADE, GRAVIDADES,
   SITUACOES_COBERTAS, SITUACOES_EXIGIVEIS, SITUACOES_FALTANDO, SITUACOES_NOSSAS, SITUACAO,
   type LinhaTitulo, type ResumoNotas,
@@ -47,6 +47,61 @@ describe("frasePanorama", () => {
 
   it("aguenta resumo ausente", () => {
     expect(frasePanorama(null)).toBe("");
+  });
+});
+
+describe("coberturaEmValor", () => {
+  const r = resumo({ exigivel_valor: 1_000_000, cobertura_valor: 60 }, {
+    situacoes: [
+      { situacao: "com_nota", titulos: 100, valor: 570_000 },
+      { situacao: "comprovante_aceito", titulos: 10, valor: 30_000 },
+      { situacao: "so_comprovante", titulos: 20, valor: 150_000 },
+      { situacao: "anexo_suspeito", titulos: 5, valor: 80_000 },
+      { situacao: "espera_confirmacao", titulos: 4, valor: 40_000 },
+      { situacao: "sem_nota", titulos: 60, valor: 160_000 },
+      // Fora dos dois lados da conta — não é nota que falta.
+      { situacao: "dispensa", titulos: 300, valor: 4_000_000 },
+    ],
+  });
+
+  it("o coberto é a mesma régua do banco: nota no ERP + recibo aceito", () => {
+    expect(coberturaEmValor(r).coberto).toBe(600_000);
+    // e fecha com o percentual que o Postgres devolveu — era o que não batia.
+    expect(100 * coberturaEmValor(r).coberto / 1_000_000).toBe(r.meta.cobertura_valor);
+  });
+
+  it("soma o comprovante por cima da nota", () => {
+    const c = coberturaEmValor(r);
+    expect(c.so_comprovante).toBe(150_000);
+    expect(c.com_documento).toBe(750_000);
+    expect(c.pct_com_documento).toBe(75);
+  });
+
+  /* Contar "tem arquivo" como "tem documento" é justamente o que a fila de
+     revisão existe para não deixar acontecer. */
+  it("não conta anexo a conferir nem nota que está só no Hub", () => {
+    // Os R$ 80 mil de "anexo a conferir" e os R$ 40 mil esperando confirmação
+    // ficariam visíveis na soma se entrassem: 750 mil é a conta sem eles.
+    expect(coberturaEmValor(r).com_documento).toBe(600_000 + 150_000);
+  });
+
+  it("o denominador é o exigível, não a despesa toda", () => {
+    // R$ 4 mi de dispensa no período e o percentual não se mexe.
+    expect(coberturaEmValor(r).pct_com_documento).toBe(75);
+  });
+
+  it("não divide por zero nem inventa número sem resumo", () => {
+    expect(coberturaEmValor(null).pct_com_documento).toBeNull();
+    expect(coberturaEmValor(resumo({ exigivel_valor: 0 })).pct_com_documento).toBeNull();
+  });
+
+  it("sem comprovante nenhum, os dois números são o mesmo", () => {
+    const s = resumo({ exigivel_valor: 200 }, {
+      situacoes: [{ situacao: "com_nota", titulos: 1, valor: 100 }],
+    });
+    const c = coberturaEmValor(s);
+    expect(c.com_documento).toBe(c.coberto);
+    expect(c.pct_com_documento).toBe(50);
   });
 });
 

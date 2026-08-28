@@ -342,6 +342,51 @@ export function frasePanorama(r: ResumoNotas | null): string {
 }
 
 /**
+ * OS DOIS NÚMEROS DO CABEÇALHO — o que está resolvido e o que ao menos tem papel.
+ *
+ * `coberto` é a régua estrita, a mesma do banco (`SITUACOES_COBERTAS`): tem o
+ * documento que dá para ter, e não há o que cobrar. É o número que manda.
+ *
+ * `com_documento` soma a esse o `so_comprovante` — o gasto que está PROVADO por
+ * recibo, boleto ou comprovante de pagamento e cuja nota fiscal ainda falta.
+ * Existe porque as duas perguntas são diferentes e as duas são feitas: "quanto
+ * está em ordem no ERP?" e "de quanto eu não tenho papel nenhum?". Sem o segundo
+ * número, o que falta de verdade (o vermelho) fica escondido atrás do que falta
+ * de nota fiscal, e são coisas de tamanho bem diferente.
+ *
+ * O que NÃO entra, e por quê: `anexo_suspeito` tem arquivo pendurado, mas
+ * ninguém sabe se é documento — contá-lo seria chamar de "provado" o que está
+ * justamente na fila de alguém abrir. `pronta_para_enviar`, `enviado_aguardando`
+ * e `espera_confirmacao` são notas na mão do HUB, não no ERP; entram na barra,
+ * não neste par de números.
+ *
+ * O `coberto` sai daqui, e não de `val("com_nota")` como a tela fazia: desde que
+ * o recibo aceito passou a contar (27/08/2026), o percentual vinha do banco com
+ * os dois estados e o R$ logo abaixo dele mostrava só um — dois números do mesmo
+ * cartão que não fechavam a divisão.
+ */
+export function coberturaEmValor(r: ResumoNotas | null): {
+  coberto: number;
+  so_comprovante: number;
+  com_documento: number;
+  pct_com_documento: number | null;
+} {
+  const vazio = { coberto: 0, so_comprovante: 0, com_documento: 0, pct_com_documento: null };
+  if (!r) return vazio;
+
+  const valorDe = (s: SituacaoTitulo) => r.situacoes.find((x) => x.situacao === s)?.valor ?? 0;
+  const coberto = SITUACOES_COBERTAS.reduce((soma, s) => soma + valorDe(s), 0);
+  const so_comprovante = valorDe("so_comprovante");
+  const com_documento = coberto + so_comprovante;
+  const base = r.meta.exigivel_valor;
+
+  return {
+    coberto, so_comprovante, com_documento,
+    pct_com_documento: base > 0 ? (100 * com_documento) / base : null,
+  };
+}
+
+/**
  * Quanto da barra cada estado ocupa. Devolve percentuais que somam 100 (ou zeros).
  * Usada na barra do mês e na do total — a mesma conta nos dois lugares.
  */

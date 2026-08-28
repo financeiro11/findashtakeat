@@ -42,7 +42,7 @@ import {
 } from "lucide-react";
 import { resolverComprovante } from "@/lib/comprovante";
 import {
-  brlStr, categoriasCriticas, dataStr, fatias, fonteDaNota, formatarDoc, frasePanorama, mesCurto,
+  brlStr, categoriasCriticas, coberturaEmValor, dataStr, fatias, fonteDaNota, formatarDoc, frasePanorama, mesCurto,
   nomeDaLinha, ondeAbrir, pctStr, periodoPadrao, resumoDoCorte, urlParaEmbutir,
   GRAVIDADE, GRAVIDADES, REGRA, SITUACAO,
   SITUACOES_EXIGIVEIS, SITUACOES_FALTANDO, SITUACOES_NOSSAS,
@@ -928,6 +928,9 @@ export default function NotasERP() {
   const val = (s: SituacaoTitulo) => porSituacao.get(s)?.valor ?? 0;
   const qtd = (s: SituacaoTitulo) => porSituacao.get(s)?.titulos ?? 0;
 
+  /* Os dois números do cabeçalho, calculados na lib para serem conferíveis. */
+  const doc = useMemo(() => coberturaEmValor(resumo), [resumo]);
+
   const anos = useMemo(() => {
     const atual = new Date().getUTCFullYear();
     return [atual - 1, atual];
@@ -1008,17 +1011,33 @@ export default function NotasERP() {
               {(m?.titulos ?? 0).toLocaleString("pt-BR")} no período
             </p>
           </div>
-          <div className="text-right">
-            <p className="text-[11px] uppercase tracking-wider text-muted-foreground">Com nota confirmada no Omie</p>
-            <p className={cn(
-              "mt-1 text-3xl font-semibold tabular-nums",
-              (m?.cobertura_valor ?? 0) >= 90 ? "text-emerald-600 dark:text-emerald-400"
-                : (m?.cobertura_valor ?? 0) >= 60 ? "text-amber-600 dark:text-amber-400"
-                : "text-red-600 dark:text-red-400",
-            )}>
-              {pctStr(m?.cobertura_valor ?? null)}
-            </p>
-            <p className="text-[12.5px] text-muted-foreground">{brlStr(val("com_nota"))}</p>
+          <div className="flex flex-wrap items-end gap-x-8 gap-y-4">
+            {/* O SEGUNDO NÚMERO, e ele responde outra pergunta.
+                O da direita diz o que está em ordem no ERP; este diz de quanto
+                NÃO se tem papel nenhum. Fica à esquerda, menor e sem cor, para
+                não disputar com a meta: é companhia, não o número que manda. */}
+            <div className="text-right" title={
+              "Soma o que tem nota confirmada no Omie com o que tem só comprovante — recibo, " +
+              "boleto, comprovante de pagamento. Nesses o gasto está provado e a nota fiscal " +
+              "ainda falta; a diferença entre os dois números é exatamente essa fatia laranja. " +
+              "Anexo a conferir não entra: tem arquivo, e ninguém sabe ainda se é documento."
+            }>
+              <p className="text-[11px] uppercase tracking-wider text-muted-foreground">Com NF ou comprovante</p>
+              <p className="mt-1 text-2xl font-semibold tabular-nums">{pctStr(doc.pct_com_documento)}</p>
+              <p className="text-[12.5px] text-muted-foreground">{brlStr(doc.com_documento)}</p>
+            </div>
+            <div className="text-right">
+              <p className="text-[11px] uppercase tracking-wider text-muted-foreground">Com nota confirmada no Omie</p>
+              <p className={cn(
+                "mt-1 text-3xl font-semibold tabular-nums",
+                (m?.cobertura_valor ?? 0) >= 90 ? "text-emerald-600 dark:text-emerald-400"
+                  : (m?.cobertura_valor ?? 0) >= 60 ? "text-amber-600 dark:text-amber-400"
+                  : "text-red-600 dark:text-red-400",
+              )}>
+                {pctStr(m?.cobertura_valor ?? null)}
+              </p>
+              <p className="text-[12.5px] text-muted-foreground">{brlStr(doc.coberto)}</p>
+            </div>
           </div>
         </div>
 
@@ -1123,7 +1142,7 @@ export default function NotasERP() {
       {aba === "caixa" && <CaixaDeNotas />}
       {aba === "diagnostico" && <PorQueFalta de={de} ate={ate} />}
       {aba === "categorias" && <Categorias resumo={resumo} />}
-      {aba === "fornecedores" && <Fornecedores resumo={resumo} de={de} ate={ate} />}
+      {aba === "fornecedores" && <Fornecedores resumo={resumo} de={de} ate={ate} aoMudar={carregar} />}
       {aba === "titulos" && (
         <Titulos de={de} ate={ate} gravidadeInicial={gravidadeFoco} situacaoInicial={situacaoFoco} />
       )}
@@ -1673,11 +1692,17 @@ function PorQueFalta({ de, ate }: { de: string; ate: string }) {
  */
 
 /** O que falta de UM fornecedor, título a título — em ordem de data. */
-function TitulosDoFornecedor({ de, ate, favorecido, doc, esperados }: {
+function TitulosDoFornecedor({ de, ate, favorecido, doc, esperados, aoMudar }: {
   de: string; ate: string; favorecido: string; doc: string | null; esperados: number;
+  /** Recarrega o resumo lá de cima — sem isto a linha do fornecedor continuaria
+      dizendo "4 títulos · R$ 24.000" depois de a nota entrar num deles. */
+  aoMudar?: () => void;
 }) {
   const [linhas, setLinhas] = useState<LinhaTitulo[] | null>(null);
   const [erro, setErro] = useState<string | null>(null);
+  const [releitura, setReleitura] = useState(0);
+  const [aberto, setAberto] = useState<{ linha: LinhaTitulo; onde: Exclude<OndeAbrir, null> } | null>(null);
+  const nomear = useNomeDaLinha();
 
   useEffect(() => {
     let vivo = true;
@@ -1703,7 +1728,16 @@ function TitulosDoFornecedor({ de, ate, favorecido, doc, esperados }: {
       setLinhas(doGrupo);
     })();
     return () => { vivo = false; };
-  }, [de, ate, favorecido, doc]);
+  }, [de, ate, favorecido, doc, releitura]);
+
+  /* ANEXAR AQUI, e não noutra aba. Esta é a tela que faz a COBRANÇA — ela abre
+     os quatro títulos do Malek e diz que os quatro estão sem nota. Quem está
+     olhando para ela costuma estar com o PDF na mão, e até 28/08/2026 o caminho
+     era decorar o número do título, trocar para a aba "Títulos", filtrar de novo
+     e achar a mesma linha. O clipe é o mesmo componente das outras listas, de
+     propósito: um segundo caminho de anexo divergiria do primeiro no primeiro
+     conserto. */
+  const anexado = () => { setReleitura((n) => n + 1); aoMudar?.(); };
 
   if (erro) {
     return <p className="px-4 py-3 text-[12.5px] text-destructive">Não deu para listar: {erro}</p>;
@@ -1729,7 +1763,8 @@ function TitulosDoFornecedor({ de, ate, favorecido, doc, esperados }: {
             <th className="py-1 pr-3 font-medium">Vencimento</th>
             <th className="py-1 pr-3 font-medium">Categoria</th>
             <th className="py-1 pr-3 font-medium">Situação</th>
-            <th className="py-1 text-right font-medium">Valor</th>
+            <th className="py-1 pr-3 text-right font-medium">Valor</th>
+            <th className="py-1 text-right font-medium">Nota</th>
           </tr>
         </thead>
         <tbody>
@@ -1748,7 +1783,15 @@ function TitulosDoFornecedor({ de, ate, favorecido, doc, esperados }: {
                   {SITUACAO[l.situacao].rotulo}
                 </span>
               </td>
-              <td className="py-1.5 text-right font-medium tabular-nums">{brl(l.valor)}</td>
+              <td className="py-1.5 pr-3 text-right font-medium tabular-nums">{brl(l.valor)}</td>
+              {/* O gesto na linha que faz o pedido — o olho só aparece quando há
+                  o que ver (`anexo_suspeito` tem arquivo; `sem_nota`, não). */}
+              <td className="py-1.5 text-right">
+                <span className="inline-flex items-center justify-end gap-0.5">
+                  <BotaoAbrir l={l} onAbrir={(onde) => setAberto({ linha: l, onde })} />
+                  <BotaoAnexar l={l} onPronto={anexado} />
+                </span>
+              </td>
             </tr>
           ))}
         </tbody>
@@ -1760,11 +1803,20 @@ function TitulosDoFornecedor({ de, ate, favorecido, doc, esperados }: {
           {linhas.length} títulos abertos aqui, {esperados} contados na linha de cima.
         </p>
       )}
+
+      {aberto && (
+        <VisorAnexo
+          linha={aberto.linha} onde={aberto.onde} nomear={nomear}
+          aoFechar={() => setAberto(null)}
+        />
+      )}
     </div>
   );
 }
 
-function Fornecedores({ resumo, de, ate }: { resumo: ResumoNotas | null; de: string; ate: string }) {
+function Fornecedores({ resumo, de, ate, aoMudar }: {
+  resumo: ResumoNotas | null; de: string; ate: string; aoMudar?: () => void;
+}) {
   const linhas = resumo?.fornecedores ?? [];
   const cartaoTitulos = resumo?.meta?.cartao_titulos ?? 0;
   const [aberto, setAberto] = useState<string | null>(null);
@@ -1801,8 +1853,12 @@ function Fornecedores({ resumo, de, ate }: { resumo: ResumoNotas | null; de: str
               Ninguém devendo nota no período.
             </td></tr>
           )}
-          {linhas.map((f, i) => {
-            const chave = `${f.doc ?? ""}|${f.favorecido}|${i}`;
+          {linhas.map((f) => {
+            /* SEM O ÍNDICE NA CHAVE. Anexar uma nota recarrega o resumo, e um
+               fornecedor que zera some da lista — com o índice dentro da chave,
+               todos abaixo dele deslizam e o painel aberto passa a ser o do
+               vizinho. `doc|favorecido` é o próprio agrupamento da RPC. */
+            const chave = `${f.doc ?? ""}|${f.favorecido}`;
             const eh = aberto === chave;
             return (
               <Fragment key={chave}>
@@ -1830,6 +1886,7 @@ function Fornecedores({ resumo, de, ate }: { resumo: ResumoNotas | null; de: str
                         de={de} ate={ate}
                         favorecido={f.favorecido} doc={f.doc}
                         esperados={f.titulos}
+                        aoMudar={aoMudar}
                       />
                     </td>
                   </tr>

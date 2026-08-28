@@ -33,10 +33,14 @@ import { omieCall } from "../_shared/omie-rpc.ts";
 import { requireUser } from "../_shared/auth.ts";
 import { generateJSON, GeminiError, DEFAULT_MODEL } from "../_shared/gemini.ts";
 import { mimeDosBytes, mimeDoNome } from "../_shared/mime.ts";
+import { lerXmlFiscal } from "../_shared/nota-fiscal.ts";
 import {
   triar, perguntaDaTriagem, SISTEMA_TRIAGEM, SCHEMA_TRIAGEM,
   type LeituraAnexo, type ContextoTitulo,
 } from "../_shared/anexo-triagem.ts";
+
+/** O nosso, para o XML saber qual dos CNPJs do arquivo é o do fornecedor. */
+const CNPJ_TAKEAT = "37511891000150";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -200,8 +204,51 @@ async function lerDocumento(
   /* Os bytes primeiro, o nome depois: a extensão é palpite e o Omie guarda
      arquivo com nome que não diz nada — é por isso que a linha está na fila. */
   const mime = mimeDosBytes(bytes) ?? mimeDoNome(nome);
+
+  /* ---------------- O XML SE LÊ SOZINHO, ANTES DE CHAMAR A IA ----------------
+   *
+   * Aqui a IA não é só desnecessária: ela é pior. No XML o tipo, o emitente, o
+   * CNPJ, o valor, a data e o número estão em campo próprio — pedir ao Gemini
+   * que "olhe" um arquivo de tags é pagar para introduzir uma chance de erro
+   * onde não havia nenhuma. E de qualquer forma ele não olharia: `SUPORTADOS`
+   * é PDF e imagem, então até 28/08/2026 todo XML morria em `não sei ler` e a
+   * linha ficava `indefinido` para sempre — contando como coberta pelo
+   * desempate do "não sei". Eram 8 títulos, um deles de R$ 79.450.
+   *
+   * `lerXmlFiscal` devolve `null` para o que não tem tag de NF-e/NFS-e, e aí a
+   * recusa é honesta: um `.xml` que não é nota fiscal existe (retorno de banco,
+   * planilha exportada) e precisa aparecer como problema, não como nota. */
+  if (mime === "text/xml" || mime === "application/xml" || /\.xml$/i.test(nome)) {
+    const x = lerXmlFiscal(new TextDecoder().decode(bytes), CNPJ_TAKEAT);
+    if (!x) {
+      throw new Error(
+        `"${nome}" é XML, mas não tem nenhuma tag conhecida de NF-e/NFS-e — não é nota fiscal`,
+      );
+    }
+    return {
+      leitura: {
+        tipo: "nota_fiscal",
+        emitente: x.emitente,
+        cnpj_emitente: x.cnpj,
+        numero: x.numero,
+        valor_total: x.valor,
+        data: x.data,
+        /* Sempre legível: ou as tags estavam lá, ou nem chegamos aqui. Não há
+           o meio-termo do escaneado torto que justifica este campo na IA. */
+        legivel: true,
+        resumo: [
+          "XML fiscal",
+          x.numero ? `nº ${x.numero}` : null,
+          x.emitente,
+          x.chave ? `chave ${x.chave}` : null,
+        ].filter(Boolean).join(" · "),
+      },
+      arquivo: nome,
+    };
+  }
+
   if (!mime || !SUPORTADOS.has(mime)) {
-    throw new Error(`não sei ler "${nome}"${mime ? ` (${mime})` : ""} — use PDF, JPG, PNG ou WEBP`);
+    throw new Error(`não sei ler "${nome}"${mime ? ` (${mime})` : ""} — use PDF, JPG, PNG, WEBP ou XML`);
   }
 
   const ctx: ContextoTitulo = {

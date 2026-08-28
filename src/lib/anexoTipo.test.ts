@@ -178,6 +178,24 @@ describe("classificarAnexo", () => {
     expect(classificarAnexo("comprovante_whatsapp.pdf")).toBe("nota");
   });
 
+  it("o XML fiscal é nota pela extensão, mesmo com nome que não diz nada", () => {
+    // Decisão do usuário em 28/08/2026. Estes quatro estão pendurados em títulos
+    // no ERP e caíam em 'indefinido' — contavam como cobertos pelo desempate do
+    // "não sei", não por decisão, e a triagem por IA nunca ia resolvê-los porque
+    // ela só aceita PDF e imagem.
+    expect(classificarAnexo("19f11789034de969_anexo2.xml")).toBe("nota");
+    expect(classificarAnexo("1a0243d004948306_NFSe0314535_229U.4024.5052.43.xml")).toBe("nota");
+    expect(classificarAnexo("3034226600018370443-nfs-e.xml")).toBe("nota");
+    expect(classificarAnexo("ANEXO2.XML")).toBe("nota");
+  });
+
+  it("a extensão do XML vence até o nome que seria duvidoso", () => {
+    // Um `.xml` gerado pelo sistema continua sendo o documento fiscal: quem
+    // recusa o que não tem tag de NF-e é a leitura por dentro, não o nome.
+    expect(classificarAnexo("documento (3).xml")).toBe("nota");
+    expect(classificarAnexo("nf_undefined.xml")).toBe("nota");
+  });
+
   it("marca como duvidoso só o que o sistema nomeou sozinho", () => {
     expect(classificarAnexo("5aef68b9-5e16-426a-94e2-0cc1ab985241.tmp.pdf")).toBe("duvidoso");
     expect(classificarAnexo("IMG-20260812-WA0007.jpg")).toBe("duvidoso");

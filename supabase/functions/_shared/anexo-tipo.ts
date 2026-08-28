@@ -209,6 +209,18 @@ const NOME_GENERICO =
 export function classificarAnexo(nome: string | null | undefined): ClasseDeAnexo {
   const s = String(nome ?? "").trim().toLowerCase();
   if (!s) return "duvidoso";                       // anexo sem nome nenhum
+  /* O XML FISCAL É A NOTA — decisão do usuário em 28/08/2026, e a extensão
+     basta. Um `.xml` não é um comprovante de segunda que dá para tolerar: para
+     NF-e ele É o documento, e o PDF é o retrato dele. Ele também é o único
+     lugar onde CNPJ, valor, data e chave vêm de campo próprio, sem OCR.
+     Sem esta linha eles caíam em `indefinido` e contavam como cobertos pelo
+     desempate do "não sei", não por decisão — e a triagem por IA, que só
+     aceita PDF e imagem, nunca ia resolvê-los: os 8 XMLs pendurados em títulos
+     no ERP estavam assim, entre eles um de R$ 79.450.
+     Um `.xml` que não seja nota fiscal existe (retorno de banco, planilha
+     exportada), e é o que a leitura por dentro pega: `lerXmlFiscal` recusa o
+     que não tem tag de NF-e/NFS-e, e a revisão de gente vence isto aqui. */
+  if (/\.xml$/.test(s)) return "nota";
   if (CHAVE_FISCAL.test(s) || PALAVRA_DE_NOTA.test(s)) return "nota";
   if (NOME_VAZIO.test(s) || NOME_GENERICO.test(s)) return "duvidoso";
   return "indefinido";

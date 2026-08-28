@@ -24,23 +24,28 @@
 // avisar. Um mês tem ~3.600 cobranças, então ler de uma vez mostraria 1.000 e
 // esconderia o resto — parecendo que o mês é menor do que é.
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import { comValorExato } from "@/components/ValorExato";
 import {
   FileText, RefreshCw, Loader2, Search, FileCode2, AlertTriangle,
-  ChevronLeft, ChevronRight, CheckCircle2, Send, Info,
+  ChevronLeft, ChevronRight, CheckCircle2, Send, Info, Zap, Layers, Square,
 } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import NotasFiscaisLog from "./NotasFiscaisLog";
 import NotasFiscaisAuditoria from "./NotasFiscaisAuditoria";
 import {
-  SITUACOES, motivoBloqueio, motivoCurto, podeEmitir, resumoLote, xmlAindaVale, formatarDoc, statusAsaas,
+  SITUACOES, motivoBloqueio, motivoCurto, podeEmitir, exigeAvulsa, resumoLote,
+  xmlAindaVale, formatarDoc, statusAsaas,
   linkPortalNacional, chaveEmBlocos,
-  type LinhaNota, type Situacao,
+  somarBloco, precisaEsperarOLote, tetoDoDiaAtingido,
+  esperaAntesDeRepetir, PROGRESSO_ZERO, CABEM_NUMA_CHAMADA,
+  type LinhaNota, type Situacao, type ProgressoMassa,
 } from "@/lib/notasFiscais";
+
+const dorme = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 const sb = supabase as any;
 
@@ -100,6 +105,29 @@ export default function NotasFiscais() {
   const [filtro, setFiltro] = useState<Situacao | "todas">("todas");
   const [sel, setSel] = useState<Set<string>>(new Set());
   const [aba, setAba] = useState<"painel" | "auditoria" | "log">("painel");
+  /* A CHAVE DA AVULSA — desligada sempre que a tela nasce, e nunca lembrada.
+   *
+   * Não vai para o localStorage de propósito, ao contrário de quase toda
+   * preferência daqui. Preferência que sobrevive à sessão é boa quando o pior
+   * caso é uma coluna escondida; aqui o pior caso é abrir a tela amanhã sob uma
+   * régua que se ligou ontem e emitir nota antes de o dinheiro entrar sem ter
+   * decidido isso hoje. A avulsa é um ato, e ato se repete, não se herda. */
+  const [avulsa, setAvulsa] = useState(false);
+  /* A EMISSÃO EM MASSA — o estado da esteira quando ela roda por aqui.
+   * `null` = parada. O `esperando` é o que distingue "travou" de "o Omie está
+   * faturando o lote anterior", que é a coisa mais comum de acontecer e a mais
+   * fácil de confundir com pane. O ref (e não o state) é o que o laço consegue
+   * ler no meio da execução — state dentro de um `for await` fica congelado no
+   * valor da renderização em que o laço começou. */
+  const [massa, setMassa] = useState<ProgressoMassa | null>(null);
+  const [esperando, setEsperando] = useState(0);
+  const pararMassa = useRef(false);
+  /* O TAMANHO DA FILA DA ESTEIRA — e ele não sai das linhas desta tela.
+   * A tela mostra o MÊS; a fila é o que a esteira pode emitir AGORA, sob todas
+   * as guardas (paralelo com o Asaas, cadastro no Omie, carência). Os dois
+   * números são diferentes de propósito e por muito: em agosto, 1.989 contra
+   * 1.004. Quem oferece o botão de massa é a fila. */
+  const [filaResumo, setFilaResumo] = useState<{ cobrancas: number; valor: number } | null>(null);
 
   const periodo = useMemo(() => {
     const ult = new Date(ano, mes + 1, 0).getDate();
@@ -136,6 +164,13 @@ export default function NotasFiscais() {
 
       const { data: cfg } = await sb.from("nf_config").select("data_corte").eq("id", 1).maybeSingle();
       setCorte(cfg?.data_corte ?? null);
+
+      /* A fila é do dia, não do mês em foco — por isso ela é lida aqui e não
+         derivada das linhas. Falhar aqui não pode derrubar a tela: sem o número
+         a faixa de massa some, e o painel do mês continua servindo. */
+      const { data: fr } = await sb.rpc("notas_fiscais_fila_resumo");
+      const linha = Array.isArray(fr) ? fr[0] : fr;
+      setFilaResumo(linha ? { cobrancas: Number(linha.cobrancas ?? 0), valor: Number(linha.valor ?? 0) } : null);
     } catch (e: any) {
       toast.error("Não foi possível carregar o período.", { description: e?.message });
     } finally {
@@ -181,26 +216,62 @@ export default function NotasFiscais() {
     });
   }, [linhas, busca, filtro]);
 
-  const lote = useMemo(() => resumoLote(linhas, sel), [linhas, sel]);
+  const lote = useMemo(() => resumoLote(linhas, sel, { avulsa }), [linhas, sel, avulsa]);
 
   const alternar = (id: string) => {
     setSel((s) => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
   };
   /** Marca só o que dá para emitir — marcar o bloqueado seria promessa falsa. */
-  const marcarEmitiveis = () => setSel(new Set(visiveis.filter(podeEmitir).map((l) => l.id_asaas)));
+  const marcarEmitiveis = () =>
+    setSel(new Set(visiveis.filter((l) => podeEmitir(l, { avulsa })).map((l) => l.id_asaas)));
+
+  /**
+   * DESLIGAR A CHAVE DESMARCA O QUE SÓ ELA DEIXAVA MARCAR.
+   *
+   * Sem isto a confirmada continuaria selecionada com a chave desligada: a barra
+   * de lote diria "3 de 5 vão ser emitidas" e as duas de fora seriam justamente
+   * as que a pessoa escolheu a dedo. Some da barra o que sumiu da régua.
+   */
+  const trocarAvulsa = (ligada: boolean) => {
+    setAvulsa(ligada);
+    if (!ligada) {
+      setSel((s) => new Set(
+        linhas.filter((l) => s.has(l.id_asaas) && podeEmitir(l)).map((l) => l.id_asaas),
+      ));
+    }
+  };
 
   const emitir = async () => {
-    const ids = linhas.filter((l) => sel.has(l.id_asaas)).filter(podeEmitir).map((l) => l.id_asaas);
+    const escolhidas = linhas.filter((l) => sel.has(l.id_asaas)).filter((l) => podeEmitir(l, { avulsa }));
+    const ids = escolhidas.map((l) => l.id_asaas);
     if (!ids.length) return;
+    const plural = ids.length > 1;
+    /* O aviso diz o que a régua larga acrescentou, com número e valor. "Emitir
+     * 12 notas" e "emitir 12 notas, 5 delas sobre cobrança que ainda não
+     * liquidou" são dois pedidos diferentes, e quem clica tem de saber qual dos
+     * dois está fazendo antes de clicar. */
     const aviso =
-      `Emitir ${ids.length} nota${ids.length > 1 ? "s" : ""} fiscal${ids.length > 1 ? "is" : ""} no Omie ` +
-      `(${brlStr(lote.valor)})?\n\nIsto cria a Ordem de Serviço e fatura, o que emite a NFS-e de verdade. ` +
+      `Emitir ${ids.length} nota${plural ? "s" : ""} fiscal${plural ? "is" : ""} no Omie ` +
+      `(${brlStr(lote.valor)})?\n\n` +
+      (lote.confirmadas
+        ? `ATENÇÃO — ${lote.confirmadas} dela${lote.confirmadas > 1 ? "s" : ""} (${brlStr(lote.valorConfirmadas)}) ` +
+          `${lote.confirmadas > 1 ? "são de cobranças CONFIRMADAS" : "é de cobrança CONFIRMADA"}: ` +
+          `pagamento autorizado cuja liquidação ainda não caiu na conta. Se não liquidar, a nota vira imposto ` +
+          `sobre receita que não existiu.\n\n`
+        : "") +
+      `Isto cria a Ordem de Serviço e fatura, o que emite a NFS-e de verdade. ` +
       `Nota emitida não se apaga — cancela-se, com prazo e justificativa.`;
     if (!window.confirm(aviso)) return;
 
     setEmitindo(true);
     try {
-      const { data, error } = await sb.functions.invoke("omie-nfse-sync", { body: { action: "emitir", ids } });
+      const { data, error } = await sb.functions.invoke("omie-nfse-sync", {
+        // `avulsa` viaja no corpo e não é lido de configuração nenhuma: é a
+        // decisão desta chamada, e o servidor confere a régua de novo do lado de
+        // lá (ver `bloqueioDeEmissao` na edge function). A tela explica; ela não
+        // é a guarda.
+        body: { action: "emitir", ids, avulsa },
+      });
       if (error) throw error;
       if (data?.erro) throw new Error(data.erro);
 
@@ -254,6 +325,125 @@ export default function NotasFiscais() {
       toast.error("Falha na emissão.", { description: e?.message });
     } finally {
       setEmitindo(false);
+    }
+  };
+
+  /* ------------------------- emissão em massa ---------------------------- */
+  /**
+   * Emite a fila inteira, uma leva por vez, esperando o Omie entre elas.
+   *
+   * DE ONDE SAI A LISTA, e esta é a decisão que mais importa aqui: da FILA
+   * (`notas_fiscais_fila_emissao`), que é a mesma que o cron consome — não do
+   * que está selecionado nem do que a tela mostra.
+   *
+   * A régua da tela (`motivoBloqueio`) responde "esta linha pode ser
+   * selecionada?" e não conhece as guardas da fila: o paralelo com o Asaas, o
+   * cadastro do cliente no Omie, a nota do Asaas em `SCHEDULED`/`ERROR`. Numa
+   * seleção a dedo isso está certo — a porta do servidor confere de novo. Em
+   * massa, não: medido em 27/08, a tela ofereceria 1.989 cobranças de agosto e
+   * 1.070 delas (R$ 591 mil) já tinham nota do Asaas. Seriam mil chamadas para
+   * colher mil recusas e mil linhas `bloqueado` no diário.
+   *
+   * A fila é relida A CADA LEVA, e não uma vez no começo. Duas razões que se
+   * somam: o teto de 1.000 linhas do PostgREST não alcança uma lista de 1.004, e
+   * a fila já exclui sozinha quem acabou de ser despachado (a guarda das 12h
+   * sobre `nf_emissoes`). Reler é mais barato do que paginar e não erra.
+   *
+   * O laço é burro de propósito. O único julgamento que faz é separar os três
+   * motivos de uma leva não andar: lote em voo (espera e REPETE), teto do dia
+   * (para — só abre amanhã) e o resto (desiste dessa leva, porque uma leva ruim
+   * não pode impedir o mês de fechar).
+   */
+  const emitirEmMassa = async () => {
+    const total = filaResumo?.cobrancas ?? 0;
+    if (!total) return;
+    const levas = Math.ceil(total / CABEM_NUMA_CHAMADA);
+
+    if (!window.confirm(
+      `Emitir as ${total.toLocaleString("pt-BR")} notas fiscais da fila no Omie (${brlStr(filaResumo?.valor ?? 0)})?\n\n` +
+      `Vai em ${levas} leva${levas > 1 ? "s" : ""} de até ${CABEM_NUMA_CHAMADA}, esperando o Omie faturar ` +
+      `entre uma e outra — cada lote leva alguns minutos. ` +
+      `Estimativa: ${Math.max(1, Math.round(levas * 2.5))} a ${Math.round(levas * 4)} minutos.\n\n` +
+      `ESTA ABA PRECISA FICAR ABERTA. Fechar no meio não desfaz o que já saiu — ` +
+      `só interrompe o resto, e a esteira retoma de onde parou.\n\n` +
+      `Sai a fila da esteira: só cobrança recebida, com cliente no Omie e sem nota do Asaas. ` +
+      `A chave Avulsa não vale aqui — ela é ato de seleção, não de varredura.\n\n` +
+      `Nota emitida não se apaga: cancela-se, com prazo e justificativa.`,
+    )) return;
+
+    pararMassa.current = false;
+    let acc = PROGRESSO_ZERO(levas);
+    setMassa(acc);
+
+    try {
+      for (let leva = 0; leva < levas + 5; leva++) {
+        if (pararMassa.current) throw new Error("__parado__");
+
+        // A fila de agora, não a de um minuto atrás.
+        const { data: proximas, error: erroFila } = await sb.rpc(
+          "notas_fiscais_fila_emissao", { p_limite: CABEM_NUMA_CHAMADA },
+        );
+        if (erroFila) throw erroFila;
+        const ids = ((proximas ?? []) as Array<{ id_asaas: string }>).map((l) => l.id_asaas);
+        if (!ids.length) break; // acabou
+
+        for (let tentativa = 1; ; tentativa++) {
+          if (pararMassa.current) throw new Error("__parado__");
+
+          const { data, error } = await sb.functions.invoke("omie-nfse-sync", {
+            body: { action: "emitir", ids },
+          });
+          const r = error ? { erro: error.message ?? String(error) } : (data ?? {});
+
+          /* O LOTE ANTERIOR AINDA ESTÁ NO FORNO. Nada foi criado, então repetir
+           * é seguro — e é a única coisa que faz o mês fechar. */
+          if (precisaEsperarOLote(r) && tentativa <= 12) {
+            const seg = Math.round(esperaAntesDeRepetir(tentativa) / 1000);
+            // Conta regressiva: sem ela a tela fica parada e parece pane.
+            for (let s = seg; s > 0 && !pararMassa.current; s--) {
+              setEsperando(s);
+              await dorme(1000);
+            }
+            setEsperando(0);
+            continue;
+          }
+
+          acc = somarBloco(acc, r);
+          setMassa({ ...acc });
+
+          if (tetoDoDiaAtingido(r)) {
+            toast.warning("O teto do dia foi atingido.", {
+              description: "A esteira para por hoje e retoma amanhã sozinha. Para empurrar mais, suba o teto do dia em nf_config.",
+              duration: 15000,
+            });
+            throw new Error("__teto__");
+          }
+          break;
+        }
+      }
+      toast.success(`${acc.despachadas} nota(s) despachada(s) ao Omie.`, {
+        description: "O lote é assíncrono: os números chegam nos próximos minutos. Use \"Atualizar do Omie\" para vê-los.",
+        duration: 15000,
+      });
+    } catch (e) {
+      /* Os dois nomes com underscore são desvios de fluxo, não panes: "parado"
+         é o botão da pessoa e "teto" é o freio do dia, que já avisou por conta
+         própria. Só o que não é nenhum dos dois merece cara de erro. */
+      const msg = e instanceof Error ? e.message : String(e);
+      if (msg === "__parado__") {
+        toast.info(`Interrompido. ${acc.despachadas} já foram despachadas.`, {
+          description: "O que saiu, saiu — não se desfaz. O resto continua na fila e a esteira retoma.",
+          duration: 12000,
+        });
+      } else if (msg !== "__teto__") {
+        toast.error("A emissão em massa parou.", { description: msg, duration: 12000 });
+      }
+    } finally {
+      setEsperando(0);
+      pararMassa.current = false;
+      await carregar();
+      // O progresso fica na tela depois de terminar: é o resumo do que
+      // aconteceu, e apagá-lo no fim levaria embora justamente o relatório.
     }
   };
 
@@ -394,12 +584,154 @@ export default function NotasFiscais() {
         </div>
       </div>
 
+      {/* ------------------------------- avulsa -------------------------------- */}
+      {/* A CHAVE, e por que ela é uma chave e não um botão a mais.
+          Um botão "Emitir avulsa" ao lado de "Emitir no Omie" faria a régua ser
+          escolhida no último clique, depois de a seleção já estar montada — e as
+          duas listas seriam idênticas na tela. A chave inverte a ordem: primeiro
+          se decide sob que régua se está trabalhando, e a LISTA responde na hora
+          (caixas que acendem, selo âmbar nas que só saem assim). O risco fica
+          visível durante a escolha, que é quando dá para desistir dele. */}
+      <div className={cn(
+        "flex flex-wrap items-center gap-2 rounded-lg border p-2 transition-colors",
+        avulsa ? "border-amber-500/40 bg-amber-500/5" : "border-border bg-card",
+      )}>
+        <button
+          onClick={() => trocarAvulsa(!avulsa)}
+          role="switch"
+          aria-checked={avulsa}
+          className={cn(
+            "flex items-center gap-1.5 rounded-md border px-2 py-1 text-xs font-medium transition-colors",
+            avulsa
+              ? "border-amber-500/40 bg-amber-500/15 text-amber-600 dark:text-amber-400"
+              : "border-border text-muted-foreground hover:bg-muted",
+          )}
+        >
+          <Zap className={cn("h-3.5 w-3.5", avulsa && "fill-current")} />
+          Emissão avulsa
+        </button>
+        <p className="flex-1 text-[11px] leading-relaxed text-muted-foreground">
+          {avulsa ? (
+            <>
+              A régua larga está ligada: cobrança <strong className="text-amber-600 dark:text-amber-400">confirmada</strong> também
+              pode ser emitida agora, com a competência no vencimento. Estorno, pendente e vencida continuam barrados,
+              e nenhuma guarda contra nota duplicada foi afrouxada. Quem manda assina no registro de emissões.
+            </>
+          ) : (
+            <>
+              Só cobrança <strong>recebida</strong> pode ser emitida — é a régua da rodada diária. Ligue a avulsa para
+              emitir também as <strong>confirmadas</strong> (pagamento autorizado, liquidação ainda não caiu na conta),
+              uma a uma e sob sua assinatura.
+            </>
+          )}
+        </p>
+      </div>
+
+      {/* ---------------------------- emissão em massa ------------------------- */}
+      {/* A FAIXA DO FECHAMENTO DE MÊS.
+          Fica acima da barra de lote porque responde outra pergunta: a de baixo
+          é "o que eu escolhi", esta é "tudo o que dá para emitir agora". Só
+          aparece quando há leva — uma faixa permanente dizendo "0 para emitir"
+          seria um botão de emitir nota fiscal em massa sempre à mão, e este é
+          exatamente o tipo de botão que não deve estar sempre à mão. */}
+      {((filaResumo?.cobrancas ?? 0) > 0 || massa) && (
+        <div className={cn(
+          "flex flex-wrap items-center gap-3 rounded-lg border p-3",
+          massa ? "border-primary/40 bg-primary/5" : "border-border bg-card",
+        )}>
+          <Layers className="h-4 w-4 shrink-0 text-primary" />
+          <div className="flex-1 text-xs leading-relaxed">
+            {massa ? (
+              <>
+                <span className="font-semibold">
+                  Leva {Math.min(massa.blocosFeitos + 1, massa.blocosTotal)} de {massa.blocosTotal}
+                </span>
+                {" · "}
+                <span className="num">{massa.despachadas}</span> despachada{massa.despachadas === 1 ? "" : "s"} ao Omie
+                {massa.jaEmitidas > 0 && <> · <span className="num">{massa.jaEmitidas}</span> já tinham nota</>}
+                {massa.barradas > 0 && <> · <span className="num">{massa.barradas}</span> barradas no Asaas</>}
+                {massa.falhas > 0 && <> · <span className="num text-destructive">{massa.falhas}</span> não saíram</>}
+                <div className="mt-1 text-[11px] text-muted-foreground">
+                  {esperando > 0
+                    ? `O Omie ainda está faturando a leva anterior — nova tentativa em ${esperando}s. Nada se perdeu.`
+                    : "Despachada não é emitida: o lote é assíncrono e o número da nota chega minutos depois."}
+                </div>
+                {/* Os motivos agrupados são o relatório do que NÃO saiu — sem
+                    eles, "12 barradas" manda abrir o registro e garimpar. */}
+                {massa.motivos.length > 0 && (
+                  <div className="mt-1 text-[11px] text-muted-foreground" title={massa.motivos.map(([m, n]) => `${n}× ${m}`).join("\n")}>
+                    {massa.motivos.slice(0, 2).map(([m, n]) => `${n}× ${m}`).join(" · ")}
+                    {massa.motivos.length > 2 && ` · +${massa.motivos.length - 2} motivo(s)`}
+                  </div>
+                )}
+              </>
+            ) : (
+              <>
+                <span className="font-semibold">{(filaResumo?.cobrancas ?? 0).toLocaleString("pt-BR")}</span>
+                {" "}na fila da esteira, prontas para virar nota {" · "}{brl(filaResumo?.valor ?? 0)}
+                <div className="mt-0.5 text-[11px] text-muted-foreground">
+                  {/* O contraste com a lista é o ponto: sem esta frase, quem vê
+                      "1.004" numa tela que mostra 3.241 linhas acha que o Hub
+                      perdeu algo. Não perdeu — a fila é mais estreita porque
+                      exclui o que é do Asaas e quem não tem cadastro no Omie. */}
+                  É a lista da esteira — só recebida, com cliente no Omie e sem nota do Asaas —,
+                  e não o que está filtrado acima. Vai em levas de {CABEM_NUMA_CHAMADA},
+                  esperando o Omie faturar entre uma e outra
+                  {" · "}~{Math.max(1, Math.round(Math.ceil((filaResumo?.cobrancas ?? 0) / CABEM_NUMA_CHAMADA) * 2.5))}–
+                  {Math.round(Math.ceil((filaResumo?.cobrancas ?? 0) / CABEM_NUMA_CHAMADA) * 4)} min, com esta aba aberta
+                </div>
+              </>
+            )}
+          </div>
+          {massa && esperando === 0 && massa.blocosFeitos < massa.blocosTotal && (
+            <Loader2 className="h-4 w-4 animate-spin text-primary" />
+          )}
+          {massa && massa.blocosFeitos < massa.blocosTotal ? (
+            <button
+              onClick={() => { pararMassa.current = true; }}
+              className="ghost-btn flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-xs"
+              title="Para depois da leva atual. O que já foi despachado não se desfaz."
+            >
+              <Square className="h-3.5 w-3.5" />
+              Parar
+            </button>
+          ) : massa ? (
+            <button onClick={() => setMassa(null)} className="ghost-btn rounded-md border border-border px-3 py-1.5 text-xs">
+              Fechar
+            </button>
+          ) : (
+            <button
+              onClick={emitirEmMassa}
+              className="flex items-center gap-2 rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground"
+            >
+              <Layers className="h-3.5 w-3.5" />
+              Emitir as {(filaResumo?.cobrancas ?? 0).toLocaleString("pt-BR")}
+            </button>
+          )}
+        </div>
+      )}
+
       {/* -------------------------------- lote --------------------------------- */}
       {sel.size > 0 && (
-        <div className="flex flex-wrap items-center gap-3 rounded-lg border border-primary/30 bg-primary/5 p-3">
+        <div className={cn(
+          "flex flex-wrap items-center gap-3 rounded-lg border p-3",
+          lote.confirmadas > 0 ? "border-amber-500/40 bg-amber-500/5" : "border-primary/30 bg-primary/5",
+        )}>
           <div className="flex-1 text-xs">
             <span className="font-semibold">{lote.emitiveis}</span> de {lote.selecionadas} selecionadas vão ser emitidas
             {" · "}{brl(lote.valor)}
+            {/* O contraste é o ponto: quantas do lote saem ANTES de o dinheiro
+                entrar. Sem este número, a barra diria a mesma frase para um lote
+                inteiramente recebido e para um lote metade confirmado. */}
+            {lote.confirmadas > 0 && (
+              <span
+                className="ml-2 font-medium text-amber-600 dark:text-amber-400"
+                title="Pagamento autorizado cuja liquidação ainda não caiu na conta. Se não liquidar, a nota vira imposto sobre receita que não existiu."
+              >
+                <Zap className="mr-1 inline h-3 w-3" />
+                {lote.confirmadas} ainda não liquidada{lote.confirmadas > 1 ? "s" : ""} · {brl(lote.valorConfirmadas)}
+              </span>
+            )}
             {lote.bloqueadas > 0 && (
               <span className="ml-2 text-muted-foreground" title={lote.motivos.map(([m, n]) => `${n}× ${m}`).join("\n")}>
                 <AlertTriangle className="mr-1 inline h-3 w-3" />
@@ -413,10 +745,16 @@ export default function NotasFiscais() {
           <button
             onClick={emitir}
             disabled={emitindo || lote.emitiveis === 0}
-            className="flex items-center gap-2 rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground disabled:opacity-50"
+            className={cn(
+              "flex items-center gap-2 rounded-md px-3 py-1.5 text-xs font-medium disabled:opacity-50",
+              lote.confirmadas > 0
+                ? "bg-amber-600 text-white hover:bg-amber-700"
+                : "bg-primary text-primary-foreground",
+            )}
           >
-            {emitindo ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Send className="h-3.5 w-3.5" />}
-            Emitir no Omie
+            {emitindo ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              : lote.confirmadas > 0 ? <Zap className="h-3.5 w-3.5" /> : <Send className="h-3.5 w-3.5" />}
+            {lote.confirmadas > 0 ? "Emitir avulsa no Omie" : "Emitir no Omie"}
           </button>
         </div>
       )}
@@ -452,17 +790,36 @@ export default function NotasFiscais() {
             )}
             {!carregando && visiveis.map((l) => {
               const s = SITUACOES[l.situacao];
-              const bloqueio = motivoBloqueio(l);
+              const bloqueio = motivoBloqueio(l, { avulsa });
+              // Esta linha só está marcável porque a chave está ligada? É o que o
+              // selo âmbar mais abaixo anuncia, e o que muda a cor da caixa.
+              const soAvulsa = exigeAvulsa(l);
               return (
-                <tr key={l.id_asaas} className="border-b border-border/50 last:border-0 hover:bg-muted/30">
+                <tr
+                  key={l.id_asaas}
+                  className={cn(
+                    "border-b border-border/50 last:border-0 hover:bg-muted/30",
+                    avulsa && soAvulsa && "bg-amber-500/[0.04]",
+                  )}
+                >
                   <td className="p-2">
                     <input
                       type="checkbox"
                       checked={sel.has(l.id_asaas)}
                       onChange={() => alternar(l.id_asaas)}
                       disabled={!!bloqueio}
-                      title={bloqueio ?? "Selecionar para emitir"}
-                      className="h-3.5 w-3.5 accent-[hsl(var(--primary))] disabled:opacity-30"
+                      title={
+                        bloqueio ??
+                        (soAvulsa
+                          ? "Selecionar para emitir como AVULSA — a cobrança ainda não liquidou."
+                          : "Selecionar para emitir")
+                      }
+                      className={cn(
+                        "h-3.5 w-3.5 disabled:opacity-30",
+                        soAvulsa && !bloqueio
+                          ? "accent-amber-600"
+                          : "accent-[hsl(var(--primary))]",
+                      )}
                     />
                   </td>
                   <td className="max-w-[220px] p-2">
@@ -485,6 +842,19 @@ export default function NotasFiscais() {
                         </span>
                       );
                     })()}
+                    {/* O SELO SÓ APARECE COM A CHAVE LIGADA, e isso é deliberado:
+                        desligada, a confirmada já se explica pelo bloqueio do
+                        hover da caixa, e um selo permanente viraria propaganda
+                        de um atalho que quase nunca é a resposta certa. */}
+                    {avulsa && soAvulsa && (
+                      <span
+                        className="ml-1 mt-0.5 inline-flex items-center gap-0.5 whitespace-nowrap rounded border border-amber-500/30 bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-medium text-amber-600 dark:text-amber-400"
+                        title="Sai só como avulsa: o pagamento foi autorizado e a liquidação ainda não caiu na conta. A nota vai com a competência no vencimento."
+                      >
+                        <Zap className="h-2.5 w-2.5" />
+                        avulsa
+                      </span>
+                    )}
                   </td>
                   <td className="num p-2 text-right">{brl(Number(l.valor))}</td>
                   {/* A linha entra no mês por pagamento OU por vencimento (o que

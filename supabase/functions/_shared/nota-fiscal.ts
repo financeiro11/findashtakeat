@@ -338,7 +338,19 @@ export function tipoDoDocumento(nome: string | null | undefined): TipoDocumento 
   if (!s) return "outro";
   if (/\bboleto/.test(s)) return "boleto";
   if (/\bextrato|statement/.test(s)) return "extrato";
-  if (/\bnfe?\b|\bnfs-?e\b|danfe|nota[\s_-]*fiscal|notafiscal|\bnf[\s_-]?\d|invoice/.test(s)) return "nota";
+  /* "nota" SEGUIDA DO NÚMERO vale, e não só "nota fiscal". O arquivo
+     "2026-05-11_nota-0041742026-1778505996222-4179.pdf" — a NFS-e da F. Dutra,
+     com o nome que o portal do emissor dá — caía em "outro" porque depois de
+     "nota" vem um hífen e um número, não a palavra "fiscal". E "outro" não é
+     rótulo inofensivo: `parece_nota` é coluna gerada de `tipo_documento`, e sem
+     ela a nota perde as regras fortes do casador e todo o peso na disputa por
+     um título.
+     `\d` LOGO DEPOIS, e não `\bnota\b` solto, porque esta função também é
+     chamada com ASSUNTO DE E-MAIL em `gmail-nf-sync` — e ali "sua nota está
+     pronta" é recado, não documento (é a lição das 489 linhas sem anexo de
+     26/08/2026). Nome de arquivo numera; recado não.
+     Continua atrás de `boleto`, testado antes: "Boleto NF 11064" é boleto. */
+  if (/\bnfe?\b|\bnfs-?e\b|danfe|nota[\s_-]*fiscal|notafiscal|\bnota[\s_.-]*\d|\bnf[\s_-]?\d|invoice/.test(s)) return "nota";
   if (/recibo|receipt|comprovante/.test(s)) return "recibo";
   return "outro";
 }

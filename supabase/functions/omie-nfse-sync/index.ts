@@ -36,6 +36,18 @@
 // emissão — ver `conferirNoAsaas`. Espelho é retrato de ontem; nota fiscal é
 // escrita de hoje que não se apaga.
 //
+// A EXCEÇÃO TEM NOME: AVULSA (`body.avulsa: true`). São duas réguas, não uma
+// afrouxada:
+//   • a RODADA automática segue só em RECEIVED/RECEIVED_IN_CASH — intocada;
+//   • a AVULSA, que uma pessoa liga no painel e assina, vai até `CONFIRMED`.
+// A diferença não é o direito de emitir (as duas exigem nota: o fato gerador do
+// ISS é a prestação do serviço, não a liquidação) — é quem responde se a
+// liquidação não vier. Numa rodada, ninguém; num ato, quem clicou, e o nome
+// dele fica em `nf_emissoes.avulsa` + `operador`. O ESTORNO barra nas duas, e
+// não há chave que o abra. A avulsa também não toca em nenhuma guarda de
+// duplicata (sombra, carimbo `cCodIntOS`, nota do Asaas ao vivo): essas
+// respondem "esta nota já saiu?", que é outra pergunta.
+//
 // Ações (body.action):
 //   "espelhar" (default) → lista as OS e atualiza nf_os_omie. Consulta StatusOS só
 //                          de quem precisa (ver ehStatusPendente).
@@ -46,6 +58,8 @@
 //                          etapa de isolamento e sai UM `FaturarLoteOS`. Por isso
 //                          ninguém volta com número de nota na mão — todas voltam
 //                          "em processamento" e o `espelhar` grava o número.
+//                          Com `avulsa: true`, a régua larga (ver acima). Só vale
+//                          acompanhada de `ids`: a fila automática nunca é avulsa.
 //
 // Auth: usuário logado OU cron (x-cron-token), no padrão do repo.
 
@@ -1083,6 +1097,11 @@ async function sondarMetodos(extras: Array<[string, string]> = []): Promise<Reco
  * justificativa. As três caras do estorno: o status (total), o `refunds[]`
  * (parcial, que NÃO tem status próprio — a cobrança segue "RECEIVED") e a
  * contestação (`CHARGEBACK_*`, dinheiro em disputa).
+ *
+ * `avulsa` é o alcance, e o default é o estreito. Ligado, a confirmada passa —
+ * e SÓ ela: o estorno continua barrando (não há caso em que emitir sobre
+ * dinheiro devolvido seja a resposta certa) e a pendente/vencida também (avulsa
+ * é urgência de nota, não licença para faturar o que ninguém pagou).
  */
 const RECEBIDAS = ["RECEIVED", "RECEIVED_IN_CASH"];
 const ESTORNADAS = [
@@ -1090,16 +1109,23 @@ const ESTORNADAS = [
   "CHARGEBACK_REQUESTED", "CHARGEBACK_DISPUTE", "AWAITING_CHARGEBACK_REVERSAL",
 ];
 
-function bloqueioDeEmissao(status: unknown, cobranca: any, estornoRegistrado = false): string | null {
+function bloqueioDeEmissao(
+  status: unknown, cobranca: any, estornoRegistrado = false, avulsa = false,
+): string | null {
   const st = String(status ?? "").toUpperCase();
   const temRefunds = Array.isArray(cobranca?.refunds) && cobranca.refunds.length > 0;
   if (estornoRegistrado || temRefunds || ESTORNADAS.includes(st)) {
     return "Cobrança estornada — emitir criaria imposto sobre receita devolvida.";
   }
   if (st === "CONFIRMED") {
-    return "Cobrança confirmada e ainda não liquidada — a nota sai no dia em que o dinheiro entrar.";
+    if (avulsa) return null;
+    return "Cobrança confirmada e ainda não liquidada — a nota sai no dia em que o dinheiro entrar, " +
+      "ou agora, como avulsa, se alguém assinar a espera.";
   }
-  if (!RECEBIDAS.includes(st)) return `Cobrança não recebida (${st || "sem status"}).`;
+  if (!RECEBIDAS.includes(st)) {
+    return `Cobrança não recebida (${st || "sem status"}).` +
+      (avulsa ? " A avulsa vai até a confirmada e não além." : "");
+  }
   return null;
 }
 
@@ -1139,7 +1165,7 @@ async function curarEspelho(supabase: any, idAsaas: string, cobranca: any) {
  * horas por uma nota que se cancela com prazo e justificativa.
  */
 async function conferirNoAsaas(
-  supabase: any, cobrancas: any[], paralelo: boolean,
+  supabase: any, cobrancas: any[], paralelo: boolean, avulsa = false,
 ): Promise<Map<string, string | null>> {
   const veredito = new Map<string, string | null>();
 
@@ -1152,7 +1178,7 @@ async function conferirNoAsaas(
     // 2) O que o Asaas diz neste instante.
     try {
       const p = await asaasGet<any>(`/payments/${id}`);
-      const motivo = bloqueioDeEmissao(p?.status, p);
+      const motivo = bloqueioDeEmissao(p?.status, p, false, avulsa);
       if (motivo) {
         veredito.set(id, `${motivo} (lido no Asaas agora: ${String(p?.status ?? "?")})`);
         await curarEspelho(supabase, id, p).catch(() => { /* o bloqueio já valeu */ });
@@ -1199,16 +1225,23 @@ async function conferirNoAsaas(
  */
 async function passarPelaPorta(
   supabase: any, cobrancas: any[],
-  opts: { seco: boolean; usuario: string | null; operador: string | null },
+  opts: { seco: boolean; usuario: string | null; operador: string | null; avulsa?: boolean },
 ): Promise<{ liberadas: any[]; barradas: Array<{ id_asaas: string; motivo: string }> }> {
   if (!cobrancas.length) return { liberadas: [], barradas: [] };
 
   /* `paralelo_asaas` liga a conferência da nota do Asaas ao vivo. Lido aqui e
    * não no chamador porque a porta é uma só, e as duas rotas que a atravessam
-   * (rodada e emissão manual) têm de fechar com o mesmo critério. */
+   * (rodada e emissão manual) têm de fechar com o mesmo critério.
+   *
+   * A avulsa muda o ALCANCE da régua do dinheiro e nada mais: a conferência da
+   * nota do Asaas ao vivo continua valendo igual, porque ela responde "esta
+   * nota já saiu?" — pergunta que não tem urgência do outro lado. */
   const { data: cfgPar } = await supabase
     .from("nf_config").select("paralelo_asaas").eq("id", 1).maybeSingle();
-  const veredito = await conferirNoAsaas(supabase, cobrancas, cfgPar?.paralelo_asaas !== false);
+  const avulsa = opts.avulsa === true;
+  const veredito = await conferirNoAsaas(
+    supabase, cobrancas, cfgPar?.paralelo_asaas !== false, avulsa,
+  );
   const liberadas: any[] = [];
   const barradas: Array<{ id_asaas: string; motivo: string; n_cod_os: number | null }> = [];
 
@@ -1232,6 +1265,9 @@ async function passarPelaPorta(
       acao: b.n_cod_os ? "faturar" : "criar_e_faturar",
       resultado: "bloqueado",
       erro: b.motivo,
+      // Barrada NA avulsa é diferente de barrada na régua estreita: a primeira
+      // não volta sozinha (já se usou a régua larga e mesmo assim não passou).
+      avulsa,
       usuario: opts.usuario, operador: opts.operador,
     })));
   }
@@ -1355,7 +1391,20 @@ function montarOS(molde: any, cob: {
       ...servicoMolde,
       // As alíquotas e retenções vêm do molde; os valores calculados, não (ver acima).
       impostos: impostosDoMolde(servicoMolde?.impostos),
-      cDescServ: cob.descricao.slice(0, 200),
+      /* A DESCRIÇÃO DO SERVIÇO, limpa antes de virar texto de nota fiscal.
+       *
+       * O que vem do Asaas é digitado por gente no cadastro da cobrança, e o
+       * ensaio de 27/08 achou o que era de se esperar: tabulação no começo
+       * ("\tTakeat - Plano PRO + POS…") e quebra de linha no meio ("…10 Tablet
+       * \r\n[Diferença de -R$…"). Cortar em 200 não resolve isso — só garante
+       * que o lixo caiba.
+       *
+       * Isto é o corpo da NFS-e, o texto que o cliente lê e que fica no XML da
+       * prefeitura. Nota não se corrige: cancela-se, com prazo e justificativa.
+       * Então o espaço em branco vira espaço simples e as pontas são aparadas —
+       * sem tocar em mais nada, porque o resto é a descrição que o comercial
+       * escreveu e não cabe a este código reescrever. */
+      cDescServ: cob.descricao.replace(/\s+/g, " ").trim().slice(0, 200),
       nQtde: 1,
       nSeqItem: 1,
       nValUnit: cob.valor,
@@ -1620,12 +1669,12 @@ async function faturarIsolada(nCodOS: number, etapaIsolamento: string): Promise<
  */
 async function emitirUma(
   supabase: any, molde: any, cob: any, cfg: any,
-  usuario: string | null, seco: boolean, operador: string | null = null,
+  usuario: string | null, seco: boolean, operador: string | null = null, avulsa = false,
 ) {
   const registrar = async (acao: string, resultado: string, extra: Record<string, unknown>) => {
     if (seco) return;
     await supabase.from("nf_emissoes").insert({
-      id_asaas: cob.id_asaas, acao, resultado, usuario, operador, ...extra,
+      id_asaas: cob.id_asaas, acao, resultado, usuario, operador, avulsa, ...extra,
     });
   };
 
@@ -1815,7 +1864,7 @@ async function emitirUma(
 async function emitirDia(
   supabase: any,
   cfg: any,
-  opts: { origem: string; operador: string | null; usuario: string | null; ids?: string[] },
+  opts: { origem: string; operador: string | null; usuario: string | null; ids?: string[]; avulsa?: boolean },
 ) {
   /* `emissao_automatica` governa o CRON, não a pessoa.
    *
@@ -1823,7 +1872,18 @@ async function emitirDia(
    * `previa` — que é uma ação própria. Deixar o modo do cron calar a emissão
    * manual faria a tela devolver "modo ensaio" para quem clicou em emitir. */
   const manual = Array.isArray(opts.ids) && opts.ids.length > 0;
-  const modo = manual ? "manual" : String(cfg?.emissao_automatica ?? "previa");
+
+  /* A AVULSA É FILHA DO `manual`, e o `&&` é a guarda, não um detalhe de estilo.
+   *
+   * Sem ele, um `{ avulsa: true }` sem `ids` — um cron mal configurado, um
+   * script que copiou o corpo errado — poria a fila automática inteira sob a
+   * régua larga e emitiria as confirmadas do mês numa varredura. A decisão de
+   * 20/08/26 é justamente que isso não acontece sozinho: a régua larga só existe
+   * quando alguém apontou para cobranças específicas. */
+  const avulsa = manual && opts.avulsa === true;
+  // O `modo` é o que a rodada assina em `nf_execucoes`, e "avulsa" tem de se ler
+  // de longe: é a rodada que emitiu sob a régua larga.
+  const modo = avulsa ? "avulsa" : manual ? "manual" : String(cfg?.emissao_automatica ?? "previa");
   const etapaIso = String(cfg?.etapa_isolamento ?? ETAPA_ISOLAMENTO_PADRAO);
   const tetoDia = Number(cfg?.teto_dia ?? 120);
   const tetoRodada = Number(cfg?.teto_rodada ?? 20);
@@ -1884,7 +1944,7 @@ async function emitirDia(
       // jeito nenhum: é a trava contra a segunda nota da mesma cobrança. Elas não
       // somem da resposta, porém: voltam marcadas, senão a tela anunciaria menos
       // cobranças tratadas do que o operador mandou e ninguém saberia por quê.
-      const linhas = await candidatas(supabase, opts.ids!.slice(0, limite));
+      const linhas = await candidatas(supabase, opts.ids!.slice(0, limite), avulsa);
       jaComNota = (linhas ?? []).filter((c: any) => c.ja_tem_nota);
       fila = (linhas ?? []).filter((c: any) => !c.ja_tem_nota);
     } else {
@@ -1915,7 +1975,7 @@ async function emitirDia(
      * está aqui AGORA? No ensaio a porta também vale — e registra —, senão o
      * ensaio prometeria emitir o que a emissão de verdade recusaria. */
     const { liberadas, barradas } = await passarPelaPorta(supabase, fila, {
-      seco: false, usuario: opts.usuario, operador: opts.operador,
+      seco: false, usuario: opts.usuario, operador: opts.operador, avulsa,
     });
     if (!liberadas.length) {
       return await fechar({
@@ -1934,6 +1994,7 @@ async function emitirDia(
         id_asaas: c.id_asaas, n_cod_os: c.n_cod_os ?? null,
         acao: "previa", resultado: "ok",
         erro: `Ensaio: teria emitido R$ ${Number(c.valor).toFixed(2)} (${c.descricao ?? "—"}).`,
+        avulsa,
         usuario: opts.usuario, operador: opts.operador,
       })));
       return await fechar({
@@ -1991,6 +2052,7 @@ async function emitirDia(
           if (!nCodOS) throw new Error(`IncluirOS não devolveu nCodOS`);
           await supabase.from("nf_emissoes").insert({
             id_asaas: cob.id_asaas, n_cod_os: nCodOS, acao: "criar_os", resultado: "ok",
+            avulsa,
             usuario: opts.usuario, operador: opts.operador,
           });
           /* O destinatário fica gravado no NASCIMENTO da OS, não depois.
@@ -2014,6 +2076,7 @@ async function emitirDia(
         falhas.push({ id_asaas: cob.id_asaas, erro });
         await supabase.from("nf_emissoes").insert({
           id_asaas: cob.id_asaas, acao: "criar_e_faturar", resultado: "erro", erro,
+          avulsa,
           usuario: opts.usuario, operador: opts.operador,
         });
       }
@@ -2108,14 +2171,24 @@ async function emitirDia(
     if (!nIdLoteFat) throw new Error("FaturarLoteOS não devolveu nIdLoteFat.");
 
     // 4. Registra a intenção por cobrança. O desfecho é do `espelhar`.
-    await supabase.from("nf_emissoes").insert(entraram.map((x) => ({
-      id_asaas: x.cob.id_asaas, n_cod_os: x.nCodOS, acao: x.acao, resultado: "em_processamento",
-      erro: `Lote ${nIdLoteFat} disparado com ${entraram.length} OS. A nota nasce em alguns minutos; o próximo sync grava o número.`,
-      // O lote em coluna e não só na frase: é por ele que o `fecharRecusadas` vai
-      // reler o `detalhes[]` e descobrir quem o Omie recusou no faturamento.
-      payload: { lote: nIdLoteFat },
-      usuario: opts.usuario, operador: opts.operador,
-    })));
+    await supabase.from("nf_emissoes").insert(entraram.map((x) => {
+      /* O ESTADO DA COBRANÇA NO INSTANTE DA EMISSÃO — só na avulsa, e é o que
+       * responde a pergunta que um contador faz meses depois: esta nota saiu
+       * antes de o dinheiro entrar? O status vive em `asaas_cache` e MUDA (a
+       * confirmada de hoje é a recebida de amanhã), então perguntar depois não
+       * reconstitui nada. Aqui é a única hora em que a resposta existe. */
+      const st = String(x.cob.status_asaas ?? "").toUpperCase();
+      return {
+        id_asaas: x.cob.id_asaas, n_cod_os: x.nCodOS, acao: x.acao, resultado: "em_processamento",
+        erro: `Lote ${nIdLoteFat} disparado com ${entraram.length} OS. A nota nasce em alguns minutos; o próximo sync grava o número.`
+          + (avulsa ? ` Avulsa: emitida com a cobrança em ${st || "status desconhecido"}.` : ""),
+        avulsa,
+        // O lote em coluna e não só na frase: é por ele que o `fecharRecusadas` vai
+        // reler o `detalhes[]` e descobrir quem o Omie recusou no faturamento.
+        payload: { lote: nIdLoteFat, ...(avulsa ? { avulsa: true, status_na_emissao: st || null } : {}) },
+        usuario: opts.usuario, operador: opts.operador,
+      };
+    }));
 
     return await fechar({
       fila: fila.length, bloqueadas: barradas.length,
@@ -2146,9 +2219,17 @@ async function emitirDia(
   }
 }
 
-/** As cobranças que o lote vai tratar, já com cliente do Omie e OS resolvidos. */
-async function candidatas(supabase: any, ids: string[]) {
-  const { data: linhas, error } = await supabase.rpc("notas_fiscais_candidatas", { p_ids: ids });
+/**
+ * As cobranças que o lote vai tratar, já com cliente do Omie e OS resolvidos.
+ *
+ * `p_avulsa` decide só o `bloqueio` que volta em cada linha — é a régua do
+ * dinheiro. O `ja_tem_nota` da mesma linha não muda com ele, e é assim que tem
+ * de ser: a avulsa não é licença para emitir a segunda nota de nada.
+ */
+async function candidatas(supabase: any, ids: string[], avulsa = false) {
+  const { data: linhas, error } = await supabase.rpc("notas_fiscais_candidatas", {
+    p_ids: ids, p_avulsa: avulsa,
+  });
   if (error) throw new Error(`notas_fiscais_candidatas: ${error.message}`);
   return linhas ?? [];
 }
@@ -2227,6 +2308,15 @@ Deno.serve(async (req) => {
     }
 
     if (action === "espelhar") {
+      /* `so_se_houver_forno` é o que torna barato rodar o espelho de 10 em 10
+       * minutos. Sem nota esperando desfecho, a varredura completa das OS não
+       * fecharia nada — e essa pergunta são duas leituras do Postgres, não um
+       * `ListarOS`. Quem passa a bandeira é o cron da janela de emissão; o cron
+       * das 18h não passa, porque o espelho completo do dia é garantia, não
+       * economia. */
+      if (body?.so_se_houver_forno === true && !(await haNotaNoForno(supabase).catch(() => true))) {
+        return json({ ok: true, pulado: "nenhuma nota no forno — o espelho não teria o que fechar." });
+      }
       const r = await espelhar(supabase, { tetoStatus: Math.min(Number(body?.teto_status ?? 120), 400) });
 
       /* O anexo mora aqui, e não no `emitir_dia`, por dois motivos.
@@ -2256,17 +2346,28 @@ Deno.serve(async (req) => {
         operador: String(body?.operador ?? "").trim() || (ehCron ? "emissão automática (cron)" : null),
         usuario,
       });
-      /* O sync logo em seguida fecha no diário as notas que nasceram desde a
-       * rodada anterior — é o que transforma "em processamento" em número. Só
-       * que ele custa um `ListarOS` inteiro mais uma consulta de status por OS,
-       * e não tem o que fechar quando nada foi emitido e nada está no forno. */
-      const precisaEspelhar = Number((r as any)?.emitidas ?? 0) > 0
-        || body?.espelhar === true
-        || await haNotaNoForno(supabase).catch(() => true);
-      const espelho = precisaEspelhar
+      /* O ESPELHO SAIU DAQUI — 27/08/26, e a conta é de relógio.
+       *
+       * A rodada que cria 20 OS leva 116s dos 150s da Edge Function. Pendurar
+       * nela um `ListarOS` de 3 páginas mais 40 `StatusOS` não é "um pouco mais
+       * lento": é o worker derrubado sem exceção que se possa pegar. Foi o que
+       * aconteceu no primeiro dia de emissão automática — a rodada das 13:00 UTC
+       * criou as 20 OS, disparou o lote e MORREU antes de responder; as 17
+       * seguintes voltaram 200 com o erro do espelho engolido pelo `.catch` e
+       * jogado fora na resposta ao cron. Resultado: `nf_os_omie.atualizado_em`
+       * parado das 10:01 às 15:00, `faturada` falso o dia inteiro, e a fila
+       * servindo 17 vezes as mesmas cobranças que já tinham virado nota — 323
+       * "não é possível trocar a etapa" e 17 lotes disparados à toa. Vinte notas
+       * em dezoito rodadas.
+       *
+       * Agora o espelho tem cron próprio (`nf-espelho-rodada`, aos :05 de cada
+       * janela), onde ele tem os 150s inteiros e não disputa o `ListarOS` com a
+       * rodada. Aqui ele só roda a pedido explícito — a tela, que quer o número
+       * na hora e aceita esperar. */
+      const espelho = body?.espelhar === true
         ? await espelhar(supabase, { tetoStatus: Math.min(Number(body?.teto_status ?? 40), 400) })
             .catch((e) => ({ erro: mensagemDoOmie(e) }))
-        : { pulado: "nenhuma nota emitida agora e nenhuma no forno — o espelho não teria o que fechar." };
+        : { pulado: "o espelho roda no cron `nf-espelho-rodada`, aos :05 — dentro da rodada ele não cabe nos 150s." };
       return json({ ok: true, ...r, espelho });
     }
 
@@ -2410,6 +2511,14 @@ Deno.serve(async (req) => {
       const ids: string[] = Array.isArray(body?.ids) ? body.ids.map(String) : [];
       if (!ids.length) return json({ erro: "Nenhuma cobrança informada." }, 400);
 
+      /* A RÉGUA LARGA, e só quando pedida por escrito.
+       *
+       * `=== true` e não um truthy qualquer: `avulsa: "false"` (uma string, que é
+       * o que sai de um formulário mal serializado) é truthy em JavaScript e
+       * abriria a régua sem que ninguém tivesse pedido. O que está em jogo do
+       * outro lado é nota fiscal emitida antes de o dinheiro entrar. */
+      const avulsa = body?.avulsa === true;
+
       const { data: cfg } = await supabase.from("nf_config").select("*").eq("id", 1).maybeSingle();
       const teto = Number(cfg?.teto_lote ?? 50);
       if (ids.length > teto) {
@@ -2439,6 +2548,7 @@ Deno.serve(async (req) => {
           operador: operador || (ehCron ? "emissão por token de sistema" : null),
           usuario,
           ids,
+          avulsa,
         });
         const despachadas = Number((r as any)?.emitidas ?? 0);
         /* Rodada que não produziu nada precisa DIZER. Sem isto, uma recusa do
@@ -2451,12 +2561,16 @@ Deno.serve(async (req) => {
         // Anunciar emissão aqui seria o erro que este módulo mais teme — dizer
         // "pronto" para o que ainda pode voltar recusado pela prefeitura.
         return json({
-          ok: true, ...r, emitidas: 0, despachadas,
+          ok: true, ...r, emitidas: 0, despachadas, avulsa,
           ...(semNada && (r as any)?.pulada ? { erro: String((r as any).pulada) } : {}),
         });
       }
 
-      const linhas = await candidatas(supabase, ids);
+      /* O ensaio usa a MESMA régua que a emissão de verdade usaria. Uma prévia
+       * que barrasse a confirmada e uma emissão que a deixasse passar seriam
+       * dois processos com o mesmo nome — e o ensaio existe justamente para que
+       * ninguém descubra o que a emissão escolhe no dia em que ela escolhe. */
+      const linhas = await candidatas(supabase, ids, avulsa);
       /* Daqui para baixo só passa `previa`. `emitir` saiu para o motor de lote,
        * acima; o ensaio fica aqui de propósito, cobrança a cobrança, porque é
        * exatamente isso que ele precisa mostrar — o payload de cada uma — e
@@ -2476,7 +2590,7 @@ Deno.serve(async (req) => {
        * diário: prévia da tela é pergunta, e pergunta não vira rastro fiscal.
        */
       const { liberadas, barradas } = await passarPelaPorta(supabase, linhas, {
-        seco, usuario, operador: operador || null,
+        seco, usuario, operador: operador || null, avulsa,
       });
 
       const resultados: unknown[] = barradas.map((b) => ({
@@ -2485,7 +2599,7 @@ Deno.serve(async (req) => {
 
       const molde = liberadas.length ? await pegarMolde(supabase) : null;
       for (const cob of liberadas) {
-        resultados.push(await emitirUma(supabase, molde, cob, cfg ?? {}, usuario, seco, operador || null));
+        resultados.push(await emitirUma(supabase, molde, cob, cfg ?? {}, usuario, seco, operador || null, avulsa));
       }
 
       // "Já estava emitida" não é emissão nem falha: contá-la como emitida faria a
@@ -2495,7 +2609,7 @@ Deno.serve(async (req) => {
       const emProcessamento = resultados.filter((r: any) => r.em_processamento).length;
       const bloqueadas = resultados.filter((r: any) => r.bloqueado).length;
       return json({
-        ok: true, seco, pedidas: ids.length, tratadas: resultados.length,
+        ok: true, seco, avulsa, pedidas: ids.length, tratadas: resultados.length,
         emitidas: ok - jaEmitidas, ja_emitidas: jaEmitidas, em_processamento: emProcessamento,
         bloqueadas,
         falhas: resultados.length - ok - bloqueadas,

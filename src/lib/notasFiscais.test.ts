@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import {
-  motivoBloqueio, motivoCurto, podeEmitir, resumoLote, xmlAindaVale, formatarDoc, statusAsaas, foiPaga,
+  motivoBloqueio, motivoCurto, podeEmitir, exigeAvulsa, resumoLote, xmlAindaVale, formatarDoc, statusAsaas, foiPaga,
   vereditoProntidao, oQueFazer, diasDoCadastro, clientesEmTexto, recadoDoCadastro,
   chaveNfseValida, linkPortalNacional, chaveEmBlocos,
   type LinhaNota, type Situacao, type ClienteFaltante, type CadastroNoOmie,
@@ -117,6 +117,89 @@ describe("motivoBloqueio", () => {
   });
 });
 
+/* ---------------------------------------------------------------------------
+ * A RÉGUA LARGA — o que a emissão avulsa alcança, e o muito que ela não.
+ *
+ * São duas réguas e não uma afrouxada, e o valor destes testes está quase todo
+ * na segunda metade: a lista do que continua barrado. Uma implementação que
+ * liberasse a confirmada passaria no primeiro caso e ainda assim seria o pior
+ * defeito possível deste módulo se deixasse a estornada passar junto.
+ * ------------------------------------------------------------------------- */
+describe("motivoBloqueio — emissão avulsa", () => {
+  it("a confirmada passa: é o único status que a avulsa acrescenta", () => {
+    const l = linha({ status_asaas: "CONFIRMED", situacao: "falta" });
+    expect(podeEmitir(l)).toBe(false);
+    expect(podeEmitir(l, { avulsa: true })).toBe(true);
+    expect(motivoBloqueio(l, { avulsa: true })).toBeNull();
+  });
+
+  it("a recebida continua passando — a avulsa amplia, não substitui", () => {
+    expect(podeEmitir(linha({ status_asaas: "RECEIVED" }), { avulsa: true })).toBe(true);
+    expect(podeEmitir(linha({ status_asaas: "RECEIVED_IN_CASH" }), { avulsa: true })).toBe(true);
+  });
+
+  /* O caso que não pode falhar nunca. Emitir sobre receita devolvida cria
+   * imposto sobre dinheiro que voltou ao cliente, e a nota não se apaga:
+   * cancela-se, com prazo e justificativa. Não há urgência que justifique. */
+  it("ESTORNO barra na avulsa, nas três caras", () => {
+    for (const l of [
+      linha({ status_asaas: "REFUNDED", estornado: true }),
+      linha({ status_asaas: "RECEIVED", estornado: true }),        // parcial: segue "recebida"
+      linha({ status_asaas: "CONFIRMED", estornado: true }),       // confirmada E devolvida
+      linha({ status_asaas: "CHARGEBACK_REQUESTED", estornado: true }),
+    ]) {
+      expect(motivoBloqueio(l, { avulsa: true })).toMatch(/estornada/i);
+    }
+  });
+
+  it("a avulsa vai até a confirmada e não além", () => {
+    for (const st of ["PENDING", "OVERDUE", "AWAITING_RISK_ANALYSIS", "STATUS_NOVO_DO_ASAAS"]) {
+      expect(podeEmitir(linha({ status_asaas: st }), { avulsa: true })).toBe(false);
+    }
+  });
+
+  // As guardas de duplicata respondem "esta nota já saiu?", que é outra pergunta
+  // — e nenhuma delas tem urgência do outro lado que a justifique ceder.
+  it("nenhuma guarda contra nota duplicada cede", () => {
+    expect(podeEmitir(linha({ situacao: "emitida_omie" }), { avulsa: true })).toBe(false);
+    expect(podeEmitir(linha({ situacao: "emitida_asaas" }), { avulsa: true })).toBe(false);
+    expect(podeEmitir(linha({ situacao: "em_processamento" }), { avulsa: true })).toBe(false);
+    expect(podeEmitir(linha({ situacao: "nota_rejeitada" }), { avulsa: true })).toBe(false);
+  });
+
+  it("cadastro e valor continuam valendo — não é régua de dinheiro", () => {
+    expect(podeEmitir(linha({ status_asaas: "CONFIRMED", cnpj_cpf: null }), { avulsa: true })).toBe(false);
+    expect(podeEmitir(linha({ status_asaas: "CONFIRMED", valor: 0 }), { avulsa: true })).toBe(false);
+    expect(podeEmitir(
+      linha({ status_asaas: "CONFIRMED", data_vencimento: null, data_pagamento: null }),
+      { avulsa: true },
+    )).toBe(false);
+  });
+
+  // A régua estreita, desligada, tem de continuar sendo exatamente o que era —
+  // é ela que a rodada diária das 13h usa.
+  it("desligada, a régua é a de antes", () => {
+    expect(podeEmitir(linha({ status_asaas: "CONFIRMED" }))).toBe(false);
+    expect(motivoBloqueio(linha({ status_asaas: "CONFIRMED" }))).toMatch(/confirmada/i);
+  });
+});
+
+describe("exigeAvulsa", () => {
+  it("é verdade só para quem a chave resgata", () => {
+    expect(exigeAvulsa(linha({ status_asaas: "CONFIRMED", situacao: "falta" }))).toBe(true);
+  });
+
+  it("é falso para quem já emitia sem ela", () => {
+    expect(exigeAvulsa(linha({ status_asaas: "RECEIVED" }))).toBe(false);
+  });
+
+  it("é falso para quem nem a chave resgata — o selo não promete o impossível", () => {
+    expect(exigeAvulsa(linha({ status_asaas: "CONFIRMED", estornado: true }))).toBe(false);
+    expect(exigeAvulsa(linha({ status_asaas: "OVERDUE" }))).toBe(false);
+    expect(exigeAvulsa(linha({ situacao: "emitida_omie" }))).toBe(false);
+  });
+});
+
 describe("resumoLote", () => {
   const linhas = [
     linha({ id_asaas: "a" }),
@@ -154,6 +237,48 @@ describe("resumoLote", () => {
   it("lote vazio não quebra", () => {
     const r = resumoLote(linhas, new Set());
     expect(r).toMatchObject({ selecionadas: 0, emitiveis: 0, bloqueadas: 0, valor: 0 });
+  });
+
+  /* `confirmadas` é o número que o aviso de confirmação precisa dizer em voz
+   * alta: quantas do lote saem ANTES de o dinheiro entrar. Sem ele, "emitir 3
+   * notas" seria a mesma frase para um lote todo recebido e para um metade
+   * confirmado. */
+  it("conta e soma à parte as que só saem como avulsa", () => {
+    const mistas = [
+      linha({ id_asaas: "r1", valor: 100 }),                                          // recebida
+      linha({ id_asaas: "c1", valor: 200, status_asaas: "CONFIRMED" }),
+      linha({ id_asaas: "c2", valor: 300, status_asaas: "CONFIRMED" }),
+      linha({ id_asaas: "x1", valor: 999, estornado: true }),                          // barrada nas duas
+    ];
+    const todas = new Set(["r1", "c1", "c2", "x1"]);
+
+    const estreita = resumoLote(mistas, todas);
+    expect(estreita.emitiveis).toBe(1);
+    expect(estreita.valor).toBe(100);
+    expect(estreita.confirmadas).toBe(0);
+
+    const larga = resumoLote(mistas, todas, { avulsa: true });
+    expect(larga.emitiveis).toBe(3);
+    expect(larga.valor).toBe(600);
+    expect(larga.confirmadas).toBe(2);
+    expect(larga.valorConfirmadas).toBe(500);
+    // A estornada continua fora, e é o único motivo que sobra.
+    expect(larga.bloqueadas).toBe(1);
+    expect(larga.motivos[0][0]).toMatch(/estornada/i);
+  });
+
+  // `confirmadas` conta só entre as que VÃO sair: uma confirmada que a régua
+  // larga também barra (estornada, sem CNPJ) inflaria o aviso com cobrança que
+  // ninguém vai emitir.
+  it("não conta como confirmada quem nem a avulsa emite", () => {
+    const l = [
+      linha({ id_asaas: "z1", status_asaas: "CONFIRMED", estornado: true }),
+      linha({ id_asaas: "z2", status_asaas: "CONFIRMED", cnpj_cpf: null }),
+    ];
+    const r = resumoLote(l, new Set(["z1", "z2"]), { avulsa: true });
+    expect(r.emitiveis).toBe(0);
+    expect(r.confirmadas).toBe(0);
+    expect(r.valorConfirmadas).toBe(0);
   });
 });
 
@@ -419,5 +544,112 @@ describe("clientesEmTexto", () => {
 
   it("lista vazia devolve só o cabeçalho", () => {
     expect(clientesEmTexto([]).split("\n")).toHaveLength(1);
+  });
+});
+
+/* ---------------------------------------------------------------------------
+ * Emissão em massa — a cadência que fecha o mês.
+ * ------------------------------------------------------------------------- */
+
+import {
+  somarBloco, precisaEsperarOLote, tetoDoDiaAtingido,
+  esperaAntesDeRepetir, PROGRESSO_ZERO, CABEM_NUMA_CHAMADA,
+  type RespostaEmissao,
+} from "./notasFiscais";
+
+describe("CABEM_NUMA_CHAMADA", () => {
+  it("e 20, e nao o teto_lote de 50 — quem manda e o relogio do worker", () => {
+    // Medido em 27/08/2026: 20 OS = 116s dos 150s da Edge Function, com duas
+    // chamadas Omie seriais por cobranca. Uma leva de 50 seria derrubada pelo
+    // relogio DEPOIS de ja ter criado metade das OS no Omie — e OS criada e nao
+    // faturada fica ocupando o corredor de isolamento e trava a rodada seguinte.
+    expect(CABEM_NUMA_CHAMADA).toBe(20);
+  });
+});
+
+describe("somarBloco", () => {
+  it("conta `em_processamento` como despachada, que é o desfecho normal do lote", () => {
+    const r: RespostaEmissao = {
+      resultados: [
+        { id_asaas: "pay_1", ok: false, em_processamento: true },
+        { id_asaas: "pay_2", ok: false, em_processamento: true },
+      ],
+    };
+    const p = somarBloco(PROGRESSO_ZERO(3), r);
+    expect(p.despachadas).toBe(2);
+    expect(p.falhas).toBe(0); // o erro que faria alguém emitir tudo de novo
+    expect(p.blocosFeitos).toBe(1);
+  });
+
+  it("separa os quatro desfechos e não mistura barrada com falha", () => {
+    const r: RespostaEmissao = {
+      resultados: [
+        { id_asaas: "a", ok: false, em_processamento: true },
+        { id_asaas: "b", ok: true, ja_emitida: true, aviso: "já tem nota" },
+        { id_asaas: "c", ok: false, bloqueado: true, erro: "Cobrança estornada" },
+        { id_asaas: "d", ok: false, erro: "IncluirOS recusou" },
+      ],
+    };
+    const p = somarBloco(PROGRESSO_ZERO(1), r);
+    expect([p.despachadas, p.jaEmitidas, p.barradas, p.falhas]).toEqual([1, 1, 1, 1]);
+  });
+
+  it("acumula entre blocos e agrupa os motivos do mais frequente para o menos", () => {
+    const bloq = (erro: string) => ({ id_asaas: "x", ok: false, bloqueado: true, erro });
+    let p = PROGRESSO_ZERO(2);
+    p = somarBloco(p, { resultados: [bloq("Cobrança estornada"), bloq("Cobrança estornada")] });
+    p = somarBloco(p, { resultados: [bloq("Cobrança estornada"), bloq("Sem cadastro no Omie")] });
+    expect(p.barradas).toBe(4);
+    expect(p.blocosFeitos).toBe(2);
+    expect(p.motivos[0]).toEqual(["Cobrança estornada", 3]);
+    expect(p.motivos[1]).toEqual(["Sem cadastro no Omie", 1]);
+  });
+
+  it("rodada sem resultado nenhum ainda registra POR QUE não andou", () => {
+    const p = somarBloco(PROGRESSO_ZERO(1), { pulada: "teto do dia atingido (400/400)." });
+    expect(p.motivos[0][0]).toMatch(/teto do dia/);
+  });
+});
+
+describe("precisaEsperarOLote", () => {
+  // A frase é a que a edge function devolve de verdade (`limparCorredor`).
+  it("reconhece o lote em voo e manda repetir o mesmo bloco", () => {
+    expect(precisaEsperarOLote({
+      pulada: "o lote 5514257733 ainda está em processamento no Omie, com 20 OS na etapa 20. Nada foi criado — chame de novo em alguns minutos.",
+    })).toBe(true);
+  });
+
+  it("não confunde nota em processamento na PREFEITURA com lote em voo", () => {
+    // Esta é a resposta de sucesso: as notas foram despachadas. Esperar aqui
+    // faria a emissão travar justamente quando está dando certo.
+    expect(precisaEsperarOLote({
+      resultados: [{ id_asaas: "a", em_processamento: true, erro: "Lote 551 disparado com 20 OS." }],
+    })).toBe(false);
+  });
+
+  it("resposta limpa não pede espera", () => {
+    expect(precisaEsperarOLote({ despachadas: 20, resultados: [] })).toBe(false);
+  });
+});
+
+describe("tetoDoDiaAtingido", () => {
+  it("distingue o freio de calendário da espera do lote — um repete, o outro para", () => {
+    const teto: RespostaEmissao = { pulada: "teto do dia atingido (400/400)." };
+    expect(tetoDoDiaAtingido(teto)).toBe(true);
+    expect(precisaEsperarOLote(teto)).toBe(false);
+  });
+
+  it("o lote em voo não é teto do dia", () => {
+    expect(tetoDoDiaAtingido({ pulada: "o lote 55 ainda está em processamento no Omie" })).toBe(false);
+  });
+});
+
+describe("esperaAntesDeRepetir", () => {
+  it("cresce a cada tentativa e para em 60s", () => {
+    expect(esperaAntesDeRepetir(1)).toBe(10_000);
+    expect(esperaAntesDeRepetir(2)).toBe(20_000);
+    expect(esperaAntesDeRepetir(3)).toBe(40_000);
+    expect(esperaAntesDeRepetir(4)).toBe(60_000);
+    expect(esperaAntesDeRepetir(99)).toBe(60_000);
   });
 });

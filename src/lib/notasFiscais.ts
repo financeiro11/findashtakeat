@@ -155,6 +155,28 @@ export const foiPaga = (s: string | null | undefined) =>
 export const EMITIVEIS = ["RECEIVED", "RECEIVED_IN_CASH"];
 
 /**
+ * A RÉGUA LARGA — a da nota AVULSA.
+ *
+ * São duas réguas e não uma afrouxada, e a diferença entre elas não é o direito
+ * de emitir: a confirmada exige nota tanto quanto a recebida, porque o fato
+ * gerador do ISS é a prestação do serviço e não a liquidação. O que separa as
+ * duas é QUEM RESPONDE se a liquidação nunca vier — cartão autorizado pode não
+ * liquidar (chargeback, cancelamento, falha na captura), e a nota emitida sobre
+ * ele vira imposto sobre receita que não existiu.
+ *
+ * Numa rodada automática não há a quem perguntar, então ela fica na régua
+ * estreita — foi a decisão de 20/08/26 e continua de pé. Na avulsa há: alguém
+ * abriu o painel, achou a cobrança, ligou a chave e mandou, e o nome dessa
+ * pessoa fica em `nf_emissoes.avulsa` junto com o operador. Esperar é barato
+ * quando dá para esperar; a avulsa existe para quando não dá.
+ *
+ * O QUE ELA NÃO ALCANÇA, e não há chave que abra: estorno (nas três caras),
+ * pendente, vencida — e nenhuma das guardas de duplicata, que respondem "esta
+ * nota já saiu?" e não têm urgência do outro lado.
+ */
+export const EMITIVEIS_AVULSA = [...EMITIVEIS, "CONFIRMED"];
+
+/**
  * Por que esta linha NÃO pode entrar num lote de emissão. `null` = pode.
  *
  * A ordem importa: o primeiro motivo é o que aparece na tela, e o mais grave tem
@@ -169,7 +191,13 @@ export const EMITIVEIS = ["RECEIVED", "RECEIVED_IN_CASH"];
  * contra o Asaas no instante da emissão. O que sobrou aqui é o papel que sempre
  * foi o dela: explicar à pessoa, ANTES do clique, por que a caixa não marca.
  */
-export function motivoBloqueio(l: Pick<LinhaNota, "situacao" | "estornado" | "status_asaas" | "cnpj_cpf" | "valor" | "data_vencimento" | "data_pagamento"> & { nfse_mensagem?: string | null }): string | null {
+export function motivoBloqueio(
+  l: Pick<LinhaNota, "situacao" | "estornado" | "status_asaas" | "cnpj_cpf" | "valor" | "data_vencimento" | "data_pagamento"> & { nfse_mensagem?: string | null },
+  opts: { avulsa?: boolean } = {},
+): string | null {
+  const avulsa = opts.avulsa === true;
+  // O estorno é o primeiro e é o que a avulsa NÃO alcança — de propósito, e
+  // acima de tudo o resto.
   if (l.estornado) return "Cobrança estornada — emitir criaria imposto sobre receita devolvida.";
   if (l.situacao === "emitida_omie") return "Já tem NFS-e autorizada no Omie.";
   if (l.situacao === "emitida_asaas") return "Já tem nota autorizada no Asaas.";
@@ -188,10 +216,17 @@ export function motivoBloqueio(l: Pick<LinhaNota, "situacao" | "estornado" | "st
    * foi paga, e a confirmada é classificada como "falta" — ela é receita que
    * ainda pode não acontecer, não receita ausente. */
   const st = String(l.status_asaas ?? "").toUpperCase();
-  if (st === "CONFIRMED") {
-    return "Cobrança confirmada e ainda não liquidada — a nota sai sozinha no dia em que o dinheiro entrar.";
+  const regua = avulsa ? EMITIVEIS_AVULSA : EMITIVEIS;
+  if (st === "CONFIRMED" && !avulsa) {
+    return "Cobrança confirmada e ainda não liquidada — a nota sai sozinha no dia em que o dinheiro entrar. " +
+      "Para emiti-la agora, ligue a chave \"Avulsa\".";
   }
-  if (st && !EMITIVEIS.includes(st)) return "A cobrança não foi recebida.";
+  if (st && !regua.includes(st)) {
+    return "A cobrança não foi recebida." + (avulsa ? " A avulsa vai até a confirmada e não além." : "");
+  }
+  /* `nao_exige` é a situação de quem nunca foi paga, e a avulsa não a resgata:
+   * se o status já disse "confirmada" o `if` acima liberou, e o que sobra aqui
+   * é pendente, vencida ou cancelada — nenhuma delas vira nota por atalho. */
   if (l.situacao === "nao_exige") return "A cobrança não foi recebida.";
   if (!l.cnpj_cpf) return "Cliente sem CNPJ/CPF no Asaas — sem documento não há como achar o cadastro no Omie.";
   if (!(Number(l.valor) > 0)) return "Valor zerado ou negativo.";
@@ -199,27 +234,53 @@ export function motivoBloqueio(l: Pick<LinhaNota, "situacao" | "estornado" | "st
   return null;
 }
 
-export const podeEmitir = (l: Parameters<typeof motivoBloqueio>[0]): boolean => motivoBloqueio(l) === null;
+export const podeEmitir = (
+  l: Parameters<typeof motivoBloqueio>[0],
+  opts: { avulsa?: boolean } = {},
+): boolean => motivoBloqueio(l, opts) === null;
+
+/**
+ * Esta linha só sai como AVULSA?
+ *
+ * É a diferença entre as duas réguas, medida linha a linha — e é ela que a tela
+ * usa para pôr o selo âmbar. Sem o selo, ligar a chave "Avulsa" faria caixas
+ * novas se acenderem no meio da lista sem que nada dissesse QUAIS mudaram nem
+ * por quê: o operador veria mais opções e não veria mais risco.
+ */
+export const exigeAvulsa = (l: Parameters<typeof motivoBloqueio>[0]): boolean =>
+  !podeEmitir(l) && podeEmitir(l, { avulsa: true });
 
 /**
  * O que o lote vai fazer, antes de fazer.
  *
  * `bloqueadas` não é erro — é o número que explica por que "selecionei 50 e ele
  * mandou 47". Sem ele a diferença parece perda silenciosa.
+ *
+ * `confirmadas` é o mesmo raciocínio aplicado à régua larga: das que VÃO sair,
+ * quantas estão saindo antes de o dinheiro entrar. É o número que o aviso de
+ * confirmação precisa dizer em voz alta — "emitir 12 notas" e "emitir 12 notas,
+ * 5 delas sobre cobrança que ainda não liquidou" são dois pedidos diferentes.
  */
-export function resumoLote(linhas: LinhaNota[], selecionados: Set<string>) {
+export function resumoLote(
+  linhas: LinhaNota[], selecionados: Set<string>,
+  opts: { avulsa?: boolean } = {},
+) {
   const sel = linhas.filter((l) => selecionados.has(l.id_asaas));
-  const podem = sel.filter(podeEmitir);
+  const podem = sel.filter((l) => podeEmitir(l, opts));
   const motivos = new Map<string, number>();
   for (const l of sel) {
-    const m = motivoBloqueio(l);
+    const m = motivoBloqueio(l, opts);
     if (m) motivos.set(m, (motivos.get(m) ?? 0) + 1);
   }
   return {
     selecionadas: sel.length,
     emitiveis: podem.length,
     bloqueadas: sel.length - podem.length,
+    // Só entre as que realmente vão sair: contar as bloqueadas aqui inflaria o
+    // aviso com cobranças que ninguém vai emitir.
+    confirmadas: podem.filter((l) => exigeAvulsa(l)).length,
     valor: podem.reduce((s, l) => s + Number(l.valor || 0), 0),
+    valorConfirmadas: podem.filter((l) => exigeAvulsa(l)).reduce((s, l) => s + Number(l.valor || 0), 0),
     motivos: [...motivos.entries()].sort((a, b) => b[1] - a[1]),
   };
 }
@@ -538,4 +599,148 @@ export function clientesEmTexto(clientes: ClienteFaltante[]): string {
     `R$ ${Number(c.valor || 0).toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`,
   ].join("\t"));
   return ["Cliente\tCNPJ/CPF no Asaas\tSituação\tCadastro parecido no Omie\tCobranças\tValor", ...linhas].join("\n");
+}
+
+/* ---------------------------------------------------------------------------
+ * EMISSÃO EM MASSA — o motor de fechamento de mês, do lado do navegador.
+ *
+ * POR QUE ISTO EXISTE DO LADO DE CÁ. A edge function morre aos 150s e uma leva
+ * de 20 cobranças já come 116s deles (duas chamadas Omie seriais por cobrança:
+ * IncluirOS + TrocarEtapaOS). Não há como pedir 900 notas numa chamada — nem
+ * como pedir 50, que é o `teto_lote` no papel. Quem quiser emitir o mês inteiro
+ * precisa de alguém CHAMANDO EM SEQUÊNCIA, e esse alguém é ou o cron (que tem o
+ * dia todo) ou a tela (que tem a pessoa esperando).
+ *
+ * Os dois existem de propósito e não competem: o cron é a vazão que sobrevive
+ * ao notebook fechado, e o botão é para quando o mês fecha amanhã e alguém
+ * precisa VER acontecer. O motor no servidor é o mesmo — `action: "emitir"` com
+ * um bloco de ids —, então o que o botão faz é só cadenciar.
+ *
+ * A CADÊNCIA É O PROBLEMA INTEIRO, e ela não é uma pausa fixa. O Omie fatura
+ * por LOTE e só aceita um lote de cada vez: enquanto o anterior está `RUNNING`,
+ * a função recusa a leva seguinte com "o lote N ainda está em processamento" e
+ * NÃO cria nada. Isso não é erro — é a fila do Omie falando. Quem trata como
+ * falha desiste no segundo bloco; quem trata como "espere e repita" emite o mês.
+ * ------------------------------------------------------------------------- */
+
+/**
+ * Quantas cobranças cabem numa chamada.
+ *
+ * 20 e não `teto_lote` (50): o teto do banco é o que o SERVIDOR aceita, e o
+ * relógio é o que o worker aguenta. Medido em 27/08: 20 OS = 116s dos 150s. Uma
+ * leva de 50 seria recusada pelo relógio depois de já ter criado metade das OS
+ * no Omie — o pior desfecho possível, porque OS criada e não faturada fica
+ * ocupando o corredor de isolamento e trava a rodada seguinte.
+ */
+export const CABEM_NUMA_CHAMADA = 20;
+
+/** O acumulado de uma emissão em massa — é o que a barra de progresso lê. */
+export interface ProgressoMassa {
+  /** blocos já respondidos (não necessariamente bem-sucedidos) */
+  blocosFeitos: number;
+  blocosTotal: number;
+  /** cobranças que entraram num lote do Omie — a nota nasce minutos depois */
+  despachadas: number;
+  /** já tinham nota: nada foi emitido, e isso não é falha */
+  jaEmitidas: number;
+  /** barradas na conferência com o Asaas (estorno, dinheiro não entrou) */
+  barradas: number;
+  /** não saíram por erro do Omie */
+  falhas: number;
+  /** os motivos agrupados, do mais frequente para o menos */
+  motivos: Array<[string, number]>;
+}
+
+export const PROGRESSO_ZERO = (blocosTotal: number): ProgressoMassa => ({
+  blocosFeitos: 0, blocosTotal, despachadas: 0, jaEmitidas: 0, barradas: 0, falhas: 0, motivos: [],
+});
+
+/** A resposta de `action: "emitir"`, no que interessa a quem cadencia. */
+export interface RespostaEmissao {
+  despachadas?: number;
+  resultados?: Array<{
+    id_asaas?: string; ok?: boolean; ja_emitida?: boolean;
+    em_processamento?: boolean; bloqueado?: boolean; erro?: string; aviso?: string;
+  }>;
+  pulada?: string;
+  erro?: string;
+}
+
+/**
+ * O bloco respondeu — soma ao acumulado.
+ *
+ * `em_processamento` é SUCESSO e é a resposta normal: o lote é assíncrono, então
+ * ninguém volta com número de nota na mão. Contar isso como falha faria a barra
+ * dizer "0 de 900" no fim de uma emissão que deu certo inteira — e, pior, faria
+ * quem está olhando mandar emitir de novo o que já foi emitido.
+ */
+export function somarBloco(acc: ProgressoMassa, r: RespostaEmissao): ProgressoMassa {
+  const res = r.resultados ?? [];
+  const motivos = new Map(acc.motivos);
+  const anota = (m?: string) => {
+    const t = (m ?? "").trim();
+    if (t) motivos.set(t, (motivos.get(t) ?? 0) + 1);
+  };
+
+  for (const x of res) {
+    if (x.ja_emitida) anota(x.aviso);
+    else if (x.bloqueado || (!x.ok && !x.em_processamento)) anota(x.erro);
+  }
+  // Rodada que não produziu resultado nenhum ainda tem o que dizer: é o
+  // `pulada` que explica por que o bloco não andou (corredor ocupado, teto do
+  // dia). Sem ele a barra avança em silêncio e ninguém sabe que parou de sair.
+  if (!res.length && r.pulada) anota(r.pulada);
+  if (r.erro) anota(r.erro);
+
+  return {
+    ...acc,
+    blocosFeitos: acc.blocosFeitos + 1,
+    despachadas: acc.despachadas + res.filter((x) => x.em_processamento).length,
+    jaEmitidas: acc.jaEmitidas + res.filter((x) => x.ja_emitida).length,
+    barradas: acc.barradas + res.filter((x) => x.bloqueado).length,
+    falhas: acc.falhas + res.filter((x) => !x.ok && !x.em_processamento && !x.bloqueado).length,
+    motivos: [...motivos.entries()].sort((a, b) => b[1] - a[1]),
+  };
+}
+
+/**
+ * O bloco não andou porque o Omie ainda está faturando o anterior?
+ *
+ * A pergunta parece detalhe e é a diferença entre emitir 40 notas e emitir 900.
+ * `FaturarLoteOS` é assíncrono: a função dispara o lote e volta na hora, mas o
+ * Omie leva minutos para processá-lo — e enquanto processa, `limparCorredor`
+ * devolve "o lote N ainda está em processamento" e a leva seguinte NÃO é criada.
+ *
+ * Nada foi perdido quando isso acontece: as cobranças do bloco continuam
+ * intactas, e é por isso que a resposta certa é repetir O MESMO bloco depois de
+ * esperar, em vez de seguir para o próximo (o próximo bateria na mesma trava) ou
+ * abortar (o mês não fecha).
+ */
+export function precisaEsperarOLote(r: RespostaEmissao): boolean {
+  const t = `${r.pulada ?? ""} ${r.erro ?? ""}`.toLowerCase();
+  if (!t.trim()) return false;
+  return /ainda está em processamento|lote_em_voo|em processamento no omie/.test(t);
+}
+
+/**
+ * O teto do dia acabou — parar é a única resposta certa.
+ *
+ * Diferente da espera do lote, aqui repetir não adianta: o freio é de calendário
+ * e só abre amanhã. Insistir queimaria a chamada e encheria o registro de
+ * rodadas puladas idênticas.
+ */
+export function tetoDoDiaAtingido(r: RespostaEmissao): boolean {
+  return /teto do dia atingido/i.test(`${r.pulada ?? ""} ${r.erro ?? ""}`);
+}
+
+/**
+ * Quanto esperar antes de repetir o bloco, em ms.
+ *
+ * Cresce a cada tentativa (10s, 20s, 40s…) e para de crescer em 60s. O lote de
+ * 20 OS leva de uns segundos a poucos minutos dependendo da prefeitura, e
+ * perguntar de 5 em 5 segundos só gasta a cota do Omie — `ListarLotesOS` conta
+ * como chamada e a trava dele é por método.
+ */
+export function esperaAntesDeRepetir(tentativa: number): number {
+  return Math.min(60_000, 10_000 * Math.pow(2, Math.max(0, tentativa - 1)));
 }

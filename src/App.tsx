@@ -60,6 +60,8 @@ import CartaoOmie from "./pages/operacional/CartaoOmie";
 import PainelCAC from "./pages/governanca/PainelCAC";
 import Rescisoes from "./pages/governanca/Rescisoes";
 import NotasERP from "./pages/governanca/NotasERP";
+import Vigilancia from "./pages/governanca/Vigilancia";
+import PainelAutomacoes from "./pages/PainelAutomacoes";
 import Reembolsos from "./pages/operacional/Reembolsos";
 import ColaboradoresRH from "./pages/operacional/ColaboradoresRH";
 import Estornos from "./pages/operacional/Estornos";
@@ -168,6 +170,9 @@ function Rotas() {
               <Route path="/usuarios" element={<Usuarios />} />
               <Route path="/configuracoes/parametrizacao" element={<Parametrizacao />} />
               <Route path="/automacoes/proporcionais" element={<AutomacoesProporcionais />} />
+              {/* "Está rodando?" — a faixa do topo, aberta: a esteira das notas
+                  etapa a etapa e as 46 automações com o que responderam. */}
+              <Route path="/automacoes/painel" element={<PainelAutomacoes />} />
               <Route path="/recargas/celulares" element={<RecargasCelulares />} />
               <Route path="/recargas/viagens" element={<RecargasViagens />} />
               {/* Catálogo virou a aba "IA & Automação" da Visão do Time — redireciona links antigos. */}
@@ -236,6 +241,7 @@ function Rotas() {
                   Governança e não na Auditoria porque a pergunta é do fechamento
                   inteiro ("está tudo no ERP?"), não de um achado. */}
               <Route path="/governanca/notas-erp" element={<NotasERP />} />
+              <Route path="/governanca/vigilancia" element={<Vigilancia />} />
               {/* A aba Extratos existe só no celular; no computador cada fonte tem a sua
                   página própria, e a do cartão é a mais parecida com ela. */}
               <Route path="/extratos" element={<Navigate to="/governanca/cartao" replace />} />

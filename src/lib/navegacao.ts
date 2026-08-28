@@ -13,7 +13,7 @@ import {
   FileText, Smartphone, Plane, LayoutDashboard, Kanban, FileSpreadsheet, Truck,
   History, FileSignature, Gavel, CheckCircle2, PieChart, TrendingUp, FileBarChart,
   Scale, Target, Brain, Wallet2, ShieldCheck, Megaphone, UserMinus, UserCog, Tags,
-  Palette, Mic, Rocket, Globe2, Paperclip, Radar,
+  Palette, Mic, Rocket, Globe2, Paperclip, Radar, Zap,
   type LucideIcon,
 } from "lucide-react";
 import type { ModuleAccess, ModuleId } from "./modules";
@@ -66,6 +66,9 @@ export const GRUPOS_FINANCEIRO: NavGrupo[] = [
     { title: "Visão do Time", url: "/time/visao", icon: Users, busca: ["estrutura", "cargos", "automações", "catálogo"] },
     { title: "Tarefas", url: "/tarefas", icon: CheckSquare, busca: ["kanban", "backlog"] },
     { title: "Projetos", url: "/automacoes/projetos", icon: FolderKanban },
+    // "Está rodando?" — a mesma leitura da faixa do topo, aberta. Fica aqui, e não
+    // em Governança, porque a pergunta é do time que opera o Hub.
+    { title: "Automações", url: "/automacoes/painel", icon: Zap, busca: ["cron", "fila", "esteira", "está rodando", "agendamento", "job", "notas para o omie", "anexo", "varredura", "agendador"] },
     { title: "Anotações", url: "/playbook", icon: BookOpenCheck, busca: ["playbook", "notas"], alias: ["/notas"] },
   ]},
   /* Apresentações: o que sai do Hub para uma PLATEIA — a reunião de tracker com o
@@ -120,6 +123,7 @@ export const GRUPOS_FINANCEIRO: NavGrupo[] = [
     { title: "Notas no ERP", url: "/governanca/notas-erp", icon: Paperclip, busca: ["nota fiscal", "fornecedor", "anexo", "omie", "cobertura", "comprovante"] },
     { title: "Cartão", url: "/governanca/cartao", icon: CreditCard, badge: "OFX", busca: ["fatura", "ofx", "sicoob"] },
     { title: "Painel CAC", url: "/governanca/cac", icon: Megaphone, busca: ["aquisição", "marketing", "comercial"] },
+    { title: "Vigilância externa", url: "/governanca/vigilancia", icon: Radar, busca: ["reajuste", "preço do fornecedor", "saas", "churn", "fechou", "créditos", "raspagem"] },
     { title: "Rescisões", url: "/governanca/rescisoes", icon: UserMinus, busca: ["desligamento", "verbas", "pj"] },
   ]},
   { label: "Configurações", items: [

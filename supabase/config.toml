@@ -39,3 +39,11 @@ verify_jwt = false
 # Tem caminho de cron (7h) para escrever o diagnostico da manha.
 [functions.notas-diagnostico]
 verify_jwt = false
+
+# Roda de cron (07:40 BRT) com `x-cron-token` para montar o painel de noticias do
+# briefing. Cair nesta armadilha custou uma rodada: sem a linha, a CLI sobe com
+# verify_jwt = true, `disparar_automacao` nao manda Authorization (so o
+# x-cron-token) e o gateway devolve UNAUTHORIZED_NO_AUTH_HEADER — 401 no
+# net._http_response e NADA no log da funcao, porque ela nem chegou a rodar.
+[functions.briefing-noticias]
+verify_jwt = false

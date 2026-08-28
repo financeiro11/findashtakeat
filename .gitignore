@@ -28,3 +28,11 @@ dist-ssr
 
 # Estado local do Supabase CLI (ref do projeto, cache) — não versionar.
 supabase/.temp/
+
+# Segredo local — token de ferramenta. NUNCA versionar.
+.ltok
+
+# Rascunhos de depuração (Playwright apontando para o dev server, arquivos soltos).
+simple-test.js
+test-cartao.mjs
+x

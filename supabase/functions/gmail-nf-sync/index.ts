@@ -30,8 +30,9 @@ import { baixarAnexo, listar, mensagem, segredosDoGmail, tokenDeAcesso, type Ane
 import { tipoQueVale } from "../_shared/mime.ts";
 import { textoDePdf } from "../_shared/pdf.ts";
 import {
-  chaveDeAcesso, dadosDaChave, descricaoDaNota, ehAvisoDeCobranca, lerCorpoDeEmail, lerDanfes, lerEmailOmie,
-  linksDeNota, lerNomeDeArquivo, lerXmlFiscal, tipoDoDocumento, type TipoDocumento,
+  chaveDeAcesso, dadosDaChave, descricaoDaNota, ehAvisoDeCobranca, ehBoletoPeloTexto, lerCorpoDeEmail,
+  lerDanfes, lerEmailOmie, linksDeNota, lerNomeDeArquivo, lerXmlFiscal, tipoDoDocumento,
+  type TipoDocumento,
 } from "../_shared/nota-fiscal.ts";
 import { comprovanteEmailPdf } from "../_shared/danfse.ts";
 
@@ -211,9 +212,18 @@ async function lerAnexo(a: Anexo, bytes: Uint8Array): Promise<Achado> {
        orçamento de OCR (e a fila, e o teto por rodada) é a esteira do Drive. O
        que este caminho garante é o CNPJ pela chave e pelo corpo — que é a chave
        forte do casamento. Se um dia faltar valor demais, o OCR entra depois. */
+
+    /* O PAPEL CORRIGE O NOME DO ARQUIVO.
+       Daqui para baixo o `tipo` é palpite: veio da palavra que alguém escreveu
+       ao salvar. O texto já está extraído e não custa nada, então quando ele
+       contradiz o nome, quem manda é ele — "SUA FATURA.PDF" que por dentro é
+       ficha de compensação vira boleto, e boleto não conta como nota no ERP.
+       Só desce; nunca promove. Ver `ehBoletoPeloTexto`. */
+    const tipoLido = ehBoletoPeloTexto(texto) ? "boleto" : tipo;
     return {
       nome: null, cnpj: doNome.cnpj, valor: doNome.valor, data: doNome.data,
-      chave: doNome.chave, tipo, lido_como: "nome_arquivo",
+      chave: doNome.chave, tipo: tipoLido,
+      lido_como: tipoLido === tipo ? "nome_arquivo" : "texto_do_pdf",
       descricao: doNome.descricao ?? a.nome,
     };
   }

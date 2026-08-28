@@ -372,10 +372,67 @@ export function tipoDoDocumento(nome: string | null | undefined): TipoDocumento 
      chamada com ASSUNTO DE E-MAIL em `gmail-nf-sync` — e ali "sua nota está
      pronta" é recado, não documento (é a lição das 489 linhas sem anexo de
      26/08/2026). Nome de arquivo numera; recado não.
-     Continua atrás de `boleto`, testado antes: "Boleto NF 11064" é boleto. */
-  if (/\bnfe?\b|\bnfs-?e\b|danfe|nota[\s_-]*fiscal|notafiscal|\bnota[\s_.-]*\d|\bnf[\s_-]?\d|invoice/.test(s)) return "nota";
+     Continua atrás de `boleto`, testado antes: "Boleto NF 11064" é boleto.
+
+     "FATURA" ENTROU EM 28/08/2026, e por dois motivos.
+     O primeiro é coerência: `invoice` já estava aqui, e fatura é a mesma
+     palavra em português. O segundo é medido — no descarte inteiro da caixa
+     (72 mensagens com anexo dadas como não fiscais), 4 têm "fatura" no NOME DO
+     ARQUIVO, todas as quatro da Verisure ("SUA FATURA.PDF"), e NENHUMA delas
+     tem assunto de recado. A palavra que assustava — "Fatura com atraso de 5
+     dias", "Lembrete de Fatura vencendo hoje" — mora no ASSUNTO, e o assunto
+     não decide `tipo_documento` de linha com anexo: `lerAnexo` classifica pelo
+     nome do arquivo. Onde o assunto decide (a linha SEM arquivo) quem responde
+     é `ehAvisoDeCobranca`, que já separa o recado da entrega.
+
+     `\bfaturas?\b` e não `\bfatura`: sem a fronteira do fim, "Relatório de
+     faturamento" viraria nota fiscal.
+
+     O QUE PROTEGE DE VERDADE não é este regex, é o conteúdo: um PDF chamado
+     "fatura" que por dentro é boleto vira boleto, e não conta como nota no ERP.
+     Ver `ehBoletoPeloTexto`. */
+  if (/\bnfe?\b|\bnfs-?e\b|danfe|nota[\s_-]*fiscal|notafiscal|\bnota[\s_.-]*\d|\bnf[\s_-]?\d|invoice|\bfaturas?\b/.test(s)) return "nota";
   if (/recibo|receipt|comprovante/.test(s)) return "recibo";
   return "outro";
+}
+
+/**
+ * O PAPEL DIZ QUE É BOLETO, e o nome do arquivo não manda mais que ele.
+ *
+ * Marcar um lançamento como "COM NF" porque existe um boleto é mentir com cara
+ * de resolvido: o contador abre o título e encontra uma cobrança, não o
+ * documento fiscal. `tipoDoDocumento` já defende isso pela palavra escrita no
+ * nome — só que o nome é escolha de quem salvou o arquivo, e "SUA FATURA.PDF"
+ * não diz qual dos dois documentos veio dentro.
+ *
+ * Este freio existe porque "fatura" passou a valer como nota (28/08/2026). Ele
+ * lê o texto que o PDF já entregou — não custa nada, o extrator rodou de
+ * qualquer jeito — e desfaz o palpite do nome quando o conteúdo o contradiz.
+ *
+ * AS DUAS MARCAS, e a segunda é a que evita o tiro no pé:
+ *   • de boleto: a ficha de compensação e o que só existe nela — linha
+ *     digitável, nosso número, cedente/sacado, "não receber após o vencimento";
+ *   • de nota: "nota fiscal", "NFS-e", "DANFE", "chave de acesso", "código de
+ *     verificação", "discriminação dos serviços", ISSQN.
+ *
+ * SÓ VIRA BOLETO QUEM TEM A PRIMEIRA E NÃO TEM A SEGUNDA. Metade dos emissores
+ * manda a NFS-e e o boleto NO MESMO PDF — "NFS-e + Boleto Nº 891" é um arquivo
+ * real desta caixa. Ali as duas marcas aparecem, e o papel É a nota (com uma
+ * cobrança grampeada). Derrubar esses seria trocar um erro pelo seu contrário.
+ *
+ * Os recortes do teste são SINTÉTICOS, ao contrário dos de DANFE — não havia
+ * texto de boleto real extraído por `unpdf` no repositório para ancorar.
+ */
+const MARCA_BOLETO =
+  /ficha de compensa|linha digit[áa]vel|nosso n[úu]mero|\bcedente\b|\bsacado\b|n[ãa]o receber ap[óo]s|autentica[çc][ãa]o mec[âa]nica|local de pagamento/i;
+const MARCA_NOTA =
+  /nota fiscal|notafiscal|\bnfs-?e\b|\bdanfe\b|chave de acesso|c[óo]digo de verifica|prestador de servi|discrimina[çc][ãa]o d[oa]s servi|\bissqn\b|\bnf-?e\b/i;
+
+export function ehBoletoPeloTexto(texto: string | null | undefined): boolean {
+  const t = String(texto ?? "");
+  if (!t.trim()) return false;
+  if (!MARCA_BOLETO.test(t)) return false;
+  return !MARCA_NOTA.test(t);
 }
 
 export type NomeDeArquivo = {

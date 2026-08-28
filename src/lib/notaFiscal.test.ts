@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   chaveDeAcesso, chaveNfse, chaveValida, dadosDaChave, descricaoDaNota, lerCorpoDeEmail,
   ehAvisoDeCobranca, lerDanfes, lerEmailOmie, lerNomeDeArquivo, lerXmlFiscal, linksDeNota,
-  nomeDoEmitente, cnpjValido,
+  nomeDoEmitente, cnpjValido, ehBoletoPeloTexto,
   tipoDoDocumento, valorComMoeda,
 } from "@/lib/notaFiscal";
 
@@ -220,6 +220,18 @@ describe("tipo do documento", () => {
 
   it("separa recibo e extrato do resto", () => {
     expect(tipoDoDocumento("2026-08-05_Alude_Recibo-Aluguel_Takeat.pdf")).toBe("recibo");
+  });
+
+  /* "fatura" entrou em 28/08/2026 — `invoice` já valia, e é a mesma palavra.
+     As quatro da Verisure eram o descarte que motivou. */
+  it("fatura é documento, e boleto continua ganhando dela", () => {
+    expect(tipoDoDocumento("SUA FATURA.PDF")).toBe("nota");
+    expect(tipoDoDocumento("fatura_verisure_08-2026.pdf")).toBe("nota");
+    expect(tipoDoDocumento("Faturas EDP.pdf")).toBe("nota");
+    // A ordem importa: quem escreveu "boleto" sabia mais do que quem leu "fatura".
+    expect(tipoDoDocumento("Boleto da fatura 4535.pdf")).toBe("boleto");
+    // Sem a fronteira do fim, isto viraria nota fiscal.
+    expect(tipoDoDocumento("Relatorio de faturamento.pdf")).toBe("outro");
     expect(tipoDoDocumento("99Receipt - 23Jul2026 - R$57,00 - Pop - Vitória.pdf")).toBe("recibo");
     expect(tipoDoDocumento("Cópia de ClientStatements_082426.pdf")).toBe("extrato");
     expect(tipoDoDocumento("2026-08-04_Junho_2026.pdf")).toBe("outro");
@@ -306,6 +318,43 @@ describe("nome do arquivo", () => {
     // Boleto que cita a NF existe, e ali quem sabe mais é quem nomeou o arquivo.
     expect(lerNomeDeArquivo(`boleto_${FRACALOSSI}.pdf`).tipo).toBe("boleto");
     expect(lerNomeDeArquivo(`recibo ${FRACALOSSI}.pdf`).tipo).toBe("recibo");
+  });
+});
+
+/* ---------------------------------------------------------------------------
+ * O FREIO DE CONTEÚDO
+ *
+ * ATENÇÃO: estes recortes são SINTÉTICOS, ao contrário dos de DANFE lá em cima.
+ * Não havia texto de boleto extraído por `unpdf` no repositório para ancorar, e
+ * inventar um recorte é honesto desde que se diga. O que eles fixam é a REGRA —
+ * "boleto sem marca de nota é boleto" —, não o layout de um emissor específico.
+ * ------------------------------------------------------------------------- */
+describe("ehBoletoPeloTexto", () => {
+  const BOLETO = `Banco do Brasil 001-9 Local de pagamento Pagável em qualquer banco
+    Beneficiário VERISURE BRASIL MONITORAMENTO LTDA Cedente 12.345.678/0001-90
+    Nosso número 00012345678 Vencimento 04/09/2026 Valor do documento 189,90
+    Sacado TAKEAT TECNOLOGIA LTDA Não receber após o vencimento
+    Autenticação mecânica - Ficha de Compensação`;
+
+  const NOTA_COM_BOLETO = `PREFEITURA MUNICIPAL DE VITORIA NOTA FISCAL DE SERVICOS ELETRONICA - NFS-e
+    Código de Verificação: ABCD-1234 Discriminação dos Serviços: monitoramento mensal
+    ISSQN retido na fonte ... Local de pagamento Pagável em qualquer banco
+    Nosso número 00012345678 Ficha de Compensação`;
+
+  it("boleto sem marca de nota é boleto, mesmo que o arquivo se chame fatura", () => {
+    expect(ehBoletoPeloTexto(BOLETO)).toBe(true);
+  });
+
+  it("a NFS-e com o boleto grampeado continua sendo a nota", () => {
+    // "NFS-e + Boleto Nº 891" é um arquivo real desta caixa: as duas marcas
+    // convivem, e derrubar o papel seria trocar um erro pelo seu contrário.
+    expect(ehBoletoPeloTexto(NOTA_COM_BOLETO)).toBe(false);
+  });
+
+  it("sem marca de boleto nenhuma, não opina", () => {
+    expect(ehBoletoPeloTexto("Contrato de prestação de serviços, cláusula 4ª")).toBe(false);
+    expect(ehBoletoPeloTexto("")).toBe(false);
+    expect(ehBoletoPeloTexto(null)).toBe(false);
   });
 });
 

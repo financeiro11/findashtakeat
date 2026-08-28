@@ -73,6 +73,8 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.0";
 import { requireUser } from "../_shared/auth.ts";
 import { asaasPut } from "../_shared/asaas.ts";
+import { consultarCnpjPublico } from "../_shared/cnpj-publico.ts";
+import { clienteServico } from "../_shared/firecrawl.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -142,7 +144,23 @@ const NAO_FORCAVEL = ["documento_invalido", "sem_cliente_no_espelho"];
 
 /* ------------------------------ Receita / CEP ------------------------------ */
 
-type Fonte = "receita" | "cep" | "asaas";
+/**
+ * De onde o endereço veio. `firecrawl` é o cadastro federal lido de página
+ * pública — mesmo dado da Receita, outra porta. Ver `_shared/cnpj-publico.ts`.
+ */
+type Fonte = "receita" | "firecrawl" | "cep" | "asaas";
+
+/**
+ * As fontes que valem como "a Receita disse".
+ *
+ * Existe porque a regra de ouro desta função — só escreve no Omie o cadastro de
+ * PJ que bateu com o cadastro federal — estava escrita como `fonte !== "receita"`
+ * em dois lugares. Com uma segunda porta para o mesmo dado, a comparação por
+ * igualdade passaria a REJEITAR endereço bom, e o sintoma seria o pior possível:
+ * o cliente continuaria pulado, com uma mensagem dizendo que a Receita não
+ * respondeu, logo depois de ela ter respondido por outro caminho.
+ */
+const FONTES_OFICIAIS: Fonte[] = ["receita", "firecrawl"];
 
 /** Consulta com prazo: BrasilAPI às vezes engasga, e a rodada não pode ficar
  *  presa num cliente. Devolve `null` na falha de rede/tempo e `404` explícito
@@ -172,6 +190,23 @@ async function buscaJSON(url: string, ms = 12000): Promise<{ ok: boolean; naoExi
  *  resposta, se foi limite de taxa ou intermitência. Módulo-nível porque
  *  `montarCadastro` fica entre quem consulta e quem precisa saber. */
 let ultimoStatusBrasilAPI: number | null = null;
+
+/**
+ * ATÉ QUANDO A LEVA AINDA TEM FÔLEGO PARA O PLANO B.
+ *
+ * O socorro por raspagem custa até duas leituras de página mais duas chamadas de
+ * IA — pode passar de um minuto. O laço da varredura só checa o relógio ANTES de
+ * cada cliente: um cliente que comece aos 105s e caia no plano B levaria a
+ * função para além dos 150s do worker, e aí não é o cliente que se perde, é a
+ * leva inteira — sem resposta, sem relatório, com o trabalho já feito jogado
+ * fora. É o mesmo desenho de `fimDaRodada` no radar de preços.
+ *
+ * Global porque `montarCadastro` está a três chamadas de distância de quem sabe
+ * a hora, e passar o relógio por todas as assinaturas só espalharia o número.
+ * `Infinity` fora da varredura: quem chama um cliente por vez (a tela) não
+ * disputa relógio com ninguém e deve poder esperar.
+ */
+let fimDaLeva = Number.POSITIVE_INFINITY;
 
 interface Fila {
   id_asaas: string; doc: string; nome: string; pessoa_fisica: boolean;
@@ -214,6 +249,34 @@ function logradouroDaReceita(d: any): string {
 }
 
 /**
+ * O código IBGE do município, a partir do CEP. Não custa crédito de raspagem.
+ *
+ * Existe porque a página pública de CNPJ traz o endereço mas NÃO traz o código
+ * do município — e é ele que resolve o E0921/E0922, um dos dois erros que
+ * prendem as notas em status 003. Buscar o endereço e não buscar o código seria
+ * gastar o crédito para trocar um erro de prefeitura por outro.
+ *
+ * DUAS BASES, e a segunda é o ponto: a BrasilAPI é a mesma que acabou de recusar
+ * por limite de IP quando chegamos aqui pelo plano B. O ViaCEP é outro host,
+ * outro limite, e devolve o mesmo `ibge`. Sem ele, o socorro dependeria
+ * justamente do serviço que motivou o socorro.
+ */
+async function ibgePeloCep(cep: string): Promise<string | undefined> {
+  const c = soDigitos(cep);
+  if (c.length !== 8) return undefined;
+
+  const b = await buscaJSON(`https://brasilapi.com.br/api/cep/v2/${c}`, 8000);
+  const daBrasil = soDigitos(b?.dados?.ibge?.city);
+  if (b.ok && daBrasil.length === 7) return daBrasil;
+
+  const v = await buscaJSON(`https://viacep.com.br/ws/${c}/json/`, 8000);
+  const doViaCep = soDigitos(v?.dados?.ibge);
+  // O ViaCEP responde 200 com `{ "erro": true }` para CEP inexistente — o
+  // `ok` do fetch não distingue isso, e o dígito é que decide.
+  return v.ok && doViaCep.length === 7 ? doViaCep : undefined;
+}
+
+/**
  * O endereço que vai para o cadastro, e de onde ele veio.
  *
  * Devolve `{ bloqueio }` quando o que existe não dá uma nota emitível — e é de
@@ -252,6 +315,59 @@ async function montarCadastro(c: Fila): Promise<{ cadastro?: Cadastro; bloqueio?
           situacao_receita: limpo(d.descricao_situacao_cadastral) || undefined,
         },
       };
+    }
+    /* PLANO B: A MESMA RECEITA, POR OUTRA PORTA.
+     *
+     * Só entra quando a BrasilAPI RECUSOU (429/403 de limite por IP) ou não
+     * respondeu — nunca quando ela disse "não existe", que é resposta e vale
+     * mais que qualquer página de terceiro. A distinção já estava feita acima,
+     * no `r.naoExiste`, que interrompe antes de chegar aqui.
+     *
+     * POR QUE VALE O CRÉDITO. Sem isto, o cliente é pulado e volta na janela
+     * seguinte para bater na mesma parede — a fila anda no ritmo do limite de
+     * taxa de terceiro, e cada volta que não anda é uma NFS-e que não sai. Com
+     * isto, um crédito de raspagem destrava um cadastro. É a conversão mais
+     * direta de crédito em nota emitida que existe no Hub.
+     *
+     * O `ultimoStatusBrasilAPI` é preservado de propósito: se o plano B também
+     * falhar, a mensagem que a tela mostra continua sendo a verdadeira causa
+     * ("a BrasilAPI recusou por limite de taxa"), e não a do socorro. */
+    const recusou = !r.ok && !r.naoExiste;
+    /* SÓ SE COUBER. Sem margem, o cliente fica pendente e volta na próxima
+       janela — que é exatamente o que acontecia antes deste socorro existir.
+       Perder um cliente é o custo conhecido; perder a leva é o desconhecido. */
+    const cabeOPlanoB = fimDaLeva - Date.now() > 70_000;
+    if (recusou && cabeOPlanoB) {
+      try {
+        const alt = await consultarCnpjPublico(clienteServico(), c.doc);
+        if (alt.dados) {
+          const p = alt.dados;
+          return {
+            cadastro: {
+              razao_social: p.razao_social || nomeAsaas,
+              nome_fantasia: nomeAsaas || p.nome_fantasia,
+              endereco: p.logradouro || limpo(c.endereco),
+              endereco_numero: p.numero || limpo(c.endereco_numero) || "S/N",
+              complemento: p.complemento || limpo(c.complemento),
+              bairro: p.bairro || limpo(c.bairro),
+              cidade: p.municipio,
+              estado: p.uf,
+              cep: p.cep,
+              /* O código IBGE não vem da página — ela não o publica. Quem o traz
+               * é o CEP, e a consulta de CEP não custa crédito: sem ele o E0921
+               * ("código do município do tomador") continuaria prendendo a nota,
+               * e teríamos gasto o crédito para trocar um erro por outro. */
+              cidade_ibge: await ibgePeloCep(p.cep),
+              fonte: "firecrawl",
+              situacao_receita: p.situacao || undefined,
+            },
+          };
+        }
+        console.log(`cnpj-publico ${c.doc}: ${alt.motivo}`);
+      } catch (e) {
+        // Socorro que falha não pode derrubar a fila: segue para o CEP.
+        console.error("cnpj-publico", c.doc, e);
+      }
     }
     // Receita fora do ar ou resposta sem endereço: cai no CEP, abaixo.
   }
@@ -798,6 +914,10 @@ async function prepararCadastros(
    * trabalho — perde só a vontade de terminar nesta invocação. */
   const inicio = Date.now();
   const PRAZO = 110_000;
+  /* O mesmo prazo, dito como INSTANTE, para quem está longe daqui: é o que
+     `montarCadastro` consulta antes de gastar um minuto no plano B por
+     raspagem. Ver `fimDaLeva`. */
+  fimDaLeva = inicio + PRAZO;
   let interrompido = false;
 
   for (const c of lista) {
@@ -815,7 +935,7 @@ async function prepararCadastros(
       await dorme(900);
       continue;
     }
-    if (pj && cadastro.fonte !== "receita") {
+    if (pj && !FONTES_OFICIAIS.includes(cadastro.fonte)) {
       /* Fica PENDENTE de propósito: sem marcar, ele volta na próxima passada.
        * Escrever daqui gravaria "S/N" por cima de um número que a Receita
        * conhece — e o cliente sairia da fila carregando um endereço inventado. */
@@ -823,8 +943,12 @@ async function prepararCadastros(
       saida.push({
         doc: c.doc, nome: c.nome, ok: false, pulado: true, falta: c.falta,
         http: ultimoStatusBrasilAPI,
+        /* A mensagem diz que o socorro TAMBÉM não deu — senão ela manda esperar
+         * o relógio da BrasilAPI, e quem for atrás vai concluir que basta
+         * aguardar, quando na verdade as duas portas estão fechadas (crédito no
+         * fim do quinhão, página fora do ar, CNPJ que não está em lugar nenhum). */
         motivo: limite
-          ? `A BrasilAPI recusou por limite de taxa (HTTP ${ultimoStatusBrasilAPI}). Pulado; só o relógio resolve — a varredura volta na próxima janela.`
+          ? `A BrasilAPI recusou por limite de taxa (HTTP ${ultimoStatusBrasilAPI}) e a consulta pública também não trouxe o endereço. Pulado; volta na próxima janela.`
           : `A Receita não respondeu agora (caiu para "${cadastro.fonte}"). Pulado de propósito; volta na próxima passada.`,
       });
       semReceita++;

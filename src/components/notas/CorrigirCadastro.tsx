@@ -50,6 +50,7 @@ const CAMPO: Record<string, string> = {
 /** De onde saiu o endereço proposto — e por que isso importa na linha. */
 const FONTE: Record<string, { rotulo: string; ajuda: string }> = {
   receita: { rotulo: "Receita Federal", ajuda: "Endereço oficial do CNPJ (BrasilAPI /cnpj). É o mais coerente com o que a prefeitura valida." },
+  firecrawl: { rotulo: "Receita (consulta pública)", ajuda: "O mesmo cadastro federal, lido de uma página pública de consulta porque a BrasilAPI recusou por limite de taxa. Vale como Receita; o código do município veio do CEP." },
   cep: { rotulo: "CEP", ajuda: "Consulta do CEP (BrasilAPI /cep). Um CEP pertence a exatamente um município — é o par que o erro E0240 recusa." },
   asaas: { rotulo: "Asaas", ajuda: "As duas consultas caíram; vale o que o Asaas tem, e só porque está completo." },
 };

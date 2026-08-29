@@ -10,7 +10,7 @@ export type Database = {
   // Allows to automatically instantiate createClient with right options
   // instead of createClient<Database, { PostgrestVersion: 'XX' }>(URL, KEY)
   __InternalSupabase: {
-    PostgrestVersion: "14.17"
+    PostgrestVersion: "14.5"
   }
   graphql_public: {
     Tables: {
@@ -1383,6 +1383,63 @@ export type Database = {
           noticias?: Json | null
           periodo_fim?: string
           periodo_inicio?: string
+        }
+        Relationships: []
+      }
+      briefing_noticias: {
+        Row: {
+          chave: string
+          colhido_em: string
+          detalhe: Json
+          fonte: string | null
+          id: number
+          lido_em: string | null
+          lido_por: string | null
+          motivos: string[]
+          muda_algo: boolean | null
+          pauta: string
+          por_que_importa: string | null
+          publicado_em: string | null
+          relevancia: number
+          resumo: string | null
+          titulo: string
+          url: string
+        }
+        Insert: {
+          chave: string
+          colhido_em?: string
+          detalhe?: Json
+          fonte?: string | null
+          id?: number
+          lido_em?: string | null
+          lido_por?: string | null
+          motivos?: string[]
+          muda_algo?: boolean | null
+          pauta: string
+          por_que_importa?: string | null
+          publicado_em?: string | null
+          relevancia?: number
+          resumo?: string | null
+          titulo: string
+          url: string
+        }
+        Update: {
+          chave?: string
+          colhido_em?: string
+          detalhe?: Json
+          fonte?: string | null
+          id?: number
+          lido_em?: string | null
+          lido_por?: string | null
+          motivos?: string[]
+          muda_algo?: boolean | null
+          pauta?: string
+          por_que_importa?: string | null
+          publicado_em?: string | null
+          relevancia?: number
+          resumo?: string | null
+          titulo?: string
+          url?: string
         }
         Relationships: []
       }
@@ -3860,6 +3917,7 @@ export type Database = {
           preco_alvo: number
           preco_total: number | null
           status: string
+          tentativas: number
           texto: string
           tipo: string
           visto_em: string | null
@@ -3877,6 +3935,7 @@ export type Database = {
           preco_alvo: number
           preco_total?: number | null
           status?: string
+          tentativas?: number
           texto: string
           tipo: string
           visto_em?: string | null
@@ -3894,6 +3953,7 @@ export type Database = {
           preco_alvo?: number
           preco_total?: number | null
           status?: string
+          tentativas?: number
           texto?: string
           tipo?: string
           visto_em?: string | null
@@ -5206,6 +5266,7 @@ export type Database = {
       nf_config: {
         Row: {
           atualizado_em: string
+          avulsa_sem_asaas_desde: string | null
           cadastro_auto: string
           cadastro_auto_teto: number
           data_corte: string
@@ -5220,6 +5281,7 @@ export type Database = {
         }
         Insert: {
           atualizado_em?: string
+          avulsa_sem_asaas_desde?: string | null
           cadastro_auto?: string
           cadastro_auto_teto?: number
           data_corte?: string
@@ -5234,6 +5296,7 @@ export type Database = {
         }
         Update: {
           atualizado_em?: string
+          avulsa_sem_asaas_desde?: string | null
           cadastro_auto?: string
           cadastro_auto_teto?: number
           data_corte?: string
@@ -9729,6 +9792,15 @@ export type Database = {
         Args: { p_codigo: string; p_descricao: string }
         Returns: string
       }
+      cap_titulo_resumo: {
+        Args: { p_cods: number[] }
+        Returns: {
+          cod_titulo: number
+          data: string
+          favorecido: string
+          valor: number
+        }[]
+      }
       cartao_importar: { Args: { p_payload: Json }; Returns: Json }
       cartao_marcar: {
         Args: {
@@ -10329,6 +10401,10 @@ export type Database = {
         Returns: string
       }
       nfse_preparo_montar: { Args: { p_desde?: string }; Returns: number }
+      nome_de_arquivo_da_nota: {
+        Args: { p_detalhe: string; p_fonte: string }
+        Returns: string
+      }
       normaliza_nome: { Args: { p_nome: string }; Returns: string }
       nota_fonte_do_titulo: {
         Args: { p_cod: string }
@@ -10388,6 +10464,9 @@ export type Database = {
           competencia: string
           conferencia: string
           confianca: string
+          copia_de: number
+          copia_de_fonte: string
+          copia_de_rotulo: string
           detalhe: string
           diz_anexado: boolean
           enviado_em: string
@@ -10566,6 +10645,13 @@ export type Database = {
           n_cod_cli: number
           n_cod_os: number
           status_asaas: string
+          valor: number
+        }[]
+      }
+      notas_fiscais_fila_resumo: {
+        Args: never
+        Returns: {
+          cobrancas: number
           valor: number
         }[]
       }

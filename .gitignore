@@ -36,3 +36,9 @@ supabase/.temp/
 simple-test.js
 test-cartao.mjs
 x
+
+# Relatórios gerados para conferência (planilhas e CSV de apuração). São DADO,
+# não código: trazem nome de cliente, CNPJ e valor, e nascem de uma consulta que
+# se pode repetir a qualquer hora. Versionar congelaria o retrato de um dia
+# dentro do repositório, e o repositório não é onde esse retrato deve morar.
+saida/

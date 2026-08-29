@@ -2642,6 +2642,10 @@ type LinhaAcervo = {
   motivo: MotivoParada;
   ignorado_em: string | null;
   ignorado_motivo: string | null;
+  /** Preenchido só na aba "Cópias": de qual documento esta linha é repetição. */
+  copia_de: number | null;
+  copia_de_fonte: string | null;
+  copia_de_rotulo: string | null;
   total: number;
 };
 
@@ -2662,6 +2666,8 @@ type ResumoAcervo = {
   tudo: number; arquivos: number; notas: number; sem_arquivo: number;
   falta_no_erp: number; sobe_sozinha: number;
   espera_gente: number; na_fila: number; no_erp: number; com_erro: number;
+  /** O papel repetido. É o único número que conta cópia — todos os outros não. */
+  copias: number;
   por_alvo: Record<string, number>; por_fonte: Record<string, number>;
 };
 
@@ -2720,6 +2726,15 @@ const RECORTES_CONSULTA: Array<{ id: string; rotulo: string; chave: keyof Resumo
     ajuda: "Os arquivos guardados mais os registros sem arquivo. É o acervo inteiro." },
   { id: "so_no_drive", rotulo: "Sem cópia da empresa", chave: "so_no_drive",
     ajuda: "O arquivo existe só no Drive de quem preencheu o formulário — um caso real da fila tem dono num Gmail pessoal, compartilhado com o financeiro@ desde 2024. Se a pessoa sair, mover ou apagar, a nota some e a empresa nunca a teve. A notas-arquivar copia para o bucket do projeto e esta fila encolhe." },
+  /* O PAPEL REPETIDO, e por que ele merece uma aba em vez de sumir calado.
+     A mesma nota chega pela caixa do financeiro@ e pela pasta "0. Gmail" do
+     Drive, que uma automação enche com os anexos da MESMA caixa — 78% do que
+     vem da pasta é gêmeo de um e-mail. Nenhum outro número desta tela conta
+     estas linhas; aqui elas aparecem com o documento de que são cópia ao lado,
+     porque o agrupamento por nome de arquivo é recente e alguém precisa poder
+     desconfiar dele no olho. */
+  { id: "copias", rotulo: "Papel repetido", chave: "copias",
+    ajuda: "A mesma nota que chegou por duas portas: a caixa do financeiro@ e a pasta \"0. Gmail\" do Drive, que é abastecida com os anexos dessa mesma caixa. O Hub guarda a melhor leitura das duas — o XML antes do PDF passado por OCR — e esconde a repetida de todos os outros recortes. Fica aqui para conferência, com o documento original do lado." },
 ];
 
 const EH_CONSULTA = (id: string) => RECORTES_CONSULTA.some((r) => r.id === id);
@@ -2940,7 +2955,11 @@ function Acervo({ aoMudar }: { aoMudar: () => void }) {
   /* No recorte "Arquivado" marca-se qualquer linha: o gesto ali é devolver à
      fila, e nenhuma delas tem alvo (é por isso que foram arquivadas). */
   const noArquivo = recorte === "arquivado";
-  const marcaveisAqui = noArquivo ? linhas : marcaveis;
+  /* Em "Papel repetido" não se marca nada. A `notas_externas_enfileirar` já
+     recusa cópia, então o botão não faria estrago — faria pior: responderia
+     "0 enfileiradas" sem dizer por quê. A aba é de conferência, não de gesto. */
+  const noCopias = recorte === "copias";
+  const marcaveisAqui = noCopias ? [] : noArquivo ? linhas : marcaveis;
   const ajudaDoRecorte = [...RECORTES, ...RECORTES_FILA, ...RECORTES_CONSULTA]
     .find((r) => r.id === recorte)?.ajuda ?? "";
   /* Confirmar só faz sentido no que ainda não foi olhado por gente. */
@@ -3296,7 +3315,7 @@ function Acervo({ aoMudar }: { aoMudar: () => void }) {
               <LinhaDoAcervo
                 key={l.id} l={l}
                 marcada={marcadas.has(l.id)}
-                marcavel={noArquivo || (l.tem_arquivo && !l.enviado_erp_em && !l.fila_erp)}
+                marcavel={!noCopias && (noArquivo || (l.tem_arquivo && !l.enviado_erp_em && !l.fila_erp))}
                 aoMarcar={(v) => setMarcadas((s) => {
                   const n = new Set(s); if (v) n.add(l.id); else n.delete(l.id); return n;
                 })}
@@ -3381,6 +3400,16 @@ function LinhaDoAcervo({
             {l.chave_fiscal ? " · tem chave de acesso" : ""}
           </span>
         )}
+        {/* DE QUEM ESTA LINHA É CÓPIA. Só a aba "Papel repetido" traz isto
+            preenchido — nos outros recortes a cópia nem aparece. É aqui que se
+            confere se o agrupamento acertou: os dois nomes lado a lado. */}
+        {!!l.copia_de && (
+          <span className="mt-0.5 block text-[11px] text-muted-foreground/80"
+                title={`Mesmo documento do registro #${l.copia_de}. O Hub guarda aquele e esconde este dos outros recortes.`}>
+            cópia de {l.copia_de_rotulo || `#${l.copia_de}`}
+            {l.copia_de_fonte ? ` · ${l.copia_de_fonte}` : ""}
+          </span>
+        )}
       </td>
 
       <td className="px-3 py-2 text-right tabular-nums">{l.valor != null ? brl(Number(l.valor)) : "—"}</td>
@@ -3398,7 +3427,13 @@ function LinhaDoAcervo({
           </>
         ) : (
           <span className="text-[12.5px] text-muted-foreground">
-            {l.candidatos?.motivo === "varios_alvos"
+            {/* A CÓPIA VEM PRIMEIRO. Ela não tem alvo porque o alvo é do
+                documento original, e não porque nada bateu — dizer "nenhum
+                lançamento bate" aqui mandaria alguém casar à mão o que já está
+                casado do outro lado. */}
+            {l.copia_de
+              ? "o lançamento está no documento original"
+              : l.candidatos?.motivo === "varios_alvos"
               ? `${l.candidatos.quantos} lançamentos cabem — empate não casa`
               : l.candidatos?.motivo === "alvo_disputado"
                 ? `${l.candidatos.linhas_disputando} linhas disputam o mesmo lançamento`

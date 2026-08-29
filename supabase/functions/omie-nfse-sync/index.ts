@@ -1206,6 +1206,43 @@ async function curarEspelho(supabase: any, idAsaas: string, cobranca: any) {
 }
 
 /**
+ * A NOTA DO ASAAS ACHADA AO VIVO ENTRA NO ESPELHO — senão a porta reabre o
+ * mesmo processo a cada dez minutos.
+ *
+ * O problema, medido em 28/08/2026: a rodada das 12h ofereceu 20 cobranças e
+ * **11 foram barradas** por já terem nota do Asaas, lida ao vivo. O espelho de
+ * invoices é diário (12:15 UTC) e as notas dele nasceram depois — então a fila,
+ * que se apoia no espelho, não tinha como saber e ofereceu de novo. E de novo:
+ * como o bloqueio não escrevia nada, aquelas 11 voltariam em TODAS as rodadas
+ * restantes do dia, cada uma custando uma vaga das 20 e uma leitura de API, até
+ * a sync do dia seguinte.
+ *
+ * Gravar aqui fecha o ciclo: `notas_fiscais_fila_emissao` já exclui cobrança com
+ * nota do Asaas "em qualquer situação", e passa a enxergar esta na rodada
+ * seguinte. A vaga volta a ser de quem pode virar nota.
+ *
+ * `pagamento_ref` não é escrito porque é coluna GERADA de `dados->>'payment'`
+ * (ver `20260818190000`) — vem de graça ao gravar o objeto inteiro que o Asaas
+ * devolveu. As colunas de data ficam para a sync diária: aqui o que importa é a
+ * EXISTÊNCIA da nota, e é ela que a fila lê.
+ *
+ * Falha de escrita não derruba nada: o bloqueio já valeu, e a única perda é a
+ * vaga desperdiçada na próxima rodada — exatamente o que havia antes.
+ */
+async function curarEspelhoNota(supabase: any, nota: any) {
+  const id = String(nota?.id ?? "");
+  if (!id) return;
+  await supabase.from("asaas_cache").upsert({
+    tipo: "invoice",
+    id_asaas: id,
+    status: String(nota?.status ?? ""),
+    valor: Number(nota?.value) || null,
+    dados: nota,
+    atualizado_em: new Date().toISOString(),
+  }, { onConflict: "tipo,id_asaas" });
+}
+
+/**
  * A CONFERÊNCIA DA PORTA — o estado da cobrança no Asaas AGORA.
  *
  * Por que não basta o espelho. A `asaas-sync` roda às 12:15 UTC e a emissão às
@@ -1254,10 +1291,34 @@ async function conferirNoAsaas(
        * Custa UMA leitura por cobrança. Falha de leitura FECHA a porta, como o
        * resto deste bloco: no escuro não se emite. */
       if (paralelo) {
-        const inv = await asaasGet<any>("/invoices", { payment: id, limit: 1 });
-        const quantas = Number(inv?.totalCount ?? (inv?.data?.length ?? 0));
-        if (quantas > 0) {
-          const st = String(inv?.data?.[0]?.status ?? "?");
+        const inv = await asaasGet<any>("/invoices", { payment: id, limit: 5 });
+        /* A NOTA QUE FALHOU NÃO BARRA — 28/08/2026.
+         *
+         * Até aqui QUALQUER nota do Asaas fechava a porta, e `ERROR` é uma nota
+         * do Asaas. O efeito era uma faixa órfã: 464 cobranças recebidas desde o
+         * corte, R$ 224.680, em que ele tentou, falhou, e nós não podíamos
+         * entrar — nota nenhuma saía para ninguém.
+         *
+         * `ERROR` e `CANCELLED` não existem no portal nacional: não há segunda
+         * nota a criar, e portanto não há o que a porta esteja protegendo. Todo
+         * o resto (SCHEDULED, SYNCHRONIZED, PENDING, AUTHORIZED) continua
+         * barrando exatamente como antes — inclusive o que ele criar enquanto a
+         * nossa rodada corre, que é o caso que produziu as 34 duplicidades de
+         * hoje e o motivo de esta leitura ser AO VIVO e não pelo espelho.
+         *
+         * `limit: 5` e não 1: uma cobrança pode ter a tentativa que falhou E a
+         * boa. Se olhássemos só a primeira, a `ERROR` mais recente esconderia
+         * uma `AUTHORIZED` anterior — e aí sim sairia a segunda nota. */
+        const notas: any[] = Array.isArray(inv?.data) ? inv.data : [];
+        const viva = notas.find((n) =>
+          !["ERROR", "CANCELLED", "CANCELED"].includes(String(n?.status ?? "").toUpperCase())
+        );
+        if (viva) {
+          const nota = viva;
+          const st = String(nota?.status ?? "?");
+          // O espelho não sabia desta nota; agora sabe. Sem isto a mesma
+          // cobrança volta a ocupar vaga em todas as rodadas do dia.
+          await curarEspelhoNota(supabase, nota).catch(() => { /* o bloqueio já valeu */ });
           veredito.set(id, `O Asaas já tem nota para esta cobrança (${st}), lido agora. Enquanto os dois emitem, a nota é dele.`);
           return;
         }
@@ -1921,7 +1982,10 @@ async function emitirUma(
 async function emitirDia(
   supabase: any,
   cfg: any,
-  opts: { origem: string; operador: string | null; usuario: string | null; ids?: string[]; avulsa?: boolean },
+  opts: {
+    origem: string; operador: string | null; usuario: string | null;
+    ids?: string[]; avulsa?: boolean; forcar?: boolean;
+  },
 ) {
   /* `emissao_automatica` governa o CRON, não a pessoa.
    *
@@ -1963,6 +2027,33 @@ async function emitirDia(
 
   try {
     if (modo === "off") return await fechar({ pulada: "emissão automática desligada em Configurações" });
+
+    /* `off` PASSOU A CALAR TAMBÉM A PESSOA — 28/08/2026, e é uma reversão
+     * deliberada do comentário logo acima.
+     *
+     * O desenho antigo dizia "o modo governa o cron, não a pessoa", e estava
+     * certo enquanto o risco era alguém não conseguir emitir uma nota avulsa. Em
+     * 28/08 o risco virou outro: o fluxo de emissão do Asaas foi rodado para a
+     * competência inteira de agosto enquanto o Hub emitia, e 99 cobranças
+     * receberam nota dos dois lados — 34 já autorizadas nos dois. Nota fiscal em
+     * duplicidade não se apaga; cancela-se, com prazo e justificativa.
+     *
+     * Com dois emissores vivos, "desligado" tem de significar desligado para
+     * todo mundo. Um clique bem-intencionado na tela do mês, enquanto o outro
+     * lado ainda está rodando, é exatamente o que produziu as 34.
+     *
+     * NÃO É UMA TRAVA NOVA E NÃO PEDE DEPLOY PARA SAIR: é a mesma chave de
+     * Configurações. Voltar o modo para `previa` ou `on` devolve a emissão
+     * manual no mesmo instante. Quem precisar de UMA nota com a chave desligada
+     * manda `forcar: true` — que existe para ser uma decisão consciente e fica
+     * gravada no diário como `manual_forcado`. */
+    if (manual && String(cfg?.emissao_automatica ?? "") === "off" && opts.forcar !== true) {
+      return await fechar({
+        pulada: "A emissão está DESLIGADA em Configurações, e com ela a emissão manual. " +
+          "Foi desligada em 28/08/2026 por duplicidade com o Asaas. Religue a chave em " +
+          "Configurações para voltar a emitir pela tela.",
+      });
+    }
 
     /* A ORDEM AQUI É CUSTO, e por isso o barato vem primeiro.
      *
@@ -2644,6 +2735,9 @@ Deno.serve(async (req) => {
           usuario,
           ids,
           avulsa,
+          // Escape consciente da chave geral: emite UMA leva com a emissão
+          // desligada. Quem manda isto sabe que o outro lado pode estar vivo.
+          forcar: body?.forcar === true,
         });
         const despachadas = Number((r as any)?.emitidas ?? 0);
         /* Rodada que não produziu nada precisa DIZER. Sem isto, uma recusa do

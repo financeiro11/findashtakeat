@@ -182,14 +182,38 @@ Deno.serve(async (req) => {
     const { data: doDrive, error: erroDrive } = await supabase.rpc("notas_externas_do_drive");
     if (erroDrive) console.error("notas_externas_do_drive:", erroDrive.message);
 
-    /* ---------- casar e conferir ---------- */
-    const { data: resumo, error: erroCasar } = await supabase.rpc("notas_externas_casar");
-    if (erroCasar) throw new Error(`casar: ${erroCasar.message}`);
+    /* ---------- casar e conferir ----------
+       ACESSÓRIO, e por isso não derruba a rodada. `notas_externas_casar` leva
+       20–27s e o PostgREST corta em 8s: a conexão entra como `authenticator`
+       (`statement_timeout=8s`) e `service_role` não tem `rolconfig` que a
+       levante, então o `SET LOCAL ROLE` herda o teto de 8s. Ou seja, esta
+       chamada FALHA por construção sempre que o acervo cresce — não é
+       intermitência.
+
+       Quem casa de verdade é o cron `notas-acervo-casar` (:00 e :30), que roda
+       a mesma função dentro do Postgres, sem PostgREST no caminho e portanto
+       sem o teto. É o mesmo arranjo de `nota-baixar-link`, `nota-caixa` e
+       `nota-ler-arquivo`, que já engolem o erro com "o cron :30 recasa".
+
+       Antes isto era `throw`, e o custo era desproporcional: as 5 planilhas
+       tinham sido lidas e as notas já estavam gravadas em lotes de 100 — tudo
+       comitado — e mesmo assim a função devolvia 500 com `ok:false`. O painel
+       marcava a automação como falhando, e o trabalho que deu certo não
+       aparecia em lugar nenhum. */
+    let resumo: unknown = null;
+    let erroCasarMsg: string | null = null;
+    const { data: dadosCasar, error: erroCasar } = await supabase.rpc("notas_externas_casar");
+    if (erroCasar) {
+      erroCasarMsg = erroCasar.message;
+      console.error("notas_externas_casar:", erroCasarMsg);
+    } else {
+      resumo = dadosCasar;
+    }
 
     return json({
       ok: true, por_fonte: porFonte, gravadas,
       do_drive: Number(doDrive ?? 0), do_drive_erro: erroDrive?.message ?? null,
-      resumo,
+      resumo, casar_erro: erroCasarMsg,
     });
   } catch (e) {
     console.error("planilhas-nf-sync", e);

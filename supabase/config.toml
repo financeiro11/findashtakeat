@@ -47,3 +47,24 @@ verify_jwt = false
 # net._http_response e NADA no log da funcao, porque ela nem chegou a rodar.
 [functions.briefing-noticias]
 verify_jwt = false
+
+# Tem caminho por `x-cron-token` para quem opera de fora do navegador. Sem esta
+# linha a CLI sobe com verify_jwt = true e o gateway devolve
+# UNAUTHORIZED_NO_AUTH_HEADER antes de a funcao existir.
+[functions.omie-anexo-remover]
+verify_jwt = false
+
+# Roda de cron (09:20 UTC) com `x-cron-token`, e o agendamento em
+# `20260827450000` manda `'{}'::jsonb` de headers extras — ou seja, SEM
+# Authorization. As duas metades so fecham com esta linha: nasceu com
+# verify_jwt = true e passou desde 27/08 devolvendo UNAUTHORIZED_NO_AUTH_HEADER,
+# com nada no log da funcao porque ela nunca chegou a rodar.
+[functions.vigilancia-mudancas]
+verify_jwt = false
+
+# Mesma dupla e mesma migracao: cron semanal (segunda, 12:10 UTC) com
+# `x-cron-token` e sem Authorization. E semanal, entao o 401 dele so apareceria
+# na segunda seguinte — foi consertado junto por ser o mesmo defeito, nao por ja
+# ter falhado.
+[functions.churn-sinal-externo]
+verify_jwt = false

@@ -52,9 +52,47 @@ export type EstadoHub = {
  * `omie-cartao-nome` passou dias respondendo "Não autenticado." com o painel do
  * Supabase todo verde.
  */
+/**
+ * O 2xx QUE SE DESMENTE NO CORPO.
+ *
+ * Metade das funções do Hub devolve o erro com status 200 — `errorResponse` do
+ * helper do Gemini e o `json({ error })` de várias delas não carimbam 4xx. Um
+ * cron sem `x-cron-token` recebe de volta, com HTTP 200:
+ *
+ *     {"error":"Não autenticado."}          {"status":"erro","erro":"..."}
+ *     {"ok":false,"error":"casar: ..."}
+ *
+ * Custou dois dias em 29/08/2026: treze crons perderam o token numa reescrita
+ * (ver `20260829150000`), e só os dois que por acaso devolviam 401 acenderam a
+ * faixa. Asaas, caixa do Omie, orçamento e estornos ficaram parados pintados de
+ * verde — o painel dizia "está rodando" sobre uma sync que não rodou.
+ *
+ * A leitura é DELIBERADAMENTE ESTREITA: só três formas explícitas de dizer "não
+ * deu", todas no topo do objeto. Procurar a palavra "erro" solta no corpo
+ * pintaria de vermelho a rodada que responde `{"ok":true,"falhas":0,"erros":[]}`
+ * — que é como quase toda função daqui relata sucesso.
+ */
+function corpoDesmente(resposta: string): boolean {
+  if (!resposta) return false;
+  let corpo: unknown;
+  try {
+    corpo = JSON.parse(resposta);
+  } catch {
+    return false; // resposta truncada ou não-JSON: o status que decida
+  }
+  if (typeof corpo !== "object" || corpo === null || Array.isArray(corpo)) return false;
+  const o = corpo as Record<string, unknown>;
+  if (o.ok === false) return true;
+  if (typeof o.error === "string" && o.error !== "") return true;
+  if (o.status === "erro") return true;
+  return false;
+}
+
 export function falhou(a: Automacao): boolean {
   if (!a.ativo) return false;
-  if (a.status_http != null) return a.status_http >= 300;
+  /* O corpo vem ANTES do status: um 200 que diz `{"error":...}` é falha, e é
+     justamente o caso que o status sozinho não enxerga. */
+  if (a.status_http != null) return a.status_http >= 300 || corpoDesmente(a.resposta);
   if (a.chama_funcao) return false; // ainda não colheu resposta
   return a.status_sql != null && a.status_sql !== "succeeded";
 }

@@ -34,6 +34,34 @@ describe("falhou", () => {
   it("desligada não é falha", () => {
     expect(falhou(com({ ativo: false, status_http: 500 }))).toBe(false);
   });
+
+  it("o 2xx que se desmente no corpo é falha", () => {
+    // 29/08/2026: treze crons perderam o `x-cron-token` numa reescrita e
+    // responderam isto por dois dias. Só os dois que por acaso devolviam 401
+    // acenderam a faixa; Asaas, caixa do Omie, orçamento e estornos ficaram
+    // parados pintados de verde.
+    expect(falhou(com({ resposta: '{"error":"Não autenticado."}' }))).toBe(true);
+    expect(falhou(com({ resposta: '{"status":"erro","erro":"Não autenticado."}' }))).toBe(true);
+    expect(falhou(com({ resposta: '{"ok":false,"error":"casar: statement timeout"}' }))).toBe(true);
+  });
+
+  it("relatar zero falhas é sucesso, não falha", () => {
+    // A leitura do corpo é estreita de propósito: quase toda função daqui
+    // relata sucesso COM as palavras "erro"/"falha" dentro.
+    expect(falhou(com({ resposta: '{"ok":true,"falhas":0,"erros":[]}' }))).toBe(false);
+    expect(falhou(com({ resposta: '{"ok":true,"erro":null,"achados":0}' }))).toBe(false);
+    expect(falhou(com({ resposta: '{"status":"ok","criados":0,"falhas":0}' }))).toBe(false);
+    expect(falhou(com({ resposta: '{"ok":true,"do_drive_erro":null,"casar_erro":null}' }))).toBe(false);
+  });
+
+  it("corpo que não é objeto JSON deixa o status decidir", () => {
+    // Resposta truncada pela colheita, texto puro ou lista: sem afirmação de
+    // fracasso legível, inventar uma seria pior que não ler nada.
+    for (const r of ['{"ok":fal', "Timeout of 5000 ms reached", "[1,2]", "null", ""]) {
+      expect(falhou(com({ resposta: r })), r).toBe(false);
+      expect(falhou(com({ status_http: 500, resposta: r })), r).toBe(true);
+    }
+  });
 });
 
 describe("situacao", () => {

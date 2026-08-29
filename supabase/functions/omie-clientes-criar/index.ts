@@ -276,14 +276,114 @@ async function ibgePeloCep(cep: string): Promise<string | undefined> {
   return v.ok && doViaCep.length === 7 ? doViaCep : undefined;
 }
 
+/** CEP de município, do tipo `14150000` — o que a Receita devolve para cidade
+ *  pequena, e o que a prefeitura recusa quando quer o CEP da rua. */
+const cepDeCidade = (cep: string) => /000$/.test(soDigitos(cep));
+
+/**
+ * O CEP DA RUA, quando o que temos é o da cidade.
+ *
+ * POR QUE ISTO EXISTE — medido em 29/08/2026, em 31 notas emitidas pelo Omie
+ * depois de corrigir o cadastro: 27 foram recusadas com `E0240` ("o CEP
+ * informado não existe ou não pertence ao município"), e **17 das 18 recusas do
+ * segundo lote eram cliente com CEP terminado em `000`**. A Receita entrega o
+ * CEP genérico do município e a prefeitura quer o da rua.
+ *
+ * O ViaCEP tem busca reversa — UF + cidade + logradouro — e ela não custa nada.
+ *
+ * A DISAMBIGUAÇÃO É O CUIDADO CENTRAL, porque "Rua Barão do Rio Branco" devolveu
+ * TRÊS CEPs no teste. Escolher errado põe um CEP falso num documento fiscal, que
+ * é pior do que não mexer. Por isso:
+ *
+ *   • um resultado só  → é ele;
+ *   • vários, e o bairro do cadastro bate com o de UM deles → é esse;
+ *   • vários sem desempate → NÃO SE ESCOLHE. Fica o CEP da cidade, e a nota
+ *     falha como falhava. Errar para menos aqui custa uma recusa; errar para
+ *     mais custa uma nota com endereço de outro lugar.
+ *
+ * Município de CEP único (Irapuá, Pradópolis) devolve lista vazia — e aí o CEP
+ * genérico é mesmo o correto, e a recusa tem outra causa.
+ */
+async function cepDaRua(
+  uf: string, cidade: string, logradouro: string, bairro: string,
+): Promise<{ cep: string; bairro?: string } | undefined> {
+  const u = semAcento(limpo(uf)).toUpperCase();
+  const cid = semAcento(limpo(cidade));
+  // O ViaCEP exige 3+ caracteres em cidade e logradouro, e responde 400 abaixo
+  // disso — conferir aqui evita gastar a chamada para receber erro.
+  const rua = semAcento(limpo(logradouro));
+  if (u.length !== 2 || cid.length < 3 || rua.length < 3) return undefined;
+
+  const url = `https://viacep.com.br/ws/${u}/${encodeURIComponent(cid)}/${encodeURIComponent(rua)}/json/`;
+  const r = await buscaJSON(url, 8000);
+  const lista: any[] = Array.isArray(r?.dados) ? r.dados : [];
+  const validos = lista.filter((x) => soDigitos(x?.cep).length === 8 && !cepDeCidade(x?.cep));
+  if (!validos.length) return undefined;
+  if (validos.length === 1) {
+    return { cep: soDigitos(validos[0].cep), bairro: limpo(validos[0].bairro) || undefined };
+  }
+
+  const b = semAcento(limpo(bairro)).toUpperCase();
+  if (b) {
+    const casam = validos.filter((x) => semAcento(limpo(x?.bairro)).toUpperCase() === b);
+    if (casam.length === 1) {
+      return { cep: soDigitos(casam[0].cep), bairro: limpo(casam[0].bairro) || undefined };
+    }
+  }
+  return undefined;   // ambíguo: não se escolhe
+}
+
+/**
+ * Troca o CEP da cidade pelo da rua, quando dá — e só então.
+ *
+ * Roda sobre o cadastro JÁ MONTADO, seja qual for a fonte (Receita, página
+ * pública, CEP ou Asaas), porque o problema é o mesmo nas quatro: o CEP
+ * genérico. Fazer isto num lugar só é o que garante que a Receita não escape da
+ * regra por ser a fonte mais confiável — ela é justamente quem mais entrega CEP
+ * de município.
+ *
+ * O `cidade_ibge` é relido do CEP novo. Não é zelo: trocar o CEP e manter o
+ * código do município antigo é fabricar exatamente a incoerência que o E0240
+ * acusa.
+ */
+async function refinarCep(cadastro: Cadastro): Promise<Cadastro> {
+  if (!cepDeCidade(cadastro.cep)) return cadastro;
+  try {
+    const achado = await cepDaRua(
+      cadastro.estado, cadastro.cidade, cadastro.endereco, cadastro.bairro,
+    );
+    if (!achado) return cadastro;
+    return {
+      ...cadastro,
+      cep: achado.cep,
+      bairro: cadastro.bairro || achado.bairro || "",
+      cidade_ibge: (await ibgePeloCep(achado.cep)) ?? cadastro.cidade_ibge,
+      fonte: cadastro.fonte,
+    };
+  } catch {
+    // Rede caiu: fica o CEP da cidade. O conserto é oportunista, não obrigatório.
+    return cadastro;
+  }
+}
+
 /**
  * O endereço que vai para o cadastro, e de onde ele veio.
  *
  * Devolve `{ bloqueio }` quando o que existe não dá uma nota emitível — e é de
  * propósito que isso interrompe ANTES de escrever no Omie: cadastro ruim no ERP
  * não some, vira duplicado quando alguém arruma na mão.
+ *
+ * O refinamento do CEP mora no invólucro abaixo, e não em cada `return` de
+ * `montarCadastroBruto`: são quatro saídas (Receita, página pública, CEP, Asaas)
+ * e a regra é a mesma nas quatro.
  */
 async function montarCadastro(c: Fila): Promise<{ cadastro?: Cadastro; bloqueio?: string }> {
+  const r = await montarCadastroBruto(c);
+  if (!r.cadastro) return r;
+  return { cadastro: await refinarCep(r.cadastro) };
+}
+
+async function montarCadastroBruto(c: Fila): Promise<{ cadastro?: Cadastro; bloqueio?: string }> {
   const nomeAsaas = limpo(c.nome);
 
   // 1. RECEITA — só PJ. Endereço oficial + razão social.
@@ -509,8 +609,20 @@ function payloadOmie(c: Fila, cad: Cadastro): Record<string, unknown> {
 /** Os campos de endereço, e só eles. O nome do cliente não se mexe daqui: no
  *  Asaas ele é o fantasia que a equipe reconhece, e trocá-lo por razão social
  *  faria a cobrança ficar irreconhecível na tela de quem cobra. */
+/* `cidade_ibge` ENTRA AQUI EM 29/08/2026, e a ausência dele era um buraco.
+ *
+ * Ele já era ESCRITO no payload do Omie, mas nunca COMPARADO — e a escrita só
+ * acontece quando o diff acusa alguma mudança. Resultado: o cliente cujo
+ * endereço batia com a Receita e cujo código de município estava errado (ou
+ * vazio) era rotulado "nada a corrigir" e a nota continuava sendo recusada pelo
+ * E0240/E0921, que é justamente sobre o município. O campo que resolvia o erro
+ * era o único que não abria a porta para ser escrito.
+ *
+ * Não tem par do lado do Asaas (`NO_ASAAS` não o mapeia), então o laço que monta
+ * o corpo de lá o ignora sozinho. */
 const CAMPOS_ENDERECO = [
   "endereco", "endereco_numero", "complemento", "bairro", "cidade", "estado", "cep",
+  "cidade_ibge",
 ] as const;
 
 /** Como o campo se chama de cada lado da ponte. */

@@ -162,6 +162,20 @@ const HORAS_PARA_RECONFERIR = 24;
  */
 const MAX_RECONFERIR = 3;
 
+/**
+ * QUANTAS LEITURAS FALHADAS ANTES DE DESISTIR DE UM ACHADO NA QUARENTENA.
+ *
+ * Três, e não duas: a primeira falha costuma ser soluço (o mesmo `HTTP 500 —
+ * exception ID` que a Terabyte devolveu e que sumiu minutos depois), e a
+ * segunda ainda pode ser a loja em manutenção. Três leituras espaçadas por
+ * rodadas diferentes já são um "não" sobre o link, não sobre o momento.
+ *
+ * Isto convive com o prazo de 48h em vez de substituí-lo: são as duas metades
+ * da mesma frase. Idade sozinha descarta quem nunca foi tentado; tentativa
+ * sozinha deixaria na fila para sempre o achado que a fila nunca alcança.
+ */
+const TENTATIVAS_ATE_DESISTIR = 3;
+
 /* =========================================================== Mercado Livre */
 
 /**
@@ -263,6 +277,36 @@ const sobramMs = () => fimDaRodada - Date.now();
 const TETO_IA_MS = 45_000;
 const RESERVA_PARA_GRAVAR_MS = 15_000;
 const MINIMO_DE_IA_MS = 15_000;
+
+/**
+ * QUANTO A PRIMEIRA TENTATIVA DE EXTRAÇÃO GANHA DO TETO — e o resto fica para a
+ * segunda. As duas somadas continuam cabendo em `TETO_IA_MS`: a retentativa
+ * existe para usar melhor o mesmo relógio, não para pedir mais.
+ *
+ * Ver `extrairDaLoja` para o porquê de 25s. Em resumo: a chamada que chega aos
+ * 45s está morta, não lenta — as rodadas boas fecham em 36-41s com a raspagem
+ * dentro. O log de duração de cada chamada existe para corrigir este número com
+ * medida em vez de inferência.
+ */
+const IA_PRIMEIRA_MS = 25_000;
+
+/** Abaixo disto a segunda tentativa é o mesmo "prazo impossível" de `prazoDeIA`. */
+const IA_SEGUNDA_MINIMA_MS = 12_000;
+
+/**
+ * VALE A PENA REPETIR ESTA FALHA DE IA?
+ *
+ * Só o que volta diferente na segunda vez: o modelo ocupado (503, 429) e o
+ * nosso próprio estouro de prazo. Erro de schema, de chave ou de payload
+ * repetiria idêntico — insistir queimaria a segunda metade do prazo para
+ * receber a mesma resposta e, pior, faria a mensagem final dizer "falhou nas 2
+ * tentativas" sobre um defeito que não tinha nada de intermitente.
+ */
+const ehPassageiroIA = (cru: string) =>
+  /não respondeu em/.test(cru) ||
+  /high demand|UNAVAILABLE|\b503\b/i.test(cru) ||
+  /\b429\b|quota|rate limit/i.test(cru) ||
+  /error sending request|connection|ECONNRESET|network/i.test(cru);
 function prazoDeIA(): number | null {
   const util = sobramMs() - RESERVA_PARA_GRAVAR_MS;
   return util < MINIMO_DE_IA_MS ? null : Math.min(TETO_IA_MS, util);
@@ -460,12 +504,25 @@ const TETO_MARKDOWN = 200_000;
 const CACHE_BUSCA_MS = 4 * 3600 * 1000;
 
 /**
- * QUANTAS RASPAGENS ESTA REQUISIÇÃO PEDIU. Não é o custo em créditos — o
+ * QUANTAS RASPAGENS JÁ SE PEDIU NESTE ISOLATE. Não é o custo em créditos — o
  * Firecrawl cobra 1 por página, mas cobra 5 quando precisa do proxy stealth, e
  * cobra igual quando a página responde 403. Contar chamadas é o que dá para
  * fazer aqui dentro com honestidade; o custo REAL sai da diferença de saldo
  * (ação `saldo`), que é a única fonte que não depende de eu adivinhar a tabela
  * de preços de terceiros.
+ *
+ * E O CONTADOR É DO ISOLATE, NÃO DA REQUISIÇÃO — ler este número direto era um
+ * defeito. O worker do Deno sobrevive entre chamadas (é a mesma razão pela qual
+ * `fimDaRodada` precisa daquele `Math.min`), então a segunda rodada atendida
+ * pelo mesmo processo somava as páginas da primeira. Isso ia para o relatório e,
+ * pior, para o RAZÃO: a conferência não mede pelo saldo — registra o que pediu —,
+ * e em 28/08/2026 gravou 6 créditos para dois anúncios cujo teto real era 4.
+ * Razão furado é teto furado.
+ *
+ * Por isso quem lê o número lê a DIFERENÇA desde o início da própria requisição
+ * (`raspagensAntes` no handler). Zerar aqui seria pior: com duas rodadas em voo
+ * no mesmo isolate — o cron das 16:45 e um clique em "Varrer agora" —, a que
+ * chegasse depois apagaria a contagem da que já estava correndo.
  */
 let raspagens = 0;
 
@@ -629,6 +686,95 @@ const SCHEMA_CONFIRMACAO = {
 };
 
 /**
+ * UM ANÚNCIO COMO QUALQUER LEITOR O ENTREGA — cru, antes das nossas regras.
+ *
+ * É o CONTRATO entre quem lê a vitrine e o resto do radar, e existe como tipo
+ * próprio porque em breve haverá dois leitores: a IA sobre markdown (hoje) e o
+ * seletor CSS no servidor de raspagem (a partir da VPS). Os campos são os do
+ * `SCHEMA_ANUNCIOS`, e a regra de preenchimento é a mesma para os dois — campo
+ * ausente é "não sei", nunca "não".
+ */
+interface ItemLido {
+  titulo: string;
+  preco: number;
+  url?: string;
+  imagem_url?: string;
+  avaliacao?: number;
+  avaliacoes?: number;
+  disponivel?: boolean;
+  frete_gratis?: boolean;
+  frete_valor?: number;
+  frete_texto?: string;
+}
+
+/**
+ * O QUE O LEITOR ENTREGA VIRA `OfertaBruta` AQUI, E SÓ AQUI.
+ *
+ * Estas quarenta linhas são a parte cara de acertar: os três degraus da
+ * identidade do anúncio (que viram a chave do `upsert` e, por tabela, todo o
+ * histórico de preço), a resolução de URL relativa da foto, e o cruzamento de
+ * disponibilidade em que a regra vence a IA no lado do "não". Nada disso tem a
+ * ver com QUEM leu a página.
+ *
+ * Vive separada da chamada de IA de propósito, e a razão é a do
+ * `_shared/folha-envio.ts` no CLAUDE.md: quando a leitura por seletor chegar,
+ * ela vai precisar destas mesmas regras. Se elas estivessem dentro de
+ * `extrairDaLoja`, o segundo leitor nasceria com uma cópia — e a cópia diverge
+ * na primeira vez que alguém corrigir um dos dois. O sintoma não seria erro de
+ * build: seria o `id_externo` saindo diferente entre os leitores, cada rodada
+ * criando "anúncio novo" para o mesmo produto e o histórico de preço quebrando
+ * em duas metades — sem uma linha vermelha em lugar nenhum.
+ */
+function montarOfertas(itens: ItemLido[], baseUrl: string, loja: string): OfertaBruta[] {
+  return itens
+    .filter((i) => i?.titulo && Number(i.preco) > 0)
+    .map((i): OfertaBruta => {
+      let url = i.url || baseUrl;
+      try { url = new URL(url, baseUrl).toString(); } catch { /* fica o que veio */ }
+      /* A IDENTIDADE DO ANÚNCIO, EM TRÊS DEGRAUS — e o terceiro degrau não é
+         luxo. No ML o id (MLB…) vence, porque o link ganha parâmetros de
+         rastreio que mudam toda hora e virariam anúncio "novo" a cada
+         varredura, estourando o histórico de preço.
+         Quando a extração NÃO acha o link do produto (comum nos agregadores,
+         que escondem a URL atrás de redirecionador), o fallback era a URL da
+         BUSCA — a mesma para todos. Resultado medido: Zoom 24 + Buscapé 30 =
+         54 anúncios que viraram 22, porque cada um sobrescrevia o anterior no
+         mapa. O título normalizado é estável entre rodadas e distingue os
+         produtos, que é exatamente o que a chave precisa fazer. */
+      const mlb = url.match(/\bMLB-?(\d{6,})/i);
+      const temLinkProprio = !!i.url && url.split("?")[0] !== baseUrl.split("?")[0];
+      return {
+        fonte: loja,
+        id_externo: mlb
+          ? `MLB${mlb[1]}`
+          : temLinkProprio
+            ? url.split("?")[0].slice(0, 300)
+            : `t:${norm(String(i.titulo)).slice(0, 160)}`,
+        titulo: String(i.titulo),
+        url,
+        /* A foto vem resolvida contra a URL da busca porque metade das lojas
+           devolve caminho relativo, e `<img src="/img/x.jpg">` na tela do Hub
+           não carrega nada — quebraria em silêncio, com o alt vazio. */
+        imagem_url: i.imagem_url ? (() => { try { return new URL(i.imagem_url!, baseUrl).toString(); } catch { return null; } })() : null,
+        preco: Number(i.preco),
+        avaliacao: typeof i.avaliacao === "number" && i.avaliacao > 0 && i.avaliacao <= 5 ? i.avaliacao : null,
+        avaliacoes: typeof i.avaliacoes === "number" && i.avaliacoes > 0 ? Math.round(i.avaliacoes) : null,
+        vendedor: LOJAS[loja]?.nome ?? loja,
+        reputacao: LOJAS[loja]?.reputacao ?? null,
+        condicao: condicaoDoTitulo(String(i.titulo)),
+        /* `disponibilidade` cruza o que o leitor entregou com as palavras do
+           próprio título. A regra vence o leitor no lado do "não": se o título
+           grita ESGOTADO, não importa que a extração tenha dito que estava tudo
+           bem. */
+        disponivel: disponibilidade(String(i.titulo), i.frete_texto ?? null, i.disponivel ?? null),
+        frete_gratis: i.frete_gratis ?? null,
+        frete_valor: typeof i.frete_valor === "number" ? i.frete_valor : null,
+        frete_texto: i.frete_texto ?? null,
+      };
+    });
+}
+
+/**
  * A página de busca da loja vira lista de anúncios. Só isto é IA aqui: extrair
  * título/preço/link de markdown. Se o produto SERVE, quem decide é a regra —
  * a IA nem recebe as specs pedidas, de propósito, para não ser tentada a
@@ -647,18 +793,19 @@ const SCHEMA_CONFIRMACAO = {
  * diferentes.
  */
 async function extrairDaLoja(markdown: string, baseUrl: string, loja: string): Promise<{ ofertas: OfertaBruta[]; erro: string | null }> {
-  if (!markdown || markdown.length < 100) return { ofertas: [], erro: null };
+  /* PÁGINA QUE VEIO VAZIA NÃO É "A LOJA NÃO TEM NADA". São 100 caracteres: nem
+     o cabeçalho de uma vitrine cabe aí. É muro de robô, erro de rota ou leitura
+     truncada — e antes isto devolvia `erro: null`, que lá na frente virava
+     "0 anúncios" e passava por leitura limpa. Ver o comentário do `nota` na
+     varredura: leitura limpa AUTORIZA desativar as ofertas daquela fonte. */
+  if (!markdown || markdown.length < 100) {
+    return { ofertas: [], erro: "a página voltou praticamente vazia — provável bloqueio de robô, não vitrine sem produto" };
+  }
   const prazo = prazoDeIA();
   if (prazo == null) return { ofertas: [], erro: "a página foi lida, mas não sobrou tempo na rodada para a IA extrair — a fonte entra de novo na próxima" };
   const trecho = markdown.length > 16000 ? markdown.slice(0, 16000) : markdown;
-  try {
-    const out = await comPrazo(generateJSON<{
-      itens: Array<{
-        titulo: string; preco: number; url?: string; imagem_url?: string;
-        avaliacao?: number; avaliacoes?: number;
-        disponivel?: boolean; frete_gratis?: boolean; frete_valor?: number; frete_texto?: string;
-      }>;
-    }>({
+
+  const chamar = (ms: number) => comPrazo(generateJSON<{ itens: ItemLido[] }>({
       /* O MODELO LEVE, e isto é medição, não economia de estilo. O padrão
          (`gemini-3.6-flash`) leva ~50s para transcrever UMA vitrine de 16 000
          caracteres — medido em 27/08/2026 numa rodada de fonte única, e sem
@@ -695,66 +842,70 @@ async function extrairDaLoja(markdown: string, baseUrl: string, loja: string): P
          Se um dia a extração começar a errar preço ou título, é aqui que se
          volta para "high". */
       thinking: "low",
-    }), prazo, "a leitura da página pela IA");
-    const itens = Array.isArray(out?.itens) ? out.itens : [];
-    const ofertas = itens
-      .filter((i) => i?.titulo && Number(i.preco) > 0)
-      .map((i): OfertaBruta => {
-        let url = i.url || baseUrl;
-        try { url = new URL(url, baseUrl).toString(); } catch { /* fica o que veio */ }
-        /* A IDENTIDADE DO ANÚNCIO, EM TRÊS DEGRAUS — e o terceiro degrau não é
-           luxo. No ML o id (MLB…) vence, porque o link ganha parâmetros de
-           rastreio que mudam toda hora e virariam anúncio "novo" a cada
-           varredura, estourando o histórico de preço.
-           Quando a extração NÃO acha o link do produto (comum nos agregadores,
-           que escondem a URL atrás de redirecionador), o fallback era a URL da
-           BUSCA — a mesma para todos. Resultado medido: Zoom 24 + Buscapé 30 =
-           54 anúncios que viraram 22, porque cada um sobrescrevia o anterior no
-           mapa. O título normalizado é estável entre rodadas e distingue os
-           produtos, que é exatamente o que a chave precisa fazer. */
-        const mlb = url.match(/\bMLB-?(\d{6,})/i);
-        const temLinkProprio = !!i.url && url.split("?")[0] !== baseUrl.split("?")[0];
-        return {
-          fonte: loja,
-          id_externo: mlb
-            ? `MLB${mlb[1]}`
-            : temLinkProprio
-              ? url.split("?")[0].slice(0, 300)
-              : `t:${norm(String(i.titulo)).slice(0, 160)}`,
-          titulo: String(i.titulo),
-          url,
-          /* A foto vem resolvida contra a URL da busca porque metade das lojas
-             devolve caminho relativo, e `<img src="/img/x.jpg">` na tela do Hub
-             não carrega nada — quebraria em silêncio, com o alt vazio. */
-          imagem_url: i.imagem_url ? (() => { try { return new URL(i.imagem_url!, baseUrl).toString(); } catch { return null; } })() : null,
-          preco: Number(i.preco),
-          avaliacao: typeof i.avaliacao === "number" && i.avaliacao > 0 && i.avaliacao <= 5 ? i.avaliacao : null,
-          avaliacoes: typeof i.avaliacoes === "number" && i.avaliacoes > 0 ? Math.round(i.avaliacoes) : null,
-          vendedor: LOJAS[loja]?.nome ?? loja,
-          reputacao: LOJAS[loja]?.reputacao ?? null,
-          condicao: condicaoDoTitulo(String(i.titulo)),
-          /* `disponibilidade` cruza o que a IA leu com as palavras do próprio
-             título. A regra vence a IA no lado do "não": se o título grita
-             ESGOTADO, não importa que a extração tenha dito que estava tudo bem. */
-          disponivel: disponibilidade(String(i.titulo), i.frete_texto ?? null, i.disponivel ?? null),
-          frete_gratis: i.frete_gratis ?? null,
-          frete_valor: typeof i.frete_valor === "number" ? i.frete_valor : null,
-          frete_texto: i.frete_texto ?? null,
-        };
-      });
-    return { ofertas, erro: null };
-  } catch (e) {
-    console.error("extrairDaLoja", loja, e);
-    /* `503 — high demand` e `429` são o Gemini sobrecarregado, não a loja. A
-       distinção vai para a tela porque muda o que se faz: com a loja não há o
-       que fazer; com a IA, é esperar a próxima rodada. */
-    const cru = String((e as any)?.detail ?? (e as Error)?.message ?? e);
-    const motivo = /high demand|UNAVAILABLE|\b503\b/i.test(cru) ? "a IA estava sobrecarregada"
-      : /\b429\b|quota|rate limit/i.test(cru) ? "a IA recusou por excesso de chamadas"
-      : /não respondeu em/.test(cru) ? cru
-      : `a IA falhou (${cru.slice(0, 80)})`;
-    return { ofertas: [], erro: `a página foi lida, mas ${motivo} — a fonte entra de novo na próxima rodada` };
+    }), ms, "a leitura da página pela IA");
+
+  /* DUAS CHANCES DENTRO DO MESMO RELÓGIO, e o "dentro" é a decisão inteira.
+     A página já foi raspada e o crédito já foi debitado quando a IA falha — em
+     29/08/2026 uma rodada pagou cinco créditos e voltou com zero anúncio,
+     porque as cinco chamadas estouraram os 45s. Retentar não custa Firecrawl
+     nenhum; custa tempo, e tempo aqui é a vida do worker.
+     Por isso o orçamento total NÃO cresce: `prazo` continua sendo o mesmo teto
+     de antes, e as duas tentativas o dividem. Esticar para 45+45 daria mais
+     chance de salvar e comeria a margem que existe para a rodada conseguir
+     GRAVAR o que apurou — que é o defeito de 27/08, o pior deste módulo.
+
+     POR QUE 25s NA PRIMEIRA. As rodadas em que as cinco fontes deram certo
+     fecharam em 36-41s COM a raspagem dentro (~12s), o que põe a extração boa
+     na casa dos 20-25s. A chamada que chega aos 45s quase nunca está lenta —
+     está morta, e o que resta do prazo é espera pura. Trocar uma espera longa
+     por duas curtas é o mesmo relógio comprando o dobro de tentativas.
+     É inferência a partir da duração das rodadas, não medição direta: por isso
+     cada chamada agora registra quanto levou, e o número corrige este 25s. */
+  const t0 = Date.now();
+  let cru = "";
+  let tentativas = 0;
+
+  for (const n of [1, 2]) {
+    /* A segunda só existe se sobrar do MESMO prazo — e o `prazoDeIA()` é
+       consultado de novo porque o relógio da rodada andou enquanto a primeira
+       esperava. Prazo impossível não é prazo: abaixo do mínimo honesto,
+       ninguém chama. */
+    const ms = n === 1
+      ? Math.min(IA_PRIMEIRA_MS, prazo)
+      : Math.min(prazo - (Date.now() - t0), prazoDeIA() ?? 0);
+    if (n === 2 && ms < IA_SEGUNDA_MINIMA_MS) break;
+
+    const t1 = Date.now();
+    tentativas = n;
+    try {
+      const out = await chamar(ms);
+      console.log(`extração ${loja} ok ${((Date.now() - t1) / 1000).toFixed(1)}s${n > 1 ? " (2ª tentativa)" : ""}`);
+      const itens = Array.isArray(out?.itens) ? out.itens : [];
+      return { ofertas: montarOfertas(itens, baseUrl, loja), erro: null };
+    } catch (e) {
+      cru = String((e as any)?.detail ?? (e as Error)?.message ?? e);
+      console.log(`extração ${loja} falhou ${((Date.now() - t1) / 1000).toFixed(1)}s (tentativa ${n}): ${cru.slice(0, 100)}`);
+      /* SÓ SE REPETE O QUE VOLTA DIFERENTE. Timeout, 503 e 429 são o Gemini
+         ocupado — a mesma chamada, segundos depois, costuma passar. Erro de
+         schema ou de chave repetiria idêntico, e insistir seria gastar a
+         segunda metade do prazo para receber a mesma resposta. Mesma regra do
+         `ehPassageiro` do lado do Firecrawl. */
+      if (n === 1 && !ehPassageiroIA(cru)) break;
+    }
   }
+
+  console.error("extrairDaLoja", loja, cru);
+  /* `503 — high demand` e `429` são o Gemini sobrecarregado, não a loja. A
+     distinção vai para a tela porque muda o que se faz: com a loja não há o
+     que fazer; com a IA, é esperar a próxima rodada. */
+  const motivo = /high demand|UNAVAILABLE|\b503\b/i.test(cru) ? "a IA estava sobrecarregada"
+    : /\b429\b|quota|rate limit/i.test(cru) ? "a IA recusou por excesso de chamadas"
+    : /não respondeu em/.test(cru) ? cru
+    : `a IA falhou (${cru.slice(0, 80)})`;
+  /* "falhou nas 2 tentativas" muda o que a frase significa: uma vez é tropeço,
+     duas é a IA fora do ar. Mesma razão do aviso gêmeo no `firecrawl`. */
+  const quantas = tentativas > 1 ? " (falhou nas 2 tentativas)" : "";
+  return { ofertas: [], erro: `a página foi lida, mas ${motivo}${quantas} — a fonte entra de novo na próxima rodada` };
 }
 
 /* ============================================== confirmação no próprio anúncio */
@@ -1261,17 +1412,39 @@ async function varrerAlvo(
          está certa. */
       if (erroIA) return { loja, ofertas: [] as OfertaBruta[], nota: erroIA };
       const unicos = new Set(ofertas.map((o) => o.id_externo)).size;
-      /* "0 anúncios" NÃO pode se parecer com sucesso. A página raspou e nada
-         saiu dela — URL errada, layout novo, ou muro anti-bot que devolve HTML
-         bonito e vazio. Se isso passar como sucesso, a tela vai dizer "não achei
-         promoção" durante semanas. */
+      /* "0 anúncios" NÃO pode se parecer com sucesso — e até 29/08/2026 se
+         parecia de um jeito pior do que a frase deixava ver.
+         A nota "0 anúncios — …" CASA com `/^\d+ anúncios/`, que é o teste de
+         duas coisas: o `ehOk` (não vira `ultimo_erro`, card verde) e, sobretudo,
+         o `lidas` — que é quem AUTORIZA desativar as ofertas daquela fonte no
+         fim da rodada. Ou seja: um muro anti-robô de meio quilobyte era tratado
+         como "a loja foi lida e não tem mais nada", e limpava da tela as ofertas
+         boas que ela tinha na rodada anterior. Exatamente o pecado que este
+         módulo combate em todos os outros lugares — acreditar num "não" que
+         ninguém disse.
+         Nunca disparou nas rodadas gravadas (38 a 48), mas vai ficar muito mais
+         provável quando a raspagem mudar de motor e entrarem justamente as
+         fontes que erguem muro (ML, Amazon, Magalu).
+
+         A DISCRIMINAÇÃO É A MESMA DA CONFERÊNCIA: só se acredita numa página se
+         ela parecer uma página de resultado, e o sinal é ter preço escrito. Com
+         preço e nada extraído, o defeito é nosso; sem preço nenhum, não dá para
+         saber se é vitrine vazia ou muro. Nos dois casos a resposta é a mesma —
+         não desativar nada e falar alto. */
+      if (!ofertas.length) {
+        const temPreco = /r\$\s?\d/i.test(markdown);
+        return {
+          loja, ofertas,
+          nota: temPreco
+            ? "a página tem preços, mas nada foi extraído — conferir a busca desta fonte"
+            : "a página abriu sem preço nenhum — vitrine vazia ou muro de robô, não dá para saber",
+        };
+      }
       return {
         loja, ofertas,
-        nota: ofertas.length
-          // "30 anúncios (13 produtos)" — a diferença entre os dois números conta
-          // a história do agregador, e some se a gente reportar só um deles.
-          ? `${ofertas.length} anúncios${unicos !== ofertas.length ? ` (${unicos} produtos)` : ""}`
-          : "0 anúncios — a página abriu mas nada foi extraído (conferir a busca desta fonte)",
+        // "30 anúncios (13 produtos)" — a diferença entre os dois números conta
+        // a história do agregador, e some se a gente reportar só um deles.
+        nota: `${ofertas.length} anúncios${unicos !== ofertas.length ? ` (${unicos} produtos)` : ""}`,
       };
     }));
 
@@ -1285,8 +1458,15 @@ async function varrerAlvo(
       res.fontes[loja] = nota;
       /* SÓ QUEM RESPONDEU PODE TER SUAS OFERTAS APAGADAS no fim da rodada.
          Fonte que deu erro de leitura não teve suas ofertas "sumindo da busca"
-         — não houve busca. Ver `lidas` lá embaixo. */
-      if (/^\d+ anúncios/.test(nota)) lidas.add(loja);
+         — não houve busca. Ver `lidas` lá embaixo.
+
+         E "respondeu" agora quer dizer TROUXE ANÚNCIO. A condição repete o
+         `ofertas.length` em vez de confiar só no formato da nota porque é uma
+         permissão para APAGAR: a versão anterior a concedia por casamento de
+         texto, e bastou a nota de zero começar com "0 anúncios" para que um muro
+         de robô ganhasse o direito de limpar a tela. Permissão destrutiva não se
+         deduz de string. */
+      if (ofertas.length && /^\d+ anúncios/.test(nota)) lidas.add(loja);
       for (const o of ofertas) {
         const k = `${o.fonte}|${o.id_externo}`;
         const antes = brutas.get(k);
@@ -1456,8 +1636,45 @@ async function varrerAlvo(
      listaram o MESMO notebook a R$ 2.969,10 — três avisos idênticos na tela,
      que é o começo do fim da confiança na aba. As três OFERTAS continuam
      gravadas (o histórico de preço de cada fonte é legítimo); o que não se
-     repete é o aviso. */
+     repete é o aviso.
+
+     E A REGRA ATRAVESSA AS RODADAS, não só esta — foi o buraco que o rodízio de
+     família abriu sem querer. Enquanto as três gêmeas entravam na MESMA rodada,
+     o `Set` local dava conta: o segundo Buscapé caía no primeiro. Desde
+     27/08/2026 só uma da família entra por vez, e a que entra MUDA: o Acer
+     Aspire GO a R$ 4.299 virou aviso pelo Zoom às 11h45, de novo pelo Buscapé às
+     15h46 e de novo pelo Bondfaro às 19h45 de 28/08 — três linhas do mesmo
+     notebook, cada uma legítima do ponto de vista da sua rodada. Dos seis avisos
+     na tela naquela manhã, dois eram produtos.
+
+     Então o `Set` nasce com o que JÁ ESTÁ ABERTO neste alvo. Preço diferente
+     continua avisando de propósito: a chave inclui o total, e queda de preço é
+     exatamente o que merece aviso novo. */
   const vistos = new Set<string>();
+  const { data: jaAbertos, error: erroAbertos } = await supabase
+    .from("facilities_radar_alertas")
+    .select("preco_total, preco, facilities_radar_ofertas(titulo, preco_total, preco)")
+    .eq("alvo_id", alvo.id)
+    .in("status", ["a_confirmar", "novo", "visto"]);
+  /* SE ESTA LEITURA FALHAR, O RADAR VOLTA A REPETIR AVISO — e faria isso em
+     silêncio, porque `data` nulo vira conjunto vazio e o filtro segue como se
+     não houvesse nada aberto. É a forma de falha que este módulo mais combate:
+     o defeito com cara de funcionamento normal. Não derruba a rodada (avisar
+     duas vezes é melhor que não varrer), mas deixa rastro. */
+  if (erroAbertos) console.error("dedup de aviso: não li os alertas abertos —", erroAbertos.message);
+  for (const a of jaAbertos ?? []) {
+    const of = (a as any).facilities_radar_ofertas;
+    const titulo = String(of?.titulo ?? "");
+    if (!titulo) continue;
+    /* DOIS TOTAIS, e não um. A conferência reescreve o total da oferta quando
+       descobre o frete (R$ 4.299 vira R$ 4.389), e nem sempre o do alerta junto
+       — usar só um dos dois deixaria a gêmea passar justamente nos achados que
+       já foram conferidos, que são os que estão na tela há mais tempo. */
+    for (const t of [Number(a.preco_total ?? a.preco), Number(of?.preco_total ?? of?.preco)]) {
+      if (t > 0) vistos.add(chaveDoProduto(titulo, t));
+    }
+  }
+
   const unicos = candidatos.filter((c) => {
     const k = chaveDoProduto(c.titulo, c.total);
     if (vistos.has(k)) return false;
@@ -1485,8 +1702,17 @@ async function varrerAlvo(
 
   /* "fora do rodízio" não é problema — é o desenho. Só entra em `ultimo_erro`
      o que de fato falhou, senão o card do alvo ficaria amarelo para sempre e o
-     aviso deixaria de significar alguma coisa. */
-  const ehOk = (v: string) => /^\d+ anúncios/.test(v) || v.startsWith("fora do rodízio");
+     aviso deixaria de significar alguma coisa.
+
+     E "mesmo estoque de X" é a MESMA classe de coisa: a família reveza porque
+     alguém decidiu que ela deve revezar. Ficou de fora desta lista quando o
+     rodízio de família entrou (27/08/2026), e o efeito foi exatamente o que
+     este comentário existe para impedir — em 29/08 o `ultimo_erro` do único
+     alvo ativo começava com "Zoom, Bondfaro: mesmo estoque de Buscapé", com a
+     rodada inteira tendo corrido bem. Card amarelo por desenho é card amarelo
+     que ninguém mais lê. */
+  const ehOk = (v: string) =>
+    /^\d+ anúncios/.test(v) || v.startsWith("fora do rodízio") || v.startsWith("mesmo estoque de");
   const falhas = Object.entries(res.fontes).filter(([, v]) => !ehOk(v));
 
   /* AGRUPADO PELO MOTIVO, não uma linha por fonte. Quando a IA está fora do ar
@@ -1527,6 +1753,11 @@ Deno.serve(async (req) => {
      agora" caem juntos), e sobrescrever o prazo daria à rodada antiga um
      relógio que ela não tem — de volta a morrer sem gravar nada. */
   fimDaRodada = Math.min(fimDaRodada > t0 ? fimDaRodada : Infinity, t0 + LIMITE_WORKER_MS);
+  /* Quantas páginas ESTA requisição pediu — ver `raspagens`. É diferença, e não
+     leitura direta, porque o contador é do isolate e sobrevive à requisição
+     anterior. */
+  const raspagensAntes = raspagens;
+  const daRodada = () => raspagens - raspagensAntes;
 
   try {
     const supabase = createClient(
@@ -1684,7 +1915,7 @@ Deno.serve(async (req) => {
       const vagasQuarentena = Math.max(1, limite - (reconferir?.length ?? 0));
       let q = supabase
         .from("facilities_radar_alertas")
-        .select("id, alvo_id, oferta_id, preco, preco_total, preco_alvo, texto, tipo, status, facilities_radar_ofertas(id,url,titulo,preco,preco_total,embalagem_qtd,embalagem_unidade,embalagem_texto,conferir), facilities_radar_alvos(quantidade)")
+        .select("id, alvo_id, oferta_id, preco, preco_total, preco_alvo, texto, tipo, status, tentativas, facilities_radar_ofertas(id,url,titulo,preco,preco_total,embalagem_qtd,embalagem_unidade,embalagem_texto,conferir), facilities_radar_alvos(quantidade)")
         .eq("status", "a_confirmar")
         .order("created_at", { ascending: true })
         .limit(vagasQuarentena);
@@ -1693,12 +1924,25 @@ Deno.serve(async (req) => {
       /* QUARENTENA TEM PRAZO. Um anúncio cuja página nunca abre ficaria em
          `a_confirmar` para sempre, e a fila encheria de zumbi — cada rodada
          gastando crédito nos mesmos links mortos e empurrando os achados novos
-         para o fim. Dois dias de tentativa é generoso: são quatro rodadas de
-         cron. Depois disso vira `descartado`, com o motivo escrito. */
+         para o fim.
+
+         MAS QUEM DESISTE É A CONTAGEM, NÃO O RELÓGIO. Até aqui bastavam 48h em
+         quarentena para o alerta virar `descartado` com o texto "não consegui
+         abrir o anúncio em 48h de tentativas" — uma frase deduzida da idade, com
+         zero tentativa apurada. E a vazão desta ação é de DOIS anúncios por
+         rodada (o laço para em 55s; um anúncio custa até 75s com o CEP mais 45s
+         de releitura), então uma fila um pouco maior que isso já produz achado
+         descartado sem nunca ter sido aberto — afirmando o contrário.
+
+         Idade E tentativa, agora. Quem envelheceu sem ser tentado continua na
+         fila, e a fila é ordenada pelo mais antigo: ele está na cabeça dela. Se
+         crescer sem parar, aparece como fila grande — que é um problema que se
+         vê — em vez de sumir como limpeza. */
       const limiteIdade = new Date(Date.now() - 48 * 3600 * 1000).toISOString();
       const { data: velhos } = await supabase.from("facilities_radar_alertas")
-        .update({ status: "descartado", texto: "não consegui abrir o anúncio em 48h de tentativas" })
+        .update({ status: "descartado", texto: `não consegui abrir o anúncio em ${TENTATIVAS_ATE_DESISTIR} tentativas` })
         .eq("status", "a_confirmar").lt("created_at", limiteIdade)
+        .gte("tentativas", TENTATIVAS_ATE_DESISTIR)
         .select("id");
 
       const { data: fila, error: erroFila } = await q;
@@ -1730,7 +1974,18 @@ Deno.serve(async (req) => {
           /* Erro de leitura NÃO condena o anúncio. Na quarentena ele fica na
              fila; na tela, continua na tela. Tirar um achado por falha NOSSA
              seria o mesmo erro do "provável bloqueio de robô" virar "esgotado":
-             ausência de evidência não é evidência de ausência. */
+             ausência de evidência não é evidência de ausência.
+
+             O que muda é que a tentativa fica ESCRITA. É ela — e não a idade —
+             que autoriza a desistência lá em cima, e é ela que permite ao
+             descarte dizer uma coisa verdadeira sobre o que se tentou. Só na
+             quarentena: o achado que já está na tela não é descartado por
+             falha de leitura, então contar seria contar para ninguém. */
+          if (modo === "quarentena") {
+            await supabase.from("facilities_radar_alertas")
+              .update({ tentativas: Number(al.tentativas ?? 0) + 1 })
+              .eq("id", al.id);
+          }
           return { id: al.id, desfecho: `erro: ${c.erro.slice(0, 80)}` };
         }
 
@@ -1877,7 +2132,7 @@ Deno.serve(async (req) => {
          rodada custariam mais latência do que a precisão vale. Registra o que
          pediu — subestima o link de agregador que precisou de stealth, e é por
          isso que o quinhão dela (900) tem folga sobre a conta nominal (~640). */
-      await registrarGasto(supabase, "radar_conferir", raspagens, { desfechos: conta, quem });
+      await registrarGasto(supabase, "radar_conferir", daRodada(), { desfechos: conta, quem });
 
       return json({
         ok: true,
@@ -1894,7 +2149,7 @@ Deno.serve(async (req) => {
         // A conferência é a metade CARA: cada anúncio pode custar duas
         // raspagens (com CEP e, se falhar, sem), e o link do agregador leva a
         // lojas que só abrem com proxy stealth — cinco créditos cada.
-        raspagens,
+        raspagens: daRodada(),
         desfechos: conta,
         // Quem errou continua em `a_confirmar` e é retentado — falha nossa não
         // condena o anúncio.
@@ -2006,8 +2261,8 @@ Deno.serve(async (req) => {
        stealth, mas um razão que ignora a rodada inteira mentiria muito mais. */
     await registrarGasto(
       supabase, "radar_varrer",
-      custo != null && custo > 0 ? custo : raspagens,
-      { alvos: resultados.length, raspagens, quem },
+      custo != null && custo > 0 ? custo : daRodada(),
+      { alvos: resultados.length, raspagens: daRodada(), quem },
       custo != null && custo > 0,
     );
 
@@ -2019,7 +2274,7 @@ Deno.serve(async (req) => {
         alertas: totalAlertas,
         detalhe: {
           por_alvo: resultados, restante, quem,
-          raspagens,
+          raspagens: daRodada(),
           creditos: custo,
           saldo: saldoDepois.restantes,
           plano: saldoDepois.plano,
@@ -2033,7 +2288,7 @@ Deno.serve(async (req) => {
       ofertas: totalOfertas,
       alertas: totalAlertas,
       restante,
-      raspagens,
+      raspagens: daRodada(),
       creditos: custo,
       saldo: saldoDepois.restantes,
       por_alvo: resultados,

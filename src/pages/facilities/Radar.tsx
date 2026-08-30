@@ -37,6 +37,13 @@ interface Oferta {
   embalagem_texto: string | null;
   avaliacao: number | null; avaliacoes: number | null;
   score: number; motivos: string[]; conferir: string[];
+  /* O que a conferência leu na PÁGINA do anúncio, além de estoque e frete.
+     `ficha` é transcrição (e é dela que o `lerSpecs` fecha as pendências);
+     `porque_barato` só vem quando o preço estava materialmente abaixo dos
+     irmãos, porque a pergunta só foi feita nesse caso. */
+  ficha: string | null;
+  reclamacoes: string | null;
+  porque_barato: string | null;
   visto_em: string; primeiro_visto_em: string;
 }
 
@@ -476,6 +483,37 @@ export default function Radar() {
                                 )}
                                 <span>{al.texto}</span>
                               </div>
+
+                              {/* A FICHA VEM DA PÁGINA DO ANÚNCIO, não do título — é o
+                                  que a conferência transcreveu, e é dela que saem as
+                                  specs que o título não dizia. Fica discreta: quem
+                                  decide olhar já decidiu pelo preço. */}
+                              {!!o?.ficha && (
+                                <div className="mt-1 text-[11.5px] text-muted-foreground" title="Ficha técnica lida na página do anúncio">
+                                  {o.ficha}
+                                </div>
+                              )}
+
+                              {/* O QUE OS COMPRADORES CRITICAM. É a única linha aqui
+                                  que nenhuma regra produz: "4,6 ★ (1.842)" é número,
+                                  isto é o que o número não conta. */}
+                              {!!o?.reclamacoes && (
+                                <div className="mt-1 text-[11.5px] text-amber-700 dark:text-amber-400">
+                                  Nas avaliações: {o.reclamacoes}
+                                </div>
+                              )}
+
+                              {/* POR QUE ESTE ESTÁ MAIS BARATO. Só aparece quando a
+                                  pergunta foi feita — e ela só é feita quando o
+                                  anúncio está ao menos 10% abaixo dos irmãos. Preço
+                                  bom demais sem motivo é o achado mais convincente
+                                  e mais perigoso deste módulo. */}
+                              {!!o?.porque_barato && (
+                                <div className="mt-1 flex items-start gap-1.5 text-[11.5px] text-violet-700 dark:text-violet-400">
+                                  <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                                  <span>Mais barato porque: {o.porque_barato}</span>
+                                </div>
+                              )}
 
                               {!!o?.conferir?.length && (
                                 <div className="mt-1.5 flex items-start gap-1.5 text-[11.5px] text-amber-700 dark:text-amber-400">

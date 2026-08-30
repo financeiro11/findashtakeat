@@ -75,7 +75,7 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.0";
 import { requireUser } from "../_shared/auth.ts";
 import { generateJSON, generateText, MODELO_LITE } from "../_shared/gemini.ts";
 import {
-  avaliar, chaveDoProduto, classificar, condicaoDoTitulo, disponibilidade, DIAS_PARA_SUGERIR, economiaDe, emCentavos, norm, pisoDePreco, sugerirTeto, totalDaOferta,
+  avaliar, chaveDoProduto, classificar, condicaoDoTitulo, disponibilidade, DIAS_PARA_SUGERIR, economiaDe, emCentavos, lerSpecs, MIN_AVALIACOES, norm, pisoDePreco, sugerirTeto, totalDaOferta,
   type AlvoSpecs, type OfertaBruta,
 } from "../_shared/radar-precos.ts";
 /* O saldo e o freio moram no módulo compartilhado desde que o Firecrawl passou a
@@ -307,6 +307,64 @@ const ehPassageiroIA = (cru: string) =>
   /high demand|UNAVAILABLE|\b503\b/i.test(cru) ||
   /\b429\b|quota|rate limit/i.test(cru) ||
   /error sending request|connection|ECONNRESET|network/i.test(cru);
+
+/**
+ * DUAS CHANCES DENTRO DE UM ORÇAMENTO SÓ.
+ *
+ * A página já foi raspada e o crédito já foi debitado quando a IA falha —
+ * retentar não custa Firecrawl nenhum, custa tempo, e tempo aqui é a vida do
+ * worker. Por isso o total NÃO cresce: `prazo` é o mesmo teto de sempre e as
+ * duas tentativas o dividem. Esticar comeria a margem que existe para a rodada
+ * conseguir GRAVAR o que apurou, que é o pior defeito conhecido deste módulo.
+ *
+ * MEDIDO EM 29/08/2026, com o log que esta função escreve: as leituras que dão
+ * certo fecham em 10,5 a 18,5s, e o Gemini sobrecarregado devolve 503 em ~10s.
+ * A chamada que chega aos 25s quase nunca está lenta — está morta, e o resto do
+ * prazo é espera pura. Trocar uma espera longa por duas curtas é o mesmo relógio
+ * comprando o dobro de tentativas.
+ *
+ * Existe como função porque são DOIS chamadores — a extração da vitrine e a
+ * sugestão de busca. Duas cópias divergiriam no primeiro ajuste de limiar, e o
+ * sintoma seria uma delas continuar esperando 45s em silêncio.
+ */
+async function duasChancesDeIA<T>(
+  chamar: (ms: number) => Promise<T>,
+  prazo: number,
+  rotulo: string,
+): Promise<{ ok: true; valor: T } | { ok: false; cru: string; tentativas: number }> {
+  const inicio = Date.now();
+  let cru = "";
+  let tentativas = 0;
+
+  for (const n of [1, 2]) {
+    /* A segunda só existe se sobrar do MESMO prazo — e o `prazoDeIA()` é
+       consultado de novo porque o relógio da rodada andou enquanto a primeira
+       esperava. Prazo impossível não é prazo: abaixo do mínimo honesto,
+       ninguém chama. */
+    const ms = n === 1
+      ? Math.min(IA_PRIMEIRA_MS, prazo)
+      : Math.min(prazo - (Date.now() - inicio), prazoDeIA() ?? 0);
+    if (n === 2 && ms < IA_SEGUNDA_MINIMA_MS) break;
+
+    const t1 = Date.now();
+    tentativas = n;
+    try {
+      const valor = await chamar(ms);
+      console.log(`${rotulo} ok ${((Date.now() - t1) / 1000).toFixed(1)}s${n > 1 ? " (2ª tentativa)" : ""}`);
+      return { ok: true, valor };
+    } catch (e) {
+      cru = String((e as any)?.detail ?? (e as Error)?.message ?? e);
+      console.log(`${rotulo} falhou ${((Date.now() - t1) / 1000).toFixed(1)}s (tentativa ${n}): ${cru.slice(0, 100)}`);
+      /* SÓ SE REPETE O QUE VOLTA DIFERENTE. Timeout, 503 e 429 são o Gemini
+         ocupado — a mesma chamada, segundos depois, costuma passar. Erro de
+         schema ou de chave repetiria idêntico, e insistir seria gastar a
+         segunda metade do prazo para receber a mesma resposta. Mesma regra do
+         `ehPassageiro` do lado do Firecrawl. */
+      if (n === 1 && !ehPassageiroIA(cru)) break;
+    }
+  }
+  return { ok: false, cru, tentativas };
+}
 function prazoDeIA(): number | null {
   const util = sobramMs() - RESERVA_PARA_GRAVAR_MS;
   return util < MINIMO_DE_IA_MS ? null : Math.min(TETO_IA_MS, util);
@@ -681,6 +739,37 @@ const SCHEMA_CONFIRMACAO = {
     avaliacoes: { type: "number", description: "Quantas pessoas avaliaram" },
     imagem_url: { type: "string", description: "Link absoluto da foto principal do produto" },
     observacao: { type: "string", description: "Algo que desaconselhe a compra (pré-venda, entrega em 30 dias, vendedor sem reputação)" },
+    /* A FICHA VEM COMO TEXTO, DE PROPÓSITO — e essa escolha é a linha que o
+       módulo não cruza. Pedir `ram_gb: number` faria a IA decidir se o anúncio
+       é aprovado, porque é esse número que o `avaliar` compara com o pedido.
+       Pedindo o texto, quem extrai o número continua sendo o `lerSpecs`, a
+       mesma função testada que já lê o título — a IA só entrega mais texto para
+       ela ler. Erro de transcrição vira erro de cópia, visível ao lado do que
+       foi copiado, em vez de virar uma recusa sem apelação. */
+    ficha: {
+      type: "string",
+      description:
+        "A ficha técnica do produto COMO A PÁGINA ESCREVEU, em uma linha " +
+        "(ex: 'Intel Core i5-13420H, 16GB DDR4, SSD 512GB, 15.6\" Full HD'). " +
+        "Copie, não interprete. Omita se a página não trouxer ficha.",
+    },
+    reclamacoes: {
+      type: "string",
+      description:
+        "Se a página mostrar avaliações escritas por compradores, resuma em UMA frase " +
+        "curta o que eles CRITICAM (ex: 'citam tela escura e fonte que esquenta'). " +
+        "Só o que estiver escrito nas avaliações. Omita se não houver avaliação escrita " +
+        "ou se não houver crítica.",
+    },
+    porque_barato: {
+      type: "string",
+      description:
+        "PREENCHA SOMENTE SE A PERGUNTA FOR FEITA na mensagem. O que a PÁGINA diz que " +
+        "explica o preço abaixo do normal: garantia curta do vendedor, produto de vitrine/" +
+        "recondicionado, versão ou configuração diferente, vendedor de marketplace sem " +
+        "reputação, entrega demorada. Uma frase. Se a página não der motivo, omita — " +
+        "não deduza.",
+    },
   },
   required: ["disponivel"],
 };
@@ -861,38 +950,12 @@ async function extrairDaLoja(markdown: string, baseUrl: string, loja: string): P
      por duas curtas é o mesmo relógio comprando o dobro de tentativas.
      É inferência a partir da duração das rodadas, não medição direta: por isso
      cada chamada agora registra quanto levou, e o número corrige este 25s. */
-  const t0 = Date.now();
-  let cru = "";
-  let tentativas = 0;
-
-  for (const n of [1, 2]) {
-    /* A segunda só existe se sobrar do MESMO prazo — e o `prazoDeIA()` é
-       consultado de novo porque o relógio da rodada andou enquanto a primeira
-       esperava. Prazo impossível não é prazo: abaixo do mínimo honesto,
-       ninguém chama. */
-    const ms = n === 1
-      ? Math.min(IA_PRIMEIRA_MS, prazo)
-      : Math.min(prazo - (Date.now() - t0), prazoDeIA() ?? 0);
-    if (n === 2 && ms < IA_SEGUNDA_MINIMA_MS) break;
-
-    const t1 = Date.now();
-    tentativas = n;
-    try {
-      const out = await chamar(ms);
-      console.log(`extração ${loja} ok ${((Date.now() - t1) / 1000).toFixed(1)}s${n > 1 ? " (2ª tentativa)" : ""}`);
-      const itens = Array.isArray(out?.itens) ? out.itens : [];
-      return { ofertas: montarOfertas(itens, baseUrl, loja), erro: null };
-    } catch (e) {
-      cru = String((e as any)?.detail ?? (e as Error)?.message ?? e);
-      console.log(`extração ${loja} falhou ${((Date.now() - t1) / 1000).toFixed(1)}s (tentativa ${n}): ${cru.slice(0, 100)}`);
-      /* SÓ SE REPETE O QUE VOLTA DIFERENTE. Timeout, 503 e 429 são o Gemini
-         ocupado — a mesma chamada, segundos depois, costuma passar. Erro de
-         schema ou de chave repetiria idêntico, e insistir seria gastar a
-         segunda metade do prazo para receber a mesma resposta. Mesma regra do
-         `ehPassageiro` do lado do Firecrawl. */
-      if (n === 1 && !ehPassageiroIA(cru)) break;
-    }
+  const r = await duasChancesDeIA(chamar, prazo, `extração ${loja}`);
+  if (r.ok) {
+    const itens = Array.isArray(r.valor?.itens) ? r.valor.itens : [];
+    return { ofertas: montarOfertas(itens, baseUrl, loja), erro: null };
   }
+  const { cru, tentativas } = r;
 
   console.error("extrairDaLoja", loja, cru);
   /* `503 — high demand` e `429` são o Gemini sobrecarregado, não a loja. A
@@ -921,6 +984,12 @@ export interface Confirmacao {
   avaliacoes: number | null;
   imagem_url: string | null;
   observacao: string | null;
+  /** A ficha técnica como a página escreveu. INSUMO do `lerSpecs`, não veredito. */
+  ficha: string | null;
+  /** O que os compradores criticam, lido das avaliações escritas. */
+  reclamacoes: string | null;
+  /** O que a página diz que explica o preço baixo. Só vem quando a pergunta foi feita. */
+  porque_barato: string | null;
   erro: string | null;
 }
 
@@ -1034,9 +1103,27 @@ async function irmasDaMesmaOferta(supabase: any, alvoId: string, of: any): Promi
     .map((x: any) => x.id as number);
 }
 
-async function confirmarNoAnuncio(urlOriginal: string): Promise<Confirmacao & { url: string }> {
+/**
+ * A partir de quanto abaixo dos irmãos vale perguntar "por que está barato?".
+ *
+ * A pergunta só faz sentido quando há um desvio a explicar. Feita sobre um preço
+ * normal, ela é um convite a inventar: o modelo procura na página uma justifica-
+ * tiva para uma premissa falsa e sempre acha alguma coisa. Dez por cento é a
+ * mesma folga que o `classificar` usa para chamar uma queda de "forte".
+ */
+const GAP_PARA_PERGUNTAR = 0.10;
+
+async function confirmarNoAnuncio(
+  urlOriginal: string,
+  /**
+   * Quanto este anúncio está abaixo da mediana dos irmãos do mesmo alvo, de 0 a
+   * 1. A CONTA É FEITA EM TypeScript e ENTREGUE pronta — a IA não mede nada,
+   * só procura na página o que explica um número que já veio decidido.
+   */
+  abaixoDosIrmaos: number | null = null,
+): Promise<Confirmacao & { url: string }> {
   const { url, loja } = await resolverLink(urlOriginal);
-  const vazio: Confirmacao & { url: string } = { url, loja, disponivel: null, preco: null, frete_valor: null, frete_texto: null, avaliacao: null, avaliacoes: null, imagem_url: null, observacao: null, erro: null };
+  const vazio: Confirmacao & { url: string } = { url, loja, disponivel: null, preco: null, frete_valor: null, frete_texto: null, avaliacao: null, avaliacoes: null, imagem_url: null, observacao: null, ficha: null, reclamacoes: null, porque_barato: null, erro: null };
 
   /* Primeiro com o CEP digitado, que é a única forma de a loja mostrar frete.
      Se a ação falhar — input com outro nome, página que não carregou a tempo —,
@@ -1077,6 +1164,13 @@ async function confirmarNoAnuncio(urlOriginal: string): Promise<Confirmacao & { 
   const prazo = prazoDeIA();
   if (prazo == null) return { ...vazio, erro: "não sobrou tempo na rodada para a IA ler o anúncio — fica na fila" };
 
+  /* A CONFERÊNCIA TAMBÉM SE MEDE, e agora com mais razão: ela é a metade de
+     vazão mais curta do radar (dois anúncios por rodada, porque o laço para em
+     55s), e acabou de ganhar quatro campos e 4 000 caracteres de entrada. Se o
+     custo disso for maior do que eu suponho, é aqui que vai aparecer — do mesmo
+     jeito que o log da extração mostrou que as leituras boas fecham em 10 a 18s
+     e o teto de 45s era espera pura. */
+  const tIA = Date.now();
   try {
     const out = await comPrazo(generateJSON<any>({
       /* O MESMO modelo leve da extração, e o risco aqui é menor do que parece:
@@ -1102,9 +1196,28 @@ async function confirmarNoAnuncio(urlOriginal: string): Promise<Confirmacao & { 
             "NÃO invente frete: só preencha `frete_valor` se houver um número na página. " +
             "Loja que só calcula frete depois do CEP não tem valor — deixe em branco.\n" +
             "Preencha `avaliacao` (0 a 5) e `avaliacoes` (quantidade) só se a página mostrar, " +
-            "e `imagem_url` com a foto principal do produto.",
+            "e `imagem_url` com a foto principal do produto.\n" +
+            "Copie a ficha técnica em `ficha` e, se houver avaliações ESCRITAS, resuma as " +
+            "críticas em `reclamacoes`. Nos dois casos: copiar, não deduzir.\n" +
+            /* A PERGUNTA SÓ EXISTE QUANDO HÁ DESVIO A EXPLICAR, e o desvio já vem
+               medido. Perguntada sobre um preço normal, a IA procura na página
+               uma justificativa para uma premissa falsa — e sempre acha alguma.
+               Ver `GAP_PARA_PERGUNTAR`. */
+            (abaixoDosIrmaos != null && abaixoDosIrmaos >= GAP_PARA_PERGUNTAR
+              ? `ATENÇÃO: este anúncio está ${Math.round(abaixoDosIrmaos * 100)}% ABAIXO dos outros ` +
+                "do mesmo produto. Preencha `porque_barato` com o que ESTA PÁGINA diz que explica " +
+                "isso (garantia curta do vendedor, vitrine/recondicionado, configuração menor, " +
+                "vendedor sem reputação, entrega longa). Se a página não der motivo, omita o " +
+                "campo — a ausência de explicação é uma resposta legítima.\n"
+              : ""),
         },
-        { role: "user", content: markdown.slice(0, 14000) },
+        /* 18 000 e não 14 000: a ficha técnica e as avaliações escritas moram no
+           MEIO da página, depois do bloco de compra. Com o corte antigo elas
+           ficavam de fora com frequência, e o campo voltaria vazio dando a
+           impressão de que a loja não informa. Entrada é barata em latência;
+           o que custa é a saída, e a saída aqui continua sendo um punhado de
+           campos curtos. */
+        { role: "user", content: markdown.slice(0, 18000) },
       ],
       responseSchema: SCHEMA_CONFIRMACAO,
       temperature: 0,
@@ -1124,6 +1237,10 @@ async function confirmarNoAnuncio(urlOriginal: string): Promise<Confirmacao & { 
       : (out?.disponivel === false && temPreco) ? false
       : out?.disponivel === true ? true
       : null;
+    console.log(
+      `conferência ${new URL(url).hostname} ok ${((Date.now() - tIA) / 1000).toFixed(1)}s` +
+      ` ficha:${out?.ficha ? "sim" : "não"} reclam:${out?.reclamacoes ? "sim" : "não"}`,
+    );
     return {
       url, loja,
       disponivel: disp,
@@ -1134,6 +1251,14 @@ async function confirmarNoAnuncio(urlOriginal: string): Promise<Confirmacao & { 
       avaliacoes: typeof out?.avaliacoes === "number" && out.avaliacoes > 0 ? Math.round(out.avaliacoes) : null,
       imagem_url: out?.imagem_url ?? null,
       observacao: out?.observacao ?? null,
+      ficha: typeof out?.ficha === "string" && out.ficha.trim() ? out.ficha.trim().slice(0, 600) : null,
+      reclamacoes: typeof out?.reclamacoes === "string" && out.reclamacoes.trim() ? out.reclamacoes.trim().slice(0, 300) : null,
+      /* O campo só vale se a pergunta foi feita. Sem a guarda, um modelo
+         prestativo preencheria mesmo sem ter sido perguntado, e a tela mostraria
+         "por que está barato" ao lado de um preço que não está. */
+      porque_barato: (abaixoDosIrmaos != null && abaixoDosIrmaos >= GAP_PARA_PERGUNTAR
+        && typeof out?.porque_barato === "string" && out.porque_barato.trim())
+        ? out.porque_barato.trim().slice(0, 300) : null,
       erro: null,
     };
   } catch (e) {
@@ -1854,6 +1979,131 @@ Deno.serve(async (req) => {
       return json({ ok: true, ...s, texto, duracao_ms: Date.now() - t0 });
     }
 
+    /* -------------------------------------------------- sugerir busca */
+    /* O TERMO DE BUSCA ENVELHECE E NINGUÉM PERCEBE. `specs.buscas` é escrito uma
+       única vez, na criação do alvo, e só o PRIMEIRO termo é usado — uma consulta
+       por fonte, para sempre. Ele nunca vê o que trouxe.
+       Numa rodada medida em 29/08/2026, 65 anúncios lidos viraram 48 recusas.
+       Trinta e sete eram "acima do teto", que é trabalho útil (alimentam a curva
+       do histórico); as outras onze eram spec — "8GB de RAM, abaixo dos 16
+       pedidos" — e essas o próprio termo de busca poderia ter excluído na origem.
+       É crédito e relógio gastos para ler anúncio que já se sabia que não serve.
+
+       A IA PROPÕE, A PESSOA CARIMBA. Mesma divisão da Parametrização e do
+       Cartão: nada é aplicado aqui. A resposta é uma sugestão com o porquê, e
+       quem troca o termo é quem edita o alvo — porque um termo ruim não dá erro,
+       dá silêncio, e silêncio é o que este módulo mais teme. */
+    if (action === "sugerir_busca") {
+      const alvoId = String(body?.alvo_id ?? "");
+      if (!alvoId) return json({ ok: false, erro: "Informe o alvo." }, 400);
+
+      const { data: alvo, error: erroAlvo } = await supabase
+        .from("facilities_radar_alvos").select("*").eq("id", alvoId).single();
+      if (erroAlvo || !alvo) return json({ ok: false, erro: "Alvo não encontrado." }, 400);
+
+      /* As recusas moram no relatório das execuções, não numa tabela: o anúncio
+         recusado não é gravado (só o "produto certo, preço errado"). Vinte
+         rodadas cobrem uns cinco dias no ritmo atual. */
+      const { data: execs } = await supabase
+        .from("facilities_radar_execucoes")
+        .select("detalhe").order("iniciado_em", { ascending: false }).limit(20);
+
+      const contagem = new Map<string, number>();
+      let lidos = 0, recusados = 0;
+      for (const e of execs ?? []) {
+        for (const pa of ((e as any).detalhe?.por_alvo ?? [])) {
+          if (pa?.alvo_id !== alvoId) continue;
+          lidos += Number(pa.buscadas ?? 0);
+          recusados += Number(pa.recusadas ?? 0);
+          for (const linha of (pa.top_recusas ?? [])) {
+            const m = String(linha).match(/^(\d+)×\s*(.+)$/);
+            if (!m) continue;
+            contagem.set(m[2], (contagem.get(m[2]) ?? 0) + Number(m[1]));
+          }
+        }
+      }
+      const recusas = [...contagem.entries()].sort((a, b) => b[1] - a[1]).slice(0, 8);
+      if (!recusas.length) {
+        return json({ ok: true, pode: false, texto: "Ainda não há rodadas suficientes deste alvo para eu olhar as recusas." });
+      }
+
+      /* O TETO NÃO É PROBLEMA DE BUSCA, e separar isso é o que impede a sugestão
+         de ser boba. "Acima do teto" quer dizer que o termo achou o produto
+         certo — o preço é que não coube, e é exatamente o que alimenta a curva.
+         Só as recusas de SPEC e de CATEGORIA são evitáveis na origem. */
+      const evitaveis = recusas.filter(([m]) => !/acima do teto|abaixo do piso/i.test(m));
+      const somaEvitavel = evitaveis.reduce((s, [, n]) => s + n, 0);
+      const atual = (alvo.specs?.buscas ?? [])[0] ?? alvo.titulo;
+
+      /* Esta ação não corre contra a rodada — é um clique, e o worker é todo
+         dela. Mas o prazo continua saindo do `prazoDeIA()`, porque o teto de
+         150s do worker vale igual; e a retentativa não é luxo: a primeira versão
+         desta ação, com uma chance de 30s, voltou "não respondeu em 30s" no
+         primeiro teste real, num dia em que o Gemini devolvia 503 em 10s. */
+      const prazoIA = prazoDeIA();
+      if (prazoIA == null) return json({ ok: false, erro: "sem tempo de worker para a sugestão agora — tente de novo" });
+
+      const chamarSugestao = (ms: number) => comPrazo(generateJSON<{ busca: string; porque: string }>({
+        model: MODELO_LITE,
+        messages: [
+          {
+            role: "system",
+            content:
+              "Você ajusta o TERMO DE BUSCA que um radar de preços digita na busca de lojas " +
+              "brasileiras. Recebe o termo atual e a lista do que foi recusado depois de lido.\n" +
+              "REGRAS:\n" +
+              "- Devolva um termo curto, como alguém digitaria numa loja. Sem preço, sem aspas, " +
+              "sem operadores (-, OR, site:). Lojas brasileiras não entendem operador.\n" +
+              "- Só acrescente palavra que ESTREITE o que a recusa mostra ser lixo. " +
+              "Recusa por preço NÃO se resolve com termo de busca — ignore.\n" +
+              "- Mais específico não é sempre melhor: termo estreito demais devolve zero anúncio, " +
+              "e zero anúncio é pior que anúncio recusado. Na dúvida, mude pouco.\n" +
+              "- Se o termo atual já estiver bom, devolva-o igual e diga isso em `porque`.\n" +
+              "- `porque` é UMA frase, em português do Brasil, dizendo o que muda e por quê.",
+          },
+          {
+            role: "user",
+            content:
+              `Termo atual: ${atual}\n` +
+              `O que se procura: ${alvo.titulo}\n` +
+              `Specs pedidas: ${JSON.stringify(alvo.specs ?? {})}\n\n` +
+              `Nas últimas rodadas: ${lidos} anúncios lidos, ${recusados} recusados.\n` +
+              `Recusas:\n${recusas.map(([m, n]) => `  ${n}× ${m}`).join("\n")}\n\n` +
+              `Evitáveis por busca (não são preço): ${somaEvitavel}`,
+          },
+        ],
+        responseSchema: {
+          type: "object",
+          properties: { busca: { type: "string" }, porque: { type: "string" } },
+          required: ["busca", "porque"],
+        },
+        temperature: 0.2,
+        thinking: "low",
+      }), ms, "a sugestão de busca pela IA");
+
+      const r = await duasChancesDeIA(chamarSugestao, prazoIA, "sugestão de busca");
+      if (!r.ok) {
+        return json({ ok: false, erro: `não deu para sugerir agora: ${r.cru}${r.tentativas > 1 ? " (falhou nas 2 tentativas)" : ""}` });
+      }
+      const proposta = String(r.valor?.busca ?? "").trim() || atual;
+      const porque = String(r.valor?.porque ?? "").trim();
+
+      return json({
+        ok: true,
+        pode: true,
+        atual,
+        proposta,
+        // `mudou` é comparação de string, não julgamento: a tela precisa saber se
+        // há algo para carimbar ou se a IA concordou com o que já está lá.
+        mudou: norm(proposta) !== norm(atual),
+        porque,
+        lidos, recusados,
+        evitaveis: somaEvitavel,
+        recusas: recusas.map(([m, n]) => `${n}× ${m}`),
+        duracao_ms: Date.now() - t0,
+      });
+    }
+
     /* ------------------------------------------------------ confirmar */
     /* A segunda metade do radar: tira o achado da quarentena.
        Cada alerta em `a_confirmar` tem o anúncio ABERTO um a um. Só vira aviso
@@ -1899,7 +2149,7 @@ Deno.serve(async (req) => {
       const limiteReconferir = new Date(Date.now() - HORAS_PARA_RECONFERIR * 3600 * 1000).toISOString();
       let qr = supabase
         .from("facilities_radar_alertas")
-        .select("id, alvo_id, oferta_id, preco, preco_total, preco_alvo, texto, tipo, status, facilities_radar_ofertas!inner(id,url,titulo,preco,preco_total,embalagem_qtd,embalagem_unidade,embalagem_texto,conferir,confirmado_em), facilities_radar_alvos(quantidade)")
+        .select("id, alvo_id, oferta_id, preco, preco_total, preco_alvo, texto, tipo, status, facilities_radar_ofertas!inner(id,url,titulo,preco,preco_total,embalagem_qtd,embalagem_unidade,embalagem_texto,conferir,confirmado_em,score,avaliacao,avaliacoes), facilities_radar_alvos(quantidade,specs)")
         .in("status", ["novo", "visto"])
         .lt("facilities_radar_ofertas.confirmado_em", limiteReconferir)
         .order("created_at", { ascending: true })
@@ -1915,7 +2165,7 @@ Deno.serve(async (req) => {
       const vagasQuarentena = Math.max(1, limite - (reconferir?.length ?? 0));
       let q = supabase
         .from("facilities_radar_alertas")
-        .select("id, alvo_id, oferta_id, preco, preco_total, preco_alvo, texto, tipo, status, tentativas, facilities_radar_ofertas(id,url,titulo,preco,preco_total,embalagem_qtd,embalagem_unidade,embalagem_texto,conferir), facilities_radar_alvos(quantidade)")
+        .select("id, alvo_id, oferta_id, preco, preco_total, preco_alvo, texto, tipo, status, tentativas, facilities_radar_ofertas(id,url,titulo,preco,preco_total,embalagem_qtd,embalagem_unidade,embalagem_texto,conferir,score,avaliacao,avaliacoes), facilities_radar_alvos(quantidade,specs)")
         .eq("status", "a_confirmar")
         .order("created_at", { ascending: true })
         .limit(vagasQuarentena);
@@ -1965,11 +2215,43 @@ Deno.serve(async (req) => {
        * muda é o que se diz e para onde vai o alerta. Duas cópias divergiriam
        * na primeira vez que alguém corrigisse só uma delas.
        */
+      /**
+       * QUANTO ESTE ANÚNCIO ESTÁ ABAIXO DOS IRMÃOS DO MESMO ALVO.
+       *
+       * A conta é feita AQUI, em TypeScript, e entregue pronta à IA — que só vai
+       * procurar na página o que explica um desvio já medido. A alternativa
+       * seria mandar as outras ofertas junto e pedir para ela comparar, e aí o
+       * número que aparece na tela passaria a depender do modelo.
+       *
+       * Mediana e não média: numa lista de oito ofertas do mesmo notebook, um
+       * único anúncio de acessório mal filtrado puxaria a média para baixo e
+       * faria o preço normal parecer caro.
+       */
+      const abaixoDosIrmaos = async (alvoId: string, ofertaId: number, total: number): Promise<number | null> => {
+        if (!(total > 0)) return null;
+        const { data } = await supabase
+          .from("facilities_radar_ofertas")
+          .select("preco_total, preco")
+          .eq("alvo_id", alvoId).eq("ativo", true).eq("dentro_do_teto", true)
+          .neq("id", ofertaId);
+        const totais = (data ?? [])
+          .map((x: any) => Number(x.preco_total ?? x.preco ?? 0))
+          .filter((n: number) => n > 0)
+          .sort((a: number, b: number) => a - b);
+        // Menos de três irmãos não faz mediana — faz opinião com cara de estatística.
+        if (totais.length < 3) return null;
+        const m = Math.floor(totais.length / 2);
+        const mediana = totais.length % 2 ? totais[m] : (totais[m - 1] + totais[m]) / 2;
+        if (!(mediana > 0)) return null;
+        return Math.max(0, (mediana - total) / mediana);
+      };
+
       const conferirUm = async (al: any, modo: "quarentena" | "reconferencia") => {
         const of = al.facilities_radar_ofertas;
         if (!of?.url) return { id: al.id, desfecho: "sem link" };
 
-        const c = await confirmarNoAnuncio(of.url);
+        const gap = await abaixoDosIrmaos(al.alvo_id, of.id, Number(of.preco_total ?? of.preco ?? 0));
+        const c = await confirmarNoAnuncio(of.url, gap);
         if (c.erro) {
           /* Erro de leitura NÃO condena o anúncio. Na quarentena ele fica na
              fila; na tela, continua na tela. Tirar um achado por falha NOSSA
@@ -2036,7 +2318,83 @@ Deno.serve(async (req) => {
         const comparavel = qtdEmb ? emCentavos(total / qtdEmb) : total;
         const porUnidade = qtdEmb ? `${of.embalagem_unidade === "l" ? "L" : of.embalagem_unidade ?? "un"}` : null;
 
-        const conferir = (of.conferir ?? []).filter((x: string) => x !== "se está em estoque" && (c.frete_valor == null || x !== "valor do frete"));
+        /* ============ A FICHA FECHA AS PENDÊNCIAS QUE O TÍTULO DEIXOU ABERTAS
+           Medido em 29/08/2026: 24 de 24 ofertas dentro do teto tinham pendência,
+           3,2 em média, e o score médio era 46 de 100. Como cada pendência tira
+           quatro pontos, ~13 do que faltava não era "este anúncio é ruim" — era
+           "eu não sei". O radar descontava a própria ignorância e chamava aquilo
+           de nota.
+
+           E O NÚMERO SAI DO `lerSpecs`, NÃO DA IA. A ficha é texto transcrito;
+           quem extrai "16GB de RAM" dele é a mesma função testada que já lê o
+           título. A IA não ganhou voto — ganhou a obrigação de copiar mais.
+
+           POR QUE NÃO REEXECUTAR O `avaliar` INTEIRO com título + ficha, que
+           seria o caminho óbvio: as guardas de acessório e de sucata varrem o
+           texto todo, e ficha de notebook diz coisas como "fonte para notebook
+           65W inclusa" e "sem leitor de cartão". O `PARA_ALGO` casaria com a
+           primeira e o achado bom seria recusado como peça de reposição. A ficha
+           serve para PREENCHER spec, não para reabrir o julgamento de o que o
+           anúncio é. */
+        const specsAlvo: AlvoSpecs | null = al.facilities_radar_alvos?.specs ?? null;
+        /* Fora do consumível, e isto é guarda e não escrúpulo: em alvo medido por
+           quilo quem decide é o tamanho da embalagem, que mora no título — e uma
+           ficha com "peso líquido 2,3 kg" (o peso do notebook!) daria uma leitura
+           de embalagem inventada. */
+        const lidas = (c.ficha && specsAlvo && !specsAlvo.unidade)
+          ? lerSpecs(`${of.titulo} ${c.ficha}`)
+          : null;
+
+        /* O QUE A FICHA DESMENTE. Uma spec que o título não dizia, e que agora
+           se sabe MENOR que o pedido, é um achado que não devia ter chegado à
+           tela. Antes ele ficava lá com um "conferir: memória RAM" que ninguém
+           conferia. */
+        const desmentido: string | null = !lidas || !specsAlvo ? null
+          : specsAlvo.ram_gb_min != null && lidas.ram_gb != null && lidas.ram_gb < specsAlvo.ram_gb_min
+            ? `a ficha da página diz ${lidas.ram_gb}GB de RAM, abaixo dos ${specsAlvo.ram_gb_min}GB pedidos`
+          : specsAlvo.armazenamento_gb_min != null && lidas.armazenamento_gb != null && lidas.armazenamento_gb < specsAlvo.armazenamento_gb_min
+            ? `a ficha da página diz ${lidas.armazenamento_gb}GB de armazenamento, abaixo dos ${specsAlvo.armazenamento_gb_min}GB pedidos`
+          : specsAlvo.cpu_tier_min != null && lidas.cpu_tier != null && lidas.cpu_tier < specsAlvo.cpu_tier_min
+            ? `a ficha da página diz processador ${lidas.cpu_texto}, inferior ao pedido`
+          : specsAlvo.armazenamento_tipo === "ssd" && lidas.armazenamento_tipo != null && lidas.armazenamento_tipo !== "ssd"
+            ? `a ficha da página diz ${lidas.armazenamento_tipo.toUpperCase()}, e o pedido exige SSD`
+          : null;
+
+        /* O QUE A CONFERÊNCIA RESOLVEU SAI DA LISTA — e "avaliações do produto"
+           saía errado desde sempre: a IA já devolvia `avaliacao`/`avaliacoes`, e
+           o filtro nunca as tirava de `conferir`. Vinte e três das vinte e quatro
+           ofertas carregavam essa pendência (e os quatro pontos de desconto) com
+           o dado já em mãos. */
+        const temNota = (c.avaliacao ?? of.avaliacao) != null
+          && Number(c.avaliacoes ?? of.avaliacoes ?? 0) >= MIN_AVALIACOES;
+        const resolvido = new Set<string>();
+        if (c.disponivel === true) resolvido.add("se está em estoque");
+        if (c.frete_valor != null) resolvido.add("valor do frete");
+        if (temNota) resolvido.add("avaliações do produto");
+        if (lidas?.cpu_tier != null) resolvido.add("processador");
+        if (lidas?.cpu_marca === "intel" && lidas?.cpu_geracao != null) resolvido.add("geração do processador");
+        if (lidas?.ram_gb != null) resolvido.add("memória RAM");
+        if (lidas?.armazenamento_gb != null) resolvido.add("armazenamento");
+        if (lidas?.armazenamento_tipo != null) resolvido.add("se o disco é SSD");
+        if (lidas?.tela_pol != null) resolvido.add("tamanho da tela");
+
+        const conferir = (of.conferir ?? []).filter((x: string) => !resolvido.has(x));
+        /* Devolve os quatro pontos que cada pendência havia tirado — é o inverso
+           exato do `score -= conferir.length * 4` do `avaliar`, e não uma nota
+           nova inventada aqui. */
+        const pontosDeVolta = Math.max(0, (of.conferir ?? []).length - conferir.length) * 4;
+        const score = Math.min(100, Number(of.score ?? 0) + pontosDeVolta);
+
+        if (desmentido) {
+          await supabase.from("facilities_radar_ofertas").update({
+            ficha: c.ficha, reclamacoes: c.reclamacoes, conferir,
+            disponivel: c.disponivel ?? null, confirmado_em: new Date().toISOString(),
+          }).eq("id", of.id);
+          await supabase.from("facilities_radar_alertas")
+            .update({ status: "descartado", texto: desmentido })
+            .eq("id", al.id);
+          return { id: al.id, desfecho: "a ficha desmentiu o título" };
+        }
 
         await supabase.from("facilities_radar_ofertas").update({
           preco, preco_total: total,
@@ -2050,7 +2408,17 @@ Deno.serve(async (req) => {
           ...(c.avaliacao != null ? { avaliacao: c.avaliacao } : {}),
           ...(c.avaliacoes != null ? { avaliacoes: c.avaliacoes } : {}),
           ...(c.imagem_url ? { imagem_url: c.imagem_url } : {}),
-          conferir,
+          /* MESMA REGRA DA FOTO E DA NOTA: a conferência COMPLETA o que a busca
+             leu, não apaga. Uma releitura em que a ficha não veio (página que
+             mudou de layout, corte de 18 000 caracteres que não alcançou) não
+             pode zerar a ficha que já estava certa. */
+          ...(c.ficha ? { ficha: c.ficha } : {}),
+          ...(c.reclamacoes ? { reclamacoes: c.reclamacoes } : {}),
+          /* `porque_barato` é a exceção, e de propósito: ela responde a uma
+             pergunta sobre o preço DESTE momento. Se o anúncio deixou de estar
+             abaixo dos irmãos, a frase antiga passou a mentir — some. */
+          porque_barato: c.porque_barato,
+          conferir, score,
           // Guarda o endereço RESOLVIDO: o aviso passa a levar direto à loja,
           // e não ao redirecionador do comparador. E o vendedor deixa de ser
           // "Buscapé" (que não vende nada) para ser quem realmente vende.

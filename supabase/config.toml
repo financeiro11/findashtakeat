@@ -68,3 +68,19 @@ verify_jwt = false
 # ter falhado.
 [functions.churn-sinal-externo]
 verify_jwt = false
+
+# As duas perguntas da IA sobre o acervo de notas. Roda de cron com
+# `x-cron-token`, e a linha nasce junto com a funcao de propósito — foi a falta
+# dela que deixou `vigilancia-mudancas` dois dias em 401 no gateway.
+[functions.notas-explicar]
+verify_jwt = false
+
+# Le a falha do cron e escreve a causa. Roda de cron com `x-cron-token`.
+[functions.automacoes-diagnosticar]
+verify_jwt = false
+
+# `sugerir` roda de cron com `x-cron-token`; `enviar` exige pessoa logada e faz
+# essa checagem DENTRO da funcao (requireUser), porque e-mail que sai nao se
+# desfaz. verify_jwt = false aqui e para o caminho do cron, nao para o do envio.
+[functions.email-responder]
+verify_jwt = false

@@ -479,7 +479,7 @@ export type Database = {
           model: string
           prompt_tokens: number
           total_tokens: number
-          user_id: string
+          user_id: string | null
         }
         Insert: {
           completion_tokens?: number
@@ -490,7 +490,7 @@ export type Database = {
           model: string
           prompt_tokens?: number
           total_tokens?: number
-          user_id: string
+          user_id?: string | null
         }
         Update: {
           completion_tokens?: number
@@ -501,7 +501,7 @@ export type Database = {
           model?: string
           prompt_tokens?: number
           total_tokens?: number
-          user_id?: string
+          user_id?: string | null
         }
         Relationships: []
       }
@@ -1134,6 +1134,54 @@ export type Database = {
         }
         Relationships: []
       }
+      automacao_diagnostico: {
+        Row: {
+          amostra: string | null
+          assinatura: string
+          causa: string | null
+          gravidade: string | null
+          id: number
+          jobname: string
+          modelo: string | null
+          o_que_fazer: string | null
+          ocorrencias: number
+          primeira_em: string
+          resolvido_em: string | null
+          resumo: string
+          ultima_em: string
+        }
+        Insert: {
+          amostra?: string | null
+          assinatura: string
+          causa?: string | null
+          gravidade?: string | null
+          id?: number
+          jobname: string
+          modelo?: string | null
+          o_que_fazer?: string | null
+          ocorrencias?: number
+          primeira_em?: string
+          resolvido_em?: string | null
+          resumo: string
+          ultima_em?: string
+        }
+        Update: {
+          amostra?: string | null
+          assinatura?: string
+          causa?: string | null
+          gravidade?: string | null
+          id?: number
+          jobname?: string
+          modelo?: string | null
+          o_que_fazer?: string | null
+          ocorrencias?: number
+          primeira_em?: string
+          resolvido_em?: string | null
+          resumo?: string
+          ultima_em?: string
+        }
+        Relationships: []
+      }
       automacao_execucao: {
         Row: {
           colhido_em: string | null
@@ -1388,6 +1436,7 @@ export type Database = {
       }
       briefing_noticias: {
         Row: {
+          aprendido_em: string | null
           chave: string
           colhido_em: string
           detalhe: Json
@@ -1401,11 +1450,16 @@ export type Database = {
           por_que_importa: string | null
           publicado_em: string | null
           relevancia: number
+          repete: boolean | null
           resumo: string | null
           titulo: string
           url: string
+          voto: number | null
+          voto_em: string | null
+          voto_por: string | null
         }
         Insert: {
+          aprendido_em?: string | null
           chave: string
           colhido_em?: string
           detalhe?: Json
@@ -1419,11 +1473,16 @@ export type Database = {
           por_que_importa?: string | null
           publicado_em?: string | null
           relevancia?: number
+          repete?: boolean | null
           resumo?: string | null
           titulo: string
           url: string
+          voto?: number | null
+          voto_em?: string | null
+          voto_por?: string | null
         }
         Update: {
+          aprendido_em?: string | null
           chave?: string
           colhido_em?: string
           detalhe?: Json
@@ -1437,9 +1496,58 @@ export type Database = {
           por_que_importa?: string | null
           publicado_em?: string | null
           relevancia?: number
+          repete?: boolean | null
           resumo?: string | null
           titulo?: string
           url?: string
+          voto?: number | null
+          voto_em?: string | null
+          voto_por?: string | null
+        }
+        Relationships: []
+      }
+      briefing_noticias_preferencias: {
+        Row: {
+          assunto: string
+          ativo: boolean
+          atualizado_em: string
+          criado_em: string
+          criado_por: string | null
+          exemplos: string[]
+          id: number
+          pauta: string | null
+          peso: number
+          rotulo: string
+          termos: string[]
+          votos: number
+        }
+        Insert: {
+          assunto: string
+          ativo?: boolean
+          atualizado_em?: string
+          criado_em?: string
+          criado_por?: string | null
+          exemplos?: string[]
+          id?: number
+          pauta?: string | null
+          peso?: number
+          rotulo: string
+          termos?: string[]
+          votos?: number
+        }
+        Update: {
+          assunto?: string
+          ativo?: boolean
+          atualizado_em?: string
+          criado_em?: string
+          criado_por?: string | null
+          exemplos?: string[]
+          id?: number
+          pauta?: string | null
+          peso?: number
+          rotulo?: string
+          termos?: string[]
+          votos?: number
         }
         Relationships: []
       }
@@ -3306,6 +3414,69 @@ export type Database = {
         }
         Relationships: []
       }
+      email_acao: {
+        Row: {
+          acao: string | null
+          assunto: string | null
+          chave: string
+          criada_em: string
+          data_email: string | null
+          enviado_em: string | null
+          enviado_por: string | null
+          erro: string | null
+          gmail_id: string | null
+          modelo: string | null
+          msg_assunto: string | null
+          msg_data: string | null
+          porque: string | null
+          remetente: string
+          sugestao: string | null
+          tarefa_id: string | null
+          thread_id: string | null
+          veredito: string
+        }
+        Insert: {
+          acao?: string | null
+          assunto?: string | null
+          chave: string
+          criada_em?: string
+          data_email?: string | null
+          enviado_em?: string | null
+          enviado_por?: string | null
+          erro?: string | null
+          gmail_id?: string | null
+          modelo?: string | null
+          msg_assunto?: string | null
+          msg_data?: string | null
+          porque?: string | null
+          remetente: string
+          sugestao?: string | null
+          tarefa_id?: string | null
+          thread_id?: string | null
+          veredito?: string
+        }
+        Update: {
+          acao?: string | null
+          assunto?: string | null
+          chave?: string
+          criada_em?: string
+          data_email?: string | null
+          enviado_em?: string | null
+          enviado_por?: string | null
+          erro?: string | null
+          gmail_id?: string | null
+          modelo?: string | null
+          msg_assunto?: string | null
+          msg_data?: string | null
+          porque?: string | null
+          remetente?: string
+          sugestao?: string | null
+          tarefa_id?: string | null
+          thread_id?: string | null
+          veredito?: string
+        }
+        Relationships: []
+      }
       email_mensagens: {
         Row: {
           anexos: Json
@@ -4094,6 +4265,7 @@ export type Database = {
           embalagem_qtd: number | null
           embalagem_texto: string | null
           embalagem_unidade: string | null
+          ficha: string | null
           fonte: string
           frete_gratis: boolean
           frete_texto: string | null
@@ -4102,11 +4274,13 @@ export type Database = {
           id_externo: string
           imagem_url: string | null
           motivos: string[]
+          porque_barato: string | null
           preco: number
           preco_min: number | null
           preco_total: number | null
           preco_unitario: number | null
           primeiro_visto_em: string
+          reclamacoes: string | null
           score: number
           specs_lidas: Json
           titulo: string
@@ -4127,6 +4301,7 @@ export type Database = {
           embalagem_qtd?: number | null
           embalagem_texto?: string | null
           embalagem_unidade?: string | null
+          ficha?: string | null
           fonte: string
           frete_gratis?: boolean
           frete_texto?: string | null
@@ -4135,11 +4310,13 @@ export type Database = {
           id_externo: string
           imagem_url?: string | null
           motivos?: string[]
+          porque_barato?: string | null
           preco: number
           preco_min?: number | null
           preco_total?: number | null
           preco_unitario?: number | null
           primeiro_visto_em?: string
+          reclamacoes?: string | null
           score?: number
           specs_lidas?: Json
           titulo: string
@@ -4160,6 +4337,7 @@ export type Database = {
           embalagem_qtd?: number | null
           embalagem_texto?: string | null
           embalagem_unidade?: string | null
+          ficha?: string | null
           fonte?: string
           frete_gratis?: boolean
           frete_texto?: string | null
@@ -4168,11 +4346,13 @@ export type Database = {
           id_externo?: string
           imagem_url?: string | null
           motivos?: string[]
+          porque_barato?: string | null
           preco?: number
           preco_min?: number | null
           preco_total?: number | null
           preco_unitario?: number | null
           primeiro_visto_em?: string
+          reclamacoes?: string | null
           score?: number
           specs_lidas?: Json
           titulo?: string
@@ -4651,6 +4831,36 @@ export type Database = {
           atualizado_em?: string
           user_id?: string
           visto_ate?: string
+        }
+        Relationships: []
+      }
+      ia_orcamento: {
+        Row: {
+          ativo: boolean
+          atualizado_em: string
+          consumidor: string
+          para_que: string | null
+          rotulo: string
+          teto_dia: number
+          teto_mes_usd: number
+        }
+        Insert: {
+          ativo?: boolean
+          atualizado_em?: string
+          consumidor: string
+          para_que?: string | null
+          rotulo: string
+          teto_dia?: number
+          teto_mes_usd?: number
+        }
+        Update: {
+          ativo?: boolean
+          atualizado_em?: string
+          consumidor?: string
+          para_que?: string | null
+          rotulo?: string
+          teto_dia?: number
+          teto_mes_usd?: number
         }
         Relationships: []
       }
@@ -5601,6 +5811,7 @@ export type Database = {
       }
       notas_externas: {
         Row: {
+          alvo_decidido_por: string | null
           alvo_id_unico: string | null
           alvo_manual: boolean
           alvo_tipo: string | null
@@ -5639,11 +5850,16 @@ export type Database = {
           link: string
           link_documento: string | null
           moeda: string | null
+          nao_casou_em: string | null
+          nao_casou_motivo: string | null
+          nao_casou_por: string | null
           nome: string | null
           o_que_e: string | null
           ordem: number
           parece_nota: boolean | null
           status_planilha: string | null
+          sugestao_em: string | null
+          sugestao_ia: Json | null
           tem_arquivo: boolean
           tipo_documento: string | null
           valor: number | null
@@ -5653,6 +5869,7 @@ export type Database = {
           visto_em: string
         }
         Insert: {
+          alvo_decidido_por?: string | null
           alvo_id_unico?: string | null
           alvo_manual?: boolean
           alvo_tipo?: string | null
@@ -5691,11 +5908,16 @@ export type Database = {
           link: string
           link_documento?: string | null
           moeda?: string | null
+          nao_casou_em?: string | null
+          nao_casou_motivo?: string | null
+          nao_casou_por?: string | null
           nome?: string | null
           o_que_e?: string | null
           ordem?: number
           parece_nota?: boolean | null
           status_planilha?: string | null
+          sugestao_em?: string | null
+          sugestao_ia?: Json | null
           tem_arquivo?: boolean
           tipo_documento?: string | null
           valor?: number | null
@@ -5705,6 +5927,7 @@ export type Database = {
           visto_em?: string
         }
         Update: {
+          alvo_decidido_por?: string | null
           alvo_id_unico?: string | null
           alvo_manual?: boolean
           alvo_tipo?: string | null
@@ -5743,11 +5966,16 @@ export type Database = {
           link?: string
           link_documento?: string | null
           moeda?: string | null
+          nao_casou_em?: string | null
+          nao_casou_motivo?: string | null
+          nao_casou_por?: string | null
           nome?: string | null
           o_que_e?: string | null
           ordem?: number
           parece_nota?: boolean | null
           status_planilha?: string | null
+          sugestao_em?: string | null
+          sugestao_ia?: Json | null
           tem_arquivo?: boolean
           tipo_documento?: string | null
           valor?: number | null
@@ -6245,6 +6473,7 @@ export type Database = {
         Row: {
           bairro: string | null
           cep: string | null
+          cep_generico: boolean | null
           cidade: string | null
           cnpj_cpf: string | null
           codigo: number
@@ -6260,6 +6489,7 @@ export type Database = {
         Insert: {
           bairro?: string | null
           cep?: string | null
+          cep_generico?: boolean | null
           cidade?: string | null
           cnpj_cpf?: string | null
           codigo: number
@@ -6275,6 +6505,7 @@ export type Database = {
         Update: {
           bairro?: string | null
           cep?: string | null
+          cep_generico?: boolean | null
           cidade?: string | null
           cnpj_cpf?: string | null
           codigo?: number
@@ -9596,6 +9827,10 @@ export type Database = {
         }[]
       }
       auditoria_lojistas: { Args: never; Returns: Json }
+      automacao_assinatura_erro: {
+        Args: { p_resposta: string; p_status: number }
+        Returns: string
+      }
       automacao_colher: { Args: never; Returns: number }
       automacao_criar_tarefa: {
         Args: {
@@ -9605,6 +9840,44 @@ export type Database = {
           p_responsavel?: string
         }
         Returns: string
+      }
+      automacao_diagnostico_gravar: {
+        Args: {
+          p_amostra: string
+          p_assinatura: string
+          p_causa: string
+          p_gravidade: string
+          p_jobname: string
+          p_modelo: string
+          p_o_que_fazer: string
+          p_resumo: string
+        }
+        Returns: undefined
+      }
+      automacao_diagnosticos_abertos: {
+        Args: never
+        Returns: {
+          causa: string
+          gravidade: string
+          jobname: string
+          o_que_fazer: string
+          ocorrencias: number
+          primeira_em: string
+          resumo: string
+          ultima_em: string
+        }[]
+      }
+      automacoes_para_diagnosticar: {
+        Args: { p_limite?: number }
+        Returns: {
+          assinatura: string
+          disparado_em: string
+          falhas_7d: number
+          jobname: string
+          resposta: string
+          schedule: string
+          status_code: number
+        }[]
       }
       cac_celula: {
         Args: { p_ano: number; p_linha_id: string; p_mes: number }
@@ -9888,6 +10161,7 @@ export type Database = {
           nome: string
         }[]
       }
+      corpo_desmente: { Args: { p_resposta: string }; Returns: boolean }
       criar_token_e_registrar: {
         Args: {
           p_colaborador_id?: string
@@ -10030,6 +10304,59 @@ export type Database = {
         }[]
       }
       eh_cartao: { Args: { p_contraparte: string }; Returns: boolean }
+      email_acao_marcar_enviada: {
+        Args: { p_chave: string }
+        Returns: undefined
+      }
+      email_acao_virar_tarefa: {
+        Args: { p_chave: string; p_prazo?: string; p_responsavel?: string }
+        Returns: string
+      }
+      email_acoes_pendentes: {
+        Args: { p_limite?: number }
+        Returns: {
+          acao: string
+          assunto: string
+          chave: string
+          data_email: string
+          enviado_em: string
+          gmail_id: string
+          msg_assunto: string
+          msg_data: string
+          porque: string
+          remetente: string
+          sugestao: string
+          tarefa_id: string
+          veredito: string
+        }[]
+      }
+      email_resposta_fila: {
+        Args: { p_limite?: number }
+        Returns: {
+          assunto: string
+          data: string
+          gmail_id: string
+          remetente: string
+          thread_id: string
+        }[]
+      }
+      email_resposta_marcar_enviada: {
+        Args: { p_gmail_id: string }
+        Returns: undefined
+      }
+      email_respostas_pendentes: {
+        Args: { p_limite?: number }
+        Returns: {
+          assunto: string
+          criada_em: string
+          gmail_id: string
+          porque: string
+          remetente: string
+          sugestao: string
+          thread_id: string
+          veredito: string
+        }[]
+      }
       estornos_chave: { Args: { t: string }; Returns: string }
       estornos_conciliar: { Args: never; Returns: Json }
       estornos_motivo_descarta: { Args: { t: string }; Returns: boolean }
@@ -10307,6 +10634,20 @@ export type Database = {
       fornecedor_emite_nf: { Args: { p_nome: string }; Returns: boolean }
       hub_automacoes: { Args: never; Returns: Json }
       hub_base_url: { Args: never; Returns: string }
+      ia_orcamento_status: {
+        Args: never
+        Returns: {
+          ativo: boolean
+          consumidor: string
+          gasto_mes_usd: number
+          para_que: string
+          resta_hoje: number
+          rotulo: string
+          teto_dia: number
+          teto_mes_usd: number
+          usadas_hoje: number
+        }[]
+      }
       importar_auditoria: {
         Args: { p_achados: Json }
         Returns: {
@@ -10314,6 +10655,7 @@ export type Database = {
           inseridos: number
         }[]
       }
+      jsonb_ou_nulo: { Args: { p: string }; Returns: Json }
       justificativa_decidir: {
         Args: { p_id: string; p_status?: string; p_texto?: string }
         Returns: undefined
@@ -10365,6 +10707,7 @@ export type Database = {
         Args: { p_limite?: number }
         Returns: {
           doc: string
+          fonte: string
           id_customer: string
           ids: string[]
           motivo: string
@@ -10521,6 +10864,7 @@ export type Database = {
           valor: number
         }[]
       }
+      notas_externas_aplicar_sugestao: { Args: { p_id: number }; Returns: Json }
       notas_externas_arquivar_lote: {
         Args: { p_ids: number[]; p_motivo: string }
         Returns: number
@@ -10555,20 +10899,57 @@ export type Database = {
         Args: { p_motivo: string }
         Returns: number
       }
+      notas_externas_desfazer_ia: {
+        Args: { p_desde?: string }
+        Returns: number
+      }
       notas_externas_do_drive: { Args: never; Returns: number }
       notas_externas_enfileirar: { Args: { p_ids: number[] }; Returns: number }
       notas_externas_enfileirar_automatico: {
         Args: { p_limite?: number }
         Returns: Json
       }
+      notas_externas_explicar_resumo: { Args: never; Returns: Json }
       notas_externas_facetas: { Args: never; Returns: Json }
       notas_externas_faxina: { Args: { p_simular?: boolean }; Returns: Json }
+      notas_externas_fila_explicar: {
+        Args: { p_limite?: number; p_modo: string }
+        Returns: {
+          candidatos: Json
+          cnpj: string
+          competencia: string
+          detalhe: string
+          enviado_em: string
+          fonte: string
+          id: number
+          nome: string
+          o_que_e: string
+          valor: number
+          vencimento: string
+        }[]
+      }
+      notas_externas_gravar_motivo: {
+        Args: { p_id: number; p_motivo: string }
+        Returns: undefined
+      }
+      notas_externas_gravar_sugestao: {
+        Args: {
+          p_alvo_id_unico: string
+          p_alvo_tipo: string
+          p_confianca: string
+          p_id: number
+          p_modelo: string
+          p_porque: string
+        }
+        Returns: undefined
+      }
       notas_externas_ignorar: {
         Args: { p_id: number; p_motivo?: string }
         Returns: undefined
       }
       notas_externas_janela_medir: { Args: never; Returns: string }
       notas_externas_marcar_copias: { Args: never; Returns: number }
+      notas_externas_motivo_por_regra: { Args: never; Returns: Json }
       notas_externas_para_arquivar: {
         Args: { p_limite?: number }
         Returns: {

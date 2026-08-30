@@ -525,6 +525,22 @@ const ACOES_CEP = [
   { type: "write", text: CEP_DESTINO },
   { type: "press", key: "Enter" },
   { type: "wait", milliseconds: 3500 },
+  /* NÃO ADIANTA ROLAR PARA BUSCAR AS RESENHAS — testado e medido em 30/08/2026,
+     e fica registrado para ninguém tentar de novo achando que é ideia nova.
+     Num notebook 4,5★ com 17 avaliações na Casas Bahia, o markdown vem com o
+     cabeçalho da seção e a distribuição de estrelas, e NENHUMA resenha escrita.
+     Acrescentei três `scroll` e 2,5s de espera aqui: o markdown voltou com os
+     MESMOS 14 000 caracteres, byte por byte de tamanho. O texto não está sendo
+     carregado tarde — ele não está no documento.
+     A causa provável é que as lojas brasileiras servem avaliação por widget de
+     terceiro (Bazaarvoice, Trustvox e parecidos), quase sempre dentro de um
+     iframe, e iframe não entra no markdown do Firecrawl. Sair rolando custa
+     2,5s em cada conferência, que é a metade de vazão mais curta do módulo
+     (dois anúncios por rodada) — pagar isso por zero é o tipo de código que
+     fica para sempre porque ninguém lembra de medir.
+     Quem for resolver: é trabalho para um navegador que a gente controle, que
+     saiba esperar o widget e ler o iframe. Ver `reclamacoes` na conferência — o
+     log já separa "não tem" de "não achei". */
 ];
 
 /**
@@ -1113,6 +1129,51 @@ async function irmasDaMesmaOferta(supabase: any, alvoId: string, of: any): Promi
  */
 const GAP_PARA_PERGUNTAR = 0.10;
 
+/** Como as lojas brasileiras chamam o bloco de avaliação escrita. */
+const MARCA_AVALIACAO =
+  /avalia(?:ç|c)(?:ões|oes|ão|ao)|coment[áa]rios?|opini(?:ões|oes|ão|ao)|resenhas?|o que (?:est[ãa]o dizendo|as pessoas achar)/gi;
+
+/**
+ * O PEDAÇO DA PÁGINA QUE VAI PARA A IA — e por que não são simplesmente os
+ * primeiros N caracteres.
+ *
+ * O corte cego pelo começo entregava a ficha técnica e escondia as avaliações,
+ * e o resultado apareceu na primeira medição real (30/08/2026): `ficha:sim` nas
+ * três lojas conferidas, `reclam:não` nas três. Não era a loja não ter avaliação
+ * — era o topo da página não ser onde ela mora. Ficha técnica fica logo abaixo
+ * do bloco de compra; o que os compradores escreveram fica no rodapé, depois de
+ * "produtos relacionados", "quem viu também viu" e meia dúzia de vitrines.
+ *
+ * Então o trecho é montado: a CABEÇA (onde estão preço, estoque, frete e ficha)
+ * mais a VIZINHANÇA da seção de avaliação. O total continua na mesma ordem de
+ * grandeza de antes — isto não é pedir mais, é pedir o pedaço certo.
+ *
+ * A ÚLTIMA OCORRÊNCIA, e não a primeira: quase toda página escreve "4,6 · 1.842
+ * avaliações" ao lado do título, lá em cima. Essa é o NÚMERO, que já se tem. O
+ * texto escrito está na última vez que a palavra aparece.
+ */
+const CABECA_MS = 12_000;
+const VIZINHANCA_AVALIACAO = 6_000;
+
+function trechoDaConferencia(md: string): { trecho: string; temSecao: boolean } {
+  const cabeca = md.slice(0, CABECA_MS);
+  let ultimo = -1;
+  for (const m of md.matchAll(MARCA_AVALIACAO)) ultimo = m.index ?? ultimo;
+  if (ultimo < 0) return { trecho: cabeca, temSecao: false };
+  // Já estava na cabeça: nada a acrescentar, e a seção foi lida do mesmo jeito.
+  if (ultimo < CABECA_MS) return { trecho: cabeca, temSecao: true };
+  /* Volta 1 500 caracteres antes da palavra: o cabeçalho da seção ("Avaliações
+     dos clientes", a nota, a distribuição de estrelas) é o que dá contexto ao
+     texto solto que vem depois. */
+  const ini = Math.max(CABECA_MS, ultimo - 1_500);
+  return {
+    // A marca de corte é explícita para o modelo não costurar duas metades como
+    // se fossem contíguas — e concluir bobagem da emenda.
+    trecho: `${cabeca}\n\n[... trecho do meio da página omitido ...]\n\n${md.slice(ini, ini + VIZINHANCA_AVALIACAO)}`,
+    temSecao: true,
+  };
+}
+
 async function confirmarNoAnuncio(
   urlOriginal: string,
   /**
@@ -1171,8 +1232,8 @@ async function confirmarNoAnuncio(
      jeito que o log da extração mostrou que as leituras boas fecham em 10 a 18s
      e o teto de 45s era espera pura. */
   const tIA = Date.now();
-  try {
-    const out = await comPrazo(generateJSON<any>({
+  const pedaco = trechoDaConferencia(markdown);
+  const chamarConferencia = (ms: number) => comPrazo(generateJSON<any>({
       /* O MESMO modelo leve da extração, e o risco aqui é menor do que parece:
          quem decide são os três degraus logo abaixo, em TypeScript. O `false`
          da IA só vale acompanhado de prova (`temPreco`), o `dizEsgotado` por
@@ -1211,20 +1272,30 @@ async function confirmarNoAnuncio(
                 "campo — a ausência de explicação é uma resposta legítima.\n"
               : ""),
         },
-        /* 18 000 e não 14 000: a ficha técnica e as avaliações escritas moram no
-           MEIO da página, depois do bloco de compra. Com o corte antigo elas
-           ficavam de fora com frequência, e o campo voltaria vazio dando a
-           impressão de que a loja não informa. Entrada é barata em latência;
-           o que custa é a saída, e a saída aqui continua sendo um punhado de
-           campos curtos. */
-        { role: "user", content: markdown.slice(0, 18000) },
+        /* Cabeça da página + a vizinhança da seção de avaliação. Ver
+           `trechoDaConferencia`: o corte cego pelo começo entregava a ficha e
+           escondia justamente o que os compradores escreveram. */
+        { role: "user", content: pedaco.trecho },
       ],
       responseSchema: SCHEMA_CONFIRMACAO,
       temperature: 0,
       // Mesma razão da extração: ler a página e preencher campos é transcrição.
       // Quem decide de fato é a regra em TypeScript, logo abaixo.
       thinking: "low",
-    }), prazo, "a leitura do anúncio pela IA");
+    }), ms, "a leitura do anúncio pela IA");
+
+  /* A TERCEIRA CHAMADORA DAS DUAS CHANCES, e ela era a que mais precisava: a
+     conferência é a metade cara (a página já custou uma raspagem de até 75s com
+     o CEP digitado), então perder tudo num timeout de IA é jogar fora o trabalho
+     inteiro do anúncio. Aconteceu no teste de 30/08/2026 — "a leitura do anúncio
+     pela IA não respondeu em 45s" — e a página teria de ser raspada de novo na
+     rodada seguinte, do zero.
+     Era o "e serão três" que eu escrevi no comentário de `duasChancesDeIA` e não
+     tinha cumprido. */
+  try {
+    const r = await duasChancesDeIA(chamarConferencia, prazo, `conferência-ia ${new URL(url).hostname}`);
+    if (!r.ok) throw new Error(r.cru);
+    const out = r.valor;
 
     /* Três degraus, do mais confiável ao menos:
        1. a página ESCREVE que acabou → false, e não se discute;
@@ -1237,9 +1308,20 @@ async function confirmarNoAnuncio(
       : (out?.disponivel === false && temPreco) ? false
       : out?.disponivel === true ? true
       : null;
+    /* AUSÊNCIA DE EVIDÊNCIA, DE NOVO — agora sobre nós mesmos. "reclam:não" era
+       ambíguo entre três coisas muito diferentes: a página não tem avaliação
+       escrita, tem e nós cortamos fora, ou tem e a IA não achou crítica. Sem
+       separá-las, a próxima pessoa a olhar isto (eu, amanhã) ia mexer no prompt
+       quando o problema era o corte — que foi exatamente o que quase aconteceu.
+       A frase fala do QUE FOI LIDO, não da página: dizer "a página não tem"
+       sobre um markdown que o `onlyMainContent` pode ter podado seria afirmar o
+       que não se sabe. */
+    const reclam = out?.reclamacoes ? "sim"
+      : pedaco.temSecao ? "não (seção lida, sem crítica escrita)"
+      : "não (não achei seção de avaliação no que foi lido)";
     console.log(
       `conferência ${new URL(url).hostname} ok ${((Date.now() - tIA) / 1000).toFixed(1)}s` +
-      ` ficha:${out?.ficha ? "sim" : "não"} reclam:${out?.reclamacoes ? "sim" : "não"}`,
+      ` ${(markdown.length / 1000).toFixed(0)}k ficha:${out?.ficha ? "sim" : "não"} reclam:${reclam}`,
     );
     return {
       url, loja,

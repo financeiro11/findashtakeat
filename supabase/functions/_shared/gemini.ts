@@ -93,7 +93,35 @@ interface GenerateOptions {
    *  trabalho é transcrever um documento para um schema fechado, que é leitura,
    *  não deliberação. Só peça o que a tarefa precisa. */
   thinking?: "low" | "high";
+  /** Desliga a retentativa de 503/429 para quem já tem a sua (o radar tem). */
+  semRetentativa?: boolean;
+  /** Recebe os tokens da chamada, para quem grava o razão de consumo. */
+  onUso?: (uso: { model: string; promptTokens: number; completionTokens: number }) => void;
 }
+
+/* ---------------------------------------------------------------- retry --
+ *
+ * UMA TENTATIVA EXTRA, e não três. O 503 do Gemini ("This model is currently
+ * experiencing high demand") apareceu 11 vezes em 24h de logs em 29/08/2026, e
+ * cada uma custava a unidade de trabalho inteira porque aqui não havia
+ * retentativa nenhuma — `MODELOS_CASCATA` existe desde sempre, mas é opt-in e só
+ * 3 dos ~20 call sites a usam.
+ *
+ * O CUIDADO É NÃO PIORAR O QUE SE QUER CONSERTAR. Retentativa agressiva contra
+ * um modelo que já está dizendo "estou sobrecarregado" é exatamente como se
+ * transforma um pico do fornecedor numa tempestade nossa. Por isso:
+ *
+ *   • uma tentativa extra, no máximo — se a segunda também falha, o problema não
+ *     é intermitente e insistir é desperdício com aparência de robustez;
+ *   • recuo ANTES de tentar, e maior para 429 do que para 503: 503 é "estou
+ *     cheio agora", 429 é "você está pedindo demais" — a segunda merece mais
+ *     silêncio da nossa parte;
+ *   • só 503 e 429. 400, 404 e 403 são defeito nosso e repetir só multiplica o
+ *     mesmo erro.
+ */
+const RECUO_MS: Record<number, number> = { 503: 1_200, 429: 4_000 };
+
+const dorme = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 /* Nem todo modelo aceita `thinkingLevel` — os 2.x nunca aceitaram, e o próximo
    nome de modelo pode não aceitar também. Em vez de fixar uma lista que envelhece
@@ -140,10 +168,34 @@ async function callGenerate(opts: GenerateOptions, stream = false): Promise<Resp
       console.error("Gemini error", resp.status, d2);
       throw new GeminiError("Falha ao consultar a IA", resp.status === 429 ? 429 : 502, d2);
     }
+
+    /* Pico do fornecedor: recua e tenta UMA vez. Ver o bloco `RECUO_MS`. */
+    const recuo = RECUO_MS[resp.status];
+    if (recuo && !opts.semRetentativa && !stream) {
+      console.warn(`Gemini ${resp.status} em ${model} — recuando ${recuo}ms e tentando outra vez`);
+      await dorme(recuo);
+      const segunda = await disparar(pedindoThinking && aceitaThinking);
+      if (segunda.ok) return segunda;
+      const d3 = await segunda.text();
+      console.error("Gemini error", segunda.status, "(falhou nas 2 tentativas)", d3);
+      throw new GeminiError("Falha ao consultar a IA", segunda.status === 429 ? 429 : 502, d3);
+    }
+
     console.error("Gemini error", resp.status, detail);
     throw new GeminiError("Falha ao consultar a IA", resp.status === 429 ? 429 : 502, detail);
   }
   return resp;
+}
+
+/** Tokens que o Gemini informa, entregues a quem quiser gravar o razão. */
+function avisarUso(opts: GenerateOptions, data: any) {
+  if (!opts.onUso) return;
+  const u = data?.usageMetadata ?? {};
+  opts.onUso({
+    model: opts.model || DEFAULT_MODEL,
+    promptTokens: Number(u.promptTokenCount ?? 0),
+    completionTokens: Number(u.candidatesTokenCount ?? 0),
+  });
 }
 
 function extractTextFromResponse(data: any): string {
@@ -169,12 +221,14 @@ function tryParseJson(text: string): any | null {
 export async function generateText(opts: GenerateOptions): Promise<string> {
   const resp = await callGenerate(opts, false);
   const data = await resp.json();
+  avisarUso(opts, data);
   return extractTextFromResponse(data);
 }
 
 export async function generateJSON<T = any>(opts: GenerateOptions): Promise<T> {
   const resp = await callGenerate({ ...opts, json: true }, false);
   const data = await resp.json();
+  avisarUso(opts, data);
   const txt = extractTextFromResponse(data);
   const parsed = tryParseJson(txt);
   if (!parsed) throw new GeminiError("IA retornou resposta inválida", 502, txt.slice(0, 500));

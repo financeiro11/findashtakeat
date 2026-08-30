@@ -152,6 +152,12 @@ export const O_QUE_FAZ: Record<string, string> = {
   "nf-sondar-config-asaas": "confere de quem é a nota daquele cliente: do Asaas ou nossa",
   "nota-baixar-link": "baixa a nota que chegou como link",
   "nota-ler-arquivo": "lê o arquivo da nota: valor, CNPJ e data",
+  "email-responder-preparar":
+    "prepara a tratativa dos e-mails acionáveis do briefing: a resposta e/ou a tarefa",
+  "automacoes-diagnosticar-dia":
+    "a IA lê as automações que falharam e escreve a causa provável e o que fazer",
+  "notas-explicar-rodada":
+    "a IA explica por que a nota não casou e desempata quem tem vários títulos candidatos",
   "nota-propagar-varredura": "repete a nota nas demais parcelas do mesmo compromisso",
   "notas-acervo-casar": "casa a nota do acervo com o título do contas a pagar",
   "notas-arquivar-diaria": "arquiva o que já não pede atenção",

@@ -19,7 +19,7 @@
  * `20260827220000`.
  */
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { cn } from "@/lib/utils";
 import { Input } from "@/components/ui/input";
@@ -32,8 +32,9 @@ import {
 import { normalize } from "@/lib/normalize";
 import {
   AlertTriangle, ArrowRight, Check, Clock, HelpCircle, Loader2, MinusCircle, Paperclip,
-  RefreshCw, Search, Zap,
+  RefreshCw, Search, Sparkles, Zap,
 } from "lucide-react";
+import { supabase } from "@/integrations/supabase/client";
 
 /* -------------------------------------------------------------------------
  * Pecinhas
@@ -107,10 +108,36 @@ function Linha({ a, agora, compacto }: { a: Automacao; agora: Date; compacto?: b
 
 type Corte = "todas" | "esteira" | "problema";
 
+/** O que a IA entendeu de cada falha (`automacao_diagnosticos_abertos`). */
+type Diagnostico = {
+  jobname: string;
+  resumo: string;
+  causa: string | null;
+  o_que_fazer: string | null;
+  gravidade: string | null;
+  ocorrencias: number;
+};
+
 export default function PainelAutomacoes() {
   const { estado, erro, agora, lendo, ler } = useAutomacoes();
   const [corte, setCorte] = useState<Corte>("todas");
   const [busca, setBusca] = useState("");
+  const [diagnosticos, setDiagnosticos] = useState<Record<string, Diagnostico>>({});
+
+  /* ACESSÓRIO POR CONSTRUÇÃO: a leitura do diagnóstico é uma chamada própria e,
+     se falhar, a tela mostra a falha crua como sempre mostrou. O diagnóstico
+     ajuda a entender o erro; ele não pode ser mais uma coisa capaz de esconder o
+     erro. Só uma vez por montagem — a lista muda a cada 60s, o diagnóstico não. */
+  useEffect(() => {
+    let vivo = true;
+    (supabase as any).rpc("automacao_diagnosticos_abertos").then(
+      ({ data }: { data: Diagnostico[] | null }) => {
+        if (!vivo || !data) return;
+        setDiagnosticos(Object.fromEntries(data.map((d) => [d.jobname, d])));
+      },
+    );
+    return () => { vivo = false; };
+  }, []);
 
   // Memorizado porque o relógio repinta esta tela de segundo em segundo: um `[]`
   // novo a cada render invalidaria todos os `useMemo` abaixo, inclusive a
@@ -212,6 +239,36 @@ export default function PainelAutomacoes() {
                   {a.status_http ? `HTTP ${a.status_http} · ` : ""}
                   {a.erro_sql || a.resposta || "sem detalhe da resposta"}
                 </p>
+                {/* A CAUSA, quando a IA já leu esta falha.
+                    O erro cru fica ACIMA e continua sendo a fonte: o diagnóstico
+                    é leitura sobre ele, não substituto dele. Quem for consertar
+                    precisa ver a resposta original — foi ela que provou, no dia
+                    dos 13 crons sem token, que o problema era o cabeçalho e não
+                    a chave da API. */}
+                {diagnosticos[a.jobname] && (
+                  <div className="mt-1 rounded border border-border bg-muted/40 px-2 py-1.5 text-[11.5px]">
+                    <p className="flex items-center gap-1.5 font-medium">
+                      <Sparkles className="h-3.5 w-3.5 text-primary" />
+                      {diagnosticos[a.jobname].resumo}
+                      {diagnosticos[a.jobname].ocorrencias > 1 && (
+                        <span className="text-muted-foreground">
+                          · {diagnosticos[a.jobname].ocorrencias}ª vez
+                        </span>
+                      )}
+                    </p>
+                    {diagnosticos[a.jobname].causa && (
+                      <p className="mt-0.5 text-muted-foreground">
+                        {diagnosticos[a.jobname].causa}
+                      </p>
+                    )}
+                    {diagnosticos[a.jobname].o_que_fazer && (
+                      <p className="mt-0.5">
+                        <span className="font-medium">O que fazer: </span>
+                        {diagnosticos[a.jobname].o_que_fazer}
+                      </p>
+                    )}
+                  </div>
+                )}
               </li>
             ))}
           </ul>

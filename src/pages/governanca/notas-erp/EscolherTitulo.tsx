@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { AlertTriangle, Check, FileText, Loader2 } from "lucide-react";
+import { AlertTriangle, Check, FileText, Loader2, Sparkles } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import {
@@ -43,6 +43,24 @@ export type NotaEmEscolha = {
   data: string | null;
 };
 
+/**
+ * A opinião da IA sobre o empate (`notas_externas.sugestao_ia`, escrita pela
+ * função `notas-explicar` desde 29/08/2026).
+ *
+ * ELA É PALPITE COM RASTRO, NÃO DECISÃO. Aparece como uma linha acima da tabela,
+ * destacando o candidato de que ela fala — e quem grava continua sendo o botão
+ * "É este", clicado por gente. Se `escolheu` for falso, a IA olhou e desistiu:
+ * isso também é informação, e mostrar a recusa é mais honesto que esconder que
+ * alguém já tentou.
+ */
+type Sugestao = {
+  escolheu: boolean;
+  alvo_id_unico?: string;
+  porque?: string;
+  confianca?: "alta" | "media" | "baixa";
+  modelo?: string;
+};
+
 /** Uma linha de `notas_externas_candidatos(p_id)`. */
 type Candidato = {
   alvo_tipo: string;
@@ -78,11 +96,13 @@ export function EscolherTitulo({
   aoEscolher: () => void;
 }) {
   const [candidatos, setCandidatos] = useState<Candidato[] | null>(null);
+  const [sugestao, setSugestao] = useState<Sugestao | null>(null);
   const [gravando, setGravando] = useState<string | null>(null);
 
   useEffect(() => {
     let vivo = true;
     setCandidatos(null);
+    setSugestao(null);
     db.rpc("notas_externas_candidatos", { p_id: nota.id }).then(
       ({ data, error }: { data: Candidato[] | null; error: { message: string } | null }) => {
         if (!vivo) return;
@@ -94,6 +114,13 @@ export function EscolherTitulo({
         setCandidatos(data ?? []);
       },
     );
+    /* A sugestão é ACESSÓRIA: se não vier, a janela funciona igual à de antes.
+       Por isso ela não entra no mesmo `then` dos candidatos nem bloqueia nada —
+       um erro aqui não pode tirar de alguém a única saída que o empate tem. */
+    db.from("notas_externas").select("sugestao_ia").eq("id", nota.id).maybeSingle()
+      .then(({ data }: { data: { sugestao_ia: Sugestao | null } | null }) => {
+        if (vivo && data?.sugestao_ia) setSugestao(data.sugestao_ia);
+      });
     return () => { vivo = false; };
   }, [nota.id]);
 
@@ -138,6 +165,38 @@ export function EscolherTitulo({
           <span className="text-muted-foreground">{dataBR(nota.data)}</span>
         </div>
 
+        {/* O palpite da IA, quando existe. Fica ACIMA da tabela e fora dela de
+            propósito: é uma leitura sobre os candidatos, não mais um candidato. */}
+        {sugestao && (
+          <div className={cn(
+            "flex gap-2.5 rounded-lg border px-3 py-2 text-[12.5px]",
+            sugestao.escolheu
+              ? "border-primary/30 bg-primary/5"
+              : "border-border bg-muted/40",
+          )}>
+            <Sparkles className={cn(
+              "mt-0.5 h-4 w-4 shrink-0",
+              sugestao.escolheu ? "text-primary" : "text-muted-foreground",
+            )} />
+            <div className="min-w-0">
+              <span className="font-medium">
+                {sugestao.escolheu
+                  ? "A IA leu o documento e aposta num deles"
+                  : "A IA leu o documento e não quis escolher"}
+              </span>
+              {sugestao.porque && (
+                <span className="block text-muted-foreground">{sugestao.porque}</span>
+              )}
+              <span className="mt-0.5 block text-[11px] text-muted-foreground">
+                {sugestao.escolheu && sugestao.confianca
+                  ? `Confiança ${sugestao.confianca}. `
+                  : ""}
+                É palpite, não decisão — quem aponta o título é você, no botão da linha.
+              </span>
+            </div>
+          </div>
+        )}
+
         <div className="max-h-[50vh] overflow-auto">
           {candidatos === null ? (
             <div className="space-y-2">
@@ -167,8 +226,15 @@ export function EscolherTitulo({
                      ruído, e a diferença é a informação. */
                   const diverge = nota.valor != null && c.valor != null
                     && Math.abs(Number(nota.valor) - Number(c.valor)) > 0.02;
+                  const apontado = !!sugestao?.escolheu && sugestao.alvo_id_unico === c.id_unico;
                   return (
-                    <tr key={c.id_unico} className="border-b border-border/50 last:border-0 align-top">
+                    <tr
+                      key={c.id_unico}
+                      className={cn(
+                        "border-b border-border/50 last:border-0 align-top",
+                        apontado && "bg-primary/5",
+                      )}
+                    >
                       <td className="px-3 py-2">
                         <span className="block font-medium">{c.nome || "(sem nome)"}</span>
                         <span className="block text-[11px] text-muted-foreground">
@@ -178,6 +244,11 @@ export function EscolherTitulo({
                         {c.ja_tem_nota && (
                           <span className="mt-1 inline-flex items-center gap-1 rounded bg-amber-500/15 px-1.5 py-0.5 text-[10.5px] font-bold text-amber-700 dark:text-amber-400">
                             <AlertTriangle className="h-3 w-3" /> já tem nota anexada
+                          </span>
+                        )}
+                        {apontado && (
+                          <span className="mt-1 inline-flex items-center gap-1 rounded bg-primary/10 px-1.5 py-0.5 text-[10.5px] font-bold text-primary">
+                            <Sparkles className="h-3 w-3" /> é o que a IA aponta
                           </span>
                         )}
                       </td>

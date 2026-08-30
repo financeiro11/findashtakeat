@@ -161,11 +161,87 @@ export const CATALOGO: Fonte[] = [
   {
     id: "ai_usage_log",
     area: "Governança",
-    descricao: "Consumo de IA no Hub: modelo, funcionalidade, tokens e custo em dólar.",
+    descricao:
+      "Consumo de IA no Hub, uma linha por chamada: modelo, funcionalidade (feature), " +
+      "tokens e custo em dólar. `user_id` nulo quer dizer que quem chamou foi o servidor " +
+      "(cron, fila, varredura), não uma pessoa. Só tem dado a partir de 29/08/2026 — " +
+      "antes disso o registro estava quebrado e a tabela ficou quatro meses vazia.",
     data: "created_at",
     valor: "cost_usd",
     dimensoes: ["model", "feature"],
     listar: ["created_at", "model", "feature", "total_tokens", "cost_usd"],
+  },
+
+  // --- Acervo de notas, contas a pagar e cobrança ---
+  //
+  // As quatro fontes abaixo entraram em 29/08/2026 e são as áreas onde o
+  // trabalho de fato acontece: o acervo tem milhares de documentos em triagem, o
+  // contas a pagar é o denominador de tudo que se cobra do ERP, e o Asaas é a
+  // ponta que recebe. Sem elas o Assistente respondia sobre o Hub inteiro
+  // MENOS sobre o que ocupa o dia de quem trabalha nele.
+  {
+    id: "notas_externas",
+    area: "Notas fiscais",
+    descricao:
+      "Acervo de notas e comprovantes recolhidos de planilhas, e-mail e Drive. `alvo_tipo` " +
+      "diz a que lançamento a nota foi casada (pix, cartao, erp) e fica NULO quando o " +
+      "casador não decidiu; `conferencia` diz se o ERP já tem o arquivo; " +
+      "`nao_casou_motivo` explica por que ficou sem alvo. Uma linha por documento.",
+    data: "enviado_em",
+    valor: "valor",
+    dimensoes: [
+      "fonte", "alvo_tipo", "casamento", "confianca", "conferencia",
+      "nao_casou_motivo", "tipo_documento", "moeda",
+    ],
+    listar: ["enviado_em", "nome", "valor", "fonte", "alvo_tipo", "conferencia", "nao_casou_motivo"],
+  },
+  {
+    id: "cap_titulos",
+    area: "Contas a pagar",
+    descricao:
+      "Títulos do contas a pagar do Omie: fornecedor, categoria, valor, vencimento, " +
+      "pagamento e quantos anexos o título já tem no ERP (`anexos_no_erp`). É a lista " +
+      "contra a qual o acervo de notas é conferido. `favorecido` já vem com o apelido " +
+      "da Parametrização; `favorecido_cru` é o nome como o ERP escreve.",
+    data: "vencimento",
+    valor: "valor",
+    dimensoes: ["categoria", "conta", "status", "situacao", "favorecido", "competencia", "regra"],
+    listar: ["vencimento", "favorecido", "categoria", "valor", "status", "anexos_no_erp"],
+  },
+  {
+    id: "asaas_cache",
+    area: "Recebimentos",
+    descricao:
+      "Espelho das cobranças do Asaas. `tipo` separa cobrança de assinatura e de nota; " +
+      "`status` é a situação da cobrança; `data_credito` é quando o dinheiro entra, que " +
+      "não é a mesma coisa que `data_pagamento`.",
+    data: "data_vencimento",
+    valor: "valor",
+    dimensoes: ["tipo", "status", "forma", "ciclo", "nome"],
+    listar: ["data_vencimento", "nome", "valor", "status", "forma", "data_credito"],
+  },
+  {
+    id: "auditoria_pix_lancamentos",
+    area: "Auditoria",
+    descricao:
+      "Lançamentos de PIX e transferência do extrato, com favorecido, categoria e se já " +
+      "têm comprovante anexado. É a base da auditoria de comprovantes.",
+    data: "data",
+    valor: "valor",
+    dimensoes: ["favorecido", "categoria", "conta_corrente", "status", "tem_comprovante"],
+    listar: ["data", "favorecido", "valor", "categoria", "tem_comprovante"],
+  },
+  {
+    id: "nfse_preparo_fila",
+    area: "Notas fiscais",
+    descricao:
+      "Clientes cujo cadastro precisa de conserto antes de a NFS-e poder ser emitida. " +
+      "`falta` diz o que está faltando e `situacao` diz em que pé está (pendente, " +
+      "corrigido, bloqueado, humano).",
+    data: "montada_em",
+    valor: "valor",
+    dimensoes: ["situacao", "falta", "motivo", "nome"],
+    listar: ["montada_em", "nome", "doc", "falta", "situacao", "valor"],
   },
 
   // --- Facilities (completando: compras, cotações, fornecedores) ---

@@ -169,6 +169,11 @@ async function lerComGemini(bytes: Uint8Array, caminho: string, prazo = 0): Prom
     try {
       l = await generateJSON<LeituraAnexo>({
         model, temperature: 0, responseSchema: SCHEMA_TRIAGEM, messages: mensagens,
+        /* A escada de modelos JÁ É a retentativa aqui, e o parágrafo acima conta
+           o preço dela: leitura de imagem gasta ~50s e três em sequência matam o
+           worker. A retentativa que o helper ganhou em 29/08/2026 dobraria cada
+           degrau — seis idas no pior caso. Um relógio só por chamada. */
+        semRetentativa: true,
       });
       break;
     } catch (e) {

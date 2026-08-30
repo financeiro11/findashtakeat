@@ -403,6 +403,13 @@ export default function ContaCorrenteBancaria({ banco }: { banco: FonteCCKey }) 
     return ORDEM_SIC.filter((k) => acc.has(k)).map((k) => ({ key: k, ...acc.get(k)!, ...SIC_META[k] }));
   }, [filtrado]);
 
+  /* O estorno entra nos totais como qualquer crédito ou débito — tem de entrar,
+     senão o saldo do dia não fecha. Mas "Entradas +R$ 12 mil" com R$ 3,4 mil de
+     Pix voltando é uma frase que se lê errado: a faixa diz quanto do número é
+     devolução, para ninguém contar duas vezes o que só foi desfeito. */
+  const estornoIn = chipsSicoob.find((c) => c.key === "estorno_in");
+  const estornoOut = chipsSicoob.find((c) => c.key === "estorno_out");
+
   // Totais por dia (linha separadora do feed).
   const totaisDia = useMemo(() => {
     const map = new Map<string, { c: number; d: number }>();
@@ -569,12 +576,26 @@ export default function ContaCorrenteBancaria({ banco }: { banco: FonteCCKey }) 
           <div className="px-5 py-4">
             <div className="eyebrow">Entradas</div>
             <div className="num mt-1.5 text-[24px] font-semibold leading-none text-pos">+{fmtBRL(totais.entradas)}</div>
-            <div className="mt-2 text-[10.5px] text-muted-foreground">{qtdCreditos} crédito{qtdCreditos === 1 ? "" : "s"} no período</div>
+            <div className="mt-2 text-[10.5px] text-muted-foreground">
+              {qtdCreditos} crédito{qtdCreditos === 1 ? "" : "s"} no período
+              {estornoIn && (
+                <span className="text-fuchsia-700 dark:text-fuchsia-300" title={estornoIn.dica}>
+                  {" · "}<span className="num">{fmtBRL(estornoIn.v)}</span> de estorno
+                </span>
+              )}
+            </div>
           </div>
           <div className="px-5 py-4">
             <div className="eyebrow">Saídas</div>
             <div className="num mt-1.5 text-[24px] font-semibold leading-none text-neg">−{fmtBRL(totais.saidas)}</div>
-            <div className="mt-2 text-[10.5px] text-muted-foreground">{qtdDebitos} débito{qtdDebitos === 1 ? "" : "s"} no período</div>
+            <div className="mt-2 text-[10.5px] text-muted-foreground">
+              {qtdDebitos} débito{qtdDebitos === 1 ? "" : "s"} no período
+              {estornoOut && (
+                <span className="text-fuchsia-700 dark:text-fuchsia-300" title={estornoOut.dica}>
+                  {" · "}<span className="num">{fmtBRL(estornoOut.v)}</span> de estorno
+                </span>
+              )}
+            </div>
           </div>
           <div className="px-5 py-4">
             <div className="eyebrow">Resultado do período</div>
@@ -592,7 +613,7 @@ export default function ContaCorrenteBancaria({ banco }: { banco: FonteCCKey }) 
               <div key={c.key} className="rounded-md border border-border px-3 py-2 text-left">
                 <div className="flex items-center gap-1.5">
                   <span className={cn("h-1.5 w-1.5 shrink-0 rounded-full", c.dot)} />
-                  <span className="truncate text-[11px] text-muted-foreground" title={c.rot}>{c.rot}</span>
+                  <span className="truncate text-[11px] text-muted-foreground" title={c.dica ? `${c.rot} — ${c.dica}` : c.rot}>{c.rot}</span>
                 </div>
                 <div className={cn("num mt-1 text-[15px] font-semibold leading-none", c.credito ? "text-pos" : "text-neg")}>
                   {c.credito ? "+" : "−"}{fmtBRL(c.v)}
@@ -677,7 +698,10 @@ export default function ContaCorrenteBancaria({ banco }: { banco: FonteCCKey }) 
                     )}
                     <tr className="border-b border-border/50 hover:bg-secondary/40">
                       <td className="px-4 py-2 align-middle">
-                        <span className={cn("inline-flex items-center rounded-full border px-2 py-0.5 text-[10.5px] font-medium", meta.chip)}>
+                        <span
+                          className={cn("inline-flex items-center rounded-full border px-2 py-0.5 text-[10.5px] font-medium", meta.chip)}
+                          title={meta.dica}
+                        >
                           {meta.selo}
                         </span>
                       </td>

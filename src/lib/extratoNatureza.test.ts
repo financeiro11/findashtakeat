@@ -137,6 +137,14 @@ describe("classificaSicoob", () => {
     expect(classificaSicoob("PIX RECEBIDO - OUTRA IF", true)).toBe("pix_in");
   });
 
+  it("estorno ganha de todos — é um pagamento desfeito antes de ser Pix ou tarifa", () => {
+    // Valor real de `sicoob_extrato`: crédito, e portanto caía em "Pix recebido".
+    expect(classificaSicoob("ESTORNO PIX EMITIDO", true)).toBe("estorno_in");
+    expect(classificaSicoob("ESTORNO TARIFA PACOTE DE SERVICOS", true)).toBe("estorno_in");
+    expect(classificaSicoob("DEVOLUÇÃO PIX RECEBIDO", false)).toBe("estorno_out");
+    expect(classificaSicoob("PIX DEVOLVIDO", false)).toBe("estorno_out");
+  });
+
   it("o mesmo texto muda de lado conforme crédito ou débito", () => {
     expect(classificaSicoob("TED", true)).toBe("ted_in");
     expect(classificaSicoob("TED", false)).toBe("outros_out");

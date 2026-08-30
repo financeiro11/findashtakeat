@@ -18,9 +18,16 @@ import { normalize } from "@/lib/normalize";
 
 export type SicKey =
   | "pix_in" | "ted_in" | "pix_out" | "boleto"
-  | "folha" | "imposto" | "tarifa" | "outros_in" | "outros_out";
+  | "folha" | "imposto" | "tarifa"
+  | "estorno_in" | "estorno_out"
+  | "outros_in" | "outros_out";
 
-export const SIC_META: Record<SicKey, { rot: string; selo: string; dot: string; chip: string }> = {
+/**
+ * `dica` só existe onde o selo precisa se explicar. Hoje é o estorno: o número
+ * está certo, o sinal está certo, e mesmo assim a linha se lê errado sem uma
+ * frase dizendo que aquilo não é dinheiro novo.
+ */
+export const SIC_META: Record<SicKey, { rot: string; selo: string; dot: string; chip: string; dica?: string }> = {
   pix_in:    { rot: "Pix recebido",       selo: "Pix recebido",  dot: "bg-emerald-500", chip: "border-emerald-500/40 text-emerald-700 dark:text-emerald-400" },
   ted_in:    { rot: "TED recebida",       selo: "TED recebida",  dot: "bg-teal-500",    chip: "border-teal-500/40 text-teal-700 dark:text-teal-400" },
   pix_out:   { rot: "Pix enviado",        selo: "Pix enviado",   dot: "bg-sky-500",     chip: "border-sky-500/40 text-sky-700 dark:text-sky-400" },
@@ -28,12 +35,24 @@ export const SIC_META: Record<SicKey, { rot: string; selo: string; dot: string; 
   folha:     { rot: "Folha e benefícios", selo: "Folha",         dot: "bg-amber-500",   chip: "border-amber-500/40 text-amber-700 dark:text-amber-400" },
   imposto:   { rot: "Impostos",           selo: "Imposto",       dot: "bg-red-500",     chip: "border-red-500/40 text-red-700 dark:text-red-400" },
   tarifa:    { rot: "Tarifas bancárias",  selo: "Tarifa banc.",  dot: "bg-zinc-500",    chip: "border-zinc-400/50 text-muted-foreground" },
+  // Preenchido, e não vazado como os outros: é o selo que precisa saltar da lista.
+  estorno_in: {
+    rot: "Estorno recebido", selo: "Estorno recebido", dot: "bg-fuchsia-500",
+    chip: "border-fuchsia-500/50 bg-fuchsia-500/10 font-semibold text-fuchsia-700 dark:text-fuchsia-300",
+    dica: "Dinheiro que voltou: um pagamento que o banco desfez. Não é entrada nova — a saída original continua na lista, com o mesmo valor.",
+  },
+  estorno_out: {
+    rot: "Estorno enviado", selo: "Estorno enviado", dot: "bg-fuchsia-400",
+    chip: "border-fuchsia-500/50 bg-fuchsia-500/10 font-semibold text-fuchsia-700 dark:text-fuchsia-300",
+    dica: "Dinheiro devolvido: um recebimento que o banco desfez. Não é despesa — a entrada original continua na lista, com o mesmo valor.",
+  },
   outros_in: { rot: "Outras entradas",    selo: "Entrada",       dot: "bg-emerald-400", chip: "border-emerald-400/40 text-emerald-700 dark:text-emerald-400" },
   outros_out:{ rot: "Outras saídas",      selo: "Saída",         dot: "bg-muted-foreground/60", chip: "border-border text-muted-foreground" },
 };
 
 export const ORDEM_SIC: SicKey[] = [
-  "pix_in", "ted_in", "pix_out", "boleto", "folha", "imposto", "tarifa", "outros_in", "outros_out",
+  "pix_in", "ted_in", "pix_out", "boleto", "folha", "imposto", "tarifa",
+  "estorno_in", "estorno_out", "outros_in", "outros_out",
 ];
 
 /** Crédito ou débito. A coluna `tipo` vem 'credito'/'debito'; `valor` é sempre positivo. */
@@ -43,10 +62,21 @@ export const eCredito = (t: string | null | undefined) => (t ?? "").toLowerCase(
  * A ordem dos testes é a regra: tarifa e imposto ganham de "pix" porque um DARF
  * pago via Pix é imposto, não "Pix enviado" — quem procura o que saiu de dinheiro
  * no mês quer ver o tributo separado do fornecedor.
+ *
+ * E o ESTORNO ganha de todos, inclusive de tarifa e imposto. "ESTORNO PIX
+ * EMITIDO" é crédito, então caía em `pix_in` e aparecia com o mesmo selo verde de
+ * um cliente pagando — duas linhas coladas, "Flash App −258,06" e "Flash App
+ * +258,06", contando a mesma coisa e parecendo receita. Um pagamento desfeito é
+ * primeiro um pagamento desfeito, e só depois é Pix ou tarifa: o que a pessoa
+ * precisa saber ao bater o olho é que ali não entrou (nem saiu) dinheiro novo.
  */
 export function classificaSicoob(h: string | null | undefined, credito: boolean): SicKey {
   const s = (h ?? "").toLowerCase();
   const tem = (...t: string[]) => t.some((x) => s.includes(x));
+  // Só o histórico — o rótulo do BANCO — vira estorno. A descrição que a pessoa
+  // digita no Pix ("reembolso panos de chao", "estorno da cobrança do cliente")
+  // fala de outra coisa: ali houve pagamento de verdade.
+  if (tem("estorn", "devolucao", "devolução", "devolvid")) return credito ? "estorno_in" : "estorno_out";
   if (tem("tarifa", "pacote de serv", "cesta", "manutenção de conta", "manutencao de conta")) return "tarifa";
   if (tem("imposto", "darf", "das ", "fgts", "inss", "iss", "tribut", "gps", "gare")) return "imposto";
   if (tem("folha", "salário", "salario", "sal.", "vale", "benefíc", "benefic", "rescis", "13º", "adiantamento")) return "folha";

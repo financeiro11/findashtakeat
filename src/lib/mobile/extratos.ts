@@ -288,6 +288,9 @@ export function normalizarBanco(l: LinhaBanco): LinhaExtrato {
   const campos: [string, string][] = [];
   if (l.data_movimento) campos.push(["Data", fmtDia(l.data_movimento)]);
   campos.push(["Natureza", SIC_META[cat].rot]);
+  // No celular não há hover: a frase que o desktop guarda no `title` do selo tem
+  // de estar escrita na folha de detalhe, senão o estorno só se distingue pela cor.
+  if (SIC_META[cat].dica) campos.push(["O que é", SIC_META[cat].dica!]);
   campos.push(["Tipo", entrada ? "Crédito" : "Débito"]);
   if (cp.operacao) campos.push(["Operação", cp.operacao]);
   if (l.historico) campos.push(["Histórico", l.historico]);

@@ -1,5 +1,5 @@
-// A régua do painel de notícias: o que se procura, o que se descarta e o que
-// merece uma linha na tela de manhã.
+// A régua do painel de notícias do briefing: o que se procura, o que se descarta
+// e o que merece uma linha na tela de manhã.
 //
 // POR QUE ISTO MORA FORA DA FUNÇÃO. Sem imports, para o vitest poder testar —
 // mesmo arranjo de `vigilancia-diff.ts` e `radar-precos.ts`. E é aqui que está a
@@ -11,18 +11,51 @@
 // notícia entra é `pontuar` aqui embaixo, em TypeScript, contra um vocabulário
 // escrito à mão do que a Takeat usa e de quem a Takeat disputa. A IA recebe
 // depois, e só, o item já aprovado, para escrever uma frase de "por que isto
-// importa". Deixar a IA escolher produziria uma seleção diferente a cada manhã,
+// importa" e responder duas perguntas binárias (muda algo? já vimos isso?).
+// Deixar a IA escolher produziria uma seleção diferente a cada manhã,
 // impossível de calibrar e impossível de explicar.
 //
-// O QUE ESTE PAINEL NÃO É. Não é feed de notícia geral — macro Brasil e
-// foodservice genérico continuam vindo da skill de briefing, em prosa. Aqui
-// entram três pautas escolhidas por serem ACIONÁVEIS: ferramenta que usamos e
-// mexeu, IA aplicada a backoffice que dá para copiar no Hub, e concorrente que
-// se mexeu. Notícia que não muda nada do que fazemos é ruído com fonte confiável.
+// AS QUATRO FRENTES (29/08/2026). Antes eram três pautas e, ao lado delas, um
+// "Panorama do dia" em prosa que a skill escrevia — macro Brasil, tech/SaaS e
+// foodservice. A prosa foi extinta e virou item, porque era exatamente ela que
+// se repetia: "Selic em 14% desde 05/08" é verdade todo dia e novidade em um só.
+// Texto sem link não tem data, não deduplica e não se marca como lido — as três
+// coisas que fazem um painel diário parar de repetir. As frentes agora são:
+//
+//     IA e inovação  →  `ia_ferramentas` + `ia_backoffice`
+//     Finanças       →  `financas`      (juros, câmbio, tributário, meios de pagamento)
+//     Foodservice    →  `foodservice`   (o setor E os concorrentes)
+//     Startups       →  `startups`      (rodada, aporte, M&A, foodtech/SaaS)
+//
+// E O PAINEL APRENDE. Cada item tem 👍 ("quero mais") e 👎 ("evite"); o voto vira
+// vocabulário com peso em `briefing_noticias_preferencias`, e `pontuar` soma
+// esse peso como soma qualquer outro sinal. O aprendizado não é um modelo que se
+// ajusta no escuro: é uma lista de assuntos, com termos visíveis, que dá para
+// abrir e apagar na tela. Ver `aplicarPreferencias`.
 
 /* ============================================================== as pautas */
 
-export type PautaChave = "ia_ferramentas" | "ia_backoffice" | "concorrentes";
+export type PautaChave =
+  | "ia_ferramentas"
+  | "ia_backoffice"
+  | "financas"
+  | "foodservice"
+  | "startups";
+
+/**
+ * Pautas que mudaram de nome, e o nome novo.
+ *
+ * `concorrentes` virou `foodservice` quando a pauta deixou de exigir nome de
+ * rival e passou a aceitar dado do setor — o que a prosa do panorama trazia. A
+ * migração renomeia as linhas antigas, mas isto fica por dois motivos: um item
+ * gravado entre a subida do código e a da migração, e a tela, que precisa saber
+ * desenhar o chip de uma linha velha sem quebrar.
+ */
+export const PAUTA_RENOMEADA: Record<string, PautaChave> = { concorrentes: "foodservice" };
+
+export function pautaAtual(chave: string): PautaChave {
+  return (PAUTA_RENOMEADA[chave] ?? chave) as PautaChave;
+}
 
 export interface Consulta {
   q: string;
@@ -31,9 +64,10 @@ export interface Consulta {
   /**
    * Qual aba do buscador. UMA SÓ POR CONSULTA, e a escolha é por pauta:
    *
-   * • `news` para o que sai em veículo — lançamento de modelo, movimento de
-   *   concorrente. É a única aba que devolve data e nome do veículo, que é o que
-   *   permite escrever "há 3 horas, no TechCrunch" em vez de adivinhar pela URL.
+   * • `news` para o que sai em veículo — lançamento de modelo, decisão do Copom,
+   *   rodada de investimento. É a única aba que devolve data e nome do veículo,
+   *   que é o que permite escrever "há 3 horas, no TechCrunch" em vez de
+   *   adivinhar pela URL.
    *
    * • `web` para o que NÃO sai em veículo. Caso de empresa que automatizou o
    *   contas a pagar mora em blog de engenharia, post de LinkedIn e página de
@@ -50,47 +84,8 @@ export interface Pauta {
   rotulo: string;
   /** Vai no prompt de quem escreve o "por que importa". */
   oQueImporta: string;
-  consultas: Consulta[];
 }
 
-/**
- * Quatro buscas por dia, ao custo de 2 créditos cada (o Firecrawl cobra por
- * dezena de resultados, arredondando para cima — daí `RESULTADOS = 10`, porque
- * pedir 5 pagaria o mesmo por metade). São ~240 créditos/mês, ou 300 no mês em
- * que TODO dia precisar da retentativa da aba de notícias — que é exatamente o
- * teto. Quem quiser espaço para o "buscar agora" da tela num mês desses sobe o
- * teto no painel de créditos; o freio avisa antes de estourar, não depois.
- *
- * A ABA DE NOTÍCIAS É INTERMITENTE, e essa é a lição cara de 28/08/2026. Onze
- * buscas medidas, e o resultado NÃO tem padrão de consulta:
- *
- *     "Anthropic OpenAI Claude modelo"        qdr:d   news → 10
- *     "inteligência artificial empresas"      qdr:d   news → 10
- *     "restaurantes delivery cardápio digital" qdr:d  news →  4
- *     "iFood restaurantes delivery"           qdr:d   news →  0
- *     "iFood restaurantes delivery"           qdr:w   news →  0
- *     "Supabase n8n Cursor desenvolvedores"   (sem)   news →  0
- *
- * A mesma família de consulta devolve dez numa hora e zero na seguinte, e
- * ACRESCENTAR um termo chegou a aumentar o número de achados — o que não é
- * comportamento de busca, é comportamento de serviço intermitente. Cheguei a
- * concluir que a culpa era do `tbs: "qdr:w"` (todas as primeiras vazias tinham
- * essa janela) e a consulta seguinte, com `qdr:d`, desmentiu.
- *
- * O QUE SE FAZ COM ISSO: não confiar em zero. A rodada retenta UMA vez quando a
- * aba de notícias volta vazia sem erro, e o painel guarda o que já tinha em vez
- * de esvaziar — item não lido continua na tela pelos dias seguintes. O que NÃO
- * se faz é ler "0 achados" como "não houve notícia": é a leitura natural, é
- * plausível, e está errada com frequência.
- *
- * Continua valendo `qdr:d` na aba de notícias por outro motivo, esse sim de
- * desenho: um painel lido toda manhã quer o dia, e a semana traria o mesmo
- * anúncio sete vezes. A aba `web` usa `qdr:w` e não deu sinal de intermitência.
- *
- * CONSULTA CURTA NA ABA DE NOTÍCIAS. A primeira versão mandava sopa de termos
- * com aspas e oito palavras; as de duas a quatro palavras rendem mais. Com a
- * intermitência no meio, isto é tendência medida, não lei.
- */
 export const PAUTAS: Pauta[] = [
   {
     chave: "ia_ferramentas",
@@ -99,10 +94,6 @@ export const PAUTAS: Pauta[] = [
       "A Takeat roda o Hub sobre Gemini, OpenAI, Supabase e Firecrawl, e o financeiro sobre Omie e Asaas. " +
       "Interessa: modelo novo, mudança de preço, recurso que substitui trabalho que hoje é nosso, " +
       "e depreciação de algo que já usamos.",
-    consultas: [
-      { q: "Anthropic OpenAI Claude modelo", tbs: "qdr:d", fontes: ["news"] },
-      { q: "Gemini Google IA lançamento", tbs: "qdr:d", fontes: ["news"] },
-    ],
   },
   {
     chave: "ia_backoffice",
@@ -111,29 +102,156 @@ export const PAUTAS: Pauta[] = [
       "O que dá para copiar no Hub: agente de conciliação, leitura de nota fiscal, automação de contas a " +
       "pagar, fechamento contábil assistido. Interessa o caso concreto de quem implantou e contou o " +
       "resultado — não a promessa de fornecedor.",
+  },
+  {
+    chave: "financas",
+    rotulo: "Finanças",
+    oQueImporta:
+      "O que muda o custo do dinheiro e o trabalho do financeiro da Takeat: decisão do Copom e Selic, " +
+      "câmbio (parte do custo de IA é em dólar), inflação, reforma tributária e obrigação fiscal nova, " +
+      "regra do Banco Central sobre Pix e meios de pagamento — que é por onde o dinheiro dos clientes entra.",
+  },
+  {
+    chave: "foodservice",
+    rotulo: "Foodservice",
+    oQueImporta:
+      "O mercado do cliente da Takeat e quem disputa esse cliente com ela: Goomer, Anota AI, Saipos, " +
+      "Consumer, Neemo, Cardápio Web e as plataformas de delivery. Interessa movimento de concorrente " +
+      "(lançamento, preço, aporte, aquisição, encerramento) e dado do setor que mude a conversa de venda.",
+  },
+  {
+    chave: "startups",
+    rotulo: "Startups",
+    oQueImporta:
+      "A Takeat é uma startup de SaaS B2B que vai levantar Series A. Interessa rodada, aporte, M&A e " +
+      "valuation em SaaS B2B, foodtech e fintech no Brasil e na América Latina — o que baliza a própria " +
+      "captação — e o que fecha ou encolhe, que é o outro lado do mesmo termômetro.",
+  },
+];
+
+export const pautaPorChave = (c: string): Pauta | undefined =>
+  PAUTAS.find((p) => p.chave === pautaAtual(c));
+
+/* ========================================================= o revezamento */
+
+/**
+ * QUATRO BUSCAS POR DIA, CINCO PAUTAS: quem cobre o quê hoje.
+ *
+ * O ORÇAMENTO NÃO MUDOU e isso foi uma decisão, não uma sobra. São 2 créditos por
+ * busca (o Firecrawl cobra por dezena de resultados, arredondando para cima —
+ * daí `RESULTADOS = 10`, porque pedir 5 pagaria o mesmo por metade), ~240
+ * créditos/mês, contra um teto de 300. Cobrir as quatro frentes com uma busca
+ * dedicada cada, todo dia, seria ~400 — e comeria 150 dos 200 créditos de
+ * reserva do plano, que é o que segura o mês em que uma loja passar a exigir
+ * proxy stealth e uma varredura do radar custar cinco vezes mais.
+ *
+ * ENTÃO O QUE SE REVEZA É A PAUTA, NÃO O DINHEIRO. Cada slot é um horário fixo
+ * na grade com duas consultas que se alternam por dia. IA e foodservice caem
+ * todo dia (dois slots e um slot); finanças e startups dividem o quarto slot e
+ * chegam em dias alternados — o que é a cadência natural das duas: o Copom se
+ * reúne a cada 45 dias e rodada de investimento não sai de manhã.
+ *
+ * A ESCALA É FUNÇÃO DA DATA, e de nada mais. Nada de contador no banco: uma
+ * rodada repetida (o botão "buscar agora", uma reenfileirada do cron) não pode
+ * fazer a grade andar, senão a mesma frente pula dois dias sem ninguém notar.
+ * `escalaDoDia("2026-08-29")` devolve hoje e devolverá o mesmo daqui a um ano.
+ */
+export interface Slot {
+  chave: string;
+  /** Por que este slot existe — vai no relatório da rodada. */
+  papel: string;
+  consultas: Array<Consulta & { pauta: PautaChave }>;
+}
+
+export const SLOTS: Slot[] = [
+  {
+    chave: "ia_laboratorios",
+    papel: "quem faz os modelos que o Hub usa — todo dia",
     consultas: [
-      { q: "inteligência artificial agente automação financeiro conciliação contas a pagar nota fiscal empresa caso", tbs: "qdr:w", fontes: ["web"] },
+      /* CONSULTA CURTA NA ABA DE NOTÍCIAS. A primeira versão mandava sopa de
+         termos com aspas e oito palavras; as de duas a quatro palavras rendem
+         mais. Com a intermitência da aba de notícias no meio (ver `RESULTADOS`),
+         isto é tendência medida, não lei. */
+      { pauta: "ia_ferramentas", q: "Anthropic OpenAI Claude modelo", tbs: "qdr:d", fontes: ["news"] },
+      { pauta: "ia_ferramentas", q: "Gemini Google IA lançamento", tbs: "qdr:d", fontes: ["news"] },
     ],
   },
   {
-    chave: "concorrentes",
-    rotulo: "Concorrentes e o setor",
-    oQueImporta:
-      "Quem disputa o mesmo restaurante que a Takeat: Goomer, Anota AI, Saipos, Consumer, Neemo, Cardápio " +
-      "Web, e as plataformas de delivery. Interessa lançamento, mudança de preço, aporte, aquisição e " +
-      "encerramento.",
+    chave: "ia_aplicada",
+    papel: "IA que vira trabalho a menos aqui dentro — todo dia, de dois ângulos",
+    consultas: [
+      /* A aba `web` e a janela de uma semana são de propósito: caso contado de
+         automação de backoffice mora em blog de engenharia e post de LinkedIn,
+         que o índice de notícias não vê, e não sai um por dia. */
+      { pauta: "ia_backoffice", q: "inteligência artificial agente automação financeiro conciliação contas a pagar nota fiscal empresa caso", tbs: "qdr:w", fontes: ["web"] },
+      { pauta: "ia_ferramentas", q: "agentes de IA empresas automação lançamento", tbs: "qdr:d", fontes: ["news"] },
+    ],
+  },
+  {
+    chave: "setor",
+    papel: "o mercado do cliente e quem o disputa — todo dia",
     consultas: [
       /* Setor, e não os nomes das empresas: "Goomer" e "Saipos" não aparecem no
          índice de notícias (medido — zero em três janelas diferentes). O que
          aparece é a matéria de restaurante e delivery, e é ali que o movimento
-         do concorrente sai quando sai. Quem separa o que interessa é a régua,
-         que exige nome de rival OU contexto do setor mais um verbo de fato. */
-      { q: "restaurantes delivery cardápio digital", tbs: "qdr:d", fontes: ["news"] },
+         do concorrente sai quando sai. Quem separa o que interessa é a régua. */
+      { pauta: "foodservice", q: "restaurantes delivery cardápio digital", tbs: "qdr:d", fontes: ["news"] },
+      { pauta: "foodservice", q: "foodservice bares restaurantes mercado vendas", tbs: "qdr:d", fontes: ["news"] },
+    ],
+  },
+  {
+    chave: "dinheiro",
+    papel: "o custo do dinheiro e o mercado de captação — dias alternados",
+    consultas: [
+      /* Consulta larga contra a regra das 2 a 4 palavras, e sabendo disso: a
+         frente de finanças é a que mais tem sub-assuntos disputando o mesmo dia
+         (juros, câmbio, tributário, Pix), e uma consulta estreita entregaria a
+         mesma decisão do Copom por três dias enquanto a regra nova do Banco
+         Central não aparece nunca. */
+      { pauta: "financas", q: "Selic Copom juros inflação câmbio Pix Banco Central", tbs: "qdr:d", fontes: ["news"] },
+      { pauta: "startups", q: "startup rodada aporte investimento SaaS", tbs: "qdr:d", fontes: ["news"] },
     ],
   },
 ];
 
-/** Resultados por busca. Ver a conta em `PAUTAS`: menos que 10 custa igual. */
+/** Dias inteiros desde 1970 para uma data `YYYY-MM-DD`. Sem fuso: a data já vem em BRT. */
+export function diasDesdeEpoch(diaISO: string): number {
+  const t = Date.parse(`${String(diaISO).slice(0, 10)}T00:00:00Z`);
+  return isNaN(t) ? 0 : Math.floor(t / 86_400_000);
+}
+
+/** A grade de hoje: uma consulta por slot, escolhida pela data. */
+export function escalaDoDia(diaISO: string): Array<{ slot: string; pauta: Pauta; consulta: Consulta }> {
+  const d = diasDesdeEpoch(diaISO);
+  return SLOTS.map((s) => {
+    const c = s.consultas[((d % s.consultas.length) + s.consultas.length) % s.consultas.length];
+    return { slot: s.chave, pauta: pautaPorChave(c.pauta)!, consulta: { q: c.q, tbs: c.tbs, fontes: c.fontes } };
+  });
+}
+
+/**
+ * Resultados por busca. Ver a conta em `SLOTS`: menos que 10 custa igual.
+ *
+ * A ABA DE NOTÍCIAS É INTERMITENTE, e essa é a lição cara de 28/08/2026. Onze
+ * buscas medidas, e o resultado NÃO tem padrão de consulta:
+ *
+ *     "Anthropic OpenAI Claude modelo"         qdr:d   news → 10
+ *     "inteligência artificial empresas"       qdr:d   news → 10
+ *     "restaurantes delivery cardápio digital" qdr:d   news →  4
+ *     "iFood restaurantes delivery"            qdr:d   news →  0
+ *     "iFood restaurantes delivery"            qdr:w   news →  0
+ *     "Supabase n8n Cursor desenvolvedores"    (sem)   news →  0
+ *
+ * A mesma família de consulta devolve dez numa hora e zero na seguinte, e
+ * ACRESCENTAR um termo chegou a aumentar o número de achados — o que não é
+ * comportamento de busca, é comportamento de serviço intermitente.
+ *
+ * O QUE SE FAZ COM ISSO: não confiar em zero. A rodada retenta UMA vez quando a
+ * aba de notícias volta vazia sem erro, e o painel guarda o que já tinha em vez
+ * de esvaziar — item não lido continua na tela pelos dias seguintes. O que NÃO
+ * se faz é ler "0 achados" como "não houve notícia": é a leitura natural, é
+ * plausível, e está errada com frequência.
+ */
 export const RESULTADOS = 10;
 
 /* ========================================================== normalização */
@@ -286,7 +404,9 @@ function palavras(titulo: string): Set<string> {
  *
  * E ERRA PARA O LADO DE MOSTRAR: repetir uma notícia custa uma linha de tela;
  * engolir uma notícia diferente por parecer com outra custa a notícia, e ninguém
- * descobre que ela existiu.
+ * descobre que ela existiu. Quem pega a repetição que as palavras não pegam
+ * ("Copom mantém juros" × "Selic segue em 14%") é a IA, no campo `repete` da
+ * legenda — e ela manda o item para o rodapé, não para o lixo.
  */
 export function mesmaNoticia(a: string, b: string, corte = 0.6): boolean {
   const A = palavras(a), B = palavras(b);
@@ -325,6 +445,58 @@ const RIVAIS_AMBIGUOS = ["consumer"];
 const CONTEXTO_SETOR = [
   "restaurante", "restaurantes", "bar", "bares", "pizzaria", "delivery",
   "cardapio", "foodservice", "food service", "gastronomia", "lanchonete",
+  "franquia", "franquias", "hamburgueria", "padaria",
+];
+
+/**
+ * O vocabulário da frente de finanças.
+ *
+ * DUAS FAMÍLIAS NA MESMA LISTA, e é de propósito: o que muda o custo do dinheiro
+ * (Selic, câmbio, inflação) e o que muda o trabalho do time (tributário, Pix,
+ * meios de pagamento). As duas caem na mesma pergunta de manhã — "isso me
+ * obriga a fazer alguma coisa?" — e separá-las em duas pautas gastaria uma busca
+ * a mais para dividir uma frente que já rende pouco item por dia.
+ */
+export const FINANCAS = [
+  "selic", "copom", "juros", "inflacao", "ipca", "igpm", "cambio", "dolar",
+  "banco central", "bacen", "pix", "drex", "open finance", "cdi", "ibovespa",
+  "imposto", "impostos", "tributaria", "tributario", "receita federal", "fisco",
+  "reforma tributaria", "nota fiscal", "simples nacional", "fintech",
+  "meios de pagamento", "adquirente", "maquininha", "antecipacao", "credito",
+  "capital de giro", "inadimplencia",
+];
+
+/**
+ * O vocabulário da frente de startups.
+ *
+ * "vc" ficou de fora de propósito: é a sigla de venture capital e é como meio
+ * Brasil escreve "você". Um termo de duas letras que casa com conversa informal
+ * encheria a pauta de qualquer coisa — e `contemTermo` não salva, porque aqui a
+ * palavra é mesmo a palavra.
+ */
+export const STARTUP = [
+  "startup", "startups", "rodada", "aporte", "seed", "series a", "series b",
+  "series c", "venture", "venture capital", "valuation", "unicornio",
+  "captacao", "aquisicao", "fusao", "ipo", "aceleradora", "foodtech",
+  "scaleup", "scale up", "saas", "investidores", "fundo de investimento",
+];
+
+/**
+ * Sinal de DADO de mercado — o que separa a matéria de setor da matéria de
+ * gastronomia.
+ *
+ * A pauta de foodservice herdou do panorama em prosa a obrigação de trazer o
+ * número do setor ("foodservice bateu recorde no 2T26: R$ 62,9 bi"), que é o
+ * que serve de munição comercial. Mas a mesma busca traz, em muito maior
+ * volume, "restaurante do centro lança cardápio de inverno". A diferença entre
+ * as duas é medível: a primeira fala de mercado, faturamento e pesquisa; a
+ * segunda, de prato.
+ */
+export const DADO_DE_MERCADO = [
+  "recorde", "cresce", "crescimento", "faturamento", "vendas", "mercado",
+  "setor", "pesquisa", "levantamento", "balanco", "bilhoes", "bilhao",
+  "milhoes", "inadimplencia", "tendencia", "consumo", "alta", "queda",
+  "abrasel", "abia", "ibge",
 ];
 
 /**
@@ -346,6 +518,16 @@ export const VERBOS_DE_FATO = [
   "unveils", "releases", "release", "released", "introduces", "introducing",
   "pricing", "price", "prices", "free", "preview", "update", "updates",
   "deprecated", "shuts", "acquires", "acquired", "raises", "partnership", "agents",
+  // O VERBO DA DECISÃO, que a frente de finanças exigiu. "Copom mantém a Selic
+  // em 14%" é o fato mais importante do mês para o custo do dinheiro e não tem
+  // um único verbo de lançamento — sem esta linha, a pauta inteira morreria no
+  // "só menção".
+  "mantem", "manteve", "mantida", "mantido", "sobe", "subiu", "cai", "caiu",
+  "reduz", "reduziu", "eleva", "elevou", "corta", "cortou", "aprova", "aprovou",
+  "sanciona", "sancionou", "decide", "decidiu", "define", "publica", "vigor",
+  "proibe", "autoriza", "capta", "captou", "levanta", "levantou", "investe",
+  "investiu", "adquire", "adquiriu", "fecha", "fechou", "segue", "atinge",
+  "supera", "recua", "avanca", "registra", "divulga", "bate", "bateu",
 ];
 
 /**
@@ -367,7 +549,87 @@ export const RUIDO = [
   // "quem ganha em agosto: odds e previsões". Medido na rodada de estreia —
   // dois dos três itens escolhidos eram disto.
   "influential", "influentes", "odds", "predictions", "previsoes", "opinion",
+  // A versão financeira do mesmo gênero, que a frente nova traz junto: a coluna
+  // diária de "o que esperar do pregão" e a receita de investimento pessoal.
+  "onde investir", "carteira recomendada", "melhores acoes", "dicas de",
 ];
+
+/* --------------------------------------------------- o que a pessoa pediu */
+
+/**
+ * Um assunto que alguém marcou com 👍 ou 👎, virado em vocabulário.
+ *
+ * O PESO É A SOMA DOS VOTOS, com sinal: três 👍 no mesmo assunto valem +3, um 👎
+ * depois deixa +2. Não é média nem taxa de aprendizado — é contagem, porque
+ * contagem é a única coisa que a pessoa consegue prever ao clicar e conferir
+ * depois na tela de preferências.
+ *
+ * OS TERMOS SÃO O QUE A RÉGUA CASA, e é aí que a IA entra sem decidir nada: ela
+ * lê o item votado e devolve de 2 a 5 palavras que descrevem o assunto ("preco
+ * api", "modelo", "token"). Daí em diante é casamento de palavra, igual ao
+ * resto do módulo — auditável, testável, e visível na tela para quem quiser
+ * apagar.
+ */
+export interface Preferencia {
+  assunto: string;
+  rotulo: string;
+  termos: string[];
+  /** > 0 quero mais; < 0 evite. */
+  peso: number;
+}
+
+/** Nenhum assunto sozinho vale mais que isto, por mais votos que junte. */
+export const TETO_POR_PREFERENCIA = 4;
+/** Nem a soma de todos: preferência empurra a fila, não substitui a régua. */
+export const TETO_DAS_PREFERENCIAS = 6;
+/**
+ * A partir daqui o 👎 deixa de descontar e passa a vetar.
+ *
+ * DOIS VOTOS CONTRA O MESMO ASSUNTO. Um só pode ser o dia ruim, o título
+ * infeliz, o clique errado; dois é uma pessoa dizendo a mesma coisa duas vezes,
+ * e ignorar isso é o que faz um botão de feedback virar enfeite. O veto é
+ * reversível pela tela de preferências, que é onde ele fica visível — vetar em
+ * silêncio, sem lugar para desfazer, seria a versão ruim disto.
+ */
+export const VETO_DA_PREFERENCIA = -2;
+
+export interface EfeitoPreferencia {
+  delta: number;
+  motivos: string[];
+  vetado: boolean;
+}
+
+/**
+ * Quanto o gosto declarado mexe neste item.
+ *
+ * EXIGE DOIS TERMOS (ou o único que houver). Casar um termo solto é
+ * casar coincidência: "preco" aparece em metade das manchetes de tecnologia, e
+ * um 👎 em "aumento de preço de maquininha" não pode calar todo anúncio de
+ * preço da Anthropic. Dois termos do mesmo assunto no mesmo texto já é assunto.
+ */
+export function aplicarPreferencias(textoNormalizado: string, prefs: Preferencia[] = []): EfeitoPreferencia {
+  let delta = 0;
+  const motivos: string[] = [];
+  let vetado = false;
+
+  for (const p of prefs) {
+    const termos = (p.termos ?? []).filter(Boolean);
+    if (!termos.length || !p.peso) continue;
+    const casou = termos.filter((t) => contemTermo(textoNormalizado, t));
+    if (casou.length < Math.min(2, termos.length)) continue;
+
+    const peso = Math.max(-TETO_POR_PREFERENCIA, Math.min(TETO_POR_PREFERENCIA, p.peso));
+    delta += peso;
+    motivos.push(`${peso > 0 ? "você pediu mais" : "você pediu menos"}: ${p.rotulo}`);
+    if (p.peso <= VETO_DA_PREFERENCIA) vetado = true;
+  }
+
+  return {
+    delta: Math.max(-TETO_DAS_PREFERENCIAS, Math.min(TETO_DAS_PREFERENCIAS, delta)),
+    motivos,
+    vetado,
+  };
+}
 
 export interface Bruto {
   titulo: string;
@@ -390,6 +652,8 @@ export interface Nota {
 /** Abaixo disto não vira linha na tela. */
 export const CORTE = 3;
 
+const conta = (texto: string, lista: string[]) => lista.filter((t) => contemTermo(texto, t));
+
 /**
  * Quanto vale este resultado de busca.
  *
@@ -399,7 +663,12 @@ export const CORTE = 3;
  * ferramenta nossa e anuncia alguma coisa" de "cita uma ferramenta nossa de
  * passagem" — e para isso três faixas bastam.
  */
-export function pontuar(b: Bruto, pauta: PautaChave, agora: Date = new Date()): Nota {
+export function pontuar(
+  b: Bruto,
+  pauta: PautaChave,
+  agora: Date = new Date(),
+  prefs: Preferencia[] = [],
+): Nota {
   const texto = normalizarTexto(`${b.titulo} ${b.descricao}`);
   const motivos: string[] = [];
 
@@ -409,9 +678,19 @@ export function pontuar(b: Bruto, pauta: PautaChave, agora: Date = new Date()): 
     }
   }
 
+  /* O 👎 REPETIDO VETA ANTES DE QUALQUER PONTUAÇÃO, e vem aqui em cima junto do
+     ruído porque é a mesma natureza de decisão: não é "vale menos", é "não é
+     para mim". Deixar para o fim faria um item bem pontuado sobreviver ao veto
+     por acumular pontos de outro lado — que é exatamente a queixa que originou o
+     botão. */
+  const gosto = aplicarPreferencias(texto, prefs);
+  if (gosto.vetado) {
+    return { pontos: 0, motivos: [...gosto.motivos, "evitado a seu pedido"], ruido: true };
+  }
+
   let pontos = 0;
 
-  const ferramentas = NOSSAS_FERRAMENTAS.filter((f) => contemTermo(texto, f));
+  const ferramentas = conta(texto, NOSSAS_FERRAMENTAS);
   if (ferramentas.length) {
     // Três pontos pela PRIMEIRA e um por cada outra: o texto que lista quinze
     // ferramentas não é notícia sobre nenhuma delas.
@@ -423,15 +702,17 @@ export function pontuar(b: Bruto, pauta: PautaChave, agora: Date = new Date()): 
   const rivais = CONCORRENTES.filter((c) =>
     contemTermo(texto, c) && (!RIVAIS_AMBIGUOS.includes(c) || temSetor));
   if (rivais.length) {
-    pontos += pauta === "concorrentes" ? 3 : 2;
+    pontos += pauta === "foodservice" ? 3 : 2;
     motivos.push(`setor: ${rivais.slice(0, 3).join(", ")}`);
   }
 
-  const verbos = VERBOS_DE_FATO.filter((v) => contemTermo(texto, v));
+  const verbos = conta(texto, VERBOS_DE_FATO);
   if (verbos.length) {
     pontos += 1;
     motivos.push(`fato: ${verbos.slice(0, 2).join(", ")}`);
   }
+
+  /* ------------------------------------------------- a régua de cada frente */
 
   /* MENÇÃO NÃO É NOTÍCIA — e esta é a regra que o painel mais precisava.
    *
@@ -442,34 +723,82 @@ export function pontuar(b: Bruto, pauta: PautaChave, agora: Date = new Date()): 
    * linha do que fazemos —, enquanto o anúncio de produto de verdade ficava de
    * fora, empurrado pela cota da pauta.
    *
-   * Nestas duas pautas o item precisa dizer que ALGO ACONTECEU: lançou, mudou
-   * de preço, comprou, encerrou. Sem verbo de fato, o item fica em 1 ponto e
-   * morre no corte — mas continua com os motivos preenchidos, para a `previa`
-   * poder mostrar por que ele não entrou.
-   *
-   * A pauta de backoffice não passa por aqui: lá o que se procura é CASO
-   * contado, e caso raramente vem com verbo de anúncio. Ela tem a própria régua
-   * logo abaixo, que exige dois sinais de backoffice.
+   * Vale para as duas frentes que vivem de ANÚNCIO (ferramentas e finanças). A
+   * de backoffice fica de fora porque ali o que se procura é CASO contado, e
+   * caso raramente vem com verbo de anúncio; a de startups aceita a cifra no
+   * lugar do verbo; e a de foodservice tem as duas portas logo abaixo, porque o
+   * dado do setor chega sem verbo nenhum ("foodservice: R$ 62,9 bi no 2T26").
    */
-  if ((pauta === "ia_ferramentas" || pauta === "concorrentes") && verbos.length === 0) {
+  if ((pauta === "ia_ferramentas" || pauta === "financas") && verbos.length === 0) {
     return { pontos: 1, motivos: [...motivos, "só menção — nada aconteceu"], ruido: false };
   }
 
-  /* NA PAUTA DE CONCORRENTES, PRECISA TER NOME.
-   *
-   * A consulta dela é do SETOR ("restaurantes delivery cardápio digital"),
-   * porque os nomes das empresas não existem no índice de notícias. O preço
-   * disso é que a busca traz muita matéria de restaurante em geral — abertura de
-   * casa nova, tendência de consumo, alta do preço do insumo. Nada disso é
-   * movimento de concorrente, e tudo isso passaria: contexto de setor mais um
-   * verbo de fato dá exatamente o corte.
-   *
-   * Então aqui a régua é nominal. O custo é a pauta ficar vazia em muitos dias —
-   * e ficar vazia é a resposta certa quando não houve movimento, num painel que
-   * já tem outras duas pautas e a faixa dos fornecedores para mostrar.
-   */
-  if (pauta === "concorrentes" && rivais.length === 0) {
-    return { pontos: 1, motivos: [...motivos, "setor sim, concorrente não"], ruido: false };
+  if (pauta === "foodservice") {
+    /* DUAS PORTAS, E ESSA É A NOVIDADE DA FRENTE.
+     *
+     * A primeira é o nome do rival, que sempre valeu — e continua exigindo que
+     * algo tenha acontecido, senão volta o problema de sempre: a matéria que
+     * cita o iFood de passagem.
+     *
+     * A segunda é o DADO do setor, que entrou quando o "Panorama do dia" foi
+     * extinto: "foodservice bateu recorde no 2T26, R$ 62,9 bi" não cita
+     * concorrente nenhum e é exatamente o número que servia de munição comercial
+     * na prosa. Ela NÃO exige verbo de fato, e isso é o ponto: manchete de dado
+     * setorial é substantivo e número, quase nunca verbo de anúncio.
+     *
+     * O preço de abrir a segunda porta é a matéria de gastronomia, que a busca
+     * traz em muito maior volume. Por isso ela exige DOIS sinais de mercado:
+     * "restaurante do centro lança cardápio de inverno" tem contexto de setor e
+     * verbo de fato — que daria exatamente o corte —, e não tem nem faturamento,
+     * nem pesquisa, nem número.
+     */
+    if (rivais.length) {
+      if (!verbos.length) {
+        return { pontos: 1, motivos: [...motivos, "só menção — nada aconteceu"], ruido: false };
+      }
+    } else {
+      const dados = conta(texto, DADO_DE_MERCADO);
+      if (temSetor && dados.length >= 2) {
+        pontos += 3;
+        motivos.push(`dado do setor: ${dados.slice(0, 3).join(", ")}`);
+      } else {
+        return { pontos: 1, motivos: [...motivos, "setor sim, nada de novo"], ruido: false };
+      }
+    }
+  }
+
+  if (pauta === "financas") {
+    const termos = conta(texto, FINANCAS);
+    if (!termos.length) {
+      return { pontos: 1, motivos: [...motivos, "não é assunto de finanças"], ruido: false };
+    }
+    pontos += 3 + Math.min(1, termos.length - 1);
+    motivos.push(`finanças: ${termos.slice(0, 3).join(", ")}`);
+  }
+
+  if (pauta === "startups") {
+    const termos = conta(texto, STARTUP);
+    /* A CIFRA VALE PELO VERBO. "Nuvemshop, US$ 500 milhões" é rodada mesmo sem
+       um único verbo de anúncio no título — e é o formato mais comum da
+       manchete de captação, que costuma ser nome + valor + estágio. */
+    const cifra = ["milhoes", "milhao", "bilhoes", "bilhao", "million", "billion"].some((c) => contemTermo(texto, c));
+    if (!termos.length || (!verbos.length && !cifra)) {
+      return { pontos: 1, motivos: [...motivos, "não é movimento de startup"], ruido: false };
+    }
+    pontos += 3 + Math.min(1, termos.length - 1);
+    if (cifra) pontos += 1;
+    motivos.push(`startup: ${termos.slice(0, 3).join(", ")}`);
+  }
+
+  if (pauta === "ia_backoffice") {
+    /* A pauta de backoffice não tem vocabulário próprio forte — ela procura
+       CASO, e caso se reconhece pela combinação "empresa + resultado". Sem este
+       empurrão ela quase nunca cruzaria o corte, e a pauta viveria vazia. */
+    const sinais = ["conciliacao", "contas a pagar", "nota fiscal", "fechamento",
+                    "backoffice", "financeiro", "contabil", "erp", "auditoria"];
+    const casou = conta(texto, sinais);
+    if (casou.length >= 2) { pontos += 3; motivos.push(`backoffice: ${casou.slice(0, 3).join(", ")}`); }
+    else if (casou.length === 1) { pontos += 1; motivos.push(`backoffice: ${casou[0]}`); }
   }
 
   /* Recência vale ponto, mas só some com data. A ausência de data no resultado
@@ -485,15 +814,13 @@ export function pontuar(b: Bruto, pauta: PautaChave, agora: Date = new Date()): 
     }
   }
 
-  /* A pauta de backoffice não tem vocabulário próprio forte — ela procura CASO,
-     e caso se reconhece pela combinação "empresa + resultado". Sem este empurrão
-     ela quase nunca cruzaria o corte, e a pauta viveria vazia. */
-  if (pauta === "ia_backoffice") {
-    const sinais = ["conciliacao", "contas a pagar", "nota fiscal", "fechamento",
-                    "backoffice", "financeiro", "contabil", "erp", "auditoria"];
-    const casou = sinais.filter((s) => contemTermo(texto, s));
-    if (casou.length >= 2) { pontos += 3; motivos.push(`backoffice: ${casou.slice(0, 3).join(", ")}`); }
-    else if (casou.length === 1) { pontos += 1; motivos.push(`backoffice: ${casou[0]}`); }
+  /* O gosto declarado entra POR ÚLTIMO e como soma, não como multiplicador: ele
+     desempata e reordena a fila do dia, e não faz um item passar no lugar da
+     régua. Um 👍 vale até 4 pontos; o corte é 3, então um assunto muito querido
+     pode, sim, aprovar sozinho — e essa é a intenção declarada do botão. */
+  if (gosto.delta) {
+    pontos += gosto.delta;
+    motivos.push(...gosto.motivos);
   }
 
   return { pontos, motivos, ruido: false };
@@ -514,14 +841,16 @@ export function valeMostrar(n: Nota): boolean {
 export const MAX_NA_TELA = 6;
 
 /**
- * No máximo três de uma pauta só.
+ * No máximo dois de uma pauta só.
  *
- * Sem esta trava, um dia movimentado na Anthropic entrega seis manchetes de
- * "IA e ferramentas" e o painel inteiro vira uma pauta — justamente no dia em
- * que a pauta de concorrentes tinha a única notícia da semana. A cota protege a
- * DIVERSIDADE, que é o que faz o painel valer os três olhares em vez de um.
+ * ERA TRÊS ENQUANTO ERAM TRÊS PAUTAS; virou dois quando viraram quatro frentes.
+ * A conta é a mesma de sempre: sem trava, um dia movimentado na Anthropic
+ * entrega o painel inteiro de "IA e ferramentas" — justamente no dia em que
+ * finanças tinha a decisão do Copom e foodservice, o dado do trimestre. A cota
+ * protege a DIVERSIDADE, que é o que faz o painel valer quatro olhares em vez
+ * de um. Com seis linhas e dois por pauta, cabem três frentes por manhã.
  */
-export const MAX_POR_PAUTA = 3;
+export const MAX_POR_PAUTA = 2;
 
 /** O veículo, quando o buscador não diz: o host, sem `www`. */
 export function hostDe(url: string): string {
@@ -560,4 +889,40 @@ export function escolherDoDia(
     escolhidos.push(c);
   }
   return escolhidos;
+}
+
+/* ================================================= o voto vira vocabulário */
+
+/**
+ * A chave de um assunto aprendido: o rótulo, normalizado.
+ *
+ * É POR AQUI QUE OS VOTOS SE SOMAM. Duas pessoas votando em "preço de API de IA"
+ * e "Preço de API de IA" têm de cair na mesma linha, senão o peso nunca passa de
+ * 1 e o botão não aprende nada — só acumula linhas parecidas na tela de
+ * preferências, que é a maneira mais silenciosa de um recurso destes falhar.
+ */
+export function chaveDoAssunto(rotulo: string): string {
+  return normalizarTexto(rotulo).slice(0, 80);
+}
+
+/**
+ * Limpa os termos que a IA devolveu para virarem vocabulário da régua.
+ *
+ * Normaliza (a régua compara normalizado), tira o que tem menos de três letras —
+ * "ia", "os", "de" casariam com tudo — e corta em cinco. Cinco porque o
+ * casamento exige dois: uma lista longa transforma o assunto em peneira grossa,
+ * e aí o 👎 em uma notícia derruba uma pauta inteira.
+ */
+export function limparTermos(termos: unknown, max = 5): string[] {
+  const brutos = Array.isArray(termos) ? termos : [];
+  const vistos = new Set<string>();
+  const saida: string[] = [];
+  for (const t of brutos) {
+    const n = normalizarTexto(String(t ?? "")).slice(0, 40);
+    if (n.replace(/\s/g, "").length < 3 || vistos.has(n)) continue;
+    vistos.add(n);
+    saida.push(n);
+    if (saida.length >= max) break;
+  }
+  return saida;
 }

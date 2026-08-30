@@ -10,6 +10,7 @@ import { Link } from "react-router-dom";
 import { TaskDialog, DEFAULT_COLUMNS, type Tarefa } from "@/components/tarefas/TaskDialog";
 import { NovidadesResumo } from "@/components/briefing/NovidadesResumo";
 import { PainelNoticias } from "@/components/briefing/PainelNoticias";
+import { RespostasSugeridas } from "@/components/briefing/RespostasSugeridas";
 import { conciliarPagamentos, descreverTitulo, type Conciliacao, type Situacao, type TituloOmie } from "@/lib/pagamentos";
 import {
   Sparkles, RefreshCw, Loader2, CalendarDays, AlertTriangle, Mail,
@@ -48,7 +49,6 @@ const fmtHoraBRT = (iso: string) =>
 /** data do dia (YYYY-MM-DD) no fuso BRT — usada p/ casar tarefas.prazo e identificar "hoje". */
 const isoDateBRT = (iso: string) => new Date(iso).toLocaleDateString("en-CA", { timeZone: "America/Sao_Paulo" });
 const agoraHHMM_BRT = () => new Date().toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", timeZone: "America/Sao_Paulo" });
-const hostOf = (url: string) => { try { return new URL(url).hostname.replace(/^www\./, ""); } catch { return "fonte"; } };
 /** normalização genérica (sem acento, minúsculo, espaços colapsados) p/ deduplicar eventos/nomes */
 const norm = (s?: string | null) => String(s ?? "").normalize("NFD").replace(/\p{Diacritic}/gu, "").replace(/\s+/g, " ").trim().toLowerCase();
 
@@ -106,11 +106,6 @@ const PESSOA_META: Record<string, { nome: string; papel: string; iniciais: strin
   voce: { nome: "Você", papel: "financeiro@takeat.app", iniciais: "VC", cor: "primary" },
   henrique: { nome: "Henrique", papel: "gerente financeiro", iniciais: "HM", cor: "blue" },
   julia: { nome: "Júlia", papel: "analista financeira", iniciais: "JR", cor: "green" },
-};
-const TEMA_TITULO: Record<string, string> = {
-  macro: "MERCADO FINANCEIRO / MACRO BRASIL",
-  tech_saas: "TECNOLOGIA / SAAS", tech: "TECNOLOGIA / SAAS", saas: "TECNOLOGIA / SAAS",
-  foodservice: "RESTAURANTES / FOODSERVICE", restaurantes: "RESTAURANTES / FOODSERVICE",
 };
 
 /* renderiza markdown inline (negrito + links) dentro de um resumo curto */
@@ -288,23 +283,22 @@ function normalizeEmails(emails: any) {
   return { total, itens, vencemSemana };
 }
 
-function normalizeNoticias(noticias: any) {
-  const n = noticias ?? {};
-  if (Array.isArray(n.temas)) {
-    return { janela: n.janela ?? null, temas: n.temas.map((t: any) => ({ titulo: t.titulo ?? "", resumo: t.resumo ?? "" })) };
-  }
-  const order = ["macro", "tech_saas", "tech", "saas", "foodservice", "restaurantes"];
-  const keys = Object.keys(n).filter((k) => k !== "janela" && n[k] && typeof n[k] === "object");
-  keys.sort((x, y) => (order.indexOf(x) === -1 ? 99 : order.indexOf(x)) - (order.indexOf(y) === -1 ? 99 : order.indexOf(y)));
-  const temas = keys.map((k) => {
-    const t = n[k];
-    let resumo: string = t.resumo ?? t.texto ?? "";
-    const fontes: string[] = Array.isArray(t.fontes) ? t.fontes : (Array.isArray(t.links) ? t.links : []);
-    if (fontes.length && !/\]\(/.test(resumo)) resumo += ` (${fontes.map((u) => `[${hostOf(u)}](${u})`).join(", ")})`;
-    return { titulo: TEMA_TITULO[k] ?? k.replace(/_/g, " ").toUpperCase(), resumo };
-  });
-  return { janela: n.janela ?? null, temas };
-}
+/* A PROSA DE NOTÍCIA DA SKILL NÃO É MAIS LIDA (29/08/2026).
+ *
+ * `briefing_diario.noticias` continua sendo gravado — a skill não mudou —, e
+ * esta página deixou de renderizar. Era o "Panorama do dia": três parágrafos de
+ * macro Brasil, tech/SaaS e foodservice, no rodapé do card de notícias.
+ *
+ * SAIU POR SER O PEDAÇO REPETITIVO, e repetitivo por construção: "Selic em 14%
+ * a.a. desde 05/08/2026" é verdade todo dia e novidade em exatamente um deles.
+ * Um parágrafo não tem data por item, não tem chave de deduplicação e não se
+ * marca como lido — as três coisas que fazem um painel diário parar de repetir.
+ * As quatro frentes (IA, finanças, foodservice e startups) viraram item com
+ * link em `briefing_noticias`, que é o que `PainelNoticias` mostra.
+ *
+ * O JSONB fica gravado de propósito: é o histórico do que a skill viu, e o dia
+ * em que alguém quiser conferir se o painel deixou passar alguma coisa, está lá.
+ */
 
 function buildVM(b: Briefing) {
   const diaISO = b.agenda?.data ?? isoDateBRT(b.gerado_em);
@@ -316,7 +310,6 @@ function buildVM(b: Briefing) {
 
   const A = normalizeAgenda(b.agenda);
   const E = normalizeEmails(b.emails);
-  const N = normalizeNoticias(b.noticias);
 
   // próximo evento: próximo horário >= agora (se for hoje), senão o 1º do dia
   let proximo = A.proximoCanon as { hora: string; titulo: string } | null;
@@ -334,8 +327,7 @@ function buildVM(b: Briefing) {
     nCompromissos: A.nCompromissos, nPessoas: A.nPessoas, conflitos: A.conflitos, timeline: A.timeline,
     compromissos: A.compromissos, pagamentos: A.pagamentos, resumoIa: A.resumoIa, resumoTags: A.resumoTags, proximo,
     emails: E.itens, nEmails: E.total, vencemSemana: E.vencemSemana,
-    temas: N.temas, janelaNoticias: N.janela ?? (b.periodo_inicio === b.periodo_fim ? null : `${fmtDDMM(ini)}–${fmtDDMM(fim)}`),
-    temEstruturado: A.compromissos.length > 0 || A.pagamentos.length > 0 || E.itens.length > 0 || N.temas.length > 0,
+    temEstruturado: A.compromissos.length > 0 || A.pagamentos.length > 0 || E.itens.length > 0,
   };
 }
 type VM = ReturnType<typeof buildVM>;
@@ -557,35 +549,22 @@ function BriefingView({ b, vm, tarefas, meNome, titulosOmie, erroOmie, onAtualiz
         </div>
       </div>
 
-      {/* ---------------- O que mudou no Hub (ontem) ----------------
-          Some sozinho quando não houve mudança nenhuma — ver NovidadesResumo. */}
-      <NovidadesResumo />
+      {/* ============================== A ORDEM DA PÁGINA ==============================
+          Definida em 29/08/2026, e a regra dela é uma só: primeiro o que tem
+          hora marcada, depois o que tem dono, por último o que é para saber.
 
-      {/* ---------------- Notícias ----------------
-          FORA do `temEstruturado`: os itens vêm da função `briefing-noticias`,
-          que roda no cron e não depende de a skill ter rodado. Se dependesse, o
-          painel sumiria justamente na manhã em que a skill falhou — que é
-          quando ele é a única coisa nova da tela. A prosa da skill (macro e
-          setor) entra como rodapé quando existe. */}
-      <PainelNoticias
-        janela={vm.janelaNoticias}
-        prosa={vm.temas.length > 0 ? (
-          <div className="space-y-4">
-            {vm.temas.map((t, i) => (
-              <div key={i} className="border-l-2 border-sky-500/60 pl-3">
-                <div className="mb-0.5 text-[10.5px] font-bold uppercase tracking-wider text-muted-foreground/80">{t.titulo}</div>
-                <div className="text-[12.5px] leading-relaxed text-foreground [&_a]:text-primary [&_a]:underline-offset-2 hover:[&_a]:underline">
-                  <ReactMarkdown components={mdComponents}>{t.resumo}</ReactMarkdown>
-                </div>
-              </div>
-            ))}
-          </div>
-        ) : undefined}
-      />
+              agenda → tarefas → pagamentos → e-mails → notícias → o que mudou no Hub
+
+          A agenda abre porque o dia se lê pelo relógio: tarefa e pagamento são o
+          que cabe entre os compromissos, e saber disso antes muda como se olha
+          para os dois. As notícias desceram para o fim pelo motivo oposto ao que
+          as tinha colocado em cima — elas são a única coisa da tela que não
+          cobra nada de ninguém, e ficar no topo fazia a manhã começar pelo que
+          menos importa. O que mudou no Hub fecha, porque é changelog.
+          ============================================================================= */}
 
       {/* ---------------- Agenda + coluna lateral ---------------- */}
       {vm.temEstruturado ? (
-        <>
           <div className="grid grid-cols-1 gap-3 lg:grid-cols-3">
             {/* Agenda */}
             <div className="lg:col-span-2">
@@ -660,40 +639,24 @@ function BriefingView({ b, vm, tarefas, meNome, titulosOmie, erroOmie, onAtualiz
               )}
             </div>
           </div>
+      ) : (
+        /* fallback: só markdown publicado. Some quando a skill não deixou nada
+           estruturado — e é onde o "Panorama do dia" ainda pode reaparecer, o que
+           é certo: nesse caso ele é o briefing inteiro, não um rodapé repetido. */
+        <SectionCard title="Briefing de hoje">
+          <div className="prose prose-sm max-w-none prose-headings:tracking-tight prose-a:text-primary">
+            <ReactMarkdown>{b.conteudo_markdown}</ReactMarkdown>
+          </div>
+        </SectionCard>
+      )}
 
-          {/* ---------------- E-mails ---------------- */}
-          {vm.emails.length > 0 && (
-            <SectionCard
-              title={<span className="flex items-center gap-2"><Mail className="h-4 w-4 text-muted-foreground" /> E-mails que pedem atenção</span>}
-              subtitle={`${vm.nEmails} acionáveis · ruído filtrado`}
-            >
-              <div className="space-y-2.5">
-                {vm.emails.map((it, i) => {
-                  const href = it.link || `https://mail.google.com/mail/u/0/#search/${encodeURIComponent(it.busca)}`;
-                  return (
-                    <div key={i} className="flex items-start gap-3 rounded-md border border-border bg-card px-3 py-2.5">
-                      <span className={cn("mt-0.5 h-9 w-1 shrink-0 rounded-full", BARRA_TOM[it.tom])} />
-                      <div className="min-w-0 flex-1">
-                        <div className="flex flex-wrap items-center gap-2">
-                          <span className="text-[13px] font-semibold text-foreground">{it.remetente}</span>
-                          {it.badge && (
-                            <span className={cn("rounded px-1.5 py-0.5 text-[9.5px] font-bold uppercase tracking-wider", BADGE_TOM[it.tom])}>{it.badge}</span>
-                          )}
-                        </div>
-                        <div className="mt-0.5 text-[12.5px] text-muted-foreground">
-                          <ReactMarkdown components={mdComponents}>{it.resumo}</ReactMarkdown>
-                        </div>
-                      </div>
-                      <a href={href} target="_blank" rel="noreferrer" className="mt-0.5 inline-flex shrink-0 items-center gap-1 text-[12px] font-medium text-primary hover:underline">
-                        Abrir <ArrowRight className="h-3.5 w-3.5" />
-                      </a>
-                    </div>
-                  );
-                })}
-              </div>
-            </SectionCard>
-          )}
+      {/* ---------------- Tarefas com prazo para hoje ----------------
+          FORA do `temEstruturado`: as tarefas são lidas ao vivo da tabela
+          `tarefas`, e não dependem de a skill ter rodado. */}
+      <TarefasDoDia pessoas={tarefasPorPessoa} total={totalTarefas} dia={vm.dataHoje} onEdit={onEdit} />
 
+      {vm.temEstruturado && (
+        <>
           {/* ------- Pagamentos do dia: agenda (dia inteiro) × contas a pagar do Omie ------- */}
           <SectionCard
             title={<span className="flex items-center gap-2"><Wallet className="h-4 w-4 text-muted-foreground" /> Pagamentos do dia</span>}
@@ -827,75 +790,57 @@ function BriefingView({ b, vm, tarefas, meNome, titulosOmie, erroOmie, onAtualiz
               </details>
             )}
           </SectionCard>
+
+          {/* ---------------- E-mails ---------------- */}
+          {vm.emails.length > 0 && (
+            <SectionCard
+              title={<span className="flex items-center gap-2"><Mail className="h-4 w-4 text-muted-foreground" /> E-mails que pedem atenção</span>}
+              subtitle={`${vm.nEmails} acionáveis · ruído filtrado`}
+            >
+              <div className="space-y-2.5">
+                {vm.emails.map((it, i) => {
+                  const href = it.link || `https://mail.google.com/mail/u/0/#search/${encodeURIComponent(it.busca)}`;
+                  return (
+                    <div key={i} className="flex items-start gap-3 rounded-md border border-border bg-card px-3 py-2.5">
+                      <span className={cn("mt-0.5 h-9 w-1 shrink-0 rounded-full", BARRA_TOM[it.tom])} />
+                      <div className="min-w-0 flex-1">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span className="text-[13px] font-semibold text-foreground">{it.remetente}</span>
+                          {it.badge && (
+                            <span className={cn("rounded px-1.5 py-0.5 text-[9.5px] font-bold uppercase tracking-wider", BADGE_TOM[it.tom])}>{it.badge}</span>
+                          )}
+                        </div>
+                        <div className="mt-0.5 text-[12.5px] text-muted-foreground">
+                          <ReactMarkdown components={mdComponents}>{it.resumo}</ReactMarkdown>
+                        </div>
+                      </div>
+                      <a href={href} target="_blank" rel="noreferrer" className="mt-0.5 inline-flex shrink-0 items-center gap-1 text-[12px] font-medium text-primary hover:underline">
+                        Abrir <ArrowRight className="h-3.5 w-3.5" />
+                      </a>
+                    </div>
+                  );
+                })}
+              </div>
+            </SectionCard>
+          )}
         </>
-      ) : (
-        /* fallback: só markdown publicado */
-        <SectionCard title="Briefing de hoje">
-          <div className="prose prose-sm max-w-none prose-headings:tracking-tight prose-a:text-primary">
-            <ReactMarkdown>{b.conteudo_markdown}</ReactMarkdown>
-          </div>
-        </SectionCard>
       )}
 
-      {/* ---------------- Tarefas com prazo para hoje ---------------- */}
-      <SectionCard
-        title={<span className="flex items-center gap-2"><ListChecks className="h-4 w-4 text-muted-foreground" /> Tarefas com prazo para hoje</span>}
-        subtitle={`${totalTarefas} tarefa${totalTarefas === 1 ? "" : "s"} · você e Júlia · vence ${fmtDDMM(vm.dataHoje)}`}
-        actions={<Link to="/tarefas" className="inline-flex items-center gap-1 text-[11px] font-medium text-primary hover:underline">Abrir Tarefas <ArrowRight className="h-3 w-3" /></Link>}
-      >
-        {totalTarefas === 0 ? (
-          <div className="py-4 text-center text-[12.5px] text-muted-foreground">Nenhuma tarefa com prazo para hoje para você ou a Júlia.</div>
-        ) : (
-          <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-            {tarefasPorPessoa.map((p) => (
-              <div key={p.alvo} className="space-y-2">
-                <div className="flex items-center gap-2">
-                  <span className={cn("flex h-6 w-6 items-center justify-center rounded-full text-[10px] font-bold", p.ehVoce ? "bg-primary/10 text-primary" : "bg-emerald-500/15 text-emerald-600 dark:text-emerald-400")}>
-                    {iniciais(p.nome)}
-                  </span>
-                  <span className="text-[12.5px] font-semibold text-foreground">{p.nome}</span>
-                  {p.ehVoce && <span className="rounded bg-secondary px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wider text-muted-foreground">você</span>}
-                  <span className="num text-[11px] text-muted-foreground">· {p.itens.length}</span>
-                </div>
-                {p.itens.length === 0 ? (
-                  <div className="rounded-md border border-dashed border-border px-3 py-2 text-[11.5px] text-muted-foreground">Sem tarefas para hoje.</div>
-                ) : (
-                  <ul className="space-y-1.5">
-                    {p.itens.map((t) => {
-                      const done = t.status === "Concluído";
-                      return (
-                        <li key={t.id}>
-                          <button
-                            type="button"
-                            onClick={() => onEdit(t)}
-                            title="Clique para editar (data, prioridade, responsável…)"
-                            className="group flex w-full items-start gap-2 rounded-md border border-border bg-card px-2.5 py-2 text-left transition hover:border-primary/40 hover:bg-secondary/40"
-                          >
-                            <span className={cn("mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full", PRIO_DOT_B[t.prioridade] ?? "bg-muted-foreground")} />
-                            <div className="min-w-0 flex-1">
-                              <div className={cn("text-[12.5px] font-medium leading-snug", done ? "text-muted-foreground line-through" : "text-foreground")}>{t.titulo}</div>
-                              <div className="mt-0.5 flex items-center gap-1.5 text-[10.5px] text-muted-foreground">
-                                <span>{t.prioridade}</span>
-                                <span>·</span>
-                                <span>{t.prazo ? fmtDDMM(parseLocal(t.prazo)) : "—"}</span>
-                                <span>·</span>
-                                <span className="inline-flex items-center gap-1">
-                                  {done && <CheckCircle2 className="h-3 w-3 text-emerald-500" />}{t.status}
-                                </span>
-                              </div>
-                            </div>
-                            <Pencil className="mt-0.5 h-3.5 w-3.5 shrink-0 text-transparent transition group-hover:text-muted-foreground" />
-                          </button>
-                        </li>
-                      );
-                    })}
-                  </ul>
-                )}
-              </div>
-            ))}
-          </div>
-        )}
-      </SectionCard>
+      {/* A resposta já escrita para o e-mail que pede uma. Fica colada nos
+          e-mails de propósito — é a mesma caixa de entrada vista de outro
+          ângulo. Some sozinha quando não há nada a responder. */}
+      <RespostasSugeridas />
+
+      {/* ---------------- Notícias ----------------
+          FORA do `temEstruturado`: os itens vêm da função `briefing-noticias`,
+          que roda no cron e não depende de a skill ter rodado. Se dependesse, o
+          painel sumiria justamente na manhã em que a skill falhou — que é
+          quando ele é a única coisa nova da tela. */}
+      <PainelNoticias />
+
+      {/* ---------------- O que mudou no Hub (ontem) ----------------
+          Some sozinho quando não houve mudança nenhuma — ver NovidadesResumo. */}
+      <NovidadesResumo />
 
       <div className="pt-1 text-center text-[11px] text-muted-foreground">
         Gerado automaticamente às {vm.entregueHora} · publicado no Hub (Supabase · <span className="num">briefing_diario</span>)
@@ -905,6 +850,83 @@ function BriefingView({ b, vm, tarefas, meNome, titulosOmie, erroOmie, onAtualiz
 }
 
 /* ------------------------------ subcomponentes ------------------------------ */
+
+/** Uma pessoa e as tarefas que vencem hoje para ela. */
+type ColunaTarefas = { alvo: string; nome: string; ehVoce: boolean; itens: Tarefa[] };
+
+/**
+ * As tarefas com prazo para hoje, em duas colunas (você e a Júlia).
+ *
+ * VIROU COMPONENTE QUANDO A ORDEM DA PÁGINA MUDOU (29/08/2026): ele precisava
+ * subir para logo depois da agenda, e mover setenta linhas de JSX entre dois
+ * condicionais é a maneira mais fácil de perder um `)` e não perceber. Aqui a
+ * ordem da página é uma lista de seis linhas que dá para ler.
+ */
+function TarefasDoDia({ pessoas, total, dia, onEdit }: {
+  pessoas: ColunaTarefas[]; total: number; dia: Date; onEdit: (t: Tarefa) => void;
+}) {
+  return (
+    <SectionCard
+      title={<span className="flex items-center gap-2"><ListChecks className="h-4 w-4 text-muted-foreground" /> Tarefas com prazo para hoje</span>}
+      subtitle={`${total} tarefa${total === 1 ? "" : "s"} · você e Júlia · vence ${fmtDDMM(dia)}`}
+      actions={<Link to="/tarefas" className="inline-flex items-center gap-1 text-[11px] font-medium text-primary hover:underline">Abrir Tarefas <ArrowRight className="h-3 w-3" /></Link>}
+    >
+      {total === 0 ? (
+        <div className="py-4 text-center text-[12.5px] text-muted-foreground">Nenhuma tarefa com prazo para hoje para você ou a Júlia.</div>
+      ) : (
+        <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+          {pessoas.map((p) => (
+            <div key={p.alvo} className="space-y-2">
+              <div className="flex items-center gap-2">
+                <span className={cn("flex h-6 w-6 items-center justify-center rounded-full text-[10px] font-bold", p.ehVoce ? "bg-primary/10 text-primary" : "bg-emerald-500/15 text-emerald-600 dark:text-emerald-400")}>
+                  {iniciais(p.nome)}
+                </span>
+                <span className="text-[12.5px] font-semibold text-foreground">{p.nome}</span>
+                {p.ehVoce && <span className="rounded bg-secondary px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wider text-muted-foreground">você</span>}
+                <span className="num text-[11px] text-muted-foreground">· {p.itens.length}</span>
+              </div>
+              {p.itens.length === 0 ? (
+                <div className="rounded-md border border-dashed border-border px-3 py-2 text-[11.5px] text-muted-foreground">Sem tarefas para hoje.</div>
+              ) : (
+                <ul className="space-y-1.5">
+                  {p.itens.map((t) => {
+                    const done = t.status === "Concluído";
+                    return (
+                      <li key={t.id}>
+                        <button
+                          type="button"
+                          onClick={() => onEdit(t)}
+                          title="Clique para editar (data, prioridade, responsável…)"
+                          className="group flex w-full items-start gap-2 rounded-md border border-border bg-card px-2.5 py-2 text-left transition hover:border-primary/40 hover:bg-secondary/40"
+                        >
+                          <span className={cn("mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full", PRIO_DOT_B[t.prioridade] ?? "bg-muted-foreground")} />
+                          <div className="min-w-0 flex-1">
+                            <div className={cn("text-[12.5px] font-medium leading-snug", done ? "text-muted-foreground line-through" : "text-foreground")}>{t.titulo}</div>
+                            <div className="mt-0.5 flex items-center gap-1.5 text-[10.5px] text-muted-foreground">
+                              <span>{t.prioridade}</span>
+                              <span>·</span>
+                              <span>{t.prazo ? fmtDDMM(parseLocal(t.prazo)) : "—"}</span>
+                              <span>·</span>
+                              <span className="inline-flex items-center gap-1">
+                                {done && <CheckCircle2 className="h-3 w-3 text-emerald-500" />}{t.status}
+                              </span>
+                            </div>
+                          </div>
+                          <Pencil className="mt-0.5 h-3.5 w-3.5 shrink-0 text-transparent transition group-hover:text-muted-foreground" />
+                        </button>
+                      </li>
+                    );
+                  })}
+                </ul>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </SectionCard>
+  );
+}
+
 function Participantes({ lista }: { lista: Participante[] }) {
   if (!lista?.length) return null;
   return (

@@ -12,9 +12,10 @@
 
 import { describe, expect, it } from "vitest";
 import {
-  CORTE, chaveDaUrl, chaveDoItem, contemTermo, ehRedirecionador, lerQuando,
-  mesmaNoticia, normalizarTexto, pontuar, valeMostrar,
-  type Bruto,
+  CORTE, SLOTS, aplicarPreferencias, chaveDaUrl, chaveDoAssunto, chaveDoItem,
+  contemTermo, ehRedirecionador, escalaDoDia, escolherDoDia, lerQuando,
+  limparTermos, mesmaNoticia, normalizarTexto, pautaAtual, pontuar, valeMostrar,
+  type Bruto, type Candidato, type Preferencia,
 } from "../../supabase/functions/_shared/briefing-noticias";
 
 const HOJE = new Date("2026-08-28T11:00:00Z");
@@ -224,39 +225,100 @@ describe("pontuar", () => {
   it("não conta 'consumer' como concorrente sem contexto do setor", () => {
     const semSetor = pontuar(
       item("US consumer prices rise in August", "Inflation data came in above expectations."),
-      "concorrentes", HOJE,
+      "foodservice", HOJE,
     );
     expect(semSetor.pontos).toBeLessThan(CORTE);
 
     const comSetor = pontuar(
       item("Consumer lança integração para restaurantes",
            "O sistema para restaurantes anunciou nova função de cardápio."),
-      "concorrentes", HOJE,
+      "foodservice", HOJE,
     );
     expect(valeMostrar(comSetor)).toBe(true);
   });
 
-  it("descarta matéria de setor que não cita concorrente nenhum", () => {
+  it("descarta matéria de gastronomia que não é nem rival nem dado do setor", () => {
     // A consulta da pauta é do setor (os nomes das empresas não existem no
     // índice de notícias). Sem esta regra, "restaurante da Serra lança novo
     // cardápio" entraria: contexto de setor + verbo de fato dá exatamente o
-    // corte, e o painel de concorrentes viraria coluna de gastronomia.
+    // corte, e a frente de foodservice viraria coluna de gastronomia.
     const n = pontuar(
       item("Restaurante do centro lança novo cardápio de inverno",
            "A casa anunciou pratos sazonais para os clientes.", { publicado: "5 hours ago" }),
-      "concorrentes", HOJE,
+      "foodservice", HOJE,
     );
     expect(valeMostrar(n)).toBe(false);
-    expect(n.motivos).toContain("setor sim, concorrente não");
+    expect(n.motivos).toContain("setor sim, nada de novo");
   });
 
-  it("aprova movimento de concorrente na pauta de concorrentes", () => {
+  it("aprova movimento de concorrente na frente de foodservice", () => {
     const n = pontuar(
       item("Goomer anuncia aporte e compra a Neemo",
            "A empresa de cardápio digital para restaurantes fechou rodada."),
-      "concorrentes", HOJE,
+      "foodservice", HOJE,
     );
     expect(valeMostrar(n)).toBe(true);
+  });
+
+  it("aprova o DADO do setor, que chega sem verbo de anúncio", () => {
+    // O item que herdou a função do "Panorama do dia": o número que servia de
+    // munição comercial na prosa. Não cita concorrente e não anuncia nada — a
+    // manchete de dado setorial é substantivo e número. Antes da segunda porta,
+    // caía no "só menção" e a frente perdia justamente o que ela ganhou.
+    const n = pontuar(
+      item("Foodservice bate recorde no 2T26: R$ 62,9 bilhões",
+           "Levantamento aponta crescimento de 1% e faturamento recorde em bares e restaurantes.",
+           { publicado: "6 hours ago" }),
+      "foodservice", HOJE,
+    );
+    expect(valeMostrar(n)).toBe(true);
+    expect(n.motivos.join(" ")).toContain("dado do setor");
+  });
+
+  it("aprova a decisão do Copom e derruba o palpite sobre ela", () => {
+    // A frente de finanças nasceu da prosa repetitiva do panorama. O que a
+    // salva de repetir é o mesmo que salva as outras: exigir que algo tenha
+    // ACONTECIDO. "Copom mantém" aconteceu; "o que esperar dos juros" não.
+    const decisao = pontuar(
+      item("Copom mantém a Selic em 14% ao ano",
+           "O Banco Central decidiu por unanimidade manter os juros.", { publicado: "4 hours ago" }),
+      "financas", HOJE,
+    );
+    expect(valeMostrar(decisao)).toBe(true);
+
+    const palpite = pontuar(
+      item("Juros: analistas divergem sobre o próximo passo",
+           "O mercado discute o cenário para a Selic."),
+      "financas", HOJE,
+    );
+    expect(valeMostrar(palpite)).toBe(false);
+  });
+
+  it("não deixa matéria de tecnologia entrar pela porta de finanças", () => {
+    const n = pontuar(
+      item("Empresa lança novo aplicativo de fotos", "O app chegou hoje às lojas."),
+      "financas", HOJE,
+    );
+    expect(valeMostrar(n)).toBe(false);
+    expect(n.motivos).toContain("não é assunto de finanças");
+  });
+
+  it("aceita a cifra no lugar do verbo na frente de startups", () => {
+    // O formato mais comum da manchete de captação é nome + valor + estágio,
+    // sem um único verbo de anúncio.
+    const rodada = pontuar(
+      item("Foodtech brasileira capta US$ 20 milhões em Series A",
+           "A startup de SaaS para restaurantes fechou a rodada com fundo americano.",
+           { publicado: "3 hours ago" }),
+      "startups", HOJE,
+    );
+    expect(valeMostrar(rodada)).toBe(true);
+
+    const semNada = pontuar(
+      item("Startups discutem o futuro do trabalho", "Painel reuniu fundadores."),
+      "startups", HOJE,
+    );
+    expect(valeMostrar(semNada)).toBe(false);
   });
 
   it("exige dois sinais para aprovar caso de backoffice", () => {
@@ -293,5 +355,166 @@ describe("pontuar", () => {
     // isso puniria o veículo pelo HTML dele, não pela idade da matéria.
     const semData = pontuar(item("Supabase lança nova função de branch", "Recurso disponível hoje."), "ia_ferramentas", HOJE);
     expect(valeMostrar(semData)).toBe(true);
+  });
+});
+
+/* ============================================================ o revezamento */
+
+describe("escalaDoDia", () => {
+  it("entrega uma consulta por slot — quatro buscas, e nem uma a mais", () => {
+    // O teto de créditos é a razão de a grade existir. Se um dia alguém
+    // acrescentar um slot sem olhar a conta, o custo mensal sobe ~25% em
+    // silêncio: o freio só avisa depois, e no meio do mês.
+    const hoje = escalaDoDia("2026-08-29");
+    expect(hoje).toHaveLength(SLOTS.length);
+    expect(SLOTS).toHaveLength(4);
+  });
+
+  it("reveza as consultas do mesmo slot de um dia para o outro", () => {
+    const a = escalaDoDia("2026-08-29").map((e) => e.consulta.q);
+    const b = escalaDoDia("2026-08-30").map((e) => e.consulta.q);
+    // Todo slot desta grade tem duas consultas: nenhuma se repete no dia seguinte.
+    a.forEach((q, i) => expect(q).not.toBe(b[i]));
+  });
+
+  it("é função da data e não de um contador — a mesma data dá a mesma grade", () => {
+    // O botão "buscar agora" e uma reenfileirada do cron rodam o mesmo dia duas
+    // vezes. Com contador no banco, a grade andaria e uma frente pularia o dia
+    // seguinte inteiro sem ninguém notar.
+    expect(escalaDoDia("2026-08-29")).toEqual(escalaDoDia("2026-08-29"));
+    expect(escalaDoDia("2026-08-29T07:40:00-03:00").map((e) => e.consulta.q))
+      .toEqual(escalaDoDia("2026-08-29").map((e) => e.consulta.q));
+  });
+
+  it("cobre as quatro frentes em dois dias", () => {
+    const frentes = new Set([
+      ...escalaDoDia("2026-08-29").map((e) => e.pauta.chave),
+      ...escalaDoDia("2026-08-30").map((e) => e.pauta.chave),
+    ]);
+    expect(frentes).toEqual(new Set(["ia_ferramentas", "ia_backoffice", "foodservice", "financas", "startups"]));
+  });
+
+  it("não devolve pauta que a régua não conhece", () => {
+    // `escalaDoDia` resolve a pauta por `pautaPorChave`, que devolve `undefined`
+    // para chave desconhecida — e o `!` na função esconderia isso até virar
+    // "cannot read property 'chave' of undefined" às 07:40 da manhã.
+    for (const dia of ["2026-08-29", "2026-08-30", "2026-09-01"]) {
+      escalaDoDia(dia).forEach((e) => expect(e.pauta?.chave).toBeTruthy());
+    }
+  });
+});
+
+describe("pautaAtual", () => {
+  it("traduz a pauta velha para a nova", () => {
+    // Linhas gravadas antes de 29/08/2026 têm `concorrentes`, que virou
+    // `foodservice`. Sem esta tradução, a rodada de conserto pula essas linhas
+    // caladas e elas ficam mudas para sempre.
+    expect(pautaAtual("concorrentes")).toBe("foodservice");
+    expect(pautaAtual("financas")).toBe("financas");
+  });
+});
+
+/* ======================================================== o gosto declarado */
+
+describe("aplicarPreferencias", () => {
+  const pref = (rotulo: string, termos: string[], peso: number): Preferencia =>
+    ({ assunto: rotulo, rotulo, termos, peso });
+
+  it("exige DOIS termos — um só é coincidência", () => {
+    const p = [pref("preço de API de IA", ["preco", "api", "token"], 2)];
+    // "preço" aparece em metade das manchetes de tecnologia. Sozinho, um 👎 em
+    // "aumento de preço da maquininha" calaria todo anúncio de preço da Anthropic.
+    expect(aplicarPreferencias(normalizarTexto("Preço do aluguel sobe em agosto"), p).delta).toBe(0);
+    expect(aplicarPreferencias(normalizarTexto("OpenAI muda o preço da API"), p).delta).toBe(2);
+  });
+
+  it("respeita o teto por assunto e o teto da soma", () => {
+    const muito = [pref("um", ["alfa", "beta"], 99), pref("dois", ["alfa", "beta"], 99)];
+    // 99 vira 4 por assunto, e 4+4 vira 6 no total: preferência empurra a fila,
+    // não substitui a régua.
+    expect(aplicarPreferencias(normalizarTexto("alfa e beta"), muito).delta).toBe(6);
+  });
+
+  it("veta a partir do segundo 👎, e não antes", () => {
+    const um = aplicarPreferencias(normalizarTexto("alfa e beta"), [pref("x", ["alfa", "beta"], -1)]);
+    expect(um.vetado).toBe(false);
+    expect(um.delta).toBe(-1);
+
+    const dois = aplicarPreferencias(normalizarTexto("alfa e beta"), [pref("x", ["alfa", "beta"], -2)]);
+    expect(dois.vetado).toBe(true);
+  });
+
+  it("o veto derruba o item mesmo bem pontuado", () => {
+    const bruto = item("Anthropic reduz o preço do Claude na API",
+                       "A empresa anunciou nova tabela por milhão de tokens.",
+                       { publicado: "2 hours ago" });
+    expect(valeMostrar(pontuar(bruto, "ia_ferramentas", HOJE))).toBe(true);
+
+    const vetado = pontuar(bruto, "ia_ferramentas", HOJE, [pref("preço de API", ["preco", "api"], -2)]);
+    expect(vetado.ruido).toBe(true);
+    expect(vetado.motivos.join(" ")).toContain("evitado a seu pedido");
+  });
+
+  it("o 👍 aprova o que ficaria de fora por um ponto", () => {
+    // A intenção declarada do botão: "quero mais disso" precisa poder mudar o
+    // resultado, senão é enfeite. Sem preferência este item morre no corte.
+    const bruto = item("Prefeitura discute a coleta de lixo dos restaurantes",
+                       "Bares e restaurantes terão nova regra de coleta.");
+    expect(valeMostrar(pontuar(bruto, "ia_backoffice", HOJE))).toBe(false);
+
+    const querido = pontuar(bruto, "ia_backoffice", HOJE, [pref("regra municipal", ["coleta", "restaurantes"], 4)]);
+    expect(valeMostrar(querido)).toBe(true);
+    expect(querido.motivos.join(" ")).toContain("você pediu mais");
+  });
+
+  it("ignora preferência sem termos ou com peso zero", () => {
+    // O caso do assunto recém-criado cujo voto foi desfeito: peso 0. Sem esta
+    // guarda ele empataria a soma com um motivo escrito na tela dizendo que
+    // pesou — mentira barata e difícil de rastrear.
+    const nada = aplicarPreferencias(normalizarTexto("alfa e beta"), [
+      pref("sem termos", [], 3), pref("sem peso", ["alfa", "beta"], 0),
+    ]);
+    expect(nada.delta).toBe(0);
+    expect(nada.motivos).toHaveLength(0);
+  });
+});
+
+/* ============================================================== a vitrine */
+
+describe("escolherDoDia", () => {
+  const cand = (pauta: any, pontos: number, titulo: string): Candidato => ({
+    titulo, descricao: "", url: `https://exemplo.com/${titulo}`, pauta, nota: { pontos, motivos: [], ruido: false },
+  });
+
+  it("dois por pauta, para caberem três frentes na manhã", () => {
+    const dia = [
+      cand("ia_ferramentas", 9, "a"), cand("ia_ferramentas", 8, "b"), cand("ia_ferramentas", 7, "c"),
+      cand("financas", 6, "d"), cand("foodservice", 5, "e"), cand("startups", 4, "f"),
+    ];
+    const escolhidos = escolherDoDia(dia);
+    expect(escolhidos.filter((c) => c.pauta === "ia_ferramentas")).toHaveLength(2);
+    expect(new Set(escolhidos.map((c) => c.pauta)).size).toBe(4);
+  });
+});
+
+/* =================================================== o voto vira vocabulário */
+
+describe("chaveDoAssunto", () => {
+  it("junta as grafias do mesmo assunto", () => {
+    // Sem isto, o peso de um assunto nunca passa de 1: cada voto cria uma linha
+    // parecida, e a tela de preferências vira uma lista de sinônimos.
+    expect(chaveDoAssunto("Preço de API de IA")).toBe(chaveDoAssunto("preco de api de ia"));
+  });
+});
+
+describe("limparTermos", () => {
+  it("descarta o que casaria com tudo e corta em cinco", () => {
+    expect(limparTermos(["Preço", "API", "ia", "de", "token", "modelo", "tabela", "custo"]))
+      .toEqual(["preco", "api", "token", "modelo", "tabela"]);
+  });
+
+  it("não repete termo e aguenta lixo", () => {
+    expect(limparTermos(["preco", "PREÇO", null, 3, ""])).toEqual(["preco"]);
+    expect(limparTermos(undefined)).toEqual([]);
   });
 });

@@ -15,6 +15,7 @@ import NovidadesHub from "./pages/NovidadesHub";
 import Login from "./pages/Login";
 import Usuarios from "./pages/Usuarios";
 import Parametrizacao from "./pages/configuracoes/Parametrizacao";
+import Integracoes from "./pages/configuracoes/Integracoes";
 import AutomacoesProporcionais from "./pages/AutomacoesProporcionais";
 import RecargasCelulares from "./pages/RecargasCelulares";
 import RecargasViagens from "./pages/RecargasViagens";
@@ -169,6 +170,7 @@ function Rotas() {
               <Route path="/design-system" element={<DesignSystem />} />
               <Route path="/usuarios" element={<Usuarios />} />
               <Route path="/configuracoes/parametrizacao" element={<Parametrizacao />} />
+              <Route path="/configuracoes/integracoes" element={<Integracoes />} />
               <Route path="/automacoes/proporcionais" element={<AutomacoesProporcionais />} />
               {/* "Está rodando?" — a faixa do topo, aberta: a esteira das notas
                   etapa a etapa e as 46 automações com o que responderam. */}

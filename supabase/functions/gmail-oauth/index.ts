@@ -59,47 +59,59 @@ const REDIRECT = `https://${PROJETO}.supabase.co/functions/v1/gmail-oauth`;
  * escopo antigo, e o Google não amplia token existente. Por isso a `url` tem de
  * ser aberta de novo depois desta mudança — o `prompt=consent` já garante que
  * volte refresh token novo. */
+/* `gmail.send` entrou em 29/08/2026, para a resposta sugerida do briefing.
+ *
+ * É O ESCOPO MAIS ESTREITO QUE FAZ O TRABALHO, e a escolha é deliberada:
+ * `gmail.send` só permite ENVIAR. Ele não lê, não apaga, não mexe em rótulo e
+ * não altera rascunho — diferente de `gmail.modify`, que daria tudo isso de
+ * brinde para uma funcionalidade que precisa de um verbo só.
+ *
+ * ATENÇÃO, E ISTO NÃO É AUTOMÁTICO: enquanto ninguém reabrir o consentimento, o
+ * refresh token guardado continua valendo só para os dois escopos antigos, e
+ * qualquer tentativa de enviar volta 403. O Hub trata isso como estado normal e
+ * diz o que fazer, em vez de estourar. */
 const ESCOPO = [
   "https://www.googleapis.com/auth/gmail.readonly",
   "https://www.googleapis.com/auth/drive.readonly",
+  "https://www.googleapis.com/auth/gmail.send",
 ].join(" ");
 
-/** Página simples para quem chega pelo navegador — é uma pessoa do outro lado. */
-/* O ESQUELETO COMPLETO, e o corpo em BYTES.
+/** A resposta para quem chega pelo navegador — é uma pessoa do outro lado. */
+/* ESTA PÁGINA NÃO PODE SER HTML, e agora se sabe por quê.
  *
- * Em 26/08/2026 esta página chegou ao navegador como TEXTO CRU, com os acentos
- * quebrados ("jÃ¡", "âœ…") — sintoma clássico de UTF-8 lido como latin-1.
- * Conferido na resposta: o cabeçalho sai certo, `text/html; charset=utf-8`.
- * Não reproduzi, então não sei a causa e não vou fingir que sei.
+ * Em 26/08/2026 ela chegou como TEXTO CRU com acentos quebrados ("jÃ¡"), e a
+ * tentativa da época foi mandar documento inteiro em bytes UTF-8, com
+ * `Content-Type: text/html; charset=utf-8`. Não resolveu — em 30/08/2026 o
+ * mesmo sintoma voltou, e desta vez a resposta foi MEDIDA com `curl`:
  *
- * O que dá para fazer sem chutar é tirar as duas variáveis mais prováveis:
- * a página era um FRAGMENTO (sem `<html>`, `<head>` e `<body>`), o que deixa o
- * navegador decidir; e a string ia como texto, deixando a codificação por conta
- * de quem serializa. Agora vai documento inteiro, e em bytes UTF-8 explícitos.
- * Se voltar a acontecer, o problema está fora daqui. */
+ *     Content-Type: text/plain
+ *     Content-Security-Policy: default-src 'none'; sandbox
+ *     x-content-type-options: nosniff
+ *
+ * O gateway do Supabase SOBRESCREVE o nosso `text/html` por `text/plain` e
+ * injeta CSP `sandbox`. É proteção da plataforma — servir HTML de
+ * `*.supabase.co/functions/v1/...` seria phishing pronto no domínio deles.
+ * Com `nosniff` junto, o navegador é OBRIGADO a mostrar a fonte.
+ *
+ * Ou seja: mandar HTML aqui é escrever markup para ninguém ver, e o `text/plain`
+ * sem charset é o que quebra os acentos. Então a página vira TEXTO PURO, e
+ * SEM ACENTO — não por desleixo, mas porque o charset não é nosso para escolher.
+ * A regra é chata e vale registrar: Edge Function do Supabase não serve página. */
 const pagina = (titulo: string, texto: string, ok: boolean) =>
   new Response(
-    new TextEncoder().encode(
-      `<!doctype html>
-<html lang="pt-BR">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>${titulo}</title></head>
-<body style="margin:0">
-  <div style="font:16px/1.6 system-ui,-apple-system,Segoe UI,sans-serif;max-width:34rem;margin:12vh auto;padding:0 1.5rem">
-    <div style="font-size:2rem">${ok ? "&#9989;" : "&#9888;&#65039;"}</div>
-    <h1 style="font-size:1.3rem;margin:.6rem 0">${titulo}</h1>
-    <p style="color:#555">${texto}</p>
-    <p style="color:#888;font-size:.9rem">Pode fechar esta aba.</p>
-  </div>
-</body>
-</html>`,
-    ),
+    [
+      ok ? "[OK] " + titulo : "[ERRO] " + titulo,
+      "",
+      texto,
+      "",
+      "Pode fechar esta aba.",
+    ].join("\n"),
     {
       status: ok ? 200 : 400,
       headers: {
-        "Content-Type": "text/html; charset=utf-8",
-        // Sem isto, um proxy que "adivinha" o tipo pode servir como texto.
-        "X-Content-Type-Options": "nosniff",
+        /* Declarado mesmo sabendo que o gateway sobrescreve: se um dia ele
+           parar de sobrescrever, a resposta já sai certa. */
+        "Content-Type": "text/plain; charset=utf-8",
         "Cache-Control": "no-store",
       },
     },
@@ -170,7 +182,11 @@ Deno.serve(async (req) => {
       // O `state` é de uso único: gasto, some.
       await supabase.from("internal_secrets").delete().eq("nome", "GMAIL_OAUTH_STATE");
 
-      return pagina("Caixa conectada", "O Hub já pode ler as notas fiscais que chegam por e-mail.", true);
+      return pagina(
+        "Caixa conectada",
+        "O Hub ja pode ler as notas que chegam por e-mail e responder pelo briefing.",
+        true,
+      );
     }
 
     /* -------- passos 1 e 2, e o diagnóstico: exigem usuário -------- */
@@ -182,8 +198,36 @@ Deno.serve(async (req) => {
       const s = await segredosDoGmail(supabase);
       if (!s.refreshToken) return json({ ok: true, conectado: false, motivo: "sem refresh token" });
       try {
-        await tokenDeAcesso(s);
-        return json({ ok: true, conectado: true });
+        const token = await tokenDeAcesso(s);
+
+        /* OS ESCOPOS CONCEDIDOS, e não os PEDIDOS. A diferença é a pergunta que
+           mais custou tempo aqui: `ESCOPO` acima diz o que o Hub pede, e o
+           refresh token guardado pode ser mais antigo que essa lista — o Google
+           não amplia token existente. Sem perguntar ao `tokeninfo`, "conectado:
+           true" convive com um envio que volta 403, e o painel mente.
+
+           Falha de leitura NÃO derruba o status: não saber os escopos é pior que
+           saber, mas ainda é melhor que responder "desconectado" para uma caixa
+           que lê e-mail sem problema. */
+        let escopos: string[] | null = null;
+        try {
+          const ti = await fetch(
+            `https://oauth2.googleapis.com/tokeninfo?access_token=${encodeURIComponent(token)}`,
+            { signal: AbortSignal.timeout(10_000) },
+          );
+          if (ti.ok) {
+            const j = await ti.json();
+            escopos = String(j?.scope ?? "").split(/\s+/).filter(Boolean);
+          }
+        } catch { /* segue sem a lista */ }
+
+        return json({
+          ok: true,
+          conectado: true,
+          escopos,
+          pode_enviar: escopos ? escopos.includes("https://www.googleapis.com/auth/gmail.send") : null,
+          pode_ler: escopos ? escopos.includes("https://www.googleapis.com/auth/gmail.readonly") : null,
+        });
       } catch (e) {
         return json({ ok: true, conectado: false, motivo: String((e as Error)?.message ?? e) });
       }

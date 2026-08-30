@@ -12,7 +12,7 @@ import {
   FolderKanban, BookOpenCheck, Presentation, Building2, Percent, Receipt, Undo2,
   FileText, Smartphone, Plane, LayoutDashboard, Kanban, FileSpreadsheet, Truck,
   History, FileSignature, Gavel, CheckCircle2, PieChart, TrendingUp, FileBarChart,
-  Scale, Target, Brain, Wallet2, ShieldCheck, Megaphone, UserMinus, UserCog, Tags,
+  Scale, Target, Brain, Wallet2, ShieldCheck, Megaphone, UserMinus, UserCog, Tags, Plug,
   Palette, Mic, Rocket, Globe2, Paperclip, Radar, Zap,
   type LucideIcon,
 } from "lucide-react";
@@ -129,6 +129,7 @@ export const GRUPOS_FINANCEIRO: NavGrupo[] = [
   { label: "Configurações", items: [
     { title: "Colaboradores (RH)", url: "/operacional/colaboradores", icon: Users, busca: ["rh", "portal rh", "ficha", "funcionário", "funcionario", "equipe"] },
     { title: "Parametrização", url: "/configuracoes/parametrizacao", icon: Tags, busca: ["apelido", "contraparte", "fornecedor", "de-para", "de para"] },
+    { title: "Integrações", url: "/configuracoes/integracoes", icon: Plug, busca: ["gmail", "conectar", "credencial", "chave", "api", "planilha", "omie", "asaas", "token", "oauth"] },
     { title: "Usuários", url: "/usuarios", icon: UserCog, busca: ["acesso", "cargo", "permissão"] },
     { title: "Biblioteca", url: "/analise/conhecimento", icon: Brain, busca: ["base de conhecimento", "políticas", "colaboradores"] },
   ]},

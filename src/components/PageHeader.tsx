@@ -3,6 +3,7 @@ import { useLocation } from "react-router-dom";
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
 import { ROTAS, resolverDinamica } from "@/lib/rotas";
+import { Sino } from "@/components/Sino";
 
 interface PageHeaderProps {
   breadcrumbs?: string[];
@@ -86,13 +87,18 @@ export function PageHeader({ breadcrumbs, context, hideToolbar }: PageHeaderProp
         {ctx && <span className="ml-2 truncate text-[12px] text-muted-foreground">· {ctx}</span>}
       </nav>
 
-      {!hideToolbar && pathname !== "/operacional/parceiros" && pathname !== "/governanca/auditoria" && (
-        <div className="flex shrink-0 items-center gap-1.5">
-          <button onClick={handleAssistant} className="ghost-btn px-2" title="Assistente IA"><SlidersHorizontal className="h-3.5 w-3.5" /></button>
-          <button onClick={handleDownload} className="ghost-btn px-2" title="Exportar (PDF)"><Download className="h-3.5 w-3.5" /></button>
-          <button onClick={handleRefresh} className="ghost-btn px-2" title="Atualizar"><RefreshCw className="h-3.5 w-3.5" /></button>
-        </div>
-      )}
+      <div className="flex shrink-0 items-center gap-1.5">
+        {!hideToolbar && pathname !== "/operacional/parceiros" && pathname !== "/governanca/auditoria" && (
+          <>
+            <button onClick={handleAssistant} className="ghost-btn px-2" title="Assistente IA"><SlidersHorizontal className="h-3.5 w-3.5" /></button>
+            <button onClick={handleDownload} className="ghost-btn px-2" title="Exportar (PDF)"><Download className="h-3.5 w-3.5" /></button>
+            <button onClick={handleRefresh} className="ghost-btn px-2" title="Atualizar"><RefreshCw className="h-3.5 w-3.5" /></button>
+          </>
+        )}
+        {/* O sino fica FORA do `hideToolbar`: ele é o degrau que te induz a ver o
+            que a IA achou, e um sino que some em algumas páginas não induz nada. */}
+        <Sino />
+      </div>
     </div>
   );
 }

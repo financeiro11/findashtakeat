@@ -6,6 +6,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import takeatLogo from "@/assets/takeat-logo.png";
 import { useAuth } from "@/hooks/useAuth";
 import { useRadarAlertas } from "@/hooks/useRadarAlertas";
+import { useSinaisContagem } from "@/hooks/useSinais";
 import { Sidebar, SidebarContent, useSidebar } from "@/components/ui/sidebar";
 import { CommandMenu } from "@/components/CommandMenu";
 import { ModuleSwitcher } from "@/components/ModuleSwitcher";
@@ -233,13 +234,24 @@ export function AppSidebar() {
      estático de propósito (o CommandMenu lê o mesmo objeto) e não pode depender
      de rede. Só conta quando o Facilities está na tela. */
   const radarNovos = useRadarAlertas(mod === "facilities");
+
+  /* Os sinais do vigia selam o item pela ROTA — é o que diz ONDE tem coisa nova
+     sem você ter que abrir o sino para descobrir. Vem da mesma chamada que o
+     contador do cabeçalho: quando cada um fazia a sua conta, a sidebar dizia 3 e
+     o sino dizia 4, e quem lê não tinha como saber qual mentia. */
+  const { por_rota } = useSinaisContagem();
+
   const grupos = useMemo(() => {
-    if (!radarNovos) return gruposBase;
+    if (!radarNovos && Object.keys(por_rota).length === 0) return gruposBase;
     return gruposBase.map((g) => ({
       ...g,
-      items: g.items.map((i) => (i.url === "/facilities/radar" ? { ...i, badge: String(radarNovos) } : i)),
+      items: g.items.map((i) => {
+        if (i.url === "/facilities/radar" && radarNovos) return { ...i, badge: String(radarNovos) };
+        const n = por_rota[i.url];
+        return n ? { ...i, badge: String(n) } : i;
+      }),
     }));
-  }, [gruposBase, radarNovos]);
+  }, [gruposBase, radarNovos, por_rota]);
 
   // Pool de itens favoritáveis: só os do módulo/acesso atualmente visível, pra não
   // listar (nem deixar favoritar) rotas que este usuário não enxerga no menu. Sai dos

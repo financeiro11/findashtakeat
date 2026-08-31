@@ -2,15 +2,17 @@ import { useEffect, useState } from "react";
 import Achados from "./auditoria/Achados";
 import BaseCartao from "./auditoria/BaseCartao";
 import BasePix from "./auditoria/BasePix";
-import { AlertTriangle, CreditCard, Zap } from "lucide-react";
+import Lideres from "./auditoria/Lideres";
+import { AlertTriangle, CreditCard, Users, Zap } from "lucide-react";
 import { cn } from "@/lib/utils";
 
-type Mode = "achados" | "base" | "pix";
+type Mode = "achados" | "base" | "pix" | "lideres";
 
 const TITLES: Record<Mode, string> = {
   achados: "FinHub · Auditoria",
   base: "FinHub · Base do Cartão",
   pix: "FinHub · PIX Sicoob",
+  lideres: "FinHub · Líderes do cartão",
 };
 
 export default function Auditoria() {
@@ -34,12 +36,18 @@ export default function Auditoria() {
       <ModeBtn active={mode === "pix"} onClick={() => setMode("pix")} icon={<Zap className="h-3 w-3" />}>
         PIX
       </ModeBtn>
+      <ModeBtn active={mode === "lideres"} onClick={() => setMode("lideres")} icon={<Users className="h-3 w-3" />}>
+        Líderes
+      </ModeBtn>
     </div>
   );
 
   return (
     <div className="min-h-screen bg-background">
-      {mode === "achados" ? <Achados abas={abas} /> : mode === "base" ? <BaseCartao abas={abas} /> : <BasePix abas={abas} />}
+      {mode === "achados" ? <Achados abas={abas} />
+        : mode === "base" ? <BaseCartao abas={abas} />
+        : mode === "lideres" ? <Lideres abas={abas} />
+        : <BasePix abas={abas} />}
     </div>
   );
 }

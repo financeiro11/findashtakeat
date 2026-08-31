@@ -39,6 +39,51 @@ export type Database = {
   }
   public: {
     Tables: {
+      agenda_eventos: {
+        Row: {
+          atualizado_em: string
+          cor: string | null
+          descricao: string | null
+          dia: string
+          dia_inteiro: boolean
+          eh_pagamento: boolean
+          event_id: string
+          id: string
+          link: string | null
+          rotulo: string
+          titulo: string
+          valor: number | null
+        }
+        Insert: {
+          atualizado_em?: string
+          cor?: string | null
+          descricao?: string | null
+          dia: string
+          dia_inteiro?: boolean
+          eh_pagamento?: boolean
+          event_id: string
+          id?: string
+          link?: string | null
+          rotulo: string
+          titulo: string
+          valor?: number | null
+        }
+        Update: {
+          atualizado_em?: string
+          cor?: string | null
+          descricao?: string | null
+          dia?: string
+          dia_inteiro?: boolean
+          eh_pagamento?: boolean
+          event_id?: string
+          id?: string
+          link?: string | null
+          rotulo?: string
+          titulo?: string
+          valor?: number | null
+        }
+        Relationships: []
+      }
       agente_excecoes: {
         Row: {
           agente_id: string
@@ -953,6 +998,8 @@ export type Database = {
           gestor: string | null
           id: number
           id_unico: string
+          justificativa_lider: string | null
+          justificativa_lider_em: string | null
           link_comprovante: string | null
           observacao: string | null
           omie_anexo_enviado_em: string | null
@@ -984,6 +1031,8 @@ export type Database = {
           gestor?: string | null
           id?: number
           id_unico: string
+          justificativa_lider?: string | null
+          justificativa_lider_em?: string | null
           link_comprovante?: string | null
           observacao?: string | null
           omie_anexo_enviado_em?: string | null
@@ -1015,6 +1064,8 @@ export type Database = {
           gestor?: string | null
           id?: number
           id_unico?: string
+          justificativa_lider?: string | null
+          justificativa_lider_em?: string | null
           link_comprovante?: string | null
           observacao?: string | null
           omie_anexo_enviado_em?: string | null
@@ -1312,6 +1363,13 @@ export type Database = {
             referencedRelation: "tarefas"
             referencedColumns: ["id"]
           },
+          {
+            foreignKeyName: "automacoes_catalogo_tarefa_id_fkey"
+            columns: ["tarefa_id"]
+            isOneToOne: false
+            referencedRelation: "tarefas_rotinas"
+            referencedColumns: ["tarefa_modelo_id"]
+          },
         ]
       }
       automacoes_niveis: {
@@ -1341,6 +1399,30 @@ export type Database = {
           n?: number
           nome?: string
           updated_at?: string
+        }
+        Relationships: []
+      }
+      aviso_dispensado: {
+        Row: {
+          assinatura: string
+          chave: string
+          dispensado_em: string
+          fonte: string
+          user_id: string
+        }
+        Insert: {
+          assinatura: string
+          chave: string
+          dispensado_em?: string
+          fonte: string
+          user_id: string
+        }
+        Update: {
+          assinatura?: string
+          chave?: string
+          dispensado_em?: string
+          fonte?: string
+          user_id?: string
         }
         Relationships: []
       }
@@ -1676,6 +1758,27 @@ export type Database = {
           },
         ]
       }
+      cadastro_autorizado: {
+        Row: {
+          autorizado_em: string
+          autorizado_por: string | null
+          email: string
+          usado_em: string | null
+        }
+        Insert: {
+          autorizado_em?: string
+          autorizado_por?: string | null
+          email: string
+          usado_em?: string | null
+        }
+        Update: {
+          autorizado_em?: string
+          autorizado_por?: string | null
+          email?: string
+          usado_em?: string | null
+        }
+        Relationships: []
+      }
       calendario_financeiro: {
         Row: {
           agente_dono: string | null
@@ -1826,6 +1929,48 @@ export type Database = {
           planos?: Json
           resumo?: string
           sinal?: Json
+        }
+        Relationships: []
+      }
+      cartao_contestacoes: {
+        Row: {
+          card_final: string
+          criado_em: string
+          id: string
+          id_unico: string
+          motivo: string
+          resolvido_em: string | null
+          resolvido_por: string | null
+          responsavel: string | null
+          resposta: string | null
+          status: string
+          texto: string | null
+        }
+        Insert: {
+          card_final: string
+          criado_em?: string
+          id?: string
+          id_unico: string
+          motivo: string
+          resolvido_em?: string | null
+          resolvido_por?: string | null
+          responsavel?: string | null
+          resposta?: string | null
+          status?: string
+          texto?: string | null
+        }
+        Update: {
+          card_final?: string
+          criado_em?: string
+          id?: string
+          id_unico?: string
+          motivo?: string
+          resolvido_em?: string | null
+          resolvido_por?: string | null
+          responsavel?: string | null
+          resposta?: string | null
+          status?: string
+          texto?: string | null
         }
         Relationships: []
       }
@@ -2023,6 +2168,48 @@ export type Database = {
         }
         Relationships: []
       }
+      cartao_portadores: {
+        Row: {
+          acesso_ate: string | null
+          atualizado_em: string
+          card_final: string
+          criado_em: string
+          encerrado_em: string | null
+          encerrado_por: string | null
+          id: string
+          motivo: string | null
+          nome: string
+          status: string
+          time: string | null
+        }
+        Insert: {
+          acesso_ate?: string | null
+          atualizado_em?: string
+          card_final: string
+          criado_em?: string
+          encerrado_em?: string | null
+          encerrado_por?: string | null
+          id?: string
+          motivo?: string | null
+          nome: string
+          status?: string
+          time?: string | null
+        }
+        Update: {
+          acesso_ate?: string | null
+          atualizado_em?: string
+          card_final?: string
+          criado_em?: string
+          encerrado_em?: string | null
+          encerrado_por?: string | null
+          id?: string
+          motivo?: string | null
+          nome?: string
+          status?: string
+          time?: string | null
+        }
+        Relationships: []
+      }
       cartao_recomendacoes: {
         Row: {
           acao: string | null
@@ -2116,6 +2303,13 @@ export type Database = {
             isOneToOne: false
             referencedRelation: "tarefas"
             referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "cartao_recomendacoes_tarefa_id_fkey"
+            columns: ["tarefa_id"]
+            isOneToOne: false
+            referencedRelation: "tarefas_rotinas"
+            referencedColumns: ["tarefa_modelo_id"]
           },
         ]
       }
@@ -4864,6 +5058,51 @@ export type Database = {
         }
         Relationships: []
       }
+      integracao_estado: {
+        Row: {
+          assinatura: string | null
+          causa: string | null
+          chave: string
+          conectado: boolean | null
+          detalhe: string | null
+          gravidade: string
+          nome: string
+          o_que_fazer: string | null
+          para_que: string | null
+          primeira_em: string
+          ultima_em: string
+          verificado_em: string
+        }
+        Insert: {
+          assinatura?: string | null
+          causa?: string | null
+          chave: string
+          conectado?: boolean | null
+          detalhe?: string | null
+          gravidade?: string
+          nome: string
+          o_que_fazer?: string | null
+          para_que?: string | null
+          primeira_em?: string
+          ultima_em?: string
+          verificado_em?: string
+        }
+        Update: {
+          assinatura?: string | null
+          causa?: string | null
+          chave?: string
+          conectado?: boolean | null
+          detalhe?: string | null
+          gravidade?: string
+          nome?: string
+          o_que_fazer?: string | null
+          para_que?: string | null
+          primeira_em?: string
+          ultima_em?: string
+          verificado_em?: string
+        }
+        Relationships: []
+      }
       internal_cron_tokens: {
         Row: {
           criado_em: string
@@ -5312,11 +5551,15 @@ export type Database = {
       magic_tokens: {
         Row: {
           acessos: number
+          card_final: string | null
           colaborador_id: string | null
           criado_em: string
           criado_por: string | null
           enviado_para: string | null
           expira_em: string | null
+          fatura_abertura_em: string | null
+          fatura_bloqueio_ate: string | null
+          fatura_erros: number
           id_unicos: Json
           ip_ultimo_acesso: string | null
           qtd_itens: number
@@ -5328,11 +5571,15 @@ export type Database = {
         }
         Insert: {
           acessos?: number
+          card_final?: string | null
           colaborador_id?: string | null
           criado_em?: string
           criado_por?: string | null
           enviado_para?: string | null
           expira_em?: string | null
+          fatura_abertura_em?: string | null
+          fatura_bloqueio_ate?: string | null
+          fatura_erros?: number
           id_unicos?: Json
           ip_ultimo_acesso?: string | null
           qtd_itens?: number
@@ -5344,11 +5591,15 @@ export type Database = {
         }
         Update: {
           acessos?: number
+          card_final?: string | null
           colaborador_id?: string | null
           criado_em?: string
           criado_por?: string | null
           enviado_para?: string | null
           expira_em?: string | null
+          fatura_abertura_em?: string | null
+          fatura_bloqueio_ate?: string | null
+          fatura_erros?: number
           id_unicos?: Json
           ip_ultimo_acesso?: string | null
           qtd_itens?: number
@@ -8971,6 +9222,11 @@ export type Database = {
           prioridade: string
           responsavel: string | null
           rotina: boolean
+          rotina_antecedencia_dias: number
+          rotina_ativa: boolean
+          rotina_cadencia: Json | null
+          rotina_serie_id: string | null
+          rotina_subtarefas_fonte: string | null
           status: string
           status_desde: string | null
           subtarefas: Json
@@ -8993,6 +9249,11 @@ export type Database = {
           prioridade?: string
           responsavel?: string | null
           rotina?: boolean
+          rotina_antecedencia_dias?: number
+          rotina_ativa?: boolean
+          rotina_cadencia?: Json | null
+          rotina_serie_id?: string | null
+          rotina_subtarefas_fonte?: string | null
           status?: string
           status_desde?: string | null
           subtarefas?: Json
@@ -9015,6 +9276,11 @@ export type Database = {
           prioridade?: string
           responsavel?: string | null
           rotina?: boolean
+          rotina_antecedencia_dias?: number
+          rotina_ativa?: boolean
+          rotina_cadencia?: Json | null
+          rotina_serie_id?: string | null
+          rotina_subtarefas_fonte?: string | null
           status?: string
           status_desde?: string | null
           subtarefas?: Json
@@ -9641,6 +9907,29 @@ export type Database = {
         }
         Relationships: []
       }
+      tarefas_rotinas: {
+        Row: {
+          aberta_id: string | null
+          aberta_prazo: string | null
+          antecedencia_dias: number | null
+          ativa: boolean | null
+          cadencia: Json | null
+          cat_area: string | null
+          cat_natureza: string | null
+          concluidas: number | null
+          ocorrencias: number | null
+          prioridade: string | null
+          proxima_data: string | null
+          proxima_itens: number | null
+          responsavel: string | null
+          serie_id: string | null
+          subtarefas_fonte: string | null
+          tarefa_modelo_id: string | null
+          titulo: string | null
+          ultima_conclusao: string | null
+        }
+        Relationships: []
+      }
       vw_agente_saude: {
         Row: {
           agente_id: string | null
@@ -9713,6 +10002,11 @@ export type Database = {
     }
     Functions: {
       aceita_recibo_do_app: { Args: { nome: string }; Returns: boolean }
+      achado_do_lancamento: { Args: { p_id_unico: string }; Returns: string }
+      agenda_checklist_do_dia: {
+        Args: { p_dia: string; p_responsavel?: string }
+        Returns: Json
+      }
       anexo_classe: { Args: { p_nome: string }; Returns: string }
       anexo_documento_classe: {
         Args: {
@@ -9879,6 +10173,25 @@ export type Database = {
           status_code: number
         }[]
       }
+      aviso_dispensar: {
+        Args: { p_assinatura: string; p_chave: string; p_fonte: string }
+        Returns: undefined
+      }
+      avisos_graves_abertos: {
+        Args: never
+        Returns: {
+          assinatura: string
+          causa: string
+          chave: string
+          desde: string
+          fonte: string
+          o_que_fazer: string
+          ocorrencias: number
+          resumo: string
+          titulo: string
+        }[]
+      }
+      avisos_limpar_resolvidos: { Args: never; Returns: number }
       cac_celula: {
         Args: { p_ano: number; p_linha_id: string; p_mes: number }
         Returns: {
@@ -10074,6 +10387,7 @@ export type Database = {
           valor: number
         }[]
       }
+      cartao_acesso: { Args: { p_card_final: string }; Returns: Json }
       cartao_importar: { Args: { p_payload: Json }; Returns: Json }
       cartao_marcar: {
         Args: {
@@ -10357,6 +10671,10 @@ export type Database = {
           veredito: string
         }[]
       }
+      encerrar_cartao: {
+        Args: { p_card_final: string; p_dias_graca?: number; p_motivo?: string }
+        Returns: Json
+      }
       estornos_chave: { Args: { t: string }; Returns: string }
       estornos_conciliar: { Args: never; Returns: Json }
       estornos_motivo_descarta: { Args: { t: string }; Returns: boolean }
@@ -10607,6 +10925,33 @@ export type Database = {
         Args: { p_alerta_id: number; p_quem?: string }
         Returns: Json
       }
+      fatura_cartao_do_token: {
+        Args: { p_digitos: string; p_token: string }
+        Returns: string
+      }
+      fatura_contestar_via_token: {
+        Args: {
+          p_digitos: string
+          p_id_unico: string
+          p_motivo: string
+          p_texto?: string
+          p_token: string
+        }
+        Returns: Json
+      }
+      fatura_descontestar_via_token: {
+        Args: { p_digitos: string; p_id_unico: string; p_token: string }
+        Returns: Json
+      }
+      fatura_justificar_via_token: {
+        Args: {
+          p_digitos: string
+          p_id_unico: string
+          p_texto: string
+          p_token: string
+        }
+        Returns: Json
+      }
       firecrawl_orcamento_status: {
         Args: { p_desde?: string }
         Returns: {
@@ -10632,6 +10977,7 @@ export type Database = {
       fn_familia_texto: { Args: { p_texto: string }; Returns: string }
       fn_resumo_tarefas_semana: { Args: { p_ref?: string }; Returns: Json }
       fornecedor_emite_nf: { Args: { p_nome: string }; Returns: boolean }
+      garantir_links_dos_cartoes: { Args: never; Returns: number }
       hub_automacoes: { Args: never; Returns: Json }
       hub_base_url: { Args: never; Returns: string }
       ia_orcamento_status: {
@@ -10655,11 +11001,25 @@ export type Database = {
           inseridos: number
         }[]
       }
+      integracao_estado_gravar: {
+        Args: {
+          p_causa: string
+          p_chave: string
+          p_conectado: boolean
+          p_detalhe: string
+          p_gravidade: string
+          p_nome: string
+          p_o_que_fazer: string
+          p_para_que: string
+        }
+        Returns: undefined
+      }
       jsonb_ou_nulo: { Args: { p: string }; Returns: Json }
       justificativa_decidir: {
         Args: { p_id: string; p_status?: string; p_texto?: string }
         Returns: undefined
       }
+      lancamento_do_achado: { Args: { p_id_unico: string }; Returns: string }
       lancamento_nota_salvar: {
         Args: {
           p_cod_titulo: string
@@ -11237,6 +11597,7 @@ export type Database = {
             Returns: Json
           }
       promover_agendamentos_sync: { Args: never; Returns: undefined }
+      reativar_cartao: { Args: { p_card_final: string }; Returns: Json }
       reclassificacao_ignorar: {
         Args: { p_escopo?: string; p_id: string; p_motivo?: string }
         Returns: number
@@ -11268,6 +11629,10 @@ export type Database = {
           telefone: string
         }[]
       }
+      resolver_fatura_via_token: {
+        Args: { p_digitos: string; p_ip?: string; p_token: string }
+        Returns: Json
+      }
       resolver_nota_publica: { Args: { p_token: string }; Returns: Json }
       resolver_token: {
         Args: { p_ip?: string; p_token: string }
@@ -11288,6 +11653,10 @@ export type Database = {
         }
         Returns: undefined
       }
+      rotina_datas: {
+        Args: { ate: string; cad: Json; de: string }
+        Returns: string[]
+      }
       salvar_justificativa_via_token: {
         Args: { p_id_unico: string; p_texto: string; p_token: string }
         Returns: Json
@@ -11295,6 +11664,7 @@ export type Database = {
       show_limit: { Args: never; Returns: number }
       show_trgm: { Args: { "": string }; Returns: string[] }
       sync_rh_colaboradores: { Args: never; Returns: undefined }
+      tarefas_rotinas_gerar: { Args: { p_hoje?: string }; Returns: number }
       titulos_por_memo: {
         Args: { p_memos: string[] }
         Returns: {

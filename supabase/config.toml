@@ -5,6 +5,15 @@ project_id = "lgcxyxyidoirqmbdlldh"
 [functions.delete-user]
 verify_jwt = true
 
+# Quem chega aqui e o NAVEGADOR do lider pelo /l/<token>, sem conta no Hub e sem
+# sessao — so a anon key. Nao ha JWT para o gateway conferir. Quem autoriza e a
+# propria funcao: `fatura_cartao_do_token` (token + os 4 digitos do cartao) e, em
+# seguida, a checagem de que a linha pedida e do MESMO cartao. Vale lembrar que
+# verify_jwt = true tambem nao protegeria nada aqui — o gateway aceita qualquer JWT
+# assinado pelo projeto, e a anon key e um deles.
+[functions.fatura-anexar-comprovante]
+verify_jwt = false
+
 # Webhook do TakeatOS: quem prova a origem e a assinatura HMAC do corpo, nao o JWT
 # do gateway. Exigir JWT aqui obrigaria o TakeatOS a carregar tambem a anon key do
 # Hub, sem ganho de seguranca: a assinatura ja e o controle de acesso.

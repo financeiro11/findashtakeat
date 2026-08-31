@@ -9,6 +9,7 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { brl } from "@/pages/auditoria/utils";
+import FaturaCartao from "@/pages/linkpublico/FaturaCartao";
 import takeatLogo from "@/assets/takeat-logo-white.png";
 
 const SUPABASE_URL = "https://lgcxyxyidoirqmbdlldh.supabase.co";
@@ -49,6 +50,10 @@ export default function LinkPublico() {
   const { token } = useParams<{ token: string }>();
   const [loading, setLoading] = useState(true);
   const [data, setData] = useState<Resolve | null>(null);
+  /* As duas abas mostram o MESMO gasto por ângulos diferentes. Anexar numa tem de
+     aparecer na outra na hora: quem grava chama `recarregarTudo`, que relê as pendências
+     e sobe a versão — e a versão é o que faz a aba da fatura reler. */
+  const [versao, setVersao] = useState(0);
 
   const load = useCallback(async () => {
     if (!token) { setLoading(false); return; }
@@ -61,14 +66,19 @@ export default function LinkPublico() {
     setLoading(false);
   }, [token]);
 
+  const recarregarTudo = useCallback(async () => {
+    await load();
+    setVersao((v) => v + 1);
+  }, [load]);
+
   useEffect(() => {
-    document.title = "Takeat · Pendências do cartão";
+    document.title = "Takeat · Meu cartão corporativo";
     load();
   }, [load]);
 
   if (loading) return <Carregando />;
   if (!data || "erro" in data) return <ErrorPage message={data?.erro || "Link inválido"} />;
-  return <TokenPage data={data} token={token!} onRefresh={load} />;
+  return <TokenPage data={data} token={token!} onRefresh={recarregarTudo} versao={versao} />;
 }
 
 /* ------------------------------------------------------------------ *
@@ -144,7 +154,9 @@ function primeiroNome(nome: string) {
   return nome.trim().split(/\s+/)[0] || nome;
 }
 
-function TokenPage({ data, token, onRefresh }: { data: ResolveOk; token: string; onRefresh: () => Promise<void> }) {
+function TokenPage({ data, token, onRefresh, versao }: {
+  data: ResolveOk; token: string; onRefresh: () => Promise<void>; versao: number;
+}) {
   const { abertos, resolvidos, valorAberto } = useMemo(() => {
     const abertos = data.itens.filter(i => !i.resolvido);
     const resolvidos = data.itens.filter(i => i.resolvido);
@@ -158,19 +170,29 @@ function TokenPage({ data, token, onRefresh }: { data: ResolveOk; token: string;
   const total = data.itens.length;
   const tudoFeito = total > 0 && abertos.length === 0;
 
+  // Sem nada cobrado (ou tudo respondido), a fatura é o que ele veio ver — a aba de
+  // pendências abriria vazia. Em ago/26 nenhum lançamento virou achado, então esse é
+  // o caso comum, não a exceção.
+  const [aba, setAba] = useState<"pendencias" | "fatura">(
+    abertos.length > 0 ? "pendencias" : "fatura",
+  );
+
   return (
     <div className="min-h-screen bg-background pb-16">
-      <Cabecalho progresso={{ feitos: resolvidos.length, total }} />
+      <Cabecalho progresso={aba === "pendencias" ? { feitos: resolvidos.length, total } : undefined} />
 
       <main className="mx-auto max-w-[680px] px-5">
         {/* Abertura */}
         <section className="pt-9">
-          <div className="eyebrow">Auditoria do cartão corporativo</div>
+          <div className="eyebrow">Cartão corporativo</div>
           <h1 className="mt-2 text-[28px] font-semibold leading-tight tracking-tight sm:text-[32px]">
             Olá, {primeiroNome(data.responsavel)}.
           </h1>
           <p className="mt-3 max-w-[520px] text-[15px] leading-relaxed text-muted-foreground">
-            {tudoFeito ? (
+            {aba === "fatura" ? (
+              <>Aqui está tudo o que passou no seu cartão — com e sem nota. Anexe o comprovante,
+                justifique o que não tem nota, ou avise se algum gasto não for seu.</>
+            ) : tudoFeito ? (
               <>Tudo o que estava sob sua alçada já foi respondido. O financeiro revisa e volta a falar
                 com você se faltar alguma coisa.</>
             ) : (
@@ -181,7 +203,93 @@ function TokenPage({ data, token, onRefresh }: { data: ResolveOk; token: string;
           </p>
         </section>
 
-        {/* Números — o que ainda falta, não o histórico */}
+        <Abas aba={aba} onTrocar={setAba} pendencias={abertos.length} />
+
+        {aba === "fatura" ? (
+          <FaturaCartao token={token} versao={versao} onMudou={onRefresh} />
+        ) : (
+          <ListaPendencias
+            token={token} onRefresh={onRefresh}
+            abertos={abertos} resolvidos={resolvidos}
+            valorAberto={valorAberto} total={total} tudoFeito={tudoFeito}
+          />
+        )}
+
+        {/* Rodapé */}
+        <footer className="mt-14 border-t border-border pt-5">
+          <div className="flex items-start gap-2.5">
+            {data.expira_em ? (
+              <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-warn" />
+            ) : (
+              <Lock className="mt-0.5 h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+            )}
+            <p className="text-[12px] leading-relaxed text-muted-foreground">
+              {data.expira_em ? (
+                <>Este link expira em <strong className="font-medium text-foreground">{data.expira_em}</strong>.</>
+              ) : (
+                <>Este endereço é só seu e não expira — pode salvar e voltar quando precisar. Não repasse a ninguém.</>
+              )}
+            </p>
+          </div>
+          <div className="mt-4 text-[11px] text-muted-foreground/70">
+            Takeat · Hub Financeiro
+          </div>
+        </footer>
+      </main>
+    </div>
+  );
+}
+
+/** Segmentado das duas abas. A contagem só aparece quando há o que responder. */
+function Abas({ aba, onTrocar, pendencias }: {
+  aba: "pendencias" | "fatura";
+  onTrocar: (a: "pendencias" | "fatura") => void;
+  pendencias: number;
+}) {
+  const item = (chave: "pendencias" | "fatura", rotulo: string, contagem?: number) => {
+    const ativo = aba === chave;
+    return (
+      <button
+        type="button"
+        onClick={() => onTrocar(chave)}
+        aria-current={ativo ? "page" : undefined}
+        className="relative flex items-center gap-1.5 px-1 pb-2.5 pt-1 text-[14px] transition-colors"
+        style={{
+          color: ativo ? "hsl(var(--foreground))" : "hsl(var(--muted-foreground))",
+          fontWeight: ativo ? 600 : 400,
+        }}
+      >
+        {rotulo}
+        {typeof contagem === "number" && contagem > 0 && (
+          <span
+            className="num rounded-full px-1.5 py-0.5 text-[11px] font-semibold leading-none"
+            style={{ background: "hsl(var(--warn) / 0.15)", color: "hsl(38 92% 30%)" }}
+          >
+            {contagem}
+          </span>
+        )}
+        {ativo && <span className="absolute inset-x-0 -bottom-px h-0.5 bg-foreground" />}
+      </button>
+    );
+  };
+
+  return (
+    <nav className="mt-7 flex items-center gap-5 border-b border-border">
+      {item("pendencias", "Precisam de resposta", pendencias)}
+      {item("fatura", "Minha fatura")}
+    </nav>
+  );
+}
+
+function ListaPendencias({
+  token, onRefresh, abertos, resolvidos, valorAberto, total, tudoFeito,
+}: {
+  token: string; onRefresh: () => Promise<void>;
+  abertos: Item[]; resolvidos: Item[]; valorAberto: number; total: number; tudoFeito: boolean;
+}) {
+  return (
+    <>
+      {/* Números — o que ainda falta, não o histórico */}
         <section className="mt-8 grid grid-cols-2 divide-x divide-border border-y border-border">
           <div className="py-4 pr-4">
             <div className="eyebrow">Em aberto</div>
@@ -246,28 +354,7 @@ function TokenPage({ data, token, onRefresh }: { data: ResolveOk; token: string;
           </section>
         )}
 
-        {/* Rodapé */}
-        <footer className="mt-14 border-t border-border pt-5">
-          <div className="flex items-start gap-2.5">
-            {data.expira_em ? (
-              <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-warn" />
-            ) : (
-              <Lock className="mt-0.5 h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-            )}
-            <p className="text-[12px] leading-relaxed text-muted-foreground">
-              {data.expira_em ? (
-                <>Este link expira em <strong className="font-medium text-foreground">{data.expira_em}</strong>.</>
-              ) : (
-                <>Este endereço é só seu e não expira — pode salvar e voltar quando precisar. Não repasse a ninguém.</>
-              )}
-            </p>
-          </div>
-          <div className="mt-4 text-[11px] text-muted-foreground/70">
-            Takeat · Hub Financeiro
-          </div>
-        </footer>
-      </main>
-    </div>
+    </>
   );
 }
 

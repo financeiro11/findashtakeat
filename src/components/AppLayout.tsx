@@ -4,6 +4,7 @@ import { SidebarProvider } from "@/components/ui/sidebar";
 import { AppSidebar } from "@/components/AppSidebar";
 import { PageHeader } from "@/components/PageHeader";
 import { FaixaEsteira } from "@/components/FaixaEsteira";
+import { AvisoGrave } from "@/components/AvisoGrave";
 import { ProfileMenu } from "@/components/ProfileMenu";
 import { AIAssistant } from "@/components/AIAssistant";
 import { NovaVersao } from "@/components/NovaVersao";
@@ -85,6 +86,10 @@ export default function AppLayout() {
         {!isParcerias && !emFacilities && (
           <div data-chrome="assistente" className="contents"><AIAssistant /></div>
         )}
+        {/* O aviso do que quebrou. Fica AQUI, no layout, para valer em qualquer
+            página — quem precisa ser avisado é justamente quem não foi olhar o
+            painel. Escondido para `parcerias`, que não opera nada disto. */}
+        {!isParcerias && <AvisoGrave />}
         {/* Só aparece quando este Hub montou numa janela de celular — ver AbrirNoCelular. */}
         <AbrirNoCelular />
       </div>

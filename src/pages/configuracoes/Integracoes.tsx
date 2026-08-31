@@ -36,7 +36,7 @@ type Estado = {
   para_que: string;
   conectado: boolean | null;
   detalhe: string;
-  conserto?: "gmail_oauth" | "painel_supabase" | "compartilhar_planilha";
+  conserto?: "gmail_oauth" | "painel_supabase" | "compartilhar_planilha" | "compartilhar_com_conta";
   extra?: Record<string, unknown>;
 };
 
@@ -45,6 +45,13 @@ const AJUDA: Record<string, string> = {
     "É uma chave de ambiente. Troque em Supabase › Edge Functions › Secrets e recheque aqui.",
   compartilhar_planilha:
     'Abra a planilha no Google Drive, em Compartilhar, e deixe "qualquer pessoa com o link" como leitor.',
+  /* Este caminho NÃO pede link público — pede a planilha compartilhada com a
+     conta Google que o Hub usa, que é a mesma das outras planilhas nativas. É a
+     diferença entre abrir o arquivo para a internet e dar acesso a quem trabalha
+     nele. */
+  compartilhar_com_conta:
+    "Abra a planilha em Compartilhar e dê acesso (leitor basta) à conta Google conectada ao Hub — a mesma " +
+    "que já lê as outras planilhas. Não é preciso ligar o link público.",
 };
 
 async function chamar<T>(funcao: string, corpo: unknown): Promise<T> {

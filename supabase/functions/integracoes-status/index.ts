@@ -29,6 +29,7 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.0";
 import { segredosDoGmail, tokenDeAcesso } from "../_shared/gmail.ts";
 import { requireUser } from "../_shared/auth.ts";
+import { ErroSheets, sheetsConfigurado, titulosDasAbas } from "../_shared/sheets.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -48,7 +49,12 @@ type Estado = {
   conectado: boolean | null;
   detalhe: string;
   /** O que a tela oferece: `gmail_oauth` abre o consentimento; o resto é texto. */
-  conserto?: "gmail_oauth" | "painel_supabase" | "compartilhar_planilha";
+  conserto?: "gmail_oauth" | "painel_supabase" | "compartilhar_planilha" | "compartilhar_com_conta";
+  /* SÓ `alta` INTERROMPE com modal (ver `avisos_graves_abertos`). A régua é o
+     que se perde enquanto estiver quebrado: dado de dinheiro parando é alta;
+     uma comodidade que atrasa trabalho é média. Marcar tudo como alta é o mesmo
+     que não marcar nada — o modal vira clique automático em "Entendi". */
+  gravidade?: "alta" | "media" | "baixa";
   extra?: Record<string, unknown>;
 };
 
@@ -70,17 +76,99 @@ async function checar(base: Omit<Estado, "conectado" | "detalhe">, f: () => Prom
   }
 }
 
-/* As planilhas públicas que alimentam sync. O ID fica aqui repetido de propósito
-   — a fonte da verdade é cada função, e duplicar 5 ids é mais barato que fazer
-   cinco funções exportarem constante para uma tela de diagnóstico ler. Se um id
-   mudar lá e não aqui, a checagem acusa "não abre" e alguém vem conferir, que é
-   exatamente o comportamento desejado. */
-const PLANILHAS = [
-  { id: "10A9YnskShPPZ2Xz9d-kN2SHCv-qN-48-94rQBbCNWIo", nome: "Churn e estornos", usada: "churn-sheet-sync, estornos-sync" },
-  { id: "110Vp0mA3r8OgGpODHxszllKIBsELSeqR", nome: "Assinaturas", usada: "assinaturas-sheet-sync" },
-  { id: "1fwt-sosZW-YRkV-uNyE06sE40ZLwdlkh3fjbo50VU8o", nome: "Proporcionais", usada: "proporcionais-sheet" },
-  { id: "17MOvrcc7OpMVPFxzoKn4Nufg0zKU33qgmvZ-N3eCwgk", nome: "Recargas e viagens", usada: "recargas-viagens-sheet" },
+/* As planilhas que alimentam sync, e POR ONDE cada uma entra. O ID fica aqui
+   repetido de propósito — a fonte da verdade é cada função, e duplicar 4 ids é
+   mais barato que fazer quatro funções exportarem constante para uma tela de
+   diagnóstico ler. Se um id mudar lá e não aqui, a checagem acusa "não abre" e
+   alguém vem conferir, que é exatamente o comportamento desejado.
+
+   O `via` NÃO É DETALHE: checar pelo caminho errado é pior que não checar. Esta
+   tela nasceu acusando a planilha de churn como quebrada para as DUAS syncs que
+   ela alimenta, quando o `estornos-sync` lê pelo conector e nunca parou — quem
+   dependia do link público era só o `churn-sheet-sync`.
+
+   DESDE 30/08/2026 NENHUMA SYNC ENTRA POR LINK PÚBLICO, e por isso não há mais
+   checagem anônima aqui: as nativas vão pelo conector do Sheets, e o .xlsx de
+   assinaturas (que o Sheets recusa, por ser Office file) pelo OAuth do
+   financeiro@ no Drive.
+
+     'conector' → conta Google conectada (`_shared/sheets.ts`).
+     'drive'    → OAuth do financeiro@ (`_shared/gmail.ts` + Drive v3).
+   Nos dois casos o conserto é o mesmo: compartilhar o arquivo com a conta. */
+const PLANILHAS: { id: string; nome: string; usada: string; via: "conector" | "drive"; gravidade: "alta" | "media" }[] = [
+  { id: "10A9YnskShPPZ2Xz9d-kN2SHCv-qN-48-94rQBbCNWIo", nome: "Churn e estornos", usada: "churn-sheet-sync, estornos-sync", via: "conector", gravidade: "alta" },
+  { id: "110Vp0mA3r8OgGpODHxszllKIBsELSeqR", nome: "Assinaturas", usada: "assinaturas-sheet-sync", via: "drive", gravidade: "alta" },
+  { id: "1fwt-sosZW-YRkV-uNyE06sE40ZLwdlkh3fjbo50VU8o", nome: "Proporcionais", usada: "proporcionais-sheet", via: "conector", gravidade: "alta" },
+  { id: "17MOvrcc7OpMVPFxzoKn4Nufg0zKU33qgmvZ-N3eCwgk", nome: "Recargas e viagens", usada: "recargas-viagens-sheet", via: "conector", gravidade: "alta" },
+  /* As CINCO de formulário (`_shared/planilhas-notas.ts`). Não eram checadas por
+     ninguém: quando uma perdeu o compartilhamento, o jeito de descobrir foi um
+     humano estranhar o número de notas. Média, e não alta: uma delas parada
+     atrasa a captura de nota — não congela número de dinheiro na tela. */
+  { id: "1Y2jvIpZDrwe30z3M_UVazzBv2BrtJJujT-S0SUt2JqM", nome: "Formulário de Compras", usada: "planilhas-nf-sync, parametrizacao-planilhas-sync", via: "conector", gravidade: "media" },
+  { id: "1P7O1xRyrybuDQOfw3WIRkne15FOM7bBPMTWweMrCulA", nome: "Reembolsos - NFs", usada: "planilhas-nf-sync, parametrizacao-planilhas-sync", via: "conector", gravidade: "media" },
+  { id: "1jd0-LRwWdElNBttQP0z-8bv_rJ-Hh92aX9eE2pL9uwc", nome: "NFS-e (colaboradores)", usada: "planilhas-nf-sync, parametrizacao-planilhas-sync", via: "conector", gravidade: "media" },
+  { id: "1TQU3dph4qOTUpOXPCwp-bahVRxEORE9DjGKX3RRuCNs", nome: "NFs - Eventos & Parcerias", usada: "planilhas-nf-sync, parametrizacao-planilhas-sync", via: "conector", gravidade: "media" },
+  { id: "1A_J9MPtdpCqA0PrafjA28KT-3HMBuQyGOtSCjZTfEEU", nome: "NFs - Parceiros (Novo)", usada: "planilhas-nf-sync", via: "conector", gravidade: "media" },
 ];
+
+/* NOVE PLANILHAS DE UMA VEZ ESTOURAM A COTA. O limite de "Read requests per
+   minute" do Sheets é do projeto Google do conector, que é COMPARTILHADO — cinco
+   leituras simultâneas já devolveram 429 (medido em 30/08/2026). As checagens
+   continuam começando juntas, mas passam por esta fila: uma de cada vez, ~300ms
+   cada, o que cabe folgado no orçamento de 12s de cada uma. */
+let fila: Promise<unknown> = Promise.resolve();
+function emFila<T>(f: () => Promise<T>): Promise<T> {
+  const p = fila.then(f, f);
+  fila = p.catch(() => {});
+  return p;
+}
+
+/** A planilha abre para a CONTA CONECTADA? Um metadado, nenhuma célula. */
+async function checarPeloConector(id: string): Promise<{ ok: boolean; detalhe: string }> {
+  if (!sheetsConfigurado()) {
+    return { ok: false, detalhe: "conector do Google Sheets sem chave (LOVABLE_API_KEY / GOOGLE_SHEETS_API_KEY)" };
+  }
+  try {
+    /* Sem retentativa: aqui o orçamento é de 12s por checagem, e esperar a cota
+       do Google virar o minuto seguraria a tela inteira. */
+    const abas = await emFila(() => titulosDasAbas(id, { tentativas: 0 }));
+    return { ok: true, detalhe: `abre pela conta conectada (${abas.length} aba${abas.length === 1 ? "" : "s"})` };
+  } catch (e) {
+    /* 401/403/404 é veredito: a conta perdeu o acesso, ou a conexão morreu.
+       Qualquer outra coisa (5xx, rede) sobe e vira "não deu para checar" — que
+       é cinza, e não vermelho, porque não é a mesma informação. */
+    if (e instanceof ErroSheets && [401, 403, 404].includes(e.status)) {
+      return {
+        ok: false,
+        detalhe: e.status === 401
+          ? "a conexão do Google Sheets no Lovable expirou ou foi revogada"
+          : "a conta Google conectada não enxerga mais esta planilha",
+      };
+    }
+    throw e;
+  }
+}
+
+/** O arquivo abre para o financeiro@ no Drive? Só o metadado, sem baixar os 6 MB. */
+async function checarNoDrive(supa: ReturnType<typeof createClient>, id: string): Promise<{ ok: boolean; detalhe: string }> {
+  const s = await segredosDoGmail(supa);
+  if (!s.refreshToken) return { ok: false, detalhe: "financeiro@ nunca foi conectado — autorize em Gmail e Drive" };
+
+  const token = await tokenDeAcesso(s);
+  const r = await fetch(
+    `https://www.googleapis.com/drive/v3/files/${id}?fields=name&supportsAllDrives=true`,
+    { headers: { Authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(8_000) },
+  );
+  if (r.ok) {
+    const nome = String(((await r.json().catch(() => ({}))) as { name?: string })?.name ?? "");
+    return { ok: true, detalhe: `abre pela conta financeiro@${nome ? ` (${nome})` : ""}` };
+  }
+  // O Drive responde 404 — e não 403 — para o que a conta não pode ver.
+  if (r.status === 403 || r.status === 404) {
+    return { ok: false, detalhe: "a conta financeiro@ não enxerga este arquivo no Drive" };
+  }
+  return { ok: false, detalhe: `o Drive respondeu ${r.status}` };
+}
 
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
@@ -92,7 +180,19 @@ Deno.serve(async (req) => {
   );
 
   try {
-    await requireUser(req, { bloquearCargos: ["parcerias"] });
+    /* DUAS PORTAS. A tela chama com o usuário logado; o cron chama com
+       `x-cron-token` para GRAVAR o veredito — e é da tabela gravada que o modal
+       de aviso lê. Sem o caminho de cron, só saberia de uma integração quebrada
+       quem fosse até a tela de Integrações, que é exatamente quem não precisa
+       ser avisado. */
+    const tok = req.headers.get("x-cron-token");
+    let ehCron = false;
+    if (tok) {
+      const { data } = await supa.from("internal_cron_tokens")
+        .select("name").eq("name", "integracoes-status").eq("token", tok).maybeSingle();
+      ehCron = !!data;
+    }
+    if (!ehCron) await requireUser(req, { bloquearCargos: ["parcerias"] });
 
     const testes: Array<Promise<Estado>> = [];
 
@@ -103,6 +203,9 @@ Deno.serve(async (req) => {
         nome: "Gmail e Drive (financeiro@)",
         para_que: "Lê as notas que chegam por e-mail e responde pelo briefing.",
         conserto: "gmail_oauth",
+        /* Média: parar de ler a caixa atrasa a captura de nota, mas nenhum
+           número do Hub fica errado por causa disso. */
+        gravidade: "media",
       },
       async () => {
         const s = await segredosDoGmail(supa);
@@ -141,26 +244,15 @@ Deno.serve(async (req) => {
           chave: `planilha_${p.id.slice(0, 8)}`,
           nome: `Planilha: ${p.nome}`,
           para_que: `Alimenta ${p.usada}.`,
-          conserto: "compartilhar_planilha",
+          conserto: "compartilhar_com_conta",
+          gravidade: p.gravidade,
         },
-        async () => {
-          /* O MESMO endpoint que a sync usa, e não a API do Sheets: é o
-             compartilhamento "qualquer pessoa com o link" que se quer provar, e
-             só o export anônimo prova isso. Uma checagem por outro caminho
-             passaria verde com a planilha fechada para quem importa. */
-          const r = await fetch(
-            `https://docs.google.com/spreadsheets/d/${p.id}/export?format=csv`,
-            { method: "GET", redirect: "follow", signal: AbortSignal.timeout(10_000) },
-          );
-          /* O Google devolve 200 com HTML de login quando a planilha fechou —
-             status sozinho não distingue. O tipo do conteúdo distingue. */
-          const tipo = r.headers.get("content-type") ?? "";
-          if (r.ok && !tipo.includes("text/html")) return { ok: true, detalhe: "abre pelo link" };
-          if (r.status === 401 || r.status === 403 || tipo.includes("text/html")) {
-            return { ok: false, detalhe: 'o compartilhamento "qualquer pessoa com o link" foi removido' };
-          }
-          return { ok: false, detalhe: `o Google respondeu ${r.status}` };
-        },
+        /* SEMPRE O MESMO CAMINHO QUE A SYNC USA. Uma checagem por outro caminho
+           mente dos dois lados: passa verde com a planilha fechada para quem
+           importa, ou pinta de vermelho uma sync que está viva. */
+        async () => p.via === "conector"
+          ? await checarPeloConector(p.id)
+          : await checarNoDrive(supa, p.id),
       ));
     }
 
@@ -168,6 +260,8 @@ Deno.serve(async (req) => {
     testes.push(checar(
       {
         chave: "omie",
+        // Alta: sem Omie, contas a pagar, caixa e DRE param de andar.
+        gravidade: "alta",
         nome: "Omie (ERP)",
         para_que: "Contas a pagar, caixa, NFS-e e anexos.",
         conserto: "painel_supabase",
@@ -195,6 +289,8 @@ Deno.serve(async (req) => {
     testes.push(checar(
       {
         chave: "asaas",
+        // Alta: é a entrada de dinheiro — cobrança, assinatura e estorno.
+        gravidade: "alta",
         nome: "Asaas",
         para_que: "Cobranças, assinaturas e estornos.",
         conserto: "painel_supabase",
@@ -216,6 +312,8 @@ Deno.serve(async (req) => {
     testes.push(checar(
       {
         chave: "gemini",
+        // Média: a IA para, o resto do Hub continua inteiro.
+        gravidade: "media",
         nome: "Gemini",
         para_que: "Lê documento, tria anexo e desempata nota.",
         conserto: "painel_supabase",
@@ -236,6 +334,7 @@ Deno.serve(async (req) => {
     testes.push(checar(
       {
         chave: "openai",
+        gravidade: "media",
         nome: "OpenAI",
         para_que: "Motor do Assistente e dos comentários da DRE.",
         conserto: "painel_supabase",
@@ -253,6 +352,34 @@ Deno.serve(async (req) => {
     ));
 
     const integracoes = await Promise.all(testes);
+
+    /* GRAVA SEMPRE, não só no cron: quem abriu a tela acabou de produzir a
+       leitura mais fresca que existe, e jogá-la fora obrigaria o modal a esperar
+       o próximo cron para saber de algo que já se sabe.
+       `null` (não deu para checar) NÃO é gravado como quebrado — sobrescrever um
+       veredito bom com uma dúvida de rede faria o modal acusar falha que não
+       houve. */
+    const ajuda: Record<string, string> = {
+      gmail_oauth: "Reconecte o Gmail em Configurações › Integrações.",
+      painel_supabase: "É uma chave de ambiente: troque em Supabase › Edge Functions › Secrets.",
+      compartilhar_planilha: 'Abra a planilha em Compartilhar e deixe "qualquer pessoa com o link" como leitor.',
+      compartilhar_com_conta: "Compartilhe a planilha (leitor basta) com a conta Google conectada ao Hub.",
+    };
+
+    await Promise.all(integracoes.map(async (i) => {
+      if (i.conectado === null) return;
+      const { error } = await supa.rpc("integracao_estado_gravar", {
+        p_chave: i.chave,
+        p_nome: i.nome,
+        p_para_que: i.para_que,
+        p_conectado: i.conectado,
+        p_detalhe: i.detalhe,
+        p_causa: i.conectado ? null : i.detalhe,
+        p_o_que_fazer: i.conectado ? null : (i.conserto ? ajuda[i.conserto] ?? null : null),
+        p_gravidade: i.gravidade ?? "media",
+      });
+      if (error) console.error("integracao_estado_gravar", i.chave, error.message);
+    }));
 
     return json({
       ok: true,

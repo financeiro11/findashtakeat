@@ -154,6 +154,8 @@ export const O_QUE_FAZ: Record<string, string> = {
   "nota-ler-arquivo": "lê o arquivo da nota: valor, CNPJ e data",
   "email-responder-preparar":
     "prepara a tratativa dos e-mails acionáveis do briefing: a resposta e/ou a tarefa",
+  "integracoes-checar":
+    "confere se as portas do Hub para fora ainda abrem (Gmail, planilhas, Omie, Asaas, IA)",
   "automacoes-diagnosticar-dia":
     "a IA lê as automações que falharam e escreve a causa provável e o que fazer",
   "notas-explicar-rodada":

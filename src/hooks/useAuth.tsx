@@ -9,8 +9,15 @@ type AuthCtx = {
   user: User | null;
   profile: Profile | null;
   loading: boolean;
+  /**
+   * Verdadeiro quando a pessoa chegou pelo link de "esqueci a senha". Ela TEM
+   * sessão (o link autentica), mas ainda não escolheu senha nova — e enquanto
+   * não escolher, o Hub não abre. Ver `components/RedefinirSenha.tsx`.
+   */
+  recuperacao: boolean;
   signIn: (email: string, password: string) => Promise<{ error?: string }>;
   signOut: () => Promise<void>;
+  definirNovaSenha: (senha: string) => Promise<{ error?: string }>;
   refreshProfile: () => Promise<void>;
 };
 
@@ -21,6 +28,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [profile, setProfile] = useState<Profile | null>(null);
   const [loading, setLoading] = useState(true);
+  const [recuperacao, setRecuperacao] = useState(false);
 
   const loadProfile = async (uid: string) => {
     const { data } = await supabase.from("profiles").select("*").eq("user_id", uid).maybeSingle();
@@ -28,7 +36,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   };
 
   useEffect(() => {
-    const { data: sub } = supabase.auth.onAuthStateChange((_e, s) => {
+    const { data: sub } = supabase.auth.onAuthStateChange((evento, s) => {
+      // O link de recuperação abre uma sessão de verdade. Sem marcar isto, a
+      // pessoa cairia direto no Hub logada e NUNCA trocaria a senha — que é o
+      // único motivo pelo qual ela clicou no link.
+      if (evento === "PASSWORD_RECOVERY") setRecuperacao(true);
+      if (evento === "SIGNED_OUT") setRecuperacao(false);
+
       setSession(s);
       setUser(s?.user ?? null);
       if (s?.user) setTimeout(() => loadProfile(s.user.id), 0);
@@ -47,10 +61,25 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const { error } = await supabase.auth.signInWithPassword({ email, password });
     return error ? { error: error.message } : {};
   };
-  const signOut = async () => { await supabase.auth.signOut(); };
+  const signOut = async () => { setRecuperacao(false); await supabase.auth.signOut(); };
+
+  const definirNovaSenha = async (senha: string) => {
+    const { error } = await supabase.auth.updateUser({ password: senha });
+    if (error) return { error: error.message };
+    setRecuperacao(false);
+    return {};
+  };
+
   const refreshProfile = async () => { if (user) await loadProfile(user.id); };
 
-  return <Ctx.Provider value={{ session, user, profile, loading, signIn, signOut, refreshProfile }}>{children}</Ctx.Provider>;
+  return (
+    <Ctx.Provider value={{
+      session, user, profile, loading, recuperacao,
+      signIn, signOut, definirNovaSenha, refreshProfile,
+    }}>
+      {children}
+    </Ctx.Provider>
+  );
 }
 
 export const useAuth = () => {

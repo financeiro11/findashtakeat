@@ -1,29 +1,65 @@
+// Definir a senha de OUTRA pessoa. Ferramenta de administração, não de autoatendimento.
+//
+// ---------------------------------------------------------------------------
+// POR QUE ESTA FUNÇÃO FOI REESCRITA EM 30/08/2026
+//
+// A versão anterior tinha um único portão: um código de quatro dígitos, "2122",
+// escrito em texto puro AQUI e também em `src/pages/Login.tsx` — ou seja, no
+// bundle que qualquer pessoa baixa ao abrir a tela de login. Com ele, qualquer
+// um na internet trocava a senha de QUALQUER e-mail, sem estar logado. Foi
+// exatamente por aí que entraram, e o aviso chegou por Instagram.
+//
+// Duas lições viraram regra aqui:
+//
+//   1. SEGREDO NO FRONT NÃO É SEGREDO. Tudo que o navegador precisa saber para
+//      chamar a função, o atacante também sabe. O portão tem de ser um usuário
+//      autenticado de verdade — `requireUser` valida o token de sessão contra o
+//      Auth, e recusa a anon key sozinha (que é pública).
+//   2. `verify_jwt` DO GATEWAY NÃO BASTA. Ele aceita qualquer JWT assinado pelo
+//      projeto, e a anon key é um desses. A checagem interna é a que vale.
+//
+// O caminho de "esqueci a senha" do usuário comum NÃO passa mais por aqui: ele é
+// o e-mail de recuperação do próprio Supabase (`resetPasswordForEmail`), que
+// prova a posse da caixa de entrada — ver `src/pages/Login.tsx`.
+
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.0";
+import { requireUser } from "../_shared/auth.ts";
+import { motivoSenhaRuim } from "../_shared/senha.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
 };
 
-const SECRET_CODE = "2122";
+const json = (corpo: unknown, status = 200) =>
+  new Response(JSON.stringify(corpo), {
+    status,
+    headers: { ...corsHeaders, "Content-Type": "application/json" },
+  });
 
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response(null, { headers: corsHeaders });
 
   try {
-    const { email, secret, password } = await req.json();
-    if (!email || !secret || !password) throw new Error("Dados incompletos");
-    if (String(secret).trim() !== SECRET_CODE) throw new Error("Código secreto inválido");
-    if (String(password).length < 6) throw new Error("Senha deve ter ao menos 6 caracteres");
+    // PORTÃO. Antes de ler o corpo, antes de tudo: quem está chamando?
+    // "parcerias" fica de fora porque é o cargo de menor alcance no Hub (ver
+    // AppLayout) — quem não pode ver o financeiro não redefine senha de ninguém.
+    const quem = await requireUser(req, { bloquearCargos: ["parcerias"] });
+
+    const { email, password } = await req.json();
+    if (!email || !password) throw new Error("Dados incompletos");
+
+    const target = String(email).trim().toLowerCase();
+
+    const ruim = motivoSenhaRuim(String(password), target);
+    if (ruim) throw new Error(ruim);
 
     const admin = createClient(
       Deno.env.get("SUPABASE_URL")!,
       Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!,
     );
 
-    const target = String(email).trim().toLowerCase();
-
-    // 1) Read the profile, but don't trust profile.user_id until it is verified in Auth.
+    // 1) Lê o cadastro, mas não confia em `profile.user_id` até conferir no Auth.
     let authUserId: string | null = null;
     const { data: profiles, error: profilesErr } = await admin
       .from("profiles")
@@ -33,7 +69,7 @@ Deno.serve(async (req) => {
     if (profilesErr) throw profilesErr;
     let prof = (profiles ?? [])[0] ?? null;
 
-    // 2) Auth is the source of truth. Find the real Auth user by email.
+    // 2) O Auth é a fonte da verdade. Acha o usuário real pelo e-mail.
     for (let page = 1; page <= 10 && !authUserId; page++) {
       const { data, error } = await admin.auth.admin.listUsers({ page, perPage: 200 });
       if (error) throw error;
@@ -51,7 +87,9 @@ Deno.serve(async (req) => {
     }
 
     if (!authUserId) {
-      // Auth user doesn't exist yet — create it using profile data if available.
+      // Conserto de descompasso: existe cadastro em `profiles` mas o usuário do
+      // Auth sumiu. Continua sendo permitido porque é reparo real, e agora exige
+      // um administrador logado — não é mais porta de entrada para desconhecido.
       const nome = (prof as any)?.nome ?? target.split("@")[0];
       const cargo = (prof as any)?.cargo ?? "";
       const { data: created, error: createErr } = await admin.auth.admin.createUser({
@@ -67,35 +105,43 @@ Deno.serve(async (req) => {
       if (prof?.id) {
         await admin.from("profiles").delete().ilike("email", target).neq("id", prof.id);
         await admin.from("profiles").delete().eq("user_id", authUserId).neq("id", prof.id);
-        const { error: profileErr } = await admin.from("profiles").update({ user_id: authUserId, email: target }).eq("id", prof.id);
+        const { error: profileErr } = await admin
+          .from("profiles").update({ user_id: authUserId, email: target }).eq("id", prof.id);
         if (profileErr) throw profileErr;
       } else {
-        const { error: profileErr } = await admin.from("profiles").insert({ user_id: authUserId, email: target, nome, cargo });
+        const { error: profileErr } = await admin
+          .from("profiles").insert({ user_id: authUserId, email: target, nome, cargo });
         if (profileErr) throw profileErr;
       }
 
-      return new Response(JSON.stringify({ ok: true, created: true, user_id: authUserId }), {
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
-      });
+      console.log(`[admin-reset-password] ${quem.email ?? quem.userId} RECRIOU o acesso de ${target}`);
+      return json({ ok: true, created: true, user_id: authUserId });
     }
 
     if (prof?.id && prof.user_id !== authUserId) {
       await admin.from("profiles").delete().ilike("email", target).neq("id", prof.id);
       await admin.from("profiles").delete().eq("user_id", authUserId).neq("id", prof.id);
-      const { error: profileErr } = await admin.from("profiles").update({ user_id: authUserId, email: target }).eq("id", prof.id);
+      const { error: profileErr } = await admin
+        .from("profiles").update({ user_id: authUserId, email: target }).eq("id", prof.id);
       if (profileErr) throw profileErr;
     }
 
     const { error } = await admin.auth.admin.updateUserById(authUserId, { password });
     if (error) throw error;
 
-    return new Response(JSON.stringify({ ok: true }), {
-      headers: { ...corsHeaders, "Content-Type": "application/json" },
-    });
+    // Trocar a senha não derruba sessão nenhuma por conta própria. Se a conta foi
+    // usada por outra pessoa, a senha nova sozinha não expulsa ninguém — quem
+    // expulsa é isto. É o passo que faltava na versão antiga.
+    const { error: erroSair } = await admin.auth.admin.signOut(authUserId, "global");
+    if (erroSair) console.error("[admin-reset-password] falhou ao encerrar sessões:", erroSair.message);
+
+    console.log(`[admin-reset-password] ${quem.email ?? quem.userId} redefiniu a senha de ${target}`);
+    return json({ ok: true, sessoesEncerradas: !erroSair });
   } catch (e: any) {
-    return new Response(JSON.stringify({ error: e.message }), {
-      status: 400,
-      headers: { ...corsHeaders, "Content-Type": "application/json" },
-    });
+    const msg = e?.message ?? "Erro";
+    // 401 quando o problema é quem chamou; 400 quando é o que foi pedido. Ajuda a
+    // enxergar tentativa de acesso no log em vez de virar mais um "erro 400".
+    const status = /autenticad|permiss/i.test(msg) ? 401 : 400;
+    return json({ error: msg }, status);
   }
 });

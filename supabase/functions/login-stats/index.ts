@@ -1,4 +1,19 @@
+// Receita bruta, cashburn e editais ativos.
+//
+// FECHADA EM 30/08/2026. Esta função nasceu para enfeitar a TELA DE LOGIN com
+// números ao vivo — ou seja, publicava receita e cashburn da Takeat para
+// qualquer pessoa que abrisse a página, sem login, e ainda se atualizava
+// sozinha a cada 15 segundos. Não havia checagem nenhuma: service role e porta
+// aberta.
+//
+// A tela de login não mostra mais número nenhum da empresa. Um painel público
+// não tem como distinguir "cliente curioso" de "concorrente", e faturamento não
+// é cartão de visitas.
+//
+// A função segue existindo para telas internas, agora exigindo pessoa logada.
+
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.0";
+import { requireUser } from "../_shared/auth.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -58,6 +73,8 @@ Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
 
   try {
+    await requireUser(req);
+
     const supabase = createClient(
       Deno.env.get("SUPABASE_URL")!,
       Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!
@@ -101,10 +118,14 @@ Deno.serve(async (req) => {
       JSON.stringify({ receita, cashburn, editaisAtivos, ts: Date.now() }),
       { headers: { ...corsHeaders, "Content-Type": "application/json" } }
     );
-  } catch (e) {
+  } catch (e: any) {
+    const msg = e?.message ?? String(e);
+    // Recusa com o código certo. Devolver 200 com zeros — como fazia antes —
+    // faria a tela mostrar "R$ 0" no lugar de "você não tem acesso a isto".
+    const status = /autenticad|permiss/i.test(msg) ? 401 : 400;
     return new Response(
-      JSON.stringify({ error: String(e), receita: 0, cashburn: 0, editaisAtivos: 0 }),
-      { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      JSON.stringify({ error: msg, receita: 0, cashburn: 0, editaisAtivos: 0 }),
+      { status, headers: { ...corsHeaders, "Content-Type": "application/json" } }
     );
   }
 });

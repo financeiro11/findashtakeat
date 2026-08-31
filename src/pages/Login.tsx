@@ -1,56 +1,101 @@
+// A tela de login do Hub.
+//
+// ===========================================================================
+// REESCRITA EM 30/08/2026, DEPOIS DE UMA INVASÃO
+//
+// Alguém de fora entrou e avisou pelo Instagram. Esta tela era a porta, e ela
+// tinha três defeitos que se somavam:
+//
+//   1. A SENHA VINHA PREENCHIDA. `useState("123456")` — a senha padrão de todo
+//      mundo, já digitada no campo. Bastava escolher um nome e clicar em Entrar.
+//   2. A LISTA DE USUÁRIOS ERA PÚBLICA. Um seletor carregado por `list-users`
+//      entregava nome, cargo e e-mail do time inteiro a QUALQUER visitante, sem
+//      login. Era o cardápio de alvos.
+//   3. HAVIA UM CÓDIGO MESTRE NO BUNDLE. `SECRET_CODE = "2122"`, em texto puro
+//      neste arquivo, redefinia a senha de qualquer e-mail. Segredo que o
+//      navegador precisa saber não é segredo: está no JavaScript que qualquer
+//      pessoa baixa.
+//
+// E, de brinde, a faixa da esquerda publicava RECEITA e CASHBURN ao vivo para
+// quem nem tinha conta.
+//
+// ---------------------------------------------------------------------------
+// O QUE ENTROU NO LUGAR, e por quê
+//
+// • CAMPO DE E-MAIL DIGITADO, não lista. Quem lembra o e-mail é o gerenciador de
+//   senhas do navegador (`autoComplete="username"`), que preenche os dois campos
+//   de uma vez — mesma conveniência de antes, sem contar a ninguém quem trabalha
+//   aqui. O último e-mail usado fica NESTE aparelho, e só nele.
+// • RECUSA SEMPRE IGUAL. "E-mail ou senha incorretos", nunca "usuário não
+//   existe". A diferença entre as duas mensagens é o que transforma a tela num
+//   verificador de quem tem conta.
+// • FREIO QUE CRESCE a cada erro (ver `lib/loginTentativas.ts`).
+// • "ESQUECI A SENHA" É E-MAIL DE VERDADE. O link do Supabase prova que a pessoa
+//   tem a caixa de entrada. Nenhum código digitável substitui isso.
+// • A CAIXA "LEMBRAR DE MIM" PASSOU A FUNCIONAR (ver `lib/authStorage.ts`).
+// • NENHUM NÚMERO DA EMPRESA nesta tela.
+
 import { useState, useEffect } from "react";
 import { Navigate, useLocation } from "react-router-dom";
-import { Loader2, Lock, ArrowRight, Mail } from "lucide-react";
+import { Loader2, Lock, ArrowRight, Mail, ShieldCheck, LineChart, Radar, Bot } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Checkbox } from "@/components/ui/checkbox";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter,
 } from "@/components/ui/dialog";
 import { useAuth } from "@/hooks/useAuth";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { destinoSeguro, guardarDestino } from "@/lib/destinoLogin";
+import { lembraNesteDispositivo, lembrarNesteDispositivo } from "@/lib/authStorage";
+import {
+  esperaRestanteMs, formatarEspera, limparTentativas, registrarErro,
+} from "@/lib/loginTentativas";
 import { toast } from "sonner";
 import { supabase } from "@/integrations/supabase/client";
 import takeatLogo from "@/assets/takeat-logo-white.png";
 import financeBg from "@/assets/finance-bg-dashboard.jpg";
 
-type UserOpt = { nome: string; email: string; cargo?: string | null };
+/** O último e-mail usado, NESTE aparelho. Conveniência local; não sai daqui. */
+const CHAVE_ULTIMO_EMAIL = "hub:ultimo-email";
+
+function lerUltimoEmail(): string {
+  try { return localStorage.getItem(CHAVE_ULTIMO_EMAIL) ?? ""; } catch { return ""; }
+}
+function gravarUltimoEmail(email: string): void {
+  try { localStorage.setItem(CHAVE_ULTIMO_EMAIL, email); } catch { /* sem armazenamento */ }
+}
 
 export default function Login() {
   const { user, loading, signIn } = useAuth();
   const isMobile = useIsMobile();
   const location = useLocation();
-  const [linkEnviado, setLinkEnviado] = useState(false);
-  const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("123456");
-  const [showPwd, setShowPwd] = useState(false);
-  const [remember, setRemember] = useState(true);
-  const [busy, setBusy] = useState(false);
-  const [users, setUsers] = useState<UserOpt[]>([]);
-  const [seedShown, setSeedShown] = useState(false);
 
-  // Forgot-password flow (código interno)
-  const SECRET_CODE = "2122";
+  const [email, setEmail] = useState(lerUltimoEmail);
+  const [password, setPassword] = useState("");
+  const [showPwd, setShowPwd] = useState(false);
+  const [remember, setRemember] = useState(lembraNesteDispositivo);
+  const [busy, setBusy] = useState(false);
+  const [linkEnviado, setLinkEnviado] = useState(false);
+  const [esperaMs, setEsperaMs] = useState(() => esperaRestanteMs());
+
+  // Recuperação de senha por e-mail
   const [forgotOpen, setForgotOpen] = useState(false);
-  const [step, setStep] = useState<"code" | "password">("code");
   const [fpEmail, setFpEmail] = useState("");
-  const [code, setCode] = useState("");
-  const [newPwd, setNewPwd] = useState("");
-  const [newPwd2, setNewPwd2] = useState("");
   const [fpBusy, setFpBusy] = useState(false);
 
   useEffect(() => {
     document.title = "Login · Takeat Hub Financeiro";
-    supabase.functions.invoke("list-users").then(({ data }) => {
-      const list = ((data as any)?.users ?? []) as UserOpt[];
-      setUsers(list);
-      setSeedShown(list.length === 0);
-      if (list.length && !email) setEmail(list[0].email);
-    });
   }, []);
+
+  /* O relógio do freio. Só corre enquanto há espera — sem intervalo pendurado
+     na tela parada. */
+  useEffect(() => {
+    if (esperaMs <= 0) return;
+    const t = setInterval(() => setEsperaMs(esperaRestanteMs()), 1000);
+    return () => clearInterval(t);
+  }, [esperaMs > 0]);
 
   if (loading) return null;
   // Volta para onde a pessoa queria ir — o link de uma anotação, por exemplo. Este é o
@@ -59,37 +104,38 @@ export default function Login() {
   // layouts. Só caminho de dentro do Hub passa no filtro — ver lib/destinoLogin.
   if (user) return <Navigate to={destinoSeguro((location.state as any)?.destino)} replace />;
 
-  const selected = users.find((u) => u.email === email);
-  const initials = (selected?.nome || email || "??")
-    .split(/[ @.]/)
-    .filter(Boolean)
-    .slice(0, 2)
-    .map((s) => s[0]?.toUpperCase())
-    .join("");
+  const travado = esperaMs > 0;
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!email) return toast.error("Selecione um usuário");
-    setBusy(true);
-    const { error } = await signIn(email, password);
-    setBusy(false);
-    if (error) toast.error(error);
-  };
+    if (travado) return;
 
-  const seedFirst = async () => {
+    const alvo = email.trim().toLowerCase();
+    if (!alvo || !password) return toast.error("Preencha e-mail e senha.");
+
+    // A escolha da caixa precisa valer ANTES de a sessão ser gravada.
+    lembrarNesteDispositivo(remember);
+
     setBusy(true);
-    const { data, error } = await supabase.functions.invoke("create-user", {
-      body: { nome: "Henrique Moura", cargo: "Financeiro", email: "henrique@finops.com", password: "123456" },
-    });
+    const { error } = await signIn(alvo, password);
     setBusy(false);
-    if (error || (data as any)?.error) {
-      toast.error((data as any)?.error || error?.message || "Erro");
-    } else {
-      toast.success("Usuário criado: henrique@finops.com / 123456");
-      setUsers([{ nome: "Henrique Moura", email: "henrique@finops.com", cargo: "Financeiro" }]);
-      setEmail("henrique@finops.com");
-      setSeedShown(false);
+
+    if (error) {
+      const espera = registrarErro();
+      setEsperaMs(espera);
+      setPassword("");
+      // Mensagem única de propósito. O erro cru do Supabase distingue e-mail
+      // inexistente de senha errada — e é essa distinção que entrega a lista de
+      // quem tem conta a quem está testando endereços.
+      return toast.error(
+        espera > 0
+          ? `E-mail ou senha incorretos. Aguarde ${formatarEspera(espera)} antes de tentar de novo.`
+          : "E-mail ou senha incorretos.",
+      );
     }
+
+    limparTentativas();
+    gravarUltimoEmail(alvo);
   };
 
   /**
@@ -100,53 +146,59 @@ export default function Login() {
    * usuário novo no Auth, fora da tabela `profiles` e fora do controle de cargo.
    */
   const enviarMagicLink = async () => {
-    if (!email) return toast.error("Selecione seu usuário");
+    const alvo = email.trim().toLowerCase();
+    if (!alvo) return toast.error("Digite seu e-mail.");
     guardarDestino((location.state as any)?.destino);
+
+    // O link do e-mail costuma abrir numa ABA NOVA, e `sessionStorage` não
+    // atravessa abas: com "lembrar" desmarcado a sessão chegaria e se perderia.
+    // Neste caminho a persistência é sempre local.
+    lembrarNesteDispositivo(true);
+
     setBusy(true);
     const { error } = await supabase.auth.signInWithOtp({
-      email,
+      email: alvo,
       // `emailRedirectTo` continua sendo a RAIZ de propósito: qualquer outro endereço
       // precisa estar na allow-list de redirecionamento do projeto no Supabase, e um
       // caminho novo ali derrubaria o login por magic link inteiro. Quem leva o destino
-      // até o outro lado é o `guardarDestino` abaixo — ver lib/destinoLogin.
+      // até o outro lado é o `guardarDestino` acima — ver lib/destinoLogin.
       options: { emailRedirectTo: `${window.location.origin}/`, shouldCreateUser: false },
     });
     setBusy(false);
-    if (error) return toast.error(error.message);
+
+    // Mesma resposta em qualquer caso, pelo mesmo motivo da recusa de login:
+    // "esse e-mail não existe" é um verificador de contas de graça.
+    if (error && !/not found|no user|signups? not allowed/i.test(error.message)) {
+      return toast.error(error.message);
+    }
+    gravarUltimoEmail(alvo);
     setLinkEnviado(true);
-    toast.success("Link enviado — confira seu e-mail.");
+    toast.success("Se houver uma conta com esse e-mail, o link acabou de sair.");
   };
 
-  const openForgot = () => {
-    setFpEmail(email || "");
-    setCode("");
-    setNewPwd("");
-    setNewPwd2("");
-    setStep("code");
+  const abrirEsqueci = () => {
+    setFpEmail(email.trim());
     setForgotOpen(true);
   };
 
-  const verifyCode = () => {
-    if (code.trim() !== SECRET_CODE) return toast.error("Código incorreto");
-    setStep("password");
-  };
+  const enviarRecuperacao = async () => {
+    const alvo = fpEmail.trim().toLowerCase();
+    if (!alvo) return toast.error("Digite seu e-mail.");
 
-  const setNewPassword = async () => {
-    if (!fpEmail) return toast.error("Selecione um usuário antes");
-    if (newPwd.length < 6) return toast.error("Senha deve ter ao menos 6 caracteres");
-    if (newPwd !== newPwd2) return toast.error("As senhas não coincidem");
     setFpBusy(true);
-    const { data, error } = await supabase.functions.invoke("admin-reset-password", {
-      body: { email: fpEmail, secret: code.trim(), password: newPwd },
+    // A raiz, de novo, por causa da allow-list de redirecionamento. Quem detecta
+    // que a volta é de recuperação — e obriga a trocar a senha antes de abrir o
+    // Hub — é o `AuthProvider`, pelo evento PASSWORD_RECOVERY.
+    const { error } = await supabase.auth.resetPasswordForEmail(alvo, {
+      redirectTo: `${window.location.origin}/`,
     });
     setFpBusy(false);
-    if (error || (data as any)?.error) {
-      return toast.error((data as any)?.error || error?.message || "Erro ao redefinir senha");
+
+    if (error && !/not found|no user/i.test(error.message)) {
+      return toast.error(error.message);
     }
-    toast.success("Senha redefinida com sucesso");
     setForgotOpen(false);
-    setEmail(fpEmail);
-    setPassword(newPwd);
+    toast.success("Se houver uma conta com esse e-mail, o link de redefinição acabou de sair.");
   };
 
   return (
@@ -202,48 +254,39 @@ export default function Login() {
               Conciliação automática, DRE em tempo real e radar de editais com IA. Tudo isso enquanto você dorme.
             </p>
 
-            <LiveStats />
+            {/*
+              Aqui ficavam RECEITA BRUTA, CASHBURN e EDITAIS ATIVOS, ao vivo, para
+              quem ainda não tinha entrado. Um painel público não distingue cliente
+              curioso de concorrente. O que a empresa faz pode ser dito sem número.
+            */}
+            <div className="mt-10 grid grid-cols-1 gap-5 border-t border-white/10 pt-6 sm:grid-cols-3 md:max-w-lg">
+              <Recurso icone={LineChart} titulo="DRE e DFC" texto="Fechamento com rastro até o lançamento." />
+              <Recurso icone={Radar} titulo="Radar de editais" texto="Oportunidades garimpadas todo dia." />
+              <Recurso icone={Bot} titulo="Automações" texto="O trabalho repetitivo roda sozinho." />
+            </div>
           </div>
 
           {/* Right: login card */}
           <div className="w-full justify-self-center lg:justify-self-end">
             <div className="w-full rounded-2xl bg-white p-6 text-foreground shadow-2xl md:p-7">
               <h2 className="text-xl font-semibold">Entrar</h2>
-              <p className="mt-1 text-sm text-muted-foreground">Escolha seu usuário e digite sua senha.</p>
+              <p className="mt-1 text-sm text-muted-foreground">Acesso restrito ao time da Takeat.</p>
 
               <form onSubmit={submit} className="mt-5 space-y-4">
                 <div className="space-y-1.5">
-                  <Label className="text-xs font-medium text-foreground/80">Usuário</Label>
-                  {users.length > 0 ? (
-                    <Select value={email} onValueChange={setEmail}>
-                      <SelectTrigger className="h-12">
-                        <SelectValue placeholder="Selecione…">
-                          {selected && (
-                            <div className="flex items-center gap-2.5">
-                              <span className="flex h-7 w-7 items-center justify-center rounded-md bg-primary text-[11px] font-semibold text-primary-foreground">
-                                {initials}
-                              </span>
-                              <span className="flex flex-col items-start leading-tight">
-                                <span className="text-sm font-medium">{selected.nome}</span>
-                                <span className="text-[11px] text-muted-foreground">
-                                  {selected.cargo || "Usuário"}
-                                </span>
-                              </span>
-                            </div>
-                          )}
-                        </SelectValue>
-                      </SelectTrigger>
-                      <SelectContent>
-                        {users.map((u) => (
-                          <SelectItem key={u.email} value={u.email}>
-                            {u.nome} — {u.email}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  ) : (
-                    <Input type="email" placeholder="email@finops.com" value={email} onChange={(e) => setEmail(e.target.value)} />
-                  )}
+                  <Label htmlFor="email" className="text-xs font-medium text-foreground/80">E-mail</Label>
+                  <Input
+                    id="email"
+                    name="email"
+                    type="email"
+                    required
+                    autoComplete="username"
+                    autoFocus={!email}
+                    placeholder="voce@takeat.app"
+                    value={email}
+                    onChange={(e) => setEmail(e.target.value)}
+                    className="h-11"
+                  />
                 </div>
 
                 <div className="space-y-1.5">
@@ -251,8 +294,11 @@ export default function Login() {
                   <div className="relative">
                     <Input
                       id="password"
+                      name="password"
                       type={showPwd ? "text" : "password"}
                       required
+                      autoComplete="current-password"
+                      autoFocus={!!email}
                       value={password}
                       onChange={(e) => setPassword(e.target.value)}
                       className="h-11 pr-20"
@@ -274,14 +320,24 @@ export default function Login() {
                   </label>
                   <button
                     type="button"
-                    onClick={openForgot}
+                    onClick={abrirEsqueci}
                     className="text-xs font-medium text-primary hover:underline"
                   >
                     Esqueci a senha
                   </button>
                 </div>
 
-                <Button type="submit" className="h-11 w-full text-sm font-semibold" disabled={busy}>
+                {travado && (
+                  <p className="rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-[12px] text-destructive">
+                    Tentativas demais. Você poderá tentar de novo em {formatarEspera(esperaMs)}.
+                  </p>
+                )}
+
+                <Button
+                  type="submit"
+                  className="h-11 w-full text-sm font-semibold"
+                  disabled={busy || travado}
+                >
                   {busy ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
                   Entrar
                   {!busy && <ArrowRight className="ml-2 h-4 w-4" />}
@@ -306,21 +362,21 @@ export default function Login() {
                     </Button>
                   </div>
                 )}
-
-                {seedShown && (
-                  <Button type="button" variant="outline" className="w-full" onClick={seedFirst} disabled={busy}>
-                    Criar primeiro usuário (Henrique Moura)
-                  </Button>
-                )}
               </form>
 
               <div className="mt-5 flex items-center justify-between border-t border-border pt-4 text-[11px] text-muted-foreground">
                 <span className="flex items-center gap-1.5">
                   <Lock className="h-3 w-3" /> Conexão segura via SSL · LGPD
                 </span>
-                <span>v3.2.1</span>
+                <span>v3.3.0</span>
               </div>
             </div>
+
+            <p className="mt-4 flex items-start gap-1.5 px-1 text-[11px] leading-relaxed text-white/50">
+              <ShieldCheck className="mt-px h-3.5 w-3.5 shrink-0" />
+              Precisa de acesso? Peça ao time financeiro. Contas são criadas apenas
+              internamente — esta tela não faz cadastro.
+            </p>
           </div>
         </div>
       </div>
@@ -330,72 +386,35 @@ export default function Login() {
           <DialogHeader>
             <DialogTitle>Redefinir senha</DialogTitle>
             <DialogDescription>
-              {step === "code" && "Digite o código interno de 4 dígitos para liberar a redefinição de senha."}
-              {step === "password" && `Defina a nova senha para ${fpEmail}.`}
+              Enviamos um link para o seu e-mail. Ao clicar nele, você escolhe a nova senha.
             </DialogDescription>
           </DialogHeader>
 
-          {step === "code" && (
-            <div className="space-y-2 py-2">
-              <Label>Código interno</Label>
-              <Input
-                inputMode="numeric"
-                maxLength={4}
-                value={code}
-                onChange={(e) => setCode(e.target.value.replace(/\D/g, ""))}
-                placeholder="0000"
-                className="tracking-[0.5em] text-center text-lg"
-                autoFocus
-                onKeyDown={(e) => { if (e.key === "Enter") verifyCode(); }}
-              />
-            </div>
-          )}
-
-          {step === "password" && (
-            <div className="space-y-3 py-2">
-              <div className="space-y-1.5">
-                <Label>Usuário</Label>
-                {users.length > 0 ? (
-                  <Select value={fpEmail} onValueChange={setFpEmail}>
-                    <SelectTrigger><SelectValue placeholder="Selecione…" /></SelectTrigger>
-                    <SelectContent>
-                      {users.map(u => (
-                        <SelectItem key={u.email} value={u.email}>
-                          {u.nome} — {u.email}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                ) : (
-                  <Input type="email" value={fpEmail} onChange={(e) => setFpEmail(e.target.value)} />
-                )}
-              </div>
-              <div className="space-y-1.5">
-                <Label>Nova senha</Label>
-                <Input type="password" value={newPwd} onChange={(e) => setNewPwd(e.target.value)} />
-              </div>
-              <div className="space-y-1.5">
-                <Label>Confirmar senha</Label>
-                <Input type="password" value={newPwd2} onChange={(e) => setNewPwd2(e.target.value)} />
-              </div>
-            </div>
-          )}
+          <div className="space-y-2 py-2">
+            <Label htmlFor="fp-email">Seu e-mail</Label>
+            <Input
+              id="fp-email"
+              type="email"
+              autoComplete="username"
+              value={fpEmail}
+              onChange={(e) => setFpEmail(e.target.value)}
+              placeholder="voce@takeat.app"
+              autoFocus
+              onKeyDown={(e) => { if (e.key === "Enter" && !fpBusy) enviarRecuperacao(); }}
+            />
+            <p className="text-[11px] text-muted-foreground">
+              O link vale por pouco tempo e só funciona uma vez.
+            </p>
+          </div>
 
           <DialogFooter>
             <Button variant="outline" onClick={() => setForgotOpen(false)} disabled={fpBusy}>
               Cancelar
             </Button>
-            {step === "code" && (
-              <Button onClick={verifyCode} disabled={fpBusy || code.length < 4}>
-                Verificar
-              </Button>
-            )}
-            {step === "password" && (
-              <Button onClick={setNewPassword} disabled={fpBusy}>
-                {fpBusy && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-                Redefinir senha
-              </Button>
-            )}
+            <Button onClick={enviarRecuperacao} disabled={fpBusy || !fpEmail.trim()}>
+              {fpBusy && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+              Enviar link
+            </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -403,99 +422,16 @@ export default function Login() {
   );
 }
 
-function Stat({ label, value, pulse }: { label: string; value: string; pulse?: boolean }) {
+function Recurso({
+  icone: Icone, titulo, texto,
+}: {
+  icone: typeof LineChart; titulo: string; texto: string;
+}) {
   return (
     <div>
-      <div className="flex items-center gap-1.5">
-        <span className="relative flex h-1.5 w-1.5">
-          <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-75" />
-          <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-emerald-400" />
-        </span>
-        <div className="text-[10px] font-semibold tracking-[0.15em] text-white/55">{label}</div>
-      </div>
-      <div
-        key={value}
-        className={`mt-1 text-xl font-bold tracking-tight tabular-nums md:text-2xl animate-fade-in ${
-          pulse ? "text-white" : "text-white"
-        }`}
-      >
-        {value}
-      </div>
+      <Icone className="h-4 w-4 text-white/55" aria-hidden />
+      <div className="mt-2 text-[13px] font-semibold text-white/90">{titulo}</div>
+      <div className="mt-0.5 text-[11.5px] leading-relaxed text-white/55">{texto}</div>
     </div>
   );
 }
-
-function fmtBRLCompact(n: number): string {
-  const abs = Math.abs(n);
-  if (abs >= 1_000_000)
-    return `R$ ${(n / 1_000_000).toLocaleString("pt-BR", {
-      minimumFractionDigits: 2,
-      maximumFractionDigits: 2,
-    })}M`;
-  if (abs >= 1_000)
-    return `R$ ${(n / 1_000).toLocaleString("pt-BR", {
-      maximumFractionDigits: 0,
-    })}k`;
-  return n.toLocaleString("pt-BR", {
-    style: "currency",
-    currency: "BRL",
-    maximumFractionDigits: 0,
-  });
-}
-
-function LiveStats() {
-  const [stats, setStats] = useState<{
-    receita: number;
-    cashburn: number;
-    editaisAtivos: number;
-  } | null>(null);
-
-  const refetch = async () => {
-    const { data } = await supabase.functions.invoke("login-stats");
-    if (data && typeof data.receita === "number") {
-      setStats({
-        receita: data.receita,
-        cashburn: data.cashburn,
-        editaisAtivos: data.editaisAtivos,
-      });
-    }
-  };
-
-  useEffect(() => {
-    refetch();
-    const t = setInterval(refetch, 15000);
-
-    // Realtime: refresh whenever underlying data changes
-    const channel = supabase
-      .channel("login-stats-rt")
-      .on(
-        "postgres_changes",
-        { event: "*", schema: "public", table: "demonstracoes_contabeis" },
-        () => refetch()
-      )
-      .on(
-        "postgres_changes",
-        { event: "*", schema: "public", table: "editais" },
-        () => refetch()
-      )
-      .subscribe();
-
-    return () => {
-      clearInterval(t);
-      supabase.removeChannel(channel);
-    };
-  }, []);
-
-  const receitaFmt = stats ? fmtBRLCompact(stats.receita) : "—";
-  const cashburnFmt = stats ? fmtBRLCompact(stats.cashburn) : "—";
-  const editaisFmt = stats ? String(stats.editaisAtivos) : "—";
-
-  return (
-    <div className="mt-10 grid grid-cols-3 gap-6 border-t border-white/10 pt-6 md:max-w-lg">
-      <Stat label="RECEITA BRUTA" value={receitaFmt} />
-      <Stat label="EDITAIS ATIVOS" value={editaisFmt} />
-      <Stat label="CASHBURN" value={cashburnFmt} />
-    </div>
-  );
-}
-

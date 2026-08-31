@@ -3,9 +3,10 @@ import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
 import { Toaster as Sonner } from "@/components/ui/sonner";
 import { Toaster } from "@/components/ui/toaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
-import { AuthProvider } from "@/hooks/useAuth";
+import { AuthProvider, useAuth } from "@/hooks/useAuth";
 import AppLayout from "@/components/AppLayout";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
+import RedefinirSenha from "@/components/RedefinirSenha";
 import Dashboard from "./pages/Dashboard";
 import DashboardLegacy from "./pages/DashboardLegacy";
 import Caixa from "./pages/Caixa";
@@ -110,13 +111,30 @@ const App = () => (
       <BrowserRouter>
         <AuthProvider>
           <ErrorBoundary>
-            <Rotas />
+            <PortaoDeRecuperacao>
+              <Rotas />
+            </PortaoDeRecuperacao>
           </ErrorBoundary>
         </AuthProvider>
       </BrowserRouter>
     </TooltipProvider>
   </QueryClientProvider>
 );
+
+/**
+ * Quem chegou pelo link de "esqueci a senha" troca a senha ANTES de qualquer
+ * outra coisa. Fica acima das rotas — desktop e celular — porque a volta do link
+ * cai na raiz, e daria em qualquer tela.
+ *
+ * Bloquear em vez de sugerir é a decisão: quem clicou no link clicou para trocar
+ * a senha. Deixar entrar sem trocar mantém viva a senha velha, que é justamente
+ * a que se quer aposentar.
+ */
+function PortaoDeRecuperacao({ children }: { children: React.ReactNode }) {
+  const { recuperacao } = useAuth();
+  if (recuperacao) return <RedefinirSenha />;
+  return <>{children}</>;
+}
 
 function Rotas() {
   const isMobile = useIsMobile();

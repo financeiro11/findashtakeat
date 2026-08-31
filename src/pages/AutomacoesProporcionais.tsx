@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Badge } from "@/components/ui/badge";
 import { Checkbox } from "@/components/ui/checkbox";
 import { KpiCard } from "@/components/ui/kpi-card";
 import {
@@ -10,7 +9,7 @@ import {
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import {
   RefreshCw, Loader2, ExternalLink, Check, X, MessageSquare, Search,
-  CheckCircle2, Clock, Send,
+  Clock, Send,
 } from "lucide-react";
 import { supabase } from "@/integrations/supabase/client";
 import { toast } from "@/hooks/use-toast";
@@ -80,6 +79,9 @@ type Rec = {
   mensagem: string;
   approvalRaw: string;
   envioRaw: string;
+  /** "Pode enviar" cru, independente de já ter sido enviado. */
+  approved: boolean;
+  refused: boolean;
   sent: boolean;
   status: Status;
 };
@@ -151,6 +153,8 @@ export default function AutomacoesProporcionais() {
         mensagem: g(row, cols.mensagem),
         approvalRaw,
         envioRaw,
+        approved,
+        refused,
         sent,
         status,
       };
@@ -414,32 +418,28 @@ export default function AutomacoesProporcionais() {
                           </button>
                         </TableCell>
                         <TableCell>
-                          {r.sent ? (
-                            <Badge className="gap-1 bg-[hsl(var(--pos)/0.12)] text-[hsl(var(--pos))] hover:bg-[hsl(var(--pos)/0.12)]">
-                              <CheckCircle2 className="h-3 w-3" /> Aprovado
-                            </Badge>
-                          ) : (
-                            <div className="flex items-center gap-1.5">
-                              <Button
-                                size="sm"
-                                variant={r.status === "aprovado" ? "default" : "outline"}
-                                disabled={saving}
-                                onClick={() => setApproval(r.idx, "Sim")}
-                                className={cn("h-7 px-2", r.status === "aprovado" && "bg-[hsl(var(--pos))] hover:bg-[hsl(var(--pos)/0.88)]")}
-                              >
-                                {saving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Check className="h-3.5 w-3.5" />} Sim
-                              </Button>
-                              <Button
-                                size="sm"
-                                variant={r.status === "recusado" ? "destructive" : "outline"}
-                                disabled={saving}
-                                onClick={() => setApproval(r.idx, "Não")}
-                                className="h-7 px-2"
-                              >
-                                <X className="h-3.5 w-3.5" /> Não
-                              </Button>
-                            </div>
-                          )}
+                          {/* Sempre editável: a coluna continua valendo depois do disparo,
+                              e é ela que trava um reenvio. O "já foi" quem conta é a coluna Envio. */}
+                          <div className="flex items-center gap-1.5">
+                            <Button
+                              size="sm"
+                              variant={r.approved ? "default" : "outline"}
+                              disabled={saving}
+                              onClick={() => setApproval(r.idx, "Sim")}
+                              className={cn("h-7 px-2", r.approved && "bg-[hsl(var(--pos))] hover:bg-[hsl(var(--pos)/0.88)]")}
+                            >
+                              {saving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Check className="h-3.5 w-3.5" />} Sim
+                            </Button>
+                            <Button
+                              size="sm"
+                              variant={r.refused ? "destructive" : "outline"}
+                              disabled={saving}
+                              onClick={() => setApproval(r.idx, "Não")}
+                              className="h-7 px-2"
+                            >
+                              <X className="h-3.5 w-3.5" /> Não
+                            </Button>
+                          </div>
                         </TableCell>
                         <TableCell className="whitespace-nowrap text-sm">
                           {r.sent ? (

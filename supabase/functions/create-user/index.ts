@@ -54,6 +54,21 @@ Deno.serve(async (req) => {
     const ruim = motivoSenhaRuim(senha, alvo);
     if (ruim) throw new Error(ruim);
 
+    // O PORTEIRO. Desde 30/08/2026 o gatilho `handle_new_user` recusa qualquer
+    // conta cujo e-mail não esteja autorizado antes — é o que mantém o cadastro
+    // público fechado mesmo se o signup do GoTrue estiver ligado no painel. Ver
+    // a migração `20260831002000_ninguem_se_cadastra_sozinho.sql`.
+    //
+    // Autorizar ANTES de chamar o Auth, não depois: o gatilho roda dentro da
+    // transação do INSERT, e uma autorização que chegasse depois chegaria tarde.
+    const { error: erroAutorizar } = await admin
+      .from("cadastro_autorizado")
+      .upsert(
+        { email: alvo, autorizado_por: quem.email ?? quem.userId ?? "sistema" },
+        { onConflict: "email" },
+      );
+    if (erroAutorizar) throw erroAutorizar;
+
     const { data, error } = await admin.auth.admin.createUser({
       email: alvo,
       password: senha,

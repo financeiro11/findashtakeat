@@ -92,6 +92,19 @@ Deno.serve(async (req) => {
       // um administrador logado — não é mais porta de entrada para desconhecido.
       const nome = (prof as any)?.nome ?? target.split("@")[0];
       const cargo = (prof as any)?.cargo ?? "";
+
+      // Este caminho CRIA usuário, então passa pelo mesmo porteiro do
+      // `create-user`: sem a autorização prévia, o gatilho `handle_new_user`
+      // aborta e o reparo falharia sem explicar por quê. Ver a migração
+      // `20260831002000_ninguem_se_cadastra_sozinho.sql`.
+      const { error: erroAutorizar } = await admin
+        .from("cadastro_autorizado")
+        .upsert(
+          { email: target, autorizado_por: quem.email ?? quem.userId ?? "reparo" },
+          { onConflict: "email" },
+        );
+      if (erroAutorizar) throw erroAutorizar;
+
       const { data: created, error: createErr } = await admin.auth.admin.createUser({
         email: target,
         password,

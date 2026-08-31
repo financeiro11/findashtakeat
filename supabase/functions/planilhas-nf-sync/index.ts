@@ -24,6 +24,7 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.0";
 import { requireUser } from "../_shared/auth.ts";
 import { FONTES, notasDaPlanilha, type FonteNota, type NotaPlanilha } from "../_shared/planilhas-notas.ts";
+import { lerComoCsv } from "../_shared/sheets.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -34,9 +35,14 @@ const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: { ...corsHeaders, "Content-Type": "application/json" } });
 
 /**
- * O CSV sai sem OAuth enquanto o compartilhamento "qualquer pessoa com o link"
- * estiver ligado — mesmo caminho da `parametrizacao-planilhas-sync`, que lê
- * quatro destas mesmas planilhas há meses.
+ * A planilha vira CSV pela CONTA CONECTADA (`_shared/sheets.ts`), não pelo link.
+ *
+ * Isto lia `export?format=csv`, que é anônimo e só funciona com "qualquer pessoa
+ * com o link" ligado. Em 29/08/2026 a planilha de churn perdeu esse
+ * compartilhamento e a sync dela morreu calada por um dia — estas cinco vinham
+ * pelo mesmo caminho e correriam o mesmo risco. O conteúdo é o mesmo: o Sheets
+ * devolve o valor formatado, e a serialização em CSV entrega ao parser
+ * exatamente o que o Google entregava.
  *
  * Uma fonte que cai NÃO derruba as outras: o erro fica na resposta, com nome, e
  * as demais seguem. Foi assim que se descobriu que uma planilha tinha perdido o
@@ -44,26 +50,11 @@ const json = (body: unknown, status = 200) =>
  */
 async function baixar(id: string): Promise<{ csv: string | null; erro: string | null }> {
   try {
-    const r = await fetch(`https://docs.google.com/spreadsheets/d/${id}/export?format=csv`, {
-      redirect: "follow", signal: AbortSignal.timeout(45_000),
-    });
-    if (!r.ok) {
-      return {
-        csv: null,
-        erro: r.status === 401 || r.status === 403
-          ? "sem acesso — ligue 'qualquer pessoa com o link' nesta planilha"
-          : `HTTP ${r.status}`,
-      };
-    }
-    const tipo = r.headers.get("content-type") ?? "";
-    const csv = await r.text();
-    // Sem compartilhamento o Google devolve 200 com a página de login.
-    if (!tipo.includes("csv") || /^\s*<!DOCTYPE html/i.test(csv)) {
-      return { csv: null, erro: "sem acesso — ligue 'qualquer pessoa com o link' nesta planilha" };
-    }
+    const csv = await lerComoCsv(id);
+    if (!csv.trim()) return { csv: null, erro: "a planilha voltou vazia" };
     return { csv, erro: null };
   } catch (e) {
-    return { csv: null, erro: String((e as Error)?.message ?? e).slice(0, 160) };
+    return { csv: null, erro: String((e as Error)?.message ?? e).slice(0, 200) };
   }
 }
 

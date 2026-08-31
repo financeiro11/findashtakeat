@@ -26,6 +26,7 @@
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.0";
 import { requireUser } from "../_shared/auth.ts";
+import { lerComoCsv } from "../_shared/sheets.ts";
 import {
   candidatosDeCompras, candidatosDeEventos, candidatosDeReembolsos,
   candidatosDeNfsColaboradores, juntarDetalhes, maisComum, soDigitos,
@@ -40,9 +41,10 @@ const corsHeaders = {
 const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: { ...corsHeaders, "Content-Type": "application/json" } });
 
-/* As quatro planilhas. O endpoint de export entrega o CSV sem OAuth desde que o
-   compartilhamento "qualquer pessoa com o link" siga ativo — mesmo caminho do
-   `churn-sheet-sync`. Se alguém desligar, a fonte cai sozinha e as outras três
+/* As quatro planilhas. Entram pela CONTA CONECTADA (`_shared/sheets.ts`), e não
+   pelo `export?format=csv`, que é anônimo e depende de "qualquer pessoa com o
+   link" — o compartilhamento que sumiu da planilha de churn em 29/08/2026 e
+   matou a sync dela. Se uma fonte cair, ela cai sozinha e as outras três
    continuam (ver `baixar`). */
 const PLANILHAS: { fonte: Fonte; id: string; rotulo: string }[] = [
   { fonte: "compras", id: "1Y2jvIpZDrwe30z3M_UVazzBv2BrtJJujT-S0SUt2JqM", rotulo: "Formulário de Compras" },
@@ -80,23 +82,11 @@ function chaveContraparte(s: string | null | undefined): string {
 
 async function baixar(id: string): Promise<{ csv: string | null; erro: string | null }> {
   try {
-    const r = await fetch(`https://docs.google.com/spreadsheets/d/${id}/export?format=csv`, {
-      redirect: "follow", signal: AbortSignal.timeout(45_000),
-    });
-    if (!r.ok) {
-      return { csv: null, erro: r.status === 401 || r.status === 403
-        ? "sem acesso — ligue 'qualquer pessoa com o link' nesta planilha"
-        : `HTTP ${r.status}` };
-    }
-    const tipo = r.headers.get("content-type") ?? "";
-    const csv = await r.text();
-    // Sem compartilhamento o Google devolve 200 com a página de login.
-    if (!tipo.includes("csv") || /^\s*<!DOCTYPE html/i.test(csv)) {
-      return { csv: null, erro: "sem acesso — ligue 'qualquer pessoa com o link' nesta planilha" };
-    }
+    const csv = await lerComoCsv(id);
+    if (!csv.trim()) return { csv: null, erro: "a planilha voltou vazia" };
     return { csv, erro: null };
   } catch (e) {
-    return { csv: null, erro: String((e as Error)?.message ?? e) };
+    return { csv: null, erro: String((e as Error)?.message ?? e).slice(0, 200) };
   }
 }
 

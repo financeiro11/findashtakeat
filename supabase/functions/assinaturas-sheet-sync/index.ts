@@ -25,12 +25,9 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.0";
 import * as XLSX from "https://esm.sh/xlsx@0.18.5";
 import { requireUser } from "../_shared/auth.ts";
 import { generateJSON, temChave } from "../_shared/openai.ts";
+import { baixarComOAuthDoDrive, baixarDoDrive, driveConfigurado } from "../_shared/drive.ts";
 
 const FILE_ID = "110Vp0mA3r8OgGpODHxszllKIBsELSeqR";
-// O arquivo é um .xlsx compartilhado por link no Drive — o endpoint público de
-// download entrega o binário sem OAuth/conector. (Depende do compartilhamento
-// "qualquer pessoa com o link" seguir ativo.)
-const DOWNLOAD_URL = `https://drive.google.com/uc?export=download&id=${FILE_ID}`;
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -77,17 +74,34 @@ function parseAba(title: string): { competencia: string; label: string; ord: num
 // Linhas que NÃO são receita "core" de restaurante (Banestes, aluguéis de sala, repasses).
 const NAO_CORE = /aluguel|banestes|repasse|concilia|sala takeat/i;
 
-// Baixa o binário .xlsx do Drive pelo endpoint público de download (sem conector).
-async function baixarXlsx(): Promise<Uint8Array> {
-  const r = await fetch(DOWNLOAD_URL, { redirect: "follow" });
-  if (!r.ok) throw new Error(`Drive [${r.status}] ao baixar o arquivo.`);
-  const buf = new Uint8Array(await r.arrayBuffer());
-  // Assinatura ZIP (PK) confirma que é um .xlsx; senão, veio HTML (login/sem acesso).
-  if (!(buf[0] === 0x50 && buf[1] === 0x4b)) {
-    const amostra = new TextDecoder().decode(buf.slice(0, 160));
-    throw new Error(`O arquivo não retornou um .xlsx — provavelmente o compartilhamento "por link" foi removido. Início: ${amostra}`);
+/**
+ * Baixa o binário .xlsx do Drive pela CONTA, não pelo link.
+ *
+ * Ordem: OAuth do financeiro@ (é a conta da empresa, e já tem `drive.readonly`)
+ * e, se ele falhar, o conector do Drive — quando estiver configurado. O antigo
+ * `uc?export=download` saiu de propósito: era anônimo, e bastava alguém desligar
+ * "qualquer pessoa com o link" para a página de assinaturas congelar sem aviso,
+ * que foi o que aconteceu com a planilha de churn em 29/08/2026.
+ */
+async function baixarXlsx(supabase: { from: (t: string) => any }): Promise<Uint8Array> {
+  const tentativas: string[] = [];
+
+  const ehXlsx = (b: Uint8Array) => b[0] === 0x50 && b[1] === 0x4b; // assinatura ZIP (PK)
+
+  for (const [rotulo, baixar] of [
+    ["financeiro@ (OAuth)", () => baixarComOAuthDoDrive(supabase, FILE_ID)],
+    ...(driveConfigurado() ? [["conector do Drive", () => baixarDoDrive(FILE_ID)] as const] : []),
+  ] as [string, () => Promise<{ bytes: Uint8Array }>][]) {
+    try {
+      const { bytes } = await baixar();
+      if (ehXlsx(bytes)) return bytes;
+      tentativas.push(`${rotulo}: veio algo que não é .xlsx`);
+    } catch (e) {
+      tentativas.push(`${rotulo}: ${String((e as Error)?.message ?? e).slice(0, 200)}`);
+    }
   }
-  return buf;
+
+  throw new Error(`Não consegui baixar a planilha de assinaturas. ${tentativas.join(" | ")}`);
 }
 
 /* ------------------------- parsing de uma aba mensal ------------------------- */
@@ -290,7 +304,7 @@ Deno.serve(async (req) => {
 
     // PROBE: testa só o download do binário e mostra a assinatura (PK = zip/xlsx).
     if (action === "probe") {
-      const bytes = await baixarXlsx();
+      const bytes = await baixarXlsx(supabase);
       const sig = Array.from(bytes.slice(0, 4)).map((b) => b.toString(16).padStart(2, "0")).join("");
       return json({ ok: true, bytes: bytes.length, assinatura: sig, is_xlsx: sig.startsWith("504b") });
     }
@@ -302,7 +316,7 @@ Deno.serve(async (req) => {
     }
 
     // Baixa e lê só os NOMES das abas (bookSheets — não materializa as células).
-    const bytes = await baixarXlsx();
+    const bytes = await baixarXlsx(supabase);
     const nomes = XLSX.read(bytes, { type: "array", bookSheets: true }).SheetNames;
 
     let abas = nomes

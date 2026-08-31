@@ -20,6 +20,8 @@
 // Como o mapeamento do prefixo também não é documentado, testamos os candidatos com uma
 // sonda que usa a capacidade central do conector (listar arquivos), e não /about — que
 // pode simplesmente não estar no escopo concedido.
+import { segredosDoGmail, tokenDeAcesso } from "./gmail.ts";
+
 const PREFIXOS_CANDIDATOS = [
   "https://connector-gateway.lovable.dev/google_drive/v3",
   "https://connector-gateway.lovable.dev/google_drive",
@@ -317,6 +319,71 @@ export async function baixarPublicoDoDrive(
     `comprovante-${id.slice(0, 8)}.pdf`;
 
   return { bytes, nome, mime: (res.headers.get("content-type") ?? "application/octet-stream").split(";")[0] };
+}
+
+/**
+ * Baixa o binário com o OAUTH DO financeiro@ — a mesma credencial que lê a caixa
+ * (`_shared/gmail.ts`), que já tem escopo `drive.readonly` concedido.
+ *
+ * POR QUE EXISTE, tendo conector e link público: é o caminho autenticado que NÃO
+ * depende do Lovable nem de "qualquer pessoa com o link". Para um arquivo que
+ * mora no Drive da empresa e alimenta uma tela todo mês (a planilha de
+ * assinaturas), essa é a porta certa — o link público é uma configuração que
+ * qualquer pessoa desliga sem saber o que quebra, como se descobriu em
+ * 29/08/2026 com a planilha de churn.
+ *
+ * O TAMANHO VEM ANTES DOS BYTES, pela mesma razão de `baixarDoDrive`: recusar um
+ * arquivo grande depois de baixá-lo custa o orçamento do worker inteiro.
+ */
+export async function baixarComOAuthDoDrive(
+  supabase: { from: (t: string) => any },
+  idOuUrl: string,
+  opts: { maxBytes?: number } = {},
+): Promise<ArquivoDrive> {
+  const id = extrairIdDrive(idOuUrl) ?? String(idOuUrl).trim();
+  if (!/^[a-zA-Z0-9_-]{10,}$/.test(id)) throw new Error("O link não é um arquivo do Google Drive.");
+
+  const token = await tokenDeAcesso(await segredosDoGmail(supabase));
+  const cabecalho = { Authorization: `Bearer ${token}` };
+
+  const m = await fetch(
+    `https://www.googleapis.com/drive/v3/files/${id}?fields=name,mimeType,size&supportsAllDrives=true`,
+    { headers: cabecalho, signal: AbortSignal.timeout(30_000) },
+  );
+  if (!m.ok) {
+    const corpo = (await m.text().catch(() => "")).slice(0, 200);
+    /* 404 no Drive é "não posso ver", e não "não existe" — a diferença importa
+       para quem vai consertar: o conserto é compartilhar com a conta. */
+    throw new ErroDrive(
+      m.status, corpo,
+      m.status === 404 || m.status === 403
+        ? "A conta financeiro@ não enxerga este arquivo no Drive — compartilhe com ela."
+        : `Drive [${m.status}]: ${corpo || m.statusText}`,
+    );
+  }
+  const meta = await m.json().catch(() => ({}));
+  const bruto = Number(meta?.size ?? NaN);
+  const tamanho = Number.isFinite(bruto) && bruto > 0 ? bruto : null;
+  if (opts.maxBytes && tamanho && tamanho > opts.maxBytes) throw erroDeTamanho(tamanho, opts.maxBytes);
+
+  const r = await fetch(
+    `https://www.googleapis.com/drive/v3/files/${id}?alt=media&supportsAllDrives=true`,
+    { headers: cabecalho, signal: AbortSignal.timeout(120_000) },
+  );
+  if (!r.ok) {
+    const corpo = (await r.text().catch(() => "")).slice(0, 200);
+    throw new ErroDrive(r.status, corpo, `Drive [${r.status}] ao baixar: ${corpo || r.statusText}`);
+  }
+
+  const bytes = new Uint8Array(await r.arrayBuffer());
+  if (!bytes.length) throw new Error("O Drive devolveu um arquivo vazio.");
+  if (ehHtml(bytes)) throw new Error("O Drive devolveu HTML em vez do arquivo (token sem escopo de Drive?).");
+
+  return {
+    bytes,
+    nome: String(meta?.name ?? `arquivo-${id.slice(0, 8)}`),
+    mime: String(meta?.mimeType ?? "application/octet-stream"),
+  };
 }
 
 /**

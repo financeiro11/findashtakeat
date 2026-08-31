@@ -1,8 +1,17 @@
 // Edge Function: churn-sheet-sync
 //
-// Lê a planilha "[CHURN TAKEAT 2026] Métricas gerais" (Google Sheets nativo, compartilhado
-// por link) e grava um snapshot por competência em `churn_snapshot`. A aba "Churn" de
-// /assinaturas só lê o snapshot.
+// Lê a planilha "[CHURN TAKEAT 2026] Métricas gerais" (Google Sheets nativo) pela conta
+// Google conectada e grava um snapshot por competência em `churn_snapshot`. A aba "Churn"
+// de /assinaturas só lê o snapshot.
+//
+// POR QUE NÃO BAIXA MAIS O .xlsx PELO LINK PÚBLICO: até 29/08/2026 esta função pegava o
+// workbook inteiro (~16 MB de XML) em `docs.google.com/.../export?format=xlsx`, o que só
+// funciona com "qualquer pessoa com o link" ligado. Nesse dia o compartilhamento foi
+// removido — corretamente, porque a planilha tem nome e CNPJ de cliente — e a sync passou
+// a devolver 401 todo dia. O `estornos-sync`, que lê A MESMA planilha pelo conector do
+// Lovable, não sentiu nada. Agora os dois entram pela mesma porta (`_shared/sheets.ts`):
+// depende de a planilha estar compartilhada com a conta, não de um link aberto ao mundo.
+// De brinde, sai o custo de parsear 16 MB de XML dentro do worker.
 //
 // POR QUE RECALCULAR EM VEZ DE LER A ABA PRONTA: o bloco "KPI's Gerais" da aba
 // "Mensal 2026" é calculado em cima de um dropdown de mês (célula B1) — pela API só viria o
@@ -25,17 +34,13 @@
 // do mês passado). O sync confere isso e guarda o resultado em dados.base.conferencia.
 //
 // Ações (body.action): "sync" (default — todos os meses com base) · "preview" (lista abas e
-// meses com dados) · "probe" (testa só o download do binário).
+// meses com dados) · "probe" (testa só o acesso à planilha).
 
-import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
-import * as XLSX from "https://esm.sh/xlsx@0.18.5";
+import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.0";
 import { requireUser } from "../_shared/auth.ts";
+import { lerIntervalos, refAba, titulosDasAbas } from "../_shared/sheets.ts";
 
 const FILE_ID = "10A9YnskShPPZ2Xz9d-kN2SHCv-qN-48-94rQBbCNWIo";
-// Google Sheets NATIVO (diferente da planilha de assinaturas, que é um .xlsx no Drive): o
-// endpoint de export entrega o workbook convertido sem OAuth, desde que o compartilhamento
-// "qualquer pessoa com o link" siga ativo.
-const DOWNLOAD_URL = `https://docs.google.com/spreadsheets/d/${FILE_ID}/export?format=xlsx`;
 
 const ANO_PADRAO = 2026;
 
@@ -93,38 +98,12 @@ function num(v: unknown): number {
 const div = (a: number, b: number) => (b ? a / b : 0);
 const pctDe = (a: number, b: number) => div(a, b) * 100;
 
-// Baixa o workbook convertido em .xlsx.
-async function baixarXlsx(): Promise<Uint8Array> {
-  const r = await fetch(DOWNLOAD_URL, { redirect: "follow" });
-  if (!r.ok) {
-    throw new Error(
-      `Google [${r.status}] ao exportar a planilha de churn — provavelmente o compartilhamento "qualquer pessoa com o link" foi removido.`,
-    );
-  }
-  const buf = new Uint8Array(await r.arrayBuffer());
-  if (!(buf[0] === 0x50 && buf[1] === 0x4b)) {
-    const amostra = new TextDecoder().decode(buf.slice(0, 160));
-    throw new Error(`O export não retornou um .xlsx (veio HTML — sem acesso?). Início: ${amostra}`);
-  }
-  return buf;
-}
+// A última coluna que o cálculo usa em cada base — ver os índices `C_*` acima. Pedir só
+// até ela evita arrastar as colunas de anotação que o time mantém à direita.
+const ULTIMA_COLUNA = { dados: "H", churns: "L", downsell: "F", upsell: "L", reativacoes: "F" };
+const LINHAS = 20_000;
 
-// Lê só as abas necessárias numa passada (o workbook inteiro tem ~16MB de XML; as 5 abas
-// de interesse + sharedStrings dão ~4MB, o que cabe na memória da edge function).
-function lerAbas(bytes: Uint8Array, nomes: string[]): Record<string, any[][]> {
-  const wb = XLSX.read(bytes, {
-    type: "array", sheets: nomes,
-    cellStyles: false, cellNF: false, cellHTML: false, bookVBA: false, sheetStubs: false,
-  });
-  const out: Record<string, any[][]> = {};
-  for (const n of nomes) {
-    const ws = wb.Sheets[n];
-    out[n] = ws
-      ? (XLSX.utils.sheet_to_json(ws, { header: 1, blankrows: false, defval: "", raw: true }) as any[][])
-      : [];
-  }
-  return out;
-}
+const faixa = (aba: string, ultima: string) => `${refAba(aba)}!A1:${ultima}${LINHAS}`;
 
 // Resolve o nome real da aba (a planilha tem "CÓPIA DE 2026 CHURNS", "UPSELL 2" etc. —
 // por isso o match é exato sobre o nome normalizado, não "contém").
@@ -280,13 +259,11 @@ Deno.serve(async (req) => {
     const ano = Number(body?.ano) || ANO_PADRAO;
 
     if (action === "probe") {
-      const bytes = await baixarXlsx();
-      const sig = Array.from(bytes.slice(0, 4)).map((b) => b.toString(16).padStart(2, "0")).join("");
-      return json({ ok: true, bytes: bytes.length, assinatura: sig, is_xlsx: sig.startsWith("504b") });
+      const nomes = await titulosDasAbas(FILE_ID);
+      return json({ ok: true, abas: nomes.length, nomes });
     }
 
-    const bytes = await baixarXlsx();
-    const nomes = XLSX.read(bytes, { type: "array", bookSheets: true }).SheetNames as string[];
+    const nomes = await titulosDasAbas(FILE_ID);
 
     const nomeDados = acharAba(nomes, `DADOS ${ano}`);
     const nomeChurns = acharAba(nomes, `${ano} CHURNS`);
@@ -294,14 +271,14 @@ Deno.serve(async (req) => {
     const nomeUpsell = acharAba(nomes, `${ano} UPSELL`);
     const nomeReativacoes = acharAba(nomes, `${ano} REATIVAÇÕES`);
 
-    const abas = lerAbas(bytes, [nomeDados, nomeChurns, nomeDownsell, nomeUpsell, nomeReativacoes]);
-    const bases: Bases = {
-      dados: abas[nomeDados],
-      churns: abas[nomeChurns],
-      downsell: abas[nomeDownsell],
-      upsell: abas[nomeUpsell],
-      reativacoes: abas[nomeReativacoes],
-    };
+    const [dados, churns, downsell, upsell, reativacoes] = await lerIntervalos(FILE_ID, [
+      faixa(nomeDados, ULTIMA_COLUNA.dados),
+      faixa(nomeChurns, ULTIMA_COLUNA.churns),
+      faixa(nomeDownsell, ULTIMA_COLUNA.downsell),
+      faixa(nomeUpsell, ULTIMA_COLUNA.upsell),
+      faixa(nomeReativacoes, ULTIMA_COLUNA.reativacoes),
+    ]);
+    const bases: Bases = { dados, churns, downsell, upsell, reativacoes };
 
     // Snapshot de recorrência: serve para (a) conferir a ponte entre as duas planilhas — o
     // "MRR início do mês" de M é a base fechada em M-1 — e (b) trazer o MRR por nível dessa

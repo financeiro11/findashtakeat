@@ -34,6 +34,7 @@
 
 import { asaasGet, asaasList } from "../_shared/asaas.ts";
 import { requireUser } from "../_shared/auth.ts";
+import { lerIntervalo, refAba } from "../_shared/sheets.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.0";
 
 const corsHeaders = {
@@ -126,39 +127,19 @@ function dataBR(v: unknown): string | null {
 /* ------------------------------- planilha --------------------------------- */
 
 /**
- * Lê a aba pelo mesmo caminho do espelho da tela (gateway do Lovable).
+ * Lê a aba pelo caminho autenticado (`_shared/sheets.ts`, gateway do Lovable).
  *
- * O caminho "óbvio" — baixar o .xlsx pelo link público, como faz a churn-sheet-sync —
- * respondeu 401 nos testes: a planilha não está aberta por link para quem chama de
- * fora. O gateway usa a conexão Google já autorizada e não tem esse problema.
+ * O caminho "óbvio" — baixar o .xlsx pelo link público — respondeu 401 nos testes: a
+ * planilha não está aberta por link para quem chama de fora, e desde 29/08/2026 não está
+ * aberta para ninguém. O gateway usa a conexão Google já autorizada e não depende disso;
+ * foi por isso que esta sync seguiu verde enquanto a do churn morria todo dia.
+ *
+ * FORMATADO de propósito: o parser daqui espera "26/02/2026" e "R$ 1.234,56". Sem
+ * formatação a data viria como número de série do Sheets, e `dataBR` devolveria null.
  */
 async function lerPlanilha(): Promise<{ headers: string[]; rows: string[][] }> {
-  const LOVABLE_API_KEY = Deno.env.get("LOVABLE_API_KEY");
-  const GOOGLE_SHEETS_API_KEY = Deno.env.get("GOOGLE_SHEETS_API_KEY");
-  if (!LOVABLE_API_KEY || !GOOGLE_SHEETS_API_KEY) throw new Error("Credenciais do Google Sheets não configuradas.");
-
-  const url = `https://connector-gateway.lovable.dev/google_sheets/v4/spreadsheets/${PLANILHA_ID}/values/${ABA}!A1:AZ1000`;
-  let ultimo: unknown = null;
-  for (let tentativa = 0; tentativa < 4; tentativa++) {
-    const res = await fetch(url, {
-      headers: {
-        Authorization: `Bearer ${LOVABLE_API_KEY}`,
-        "X-Connection-Api-Key": GOOGLE_SHEETS_API_KEY,
-        "Content-Type": "application/json",
-      },
-    });
-    const texto = await res.text();
-    let dados: any = null;
-    try { dados = texto ? JSON.parse(texto) : null; } catch { dados = texto; }
-    if (res.ok) {
-      const values: string[][] = dados?.values ?? [];
-      return { headers: values[0] ?? [], rows: values.slice(1) };
-    }
-    ultimo = `Sheets [${res.status}] ${String(typeof dados === "string" ? dados : JSON.stringify(dados)).slice(0, 200)}`;
-    if (res.status === 429 || res.status >= 500) { await new Promise((r) => setTimeout(r, 600 * 2 ** tentativa)); continue; }
-    break;
-  }
-  throw new Error(String(ultimo));
+  const values = await lerIntervalo(PLANILHA_ID, `${refAba(ABA)}!A1:AZ1000`, { formatado: true });
+  return { headers: (values[0] ?? []) as string[], rows: values.slice(1) as string[][] };
 }
 
 type LinhaPlanilha = {

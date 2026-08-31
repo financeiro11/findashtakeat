@@ -28,6 +28,7 @@ export const ROTAS: Record<string, { crumbs: string[]; context?: string }> = {
   "/usuarios": { crumbs: ["Configurações", "Usuários"] },
   "/configuracoes/parametrizacao": { crumbs: ["Configurações", "Parametrização"], context: "Apelido das contrapartes · o nome que o fornecedor tem para nós" },
   "/configuracoes/uso-ia": { crumbs: ["Configurações", "Uso IA"], context: "Custo estimado das chamadas à IA" },
+  "/configuracoes/integracoes": { crumbs: ["Configurações", "Integrações"], context: "O que está conectado — e o que expirou calado" },
   "/automacoes/proporcionais": { crumbs: ["Automações", "Proporcionais"], context: "Aprovação de salários proporcionais" },
   "/automacoes/painel": { crumbs: ["Time Financeiro", "Automações"], context: "Está rodando? · próximo disparo, filas e o que a função respondeu" },
   "/asaas": { crumbs: ["Operacional", "Asaas"], context: "Recebimentos · Assinaturas · NF-e" },

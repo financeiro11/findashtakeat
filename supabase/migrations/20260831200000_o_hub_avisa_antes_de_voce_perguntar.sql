@@ -673,21 +673,18 @@ select cron.schedule(
   $$
 );
 
-/* NASCE DESLIGADO, e isto não é cautela genérica: em 31/08/2026 o deploy de
-   `vigia-series` foi recusado com 402 (`Max number of functions reached for
-   project`) — o projeto tem 98 funções e o plano para em 100. Um cron apontando
-   para uma função que não existe erraria toda madrugada, encheria
-   `automacao_execucao` e acenderia luz vermelha no painel de automações: ou
-   seja, o primeiro alarme falso do sistema que existe para acabar com alarme
-   falso.
+/* O DEPLOY QUASE NÃO ACONTECEU, e a história fica aqui porque vai se repetir:
+   em 31/08/2026 a publicação de `vigia-series` foi recusada com 402 (`Max number
+   of functions reached for project`) — o plano free para em 100 funções, e o
+   projeto estava exatamente em 100. Três daquelas vagas eram ocupadas por
+   funções SEM CÓDIGO no repositório; duas delas (`anexar-comprovante-auditoria`,
+   sobra de um rename, e `enviar-consolidado`) foram apagadas para abrir espaço.
 
-   DEPOIS DE CONSEGUIR PUBLICAR A FUNÇÃO, ligue com:
-     select cron.alter_job((select jobid from cron.job
-                             where jobname = 'vigia-series-diario'), active := true); */
-select cron.alter_job(
-  (select jobid from cron.job where jobname = 'vigia-series-diario'),
-  active := false
-);
+   A segunda armadilha veio logo depois: a função subiu com `verify_jwt = true` e
+   o primeiro disparo morreu em UNAUTHORIZED_NO_AUTH_HEADER **no gateway**, sem
+   nada no log da função porque ela nem chegou a rodar. O conserto é a linha
+   `[functions.vigia-series] verify_jwt = false` no `config.toml` — que aquele
+   arquivo já documentava cinco vezes antes desta. */
 
 /* O escalonamento é barato e não chama nada de fora, então roda direto no
    Postgres — de hora em hora, para que "3 dias" signifique 3 dias e não

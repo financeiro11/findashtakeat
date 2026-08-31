@@ -12,6 +12,7 @@ import {
   type Compra, type PagamentoStatus, type VinculoNf,
 } from "./lib";
 import { resolverComprovante } from "@/lib/comprovante";
+import { assinarUrl } from "@/lib/arquivoPrivado";
 import { comValorExato } from "@/components/ValorExato";
 import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger,
@@ -167,7 +168,11 @@ export default function Historico() {
     const alvo = c.nf_arquivo || c.nf_url;
     if (!alvo) return;
     try {
-      window.open(await resolverComprovante(alvo), "_blank", "noopener");
+      // `resolverComprovante` cobre o bucket da auditoria e deixa URL http
+      // passar intacta. Desde 30/08/2026 `facilities-contratos` também é
+      // privado, então a URL que passou por ele ainda precisa de assinatura —
+      // sem isto o `nf_url` antigo abre num 400.
+      window.open(await assinarUrl(await resolverComprovante(alvo)), "_blank", "noopener");
     } catch (err: any) {
       toast.error(err?.message || "Não consegui abrir a NF.");
     }

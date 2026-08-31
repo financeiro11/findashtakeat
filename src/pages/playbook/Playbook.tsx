@@ -32,6 +32,7 @@ import {
 } from "./constants";
 import { PlaybookEditor } from "./PlaybookEditor";
 import { cn } from "@/lib/utils";
+import { assinarConteudo, assinarUrl, normalizarConteudo } from "@/lib/arquivoPrivado";
 
 type Asset = {
   id: string;
@@ -77,6 +78,12 @@ export default function Playbook() {
       setEditing(true);
       justCreatedRef.current = null;
       loadAssets(selected.id);
+      // As imagens do corpo moram em bucket PRIVADO desde 30/08/2026: o que está
+      // gravado não abre sozinho. Assina ao abrir; o `save` desfaz antes de
+      // gravar, senão o banco guardaria assinatura, que expira.
+      assinarConteudo(selected.content).then((content) => {
+        setDraft((atual) => (atual?.id === selected.id ? { ...atual, content } : atual));
+      });
     } else {
       setDraft(null);
       setAssets([]);
@@ -143,7 +150,9 @@ export default function Playbook() {
       category: d.category,
       status: d.status,
       owner_name: d.owner_name,
-      content: d.content,
+      // Desfaz a assinatura: URL assinada expira, e gravar uma é gravar uma
+      // imagem que morre em dez minutos. Ver `lib/arquivoPrivado.ts`.
+      content: normalizarConteudo(d.content),
       archived: d.archived,
       last_edited_by: profile?.nome ?? null,
     }).eq("id", d.id);
@@ -174,7 +183,7 @@ export default function Playbook() {
       category: p.category,
       status: "Rascunho",
       owner_name: p.owner_name,
-      content: p.content,
+      content: normalizarConteudo(p.content),
       last_edited_by: profile?.nome ?? null,
     }).select().single();
     if (error) { toast.error("Erro ao duplicar"); return; }
@@ -606,7 +615,19 @@ export default function Playbook() {
                     {assets.map(a => (
                       <li key={a.id} className="flex items-center gap-3 py-2 text-sm">
                         <FileText className="h-4 w-4 text-muted-foreground" />
-                        <a href={a.file_url} target="_blank" rel="noreferrer" className="flex-1 truncate hover:underline">{a.file_name}</a>
+                        {/* Bucket privado: o `file_url` gravado não abre sozinho. Assina no
+                            CLIQUE e não ao listar — assinar dez anexos que ninguém vai abrir
+                            é gastar dez assinaturas para nada. */}
+                        <a
+                          href={a.file_url}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="flex-1 truncate hover:underline"
+                          onClick={async (e) => {
+                            e.preventDefault();
+                            window.open(await assinarUrl(a.file_url), "_blank", "noopener,noreferrer");
+                          }}
+                        >{a.file_name}</a>
                         <span className="text-xs text-muted-foreground">{a.file_size ? `${(a.file_size / 1024).toFixed(1)} KB` : ""}</span>
                         <Button size="sm" variant="ghost" className="h-7 w-7 p-0" onClick={() => deleteAsset(a)}>
                           <Trash2 className="h-3.5 w-3.5" />

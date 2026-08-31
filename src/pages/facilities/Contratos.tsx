@@ -15,6 +15,7 @@ import { FacToolbar } from "./NovaSolicitacaoDialog";
 import { CatDot } from "./components";
 import { db, fmtBRL as fmtBRLStr, parseValor, CATEGORIAS, type Contrato, type Fornecedor } from "./lib";
 import { comValorExato } from "@/components/ValorExato";
+import { assinarUrl } from "@/lib/arquivoPrivado";
 
 const STATUS_STYLE: Record<string, string> = {
   ativo: "bg-emerald-50 text-emerald-700",
@@ -154,7 +155,12 @@ export default function Contratos() {
                           href={a.url}
                           target="_blank"
                           rel="noreferrer"
-                          onClick={(e) => e.stopPropagation()}
+                          // stopPropagation continua: o clique não pode abrir o card atrás.
+                          onClick={async (e) => {
+                            e.stopPropagation();
+                            e.preventDefault();
+                            window.open(await assinarUrl(a.url), "_blank", "noopener,noreferrer");
+                          }}
                           className="flex items-center gap-1.5 text-[12px] text-foreground hover:text-primary hover:underline"
                         >
                           <FileText className="h-3 w-3 shrink-0 text-muted-foreground" />
@@ -193,6 +199,10 @@ export default function Contratos() {
                       href={a.url}
                       target="_blank"
                       rel="noreferrer"
+                      onClick={async (e) => {
+                        e.preventDefault();
+                        window.open(await assinarUrl(a.url), "_blank", "noopener,noreferrer");
+                      }}
                       className="flex items-center gap-1.5 text-[12px] text-foreground hover:text-primary hover:underline"
                     >
                       <FileText className="h-3 w-3 shrink-0 text-muted-foreground" />
@@ -336,6 +346,10 @@ function ContratoDialog({
                     href={a.url}
                     target="_blank"
                     rel="noreferrer"
+                    onClick={async (e) => {
+                      e.preventDefault();
+                      window.open(await assinarUrl(a.url), "_blank", "noopener,noreferrer");
+                    }}
                     className="flex items-center gap-1.5 text-[12px] text-foreground hover:text-primary hover:underline"
                   >
                     <FileText className="h-3 w-3 shrink-0 text-muted-foreground" />

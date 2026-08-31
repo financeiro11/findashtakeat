@@ -19,8 +19,9 @@ import {
   type Fornecedor, type Compra, type FornecedorAnexo,
 } from "./lib";
 import { comValorExato } from "@/components/ValorExato";
+import { assinarUrl } from "@/lib/arquivoPrivado";
 
-const CONTRATOS_BUCKET = "facilities-contratos";
+const CONTRATOS_BUCKET = "facilities-contratos"; // privado desde 30/08/2026 — ver lib/arquivoPrivado.ts
 
 function fmtTamanho(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
@@ -400,11 +401,16 @@ function FornecedorDialog({ alvo, onClose, onSaved }: { alvo: Fornecedor | "novo
                 {contratos.map((c, idx) => (
                   <div key={idx} className="flex items-center gap-2 rounded-md border border-border bg-muted/30 px-2 py-1">
                     <FileText className="h-3 w-3 shrink-0 text-muted-foreground" />
+                    {/* Bucket privado: assina no CLIQUE. Ver `lib/arquivoPrivado.ts`. */}
                     <a
                       href={c.url}
                       target="_blank"
                       rel="noreferrer"
                       className="min-w-0 flex-1 truncate text-[11.5px] text-foreground hover:text-primary hover:underline"
+                      onClick={async (e) => {
+                        e.preventDefault();
+                        window.open(await assinarUrl(c.url), "_blank", "noopener,noreferrer");
+                      }}
                     >
                       {c.nome}
                     </a>

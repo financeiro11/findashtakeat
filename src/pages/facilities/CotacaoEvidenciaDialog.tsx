@@ -9,6 +9,7 @@ import { Label } from "@/components/ui/label";
 import { supabase } from "@/integrations/supabase/client";
 import { db, fmtBRL as fmtBRLStr, type Cotacao } from "./lib";
 import { comValorExato } from "@/components/ValorExato";
+import { assinarUrl } from "@/lib/arquivoPrivado";
 
 const BUCKET = "facilities-contratos";
 const MAX_MB = 10;
@@ -153,7 +154,17 @@ export function CotacaoEvidenciaDialog({ cotacao, solicTitulo, open, onOpenChang
               <ul className="mt-2 space-y-1.5">
                 {anexos.map((a, i) => (
                   <li key={i} className="flex items-center justify-between gap-2 rounded-md border border-border bg-muted/30 px-2.5 py-1.5">
-                    <a href={a.url} target="_blank" rel="noreferrer" className="flex min-w-0 items-center gap-2 text-[12.5px] text-foreground hover:underline">
+                    {/* Bucket privado: assina no CLIQUE. Ver `lib/arquivoPrivado.ts`. */}
+                    <a
+                      href={a.url}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="flex min-w-0 items-center gap-2 text-[12.5px] text-foreground hover:underline"
+                      onClick={async (e) => {
+                        e.preventDefault();
+                        window.open(await assinarUrl(a.url), "_blank", "noopener,noreferrer");
+                      }}
+                    >
                       <FileText className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
                       <span className="truncate">{a.nome}</span>
                       <ExternalLink className="h-3 w-3 shrink-0 text-muted-foreground" />

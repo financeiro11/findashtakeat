@@ -26,6 +26,8 @@ import { BotaoComentarios, ComentariosDaNota } from "@/components/notas/Comentar
 import {
   comentariosAbertosPorNota, copiar, notasComLinkPublico, urlDaNota,
 } from "@/lib/notas/compartilhar";
+import { assinarConteudo, normalizarConteudo, normalizarUrl } from "@/lib/arquivoPrivado";
+import { useUrlAssinada } from "@/hooks/useArquivoPrivado";
 
 export type WorkspacePage = {
   id: string;
@@ -81,6 +83,8 @@ export default function Workspace() {
   const [pages, setPages] = useState<WorkspacePage[]>([]);
   const [loading, setLoading] = useState(true);
   const [draft, setDraft] = useState<WorkspacePage | null>(null);
+  /** A capa mora em bucket privado; o que está gravado não abre sozinho. */
+  const capaAssinada = useUrlAssinada(draft?.cover_url);
   const [search, setSearch] = useState("");
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [collapsedRoots, setCollapsedRoots] = useState<Set<string>>(new Set());
@@ -145,8 +149,19 @@ export default function Workspace() {
   useEffect(() => { recarregarCompartilhamento(); }, [recarregarCompartilhamento]);
   useEffect(() => {
     const p = pages.find(p => p.id === selectedId) ?? null;
+    // As imagens do corpo moram em bucket PRIVADO desde 30/08/2026, então o que
+    // está gravado não abre sozinho. Assinar aqui, uma vez ao abrir a página, e
+    // não a cada tecla: o editor só relê o `value` quando o `pageId` muda.
+    // O caminho de volta é o `normalizarConteudo` do `persist` — sem ele o save
+    // gravaria a assinatura, que expira. Ver `lib/arquivoPrivado.ts`.
+    let vivo = true;
+    if (!p) { setDraft(null); setMostrarComentarios(false); return; }
     setDraft(p);
     setMostrarComentarios(false);
+    assinarConteudo(p.content).then((content) => {
+      if (vivo) setDraft((atual) => (atual?.id === p.id ? { ...atual, content } : atual));
+    });
+    return () => { vivo = false; };
   }, [selectedId, pages]);
 
   async function copiarLinkDaNota(p: WorkspacePage) {
@@ -198,8 +213,12 @@ export default function Workspace() {
 
   async function persist(p: WorkspacePage) {
     setSaveState("saving");
+    // Desfaz a assinatura antes de gravar: URL assinada expira, e gravar uma é
+    // gravar uma imagem que morre em dez minutos. Ver `lib/arquivoPrivado.ts`.
     const { error } = await supabase.from("workspace_pages").update({
-      title: p.title, icon: p.icon, cover_url: p.cover_url, content: p.content,
+      title: p.title, icon: p.icon,
+      cover_url: p.cover_url ? normalizarUrl(p.cover_url) : p.cover_url,
+      content: normalizarConteudo(p.content),
       tags: p.tags, is_favorite: p.is_favorite, archived: p.archived,
       last_edited_by: profile?.nome ?? null,
     }).eq("id", p.id);
@@ -220,7 +239,8 @@ export default function Workspace() {
   async function duplicate(p: WorkspacePage) {
     const { data, error } = await supabase.from("workspace_pages").insert({
       parent_id: p.parent_id, title: `${p.title} (cópia)`, icon: p.icon,
-      cover_url: p.cover_url, content: p.content, tags: p.tags,
+      cover_url: p.cover_url ? normalizarUrl(p.cover_url) : p.cover_url,
+      content: normalizarConteudo(p.content), tags: p.tags,
       created_by: user?.id ?? null, created_by_name: profile?.nome ?? null,
     }).select().single();
     if (error) { toast.error("Erro ao duplicar"); return; }
@@ -583,7 +603,7 @@ export default function Workspace() {
             <div className="max-w-3xl mx-auto px-12 pt-0 pb-20">
               {draft.cover_url ? (
                 <div className="relative -mx-12 h-48 group">
-                  <img src={draft.cover_url} alt="" className="w-full h-full object-cover" />
+                  <img src={capaAssinada} alt="" className="w-full h-full object-cover" />
                   <div className="absolute top-3 right-3 flex gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
                     <Button size="sm" variant="secondary" onClick={() => coverRef.current?.click()}><ImageIcon className="h-3.5 w-3.5"/> Trocar capa</Button>
                     <Button size="sm" variant="secondary" onClick={() => update({ cover_url: null })}><X className="h-3.5 w-3.5"/></Button>

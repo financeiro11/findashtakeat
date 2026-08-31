@@ -18,7 +18,7 @@ import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
-  Paperclip, Loader2, Check, Send, X, ChevronDown, CreditCard,
+  Paperclip, Loader2, Check, Send, X, CreditCard,
   AlertTriangle, Flag, Minus, MessageSquare, Search, ArrowUpDown, StickyNote,
 } from "lucide-react";
 import { toast } from "sonner";
@@ -433,7 +433,11 @@ function MesBloco({ mes, ordem, achatado, token, digitos, onRefresh }: {
     () => ordenar(mes.itens.filter((i) => i.situacao !== "pendente"), ordem),
     [mes.itens, ordem]);
   const todos = useMemo(() => ordenar(mes.itens, ordem), [mes.itens, ordem]);
-  const [mostrarResto, setMostrarResto] = useState(false);
+
+  /* Nada fica escondido atrás de clique. Na ordem padrão o que espera resposta vem
+     primeiro, com uma divisória para o olho achar onde acaba a obrigação — mas o resto
+     está logo abaixo, na mesma forma, sem botão para revelar. */
+  const lista = achatado ? todos : [...pendentes, ...resto];
 
   return (
     <section className="mt-10">
@@ -446,46 +450,20 @@ function MesBloco({ mes, ordem, achatado, token, digitos, onRefresh }: {
         {pendentes.length > 0 && <> · <strong className="font-medium text-foreground">{pendentes.length} esperando você</strong></>}
       </p>
 
-      {/* Busca ou ordem escolhida: uma lista só, na ordem pedida. */}
-      {achatado ? (
-        <div className="mt-4 space-y-2">
-          {todos.map((it) => (
-            <Linha key={it.id_unico} item={it} token={token} digitos={digitos} onRefresh={onRefresh} />
-          ))}
-        </div>
-      ) : (
-        <>
-          {pendentes.length > 0 && (
-            <div className="mt-4 space-y-3">
-              {pendentes.map((it) => (
-                <Linha key={it.id_unico} item={it} token={token} digitos={digitos} onRefresh={onRefresh} />
-              ))}
-            </div>
-          )}
-
-          {resto.length > 0 && (
-            <>
-              {pendentes.length > 0 && !mostrarResto && (
-                <button
-                  type="button"
-                  onClick={() => setMostrarResto(true)}
-                  className="mt-4 flex w-full items-center justify-center gap-1.5 rounded-lg border border-dashed border-border py-2.5 text-[13px] text-muted-foreground transition-colors hover:bg-muted/40"
-                >
-                  Ver os outros {resto.length} lançamento{resto.length === 1 ? "" : "s"} do mês
-                  <ChevronDown className="h-3.5 w-3.5" />
-                </button>
-              )}
-              {(mostrarResto || pendentes.length === 0) && (
-                <div className="mt-4 space-y-2">
-                  {resto.map((it) => (
-                    <Linha key={it.id_unico} item={it} token={token} digitos={digitos} onRefresh={onRefresh} />
-                  ))}
-                </div>
-              )}
-            </>
-          )}
-        </>
-      )}
+      <div className="mt-4 space-y-3">
+        {lista.map((it, i) => (
+          <div key={it.id_unico}>
+            {!achatado && pendentes.length > 0 && i === pendentes.length && (
+              <div className="mb-3 flex items-center gap-3 pt-2">
+                <span className="eyebrow shrink-0">Já resolvidos</span>
+                <div className="h-px flex-1 bg-border" />
+                <span className="num text-[12px] text-muted-foreground">{resto.length}</span>
+              </div>
+            )}
+            <Linha item={it} token={token} digitos={digitos} onRefresh={onRefresh} />
+          </div>
+        ))}
+      </div>
     </section>
   );
 }
@@ -516,7 +494,6 @@ const MOTIVOS: { valor: string; rotulo: string }[] = [
 function Linha({ item, token, digitos, onRefresh }: {
   item: ItemFatura; token: string; digitos: string; onRefresh: () => Promise<void>;
 }) {
-  const [expandido, setExpandido] = useState(false);
   const [justificativa, setJustificativa] = useState(item.justificativa || "");
   const [arquivo, setArquivo] = useState<File | null>(null);
   const [enviando, setEnviando] = useState(false);
@@ -529,7 +506,6 @@ function Linha({ item, token, digitos, onRefresh }: {
   const [justificando, setJustificando] = useState(!!item.justificativa);
 
   const pendente = item.situacao === "pendente";
-  const aberto = pendente || expandido;
 
   const justSalva = (item.justificativa || "").trim();
   const justNova = justificativa.trim() !== "" && justificativa.trim() !== justSalva;
@@ -584,7 +560,6 @@ function Linha({ item, token, digitos, onRefresh }: {
 
       toast.success(arquivo ? "Comprovante enviado" : "Justificativa enviada");
       setArquivo(null);
-      setExpandido(false);
       await onRefresh();
     } catch {
       toast.error("Erro ao enviar");
@@ -630,38 +605,9 @@ function Linha({ item, token, digitos, onRefresh }: {
   const meta = [item.data, item.parcela ? `parcela ${item.parcela}` : null, item.categoria]
     .filter(Boolean).join(" · ");
 
-  /* ---- Recolhida: uma linha ---- */
-  if (!aberto) {
-    const dispensado = item.situacao === "dispensado";
-    return (
-      <button
-        type="button"
-        onClick={() => setExpandido(true)}
-        className="flex w-full items-center gap-3 rounded-lg border border-border bg-card px-4 py-3 text-left transition-colors hover:bg-muted/40"
-      >
-        <span
-          className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full"
-          style={{ background: dispensado ? "hsl(var(--muted))" : "hsl(var(--pos) / 0.14)" }}
-        >
-          {dispensado
-            ? <Minus className="h-3 w-3 text-muted-foreground" />
-            : <Check className="h-3 w-3" style={{ color: "hsl(var(--pos))" }} />}
-        </span>
-        <span className="min-w-0 flex-1">
-          <span className="block truncate text-[13px] font-medium">{item.estabelecimento}</span>
-          <span className="block truncate text-[11px] text-muted-foreground">
-            {item.contestacao ? "Contestado — o financeiro está olhando"
-              : item.tem_comprovante ? "Nota anexada"
-              : item.motivo || "Sem pendência"}
-          </span>
-        </span>
-        <span className="num shrink-0 text-[13px] text-muted-foreground">{brl(Number(item.valor || 0))}</span>
-        <ChevronDown className="h-4 w-4 shrink-0 text-muted-foreground" />
-      </button>
-    );
-  }
-
-  /* ---- Aberta ---- */
+  /* Toda linha tem a MESMA forma, resolvida ou não — muda só o selo. A versão recolhida
+     escondia atrás de uma seta justamente o que prova que está tudo certo, e obrigava a
+     abrir uma por uma para conferir a fatura. */
   return (
     <article
       className="overflow-hidden rounded-lg border border-border bg-card"
@@ -679,8 +625,28 @@ function Linha({ item, token, digitos, onRefresh }: {
         </div>
       </div>
 
-      {item.motivo && pendente && (
-        <div className="px-4 pt-3">
+      {/* O selo ocupa o MESMO lugar nas três situações — é ele que diz num relance se a
+          linha espera alguma coisa. Verde: pronta. Âmbar: falta você. Cinza: não se aplica. */}
+      <div className="px-4 pt-3">
+        {item.situacao === "ok" ? (
+          <span
+            className="inline-flex items-center gap-1 rounded border px-1.5 py-0.5 text-[10.5px] font-semibold uppercase tracking-wider"
+            style={{
+              borderColor: "hsl(var(--pos) / 0.35)",
+              background: "hsl(var(--pos) / 0.10)",
+              // Mesmo cuidado do âmbar: o --pos não tem contraste sobre o próprio fundo a 10%.
+              color: "hsl(152 60% 26%)",
+            }}
+          >
+            <Check className="h-3 w-3" />
+            {item.tem_comprovante ? "Nota anexada" : "Resolvido"}
+          </span>
+        ) : item.situacao === "dispensado" ? (
+          <span className="inline-flex items-center gap-1 rounded border border-border bg-muted px-1.5 py-0.5 text-[10.5px] font-semibold uppercase tracking-wider text-muted-foreground">
+            <Minus className="h-3 w-3" />
+            {item.motivo || "Não precisa de nota"}
+          </span>
+        ) : (
           <span
             className="inline-flex items-center rounded border px-1.5 py-0.5 text-[10.5px] font-semibold uppercase tracking-wider"
             style={{
@@ -690,10 +656,10 @@ function Linha({ item, token, digitos, onRefresh }: {
               color: "hsl(38 92% 30%)",
             }}
           >
-            {item.motivo}
+            {item.motivo || "Falta a nota fiscal"}
           </span>
-        </div>
-      )}
+        )}
+      </div>
 
       {/* A anotação da analista, como contexto. Ajuda o líder a lembrar do gasto ("Airbnb
           HMX4SA5JAZ - 5.300,00 em 6x; viajante Miguel"). Só leitura: é o caderno dela. */}
@@ -727,21 +693,6 @@ function Linha({ item, token, digitos, onRefresh }: {
         </div>
       )}
 
-      {!pendente && !item.contestacao && (
-        <div className="mt-3 flex items-center gap-2 border-y border-border bg-muted/40 px-4 py-2 text-[12px] text-muted-foreground">
-          <Check className="h-3.5 w-3.5" style={{ color: "hsl(var(--pos))" }} />
-          <span className="flex-1">
-            {item.tem_comprovante ? "Nota já anexada." : item.motivo || "Nada pendente."}
-            {" "}Mexa só se precisar corrigir.
-          </span>
-          <button
-            type="button" onClick={() => setExpandido(false)}
-            className="shrink-0 font-medium text-foreground hover:underline"
-          >
-            Recolher
-          </button>
-        </div>
-      )}
 
       {/* Ações */}
       <div className="space-y-3 px-4 pb-4 pt-4">

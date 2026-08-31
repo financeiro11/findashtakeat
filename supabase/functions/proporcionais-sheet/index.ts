@@ -1,3 +1,5 @@
+import { requireUser } from "../_shared/auth.ts";
+
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
@@ -74,6 +76,13 @@ Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
 
   try {
+    // PORTÃO (30/08/2026). Esta função lia e ESCREVIA a planilha de
+    // proporcionais da folha com a credencial do conector Google, sem checagem
+    // nenhuma: salário e aprovação de pagamento abertos para quem tivesse a
+    // chave pública do bundle. `parcerias` fica de fora — folha não é assunto
+    // do cargo de menor alcance do Hub.
+    await requireUser(req, { bloquearCargos: ["parcerias"] });
+
     const body = req.method === "POST" ? await req.json().catch(() => ({})) : {};
     const action = body?.action ?? "read";
 
@@ -128,7 +137,12 @@ Deno.serve(async (req) => {
           : msg,
         rateLimited: isRate,
       }),
-      { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } },
+      // A recusa do portão sai como 401; o resto continua 200, que é como a
+      // tela já mostra cota estourada do Sheets sem parecer falha do Hub.
+      {
+        status: /autenticad|permiss/i.test(msg) ? 401 : 200,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      },
     );
   }
 });

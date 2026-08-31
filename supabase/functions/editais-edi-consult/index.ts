@@ -3,6 +3,7 @@
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.0";
 import { MODELOS_CASCATA } from "../_shared/gemini.ts";
+import { requireUser } from "../_shared/auth.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -35,6 +36,9 @@ Deno.serve(async (req) => {
   }
 
   try {
+    // PORTÃO (30/08/2026): a chave de IA da empresa não atende desconhecido.
+    await requireUser(req);
+
     const apiKey = Deno.env.get("GEMINI_API_KEY");
     if (!apiKey) {
       return new Response(JSON.stringify({ error: "GEMINI_API_KEY não configurada" }), {
@@ -156,8 +160,12 @@ Deno.serve(async (req) => {
     });
   } catch (e) {
     console.error("editais-edi-consult error", e);
-    return new Response(JSON.stringify({ error: e instanceof Error ? e.message : "Erro" }), {
-      status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" },
+    const msg = e instanceof Error ? e.message : "Erro";
+    // 401 quando o problema e QUEM chamou, e nao o que foi pedido: a recusa do
+    // portao precisa se ler como tentativa de acesso no log, nao como bug nosso.
+    return new Response(JSON.stringify({ error: msg }), {
+      status: /autenticad|permiss/i.test(msg) ? 401 : 500,
+      headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
   }
 });

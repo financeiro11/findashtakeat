@@ -1,9 +1,17 @@
 // Edge Function: ask-finance-ai
 // Chama a Gemini API diretamente usando GEMINI_API_KEY (server-side)
+//
+// FECHADA EM 30/08/2026. Rodava sem checagem nenhuma: qualquer pessoa com a
+// chave pública do bundle fazia perguntas ao assistente financeiro da Takeat e
+// recebia de volta o contexto organizacional que o prompt injeta — quem são os
+// colaboradores, fornecedores, centros de custo e as políticas internas. Ou
+// seja, não era só um proxy de IA de graça na conta da empresa; era a
+// Biblioteca respondendo a estranho.
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.0";
 import { buildOrgContext } from "../_shared/org-context.ts";
 import { MODELOS_CASCATA } from "../_shared/gemini.ts";
+import { requireUser } from "../_shared/auth.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -111,6 +119,9 @@ Deno.serve(async (req) => {
   }
 
   try {
+    // PORTÃO: antes da chave de IA e antes do contexto organizacional.
+    await requireUser(req);
+
     const apiKey = Deno.env.get("GEMINI_API_KEY");
     if (!apiKey) {
       return new Response(JSON.stringify({ error: "GEMINI_API_KEY não configurada" }), {
@@ -220,8 +231,12 @@ Deno.serve(async (req) => {
     });
   } catch (e) {
     console.error("ask-finance-ai error", e);
-    return new Response(JSON.stringify({ error: e instanceof Error ? e.message : "Erro" }), {
-      status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" },
+    const msg = e instanceof Error ? e.message : "Erro";
+    // 401 quando o problema é QUEM chamou. Sem isto a recusa do portão vira
+    // "erro 500 do servidor" no log, e some no meio das falhas de verdade.
+    const status = /autenticad|permiss/i.test(msg) ? 401 : 500;
+    return new Response(JSON.stringify({ error: msg }), {
+      status, headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
   }
 });

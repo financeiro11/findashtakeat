@@ -25,6 +25,7 @@
 // Auth: JWT do usuário logado (verify_jwt no padrão).
 
 import { createClient } from "npm:@supabase/supabase-js@2";
+import { requireUser } from "../_shared/auth.ts";
 
 // CORS inline, como em recargas-concluir: a função é publicada isolada, e depender de
 // ../_shared/ acopla o deploy ao resto da pasta.
@@ -82,6 +83,15 @@ type Linha = {
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
   if (req.method !== "POST") return json({ error: "method not allowed" }, 405);
+
+  // PORTÃO (30/08/2026). Rodava com a service role e sem checagem: qualquer
+  // pessoa listava os colaboradores do TakeatOS (nome e celular de todo mundo)
+  // e cadastrava linha em nome da empresa.
+  try {
+    await requireUser(req, { bloquearCargos: ["parcerias"] });
+  } catch (e) {
+    return json({ error: (e as Error).message }, 401);
+  }
 
   const url = Deno.env.get("SUPABASE_URL")!;
   const service = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;

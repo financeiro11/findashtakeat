@@ -4,6 +4,7 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.0";
 import { extractText, getDocumentProxy } from "https://esm.sh/unpdf@0.12.1";
 import { generateJSON } from "../_shared/openai.ts";
+import { requireUser } from "../_shared/auth.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -22,8 +23,11 @@ Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response(null, { headers: corsHeaders });
 
   try {
-    const auth = req.headers.get("Authorization");
-    if (!auth) return new Response(JSON.stringify({ error: "no auth" }), { status: 401, headers: corsHeaders });
+    // PORTÃO (30/08/2026). Antes bastava EXISTIR um header `Authorization` —
+    // e a chave pública do bundle é um valor válido para ele. Ou seja, a
+    // checagem passava para qualquer pessoa da internet. `requireUser` valida o
+    // token contra o Auth e recusa a anon key.
+    await requireUser(req, { bloquearCargos: ["parcerias"] });
 
     const { path, filename, prefer_tipo } = await req.json();
     if (!path) return new Response(JSON.stringify({ error: "path required" }), { status: 400, headers: corsHeaders });
@@ -85,6 +89,11 @@ Responda APENAS com JSON válido no formato { "notas": [ { "titulo": "...", "tip
       headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
   } catch (e: any) {
-    return new Response(JSON.stringify({ error: e?.message || String(e) }), { status: 500, headers: corsHeaders });
+    const msg = e?.message || String(e);
+    // 401 quando o problema e QUEM chamou, e nao o que foi pedido: a recusa do
+    // portao precisa se ler como tentativa de acesso no log, nao como bug nosso.
+    return new Response(JSON.stringify({ error: msg }), {
+      status: /autenticad|permiss/i.test(msg) ? 401 : 500, headers: corsHeaders,
+    });
   }
 });

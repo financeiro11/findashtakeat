@@ -84,3 +84,16 @@ verify_jwt = false
 # desfaz. verify_jwt = false aqui e para o caminho do cron, nao para o do envio.
 [functions.email-responder]
 verify_jwt = false
+
+# Tem caminho de cron por `x-cron-token` para GRAVAR o estado das integracoes —
+# e a tabela gravada e de onde o modal de aviso le.
+[functions.integracoes-status]
+verify_jwt = false
+
+# Roda de cron (9h UTC) com `x-cron-token` e SEM Authorization — ver a migration
+# `20260831093000`. A linha nao e nova na pratica: a funcao ja estava com
+# verify_jwt = false no projeto hospedado, so nao estava escrita aqui. Sem ela,
+# o primeiro deploy pela CLI ligaria a checagem do gateway e a varredura das 9h
+# passaria a morrer em UNAUTHORIZED_NO_AUTH_HEADER, sem nada no log da funcao.
+[functions.editais-sync]
+verify_jwt = false

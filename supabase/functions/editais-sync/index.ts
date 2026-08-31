@@ -1,6 +1,7 @@
 import { corsHeaders } from "../_shared/cors.ts";
 import { getServiceClient } from "../_shared/normalize.ts";
 import { calculateEditalRelevance, loadFilterSettings } from "../_shared/relevance.ts";
+import { requireUser } from "../_shared/auth.ts";
 
 const FONTE_TO_FUNCTION: Record<string, string> = {
   pncp: "editais-fonte-pncp",
@@ -103,6 +104,29 @@ Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response(null, { headers: corsHeaders });
   const startedAll = Date.now();
   const supa = getServiceClient();
+
+  /* DUAS PORTAS (30/08/2026). Antes não havia nenhuma: a função rodava com a
+     service role e qualquer pessoa disparava a varredura inteira — o que gasta
+     crédito de Firecrawl da empresa a cada chamada, sem teto de quem chama.
+
+     A tela chama com o usuário logado. O cron chama com `x-cron-token`, porque
+     `editais-sync-diario` dispara SEM header de Authorization (ver o
+     `disparar_automacao` do agendamento) — se o portão só aceitasse usuário,
+     o cron das 9h passaria a morrer em 401, calado. */
+  try {
+    const tok = req.headers.get("x-cron-token");
+    let ehCron = false;
+    if (tok) {
+      const { data } = await supa.from("internal_cron_tokens")
+        .select("name").eq("name", "editais-sync").eq("token", tok).maybeSingle();
+      ehCron = !!data;
+    }
+    if (!ehCron) await requireUser(req, { bloquearCargos: ["parcerias"] });
+  } catch (e) {
+    return new Response(JSON.stringify({ error: (e as Error).message }), {
+      status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" },
+    });
+  }
 
   let body: { fonte?: string; force?: boolean; reprocess?: boolean } = {};
   try { body = await req.json(); } catch { /* empty body OK */ }

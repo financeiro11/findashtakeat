@@ -2,6 +2,7 @@
 import { createClient } from "npm:@supabase/supabase-js@2";
 import { extractText, getDocumentProxy } from "npm:unpdf@0.12.1";
 import { MODELO_LITE } from "../_shared/gemini.ts";
+import { requireUser } from "../_shared/auth.ts";
 
 // EdgeRuntime.waitUntil permite continuar o processamento DEPOIS de responder
 // (essencial para PDFs escaneados grandes, cujo OCR pode passar de 2 min).
@@ -171,6 +172,12 @@ async function processar(supabase: any, tipo: string, periodo: string, pdf_path:
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response(null, { headers: corsHeaders });
   try {
+    // PORTÃO (30/08/2026). Rodava com a service role e sem checagem: qualquer
+    // pessoa mandava um `pdf_path` e recebia de volta o balancete lido — e a
+    // service role ignora RLS, então o caminho podia ser o de qualquer PDF
+    // guardado no projeto, não só o dela.
+    await requireUser(req, { bloquearCargos: ["parcerias"] });
+
     const { periodo, pdf_path, tipo: tipoRaw } = await req.json();
     const tipo = tipoRaw === "balanco" ? "balanco" : "balancete";
     if (!periodo || !pdf_path) {
@@ -213,8 +220,12 @@ Deno.serve(async (req) => {
     });
   } catch (err: any) {
     console.error("parse-balancete-pdf error:", err);
-    return new Response(JSON.stringify({ error: err?.message || "Erro inesperado" }), {
-      status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" },
+    const msg = err?.message || "Erro inesperado";
+    // 401 quando o problema e QUEM chamou, e nao o que foi pedido: a recusa do
+    // portao precisa se ler como tentativa de acesso no log, nao como bug nosso.
+    return new Response(JSON.stringify({ error: msg }), {
+      status: /autenticad|permiss/i.test(msg) ? 401 : 500,
+      headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
   }
 });

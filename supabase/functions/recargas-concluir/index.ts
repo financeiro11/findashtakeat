@@ -14,6 +14,7 @@
 // Auth: JWT do usuário logado (o gateway já exige, verify_jwt fica no padrão).
 
 import { createClient, type SupabaseClient } from "npm:@supabase/supabase-js@2";
+import { requireUser } from "../_shared/auth.ts";
 // CORS inline, como em create-user e admin-reset-password: a funcao e publicada
 // isolada, e depender de ../_shared/ acopla o deploy ao resto da pasta.
 const corsHeaders = {
@@ -103,6 +104,16 @@ async function acharSolicitacao(
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response(null, { headers: corsHeaders });
   if (req.method !== "POST") return json({ error: "method not allowed" }, 405);
+
+  // PORTÃO (30/08/2026). Rodava com a service role e sem checagem nenhuma:
+  // qualquer pessoa marcava recarga como concluída e disparava o callback
+  // assinado para o TakeatOS. Quem clica em "feita" é o Financeiro — então que
+  // seja alguém logado, e não a chave pública que está no bundle.
+  try {
+    await requireUser(req, { bloquearCargos: ["parcerias"] });
+  } catch (e) {
+    return json({ error: (e as Error).message }, 401);
+  }
 
   const url = Deno.env.get("SUPABASE_URL");
   const serviceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");

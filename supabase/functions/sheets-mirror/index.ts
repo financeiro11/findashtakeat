@@ -1,5 +1,27 @@
-// Generic Google Sheets mirror: read / update single cell / append row.
-// Caller passes spreadsheetId + sheet name in the request body.
+// Espelho genérico de Google Sheets: ler / escrever célula / acrescentar linha.
+// Quem chama passa `spreadsheetId` e o nome da aba no corpo.
+//
+// ---------------------------------------------------------------------------
+// FECHADA EM 30/08/2026 — era a porta mais larga do Hub
+//
+// Esta função não tinha checagem NENHUMA e roda com as credenciais do conector
+// Google do Lovable. Some-se a isso o fato de o `spreadsheetId` vir do CORPO da
+// requisição, e o que existia era isto: qualquer pessoa da internet, com a
+// chave pública do bundle, podia LER, ESCREVER e ACRESCENTAR LINHA em
+// **qualquer planilha compartilhada com a conta do conector** — bastava saber
+// (ou descobrir) o ID. As três ações estavam abertas, não só a leitura.
+//
+// Não era a função de uma planilha: era um proxy universal de Google Sheets
+// pendurado na internet com a credencial da empresa.
+//
+// O portão agora é `requireUser`. O `spreadsheetId` continua vindo do corpo —
+// é o que a tela genérica `/operacional/sheet-mirror` precisa —, mas quem o
+// envia passou a ser um funcionário logado, e não qualquer um.
+//
+// `parcerias` fica de fora: é o cargo de menor alcance no Hub (ver AppLayout),
+// e planilha de folha e reembolso não é assunto dele.
+
+import { requireUser } from "../_shared/auth.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -64,6 +86,9 @@ Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
 
   try {
+    // PORTÃO: antes de ler o corpo, antes de tocar no conector. Ver o cabeçalho.
+    await requireUser(req, { bloquearCargos: ["parcerias"] });
+
     const body = req.method === "POST" ? await req.json().catch(() => ({})) : {};
     const action = body?.action ?? "read";
     const spreadsheetId: string = body?.spreadsheetId;
@@ -168,6 +193,11 @@ Deno.serve(async (req) => {
     console.error("sheets-mirror error:", msg);
     const isRate = /\[429\]/.test(msg);
     const isForbidden = /\[403\]/.test(msg);
+    // A recusa do PORTÃO precisa sair como 401. O `status: 200` que valia para
+    // tudo aqui vinha de quando os erros eram do Google (cota, compartilhamento)
+    // e a tela queria mostrá-los como aviso — mas com ele a recusa de acesso
+    // chegaria à tela como se fosse mais um recado do Sheets.
+    const naoAutorizado = /autenticad|permiss/i.test(msg);
     return new Response(
       JSON.stringify({
         error: isRate
@@ -178,7 +208,7 @@ Deno.serve(async (req) => {
         rateLimited: isRate,
         forbidden: isForbidden,
       }),
-      { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } },
+      { status: naoAutorizado ? 401 : 200, headers: { ...corsHeaders, "Content-Type": "application/json" } },
     );
   }
 });

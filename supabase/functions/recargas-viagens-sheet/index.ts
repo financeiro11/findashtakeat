@@ -1,5 +1,6 @@
 import { corsHeaders } from 'npm:@supabase/supabase-js@2/cors';
 import { createClient } from 'npm:@supabase/supabase-js@2';
+import { requireUser } from "../_shared/auth.ts";
 
 const SHEET_ID = "17MOvrcc7OpMVPFxzoKn4Nufg0zKU33qgmvZ-N3eCwgk";
 const RANGE = "Página1!A1:Z1000";
@@ -25,6 +26,17 @@ async function sha1(input: string) {
 
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
+
+  // PORTÃO (30/08/2026). Rodava com a credencial do conector Google e a service
+  // role, sem checagem nenhuma: qualquer pessoa lia a planilha de viagens e
+  // eventos — nome de colaborador, destino, data e valor — com um `curl`.
+  try {
+    await requireUser(req, { bloquearCargos: ["parcerias"] });
+  } catch (e) {
+    return new Response(JSON.stringify({ error: (e as Error).message }), {
+      status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" },
+    });
+  }
 
   const LOVABLE_API_KEY = Deno.env.get("LOVABLE_API_KEY");
   const GOOGLE_SHEETS_API_KEY = Deno.env.get("GOOGLE_SHEETS_API_KEY");

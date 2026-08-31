@@ -1,11 +1,28 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.0";
 import { errorResponse, generateJSON, handleCors, jsonResponse } from "../_shared/openai.ts";
 import { buildOrgContext } from "../_shared/org-context.ts";
+import { requireUser } from "../_shared/auth.ts";
 
 interface Tx { description: string; amount: number; tipo: "Crédito" | "Débito" }
 
 Deno.serve(async (req) => {
   const pre = handleCors(req); if (pre) return pre;
+
+  /* PORTÃO (30/08/2026). Sem ele, qualquer pessoa com a chave pública do bundle
+     usava a chave de IA da empresa de graça — e recebia de volta o contexto
+     organizacional (fornecedores, centros de custo, colaboradores) que o prompt
+     carrega. Não era só custo: era o organograma saindo junto.
+
+     Fica FORA do `try` de propósito: o `errorResponse` compartilhado troca a
+     mensagem por um texto genérico de "tente de novo" e devolve 500, o que
+     faria a recusa de acesso se parecer com instabilidade da IA — tanto para
+     quem lê o log quanto para quem está tentando entrar. */
+  try {
+    await requireUser(req);
+  } catch (e) {
+    return jsonResponse({ error: (e as Error).message }, 401);
+  }
+
   try {
     const { transactions } = await req.json() as { transactions: Tx[] };
     if (!Array.isArray(transactions) || transactions.length === 0) {

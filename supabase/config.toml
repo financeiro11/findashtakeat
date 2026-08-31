@@ -107,6 +107,14 @@ verify_jwt = false
 [functions.editais-sync]
 verify_jwt = false
 
+# Espelha a agenda do Google para `agenda_eventos`. Roda de cron duas vezes por
+# dia (9h e 18h UTC) com `x-cron-token`. Nasceu com verify_jwt = true, e por isso
+# os dois disparos diarios morreriam no gateway antes de a funcao existir — o
+# mesmo defeito que este arquivo ja documenta seis vezes. Achado ao revisar as
+# edge functions em 31/08/2026, antes de o primeiro cron ter chance de falhar.
+[functions.agenda-sync]
+verify_jwt = false
+
 # O vigia de series, que alimenta o sino. Roda de cron (07:10 UTC) com
 # `x-cron-token` e sem Authorization. Caiu na mesma armadilha que este arquivo ja
 # documenta cinco vezes: subiu com verify_jwt = true e o primeiro disparo voltou

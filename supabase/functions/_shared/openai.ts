@@ -112,6 +112,9 @@ interface GenerateOptions {
   json?: boolean;           // forçar JSON sem schema
   maxTokens?: number;       // teto da resposta; sem ele, uma geração em loop só para no limite do modelo
   timeoutMs?: number;       // padrão TIMEOUT_PADRAO
+  /** Pula a OpenAI e vai direto ao Gemini, pela MESMA rota da queda automática.
+   *  Para exercitar a rede de proteção sem mexer na chave de produção. */
+  preferirGemini?: boolean;
 }
 
 async function callChat(opts: GenerateOptions): Promise<Record<string, unknown>> {
@@ -183,16 +186,111 @@ function tryParseJson(text: string): unknown | null {
   return null;
 }
 
+/* ===================================================================== */
+/* ===================== a rede de proteção do Gemini =================== */
+/* ===================================================================== */
+/**
+ * EM 31/08/2026 A CONTA DA OPENAI FICOU SEM CRÉDITO, e o Hub descobriu do pior
+ * jeito: oito `credit_balance_exhausted` em 24h e cada recurso de IA deste
+ * módulo simplesmente apagando. Só o assistente sobrevivia, porque só ele tinha
+ * queda para o Gemini — em `_shared/assistente/llm.ts`, um andar acima. Todo o
+ * resto (recomendação do cartão, justificativa da DRE, o vigia do sino…) chama
+ * este arquivo direto e ia junto.
+ *
+ * A queda passa a ser AQUI, e não em cada função, porque o problema não é de
+ * nenhuma delas em particular: é do motor. Assim ninguém precisa lembrar de
+ * pedir a proteção, que é exatamente o tipo de coisa que se esquece.
+ *
+ * QUANDO CAI, E QUANDO NÃO CAI — a parte que importa:
+ *
+ * Só se troca de motor quando o defeito é DA OPENAI e o Gemini teria chance de
+ * acertar: sem crédito/cota (429), fora do ar (5xx), sem chave, ou demora demais.
+ * Um 400 por schema malformado NÃO cai: o Gemini erraria igual, e mascarar isso
+ * transformaria um bug de programação em "a IA está estranha hoje" — que é o
+ * defeito mais caro de achar. Recusa do modelo idem: é resposta, não falha.
+ */
+function valeTentarOutroMotor(e: unknown): boolean {
+  if (!(e instanceof OpenAIError)) return false;
+  /* RECUSA NÃO É FALHA, é resposta — e perguntar a mesma coisa ao Gemini para
+     ver se ele topa é justamente o que não se deve fazer. Fica de fora mesmo
+     viajando com status 502, que é o código que `extractText` usa para ela. */
+  if (/recus/i.test(e.message)) return false;
+  // 429 = cota/crédito · 502 = não consegui falar · 504 = estourou o tempo
+  // 500 = chave ausente (o `getKey` usa esse código)
+  return e.status === 429 || e.status === 500 || e.status === 502 || e.status === 504;
+}
+
+async function comQuedaParaGemini<T>(
+  tentarOpenAI: () => Promise<T>,
+  tentarGemini: () => Promise<T>,
+  preferirGemini?: boolean,
+): Promise<T> {
+  /* O DESVIO EXISTE PARA PODER TESTAR A QUEDA. Uma rede de proteção que nunca
+     foi vista funcionando não é rede: o caminho do Gemini só roda quando a
+     OpenAI quebra, ou seja, no pior momento possível e sem ninguém olhando.
+     Com `preferirGemini` dá para exercitar a MESMA rota quando se quer, sem
+     mexer na chave de produção — que, no Supabase, não se restaura depois de
+     sobrescrita. Serve também a quem prefira o motor barato numa tarefa
+     específica. */
+  if (preferirGemini) return await tentarGemini();
+  try {
+    return await tentarOpenAI();
+  } catch (e) {
+    if (!valeTentarOutroMotor(e)) throw e;
+    console.error(
+      "OpenAI indisponível; caindo para o Gemini.",
+      e instanceof Error ? e.message : e,
+    );
+    return await tentarGemini();
+  }
+}
+
 export async function generateText(opts: GenerateOptions): Promise<string> {
-  return extractText(await callChat(opts));
+  return await comQuedaParaGemini(
+    async () => extractText(await callChat(opts)),
+    /* Importação preguiçosa: quem nunca cai não paga o custo de carregar o
+       módulo do Gemini, e o ciclo openai↔gemini nunca chega a se formar. */
+    /* `maxTokens` e `timeoutMs` NÃO atravessam: o `GenerateOptions` do Gemini
+       não tem esses campos, e mandá-los assim mesmo seria um objeto ignorado em
+       silêncio — o tipo de "funciona" que só se descobre quando o teto não
+       segura nada. O Gemini tem o retry e a cascata dele próprios. */
+    async () => {
+      const g = await import("./gemini.ts");
+      return await g.generateText({
+        messages: opts.messages,
+        temperature: opts.temperature,
+      });
+    },
+    opts.preferirGemini,
+  );
 }
 
 export async function generateJSON<T = unknown>(opts: GenerateOptions): Promise<T> {
-  const data = await callChat({ ...opts, json: true });
-  const txt = extractText(data);
-  const parsed = tryParseJson(txt);
-  if (!parsed) throw new OpenAIError("IA retornou resposta inválida", 502, txt.slice(0, 500));
-  return parsed as T;
+  return await comQuedaParaGemini(
+    async () => {
+      const data = await callChat({ ...opts, json: true });
+      const txt = extractText(data);
+      const parsed = tryParseJson(txt);
+      if (!parsed) throw new OpenAIError("IA retornou resposta inválida", 502, txt.slice(0, 500));
+      return parsed as T;
+    },
+    /* `responseSchema` vai CRU. Ele já chega na forma do Gemini — é o
+       `paraStrict()` deste arquivo que o converte para a OpenAI, não o
+       contrário —, então repassar o original é o certo. */
+    async () => {
+      const g = await import("./gemini.ts");
+      return await g.generateJSON<T>({
+        messages: opts.messages,
+        temperature: opts.temperature,
+        responseSchema: opts.responseSchema,
+        /* Sem schema, o Gemini precisa que lhe digam que a saída é JSON —
+           `json: true` é o `responseMimeType` dele. Na OpenAI isso já vinha
+           embutido no `callChat({ ...opts, json: true })` acima. */
+        json: !opts.responseSchema,
+      });
+    },
+    opts.preferirGemini,
+  );
 }
 
 export function jsonResponse(body: unknown, status = 200): Response {

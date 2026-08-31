@@ -640,7 +640,20 @@ async function espelhar(supabase: any, opts: { tetoStatus: number }) {
 
   // Grava a listagem primeiro: mesmo que a leitura de status pare no meio (trava
   // do Omie), o espelho da OS fica correto e o próximo sync retoma só o status.
-  const LOTE = 500;
+  /* 100, e não 500, por causa de CONTENÇÃO — não de volume. A tabela tem ~1.700
+     linhas e 10 MB; um lote de 500 não é grande. O que estoura é o relógio: o
+     `authenticator` do PostgREST roda com `statement_timeout = 8s` e
+     `lock_timeout = 8s`, e esta função tem DUAS rodadas de cron se alternando de
+     5 em 5 minutos (`nf-emissao-diaria` nos minutos 0,10,20… e
+     `nf-espelho-rodada` nos 5,15,25…). Quando uma rodada passa dos 5 minutos, a
+     seguinte entra por cima e as duas disputam as mesmas linhas: em 31/08/2026
+     isso apareceu como nove `canceling statement due to statement timeout` em
+     24h, com a mensagem `nf_os_omie upsert`.
+
+     Lote menor = transação mais curta = trava segurada por menos tempo. Não é a
+     cura (a cura seria as duas rodadas não se sobreporem), mas derruba muito a
+     janela de colisão e é uma mudança que não muda comportamento nenhum. */
+  const LOTE = 100;
   for (let i = 0; i < linhas.length; i += LOTE) {
     const { error } = await supabase.from("nf_os_omie").upsert(linhas.slice(i, i + LOTE), { onConflict: "n_cod_os" });
     if (error) throw new Error(`nf_os_omie upsert: ${error.message}`);

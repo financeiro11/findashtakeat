@@ -233,6 +233,128 @@ async function medirTarefas(supa: any, s: Serie): Promise<Candidato[]> {
   return out;
 }
 
+/* ================================================ série: automações falhando */
+
+/**
+ * A saúde das automações, medida contra a normalidade de CADA job.
+ *
+ * O painel e o AvisoGrave já reagem a falha. O que eles não sabem fazer é
+ * separar o job que quebrou hoje do job que sempre falha um pouco: o radar de
+ * preços e a varredura de editais raspam a internet e erram por natureza. Quem
+ * olha o painel aprende a ignorar o vermelho deles — e ignora junto o vermelho
+ * que importa.
+ *
+ * DUAS ROTAS, porque a matemática de uma não serve para a outra:
+ *
+ *   1. ESTREOU. Job cujo histórico é só zero e que hoje falhou. A banda NÃO
+ *      pega este caso: com mediana zero, a variação relativa é indefinida e a
+ *      guarda de divisão por zero do `avaliar` (corretamente) devolve 0, o que
+ *      derruba o piso relativo e engole o sinal. Só que este é justamente o
+ *      caso mais importante — "falhou num job que nunca falhava" é a definição
+ *      de notícia. Por isso ele é tratado à parte, com piso absoluto para uma
+ *      falha solta não virar alarme.
+ *
+ *   2. PIOROU. Job com histórico de falha, cuja TAXA de hoje foge da banda dele.
+ *
+ * É TAXA (falhas ÷ execuções), não contagem, e por um motivo específico: o dia
+ * corrente está pela metade. Comparar "3 falhas até agora" com "8 no dia
+ * inteiro de ontem" é o mesmo erro de comparar mês parcial com mês fechado — e
+ * a taxa é imune a isso, porque o denominador encolhe junto.
+ */
+const PISO_ESTREIA = 3;
+
+async function medirAutomacoes(supa: any, s: Serie): Promise<Candidato[]> {
+  const { data, error } = await supa.rpc("sinal_automacoes_dia", { p_dias: s.historico_meses });
+  if (error) throw new Error(`sinal_automacoes_dia: ${error.message}`);
+
+  const linhas = (data ?? []) as { jobname: string; dia: string; execucoes: number; falhas: number }[];
+  const hojeISO = iso(new Date());
+
+  const porJob = new Map<string, { dia: string; execucoes: number; falhas: number }[]>();
+  for (const l of linhas) {
+    if (!porJob.has(l.jobname)) porJob.set(l.jobname, []);
+    porJob.get(l.jobname)!.push(l);
+  }
+
+  const out: Candidato[] = [];
+  for (const [jobname, dias] of porJob) {
+    const hoje = dias.find((d) => d.dia === hojeISO);
+    if (!hoje || Number(hoje.falhas) === 0) continue;  // sem falha hoje, sem assunto
+
+    /* Dia sem linha é dia em que o job NÃO RODOU — e não um dia de zero falhas.
+       Preencher com zero rebaixaria a mediana de um job semanal e faria a
+       primeira falha dele parecer catástrofe. */
+    const anteriores = dias.filter((d) => d.dia !== hojeISO);
+    if (anteriores.length < MIN_HISTORICO) continue;
+
+    const falhasHoje = Number(hoje.falhas);
+    const taxaHoje = Number(hoje.execucoes) > 0 ? falhasHoje / Number(hoje.execucoes) : 0;
+    const taxasAntes = anteriores.map((d) =>
+      Number(d.execucoes) > 0 ? Number(d.falhas) / Number(d.execucoes) : 0);
+    const falhasAntes = anteriores.reduce((a, d) => a + Number(d.falhas), 0);
+
+    const base = {
+      chave: jobname,
+      valor: null,
+      dono: s.dono_user_id,
+      rascunho: { tipo: "abrir_painel_automacoes", jobname, rota: `${s.rota}?job=${jobname}` },
+    };
+
+    if (falhasAntes === 0) {
+      if (falhasHoje < PISO_ESTREIA) continue;   // uma falha solta não é tendência
+      const v = avaliar(taxaHoje, taxasAntes, { k: s.k, folga: s.folga, direcao: "acima", minRelativo: 0 });
+      out.push({
+        ...base,
+        assinatura: "falha_estreou",
+        titulo: `"${jobname}" começou a falhar`,
+        atual: taxaHoje,
+        veredito: v,
+        dossie: {
+          automacao: jobname,
+          falhas_hoje: falhasHoje,
+          execucoes_hoje: Number(hoje.execucoes),
+          dias_anteriores_observados: anteriores.length,
+          falhas_nos_dias_anteriores: 0,
+          observacao: "Este job nunca havia falhado na janela observada.",
+        },
+        fallback: {
+          corpo: `${falhasHoje} falhas hoje em ${hoje.execucoes} execuções. Nos ${anteriores.length} dias anteriores este job não falhou nenhuma vez.`,
+          acao: "Abrir o painel de automações e ver o que a função respondeu.",
+        },
+      });
+      continue;
+    }
+
+    const v = avaliar(taxaHoje, taxasAntes, {
+      k: s.k, folga: s.folga, direcao: "acima", minRelativo: s.min_relativo,
+    });
+    if (!v.disparou) continue;
+
+    const pctHoje = `${(taxaHoje * 100).toFixed(0)}%`;
+    const pctNormal = `${(v.banda.centro * 100).toFixed(0)}%`;
+    out.push({
+      ...base,
+      assinatura: `falha_acima_${faixaDoDesvio(v.relativo)}`,
+      titulo: `"${jobname}" falhando mais que o normal`,
+      atual: taxaHoje,
+      veredito: v,
+      dossie: {
+        automacao: jobname,
+        falhas_hoje: falhasHoje,
+        execucoes_hoje: Number(hoje.execucoes),
+        taxa_de_falha_hoje: pctHoje,
+        taxa_de_falha_normal: pctNormal,
+        dias_anteriores_observados: anteriores.length,
+      },
+      fallback: {
+        corpo: `${falhasHoje} falhas em ${hoje.execucoes} execuções hoje (${pctHoje}), contra ${pctNormal} de costume nos ${anteriores.length} dias anteriores.`,
+        acao: "Abrir o painel de automações e ver o que a função respondeu.",
+      },
+    });
+  }
+  return out;
+}
+
 /* =========================================================== a redação da IA */
 
 const ESTILO = `
@@ -260,8 +382,10 @@ REGRAS
 Responda SÓ com JSON: {"corpo": "...", "acao": "..."}
 `.trim();
 
-async function redigir(c: Candidato, s: Serie): Promise<{ corpo: string; acao: string }> {
-  if (!temChave()) return c.fallback;
+async function redigir(
+  c: Candidato, s: Serie, preferirGemini = false,
+): Promise<{ corpo: string; acao: string }> {
+  if (!temChave() && !preferirGemini) return c.fallback;
   try {
     const r = await generateJSON<{ corpo?: string; acao?: string }>({
       messages: [
@@ -277,6 +401,7 @@ async function redigir(c: Candidato, s: Serie): Promise<{ corpo: string; acao: s
       temperature: 0.3,
       maxTokens: 400,
       timeoutMs: PRAZO_IA_MS,
+      preferirGemini,
     });
     const corpo = String(r?.corpo ?? "").trim();
     const acao = String(r?.acao ?? "").trim();
@@ -323,6 +448,11 @@ Deno.serve(async (req) => {
     const body = await req.json().catch(() => ({}));
     const soEsta: string | undefined = body?.serie;
     const preview = body?.preview === true;
+    /* `{"motor":"gemini"}` exercita a rede de proteção do `_shared/openai.ts`
+       pela mesma rota que a queda automática usaria. Sem isto, o caminho do
+       Gemini só rodaria quando a OpenAI quebrasse — no pior momento e sem
+       ninguém olhando. */
+    const preferirGemini = body?.motor === "gemini";
     const hoje = body?.hoje ? new Date(`${body.hoje}T12:00:00Z`) : new Date();
 
     let q = supa.from("sinal_serie").select("*").eq("ativa", true);
@@ -337,6 +467,7 @@ Deno.serve(async (req) => {
       try {
         if (s.serie === "notas.cobertura") candidatos = await medirCobertura(supa, s, hoje);
         else if (s.serie === "tarefas.encalhada") candidatos = await medirTarefas(supa, s);
+        else if (s.serie === "automacoes.falhas") candidatos = await medirAutomacoes(supa, s);
         else { relatorio.push({ serie: s.serie, erro: "sem medidor" }); continue; }
       } catch (e) {
         /* Uma série que quebra não pode levar as outras junto: o sino ficaria
@@ -360,7 +491,7 @@ Deno.serve(async (req) => {
 
       const vivos: string[] = [];
       for (const c of candidatos) {
-        const { corpo, acao } = await redigir(c, s);
+        const { corpo, acao } = await redigir(c, s, preferirGemini);
         const { error } = await supa.rpc("sinal_gravar", {
           p_serie: s.serie, p_chave: c.chave, p_assinatura: c.assinatura,
           p_titulo: c.titulo, p_corpo: corpo, p_acao: acao,

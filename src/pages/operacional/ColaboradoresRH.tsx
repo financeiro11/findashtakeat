@@ -32,6 +32,10 @@ import {
 } from "@/lib/folha/chaves-pix";
 import { invocar } from "@/lib/erroEdge";
 import {
+  calcularRescisao, classificacaoDoRH, mesesDeCasa, parseISO, rescisaoEmTexto,
+  type Classificacao,
+} from "@/lib/rescisao";
+import {
   montarLote, type ColaboradorDaFolha, type ResolveDePara,
 } from "../../../supabase/functions/_shared/folha-envio";
 
@@ -78,40 +82,16 @@ const fmtCpf = (c: unknown) => {
 const txt = (v: unknown) => (v === null || v === undefined || v === "" ? "—" : String(v));
 const boolTxt = (v: unknown) => (v === true ? "Sim" : v === false ? "Não" : "—");
 
-/* ─────────────────────────── Cálculo proporcional ───────────────────────────
-   Regra: mês comercial de 30 dias. Dias trabalhados no mês do desligamento =
-   dia do desligamento (ou desde o início, se a pessoa entrou no mesmo mês).
-   Proporcional = (valor mensal / 30) × dias. Soma-se a liberalidade, se houver. */
-
-const parseISO = (s: unknown): Date | null => {
-  if (!s || typeof s !== "string") return null;
-  const [y, m, d] = s.slice(0, 10).split("-").map(Number);
-  return y && m && d ? new Date(y, m - 1, d) : null;
-};
+/* ─────────────────────────── Tempo de casa ───────────────────────────
+   O cálculo do acerto de saída mora em `@/lib/rescisao` — aqui fica só a
+   leitura humana do tempo de casa, que a ficha mostra no topo. */
 
 function tempoDeCasa(inicio: Date, fim: Date): string {
-  let meses = (fim.getFullYear() - inicio.getFullYear()) * 12 + (fim.getMonth() - inicio.getMonth());
-  if (fim.getDate() < inicio.getDate()) meses -= 1;
-  meses = Math.max(0, meses);
+  const meses = mesesDeCasa(inicio, fim);
   const anos = Math.floor(meses / 12);
   const resto = meses % 12;
   if (anos === 0) return `${meses} ${meses === 1 ? "mês" : "meses"}`;
   return `${anos} ${anos === 1 ? "ano" : "anos"}${resto ? ` e ${resto} ${resto === 1 ? "mês" : "meses"}` : ""}`;
-}
-
-function calculoProporcional(c: Colaborador) {
-  const inicio = parseISO(c.inicio);
-  const desl = parseISO(c.datadesl);
-  const valor = Number(c.valor) || 0;
-  if (!desl || !valor) return null;
-  const mesmoMes =
-    inicio &&
-    inicio.getFullYear() === desl.getFullYear() &&
-    inicio.getMonth() === desl.getMonth();
-  const dias = Math.min(30, Math.max(1, mesmoMes ? desl.getDate() - inicio!.getDate() + 1 : desl.getDate()));
-  const proporcional = (valor / 30) * dias;
-  const liberalidade = Number(c.valor_liberalidade) || 0;
-  return { valor, dias, proporcional, liberalidade, total: proporcional + liberalidade };
 }
 
 /* ─────────────────────────── Catálogo de colunas ───────────────────────────
@@ -2101,6 +2081,198 @@ function Ladrilho({ rotulo, valor, tom }: { rotulo: string; valor: string; tom?:
   );
 }
 
+/** Campo de número do acerto — vazio quer dizer "ainda não informado", não zero. */
+function CampoDoAcerto({
+  rotulo, ajuda, prefixo, valor, onChange, pendente,
+}: {
+  rotulo: string;
+  ajuda: string;
+  prefixo?: string;
+  valor: string;
+  onChange: (v: string) => void;
+  pendente?: boolean;
+}) {
+  return (
+    <label className="flex-1">
+      <span className="block text-[11px] font-medium text-muted-foreground">{rotulo}</span>
+      <span className="relative mt-1 flex items-center">
+        {prefixo && (
+          <span className="pointer-events-none absolute left-2 text-[12px] text-muted-foreground">{prefixo}</span>
+        )}
+        <Input
+          value={valor}
+          onChange={(e) => onChange(e.target.value)}
+          inputMode="decimal"
+          placeholder={ajuda}
+          className={cn(
+            "h-8 bg-background text-[13px] tabular-nums",
+            prefixo && "pl-8",
+            pendente && "border-destructive/60",
+          )}
+        />
+      </span>
+    </label>
+  );
+}
+
+/**
+ * O acerto de saída, conforme a regra de rescisão PJ.
+ *
+ * A ficha do RH não guarda três coisas que a conta precisa — dias de férias já
+ * tirados, variável do mês e, quando `tipodesl` vem vazio, se a saída foi
+ * voluntária ou involuntária. Elas são perguntadas aqui, e nada é chutado:
+ * enquanto faltar resposta que muda o valor, o total não aparece. É o mesmo
+ * "parar e perguntar" que a regra manda, só que na tela.
+ *
+ * Nada disto grava no RH — a tela é espelho. O que sai daqui é o texto
+ * discriminado do botão de copiar, que vai no e-mail de aprovação.
+ */
+function PainelRescisao({
+  c, nome, onCopiar,
+}: {
+  c: Colaborador;
+  nome: string;
+  onCopiar: (valor: string, rotulo: string) => void;
+}) {
+  const [diasFerias, setDiasFerias] = useState("");
+  const [variavel, setVariavel] = useState("");
+  const [escolha, setEscolha] = useState<Classificacao | null>(null);
+
+  const numero = (s: string) => {
+    if (!s.trim()) return null;
+    const n = Number(s.replace(/\./g, "").replace(",", "."));
+    return Number.isFinite(n) ? n : null;
+  };
+
+  const r = useMemo(
+    () =>
+      calcularRescisao(c, {
+        diasDeFeriasTirados: numero(diasFerias),
+        variavel: numero(variavel),
+        classificacao: escolha,
+      }),
+    [c, diasFerias, variavel, escolha],
+  );
+
+  if (!r) return null;
+
+  const doRH = classificacaoDoRH(c.tipodesl);
+  const fechado = r.pendencias.length === 0;
+  const faltaFerias = r.pendencias.some((p) => p.includes("férias"));
+
+  return (
+    <div className="space-y-2.5 rounded-xl border border-amber-500/40 bg-amber-500/5 p-3">
+      <div className="flex items-center justify-between gap-2">
+        <p className="text-xs font-semibold uppercase tracking-wider text-amber-700 dark:text-amber-400">
+          Acerto da rescisão
+        </p>
+        <button
+          onClick={() => onCopiar(rescisaoEmTexto(nome, r, c.datadesl), "cálculo da rescisão")}
+          className="inline-flex h-7 items-center gap-1.5 rounded-lg border bg-card px-2.5 text-[12px] transition-colors hover:bg-muted"
+        >
+          <Copy className="size-3" />
+          Copiar cálculo
+        </button>
+      </div>
+
+      {/* O que só o e-mail de desligamento sabe */}
+      <div className="space-y-2 rounded-lg border border-border/70 bg-background/60 p-2.5">
+        <p className="text-[11px] text-muted-foreground">
+          Do e-mail de desligamento{doRH ? "" : " — o tipo não veio preenchido do RH"}:
+        </p>
+        <div className="flex gap-2">
+          <CampoDoAcerto
+            rotulo="Dias de férias já tirados"
+            ajuda={faltaFerias ? "obrigatório" : "0"}
+            valor={diasFerias}
+            onChange={setDiasFerias}
+            pendente={faltaFerias}
+          />
+          <CampoDoAcerto
+            rotulo="Variável / comissão"
+            ajuda="0,00"
+            prefixo="R$"
+            valor={variavel}
+            onChange={setVariavel}
+          />
+        </div>
+        <div>
+          <span className="block text-[11px] font-medium text-muted-foreground">
+            Tipo de desligamento
+            {r.origemDaClassificacao === "rh" && " (do RH)"}
+          </span>
+          <div className="mt-1 flex gap-1.5">
+            {(["voluntario", "involuntario"] as const).map((op) => (
+              <button
+                key={op}
+                onClick={() => setEscolha(escolha === op ? null : op)}
+                className={cn(
+                  "h-8 flex-1 rounded-lg border text-[12.5px] transition-colors",
+                  r.classificacao === op
+                    ? "border-amber-500/60 bg-amber-500/15 font-medium text-amber-800 dark:text-amber-300"
+                    : "bg-card hover:bg-muted",
+                  !r.classificacao && "border-destructive/60",
+                )}
+              >
+                {op === "voluntario" ? "Voluntário" : "Involuntário"}
+              </button>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      {/* A conta, componente a componente */}
+      <div className="space-y-1 text-sm">
+        <div className="flex justify-between">
+          <span className="text-muted-foreground">Remuneração mensal</span>
+          <span className="tabular-nums">{BRL(r.valor)}</span>
+        </div>
+        {r.linhas.map((l) => (
+          <div key={l.chave} className="flex justify-between gap-4">
+            <span className="text-muted-foreground">
+              {l.desconto ? "− " : ""}
+              {l.rotulo}
+              {l.detalhe && <span className="text-[11.5px] opacity-70"> ({l.detalhe})</span>}
+            </span>
+            <span
+              className={cn(
+                "whitespace-nowrap font-medium tabular-nums",
+                l.desconto && "text-destructive",
+              )}
+            >
+              {l.desconto ? "− " : ""}
+              {BRL(l.valor)}
+            </span>
+          </div>
+        ))}
+        <div className="mt-1.5 flex items-baseline justify-between border-t pt-1.5">
+          <span className="font-semibold">Total a receber</span>
+          {fechado ? (
+            <span className="text-base font-bold tabular-nums">{BRL(r.total)}</span>
+          ) : (
+            <span className="text-[12px] font-medium text-destructive">falta informar acima</span>
+          )}
+        </div>
+      </div>
+
+      {r.pendencias.map((p) => (
+        <p key={p} className="flex gap-1.5 text-[11.5px] text-destructive">
+          <AlertTriangle className="mt-[1px] size-3.5 flex-none" />
+          {p}
+        </p>
+      ))}
+      {r.avisos.map((a) => (
+        <p key={a} className="text-[11px] text-muted-foreground">
+          {a}
+        </p>
+      ))}
+      <p className="text-[11px] text-muted-foreground">
+        Estimativa a partir da ficha do RH — confira contra o e-mail de desligamento antes de pagar.
+      </p>
+    </div>
+  );
+}
+
 function FichaConteudo({
   c, fotoUrl, onFoto, onCopiar, duasColunas,
 }: {
@@ -2114,7 +2286,6 @@ function FichaConteudo({
   const eAtivo = ativo(c);
   const inicio = parseISO(c.inicio);
   const desl = parseISO(c.datadesl);
-  const calc = !eAtivo ? calculoProporcional(c) : null;
   const fimRef = desl ?? new Date();
 
   return (
@@ -2179,42 +2350,7 @@ function FichaConteudo({
         </button>
       </div>
 
-      {calc && (
-        <div className="space-y-1.5 rounded-xl border border-amber-500/40 bg-amber-500/5 p-3">
-          <p className="text-xs font-semibold uppercase tracking-wider text-amber-700 dark:text-amber-400">
-            Pagamento proporcional do desligamento
-          </p>
-          <div className="space-y-1 text-sm">
-            <div className="flex justify-between">
-              <span className="text-muted-foreground">Valor mensal do contrato</span>
-              <span className="tabular-nums">{BRL(calc.valor)}</span>
-            </div>
-            <div className="flex justify-between">
-              <span className="text-muted-foreground">Dias trabalhados no mês do desligamento</span>
-              <span className="tabular-nums">{calc.dias} {calc.dias === 1 ? "dia" : "dias"}</span>
-            </div>
-            <div className="flex justify-between gap-4">
-              <span className="text-muted-foreground">
-                Proporcional ({BRL(calc.valor)} ÷ 30 × {calc.dias})
-              </span>
-              <span className="whitespace-nowrap font-medium tabular-nums">{BRL(calc.proporcional)}</span>
-            </div>
-            {calc.liberalidade > 0 && (
-              <div className="flex justify-between">
-                <span className="text-muted-foreground">Liberalidade</span>
-                <span className="font-medium tabular-nums">{BRL(calc.liberalidade)}</span>
-              </div>
-            )}
-            <div className="mt-1.5 flex justify-between border-t pt-1.5">
-              <span className="font-semibold">Total a receber</span>
-              <span className="text-base font-bold tabular-nums">{BRL(calc.total)}</span>
-            </div>
-          </div>
-          <p className="text-[11px] text-muted-foreground">
-            Estimativa em base comercial (mês de 30 dias) — confira antes de pagar.
-          </p>
-        </div>
-      )}
+      {!eAtivo && <PainelRescisao key={String(c.id)} c={c} nome={nome} onCopiar={onCopiar} />}
 
       <div className={cn("flex flex-col gap-3", duasColunas && "sm:grid sm:grid-cols-2 sm:items-start")}>
         <Bloco

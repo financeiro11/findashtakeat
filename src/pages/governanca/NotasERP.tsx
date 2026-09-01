@@ -35,7 +35,7 @@ import { Input } from "@/components/ui/input";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 import { Tooltip, TooltipTrigger, TooltipContent } from "@/components/ui/tooltip";
 import {
-  AlertTriangle, Archive, ArrowUpRight, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, CreditCard,
+  AlertTriangle, Archive, ArrowRight, ArrowUpRight, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, CreditCard,
   ExternalLink, Eye, FileWarning, FilterX, Flame, Loader2, Paperclip, RefreshCw, Scale,
   Maximize2, Minus, Plus,
   Search, Send, ShieldAlert, ShieldCheck, ShieldQuestion, Target, ThumbsDown, ThumbsUp, Upload, Zap,
@@ -741,9 +741,10 @@ const CARTOES: Array<{
     icone: <Send className="h-3.5 w-3.5" />,
     situacoes: [...SITUACOES_NOSSAS], aba: "titulos",
     rodape: "sem ação",
-    ajuda: "O Hub tem o arquivo e a varredura de envio o leva ao Omie de 15 em 15 minutos; " +
+    ajuda: "Já está NA FILA de envio, e a varredura a leva ao Omie a cada 7 ou 8 minutos; " +
       "o que já subiu espera só a releitura do ERP. Ninguém precisa fazer nada — e se uma " +
-      "linha travar, ela aparece em \"Falta um passo\" com o motivo.",
+      "linha travar, ela aparece em \"Falta um passo\" com o motivo. " +
+      "O que o Hub casou e ninguém mandou NÃO está aqui: está em \"achada — falta você confirmar\".",
   },
   /* AO LADO do "Hub leva sozinho" de propósito: os dois dizem "a nota está
      aqui", e a diferença inteira é quem move. Separados na tela, a pessoa lê
@@ -858,6 +859,20 @@ export default function NotasERP() {
    * recorte padrão e vinha cheia de "Sem nota" — o cartão dizia 16 títulos e a
    * tela mostrava centenas de outra coisa. Vazio = o recorte de abertura. */
   const [situacaoFoco, setSituacaoFoco] = useState<SituacaoTitulo[]>([]);
+  /* E qual RECORTE a aba Acervo abre. Mesma ideia dos dois de cima, para o outro
+     lado do problema: os cartões de "Por que falta" contam trabalho que se faz
+     no acervo, e cair lá no recorte padrão ("Tudo que falta", 23 linhas) depois
+     de clicar num cartão de 10 é a mesma decepção que o foco de situação já
+     tinha resolvido na aba Títulos. */
+  const [acervoFoco, setAcervoFoco] = useState<string | null>(null);
+
+  /** O clique de um cartão: uma aba, e o recorte que aquele número conta. */
+  const irPara = useCallback((d: DestinoEstagio) => {
+    setGravidadeFoco([]);
+    setSituacaoFoco(d.situacoes ? [...d.situacoes] : []);
+    setAcervoFoco(d.acervo ?? null);
+    setAba(d.aba);
+  }, []);
 
   /* ------------------------------- resumo ------------------------------- */
   const carregar = useCallback(async () => {
@@ -908,8 +923,20 @@ export default function NotasERP() {
         sb.functions.invoke("omie-anexar-comprovante", { body: { action: "varredura", limite: 40 } }),
       );
       const { enviados = 0, falhas = 0, fila = 0 } = d ?? {};
-      if (!fila) toast.info("Nada pronto para subir: toda nota que o Hub tem já está no ERP.");
-      else toast.success(`${enviados} nota(s) anexadas no Omie` + (falhas ? ` · ${falhas} falharam` : ""));
+      /* FILA VAZIA NÃO É "ESTÁ TUDO NO ERP", e dizer isso foi o que fez a tela
+         se contradizer: a aba "Falta um passo" mostrava "2 prontas para subir"
+         e o botão respondia que não havia nada. Este botão leva só o que está
+         NA FILA — e a fila do acervo se enche por clique de gente, na aba
+         Acervo de notas. Zero aqui quase sempre quer dizer "ninguém mandou
+         ainda", não "acabou". */
+      if (!fila) {
+        toast.info(
+          "Nada na fila de envio. O que o Hub já casou e ainda não mandou está na aba " +
+          "“Acervo de notas” — marque as linhas e clique “Mandar ao ERP”.",
+        );
+      } else {
+        toast.success(`${enviados} nota(s) anexadas no Omie` + (falhas ? ` · ${falhas} falharam` : ""));
+      }
       await carregar();
     } catch (e: any) {
       toast.error(`O envio falhou: ${e?.message ?? e}`);
@@ -1131,7 +1158,10 @@ export default function NotasERP() {
             /* Trocar de aba PELO NOME devolve o recorte de abertura: o foco só
                existe quando se chega por um cartão, e carregá-lo adiante faria a
                aba Títulos abrir filtrada por algo que ninguém pediu. */
-            onClick={() => { if (a.id !== aba) { setGravidadeFoco([]); setSituacaoFoco([]); } setAba(a.id); }}
+            onClick={() => {
+              if (a.id !== aba) { setGravidadeFoco([]); setSituacaoFoco([]); setAcervoFoco(null); }
+              setAba(a.id);
+            }}
           >
             {a.rotulo}
           </button>
@@ -1140,16 +1170,16 @@ export default function NotasERP() {
 
       {aba === "panorama" && <Panorama resumo={resumo} />}
       {aba === "caixa" && <CaixaDeNotas />}
-      {aba === "diagnostico" && <PorQueFalta de={de} ate={ate} />}
+      {aba === "diagnostico" && <PorQueFalta de={de} ate={ate} irPara={irPara} />}
       {aba === "categorias" && <Categorias resumo={resumo} />}
       {aba === "fornecedores" && <Fornecedores resumo={resumo} de={de} ate={ate} aoMudar={carregar} />}
       {aba === "titulos" && (
         <Titulos de={de} ate={ate} gravidadeInicial={gravidadeFoco} situacaoInicial={situacaoFoco} />
       )}
-      {aba === "acervo" && <Acervo aoMudar={carregar} />}
+      {aba === "acervo" && <Acervo aoMudar={carregar} recorteInicial={acervoFoco} />}
       {aba === "revisar" && <Revisar de={de} ate={ate} aoRevisar={carregar} />}
       {aba === "parcelas" && <Parcelas />}
-      {aba === "quase" && <QuaseLa />}
+      {aba === "quase" && <QuaseLa irPara={irPara} />}
       {aba === "regua" && <Regua aoMudar={carregar} />}
     </div>
   );
@@ -1300,8 +1330,19 @@ function Categorias({ resumo }: { resumo: ResumoNotas | null }) {
 const ESTAGIO: Record<string, { rotulo: string; ajuda: string; tom: string }> = {
   pronta_para_subir: {
     rotulo: "O Hub leva sozinho",
-    ajuda: "O arquivo já está aqui e o título já está identificado. A varredura sobe em minutos — ninguém precisa fazer nada.",
+    ajuda: "Já está na fila de envio: o arquivo aqui, o título identificado e alguém já mandou. A varredura leva ao Omie a cada 7 ou 8 minutos — daqui em diante ninguém precisa fazer nada.",
     tom: "ok",
+  },
+  /* O ESTÁGIO QUE FALTAVA, e a mentira que ele desfaz.
+     Até 31/08/2026 estas linhas contavam como "O Hub leva sozinho — ninguém
+     precisa fazer nada": eram 11 títulos e R$ 13.878 debaixo desse rótulo,
+     quando só 1 estava mesmo na fila. A fila do acervo se enche por clique de
+     gente; nenhum cron chama `notas_externas_enfileirar`. Ver a migration
+     20260831200000. */
+  falta_mandar: {
+    rotulo: "Casada — falta mandar",
+    ajuda: "O Hub casou a nota com o título e parou aí: a fila de envio só anda depois que alguém manda. É o clique mais barato desta tela — marcar as linhas e usar \"Mandar ao ERP\".",
+    tom: "atencao",
   },
   espera_um_clique: {
     rotulo: "Espera um clique",
@@ -1322,6 +1363,65 @@ const ESTAGIO: Record<string, { rotulo: string; ajuda: string; tom: string }> = 
     rotulo: "Não existe nota",
     ajuda: "Uber, 99 e afins não emitem nota por corrida. O recibo do app é o documento, e a triagem já o aceita.",
     tom: "fora",
+  },
+};
+
+/**
+ * PARA ONDE CADA CARTÃO LEVA — e por que ele leva a algum lugar.
+ *
+ * Os cartões desta aba nomeiam trabalhos diferentes e, até 31/08/2026, eram
+ * todos becos sem saída: liam-se cinco diagnósticos e depois se procurava, à
+ * mão, em qual das onze abas ficava o botão de cada um. É o mesmo defeito que
+ * os cartões do topo já tinham corrigido — "um painel cujo número não sobrevive
+ * ao próprio clique ensina a não clicar".
+ *
+ * `chamada` é escrita como gesto, não como destino: quem lê "Marcar e mandar ao
+ * ERP" sabe o que vai encontrar do outro lado; quem lê "Ir para o Acervo" ainda
+ * não sabe o que fazer lá.
+ */
+type DestinoEstagio = {
+  aba: Aba;
+  /** Recorte de abertura da aba Acervo — o mesmo id de RECORTES/RECORTES_FILA. */
+  acervo?: string;
+  situacoes?: SituacaoTitulo[];
+  chamada: string;
+};
+
+const DESTINO_ESTAGIO: Record<string, DestinoEstagio> = {
+  pronta_para_subir: {
+    aba: "acervo", acervo: "na_fila",
+    chamada: "Ver a fila de envio",
+  },
+  /* "Tudo que falta" e não "Pode mandar sem conferir": o cartão conta TÍTULOS
+     casados e fora da fila, e os dois chips de dentro ("pode mandar sem
+     conferir" e "confira antes de mandar") são recortes disso pela confiança do
+     casamento. Cair no recorte guarda-chuva mostra a lista inteira que o número
+     conta; escolher um dos dois esconderia metade dela sem avisar. */
+  falta_mandar: {
+    aba: "acervo", acervo: "falta_no_erp",
+    chamada: "Marcar e mandar ao ERP",
+  },
+  espera_um_clique: {
+    aba: "acervo", acervo: "ambiguas",
+    chamada: "Escolher o título de cada uma",
+  },
+  /* OS DOIS DE COBRANÇA vão para a mesma aba de propósito: os dois terminam num
+     e-mail ao fornecedor, e é lá que a lista sai agrupada por CNPJ, que é como
+     o e-mail se escreve. O que muda é o texto da cobrança, não a tela. */
+  achou_mas_nao_abre: {
+    aba: "fornecedores",
+    chamada: "Ver de quem pedir o acesso",
+  },
+  nunca_apareceu: {
+    aba: "fornecedores",
+    chamada: "Ver quem deve nota",
+  },
+  /* "Não existe nota" não tem trabalho de cobrança — tem uma REGRA, e a régua é
+     onde ela se muda. Quem clica aqui quase sempre veio perguntar "por que a
+     Uber está de fora?", e a resposta mora lá. */
+  fornecedor_nao_emite: {
+    aba: "regua",
+    chamada: "Ver a régua que dispensa",
   },
 };
 
@@ -1452,7 +1552,11 @@ function OndeEsta({ de, ate }: { de: string; ate: string }) {
   );
 }
 
-function PorQueFalta({ de, ate }: { de: string; ate: string }) {
+function PorQueFalta({ de, ate, irPara }: {
+  de: string; ate: string;
+  /** Troca de aba já com o recorte que o cartão clicado conta. Ver DESTINO_ESTAGIO. */
+  irPara: (d: DestinoEstagio) => void;
+}) {
   const [sinal, setSinal] = useState<Diagnostico | null>(null);
   const [texto, setTexto] = useState<TextoIA | null>(null);
   const [carregando, setCarregando] = useState(true);
@@ -1530,8 +1634,21 @@ function PorQueFalta({ de, ate }: { de: string; ate: string }) {
         <div className="mt-3 grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
           {sinal.estagios.map((e) => {
             const meta = ESTAGIO[e.estagio] ?? { rotulo: e.estagio, ajuda: "", tom: "neutro" };
+            const destino = DESTINO_ESTAGIO[e.estagio];
+            /* O cartão SÓ vira botão quando há para onde ir. Um estágio novo que
+               o front ainda não conhece continua legível como texto, em vez de
+               virar um clique que não faz nada. */
+            const Marca = destino ? "button" : "div";
             return (
-              <div key={e.estagio} className={cn("rounded border p-3", TOM[meta.tom])}>
+              <Marca
+                key={e.estagio}
+                className={cn(
+                  "rounded border p-3 text-left",
+                  TOM[meta.tom],
+                  destino && "transition hover:brightness-105",
+                )}
+                {...(destino ? { type: "button" as const, onClick: () => irPara(destino) } : {})}
+              >
                 <div className="flex items-baseline justify-between gap-2">
                   <span className="text-[12.5px] font-medium">{meta.rotulo}</span>
                   <span className="text-[11px] opacity-80">
@@ -1550,7 +1667,13 @@ function PorQueFalta({ de, ate }: { de: string; ate: string }) {
                     ))}
                   </ul>
                 )}
-              </div>
+                {destino && (
+                  <span className="mt-2 flex items-center gap-1 text-[11.5px] font-medium">
+                    {destino.chamada}
+                    <ArrowRight className="h-3 w-3" />
+                  </span>
+                )}
+              </Marca>
             );
           })}
         </div>
@@ -2521,7 +2644,37 @@ type QuaseLinha = {
   valor: number; tem_comprovante: boolean; tem_titulo: boolean; falta: string;
 };
 
-function QuaseLa() {
+/** O que a RPC escreve quando a linha está mesmo na fila de envio. */
+const PRONTA = "pronta para subir";
+/** E o começo do que ela escreve quando falta o clique de mandar. */
+const FALTA_MANDAR = "a nota está casada e ninguém mandou";
+
+/**
+ * ONDE SE RESOLVE ESTE "O QUE FALTA".
+ *
+ * A frase da RPC já nomeia a aba — "(aba Acervo)", "marque na aba Acervo de
+ * notas" — e a coluna era texto morto: quem lia tinha de sair procurando o
+ * recorte certo entre onze chips. Aqui a frase vira o link para ele.
+ *
+ * Casa por trecho do texto, e não por um código à parte, de propósito: o
+ * diagnóstico é escrito em SQL numa frase só, e um código paralelo seria mais
+ * uma coisa para sair de sincronia com ela. Trecho que não bate não vira link —
+ * a linha continua legível, como era antes.
+ */
+function destinoDoQueFalta(falta: string): DestinoEstagio | null {
+  if (falta.startsWith(FALTA_MANDAR)) return DESTINO_ESTAGIO.falta_mandar;
+  if (falta.includes("falta escolher qual")) return DESTINO_ESTAGIO.espera_um_clique;
+  /* O recorte guarda-chuva, e não um dos dois de confiança: o que prende estas
+     linhas é o Hub não saber que papel é o arquivo, e isso corta os dois. Desde
+     31/08/2026 boleto e recibo já não param aqui — sobem como comprovante — e
+     quem sobra é o balde `outro`, que só um olho resolve. */
+  if (falta.includes("não reconheceu que papel é este arquivo")) {
+    return { aba: "acervo", acervo: "falta_no_erp", chamada: "Abrir e confirmar o documento" };
+  }
+  return null;
+}
+
+function QuaseLa({ irPara }: { irPara: (d: DestinoEstagio) => void }) {
   const [linhas, setLinhas] = useState<QuaseLinha[]>([]);
   const [carregando, setCarregando] = useState(true);
 
@@ -2534,8 +2687,9 @@ function QuaseLa() {
     })();
   }, []);
 
-  const prontas = linhas.filter((l) => l.falta === "pronta para subir");
-  const resto = linhas.filter((l) => l.falta !== "pronta para subir");
+  const prontas = linhas.filter((l) => l.falta === PRONTA);
+  const aMandar = linhas.filter((l) => l.falta.startsWith(FALTA_MANDAR));
+  const resto = linhas.filter((l) => l.falta !== PRONTA && !l.falta.startsWith(FALTA_MANDAR));
 
   return (
     <div className="space-y-3">
@@ -2547,11 +2701,28 @@ function QuaseLa() {
           foi assim que os 79 achados de junho ficaram inteiros de fora por dois meses. Esta lista é
           o oposto disso: o que está a um passo, e qual é o passo.
         </p>
+        {/* AS DUAS FAIXAS DIZEM COISAS DIFERENTES, e misturá-las foi o bug.
+            A verde é "já está na fila, o botão de cima leva"; a âmbar é "a fila
+            está vazia porque ninguém mandou, e mandar é noutra aba". Até
+            31/08/2026 a segunda usava o texto da primeira, e mandava apertar um
+            botão que respondia "nada pronto para subir". */}
         {!!prontas.length && (
           <p className="mt-3 inline-flex items-center gap-1.5 rounded border border-emerald-500/20 bg-emerald-500/10 px-2 py-1 text-[12.5px] text-emerald-600 dark:text-emerald-400">
             <CheckCircle2 className="h-3.5 w-3.5" />
-            {prontas.length} pronta(s) para subir — use “Subir o que está pronto” lá em cima.
+            {prontas.length} na fila de envio — sobem sozinhas, ou agora com “Subir o que está pronto” lá em cima.
           </p>
+        )}
+        {!!aMandar.length && (
+          <button
+            type="button"
+            className="mt-3 flex items-center gap-1.5 rounded border border-amber-500/20 bg-amber-500/10 px-2 py-1 text-left text-[12.5px] text-amber-700 transition hover:brightness-105 dark:text-amber-400"
+            onClick={() => irPara(DESTINO_ESTAGIO.falta_mandar)}
+          >
+            <Send className="h-3.5 w-3.5 shrink-0" />
+            {aMandar.length} casada(s) e fora da fila — o botão lá em cima não as leva.
+            Marque no Acervo de notas e clique “Mandar ao ERP”.
+            <ArrowRight className="h-3 w-3 shrink-0" />
+          </button>
         )}
       </div>
 
@@ -2572,12 +2743,15 @@ function QuaseLa() {
                 <Loader2 className="mx-auto h-4 w-4 animate-spin" />
               </td></tr>
             )}
-            {!carregando && ![...prontas, ...resto].length && (
+            {!carregando && ![...prontas, ...aMandar, ...resto].length && (
               <tr><td colSpan={5} className="px-4 py-8 text-center text-muted-foreground">
                 Nada pendente: tudo que tinha nota já está no ERP.
               </td></tr>
             )}
-            {[...prontas, ...resto].map((l) => (
+            {/* A ORDEM É A DO TRABALHO: o que anda sozinho primeiro (só para
+                conferir), depois o que espera um clique seu, e por último o que
+                depende de terceiros. */}
+            {[...prontas, ...aMandar, ...resto].map((l) => (
               <tr key={`${l.origem}-${l.ref_id}`} className="border-b border-border/60 last:border-0">
                 <td className="px-4 py-2 text-[12px] capitalize text-muted-foreground">{l.origem}</td>
                 <td className="px-3 py-2">{l.rotulo}</td>
@@ -2585,9 +2759,20 @@ function QuaseLa() {
                 <td className="px-3 py-2 tabular-nums text-muted-foreground">{dataStr(l.competencia)}</td>
                 <td className={cn(
                   "px-4 py-2 text-[12.5px]",
-                  l.falta === "pronta para subir" ? "text-emerald-600 dark:text-emerald-400" : "text-muted-foreground",
+                  l.falta === PRONTA && "text-emerald-600 dark:text-emerald-400",
+                  l.falta.startsWith(FALTA_MANDAR) && "text-amber-700 dark:text-amber-400",
+                  l.falta !== PRONTA && !l.falta.startsWith(FALTA_MANDAR) && "text-muted-foreground",
                 )}>
-                  {l.falta}
+                  {/* O texto da RPC já nomeia a aba; o clique poupa a procura. */}
+                  {destinoDoQueFalta(l.falta) ? (
+                    <button
+                      type="button"
+                      className="text-left underline decoration-dotted underline-offset-2"
+                      onClick={() => irPara(destinoDoQueFalta(l.falta)!)}
+                    >
+                      {l.falta}
+                    </button>
+                  ) : l.falta}
                 </td>
               </tr>
             ))}
@@ -2699,12 +2884,19 @@ const RECORTES: Array<{ id: string; rotulo: string; chave: keyof ResumoAcervo; t
 const RECORTES_FILA: Array<{ id: string; rotulo: string; chave: keyof ResumoAcervo; ajuda: string }> = [
   { id: "falta_no_erp", rotulo: "Tudo que falta", chave: "falta_no_erp",
     ajuda: "A soma dos dois vermelhos acima. É o guarda-chuva dos dois próximos chips." },
-  { id: "sobe_sozinha", rotulo: "Sobe sozinha", chave: "sobe_sozinha",
-    ajuda: "Casou por CNPJ — isso é identidade, não coincidência — ou alguém escolheu o alvo à mão. O cron das :30 põe na fila sem perguntar." },
-  { id: "espera_gente", rotulo: "Espera você", chave: "espera_gente",
-    ajuda: "Casou por valor+data ou nome parecido. Numa fatura de milhares de linhas, coincidir valor é rotina: confira o lado de lá e confirme antes de mandar." },
+  /* "SOBE SOZINHA" É SOBRE A CONFIANÇA, NÃO SOBRE A FILA — e confundir as duas
+     foi o que espalhou a mentira por três telas. Nenhum cron chama
+     `notas_externas_enfileirar`: quem enche a fila é sempre um clique de gente,
+     aqui ou na Caixa de notas. Em 31/08/2026 havia 8 linhas neste chip e 1 em
+     "Na fila"; a diferença era exatamente o clique que ninguém deu, e o texto
+     antigo ("o cron das :30 põe na fila sem perguntar") mandava esperar por
+     ele. Ver a migration 20260831200000. */
+  { id: "sobe_sozinha", rotulo: "Pode mandar sem conferir", chave: "sobe_sozinha",
+    ajuda: "Casou por CNPJ — isso é identidade, não coincidência — ou alguém escolheu o alvo à mão. Não precisa de conferência, mas precisa de um clique: marque e use \"Mandar ao ERP\". Nada aqui sobe sozinho." },
+  { id: "espera_gente", rotulo: "Confira antes de mandar", chave: "espera_gente",
+    ajuda: "Casou por valor+data ou nome parecido. Numa fatura de milhares de linhas, coincidir valor é rotina: confira o lado de lá, confirme, e só então mande." },
   { id: "na_fila", rotulo: "Na fila", chave: "na_fila",
-    ajuda: "Já marcada para subir; a varredura leva ao Omie de 15 em 15 minutos. Hoje é o mesmo conjunto de \"Sobe sozinha\" — só difere quando alguém enfileira à mão uma de confiança média." },
+    ajuda: "Marcada para subir por alguém; daqui a varredura leva ao Omie sozinha, a cada 7 ou 8 minutos. É o único recorte desta linha em que o Hub anda sem você — e o botão \"Subir o que está pronto\" lá em cima leva exatamente estas." },
   { id: "no_erp", rotulo: "Mandadas pelo Hub", chave: "no_erp",
     ajuda: "Destas o Hub tem o carimbo de envio. Estão dentro de \"O ERP tem\", que conta também as que alguém anexou direto no Omie." },
 ];
@@ -2759,12 +2951,18 @@ const CONFIANCA_TOM: Record<string, string> = {
   media: "bg-amber-500/10 text-amber-700 border-amber-500/20 dark:text-amber-400",
 };
 
-function Acervo({ aoMudar }: { aoMudar: () => void }) {
+function Acervo({ aoMudar, recorteInicial }: {
+  aoMudar: () => void;
+  /** Recorte de abertura quando se chega por um cartão de outra aba. */
+  recorteInicial?: string | null;
+}) {
   const [resumo, setResumo] = useState<ResumoAcervo | null>(null);
   const [porque, setPorque] = useState<PorQueParou | null>(null);
   const [facetas, setFacetas] = useState<FacetasAcervo | null>(null);
   const [linhas, setLinhas] = useState<LinhaAcervo[]>([]);
-  const [recorte, setRecorte] = useState("falta_no_erp");
+  /* A aba desmonta ao trocar de aba, então o estado inicial basta — não há
+     `recorteInicial` chegando depois para um efeito ter de acompanhar. */
+  const [recorte, setRecorte] = useState(recorteInicial ?? "falta_no_erp");
   /* O CORTE POR MOTIVO DE PARADA — a pergunta que faz alguém trabalhar a fila.
      Vive separado do `recorte` porque as duas perguntas se cruzam: "o que ainda
      está parado" (recorte) e "parado POR QUÊ" (motivo). Ver `acervoNotas.ts`. */
@@ -2859,12 +3057,14 @@ function Acervo({ aoMudar }: { aoMudar: () => void }) {
       const { data: n, error } = await sb.rpc("notas_externas_enfileirar", { p_ids: ids });
       if (error) throw error;
       /* Zero tem DUAS causas, e dizer só uma delas manda a pessoa procurar no
-         lugar errado: ou o Omie já tem o anexo, ou o papel não parece nota e
-         ninguém confirmou ainda (o "Confirmar" é que abre essa porta — ver a
-         migração `20260827470000`). */
+         lugar errado: ou o Omie já tem o anexo, ou o Hub não reconheceu o papel.
+         Desde 31/08/2026 boleto e recibo entram (como comprovante), então a
+         segunda causa é só o balde `outro` — e a porta dele continua sendo o
+         "Confirmar". Ver `20260831210000`. */
       if (!n) {
         toast.message(
-          "Nada entrou na fila: ou o Omie já tem essas notas, ou o documento não parece nota — nesse caso, use \"Confirmar\" primeiro.",
+          "Nada entrou na fila: ou o Omie já tem essas notas, ou o Hub não reconheceu que papel é o arquivo " +
+          "(nem nota, nem boleto, nem recibo) — nesse caso, use \"Confirmar\" primeiro.",
         );
         return;
       }

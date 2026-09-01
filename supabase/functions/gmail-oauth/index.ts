@@ -70,10 +70,19 @@ const REDIRECT = `https://${PROJETO}.supabase.co/functions/v1/gmail-oauth`;
  * refresh token guardado continua valendo só para os dois escopos antigos, e
  * qualquer tentativa de enviar volta 403. O Hub trata isso como estado normal e
  * diz o que fazer, em vez de estourar. */
+/* `calendar.readonly` entrou em 31/08/2026, para o Hub ler a agenda de
+ * pagamentos de verdade em vez da fotografia que a skill do briefing gravava
+ * uma vez por dia. Somente leitura, e a escolha e deliberada: o Hub nao cria,
+ * nao move e nao apaga evento — a agenda continua sendo escrita por pessoas.
+ *
+ * MESMA ARMADILHA DOS OUTROS: enquanto ninguem reabrir o consentimento, o
+ * refresh token guardado vale so para os escopos antigos, e a agenda-sync volta
+ * 403 dizendo exatamente isso. */
 const ESCOPO = [
   "https://www.googleapis.com/auth/gmail.readonly",
   "https://www.googleapis.com/auth/drive.readonly",
   "https://www.googleapis.com/auth/gmail.send",
+  "https://www.googleapis.com/auth/calendar.readonly",
 ].join(" ");
 
 /** A resposta para quem chega pelo navegador — é uma pessoa do outro lado. */

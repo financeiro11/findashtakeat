@@ -31,6 +31,11 @@ import {
 
 const ROTULO: Record<string, string> = {
   pronta_para_subir: "o Hub já tem o arquivo e sobe sozinho",
+  /* SEPARADO DE `pronta_para_subir` desde 31/08/2026, porque a fila do ERP só
+     se enche por clique de gente: o que está casado e fora de `fila_erp` não
+     sobe sozinho nunca. Juntos, os dois davam "ninguém precisa fazer nada" a
+     11 títulos quando só 1 era verdade. */
+  falta_mandar: "o Hub casou a nota e ninguém a mandou ao ERP — falta marcar no Acervo e clicar Mandar",
   espera_um_clique: "o Hub achou candidata e precisa de alguém para confirmar",
   achou_mas_nao_abre: "sabe-se onde está e não se consegue pegar",
   nunca_apareceu: "nenhuma fonte trouxe documento desse fornecedor",

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/hooks/useAuth";
 import type { Json } from "@/integrations/supabase/types";
@@ -38,6 +38,12 @@ import { brl, fmtDateBR } from "./utils";
  * inteiro na primeira chamada — mas o encadeamento fica: chamada nova é worker
  * novo, com 75 segundos novos e memória limpa, e ela repete até a fila zerar.
  * O botão "Ler mais" continua ali para o que sobrar de cota ou de parada.
+ *
+ * A LEITURA NÃO MORA MAIS AQUI. O laço das rodadas vive na página (`Achados`),
+ * e este componente é a JANELA para ele: abrir e fechar não começa nem para
+ * nada. Foi o que destravou a tela — enquanto o laço era estado interno do
+ * modal, fechar o modal matava a leitura, então ele precisava ficar aberto na
+ * frente da pessoa até o fim. Quem quiser parar de verdade clica em "Parar".
  * ------------------------------------------------------------------------- */
 
 export type ItemConferido = {
@@ -69,7 +75,7 @@ export type ItemConferido = {
   descricao: string;
 };
 
-type Resumo = {
+export type Resumo = {
   lidos: number;
   /** Quantos desta rodada já foram para "Aprovado" no banco. */
   aprovados: number;
@@ -87,112 +93,36 @@ type Resumo = {
 };
 
 /** O corpo de erro da função — ela responde 200 com a mensagem pronta. */
-type Falha = { error?: string };
+export type Falha = { error?: string };
 
 type Props = {
   open: boolean;
+  /** Fecha a janela. NÃO para a leitura — quem para é o botão "Parar". */
   onClose: () => void;
-  /** Recarrega a lista da página depois de conferir/aprovar. */
+  /** Recarrega a lista da página depois de aprovar na mão. */
   onMudou: () => void;
-  competencia: string;
   /** Quantos achados da fatura têm comprovante e ainda estão em aberto. */
   totalComComprovante: number;
+  /* --- o trabalho, que mora na página --- */
+  lendo: boolean;
+  /** Qual leva está no ar (1-based); 0 quando parado. */
+  rodada: number;
+  resumo: Resumo | null;
+  erro: string | null;
+  parando: boolean;
+  onLer: (reler: boolean) => void;
+  onParar: () => void;
+  /** Move o item para o bloco verde sem refazer leitura nenhuma. */
+  onAprovadoNaMao: (id: number) => void;
 };
 
-/* O teto que a rodada do servidor aceita. Não é promessa de quantos vão sair: lá
-   quem manda é o relógio de 75 segundos, e o que não couber volta como fila para
-   a próxima chamada. Pedir alto é o certo justamente por isso — pedir baixo era
-   o que obrigava a encadear chamadas para uma fatura de tamanho normal. */
-const LOTE = 40;
-/* Trava de segurança do encadeamento. Não existe fatura com cem comprovantes:
-   se chegar aqui, alguma coisa está andando em círculo e é melhor devolver o
-   controle para a pessoa do que ficar gastando cota sozinho. */
-const MAX_RODADAS = 12;
-
-export default function ConferenciaModal({ open, onClose, onMudou, competencia, totalComComprovante }: Props) {
+export default function ConferenciaModal({
+  open, onClose, onMudou, totalComComprovante,
+  lendo, rodada, resumo, erro, parando, onLer, onParar, onAprovadoNaMao,
+}: Props) {
   const { user } = useAuth();
-  const [lendo, setLendo] = useState(false);
   /** Id do achado que está sendo aprovado agora — trava só aquele botão. */
   const [aprovando, setAprovando] = useState<number | null>(null);
-  const [rodada, setRodada] = useState(0);
-  const [resumo, setResumo] = useState<Resumo | null>(null);
-  const [erro, setErro] = useState<string | null>(null);
-  /* O pedido de parar mora numa ref, não no estado: o laço é uma função só, e a
-     variável de estado que ele leria ficaria congelada na primeira rodada. O
-     estado ao lado existe só para o botão mudar de cara — ref não redesenha. */
-  const pararRef = useRef(false);
-  const [parando, setParando] = useState(false);
-
-  // Cada abertura começa limpa: um resumo velho ao lado de uma fatura nova mente.
-  useEffect(() => { if (open) { setResumo(null); setErro(null); setRodada(0); } }, [open, competencia]);
-  // Fechar no meio não deixa rodada órfã disparando chamada atrás de chamada.
-  useEffect(() => () => { pararRef.current = true; }, []);
-
-  /** Uma chamada à função. Devolve o resumo da rodada, ou null se falhou. */
-  const umaRodada = async (reler: boolean): Promise<Resumo | null> => {
-    const { data, error } = await supabase.functions.invoke("auditoria-conferir-comprovante", {
-      body: { action: "conferir", competencia, limite: LOTE, reler },
-    });
-    if (error) { setErro(error.message); return null; }
-    // A função devolve 200 com `{ error }` no corpo para o erro chegar legível
-    // no toast em vez de virar "FunctionsHttpError" — é o padrão do resto do Hub.
-    const falha = (data as Falha)?.error;
-    if (falha) { setErro(falha); return null; }
-
-    const r = data as Resumo;
-    /* Acumula em vez de substituir: a leitura sai em rodadas e quem já apareceu
-       na lista continua nela. `restantes` e `quota_esgotada` são sempre os da
-       última rodada — é o estado de agora, não a soma de nada. As contagens da
-       tela saem de `itens`, então não há contador para somar aqui. */
-    setResumo((ant) => {
-      if (!ant) return r;
-      const vistos = new Set(r.itens.map((i) => i.id));
-      return {
-        ...r,
-        itens: [...r.itens, ...ant.itens.filter((i) => !vistos.has(i.id))],
-        erros: [...r.erros, ...ant.erros.filter((e) => !r.erros.some((n) => n.id === e.id))],
-        lidos: ant.lidos + r.lidos,
-      };
-    });
-    onMudou();
-    return r;
-  };
-
-  const conferir = async (reler = false) => {
-    setLendo(true); setErro(null); pararRef.current = false; setParando(false);
-    let aprovados = 0;
-    /* O que sobrava na rodada anterior. É por ele que se sabe se a rodada ANDOU:
-       um documento que o serviço de IA não conseguiu ler continua na fila sem ser
-       carimbado, e insistir nele seria repetir o mesmo tropeço até a trava. */
-    let sobrava: number | null = null;
-    try {
-      for (let i = 0; i < MAX_RODADAS; i++) {
-        setRodada(i + 1);
-        const r = await umaRodada(reler && i === 0);
-        if (!r) break;
-        aprovados += r.aprovados;
-        if (pararRef.current) break;
-        if (r.restantes <= 0 || r.quota_esgotada) break;
-        if (sobrava !== null && r.restantes >= sobrava) break;
-        sobrava = r.restantes;
-        /* "Ler de novo" é rodada única, de propósito. Com `reler`, a fila do
-           servidor é a lista INTEIRA e a rodada é sempre a cabeça dela — encadear
-           releria os mesmos três documentos para sempre. Quem quiser reler a
-           fatura toda clica de novo. */
-        if (reler) break;
-      }
-    } finally {
-      setLendo(false);
-      setRodada(0);
-      setParando(false);
-      pararRef.current = false;
-    }
-    // Um toast no fim, e não um por rodada: são quatro chamadas para uma fatura
-    // de doze notas, e quatro avisos empilhados na tela não informam mais nada.
-    if (aprovados > 0) {
-      toast.success(`${aprovados} lançamento${aprovados === 1 ? "" : "s"} aprovado${aprovados === 1 ? "" : "s"}: bate com a nota.`);
-    }
-  };
 
   /** Aprova um achado daqui, com o documento à vista. Mesma gravação do menu da
    *  lista: status + evento na trilha, para a auditoria ter uma história só. */
@@ -246,11 +176,9 @@ export default function ConferenciaModal({ open, onClose, onMudou, competencia, 
     }
   };
 
-  /** Move o item para o bloco verde sem refazer leitura nenhuma. */
-  const marcarAprovado = (id: number) =>
-    setResumo((ant) => ant
-      ? { ...ant, itens: ant.itens.map((x) => x.id === id ? { ...x, aprovado: true, aprovado_na_mao: true, status: "Aprovado" } : x) }
-      : ant);
+  /* Move o item para o bloco verde sem refazer leitura nenhuma. A lista mora na
+     página agora, então quem risca o item é ela. */
+  const marcarAprovado = onAprovadoNaMao;
 
   const itens = resumo?.itens ?? [];
   /* Separa pelo que ACONTECEU, não pelo veredito: se a gravação do status falhou,
@@ -258,8 +186,11 @@ export default function ConferenciaModal({ open, onClose, onMudou, competencia, 
   const aprovados = itens.filter((i) => i.aprovado);
   const revisar = itens.filter((i) => !i.aprovado);
 
+  /* Fechar no meio da leitura é permitido de propósito: o laço mora na página e
+     continua sem esta janela. Era o `!lendo` no onOpenChange e no botão Fechar
+     que prendia a pessoa aqui até a última nota. */
   return (
-    <Dialog open={open} onOpenChange={(o) => { if (!o && !lendo) onClose(); }}>
+    <Dialog open={open} onOpenChange={(o) => { if (!o) onClose(); }}>
       <DialogContent className="sm:max-w-[760px] max-h-[85vh] flex flex-col p-0">
         <DialogHeader className="px-6 pt-6 pb-3">
           <DialogTitle className="flex items-center gap-2">
@@ -385,7 +316,8 @@ export default function ConferenciaModal({ open, onClose, onMudou, competencia, 
                 {aprovados.length} aprovado{aprovados.length === 1 ? "" : "s"}
               </span>
             )}
-            <Button variant="outline" onClick={onClose} disabled={lendo} className="h-9">
+            <Button variant="outline" onClick={onClose} className="h-9"
+              title={lendo ? "A leitura continua em segundo plano" : undefined}>
               Fechar
             </Button>
             {/* Parar termina a leva que está no ar e não começa a próxima. O que
@@ -393,7 +325,7 @@ export default function ConferenciaModal({ open, onClose, onMudou, competencia, 
             {lendo ? (
               <Button
                 variant="outline"
-                onClick={() => { pararRef.current = true; setParando(true); }}
+                onClick={onParar}
                 disabled={parando}
                 className="h-9"
                 title="Termina a leva em andamento e para"
@@ -407,7 +339,7 @@ export default function ConferenciaModal({ open, onClose, onMudou, competencia, 
                  leitura saiu torta e vale gastar cota de novo. */
               <Button
                 variant="outline"
-                onClick={() => conferir(!!resumo && resumo.restantes === 0)}
+                onClick={() => onLer(!!resumo && resumo.restantes === 0)}
                 className="h-9"
                 title={resumo && resumo.restantes === 0 ? "Lê os comprovantes de novo, gastando cota" : undefined}
               >

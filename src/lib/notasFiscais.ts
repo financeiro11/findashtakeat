@@ -73,10 +73,16 @@ export const SITUACOES: Record<Situacao, { rotulo: string; tom: "ok" | "aviso" |
     tom: "ok",
     ajuda: "OS faturada e RPS autorizado pela prefeitura.",
   },
+  // ANTES E DEPOIS DO CORTE SÃO A MESMA SITUAÇÃO, e isso é uma correção de
+  // 31/08/2026. A classificação só valia antes do corte, e por isso 1.035
+  // cobranças de agosto com nota autorizada do Asaas apareciam como "Sem nota"
+  // — com o número da nota impresso na coluna ao lado. O corte responde "quem
+  // emite de agora em diante?", pergunta da fila; a situação responde "esta
+  // cobrança tem nota?", e nota autorizada é nota independente de data.
   emitida_asaas: {
     rotulo: "Emitida no Asaas",
     tom: "ok",
-    ajuda: "Nota autorizada pelo Asaas antes da data de corte — não precisa sair de novo pelo Omie.",
+    ajuda: "Nota autorizada pelo Asaas — não precisa sair de novo pelo Omie. Depois do corte isto é o paralelo: os dois emitem, e quem chegou primeiro vale.",
   },
   // "Faturado (NFS-e rejeitada)" é o nome que a própria tela do Omie dá ao
   // cStatusRps '003'. A OS foi faturada, o RPS foi enviado e a prefeitura
@@ -416,7 +422,7 @@ export interface Auditoria {
  */
 export const BALDES: Record<Balde, { rotulo: string; tom: "ok" | "aviso" | "erro" | "neutro"; grupo: "resolvido" | "andamento" | "travado"; ajuda: string }> = {
   nota_omie:        { rotulo: "Nota emitida no Omie", tom: "ok", grupo: "resolvido", ajuda: "NFS-e autorizada pela prefeitura." },
-  nota_asaas:       { rotulo: "Nota emitida no Asaas", tom: "ok", grupo: "resolvido", ajuda: "Nota autorizada pelo Asaas antes da data de corte." },
+  nota_asaas:       { rotulo: "Nota emitida no Asaas", tom: "ok", grupo: "resolvido", ajuda: "Nota autorizada pelo Asaas. Vale antes e depois do corte: no paralelo os dois emitem, e a nota dele é nota igual." },
   nao_exige:        { rotulo: "Não exige nota", tom: "neutro", grupo: "resolvido", ajuda: "Cobrança não recebida — pendente, vencida ou cancelada." },
   estornada:        { rotulo: "Estornada", tom: "neutro", grupo: "resolvido", ajuda: "Dinheiro devolvido ao cliente; não há receita para tributar." },
 

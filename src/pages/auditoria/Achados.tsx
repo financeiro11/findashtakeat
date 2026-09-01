@@ -20,7 +20,7 @@ import { brl, brlAbbr, fmtDateBR, fmtDateTimeBR, fmtTrilha, compLabel, parcelaDo
 import { comValorExato } from "@/components/ValorExato";
 import AjusteSolicitadoModal from "./AjusteSolicitadoModal";
 import SolicitarJustificativasModal from "./SolicitarJustificativasModal";
-import ConferenciaModal from "./ConferenciaModal";
+import ConferenciaModal, { type Falha, type Resumo } from "./ConferenciaModal";
 import FacilitiesNfPropostas from "./FacilitiesNfPropostas";
 import { enviarProntos, enviarUnitario } from "@/lib/omieAnexos";
 import { WhatsAppLogo, OmieLogo } from "@/components/brand-logos";
@@ -114,6 +114,18 @@ const ALL_CATEGORIAS: Categoria[] = ["COM NF", "SEM NF", "A CONFERIR", "FORA DE 
 /** Linhas por página na tabela de lançamentos. */
 const POR_PAGINA = 50;
 
+/* O teto que a rodada da conferência aceita. Não é promessa de quantos vão sair:
+   lá quem manda é o relógio de 75 segundos do worker, e o que não couber volta
+   como fila para a próxima chamada. */
+const LOTE_CONFERENCIA = 40;
+/* Trava de segurança do encadeamento. Não existe fatura com cem comprovantes: se
+   chegar aqui, alguma coisa está andando em círculo e é melhor devolver o
+   controle para a pessoa do que ficar gastando cota sozinho. */
+const MAX_RODADAS_CONFERENCIA = 12;
+/* Um id só para a conferência inteira: as levas se sucedem e cada uma escreve
+   por cima do mesmo aviso, em vez de empilhar quatro toasts na tela. */
+const TOAST_CONFERENCIA = "conferencia-comprovantes";
+
 /* `types.ts` é gerado pelo Supabase CLI e ainda não conhece a RPC criada na
    migration 20260819120000. Mesmo atalho do `useApelidos` — some quando os tipos
    forem regerados. */
@@ -131,6 +143,12 @@ function deriveCategoria(regra?: string | null, statusNf?: string | null, status
   if (esc.includes("FORA") || rg.includes("FORA")) return "FORA DE ESCOPO";
   if (nf.includes("CONFERIR") || rg.includes("CONFERIR")) return "A CONFERIR";
   if (nf === "OK") return "COM NF";
+  /* SÓ COMPROVANTE É SEM NF, e precisa estar escrito.
+     O status nasceu em 31/08/2026, quando boleto e recibo passaram a subir ao
+     ERP como comprovante (migration 20260831210000). Sem esta linha ele caía no
+     `return null` — não por decisão, mas porque "SÓ COMPROVANTE" não contém a
+     palavra "SEM". A NF continua sendo devida, e é isso que a categoria diz. */
+  if (nf === "SÓ COMPROVANTE") return "SEM NF";
   if (nf.includes("SEM") || rg.includes("SEM NF")) return "SEM NF";
   return null;
 }
@@ -222,7 +240,15 @@ export default function Achados({ abas }: { abas?: React.ReactNode }) {
   const [cruzando, setCruzando] = useState(false);
   const [enviandoUm, setEnviandoUm] = useState(false);
   const [enviandoMassa, setEnviandoMassa] = useState(false);
+  /* A conferência de comprovantes é um trabalho da PÁGINA, não do modal: o laço
+     das rodadas mora aqui e continua rodando com a janela fechada. O modal é a
+     janela para ele. Ver `conferirComprovantes` mais abaixo. */
   const [conferenciaOpen, setConferenciaOpen] = useState(false);
+  const [confLendo, setConfLendo] = useState(false);
+  const [confRodada, setConfRodada] = useState(0);
+  const [confResumo, setConfResumo] = useState<Resumo | null>(null);
+  const [confErro, setConfErro] = useState<string | null>(null);
+  const [confParando, setConfParando] = useState(false);
   const [filtrosOpen, setFiltrosOpen] = useState(false);
   const [pagina, setPagina] = useState(1);
 
@@ -240,8 +266,14 @@ export default function Achados({ abas }: { abas?: React.ReactNode }) {
     });
   }, []);
 
-  const load = async () => {
-    setLoading(true);
+  /* `silencioso` recarrega sem acender o esqueleto. É o que a conferência usa
+     entre uma leva e outra: com a tela livre (o modal não prende mais ninguém),
+     um `setLoading(true)` a cada rodada faria a tabela piscar na cara de quem
+     está trabalhando nela. Passar a opção num objeto é de propósito — `load` é
+     entregue direto como handler (`onAplicado={load}`), e um parâmetro solto
+     receberia o evento do React como se fosse "silencioso". */
+  const load = async (opts?: { silencioso?: boolean }) => {
+    if (!opts?.silencioso) setLoading(true);
     const [audRes, cartRes] = await Promise.all([
       supabase
         .from("auditoria")
@@ -643,6 +675,154 @@ export default function Achados({ abas }: { abas?: React.ReactNode }) {
     }
   };
 
+  /* O pedido de parar mora numa ref, não no estado: o laço é uma função só, e a
+     variável de estado que ele leria ficaria congelada na primeira rodada. O
+     estado `confParando` existe só para o botão mudar de cara — ref não redesenha. */
+  const confPararRef = useRef(false);
+  /* Trava de reentrada. O botão do cabeçalho abre o painel em vez de disparar de
+     novo, mas o "Ler mais" do painel chama a mesma função e o estado do React é
+     assíncrono — dois cliques rápidos disparariam dois laços gastando cota em dobro. */
+  const confRodandoRef = useRef(false);
+  /* Sair da página encerra o encadeamento. Nada se perde: a leva que já está no
+     ar termina no servidor e grava, e o que sobrou volta como fila — o mesmo
+     estado de quem clicou em "Parar". */
+  const confMontadoRef = useRef(true);
+  useEffect(() => () => { confMontadoRef.current = false; confPararRef.current = true; }, []);
+
+  /* Trocar de fatura joga fora o resultado da anterior: um resumo velho ao lado
+     de uma fatura nova mente. Não interrompe o que está no ar — o laço guardou a
+     competência dele e termina o que começou. */
+  useEffect(() => {
+    if (!confRodandoRef.current) { setConfResumo(null); setConfErro(null); }
+  }, [competencia]);
+
+  /* A conferência de comprovantes, em segundo plano.
+   *
+   * Ela lê em rodadas porque o worker do servidor morre nos 150s: cada chamada é
+   * um worker novo, com orçamento novo, e o laço repete até a fila zerar. Isso
+   * levava minutos com a pessoa presa olhando um modal — hoje o laço é daqui, e
+   * fechar o painel (ou nunca abri-lo) não para nada.
+   *
+   * O desfecho é escrito UMA vez, no fim. Erro e cota já escreveram no mesmo id
+   * do toast, e um "concluída" por cima apagaria o motivo — foi exatamente o que
+   * transformava uma falha em "Conferência concluída". */
+  const conferirComprovantes = async (reler = false) => {
+    if (confRodandoRef.current) return;
+    confRodandoRef.current = true;
+    confPararRef.current = false;
+    setConfLendo(true); setConfErro(null); setConfParando(false);
+
+    /* A fatura fica presa no início: trocar o seletor no meio da leitura não pode
+       redirecionar as rodadas que faltam para outra competência. */
+    const daFatura = competencia;
+    const verResultado = { label: "Ver", onClick: () => setConferenciaOpen(true) };
+
+    let aprovados = 0;
+    let desfecho: "erro" | "cota" | "parado" | null = null;
+    /* O que sobrava na rodada anterior. É por ele que se sabe se a rodada ANDOU:
+       um documento que o serviço de IA não conseguiu ler continua na fila sem ser
+       carimbado, e insistir nele seria repetir o mesmo tropeço até a trava. */
+    let sobrava: number | null = null;
+
+    toast.loading("Conferindo comprovantes…", {
+      id: TOAST_CONFERENCIA,
+      description: "Pode continuar trabalhando — o aviso chega quando terminar.",
+    });
+
+    try {
+      for (let i = 0; i < MAX_RODADAS_CONFERENCIA; i++) {
+        setConfRodada(i + 1);
+        const { data, error } = await supabase.functions.invoke("auditoria-conferir-comprovante", {
+          body: { action: "conferir", competencia: daFatura, limite: LOTE_CONFERENCIA, reler: reler && i === 0 },
+        });
+
+        // A função devolve 200 com `{ error }` no corpo para o erro chegar legível
+        // no toast em vez de virar "FunctionsHttpError" — é o padrão do resto do Hub.
+        const falha = error?.message ?? (data as Falha | null)?.error;
+        if (falha) {
+          setConfErro(falha);
+          toast.error("Não deu para conferir: " + falha, { id: TOAST_CONFERENCIA, duration: 10000, action: verResultado });
+          desfecho = "erro";
+          break;
+        }
+
+        const r = data as Resumo;
+        aprovados += r.aprovados;
+
+        /* Acumula em vez de substituir: a leitura sai em rodadas e quem já
+           apareceu na lista continua nela. `restantes` e `quota_esgotada` são
+           sempre os da última rodada — é o estado de agora, não a soma de nada. */
+        setConfResumo((ant) => {
+          if (!ant) return r;
+          const vistos = new Set(r.itens.map((x) => x.id));
+          return {
+            ...r,
+            itens: [...r.itens, ...ant.itens.filter((x) => !vistos.has(x.id))],
+            erros: [...r.erros, ...ant.erros.filter((e) => !r.erros.some((n) => n.id === e.id))],
+            lidos: ant.lidos + r.lidos,
+          };
+        });
+        // A lista reflete a leva na hora — sem acender o esqueleto por cima de
+        // quem está lendo a tabela.
+        await load({ silencioso: true });
+
+        if (confPararRef.current) { desfecho = "parado"; break; }
+        if (r.quota_esgotada) {
+          toast.warning(
+            r.quota_por_dia
+              ? "A cota da chave do Gemini acabou por hoje. O que já foi lido está gravado; o resto sai amanhã."
+              : "A chave bateu no limite por minuto. Espere alguns segundos e clique em \"Ler mais\".",
+            { id: TOAST_CONFERENCIA, duration: 12000, action: verResultado },
+          );
+          desfecho = "cota";
+          break;
+        }
+        if (r.restantes <= 0) break;
+        if (sobrava !== null && r.restantes >= sobrava) break;
+        sobrava = r.restantes;
+        /* "Ler de novo" é rodada única, de propósito. Com `reler`, a fila do
+           servidor é a lista INTEIRA e a rodada é sempre a cabeça dela — encadear
+           releria os mesmos documentos para sempre. */
+        if (reler) break;
+      }
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      setConfErro(msg);
+      toast.error("Não deu para conferir: " + msg, { id: TOAST_CONFERENCIA, duration: 10000, action: verResultado });
+      desfecho = "erro";
+    } finally {
+      setConfLendo(false);
+      setConfRodada(0);
+      setConfParando(false);
+      confPararRef.current = false;
+      confRodandoRef.current = false;
+    }
+
+    // Saiu da página no meio: nada de toast órfão numa tela que não é esta.
+    if (!confMontadoRef.current) { toast.dismiss(TOAST_CONFERENCIA); return; }
+    // Erro e cota já falaram, com o motivo escrito. Quem já terminou não repete.
+    if (desfecho === "erro" || desfecho === "cota") return;
+    if (desfecho === "parado") {
+      toast.message("Conferência interrompida. O que já foi lido está gravado.", { id: TOAST_CONFERENCIA, action: verResultado });
+      return;
+    }
+    if (aprovados > 0) {
+      toast.success(
+        `${aprovados} lançamento${aprovados === 1 ? "" : "s"} aprovado${aprovados === 1 ? "" : "s"}: ` +
+        `bate${aprovados === 1 ? "" : "m"} com a nota.`,
+        { id: TOAST_CONFERENCIA, action: verResultado },
+      );
+    } else {
+      toast.message("Conferência concluída — nada foi aprovado sozinho.", { id: TOAST_CONFERENCIA, action: verResultado });
+    }
+  };
+
+  /** O item que a pessoa aprovou na mão vai para o bloco verde do painel. */
+  const marcarAprovadoNaMao = (id: number) =>
+    setConfResumo((ant) => ant
+      ? { ...ant, itens: ant.itens.map((x) => x.id === id ? { ...x, aprovado: true, aprovado_na_mao: true, status: "Aprovado" } : x) }
+      : ant);
+
   const kpis = useMemo(() => {
     const pend = periodRows.filter(r => r.status === "Pendente");
     const emAn = periodRows.filter(r => r.status === "Em análise");
@@ -821,16 +1001,36 @@ export default function Achados({ abas }: { abas?: React.ReactNode }) {
         <div className="flex items-center gap-2.5 flex-wrap">
           {abas}
           {abas && <div className="h-6 w-px bg-border" />}
+          {/* Lendo, o botão vira a porta do painel: clicar mostra o que já saiu,
+              sem interromper nada. Parado, ele começa a leitura. */}
           <Button
             variant="outline"
-            onClick={() => setConferenciaOpen(true)}
-            disabled={conferiveis.length === 0}
+            onClick={() => (confLendo ? setConferenciaOpen(true) : void conferirComprovantes(false))}
+            disabled={!confLendo && conferiveis.length === 0}
             className="h-9"
-            title="Lê os comprovantes anexados e aprova os que batem em valor e fornecedor"
+            title={confLendo
+              ? "Lendo em segundo plano — clique para acompanhar"
+              : "Lê os comprovantes anexados e aprova os que batem em valor e fornecedor. Dá para continuar trabalhando enquanto isso acontece."}
           >
-            <Sparkles className="h-4 w-4 mr-2 text-[hsl(212_80%_45%)]" />
-            Conferir comprovantes{porConferir > 0 ? ` (${porConferir})` : ""}
+            {confLendo ? (
+              <>
+                <Loader2 className="h-4 w-4 mr-2 animate-spin text-[hsl(212_80%_45%)]" />
+                Conferindo{confRodada > 1 ? ` · ${confRodada}ª leva` : "…"}
+              </>
+            ) : (
+              <>
+                <Sparkles className="h-4 w-4 mr-2 text-[hsl(212_80%_45%)]" />
+                Conferir comprovantes{porConferir > 0 ? ` (${porConferir})` : ""}
+              </>
+            )}
           </Button>
+          {/* O resultado da última leitura não pode morar só no toast, que some
+              sozinho — quem estava noutra aba quando terminou volta por aqui. */}
+          {!confLendo && confResumo && (
+            <Button variant="ghost" onClick={() => setConferenciaOpen(true)} className="h-9">
+              Ver resultado
+            </Button>
+          )}
           <Button variant="outline" onClick={cruzarOmie} disabled={cruzando} className="h-9" title="Casa cada lançamento do cartão com o movimento do Omie (categoria contábil)">
             {cruzando ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <RefreshCw className="h-4 w-4 mr-2" />} Cruzar com Omie
           </Button>
@@ -1601,9 +1801,16 @@ export default function Achados({ abas }: { abas?: React.ReactNode }) {
       <ConferenciaModal
         open={conferenciaOpen}
         onClose={() => setConferenciaOpen(false)}
-        onMudou={load}
-        competencia={competencia}
+        onMudou={() => { void load({ silencioso: true }); }}
         totalComComprovante={conferiveis.length}
+        lendo={confLendo}
+        rodada={confRodada}
+        resumo={confResumo}
+        erro={confErro}
+        parando={confParando}
+        onLer={(reler) => { void conferirComprovantes(reler); }}
+        onParar={() => { confPararRef.current = true; setConfParando(true); }}
+        onAprovadoNaMao={marcarAprovadoNaMao}
       />
 
       {consolidadoOpen && fResp !== "todas" && (

@@ -145,7 +145,14 @@ export default function BaseCartao({ abas }: { abas?: React.ReactNode }) {
   const kpis = useMemo(() => {
     const total = periodRows.length;
     const soma = periodRows.reduce((s, r) => s + Number(r.valor || 0), 0);
-    const semNf = periodRows.filter(r => r.status_nf === "SEM NF").length;
+    /* "SÓ COMPROVANTE" CONTA COMO NF QUE FALTA (31/08/2026).
+       O status nasceu quando boleto e recibo passaram a subir ao ERP como
+       comprovante. Ele tem papel, então não é "SEM NF" no selo da linha — mas a
+       nota fiscal continua sendo devida, e deixá-lo fora dos dois lados da
+       divisão faria a cobertura SUBIR quando um boleto chega, que é o oposto do
+       que aconteceu. Entra no denominador, junto do que falta. */
+    const soComprovante = periodRows.filter(r => r.status_nf === "SÓ COMPROVANTE").length;
+    const semNf = periodRows.filter(r => r.status_nf === "SEM NF").length + soComprovante;
     const fora = periodRows.filter(r => r.status_escopo === "FORA-JUSTIFICAR").length;
     const ok = periodRows.filter(r => r.status_nf === "OK" || r.status_nf === "OK (conferir)").length;
     const denom = ok + semNf;
@@ -320,8 +327,16 @@ function BaseRow({ r, nome, onAnexar, enviando }: { r: Lanc; nome: NomeContrapar
           "inline-flex px-2 py-0.5 rounded-full text-[11px] font-medium border",
           r.status_nf === "SEM NF" ? "bg-[hsl(0_80%_96%)] text-[hsl(0_72%_38%)] border-[hsl(0_80%_88%)]" :
           r.status_nf === "OK" ? "bg-[hsl(152_55%_94%)] text-[hsl(152_60%_28%)] border-[hsl(152_55%_82%)]" :
+          /* ÂMBAR, e não verde nem vermelho: o gasto está provado (tem papel) e
+             a nota fiscal ainda falta. É a mesma cor que "Só comprovante" tem em
+             Notas no ERP, para as duas telas dizerem a mesma coisa. */
+          r.status_nf === "SÓ COMPROVANTE" ? "bg-amber-500/10 text-amber-700 border-amber-500/20 dark:text-amber-400" :
           "bg-muted text-muted-foreground border-border"
-        )}>{r.status_nf}</span>
+        )}
+        title={r.status_nf === "SÓ COMPROVANTE"
+          ? "O Hub anexou um boleto ou recibo no título do Omie: o gasto está provado, mas a nota fiscal continua sendo devida. Quando ela chegar, substitui este papel."
+          : undefined}
+        >{r.status_nf}</span>
         {/* O comprovante pode ser URL (Drive) ou caminho no bucket privado — o
             ComprovanteLink resolve os dois e não renderiza quando não dá para abrir. */}
         <ComprovanteLink

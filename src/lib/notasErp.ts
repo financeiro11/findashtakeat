@@ -171,11 +171,11 @@ export const SITUACAO: Record<SituacaoTitulo, {
   },
   so_comprovante: {
     rotulo: "Só comprovante — falta a NF", tom: "atencao",
-    ajuda: "Tem papel pendurado no título (recibo, boleto, comprovante de pagamento), e não é a nota fiscal. O gasto está provado, então não é vermelho; mas o fornecedor EMITE nota e ela ainda falta. Quando ela chegar, entra neste mesmo título — o Hub avisa que se resolveu.",
+    ajuda: "Tem papel pendurado no título (recibo, boleto, comprovante de pagamento), e não é a nota fiscal. O gasto está provado, então não é vermelho; mas o fornecedor EMITE nota e ela ainda falta. Desde 31/08/2026 o próprio Hub pendura esse papel: boleto e recibo do acervo sobem ao Omie marcados como comprovante, em vez de ficarem parados esperando uma nota que talvez nunca venha. Quando ela chegar, entra neste mesmo título — o Hub avisa que se resolveu.",
   },
   pronta_para_enviar: {
     rotulo: "Pronta para subir", tom: "atencao",
-    ajuda: "O Hub TEM o arquivo da nota e o ERP não. Não é tarefa de ninguém: a varredura de envio roda de 15 em 15 minutos e leva. Se uma linha ficar parada aqui, o motivo está em \"Falta um passo\".",
+    ajuda: "O Hub TEM o arquivo da nota, o ERP não, e a linha já está NA FILA de envio. Não é tarefa de ninguém: a varredura roda a cada 7 ou 8 minutos e leva. Se uma linha ficar parada aqui, o motivo está em \"Falta um passo\". O que o Hub casou e ninguém enfileirou não entra neste estado — fica em \"Achada — falta você confirmar\".",
   },
   espera_confirmacao: {
     rotulo: "Achada — falta você confirmar", tom: "atencao",

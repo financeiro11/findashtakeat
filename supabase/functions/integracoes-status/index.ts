@@ -200,8 +200,8 @@ Deno.serve(async (req) => {
     testes.push(checar(
       {
         chave: "gmail",
-        nome: "Gmail e Drive (financeiro@)",
-        para_que: "Lê as notas que chegam por e-mail e responde pelo briefing.",
+        nome: "Gmail, Drive e Agenda (financeiro@)",
+        para_que: "Lê as notas que chegam por e-mail, responde pelo briefing e lê a agenda de pagamentos.",
         conserto: "gmail_oauth",
         /* Média: parar de ler a caixa atrasa a captura de nota, mas nenhum
            número do Hub fica errado por causa disso. */
@@ -226,13 +226,23 @@ Deno.serve(async (req) => {
         const podeEnviar = escopos.includes("https://www.googleapis.com/auth/gmail.send");
         const podeLer = escopos.includes("https://www.googleapis.com/auth/gmail.readonly");
         const drive = escopos.includes("https://www.googleapis.com/auth/drive.readonly");
+        /* `calendar.readonly` entrou em 31/08/2026, para a rotina de pagamentos
+           puxar o checklist do dia da agenda. Cai na MESMA armadilha que o
+           comentário acima descreve: token velho continua valendo, e a agenda-sync
+           volta 403 enquanto ninguém reconectar. Por isso ele aparece aqui. */
+        const agenda = escopos.includes("https://www.googleapis.com/auth/calendar.readonly");
+
+        const faltando = [
+          podeEnviar ? null : "enviar e-mail",
+          agenda ? null : "ler a agenda",
+        ].filter(Boolean);
 
         return {
-          ok: podeLer,
-          detalhe: podeEnviar
-            ? "lê a caixa e pode enviar resposta"
-            : "lê a caixa, mas NÃO pode enviar — reconecte para liberar o envio",
-          extra: { pode_ler: podeLer, pode_enviar: podeEnviar, drive },
+          ok: podeLer && agenda,
+          detalhe: faltando.length === 0
+            ? "lê a caixa, a agenda e pode enviar resposta"
+            : `conectado, mas SEM ${faltando.join(" e ")} — reconecte para liberar`,
+          extra: { pode_ler: podeLer, pode_enviar: podeEnviar, drive, agenda },
         };
       },
     ));

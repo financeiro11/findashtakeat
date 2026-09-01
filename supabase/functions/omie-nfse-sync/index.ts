@@ -66,6 +66,7 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.0";
 import { asaasGet, asaasUpload } from "../_shared/asaas.ts";
 import { espelhoPdf, lerXmlNfse } from "../_shared/danfse.ts";
+import { segredosDoGmail, tokenDeAcesso } from "../_shared/gmail.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -1597,10 +1598,32 @@ async function trocarEtapa(nCodOS: number, cEtapa: string): Promise<void> {
  * o módulo inteiro parava até alguém abrir o Omie e mover a OS na mão. Em
  * 25/08/26 duas OS presas assim seguraram as 42 cobranças que vinham atrás.
  *
- * A varredura devolve o corredor ao estado de corredor, e só mexe no que é NOSSO:
- * OS com o carimbo `cCodIntOS` do Asaas e ainda não faturada. O que não for nosso
- * continua restando — e restando, aborta o lote, que é o comportamento certo:
- * faturar a etapa emitiria nota de terceiro.
+ * A varredura devolve o corredor ao estado de corredor: TODA OS não faturada sai
+ * daqui para a etapa de fila, tenha ela o carimbo `cCodIntOS` ou não. Só a
+ * faturada resta — e resta porque o Omie recusa movê-la, não por escolha nossa.
+ *
+ * ATÉ 01/09/2026 A REGRA ERA OUTRA, e ela travava o módulo. A varredura só mexia
+ * no que era NOSSO (carimbo de cobrança do Asaas); OS de fora restava, e restando
+ * abortava o lote. O raciocínio parecia certo — "faturar a etapa emitiria nota de
+ * terceiro" — mas confunde duas coisas diferentes:
+ *
+ *   • NÃO FATURAR OS de terceiro  → certo, e continua valendo;
+ *   • NÃO TOCAR em OS de terceiro → foi o que produziu o entupimento.
+ *
+ * Tirar uma OS do corredor não emite nada. É o oposto: ENCOLHE o raio do
+ * `FaturarLoteOS` seguinte, que fatura a etapa inteira. A regra antiga deixava a
+ * intrusa exatamente onde ela era perigosa e parava a esteira para todo mundo.
+ *
+ * E a esteira PRODUZ essas intrusas sozinha. Quando `notas_fiscais_candidatas`
+ * casa uma cobrança com OS antiga por CNPJ+valor+mês (o acervo do lote manual de
+ * junho, sem carimbo), a OS adotada entra no corredor sem carimbo; se o lote não
+ * a faturar, ela vira entulho que a própria varredura se recusava a limpar. Em
+ * 31/08–01/09/26 isso parou a emissão três vezes (OS 773, 1078 e 594), cada uma
+ * exigindo alguém abrir o Omie e mover a OS na mão.
+ *
+ * A etapa de isolamento é corredor de passagem, não estado de negócio (nasceu
+ * vazia, ver `ETAPA_ISOLAMENTO_PADRAO`) — não há nada legítimo estacionado nela
+ * para se preservar.
  */
 async function limparCorredor(
   etapa: string,
@@ -1609,7 +1632,7 @@ async function limparCorredor(
   const poupar = new Set(exceto.map(Number));
 
   // Quem está lá, com o que decide o destino de cada um.
-  const ocupantes: Array<{ nCodOS: number; nosso: boolean; faturada: boolean }> = [];
+  const ocupantes: Array<{ nCodOS: number; faturada: boolean }> = [];
   for (const os of await listarOS()) {
     const cab = os?.Cabecalho ?? {};
     const info = os?.InfoCadastro ?? {};
@@ -1619,8 +1642,6 @@ async function limparCorredor(
     if (poupar.has(nCodOS)) continue;
     ocupantes.push({
       nCodOS,
-      // Nosso = criado pelo Hub a partir de uma cobrança do Asaas.
-      nosso: /^pay_/i.test(String(cab.cCodIntOS ?? "")),
       faturada: String(info.cFaturada ?? "N") === "S",
     });
   }
@@ -1642,9 +1663,11 @@ async function limparCorredor(
   const removidas: number[] = [];
   const restantes: number[] = [];
   for (const o of ocupantes) {
-    // Faturada não se move (o Omie recusa) e não se fatura de novo — mas continua
-    // ocupando, então vira "restante" e o lote aborta com o motivo à mostra.
-    if (!o.nosso || o.faturada) { restantes.push(o.nCodOS); continue; }
+    // Faturada não se move (o Omie só aceita a etapa 60 para ela) e não se fatura
+    // de novo — mas continua ocupando, então vira "restante" e o lote aborta com o
+    // motivo à mostra. É a ÚNICA razão de restar: `o.nosso` não decide mais nada
+    // aqui, porque tirar do corredor é sempre mais seguro do que deixar.
+    if (o.faturada) { restantes.push(o.nCodOS); continue; }
     try {
       await trocarEtapa(o.nCodOS, ETAPA_FILA);
       removidas.push(o.nCodOS);
@@ -2185,7 +2208,7 @@ async function emitirDia(
           fila: fila.length, bloqueadas: barradas.length,
           pulada: limpeza.lote_em_voo
             ? `o lote ${limpeza.lote_em_voo} ainda está em processamento no Omie, com ${limpeza.restantes.length} OS na etapa ${etapaIso}. Nada foi criado — chame de novo em alguns minutos.`
-            : `a etapa de isolamento ${etapaIso} tem ${limpeza.restantes.length} OS que não saíram (já faturadas, ou de fora do Hub). Nada foi criado.`,
+            : `a etapa de isolamento ${etapaIso} tem ${limpeza.restantes.length} OS JÁ FATURADAS, que o Omie não deixa mover (só aceita a etapa 60 para elas). Nada foi criado — é preciso movê-las para "Faturado" na tela do Omie.`,
           detalhe: { restantes: limpeza.restantes.slice(0, 20), varridas, ...(limpeza.lote_em_voo ? { lote_em_voo: limpeza.lote_em_voo } : {}) },
         });
       }
@@ -2442,6 +2465,160 @@ function jwtRole(t: string): string | null {
 
 /* --------------------------------- handler -------------------------------- */
 
+
+/* ======================= AVISO DIÁRIO DE NOTA RECUSADA =======================
+ *
+ * Mora aqui, e não numa função própria, por limite do projeto: o Supabase recusa
+ * a criação de mais Edge Functions ("Max number of functions reached"). Este é o
+ * lugar certo de qualquer forma — quem sabe o que é uma recusa é este módulo.
+ *
+ * Por que ele existe: em 01/09/2026 a emissão do Asaas foi desligada (2.099
+ * assinaturas + as notas agendadas) e o Omie virou o único emissor. Antes, uma
+ * recusa da prefeitura era contratempo — o Asaas emitia a nota daquela cobrança
+ * mesmo assim. Agora ela é um cliente SEM NOTA NENHUMA.
+ *
+ * O ALERTA VAI ATÉ A PESSOA e não espera a pessoa vir até ele: foi o desenho de
+ * esperar que alguém reparasse que produziu 12h de silêncio sobre R$ 6.257.
+ * NÃO REPETE (`nfse_recusa_avisada`), e SILÊNCIO É RESPOSTA VÁLIDA — sem recusa
+ * nova, nenhum e-mail sai.
+ * ========================================================================== */
+const DESTINO_PADRAO = "financeiro@takeat.app";
+
+const brlAviso = (v: unknown) =>
+  Number(v ?? 0).toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
+
+const dataBRAviso = (d: unknown) => {
+  const s = String(d ?? "");
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(s);
+  return m ? `${m[3]}/${m[2]}/${m[1]}` : s;
+};
+
+/**
+ * O corpo do aviso.
+ *
+ * Agrupado por MOTIVO e não por cliente: quem vai agir precisa saber que ação
+ * fazer, e a ação é a mesma dentro de um motivo (conferir CEP com o cliente,
+ * preencher cadastro no Omie, só reenviar). Ordenado por valor dentro do grupo,
+ * porque é por onde se começa quando não dá para fazer tudo.
+ */
+function montarTextoAviso(linhas: any[]): string {
+  /* AGRUPADO POR AÇÃO, não por motivo.
+   *
+   * Quem lê precisa saber o que FAZER, e são três coisas diferentes: clicar
+   * "Reenviar" (o cadastro já foi consertado), investigar com o cliente, ou
+   * apenas reenviar porque a prefeitura oscilou. Agrupar por código de erro
+   * ("E0240", 49 casos) descreve o defeito e não a tarefa. */
+  const grupo = (s: string) => linhas.filter((l) => String(l.situacao) === s);
+  const soma = (ls: any[]) => ls.reduce((s, l) => s + Number(l.valor ?? 0), 0);
+  const consertadas = grupo("consertado");
+  const humanas = grupo("precisa_de_gente");
+  const instaveis = grupo("so_reenviar");
+
+  const linha = (l: any) =>
+    `   OS ${l.c_num_os ?? l.n_cod_os} · ${l.nome ?? "—"} · ${brlAviso(l.valor)} · ${dataBRAviso(l.data_faturamento)}`;
+
+  const partes: string[] = [
+    `${linhas.length} nota(s) recusada(s) pela prefeitura — ${brlAviso(soma(linhas))}.`,
+    "",
+    "Desde 01/09/2026 o Omie é o único emissor: o Asaas não cobre mais essas.",
+    "Enquanto não saírem, esses clientes estão SEM NOTA.",
+    "",
+  ];
+
+  if (consertadas.length) {
+    partes.push(
+      `✔ JÁ CONSERTEI O CADASTRO — falta só reenviar no Omie (${consertadas.length}, ${brlAviso(soma(consertadas))})`,
+      "  Corrigi o endereço no ERP depois da recusa. A nota deve sair no reenvio.",
+      "",
+    );
+    for (const l of consertadas.slice(0, 40)) {
+      partes.push(linha(l) + (l.o_que_foi_feito ? `\n      escrevi: ${l.o_que_foi_feito}` : ""));
+    }
+    if (consertadas.length > 40) partes.push(`   … e mais ${consertadas.length - 40}.`);
+    partes.push("");
+  }
+
+  if (humanas.length) {
+    partes.push(
+      `✖ PRECISAM DE VOCÊ — a máquina tentou e não resolveu (${humanas.length}, ${brlAviso(soma(humanas))})`,
+      "  O cadastro bate com a Receita e mesmo assim a prefeitura recusa.",
+      "  Em geral é endereço materialmente errado (logradouro com nome de cidade,",
+      "  número '00') — se resolve conferindo com o cliente.",
+      "",
+    );
+    const porMotivo = new Map<string, any[]>();
+    for (const l of humanas) {
+      const k = String(l.motivo_curto ?? "—");
+      porMotivo.set(k, [...(porMotivo.get(k) ?? []), l]);
+    }
+    for (const [motivo, itens] of [...porMotivo].sort((a, b) => b[1].length - a[1].length)) {
+      partes.push(`  ── ${motivo} (${itens.length})`);
+      for (const l of itens.slice(0, 25)) {
+        const pista = l.cep_generico ? "  [CEP de cidade]" : l.emitivel === false ? "  [cadastro incompleto]" : "";
+        partes.push(linha(l) + pista);
+      }
+      if (itens.length > 25) partes.push(`   … e mais ${itens.length - 25}.`);
+    }
+    partes.push("");
+  }
+
+  if (instaveis.length) {
+    partes.push(
+      `~ SÓ REENVIAR — a prefeitura oscilou, não há cadastro a corrigir (${instaveis.length}, ${brlAviso(soma(instaveis))})`,
+      "",
+    );
+    for (const l of instaveis.slice(0, 25)) partes.push(linha(l));
+    partes.push("");
+  }
+
+  partes.push(
+    "POR QUE O REENVIO NÃO É AUTOMÁTICO: OS faturada com recusa não volta pela",
+    "API do Omie — os dez métodos de reenvio foram sondados e nenhum existe. O",
+    'botão "Reenviar NFS-e" na tela do Omie é o único caminho.',
+    "",
+    "Lista completa e sempre atual: Hub › Operacional › Notas Fiscais › Recusadas.",
+  );
+  return partes.join("\n");
+}
+
+async function enviarPeloGmail(supabase: any, para: string, assunto: string, texto: string) {
+  const seg = await segredosDoGmail(supabase);
+  if (!seg.refreshToken) {
+    throw new Error("O Gmail não está conectado — conecte em Configurações › Integrações.");
+  }
+  const token = await tokenDeAcesso(seg);
+
+  const cabecalhos = [
+    `To: ${para}`,
+    `Subject: ${assunto}`,
+    "Content-Type: text/plain; charset=UTF-8",
+    "MIME-Version: 1.0",
+    "",
+    texto,
+  ].join("\r\n");
+
+  // O corpo tem acento, e `btoa` só entende byte. Codifica-se em UTF-8 primeiro,
+  // depois byte a byte — o mesmo caminho do `email-responder`.
+  const bytes = new TextEncoder().encode(cabecalhos);
+  let bin = "";
+  for (const b of bytes) bin += String.fromCharCode(b);
+  const raw = btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+
+  const resp = await fetch("https://gmail.googleapis.com/gmail/v1/users/me/messages/send", {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ raw }),
+  });
+  if (!resp.ok) {
+    const detalhe = await resp.text();
+    const faltaEscopo = resp.status === 403 && /insufficient|scope|permission/i.test(detalhe);
+    throw new Error(faltaEscopo
+      ? "O Gmail ainda não tem permissão de ENVIO. Reconecte o Gmail em Configurações."
+      : `Gmail recusou o envio (${resp.status}): ${detalhe.slice(0, 200)}`);
+  }
+  return await resp.json();
+}
+
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
 
@@ -2466,6 +2643,31 @@ Deno.serve(async (req) => {
         }
         usuario = data.user.id;
       }
+    }
+
+    /* O aviso de recusa. `previa` mostra o texto sem mandar nada nem carimbar. */
+    if (action === "alerta_recusas") {
+      const dias = Math.max(1, Math.min(Number(body?.dias ?? 30), 365));
+      const para = String(body?.para ?? DESTINO_PADRAO);
+      const { data: linhas, error } = await supabase.rpc("nfse_recusas_a_avisar", { p_dias: dias });
+      if (error) return json({ erro: `nfse_recusas_a_avisar: ${error.message}` }, 400);
+      if (!linhas?.length) {
+        return json({ ok: true, recusas: 0, enviado: false, motivo: "nenhuma recusa nova — nada a avisar." });
+      }
+      const total = linhas.reduce((s: number, l: any) => s + Number(l.valor ?? 0), 0);
+      const assunto = `[Hub] ${linhas.length} nota(s) recusada(s) pela prefeitura — ${brlAviso(total)}`;
+      const texto = montarTextoAviso(linhas);
+      if (body?.enviar !== true) {
+        return json({ ok: true, recusas: linhas.length, enviado: false, assunto, texto });
+      }
+      await enviarPeloGmail(supabase, para, assunto, texto);
+      // O carimbo vem DEPOIS do envio: se o Gmail recusar, ninguém foi avisado e
+      // a lista tem de voltar amanhã inteira.
+      await supabase.from("nfse_recusa_avisada").upsert(
+        linhas.map((l: any) => ({ n_cod_os: l.n_cod_os, motivo: String(l.motivo_curto ?? "").slice(0, 200) })),
+        { onConflict: "n_cod_os" },
+      );
+      return json({ ok: true, recusas: linhas.length, enviado: true, para, assunto });
     }
 
     if (action === "espelhar") {

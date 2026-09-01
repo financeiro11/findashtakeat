@@ -102,7 +102,7 @@ function repetivel(escrita: boolean, status: number, bloqueado: boolean): boolea
   return !escrita && status >= 500;
 }
 
-type Metodo = "GET" | "PUT" | "POST";
+type Metodo = "GET" | "PUT" | "POST" | "DELETE";
 
 async function requisitar<T = any>(
   metodo: Metodo, path: string,
@@ -197,6 +197,32 @@ export async function asaasPut<T = any>(path: string, corpo: Record<string, unkn
  */
 export async function asaasUpload<T = any>(path: string, form: FormData): Promise<T> {
   return await requisitar<T>("POST", path, { form });
+}
+
+/**
+ * POST sem arquivo — hoje só o `cancel` de nota fiscal agendada.
+ *
+ * Separado do `asaasUpload` porque o corpo é JSON e não `FormData`, e separado do
+ * `PUT` porque a semântica é outra: aqui não se substitui recurso nenhum, chama-se
+ * uma AÇÃO sobre ele (`/invoices/{id}/cancel`). O corpo costuma ser vazio.
+ */
+export async function asaasPost<T = any>(path: string, corpo: Record<string, unknown> = {}): Promise<T> {
+  return await requisitar<T>("POST", path, { corpo });
+}
+
+/**
+ * DELETE — hoje só a configuração de NFS-e da assinatura
+ * (`/subscriptions/{id}/invoiceSettings`).
+ *
+ * É a escrita mais perigosa deste arquivo e a única que APAGA: ela desliga a
+ * emissão automática de nota do Asaas para aquela assinatura. Não toca na
+ * assinatura, na cobrança nem no cliente — mas o que ela remove não volta
+ * sozinho, e reconfigurar duas mil assinaturas na mão não é opção. Por isso a
+ * regra de quem chama, sem exceção: **ler e GUARDAR a configuração antes de
+ * apagar** (ver `asaas_nf_desligamento`), senão o desligamento é de mão única.
+ */
+export async function asaasDelete<T = any>(path: string): Promise<T> {
+  return await requisitar<T>("DELETE", path, {});
 }
 
 /* -------------------------------- contagem -------------------------------- */

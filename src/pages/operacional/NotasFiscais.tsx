@@ -1,8 +1,12 @@
 // /operacional/notas-fiscais — a cobrança do Asaas e a nota do Omie, lado a lado.
 //
 // A PERGUNTA QUE ESTA TELA RESPONDE: "esta cobrança tem nota?" — que hoje tem duas
-// respostas possíveis em dois sistemas que não sabem um do outro. Até a data de
-// corte quem emite é o Asaas; do corte em diante, o Omie.
+// respostas possíveis em dois sistemas que não sabem um do outro. E ela NÃO é a
+// pergunta do corte: o corte diz quem deve emitir de agora em diante (é cláusula
+// da fila), e durante o PARALELO os dois emitem ao mesmo tempo de propósito. Nota
+// autorizada do Asaas depois do corte é nota — foi a correção de 31/08/2026, que
+// tirou 1.035 cobranças de agosto do balde "Sem nota" com o número da nota
+// impresso na coluna ao lado.
 //
 // ONDE A NOTA MORA NO OMIE. Dentro da ORDEM DE SERVIÇO, não num cadastro de notas:
 //
@@ -35,6 +39,7 @@ import {
 } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import NotasFiscaisLog from "./NotasFiscaisLog";
+import RecusasATratar from "@/components/notas/RecusasATratar";
 import NotasFiscaisAuditoria from "./NotasFiscaisAuditoria";
 import {
   SITUACOES, motivoBloqueio, motivoCurto, podeEmitir, exigeAvulsa, resumoLote,
@@ -104,7 +109,7 @@ export default function NotasFiscais() {
   const [busca, setBusca] = useState("");
   const [filtro, setFiltro] = useState<Situacao | "todas">("todas");
   const [sel, setSel] = useState<Set<string>>(new Set());
-  const [aba, setAba] = useState<"painel" | "auditoria" | "log">("painel");
+  const [aba, setAba] = useState<"painel" | "auditoria" | "recusadas" | "log">("painel");
   /* A CHAVE DA AVULSA — desligada sempre que a tela nasce, e nunca lembrada.
    *
    * Não vai para o localStorage de propósito, ao contrário de quase toda
@@ -447,11 +452,41 @@ export default function NotasFiscais() {
     }
   };
 
-  const kpis = resumo ? [
+  /* O PLACAR DO PARALELO — quantas das notas do Asaas nasceram DEPOIS do corte.
+   *
+   * Até 31/08/2026 este número não existia porque a nota do Asaas depois do
+   * corte era classificada como "Sem nota" (ver a migration
+   * `20260831220000_a_nota_do_asaas_depois_do_corte_tambem_e_nota`). Agora ela
+   * conta como emitida — e o recorte por data, que saiu da classificação, volta
+   * aqui como INFORMAÇÃO: é ele que diz se o Asaas ainda está emitindo, que é a
+   * pergunta de quem quer desligá-lo. Comparação de string serve porque as duas
+   * datas são ISO. */
+  const asaasPosCorte = useMemo(() => {
+    if (!corte) return 0;
+    return linhas.filter((l) =>
+      l.situacao === "emitida_asaas" && (l.data_pagamento ?? l.data_vencimento ?? "") >= corte
+    ).length;
+  }, [linhas, corte]);
+
+  /* `t` é o hover — opcional, e por isso o tipo vem escrito: num array de
+     literais o TypeScript infere a união e reclamaria de `k.t` nos que não têm. */
+  const kpis: { r: string; v: string; s: string; tom: string; t?: string }[] = resumo ? [
     { r: "Cobranças", v: resumo.cobrancas.toLocaleString("pt-BR"), s: brlStr(resumo.valor_total), tom: "neutro" },
     { r: "Sem nota", v: resumo.falta.toLocaleString("pt-BR"), s: brlStr(resumo.valor_falta), tom: resumo.falta ? "erro" : "ok" },
     { r: "Emitida no Omie", v: resumo.emitida_omie.toLocaleString("pt-BR"), s: "NFS-e autorizada", tom: "ok" },
-    { r: "Emitida no Asaas", v: resumo.emitida_asaas.toLocaleString("pt-BR"), s: "antes do corte", tom: "ok" },
+    {
+      r: "Emitida no Asaas",
+      v: resumo.emitida_asaas.toLocaleString("pt-BR"),
+      s: asaasPosCorte === 0
+        ? "antes do corte"
+        : asaasPosCorte === resumo.emitida_asaas
+          ? "no paralelo, após o corte"
+          : `${asaasPosCorte.toLocaleString("pt-BR")} após o corte`,
+      tom: "ok",
+      t: asaasPosCorte > 0
+        ? `${asaasPosCorte.toLocaleString("pt-BR")} destas notas o Asaas autorizou DEPOIS do corte (${dataStr(corte)}), no período de paralelo — nota dele é nota, e a cobrança não precisa sair de novo pelo Omie.`
+        : undefined,
+    },
     { r: "NFS-e rejeitada", v: resumo.nota_rejeitada.toLocaleString("pt-BR"), s: "faturada sem nota válida", tom: resumo.nota_rejeitada ? "erro" : "neutro" },
     { r: "Nota a cancelar", v: resumo.nota_a_cancelar.toLocaleString("pt-BR"), s: "estorno com nota", tom: resumo.nota_a_cancelar ? "erro" : "neutro" },
   ] : [];
@@ -490,7 +525,7 @@ export default function NotasFiscais() {
           Misturar as duas primeiras numa tela só é o que deixaria a falta
           silenciosa parecendo ausência de problema. */}
       <div className="flex items-center gap-1 border-b border-border">
-        {([["painel", "Painel do mês"], ["auditoria", "Auditoria"], ["log", "Registro de emissões"]] as const).map(([k, r]) => (
+        {([["painel", "Painel do mês"], ["auditoria", "Auditoria"], ["recusadas", "Recusadas"], ["log", "Registro de emissões"]] as const).map(([k, r]) => (
           <button
             key={k}
             onClick={() => setAba(k)}
@@ -507,13 +542,14 @@ export default function NotasFiscais() {
       </div>
 
       {aba === "log" && <NotasFiscaisLog />}
+      {aba === "recusadas" && <div className="mt-3"><RecusasATratar /></div>}
 
       {/* ------------------------------- período ------------------------------- */}
       {/* Fora do bloco do painel de propósito: a auditoria olha o MESMO recorte, e
           um seletor por aba faria a pessoa trocar o mês duas vezes para comparar
           o que falta com o que nunca vai sair. O registro de emissões é o único
           que não tem mês — ele é uma linha do tempo. */}
-      {aba !== "log" && (
+      {aba !== "log" && aba !== "recusadas" && (
       <div className="flex flex-wrap items-center gap-2 rounded-lg border border-border bg-card p-2">
         <button onClick={() => setAno((a) => Math.max(ANO_INICIAL, a - 1))} className="ghost-icone rounded p-1">
           <ChevronLeft className="h-4 w-4" />
@@ -549,7 +585,7 @@ export default function NotasFiscais() {
       {/* --------------------------------- KPIs -------------------------------- */}
       <div className="grid grid-cols-2 gap-2 md:grid-cols-3 lg:grid-cols-6">
         {kpis.map((k) => (
-          <div key={k.r} className="rounded-lg border border-border bg-card p-3">
+          <div key={k.r} title={k.t} className="rounded-lg border border-border bg-card p-3">
             <p className="text-[11px] text-muted-foreground">{k.r}</p>
             <p className={cn("num text-xl font-semibold", k.tom === "erro" && "text-destructive")}>{k.v}</p>
             <p className="truncate text-[11px] text-muted-foreground">{k.s}</p>

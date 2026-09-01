@@ -13,6 +13,11 @@ import {
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import { AREAS, NATUREZAS } from "@/lib/tarefas/classificacao";
+import {
+  CADENCIA_PADRAO, Cadencia, ajustarPrazoACadencia, cadenciaValida, deIso, descreverCadencia,
+  ehDataDaCadencia, iso, lerCadencia, proximaData,
+} from "@/lib/tarefas/rotina";
+import { CadenciaEditor, PagamentoDoDia } from "@/components/tarefas/CadenciaEditor";
 
 /* Tipos e helpers de Tarefas compartilhados entre a página Tarefas e o Briefing. */
 export type Subtarefa = {
@@ -38,6 +43,17 @@ export type Tarefa = {
   cat_area?: string | null;
   cat_origem?: string | null;
   rotina?: boolean | null;
+  /* A agenda da rotina. `rotina` acima diz "isto se repete" (e é o que a Análise
+     soma); estes dizem QUANDO — e é o que o cron `tarefas_rotinas_gerar` executa
+     para criar a próxima ocorrência. Sem cadência, `rotina` continua valendo
+     como observação, exatamente como antes. */
+  rotina_cadencia?: Cadencia | null;
+  rotina_serie_id?: string | null;
+  rotina_ativa?: boolean | null;
+  rotina_antecedencia_dias?: number | null;
+  /* De onde vem o checklist da PRÓXIMA ocorrência. null = clona o desta;
+     "agenda" = uma subtarefa por pagamento daquele dia no Google Calendar. */
+  rotina_subtarefas_fonte?: string | null;
   subtarefas: Subtarefa[];
 };
 
@@ -82,6 +98,10 @@ export function TaskDialog({ columns, open, tarefa, defaultStatus, onClose, onSa
   const [natureza, setNatureza] = useState<string>("");
   const [area, setArea] = useState<string>("");
   const [rotina, setRotina] = useState(false);
+  const [cadencia, setCadencia] = useState<Cadencia | null>(null);
+  const [rotinaAtiva, setRotinaAtiva] = useState(true);
+  const [antecedencia, setAntecedencia] = useState(0);
+  const [fonteSubtarefas, setFonteSubtarefas] = useState<string | null>(null);
   /* Só marca `cat_origem: "manual"` se a pessoa realmente mexeu na classificação.
      Sem isso, abrir uma tarefa para trocar o prazo e salvar congelaria o carimbo
      automático dela para sempre — e o backfill de uma revisão de vocabulário
@@ -108,6 +128,10 @@ export function TaskDialog({ columns, open, tarefa, defaultStatus, onClose, onSa
       setNatureza(tarefa?.cat_natureza || "");
       setArea(tarefa?.cat_area || "");
       setRotina(!!tarefa?.rotina);
+      setCadencia(lerCadencia(tarefa?.rotina_cadencia));
+      setRotinaAtiva(tarefa?.rotina_ativa ?? true);
+      setAntecedencia(tarefa?.rotina_antecedencia_dias ?? 0);
+      setFonteSubtarefas(tarefa?.rotina_subtarefas_fonte ?? null);
       setClassifTocada(false);
       setSubtarefas(tarefa?.subtarefas ? [...tarefa.subtarefas] : []);
       setNewSubTitle("");
@@ -161,6 +185,49 @@ export function TaskDialog({ columns, open, tarefa, defaultStatus, onClose, onSa
   const encerraArrasto = () => { setDragId(null); setOverId(null); setGrabId(null); };
   const dragIdx = dragId ? subtarefas.findIndex(s => s.id === dragId) : -1;
 
+  /* O PRAZO DE UMA ROTINA SE DEDUZ, e por isso deixa de ser obrigatorio.
+     Quem escreveu "todo dia 5, 10, 15, 20, 25 e 30" ja disse quando a tarefa
+     vence — pedir a data de novo e pedir a mesma informacao duas vezes.
+
+     E ele nao pode CONTRADIZER a cadencia. A primeira versao so preenchia o
+     campo vazio, e o resultado apareceu no quadro: "todo dia 31" vencendo em
+     30/09, "dias 6, 16, 21, 26 e 31" vencendo em 05/09 — o cartao anunciando
+     uma regra e vencendo noutro dia. Alem de nao fazer sentido para quem le,
+     duplica: o gerador cria a ocorrencia do dia da cadencia enquanto a de prazo
+     torto segue aberta. Por isso o ajuste vale tambem para prazo ja preenchido,
+     ancorado no que a pessoa escreveu (05/09 numa rotina de dia 6 vira 06/09,
+     e nao o proximo contado de hoje). */
+  const cadenciaAtiva = rotina && cadenciaValida(cadencia) ? cadencia : null;
+  const prazoSugerido = cadenciaAtiva ? ajustarPrazoACadencia(cadenciaAtiva, prazo) : null;
+  const prazoEfetivo = prazo || (prazoSugerido ?? "");
+  const prazoDaRotina = !!cadenciaAtiva;
+  /* Divergencia que a pessoa PRECISA ver: ela digitou uma data, e a regra que
+     ela mesma escreveu nao produz aquele dia. */
+  const prazoDiverge = !!cadenciaAtiva && !!prazo && !ehDataDaCadencia(cadenciaAtiva, deIso(prazo));
+
+  useEffect(() => {
+    if (!cadenciaAtiva) return;
+    const ajustado = ajustarPrazoACadencia(cadenciaAtiva, prazo);
+    if (ajustado) setPrazo(ajustado);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rotina, cadencia]);
+
+  /* Traz os pagamentos da agenda como SUBTAREFA de verdade — marcavel, editavel
+     e salva com a tarefa. Antes isto era so prevIa, e a tarefa recem-criada
+     nascia com checklist vazio: o preenchimento automatico so vale para a
+     PROXIMA ocorrencia, a que o cron cria. Casa por rotulo para nao duplicar
+     quem ja esta na lista, e o que foi escrito a mao fica onde estava. */
+  const trazerDaAgenda = (itens: PagamentoDoDia[]) => {
+    setSubtarefas(prev => {
+      const tem = new Set(prev.map(s => s.titulo));
+      const novas = itens
+        .filter(i => !tem.has(i.rotulo))
+        .map(i => ({ id: crypto.randomUUID(), titulo: i.rotulo, responsavel: responsavel || null, done: false }));
+      return novas.length ? [...prev, ...novas] : prev;
+    });
+    toast.success("Pagamentos trazidos para o checklist");
+  };
+
   const origemAtual = tarefa?.cat_origem ?? "auto";
 
   const subsDone = subtarefas.filter(s => s.done).length;
@@ -168,10 +235,12 @@ export function TaskDialog({ columns, open, tarefa, defaultStatus, onClose, onSa
 
   const isEdit = !!tarefa;
 
-  const canSave = !!titulo.trim() && !!responsavel && !!prazo;
+  const canSave = !!titulo.trim() && !!responsavel && !!prazoEfetivo;
   const submit = () => {
     if (!canSave) {
-      toast.error("Preencha título, responsável e prazo");
+      toast.error(rotina
+        ? "Preencha título e responsável (o prazo vem da rotina)"
+        : "Preencha título, responsável e prazo");
       return;
     }
     onSave({
@@ -179,9 +248,17 @@ export function TaskDialog({ columns, open, tarefa, defaultStatus, onClose, onSa
       responsavel: responsavel || null,
       status,
       prioridade,
-      prazo: prazo || null,
+      prazo: prazoEfetivo || null,
       observacao: observacao || null,
       subtarefas,
+      /* A agenda vai SEMPRE, independente de `classifTocada`. Ela não é carimbo
+         que o gatilho preenche — é ordem de execução, e omiti-la ao salvar uma
+         tarefa cuja rotina foi desmarcada deixaria o cron gerando ocorrências de
+         uma rotina que a pessoa acabou de encerrar. */
+      rotina_cadencia: rotina ? cadencia : null,
+      rotina_ativa: rotinaAtiva,
+      rotina_antecedencia_dias: antecedencia,
+      rotina_subtarefas_fonte: rotina && cadencia ? fonteSubtarefas : null,
       /* Numa tarefa NOVA os três campos vão vazios de propósito: quem carimba é o
          gatilho, a partir do título, e mandar `cat_natureza: null` é exatamente o
          que ele espera para preencher. Só vai valor daqui se a pessoa escolheu. */
@@ -230,8 +307,30 @@ export function TaskDialog({ columns, open, tarefa, defaultStatus, onClose, onSa
               </Select>
             </div>
             <div>
-              <Label>Prazo</Label>
-              <Input type="date" value={prazo} onChange={(e) => setPrazo(e.target.value)} />
+              <div className="flex items-baseline justify-between gap-2">
+                <Label>Prazo</Label>
+                {prazoDaRotina && (
+                  <span className={cn("text-[10px]", prazoDiverge ? "text-warning" : "text-muted-foreground")}>
+                    {prazoDiverge ? "não é dia da rotina" : "pela rotina"}
+                  </span>
+                )}
+              </div>
+              <Input
+                type="date"
+                value={prazo}
+                onChange={(e) => setPrazo(e.target.value)}
+                className={cn(prazoDiverge && "border-warning")}
+              />
+              {prazoDiverge && prazoSugerido && (
+                <button
+                  type="button"
+                  onClick={() => setPrazo(prazoSugerido)}
+                  className="mt-1 text-left text-[10px] text-warning underline-offset-2 hover:underline"
+                >
+                  {descreverCadencia(cadenciaAtiva)} não cai nesse dia — usar{" "}
+                  {deIso(prazoSugerido).toLocaleDateString("pt-BR")}
+                </button>
+              )}
             </div>
           </div>
           <div className="grid grid-cols-2 gap-3">
@@ -300,16 +399,53 @@ export function TaskDialog({ columns, open, tarefa, defaultStatus, onClose, onSa
             <label className="flex cursor-pointer items-start gap-2 pt-1">
               <Checkbox
                 checked={rotina}
-                onCheckedChange={(c) => { setRotina(c === true); setClassifTocada(true); }}
+                onCheckedChange={(c) => {
+                  const v = c === true;
+                  setRotina(v);
+                  setClassifTocada(true);
+                  /* Marcar "é rotina" já abre uma agenda utilizável (todo dia 5),
+                     em vez de um bloco vazio: a pergunta seguinte é sempre
+                     "quando?", e deixar o padrão pronto é o que faz a resposta
+                     custar um clique. Quem não quer agenda escolhe "Sem agenda". */
+                  if (v && !cadencia) setCadencia(CADENCIA_PADRAO);
+                  if (!v) setCadencia(null);
+                }}
                 className="mt-0.5"
               />
               <span className="text-xs">
                 <span className="font-medium text-foreground">É rotina</span>
-                <span className="text-muted-foreground"> — volta sozinha toda semana/mês. É o que a
-                Análise soma para montar a fila de automação em ordem de custo.</span>
+                <span className="text-muted-foreground"> — se repete. A Análise soma as rotinas para
+                montar a fila de automação em ordem de custo.</span>
               </span>
             </label>
           </div>
+
+          {/* Quando ela volta. Bloco à parte de propósito: classificação é como a
+              tarefa é CONTADA; cadência é o que o banco EXECUTA. Misturar os dois
+              foi o que fez o checkbox prometer "volta sozinha" sem nada atrás. */}
+          {rotina && (
+            <div className="space-y-2 rounded-md border border-border p-3">
+              <div className="flex items-center justify-between">
+                <Label className="text-sm font-semibold">Quando volta</Label>
+                <span className="text-[11px] text-muted-foreground">
+                  {cadencia ? "o Hub cria a próxima sozinho" : "nada é criado automaticamente"}
+                </span>
+              </div>
+              <CadenciaEditor
+                cadencia={cadencia}
+                onCadencia={setCadencia}
+                antecedencia={antecedencia}
+                onAntecedencia={setAntecedencia}
+                ativa={rotinaAtiva}
+                onAtiva={setRotinaAtiva}
+                fonte={fonteSubtarefas}
+                onFonte={setFonteSubtarefas}
+                prazo={prazoEfetivo}
+                jaNoChecklist={new Set(subtarefas.map(s => s.titulo))}
+                onTrazerDaAgenda={trazerDaAgenda}
+              />
+            </div>
+          )}
 
           <div>
             <Label>Observação</Label>
@@ -448,14 +584,14 @@ export function TaskDialog({ columns, open, tarefa, defaultStatus, onClose, onSa
           {isEdit ? (
             <>
               <Button variant="outline" onClick={onClose}>Fechar</Button>
-              <Button onClick={submit} disabled={!canSave} title={canSave ? "" : "Preencha título, responsável e prazo"}>
+              <Button onClick={submit} disabled={!canSave} title={canSave ? "" : (rotina ? "Preencha título e responsável" : "Preencha título, responsável e prazo")}>
                 Salvar <span className="ml-2 text-[10px] opacity-70">Ctrl+Enter</span>
               </Button>
             </>
           ) : (
             <>
               <Button variant="outline" onClick={onClose}>Cancelar</Button>
-              <Button onClick={submit} disabled={!canSave} title={canSave ? "" : "Preencha título, responsável e prazo"}>
+              <Button onClick={submit} disabled={!canSave} title={canSave ? "" : (rotina ? "Preencha título e responsável" : "Preencha título, responsável e prazo")}>
                 Criar <span className="ml-2 text-[10px] opacity-70">Ctrl+Enter</span>
               </Button>
             </>

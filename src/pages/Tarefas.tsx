@@ -3,7 +3,7 @@ import { useSearchParams } from "react-router-dom";
 import {
   Plus, Trash2, ChevronDown, ChevronRight, Filter, X, LayoutGrid,
   Table as TableIcon, AlertTriangle, MoreHorizontal,
-  Search, GripVertical, Pencil, Palette, Check, CheckCircle2, Clock, ListChecks, Target, BarChart3, History, Pause, Zap, Tags,
+  Search, GripVertical, Pencil, Palette, Check, CheckCircle2, Clock, ListChecks, Target, BarChart3, History, Pause, Zap, Tags, CalendarClock,
 } from "lucide-react";
 import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger,
@@ -26,6 +26,7 @@ import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter,
 } from "@/components/ui/dialog";
 import { supabase } from "@/integrations/supabase/client";
+import type { Json } from "@/integrations/supabase/types";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import { useAuth } from "@/hooks/useAuth";
@@ -39,6 +40,8 @@ import { calcIdade, explicaIdade } from "@/lib/tarefas/idade";
 import { comparaPrioridade } from "@/lib/tarefas/prioridade";
 import { AREAS, AREA_NAO_CLASSIFICADA, corDaArea, rotuloClassificacao } from "@/lib/tarefas/classificacao";
 import { RevisaoClassificacao } from "@/components/tarefas/RevisaoClassificacao";
+import { RotinasPanel } from "@/components/tarefas/RotinasPanel";
+import { descreverCadencia, descreverCadenciaLonga, iso, lerCadencia, proximaData } from "@/lib/tarefas/rotina";
 
 export type { Subtarefa } from "@/components/tarefas/TaskDialog";
 const COLUMNS_CFG_KEY = "tarefas.columns.cfg.v1";
@@ -56,7 +59,7 @@ const FILTROS_KEY = "tarefas.filtros.v1";
    inventado ou responsável que saiu do time viraria um filtro que não casa com
    nada, e o quadro abriria vazio sem nenhum jeito de descobrir o motivo. */
 type FiltrosSalvos = {
-  view: "kanban" | "tabela" | "analise" | "historico";
+  view: "kanban" | "tabela" | "rotinas" | "analise" | "historico";
   periodo: string;
   prio: string;
   area: string;
@@ -79,7 +82,7 @@ const FILTROS_PADRAO: FiltrosSalvos = {
   fResponsavel: [],
 };
 
-const VIEWS_VALIDAS = ["kanban", "tabela", "analise", "historico"];
+const VIEWS_VALIDAS = ["kanban", "tabela", "rotinas", "analise", "historico"];
 const PERIODOS_VALIDOS = ["", "mes", "3m", "ano"];
 const RESPONSAVEIS = ["Henrique", "Júlia"];
 
@@ -342,7 +345,7 @@ export default function Tarefas() {
   const { user, profile } = useAuth();
   const [rows, setRows] = useState<Tarefa[]>([]);
   const [filtrosIniciais] = useState(loadFiltros); // lê o localStorage uma vez, na montagem
-  const [view, setView] = useState<"kanban" | "tabela" | "analise" | "historico">(filtrosIniciais.view);
+  const [view, setView] = useState<"kanban" | "tabela" | "rotinas" | "analise" | "historico">(filtrosIniciais.view);
 
   // Registra uma ação num card no histórico (tarefas_log). Best-effort: nunca quebra a
   // ação principal — se a tabela ainda não existir, o erro é ignorado silenciosamente.
@@ -718,14 +721,26 @@ export default function Tarefas() {
   const create = async (t: Partial<Tarefa>) => {
     if (!t.titulo?.trim()) { toast.error("Título é obrigatório"); return; }
     if (!t.responsavel) { toast.error("Responsável é obrigatório"); return; }
-    if (!t.prazo) { toast.error("Prazo é obrigatório"); return; }
+    /* Rotina não precisa de prazo digitado: a cadência já disse quando ela cai,
+       e a próxima data é a resposta. A regra vale aqui, e não só no diálogo,
+       porque este é o ponto por onde TODA tarefa nova passa. */
+    const cadNova = lerCadencia(t.rotina_cadencia);
+    const prazoNovo = t.prazo || (cadNova ? (proximaData(cadNova) ? iso(proximaData(cadNova)!) : null) : null);
+    if (!prazoNovo) { toast.error("Prazo é obrigatório"); return; }
     const ordem = rows.length ? Math.max(...rows.map(r => r.ordem)) + 1 : 1;
     const status = t.status || creatingStatus;
     const { data: inserida, error } = await supabase.from("tarefas").insert({
       ordem, titulo: t.titulo, responsavel: t.responsavel,
       status, prioridade: t.prioridade || "Média",
-      prazo: t.prazo, observacao: t.observacao || null,
+      prazo: prazoNovo, observacao: t.observacao || null,
       subtarefas: (t.subtarefas || []) as any,
+      /* A agenda da rotina não passa pelo gatilho de classificação: quem escreve
+         `rotina_cadencia` é sempre a pessoa. O gatilho `fn_tarefa_rotina_serie`
+         se encarrega de abrir a série (uuid) e de marcar `rotina = true`. */
+      rotina_cadencia: (t.rotina_cadencia ?? null) as unknown as Json,
+      rotina_ativa: t.rotina_ativa ?? true,
+      rotina_antecedencia_dias: t.rotina_antecedencia_dias ?? 0,
+      rotina_subtarefas_fonte: t.rotina_subtarefas_fonte ?? null,
       /* Só vai o que a pessoa escolheu no diálogo. Omitir os campos é o que deixa
          o gatilho `fn_tarefa_autoclassifica` carimbar pelo título — mandar
          `cat_area: null` explicitamente daria no mesmo, mas mandar "" não: o
@@ -873,6 +888,13 @@ export default function Tarefas() {
             <TableIcon className="h-3.5 w-3.5" /> Tabela
           </button>
           <button
+            onClick={() => setView("rotinas")}
+            className={cn("flex items-center gap-1.5 rounded px-3 py-1 text-xs font-bold transition-colors",
+              view === "rotinas" ? "bg-white text-destructive" : "text-white hover:bg-white/10")}
+          >
+            <CalendarClock className="h-3.5 w-3.5" /> Rotinas
+          </button>
+          <button
             onClick={() => setView("analise")}
             className={cn("flex items-center gap-1.5 rounded px-3 py-1 text-xs font-bold transition-colors",
               view === "analise" ? "bg-white text-destructive" : "text-white hover:bg-white/10")}
@@ -923,6 +945,15 @@ export default function Tarefas() {
           onRemove={remove}
           pausaIdade={pausaIdade}
         />
+      ) : view === "rotinas" ? (
+        /* Abre a ocorrência aberta (ou a última) no MESMO diálogo do quadro: a
+           rotina se edita editando a tarefa, então não há uma segunda tela de
+           cadastro para divergir da primeira. */
+        <RotinasPanel onAbrirTarefa={(id) => {
+          const t = rows.find(r => r.id === id);
+          if (t) setEditing(t);
+          else toast.info("A ocorrência dessa rotina não está no quadro (concluída ou arquivada).");
+        }} />
       ) : view === "analise" ? (
         <AnaliseSemanal />
       ) : (
@@ -1271,6 +1302,7 @@ function KanbanCard({ t, bar, onClick, onRemove }: { t: Tarefa; bar: string; onC
   const showProgress = subsTotal > 0;
   const auto = ehAutomacao(t);
   const area = areaVisivel(t);
+  const cadenciaDoCard = lerCadencia(t.rotina_cadencia);
 
   return (
     <div
@@ -1323,16 +1355,37 @@ function KanbanCard({ t, bar, onClick, onRemove }: { t: Tarefa; bar: string; onC
         </div>
       )}
 
-      {area && (
+      {/* A linha existe se houver área OU rotina: antes ela dependia só da área,
+          e uma rotina ainda não classificada escondia a própria cadência. */}
+      {(area || t.rotina) && (
         <div className="flex items-center gap-1.5 text-[10px] text-muted-foreground">
-          <span className="h-1.5 w-1.5 shrink-0 rounded-full" style={{ background: corDaArea(area) }} />
-          <span className="truncate">{area}</span>
+          {area && (
+            <>
+              <span className="h-1.5 w-1.5 shrink-0 rounded-full" style={{ background: corDaArea(area) }} />
+              <span className="truncate">{area}</span>
+            </>
+          )}
           {t.rotina && (
+            /* O selo mostra a CADÊNCIA, não a palavra "rotina": quem olha o card
+               quer saber quando ela volta, e "rotina" nunca respondeu isso. Sem
+               agenda cadastrada, cai no rótulo antigo — que agora significa
+               exatamente o que diz: repetição observada, sem geração. */
             <span
-              className="ml-auto shrink-0 rounded bg-secondary px-1 py-px text-[9px] font-semibold uppercase tracking-wider text-muted-foreground"
-              title="Rotina: volta sozinha toda semana/mês — entra na fila de automação"
+              className={cn(
+                "ml-auto shrink-0 rounded px-1 py-px text-[9px] font-semibold tracking-wider",
+                cadenciaDoCard
+                  ? "bg-primary/10 text-primary"
+                  : "bg-secondary uppercase text-muted-foreground",
+              )}
+              title={
+                cadenciaDoCard
+                  ? `Rotina · ${descreverCadenciaLonga(cadenciaDoCard)}${t.rotina_ativa === false ? " — PAUSADA" : ""}`
+                  : "Rotina sem agenda: entra na conta da Análise, mas não é criada sozinha"
+              }
             >
-              rotina
+              {cadenciaDoCard
+                ? `↻ ${descreverCadencia(cadenciaDoCard)}${t.rotina_ativa === false ? " (pausada)" : ""}`
+                : "rotina"}
             </span>
           )}
         </div>

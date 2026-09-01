@@ -1166,7 +1166,7 @@ function KanbanView({
             }}
             onDrop={(e) => handleDrop(e, col)}
             className={cn(
-              "flex w-[280px] shrink-0 flex-col rounded-lg border border-border bg-card transition-colors",
+              "flex max-h-[calc(100vh-320px)] min-h-[220px] w-[280px] shrink-0 flex-col rounded-lg border border-border bg-card transition-colors",
               dragOver === col && "border-primary ring-2 ring-primary/30 bg-primary/5",
               colDragOver === col && "border-primary ring-2 ring-primary/40 bg-primary/5",
             )}
@@ -1251,34 +1251,36 @@ function KanbanView({
                 />
               </div>
             </div>
-            <div className="flex flex-1 flex-col gap-2 p-2">
-              {groupByEvento(items).map(g => (
-                <div key={g.evento || "__none__"} className="space-y-1.5">
-                  {g.evento && (
-                    <div className="flex items-center gap-1.5 px-0.5 pt-1">
-                      <span className="h-1 w-1 rounded-full bg-muted-foreground/60" />
-                      <span className="truncate text-[9px] font-bold uppercase tracking-wider text-muted-foreground">
-                        {g.evento}
-                      </span>
-                      <span className="num rounded bg-secondary px-1 py-px text-[9px] text-muted-foreground">
-                        {g.items.length}
-                      </span>
-                      <div className="h-px flex-1 bg-border/60" />
+            <div className="flex min-h-0 flex-1 flex-col gap-2 p-2">
+              <div className="scroll-thin -mr-1 flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto pr-1">
+                {groupByEvento(items).map(g => (
+                  <div key={g.evento || "__none__"} className="space-y-1.5">
+                    {g.evento && (
+                      <div className="flex items-center gap-1.5 px-0.5 pt-1">
+                        <span className="h-1 w-1 rounded-full bg-muted-foreground/60" />
+                        <span className="truncate text-[9px] font-bold uppercase tracking-wider text-muted-foreground">
+                          {g.evento}
+                        </span>
+                        <span className="num rounded bg-secondary px-1 py-px text-[9px] text-muted-foreground">
+                          {g.items.length}
+                        </span>
+                        <div className="h-px flex-1 bg-border/60" />
+                      </div>
+                    )}
+                    <div className="flex flex-col gap-2">
+                      {g.items.map(t => (
+                        <KanbanCard
+                          key={t.id}
+                          t={t}
+                          bar={colorOf(t.status, colsMeta).bar}
+                          onClick={() => onOpen(t)}
+                          onRemove={() => onRemove(t.id)}
+                        />
+                      ))}
                     </div>
-                  )}
-                  <div className="flex flex-col gap-2">
-                    {g.items.map(t => (
-                      <KanbanCard
-                        key={t.id}
-                        t={t}
-                        bar={colorOf(t.status, colsMeta).bar}
-                        onClick={() => onOpen(t)}
-                        onRemove={() => onRemove(t.id)}
-                      />
-                    ))}
                   </div>
-                </div>
-              ))}
+                ))}
+              </div>
               <button
                 onClick={() => onAdd(col)}
                 className="flex items-center justify-center gap-1 rounded border border-dashed border-border py-1.5 text-[10px] font-medium text-muted-foreground hover:border-primary hover:text-primary"

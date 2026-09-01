@@ -410,11 +410,24 @@ export default function Briefing() {
   }
 
   // Edição a partir do briefing: grava a alteração na tabela tarefas (otimista).
+  //
+  // Gravar e parar por aí foi o que fez "concluir pelo briefing" parecer quebrado:
+  // o diálogo continuava aberto, sem aviso nenhum, e a pessoa clicava de novo (e o
+  // banco recebia a mesma edição duas vezes). Salvou → avisa e fecha; falhou →
+  // recarrega, porque manter o otimismo na tela esconderia o erro.
   async function salvarTarefa(patch: Partial<Tarefa>) {
     if (!editing) return;
-    setTarefas((ts) => ts.map((t) => (t.id === editing.id ? { ...t, ...patch } : t)));
-    const { error } = await sb.from("tarefas").update(patch as any).eq("id", editing.id);
-    if (error) toast.error("Erro ao salvar tarefa: " + error.message);
+    const alvo = editing;
+    setTarefas((ts) => ts.map((t) => (t.id === alvo.id ? { ...t, ...patch } : t)));
+    const { error } = await sb.from("tarefas").update(patch as any).eq("id", alvo.id);
+    if (error) {
+      toast.error("Erro ao salvar tarefa: " + error.message);
+      carregarTarefas();
+      return;
+    }
+    toast.success("Tarefa salva");
+    setEditing(null);
+    carregarTarefas();
   }
 
   async function regerar() {

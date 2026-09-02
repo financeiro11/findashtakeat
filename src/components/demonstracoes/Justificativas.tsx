@@ -296,7 +296,7 @@ function LinhaDriver({ d, mapa }: { d: DriverJustificativa; mapa: MapaPessoas })
 }
 
 export function MarcaJustificativa({
-  justificativa, onMudou, valorCelula, perguntas, montarPayload, onPerguntaMudou,
+  justificativa, onMudou, valorCelula, perguntas, montarPayload, onPerguntaMudou, aposAplicar,
 }: {
   justificativa: Justificativa;
   onMudou: () => void;
@@ -309,6 +309,8 @@ export function MarcaJustificativa({
   perguntas?: Pergunta[];
   montarPayload?: () => (PayloadPergunta | null);
   onPerguntaMudou?: () => void | Promise<void>;
+  /** Recalcula a demonstração quando uma correção do fio altera o Omie. */
+  aposAplicar?: () => void | Promise<void>;
 }) {
   const j = justificativa;
   const mapaPessoas = usePessoasPJ();
@@ -557,6 +559,7 @@ export function MarcaJustificativa({
             perguntas={perguntas ?? []}
             montarPayload={montarPayload}
             onMudou={onPerguntaMudou}
+            aposAplicar={aposAplicar}
             compacto
           />
         )}

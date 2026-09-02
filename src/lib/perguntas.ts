@@ -20,6 +20,7 @@
 import { supabase } from "@/integrations/supabase/client";
 import { fontesDaCelula } from "@/lib/justificativas";
 import type { Node } from "@/lib/demonstracoes-schema";
+import type { EstadoAcao, ResultadoAcao } from "@/lib/acaoCelula";
 
 /** Meses de história da célula que acompanham a pergunta. */
 export const MESES_DE_SERIE = 12;
@@ -137,8 +138,21 @@ export type Pergunta = {
   valor_anterior: number | null;
   travado: boolean;
   drivers: DriverPergunta[];
-  dados: { lancamentos?: number; omitidos?: number; contrapartes?: number; diferenca_contra_tela?: number } | null;
+  dados: {
+    lancamentos?: number; omitidos?: number; contrapartes?: number; diferenca_contra_tela?: number;
+    /** Nomes que a triagem extraiu da frase e levou à varredura do mês inteiro. */
+    busca?: string[];
+    encontrados?: number;
+    correcao?: boolean;
+  } | null;
   confianca: "alta" | "media" | "baixa" | null;
+  /* A correção que a IA propôs a partir desta pergunta. `jsonb` cru — quem lê
+     passa por `lerAcao` antes de tocar em qualquer campo, porque a linha pode ter
+     sido gravada por uma versão anterior da função. */
+  acao: unknown | null;
+  acao_estado: EstadoAcao | null;
+  acao_resultado: ResultadoAcao | null;
+  acao_em: string | null;
   autor_email: string | null;
   criado_em: string;
 };

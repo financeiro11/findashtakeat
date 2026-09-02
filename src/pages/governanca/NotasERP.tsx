@@ -38,16 +38,18 @@ import {
   AlertTriangle, Archive, ArrowRight, ArrowUpRight, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, CreditCard,
   ExternalLink, Eye, FileWarning, FilterX, Flame, Loader2, Paperclip, RefreshCw, Scale,
   Maximize2, Minus, Plus,
-  Search, Send, ShieldAlert, ShieldCheck, ShieldQuestion, Target, ThumbsDown, ThumbsUp, Upload, Zap,
+  Search, Send, ShieldAlert, ShieldCheck, ShieldQuestion, Target, ThumbsDown, ThumbsUp,
+  TrendingDown, TrendingUp, Upload, Zap,
 } from "lucide-react";
 import { resolverComprovante } from "@/lib/comprovante";
 import {
-  brlStr, categoriasCriticas, coberturaEmValor, dataStr, fatias, fonteDaNota, formatarDoc, frasePanorama, mesCurto,
-  nomeDaLinha, ondeAbrir, pctStr, periodoPadrao, resumoDoCorte, urlParaEmbutir,
+  brlStr, categoriasCriticas, coberturaEmValor, dataStr, evolucaoMensal, fatias, fonteDaNota, formatarDoc,
+  frasePanorama, mesCurto, nomeDaLinha, ondeAbrir, pctStr, periodoDoMes, periodoPadrao, ppStr,
+  resumoDoCorte, urlParaEmbutir,
   GRAVIDADE, GRAVIDADES, REGRA, SITUACAO,
   SITUACOES_EXIGIVEIS, SITUACOES_FALTANDO, SITUACOES_NOSSAS,
-  type FacetasNotas, type Gravidade, type LinhaTitulo, type OndeAbrir, type Regra,
-  type ResumoNotas, type SituacaoTitulo,
+  type EstadoMes, type FacetasNotas, type Gravidade, type LinhaTitulo, type MedidaCobertura,
+  type OndeAbrir, type Regra, type ResumoNotas, type SituacaoTitulo,
 } from "@/lib/notasErp";
 import { useApelidos } from "@/hooks/useApelidos";
 import { nomeExibido } from "@/lib/apelidos";
@@ -824,15 +826,39 @@ function BarraCobertura({ v, total }: {
   );
 }
 
+/**
+ * A DIFERENÇA CONTRA O MÊS ANTERIOR, em pontos percentuais.
+ *
+ * Em pp e não em "%", porque a diferença entre 60% e 64% não é 4% — é 4 pp, e a
+ * confusão entre as duas coisas é o jeito clássico de um painel de evolução
+ * anunciar um progresso que não houve. Vazio quando não há com quem comparar:
+ * mês em curso, mês a vencer, ou o primeiro da série.
+ */
+function Delta({ pp }: { pp: number | null }) {
+  if (pp === null) return <span className="text-muted-foreground">—</span>;
+  const parado = Math.abs(pp) < 0.05;
+  return (
+    <span className={cn(
+      "inline-flex items-center justify-end gap-1",
+      parado ? "text-muted-foreground"
+        : pp > 0 ? "text-emerald-600 dark:text-emerald-400" : "text-red-600 dark:text-red-400",
+    )}>
+      {parado ? <Minus className="h-3 w-3" />
+        : pp > 0 ? <TrendingUp className="h-3.5 w-3.5" /> : <TrendingDown className="h-3.5 w-3.5" />}
+      {parado ? "igual" : ppStr(Math.abs(pp))}
+    </span>
+  );
+}
+
 function Legenda() {
   return (
     <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-[11.5px] text-muted-foreground">
       {([
-        ["com_nota", "com nota no ERP"],
+        ["com_nota", "com nota (ou recibo aceito)"],
         ["pronta", "o Hub leva sozinho"],
         ["espera", "achada — falta confirmar"],
         ["comprovante", "só comprovante"],
-        ["sem_nota", "sem nota"],
+        ["sem_nota", "sem nota ou anexo a conferir"],
         ["nao_verificado", "não verificado"],
       ] as const).map(([k, t]) => (
         <span key={k} className="inline-flex items-center gap-1.5">
@@ -1071,7 +1097,12 @@ export default function NotasERP() {
         <div className="mt-4">
           <BarraCobertura
             v={{
-              com_nota: val("com_nota"),
+              /* O VERDE É O COBERTO, e não `com_nota` sozinho — a mesma régua do
+                 percentual grande à direita. Enquanto foi só `com_nota`, o
+                 `comprovante_aceito` (recibo de quem não emite NF) não cabia em
+                 fatia nenhuma e virava um vão cinza no fim da barra: a barra
+                 dizia menos do que o número logo acima dela. */
+              com_nota: doc.coberto,
               // A fatia amarela é "nossa": o que vai subir e o que já subiu e
               // espera confirmação. Sem os dois, a barra não fecha os 100%.
               pronta: val("pronta_para_enviar") + val("enviado_aguardando"),
@@ -1080,7 +1111,11 @@ export default function NotasERP() {
               espera: val("espera_confirmacao"),
               // A laranja: o gasto está provado e a nota fiscal ainda falta.
               comprovante: val("so_comprovante"),
-              sem_nota: val("sem_nota") + val("erro_leitura"), nao_verificado: val("nao_verificado"),
+              /* `anexo_suspeito` entra no vermelho: tem arquivo pendurado e
+                 ninguém sabe se é documento — era o segundo pedaço que faltava
+                 para as seis fatias somarem o exigível inteiro. */
+              sem_nota: val("sem_nota") + val("erro_leitura") + val("anexo_suspeito"),
+              nao_verificado: val("nao_verificado"),
             }}
             total={m?.exigivel_valor ?? 0}
           />
@@ -1168,7 +1203,9 @@ export default function NotasERP() {
         ))}
       </div>
 
-      {aba === "panorama" && <Panorama resumo={resumo} />}
+      {aba === "panorama" && (
+        <Panorama resumo={resumo} verMes={(mes) => setPeriodo(periodoDoMes(mes))} />
+      )}
       {aba === "caixa" && <CaixaDeNotas />}
       {aba === "diagnostico" && <PorQueFalta de={de} ate={ate} irPara={irPara} />}
       {aba === "categorias" && <Categorias resumo={resumo} />}
@@ -1187,33 +1224,137 @@ export default function NotasERP() {
 
 /* ============================== Panorama ============================== */
 
-function Panorama({ resumo }: { resumo: ResumoNotas | null }) {
+const TAG_MES: Record<EstadoMes, { rotulo: string; ajuda: string } | null> = {
+  fechado: null,
+  em_curso: {
+    rotulo: "em curso",
+    ajuda: "O mês ainda está enchendo, e a nota costuma chegar depois do pagamento. Este percentual vai subir sozinho — não compare com um mês fechado.",
+  },
+  a_vencer: {
+    rotulo: "a vencer",
+    ajuda: "Títulos que ainda vão vencer. A competência é a data de pagamento (ou o vencimento, quando ainda não foi pago), então este mês é o futuro: ninguém deveria ter a nota dele ainda.",
+  },
+};
+
+function Panorama({ resumo, verMes }: {
+  resumo: ResumoNotas | null;
+  /** Clicar num mês estreita o período da tela inteira para aquele mês. */
+  verMes: (mes: string) => void;
+}) {
+  /* EM VALOR OU EM TÍTULOS. As duas leituras são verdade e discordam muito
+     (59,4% × 34,6% em ago/26): o dinheiro está documentado, os documentos não.
+     Quem pergunta se o controle está melhorando precisa das duas. */
+  const [medida, setMedida] = useState<MedidaCobertura>("valor");
+  const ev = useMemo(() => evolucaoMensal(resumo, medida), [resumo, medida]);
+  const nEsteMes = (n: number) => (medida === "valor" ? brlStr(n) : `${n.toLocaleString("pt-BR")} títulos`);
+
   if (!resumo) return null;
   return (
-    <div className="grid gap-4 lg:grid-cols-2">
+    <div className="space-y-4">
       <div className="card-surface p-4">
-        <h3 className="mb-3 text-sm font-semibold">Mês a mês</h3>
-        {!resumo.meses.length && <p className="text-[13px] text-muted-foreground">Nada no período.</p>}
-        <div className="space-y-2.5">
-          {resumo.meses.map((mm) => (
-            <div key={mm.mes} className="grid grid-cols-[52px_1fr_112px] items-center gap-3">
-              <span className="text-[12px] tabular-nums text-muted-foreground">{mesCurto(mm.mes)}</span>
-              <BarraCobertura
-                v={{
-                  // O mês a mês só traz dois números do banco; o resto da barra
-                  // vira "não verificado" e as duas fatias intermediárias ficam
-                  // zeradas de propósito.
-                  com_nota: mm.valor_com_nota, pronta: 0, espera: 0, comprovante: 0,
-                  sem_nota: mm.valor_sem_nota,
-                  nao_verificado: Math.max(0, mm.valor - mm.valor_com_nota - mm.valor_sem_nota),
-                }}
-                total={mm.valor}
-              />
-              <span className="text-right text-[12px] tabular-nums text-muted-foreground" title={`${mm.titulos} títulos`}>
-                {brlStr(mm.valor)}
-              </span>
-            </div>
-          ))}
+        <div className="mb-1 flex flex-wrap items-start justify-between gap-2">
+          <div>
+            <h3 className="text-sm font-semibold">Cobertura mês a mês</h3>
+            <p className="mt-0.5 text-[12.5px] text-muted-foreground">
+              Por mês de <b>competência</b> — a data do pagamento, ou a do vencimento enquanto o
+              título não foi pago. É a mesma conta do número lá de cima, recortada por mês.
+            </p>
+          </div>
+          <div className="flex items-center gap-1.5">
+            {([["valor", "em valor"], ["titulos", "em títulos"]] as const).map(([k, t]) => (
+              <button
+                key={k}
+                className={cn("chip", medida === k && "border-primary text-primary")}
+                onClick={() => setMedida(k)}
+                title={k === "valor"
+                  ? "Quanto do dinheiro exigível tem nota confirmada no Omie."
+                  : "Quantos títulos têm nota — cada documento vale um, do R$ 12 ao R$ 120 mil. É a leitura mais dura, e a que mede hábito."}
+              >
+                {t}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {/* O VEREDITO EM UMA FRASE, e só sobre meses FECHADOS. Ver `evolucaoMensal`. */}
+        {ev.frase && (
+          <p className="mb-3 rounded-md border border-border bg-muted/40 px-3 py-2 text-[12.5px]">
+            {ev.frase}
+          </p>
+        )}
+
+        {!ev.linhas.length && <p className="text-[13px] text-muted-foreground">Nada no período.</p>}
+
+        {!!ev.linhas.length && (
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[620px] text-[13px]">
+              <thead>
+                <tr className="text-left text-[11px] uppercase tracking-wide text-muted-foreground">
+                  <th className="py-1.5 pr-2 font-medium">Mês</th>
+                  <th className="py-1.5 pr-3 font-medium">Como o mês está</th>
+                  <th className="py-1.5 pr-3 text-right font-medium">Cobertura</th>
+                  <th className="py-1.5 pr-3 text-right font-medium">vs. mês anterior</th>
+                  <th className="py-1.5 pr-3 text-right font-medium">Exigível</th>
+                  <th className="py-1.5 text-right font-medium">Falta</th>
+                </tr>
+              </thead>
+              <tbody>
+                {ev.linhas.map((l) => {
+                  const tag = TAG_MES[l.estado];
+                  return (
+                    <tr
+                      key={l.mes}
+                      className="cursor-pointer border-t border-border/60 hover:bg-muted/40"
+                      onClick={() => verMes(l.mes)}
+                      title={`Ver só ${mesCurto(l.mes)} — o período da tela inteira passa a ser este mês.`}
+                    >
+                      <td className="py-2 pr-2 align-middle">
+                        <span className="tabular-nums">{mesCurto(l.mes)}</span>
+                        {tag && (
+                          <span className="ml-1.5 text-[10.5px] text-muted-foreground" title={tag.ajuda}>
+                            {tag.rotulo}
+                          </span>
+                        )}
+                      </td>
+                      <td className="py-2 pr-3 align-middle">
+                        <BarraCobertura v={l.fatias} total={l.total} />
+                      </td>
+                      <td className={cn(
+                        "py-2 pr-3 text-right font-medium tabular-nums",
+                        /* Mês que ainda não fechou não ganha cor: verde e vermelho
+                           aqui seriam elogio e acusação por causa do calendário. */
+                        l.estado !== "fechado" ? "text-muted-foreground"
+                          : (l.cobertura ?? 0) >= 90 ? "text-emerald-600 dark:text-emerald-400"
+                          : (l.cobertura ?? 0) >= 60 ? "text-amber-600 dark:text-amber-400"
+                          : "text-red-600 dark:text-red-400",
+                      )}>
+                        {pctStr(l.cobertura)}
+                      </td>
+                      <td className="py-2 pr-3 text-right tabular-nums">
+                        <Delta pp={l.delta} />
+                      </td>
+                      <td className="py-2 pr-3 text-right tabular-nums text-muted-foreground"
+                          title={`${l.titulos.toLocaleString("pt-BR")} títulos · ${brlStr(l.valor)}`}>
+                        {nEsteMes(l.total)}
+                      </td>
+                      {/* Vermelho só no mês fechado, pelo mesmo motivo da coluna
+                          de cobertura: o que ainda vai vencer não está atrasado. */}
+                      <td className={cn(
+                        "py-2 text-right tabular-nums",
+                        l.estado === "fechado" ? "text-red-600 dark:text-red-400" : "text-muted-foreground",
+                      )}>
+                        {l.faltante > 0 ? nEsteMes(l.faltante) : "—"}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+
+        <div className="mt-3">
+          <Legenda />
         </div>
       </div>
 

@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
-  brlStr, categoriasCriticas, coberturaEmValor, fatias, fonteDaNota, formatarDoc, frasePanorama, mesCurto,
-  ondeAbrir, pctStr, periodoPadrao, nomeDaLinha, urlParaEmbutir, GRAVIDADE, GRAVIDADES,
+  brlStr, categoriasCriticas, coberturaEmValor, evolucaoMensal, fatias, fonteDaNota, formatarDoc,
+  frasePanorama, mesCurto, ondeAbrir, pctStr, periodoDoMes, periodoPadrao, ppStr, nomeDaLinha,
+  urlParaEmbutir, GRAVIDADE, GRAVIDADES,
   SITUACOES_COBERTAS, SITUACOES_EXIGIVEIS, SITUACOES_FALTANDO, SITUACOES_NOSSAS, SITUACAO,
   type LinhaTitulo, type ResumoNotas,
 } from "./notasErp";
@@ -244,6 +245,120 @@ describe("periodoPadrao", () => {
     const p = periodoPadrao(new Date(Date.UTC(2026, 1, 10)), 6); // fev/2026
     expect(p.de).toBe("2025-09-01");
     expect(p.ate).toBe("2026-02-28");
+  });
+});
+
+describe("periodoDoMes", () => {
+  it("fecha no último dia do mês, inclusive nos curtos", () => {
+    expect(periodoDoMes("2026-08")).toEqual({ de: "2026-08-01", ate: "2026-08-31" });
+    expect(periodoDoMes("2026-02")).toEqual({ de: "2026-02-01", ate: "2026-02-28" });
+    expect(periodoDoMes("2024-02").ate).toBe("2024-02-29");
+  });
+});
+
+describe("evolucaoMensal", () => {
+  /* 01/09/2026: jun, jul e ago estão fechados; set está em curso; nov é futuro. */
+  const HOJE = new Date(Date.UTC(2026, 8, 1));
+
+  const mes = (over: Partial<ResumoNotas["meses"][number]>): ResumoNotas["meses"][number] => ({
+    mes: "2026-06", titulos: 0, valor: 0,
+    com_nota: 0, valor_com_nota: 0, sem_nota: 0, valor_sem_nota: 0,
+    pronta: 0, valor_pronta: 0, espera: 0, valor_espera: 0,
+    comprovante: 0, valor_comprovante: 0, erro: 0, valor_erro: 0,
+    nao_verificado: 0, valor_nao_verificado: 0,
+    valor_faltante: 0, cobertura: null, cobertura_titulos: null, ...over,
+  });
+
+  const r = resumo({}, {
+    meses: [
+      mes({ mes: "2026-06", titulos: 100, valor: 1000, com_nota: 40, valor_com_nota: 500,
+            sem_nota: 60, valor_sem_nota: 500 }),
+      mes({ mes: "2026-07", titulos: 100, valor: 1000, com_nota: 30, valor_com_nota: 600,
+            pronta: 5, valor_pronta: 50, espera: 5, valor_espera: 50,
+            comprovante: 10, valor_comprovante: 100, sem_nota: 20, valor_sem_nota: 100,
+            erro: 5, valor_erro: 50, nao_verificado: 25, valor_nao_verificado: 50 }),
+      mes({ mes: "2026-08", titulos: 100, valor: 1000, com_nota: 25, valor_com_nota: 700,
+            comprovante: 10, valor_comprovante: 100, sem_nota: 65, valor_sem_nota: 200 }),
+      mes({ mes: "2026-09", titulos: 40, valor: 500, com_nota: 4, valor_com_nota: 100,
+            sem_nota: 36, valor_sem_nota: 400 }),
+      mes({ mes: "2026-11", titulos: 20, valor: 300, sem_nota: 20, valor_sem_nota: 300 }),
+    ],
+  });
+
+  it("as seis fatias somam o mês inteiro — inclusive o erro de leitura", () => {
+    const jul = evolucaoMensal(r, "valor", HOJE).linhas[1];
+    const f = jul.fatias;
+    expect(f.com_nota + f.pronta + f.espera + f.comprovante + f.sem_nota + f.nao_verificado)
+      .toBe(jul.total);
+    // `erro_leitura` mora no vermelho: 100 sem nota + 50 que o ERP recusou ler.
+    expect(f.sem_nota).toBe(150);
+  });
+
+  /* O erro que esta marca existe para impedir: `competencia` é a data de
+     pagamento OU o vencimento futuro, então escolher o ano inteiro traz meses
+     que ainda nem venceram — e eles apareceriam como descontrole. */
+  it("separa mês fechado, mês em curso e mês a vencer", () => {
+    const linhas = evolucaoMensal(r, "valor", HOJE).linhas;
+    expect(linhas.map((l) => l.estado))
+      .toEqual(["fechado", "fechado", "fechado", "em_curso", "a_vencer"]);
+    expect(evolucaoMensal(r, "valor", HOJE).fechados).toHaveLength(3);
+  });
+
+  it("o delta só liga mês fechado a mês fechado", () => {
+    const linhas = evolucaoMensal(r, "valor", HOJE).linhas;
+    expect(linhas[0].delta).toBeNull();          // não há mês anterior
+    expect(linhas[1].delta).toBeCloseTo(10, 6);  // 50% → 60%
+    expect(linhas[2].delta).toBeCloseTo(10, 6);  // 60% → 70%
+    expect(linhas[3].delta).toBeNull();          // set/26 ainda está enchendo
+    expect(linhas[4].delta).toBeNull();          // nov/26 nem venceu
+  });
+
+  /* O motivo de a tela ter as duas medidas: em valor o período MELHOROU e em
+     títulos PIOROU, com os mesmos dados. Uma tela com só uma delas responderia
+     "estamos evoluindo?" com metade da verdade. */
+  it("valor e títulos podem discordar até no sinal", () => {
+    const v = evolucaoMensal(r, "valor", HOJE);
+    const t = evolucaoMensal(r, "titulos", HOJE);
+    expect(v.linhas[2].cobertura).toBe(70);
+    expect(t.linhas[2].cobertura).toBe(25);
+    expect(v.frase).toContain("subiu 20,0 pp");
+    expect(t.frase).toContain("caiu 15,0 pp");
+    // e o denominador de cada uma é o seu: R$ 1.000 num caso, 100 títulos no outro
+    expect(v.linhas[2].total).toBe(1000);
+    expect(t.linhas[2].total).toBe(100);
+    expect(t.linhas[2].faltante).toBe(75);
+  });
+
+  it("a frase compara o primeiro e o último mês FECHADO, e depois o último passo", () => {
+    const { frase } = evolucaoMensal(r, "valor", HOJE);
+    expect(frase).toContain("De jun/26 a ago/26");
+    expect(frase).toContain("50,0% para 70,0%");
+    expect(frase).toContain("No último mês fechado (ago/26), +10,0 pp contra jul/26");
+    // set/26 está em 20% e não pode aparecer no veredito.
+    expect(frase).not.toContain("set/26");
+  });
+
+  it("não inventa evolução quando nenhum mês fechou", () => {
+    const so_futuro = resumo({}, {
+      meses: [mes({ mes: "2026-11", titulos: 20, valor: 300, sem_nota: 20, valor_sem_nota: 300 })],
+    });
+    const e = evolucaoMensal(so_futuro, "valor", HOJE);
+    expect(e.fechados).toHaveLength(0);
+    expect(e.frase).toContain("Nenhum mês fechado");
+  });
+
+  it("aguenta resumo ausente e mês sem nada", () => {
+    expect(evolucaoMensal(null).linhas).toEqual([]);
+    const vazio = evolucaoMensal(resumo({}, { meses: [mes({ mes: "2026-07" })] }), "valor", HOJE);
+    expect(vazio.linhas[0].cobertura).toBeNull();
+    expect(vazio.fechados).toHaveLength(0);
+  });
+});
+
+describe("ppStr", () => {
+  it("diz pp, que não é o mesmo que %", () => {
+    expect(ppStr(2.24)).toBe("2,2 pp");
+    expect(ppStr(null)).toBe("—");
   });
 });
 

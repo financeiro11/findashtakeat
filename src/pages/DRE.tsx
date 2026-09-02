@@ -38,7 +38,14 @@ import {
 import {
   LINHAS_DO_AJUSTE, LINHA_AJUSTES, LINHA_EBITDA_AJUSTADO, precisaRecalcular,
 } from "@/lib/ebitdaAjustado";
-import { gerarJustificativas } from "@/lib/justificativas";
+import { ausenciasDoMes, gerarJustificativas, recordesDoMes } from "@/lib/justificativas";
+import {
+  ResumoAusencias, mapaDeAusencias, tituloAusencia, perguntaSugerida,
+} from "@/components/demonstracoes/Ausencias";
+import {
+  BotaoFechamento, PainelFechamento, useCategoriasOrfas,
+} from "@/components/demonstracoes/Fechamento";
+import { mesEmFechamento, montarFechamento, type Pendencia } from "@/lib/fechamento";
 import Analises from "@/components/demonstracoes/Analises";
 import { MarcaComposicao, tituloComposicao } from "@/components/demonstracoes/ComposicaoCelula";
 import {
@@ -524,6 +531,25 @@ export default function DRE() {
   const valorDaLinha = (node: Node, col: string): number | null =>
     node.children?.length ? sumChildren(node, col) : getValueForRow(node, col);
 
+  /* ----- Rubricas recorrentes que não vieram -----------------------------
+   * A única leitura que roda em mês ABERTO, e é o ponto: o comentário
+   * automático só sai em mês travado (texto sobre mês pela metade envelhece
+   * congelado), mas é no mês em curso que se fecha.
+   *
+   * Pode rodar no mês em curso porque não escreve NADA: sem IA, sem gravação,
+   * sem comentário para envelhecer. Recalcula a cada render; se o lançamento
+   * entrar, o aviso some sozinho. Ver components/demonstracoes/Ausencias.tsx. */
+  const ausencias = useMemo(
+    () => displayColumns.flatMap((mes) => ausenciasDoMes({
+      schema: DRE_SCHEMA, colunas: columns, mes, valorDaLinha,
+    })),
+    // `rows` entra porque `valorDaLinha` fecha sobre o índice do blob — sem ele
+    // a varredura ficaria congelada no primeiro carregamento.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [displayColumns, columns, rows],
+  );
+  const mapaAusencias = useMemo(() => mapaDeAusencias(ausencias), [ausencias]);
+
   /* O mesmo, mas a partir do RÓTULO — é o que a conferência de célula precisa
      para ler as parcelas com exatamente a regra da grade. Rubrica fora do
      esquema (o blob tem rubricas órfãs do Omie) lê o blob direto. */
@@ -541,12 +567,106 @@ export default function DRE() {
     guardado: (rotulo) => valueAt(rotulo, col),
   });
 
+  /* ----- "O que falta fechar" ---------------------------------------------
+   * O painel do mês em curso: cinco checagens determinísticas, nenhuma delas
+   * gravada. Quatro a página já tem em memória; só as categorias órfãs descem
+   * ao Omie, e só quando o painel abre. Ver lib/fechamento.ts.
+   *
+   * O bloco inteiro fica DEPOIS de `lerCelula` porque o corpo de um `useMemo`
+   * roda DURANTE o render, na linha em que ele aparece: referenciar `lerCelula`
+   * antes explodiria em TDZ no primeiro render — e isso chega como tela branca,
+   * não como aviso do compilador. */
+  const [fechamentoAberto, setFechamentoAberto] = useState(false);
+
+  /* O último mês com dado de GENTE dentro — não a última coluna. O tracker traz
+     meses à frente pela metade (Set/26 tem 12 de 61 células) e apontar o painel
+     para um mês que nem começou faria dele um alarme sobre o nada. */
+  const mesFechando = useMemo(() => {
+    const preenchidas = (col: string) =>
+      rows.reduce((n, r) => { const v = toNum(r[col]); return v != null && v !== 0 ? n + 1 : n; }, 0);
+    return mesEmFechamento(displayColumns, preenchidas);
+  }, [displayColumns, rows]);
+
+  const { orfas, carregandoOrfas, erroOrfas, recarregarOrfas } =
+    useCategoriasOrfas("dre", mesFechando, fechamentoAberto);
+
+  const recordes = useMemo(
+    () => (mesFechando
+      ? recordesDoMes({ schema: DRE_SCHEMA, colunas: columns, mes: mesFechando, valorDaLinha })
+      : []),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [mesFechando, columns, rows],
+  );
+
+  /* Os alertas de classificação e os totais que não fecham já existem na tela —
+     aqui só são recortados para o mês em foco. Reunir num lugar é o ponto: hoje
+     eles só aparecem célula a célula, e ninguém varre a grade procurando. */
+  const suspeitasDoMes = useMemo(() => {
+    if (!mesFechando) return [];
+    const out: { rubrica: string; mes: string; alertas: number; valor: number }[] = [];
+    for (const [k, a] of reclassificacoes) {
+      const [rubrica, mes] = k.split("|");
+      if (mes !== mesFechando) continue;
+      out.push({ rubrica, mes, alertas: a.alertas, valor: a.valorTotal });
+    }
+    return out;
+  }, [reclassificacoes, mesFechando]);
+
+  const totaisDivergentes = useMemo(() => {
+    if (!mesFechando) return [];
+    const out: { rubrica: string; mes: string; calculado: number | null; guardado: number | null; diferenca: number }[] = [];
+    for (const rotulo of DRE_RUBRICAS) {
+      if (!temComposicao(rotulo, "dre")) continue;
+      const c = composicaoDaCelula(rotulo, lerCelula(mesFechando));
+      if (!c?.divergente || c.diferenca == null) continue;
+      out.push({
+        rubrica: rotulo, mes: mesFechando,
+        calculado: c.calculado, guardado: c.guardado, diferenca: c.diferenca,
+      });
+    }
+    return out;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mesFechando, rows, columns]);
+
+  /* A contagem que o botão mostra é a MESMA lista do painel — montada aqui, e
+     não lida de dentro dele, porque o painel só monta quando abre e o botão
+     precisa do número antes disso. */
+  const pendenciasDoMes = useMemo(
+    () => (mesFechando ? montarFechamento({
+      mes: mesFechando, rotuloMes: ptLabelFromKey,
+      ausencias, orfas, suspeitas: suspeitasDoMes, totais: totaisDivergentes, recordes,
+    }) : []),
+    [mesFechando, ausencias, orfas, suspeitasDoMes, totaisDivergentes, recordes],
+  );
+
+  /* A pendência que não é para consertar agora vira linha do checklist do card
+     "Fechamento" — a MESMA função que o chat da célula usa, para o quadro ganhar
+     uma raia e não trinta cards soltos. */
+  const virarSubtarefa = async (p: Pendencia) => {
+    const { error } = await supabase.rpc("tarefa_fechamento_subtarefa" as never, {
+      p_titulo: `DRE ${ptLabelFromKey(p.mes)} · ${p.titulo}`,
+    } as never);
+    if (error) { toast.error("Não consegui criar a subtarefa: " + error.message); throw error; }
+    toast.success("Entrou no checklist do card “Fechamento”, nas Tarefas.");
+  };
+
   /* Perguntar e promover mexem em DUAS tabelas: o fio da célula e — quando a
      resposta vira o comentário oficial — a justificativa. Recarregar só o fio
      deixaria o balão exibindo o texto velho até a próxima visita à página. */
   const aposPergunta = async () => {
     await recarregarPerguntas();
     await recarregarJustificativas();
+  };
+
+  /* Trocar a categoria muda o Omie e o cache; a DRE só reflete depois de
+     recalcular — o mesmo recálculo local do botão de sincronizar, que é
+     instantâneo e não custa API do Omie.
+     A MESMA função serve o lápis do drill-down e o botão de correção do chat da
+     célula: são duas portas para a mesma alteração, e duas cópias deste par de
+     chamadas divergiriam na primeira vez que uma delas ganhasse um passo. */
+  const aposCategoriaTrocada = async () => {
+    await sincronizarOmie(false);
+    await recarregarReclassificacoes();
   };
 
   /* O dossiê que acompanha a pergunta, montado no instante do envio com a MESMA
@@ -770,14 +890,26 @@ export default function DRE() {
             <BarraStatus
               periodo={rotuloPeriodo(displayColumns)}
               acoes={
-                <RegerarJustificativas
-                  gerando={gerandoJust}
-                  progresso={progressoJust}
-                  onGerar={(force) => gerarJust(force, displayColumns)}
-                />
+                <>
+                  {/* Antes do "Regerar": fechar o mês vem antes de reescrever o
+                      que já foi fechado. */}
+                  <BotaoFechamento
+                    mes={mesFechando}
+                    quantas={pendenciasDoMes.length}
+                    onAbrir={() => setFechamentoAberto(true)}
+                  />
+                  <RegerarJustificativas
+                    gerando={gerandoJust}
+                    progresso={progressoJust}
+                    onGerar={(force) => gerarJust(force, displayColumns)}
+                  />
+                </>
               }
             >
               <ResumoReclassificacoes mapa={reclassificacoes} />
+              {/* Antes dos comentários de propósito: é a constatação que vale
+                  para o mês em curso, e é a que muda o que se faz agora. */}
+              <ResumoAusencias lista={ausencias} colunas={displayColumns} />
               <ResumoValoresManuais mapa={manuais} colunas={displayColumns} />
               <ResumoAjustesEbitda
                 mapa={ajustes}
@@ -948,6 +1080,11 @@ export default function DRE() {
                         const perguntasDaCelula = tab === "valores"
                           ? perguntas.get(chaveCelula(node.label, c)) ?? []
                           : [];
+                        /* A rubrica que vinha todo mês e não veio. Acende o "?"
+                           em vez de virar marca nova — ver Ausencias.tsx. */
+                        const ausencia = tab === "valores"
+                          ? mapaAusencias.get(chaveCelula(node.label, c))
+                          : undefined;
                         /* Digitar valor vale nas MESMAS células que abrem
                            auditoria, e pelo mesmo motivo: linha com filhos é a
                            soma dos filhos, total e percentual são calculados —
@@ -989,6 +1126,7 @@ export default function DRE() {
                               tituloComposicao(comp),
                               manual ? tituloValorManual(manual) : null,
                               alerta ? tituloReclassificacao(alerta) : null,
+                              ausencia ? tituloAusencia(ausencia) : null,
                               tituloPerguntas(perguntasDaCelula),
                               auditavel ? "clique para ver os lançamentos" : null,
                               curavel ? tituloAjustes(ajustesDoMes ?? []) : null,
@@ -1045,6 +1183,7 @@ export default function DRE() {
                                   perguntas={perguntasDaCelula}
                                   montarPayload={dossieDaCelula(node, c, v)}
                                   onPerguntaMudou={aposPergunta}
+                                  aposAplicar={aposCategoriaTrocada}
                                 />
                               ) : tab === "valores" ? (
                                 <MarcaPerguntas
@@ -1054,6 +1193,12 @@ export default function DRE() {
                                   perguntas={perguntasDaCelula}
                                   montarPayload={dossieDaCelula(node, c, v)}
                                   onMudou={aposPergunta}
+                                  aposAplicar={aposCategoriaTrocada}
+                                  sinal={ausencia ? {
+                                    texto: tituloAusencia(ausencia),
+                                    pergunta: perguntaSugerida(ausencia),
+                                    rotulo: "Procurar onde foi parar",
+                                  } : undefined}
                                 />
                               ) : null}
                               {display}
@@ -1078,17 +1223,36 @@ export default function DRE() {
       </>
       )}
 
+      {/* O que falta fechar no mês em curso. Fica fora da grade porque não é
+          sobre uma célula: é sobre a coluna inteira. */}
+      <PainelFechamento
+        aberto={fechamentoAberto}
+        onFechar={() => setFechamentoAberto(false)}
+        tipo="dre"
+        mes={mesFechando}
+        ausencias={ausencias}
+        orfas={orfas}
+        suspeitas={suspeitasDoMes}
+        totais={totaisDivergentes}
+        recordes={recordes}
+        carregandoOrfas={carregandoOrfas}
+        erroOrfas={erroOrfas}
+        onRecarregar={recarregarOrfas}
+        onIrParaCelula={(rubrica, mes) => setAuditando({
+          tipo: "dre", rubrica, mes,
+          mesLabel: ptLabelFromKey(mes).replace("/", " "),
+          celula: valueAt(rubrica, mes), travado: travados.has(mes),
+          ...parAnterior(rubrica, mes),
+        })}
+        onVirarSubtarefa={virarSubtarefa}
+      />
+
       {/* Fechar o drill-down recarrega as marcas: quem ignorou um alerta lá
           dentro tem que ver a célula limpar aqui fora. */}
       <LancamentosSheet
         alvo={auditando}
         onClose={() => { setAuditando(null); recarregarReclassificacoes(); }}
-        /* Trocar a categoria muda o Omie e o cache; a DRE só reflete depois de
-           recalcular — o mesmo recálculo local do botão de sincronizar. */
-        onCategoriaTrocada={async () => {
-          await sincronizarOmie(false);
-          await recarregarReclassificacoes();
-        }}
+        onCategoriaTrocada={aposCategoriaTrocada}
       />
 
       {/* Decidir um ajuste reescreve a linha do EBITDA Ajustado dentro do blob —

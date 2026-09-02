@@ -11,6 +11,7 @@ import { chaveCelula } from "@/components/demonstracoes/Reclassificacoes";
 import { DetalheStatus, SegmentoStatus } from "@/components/demonstracoes/BarraStatus";
 import { variacao } from "@/lib/demonstracoes-schema";
 import { perguntar, type PayloadPergunta, type Pergunta } from "@/lib/perguntas";
+import { AcaoProposta } from "@/components/demonstracoes/AcaoProposta";
 import { usePessoasPJ } from "@/hooks/usePessoasPJ";
 import { pessoasNoTexto } from "@/lib/pessoasPJ";
 
@@ -131,13 +132,21 @@ async function copiar(texto: string, rotulo: string) {
  * popover faria a resposta falar de um número que um recálculo já mudou.
  */
 export function BlocoPerguntas({
-  perguntas, montarPayload, onMudou, compacto,
+  perguntas, montarPayload, onMudou, aposAplicar, compacto, sugestao,
 }: {
   perguntas: Pergunta[];
   montarPayload: () => (PayloadPergunta | null);
   onMudou: () => void | Promise<void>;
+  /* Aplicar uma correção mexe no Omie, e a demonstração continua mostrando o
+     número velho até recalcular. Quem sabe recalcular é a página — o mesmo
+     `sincronizarOmie(false)` que o drill-down já dispara depois do lápis. */
+  aposAplicar?: () => void | Promise<void>;
   /** dentro do balão de justificativa o cabeçalho já foi dito lá em cima */
   compacto?: boolean;
+  /* Uma pergunta que a MÁQUINA já sabe fazer sobre esta célula — hoje, a rubrica
+     recorrente que não veio. Vira um botão que manda a pergunta pronta, em vez
+     de esperar que alguém redija do zero o que a tela acabou de constatar. */
+  sugestao?: { rotulo: string; pergunta: string };
 }) {
   const [texto, setTexto] = useState("");
   const [enviando, setEnviando] = useState(false);
@@ -148,15 +157,18 @@ export function BlocoPerguntas({
   const mapaPessoas = usePessoasPJ();
   const respostaDe = (q: Pergunta) => pessoasNoTexto(mapaPessoas, q.resposta);
 
-  const enviar = async () => {
-    const p = texto.trim();
+  /* `pronta` existe para o botão da sugestão não depender do estado da caixa:
+     `setTexto` não teria efeito antes deste mesmo tick, e a pergunta sairia
+     vazia. Quem digitou continua mandando o que digitou. */
+  const enviar = async (pronta?: string) => {
+    const p = (pronta ?? texto).trim();
     if (p.length < 3) { toast.error("Escreva a pergunta."); return; }
     const payload = montarPayload();
     if (!payload) { toast.error("Não consegui identificar esta célula no esquema da demonstração."); return; }
     setEnviando(true);
     try {
       await perguntar({ ...payload, pergunta: p });
-      setTexto("");
+      if (!pronta) setTexto("");
       await onMudou();
     } catch (e) {
       toast.error("Não consegui responder: " + (e instanceof Error ? e.message : String(e)));
@@ -255,27 +267,62 @@ export function BlocoPerguntas({
                   Lidos {q.dados.lancamentos} lançamento(s) do Omie
                   {!!q.dados.contrapartes && ` · ${q.dados.contrapartes} contraparte(s)`}
                   {!!q.dados.omitidos && ` · ${q.dados.omitidos} fora do recorte enviado`}
+                  {/* A varredura larga também é prova: quem lê vê que a IA
+                      procurou "paytime" no mês INTEIRO, e não só nesta célula. */}
+                  {!!q.dados.busca?.length && (
+                    <> · procurou “{q.dados.busca.join("”, “")}” no mês todo
+                      {typeof q.dados.encontrados === "number" && ` (${q.dados.encontrados} achado(s))`}</>
+                  )}
                 </div>
               )}
+
+              {/* A correção proposta — ou o recibo do que já foi feito com ela. */}
+              <div className="pl-[18px]">
+                <AcaoProposta
+                  pergunta={q}
+                  onMudou={onMudou}
+                  aposAplicar={aposAplicar}
+                  promover={() => promover(q)}
+                />
+              </div>
             </div>
           ))}
         </div>
       )}
 
       <div className={cn("px-4 py-3", !!perguntas.length && "border-t border-border")}>
+        {/* A pergunta que a máquina já sabe fazer, a um clique. Fica ACIMA da
+            caixa, e não pré-preenchendo ela: pré-preencher apagaria o que a
+            pessoa estivesse escrevendo e esconderia que há duas coisas ali. */}
+        {sugestao && !perguntas.length && (
+          <button
+            onClick={() => enviar(sugestao.pergunta)}
+            disabled={enviando}
+            title={sugestao.pergunta}
+            className="mb-2 inline-flex items-center gap-1.5 rounded-md border border-amber-300 bg-amber-50 px-2.5 py-1 text-[11.5px] font-medium text-amber-900 transition hover:bg-amber-100 disabled:opacity-50"
+          >
+            {enviando
+              ? <Loader2 className="h-3 w-3 animate-spin" />
+              : <Sparkles className="h-3 w-3" />}
+            {sugestao.rotulo}
+          </button>
+        )}
         <textarea
           value={texto}
           onChange={(e) => setTexto(e.target.value)}
           onKeyDown={(e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) enviar(); }}
           rows={perguntas.length ? 2 : 3}
+          /* O exemplo mudou junto com o que a caixa faz: pedir conserto é o uso
+             que ninguém descobre sozinho, porque durante meses aqui só se
+             perguntava. O de entender continua logo abaixo, no repique. */
           placeholder={perguntas.length
-            ? "Repicar — a resposta anterior vai junto…"
-            : "Ex.: teve reajuste de 4 pessoas do comercial em julho, por que não subiu?"}
+            ? "Repicar, ou pedir para consertar — a resposta anterior vai junto…"
+            : "Pergunte (“por que não subiu?”) ou peça o conserto (“isso é da Paytime, deveria ser markup — corrija”)"}
           className="w-full resize-y rounded-md border border-input bg-background px-2.5 py-2 text-[12px] leading-relaxed focus:outline-none focus:ring-1 focus:ring-ring"
         />
         <div className="mt-2 flex items-center gap-2">
           <button
-            onClick={enviar}
+            onClick={() => enviar()}
             disabled={enviando}
             className="inline-flex items-center gap-1 rounded-md bg-primary px-2.5 py-1 text-[11px] font-medium text-primary-foreground transition hover:opacity-90 disabled:opacity-50"
           >
@@ -284,9 +331,12 @@ export function BlocoPerguntas({
               : <><MessageCircleQuestion className="h-3 w-3" /> Perguntar</>}
           </button>
           {/* Sem isto a resposta passaria por verdade contábil. Ela é leitura dos
-              lançamentos — o Omie diz QUEM e QUANTO, nunca POR QUÊ. */}
+              lançamentos — o Omie diz QUEM e QUANTO, nunca POR QUÊ. E a segunda
+              frase existe porque agora há um botão que mexe no ERP: quem lê tem
+              de saber que a correção é PROPOSTA, e que aplicar é decisão dele. */}
           <span className="text-[10px] leading-snug text-muted-foreground">
             Responde pelos lançamentos do Omie desta célula e dos meses vizinhos. Confira antes de levar ao tracker.
+            Ao pedir conserto, procura no mês inteiro e propõe a correção — quem aplica é você.
           </span>
         </div>
       </div>
@@ -299,7 +349,7 @@ export function BlocoPerguntas({
  * ============================================================ */
 
 export function MarcaPerguntas({
-  rubrica, mes, valorCelula, perguntas, montarPayload, onMudou,
+  rubrica, mes, valorCelula, perguntas, montarPayload, onMudou, aposAplicar, sinal,
 }: {
   rubrica: string;
   mes: string;
@@ -307,6 +357,11 @@ export function MarcaPerguntas({
   perguntas: Pergunta[];
   montarPayload: () => (PayloadPergunta | null);
   onMudou: () => void | Promise<void>;
+  aposAplicar?: () => void | Promise<void>;
+  /* Um fato que a tela CONSTATOU sobre esta célula — hoje, a rubrica recorrente
+     que não veio. Não vira uma segunda marca: acende esta, que já estava aqui.
+     `pergunta` é o que o botão de um clique manda para a IA. */
+  sinal?: { texto: string; pergunta: string; rotulo: string };
 }) {
   const [aberto, setAberto] = useState(false);
   /* Só monta o Popover no primeiro clique — mesma razão do lápis de valor
@@ -321,18 +376,21 @@ export function MarcaPerguntas({
       /* A célula inteira abre o drill-down de lançamentos. Sem isto, perguntar
          abriria também a gaveta por baixo. */
       onClick={(e) => { e.stopPropagation(); if (!montado) { setMontado(true); setAberto(true); } }}
-      title={tem ? tituloPerguntas(perguntas)! : "Perguntar sobre este valor"}
+      title={[sinal?.texto, tem ? tituloPerguntas(perguntas)! : "Perguntar sobre este valor"]
+        .filter(Boolean).join(" · ")}
       /* Sem pergunta o "?" é `invisible`, não `hidden`: some da vista e do clique,
          mas continua ocupando o espaço, então o número não dança quando o mouse
-         entra e sai da linha. */
+         entra e sai da linha.
+         Com sinal ele acende — é a única maneira de a constatação virar algo que
+         se enxerga varrendo a grade, sem uma marca a mais em cada célula. */
       className={cn(
         "inline-flex h-[18px] w-[18px] shrink-0 items-center justify-center rounded-sm transition hover:bg-black/10",
-        tem
-          ? "text-indigo-700"
+        tem ? "text-indigo-700"
+          : sinal ? "text-amber-600"
           : "invisible text-muted-foreground/70 group-hover/linha:visible",
       )}
     >
-      <MessageCircleQuestion strokeWidth={tem ? 2.5 : 2.25} className="h-3.5 w-3.5" />
+      <MessageCircleQuestion strokeWidth={tem || sinal ? 2.5 : 2.25} className="h-3.5 w-3.5" />
       {perguntas.length > 1 && (
         <span className="ml-px text-[8px] font-bold leading-none text-indigo-700">{perguntas.length}</span>
       )}
@@ -354,7 +412,20 @@ export function MarcaPerguntas({
             Na tela: <span className="num font-medium text-foreground">{valorExato(valorCelula)}</span>
           </div>
         </div>
-        <BlocoPerguntas perguntas={perguntas} montarPayload={montarPayload} onMudou={onMudou} />
+        {/* O fato, antes da caixa de escrever: quem abriu o "?" âmbar abriu por
+            causa dele, e a pergunta pronta logo abaixo é a resposta natural. */}
+        {sinal && (
+          <div className="border-b border-amber-200 bg-amber-50 px-4 py-2 text-[10.5px] leading-relaxed text-amber-900">
+            {sinal.texto}
+          </div>
+        )}
+        <BlocoPerguntas
+          perguntas={perguntas}
+          montarPayload={montarPayload}
+          onMudou={onMudou}
+          aposAplicar={aposAplicar}
+          sugestao={sinal ? { rotulo: sinal.rotulo, pergunta: sinal.pergunta } : undefined}
+        />
       </PopoverContent>
     </Popover>
   );

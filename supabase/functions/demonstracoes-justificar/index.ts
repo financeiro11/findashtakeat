@@ -52,6 +52,24 @@ const LOTE = 12;
 /** Contrapartes citáveis por célula. Acima disso vira lista de compras. */
 const MAX_DRIVERS = 6;
 
+/* A história da rubrica, calculada no cliente (`src/lib/serieRubrica.ts`) e
+   trafegada só como NÚMERO. A frase é montada aqui, com os mesmos formatadores
+   dos drivers: sinal redigido em dois lugares diverge no primeiro ajuste que
+   alguém fizer num deles. */
+type SerieResumo = {
+  janela: number;
+  meses: number;
+  mediana: number;
+  mad: number;
+  z: number | null;
+  extremo: "maior" | "menor" | null;
+  recorrente: boolean;
+  ausente: boolean;
+  zerada: boolean;
+  ultimoMes: string | null;
+  ultimoValor: number | null;
+};
+
 type Celula = {
   rubrica: string;
   valor: number | null;
@@ -65,6 +83,10 @@ type Celula = {
      devolvia zero contraparte e o comentário saía dizendo que o Omie não
      explicava a variação — em 59% dos casos. */
   fontes?: string[];
+  /* Por que a célula entrou na lista. Ausente nas chamadas de versões antigas
+     da tela — nesse caso vale a régua de sempre. */
+  motivo?: "variacao" | "ausencia" | "atipica";
+  serie?: SerieResumo | null;
 };
 
 type Driver = {
@@ -166,6 +188,15 @@ REGRAS
    claro que o resto não tem lastro nos lançamentos. Não invente o resto, e não
    encha o comentário de instruções de conferência — quem quiser o detalhe clica
    na célula e vê os lançamentos.
+9. RUBRICA QUE SUMIU (sinal "ausencia_recorrente"): o comentário é sobre o que
+   FALTOU, não sobre uma queda. Diga que a linha não veio, de quanto ela
+   costumava ser, e cite quem lançava nela no mês anterior — são os drivers com
+   movimento "saiu". A causa é hipótese: "pode ter caído em outra rubrica" é o
+   mais longe que você pode ir. Nunca escreva que a empresa deixou de ter aquela
+   receita ou aquele custo.
+10. O campo "historico" é contexto para você ESCREVER, não um aviso. Use quando
+   ajudar a dimensionar ("é o maior valor dos últimos 12 meses", "costuma ficar
+   em torno de X"). Não o recite inteiro, e não o transforme em alerta.
 `.trim();
 
 /* ============================================================
@@ -236,7 +267,63 @@ function montarSinais(c: Celula, drivers: Driver[], deltaOmie: number, deltaOrie
   if (c.valorAnterior == null) {
     sinais.push({ codigo: "sem_anterior", detalhe: "Não havia valor no mês anterior — a variação é de base zero." });
   }
+  sinais.push(...sinaisDaSerie(c));
   return sinais;
+}
+
+/**
+ * As suspeitas que só a HISTÓRIA da rubrica levanta — as que um par de meses
+ * não consegue ver.
+ *
+ * Vão para os `sinais`, e não para o texto do prompt, porque são exatamente o
+ * que a caixa âmbar da célula existe para mostrar: possível erro de lançamento.
+ * O que é só CONTEXTO de redação ("é o maior valor dos últimos 12 meses") entra
+ * pelo `historico` do payload, sem acender aviso nenhum.
+ */
+function sinaisDaSerie(c: Celula): { codigo: string; detalhe: string }[] {
+  const s = c.serie;
+  if (!s) return [];
+  const out: { codigo: string; detalhe: string }[] = [];
+
+  if (c.motivo === "ausencia") {
+    const quantos = s.meses >= s.janela
+      ? `nos ${s.janela} meses anteriores`
+      : `em ${s.meses} dos ${s.janela} meses anteriores`;
+    const ultimo = s.ultimoMes && s.ultimoValor != null
+      ? ` — o último foi ${brl(s.ultimoValor)} em ${rotuloMes(s.ultimoMes)}`
+      : "";
+    out.push({
+      codigo: "ausencia_recorrente",
+      detalhe:
+        `Esta rubrica teve valor ${quantos}, mediana ${brl(s.mediana)}${ultimo}, e neste mês está `
+        + `${s.zerada ? "zerada" : "sem linha nenhuma"}. Confira se o lançamento caiu em outra rubrica, `
+        + `se a categoria ficou fora do DE-PARA ou se de fato não houve movimento.`,
+    });
+  }
+
+  /* Atípico contra a própria série: a variação em % é pequena, mas a rubrica
+     não costuma se mexer tanto. Sem esta frase o comentário sairia dizendo
+     "variou 5%" — que é justamente o motivo pelo qual ninguém olhava. */
+  if (c.motivo === "atipica" && s.z != null && s.mad > 0) {
+    out.push({
+      codigo: "atipico_na_serie",
+      detalhe:
+        `A variação é pequena em percentual, mas grande para esta rubrica: ela costuma ficar em `
+        + `${brl(s.mediana)} e oscilar cerca de ${brl(s.mad)}.`,
+    });
+  }
+  return out;
+}
+
+/** O contexto de série que a IA usa para ESCREVER — não acende aviso. */
+function historicoDoPrompt(s: SerieResumo | null | undefined) {
+  if (!s || s.meses < 2) return null;
+  return {
+    mesesComValor: `${s.meses} de ${s.janela} meses anteriores`,
+    tipico: brl(s.mediana),
+    oscilacaoTipica: s.mad > 0 ? brl(s.mad) : null,
+    posicao: s.extremo ? `é o ${s.extremo} valor dos últimos ${s.janela} meses` : null,
+  };
 }
 
 /**
@@ -418,6 +505,12 @@ Deno.serve(async (req) => {
       const direcao = deltaO > 0 ? "subiu" : "caiu";
       const pct = pctTexto(c.deltaPct);
 
+      /* Numa ausência em que o mês anterior TAMBÉM estava vazio o delta é zero,
+         e "caiu 0" não é frase. Quem carrega o fato aí é a série, não o par. */
+      const movimento = c.motivo === "ausencia" && Math.abs(deltaO) < 1
+        ? `não veio neste mês (a rubrica costuma trazer ${brl(c.serie?.mediana ?? 0)})`
+        : `${direcao} ${abrev(Math.abs(deltaO))}${pct ? ` (${pct})` : ""}`;
+
       return {
         celula: c,
         drivers,
@@ -430,7 +523,8 @@ Deno.serve(async (req) => {
           valorMesAnterior: brl(anteriorO),
           // Já redigido, com o sinal resolvido: o modelo escrevia "caiu -23,0k"
           // quando recebia "-23,0k" e a instrução de falar em subiu/caiu.
-          movimento: `${direcao} ${abrev(Math.abs(deltaO))}${pct ? ` (${pct})` : ""}`,
+          movimento,
+          historico: historicoDoPrompt(c.serie),
           cobertura: cobertura == null ? null : `${Math.round(cobertura * 100)}% da variação está explicada pelos drivers abaixo`,
           drivers: drivers.map((d) => ({
             contraparte: d.contraparte,

@@ -3,7 +3,7 @@ import { useSearchParams } from "react-router-dom";
 import {
   Plus, Trash2, ChevronDown, ChevronRight, Filter, X, LayoutGrid,
   Table as TableIcon, AlertTriangle, MoreHorizontal,
-  Search, GripVertical, Pencil, Palette, Check, CheckCircle2, Clock, ListChecks, Target, BarChart3, History, Pause, Zap, Tags, CalendarClock,
+  Search, GripVertical, Pencil, Palette, Check, Target, BarChart3, History, Pause, Zap, Tags, CalendarClock,
 } from "lucide-react";
 import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger,
@@ -642,13 +642,8 @@ export default function Tarefas() {
     [rows],
   );
 
-  const total = baseForCounts.length;
-  const emAnd = baseForCounts.filter(r => ["Em andamento", "Acompanhamento", "Revisão", "Tasks - RPA"].includes(r.status)).length;
-  const concl = baseForCounts.filter(r => r.status === "Concluído").length;
   // Conta apenas tarefas atrasadas cujo status está visível nas colunas (evita contar registros de status legados/órfãos que não aparecem na UI)
   const atras = baseForCounts.filter(r => isAtrasada(r) && COLUMNS.includes(r.status)).length;
-  const pctEm = total ? Math.round((emAnd / total) * 100) : 0;
-  const META_CONCLUIDAS = 22;
 
   const grouped = useMemo(() => {
     const g: Record<string, Tarefa[]> = {};
@@ -766,7 +761,7 @@ export default function Tarefas() {
     setCreating(true);
   };
 
-  // ---------- Header com KPIs + chips ----------
+  // ---------- Header com chips ----------
   return (
     <div className="space-y-4 p-5">
       <div className="sticky top-0 z-30 -mx-5 -mt-5 px-5 pt-5 pb-4 bg-background border-b shadow-sm space-y-4">
@@ -790,16 +785,6 @@ export default function Tarefas() {
           )}
         </div>
       </div>
-
-      {/* KPIs */}
-      {(view === "kanban" || view === "tabela") && (
-        <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
-          <KPI label="Total" value={total} hint={`${total} no escopo atual`} tone="foreground" icon={ListChecks} />
-          <KPI label="Em andamento" value={emAnd} hint={`${pctEm}% do total`} tone="warning" icon={Clock} progress={pctEm} />
-          <KPI label="Concluídas" value={concl} hint={`meta ${META_CONCLUIDAS}`} tone="success" icon={CheckCircle2} progress={META_CONCLUIDAS ? Math.min(100, Math.round((concl / META_CONCLUIDAS) * 100)) : 0} />
-          <KPI label="Atrasadas" value={atras} hint={atras ? "requerem ação" : "tudo em dia"} tone="destructive" icon={AlertTriangle} progress={total ? Math.round((atras / total) * 100) : 0} />
-        </div>
-      )}
 
       {/* Toolbar de chips */}
       <div className="flex flex-wrap items-center gap-2">
@@ -995,41 +980,6 @@ export default function Tarefas() {
         title="Editar Tarefa"
       />
     </div>
-  );
-}
-
-/* --------------------------- KPI --------------------------- */
-function KPI({ label, value, hint, tone, icon: Icon, progress }: {
-  label: string; value: number; hint: string;
-  tone: "foreground" | "warning" | "success" | "destructive";
-  icon: React.ComponentType<{ className?: string }>;
-  progress?: number;
-}) {
-  const toneCls: Record<string, { bg: string; fg: string; bar: string }> = {
-    foreground:  { bg: "bg-muted",            fg: "text-foreground",       bar: "bg-foreground/60" },
-    warning:     { bg: "bg-warning/15",       fg: "text-warning",          bar: "bg-warning" },
-    success:     { bg: "bg-success/15",       fg: "text-success",          bar: "bg-success" },
-    destructive: { bg: "bg-destructive/15",   fg: "text-destructive",      bar: "bg-destructive" },
-  };
-  const t = toneCls[tone];
-  return (
-    <Card className="flex items-center gap-3 border-border p-3">
-      <div className={cn("flex h-10 w-10 shrink-0 items-center justify-center rounded-lg", t.bg, t.fg)}>
-        <Icon className="h-5 w-5" />
-      </div>
-      <div className="min-w-0 flex-1">
-        <div className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">{label}</div>
-        <div className="num mt-0.5 text-2xl font-bold leading-none">{value}</div>
-        {hint && (
-          <div className="mt-1 text-[10px] text-muted-foreground">{hint}</div>
-        )}
-        {typeof progress === "number" && (
-          <div className="mt-1.5 h-1 w-full overflow-hidden rounded-full bg-secondary">
-            <div className={cn("h-full rounded-full transition-all", t.bar)} style={{ width: `${Math.min(100, Math.max(0, progress))}%` }} />
-          </div>
-        )}
-      </div>
-    </Card>
   );
 }
 

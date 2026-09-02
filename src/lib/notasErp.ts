@@ -105,11 +105,27 @@ export type ResumoNotas = {
   };
   gravidade: Array<{ gravidade: Gravidade; titulos: number; valor: number }>;
   situacoes: Array<{ situacao: SituacaoTitulo; titulos: number; valor: number }>;
+  /**
+   * O mês a mês, com as MESMAS seis fatias da barra do topo — em valor e em
+   * contagem. Até 01/09/2026 vinham só duas (`com_nota` e `sem_nota`) e a tela
+   * pintava todo o resto de "não verificado", o que virou mentira quando
+   * `so_comprovante` passou a existir. `cobertura` e `cobertura_titulos` vêm
+   * prontas do banco: a evolução se lê como número, não pela largura da barra.
+   */
   meses: Array<{
     mes: string; titulos: number; valor: number;
+    /** com_nota + comprovante_aceito — a mesma régua de `SITUACOES_COBERTAS` */
     com_nota: number; valor_com_nota: number;
+    /** sem_nota + anexo_suspeito (o `erro_leitura` vem separado, em `erro`) */
     sem_nota: number; valor_sem_nota: number;
-    pronta: number; nao_verificado: number;
+    /** pronta_para_enviar + enviado_aguardando */
+    pronta: number; valor_pronta: number;
+    espera: number; valor_espera: number;
+    comprovante: number; valor_comprovante: number;
+    erro: number; valor_erro: number;
+    nao_verificado: number; valor_nao_verificado: number;
+    valor_faltante: number;
+    cobertura: number | null; cobertura_titulos: number | null;
   }>;
   contas: Array<{
     conta: string; titulos: number; valor: number;
@@ -430,6 +446,150 @@ export function categoriasCriticas(r: ResumoNotas | null, minimo = 0): ResumoNot
   return r.categorias
     .filter((c) => c.valor_faltante > minimo)
     .sort((a, b) => b.valor_faltante - a.valor_faltante);
+}
+
+/* --------------------------- a evolução mensal --------------------------- */
+
+/**
+ * EM VALOR OU EM TÍTULOS — e as duas são verdade ao mesmo tempo.
+ *
+ * Medido em ago/26: 59,4% do dinheiro tem nota, e só 34,6% dos títulos. Não é
+ * contradição, é o retrato de onde está o controle — o que é grande está
+ * documentado, o que é pequeno não. Quem pergunta "estamos evoluindo?" precisa
+ * poder virar a chave: melhorar a cobertura em valor pode ser só uma nota grande
+ * que chegou, e melhorar em títulos é hábito.
+ */
+export type MedidaCobertura = "valor" | "titulos";
+
+/**
+ * O ESTADO DO MÊS, e ele existe para impedir a leitura errada mais provável.
+ *
+ * `competencia` é `coalesce(pagamento, vencimento, emissao)`: um título que vence
+ * em novembro cai em novembro, e é claro que ninguém tem a nota dele ainda. Sem
+ * esta marca, escolher o ano inteiro no filtro pinta out/26 a dez/26 de vermelho
+ * e a tela passa a acusar de descontrole o que é só o futuro — o mesmo erro,
+ * menor, vale para o mês corrente, que ainda está enchendo.
+ */
+export type EstadoMes = "fechado" | "em_curso" | "a_vencer";
+
+export type LinhaMes = {
+  mes: string;
+  estado: EstadoMes;
+  /** o denominador na medida escolhida: R$ exigível ou nº de títulos */
+  total: number;
+  coberto: number;
+  faltante: number;
+  cobertura: number | null;
+  /** pontos percentuais contra o mês anterior da lista; só entre meses FECHADOS */
+  delta: number | null;
+  /** as seis fatias da barra, na medida escolhida — somam `total` */
+  fatias: {
+    com_nota: number; pronta: number; espera: number;
+    comprovante: number; sem_nota: number; nao_verificado: number;
+  };
+  /** os dois números crus, sempre, para o rodapé da linha */
+  titulos: number;
+  valor: number;
+};
+
+/**
+ * A EVOLUÇÃO DA COBERTURA, mês a mês — a resposta a "estamos melhorando?".
+ *
+ * O veredito sai só dos meses FECHADOS. Incluir o mês corrente faria a frase
+ * anunciar uma queda todo dia 1º, quando o que aconteceu é que o mês começou; e
+ * incluir os meses a vencer faria a conta comparar despesa documentada com
+ * despesa que ainda nem foi paga.
+ *
+ * `hoje` entra por parâmetro porque um número que muda com o relógio da máquina
+ * não se testa.
+ */
+export function evolucaoMensal(
+  r: ResumoNotas | null,
+  medida: MedidaCobertura = "valor",
+  hoje = new Date(),
+): { linhas: LinhaMes[]; fechados: LinhaMes[]; frase: string } {
+  if (!r?.meses?.length) return { linhas: [], fechados: [], frase: "" };
+
+  const mesAtual = `${hoje.getUTCFullYear()}-${String(hoje.getUTCMonth() + 1).padStart(2, "0")}`;
+  const emValor = medida === "valor";
+  const n = (x: number | null | undefined) => Number(x) || 0;
+
+  const linhas: LinhaMes[] = r.meses.map((m) => {
+    const total = emValor ? n(m.valor) : n(m.titulos);
+    const coberto = emValor ? n(m.valor_com_nota) : n(m.com_nota);
+    return {
+      mes: m.mes,
+      estado: m.mes < mesAtual ? "fechado" : m.mes === mesAtual ? "em_curso" : "a_vencer",
+      total, coberto,
+      faltante: Math.max(0, total - coberto),
+      cobertura: total > 0 ? (100 * coberto) / total : null,
+      delta: null,
+      fatias: {
+        com_nota: coberto,
+        pronta: emValor ? n(m.valor_pronta) : n(m.pronta),
+        espera: emValor ? n(m.valor_espera) : n(m.espera),
+        comprovante: emValor ? n(m.valor_comprovante) : n(m.comprovante),
+        /* `erro_leitura` mora no vermelho junto com o que não tem nota: o ERP
+           recusou a consulta, então não há documento provado deste lado. */
+        sem_nota: emValor ? n(m.valor_sem_nota) + n(m.valor_erro) : n(m.sem_nota) + n(m.erro),
+        nao_verificado: emValor ? n(m.valor_nao_verificado) : n(m.nao_verificado),
+      },
+      titulos: n(m.titulos),
+      valor: n(m.valor),
+    };
+  });
+
+  /* O delta só liga mês fechado a mês fechado, e SEMPRE ao anterior imediato da
+     lista: pular um buraco compararia agosto com abril e chamaria isso de "mês
+     passado". Quando há buraco, a linha simplesmente não tem delta. */
+  for (let i = 1; i < linhas.length; i++) {
+    const a = linhas[i - 1], b = linhas[i];
+    if (a.estado === "fechado" && b.estado === "fechado" && a.cobertura !== null && b.cobertura !== null) {
+      b.delta = b.cobertura - a.cobertura;
+    }
+  }
+
+  const fechados = linhas.filter((l) => l.estado === "fechado" && l.cobertura !== null);
+  return { linhas, fechados, frase: fraseEvolucao(fechados, medida) };
+}
+
+/** A frase de veredito — em pontos percentuais, que é como se lê progresso. */
+function fraseEvolucao(fechados: LinhaMes[], medida: MedidaCobertura): string {
+  const unidade = medida === "valor" ? "em valor" : "em títulos";
+  if (!fechados.length) return "Nenhum mês fechado neste período — não há evolução para comparar ainda.";
+  if (fechados.length === 1) {
+    const u = fechados[0];
+    return `Só um mês fechado no período: ${mesCurto(u.mes)}, com ${pctStr(u.cobertura)} ${unidade}.`;
+  }
+
+  const ini = fechados[0], fim = fechados[fechados.length - 1];
+  const pp = (fim.cobertura ?? 0) - (ini.cobertura ?? 0);
+  const rumo = Math.abs(pp) < 0.05 ? "ficou no mesmo lugar"
+    : pp > 0 ? `subiu ${ppStr(pp)}` : `caiu ${ppStr(Math.abs(pp))}`;
+  let frase = `De ${mesCurto(ini.mes)} a ${mesCurto(fim.mes)} a cobertura ${unidade} ${rumo}`
+    + ` — ${pctStr(ini.cobertura)} para ${pctStr(fim.cobertura)}.`;
+
+  /* O ÚLTIMO PASSO, separado do trecho todo: uma série que caiu 20 pp em cinco
+     meses e subiu 4 no último conta duas histórias, e quem decide precisa das
+     duas. Com dois meses fechados as duas frases seriam a mesma. */
+  if (fechados.length > 2 && fim.delta !== null) {
+    const p = fim.delta;
+    frase += ` No último mês fechado (${mesCurto(fim.mes)}), ${
+      Math.abs(p) < 0.05 ? "sem mudança" : p > 0 ? `+${ppStr(p)}` : `−${ppStr(Math.abs(p))}`
+    } contra ${mesCurto(fechados[fechados.length - 2].mes)}.`;
+  }
+  return frase;
+}
+
+/** "2,2 pp" — a unidade de diferença entre dois percentuais. */
+export const ppStr = (n: number | null | undefined): string =>
+  n === null || n === undefined || Number.isNaN(n) ? "—" : `${Number(n).toFixed(1).replace(".", ",")} pp`;
+
+/** "2026-08" → o mês inteiro como período da tela. */
+export function periodoDoMes(mes: string): { de: string; ate: string } {
+  const [a, m] = String(mes).split("-").map(Number);
+  const fim = new Date(Date.UTC(a, m, 0));
+  return { de: `${mes}-01`, ate: fim.toISOString().slice(0, 10) };
 }
 
 /**

@@ -30,6 +30,34 @@
 //   salvos ao lado da resposta pelo mesmo motivo da justificativa: quem lê
 //   confere a conta sem sair da tela.
 //
+// E QUANDO O PEDIDO É DE CONSERTO
+//   "Certamente tem receita financeira aqui. É da Paytime, e deveria estar
+//    classificada como Receita Markup. Se estiver errado, conserte."
+//
+//   Isso não é pergunta: é um erro apontado por quem conhece a operação. Duas
+//   coisas mudam em relação ao caminho acima.
+//
+//   1. ONDE SE PROCURA. A célula do exemplo está ZERADA — o lançamento existe,
+//      mas caiu noutra linha, que é o que significa "classificado errado".
+//      Procurar dentro da rubrica perguntada é procurar onde sabidamente não
+//      está. Uma triagem curta extrai os NOMES da frase ("paytime") e
+//      `demonstracoes_lancamentos_busca` varre o mês inteiro, em todas as
+//      rubricas e inclusive fora do DE-PARA.
+//   2. O QUE SE DEVOLVE. Junto da resposta vai uma PROPOSTA (`acao`): quais
+//      títulos mover, para qual categoria, e por quê. Proposta, não execução —
+//      quem aplica é a pessoa, num clique, na própria célula.
+//
+//   NADA AQUI ESCREVE NO OMIE. A alteração continua inteira em
+//   `omie-trocar-categoria` (altera no ERP → confirma → espelha no cache →
+//   grava trilha), chamada pela tela com os títulos desta proposta. Uma segunda
+//   porta para o ERP seria uma segunda cópia daquela regra, e a cópia diverge na
+//   primeira vez que alguém editar só um dos lados.
+//
+//   A peneira que sustenta tudo isso é `conferirAcao`: um `cod_titulo` é um
+//   número de oito dígitos, exatamente o que um modelo produz plausível e
+//   errado. Nenhum título é aceito de palavra — todos são procurados no mesmo
+//   conjunto que foi enviado no prompt.
+//
 // Body: {
 //   tipo:'dre'|'dfc', rubrica, mes:'Jul-26', mesAnterior:'Jun-26',
 //   pergunta, fontes:string[], valor, valorAnterior, despesa, travado,
@@ -65,6 +93,37 @@ const MAX_DRIVERS = 40;
 const MAX_LANCAMENTOS = 150;
 /** Trocas anteriores da mesma célula que entram como contexto do fio. */
 const MAX_FIO = 6;
+
+/* A BUSCA NO MÊS INTEIRO — a peça que faz o chat conseguir consertar.
+ *
+ * Os blocos acima só enxergam a rubrica da célula, e é justamente onde o
+ * lançamento procurado NÃO está: quando alguém diz "certamente tem receita
+ * financeira aqui, é da Paytime", a célula está zerada porque o dinheiro caiu
+ * noutra linha. `demonstracoes_lancamentos_busca` atravessa rubricas (e o que
+ * está fora do DE-PARA) atrás dos nomes que a pergunta citou.
+ *
+ * Dois recortes separados de propósito, para um não expulsar o outro: o que casa
+ * com os NOMES da pergunta, e o que compõe a própria célula. Num mês de "Pessoal"
+ * as 300 linhas da rubrica engoliriam as três da Paytime se dividissem o teto. */
+const MAX_BUSCA_NOMES = 150;
+const MAX_BUSCA_CELULA = 120;
+/** Termos que a triagem pode pedir. Mais que isso é a pergunta inteira virando busca. */
+const MAX_TERMOS = 6;
+/** Títulos que uma proposta pode mexer de uma vez. */
+const MAX_ITENS_ACAO = 40;
+
+/* A triagem é uma SEGUNDA chamada de IA, e ela entra antes do trabalho principal.
+ * O worker morre por volta dos 150s sem exceção que dê para pegar — com os 90s
+ * padrão nas duas, a soma estoura e a pessoa recebe 546 depois de dois minutos e
+ * meio. Vinte segundos bastam para uma classificação de duas linhas, e o que
+ * sobra continua sendo do texto, que é o que demora. */
+const PRAZO_TRIAGEM_MS = 20_000;
+
+/* `cGrupo` do movimento — espelha `grupoAlteravel` de `_shared/omie.ts`, do mesmo
+   jeito que `src/lib/loteCategoria.ts` espelha na tela. A cópia existe para NÃO
+   PROPOR o que o ERP vai recusar: previsão de OS/contrato tem a categoria no
+   documento de origem, e perna bancária não tem classificação própria. */
+const GRUPOS_ALTERAVEIS = new Set(["CONTA_A_PAGAR", "CONTA_A_RECEBER"]);
 
 type Corpo = {
   tipo?: string;
@@ -173,6 +232,88 @@ mostram parte dela; "baixa" quando você está inferindo ou quando o dado não
 alcança a pergunta.
 `.trim();
 
+/* ============================================================
+ *  A triagem: pergunta ou pedido de conserto?
+ * ============================================================
+ * Chamada curta e barata que roda ANTES de buscar qualquer coisa, e que existe
+ * por dois motivos independentes:
+ *
+ *   • dizer O QUE PROCURAR. A busca no mês inteiro precisa de termos; sem eles a
+ *     alternativa seria mandar o mês inteiro para o prompt (milhares de linhas)
+ *     ou não procurar nada. É a pergunta que sabe o nome — "é da paytime".
+ *   • dizer se a pessoa quer CONSERTAR. Só nesse caso o plano de contas entra no
+ *     prompt e a IA ganha permissão de propor. Oferecer uma alteração no ERP a
+ *     quem só fez uma pergunta é empurrar mudança para quem não pediu.
+ */
+const REGRAS_TRIAGEM = `
+Você lê UMA frase escrita pelo time financeiro em cima de uma célula da DRE/DFC e
+devolve duas coisas. Não responda a pergunta, não explique nada.
+
+1. intencao:
+   • "correcao" — a pessoa afirma que algo está errado e quer que seja mudado
+     ("está classificado errado, conserte", "isso aqui é markup, troca",
+     "esse lançamento não devia estar nessa linha").
+   • "pergunta" — a pessoa quer entender ("por que caiu?", "o que é isso?",
+     "quem se mexeu aqui?"). Na dúvida, "pergunta": é a opção que não mexe em nada.
+
+2. buscar: os NOMES PRÓPRIOS citados na frase que valha procurar nos lançamentos
+   do mês — fornecedor, cliente, pessoa, produto, categoria. Um por item, sem
+   artigo e sem sobrenome de empresa ("paytime", não "a Paytime Ltda").
+   • Nome com menos de 3 letras não serve: casa dentro de qualquer palavra.
+   • Palavra comum do vocabulário contábil ("receita", "despesa", "imposto",
+     "custo", "markup") NÃO é nome próprio — deixe de fora, ela traria o mês
+     inteiro de volta.
+   • Nenhum nome citado? Devolva a lista vazia. É uma resposta legítima.
+`.trim();
+
+/* ============================================================
+ *  Quando o pedido é de conserto
+ * ============================================================
+ * Só entra no prompt quando a triagem disse "correcao". A regra que paga o preço
+ * é a A: o modelo não INVENTA um título. Ele escolhe entre os que recebeu, e o
+ * servidor confere um a um contra a mesma lista antes de deixar a proposta chegar
+ * na tela — uma alteração no ERP não pode nascer de um número alucinado.
+ */
+const REGRAS_CORRECAO = `
+
+VOCÊ TAMBÉM PODE PROPOR A CORREÇÃO
+
+Quem escreveu não está pedindo explicação: está dizendo que algo está errado e
+quer que seja consertado. Além de responder, preencha \`acao\`.
+
+A. SÓ PROPONHA O QUE ESTÁ NOS DADOS. Todo cod_titulo da proposta tem de ser
+   copiado, exatamente, de \`lancamentosEncontrados\`. Título que não está nessa
+   lista é recusado pelo servidor antes de chegar à tela — e a pessoa fica lendo
+   uma promessa que não aconteceu.
+B. TODOS os lançamentos que se encaixam, não só o primeiro. Erro de classificação
+   quase nunca é de um lançamento só: a mesma assinatura cai na mesma categoria
+   errada seis vezes no mesmo mês.
+C. \`categoria_codigo\` sai de \`categoriasDisponiveis\`, escolhida pela RUBRICA de
+   destino: quem corrige está mirando a linha da demonstração, não o código do
+   plano de contas.
+D. Só entra na proposta lançamento com \`alteravel: true\`. Previsão de ordem de
+   serviço e perna bancária não têm categoria própria; para esses a resposta
+   explica o que houve e a ação vira "tarefa", ou nenhuma.
+E. NA DÚVIDA, NÃO PROPONHA — deixe \`acao\` nula. Se você não achou o lançamento
+   que a pessoa descreve, diga o que procurou e o que encontrou. "Não achei
+   nenhum lançamento da Paytime em Ago/26; os quatro que existem estão em julho,
+   já em Receita Markup" é uma resposta excelente. Uma proposta errada custa uma
+   alteração no ERP e uma conversa com a contabilidade.
+F. Quando a correção não é de classificação — o período está fechado no Omie,
+   falta a nota, é dúvida da contabilidade — use \`tipo: "tarefa"\`. Vira uma linha
+   do checklist do fechamento, com o contexto já escrito no título.
+G. Quando o problema é o NOME e não a linha ("isso aqui é o Café dos eventos"),
+   use \`tipo: "apelido"\`.
+H. \`resumo\` é a linha que a pessoa lê antes de clicar: o que vai acontecer, com
+   quantos lançamentos e quanto dinheiro. \`motivo\` é uma frase que fica gravada na
+   trilha do Omie — quem abrir o histórico daqui a seis meses tem que entender por
+   que aquele lançamento mudou de lugar.
+
+A RESPOSTA CONTINUA SENDO RESPOSTA: diga o que encontrou e o que a proposta faz.
+Não escreva "clique em aplicar" nem "vou corrigir" — o botão está logo abaixo do
+seu texto, e quem aplica é quem está lendo.
+`;
+
 /**
  * A falha da IA em português, com o que o provedor disse junto.
  *
@@ -191,6 +332,170 @@ function motivoDaIA(e: unknown): string {
   }
   return `A IA não respondeu${err?.status ? ` (${err.status})` : ""}: ${err?.message ?? String(e)}`
     + (detalhe ? ` — ${detalhe}` : "");
+}
+
+/* ============================================================
+ *  A conferência da proposta
+ * ============================================================
+ * ESTA É A PARTE QUE IMPEDE UMA ALUCINAÇÃO DE VIRAR ALTERAÇÃO NO ERP.
+ *
+ * O modelo escreve texto; um `cod_titulo` é um número de oito dígitos, que é
+ * exatamente o tipo de coisa que um modelo produz plausível e errada. Por isso
+ * nada do que ele devolve é aceito de palavra: cada título é procurado no MESMO
+ * conjunto que foi enviado no prompt, e o que não está lá é recusado com o motivo
+ * escrito. O mesmo vale para a categoria de destino, que tem de existir em
+ * `omie_categorias_disponiveis` (fora as inativas e as totalizadoras).
+ *
+ * O que sobra é uma proposta que a tela pode desenhar item a item — e que a
+ * pessoa confere antes de clicar, porque quem aplica é ela.
+ */
+
+type Candidato = {
+  cod_titulo: string;
+  rubrica: string | null;
+  mes: string;
+  data: string | null;
+  contraparte: string | null;
+  documento: string | null;
+  categoria: string | null;
+  codigo: string | null;
+  grupo: string | null;
+  valor: number;
+  observacao: string | null;
+};
+
+type CategoriaOmie = {
+  codigo: string;
+  descricao: string;
+  despesa: boolean;
+  receita: boolean;
+  rubrica_dre: string | null;
+  rubrica_dfc: string | null;
+  usos: number;
+};
+
+/** O que o modelo devolveu — ainda sem conferência nenhuma. */
+type AcaoCrua = {
+  tipo?: string | null;
+  resumo?: string | null;
+  motivo?: string | null;
+  categoria_codigo?: string | null;
+  cod_titulos?: string[] | null;
+  contraparte_nome?: string | null;
+  apelido?: string | null;
+  tarefa_titulo?: string | null;
+  tarefa_responsavel?: string | null;
+};
+
+const texto = (v: unknown, max: number): string => String(v ?? "").replace(/\s+/g, " ").trim().slice(0, max);
+
+/** Por que este título não pode ser mexido — na língua de quem vai ler. */
+function motivoNaoAlteravel(grupo: string | null): string {
+  if (grupo?.startsWith("PREVISAO")) {
+    return "previsão gerada por ordem de serviço/contrato — a categoria vem do documento de origem";
+  }
+  if (grupo?.startsWith("CONTA_CORRENTE")) return "perna bancária do título — não tem classificação própria";
+  return "tipo de lançamento sem categoria alterável pelo Hub";
+}
+
+function conferirAcao(
+  crua: AcaoCrua | null | undefined,
+  candidatos: Map<string, Candidato>,
+  categorias: CategoriaOmie[],
+  tipo: "dre" | "dfc",
+): Record<string, unknown> | null {
+  const kind = texto(crua?.tipo, 40);
+  if (!crua || !kind) return null;
+
+  const resumo = texto(crua.resumo, 300) || null;
+  const motivo = texto(crua.motivo, 400) || null;
+
+  /* Tarefa e apelido não tocam no ERP: a validação é só de forma, e quem escreve
+     de fato é a tela (`salvarApelido` e a RPC do fechamento têm as regras deles,
+     e duplicá-las aqui criaria a segunda cópia que diverge). */
+  if (kind === "tarefa") {
+    const titulo = texto(crua.tarefa_titulo, 220);
+    if (titulo.length < 3) return null;
+    return { tipo: "tarefa", resumo, motivo, titulo, responsavel: texto(crua.tarefa_responsavel, 80) || null };
+  }
+
+  if (kind === "apelido") {
+    const nome = texto(crua.contraparte_nome, 200);
+    const apelido = texto(crua.apelido, 120);
+    if (!nome || apelido.length < 2) return null;
+    /* O CNPJ, quando algum dos lançamentos lidos souber dele: é identidade de
+       verdade, e o cadastro casa por documento antes de casar por nome. */
+    const chave = nome.toLowerCase();
+    const doc = [...candidatos.values()]
+      .find((c) => (c.contraparte ?? "").toLowerCase().includes(chave) && c.documento)?.documento ?? null;
+    return { tipo: "apelido", resumo, motivo, nome, apelido, documento: doc };
+  }
+
+  if (kind !== "trocar_categoria") return null;
+
+  const destino = categorias.find((c) => c.codigo === texto(crua.categoria_codigo, 40));
+  // Categoria inventada, inativa ou totalizadora: a proposta inteira cai. Sem
+  // destino não há o que propor, e adivinhar qual ele quis dizer é pior.
+  if (!destino) return null;
+
+  const rubricaDestino = (tipo === "dre" ? destino.rubrica_dre : destino.rubrica_dfc) ?? null;
+
+  const itens: Record<string, unknown>[] = [];
+  const recusados: Record<string, unknown>[] = [];
+  const vistos = new Set<string>();
+  let total = 0;
+
+  for (const bruto of crua.cod_titulos ?? []) {
+    const cod = texto(bruto, 40);
+    if (!cod || vistos.has(cod)) continue;
+    vistos.add(cod);
+
+    const c = candidatos.get(cod);
+    if (!c) {
+      recusados.push({ cod_titulo: cod, motivo: "não está entre os lançamentos lidos" });
+      continue;
+    }
+    if (!GRUPOS_ALTERAVEIS.has(String(c.grupo ?? ""))) {
+      recusados.push({ cod_titulo: cod, contraparte: c.contraparte, motivo: motivoNaoAlteravel(c.grupo) });
+      continue;
+    }
+    if (c.codigo === destino.codigo) {
+      recusados.push({ cod_titulo: cod, contraparte: c.contraparte, motivo: "já está nessa categoria" });
+      continue;
+    }
+    if (itens.length >= MAX_ITENS_ACAO) {
+      recusados.push({ cod_titulo: cod, contraparte: c.contraparte, motivo: `acima do teto de ${MAX_ITENS_ACAO} por proposta` });
+      continue;
+    }
+
+    total += c.valor;
+    itens.push({
+      cod_titulo: c.cod_titulo,
+      data: c.data,
+      mes: c.mes,
+      contraparte: c.contraparte,
+      valor: c.valor,
+      grupo: c.grupo,
+      categoria_codigo: c.codigo,
+      categoria_descricao: c.categoria,
+      rubrica_atual: c.rubrica,
+    });
+  }
+
+  /* Proposta sem item nenhum ainda vai para a tela, com os motivos: "a IA quis
+     mover quatro títulos e nenhum pode ser mexido" é informação, e engolir isso
+     deixaria a resposta prometendo uma correção que sumiu no caminho. É a tela
+     que decide não desenhar o botão. */
+  return {
+    tipo: "trocar_categoria",
+    resumo,
+    motivo,
+    categoria: { codigo: destino.codigo, descricao: destino.descricao },
+    rubrica_destino: rubricaDestino,
+    itens,
+    recusados,
+    total,
+  };
 }
 
 /* ============================================================ */
@@ -230,6 +535,47 @@ Deno.serve(async (req) => {
 
     const temAnterior = /^[A-Za-z]{3}-\d{2}$/.test(mesAnterior);
     const meses = temAnterior ? [mesAnterior, mes] : [mes];
+
+    /* --- 0) Triagem: entender ou consertar? -------------------------------
+       Disparada aqui e colhida depois do passo 3: ela só depende da FRASE, então
+       roda enquanto o banco devolve o fio, os drivers e os lançamentos. Esperar
+       por ela primeiro somaria os dois tempos por nada. */
+    const triagemP = (async () => {
+      try {
+        const t = await generateJSON<{ intencao?: string; buscar?: string[] }>({
+          temperature: 0,
+          timeoutMs: PRAZO_TRIAGEM_MS,
+          maxTokens: 300,
+          responseSchema: {
+            type: "object",
+            properties: {
+              intencao: { type: "string", enum: ["pergunta", "correcao"] },
+              buscar: { type: "array", items: { type: "string" } },
+            },
+            required: ["intencao", "buscar"],
+          },
+          messages: [
+            { role: "system", content: REGRAS_TRIAGEM },
+            {
+              role: "user",
+              content: `Célula: "${rubrica}" em ${rotuloMes(mes)} da ${tipo.toUpperCase()}.\nFrase: ${pergunta}`,
+            },
+          ],
+        });
+        return {
+          correcao: t?.intencao === "correcao",
+          termos: [...new Set((t?.buscar ?? []).map((s) => texto(s, 60)).filter((s) => s.length >= 3))]
+            .slice(0, MAX_TERMOS),
+        };
+      } catch (e) {
+        /* A triagem cair não pode derrubar a pergunta. Sem ela o chat volta a ser
+           exatamente o que era antes desta funcionalidade: responde pela célula,
+           não procura no mês inteiro e não propõe nada. Degradar é melhor do que
+           recusar uma pergunta que teria resposta. */
+        console.error("triagem falhou (segue sem busca nem proposta):", e);
+        return { correcao: false, termos: [] as string[] };
+      }
+    })();
 
     /* Orientação dos valores: em rubrica de despesa o Omie lança negativo. O
        sinal é INVERTIDO, não posto em módulo — assim gastar mais é positivo (que
@@ -349,6 +695,87 @@ Deno.serve(async (req) => {
       };
     });
 
+    /* --- 3b) O mês inteiro, atrás do que a pergunta nomeou ----------------
+       Os blocos acima param na fronteira da célula. Aqui se atravessa: o
+       lançamento classificado errado está, por definição, na rubrica errada. */
+    const { correcao, termos } = await triagemP;
+
+    const candidatos = new Map<string, Candidato>();
+    const guardar = (linhas: unknown) => {
+      for (const l of (linhas ?? []) as Record<string, unknown>[]) {
+        const cod = texto(l.cod_titulo, 40);
+        if (!cod || candidatos.has(cod)) continue;
+        candidatos.set(cod, {
+          cod_titulo: cod,
+          rubrica: (l.rubrica as string) ?? null,
+          mes: String(l.mes ?? ""),
+          data: (l.data as string) ?? null,
+          contraparte: pessoaDe(pessoas, (l.contraparte as string) ?? "sem nome no cadastro"),
+          documento: (l.documento as string) ?? null,
+          categoria: (l.categoria as string) ?? null,
+          codigo: (l.codigo as string) ?? null,
+          grupo: (l.grupo as string) ?? null,
+          valor: Number(l.valor) || 0,
+          observacao: (l.observacao as string) ?? null,
+        });
+      }
+    };
+
+    const [porNome, daCelula, catRows] = await Promise.all([
+      termos.length
+        ? supabase.rpc("demonstracoes_lancamentos_busca", {
+          p_tipo: tipo, p_meses: meses, p_busca: termos, p_limite: MAX_BUSCA_NOMES,
+        })
+        : Promise.resolve({ data: null, error: null }),
+      /* A própria célula só entra no conjunto de candidatos quando há conserto a
+         fazer — é o caso "essa linha aqui está errada", em que o alvo é a rubrica
+         e não um fornecedor. Numa pergunta comum seria uma varredura para nada.
+         Vai numa chamada SEPARADA da busca por nome, e não no mesmo array de
+         termos, para os dois recortes não dividirem o mesmo teto: num mês de
+         "Pessoal" as 300 linhas da rubrica engoliriam as três da Paytime. */
+      correcao
+        ? supabase.rpc("demonstracoes_lancamentos_busca", {
+          p_tipo: tipo, p_meses: meses, p_busca: fontes, p_limite: MAX_BUSCA_CELULA,
+        })
+        : Promise.resolve({ data: null, error: null }),
+      // O plano de contas só é carregado quando há proposta a montar: são 133
+      // linhas que não têm o que fazer no prompt de uma pergunta comum.
+      correcao ? supabase.rpc("omie_categorias_disponiveis") : Promise.resolve({ data: null, error: null }),
+    ]);
+
+    /* Busca que falha não derruba a resposta: ela é ENRIQUECIMENTO. O que se
+       perde é a proposta — e a resposta sai dizendo o que viu na célula. */
+    if (porNome.error) console.error("busca por nome falhou:", porNome.error.message);
+    if (daCelula.error) console.error("busca da célula falhou:", daCelula.error.message);
+    if (catRows?.error) console.error("categorias não carregadas:", catRows.error.message);
+    guardar(porNome.data);
+    guardar(daCelula.data);
+    const categorias = (catRows?.data as CategoriaOmie[] | null) ?? [];
+
+    /* Sinal CRU aqui, ao contrário dos blocos da célula: esta lista atravessa
+       rubricas, e orientá-la pela natureza da célula perguntada faria a receita
+       aparecer negativa sempre que a pergunta fosse sobre uma despesa — o mesmo
+       motivo de `linhaSolta` mais abaixo. */
+    const encontrados = [...candidatos.values()]
+      .sort((a, b) => Math.abs(b.valor) - Math.abs(a.valor))
+      .map((c) => ({
+        cod_titulo: c.cod_titulo,
+        data: dataCurta(c.data),
+        mes: rotuloMes(c.mes),
+        contraparte: c.contraparte,
+        // Nulo aqui é informação, não falha: a categoria está fora do DE-PARA e o
+        // lançamento não aparece em linha nenhuma da demonstração.
+        rubricaAtual: c.rubrica ?? "fora do DE-PARA — não aparece na demonstração",
+        categoriaNoOmie: c.categoria,
+        categoriaCodigo: c.codigo,
+        valor: brl(c.valor),
+        alteravel: GRUPOS_ALTERAVEIS.has(String(c.grupo ?? "")),
+        textoDoTitulo: (() => {
+          const m = memo(c.observacao);
+          return m == null ? null : pessoasNoTexto(pessoas, m);
+        })(),
+      }));
+
     /* --- 4) O que a tela já sabe ------------------------------------------ */
     const valorO = orient(body?.valor);
     const anteriorO = orient(body?.valorAnterior);
@@ -425,17 +852,70 @@ Deno.serve(async (req) => {
         variacao: d.fmtDelta,
       })),
       lancamentosDoOmie: blocos.map(({ soma: _soma, ...b }) => b),
+      /* O que a célula não vê. Só entra quando a pergunta nomeou alguém (ou pediu
+         conserto): é a única lista da qual uma proposta pode tirar títulos, e é
+         também o que permite responder "está lançado, mas em Receita Markup". */
+      ...(encontrados.length
+        ? {
+          lancamentosEncontrados: {
+            procureiPor: termos.length ? termos : fontes,
+            nosMeses: meses.map(rotuloMes),
+            achados: encontrados.length,
+            nota: "varredura do mês inteiro, em TODAS as rubricas — inclusive fora do DE-PARA. "
+              + "É desta lista, e só dela, que podem sair os cod_titulo de uma proposta.",
+            linhas: encontrados,
+          },
+        }
+        : termos.length
+          ? { lancamentosEncontrados: { procureiPor: termos, achados: 0, nota: "nenhum lançamento do mês casa com esses nomes." } }
+          : {}),
+      ...(correcao && categorias.length
+        ? {
+          categoriasDisponiveis: categorias
+            // Categoria que a empresa realmente usa primeiro: o destino certo é,
+            // quase sempre, um dos que já receberam lançamento parecido.
+            .sort((a, b) => (Number(b.usos) || 0) - (Number(a.usos) || 0))
+            .map((c) => ({
+              codigo: c.codigo,
+              descricao: c.descricao,
+              rubrica: (tipo === "dre" ? c.rubrica_dre : c.rubrica_dfc) ?? "fora do DE-PARA",
+            })),
+        }
+        : {}),
     };
 
     /* --- 5) Redação ------------------------------------------------------- */
     let orgCtx = "";
     try { orgCtx = await buildOrgContext(supabase); } catch { /* segue sem a Biblioteca */ }
 
+    /* `acao` fica FORA do `required`: no modo estrito da OpenAI o que não é
+       exigido vira anulável (ver `paraStrict` em `_shared/openai.ts`), e é
+       exatamente o que se quer — "não há o que propor" precisa ser uma saída
+       possível, senão o modelo inventa uma correção para preencher o campo. */
     const schema = {
       type: "object",
       properties: {
         resposta: { type: "string" },
         confianca: { type: "string", enum: ["alta", "media", "baixa"] },
+        ...(correcao
+          ? {
+            acao: {
+              type: "object",
+              properties: {
+                tipo: { type: "string", enum: ["trocar_categoria", "apelido", "tarefa"] },
+                resumo: { type: "string" },
+                motivo: { type: "string" },
+                categoria_codigo: { type: "string" },
+                cod_titulos: { type: "array", items: { type: "string" } },
+                contraparte_nome: { type: "string" },
+                apelido: { type: "string" },
+                tarefa_titulo: { type: "string" },
+                tarefa_responsavel: { type: "string" },
+              },
+              required: ["tipo"],
+            },
+          }
+          : {}),
       },
       required: ["resposta", "confianca"],
     };
@@ -448,11 +928,11 @@ Deno.serve(async (req) => {
         + fio.map((f, i) => `${i + 1}. P: ${f.pergunta}\n   R: ${pessoasNoTexto(pessoas, f.resposta)}`).join("\n")
       : "";
 
-    const redigir = () => generateJSON<{ resposta: string; confianca: string }>({
+    const redigir = () => generateJSON<{ resposta: string; confianca: string; acao?: AcaoCrua | null }>({
       temperature: 0.3,
       responseSchema: schema,
       messages: [
-        { role: "system", content: `${REGRAS}\n\n${orgCtx}` },
+        { role: "system", content: `${REGRAS}${correcao ? REGRAS_CORRECAO : ""}\n\n${orgCtx}` },
         {
           role: "user",
           content:
@@ -469,7 +949,7 @@ Deno.serve(async (req) => {
        provedor responde 429 quando as chamadas vêm em rajada, e a pausa é o que
        faz a segunda passar. Se falhar de novo, o motivo vai para a tela em
        PORTUGUÊS, com status 200: falha de IA não é a função quebrando. */
-    let out: { resposta: string; confianca: string } | null = null;
+    let out: { resposta: string; confianca: string; acao?: AcaoCrua | null } | null = null;
     try {
       out = await redigir();
     } catch {
@@ -489,6 +969,11 @@ Deno.serve(async (req) => {
     if (!resposta) {
       return jsonResponse({ error: "A IA não devolveu resposta. Tente reformular a pergunta." }, 200);
     }
+
+    /* A proposta passa pela peneira: título que não veio nos dados, categoria que
+       não existe e lançamento que o ERP não deixa mexer caem aqui, e não na cara
+       de quem clicar. `null` significa "só resposta", que é o desfecho normal. */
+    const acao = correcao ? conferirAcao(out?.acao, candidatos, categorias, tipo) : null;
 
     /* --- 6) Grava --------------------------------------------------------- */
     const { data: linha, error: insErr } = await supabase
@@ -511,7 +996,14 @@ Deno.serve(async (req) => {
           soma_omie: somaOmie,
           diferenca_contra_tela: diferenca,
           contrapartes: porContraparte.size,
+          // A prova da varredura larga, ao lado da prova da célula: quem lê a
+          // resposta vê que ela procurou "paytime" no mês inteiro e achou 4.
+          busca: termos,
+          encontrados: candidatos.size,
+          correcao,
         },
+        acao,
+        acao_estado: acao ? "proposta" : null,
         confianca: ["alta", "media", "baixa"].includes(String(out?.confianca)) ? out.confianca : "media",
         autor_id: caller.userId,
         autor_email: caller.email ?? null,

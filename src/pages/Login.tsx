@@ -30,8 +30,12 @@
 //   existe". A diferença entre as duas mensagens é o que transforma a tela num
 //   verificador de quem tem conta.
 // • FREIO QUE CRESCE a cada erro (ver `lib/loginTentativas.ts`).
-// • "ESQUECI A SENHA" É E-MAIL DE VERDADE. O link do Supabase prova que a pessoa
-//   tem a caixa de entrada. Nenhum código digitável substitui isso.
+// • NÃO HÁ "ESQUECI A SENHA" NA TELA. O código mestre saiu por ser um segredo que
+//   o navegador precisava saber; o link por e-mail que o substituiu foi retirado
+//   em 01/09/2026 a pedido do financeiro: quem esquece a senha pede a redefinição
+//   internamente, e ela é feita no modo admin (Configurações › Usuários) ou pelo
+//   painel do Supabase. É uma porta a menos exposta a quem não tem conta, ao
+//   custo de depender de alguém de dentro para reabrir o acesso.
 // • A CAIXA "LEMBRAR DE MIM" PASSOU A FUNCIONAR (ver `lib/authStorage.ts`).
 // • NENHUM NÚMERO DA EMPRESA nesta tela.
 
@@ -42,9 +46,6 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Checkbox } from "@/components/ui/checkbox";
-import {
-  Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter,
-} from "@/components/ui/dialog";
 import { useAuth } from "@/hooks/useAuth";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { destinoSeguro, guardarDestino } from "@/lib/destinoLogin";
@@ -79,11 +80,6 @@ export default function Login() {
   const [busy, setBusy] = useState(false);
   const [linkEnviado, setLinkEnviado] = useState(false);
   const [esperaMs, setEsperaMs] = useState(() => esperaRestanteMs());
-
-  // Recuperação de senha por e-mail
-  const [forgotOpen, setForgotOpen] = useState(false);
-  const [fpEmail, setFpEmail] = useState("");
-  const [fpBusy, setFpBusy] = useState(false);
 
   useEffect(() => {
     document.title = "Login · Takeat Hub Financeiro";
@@ -174,31 +170,6 @@ export default function Login() {
     gravarUltimoEmail(alvo);
     setLinkEnviado(true);
     toast.success("Se houver uma conta com esse e-mail, o link acabou de sair.");
-  };
-
-  const abrirEsqueci = () => {
-    setFpEmail(email.trim());
-    setForgotOpen(true);
-  };
-
-  const enviarRecuperacao = async () => {
-    const alvo = fpEmail.trim().toLowerCase();
-    if (!alvo) return toast.error("Digite seu e-mail.");
-
-    setFpBusy(true);
-    // A raiz, de novo, por causa da allow-list de redirecionamento. Quem detecta
-    // que a volta é de recuperação — e obriga a trocar a senha antes de abrir o
-    // Hub — é o `AuthProvider`, pelo evento PASSWORD_RECOVERY.
-    const { error } = await supabase.auth.resetPasswordForEmail(alvo, {
-      redirectTo: `${window.location.origin}/`,
-    });
-    setFpBusy(false);
-
-    if (error && !/not found|no user/i.test(error.message)) {
-      return toast.error(error.message);
-    }
-    setForgotOpen(false);
-    toast.success("Se houver uma conta com esse e-mail, o link de redefinição acabou de sair.");
   };
 
   return (
@@ -313,19 +284,10 @@ export default function Login() {
                   </div>
                 </div>
 
-                <div className="flex items-center justify-between pt-1">
-                  <label className="flex cursor-pointer items-center gap-2 text-xs text-foreground/80">
-                    <Checkbox checked={remember} onCheckedChange={(v) => setRemember(!!v)} />
-                    Lembrar de mim neste dispositivo
-                  </label>
-                  <button
-                    type="button"
-                    onClick={abrirEsqueci}
-                    className="text-xs font-medium text-primary hover:underline"
-                  >
-                    Esqueci a senha
-                  </button>
-                </div>
+                <label className="flex cursor-pointer items-center gap-2 pt-1 text-xs text-foreground/80">
+                  <Checkbox checked={remember} onCheckedChange={(v) => setRemember(!!v)} />
+                  Lembrar de mim neste dispositivo
+                </label>
 
                 {travado && (
                   <p className="rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-[12px] text-destructive">
@@ -381,43 +343,6 @@ export default function Login() {
         </div>
       </div>
 
-      <Dialog open={forgotOpen} onOpenChange={setForgotOpen}>
-        <DialogContent className="max-w-sm">
-          <DialogHeader>
-            <DialogTitle>Redefinir senha</DialogTitle>
-            <DialogDescription>
-              Enviamos um link para o seu e-mail. Ao clicar nele, você escolhe a nova senha.
-            </DialogDescription>
-          </DialogHeader>
-
-          <div className="space-y-2 py-2">
-            <Label htmlFor="fp-email">Seu e-mail</Label>
-            <Input
-              id="fp-email"
-              type="email"
-              autoComplete="username"
-              value={fpEmail}
-              onChange={(e) => setFpEmail(e.target.value)}
-              placeholder="voce@takeat.app"
-              autoFocus
-              onKeyDown={(e) => { if (e.key === "Enter" && !fpBusy) enviarRecuperacao(); }}
-            />
-            <p className="text-[11px] text-muted-foreground">
-              O link vale por pouco tempo e só funciona uma vez.
-            </p>
-          </div>
-
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setForgotOpen(false)} disabled={fpBusy}>
-              Cancelar
-            </Button>
-            <Button onClick={enviarRecuperacao} disabled={fpBusy || !fpEmail.trim()}>
-              {fpBusy && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-              Enviar link
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
     </div>
   );
 }

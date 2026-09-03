@@ -76,6 +76,13 @@ export default function Passagens() {
   /* Quantas ainda não têm o alerta ligado no Google. É a falha mais silenciosa
      do módulo: a viagem existe, o teto existe, e nunca chega preço nenhum. */
   const semAlerta = useMemo(() => abertas.filter((l) => !l.viagem.rastreando_em).length, [abertas]);
+  /* O espelho da anterior: viagem já fechada cujo alerta ninguém desligou no
+     Google. A expiração é automática, então esta é a fila que cresce sem que
+     ninguém tenha clicado em nada — e ela vira e-mail órfão daqui a semanas. */
+  const rastreioOrfao = useMemo(
+    () => linhas.filter((l) => l.viagem.status !== "rastreando" && l.viagem.rastreando_em).length,
+    [linhas],
+  );
 
   async function expandir(id: string) {
     if (aberto === id) { setAberto(null); return; }
@@ -132,12 +139,49 @@ export default function Passagens() {
     }
   }
 
+  /**
+   * Fecha a viagem — e lembra da METADE QUE O HUB NÃO CONTROLA.
+   *
+   * Desligar o rastreamento tem dois lados, e o Hub só manda num deles. Aqui a
+   * viagem para de casar e-mail (o casador só olha `rastreando`); no Google, o
+   * alerta continua vivo e mandando para sempre, porque não existe API para
+   * removê-lo — mesmo motivo de ligar ter exigido clique humano.
+   * Sem este lembrete, o entulho aparece semanas depois na lista de órfãos,
+   * quando ninguém mais liga o e-mail à viagem que fechou.
+   */
   async function mudarStatus(l: Linha, status: string, preco?: number) {
     const patch: Record<string, unknown> = { status, updated_at: new Date().toISOString() };
     if (status === "comprada") { patch.preco_comprado = preco ?? null; patch.comprado_em = new Date().toISOString(); }
     const { error } = await db.from("passagens_viagens").update(patch).eq("id", l.viagem.id);
     if (error) { toast.error(error.message); return; }
     toast.success(status === "comprada" ? "Viagem marcada como comprada." : `Viagem ${status}.`);
+    if (l.viagem.rastreando_em) {
+      const link = l.viagem.google_url ?? linkGoogleFlights({
+        origem: l.viagem.origem, destino: l.viagem.destino,
+        data_ida: l.viagem.data_ida, data_volta: l.viagem.data_volta,
+      });
+      toast.warning(
+        "Falta desligar o rastreamento no Google — senão os e-mails desta rota continuam chegando para sempre.",
+        { duration: 15000, action: { label: "Abrir no Google", onClick: () => window.open(link, "_blank", "noreferrer") } },
+      );
+    }
+    load();
+  }
+
+  /**
+   * "Já desliguei lá" — devolve `rastreando_em` para null.
+   *
+   * A coluna quer dizer UMA coisa: o alerta do Google está ligado para esta
+   * viagem. Ligar preenche, desligar zera. Reusar o mesmo campo (em vez de criar
+   * um `rastreio_encerrado_em`) é o que faz o selo sumir sozinho quando o
+   * trabalho foi feito — e selo que não some é selo que se aprende a ignorar.
+   */
+  async function desligarRastreio(l: Linha) {
+    const { error } = await db.from("passagens_viagens")
+      .update({ rastreando_em: null, updated_at: new Date().toISOString() })
+      .eq("id", l.viagem.id);
+    if (error) { toast.error(error.message); return; }
+    toast.success("Anotado: o Google não rastreia mais esta rota.");
     load();
   }
 
@@ -151,7 +195,20 @@ export default function Passagens() {
   }
 
   async function apagar(l: Linha) {
-    if (!window.confirm(`Excluir a viagem ${rotaTexto(l.viagem.origem, l.viagem.destino)}? O histórico de preço dela vai junto.`)) return;
+    /* Duas perdas e uma pendência, ditas antes: a curva some, e o alerta do
+       Google NÃO some. Quem quer só encerrar a viagem tem "Comprei" e "Cancelar
+       viagem", que preservam o histórico — excluir é para o que foi cadastrado
+       errado. */
+    const aviso = [
+      `Excluir a viagem ${rotaTexto(l.viagem.origem, l.viagem.destino)}?`,
+      "",
+      "O histórico de preço dela vai junto.",
+      l.viagem.rastreando_em
+        ? "E o alerta continua ligado no Google: os e-mails vão continuar chegando, sem viagem para casar. Desligue lá antes."
+        : "",
+      "Para só encerrar a viagem sem perder a curva, use “Comprei” ou “Cancelar viagem”.",
+    ].filter(Boolean).join("\n");
+    if (!window.confirm(aviso)) return;
     const { error } = await db.from("passagens_viagens").delete().eq("id", l.viagem.id);
     if (error) { toast.error(error.message); return; }
     toast.success("Viagem excluída.");
@@ -204,6 +261,17 @@ export default function Passagens() {
             <span className="font-medium">{semAlerta} viagem(ns) sem o alerta ligado no Google.</span>{" "}
             Enquanto ninguém abrir o link e clicar em "Rastrear preços", nenhum e-mail chega e a curva fica vazia —
             o Hub não tem como buscar preço sozinho.
+          </span>
+        </div>
+      )}
+
+      {rastreioOrfao > 0 && (
+        <div className="flex items-start gap-2 rounded-md border border-amber-200 bg-amber-50 p-3 text-[12.5px] text-amber-800 dark:border-amber-900 dark:bg-amber-950/40 dark:text-amber-300">
+          <BellRing className="mt-0.5 h-4 w-4 shrink-0" />
+          <span>
+            <span className="font-medium">{rastreioOrfao} viagem(ns) fechada(s) com o alerta ainda ligado no Google.</span>{" "}
+            Elas já não casam e-mail nenhum, então o que chegar vai para "Alertas sem dono". Abra a linha e desligue
+            o rastreamento lá — o Hub não consegue fazer isso por você.
           </span>
         </div>
       )}
@@ -266,6 +334,20 @@ export default function Passagens() {
                       {noTeto && v.status === "rastreando" && (
                         <span className="rounded border border-emerald-200 bg-emerald-50 px-1.5 py-0.5 text-[10.5px] font-semibold text-emerald-700 dark:border-emerald-900 dark:bg-emerald-950/40 dark:text-emerald-400">
                           dentro do teto
+                        </span>
+                      )}
+                      {/* A PENDÊNCIA QUE SÓ EXISTE FORA DO HUB. Viagem fechada
+                          com o alerta ainda ligado lá continua gerando e-mail
+                          para sempre — e como a expiração é automática, para a
+                          maioria dos casos ninguém viu toast nenhum. Selo, e não
+                          aviso de passagem: some sozinho quando o trabalho for
+                          feito, que é o que o impede de virar ruído. */}
+                      {v.status !== "rastreando" && v.rastreando_em && (
+                        <span
+                          className="inline-flex items-center gap-1 rounded border border-amber-200 bg-amber-50 px-1.5 py-0.5 text-[10.5px] font-medium text-amber-800 dark:border-amber-900 dark:bg-amber-950/40 dark:text-amber-300"
+                          title="A viagem fechou, mas o alerta continua ligado no Google — os e-mails desta rota seguem chegando sem ter com o que casar."
+                        >
+                          <BellRing className="h-3 w-3" /> Google ainda rastreia
                         </span>
                       )}
                     </div>
@@ -364,6 +446,26 @@ export default function Passagens() {
                         </Button>
                         <Button size="sm" variant="ghost" onClick={() => mudarStatus(l, "cancelada")}>
                           <X className="mr-1 h-3.5 w-3.5" /> Cancelar viagem
+                        </Button>
+                      </div>
+                    )}
+
+                    {/* A viagem fechada também tem trabalho a fazer, e antes ela
+                        não tinha botão nenhum aqui — a única saída era lembrar
+                        sozinho de ir ao Google. */}
+                    {v.status !== "rastreando" && v.rastreando_em && (
+                      <div className="flex flex-wrap items-center gap-2 rounded-md border border-amber-200 bg-amber-50 p-2.5 dark:border-amber-900 dark:bg-amber-950/40">
+                        <span className="flex-1 text-[12px] text-amber-800 dark:text-amber-300">
+                          O alerta desta rota continua ligado no Google. Enquanto estiver, os e-mails chegam e
+                          caem em "Alertas sem dono", porque esta viagem já fechou.
+                        </span>
+                        <a href={link} target="_blank" rel="noreferrer">
+                          <Button size="sm" variant="outline">
+                            <ExternalLink className="mr-1 h-3.5 w-3.5" /> Abrir no Google
+                          </Button>
+                        </a>
+                        <Button size="sm" variant="outline" onClick={() => desligarRastreio(l)}>
+                          <Check className="mr-1 h-3.5 w-3.5" /> Já desliguei lá
                         </Button>
                       </div>
                     )}

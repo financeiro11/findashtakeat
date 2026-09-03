@@ -35,11 +35,21 @@ export default function Asaas() {
 
   useEffect(() => { document.title = "Asaas · Receita"; }, []);
 
+  // "De quando são os dados" NÃO é o gerado_em do snapshot: ele muda a cada
+  // Recalcular, que só refaz conta local — clicava-se no botão e a tela dizia
+  // "atualizado agora" sem nenhum dado novo do Asaas. Quem responde de verdade é a
+  // última puxada gravada em asaas_sync_estado (escopo payment:<mês>).
+  const [dadosDe, setDadosDe] = useState<string | null>(null);
+
   const load = async () => {
     setLoading(true);
-    const { data } = await supabase.from("asaas_snapshots" as any).select("dados,gerado_em").eq("referencia", ref).maybeSingle();
+    const [{ data }, { data: est }] = await Promise.all([
+      supabase.from("asaas_snapshots" as any).select("dados,gerado_em").eq("referencia", ref).maybeSingle(),
+      supabase.from("asaas_sync_estado" as any).select("ultima_incremental,ultima_completa").eq("escopo", `payment:${ref}`).maybeSingle(),
+    ]);
     setDados((data as any)?.dados ?? null);
     setGeradoEm((data as any)?.gerado_em ?? null);
+    setDadosDe((est as any)?.ultima_incremental ?? (est as any)?.ultima_completa ?? null);
     setLoading(false);
   };
   useEffect(() => { load(); /* eslint-disable-next-line */ }, [ref]);
@@ -99,7 +109,9 @@ export default function Asaas() {
           <h2 className="text-2xl font-bold tracking-tight">Asaas</h2>
           <p className="text-sm text-muted-foreground">
             Recebimentos, assinaturas (MRR/ARR) e NF-e do Asaas · atualização automática às 07:45, 12:30 e 17:00.
-            {geradoEm && <span className="num"> · atualizado em {new Date(geradoEm).toLocaleString("pt-BR")}</span>}
+            {dadosDe
+              ? <span className="num"> · dados do Asaas de {new Date(dadosDe).toLocaleString("pt-BR")}</span>
+              : geradoEm && <span className="num"> · calculado em {new Date(geradoEm).toLocaleString("pt-BR")}</span>}
           </p>
         </div>
         <div className="flex items-center gap-2">

@@ -45,7 +45,7 @@ function tempoRelativo(iso?: string) {
   const sem = Math.floor(dias / 7);
   if (sem < 4) return `há ${sem} semana${sem > 1 ? "s" : ""}`;
   const meses = Math.floor(dias / 30);
-  return `há ${meses} mês${meses > 1 ? "es" : ""}`;
+  return `há ${meses} ${meses > 1 ? "meses" : "mês"}`;
 }
 
 export default function BaseConhecimento() {

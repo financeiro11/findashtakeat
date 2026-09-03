@@ -108,6 +108,27 @@ export default defineConfig(({ mode }) => ({
       },
     }),
   ].filter(Boolean),
+  /* AS LIBS PESADAS SÃO PRÉ-EMPACOTADAS NA LARGADA, mesmo só entrando por
+   * `import()` dinâmico.
+   *
+   * O Vite varre os imports ESTÁTICOS ao subir o servidor e pré-empacota o que
+   * achou. `jspdf` e `pptxgenjs` não aparecem em varredura nenhuma — só existem
+   * dentro de `await import(...)` em `lib/folhaRevisao.ts` e `lib/thetysExport.ts`.
+   * Resultado: o Vite só os descobre no PRIMEIRO clique em "PDF", e aí reotimiza as
+   * dependências com a página já aberta. Enquanto a pasta `deps/` é trocada pela
+   * `deps_temp_*`, o import em voo pede o hash velho e morre com "Failed to fetch
+   * dynamically imported module: .../deps/jspdf.js?v=<hash>" — que parece um bug do
+   * botão e não é: o build de produção sempre gerou o chunk certo.
+   *
+   * Foi exatamente o que aconteceu em 02/09/2026 com o relatório da Thétys. E é por
+   * isso que o Excel da mesma tela funcionava: `xlsx` é importado estaticamente em
+   * meia dúzia de páginas, então já nasce pré-empacotado.
+   *
+   * `html-to-image` fica de fora porque o FlowEditor já o importa estaticamente — a
+   * varredura o encontra sozinha. */
+  optimizeDeps: {
+    include: ["jspdf", "pptxgenjs"],
+  },
   resolve: {
     alias: {
       "@": path.resolve(__dirname, "./src"),

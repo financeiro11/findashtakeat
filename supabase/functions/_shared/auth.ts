@@ -25,21 +25,33 @@ function jwtRole(token: string): string | null {
   } catch { return null; }
 }
 
+// Erro do próprio portão (token ausente/inválido ou cargo bloqueado) — marcado para quem
+// chama distinguir de um "permission"/"autenticad" que por acaso apareça na mensagem de uma
+// API de terceiro (ex.: o Google Sheets devolve "The caller does not have permission", e um
+// regex textual solto confundiria isso com falha de login e devolveria 401 pro cliente, que
+// descarta o corpo da resposta — foi o que aconteceu com a planilha do Branding em 03/09/2026).
+export class AuthError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "AuthError";
+  }
+}
+
 export async function requireUser(req: Request, opts: { bloquearCargos?: string[] } = {}): Promise<Caller> {
   const token = (req.headers.get("Authorization") ?? "").replace("Bearer ", "").trim();
-  if (!token) throw new Error("Não autenticado.");
+  if (!token) throw new AuthError("Não autenticado.");
 
   // Chamada de sistema com a service role key (cron/back-office) — permitida.
   if (jwtRole(token) === "service_role") return { userId: null, cargo: "", isService: true };
 
   const admin = createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!);
   const { data, error } = await admin.auth.getUser(token);
-  if (error || !data?.user) throw new Error("Não autenticado."); // anon key ou token inválido
+  if (error || !data?.user) throw new AuthError("Não autenticado."); // anon key ou token inválido
 
   const { data: prof } = await admin.from("profiles").select("cargo").eq("user_id", data.user.id).maybeSingle();
   const cargo = (prof?.cargo ?? "").trim().toLowerCase();
   if (opts.bloquearCargos?.map((c) => c.toLowerCase()).includes(cargo)) {
-    throw new Error("Você não tem permissão para esta ação.");
+    throw new AuthError("Você não tem permissão para esta ação.");
   }
   return { userId: data.user.id, cargo, isService: false, email: data.user.email ?? null };
 }

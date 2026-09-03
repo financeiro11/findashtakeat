@@ -3,7 +3,7 @@ import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import {
   Percent, RefreshCw, Loader2, ExternalLink, ChevronRight,
-  ShieldAlert, FileWarning, CheckCircle2,
+  ShieldAlert, FileWarning, CheckCircle2, Archive, ArchiveRestore,
 } from "lucide-react";
 import { supabase } from "@/integrations/supabase/client";
 import { cn } from "@/lib/utils";
@@ -283,11 +283,21 @@ function sheetUrl(spreadsheetId: string, sheetTabId?: number | null) {
 
 export default function Variavel() {
   const now = new Date();
-  const [monthIdx, setMonthIdx] = useState(now.getMonth());
-  const [year, setYear] = useState(now.getFullYear());
+  // Esta página serve para CONFERIR o mês que já fechou — ao entrar em setembro,
+  // quem confere quer ver agosto, não o mês corrente (ainda em andamento).
+  const previousMonth = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+  const [monthIdx, setMonthIdx] = useState(previousMonth.getMonth());
+  const [year, setYear] = useState(previousMonth.getFullYear());
   const [statuses, setStatuses] = useState<Record<string, TeamStatus>>({});
   const [loading, setLoading] = useState(false);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
+
+  // Times ocultados (arquivados) pela pessoa — não entram no painel nem no resumo,
+  // e não são mais consultados no Google Sheets. Persistido em banco (não é preferência
+  // só do navegador: todo mundo que abre este painel vê o mesmo conjunto).
+  const [hidden, setHidden] = useState<Set<string>>(new Set());
+  const [hiddenLoaded, setHiddenLoaded] = useState(false);
+  const [showArchived, setShowArchived] = useState(false);
 
   const periodKey = `${year}-${monthIdx}`;
 
@@ -299,65 +309,108 @@ export default function Variavel() {
     });
   }, []);
 
-  const loadAll = useCallback(async (force = false) => {
-    setLoading(true);
-    setStatuses(Object.fromEntries(TEAMS.map((t) => [t.key, { state: "loading" } as TeamStatus])));
-
-    await runLimited(TEAMS, 4, async (team) => {
-      try {
-        const meta = await invokeSheets({ action: "meta", spreadsheetId: team.spreadsheetId, force });
-        const tabs: SheetTab[] = (meta?.sheets ?? []).map((s: any) => ({ title: s.title, sheetId: s.sheetId }));
-        const match = tabs.find((t) => {
-          const p = parseTabMonth(t.title);
-          return p && p.monthIdx === monthIdx && (p.year == null || p.year === year);
-        });
-
-        if (!match) {
-          setStatuses((prev) => ({
-            ...prev,
-            [team.key]: { state: "done", tabTitle: null, data: null, sheetTabId: null },
-          }));
-          return;
-        }
-
-        const read = await invokeSheets({ action: "read", spreadsheetId: team.spreadsheetId, sheet: match.title, force });
-        const data: SheetData = { headers: read?.headers ?? [], rows: read?.rows ?? [] };
-        setStatuses((prev) => ({
-          ...prev,
-          [team.key]: { state: "done", tabTitle: match.title, data, sheetTabId: match.sheetId },
-        }));
-      } catch (e: any) {
-        setStatuses((prev) => ({
-          ...prev,
-          [team.key]: { state: "error", message: e?.message ?? "Falha ao carregar", forbidden: !!e?.forbidden },
-        }));
+  useEffect(() => {
+    (async () => {
+      const { data, error } = await supabase.from("variavel_times_config").select("team_key, oculto");
+      if (!error && data) {
+        setHidden(new Set(data.filter((r) => r.oculto).map((r) => r.team_key)));
       }
-    });
+      setHiddenLoaded(true);
+    })();
+  }, []);
 
-    setLoading(false);
+  const fetchTeam = useCallback(async (team: Team, force: boolean) => {
+    try {
+      const meta = await invokeSheets({ action: "meta", spreadsheetId: team.spreadsheetId, force });
+      const tabs: SheetTab[] = (meta?.sheets ?? []).map((s: any) => ({ title: s.title, sheetId: s.sheetId }));
+      const match = tabs.find((t) => {
+        const p = parseTabMonth(t.title);
+        return p && p.monthIdx === monthIdx && (p.year == null || p.year === year);
+      });
+
+      if (!match) {
+        setStatuses((prev) => ({
+          ...prev,
+          [team.key]: { state: "done", tabTitle: null, data: null, sheetTabId: null },
+        }));
+        return;
+      }
+
+      const read = await invokeSheets({ action: "read", spreadsheetId: team.spreadsheetId, sheet: match.title, force });
+      const data: SheetData = { headers: read?.headers ?? [], rows: read?.rows ?? [] };
+      setStatuses((prev) => ({
+        ...prev,
+        [team.key]: { state: "done", tabTitle: match.title, data, sheetTabId: match.sheetId },
+      }));
+    } catch (e: any) {
+      setStatuses((prev) => ({
+        ...prev,
+        [team.key]: { state: "error", message: e?.message ?? "Falha ao carregar", forbidden: !!e?.forbidden },
+      }));
+    }
   }, [monthIdx, year]);
 
-  useEffect(() => { loadAll(); /* eslint-disable-next-line */ }, [periodKey]);
+  const visibleTeams = useMemo(() => TEAMS.filter((t) => !hidden.has(t.key)), [hidden]);
+  const archivedTeams = useMemo(() => TEAMS.filter((t) => hidden.has(t.key)), [hidden]);
+
+  const loadAll = useCallback(async (force = false) => {
+    setLoading(true);
+    setStatuses(Object.fromEntries(visibleTeams.map((t) => [t.key, { state: "loading" } as TeamStatus])));
+    await runLimited(visibleTeams, 4, (team) => fetchTeam(team, force));
+    setLoading(false);
+  }, [visibleTeams, fetchTeam]);
+
+  // Só carrega depois que o conjunto de arquivados já foi lido — senão o primeiro
+  // carregamento bateria em planilhas que a pessoa já tirou do painel.
+  useEffect(() => { if (hiddenLoaded) loadAll(); /* eslint-disable-next-line */ }, [periodKey, hiddenLoaded]);
+
+  const arquivar = useCallback(async (teamKey: string, oculto: boolean) => {
+    setHidden((prev) => {
+      const next = new Set(prev);
+      if (oculto) next.add(teamKey); else next.delete(teamKey);
+      return next;
+    });
+    const { error } = await supabase
+      .from("variavel_times_config")
+      .upsert({ team_key: teamKey, oculto, atualizado_em: new Date().toISOString() });
+    if (error) {
+      // Desfaz o otimismo se o banco recusou.
+      setHidden((prev) => {
+        const next = new Set(prev);
+        if (oculto) next.delete(teamKey); else next.add(teamKey);
+        return next;
+      });
+      return;
+    }
+    // Restaurou: busca os dados do mês atual pra esse time reaparecer já preenchido.
+    if (!oculto) {
+      const team = TEAMS.find((t) => t.key === teamKey);
+      if (team) {
+        setStatuses((prev) => ({ ...prev, [teamKey]: { state: "loading" } }));
+        fetchTeam(team, false);
+      }
+    }
+  }, [fetchTeam]);
 
   // Interpreta cada time e calcula o resumo geral.
   const parsedByTeam = useMemo(() => {
     const map: Record<string, ParsedTeam> = {};
-    for (const t of TEAMS) {
+    for (const t of visibleTeams) {
       const s = statuses[t.key];
       map[t.key] = parseTeam(t, s?.state === "done" ? s.data : null);
     }
     return map;
-  }, [statuses]);
+  }, [statuses, visibleTeams]);
 
   const resumo = useMemo(() => {
     let totalGeral = 0, lancados = 0;
-    for (const t of TEAMS) {
+    for (const t of visibleTeams) {
       const s = statuses[t.key];
       const p = parsedByTeam[t.key];
       if (s?.state === "done" && p.total > 0) { lancados++; totalGeral += p.total; }
     }
     return { totalGeral, lancados };
-  }, [statuses, parsedByTeam]);
+  }, [statuses, parsedByTeam, visibleTeams]);
 
   const monthOptions = useMemo(() => {
     const opts: { value: string; label: string }[] = [];
@@ -413,14 +466,25 @@ export default function Variavel() {
             Comissões Variáveis{" "}
             <span className="text-base font-normal text-muted-foreground">{MESES[monthIdx]} / {year}</span>
           </h3>
-          <div className="flex items-center gap-6 rounded-xl border border-border px-5 py-2.5">
-            <div className="flex items-baseline gap-2">
-              <span className="text-xs uppercase tracking-wide text-muted-foreground">Total geral</span>
-              <span className="text-lg font-bold text-primary">{fmtBRL(resumo.totalGeral)}</span>
-            </div>
-            <div className="flex items-center gap-1.5 text-sm font-medium text-muted-foreground">
-              <span className="h-2 w-2 rounded-full bg-emerald-500" />
-              {resumo.lancados} <span className="text-muted-foreground/70">/ {TEAMS.length} lançados</span>
+          <div className="flex items-center gap-3">
+            {archivedTeams.length > 0 && (
+              <button
+                type="button"
+                onClick={() => setShowArchived((v) => !v)}
+                className="text-xs font-medium text-muted-foreground underline underline-offset-2 hover:text-foreground"
+              >
+                {showArchived ? "Ocultar arquivadas" : `Arquivadas (${archivedTeams.length})`}
+              </button>
+            )}
+            <div className="flex items-center gap-6 rounded-xl border border-border px-5 py-2.5">
+              <div className="flex items-baseline gap-2">
+                <span className="text-xs uppercase tracking-wide text-muted-foreground">Total geral</span>
+                <span className="text-lg font-bold text-primary">{fmtBRL(resumo.totalGeral)}</span>
+              </div>
+              <div className="flex items-center gap-1.5 text-sm font-medium text-muted-foreground">
+                <span className="h-2 w-2 rounded-full bg-emerald-500" />
+                {resumo.lancados} <span className="text-muted-foreground/70">/ {visibleTeams.length} lançados</span>
+              </div>
             </div>
           </div>
         </div>
@@ -433,10 +497,11 @@ export default function Variavel() {
                 <th className="px-4 py-3 text-center font-medium">Status</th>
                 <th className="px-4 py-3 text-right font-medium">Lanç.</th>
                 <th className="px-4 py-3 text-right font-medium">Total Variável</th>
+                <th className="px-2 py-3 w-8" />
               </tr>
             </thead>
             <tbody>
-              {TEAMS.map((team) => (
+              {visibleTeams.map((team) => (
                 <TeamRows
                   key={team.key}
                   team={team}
@@ -444,24 +509,48 @@ export default function Variavel() {
                   parsed={parsedByTeam[team.key]}
                   open={expanded.has(team.key)}
                   onToggle={() => toggle(team.key)}
+                  onArquivar={() => arquivar(team.key, true)}
                 />
               ))}
             </tbody>
           </table>
         </div>
+
+        {showArchived && archivedTeams.length > 0 && (
+          <div className="mt-5 rounded-xl border border-dashed border-border p-4">
+            <div className="mb-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">
+              Planilhas arquivadas — fora do painel e não são mais consultadas
+            </div>
+            <ul className="divide-y divide-border/60">
+              {archivedTeams.map((team) => (
+                <li key={team.key} className="flex items-center justify-between gap-3 py-2">
+                  <span className="text-sm font-medium text-muted-foreground">{team.label}</span>
+                  <button
+                    type="button"
+                    onClick={() => arquivar(team.key, false)}
+                    className="inline-flex items-center gap-1.5 text-xs font-medium text-primary hover:underline"
+                  >
+                    <ArchiveRestore className="h-3.5 w-3.5" /> Restaurar
+                  </button>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
       </div>
     </div>
   );
 }
 
 function TeamRows({
-  team, status, parsed, open, onToggle,
+  team, status, parsed, open, onToggle, onArquivar,
 }: {
   team: Team;
   status: TeamStatus | undefined;
   parsed: ParsedTeam;
   open: boolean;
   onToggle: () => void;
+  onArquivar: () => void;
 }) {
   const loading = !status || status.state === "loading";
   const error = status?.state === "error";
@@ -558,11 +647,28 @@ function TeamRows({
             </div>
           )}
         </td>
+
+        {/* Arquivar */}
+        <td className="px-2 py-4 text-right">
+          <button
+            type="button"
+            title="Arquivar planilha (tira do painel)"
+            onClick={(e) => {
+              e.stopPropagation();
+              if (window.confirm(`Arquivar "${team.label}"? Ela some do painel e deixa de ser consultada. Dá para restaurar depois em "Arquivadas".`)) {
+                onArquivar();
+              }
+            }}
+            className="rounded-md p-1.5 text-muted-foreground/50 transition-colors hover:bg-muted hover:text-foreground"
+          >
+            <Archive className="h-4 w-4" />
+          </button>
+        </td>
       </tr>
 
       {open && filled && (
         <tr className="border-b border-border bg-muted/10">
-          <td colSpan={4} className="px-4 pb-5 pt-1">
+          <td colSpan={5} className="px-4 pb-5 pt-1">
             <TeamDetail team={team} parsed={parsed} sheetTabId={done ? (status as any).sheetTabId : null} />
           </td>
         </tr>

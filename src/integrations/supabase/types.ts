@@ -39,6 +39,36 @@ export type Database = {
   }
   public: {
     Tables: {
+      _nf_fila_antes: {
+        Row: {
+          id_asaas: string | null
+          valor: number | null
+        }
+        Insert: {
+          id_asaas?: string | null
+          valor?: number | null
+        }
+        Update: {
+          id_asaas?: string | null
+          valor?: number | null
+        }
+        Relationships: []
+      }
+      _nf_fila_baseline: {
+        Row: {
+          id_asaas: string | null
+          valor: number | null
+        }
+        Insert: {
+          id_asaas?: string | null
+          valor?: number | null
+        }
+        Update: {
+          id_asaas?: string | null
+          valor?: number | null
+        }
+        Relationships: []
+      }
       agenda_eventos: {
         Row: {
           atualizado_em: string
@@ -160,6 +190,13 @@ export type Database = {
             foreignKeyName: "agente_excecoes_agente_id_fkey"
             columns: ["agente_id"]
             isOneToOne: false
+            referencedRelation: "agentes_resumo"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "agente_excecoes_agente_id_fkey"
+            columns: ["agente_id"]
+            isOneToOne: false
             referencedRelation: "vw_agente_saude"
             referencedColumns: ["agente_id"]
           },
@@ -259,6 +296,13 @@ export type Database = {
             foreignKeyName: "agente_execucoes_agente_id_fkey"
             columns: ["agente_id"]
             isOneToOne: false
+            referencedRelation: "agentes_resumo"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "agente_execucoes_agente_id_fkey"
+            columns: ["agente_id"]
+            isOneToOne: false
             referencedRelation: "vw_agente_saude"
             referencedColumns: ["agente_id"]
           },
@@ -348,6 +392,13 @@ export type Database = {
             columns: ["agente_id"]
             isOneToOne: false
             referencedRelation: "agentes"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "agente_obrigacoes_agente_id_fkey"
+            columns: ["agente_id"]
+            isOneToOne: false
+            referencedRelation: "agentes_resumo"
             referencedColumns: ["id"]
           },
           {
@@ -694,6 +745,39 @@ export type Database = {
           lido_em?: string
           periodo?: string | null
           tem_config?: boolean | null
+        }
+        Relationships: []
+      }
+      asaas_nf_desligamento: {
+        Row: {
+          alvo: string
+          config: Json | null
+          criado_em: string
+          erro: string | null
+          id: string
+          ok: boolean
+          operador: string | null
+          referencia: string
+        }
+        Insert: {
+          alvo: string
+          config?: Json | null
+          criado_em?: string
+          erro?: string | null
+          id?: string
+          ok?: boolean
+          operador?: string | null
+          referencia: string
+        }
+        Update: {
+          alvo?: string
+          config?: Json | null
+          criado_em?: string
+          erro?: string | null
+          id?: string
+          ok?: boolean
+          operador?: string | null
+          referencia?: string
         }
         Relationships: []
       }
@@ -3133,6 +3217,11 @@ export type Database = {
       }
       demonstracoes_perguntas: {
         Row: {
+          acao: Json | null
+          acao_em: string | null
+          acao_estado: string | null
+          acao_por: string | null
+          acao_resultado: Json | null
           autor_email: string | null
           autor_id: string | null
           confianca: string | null
@@ -3152,6 +3241,11 @@ export type Database = {
           valor_anterior: number | null
         }
         Insert: {
+          acao?: Json | null
+          acao_em?: string | null
+          acao_estado?: string | null
+          acao_por?: string | null
+          acao_resultado?: Json | null
           autor_email?: string | null
           autor_id?: string | null
           confianca?: string | null
@@ -3171,6 +3265,11 @@ export type Database = {
           valor_anterior?: number | null
         }
         Update: {
+          acao?: Json | null
+          acao_em?: string | null
+          acao_estado?: string | null
+          acao_por?: string | null
+          acao_resultado?: Json | null
           autor_email?: string | null
           autor_id?: string | null
           confianca?: string | null
@@ -4346,12 +4445,15 @@ export type Database = {
           ativo: boolean
           cadencia_dias: number
           categoria: string
+          compra_ate: string | null
           created_at: string
           criado_por: string | null
           favorito: boolean
           fontes: string[]
           id: string
           link_ref: string | null
+          modo: string
+          pai_id: string | null
           pedido: string
           preco_alvo: number
           quantidade: number
@@ -4367,12 +4469,15 @@ export type Database = {
           ativo?: boolean
           cadencia_dias?: number
           categoria?: string
+          compra_ate?: string | null
           created_at?: string
           criado_por?: string | null
           favorito?: boolean
           fontes?: string[]
           id?: string
           link_ref?: string | null
+          modo?: string
+          pai_id?: string | null
           pedido: string
           preco_alvo: number
           quantidade?: number
@@ -4388,12 +4493,15 @@ export type Database = {
           ativo?: boolean
           cadencia_dias?: number
           categoria?: string
+          compra_ate?: string | null
           created_at?: string
           criado_por?: string | null
           favorito?: boolean
           fontes?: string[]
           id?: string
           link_ref?: string | null
+          modo?: string
+          pai_id?: string | null
           pedido?: string
           preco_alvo?: number
           quantidade?: number
@@ -4406,6 +4514,13 @@ export type Database = {
           updated_at?: string
         }
         Relationships: [
+          {
+            foreignKeyName: "facilities_radar_alvos_pai_id_fkey"
+            columns: ["pai_id"]
+            isOneToOne: false
+            referencedRelation: "facilities_radar_alvos"
+            referencedColumns: ["id"]
+          },
           {
             foreignKeyName: "facilities_radar_alvos_solicitacao_id_fkey"
             columns: ["solicitacao_id"]
@@ -4442,6 +4557,117 @@ export type Database = {
           iniciado_em?: string
           ofertas?: number
           terminado_em?: string | null
+        }
+        Relationships: []
+      }
+      facilities_radar_feedback: {
+        Row: {
+          alvo_id: string
+          condicao: string
+          created_at: string
+          criado_por: string | null
+          fonte: string
+          id: number
+          marca: string | null
+          oferta_id: number
+          sinal: string
+          vendedor: string | null
+        }
+        Insert: {
+          alvo_id: string
+          condicao?: string
+          created_at?: string
+          criado_por?: string | null
+          fonte: string
+          id?: number
+          marca?: string | null
+          oferta_id: number
+          sinal: string
+          vendedor?: string | null
+        }
+        Update: {
+          alvo_id?: string
+          condicao?: string
+          created_at?: string
+          criado_por?: string | null
+          fonte?: string
+          id?: number
+          marca?: string | null
+          oferta_id?: number
+          sinal?: string
+          vendedor?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "facilities_radar_feedback_alvo_id_fkey"
+            columns: ["alvo_id"]
+            isOneToOne: false
+            referencedRelation: "facilities_radar_alvos"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "facilities_radar_feedback_oferta_id_fkey"
+            columns: ["oferta_id"]
+            isOneToOne: true
+            referencedRelation: "facilities_radar_ofertas"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      facilities_radar_kit_itens: {
+        Row: {
+          alvo_id: string
+          kit_id: string
+          quantidade: number
+        }
+        Insert: {
+          alvo_id: string
+          kit_id: string
+          quantidade?: number
+        }
+        Update: {
+          alvo_id?: string
+          kit_id?: string
+          quantidade?: number
+        }
+        Relationships: [
+          {
+            foreignKeyName: "facilities_radar_kit_itens_alvo_id_fkey"
+            columns: ["alvo_id"]
+            isOneToOne: false
+            referencedRelation: "facilities_radar_alvos"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "facilities_radar_kit_itens_kit_id_fkey"
+            columns: ["kit_id"]
+            isOneToOne: false
+            referencedRelation: "facilities_radar_kits"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      facilities_radar_kits: {
+        Row: {
+          ativo: boolean
+          created_at: string
+          descricao: string | null
+          id: string
+          nome: string
+        }
+        Insert: {
+          ativo?: boolean
+          created_at?: string
+          descricao?: string | null
+          id?: string
+          nome: string
+        }
+        Update: {
+          ativo?: boolean
+          created_at?: string
+          descricao?: string | null
+          id?: string
+          nome?: string
         }
         Relationships: []
       }
@@ -5865,6 +6091,63 @@ export type Database = {
         }
         Relationships: []
       }
+      nf_fila_resumo_cache: {
+        Row: {
+          calculado_em: string
+          cobrancas: number
+          estimado: boolean
+          id: number
+          valor: number
+        }
+        Insert: {
+          calculado_em?: string
+          cobrancas?: number
+          estimado?: boolean
+          id?: number
+          valor?: number
+        }
+        Update: {
+          calculado_em?: string
+          cobrancas?: number
+          estimado?: boolean
+          id?: number
+          valor?: number
+        }
+        Relationships: []
+      }
+      nf_nota_antes_do_pagamento: {
+        Row: {
+          assinatura_origem: string | null
+          ativo: boolean
+          criado_em: string
+          criado_por: string | null
+          doc: string
+          motivo: string
+          nome: string | null
+          regra_asaas: string | null
+        }
+        Insert: {
+          assinatura_origem?: string | null
+          ativo?: boolean
+          criado_em?: string
+          criado_por?: string | null
+          doc: string
+          motivo: string
+          nome?: string | null
+          regra_asaas?: string | null
+        }
+        Update: {
+          assinatura_origem?: string | null
+          ativo?: boolean
+          criado_em?: string
+          criado_por?: string | null
+          doc?: string
+          motivo?: string
+          nome?: string | null
+          regra_asaas?: string | null
+        }
+        Relationships: []
+      }
       nf_os_omie: {
         Row: {
           asaas_anexado_em: string | null
@@ -5892,6 +6175,10 @@ export type Database = {
           nfse_verificacao: string | null
           nfse_xml: string | null
           status_lido_em: string | null
+          titulo_baixa_erro: string | null
+          titulo_baixa_tentativas: number
+          titulo_baixado_em: string | null
+          titulo_cod: number | null
           valor: number | null
         }
         Insert: {
@@ -5920,6 +6207,10 @@ export type Database = {
           nfse_verificacao?: string | null
           nfse_xml?: string | null
           status_lido_em?: string | null
+          titulo_baixa_erro?: string | null
+          titulo_baixa_tentativas?: number
+          titulo_baixado_em?: string | null
+          titulo_cod?: number | null
           valor?: number | null
         }
         Update: {
@@ -5948,6 +6239,10 @@ export type Database = {
           nfse_verificacao?: string | null
           nfse_xml?: string | null
           status_lido_em?: string | null
+          titulo_baixa_erro?: string | null
+          titulo_baixa_tentativas?: number
+          titulo_baixado_em?: string | null
+          titulo_cod?: number | null
           valor?: number | null
         }
         Relationships: []
@@ -5994,6 +6289,24 @@ export type Database = {
           tentativas?: number
           tratada_em?: string | null
           valor?: number | null
+        }
+        Relationships: []
+      }
+      nfse_recusa_avisada: {
+        Row: {
+          avisado_em: string
+          motivo: string | null
+          n_cod_os: number
+        }
+        Insert: {
+          avisado_em?: string
+          motivo?: string | null
+          n_cod_os: number
+        }
+        Update: {
+          avisado_em?: string
+          motivo?: string | null
+          n_cod_os?: number
         }
         Relationships: []
       }
@@ -6717,6 +7030,24 @@ export type Database = {
           payload?: Json | null
           situacao?: string
           tentativas?: number
+        }
+        Relationships: []
+      }
+      omie_clientes_doc: {
+        Row: {
+          atualizado_em: string
+          codigo: number
+          doc: string
+        }
+        Insert: {
+          atualizado_em?: string
+          codigo: number
+          doc: string
+        }
+        Update: {
+          atualizado_em?: string
+          codigo?: number
+          doc?: string
         }
         Relationships: []
       }
@@ -9181,6 +9512,178 @@ export type Database = {
         }
         Relationships: []
       }
+      sinais: {
+        Row: {
+          acao: string | null
+          assinatura: string
+          atualizado_em: string
+          carimbado_em: string | null
+          carimbado_por: string | null
+          chave: string
+          corpo: string | null
+          criado_em: string
+          dono_user_id: string | null
+          gravidade: string
+          id: string
+          medida: Json | null
+          rascunho: Json | null
+          resolvido_em: string | null
+          serie: string
+          subiu_em: string | null
+          titulo: string
+          valor: number | null
+        }
+        Insert: {
+          acao?: string | null
+          assinatura: string
+          atualizado_em?: string
+          carimbado_em?: string | null
+          carimbado_por?: string | null
+          chave?: string
+          corpo?: string | null
+          criado_em?: string
+          dono_user_id?: string | null
+          gravidade?: string
+          id?: string
+          medida?: Json | null
+          rascunho?: Json | null
+          resolvido_em?: string | null
+          serie: string
+          subiu_em?: string | null
+          titulo: string
+          valor?: number | null
+        }
+        Update: {
+          acao?: string | null
+          assinatura?: string
+          atualizado_em?: string
+          carimbado_em?: string | null
+          carimbado_por?: string | null
+          chave?: string
+          corpo?: string | null
+          criado_em?: string
+          dono_user_id?: string | null
+          gravidade?: string
+          id?: string
+          medida?: Json | null
+          rascunho?: Json | null
+          resolvido_em?: string | null
+          serie?: string
+          subiu_em?: string | null
+          titulo?: string
+          valor?: number | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "sinais_serie_fkey"
+            columns: ["serie"]
+            isOneToOne: false
+            referencedRelation: "sinal_serie"
+            referencedColumns: ["serie"]
+          },
+        ]
+      }
+      sinal_config: {
+        Row: {
+          atualizado_em: string
+          dias_para_arquivar: number
+          dias_para_subir: number
+          id: number
+          valor_para_subir: number
+        }
+        Insert: {
+          atualizado_em?: string
+          dias_para_arquivar?: number
+          dias_para_subir?: number
+          id?: number
+          valor_para_subir?: number
+        }
+        Update: {
+          atualizado_em?: string
+          dias_para_arquivar?: number
+          dias_para_subir?: number
+          id?: number
+          valor_para_subir?: number
+        }
+        Relationships: []
+      }
+      sinal_serie: {
+        Row: {
+          ativa: boolean
+          atualizado_em: string
+          descricao: string | null
+          direcao: string
+          dono_user_id: string | null
+          folga: number
+          gravidade: string
+          historico_meses: number
+          k: number
+          min_relativo: number
+          modulo: string
+          rota: string
+          serie: string
+          titulo: string
+        }
+        Insert: {
+          ativa?: boolean
+          atualizado_em?: string
+          descricao?: string | null
+          direcao?: string
+          dono_user_id?: string | null
+          folga?: number
+          gravidade?: string
+          historico_meses?: number
+          k?: number
+          min_relativo?: number
+          modulo: string
+          rota: string
+          serie: string
+          titulo: string
+        }
+        Update: {
+          ativa?: boolean
+          atualizado_em?: string
+          descricao?: string | null
+          direcao?: string
+          dono_user_id?: string | null
+          folga?: number
+          gravidade?: string
+          historico_meses?: number
+          k?: number
+          min_relativo?: number
+          modulo?: string
+          rota?: string
+          serie?: string
+          titulo?: string
+        }
+        Relationships: []
+      }
+      sinal_visto: {
+        Row: {
+          sinal_id: string
+          user_id: string
+          visto_em: string
+        }
+        Insert: {
+          sinal_id: string
+          user_id: string
+          visto_em?: string
+        }
+        Update: {
+          sinal_id?: string
+          user_id?: string
+          visto_em?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "sinal_visto_sinal_id_fkey"
+            columns: ["sinal_id"]
+            isOneToOne: false
+            referencedRelation: "sinais"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       sync_agendamento: {
         Row: {
           atualizado_em: string
@@ -9351,6 +9854,9 @@ export type Database = {
       time_cargos: {
         Row: {
           acumulo: boolean
+          agente_automacoes: string[]
+          agente_canal: string | null
+          agente_ref: string | null
           alvo: string | null
           ano: number
           atribuicoes: Json
@@ -9366,10 +9872,14 @@ export type Database = {
           prioridade: string | null
           senioridade: string | null
           status: string
+          tipo: string
           titulo: string
         }
         Insert: {
           acumulo?: boolean
+          agente_automacoes?: string[]
+          agente_canal?: string | null
+          agente_ref?: string | null
           alvo?: string | null
           ano?: number
           atribuicoes?: Json
@@ -9385,10 +9895,14 @@ export type Database = {
           prioridade?: string | null
           senioridade?: string | null
           status?: string
+          tipo?: string
           titulo: string
         }
         Update: {
           acumulo?: boolean
+          agente_automacoes?: string[]
+          agente_canal?: string | null
+          agente_ref?: string | null
           alvo?: string | null
           ano?: number
           atribuicoes?: Json
@@ -9404,9 +9918,31 @@ export type Database = {
           prioridade?: string | null
           senioridade?: string | null
           status?: string
+          tipo?: string
           titulo?: string
         }
         Relationships: [
+          {
+            foreignKeyName: "time_cargos_agente_ref_fkey"
+            columns: ["agente_ref"]
+            isOneToOne: false
+            referencedRelation: "agentes"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "time_cargos_agente_ref_fkey"
+            columns: ["agente_ref"]
+            isOneToOne: false
+            referencedRelation: "agentes_resumo"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "time_cargos_agente_ref_fkey"
+            columns: ["agente_ref"]
+            isOneToOne: false
+            referencedRelation: "vw_agente_saude"
+            referencedColumns: ["agente_id"]
+          },
           {
             foreignKeyName: "time_cargos_parent_id_fkey"
             columns: ["parent_id"]
@@ -9520,6 +10056,24 @@ export type Database = {
           periodicidade?: string | null
           tipo?: string | null
           titulo?: string
+        }
+        Relationships: []
+      }
+      variavel_times_config: {
+        Row: {
+          atualizado_em: string
+          oculto: boolean
+          team_key: string
+        }
+        Insert: {
+          atualizado_em?: string
+          oculto?: boolean
+          team_key: string
+        }
+        Update: {
+          atualizado_em?: string
+          oculto?: boolean
+          team_key?: string
         }
         Relationships: []
       }
@@ -9786,6 +10340,21 @@ export type Database = {
       }
     }
     Views: {
+      agentes_resumo: {
+        Row: {
+          alcada_maxima: string | null
+          ativo: boolean | null
+          descricao: string | null
+          escaladas: number | null
+          excecoes_abertas: number | null
+          execucoes: number | null
+          falhas: number | null
+          id: string | null
+          nome: string | null
+          ultima_execucao: string | null
+        }
+        Relationships: []
+      }
       cac_pagamentos: {
         Row: {
           categoria: string | null
@@ -10006,6 +10575,15 @@ export type Database = {
       agenda_checklist_do_dia: {
         Args: { p_dia: string; p_responsavel?: string }
         Returns: Json
+      }
+      agente_colaborador_atual: { Args: never; Returns: string }
+      agente_excecao_resolver: {
+        Args: { p_excecao_id: string; p_resolucao?: string; p_status: string }
+        Returns: undefined
+      }
+      agente_execucao_corrigir: {
+        Args: { p_campos?: Json; p_execucao_id: string; p_texto: string }
+        Returns: string
       }
       anexo_classe: { Args: { p_nome: string }; Returns: string }
       anexo_documento_classe: {
@@ -10486,6 +11064,7 @@ export type Database = {
         }
         Returns: Json
       }
+      cron_historico_podar: { Args: { p_dias?: number }; Returns: number }
       demonstracoes_categorias: {
         Args: { p_meses: string[]; p_rubrica?: string; p_tipo: string }
         Returns: {
@@ -10525,6 +11104,27 @@ export type Database = {
           vencimento: string
         }[]
       }
+      demonstracoes_lancamentos_busca: {
+        Args: {
+          p_busca: string[]
+          p_limite?: number
+          p_meses: string[]
+          p_tipo: string
+        }
+        Returns: {
+          categoria: string
+          cod_titulo: string
+          codigo: string
+          contraparte: string
+          data: string
+          documento: string
+          grupo: string
+          mes: string
+          observacao: string
+          rubrica: string
+          valor: number
+        }[]
+      }
       demonstracoes_lancamentos_multi: {
         Args: { p_meses: string[]; p_rubricas: string[]; p_tipo: string }
         Returns: {
@@ -10562,6 +11162,17 @@ export type Database = {
           status: string
           valor: number
           valor_padrao: number
+        }[]
+      }
+      demonstracoes_sem_de_para: {
+        Args: { p_meses: string[]; p_piso?: number; p_tipo: string }
+        Returns: {
+          categoria: string
+          codigo: string
+          mes: string
+          meses_antes: number
+          quantidade: number
+          valor: number
         }[]
       }
       disparar_automacao: {
@@ -10844,6 +11455,10 @@ export type Database = {
           score: number
         }[]
       }
+      facilities_radar_acordar: {
+        Args: { p_alvo_id: string; p_dias?: number; p_solicitacao_id?: string }
+        Returns: number
+      }
       facilities_radar_agenda: {
         Args: never
         Returns: {
@@ -10852,18 +11467,55 @@ export type Database = {
           proxima: string
         }[]
       }
+      facilities_radar_dormir_expirados: { Args: never; Returns: number }
       facilities_radar_fila: {
         Args: { p_limite?: number }
         Returns: {
           ativo: boolean
           cadencia_dias: number
           categoria: string
+          compra_ate: string | null
           created_at: string
           criado_por: string | null
           favorito: boolean
           fontes: string[]
           id: string
           link_ref: string | null
+          modo: string
+          pai_id: string | null
+          pedido: string
+          preco_alvo: number
+          quantidade: number
+          rodadas: number
+          solicitacao_id: string | null
+          specs: Json
+          titulo: string
+          ultima_varredura: string | null
+          ultimo_erro: string | null
+          updated_at: string
+        }[]
+        SetofOptions: {
+          from: "*"
+          to: "facilities_radar_alvos"
+          isOneToOne: false
+          isSetofReturn: true
+        }
+      }
+      facilities_radar_fila_vigia: {
+        Args: { p_limite?: number }
+        Returns: {
+          ativo: boolean
+          cadencia_dias: number
+          categoria: string
+          compra_ate: string | null
+          created_at: string
+          criado_por: string | null
+          favorito: boolean
+          fontes: string[]
+          id: string
+          link_ref: string | null
+          modo: string
+          pai_id: string | null
           pedido: string
           preco_alvo: number
           quantidade: number
@@ -10897,6 +11549,25 @@ export type Database = {
         Returns: {
           dia: string
           preco: number
+        }[]
+      }
+      facilities_radar_kit_curva: {
+        Args: { p_dias?: number; p_kit_id: string }
+        Returns: {
+          dia: string
+          itens: number
+          total: number
+        }[]
+      }
+      facilities_radar_kits_painel: {
+        Args: never
+        Returns: {
+          itens: Json
+          itens_total: number
+          kit: Json
+          medidos: number
+          teto_total: number
+          total: number
         }[]
       }
       facilities_radar_painel: {
@@ -11078,8 +11749,13 @@ export type Database = {
           ultima_recusa: string
         }[]
       }
+      nfse_avisar_nota_antes_do_pagamento: {
+        Args: { p_dias?: number }
+        Returns: number
+      }
       nfse_bloqueio_emissao: {
         Args: {
+          p_antes_pagamento?: boolean
           p_avulsa?: boolean
           p_dados?: Json
           p_estorno_registrado?: boolean
@@ -11103,7 +11779,48 @@ export type Database = {
         Args: { p_erro: string; p_tentativas: number }
         Returns: string
       }
+      nfse_fila_resumo_recalcular: { Args: never; Returns: undefined }
       nfse_preparo_montar: { Args: { p_desde?: string }; Returns: number }
+      nfse_recusas_a_avisar: {
+        Args: { p_dias?: number }
+        Returns: {
+          c_num_os: string
+          cep: string
+          cep_generico: boolean
+          cnpj_cpf: string
+          consertado_em: string
+          data_faturamento: string
+          emitivel: boolean
+          id_cobranca: string
+          motivo: string
+          motivo_curto: string
+          n_cod_os: number
+          nome: string
+          o_que_foi_feito: string
+          situacao: string
+          valor: number
+        }[]
+      }
+      nfse_recusas_a_tratar: {
+        Args: { p_dias?: number }
+        Returns: {
+          c_num_os: string
+          cep: string
+          cep_generico: boolean
+          cnpj_cpf: string
+          consertado_em: string
+          data_faturamento: string
+          emitivel: boolean
+          id_cobranca: string
+          motivo: string
+          motivo_curto: string
+          n_cod_os: number
+          nome: string
+          o_que_foi_feito: string
+          situacao: string
+          valor: number
+        }[]
+      }
       nome_de_arquivo_da_nota: {
         Args: { p_detalhe: string; p_fonte: string }
         Returns: string
@@ -11126,6 +11843,10 @@ export type Database = {
           p_link_documento: string
         }
         Returns: Json
+      }
+      nota_pode_ir_ao_erp: {
+        Args: { p_alvo_manual: boolean; p_tipo_documento: string }
+        Returns: boolean
       }
       nota_propagar: { Args: { p_cod: string }; Returns: Json }
       nota_propagar_tudo: { Args: { p_limite?: number }; Returns: Json }
@@ -11357,6 +12078,7 @@ export type Database = {
       notas_fiscais_candidatas: {
         Args: { p_avulsa?: boolean; p_ids: string[] }
         Returns: {
+          antes_pagamento: boolean
           bloqueio: string
           cnpj_cpf: string
           data_pagamento: string
@@ -11373,6 +12095,15 @@ export type Database = {
         }[]
       }
       notas_fiscais_emitidas_hoje: { Args: never; Returns: number }
+      notas_fiscais_emitidas_no_periodo: {
+        Args: { p_ate: string; p_de: string }
+        Returns: {
+          notas: number
+          primeira: string
+          ultima: string
+          valor: number
+        }[]
+      }
       notas_fiscais_fila_emissao: {
         Args: { p_limite?: number }
         Returns: {
@@ -11392,7 +12123,9 @@ export type Database = {
       notas_fiscais_fila_resumo: {
         Args: never
         Returns: {
+          calculado_em: string
           cobrancas: number
+          estimado: boolean
           valor: number
         }[]
       }
@@ -11501,6 +12234,7 @@ export type Database = {
           via: string
         }[]
       }
+      omie_clientes_doc_refazer: { Args: never; Returns: undefined }
       omie_lancamento: {
         Args: { p_cod_titulo: string }
         Returns: {
@@ -11568,6 +12302,10 @@ export type Database = {
           descricao: string
           valor: number
         }[]
+      }
+      pergunta_acao_registrar: {
+        Args: { p_estado: string; p_id: string; p_resultado?: Json }
+        Returns: boolean
       }
       pergunta_apagar: { Args: { p_id: string }; Returns: undefined }
       pergunta_promover: {
@@ -11663,7 +12401,95 @@ export type Database = {
       }
       show_limit: { Args: never; Returns: number }
       show_trgm: { Args: { "": string }; Returns: string[] }
+      sinais_abertos: {
+        Args: never
+        Returns: {
+          acao: string
+          carimbado_em: string
+          chave: string
+          corpo: string
+          criado_em: string
+          dono_nome: string
+          dono_user_id: string
+          gravidade: string
+          id: string
+          medida: Json
+          meu: boolean
+          modulo: string
+          rascunho: Json
+          rota: string
+          serie: string
+          subiu_em: string
+          titulo: string
+          valor: number
+          visto: boolean
+        }[]
+      }
+      sinais_contagem: { Args: never; Returns: Json }
+      sinais_escalar: { Args: never; Returns: Json }
+      sinal_automacoes_dia: {
+        Args: { p_dias?: number }
+        Returns: {
+          dia: string
+          execucoes: number
+          falhas: number
+          jobname: string
+        }[]
+      }
+      sinal_carimbar: { Args: { p_id: string }; Returns: undefined }
+      sinal_cobertura_notas: {
+        Args: { p_ate: string; p_de: string }
+        Returns: Json
+      }
+      sinal_gravar: {
+        Args: {
+          p_acao: string
+          p_assinatura: string
+          p_chave: string
+          p_corpo: string
+          p_dono: string
+          p_gravidade: string
+          p_medida: Json
+          p_rascunho: Json
+          p_serie: string
+          p_titulo: string
+          p_valor: number
+        }
+        Returns: string
+      }
+      sinal_normalizar: { Args: { p_id: string }; Returns: number }
+      sinal_resolver_ausentes: {
+        Args: { p_serie: string; p_vivos: string[] }
+        Returns: number
+      }
+      sinal_tarefas_idade: {
+        Args: never
+        Returns: {
+          dias_ativos: number
+          dono_user_id: string
+          id: string
+          prazo: string
+          prioridade: string
+          responsavel: string
+          status: string
+          titulo: string
+        }[]
+      }
+      sinal_ver: { Args: { p_ids: string[] }; Returns: number }
       sync_rh_colaboradores: { Args: never; Returns: undefined }
+      tarefa_fechamento_subtarefa: {
+        Args: { p_card?: string; p_responsavel?: string; p_titulo: string }
+        Returns: Json
+      }
+      tarefas_rotinas_alinhar_prazo: {
+        Args: never
+        Returns: {
+          de: string
+          para: string
+          tarefa_id: string
+          titulo: string
+        }[]
+      }
       tarefas_rotinas_gerar: { Args: { p_hoje?: string }; Returns: number }
       titulos_por_memo: {
         Args: { p_memos: string[] }
@@ -11696,12 +12522,12 @@ export type Tables<
   DefaultSchemaTableNameOrOptions extends
     | keyof (DefaultSchema["Tables"] & DefaultSchema["Views"])
     | { schema: keyof DatabaseWithoutInternals },
-  TableName extends DefaultSchemaTableNameOrOptions extends {
+  TableName extends (DefaultSchemaTableNameOrOptions extends {
     schema: keyof DatabaseWithoutInternals
   }
     ? keyof (DatabaseWithoutInternals[DefaultSchemaTableNameOrOptions["schema"]]["Tables"] &
         DatabaseWithoutInternals[DefaultSchemaTableNameOrOptions["schema"]]["Views"])
-    : never = never,
+    : never) = never,
 > = DefaultSchemaTableNameOrOptions extends {
   schema: keyof DatabaseWithoutInternals
 }
@@ -11725,11 +12551,11 @@ export type TablesInsert<
   DefaultSchemaTableNameOrOptions extends
     | keyof DefaultSchema["Tables"]
     | { schema: keyof DatabaseWithoutInternals },
-  TableName extends DefaultSchemaTableNameOrOptions extends {
+  TableName extends (DefaultSchemaTableNameOrOptions extends {
     schema: keyof DatabaseWithoutInternals
   }
     ? keyof DatabaseWithoutInternals[DefaultSchemaTableNameOrOptions["schema"]]["Tables"]
-    : never = never,
+    : never) = never,
 > = DefaultSchemaTableNameOrOptions extends {
   schema: keyof DatabaseWithoutInternals
 }
@@ -11750,11 +12576,11 @@ export type TablesUpdate<
   DefaultSchemaTableNameOrOptions extends
     | keyof DefaultSchema["Tables"]
     | { schema: keyof DatabaseWithoutInternals },
-  TableName extends DefaultSchemaTableNameOrOptions extends {
+  TableName extends (DefaultSchemaTableNameOrOptions extends {
     schema: keyof DatabaseWithoutInternals
   }
     ? keyof DatabaseWithoutInternals[DefaultSchemaTableNameOrOptions["schema"]]["Tables"]
-    : never = never,
+    : never) = never,
 > = DefaultSchemaTableNameOrOptions extends {
   schema: keyof DatabaseWithoutInternals
 }
@@ -11775,11 +12601,11 @@ export type Enums<
   DefaultSchemaEnumNameOrOptions extends
     | keyof DefaultSchema["Enums"]
     | { schema: keyof DatabaseWithoutInternals },
-  EnumName extends DefaultSchemaEnumNameOrOptions extends {
+  EnumName extends (DefaultSchemaEnumNameOrOptions extends {
     schema: keyof DatabaseWithoutInternals
   }
     ? keyof DatabaseWithoutInternals[DefaultSchemaEnumNameOrOptions["schema"]]["Enums"]
-    : never = never,
+    : never) = never,
 > = DefaultSchemaEnumNameOrOptions extends {
   schema: keyof DatabaseWithoutInternals
 }
@@ -11792,11 +12618,11 @@ export type CompositeTypes<
   PublicCompositeTypeNameOrOptions extends
     | keyof DefaultSchema["CompositeTypes"]
     | { schema: keyof DatabaseWithoutInternals },
-  CompositeTypeName extends PublicCompositeTypeNameOrOptions extends {
+  CompositeTypeName extends (PublicCompositeTypeNameOrOptions extends {
     schema: keyof DatabaseWithoutInternals
   }
     ? keyof DatabaseWithoutInternals[PublicCompositeTypeNameOrOptions["schema"]]["CompositeTypes"]
-    : never = never,
+    : never) = never,
 > = PublicCompositeTypeNameOrOptions extends {
   schema: keyof DatabaseWithoutInternals
 }

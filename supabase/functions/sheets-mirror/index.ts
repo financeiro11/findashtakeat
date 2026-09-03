@@ -21,7 +21,7 @@
 // `parcerias` fica de fora: é o cargo de menor alcance no Hub (ver AppLayout),
 // e planilha de folha e reembolso não é assunto dele.
 
-import { requireUser } from "../_shared/auth.ts";
+import { requireUser, AuthError } from "../_shared/auth.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -197,7 +197,11 @@ Deno.serve(async (req) => {
     // tudo aqui vinha de quando os erros eram do Google (cota, compartilhamento)
     // e a tela queria mostrá-los como aviso — mas com ele a recusa de acesso
     // chegaria à tela como se fosse mais um recado do Sheets.
-    const naoAutorizado = /autenticad|permiss/i.test(msg);
+    // A checagem é pelo TIPO do erro (AuthError, lançado só pelo requireUser), nunca por
+    // regex na mensagem: o Google devolve "The caller does not have permission" num 403 de
+    // planilha sem compartilhamento, e um regex textual confundia isso com falha de login,
+    // subia como 401 e o supabase-js descartava o corpo (forbidden/mensagem real perdidos).
+    const naoAutorizado = e instanceof AuthError;
     return new Response(
       JSON.stringify({
         error: isRate

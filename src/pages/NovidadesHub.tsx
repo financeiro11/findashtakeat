@@ -202,7 +202,7 @@ function DiaCard({ dia, hoje, novo }: { dia: DiaNovidades; hoje: string; novo: b
       subtitle={dia.resumo || `${n} mudança${n === 1 ? "" : "s"} publicada${n === 1 ? "" : "s"}`}
       actions={
         <span className="num text-[11px] text-muted-foreground" title={`${dia.n_commits} commits no dia`}>
-          {n} item{n === 1 ? "" : "ns"}
+          {n} {n === 1 ? "item" : "itens"}
         </span>
       }
     >

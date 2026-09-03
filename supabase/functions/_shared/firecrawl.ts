@@ -25,6 +25,13 @@ import { createClient, type SupabaseClient } from "https://esm.sh/@supabase/supa
 export type Consumidor =
   | "radar_varrer"
   | "radar_conferir"
+  /* A vigia permanente do radar tem quinhão SEPARADO da varredura, e não é
+     detalhe contábil: são regimes com prioridades opostas. A varredura serve
+     uma compra que alguém está esperando hoje; a vigia constrói curva para a
+     compra do mês que vem, e adiá-la uma semana não custa nada. Compartilhando
+     o mesmo teto, a curva de seis produtos comeria o crédito da compra em
+     curso — que é exatamente o que o rateio existe para impedir. */
+  | "radar_vigia"
   | "cadastro_cnpj"
   | "editais"
   | "vigilancia"

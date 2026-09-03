@@ -6,6 +6,7 @@
 //   { action: "varrer",  alvo_id?, limite?, fontes? } → sai atrás de preço
 //   { action: "confirmar", alvo_id?, limite? }        → abre o anúncio e checa
 //   { action: "sugerir_teto", alvo_id, preco_alvo? }  → o que a curva diz do teto
+//   { action: "classificar", oferta_id, sinal }       → 👍/👎 num anúncio
 //
 // VARRER E CONFIRMAR SÃO DUAS METADES, e essa separação é o coração da coisa.
 // A varredura lê PÁGINAS DE BUSCA, que são baratas e mentem: mostram produto
@@ -76,12 +77,12 @@ import { requireUser } from "../_shared/auth.ts";
 import { generateJSON, generateText, MODELO_LITE } from "../_shared/gemini.ts";
 import {
   avaliar, chaveDoProduto, classificar, condicaoDoTitulo, disponibilidade, DIAS_PARA_SUGERIR, economiaDe, emCentavos, lerSpecs, MIN_AVALIACOES, norm, pisoDePreco, sugerirTeto, totalDaOferta,
-  type AlvoSpecs, type OfertaBruta,
+  type AlvoSpecs, type OfertaBruta, type Preferencias,
 } from "../_shared/radar-precos.ts";
 /* O saldo e o freio moram no módulo compartilhado desde que o Firecrawl passou a
    ter cinco consumidores no Hub. O radar deixou de ser o único que gasta, e o
    número que decide "posso?" não pode viver dentro de quem pergunta. */
-import { podeGastar, registrarGasto, saldoFirecrawl } from "../_shared/firecrawl.ts";
+import { podeGastar, registrarGasto, saldoFirecrawl, type Consumidor } from "../_shared/firecrawl.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -99,6 +100,16 @@ const ORCAMENTO_MS = 55_000;
  */
 const MAX_ALERTAS_POR_ALVO = 3;
 /**
+ * A partir de quantos 👎 na mesma marca, no mesmo alvo, a `action: "classificar"`
+ * propõe excluí-la — e para de propor de novo, uma vez aplicada (ver o
+ * `jaExclui` no handler). Mesmo número de sempre neste módulo (`MAX_ALERTAS_POR_ALVO`,
+ * `FIXAS_ATE`): uma recusa é o preço normal (a pessoa só recusa o que não
+ * queria), duas ainda cabem em coincidência (duas lojas listando o mesmo
+ * anúncio ruim), três seguidas na mesma marca é o menor número que já dói
+ * ignorar como acaso.
+ */
+const LIMIAR_PROPOR_MARCA = 3;
+/**
  * Quantas fontes por alvo por rodada. Cada uma custa um crédito de Firecrawl,
  * uma chamada de IA e ~40s de espera — e são doze cadastradas.
  *
@@ -110,12 +121,34 @@ const MAX_ALERTAS_POR_ALVO = 3;
  * por um crédito a menos por alvo por rodada.
  */
 const MAX_FONTES_POR_RODADA = 5;
+
+/**
+ * Quantas fontes lê um alvo em VIGIA — o regime permanente e mudo, que existe
+ * para construir a curva do produto que a empresa compra sempre.
+ *
+ * DUAS, E É ISSO QUE FAZ A VIGIA CABER. Cinco fontes × quatro rodadas por dia
+ * custam ~600 créditos por mês por alvo; duas fontes uma vez por semana custam
+ * ~9. Seis produtos no primeiro regime não cabem no plano (que é rateado com
+ * editais, cadastro de CNPJ, vigilância e churn); no segundo, somam menos que
+ * o arredondamento de qualquer um dos outros consumidores.
+ *
+ * DUAS TAMBÉM É O MÍNIMO HONESTO. Com uma só, a série inteira depende de uma
+ * vitrine — se a Kabum mudar o layout da busca, a curva para de andar e o
+ * gráfico continua bonito, mostrando o último preço conhecido como se fosse o
+ * de hoje. Com duas, a segunda denuncia a primeira.
+ */
+const FONTES_VIGIA = 2;
+
 /**
  * Quantas das melhores vão SEMPRE, antes do rodízio. Não é mais "até a
  * prioridade N": a ordem agora vem do rendimento medido, e o que se fixa é a
  * quantidade de lugares no pódio.
  */
 const FIXAS_ATE = 3;
+
+/** O teto de fontes deste alvo, que é o que separa os dois regimes. */
+const fontesDoAlvo = (alvo: any) =>
+  alvo?.modo === "vigia" ? FONTES_VIGIA : MAX_FONTES_POR_RODADA;
 
 /* O freio de crédito mora em `_shared/radar-precos.ts` (SALDO_MINIMO_RASPAGEM),
    junto com o resto da regra: a tela precisa do mesmo número para explicar por
@@ -1581,9 +1614,19 @@ async function varrerAlvo(
       if (ra == null && rb != null) return 1;
       return LOJAS[a].prioridade - LOJAS[b].prioridade;
     });
-  const fixas = escolhidas.slice(0, FIXAS_ATE);
-  const roda = escolhidas.slice(FIXAS_ATE);
-  const vagas = Math.max(0, MAX_FONTES_POR_RODADA - fixas.length);
+  /* O PÓDIO ENCOLHE JUNTO COM A RODADA. Em vigia são duas vagas no total, e
+     `FIXAS_ATE = 3` fixaria as três melhores — o que zeraria o rodízio e
+     prenderia a curva em duas vitrines para sempre. Uma fonte que morresse
+     levaria metade da série junto, em silêncio.
+     A fórmula deixa sempre PELO MENOS UMA vaga de rodízio: em compra dá os três
+     de sempre (min(3, 5−1)); em vigia dá uma fixa — a melhor, que mantém a
+     série comparável de semana a semana — e uma girando, que é o que cobre as
+     outras vitrines ao longo do mês e denuncia a que parou. */
+  const maxFontes = fontesDoAlvo(alvo);
+  const fixasAte = Math.min(FIXAS_ATE, Math.max(1, maxFontes - 1));
+  const fixas = escolhidas.slice(0, fixasAte);
+  const roda = escolhidas.slice(fixasAte);
+  const vagas = Math.max(0, maxFontes - fixas.length);
   const giro = roda.length ? (rodada * vagas) % roda.length : 0;
   const naOrdem = [
     ...fixas,
@@ -1684,6 +1727,23 @@ async function varrerAlvo(
 
   res.buscadas = brutas.size;
 
+  /* O QUE ESTE ALVO JÁ CURTIU, lido uma vez por rodada — não por anúncio, são
+     ~200 na rodada e o voto de ontem não muda no meio dela. Puramente aditivo:
+     ver `Preferencias` em _shared/radar-precos.ts e a migração de
+     facilities_radar_feedback. Erro aqui não pode derrubar a varredura por um
+     bônus de ranking — degrada para "sem preferência" e segue. */
+  let prefs: Preferencias = { marcasGostei: new Set(), vendedoresGostei: new Set() };
+  try {
+    const { data: gostei } = await supabase.from("facilities_radar_feedback")
+      .select("marca, vendedor").eq("alvo_id", alvo.id).eq("sinal", "gostei");
+    for (const g of gostei ?? []) {
+      if (g.marca) prefs.marcasGostei.add(g.marca);
+      if (g.vendedor) prefs.vendedoresGostei.add(g.vendedor);
+    }
+  } catch (e) {
+    console.error("preferencias", (e as Error)?.message);
+  }
+
   /* Avaliação — regra pura, sem rede. */
   const recusas = new Map<string, number>();
   const aprovadas: Array<{ o: OfertaBruta; av: ReturnType<typeof avaliar> }> = [];
@@ -1694,7 +1754,7 @@ async function varrerAlvo(
      haveria com o que comparar. */
   const soPreco: Array<{ o: OfertaBruta; av: ReturnType<typeof avaliar> }> = [];
   for (const o of brutas.values()) {
-    const av = avaliar(specs, precoAlvo, o);
+    const av = avaliar(specs, precoAlvo, o, prefs);
     if (!av.aprovado) {
       res.recusadas++;
       if (av.apenas_preco) soPreco.push({ o, av });
@@ -1839,6 +1899,16 @@ async function varrerAlvo(
   const ordem: Record<string, number> = { minimo_historico: 0, queda_forte: 1, alvo_batido: 2 };
   candidatos.sort((a, b) => (ordem[a.classe.tipo] ?? 9) - (ordem[b.classe.tipo] ?? 9) || a.total - b.total);
 
+  /* VIGIA NÃO AVISA, E É AQUI QUE SE CORTA — não na tela.
+     O alvo em vigia existe para engordar a curva, e a curva já foi gravada
+     acima, no upsert das ofertas. O que ele não faz é criar aviso: o Facilities
+     pediu silêncio no regime permanente, e "criar o alerta e escondê-lo" seria
+     pior que inútil — o alerta nasce em `a_confirmar`, e é exatamente essa fila
+     que o cron das :15 abre um a um, gastando um crédito por anúncio para
+     confirmar o estoque de algo que ninguém vai comprar hoje. O silêncio da
+     vigia e o preço dela são a mesma decisão. */
+  if (alvo.modo === "vigia") candidatos.length = 0;
+
   /* UM PRODUTO, UM AVISO. Buscapé, Zoom e Bondfaro são do mesmo grupo e
      listaram o MESMO notebook a R$ 2.969,10 — três avisos idênticos na tela,
      que é o começo do fim da confiança na aba. As três OFERTAS continuam
@@ -1858,11 +1928,14 @@ async function varrerAlvo(
      continua avisando de propósito: a chave inclui o total, e queda de preço é
      exatamente o que merece aviso novo. */
   const vistos = new Set<string>();
-  const { data: jaAbertos, error: erroAbertos } = await supabase
-    .from("facilities_radar_alertas")
-    .select("preco_total, preco, facilities_radar_ofertas(titulo, preco_total, preco)")
-    .eq("alvo_id", alvo.id)
-    .in("status", ["a_confirmar", "novo", "visto"]);
+  // Sem candidato não há o que deduplicar — e é o caso de toda rodada de vigia.
+  const { data: jaAbertos, error: erroAbertos } = candidatos.length
+    ? await supabase
+        .from("facilities_radar_alertas")
+        .select("preco_total, preco, facilities_radar_ofertas(titulo, preco_total, preco)")
+        .eq("alvo_id", alvo.id)
+        .in("status", ["a_confirmar", "novo", "visto"])
+    : { data: [] as any[], error: null };
   /* SE ESTA LEITURA FALHAR, O RADAR VOLTA A REPETIR AVISO — e faria isso em
      silêncio, porque `data` nulo vira conjunto vazio e o filtro segue como se
      não houvesse nada aberto. É a forma de falha que este módulo mais combate:
@@ -2059,6 +2132,66 @@ Deno.serve(async (req) => {
       } catch { /* a frase é enfeite; os números é que decidem */ }
 
       return json({ ok: true, ...s, texto, duracao_ms: Date.now() - t0 });
+    }
+
+    /* ---------------------------------------------------- classificar */
+    /* 👍/👎 num anúncio — o insumo para o radar aprender preferência sem que
+       ninguém preencha formulário nenhum.
+       SEM EFEITO PRÓPRIO NA HORA. Isto só grava. 👍 entra no bônus de ranking
+       que `avaliar()` já aplica na PRÓXIMA varredura (ver `Preferencias`); 👎
+       só filtra depois que a PESSOA confirmar a proposta abaixo — nunca sozinho,
+       pelo mesmo motivo do Cartão e das Tarefas: um padrão de três pode ser
+       coincidência, e quem decide se é regra é quem está comprando.
+       `sinal: null` DESFAZ o voto — é o que o clique no ícone já ativo dispara
+       no front, sem precisar de uma ação separada de "remover". */
+    if (action === "classificar") {
+      const ofertaId = Number(body?.oferta_id);
+      const sinal = body?.sinal === "gostei" || body?.sinal === "nao_gostei" ? body.sinal : null;
+      if (!ofertaId) return json({ ok: false, erro: "Informe o anúncio." }, 400);
+
+      const { data: oferta, error: erroOferta } = await supabase
+        .from("facilities_radar_ofertas")
+        .select("id, alvo_id, fonte, vendedor, condicao, specs_lidas")
+        .eq("id", ofertaId).maybeSingle();
+      if (erroOferta) throw new Error(erroOferta.message);
+      if (!oferta) return json({ ok: false, erro: "Anúncio não encontrado — pode ter saído da lista." }, 404);
+
+      if (!sinal) {
+        const { error } = await supabase.from("facilities_radar_feedback").delete().eq("oferta_id", ofertaId);
+        if (error) throw new Error(error.message);
+        return json({ ok: true, sinal: null, duracao_ms: Date.now() - t0 });
+      }
+
+      // A marca sai da FOTOGRAFIA já tirada na varredura (`specs_lidas`), não de
+      // reler o título agora — é o mesmo valor que `avaliar()` viu na hora.
+      const marca: string | null = (oferta.specs_lidas as any)?.marca ?? null;
+      const vendedor = oferta.vendedor ? norm(oferta.vendedor) : null;
+      const { error: erroUpsert } = await supabase.from("facilities_radar_feedback").upsert({
+        alvo_id: oferta.alvo_id, oferta_id: ofertaId, sinal,
+        marca, vendedor, fonte: oferta.fonte, condicao: oferta.condicao,
+        criado_por: quem,
+      }, { onConflict: "oferta_id" });
+      if (erroUpsert) throw new Error(erroUpsert.message);
+
+      /* O PADRÃO SÓ SE PROPÕE EM CIMA DE 👎 COM MARCA CONHECIDA. Sem marca não
+         há o que generalizar — ficaria só na tabela, para o dia em que o
+         vendedor virar um segundo eixo (ver a migração). */
+      if (sinal === "nao_gostei" && marca) {
+        const { count } = await supabase.from("facilities_radar_feedback")
+          .select("id", { count: "exact", head: true })
+          .eq("alvo_id", oferta.alvo_id).eq("sinal", "nao_gostei").eq("marca", marca);
+        if ((count ?? 0) >= LIMIAR_PROPOR_MARCA) {
+          const { data: alvoAtual } = await supabase.from("facilities_radar_alvos")
+            .select("specs").eq("id", oferta.alvo_id).maybeSingle();
+          const jaExclui = ((alvoAtual?.specs as any)?.termos_proibidos ?? [])
+            .some((t: string) => norm(t) === marca);
+          if (!jaExclui) {
+            return json({ ok: true, sinal, marca, duracao_ms: Date.now() - t0, proposta: { marca, contagem: count } });
+          }
+        }
+      }
+
+      return json({ ok: true, sinal, marca, duracao_ms: Date.now() - t0 });
     }
 
     /* -------------------------------------------------- sugerir busca */
@@ -2613,6 +2746,23 @@ Deno.serve(async (req) => {
 
     const fontesPedidas: string[] | null = Array.isArray(body?.fontes) && body.fontes.length ? body.fontes : null;
 
+    /* QUAL RAIA. `modo: "vigia"` é o cron semanal da vigia permanente; sem ele,
+       a fila de sempre — que agora só enxerga alvo em modo compra. Duas filas
+       porque uma chamada cobre no máximo dois alvos (o worker morre aos ~150s):
+       na fila única, o alvo de vigia cuja semana venceu seria o mais antigo e
+       tomaria a vaga de um alvo que alguém está esperando ver na tela hoje. */
+    const modoRodada: "vigia" | "compra" = body?.modo === "vigia" ? "vigia" : "compra";
+
+    /* QUEM FOI ACORDADO VOLTA A DORMIR. Roda antes da fila, e de propósito:
+       o alvo cujo prazo de compra venceu tem de sair da fila de compra NESTA
+       rodada, não na próxima. Sem isso o modo compra vira o permanente por
+       esquecimento — o caso real é ligar "estou comprando" numa terça, comprar
+       na quinta e ninguém desligar nunca.
+       Não derruba a rodada se falhar: dormir um dia atrasado custa crédito;
+       não varrer custa a tela. */
+    const { data: dormiram, error: erroDormir } = await supabase.rpc("facilities_radar_dormir_expirados");
+    if (erroDormir) console.error("dormir_expirados", erroDormir.message);
+
     /* A FILA VEM DO BANCO, e a razão é a cadência: o filtro compara
        `ultima_varredura` com uma expressão sobre OUTRA coluna do mesmo registro
        (`now() - cadencia_dias`), e isso não se escreve num filtro do PostgREST.
@@ -2622,14 +2772,19 @@ Deno.serve(async (req) => {
        propósito: quem clicou quer agora, e a espera é do cron, não da pessoa. */
     const { data: alvos, error } = body?.alvo_id
       ? await supabase.from("facilities_radar_alvos").select("*").eq("ativo", true).eq("id", body.alvo_id)
-      : await supabase.rpc("facilities_radar_fila", { p_limite: Number(body?.limite ?? 20) });
+      : await supabase.rpc(
+          modoRodada === "vigia" ? "facilities_radar_fila_vigia" : "facilities_radar_fila",
+          { p_limite: Number(body?.limite ?? 20) },
+        );
     if (error) throw new Error(error.message);
     if (!alvos?.length) {
       return json({
-        ok: true, alvos: 0,
+        ok: true, alvos: 0, dormiram: dormiram ?? 0,
         // "Nenhum alvo ativo" e "nenhum alvo NA HORA" são coisas diferentes, e
         // confundi-las faria o café semanal parecer um alvo quebrado.
-        mensagem: "Nenhum alvo na hora de varrer — os semanais só entram quando a cadência deles vence.",
+        mensagem: modoRodada === "vigia"
+          ? "Nenhum alvo de vigia na hora — a curva semanal só entra quando a cadência vence."
+          : "Nenhum alvo na hora de varrer — os semanais só entram quando a cadência deles vence.",
       });
     }
 
@@ -2650,16 +2805,42 @@ Deno.serve(async (req) => {
        laço defeituoso não torrar o mês numa madrugada) e o piso de saldo desta
        prioridade (para a varredura parar ANTES da conferência, que é a que tira
        fantasma da tela). Ver `_shared/firecrawl.ts`. */
-    const cabe = await podeGastar(supabase, "radar_varrer", alvos.length * MAX_FONTES_POR_RODADA, saldoAntes);
+    /* O CONSUMIDOR VEM DOS ALVOS, e não do parâmetro da chamada. A rodada de
+       vigia gasta do quinhão da vigia (200/mês, piso 850) e a de compra do
+       quinhão da varredura (1.400/mês, piso 500) — é essa separação, e não o
+       tamanho da lista, que garante que ligar a vigia permanente não possa
+       frear uma compra em curso.
+       Lê-se dos alvos e não de `modoRodada` porque o clique manual (`alvo_id`)
+       não passa por fila nenhuma e pode ser num alvo de qualquer regime. Misto
+       não acontece pelas filas; se acontecesse, cobrar da varredura é o
+       desempate certo — nunca deixar uma rodada de compra ser barrada pelo teto
+       pequeno da vigia. */
+    const soVigia = (alvos as any[]).every((a) => a.modo === "vigia");
+    const consumidor: Consumidor = soVigia ? "radar_vigia" : "radar_varrer";
+
+    /* A RESERVA É SOMADA POR ALVO, não `alvos.length × 5`. Um alvo de vigia lê
+       duas fontes; cobrar cinco dele faria o freio recusar rodadas que cabiam —
+       e, contra um teto de 200, isso é a diferença entre a curva andar o mês
+       inteiro e parar na terceira semana. */
+    const custoPrevisto = (alvos as any[]).reduce((s, a) => s + fontesDoAlvo(a), 0);
+    const cabe = await podeGastar(supabase, consumidor, custoPrevisto, saldoAntes);
     if (!cabe.pode) {
-      const recado = `varredura suspensa: ${cabe.motivo}. ` +
-        "A conferência dos achados que já estão na tela continua rodando.";
+      /* O RECADO TEM DE DIZER O QUE CONTINUA DE PÉ, e as duas raias param de
+         jeitos diferentes. Na compra, a conferência segue e a tela continua
+         sendo desmentida; na vigia não há conferência nenhuma, e o que se perde
+         é um ponto da curva — dizer "a conferência continua" numa rodada de
+         vigia seria prometer um trabalho que ninguém vai fazer. */
+      const recado = soVigia
+        ? `vigia semanal suspensa: ${cabe.motivo}. A curva fica sem o ponto desta semana; ` +
+          "a varredura dos alvos em compra tem quinhão próprio e não é afetada."
+        : `varredura suspensa: ${cabe.motivo}. ` +
+          "A conferência dos achados que já estão na tela continua rodando.";
       const agora = new Date().toISOString();
       await supabase.from("facilities_radar_execucoes").insert({
         alvos: 0, terminado_em: agora,
-        detalhe: { freado: true, motivo: recado, saldo: saldoAntes.restantes, plano: saldoAntes.plano, quinhao: cabe.restaCiclo, quem },
+        detalhe: { freado: true, motivo: recado, modo: modoRodada, consumidor, saldo: saldoAntes.restantes, plano: saldoAntes.plano, quinhao: cabe.restaCiclo, quem },
       });
-      return json({ ok: true, freado: true, alvos: 0, saldo: saldoAntes.restantes, plano: saldoAntes.plano, mensagem: recado });
+      return json({ ok: true, freado: true, alvos: 0, modo: modoRodada, saldo: saldoAntes.restantes, plano: saldoAntes.plano, mensagem: recado });
     }
 
     /* A ordem das fontes desta rodada sai do que elas renderam nos últimos 14
@@ -2710,9 +2891,9 @@ Deno.serve(async (req) => {
        de saldo falha, registra-se o que se PEDIU: subestima a página que exigiu
        stealth, mas um razão que ignora a rodada inteira mentiria muito mais. */
     await registrarGasto(
-      supabase, "radar_varrer",
+      supabase, consumidor,
       custo != null && custo > 0 ? custo : daRodada(),
-      { alvos: resultados.length, raspagens: daRodada(), quem },
+      { alvos: resultados.length, raspagens: daRodada(), modo: modoRodada, quem },
       custo != null && custo > 0,
     );
 
@@ -2724,6 +2905,10 @@ Deno.serve(async (req) => {
         alertas: totalAlertas,
         detalhe: {
           por_alvo: resultados, restante, quem,
+          // Qual raia correu, e de qual quinhão saiu o crédito. Sem isto, uma
+          // rodada de vigia e uma de compra ficam idênticas no relatório — e
+          // são justamente elas que se quer separar ao investigar o consumo.
+          modo: modoRodada, consumidor, dormiram: dormiram ?? 0,
           raspagens: daRodada(),
           creditos: custo,
           saldo: saldoDepois.restantes,
@@ -2738,6 +2923,12 @@ Deno.serve(async (req) => {
       ofertas: totalOfertas,
       alertas: totalAlertas,
       restante,
+      modo: modoRodada,
+      /* Quantos alvos voltaram a dormir nesta rodada. A tela usa para dizer
+         "o monitor voltou à vigia" — o retorno automático precisa ser visível,
+         senão vira o oposto do que ele resolve: alguém vê o card sem o selo de
+         compra e acha que alguém desligou pelas costas. */
+      dormiram: dormiram ?? 0,
       raspagens: daRodada(),
       creditos: custo,
       saldo: saldoDepois.restantes,

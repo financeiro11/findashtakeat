@@ -54,6 +54,16 @@ export interface AlvoRow {
   favorito: boolean;
   /** Dias mínimos entre varreduras. 0 = toda rodada; 7 = o consumível semanal. */
   cadencia_dias: number;
+  /**
+   * O regime. `vigia` é a curva permanente e muda — duas fontes, uma vez por
+   * semana, sem conferência e sem aviso; `compra` é o ritmo cheio de sempre.
+   * São ~9 créditos de raspagem por mês contra ~600.
+   */
+  modo: "vigia" | "compra";
+  /** A faixa de que este alvo é um modelo específico. Null na própria faixa. */
+  pai_id: string | null;
+  /** Quando o modo compra vence e o alvo volta sozinho à vigia. */
+  compra_ate: string | null;
 }
 
 interface Props {
@@ -95,6 +105,11 @@ export function NovoAlvoDialog({ alvo, open, onOpenChange, onSaved, onBuscarAgor
   /* De quantos em quantos dias vale olhar. Zero é "toda rodada", que é o
      equipamento; o consumível nasce em 7 pela mão da interpretação. */
   const [cadencia, setCadencia] = useState(0);
+  /* O REGIME. Nasce em `compra`, que é o comportamento de sempre — o mesmo
+     motivo pelo qual a coluna no banco tem esse default. A vigia é o regime
+     novo, e regime novo que se liga sozinho vira alvo que não avisa e ninguém
+     entende por quê. */
+  const [modo, setModo] = useState<"vigia" | "compra">("compra");
   const [fontes, setFontes] = useState<string[]>(FONTES_PADRAO);
   const [specs, setSpecs] = useState<AlvoSpecs | null>(null);
   const [solicId, setSolicId] = useState<string>("");
@@ -119,10 +134,11 @@ export function NovoAlvoDialog({ alvo, open, onOpenChange, onSaved, onBuscarAgor
       setCategoria(alvo.categoria); setPrecoTxt(String(alvo.preco_alvo));
       setQuantidade(String(alvo.quantidade)); setFontes(alvo.fontes ?? []);
       setCadencia(Number(alvo.cadencia_dias ?? 0));
+      setModo(alvo.modo ?? "compra");
       setSpecs(alvo.specs ?? null); setSolicId(alvo.solicitacao_id ?? "");
     } else {
       setPedido(""); setLinkRef(""); setTitulo(""); setCategoria("TI"); setPrecoTxt("");
-      setQuantidade("1"); setFontes(FONTES_PADRAO); setCadencia(0);
+      setQuantidade("1"); setFontes(FONTES_PADRAO); setCadencia(0); setModo("compra");
       setSpecs(null); setSolicId("");
     }
   }, [open, alvo]);
@@ -182,12 +198,41 @@ export function NovoAlvoDialog({ alvo, open, onOpenChange, onSaved, onBuscarAgor
     if (!specs) { toast.error("Interprete o pedido antes de salvar — é dele que saem os filtros."); return; }
     if (!preco || preco <= 0) { toast.error("Defina o preço-teto."); return; }
     if (!fontes.length) { toast.error("Escolha pelo menos uma fonte."); return; }
+    /* A PROIBIÇÃO DO CAFÉ, dita aqui em português. O banco tem o mesmo check
+       (`radar_vigia_nao_e_consumivel`) e é ele que garante — mas o que chega da
+       violação de constraint é uma linha de Postgres, e quem está preenchendo o
+       formulário merece a razão: a Takeat tem fornecedor fechado de copa e
+       limpeza, e vigiar preço deles é pagar raspagem para reconfirmar um número
+       que ninguém vai usar. Pedido em 28/08/2026, e o barateamento da vigia não
+       muda a decisão. */
+    if (modo === "vigia" && specs.unidade) {
+      toast.error(
+        "Consumível não entra na vigia permanente — a Takeat já tem fornecedor de copa e limpeza. " +
+        "Para comparar uma vez, deixe em “compra pontual” e use “Criar e buscar agora”.",
+        { duration: 9000 },
+      );
+      return;
+    }
     setSalvando(true);
     const linha = {
       titulo: titulo.trim() || pedido.slice(0, 80),
       pedido, link_ref: linkRef || null, categoria,
       specs, preco_alvo: preco, quantidade: Number(quantidade) || 1,
-      cadencia_dias: cadencia,
+      modo,
+      /* Em vigia a cadência é do REGIME, não do gosto de quem cadastra: o cron
+         da vigia roda uma vez por semana, e um alvo com cadência 0 aqui só
+         atravessaria a fila na frente dos outros sem ganhar rodada nenhuma. */
+      cadencia_dias: modo === "vigia" ? Math.max(cadencia, 7) : cadencia,
+      /* O PRAZO SÓ É TOCADO QUANDO O REGIME MUDA — e esta linha já esteve
+         errada. Mandar `compra_ate: null` em todo salvamento significaria que
+         corrigir o teto de um alvo ACORDADO apagaria, de quebra, o relógio que
+         o faz voltar a vigiar: um alvo em ritmo de compra para sempre, por
+         causa de uma edição que não tinha nada a ver com isso. É exatamente a
+         falha que `compra_ate` existe para impedir, entrando pela porta dos
+         fundos.
+         Trocar o regime na mão, aí sim, zera o relógio: é uma decisão de gente,
+         e decisão de gente não expira sozinha. */
+      ...(alvo && alvo.modo === modo ? {} : { compra_ate: null }),
       solicitacao_id: solicId || null, fontes, updated_at: new Date().toISOString(),
       /* Quem cadastrou vira o solicitante quando o achado virar cotação — é o
          que `facilities_radar_virar_cotacao` usa. Sem isso a solicitação nasce
@@ -212,7 +257,13 @@ export function NovoAlvoDialog({ alvo, open, onOpenChange, onSaved, onBuscarAgor
       return;
     }
 
-    toast.success(alvo ? "Alvo atualizado." : "Alvo criado. O radar começa a olhar na próxima varredura.");
+    toast.success(
+      alvo
+        ? "Alvo atualizado."
+        : modo === "vigia"
+          ? "Alvo em vigia. A curva começa a andar na segunda de manhã — e ele não vai avisar nada até você ligar o modo de compra."
+          : "Alvo criado. O radar começa a olhar na próxima varredura.",
+    );
     onOpenChange(false);
     onSaved();
   }
@@ -284,6 +335,61 @@ export function NovoAlvoDialog({ alvo, open, onOpenChange, onSaved, onBuscarAgor
             </div>
           )}
 
+          {/* O REGIME É A PRIMEIRA DECISÃO DE CUSTO deste formulário, e está
+              escrito com o preço na mesa porque as duas opções não são "mais" e
+              "menos" da mesma coisa: uma avisa e a outra é muda. Escolher a
+              vigia sem saber disso produz um alvo que funciona perfeitamente e
+              nunca fala — a forma de defeito mais difícil de diagnosticar que
+              este módulo tem. */}
+          <div>
+            <Label>Como o radar deve olhar isto</Label>
+            <div className="mt-2 grid gap-2 sm:grid-cols-2">
+              {[
+                {
+                  id: "compra" as const,
+                  nome: "Estou comprando",
+                  ritmo: "5 fontes · 4× ao dia · confere estoque e frete · avisa",
+                  custo: "~600 créditos/mês",
+                  ajuda: "O ritmo de sempre. Para a compra que está acontecendo agora.",
+                },
+                {
+                  id: "vigia" as const,
+                  nome: "Vigia permanente",
+                  ritmo: "2 fontes · 1× por semana · sem conferência · não avisa",
+                  custo: "~9 créditos/mês",
+                  ajuda: "Para o que a empresa compra sempre. Só constrói a curva — no dia da compra, você já sabe se o preço é bom.",
+                },
+              ].map((op) => (
+                <button
+                  key={op.id}
+                  type="button"
+                  onClick={() => setModo(op.id)}
+                  className={cn(
+                    "rounded-md border p-3 text-left transition",
+                    modo === op.id
+                      ? "border-primary bg-primary/5 ring-1 ring-primary"
+                      : "border-border hover:border-muted-foreground/40",
+                  )}
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-[13px] font-medium text-foreground">{op.nome}</span>
+                    <span className="num rounded bg-muted px-1.5 py-0.5 text-[10.5px] text-muted-foreground">{op.custo}</span>
+                  </div>
+                  <div className="mt-1 text-[11px] text-muted-foreground">{op.ritmo}</div>
+                  <div className="mt-1 text-[11.5px] text-muted-foreground">{op.ajuda}</div>
+                </button>
+              ))}
+            </div>
+            {modo === "vigia" && (
+              <p className="mt-1.5 text-[11.5px] text-muted-foreground">
+                Em vigia o preço mostrado <span className="font-medium text-foreground">não passa pela conferência de estoque</span> — a
+                vitrine da loja continua listando o esgotado com o último preço praticado. É aceitável aqui porque a pergunta é
+                “o mercado está caro?”, e não “dá para comprar este?”. Ao ligar o modo de compra, a conferência entra e os fantasmas
+                saem antes de qualquer decisão.
+              </p>
+            )}
+          </div>
+
           <div className="grid grid-cols-2 gap-3">
             <div>
               <Label htmlFor="titulo">Nome do alvo</Label>
@@ -310,7 +416,9 @@ export function NovoAlvoDialog({ alvo, open, onOpenChange, onSaved, onBuscarAgor
                   é apertado. Quem digita precisa saber qual das duas está
                   escrevendo ANTES de salvar. */}
               <Label htmlFor="preco">
-                {unidade ? `Preço-teto por ${UNIDADE_LABEL[unidade]}` : "Preço-teto (por unidade)"}
+                {unidade
+                  ? `Preço-teto por ${UNIDADE_LABEL[unidade]}`
+                  : modo === "vigia" ? "Preço de referência" : "Preço-teto (por unidade)"}
               </Label>
               <Input id="preco" value={precoTxt} onChange={(e) => setPrecoTxt(e.target.value)} placeholder={unidade ? "40,00" : "3.000"} />
               {!!preco && (
@@ -320,6 +428,16 @@ export function NovoAlvoDialog({ alvo, open, onOpenChange, onSaved, onBuscarAgor
                       Avisa em até {fmtBRL(preco)} por {UNIDADE_LABEL[unidade]} — o pacote inteiro pode custar mais que isso,
                       desde que a conta por {UNIDADE_LABEL[unidade]} feche. Anúncio que não diz o tamanho da embalagem é recusado,
                       porque sem ele não há como comparar.
+                    </>
+                  ) : modo === "vigia" ? (
+                    /* EM VIGIA O NÚMERO NÃO DISPARA NADA — vira a linha
+                       tracejada do gráfico e o corte entre "melhor agora" e
+                       "nada no teto · menor: X" no card. Chamá-lo de "teto"
+                       aqui prometeria um aviso que o regime não dá. */
+                    <>
+                      Referência de {fmtBRL(preco)} — em vigia não dispara aviso: vira a linha do gráfico e o corte do card.
+                      Depois de 14 dias medidos, a curva sugere um número melhor que o chutado hoje. Abaixo de{" "}
+                      {fmtBRL(pisoDePreco(preco))} o radar ignora o anúncio — nesse preço não é o produto, é acessório ou isca.
                     </>
                   ) : (
                     <>
@@ -369,23 +487,44 @@ export function NovoAlvoDialog({ alvo, open, onOpenChange, onSaved, onBuscarAgor
               {/* A cadência é a peça que faz o consumível caber no orçamento de
                   raspagem: preço de café não se mexe entre a manhã e a tarde. */}
               <div className="mt-3">
-                <Label htmlFor="cad">De quanto em quanto tempo olhar</Label>
-                <select
-                  id="cad"
-                  value={cadencia}
-                  onChange={(e) => setCadencia(Number(e.target.value))}
-                  className="mt-1 h-9 w-full rounded-md border border-input bg-background px-2 text-[13px]"
-                >
-                  <option value={0}>Toda rodada (2x ao dia)</option>
-                  <option value={1}>Uma vez por dia</option>
-                  <option value={7}>Uma vez por semana</option>
-                  <option value={15}>A cada 15 dias</option>
-                </select>
-                <p className="mt-1 text-[11.5px] text-muted-foreground">
-                  {cadencia >= 7
-                    ? "Consumível não muda de preço todo dia — e cada varredura consome crédito de raspagem."
-                    : "Equipamento vale olhar sempre: o preço se mexe e a compra é grande."}
-                </p>
+                {/* EM VIGIA A CADÊNCIA É DO REGIME, e o campo sai da tela em vez
+                    de ficar desabilitado: ele não está indisponível, ele deixou
+                    de ser uma pergunta. O cron da vigia roda uma vez por semana,
+                    e um alvo com cadência menor só passaria na frente dos outros
+                    na fila sem ganhar rodada nenhuma — um controle que parece
+                    fazer efeito e não faz. */}
+                {modo === "vigia" ? (
+                  <>
+                    <Label>De quanto em quanto tempo olhar</Label>
+                    <div className="mt-1 rounded-md border border-border bg-muted/40 px-2 py-2 text-[12.5px] text-muted-foreground">
+                      Segunda de manhã, uma vez por semana
+                    </div>
+                    <p className="mt-1 text-[11.5px] text-muted-foreground">
+                      Sempre no mesmo dia de propósito: medir ora na segunda, ora no sábado misturaria promoção de fim de semana
+                      com preço de dia útil na mesma linha do tempo.
+                    </p>
+                  </>
+                ) : (
+                  <>
+                    <Label htmlFor="cad">De quanto em quanto tempo olhar</Label>
+                    <select
+                      id="cad"
+                      value={cadencia}
+                      onChange={(e) => setCadencia(Number(e.target.value))}
+                      className="mt-1 h-9 w-full rounded-md border border-input bg-background px-2 text-[13px]"
+                    >
+                      <option value={0}>Toda rodada (4x ao dia)</option>
+                      <option value={1}>Uma vez por dia</option>
+                      <option value={7}>Uma vez por semana</option>
+                      <option value={15}>A cada 15 dias</option>
+                    </select>
+                    <p className="mt-1 text-[11.5px] text-muted-foreground">
+                      {cadencia >= 7
+                        ? "Consumível não muda de preço todo dia — e cada varredura consome crédito de raspagem."
+                        : "Equipamento vale olhar sempre: o preço se mexe e a compra é grande."}
+                    </p>
+                  </>
+                )}
               </div>
             </div>
           </div>
@@ -416,8 +555,19 @@ export function NovoAlvoDialog({ alvo, open, onOpenChange, onSaved, onBuscarAgor
               As cinco marcadas em âmbar não renderam nada no teste — seguem selecionáveis e, se voltarem, funcionam sozinhas.
             </p>
             <p className="mt-1 text-[11.5px] text-muted-foreground">
-              Cada varredura consulta até seis, em rodízio: as comprovadas vão sempre e as demais giram, para nenhuma ficar ligada
-              aqui e muda na prática.
+              {modo === "vigia" ? (
+                <>
+                  Marcar aqui monta o <span className="font-medium text-foreground">conjunto</span>, não a rodada: em vigia cada
+                  varredura lê <span className="font-medium text-foreground">duas</span> — a que mais rendeu, sempre (para a série
+                  ser comparável de semana a semana), mais uma girando entre as demais, que é o que cobre as outras vitrines ao longo
+                  do mês e denuncia a que parou de responder.
+                </>
+              ) : (
+                <>
+                  Cada varredura consulta até cinco, em rodízio: as comprovadas vão sempre e as demais giram, para nenhuma ficar
+                  ligada aqui e muda na prática.
+                </>
+              )}
             </p>
           </div>
 

@@ -167,6 +167,20 @@ export interface Avaliacao {
   apenas_preco: boolean;
 }
 
+/**
+ * O que o alvo já aprovou por 👍, num formato que `avaliar` só precisa
+ * consultar — a leitura do histórico (`facilities_radar_feedback`) e a conta de
+ * quem repetiu ficam do lado de fora, porque dependem do banco e este arquivo
+ * não importa nada. Um por alvo, montado uma vez por varredura, não por
+ * anúncio: são ~200 anúncios por rodada e o voto não muda no meio dela.
+ */
+export interface Preferencias {
+  /** Tokens da lista MARCAS (ver `lerSpecs`), já no formato de `lidas.marca`. */
+  marcasGostei: Set<string>;
+  /** `vendedor` normalizado por `norm()`. */
+  vendedoresGostei: Set<string>;
+}
+
 /* ------------------------------------------------------------- normalização */
 
 /** minúsculas, sem acento, sem pontuação — a forma em que todas as regras comparam. */
@@ -188,6 +202,14 @@ const MARCAS = [
   "vaio", "multilaser", "avell", "gigabyte", "msi", "lg", "motorola", "xiaomi",
   "aoc", "philips", "benq", "epson", "brother", "canon", "logitech", "flexform",
   "cavaletti", "dt3", "thinkpad", "ideapad", "inspiron", "vostro", "latitude",
+  /* PERIFÉRICO (mouse, headset, teclado), adicionadas em 03/09/2026 para o
+     feedback (ver facilities_radar_feedback) ter marca para generalizar: sem
+     elas, `lidas.marca` saía `null` na maioria dos anúncios de mouse/headset —
+     as marcas de notebook/monitor acima não cobrem essa prateleira, e "3
+     recusas de marca" nunca detectaria padrão nenhum na categoria mais barata
+     do módulo. */
+  "vinik", "rise mode", "ninja", "rapoo", "redragon", "hyperx", "razer",
+  "corsair", "fortrek", "oex", "pcyes", "havit", "goldentec", "jbl", "elg",
 ];
 
 /**
@@ -718,7 +740,7 @@ const CONDICAO_LABEL: Record<Condicao, string> = {
  * por omissão jogaria fora metade dos anúncios bons do Mercado Livre, onde o
  * título é curto e as specs estão na ficha técnica.
  */
-export function avaliar(alvo: AlvoSpecs, precoAlvo: number, o: OfertaBruta): Avaliacao {
+export function avaliar(alvo: AlvoSpecs, precoAlvo: number, o: OfertaBruta, prefs?: Preferencias): Avaliacao {
   const t = norm(o.titulo);
   const lidas = lerSpecs(o.titulo);
   const conferir: string[] = [];
@@ -898,6 +920,18 @@ export function avaliar(alvo: AlvoSpecs, precoAlvo: number, o: OfertaBruta): Ava
     score += peso;
     if (peso > 0) motivos.push(`${textoNota(o.avaliacao, o.avaliacoes)}`);
     if (peso < 0) motivos.push(`⚠ mal avaliado: ${textoNota(o.avaliacao, o.avaliacoes)}`);
+  }
+  /* SINAL LEVE DE 👍 PASSADO — não filtra (só termos_proibidos filtra), só
+     ajuda a ordenar. Marca antes de vendedor porque marca sobrevive à troca de
+     loja e o vendedor não sobrevive à troca de marca: quem curtiu um mouse
+     Logitech pela marca continua curtindo em outra loja; quem curtiu porque
+     era a Kabum não necessariamente curte a marca que a Kabum vender amanhã. */
+  if (prefs?.marcasGostei.size && lidas.marca && prefs.marcasGostei.has(lidas.marca)) {
+    score += 8;
+    motivos.push("marca que você já aprovou antes");
+  } else if (prefs?.vendedoresGostei.size && o.vendedor && prefs.vendedoresGostei.has(norm(o.vendedor))) {
+    score += 6;
+    motivos.push("vendedor que você já aprovou antes");
   }
   score -= conferir.length * 4; // cada coisa não confirmada tira confiança
   score = Math.max(1, Math.min(100, score));

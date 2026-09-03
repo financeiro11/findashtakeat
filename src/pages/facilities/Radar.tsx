@@ -1,13 +1,15 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
-  AlertTriangle, ArrowDownRight, ChevronDown, ChevronRight, Copy, ExternalLink,
-  Loader2, PackageCheck, PackageX, Pause, PiggyBank, Play, Plus, Radar as RadarIcon, RefreshCw, Sparkles, Star, Trash2, TrendingDown,
+  AlertTriangle, ArrowDownRight, ChevronDown, ChevronRight, Copy, Eye, ExternalLink,
+  Loader2, PackageCheck, PackageX, Pause, PiggyBank, Play, Plus, Radar as RadarIcon, RefreshCw, ShoppingCart,
+  Sparkles, Star, ThumbsDown, ThumbsUp, Trash2, TrendingDown,
 } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
 import { supabase } from "@/integrations/supabase/client";
+import { useAuth } from "@/hooks/useAuth";
 import { invocar } from "@/lib/erroEdge";
 import { comValorExato } from "@/components/ValorExato";
 import { CatDot } from "./components";
@@ -18,6 +20,7 @@ import { invalidarRadarAlertas } from "@/hooks/useRadarAlertas";
 import { ProximaVarredura } from "./ProximaVarredura";
 import { SaldoRaspagem } from "./SaldoRaspagem";
 import { HistoricoPreco } from "./HistoricoPreco";
+import { Kits } from "./Kits";
 
 /* Valor compacto na tela, número cheio no hover — convenção do Hub.
    Onde precisa ser string mesmo (toast, title, template), use fmtBRLStr. */
@@ -75,14 +78,47 @@ const TIPO_STYLE: Record<string, { label: string; cls: string; Icon: typeof Tren
 };
 
 export default function Radar() {
+  const { profile } = useAuth();
   const [loading, setLoading] = useState(true);
   const [varrendo, setVarrendo] = useState<string | null>(null); // id do alvo ou "todos"
+  const [adotando, setAdotando] = useState<number | null>(null);
   const [painel, setPainel] = useState<PainelLinha[]>([]);
   const [alertas, setAlertas] = useState<Alerta[]>([]);
   const [aberto, setAberto] = useState<string | null>(null);
   const [ofertas, setOfertas] = useState<Record<string, Oferta[]>>({});
   const [editando, setEditando] = useState<AlvoRow | null>(null);
   const [dialogAberto, setDialogAberto] = useState(false);
+  /** alvo_id → oferta_id → o que a pessoa já votou. Só do alvo aberto por vez. */
+  const [feedback, setFeedback] = useState<Record<string, Record<number, "gostei" | "nao_gostei">>>({});
+
+  /* Quantos alvos em cada regime. Sai daqui e não de dentro dos componentes
+     porque três lugares fazem a mesma pergunta e por motivos diferentes: o
+     contador do topo (para não anunciar um cron que passaria pela fila vazia),
+     o cabeçalho da lista (porque um em compra vale ~65 em vigia na fatura de
+     raspagem) e o toast de "Varrer agora". */
+  const regimes = useMemo(() => {
+    const vigia = painel.filter((p) => p.alvo.modo === "vigia").length;
+    return { vigia, compra: painel.length - vigia };
+  }, [painel]);
+
+  /* Os alvos como a caixa de kit precisa deles. Sai do painel que já está na
+     memória: uma consulta a mais para ler os mesmos títulos seria trabalho e
+     mais uma chance de as duas listas divergirem. */
+  const alvosDoKit = useMemo(
+    () => painel.map((p) => ({
+      id: p.alvo.id,
+      titulo: p.alvo.titulo,
+      categoria: p.alvo.categoria ?? null,
+      modo: p.alvo.modo,
+      preco_alvo: Number(p.alvo.preco_alvo),
+    })),
+    [painel],
+  );
+
+  /* Sobe a cada `load`, e é o que faz o bloco de kits reler junto com a página.
+     Sem isto, trocar um alvo de regime ou varrer deixaria o total do kit
+     mostrando o preço anterior — número velho com cara de atual. */
+  const [versao, setVersao] = useState(0);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -97,6 +133,7 @@ export default function Radar() {
     setPainel((p.data as PainelLinha[]) ?? []);
     setAlertas((a.data as Alerta[]) ?? []);
     setLoading(false);
+    setVersao((n) => n + 1);
     invalidarRadarAlertas(); // o selo do menu segue o que esta tela acabou de ler
   }, []);
   useEffect(() => { load(); }, [load]);
@@ -105,15 +142,78 @@ export default function Radar() {
     if (aberto === id) { setAberto(null); return; }
     setAberto(id);
     if (ofertas[id]) return;
-    const { data } = await db.from("facilities_radar_ofertas")
-      .select("*").eq("alvo_id", id).eq("ativo", true)
-      /* Esgotado apurado não entra na lista. `not.is.false` e não `neq`: o
-         estoque desconhecido é `null` — o caso normal de quem ainda não foi
-         conferido —, e `neq(false)` derrubaria esses junto. */
-      .not("disponivel", "is", false)
-      // Pelo TOTAL: o mais barato de verdade, não o de etiqueta menor.
-      .order("preco_total", { ascending: true }).limit(60);
+    const [{ data }, { data: votos }] = await Promise.all([
+      db.from("facilities_radar_ofertas")
+        .select("*").eq("alvo_id", id).eq("ativo", true)
+        /* Esgotado apurado não entra na lista. `not.is.false` e não `neq`: o
+           estoque desconhecido é `null` — o caso normal de quem ainda não foi
+           conferido —, e `neq(false)` derrubaria esses junto. */
+        .not("disponivel", "is", false)
+        // Pelo TOTAL: o mais barato de verdade, não o de etiqueta menor.
+        .order("preco_total", { ascending: true }).limit(60),
+      db.from("facilities_radar_feedback").select("oferta_id, sinal").eq("alvo_id", id),
+    ]);
     setOfertas((p) => ({ ...p, [id]: (data as Oferta[]) ?? [] }));
+    setFeedback((p) => ({
+      ...p,
+      [id]: Object.fromEntries((votos ?? []).map((v: any) => [v.oferta_id, v.sinal])),
+    }));
+  }
+
+  /**
+   * 👍/👎 num anúncio — sem formulário, sem confirmação, e SEM EFEITO na tela
+   * agora: só alimenta a próxima varredura (bônus de ranking em 👍, proposta de
+   * regra depois de 👎 repetido). Reclicar no ícone já ativo desfaz o voto.
+   *
+   * OTIMISTA, e sem desfazer sozinho no erro: a chance real de falha aqui é de
+   * rede, não de regra de negócio, e um segundo clique já resolve — regredir o
+   * ícone sozinho arrisca uma correção que ninguém pediu brigar com o clique
+   * seguinte da pessoa.
+   */
+  async function classificar(alvoId: string, ofertaId: number, sinal: "gostei" | "nao_gostei") {
+    const atual = feedback[alvoId]?.[ofertaId];
+    const novo = atual === sinal ? null : sinal;
+    setFeedback((p) => {
+      const doAlvo = { ...(p[alvoId] ?? {}) };
+      if (novo) doAlvo[ofertaId] = novo; else delete doAlvo[ofertaId];
+      return { ...p, [alvoId]: doAlvo };
+    });
+    try {
+      const r = await invocar<any>(supabase.functions.invoke("facilities-radar", {
+        body: { action: "classificar", oferta_id: ofertaId, sinal: novo },
+      }));
+      if (r?.proposta) {
+        const { marca, contagem } = r.proposta;
+        toast.message(
+          `${contagem} recusas de marca "${marca}" neste alvo. Proibir essa marca aqui?`,
+          { duration: 15000, action: { label: "Proibir", onClick: () => aplicarPreferencia(alvoId, marca) } },
+        );
+      }
+    } catch (e: any) {
+      toast.error(`Não deu para registrar: ${e.message ?? e}`);
+    }
+  }
+
+  /** Aplica a marca proposta em `specs.termos_proibidos` — o mesmo campo que o
+   *  formulário já mostra ("Exclui: ...") e que `avaliar()` já sabe recusar. Lê o
+   *  `specs` fresco do banco antes de escrever: a cópia em `painel` pode estar
+   *  velha se alguém editou o alvo enquanto a proposta ficava no ar. */
+  async function aplicarPreferencia(alvoId: string, marca: string) {
+    const { data: atual, error: eLer } = await db.from("facilities_radar_alvos")
+      .select("specs").eq("id", alvoId).single();
+    if (eLer) { toast.error(eLer.message); return; }
+    const specs = atual.specs ?? {};
+    const termos: string[] = specs.termos_proibidos ?? [];
+    if (termos.some((t: string) => t.toLowerCase() === marca.toLowerCase())) {
+      toast.info("Essa marca já estava excluída neste alvo.");
+      return;
+    }
+    const { error } = await db.from("facilities_radar_alvos")
+      .update({ specs: { ...specs, termos_proibidos: [...termos, marca] }, updated_at: new Date().toISOString() })
+      .eq("id", alvoId);
+    if (error) { toast.error(error.message); return; }
+    toast.success(`Marca "${marca}" passa a ser recusada neste alvo a partir da próxima varredura.`);
+    load();
   }
 
   /* A metade que confere. Vive separada porque roda nos DOIS caminhos: depois
@@ -171,11 +271,46 @@ export default function Radar() {
          duas consultas e volta na hora — não é rodada de raspagem. */
       const confirmados = await conferir(alvoId);
 
-      const partes = [`${r.ofertas} anúncio(s) dentro dos filtros`];
+      /* RODADA SEM ALVO NÃO É RODADA COM ZERO ACHADO — mesma distinção do freio
+         de crédito acima. A fila de "Varrer agora" só enxerga alvo em modo
+         COMPRA; com o kit inteiro em vigia ela volta legitimamente vazia, e
+         essa resposta não traz `ofertas`. Sem esta saída a linha de baixo
+         interpolava o campo inexistente e a tela dizia "undefined anúncio(s)
+         dentro dos filtros" — um defeito aparente no lugar de uma explicação.
+         A frase é montada aqui, e não no servidor, porque quem sabe QUANTOS
+         alvos estão em cada regime é esta tela: dizer "os semanais entram
+         quando a cadência vence" a quem só tem alvos em vigia é verdadeiro e
+         inútil; dizer onde fica o botão que varre agora, não. */
+      if (!r.alvos) {
+        const { vigia: emVigia, compra: emCompra } = regimes;
+        toast.info(
+          !alvoId && emVigia && !emCompra
+            ? `Nenhum alvo em modo compra — os ${emVigia} em vigia são varridos uma vez por semana, e "Varrer agora" não os acorda. ` +
+              "Para varrer um deles agora, use o ⟳ do card."
+            : (r.mensagem ?? "Nenhum alvo na hora de varrer."),
+          { duration: 10000 },
+        );
+        setOfertas({});
+        await load();
+        return;
+      }
+
+      const partes = [`${r.ofertas ?? 0} anúncio(s) dentro dos filtros`];
       if (confirmados) partes.push(`${confirmados} confirmado(s) com estoque`);
       else if (r.alertas) partes.push(`${r.alertas} em conferência`);
       if (r.restante) partes.push(`${r.restante} alvo(s) ficaram para a próxima rodada`);
       toast.success(partes.join(" · "));
+
+      /* O RETORNO AUTOMÁTICO PRECISA SER VISÍVEL. O alvo acordado volta à vigia
+         sozinho quando os 14 dias vencem — e, sem este aviso, alguém abre a
+         tela, vê o card sem o selo de compra e conclui que outra pessoa
+         desligou pelas costas. Um automatismo silencioso vira desconfiança. */
+      if (r.dormiram > 0) {
+        toast.info(
+          `${r.dormiram} alvo(s) voltaram à vigia — o prazo do modo de compra venceu. A curva continua, o aviso não.`,
+          { duration: 9000 },
+        );
+      }
 
       /* Fonte que falhou não pode sumir calada: é assim que um radar "funciona"
          por semanas devolvendo zero. */
@@ -265,6 +400,110 @@ export default function Radar() {
     load();
   }
 
+  /**
+   * O interruptor entre os dois regimes — e é ele que o módulo inteiro existe
+   * para oferecer.
+   *
+   * LIGAR PASSA PELA RPC, e não por um update. `facilities_radar_acordar` faz
+   * três coisas que têm de andar juntas (o modo, a cadência e o prazo de volta)
+   * e acorda os MODELOS ADOTADOS da faixa no mesmo movimento: quem adotou um
+   * modelo quer o preço dele no dia da compra, não a média da faixa. A mesma
+   * regra é usada pelo gatilho da Solicitação — dois caminhos, uma regra.
+   *
+   * E O PRAZO É O PONTO. Sem o retorno automático em 14 dias, o modo de compra
+   * vira o permanente por esquecimento: liga-se numa terça, compra-se na
+   * quinta, e o alvo segue a 20 créditos por dia até alguém desconfiar olhando
+   * o painel de créditos.
+   */
+  async function alternarModo(l: PainelLinha) {
+    if (l.alvo.modo === "vigia") {
+      const { data, error } = await db.rpc("facilities_radar_acordar", { p_alvo_id: l.alvo.id, p_dias: 14 });
+      if (error) { toast.error(error.message); return; }
+      const n = Number(data ?? 1);
+      toast.success(
+        (n > 1
+          ? `Modo de compra ligado em ${n} alvos — a faixa e os modelos adotados dela. `
+          : "Modo de compra ligado — 5 fontes, 4× ao dia, com conferência de estoque e aviso. ") +
+        "Volta a vigiar sozinho em 14 dias.",
+        { duration: 8000 },
+      );
+    } else {
+      /* O CHECK DO BANCO PEGARIA ISTO, mas devolveria uma linha de Postgres.
+         Consumível não entra na vigia permanente — a Takeat tem fornecedor
+         fechado de copa e limpeza, e o barateamento da vigia não muda a decisão
+         de 28/08/2026. Aqui o alvo se PAUSA; vigiar, não. */
+      if ((l.alvo.specs as any)?.unidade) {
+        toast.error(
+          "Consumível não entra na vigia permanente — a Takeat já tem fornecedor de copa e limpeza. Pause o alvo em vez disso.",
+          { duration: 8000 },
+        );
+        return;
+      }
+      /* O filho volta junto com o pai. `.or` e não dois updates: são a mesma
+         decisão, e metade dela aplicada deixaria o modelo adotado em ritmo de
+         compra sozinho — o gasto que ninguém ligou e ninguém vê. */
+      const { error } = await db.from("facilities_radar_alvos")
+        .update({ modo: "vigia", compra_ate: null, cadencia_dias: 7, updated_at: new Date().toISOString() })
+        .or(`id.eq.${l.alvo.id},pai_id.eq.${l.alvo.id}`);
+      if (error) { toast.error(error.message); return; }
+      toast.success("De volta à vigia — a curva continua andando, em silêncio, uma vez por semana.");
+    }
+    setOfertas({});
+    load();
+  }
+
+  /**
+   * Adotar um modelo: a oferta que agradou vira alvo próprio, sob a faixa.
+   *
+   * A FAIXA MEDE O MERCADO, O MODELO MEDE O PRODUTO — e os dois correm juntos,
+   * no mesmo regime barato. O específico não substitui o genérico: é a curva da
+   * faixa que dá sentido à do modelo ("está 12% acima da mediana de mouse"), e
+   * sem ela o preço do modelo é um número solto.
+   *
+   * A INTERPRETAÇÃO É A MESMA DO FORMULÁRIO, e de propósito. Copiar
+   * `specs_lidas` do anúncio pareceria mais direto e produziria um alvo sem
+   * `buscas` — os termos que as vitrines de fato recebem. Alvo sem busca boa
+   * varre, custa crédito e não acha nada: o defeito mudo, outra vez.
+   * Vai sem `link_ref` para não pagar uma raspagem: o título de anúncio já é
+   * uma descrição completa do produto, e a `ficha` (quando existe) é o que a
+   * conferência transcreveu da própria página.
+   */
+  async function adotarModelo(pai: PainelLinha, o: Oferta) {
+    if (pai.alvo.pai_id) {
+      toast.error("A árvore tem dois níveis: adote a partir da faixa, não de um modelo já adotado.");
+      return;
+    }
+    setAdotando(o.id);
+    try {
+      const r = await invocar<any>(supabase.functions.invoke("facilities-radar", {
+        body: { action: "interpretar", pedido: [o.titulo, o.ficha].filter(Boolean).join(" — ") },
+      }));
+      const visto = Number(o.preco_total ?? o.preco);
+      const { error } = await db.from("facilities_radar_alvos").insert({
+        titulo: o.titulo.slice(0, 90),
+        pedido: o.titulo,
+        link_ref: o.url,
+        categoria: pai.alvo.categoria,
+        specs: r.specs,
+        /* A referência nasce no preço em que o modelo foi visto, e não no teto
+           da faixa — que é de outra escala e reprovaria o modelo no primeiro
+           dia. A curva corrige em 14 dias, e o formulário mostra a sugestão. */
+        preco_alvo: visto > 0 ? Math.round(visto) : Number(pai.alvo.preco_alvo),
+        quantidade: pai.alvo.quantidade ?? 1,
+        fontes: pai.alvo.fontes,
+        modo: "vigia",
+        cadencia_dias: 7,
+        pai_id: pai.alvo.id,
+        criado_por: profile?.nome ?? null,
+      });
+      if (error) { toast.error(error.message); return; }
+      toast.success(`Modelo adotado sob "${pai.alvo.titulo}" — passa a ter curva própria a partir de segunda.`);
+      load();
+    } catch (e: any) {
+      toast.error(e.message ?? "Não consegui ler o anúncio para adotar o modelo.");
+    } finally { setAdotando(null); }
+  }
+
   async function excluir(l: PainelLinha) {
     if (!window.confirm(`Excluir o alvo "${l.alvo.titulo}"? O histórico de preço dele vai junto.`)) return;
     const { error } = await db.from("facilities_radar_alvos").delete().eq("id", l.alvo.id);
@@ -294,6 +533,25 @@ export default function Radar() {
 
   const totalNovos = alertas.filter((a) => a.status === "novo").length;
 
+  /* A ÁRVORE, ACHATADA na ordem que o painel já devolve — a RPC põe o modelo
+     adotado logo depois da faixa dele, usando a chave de ordenação DO PAI.
+     Achatar em vez de aninhar mantém um laço de renderização só: o recuo do
+     filho vira uma classe, não uma estrutura, e o card continua sendo o mesmo
+     nos dois casos. */
+  const linhas = useMemo(() => {
+    const ids = new Set(painel.map((l) => l.alvo.id));
+    const titulos = new Map(painel.map((l) => [l.alvo.id, l.alvo.titulo]));
+    return painel.map((l) => ({
+      l,
+      /* Filho ÓRFÃO volta a ser raiz. O `pai_id` é `on delete set null` de
+         propósito — apagar a faixa não pode levar junto a curva do modelo, que
+         é histórico legítimo de mercado —, e um filho recuado sob nada pareceria
+         defeito de tela. */
+      filho: !!l.alvo.pai_id && ids.has(l.alvo.pai_id),
+      pai: l.alvo.pai_id ? titulos.get(l.alvo.pai_id) ?? null : null,
+    }));
+  }, [painel]);
+
   /* A ECONOMIA VEM EM DOIS NÚMEROS, e separá-los é o ponto.
      `realizada` é o que já virou cotação — dinheiro que o radar de fato poupou,
      e o único que serve para prestar contas. `aberta` é o que está na mesa
@@ -314,14 +572,16 @@ export default function Radar() {
         <div>
           <h1 className="text-[28px] font-semibold tracking-tight text-foreground">Radar de preços</h1>
           <p className="mt-1 max-w-2xl text-[14px] text-muted-foreground">
-            Registre o equipamento e o quanto vale a pena pagar. O Hub fica olhando as lojas e os comparadores e avisa quando o preço
-            aparecer — com o histórico, para você saber se é promoção de verdade.
+            Registre o equipamento e o quanto vale a pena pagar. O Hub olha as lojas e os comparadores em dois regimes: em{" "}
+            <span className="font-medium text-foreground">vigia</span>, uma vez por semana e em silêncio, só para construir a curva do
+            que a empresa compra sempre; em <span className="font-medium text-foreground">compra</span>, quatro vezes ao dia, com
+            conferência de estoque e aviso. O botão no card troca de um para o outro — e o de compra volta a vigiar sozinho em 14 dias.
           </p>
           {/* Quando o radar age, e com quanto ele ainda pode agir. As duas
               respostas moram na mesma linha porque é a mesma pergunta: dá para
               contar com ele hoje? */}
           <div className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1">
-            <ProximaVarredura />
+            <ProximaVarredura emCompra={regimes.compra} emVigia={regimes.vigia} />
             <SaldoRaspagem />
           </div>
         </div>
@@ -569,10 +829,22 @@ export default function Radar() {
             </div>
           )}
 
+          {/* --------------------------------------------------------- kits */}
+          {/* Antes da lista de alvos porque é a leitura de cima para baixo: o
+              conjunto responde a pergunta da compra ("quanto custa a estação?"),
+              e as linhas abaixo são a conferência dela. */}
+          <Kits alvos={alvosDoKit} versao={versao} />
+
           {/* -------------------------------------------------------- alvos */}
           <div className="flex items-center gap-2 pt-1">
             <h2 className="text-[15px] font-semibold text-foreground">O que o radar está vigiando</h2>
-            <span className="text-[12px] text-muted-foreground">{painel.length}</span>
+            {/* Os dois números separados, porque custam ordens de grandeza
+                diferentes: um alvo em compra vale ~65 em vigia. Um total só
+                esconderia justamente a conta que interessa ao olhar a fatura
+                de raspagem. */}
+            <span className="text-[12px] text-muted-foreground">
+              {regimes.vigia} em vigia · {regimes.compra} em compra
+            </span>
           </div>
 
           {painel.length === 0 ? (
@@ -587,8 +859,9 @@ export default function Radar() {
             </div>
           ) : (
             <div className="space-y-2">
-              {painel.map((l) => {
+              {linhas.map(({ l, filho, pai }) => {
                 const expandido = aberto === l.alvo.id;
+                const emVigia = l.alvo.modo === "vigia";
                 const melhor = l.melhor;
                 /* O MESMO COMPARÁVEL DO SERVIDOR: unitário quando existe. Se a
                    tela mostrasse o preço do pacote e o painel tivesse escolhido
@@ -605,7 +878,16 @@ export default function Radar() {
                 const unidadeDoAlvo = uAlvo ? (uAlvo === "l" ? "L" : uAlvo) : null;
                 const folga = melhorTotal != null ? (Number(l.alvo.preco_alvo) - melhorTotal) / Number(l.alvo.preco_alvo) : null;
                 return (
-                  <div key={l.alvo.id} className={cn("card-surface", !l.alvo.ativo && "opacity-60")}>
+                  <div
+                    key={l.alvo.id}
+                    className={cn(
+                      "card-surface",
+                      !l.alvo.ativo && "opacity-60",
+                      // O modelo adotado mora sob a faixa: recuo e um filete à
+                      // esquerda, que é o que liga os dois sem precisar de caixa.
+                      filho && "ml-4 border-l-2 border-l-primary/40 sm:ml-8",
+                    )}
+                  >
                     <div className="flex flex-wrap items-center gap-3 p-4">
                       <button type="button" onClick={() => abrirAlvo(l.alvo.id)} className="ghost-icone text-muted-foreground">
                         {expandido ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
@@ -630,8 +912,35 @@ export default function Radar() {
                             </span>
                           )}
                           {!l.alvo.ativo && <span className="text-[10.5px] uppercase tracking-wide text-muted-foreground">pausado</span>}
+
+                          {/* O REGIME NO ROSTO DO CARD. Sem este selo, o alvo em
+                              vigia é indistinguível de um alvo de compra que
+                              parou de achar coisa — e o diagnóstico dos dois é
+                              oposto: um está calado porque foi mandado calar, o
+                              outro porque quebrou. */}
+                          {emVigia ? (
+                            <span
+                              className="inline-flex items-center gap-1 rounded border border-border bg-muted px-1.5 py-0.5 text-[10.5px] font-medium text-muted-foreground"
+                              title="Vigia permanente: 2 fontes, uma vez por semana, sem conferência de estoque e sem aviso. Só constrói a curva."
+                            >
+                              <Eye className="h-3 w-3" /> vigia
+                            </span>
+                          ) : (
+                            <span
+                              className="inline-flex items-center gap-1 rounded border border-emerald-200 bg-emerald-50 px-1.5 py-0.5 text-[10.5px] font-medium text-emerald-700 dark:border-emerald-900 dark:bg-emerald-950/40 dark:text-emerald-400"
+                              title="Modo de compra: 5 fontes, 4× ao dia, com conferência de estoque e frete, e com aviso."
+                            >
+                              <ShoppingCart className="h-3 w-3" /> em compra
+                              {l.alvo.compra_ate && ` até ${fmtData(l.alvo.compra_ate)}`}
+                            </span>
+                          )}
                         </div>
-                        <div className="mt-0.5 text-[11.5px] text-muted-foreground">{resumoDoAlvo(l.alvo.specs)}</div>
+                        <div className="mt-0.5 text-[11.5px] text-muted-foreground">
+                          {filho && pai && (
+                            <span className="mr-1 text-foreground/70">modelo de <span className="font-medium">{pai}</span> ·</span>
+                          )}
+                          {resumoDoAlvo(l.alvo.specs)}
+                        </div>
                       </div>
 
                       <div className="text-right">
@@ -640,7 +949,17 @@ export default function Radar() {
                       </div>
 
                       <div className="text-right">
-                        <div className="text-[10.5px] uppercase tracking-wide text-muted-foreground">Melhor agora</div>
+                        {/* "MELHOR AGORA" PROMETE UMA COMPRA, e em vigia esse
+                            preço não passou pela conferência de estoque — a
+                            vitrine continua listando o esgotado com o último
+                            preço praticado. "Menor visto" é o que o número de
+                            fato é, e o hover diz por quê. */}
+                        <div
+                          className="text-[10.5px] uppercase tracking-wide text-muted-foreground"
+                          title={emVigia ? "Em vigia o preço não passa pela conferência de estoque — serve para medir o mercado, não para decidir a compra." : undefined}
+                        >
+                          {emVigia ? "Menor visto" : "Melhor agora"}
+                        </div>
                         {melhor ? (
                           <div className="num text-[13px] font-semibold text-emerald-700 dark:text-emerald-400">
                             {fmtBRL(melhorTotal)}{melhorUn && <span className="text-[12px] font-normal text-muted-foreground">/{melhorUn}</span>}
@@ -671,6 +990,22 @@ export default function Radar() {
                       </div>
 
                       <div className="flex items-center gap-1">
+                        {/* A AÇÃO PRINCIPAL DO CARD, e por isso é a única com
+                            texto no meio de uma fileira de ícones. É ela que o
+                            Facilities vai procurar no dia em que a compra
+                            começar de verdade. */}
+                        <Button
+                          size="sm"
+                          variant={emVigia ? "outline" : "ghost"}
+                          onClick={() => alternarModo(l)}
+                          title={emVigia
+                            ? "Sobe para 5 fontes, 4× ao dia, com conferência de estoque e aviso. Volta a vigiar sozinho em 14 dias."
+                            : "Volta ao regime barato: 2 fontes, uma vez por semana, sem aviso."}
+                        >
+                          {emVigia
+                            ? <><ShoppingCart className="mr-1.5 h-3.5 w-3.5" /> Estou comprando</>
+                            : <><Eye className="mr-1.5 h-3.5 w-3.5" /> Voltar a vigiar</>}
+                        </Button>
                         <Button size="sm" variant="ghost" className="ghost-icone" title="Varrer só este alvo"
                           onClick={() => varrer(l.alvo.id)} disabled={!!varrendo}>
                           {varrendo === l.alvo.id ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
@@ -779,10 +1114,58 @@ export default function Radar() {
                                         <div className="num text-[10.5px] text-muted-foreground">{fmtBRLStr(Number(o.preco))} + frete</div>
                                       )}
                                     </td>
-                                    <td className="px-3 py-2 text-right">
-                                      <a href={o.url} target="_blank" rel="noreferrer" className="text-muted-foreground hover:text-foreground">
-                                        <ExternalLink className="h-3.5 w-3.5" />
-                                      </a>
+                                    <td className="px-3 py-2">
+                                      <div className="flex items-center justify-end gap-1">
+                                        {/* O SINAL LEVE, antes do "adotar" pesado.
+                                            Sem formulário e sem efeito na hora —
+                                            só alimenta a próxima varredura (ver
+                                            `classificar`). Reclicar no que já
+                                            está aceso desfaz o voto. */}
+                                        {(() => {
+                                          const voto = feedback[l.alvo.id]?.[o.id];
+                                          return (
+                                            <>
+                                              <Button
+                                                size="sm" variant="ghost"
+                                                className={cn("ghost-icone", voto === "gostei" && "bg-emerald-50 dark:bg-emerald-950/40")}
+                                                onClick={() => classificar(l.alvo.id, o.id, "gostei")}
+                                                title={voto === "gostei" ? "Você curtiu — clique para desfazer" : "Eu levaria em conta"}
+                                              >
+                                                <ThumbsUp className={cn("h-3.5 w-3.5", voto === "gostei" ? "text-emerald-700 dark:text-emerald-400" : "text-muted-foreground")} />
+                                              </Button>
+                                              <Button
+                                                size="sm" variant="ghost"
+                                                className={cn("ghost-icone", voto === "nao_gostei" && "bg-red-50 dark:bg-red-950/40")}
+                                                onClick={() => classificar(l.alvo.id, o.id, "nao_gostei")}
+                                                title={voto === "nao_gostei" ? "Você recusou — clique para desfazer" : "Eu não levaria em conta"}
+                                              >
+                                                <ThumbsDown className={cn("h-3.5 w-3.5", voto === "nao_gostei" ? "text-destructive" : "text-muted-foreground")} />
+                                              </Button>
+                                            </>
+                                          );
+                                        })()}
+                                        {/* ADOTAR SÓ A PARTIR DA FAIXA. A árvore
+                                            tem dois níveis de propósito: um
+                                            terceiro daria a mesma curva contada
+                                            duas vezes e uma tela que ninguém lê. */}
+                                        {!l.alvo.pai_id && (
+                                          <Button
+                                            size="sm"
+                                            variant="ghost"
+                                            className="h-7 px-2 text-[11px]"
+                                            disabled={adotando != null}
+                                            onClick={() => adotarModelo(l, o)}
+                                            title="Passa a acompanhar ESTE modelo com curva própria, sob esta faixa — no mesmo regime barato."
+                                          >
+                                            {adotando === o.id
+                                              ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                                              : <><Star className="mr-1 h-3 w-3" /> adotar</>}
+                                          </Button>
+                                        )}
+                                        <a href={o.url} target="_blank" rel="noreferrer" className="text-muted-foreground hover:text-foreground">
+                                          <ExternalLink className="h-3.5 w-3.5" />
+                                        </a>
+                                      </div>
                                     </td>
                                   </tr>
                                 ))}

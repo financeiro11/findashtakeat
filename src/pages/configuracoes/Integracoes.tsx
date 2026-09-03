@@ -8,7 +8,10 @@ import { cn } from "@/lib/utils";
 import { supabase } from "@/integrations/supabase/client";
 import { urlDaFuncao } from "@/lib/urlFuncao";
 
-/* /configuracoes/integracoes — as portas do Hub para fora, e se cada uma abre.
+/* /monitoramento/integracoes — as portas do Hub para fora, e se cada uma abre.
+ *
+ * Morou em `/configuracoes/integracoes` até 02/09/2026, quando virou aba de
+ * Monitoramento. O endereço antigo continua chegando por redirect (ver App.tsx).
  *
  * POR QUE ESTA TELA EXISTE, e o caso que a decidiu: em 29/08/2026 a planilha de
  * churn deixou de abrir porque alguém removeu o compartilhamento "qualquer
@@ -143,7 +146,7 @@ export default function Integracoes() {
         <div className="rounded-lg border border-red-500/40 bg-card p-3">
           <p className="flex items-center gap-1.5 text-[13px] font-semibold text-red-700 dark:text-red-400">
             <AlertTriangle className="h-4 w-4" />
-            {quebradas} integração{quebradas > 1 ? "ões" : ""} precisando de atenção
+            {quebradas} {quebradas > 1 ? "integrações" : "integração"} precisando de atenção
           </p>
         </div>
       )}

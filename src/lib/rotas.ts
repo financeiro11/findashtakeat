@@ -28,9 +28,13 @@ export const ROTAS: Record<string, { crumbs: string[]; context?: string }> = {
   "/usuarios": { crumbs: ["Configurações", "Usuários"] },
   "/configuracoes/parametrizacao": { crumbs: ["Configurações", "Parametrização"], context: "Apelido das contrapartes · o nome que o fornecedor tem para nós" },
   "/configuracoes/uso-ia": { crumbs: ["Configurações", "Uso IA"], context: "Custo estimado das chamadas à IA" },
-  "/configuracoes/integracoes": { crumbs: ["Configurações", "Integrações"], context: "O que está conectado — e o que expirou calado" },
   "/automacoes/proporcionais": { crumbs: ["Automações", "Proporcionais"], context: "Aprovação de salários proporcionais" },
-  "/automacoes/painel": { crumbs: ["Time Financeiro", "Automações"], context: "Está rodando? · próximo disparo, filas e o que a função respondeu" },
+  /* As três abas de /monitoramento. Cada uma tem entrada própria porque o
+     breadcrumb é lido por caminho exato — sem elas, a aba cairia no `pathname` cru. */
+  "/monitoramento": { crumbs: ["Configurações", "Monitoramento"], context: "Está tudo funcionando?" },
+  "/monitoramento/thetys": { crumbs: ["Configurações", "Monitoramento", "TETS"], context: "O que a agente fez · trilha, fila do humano e relatório do período" },
+  "/monitoramento/automacoes": { crumbs: ["Configurações", "Monitoramento", "Automações"], context: "Está rodando? · próximo disparo, filas e o que a função respondeu" },
+  "/monitoramento/integracoes": { crumbs: ["Configurações", "Monitoramento", "Integrações"], context: "O que está conectado — e o que expirou calado" },
   "/asaas": { crumbs: ["Operacional", "Asaas"], context: "Recebimentos · Assinaturas · NF-e" },
   "/assinaturas": { crumbs: ["Início", "Assinaturas"], context: "Base Asaas · MRR & carteira de clientes" },
   "/operacional/variavel": { crumbs: ["Operacional", "Variável"], context: "Comissões variáveis · fechamento mensal" },
@@ -78,6 +82,7 @@ export const ROTAS: Record<string, { crumbs: string[]; context?: string }> = {
   "/facilities/solicitacoes": { crumbs: ["Facilities", "Solicitações"], context: "Pipeline de compras" },
   "/facilities/cotacoes": { crumbs: ["Facilities", "Cotações"], context: "Comparativo de orçamentos" },
   "/facilities/radar": { crumbs: ["Facilities", "Radar de preços"], context: "Monitoramento de preço de equipamentos" },
+  "/facilities/passagens": { crumbs: ["Facilities", "Passagens"], context: "Viagem marcada com teto · alerta do Google Flights" },
   "/facilities/fornecedores": { crumbs: ["Facilities", "Fornecedores"], context: "Cadastro e histórico por fornecedor" },
   "/facilities/historico": { crumbs: ["Facilities", "Histórico"], context: "Compras realizadas" },
   "/facilities/contratos": { crumbs: ["Facilities", "Contratos"], context: "Serviços recorrentes" },

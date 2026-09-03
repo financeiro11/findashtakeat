@@ -214,6 +214,28 @@ function BotaoRecolher({ recolhido, onClick }: { recolhido: boolean; onClick: ()
   );
 }
 
+/**
+ * Quantos sinais abertos pertencem a este item do menu — os dele e os das telas
+ * que moram debaixo dele.
+ *
+ * Um item pode ser a porta de várias telas: "Monitoramento" (`/monitoramento`) é a
+ * casa de três abas, e o sinal de automação falhando aponta para
+ * `/monitoramento/automacoes`, que não é item de menu nenhum. Com a comparação
+ * exata que havia antes, esse selo existiria no banco e nunca acenderia na barra —
+ * exatamente o tipo de quebra silenciosa que o sino existe para não ter.
+ *
+ * `startsWith(url + "/")` e não `startsWith(url)`: sem a barra, `/caixa` casaria
+ * com `/caixaqualquercoisa`. A raiz `/` também não engole ninguém, porque nenhuma
+ * rota começa com `//`.
+ */
+function sinaisDaRota(porRota: Record<string, number>, url: string): number {
+  let total = 0;
+  for (const [rota, n] of Object.entries(porRota)) {
+    if (rota === url || rota.startsWith(url + "/")) total += n;
+  }
+  return total;
+}
+
 export function AppSidebar() {
   const { pathname } = useLocation();
   const { user, profile } = useAuth();
@@ -247,7 +269,7 @@ export function AppSidebar() {
       ...g,
       items: g.items.map((i) => {
         if (i.url === "/facilities/radar" && radarNovos) return { ...i, badge: String(radarNovos) };
-        const n = por_rota[i.url];
+        const n = sinaisDaRota(por_rota, i.url);
         return n ? { ...i, badge: String(n) } : i;
       }),
     }));

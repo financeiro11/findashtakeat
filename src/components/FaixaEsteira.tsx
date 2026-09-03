@@ -10,7 +10,7 @@
  * pediu a faixa não a achou na tela. Um marcador de status que não se apresenta
  * não é discreto, é invisível. Agora a palavra "Automações" vem junto, e o
  * detalhe continua a um clique — com caminho para o painel inteiro
- * (`/automacoes/painel`), que é onde a esteira das notas se lê etapa a etapa.
+ * (`/monitoramento/automacoes`), onde a esteira das notas se lê etapa a etapa.
  *
  * O PONTO VERMELHO É O PONTO. Falha de automação não avisa sozinha — o cron
  * segue disparando, a função segue respondendo 500, e o número na tela para de
@@ -87,7 +87,7 @@ export function FaixaEsteira() {
             <span className="font-medium">não deu para ler as automações</span>
           ) : temFalha ? (
             <span className="font-medium">
-              {calc.ruins.length} automação{calc.ruins.length > 1 ? "ões" : ""} falhando
+              {calc.ruins.length} {calc.ruins.length > 1 ? "automações" : "automação"} falhando
             </span>
           ) : (
             <>
@@ -112,7 +112,7 @@ export function FaixaEsteira() {
           </div>
           <div className="flex items-center gap-1">
             <Link
-              to="/automacoes/painel"
+              to="/monitoramento/automacoes"
               onClick={() => setAberto(false)}
               className="flex items-center gap-1 rounded border border-border px-2 py-1 text-[11.5px] text-muted-foreground hover:bg-muted/60 hover:text-foreground"
             >

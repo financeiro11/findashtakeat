@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import { Kanban } from "lucide-react";
 import {
   GRUPOS_FINANCEIRO, GRUPO_FACILITIES, GRUPO_PARCERIAS, GRUPO_BUSCA_EXTRA,
-  gruposVisiveis, itensDe, termosDeBusca, type NavGrupo, type NavItem,
+  gruposVisiveis, itensDe, pontuarBusca, termosDeBusca, type NavGrupo, type NavItem,
 } from "./navegacao";
 import { ROTAS, resolverDinamica } from "./rotas";
 import { moduleAccess } from "./modules";
@@ -61,6 +61,64 @@ describe("termosDeBusca", () => {
       const termos = termosDeBusca(grupo, item);
       expect(termos).toHaveLength(new Set(termos).size);
     }
+  });
+});
+
+/* A busca de verdade, com o catálogo de verdade — é como o ⌘K chama `pontuarBusca`. */
+function buscar(consulta: string): string[] {
+  return GRUPOS_FINANCEIRO
+    .flatMap((g) => g.items.map((item) => ({
+      titulo: item.title,
+      pontos: pontuarBusca(`${g.label} ${item.title}`, consulta, termosDeBusca(g.label, item)),
+    })))
+    .filter((r) => r.pontos > 0)
+    .sort((a, b) => b.pontos - a.pontos)
+    .map((r) => r.titulo);
+}
+
+describe("pontuarBusca (o filtro do ⌘K)", () => {
+  /* O bug: o fuzzy padrão do cmdk casa por SUBSEQUÊNCIA, e digitar "monitoramento"
+     trazia Caixa, Visão do Time, Anotações e Revisão Mensal — as letras estavam
+     espalhadas pelos sinônimos de cada um. */
+  it("'monitoramento' acha Monitoramento e mais nada", () => {
+    expect(buscar("monitoramento")).toEqual(["Monitoramento"]);
+  });
+
+  it("não casa letras soltas espalhadas pelo item", () => {
+    // "cxa" está em "Caixa" como subsequência, mas não como pedaço de palavra.
+    expect(buscar("cxa")).not.toContain("Caixa");
+    expect(buscar("caixa")).toContain("Caixa");
+  });
+
+  it("acha pelo sinônimo das três abas de Monitoramento", () => {
+    for (const termo of ["cron", "gmail", "agente", "credencial", "esteira"]) {
+      expect(buscar(termo)).toContain("Monitoramento");
+    }
+  });
+
+  it("o que está escrito na linha vale mais que o sinônimo", () => {
+    const naLinha = pontuarBusca("Configurações Monitoramento", "monitoramento", ["cron"]);
+    const sinonimo = pontuarBusca("Início Caixa", "monitoramento", ["monitoramento"]);
+    expect(naLinha).toBeGreaterThan(sinonimo);
+    expect(sinonimo).toBeGreaterThan(0);
+  });
+
+  it("toda palavra da consulta precisa casar", () => {
+    expect(pontuarBusca("Governança Auditoria", "auditoria bicicleta", [])).toBe(0);
+    expect(pontuarBusca("Governança Auditoria", "governanca auditoria", [])).toBeGreaterThan(0);
+  });
+
+  it("ignora acento nos dois lados", () => {
+    expect(buscar("orcamento")).toContain("Orçamento");
+    expect(buscar("integrações")).toContain("Monitoramento");
+  });
+
+  it("consulta vazia deixa o menu inteiro passar", () => {
+    expect(pontuarBusca("Início Caixa", "", [])).toBeGreaterThan(0);
+  });
+
+  it("consulta sem resposta devolve lista vazia", () => {
+    expect(buscar("zimbabue")).toEqual([]);
   });
 });
 

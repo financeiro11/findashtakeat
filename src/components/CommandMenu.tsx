@@ -5,7 +5,7 @@ import {
 } from "@/components/ui/command";
 import { useAuth } from "@/hooks/useAuth";
 import { moduleAccess, currentModule } from "@/lib/modules";
-import { GRUPO_BUSCA_EXTRA, gruposVisiveis, termosDeBusca } from "@/lib/navegacao";
+import { GRUPO_BUSCA_EXTRA, gruposVisiveis, pontuarBusca, termosDeBusca } from "@/lib/navegacao";
 
 export function CommandMenu({ open, onOpenChange }: { open: boolean; onOpenChange: (v: boolean) => void }) {
   const nav = useNavigate();
@@ -32,7 +32,7 @@ export function CommandMenu({ open, onOpenChange }: { open: boolean; onOpenChang
   }, [open, onOpenChange]);
 
   return (
-    <CommandDialog open={open} onOpenChange={onOpenChange}>
+    <CommandDialog open={open} onOpenChange={onOpenChange} filter={pontuarBusca}>
       <CommandInput placeholder="Buscar ou ir para…" />
       <CommandList>
         <CommandEmpty>Nada encontrado.</CommandEmpty>

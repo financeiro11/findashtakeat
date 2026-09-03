@@ -1,4 +1,9 @@
-/* /automacoes/painel — "o que roda sozinho, está rodando?"
+/* /monitoramento/automacoes — "o que roda sozinho, está rodando?"
+ *
+ * Morou em `/automacoes/painel` até 02/09/2026, quando virou aba de Monitoramento
+ * ao lado da agente e das integrações — as três respondem à mesma pergunta. O
+ * endereço antigo continua chegando por redirect (ver App.tsx). O arquivo segue
+ * aqui, e não em `pages/monitoramento/`, porque mudou de LUGAR, não de conteúdo.
  *
  * A FAIXA DO TOPO NÃO BASTAVA, e o motivo é honesto: ela cabe no canto do olho e
  * por isso mostra três coisas. Quem quer conferir a esteira das notas precisa de
@@ -223,7 +228,7 @@ export default function PainelAutomacoes() {
         <div className="rounded-lg border border-red-500/40 bg-card p-3">
           <p className="flex items-center gap-1.5 text-[13px] font-semibold text-red-700 dark:text-red-400">
             <AlertTriangle className="h-4 w-4" />
-            {ruins.length} automação{ruins.length > 1 ? "ões" : ""} falhando
+            {ruins.length} {ruins.length > 1 ? "automações" : "automação"} falhando
           </p>
           <ul className="mt-2 space-y-2">
             {ruins.map((a) => (

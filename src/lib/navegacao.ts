@@ -12,8 +12,8 @@ import {
   FolderKanban, BookOpenCheck, Presentation, Building2, Percent, Receipt, Undo2,
   FileText, Smartphone, Plane, LayoutDashboard, Kanban, FileSpreadsheet, Truck,
   History, FileSignature, Gavel, CheckCircle2, PieChart, TrendingUp, FileBarChart,
-  Scale, Target, Brain, Wallet2, ShieldCheck, Megaphone, UserMinus, UserCog, Tags, Plug,
-  Palette, Mic, Rocket, Globe2, Paperclip, Radar, Zap,
+  Scale, Target, Brain, Wallet2, ShieldCheck, Megaphone, UserMinus, UserCog, Tags,
+  Palette, Mic, Rocket, Globe2, Paperclip, Radar, Activity,
   type LucideIcon,
 } from "lucide-react";
 import type { ModuleAccess, ModuleId } from "./modules";
@@ -66,9 +66,8 @@ export const GRUPOS_FINANCEIRO: NavGrupo[] = [
     { title: "Visão do Time", url: "/time/visao", icon: Users, busca: ["estrutura", "cargos", "automações", "catálogo"] },
     { title: "Tarefas", url: "/tarefas", icon: CheckSquare, busca: ["kanban", "backlog"] },
     { title: "Projetos", url: "/automacoes/projetos", icon: FolderKanban },
-    // "Está rodando?" — a mesma leitura da faixa do topo, aberta. Fica aqui, e não
-    // em Governança, porque a pergunta é do time que opera o Hub.
-    { title: "Automações", url: "/automacoes/painel", icon: Zap, busca: ["cron", "fila", "esteira", "está rodando", "agendamento", "job", "notas para o omie", "anexo", "varredura", "agendador"] },
+    // O painel das automações saiu daqui: virou aba de Configurações › Monitoramento,
+    // junto da agente e das integrações. As três respondem "está funcionando?".
     { title: "Anotações", url: "/playbook", icon: BookOpenCheck, busca: ["playbook", "notas"], alias: ["/notas"] },
   ]},
   /* Apresentações: o que sai do Hub para uma PLATEIA — a reunião de tracker com o
@@ -127,9 +126,17 @@ export const GRUPOS_FINANCEIRO: NavGrupo[] = [
     { title: "Rescisões", url: "/governanca/rescisoes", icon: UserMinus, busca: ["desligamento", "verbas", "pj"] },
   ]},
   { label: "Configurações", items: [
+    /* MONITORAMENTO — UMA entrada, três abas dentro da tela.
+       As abas já estão desenhadas no topo da página; repeti-las aqui era dizer a
+       mesma coisa duas vezes na mesma tela. O `alias` faz o item continuar aceso
+       em qualquer uma das três, e os sinônimos das três telas se juntam aqui para
+       que o ⌘K continue achando "cron", "gmail" e "agente" pelo nome de cada uma. */
+    { title: "Monitoramento", url: "/monitoramento", icon: Activity, alias: ["/monitoramento"],
+      busca: ["tets", "thétys", "thetys", "agente", "trilha", "execuções", "exceções", "tesouraria",
+              "automações", "cron", "fila", "esteira", "está rodando", "agendamento", "job", "agendador", "varredura",
+              "integrações", "gmail", "conectar", "credencial", "chave", "api", "planilha", "omie", "asaas", "token", "oauth"] },
     { title: "Colaboradores (RH)", url: "/operacional/colaboradores", icon: Users, busca: ["rh", "portal rh", "ficha", "funcionário", "funcionario", "equipe"] },
     { title: "Parametrização", url: "/configuracoes/parametrizacao", icon: Tags, busca: ["apelido", "contraparte", "fornecedor", "de-para", "de para"] },
-    { title: "Integrações", url: "/configuracoes/integracoes", icon: Plug, busca: ["gmail", "conectar", "credencial", "chave", "api", "planilha", "omie", "asaas", "token", "oauth"] },
     { title: "Usuários", url: "/usuarios", icon: UserCog, busca: ["acesso", "cargo", "permissão"] },
     { title: "Biblioteca", url: "/analise/conhecimento", icon: Brain, busca: ["base de conhecimento", "políticas", "colaboradores"] },
   ]},
@@ -143,6 +150,7 @@ export const GRUPO_FACILITIES: NavGrupo = {
     { title: "Solicitações", url: "/facilities/solicitacoes", icon: Kanban, busca: ["pedido", "compra"] },
     { title: "Cotações", url: "/facilities/cotacoes", icon: FileSpreadsheet, busca: ["orçamento", "comparativo"] },
     { title: "Radar de preços", url: "/facilities/radar", icon: Radar, busca: ["monitorar preço", "notebook", "equipamento", "promoção", "mercado livre", "oferta"] },
+    { title: "Passagens", url: "/facilities/passagens", icon: Plane, busca: ["viagem", "voo", "aérea", "passagem", "google flights", "aeroporto", "bilhete"] },
     { title: "Fornecedores", url: "/facilities/fornecedores", icon: Truck },
     { title: "Histórico", url: "/facilities/historico", icon: History, busca: ["compras realizadas"] },
     { title: "Contratos", url: "/facilities/contratos", icon: FileSignature, busca: ["recorrentes"] },
@@ -191,4 +199,41 @@ export function termosDeBusca(grupo: string, item: NavItem): string[] {
   const cru = [grupo, item.title, item.url, item.badge ?? "", ...(item.busca ?? [])].filter(Boolean);
   const semAcento = cru.map((t) => normalize(t).toLowerCase()).filter(Boolean);
   return [...new Set([...cru, ...semAcento])];
+}
+
+/**
+ * O filtro do ⌘K.
+ *
+ * O PADRÃO DO CMDK É FUZZY POR SUBSEQUÊNCIA: as letras da consulta só precisam
+ * aparecer na ordem, com buracos entre elas. Digitar "monitoramento" devolvia
+ * Caixa, Visão do Time, Anotações e Revisão Mensal — as treze letras estavam lá,
+ * espalhadas por título, grupo, rota e sinônimos de cada um. Uma busca que
+ * responde qualquer coisa não responde nada, e o item certo ficava embaixo do
+ * lixo em vez de em primeiro.
+ *
+ * A REGRA AQUI: cada palavra da consulta precisa aparecer INTEIRA (como pedaço de
+ * palavra, não como letras soltas) em algum termo do item. Palavra que não casa em
+ * lugar nenhum derruba o item — é o que faz a lista encurtar em vez de crescer.
+ *
+ * A ORDEM sai de ONDE casou: o que está escrito na linha do resultado (grupo +
+ * título) vale mais do que um sinônimo do catálogo, senão "notas" traria primeiro
+ * uma tela que só tem "notas" como apelido, e quem digitou não entenderia por quê.
+ *
+ * Devolve 0 quando não casa — é o contrato do `filter` do cmdk, onde qualquer
+ * número positivo aparece e o maior sobe.
+ */
+export function pontuarBusca(valor: string, consulta: string, termos?: string[]): number {
+  const alvo = normalize(consulta);
+  if (!alvo) return 1; // sem consulta digitada, a lista é o menu inteiro
+
+  const naLinha = normalize(valor);
+  const sinonimos = (termos ?? []).map((t) => normalize(t)).filter(Boolean);
+
+  let pontos = 0;
+  for (const palavra of alvo.split(" ")) {
+    if (naLinha.includes(palavra)) pontos += 4;
+    else if (sinonimos.some((t) => t.includes(palavra))) pontos += 1;
+    else return 0;
+  }
+  return pontos;
 }

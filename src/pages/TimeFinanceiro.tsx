@@ -12,7 +12,7 @@ import {
   Loader2, Plus, Pencil, Trash2, X, Users, UserPlus, Network, ListChecks,
   CalendarDays, Bot, Target, Zap, Clock, ArrowRight, Layers, ChevronDown, ShieldCheck,
   Download, Copy, ArrowRightLeft, Check, Lock, Wrench, Waypoints, Calculator, Landmark, Rocket, Search,
-  GitBranch, Triangle,
+  GitBranch, Triangle, Activity, Inbox, Eye, EyeOff,
 } from "lucide-react";
 
 // ============================================================================
@@ -31,11 +31,24 @@ type Status = "efetivo" | "vaga_aberta" | "entrevista" | "contratado" | "planeja
 // e só some quando o destino vira efetivo).
 type AtribItem = string | { texto: string; transfPara?: string; transfParaNome?: string };
 type AtribGrupo = { titulo: string; itens: AtribItem[] };
+// `tipo` separa gente de membro virtual. Um agente é um cargo igual aos outros
+// (mesma árvore, mesmo ano, mesmas atribuições) — o que muda é que no lugar da
+// pessoa entram o canal por onde se fala com ele, o registro em `agentes` e as
+// automações do catálogo que ele executa.
+type TipoCargo = "humano" | "agente";
 type Cargo = {
   id: string; titulo: string; pessoa: string | null; senioridade: string | null;
   status: Status; acumulo: boolean; prioridade: string | null; custo_mensal: number | null;
   alvo: string | null; parent_id: string | null; atribuicoes: AtribGrupo[]; ordem: number; ano: number;
   chave: string; desacoplado: boolean;
+  tipo: TipoCargo; agente_ref: string | null; agente_canal: string | null; agente_automacoes: string[];
+};
+// Uma automação do catálogo, do jeito que o card do agente precisa dela.
+type Automacao = { id: string; automacao: string; categoria: string | null; status: string; nivel: number | null; horas_mes: number | null };
+// Linha da view `agentes_resumo` — contagem por resultado, que o PostgREST não agrupa.
+type AgenteResumo = {
+  id: string; nome: string; descricao: string | null; alcada_maxima: string; ativo: boolean;
+  execucoes: number; falhas: number; escaladas: number; ultima_execucao: string | null; excecoes_abertas: number;
 };
 const ANOS = [2026, 2027, 2028];
 
@@ -70,7 +83,37 @@ const STATUS_META: Record<Status, { label: string; badge: string; borda: string 
   planejado:   { label: "PLANEJADO",     badge: "bg-muted text-muted-foreground",          borda: "border-dashed" },
 };
 
+// Membro virtual tem paleta própria (violeta) — não é vermelho de gente nem
+// cinza de planejado. A mesma cor identifica o agente no card, no avatar e no
+// painel lateral.
+const AGENTE_COR = "hsl(265 62% 55%)";
+// O vocabulário de status muda para quem não é gente: não se "contrata" um agente.
+const AGENTE_STATUS: Record<Status, string> = {
+  efetivo: "EM PRODUÇÃO",
+  contratado: "HOMOLOGADO",
+  entrevista: "EM TESTE",
+  vaga_aberta: "EM CONSTRUÇÃO",
+  planejado: "PLANEJADO",
+};
+// Alçada do agente (public.agentes.alcada_maxima): o teto do que ele decide sozinho.
+const ALCADA_META: Record<string, { label: string; chip: string }> = {
+  verde:    { label: "Alçada verde · decide sozinho",        chip: "bg-success/10 text-success" },
+  amarelo:  { label: "Alçada amarela · propõe e escala",     chip: "bg-amber-500/15 text-amber-600 dark:text-amber-400" },
+  vermelho: { label: "Alçada vermelha · só com aprovação",   chip: "bg-destructive/10 text-destructive" },
+};
+
 const fmtBRL0 = (n: number) => `R$ ${Math.round(n).toLocaleString("pt-BR")}`;
+// "hoje 07:05" / "há 3 dias" — a última vez que o agente decidiu alguma coisa.
+function desdeQuando(iso: string | null): string {
+  if (!iso) return "nunca rodou";
+  const d = new Date(iso);
+  const dias = Math.floor((Date.now() - d.getTime()) / 86_400_000);
+  const hora = d.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" });
+  if (dias <= 0) return `hoje ${hora}`;
+  if (dias === 1) return `ontem ${hora}`;
+  if (dias < 30) return `há ${dias} dias`;
+  return d.toLocaleDateString("pt-BR");
+}
 
 // Cor do badge de tipo de ritual/reunião.
 function tipoRitualBadge(tipo?: string | null): string {
@@ -245,6 +288,17 @@ type TabKey = (typeof TABS)[number]["key"];
 
 /* ------------------------------ subcomponentes ------------------------------ */
 function Avatar({ cargo, size = "h-9 w-9 text-[13px]" }: { cargo: Cargo; size?: string }) {
+  if (cargo.tipo === "agente") {
+    return (
+      <div
+        className={cn("flex shrink-0 items-center justify-center rounded-full text-white", size)}
+        style={{ background: AGENTE_COR }}
+        title="Membro virtual"
+      >
+        <Bot className="h-[55%] w-[55%]" />
+      </div>
+    );
+  }
   if (!cargo.pessoa) {
     return (
       <div className={cn("flex shrink-0 items-center justify-center rounded-full border-2 border-dashed border-primary/60 text-primary", size)}>
@@ -260,20 +314,28 @@ function Avatar({ cargo, size = "h-9 w-9 text-[13px]" }: { cargo: Cargo; size?: 
 }
 
 function subtitulo(c: Cargo): string {
+  if (c.tipo === "agente") return [c.agente_canal, c.senioridade].filter(Boolean).join(" · ") || "Membro virtual";
   if (c.pessoa) return [c.pessoa, c.senioridade].filter(Boolean).join(" · ");
   return ["Em aberto", c.senioridade, c.prioridade ? `prioridade ${c.prioridade}` : null].filter(Boolean).join(" · ");
 }
 
-function CargoCard({ c, selected, onClick }: { c: Cargo; selected: boolean; onClick: () => void }) {
+function CargoCard({ c, selected, onClick, autos }: {
+  c: Cargo; selected: boolean; onClick: () => void; autos?: Automacao[];
+}) {
   const meta = STATUS_META[c.status];
+  const agente = c.tipo === "agente";
+  // Só as automações que existem hoje no catálogo — id órfão não vira número na tela.
+  const minhas = agente ? (autos ?? []).filter((a) => c.agente_automacoes?.includes(a.id)) : [];
+  const horas = minhas.reduce((s, a) => s + Math.max(0, a.horas_mes ?? 0), 0);
   return (
     <button
       onClick={onClick}
       className={cn(
         "w-[230px] rounded-lg border border-muted-foreground/30 bg-card p-3 text-left shadow-sm transition hover:shadow-md",
-        meta.borda,
+        agente ? "border-l-[3px]" : meta.borda,
         selected && "ring-2 ring-primary/40",
       )}
+      style={agente ? { borderLeftColor: AGENTE_COR, background: `color-mix(in srgb, ${AGENTE_COR} 4%, hsl(var(--card)))` } : undefined}
     >
       <div className="flex items-center gap-2.5">
         <Avatar cargo={c} />
@@ -284,9 +346,15 @@ function CargoCard({ c, selected, onClick }: { c: Cargo; selected: boolean; onCl
       </div>
       <div className="mt-2.5 flex items-center justify-between gap-2">
         <div className="flex min-w-0 items-center gap-1">
-          <span className={cn("shrink-0 rounded px-1.5 py-0.5 text-[9px] font-bold tracking-wider", meta.badge)}>
-            {meta.label}{c.acumulo ? " · ACÚMULO" : ""}
-          </span>
+          {agente ? (
+            <span className="shrink-0 rounded px-1.5 py-0.5 text-[9px] font-bold tracking-wider text-white" style={{ background: AGENTE_COR }}>
+              AGENTE{c.status !== "efetivo" ? ` · ${AGENTE_STATUS[c.status]}` : ""}
+            </span>
+          ) : (
+            <span className={cn("shrink-0 rounded px-1.5 py-0.5 text-[9px] font-bold tracking-wider", meta.badge)}>
+              {meta.label}{c.acumulo ? " · ACÚMULO" : ""}
+            </span>
+          )}
           {c.desacoplado && (
             <span className="shrink-0 rounded bg-amber-500/15 px-1 py-0.5 text-[9px] font-bold text-amber-600 dark:text-amber-400" title="Personalizado neste ano — não herda mais mudanças do ano anterior">
               EDITADO
@@ -298,9 +366,15 @@ function CargoCard({ c, selected, onClick }: { c: Cargo; selected: boolean; onCl
             </span>
           )}
         </div>
-        {c.custo_mensal != null && c.status !== "efetivo" && (
+        {agente ? (
+          minhas.length > 0 && (
+            <span className="num shrink-0 text-[11px] font-semibold text-foreground" title="Automações do catálogo que este agente executa">
+              {minhas.length} autom.{horas > 0 ? ` · ${horas}h` : ""}
+            </span>
+          )
+        ) : c.custo_mensal != null && c.status !== "efetivo" ? (
           <span className="num shrink-0 text-[11px] font-semibold text-foreground">{fmtBRL0(c.custo_mensal)}/mês</span>
-        )}
+        ) : null}
       </div>
     </button>
   );
@@ -398,14 +472,16 @@ const ORG_TREE_CSS = `
 `;
 
 // Nó recursivo do organograma (renderiza qualquer profundidade).
-function Ramo({ cargo, all, selId, onSel }: { cargo: Cargo; all: Cargo[]; selId: string | null; onSel: (id: string) => void }) {
+function Ramo({ cargo, all, selId, onSel, autos }: {
+  cargo: Cargo; all: Cargo[]; selId: string | null; onSel: (id: string) => void; autos: Automacao[];
+}) {
   const kids = all.filter((c) => c.parent_id === cargo.id).sort((a, b) => a.ordem - b.ordem);
   return (
     <li>
-      <CargoCard c={cargo} selected={selId === cargo.id} onClick={() => onSel(cargo.id)} />
+      <CargoCard c={cargo} selected={selId === cargo.id} onClick={() => onSel(cargo.id)} autos={autos} />
       {kids.length > 0 && (
         <ul>
-          {kids.map((k) => <Ramo key={k.id} cargo={k} all={all} selId={selId} onSel={onSel} />)}
+          {kids.map((k) => <Ramo key={k.id} cargo={k} all={all} selId={selId} onSel={onSel} autos={autos} />)}
         </ul>
       )}
     </li>
@@ -418,7 +494,9 @@ export default function TimeFinanceiro() {
   const [passos, setPassos] = useState<Passo[]>([]);
   const [rituais, setRituais] = useState<Ritual[]>([]);
   const [escopos, setEscopos] = useState<Escopo[]>([]);
-  const [autoNiveis, setAutoNiveis] = useState<{ nivel: number | null; status: string }[]>([]);
+  const [automacoes, setAutomacoes] = useState<Automacao[]>([]);
+  const [agentesResumo, setAgentesResumo] = useState<AgenteResumo[]>([]);
+  const [mostrarAgentes, setMostrarAgentes] = useState(true);
   // Níveis da pirâmide vêm de automacoes_niveis; NIVEIS é só a semente/fallback.
   const [niveisDb, setNiveisDb] = useState<{ n: number; nome: string; bullets?: string[] }[]>(NIVEIS);
   const [loading, setLoading] = useState(true);
@@ -443,11 +521,16 @@ export default function TimeFinanceiro() {
     });
 
   // diálogo de cargo/vaga (criar + editar)
-  const vazio = { titulo: "", pessoa: "", senioridade: "Pleno", status: "vaga_aberta" as Status, prioridade: "Alta", custo_mensal: "", alvo: "", parent_id: "" };
+  const vazio = {
+    titulo: "", pessoa: "", senioridade: "Pleno", status: "vaga_aberta" as Status, prioridade: "Alta",
+    custo_mensal: "", alvo: "", parent_id: "",
+    tipo: "humano" as TipoCargo, agente_ref: "", agente_canal: "Telegram", agente_automacoes: [] as string[],
+  };
   const [dlgOpen, setDlgOpen] = useState(false);
   const [editId, setEditId] = useState<string | null>(null);
   const [form, setForm] = useState(vazio);
   const [salvando, setSalvando] = useState(false);
+  const [autoBusca, setAutoBusca] = useState(""); // filtro do seletor de automações do agente
 
   // editor de atribuições (blocos/itens) + "puxar de outro cargo"
   const [atbDlgOpen, setAtbDlgOpen] = useState(false);
@@ -483,21 +566,23 @@ export default function TimeFinanceiro() {
     setEscRecolhidos((prev) => { const n = new Set(prev); n.has(nome) ? n.delete(nome) : n.add(nome); return n; });
 
   async function carregar() {
-    const [{ data: cs, error: e1 }, { data: ps, error: e2 }, { data: rs, error: e3 }, { data: au }, { data: nv }, { data: es, error: e5 }] = await Promise.all([
+    const [{ data: cs, error: e1 }, { data: ps, error: e2 }, { data: rs, error: e3 }, { data: au }, { data: nv }, { data: es, error: e5 }, { data: ag }] = await Promise.all([
       sb.from("time_cargos").select("*").order("ordem", { ascending: true }),
       sb.from("time_passos").select("*").order("ordem", { ascending: true }),
       sb.from("time_rituais").select("*").order("ordem", { ascending: true }),
-      sb.from("automacoes_catalogo").select("nivel,status"),
+      sb.from("automacoes_catalogo").select("id,automacao,categoria,status,nivel,horas_mes").order("ordem"),
       sb.from("automacoes_niveis").select("n,nome,bullets").order("n"),
       sb.from("time_escopos").select("*").order("ordem", { ascending: true }),
+      sb.from("agentes_resumo").select("*"),
     ]);
     if (e1 || e2 || e3 || e5) toast.error("Falha ao carregar o time: " + (e1?.message ?? e2?.message ?? e3?.message ?? e5?.message));
     setCargos((cs ?? []) as Cargo[]);
     setPassos((ps ?? []) as Passo[]);
     setRituais((rs ?? []) as Ritual[]);
-    setAutoNiveis((au ?? []) as { nivel: number | null; status: string }[]);
+    setAutomacoes((au ?? []) as Automacao[]);
     if (nv?.length) setNiveisDb(nv as { n: number; nome: string; bullets?: string[] }[]);
     setEscopos((es ?? []) as Escopo[]);
+    setAgentesResumo((ag ?? []) as AgenteResumo[]);
     setLoading(false);
   }
   useEffect(() => { carregar(); }, []);
@@ -520,6 +605,37 @@ export default function TimeFinanceiro() {
 
   const raiz = cargosDoAno.find((c) => !c.parent_id);
   const selCargo = cargosDoAno.find((c) => c.id === selCargoId) ?? null;
+
+  /* ---- membros virtuais ---- */
+  // A árvore pode esconder os agentes (foto só do time humano, para RH/diretoria).
+  const cargosArvore = useMemo(
+    () => (mostrarAgentes ? cargosDoAno : cargosDoAno.filter((c) => c.tipo !== "agente")),
+    [cargosDoAno, mostrarAgentes],
+  );
+  const autoById = useMemo(() => new Map(automacoes.map((a) => [a.id, a])), [automacoes]);
+  // Automações de um agente, na ordem do catálogo, ignorando id que não existe mais.
+  const autosDoAgente = (c: Cargo | null): Automacao[] =>
+    !c || c.tipo !== "agente" ? [] : (c.agente_automacoes ?? []).map((id) => autoById.get(id)).filter(Boolean) as Automacao[];
+  const resumoDoAgente = (c: Cargo | null): AgenteResumo | null =>
+    c?.agente_ref ? agentesResumo.find((a) => a.id === c.agente_ref) ?? null : null;
+  // Placar do ano: gente de um lado, membros virtuais do outro. As horas vêm do
+  // catálogo (horas_mes), então só aparecem depois de a automação ser medida lá.
+  const placar = useMemo(() => {
+    const agentes = cargosDoAno.filter((c) => c.tipo === "agente");
+    const humanos = cargosDoAno.filter((c) => c.tipo !== "agente");
+    const ids = new Set(agentes.flatMap((c) => c.agente_automacoes ?? []));
+    const horas = [...ids].reduce((s, id) => s + Math.max(0, autoById.get(id)?.horas_mes ?? 0), 0);
+    const refs = new Set(agentes.map((c) => c.agente_ref).filter(Boolean) as string[]);
+    const execucoes = agentesResumo.filter((a) => refs.has(a.id)).reduce((s, a) => s + Number(a.execucoes ?? 0), 0);
+    return {
+      pessoas: humanos.filter((c) => c.status === "efetivo").length,
+      vagas: humanos.filter((c) => c.status !== "efetivo").length,
+      agentes: agentes.length,
+      automacoes: ids.size,
+      horas,
+      execucoes,
+    };
+  }, [cargosDoAno, autoById, agentesResumo]);
 
   /* ---- Escopo do financeiro (skill tree): agrupamento + cobertura ---- */
   const escKpi = useMemo(() => {
@@ -591,9 +707,12 @@ export default function TimeFinanceiro() {
   }, [escFolhas, escById]);
 
   /* ------------------------------ ações ------------------------------ */
-  function abrirNovo(status: Status = "vaga_aberta") {
+  function abrirNovo(status: Status = "vaga_aberta", tipo: TipoCargo = "humano") {
     setEditId(null);
-    setForm({ ...vazio, status, parent_id: raiz?.id ?? "" });
+    setForm({
+      ...vazio, status, parent_id: raiz?.id ?? "", tipo,
+      ...(tipo === "agente" ? { senioridade: "Agente autônomo", status: "efetivo" as Status } : null),
+    });
     setDlgOpen(true);
   }
   function abrirEdicao(c: Cargo) {
@@ -602,9 +721,18 @@ export default function TimeFinanceiro() {
       titulo: c.titulo, pessoa: c.pessoa ?? "", senioridade: c.senioridade ?? "",
       status: c.status, prioridade: c.prioridade ?? "", custo_mensal: c.custo_mensal != null ? String(c.custo_mensal) : "",
       alvo: c.alvo ?? "", parent_id: c.parent_id ?? "",
+      tipo: c.tipo ?? "humano", agente_ref: c.agente_ref ?? "", agente_canal: c.agente_canal ?? "",
+      agente_automacoes: [...(c.agente_automacoes ?? [])],
     });
     setDlgOpen(true);
   }
+  const toggleAutoDoForm = (id: string) =>
+    setForm((f) => ({
+      ...f,
+      agente_automacoes: f.agente_automacoes.includes(id)
+        ? f.agente_automacoes.filter((x) => x !== id)
+        : [...f.agente_automacoes, id],
+    }));
 
   // Ao virar efetivo, os itens que estavam sinalizados "vão para este cargo" saem em
   // definitivo das origens (no mesmo ano).
@@ -619,13 +747,20 @@ export default function TimeFinanceiro() {
   async function salvarCargo() {
     if (!form.titulo.trim()) { toast.error("Informe o título do cargo."); return; }
     setSalvando(true);
+    const agente = form.tipo === "agente";
     const meta = {
       titulo: form.titulo.trim(),
-      pessoa: form.pessoa.trim() || null,
+      // Agente não tem pessoa nem custo de folha: os campos ficam nulos de propósito,
+      // senão um card convertido de humano para agente carregaria o resto do currículo.
+      pessoa: agente ? null : form.pessoa.trim() || null,
       senioridade: form.senioridade.trim() || null,
-      prioridade: form.prioridade.trim() || null,
-      custo_mensal: form.custo_mensal ? parseFloat(form.custo_mensal.replace(/\./g, "").replace(",", ".")) : null,
+      prioridade: agente ? null : form.prioridade.trim() || null,
+      custo_mensal: agente || !form.custo_mensal ? null : parseFloat(form.custo_mensal.replace(/\./g, "").replace(",", ".")),
       alvo: form.alvo.trim() || null,
+      tipo: form.tipo,
+      agente_ref: agente ? form.agente_ref || null : null,
+      agente_canal: agente ? form.agente_canal.trim() || null : null,
+      agente_automacoes: agente ? form.agente_automacoes : [],
     };
     const parentChave = form.parent_id ? cargos.find((c) => c.id === form.parent_id)?.chave ?? null : null;
     const parentNoAno = (a: number) => (parentChave ? cargos.find((c) => c.chave === parentChave && c.ano === a)?.id ?? null : null);
@@ -672,7 +807,8 @@ export default function TimeFinanceiro() {
     }
     setSalvando(false);
     if (error) { toast.error("Falha ao salvar: " + error.message); return; }
-    toast.success(editId ? "Cargo atualizado." : `Cargo criado${ano < 2028 ? " (propagado para os anos seguintes)" : ""}.`);
+    const oque = agente ? "Agente" : "Cargo";
+    toast.success(editId ? `${oque} atualizado.` : `${oque} criado${ano < 2028 ? " (propagado para os anos seguintes)" : ""}.`);
     setDlgOpen(false);
     carregar();
   }
@@ -699,6 +835,8 @@ export default function TimeFinanceiro() {
       id: idMap.get(c.id), titulo: c.titulo, pessoa: c.pessoa, senioridade: c.senioridade, status: c.status,
       acumulo: c.acumulo, prioridade: c.prioridade, custo_mensal: c.custo_mensal, alvo: c.alvo,
       parent_id: parentNoDestino(c), atribuicoes: c.atribuicoes, ordem: c.ordem, ano: destino, chave: c.chave, desacoplado: false,
+      tipo: c.tipo ?? "humano", agente_ref: c.agente_ref ?? null, agente_canal: c.agente_canal ?? null,
+      agente_automacoes: c.agente_automacoes ?? [],
     }));
     const { error } = await sb.from("time_cargos").insert(novos);
     if (error) { toast.error("Falha ao herdar: " + error.message); return; }
@@ -939,7 +1077,7 @@ export default function TimeFinanceiro() {
   }
 
   const nivel = niveisDb.find((n) => n.n === nivelSel) ?? niveisDb[0] ?? NIVEIS[0];
-  const autosNivel = autoNiveis.filter((a) => a.nivel === nivelSel && a.status === "Rodando").length;
+  const autosNivel = automacoes.filter((a) => a.nivel === nivelSel && a.status === "Rodando").length;
 
   const atbCargo = cargos.find((c) => c.id === atbCargoId) ?? null;
   const pullSource = cargos.find((c) => c.id === pullSourceId) ?? null;
@@ -984,6 +1122,14 @@ export default function TimeFinanceiro() {
             ))}
           </div>
           <button
+            onClick={() => abrirNovo("efetivo", "agente")}
+            className="inline-flex items-center gap-1.5 rounded-md border px-3 py-2 text-[12.5px] font-semibold shadow-sm transition hover:brightness-110"
+            style={{ borderColor: AGENTE_COR, color: AGENTE_COR }}
+            title="Adicionar um membro virtual ao organograma"
+          >
+            <Bot className="h-4 w-4" /> Novo agente
+          </button>
+          <button
             onClick={() => abrirNovo("vaga_aberta")}
             className="inline-flex items-center gap-1.5 rounded-md bg-primary px-3.5 py-2 text-[12.5px] font-semibold text-primary-foreground shadow-sm transition hover:brightness-110"
           >
@@ -1015,24 +1161,73 @@ export default function TimeFinanceiro() {
             <style>{ORG_TREE_CSS}</style>
             {raiz ? (
               <div className="flex flex-col items-center">
+                {/* Placar do time: gente de um lado, membro virtual do outro. */}
+                <div className="mb-4 flex w-full flex-wrap items-center justify-between gap-2 border-b border-border/60 pb-3">
+                  <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-[12px]">
+                    <span className="flex items-center gap-1.5 text-muted-foreground">
+                      <Users className="h-3.5 w-3.5" />
+                      <span className="num font-semibold text-foreground">{placar.pessoas}</span> no time
+                      {placar.vagas > 0 && <span className="text-muted-foreground/70">+ {placar.vagas} a preencher</span>}
+                    </span>
+                    <span className="flex items-center gap-1.5" style={{ color: AGENTE_COR }}>
+                      <Bot className="h-3.5 w-3.5" />
+                      <span className="num font-semibold">{placar.agentes}</span>
+                      {placar.agentes === 1 ? " membro virtual" : " membros virtuais"}
+                    </span>
+                    {placar.automacoes > 0 && (
+                      <span className="flex items-center gap-1.5 text-muted-foreground">
+                        <Zap className="h-3.5 w-3.5" />
+                        <span className="num font-semibold text-foreground">{placar.automacoes}</span> automações
+                        {placar.horas > 0 && <span className="num">· {placar.horas} h/mês de volta</span>}
+                      </span>
+                    )}
+                    {placar.execucoes > 0 && (
+                      <span className="flex items-center gap-1.5 text-muted-foreground" title="Decisões registradas em agente_execucoes">
+                        <Activity className="h-3.5 w-3.5" />
+                        <span className="num font-semibold text-foreground">{placar.execucoes}</span> execuções
+                      </span>
+                    )}
+                  </div>
+                  {placar.agentes > 0 && (
+                    <button
+                      onClick={() => setMostrarAgentes((v) => !v)}
+                      className="inline-flex shrink-0 items-center gap-1.5 rounded-md border border-border px-2 py-1 text-[11.5px] font-medium text-muted-foreground transition hover:text-foreground"
+                      title={mostrarAgentes ? "Esconder os agentes (foto só do time humano)" : "Mostrar os agentes na árvore"}
+                    >
+                      {mostrarAgentes ? <Eye className="h-3.5 w-3.5" /> : <EyeOff className="h-3.5 w-3.5" />}
+                      {mostrarAgentes ? "Agentes visíveis" : "Agentes ocultos"}
+                    </button>
+                  )}
+                </div>
                 <div className="w-full overflow-x-auto pb-2">
                   <div className="flex min-w-full justify-center">
                     <ul className="org-tree">
-                      <Ramo cargo={raiz} all={cargosDoAno} selId={selCargoId} onSel={setSelCargoId} />
+                      <Ramo cargo={raiz} all={cargosArvore} selId={selCargoId} onSel={setSelCargoId} autos={automacoes} />
                     </ul>
                   </div>
                 </div>
-                <button
-                  onClick={() => abrirNovo("planejado")}
-                  className="mt-6 flex w-[230px] flex-col items-center gap-1 rounded-lg border-2 border-dashed border-border p-4 text-muted-foreground transition hover:border-primary/50 hover:text-foreground"
-                >
-                  <Plus className="h-4 w-4" />
-                  <span className="text-[12px]">Adicionar cargo em {ano}</span>
-                </button>
+                <div className="mt-6 flex flex-wrap items-center justify-center gap-2">
+                  <button
+                    onClick={() => abrirNovo("planejado")}
+                    className="flex w-[230px] flex-col items-center gap-1 rounded-lg border-2 border-dashed border-border p-4 text-muted-foreground transition hover:border-primary/50 hover:text-foreground"
+                  >
+                    <Plus className="h-4 w-4" />
+                    <span className="text-[12px]">Adicionar cargo em {ano}</span>
+                  </button>
+                  <button
+                    onClick={() => abrirNovo("efetivo", "agente")}
+                    className="flex w-[230px] flex-col items-center gap-1 rounded-lg border-2 border-dashed p-4 transition hover:brightness-110"
+                    style={{ borderColor: `color-mix(in srgb, ${AGENTE_COR} 45%, transparent)`, color: AGENTE_COR }}
+                  >
+                    <Bot className="h-4 w-4" />
+                    <span className="text-[12px]">Adicionar agente em {ano}</span>
+                  </button>
+                </div>
                 <div className="mt-6 flex flex-wrap items-center justify-center gap-4 text-[11px] text-muted-foreground">
                   <span className="flex items-center gap-1.5"><span className="h-2.5 w-2.5 rounded-[3px] bg-primary" /> Efetivo</span>
                   <span className="flex items-center gap-1.5"><span className="h-2.5 w-2.5 rounded-[3px] border-2 border-primary" /> Vaga aberta / entrevista</span>
                   <span className="flex items-center gap-1.5"><span className="h-2.5 w-2.5 rounded-[3px] border-2 border-dashed border-muted-foreground" /> Planejado (futuro)</span>
+                  <span className="flex items-center gap-1.5"><span className="h-2.5 w-2.5 rounded-[3px]" style={{ background: AGENTE_COR }} /> Agente de IA (membro virtual)</span>
                 </div>
               </div>
             ) : (
@@ -1072,11 +1267,66 @@ export default function TimeFinanceiro() {
                     </button>
                   </div>
                 </div>
+                {/* Ficha do membro virtual: o que ele executa e o que ele já decidiu.
+                    Nada aqui é digitado — sai do catálogo de automações e da view
+                    `agentes_resumo`, então nunca fica desatualizado na mão. */}
+                {selCargo.tipo === "agente" && (() => {
+                  const meus = autosDoAgente(selCargo);
+                  const r = resumoDoAgente(selCargo);
+                  const horas = meus.reduce((s, a) => s + Math.max(0, a.horas_mes ?? 0), 0);
+                  const alc = r ? ALCADA_META[r.alcada_maxima] : null;
+                  return (
+                    <div className="mt-3 space-y-2.5 rounded-lg border p-2.5" style={{ borderColor: `color-mix(in srgb, ${AGENTE_COR} 30%, transparent)`, background: `color-mix(in srgb, ${AGENTE_COR} 5%, transparent)` }}>
+                      {alc && <span className={cn("inline-block rounded px-1.5 py-0.5 text-[10px] font-semibold", alc.chip)}>{alc.label}</span>}
+                      {r && (
+                        <div className="grid grid-cols-3 gap-2 text-center">
+                          <div title={`Última decisão: ${desdeQuando(r.ultima_execucao)}`}>
+                            <div className="num text-[15px] font-semibold text-foreground">{r.execucoes}</div>
+                            <div className="text-[9.5px] uppercase tracking-wider text-muted-foreground">execuções</div>
+                          </div>
+                          <div>
+                            <div className="num text-[15px] font-semibold text-foreground">{r.excecoes_abertas}</div>
+                            <div className="text-[9.5px] uppercase tracking-wider text-muted-foreground">na fila</div>
+                          </div>
+                          <div>
+                            <div className={cn("num text-[15px] font-semibold", r.falhas > 0 ? "text-amber-600 dark:text-amber-400" : "text-foreground")}>{r.falhas}</div>
+                            <div className="text-[9.5px] uppercase tracking-wider text-muted-foreground">falhas</div>
+                          </div>
+                        </div>
+                      )}
+                      {r && (
+                        <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
+                          <Activity className="h-3 w-3" /> Última decisão {desdeQuando(r.ultima_execucao)}
+                        </div>
+                      )}
+                      <div>
+                        <div className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/80">
+                          Executa no Hub{horas > 0 ? ` · ${horas} h/mês de volta` : ""}
+                        </div>
+                        {meus.length ? (
+                          <ul className="mt-1 space-y-1">
+                            {meus.map((a) => (
+                              <li key={a.id} className="flex items-start gap-1.5 text-[11.5px] leading-snug">
+                                <span className="mt-1 h-1.5 w-1.5 shrink-0 rounded-full" style={{ background: a.status === "Rodando" ? "hsl(var(--success))" : "hsl(var(--muted-foreground))" }} />
+                                <span className="min-w-0 flex-1 text-foreground">{a.automacao}</span>
+                                {a.nivel != null && <span className="num shrink-0 rounded bg-muted px-1 text-[9.5px] font-semibold text-muted-foreground" title={`Nível ${a.nivel} de maturidade`}>N{a.nivel}</span>}
+                              </li>
+                            ))}
+                          </ul>
+                        ) : (
+                          <p className="mt-1 text-[11.5px] text-muted-foreground">
+                            Nenhuma automação vinculada — abra “Editar cargo” e marque no catálogo o que este agente executa.
+                          </p>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })()}
                 <div className="mt-3 max-h-[420px] space-y-3 overflow-y-auto pr-1">
                   {selCargo.atribuicoes.length ? selCargo.atribuicoes.map((g, i) => (
                     <div key={i}>
                       <div className="flex items-baseline gap-2">
-                        <span className="num text-[11px] font-bold text-primary">{String(i + 1).padStart(2, "0")}</span>
+                        <span className="num text-[11px] font-bold" style={{ color: selCargo.tipo === "agente" ? AGENTE_COR : "hsl(var(--primary))" }}>{String(i + 1).padStart(2, "0")}</span>
                         <span className="text-[12.5px] font-semibold text-foreground">{g.titulo}</span>
                       </div>
                       {g.itens.length > 0 && (
@@ -1100,7 +1350,7 @@ export default function TimeFinanceiro() {
               <div className="flex flex-1 flex-col items-center justify-center gap-2 py-10 text-center">
                 <Network className="h-8 w-8 text-muted-foreground/40" />
                 <p className="max-w-[220px] text-[12.5px] text-muted-foreground">
-                  Clique num cargo para ver as atribuições completas. Cargos <span className="font-semibold">pontilhados</span> são planejamento futuro.
+                  Clique num cargo para ver as atribuições completas. Cargos <span className="font-semibold">pontilhados</span> são planejamento futuro; os <span className="font-semibold" style={{ color: AGENTE_COR }}>roxos</span> são membros virtuais — a ficha deles mostra o que executam no Hub.
                 </p>
               </div>
             )}
@@ -1122,9 +1372,15 @@ export default function TimeFinanceiro() {
                   <div className="truncate text-[14px] font-semibold">{c.titulo}</div>
                   <div className="truncate text-[11.5px] text-muted-foreground">{subtitulo(c)}</div>
                 </div>
-                <span className={cn("ml-auto shrink-0 rounded px-1.5 py-0.5 text-[9px] font-bold tracking-wider", STATUS_META[c.status].badge)}>
-                  {STATUS_META[c.status].label}
-                </span>
+                {c.tipo === "agente" ? (
+                  <span className="ml-auto shrink-0 rounded px-1.5 py-0.5 text-[9px] font-bold tracking-wider text-white" style={{ background: AGENTE_COR }}>
+                    AGENTE · {AGENTE_STATUS[c.status]}
+                  </span>
+                ) : (
+                  <span className={cn("ml-auto shrink-0 rounded px-1.5 py-0.5 text-[9px] font-bold tracking-wider", STATUS_META[c.status].badge)}>
+                    {STATUS_META[c.status].label}
+                  </span>
+                )}
               </div>
               <div className="mt-3 space-y-3">
                 {c.atribuicoes.map((g, i) => (
@@ -1150,7 +1406,8 @@ export default function TimeFinanceiro() {
       {tab === "vagas" && (
         <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-5">
           {KANBAN.map((col) => {
-            const items = cargosDoAno.filter((c) => c.status === col.status);
+            // Funil de contratação é de gente: agente não passa por entrevista.
+            const items = cargosDoAno.filter((c) => c.status === col.status && c.tipo !== "agente");
             return (
               <div key={col.status} className="card-surface flex flex-col p-3">
                 <div className="flex items-center justify-between px-1 pb-2">
@@ -1678,23 +1935,51 @@ export default function TimeFinanceiro() {
 
       {/* ---------------- Dialog: novo/editar cargo ---------------- */}
       <Dialog open={dlgOpen} onOpenChange={setDlgOpen}>
-        <DialogContent className="max-w-md">
+        <DialogContent className="max-h-[90vh] max-w-lg overflow-y-auto">
           <DialogHeader>
-            <DialogTitle>{editId ? "Editar cargo / vaga" : "Novo cargo / vaga"}</DialogTitle>
+            <DialogTitle>
+              {editId
+                ? form.tipo === "agente" ? "Editar agente" : "Editar cargo / vaga"
+                : form.tipo === "agente" ? "Novo agente" : "Novo cargo / vaga"}
+            </DialogTitle>
           </DialogHeader>
           <div className="space-y-3">
+            {/* Gente ou membro virtual — é essa escolha que troca o resto do formulário. */}
+            <div className="flex gap-1 rounded-lg bg-secondary/60 p-1">
+              {([
+                { k: "humano" as TipoCargo, label: "Pessoa / vaga", Icon: Users },
+                { k: "agente" as TipoCargo, label: "Agente de IA", Icon: Bot },
+              ]).map((o) => (
+                <button
+                  key={o.k}
+                  onClick={() => setForm({ ...form, tipo: o.k })}
+                  className={cn(
+                    "inline-flex flex-1 items-center justify-center gap-1.5 rounded-md px-3 py-1.5 text-[12.5px] font-medium transition",
+                    form.tipo === o.k ? "bg-card shadow-sm" : "text-muted-foreground hover:text-foreground",
+                  )}
+                  style={form.tipo === o.k && o.k === "agente" ? { color: AGENTE_COR } : undefined}
+                >
+                  <o.Icon className="h-3.5 w-3.5" /> {o.label}
+                </button>
+              ))}
+            </div>
+
             <div>
-              <Label className="text-[12px]">Título do cargo *</Label>
-              <Input value={form.titulo} onChange={(e) => setForm({ ...form, titulo: e.target.value })} placeholder="ex.: Analista FP&A" className="mt-1 h-9" />
+              <Label className="text-[12px]">{form.tipo === "agente" ? "Nome do agente *" : "Título do cargo *"}</Label>
+              <Input value={form.titulo} onChange={(e) => setForm({ ...form, titulo: e.target.value })} placeholder={form.tipo === "agente" ? "ex.: TETS" : "ex.: Analista FP&A"} className="mt-1 h-9" />
             </div>
             <div className="grid grid-cols-2 gap-3">
               <div>
-                <Label className="text-[12px]">Pessoa (se ocupado)</Label>
-                <Input value={form.pessoa} onChange={(e) => setForm({ ...form, pessoa: e.target.value })} placeholder="ex.: Júlia" className="mt-1 h-9" />
+                <Label className="text-[12px]">{form.tipo === "agente" ? "Canal" : "Pessoa (se ocupado)"}</Label>
+                {form.tipo === "agente" ? (
+                  <Input value={form.agente_canal} onChange={(e) => setForm({ ...form, agente_canal: e.target.value })} placeholder="Telegram" className="mt-1 h-9" />
+                ) : (
+                  <Input value={form.pessoa} onChange={(e) => setForm({ ...form, pessoa: e.target.value })} placeholder="ex.: Júlia" className="mt-1 h-9" />
+                )}
               </div>
               <div>
                 <Label className="text-[12px]">Senioridade</Label>
-                <Input value={form.senioridade} onChange={(e) => setForm({ ...form, senioridade: e.target.value })} placeholder="Pleno" className="mt-1 h-9" />
+                <Input value={form.senioridade} onChange={(e) => setForm({ ...form, senioridade: e.target.value })} placeholder={form.tipo === "agente" ? "Agente autônomo · nível 5" : "Pleno"} className="mt-1 h-9" />
               </div>
             </div>
             <div className="grid grid-cols-2 gap-3">
@@ -1705,32 +1990,67 @@ export default function TimeFinanceiro() {
                   onChange={(e) => setForm({ ...form, status: e.target.value as Status })}
                   className="mt-1 h-9 w-full rounded-md border border-border bg-card px-2 text-[13px] outline-none focus:ring-1 focus:ring-primary"
                 >
-                  <option value="planejado">Planejado (futuro)</option>
-                  <option value="vaga_aberta">Vaga aberta</option>
-                  <option value="entrevista">Em entrevista</option>
-                  <option value="contratado">Contratado</option>
-                  <option value="efetivo">Efetivo</option>
+                  {form.tipo === "agente" ? (
+                    <>
+                      <option value="planejado">Planejado (ainda não existe)</option>
+                      <option value="vaga_aberta">Em construção</option>
+                      <option value="entrevista">Em teste</option>
+                      <option value="contratado">Homologado</option>
+                      <option value="efetivo">Em produção</option>
+                    </>
+                  ) : (
+                    <>
+                      <option value="planejado">Planejado (futuro)</option>
+                      <option value="vaga_aberta">Vaga aberta</option>
+                      <option value="entrevista">Em entrevista</option>
+                      <option value="contratado">Contratado</option>
+                      <option value="efetivo">Efetivo</option>
+                    </>
+                  )}
                 </select>
               </div>
               <div>
-                <Label className="text-[12px]">Prioridade</Label>
-                <select
-                  value={form.prioridade}
-                  onChange={(e) => setForm({ ...form, prioridade: e.target.value })}
-                  className="mt-1 h-9 w-full rounded-md border border-border bg-card px-2 text-[13px] outline-none focus:ring-1 focus:ring-primary"
-                >
-                  <option value="">—</option>
-                  <option value="Alta">Alta</option>
-                  <option value="Média">Média</option>
-                  <option value="Baixa">Baixa</option>
-                </select>
+                {form.tipo === "agente" ? (
+                  <>
+                    <Label className="text-[12px]">Registro do agente</Label>
+                    <select
+                      value={form.agente_ref}
+                      onChange={(e) => setForm({ ...form, agente_ref: e.target.value })}
+                      className="mt-1 h-9 w-full rounded-md border border-border bg-card px-2 text-[13px] outline-none focus:ring-1 focus:ring-primary"
+                      title="Liga o card à trilha de execuções e à fila de exceções (public.agentes)"
+                    >
+                      <option value="">— sem registro (só ficha)</option>
+                      {agentesResumo.map((a) => <option key={a.id} value={a.id}>{a.nome}</option>)}
+                    </select>
+                  </>
+                ) : (
+                  <>
+                    <Label className="text-[12px]">Prioridade</Label>
+                    <select
+                      value={form.prioridade}
+                      onChange={(e) => setForm({ ...form, prioridade: e.target.value })}
+                      className="mt-1 h-9 w-full rounded-md border border-border bg-card px-2 text-[13px] outline-none focus:ring-1 focus:ring-primary"
+                    >
+                      <option value="">—</option>
+                      <option value="Alta">Alta</option>
+                      <option value="Média">Média</option>
+                      <option value="Baixa">Baixa</option>
+                    </select>
+                  </>
+                )}
               </div>
             </div>
             <div className="grid grid-cols-2 gap-3">
-              <div>
-                <Label className="text-[12px]">Custo mensal (R$)</Label>
-                <Input value={form.custo_mensal} onChange={(e) => setForm({ ...form, custo_mensal: e.target.value })} placeholder="8000" className="mt-1 h-9" inputMode="decimal" />
-              </div>
+              {form.tipo === "agente" ? (
+                <div className="flex items-end pb-1 text-[11.5px] text-muted-foreground">
+                  <span>Membro virtual não entra na folha — não tem custo mensal.</span>
+                </div>
+              ) : (
+                <div>
+                  <Label className="text-[12px]">Custo mensal (R$)</Label>
+                  <Input value={form.custo_mensal} onChange={(e) => setForm({ ...form, custo_mensal: e.target.value })} placeholder="8000" className="mt-1 h-9" inputMode="decimal" />
+                </div>
+              )}
               <div>
                 <Label className="text-[12px]">Aparece a partir de</Label>
                 <select
@@ -1743,8 +2063,43 @@ export default function TimeFinanceiro() {
                 </select>
               </div>
             </div>
+
+            {/* O "o que ele faz" do agente: as automações que ele executa. Marcar aqui
+                é o que alimenta o card, as horas/mês devolvidas e o placar do topo. */}
+            {form.tipo === "agente" && (
+              <div>
+                <Label className="text-[12px]">
+                  Automações que ele executa
+                  {form.agente_automacoes.length > 0 && (
+                    <span className="num ml-1.5 rounded px-1.5 text-[10px] font-bold text-white" style={{ background: AGENTE_COR }}>
+                      {form.agente_automacoes.length}
+                    </span>
+                  )}
+                </Label>
+                <div className="relative mt-1">
+                  <Search className="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+                  <Input value={autoBusca} onChange={(e) => setAutoBusca(e.target.value)} placeholder="Filtrar o catálogo…" className="h-8 pl-7 text-[12.5px]" />
+                </div>
+                <div className="mt-1.5 max-h-44 space-y-0.5 overflow-y-auto rounded-md border border-border p-1.5">
+                  {automacoes
+                    .filter((a) => !autoBusca.trim() || normalize(a.automacao).includes(normalize(autoBusca)))
+                    .map((a) => {
+                      const on = form.agente_automacoes.includes(a.id);
+                      return (
+                        <label key={a.id} className="flex cursor-pointer items-start gap-2 rounded px-1 py-0.5 hover:bg-muted">
+                          <input type="checkbox" checked={on} onChange={() => toggleAutoDoForm(a.id)} className="mt-0.5 h-3.5 w-3.5 shrink-0 cursor-pointer accent-violet-600" />
+                          <span className="min-w-0 flex-1 text-[12px] leading-snug text-foreground">{a.automacao}</span>
+                          <span className="shrink-0 text-[10px] text-muted-foreground">{a.categoria}</span>
+                          {a.horas_mes ? <span className="num shrink-0 text-[10px] font-semibold text-muted-foreground">{a.horas_mes}h</span> : null}
+                        </label>
+                      );
+                    })}
+                  {!automacoes.length && <p className="px-1 text-[11.5px] text-muted-foreground">Catálogo vazio.</p>}
+                </div>
+              </div>
+            )}
             <div>
-              <Label className="text-[12px]">Reporta a</Label>
+              <Label className="text-[12px]">{form.tipo === "agente" ? "Quem responde por ele" : "Reporta a"}</Label>
               <select
                 value={form.parent_id}
                 onChange={(e) => setForm({ ...form, parent_id: e.target.value })}

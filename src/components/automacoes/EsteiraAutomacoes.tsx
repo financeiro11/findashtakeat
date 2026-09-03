@@ -247,7 +247,7 @@ export default function EsteiraAutomacoes({
           <div className="px-2 py-8 text-center text-[12px] text-slate-500">
             Nada na fila para esse filtro.
             <div className="mt-1 text-[11px] text-slate-600">
-              A fila inteira continua com {resumo.total} item{resumo.total > 1 ? "s" : ""} — clique em “Todos” para ver.
+              A fila inteira continua com {resumo.total} {resumo.total > 1 ? "itens" : "item"} — clique em “Todos” para ver.
             </div>
           </div>
         ) : (

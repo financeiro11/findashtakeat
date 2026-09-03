@@ -64,6 +64,8 @@ import Rescisoes from "./pages/governanca/Rescisoes";
 import NotasERP from "./pages/governanca/NotasERP";
 import Vigilancia from "./pages/governanca/Vigilancia";
 import PainelAutomacoes from "./pages/PainelAutomacoes";
+import MonitoramentoLayout from "./pages/monitoramento/MonitoramentoLayout";
+import Thetys from "./pages/monitoramento/Thetys";
 import Reembolsos from "./pages/operacional/Reembolsos";
 import ColaboradoresRH from "./pages/operacional/ColaboradoresRH";
 import Estornos from "./pages/operacional/Estornos";
@@ -73,6 +75,7 @@ import FacilitiesDashboard from "./pages/facilities/FacilitiesDashboard";
 import FacilitiesSolicitacoes from "./pages/facilities/Solicitacoes";
 import FacilitiesCotacoes from "./pages/facilities/Cotacoes";
 import FacilitiesRadar from "./pages/facilities/Radar";
+import FacilitiesPassagens from "./pages/facilities/Passagens";
 import FacilitiesFornecedores from "./pages/facilities/Fornecedores";
 import FacilitiesHistorico from "./pages/facilities/Historico";
 import FacilitiesContratos from "./pages/facilities/Contratos";
@@ -188,11 +191,23 @@ function Rotas() {
               <Route path="/design-system" element={<DesignSystem />} />
               <Route path="/usuarios" element={<Usuarios />} />
               <Route path="/configuracoes/parametrizacao" element={<Parametrizacao />} />
-              <Route path="/configuracoes/integracoes" element={<Integracoes />} />
               <Route path="/automacoes/proporcionais" element={<AutomacoesProporcionais />} />
-              {/* "Está rodando?" — a faixa do topo, aberta: a esteira das notas
-                  etapa a etapa e as 46 automações com o que responderam. */}
-              <Route path="/automacoes/painel" element={<PainelAutomacoes />} />
+
+              {/* "Está tudo funcionando?" — a agente, os crons e as credenciais no
+                  mesmo lugar, em abas. A Vigilância externa NÃO entra aqui: ela
+                  vigia o mercado, não a saúde do Hub. */}
+              <Route path="/monitoramento" element={<MonitoramentoLayout />}>
+                <Route index element={<Navigate to="/monitoramento/thetys" replace />} />
+                <Route path="thetys" element={<Thetys />} />
+                {/* A faixa do topo, aberta: a esteira das notas etapa a etapa e as
+                    46 automações com o que responderam. */}
+                <Route path="automacoes" element={<PainelAutomacoes />} />
+                <Route path="integracoes" element={<Integracoes />} />
+              </Route>
+              {/* Os dois endereços antigos: favoritos, links colados em tarefa e o
+                  destino do AvisoGrave continuam chegando. */}
+              <Route path="/automacoes/painel" element={<Navigate to="/monitoramento/automacoes" replace />} />
+              <Route path="/configuracoes/integracoes" element={<Navigate to="/monitoramento/integracoes" replace />} />
               <Route path="/recargas/celulares" element={<RecargasCelulares />} />
               <Route path="/recargas/viagens" element={<RecargasViagens />} />
               {/* Catálogo virou a aba "IA & Automação" da Visão do Time — redireciona links antigos. */}
@@ -275,6 +290,7 @@ function Rotas() {
               <Route path="/facilities/solicitacoes" element={<FacilitiesSolicitacoes />} />
               <Route path="/facilities/cotacoes" element={<FacilitiesCotacoes />} />
               <Route path="/facilities/radar" element={<FacilitiesRadar />} />
+              <Route path="/facilities/passagens" element={<FacilitiesPassagens />} />
               <Route path="/facilities/fornecedores" element={<FacilitiesFornecedores />} />
               <Route path="/facilities/historico" element={<FacilitiesHistorico />} />
               <Route path="/facilities/contratos" element={<FacilitiesContratos />} />

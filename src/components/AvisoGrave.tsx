@@ -90,7 +90,7 @@ export function AvisoGrave() {
 
   if (!atual) return null;
 
-  const destino = atual.fonte === "integracao" ? "/configuracoes/integracoes" : "/automacoes/painel";
+  const destino = atual.fonte === "integracao" ? "/monitoramento/integracoes" : "/monitoramento/automacoes";
 
   return (
     <Dialog open onOpenChange={(v) => { if (!v && !fechando) dispensar(); }}>

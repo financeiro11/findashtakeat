@@ -2,7 +2,7 @@
  * O ESTADO DAS AUTOMAÇÕES, lido uma vez e servido a quem precisar.
  *
  * Duas telas leem a mesma coisa: a faixa do topo (que acompanha a pessoa em toda
- * página) e o painel `/automacoes/painel`. Se cada uma fizesse a sua leitura,
+ * página) e o painel `/monitoramento/automacoes`. Se cada uma fizesse a sua leitura,
  * abrir o painel custaria duas chamadas por minuto para o mesmo dado — e, pior,
  * a tela abriria em branco esperando um `hub_automacoes` que a faixa já tinha
  * acabado de trazer. O cache em nível de módulo resolve as duas coisas: quem

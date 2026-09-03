@@ -988,7 +988,7 @@ export default function ArvoreAutomacoes() {
           <div className="absolute left-1/2 top-3 z-20 -translate-x-1/2 rounded-lg border border-emerald-500/40 px-4 py-2 text-center shadow-xl" style={{ background: "rgba(8,10,16,.96)" }}>
             <div className="text-[11.5px] text-slate-300">
               Concluir <b className="text-white">{selNo.r.automacao}</b> destrava{" "}
-              <b className="num text-emerald-400">{destrava.ids.size}</b> automação{destrava.ids.size === 1 ? "" : "ões"}
+              <b className="num text-emerald-400">{destrava.ids.size}</b> {destrava.ids.size === 1 ? "automação" : "automações"}
               {destrava.horas > 0 && <> · <b className="num text-emerald-400">+{destrava.horas} h/mês</b></>}
             </div>
             <div className="text-[10px] text-slate-500">simulação — nada é alterado no catálogo</div>

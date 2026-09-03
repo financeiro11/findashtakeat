@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { RefreshCw, Loader2, CloudDownload } from "lucide-react";
+import { RefreshCw, Loader2 } from "lucide-react";
 import { supabase } from "@/integrations/supabase/client";
 import { toast } from "sonner";
 import { KpiCard } from "@/components/ui/kpi-card";
@@ -31,7 +31,7 @@ export default function Asaas() {
   const [dados, setDados] = useState<any>(null);
   const [geradoEm, setGeradoEm] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
-  const [ocupado, setOcupado] = useState<"recalcular" | "atualizar" | null>(null);
+  const [ocupado, setOcupado] = useState<"recalcular" | null>(null);
 
   useEffect(() => { document.title = "Asaas · Receita"; }, []);
 
@@ -45,17 +45,17 @@ export default function Asaas() {
   useEffect(() => { load(); /* eslint-disable-next-line */ }, [ref]);
 
   /**
-   * "recalcular" soma o espelho local e não gasta uma requisição sequer no Asaas;
-   * "atualizar" é a única que fala com a API. A separação existe porque o botão
-   * antigo baixava o mês inteiro a cada clique (~115 requisições) e derrubava a
-   * conta no limite de 429.
+   * "Recalcular" refaz os números da tela a partir da cópia local (RPC
+   * asaas_metricas sobre o espelho asaas_cache) — ZERO requisição ao Asaas. Quem
+   * busca dado novo na API são os crons (07:45, 12:30 e 17:00 BRT — ver a migration
+   * 20260903250000), que já recalculam ao terminar. O botão "Atualizar do Asaas"
+   * foi removido de propósito: era o caminho que gastava cota na mão.
    */
-  const chamar = async (action: "recalcular" | "atualizar", completo = false) => {
-    setOcupado(action);
-    if (action === "atualizar") toast.message(`Buscando ${mesLabel(ref)} no Asaas…`);
+  const recalcular = async () => {
+    setOcupado("recalcular");
     try {
       const { data, error } = await supabase.functions.invoke("asaas-sync", {
-        body: { action, referencia: ref, completo },
+        body: { action: "recalcular", referencia: ref },
       });
 
       // supabase-js embrulha respostas non-2xx num FunctionsHttpError cujo corpo real
@@ -75,19 +75,13 @@ export default function Asaas() {
         if (status === 404 || /not found|Failed to send|Failed to fetch/i.test(detalhe)) {
           throw new Error("A função asaas-sync ainda não foi publicada no Supabase.");
         }
-        if (/ASAAS_API_KEY/i.test(detalhe)) {
-          throw new Error("O secret ASAAS_API_KEY não está configurado nas Edge Functions do Supabase.");
-        }
-        if (/429|Too Many Requests|RateLimit/i.test(detalhe)) {
-          throw new Error("O Asaas recusou por limite de requisições. Espere alguns minutos — o Recalcular continua funcionando, ele lê a cópia local.");
-        }
         throw new Error(detalhe || "Erro desconhecido no backend.");
       }
       if ((data as any)?.error) throw new Error((data as any).error);
 
       const aviso = (data as any)?.aviso;
       if (aviso) toast.warning(aviso, { duration: 7000 });
-      else toast.success(action === "atualizar" ? "Atualizado do Asaas." : "Números recalculados.");
+      else toast.success("Números recalculados.");
       await load();
     } catch (e: any) {
       console.error("[asaas-sync] erro no handler", e);
@@ -104,7 +98,7 @@ export default function Asaas() {
         <div>
           <h2 className="text-2xl font-bold tracking-tight">Asaas</h2>
           <p className="text-sm text-muted-foreground">
-            Recebimentos, assinaturas (MRR/ARR) e NF-e direto da API do Asaas.
+            Recebimentos, assinaturas (MRR/ARR) e NF-e do Asaas · atualização automática às 07:45, 12:30 e 17:00.
             {geradoEm && <span className="num"> · atualizado em {new Date(geradoEm).toLocaleString("pt-BR")}</span>}
           </p>
         </div>
@@ -118,19 +112,11 @@ export default function Asaas() {
           </select>
           <button
             className="ghost-btn h-9"
-            onClick={() => chamar("recalcular")}
+            onClick={recalcular}
             disabled={ocupado !== null}
             title="Refaz as contas a partir da cópia local — não consulta o Asaas."
           >
             {ocupado === "recalcular" ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />} Recalcular
-          </button>
-          <button
-            className="ghost-btn h-9"
-            onClick={() => chamar("atualizar")}
-            disabled={ocupado !== null}
-            title="Busca no Asaas o que mudou desde a última vez. Só esta ação consome requisições da conta."
-          >
-            {ocupado === "atualizar" ? <Loader2 className="h-4 w-4 animate-spin" /> : <CloudDownload className="h-4 w-4" />} Atualizar do Asaas
           </button>
         </div>
       </div>
@@ -141,7 +127,7 @@ export default function Asaas() {
         </div>
       ) : !dados ? (
         <div className="card-surface p-12 text-center text-sm text-muted-foreground">
-          Sem dados para {mesLabel(ref)}. Clique em <b>Atualizar do Asaas</b> para puxar o mês.
+          Sem dados para {mesLabel(ref)}. Os dados chegam nas atualizações automáticas (07:45, 12:30 e 17:00).
         </div>
       ) : (
         <div className="space-y-6">

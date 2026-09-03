@@ -23,6 +23,7 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { brl } from "@/pages/auditoria/utils";
+import { faixaDeMeses, nomeDoMes } from "@/lib/cartao/meses";
 
 const SUPABASE_URL = "https://lgcxyxyidoirqmbdlldh.supabase.co";
 const SUPABASE_ANON_KEY =
@@ -58,8 +59,10 @@ type FaturaOk = {
   /** Cartão encerrado que ainda está no prazo de graça. */
   encerrando?: boolean;
   acesso_ate?: string | null;
-  resumo: { lancamentos: number; total: number; pendentes: number; com_comprovante: number };
+  resumo: { lancamentos: number; total: number; pendentes: number; com_comprovante: number; meses: number };
   meses: Mes[];
+  /** Competências que existem no extrato consolidado e ainda não foram rateadas por cartão. */
+  meses_sem_rateio?: string[];
   erro?: undefined;
   precisa_digitos?: undefined;
 };
@@ -89,15 +92,6 @@ type FaturaGate = { precisa_digitos: true; responsavel?: string; erro?: string; 
 type FaturaErr = { erro: string; bloqueado?: boolean; precisa_digitos?: boolean; restam?: number };
 type Fatura = FaturaOk | FaturaGate | FaturaErr;
 
-const MESES = ["janeiro", "fevereiro", "março", "abril", "maio", "junho",
-  "julho", "agosto", "setembro", "outubro", "novembro", "dezembro"];
-
-/** "2026-08-01" → "Agosto de 2026". O RPC devolve MM/YYYY; aqui vira nome. */
-function nomeDoMes(competencia: string) {
-  const [ano, mes] = competencia.split("-");
-  const nome = MESES[Number(mes) - 1] || competencia;
-  return `${nome[0].toUpperCase()}${nome.slice(1)} de ${ano}`;
-}
 
 /* ================================================================== *
  *  Portão dos 4 dígitos
@@ -312,6 +306,7 @@ function Extrato({
   }).filter((m) => m.itens.length > 0), [meses, termo]);
 
   const achados = filtrados.reduce((s, m) => s + m.itens.length, 0);
+  const semRateio = faixaDeMeses(dados.meses_sem_rateio || []);
 
   if (!meses.length) {
     return (
@@ -401,6 +396,17 @@ function Extrato({
           token={token} digitos={digitos} onRefresh={onRefresh}
         />
       ))}
+
+      {/* O vão do calendário, dito em voz alta. A fatura da empresa é uma conta só, e o
+          financeiro separa mês a mês quem gastou o quê; enquanto um mês não passa por
+          isso, ele não aparece para ninguém. Sem esta linha, some sem explicação. */}
+      {semRateio && !termo && (
+        <p className="mt-10 border-t border-border pt-5 text-[12px] leading-relaxed text-muted-foreground">
+          O financeiro ainda não separou por cartão os gastos de{" "}
+          <strong className="font-medium text-foreground">{semRateio}</strong>. Quando
+          separar, esses meses aparecem aqui automaticamente.
+        </p>
+      )}
     </div>
   );
 }

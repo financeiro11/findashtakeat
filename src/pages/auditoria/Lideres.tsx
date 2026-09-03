@@ -18,8 +18,6 @@ import { toast } from "sonner";
 import { brl, fmtDateBR } from "./utils";
 import { Link2, Copy, Ban, Flag, Check, X, Plus, Eye, EyeOff, RotateCcw } from "lucide-react";
 
-const COMPETENCIA_INICIAL = "2026-08-01";
-
 const MOTIVOS: Record<string, string> = {
   nao_e_meu: "Não é meu",
   nao_reconheco: "Não reconheço",
@@ -101,9 +99,11 @@ export default function Lideres({ abas }: { abas?: React.ReactNode }) {
       supabase.from("magic_tokens")
         .select("token, responsavel, card_final, status, acessos, ultimo_acesso, fatura_abertura_em, criado_em")
         .neq("status", "revogado"),
+      /* Sem corte de competência: este painel tem de contar exatamente o que o líder vê
+         no /l/<token>, e lá a fatura passou a mostrar toda competência com dono. Contar
+         só agosto aqui fazia a analista ver "3 lançamentos" do Luiz enquanto ele via 13. */
       supabase.from("auditoria_cartao_lancamentos")
         .select("id_unico, card_final, gestor, time, valor, status_nf, link_comprovante, estabelecimento, data")
-        .gte("competencia", COMPETENCIA_INICIAL)
         .limit(5000),
       supabase.from("cartao_portadores").select("*"),
       supabase.from("cartao_contestacoes")
@@ -444,8 +444,9 @@ export default function Lideres({ abas }: { abas?: React.ReactNode }) {
         encaminhado sozinho não mostra os gastos; cinco erros deixam o link dormindo por 15
         minutos, e o link em si nunca expira. Ao encerrar um cartão você escolhe por quantos
         dias ele ainda abre, para a pessoa terminar de enviar o que devia — o histórico dela
-        continua aqui para sempre. A fatura começa em {fmtDateBR(COMPETENCIA_INICIAL)}: antes
-        disso o .ofx do Sicoob vem consolidado num cartão só, sem separar por portador.
+        continua aqui para sempre. A fatura mostra toda competência que já foi rateada por
+        cartão; o mês que ainda não passou pelo rateio não aparece para ninguém, porque o
+        .ofx do Sicoob vem consolidado num cartão só, sem separar por portador.
       </p>
     </div>
   );

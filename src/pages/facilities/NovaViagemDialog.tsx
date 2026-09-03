@@ -30,6 +30,7 @@ export interface ViagemRow {
   google_url: string | null;
   rastreando_em: string | null;
   google_veredito: VereditoGoogle | null;
+  area: string | null;
 }
 
 /** O que a empresa já pagou nesta rota — `passagens_historico_rota`. */
@@ -77,7 +78,14 @@ export function NovaViagemDialog({ aberto, onFechar, onSalvo, viagem }: Props) {
   const [precoGoogle, setPrecoGoogle] = useState("");
   const [vereditoGoogle, setVereditoGoogle] = useState<VereditoGoogle | "">("");
   const [historico, setHistorico] = useState<HistoricoRota | null>(null);
+  const [areas, setAreas] = useState<{ chave: string; nome: string }[]>([]);
+  const [area, setArea] = useState("");
   const [salvando, setSalvando] = useState(false);
+
+  useEffect(() => {
+    db.from("passagens_areas").select("chave, nome").eq("ativa", true).order("ordem")
+      .then(({ data }: any) => setAreas(data ?? []));
+  }, []);
 
   useEffect(() => {
     if (!aberto) return;
@@ -90,6 +98,7 @@ export function NovaViagemDialog({ aberto, onFechar, onSalvo, viagem }: Props) {
     setMotivo(viagem?.motivo ?? "");
     setPrecoGoogle("");
     setVereditoGoogle(viagem?.google_veredito ?? "");
+    setArea(viagem?.area ?? "");
     setHistorico(null);
   }, [aberto, viagem]);
 
@@ -140,6 +149,7 @@ export function NovaViagemDialog({ aberto, onFechar, onSalvo, viagem }: Props) {
       motivo: motivo.trim() || null,
       google_url: linkGoogleFlights({ origem: oIata, destino: dIata, data_ida: ida, data_volta: volta || null }),
       google_veredito: vereditoGoogle || null,
+      area: area || null,
       updated_at: new Date().toISOString(),
       ...(viagem ? {} : { criado_por: profile?.nome ?? null }),
     };
@@ -239,6 +249,24 @@ export function NovaViagemDialog({ aberto, onFechar, onSalvo, viagem }: Props) {
                 </span>
               </div>
             )}
+            {/* DE QUEM É ESTA VIAGEM. Não é permissão — é o que faz a viagem
+                cair na fila certa. Sem área ela aparece em "Todas" e some da
+                fila de todo mundo, que é o pior lugar para uma pendência estar. */}
+            <div className="space-y-1.5">
+              <Label htmlFor="v-area">Área</Label>
+              <select
+                id="v-area"
+                className="h-10 w-full rounded-md border border-input bg-background px-3 text-[14px]"
+                value={area}
+                onChange={(e) => setArea(e.target.value)}
+              >
+                <option value="">sem área</option>
+                {areas.map((a) => <option key={a.chave} value={a.chave}>{a.nome}</option>)}
+              </select>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-2 gap-3">
             <div className="space-y-1.5">
               <Label htmlFor="v-quem">Quem viaja</Label>
               <Input id="v-quem" value={quem} onChange={(e) => setQuem(e.target.value)} placeholder="opcional" />

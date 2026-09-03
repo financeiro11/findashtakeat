@@ -12,7 +12,11 @@ import { supabase } from "@/integrations/supabase/client";
 import { invocar } from "@/lib/erroEdge";
 import { comValorExato } from "@/components/ValorExato";
 import { db, fmtBRL as fmtBRLStr, fmtData, parseValor } from "./lib";
-import { aeroporto, diasAte, linkGoogleFlights, rotaTexto } from "@/lib/passagens";
+import {
+  aeroporto, diasAte, linkGoogleFlights, rotaTexto,
+  janelaDeCompra, pendenciasDaViagem, PESO_URGENCIA,
+  type Janela, type Pendencia, type Urgencia,
+} from "@/lib/passagens";
 /* CAMADA 2 — a MESMA régua de teto do Radar, não uma segunda. Duas divergiriam
    no primeiro ajuste, e o sintoma seria as duas telas discordando sobre o que é
    um teto bom. `sugerirTeto` é determinística e testada; a curva de passagens
@@ -43,6 +47,27 @@ interface EmailOrfao {
 
 interface Ponto { preco: number; fonte: string; coletado_em: string }
 
+interface Area { chave: string; nome: string; ordem: number }
+
+/** Lembrada por pessoa, no navegador — o comprador do Facilities e o analista de
+ *  eventos abrem a mesma tela e cada um cai na sua fila. Mesmo mecanismo dos
+ *  favoritos da sidebar e das colunas de /tarefas. */
+const CHAVE_AREA = "passagens.area";
+
+const JANELA_STYLE: Record<Janela, string> = {
+  cedo:       "border-border bg-muted text-muted-foreground",
+  boa:        "border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-900 dark:bg-emerald-950/40 dark:text-emerald-400",
+  encurtando: "border-amber-200 bg-amber-50 text-amber-800 dark:border-amber-900 dark:bg-amber-950/40 dark:text-amber-300",
+  tarde:      "border-red-200 bg-red-50 text-red-700 dark:border-red-900 dark:bg-red-950/40 dark:text-red-400",
+  passou:     "border-border bg-muted text-muted-foreground",
+};
+
+const URGENCIA_STYLE: Record<Urgencia, string> = {
+  alta:  "border-l-red-500",
+  media: "border-l-amber-500",
+  baixa: "border-l-border",
+};
+
 const STATUS_STYLE: Record<string, { label: string; cls: string }> = {
   rastreando: { label: "rastreando", cls: "bg-muted text-muted-foreground border-border" },
   comprada:   { label: "comprada",   cls: "bg-emerald-50 text-emerald-700 border-emerald-200 dark:bg-emerald-950/40 dark:text-emerald-400 dark:border-emerald-900" },
@@ -63,33 +88,70 @@ export default function Passagens() {
   const [lendo, setLendo] = useState(false);
   const [precoManual, setPrecoManual] = useState<Record<string, string>>({});
   const [ocupado, setOcupado] = useState<string | null>(null);
+  const [areas, setAreas] = useState<Area[]>([]);
+  const [area, setArea] = useState<string>(() => {
+    try { return localStorage.getItem(CHAVE_AREA) ?? "todas"; } catch { return "todas"; }
+  });
 
   const load = useCallback(async () => {
     setLoading(true);
-    const [p, o] = await Promise.all([
+    const [p, o, a] = await Promise.all([
       db.rpc("passagens_painel"),
       db.from("passagens_emails")
         .select("id, assunto, recebido_em, preco, motivo")
         .is("viagem_id", null)
         .order("created_at", { ascending: false }).limit(30),
+      db.from("passagens_areas").select("chave, nome, ordem").eq("ativa", true).order("ordem"),
     ]);
     setLinhas((p.data as Linha[]) ?? []);
     setOrfaos((o.data as EmailOrfao[]) ?? []);
+    setAreas((a.data as Area[]) ?? []);
     setLoading(false);
   }, []);
   useEffect(() => { load(); }, [load]);
 
+  function trocarArea(a: string) {
+    setArea(a);
+    try { localStorage.setItem(CHAVE_AREA, a); } catch { /* navegador sem storage: só não lembra */ }
+  }
+
+  /* O recorte de quem está olhando. "sem" junta as que ninguém classificou —
+     elas não podem sumir do mapa só por não terem área. */
+  const visiveis = useMemo(() => linhas.filter((l) => {
+    if (area === "todas") return true;
+    if (area === "sem") return !l.viagem.area;
+    return l.viagem.area === area;
+  }), [linhas, area]);
+
+  /**
+   * A FILA: o que pede decisão agora, e por quê.
+   *
+   * É a inversão do painel. A lista de viagens responde "o que existe"; quem
+   * compra precisa de "o que eu resolvo hoje" — e com fluxo constante em vários
+   * destinos a primeira vira ruído em duas semanas. A regra de o que é pendência
+   * mora em `pendenciasDaViagem`, testada, para a tela não ter opinião própria.
+   */
+  const fila = useMemo(() => {
+    const agora = new Date();
+    return visiveis
+      .flatMap((l) => pendenciasDaViagem({
+        status: l.viagem.status, data_ida: l.viagem.data_ida, teto: Number(l.viagem.teto),
+        rastreando_em: l.viagem.rastreando_em, ultimo_preco: l.ultimo_preco,
+        ultimo_em: l.ultimo_em, pontos: l.pontos,
+      }, agora).map((p) => ({ l, p })))
+      .sort((a, b) =>
+        PESO_URGENCIA[b.p.urgencia] - PESO_URGENCIA[a.p.urgencia] ||
+        diasAte(a.l.viagem.data_ida) - diasAte(b.l.viagem.data_ida));
+  }, [visiveis]);
+
+  /* Todas as viagens abertas, INDEPENDENTE do filtro: é a lista para onde um
+     e-mail órfão pode ser atribuído, e o e-mail não sabe de área nenhuma. */
   const abertas = useMemo(() => linhas.filter((l) => l.viagem.status === "rastreando"), [linhas]);
-  /* Quantas ainda não têm o alerta ligado no Google. É a falha mais silenciosa
-     do módulo: a viagem existe, o teto existe, e nunca chega preço nenhum. */
-  const semAlerta = useMemo(() => abertas.filter((l) => !l.viagem.rastreando_em).length, [abertas]);
-  /* O espelho da anterior: viagem já fechada cujo alerta ninguém desligou no
-     Google. A expiração é automática, então esta é a fila que cresce sem que
-     ninguém tenha clicado em nada — e ela vira e-mail órfão daqui a semanas. */
-  const rastreioOrfao = useMemo(
-    () => linhas.filter((l) => l.viagem.status !== "rastreando" && l.viagem.rastreando_em).length,
-    [linhas],
-  );
+
+  /* As duas faixas âmbar do topo saíram daqui: "alerta desligado" e "Google
+     ainda rastreia" viraram pendências na fila, que é onde já se olha. Manter as
+     duas coisas seria dizer o mesmo duas vezes na mesma tela — e a segunda vez
+     é a que ensina a não ler nenhuma. */
 
   async function expandir(id: string) {
     if (aberto === id) { setAberto(null); return; }
@@ -264,35 +326,96 @@ export default function Passagens() {
         </div>
       </div>
 
-      {/* O PASSO MANUAL PRECISA GRITAR. Viagem sem alerta ligado no Google nunca
-          recebe e-mail: fica na tela, com teto, parecendo monitorada, e em
-          silêncio para sempre. É o único jeito de este módulo falhar sem dar
-          erro nenhum. */}
-      {semAlerta > 0 && (
-        <div className="flex items-start gap-2 rounded-md border border-amber-200 bg-amber-50 p-3 text-[12.5px] text-amber-800 dark:border-amber-900 dark:bg-amber-950/40 dark:text-amber-300">
-          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
-          <span>
-            <span className="font-medium">{semAlerta} viagem(ns) sem o alerta ligado no Google.</span>{" "}
-            Enquanto ninguém abrir o link e clicar em "Rastrear preços", nenhum e-mail chega e a curva fica vazia —
-            o Hub não tem como buscar preço sozinho.
-          </span>
+      {/* DE QUEM É A FILA. O comprador do Facilities e o analista de eventos
+          abrem a mesma tela; sem este corte, cada um leria pendência do outro e
+          os dois aprenderiam a ignorar a lista. É filtro, não permissão — todo
+          mundo continua podendo ver e cobrir o colega. */}
+      {areas.length > 0 && (
+        <div className="flex flex-wrap items-center gap-1">
+          {[
+            { chave: "todas", nome: "Todas" },
+            ...areas,
+            ...(linhas.some((l) => !l.viagem.area) ? [{ chave: "sem", nome: "Sem área" }] : []),
+          ].map((a) => (
+            <button
+              key={a.chave}
+              type="button"
+              onClick={() => trocarArea(a.chave)}
+              className={cn(
+                "rounded-md border px-2.5 py-1 text-[12px] transition-colors",
+                area === a.chave
+                  ? "border-primary bg-primary/10 font-medium text-foreground"
+                  : "border-border text-muted-foreground hover:text-foreground",
+              )}
+            >
+              {a.nome}
+              <span className="ml-1.5 text-[11px] text-muted-foreground">
+                {a.chave === "todas"
+                  ? linhas.filter((l) => l.viagem.status === "rastreando").length
+                  : a.chave === "sem"
+                    ? linhas.filter((l) => !l.viagem.area && l.viagem.status === "rastreando").length
+                    : linhas.filter((l) => l.viagem.area === a.chave && l.viagem.status === "rastreando").length}
+              </span>
+            </button>
+          ))}
         </div>
       )}
 
-      {rastreioOrfao > 0 && (
-        <div className="flex items-start gap-2 rounded-md border border-amber-200 bg-amber-50 p-3 text-[12.5px] text-amber-800 dark:border-amber-900 dark:bg-amber-950/40 dark:text-amber-300">
-          <BellRing className="mt-0.5 h-4 w-4 shrink-0" />
-          <span>
-            <span className="font-medium">{rastreioOrfao} viagem(ns) fechada(s) com o alerta ainda ligado no Google.</span>{" "}
-            Elas já não casam e-mail nenhum, então o que chegar vai para "Alertas sem dono". Abra a linha e desligue
-            o rastreamento lá — o Hub não consegue fazer isso por você.
-          </span>
+      {/* A FILA — o que pede decisão agora. Substituiu as duas faixas de aviso
+          que existiam aqui: elas diziam o mesmo que estas linhas dizem, e repetir
+          na mesma tela é o jeito mais rápido de ensinar alguém a não ler. */}
+      {!loading && fila.length > 0 && (
+        <div className="space-y-1.5">
+          <div className="flex items-center gap-2">
+            <AlertTriangle className="h-4 w-4 text-muted-foreground" />
+            <h2 className="text-[15px] font-semibold text-foreground">Resolver hoje</h2>
+            <span className="text-[12px] text-muted-foreground">
+              {fila.length} pendência(s){area !== "todas" && " nesta área"}
+            </span>
+          </div>
+          <div className="space-y-1.5">
+            {fila.map(({ l, p }, i) => {
+              const link = l.viagem.google_url ?? linkGoogleFlights({
+                origem: l.viagem.origem, destino: l.viagem.destino,
+                data_ida: l.viagem.data_ida, data_volta: l.viagem.data_volta,
+              });
+              return (
+                <div
+                  key={`${l.viagem.id}-${p.tipo}-${i}`}
+                  className={cn("card-surface flex flex-wrap items-center gap-3 border-l-4 px-3 py-2", URGENCIA_STYLE[p.urgencia])}
+                >
+                  <button
+                    type="button"
+                    onClick={() => expandir(l.viagem.id)}
+                    className="shrink-0 text-left"
+                    title="Abrir a viagem"
+                  >
+                    <span className="num text-[13px] font-semibold text-foreground">
+                      {rotaTexto(l.viagem.origem, l.viagem.destino)}
+                    </span>
+                    <span className="ml-2 text-[11.5px] text-muted-foreground">{fmtData(l.viagem.data_ida)}</span>
+                  </button>
+                  <span className="min-w-0 flex-1 text-[12.5px] text-muted-foreground">{p.texto}</span>
+                  {p.tipo === "comprar" && l.ultimo_preco != null && (
+                    <span className="num shrink-0 text-[13px] font-semibold text-emerald-700 dark:text-emerald-400">
+                      {fmtBRL(Number(l.ultimo_preco))}
+                    </span>
+                  )}
+                  <a href={link} target="_blank" rel="noreferrer" className="shrink-0">
+                    <Button size="sm" variant="outline">
+                      <ExternalLink className="mr-1 h-3.5 w-3.5" /> Google
+                    </Button>
+                  </a>
+                </div>
+              );
+            })}
+          </div>
         </div>
       )}
 
       {loading ? (
         <div className="space-y-2">{[0, 1, 2].map((i) => <Skeleton key={i} className="h-20 rounded-md" />)}</div>
-      ) : linhas.length === 0 ? (
+      ) : visiveis.length === 0 ? (
         <div className="card-surface py-16 text-center">
           <Plane className="mx-auto h-8 w-8 text-muted-foreground/40" />
           <div className="mt-3 text-[13px] text-muted-foreground">
@@ -304,7 +427,7 @@ export default function Passagens() {
         </div>
       ) : (
         <div className="space-y-2">
-          {linhas.map((l) => {
+          {visiveis.map((l) => {
             const v = l.viagem;
             const st = STATUS_STYLE[v.status] ?? STATUS_STYLE.rastreando;
             const expandido = aberto === v.id;
@@ -337,6 +460,28 @@ export default function Passagens() {
                         {aeroporto(v.origem)?.cidade ?? v.origem} → {aeroporto(v.destino)?.cidade ?? v.destino}
                       </span>
                       <span className={cn("rounded border px-1.5 py-0.5 text-[10.5px] font-medium", st.cls)}>{st.label}</span>
+                      {/* O RELÓGIO DA ANTECEDÊNCIA. A tela já mostrava "em 77
+                          dias" como informação solta; aqui ele vira veredito —
+                          é a diferença entre saber o número e saber o que fazer
+                          com ele. */}
+                      {v.status === "rastreando" && (
+                        <span
+                          className={cn("rounded border px-1.5 py-0.5 text-[10.5px] font-medium", JANELA_STYLE[janelaDeCompra(dias).janela])}
+                          title={janelaDeCompra(dias).texto}
+                        >
+                          {janelaDeCompra(dias).janela === "boa" ? "janela boa" : janelaDeCompra(dias).janela}
+                        </span>
+                      )}
+                      {v.area
+                        ? <span className="rounded border border-border bg-muted px-1.5 py-0.5 text-[10.5px] text-muted-foreground">
+                            {areas.find((a) => a.chave === v.area)?.nome ?? v.area}
+                          </span>
+                        : <span
+                            className="rounded border border-dashed border-border px-1.5 py-0.5 text-[10.5px] text-muted-foreground"
+                            title="Sem área: esta viagem aparece em 'Todas' e em 'Sem área', mas não na fila de ninguém."
+                          >
+                            sem área
+                          </span>}
                       {v.status === "rastreando" && !v.rastreando_em && (
                         <span
                           className="inline-flex items-center gap-1 rounded border border-amber-200 bg-amber-50 px-1.5 py-0.5 text-[10.5px] font-medium text-amber-800 dark:border-amber-900 dark:bg-amber-950/40 dark:text-amber-300"

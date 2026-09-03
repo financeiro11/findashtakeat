@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   norm, precosNoTexto, formasDaData, casarEmail, deveAvisar, linkGoogleFlights,
-  aeroporto, rotaTexto, diasAte, lerTeto, PRECO_MIN_PLAUSIVEL,
+  aeroporto, rotaTexto, diasAte, lerTeto, janelaDeCompra, pendenciasDaViagem, PRECO_MIN_PLAUSIVEL,
   type ViagemParaCasar,
 } from "./passagens";
 import { sugerirTeto } from "./radarPrecos";
@@ -246,6 +246,87 @@ describe("a curva de passagens alimenta o sugerirTeto do Radar", () => {
 
   it("acusa o teto abaixo de tudo o que já se viu", () => {
     expect(sugerirTeto(curva, 1500).veredito).toBe("abaixo_do_minimo");
+  });
+});
+
+describe("janelaDeCompra", () => {
+  it("classifica a antecedência", () => {
+    expect(janelaDeCompra(120).janela).toBe("cedo");
+    expect(janelaDeCompra(77).janela).toBe("boa");
+    expect(janelaDeCompra(22).janela).toBe("encurtando");
+    expect(janelaDeCompra(9).janela).toBe("tarde");
+    expect(janelaDeCompra(-1).janela).toBe("passou");
+  });
+
+  it("nas bordas, o lado mais conservador ganha", () => {
+    expect(janelaDeCompra(90).janela).toBe("boa");
+    expect(janelaDeCompra(30).janela).toBe("encurtando");
+    expect(janelaDeCompra(14).janela).toBe("tarde");
+    expect(janelaDeCompra(0).janela).toBe("tarde");
+  });
+});
+
+describe("pendenciasDaViagem", () => {
+  const hoje = new Date("2026-09-03T12:00:00Z");
+  const base = {
+    status: "rastreando", data_ida: "2026-11-19", teto: 3000,
+    rastreando_em: "2026-09-03T00:00:00Z", ultimo_preco: null as number | null,
+    ultimo_em: null as string | null, pontos: 0,
+  };
+
+  it("viagem saudável e longe não pede nada", () => {
+    expect(pendenciasDaViagem({ ...base, ultimo_preco: 3500, ultimo_em: "2026-09-02T00:00:00Z", pontos: 1 }, hoje)).toEqual([]);
+  });
+
+  it("preço no teto pede COMPRAR, e cala o resto", () => {
+    const p = pendenciasDaViagem({ ...base, ultimo_preco: 2800, ultimo_em: "2026-09-02T00:00:00Z", pontos: 1 }, hoje);
+    expect(p).toHaveLength(1);
+    expect(p[0].tipo).toBe("comprar");
+    expect(p[0].urgencia).toBe("alta");
+  });
+
+  it("A METADE QUE FALTAVA: prazo acabando sem preço no teto pede DECIDIR", () => {
+    // Antes disto, esta viagem não gerava aviso nenhum — ela só expirava.
+    const p = pendenciasDaViagem(
+      { ...base, data_ida: "2026-09-10", ultimo_preco: 4200, ultimo_em: "2026-09-02T00:00:00Z", pontos: 3 }, hoje,
+    );
+    expect(p[0].tipo).toBe("decidir");
+    expect(p[0].urgencia).toBe("alta");
+  });
+
+  it("prazo encurtando é média, não alta", () => {
+    const p = pendenciasDaViagem(
+      { ...base, data_ida: "2026-09-25", ultimo_preco: 4200, ultimo_em: "2026-09-02T00:00:00Z", pontos: 3 }, hoje,
+    );
+    expect(p[0].tipo).toBe("decidir");
+    expect(p[0].urgencia).toBe("media");
+  });
+
+  it("alerta nunca ligado é pendência própria", () => {
+    const p = pendenciasDaViagem({ ...base, rastreando_em: null }, hoje);
+    expect(p.some((x) => x.tipo === "ligar_alerta")).toBe(true);
+  });
+
+  it("alerta ligado e mudo há muito tempo levanta suspeita", () => {
+    // O modo de falha invisível: tudo responde 2xx, o painel fica verde, e a
+    // curva nunca anda porque o casador não reconhece os e-mails da rota.
+    const p = pendenciasDaViagem({ ...base, rastreando_em: "2026-08-01T00:00:00Z" }, hoje);
+    expect(p.some((x) => x.tipo === "sem_preco")).toBe(true);
+  });
+
+  it("poucos dias de silêncio ainda é normal", () => {
+    const p = pendenciasDaViagem({ ...base, rastreando_em: "2026-08-30T00:00:00Z" }, hoje);
+    expect(p.some((x) => x.tipo === "sem_preco")).toBe(false);
+  });
+
+  it("viagem fechada só cobra o desligamento lá fora", () => {
+    const p = pendenciasDaViagem({ ...base, status: "comprada" }, hoje);
+    expect(p).toHaveLength(1);
+    expect(p[0].tipo).toBe("desligar_alerta");
+  });
+
+  it("viagem fechada com o alerta já desligado não pede nada", () => {
+    expect(pendenciasDaViagem({ ...base, status: "comprada", rastreando_em: null }, hoje)).toEqual([]);
   });
 });
 

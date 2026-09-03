@@ -389,6 +389,160 @@ export function lerTeto(
   };
 }
 
+/* ------------------------------------------- o relógio da antecedência */
+
+export type Janela = "cedo" | "boa" | "encurtando" | "tarde" | "passou";
+
+export interface LeituraDaJanela {
+  janela: Janela;
+  /** Curto, para o selo da linha. */
+  selo: string;
+  /** O que fazer, em uma frase. */
+  texto: string;
+}
+
+/**
+ * Em que ponto da janela de compra esta viagem está.
+ *
+ * O MÓDULO SÓ SABIA DAR BOA NOTÍCIA. Ele fala quando o preço entra no teto — e
+ * fica mudo quando o preço nunca entra, que é o desfecho mais comum. A viagem
+ * envelhece na lista, expira sozinha e alguém compra tarde, caro, sem que nada
+ * tenha avisado. Ferramenta que só fala quando há boa notícia é ferramenta que
+ * se aprende a ignorar.
+ *
+ * OS CORTES SÃO REGRA DE OPERAÇÃO, NÃO LEI DE MERCADO — e é bom que estejam
+ * escritos num lugar só, para poderem ser discutidos. O ponto de partida é o que
+ * o próprio Google Flights diz na tela de busca ("o período mais barato para
+ * reservar costuma ser de 2 a 5 meses antes"), encostado na realidade de quem
+ * compra: dentro de duas semanas, esperar deixou de ser estratégia e virou
+ * torcida. Se a curva desta empresa contar outra história, mexa AQUI — e não em
+ * cada tela que pergunta "já está na hora?".
+ */
+export const DIAS_JANELA_BOA = 90;
+export const DIAS_ENCURTANDO = 30;
+export const DIAS_TARDE = 14;
+
+export function janelaDeCompra(dias: number): LeituraDaJanela {
+  if (dias < 0) return { janela: "passou", selo: "já passou", texto: "A data de ida já passou." };
+  if (dias <= DIAS_TARDE) {
+    return {
+      janela: "tarde", selo: `faltam ${dias}d`,
+      texto: "Esperar deixou de ser estratégia: daqui para frente o preço tende a subir todo dia. Compre o melhor que houver.",
+    };
+  }
+  if (dias <= DIAS_ENCURTANDO) {
+    return {
+      janela: "encurtando", selo: `faltam ${dias}d`,
+      texto: "A janela está fechando. Se o preço não entrar no teto nos próximos dias, comprar um pouco acima dele pode sair mais barato que esperar.",
+    };
+  }
+  if (dias <= DIAS_JANELA_BOA) {
+    return { janela: "boa", selo: `faltam ${dias}d`, texto: "Está na janela em que costuma valer a pena comprar." };
+  }
+  return { janela: "cedo", selo: `faltam ${dias}d`, texto: "Ainda é cedo: dá para observar sem pressa." };
+}
+
+/* ------------------------------------------------- a fila de decisões */
+
+export type TipoPendencia = "comprar" | "decidir" | "sem_preco" | "ligar_alerta" | "desligar_alerta";
+export type Urgencia = "alta" | "media" | "baixa";
+
+export interface Pendencia {
+  tipo: TipoPendencia;
+  urgencia: Urgencia;
+  texto: string;
+}
+
+/** Quantos dias sem preço novo antes de desconfiar de que nada está chegando. */
+export const DIAS_SEM_PRECO_SUSPEITO = 10;
+
+/** O que o painel precisa saber de uma viagem para decidir o que ela pede. */
+export interface ViagemParaFila {
+  status: string;
+  data_ida: string;
+  teto: number;
+  rastreando_em: string | null;
+  ultimo_preco: number | null;
+  ultimo_em: string | null;
+  pontos: number;
+}
+
+/**
+ * O que ESTA viagem pede de alguém hoje. Vazio = não pede nada.
+ *
+ * A TELA LISTAVA VIAGENS; QUEM COMPRA PRECISA DE UMA FILA. Com fluxo constante e
+ * vários destinos, uma lista ordenada por data vira ruído em duas semanas — e o
+ * que interessa nunca é "quais viagens existem", é "o que eu preciso resolver
+ * agora". Só cinco coisas pedem ação, e três delas o módulo antes não dizia.
+ *
+ * ORDEM IMPORTA: a primeira pendência devolvida é a que manda na linha. Comprar
+ * vem antes de decidir, e as duas vêm antes de tarefa administrativa — quem tem
+ * uma passagem no teto não precisa ser lembrado de ligar alerta.
+ */
+export function pendenciasDaViagem(v: ViagemParaFila, hoje = new Date()): Pendencia[] {
+  const fora: Pendencia[] = [];
+
+  /* Viagem fechada só pode pedir uma coisa: desligar o rastreamento lá fora,
+     que o Hub não alcança. */
+  if (v.status !== "rastreando") {
+    if (v.rastreando_em) {
+      fora.push({
+        tipo: "desligar_alerta", urgencia: "baixa",
+        texto: "Viagem fechada, mas o alerta continua ligado no Google — os e-mails vão seguir chegando sem dono.",
+      });
+    }
+    return fora;
+  }
+
+  const dias = diasAte(v.data_ida, hoje);
+  const j = janelaDeCompra(dias);
+  const noTeto = v.ultimo_preco != null && Number(v.ultimo_preco) <= Number(v.teto);
+
+  if (noTeto) {
+    fora.push({
+      tipo: "comprar", urgencia: "alta",
+      texto: `O último preço está dentro do teto. ${dias <= DIAS_ENCURTANDO ? "E o prazo está curto: comprar agora." : "Dá para comprar."}`,
+    });
+    return fora;
+  }
+
+  /* A METADE QUE FALTAVA. Preço fora do teto com o prazo acabando não gera
+     alerta nenhum hoje — e é exatamente aí que se perde dinheiro, porque
+     ninguém é avisado de que o tempo de esperar acabou. */
+  if (j.janela === "tarde" || j.janela === "encurtando") {
+    fora.push({
+      tipo: "decidir", urgencia: j.janela === "tarde" ? "alta" : "media",
+      texto: `${j.texto} O preço não entrou no teto${v.pontos ? "" : " e ainda não chegou preço nenhum"}.`,
+    });
+  }
+
+  if (!v.rastreando_em) {
+    fora.push({
+      tipo: "ligar_alerta", urgencia: "media",
+      texto: "O alerta nunca foi ligado no Google. Sem isso não chega e-mail e a curva não anda.",
+    });
+    return fora;
+  }
+
+  /* O ALERTA ESTÁ LIGADO E MESMO ASSIM NÃO CHEGA NADA. Ou o Google não escreveu
+     ainda (normal nos primeiros dias), ou o casador não está reconhecendo os
+     e-mails desta rota — e essa segunda hipótese é invisível sem esta linha:
+     tudo responde 2xx, o painel fica verde, e a curva fica vazia para sempre. */
+  const desde = v.ultimo_em ?? v.rastreando_em;
+  const diasMudo = Math.floor((hoje.getTime() - new Date(desde).getTime()) / 86_400_000);
+  if (diasMudo >= DIAS_SEM_PRECO_SUSPEITO) {
+    fora.push({
+      tipo: "sem_preco", urgencia: "media",
+      texto: `${diasMudo} dias sem nenhum preço novo, com o alerta ligado. Confira se o Google está mandando e-mail desta rota.`,
+    });
+  }
+
+  return fora;
+}
+
+/** A urgência mais alta de um conjunto — para ordenar a fila. */
+export const PESO_URGENCIA: Record<Urgencia, number> = { alta: 3, media: 2, baixa: 1 };
+
 /* ------------------------------------------------------------- a decisão */
 
 /** Quanto falta (em dias) para a ida. Negativo = já passou. */

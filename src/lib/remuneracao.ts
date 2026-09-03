@@ -166,6 +166,25 @@ export function resumoDaPessoa(p: PessoaRemuneracao): ResumoPessoa {
   };
 }
 
+/**
+ * O último mês FECHADO — a referência de "quem ainda está aqui".
+ *
+ * O mês corrente é sempre parcial: a folha é registrada no fim do mês, e no dia
+ * 3 existem uns poucos títulos avulsos já lançados para ele. Usar o mês mais
+ * recente como referência fazia a tela dizer que TODO MUNDO tinha saído — em
+ * 03/09/2026 havia 1 lançamento em setembro contra 107 pessoas pagas em agosto,
+ * e as 107 eram descartadas por "não receberam no último mês".
+ *
+ * Por isso a referência é o último mês anterior ao corrente. Determinístico, e
+ * explicável para quem olhar a tela: o mês que já fechou.
+ */
+export function ultimaCompetenciaFechada(meses: string[], hoje = new Date()): string | null {
+  const corrente = `${hoje.getFullYear()}-${String(hoje.getMonth() + 1).padStart(2, "0")}`;
+  const fechados = meses.filter((m) => m.slice(0, 7) < corrente).sort((a, b) => a.localeCompare(b));
+  // Sem nenhum mês fechado (base recém-criada), o mais recente é o que há.
+  return fechados[fechados.length - 1] ?? [...meses].sort((a, b) => a.localeCompare(b)).pop() ?? null;
+}
+
 export type Filtros = {
   busca: string;
   /** Inclui quem já saiu (tem data de desligamento ou parou de receber). */
@@ -181,10 +200,15 @@ export type Filtros = {
 const alvoDaBusca = (p: PessoaRemuneracao) =>
   [p.nome, p.cargo, p.setor, p.codigo_rh].filter(Boolean).join(" ").toLowerCase();
 
+/**
+ * @param referencia o último mês FECHADO (ver `ultimaCompetenciaFechada`).
+ *   NUNCA o mês mais recente da base: o corrente é parcial e derrubaria como
+ *   "saída" todo mundo que só recebeu no mês anterior — ou seja, a empresa toda.
+ */
 export function filtrarPessoas(
   pessoas: PessoaRemuneracao[],
   f: Filtros,
-  ultimaCompetencia: string | null,
+  referencia: string | null,
 ): PessoaRemuneracao[] {
   const termo = f.busca.trim().toLowerCase();
   return pessoas.filter((p) => {
@@ -194,11 +218,16 @@ export function filtrarPessoas(
 
     if (!f.incluirSaidas) {
       if (p.datadesl) return false;
-      // Sem data de desligamento mas sem receber no último mês conhecido: saiu
-      // e o Portal RH não registrou, ou nunca teve ficha lá. São 50 pessoas
-      // hoje — a maioria de quem foi removida do RH ao sair.
-      const ultimo = p.meses?.[p.meses.length - 1]?.competencia ?? null;
-      if (ultimaCompetencia && ultimo && ultimo < ultimaCompetencia) return false;
+      // Sem data de desligamento e sem receber no último mês fechado: saiu e o
+      // Portal RH não registrou, ou nunca teve ficha lá — é o caso da maioria
+      // de quem foi removido do espelho ao sair.
+      //
+      // Quem ainda não tem lançamento NENHUM passa: é o contratado que começa
+      // semana que vem e já está no Portal RH, e ele deve aparecer.
+      const ultimo = p.meses?.length
+        ? p.meses[p.meses.length - 1].competencia
+        : null;
+      if (referencia && ultimo && ultimo < referencia) return false;
     }
 
     if (termo && !alvoDaBusca(p).includes(termo)) return false;

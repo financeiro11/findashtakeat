@@ -25,7 +25,7 @@ import { valorExato } from "@/lib/valor";
 import { mesesDeCasa, parseISO } from "@/lib/rescisao";
 import {
   degrausDoFixo, filtrarPessoas, matrizParaPlanilha, resumoDaPessoa, rotuloMes,
-  totaisDoMes,
+  totaisDoMes, ultimaCompetenciaFechada,
   type Filtros, type PainelRemuneracao, type PessoaRemuneracao, type ResumoPessoa,
 } from "@/lib/remuneracao";
 
@@ -133,11 +133,16 @@ export default function Remuneracao() {
     () => [...(painel?.meses ?? [])].sort((a, b) => a.localeCompare(b)),
     [painel],
   );
-  const ultimaCompetencia = meses[meses.length - 1] ?? null;
 
-  // O mês em foco começa no último com dados. `mesFoco` só é escrito pelo
-  // seletor — assim recarregar não joga a pessoa de volta para o último mês.
-  const mes = mesFoco ?? ultimaCompetencia;
+  /* A referência é o último mês FECHADO, não o mais recente da base.
+     O mês corrente tem uns poucos títulos avulsos já lançados, e usá-lo como
+     referência dizia que todo mundo tinha saído: em 03/09/2026 era 1 lançamento
+     de setembro contra 107 pessoas pagas em agosto, e as 107 sumiam da tela. */
+  const referencia = useMemo(() => ultimaCompetenciaFechada(meses), [meses]);
+
+  // O mês em foco começa no último fechado. `mesFoco` só é escrito pelo
+  // seletor — assim recarregar não joga a pessoa de volta para o padrão.
+  const mes = mesFoco ?? referencia;
 
   const setores = useMemo(() => {
     const s = new Set<string>();
@@ -146,8 +151,8 @@ export default function Remuneracao() {
   }, [painel]);
 
   const pessoas = useMemo(
-    () => filtrarPessoas(painel?.pessoas ?? [], filtros, ultimaCompetencia),
-    [painel, filtros, ultimaCompetencia],
+    () => filtrarPessoas(painel?.pessoas ?? [], filtros, referencia),
+    [painel, filtros, referencia],
   );
 
   const linhas: Linha[] = useMemo(

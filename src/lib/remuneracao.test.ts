@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   degrausDoFixo, resumoDaPessoa, filtrarPessoas, totaisDoMes, paraCsv, matrizParaPlanilha,
-  rotuloMes, distanciaEmMeses,
+  rotuloMes, distanciaEmMeses, ultimaCompetenciaFechada,
   type MesRemuneracao, type PessoaRemuneracao,
 } from "./remuneracao";
 
@@ -156,6 +156,29 @@ describe("resumo da pessoa", () => {
   });
 });
 
+describe("última competência fechada", () => {
+  const meses = ["2026-06-01", "2026-07-01", "2026-08-01", "2026-09-01"];
+
+  /* O bug de 03/09/2026: 1 lançamento avulso de setembro contra 107 pessoas
+     pagas em agosto. Tomando setembro como referência, as 107 sumiam da tela —
+     o painel mostrava 30 pessoas, todas sem valor nenhum. */
+  it("ignora o mês corrente, que ainda está aberto", () => {
+    expect(ultimaCompetenciaFechada(meses, new Date("2026-09-03T12:00:00"))).toBe("2026-08-01");
+  });
+
+  it("no mês seguinte, o mês antes fechado vira a referência", () => {
+    expect(ultimaCompetenciaFechada(meses, new Date("2026-10-01T12:00:00"))).toBe("2026-09-01");
+  });
+
+  it("sem nenhum mês fechado, usa o que há", () => {
+    expect(ultimaCompetenciaFechada(["2026-09-01"], new Date("2026-09-03T12:00:00"))).toBe("2026-09-01");
+  });
+
+  it("sem mês nenhum, devolve nulo", () => {
+    expect(ultimaCompetenciaFechada([], new Date("2026-09-03T12:00:00"))).toBeNull();
+  });
+});
+
 describe("filtro de pessoas", () => {
   const base = { busca: "", incluirSaidas: false, incluirNaoPessoas: false, soComFichaRh: false, setor: null };
   const ativo = pessoa({ id: "a", nome: "Ana Ativa", meses: [mes("2026-08-01", 5000)] });
@@ -196,6 +219,22 @@ describe("filtro de pessoas", () => {
     // A empresa fica de fora mesmo casando o código: `incluirNaoPessoas` é false.
     expect(f("COL-1").map((p) => p.id)).toEqual(["a", "c"]);
     expect(f("ninguém")).toHaveLength(0);
+  });
+
+  /* A regressão que esvaziou a tela: quem recebeu no último mês FECHADO está
+     ativo. Só some quem parou antes disso. */
+  it("mantém quem recebeu no mês de referência", () => {
+    const pagoEmAgosto = pessoa({ id: "x", meses: [mes("2026-07-01", 5000), mes("2026-08-01", 5000)] });
+    const parouEmJunho = pessoa({ id: "y", meses: [mes("2026-06-01", 5000)] });
+    const r = filtrarPessoas([pagoEmAgosto, parouEmJunho], base, "2026-08-01");
+    expect(r.map((p) => p.id)).toEqual(["x"]);
+  });
+
+  /* O contratado que começa semana que vem já está no Portal RH e ainda não tem
+     lançamento nenhum — tem de aparecer, não ser lido como saída. */
+  it("mantém quem ainda não recebeu nada", () => {
+    const novato = pessoa({ id: "z", nome: "Joel Recém-Chegado", meses: [] });
+    expect(filtrarPessoas([novato], base, "2026-08-01").map((p) => p.id)).toEqual(["z"]);
   });
 
   it("filtra por setor", () => {

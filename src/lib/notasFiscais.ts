@@ -183,6 +183,30 @@ export const EMITIVEIS = ["RECEIVED", "RECEIVED_IN_CASH"];
 export const EMITIVEIS_AVULSA = [...EMITIVEIS, "CONFIRMED"];
 
 /**
+ * A TERCEIRA RÉGUA — o cliente que paga CONTRA a nota.
+ *
+ * Há clientes cujo processo é o inverso do nosso: eles precisam da NFS-e em mãos
+ * para conseguir pagar. Enquanto o Asaas emitia, isso era um campo na assinatura
+ * (`invoiceCreationPeriod`) e ninguém aqui precisava saber; o desligamento de
+ * 01/09/2026 apagou esse campo em 2.099 assinaturas e deixou QUATRO delas sem
+ * emissor nenhum — as quatro que não eram `ON_PAYMENT_CONFIRMATION`.
+ *
+ * Então esta régua não é um afrouxamento: é uma regra que já estava em produção
+ * e que nós derrubamos sem perceber. Quem está nela está por decisão registrada
+ * em `nf_nota_antes_do_pagamento`, com o motivo escrito ao lado.
+ *
+ * `OVERDUE` entra junto com `PENDING` porque neste fluxo a nota nasce ANTES do
+ * vencimento: cobrança vencida sem nota é cobrança que ficou sem o documento que
+ * a destrava, e recusar aqui manteria o cliente impedido de pagar justamente por
+ * causa do que ele espera.
+ *
+ * O que ela NÃO alcança é o mesmo de sempre: estorno nas três caras e as guardas
+ * de duplicata. E ela não entra na fila automática — a rodada do cron continua
+ * só em `RECEIVED`, porque numa rodada não há a quem perguntar.
+ */
+export const EMITIVEIS_ANTES_DO_PAGAMENTO = [...EMITIVEIS_AVULSA, "PENDING", "OVERDUE"];
+
+/**
  * Por que esta linha NÃO pode entrar num lote de emissão. `null` = pode.
  *
  * A ordem importa: o primeiro motivo é o que aparece na tela, e o mais grave tem
@@ -199,9 +223,10 @@ export const EMITIVEIS_AVULSA = [...EMITIVEIS, "CONFIRMED"];
  */
 export function motivoBloqueio(
   l: Pick<LinhaNota, "situacao" | "estornado" | "status_asaas" | "cnpj_cpf" | "valor" | "data_vencimento" | "data_pagamento"> & { nfse_mensagem?: string | null },
-  opts: { avulsa?: boolean } = {},
+  opts: { avulsa?: boolean; antesDoPagamento?: boolean } = {},
 ): string | null {
   const avulsa = opts.avulsa === true;
+  const antes = opts.antesDoPagamento === true;
   // O estorno é o primeiro e é o que a avulsa NÃO alcança — de propósito, e
   // acima de tudo o resto.
   if (l.estornado) return "Cobrança estornada — emitir criaria imposto sobre receita devolvida.";
@@ -222,18 +247,24 @@ export function motivoBloqueio(
    * foi paga, e a confirmada é classificada como "falta" — ela é receita que
    * ainda pode não acontecer, não receita ausente. */
   const st = String(l.status_asaas ?? "").toUpperCase();
-  const regua = avulsa ? EMITIVEIS_AVULSA : EMITIVEIS;
-  if (st === "CONFIRMED" && !avulsa) {
+  const regua = antes ? EMITIVEIS_ANTES_DO_PAGAMENTO : avulsa ? EMITIVEIS_AVULSA : EMITIVEIS;
+  if (st === "CONFIRMED" && !avulsa && !antes) {
     return "Cobrança confirmada e ainda não liquidada — a nota sai sozinha no dia em que o dinheiro entrar. " +
       "Para emiti-la agora, ligue a chave \"Avulsa\".";
   }
   if (st && !regua.includes(st)) {
-    return "A cobrança não foi recebida." + (avulsa ? " A avulsa vai até a confirmada e não além." : "");
+    return "A cobrança não foi recebida."
+      + (antes ? " Nem a régua de \"nota antes do pagamento\" alcança este status."
+         : avulsa ? " A avulsa vai até a confirmada e não além." : "");
   }
   /* `nao_exige` é a situação de quem nunca foi paga, e a avulsa não a resgata:
    * se o status já disse "confirmada" o `if` acima liberou, e o que sobra aqui
-   * é pendente, vencida ou cancelada — nenhuma delas vira nota por atalho. */
-  if (l.situacao === "nao_exige") return "A cobrança não foi recebida.";
+   * é pendente, vencida ou cancelada — nenhuma delas vira nota por atalho.
+   *
+   * A EXCEÇÃO é o cliente que paga contra nota: para ele, `nao_exige` é
+   * literalmente falso — a nota é o que faz a cobrança ser paga. O `regua`
+   * acima já disse sim; este `if` não pode desdizer. */
+  if (l.situacao === "nao_exige" && !antes) return "A cobrança não foi recebida.";
   if (!l.cnpj_cpf) return "Cliente sem CNPJ/CPF no Asaas — sem documento não há como achar o cadastro no Omie.";
   if (!(Number(l.valor) > 0)) return "Valor zerado ou negativo.";
   if (!l.data_vencimento && !l.data_pagamento) return "Cobrança sem data.";
@@ -242,8 +273,40 @@ export function motivoBloqueio(
 
 export const podeEmitir = (
   l: Parameters<typeof motivoBloqueio>[0],
-  opts: { avulsa?: boolean } = {},
+  opts: { avulsa?: boolean; antesDoPagamento?: boolean } = {},
 ): boolean => motivoBloqueio(l, opts) === null;
+
+/**
+ * Este cliente está na lista dos que pagam CONTRA a nota?
+ *
+ * Por CNPJ/CPF e nunca por nome — é a regra do módulo inteiro, e aqui ela pesa
+ * mais do que em qualquer outro lugar: o nome fantasia do Asaas e a razão social
+ * do Omie divergem, e a consequência de casar errado seria emitir nota de
+ * cobrança não paga para quem não pediu isso.
+ */
+export const pagaContraNota = (
+  l: { cnpj_cpf?: string | null },
+  docs?: Set<string> | null,
+): boolean => {
+  const d = String(l.cnpj_cpf ?? "").replace(/\D/g, "");
+  return !!d && !!docs?.has(d);
+};
+
+/**
+ * A régua desta linha, resolvida.
+ *
+ * `avulsa` é do LOTE (uma chave que a pessoa liga uma vez, valendo para o clique
+ * inteiro); `antesDoPagamento` é da LINHA (depende de quem é o cliente). Misturar
+ * os dois num só objeto de opções foi o que me fez escrever esta função em vez de
+ * passar `opts` adiante: sem ela, uma linha herdaria a régua da outra.
+ */
+export const reguaDaLinha = (
+  l: { cnpj_cpf?: string | null },
+  opts: { avulsa?: boolean; docsAntesDoPagamento?: Set<string> | null } = {},
+) => ({
+  avulsa: opts.avulsa === true,
+  antesDoPagamento: pagaContraNota(l, opts.docsAntesDoPagamento),
+});
 
 /**
  * Esta linha só sai como AVULSA?
@@ -255,6 +318,17 @@ export const podeEmitir = (
  */
 export const exigeAvulsa = (l: Parameters<typeof motivoBloqueio>[0]): boolean =>
   !podeEmitir(l) && podeEmitir(l, { avulsa: true });
+
+/**
+ * Esta linha só sai porque o cliente paga contra nota?
+ *
+ * Mesmo raciocínio do `exigeAvulsa`, e mesmo motivo para existir: a lista
+ * destrava caixas no meio de uma tabela em que tudo o mais está bloqueado, e uma
+ * caixa que acende sem explicação é pior do que uma caixa apagada. O selo diz
+ * qual é a régua que está segurando aquela linha de pé.
+ */
+export const exigeAntesDoPagamento = (l: Parameters<typeof motivoBloqueio>[0]): boolean =>
+  !podeEmitir(l, { avulsa: true }) && podeEmitir(l, { antesDoPagamento: true });
 
 /**
  * O que o lote vai fazer, antes de fazer.
@@ -269,15 +343,16 @@ export const exigeAvulsa = (l: Parameters<typeof motivoBloqueio>[0]): boolean =>
  */
 export function resumoLote(
   linhas: LinhaNota[], selecionados: Set<string>,
-  opts: { avulsa?: boolean } = {},
+  opts: { avulsa?: boolean; docsAntesDoPagamento?: Set<string> | null } = {},
 ) {
   const sel = linhas.filter((l) => selecionados.has(l.id_asaas));
-  const podem = sel.filter((l) => podeEmitir(l, opts));
+  const podem = sel.filter((l) => podeEmitir(l, reguaDaLinha(l, opts)));
   const motivos = new Map<string, number>();
   for (const l of sel) {
-    const m = motivoBloqueio(l, opts);
+    const m = motivoBloqueio(l, reguaDaLinha(l, opts));
     if (m) motivos.set(m, (motivos.get(m) ?? 0) + 1);
   }
+  const antes = podem.filter((l) => pagaContraNota(l, opts.docsAntesDoPagamento) && exigeAntesDoPagamento(l));
   return {
     selecionadas: sel.length,
     emitiveis: podem.length,
@@ -285,6 +360,11 @@ export function resumoLote(
     // Só entre as que realmente vão sair: contar as bloqueadas aqui inflaria o
     // aviso com cobranças que ninguém vai emitir.
     confirmadas: podem.filter((l) => exigeAvulsa(l)).length,
+    /* As que saem ANTES de a cobrança ser paga. Número separado do
+     * `confirmadas` porque o risco é de outra natureza: a confirmada tem o
+     * pagamento autorizado e falta liquidar; esta não tem pagamento nenhum. */
+    antesDoPagamento: antes.length,
+    valorAntesDoPagamento: antes.reduce((s, l) => s + Number(l.valor || 0), 0),
     valor: podem.reduce((s, l) => s + Number(l.valor || 0), 0),
     valorConfirmadas: podem.filter((l) => exigeAvulsa(l)).reduce((s, l) => s + Number(l.valor || 0), 0),
     motivos: [...motivos.entries()].sort((a, b) => b[1] - a[1]),

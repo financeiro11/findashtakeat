@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   motivoBloqueio, motivoCurto, podeEmitir, exigeAvulsa, resumoLote, xmlAindaVale, formatarDoc, statusAsaas, foiPaga,
+  pagaContraNota, reguaDaLinha, exigeAntesDoPagamento,
   vereditoProntidao, oQueFazer, diasDoCadastro, clientesEmTexto, recadoDoCadastro,
   chaveNfseValida, linkPortalNacional, chaveEmBlocos,
   type LinhaNota, type Situacao, type ClienteFaltante, type CadastroNoOmie,
@@ -197,6 +198,111 @@ describe("exigeAvulsa", () => {
     expect(exigeAvulsa(linha({ status_asaas: "CONFIRMED", estornado: true }))).toBe(false);
     expect(exigeAvulsa(linha({ status_asaas: "OVERDUE" }))).toBe(false);
     expect(exigeAvulsa(linha({ situacao: "emitida_omie" }))).toBe(false);
+  });
+});
+
+/* ---------------------------------------------------------------------------
+ * A TERCEIRA RÉGUA — o cliente que paga CONTRA a nota.
+ *
+ * Estes testes existem pelo mesmo motivo que o módulo inteiro é puro: é a regra
+ * que decide se sai uma nota fiscal irreversível sobre cobrança que ainda não
+ * foi paga. O caso real que a originou é o Banestes — nota no fim do mês, boleto
+ * junto, pagamento no dia 10 do mês seguinte, sem exceção desde 2024.
+ * ------------------------------------------------------------------------- */
+describe("motivoBloqueio — nota antes do pagamento", () => {
+  const pendente = linha({
+    status_asaas: "PENDING", situacao: "nao_exige",
+    data_pagamento: null, data_vencimento: "2026-09-10",
+  });
+
+  it("a pendente é barrada nas duas réguas antigas", () => {
+    expect(motivoBloqueio(pendente)).toMatch(/não foi recebida/i);
+    expect(motivoBloqueio(pendente, { avulsa: true })).toMatch(/não foi recebida/i);
+  });
+
+  it("e passa na régua do cliente que paga contra nota", () => {
+    expect(motivoBloqueio(pendente, { antesDoPagamento: true })).toBeNull();
+  });
+
+  it("a vencida também passa — sem a nota ele não consegue quitar", () => {
+    const vencida = linha({ status_asaas: "OVERDUE", situacao: "nao_exige", data_pagamento: null });
+    expect(motivoBloqueio(vencida, { avulsa: true })).not.toBeNull();
+    expect(motivoBloqueio(vencida, { antesDoPagamento: true })).toBeNull();
+  });
+
+  it("o `nao_exige` não pode desdizer a régua que já liberou", () => {
+    // A armadilha: o `if (situacao === "nao_exige")` vinha DEPOIS da checagem de
+    // status e barrava de novo o que a régua tinha acabado de liberar.
+    expect(podeEmitir(pendente, { antesDoPagamento: true })).toBe(true);
+  });
+
+  it("mas o estorno continua acima de tudo", () => {
+    expect(motivoBloqueio(linha({ status_asaas: "PENDING", estornado: true }), { antesDoPagamento: true }))
+      .toMatch(/estornada/i);
+    expect(motivoBloqueio(linha({ status_asaas: "REFUNDED" }), { antesDoPagamento: true }))
+      .toMatch(/estornada|não foi recebida/i);
+  });
+
+  it("e as guardas de duplicata também — a lista não é licença para segunda nota", () => {
+    expect(motivoBloqueio(linha({ status_asaas: "PENDING", situacao: "emitida_omie" }), { antesDoPagamento: true }))
+      .toMatch(/já tem/i);
+    expect(motivoBloqueio(linha({ status_asaas: "PENDING", situacao: "emitida_asaas" }), { antesDoPagamento: true }))
+      .toMatch(/já tem/i);
+  });
+
+  it("status fora da régua diz que nem ela alcança", () => {
+    const analise = linha({ status_asaas: "AWAITING_RISK_ANALYSIS", situacao: "nao_exige" });
+    expect(motivoBloqueio(analise, { antesDoPagamento: true })).toMatch(/nem a régua/i);
+  });
+});
+
+describe("pagaContraNota", () => {
+  const docs = new Set(["28127603000178"]);
+
+  it("casa pelo documento, com ou sem pontuação na linha", () => {
+    expect(pagaContraNota({ cnpj_cpf: "28127603000178" }, docs)).toBe(true);
+    expect(pagaContraNota({ cnpj_cpf: "28.127.603/0001-78" }, docs)).toBe(true);
+  });
+
+  it("não casa por ausência de documento nem por lista vazia", () => {
+    expect(pagaContraNota({ cnpj_cpf: null }, docs)).toBe(false);
+    expect(pagaContraNota({ cnpj_cpf: "" }, docs)).toBe(false);
+    expect(pagaContraNota({ cnpj_cpf: "28127603000178" }, null)).toBe(false);
+    expect(pagaContraNota({ cnpj_cpf: "37511891000150" }, docs)).toBe(false);
+  });
+});
+
+describe("reguaDaLinha", () => {
+  const docs = new Set(["28127603000178"]);
+
+  it("a avulsa é do lote e a lista é da linha", () => {
+    const banestes = { cnpj_cpf: "28127603000178" };
+    const outro = { cnpj_cpf: "37511891000150" };
+    expect(reguaDaLinha(banestes, { avulsa: true, docsAntesDoPagamento: docs }))
+      .toEqual({ avulsa: true, antesDoPagamento: true });
+    // O ponto do teste: uma linha não herda a régua da outra.
+    expect(reguaDaLinha(outro, { avulsa: true, docsAntesDoPagamento: docs }))
+      .toEqual({ avulsa: true, antesDoPagamento: false });
+  });
+
+  it("sem opções, é a régua estreita", () => {
+    expect(reguaDaLinha({ cnpj_cpf: "28127603000178" }))
+      .toEqual({ avulsa: false, antesDoPagamento: false });
+  });
+});
+
+describe("exigeAntesDoPagamento", () => {
+  it("é verdade só para quem NENHUMA outra régua alcança", () => {
+    expect(exigeAntesDoPagamento(linha({ status_asaas: "PENDING", situacao: "nao_exige" }))).toBe(true);
+    expect(exigeAntesDoPagamento(linha({ status_asaas: "OVERDUE", situacao: "nao_exige" }))).toBe(true);
+  });
+
+  it("é falso para o que a avulsa já resolvia, e para o que nada resolve", () => {
+    // A confirmada sai pela avulsa: o selo dela é o âmbar, não o azul.
+    expect(exigeAntesDoPagamento(linha({ status_asaas: "CONFIRMED" }))).toBe(false);
+    expect(exigeAntesDoPagamento(linha({ status_asaas: "RECEIVED" }))).toBe(false);
+    expect(exigeAntesDoPagamento(linha({ status_asaas: "PENDING", estornado: true }))).toBe(false);
+    expect(exigeAntesDoPagamento(linha({ status_asaas: "PENDING", situacao: "emitida_omie" }))).toBe(false);
   });
 });
 

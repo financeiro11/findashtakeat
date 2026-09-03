@@ -1043,7 +1043,7 @@ export default function NotasERP() {
               chega aqui querendo saber se está andando sem apertar nada tem de
               achar o caminho a partir desta tela — era onde a pergunta nascia. */}
           <Link
-            to="/automacoes/painel"
+            to="/monitoramento/automacoes"
             className="chip"
             title="Os crons desta esteira: quando rodam de novo, o que responderam e quanto está parado em cada fila."
           >

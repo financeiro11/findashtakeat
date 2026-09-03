@@ -64,7 +64,7 @@
 // Auth: usuário logado OU cron (x-cron-token), no padrão do repo.
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.0";
-import { asaasGet, asaasUpload } from "../_shared/asaas.ts";
+import { asaasGet, asaasPost, asaasUpload } from "../_shared/asaas.ts";
 import { espelhoPdf, lerXmlNfse } from "../_shared/danfse.ts";
 import { segredosDoGmail, tokenDeAcesso } from "../_shared/gmail.ts";
 
@@ -1180,14 +1180,33 @@ const ESTORNADAS = [
   "CHARGEBACK_REQUESTED", "CHARGEBACK_DISPUTE", "AWAITING_CHARGEBACK_REVERSAL",
 ];
 
+/**
+ * Os status que a régua do CLIENTE QUE PAGA CONTRA NOTA alcança.
+ *
+ * `OVERDUE` entra junto com `PENDING` de propósito: nesse fluxo a nota nasce
+ * ANTES do vencimento, então cobrança vencida sem nota é cobrança que ficou sem
+ * o documento que a destrava — recusar aqui seria manter o cliente impedido de
+ * pagar exatamente por causa do que ele está esperando.
+ */
+const ANTES_DO_PAGAMENTO = [...RECEBIDAS, "CONFIRMED", "PENDING", "OVERDUE"];
+
+/**
+ * A GÊMEA de `nfse_bloqueio_emissao` no Postgres e de `motivoBloqueio` no front.
+ * As três mudam juntas — foi a lição de 22/08/26, quando a guarda existia só na
+ * tela e chamar a função por token emitia sem uma pergunta.
+ */
 function bloqueioDeEmissao(
   status: unknown, cobranca: any, estornoRegistrado = false, avulsa = false,
+  antesPagamento = false,
 ): string | null {
   const st = String(status ?? "").toUpperCase();
   const temRefunds = Array.isArray(cobranca?.refunds) && cobranca.refunds.length > 0;
   if (estornoRegistrado || temRefunds || ESTORNADAS.includes(st)) {
     return "Cobrança estornada — emitir criaria imposto sobre receita devolvida.";
   }
+  // A mais larga das três vem primeiro, e quem está nela está por decisão
+  // registrada em `nf_nota_antes_do_pagamento`, com motivo escrito.
+  if (antesPagamento && ANTES_DO_PAGAMENTO.includes(st)) return null;
   if (st === "CONFIRMED") {
     if (avulsa) return null;
     return "Cobrança confirmada e ainda não liquidada — a nota sai no dia em que o dinheiro entrar, " +
@@ -1195,7 +1214,9 @@ function bloqueioDeEmissao(
   }
   if (!RECEBIDAS.includes(st)) {
     return `Cobrança não recebida (${st || "sem status"}).` +
-      (avulsa ? " A avulsa vai até a confirmada e não além." : "");
+      (antesPagamento
+        ? " Nem a régua de \"nota antes do pagamento\" alcança este status."
+        : avulsa ? " A avulsa vai até a confirmada e não além." : "");
   }
   return null;
 }
@@ -1208,15 +1229,57 @@ function bloqueioDeEmissao(
  * nota" para uma cobrança devolvida, e alguém tentaria de novo amanhã. Grava-se
  * o que o Asaas acabou de dizer.
  *
- * Só `status` e `dados` — a `data_pagamento` da coluna fica onde está. O Asaas
- * LIMPA o paymentDate ao estornar, e copiar essa limpeza tiraria a linha do mês
- * em que ela aparece na tela: some do painel exatamente a cobrança que alguém
- * precisa ver para cancelar a nota que porventura já saiu.
+ * A `data_pagamento` da coluna fica onde está. O Asaas LIMPA o paymentDate ao
+ * estornar, e copiar essa limpeza tiraria a linha do mês em que ela aparece na
+ * tela: some do painel exatamente a cobrança que alguém precisa ver para
+ * cancelar a nota que porventura já saiu.
+ *
+ * O `valor` E O `dueDate`, SIM — e a ausência deles aqui era um buraco.
+ * `montarOS` monta o `nValorTotal` da nota a partir de `asaas_cache.valor`, que é
+ * coluna comum e não derivada de `dados`. Enquanto esta função gravava só
+ * `status` e `dados`, uma cobrança cujo valor tivesse sido corrigido no Asaas
+ * ficava com o valor VELHO na coluna até a `asaas-sync` do dia seguinte passar —
+ * e quem mandasse emitir no meio ganhava uma NFS-e com o valor errado. Nota não
+ * se corrige: cancela-se, com prazo e justificativa. O caso que revelou isto foi
+ * o do Banestes, onde o valor mudou três vezes em 2026.
+ *
+ * O `dueDate` vai junto porque é a competência da nota quando não há pagamento
+ * (`montarOS` usa o vencimento no `dDtPrevisao`), e porque mover a linha de mês
+ * quando o vencimento realmente mudou é o comportamento certo — ao contrário da
+ * `data_pagamento`, que o estorno apaga sem que nada tenha mudado de mês.
  */
 async function curarEspelho(supabase: any, idAsaas: string, cobranca: any) {
+  const valor = Number(cobranca?.value);
+  const vencimento = String(cobranca?.dueDate ?? "").slice(0, 10);
   await supabase.from("asaas_cache")
-    .update({ status: String(cobranca?.status ?? ""), dados: cobranca, atualizado_em: new Date().toISOString() })
+    .update({
+      status: String(cobranca?.status ?? ""),
+      dados: cobranca,
+      ...(Number.isFinite(valor) && valor > 0 ? { valor } : {}),
+      ...(/^\d{4}-\d{2}-\d{2}$/.test(vencimento) ? { data_vencimento: vencimento } : {}),
+      atualizado_em: new Date().toISOString(),
+    })
     .eq("tipo", "payment").eq("id_asaas", idAsaas);
+}
+
+/**
+ * O valor que o Hub ia usar ainda é o valor que o Asaas tem?
+ *
+ * Um centavo de diferença aqui é uma nota fiscal emitida no valor errado, e é a
+ * pior classe de defeito deste módulo: passa por todas as guardas (a cobrança
+ * está recebida, não foi estornada, não tem nota em lugar nenhum) e só aparece
+ * depois, quando o cliente reclama do documento. Todas as outras guardas
+ * perguntam SE se pode emitir; esta pergunta QUANTO.
+ *
+ * A tolerância é meio centavo porque `numeric` do Postgres e `number` do
+ * JavaScript não fecham bit a bit, e um arredondamento de ponto flutuante não é
+ * uma correção de valor.
+ */
+const CENTAVO = 0.005;
+function valorDivergiu(doEspelho: unknown, doAsaas: unknown): boolean {
+  const a = Number(doEspelho), b = Number(doAsaas);
+  if (!Number.isFinite(a) || !Number.isFinite(b) || b <= 0) return false;
+  return Math.abs(a - b) >= CENTAVO;
 }
 
 /**
@@ -1256,6 +1319,194 @@ async function curarEspelhoNota(supabase: any, nota: any) {
   }, { onConflict: "tipo,id_asaas" });
 }
 
+/* ---------------------------------------------------------------------------
+ * REFAZER A NOTA — cancelar a do Asaas e emitir a certa pelo Omie, num ato só.
+ *
+ * POR QUE ISTO É UM ATO E NÃO QUATRO PASSOS. Até 02/09/2026 a sequência era:
+ * cancelar no painel do Asaas, corrigir o valor da cobrança lá, esperar a
+ * `asaas-sync` do dia seguinte, voltar aqui e mandar emitir. Duas telas, quatro
+ * passos e um buraco silencioso no meio — quem não esperasse o espelho emitiria
+ * a nota NOVA com o valor VELHO, porque `montarOS` lê `asaas_cache.valor`. A
+ * correção do espelho (em `curarEspelho`) fechou o buraco; isto fecha a
+ * sequência.
+ *
+ * O QUE ELE NÃO FAZ, e não há como fazer: cancelar nota emitida pelo OMIE. A API
+ * não tem `CancelarOS` nem nada em `servicos/nfse/` — foi varrida método a
+ * método em 25/08/2026. Nota nossa se cancela na tela do Omie, e por isso o ato
+ * recusa esse caso em voz alta em vez de tentar e falhar pela metade.
+ *
+ * A JUSTIFICATIVA É OBRIGATÓRIA porque o cancelamento de NFS-e é, ele próprio,
+ * um ato que a prefeitura registra com motivo. Se alguém precisa escrever a
+ * razão lá, precisa tê-la escrito aqui — senão o Hub vira o lugar onde a nota
+ * some sem explicação.
+ * ------------------------------------------------------------------------- */
+
+/** O Asaas responde 400 para nota que já saiu de cena. Isso não é falha. */
+const jaEstavaCancelada = (msg: string) =>
+  /status Cancelada|invalid_object|não pode ser cancelada/i.test(msg);
+
+async function refazerNota(supabase: any, cfg: any, opts: {
+  id: string; justificativa: string; observacao?: string | null;
+  usuario: string | null; operador: string | null;
+}) {
+  const id = String(opts.id);
+  const justificativa = String(opts.justificativa ?? "").trim();
+  if (!justificativa) {
+    return { erro: "Refazer uma nota exige justificativa — é o motivo que a prefeitura registra no cancelamento." };
+  }
+
+  /* 1) O ESTADO AO VIVO, das duas pontas. O espelho não serve aqui: o ato
+   *    inteiro depende de saber QUAL nota está de pé neste instante. */
+  let pagamento: any, notas: any[];
+  try {
+    pagamento = await asaasGet<any>(`/payments/${id}`);
+    const inv = await asaasGet<any>("/invoices", { payment: id, limit: 10 });
+    notas = Array.isArray(inv?.data) ? inv.data : [];
+  } catch (e) {
+    return { erro: `Não deu para ler a cobrança no Asaas (${e instanceof Error ? e.message : String(e)}). Nada foi feito.` };
+  }
+
+  /* 2) O ESPELHO É CURADO ANTES DE QUALQUER ESCRITA, e não depois.
+   *    É o passo que garante que a nota nova saia com o valor de hoje — se ele
+   *    ficasse para o fim, a emissão logo abaixo leria o valor velho. */
+  await curarEspelho(supabase, id, pagamento).catch(() => { /* segue: a emissão relê */ });
+
+  // 3) A nota do OMIE não se cancela por API. Recusa explícita, com o caminho.
+  const [candidata] = await candidatas(supabase, [id], false);
+  if (candidata?.ja_tem_nota) {
+    return {
+      erro: "Esta cobrança já tem NFS-e emitida pelo Omie, e a API do Omie não cancela nota — " +
+        "não existe `CancelarOS` nem `servicos/nfse/`. Cancele na tela do Omie, clique em " +
+        "\"Atualizar do Omie\" aqui, e então a linha volta a aceitar emissão.",
+    };
+  }
+
+  /* 4) Cancela no Asaas TODA nota viva desta cobrança. Plural porque uma
+   *    cobrança pode ter mais de uma (a que falhou e a boa), e deixar qualquer
+   *    uma de pé faria a porta barrar a emissão logo em seguida. */
+  const vivas = notas.filter((n) =>
+    !["ERROR", "CANCELLED", "CANCELED"].includes(String(n?.status ?? "").toUpperCase())
+  );
+  const canceladas: Array<{ nota: string; numero: string | null; ja_estava: boolean }> = [];
+
+  for (const n of vivas) {
+    const idNota = String(n?.id ?? "");
+    if (!idNota) continue;
+    // A FOTO VEM ANTES DE APAGAR — a mesma regra do desligamento de 01/09. O
+    // objeto original é a única prova do que a nota dizia depois de cancelada.
+    await supabase.from("asaas_nf_desligamento").insert({
+      alvo: "nota_refeita", referencia: idNota, config: n,
+      ok: false, erro: justificativa, operador: opts.operador,
+    });
+
+    let jaEstava = false;
+    try {
+      await asaasPost<any>(`/invoices/${idNota}/cancel`, {});
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      if (!jaEstavaCancelada(msg)) {
+        await supabase.from("nf_emissoes").insert({
+          id_asaas: id, acao: "cancelar_asaas", resultado: "erro",
+          erro: `Nota ${n?.number ?? idNota}: ${msg}`,
+          usuario: opts.usuario, operador: opts.operador,
+          payload: { nota: idNota, justificativa },
+        });
+        return { erro: `O Asaas recusou cancelar a nota ${n?.number ?? idNota}: ${msg}. Nada foi emitido.` };
+      }
+      jaEstava = true;
+    }
+
+    await supabase.from("asaas_nf_desligamento")
+      .update({ ok: true }).eq("alvo", "nota_refeita").eq("referencia", idNota).is("ok", false);
+    await curarEspelhoNota(supabase, { ...n, status: "CANCELLED" }).catch(() => {});
+    await supabase.from("nf_emissoes").insert({
+      id_asaas: id, acao: "cancelar_asaas", resultado: "ok",
+      nfse_numero: n?.number ? String(n.number) : null,
+      usuario: opts.usuario, operador: opts.operador,
+      payload: { nota: idNota, justificativa, ja_estava_cancelada: jaEstava, valor_da_nota: n?.value ?? null },
+    });
+    canceladas.push({ nota: idNota, numero: n?.number ? String(n.number) : null, ja_estava: jaEstava });
+  }
+
+  /* 4b) O CANCELAMENTO NÃO TERMINA NO `POST`. Ele começa ali.
+   *
+   * O Asaas responde 200 e move a nota para **`PROCESSING_CANCELLATION`** — ele
+   * mandou o pedido à prefeitura e está esperando a resposta dela. Só quando ela
+   * confirma é que o status vira `CANCELLED`. E `PROCESSING_CANCELLATION` barra
+   * na porta, com razão: nota em cancelamento AINDA EXISTE no portal nacional,
+   * e emitir a substituta antes da confirmação cria duas notas se o
+   * cancelamento for recusado.
+   *
+   * Medido no primeiro uso real (Banestes, 02/09/2026): o `refazer` cancelou e
+   * disparou a emissão 350ms depois — barrado, como tinha de ser. O conserto não
+   * é afrouxar a porta, é ESPERAR: um minuto de espera resolve o caso comum, e
+   * quando não resolve a resposta diz exatamente isso em vez de "barradas na
+   * conferência", que manda a pessoa procurar um problema que não existe.
+   *
+   * Um minuto e não mais: o worker morre aos 150s e a emissão ainda precisa dos
+   * seus ~20s. Quando a prefeitura demora além disso, quem termina o serviço é a
+   * pessoa (pela lista) ou o sino do dia seguinte. */
+  let aindaCancelando: string | null = null;
+  if (canceladas.length) {
+    const ate = Date.now() + 60_000;
+    while (Date.now() < ate) {
+      await dorme(8_000);
+      try {
+        const inv = await asaasGet<any>("/invoices", { payment: id, limit: 10 });
+        const viva = (Array.isArray(inv?.data) ? inv.data : []).find((n: any) =>
+          !["ERROR", "CANCELLED", "CANCELED"].includes(String(n?.status ?? "").toUpperCase())
+        );
+        if (!viva) { aindaCancelando = null; break; }
+        aindaCancelando = String(viva?.status ?? "?");
+        await curarEspelhoNota(supabase, viva).catch(() => {});
+      } catch {
+        // Leitura falhou: não se conclui nada no escuro. Tenta de novo no laço.
+        aindaCancelando = aindaCancelando ?? "sem resposta do Asaas";
+      }
+    }
+  }
+
+  if (aindaCancelando) {
+    await supabase.from("nf_emissoes").insert({
+      id_asaas: id, acao: "refazer", resultado: "em_processamento",
+      erro: `Cancelamento em andamento no Asaas (${aindaCancelando}). A nota nova não foi emitida.`,
+      usuario: opts.usuario, operador: opts.operador,
+      payload: { justificativa, observacao: opts.observacao ?? null, canceladas },
+    });
+    return {
+      ok: true,
+      canceladas,
+      cancelamento_em_andamento: aindaCancelando,
+      despachada: false,
+      valor_agora: pagamento?.value ?? null,
+    };
+  }
+
+  /* 5) Emite. Pela leva normal, com um id só — assim a nota nova passa pelas
+   *    MESMAS guardas de sempre (a porta ao vivo, as sombras de duplicata, a
+   *    régua do dinheiro). Refazer não é atalho para emitir o que não podia. */
+  const emissao: any = await emitirDia(supabase, cfg ?? {}, {
+    origem: "tela", operador: opts.operador, usuario: opts.usuario,
+    ids: [id], observacao: opts.observacao ?? null,
+  });
+
+  await supabase.from("nf_emissoes").insert({
+    id_asaas: id, acao: "refazer",
+    resultado: Number(emissao?.emitidas ?? 0) > 0 ? "em_processamento" : "erro",
+    erro: Number(emissao?.emitidas ?? 0) > 0 ? null : (emissao?.pulada ?? emissao?.erro ?? "A nova nota não foi despachada."),
+    usuario: opts.usuario, operador: opts.operador,
+    payload: { justificativa, observacao: opts.observacao ?? null, canceladas, valor: pagamento?.value ?? null },
+  });
+
+  return {
+    ok: true,
+    canceladas,
+    valor_agora: pagamento?.value ?? null,
+    despachada: Number(emissao?.emitidas ?? 0) > 0,
+    emissao,
+  };
+}
+
 /**
  * A CONFERÊNCIA DA PORTA — o estado da cobrança no Asaas AGORA.
  *
@@ -1286,10 +1537,39 @@ async function conferirNoAsaas(
     // 2) O que o Asaas diz neste instante.
     try {
       const p = await asaasGet<any>(`/payments/${id}`);
-      const motivo = bloqueioDeEmissao(p?.status, p, false, avulsa);
+      /* `antes_pagamento` vem POR LINHA da `notas_fiscais_candidatas`, que o
+       * resolve contra `nf_nota_antes_do_pagamento`. Não se relê aqui de
+       * propósito: duas consultas separadas à mesma lista são duas chances de
+       * discordar sobre a mesma cobrança, e a porta tem de fechar com o mesmo
+       * critério da RPC que a abriu. A fila automática não traz esta coluna,
+       * então lá ela é `undefined` e a régua fica estreita — que é o desenho. */
+      const motivo = bloqueioDeEmissao(p?.status, p, false, avulsa, cob.antes_pagamento === true);
       if (motivo) {
         veredito.set(id, `${motivo} (lido no Asaas agora: ${String(p?.status ?? "?")})`);
         await curarEspelho(supabase, id, p).catch(() => { /* o bloqueio já valeu */ });
+        return;
+      }
+
+      /* 2b) O VALOR MUDOU DESDE O ESPELHO — não se emite, cura-se e espera.
+       *
+       * Mesma lógica da leitura ao vivo do status, aplicada ao número que vai
+       * dentro da nota. O espelho é de 12:15 e a emissão é 13h; entre um e outro
+       * cabe alguém corrigindo o valor da cobrança no Asaas, que é operação
+       * rotineira em contrato grande. O que NÃO cabe é emitir com o valor velho:
+       * a nota sai autorizada, no valor errado, e o conserto é cancelar com
+       * prazo e justificativa.
+       *
+       * Barrar em vez de emitir com o valor novo é decisão, não preguiça. O
+       * valor viaja em `cob` desde a fila e é lido em três lugares (a régua, a
+       * OS e o diário); trocá-lo no meio do voo deixaria as guardas de duplicata
+       * comparando um valor e a OS carregando outro. Curado o espelho, a próxima
+       * rodada monta tudo de novo, coerente, com o valor certo — e a espera é de
+       * dez minutos. */
+      if (valorDivergiu(cob.valor, p?.value)) {
+        const antes = Number(cob.valor).toFixed(2), agora = Number(p?.value).toFixed(2);
+        await curarEspelho(supabase, id, p).catch(() => { /* o bloqueio já valeu */ });
+        veredito.set(id, `O valor mudou no Asaas (aqui estava R$ ${antes}, agora é R$ ${agora}). ` +
+          "Nada foi emitido: o espelho já foi corrigido e a nota sai na próxima rodada com o valor certo.");
         return;
       }
 
@@ -1469,9 +1749,39 @@ function impostosDoMolde(impostos: Record<string, unknown> = {}): Record<string,
   return limpo;
 }
 
+/** O que cabe no corpo da NFS-e. O Omie recusa `cDescServ` acima disso. */
+const CABE_NO_CORPO_DA_NOTA = 200;
+
+/**
+ * A DESCRIÇÃO DA NOTA COM A OBSERVAÇÃO DE QUEM MANDOU EMITIR.
+ *
+ * `cDescServ` é o corpo da NFS-e — o texto que o cliente lê e que fica no XML da
+ * prefeitura. A descrição vem do cadastro da cobrança no Asaas e serve para a
+ * imensa maioria; a observação existe para o que só se sabe no ato: "referente a
+ * agosto/2026", "conforme aditivo assinado em 12/08". Nota não se corrige, então
+ * o que precisa estar escrito precisa estar escrito ANTES.
+ *
+ * QUANDO NÃO CABE, QUEM CEDE É A DESCRIÇÃO. Ela é texto padrão, repetido em
+ * milhares de notas e recuperável em qualquer uma delas; a observação foi
+ * digitada agora, para esta nota, por alguém que tinha um motivo. Cortar a
+ * observação para preservar a descrição seria jogar fora a única informação
+ * nova — e em silêncio, que é pior.
+ */
+function corpoDaNota(descricao: string, observacao?: string | null): string {
+  const desc = String(descricao ?? "").replace(/\s+/g, " ").trim();
+  const obs = String(observacao ?? "").replace(/\s+/g, " ").trim();
+  if (!obs) return desc.slice(0, CABE_NO_CORPO_DA_NOTA);
+  const sufixo = ` — ${obs}`;
+  const sobra = CABE_NO_CORPO_DA_NOTA - sufixo.length;
+  // Observação sozinha já estoura: ela vai, cortada, e a descrição fica de fora.
+  if (sobra <= 0) return obs.slice(0, CABE_NO_CORPO_DA_NOTA);
+  return `${desc.slice(0, sobra)}${sufixo}`;
+}
+
 /** O payload de IncluirOS para uma cobrança, a partir do molde. */
 function montarOS(molde: any, cob: {
-  id_asaas: string; nCodCli: number; valor: number; vencimento: string; descricao: string; email?: string | null;
+  id_asaas: string; nCodCli: number; valor: number; vencimento: string; descricao: string;
+  email?: string | null; observacao?: string | null;
 }): Record<string, unknown> {
   const servicoMolde = molde.ServicosPrestados[0];
   const dtBR = brDeISO(cob.vencimento);
@@ -1535,8 +1845,12 @@ function montarOS(molde: any, cob: {
        * prefeitura. Nota não se corrige: cancela-se, com prazo e justificativa.
        * Então o espaço em branco vira espaço simples e as pontas são aparadas —
        * sem tocar em mais nada, porque o resto é a descrição que o comercial
-       * escreveu e não cabe a este código reescrever. */
-      cDescServ: cob.descricao.replace(/\s+/g, " ").trim().slice(0, 200),
+       * escreveu e não cabe a este código reescrever.
+       *
+       * A observação de quem mandou emitir entra AQUI e não no `cObsOS`: o bloco
+       * `Observacoes` da OS é interno do Omie e não viaja para a nota. Se o
+       * cliente tem de ler "referente a agosto/2026", tem de estar no corpo. */
+      cDescServ: corpoDaNota(cob.descricao, cob.observacao),
       nQtde: 1,
       nSeqItem: 1,
       nValUnit: cob.valor,
@@ -1545,7 +1859,12 @@ function montarOS(molde: any, cob: {
       cCodigo: "",
     }],
     Parcelas: [{ dDtVenc: dtBR, nDias: 0, nParcela: 1, nPercentual: 100, nValor: cob.valor }],
-    Observacoes: { cObsOS: `Emitida pelo Hub a partir da cobrança ${cob.id_asaas} do Asaas.` },
+    Observacoes: {
+      // Interno do Omie: não sai na nota, mas é onde quem abrir a OS meses
+      // depois descobre de onde ela veio — e, agora, o que foi pedido no ato.
+      cObsOS: `Emitida pelo Hub a partir da cobrança ${cob.id_asaas} do Asaas.`
+        + (cob.observacao ? ` Observação de quem emitiu: ${String(cob.observacao).trim()}` : ""),
+    },
   };
 }
 
@@ -1824,6 +2143,7 @@ async function faturarIsolada(nCodOS: number, etapaIsolamento: string): Promise<
 async function emitirUma(
   supabase: any, molde: any, cob: any, cfg: any,
   usuario: string | null, seco: boolean, operador: string | null = null, avulsa = false,
+  observacao: string | null = null,
 ) {
   const registrar = async (acao: string, resultado: string, extra: Record<string, unknown>) => {
     if (seco) return;
@@ -1865,6 +2185,7 @@ async function emitirUma(
         vencimento: cob.data_vencimento ?? cob.data_pagamento,
         descricao: cob.descricao ?? "Serviço prestado",
         email: cob.email,
+        observacao,
       });
       if (seco) return { id_asaas: cob.id_asaas, ok: true, seco: true, acao, payload };
 
@@ -2021,6 +2342,10 @@ async function emitirDia(
   opts: {
     origem: string; operador: string | null; usuario: string | null;
     ids?: string[]; avulsa?: boolean; forcar?: boolean;
+    /* O texto que vai no corpo da NFS-e além da descrição da cobrança. Só existe
+     * na rota manual: numa rodada de cron não há quem escreva, e um texto fixo
+     * de configuração cairia em milhares de notas sem ninguém reler. */
+    observacao?: string | null;
   },
 ) {
   /* `emissao_automatica` governa o CRON, não a pessoa.
@@ -2231,6 +2556,7 @@ async function emitirDia(
             vencimento: cob.data_vencimento ?? cob.data_pagamento,
             descricao: cob.descricao ?? "Serviço prestado",
             email: cob.email,
+            observacao: opts.observacao,
           }));
           nCodOS = Number(r?.nCodOS ?? 0);
           if (!nCodOS) throw new Error(`IncluirOS não devolveu nCodOS`);
@@ -2238,6 +2564,14 @@ async function emitirDia(
             id_asaas: cob.id_asaas, n_cod_os: nCodOS, acao: "criar_os", resultado: "ok",
             avulsa,
             usuario: opts.usuario, operador: opts.operador,
+            /* O que foi escrito no corpo da nota, e sob qual régua ela saiu.
+             * `asaas_cache` muda e depois não se reconstitui — se a cobrança
+             * estava PENDING no instante do disparo, é aqui que isso fica. */
+            payload: {
+              observacao: opts.observacao ?? null,
+              antes_pagamento: cob.antes_pagamento === true,
+              status_no_disparo: cob.status_asaas ?? null,
+            },
           });
           /* O destinatário fica gravado no NASCIMENTO da OS, não depois.
            *
@@ -2619,6 +2953,348 @@ async function enviarPeloGmail(supabase: any, para: string, assunto: string, tex
   return await resp.json();
 }
 
+/* ------------------- a cobrança já paga, baixada como tal ------------------- */
+
+/**
+ * A CONTA ONDE O ADIANTAMENTO MORA.
+ *
+ * "Adiantamento de Cliente" (`nCodCC 5481161165`) é o conceito exato do que
+ * aconteceu: o cliente pagou no Asaas e a nota veio meses depois. E é a única
+ * escolha que não mente sobre o caixa — ela está com `incluir: false` em
+ * `omie_caixa_conta`, então baixar 1.428 títulos ali não põe R$ 592 mil de
+ * dinheiro num banco que já recebeu esse dinheiro pelo consolidado mensal do
+ * Asaas. Baixar no Sicoob ou no "ASAAS Disponível" dobraria o caixa.
+ *
+ * É também a conta que o próprio molde da OS já carrega em
+ * `InformacoesAdicionais.nCodCC` — não é escolha nova, é a que estava lá.
+ */
+const CONTA_ADIANTAMENTO_CLIENTE = 5481161165;
+
+/**
+ * A ORIGEM QUE SEPARA O NOSSO DO ALHEIO.
+ *
+ * O `lcrListarRequest` não filtra por cliente nem por origem — a única tag útil
+ * que ele aceita é `filtrar_por_status`, e "ATRASADO" traz 1.448 títulos, dos
+ * quais as ~1.428 OS do Hub são a quase totalidade. Os outros são lançamentos
+ * feitos à mão no Omie (`id_origem: "MANR"`, categoria 1.01.02, conta Sicoob) e
+ * baixá-los seria dar por recebido dinheiro que ninguém recebeu.
+ *
+ * `VENR` é a origem "venda" — o título que nasce do faturamento de uma OS. É a
+ * guarda que impede esta varredura de encostar em cobrança de verdade.
+ */
+const ORIGEM_DE_FATURAMENTO = "VENR";
+
+/** Título já liquidado ou cancelado: não é ele que mostra "Atrasada". */
+const TITULO_ENCERRADO = /^(RECEBIDO|LIQUIDADO|PAGO|CANCELADO|BAIXADO)/i;
+
+/**
+ * TODOS os títulos atrasados, de uma vez.
+ *
+ * O caminho óbvio — uma consulta por OS — são 1.428 chamadas, e a trava do Omie
+ * (que é POR MÉTODO, ver `omieCall`) transforma isso em horas. A listagem
+ * paginada traz 500 por página: o acervo atrasado inteiro cabe em 3 chamadas e o
+ * casamento acontece na memória.
+ */
+async function titulosEmAberto(): Promise<{ exato: Map<string, any>; porCliente: Map<string, any[]> }> {
+  const exato = new Map<string, any>();
+  const porCliente = new Map<string, any[]>();
+  for (let pagina = 1; pagina <= 30; pagina++) {
+    /* SEM `filtrar_por_status`, de propósito.
+     *
+     * "ATRASADO" traria só o que já venceu — e é justamente a nota emitida HOJE,
+     * cujo título ainda vai vencer, que se quer baixar antes de virar susto. O
+     * acervo inteiro são ~1.800 títulos, 4 páginas: a diferença de custo entre
+     * filtrar e não filtrar é uma chamada. */
+    const r = await omieCall<any>("financas/contareceber", "ListarContasReceber", {
+      pagina,
+      registros_por_pagina: 500,
+    }).catch((e) => {
+      // "não existem registros" é resposta, não falha.
+      if (/não existem registros|nao existem registros/i.test(mensagemDoOmie(e))) return null;
+      throw e;
+    });
+    if (!r) break;
+
+    const arr = r?.conta_receber_cadastro ?? r?.contas_receber_cadastro ?? [];
+    for (const t of arr) {
+      if (String(t?.id_origem ?? "") !== ORIGEM_DE_FATURAMENTO) continue;
+      if (String(t?.bloquear_baixa ?? "N") === "S") continue;
+      if (TITULO_ENCERRADO.test(String(t?.status_titulo ?? ""))) continue;
+      exato.set(chaveDoTitulo(t?.codigo_cliente_fornecedor, t?.valor_documento, t?.data_vencimento), t);
+
+      // O mesmo título, indexado sem a data — ver `acharTitulo`.
+      const k = chaveSemData(t?.codigo_cliente_fornecedor, t?.valor_documento);
+      const lista = porCliente.get(k);
+      if (lista) lista.push(t); else porCliente.set(k, [t]);
+    }
+    const totalPaginas = Number(r?.total_de_paginas ?? 1);
+    if (pagina >= totalPaginas || !arr.length) break;
+  }
+  return { exato, porCliente };
+}
+
+/**
+ * O CASAMENTO, COM A FOLGA QUE O CALENDÁRIO EXIGE.
+ *
+ * A chave exata (cliente+valor+vencimento) falha num caso previsível: o Omie
+ * empurra o vencimento para o próximo dia útil. A OS 2635 tem `data_previsao`
+ * 16/02/2026 no espelho e a cobrança venceu em **18/02** no portal — 16/02 foi
+ * segunda de Carnaval. Foram 10 em 100 no ensaio, todas com vencimento em fim
+ * de semana ou feriado.
+ *
+ * Então: tenta a data exata; não achando, procura entre os títulos do MESMO
+ * cliente com o MESMO valor o de vencimento mais próximo, aceitando até 10 dias
+ * de diferença. Cliente e valor idênticos continuam sendo exigidos — a folga é
+ * só na data, que é a única coisa que o ERP mexe sozinho.
+ */
+function acharTitulo(indice: { exato: Map<string, any>; porCliente: Map<string, any[]> },
+                     cliente: unknown, valor: unknown, vencISO: string): any | null {
+  const exato = indice.exato.get(chaveDoTitulo(cliente, valor, brDeISO(vencISO)));
+  if (exato) return exato;
+
+  const candidatos = indice.porCliente.get(chaveSemData(cliente, valor)) ?? [];
+  if (candidatos.length !== 1 && !candidatos.length) return null;
+
+  const alvo = Date.parse(vencISO);
+  let melhor: any = null;
+  let menorDistancia = Infinity;
+  for (const t of candidatos) {
+    const m = String(t?.data_vencimento ?? "").match(/^(\d{2})\/(\d{2})\/(\d{4})/);
+    if (!m) continue;
+    const d = Math.abs(Date.parse(`${m[3]}-${m[2]}-${m[1]}`) - alvo) / 86_400_000;
+    if (d < menorDistancia) { menorDistancia = d; melhor = t; }
+  }
+  return menorDistancia <= 10 ? melhor : null;
+}
+
+const chaveSemData = (cliente: unknown, valor: unknown): string =>
+  `${String(cliente ?? "")}|${Number(valor ?? 0).toFixed(2)}`;
+
+/**
+ * A CHAVE DO CASAMENTO: cliente + valor + vencimento.
+ *
+ * Não há campo que ligue o título à OS de origem na listagem — o Omie devolve o
+ * vínculo só no `ConsultarContaReceber`, que seria de novo uma chamada por
+ * título. Cliente+valor+vencimento é único na prática (é um título por cobrança
+ * do Asaas, e duas cobranças do mesmo cliente, no mesmo dia, pelo mesmo valor
+ * seriam a mesma assinatura cobrada duas vezes).
+ *
+ * O valor entra com 2 casas fixas porque o Omie devolve `390` e o espelho guarda
+ * `390.00` — comparar número formatado é o que faz a chave ser estável.
+ */
+function chaveDoTitulo(cliente: unknown, valor: unknown, vencimento: unknown): string {
+  const v = Number(valor ?? 0).toFixed(2);
+  const d = String(vencimento ?? "").trim();
+  return `${String(cliente ?? "")}|${v}|${d}`;
+}
+
+/**
+ * A BAIXA.
+ *
+ * `data` é a data em que o dinheiro entrou no Asaas, não hoje: baixar tudo com a
+ * data de hoje jogaria R$ 592 mil de recebimento num único dia e apagaria a
+ * informação de quando cada cliente pagou. Quando o espelho do Asaas não tem a
+ * cobrança (407 das 1.429 são anteriores à janela do cache), cai-se no
+ * vencimento — que é a data que o cliente vê na própria cobrança.
+ */
+async function baixarTitulo(cod: number, valor: number, dataBR: string, idAsaas: string, dataReal = dataBR) {
+  const nota = dataBR === dataReal
+    ? ""
+    : ` O recebimento ocorreu em ${dataReal}; a baixa está datada de ${dataBR} porque o período contábil de origem está fechado.`;
+  return await omieCall<any>("financas/contareceber", "LancarRecebimento", {
+    codigo_lancamento: cod,
+    codigo_conta_corrente: CONTA_ADIANTAMENTO_CLIENTE,
+    valor,
+    data: dataBR,
+    observacao: `Recebido no Asaas (${idAsaas}) em ${dataReal}. Baixado como adiantamento de cliente: a nota foi emitida depois do pagamento.${nota}`,
+  }, { semRetentativa: true });
+}
+
+/** O Omie recusa escrita em mês que a contabilidade fechou. */
+const PERIODO_FECHADO = /período contábil|periodo contabil|foi bloqueado/i;
+
+/**
+ * A VARREDURA.
+ *
+ * Uma leitura em lote dos títulos, depois uma escrita por OS. A escrita é que
+ * manda no relógio: ~1s por `LancarRecebimento`, serial por causa da trava do
+ * Omie. Por isso o orçamento de tempo e o teto — o que não couber volta na
+ * rodada seguinte com a busca já feita (`titulo_cod` gravado).
+ */
+async function baixarAdiantamentos(
+  supabase: any,
+  opts: { teto?: number; seco?: boolean; ids?: number[] } = {},
+): Promise<Record<string, unknown>> {
+  const comecou = Date.now();
+  const LIMITE_MS = 110_000;
+  const teto = Math.max(1, Math.min(Number(opts.teto ?? 60), 400));
+
+  /* A GUARDA QUE QUASE FALTOU.
+   *
+   * `c_cod_int_os like 'pay_%'` é o carimbo do Asaas que a emissão do Hub grava
+   * em toda OS que cria. Sem esta cláusula a fila pegava também as 407 OS
+   * antigas, criadas fora do Hub (pelo fluxo do n8n), com `c_cod_int_os` NULO e
+   * R$ 151.611 em títulos — e o casamento por cliente+valor+vencimento acha o
+   * título delas do mesmo jeito.
+   *
+   * Elas também mostram "Atrasada" no portal, mas ninguém aqui sabe se foram
+   * pagas: não têm cobrança do Asaas para consultar. Baixar um título sem saber
+   * se o dinheiro entrou é registrar recebimento que pode não ter existido —
+   * o único erro desta varredura que não se desfaz com uma segunda rodada.
+   * Ficam de fora até que alguém diga o que são.
+   */
+  let q = supabase
+    .from("nf_os_omie")
+    .select("n_cod_os, c_num_os, c_cod_int_os, n_cod_cli, valor, data_previsao, nfse_numero, titulo_cod, titulo_baixa_tentativas")
+    .eq("nfse_status", "004")
+    .eq("cancelada", false)
+    .is("titulo_baixado_em", null)
+    .like("c_cod_int_os", "pay_%")
+    .order("data_previsao", { ascending: true })
+    .limit(teto);
+  if (opts.ids?.length) q = q.in("n_cod_os", opts.ids);
+
+  const { data: fila, error } = await q;
+  if (error) throw new Error(`fila da baixa: ${error.message}`);
+  if (!fila?.length) return { ok: true, pendentes: 0, baixadas: 0, motivo: "nada a baixar." };
+
+  /* O ESPELHO DO ASAAS DIZ SE O DINHEIRO ENTROU — E QUANDO.
+   *
+   * A data serve para datar a baixa; o status é guarda. `CONFIRMED` não basta:
+   * é cartão autorizado que ainda pode não liquidar, e a mesma régua já vale na
+   * emissão (`nfse_bloqueio_emissao`). Cobrança sem linha no espelho não é
+   * baixada — volta na rodada seguinte, quando a `asaas-sync` a tiver trazido. */
+  const ids = fila.map((o: any) => o.c_cod_int_os).filter(Boolean);
+  const { data: pagamentos } = await supabase
+    .from("asaas_cache")
+    .select("id_asaas, status, data_pagamento, data_credito")
+    .eq("tipo", "payment")
+    .in("id_asaas", ids);
+  const RECEBIDO = new Set(["RECEIVED", "RECEIVED_IN_CASH"]);
+  const pagoEm = new Map<string, string>();
+  for (const p of pagamentos ?? []) {
+    if (!RECEBIDO.has(String(p.status ?? "").toUpperCase())) continue;
+    const d = p.data_pagamento ?? p.data_credito;
+    if (d) pagoEm.set(String(p.id_asaas), String(d).slice(0, 10));
+  }
+
+  const indice = await titulosEmAberto();
+
+  const hojeBR = brDeISO(new Date().toISOString().slice(0, 10));
+  const resultado = { baixadas: 0, periodoFechado: 0, semTitulo: 0, semPagamento: 0, erros: [] as string[], naoTentadas: 0 };
+  const amostra: any[] = [];
+
+  for (const os of fila) {
+    if (Date.now() - comecou > LIMITE_MS) { resultado.naoTentadas++; continue; }
+
+    const achado = acharTitulo(indice, os.n_cod_cli, os.valor, String(os.data_previsao));
+    const cod = Number(os.titulo_cod ?? achado?.codigo_lancamento_omie ?? 0);
+
+    if (!cod) {
+      resultado.semTitulo++;
+      if (amostra.length < 5) amostra.push({ os: os.c_num_os, procurou: chaveDoTitulo(os.n_cod_cli, os.valor, brDeISO(os.data_previsao)) });
+      await supabase.from("nf_os_omie")
+        .update({ titulo_baixa_erro: "título a receber não encontrado em aberto no Omie" })
+        .eq("n_cod_os", os.n_cod_os);
+      continue;
+    }
+
+    /* Sem confirmação de recebimento no espelho, não se baixa. Antes aqui havia
+     * um `?? os.data_previsao` — um fallback que transformava "o Asaas não diz
+     * que recebeu" em "baixa na data do vencimento". Silencioso e na direção
+     * errada: o caso em que a informação falta é exatamente o caso em que não
+     * se pode afirmar que o cliente pagou. */
+    const dataISO = pagoEm.get(String(os.c_cod_int_os));
+    if (!dataISO) {
+      resultado.semPagamento++;
+      await supabase.from("nf_os_omie")
+        .update({ titulo_baixa_erro: "o espelho do Asaas não confirma recebimento desta cobrança" })
+        .eq("n_cod_os", os.n_cod_os);
+      continue;
+    }
+
+    if (opts.seco) {
+      if (amostra.length < 10) amostra.push({ os: os.c_num_os, titulo: cod, valor: os.valor, baixaria_em: brDeISO(dataISO) });
+      continue;
+    }
+
+    const marcarFeita = async (obs: string | null) => {
+      await supabase.from("nf_os_omie").update({
+        titulo_cod: cod,
+        titulo_baixado_em: new Date().toISOString(),
+        titulo_baixa_erro: obs,
+        titulo_baixa_tentativas: 0,
+      }).eq("n_cod_os", os.n_cod_os);
+      resultado.baixadas++;
+    };
+
+    try {
+      await baixarTitulo(cod, Number(os.valor), brDeISO(dataISO), String(os.c_cod_int_os ?? ""));
+      await marcarFeita(null);
+    } catch (e) {
+      const msg = mensagemDoOmie(e);
+
+      /* O MÊS FECHADO NÃO É FALHA — É UMA DATA QUE NÃO SERVE.
+       *
+       * A contabilidade travou os meses de 2026 (Janeiro em 22/07), e o Omie
+       * recusa lançar recebimento dentro deles. Reabrir mês fechado para
+       * regularizar 1.428 títulos seria mexer em contabilidade encerrada por
+       * causa de uma tela; a baixa então é datada de HOJE, que é quando ela
+       * está de fato acontecendo, e a data real do pagamento vai escrita na
+       * observação do título — nada se perde.
+       *
+       * Vale lembrar que a contrapartida é "Adiantamento de Cliente", conta
+       * fora do caixa do painel: mover a data não move nenhum saldo que alguém
+       * lê. O que muda é só em que mês a regularização aparece.
+       */
+      if (PERIODO_FECHADO.test(msg)) {
+        try {
+          await baixarTitulo(cod, Number(os.valor), hojeBR, String(os.c_cod_int_os ?? ""), brDeISO(dataISO));
+          await marcarFeita(`baixa datada de hoje: ${msg.slice(0, 200)}`);
+          resultado.periodoFechado++;
+          continue;
+        } catch (e2) {
+          const msg2 = mensagemDoOmie(e2);
+          await supabase.from("nf_os_omie").update({
+            titulo_cod: cod, titulo_baixa_erro: msg2.slice(0, 400),
+            titulo_baixa_tentativas: Number(os.titulo_baixa_tentativas ?? 0) + 1,
+          }).eq("n_cod_os", os.n_cod_os);
+          if (resultado.erros.length < 8) resultado.erros.push(`OS ${os.c_num_os}: ${msg2.slice(0, 160)}`);
+          continue;
+        }
+      }
+      // "Consumo redundante" e "já baixado" querem dizer que o efeito existe.
+      if (/já.*baixad|ja.*baixad|redundante|já.*liquidad/i.test(msg)) {
+        await supabase.from("nf_os_omie").update({
+          titulo_cod: cod, titulo_baixado_em: new Date().toISOString(), titulo_baixa_erro: null,
+        }).eq("n_cod_os", os.n_cod_os);
+        resultado.baixadas++;
+        continue;
+      }
+      await supabase.from("nf_os_omie").update({
+        titulo_cod: cod,
+        titulo_baixa_erro: msg.slice(0, 400),
+        titulo_baixa_tentativas: Number(os.titulo_baixa_tentativas ?? 0) + 1,
+      }).eq("n_cod_os", os.n_cod_os);
+      if (resultado.erros.length < 8) resultado.erros.push(`OS ${os.c_num_os}: ${msg.slice(0, 160)}`);
+    }
+  }
+
+  const { count: pendentes } = await supabase
+    .from("nf_os_omie")
+    .select("n_cod_os", { count: "exact", head: true })
+    .eq("nfse_status", "004").eq("cancelada", false)
+    .is("titulo_baixado_em", null)
+    .like("c_cod_int_os", "pay_%");
+
+  return {
+    ok: true, seco: opts.seco === true, lote: fila.length,
+    titulos_em_aberto_lidos: indice.exato.size,
+    ...resultado, pendentes: pendentes ?? null,
+    segundos: Math.round((Date.now() - comecou) / 1000), amostra,
+  };
+}
+
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
 
@@ -2643,6 +3319,38 @@ Deno.serve(async (req) => {
         }
         usuario = data.user.id;
       }
+    }
+
+    /* A SONDA DO TÍTULO. Não escreve nada: mostra como o Omie devolve as contas
+     * a receber em aberto, que é o que o casamento por cliente+valor+vencimento
+     * precisa acertar antes de qualquer baixa. */
+    if (action === "sondar_titulo") {
+      // `filtros` é cru de propósito: os nomes das tags do `lcrListarRequest` só
+      // se descobrem tentando, e um deploy por tentativa custa minutos. Leitura,
+      // nunca escrita — o método é fixo aqui.
+      const filtros = (body?.filtros && typeof body.filtros === "object") ? body.filtros : {};
+      const r = await omieCall<any>("financas/contareceber", "ListarContasReceber", {
+        pagina: Number(body?.pagina ?? 1), registros_por_pagina: 20, ...filtros,
+      });
+      const arr = r?.conta_receber_cadastro ?? r?.contas_receber_cadastro ?? [];
+      return json({
+        ok: true, filtros,
+        total_de_registros: r?.total_de_registros, total_de_paginas: r?.total_de_paginas,
+        chaves_do_primeiro: arr[0] ? Object.keys(arr[0]) : [],
+        amostra: arr.slice(0, 2),
+      });
+    }
+
+    /* A BAIXA DAS COBRANÇAS JÁ PAGAS.
+     *
+     * `seco: true` mostra o que casaria sem tocar no Omie — é como se confere o
+     * casamento antes de 1.428 escritas irreversíveis. */
+    if (action === "baixar_adiantamento") {
+      return json(await baixarAdiantamentos(supabase, {
+        teto: Number(body?.teto ?? 60),
+        seco: body?.seco === true,
+        ids: Array.isArray(body?.ids) ? body.ids.map(Number).filter(Boolean) : undefined,
+      }));
     }
 
     /* O aviso de recusa. `previa` mostra o texto sem mandar nada nem carimbar. */
@@ -2837,6 +3545,34 @@ Deno.serve(async (req) => {
       });
     }
 
+    /* O CADASTRO DA NOSSA PRÓPRIA EMPRESA — leitura pura.
+     *
+     * A pergunta que ela responde apareceu em 02/09/2026, olhando um DANFSe: o
+     * bloco PRESTADOR trazia um Gmail pessoal como e-mail da Takeat. O Hub não
+     * manda esse campo — o payload de `IncluirOS` não tem lugar para o e-mail do
+     * prestador, só para o do destinatário (`cEnviarPara`, no bloco `Email`, que
+     * é para QUEM RECEBE a nota). Então ele só pode vir do cadastro da empresa
+     * que o Omie transmite na DPS, e esta ação mostra qual é esse cadastro sem
+     * ninguém precisar abrir a tela e procurar.
+     *
+     * Só lê. Alterar o e-mail fiscal do emitente muda todas as notas daqui para
+     * a frente e é decisão de gente, na tela do Omie. */
+    if (action === "empresa") {
+      const r = await omieCall<any>("geral/empresas", "ListarEmpresas", {
+        pagina: 1, registros_por_pagina: 50, apenas_importado_api: "N",
+      });
+      const empresas = (r?.empresas_cadastro ?? r?.empresas ?? []).map((e: any) => ({
+        codigo: e?.codigo_empresa ?? e?.nCodEmp ?? null,
+        nome: e?.razao_social ?? e?.nome_fantasia ?? null,
+        cnpj: e?.cnpj ?? null,
+        email: e?.email ?? null,
+        telefone: [e?.telefone1_ddd, e?.telefone1_numero].filter(Boolean).join(" ") || null,
+        cidade: e?.cidade ?? null,
+        inscricao_municipal: e?.inscricao_municipal ?? null,
+      }));
+      return json({ ok: true, empresas, cru: body?.cru === true ? r : undefined });
+    }
+
     if (action === "sondar_metodos") {
       const extras = Array.isArray(body?.alvos)
         ? body.alvos.map((a: any) => [String(a?.[0] ?? ""), String(a?.[1] ?? "")] as [string, string])
@@ -2890,6 +3626,32 @@ Deno.serve(async (req) => {
         anexos: body?.anexos === true,
       });
       return json({ ok: true, ...r });
+    }
+
+    /* REFAZER — cancelar a nota do Asaas e emitir a certa pelo Omie.
+     *
+     * UMA cobrança por chamada, sempre. Não é limitação técnica: é o mesmo
+     * princípio da avulsa. Cancelar nota fiscal é ato individual com motivo
+     * individual, e uma lista de ids aqui seria o caminho para alguém cancelar
+     * quarenta notas com uma justificativa copiada. Quem precisa refazer
+     * quarenta tem um problema que não se resolve por botão. */
+    if (action === "refazer") {
+      const operador = String(body?.operador ?? "").trim();
+      if (ehCron) {
+        return json({ erro: "Refazer nota é ato de pessoa: cancelamento fiscal não sai por token de sistema." }, 403);
+      }
+      const id = String(body?.id ?? "").trim();
+      if (!id) return json({ erro: "Informe a cobrança (`id`)." }, 400);
+
+      const { data: cfgRefazer } = await supabase.from("nf_config").select("*").eq("id", 1).maybeSingle();
+      const r = await refazerNota(supabase, cfgRefazer ?? {}, {
+        id,
+        justificativa: String(body?.justificativa ?? ""),
+        observacao: typeof body?.observacao === "string" ? body.observacao : null,
+        usuario,
+        operador: operador || null,
+      });
+      return json(r, (r as any)?.erro ? 400 : 200);
     }
 
     if (action === "previa" || action === "emitir") {
@@ -2953,6 +3715,7 @@ Deno.serve(async (req) => {
           // Escape consciente da chave geral: emite UMA leva com a emissão
           // desligada. Quem manda isto sabe que o outro lado pode estar vivo.
           forcar: body?.forcar === true,
+          observacao: typeof body?.observacao === "string" ? body.observacao : null,
         });
         const despachadas = Number((r as any)?.emitidas ?? 0);
         /* Rodada que não produziu nada precisa DIZER. Sem isto, uma recusa do
@@ -3003,7 +3766,13 @@ Deno.serve(async (req) => {
 
       const molde = liberadas.length ? await pegarMolde(supabase) : null;
       for (const cob of liberadas) {
-        resultados.push(await emitirUma(supabase, molde, cob, cfg ?? {}, usuario, seco, operador || null, avulsa));
+        // A observação vai na PRÉVIA também: o ensaio existe para mostrar o
+        // payload que sairia, e um ensaio sem o texto que o cliente vai ler não
+        // ensaia a única parte que alguém digitou à mão.
+        resultados.push(await emitirUma(
+          supabase, molde, cob, cfg ?? {}, usuario, seco, operador || null, avulsa,
+          typeof body?.observacao === "string" ? body.observacao : null,
+        ));
       }
 
       // "Já estava emitida" não é emissão nem falha: contá-la como emitida faria a

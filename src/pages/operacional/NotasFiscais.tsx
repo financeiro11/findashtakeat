@@ -36,6 +36,7 @@ import { comValorExato } from "@/components/ValorExato";
 import {
   FileText, RefreshCw, Loader2, Search, FileCode2, AlertTriangle,
   ChevronLeft, ChevronRight, CheckCircle2, Send, Info, Zap, Layers, Square,
+  FileClock, MessageSquareText,
 } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import NotasFiscaisLog from "./NotasFiscaisLog";
@@ -43,6 +44,7 @@ import RecusasATratar from "@/components/notas/RecusasATratar";
 import NotasFiscaisAuditoria from "./NotasFiscaisAuditoria";
 import {
   SITUACOES, motivoBloqueio, motivoCurto, podeEmitir, exigeAvulsa, resumoLote,
+  reguaDaLinha, pagaContraNota, exigeAntesDoPagamento,
   xmlAindaVale, formatarDoc, statusAsaas,
   linkPortalNacional, chaveEmBlocos,
   somarBloco, precisaEsperarOLote, tetoDoDiaAtingido,
@@ -133,6 +135,27 @@ export default function NotasFiscais() {
    * números são diferentes de propósito e por muito: em agosto, 1.989 contra
    * 1.004. Quem oferece o botão de massa é a fila. */
   const [filaResumo, setFilaResumo] = useState<{ cobrancas: number; valor: number } | null>(null);
+  /* OS CLIENTES QUE PAGAM CONTRA NOTA — os documentos, não os nomes.
+   *
+   * São quatro hoje (Banestes, Gojuice, New Bowling, Menu Beach), e a lista veio
+   * da foto do `invoiceSettings` que o Asaas tinha antes do desligamento de
+   * 01/09/2026. Fica em `Set` porque a régua é consultada uma vez por linha
+   * renderizada e o mês tem 3.600. */
+  const [docsAntes, setDocsAntes] = useState<Set<string>>(new Set());
+  /* O TEXTO QUE VAI DENTRO DA NOTA, e ele nasce vazio a cada emissão.
+   *
+   * Mesmo raciocínio da chave da avulsa: observação é do ATO. Lembrar a de
+   * ontem faria "referente a agosto/2026" entrar numa nota de outubro sem
+   * ninguém reler — e o corpo da NFS-e não se corrige depois. */
+  const [observacao, setObservacao] = useState("");
+  /* QUANTAS NOTAS A ESTEIRA EMITIU NO PERÍODO EM FOCO.
+   *
+   * Número diferente do `emitida_omie` do resumo, e a diferença não é detalhe: o
+   * resumo conta COBRANÇAS DESTE MÊS que já têm nota; este conta NOTAS QUE
+   * SAÍRAM neste mês, de qualquer competência. Em 02/09/2026 os dois eram 1 e
+   * 153 — a esteira estava drenando janeiro e fevereiro, e o painel só sabia
+   * dizer o primeiro. Quem olhou concluiu que a máquina tinha parado. */
+  const [emitidasNoMes, setEmitidasNoMes] = useState<{ notas: number; valor: number } | null>(null);
 
   const periodo = useMemo(() => {
     const ult = new Date(ano, mes + 1, 0).getDate();
@@ -152,6 +175,10 @@ export default function NotasFiscais() {
   const carregar = useCallback(async () => {
     setCarregando(true);
     setSel(new Set());
+    // A observação é do ATO que acabou de acontecer. Deixá-la no campo faria o
+    // próximo lote herdar um texto que ninguém releu — e o corpo da NFS-e não
+    // se corrige depois.
+    setObservacao("");
     try {
       const { data, error } = await sb.rpc("notas_fiscais_painel_json", {
         p_de: periodo.de, p_ate: periodo.ate,
@@ -176,6 +203,22 @@ export default function NotasFiscais() {
       const { data: fr } = await sb.rpc("notas_fiscais_fila_resumo");
       const linha = Array.isArray(fr) ? fr[0] : fr;
       setFilaResumo(linha ? { cobrancas: Number(linha.cobrancas ?? 0), valor: Number(linha.valor ?? 0) } : null);
+
+      /* A lista dos que pagam contra nota. Quatro linhas; ler junto com o painel
+         é mais barato do que qualquer cache, e garante que a régua da tela e a
+         do banco estejam falando do mesmo conjunto no mesmo instante. */
+      const { data: antes } = await sb
+        .from("nf_nota_antes_do_pagamento").select("doc").eq("ativo", true);
+      setDocsAntes(new Set((antes ?? []).map((a: any) => String(a.doc))));
+
+      /* O trabalho DO MÊS, que não sai das linhas da tela: as linhas são as
+         cobranças da competência, e as notas que saíram este mês são de outras
+         competências (o backlog). Só o banco sabe cruzar isso. */
+      const { data: em } = await sb.rpc("notas_fiscais_emitidas_no_periodo", {
+        p_de: periodo.de, p_ate: periodo.ate,
+      });
+      const le = Array.isArray(em) ? em[0] : em;
+      setEmitidasNoMes(le ? { notas: Number(le.notas ?? 0), valor: Number(le.valor ?? 0) } : null);
     } catch (e: any) {
       toast.error("Não foi possível carregar o período.", { description: e?.message });
     } finally {
@@ -221,14 +264,23 @@ export default function NotasFiscais() {
     });
   }, [linhas, busca, filtro]);
 
-  const lote = useMemo(() => resumoLote(linhas, sel, { avulsa }), [linhas, sel, avulsa]);
+  /** A régua desta linha: `avulsa` é do lote, `antesDoPagamento` é do cliente. */
+  const regua = useCallback(
+    (l: { cnpj_cpf?: string | null }) => reguaDaLinha(l, { avulsa, docsAntesDoPagamento: docsAntes }),
+    [avulsa, docsAntes],
+  );
+
+  const lote = useMemo(
+    () => resumoLote(linhas, sel, { avulsa, docsAntesDoPagamento: docsAntes }),
+    [linhas, sel, avulsa, docsAntes],
+  );
 
   const alternar = (id: string) => {
     setSel((s) => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
   };
   /** Marca só o que dá para emitir — marcar o bloqueado seria promessa falsa. */
   const marcarEmitiveis = () =>
-    setSel(new Set(visiveis.filter((l) => podeEmitir(l, { avulsa })).map((l) => l.id_asaas)));
+    setSel(new Set(visiveis.filter((l) => podeEmitir(l, regua(l))).map((l) => l.id_asaas)));
 
   /**
    * DESLIGAR A CHAVE DESMARCA O QUE SÓ ELA DEIXAVA MARCAR.
@@ -241,13 +293,18 @@ export default function NotasFiscais() {
     setAvulsa(ligada);
     if (!ligada) {
       setSel((s) => new Set(
-        linhas.filter((l) => s.has(l.id_asaas) && podeEmitir(l)).map((l) => l.id_asaas),
+        linhas
+          // A régua do cliente que paga contra nota NÃO depende desta chave, e
+          // por isso continua valendo aqui: desligar a avulsa não pode desmarcar
+          // o Banestes, que nunca dependeu dela.
+          .filter((l) => s.has(l.id_asaas) && podeEmitir(l, reguaDaLinha(l, { docsAntesDoPagamento: docsAntes })))
+          .map((l) => l.id_asaas),
       ));
     }
   };
 
   const emitir = async () => {
-    const escolhidas = linhas.filter((l) => sel.has(l.id_asaas)).filter((l) => podeEmitir(l, { avulsa }));
+    const escolhidas = linhas.filter((l) => sel.has(l.id_asaas)).filter((l) => podeEmitir(l, regua(l)));
     const ids = escolhidas.map((l) => l.id_asaas);
     if (!ids.length) return;
     const plural = ids.length > 1;
@@ -256,13 +313,26 @@ export default function NotasFiscais() {
      * liquidou" são dois pedidos diferentes, e quem clica tem de saber qual dos
      * dois está fazendo antes de clicar. */
     const aviso =
-      `Emitir ${ids.length} nota${plural ? "s" : ""} fiscal${plural ? "is" : ""} no Omie ` +
+      `Emitir ${ids.length} ${plural ? "notas fiscais" : "nota fiscal"} no Omie ` +
       `(${brlStr(lote.valor)})?\n\n` +
       (lote.confirmadas
         ? `ATENÇÃO — ${lote.confirmadas} dela${lote.confirmadas > 1 ? "s" : ""} (${brlStr(lote.valorConfirmadas)}) ` +
           `${lote.confirmadas > 1 ? "são de cobranças CONFIRMADAS" : "é de cobrança CONFIRMADA"}: ` +
           `pagamento autorizado cuja liquidação ainda não caiu na conta. Se não liquidar, a nota vira imposto ` +
           `sobre receita que não existiu.\n\n`
+        : "") +
+      /* A régua mais larga das três precisa dizer o próprio nome em voz alta.
+       * "Confirmada" e "pendente" são riscos de naturezas diferentes: na
+       * primeira o pagamento foi autorizado e falta liquidar; na segunda não há
+       * pagamento nenhum, e a nota está saindo justamente para que ele aconteça. */
+      (lote.antesDoPagamento
+        ? `${lote.antesDoPagamento} dela${lote.antesDoPagamento > 1 ? "s" : ""} ` +
+          `(${brlStr(lote.valorAntesDoPagamento)}) ${lote.antesDoPagamento > 1 ? "saem" : "sai"} ` +
+          `ANTES DO PAGAMENTO, porque ${lote.antesDoPagamento > 1 ? "esses clientes precisam" : "esse cliente precisa"} ` +
+          `da nota para pagar. Está na lista de Parametrização, com o motivo escrito.\n\n`
+        : "") +
+      (observacao.trim()
+        ? `O corpo da nota vai levar: "${observacao.trim()}"\n\n`
         : "") +
       `Isto cria a Ordem de Serviço e fatura, o que emite a NFS-e de verdade. ` +
       `Nota emitida não se apaga — cancela-se, com prazo e justificativa.`;
@@ -275,7 +345,9 @@ export default function NotasFiscais() {
         // decisão desta chamada, e o servidor confere a régua de novo do lado de
         // lá (ver `bloqueioDeEmissao` na edge function). A tela explica; ela não
         // é a guarda.
-        body: { action: "emitir", ids, avulsa },
+        // `antes_pagamento` NÃO viaja: o servidor o resolve sozinho contra a
+        // lista, e é por isso que ele não é uma chave que a tela possa ligar.
+        body: { action: "emitir", ids, avulsa, observacao: observacao.trim() || null },
       });
       if (error) throw error;
       if (data?.erro) throw new Error(data.erro);
@@ -328,6 +400,92 @@ export default function NotasFiscais() {
       await carregar();
     } catch (e: any) {
       toast.error("Falha na emissão.", { description: e?.message });
+    } finally {
+      setEmitindo(false);
+    }
+  };
+
+  /* --------------------------- refazer a nota ---------------------------- */
+  /**
+   * Cancela a nota do Asaas e emite a certa pelo Omie, num ato só.
+   *
+   * A JUSTIFICATIVA É PEDIDA AQUI, e não é burocracia: o cancelamento de NFS-e é
+   * um ato que a prefeitura registra COM MOTIVO. Quem vai ter de escrever a razão
+   * lá precisa tê-la escrito aqui — senão o Hub vira o lugar onde a nota some sem
+   * explicação, e é o Hub que a contabilidade vai abrir daqui a seis meses.
+   *
+   * A observação é separada da justificativa de propósito: uma diz por que a nota
+   * VELHA morreu (fica no diário), a outra é o texto que vai DENTRO da nota nova
+   * (o cliente lê). Um campo só faria as duas coisas mal.
+   */
+  const refazer = async (l: LinhaNota) => {
+    const justificativa = window.prompt(
+      `Refazer a nota ${l.nf_asaas_numero ?? ""} de ${l.cliente_asaas ?? l.id_asaas}?\n\n` +
+      "Isto CANCELA a nota no Asaas e emite outra pelo Omie, com o valor que a cobrança tem agora.\n" +
+      "Antes de continuar, corrija o valor no Asaas se for o caso — o cancelamento não tem volta.\n\n" +
+      "Por que esta nota está sendo cancelada?",
+      "",
+    );
+    if (justificativa === null) return;
+    if (!justificativa.trim()) {
+      toast.error("Sem justificativa não dá para cancelar.", {
+        description: "É o motivo que a prefeitura registra no cancelamento.",
+      });
+      return;
+    }
+    const obs = window.prompt(
+      "O que escrever no corpo da NOTA NOVA? (opcional)\n\n" +
+      "Este texto sai na NFS-e, depois da descrição da cobrança — é o que o cliente lê.\n" +
+      "Ex.: Referente a agosto/2026",
+      "",
+    );
+    if (obs === null) return;
+
+    setEmitindo(true);
+    try {
+      const { data, error } = await sb.functions.invoke("omie-nfse-sync", {
+        body: { action: "refazer", id: l.id_asaas, justificativa: justificativa.trim(), observacao: obs.trim() || null },
+      });
+      if (error) throw error;
+      if (data?.erro) throw new Error(data.erro);
+
+      const canc = (data.canceladas ?? []).length;
+      /* Os dois desfechos precisam de frases diferentes. "Cancelou e despachou" é
+       * o caminho feliz; "cancelou e NÃO despachou" é o caso em que a nota velha
+       * já morreu e a nova não saiu — quem lê isso precisa saber que a cobrança
+       * está agora SEM NOTA NENHUMA, e não achar que deu tudo certo. */
+      if (data.despachada) {
+        toast.success(
+          canc ? `${canc} nota cancelada no Asaas · nova nota despachada` : "Nova nota despachada",
+          {
+            description: `Valor de agora: ${brlStr(Number(data.valor_agora ?? l.valor))}. ` +
+              "O Omie leva alguns minutos — clique em \"Atualizar do Omie\" para ver o número.",
+            duration: 15000,
+          },
+        );
+      } else if (data.cancelamento_em_andamento) {
+        /* O DESFECHO MAIS COMUM, e ele não é falha. O Asaas responde 200 ao
+         * cancelamento e passa a nota para `PROCESSING_CANCELLATION`: o pedido
+         * foi à prefeitura e ela ainda não respondeu. Enquanto isso a nota
+         * EXISTE, e por isso a porta recusa emitir a substituta. Chamar isso de
+         * erro mandaria a pessoa procurar defeito onde só há espera. */
+        toast.info("Cancelamento a caminho da prefeitura.", {
+          description:
+            `A nota ${canc ? "foi cancelada no Asaas e está" : "está"} em processamento ` +
+            `(${data.cancelamento_em_andamento}). A nova só pode sair quando a prefeitura confirmar — ` +
+            "costuma levar alguns minutos. Volte, atualize a tela e emita a linha pela lista.",
+          duration: 25000,
+        });
+      } else {
+        toast.warning("A nota velha foi cancelada, mas a nova NÃO saiu.", {
+          description: (data.emissao?.pulada ?? data.emissao?.erro ??
+            "A cobrança está sem nota agora.") + " Confira e emita pela lista.",
+          duration: 25000,
+        });
+      }
+      await carregar();
+    } catch (e: any) {
+      toast.error("Não deu para refazer a nota.", { description: e?.message, duration: 20000 });
     } finally {
       setEmitindo(false);
     }
@@ -470,10 +628,50 @@ export default function NotasFiscais() {
 
   /* `t` é o hover — opcional, e por isso o tipo vem escrito: num array de
      literais o TypeScript infere a união e reclamaria de `k.t` nos que não têm. */
-  const kpis: { r: string; v: string; s: string; tom: string; t?: string }[] = resumo ? [
-    { r: "Cobranças", v: resumo.cobrancas.toLocaleString("pt-BR"), s: brlStr(resumo.valor_total), tom: "neutro" },
-    { r: "Sem nota", v: resumo.falta.toLocaleString("pt-BR"), s: brlStr(resumo.valor_falta), tom: resumo.falta ? "erro" : "ok" },
-    { r: "Emitida no Omie", v: resumo.emitida_omie.toLocaleString("pt-BR"), s: "NFS-e autorizada", tom: "ok" },
+  /* `s` é ReactNode e não string porque os valores em dinheiro daqui são
+     ARREDONDADOS (`brlStr` corta os centavos para caber no card). A convenção do
+     projeto é que todo valor abreviado carregue o número cheio no hover, e quem
+     faz isso é o `brl`, que devolve um nó com `title`. Escrito como `string`,
+     este campo obrigava a usar a variante muda. */
+  const kpis: { r: string; v: string; s: React.ReactNode; tom: string; t?: string }[] = resumo ? [
+    { r: "Cobranças", v: resumo.cobrancas.toLocaleString("pt-BR"), s: brl(resumo.valor_total), tom: "neutro" },
+    { r: "Sem nota", v: resumo.falta.toLocaleString("pt-BR"), s: brl(resumo.valor_falta), tom: resumo.falta ? "erro" : "ok" },
+    /* O CARD "EMITIDA NO OMIE" SAIU DAQUI, e a decisão é de 02/09/2026.
+     *
+     * Ele contava as cobranças DESTA COMPETÊNCIA que já têm nota nossa. O número
+     * é verdadeiro e continua existindo — mas, como CARD, ele mentia por
+     * contexto: a esteira serve a fila da mais velha para a mais nova, então num
+     * dia de 97 notas emitidas o card mostrava "1", ao lado do rótulo "NFS-e
+     * autorizada". Quem olhava concluía que a emissão tinha parado, e concluía
+     * isso todo dia enquanto o backlog de janeiro não drenasse.
+     *
+     * Um número que exige três frases de contexto para não assustar não é um
+     * KPI: é uma nota de rodapé com corpo 20. A informação não se perdeu — o
+     * chip de filtro "Emitida no Omie" logo abaixo mostra as mesmas linhas, e a
+     * aba Auditoria mede a cobertura do mês com os baldes todos. O que saiu foi
+     * o destaque, não o dado.
+     *
+     * O que ficou no lugar responde a pergunta que as pessoas realmente fazem
+     * ao abrir esta tela: a máquina está andando? */
+    {
+      r: "Emitidas no mês",
+      v: (emitidasNoMes?.notas ?? 0).toLocaleString("pt-BR"),
+      /* O VALOR SOMADO VEM COM PESO, e não como legenda.
+         É o número que responde "quanto já foi emitido até agora" sem abrir o
+         Omie nem o emissor nacional — a pergunta que trouxe este card. Em corpo
+         de rodapé ele existia e ninguém via. O `brl` (e não `brlStr`) põe o
+         valor cheio, com centavos, no hover. */
+      s: emitidasNoMes ? (
+        <>
+          <span className="font-semibold text-foreground">{brl(emitidasNoMes.valor)}</span>
+          {" · todas as competências"}
+        </>
+      ) : "—",
+      tom: "ok",
+      t: "Notas que a esteira emitiu DURANTE este mês, seja qual for a competência da cobrança, "
+        + "com o valor somado. A fila é servida da mais antiga para a mais nova, então boa parte "
+        + "destas notas é de meses anteriores — é o backlog sendo drenado.",
+    },
     {
       r: "Emitida no Asaas",
       v: resumo.emitida_asaas.toLocaleString("pt-BR"),
@@ -768,6 +966,19 @@ export default function NotasFiscais() {
                 {lote.confirmadas} ainda não liquidada{lote.confirmadas > 1 ? "s" : ""} · {brl(lote.valorConfirmadas)}
               </span>
             )}
+            {/* A régua mais larga das três, e a que não tem chave para ligar:
+                ela vale porque o cliente está numa lista. O número aqui é o que
+                impede alguém de mandar 40 notas sem reparar que uma delas é de
+                cobrança ainda não paga. */}
+            {lote.antesDoPagamento > 0 && (
+              <span
+                className="ml-2 font-medium text-sky-700 dark:text-sky-400"
+                title="Clientes que precisam da NFS-e para conseguir pagar. A nota sai antes da cobrança ser quitada, por decisão registrada em Parametrização."
+              >
+                <FileClock className="mr-1 inline h-3 w-3" />
+                {lote.antesDoPagamento} antes do pagamento · {brl(lote.valorAntesDoPagamento)}
+              </span>
+            )}
             {lote.bloqueadas > 0 && (
               <span className="ml-2 text-muted-foreground" title={lote.motivos.map(([m, n]) => `${n}× ${m}`).join("\n")}>
                 <AlertTriangle className="mr-1 inline h-3 w-3" />
@@ -775,6 +986,22 @@ export default function NotasFiscais() {
               </span>
             )}
           </div>
+          {/* A OBSERVAÇÃO VAI DENTRO DA NOTA, e por isso está aqui e não numa
+              tela de configuração: ela é do ato. O texto entra no `cDescServ`,
+              que é o corpo da NFS-e — o que o cliente lê e o que fica no XML da
+              prefeitura. Quando não cabe nos 200 caracteres do Omie, quem cede é
+              a descrição da cobrança, não isto. */}
+          <label className="flex items-center gap-1.5 text-xs text-muted-foreground">
+            <MessageSquareText className="h-3.5 w-3.5" />
+            <input
+              value={observacao}
+              onChange={(e) => setObservacao(e.target.value)}
+              placeholder="Observação na nota (ex.: referente a agosto/2026)"
+              maxLength={160}
+              title="Vai no corpo da NFS-e, depois da descrição da cobrança. Deixe vazio para não escrever nada."
+              className="w-64 rounded border border-border bg-background px-2 py-1 text-xs"
+            />
+          </label>
           <button onClick={() => setSel(new Set())} className="ghost-btn rounded border border-border px-2 py-1 text-xs">
             Limpar
           </button>
@@ -826,16 +1053,22 @@ export default function NotasFiscais() {
             )}
             {!carregando && visiveis.map((l) => {
               const s = SITUACOES[l.situacao];
-              const bloqueio = motivoBloqueio(l, { avulsa });
+              const bloqueio = motivoBloqueio(l, regua(l));
               // Esta linha só está marcável porque a chave está ligada? É o que o
               // selo âmbar mais abaixo anuncia, e o que muda a cor da caixa.
               const soAvulsa = exigeAvulsa(l);
+              /* E esta só está marcável porque o cliente paga contra nota? O selo
+                 é sempre visível (ao contrário do da avulsa, que depende da
+                 chave): não há chave para ligar, então sem o selo a caixa
+                 acenderia sozinha no meio de uma coluna de caixas apagadas. */
+              const contraNota = pagaContraNota(l, docsAntes) && exigeAntesDoPagamento(l);
               return (
                 <tr
                   key={l.id_asaas}
                   className={cn(
                     "border-b border-border/50 last:border-0 hover:bg-muted/30",
                     avulsa && soAvulsa && "bg-amber-500/[0.04]",
+                    contraNota && "bg-sky-500/[0.05]",
                   )}
                 >
                   <td className="p-2">
@@ -846,13 +1079,17 @@ export default function NotasFiscais() {
                       disabled={!!bloqueio}
                       title={
                         bloqueio ??
-                        (soAvulsa
+                        (contraNota
+                          ? "Selecionar para emitir ANTES DO PAGAMENTO — este cliente precisa da nota para pagar."
+                          : soAvulsa
                           ? "Selecionar para emitir como AVULSA — a cobrança ainda não liquidou."
                           : "Selecionar para emitir")
                       }
                       className={cn(
                         "h-3.5 w-3.5 disabled:opacity-30",
-                        soAvulsa && !bloqueio
+                        contraNota && !bloqueio
+                          ? "accent-sky-600"
+                          : soAvulsa && !bloqueio
                           ? "accent-amber-600"
                           : "accent-[hsl(var(--primary))]",
                       )}
@@ -889,6 +1126,15 @@ export default function NotasFiscais() {
                       >
                         <Zap className="h-2.5 w-2.5" />
                         avulsa
+                      </span>
+                    )}
+                    {contraNota && (
+                      <span
+                        className="ml-1 mt-0.5 inline-flex items-center gap-0.5 whitespace-nowrap rounded border border-sky-500/30 bg-sky-500/10 px-1.5 py-0.5 text-[10px] font-medium text-sky-700 dark:text-sky-400"
+                        title="Este cliente precisa da NFS-e para conseguir pagar — a nota sai antes da cobrança ser quitada. Está na lista de Parametrização, com o motivo registrado."
+                      >
+                        <FileClock className="h-2.5 w-2.5" />
+                        nota antes do pagamento
                       </span>
                     )}
                   </td>
@@ -946,7 +1192,38 @@ export default function NotasFiscais() {
                         )}
                       </span>
                     ) : l.nf_asaas_numero ? (
-                      <span className="num text-muted-foreground" title="Nota emitida pelo Asaas">{l.nf_asaas_numero}</span>
+                      /* O NÚMERO SOZINHO MENTE QUANDO A NOTA NÃO ESTÁ MAIS DE PÉ.
+                         Esta coluna imprimia `nf_asaas_numero` sempre que ele
+                         existisse, sem olhar o status — então uma nota cancelada,
+                         em cancelamento ou em erro aparecia idêntica a uma
+                         autorizada, ao lado de um selo que dizia o contrário. Foi
+                         o que confundiu no primeiro "Refazer" real (02/09/2026):
+                         a linha dizia "Não exige" com o 17579 impresso ao lado, e
+                         não havia como saber, olhando, que aquela nota estava
+                         sendo cancelada. Riscado + motivo no hover resolve sem
+                         esconder o número, que é o que se procura no Asaas. */
+                      (() => {
+                        const st = String(l.nf_asaas_status ?? "").toUpperCase();
+                        const viva = st === "AUTHORIZED";
+                        const recado: Record<string, string> = {
+                          PROCESSING_CANCELLATION:
+                            "Cancelamento pedido, aguardando a prefeitura confirmar. Enquanto isso a nota ainda existe no portal — a emissão da substituta fica barrada.",
+                          CANCELLED: "Nota cancelada — não existe mais no portal nacional.",
+                          CANCELED: "Nota cancelada — não existe mais no portal nacional.",
+                          ERROR: "O Asaas tentou emitir e a prefeitura recusou. Não há nota válida.",
+                          SCHEDULED: "Agendada pelo Asaas, ainda não emitida.",
+                        };
+                        return (
+                          <span
+                            className={cn("num", viva ? "text-muted-foreground" : "text-muted-foreground/60 line-through")}
+                            title={viva
+                              ? "Nota emitida pelo Asaas"
+                              : `${recado[st] ?? `Nota do Asaas em ${st || "status desconhecido"}`}`}
+                          >
+                            {l.nf_asaas_numero}
+                          </span>
+                        );
+                      })()
                     ) : l.n_cod_os ? (
                       <span className="num text-[11px] text-muted-foreground" title="Ordem de serviço no Omie, ainda sem nota">
                         OS {l.n_cod_os}
@@ -972,6 +1249,25 @@ export default function NotasFiscais() {
                         <AlertTriangle className="mt-px h-2.5 w-2.5 shrink-0" />
                         <span className="line-clamp-2">{motivoCurto(l.nfse_mensagem)}</span>
                       </div>
+                    )}
+                    {/* REFAZER só aparece onde ele funciona: nota viva do ASAAS.
+                        A nota emitida pelo Omie não se cancela por API — não
+                        existe `CancelarOS` nem `servicos/nfse/`, foi varrido
+                        método a método —, então oferecer o botão ali seria
+                        prometer o que o servidor vai recusar. */}
+                    {l.situacao === "emitida_asaas" && (
+                      <button
+                        onClick={() => refazer(l)}
+                        disabled={emitindo}
+                        className="ghost-btn mt-1 flex items-center gap-1 rounded border border-border px-1.5 py-0.5 text-[10px] text-muted-foreground disabled:opacity-40"
+                        title={
+                          "Cancela esta nota no Asaas e emite outra pelo Omie, com o valor que a cobrança tem agora.\n" +
+                          "Use quando a nota saiu errada. Corrija o valor no Asaas ANTES — o cancelamento não tem volta."
+                        }
+                      >
+                        <RefreshCw className="h-2.5 w-2.5" />
+                        Refazer a nota
+                      </button>
                     )}
                   </td>
                 </tr>

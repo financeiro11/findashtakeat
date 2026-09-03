@@ -314,6 +314,81 @@ export function casarEmail(
   };
 }
 
+/* ----------------------------------------------- o teto contra a âncora */
+
+/** O que o Google diz do preço de hoje, na própria tela de busca. */
+export type VereditoGoogle = "baixo" | "tipico" | "alto";
+
+export const VEREDITO_GOOGLE_LABEL: Record<VereditoGoogle, string> = {
+  baixo: "barato para esta rota",
+  tipico: "no preço de sempre",
+  alto: "caro para esta rota",
+};
+
+export interface LeituraDoTeto {
+  /** Fração abaixo da âncora: 0.21 = o teto é 21% menor que o preço de hoje.
+   *  Negativo quer dizer que o teto está ACIMA do preço de hoje. */
+  folga: number | null;
+  /** `true` quando o teto dispararia aviso já no primeiro preço. */
+  dispara_agora: boolean;
+  frase: string;
+}
+
+/**
+ * O que o teto digitado SIGNIFICA — que é diferente de sugerir um teto.
+ *
+ * Com um preço só não há o que sugerir: um ponto não é curva, e um número
+ * inventado a partir dele teria a mesma autoridade visual de um número medido.
+ * O que dá para fazer com honestidade é traduzir: "R$ 3.000 é 21% abaixo dos
+ * R$ 3.793 que o Google pede hoje". Aí quem decide decide sabendo.
+ *
+ * O CASO QUE MAIS IMPORTA É O TETO ACIMA DO PREÇO DE HOJE. Ele não é
+ * "generoso": ele torna o aviso inútil, porque dispara no primeiro ponto e
+ * confirma apenas que o preço de hoje é o preço de hoje. Quem cadastra não
+ * percebe isso sozinho — o número parece razoável — e descobre semanas depois,
+ * quando o sino tocou uma vez e nunca mais.
+ */
+export function lerTeto(
+  teto: number,
+  ancora: number | null | undefined,
+  google?: VereditoGoogle | null,
+): LeituraDoTeto {
+  const contexto = google ? ` O Google classifica hoje como ${VEREDITO_GOOGLE_LABEL[google]}.` : "";
+
+  if (!(teto > 0)) return { folga: null, dispara_agora: false, frase: "Defina o teto para o Hub saber quando avisar." };
+  if (!(Number(ancora) > 0)) {
+    return {
+      folga: null, dispara_agora: false,
+      frase: "Sem um preço de referência, o teto é um palpite: informe quanto o Google está pedindo agora." + contexto,
+    };
+  }
+
+  const a = Number(ancora);
+  const folga = (a - teto) / a;
+  const pct = Math.round(Math.abs(folga) * 100);
+
+  if (teto >= a) {
+    return {
+      folga, dispara_agora: true,
+      frase: `Seu teto está ${pct === 0 ? "no mesmo valor do" : `${pct}% acima do`} preço de hoje — o aviso dispararia ` +
+        "na primeira leitura e não diria nada. Para o sino significar algo, o teto precisa ficar abaixo do preço atual." + contexto,
+    };
+  }
+
+  /* As faixas são grosseiras de propósito — são conselho, não veredito. O
+     veredito de verdade vem depois, do `sugerirTeto` sobre a curva medida. */
+  const conselho = folga < 0.05
+    ? " É pouca margem: um teto colado no preço de hoje avisa por variação normal."
+    : folga > 0.4
+      ? " É bastante coisa: um teto tão abaixo pode nunca ser alcançado nesta janela."
+      : "";
+
+  return {
+    folga, dispara_agora: false,
+    frase: `Seu teto está ${pct}% abaixo do preço de hoje.${conselho}${contexto}`,
+  };
+}
+
 /* ------------------------------------------------------------- a decisão */
 
 /** Quanto falta (em dias) para a ida. Negativo = já passou. */

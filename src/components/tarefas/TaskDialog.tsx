@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { GripVertical, Plus, Trash2 } from "lucide-react";
+import { Check, GripVertical, Link2, Plus, Share2, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -12,6 +12,8 @@ import {
 } from "@/components/ui/dialog";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
+import { compartilharNativo, copiar, temCompartilhamentoNativo } from "@/lib/compartilhar";
+import { mensagemDaTarefa, urlDaTarefa } from "@/lib/tarefas/link";
 import { AREAS, NATUREZAS } from "@/lib/tarefas/classificacao";
 import {
   CADENCIA_PADRAO, Cadencia, ajustarPrazoACadencia, cadenciaValida, deIso, descreverCadencia,
@@ -116,6 +118,9 @@ export function TaskDialog({ columns, open, tarefa, defaultStatus, onClose, onSa
   const [grabId, setGrabId] = useState<string | null>(null);
   const [dragId, setDragId] = useState<string | null>(null);
   const [overId, setOverId] = useState<string | null>(null);
+  /* O ✓ do "Copiar link" por um instante: o toast some no canto e o botão é onde a
+     pessoa ainda está olhando. */
+  const [linkCopiado, setLinkCopiado] = useState(false);
 
   useEffect(() => {
     if (open) {
@@ -139,6 +144,7 @@ export function TaskDialog({ columns, open, tarefa, defaultStatus, onClose, onSa
       setGrabId(null);
       setDragId(null);
       setOverId(null);
+      setLinkCopiado(false);
     }
   }, [open, tarefa, defaultStatus]);
 
@@ -234,6 +240,25 @@ export function TaskDialog({ columns, open, tarefa, defaultStatus, onClose, onSa
   const subsProgress = subtarefas.length ? Math.round((subsDone / subtarefas.length) * 100) : 0;
 
   const isEdit = !!tarefa;
+
+  /* Mandar a demanda para alguém. Só em edição, porque o endereço é o id da linha e
+     tarefa que ainda não foi criada não tem id — não há o que mandar.
+
+     Copia o TÍTULO junto com o link: colado no WhatsApp, um endereço terminado em UUID
+     não diz do que se trata, e quem recebe abre para descobrir. */
+  const copiarLink = async () => {
+    if (!tarefa) return;
+    const url = urlDaTarefa(tarefa.id);
+    /* `tarefa.titulo`, não o campo em edição: o recado tem que descrever o que está
+       gravado no quadro, e não um título que a pessoa ainda pode cancelar. */
+    if (!(await copiar(mensagemDaTarefa(tarefa)))) {
+      toast.error("O navegador bloqueou a cópia", { description: url });
+      return;
+    }
+    setLinkCopiado(true);
+    toast.success("Link copiado, com o título junto", { description: url });
+    setTimeout(() => setLinkCopiado(false), 1800);
+  };
 
   const canSave = !!titulo.trim() && !!responsavel && !!prazoEfetivo;
   const submit = () => {
@@ -581,6 +606,29 @@ export function TaskDialog({ columns, open, tarefa, defaultStatus, onClose, onSa
           </div>
         </div>
         <DialogFooter>
+          {isEdit && tarefa && (
+            <div className="flex items-center gap-1.5 sm:mr-auto">
+              <Button variant="outline" onClick={copiarLink} className="gap-1.5" title={urlDaTarefa(tarefa.id)}>
+                {linkCopiado
+                  ? <Check className="h-3.5 w-3.5 text-emerald-600" />
+                  : <Link2 className="h-3.5 w-3.5" />}
+                Copiar link
+              </Button>
+              {/* A folha do sistema (WhatsApp, e-mail) não existe em todo navegador —
+                  onde não existir, o botão nem aparece e sobra o "Copiar link". */}
+              {temCompartilhamentoNativo() && (
+                <Button
+                  variant="outline"
+                  className="w-10 shrink-0 p-0"
+                  onClick={() => compartilharNativo(tarefa.titulo, urlDaTarefa(tarefa.id))}
+                  title="Enviar por WhatsApp, e-mail…"
+                  aria-label="Enviar por WhatsApp, e-mail…"
+                >
+                  <Share2 className="h-3.5 w-3.5" />
+                </Button>
+              )}
+            </div>
+          )}
           {isEdit ? (
             <>
               <Button variant="outline" onClick={onClose}>Fechar</Button>

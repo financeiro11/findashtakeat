@@ -13,6 +13,11 @@ import { invocar } from "@/lib/erroEdge";
 import { comValorExato } from "@/components/ValorExato";
 import { db, fmtBRL as fmtBRLStr, fmtData, parseValor } from "./lib";
 import { aeroporto, diasAte, linkGoogleFlights, rotaTexto } from "@/lib/passagens";
+/* CAMADA 2 — a MESMA régua de teto do Radar, não uma segunda. Duas divergiriam
+   no primeiro ajuste, e o sintoma seria as duas telas discordando sobre o que é
+   um teto bom. `sugerirTeto` é determinística e testada; a curva de passagens
+   chega no formato dela por `passagens_curva_diaria`. */
+import { sugerirTeto, DIAS_PARA_SUGERIR, type PontoHistorico } from "@/lib/radarPrecos";
 import { NovaViagemDialog, type ViagemRow } from "./NovaViagemDialog";
 
 /* Valor arredondado na tela, número cheio no hover — convenção do Hub. */
@@ -51,6 +56,8 @@ export default function Passagens() {
   const [orfaos, setOrfaos] = useState<EmailOrfao[]>([]);
   const [aberto, setAberto] = useState<string | null>(null);
   const [curvas, setCurvas] = useState<Record<string, Ponto[]>>({});
+  /** A mesma curva agregada por dia, no formato que `sugerirTeto` consome. */
+  const [diarias, setDiarias] = useState<Record<string, PontoHistorico[]>>({});
   const [dialogAberto, setDialogAberto] = useState(false);
   const [editando, setEditando] = useState<ViagemRow | null>(null);
   const [lendo, setLendo] = useState(false);
@@ -88,10 +95,14 @@ export default function Passagens() {
     if (aberto === id) { setAberto(null); return; }
     setAberto(id);
     if (curvas[id]) return;
-    const { data } = await db.from("passagens_precos")
-      .select("preco, fonte, coletado_em").eq("viagem_id", id)
-      .order("coletado_em", { ascending: false }).limit(60);
+    const [{ data }, { data: diaria }] = await Promise.all([
+      db.from("passagens_precos")
+        .select("preco, fonte, coletado_em").eq("viagem_id", id)
+        .order("coletado_em", { ascending: false }).limit(60),
+      db.rpc("passagens_curva_diaria", { p_viagem_id: id, p_dias: 180 }),
+    ]);
     setCurvas((c) => ({ ...c, [id]: (data as Ponto[]) ?? [] }));
+    setDiarias((d) => ({ ...d, [id]: (diaria as PontoHistorico[]) ?? [] }));
   }
 
   async function lerCaixa() {
@@ -110,6 +121,7 @@ export default function Passagens() {
         toast.success(partes.join(" · "), { duration: 9000 });
       }
       setCurvas({});
+      setDiarias({});
       await load();
     } catch (e: any) {
       toast.error(`Não deu para ler a caixa: ${e.message ?? e}`);
@@ -131,6 +143,7 @@ export default function Passagens() {
       toast.success(r.avisou ? `Preço gravado — e virou aviso: ${r.motivo}.` : `Preço gravado. ${r.motivo}.`);
       setPrecoManual((p) => ({ ...p, [viagemId]: "" }));
       setCurvas((c) => { const n = { ...c }; delete n[viagemId]; return n; });
+      setDiarias((d) => { const n = { ...d }; delete n[viagemId]; return n; });
       await load();
     } catch (e: any) {
       toast.error(e.message ?? String(e));
@@ -222,6 +235,7 @@ export default function Passagens() {
       }));
       toast.success("E-mail atribuído — o preço entrou na curva da viagem.");
       setCurvas({});
+      setDiarias({});
       await load();
     } catch (e: any) {
       toast.error(e.message ?? String(e));
@@ -469,6 +483,40 @@ export default function Passagens() {
                         </Button>
                       </div>
                     )}
+
+                    {/* CAMADA 2 — o que a CURVA diz do teto, pela mesma função
+                        que o Radar usa. Mostra mesmo com poucos pontos, dizendo
+                        quantos são: aqui os preços chegam quando o Google
+                        resolve escrever (não 4x ao dia como no Radar), então
+                        exigir os 14 dias da função esconderia a leitura para
+                        sempre. Com cinco pontos ela ainda vale — desde que se
+                        saiba que são cinco. */}
+                    {(() => {
+                      const d = diarias[v.id];
+                      if (!d?.length) return null;
+                      const s = sugerirTeto(d, Number(v.teto));
+                      const VER: Record<string, { txt: string; cls: string }> = {
+                        abaixo_do_minimo: { txt: "abaixo de tudo o que já se viu — pode nunca disparar", cls: "text-amber-700 dark:text-amber-400" },
+                        apertado:         { txt: "apertado, mas alcançável", cls: "text-foreground" },
+                        bom:              { txt: "no lugar certo", cls: "text-emerald-700 dark:text-emerald-400" },
+                        folgado:          { txt: "folgado — vai disparar no preço de sempre", cls: "text-amber-700 dark:text-amber-400" },
+                      };
+                      const ver = s.veredito ? VER[s.veredito] : null;
+                      return (
+                        <div className="rounded-md border border-border bg-muted/40 p-2.5 text-[11.5px]">
+                          <span className="font-medium text-foreground">O que a curva diz do seu teto:</span>{" "}
+                          {ver && <span className={cn("font-medium", ver.cls)}>{ver.txt}</span>}
+                          <span className="text-muted-foreground">
+                            {ver ? " · " : ""}menor visto {fmtBRLStr(Number(s.minimo))} · típico {fmtBRLStr(Number(s.tipico))}
+                            {" · "}sugestão {fmtBRLStr(Number(s.teto))}
+                          </span>
+                          <div className="mt-0.5 text-muted-foreground/80">
+                            {s.dias} dia(s) medido(s)
+                            {!s.pode && ` — a partir de ${DIAS_PARA_SUGERIR} a leitura fica firme; até lá, é indício.`}
+                          </div>
+                        </div>
+                      );
+                    })()}
 
                     {!curvas[v.id] ? (
                       <Skeleton className="h-16 rounded" />

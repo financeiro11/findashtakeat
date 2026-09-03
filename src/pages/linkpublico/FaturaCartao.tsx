@@ -18,7 +18,7 @@ import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
-  Paperclip, Loader2, Check, Send, X, CreditCard,
+  Paperclip, Loader2, Check, Send, X, CreditCard, Clock, ChevronDown,
   AlertTriangle, Flag, Minus, MessageSquare, Search, ArrowUpDown, StickyNote,
 } from "lucide-react";
 import { toast } from "sonner";
@@ -42,7 +42,8 @@ export type ItemFatura = {
   valor: number;
   /** Anotação do FINANCEIRO — contexto, só leitura. Nunca vai para a caixa de texto. */
   nota_interna: string | null;
-  situacao: "ok" | "dispensado" | "pendente";
+  /** `aberto` = veio da fatura e a auditoria ainda não olhou. Aparece, dá para anexar, não cobra. */
+  situacao: "ok" | "dispensado" | "pendente" | "aberto";
   motivo: string | null;
   tem_comprovante: boolean;
   justificativa: string | null;
@@ -51,7 +52,19 @@ export type ItemFatura = {
   contestacao_texto: string | null;
 };
 
-type Mes = { competencia: string; label: string; total: number; itens: ItemFatura[] };
+/** O mês contra a competência anterior QUE ESTE CARTÃO TEM — `anterior` diz qual foi. */
+type Comparacao = {
+  anterior: string | null;
+  total: number;
+  total_anterior: number;
+  categorias: { categoria: string; total: number; anterior: number }[];
+};
+
+type Mes = {
+  competencia: string; label: string; total: number;
+  comparacao?: Comparacao | null;
+  itens: ItemFatura[];
+};
 
 type FaturaOk = {
   responsavel: string;
@@ -456,6 +469,8 @@ function MesBloco({ mes, ordem, achatado, token, digitos, onRefresh }: {
         {pendentes.length > 0 && <> · <strong className="font-medium text-foreground">{pendentes.length} esperando você</strong></>}
       </p>
 
+      <Comparativo comparacao={mes.comparacao} />
+
       <div className="mt-4 space-y-3">
         {lista.map((it, i) => (
           <div key={it.id_unico}>
@@ -470,6 +485,87 @@ function MesBloco({ mes, ordem, achatado, token, digitos, onRefresh }: {
           </div>
         ))}
       </div>
+    </section>
+  );
+}
+
+/* ================================================================== *
+ *  O mês contra o anterior, por categoria
+ * ================================================================== */
+
+/** "+R$ 1.850,00" / "−R$ 420,00". O sinal é o menos tipográfico, não o hífen. */
+const delta = (n: number) => `${n > 0 ? "+" : n < 0 ? "−" : ""}${brl(Math.abs(n))}`;
+
+/** Quanto variou, em %. `null` quando não havia base — aí a palavra é "novo", não "+∞%". */
+function pct(atual: number, antes: number): string | null {
+  if (!antes) return null;
+  return `${atual - antes > 0 ? "+" : "−"}${Math.abs(((atual - antes) / antes) * 100).toFixed(0)}%`;
+}
+
+const MOSTRA_DE_CARA = 4;
+
+function Comparativo({ comparacao }: { comparacao?: Comparacao | null }) {
+  const [tudo, setTudo] = useState(false);
+  // Sem mês anterior não há o que comparar — o primeiro mês do cartão não ganha bloco.
+  if (!comparacao?.anterior) return null;
+
+  const dif = comparacao.total - comparacao.total_anterior;
+  const linhas = (comparacao.categorias ?? [])
+    .filter((c) => Math.abs(c.total - c.anterior) >= 0.01);
+  if (!linhas.length) return null;
+
+  const visiveis = tudo ? linhas : linhas.slice(0, MOSTRA_DE_CARA);
+  const subiu = dif > 0;
+
+  return (
+    <section className="mt-4 rounded-lg border border-border bg-muted/25 px-3.5 py-3">
+      <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
+        <span className="eyebrow">vs {nomeDoMes(comparacao.anterior)}</span>
+        <span className="num text-[13px]">
+          {/* Em fatura de cartão, subir é o que chama atenção — mas sem alarme: o mês
+              pode ter subido por uma viagem aprovada. Cor no número, não na caixa. */}
+          <strong className="font-semibold" style={{ color: `hsl(var(--${subiu ? "neg" : "pos"}))` }}>
+            {delta(dif)}
+          </strong>
+          {pct(comparacao.total, comparacao.total_anterior) && (
+            <span className="ml-1.5 text-muted-foreground">
+              ({pct(comparacao.total, comparacao.total_anterior)})
+            </span>
+          )}
+        </span>
+      </div>
+
+      <ul className="mt-2.5 space-y-1.5">
+        {visiveis.map((c) => {
+          const d = c.total - c.anterior;
+          return (
+            <li key={c.categoria} className="flex items-baseline gap-2 text-[12px]">
+              <span className="min-w-0 flex-1 truncate">{c.categoria}</span>
+              <span className="num shrink-0 tabular-nums text-muted-foreground">{brl(c.total)}</span>
+              <span
+                className="num w-[92px] shrink-0 text-right tabular-nums"
+                style={{ color: `hsl(var(--${d > 0 ? "neg" : "pos"}))` }}
+              >
+                {delta(d)}
+              </span>
+              <span className="w-[52px] shrink-0 text-right text-[11px] text-muted-foreground">
+                {c.anterior === 0 ? "novo" : c.total === 0 ? "sumiu" : pct(c.total, c.anterior)}
+              </span>
+            </li>
+          );
+        })}
+      </ul>
+
+      {linhas.length > MOSTRA_DE_CARA && (
+        <button
+          type="button"
+          onClick={() => setTudo((v) => !v)}
+          className="mt-2.5 inline-flex items-center gap-1 text-[12px] font-medium text-muted-foreground hover:text-foreground"
+        >
+          <ChevronDown className={`h-3.5 w-3.5 transition-transform ${tudo ? "rotate-180" : ""}`} />
+          {tudo ? "Mostrar menos" : `Mais ${linhas.length - MOSTRA_DE_CARA} categoria${linhas.length - MOSTRA_DE_CARA === 1 ? "" : "s"}`}
+        </button>
+      )}
     </section>
   );
 }
@@ -619,7 +715,10 @@ function Linha({ item, token, digitos, onRefresh }: {
       className="overflow-hidden rounded-lg border border-border bg-card"
       style={item.contestacao
         ? { borderColor: "hsl(var(--warn) / 0.45)" }
-        : !pendente ? { borderColor: "hsl(var(--pos) / 0.35)" } : undefined}
+        // Verde é "resolvido". `aberto` não é resolvido nem cobrado: fica na borda neutra.
+        : (item.situacao === "ok" || item.situacao === "dispensado")
+          ? { borderColor: "hsl(var(--pos) / 0.35)" }
+          : undefined}
     >
       <div className="flex items-start gap-4 px-4 pt-4">
         <div className="min-w-0 flex-1">
@@ -634,7 +733,14 @@ function Linha({ item, token, digitos, onRefresh }: {
       {/* O selo ocupa o MESMO lugar nas três situações — é ele que diz num relance se a
           linha espera alguma coisa. Verde: pronta. Âmbar: falta você. Cinza: não se aplica. */}
       <div className="px-4 pt-3">
-        {item.situacao === "ok" ? (
+        {item.situacao === "aberto" ? (
+          /* Veio da fatura do cartão e a auditoria ainda não olhou. Cinza de propósito:
+             âmbar aqui seria cobrar 345 gastos que ninguém decidiu cobrar. */
+          <span className="inline-flex items-center gap-1 rounded border border-border bg-muted px-1.5 py-0.5 text-[10.5px] font-semibold uppercase tracking-wider text-muted-foreground">
+            <Clock className="h-3 w-3" />
+            Ainda não conferido
+          </span>
+        ) : item.situacao === "ok" ? (
           <span
             className="inline-flex items-center gap-1 rounded border px-1.5 py-0.5 text-[10.5px] font-semibold uppercase tracking-wider"
             style={{

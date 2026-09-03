@@ -43,6 +43,7 @@ import {
   perguntaSemTitulo, SISTEMA_TRIAGEM, SCHEMA_TRIAGEM, type LeituraAnexo,
 } from "../_shared/anexo-triagem.ts";
 import { generateJSON, MODELOS_CASCATA } from "../_shared/gemini.ts";
+import { podeGastarIA, registrarUsoIA } from "../_shared/ia-orcamento.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",

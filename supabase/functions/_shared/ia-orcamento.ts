@@ -27,8 +27,15 @@
 
 import type { SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2.45.0";
 
-/** Quem pode gastar IA. Tem de existir em `public.ia_orcamento`. */
-export type ConsumidorIA = "notas_desempate" | "notas_motivo" | "assistente";
+/** Quem pode gastar IA. Tem de existir em `public.ia_orcamento`.
+ *
+ *  O tipo estava três nomes atrás da tabela (que já tinha `email_resposta` e
+ *  `automacao_diagnostico`) — e os três nomes de 03/09/2026 são os que gastam de verdade:
+ *  leitura de documento é multimodal e se paga por página, não por chamada. */
+export type ConsumidorIA =
+  | "notas_desempate" | "notas_motivo" | "assistente"
+  | "email_resposta" | "automacao_diagnostico"
+  | "acervo_leitura" | "anexo_triagem" | "fatura_rateio";
 
 export interface VeredictoIA {
   pode: boolean;

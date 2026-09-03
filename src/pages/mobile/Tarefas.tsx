@@ -5,9 +5,10 @@
 // carregado junto: vem paginado de 20 em 20, só quando a pessoa abre a seção.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import {
   Plus, AlertTriangle, ChevronDown, ListChecks, Loader2, CalendarDays, Check, X,
-  Pencil, Archive, Trash2,
+  Pencil, Archive, Share2, Trash2,
 } from "lucide-react";
 import { toast } from "sonner";
 import { supabase } from "@/integrations/supabase/client";
@@ -19,6 +20,8 @@ import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
+import { compartilharNativo, copiar, temCompartilhamentoNativo } from "@/lib/compartilhar";
+import { mensagemDaTarefa, urlDaTarefa } from "@/lib/tarefas/link";
 import { emDias, fmtData, hojeISO } from "@/lib/mobile/formato";
 import { iniciais, mesmaPessoa, pessoasConhecidas, rotuloResponsavel, type Pessoa } from "@/lib/mobile/responsavel";
 import {
@@ -114,6 +117,42 @@ export default function MobileTarefas() {
     carregarAbertas();
     carregarConcluidas(limiteConcluidas);
   });
+
+  /* `/tarefas?tarefa=<id>` — a tarefa que alguém mandou pelo WhatsApp.
+     É o MESMO endereço do computador (ver src/lib/tarefas/link.ts), e é aqui que ele
+     costuma ser aberto: o link chega no celular. A busca por id existe porque esta lista
+     traz só as abertas e as 20 concluídas mais recentes — link apontado tem que abrir a
+     tarefa, e não dizer que ela não existe.
+     O parâmetro se apaga depois de usado, senão recarregar a página reabriria a folha que
+     a pessoa acabou de fechar. */
+  const [searchParams, setSearchParams] = useSearchParams();
+  const alvoUrl = searchParams.get("tarefa");
+  useEffect(() => {
+    if (!alvoUrl || carregando) return;
+    searchParams.delete("tarefa");
+    setSearchParams(searchParams, { replace: true });
+
+    const mostrar = (t: Tarefa) => {
+      setAberta(t);
+      /* A folha abre por cima da lista — mas ao fechá-la o card tem que estar em algum
+         lugar. Tarefa de outra pessoa com o filtro em "Minhas" (ou concluída com a seção
+         recolhida) sumiria sem explicação, como se o link tivesse falhado. */
+      if (aplicarFiltro([t], filtro, profile?.nome, hoje).length === 0) setFiltro("todas");
+      if (t.status === STATUS_CONCLUIDO) setMostrarConcluidas(true);
+    };
+
+    const naLista = [...abertas, ...concluidas].find((t) => t.id === alvoUrl);
+    if (naLista) { mostrar(naLista); return; }
+
+    (async () => {
+      const { data, error } = await sb.from("tarefas").select("*").eq("id", alvoUrl).maybeSingle();
+      if (error || !data) { toast.error("Não achei essa tarefa. O link pode estar incompleto."); return; }
+      const t = comSubtarefas(data);
+      if (t.arquivada_em) { toast.error("Essa tarefa foi arquivada."); return; }
+      mostrar(t);
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [alvoUrl, carregando]);
 
   /* ------------------------------ escrita ------------------------------ */
   async function salvar(alvo: Tarefa, patch: Partial<Tarefa>, descricao: string) {
@@ -676,6 +715,14 @@ function FolhaDetalhe({
             </div>
 
             <div className="mt-6 border-t border-border pt-4">
+              <BotaoEnviarLink tarefa={tarefa} />
+              <p className="mt-2 text-[11.5px] leading-relaxed text-muted-foreground">
+                Abre nesta mesma tarefa, no computador ou no celular de quem receber. Precisa
+                de login no Hub.
+              </p>
+            </div>
+
+            <div className="mt-6 border-t border-border pt-4">
               <Button
                 variant="outline"
                 onClick={() => onArquivar(tarefa)}
@@ -692,6 +739,43 @@ function FolhaDetalhe({
         )}
       </DrawerContent>
     </Drawer>
+  );
+}
+
+/**
+ * Enviar a tarefa para alguém.
+ *
+ * No celular o destino é quase sempre o WhatsApp, então a folha do sistema é o caminho
+ * curto: ela já lista as conversas. Onde ela não existir (navegador de computador aberto
+ * numa janela estreita, por exemplo), sobra a cópia — com o título junto, porque um
+ * endereço terminado em UUID não diz do que se trata.
+ *
+ * Cancelar a folha do sistema NÃO cai na cópia: a pessoa desistiu de mandar, e copiar
+ * calada seria fazer outra coisa no lugar do que ela pediu.
+ */
+function BotaoEnviarLink({ tarefa }: { tarefa: Tarefa }) {
+  const [copiado, setCopiado] = useState(false);
+
+  async function enviar() {
+    if (temCompartilhamentoNativo()) {
+      await compartilharNativo(tarefa.titulo, urlDaTarefa(tarefa.id));
+      return;
+    }
+    if (!(await copiar(mensagemDaTarefa(tarefa)))) {
+      toast.error("Não deu para copiar o link.");
+      return;
+    }
+    setCopiado(true);
+    toast.success("Link copiado, com o título junto");
+    setTimeout(() => setCopiado(false), 1800);
+  }
+
+  return (
+    <Button variant="outline" onClick={enviar} className="h-11 w-full text-[13px]">
+      {copiado
+        ? <><Check className="mr-2 h-4 w-4 text-emerald-600" /> Link copiado</>
+        : <><Share2 className="mr-2 h-4 w-4" /> Enviar link da tarefa</>}
+    </Button>
   );
 }
 

@@ -372,7 +372,9 @@ export default function Tarefas() {
   /* /tarefas?tarefa=<id> abre a tarefa direto.
      É como a Linha de Produção volta para cá ("já está no quadro — ver a
      tarefa"): cair no quadro com 26 cards no Backlog e ter que caçar o certo
-     não é ver a tarefa. O parâmetro se apaga depois de usado, senão um F5
+     não é ver a tarefa. E é também o link que o "Copiar link" do diálogo manda
+     para outra pessoa (src/lib/tarefas/link.ts) — o mesmo endereço abre a folha
+     de detalhe no celular. O parâmetro se apaga depois de usado, senão um F5
      reabriria o diálogo que a pessoa acabou de fechar. */
   const [searchParams, setSearchParams] = useSearchParams();
   const alvoUrl = searchParams.get("tarefa");
@@ -380,7 +382,9 @@ export default function Tarefas() {
     if (!alvoUrl || !rows.length) return;
     const achada = rows.find(r => r.id === alvoUrl);
     if (achada) setEditing(achada);
-    else toast.error("Essa tarefa não está no quadro — pode ter sido concluída ou arquivada.");
+    // Concluída não é motivo: `load` traz o quadro inteiro, inclusive a coluna
+    // "Concluído". Some do quadro quem foi arquivada.
+    else toast.error("Essa tarefa não está no quadro — pode ter sido arquivada.");
     searchParams.delete("tarefa");
     setSearchParams(searchParams, { replace: true });
   }, [alvoUrl, rows, searchParams, setSearchParams]);

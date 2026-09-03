@@ -130,7 +130,11 @@ export default function Lideres({ abas }: { abas?: React.ReactNode }) {
       s.lancamentos += 1;
       s.total += Number(r.valor || 0);
       if (r.link_comprovante) s.comNota += 1;
-      else if (!["OK", "ENCARGO", "DISPENSADO (<piso)", "SEM NF-ESPERADO", "PARCELA (origem)"].includes(r.status_nf)) {
+      // `A CLASSIFICAR` são as linhas que vieram do PDF da fatura e a auditoria ainda não
+      // olhou: elas aparecem na fatura do líder, mas não são cobrança — e a contagem
+      // daqui tem de bater com a do `/l/<token>`, senão os dois lados discordam.
+      else if (!["OK", "ENCARGO", "DISPENSADO (<piso)", "SEM NF-ESPERADO", "PARCELA (origem)",
+                 "A CLASSIFICAR"].includes(r.status_nf)) {
         s.pendentes += 1;
       }
       stats.set(r.card_final, s);

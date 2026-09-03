@@ -1,9 +1,10 @@
 import { describe, it, expect } from "vitest";
 import {
   norm, precosNoTexto, formasDaData, casarEmail, deveAvisar, linkGoogleFlights,
-  aeroporto, rotaTexto, diasAte, PRECO_MIN_PLAUSIVEL,
+  aeroporto, rotaTexto, diasAte, lerTeto, PRECO_MIN_PLAUSIVEL,
   type ViagemParaCasar,
 } from "./passagens";
+import { sugerirTeto } from "./radarPrecos";
 
 /* As viagens que os testes de casamento usam. Duas para o mesmo destino em
    datas diferentes de propósito: é o caso que separa um casador honesto de um
@@ -173,6 +174,78 @@ describe("aeroporto e rota", () => {
 
   it("rotaTexto sempre em maiúscula", () => {
     expect(rotaTexto("vix", "rec")).toBe("VIX → REC");
+  });
+});
+
+describe("lerTeto", () => {
+  it("traduz o teto em distância do preço de hoje", () => {
+    const r = lerTeto(3000, 3793);
+    expect(r.dispara_agora).toBe(false);
+    expect(r.frase).toContain("21% abaixo do preço de hoje");
+  });
+
+  it("ACUSA o teto acima do preço de hoje — o erro que ninguém percebe sozinho", () => {
+    const r = lerTeto(4200, 3793);
+    expect(r.dispara_agora).toBe(true);
+    expect(r.frase).toContain("acima do preço de hoje");
+    expect(r.frase).toContain("não diria nada");
+  });
+
+  it("teto igual ao preço de hoje também dispara à toa", () => {
+    expect(lerTeto(3793, 3793).dispara_agora).toBe(true);
+  });
+
+  it("avisa quando a margem é pequena demais ou grande demais", () => {
+    expect(lerTeto(3700, 3793).frase).toContain("pouca margem");
+    expect(lerTeto(1500, 3793).frase).toContain("nunca ser alcançado");
+  });
+
+  it("sem âncora, pede a âncora em vez de opinar", () => {
+    const r = lerTeto(3000, null);
+    expect(r.folga).toBeNull();
+    expect(r.frase).toContain("quanto o Google está pedindo");
+  });
+
+  it("o veredito do Google entra como contexto, não como número", () => {
+    expect(lerTeto(3000, 3793, "alto").frase).toContain("caro para esta rota");
+    expect(lerTeto(3000, 3793, "baixo").frase).toContain("barato para esta rota");
+  });
+});
+
+/* A camada 2 é reaproveitamento: `passagens_curva_diaria` entrega no formato que
+   `sugerirTeto` (do Radar) consome. Este teste guarda a JUNTA — se alguém mudar
+   o formato de um lado, é aqui que quebra, e não em silêncio na tela. */
+describe("a curva de passagens alimenta o sugerirTeto do Radar", () => {
+  // Exatamente o que a RPC devolveu no banco para uma viagem de teste VIX–SSA.
+  const curva = [
+    { dia: "2026-08-25", menor: 2200, mediana: 2200, ofertas: 1 },
+    { dia: "2026-08-27", menor: 2100, mediana: 2100, ofertas: 1 },
+    { dia: "2026-08-29", menor: 1950, mediana: 1950, ofertas: 1 },
+    { dia: "2026-08-31", menor: 2050, mediana: 2050, ofertas: 1 },
+    { dia: "2026-09-02", menor: 1880, mediana: 1880, ofertas: 1 },
+  ];
+
+  it("lê mínimo, típico e sugestão da curva de uma viagem", () => {
+    const s = sugerirTeto(curva, 2000);
+    expect(s.minimo).toBe(1880);
+    expect(s.tipico).toBe(2050);
+    expect(s.teto).toBe(2000);   // ate50(1880 × 1,05)
+    expect(s.veredito).toBe("bom");
+  });
+
+  it("com poucos pontos NÃO se declara firme — a amostra de passagem é rala", () => {
+    // O Radar mede ~28 vezes em 14 dias; aqui os pontos chegam quando o Google
+    // escreve. `pode: false` é o que faz a tela dizer "é indício".
+    expect(sugerirTeto(curva, 2000).pode).toBe(false);
+    expect(sugerirTeto(curva, 2000).dias).toBe(5);
+  });
+
+  it("acusa o teto folgado, que dispararia no preço de sempre", () => {
+    expect(sugerirTeto(curva, 2600).veredito).toBe("folgado");
+  });
+
+  it("acusa o teto abaixo de tudo o que já se viu", () => {
+    expect(sugerirTeto(curva, 1500).veredito).toBe("abaixo_do_minimo");
   });
 });
 

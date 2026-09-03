@@ -7,9 +7,15 @@ import { Label } from "@/components/ui/label";
 import {
   Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle,
 } from "@/components/ui/dialog";
+import { cn } from "@/lib/utils";
+import { supabase } from "@/integrations/supabase/client";
+import { invocar } from "@/lib/erroEdge";
 import { db, parseValor, fmtBRL } from "./lib";
 import { useAuth } from "@/hooks/useAuth";
-import { AEROPORTOS, aeroporto, linkGoogleFlights, norm } from "@/lib/passagens";
+import {
+  AEROPORTOS, aeroporto, linkGoogleFlights, norm, lerTeto,
+  type VereditoGoogle,
+} from "@/lib/passagens";
 
 export interface ViagemRow {
   id: string;
@@ -23,6 +29,16 @@ export interface ViagemRow {
   status: string;
   google_url: string | null;
   rastreando_em: string | null;
+  google_veredito: VereditoGoogle | null;
+}
+
+/** O que a empresa já pagou nesta rota — `passagens_historico_rota`. */
+interface HistoricoRota {
+  compras: number;
+  menor: number | null;
+  mediana: number | null;
+  maior: number | null;
+  ultimo_preco: number | null;
 }
 
 interface Props {
@@ -58,6 +74,9 @@ export function NovaViagemDialog({ aberto, onFechar, onSalvo, viagem }: Props) {
   const [teto, setTeto] = useState("");
   const [quem, setQuem] = useState("");
   const [motivo, setMotivo] = useState("");
+  const [precoGoogle, setPrecoGoogle] = useState("");
+  const [vereditoGoogle, setVereditoGoogle] = useState<VereditoGoogle | "">("");
+  const [historico, setHistorico] = useState<HistoricoRota | null>(null);
   const [salvando, setSalvando] = useState(false);
 
   useEffect(() => {
@@ -69,6 +88,9 @@ export function NovaViagemDialog({ aberto, onFechar, onSalvo, viagem }: Props) {
     setTeto(viagem ? String(viagem.teto) : "");
     setQuem(viagem?.quem_viaja ?? "");
     setMotivo(viagem?.motivo ?? "");
+    setPrecoGoogle("");
+    setVereditoGoogle(viagem?.google_veredito ?? "");
+    setHistorico(null);
   }, [aberto, viagem]);
 
   const oIata = resolverIata(origem);
@@ -81,6 +103,24 @@ export function NovaViagemDialog({ aberto, onFechar, onSalvo, viagem }: Props) {
   const link = useMemo(
     () => (oIata && dIata && ida ? linkGoogleFlights({ origem: oIata, destino: dIata, data_ida: ida, data_volta: volta || null }) : null),
     [oIata, dIata, ida, volta],
+  );
+
+  /* CAMADA 3 — o que a empresa já pagou nesta rota. É a referência mais
+     defensável das três (é extrato, não estimativa) e a única que responde no
+     instante do cadastro, antes de existir curva. */
+  useEffect(() => {
+    if (!aberto || !oIata || !dIata) { setHistorico(null); return; }
+    let vivo = true;
+    db.rpc("passagens_historico_rota", { p_origem: oIata, p_destino: dIata })
+      .then(({ data }: any) => { if (vivo) setHistorico((data?.[0] as HistoricoRota) ?? null); });
+    return () => { vivo = false; };
+  }, [aberto, oIata, dIata]);
+
+  /* CAMADA 1 — o que o teto digitado significa contra o preço de hoje. Não
+     sugere número: traduz o que a pessoa escreveu. Ver `lerTeto`. */
+  const leitura = useMemo(
+    () => lerTeto(tetoNum ?? 0, parseValor(precoGoogle), vereditoGoogle || null),
+    [tetoNum, precoGoogle, vereditoGoogle],
   );
 
   async function salvar() {
@@ -99,14 +139,34 @@ export function NovaViagemDialog({ aberto, onFechar, onSalvo, viagem }: Props) {
       quem_viaja: quem.trim() || null,
       motivo: motivo.trim() || null,
       google_url: linkGoogleFlights({ origem: oIata, destino: dIata, data_ida: ida, data_volta: volta || null }),
+      google_veredito: vereditoGoogle || null,
       updated_at: new Date().toISOString(),
       ...(viagem ? {} : { criado_por: profile?.nome ?? null }),
     };
-    const { error } = viagem
-      ? await db.from("passagens_viagens").update(linha).eq("id", viagem.id)
-      : await db.from("passagens_viagens").insert(linha);
+    const { data, error } = viagem
+      ? await db.from("passagens_viagens").update(linha).eq("id", viagem.id).select("id").single()
+      : await db.from("passagens_viagens").insert(linha).select("id").single();
+    if (error) { setSalvando(false); toast.error(error.message); return; }
+
+    /* O PREÇO DE REFERÊNCIA VIRA O PRIMEIRO PONTO DA CURVA, e vai pela Edge
+       Function em vez de um insert direto: é `gravarPreco` que lê o menor
+       anterior, compara com o teto e abre o sinal. Gravando aqui, um preço já
+       dentro do teto entraria mudo — e o único caso em que isso acontece é o
+       mais urgente de todos: a passagem já está barata na hora do cadastro. */
+    const ref = parseValor(precoGoogle);
+    if (!viagem && ref && ref > 0) {
+      try {
+        await invocar<any>(supabase.functions.invoke("passagens-gmail-sync", {
+          body: { action: "preco", viagem_id: data.id, preco: ref },
+        }));
+      } catch (e: any) {
+        // A viagem foi criada; só o ponto de partida falhou. Dizer qual das
+        // duas coisas deu errado evita a pessoa cadastrar tudo de novo.
+        toast.warning(`Viagem criada, mas não deu para gravar o preço de referência: ${e.message ?? e}`);
+      }
+    }
+
     setSalvando(false);
-    if (error) { toast.error(error.message); return; }
     toast.success(viagem ? "Viagem atualizada." : "Viagem criada — agora ligue o alerta no Google.");
     onSalvo();
     onFechar();
@@ -164,6 +224,21 @@ export function NovaViagemDialog({ aberto, onFechar, onSalvo, viagem }: Props) {
                 {tetoNum ? `avisa abaixo de ${fmtBRL(tetoNum)}` : "o preço que faz valer a pena comprar"}
               </div>
             </div>
+
+            {/* CAMADA 3, no lugar onde a decisão acontece. Aparece só quando há
+                compra registrada nesta rota — sem histórico, um bloco vazio
+                dizendo "nenhuma compra" seria ruído no formulário. */}
+            {historico && historico.compras > 0 && (
+              <div className="col-span-2 rounded-md border border-border bg-muted/40 p-2.5 text-[11.5px]">
+                <span className="font-medium text-foreground">O que vocês já pagaram nesta rota:</span>{" "}
+                <span className="text-muted-foreground">
+                  {historico.compras === 1
+                    ? `uma compra, de ${fmtBRL(Number(historico.menor))}.`
+                    : `${historico.compras} compras, de ${fmtBRL(Number(historico.menor))} a ${fmtBRL(Number(historico.maior))} · típico ${fmtBRL(Number(historico.mediana))}.`}
+                  {historico.ultimo_preco != null && ` A última saiu por ${fmtBRL(Number(historico.ultimo_preco))}.`}
+                </span>
+              </div>
+            )}
             <div className="space-y-1.5">
               <Label htmlFor="v-quem">Quem viaja</Label>
               <Input id="v-quem" value={quem} onChange={(e) => setQuem(e.target.value)} placeholder="opcional" />
@@ -174,6 +249,45 @@ export function NovaViagemDialog({ aberto, onFechar, onSalvo, viagem }: Props) {
             <Label htmlFor="v-motivo">Motivo <span className="text-muted-foreground">(opcional)</span></Label>
             <Input id="v-motivo" value={motivo} onChange={(e) => setMotivo(e.target.value)} placeholder="Visita a cliente, evento…" />
           </div>
+
+          {/* CAMADA 1 — a âncora. Só na criação: depois, quem atualiza o preço é
+              o campo "preço que vi" na linha da viagem, que faz exatamente isso
+              e não corre o risco de regravar o mesmo ponto a cada salvamento. */}
+          {!viagem && (
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-1.5">
+                <Label htmlFor="v-google">Preço que o Google pede agora <span className="text-muted-foreground">(opcional)</span></Label>
+                <Input id="v-google" value={precoGoogle} onChange={(e) => setPrecoGoogle(e.target.value)} placeholder="3.793" className="num" />
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="v-veredito">O Google diz que está</Label>
+                <select
+                  id="v-veredito"
+                  className="h-10 w-full rounded-md border border-input bg-background px-3 text-[14px]"
+                  value={vereditoGoogle}
+                  onChange={(e) => setVereditoGoogle(e.target.value as VereditoGoogle | "")}
+                >
+                  <option value="">não informado</option>
+                  <option value="baixo">barato para esta rota</option>
+                  <option value="tipico">no preço de sempre</option>
+                  <option value="alto">caro para esta rota</option>
+                </select>
+              </div>
+            </div>
+          )}
+
+          {/* O que o teto digitado significa. Não sugere número — traduz o que a
+              pessoa escreveu contra o preço que ela mesma acabou de ler. */}
+          {tetoNum != null && tetoNum > 0 && (
+            <div className={cn(
+              "rounded-md border p-2.5 text-[11.5px]",
+              leitura.dispara_agora
+                ? "border-amber-200 bg-amber-50 text-amber-800 dark:border-amber-900 dark:bg-amber-950/40 dark:text-amber-300"
+                : "border-border bg-muted/40 text-muted-foreground",
+            )}>
+              {leitura.frase}
+            </div>
+          )}
 
           {link && (
             <div className="rounded-md border border-border bg-muted/40 p-2.5 text-[11.5px] text-muted-foreground">

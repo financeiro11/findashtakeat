@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { toast } from "sonner";
-import { Paperclip, Check, X, Trash2, Plus, ShoppingCart, ChevronsUpDown, Lock } from "lucide-react";
+import { Paperclip, Check, X, Trash2, Plus, Plane, ShoppingCart, ChevronsUpDown, Lock } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -172,6 +173,7 @@ function SolicitacaoDetail({
   onChanged: () => void;
 }) {
   const { profile } = useAuth();
+  const navigate = useNavigate();
   const [fornecedores, setFornecedores] = useState<Fornecedor[]>([]);
   const [novoForn, setNovoForn] = useState("");
   const [novoValor, setNovoValor] = useState("");
@@ -445,6 +447,22 @@ function SolicitacaoDetail({
               </div>
             );
           })()}
+
+          {/* PASSAGEM É OUTRA COMPRA. A cotação de equipamento se resolve em
+              minutos; a de passagem leva semanas de vigia, e é o módulo
+              Passagens quem faz isso. Este botão só LEVA para lá com o pedido
+              no bolso — quem preenche rota e datas é gente, porque a
+              solicitação é texto livre e adivinhar aeroporto e data a partir
+              dela é o tipo de chute que este Hub não dá. */}
+          {solic.status !== "comprado" && (
+            <Button
+              size="sm" variant="outline" className="gap-1"
+              onClick={() => navigate(`/facilities/passagens?solicitacao=${solic.id}`)}
+              title="Abre o cadastro de viagem já com esta solicitação vinculada"
+            >
+              <Plane className="h-4 w-4" /> Virar viagem
+            </Button>
+          )}
 
           <button onClick={excluirSolic} className="ml-auto text-[12px] text-muted-foreground hover:text-primary">Excluir</button>
         </div>

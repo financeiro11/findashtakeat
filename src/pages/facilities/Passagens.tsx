@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { Link, useSearchParams } from "react-router-dom";
 import {
   AlertTriangle, BellRing, Check, ChevronDown, ChevronRight, ExternalLink, Loader2,
-  Mail, Pencil, Plane, Plus, RefreshCw, Trash2, X,
+  Mail, Pencil, Plane, Plus, RefreshCw, Trash2, Users, X,
 } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -14,7 +15,7 @@ import { comValorExato } from "@/components/ValorExato";
 import { db, fmtBRL as fmtBRLStr, fmtData, parseValor } from "./lib";
 import {
   aeroporto, diasAte, linkGoogleFlights, rotaTexto,
-  janelaDeCompra, pendenciasDaViagem, PESO_URGENCIA,
+  janelaDeCompra, pendenciasDaViagem, PESO_URGENCIA, lerDesfecho, agruparPorEvento,
   type Janela, type Pendencia, type Urgencia,
 } from "@/lib/passagens";
 /* CAMADA 2 — a MESMA régua de teto do Radar, não uma segunda. Duas divergiriam
@@ -92,6 +93,31 @@ export default function Passagens() {
   const [area, setArea] = useState<string>(() => {
     try { return localStorage.getItem(CHAVE_AREA) ?? "todas"; } catch { return "todas"; }
   });
+  /** A solicitação que mandou abrir o cadastro, vinda do botão "Virar viagem". */
+  const [daSolicitacao, setDaSolicitacao] = useState<{ id: string; titulo: string; solicitante: string | null; categoria: string | null } | null>(null);
+  const [params, setParams] = useSearchParams();
+
+  /* CHEGOU DE UMA SOLICITAÇÃO. A rota e as datas continuam sendo digitadas por
+     gente — a solicitação é texto livre e adivinhar aeroporto e data dela seria
+     o mesmo chute que este módulo recusa em todo lugar. O que vem pronto é o
+     que EXISTE estruturado lá: o motivo, quem pediu e o vínculo. */
+  useEffect(() => {
+    const id = params.get("solicitacao");
+    if (!id) return;
+    let vivo = true;
+    db.from("facilities_solicitacoes").select("id, titulo, solicitante, categoria").eq("id", id).maybeSingle()
+      .then(({ data }: any) => {
+        if (!vivo) return;
+        // O parâmetro sai da URL depois de lido: recarregar a página não pode
+        // reabrir o cadastro de uma viagem que já foi criada.
+        setParams((p) => { const n = new URLSearchParams(p); n.delete("solicitacao"); return n; }, { replace: true });
+        if (!data) { toast.error("Solicitação não encontrada."); return; }
+        setDaSolicitacao(data);
+        setEditando(null);
+        setDialogAberto(true);
+      });
+    return () => { vivo = false; };
+  }, [params, setParams]);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -147,6 +173,17 @@ export default function Passagens() {
   /* Todas as viagens abertas, INDEPENDENTE do filtro: é a lista para onde um
      e-mail órfão pode ser atribuído, e o e-mail não sabe de área nenhuma. */
   const abertas = useMemo(() => linhas.filter((l) => l.viagem.status === "rastreando"), [linhas]);
+
+  /* ITEM 5 — a delegação. "Evento DDR" com quatro pessoas é UMA decisão de
+     compra, e é o total dela que vai à aprovação. Mesmo raciocínio dos Kits do
+     Radar, e vale mais aqui: quem compra passagem de evento compra o grupo. */
+  const eventos = useMemo(
+    () => agruparPorEvento(visiveis.map((l) => ({
+      motivo: l.viagem.motivo, teto: Number(l.viagem.teto),
+      preco_comprado: l.viagem.preco_comprado, status: l.viagem.status,
+    }))),
+    [visiveis],
+  );
 
   /* As duas faixas âmbar do topo saíram daqui: "alerta desligado" e "Google
      ainda rastreia" viraram pendências na fila, que é onde já se olha. Manter as
@@ -230,6 +267,41 @@ export default function Passagens() {
     const { error } = await db.from("passagens_viagens").update(patch).eq("id", l.viagem.id);
     if (error) { toast.error(error.message); return; }
     toast.success(status === "comprada" ? "Viagem marcada como comprada." : `Viagem ${status}.`);
+
+    /* ITEM 4 — O DESFECHO, dito na hora em que ele se decide. Depois ninguém
+       volta para conferir se comprou bem; aqui a pessoa acabou de agir e a
+       informação ainda muda o próximo comportamento. */
+    if (status === "comprada" && preco) {
+      const d = lerDesfecho(preco, l.menor_visto, Number(l.viagem.teto), diasAte(l.viagem.data_ida));
+      toast.message(d.frase, { duration: 12000, description: d.ressalva ?? undefined });
+    }
+
+    /* ITEM 3, o caminho de volta. Vira COTAÇÃO e não compra: quem registra
+       compra é o fluxo do Facilities, que cuida de NF, forma de pagamento e
+       histórico. Duplicar isso aqui criaria dois lugares gravando a mesma
+       compra — e é o mesmo desenho do `facilities_radar_virar_cotacao`, que
+       também para na cotação e deixa o resto com quem já faz. */
+    if (status === "comprada" && preco && l.viagem.solicitacao_id) {
+      const { error: eCot } = await db.from("facilities_cotacoes").insert({
+        solicitacao_id: l.viagem.solicitacao_id,
+        fornecedor_nome: "Passagem aérea",
+        valor: preco,
+        link_url: l.viagem.google_url,
+        escolhida: true,
+        observacao: `${rotaTexto(l.viagem.origem, l.viagem.destino)} · ida ${fmtData(l.viagem.data_ida)}` +
+          `${l.viagem.data_volta ? ` · volta ${fmtData(l.viagem.data_volta)}` : ""}` +
+          `\nTeto: ${fmtBRLStr(Number(l.viagem.teto))}` +
+          `${l.menor_visto != null ? ` · menor visto pelo radar: ${fmtBRLStr(Number(l.menor_visto))}` : ""}`,
+      });
+      if (eCot) toast.error(`Não deu para lançar a cotação na solicitação: ${eCot.message}`);
+      else {
+        toast.message("Cotação lançada na solicitação de origem.", {
+          duration: 12000,
+          action: { label: "Abrir solicitações", onClick: () => window.location.assign("/facilities/solicitacoes") },
+        });
+      }
+    }
+
     if (l.viagem.rastreando_em) {
       const link = l.viagem.google_url ?? linkGoogleFlights({
         origem: l.viagem.origem, destino: l.viagem.destino,
@@ -413,6 +485,40 @@ export default function Passagens() {
         </div>
       )}
 
+      {/* POR EVENTO. Só aparece quando há grupo de verdade (2+ viagens com o
+          mesmo motivo) — com um item cada, isto repetiria a lista inteira. */}
+      {!loading && eventos.length > 0 && (
+        <div className="space-y-1.5">
+          <div className="flex items-center gap-2">
+            <Users className="h-4 w-4 text-muted-foreground" />
+            <h2 className="text-[15px] font-semibold text-foreground">Por evento</h2>
+            <span className="text-[12px] text-muted-foreground">
+              quem viaja junto se compra junto — e é o total que vai à aprovação
+            </span>
+          </div>
+          <div className="card-surface divide-y divide-border/60">
+            {eventos.map((e) => (
+              <div key={e.chave} className="flex flex-wrap items-center gap-x-4 gap-y-1 px-3 py-2">
+                <span className="min-w-0 flex-1 truncate text-[13px] font-medium text-foreground" title={e.nome}>{e.nome}</span>
+                <span className="text-[11.5px] text-muted-foreground">
+                  {e.viagens} viagem(ns){e.compradas > 0 && ` · ${e.compradas} comprada(s)`}
+                </span>
+                <span className="text-right">
+                  <span className="block text-[10.5px] uppercase tracking-wide text-muted-foreground">Teto somado</span>
+                  <span className="num text-[13px] font-medium text-foreground">{fmtBRL(e.teto_somado)}</span>
+                </span>
+                {e.pago_somado > 0 && (
+                  <span className="text-right">
+                    <span className="block text-[10.5px] uppercase tracking-wide text-muted-foreground">Já pago</span>
+                    <span className="num text-[13px] font-semibold text-emerald-700 dark:text-emerald-400">{fmtBRL(e.pago_somado)}</span>
+                  </span>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       {loading ? (
         <div className="space-y-2">{[0, 1, 2].map((i) => <Skeleton key={i} className="h-20 rounded-md" />)}</div>
       ) : visiveis.length === 0 ? (
@@ -519,7 +625,33 @@ export default function Passagens() {
                       )}
                       {v.quem_viaja && ` · ${v.quem_viaja}`}
                       {v.motivo && ` · ${v.motivo}`}
+                      {v.solicitacao_id && (
+                        <>
+                          {" · "}
+                          <Link to="/facilities/solicitacoes" className="underline underline-offset-2 hover:text-foreground">
+                            veio de uma solicitação
+                          </Link>
+                        </>
+                      )}
                     </div>
+
+                    {/* O DESFECHO, que fica. O toast do momento da compra some;
+                        este é o que responde, três meses depois, se esperar
+                        valeu a pena — e é dele que sai a antecedência certa. */}
+                    {v.status === "comprada" && v.preco_comprado != null && (() => {
+                      const d = lerDesfecho(
+                        Number(v.preco_comprado), l.menor_visto, Number(v.teto),
+                        v.comprado_em ? diasAte(v.data_ida, new Date(v.comprado_em)) : null,
+                      );
+                      return (
+                        <div className="mt-1 text-[11.5px]">
+                          <span className={cn("font-medium", d.dentro_do_teto ? "text-emerald-700 dark:text-emerald-400" : "text-amber-700 dark:text-amber-400")}>
+                            {d.frase}
+                          </span>
+                          {d.ressalva && <span className="text-muted-foreground/70"> {d.ressalva}</span>}
+                        </div>
+                      );
+                    })()}
                   </div>
 
                   <div className="shrink-0 text-right">
@@ -749,9 +881,10 @@ export default function Passagens() {
 
       <NovaViagemDialog
         aberto={dialogAberto}
-        onFechar={() => setDialogAberto(false)}
+        onFechar={() => { setDialogAberto(false); setDaSolicitacao(null); }}
         onSalvo={load}
         viagem={editando}
+        daSolicitacao={daSolicitacao}
       />
     </div>
   );

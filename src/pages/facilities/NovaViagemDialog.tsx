@@ -31,6 +31,7 @@ export interface ViagemRow {
   rastreando_em: string | null;
   google_veredito: VereditoGoogle | null;
   area: string | null;
+  solicitacao_id: string | null;
 }
 
 /** O que a empresa já pagou nesta rota — `passagens_historico_rota`. */
@@ -48,6 +49,8 @@ interface Props {
   onSalvo: () => void;
   /** Null cria; preenchido edita. */
   viagem: ViagemRow | null;
+  /** Veio do botão "Virar viagem" de uma solicitação. */
+  daSolicitacao?: { id: string; titulo: string; solicitante: string | null; categoria: string | null } | null;
 }
 
 /** Aceita "GRU" ou "São Paulo" e devolve a IATA — o campo não obriga a decorar código. */
@@ -66,7 +69,7 @@ function resolverIata(texto: string): string | null {
   return null;
 }
 
-export function NovaViagemDialog({ aberto, onFechar, onSalvo, viagem }: Props) {
+export function NovaViagemDialog({ aberto, onFechar, onSalvo, viagem, daSolicitacao }: Props) {
   const { profile } = useAuth();
   const [origem, setOrigem] = useState("VIX");
   const [destino, setDestino] = useState("");
@@ -82,10 +85,32 @@ export function NovaViagemDialog({ aberto, onFechar, onSalvo, viagem }: Props) {
   const [area, setArea] = useState("");
   const [salvando, setSalvando] = useState(false);
 
+  const [motivosUsados, setMotivosUsados] = useState<string[]>([]);
+
   useEffect(() => {
     db.from("passagens_areas").select("chave, nome").eq("ativa", true).order("ordem")
       .then(({ data }: any) => setAreas(data ?? []));
   }, []);
+
+  /* Os motivos que já existem, para reaproveitar em vez de redigitar — ver o
+     comentário no campo. Recarrega a cada abertura: um evento cadastrado há
+     cinco minutos precisa aparecer para a segunda pessoa da delegação. */
+  useEffect(() => {
+    if (!aberto) return;
+    db.from("passagens_viagens").select("motivo").not("motivo", "is", null)
+      .order("created_at", { ascending: false }).limit(200)
+      .then(({ data }: any) => {
+        const vistos = new Set<string>();
+        const lista: string[] = [];
+        for (const r of data ?? []) {
+          const m = String(r.motivo ?? "").trim();
+          if (!m || vistos.has(norm(m))) continue;
+          vistos.add(norm(m));
+          lista.push(m);
+        }
+        setMotivosUsados(lista);
+      });
+  }, [aberto]);
 
   useEffect(() => {
     if (!aberto) return;
@@ -94,13 +119,16 @@ export function NovaViagemDialog({ aberto, onFechar, onSalvo, viagem }: Props) {
     setIda(viagem?.data_ida ?? "");
     setVolta(viagem?.data_volta ?? "");
     setTeto(viagem ? String(viagem.teto) : "");
-    setQuem(viagem?.quem_viaja ?? "");
-    setMotivo(viagem?.motivo ?? "");
+    /* O que a solicitação já respondeu não se digita de novo. Rota e datas ela
+       não tem estruturado, então continuam em branco — é ali que a pessoa
+       trabalha. */
+    setQuem(viagem?.quem_viaja ?? daSolicitacao?.solicitante ?? "");
+    setMotivo(viagem?.motivo ?? daSolicitacao?.titulo ?? "");
     setPrecoGoogle("");
     setVereditoGoogle(viagem?.google_veredito ?? "");
     setArea(viagem?.area ?? "");
     setHistorico(null);
-  }, [aberto, viagem]);
+  }, [aberto, viagem, daSolicitacao]);
 
   const oIata = resolverIata(origem);
   const dIata = resolverIata(destino);
@@ -150,6 +178,7 @@ export function NovaViagemDialog({ aberto, onFechar, onSalvo, viagem }: Props) {
       google_url: linkGoogleFlights({ origem: oIata, destino: dIata, data_ida: ida, data_volta: volta || null }),
       google_veredito: vereditoGoogle || null,
       area: area || null,
+      ...(viagem ? {} : { solicitacao_id: daSolicitacao?.id ?? null }),
       updated_at: new Date().toISOString(),
       ...(viagem ? {} : { criado_por: profile?.nome ?? null }),
     };
@@ -196,6 +225,14 @@ export function NovaViagemDialog({ aberto, onFechar, onSalvo, viagem }: Props) {
         </DialogHeader>
 
         <div className="space-y-3">
+          {daSolicitacao && !viagem && (
+            <div className="rounded-md border border-border bg-muted/40 p-2.5 text-[11.5px] text-muted-foreground">
+              Veio da solicitação <span className="font-medium text-foreground">{daSolicitacao.titulo}</span>. Motivo e
+              solicitante já vieram de lá; a rota e as datas são com você — a solicitação é texto livre e o Hub não
+              adivinha aeroporto nem data.
+            </div>
+          )}
+
           <div className="grid grid-cols-2 gap-3">
             <div className="space-y-1.5">
               <Label htmlFor="v-origem">Origem</Label>
@@ -274,8 +311,20 @@ export function NovaViagemDialog({ aberto, onFechar, onSalvo, viagem }: Props) {
           </div>
 
           <div className="space-y-1.5">
-            <Label htmlFor="v-motivo">Motivo <span className="text-muted-foreground">(opcional)</span></Label>
-            <Input id="v-motivo" value={motivo} onChange={(e) => setMotivo(e.target.value)} placeholder="Visita a cliente, evento…" />
+            <Label htmlFor="v-motivo">Motivo <span className="text-muted-foreground">(agrupa a delegação)</span></Label>
+            {/* A LISTA DOS MOTIVOS JÁ USADOS é o que segura a grafia. As viagens
+                de um evento se juntam pelo motivo normalizado, então "Evento
+                DDR" e "evento ddr" caem no mesmo grupo — mas "Ev. DDR" não.
+                Reaproveitar o que já foi escrito é mais fácil que redigitar, e
+                é a defesa barata contra o grupo que se parte em dois. */}
+            <Input
+              id="v-motivo" list="motivos-usados" value={motivo}
+              onChange={(e) => setMotivo(e.target.value)}
+              placeholder="Evento DDR, visita a cliente…"
+            />
+            <datalist id="motivos-usados">
+              {motivosUsados.map((m) => <option key={m} value={m} />)}
+            </datalist>
           </div>
 
           {/* CAMADA 1 — a âncora. Só na criação: depois, quem atualiza o preço é

@@ -543,6 +543,132 @@ export function pendenciasDaViagem(v: ViagemParaFila, hoje = new Date()): Penden
 /** A urgência mais alta de um conjunto — para ordenar a fila. */
 export const PESO_URGENCIA: Record<Urgencia, number> = { alta: 3, media: 2, baixa: 1 };
 
+/* --------------------------------------------------- o desfecho da compra */
+
+export interface Desfecho {
+  /** Fração acima do menor preço que o radar viu. 0 = comprou no melhor visto. */
+  acima_do_menor: number | null;
+  dentro_do_teto: boolean;
+  frase: string;
+  /** A ressalva, quando ela existe. A tela mostra em cinza. */
+  ressalva: string | null;
+}
+
+/**
+ * O que a compra valeu — e é o único número que responde "esse módulo serve
+ * para alguma coisa?".
+ *
+ * INFORMA, NÃO ACUSA, e a diferença aqui não é diplomacia: é correção. O preço
+ * que o radar viu é preço ANUNCIADO, lido de um alerta do Google. O que se paga
+ * inclui bagagem, assento, taxa de conveniência — e, sobretudo, o anunciado pode
+ * simplesmente não estar mais disponível na hora de emitir. É o mesmo fantasma
+ * que o Radar de Preços persegue no anúncio esgotado que a vitrine continua
+ * listando. Dizer "você pagou 18% a mais do que podia" seria afirmar uma coisa
+ * que estes dados não sustentam; dizer os dois números e a diferença é o que
+ * eles sustentam, e já basta para alguém aprender a antecedência certa.
+ */
+export function lerDesfecho(
+  precoPago: number,
+  menorVisto: number | null | undefined,
+  teto: number,
+  diasAntes: number | null,
+): Desfecho {
+  const dentro = precoPago <= teto;
+  const quando = diasAntes != null && diasAntes >= 0 ? ` Comprou ${diasAntes} dia(s) antes da ida.` : "";
+  const menor = Number(menorVisto);
+
+  if (!(menor > 0)) {
+    return {
+      acima_do_menor: null, dentro_do_teto: dentro,
+      frase: `Pagou ${dentro ? "dentro" : "acima"} do teto.${quando}`,
+      ressalva: "O radar não chegou a ver preço nenhum nesta viagem — não há com o que comparar.",
+    };
+  }
+
+  if (precoPago <= menor) {
+    return {
+      acima_do_menor: 0, dentro_do_teto: dentro,
+      frase: `Pagou o melhor preço que o radar chegou a ver.${quando}`,
+      ressalva: null,
+    };
+  }
+
+  const acima = (precoPago - menor) / menor;
+  return {
+    acima_do_menor: acima, dentro_do_teto: dentro,
+    frase: `Pagou ${Math.round(acima * 100)}% acima do menor que o radar viu na janela.${quando}`,
+    ressalva: "O preço visto é o anunciado — pode não incluir bagagem nem estar disponível na hora de emitir.",
+  };
+}
+
+/* ------------------------------------------------- agrupar por evento */
+
+/** A chave de agrupamento de um motivo livre. Vazio = sem evento. */
+export function chaveDoEvento(motivo: string | null | undefined): string {
+  return norm(motivo);
+}
+
+export interface GrupoEvento {
+  chave: string;
+  /** O motivo escrito, na grafia mais frequente do grupo. */
+  nome: string;
+  viagens: number;
+  teto_somado: number;
+  pago_somado: number;
+  compradas: number;
+}
+
+/**
+ * Junta as viagens pelo motivo — "Evento DDR" com quatro pessoas é UMA decisão
+ * de compra, não quatro.
+ *
+ * É o mesmo raciocínio dos Kits do Radar (ninguém compra um monitor, compra uma
+ * estação), e importa mais aqui: quem compra passagem de evento compra a
+ * delegação inteira, e é o total dela que vai à aprovação.
+ *
+ * AGRUPA PELO MOTIVO NORMALIZADO, e não por uma tabela de eventos. Uma tabela
+ * seria mais firme e exigiria cadastro antes de cadastrar a viagem — atrito no
+ * lugar errado, para um campo que já existe e já é preenchido. O preço disso é
+ * a grafia: "Evento DDR" e "evento ddr" precisam cair juntas, e é o `norm` que
+ * garante. Contra o resto (abreviação, typo), a defesa é a lista de motivos já
+ * usados no formulário — reaproveitar é mais fácil que redigitar.
+ */
+export function agruparPorEvento(
+  viagens: Array<{ motivo: string | null; teto: number; preco_comprado: number | null; status: string }>,
+): GrupoEvento[] {
+  const mapa = new Map<string, GrupoEvento & { grafias: Map<string, number> }>();
+
+  for (const v of viagens) {
+    const chave = chaveDoEvento(v.motivo);
+    if (!chave) continue; // sem motivo não é evento — é viagem avulsa
+    let g = mapa.get(chave);
+    if (!g) {
+      g = { chave, nome: "", viagens: 0, teto_somado: 0, pago_somado: 0, compradas: 0, grafias: new Map() };
+      mapa.set(chave, g);
+    }
+    g.viagens++;
+    g.teto_somado += Number(v.teto) || 0;
+    if (v.status === "comprada" && v.preco_comprado != null) {
+      g.pago_somado += Number(v.preco_comprado);
+      g.compradas++;
+    }
+    const escrita = (v.motivo ?? "").trim();
+    if (escrita) g.grafias.set(escrita, (g.grafias.get(escrita) ?? 0) + 1);
+  }
+
+  return [...mapa.values()]
+    .map(({ grafias, ...g }) => ({
+      ...g,
+      // A grafia que mais aparece vira o nome do grupo: se três pessoas
+      // escreveram "Evento DDR" e uma "evento ddr", o título é o das três.
+      nome: [...grafias.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0], "pt-BR"))[0]?.[0] ?? g.chave,
+    }))
+    // Só é grupo quando há mais de uma: uma viagem sozinha com motivo é apenas
+    // uma viagem, e listá-la aqui repetiria a lista de baixo inteira.
+    .filter((g) => g.viagens > 1)
+    .sort((a, b) => b.viagens - a.viagens || b.teto_somado - a.teto_somado);
+}
+
 /* ------------------------------------------------------------- a decisão */
 
 /** Quanto falta (em dias) para a ida. Negativo = já passou. */

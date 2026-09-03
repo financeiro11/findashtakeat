@@ -1,7 +1,8 @@
 import { describe, it, expect } from "vitest";
 import {
   norm, precosNoTexto, formasDaData, casarEmail, deveAvisar, linkGoogleFlights,
-  aeroporto, rotaTexto, diasAte, lerTeto, janelaDeCompra, pendenciasDaViagem, PRECO_MIN_PLAUSIVEL,
+  aeroporto, rotaTexto, diasAte, lerTeto, janelaDeCompra, pendenciasDaViagem,
+  lerDesfecho, agruparPorEvento, PRECO_MIN_PLAUSIVEL,
   type ViagemParaCasar,
 } from "./passagens";
 import { sugerirTeto } from "./radarPrecos";
@@ -327,6 +328,72 @@ describe("pendenciasDaViagem", () => {
 
   it("viagem fechada com o alerta já desligado não pede nada", () => {
     expect(pendenciasDaViagem({ ...base, status: "comprada", rastreando_em: null }, hoje)).toEqual([]);
+  });
+});
+
+describe("lerDesfecho", () => {
+  it("comprou no melhor que o radar viu", () => {
+    const d = lerDesfecho(2400, 2400, 3000, 30);
+    expect(d.acima_do_menor).toBe(0);
+    expect(d.dentro_do_teto).toBe(true);
+    expect(d.frase).toContain("melhor preço que o radar chegou a ver");
+    expect(d.ressalva).toBeNull();
+  });
+
+  it("mede a diferença SEM acusar — o preço visto é o anunciado", () => {
+    const d = lerDesfecho(2850, 2400, 3000, 14);
+    expect(Math.round(d.acima_do_menor! * 100)).toBe(19);
+    expect(d.frase).toContain("19% acima do menor");
+    expect(d.frase).toContain("14 dia(s) antes");
+    // A ressalva existe porque o dado não sustenta "você pagou caro":
+    // anunciado ≠ emitido, e pode nem estar mais disponível.
+    expect(d.ressalva).toContain("anunciado");
+  });
+
+  it("sem curva, diz que não há com o que comparar", () => {
+    const d = lerDesfecho(2850, null, 3000, 5);
+    expect(d.acima_do_menor).toBeNull();
+    expect(d.ressalva).toContain("não chegou a ver preço");
+  });
+
+  it("acusa o pagamento acima do teto", () => {
+    expect(lerDesfecho(3500, 2400, 3000, 3).dentro_do_teto).toBe(false);
+  });
+});
+
+describe("agruparPorEvento", () => {
+  const v = (motivo: string | null, teto: number, pago: number | null = null, status = "rastreando") =>
+    ({ motivo, teto, preco_comprado: pago, status });
+
+  it("junta a delegação e soma o teto", () => {
+    const g = agruparPorEvento([v("Evento DDR", 3000), v("Evento DDR", 3000), v("Evento DDR", 2500, 2400, "comprada")]);
+    expect(g).toHaveLength(1);
+    expect(g[0].viagens).toBe(3);
+    expect(g[0].teto_somado).toBe(8500);
+    expect(g[0].pago_somado).toBe(2400);
+    expect(g[0].compradas).toBe(1);
+  });
+
+  it("a grafia diferente cai no mesmo grupo, e o nome é o da maioria", () => {
+    const g = agruparPorEvento([v("Evento DDR", 1000), v("evento ddr", 1000), v("Evento DDR", 1000)]);
+    expect(g).toHaveLength(1);
+    expect(g[0].nome).toBe("Evento DDR");
+  });
+
+  it("viagem sozinha não vira grupo — repetiria a lista de baixo", () => {
+    expect(agruparPorEvento([v("Evento DDR", 3000)])).toEqual([]);
+  });
+
+  it("viagem sem motivo não entra em grupo nenhum", () => {
+    expect(agruparPorEvento([v(null, 3000), v("", 3000)])).toEqual([]);
+  });
+
+  it("ordena pelo tamanho da delegação", () => {
+    const g = agruparPorEvento([
+      v("Feira A", 1000), v("Feira A", 1000),
+      v("Congresso B", 1000), v("Congresso B", 1000), v("Congresso B", 1000),
+    ]);
+    expect(g[0].nome).toBe("Congresso B");
   });
 });
 

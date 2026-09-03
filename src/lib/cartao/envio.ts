@@ -26,6 +26,14 @@ export {
   montarTitulo,
   recusaDoEnvio,
   dataBR,
+  // O escopo também é regra compartilhada: a tela escolhe de que pedaço da
+  // fatura está falando e a Edge Function decide, com a MESMA função, se aquele
+  // envio pode fechar a fatura.
+  ESCOPOS,
+  ehParcial,
+  lerEscopo,
+  titulosDoEscopo,
+  type EscopoEnvio,
   type EstadoDaFatura,
   type TituloParaOmie,
 } from "../../../supabase/functions/_shared/cartao-envio.ts";

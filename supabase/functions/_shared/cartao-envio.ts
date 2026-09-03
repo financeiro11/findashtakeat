@@ -224,3 +224,56 @@ export function recusaDoEnvio(opts: {
   }
   return null;
 }
+
+/* ------------------------------------------------------------------
+ * O escopo do envio
+ * ------------------------------------------------------------------ */
+
+/**
+ * Que parte da fatura este envio abrange.
+ *
+ * NASCEU DE UM BLOQUEIO REAL (set/26). As 32 linhas de 1ª parcela estavam com
+ * categoria nos 14 lojistas — o filtro "só sem categoria" marcava zero — e o
+ * botão continuava vermelho, porque 105 títulos do balde "à vista" ainda não
+ * tinham categoria e `recusaDoEnvio` julga o LOTE INTEIRO. Isso é tudo-ou-nada,
+ * e o tudo-ou-nada não vem da contabilidade: cada título é independente no Omie
+ * (chave de integração própria, recusa de repetido própria), e a série de uma
+ * compra parcelada precisa nascer agora para os meses à frente não chegarem
+ * vazios. Conferir 109 lojistas de uma sentada para poder mandar 32 linhas
+ * prontas era só a fila de trabalho travando o que já estava conferido.
+ *
+ * O QUE O ESCOPO NÃO AFROUXA: a recusa continua valendo inteira sobre o que for
+ * mandado. Nenhum título sem categoria passa em escopo nenhum — o que muda é
+ * apenas de quantos títulos se está falando.
+ *
+ * E UM ENVIO PARCIAL NÃO FECHA A FATURA (`ehParcial`): marcar
+ * `provisionamento = 'enviado'` com metade da fatura fora faria a própria
+ * `recusaDoEnvio` barrar o resto no dia seguinte, com a mensagem mais errada
+ * possível ("esta fatura já foi enviada").
+ */
+export type EscopoEnvio = "tudo" | "avista" | "primeira";
+
+export const ESCOPOS: EscopoEnvio[] = ["tudo", "avista", "primeira"];
+
+/** Lê o escopo que veio no request. Desconhecido cai em "tudo" — o mais restrito. */
+export const lerEscopo = (v: unknown): EscopoEnvio =>
+  ESCOPOS.includes(String(v ?? "") as EscopoEnvio) ? (String(v) as EscopoEnvio) : "tudo";
+
+/** Um envio parcial nunca fecha a fatura: falta o resto dela. */
+export const ehParcial = (escopo: EscopoEnvio): boolean => escopo !== "tudo";
+
+/**
+ * Os títulos que o escopo abrange.
+ *
+ * O discriminador é `parcela`, e não o balde da tela: `expandir` só gera título
+ * para "à vista" e "1ª parcela", e é exatamente na série da 1ª parcela que
+ * `parcela` vem preenchida. Filtrar pelo balde daria o mesmo resultado e
+ * obrigaria a mandar a separação junto — mais peça para desencontrar.
+ */
+export function titulosDoEscopo<T extends { parcela: { n: number; de: number } | null }>(
+  titulos: T[],
+  escopo: EscopoEnvio,
+): T[] {
+  if (escopo === "tudo") return titulos;
+  return titulos.filter((t) => (t.parcela !== null) === (escopo === "primeira"));
+}

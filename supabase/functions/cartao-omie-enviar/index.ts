@@ -24,12 +24,17 @@
 //   "conferir"         → só leitura: o que já subiu desta competência
 //   "consultar-titulo" → só leitura: a ficha de um título no Omie, crua
 //   "limpar-teste"     → apaga do Omie tudo que veio da fatura sintética
+//
+// ESCOPO (body.escopo: "tudo" | "avista" | "primeira", padrão "tudo"): de que
+// pedaço da fatura o lote fala. Quem separa os títulos é a tela; aqui isto muda
+// uma coisa só, e é a que importa — envio parcial não marca a fatura como
+// enviada. Ver `_shared/cartao-envio.ts`.
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.0";
 import { consultarTitulo, excluirContaPagar, incluirContaPagar } from "../_shared/omie.ts";
 import { requireUser } from "../_shared/auth.ts";
 import {
-  ehTeste, montarTitulo, recusaDoEnvio,
+  ehParcial, ehTeste, lerEscopo, montarTitulo, recusaDoEnvio,
   type EstadoDaFatura, type TituloParaOmie,
 } from "../_shared/cartao-envio.ts";
 
@@ -107,6 +112,11 @@ Deno.serve(async (req) => {
 
     /* ================= ENVIAR ================= */
     const titulos = (Array.isArray(body?.titulos) ? body.titulos : []) as TituloParaOmie[];
+
+    // De que pedaço da fatura este lote fala. Só serve para uma coisa aqui: um
+    // envio parcial NÃO fecha a fatura. Fechar com o resto de fora faria a
+    // própria `recusaDoEnvio` barrar a continuação com "já foi enviada".
+    const escopo = lerEscopo(body?.escopo);
 
     // O token só existe para a fatura sintética. Um único título de verdade no
     // lote derruba a chamada inteira — não sobra meio envio.
@@ -213,8 +223,10 @@ Deno.serve(async (req) => {
 
     // A fatura só fecha quando não sobrou nada e nada falhou — nesta chamada nem
     // nas anteriores (a consulta é ao estado gravado, não à memória deste lote).
+    // E nunca fecha num envio parcial: lá o "não sobrou nada" é sobre o escopo,
+    // não sobre a fatura.
     let faturaFechada = false;
-    if (!restantes && !falhas.length && fat) {
+    if (!restantes && !falhas.length && fat && !ehParcial(escopo)) {
       const { count } = await supabase
         .from("cartao_envios_omie").select("integracao", { count: "exact", head: true })
         .eq("competencia_fatura", competencia).eq("status", "erro");
@@ -227,13 +239,14 @@ Deno.serve(async (req) => {
     }
 
     console.log(
-      `cartão → Omie · ${competencia} · ${criados.length} criado(s), ${falhas.length} falha(s), ` +
-      `${restantes} restante(s)${faturaFechada ? " · fatura fechada" : ""}`,
+      `cartão → Omie · ${competencia} · escopo ${escopo} · ${criados.length} criado(s), ` +
+      `${falhas.length} falha(s), ${restantes} restante(s)${faturaFechada ? " · fatura fechada" : ""}`,
     );
 
     return json({
       status: falhas.length ? "parcial" : "ok",
       competencia,
+      escopo,
       total: titulos.length,
       ja_estavam: titulos.length - fila.length,
       criados: criados.length,

@@ -18,8 +18,8 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   CONTA_CORRENTE_CARTAO, ENVIO_AO_OMIE_LIBERADO, FORNECEDOR_CARTAO, MARCO_FORA_DO_HUB,
-  TIPO_DOCUMENTO_CARTAO, bloqueioDeEnvio, dataBR, ehTeste, integracaoDe, montarTitulo,
-  recusaDoEnvio, type TituloParaOmie,
+  TIPO_DOCUMENTO_CARTAO, bloqueioDeEnvio, dataBR, ehParcial, ehTeste, integracaoDe, lerEscopo,
+  montarTitulo, recusaDoEnvio, titulosDoEscopo, type TituloParaOmie,
 } from "../../../supabase/functions/_shared/cartao-envio.ts";
 import { expandir, type LinhaClassificada } from "./provisionar";
 
@@ -246,6 +246,56 @@ describe("recusaDoEnvio", () => {
   it("barra lote vazio e competência ausente", () => {
     expect(recusaDoEnvio({ ...ok, titulos: [] })).toMatch(/Não há título/);
     expect(recusaDoEnvio({ ...ok, competencia: "" })).toMatch(/Competência/);
+  });
+});
+
+/**
+ * O escopo do envio.
+ *
+ * O risco que estes testes guardam não é filtrar errado — é fechar a fatura com
+ * metade dela de fora. Se `ehParcial` passar a devolver false para um escopo de
+ * balde, a Edge Function marca `provisionamento = 'enviado'` e a própria
+ * `recusaDoEnvio` barra a continuação no dia seguinte com "já foi enviada".
+ */
+describe("escopo do envio", () => {
+  const avista = { ...TITULO, parcela: null };
+  const primeira = { ...TITULO, parcela: { n: 1, de: 3 } };
+  const terceira = { ...TITULO, parcela: { n: 3, de: 3 } };
+
+  it("'tudo' devolve a lista inteira", () => {
+    expect(titulosDoEscopo([avista, primeira], "tudo")).toHaveLength(2);
+  });
+
+  it("separa pela parcela, não pelo balde da tela", () => {
+    // Toda a série da 1ª parcela vem junto: quem manda a 1ª manda as N−1 que
+    // nascem com ela, senão os meses à frente chegam vazios.
+    expect(titulosDoEscopo([avista, primeira, terceira], "primeira")).toEqual([primeira, terceira]);
+    expect(titulosDoEscopo([avista, primeira, terceira], "avista")).toEqual([avista]);
+  });
+
+  it("só 'tudo' pode fechar a fatura", () => {
+    expect(ehParcial("tudo")).toBe(false);
+    expect(ehParcial("avista")).toBe(true);
+    expect(ehParcial("primeira")).toBe(true);
+  });
+
+  it("escopo desconhecido cai em 'tudo' — e 'tudo' é o que a recusa julga inteiro", () => {
+    expect(lerEscopo(undefined)).toBe("tudo");
+    expect(lerEscopo("balde-novo")).toBe("tudo");
+    expect(lerEscopo("primeira")).toBe("primeira");
+  });
+
+  it("o escopo não afrouxa a recusa: o que for mandado continua precisando de categoria", () => {
+    const lote = [
+      { ...avista, codigoCategoria: "" },
+      { ...primeira, codigoCategoria: "2.04.06" },
+    ];
+    const base = { competencia: "2026-12-01", estadoDaFatura: null } as const;
+
+    // É o caso de set/26: 1ª parcela conferida por inteiro, à vista ainda não.
+    expect(recusaDoEnvio({ ...base, titulos: lote })).toMatch(/^1 título/);
+    expect(recusaDoEnvio({ ...base, titulos: titulosDoEscopo(lote, "primeira") })).toBeNull();
+    expect(recusaDoEnvio({ ...base, titulos: titulosDoEscopo(lote, "avista") })).toMatch(/^1 título/);
   });
 });
 

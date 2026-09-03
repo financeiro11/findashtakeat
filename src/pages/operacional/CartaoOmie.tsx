@@ -17,6 +17,14 @@
  * repete a chamada até a fila zerar (uma fatura real tem ~470 títulos e não cabe
  * numa invocação).
  *
+ * O ESCOPO (desde 03/09/2026)
+ * O envio pode falar da fatura inteira ou de um balde só ("à vista", "1ª
+ * parcela"). Não é atalho: a recusa continua julgando tudo que for mandado, e um
+ * envio parcial não fecha a fatura. É que a conferência não termina junto nos
+ * dois baldes — um lojista sem categoria no "à vista" segurava também as 1ªs
+ * parcelas já conferidas, que são as que precisam nascer agora para os meses à
+ * frente não chegarem vazios.
+ *
  * O que impede um envio em dobro não está aqui: está no marco do banco, no
  * registro de `cartao_envios_omie` e no `codigo_lancamento_integracao` que o
  * próprio Omie recusa repetido. A tela desabilita o botão pela MESMA função que
@@ -51,7 +59,8 @@ import {
   type Mapa, type Mudanca, type Previa, type Sugestao, type TituloComTexto,
 } from "@/lib/cartao/depara";
 import {
-  bloqueioDeEnvio, ehTeste, recusaDoEnvio, titulosDaFatura, type EstadoDaFatura,
+  bloqueioDeEnvio, ehParcial, ehTeste, recusaDoEnvio, titulosDaFatura, titulosDoEscopo,
+  type EscopoEnvio, type EstadoDaFatura,
 } from "@/lib/cartao/envio";
 import {
   auditar, pendencias, type Auditoria, type LinhaAuditada, type Veredito,
@@ -84,6 +93,7 @@ type Resultado = {
   recuperados?: number;
   restantes?: number;
   fatura_fechada?: boolean;
+  escopo?: EscopoEnvio;
   falhas?: { integracao: string; estabelecimento: string; erro: string }[];
 };
 
@@ -134,6 +144,16 @@ export default function CartaoOmie() {
   const [sugerindo, setSugerindo] = useState(false);
   const [estadoDaFatura, setEstadoDaFatura] = useState<EstadoDaFatura>(null);
   const [envios, setEnvios] = useState<Envio[]>([]);
+  /**
+   * De que pedaço da fatura o próximo envio fala.
+   *
+   * "Tudo" é o padrão e continua sendo o caminho normal. Os outros dois existem
+   * porque a conferência não termina junto nos dois baldes: em set/26 as 32
+   * linhas de 1ª parcela estavam categorizadas por inteiro e ficaram presas
+   * atrás dos 105 títulos à vista que ainda faltavam. A regra de recusa é a
+   * mesma — ela só passa a julgar o lote que vai de fato ser mandado.
+   */
+  const [escopo, setEscopo] = useState<EscopoEnvio>("tudo");
   const [enviando, setEnviando] = useState<string | null>(null);
   const [resultado, setResultado] = useState<Resultado | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -601,7 +621,18 @@ export default function CartaoOmie() {
     () => new Set(envios.filter((e) => e.status === "enviado").map((e) => e.integracao)),
     [envios],
   );
-  const aEnviar = useMemo(() => titulos.filter((t) => !jaSubiram.has(t.integracao)), [titulos, jaSubiram]);
+
+  /** Os títulos de que o envio escolhido fala — e só eles daqui para baixo. */
+  const noEscopo = useMemo(() => titulosDoEscopo(titulos, escopo), [titulos, escopo]);
+  const aEnviar = useMemo(() => noEscopo.filter((t) => !jaSubiram.has(t.integracao)), [noEscopo, jaSubiram]);
+
+  /* Quantos títulos cada escopo ainda tem para mandar. Fica no botão: sem o
+     número, escolher "só 1ª parcela" é escolher às cegas. */
+  const faltamPorEscopo = useMemo(() => {
+    const conta = (e: EscopoEnvio) =>
+      titulosDoEscopo(titulos, e).filter((t) => !jaSubiram.has(t.integracao)).length;
+    return { tudo: conta("tudo"), avista: conta("avista"), primeira: conta("primeira") };
+  }, [titulos, jaSubiram]);
 
   /* A conferência. Roda sobre os MESMOS dados que a tela já mostra — não
      reconsulta nada — porque auditar com uma segunda fonte só provaria que as
@@ -629,8 +660,8 @@ export default function CartaoOmie() {
   /* A MESMA função que a Edge Function usa para recusar. Escrever a regra duas
      vezes é como não a ter: a cópia permissiva é a que duplica o mês. */
   const recusa = useMemo(
-    () => recusaDoEnvio({ competencia, estadoDaFatura, titulos }),
-    [competencia, estadoDaFatura, titulos],
+    () => recusaDoEnvio({ competencia, estadoDaFatura, titulos: noEscopo }),
+    [competencia, estadoDaFatura, noEscopo],
   );
 
   const faturaDeTeste = titulos.length > 0 && titulos.every((t) => ehTeste(t.fitid));
@@ -649,7 +680,9 @@ export default function CartaoOmie() {
       for (let volta = 1; ; volta++) {
         setEnviando(volta === 1 ? "Enviando…" : `Enviando… (lote ${volta})`);
         const { data, error } = await supabase.functions.invoke("cartao-omie-enviar", {
-          body: { action: "enviar", competencia, titulos: aEnviar },
+          // O escopo vai junto para a função saber que um envio parcial não
+          // fecha a fatura — fechar com o resto de fora barraria a continuação.
+          body: { action: "enviar", competencia, escopo, titulos: aEnviar },
         });
         if (error) throw new Error(error.message);
         const r = data as Resultado;
@@ -691,7 +724,7 @@ export default function CartaoOmie() {
         .from("cartao_faturas").select("provisionamento").eq("competencia", competencia).maybeSingle();
       setEstadoDaFatura((data?.provisionamento ?? null) as EstadoDaFatura);
     }
-  }, [recusa, competencia, aEnviar, carregarEnvios]);
+  }, [recusa, competencia, escopo, aEnviar, carregarEnvios]);
 
   /** Apaga do Omie o que a fatura sintética criou. Só ela — ver a função. */
   const limparTeste = useCallback(async () => {
@@ -905,9 +938,12 @@ export default function CartaoOmie() {
 
       {/* ---- o envio ---- */}
       <PainelEnvio
-        total={titulos.length}
+        total={noEscopo.length}
         aEnviar={aEnviar.length}
         valor={aEnviar.reduce((a, t) => a + t.valor, 0)}
+        escopo={escopo}
+        faltamPorEscopo={faltamPorEscopo}
+        onEscopo={setEscopo}
         envios={envios}
         orfaos={auditoria?.orfaos.length ?? 0}
         recusa={recusa}
@@ -1021,12 +1057,23 @@ function AvisoEnvioDesligado() {
  * pronto de `recusaDoEnvio` — o mesmo texto que o servidor devolveria —, então
  * ninguém descobre na hora do clique uma regra que a tela não contou.
  */
+const ESCOPO_ROTULO: Record<EscopoEnvio, string> = {
+  tudo: "Toda a fatura",
+  avista: "Só à vista",
+  primeira: "Só 1ª parcela",
+};
+
 function PainelEnvio({
-  total, aEnviar, valor, envios, orfaos, recusa, enviando, resultado, faturaDeTeste, onEnviar, onLimparTeste,
+  total, aEnviar, valor, escopo, faltamPorEscopo, onEscopo,
+  envios, orfaos, recusa, enviando, resultado, faturaDeTeste, onEnviar, onLimparTeste,
 }: {
   total: number;
   aEnviar: number;
   valor: number;
+  escopo: EscopoEnvio;
+  /** Quantos títulos cada escopo ainda tem para mandar. */
+  faltamPorEscopo: Record<EscopoEnvio, number>;
+  onEscopo: (e: EscopoEnvio) => void;
   envios: Envio[];
   /** Quantos dos que estão no Omie NÃO pertencem à fatura aberta agora. */
   orfaos: number;
@@ -1040,6 +1087,7 @@ function PainelEnvio({
   const subiram = envios.filter((e) => e.status === "enviado");
   const comErro = envios.filter((e) => e.status === "erro");
   const tudoLa = total > 0 && aEnviar === 0;
+  const parcial = ehParcial(escopo);
   /* Apagar título de conta a pagar no ERP de produção não pode caber num clique
      distraído. O segundo clique escreve o que vai sumir. */
   const [confirmando, setConfirmando] = useState(false);
@@ -1063,11 +1111,40 @@ function PainelEnvio({
             {recusa
               ? recusa
               : tudoLa
-                ? `Os ${total} títulos desta fatura já estão no Omie. Reenviar não cria nada: o `
-                  + "código de integração de cada parcela é único e o ERP recusa o repetido."
+                ? `Os ${total} títulos ${parcial ? "deste escopo" : "desta fatura"} já estão no Omie. `
+                  + "Reenviar não cria nada: o código de integração de cada parcela é único e o ERP "
+                  + "recusa o repetido."
                 : `${aEnviar} de ${total} títulos ainda não subiram — ${fmtBRLStr(valor)}. `
-                  + "Cada um vira uma conta a pagar própria, com o texto da fatura na observação."}
+                  + "Cada um vira uma conta a pagar própria, com o texto da fatura na observação."
+                  + (parcial ? " A fatura NÃO será marcada como enviada: falta o resto dela." : "")}
           </p>
+
+          {/* O escopo do envio.
+              Existe porque a conferência não termina junto nos dois baldes, e a
+              recusa é sobre o lote: um lojista sem categoria no "à vista" segurava
+              também as 1ªs parcelas já conferidas — que são justamente as que
+              precisam nascer para os meses à frente não chegarem vazios. Escolher
+              aqui não afrouxa nada: a mesma recusa passa a julgar o mesmo lote que
+              vai de fato ser mandado. */}
+          <div className="mt-2.5 flex flex-wrap items-center gap-1.5">
+            {(Object.keys(ESCOPO_ROTULO) as EscopoEnvio[]).map((e) => (
+              <button
+                key={e}
+                type="button"
+                onClick={() => onEscopo(e)}
+                disabled={!!enviando}
+                className={cn(
+                  "rounded-full border px-2.5 py-1 text-[11.5px] transition",
+                  escopo === e
+                    ? "border-primary bg-primary/10 font-semibold text-primary"
+                    : "border-border text-muted-foreground hover:border-primary/40",
+                )}
+              >
+                {ESCOPO_ROTULO[e]}
+                <span className="num ml-1.5 opacity-70">{faltamPorEscopo[e]}</span>
+              </button>
+            ))}
+          </div>
         </div>
 
         <div className="flex items-center gap-2">

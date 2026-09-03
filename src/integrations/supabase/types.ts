@@ -2115,6 +2115,51 @@ export type Database = {
         }
         Relationships: []
       }
+      cartao_fatura_rateio: {
+        Row: {
+          arquivo: string | null
+          competencia: string
+          criado_em: string
+          criado_por: string | null
+          drive_id: string | null
+          erro: string | null
+          gravar: boolean
+          id: string
+          leitura: Json | null
+          resultado: Json | null
+          status: string
+          terminado_em: string | null
+        }
+        Insert: {
+          arquivo?: string | null
+          competencia: string
+          criado_em?: string
+          criado_por?: string | null
+          drive_id?: string | null
+          erro?: string | null
+          gravar?: boolean
+          id?: string
+          leitura?: Json | null
+          resultado?: Json | null
+          status?: string
+          terminado_em?: string | null
+        }
+        Update: {
+          arquivo?: string | null
+          competencia?: string
+          criado_em?: string
+          criado_por?: string | null
+          drive_id?: string | null
+          erro?: string | null
+          gravar?: boolean
+          id?: string
+          leitura?: Json | null
+          resultado?: Json | null
+          status?: string
+          terminado_em?: string | null
+        }
+        Relationships: []
+      }
       cartao_faturas: {
         Row: {
           arquivo: string | null
@@ -5284,6 +5329,27 @@ export type Database = {
         }
         Relationships: []
       }
+      ia_teto_global: {
+        Row: {
+          atualizado_em: string
+          avisar_em: number[]
+          id: boolean
+          teto_mes_usd: number
+        }
+        Insert: {
+          atualizado_em?: string
+          avisar_em?: number[]
+          id?: boolean
+          teto_mes_usd?: number
+        }
+        Update: {
+          atualizado_em?: string
+          avisar_em?: number[]
+          id?: boolean
+          teto_mes_usd?: number
+        }
+        Relationships: []
+      }
       integracao_estado: {
         Row: {
           assinatura: string | null
@@ -8054,6 +8120,193 @@ export type Database = {
         }
         Relationships: []
       }
+      passagens_areas: {
+        Row: {
+          ativa: boolean
+          chave: string
+          created_at: string
+          nome: string
+          ordem: number
+        }
+        Insert: {
+          ativa?: boolean
+          chave: string
+          created_at?: string
+          nome: string
+          ordem?: number
+        }
+        Update: {
+          ativa?: boolean
+          chave?: string
+          created_at?: string
+          nome?: string
+          ordem?: number
+        }
+        Relationships: []
+      }
+      passagens_emails: {
+        Row: {
+          assunto: string | null
+          confianca: string | null
+          created_at: string
+          gmail_id: string
+          id: number
+          motivo: string | null
+          preco: number | null
+          recebido_em: string | null
+          trecho: string | null
+          viagem_id: string | null
+        }
+        Insert: {
+          assunto?: string | null
+          confianca?: string | null
+          created_at?: string
+          gmail_id: string
+          id?: number
+          motivo?: string | null
+          preco?: number | null
+          recebido_em?: string | null
+          trecho?: string | null
+          viagem_id?: string | null
+        }
+        Update: {
+          assunto?: string | null
+          confianca?: string | null
+          created_at?: string
+          gmail_id?: string
+          id?: number
+          motivo?: string | null
+          preco?: number | null
+          recebido_em?: string | null
+          trecho?: string | null
+          viagem_id?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "passagens_emails_viagem_id_fkey"
+            columns: ["viagem_id"]
+            isOneToOne: false
+            referencedRelation: "passagens_viagens"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      passagens_precos: {
+        Row: {
+          cia: string | null
+          coletado_em: string
+          fonte: string
+          id: number
+          preco: number
+          viagem_id: string
+        }
+        Insert: {
+          cia?: string | null
+          coletado_em?: string
+          fonte?: string
+          id?: number
+          preco: number
+          viagem_id: string
+        }
+        Update: {
+          cia?: string | null
+          coletado_em?: string
+          fonte?: string
+          id?: number
+          preco?: number
+          viagem_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "passagens_precos_viagem_id_fkey"
+            columns: ["viagem_id"]
+            isOneToOne: false
+            referencedRelation: "passagens_viagens"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      passagens_viagens: {
+        Row: {
+          area: string | null
+          comprado_em: string | null
+          created_at: string
+          criado_por: string | null
+          data_ida: string
+          data_volta: string | null
+          destino: string
+          google_url: string | null
+          google_veredito: string | null
+          id: string
+          motivo: string | null
+          origem: string
+          preco_comprado: number | null
+          quem_viaja: string | null
+          rastreando_em: string | null
+          solicitacao_id: string | null
+          status: string
+          teto: number
+          updated_at: string
+        }
+        Insert: {
+          area?: string | null
+          comprado_em?: string | null
+          created_at?: string
+          criado_por?: string | null
+          data_ida: string
+          data_volta?: string | null
+          destino: string
+          google_url?: string | null
+          google_veredito?: string | null
+          id?: string
+          motivo?: string | null
+          origem: string
+          preco_comprado?: number | null
+          quem_viaja?: string | null
+          rastreando_em?: string | null
+          solicitacao_id?: string | null
+          status?: string
+          teto: number
+          updated_at?: string
+        }
+        Update: {
+          area?: string | null
+          comprado_em?: string | null
+          created_at?: string
+          criado_por?: string | null
+          data_ida?: string
+          data_volta?: string | null
+          destino?: string
+          google_url?: string | null
+          google_veredito?: string | null
+          id?: string
+          motivo?: string | null
+          origem?: string
+          preco_comprado?: number | null
+          quem_viaja?: string | null
+          rastreando_em?: string | null
+          solicitacao_id?: string | null
+          status?: string
+          teto?: number
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "passagens_viagens_area_fkey"
+            columns: ["area"]
+            isOneToOne: false
+            referencedRelation: "passagens_areas"
+            referencedColumns: ["chave"]
+          },
+          {
+            foreignKeyName: "passagens_viagens_solicitacao_id_fkey"
+            columns: ["solicitacao_id"]
+            isOneToOne: false
+            referencedRelation: "facilities_solicitacoes"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       playbook_assets: {
         Row: {
           created_at: string
@@ -8994,6 +9247,102 @@ export type Database = {
             referencedColumns: ["id"]
           },
         ]
+      }
+      remuneracao_lancamento: {
+        Row: {
+          atualizado_em: string
+          bloco: string
+          categoria: string | null
+          competencia: string
+          criado_em: string
+          fonte: string
+          id: number
+          origem_ref: string
+          pagamento: string | null
+          pessoa_id: string
+          valor: number
+          vencimento: string | null
+        }
+        Insert: {
+          atualizado_em?: string
+          bloco: string
+          categoria?: string | null
+          competencia: string
+          criado_em?: string
+          fonte: string
+          id?: number
+          origem_ref: string
+          pagamento?: string | null
+          pessoa_id: string
+          valor: number
+          vencimento?: string | null
+        }
+        Update: {
+          atualizado_em?: string
+          bloco?: string
+          categoria?: string | null
+          competencia?: string
+          criado_em?: string
+          fonte?: string
+          id?: number
+          origem_ref?: string
+          pagamento?: string | null
+          pessoa_id?: string
+          valor?: number
+          vencimento?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "remuneracao_lancamento_pessoa_id_fkey"
+            columns: ["pessoa_id"]
+            isOneToOne: false
+            referencedRelation: "remuneracao_pessoa"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "remuneracao_lancamento_pessoa_id_fkey"
+            columns: ["pessoa_id"]
+            isOneToOne: false
+            referencedRelation: "vw_remuneracao_mensal"
+            referencedColumns: ["pessoa_id"]
+          },
+        ]
+      }
+      remuneracao_pessoa: {
+        Row: {
+          atualizado_em: string
+          chave: string
+          codigo_rh: string | null
+          criado_em: string
+          doc: string | null
+          eh_pessoa: boolean
+          id: string
+          nome: string
+          observacao: string | null
+        }
+        Insert: {
+          atualizado_em?: string
+          chave: string
+          codigo_rh?: string | null
+          criado_em?: string
+          doc?: string | null
+          eh_pessoa?: boolean
+          id?: string
+          nome: string
+          observacao?: string | null
+        }
+        Update: {
+          atualizado_em?: string
+          chave?: string
+          codigo_rh?: string | null
+          criado_em?: string
+          doc?: string | null
+          eh_pessoa?: boolean
+          id?: string
+          nome?: string
+          observacao?: string | null
+        }
+        Relationships: []
       }
       rescisoes: {
         Row: {
@@ -10568,6 +10917,39 @@ export type Database = {
         }
         Relationships: []
       }
+      vw_remuneracao_mensal: {
+        Row: {
+          codigo_rh: string | null
+          competencia: string | null
+          eh_pessoa: boolean | null
+          escala: number | null
+          fixo: number | null
+          fontes: string | null
+          lancamentos: number | null
+          nome: string | null
+          outro: number | null
+          pessoa_id: string | null
+          premiacao: number | null
+          total: number | null
+        }
+        Relationships: []
+      }
+      vw_remuneracao_omie: {
+        Row: {
+          bloco: string | null
+          categoria: string | null
+          cod_titulo: number | null
+          competencia: string | null
+          doc: string | null
+          nome: string | null
+          nome_cru: string | null
+          pagamento: string | null
+          registro: string | null
+          valor: number | null
+          vencimento: string | null
+        }
+        Relationships: []
+      }
     }
     Functions: {
       aceita_recibo_do_app: { Args: { nome: string }; Returns: boolean }
@@ -11651,6 +12033,8 @@ export type Database = {
       garantir_links_dos_cartoes: { Args: never; Returns: number }
       hub_automacoes: { Args: never; Returns: Json }
       hub_base_url: { Args: never; Returns: string }
+      ia_consumo_mes: { Args: never; Returns: Json }
+      ia_orcamento_alerta: { Args: never; Returns: Json }
       ia_orcamento_status: {
         Args: never
         Returns: {
@@ -12303,6 +12687,39 @@ export type Database = {
           valor: number
         }[]
       }
+      passagens_curva_diaria: {
+        Args: { p_dias?: number; p_viagem_id: string }
+        Returns: {
+          dia: string
+          mediana: number
+          menor: number
+          ofertas: number
+        }[]
+      }
+      passagens_expirar: { Args: never; Returns: number }
+      passagens_historico_rota: {
+        Args: { p_destino: string; p_origem: string }
+        Returns: {
+          compras: number
+          maior: number
+          mediana: number
+          menor: number
+          ultima_em: string
+          ultimo_preco: number
+        }[]
+      }
+      passagens_painel: {
+        Args: never
+        Returns: {
+          menor_em: string
+          menor_visto: number
+          pontos: number
+          primeiro_preco: number
+          ultimo_em: string
+          ultimo_preco: number
+          viagem: Json
+        }[]
+      }
       pergunta_acao_registrar: {
         Args: { p_estado: string; p_id: string; p_resultado?: Json }
         Returns: boolean
@@ -12320,6 +12737,7 @@ export type Database = {
         }
         Returns: undefined
       }
+      pode_ver_remuneracao: { Args: never; Returns: boolean }
       postgres_fdw_disconnect: { Args: { "": string }; Returns: boolean }
       postgres_fdw_disconnect_all: { Args: never; Returns: boolean }
       postgres_fdw_get_connections: {
@@ -12345,6 +12763,14 @@ export type Database = {
         Args: { p_id_unico: string; p_storage_path: string; p_token: string }
         Returns: Json
       }
+      remuneracao_carregar_omie: {
+        Args: never
+        Returns: {
+          lancamentos_gravados: number
+          pessoas_novas: number
+        }[]
+      }
+      remuneracao_painel: { Args: never; Returns: Json }
       rescisao_brl: { Args: { n: number }; Returns: string }
       rescisao_nome_chave: { Args: { p_nome: string }; Returns: string }
       rescisao_registrar: { Args: { p_payload: Json }; Returns: Json }

@@ -21,6 +21,7 @@ export const ROTAS: Record<string, { crumbs: string[]; context?: string }> = {
   "/governanca/cac": { crumbs: ["Governança", "Painel CAC"], context: "Custo de aquisição por time · exporta para o sistema da controladoria" },
   "/governanca/rescisoes": { crumbs: ["Governança", "Rescisões"], context: "Acerto de saída parcela a parcela · cálculo da skill Rescisão PJ + controle do pagamento" },
   "/operacional/colaboradores": { crumbs: ["Operacional", "Colaboradores (RH)"], context: "Ficha do colaborador · espelho do Portal RH" },
+  "/operacional/remuneracao": { crumbs: ["Operacional", "Remuneração"], context: "Quanto cada pessoa ganha mês a mês · fixo e comissão separados, lidos do Omie" },
   "/operacional/cartao": { crumbs: ["Operacional", "Cartão → Omie"], context: "Importar a fatura · separar parcelas · provisionar" },
   "/operacional/parceiros": { crumbs: ["Operacional", "Parceiros"], context: "Embaixadores · bonificação e recorrência" },
   "/operacional/reembolsos": { crumbs: ["Operacional", "Reembolsos"], context: "Pedidos de reembolso do time" },

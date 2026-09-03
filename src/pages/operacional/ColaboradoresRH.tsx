@@ -4,8 +4,10 @@ import {
   Search, Users, Columns3, Filter, FilterX, X,
   ChevronLeft, ChevronRight, Copy, Receipt, PanelRightOpen, Maximize2,
   UserPlus, UserMinus, CalendarClock, Building2, FileSpreadsheet,
-  AlertTriangle, ChevronDown,
+  AlertTriangle, ChevronDown, Lock,
 } from "lucide-react";
+import { useAuth } from "@/hooks/useAuth";
+import { moduleAccess } from "@/lib/modules";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -383,6 +385,14 @@ function lerFiltrosSalvos(): { filtros: Filtros; faixas: FaixasMap } {
 /* ─────────────────────────── Página ─────────────────────────── */
 
 export default function ColaboradoresRH() {
+  /* Esta tela mostra a coluna `valor` — o salário de todo mundo. Desde
+     03/09/2026 a policy de `rh_colaboradores` exige o mesmo cargo do painel de
+     Remuneração, então para quem não tem o cargo a consulta volta VAZIA. Sem
+     este aviso a tela diria "nenhum colaborador", que é uma mentira difícil de
+     investigar: parece sync quebrada, não falta de permissão. */
+  const { profile } = useAuth();
+  const podeVer = moduleAccess(profile?.cargo).remuneracao;
+
   const [busca, setBusca] = useState("");
   const [aba, setAba] = useState<"ativos" | "desligados" | "todos">("ativos");
   const [fotoAberta, setFotoAberta] = useState<{ url: string; nome: string } | null>(null);
@@ -887,6 +897,24 @@ export default function ColaboradoresRH() {
 
 
   const pad = densidade === "compacta" ? "py-1.5" : "py-[11px]";
+
+  /* Depois de TODOS os hooks — sair antes mudaria a quantidade de hooks entre
+     renders e o React quebra. */
+  if (!podeVer) {
+    return (
+      <div className="flex flex-col items-center justify-center gap-3 py-24 text-center">
+        <div className="grid h-12 w-12 place-items-center rounded-xl bg-secondary">
+          <Lock className="h-5 w-5 text-muted-foreground" />
+        </div>
+        <h1 className="text-lg font-semibold">Ficha dos colaboradores é restrita</h1>
+        <p className="max-w-md text-sm text-muted-foreground">
+          A ficha traz o valor do contrato de cada pessoa, e por isso segue a mesma
+          regra do painel de Remuneração: Diretoria, CEO e Financeiro. Fale com o
+          financeiro se você precisa dela.
+        </p>
+      </div>
+    );
+  }
 
   return (
     <div className="flex flex-col items-stretch gap-5 p-6 lg:flex-row lg:items-start">

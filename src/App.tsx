@@ -17,6 +17,7 @@ import Login from "./pages/Login";
 import Usuarios from "./pages/Usuarios";
 import Parametrizacao from "./pages/configuracoes/Parametrizacao";
 import Integracoes from "./pages/configuracoes/Integracoes";
+import UsoIA from "./pages/UsoIA";
 import AutomacoesProporcionais from "./pages/AutomacoesProporcionais";
 import RecargasCelulares from "./pages/RecargasCelulares";
 import RecargasViagens from "./pages/RecargasViagens";
@@ -68,6 +69,7 @@ import MonitoramentoLayout from "./pages/monitoramento/MonitoramentoLayout";
 import Thetys from "./pages/monitoramento/Thetys";
 import Reembolsos from "./pages/operacional/Reembolsos";
 import ColaboradoresRH from "./pages/operacional/ColaboradoresRH";
+import Remuneracao from "./pages/operacional/Remuneracao";
 import Estornos from "./pages/operacional/Estornos";
 import NotasFiscais from "./pages/operacional/NotasFiscais";
 import Variavel from "./pages/operacional/Variavel";
@@ -191,6 +193,11 @@ function Rotas() {
               <Route path="/design-system" element={<DesignSystem />} />
               <Route path="/usuarios" element={<Usuarios />} />
               <Route path="/configuracoes/parametrizacao" element={<Parametrizacao />} />
+              {/* A página existia desde maio e nunca teve rota: o breadcrumb dela estava em
+                  `rotas.ts` e o `<Route>` não. Ou seja, o único lugar do Hub que mostra o
+                  custo da IA era inalcançável — parte de por que ninguém viu o crédito
+                  do Gemini acabar em 03/09/2026. */}
+              <Route path="/configuracoes/uso-ia" element={<UsoIA />} />
               <Route path="/automacoes/proporcionais" element={<AutomacoesProporcionais />} />
 
               {/* "Está tudo funcionando?" — a agente, os crons e as credenciais no
@@ -283,6 +290,7 @@ function Rotas() {
               <Route path="/operacional/cartao" element={<CartaoOmie />} />
               <Route path="/operacional/reembolsos" element={<Reembolsos />} />
               <Route path="/operacional/colaboradores" element={<ColaboradoresRH />} />
+              <Route path="/operacional/remuneracao" element={<Remuneracao />} />
               <Route path="/operacional/estornos" element={<Estornos />} />
               <Route path="/operacional/notas-fiscais" element={<NotasFiscais />} />
               <Route path="/operacional/variavel" element={<Variavel />} />

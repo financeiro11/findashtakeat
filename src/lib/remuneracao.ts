@@ -266,15 +266,85 @@ export function fixoDeReferencia(meses: MesRemuneracao[]): number | null {
   return Math.max(...pagos.map((m) => num(m.fixo)));
 }
 
+/**
+ * As competências cujo VARIÁVEL já foi lançado.
+ *
+ * A comissão de um mês entra no ERP depois do mês virar. Em 04/09/2026 a
+ * competência de agosto tinha 4 títulos de variável contra 60 a 82 dos meses
+ * anteriores — ela existe, mas está pela metade. Somar o total de alguém usando
+ * agosto diria que a pessoa ganhou só o fixo, e comparar isso com quem tem cinco
+ * meses cheios a colocaria no fundo do grupo por um motivo de calendário.
+ *
+ * O piso é relativo à própria empresa (um quarto da mediana dos meses
+ * anteriores), e não um valor fixo: mês fraco de comissão continua entrando,
+ * mês não lançado não.
+ */
+export function competenciasFechadas(
+  pessoas: PessoaRemuneracao[],
+  meses: string[],
+): Set<string> {
+  const ordenados = [...meses].sort((a, b) => a.localeCompare(b));
+  const variavelDoMes = new Map<string, number>();
+  for (const m of ordenados) variavelDoMes.set(m, 0);
+  for (const p of pessoas) {
+    if (!p.eh_pessoa) continue;
+    for (const m of p.meses ?? []) {
+      if (variavelDoMes.has(m.competencia)) {
+        variavelDoMes.set(m.competencia, variavelDoMes.get(m.competencia)! + num(m.premiacao));
+      }
+    }
+  }
+
+  const fechadas = new Set<string>();
+  const anteriores: number[] = [];
+  for (const m of ordenados) {
+    const v = variavelDoMes.get(m) ?? 0;
+    // O primeiro mês não tem contra o que ser medido — entra.
+    const piso = anteriores.length
+      ? medianaDe([...anteriores].sort((a, b) => a - b)) * 0.25
+      : 0;
+    if (v >= piso) fechadas.add(m);
+    anteriores.push(v);
+  }
+  return fechadas;
+}
+
+/**
+ * A remuneração mensal típica da pessoa — fixo MAIS variável e escala.
+ *
+ * MEDIANA e não média: um mês proporcional de entrada ou de saída puxaria a
+ * média para baixo, e a mediana o descarta sozinha.
+ *
+ * O total, e não o fixo, porque no comercial o fixo é quase o mesmo para todo
+ * mundo (R$ 3.000 na maioria) e a diferença mora inteira na comissão — a Luiza
+ * teve R$ 23.300 de variável em julho sobre os mesmos R$ 3.000 de fixo. Comparar
+ * por fixo diria que o time inteiro está na mediana.
+ */
+export function remuneracaoMensalTipica(
+  meses: MesRemuneracao[],
+  fechadas: Set<string>,
+): number | null {
+  const totais = meses
+    .filter((m) => fechadas.has(m.competencia) && num(m.total) > 0)
+    .map((m) => num(m.total))
+    .sort((a, b) => a - b);
+  return totais.length ? medianaDe(totais) : null;
+}
+
 export type Pares = {
   /** O cargo que define o grupo. */
   cargo: string;
   quantos: number;
+  /** Mediana do grupo na base comparada (remuneração mensal típica). */
   mediana: number;
   /** Onde a pessoa cai no grupo, de 0 a 100. */
   percentil: number;
   /** Diferença para a mediana, em reais. Negativo = ganha menos que a mediana. */
   contraMediana: number;
+  /** O valor da própria pessoa na base comparada — o que a tela mostra. */
+  valor: number;
+  /** Quanto da remuneração dela é variável (0 a 1). Alto = o fixo engana. */
+  parteVariavel: number;
 };
 
 const normCargo = (c: string | null | undefined) =>
@@ -286,47 +356,66 @@ export const MINIMO_DE_PARES = 3;
 /**
  * Onde cada pessoa está em relação a quem tem o MESMO CARGO.
  *
- * Por cargo e não por área de propósito: em agosto/2026 o Comercial tinha
- * mediana de R$ 3.231 e máximo de R$ 27.800 — comparar um analista com um Head
- * do mesmo time não responde nada. O cargo vem do espelho do RH, que é o único
- * lugar onde ele existe.
+ * COMPARA A REMUNERAÇÃO INTEIRA, não o fixo. No comercial o fixo é quase o mesmo
+ * para todo mundo — R$ 3.000 para a maioria dos vendedores — e a diferença mora
+ * inteira na comissão: em julho/2026 a Luiza teve R$ 23.300 de variável e o
+ * Thayrone R$ 4.900, sobre o mesmo fixo. Um comparador de fixo diria que os dois
+ * estão na mediana, e estaria tecnicamente certo e completamente inútil.
+ *
+ * Por cargo e não por área: em agosto/2026 o Comercial tinha mediana de R$ 3.231
+ * e máximo de R$ 27.800 — comparar um analista com um Head do mesmo time não
+ * responde nada. O cargo vem do espelho do RH, único lugar onde ele existe.
  *
  * Grupos com menos de três pessoas não entram: mediana de dois é a média deles,
- * e "você está no percentil 50 de um grupo de 2" é ruído com cara de dado.
- * Quem não tem cargo no RH também fica de fora — o mapa devolve só quem dá para
- * comparar honestamente.
+ * e "percentil 50 de um grupo de 2" é ruído com cara de dado. Quem não tem cargo
+ * no RH também fica de fora — o mapa devolve só quem dá para comparar
+ * honestamente.
  */
-export function compararComPares(pessoas: PessoaRemuneracao[]): Map<string, Pares> {
-  const grupos = new Map<string, { cargo: string; itens: { id: string; fixo: number }[] }>();
+export function compararComPares(
+  pessoas: PessoaRemuneracao[],
+  meses: string[],
+): Map<string, Pares> {
+  const fechadas = competenciasFechadas(pessoas, meses);
+  const grupos = new Map<string, {
+    cargo: string;
+    itens: { id: string; valor: number; parteVariavel: number }[];
+  }>();
 
   for (const p of pessoas) {
     if (!p.eh_pessoa) continue;
     const chave = normCargo(p.cargo);
     if (!chave) continue;
-    const fixo = fixoDeReferencia(p.meses ?? []);
-    if (fixo == null) continue;
+    const valor = remuneracaoMensalTipica(p.meses ?? [], fechadas);
+    if (valor == null || valor <= 0) continue;
+
+    const cheios = (p.meses ?? []).filter((m) => fechadas.has(m.competencia));
+    const total = cheios.reduce((s, m) => s + num(m.total), 0);
+    const variavel = cheios.reduce((s, m) => s + num(m.premiacao) + num(m.escala), 0);
+
     const g = grupos.get(chave) ?? { cargo: p.cargo!.trim(), itens: [] };
-    g.itens.push({ id: p.id, fixo });
+    g.itens.push({ id: p.id, valor, parteVariavel: total > 0 ? variavel / total : 0 });
     grupos.set(chave, g);
   }
 
   const out = new Map<string, Pares>();
   for (const g of grupos.values()) {
     if (g.itens.length < MINIMO_DE_PARES) continue;
-    const valores = g.itens.map((i) => i.fixo).sort((a, b) => a - b);
+    const valores = g.itens.map((i) => i.valor).sort((a, b) => a - b);
     const mediana = medianaDe(valores);
     for (const item of g.itens) {
       // Percentil = quantos do grupo ganham MENOS, mais metade dos empatados.
       // Sem a metade dos empatados, três pessoas no mesmo salário cairiam no
       // percentil 0 — como se fossem as piores pagas do próprio grupo.
-      const menores = valores.filter((v) => v < item.fixo).length;
-      const iguais = valores.filter((v) => v === item.fixo).length;
+      const menores = valores.filter((v) => v < item.valor).length;
+      const iguais = valores.filter((v) => v === item.valor).length;
       out.set(item.id, {
         cargo: g.cargo,
         quantos: g.itens.length,
         mediana,
         percentil: Math.round(((menores + iguais / 2) / valores.length) * 100),
-        contraMediana: item.fixo - mediana,
+        contraMediana: item.valor - mediana,
+        valor: item.valor,
+        parteVariavel: item.parteVariavel,
       });
     }
   }

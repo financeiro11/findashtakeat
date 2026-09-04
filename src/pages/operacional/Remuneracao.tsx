@@ -69,6 +69,9 @@ const fmtBRL = (n: number | null | undefined) => comValorExato(n, fmtBRLStr(n));
 const pctStr = (v: number) =>
   `${v > 0 ? "+" : ""}${(v * 100).toLocaleString("pt-BR", { maximumFractionDigits: 1 })}%`;
 
+const fmtDataHoraStr = (iso: string | null | undefined) =>
+  iso ? new Date(iso).toLocaleString("pt-BR", { dateStyle: "short", timeStyle: "short" }) : "—";
+
 const fmtDataStr = (iso: string | null) => {
   const d = parseISO(iso);
   if (!d) return "—";
@@ -138,20 +141,49 @@ export default function Remuneracao() {
   const [comparando, setComparando] = useState<Set<string>>(new Set());
   const MAX_COMPARAR = 3;
 
-  const carregar = async () => {
+  /* De quando é o dado. O painel lê uma TABELA, não o Omie ao vivo: sem isto,
+     um número velho parece atual. Em 04/09/2026 as premiações de agosto entraram
+     no cache do Omie às 00:07 e a carga só rodaria às 12:40 — a tela mostrou
+     R$ 1.178 de variável no mês em que havia R$ 108.987. */
+  const [frescor, setFrescor] = useState<{ carga_em?: string; omie_em?: string } | null>(null);
+
+  const carregar = async (recarregarDoOmie = false) => {
     setCarregando(true);
     setErro(null);
-    const { data, error } = await supabase.rpc("remuneracao_painel");
-    if (error) {
-      setErro(error.message);
+
+    // "Atualizar" dispara a carga ANTES de reler. Antes ele só relia a mesma
+    // tabela — um botão de atualizar que não atualiza faz quem clica concluir
+    // que o número está certo.
+    if (recarregarDoOmie) {
+      const { error } = await supabase.rpc("remuneracao_atualizar");
+      if (error) {
+        setErro(error.message);
+        setCarregando(false);
+        return;
+      }
+    }
+
+    const [painelRes, frescorRes] = await Promise.all([
+      supabase.rpc("remuneracao_painel"),
+      supabase.rpc("remuneracao_frescor"),
+    ]);
+    if (painelRes.error) {
+      setErro(painelRes.error.message);
       setPainel(null);
     } else {
-      setPainel(data as unknown as PainelRemuneracao);
+      setPainel(painelRes.data as unknown as PainelRemuneracao);
+      setFrescor((frescorRes.data as { carga_em?: string; omie_em?: string } | null) ?? null);
     }
     setCarregando(false);
+    if (recarregarDoOmie) toast.success("Recarregado do Omie");
   };
 
   useEffect(() => { if (podeVer) void carregar(); else setCarregando(false); }, [podeVer]);
+
+  /* O Omie tem coisa que a carga ainda não pegou. Não é erro — é a janela entre
+     a sync do ERP e a carga diária —, mas quem está lendo precisa saber. */
+  const atrasada =
+    !!frescor?.carga_em && !!frescor?.omie_em && frescor.omie_em > frescor.carga_em;
 
   const meses = useMemo(
     () => [...(painel?.meses ?? [])].sort((a, b) => a.localeCompare(b)),
@@ -213,7 +245,10 @@ export default function Remuneracao() {
   /* A comparação com os pares roda sobre TODAS as pessoas, não sobre o recorte:
      a mediana do cargo não muda porque alguém filtrou por setor, e recalcular
      por filtro faria o percentil da mesma pessoa dançar conforme a tela. */
-  const pares = useMemo(() => compararComPares(painel?.pessoas ?? []), [painel]);
+  const pares = useMemo(
+    () => compararComPares(painel?.pessoas ?? [], meses),
+    [painel, meses],
+  );
 
   const areas = useMemo(
     () => custoPorArea(pessoasDoMes, meses),
@@ -291,9 +326,15 @@ export default function Remuneracao() {
           </p>
         </div>
         <div className="flex items-center gap-2">
-          <Button variant="outline" size="sm" onClick={() => void carregar()} disabled={carregando}>
+          <Button
+            variant={atrasada ? "default" : "outline"}
+            size="sm"
+            onClick={() => void carregar(true)}
+            disabled={carregando}
+            title="Recarrega do Omie e relê o painel"
+          >
             <RefreshCw className={cn("mr-1.5 h-3.5 w-3.5", carregando && "animate-spin")} />
-            Atualizar
+            {atrasada ? "Recarregar do Omie" : "Atualizar"}
           </Button>
           <Button size="sm" onClick={exportar} disabled={!painel || !pessoas.length}>
             <Download className="mr-1.5 h-3.5 w-3.5" />
@@ -301,6 +342,20 @@ export default function Remuneracao() {
           </Button>
         </div>
       </div>
+
+      {atrasada && (
+        <div className="flex items-start gap-2 rounded-lg border border-warn/30 bg-warn/5 p-3 text-sm">
+          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-warn" />
+          <div>
+            <p className="font-medium">O Omie tem lançamentos que este painel ainda não leu.</p>
+            <p className="text-muted-foreground">
+              Última carga: {fmtDataHoraStr(frescor?.carga_em)} · Omie sincronizado em{" "}
+              {fmtDataHoraStr(frescor?.omie_em)}. A carga automática roda uma vez por dia;
+              clique em “Recarregar do Omie” para trazer agora.
+            </p>
+          </div>
+        </div>
+      )}
 
       {erro && (
         <div className="flex items-start gap-2 rounded-lg border border-neg/30 bg-neg/5 p-3 text-sm">
@@ -483,7 +538,12 @@ export default function Remuneracao() {
                   <TableHead className="hidden md:table-cell">Tempo de casa</TableHead>
                   <TableHead className="text-right">Fixo hoje</TableHead>
                   <TableHead className="hidden lg:table-cell text-right">Variável médio</TableHead>
-                  <TableHead className="hidden xl:table-cell text-right">Contra os pares</TableHead>
+                  <TableHead
+                    className="hidden xl:table-cell text-right"
+                    title="Remuneração inteira (fixo + variável) contra quem tem o mesmo cargo"
+                  >
+                    Contra os pares
+                  </TableHead>
                   <TableHead className="text-right">Último reajuste</TableHead>
                   <TableHead className="hidden sm:table-cell text-right">Sem reajuste</TableHead>
                   <TableHead className="hidden xl:table-cell w-[90px]">Evolução</TableHead>
@@ -638,6 +698,7 @@ export default function Remuneracao() {
           <p className="text-xs text-muted-foreground">
             {linhas.length} pessoas · {meses.length ? `${rotuloMes(meses[0])} a ${rotuloMes(meses[meses.length - 1])}` : "sem período"}
             {" · "}o histórico antes de {meses[0] ? rotuloMes(meses[0]) : "—"} ainda vai entrar pelo Conta Azul.
+            {frescor?.carga_em && ` · carga de ${fmtDataHoraStr(frescor.carga_em)}`}
           </p>
         </>
       )}
@@ -804,17 +865,26 @@ const SERIES = [
 /**
  * Onde a pessoa cai entre quem tem o mesmo cargo.
  *
- * O número que importa é a distância em REAIS para a mediana; o percentil dá a
- * escala ("é R$ 2.000 a menos" não diz se são 3 pessoas ou 30 acima dela).
+ * Compara a REMUNERAÇÃO INTEIRA — no comercial o fixo é R$ 3.000 para quase
+ * todo mundo e a diferença mora na comissão. O número em destaque é a distância
+ * em reais para a mediana; o percentil dá a escala, porque "R$ 2.000 a menos"
+ * não diz se são 3 pessoas ou 30 acima dela.
+ *
  * Cinza, não vermelho: ganhar abaixo da mediana não é um erro — metade do grupo
- * ganha, por definição. Quem pinta isso de alarme transforma estatística em
+ * ganha, por definição. Pintar isso de alarme transforma estatística em
  * acusação.
  */
 function ContraOsPares({ par }: { par?: Pares }) {
   if (!par) return <span className="text-xs text-muted-foreground">—</span>;
   const abaixo = par.contraMediana < 0;
   return (
-    <div title={`${par.quantos} pessoas no cargo "${par.cargo}" · mediana ${fmtBRLStr(par.mediana)}`}>
+    <div
+      title={
+        `${par.quantos} pessoas no cargo "${par.cargo}"\n` +
+        `Ela: ${fmtBRLStr(par.valor)}/mês · mediana do cargo: ${fmtBRLStr(par.mediana)}\n` +
+        `${Math.round(par.parteVariavel * 100)}% da remuneração dela é variável`
+      }
+    >
       <div className="num text-xs font-medium">
         {par.contraMediana === 0
           ? "na mediana"
@@ -1042,6 +1112,9 @@ function FichaDaPessoa({ pessoa, par, onClose }: {
             </div>
             <div className="mt-1.5 flex flex-wrap items-baseline gap-x-4 gap-y-1">
               <span>
+                Ela: <span className="num font-medium">{fmtBRLStr(par.valor)}</span>/mês
+              </span>
+              <span>
                 Mediana do cargo: <span className="num font-medium">{fmtBRLStr(par.mediana)}</span>
               </span>
               <span>
@@ -1056,6 +1129,14 @@ function FichaDaPessoa({ pessoa, par, onClose }: {
               </span>
               <span className="text-muted-foreground">percentil {par.percentil}</span>
             </div>
+            {/* Quando a maior parte vem da comissão, dizer isso muda a conversa:
+                o fixo é quase igual para o time todo e não explica nada. */}
+            {par.parteVariavel >= 0.3 && (
+              <p className="mt-1 text-[10.5px] text-info">
+                {Math.round(par.parteVariavel * 100)}% da remuneração dela é variável —
+                o fixo não conta a história deste cargo.
+              </p>
+            )}
             {/* Régua: onde ela cai dentro do grupo, de relance. */}
             <div className="relative mt-2 h-1.5 w-full rounded-full bg-secondary">
               <div className="absolute inset-y-0 left-1/2 w-px bg-border" title="Mediana" />
@@ -1065,8 +1146,10 @@ function FichaDaPessoa({ pessoa, par, onClose }: {
               />
             </div>
             <p className="mt-1.5 text-[10px] text-muted-foreground">
-              Compara o fixo cheio, não o último mês — mês de entrada ou de saída é
-              proporcional e afundaria o percentil sem motivo.
+              Compara a remuneração inteira (fixo + variável + escala), pela mediana
+              mensal dos meses cujo variável já foi lançado — o mês em que a comissão
+              ainda não entrou ficaria com só o fixo e afundaria o percentil por
+              motivo de calendário.
             </p>
           </div>
         )}

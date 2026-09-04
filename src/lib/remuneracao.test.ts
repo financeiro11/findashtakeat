@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   degrausDoFixo, resumoDaPessoa, filtrarPessoas, totaisDoMes, paraCsv, matrizParaPlanilha,
   rotuloMes, distanciaEmMeses, ultimaCompetenciaFechada, mudancasDeArea, areaAtual,
-  fixoDeReferencia, compararComPares, custoPorArea,
+  fixoDeReferencia, compararComPares, custoPorArea, competenciasFechadas,
   type MesRemuneracao, type PessoaRemuneracao,
 } from "./remuneracao";
 
@@ -265,53 +265,112 @@ describe("fixo de referência", () => {
   });
 });
 
+describe("meses com o variável fechado", () => {
+  /* Em 04/09/2026 a competência de agosto tinha 4 títulos de variável contra 60
+     a 82 dos meses anteriores: a comissão ainda não tinha sido lançada. */
+  const meses = ["2026-06-01", "2026-07-01", "2026-08-01"];
+  const time = [
+    pessoa({ id: "a", meses: [
+      mes("2026-06-01", 3000, 5000), mes("2026-07-01", 3000, 6000), mes("2026-08-01", 3000, 0),
+    ] }),
+    pessoa({ id: "b", meses: [
+      mes("2026-06-01", 3000, 4000), mes("2026-07-01", 3000, 5000), mes("2026-08-01", 3000, 0),
+    ] }),
+  ];
+
+  it("descarta o mês cujo variável ainda não entrou", () => {
+    const f = competenciasFechadas(time, meses);
+    expect(f.has("2026-06-01")).toBe(true);
+    expect(f.has("2026-07-01")).toBe(true);
+    expect(f.has("2026-08-01")).toBe(false);
+  });
+
+  /* Mês fraco de comissão continua sendo um mês real. O piso é um quarto da
+     mediana anterior, não "parecido com os outros". */
+  it("mês de comissão fraca continua fechado", () => {
+    const fraco = [
+      pessoa({ id: "a", meses: [
+        mes("2026-06-01", 3000, 8000), mes("2026-07-01", 3000, 8000), mes("2026-08-01", 3000, 3000),
+      ] }),
+    ];
+    expect(competenciasFechadas(fraco, meses).has("2026-08-01")).toBe(true);
+  });
+
+  it("o primeiro mês não tem contra o que ser medido e entra", () => {
+    expect(competenciasFechadas(time, meses).has("2026-06-01")).toBe(true);
+  });
+});
+
 describe("comparação com os pares", () => {
-  const comCargo = (id: string, cargo: string | null, fixo: number) =>
-    pessoa({ id, cargo, meses: [mes("2026-07-01", fixo), mes("2026-08-01", fixo)] });
+  const meses = ["2026-06-01", "2026-07-01"];
+  /** Alguém com fixo estável e variável estável nos dois meses fechados. */
+  const par = (id: string, cargo: string | null, fixo: number, variavel = 0) =>
+    pessoa({ id, cargo, meses: [mes("2026-06-01", fixo, variavel), mes("2026-07-01", fixo, variavel)] });
 
   it("compara por cargo e devolve mediana e percentil", () => {
     const m = compararComPares([
-      comCargo("a", "Analista de Suporte", 2000),
-      comCargo("b", "Analista de Suporte", 3000),
-      comCargo("c", "Analista de Suporte", 4000),
-    ]);
+      par("a", "Analista de Suporte", 2000),
+      par("b", "Analista de Suporte", 3000),
+      par("c", "Analista de Suporte", 4000),
+    ], meses);
     expect(m.get("b")?.mediana).toBe(3000);
     expect(m.get("b")?.quantos).toBe(3);
     expect(m.get("a")?.contraMediana).toBe(-1000);
     expect(m.get("c")?.contraMediana).toBe(1000);
   });
 
-  /* Comparar analista com Head da mesma ÁREA não diz nada: em ago/26 o
-     Comercial tinha mediana 3.231 e máximo 27.800. Por isso o grupo é o cargo. */
+  /* O caso do comercial, que motivou a correção: mesmo fixo para todo mundo, e
+     a diferença inteira na comissão. Comparar por fixo diria que os três estão
+     na mediana; comparar pela remuneração inteira mostra a distância real. */
+  it("compara a remuneração INTEIRA, não só o fixo", () => {
+    const m = compararComPares([
+      par("luiza", "Vendedor", 3000, 23300),
+      par("thayrone", "Vendedor", 3000, 4900),
+      par("israel", "Vendedor", 3000, 3800),
+    ], meses);
+    expect(m.get("luiza")?.percentil).toBe(83);
+    expect(m.get("israel")?.percentil).toBe(17);
+    expect(m.get("luiza")!.contraMediana).toBeGreaterThan(15000);
+  });
+
+  it("diz quanto da remuneração é variável", () => {
+    const m = compararComPares([
+      par("vendedor", "Vendedor", 3000, 9000),
+      par("b", "Vendedor", 3000, 9000),
+      par("c", "Vendedor", 3000, 9000),
+    ], meses);
+    expect(m.get("vendedor")?.parteVariavel).toBeCloseTo(0.75, 2);
+  });
+
   it("não mistura cargos diferentes", () => {
     const m = compararComPares([
-      comCargo("a", "Analista", 3000), comCargo("b", "Analista", 3000),
-      comCargo("c", "Analista", 3000), comCargo("d", "Head", 20000),
-    ]);
+      par("a", "Analista", 3000), par("b", "Analista", 3000),
+      par("c", "Analista", 3000), par("d", "Head", 20000),
+    ], meses);
     expect(m.get("a")?.mediana).toBe(3000);
     expect(m.has("d")).toBe(false); // grupo de 1
   });
 
   it("cargo escrito com caixa e espaço diferentes é o mesmo grupo", () => {
     const m = compararComPares([
-      comCargo("a", "Analista de Suporte", 2000),
-      comCargo("b", "ANALISTA  DE SUPORTE", 3000),
-      comCargo("c", " analista de suporte ", 4000),
-    ]);
+      par("a", "Analista de Suporte", 2000),
+      par("b", "ANALISTA  DE SUPORTE", 3000),
+      par("c", " analista de suporte ", 4000),
+    ], meses);
     expect(m.get("a")?.quantos).toBe(3);
   });
 
   /* Mediana de dois é a média dos dois — "percentil 50 de um grupo de 2" é
      ruído com cara de dado. */
   it("grupo pequeno demais fica de fora", () => {
-    const m = compararComPares([comCargo("a", "Raro", 5000), comCargo("b", "Raro", 6000)]);
+    const m = compararComPares([par("a", "Raro", 5000), par("b", "Raro", 6000)], meses);
     expect(m.size).toBe(0);
   });
 
   it("quem não tem cargo no RH fica de fora", () => {
     const m = compararComPares([
-      comCargo("a", null, 3000), comCargo("b", null, 4000), comCargo("c", null, 5000),
-    ]);
+      par("a", null, 3000), par("b", null, 4000), par("c", null, 5000),
+    ], meses);
     expect(m.size).toBe(0);
   });
 
@@ -319,19 +378,23 @@ describe("comparação com os pares", () => {
      piores pagas do próprio grupo. */
   it("empate cai no meio, não no fundo", () => {
     const m = compararComPares([
-      comCargo("a", "Igual", 5000), comCargo("b", "Igual", 5000), comCargo("c", "Igual", 5000),
-    ]);
+      par("a", "Igual", 5000), par("b", "Igual", 5000), par("c", "Igual", 5000),
+    ], meses);
     expect(m.get("a")?.percentil).toBe(50);
   });
 
-  it("usa o fixo cheio, não o mês proporcional de saída", () => {
+  /* Mediana e não média: o mês proporcional de saída fica de fora sozinho. */
+  it("um mês proporcional não afunda a pessoa", () => {
+    const tres = ["2026-05-01", "2026-06-01", "2026-07-01"];
     const saindo = pessoa({
       id: "x", cargo: "Analista",
-      meses: [mes("2026-07-01", 6000), mes("2026-08-01", 900)],
+      meses: [mes("2026-05-01", 6000), mes("2026-06-01", 6000), mes("2026-07-01", 900)],
     });
-    const m = compararComPares([
-      saindo, comCargo("y", "Analista", 6000), comCargo("z", "Analista", 6000),
-    ]);
+    const outro = (id: string) => pessoa({ id, cargo: "Analista", meses: [
+      mes("2026-05-01", 6000), mes("2026-06-01", 6000), mes("2026-07-01", 6000),
+    ] });
+    const m = compararComPares([saindo, outro("y"), outro("z")], tres);
+    expect(m.get("x")?.valor).toBe(6000);
     expect(m.get("x")?.contraMediana).toBe(0);
   });
 });

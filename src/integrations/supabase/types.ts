@@ -12837,6 +12837,7 @@ export type Database = {
           pessoas_novas: number
         }[]
       }
+      remuneracao_frescor: { Args: never; Returns: Json }
       remuneracao_fundir: {
         Args: { p_absorve: string; p_mantem: string; p_origem?: string }
         Returns: undefined

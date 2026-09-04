@@ -645,10 +645,38 @@ describe("as três abas da planilha", () => {
     }
   });
 
+  /* Os índices de moeda são escritos à mão. Este teste é o que impede que
+     acrescentar uma coluna no meio ponha "R$" no percentil. */
   it("as colunas marcadas como moeda são mesmo de dinheiro", () => {
+    for (const aba of abas()) {
+      for (const i of aba.moeda) {
+        expect(aba.linhas[0][i]).toMatch(
+          /Fixo|Pró-labore|Variável|Escala|Total|Reajuste R\$|Mediana|Contra a mediana|Contrato|jul\/26|ago\/26/,
+        );
+      }
+      for (const i of aba.percentual) expect(String(aba.linhas[0][i])).toContain("%");
+    }
+  });
+
+  /* A divisão que o diretor pediu: quanto do que a pessoa recebeu é salário,
+     quanto é comissão, quanto é escala — somado no período, sem pivotar nada. */
+  it("o Resumo separa fixo, variável e escala no período", () => {
     const [resumo] = abas();
-    for (const i of resumo.moeda) expect(String(resumo.linhas[0][i])).not.toMatch(/Percentil|Nome|Cargo/);
-    expect(resumo.linhas[0][resumo.percentual[0]]).toBe("Reajuste %");
+    const cab = resumo.linhas[0];
+    const ana = resumo.linhas[1];
+    expect(ana[cab.indexOf("Fixo no período")]).toBe(10000);
+    expect(ana[cab.indexOf("Variável no período")]).toBe(1000);
+    expect(ana[cab.indexOf("Total no período")]).toBe(11000);
+    expect(ana[cab.indexOf("Meses pagos")]).toBe(2);
+    // 1.000 de 11.000
+    expect(ana[cab.indexOf("% variável")]).toBeCloseTo(9.1, 1);
+  });
+
+  it("quem não tem escala nem pró-labore fica com célula vazia, não zero", () => {
+    const [resumo] = abas();
+    const cab = resumo.linhas[0];
+    expect(resumo.linhas[1][cab.indexOf("Escala no período")]).toBeNull();
+    expect(resumo.linhas[1][cab.indexOf("Pró-labore no período")]).toBeNull();
   });
 });
 

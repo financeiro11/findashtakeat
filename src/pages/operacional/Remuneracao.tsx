@@ -135,11 +135,21 @@ export default function Remuneracao() {
     }, { replace: true });
   };
 
-  /* Quem entra na comparação lado a lado. Teto de três: com quatro trajetórias
-     sobrepostas a leitura vira um novelo, e o pedido original era comparar duas
-     pessoas. */
-  const [comparando, setComparando] = useState<Set<string>>(new Set());
+  /* Quem está marcado na lista. SEM TETO: a seleção serve para exportar o
+     histórico de um punhado de pessoas específicas, que é o pedido da diretoria,
+     e prender isso em três só porque a comparação visual não aguenta mais seria
+     deixar o limite de um recurso mandar no outro.
+     A comparação tem teto próprio, aplicada no botão dela. */
+  const [selecionadas, setSelecionadas] = useState<Set<string>>(new Set());
+  const [comparando, setComparando] = useState(false);
   const MAX_COMPARAR = 3;
+
+  const marcar = (id: string, marcado: boolean) =>
+    setSelecionadas((s) => {
+      const novo = new Set(s);
+      if (marcado) novo.add(id); else novo.delete(id);
+      return novo;
+    });
 
   /* De quando é o dado. O painel lê uma TABELA, não o Omie ao vivo: sem isto,
      um número velho parece atual. Em 04/09/2026 as premiações de agosto entraram
@@ -284,11 +294,20 @@ export default function Remuneracao() {
   const FORMATO_MOEDA = 'R$ #,##0.00';
   const FORMATO_PCT = '0.0"%"';
 
-  const exportar = () => {
+  /* Quem vai no arquivo: as marcadas, se houver alguma; senão o recorte inteiro
+     da tela. Assim "exportar tudo" continua sendo um clique e "exportar estas
+     quatro pessoas" também. */
+  const exportar = (quem?: PessoaRemuneracao[]) => {
     if (!painel) return;
+    const alvo = quem
+      ?? (selecionadas.size
+        ? (painel.pessoas ?? []).filter((p) => selecionadas.has(p.id))
+        : pessoas);
+    if (!alvo.length) return;
+
     const wb = XLSX.utils.book_new();
 
-    for (const aba of abasDaPlanilha(pessoas, meses, pares)) {
+    for (const aba of abasDaPlanilha(alvo, meses, pares)) {
       const ws = XLSX.utils.aoa_to_sheet(aba.linhas);
       ws["!cols"] = aba.larguras.map((wch) => ({ wch }));
 
@@ -316,8 +335,19 @@ export default function Remuneracao() {
       XLSX.utils.book_append_sheet(wb, ws, aba.nome);
     }
 
-    XLSX.writeFile(wb, `remuneracao-${new Date().toISOString().slice(0, 10)}.xlsx`);
-    toast.success(`${pessoas.length} pessoas em 3 abas`);
+    /* O nome do arquivo diz de QUEM ele é. Exportar cinco pessoas e receber
+        "remuneracao-2026-09-04.xlsx" faz o terceiro download da semana virar
+        adivinhação. Uma pessoa só leva o nome dela. */
+    const quantas = alvo.length;
+    const apelido = quantas === 1
+      ? alvo[0].nome.toLowerCase().replace(/[^a-z0-9]+/gi, "-").replace(/^-|-$/g, "")
+      : `${quantas}-pessoas`;
+    XLSX.writeFile(wb, `remuneracao-${apelido}-${new Date().toISOString().slice(0, 10)}.xlsx`);
+    toast.success(
+      quantas === 1
+        ? `Histórico de ${alvo[0].nome} exportado`
+        : `${quantas} pessoas exportadas em 3 abas`,
+    );
   };
 
   /* ── Sem acesso ──
@@ -364,9 +394,16 @@ export default function Remuneracao() {
             <RefreshCw className={cn("mr-1.5 h-3.5 w-3.5", carregando && "animate-spin")} />
             {atrasada ? "Recarregar do Omie" : "Atualizar"}
           </Button>
-          <Button size="sm" onClick={exportar} disabled={!painel || !pessoas.length}>
+          <Button
+            size="sm"
+            onClick={() => exportar()}
+            disabled={!painel || (!pessoas.length && !selecionadas.size)}
+            title="Resumo, mês a mês e por área — fixo, variável e escala separados"
+          >
             <Download className="mr-1.5 h-3.5 w-3.5" />
-            Exportar planilha
+            {selecionadas.size
+              ? `Exportar ${selecionadas.size} selecionada${selecionadas.size > 1 ? "s" : ""}`
+              : "Exportar planilha"}
           </Button>
         </div>
       </div>
@@ -561,7 +598,28 @@ export default function Remuneracao() {
             <Table>
               <TableHeader>
                 <TableRow>
-                  <TableHead className="w-[34px]" />
+                  <TableHead className="w-[34px]">
+                    {/* Marca todo o recorte de uma vez — com filtro de setor
+                        aplicado, é como se exporta "o time de Tecnologia
+                        inteiro" sem clicar dezessete vezes. */}
+                    <Checkbox
+                      aria-label="Marcar todas as pessoas do recorte"
+                      checked={
+                        linhas.length > 0 && linhas.every((l) => selecionadas.has(l.pessoa.id))
+                          ? true
+                          : linhas.some((l) => selecionadas.has(l.pessoa.id))
+                            ? "indeterminate"
+                            : false
+                      }
+                      onCheckedChange={(v) => setSelecionadas((s) => {
+                        const novo = new Set(s);
+                        for (const l of linhas) {
+                          if (v === true) novo.add(l.pessoa.id); else novo.delete(l.pessoa.id);
+                        }
+                        return novo;
+                      })}
+                    />
+                  </TableHead>
                   <TableHead>Pessoa</TableHead>
                   <TableHead className="hidden md:table-cell">Tempo de casa</TableHead>
                   <TableHead className="text-right">Fixo hoje</TableHead>
@@ -588,14 +646,9 @@ export default function Remuneracao() {
                           para comparar viraria abrir duas fichas. */}
                       <TableCell onClick={(e) => e.stopPropagation()}>
                         <Checkbox
-                          checked={comparando.has(p.id)}
-                          disabled={!comparando.has(p.id) && comparando.size >= MAX_COMPARAR}
-                          onCheckedChange={(v) => setComparando((s) => {
-                            const novo = new Set(s);
-                            if (v === true) novo.add(p.id); else novo.delete(p.id);
-                            return novo;
-                          })}
-                          aria-label={`Comparar ${p.nome}`}
+                          checked={selecionadas.has(p.id)}
+                          onCheckedChange={(v) => marcar(p.id, v === true)}
+                          aria-label={`Selecionar ${p.nome}`}
                         />
                       </TableCell>
 
@@ -709,15 +762,33 @@ export default function Remuneracao() {
 
           {/* Barra da comparação: aparece quando há pelo menos uma escolhida, e
               some sozinha ao limpar. */}
-          {comparando.size > 0 && (
-            <div className="sticky bottom-3 z-10 mx-auto flex w-fit items-center gap-3 rounded-full border border-border bg-popover px-4 py-2 shadow-lg">
-              <span className="text-xs">
-                {comparando.size === 1
-                  ? "Escolha mais uma pessoa para comparar"
-                  : `Comparando ${comparando.size} de até ${MAX_COMPARAR}`}
+          {selecionadas.size > 0 && (
+            <div className="sticky bottom-3 z-10 mx-auto flex w-fit flex-wrap items-center gap-2 rounded-full border border-border bg-popover px-4 py-2 shadow-lg">
+              <span className="text-xs font-medium">
+                {selecionadas.size} selecionada{selecionadas.size > 1 ? "s" : ""}
               </span>
+              <Button size="sm" className="h-7" onClick={() => exportar()}>
+                <Download className="mr-1.5 h-3.5 w-3.5" />
+                Exportar histórico
+              </Button>
+              {/* A comparação visual tem teto próprio; a seleção não. Explicar o
+                  porquê no título evita que o botão desabilitado pareça defeito. */}
+              <Button
+                size="sm" variant="outline" className="h-7"
+                disabled={selecionadas.size < 2 || selecionadas.size > MAX_COMPARAR}
+                onClick={() => setComparando(true)}
+                title={
+                  selecionadas.size < 2
+                    ? "Escolha ao menos duas pessoas"
+                    : selecionadas.size > MAX_COMPARAR
+                      ? `A comparação visual cabe em ${MAX_COMPARAR} — acima disso as trajetórias viram novelo`
+                      : "Sobrepor as trajetórias"
+                }
+              >
+                Comparar
+              </Button>
               <Button size="sm" variant="ghost" className="h-7"
-                      onClick={() => setComparando(new Set())}>
+                      onClick={() => setSelecionadas(new Set())}>
                 Limpar
               </Button>
             </div>
@@ -735,13 +806,16 @@ export default function Remuneracao() {
         pessoa={(painel?.pessoas ?? []).find((p) => p.id === idAberto) ?? null}
         par={idAberto ? pares.get(idAberto) : undefined}
         onClose={() => abrir(null)}
+        onExportar={exportar}
       />
 
-      <Comparacao
-        pessoas={(painel?.pessoas ?? []).filter((p) => comparando.has(p.id))}
-        meses={meses}
-        onClose={() => setComparando(new Set())}
-      />
+      {comparando && (
+        <Comparacao
+          pessoas={(painel?.pessoas ?? []).filter((p) => selecionadas.has(p.id))}
+          meses={meses}
+          onClose={() => setComparando(false)}
+        />
+      )}
     </div>
   );
 }
@@ -1070,8 +1144,11 @@ const ROTULO_BLOCO: Record<string, string> = {
   prolabore: "Pro labore", outro: "Outro",
 };
 
-function FichaDaPessoa({ pessoa, par, onClose }: {
-  pessoa: PessoaRemuneracao | null; par?: Pares; onClose: () => void;
+function FichaDaPessoa({ pessoa, par, onClose, onExportar }: {
+  pessoa: PessoaRemuneracao | null;
+  par?: Pares;
+  onClose: () => void;
+  onExportar: (quem: PessoaRemuneracao[]) => void;
 }) {
   /* Qual mês está aberto no drill-down, e o que veio dele. Fica AQUI e não em
      cada linha para que abrir um mês feche o anterior — dois meses abertos ao
@@ -1138,6 +1215,16 @@ function FichaDaPessoa({ pessoa, par, onClose }: {
           {pessoa.cargo && <Badge variant="secondary" className="h-5">{pessoa.cargo}</Badge>}
           {pessoa.setor && <Badge variant="outline" className="h-5">{pessoa.setor}</Badge>}
           {pessoa.modalidade && <Badge variant="outline" className="h-5">{pessoa.modalidade}</Badge>}
+          {/* Quem já abriu a ficha não deveria ter de fechá-la, achar a linha e
+              marcar a caixa só para levar o histórico dessa pessoa. */}
+          <Button
+            size="sm" variant="outline" className="ml-auto h-7"
+            onClick={() => onExportar([pessoa])}
+            title="Histórico completo desta pessoa, com fixo, variável e escala separados"
+          >
+            <Download className="mr-1.5 h-3.5 w-3.5" />
+            Exportar histórico
+          </Button>
         </div>
 
         {/* Resumo */}

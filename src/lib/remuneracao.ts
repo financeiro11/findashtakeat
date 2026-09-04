@@ -624,10 +624,15 @@ export function abasDaPlanilha(
   const fechadas = competenciasFechadas(pessoas, meses);
 
   /* ── Resumo ── */
+  /* A divisão por tipo somada no PERÍODO fica ao lado do total, não só no mês a
+     mês: quem abre o Resumo quer saber de quanto do que a pessoa recebeu é
+     salário e quanto é comissão sem ter de pivotar a outra aba. */
   const cabResumo = [
     "Nome", "Cargo", "Setor (RH)", "Área (ERP)", "Modalidade",
-    "Início", "Tempo de casa (meses)", "Desligamento",
-    "Fixo hoje", "Pró-labore/mês", "Variável médio", "Total no período",
+    "Início", "Tempo de casa (meses)", "Desligamento", "Meses pagos",
+    "Fixo hoje", "Pró-labore/mês", "Variável médio",
+    "Fixo no período", "Pró-labore no período", "Variável no período",
+    "Escala no período", "Total no período", "% variável",
     "Último reajuste", "Reajuste R$", "Reajuste %", "Meses sem reajuste",
     "Trocas de time",
     "Mediana do cargo", "Contra a mediana", "Percentil", "Pares no cargo",
@@ -640,7 +645,15 @@ export function abasDaPlanilha(
   const linhasResumo = pessoas.map((p): CelulaPlanilha[] => {
     const r = resumoDaPessoa(p);
     const par = pares.get(p.id);
-    const ultimoMes = [...(p.meses ?? [])].sort((a, b) => a.competencia.localeCompare(b.competencia)).pop();
+    const meses_ = p.meses ?? [];
+    const ultimoMes = [...meses_].sort((a, b) => a.competencia.localeCompare(b.competencia)).pop();
+    const soma = (f: (m: MesRemuneracao) => number) =>
+      meses_.reduce((s, m) => s + num(f(m)), 0);
+    const totalFixo = soma((m) => m.fixo);
+    const totalPro = soma((m) => m.prolabore);
+    const totalVar = soma((m) => m.premiacao);
+    const totalEsc = soma((m) => m.escala);
+    const total = r.totalPeriodo;
     return [
       p.nome,
       p.cargo ?? null,
@@ -650,10 +663,16 @@ export function abasDaPlanilha(
       p.inicio ?? null,
       p.inicio ? distanciaEmMeses(`${p.inicio.slice(0, 7)}-01`, mesHoje) : null,
       p.datadesl ?? null,
+      meses_.length || null,
       r.fixoAtual,
       num(ultimoMes?.prolabore) || null,
       r.mesesComPremiacao ? Math.round(r.premiacaoMedia * 100) / 100 : null,
-      r.totalPeriodo || null,
+      totalFixo || null,
+      totalPro || null,
+      totalVar || null,
+      totalEsc || null,
+      total || null,
+      total > 0 ? Number((((totalVar + totalEsc) / total) * 100).toFixed(1)) : null,
       r.ultimoReajuste ? rotuloMes(r.ultimoReajuste.competencia) : null,
       r.ultimoReajuste ? Number((r.ultimoReajuste.para - r.ultimoReajuste.de).toFixed(2)) : null,
       r.ultimoReajuste ? Number((r.ultimoReajuste.variacao * 100).toFixed(1)) : null,
@@ -713,10 +732,13 @@ export function abasDaPlanilha(
   return [
     {
       nome: "Resumo",
+      // Índices conferidos contra `cabResumo` pelo teste "as colunas marcadas
+      // como moeda são mesmo de dinheiro" — se a ordem mudar, ele acusa.
       linhas: [cabResumo, ...linhasResumo],
-      moeda: [8, 9, 10, 11, 13, 17, 18, 21],
-      percentual: [14],
-      larguras: [30, 24, 18, 15, 11, 11, 12, 12, 12, 13, 13, 15,
+      moeda: [9, 10, 11, 12, 13, 14, 15, 16, 19, 23, 24, 27],
+      percentual: [17, 20],
+      larguras: [30, 24, 18, 15, 11, 11, 12, 12, 11,
+                 12, 13, 13, 14, 16, 15, 14, 15, 10,
                  13, 12, 10, 12, 30, 15, 15, 10, 12, 14, 12, 18],
     },
     {

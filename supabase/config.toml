@@ -123,3 +123,11 @@ verify_jwt = false
 # contra internal_cron_tokens, ou requireUser para quem chama pela tela.
 [functions.vigia-series]
 verify_jwt = false
+
+# Cron diario (11:15 UTC) que reescreve "Meios de Pagamento" com as taxas do
+# Asaas. `disparar_automacao` manda so o `x-cron-token`, sem Authorization —
+# sem esta linha a CLI sobe com verify_jwt = true, o gateway devolve
+# UNAUTHORIZED_NO_AUTH_HEADER e a funcao nem chega a rodar. O portao interno
+# continua sendo o `requireUser` para quem chama pela tela.
+[functions.demonstracoes-meios-pagamento]
+verify_jwt = false

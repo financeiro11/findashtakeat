@@ -70,16 +70,20 @@ Deno.serve(async (req) => {
       if (!Number.isFinite(valor)) return json({ error: "valor inválido." }, 200);
       const modo = body?.modo === "soma" ? "soma" : "substitui";
 
+      /* `origem: 'manual'` sempre, inclusive por cima de uma célula que a rotina
+         das taxas do Asaas escrevia: digitar aqui é FIXAR o número, e a rotina
+         respeita quem tem origem manual. Sem isso, o valor da pessoa duraria até
+         a rodada do dia seguinte — e sumiria sem aviso. */
       if (atual) {
         // valor_base/valor_aplicado NÃO são zerados aqui: eles descrevem o que
         // está no blob agora, e é a reaplicação abaixo que os atualiza.
         const { error } = await supabase.from("demonstracoes_valor_manual")
-          .update({ valor, modo, autor: caller.userId, autor_email: caller.email ?? null, atualizado_em: new Date().toISOString() })
+          .update({ valor, modo, origem: "manual", autor: caller.userId, autor_email: caller.email ?? null, atualizado_em: new Date().toISOString() })
           .eq("id", atual.id);
         if (error) throw error;
       } else {
         const { error } = await supabase.from("demonstracoes_valor_manual")
-          .insert({ tipo, rubrica, col_key: colKey, valor, modo, autor: caller.userId, autor_email: caller.email ?? null });
+          .insert({ tipo, rubrica, col_key: colKey, valor, modo, origem: "manual", autor: caller.userId, autor_email: caller.email ?? null });
         if (error) throw error;
       }
     }

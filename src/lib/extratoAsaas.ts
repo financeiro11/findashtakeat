@@ -22,6 +22,13 @@
  * Mora fora da tela para poder ser testado sem montar o componente.
  * A classificação do Sicoob é outra e mora em src/lib/extratoNatureza.ts — os
  * dois extratos falam línguas diferentes.
+ *
+ * ESTA REGRA TEM UMA GÊMEA EM SQL. A RPC `asaas_taxas_mes` (migration
+ * 20260903360000) repete a escada de `classificaAsaas` para somar as taxas do
+ * mês e escrever a linha "Meios de Pagamento" da DRE/DFC — a rubrica que nunca
+ * vem do Omie, porque a taxa é descontada na liquidação e não vira conta a
+ * pagar. Tipo de taxa novo, ou frase que o Asaas mudar, se conserta NAS DUAS
+ * PONTAS: aqui o painel da conta corrente, lá o resultado do mês.
  * ========================================================================== */
 
 import { normalize } from "@/lib/normalize";

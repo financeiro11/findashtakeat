@@ -1145,7 +1145,7 @@ export default function DRE() {
                               // valor manual vem antes do comentário porque muda o
                               // número, não só o entendimento dele.
                               alerta ? fundoCelulaReclassificacao(alerta)
-                                : manual ? fundoCelulaManual()
+                                : manual ? fundoCelulaManual(manual)
                                 : temAjuste ? fundoCelulaAjuste()
                                 : comp?.divergente ? "bg-amber-100/70"
                                 : just && fundoCelulaJustificativa(just),

@@ -1150,7 +1150,7 @@ export default function DFC() {
                               // valor manual vem antes do comentário porque muda o
                               // número, não só o entendimento dele.
                               alerta ? fundoCelulaReclassificacao(alerta)
-                                : manual ? fundoCelulaManual()
+                                : manual ? fundoCelulaManual(manual)
                                 : comp?.divergente ? "bg-amber-100/70"
                                 : just && fundoCelulaJustificativa(just),
                             )}

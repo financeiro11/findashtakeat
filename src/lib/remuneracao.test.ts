@@ -3,6 +3,7 @@ import {
   degrausDoFixo, resumoDaPessoa, filtrarPessoas, totaisDoMes, paraCsv, matrizParaPlanilha,
   rotuloMes, distanciaEmMeses, ultimaCompetenciaFechada, mudancasDeArea, areaAtual,
   fixoDeReferencia, compararComPares, custoPorArea, competenciasFechadas, abasDaPlanilha,
+  FILTROS_VAZIOS, filtrosLigados, montarLinhas, filtrarPorFaixa, ordenarLinhas,
   type MesRemuneracao, type PessoaRemuneracao,
 } from "./remuneracao";
 
@@ -465,7 +466,7 @@ describe("custo por área", () => {
 });
 
 describe("filtro de pessoas", () => {
-  const base = { busca: "", incluirSaidas: false, incluirNaoPessoas: false, soComFichaRh: false, setor: null };
+  const base = FILTROS_VAZIOS;
   const ativo = pessoa({ id: "a", nome: "Ana Ativa", meses: [mes("2026-08-01", 5000)] });
   const saiu = pessoa({
     id: "b", nome: "Bruno Saiu", codigo_rh: null,
@@ -524,8 +525,27 @@ describe("filtro de pessoas", () => {
 
   it("filtra por setor", () => {
     const outro = pessoa({ id: "e", setor: "Tecnologia", meses: [mes("2026-08-01", 9000)] });
-    const r = filtrarPessoas([ativo, outro], { ...base, setor: "Tecnologia" }, "2026-08-01");
+    const r = filtrarPessoas([ativo, outro], { ...base, setores: ["Tecnologia"] }, "2026-08-01");
     expect(r.map((p) => p.id)).toEqual(["e"]);
+  });
+
+  /* "Suporte E Onboarding" é uma pergunta real — o filtro de um setor só
+     obrigava a exportar duas vezes e juntar no Excel. */
+  it("aceita vários setores de uma vez", () => {
+    const tec = pessoa({ id: "e", setor: "Tecnologia", meses: [mes("2026-08-01", 9000)] });
+    const sup = pessoa({ id: "f", setor: "Suporte", meses: [mes("2026-08-01", 3000)] });
+    const r = filtrarPessoas([ativo, tec, sup], { ...base, setores: ["Tecnologia", "Suporte"] }, "2026-08-01");
+    expect(r.map((p) => p.id).sort()).toEqual(["e", "f"]);
+  });
+
+  it("filtra por cargo, ignorando caixa e espaço", () => {
+    const head = pessoa({ id: "h", cargo: " HEAD  de Produto ", meses: [mes("2026-08-01", 9000)] });
+    const r = filtrarPessoas([ativo, head], { ...base, cargos: ["Head de Produto"] }, "2026-08-01");
+    expect(r.map((p) => p.id)).toEqual(["h"]);
+  });
+
+  it("setor vazio quer dizer todos", () => {
+    expect(filtrarPessoas([ativo], { ...base, setores: [] }, "2026-08-01")).toHaveLength(1);
   });
 });
 
@@ -564,6 +584,84 @@ describe("pró-labore", () => {
     expect(linha[cab.indexOf("ago/26 pró-labore")]).toBe(4361);
     expect(linha[cab.indexOf("ago/26 fixo")]).toBe(22500);
     expect(linha[cab.indexOf("ago/26 total")]).toBe(26861);
+  });
+});
+
+describe("faixa e ordenação da tabela", () => {
+  const meses = ["2026-07-01", "2026-08-01"];
+  const gente = [
+    pessoa({ id: "alta", nome: "Alta", cargo: "Head", inicio: "2020-08-01",
+             meses: [mes("2026-07-01", 20000), mes("2026-08-01", 20000)] }),
+    pessoa({ id: "media", nome: "Media", cargo: "Head", inicio: "2025-08-01",
+             meses: [mes("2026-07-01", 8000, 2000), mes("2026-08-01", 9000, 2000)] }),
+    pessoa({ id: "baixa", nome: "Baixa", cargo: "Head", inicio: "2026-06-01",
+             meses: [mes("2026-07-01", 3000), mes("2026-08-01", 3000)] }),
+    pessoa({ id: "sem", nome: "Sem nada", cargo: "Head", inicio: null, meses: [] }),
+  ];
+  const linhas = () => montarLinhas(gente, compararComPares(gente, meses), new Date("2026-08-15"));
+
+  it("calcula o tempo de casa em meses", () => {
+    const l = linhas().find((x) => x.pessoa.id === "media")!;
+    expect(l.tempoDeCasa).toBe(12);
+    expect(linhas().find((x) => x.pessoa.id === "sem")!.tempoDeCasa).toBeNull();
+  });
+
+  it("a faixa corta pelo valor calculado, não pelo que veio do banco", () => {
+    const r = filtrarPorFaixa(linhas(), { fixo: { min: 5000, max: null } });
+    expect(r.map((l) => l.pessoa.id).sort()).toEqual(["alta", "media"]);
+  });
+
+  it("faixa fechada dos dois lados", () => {
+    const r = filtrarPorFaixa(linhas(), { fixo: { min: 5000, max: 10000 } });
+    expect(r.map((l) => l.pessoa.id)).toEqual(["media"]);
+  });
+
+  /* "Quem ganha acima de 5.000" não inclui quem não recebeu nada — deixar o nulo
+     passar encheria o resultado de linhas em branco. */
+  it("quem não tem valor não passa na faixa", () => {
+    const r = filtrarPorFaixa(linhas(), { fixo: { min: 0, max: null } });
+    expect(r.map((l) => l.pessoa.id)).not.toContain("sem");
+  });
+
+  it("faixas de colunas diferentes se somam", () => {
+    const r = filtrarPorFaixa(linhas(), {
+      fixo: { min: 3000, max: null }, tempoDeCasa: { min: 24, max: null },
+    });
+    expect(r.map((l) => l.pessoa.id)).toEqual(["alta"]);
+  });
+
+  it("faixa vazia não filtra nada", () => {
+    expect(filtrarPorFaixa(linhas(), { fixo: { min: null, max: null } })).toHaveLength(4);
+    expect(filtrarPorFaixa(linhas(), {})).toHaveLength(4);
+  });
+
+  it("ordena por valor, crescente e decrescente", () => {
+    const desc = ordenarLinhas(linhas(), { coluna: "fixo", desc: true });
+    expect(desc.map((l) => l.pessoa.id)).toEqual(["alta", "media", "baixa", "sem"]);
+    const asc = ordenarLinhas(linhas(), { coluna: "fixo", desc: false });
+    expect(asc.map((l) => l.pessoa.id)).toEqual(["baixa", "media", "alta", "sem"]);
+  });
+
+  /* Nulo por último nos DOIS sentidos: decrescente por "fixo hoje" com o nulo no
+     topo poria quem não recebeu nada acima de quem mais ganha. */
+  it("quem não tem valor fica no fim, subindo ou descendo", () => {
+    for (const desc of [true, false]) {
+      const r = ordenarLinhas(linhas(), { coluna: "fixo", desc });
+      expect(r[r.length - 1].pessoa.id).toBe("sem");
+    }
+  });
+
+  it("ordena por nome respeitando acento", () => {
+    const r = ordenarLinhas(linhas(), { coluna: "nome", desc: false });
+    expect(r.map((l) => l.pessoa.nome)).toEqual(["Alta", "Baixa", "Media", "Sem nada"]);
+  });
+
+  it("conta quantos filtros estão ligados", () => {
+    expect(filtrosLigados(FILTROS_VAZIOS)).toBe(0);
+    expect(filtrosLigados({ ...FILTROS_VAZIOS, busca: "ana", setores: ["Suporte"] })).toBe(2);
+    expect(filtrosLigados({ ...FILTROS_VAZIOS, faixas: { fixo: { min: 1, max: null } } })).toBe(1);
+    // Faixa declarada mas vazia não conta — senão o botão de limpar acende sozinho.
+    expect(filtrosLigados({ ...FILTROS_VAZIOS, faixas: { fixo: { min: null, max: null } } })).toBe(0);
   });
 });
 

@@ -2,7 +2,8 @@ import { Fragment, useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import {
   TrendingUp, Search, Download, Loader2, Lock, AlertTriangle, ArrowUpRight,
-  ArrowDownRight, Minus, RefreshCw,
+  ArrowDownRight, Minus, RefreshCw, ArrowUp, ArrowDown, ArrowUpDown, Filter,
+  FilterX, ChevronDown,
 } from "lucide-react";
 import { toast } from "sonner";
 import * as XLSX from "xlsx";
@@ -16,6 +17,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Sparkline } from "@/components/ui/sparkline";
 import { KpiCard } from "@/components/ui/kpi-card";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import {
@@ -29,11 +31,13 @@ import { comValorExato } from "@/components/ValorExato";
 import { valorExato } from "@/lib/valor";
 import { mesesDeCasa, parseISO } from "@/lib/rescisao";
 import {
-  abasDaPlanilha, compararComPares, custoPorArea, degrausDoFixo, filtrarPessoas,
-  resumoDaPessoa, rotuloMes, totaisDoMes, ultimaCompetenciaFechada,
-  type Filtros, type PainelRemuneracao, type Pares, type PessoaRemuneracao,
-  type ResumoPessoa,
+  abasDaPlanilha, compararComPares, custoPorArea, degrausDoFixo, faixaVazia,
+  filtrarPessoas, filtrarPorFaixa, filtrosLigados, montarLinhas, ordenarLinhas,
+  resumoDaPessoa, rotuloMes, totaisDoMes, ultimaCompetenciaFechada, FILTROS_VAZIOS,
+  type ColunaFaixa, type ColunaOrdenavel, type Faixa, type Filtros, type Ordem,
+  type PainelRemuneracao, type Pares, type PessoaRemuneracao,
 } from "@/lib/remuneracao";
+import { normalize } from "@/lib/normalize";
 
 /**
  * Remuneração — a linha do tempo de quanto cada pessoa ganha.
@@ -98,19 +102,171 @@ const inicioSuspeito = (iso: string | null) => {
   return !!d && d.getFullYear() < 2015;
 };
 
-/* ─────────────────────────── Filtros ─────────────────────────── */
+/* ─────────────────────────── Cabeçalho da tabela ───────────────────────────
+   Cada coluna numérica ordena e filtra por faixa. Antes a lista vinha ordenada
+   por fixo e ponto: achar "quem está há mais tempo sem reajuste" ou "quem ganha
+   entre 3 e 5 mil" exigia exportar e abrir no Excel. */
 
-const FILTROS_PADRAO: Filtros = {
-  busca: "",
-  incluirSaidas: false,
-  incluirNaoPessoas: false,
-  soComFichaRh: false,
-  setor: null,
+type Coluna = {
+  rotulo: string;
+  ordenar?: ColunaOrdenavel;
+  faixa?: ColunaFaixa;
+  /** Sufixo da caixinha de faixa: "R$" para dinheiro, "m" para meses. */
+  unidade?: string;
+  classe?: string;
+  alinhaDireita?: boolean;
 };
 
-/* ─────────────────────────── Página ─────────────────────────── */
+const COLUNAS: Coluna[] = [
+  { rotulo: "Pessoa", ordenar: "nome" },
+  { rotulo: "Tempo de casa", ordenar: "tempoDeCasa", faixa: "tempoDeCasa", unidade: "meses",
+    classe: "hidden md:table-cell" },
+  { rotulo: "Fixo hoje", ordenar: "fixo", faixa: "fixo", unidade: "R$", alinhaDireita: true },
+  { rotulo: "Variável médio", ordenar: "variavel", faixa: "variavel", unidade: "R$",
+    alinhaDireita: true, classe: "hidden lg:table-cell" },
+  { rotulo: "Contra os pares", ordenar: "contraPares", faixa: "contraPares", unidade: "R$",
+    alinhaDireita: true, classe: "hidden xl:table-cell" },
+  { rotulo: "Último reajuste", ordenar: "ultimoReajuste", alinhaDireita: true },
+  { rotulo: "Sem reajuste", ordenar: "semReajuste", faixa: "semReajuste", unidade: "meses",
+    alinhaDireita: true, classe: "hidden sm:table-cell" },
+  { rotulo: "Evolução", classe: "hidden xl:table-cell w-[90px]" },
+];
 
-type Linha = { pessoa: PessoaRemuneracao; resumo: ResumoPessoa };
+/** Cabeçalho de uma coluna: ordena ao clicar, e abre o funil quando tem faixa. */
+function CabecalhoColuna({ col, ordem, onOrdenar, faixa, onFaixa }: {
+  col: Coluna;
+  ordem: Ordem;
+  onOrdenar: (c: ColunaOrdenavel) => void;
+  faixa?: Faixa;
+  onFaixa: (c: ColunaFaixa, f: Faixa) => void;
+}) {
+  const ativa = col.ordenar && ordem.coluna === col.ordenar;
+  const comFiltro = !faixaVazia(faixa);
+  return (
+    <div className={cn("flex items-center gap-1", col.alinhaDireita && "justify-end")}>
+      {col.ordenar ? (
+        <button
+          type="button"
+          onClick={() => onOrdenar(col.ordenar!)}
+          className="inline-flex items-center gap-1 hover:text-foreground"
+          title={`Ordenar por ${col.rotulo}`}
+        >
+          {col.rotulo}
+          {ativa
+            ? (ordem.desc ? <ArrowDown className="h-3 w-3" /> : <ArrowUp className="h-3 w-3" />)
+            : <ArrowUpDown className="h-3 w-3 opacity-25" />}
+        </button>
+      ) : col.rotulo}
+
+      {col.faixa && (
+        <Popover>
+          <PopoverTrigger asChild>
+            <button
+              type="button"
+              className={cn("rounded p-0.5 hover:bg-secondary",
+                comFiltro ? "text-primary" : "text-muted-foreground/40")}
+              title={comFiltro ? "Faixa aplicada" : `Filtrar ${col.rotulo}`}
+            >
+              <Filter className="h-3 w-3" />
+            </button>
+          </PopoverTrigger>
+          <PopoverContent className="w-56 p-3" align="end">
+            <p className="text-xs font-medium">{col.rotulo}</p>
+            <div className="mt-2 flex items-center gap-2">
+              <Input
+                type="number" placeholder="mín." className="h-8 text-xs"
+                value={faixa?.min ?? ""}
+                onChange={(e) => onFaixa(col.faixa!, {
+                  min: e.target.value === "" ? null : Number(e.target.value),
+                  max: faixa?.max ?? null,
+                })}
+              />
+              <span className="text-xs text-muted-foreground">a</span>
+              <Input
+                type="number" placeholder="máx." className="h-8 text-xs"
+                value={faixa?.max ?? ""}
+                onChange={(e) => onFaixa(col.faixa!, {
+                  min: faixa?.min ?? null,
+                  max: e.target.value === "" ? null : Number(e.target.value),
+                })}
+              />
+            </div>
+            <p className="mt-1.5 text-[10px] text-muted-foreground">
+              Em {col.unidade}. Deixe um lado vazio para “acima de” ou “até”.
+            </p>
+            {comFiltro && (
+              <Button
+                size="sm" variant="ghost" className="mt-2 h-7 w-full"
+                onClick={() => onFaixa(col.faixa!, { min: null, max: null })}
+              >
+                Limpar esta coluna
+              </Button>
+            )}
+          </PopoverContent>
+        </Popover>
+      )}
+    </div>
+  );
+}
+
+/** Escolha de vários valores — usado em setor e cargo. */
+function EscolherVarios({ rotulo, opcoes, escolhidos, onMudar }: {
+  rotulo: string; opcoes: string[]; escolhidos: string[]; onMudar: (v: string[]) => void;
+}) {
+  const [busca, setBusca] = useState("");
+  const visiveis = busca
+    ? opcoes.filter((o) => normalize(o).includes(normalize(busca)))
+    : opcoes;
+  return (
+    <Popover onOpenChange={(a) => !a && setBusca("")}>
+      <PopoverTrigger asChild>
+        <Button variant="outline" size="sm" className="h-9 justify-between gap-2 font-normal">
+          {escolhidos.length === 0
+            ? `Todos os ${rotulo.toLowerCase()}`
+            : escolhidos.length === 1
+              ? escolhidos[0]
+              : `${escolhidos.length} ${rotulo.toLowerCase()}`}
+          <ChevronDown className="h-3.5 w-3.5 opacity-50" />
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent className="w-64 p-2" align="start">
+        {opcoes.length > 8 && (
+          <Input
+            value={busca} onChange={(e) => setBusca(e.target.value)}
+            placeholder={`Buscar ${rotulo.toLowerCase()}…`} className="mb-2 h-8 text-xs"
+          />
+        )}
+        <div className="max-h-64 space-y-0.5 overflow-y-auto">
+          {visiveis.map((o) => (
+            <label key={o} className="flex cursor-pointer items-center gap-2 rounded px-1.5 py-1 text-xs hover:bg-secondary">
+              <Checkbox
+                checked={escolhidos.includes(o)}
+                onCheckedChange={(v) => onMudar(
+                  v === true ? [...escolhidos, o] : escolhidos.filter((x) => x !== o),
+                )}
+              />
+              <span className="truncate">{o}</span>
+            </label>
+          ))}
+          {!visiveis.length && (
+            <p className="px-1.5 py-2 text-xs text-muted-foreground">Nada com esse nome.</p>
+          )}
+        </div>
+        {escolhidos.length > 0 && (
+          <Button size="sm" variant="ghost" className="mt-1 h-7 w-full" onClick={() => onMudar([])}>
+            Limpar
+          </Button>
+        )}
+      </PopoverContent>
+    </Popover>
+  );
+}
+
+/* ─────────────────────────── Filtros ─────────────────────────── */
+
+const FILTROS_PADRAO: Filtros = FILTROS_VAZIOS;
+
+/* ─────────────────────────── Página ─────────────────────────── */
 
 export default function Remuneracao() {
   const { profile } = useAuth();
@@ -120,6 +276,19 @@ export default function Remuneracao() {
   const [carregando, setCarregando] = useState(true);
   const [erro, setErro] = useState<string | null>(null);
   const [filtros, setFiltros] = useState<Filtros>(FILTROS_PADRAO);
+  /* Começa pelo fixo, do maior para o menor — é a leitura que responde "quanto
+     custa cada um" sem ninguém pedir nada. */
+  const [ordem, setOrdem] = useState<Ordem>({ coluna: "fixo", desc: true });
+
+  // Clicar na coluna já ordenada inverte; noutra, começa decrescente (o maior
+  // primeiro é o que se quer ver em valor) — menos em nome, onde A→Z é o natural.
+  const ordenarPor = (coluna: ColunaOrdenavel) =>
+    setOrdem((o) => o.coluna === coluna
+      ? { coluna, desc: !o.desc }
+      : { coluna, desc: coluna !== "nome" });
+
+  const definirFaixa = (coluna: ColunaFaixa, f: Faixa) =>
+    setFiltros((x) => ({ ...x, faixas: { ...x.faixas, [coluna]: f } }));
   const [mesFoco, setMesFoco] = useState<string | null>(null);
 
   /* A ficha aberta vive na URL: sem isso não dá para mandar "olha a trajetória
@@ -216,17 +385,40 @@ export default function Remuneracao() {
     return [...s].sort((a, b) => a.localeCompare(b, "pt-BR"));
   }, [painel]);
 
+  const cargos = useMemo(() => {
+    const s = new Set<string>();
+    for (const p of painel?.pessoas ?? []) if (p.cargo?.trim()) s.add(p.cargo.trim());
+    return [...s].sort((a, b) => a.localeCompare(b, "pt-BR"));
+  }, [painel]);
+
+  /* A comparação com os pares roda sobre TODAS as pessoas, não sobre o recorte:
+     a mediana do cargo não muda porque alguém filtrou por setor, e recalcular
+     por filtro faria o percentil da mesma pessoa dançar conforme a tela.
+     Fica ANTES da lista porque o filtro de faixa e a ordenação a usam. */
+  const pares = useMemo(
+    () => compararComPares(painel?.pessoas ?? [], meses),
+    [painel, meses],
+  );
+
   const pessoas = useMemo(
     () => filtrarPessoas(painel?.pessoas ?? [], filtros, referencia),
     [painel, filtros, referencia],
   );
 
-  const linhas: Linha[] = useMemo(
-    () => pessoas
-      .map((pessoa) => ({ pessoa, resumo: resumoDaPessoa(pessoa) }))
-      .sort((a, b) => (b.resumo.fixoAtual ?? 0) - (a.resumo.fixoAtual ?? 0)),
-    [pessoas],
+  /* Filtro de faixa e ordenação trabalham sobre o CALCULADO (fixo de hoje,
+     posição contra os pares, meses sem reajuste), por isso vêm depois do
+     `montarLinhas` e não junto do filtro de pessoa. */
+  const linhas = useMemo(
+    () => ordenarLinhas(
+      filtrarPorFaixa(montarLinhas(pessoas, pares), filtros.faixas),
+      ordem,
+    ),
+    [pessoas, pares, filtros.faixas, ordem],
   );
+
+  /* O que a faixa deixou passar — é este conjunto que vai para a exportação e
+     para os totais, não o de antes do funil. */
+  const pessoasVisiveis = useMemo(() => linhas.map((l) => l.pessoa), [linhas]);
 
   /* O KPI do mês NÃO usa a lista da tabela.
      A lista responde "quem está aqui hoje" e por isso esconde quem saiu; o custo
@@ -235,9 +427,18 @@ export default function Remuneracao() {
      fechou em R$ 557.737, e um número rotulado "custo de pessoas" tem de bater
      com a DRE. Busca e setor continuam valendo: "custo de Tecnologia em agosto"
      é uma pergunta legítima. */
+  /* O KPI segue TODOS os filtros menos o de saída — inclusive as faixas, senão
+     filtrar "fixo acima de 10 mil" mostraria uma lista curta com o custo da
+     empresa inteira em cima dela. */
   const pessoasDoMes = useMemo(
-    () => filtrarPessoas(painel?.pessoas ?? [], { ...filtros, incluirSaidas: true }, referencia),
-    [painel, filtros, referencia],
+    () => filtrarPorFaixa(
+      montarLinhas(
+        filtrarPessoas(painel?.pessoas ?? [], { ...filtros, incluirSaidas: true }, referencia),
+        pares,
+      ),
+      filtros.faixas,
+    ).map((l) => l.pessoa),
+    [painel, filtros, referencia, pares],
   );
 
   const totais = useMemo(
@@ -248,16 +449,8 @@ export default function Remuneracao() {
   /* Quantos daquele mês já não estão na lista — a diferença entre o custo real
      e o time de hoje, dita em voz alta em vez de sumir na conta. */
   const saidasNoMes = useMemo(
-    () => (mes ? totais!.gente - totaisDoMes(pessoas, mes).gente : 0),
-    [totais, pessoas, mes],
-  );
-
-  /* A comparação com os pares roda sobre TODAS as pessoas, não sobre o recorte:
-     a mediana do cargo não muda porque alguém filtrou por setor, e recalcular
-     por filtro faria o percentil da mesma pessoa dançar conforme a tela. */
-  const pares = useMemo(
-    () => compararComPares(painel?.pessoas ?? [], meses),
-    [painel, meses],
+    () => (mes ? totais!.gente - totaisDoMes(pessoasVisiveis, mes).gente : 0),
+    [totais, pessoasVisiveis, mes],
   );
 
   const areas = useMemo(
@@ -302,7 +495,7 @@ export default function Remuneracao() {
     const alvo = quem
       ?? (selecionadas.size
         ? (painel.pessoas ?? []).filter((p) => selecionadas.has(p.id))
-        : pessoas);
+        : pessoasVisiveis);
     if (!alvo.length) return;
 
     const wb = XLSX.utils.book_new();
@@ -397,7 +590,7 @@ export default function Remuneracao() {
           <Button
             size="sm"
             onClick={() => exportar()}
-            disabled={!painel || (!pessoas.length && !selecionadas.size)}
+            disabled={!painel || (!pessoasVisiveis.length && !selecionadas.size)}
             title="Resumo, mês a mês e por área — fixo, variável e escala separados"
           >
             <Download className="mr-1.5 h-3.5 w-3.5" />
@@ -567,16 +760,14 @@ export default function Remuneracao() {
               </SelectContent>
             </Select>
 
-            <Select
-              value={filtros.setor ?? "todos"}
-              onValueChange={(v) => setFiltros((f) => ({ ...f, setor: v === "todos" ? null : v }))}
-            >
-              <SelectTrigger className="h-9 w-[170px]"><SelectValue /></SelectTrigger>
-              <SelectContent>
-                <SelectItem value="todos">Todos os setores</SelectItem>
-                {setores.map((s) => <SelectItem key={s} value={s}>{s}</SelectItem>)}
-              </SelectContent>
-            </Select>
+            <EscolherVarios
+              rotulo="Setores" opcoes={setores} escolhidos={filtros.setores}
+              onMudar={(v) => setFiltros((f) => ({ ...f, setores: v }))}
+            />
+            <EscolherVarios
+              rotulo="Cargos" opcoes={cargos} escolhidos={filtros.cargos}
+              onMudar={(v) => setFiltros((f) => ({ ...f, cargos: v }))}
+            />
 
             {([
               ["incluirSaidas", "Incluir quem saiu"],
@@ -591,6 +782,18 @@ export default function Remuneracao() {
                 {rotulo}
               </label>
             ))}
+
+            {/* Só aparece com algo ligado, e diz quantos — sem isso, um funil
+                esquecido numa coluna escondida faz a lista mentir em silêncio. */}
+            {filtrosLigados(filtros) > 0 && (
+              <Button
+                size="sm" variant="ghost" className="h-9 gap-1.5"
+                onClick={() => setFiltros(FILTROS_PADRAO)}
+              >
+                <FilterX className="h-3.5 w-3.5" />
+                Limpar {filtrosLigados(filtros)} filtro{filtrosLigados(filtros) > 1 ? "s" : ""}
+              </Button>
+            )}
           </div>
 
           {/* ── A lista ── */}
@@ -620,19 +823,21 @@ export default function Remuneracao() {
                       })}
                     />
                   </TableHead>
-                  <TableHead>Pessoa</TableHead>
-                  <TableHead className="hidden md:table-cell">Tempo de casa</TableHead>
-                  <TableHead className="text-right">Fixo hoje</TableHead>
-                  <TableHead className="hidden lg:table-cell text-right">Variável médio</TableHead>
-                  <TableHead
-                    className="hidden xl:table-cell text-right"
-                    title="Remuneração inteira (fixo + variável) contra quem tem o mesmo cargo"
-                  >
-                    Contra os pares
-                  </TableHead>
-                  <TableHead className="text-right">Último reajuste</TableHead>
-                  <TableHead className="hidden sm:table-cell text-right">Sem reajuste</TableHead>
-                  <TableHead className="hidden xl:table-cell w-[90px]">Evolução</TableHead>
+                  {COLUNAS.map((col) => (
+                    <TableHead
+                      key={col.rotulo}
+                      className={col.classe}
+                      title={col.rotulo === "Contra os pares"
+                        ? "Remuneração inteira (fixo + variável) contra quem tem o mesmo cargo"
+                        : undefined}
+                    >
+                      <CabecalhoColuna
+                        col={col} ordem={ordem} onOrdenar={ordenarPor}
+                        faixa={col.faixa ? filtros.faixas[col.faixa] : undefined}
+                        onFaixa={definirFaixa}
+                      />
+                    </TableHead>
+                  ))}
                 </TableRow>
               </TableHeader>
               <TableBody>

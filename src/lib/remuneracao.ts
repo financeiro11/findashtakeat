@@ -509,6 +509,25 @@ export function custoPorArea(pessoas: PessoaRemuneracao[], meses: string[]): Lin
     .sort((a, b) => b.total - a.total);
 }
 
+/** Uma faixa aberta dos dois lados: `{min: 5000, max: null}` é "de 5.000 pra cima". */
+export type Faixa = { min: number | null; max: number | null };
+
+export const faixaVazia = (f?: Faixa) => !f || (f.min == null && f.max == null);
+
+const naFaixa = (v: number | null, f?: Faixa) => {
+  if (faixaVazia(f)) return true;
+  // Sem valor não passa numa faixa: "quem ganha acima de 5.000" não inclui quem
+  // não recebeu nada. Deixar passar encheria o filtro de linhas em branco.
+  if (v == null) return false;
+  if (f!.min != null && v < f!.min) return false;
+  if (f!.max != null && v > f!.max) return false;
+  return true;
+};
+
+/** As colunas numéricas que aceitam faixa. */
+export type ColunaFaixa =
+  | "tempoDeCasa" | "fixo" | "variavel" | "contraPares" | "semReajuste" | "totalPeriodo";
+
 export type Filtros = {
   busca: string;
   /** Inclui quem já saiu (tem data de desligamento ou parou de receber). */
@@ -517,8 +536,24 @@ export type Filtros = {
   incluirNaoPessoas: boolean;
   /** Só quem tem ficha no Portal RH. */
   soComFichaRh: boolean;
-  setor: string | null;
+  /** Vazio = todos. Vários de uma vez: "Suporte E Onboarding" é uma pergunta real. */
+  setores: string[];
+  cargos: string[];
+  faixas: Partial<Record<ColunaFaixa, Faixa>>;
 };
+
+export const FILTROS_VAZIOS: Filtros = {
+  busca: "", incluirSaidas: false, incluirNaoPessoas: false, soComFichaRh: false,
+  setores: [], cargos: [], faixas: {},
+};
+
+/** Quantos filtros estão ligados — o número que a tela mostra no botão de limpar. */
+export function filtrosLigados(f: Filtros): number {
+  return (f.busca.trim() ? 1 : 0)
+    + (f.incluirSaidas ? 1 : 0) + (f.incluirNaoPessoas ? 1 : 0) + (f.soComFichaRh ? 1 : 0)
+    + (f.setores.length ? 1 : 0) + (f.cargos.length ? 1 : 0)
+    + Object.values(f.faixas).filter((x) => !faixaVazia(x)).length;
+}
 
 /** Texto que a busca varre por pessoa — nome, cargo, setor e código do RH. */
 const alvoDaBusca = (p: PessoaRemuneracao) =>
@@ -535,10 +570,16 @@ export function filtrarPessoas(
   referencia: string | null,
 ): PessoaRemuneracao[] {
   const termo = f.busca.trim().toLowerCase();
+  const setores = new Set(f.setores);
+  // `normCargo` e não um trim/lowercase próprio: é a MESMA normalização que
+  // agrupa os pares. Se as duas divergirem, filtrar por um cargo pode devolver
+  // um conjunto diferente do grupo contra o qual a pessoa foi comparada.
+  const cargos = new Set(f.cargos.map(normCargo));
   return pessoas.filter((p) => {
     if (!f.incluirNaoPessoas && !p.eh_pessoa) return false;
     if (f.soComFichaRh && !p.codigo_rh) return false;
-    if (f.setor && p.setor !== f.setor) return false;
+    if (setores.size && !(p.setor && setores.has(p.setor))) return false;
+    if (cargos.size && !cargos.has(normCargo(p.cargo))) return false;
 
     if (!f.incluirSaidas) {
       if (p.datadesl) return false;
@@ -557,6 +598,94 @@ export function filtrarPessoas(
     if (termo && !alvoDaBusca(p).includes(termo)) return false;
     return true;
   });
+}
+
+/* ─────────────────────────── A linha da tabela ───────────────────────────
+   Pessoa mais tudo o que a tela calcula sobre ela. Existe porque filtro de
+   faixa e ordenação trabalham sobre o CALCULADO (fixo de hoje, posição contra
+   os pares, meses sem reajuste) e não sobre o que veio do banco — recalcular
+   isso dentro de cada comparação de ordenação seria refazer o resumo de 150
+   pessoas a cada clique de cabeçalho. */
+
+export type LinhaPessoa = {
+  pessoa: PessoaRemuneracao;
+  resumo: ResumoPessoa;
+  par?: Pares;
+  /** Meses desde a admissão, do espelho do RH. Null quando a data não parseia. */
+  tempoDeCasa: number | null;
+};
+
+export function montarLinhas(
+  pessoas: PessoaRemuneracao[],
+  pares: Map<string, Pares>,
+  hoje = new Date(),
+): LinhaPessoa[] {
+  const mesHoje = `${hoje.getFullYear()}-${String(hoje.getMonth() + 1).padStart(2, "0")}-01`;
+  return pessoas.map((pessoa) => ({
+    pessoa,
+    resumo: resumoDaPessoa(pessoa),
+    par: pares.get(pessoa.id),
+    tempoDeCasa: pessoa.inicio
+      ? distanciaEmMeses(`${pessoa.inicio.slice(0, 7)}-01`, mesHoje)
+      : null,
+  }));
+}
+
+/** O valor de uma linha na coluna pedida — o que a faixa mede e a ordem compara. */
+export function valorDaColuna(l: LinhaPessoa, coluna: ColunaFaixa): number | null {
+  switch (coluna) {
+    case "tempoDeCasa":  return l.tempoDeCasa;
+    case "fixo":         return l.resumo.fixoAtual;
+    case "variavel":     return l.resumo.mesesComPremiacao ? l.resumo.premiacaoMedia : null;
+    case "contraPares":  return l.par?.contraMediana ?? null;
+    case "semReajuste":  return l.resumo.mesesSemReajuste;
+    case "totalPeriodo": return l.resumo.totalPeriodo || null;
+  }
+}
+
+export function filtrarPorFaixa(
+  linhas: LinhaPessoa[],
+  faixas: Filtros["faixas"],
+): LinhaPessoa[] {
+  const ativas = (Object.entries(faixas) as [ColunaFaixa, Faixa][])
+    .filter(([, f]) => !faixaVazia(f));
+  if (!ativas.length) return linhas;
+  return linhas.filter((l) => ativas.every(([c, f]) => naFaixa(valorDaColuna(l, c), f)));
+}
+
+export type ColunaOrdenavel = ColunaFaixa | "nome" | "ultimoReajuste";
+export type Ordem = { coluna: ColunaOrdenavel; desc: boolean };
+
+/**
+ * Ordena as linhas.
+ *
+ * Quem não tem valor na coluna vai SEMPRE para o fim, subindo ou descendo. Numa
+ * ordenação decrescente por "fixo hoje", jogar os nulos no topo poria quem não
+ * recebeu nada acima de quem mais ganha, que é o oposto do que se pediu.
+ */
+export function ordenarLinhas(linhas: LinhaPessoa[], ordem: Ordem): LinhaPessoa[] {
+  const sinal = ordem.desc ? -1 : 1;
+  return [...linhas].sort((a, b) => {
+    if (ordem.coluna === "nome") {
+      return sinal * a.pessoa.nome.localeCompare(b.pessoa.nome, "pt-BR");
+    }
+    if (ordem.coluna === "ultimoReajuste") {
+      // Pelo VALOR do reajuste em reais, que é o que a coluna mostra em destaque.
+      const va = a.resumo.ultimoReajuste
+        ? a.resumo.ultimoReajuste.para - a.resumo.ultimoReajuste.de : null;
+      const vb = b.resumo.ultimoReajuste
+        ? b.resumo.ultimoReajuste.para - b.resumo.ultimoReajuste.de : null;
+      return comparar(va, vb, sinal);
+    }
+    return comparar(valorDaColuna(a, ordem.coluna), valorDaColuna(b, ordem.coluna), sinal);
+  });
+}
+
+function comparar(a: number | null, b: number | null, sinal: number): number {
+  if (a == null && b == null) return 0;
+  if (a == null) return 1;   // nulo por último, sempre
+  if (b == null) return -1;
+  return sinal * (a - b);
 }
 
 /** Soma de um mês entre as pessoas dadas. */

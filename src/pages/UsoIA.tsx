@@ -49,6 +49,213 @@ function periodRange(p: Period): { from?: Date; to?: Date } {
   return {};
 }
 
+/* ================================================================== *
+ *  Orçamento do mês — o painel que faltava em 03/09/2026
+ *
+ *  Naquele dia o crédito pré-pago do Gemini acabou no meio da tarde e ninguém
+ *  viu chegando. A tabela abaixo desta seção já existia e dizia a verdade sobre
+ *  o pedaço que media: 301 chamadas, US$ 0,30. Só que 14 funções chamam o
+ *  modelo e as duas caras não gravavam nada — o painel dizia "ociosa" sobre uma
+ *  amostra de texto curto enquanto a leitura de documento queimava por página.
+ *
+ *  O teto é NOSSO, não do Google: a API não informa saldo. Por isso ele é
+ *  editável aqui, e o aviso do sino (`ia.orcamento`) é medido contra ele.
+ * ================================================================== */
+
+type ConsumidorLinha = {
+  consumidor: string; rotulo: string; ativo: boolean;
+  teto_dia: number | null; teto_mes_usd: number | null;
+  chamadas_mes: number; tokens_mes: number; usd_mes: number;
+  chamadas_hoje: number; pct_mes: number | null;
+};
+type ProvedorLinha = { provedor: string; chamadas: number; tokens: number; usd: number };
+type Consumo = {
+  mes: string; teto_global_usd: number; gasto_mes_usd: number;
+  pct_global: number | null; consumidores: ConsumidorLinha[];
+  provedores?: ProvedorLinha[];
+};
+
+/* Os formatadores do painel de baixo vivem DENTRO do componente dele, e este é irmão,
+   não filho. Estes aqui também mudam de casa decimal conforme a ordem de grandeza: com
+   4 fixas, um teto de US$ 60 vira "US$ 60,0000"; com 2, um gasto de US$ 0,0082 vira zero. */
+const usd = (n: number) =>
+  `US$ ${n.toLocaleString("en-US", n !== 0 && Math.abs(n) < 1
+    ? { minimumFractionDigits: 4, maximumFractionDigits: 4 }
+    : { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+const emReais = (n: number, fx: number) =>
+  `R$ ${(n * fx).toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+
+function Barra({ pct }: { pct: number | null }) {
+  const p = Math.min(100, Math.max(0, pct ?? 0));
+  // Verde até 70, âmbar até 90, vermelho depois — as mesmas faixas em que o sino toca,
+  // para a cor na tela e o aviso no sino contarem a mesma história.
+  const cor = p >= 90 ? "--neg" : p >= 70 ? "--warn" : "--pos";
+  return (
+    <div className="h-1.5 w-full overflow-hidden rounded-full bg-muted">
+      <div className="h-full rounded-full transition-[width]"
+           style={{ width: `${p}%`, background: `hsl(var(${cor}))` }} />
+    </div>
+  );
+}
+
+const NOME_DO_MOTOR: Record<string, string> = {
+  gemini: "Gemini", openai: "OpenAI", outro: "Outro modelo",
+};
+
+/* A divisão por motor — e por que o zero da OpenAI é a informação, não a ausência dela.
+ *
+ * O motor sai do nome do modelo gravado em cada linha (`ia_consumo_mes`), então vale
+ * retroativamente. Só que das 303 chamadas que o razão acumulou desde 07/05/2026, NENHUMA
+ * é da OpenAI — e a OpenAI é o motor padrão do Hub desde 11/08/2026, com dezessete funções
+ * chamando `_shared/openai.ts`. O que falta lá é o `onUso` que o `gemini.ts` tem.
+ *
+ * Mostrar "OpenAI: US$ 0,00" e seguir em frente seria repetir, num andar acima, o erro que
+ * este painel nasceu para corrigir: dizer "ociosa" sobre uma amostra. Por isso o aviso vem
+ * colado à linha, e some sozinho no dia em que a primeira chamada da OpenAI for gravada —
+ * um alerta que depende de um fato deixa de mentir quando o fato muda. */
+function PorMotor({ provedores, total }: { provedores: ProvedorLinha[]; total: number }) {
+  if (!provedores.length) return null;
+  const cego = provedores.some((p) => p.provedor === "openai" && p.chamadas === 0);
+
+  return (
+    <div className="space-y-2 rounded-md border border-border bg-secondary/30 p-3">
+      <div className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+        Por motor
+      </div>
+      {provedores.map((p) => (
+        <div key={p.provedor} className="grid grid-cols-[70px_1fr_auto] items-center gap-3 text-[12.5px]">
+          <span className="font-medium">{NOME_DO_MOTOR[p.provedor] ?? p.provedor}</span>
+          <div className="h-1.5 overflow-hidden rounded-full bg-muted">
+            <div className="h-full rounded-full bg-primary transition-[width]"
+                 style={{ width: `${total > 0 ? (p.usd / total) * 100 : 0}%` }} />
+          </div>
+          <span className="num shrink-0 text-[12px] text-muted-foreground">
+            {usd(p.usd)} · {p.chamadas} chamada{p.chamadas === 1 ? "" : "s"}
+          </span>
+        </div>
+      ))}
+      {cego && (
+        <p className="pt-1 text-[11.5px] leading-relaxed text-warn">
+          <strong className="font-semibold">A OpenAI marca zero porque ninguém a mede.</strong>{" "}
+          Ela é o motor padrão do Hub — justificativa e pergunta da DRE, apresentação, revisão,
+          recomendação do cartão, insights, classificação, cenários, assistente —, mas o{" "}
+          <code className="text-[11px]">_shared/openai.ts</code> não grava no razão como o{" "}
+          <code className="text-[11px]">gemini.ts</code> grava. Enquanto esta linha existir, o
+          total acima é só o lado Gemini, e é menor que a conta real.
+        </p>
+      )}
+    </div>
+  );
+}
+
+function OrcamentoDaIA({ fx }: { fx: number }) {
+  const [c, setC] = useState<Consumo | null>(null);
+  const [editando, setEditando] = useState(false);
+  const [teto, setTeto] = useState("");
+  const [salvando, setSalvando] = useState(false);
+
+  const carregar = async () => {
+    const { data, error } = await (supabase as any).rpc("ia_consumo_mes");
+    if (!error && data) { setC(data as Consumo); setTeto(String(data.teto_global_usd ?? "")); }
+  };
+  useEffect(() => { carregar(); }, []);
+
+  const salvar = async () => {
+    const v = parseFloat(teto.replace(",", "."));
+    if (!Number.isFinite(v) || v <= 0) return;
+    setSalvando(true);
+    const { error } = await (supabase as any)
+      .from("ia_teto_global").update({ teto_mes_usd: v, atualizado_em: new Date().toISOString() }).eq("id", true);
+    setSalvando(false);
+    if (!error) { setEditando(false); await carregar(); }
+  };
+
+  if (!c) return null;
+
+  const vigiados = (c.consumidores ?? []).filter((l) => l.teto_mes_usd != null);
+  const semTeto = (c.consumidores ?? []).filter((l) => l.teto_mes_usd == null && l.chamadas_mes > 0);
+  const pct = c.pct_global ?? 0;
+
+  return (
+    <SectionCard
+      title="Orçamento de IA do mês"
+      subtitle={`${c.mes} · o teto é o nosso, não o do provedor — a API não informa saldo`}
+    >
+      <div className="space-y-4 p-4">
+        <div className="flex flex-wrap items-baseline justify-between gap-2">
+          <div className="num text-[22px] font-semibold tracking-tight">
+            {usd(c.gasto_mes_usd)}
+            <span className="ml-1.5 text-[13px] font-normal text-muted-foreground">
+              de {usd(c.teto_global_usd)} · {emReais(c.gasto_mes_usd, fx)}
+            </span>
+          </div>
+          <div className="flex items-center gap-2 text-[12px]">
+            <span className="num font-semibold"
+                  style={{ color: `hsl(var(${pct >= 90 ? "--neg" : pct >= 70 ? "--warn" : "--pos"}))` }}>
+              {pct.toFixed(1)}%
+            </span>
+            {editando ? (
+              <>
+                <input value={teto} onChange={(e) => setTeto(e.target.value)}
+                       className="num w-20 rounded border border-border bg-card px-1.5 py-0.5 text-right"
+                       aria-label="Teto do mês em dólares" />
+                <button onClick={salvar} disabled={salvando}
+                        className="rounded bg-primary px-2 py-0.5 text-primary-foreground disabled:opacity-50">
+                  {salvando ? "…" : "Salvar"}
+                </button>
+                <button onClick={() => setEditando(false)} className="text-muted-foreground hover:underline">
+                  Cancelar
+                </button>
+              </>
+            ) : (
+              <button onClick={() => setEditando(true)} className="text-muted-foreground hover:underline">
+                Mudar o teto
+              </button>
+            )}
+          </div>
+        </div>
+        <Barra pct={pct} />
+        <PorMotor provedores={c.provedores ?? []} total={c.gasto_mes_usd} />
+        <p className="text-[11px] leading-relaxed text-muted-foreground">
+          O sino avisa em 70%, 90% e 100% — uma vez por faixa, por mês. O aviso é SQL puro:
+          um alerta sobre gasto de IA não pode gastar IA para existir.
+        </p>
+
+        <div className="divide-y divide-border border-t border-border">
+          {vigiados.map((l) => (
+            <div key={l.consumidor} className="py-2.5">
+              <div className="flex items-baseline justify-between gap-3 text-[13px]">
+                <span className="min-w-0 flex-1 truncate">{l.rotulo}</span>
+                <span className="num shrink-0 text-muted-foreground">
+                  {usd(l.usd_mes)} / {usd(l.teto_mes_usd!)}
+                </span>
+                <span className="num w-12 shrink-0 text-right text-[12px]">
+                  {(l.pct_mes ?? 0).toFixed(0)}%
+                </span>
+              </div>
+              <div className="mt-1.5"><Barra pct={l.pct_mes} /></div>
+              <div className="mt-1 text-[11px] text-muted-foreground">
+                {l.chamadas_mes} chamada{l.chamadas_mes === 1 ? "" : "s"} no mês ·{" "}
+                {l.chamadas_hoje} hoje, de {l.teto_dia} por dia
+                {!l.ativo && <span className="ml-1.5 font-medium text-warn">· desligado</span>}
+              </div>
+            </div>
+          ))}
+        </div>
+
+        {/* Quem gasta e não tem teto é o buraco que criou o problema — não pode ficar mudo. */}
+        {semTeto.length > 0 && (
+          <p className="text-[12px] leading-relaxed text-warn">
+            <strong className="font-semibold">Sem teto:</strong>{" "}
+            {semTeto.map((l) => `${l.rotulo} (${l.chamadas_mes})`).join(", ")}. Consumindo sem
+            freio — cadastre em <code className="text-[11px]">ia_orcamento</code>.
+          </p>
+        )}
+      </div>
+    </SectionCard>
+  );
+}
+
 export default function UsoIA() {
   const [rows, setRows] = useState<Row[]>([]);
   const [loading, setLoading] = useState(true);
@@ -151,6 +358,8 @@ export default function UsoIA() {
           </button>
         </div>
       </div>
+
+      <OrcamentoDaIA fx={fx} />
 
       {/* KPIs */}
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">

@@ -42,6 +42,7 @@ Deno.serve(async (req) => {
     const sys = `Você é um classificador financeiro brasileiro da Takeat. Para cada lançamento bancário sugira: categoria, centro_custo, conta, cliente_fornecedor e observacao breve. Use conhecimento do mercado BR (LIGHT/CPFL=Energia, VIVO/CLARO/TIM=Telecom, etc) E o contexto organizacional abaixo — quando a descrição bater com um fornecedor cadastrado, use o nome canônico da Biblioteca; quando casar com um colaborador, atribua ao centro de custo dele. Retorne JSON estrito: { results: [{categoria, centro_custo, conta, cliente_fornecedor, observacao}] } na MESMA ORDEM dos lançamentos recebidos.\n\n${org}`;
 
     const parsed = await generateJSON<{ results: any[] }>({
+      consumidor: "classificacao",
       messages: [
         { role: "system", content: sys },
         { role: "user", content: `Classifique:\n${JSON.stringify(transactions)}` },

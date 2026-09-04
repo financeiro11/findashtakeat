@@ -270,6 +270,7 @@ Deno.serve(async (req) => {
       const out = await generateJSON<{
         recomendacoes: { chave: string; texto: string; acao: string; com_quem: string | null; confianca: string }[];
       }>({
+        consumidor: "cartao_recomendar",
         temperature: 0.4,
         responseSchema: ESQUEMA,
         messages: [

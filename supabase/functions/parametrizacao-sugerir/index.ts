@@ -116,6 +116,7 @@ Deno.serve(async (req) => {
     /* Sem `model`: o helper resolve por OPENAI_MODEL. Fixar o modelo no call
        site é o que deixou funções para trás na última migração de motor. */
     const resposta = await generateJSON<{ sugestoes?: unknown[] }>({
+      consumidor: "classificacao",
       messages: [
         { role: "system", content: SISTEMA },
         { role: "user", content: `Nomeie estas ${lote.length} contrapartes:\n\n${lote.map(descrever).join("\n")}` },

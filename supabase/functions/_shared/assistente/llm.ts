@@ -41,7 +41,7 @@ export function provedorAtual(): "openai" | "gemini" {
 export async function gerarTexto(opts: OpcoesLLM): Promise<string> {
   if (temOpenAI()) {
     try {
-      return await openaiText({ messages: opts.messages, temperature: opts.temperature });
+      return await openaiText({ consumidor: "assistente", messages: opts.messages, temperature: opts.temperature });
     } catch (e) {
       console.error("OpenAI falhou; caindo para o Gemini.", e instanceof Error ? e.message : e);
     }
@@ -58,7 +58,7 @@ export async function gerarTexto(opts: OpcoesLLM): Promise<string> {
 export async function gerarJSON<T = unknown>(opts: OpcoesLLM): Promise<T> {
   if (temOpenAI()) {
     try {
-      return await openaiJSON<T>({ messages: opts.messages, temperature: opts.temperature, json: true });
+      return await openaiJSON<T>({ consumidor: "assistente", messages: opts.messages, temperature: opts.temperature, json: true });
     } catch (e) {
       console.error("OpenAI falhou; caindo para o Gemini.", e instanceof Error ? e.message : e);
     }

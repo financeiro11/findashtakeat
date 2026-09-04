@@ -11,6 +11,8 @@
 // porque o segredo no Supabase é case-sensitive e já foi cadastrado à mão).
 // Modelo: OPENAI_MODEL sobrescreve o padrão sem precisar de deploy.
 
+import type { ConsumidorIA } from "./ia-orcamento.ts";
+
 export const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
@@ -115,6 +117,77 @@ interface GenerateOptions {
   /** Pula a OpenAI e vai direto ao Gemini, pela MESMA rota da queda automática.
    *  Para exercitar a rede de proteção sem mexer na chave de produção. */
   preferirGemini?: boolean;
+  /** Quem está gastando. Vai para `ai_usage_log.feature` e é por onde o painel
+   *  Configurações › Uso de IA e o sino do orçamento enxergam esta chamada. */
+  consumidor?: ConsumidorIA;
+  /** Quem pediu, quando foi gente. Omitido = foi o servidor. */
+  userId?: string | null;
+  /** Para quem prefere gravar por conta própria (o padrão do `gemini.ts`).
+   *  Dado isto, o motor NÃO grava sozinho — senão a chamada contaria duas vezes. */
+  onUso?: (u: { model: string; promptTokens: number; completionTokens: number }) => void;
+}
+
+/* ===================================================================== */
+/* ============================ o medidor ============================== */
+/* ===================================================================== */
+/**
+ * ATÉ 03/09/2026 ESTE ARQUIVO GASTAVA SEM DEIXAR RASTRO. Toda resposta da OpenAI vem com
+ * `usage: {prompt_tokens, completion_tokens}` — a contagem exata, de graça, sem estimativa
+ * — e o `callChat` a descartava junto com o resto do envelope. O `ai_usage_log` só tinha
+ * linhas do Gemini, e "quanto o Hub gasta de OpenAI?" só podia ser respondido contando
+ * invocações de função, que não sabem o tamanho do prompt. No dia em que a pergunta veio
+ * de fora — a conta apontando um pico e ninguém sabendo de quem era — não havia resposta.
+ *
+ * O MEDIDOR MORA NO MOTOR, e não em cada função, pela mesma razão que a queda para o
+ * Gemini desceu para cá em 31/08: dezesseis funções lembrarem de fazer a mesma coisa é
+ * exatamente o que não acontece. Quem não passa `consumidor` ainda assim é gravado, sob
+ * `openai_sem_rotulo` — o painel usa FULL JOIN e mostra consumidor sem teto como "não
+ * vigiado", que é uma cobrança visível para dar nome a ele.
+ *
+ * GRAVAR NUNCA DERRUBA A CHAMADA — a regra do `ia-orcamento.ts` vale igual aqui. E grava-se
+ * a tentativa que FALHOU também, com zero token: ela não custou dinheiro, mas consumiu a
+ * disponibilidade do dia, que é o que o teto por chamadas existe para conter.
+ */
+const SEM_ROTULO = "openai_sem_rotulo" as ConsumidorIA;
+
+async function anotar(
+  opts: GenerateOptions,
+  model: string,
+  promptTokens: number,
+  completionTokens: number,
+): Promise<void> {
+  if (opts.onUso) {
+    try { opts.onUso({ model, promptTokens, completionTokens }); } catch { /* o razão não derruba */ }
+    return;
+  }
+  try {
+    const url = Deno.env.get("SUPABASE_URL");
+    const chave = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
+    /* Sem service role não há como gravar: a `ai_usage_log` é fechada por RLS e uma
+       chamada com a credencial de quem pediu gravaria nada, em silêncio. */
+    if (!url || !chave) return;
+    const [{ createClient }, { registrarUsoIA }] = await Promise.all([
+      import("https://esm.sh/@supabase/supabase-js@2.45.0"),
+      import("./ia-orcamento.ts"),
+    ]);
+    await registrarUsoIA(createClient(url, chave), {
+      consumidor: opts.consumidor ?? SEM_ROTULO,
+      model,
+      promptTokens,
+      completionTokens,
+      userId: opts.userId ?? null,
+    });
+  } catch (e) {
+    console.error("ai_usage_log (openai)", (e as Error)?.message ?? e);
+  }
+}
+
+function tokensDe(data: Record<string, unknown>): { entrada: number; saida: number } {
+  const u = (data?.usage ?? {}) as Record<string, unknown>;
+  return {
+    entrada: Number(u.prompt_tokens ?? 0),
+    saida: Number(u.completion_tokens ?? 0),
+  };
 }
 
 async function callChat(opts: GenerateOptions): Promise<Record<string, unknown>> {
@@ -148,6 +221,7 @@ async function callChat(opts: GenerateOptions): Promise<Record<string, unknown>>
       signal: AbortSignal.timeout(opts.timeoutMs ?? TIMEOUT_PADRAO),
     });
   } catch (e) {
+    await anotar(opts, model, 0, 0);
     const nome = (e as Error)?.name;
     if (nome === "TimeoutError" || nome === "AbortError") {
       throw new OpenAIError("A IA demorou demais para responder. Tente de novo em alguns segundos.", 504);
@@ -158,9 +232,15 @@ async function callChat(opts: GenerateOptions): Promise<Record<string, unknown>>
   if (!resp.ok) {
     const detail = await resp.text();
     console.error("OpenAI error", resp.status, detail);
+    await anotar(opts, model, 0, 0);
     throw new OpenAIError("Falha ao consultar a IA", resp.status === 429 ? 429 : 502, detail);
   }
-  return await resp.json();
+  const data = await resp.json();
+  /* A contagem é a da própria OpenAI, não uma estimativa nossa: `usage` vem em toda
+     resposta e é o mesmo número que aparece na fatura. */
+  const { entrada, saida } = tokensDe(data);
+  await anotar(opts, model, entrada, saida);
+  return data;
 }
 
 function extractText(data: Record<string, unknown>): string {
@@ -256,10 +336,16 @@ export async function generateText(opts: GenerateOptions): Promise<string> {
        segura nada. O Gemini tem o retry e a cascata dele próprios. */
     async () => {
       const g = await import("./gemini.ts");
-      return await g.generateText({
+      /* A queda também entra no razão, com o modelo do Gemini no nome — senão o mês em que
+         a OpenAI ficou sem crédito apareceria no painel como um mês sem consumo. */
+      let uso = { model: "", promptTokens: 0, completionTokens: 0 };
+      const txt = await g.generateText({
         messages: opts.messages,
         temperature: opts.temperature,
+        onUso: (u) => { uso = u; },
       });
+      await anotar(opts, uso.model || "gemini", uso.promptTokens, uso.completionTokens);
+      return txt;
     },
     opts.preferirGemini,
   );
@@ -279,7 +365,8 @@ export async function generateJSON<T = unknown>(opts: GenerateOptions): Promise<
        contrário —, então repassar o original é o certo. */
     async () => {
       const g = await import("./gemini.ts");
-      return await g.generateJSON<T>({
+      let uso = { model: "", promptTokens: 0, completionTokens: 0 };
+      const out = await g.generateJSON<T>({
         messages: opts.messages,
         temperature: opts.temperature,
         responseSchema: opts.responseSchema,
@@ -287,7 +374,10 @@ export async function generateJSON<T = unknown>(opts: GenerateOptions): Promise<
            `json: true` é o `responseMimeType` dele. Na OpenAI isso já vinha
            embutido no `callChat({ ...opts, json: true })` acima. */
         json: !opts.responseSchema,
+        onUso: (u) => { uso = u; },
       });
+      await anotar(opts, uso.model || "gemini", uso.promptTokens, uso.completionTokens);
+      return out;
     },
     opts.preferirGemini,
   );

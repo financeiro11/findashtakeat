@@ -543,6 +543,7 @@ Deno.serve(async (req) => {
     const triagemP = (async () => {
       try {
         const t = await generateJSON<{ intencao?: string; buscar?: string[] }>({
+          consumidor: "dre_dfc",
           temperature: 0,
           timeoutMs: PRAZO_TRIAGEM_MS,
           maxTokens: 300,
@@ -929,6 +930,7 @@ Deno.serve(async (req) => {
       : "";
 
     const redigir = () => generateJSON<{ resposta: string; confianca: string; acao?: AcaoCrua | null }>({
+      consumidor: "dre_dfc",
       temperature: 0.3,
       responseSchema: schema,
       messages: [

@@ -230,6 +230,7 @@ async function gerarInsights(historico: { label: string; kpis: any }[]): Promise
   }));
   try {
     const out = await generateJSON<{ insights: { tipo: string; texto: string }[] }>({
+      consumidor: "texto_apoio",
       temperature: 0.3,
       responseSchema: {
         type: "object",

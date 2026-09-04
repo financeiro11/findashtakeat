@@ -275,6 +275,7 @@ Deno.serve(async (req) => {
       ].join("\n");
 
       const out = await generateJSON<{ texto?: string; itens?: string[] }>({
+        consumidor: "dre_dfc",
         temperature: 0.5,
         responseSchema: ESQUEMA_CAMPO,
         messages: [
@@ -317,6 +318,7 @@ Deno.serve(async (req) => {
 
     /* --- 4) Redação ------------------------------------------------------- */
     const redigir = async () => generateJSON<Escrito>({
+      consumidor: "dre_dfc",
       temperature: 0.4,
       responseSchema: ESQUEMA,
       messages: [

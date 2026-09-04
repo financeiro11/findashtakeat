@@ -291,6 +291,7 @@ async function redigir(dia: string, commits: Commit[]): Promise<{ resumo: string
   let bruto: { resumo?: string; itens?: any[] };
   try {
     bruto = await generateJSON({
+      consumidor: "rotina_diaria",
       messages: [
         { role: "system", content: SISTEMA },
         {

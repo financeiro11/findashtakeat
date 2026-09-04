@@ -154,6 +154,7 @@ Deno.serve(async (req) => {
     }
 
     const out = await generateJSON<{ resumo?: string; comandos?: unknown[] }>({
+      consumidor: "dre_dfc",
       temperature: 0.2,
       responseSchema: ESQUEMA,
       maxTokens: 2000,

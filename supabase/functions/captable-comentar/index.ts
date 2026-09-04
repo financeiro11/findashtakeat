@@ -146,6 +146,7 @@ Deno.serve(async (req) => {
     }
 
     const resposta = await generateJSON<{ leitura: string; pontos: { titulo: string; texto: string }[]; atencao?: string | null }>({
+      consumidor: "texto_apoio",
       messages: [
         { role: "system", content: ESTILO },
         { role: "user", content: montarPedido(body) },

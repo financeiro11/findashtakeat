@@ -388,6 +388,7 @@ async function redigir(
   if (!temChave() && !preferirGemini) return c.fallback;
   try {
     const r = await generateJSON<{ corpo?: string; acao?: string }>({
+      consumidor: "rotina_diaria",
       messages: [
         { role: "system", content: ESTILO },
         {

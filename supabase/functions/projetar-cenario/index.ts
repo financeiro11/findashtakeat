@@ -42,6 +42,7 @@ Deno.serve(async (req) => {
        gpt-4.1-mini) passa a valer. Para devolver o tier maior a ESTA tela sem
        encarecer o resto, é `model: "gpt-4.1"` aqui. */
     const parsed = await generateJSON<any>({
+      consumidor: "dre_dfc",
       temperature: 0.4,
       messages: [
         { role: "system", content: systemPrompt },

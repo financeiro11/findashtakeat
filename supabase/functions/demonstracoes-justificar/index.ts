@@ -581,6 +581,7 @@ Deno.serve(async (req) => {
 
     const redigir = async (lote: typeof dossies) => {
       const out = await generateJSON<{ justificativas: { rubrica: string; texto: string; confianca: string }[] }>({
+        consumidor: "dre_dfc",
         temperature: 0.35,
         responseSchema: schema,
         messages: [

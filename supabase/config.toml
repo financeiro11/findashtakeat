@@ -124,6 +124,77 @@ verify_jwt = false
 [functions.vigia-series]
 verify_jwt = false
 
+# =============================================================================
+# AS FUNCOES DE IA QUE NUNCA TINHAM SIDO PUBLICADAS PELA CLI.
+#
+# Todas as linhas abaixo estao com verify_jwt = false NO PROJETO HOSPEDADO desde
+# que nasceram — foram criadas por outro caminho, e este arquivo nunca soube
+# delas. Enquanto ninguem rodava `functions deploy` nelas, isso nao doia. Passou
+# a doer em 03/09/2026, quando o medidor de consumo entrou em
+# `_shared/openai.ts` e as dezesseis precisaram subir de uma vez: sem estas
+# linhas a CLI as publicaria com verify_jwt = true, ligando no gateway uma
+# checagem que elas nunca tiveram.
+#
+# O QUE QUEBRARIA, e nao e teorico: `disparar_automacao` manda Content-Type,
+# os headers extras do agendamento e o `x-cron-token` — NUNCA um `Authorization`.
+# Os crons que passam `apikey` passam a apikey, que o gateway nao le como JWT.
+# Entao hub-novidades-sync, assinaturas-sheet-sync e companhia morreriam em
+# UNAUTHORIZED_NO_AUTH_HEADER, com NADA no log da funcao porque ela nem chega a
+# rodar — o defeito que este arquivo ja documenta oito vezes.
+#
+# As chamadas pela tela nao dependem disto: cada uma dessas funcoes confere a
+# pessoa por dentro (requireUser / supabase.auth.getUser do proprio token). O
+# que se escreve aqui e o ESTADO ATUAL, nao uma decisao nova de seguranca —
+# endurecer o gateway destas rotas e uma mudanca a se fazer de proposito, uma
+# por uma, e nao de carona num deploy de instrumentacao.
+
+[functions.ai-dashboard-insights]
+verify_jwt = false
+
+[functions.assistente-responder]
+verify_jwt = false
+
+[functions.demonstracoes-justificar]
+verify_jwt = false
+
+[functions.demonstracoes-perguntar]
+verify_jwt = false
+
+[functions.demonstracoes-revisao]
+verify_jwt = false
+
+[functions.demonstracoes-apresentacao]
+verify_jwt = false
+
+[functions.projetar-cenario]
+verify_jwt = false
+
+[functions.cartao-recomendar]
+verify_jwt = false
+
+[functions.classify-transaction]
+verify_jwt = false
+
+[functions.tarefas-classificar]
+verify_jwt = false
+
+[functions.parametrizacao-sugerir]
+verify_jwt = false
+
+[functions.captable-comentar]
+verify_jwt = false
+
+# Cron mensal (dia 2, 12h) que passa `apikey` e nao `Authorization`.
+[functions.assinaturas-sheet-sync]
+verify_jwt = false
+
+# Cron diario (11:35) que passa `apikey` e nao `Authorization`.
+[functions.hub-novidades-sync]
+verify_jwt = false
+
+[functions.parse-base-conhecimento-pdf]
+verify_jwt = false
+
 # Cron diario (11:15 UTC) que reescreve "Meios de Pagamento" com as taxas do
 # Asaas. `disparar_automacao` manda so o `x-cron-token`, sem Authorization —
 # sem esta linha a CLI sobe com verify_jwt = true, o gateway devolve

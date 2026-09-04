@@ -36,6 +36,7 @@ import { baixarComOAuthDoDrive } from "../_shared/drive.ts";
 import {
   errorResponse, generateJSON, handleCors, jsonResponse, MODELOS_CASCATA,
 } from "../_shared/gemini.ts";
+import { podeGastarIA, registrarUsoIA } from "../_shared/ia-orcamento.ts";
 
 /** Uint8Array → base64 em blocos: `fromCharCode(...bytes)` estoura a pilha num PDF de 5 MB. */
 function toBase64(bytes: Uint8Array): string {
@@ -151,6 +152,9 @@ const SCHEMA = {
 type LinhaPdf = { data: string; descricao: string; valor: number; parcela?: string };
 type BlocoPdf = { nome: string; final: string; total_impresso?: number; lancamentos: LinhaPdf[] };
 
+/** Onde a fatura em PDF fica guardada. Bucket privado — a fatura tem o gasto de todo mundo. */
+const BUCKET_FATURAS = "demonstracoes-pdf";
+
 const cliente = () => createClient(
   Deno.env.get("SUPABASE_URL")!,
   Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!,
@@ -164,6 +168,23 @@ Deno.serve(async (req) => {
     const quem = await requireUser(req);
     const body = await req.json().catch(() => ({}));
     const supabase = cliente();
+
+    /* ---- guardar: o PDF do Drive vira arquivo no Storage ----
+     *
+     * Existe porque nem toda leitura precisa ser do modelo. Com o crédito do Gemini
+     * esgotado em 03/09/2026, a saída para destravar julho foi uma pessoa (ou o Claude
+     * Code) abrir o PDF e escrever a transcrição direto em `leitura` — e daí o pipeline
+     * inteiro roda igual, com as mesmas conferências. Para isso o arquivo precisa sair do
+     * Drive, que só o servidor enxerga, para um lugar que se baixa com uma chave. */
+    if (body?.action === "guardar") {
+      if (!body?.drive) return jsonResponse({ erro: "Mande `drive` (id/URL do PDF)." }, 400);
+      const arq = await baixarComOAuthDoDrive(supabase, String(body.drive), { maxBytes: 18 * 1024 * 1024 });
+      const caminho = String(body?.caminho ?? `faturas-cartao/${arq.nome}`);
+      const { error } = await supabase.storage.from(BUCKET_FATURAS)
+        .upload(caminho, arq.bytes, { contentType: "application/pdf", upsert: true });
+      if (error) throw new Error(`Storage: ${error.message}`);
+      return jsonResponse({ ok: true, bucket: BUCKET_FATURAS, caminho, bytes: arq.bytes.length, nome: arq.nome });
+    }
 
     /* ---- consulta de uma tarefa já criada ---- */
     if (body?.tarefa) {
@@ -211,37 +232,51 @@ async function processar(
   const gravar = body?.gravar === true;
 
   try {
-    /* ---- 1. o arquivo ---- */
-    let bytes: Uint8Array;
     let nome = String(body?.nome ?? "fatura.pdf");
-    if (body?.base64) {
-      bytes = deBase64(String(body.base64));
-    } else if (body?.drive) {
-      const arq = await baixarComOAuthDoDrive(supabase, String(body.drive), { maxBytes: 18 * 1024 * 1024 });
-      bytes = arq.bytes;
-      nome = arq.nome;
-    } else {
-      throw new Error("Mande `drive` (id/URL do PDF) ou `base64`.");
-    }
-    if (bytes[0] !== 0x25 || bytes[1] !== 0x50) throw new Error(`"${nome}" não é um PDF.`);
 
-    /* ---- 2. o PDF vira rateio ---- */
-    const lido = await generateJSON<{ portadores?: BlocoPdf[]; sem_portador?: LinhaPdf[]; observacao?: string }>({
-      model: MODELOS_CASCATA[0],
-      // Transcrever para um schema fechado é leitura, não deliberação: o raciocínio alto
-      // custaria os mesmos segundos e seria descartado.
-      thinking: "low",
-      temperature: 0,
-      responseSchema: SCHEMA,
-      messages: [
-        { role: "system", content: SISTEMA },
-        {
-          role: "user",
-          content: `Esta é a fatura da competência ${referencia}. Transcreva os blocos por portador.`,
-          imagens: [{ mimeType: "application/pdf", data: toBase64(bytes) }],
-        },
-      ],
-    });
+    /* ---- 1. o PDF vira rateio ----
+     *
+     * REAPROVEITA A LEITURA quando existe. O par natural de uso é "ensaia, confere, grava",
+     * e cada passo relia o mesmo PDF de 30 páginas: em 03/09/2026 a fatura de agosto foi
+     * ao modelo TRÊS vezes (ensaio, gravação que abortou, gravação boa) para produzir uma
+     * resposta só. A leitura de um PDF é a chamada mais cara do Hub — ela vale ser guardada
+     * e relida do banco, não do modelo. `reler: true` força uma leitura nova. */
+    let lido: { portadores?: BlocoPdf[]; sem_portador?: LinhaPdf[]; observacao?: string } | null = null;
+    let origemDaLeitura = "modelo";
+
+    if (body?.reler !== true) {
+      const { data: antes } = await supabase
+        .from("cartao_fatura_rateio")
+        .select("leitura")
+        .eq("competencia", competencia)
+        .eq("status", "pronto")
+        .not("leitura", "is", null)
+        .order("criado_em", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      if (antes?.leitura) { lido = antes.leitura as typeof lido; origemDaLeitura = "leitura guardada"; }
+    }
+
+    if (!lido) {
+      const verba = await podeGastarIA(supabase, "fatura_rateio", 1);
+      if (!verba.pode) throw new Error(`Sem orçamento de IA: ${verba.motivo}`);
+
+      // Só agora o arquivo importa: com leitura guardada, nem o Drive é incomodado.
+      let bytes: Uint8Array;
+      if (body?.base64) {
+        bytes = deBase64(String(body.base64));
+      } else if (body?.drive) {
+        const arq = await baixarComOAuthDoDrive(supabase, String(body.drive), { maxBytes: 18 * 1024 * 1024 });
+        bytes = arq.bytes;
+        nome = arq.nome;
+      } else {
+        throw new Error("Mande `drive` (id/URL do PDF) ou `base64`.");
+      }
+      if (bytes[0] !== 0x25 || bytes[1] !== 0x50) throw new Error(`"${nome}" não é um PDF.`);
+
+      lido = await lerOPdf(bytes, referencia, supabase);
+      await supabase.from("cartao_fatura_rateio").update({ leitura: lido }).eq("id", tarefaId);
+    }
 
     const blocos = (lido?.portadores ?? []).filter((b) => b && Array.isArray(b.lancamentos));
     if (!blocos.length) {
@@ -314,15 +349,32 @@ async function processar(
       resumo[ch] ??= { nome: gestor ?? "", final, linhas: 0, casadas: 0, novas: 0, total: 0 };
 
       for (const l of bloco.lancamentos) {
-        const d = data(l.data, anoBase);
         const v = num(l.valor);
-        if (!d || !Number.isFinite(v)) continue;
-        const k = `${d}|${Math.round(v * 100)}`;
+        if (!Number.isFinite(v)) continue;
         resumo[ch].linhas += 1;
         resumo[ch].total += v;
 
+        /* AS CHAVES CANDIDATAS. A fatura imprime a data da COMPRA, não a da competência, e
+           duas coisas quebram o casamento ingênuo `ano da competência + valor impresso`:
+           1. PARCELA VELHA. "26/11 ... 08/12" é a 8ª de 12 — a compra foi em 2025. Assumir
+              o ano da competência dava 26/11/2026, futuro numa fatura fechada em julho.
+              Foram 26 das 33 órfãs de julho.
+           2. SINAL DO ESTORNO. O PDF imprime -644,12; o .ofx guarda 644,12. Outras 7.
+           Tenta-se do mais provável ao menos: ano da competência antes dos anteriores,
+           valor impresso antes do invertido. A descrição continua sendo o desempate. */
+        const chaves: string[] = [];
+        for (const ano of [anoBase, anoBase - 1, anoBase - 2]) {
+          const dd = data(l.data, ano);
+          if (!dd) continue;
+          for (const vv of [v, -v]) chaves.push(`${dd}|${Math.round(vv * 100)}`);
+        }
+        if (!chaves.length) continue;
+        const d = data(l.data, anoBase)!;
+
         // (a) a linha já existe na base da auditoria? então só ganha dono — nunca duplica.
-        const naBaseCands = (naBase.get(k) ?? []).filter((c) => !usadosBase.has(c));
+        const naBaseCands = chaves
+          .flatMap((kk) => naBase.get(kk) ?? [])
+          .filter((c) => !usadosBase.has(c));
         if (naBaseCands.length) {
           const alvo = naBaseCands[0];
           usadosBase.add(alvo);
@@ -339,10 +391,19 @@ async function processar(
         }
 
         // (b) não está na base: nasce dela, casada com a linha do extrato.
-        const cands = (doExtrato.get(k) ?? []).filter((c) => !usadosExtrato.has(c));
-        const alvo = cands.length === 1
-          ? cands[0]
-          : cands.find((c) => chave(c.descricao).startsWith(chave(l.descricao).slice(0, 12))) ?? null;
+        /* A DESCRIÇÃO PRIMEIRO, mesmo quando só há um candidato. O extrato tem 88 linhas de
+           IOF em julho, e IOF colide em data+valor com compra de verdade (19,25 aparece
+           dezenas de vezes). Pegar o único candidato sem olhar o nome põe "IOF OPERACAO
+           EXTERIOR" no lugar da corrida de Uber — valor certo, linha errada. O candidato
+           único continua valendo como plano B, para quando a descrição do PDF vier cortada. */
+        let alvo: typeof extrato[number] | null = null;
+        for (const kk of chaves) {
+          const cands = (doExtrato.get(kk) ?? []).filter((c) => !usadosExtrato.has(c));
+          if (!cands.length) continue;
+          const porNome = cands.find((c) => chave(c.descricao).startsWith(chave(l.descricao).slice(0, 12)));
+          const escolhido = porNome ?? (cands.length === 1 ? cands[0] : null);
+          if (escolhido) { alvo = escolhido; break; }
+        }
         if (!alvo) {
           orfas.push({ final, gestor, data: d, descricao: l.descricao, valor: v });
           continue;
@@ -364,12 +425,16 @@ async function processar(
           origem: "Cartão",
           gestor,
           card_final: final || null,
-          data: d,
+          /* DATA E VALOR SAEM DA LINHA DO EXTRATO, não do PDF. Quando o casamento veio por
+             ano anterior ou sinal invertido, é o extrato que está certo — a base espelha
+             `cartao_lancamentos`, e divergir dele quebraria toda conferência que cruza os
+             dois por data+valor. O que o PDF traz de único é o DONO. */
+          data: alvo.data ?? d,
           estabelecimento: alvo.estabelecimento ?? null,
           descricao_original: alvo.descricao ?? l.descricao,
           categoria: alvo.categoria ?? null,
           parcela: String(l.parcela ?? alvo.parcela ?? "").trim() || null,
-          valor: v,
+          valor: alvo.valor ?? v,
           // Linha que o financeiro ainda não analisou. NÃO é "SEM NF": carimbar cobrança
           // em centenas de linhas de uma vez transformaria uma correção de exibição numa
           // cobrança em massa que ninguém pediu.
@@ -414,6 +479,8 @@ async function processar(
     await concluir(supabase, tarefaId, "pronto", {
       arquivo: nome,
       competencia: referencia,
+      // De onde veio a transcrição. "leitura guardada" quer dizer: nenhum token gasto.
+      leitura_de: origemDaLeitura,
       gravou: gravar,
       inseridas, atualizadas,
       extrato_no_banco: extrato.length,
@@ -446,6 +513,29 @@ async function concluir(
   await supabase.from("cartao_fatura_rateio")
     .update({ status, resultado, erro, terminado_em: new Date().toISOString() })
     .eq("id", id);
+}
+
+/** A leitura em si. Isolada porque é a parte cara: só se chega aqui sem cópia guardada. */
+async function lerOPdf(
+  bytes: Uint8Array, referencia: string, supabase: ReturnType<typeof cliente>,
+): Promise<{ portadores?: BlocoPdf[]; sem_portador?: LinhaPdf[]; observacao?: string }> {
+  return await generateJSON({
+    model: MODELOS_CASCATA[0],
+    // Transcrever para um schema fechado é leitura, não deliberação: o raciocínio alto
+    // custaria os mesmos segundos e seria descartado.
+    thinking: "low",
+    temperature: 0,
+    responseSchema: SCHEMA,
+    onUso: (u) => { void registrarUsoIA(supabase, { consumidor: "fatura_rateio", ...u }); },
+    messages: [
+      { role: "system", content: SISTEMA },
+      {
+        role: "user",
+        content: `Esta é a fatura da competência ${referencia}. Transcreva os blocos por portador.`,
+        imagens: [{ mimeType: "application/pdf", data: toBase64(bytes) }],
+      },
+    ],
+  });
 }
 
 /** 10 hex do SHA-1 da chave natural — o mesmo lançamento relido dá o mesmo `id_unico`. */

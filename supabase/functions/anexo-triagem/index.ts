@@ -32,6 +32,7 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.0";
 import { omieCall } from "../_shared/omie-rpc.ts";
 import { requireUser } from "../_shared/auth.ts";
 import { generateJSON, GeminiError, DEFAULT_MODEL } from "../_shared/gemini.ts";
+import { podeGastarIA, quantasCabem, registrarUsoIA } from "../_shared/ia-orcamento.ts";
 import { mimeDosBytes, mimeDoNome } from "../_shared/mime.ts";
 import { lerXmlFiscal } from "../_shared/nota-fiscal.ts";
 import {
@@ -261,6 +262,8 @@ async function lerDocumento(
   const chamar = () => generateJSON<LeituraAnexo>({
     model: DEFAULT_MODEL,
     temperature: 0,
+    // O XML sai acima sem passar por aqui: só o que chega ao modelo entra no razão.
+    onUso: (u) => { void registrarUsoIA(supabase, { consumidor: "anexo_triagem", ...u }); },
     responseSchema: SCHEMA_TRIAGEM,
     messages: [
       { role: "system", content: SISTEMA_TRIAGEM },
@@ -295,7 +298,26 @@ async function lerDocumento(
  * ========================================================================== */
 
 async function rodar(supabase: any, limite: number, gravar: boolean) {
-  const { data: fila, error } = await supabase.rpc("anexo_triagem_fila", { p_limite: limite });
+  /* O TETO CORTA A FILA, e aqui isso é justo: ao contrário da leitura do acervo, todo
+     item desta fila que não é XML custa uma chamada — o anexo está nela justamente
+     porque o nome não diz nada e só abrindo se sabe. Pedir menos à fila é o caminho
+     mais simples de respeitar o orçamento sem carimbar ninguém indevidamente. */
+  const verba = await podeGastarIA(supabase, "anexo_triagem", 1);
+  const cabem = quantasCabem(verba, limite);
+  if (cabem <= 0) {
+    // Mesma forma do retorno normal — quem lê o resumo não precisa saber que houve
+    // um caminho curto, só que a rodada não leu nada e por quê.
+    const { data: restam } = await supabase.rpc("anexo_triagem_fila_total");
+    return {
+      lidos: 0, nota: 0, nao_e_nota: 0, revisar: 0,
+      restantes: Number(restam ?? 0),
+      parou_por_cota: false, parou_por_tempo: false, parou_por_peso: false,
+      parou_por_orcamento: true, orcamento: verba.motivo,
+      gastou_ms: 0, megabytes: 0, ms_por_documento: null, itens: [],
+    };
+  }
+
+  const { data: fila, error } = await supabase.rpc("anexo_triagem_fila", { p_limite: cabem });
   if (error) throw new Error(`não deu para ler a fila: ${error.message}`);
 
   const comecou = Date.now();

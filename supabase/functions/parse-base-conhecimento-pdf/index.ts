@@ -60,6 +60,7 @@ Responda APENAS com JSON válido no formato { "notas": [ { "titulo": "...", "tip
     let parsed: any;
     try {
       parsed = await generateJSON({
+        consumidor: "texto_apoio",
         messages: [
           { role: "system", content: sysPrompt },
           { role: "user", content: userPrompt },

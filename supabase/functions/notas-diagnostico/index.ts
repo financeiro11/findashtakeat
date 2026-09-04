@@ -138,6 +138,7 @@ Deno.serve(async (req) => {
     }
 
     const escrito = await generateJSON<{ resumo: string; planos: unknown[] }>({
+      consumidor: "rotina_diaria",
       messages: [
         { role: "system", content: SISTEMA },
         { role: "user", content: prompt(sinal as Record<string, unknown>) },

@@ -173,6 +173,7 @@ Deno.serve(async (req) => {
       .join("\n");
 
     const { propostas } = await generateJSON<{ propostas: Proposta[] }>({
+      consumidor: "classificacao",
       messages: [
         { role: "system", content: SISTEMA },
         {

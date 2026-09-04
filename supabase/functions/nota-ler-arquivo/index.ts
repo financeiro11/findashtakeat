@@ -134,7 +134,11 @@ function tipoDoAcervo(tipo: string): string | null {
  * contratos de transcrição no mesmo repo divergem no primeiro conserto, e aí o
  * mesmo PDF é lido de dois jeitos dependendo da porta por onde entrou.
  */
-async function lerComGemini(bytes: Uint8Array, caminho: string, prazo = 0): Promise<{
+async function lerComGemini(
+  bytes: Uint8Array, caminho: string, prazo = 0,
+  /** Recebe os tokens de CADA degrau da cascata — inclusive dos que falharam. */
+  onUso?: (u: { model: string; promptTokens: number; completionTokens: number }) => void,
+): Promise<{
   emitente: string | null; cnpj: string | null; numero: string | null;
   valor: number | null; data: string | null; legivel: boolean;
   tipo_documento: string | null; resumo: string | null;
@@ -169,7 +173,7 @@ async function lerComGemini(bytes: Uint8Array, caminho: string, prazo = 0): Prom
   for (const model of MODELOS_CASCATA) {
     try {
       l = await generateJSON<LeituraAnexo>({
-        model, temperature: 0, responseSchema: SCHEMA_TRIAGEM, messages: mensagens,
+        model, temperature: 0, responseSchema: SCHEMA_TRIAGEM, messages: mensagens, onUso,
         /* A escada de modelos JÁ É a retentativa aqui, e o parágrafo acima conta
            o preço dela: leitura de imagem gasta ~50s e três em sequência matam o
            worker. A retentativa que o helper ganhou em 29/08/2026 dobraria cada
@@ -346,6 +350,20 @@ Deno.serve(async (req) => {
       ? (pendentes ?? [])
       : [...(pendentes ?? [])].sort((a, b) => Number(ehXml(b)) - Number(ehXml(a))).slice(0, limite);
 
+    /* O FREIO, e por que ele conta LEITURA e não item da fila.
+     *
+     * XML e PDF com texto não custam nada — decodificar bytes é de graça. Cortar a fila
+     * pelo orçamento puniria os baratos junto com os caros e deixaria a fila parada com
+     * saldo sobrando. Então a rodada roda inteira e o teto vale só onde o dinheiro sai:
+     * imediatamente antes de cada chamada ao modelo.
+     *
+     * Em 03/09/2026 o crédito do Gemini acabou sem aviso depois de 1.779 leituras em dois
+     * dias. Não havia teto porque não havia razão: esta função nunca gravou uma linha em
+     * `ai_usage_log`. As duas coisas nascem juntas aqui — medir sem frear é assistir. */
+    const verba = await podeGastarIA(supabase, "acervo_leitura", 1);
+    let restamIA = verba.pode ? verba.restaHoje : 0;
+    let barradasPorTeto = 0;
+
     const inicio = Date.now();
     let lidos = 0, comValor = 0, emMoeda = 0, semTexto = 0, comIdentidade = 0;
     const falhas: { id: number; erro: string }[] = [];
@@ -451,8 +469,16 @@ Deno.serve(async (req) => {
          * PDF é exato e de graça; pedir ao modelo o que o arquivo já diz é pagar
          * para introduzir uma chance de erro. */
         if (!texto.trim() && !/\.xml$/i.test(caminho)) {
+          /* Sem saldo a linha NÃO é carimbada: teto estourado é condição do dia, não
+             defeito do arquivo. Carimbar aqui condenaria o documento a nunca mais ser
+             lido — o oposto do que o freio existe para fazer. */
+          if (restamIA <= 0) { barradasPorTeto++; continue; }
+          restamIA--;
           try {
-            const lido = await lerComGemini(bytes, caminho, inicio + ORCAMENTO_MS);
+            const lido = await lerComGemini(
+              bytes, caminho, inicio + ORCAMENTO_MS,
+              (u) => { void registrarUsoIA(supabase, { consumidor: "acervo_leitura", ...u }); },
+            );
             if (lido) {
               semTexto++;
               marca.nome = (n as any).nome ?? lido.emitente ?? null;
@@ -603,6 +629,9 @@ Deno.serve(async (req) => {
       lidos, com_valor: comValor, com_identidade: comIdentidade,
       em_moeda_estrangeira: emMoeda, pdf_sem_texto: semTexto,
       falhas: falhas.slice(0, 8),
+      // O teto do dia aparece no resumo mesmo quando não barrou nada: uma fila que parou
+      // por orçamento tem de se distinguir de uma fila que acabou.
+      orcamento: { motivo: verba.motivo, restavam: verba.restaHoje, barradas: barradasPorTeto },
       gastou_ms: Date.now() - inicio,
     });
   } catch (e) {

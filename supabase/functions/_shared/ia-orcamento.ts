@@ -35,7 +35,22 @@ import type { SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2.45.0
 export type ConsumidorIA =
   | "notas_desempate" | "notas_motivo" | "assistente"
   | "email_resposta" | "automacao_diagnostico"
-  | "acervo_leitura" | "anexo_triagem" | "fatura_rateio";
+  | "acervo_leitura" | "anexo_triagem" | "fatura_rateio"
+  /* O LADO DA OPENAI, a partir de 03/09/2026. Até aqui o razão só conhecia o Gemini:
+     `_shared/openai.ts` lia o `usage` que a API devolve em toda resposta e o jogava fora,
+     então as 16 funções que chamam a OpenAI gastavam sem deixar uma linha. Quando
+     perguntaram "no que você gastou tanto token da OpenAI?", não havia o que responder de
+     dentro do Hub — só contagem de invocação, que não sabe o tamanho do prompt.
+
+     São seis nomes e não dezesseis porque o teto é a unidade de decisão, não a função: um
+     freio por função vira dezesseis linhas que ninguém revisa. Agrupa-se pelo que a IA
+     está fazendo, que é como se decide se vale a pena. */
+  | "dre_dfc"          // justificar, perguntar, revisão, apresentação, projetar cenário
+  | "painel_insights"  // os 4 cartões do painel inicial
+  | "cartao_recomendar"
+  | "rotina_diaria"    // diagnóstico das notas, novidades do Hub, vigia dos sinais
+  | "classificacao"    // tarefas, transações, sugestão de parametrização
+  | "texto_apoio";     // cap table, insight das assinaturas, leitura de PDF da Biblioteca
 
 export interface VeredictoIA {
   pode: boolean;
@@ -104,8 +119,18 @@ export async function podeGastarIA(
    está parada em maio/2026 e não tem os nomes atuais (`gemini-3.6-flash`,
    `gpt-4.1-mini`), então estimar por família é mais honesto que somar zero:
    custo zero no razão vira teto de dólar que nunca fecha. Valores em USD por
-   milhão de tokens, deliberadamente por cima. */
+   milhão de tokens (entrada, saída), deliberadamente por cima.
+
+   A ORDEM IMPORTA: vence a PRIMEIRA que casar. Os nomes da OpenAI vêm antes das
+   regras por família porque `gpt-4.1-mini` casaria com `/mini/` e sairia por
+   US$ 0,15 — menos de metade do preço real. Um razão que subestima é pior que
+   um razão vazio: ele responde com confiança o número errado. */
 const PRECO_RESERVA: Array<[RegExp, number, number]> = [
+  [/^gpt-4\.1-nano/i, 0.10, 0.40],
+  [/^gpt-4\.1-mini/i, 0.40, 1.60],
+  [/^gpt-4\.1/i, 2.00, 8.00],
+  [/^gpt-4o-mini/i, 0.15, 0.60],
+  [/^gpt-4o/i, 2.50, 10.00],
   [/lite|nano|mini/i, 0.15, 0.60],
   [/pro|gpt-5(?!-)/i, 1.25, 10.00],
   [/./, 0.30, 2.50],

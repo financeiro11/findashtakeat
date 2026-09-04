@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   degrausDoFixo, resumoDaPessoa, filtrarPessoas, totaisDoMes, paraCsv, matrizParaPlanilha,
   rotuloMes, distanciaEmMeses, ultimaCompetenciaFechada, mudancasDeArea, areaAtual,
+  fixoDeReferencia, compararComPares, custoPorArea,
   type MesRemuneracao, type PessoaRemuneracao,
 } from "./remuneracao";
 
@@ -227,6 +228,156 @@ describe("trajetória pelos times", () => {
     }));
     expect(r.area).toBe("Onboarding");
     expect(r.mudancas).toHaveLength(1);
+  });
+});
+
+describe("fixo de referência", () => {
+  it("é o fixo cheio, não o do último mês", () => {
+    // Saída no dia 10: o último mês é proporcional e não pode virar o salário.
+    expect(fixoDeReferencia([
+      mes("2026-06-01", 6000), mes("2026-07-01", 6000), mes("2026-08-01", 1800),
+    ])).toBe(6000);
+  });
+
+  it("ignora o mês de entrada proporcional", () => {
+    expect(fixoDeReferencia([
+      mes("2026-06-01", 1200), mes("2026-07-01", 6000), mes("2026-08-01", 6000),
+    ])).toBe(6000);
+  });
+
+  it("um reajuste recente vence, porque é o maior", () => {
+    expect(fixoDeReferencia([
+      mes("2026-06-01", 6000), mes("2026-07-01", 6000), mes("2026-08-01", 7500),
+    ])).toBe(7500);
+  });
+
+  /* Só os três últimos: um salário de um ano atrás não é o de hoje. */
+  it("olha só os três últimos meses pagos", () => {
+    expect(fixoDeReferencia([
+      mes("2026-03-01", 20000), mes("2026-06-01", 6000),
+      mes("2026-07-01", 6000), mes("2026-08-01", 6000),
+    ])).toBe(6000);
+  });
+
+  it("sem mês pago, não há referência", () => {
+    expect(fixoDeReferencia([])).toBeNull();
+    expect(fixoDeReferencia([mes("2026-08-01", 0)])).toBeNull();
+  });
+});
+
+describe("comparação com os pares", () => {
+  const comCargo = (id: string, cargo: string | null, fixo: number) =>
+    pessoa({ id, cargo, meses: [mes("2026-07-01", fixo), mes("2026-08-01", fixo)] });
+
+  it("compara por cargo e devolve mediana e percentil", () => {
+    const m = compararComPares([
+      comCargo("a", "Analista de Suporte", 2000),
+      comCargo("b", "Analista de Suporte", 3000),
+      comCargo("c", "Analista de Suporte", 4000),
+    ]);
+    expect(m.get("b")?.mediana).toBe(3000);
+    expect(m.get("b")?.quantos).toBe(3);
+    expect(m.get("a")?.contraMediana).toBe(-1000);
+    expect(m.get("c")?.contraMediana).toBe(1000);
+  });
+
+  /* Comparar analista com Head da mesma ÁREA não diz nada: em ago/26 o
+     Comercial tinha mediana 3.231 e máximo 27.800. Por isso o grupo é o cargo. */
+  it("não mistura cargos diferentes", () => {
+    const m = compararComPares([
+      comCargo("a", "Analista", 3000), comCargo("b", "Analista", 3000),
+      comCargo("c", "Analista", 3000), comCargo("d", "Head", 20000),
+    ]);
+    expect(m.get("a")?.mediana).toBe(3000);
+    expect(m.has("d")).toBe(false); // grupo de 1
+  });
+
+  it("cargo escrito com caixa e espaço diferentes é o mesmo grupo", () => {
+    const m = compararComPares([
+      comCargo("a", "Analista de Suporte", 2000),
+      comCargo("b", "ANALISTA  DE SUPORTE", 3000),
+      comCargo("c", " analista de suporte ", 4000),
+    ]);
+    expect(m.get("a")?.quantos).toBe(3);
+  });
+
+  /* Mediana de dois é a média dos dois — "percentil 50 de um grupo de 2" é
+     ruído com cara de dado. */
+  it("grupo pequeno demais fica de fora", () => {
+    const m = compararComPares([comCargo("a", "Raro", 5000), comCargo("b", "Raro", 6000)]);
+    expect(m.size).toBe(0);
+  });
+
+  it("quem não tem cargo no RH fica de fora", () => {
+    const m = compararComPares([
+      comCargo("a", null, 3000), comCargo("b", null, 4000), comCargo("c", null, 5000),
+    ]);
+    expect(m.size).toBe(0);
+  });
+
+  /* Três pessoas no mesmo salário não podem cair no percentil 0 — pareceriam as
+     piores pagas do próprio grupo. */
+  it("empate cai no meio, não no fundo", () => {
+    const m = compararComPares([
+      comCargo("a", "Igual", 5000), comCargo("b", "Igual", 5000), comCargo("c", "Igual", 5000),
+    ]);
+    expect(m.get("a")?.percentil).toBe(50);
+  });
+
+  it("usa o fixo cheio, não o mês proporcional de saída", () => {
+    const saindo = pessoa({
+      id: "x", cargo: "Analista",
+      meses: [mes("2026-07-01", 6000), mes("2026-08-01", 900)],
+    });
+    const m = compararComPares([
+      saindo, comCargo("y", "Analista", 6000), comCargo("z", "Analista", 6000),
+    ]);
+    expect(m.get("x")?.contraMediana).toBe(0);
+  });
+});
+
+describe("custo por área", () => {
+  const meses = ["2026-06-01", "2026-07-01", "2026-08-01"];
+
+  it("soma por área e por mês", () => {
+    const linhas = custoPorArea([
+      pessoa({ id: "a", meses: [mes("2026-06-01", 3000, 0, "Suporte"), mes("2026-07-01", 3000, 0, "Suporte")] }),
+      pessoa({ id: "b", meses: [mes("2026-06-01", 5000, 1000, "Tecnologia")] }),
+    ], meses);
+    const suporte = linhas.find((l) => l.area === "Suporte")!;
+    expect(suporte.serie).toEqual([3000, 3000, 0]);
+    expect(linhas.find((l) => l.area === "Tecnologia")!.total).toBe(6000);
+  });
+
+  /* Quem trocou de time em julho custou para o time antigo até junho. Atribuir
+     o passado inteiro ao time novo reescreveria a história dos dois. */
+  it("usa a área do MÊS, não a área atual da pessoa", () => {
+    const linhas = custoPorArea([
+      pessoa({ id: "a", meses: [
+        mes("2026-06-01", 3000, 0, "Suporte"),
+        mes("2026-07-01", 3000, 0, "Onboarding"),
+      ] }),
+    ], meses);
+    expect(linhas.find((l) => l.area === "Suporte")!.serie).toEqual([3000, 0, 0]);
+    expect(linhas.find((l) => l.area === "Onboarding")!.serie).toEqual([0, 3000, 0]);
+  });
+
+  it("ordena pela maior conta e mede a variação do período", () => {
+    const linhas = custoPorArea([
+      pessoa({ id: "a", meses: [mes("2026-06-01", 1000, 0, "Pequena")] }),
+      pessoa({ id: "b", meses: [mes("2026-06-01", 5000, 0, "Grande"), mes("2026-08-01", 7500, 0, "Grande")] }),
+    ], meses);
+    expect(linhas[0].area).toBe("Grande");
+    expect(linhas[0].variacao).toBeCloseTo(0.5, 4);
+    expect(linhas[1].variacao).toBeNull(); // um mês só, não há o que comparar
+  });
+
+  it("mês sem área vira 'Sem área' em vez de sumir da conta", () => {
+    const linhas = custoPorArea([
+      pessoa({ id: "a", meses: [mes("2026-06-01", 4361, 0, null)] }),
+    ], meses);
+    expect(linhas[0].area).toBe("Sem área");
+    expect(linhas[0].total).toBe(4361);
   });
 });
 

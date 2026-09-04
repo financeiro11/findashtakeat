@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useState } from "react";
+import { Fragment, useEffect, useMemo, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import {
   TrendingUp, Search, Download, Loader2, Lock, AlertTriangle, ArrowUpRight,
   ArrowDownRight, Minus, RefreshCw,
@@ -16,6 +17,7 @@ import { Sparkline } from "@/components/ui/sparkline";
 import { KpiCard } from "@/components/ui/kpi-card";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import {
   Bar, BarChart, CartesianGrid, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis,
 } from "recharts";
@@ -27,9 +29,10 @@ import { comValorExato } from "@/components/ValorExato";
 import { valorExato } from "@/lib/valor";
 import { mesesDeCasa, parseISO } from "@/lib/rescisao";
 import {
-  degrausDoFixo, filtrarPessoas, matrizParaPlanilha, resumoDaPessoa, rotuloMes,
-  totaisDoMes, ultimaCompetenciaFechada,
-  type Filtros, type PainelRemuneracao, type PessoaRemuneracao, type ResumoPessoa,
+  compararComPares, custoPorArea, degrausDoFixo, filtrarPessoas, matrizParaPlanilha,
+  resumoDaPessoa, rotuloMes, totaisDoMes, ultimaCompetenciaFechada,
+  type Filtros, type PainelRemuneracao, type Pares, type PessoaRemuneracao,
+  type ResumoPessoa,
 } from "@/lib/remuneracao";
 
 /**
@@ -115,7 +118,25 @@ export default function Remuneracao() {
   const [erro, setErro] = useState<string | null>(null);
   const [filtros, setFiltros] = useState<Filtros>(FILTROS_PADRAO);
   const [mesFoco, setMesFoco] = useState<string | null>(null);
-  const [aberta, setAberta] = useState<PessoaRemuneracao | null>(null);
+
+  /* A ficha aberta vive na URL: sem isso não dá para mandar "olha a trajetória
+     da Thais" para ninguém — o destinatário cairia na lista e teria de procurar.
+     Mesmo padrão de /tarefas?tarefa=<id>. */
+  const [params, setParams] = useSearchParams();
+  const idAberto = params.get("pessoa");
+  const abrir = (id: string | null) => {
+    setParams((p) => {
+      const novo = new URLSearchParams(p);
+      if (id) novo.set("pessoa", id); else novo.delete("pessoa");
+      return novo;
+    }, { replace: true });
+  };
+
+  /* Quem entra na comparação lado a lado. Teto de três: com quatro trajetórias
+     sobrepostas a leitura vira um novelo, e o pedido original era comparar duas
+     pessoas. */
+  const [comparando, setComparando] = useState<Set<string>>(new Set());
+  const MAX_COMPARAR = 3;
 
   const carregar = async () => {
     setCarregando(true);
@@ -187,6 +208,30 @@ export default function Remuneracao() {
   const saidasNoMes = useMemo(
     () => (mes ? totais!.gente - totaisDoMes(pessoas, mes).gente : 0),
     [totais, pessoas, mes],
+  );
+
+  /* A comparação com os pares roda sobre TODAS as pessoas, não sobre o recorte:
+     a mediana do cargo não muda porque alguém filtrou por setor, e recalcular
+     por filtro faria o percentil da mesma pessoa dançar conforme a tela. */
+  const pares = useMemo(() => compararComPares(painel?.pessoas ?? []), [painel]);
+
+  const areas = useMemo(
+    () => custoPorArea(pessoasDoMes, meses),
+    [pessoasDoMes, meses],
+  );
+
+  /* A série do gráfico do topo: o custo do período, decomposto nas mesmas três
+     séries da ficha. */
+  const serieDoCusto: LinhaGrafico[] = useMemo(
+    () => meses.map((m) => {
+      const t = totaisDoMes(pessoasDoMes, m);
+      return {
+        mes: rotuloMes(m),
+        fixo: t.fixo, variavel: t.premiacao, escala: t.escala,
+        total: t.total, reajuste: null,
+      };
+    }),
+    [pessoasDoMes, meses],
   );
 
   /* Quantos têm a ficha do RH atrasada em relação ao que o Omie pagou. É a
@@ -311,6 +356,76 @@ export default function Remuneracao() {
             </div>
           )}
 
+          {/* ── Para onde vai o dinheiro de gente ──
+              O custo total decomposto nas MESMAS três séries da ficha (fixo,
+              variável, escala) — três cores já validadas, em vez de inventar uma
+              paleta de nove para as áreas. A quebra por área vem na tabela ao
+              lado, com o número por extenso e a curva de cada uma. */}
+          {meses.length > 1 && (
+            <div className="grid gap-3 lg:grid-cols-[minmax(0,1.15fr)_minmax(0,1fr)]">
+              <div className="card-surface p-4">
+                <div className="flex items-baseline justify-between gap-3">
+                  <div className="eyebrow">Custo de pessoas por mês</div>
+                  <Legenda />
+                </div>
+                <div className="mt-3 h-[190px] w-full">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <BarChart data={serieDoCusto} margin={{ top: 6, right: 4, bottom: 0, left: 4 }} barCategoryGap="24%">
+                      <CartesianGrid vertical={false} strokeDasharray="3 3" stroke="hsl(var(--border))" opacity={0.6} />
+                      <XAxis dataKey="mes" tickLine={false} axisLine={false}
+                             tick={{ fontSize: 11, fill: "hsl(var(--muted-foreground))" }} />
+                      <YAxis tickLine={false} axisLine={false} width={46}
+                             tick={{ fontSize: 10, fill: "hsl(var(--muted-foreground))" }}
+                             tickFormatter={emMilStr} />
+                      <Tooltip cursor={{ fill: "hsl(var(--secondary))", opacity: 0.5 }} content={<Dica />} />
+                      {SERIES.map((s) => (
+                        <Bar key={s.chave} dataKey={s.chave} stackId="a" fill={s.cor}
+                             shape={Segmento(s.chave)} isAnimationActive={false} />
+                      ))}
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+              </div>
+
+              <div className="card-surface overflow-hidden p-4">
+                <div className="eyebrow">Por área · {rotuloMes(meses[0])} a {rotuloMes(meses[meses.length - 1])}</div>
+                <div className="mt-2 max-h-[210px] overflow-y-auto">
+                  <table className="w-full text-xs">
+                    <tbody>
+                      {areas.map((a) => (
+                        <tr key={a.area} className="border-b border-border/30 last:border-0">
+                          <td className="py-1.5 pr-2">
+                            <div className="font-medium leading-tight">{a.area}</div>
+                            <div className="text-[10px] text-muted-foreground">
+                              {a.pessoasNoUltimoMes} no último mês
+                            </div>
+                          </td>
+                          <td className="w-[70px] py-1.5">
+                            <Sparkline data={a.serie} color="hsl(var(--serie-fixo))" width={64} height={18} />
+                          </td>
+                          <td className="num py-1.5 text-right">{fmtBRL(a.total)}</td>
+                          <td className="num w-[54px] py-1.5 text-right text-[10.5px]">
+                            {a.variacao == null ? (
+                              <span className="text-muted-foreground">—</span>
+                            ) : (
+                              <span className={a.variacao > 0 ? "text-neg" : "text-pos"}>
+                                {pctStr(a.variacao)}
+                              </span>
+                            )}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+                <p className="mt-1.5 text-[10px] text-muted-foreground">
+                  Variação do primeiro ao último mês com valor. Custo subindo aparece
+                  em vermelho — é despesa, não resultado.
+                </p>
+              </div>
+            </div>
+          )}
+
           {/* ── Filtros ── */}
           <div className="flex flex-wrap items-center gap-2">
             <div className="relative min-w-[220px] flex-1">
@@ -363,10 +478,12 @@ export default function Remuneracao() {
             <Table>
               <TableHeader>
                 <TableRow>
+                  <TableHead className="w-[34px]" />
                   <TableHead>Pessoa</TableHead>
                   <TableHead className="hidden md:table-cell">Tempo de casa</TableHead>
                   <TableHead className="text-right">Fixo hoje</TableHead>
-                  <TableHead className="hidden lg:table-cell text-right">Comissão média</TableHead>
+                  <TableHead className="hidden lg:table-cell text-right">Variável médio</TableHead>
+                  <TableHead className="hidden xl:table-cell text-right">Contra os pares</TableHead>
                   <TableHead className="text-right">Último reajuste</TableHead>
                   <TableHead className="hidden sm:table-cell text-right">Sem reajuste</TableHead>
                   <TableHead className="hidden xl:table-cell w-[90px]">Evolução</TableHead>
@@ -377,11 +494,23 @@ export default function Remuneracao() {
                   const serie = p.meses.map((m) => Number(m.fixo) || 0);
                   const atrasada = Math.abs(r.divergenciaContrato ?? 0) >= 1;
                   return (
-                    <TableRow
-                      key={p.id}
-                      onClick={() => setAberta(p)}
-                      className="cursor-pointer"
-                    >
+                    <TableRow key={p.id} onClick={() => abrir(p.id)} className="cursor-pointer">
+                      {/* `stopPropagation` na célula inteira: sem isso marcar a
+                          caixa também abriria a ficha, e escolher duas pessoas
+                          para comparar viraria abrir duas fichas. */}
+                      <TableCell onClick={(e) => e.stopPropagation()}>
+                        <Checkbox
+                          checked={comparando.has(p.id)}
+                          disabled={!comparando.has(p.id) && comparando.size >= MAX_COMPARAR}
+                          onCheckedChange={(v) => setComparando((s) => {
+                            const novo = new Set(s);
+                            if (v === true) novo.add(p.id); else novo.delete(p.id);
+                            return novo;
+                          })}
+                          aria-label={`Comparar ${p.nome}`}
+                        />
+                      </TableCell>
+
                       <TableCell>
                         <div className="font-medium leading-tight">{p.nome}</div>
                         <div className="flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground">
@@ -424,6 +553,13 @@ export default function Remuneracao() {
 
                       <TableCell className="num hidden lg:table-cell text-right text-muted-foreground">
                         {r.mesesComPremiacao ? fmtBRL(r.premiacaoMedia) : "—"}
+                      </TableCell>
+
+                      {/* Onde a pessoa cai entre quem tem o MESMO cargo. Vazio
+                          quando o grupo é pequeno demais para a mediana dizer
+                          algo — melhor não dizer nada do que dizer ruído. */}
+                      <TableCell className="hidden xl:table-cell text-right">
+                        <ContraOsPares par={pares.get(p.id)} />
                       </TableCell>
 
                       {/* O reajuste em REAIS na frente, o percentual embaixo:
@@ -474,7 +610,7 @@ export default function Remuneracao() {
 
                 {!linhas.length && (
                   <TableRow>
-                    <TableCell colSpan={7} className="py-12 text-center text-sm text-muted-foreground">
+                    <TableCell colSpan={9} className="py-12 text-center text-sm text-muted-foreground">
                       Ninguém no recorte atual.
                     </TableCell>
                   </TableRow>
@@ -483,6 +619,22 @@ export default function Remuneracao() {
             </Table>
           </div>
 
+          {/* Barra da comparação: aparece quando há pelo menos uma escolhida, e
+              some sozinha ao limpar. */}
+          {comparando.size > 0 && (
+            <div className="sticky bottom-3 z-10 mx-auto flex w-fit items-center gap-3 rounded-full border border-border bg-popover px-4 py-2 shadow-lg">
+              <span className="text-xs">
+                {comparando.size === 1
+                  ? "Escolha mais uma pessoa para comparar"
+                  : `Comparando ${comparando.size} de até ${MAX_COMPARAR}`}
+              </span>
+              <Button size="sm" variant="ghost" className="h-7"
+                      onClick={() => setComparando(new Set())}>
+                Limpar
+              </Button>
+            </div>
+          )}
+
           <p className="text-xs text-muted-foreground">
             {linhas.length} pessoas · {meses.length ? `${rotuloMes(meses[0])} a ${rotuloMes(meses[meses.length - 1])}` : "sem período"}
             {" · "}o histórico antes de {meses[0] ? rotuloMes(meses[0]) : "—"} ainda vai entrar pelo Conta Azul.
@@ -490,7 +642,146 @@ export default function Remuneracao() {
         </>
       )}
 
-      <FichaDaPessoa pessoa={aberta} onClose={() => setAberta(null)} />
+      <FichaDaPessoa
+        pessoa={(painel?.pessoas ?? []).find((p) => p.id === idAberto) ?? null}
+        par={idAberto ? pares.get(idAberto) : undefined}
+        onClose={() => abrir(null)}
+      />
+
+      <Comparacao
+        pessoas={(painel?.pessoas ?? []).filter((p) => comparando.has(p.id))}
+        meses={meses}
+        onClose={() => setComparando(new Set())}
+      />
+    </div>
+  );
+}
+
+/* ─────────────────────────── Comparar pessoas ───────────────────────────
+   O pedido que originou o painel era sobre duas pessoas ("Sara e Karol"). Sem
+   isto a comparação é abrir uma ficha, decorar e abrir a outra. */
+
+function Comparacao({ pessoas, meses, onClose }: {
+  pessoas: PessoaRemuneracao[]; meses: string[]; onClose: () => void;
+}) {
+  if (pessoas.length < 2) return null;
+
+  /* Uma cor por PESSOA, na ordem em que foram escolhidas — as mesmas três
+     séries validadas. Aqui a identidade é a pessoa, não o bloco. */
+  const cores = SERIES.map((s) => s.cor);
+  const dados = meses.map((m) => {
+    const linha: Record<string, string | number> = { mes: rotuloMes(m) };
+    for (const p of pessoas) {
+      const mes = p.meses?.find((x) => x.competencia === m);
+      linha[p.id] = Number(mes?.fixo) || 0;
+    }
+    return linha;
+  });
+
+  return (
+    <Dialog open onOpenChange={(v) => !v && onClose()}>
+      <DialogContent className="max-w-3xl">
+        <DialogHeader>
+          <DialogTitle className="text-left">Comparar trajetórias</DialogTitle>
+        </DialogHeader>
+
+        <div className="flex flex-wrap items-center gap-3">
+          {pessoas.map((p, i) => (
+            <span key={p.id} className="flex items-center gap-1.5 text-xs">
+              <span className="h-2.5 w-2.5 rounded-[3px]" style={{ background: cores[i] }} />
+              <span className="font-medium">{p.nome}</span>
+              <span className="text-muted-foreground">{p.cargo ?? "sem cargo"}</span>
+            </span>
+          ))}
+        </div>
+
+        <div className="h-[230px] w-full">
+          <ResponsiveContainer width="100%" height="100%">
+            <LineChart data={dados} margin={{ top: 10, right: 12, bottom: 0, left: 4 }}>
+              <CartesianGrid vertical={false} strokeDasharray="3 3" stroke="hsl(var(--border))" opacity={0.6} />
+              <XAxis dataKey="mes" tickLine={false} axisLine={false}
+                     tick={{ fontSize: 11, fill: "hsl(var(--muted-foreground))" }} />
+              <YAxis tickLine={false} axisLine={false} width={46}
+                     tick={{ fontSize: 10, fill: "hsl(var(--muted-foreground))" }}
+                     tickFormatter={emMilStr} />
+              <Tooltip content={<DicaComparacao pessoas={pessoas} cores={cores} />} />
+              {pessoas.map((p, i) => (
+                <Line key={p.id} type="stepAfter" dataKey={p.id} name={p.nome}
+                      stroke={cores[i]} strokeWidth={2} dot={false} isAnimationActive={false} />
+              ))}
+            </LineChart>
+          </ResponsiveContainer>
+        </div>
+
+        {/* A tabela existe porque as linhas se cruzam: onde duas trajetórias se
+            encostam, só o número resolve. */}
+        <div className="overflow-x-auto">
+          <table className="w-full text-xs">
+            <thead>
+              <tr className="border-b border-border/60 text-[10px] uppercase tracking-wider text-muted-foreground">
+                <th className="py-1.5 text-left font-medium">Pessoa</th>
+                {meses.map((m) => (
+                  <th key={m} className="py-1.5 text-right font-medium">{rotuloMes(m)}</th>
+                ))}
+                <th className="py-1.5 text-right font-medium">No período</th>
+              </tr>
+            </thead>
+            <tbody>
+              {pessoas.map((p, i) => {
+                const r = resumoDaPessoa(p);
+                return (
+                  <tr key={p.id} className="border-b border-border/30 last:border-0">
+                    <td className="py-1.5">
+                      <span className="mr-1.5 inline-block h-2 w-2 rounded-[2px] align-middle"
+                            style={{ background: cores[i] }} />
+                      {p.nome}
+                    </td>
+                    {meses.map((m) => {
+                      const mes = p.meses?.find((x) => x.competencia === m);
+                      return (
+                        <td key={m} className="num py-1.5 text-right">
+                          {mes ? fmtBRL(mes.fixo) : <span className="text-muted-foreground">—</span>}
+                        </td>
+                      );
+                    })}
+                    <td className="num py-1.5 text-right font-semibold">{fmtBRL(r.totalPeriodo)}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+        <p className="text-[10.5px] text-muted-foreground">
+          A linha é o <strong>fixo</strong>; a coluna "no período" é tudo somado
+          (fixo, variável e escala). Tempo de casa e cargo estão na legenda —
+          trajetórias iguais podem ser de pessoas em pontos bem diferentes.
+        </p>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function DicaComparacao({ active, payload, label, pessoas, cores }: {
+  active?: boolean; payload?: { dataKey: string; value: number }[]; label?: string;
+  pessoas: PessoaRemuneracao[]; cores: string[];
+}) {
+  if (!active || !payload?.length) return null;
+  return (
+    <div className="rounded-lg border border-border bg-popover px-2.5 py-2 text-xs shadow-md">
+      <div className="mb-1 font-medium">{label}</div>
+      {payload.map((s) => {
+        const i = pessoas.findIndex((p) => p.id === s.dataKey);
+        if (i < 0 || !s.value) return null;
+        return (
+          <div key={s.dataKey} className="flex items-center justify-between gap-4">
+            <span className="flex items-center gap-1.5 text-muted-foreground">
+              <span className="h-2 w-2 rounded-[2px]" style={{ background: cores[i] }} />
+              {pessoas[i].nome}
+            </span>
+            <span className="num">{valorExato(s.value)}</span>
+          </div>
+        );
+      })}
     </div>
   );
 }
@@ -509,6 +800,32 @@ const SERIES = [
   { chave: "variavel", rotulo: "Variável", cor: "hsl(var(--serie-variavel))" },
   { chave: "escala",   rotulo: "Escala",   cor: "hsl(var(--serie-escala))" },
 ] as const;
+
+/**
+ * Onde a pessoa cai entre quem tem o mesmo cargo.
+ *
+ * O número que importa é a distância em REAIS para a mediana; o percentil dá a
+ * escala ("é R$ 2.000 a menos" não diz se são 3 pessoas ou 30 acima dela).
+ * Cinza, não vermelho: ganhar abaixo da mediana não é um erro — metade do grupo
+ * ganha, por definição. Quem pinta isso de alarme transforma estatística em
+ * acusação.
+ */
+function ContraOsPares({ par }: { par?: Pares }) {
+  if (!par) return <span className="text-xs text-muted-foreground">—</span>;
+  const abaixo = par.contraMediana < 0;
+  return (
+    <div title={`${par.quantos} pessoas no cargo "${par.cargo}" · mediana ${fmtBRLStr(par.mediana)}`}>
+      <div className="num text-xs font-medium">
+        {par.contraMediana === 0
+          ? "na mediana"
+          : `${abaixo ? "−" : "+"}${fmtBRLStr(Math.abs(par.contraMediana))}`}
+      </div>
+      <div className="num text-[10.5px] text-muted-foreground">
+        p{par.percentil} de {par.quantos}
+      </div>
+    </div>
+  );
+}
 
 /** Legenda: obrigatória com três séries — identidade nunca por cor sozinha. */
 function Legenda() {
@@ -621,7 +938,45 @@ function PontoDeReajuste(props: { cx?: number; cy?: number; payload?: LinhaGrafi
   );
 }
 
-function FichaDaPessoa({ pessoa, onClose }: { pessoa: PessoaRemuneracao | null; onClose: () => void }) {
+/** Um lançamento do mês — o que a RPC de drill-down devolve. */
+type LancamentoDoMes = {
+  cod_titulo: string; bloco: string; categoria: string | null;
+  valor: number; vencimento: string | null; pagamento: string | null; fonte: string;
+};
+
+const ROTULO_BLOCO: Record<string, string> = {
+  fixo: "Fixo", premiacao: "Variável", escala: "Escala",
+  prolabore: "Pro labore", outro: "Outro",
+};
+
+function FichaDaPessoa({ pessoa, par, onClose }: {
+  pessoa: PessoaRemuneracao | null; par?: Pares; onClose: () => void;
+}) {
+  /* Qual mês está aberto no drill-down, e o que veio dele. Fica AQUI e não em
+     cada linha para que abrir um mês feche o anterior — dois meses abertos ao
+     mesmo tempo empurram a tabela para fora da tela. */
+  const [mesAberto, setMesAberto] = useState<string | null>(null);
+  const [titulos, setTitulos] = useState<LancamentoDoMes[] | null>(null);
+  const [buscandoTitulos, setBuscandoTitulos] = useState(false);
+
+  const pessoaId = pessoa?.id ?? null;
+  useEffect(() => { setMesAberto(null); setTitulos(null); }, [pessoaId]);
+
+  useEffect(() => {
+    if (!pessoaId || !mesAberto) { setTitulos(null); return; }
+    let vivo = true;
+    setBuscandoTitulos(true);
+    void supabase
+      .rpc("remuneracao_lancamentos", { p_pessoa: pessoaId, p_competencia: mesAberto })
+      .then(({ data, error }) => {
+        if (!vivo) return;
+        if (error) toast.error(`Não deu para abrir o mês: ${error.message}`);
+        setTitulos((data as LancamentoDoMes[] | null) ?? []);
+        setBuscandoTitulos(false);
+      });
+    return () => { vivo = false; };
+  }, [pessoaId, mesAberto]);
+
   if (!pessoa) return null;
   const r = resumoDaPessoa(pessoa);
   const degraus = degrausDoFixo(pessoa.meses);
@@ -673,6 +1028,48 @@ function FichaDaPessoa({ pessoa, onClose }: { pessoa: PessoaRemuneracao | null; 
             </div>
           ))}
         </div>
+
+        {/* Onde ela está entre quem tem o mesmo cargo. Em tom neutro: metade de
+            qualquer grupo ganha abaixo da mediana, por definição — pintar isso
+            de alarme transformaria estatística em acusação. */}
+        {par && (
+          <div className="mt-3 rounded-lg border border-border/60 p-2.5 text-xs">
+            <div className="flex flex-wrap items-baseline justify-between gap-2">
+              <span className="font-medium">Contra quem tem o mesmo cargo</span>
+              <span className="text-muted-foreground">
+                {par.quantos} pessoas em “{par.cargo}”
+              </span>
+            </div>
+            <div className="mt-1.5 flex flex-wrap items-baseline gap-x-4 gap-y-1">
+              <span>
+                Mediana do cargo: <span className="num font-medium">{fmtBRLStr(par.mediana)}</span>
+              </span>
+              <span>
+                {par.contraMediana === 0 ? "Exatamente na mediana" : (
+                  <>
+                    {par.contraMediana < 0 ? "Abaixo" : "Acima"} em{" "}
+                    <span className="num font-medium">
+                      {fmtBRLStr(Math.abs(par.contraMediana))}
+                    </span>
+                  </>
+                )}
+              </span>
+              <span className="text-muted-foreground">percentil {par.percentil}</span>
+            </div>
+            {/* Régua: onde ela cai dentro do grupo, de relance. */}
+            <div className="relative mt-2 h-1.5 w-full rounded-full bg-secondary">
+              <div className="absolute inset-y-0 left-1/2 w-px bg-border" title="Mediana" />
+              <div
+                className="absolute -top-0.5 h-2.5 w-2.5 -translate-x-1/2 rounded-full bg-primary ring-2 ring-background"
+                style={{ left: `${Math.min(98, Math.max(2, par.percentil))}%` }}
+              />
+            </div>
+            <p className="mt-1.5 text-[10px] text-muted-foreground">
+              Compara o fixo cheio, não o último mês — mês de entrada ou de saída é
+              proporcional e afundaria o percentil sem motivo.
+            </p>
+          </div>
+        )}
 
         {Math.abs(r.divergenciaContrato ?? 0) >= 1 && (
           <div className="mt-3 flex items-start gap-2 rounded-lg border border-warn/30 bg-warn/5 p-2.5 text-xs">
@@ -807,8 +1204,15 @@ function FichaDaPessoa({ pessoa, onClose }: { pessoa: PessoaRemuneracao | null; 
                   {meses.map((m) => {
                     const degrau = porCompetencia.get(m.competencia);
                     const troca = porMudanca.get(m.competencia);
+                    const aberto = mesAberto === m.competencia;
                     return (
-                      <tr key={m.competencia} className="border-b border-border/30 last:border-0 hover:bg-secondary/40">
+                    <Fragment key={m.competencia}>
+                      <tr
+                        onClick={() => setMesAberto(aberto ? null : m.competencia)}
+                        title="Abrir os lançamentos deste mês"
+                        className={cn("cursor-pointer border-b border-border/30 hover:bg-secondary/40",
+                          aberto && "bg-secondary/60")}
+                      >
                         <td className="py-1.5">
                           <span className="text-muted-foreground">{rotuloMes(m.competencia)}</span>
                           {degrau && (
@@ -839,6 +1243,48 @@ function FichaDaPessoa({ pessoa, onClose }: { pessoa: PessoaRemuneracao | null; 
                         </td>
                         <td className="num py-1.5 text-right font-semibold">{fmtBRL(m.total)}</td>
                       </tr>
+
+                      {/* Os títulos que formam o mês. `cod_titulo` é o
+                          `nCodTitulo` do Omie — é por ele que se acha a linha
+                          no ERP, e por isso vai em monoespaçada e selecionável. */}
+                      {aberto && (
+                        <tr>
+                          <td colSpan={5} className="bg-secondary/40 px-2 py-2">
+                            {buscandoTitulos && !titulos ? (
+                              <span className="text-[10.5px] text-muted-foreground">Abrindo…</span>
+                            ) : !titulos?.length ? (
+                              <span className="text-[10.5px] text-muted-foreground">
+                                Nenhum lançamento — o mês veio de outra fonte.
+                              </span>
+                            ) : (
+                              <div className="space-y-1">
+                                {titulos.map((t) => (
+                                  <div key={`${t.fonte}-${t.cod_titulo}`}
+                                       className="flex flex-wrap items-baseline gap-x-2 text-[10.5px]">
+                                    <span className="w-[68px] shrink-0 font-medium">
+                                      {ROTULO_BLOCO[t.bloco] ?? t.bloco}
+                                    </span>
+                                    <span className="num w-[74px] shrink-0 text-right">
+                                      {fmtBRL(t.valor)}
+                                    </span>
+                                    <span className="text-muted-foreground">{t.categoria ?? "—"}</span>
+                                    <span className="text-muted-foreground/70">
+                                      vence {fmtDataStr(t.vencimento)}
+                                    </span>
+                                    <span
+                                      className="num select-all text-muted-foreground/70"
+                                      title="Código do título no Omie — procure por ele no ERP"
+                                    >
+                                      #{t.cod_titulo}
+                                    </span>
+                                  </div>
+                                ))}
+                              </div>
+                            )}
+                          </td>
+                        </tr>
+                      )}
+                    </Fragment>
                     );
                   })}
                 </tbody>

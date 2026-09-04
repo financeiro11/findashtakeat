@@ -243,6 +243,163 @@ export function ultimaCompetenciaFechada(meses: string[], hoje = new Date()): st
   return fechados[fechados.length - 1] ?? [...meses].sort((a, b) => a.localeCompare(b)).pop() ?? null;
 }
 
+/* ─────────────────────────── Comparação com os pares ─────────────────────────── */
+
+/**
+ * O fixo "cheio" da pessoa — o que ela ganha por mês inteiro trabalhado.
+ *
+ * NÃO é o fixo do último mês. Mês de entrada e mês de saída são proporcionais
+ * aos dias, e usá-los na comparação com os pares afundaria a pessoa num
+ * percentil que não é dela — o menor fixo do Comercial em ago/2026 é R$ 583, que
+ * é meia semana de alguém, não um salário.
+ *
+ * O maior dos três últimos meses pagos resolve os dois lados: a entrada
+ * proporcional fica para trás e a saída proporcional perde para o mês anterior.
+ * Um reajuste recente continua ganhando, porque é o maior.
+ */
+export function fixoDeReferencia(meses: MesRemuneracao[]): number | null {
+  const pagos = meses
+    .filter((m) => num(m.fixo) > 0)
+    .sort((a, b) => a.competencia.localeCompare(b.competencia))
+    .slice(-3);
+  if (!pagos.length) return null;
+  return Math.max(...pagos.map((m) => num(m.fixo)));
+}
+
+export type Pares = {
+  /** O cargo que define o grupo. */
+  cargo: string;
+  quantos: number;
+  mediana: number;
+  /** Onde a pessoa cai no grupo, de 0 a 100. */
+  percentil: number;
+  /** Diferença para a mediana, em reais. Negativo = ganha menos que a mediana. */
+  contraMediana: number;
+};
+
+const normCargo = (c: string | null | undefined) =>
+  (c ?? "").trim().toLowerCase().replace(/\s+/g, " ");
+
+/** Quantos pares um cargo precisa ter para a mediana dizer alguma coisa. */
+export const MINIMO_DE_PARES = 3;
+
+/**
+ * Onde cada pessoa está em relação a quem tem o MESMO CARGO.
+ *
+ * Por cargo e não por área de propósito: em agosto/2026 o Comercial tinha
+ * mediana de R$ 3.231 e máximo de R$ 27.800 — comparar um analista com um Head
+ * do mesmo time não responde nada. O cargo vem do espelho do RH, que é o único
+ * lugar onde ele existe.
+ *
+ * Grupos com menos de três pessoas não entram: mediana de dois é a média deles,
+ * e "você está no percentil 50 de um grupo de 2" é ruído com cara de dado.
+ * Quem não tem cargo no RH também fica de fora — o mapa devolve só quem dá para
+ * comparar honestamente.
+ */
+export function compararComPares(pessoas: PessoaRemuneracao[]): Map<string, Pares> {
+  const grupos = new Map<string, { cargo: string; itens: { id: string; fixo: number }[] }>();
+
+  for (const p of pessoas) {
+    if (!p.eh_pessoa) continue;
+    const chave = normCargo(p.cargo);
+    if (!chave) continue;
+    const fixo = fixoDeReferencia(p.meses ?? []);
+    if (fixo == null) continue;
+    const g = grupos.get(chave) ?? { cargo: p.cargo!.trim(), itens: [] };
+    g.itens.push({ id: p.id, fixo });
+    grupos.set(chave, g);
+  }
+
+  const out = new Map<string, Pares>();
+  for (const g of grupos.values()) {
+    if (g.itens.length < MINIMO_DE_PARES) continue;
+    const valores = g.itens.map((i) => i.fixo).sort((a, b) => a - b);
+    const mediana = medianaDe(valores);
+    for (const item of g.itens) {
+      // Percentil = quantos do grupo ganham MENOS, mais metade dos empatados.
+      // Sem a metade dos empatados, três pessoas no mesmo salário cairiam no
+      // percentil 0 — como se fossem as piores pagas do próprio grupo.
+      const menores = valores.filter((v) => v < item.fixo).length;
+      const iguais = valores.filter((v) => v === item.fixo).length;
+      out.set(item.id, {
+        cargo: g.cargo,
+        quantos: g.itens.length,
+        mediana,
+        percentil: Math.round(((menores + iguais / 2) / valores.length) * 100),
+        contraMediana: item.fixo - mediana,
+      });
+    }
+  }
+  return out;
+}
+
+/** Mediana de uma lista JÁ ORDENADA. */
+function medianaDe(ordenados: number[]): number {
+  const n = ordenados.length;
+  if (!n) return 0;
+  const meio = Math.floor(n / 2);
+  return n % 2 ? ordenados[meio] : (ordenados[meio - 1] + ordenados[meio]) / 2;
+}
+
+/* ─────────────────────────── Custo por área ─────────────────────────── */
+
+export type LinhaDeArea = {
+  area: string;
+  /** Um valor por mês, na ordem de `meses`. Zero onde ninguém daquela área foi pago. */
+  serie: number[];
+  total: number;
+  /** Do primeiro mês com valor até o último. Null quando não dá para comparar. */
+  variacao: number | null;
+  pessoasNoUltimoMes: number;
+};
+
+/**
+ * Quanto cada área custou, mês a mês.
+ *
+ * Usa a área do MÊS de cada lançamento, não a área atual da pessoa: quem trocou
+ * de time em junho custou para o time antigo até maio, e atribuir o passado
+ * inteiro ao time novo reescreveria a história dos dois.
+ */
+export function custoPorArea(pessoas: PessoaRemuneracao[], meses: string[]): LinhaDeArea[] {
+  const indice = new Map(meses.map((m, i) => [m, i]));
+  const areas = new Map<string, { serie: number[]; pessoas: Set<string>[] }>();
+
+  for (const p of pessoas) {
+    if (!p.eh_pessoa) continue;
+    for (const m of p.meses ?? []) {
+      const i = indice.get(m.competencia);
+      if (i == null) continue;
+      const area = m.area ?? "Sem área";
+      let a = areas.get(area);
+      if (!a) {
+        a = { serie: meses.map(() => 0), pessoas: meses.map(() => new Set<string>()) };
+        areas.set(area, a);
+      }
+      a.serie[i] += num(m.total);
+      a.pessoas[i].add(p.id);
+    }
+  }
+
+  const ultimo = meses.length - 1;
+  return [...areas.entries()]
+    .map(([area, a]) => {
+      const comValor = a.serie.map((v, i) => ({ v, i })).filter((x) => x.v > 0);
+      const primeiro = comValor[0];
+      const derradeiro = comValor[comValor.length - 1];
+      return {
+        area,
+        serie: a.serie,
+        total: a.serie.reduce((s, v) => s + v, 0),
+        variacao:
+          primeiro && derradeiro && primeiro.i !== derradeiro.i && primeiro.v > 0
+            ? (derradeiro.v - primeiro.v) / primeiro.v
+            : null,
+        pessoasNoUltimoMes: ultimo >= 0 ? a.pessoas[ultimo].size : 0,
+      };
+    })
+    .sort((a, b) => b.total - a.total);
+}
+
 export type Filtros = {
   busca: string;
   /** Inclui quem já saiu (tem data de desligamento ou parou de receber). */

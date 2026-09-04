@@ -3405,8 +3405,10 @@ export type Database = {
           autor_email: string | null
           col_key: string
           criado_em: string
+          detalhe: Json | null
           id: string
           modo: string
+          origem: string
           rubrica: string
           tipo: string
           valor: number
@@ -3419,8 +3421,10 @@ export type Database = {
           autor_email?: string | null
           col_key: string
           criado_em?: string
+          detalhe?: Json | null
           id?: string
           modo?: string
+          origem?: string
           rubrica: string
           tipo: string
           valor: number
@@ -3433,8 +3437,10 @@ export type Database = {
           autor_email?: string | null
           col_key?: string
           criado_em?: string
+          detalhe?: Json | null
           id?: string
           modo?: string
+          origem?: string
           rubrica?: string
           tipo?: string
           valor?: number
@@ -9344,6 +9350,42 @@ export type Database = {
         }
         Relationships: []
       }
+      remuneracao_pessoa_alias: {
+        Row: {
+          chave: string
+          criado_em: string
+          origem: string
+          pessoa_id: string
+        }
+        Insert: {
+          chave: string
+          criado_em?: string
+          origem?: string
+          pessoa_id: string
+        }
+        Update: {
+          chave?: string
+          criado_em?: string
+          origem?: string
+          pessoa_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "remuneracao_pessoa_alias_pessoa_id_fkey"
+            columns: ["pessoa_id"]
+            isOneToOne: false
+            referencedRelation: "remuneracao_pessoa"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "remuneracao_pessoa_alias_pessoa_id_fkey"
+            columns: ["pessoa_id"]
+            isOneToOne: false
+            referencedRelation: "vw_remuneracao_mensal"
+            referencedColumns: ["pessoa_id"]
+          },
+        ]
+      }
       rescisoes: {
         Row: {
           admissao: string | null
@@ -10919,6 +10961,7 @@ export type Database = {
       }
       vw_remuneracao_mensal: {
         Row: {
+          area: string | null
           codigo_rh: string | null
           competencia: string | null
           eh_pessoa: boolean | null
@@ -10959,6 +11002,10 @@ export type Database = {
         Returns: Json
       }
       agente_colaborador_atual: { Args: never; Returns: string }
+      agente_edicao_sem_efeito: {
+        Args: { p_entrada: Json; p_saida: Json }
+        Returns: boolean
+      }
       agente_excecao_resolver: {
         Args: { p_excecao_id: string; p_resolucao?: string; p_status: string }
         Returns: undefined
@@ -10967,6 +11014,11 @@ export type Database = {
         Args: { p_campos?: Json; p_execucao_id: string; p_texto: string }
         Returns: string
       }
+      agente_laco_alerta: {
+        Args: { p_rajada?: number; p_sem_efeito?: number }
+        Returns: Json
+      }
+      agente_mesmo_valor: { Args: { a: string; b: string }; Returns: boolean }
       anexo_classe: { Args: { p_nome: string }; Returns: string }
       anexo_documento_classe: {
         Args: {
@@ -11065,6 +11117,20 @@ export type Database = {
       }
       asaas_metricas: { Args: { p_referencia: string }; Returns: Json }
       asaas_prazo_credito: { Args: { p_forma: string }; Returns: number }
+      asaas_taxas_mes: {
+        Args: { p_ate?: string; p_de?: string }
+        Returns: {
+          coberto: boolean
+          cobertura_ate: string
+          cobertura_de: string
+          detalhe: Json
+          fim: string
+          inicio: string
+          lancamentos: number
+          mes: string
+          total: number
+        }[]
+      }
       auditoria_compras: { Args: never; Returns: Json }
       auditoria_envio_quase_la: {
         Args: { p_limite?: number }
@@ -12763,6 +12829,7 @@ export type Database = {
         Args: { p_id_unico: string; p_storage_path: string; p_token: string }
         Returns: Json
       }
+      remuneracao_atualizar: { Args: never; Returns: Json }
       remuneracao_carregar_omie: {
         Args: never
         Returns: {
@@ -12770,7 +12837,29 @@ export type Database = {
           pessoas_novas: number
         }[]
       }
+      remuneracao_fundir: {
+        Args: { p_absorve: string; p_mantem: string; p_origem?: string }
+        Returns: undefined
+      }
+      remuneracao_fundir_por_documento: { Args: never; Returns: number }
+      remuneracao_lancamentos: {
+        Args: { p_competencia: string; p_pessoa: string }
+        Returns: {
+          bloco: string
+          categoria: string
+          cod_titulo: string
+          fonte: string
+          pagamento: string
+          valor: number
+          vencimento: string
+        }[]
+      }
       remuneracao_painel: { Args: never; Returns: Json }
+      remuneracao_pessoa_por_chave: {
+        Args: { p_chave: string }
+        Returns: string
+      }
+      remuneracao_sincronizar_rh: { Args: never; Returns: number }
       rescisao_brl: { Args: { n: number }; Returns: string }
       rescisao_nome_chave: { Args: { p_nome: string }; Returns: string }
       rescisao_registrar: { Args: { p_payload: Json }; Returns: Json }

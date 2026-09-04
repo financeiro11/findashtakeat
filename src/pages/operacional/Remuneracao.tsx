@@ -262,12 +262,14 @@ export default function Remuneracao() {
       const t = totaisDoMes(pessoasDoMes, m);
       return {
         mes: rotuloMes(m),
-        fixo: t.fixo, variavel: t.premiacao, escala: t.escala,
+        fixo: t.fixo, prolabore: t.prolabore, variavel: t.premiacao, escala: t.escala,
         total: t.total, reajuste: null,
       };
     }),
     [pessoasDoMes, meses],
   );
+
+  const seriesDoCusto = useMemo(() => seriesPresentes(serieDoCusto), [serieDoCusto]);
 
   /* Quantos têm a ficha do RH atrasada em relação ao que o Omie pagou. É a
      pendência que esta tela devolve para o RH. */
@@ -421,7 +423,7 @@ export default function Remuneracao() {
               <div className="card-surface p-4">
                 <div className="flex items-baseline justify-between gap-3">
                   <div className="eyebrow">Custo de pessoas por mês</div>
-                  <Legenda />
+                  <Legenda series={seriesDoCusto} />
                 </div>
                 <div className="mt-3 h-[190px] w-full">
                   <ResponsiveContainer width="100%" height="100%">
@@ -433,7 +435,7 @@ export default function Remuneracao() {
                              tick={{ fontSize: 10, fill: "hsl(var(--muted-foreground))" }}
                              tickFormatter={emMilStr} />
                       <Tooltip cursor={{ fill: "hsl(var(--secondary))", opacity: 0.5 }} content={<Dica />} />
-                      {SERIES.map((s) => (
+                      {seriesDoCusto.map((s) => (
                         <Bar key={s.chave} dataKey={s.chave} stackId="a" fill={s.cor}
                              shape={Segmento(s.chave)} isAnimationActive={false} />
                       ))}
@@ -856,11 +858,30 @@ function DicaComparacao({ active, payload, label, pessoas, cores }: {
    ordem mudasse conforme o mês, a mesma cor significaria coisas diferentes.
    Os tokens estão em `src/styles/tokens.css` e têm passo próprio no tema
    escuro; foram medidos contra as duas superfícies, não estimados. */
-const SERIES = [
-  { chave: "fixo",     rotulo: "Fixo",     cor: "hsl(var(--serie-fixo))" },
-  { chave: "variavel", rotulo: "Variável", cor: "hsl(var(--serie-variavel))" },
-  { chave: "escala",   rotulo: "Escala",   cor: "hsl(var(--serie-escala))" },
-] as const;
+type Serie = { chave: string; rotulo: string; cor: string };
+
+const SERIES: Serie[] = [
+  { chave: "fixo",      rotulo: "Fixo",       cor: "hsl(var(--serie-fixo))" },
+  // Pró-labore fica DEPOIS do fixo na pilha e antes do variável: é dinheiro
+  // fixo do mês, só que do sócio e não do trabalho.
+  { chave: "prolabore", rotulo: "Pró-labore", cor: "hsl(var(--serie-prolabore))" },
+  { chave: "variavel",  rotulo: "Variável",   cor: "hsl(var(--serie-variavel))" },
+  { chave: "escala",    rotulo: "Escala",     cor: "hsl(var(--serie-escala))" },
+];
+
+/**
+ * As séries que ESTE conjunto de meses realmente tem.
+ *
+ * Pró-labore hoje é de uma pessoa só, e escala de dezesseis. Desenhar as quatro
+ * sempre deixaria duas legendas permanentemente zeradas em quase toda ficha —
+ * ruído que faz o leitor procurar uma cor que não está no gráfico. Fixo fica
+ * sempre, mesmo zerado, porque é a linha de base da leitura.
+ */
+function seriesPresentes(dados: LinhaGrafico[]): Serie[] {
+  return SERIES.filter(
+    (s) => s.chave === "fixo" || dados.some((d) => Number(d[s.chave as keyof LinhaGrafico]) > 0),
+  );
+}
 
 /**
  * Onde a pessoa cai entre quem tem o mesmo cargo.
@@ -897,11 +918,12 @@ function ContraOsPares({ par }: { par?: Pares }) {
   );
 }
 
-/** Legenda: obrigatória com três séries — identidade nunca por cor sozinha. */
-function Legenda() {
+/** Legenda: obrigatória com duas ou mais séries — identidade nunca por cor sozinha. */
+function Legenda({ series = SERIES }: { series?: Serie[] }) {
+  if (series.length < 2) return null;
   return (
-    <div className="flex items-center gap-3">
-      {SERIES.map((s) => (
+    <div className="flex flex-wrap items-center gap-3">
+      {series.map((s) => (
         <span key={s.chave} className="flex items-center gap-1.5 text-[10.5px] text-muted-foreground">
           <span className="h-2 w-2 rounded-[2px]" style={{ background: s.cor }} />
           {s.rotulo}
@@ -918,13 +940,16 @@ const emMilStr = (v: number) =>
   v >= 1000 ? `${Math.round(v / 1000)}k` : String(Math.round(v));
 
 type LinhaGrafico = {
-  mes: string; fixo: number; variavel: number; escala: number; total: number;
-  reajuste: number | null;
+  mes: string; fixo: number; prolabore: number; variavel: number; escala: number;
+  total: number; reajuste: number | null;
 };
 
 /** Qual série está no TOPO da pilha desta barra — a última com valor. */
 const topoDaPilha = (d: LinhaGrafico): string =>
-  d.escala > 0 ? "escala" : d.variavel > 0 ? "variavel" : "fixo";
+  d.escala > 0 ? "escala"
+  : d.variavel > 0 ? "variavel"
+  : d.prolabore > 0 ? "prolabore"
+  : "fixo";
 
 /**
  * O segmento da barra empilhada.
@@ -965,7 +990,7 @@ function Dica({ active, payload, soFixo }: {
     <div className="rounded-lg border border-border bg-popover px-2.5 py-2 text-xs shadow-md">
       <div className="mb-1 font-medium">{d.mes}</div>
       {(soFixo ? SERIES.slice(0, 1) : SERIES).map((s) => {
-        const v = d[s.chave];
+        const v = Number(d[s.chave as keyof LinhaGrafico]);
         if (!v) return null;
         return (
           <div key={s.chave} className="flex items-center justify-between gap-4">
@@ -1057,18 +1082,23 @@ function FichaDaPessoa({ pessoa, par, onClose }: {
   const dados: LinhaGrafico[] = meses.map((m) => ({
     mes: rotuloMes(m.competencia),
     fixo: Number(m.fixo) || 0,
+    prolabore: Number(m.prolabore) || 0,
     variavel: Number(m.premiacao) || 0,
     escala: Number(m.escala) || 0,
     total: Number(m.total) || 0,
     reajuste: porCompetencia.get(m.competencia)?.variacao ?? null,
   }));
 
+  const series = seriesPresentes(dados);
+  const temProlabore = dados.some((d) => d.prolabore > 0);
+
   const soma = dados.reduce(
     (a, d) => ({
-      fixo: a.fixo + d.fixo, variavel: a.variavel + d.variavel,
+      fixo: a.fixo + d.fixo, prolabore: a.prolabore + d.prolabore,
+      variavel: a.variavel + d.variavel,
       escala: a.escala + d.escala, total: a.total + d.total,
     }),
-    { fixo: 0, variavel: 0, escala: 0, total: 0 },
+    { fixo: 0, prolabore: 0, variavel: 0, escala: 0, total: 0 },
   );
 
   return (
@@ -1088,7 +1118,12 @@ function FichaDaPessoa({ pessoa, par, onClose }: {
         <div className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-4">
           {[
             { r: "Fixo hoje", v: fmtBRL(r.fixoAtual) },
-            { r: "Variável médio", v: r.mesesComPremiacao ? fmtBRL(r.premiacaoMedia) : "—" },
+            // O ladrilho do pró-labore toma o lugar do "variável médio" em quem
+            // recebe pró-labore: sócio não tem comissão, e um ladrilho com
+            // travessão desperdiça o espaço que o número precisa.
+            ...(temProlabore
+              ? [{ r: "Pró-labore/mês", v: fmtBRL(dados[dados.length - 1]?.prolabore || null) }]
+              : [{ r: "Variável médio", v: r.mesesComPremiacao ? fmtBRL(r.premiacaoMedia) : "—" }]),
             { r: "Total no período", v: fmtBRL(r.totalPeriodo) },
             { r: "Tempo de casa", v: tempoDeCasaStr(pessoa.inicio) },
           ].map((x) => (
@@ -1177,7 +1212,7 @@ function FichaDaPessoa({ pessoa, par, onClose }: {
             {/* ── A composição, mês a mês ── */}
             <div className="mt-5 flex items-baseline justify-between gap-3">
               <h3 className="text-sm font-semibold">Composição mês a mês</h3>
-              <Legenda />
+              <Legenda series={series} />
             </div>
             <div className="mt-2 h-[210px] w-full">
               <ResponsiveContainer width="100%" height="100%">
@@ -1195,7 +1230,7 @@ function FichaDaPessoa({ pessoa, par, onClose }: {
                     tickFormatter={emMilStr}
                   />
                   <Tooltip cursor={{ fill: "hsl(var(--secondary))", opacity: 0.5 }} content={<Dica />} />
-                  {SERIES.map((s) => (
+                  {series.map((s) => (
                     <Bar
                       key={s.chave} dataKey={s.chave} stackId="a" fill={s.cor}
                       shape={Segmento(s.chave)} isAnimationActive={false}
@@ -1222,7 +1257,10 @@ function FichaDaPessoa({ pessoa, par, onClose }: {
                         tick={{ fontSize: 11, fill: "hsl(var(--muted-foreground))" }}
                       />
                       <YAxis
-                        tickLine={false} axisLine={false} width={46} domain={["dataMin - 1000", "dataMax + 1000"]}
+                        tickLine={false} axisLine={false} width={46}
+                        // Nunca abaixo de zero: `dataMin - 1000` num mês de
+                        // fixo baixo desenharia um eixo de salário negativo.
+                        domain={[(min: number) => Math.max(0, min - 1000), "dataMax + 1000"]}
                         tick={{ fontSize: 10, fill: "hsl(var(--muted-foreground))" }}
                         tickFormatter={emMilStr}
                       />
@@ -1278,6 +1316,9 @@ function FichaDaPessoa({ pessoa, par, onClose }: {
                   <tr className="border-b border-border/60 text-[10px] uppercase tracking-wider text-muted-foreground">
                     <th className="py-1.5 text-left font-medium">Mês</th>
                     <th className="py-1.5 text-right font-medium">Fixo</th>
+                    {/* Só quem recebe ganha a coluna — uma coluna de traços em
+                        toda ficha é ruído. */}
+                    {temProlabore && <th className="py-1.5 text-right font-medium">Pró-labore</th>}
                     <th className="py-1.5 text-right font-medium">Variável</th>
                     <th className="py-1.5 text-right font-medium">Escala</th>
                     <th className="py-1.5 text-right font-medium">Total</th>
@@ -1318,6 +1359,11 @@ function FichaDaPessoa({ pessoa, par, onClose }: {
                           )}
                         </td>
                         <td className="num py-1.5 text-right">{fmtBRL(Number(m.fixo) || null)}</td>
+                        {temProlabore && (
+                          <td className="num py-1.5 text-right">
+                            {Number(m.prolabore) ? fmtBRL(m.prolabore) : <span className="text-muted-foreground">—</span>}
+                          </td>
+                        )}
                         <td className="num py-1.5 text-right">
                           {Number(m.premiacao) ? fmtBRL(m.premiacao) : <span className="text-muted-foreground">—</span>}
                         </td>
@@ -1332,7 +1378,7 @@ function FichaDaPessoa({ pessoa, par, onClose }: {
                           no ERP, e por isso vai em monoespaçada e selecionável. */}
                       {aberto && (
                         <tr>
-                          <td colSpan={5} className="bg-secondary/40 px-2 py-2">
+                          <td colSpan={temProlabore ? 6 : 5} className="bg-secondary/40 px-2 py-2">
                             {buscandoTitulos && !titulos ? (
                               <span className="text-[10.5px] text-muted-foreground">Abrindo…</span>
                             ) : !titulos?.length ? (
@@ -1375,6 +1421,7 @@ function FichaDaPessoa({ pessoa, par, onClose }: {
                   <tr className="border-t-2 border-border font-semibold">
                     <td className="py-1.5 text-muted-foreground">Total</td>
                     <td className="num py-1.5 text-right">{fmtBRL(soma.fixo)}</td>
+                    {temProlabore && <td className="num py-1.5 text-right">{fmtBRL(soma.prolabore)}</td>}
                     <td className="num py-1.5 text-right">{fmtBRL(soma.variavel)}</td>
                     <td className="num py-1.5 text-right">{fmtBRL(soma.escala)}</td>
                     <td className="num py-1.5 text-right">{fmtBRL(soma.total)}</td>

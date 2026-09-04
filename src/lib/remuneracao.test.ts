@@ -8,9 +8,10 @@ import {
 
 const mes = (
   competencia: string, fixo: number, premiacao = 0, area: string | null = "Comercial",
+  prolabore = 0,
 ): MesRemuneracao => ({
-  competencia, fixo, premiacao, escala: 0, outro: 0,
-  total: fixo + premiacao, fontes: "omie", area,
+  competencia, fixo, prolabore, premiacao, escala: 0, outro: 0,
+  total: fixo + prolabore + premiacao, fontes: "omie", area,
 });
 
 const pessoa = (over: Partial<PessoaRemuneracao> = {}): PessoaRemuneracao => ({
@@ -95,6 +96,25 @@ describe("degraus do fixo", () => {
       mes("2026-06-01", 6000),
     ]);
     expect(d).toHaveLength(0);
+  });
+
+  /* O fixo do Miguel em jun/26 é R$ 20.101 e não R$ 20.100 por causa de um
+     título solto de R$ 1,00 no ERP. Isso não é reajuste. */
+  it("centavo de ruído não vira reajuste", () => {
+    const d = degrausDoFixo([
+      mes("2026-05-01", 20100), mes("2026-06-01", 20101),
+      mes("2026-07-01", 22500), mes("2026-08-01", 22500),
+    ]);
+    expect(d).toHaveLength(1);
+    expect(d[0].competencia).toBe("2026-07-01");
+    expect(d[0].de).toBe(20101);
+  });
+
+  it("reajuste pequeno de verdade continua contando", () => {
+    const d = degrausDoFixo([
+      mes("2026-05-01", 3000), mes("2026-06-01", 3060), mes("2026-07-01", 3060),
+    ]);
+    expect(d).toHaveLength(1); // +2%
   });
 
   it("série curta demais não tem degrau", () => {
@@ -506,6 +526,44 @@ describe("filtro de pessoas", () => {
     const outro = pessoa({ id: "e", setor: "Tecnologia", meses: [mes("2026-08-01", 9000)] });
     const r = filtrarPessoas([ativo, outro], { ...base, setor: "Tecnologia" }, "2026-08-01");
     expect(r.map((p) => p.id)).toEqual(["e"]);
+  });
+});
+
+describe("pró-labore", () => {
+  /* O Miguel recebe as duas coisas no mesmo mês: R$ 22.500 de salário como CEO
+     e R$ 4.361 de pró-labore. Somar num balde só apagaria a distinção. */
+  it("soma no total sem se misturar com o fixo", () => {
+    const ceo = pessoa({ meses: [mes("2026-08-01", 22500, 0, "Administrativo", 4361)] });
+    const r = resumoDaPessoa(ceo);
+    expect(r.fixoAtual).toBe(22500);
+    expect(r.totalPeriodo).toBe(26861);
+  });
+
+  it("entra nos totais do mês em coluna própria", () => {
+    const t = totaisDoMes(
+      [pessoa({ id: "a", meses: [mes("2026-08-01", 22500, 0, "Adm", 4361)] })],
+      "2026-08-01",
+    );
+    expect(t.fixo).toBe(22500);
+    expect(t.prolabore).toBe(4361);
+    expect(t.total).toBe(26861);
+  });
+
+  /* Quem não recebe pró-labore não pode ganhar uma coluna de zeros. */
+  it("é zero para quem não recebe", () => {
+    const t = totaisDoMes(
+      [pessoa({ id: "b", meses: [mes("2026-08-01", 6000)] })],
+      "2026-08-01",
+    );
+    expect(t.prolabore).toBe(0);
+  });
+
+  it("vai para a planilha em coluna própria", () => {
+    const ceo = pessoa({ nome: "Miguel", meses: [mes("2026-08-01", 22500, 0, "Adm", 4361)] });
+    const [cab, linha] = matrizParaPlanilha([ceo], ["2026-08-01"]);
+    expect(linha[cab.indexOf("ago/26 pró-labore")]).toBe(4361);
+    expect(linha[cab.indexOf("ago/26 fixo")]).toBe(22500);
+    expect(linha[cab.indexOf("ago/26 total")]).toBe(26861);
   });
 });
 

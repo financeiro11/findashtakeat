@@ -53,6 +53,10 @@
   --serie-fixo: 0 78% 47%;
   --serie-variavel: 212 80% 45%;
   --serie-escala: 38 92% 48%;
+  /* Pró-labore só aparece em quem recebe — hoje, um sócio. A série entra no
+     gráfico apenas quando há valor, para não sobrar uma legenda sempre zerada
+     em todas as outras fichas. */
+  --serie-prolabore: 280 50% 50%;
 
   /* Lines */
   --line: 220 14% 90%;
@@ -96,6 +100,7 @@
   --serie-fixo: 0 78% 55%;
   --serie-variavel: 212 80% 45%;
   --serie-escala: 37 94% 41%;
+  --serie-prolabore: 280 50% 50%;
 }
 
 /* Tabular monospaced numerals — required for any monetary value */

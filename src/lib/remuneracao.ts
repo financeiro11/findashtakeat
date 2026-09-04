@@ -10,6 +10,14 @@ export type MesRemuneracao = {
   /** Primeiro dia do mês trabalhado, ISO: "2026-03-01". */
   competencia: string;
   fixo: number;
+  /**
+   * Remuneração do SÓCIO, separada do fixo de propósito.
+   *
+   * Hoje só o Miguel recebe, e recebe as duas coisas: R$ 22.500 de salário como
+   * CEO e R$ 4.361 de pró-labore no mesmo mês. Somar num balde só apagaria a
+   * distinção — são naturezas diferentes e a ficha existe para mostrar as duas.
+   */
+  prolabore: number;
   premiacao: number;
   escala: number;
   outro: number;
@@ -91,6 +99,17 @@ export function distanciaEmMeses(de: string, ate: string): number | null {
  * 180%" no segundo mês de casa que não é aumento nenhum. Um degrau de queda no
  * meio da série continua aparecendo — esse é real e alguém deve olhar.
  */
+/**
+ * Variação mínima para uma mudança contar como reajuste.
+ *
+ * Meio por cento. O fixo do Miguel em junho/2026 é R$ 20.101 e não R$ 20.100
+ * porque existe um título solto de R$ 1,00 no ERP — sem piso, isso viraria um
+ * "reajuste de +0,0%" na linha do tempo dele. Relativo e não em reais para valer
+ * igual num salário de R$ 2.500 e num de R$ 25.000; nenhum reajuste de verdade
+ * é menor que isso.
+ */
+const REAJUSTE_MINIMO = 0.005;
+
 export function degrausDoFixo(meses: MesRemuneracao[]): Degrau[] {
   const pagos = meses.filter((m) => num(m.fixo) > 0);
   if (pagos.length < 2) return [];
@@ -100,6 +119,7 @@ export function degrausDoFixo(meses: MesRemuneracao[]): Degrau[] {
     const de = num(pagos[i - 1].fixo);
     const para = num(pagos[i].fixo);
     if (de === para) continue;
+    if (Math.abs(para - de) / de < REAJUSTE_MINIMO) continue;
 
     // Primeiro mês menor que o seguinte: entrada proporcional, não é degrau.
     if (i === 1 && de < para * 0.95) continue;
@@ -541,17 +561,22 @@ export function filtrarPessoas(
 
 /** Soma de um mês entre as pessoas dadas. */
 export function totaisDoMes(pessoas: PessoaRemuneracao[], competencia: string) {
-  let fixo = 0, premiacao = 0, escala = 0, outro = 0, gente = 0;
+  let fixo = 0, prolabore = 0, premiacao = 0, escala = 0, outro = 0, gente = 0;
   for (const p of pessoas) {
     const m = p.meses?.find((x) => x.competencia === competencia);
     if (!m) continue;
     gente++;
     fixo += num(m.fixo);
+    prolabore += num(m.prolabore);
     premiacao += num(m.premiacao);
     escala += num(m.escala);
     outro += num(m.outro);
   }
-  return { fixo, premiacao, escala, outro, total: fixo + premiacao + escala + outro, gente };
+  return {
+    fixo, prolabore, premiacao, escala, outro,
+    total: fixo + prolabore + premiacao + escala + outro,
+    gente,
+  };
 }
 
 export type CelulaPlanilha = string | number | null;
@@ -581,8 +606,8 @@ export function matrizParaPlanilha(
     "Valor de contrato", "Fixo atual",
     "Último reajuste", "Reajuste R$", "Reajuste %", "Meses sem reajuste",
     ...meses.flatMap((m) => [
-      `${rotuloMes(m)} fixo`, `${rotuloMes(m)} variável`, `${rotuloMes(m)} escala`,
-      `${rotuloMes(m)} total`, `${rotuloMes(m)} área`,
+      `${rotuloMes(m)} fixo`, `${rotuloMes(m)} pró-labore`, `${rotuloMes(m)} variável`,
+      `${rotuloMes(m)} escala`, `${rotuloMes(m)} total`, `${rotuloMes(m)} área`,
     ]),
   ];
 
@@ -610,10 +635,10 @@ export function matrizParaPlanilha(
       r.mesesSemReajuste,
       ...meses.flatMap((m): CelulaPlanilha[] => {
         const x = porMes.get(m);
-        if (!x) return [null, null, null, null, null];
+        if (!x) return [null, null, null, null, null, null];
         return [
-          num(x.fixo) || null, num(x.premiacao) || null, num(x.escala) || null,
-          num(x.total) || null, x.area ?? null,
+          num(x.fixo) || null, num(x.prolabore) || null, num(x.premiacao) || null,
+          num(x.escala) || null, num(x.total) || null, x.area ?? null,
         ];
       }),
     ];

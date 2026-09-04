@@ -581,21 +581,162 @@ export function totaisDoMes(pessoas: PessoaRemuneracao[], competencia: string) {
 
 export type CelulaPlanilha = string | number | null;
 
+/** Uma aba da planilha, já descrita: o que tem, o que é dinheiro, que largura. */
+export type Aba = {
+  nome: string;
+  linhas: CelulaPlanilha[][];
+  /** Índices das colunas que são valor em reais. */
+  moeda: number[];
+  /** Índices das colunas que são percentual (já em pontos, ex.: 12.5). */
+  percentual: number[];
+  larguras: number[];
+};
+
 /**
- * A planilha: uma linha por pessoa, uma coluna por mês.
+ * A planilha em três abas.
  *
- * Formato largo de propósito — é o que se manipula numa planilha. Cada mês vira
- * três colunas (fixo, premiação, total) porque separar isso depois, no Excel, é
- * o trabalho que este painel existe para poupar.
+ * A versão anterior era UMA aba com cinco colunas por mês — quarenta colunas de
+ * mês para sete meses, quase todas vazias, porque pró-labore é de uma pessoa e
+ * escala de dezesseis. Ninguém lê isso; ninguém pivota isso.
  *
- * Número sai como NÚMERO, não como texto formatado: quem recebe o arquivo vai
- * somar, ordenar e fazer gráfico em cima dele. "R$ 1.234,56" não vira número em
- * lugar nenhum, e uma coluna de texto alinhada à esquerda é o sintoma que
- * aparece só depois que alguém já montou a tabela dinâmica.
+ * Agora:
  *
- * Célula vazia é `null` e não zero: a pessoa que não recebeu naquele mês não
- * ganhou zero — ela não estava lá. A diferença some numa média.
+ *   Resumo      uma linha por pessoa, as vinte colunas que respondem "quanto
+ *               ela ganha, desde quando, e como está em relação aos pares".
+ *               É a aba que se abre.
+ *   Mês a mês   FORMATO LONGO — uma linha por pessoa E mês. É o formato que
+ *               vira tabela dinâmica sem esforço; o largo obriga quem for
+ *               analisar a desempilhar tudo primeiro.
+ *   Por área    o custo de cada time por mês, para a conversa de orçamento.
+ *
+ * Número sai como NÚMERO. "R$ 1.234,56" como texto não vira número em lugar
+ * nenhum, e a coluna alinhada à esquerda é o sintoma que aparece só depois que
+ * alguém já montou a tabela dinâmica em cima.
+ *
+ * Célula vazia é `null` e não zero: quem não recebeu naquele mês não ganhou
+ * zero — não estava lá. A diferença some numa média.
  */
+export function abasDaPlanilha(
+  pessoas: PessoaRemuneracao[],
+  meses: string[],
+  pares: Map<string, Pares>,
+): Aba[] {
+  const fechadas = competenciasFechadas(pessoas, meses);
+
+  /* ── Resumo ── */
+  const cabResumo = [
+    "Nome", "Cargo", "Setor (RH)", "Área (ERP)", "Modalidade",
+    "Início", "Tempo de casa (meses)", "Desligamento",
+    "Fixo hoje", "Pró-labore/mês", "Variável médio", "Total no período",
+    "Último reajuste", "Reajuste R$", "Reajuste %", "Meses sem reajuste",
+    "Trocas de time",
+    "Mediana do cargo", "Contra a mediana", "Percentil", "Pares no cargo",
+    "Contrato no RH", "Código RH", "CNPJ/CPF",
+  ];
+
+  const hoje = new Date();
+  const mesHoje = `${hoje.getFullYear()}-${String(hoje.getMonth() + 1).padStart(2, "0")}-01`;
+
+  const linhasResumo = pessoas.map((p): CelulaPlanilha[] => {
+    const r = resumoDaPessoa(p);
+    const par = pares.get(p.id);
+    const ultimoMes = [...(p.meses ?? [])].sort((a, b) => a.competencia.localeCompare(b.competencia)).pop();
+    return [
+      p.nome,
+      p.cargo ?? null,
+      p.setor ?? null,
+      r.area,
+      p.modalidade ?? null,
+      p.inicio ?? null,
+      p.inicio ? distanciaEmMeses(`${p.inicio.slice(0, 7)}-01`, mesHoje) : null,
+      p.datadesl ?? null,
+      r.fixoAtual,
+      num(ultimoMes?.prolabore) || null,
+      r.mesesComPremiacao ? Math.round(r.premiacaoMedia * 100) / 100 : null,
+      r.totalPeriodo || null,
+      r.ultimoReajuste ? rotuloMes(r.ultimoReajuste.competencia) : null,
+      r.ultimoReajuste ? Number((r.ultimoReajuste.para - r.ultimoReajuste.de).toFixed(2)) : null,
+      r.ultimoReajuste ? Number((r.ultimoReajuste.variacao * 100).toFixed(1)) : null,
+      r.mesesSemReajuste,
+      r.mudancas.length
+        ? [r.mudancas[0].de, ...r.mudancas.map((m) => m.para)].join(" → ")
+        : null,
+      par?.mediana ?? null,
+      par?.contraMediana ?? null,
+      par?.percentil ?? null,
+      par?.quantos ?? null,
+      p.valor_contrato == null ? null : num(p.valor_contrato),
+      p.codigo_rh ?? null,
+      p.doc ?? null,
+    ];
+  });
+
+  /* ── Mês a mês, em formato longo ──
+     Uma linha por pessoa e mês. `Mês fechado` diz se o variável daquele mês já
+     foi lançado — sem essa coluna, quem somar o mês corrente vai concluir que a
+     comissão caiu, quando ela só não entrou ainda. */
+  const cabMes = [
+    "Nome", "Cargo", "Competência", "Mês", "Área",
+    "Fixo", "Pró-labore", "Variável", "Escala", "Total", "Mês fechado",
+  ];
+
+  const linhasMes: CelulaPlanilha[][] = [];
+  for (const p of pessoas) {
+    for (const m of [...(p.meses ?? [])].sort((a, b) => a.competencia.localeCompare(b.competencia))) {
+      linhasMes.push([
+        p.nome,
+        p.cargo ?? null,
+        m.competencia,
+        rotuloMes(m.competencia),
+        m.area ?? null,
+        num(m.fixo) || null,
+        num(m.prolabore) || null,
+        num(m.premiacao) || null,
+        num(m.escala) || null,
+        num(m.total) || null,
+        fechadas.has(m.competencia) ? "sim" : "não",
+      ]);
+    }
+  }
+
+  /* ── Por área ── */
+  const areas = custoPorArea(pessoas, meses);
+  const cabArea = ["Área", ...meses.map(rotuloMes), "Total", "Variação %", "Pessoas no último mês"];
+  const linhasArea = areas.map((a): CelulaPlanilha[] => [
+    a.area,
+    ...a.serie.map((v) => v || null),
+    a.total || null,
+    a.variacao == null ? null : Number((a.variacao * 100).toFixed(1)),
+    a.pessoasNoUltimoMes || null,
+  ]);
+
+  return [
+    {
+      nome: "Resumo",
+      linhas: [cabResumo, ...linhasResumo],
+      moeda: [8, 9, 10, 11, 13, 17, 18, 21],
+      percentual: [14],
+      larguras: [30, 24, 18, 15, 11, 11, 12, 12, 12, 13, 13, 15,
+                 13, 12, 10, 12, 30, 15, 15, 10, 12, 14, 12, 18],
+    },
+    {
+      nome: "Mês a mês",
+      linhas: [cabMes, ...linhasMes],
+      moeda: [5, 6, 7, 8, 9],
+      percentual: [],
+      larguras: [30, 24, 13, 9, 15, 12, 12, 12, 11, 12, 11],
+    },
+    {
+      nome: "Por área",
+      linhas: [cabArea, ...linhasArea],
+      moeda: meses.map((_, i) => i + 1).concat([meses.length + 1]),
+      percentual: [meses.length + 2],
+      larguras: [18, ...meses.map(() => 12), 14, 11, 18],
+    },
+  ];
+}
+
+/** Mantida para o CSV: a mesma aba Resumo, sem formatação. */
 export function matrizParaPlanilha(
   pessoas: PessoaRemuneracao[],
   meses: string[],

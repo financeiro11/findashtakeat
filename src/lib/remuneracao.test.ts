@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   degrausDoFixo, resumoDaPessoa, filtrarPessoas, totaisDoMes, paraCsv, matrizParaPlanilha,
   rotuloMes, distanciaEmMeses, ultimaCompetenciaFechada, mudancasDeArea, areaAtual,
-  fixoDeReferencia, compararComPares, custoPorArea, competenciasFechadas,
+  fixoDeReferencia, compararComPares, custoPorArea, competenciasFechadas, abasDaPlanilha,
   type MesRemuneracao, type PessoaRemuneracao,
 } from "./remuneracao";
 
@@ -581,6 +581,74 @@ describe("totais do mês", () => {
     expect(t.fixo).toBe(10000);
     expect(t.premiacao).toBe(1000);
     expect(t.total).toBe(11000);
+  });
+});
+
+describe("as três abas da planilha", () => {
+  const meses = ["2026-07-01", "2026-08-01"];
+  const time = [
+    pessoa({
+      id: "a", nome: "Ana", cargo: "Analista",
+      meses: [mes("2026-07-01", 5000, 1000, "Suporte"), mes("2026-08-01", 5000, 0, "Onboarding")],
+    }),
+    pessoa({
+      id: "b", nome: "Bruno", cargo: "Analista",
+      meses: [mes("2026-07-01", 7000, 0, "Suporte")],
+    }),
+  ];
+  const abas = () => abasDaPlanilha(time, meses, compararComPares(time, meses));
+
+  it("entrega Resumo, Mês a mês e Por área", () => {
+    expect(abas().map((a) => a.nome)).toEqual(["Resumo", "Mês a mês", "Por área"]);
+  });
+
+  it("o Resumo é uma linha por pessoa", () => {
+    const [resumo] = abas();
+    expect(resumo.linhas).toHaveLength(3); // cabeçalho + 2
+    expect(resumo.linhas[1][0]).toBe("Ana");
+  });
+
+  /* Formato LONGO: é o que vira tabela dinâmica sem desempilhar antes. */
+  it("o Mês a mês é uma linha por pessoa E mês", () => {
+    const mesAMes = abas()[1];
+    expect(mesAMes.linhas).toHaveLength(4); // cabeçalho + 2 meses da Ana + 1 do Bruno
+    const cab = mesAMes.linhas[0];
+    expect(cab).toContain("Competência");
+    expect(cab).toContain("Mês fechado");
+  });
+
+  /* Sem essa coluna, quem somar o mês corrente conclui que a comissão caiu —
+     quando ela só não foi lançada ainda. */
+  it("marca qual mês já teve o variável lançado", () => {
+    const mesAMes = abas()[1];
+    const iFechado = mesAMes.linhas[0].indexOf("Mês fechado");
+    expect(mesAMes.linhas.slice(1).map((l) => l[iFechado])).toContain("sim");
+  });
+
+  it("a Por área tem uma coluna por mês e a variação", () => {
+    const porArea = abas()[2];
+    expect(porArea.linhas[0]).toEqual(
+      ["Área", "jul/26", "ago/26", "Total", "Variação %", "Pessoas no último mês"],
+    );
+  });
+
+  /* A tela usa esses índices para aplicar o formato de moeda. Se saírem do
+     lugar, a planilha ganha "R$" numa coluna de percentil. */
+  it("aponta as colunas de dinheiro dentro da faixa", () => {
+    for (const aba of abas()) {
+      const largura = aba.linhas[0].length;
+      for (const i of [...aba.moeda, ...aba.percentual]) {
+        expect(i).toBeLessThan(largura);
+        expect(i).toBeGreaterThanOrEqual(0);
+      }
+      expect(aba.larguras).toHaveLength(largura);
+    }
+  });
+
+  it("as colunas marcadas como moeda são mesmo de dinheiro", () => {
+    const [resumo] = abas();
+    for (const i of resumo.moeda) expect(String(resumo.linhas[0][i])).not.toMatch(/Percentil|Nome|Cargo/);
+    expect(resumo.linhas[0][resumo.percentual[0]]).toBe("Reajuste %");
   });
 });
 

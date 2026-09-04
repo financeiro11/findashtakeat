@@ -29,7 +29,7 @@ import { comValorExato } from "@/components/ValorExato";
 import { valorExato } from "@/lib/valor";
 import { mesesDeCasa, parseISO } from "@/lib/rescisao";
 import {
-  compararComPares, custoPorArea, degrausDoFixo, filtrarPessoas, matrizParaPlanilha,
+  abasDaPlanilha, compararComPares, custoPorArea, degrausDoFixo, filtrarPessoas,
   resumoDaPessoa, rotuloMes, totaisDoMes, ultimaCompetenciaFechada,
   type Filtros, type PainelRemuneracao, type Pares, type PessoaRemuneracao,
   type ResumoPessoa,
@@ -278,20 +278,46 @@ export default function Remuneracao() {
     [linhas],
   );
 
+  /* O formato de moeda do Excel em pt-BR. Aplicado célula a célula porque o
+     SheetJS não tem formato por coluna — e sem ele o número sai cru, sem
+     separador de milhar, que é onde a planilha começa a parecer despejo. */
+  const FORMATO_MOEDA = 'R$ #,##0.00';
+  const FORMATO_PCT = '0.0"%"';
+
   const exportar = () => {
     if (!painel) return;
-    const aoa = matrizParaPlanilha(pessoas, meses);
-    const ws = XLSX.utils.aoa_to_sheet(aoa);
-    /* Largura das 15 colunas fixas; as de mês ficam no padrão, que já cabe.
-       Nome, CódRH, Cargo, Setor, Área, Trocas, Modalidade, Início, Deslig.,
-       Contrato, Fixo, Últ. reajuste, Reajuste R$, Reajuste %, Meses sem. */
-    ws["!cols"] = [{ wch: 30 }, { wch: 12 }, { wch: 22 }, { wch: 18 }, { wch: 14 },
-                   { wch: 34 }, { wch: 10 }, { wch: 11 }, { wch: 12 }, { wch: 16 },
-                   { wch: 12 }, { wch: 14 }, { wch: 13 }, { wch: 11 }, { wch: 12 }];
     const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, "Remuneração");
+
+    for (const aba of abasDaPlanilha(pessoas, meses, pares)) {
+      const ws = XLSX.utils.aoa_to_sheet(aba.linhas);
+      ws["!cols"] = aba.larguras.map((wch) => ({ wch }));
+
+      /* Congelar painel NÃO dá: a edição comunitária do SheetJS não escreve
+         `<pane>` — testei, e `ws["!freeze"]` sai do arquivo sem deixar rastro.
+         Por isso as abas são estreitas: a que tem 24 colunas é a de uma linha
+         por pessoa, e a de mês a mês tem 11. */
+
+      // Filtro na faixa INTEIRA, não só no cabeçalho: com a faixa de uma linha
+      // o Excel abre o menu e não filtra nada. É a primeira coisa que alguém faz
+      // numa lista de 150 pessoas.
+      ws["!autofilter"] = { ref: ws["!ref"]! };
+
+      // O formato de número é por CÉLULA no SheetJS — não existe formato de
+      // coluna. Sem isto o dinheiro sai cru, sem separador de milhar.
+      const ultimaLinha = aba.linhas.length - 1;
+      const moeda = new Set(aba.moeda);
+      const pct = new Set(aba.percentual);
+      for (let linha = 1; linha <= ultimaLinha; linha++) {
+        for (const col of [...moeda, ...pct]) {
+          const cel = ws[XLSX.utils.encode_cell({ r: linha, c: col })];
+          if (cel && cel.t === "n") cel.z = moeda.has(col) ? FORMATO_MOEDA : FORMATO_PCT;
+        }
+      }
+      XLSX.utils.book_append_sheet(wb, ws, aba.nome);
+    }
+
     XLSX.writeFile(wb, `remuneracao-${new Date().toISOString().slice(0, 10)}.xlsx`);
-    toast.success(`${pessoas.length} pessoas exportadas`);
+    toast.success(`${pessoas.length} pessoas em 3 abas`);
   };
 
   /* ── Sem acesso ──

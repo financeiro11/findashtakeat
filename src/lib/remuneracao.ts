@@ -16,6 +16,12 @@ export type MesRemuneracao = {
   total: number;
   /** Quais fontes formaram o mês ("omie", "omie+conta_azul"…). */
   fontes: string | null;
+  /**
+   * A área que pagou o fixo do mês — o que vem depois do traço na categoria
+   * ("3.1.1.2. Pessoal - Comercial" → "Comercial"). Nula em Pro Labore, que
+   * não tem área.
+   */
+  area: string | null;
 };
 
 export type PessoaRemuneracao = {
@@ -105,6 +111,52 @@ export function degrausDoFixo(meses: MesRemuneracao[]): Degrau[] {
   return out;
 }
 
+/** Uma troca de time: a área que pagava mudou de um mês pago para o seguinte. */
+export type MudancaDeArea = {
+  competencia: string;
+  de: string;
+  para: string;
+};
+
+/**
+ * A trajetória da pessoa pelos times, lida das categorias.
+ *
+ * É o único histórico de posição que existe: o Portal RH guarda o cargo de
+ * HOJE, e nem o espelho nem o ERP têm série. A categoria do pagamento carrega a
+ * área, e ela muda quando a pessoa muda de time.
+ *
+ * O QUE ISTO NÃO É: promoção. Subir de Analista Jr para Pleno dentro do mesmo
+ * time não muda a categoria e não aparece aqui — só troca de time aparece. O
+ * sinal de promoção que existe é o degrau no fixo (`degrausDoFixo`), e são
+ * coisas diferentes: dá para trocar de área sem aumento e para ter aumento sem
+ * trocar de área.
+ *
+ * Meses sem área (Pro Labore) são pulados em vez de virarem uma "saída": eles
+ * não dizem que a pessoa deixou o time, dizem que aquele pagamento não tinha
+ * área nenhuma.
+ */
+export function mudancasDeArea(meses: MesRemuneracao[]): MudancaDeArea[] {
+  const comArea = meses
+    .filter((m) => !!m.area)
+    .sort((a, b) => a.competencia.localeCompare(b.competencia));
+
+  const out: MudancaDeArea[] = [];
+  for (let i = 1; i < comArea.length; i++) {
+    const de = comArea[i - 1].area!;
+    const para = comArea[i].area!;
+    if (de !== para) out.push({ competencia: comArea[i].competencia, de, para });
+  }
+  return out;
+}
+
+/** A área do último mês pago — o time em que a pessoa está segundo o ERP. */
+export function areaAtual(meses: MesRemuneracao[]): string | null {
+  const comArea = meses
+    .filter((m) => !!m.area)
+    .sort((a, b) => a.competencia.localeCompare(b.competencia));
+  return comArea[comArea.length - 1]?.area ?? null;
+}
+
 export type ResumoPessoa = {
   /** O fixo do último mês em que a pessoa recebeu fixo. */
   fixoAtual: number | null;
@@ -116,6 +168,10 @@ export type ResumoPessoa = {
   totalPeriodo: number;
   degraus: Degrau[];
   ultimoReajuste: Degrau | null;
+  /** Trocas de time, na ordem em que aconteceram. */
+  mudancas: MudancaDeArea[];
+  /** A área do último mês pago — o time atual segundo o ERP. */
+  area: string | null;
   /** Meses entre o último reajuste e o último mês pago. Null se nunca houve. */
   mesesSemReajuste: number | null;
   /**
@@ -156,6 +212,8 @@ export function resumoDaPessoa(p: PessoaRemuneracao): ResumoPessoa {
     totalPeriodo: meses.reduce((s, m) => s + num(m.total), 0),
     degraus,
     ultimoReajuste,
+    mudancas: mudancasDeArea(meses),
+    area: areaAtual(meses),
     mesesSemReajuste:
       ultimoReajuste && ultimo
         ? distanciaEmMeses(ultimoReajuste.competencia, ultimo.competencia)
@@ -272,10 +330,13 @@ export function matrizParaPlanilha(
   meses: string[],
 ): CelulaPlanilha[][] {
   const cabecalho = [
-    "Nome", "Código RH", "Cargo", "Setor", "Modalidade", "Início", "Desligamento",
-    "Valor de contrato", "Fixo atual", "Último reajuste", "Variação %", "Meses sem reajuste",
+    "Nome", "Código RH", "Cargo", "Setor", "Área no ERP", "Trocas de time",
+    "Modalidade", "Início", "Desligamento",
+    "Valor de contrato", "Fixo atual",
+    "Último reajuste", "Reajuste R$", "Reajuste %", "Meses sem reajuste",
     ...meses.flatMap((m) => [
-      `${rotuloMes(m)} fixo`, `${rotuloMes(m)} premiação`, `${rotuloMes(m)} total`,
+      `${rotuloMes(m)} fixo`, `${rotuloMes(m)} variável`, `${rotuloMes(m)} escala`,
+      `${rotuloMes(m)} total`, `${rotuloMes(m)} área`,
     ]),
   ];
 
@@ -287,18 +348,27 @@ export function matrizParaPlanilha(
       p.codigo_rh ?? null,
       p.cargo ?? null,
       p.setor ?? null,
+      r.area,
+      // A trajetória inteira numa célula: "Suporte → Onboarding → Suporte".
+      r.mudancas.length
+        ? [r.mudancas[0].de, ...r.mudancas.map((m) => m.para)].join(" → ")
+        : null,
       p.modalidade ?? null,
       p.inicio ?? null,
       p.datadesl ?? null,
       p.valor_contrato == null ? null : num(p.valor_contrato),
       r.fixoAtual,
       r.ultimoReajuste ? rotuloMes(r.ultimoReajuste.competencia) : null,
+      r.ultimoReajuste ? Number((r.ultimoReajuste.para - r.ultimoReajuste.de).toFixed(2)) : null,
       r.ultimoReajuste ? Number((r.ultimoReajuste.variacao * 100).toFixed(1)) : null,
       r.mesesSemReajuste,
       ...meses.flatMap((m): CelulaPlanilha[] => {
         const x = porMes.get(m);
-        if (!x) return [null, null, null];
-        return [num(x.fixo) || null, num(x.premiacao) || null, num(x.total) || null];
+        if (!x) return [null, null, null, null, null];
+        return [
+          num(x.fixo) || null, num(x.premiacao) || null, num(x.escala) || null,
+          num(x.total) || null, x.area ?? null,
+        ];
       }),
     ];
   });

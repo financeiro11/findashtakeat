@@ -41,6 +41,19 @@
   --info: 212 80% 45%;
   --warn: 38 92% 48%;
 
+  /* Série categórica dos gráficos — identidade, não estado.
+     Cores de status (--pos, --neg, --warn) são reservadas para dizer "isto vai
+     bem / mal"; reaproveitá-las como "série 3" faz o leitor ler alarme onde só
+     há uma categoria. Estas três existem separadas por isso.
+     A ORDEM é fixa: fixo, variável, escala — sempre nesta sequência, para que a
+     mesma cor signifique a mesma coisa em qualquer gráfico do Hub.
+     Validadas contra as duas superfícies (banda de luminosidade, piso de croma,
+     separação para daltonismo e contraste). Não trocar por aproximação: o passo
+     do escuro é escolhido, não é o do claro clareado. */
+  --serie-fixo: 0 78% 47%;
+  --serie-variavel: 212 80% 45%;
+  --serie-escala: 38 92% 48%;
+
   /* Lines */
   --line: 220 14% 90%;
   --line-strong: 220 13% 82%;
@@ -78,6 +91,11 @@
   --line-strong: 220 14% 26%;
   --pos: 152 55% 50%;
   --neg: 0 75% 60%;
+  /* Passos próprios do escuro. O âmbar do claro (38 92% 48%) sai da banda de
+     luminosidade sobre o card escuro — foi medido, não estimado. */
+  --serie-fixo: 0 78% 55%;
+  --serie-variavel: 212 80% 45%;
+  --serie-escala: 37 94% 41%;
 }
 
 /* Tabular monospaced numerals — required for any monetary value */

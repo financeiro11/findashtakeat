@@ -17,6 +17,9 @@ import { KpiCard } from "@/components/ui/kpi-card";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import {
+  Bar, BarChart, CartesianGrid, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis,
+} from "recharts";
+import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from "@/components/ui/table";
 import { cn } from "@/lib/utils";
@@ -162,9 +165,28 @@ export default function Remuneracao() {
     [pessoas],
   );
 
+  /* O KPI do mês NÃO usa a lista da tabela.
+     A lista responde "quem está aqui hoje" e por isso esconde quem saiu; o custo
+     de agosto, não — quem foi pago em agosto custou em agosto, mesmo tendo saído
+     no dia 20. Com o filtro da lista o KPI dizia R$ 508.072 para um mês que
+     fechou em R$ 557.737, e um número rotulado "custo de pessoas" tem de bater
+     com a DRE. Busca e setor continuam valendo: "custo de Tecnologia em agosto"
+     é uma pergunta legítima. */
+  const pessoasDoMes = useMemo(
+    () => filtrarPessoas(painel?.pessoas ?? [], { ...filtros, incluirSaidas: true }, referencia),
+    [painel, filtros, referencia],
+  );
+
   const totais = useMemo(
-    () => (mes ? totaisDoMes(pessoas, mes) : null),
-    [pessoas, mes],
+    () => (mes ? totaisDoMes(pessoasDoMes, mes) : null),
+    [pessoasDoMes, mes],
+  );
+
+  /* Quantos daquele mês já não estão na lista — a diferença entre o custo real
+     e o time de hoje, dita em voz alta em vez de sumir na conta. */
+  const saidasNoMes = useMemo(
+    () => (mes ? totais!.gente - totaisDoMes(pessoas, mes).gente : 0),
+    [totais, pessoas, mes],
   );
 
   /* Quantos têm a ficha do RH atrasada em relação ao que o Omie pagou. É a
@@ -178,10 +200,12 @@ export default function Remuneracao() {
     if (!painel) return;
     const aoa = matrizParaPlanilha(pessoas, meses);
     const ws = XLSX.utils.aoa_to_sheet(aoa);
-    // Largura das colunas fixas; as de mês ficam no padrão, que já cabe.
-    ws["!cols"] = [{ wch: 30 }, { wch: 12 }, { wch: 22 }, { wch: 18 }, { wch: 10 },
-                   { wch: 11 }, { wch: 12 }, { wch: 16 }, { wch: 12 }, { wch: 14 },
-                   { wch: 11 }, { wch: 12 }];
+    /* Largura das 15 colunas fixas; as de mês ficam no padrão, que já cabe.
+       Nome, CódRH, Cargo, Setor, Área, Trocas, Modalidade, Início, Deslig.,
+       Contrato, Fixo, Últ. reajuste, Reajuste R$, Reajuste %, Meses sem. */
+    ws["!cols"] = [{ wch: 30 }, { wch: 12 }, { wch: 22 }, { wch: 18 }, { wch: 14 },
+                   { wch: 34 }, { wch: 10 }, { wch: 11 }, { wch: 12 }, { wch: 16 },
+                   { wch: 12 }, { wch: 14 }, { wch: 13 }, { wch: 11 }, { wch: 12 }];
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, "Remuneração");
     XLSX.writeFile(wb, `remuneracao-${new Date().toISOString().slice(0, 10)}.xlsx`);
@@ -258,14 +282,19 @@ export default function Remuneracao() {
                 value={fmtBRL(totais.total)}
                 stats={[
                   { label: "Fixo", value: fmtBRL(totais.fixo) },
-                  { label: "Comissão", value: fmtBRL(totais.premiacao) },
+                  { label: "Variável", value: fmtBRL(totais.premiacao) },
                   { label: "Escala", value: fmtBRL(totais.escala) },
                 ]}
+                footnote="O custo do mês inclui quem foi pago nele e depois saiu."
               />
               <KpiCard
                 label="Pessoas no mês"
                 value={String(totais.gente)}
-                subline={`${linhas.length} no recorte atual`}
+                subline={
+                  saidasNoMes > 0
+                    ? `${linhas.length} na lista · ${saidasNoMes} já saíram`
+                    : `${linhas.length} na lista`
+                }
               />
               <KpiCard
                 label="Comissão sobre o total"
@@ -397,19 +426,30 @@ export default function Remuneracao() {
                         {r.mesesComPremiacao ? fmtBRL(r.premiacaoMedia) : "—"}
                       </TableCell>
 
+                      {/* O reajuste em REAIS na frente, o percentual embaixo:
+                          "+R$ 2.500" é a informação que fecha a conversa; "+12,5%"
+                          sozinho obriga quem lê a fazer a multiplicação de cabeça
+                          para saber do que se trata. */}
                       <TableCell className="text-right">
                         {r.ultimoReajuste ? (
-                          <div className="flex items-center justify-end gap-1">
-                            {r.ultimoReajuste.variacao > 0
-                              ? <ArrowUpRight className="h-3 w-3 text-pos" />
-                              : <ArrowDownRight className="h-3 w-3 text-neg" />}
-                            <span className={cn("num text-xs", r.ultimoReajuste.variacao > 0 ? "text-pos" : "text-neg")}>
-                              {pctStr(r.ultimoReajuste.variacao)}
-                            </span>
-                            <span className="text-xs text-muted-foreground">
-                              {rotuloMes(r.ultimoReajuste.competencia)}
-                            </span>
-                          </div>
+                          <>
+                            <div className={cn("num flex items-center justify-end gap-1 font-medium",
+                              r.ultimoReajuste.variacao > 0 ? "text-pos" : "text-neg")}>
+                              {r.ultimoReajuste.variacao > 0
+                                ? <ArrowUpRight className="h-3 w-3" />
+                                : <ArrowDownRight className="h-3 w-3" />}
+                              {comValorExato(
+                                r.ultimoReajuste.para - r.ultimoReajuste.de,
+                                `${r.ultimoReajuste.variacao > 0 ? "+" : "−"}${fmtBRLStr(Math.abs(r.ultimoReajuste.para - r.ultimoReajuste.de))}`,
+                              )}
+                            </div>
+                            <div
+                              className="num text-[10.5px] text-muted-foreground"
+                              title={`${fmtBRLStr(r.ultimoReajuste.de)} → ${fmtBRLStr(r.ultimoReajuste.para)}`}
+                            >
+                              {pctStr(r.ultimoReajuste.variacao)} · {rotuloMes(r.ultimoReajuste.competencia)}
+                            </div>
+                          </>
                         ) : (
                           <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">
                             <Minus className="h-3 w-3" /> nenhum
@@ -459,17 +499,156 @@ export default function Remuneracao() {
    A linha do tempo mês a mês, que é o artefato que o diretor pediu: dá para
    apontar o dedo em cada degrau e dizer quando foi e de quanto. */
 
+/* As três séries, na ORDEM FIXA em que aparecem em todo lugar desta tela: fixo,
+   variável, escala. Cor por identidade, nunca por posição no ranking — se a
+   ordem mudasse conforme o mês, a mesma cor significaria coisas diferentes.
+   Os tokens estão em `src/styles/tokens.css` e têm passo próprio no tema
+   escuro; foram medidos contra as duas superfícies, não estimados. */
+const SERIES = [
+  { chave: "fixo",     rotulo: "Fixo",     cor: "hsl(var(--serie-fixo))" },
+  { chave: "variavel", rotulo: "Variável", cor: "hsl(var(--serie-variavel))" },
+  { chave: "escala",   rotulo: "Escala",   cor: "hsl(var(--serie-escala))" },
+] as const;
+
+/** Legenda: obrigatória com três séries — identidade nunca por cor sozinha. */
+function Legenda() {
+  return (
+    <div className="flex items-center gap-3">
+      {SERIES.map((s) => (
+        <span key={s.chave} className="flex items-center gap-1.5 text-[10.5px] text-muted-foreground">
+          <span className="h-2 w-2 rounded-[2px]" style={{ background: s.cor }} />
+          {s.rotulo}
+        </span>
+      ))}
+    </div>
+  );
+}
+
+/* Eixo em milhares: "R$ 22.500" repetido cinco vezes na lateral rouba a largura
+   do gráfico. Devolve string pura — dentro de SVG o hover do ValorExato não
+   vale, e o número cheio está na tabela logo abaixo. */
+const emMilStr = (v: number) =>
+  v >= 1000 ? `${Math.round(v / 1000)}k` : String(Math.round(v));
+
+type LinhaGrafico = {
+  mes: string; fixo: number; variavel: number; escala: number; total: number;
+  reajuste: number | null;
+};
+
+/** Qual série está no TOPO da pilha desta barra — a última com valor. */
+const topoDaPilha = (d: LinhaGrafico): string =>
+  d.escala > 0 ? "escala" : d.variavel > 0 ? "variavel" : "fixo";
+
+/**
+ * O segmento da barra empilhada.
+ *
+ * Arredondar só a última série (`radius` na Bar de escala) daria topo quadrado
+ * na maioria das barras: escala é zero para quase todo mundo, e variável para
+ * metade — o canto arredondado apareceria em uma barra a cada dez, o que lê como
+ * defeito. Aqui o topo é arredondado no segmento que estiver POR CIMA naquele
+ * mês, seja ele qual for.
+ *
+ * O `stroke` na cor da superfície é o vão de 2px entre os empilhados; sem ele os
+ * três viram um bloco contínuo e a divisão só existe na diferença de matiz.
+ */
+function Segmento(serie: string) {
+  return function Forma(props: {
+    x?: number; y?: number; width?: number; height?: number;
+    fill?: string; payload?: LinhaGrafico;
+  }) {
+    const { x = 0, y = 0, width = 0, height = 0, fill, payload } = props;
+    if (!height || !width || !payload) return null;
+    const r = topoDaPilha(payload) === serie ? Math.min(4, height, width / 2) : 0;
+    const d = r
+      ? `M${x},${y + height} L${x},${y + r} Q${x},${y} ${x + r},${y}
+         L${x + width - r},${y} Q${x + width},${y} ${x + width},${y + r}
+         L${x + width},${y + height} Z`
+      : `M${x},${y} L${x + width},${y} L${x + width},${y + height} L${x},${y + height} Z`;
+    return <path d={d} fill={fill} stroke="hsl(var(--background))" strokeWidth={1} />;
+  };
+}
+
+/** O balão do hover. `soFixo` no gráfico da trajetória, que só tem uma série. */
+function Dica({ active, payload, soFixo }: {
+  active?: boolean; payload?: { payload: LinhaGrafico }[]; soFixo?: boolean;
+}) {
+  const d = active && payload?.length ? payload[0].payload : null;
+  if (!d) return null;
+  return (
+    <div className="rounded-lg border border-border bg-popover px-2.5 py-2 text-xs shadow-md">
+      <div className="mb-1 font-medium">{d.mes}</div>
+      {(soFixo ? SERIES.slice(0, 1) : SERIES).map((s) => {
+        const v = d[s.chave];
+        if (!v) return null;
+        return (
+          <div key={s.chave} className="flex items-center justify-between gap-4">
+            <span className="flex items-center gap-1.5 text-muted-foreground">
+              <span className="h-2 w-2 rounded-[2px]" style={{ background: s.cor }} />
+              {s.rotulo}
+            </span>
+            {/* Valor em tinta de texto, não na cor da série: quem carrega a
+                identidade é o quadradinho ao lado. */}
+            <span className="num">{valorExato(v)}</span>
+          </div>
+        );
+      })}
+      {!soFixo && (
+        <div className="mt-1 flex items-center justify-between gap-4 border-t border-border/60 pt-1 font-medium">
+          <span>Total</span>
+          <span className="num">{valorExato(d.total)}</span>
+        </div>
+      )}
+      {d.reajuste != null && (
+        <div className={cn("mt-1 num text-[10.5px] font-medium", d.reajuste > 0 ? "text-pos" : "text-neg")}>
+          {d.reajuste > 0 ? "▲" : "▼"} reajuste de {pctStr(d.reajuste)}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* O mês do reajuste ganha um ponto; os demais, nada. Marcar todos os pontos
+   esconderia justamente o que importa nesta linha. */
+function PontoDeReajuste(props: { cx?: number; cy?: number; payload?: LinhaGrafico }) {
+  const { cx, cy, payload } = props;
+  if (cx == null || cy == null || !payload?.reajuste) return null;
+  return (
+    <g>
+      {/* Anel na cor da superfície: separa o ponto da linha por baixo dele. */}
+      <circle cx={cx} cy={cy} r={5} fill="hsl(var(--serie-fixo))" stroke="hsl(var(--background))" strokeWidth={2} />
+      <title>{`${payload.mes}: reajuste de ${pctStr(payload.reajuste)} — ${valorExato(payload.fixo)}`}</title>
+    </g>
+  );
+}
+
 function FichaDaPessoa({ pessoa, onClose }: { pessoa: PessoaRemuneracao | null; onClose: () => void }) {
   if (!pessoa) return null;
   const r = resumoDaPessoa(pessoa);
   const degraus = degrausDoFixo(pessoa.meses);
   const porCompetencia = new Map(degraus.map((d) => [d.competencia, d]));
+  const porMudanca = new Map(r.mudancas.map((m) => [m.competencia, m]));
   const meses = [...pessoa.meses].sort((a, b) => a.competencia.localeCompare(b.competencia));
-  const tetoBarra = Math.max(1, ...meses.map((m) => Number(m.total) || 0));
+
+  const dados: LinhaGrafico[] = meses.map((m) => ({
+    mes: rotuloMes(m.competencia),
+    fixo: Number(m.fixo) || 0,
+    variavel: Number(m.premiacao) || 0,
+    escala: Number(m.escala) || 0,
+    total: Number(m.total) || 0,
+    reajuste: porCompetencia.get(m.competencia)?.variacao ?? null,
+  }));
+
+  const soma = dados.reduce(
+    (a, d) => ({
+      fixo: a.fixo + d.fixo, variavel: a.variavel + d.variavel,
+      escala: a.escala + d.escala, total: a.total + d.total,
+    }),
+    { fixo: 0, variavel: 0, escala: 0, total: 0 },
+  );
 
   return (
     <Sheet open onOpenChange={(v) => !v && onClose()}>
-      <SheetContent className="w-full overflow-y-auto sm:max-w-xl">
+      <SheetContent className="w-full overflow-y-auto sm:max-w-2xl">
         <SheetHeader>
           <SheetTitle className="pr-6 text-left leading-tight">{pessoa.nome}</SheetTitle>
         </SheetHeader>
@@ -484,7 +663,7 @@ function FichaDaPessoa({ pessoa, onClose }: { pessoa: PessoaRemuneracao | null; 
         <div className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-4">
           {[
             { r: "Fixo hoje", v: fmtBRL(r.fixoAtual) },
-            { r: "Comissão média", v: r.mesesComPremiacao ? fmtBRL(r.premiacaoMedia) : "—" },
+            { r: "Variável médio", v: r.mesesComPremiacao ? fmtBRL(r.premiacaoMedia) : "—" },
             { r: "Total no período", v: fmtBRL(r.totalPeriodo) },
             { r: "Tempo de casa", v: tempoDeCasaStr(pessoa.inicio) },
           ].map((x) => (
@@ -509,52 +688,179 @@ function FichaDaPessoa({ pessoa, onClose }: { pessoa: PessoaRemuneracao | null; 
           </div>
         )}
 
-        {/* Linha do tempo */}
-        <h3 className="mt-5 text-sm font-semibold">Mês a mês</h3>
-        <div className="mt-2 space-y-1">
-          {meses.map((m) => {
-            const degrau = porCompetencia.get(m.competencia);
-            const total = Number(m.total) || 0;
-            const fixo = Number(m.fixo) || 0;
-            const premiacao = Number(m.premiacao) || 0;
-            const escala = Number(m.escala) || 0;
-            return (
-              <div key={m.competencia} className="rounded-lg px-2 py-1.5 hover:bg-secondary/50">
-                <div className="flex items-baseline justify-between gap-2 text-xs">
-                  <span className="w-14 shrink-0 text-muted-foreground">{rotuloMes(m.competencia)}</span>
-                  <span className="num font-medium">{fmtBRL(total)}</span>
+        {!meses.length ? (
+          <p className="mt-6 py-6 text-center text-sm text-muted-foreground">
+            Nenhum pagamento registrado no período carregado.
+          </p>
+        ) : (
+          <>
+            {/* ── A composição, mês a mês ── */}
+            <div className="mt-5 flex items-baseline justify-between gap-3">
+              <h3 className="text-sm font-semibold">Composição mês a mês</h3>
+              <Legenda />
+            </div>
+            <div className="mt-2 h-[210px] w-full">
+              <ResponsiveContainer width="100%" height="100%">
+                <BarChart data={dados} margin={{ top: 8, right: 4, bottom: 0, left: 4 }} barCategoryGap="22%">
+                  {/* Grade recessiva: só horizontal, tracejada. A vertical não
+                      ajuda a ler valor e compete com as próprias barras. */}
+                  <CartesianGrid vertical={false} strokeDasharray="3 3" stroke="hsl(var(--border))" opacity={0.6} />
+                  <XAxis
+                    dataKey="mes" tickLine={false} axisLine={false}
+                    tick={{ fontSize: 11, fill: "hsl(var(--muted-foreground))" }}
+                  />
+                  <YAxis
+                    tickLine={false} axisLine={false} width={46}
+                    tick={{ fontSize: 10, fill: "hsl(var(--muted-foreground))" }}
+                    tickFormatter={emMilStr}
+                  />
+                  <Tooltip cursor={{ fill: "hsl(var(--secondary))", opacity: 0.5 }} content={<Dica />} />
+                  {SERIES.map((s) => (
+                    <Bar
+                      key={s.chave} dataKey={s.chave} stackId="a" fill={s.cor}
+                      shape={Segmento(s.chave)} isAnimationActive={false}
+                    />
+                  ))}
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
+
+            {/* ── A trajetória do fixo ──
+                Separado da composição de propósito: no empilhado o fixo é a base
+                e os degraus somem sob a variação do topo. Aqui a linha responde
+                "quando ela teve aumento, e de quanto", que é a pergunta que fez
+                este painel existir. Um eixo só — nunca dois no mesmo gráfico. */}
+            {meses.filter((m) => Number(m.fixo) > 0).length > 1 && (
+              <>
+                <h3 className="mt-5 text-sm font-semibold">Trajetória do fixo</h3>
+                <div className="mt-2 h-[150px] w-full">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <LineChart data={dados} margin={{ top: 12, right: 10, bottom: 0, left: 4 }}>
+                      <CartesianGrid vertical={false} strokeDasharray="3 3" stroke="hsl(var(--border))" opacity={0.6} />
+                      <XAxis
+                        dataKey="mes" tickLine={false} axisLine={false}
+                        tick={{ fontSize: 11, fill: "hsl(var(--muted-foreground))" }}
+                      />
+                      <YAxis
+                        tickLine={false} axisLine={false} width={46} domain={["dataMin - 1000", "dataMax + 1000"]}
+                        tick={{ fontSize: 10, fill: "hsl(var(--muted-foreground))" }}
+                        tickFormatter={emMilStr}
+                      />
+                      <Tooltip cursor={{ stroke: "hsl(var(--border))" }} content={<Dica soFixo />} />
+                      {/* Degrau, não curva: o salário muda de uma vez no mês do
+                          reajuste; interpolar sugeriria aumento gradual. */}
+                      <Line
+                        type="stepAfter" dataKey="fixo" stroke="hsl(var(--serie-fixo))" strokeWidth={2}
+                        dot={<PontoDeReajuste />} activeDot={{ r: 4 }} isAnimationActive={false}
+                      />
+                    </LineChart>
+                  </ResponsiveContainer>
                 </div>
-                {/* Barra empilhada: fixo, comissão, escala. Largura relativa ao
-                    maior mês da própria pessoa — comparar com o time inteiro
-                    achataria a barra de quem ganha menos até virar um risco. */}
-                <div className="mt-1 flex h-1.5 w-full overflow-hidden rounded-full bg-secondary">
-                  <div style={{ width: `${(fixo / tetoBarra) * 100}%` }} className="bg-primary" />
-                  <div style={{ width: `${(premiacao / tetoBarra) * 100}%` }} className="bg-pos" />
-                  <div style={{ width: `${(escala / tetoBarra) * 100}%` }} className="bg-warn" />
-                </div>
-                <div className="mt-0.5 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[10.5px] text-muted-foreground">
-                  <span>fixo {fmtBRLStr(fixo)}</span>
-                  {premiacao > 0 && <span className="text-pos">comissão {fmtBRLStr(premiacao)}</span>}
-                  {escala > 0 && <span className="text-warn">escala {fmtBRLStr(escala)}</span>}
-                  {degrau && (
-                    <span className={cn("font-medium", degrau.variacao > 0 ? "text-pos" : "text-neg")}>
-                      {degrau.variacao > 0 ? "▲" : "▼"} reajuste {pctStr(degrau.variacao)}
-                      {" "}({fmtBRLStr(degrau.de)} → {fmtBRLStr(degrau.para)})
+              </>
+            )}
+
+            {/* ── A trajetória pelos times ──
+                Único histórico de posição que existe: o Portal RH guarda o cargo
+                de HOJE, e a categoria do pagamento carrega a área. A tela diz
+                que é troca de TIME e não promoção — subir de nível dentro do
+                mesmo time não muda a categoria e não aparece aqui. */}
+            <h3 className="mt-5 text-sm font-semibold">Trajetória na empresa</h3>
+            <ol className="mt-2 space-y-0 border-l border-border/70 pl-4">
+              {[
+                { quando: meses[0].competencia, area: meses[0].area, entrada: true },
+                ...r.mudancas.map((m) => ({ quando: m.competencia, area: m.para, entrada: false })),
+              ].map((passo, i) => (
+                <li key={`${passo.quando}-${i}`} className="relative py-1.5 text-xs">
+                  <span className="absolute -left-[21px] top-2.5 h-2 w-2 rounded-full bg-primary ring-2 ring-background" />
+                  <span className="text-muted-foreground">{rotuloMes(passo.quando)}</span>
+                  <span className="mx-1.5">·</span>
+                  <span className="font-medium">{passo.area ?? "sem área"}</span>
+                  {passo.entrada && (
+                    <span className="ml-1.5 text-muted-foreground">
+                      (primeiro mês do período carregado)
                     </span>
                   )}
-                  {m.fontes && m.fontes !== "omie" && (
-                    <span className="opacity-70">fontes: {m.fontes}</span>
-                  )}
-                </div>
-              </div>
-            );
-          })}
-          {!meses.length && (
-            <p className="py-6 text-center text-sm text-muted-foreground">
-              Nenhum pagamento registrado no período carregado.
+                </li>
+              ))}
+            </ol>
+            <p className="mt-1 pl-4 text-[10.5px] text-muted-foreground">
+              Lido da categoria que pagou o fixo. É troca de <strong>time</strong>, não
+              promoção — mudar de nível dentro do mesmo time não muda a categoria.
             </p>
-          )}
-        </div>
+
+            {/* ── A tabela ──
+                Os números por extenso. É também o "relief" que o âmbar da escala
+                exige no tema claro, onde ele não alcança 3:1 contra o branco. */}
+            <h3 className="mt-5 text-sm font-semibold">Valores</h3>
+            <div className="mt-2 overflow-x-auto">
+              <table className="w-full text-xs">
+                <thead>
+                  <tr className="border-b border-border/60 text-[10px] uppercase tracking-wider text-muted-foreground">
+                    <th className="py-1.5 text-left font-medium">Mês</th>
+                    <th className="py-1.5 text-right font-medium">Fixo</th>
+                    <th className="py-1.5 text-right font-medium">Variável</th>
+                    <th className="py-1.5 text-right font-medium">Escala</th>
+                    <th className="py-1.5 text-right font-medium">Total</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {meses.map((m) => {
+                    const degrau = porCompetencia.get(m.competencia);
+                    const troca = porMudanca.get(m.competencia);
+                    return (
+                      <tr key={m.competencia} className="border-b border-border/30 last:border-0 hover:bg-secondary/40">
+                        <td className="py-1.5">
+                          <span className="text-muted-foreground">{rotuloMes(m.competencia)}</span>
+                          {degrau && (
+                            <span
+                              className={cn("ml-1.5 num text-[10px] font-medium",
+                                degrau.variacao > 0 ? "text-pos" : "text-neg")}
+                              title={`Reajuste de ${fmtBRLStr(degrau.de)} para ${fmtBRLStr(degrau.para)} · ${pctStr(degrau.variacao)}`}
+                            >
+                              {degrau.variacao > 0 ? "▲" : "▼"}{" "}
+                              {degrau.variacao > 0 ? "+" : "−"}{fmtBRLStr(Math.abs(degrau.para - degrau.de))}
+                            </span>
+                          )}
+                          {troca && (
+                            <span
+                              className="ml-1.5 text-[10px] text-info"
+                              title={`Passou de ${troca.de} para ${troca.para}`}
+                            >
+                              ⇄ {troca.para}
+                            </span>
+                          )}
+                        </td>
+                        <td className="num py-1.5 text-right">{fmtBRL(Number(m.fixo) || null)}</td>
+                        <td className="num py-1.5 text-right">
+                          {Number(m.premiacao) ? fmtBRL(m.premiacao) : <span className="text-muted-foreground">—</span>}
+                        </td>
+                        <td className="num py-1.5 text-right">
+                          {Number(m.escala) ? fmtBRL(m.escala) : <span className="text-muted-foreground">—</span>}
+                        </td>
+                        <td className="num py-1.5 text-right font-semibold">{fmtBRL(m.total)}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+                <tfoot>
+                  <tr className="border-t-2 border-border font-semibold">
+                    <td className="py-1.5 text-muted-foreground">Total</td>
+                    <td className="num py-1.5 text-right">{fmtBRL(soma.fixo)}</td>
+                    <td className="num py-1.5 text-right">{fmtBRL(soma.variavel)}</td>
+                    <td className="num py-1.5 text-right">{fmtBRL(soma.escala)}</td>
+                    <td className="num py-1.5 text-right">{fmtBRL(soma.total)}</td>
+                  </tr>
+                </tfoot>
+              </table>
+            </div>
+
+            <p className="mt-2 text-[10.5px] text-muted-foreground">
+              Período coberto: {rotuloMes(meses[0].competencia)} a{" "}
+              {rotuloMes(meses[meses.length - 1].competencia)}. O que vem antes disso
+              ainda vai entrar pelo histórico do Conta Azul.
+            </p>
+          </>
+        )}
 
         <dl className="mt-5 space-y-1 border-t border-border/60 pt-3 text-xs text-muted-foreground">
           {[

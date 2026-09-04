@@ -1,13 +1,15 @@
 import { describe, it, expect } from "vitest";
 import {
   degrausDoFixo, resumoDaPessoa, filtrarPessoas, totaisDoMes, paraCsv, matrizParaPlanilha,
-  rotuloMes, distanciaEmMeses, ultimaCompetenciaFechada,
+  rotuloMes, distanciaEmMeses, ultimaCompetenciaFechada, mudancasDeArea, areaAtual,
   type MesRemuneracao, type PessoaRemuneracao,
 } from "./remuneracao";
 
-const mes = (competencia: string, fixo: number, premiacao = 0): MesRemuneracao => ({
+const mes = (
+  competencia: string, fixo: number, premiacao = 0, area: string | null = "Comercial",
+): MesRemuneracao => ({
   competencia, fixo, premiacao, escala: 0, outro: 0,
-  total: fixo + premiacao, fontes: "omie",
+  total: fixo + premiacao, fontes: "omie", area,
 });
 
 const pessoa = (over: Partial<PessoaRemuneracao> = {}): PessoaRemuneracao => ({
@@ -179,6 +181,55 @@ describe("última competência fechada", () => {
   });
 });
 
+describe("trajetória pelos times", () => {
+  /* O caso real do Levi Monteiro: Suporte → Onboarding em junho, e de volta
+     para Suporte em julho. As duas pernas têm de aparecer. */
+  it("acha as trocas de área, inclusive a volta", () => {
+    const m = mudancasDeArea([
+      mes("2026-04-01", 3000, 0, "Suporte"),
+      mes("2026-05-01", 3000, 0, "Suporte"),
+      mes("2026-06-01", 3000, 0, "Onboarding"),
+      mes("2026-07-01", 3000, 0, "Suporte"),
+    ]);
+    expect(m).toEqual([
+      { competencia: "2026-06-01", de: "Suporte", para: "Onboarding" },
+      { competencia: "2026-07-01", de: "Onboarding", para: "Suporte" },
+    ]);
+  });
+
+  it("quem nunca trocou de time não tem mudança", () => {
+    expect(mudancasDeArea([mes("2026-04-01", 3000), mes("2026-05-01", 9000)])).toHaveLength(0);
+  });
+
+  /* Pro Labore não tem área. O mês dele não pode virar uma "saída do time"
+     seguida de um "retorno" — seriam duas movimentações inventadas. */
+  it("pula o mês sem área em vez de inventar ida e volta", () => {
+    const m = mudancasDeArea([
+      mes("2026-04-01", 3000, 0, "Tecnologia"),
+      mes("2026-05-01", 4000, 0, null),
+      mes("2026-06-01", 3000, 0, "Tecnologia"),
+    ]);
+    expect(m).toHaveLength(0);
+  });
+
+  it("a área atual é a do último mês pago", () => {
+    expect(areaAtual([
+      mes("2026-04-01", 3000, 0, "Suporte"),
+      mes("2026-06-01", 3000, 0, "Sucesso"),
+    ])).toBe("Sucesso");
+    expect(areaAtual([])).toBeNull();
+    expect(areaAtual([mes("2026-04-01", 3000, 0, null)])).toBeNull();
+  });
+
+  it("entra no resumo da pessoa", () => {
+    const r = resumoDaPessoa(pessoa({
+      meses: [mes("2026-04-01", 3000, 0, "Suporte"), mes("2026-05-01", 3000, 0, "Onboarding")],
+    }));
+    expect(r.area).toBe("Onboarding");
+    expect(r.mudancas).toHaveLength(1);
+  });
+});
+
 describe("filtro de pessoas", () => {
   const base = { busca: "", incluirSaidas: false, incluirNaoPessoas: false, soComFichaRh: false, setor: null };
   const ativo = pessoa({ id: "a", nome: "Ana Ativa", meses: [mes("2026-08-01", 5000)] });
@@ -277,20 +328,37 @@ describe("planilha", () => {
     expect(linha.startsWith('"Empresa ""X""; Ltda"')).toBe(true);
   });
 
-  it("põe três colunas por mês, com ponto decimal", () => {
+  it("põe cinco colunas por mês, com ponto decimal", () => {
     const [cab, linha] = paraCsv([p], meses).split("\n");
-    expect(cab).toContain("jul/26 fixo");
-    expect(cab).toContain("ago/26 total");
+    for (const c of ["jul/26 fixo", "jul/26 variável", "jul/26 escala", "jul/26 total", "jul/26 área"]) {
+      expect(cab).toContain(c);
+    }
     expect(linha).toContain("6000.00");
     expect(linha).toContain("500.00");
     // Sem símbolo de moeda em lugar nenhum — senão não vira número.
     expect(linha).not.toContain("R$");
   });
 
-  it("deixa a célula vazia quando o mês não existe para a pessoa", () => {
+  it("deixa as cinco células vazias quando o mês não existe para a pessoa", () => {
     const so1 = pessoa({ nome: "Só Julho", meses: [mes("2026-07-01", 6000)] });
-    const linha = paraCsv([so1], meses).split("\n")[1];
-    expect(linha.endsWith(";;;")).toBe(true);
+    const [cab, linha] = paraCsv([so1], meses).split("\n");
+    const cols = cab.split(";");
+    const cels = linha.split(";");
+    for (const c of ["ago/26 fixo", "ago/26 variável", "ago/26 escala", "ago/26 total", "ago/26 área"]) {
+      expect(cels[cols.indexOf(c)]).toBe("");
+    }
+  });
+
+  /* A trajetória inteira numa célula é o que se lê de relance na planilha. */
+  it("resume as trocas de time numa coluna só", () => {
+    const andarilho = pessoa({
+      meses: [
+        mes("2026-07-01", 3000, 0, "Suporte"),
+        mes("2026-08-01", 3000, 0, "Onboarding"),
+      ],
+    });
+    const [cab, linha] = paraCsv([andarilho], meses).split("\n");
+    expect(linha.split(";")[cab.split(";").indexOf("Trocas de time")]).toBe("Suporte → Onboarding");
   });
 
   /* No .xlsx o valor tem de chegar como número, senão quem receber o arquivo

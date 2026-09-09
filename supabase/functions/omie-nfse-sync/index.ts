@@ -2379,9 +2379,26 @@ async function emitirDia(
 
   const fechar = async (campos: Record<string, unknown>) => {
     if (idExec) {
-      await supabase.from("nf_execucoes")
-        .update({ concluida_em: new Date().toISOString(), ...campos })
+      /* `resultados` NÃO É COLUNA — e mandá-la aqui derrubava o update inteiro.
+       *
+       * Ela é a lista por cobrança que a TELA lê, e só existe nos caminhos
+       * manuais. `nf_execucoes` tem fila/emitidas/falhas/bloqueadas/pulada/
+       * lote/detalhe/erro e mais nada; o PostgREST recusa a escrita toda por
+       * causa da chave a mais, e como ninguém lia o erro, a rodada ficava com
+       * `concluida_em` nulo, `fila 0`, `emitidas 0` e `lote` nulo — enquanto a
+       * resposta HTTP dizia, corretamente, que 4 OS tinham ido no lote. Medido
+       * em 09/09/2026: 31 das 54 rodadas de origem humana dos últimos 30 dias
+       * estavam assim, contra 6 de 452 do cron (essas, mortes de worker de
+       * verdade). Um dia em que a emissão manual trabalhou ficava idêntico a um
+       * dia em que ela morreu no meio.
+       *
+       * O erro passa a ser gritado no log: escrita que ninguém confere é
+       * escrita que pode não ter acontecido. */
+      const { resultados: _paraATela, ...gravaveis } = campos;
+      const { error } = await supabase.from("nf_execucoes")
+        .update({ concluida_em: new Date().toISOString(), ...gravaveis })
         .eq("id", idExec);
+      if (error) console.error(`nf_execucoes ${idExec} não fechou: ${error.message}`);
     }
     return { execucao: idExec, modo, ...campos };
   };
@@ -2607,8 +2624,34 @@ async function emitirDia(
       });
     }
 
-    // 2. A trava de raio, agora plural — e com uma chance de limpeza antes de desistir.
-    let agora = await ocupantesDaEtapa(etapaIso);
+    /* 2. A trava de raio, agora plural — e com uma chance de limpeza antes de desistir.
+     *
+     * LER A ETAPA PODE FALHAR, E FALHAR AQUI NÃO PODE DERRUBAR A RODADA.
+     *
+     * Esta leitura acontece depois de as OS já existirem no Omie. Quando ela
+     * subia exceção, a rodada morria com o corredor cheio e o diário guardando
+     * só o `criar_os` de cada cobrança — que na tela é o selo mudo "Sem nota",
+     * sem uma linha dizendo por quê (o motivo ficava em `nf_execucoes.erro`,
+     * que é a RODADA, não a cobrança).
+     *
+     * Aconteceu em 09/09/2026, numa emissão avulsa da tela: 4 OS criadas
+     * (5519172912…948) e "Consumo redundante detectado" na releitura da etapa,
+     * porque o cron `nf-espelho-rodada` das 15:55 estava paginando o MESMO
+     * `ListarOS` — a trava do Omie é por método, e entre a emissão (:00, :10…)
+     * e o espelho (:05, :15…) há alguém listando OS de 5 em 5 minutos.
+     *
+     * Sem leitura, `agora` fica vazio e o fluxo segue pelo caminho que já
+     * existe: espera 6s, relê, e se ainda não confirmar ninguém cai no "nenhuma
+     * confirmada" — que NÃO dispara lote e deixa o corredor para a varredura da
+     * próxima rodada. Ninguém é faturado no escuro; o que muda é que a rodada
+     * termina contando o que houve em vez de estourar. */
+    let agora: number[] = [];
+    let erroDaLeitura: string | null = null;
+    try {
+      agora = await ocupantesDaEtapa(etapaIso);
+    } catch (e) {
+      erroDaLeitura = mensagemDoOmie(e).slice(0, 300);
+    }
     const meus = new Set(naLeva.map((x) => x.nCodOS));
     if (agora.some((n) => !meus.has(n))) {
       const limpeza = await limparCorredor(etapaIso, [...meus]);
@@ -2647,17 +2690,41 @@ async function emitirDia(
     let faltando = naLeva.filter((x) => !agora.includes(x.nCodOS));
     if (faltando.length) {
       await dorme(6000);
-      const relista = await ocupantesDaEtapa(etapaIso).catch(() => [] as number[]);
+      let relista: number[] = [];
+      try {
+        relista = await ocupantesDaEtapa(etapaIso);
+        erroDaLeitura = null; // a segunda leitura voltou: o silêncio da primeira não vale mais
+      } catch (e) {
+        erroDaLeitura = mensagemDoOmie(e).slice(0, 300);
+      }
       // Só os nossos entram na segunda leitura: intrusa já foi tratada acima, e
       // aceitar de volta o que a varredura removeu desfaria a trava de raio.
       agora = [...new Set([...agora, ...relista.filter((n) => meus.has(n))])];
       faltando = naLeva.filter((x) => !agora.includes(x.nCodOS));
     }
     if (faltando.length) {
-      // O Omie engole troca de etapa em silêncio; quem não chegou não vai no lote.
-      for (const f of faltando) {
-        falhas.push({ id_asaas: f.cob.id_asaas, erro: `A OS ${f.nCodOS} não chegou na etapa ${etapaIso}.` });
-      }
+      /* O Omie engole troca de etapa em silêncio; quem não chegou não vai no lote.
+       *
+       * As duas causas pedem frases diferentes: "não chegou" é o que a leitura
+       * VIU; com a leitura falhando, ninguém viu nada — a OS existe e o mais
+       * provável é que esteja no corredor. Dizer "não chegou" ali seria inventar
+       * um fato para quem vai conferir no Omie depois.
+       *
+       * E a falha vai também para `nf_emissoes`, não só para a resposta: é a
+       * cobrança, não a rodada, que a pessoa procura na aba "Registro de
+       * emissões". Sem esta linha o rastro termina no `criar_os`, e a tela
+       * mostra "Sem nota" sem motivo — foi o que se viu em 09/09/2026. */
+      const naoConfirmadas = faltando.map((f) => ({
+        f,
+        erro: erroDaLeitura
+          ? `Não deu para confirmar a OS ${f.nCodOS} na etapa ${etapaIso}: ${erroDaLeitura} A OS foi criada e nada foi faturado — ela volta para a fila na varredura da próxima rodada.`
+          : `A OS ${f.nCodOS} não chegou na etapa ${etapaIso}.`,
+      }));
+      for (const { f, erro } of naoConfirmadas) falhas.push({ id_asaas: f.cob.id_asaas, erro });
+      await supabase.from("nf_emissoes").insert(naoConfirmadas.map(({ f, erro }) => ({
+        id_asaas: f.cob.id_asaas, n_cod_os: f.nCodOS, acao: f.acao, resultado: "erro", erro,
+        avulsa, usuario: opts.usuario, operador: opts.operador,
+      })));
     }
 
     /* NENHUMA CONFIRMADA, NENHUM DISPARO.
@@ -3295,6 +3362,230 @@ async function baixarAdiantamentos(
   };
 }
 
+/* ---------------------------------------------------------------------------
+ * DEVOLVER À ESTEIRA — a OS recusada é aposentada, e a esteira faz o resto.
+ *
+ * O PROBLEMA. OS faturada com RPS recusado (`nfse_status='003'`, sem número) é
+ * receita recebida sem nota, e não existe reenvio pela API do Omie: dez métodos
+ * sondados, todos "Method not exists". O único caminho era o botão "Reenviar
+ * NFS-e" na tela do Omie, uma OS por vez — 289 vezes, R$ 102 mil parados.
+ *
+ * O QUE ESTA FUNÇÃO FAZ, e é só isto: marca a OS morta como APOSENTADA aqui
+ * dentro (`carimbo_liberado_em`). **Não escreve nada no Omie.** Não emite, não
+ * cancela, não fatura, não toca em valor, cliente, serviço nem data.
+ *
+ * POR QUE ISSO BASTA — para a OS SEM carimbo, que é a maioria (256 das 289 em
+ * 09/09/2026, todas nascidas no fluxo do n8n). O que prende essas cobranças não
+ * está no ERP: está aqui, no casamento heurístico por CNPJ + valor + mês, e
+ * nominalmente na SOMBRA 3 da `notas_fiscais_fila_emissao`. Marcada a
+ * aposentadoria, as três leituras que perguntam "esta cobrança tem OS?" param de
+ * enxergá-la, e a esteira que já existe serve a cobrança como serve qualquer
+ * outra sem nota, criando uma OS NOVA. **Nenhuma linha do motor de emissão muda.**
+ *
+ * E POR QUE NÃO BASTA para a OS COM carimbo — ver o bloco `if (temCarimbo)` lá
+ * embaixo, onde as duas recusas do Omie estão medidas e transcritas. Resumo: o
+ * carimbo `pay_…` fica ocupado para sempre, `AlterarOS` não renomeia o próprio
+ * identificador e `IncluirOS` recusa carimbo repetido. Essas continuam na lista.
+ *
+ * NÃO DUPLICA NOTA. A recusada nunca gerou documento fiscal — foi exatamente por
+ * isso que ela é um problema. O que fica duplicado é a OS, que é ordem de
+ * serviço, não nota. A trilha da recusa continua inteira no Omie e aqui
+ * (`carimbo_original`, `carimbo_liberado_em`, `nfse_mensagem`).
+ *
+ * AS GUARDAS FISCAIS NÃO SÃO PULADAS, elas só acontecem DEPOIS: quem emite é a
+ * esteira, e lá continuam a porta do Asaas ao vivo (a cobrança foi estornada?
+ * ainda está recebida?), a sombra anti-duplicata e o teto do dia. Esta função
+ * não emite justamente para não ser um segundo caminho de emissão — o módulo já
+ * aprendeu, em 28/08/26, o que custam dois emissores vivos.
+ *
+ * QUEM ENTRA: só `consertado` e `so_reenviar`, lidos da MESMA
+ * `nfse_recusas_a_tratar` que a tela mostra. Não há segunda definição de
+ * "drenável" — se a tela e a máquina discordassem sobre isso, a discordância
+ * apareceria como nota que não sai. `precisa_de_gente` fica de fora de
+ * propósito: devolver à esteira quem tem cadastro materialmente errado gasta uma
+ * OS nova para colher a MESMA recusa.
+ */
+async function devolverAEsteira(
+  supabase: any,
+  opts: {
+    dias: number; limite: number; seco: boolean;
+    ids?: number[]; operador: string | null; usuario: string | null;
+  },
+) {
+  const comecou = Date.now();
+  /* O mesmo orçamento do resto da função: o worker morre por volta dos 150s sem
+     exceção que dê para pegar, e o que já foi escrito no Omie se perderia na
+     hora de gravar aqui. O que não couber volta como `faltam`. */
+  const PRAZO_MS = 110_000;
+
+  const { data: recusas, error } = await supabase.rpc("nfse_recusas_reemitiveis", { p_dias: opts.dias });
+  if (error) throw new Error(`nfse_recusas_reemitiveis: ${error.message}`);
+
+  /* SEM COBRANÇA RESOLVIDA, NÃO SE MEXE — e não é cautela vazia, é que não há o
+   * que destravar. São OS do n8n cujo `dDtPrevisao` é a data do IMPORT e não a
+   * competência (992 das 1.188 de junho estão todas em 09/06/2026), então o
+   * casamento CNPJ+valor+mês não acha cobrança nenhuma. E se ele não acha, a
+   * SOMBRA 3 da fila — que usa exatamente os mesmos três critérios — também não
+   * acha: essas OS não estão prendendo cobrança nenhuma. Aposentá-las não
+   * liberaria nota, só limparia a lista, e limpar lista escondendo linha é como
+   * se perde o rastro de R$ 55 mil. Elas voltam contadas, não tocadas. */
+  const semCobranca = (recusas ?? []).filter((r: any) => !r.id_cobranca);
+  /* AS CARIMBADAS SAEM DA SELEÇÃO, não do resultado. Elas continuam impossíveis
+   * (ver o bloco `if (temCarimbo)` adiante) e recusá-las UMA A UMA dentro da leva
+   * gastaria as 50 vagas com as mesmas 33 a cada chamada — a lista vem ordenada
+   * por valor, então seriam sempre as mesmas, e a drenagem nunca alcançaria as
+   * que dão certo. Elas voltam contadas em `com_carimbo_impossivel`. */
+  const comCarimbo = (recusas ?? []).filter((r: any) => !!r.id_cobranca && r.tem_carimbo === true);
+  let alvo = (recusas ?? []).filter((r: any) => !!r.id_cobranca && r.tem_carimbo !== true);
+
+  // Uma lista explícita de OS restringe; nunca amplia. Quem pede `ids` está
+  // conferindo uma antes de soltar as outras — e é assim que se testa isto.
+  if (opts.ids?.length) {
+    const pedidas = new Set(opts.ids.map(Number));
+    alvo = alvo.filter((r: any) => pedidas.has(Number(r.n_cod_os)));
+  }
+
+  const total = alvo.length;
+  const leva = alvo.slice(0, Math.max(1, Math.min(opts.limite, 60)));
+
+  const resumo = (l: any) => ({
+    n_cod_os: Number(l.n_cod_os), id_cobranca: String(l.id_cobranca),
+    nome: l.nome, valor: Number(l.valor), situacao: l.situacao,
+    motivo: l.motivo_curto, tem_carimbo: l.tem_carimbo === true,
+  });
+
+  /* Quantas COBRANÇAS, e não quantas OS — é o número que importa e são
+     diferentes: a mesma cobrança rende várias OS recusadas quando a esteira
+     tentou mais de uma vez, e todas elas precisam ser aposentadas para que uma
+     só cobrança se solte. Anunciar as OS faria a tela prometer 131 notas onde
+     saem 73. */
+  const cobrancasDe = (ls: any[]) => new Set(ls.map((l) => String(l.id_cobranca))).size;
+
+  if (opts.seco) {
+    return {
+      ok: true, seco: true,
+      candidatas: total, cobrancas: cobrancasDe(alvo),
+      nesta_leva: leva.length,
+      valor: leva.reduce((s: number, l: any) => s + Number(l.valor ?? 0), 0),
+      sem_cobranca: semCobranca.length,
+      com_carimbo_impossivel: comCarimbo.length,
+      amostra: leva.slice(0, 10).map(resumo),
+    };
+  }
+
+  const devolvidas: any[] = [];
+  const falhas: Array<{ n_cod_os: number; erro: string }> = [];
+  let faltam = total - leva.length;
+
+  for (const l of leva) {
+    if (Date.now() - comecou > PRAZO_MS) { faltam += 1; continue; }
+    const nCodOS = Number(l.n_cod_os);
+    const id = String(l.id_cobranca);
+    const temCarimbo = l.tem_carimbo === true;
+    try {
+      /* A CONFERÊNCIA QUE IMPEDE O PIOR ERRO POSSÍVEL, e ela vale nos dois casos:
+         aposentar uma OS que JÁ VIROU NOTA. O espelho é lido por sync e pode
+         estar velho — a nota pode ter nascido entre a última leitura e agora —, e
+         aí a cobrança voltaria à esteira para receber a SEGUNDA nota do mesmo
+         serviço. Nota duplicada não se apaga: cancela-se, com prazo e
+         justificativa. Quem responde isso é o Omie, ao vivo, uma OS por vez. */
+      const st = await omieCall<any>("servicos/os", "StatusOS", { nCodOS });
+      const rps = (st?.ListaRpsNfse ?? []) as any[];
+      const jaVirouNota = rps.some((r: any) =>
+        String(r?.cStatusRps ?? "") === "004" || String(r?.nNfse ?? "").trim() !== "");
+      if (jaVirouNota) {
+        falhas.push({
+          n_cod_os: nCodOS,
+          erro: "O Omie diz que esta OS JÁ tem nota autorizada — nada foi mexido. O espelho estava velho; o próximo 'Atualizar do Omie' corrige a tela.",
+        });
+        continue;
+      }
+
+      /* A OS COM CARIMBO NÃO PASSA POR AQUI, e a razão foi MEDIDA em 09/09/2026,
+       * não deduzida. As duas pontas estão fechadas, e o teste foi ponta a ponta
+       * na OS 5514421375 (Sabor de Frutas Gramado, R$ 99):
+       *
+       *  • `AlterarOS` NÃO renomeia o próprio identificador. Com o `cCodIntOS`
+       *    novo no Cabecalho ele responde "Informe a Tag [nCodOS] ou [cCodIntOS]
+       *    na alteração!" — procura pelo carimbo NOVO, que ainda não existe —
+       *    mesmo com `nCodOS` presente ali (e ele vem: conferido no retorno cru
+       *    do `ConsultarOS`). Pôr `nCodOS` na raiz do parâmetro devolve "Tag
+       *    [NCODOS] não faz parte da estrutura do tipo complexo [osCadastro]".
+       *  • E o carimbo não pode ser simplesmente reaproveitado: aposentada só
+       *    localmente, a cobrança volta limpa para a fila (conferido: a
+       *    `notas_fiscais_candidatas` devolveu `n_cod_os: null`, `ja_tem_nota:
+       *    false`) e a OS nova morre no `IncluirOS` com "Código de integração da
+       *    Ordem de Serviço [pay_…] informado na tag [cCodIntOS] já cadastrado!".
+       *
+       * APOSENTAR SEM CONSEGUIR EMITIR SERIA O PIOR DESFECHO POSSÍVEL: a linha
+       * sai da aba "Recusadas" (que filtra por `carimbo_liberado_em is null`) e a
+       * nota não nasce — receita recebida, sem nota, e agora invisível. Fila que
+       * some é pior do que fila cheia. Então ela fica, e fica dizendo por quê.
+       *
+       * O caminho dessas continua sendo o "Reenviar NFS-e" da tela do Omie. A
+       * alternativa — deixar a OS nova nascer com carimbo sufixado — mexeria em
+       * cinco leituras fiscais (painel, fila, candidatas, anexo da nota e baixa
+       * do título, todas casando por `c_cod_int_os = id_asaas`) e não se faz de
+       * passagem para destravar R$ 12 mil. */
+      if (temCarimbo) {
+        falhas.push({
+          n_cod_os: nCodOS,
+          erro: "Tem carimbo do Asaas, e o Omie não deixa reaproveitá-lo: AlterarOS não renomeia o " +
+            "próprio identificador e IncluirOS recusa cCodIntOS repetido. Fica na lista, para o " +
+            "\"Reenviar NFS-e\" da tela do Omie.",
+        });
+        continue;
+      }
+
+      await supabase.from("nf_os_omie").update({
+        carimbo_original: id,
+        carimbo_liberado_em: new Date().toISOString(),
+        atualizado_em: new Date().toISOString(),
+      }).eq("n_cod_os", nCodOS);
+
+      /* No diário, porque a cobrança vai reaparecer na esteira daqui a minutos e
+         quem ler o Registro precisa saber POR QUE ela voltou. Sem esta linha, a
+         emissão seguinte parece a segunda tentativa espontânea de uma nota que
+         já tinha sido tentada — e é isso que faz alguém desconfiar de duplicata. */
+      await supabase.from("nf_emissoes").insert({
+        id_asaas: id, n_cod_os: nCodOS, acao: "devolver_a_esteira", resultado: "ok",
+        usuario: opts.usuario, operador: opts.operador,
+        erro: `A OS ${nCodOS} teve o RPS recusado (${l.motivo_curto ?? "sem motivo"}) e foi aposentada. ` +
+          `Ela não tinha carimbo do Asaas — o que prendia a cobrança era o casamento por CNPJ+valor+mês —, ` +
+          `então nada foi escrito no Omie. A cobrança volta para a fila e a nota sai por uma OS nova.`,
+        payload: { situacao: l.situacao, tem_carimbo: false },
+      });
+
+      devolvidas.push(resumo(l));
+    } catch (e) {
+      falhas.push({ n_cod_os: nCodOS, erro: mensagemDoOmie(e).slice(0, 200) });
+    }
+    // A trava do Omie é por MÉTODO, e cada volta faz de uma a três chamadas
+    // (StatusOS, e mais ConsultarOS + AlterarOS quando há carimbo). Colar as
+    // voltas é como se colhe "Consumo redundante detectado" no meio de uma leva.
+    await dorme(700);
+  }
+
+  return {
+    ok: true,
+    candidatas: total,
+    devolvidas: devolvidas.length,
+    cobrancas_soltas: cobrancasDe(devolvidas),
+    valor: devolvidas.reduce((s, d) => s + Number(d.valor ?? 0), 0),
+    falhas: falhas.length,
+    faltam: Math.max(0, faltam),
+    /* Contadas e NÃO tocadas: OS recusadas que não casam com cobrança nenhuma e
+       por isso não prendem nada. Vêm no retorno para que "sobraram 158 na lista"
+       tenha resposta sem ninguém precisar investigar de novo. */
+    sem_cobranca: semCobranca.length,
+    /* Também contadas e não tocadas, e por outro motivo: o carimbo `pay_` fica
+       ocupado no Omie para sempre. Ver o bloco `if (temCarimbo)`. */
+    com_carimbo_impossivel: comCarimbo.length,
+    segundos: Math.round((Date.now() - comecou) / 1000),
+    detalhe: { devolvidas: devolvidas.slice(0, 20), falhas: falhas.slice(0, 20) },
+  };
+}
+
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
 
@@ -3652,6 +3943,33 @@ Deno.serve(async (req) => {
         operador: operador || null,
       });
       return json(r, (r as any)?.erro ? 400 : 200);
+    }
+
+    /* DEVOLVER À ESTEIRA a nota que a prefeitura recusou.
+     *
+     * NÃO é emissão — é a OS morta cedendo o carimbo (ver `devolverAEsteira`) —,
+     * e mesmo assim exige pessoa. O motivo não é fiscal, é de consequência: o que
+     * sai daqui entra na fila de emissão, e uma varredura automática que
+     * devolvesse recusadas todo dia reemitiria em loop tudo que a prefeitura
+     * insiste em recusar, gastando OS e teto do dia a cada volta. Quem devolve
+     * assina, e o `seco` existe para conferir a leva antes.
+     */
+    if (action === "devolver_a_esteira") {
+      const operador = String(body?.operador ?? "").trim();
+      if (ehCron && !operador) {
+        return json({
+          erro: "Devolver recusada à esteira exige o campo `operador` — é ele que assina no diário quem mandou a nota sair de novo.",
+        }, 403);
+      }
+      const r = await devolverAEsteira(supabase, {
+        dias: Number(body?.dias ?? 120),
+        limite: Number(body?.limite ?? 40),
+        seco: body?.seco === true,
+        ids: Array.isArray(body?.ids) ? body.ids.map(Number).filter(Boolean) : undefined,
+        operador: operador || null,
+        usuario,
+      });
+      return json(r);
     }
 
     if (action === "previa" || action === "emitir") {

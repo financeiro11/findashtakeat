@@ -13,6 +13,7 @@
 //
 //   "recalcular" (padrão) → só lê o espelho local. ZERO requisições ao Asaas.
 //   "atualizar"           → puxa da API o que mudou, grava no espelho, recalcula.
+//   "clientes"            → só a recuperação de cadastros (ver espelharClientes)
 //   "preview"             → amostras cruas (validar campos da API)
 //
 // Params de "atualizar": { referencia?: "YYYY-MM", completo?: boolean }
@@ -70,6 +71,11 @@ const TTL_ASSINATURAS_H = 6;
 // de OVERLAP_DIAS inteira e o Asaas responde 403 "acesso temporariamente bloqueado"
 // (medido). Dentro da carência a chamada vira um recálculo local, que é grátis.
 const CARENCIA_PUXADA_S = 120;
+// Quantos cadastros de cliente uma rodada vai buscar (1 requisição cada). O número é
+// o encontro de duas contas: o backlog de 09/09/26 eram 233 clientes, e três rodadas
+// diárias o zeram em um dia; e 150 requisições no portão de 8 concorrentes levam ~6s,
+// que cabem folgados no que sobra do relógio do gateway. Ver espelharClientes.
+const TETO_CLIENTES = 150;
 
 /* -------------------------------- mapeamento ------------------------------- */
 
@@ -111,6 +117,27 @@ function mapSubscription(s: any): Linha {
     data_efetiva: null,
     data_criacao: isoDate(s?.dateCreated),
     dados: s,
+  };
+}
+/** Mesmo formato da `asaas-carga-historica` — dois formatos na mesma tabela
+ *  quebrariam a `notas_fiscais_painel`, que lê `nome` e `documento` (colunas
+ *  geradas a partir de `dados`). */
+function mapCustomer(c: any): Linha {
+  return {
+    tipo: "customer",
+    id_asaas: String(c?.id ?? ""),
+    // `deleted` importa: cliente apagado no Asaas some da lista `/customers` e só
+    // volta pelo id. É por isso que alguns órfãos eram de 2022 — a carga completa
+    // de agosto não tinha como alcançá-los, e a busca por id tem.
+    status: c?.deleted ? "DELETED" : "ACTIVE",
+    valor: null,
+    valor_liquido: null,
+    ciclo: null,
+    data_pagamento: null,
+    data_vencimento: null,
+    data_efetiva: null,
+    data_criacao: isoDate(c?.dateCreated),
+    dados: c,
   };
 }
 function mapInvoice(i: any): Linha {
@@ -300,6 +327,55 @@ async function puxarJanela(supabase: any) {
 }
 
 /**
+ * OS CADASTROS DE CLIENTE — a puxada que faltava, e que faltava desde sempre.
+ *
+ * A cobrança do Asaas traz o cliente como uma referência (`customer: cus_xxx`) e
+ * nada mais: nome e CNPJ moram no cadastro, noutro endpoint. Esta sync mantinha
+ * pagamentos, assinaturas e notas frescos e NUNCA buscava cadastro — quem encheu
+ * `tipo='customer'` foi uma ação manual da `asaas-carga-historica`, rodada uma vez
+ * em 18/08/2026. O efeito, medido em 09/09/2026: 233 clientes com cobrança e sem
+ * cadastro local, 475 cobranças, R$ 204 mil. Na tela de Notas Fiscais eles
+ * apareciam com "—" no nome e "sem documento" embaixo — o que é falso, porque o
+ * Asaas não deixa criar cliente sem nome. Pior que o rótulo: a
+ * `notas_fiscais_fila_emissao` junta o cliente com `join` e não `left join`, então
+ * essas cobranças sumiam da fila de emissão sem erro nenhum.
+ *
+ * POR QUE POR ID E NÃO RELISTANDO `/customers`: a lista inteira são 63 páginas a
+ * cada rodada para descobrir os dois ou três que entraram, e ainda por cima ela
+ * NÃO devolve os apagados (`deleted`), que é o que explica os órfãos de 2022. A
+ * busca por id custa 1 requisição por cliente que falta, resolve o apagado, e em
+ * regime normal a fila tem meia dúzia. É o mesmo desenho do `resolverClientes` da
+ * estornos-sync.
+ *
+ * O TETO existe porque a fila pode estar grande (o backlog inicial) e o gateway
+ * corta em 150s independentemente do plano. Uma rodada pega até TETO_CLIENTES e
+ * devolve quantos ficaram; as três rodadas diárias terminam o serviço.
+ */
+async function espelharClientes(supabase: any, teto = TETO_CLIENTES) {
+  const { data: fila, error } = await supabase.rpc("asaas_clientes_a_espelhar", { p_limite: teto });
+  if (error) throw new Error(`asaas_clientes_a_espelhar: ${error.message}`);
+  const ids = (fila ?? []).map((r: any) => String(r.cliente_ref)).filter(Boolean);
+  if (!ids.length) {
+    await marcar(supabase, "customer", { ultima_incremental: new Date().toISOString(), detalhe: { novos: 0, faltavam: 0 } });
+    return { novos: 0, faltavam: 0, falharam: 0 };
+  }
+
+  // Um cadastro que não vem não pode derrubar a sync inteira: o resto do espelho
+  // já está gravado, e a próxima rodada tenta de novo (ele continua na fila).
+  const buscados = await Promise.all(ids.map(async (id: string) => {
+    try { return await asaasGet<any>(`/customers/${id}`); } catch { return null; }
+  }));
+  const achados = buscados.filter(Boolean);
+  const novos = await gravar(supabase, achados.map(mapCustomer));
+
+  await marcar(supabase, "customer", {
+    ultima_incremental: new Date().toISOString(),
+    detalhe: { novos, faltavam: ids.length, falharam: ids.length - achados.length },
+  });
+  return { novos, faltavam: ids.length, falharam: ids.length - achados.length };
+}
+
+/**
  * Assinaturas ativas. Carga completa (ver TTL_ASSINATURAS_H), mas antes disso um
  * `totalCount` de 1 requisição decide se vale a pena: se a contagem bate com o que
  * já está no espelho e a carga é recente, as 32 páginas são puladas inteiras.
@@ -449,6 +525,16 @@ Deno.serve(async (req) => {
       return json({ ok: true, origem: "asaas", detalhe: { janela } });
     }
 
+    /* ------------- CLIENTES — a recuperação de cadastros, sozinha ------------- */
+    // Ação própria porque o backlog inicial (233 clientes em 09/09/26) merece ser
+    // zerado de uma vez, sem esperar as rodadas diárias, e sem arrastar junto as
+    // ~115 requisições de um "atualizar" completo. `teto` aceita um número maior
+    // para essa mutirão; o padrão é o mesmo da rodada.
+    if (action === "clientes") {
+      const teto = Number.isFinite(Number(body?.teto)) ? Math.max(1, Math.min(600, Number(body.teto))) : TETO_CLIENTES;
+      return json({ ok: true, origem: "asaas", clientes: await espelharClientes(supabase, teto) });
+    }
+
     /* ------------- ATUALIZAR (única ação que fala com o Asaas) ------------- */
     if (action === "atualizar" || action === "sync") {
       const completo = body?.completo === true;
@@ -478,8 +564,13 @@ Deno.serve(async (req) => {
         // referência: o estorno que interessa a julho pode ter sido feito hoje.
         puxarEstornos(supabase),
       ]);
+      // DEPOIS das puxadas, e não junto: a fila de cadastros é lida do espelho, e
+      // o cliente da cobrança que acabou de chegar só entra nela depois que a
+      // cobrança está gravada. Em paralelo, a rodada de hoje sempre acharia o
+      // cliente novo só amanhã.
+      const clientes = await espelharClientes(supabase);
       const { dados } = await recalcular(supabase, ref);
-      return json({ ok: true, referencia: ref, origem: "asaas", detalhe: { pagamentos, assinaturas, notas, janela, estornos }, dados });
+      return json({ ok: true, referencia: ref, origem: "asaas", detalhe: { pagamentos, assinaturas, notas, janela, estornos, clientes }, dados });
     }
 
     /* ------------- RECALCULAR (padrão) — 0 requisições ------------- */

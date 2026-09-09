@@ -93,10 +93,19 @@ export const SITUACOES: Record<Situacao, { rotulo: string; tom: "ok" | "aviso" |
     tom: "erro",
     ajuda: "A prefeitura recusou o RPS. A OS consta faturada mas não existe nota fiscal válida — precisa ser corrigida e reenviada no Omie.",
   },
+  // "NO FORNO" E NÃO "EM PROCESSAMENTO", desde 09/09/2026 — é o nome que o
+  // Registro de emissões e a Auditoria já davam ao mesmo estado, e três nomes
+  // para uma coisa só na mesma tela é o que faz alguém achar que são três.
+  //
+  // E ela passou a ter DUAS fontes. O espelho das OS só sabe do faturamento
+  // depois que o `omie-nfse-sync` relê o `StatusOS` no Omie; o diário
+  // (`nf_emissoes`) sabe do lote no instante do disparo. Entre um e outro
+  // passam minutos, e nesses minutos a cobrança aparecia como "Sem nota" — em
+  // vermelho, convidando a emitir a segunda nota do mesmo serviço.
   em_processamento: {
-    rotulo: "Em processamento",
+    rotulo: "No forno",
     tom: "aviso",
-    ajuda: "A OS foi faturada e o RPS ainda não voltou da prefeitura. Este caso o próximo 'Atualizar do Omie' resolve sozinho.",
+    ajuda: "O lote foi disparado e a nota está a caminho da prefeitura — ou a OS já consta faturada e o RPS ainda não voltou. Não é falha e não se emite de novo: o próximo 'Atualizar do Omie' resolve sozinho. Passadas 2h sem nota, o Registro de emissões passa a chamar de \"Parou no forno\", que é outro assunto.",
   },
   nota_a_cancelar: {
     rotulo: "Nota a cancelar",
@@ -207,6 +216,17 @@ export const EMITIVEIS_AVULSA = [...EMITIVEIS, "CONFIRMED"];
 export const EMITIVEIS_ANTES_DO_PAGAMENTO = [...EMITIVEIS_AVULSA, "PENDING", "OVERDUE"];
 
 /**
+ * A cobrança cujo cliente o espelho local não tem.
+ *
+ * Exportada porque a frase é dita em dois lugares — o bloqueio da caixa e a
+ * linha da tabela, onde ela substitui o "sem documento" que era mentira. Ver o
+ * comentário dentro de `motivoBloqueio`.
+ */
+export const clienteForaDoEspelho =
+  "O cadastro deste cliente ainda não veio do Asaas — lá ele tem nome e CNPJ, o espelho local é que não tem a linha. " +
+  "A sincronização do Asaas busca os que faltam a cada rodada; nada precisa ser corrigido no cadastro.";
+
+/**
  * Por que esta linha NÃO pode entrar num lote de emissão. `null` = pode.
  *
  * A ordem importa: o primeiro motivo é o que aparece na tela, e o mais grave tem
@@ -222,7 +242,11 @@ export const EMITIVEIS_ANTES_DO_PAGAMENTO = [...EMITIVEIS_AVULSA, "PENDING", "OV
  * foi o dela: explicar à pessoa, ANTES do clique, por que a caixa não marca.
  */
 export function motivoBloqueio(
-  l: Pick<LinhaNota, "situacao" | "estornado" | "status_asaas" | "cnpj_cpf" | "valor" | "data_vencimento" | "data_pagamento"> & { nfse_mensagem?: string | null },
+  /* `cliente_asaas` é OBRIGATÓRIO no Pick, e não opcional, justamente porque a
+     regra abaixo o lê como ausência: um chamador que esquecesse o campo veria
+     toda linha acusada de "fora do espelho". Assim o TypeScript cobra. */
+  l: Pick<LinhaNota, "situacao" | "estornado" | "status_asaas" | "cliente_asaas" | "cnpj_cpf" | "valor" | "data_vencimento" | "data_pagamento">
+     & { nfse_mensagem?: string | null },
   opts: { avulsa?: boolean; antesDoPagamento?: boolean } = {},
 ): string | null {
   const avulsa = opts.avulsa === true;
@@ -242,7 +266,11 @@ export function motivoBloqueio(
       ? `${m}. Corrija o cadastro e reenvie pelo Omie — emitir aqui duplicaria a OS.`
       : "A prefeitura rejeitou o RPS. Corrija e reenvie pelo Omie — emitir aqui duplicaria a OS.";
   }
-  if (l.situacao === "em_processamento") return "A OS já foi faturada; o RPS está a caminho.";
+  /* O forno tem duas entradas — o lote acabado de despachar (o diário) e a OS
+     já faturada (o espelho) —, e a frase não pode afirmar a segunda quando é a
+     primeira: "a OS já foi faturada" dita sobre um lote de dois minutos atrás
+     manda a pessoa procurar no Omie uma OS que ainda está em pé. */
+  if (l.situacao === "em_processamento") return "Já despachada; o RPS está a caminho da prefeitura.";
   /* O dinheiro, pelo STATUS e não pela situação: `nao_exige` só cobre quem nunca
    * foi paga, e a confirmada é classificada como "falta" — ela é receita que
    * ainda pode não acontecer, não receita ausente. */
@@ -265,6 +293,14 @@ export function motivoBloqueio(
    * literalmente falso — a nota é o que faz a cobrança ser paga. O `regua`
    * acima já disse sim; este `if` não pode desdizer. */
   if (l.situacao === "nao_exige" && !antes) return "A cobrança não foi recebida.";
+  /* DUAS FALTAS DIFERENTES, e por meses elas tiveram a mesma frase — que era
+   * falsa na mais comum das duas. Sem nome E sem documento significa que a
+   * cobrança aponta para um cliente que o espelho local não tem: no Asaas ele
+   * tem nome e CNPJ (lá não se cria cliente sem nome), aqui não há linha
+   * nenhuma. Dizer "sem CNPJ/CPF no Asaas" mandava conferir o cadastro certo
+   * pelo motivo errado. O conserto é do espelho, e a `asaas-sync` passou a
+   * fazê-lo sozinha — esta mensagem é para a janela entre uma rodada e outra. */
+  if (!l.cliente_asaas) return clienteForaDoEspelho;
   if (!l.cnpj_cpf) return "Cliente sem CNPJ/CPF no Asaas — sem documento não há como achar o cadastro no Omie.";
   if (!(Number(l.valor) > 0)) return "Valor zerado ou negativo.";
   if (!l.data_vencimento && !l.data_pagamento) return "Cobrança sem data.";
@@ -517,7 +553,12 @@ export const BALDES: Record<Balde, { rotulo: string; tom: "ok" | "aviso" | "erro
   cadastro_divergente: { rotulo: "Cadastro divergente no Omie", tom: "erro", grupo: "travado", ajuda: "O cliente existe no Omie com OUTRO documento. A fila não o encontra, e cadastrar de novo emitiria para o tomador errado." },
   sem_cadastro_omie:{ rotulo: "Cliente não cadastrado no Omie", tom: "erro", grupo: "travado", ajuda: "Não há cadastro equivalente no Omie. A cobrança some da fila sem erro." },
   sem_documento:    { rotulo: "Cliente sem CNPJ/CPF", tom: "erro", grupo: "travado", ajuda: "O cadastro no Asaas está sem documento — sem ele não há como achar o cliente no Omie." },
-  sem_cliente:      { rotulo: "Cliente fora do espelho", tom: "erro", grupo: "travado", ajuda: "A cobrança aponta para um cliente que a carga local do Asaas não tem. É buraco de espelho: rode a carga histórica de clientes." },
+  // O conselho aqui era "rode a carga histórica de clientes" — instrução de
+  // quando o espelho de cadastros só se enchia à mão, e por isso congelava no dia
+  // da última carga (18/08 a 09/09/2026: 233 clientes órfãos, R$ 204 mil). Desde
+  // 09/09 a asaas-sync busca os que faltam a cada rodada, então o balde ainda
+  // existe, mas para descrever a janela entre rodadas — não uma tarefa humana.
+  sem_cliente:      { rotulo: "Cliente fora do espelho", tom: "erro", grupo: "travado", ajuda: "A cobrança aponta para um cliente que o espelho local ainda não tem — no Asaas ele tem nome e CNPJ. A sincronização busca os cadastros que faltam a cada rodada; some sozinho." },
 };
 
 export const PRONTIDAO: Record<ClasseProntidao, { rotulo: string; tom: "ok" | "aviso" | "erro"; ajuda: string }> = {

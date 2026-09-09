@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   motivoBloqueio, motivoCurto, podeEmitir, exigeAvulsa, resumoLote, xmlAindaVale, formatarDoc, statusAsaas, foiPaga,
-  pagaContraNota, reguaDaLinha, exigeAntesDoPagamento,
+  pagaContraNota, reguaDaLinha, exigeAntesDoPagamento, clienteForaDoEspelho,
   vereditoProntidao, oQueFazer, diasDoCadastro, clientesEmTexto, recadoDoCadastro,
   chaveNfseValida, linkPortalNacional, chaveEmBlocos,
   type LinhaNota, type Situacao, type ClienteFaltante, type CadastroNoOmie,
@@ -104,6 +104,29 @@ describe("motivoBloqueio", () => {
   it("barra cliente sem documento — é ele que casa com o Omie", () => {
     expect(motivoBloqueio(linha({ cnpj_cpf: null }))).toMatch(/CNPJ/);
     expect(motivoBloqueio(linha({ cnpj_cpf: "" }))).toMatch(/CNPJ/);
+  });
+
+  /* AS DUAS FALTAS SÃO DIFERENTES e por meses tiveram a mesma frase, que era
+   * falsa na mais comum: cobrança sem nome E sem documento é cliente que o
+   * espelho local não tem, não cliente cadastrado pela metade. O Asaas não deixa
+   * criar cliente sem nome — se o nome veio vazio, a linha do cadastro é que não
+   * existe aqui. Mandar conferir o cadastro no Asaas era mandar procurar um
+   * defeito inexistente, e o conserto é do espelho (a asaas-sync busca os que
+   * faltam a cada rodada). */
+  it("cliente fora do espelho não é cliente sem documento", () => {
+    const fora = motivoBloqueio(linha({ cliente_asaas: null, cnpj_cpf: null }));
+    expect(fora).toBe(clienteForaDoEspelho);
+    expect(fora).not.toMatch(/sem CNPJ\/CPF no Asaas/);
+
+    // Com nome e sem documento, aí sim é o cadastro que está incompleto.
+    expect(motivoBloqueio(linha({ cliente_asaas: "Restaurante X", cnpj_cpf: null })))
+      .toMatch(/sem CNPJ\/CPF no Asaas/);
+  });
+
+  it("nem a avulsa nem a régua de nota-antes-do-pagamento inventam o cadastro", () => {
+    const l = linha({ cliente_asaas: null, cnpj_cpf: null, status_asaas: "CONFIRMED" });
+    expect(podeEmitir(l, { avulsa: true })).toBe(false);
+    expect(podeEmitir(l, { antesDoPagamento: true })).toBe(false);
   });
 
   it("barra valor não positivo e cobrança sem data", () => {

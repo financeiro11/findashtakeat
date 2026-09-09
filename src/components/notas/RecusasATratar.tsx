@@ -17,11 +17,18 @@
  * volta pela API do Omie (dez métodos sondados, todos "Method not exists"). O
  * único caminho é o "Reenviar NFS-e" na tela do Omie. Prometer o botão aqui
  * seria pior do que não ter: a pessoa clicaria e nada aconteceria.
+ *
+ * OS TRÊS GRUPOS NASCEM FECHADOS. Uma etapa com 250 linhas empurra as outras duas
+ * para fora da tela, e a primeira pergunta de quem chega aqui é de tamanho — "quanto
+ * está esperando em cada etapa?" —, não de conteúdo. Fechado, o cabeçalho já responde
+ * (quantas e quanto); aberto, é a lista de trabalho. O que estava aberto fica guardado
+ * no navegador para a visita seguinte.
  */
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
-import { AlertTriangle, Check, RefreshCw, Loader2 } from "lucide-react";
+import { toast } from "sonner";
+import { AlertTriangle, Check, RefreshCw, Loader2, ChevronRight } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { comValorExato } from "@/components/ValorExato";
 
@@ -85,30 +92,104 @@ const GRUPOS = [
   },
 ];
 
+const CHAVE_ABERTOS = "nfse:recusas:abertos";
+
+const lerAbertos = (): string[] => {
+  try {
+    const cru = localStorage.getItem(CHAVE_ABERTOS);
+    const v = cru ? JSON.parse(cru) : [];
+    return Array.isArray(v) ? v.filter((c) => typeof c === "string") : [];
+  } catch {
+    return [];
+  }
+};
+
 export default function RecusasATratar() {
   const [linhas, setLinhas] = useState<Recusa[]>([]);
   const [carregando, setCarregando] = useState(true);
   const [erro, setErro] = useState<string | null>(null);
   const [dias, setDias] = useState(45);
+  const [abertos, setAbertos] = useState<string[]>(lerAbertos);
 
-  useEffect(() => {
-    let vivo = true;
-    setCarregando(true);
-    sb.rpc("nfse_recusas_a_tratar", { p_dias: dias }).then(({ data, error }: any) => {
-      if (!vivo) return;
-      if (error) setErro(error.message);
-      else {
-        setErro(null);
-        setLinhas((data ?? []) as Recusa[]);
+  const alternar = (chave: string) =>
+    setAbertos((atual) => {
+      const proximo = atual.includes(chave) ? atual.filter((c) => c !== chave) : [...atual, chave];
+      try {
+        localStorage.setItem(CHAVE_ABERTOS, JSON.stringify(proximo));
+      } catch {
+        /* navegador sem storage — a tela funciona igual, só não lembra */
       }
-      setCarregando(false);
+      return proximo;
     });
-    return () => {
-      vivo = false;
-    };
+
+  const todosAbertos = (abrir: boolean) => {
+    const proximo = abrir ? GRUPOS.map((g) => g.chave as string) : [];
+    setAbertos(proximo);
+    try {
+      localStorage.setItem(CHAVE_ABERTOS, JSON.stringify(proximo));
+    } catch {
+      /* idem */
+    }
+  };
+
+  /* Virou `useCallback` porque a devolução à esteira precisa relê-la no fim: as
+     OS aposentadas somem desta lista (a RPC filtra por `carimbo_liberado_em is
+     null`), e uma tela que continua mostrando o que acabou de sair é a mesma
+     mentira do "No forno" eterno, de outro jeito. */
+  const carregar = useCallback(async () => {
+    setCarregando(true);
+    const { data, error } = await sb.rpc("nfse_recusas_a_tratar", { p_dias: dias });
+    if (error) setErro(error.message);
+    else {
+      setErro(null);
+      setLinhas((data ?? []) as Recusa[]);
+    }
+    setCarregando(false);
   }, [dias]);
 
+  useEffect(() => { void carregar(); }, [carregar]);
+
   const total = useMemo(() => linhas.reduce((s, l) => s + Number(l.valor ?? 0), 0), [linhas]);
+
+  /* A devolução em LEVAS, e o laço mora aqui e não no servidor.
+   *
+   * Cada volta lê o `StatusOS` da OS no Omie antes de aposentá-la — a guarda que
+   * impede aposentar o que já virou nota, e a única coisa cara do processo. Isso
+   * põe umas dezenas de OS dentro dos 150s da Edge, então a função devolve
+   * `faltam` e a tela chama de novo. É o mesmo desenho da emissão em massa do
+   * painel do mês, pelo mesmo motivo. */
+  const [devolvendo, setDevolvendo] = useState(false);
+  const [devolvido, setDevolvido] = useState<{ devolvidas: number; cobrancas: number; faltam: number } | null>(null);
+
+  const devolver = async () => {
+    setDevolvendo(true);
+    let devolvidas = 0;
+    const cobrancas = new Set<string>();
+    try {
+      // O teto de voltas existe para o laço não virar infinito se `faltam` parar
+      // de diminuir (uma OS que falha sempre continua sendo candidata).
+      for (let volta = 0; volta < 12; volta++) {
+        const { data, error } = await sb.functions.invoke("omie-nfse-sync", {
+          body: { action: "devolver_a_esteira", dias, limite: 50 },
+        });
+        if (error) throw error;
+        if (data?.erro) throw new Error(data.erro);
+        devolvidas += Number(data?.devolvidas ?? 0);
+        for (const d of (data?.detalhe?.devolvidas ?? [])) cobrancas.add(String(d.id_cobranca));
+        setDevolvido({ devolvidas, cobrancas: cobrancas.size, faltam: Number(data?.faltam ?? 0) });
+        if (!Number(data?.faltam ?? 0) || !Number(data?.devolvidas ?? 0)) break;
+      }
+      toast.success(`${devolvidas} OS devolvida(s) à esteira.`, {
+        description: "A emissão roda de 10 em 10 minutos das 13h às 21h (UTC) e vai pegando a fila. Acompanhe no Registro de emissões.",
+        duration: 12000,
+      });
+      await carregar();
+    } catch (e: any) {
+      toast.error("Não deu para devolver à esteira.", { description: e?.message });
+    } finally {
+      setDevolvendo(false);
+    }
+  };
 
   if (carregando) {
     return (
@@ -137,6 +218,12 @@ export default function RecusasATratar() {
           </p>
         </div>
         <div className="flex items-center gap-1">
+          <button
+            onClick={() => todosAbertos(abertos.length === 0)}
+            className="mr-2 rounded border border-border px-2 py-1 text-xs text-muted-foreground hover:text-foreground"
+          >
+            {abertos.length === 0 ? "Expandir tudo" : "Recolher tudo"}
+          </button>
           {[15, 45, 120].map((d) => (
             <button
               key={d}
@@ -154,6 +241,50 @@ export default function RecusasATratar() {
         </div>
       </div>
 
+      {/* --------------------- devolver à esteira, em levas ---------------------
+       *
+       * O QUE ESTE BOTÃO FAZ: marca a OS recusada como aposentada aqui dentro, e
+       * a esteira normal — a das 13h às 21h, com todas as guardas de sempre —
+       * cria uma OS NOVA e emite. Ele NÃO emite; se emitisse, seria um segundo
+       * caminho de emissão, e o módulo já pagou caro por ter dois emissores
+       * vivos ao mesmo tempo (28/08/2026, 99 cobranças com nota dos dois lados).
+       *
+       * SÓ ALCANÇA A OS SEM CARIMBO do Asaas, que é a maioria. A que nasceu aqui
+       * ficou com o `cCodIntOS` ocupado para sempre: `AlterarOS` não renomeia o
+       * próprio identificador e `IncluirOS` recusa carimbo repetido — as duas
+       * recusas foram medidas no Omie em 09/09/2026. Essas continuam pedindo o
+       * "Reenviar NFS-e" da tela, e o rodapé diz isso.
+       */}
+      {linhas.length > 0 && (
+        <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-primary/30 bg-primary/5 p-3">
+          <div className="min-w-[260px] flex-1">
+            <p className="text-xs font-semibold text-foreground">Devolver à esteira</p>
+            <p className="mt-0.5 text-[11px] leading-relaxed text-muted-foreground">
+              Aposenta a OS recusada e a cobrança volta para a fila de emissão, onde uma OS nova nasce e
+              vira nota — sem ninguém reenviar à mão. Não emite agora: quem emite é a esteira, com a
+              conferência ao vivo no Asaas e a guarda anti-duplicata de sempre.
+              {devolvido && (
+                <>
+                  {" "}
+                  <strong className="text-foreground">
+                    {devolvido.devolvidas} OS devolvida(s) · {devolvido.cobrancas} cobrança(s)
+                  </strong>
+                  {devolvido.faltam > 0 ? ` · faltam ${devolvido.faltam}` : " · acabou"}
+                </>
+              )}
+            </p>
+          </div>
+          <button
+            onClick={devolver}
+            disabled={devolvendo}
+            className="flex shrink-0 items-center gap-1.5 rounded border border-primary/40 bg-primary/10 px-3 py-1.5 text-[11px] font-medium text-primary hover:bg-primary/20 disabled:opacity-60"
+          >
+            {devolvendo ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
+            {devolvendo ? "Devolvendo…" : "Devolver à esteira"}
+          </button>
+        </div>
+      )}
+
       {linhas.length === 0 && (
         <div className="rounded-lg border border-border bg-card p-6 text-center text-sm text-muted-foreground">
           Nenhuma recusa no período. Tudo que foi emitido saiu.
@@ -164,19 +295,36 @@ export default function RecusasATratar() {
         const itens = linhas.filter((l) => l.situacao === chave);
         if (!itens.length) return null;
         const soma = itens.reduce((s, l) => s + Number(l.valor ?? 0), 0);
+        const aberto = abertos.includes(chave);
         return (
           <section key={chave} className={cn("rounded-lg border border-l-4 border-border bg-card", borda)}>
-            <header className="border-b border-border p-3">
-              <h3 className={cn("flex items-center gap-2 text-sm font-semibold", cor)}>
-                <Icone className="h-4 w-4" />
-                {titulo}
-                <span className="text-muted-foreground">
-                  · {itens.length} · {fmtBRL(soma)}
+            <button
+              type="button"
+              onClick={() => alternar(chave)}
+              aria-expanded={aberto}
+              className={cn(
+                "flex w-full items-start gap-2 p-3 text-left transition-colors hover:bg-muted/40",
+                aberto && "border-b border-border",
+              )}
+            >
+              <ChevronRight
+                className={cn(
+                  "mt-0.5 h-4 w-4 shrink-0 text-muted-foreground transition-transform",
+                  aberto && "rotate-90",
+                )}
+              />
+              <span className="min-w-0 flex-1">
+                <span className={cn("flex flex-wrap items-center gap-2 text-sm font-semibold", cor)}>
+                  <Icone className="h-4 w-4 shrink-0" />
+                  {titulo}
+                  <span className="font-normal text-muted-foreground">
+                    · {itens.length} · {fmtBRL(soma)}
+                  </span>
                 </span>
-              </h3>
-              <p className="mt-1 text-xs text-muted-foreground">{ajuda}</p>
-            </header>
-            <div className="divide-y divide-border">
+                {aberto && <span className="mt-1 block text-xs text-muted-foreground">{ajuda}</span>}
+              </span>
+            </button>
+            <div className={cn("divide-y divide-border", !aberto && "hidden")}>
               {itens.map((l) => (
                 <div key={l.n_cod_os} className="flex flex-wrap items-baseline gap-x-3 gap-y-1 p-2.5 text-sm">
                   <span className="num shrink-0 text-xs text-muted-foreground">
@@ -206,9 +354,16 @@ export default function RecusasATratar() {
         );
       })}
 
-      <p className="px-1 text-xs text-muted-foreground">
-        Não há botão de reenviar aqui de propósito: OS faturada com recusa não volta pela API do Omie
-        (dez métodos sondados, todos inexistentes). O caminho é o “Reenviar NFS-e” na tela do Omie.
+      <p className="px-1 text-xs leading-relaxed text-muted-foreground">
+        Não existe reenviar pela API do Omie — dez métodos sondados, todos inexistentes. O que o botão
+        acima faz é outra coisa: <strong className="text-foreground">aposenta a OS recusada</strong> para
+        que a cobrança volte à fila e a nota saia por uma OS nova. Isso não duplica nota (a recusada nunca
+        gerou documento fiscal), duplica OS.{" "}
+        <strong className="text-foreground">Ele não alcança a OS que nasceu aqui</strong>, com carimbo
+        <span className="num"> pay_</span> do Asaas: esse código de integração fica ocupado para sempre —
+        o <span className="num">AlterarOS</span> não renomeia o próprio identificador e o{" "}
+        <span className="num">IncluirOS</span> recusa carimbo repetido (as duas recusas medidas no Omie em
+        09/09/2026). Essas continuam pedindo o “Reenviar NFS-e” da tela do Omie, uma a uma.
       </p>
     </div>
   );

@@ -44,7 +44,7 @@ import RecusasATratar from "@/components/notas/RecusasATratar";
 import NotasFiscaisAuditoria from "./NotasFiscaisAuditoria";
 import {
   SITUACOES, motivoBloqueio, motivoCurto, podeEmitir, exigeAvulsa, resumoLote,
-  reguaDaLinha, pagaContraNota, exigeAntesDoPagamento,
+  reguaDaLinha, pagaContraNota, exigeAntesDoPagamento, clienteForaDoEspelho,
   xmlAindaVale, formatarDoc, statusAsaas,
   linkPortalNacional, chaveEmBlocos,
   somarBloco, precisaEsperarOLote, tetoDoDiaAtingido,
@@ -77,21 +77,25 @@ const TOM: Record<string, string> = {
 
 interface Resumo {
   cobrancas: number; valor_total: number; falta: number; valor_falta: number;
-  emitida_omie: number; emitida_asaas: number; em_processamento: number;
+  emitida_omie: number; emitida_asaas: number;
+  em_processamento: number; valor_em_processamento: number;
   nota_rejeitada: number; nota_a_cancelar: number; nao_exige: number;
 }
 
 /** As mesmas contagens da RPC `notas_fiscais_resumo`, feitas sobre o que já veio. */
 function contar(linhas: LinhaNota[]): Resumo {
   const n = (s: Situacao) => linhas.filter((l) => l.situacao === s).length;
+  const soma = (s: Situacao) =>
+    linhas.filter((l) => l.situacao === s).reduce((t, l) => t + Number(l.valor || 0), 0);
   return {
     cobrancas: linhas.length,
     valor_total: linhas.reduce((s, l) => s + Number(l.valor || 0), 0),
     falta: n("falta"),
-    valor_falta: linhas.filter((l) => l.situacao === "falta").reduce((s, l) => s + Number(l.valor || 0), 0),
+    valor_falta: soma("falta"),
     emitida_omie: n("emitida_omie"),
     emitida_asaas: n("emitida_asaas"),
     em_processamento: n("em_processamento"),
+    valor_em_processamento: soma("em_processamento"),
     nota_rejeitada: n("nota_rejeitada"),
     nota_a_cancelar: n("nota_a_cancelar"),
     nao_exige: n("nao_exige"),
@@ -636,6 +640,26 @@ export default function NotasFiscais() {
   const kpis: { r: string; v: string; s: React.ReactNode; tom: string; t?: string }[] = resumo ? [
     { r: "Cobranças", v: resumo.cobrancas.toLocaleString("pt-BR"), s: brl(resumo.valor_total), tom: "neutro" },
     { r: "Sem nota", v: resumo.falta.toLocaleString("pt-BR"), s: brl(resumo.valor_falta), tom: resumo.falta ? "erro" : "ok" },
+    /* O FORNO, E SÓ QUANDO HÁ FORNO — o card nasce e some com o fato.
+     *
+     * Ele vem logo depois de "Sem nota" porque é dele que estas cobranças
+     * saíram: até 09/09/2026 a linha despachada há dois minutos era contada
+     * como falta, em vermelho, com o lote já na rua. Quem via vermelho mandava
+     * emitir de novo — e a segunda nota do mesmo serviço não se apaga.
+     *
+     * Um card que fica em zero 23 horas por dia seria ruído; este aparece
+     * justamente na janela em que a pessoa está olhando a tela esperando a
+     * nota nascer. É a mesma regra dos chips de canto do Registro de emissões. */
+    ...(resumo.em_processamento ? [{
+      r: "No forno",
+      v: resumo.em_processamento.toLocaleString("pt-BR"),
+      s: <>{brl(resumo.valor_em_processamento)}{" · não emita de novo"}</>,
+      tom: "aviso",
+      t: "O lote foi disparado e a nota está a caminho da prefeitura — o Omie fecha o lote em ~2min e o RPS "
+        + "vira nota em mais ~1min. Não é falha: emitir de novo criaria a segunda nota do mesmo serviço, e "
+        + "nota não se apaga, cancela-se com prazo e justificativa. O passo a passo está no Registro de "
+        + "emissões; passadas 2h sem nota, ele deixa de contar como forno e vira \"Parou no forno\".",
+    }] : []),
     /* O CARD "EMITIDA NO OMIE" SAIU DAQUI, e a decisão é de 02/09/2026.
      *
      * Ele contava as cobranças DESTA COMPETÊNCIA que já têm nota nossa. O número
@@ -781,11 +805,24 @@ export default function NotasFiscais() {
       {aba === "painel" && (
       <>
       {/* --------------------------------- KPIs -------------------------------- */}
-      <div className="grid grid-cols-2 gap-2 md:grid-cols-3 lg:grid-cols-6">
+      {/* A coluna a mais só existe quando o card do forno existe — sem isto ele
+          cairia sozinho numa segunda fileira, que é como um card se transforma
+          em rodapé. */}
+      <div className={cn(
+        "grid grid-cols-2 gap-2 md:grid-cols-3",
+        kpis.length > 6 ? "lg:grid-cols-7" : "lg:grid-cols-6",
+      )}>
         {kpis.map((k) => (
           <div key={k.r} title={k.t} className="rounded-lg border border-border bg-card p-3">
             <p className="text-[11px] text-muted-foreground">{k.r}</p>
-            <p className={cn("num text-xl font-semibold", k.tom === "erro" && "text-destructive")}>{k.v}</p>
+            <p className={cn(
+              "num text-xl font-semibold",
+              k.tom === "erro" && "text-destructive",
+              // O âmbar é o mesmo do selo "No forno" do Registro de emissões: o
+              // que está a caminho não é verde nem vermelho, e ler a cor errada
+              // aqui é o que faz mandar emitir de novo.
+              k.tom === "aviso" && "text-amber-600 dark:text-amber-400",
+            )}>{k.v}</p>
             <p className="truncate text-[11px] text-muted-foreground">{k.s}</p>
           </div>
         ))}
@@ -817,6 +854,33 @@ export default function NotasFiscais() {
           ))}
         </div>
       </div>
+
+      {/* -------------------- da recusa para o que fazer com ela ----------------
+          O PAINEL DESCREVE O DEFEITO; QUEM DIZ O QUE FAZER É A OUTRA ABA.
+          Filtrando por "NFS-e rejeitada" a tela mostra 15 linhas repetindo "CEP
+          do tomador não confere com o município" — que é o diagnóstico, não a
+          tarefa. As recusas se dividem em três trabalhos DIFERENTES (só
+          reenviar, cadastro já consertado, e as que precisam de gente), e é a
+          aba Recusadas que faz essa divisão. Ela existia e nada apontava para
+          ela: a pessoa que chegava até aqui parava aqui. */}
+      {filtro === "nota_rejeitada" && resumo && resumo.nota_rejeitada > 0 && (
+        <button
+          onClick={() => setAba("recusadas")}
+          className="flex w-full items-start gap-2 rounded-lg border border-amber-500/30 bg-amber-500/5 p-3 text-left transition-colors hover:bg-amber-500/10"
+        >
+          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-600 dark:text-amber-400" />
+          <span className="min-w-0 flex-1">
+            <span className="block text-xs font-semibold text-amber-700 dark:text-amber-400">
+              "CEP não confere" é o defeito. A tarefa está em Recusadas →
+            </span>
+            <span className="mt-0.5 block text-[11px] leading-relaxed text-muted-foreground">
+              Lá as recusas vêm agrupadas <strong className="text-foreground">por ação</strong>, não por código de
+              erro: o que é só reenviar, o que já teve o cadastro consertado e o que precisa de você. Emitir
+              daqui não resolve nenhuma delas — a OS já está faturada, e uma nova só duplicaria a OS.
+            </span>
+          </span>
+        </button>
+      )}
 
       {/* ------------------------------- avulsa -------------------------------- */}
       {/* A CHAVE, e por que ela é uma chave e não um botão a mais.
@@ -1097,7 +1161,20 @@ export default function NotasFiscais() {
                   </td>
                   <td className="max-w-[220px] p-2">
                     <div className="truncate font-medium text-foreground">{l.cliente_asaas ?? "—"}</div>
-                    <div className="num truncate text-[11px] text-muted-foreground">{formatarDoc(l.cnpj_cpf) || "sem documento"}</div>
+                    {/* SEM NOME E SEM DOCUMENTO NÃO É CADASTRO INCOMPLETO — é
+                        cadastro ausente daqui. O Asaas não deixa criar cliente
+                        sem nome, então a linha em branco só pode significar que
+                        o espelho local não tem esse `cus_*`; escrever "sem
+                        documento" mandava conferir o cadastro por um defeito
+                        que não existe. As duas frases são diferentes de
+                        propósito, e só a segunda pede conserto de cadastro. */}
+                    {l.cliente_asaas == null ? (
+                      <div className="truncate text-[11px] text-amber-600 dark:text-amber-400" title={clienteForaDoEspelho}>
+                        cadastro ainda não espelhado
+                      </div>
+                    ) : (
+                      <div className="num truncate text-[11px] text-muted-foreground">{formatarDoc(l.cnpj_cpf) || "sem documento"}</div>
+                    )}
                   </td>
                   <td className="max-w-[260px] p-2">
                     <div className="truncate text-muted-foreground" title={l.descricao ?? ""}>{l.descricao ?? "—"}</div>

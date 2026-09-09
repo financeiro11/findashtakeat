@@ -4,6 +4,7 @@ import {
   rotuloMes, distanciaEmMeses, ultimaCompetenciaFechada, mudancasDeArea, areaAtual,
   fixoDeReferencia, compararComPares, custoPorArea, competenciasFechadas, abasDaPlanilha,
   FILTROS_VAZIOS, filtrosLigados, montarLinhas, filtrarPorFaixa, ordenarLinhas,
+  recortarAte,
   type MesRemuneracao, type PessoaRemuneracao,
 } from "./remuneracao";
 
@@ -14,6 +15,14 @@ const mes = (
   competencia, fixo, prolabore, premiacao, escala: 0, outro: 0,
   total: fixo + prolabore + premiacao, fontes: "omie", area,
 });
+
+/** "2026-04:5600 2026-05:2800" → série de meses só com fixo. Para colar uma
+    trajetória real do banco num teste sem escrever trinta chamadas de `mes`. */
+const serieCrua = (s: string): MesRemuneracao[] =>
+  s.split(" ").filter(Boolean).map((par) => {
+    const [ym, v] = par.split(":");
+    return mes(`${ym}-01`, Number(v));
+  });
 
 const pessoa = (over: Partial<PessoaRemuneracao> = {}): PessoaRemuneracao => ({
   id: "p1", nome: "Fulano de Tal", codigo_rh: "COL-1", doc: "12345678000199",
@@ -118,9 +127,97 @@ describe("degraus do fixo", () => {
     expect(d).toHaveLength(1); // +2%
   });
 
+  /* O acerto de contas de quem sai soma férias, 13º e o resto do salário: o
+     último mês fica MAIOR, não menor. Com o histórico de 2025 no painel isso
+     virou regra — 34 das 65 pessoas que saíram terminam num mês inflado. */
+  it("não conta o acerto de contas de quem saiu como reajuste", () => {
+    const serie = [
+      mes("2025-06-01", 4000), mes("2025-07-01", 4000), mes("2025-09-01", 8000),
+    ];
+    // Sem referência não dá para saber que ela saiu — o degrau aparece.
+    expect(degrausDoFixo(serie)).toHaveLength(1);
+    // Com o painel indo até ago/26, set/25 é fim de emprego, não borda do dado.
+    expect(degrausDoFixo(serie, "2026-08-01")).toHaveLength(0);
+  });
+
+  /* A guarda vale só para quem parou antes da referência. Quem recebeu no mês
+     mais novo do painel está ativo, e um aumento ali é aumento de verdade. */
+  it("mantém o reajuste no último mês de quem continua", () => {
+    const d = degrausDoFixo([
+      mes("2026-06-01", 4000), mes("2026-07-01", 4000), mes("2026-08-01", 8000),
+    ], "2026-08-01");
+    expect(d).toHaveLength(1);
+    expect(d[0].competencia).toBe("2026-08-01");
+  });
+
   it("série curta demais não tem degrau", () => {
     expect(degrausDoFixo([])).toHaveLength(0);
     expect(degrausDoFixo([mes("2026-03-01", 6000)])).toHaveLength(0);
+  });
+
+  /* Dois títulos na mesma competência porque o lançamento no ERP escorregou de
+     mês: o vizinho fica sem fixo, e como a função compara meses PAGOS o buraco
+     some. O que resta é 2.800 → 5.600 → 2.800, que não é aumento nem corte.
+     Em 09/09/2026 eram oito pessoas assim — o Diogo é esta série exata. */
+  it("não conta o mês de dois salários como reajuste", () => {
+    const d = degrausDoFixo([
+      mes("2026-02-01", 2800), mes("2026-04-01", 5600), mes("2026-05-01", 2800),
+      mes("2026-06-01", 2800),
+    ], "2026-08-01");
+    expect(d).toHaveLength(0);
+  });
+
+  /* A régua exige as TRÊS condições. Aqui o valor sobe e desce, mas não volta
+     ao mesmo patamar: é um aumento de verdade com um mês cheio no meio, e some
+     se a guarda olhar só a forma do pico. */
+  it("mantém o reajuste quando a volta é para outro patamar", () => {
+    const d = degrausDoFixo([
+      mes("2026-01-01", 2800), mes("2026-02-01", 2800), mes("2026-03-01", 5600),
+      mes("2026-04-01", 4000), mes("2026-05-01", 4000),
+    ], "2026-08-01");
+    expect(d.map((x) => x.competencia)).toEqual(["2026-03-01", "2026-04-01"]);
+  });
+
+  /* A ficha passa `pessoa.meses` cru. Hoje a RPC devolve ordenado, mas as três
+     guardas dependem inteiramente da ordem — se um dia vier trocado, o "último
+     mês" seria outro e a saída proporcional voltaria a virar reajuste. */
+  /* Duas séries REAIS, de `vw_remuneracao_mensal` em 09/09/2026. A do Diogo é o
+     pico limpo — 2.800 → 5.600 → 2.800 com abril/26 recebendo o título que
+     faltou em março —, e ela precisa perder os dois degraus falsos SEM perder
+     os cinco reajustes de verdade que ele teve em dois anos. A do Luiz Paulo é
+     o contrário: 33 meses de trajetória de R$ 3.400 a R$ 22.500, com um pico em
+     mai/2024 no meio. Se a guarda ficar larga, é aqui que ela come um aumento. */
+  it("some com o pico e mantém os reajustes reais (Diogo, série real)", () => {
+    const s = "2024-09:800 2024-10:1703 2024-11:2200 2024-12:2200 2025-01:2200 2025-02:2200 " +
+      "2025-03:2200 2025-04:2400 2025-05:2400 2025-06:2400 2025-07:2400 2025-08:2400 " +
+      "2025-09:2600 2025-10:2600 2025-11:2600 2025-12:2600 2026-01:2800 2026-02:2800 " +
+      "2026-04:5600 2026-05:2800 2026-06:3000 2026-07:3000 2026-08:3000";
+    const d = degrausDoFixo(serieCrua(s), "2026-08-01");
+    expect(d.map((x) => x.competencia)).not.toContain("2026-04-01"); // a subida
+    expect(d.map((x) => x.competencia)).not.toContain("2026-05-01"); // a descida
+    expect(d.map((x) => x.para)).toEqual([2200, 2400, 2600, 2800, 3000]);
+  });
+
+  it("atravessa 33 meses sem comer aumento (Luiz Paulo, série real)", () => {
+    const s = "2023-12:3400 2024-01:3400 2024-02:3400 2024-03:4400 2024-04:4400 2024-05:7233 " +
+      "2024-06:4400 2024-07:4400 2024-08:4400 2024-09:4400 2024-10:10000 2024-11:10000 " +
+      "2024-12:10000 2025-01:11000 2025-02:11000 2025-03:11000 2025-04:12000 2025-05:12000 " +
+      "2025-06:12000 2025-07:12000 2025-08:12000 2025-09:13000 2025-10:13000 2025-11:13000 " +
+      "2025-12:13000 2026-01:20000 2026-02:20000 2026-03:20000 2026-04:20000 2026-05:20000 " +
+      "2026-06:20000 2026-07:22500 2026-08:22500";
+    const d = degrausDoFixo(serieCrua(s), "2026-08-01");
+    expect(d.map((x) => x.para)).toEqual([4400, 10000, 11000, 12000, 13000, 20000, 22500]);
+  });
+
+  it("ordena a série antes de comparar", () => {
+    const d = degrausDoFixo([
+      mes("2026-05-01", 6000), mes("2026-03-01", 4000), mes("2026-04-01", 4000),
+    ], "2026-05-01");
+    // Fora de ordem, o primeiro par seria 6000 → 4000: uma queda de 33% em
+    // março que nunca existiu, e o aumento de maio sumia.
+    expect(d).toHaveLength(1);
+    expect(d[0].competencia).toBe("2026-05-01");
+    expect(d[0].de).toBe(4000);
   });
 });
 
@@ -463,6 +560,23 @@ describe("custo por área", () => {
     expect(linhas[0].area).toBe("Sem área");
     expect(linhas[0].total).toBe(4361);
   });
+
+  /* `eh_pessoa = false` diz "não compare com gente", nunca "não custou". Em
+     2024 o extrato escreveu o time no lugar do nome em 83 linhas, que viraram
+     balde de área justamente para entrar nesta conta: pulá-las tirava R$ 17.365
+     de março/2024 — 15% do mês. */
+  it("soma o dinheiro de quem não é pessoa, sem contá-lo como cabeça", () => {
+    const linhas = custoPorArea([
+      pessoa({ id: "a", meses: [mes("2026-06-01", 3000, 0, "Suporte")] }),
+      pessoa({
+        id: "balde", nome: "Sem nome no extrato (Suporte)", eh_pessoa: false,
+        meses: [mes("2026-06-01", 1200, 0, "Suporte")],
+      }),
+    ], meses, "2026-06-01");
+    const suporte = linhas.find((l) => l.area === "Suporte")!;
+    expect(suporte.serie[0]).toBe(4200);
+    expect(suporte.pessoasNoMes).toBe(1);
+  });
 });
 
 describe("filtro de pessoas", () => {
@@ -546,6 +660,87 @@ describe("filtro de pessoas", () => {
 
   it("setor vazio quer dizer todos", () => {
     expect(filtrarPessoas([ativo], { ...base, setores: [] }, "2026-08-01")).toHaveLength(1);
+  });
+
+  /* Olhando um mês passado, quem nunca recebeu nada não estava lá. Era esta a
+     porta pela qual a lista de dezembro/25 vinha igual à de agosto/26. */
+  it("num mês passado, quem não recebeu nada até ali não aparece", () => {
+    const novato = pessoa({ id: "z", nome: "Joel Recém-Chegado", meses: [] });
+    expect(filtrarPessoas([novato], base, "2025-12-01", false)).toHaveLength(0);
+    expect(filtrarPessoas([novato], base, "2025-12-01", true)).toHaveLength(1);
+  });
+
+  /* Quem saiu em julho/26 ESTAVA aqui em dezembro/25. Sem isto, viajar no tempo
+     mostrava a folha do passado com o time de hoje. */
+  it("desligamento posterior ao mês em foco não esconde a pessoa", () => {
+    const saiuEmJulho = pessoa({
+      id: "j", datadesl: "2026-07-15", meses: [mes("2025-12-01", 5000)],
+    });
+    expect(filtrarPessoas([saiuEmJulho], base, "2025-12-01", false).map((p) => p.id))
+      .toEqual(["j"]);
+    // No presente ele continua fora: já foi embora.
+    expect(filtrarPessoas([saiuEmJulho], base, "2026-08-01")).toHaveLength(0);
+  });
+
+  /* Saída no PRÓPRIO mês de referência é saída: quem saiu dia 20 de agosto não
+     está na lista de agosto. O corte é por mês, não por dia. */
+  it("desligamento no mês de referência conta como saída", () => {
+    const saiuEmAgosto = pessoa({
+      id: "k", datadesl: "2026-08-20", meses: [mes("2026-08-01", 5000)],
+    });
+    expect(filtrarPessoas([saiuEmAgosto], base, "2026-08-01")).toHaveLength(0);
+  });
+});
+
+describe("recorte no tempo", () => {
+  const gente = [
+    pessoa({
+      id: "veterano", nome: "Vera Veterana",
+      meses: [mes("2025-12-01", 5000), mes("2026-04-01", 5000), mes("2026-08-01", 8000)],
+    }),
+    pessoa({
+      id: "novo", nome: "Nelson Novo", inicio: "2026-04-01",
+      meses: [mes("2026-04-01", 27500), mes("2026-08-01", 27500)],
+    }),
+  ];
+
+  it("corta a série de cada pessoa no mês pedido", () => {
+    const r = recortarAte(gente, "2025-12-01");
+    expect(r.find((p) => p.id === "veterano")!.meses.map((m) => m.competencia))
+      .toEqual(["2025-12-01"]);
+    expect(r.find((p) => p.id === "novo")!.meses).toEqual([]);
+  });
+
+  it("sem mês, devolve tudo como veio", () => {
+    expect(recortarAte(gente, null)).toBe(gente);
+  });
+
+  it("não toca no painel original", () => {
+    recortarAte(gente, "2025-12-01");
+    expect(gente[0].meses).toHaveLength(3);
+  });
+
+  /* O problema que originou tudo: dezembro/25 mostrava o Thayrone, que só
+     entrou em abril/26, com o fixo de agora. */
+  it("quem ainda não tinha entrado some do mês passado", () => {
+    const dezembro = filtrarPessoas(
+      recortarAte(gente, "2025-12-01"), FILTROS_VAZIOS, "2025-12-01", false,
+    );
+    expect(dezembro.map((p) => p.id)).toEqual(["veterano"]);
+  });
+
+  /* E o fixo mostrado passa a ser o do mês, não o de hoje. */
+  it("o fixo do recorte é o do mês em foco", () => {
+    const [vera] = recortarAte(gente, "2025-12-01");
+    expect(resumoDaPessoa(vera).fixoAtual).toBe(5000);
+    expect(resumoDaPessoa(gente[0]).fixoAtual).toBe(8000);
+  });
+
+  /* Tempo de casa também é do mês em foco — e quem ainda não tinha entrado não
+     tem tempo de casa negativo, tem nenhum. */
+  it("tempo de casa negativo vira nulo", () => {
+    const l = montarLinhas(gente, new Map(), new Date("2025-12-15"));
+    expect(l.find((x) => x.pessoa.id === "novo")!.tempoDeCasa).toBeNull();
   });
 });
 
@@ -680,6 +875,22 @@ describe("totais do mês", () => {
     expect(t.premiacao).toBe(1000);
     expect(t.total).toBe(11000);
   });
+
+  /* Mesma divisão de `custoPorArea`: o balde de área custou, mas não é mais uma
+     pessoa no mês. Sem isso o KPI "Custo de pessoas" não bate com a DRE; com o
+     balde contado como cabeça, o de "Pessoas no mês" passa a não bater com o RH. */
+  it("conta o dinheiro de quem não é pessoa, mas não a cabeça", () => {
+    const t = totaisDoMes(
+      [
+        pessoa({ id: "a", meses: [mes("2026-07-01", 6000)] }),
+        pessoa({ id: "b", eh_pessoa: false, meses: [mes("2026-07-01", 1500)] }),
+      ],
+      "2026-07-01",
+    );
+    expect(t.fixo).toBe(7500);
+    expect(t.total).toBe(7500);
+    expect(t.gente).toBe(1);
+  });
 });
 
 describe("as três abas da planilha", () => {
@@ -698,6 +909,48 @@ describe("as três abas da planilha", () => {
 
   it("entrega Resumo, Mês a mês e Por área", () => {
     expect(abas().map((a) => a.nome)).toEqual(["Resumo", "Mês a mês", "Por área"]);
+  });
+
+  /* A planilha discordava da tela justamente na pessoa que se exporta sozinha.
+     Deduzindo a referência do recorte, quem saiu virava a própria referência,
+     `saiu` dava `false` e o acerto de contas reaparecia como reajuste — numa
+     linha que a tela mostra como "nenhum". Eram 52 pessoas na base, e o botão
+     "Exportar histórico" da ficha manda exatamente uma por vez. */
+  it("usa a referência do PAINEL, não a do recorte exportado", () => {
+    const saiu = pessoa({
+      id: "s", nome: "Quem Saiu", cargo: "Analista",
+      meses: [
+        mes("2025-05-01", 4000), mes("2025-06-01", 4000), mes("2025-07-01", 9000),
+      ],
+    });
+    const so = ["2025-05-01", "2025-06-01", "2025-07-01"];
+    const iReajuste = (a: ReturnType<typeof abasDaPlanilha>[number]) =>
+      a.linhas[0].indexOf("Último reajuste");
+
+    const sozinha = abasDaPlanilha([saiu], so, new Map())[0];
+    expect(sozinha.linhas[1][iReajuste(sozinha)]).toBe("jul/25");
+
+    const comPainel = abasDaPlanilha([saiu], so, new Map(), "2026-08-01")[0];
+    expect(comPainel.linhas[1][iReajuste(comPainel)]).toBeNull();
+  });
+
+  /* "Mês fechado" mede se o variável DA EMPRESA já foi lançado. Medido na
+     comissão de uma pessoa só, o mês em que ela não vendeu vira "não fechado"
+     para todo mundo que abrir a planilha. */
+  it("aceita as competências fechadas de fora", () => {
+    const soUm = [pessoa({ id: "u", meses: [
+      mes("2026-07-01", 5000, 9000), mes("2026-08-01", 5000, 0),
+    ] })];
+    const iFechado = (a: ReturnType<typeof abasDaPlanilha>[number]) =>
+      a.linhas[0].indexOf("Mês fechado");
+
+    const sozinha = abasDaPlanilha(soUm, meses, new Map())[1];
+    expect(sozinha.linhas[2][iFechado(sozinha)]).toBe("não");
+
+    const doPainel = abasDaPlanilha(
+      soUm, meses, new Map(), "2026-08-01", new Set(meses),
+    )[1];
+    expect(doPainel.linhas[2][iFechado(doPainel)]).toBe("sim");
   });
 
   it("o Resumo é uma linha por pessoa", () => {
@@ -723,11 +976,39 @@ describe("as três abas da planilha", () => {
     expect(mesAMes.linhas.slice(1).map((l) => l[iFechado])).toContain("sim");
   });
 
+  /* A contagem de gente é do último mês FECHADO — pelo último da série ela
+     seria a do mês corrente, que tem avulsos e nenhuma folha, e sairia zerada
+     em toda linha. O cabeçalho diz de que mês ela é. */
   it("a Por área tem uma coluna por mês e a variação", () => {
     const porArea = abas()[2];
     expect(porArea.linhas[0]).toEqual(
-      ["Área", "jul/26", "ago/26", "Total", "Variação %", "Pessoas no último mês"],
+      ["Área", "jul/26", "ago/26", "Total", "Variação %", "Pessoas em jul/26"],
     );
+  });
+
+  it("conta a gente no mês pedido, não no último da série", () => {
+    const meses = ["2026-07-01", "2026-08-01"];
+    const emJulho = custoPorArea(time, meses, "2026-07-01");
+    expect(emJulho.find((a) => a.area === "Suporte")!.pessoasNoMes).toBe(2);
+    const emAgosto = custoPorArea(time, meses, "2026-08-01");
+    expect(emAgosto.find((a) => a.area === "Suporte")!.pessoasNoMes).toBe(0);
+    // Mês em que ninguém foi pago conta zero, e não o mês mais próximo.
+    expect(custoPorArea(time, meses, "2020-01-01").find((a) => a.area === "Suporte")!.pessoasNoMes)
+      .toBe(0);
+  });
+
+  /* A série dos gráficos para no último mês FECHADO — senão o mês corrente,
+     que tem avulsos e nenhuma folha, desenha um despenhadeiro no fim de toda
+     sparkline. Mas é o corrente que a tela conta quando alguém o põe em foco,
+     e por índice a contagem caía calada no mês anterior: a linha dizia "2 em
+     agosto" mostrando o time de julho. */
+  it("conta num mês que ficou de fora da série", () => {
+    const soJulho = ["2026-07-01"];
+    const linhas = custoPorArea(time, soJulho, "2026-08-01");
+    expect(linhas.find((a) => a.area === "Suporte")!.serie).toEqual([13000]);
+    expect(linhas.find((a) => a.area === "Suporte")!.pessoasNoMes).toBe(0);
+    // A Ana estava em Onboarding em agosto — área que a série de julho nem tem.
+    expect(linhas.find((a) => a.area === "Onboarding")).toBeUndefined();
   });
 
   /* A tela usa esses índices para aplicar o formato de moeda. Se saírem do

@@ -63,6 +63,27 @@ export type Degrau = {
   variacao: number;
 };
 
+/*
+ * NÃO EXISTE COMPETÊNCIA PARCIAL NESTA SÉRIE — e já houve duas afirmações
+ * contrárias, ambas erradas, ambas pelo mesmo motivo.
+ *
+ * A primeira dizia que dezembro/2025 era parcial: era eu comparando a minha
+ * competência com uma DRE que, até ali, era por CAIXA. A segunda dizia que
+ * dezembro/2023 era, porque faltariam o 13º e o adiantamento pagos dentro de
+ * dezembro. Também não: a competência é `vencimento − 1 mês`, então um título
+ * que vence em dezembro/2023 é competência NOVEMBRO/2023 — fora da série de
+ * qualquer jeito. E dezembro/2023 tem os quatro blocos, 32 pessoas e
+ * vencimentos de 05 a 16 de janeiro, exatamente como todo mês tem.
+ *
+ * A conferência que fecha o assunto: não há inchaço de 13º em novembro nenhum
+ * da série (nov/24 com fixo médio de R$ 3.160, nov/25 com R$ 4.147, em linha
+ * com os vizinhos). Décimo terceiro não passa por estas categorias.
+ *
+ * Se um dia entrar um export que comece no meio de um mês, o aviso volta — mas
+ * com a prova junto, não com o raciocínio de que "a ponta deve estar faltando
+ * alguma coisa".
+ */
+
 const num = (v: unknown) => {
   const n = Number(v);
   return isFinite(n) ? n : 0;
@@ -88,18 +109,6 @@ export function distanciaEmMeses(de: string, ate: string): number | null {
 }
 
 /**
- * Os degraus do fixo ao longo dos meses pagos.
- *
- * Compara meses PAGOS consecutivos, não meses de calendário: quem ficou sem
- * receber em maio e voltou em junho tem um degrau maio→junho, não dois.
- *
- * O primeiro e o último mês da série são ignorados como origem de degrau
- * quando o valor é MENOR que o vizinho: mês de entrada e mês de saída são
- * proporcionais aos dias trabalhados, e contá-los produziria um "aumento de
- * 180%" no segundo mês de casa que não é aumento nenhum. Um degrau de queda no
- * meio da série continua aparecendo — esse é real e alguém deve olhar.
- */
-/**
  * Variação mínima para uma mudança contar como reajuste.
  *
  * Meio por cento. O fixo do Miguel em junho/2026 é R$ 20.101 e não R$ 20.100
@@ -110,9 +119,92 @@ export function distanciaEmMeses(de: string, ate: string): number | null {
  */
 const REAJUSTE_MINIMO = 0.005;
 
-export function degrausDoFixo(meses: MesRemuneracao[]): Degrau[] {
-  const pagos = meses.filter((m) => num(m.fixo) > 0);
+/**
+ * Um mês inflado entre dois normais — e o vizinho vazio.
+ *
+ * A competência da era Omie é o `dDtRegistro` do título, que é quando ALGUÉM
+ * lançou a conta no ERP, não quando o mês foi trabalhado. Quando o lançamento
+ * escorrega para o mês do vencimento, o salário de março cai em abril ao lado
+ * do de abril: março fica sem fixo e abril com dois. Como `degrausDoFixo`
+ * compara meses PAGOS consecutivos, o buraco desaparece e o que sobra é
+ * "2.800 → 5.600 → 2.800" — um aumento de 100% seguido de um corte de 50%, e
+ * nenhum dos dois aconteceu.
+ *
+ * Em 09/09/2026 eram oito pessoas assim (Diogo, Vitor Coelho, Ana Júlia,
+ * Marcelo Amon, Luiz Paulo, Lhaisfar, Luis Guilherme e André Rocon), cada uma
+ * com dois degraus falsos na ficha e o corte estampado na coluna "Último
+ * reajuste" da lista.
+ *
+ * A régua exige as três coisas ao mesmo tempo — subiu muito, voltou muito, e
+ * voltou para o MESMO patamar. Sem a terceira, um aumento de verdade dado logo
+ * depois de um mês cheio seria engolido junto.
+ */
+const PICO_SUBIDA = 1.5;
+const PICO_VOLTA = 0.75;
+const PICO_MESMO_PATAMAR = 0.15;
+
+function mesesDePico(valores: number[]): Set<number> {
+  const pico = new Set<number>();
+  for (let i = 1; i < valores.length - 1; i++) {
+    const antes = valores[i - 1];
+    const nele = valores[i];
+    const depois = valores[i + 1];
+    if (
+      nele > antes * PICO_SUBIDA &&
+      depois < nele * PICO_VOLTA &&
+      Math.abs(depois - antes) < antes * PICO_MESMO_PATAMAR
+    ) {
+      pico.add(i);
+    }
+  }
+  return pico;
+}
+
+/**
+ * Os degraus do fixo ao longo dos meses pagos.
+ *
+ * Compara meses PAGOS consecutivos, não meses de calendário: quem ficou sem
+ * receber em maio e voltou em junho tem um degrau maio→junho, não dois.
+ *
+ * São TRÊS as guardas, e cada uma nasceu de um falso reajuste na tela:
+ *
+ *   1. O primeiro e o último mês são ignorados como origem quando o valor é
+ *      MENOR que o vizinho — mês de entrada e de saída são proporcionais aos
+ *      dias trabalhados, e contá-los daria "aumento de 180%" no segundo mês de
+ *      casa. Uma queda no MEIO da série continua aparecendo: essa é real.
+ *   2. O último mês de quem JÁ SAIU é ignorado nos dois sentidos: o acerto de
+ *      contas soma férias, 13º e o que sobrou do salário, e sai bem MAIOR. Para
+ *      isso a função precisa de `referencia` — sem ela não dá para distinguir
+ *      "o emprego acabou aqui" de "os dados acabam aqui".
+ *   3. O pico de um mês só (`mesesDePico`) é ignorado na subida e na descida:
+ *      são dois títulos que caíram na mesma competência porque o lançamento no
+ *      ERP escorregou de mês.
+ */
+export function degrausDoFixo(
+  meses: MesRemuneracao[],
+  /**
+   * O último mês FECHADO do painel (`ultimaCompetenciaFechada`). Serve para uma
+   * coisa só: saber se o último mês DESTA pessoa é o fim do emprego dela ou só
+   * a borda dos dados. Sem ele, o mês de rescisão vira reajuste.
+   */
+  referencia?: string | null,
+): Degrau[] {
+  // Ordena aqui em vez de confiar em quem chamou: a ficha passa `pessoa.meses`
+  // cru, e a ordem da série é o que define o que é "primeiro" e "último" mês —
+  // as três guardas abaixo dependem inteiramente dela.
+  const pagos = meses
+    .filter((m) => num(m.fixo) > 0)
+    .sort((a, b) => a.competencia.localeCompare(b.competencia));
   if (pagos.length < 2) return [];
+
+  const pico = mesesDePico(pagos.map((m) => num(m.fixo)));
+
+  // Saiu = parou de receber antes do último mês fechado. Nesse caso o mês final
+  // não é um mês de trabalho: é rescisão, férias e 13º somados ao que sobrou do
+  // salário. Com 21 meses de histórico isso deixou de ser exceção — 38 das 167
+  // pessoas com fixo terminam a série num mês inflado, e sem esta guarda cada
+  // uma delas ganharia um "reajuste de +100%" no mês em que foi embora.
+  const saiu = !!referencia && pagos[pagos.length - 1].competencia < referencia;
 
   const out: Degrau[] = [];
   for (let i = 1; i < pagos.length; i++) {
@@ -121,10 +213,18 @@ export function degrausDoFixo(meses: MesRemuneracao[]): Degrau[] {
     if (de === para) continue;
     if (Math.abs(para - de) / de < REAJUSTE_MINIMO) continue;
 
+    // Nem a subida para o pico nem a volta dele são reajuste — o mês só está
+    // inflado porque recebeu o título que faltou no vizinho.
+    if (pico.has(i) || pico.has(i - 1)) continue;
+
     // Primeiro mês menor que o seguinte: entrada proporcional, não é degrau.
     if (i === 1 && de < para * 0.95) continue;
-    // Último mês menor que o anterior: saída proporcional, não é degrau.
-    if (i === pagos.length - 1 && para < de * 0.95) continue;
+    if (i === pagos.length - 1) {
+      // Último mês menor que o anterior: saída proporcional, não é degrau.
+      if (para < de * 0.95) continue;
+      // Último mês de quem já saiu: o acerto de contas também não é degrau.
+      if (saiu) continue;
+    }
 
     out.push({ competencia: pagos[i].competencia, de, para, variacao: (para - de) / de });
   }
@@ -210,13 +310,25 @@ export type ResumoPessoa = {
   ativo: boolean;
 };
 
-export function resumoDaPessoa(p: PessoaRemuneracao): ResumoPessoa {
+/**
+ * O último mês fechado do conjunto — a borda dos dados, não o fim de ninguém.
+ *
+ * Quem parou de receber ANTES disto saiu da empresa; quem recebeu até aqui
+ * continua. É a única informação que falta para `degrausDoFixo` saber se o
+ * último mês de uma pessoa é rescisão ou só o mês mais novo que existe.
+ */
+export function referenciaDoConjunto(pessoas: PessoaRemuneracao[]): string | null {
+  const meses = [...new Set(pessoas.flatMap((p) => (p.meses ?? []).map((m) => m.competencia)))];
+  return ultimaCompetenciaFechada(meses);
+}
+
+export function resumoDaPessoa(p: PessoaRemuneracao, referencia?: string | null): ResumoPessoa {
   const meses = [...(p.meses ?? [])].sort((a, b) => a.competencia.localeCompare(b.competencia));
   const comFixo = meses.filter((m) => num(m.fixo) > 0);
   const ultimo = comFixo[comFixo.length - 1] ?? null;
   const comPremiacao = meses.filter((m) => num(m.premiacao) > 0);
 
-  const degraus = degrausDoFixo(meses);
+  const degraus = degrausDoFixo(meses, referencia);
   const ultimoReajuste = degraus[degraus.length - 1] ?? null;
 
   const fixoAtual = ultimo ? num(ultimo.fixo) : null;
@@ -459,7 +571,8 @@ export type LinhaDeArea = {
   total: number;
   /** Do primeiro mês com valor até o último. Null quando não dá para comparar. */
   variacao: number | null;
-  pessoasNoUltimoMes: number;
+  /** Quanta gente a área tinha no mês de contagem (ver `noMes`). */
+  pessoasNoMes: number;
 };
 
 /**
@@ -468,28 +581,64 @@ export type LinhaDeArea = {
  * Usa a área do MÊS de cada lançamento, não a área atual da pessoa: quem trocou
  * de time em junho custou para o time antigo até maio, e atribuir o passado
  * inteiro ao time novo reescreveria a história dos dois.
+ *
+ * O DINHEIRO INCLUI QUEM NÃO É PESSOA; a CONTAGEM não. `eh_pessoa = false` diz
+ * "não compare com gente" — vale para mediana, percentil e pares —, nunca "não
+ * custou". Em 2024, 83 linhas trazem o time no lugar do nome ("rem comercial",
+ * "escala suporte") e viraram balde de área justamente para entrar nesta conta:
+ * pulá-las tirava R$ 17.365 de março/2024, 15% do mês. Uma empresa que caiu na
+ * categoria de Pessoal também saiu do caixa e também tem área.
+ *
+ * @param noMes o mês em que a gente é contada, que NÃO precisa estar na série.
+ *   O padrão — o último da série — costuma ser o mês corrente, que tem meia
+ *   dúzia de avulsos lançados e nenhuma folha: por ele, toda área da tela dizia
+ *   "0 pessoas". Quem chama passa o mês que está olhando.
  */
-export function custoPorArea(pessoas: PessoaRemuneracao[], meses: string[]): LinhaDeArea[] {
+export function custoPorArea(
+  pessoas: PessoaRemuneracao[],
+  meses: string[],
+  noMes?: string | null,
+): LinhaDeArea[] {
   const indice = new Map(meses.map((m, i) => [m, i]));
-  const areas = new Map<string, { serie: number[]; pessoas: Set<string>[] }>();
+  const areas = new Map<string, { serie: number[]; noMes: Set<string> }>();
 
   for (const p of pessoas) {
-    if (!p.eh_pessoa) continue;
     for (const m of p.meses ?? []) {
       const i = indice.get(m.competencia);
       if (i == null) continue;
       const area = m.area ?? "Sem área";
       let a = areas.get(area);
       if (!a) {
-        a = { serie: meses.map(() => 0), pessoas: meses.map(() => new Set<string>()) };
+        a = { serie: meses.map(() => 0), noMes: new Set<string>() };
         areas.set(area, a);
       }
       a.serie[i] += num(m.total);
-      a.pessoas[i].add(p.id);
     }
   }
 
-  const ultimo = meses.length - 1;
+  /* A contagem é de uma COMPETÊNCIA, não de uma posição na série — e quem
+     chama tem motivo para contar num mês que ficou de fora dela: a série para
+     no último mês FECHADO justamente para não terminar no despenhadeiro do mês
+     corrente, e é o corrente que a tela conta quando alguém o põe em foco. Por
+     índice, isso caía calado no mês anterior e a linha dizia "29 em set/26"
+     mostrando o time de agosto.
+
+     Passada separada porque, na primeira, o balde da área pode ainda não
+     existir: quem o cria é um mês que está na série. */
+  const mesDaContagem = noMes ?? meses[meses.length - 1] ?? null;
+  if (mesDaContagem) {
+    for (const p of pessoas) {
+      // Aqui o `eh_pessoa` VALE, ao contrário da passada do dinheiro: "quantas
+      // pessoas o Suporte tinha em julho" não pode contar o balde do time nem a
+      // empresa que caiu na categoria como se fossem mais uma cabeça.
+      if (!p.eh_pessoa) continue;
+      for (const m of p.meses ?? []) {
+        if (m.competencia !== mesDaContagem) continue;
+        areas.get(m.area ?? "Sem área")?.noMes.add(p.id);
+      }
+    }
+  }
+
   return [...areas.entries()]
     .map(([area, a]) => {
       const comValor = a.serie.map((v, i) => ({ v, i })).filter((x) => x.v > 0);
@@ -503,7 +652,7 @@ export function custoPorArea(pessoas: PessoaRemuneracao[], meses: string[]): Lin
           primeiro && derradeiro && primeiro.i !== derradeiro.i && primeiro.v > 0
             ? (derradeiro.v - primeiro.v) / primeiro.v
             : null,
-        pessoasNoUltimoMes: ultimo >= 0 ? a.pessoas[ultimo].size : 0,
+        pessoasNoMes: a.noMes.size,
       };
     })
     .sort((a, b) => b.total - a.total);
@@ -560,14 +709,59 @@ const alvoDaBusca = (p: PessoaRemuneracao) =>
   [p.nome, p.cargo, p.setor, p.codigo_rh].filter(Boolean).join(" ").toLowerCase();
 
 /**
- * @param referencia o último mês FECHADO (ver `ultimaCompetenciaFechada`).
- *   NUNCA o mês mais recente da base: o corrente é parcial e derrubaria como
- *   "saída" todo mundo que só recebeu no mês anterior — ou seja, a empresa toda.
+ * As pessoas como estavam ATÉ o mês em foco — a série de cada uma cortada ali.
+ *
+ * O seletor de mês do painel mexia só nos KPIs: a lista continuava sendo a de
+ * hoje, com o fixo de hoje, mesmo com dezembro/2025 escolhido. O Thayrone, que
+ * entrou em abril/2026, aparecia em dezembro/2025 ganhando os R$ 27.500 de
+ * agora. Um filtro que não filtra é pior do que filtro nenhum, porque o número
+ * ao lado dele parece ser do mês pedido.
+ *
+ * Cortar a série resolve tudo de uma vez e num lugar só: resumo, degraus,
+ * comparação com os pares, tempo sem reajuste e minigráfico passam a enxergar
+ * apenas o que já tinha acontecido, sem que nenhum deles precise saber que
+ * existe um mês em foco.
+ *
+ * Devolve pessoas NOVAS e deixa o painel original intacto — a ficha e a
+ * exportação mostram a trajetória inteira de propósito.
+ */
+export function recortarAte(
+  pessoas: PessoaRemuneracao[],
+  ate: string | null,
+): PessoaRemuneracao[] {
+  if (!ate) return pessoas;
+  return pessoas.map((p) => {
+    const meses = (p.meses ?? []).filter((m) => m.competencia <= ate);
+    // Nada a cortar devolve a MESMA pessoa: quem consome compara por
+    // identidade, e clonar 150 objetos a cada render remontaria a tabela
+    // inteira a cada tecla digitada na busca.
+    return meses.length === (p.meses?.length ?? 0) ? p : { ...p, meses };
+  });
+}
+
+/** A competência mais recente da série, sem depender da ordem em que ela veio. */
+const ultimaCompetenciaDe = (meses: MesRemuneracao[] | undefined) =>
+  (meses ?? []).reduce<string | null>(
+    (max, m) => (max == null || m.competencia > max ? m.competencia : max),
+    null,
+  );
+
+/**
+ * @param referencia o mês em foco — por padrão o último FECHADO (ver
+ *   `ultimaCompetenciaFechada`). NUNCA o mês mais recente da base: o corrente é
+ *   parcial e derrubaria como "saída" todo mundo que só recebeu no mês anterior
+ *   — ou seja, a empresa toda.
+ * @param presente `false` quando se está olhando para um mês PASSADO. Muda uma
+ *   coisa só: quem nunca recebeu nada deixa de aparecer. No presente ele é o
+ *   contratado que começa semana que vem e já está no Portal RH; em dezembro/25
+ *   ele é alguém que ainda não era da casa, e mostrá-lo é o que fazia a lista
+ *   parecer a mesma em todos os meses.
  */
 export function filtrarPessoas(
   pessoas: PessoaRemuneracao[],
   f: Filtros,
   referencia: string | null,
+  presente = true,
 ): PessoaRemuneracao[] {
   const termo = f.busca.trim().toLowerCase();
   const setores = new Set(f.setores);
@@ -582,17 +776,27 @@ export function filtrarPessoas(
     if (cargos.size && !cargos.has(normCargo(p.cargo))) return false;
 
     if (!f.incluirSaidas) {
-      if (p.datadesl) return false;
-      // Sem data de desligamento e sem receber no último mês fechado: saiu e o
-      // Portal RH não registrou, ou nunca teve ficha lá — é o caso da maioria
-      // de quem foi removido do espelho ao sair.
-      //
-      // Quem ainda não tem lançamento NENHUM passa: é o contratado que começa
-      // semana que vem e já está no Portal RH, e ele deve aparecer.
-      const ultimo = p.meses?.length
-        ? p.meses[p.meses.length - 1].competencia
-        : null;
-      if (referencia && ultimo && ultimo < referencia) return false;
+      // O desligamento só vale A PARTIR do mês em que aconteceu: quem saiu em
+      // julho/26 ESTAVA aqui em dezembro/25 e tem de aparecer quando se olha
+      // dezembro. Comparar por mês e não por dia mantém o presente como era —
+      // quem saiu dia 20 de agosto já não está na lista de agosto.
+      if (p.datadesl && (!referencia || p.datadesl.slice(0, 7) <= referencia.slice(0, 7))) {
+        return false;
+      }
+
+      const ultimo = ultimaCompetenciaDe(p.meses);
+      if (ultimo) {
+        // Sem data de desligamento e sem receber no mês em foco: saiu e o
+        // Portal RH não registrou, ou nunca teve ficha lá — é o caso da maioria
+        // de quem foi removido do espelho ao sair.
+        if (referencia && ultimo < referencia) return false;
+      } else if (!presente) {
+        // Nenhum pagamento até o mês em foco: não era da casa. A exceção do
+        // recém-contratado (abaixo) é do presente e só dele.
+        return false;
+      }
+      // Quem ainda não tem lançamento NENHUM passa no presente: é o contratado
+      // que começa semana que vem e já está no Portal RH, e ele deve aparecer.
     }
 
     if (termo && !alvoDaBusca(p).includes(termo)) return false;
@@ -618,17 +822,29 @@ export type LinhaPessoa = {
 export function montarLinhas(
   pessoas: PessoaRemuneracao[],
   pares: Map<string, Pares>,
+  /**
+   * A data do MÊS EM FOCO, não necessariamente hoje. Olhando dezembro/25, o
+   * tempo de casa é o de dezembro — dizer "5 meses" para quem entraria só em
+   * abril é a mesma mentira que mostrar o salário de hoje na folha de lá.
+   */
   hoje = new Date(),
 ): LinhaPessoa[] {
   const mesHoje = `${hoje.getFullYear()}-${String(hoje.getMonth() + 1).padStart(2, "0")}-01`;
-  return pessoas.map((pessoa) => ({
-    pessoa,
-    resumo: resumoDaPessoa(pessoa),
-    par: pares.get(pessoa.id),
-    tempoDeCasa: pessoa.inicio
+  const referencia = referenciaDoConjunto(pessoas);
+  return pessoas.map((pessoa) => {
+    const tempo = pessoa.inicio
       ? distanciaEmMeses(`${pessoa.inicio.slice(0, 7)}-01`, mesHoje)
-      : null,
-  }));
+      : null;
+    return {
+      pessoa,
+      resumo: resumoDaPessoa(pessoa, referencia),
+      par: pares.get(pessoa.id),
+      // Negativo é quem ainda não tinha entrado no mês em foco. "−4 meses de
+      // casa" não é tempo de casa nenhum, e ordenar por isso poria quem ainda
+      // nem chegou na frente de quem está há seis anos.
+      tempoDeCasa: tempo == null || tempo < 0 ? null : tempo,
+    };
+  });
 }
 
 /** O valor de uma linha na coluna pedida — o que a faixa mede e a ordem compara. */
@@ -694,7 +910,9 @@ export function totaisDoMes(pessoas: PessoaRemuneracao[], competencia: string) {
   for (const p of pessoas) {
     const m = p.meses?.find((x) => x.competencia === competencia);
     if (!m) continue;
-    gente++;
+    // O dinheiro de todo mundo; a cabeça só de quem é gente. Mesma divisão de
+    // `custoPorArea`: o balde de área custou, mas não é mais uma pessoa no mês.
+    if (p.eh_pessoa) gente++;
     fixo += num(m.fixo);
     prolabore += num(m.prolabore);
     premiacao += num(m.premiacao);
@@ -749,8 +967,24 @@ export function abasDaPlanilha(
   pessoas: PessoaRemuneracao[],
   meses: string[],
   pares: Map<string, Pares>,
+  /**
+   * O último mês fechado DO PAINEL, não o do recorte exportado.
+   *
+   * Deduzi-lo de `pessoas` fazia a planilha discordar da tela: exportando uma
+   * pessoa só que saiu em julho/25, a referência virava julho/25, `saiu` dava
+   * `false` e o acerto de contas dela reaparecia como "reajuste em jul/25" —
+   * numa linha que a tela mostra como "nenhum". São 52 pessoas na base em
+   * 09/09/2026, e o botão "Exportar histórico" da ficha manda exatamente uma
+   * por vez.
+   *
+   * O mesmo vale para `fechadas`: a coluna "Mês fechado" mede se o VARIÁVEL DA
+   * EMPRESA já foi lançado naquele mês, e medi-lo na comissão de uma pessoa só
+   * responde outra pergunta.
+   */
+  referenciaDoPainel?: string | null,
+  fechadasDoPainel?: Set<string>,
 ): Aba[] {
-  const fechadas = competenciasFechadas(pessoas, meses);
+  const fechadas = fechadasDoPainel ?? competenciasFechadas(pessoas, meses);
 
   /* ── Resumo ── */
   /* A divisão por tipo somada no PERÍODO fica ao lado do total, não só no mês a
@@ -771,8 +1005,9 @@ export function abasDaPlanilha(
   const hoje = new Date();
   const mesHoje = `${hoje.getFullYear()}-${String(hoje.getMonth() + 1).padStart(2, "0")}-01`;
 
+  const referencia = referenciaDoPainel ?? referenciaDoConjunto(pessoas);
   const linhasResumo = pessoas.map((p): CelulaPlanilha[] => {
-    const r = resumoDaPessoa(p);
+    const r = resumoDaPessoa(p, referencia);
     const par = pares.get(p.id);
     const meses_ = p.meses ?? [];
     const ultimoMes = [...meses_].sort((a, b) => a.competencia.localeCompare(b.competencia)).pop();
@@ -847,15 +1082,23 @@ export function abasDaPlanilha(
     }
   }
 
-  /* ── Por área ── */
-  const areas = custoPorArea(pessoas, meses);
-  const cabArea = ["Área", ...meses.map(rotuloMes), "Total", "Variação %", "Pessoas no último mês"];
+  /* ── Por área ──
+     A gente é contada no último mês FECHADO, não no último da série: o corrente
+     tem meia dúzia de avulsos e nenhuma folha, e por ele a coluna sairia zerada
+     em toda linha. O cabeçalho diz de que mês é a contagem. */
+  const ultimaFechada = [...fechadas].sort((a, b) => a.localeCompare(b)).pop()
+    ?? meses[meses.length - 1] ?? null;
+  const areas = custoPorArea(pessoas, meses, ultimaFechada);
+  const cabArea = [
+    "Área", ...meses.map(rotuloMes), "Total", "Variação %",
+    `Pessoas em ${rotuloMes(ultimaFechada ?? "")}`,
+  ];
   const linhasArea = areas.map((a): CelulaPlanilha[] => [
     a.area,
     ...a.serie.map((v) => v || null),
     a.total || null,
     a.variacao == null ? null : Number((a.variacao * 100).toFixed(1)),
-    a.pessoasNoUltimoMes || null,
+    a.pessoasNoMes || null,
   ]);
 
   return [
@@ -891,6 +1134,8 @@ export function abasDaPlanilha(
 export function matrizParaPlanilha(
   pessoas: PessoaRemuneracao[],
   meses: string[],
+  /** O último mês fechado do painel — ver `abasDaPlanilha`. */
+  referenciaDoPainel?: string | null,
 ): CelulaPlanilha[][] {
   const cabecalho = [
     "Nome", "Código RH", "Cargo", "Setor", "Área no ERP", "Trocas de time",
@@ -903,8 +1148,9 @@ export function matrizParaPlanilha(
     ]),
   ];
 
+  const referencia = referenciaDoPainel ?? referenciaDoConjunto(pessoas);
   const linhas = pessoas.map((p): CelulaPlanilha[] => {
-    const r = resumoDaPessoa(p);
+    const r = resumoDaPessoa(p, referencia);
     const porMes = new Map((p.meses ?? []).map((m) => [m.competencia, m]));
     return [
       p.nome,
@@ -945,7 +1191,11 @@ export function matrizParaPlanilha(
  * Ponto decimal, não vírgula: o Excel em pt-BR entende a vírgula, mas qualquer
  * outra coisa que leia o arquivo não.
  */
-export function paraCsv(pessoas: PessoaRemuneracao[], meses: string[]): string {
+export function paraCsv(
+  pessoas: PessoaRemuneracao[],
+  meses: string[],
+  referenciaDoPainel?: string | null,
+): string {
   const sep = ";";
   const cel = (v: CelulaPlanilha) => {
     if (v == null) return "";
@@ -954,5 +1204,6 @@ export function paraCsv(pessoas: PessoaRemuneracao[], meses: string[]): string {
   };
   // BOM na frente: sem ele o Excel abre o CSV em ANSI e "Remuneração" vira
   // "RemuneraÃ§Ã£o" na primeira coluna que alguém for ler.
-  return "﻿" + matrizParaPlanilha(pessoas, meses).map((l) => l.map(cel).join(sep)).join("\n");
+  return "﻿" + matrizParaPlanilha(pessoas, meses, referenciaDoPainel)
+    .map((l) => l.map(cel).join(sep)).join("\n");
 }

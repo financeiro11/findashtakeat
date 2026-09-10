@@ -918,6 +918,81 @@ export function filtrarPessoas(
    isso dentro de cada comparação de ordenação seria refazer o resumo de 150
    pessoas a cada clique de cabeçalho. */
 
+/**
+ * Quem casaria com a busca se as caixas de conjunto estivessem ligadas.
+ *
+ * ELA EXISTE POR CAUSA DE UM MAL-ENTENDIDO REAL. Procurando "joão guilherme", a
+ * tela dizia "Ninguém no recorte atual" — e no bloco ao lado mostrava os
+ * R$ 9.873 dele em "Administrativo". Ele está na base (mai/24 a jan/25, sem
+ * ficha no RH porque saiu antes de abr/26); o que o tirava da lista era a caixa
+ * "Incluir quem saiu", desmarcada por padrão.
+ *
+ * "Ninguém" e "ninguém DENTRO DESTE FILTRO" são respostas diferentes, e a
+ * primeira manda quem procura concluir que o dado não existe — que é a pior
+ * conclusão possível num painel cujo trabalho é justamente guardar história.
+ */
+export type Escondidos = {
+  /* OS TRÊS MOTIVOS SE SOBREPÕEM, e `total` é gente DISTINTA — por isso a soma
+     dos três pode passar do total. É de propósito: quem não tem ficha no RH E
+     saiu é escondido por duas caixas, e ligar só uma delas não o traz de volta.
+     A tela cita todas as que se aplicam justamente para o clique funcionar. */
+  /** Quantos voltariam ao marcar "Incluir quem saiu". */
+  saidas: number;
+  /** Quantos voltariam ao marcar "Incluir empresas" (balde de área, favorecido PJ). */
+  naoPessoas: number;
+  /** Quantos voltariam ao desmarcar "Só com ficha no RH". */
+  semFicha: number;
+  /** Pessoas distintas fora do recorte. Nunca a soma dos três acima. */
+  total: number;
+  /** Até três, para a tela poder dizer um nome em vez de só um número. */
+  exemplos: { id: string; nome: string; ultimo: string | null }[];
+};
+
+/**
+ * @param pessoas o conjunto JÁ recortado no tempo — o mesmo de onde sai a lista.
+ *   Passar o painel cru faria a mensagem prometer gente que o mês em foco não
+ *   tem.
+ */
+export function quemOFiltroEscondeu(
+  pessoas: PessoaRemuneracao[],
+  f: Filtros,
+  referencia: string | null,
+  presente = true,
+): Escondidos {
+  const vazio: Escondidos = { saidas: 0, naoPessoas: 0, semFicha: 0, total: 0, exemplos: [] };
+  // Nenhuma caixa de conjunto restringindo: não há o que revelar.
+  if (f.incluirSaidas && f.incluirNaoPessoas && !f.soComFichaRh) return vazio;
+
+  const visiveis = new Set(filtrarPessoas(pessoas, f, referencia, presente).map((p) => p.id));
+  /* O MESMO filtro, com as três caixas abertas — e não uma regra paralela: a
+     mensagem promete exatamente o que aparecerá ao ligar a caixa, e uma segunda
+     implementação divergiria dela na primeira mudança. */
+  const comTudo = filtrarPessoas(
+    pessoas,
+    { ...f, incluirSaidas: true, incluirNaoPessoas: true, soComFichaRh: false },
+    referencia,
+    presente,
+  );
+
+  const out: Escondidos = { ...vazio, exemplos: [] };
+  for (const p of comTudo) {
+    if (visiveis.has(p.id)) continue;
+    const ehEmpresa = !p.eh_pessoa && !f.incluirNaoPessoas;
+    const faltaFicha = !p.codigo_rh && f.soComFichaRh;
+    if (ehEmpresa) out.naoPessoas++;
+    if (faltaFicha) out.semFicha++;
+    /* "Saiu" é o motivo RESIDUAL: se nenhuma das duas caixas explicava a
+       ausência, foi a de saídas — que é a única desmarcada por padrão, e por
+       isso a causa mais comum de alguém achar que o dado não existe. */
+    if (!ehEmpresa && !faltaFicha) out.saidas++;
+    out.total++;
+    if (out.exemplos.length < 3) {
+      out.exemplos.push({ id: p.id, nome: p.nome, ultimo: ultimaCompetenciaDe(p.meses) });
+    }
+  }
+  return out;
+}
+
 export type LinhaPessoa = {
   pessoa: PessoaRemuneracao;
   resumo: ResumoPessoa;

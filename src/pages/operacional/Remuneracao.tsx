@@ -33,7 +33,7 @@ import {
   abasDaPlanilha, compararComPares, competenciasFechadas, custoNoAno, custoPorArea,
   degrausDoFixo, faixaVazia, foraDaLinha,
   filtrarPessoas, filtrarPorFaixa, filtrosLigados, montarLinhas, ordenarLinhas,
-  pessoasSemTime, semReajusteHaMaisTempo,
+  pessoasSemTime, quemOFiltroEscondeu, semReajusteHaMaisTempo,
   recortarAte, resumoDaPessoa, rotuloMes, totaisDoMes, ultimaCompetenciaFechada,
   FILTROS_VAZIOS,
   type ColunaFaixa, type ColunaOrdenavel, type Faixa, type FaixaDeCargo, type Filtros,
@@ -928,6 +928,14 @@ export default function Remuneracao() {
      painel cru: "sem reajuste" e "faixa do cargo" são leituras de quem está na
      lista, e responder sobre gente que o filtro tirou seria responder outra
      pergunta. */
+  /* Quem casaria com a busca se as caixas de conjunto estivessem ligadas —
+     calculado sobre o MESMO recorte no tempo de onde sai a lista, senão a
+     mensagem prometeria gente que o mês em foco não tem. */
+  const escondidos = useMemo(
+    () => quemOFiltroEscondeu(pessoasAteOFoco, filtros, referenciaDaLista, !passado),
+    [pessoasAteOFoco, filtros, referenciaDaLista, passado],
+  );
+
   const semReajuste = useMemo(() => semReajusteHaMaisTempo(linhas), [linhas]);
   /* `foraDaLinha` e não `faixaPorCargo`: a régua completa, num time pequeno,
      ficava com uma barra e quatro linhas de "uma pessoa só". O que se veio ver
@@ -1604,8 +1612,61 @@ export default function Remuneracao() {
 
                 {!linhas.length && (
                   <TableRow>
-                    <TableCell colSpan={9} className="py-12 text-center text-sm text-muted-foreground">
-                      Ninguém no recorte atual.
+                    <TableCell colSpan={9} className="py-12 text-center">
+                      {/* "NINGUÉM" E "NINGUÉM DENTRO DESTE FILTRO" SÃO RESPOSTAS
+                          DIFERENTES. Procurando "joão guilherme" a tela dizia a
+                          primeira — e mostrava os R$ 9.873 dele no bloco ao
+                          lado, em Administrativo. Ele está na base desde
+                          mai/2024; o que o escondia era "Incluir quem saiu",
+                          desmarcada por padrão. Dizer "ninguém" manda quem
+                          procura concluir que o dado não existe, que é a pior
+                          conclusão possível num painel que guarda história. */}
+                      {escondidos.total > 0 ? (
+                        <div className="mx-auto max-w-md space-y-2">
+                          <p className="text-sm">
+                            Ninguém <strong>neste recorte</strong> — mas{" "}
+                            {escondidos.total === 1 ? "há 1 pessoa" : `há ${escondidos.total} pessoas`}{" "}
+                            fora dele.
+                          </p>
+                          <p className="text-[12px] leading-relaxed text-muted-foreground">
+                            {escondidos.exemplos.map((e, i) => (
+                              <Fragment key={e.id}>
+                                {i > 0 && ", "}
+                                <span className="text-foreground">{e.nome}</span>
+                                {e.ultimo && ` (até ${rotuloMes(e.ultimo)})`}
+                              </Fragment>
+                            ))}
+                            {escondidos.total > escondidos.exemplos.length &&
+                              ` e mais ${escondidos.total - escondidos.exemplos.length}`}.
+                          </p>
+                          {/* Os botões ligam exatamente a caixa que revela cada
+                              grupo. Quem acumula dois motivos precisa dos dois
+                              cliques — por isso todos os que se aplicam
+                              aparecem, em vez de só o maior. */}
+                          <div className="flex flex-wrap justify-center gap-2 pt-1">
+                            {escondidos.saidas > 0 && (
+                              <Button size="sm" variant="outline"
+                                onClick={() => setFiltros((f) => ({ ...f, incluirSaidas: true }))}>
+                                Incluir quem saiu ({escondidos.saidas})
+                              </Button>
+                            )}
+                            {escondidos.semFicha > 0 && (
+                              <Button size="sm" variant="outline"
+                                onClick={() => setFiltros((f) => ({ ...f, soComFichaRh: false }))}>
+                                Sem ficha no RH ({escondidos.semFicha})
+                              </Button>
+                            )}
+                            {escondidos.naoPessoas > 0 && (
+                              <Button size="sm" variant="outline"
+                                onClick={() => setFiltros((f) => ({ ...f, incluirNaoPessoas: true }))}>
+                                Incluir empresas ({escondidos.naoPessoas})
+                              </Button>
+                            )}
+                          </div>
+                        </div>
+                      ) : (
+                        <span className="text-sm text-muted-foreground">Ninguém no recorte atual.</span>
+                      )}
                     </TableCell>
                   </TableRow>
                 )}

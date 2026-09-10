@@ -3,7 +3,7 @@ import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/hooks/useAuth";
 import { useApelidos } from "@/hooks/useApelidos";
 import { fraseDaNota, itensDaNota, nomeContraparte, textoDaBusca, type MapaLojistas, type NomeContraparte } from "@/lib/lojistaCartao";
-import { rotuloNaoPagavel } from "./utils";
+import { ehCategoriaSoftware, rotuloNaoPagavel } from "./utils";
 import { Button } from "@/components/ui/button";
 import { Sheet, SheetContent } from "@/components/ui/sheet";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -113,6 +113,26 @@ const ALL_CATEGORIAS: Categoria[] = ["COM NF", "SEM NF", "A CONFERIR", "FORA DE 
 
 /** Linhas por página na tabela de lançamentos. */
 const POR_PAGINA = 50;
+
+/** O que o ERP respondeu sobre um título — uma linha de `omie_titulo_anexo`. */
+type AnexoErp = { qtd: number; parece_nota: boolean | null; lido_em: string | null };
+
+/* A chave do título, normalizada — e o motivo de ela existir.
+ *
+ * `auditoria.omie_cod_titulo` é TEXTO e `omie_titulo_anexo.cod_titulo` é BIGINT.
+ * Guardar "0123" de um lado e 123 do outro daria mapa que nunca casa, sem erro
+ * nenhum na tela: só o clipe que não aparece. As duas pontas passam por aqui, e
+ * por isso concordam. Devolve nulo para o que não é número — id inválido viraria
+ * `NaN` dentro do `in` e derrubaria a consulta inteira. */
+function chaveTitulo(v: string | number | null | undefined): string | null {
+  if (v === null || v === undefined || v === "") return null;
+  const n = Number(v);
+  return Number.isSafeInteger(n) && n > 0 ? String(n) : null;
+}
+
+/* Quantos títulos cabem num `in` por vez. O select do supabase-js vai por GET,
+   e a lista inteira (mil e poucos títulos) estoura a query string. */
+const POR_CONSULTA_ANEXO = 200;
 
 /* O teto que a rodada da conferência aceita. Não é promessa de quantos vão sair:
    lá quem manda é o relógio de 75 segundos do worker, e o que não couber volta
@@ -228,6 +248,8 @@ export default function Achados({ abas }: { abas?: React.ReactNode }) {
   const [fCat, setFCat] = useState<FiltroCat>("todas");
   const [fResp, setFResp] = useState<string>("todas");
   const [fAnexo, setFAnexo] = useState<string>("todas");
+  /** O que o Omie já tem anexado, por `cod_titulo`. Só entra quem tem anexo. */
+  const [anexoErp, setAnexoErp] = useState<Record<string, AnexoErp>>({});
   const [busca, setBusca] = useState("");
   const [selected, setSelected] = useState<Row | null>(null);
   const [origemCart, setOrigemCart] = useState<CartaoLanc | null>(null);
@@ -364,6 +386,76 @@ export default function Achados({ abas }: { abas?: React.ReactNode }) {
     void resolverParcelas(audRows);
   };
   useEffect(() => { load(); }, []);
+
+  /* O QUE JÁ ESTÁ ANEXADO NO OMIE — inclusive o que não saiu daqui.
+   *
+   * `omie_anexo_enviado_em` é o carimbo de "O HUB MANDOU", e não de "o título
+   * tem nota": a nota que alguém anexou à mão direto no ERP não passa por
+   * nenhuma linha deste repo. Sem esta consulta a tela mostrava esse título como
+   * SEM NF e ainda oferecia o "Enviar ao Omie" — que duplicaria o arquivo que já
+   * está lá.
+   *
+   * A fonte é a `omie-anexos-varredura`, que pergunta título a título ao ERP
+   * (`geral/anexo/ListarAnexo`) e grava em `omie_titulo_anexo` — a única fonte
+   * do Hub que enxerga anexo posto à mão. Consulta à parte, como a Notas ERP já
+   * faz: é um `in` sobre a chave primária e não mexe em nada do que a `load`
+   * monta.
+   *
+   * AUSÊNCIA NÃO É "NÃO TEM". Título que a varredura ainda não leu, ou que ela
+   * não CONSEGUIU ler (`erro` preenchido — que é diferente de `qtd = 0`),
+   * simplesmente não entra no mapa, e a linha continua exibindo o que sempre
+   * exibiu. Só se acrescenta sinal onde o ERP respondeu que há anexo.
+   *
+   * A dependência é a lista de títulos, e não `rows`: a `load` chama
+   * `aprovarOsQueBatem` e `resolverParcelas`, que gravam status e disparam novo
+   * `setRows` — com `rows` na dependência, a mesma leitura sairia três vezes por
+   * abertura de tela sem que um único título tivesse mudado. */
+  const chaveTitulos = useMemo(
+    () => [...new Set(rows.map(r => chaveTitulo(r.omie_cod_titulo)).filter(Boolean) as string[])].sort().join(","),
+    [rows],
+  );
+  useEffect(() => {
+    const codigos = chaveTitulos ? chaveTitulos.split(",") : [];
+    if (!codigos.length) { setAnexoErp({}); return; }
+    let vivo = true;
+    (async () => {
+      const mapa: Record<string, AnexoErp> = {};
+      for (let i = 0; i < codigos.length; i += POR_CONSULTA_ANEXO) {
+        const { data, error } = await supabase
+          .from("omie_titulo_anexo")
+          .select("cod_titulo,qtd,parece_nota,lido_em")
+          .in("cod_titulo", codigos.slice(i, i + POR_CONSULTA_ANEXO).map(Number))
+          .gt("qtd", 0);
+        if (!vivo) return;
+        if (error) { console.warn("[auditoria] não consegui ler os anexos do Omie:", error); return; }
+        for (const a of data ?? []) {
+          const k = chaveTitulo(a.cod_titulo);
+          if (!k) continue;
+          mapa[k] = {
+            qtd: Number(a.qtd ?? 0),
+            parece_nota: a.parece_nota ?? null,
+            lido_em: a.lido_em ?? null,
+          };
+        }
+      }
+      if (vivo) setAnexoErp(mapa);
+    })();
+    return () => { vivo = false; };
+  }, [chaveTitulos]);
+
+  /** O que o ERP tem neste título. Nulo = sem anexo OU a varredura ainda não leu. */
+  const anexoDoErp = useCallback(
+    (r: Row): AnexoErp | null => {
+      const k = chaveTitulo(r.omie_cod_titulo);
+      return k ? anexoErp[k] ?? null : null;
+    },
+    [anexoErp],
+  );
+  /** Tem nota no título, não importa por qual porta ela entrou. */
+  const temAnexo = useCallback(
+    (r: Row) => !!r.omie_anexo_enviado_em || !!anexoDoErp(r),
+    [anexoDoErp],
+  );
 
   /* O que bate com a nota não espera clique nenhum: quem tem o selo verde e
      ainda está em aberto vai para "Aprovado" assim que a página abre.
@@ -574,14 +666,16 @@ export default function Achados({ abas }: { abas?: React.ReactNode }) {
       if (fRegra !== "todas" && r.regra !== fRegra) return false;
       if (fCat !== "todas" && r.categoria !== fCat) return false;
       if (fResp !== "todas" && r.responsavel !== fResp) return false;
-      if (fAnexo === "Anexado" && !r.omie_anexo_enviado_em) return false;
-      if (fAnexo === "Não anexado" && r.omie_anexo_enviado_em) return false;
+      /* Conta o anexo posto à mão no ERP, e não só o que o Hub mandou: sem isso
+         "Não anexado" listava título que já tem a nota lá dentro. */
+      if (fAnexo === "Anexado" && !temAnexo(r)) return false;
+      if (fAnexo === "Não anexado" && temAnexo(r)) return false;
       // O apelido entra na varredura junto com o nome do extrato: procurar pelo
       // nome que ESTÁ escrito na linha precisa achar a linha.
       if (q && !textoDaBusca(nomeDaLinha(r)).includes(q)) return false;
       return true;
     });
-  }, [periodRows, filtro, fSev, fArea, fRegra, fCat, fResp, fAnexo, busca, nomeDaLinha]);
+  }, [periodRows, filtro, fSev, fArea, fRegra, fCat, fResp, fAnexo, busca, nomeDaLinha, temAnexo]);
 
   /* A tabela passou a paginar: 171 linhas de uma vez é rolagem sem fim e o rodapé
      ("mostrando X de Y") não queria dizer nada. Mexer em qualquer filtro volta
@@ -832,8 +926,18 @@ export default function Achados({ abas }: { abas?: React.ReactNode }) {
     const repr = periodRows.filter(r => r.status === "Reprovado").length;
     const catCount = (arr: Row[], c: Categoria) => arr.filter(r => r.categoria === c).length;
     const catSum = (arr: Row[], c: Categoria) => arr.filter(r => r.categoria === c).reduce((s, r) => s + Number(r.valor || 0), 0);
+    /* O pendente descontado das assinaturas — ver `ehCategoriaSoftware`. O card
+       "Pendentes" continua com o número cheio ao lado; este responde a outra
+       pergunta, que é "quanto disso é trabalho para alguém". */
+    const pendSw = pend.filter(r => ehCategoriaSoftware(r.omie_categoria));
+    const semSw = pend.filter(r => !ehCategoriaSoftware(r.omie_categoria));
     return {
       pend: pend.length, emAn: emAn.length, valorSob, qtdSob: sob.length,
+      pendSw: pendSw.length,
+      pendSemSw: semSw.length,
+      pendSemSwSemNf: catCount(semSw, "SEM NF"),
+      pendSemSwAConf: catCount(semSw, "A CONFERIR"),
+      valorSemSw: semSw.reduce((s, r) => s + Number(r.valor || 0), 0),
       resolv: aprov.length + repr, aprov: aprov.length, repr,
       pendSemNf: catCount(pend, "SEM NF"),
       pendAConf: catCount(pend, "A CONFERIR"),
@@ -1046,11 +1150,11 @@ export default function Achados({ abas }: { abas?: React.ReactNode }) {
       {/* KPIs — uma faixa só, dividida por dentro; cada número traz a barra do
           quanto ele representa do período e as fatias que o compõem. */}
       {loading ? (
-        <div className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-4">
-          {Array.from({ length: 4 }).map((_, i) => <Skeleton key={i} className="h-32 rounded-xl" />)}
+        <div className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-5">
+          {Array.from({ length: 5 }).map((_, i) => <Skeleton key={i} className="h-32 rounded-xl" />)}
         </div>
       ) : (
-        <div className="grid grid-cols-1 overflow-hidden rounded-xl border border-border bg-card md:grid-cols-2 lg:grid-cols-4">
+        <div className="grid grid-cols-1 overflow-hidden rounded-xl border border-border bg-card md:grid-cols-2 lg:grid-cols-5">
           <KpiCard
             className="border-b border-border md:border-r lg:border-b-0"
             label="Pendentes"
@@ -1074,8 +1178,33 @@ export default function Achados({ abas }: { abas?: React.ReactNode }) {
               </div>
             }
           />
+          {/* O MESMO PENDENTE, SEM AS ASSINATURAS.
+              Ao lado do número cheio de propósito: os dois juntos é que contam a
+              história — o de cima é o tamanho da fila, este é o tamanho do
+              trabalho. A barra mede um dentro do outro, então o vazio da barra é
+              exatamente a fatia de software. */}
           <KpiCard
             className="border-b border-border lg:border-b-0 lg:border-r"
+            label="Pendentes sem software"
+            value={String(kpis.pendSemSw)}
+            legend={kpis.pendSw
+              ? `${kpis.pendSw} de assinatura fora da conta`
+              : "nenhuma assinatura na fila"}
+            bar={<BarraKpi total={kpis.pend} fatias={[{ peso: kpis.pendSemSw, cor: "bg-[hsl(280_60%_52%)]" }]} />}
+            breakdown={
+              <div className="flex flex-wrap gap-1.5 mt-2">
+                <MiniChip cls={catStyle("SEM NF")} text={`SEM NF ${kpis.pendSemSwSemNf}`} />
+                <MiniChip cls={catStyle("A CONFERIR")} text={`A CONFERIR ${kpis.pendSemSwAConf}`} />
+                <MiniChip
+                  cls="border-border text-muted-foreground"
+                  text={brlAbbr(kpis.valorSemSw)}
+                  titulo={`${brl(kpis.valorSemSw)} em ${kpis.pendSemSw} lançamento${kpis.pendSemSw === 1 ? "" : "s"} pendentes, sem contar software`}
+                />
+              </div>
+            }
+          />
+          <KpiCard
+            className="border-b border-border md:border-r lg:border-b-0"
             label="Em análise"
             value={String(kpis.emAn)}
             legend="em verificação"
@@ -1083,7 +1212,7 @@ export default function Achados({ abas }: { abas?: React.ReactNode }) {
             bar={<BarraKpi total={periodRows.length} fatias={[{ peso: kpis.emAn, cor: "bg-[hsl(212_80%_50%)]" }]} />}
           />
           <KpiCard
-            className="border-b border-border md:border-b-0 md:border-r"
+            className="border-b border-border lg:border-b-0 lg:border-r"
             label="Valor sob auditoria"
             value={comValorExato(kpis.valorSob, brlAbbr(kpis.valorSob))}
             legend={`em ${kpis.qtdSob} lançamento${kpis.qtdSob === 1 ? "" : "s"}`}
@@ -1407,11 +1536,7 @@ export default function Achados({ abas }: { abas?: React.ReactNode }) {
                     {r.categoria && (
                       <span className={cn("inline-flex px-1.5 py-0.5 rounded text-[10px] font-medium border", catStyle(r.categoria))}>{r.categoria}</span>
                     )}
-                    {r.omie_anexo_enviado_em && (
-                      <span title={`Anexado ao Omie em ${fmtDateTimeBR(r.omie_anexo_enviado_em)}`}>
-                        <Paperclip className="h-3 w-3 shrink-0 text-[hsl(152_60%_40%)]" />
-                      </span>
-                    )}
+                    <ClipeAnexo enviadoEm={r.omie_anexo_enviado_em} erp={anexoDoErp(r)} />
                     <ChipParcela r={r} />
                     <ChipIA r={r} />
                   </div>
@@ -1663,26 +1788,63 @@ export default function Achados({ abas }: { abas?: React.ReactNode }) {
                     </Button>
                     <div className="text-[11px] text-muted-foreground mt-1">PDF, JPG, PNG ou WEBP · até 10 MB</div>
                     {/* Envio individual: manda SÓ o anexo deste lançamento para o título do Omie.
-                        Só aparece com comprovante + título do Omie e enquanto não foi enviado. */}
+                        Só aparece com comprovante + título do Omie e enquanto não foi enviado.
+
+                        QUANDO O ERP JÁ TEM ANEXO o botão azul sai da frente: enviar de novo
+                        põe um segundo arquivo no mesmo título, e quem abrir o Omie depois não
+                        sabe qual dos dois é a nota. Mas ele não some de vez — "tem arquivo" não
+                        é "tem a nota certa", e o anexo que NÃO parece nota é justamente o caso
+                        que precisa de um envio. Vira aviso + botão discreto: uma decisão, e não
+                        um clique de rotina. */}
                     {selected.link_comprovante && selected.omie_cod_titulo && !selected.omie_anexo_enviado_em && (
-                      <Button
-                        size="sm"
-                        onClick={() => enviarUmOmie(selected)}
-                        disabled={enviandoUm}
-                        className="mt-2 h-8 text-[12px] text-white"
-                        style={{ backgroundColor: "#1D63C7" }}
-                      >
-                        {enviandoUm
-                          ? <><Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> Enviando…</>
-                          : <><OmieLogo className="mr-1.5 h-3.5 w-3.5" /> Enviar ao Omie</>}
-                      </Button>
+                      anexoDoErp(selected) ? (
+                        <div className="mt-2 rounded-lg border border-amber-500/30 bg-amber-500/10 p-2.5">
+                          <div className="flex items-start gap-1.5 text-[11px] text-amber-800 dark:text-amber-300">
+                            <AlertCircle className="h-3.5 w-3.5 shrink-0 mt-px" />
+                            <span>
+                              {frasePosToAMao(anexoDoErp(selected)!)}. Enviar de novo deixa dois
+                              arquivos no mesmo título.
+                            </span>
+                          </div>
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() => enviarUmOmie(selected)}
+                            disabled={enviandoUm}
+                            className="mt-2 h-7 text-[11px]"
+                          >
+                            {enviandoUm
+                              ? <><Loader2 className="mr-1.5 h-3 w-3 animate-spin" /> Enviando…</>
+                              : <><OmieLogo className="mr-1.5 h-3 w-3" /> Enviar mesmo assim</>}
+                          </Button>
+                        </div>
+                      ) : (
+                        <Button
+                          size="sm"
+                          onClick={() => enviarUmOmie(selected)}
+                          disabled={enviandoUm}
+                          className="mt-2 h-8 text-[12px] text-white"
+                          style={{ backgroundColor: "#1D63C7" }}
+                        >
+                          {enviandoUm
+                            ? <><Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> Enviando…</>
+                            : <><OmieLogo className="mr-1.5 h-3.5 w-3.5" /> Enviar ao Omie</>}
+                        </Button>
+                      )
                     )}
                   </div>
 
                   <div className="col-span-2">
                     <div className="text-[11px] uppercase tracking-wider text-muted-foreground font-medium">Anexo Omie</div>
+                    {/* O "—" queria dizer "não anexado" e mentia: dizia isso também para o
+                        título com a nota anexada à mão no ERP. Agora ele só sobra para o
+                        que ninguém sabe — inclusive o que a varredura ainda não leu. */}
                     <div className="text-sm mt-1">
-                      {selected.omie_anexo_enviado_em ? `Anexado em ${fmtDateTimeBR(selected.omie_anexo_enviado_em)}` : "—"}
+                      {selected.omie_anexo_enviado_em
+                        ? `Anexado em ${fmtDateTimeBR(selected.omie_anexo_enviado_em)}`
+                        : anexoDoErp(selected)
+                          ? frasePosToAMao(anexoDoErp(selected)!)
+                          : "—"}
                     </div>
                   </div>
                 </div>
@@ -1900,6 +2062,47 @@ function leituraAtual(r: Row): boolean {
 /** O que a nota diz que foi comprado — vazio quando não há leitura válida. */
 function compraDaLinha(r: Row): string | null {
   return leituraDoArquivo(r) ? fraseDaNota(r.ia_leitura) : null;
+}
+
+/** O texto do hover do clipe quando a nota está no ERP sem ter saído do Hub. */
+function frasePosToAMao(erp: AnexoErp) {
+  const quantos = `${erp.qtd} anexo${erp.qtd > 1 ? "s" : ""}`;
+  const quando = erp.lido_em ? ` · lido em ${fmtDateTimeBR(erp.lido_em)}` : "";
+  const ressalva = erp.parece_nota === false
+    ? " — o nome do arquivo não parece nota fiscal"
+    : "";
+  return `Já tem ${quantos} no Omie, posto fora do Hub${ressalva}${quando}`;
+}
+
+/* O CLIPE DA LINHA — e as DUAS coisas diferentes que ele diz.
+ *
+ * Verde: o Hub mandou este arquivo, e sabe a hora (`omie_anexo_enviado_em`).
+ * Cinza: o ERP respondeu que o título tem anexo, mas não foi daqui que ele saiu
+ * — alguém anexou à mão no Omie. É nota do mesmo jeito, e o que ela evita é o
+ * reenvio que duplicaria o arquivo lá dentro.
+ * Âmbar: tem arquivo, mas o nome não parece de nota fiscal. "Tem anexo" e "tem
+ * a nota certa" não são a mesma frase, e a varredura já separa as duas.
+ *
+ * Sem clipe continua querendo dizer "não sei": título que a varredura ainda não
+ * leu não aparece aqui, e ausência de clipe nunca foi promessa de ausência de
+ * nota. */
+function ClipeAnexo({ enviadoEm, erp }: { enviadoEm?: string | null; erp: AnexoErp | null }) {
+  if (enviadoEm) {
+    return (
+      <span title={`Anexado ao Omie em ${fmtDateTimeBR(enviadoEm)}`}>
+        <Paperclip className="h-3 w-3 shrink-0 text-[hsl(152_60%_40%)]" />
+      </span>
+    );
+  }
+  if (!erp) return null;
+  return (
+    <span title={frasePosToAMao(erp)}>
+      <Paperclip className={cn(
+        "h-3 w-3 shrink-0",
+        erp.parece_nota === false ? "text-amber-500" : "text-muted-foreground",
+      )} />
+    </span>
+  );
 }
 
 /** "1/2" — a compra foi dividida em vezes e a nota é do valor CHEIO.

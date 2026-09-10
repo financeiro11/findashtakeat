@@ -1,3 +1,5 @@
+import { normalize } from "@/lib/normalize";
+
 /* O marcador de parcela da fatura ("CENTRAL DE AVIAMENTO  01/02   VITORIA") vem
    da MESMA regra que a conferência usa no servidor, e não de uma cópia: quem
    decide o que é parcela é `_shared/conferencia-comprovante.ts`, e a tela só
@@ -57,4 +59,25 @@ export function fmtTrilha(iso: string) {
 export function compLabel(iso: string) {
   const d = new Date(iso + "T00:00:00");
   return `${MESES_PT_LONG[d.getMonth()]} / ${d.getFullYear()}`;
+}
+
+/* O QUE CONTA COMO "SOFTWARE" NA AUDITORIA.
+ *
+ * Assinatura de SaaS é débito recorrente que nunca teve nota para cobrar de
+ * ninguém: entra na fatura todo mês, cai como pendente e afoga o que é trabalho
+ * de verdade. Na leitura de 10/09/2026 eram 119 dos 249 pendentes — quase
+ * metade da fila era coisa que ninguém ia atrás.
+ *
+ * O CASAMENTO É PELO TEXTO DA CATEGORIA DO OMIE, e não por uma lista de códigos.
+ * Hoje são cinco contas ("3.1.2.1 Softwares - Administrativo", "3.2.5. Software
+ * - Operação", "3.1.5.1 Softwares - Tecnologia", "3.1.3.1 Softwares - Marketing",
+ * "3.1.4.1 Softwares - Comercial"): a numeração muda quando alguém mexe no plano
+ * de contas, e nem o singular/plural é o mesmo entre elas. A raiz "SOFTWARE"
+ * pega as duas grafias e sobrevive à renumeração; uma lista de códigos
+ * silenciosamente deixaria de casar no dia em que o plano fosse reorganizado.
+ *
+ * Categoria vazia NÃO é software. "Ainda não sei o que é" continua na conta dos
+ * pendentes, que é onde o trabalho está. */
+export function ehCategoriaSoftware(categoria: string | null | undefined): boolean {
+  return normalize(categoria ?? "").includes("SOFTWARE");
 }

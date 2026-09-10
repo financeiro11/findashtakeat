@@ -22,9 +22,29 @@ import { DFC_SCHEMA, type Node } from "../_shared/demonstracoes-schema.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
+  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type, x-cron-token",
   "Access-Control-Allow-Methods": "POST, OPTIONS",
 };
+
+/**
+ * Chamada agendada (cron): `x-cron-token` casando com `internal_cron_tokens`.
+ *
+ * Até 10/09/2026 esta função só rodava quando alguém clicava em "Sincronizar" na
+ * tela — e ninguém clicava. A DRE ficou parada em 04/09 com a coluna de setembro
+ * somando só até o dia 3, sem nada na tela dizendo isso. Pior: o `updated_at` de
+ * `demonstracoes_contabeis` continuava FRESCO, porque o cron de Meios de
+ * Pagamento reescreve o blob todo dia. Quem responde "está sincronizado?" é o
+ * `omie_sync_log`, não o `updated_at`.
+ */
+// deno-lint-ignore no-explicit-any
+async function chamadaDeCron(req: Request, supabase: any): Promise<boolean> {
+  const token = req.headers.get("x-cron-token");
+  if (!token) return false;
+  const { data } = await supabase
+    .from("internal_cron_tokens").select("name")
+    .eq("name", "omie-sync").eq("token", token).maybeSingle();
+  return !!data;
+}
 
 const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: { ...corsHeaders, "Content-Type": "application/json" } });
@@ -188,7 +208,7 @@ Deno.serve(async (req) => {
   );
 
   try {
-    await requireUser(req, { bloquearCargos: ["parcerias"] });
+    if (!(await chamadaDeCron(req, supabase))) await requireUser(req, { bloquearCargos: ["parcerias"] });
     const body = req.method === "POST" ? await req.json().catch(() => ({})) : {};
     const action = body?.action ?? "sync";
     // atualizar=true força buscar do Omie; senão usa o cache compartilhado (recálculo local).

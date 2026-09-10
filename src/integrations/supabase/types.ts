@@ -858,8 +858,10 @@ export type Database = {
           enviado_em: string | null
           erro: string | null
           lancamentos: number
+          modo: string
           n_cod_lanc: string | null
           natureza: string
+          ncodcc: string
           saidas: number
           status: string
           tentativas: number
@@ -875,8 +877,10 @@ export type Database = {
           enviado_em?: string | null
           erro?: string | null
           lancamentos?: number
+          modo?: string
           n_cod_lanc?: string | null
           natureza: string
+          ncodcc?: string
           saidas?: number
           status?: string
           tentativas?: number
@@ -892,8 +896,10 @@ export type Database = {
           enviado_em?: string | null
           erro?: string | null
           lancamentos?: number
+          modo?: string
           n_cod_lanc?: string | null
           natureza?: string
+          ncodcc?: string
           saidas?: number
           status?: string
           tentativas?: number
@@ -11327,7 +11333,7 @@ export type Database = {
       }
       asaas_metricas: { Args: { p_referencia: string }; Returns: Json }
       asaas_omie_cobertura: {
-        Args: { p_ate?: string; p_de?: string }
+        Args: { p_ate?: string; p_de?: string; p_ncodcc?: string }
         Returns: {
           com_erro: number
           dia: string
@@ -11337,6 +11343,17 @@ export type Database = {
           liquido_enviado: number
           liquido_extrato: number
           pendentes: number
+        }[]
+      }
+      asaas_omie_virada: {
+        Args: { p_limite?: number }
+        Returns: {
+          dia: string
+          diarios_ativos: number
+          linhas_extrato: number
+          linhas_faltando: number
+          linhas_no_omie: number
+          virado: boolean
         }[]
       }
       asaas_prazo_credito: { Args: { p_forma: string }; Returns: number }

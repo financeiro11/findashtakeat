@@ -192,7 +192,14 @@ Deno.serve(async (req) => {
       .not("data_movimento", "is", null)
       .order("data_movimento", { ascending: true }).limit(1).maybeSingle();
 
-    const decisoes: Decisao[] = decidirMeses(taxas, hojeBRT(), (pri?.data_movimento as string) ?? null);
+    /* Mês travado fica de fora — a camada de valor manual passa por cima da
+       trava, então a guarda tem de vir daqui. Ver `decidirMeses`. */
+    const { data: travadosRows, error: eTrav } = await supabase
+      .from("demonstracoes_mes_trancado").select("col_key");
+    if (eTrav) throw eTrav;
+    const travados = new Set<string>((travadosRows ?? []).map((t: Record<string, unknown>) => String(t.col_key)));
+
+    const decisoes: Decisao[] = decidirMeses(taxas, hojeBRT(), (pri?.data_movimento as string) ?? null, travados);
     const alvos = aplicaveis(decisoes);
 
     const relatorio = {

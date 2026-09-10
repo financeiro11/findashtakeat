@@ -12,6 +12,8 @@ import { extDe, nomeSeguroParaOmie, planoDeAnexo, tipoRealDoArquivo } from "./an
 export { nomeSeguroParaOmie, pareceNotaFiscal, tipoRealDoArquivo } from "./anexo-tipo.ts";
 
 import { contarAnexos, ehRespostaQuebrada, omieCall } from "./omie-rpc.ts";
+import { ordemDaVarredura } from "./varredura.ts";
+export { ordemDaVarredura } from "./varredura.ts";
 
 // Reexportado para não quebrar quem já importa daqui — a conversa crua mudou de
 // arquivo, não de endereço.
@@ -512,9 +514,107 @@ export async function listarCategorias(): Promise<OmieCategoria[]> {
  * `filtros` é repassado direto ao Omie (ex.: intervalo de datas).
  * `limitePaginas` protege contra volumes gigantes durante testes.
  */
+/**
+ * Contas correntes do ERP, só o código. Uma chamada, poucos registros.
+ */
+export async function listarCodigosDeContaCorrente(): Promise<string[]> {
+  const out: string[] = [];
+  let pagina = 1;
+  let totalPaginas = 1;
+  do {
+    const r = await omieCall<any>("geral/contacorrente", "ListarContasCorrentes", {
+      pagina, registros_por_pagina: 100,
+    });
+    const arr = r?.ListarContasCorrentes ?? r?.conta_corrente_cadastro ?? r?.cadastros ?? r?.contas ?? [];
+    for (const c of arr) {
+      /* SÓ `nCodCC`, sem cascata de apelidos. O parser do omie-caixa-sync aceita
+         `codigo`/`nCodConta` como reserva porque lá o id é só chave de um Map;
+         aqui ele VOLTA para a API, e um campo parecido (o código de integração,
+         por exemplo) faz o Omie responder "Id da Conta Corrente informado na tag
+         [nCodCC] não cadastrado!" e derruba a varredura inteira. */
+      const cod = c?.nCodCC;
+      if (cod != null && String(cod).trim() !== "") out.push(String(cod));
+    }
+    totalPaginas = Number(r?.total_de_paginas ?? r?.nTotPaginas ?? 1);
+    pagina++;
+  } while (pagina <= totalPaginas);
+  return out;
+}
+
+/**
+ * Todos os movimentos MENOS os das contas indicadas — varrendo conta a conta.
+ *
+ * POR QUE ISTO EXISTE. A contabilidade exige o extrato do Asaas espelhado LINHA A
+ * LINHA no Omie (46.240 lançamentos entre abr e set/2026, ~284/dia). Sem recorte,
+ * `ListarMovimentos` passaria de 17.848 para ~64 mil registros — e o pull, que já
+ * leva 157,8s hoje, iria para mais de nove minutos. Isso mataria de uma vez o
+ * `omie-sync`, o `omie-caixa-sync` e o `omie-pix-sync`, que baixam o ERP inteiro.
+ *
+ * O Hub NÃO precisa desses lançamentos vindos do Omie: ele já tem `asaas_extrato`
+ * localmente, o `omie-caixa-sync` de propósito ignora as contas Asaas no
+ * calendário, e a rubrica "Meios de Pagamento" sai da RPC `asaas_taxas_mes`. Eles
+ * existem no ERP para a contabilidade, não para nós.
+ *
+ * `nCodCC` FUNCIONA como filtro — medido em 10/09/2026, contra o comentário antigo
+ * do omie-sync que dizia que o endpoint não filtrava. E a varredura não perde nada:
+ * a soma conta a conta deu 17.848, exatamente o total sem filtro, porque todo
+ * movimento tem conta (inclusive os a vencer, que apontam a conta em que serão
+ * baixados).
+ */
+export async function listarMovimentosExcluindoContas(
+  fora: ReadonlySet<string>,
+  limitePaginas = 200,
+  /** Contas que a última varredura viu com movimento. Ver `ordemDaVarredura`. */
+  comMovimento: ReadonlySet<string> = new Set(),
+): Promise<any[]> {
+  const contas = await listarCodigosDeContaCorrente();
+  const alvo = ordemDaVarredura(contas.filter((c) => !fora.has(c)), comMovimento);
+  const out: any[] = [];
+  let i = 0;
+  // Serial: o Omie tem trava POR MÉTODO, e duas listagens em voo se recusam.
+  for (const cc of alvo) {
+    /* CADA CONTA PEDE UM TAMANHO DE PÁGINA DIFERENTE, e isso não é capricho.
+     *
+     * Reproduzido em 10/09/2026: varrendo conta a conta, as onze primeiras
+     * passam e a décima segunda falha com "Consumo redundante detectado" —
+     * sempre logo depois de uma conta que devolve ZERO registros. Duas consultas
+     * seguidas que não retornam nada o Omie não distingue, mesmo com `nCodCC`
+     * diferente, e a segunda é recusada.
+     *
+     * Insistir seria pior que inútil: repetir a chamada recusada reinicia a
+     * janela de 60s, e na 10ª requisição com erro o bloqueio é de 30 MINUTOS.
+     * Variar o tamanho da página torna cada requisição distinta por construção,
+     * e custa nada — o número de páginas muda em um, no máximo. */
+    const tamanhoDaConta = 500 - (i++ % 50);
+    try {
+      const parte = await listarMovimentos(
+        { nCodCC: Number(cc) }, limitePaginas, [tamanhoDaConta, 100, 50],
+      );
+      for (const m of parte) out.push(m);
+    } catch (e) {
+      /* Conta que o cadastro lista mas o movimento não reconhece: não há o que
+         baixar dela, e derrubar a varredura inteira por causa disso deixaria a
+         DRE sem NENHUM movimento. Qualquer outro erro sobe — perder uma conta em
+         silêncio é exatamente o modo de falhar que não pode existir aqui. */
+      const msg = e instanceof Error ? e.message : String(e);
+      if (/n(ã|a)o cadastrad/i.test(msg)) {
+        console.warn(`Conta ${cc} sem movimentos no Omie (${msg.slice(0, 120)}) — seguindo.`);
+        continue;
+      }
+      throw e;
+    }
+  }
+  return out;
+}
+
 export async function listarMovimentos(
   filtros: Record<string, unknown> = {},
   limitePaginas = 200,
+  /* Tamanhos de página a tentar, do maior para o menor. Parametrizável porque a
+     varredura conta a conta precisa que contas diferentes usem tamanhos
+     diferentes — duas consultas seguidas que devolvem ZERO registros o Omie
+     recusa como redundantes, mesmo com nCodCC diferente. */
+  tamanhos: number[] = [500, 100, 50],
 ): Promise<any[]> {
   // Uma passada completa com um tamanho de página fixo.
   // Nota: `cExibirDadosCategoria` NÃO faz parte do request de financas/mf/ListarMovimentos
@@ -542,7 +642,6 @@ export async function listarMovimentos(
   // listagem inteira com página menor — como é só leitura, repetir é seguro, e recomeçar
   // do zero evita a aritmética de "de qual registro eu parei", que erraria calado e
   // duplicaria ou perderia movimentos (corrompendo o casamento com o cartão).
-  const tamanhos = [500, 100, 50];
   let ultimoErro: unknown = null;
 
   for (const n of tamanhos) {

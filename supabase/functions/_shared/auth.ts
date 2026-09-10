@@ -18,6 +18,17 @@ export interface Caller {
   userId: string | null;
   cargo: string;
   /**
+   * As capacidades desta conta — a MESMA matriz que a tela de Perfis de acesso
+   * grava (`acesso_perfil`), resolvida aqui para a função não repetir a lista.
+   *
+   * Vazio para service role, que passa por `isService`. Use `pode()`, nunca
+   * compare perfis à mão: uma lista repetida numa Edge Function diverge da tela
+   * no primeiro ajuste, e ninguém percebe até vazar.
+   */
+  capacidades: string[];
+  /** Esta conta tem a capacidade? Service role tem todas — é o Hub trabalhando. */
+  pode: (capacidade: string) => boolean;
+  /**
    * O perfil de acesso — a lista FECHADA de src/lib/modules.ts, não o `cargo`,
    * que é texto livre. Vazio para chamadas de service role.
    *
@@ -59,7 +70,12 @@ export async function requireUser(
   if (!token) throw new AuthError("Não autenticado.");
 
   // Chamada de sistema com a service role key (cron/back-office) — permitida.
-  if (jwtRole(token) === "service_role") return { userId: null, cargo: "", perfil: "", isService: true };
+  if (jwtRole(token) === "service_role") {
+    return {
+      userId: null, cargo: "", perfil: "", isService: true,
+      capacidades: [], pode: () => true,
+    };
+  }
 
   const admin = createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!);
   const { data, error } = await admin.auth.getUser(token);
@@ -70,6 +86,19 @@ export async function requireUser(
   const cargo = (prof?.cargo ?? "").trim().toLowerCase();
   const perfil = (prof?.perfil ?? "").trim().toLowerCase();
 
+  /* As capacidades do perfil, da mesma tabela que a tela edita. O `admin` não se
+     edita — a linha dele é reescrita cheia por trigger, mas a garantia mora aqui
+     também: uma linha estragada no banco não pode trancar quem conserta. */
+  let capacidades: string[] = [];
+  if (perfil === "admin") {
+    capacidades = ["*"];
+  } else if (perfil) {
+    const { data: linha } = await admin
+      .from("acesso_perfil").select("capacidades").eq("perfil", perfil).maybeSingle();
+    capacidades = ((linha?.capacidades ?? []) as string[]).map((c) => String(c));
+  }
+  const pode = (c: string) => capacidades.includes("*") || capacidades.includes(c);
+
   if (opts.bloquearCargos?.map((c) => c.toLowerCase()).includes(cargo)) {
     throw new AuthError("Você não tem permissão para esta ação.");
   }
@@ -79,5 +108,8 @@ export async function requireUser(
     throw new AuthError("Você não tem permissão para esta ação.");
   }
 
-  return { userId: data.user.id, cargo, perfil, isService: false, email: data.user.email ?? null };
+  return {
+    userId: data.user.id, cargo, perfil, isService: false,
+    email: data.user.email ?? null, capacidades, pode,
+  };
 }

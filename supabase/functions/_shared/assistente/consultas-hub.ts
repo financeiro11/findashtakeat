@@ -315,6 +315,18 @@ export async function contrapartesComparadas(
   rubricas: string[],
   atual: Competencia,
   anterior: Competencia,
+  /**
+   * Quem perguntou vê a folha inteira?
+   *
+   * A função roda com a SERVICE ROLE — `auth.uid()` é nulo e o Postgres não tem
+   * como saber quem está do outro lado. Sem isto, a Liderança perguntaria "quem
+   * puxou a Equipe Comercial em julho?" e receberia nome por nome, com valor:
+   * a mesma folha que a tela esconde, pela boca da IA.
+   *
+   * O padrão é `false` de propósito. Quem sabe é quem tem o `caller`; esquecer
+   * de passar esconde demais, e esconder demais aparece na hora.
+   */
+  comFolha = false,
 ): Promise<Resultado> {
   const mesAtual = montarColuna(atual);
   const mesAnterior = montarColuna(anterior);
@@ -324,6 +336,7 @@ export async function contrapartesComparadas(
     p_meses: [mesAtual, mesAnterior],
     // A RPC filtra no join do DE-PARA, antes de agrupar: sem isto viria a empresa inteira.
     p_rubrica: rubricas.length === 1 ? rubricas[0] : null,
+    p_com_folha: comFolha,
   });
 
   if (error) {

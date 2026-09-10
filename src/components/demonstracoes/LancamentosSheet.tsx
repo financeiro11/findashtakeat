@@ -33,6 +33,34 @@ import { montarPonte } from "@/lib/ponteVariacao";
 import { useApelidos } from "@/hooks/useApelidos";
 import { apelidoDe, apelidosNoTexto } from "@/lib/apelidos";
 import { BotaoNota, lerNotas, carimboNota, type NotaLancamento } from "@/components/demonstracoes/NotaLancamento";
+import { useAuth } from "@/hooks/useAuth";
+
+/* ─────────────── As rubricas que são folha ───────────────
+   `demonstracoes_lancamentos` não devolve linha de folha para quem não vê a
+   folha inteira — a trava está no Postgres, e é lá que ela vale. O que a tela
+   precisa saber é POR QUE a lista veio vazia: sem isto, clicar em "Equipe
+   Comercial" mostraria "nenhum lançamento caiu nesta rubrica", que é mentira e
+   vira chamado.
+
+   Cache em nível de módulo (mesmo padrão de `useApelidos`): são duas listas de
+   oito nomes, iguais para todo mundo, e buscá-las a cada abertura do painel
+   seria uma ida ao banco por clique. */
+const rubricasFolhaCache = new Map<string, Promise<Set<string>>>();
+
+function rubricasDeFolha(tipo: string): Promise<Set<string>> {
+  const emCache = rubricasFolhaCache.get(tipo);
+  if (emCache) return emCache;
+  /* O builder do supabase-js é um `PromiseLike`, não uma Promise: ele não tem
+     `.catch`. `Promise.resolve(...)` o transforma numa de verdade. */
+  const pedido = Promise.resolve(supabase.rpc("rubricas_de_folha", { p_tipo: tipo }))
+    .then(({ data }) => new Set((data as string[] | null) ?? []))
+    /* Falha de rede não pode virar "esta rubrica é folha": a tela mostraria o
+       aviso de restrição numa célula de aluguel. Vazio erra para o lado de
+       mostrar a lista — que é o que o Postgres já filtrou de qualquer jeito. */
+    .catch(() => new Set<string>());
+  rubricasFolhaCache.set(tipo, pedido);
+  return pedido;
+}
 
 /* ---------------------------------------------------------------------------
  * Auditoria: os lançamentos do Omie por trás de uma célula da DRE/DFC.
@@ -267,6 +295,22 @@ export function LancamentosSheet({
   /* O de-para de apelidos (Configurações › Parametrização). Cache compartilhado
      em nível de módulo — dezenas de linhas na tela pedem o mesmo mapa. */
   const apelidos = useApelidos();
+
+  /* ----- folha: a lista some, o total fica -----------------------------
+     Quem não tem a folha INTEIRA não vê nome e valor de pessoa aqui — nem do
+     próprio time. O total da célula continua na tela (é número da empresa); o
+     que sai é a lista. Para o próprio time o caminho é o painel de Remuneração,
+     e é para lá que o aviso aponta. */
+  const vejoAFolha = useAuth().acesso.folha.tipo === "tudo";
+  const [rubricasFolha, setRubricasFolha] = useState<Set<string>>(new Set());
+  useEffect(() => {
+    if (vejoAFolha || !alvo?.tipo) return;
+    let vivo = true;
+    void rubricasDeFolha(alvo.tipo).then((s) => { if (vivo) setRubricasFolha(s); });
+    return () => { vivo = false; };
+  }, [vejoAFolha, alvo?.tipo]);
+  const celulaDeFolha = !vejoAFolha && !!alvo && rubricasFolha.has(alvo.rubrica);
+
   const [linhas, setLinhas] = useState<Lancamento[]>([]);
   /* Os lançamentos da MESMA célula um mês atrás — a outra metade da ponte de
      variação. Vêm da mesma RPC, disparada junto com a do mês em foco, mas o
@@ -1303,27 +1347,33 @@ export function LancamentosSheet({
                 <div className="w-px bg-border" />
                 <div className={cn(
                   "flex-1 px-3 py-2",
-                  carregando || erro ? "bg-muted/40" : bate ? "bg-emerald-50" : "bg-amber-50",
+                  carregando || erro || celulaDeFolha ? "bg-muted/40" : bate ? "bg-emerald-50" : "bg-amber-50",
                 )}>
                   <div className={cn(
                     "flex items-center gap-1.5 text-[9px] font-bold tracking-[0.12em]",
-                    carregando || erro ? "text-muted-foreground" : bate ? "text-emerald-700" : "text-amber-800",
+                    carregando || erro || celulaDeFolha ? "text-muted-foreground"
+                      : bate ? "text-emerald-700" : "text-amber-800",
                   )}>
                     {carregando ? <Loader2 className="h-2.5 w-2.5 animate-spin" />
+                      : celulaDeFolha ? <Users className="h-2.5 w-2.5" />
                       : bate ? <Check strokeWidth={3.5} className="h-2.5 w-2.5" />
                       : <TriangleAlert className="h-2.5 w-2.5" />}
                     <span className="truncate">
                       {carregando ? "SOMANDO…"
+                        /* Sem a lista não há soma para comparar, e "0 LANÇAMENTOS
+                           · DIFERE" acusaria a DRE de estar furada. */
+                        : celulaDeFolha ? "FOLHA · DETALHE RESTRITO"
                         : erro ? "SOMA DOS LANÇAMENTOS"
                         : `${linhas.length} ${linhas.length === 1 ? "LANÇAMENTO" : "LANÇAMENTOS"}`}
-                      {!carregando && !erro && alvo.celula != null && (bate ? " · CONFERE" : " · DIFERE")}
+                      {!carregando && !erro && !celulaDeFolha && alvo.celula != null && (bate ? " · CONFERE" : " · DIFERE")}
                     </span>
                   </div>
                   <div className={cn(
                     "num mt-0.5 text-[15px] font-bold",
-                    carregando || erro ? "text-foreground" : bate ? "text-emerald-700" : "text-amber-900",
+                    carregando || erro || celulaDeFolha ? "text-foreground"
+                      : bate ? "text-emerald-700" : "text-amber-900",
                   )}>
-                    {moeda(soma)}
+                    {celulaDeFolha ? "—" : moeda(soma)}
                   </div>
                 </div>
               </div>
@@ -1331,7 +1381,7 @@ export function LancamentosSheet({
               {/* A exceção explica a si mesma, e só ela ocupa linha: em mês
                   travado a célula vem do tracker e não tem por que casar com o
                   que o Omie tem. */}
-              {!carregando && !erro && !bate && alvo.celula != null && (
+              {!carregando && !erro && !celulaDeFolha && !bate && alvo.celula != null && (
                 <p className="mt-1.5 text-[11px] leading-relaxed text-amber-900">
                   Diferença de <b className="num">{moeda(soma - alvo.celula)}</b> —{" "}
                   {alvo.travado
@@ -1533,6 +1583,18 @@ export function LancamentosSheet({
                 </div>
               ) : erro ? (
                 <div className="px-5 py-8 text-center text-[12.5px] text-primary">{erro}</div>
+              ) : celulaDeFolha ? (
+                /* Antes desta mensagem a lista vinha vazia dizendo "nenhum
+                   lançamento caiu nesta rubrica" — que é falso, e manda quem lê
+                   procurar um erro que não existe. */
+                <div className="mx-auto max-w-md px-5 py-10 text-center">
+                  <Users className="mx-auto mb-2 h-5 w-5 text-muted-foreground" />
+                  <p className="text-[12.5px] font-medium">Esta linha é folha de pagamento.</p>
+                  <p className="mt-1 text-[12px] leading-relaxed text-muted-foreground">
+                    O total continua acima — o que não abre é quem recebeu e quanto. Para o seu
+                    time, o histórico por pessoa está em <strong>Operacional › Remuneração</strong>.
+                  </p>
+                </div>
               ) : !linhas.length ? (
                 <div className="px-5 py-10 text-center text-[12.5px] text-muted-foreground">
                   Nenhum lançamento do Omie caiu nesta rubrica neste mês.

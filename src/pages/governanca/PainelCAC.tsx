@@ -18,6 +18,7 @@ import {
   type PainelRow, type LinhaMatriz, type GrupoMatriz, type Linha,
   type Periodo, type Selo, type Desvio,
 } from "@/lib/cac";
+import { useAuth } from "@/hooks/useAuth";
 import { CelulaDialog } from "./cac/CelulaDialog";
 import { CadastroCAC } from "./cac/CadastroCAC";
 import { SeloRegra } from "./cac/SeloRegra";
@@ -84,6 +85,9 @@ const PERIODOS: { valor: Periodo; label: string }[] = [
 ];
 
 export default function PainelCAC() {
+  /* O CAC é de `metricas`; o detalhe por pessoa é folha. Quem não tem a folha
+     inteira fica com o número e perde a aba de cadastro e a lista da célula. */
+  const vejoAFolha = useAuth().acesso.folha.tipo === "tudo";
   const [ano, setAno] = useState(ANO_PADRAO);
   const [periodo, setPeriodo] = useState<Periodo>("12m");
   const [heatmap, setHeatmap] = useState(true);
@@ -278,7 +282,14 @@ export default function PainelCAC() {
       <Tabs defaultValue="painel">
         <TabsList className="h-8">
           <TabsTrigger value="painel" className="text-[12.5px]">Painel</TabsTrigger>
-          <TabsTrigger value="cadastro" className="text-[12.5px]">Pessoas e regras</TabsTrigger>
+          {/* "Pessoas e regras" lista 103 pessoas com a remuneração cadastrada —
+              é folha, e o painel é de `metricas`. Quem não vê a folha inteira
+              fica com o NÚMERO do CAC, que é o que a tela existe para responder,
+              sem o detalhe por pessoa. A policy de `cac_pessoas` já recusa; a
+              aba some para não oferecer uma tela que voltaria vazia. */}
+          {vejoAFolha && (
+            <TabsTrigger value="cadastro" className="text-[12.5px]">Pessoas e regras</TabsTrigger>
+          )}
         </TabsList>
 
         <TabsContent value="painel" className="mt-3.5">
@@ -366,9 +377,11 @@ export default function PainelCAC() {
           )}
         </TabsContent>
 
-        <TabsContent value="cadastro" className="mt-3.5">
-          <CadastroCAC onMudou={carregar} totaisPorLinha={totaisPorLinha} />
-        </TabsContent>
+        {vejoAFolha && (
+          <TabsContent value="cadastro" className="mt-3.5">
+            <CadastroCAC onMudou={carregar} totaisPorLinha={totaisPorLinha} />
+          </TabsContent>
+        )}
       </Tabs>
 
       <CelulaDialog

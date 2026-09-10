@@ -4,12 +4,13 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/u
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Loader2, ChevronRight, AlertTriangle, Search } from "lucide-react";
+import { Loader2, ChevronRight, AlertTriangle, Search, Users } from "lucide-react";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import { valorExato } from "@/lib/valor";
 import { comValorExato } from "@/components/ValorExato";
 import { useApelidos } from "@/hooks/useApelidos";
+import { useAuth } from "@/hooks/useAuth";
 import { nomeExibido } from "@/lib/apelidos";
 import {
   MESES, agruparPorPessoa, resumirCelula, desvioVsMedia,
@@ -42,6 +43,9 @@ export function CelulaDialog({
   const [busca, setBusca] = useState("");
   const [aberta, setAberta] = useState<string | null>(null);
   const apelidos = useApelidos();
+  /* A célula é a folha de um time. Sem a folha inteira, o valor abre e a lista
+     de pessoas não — ver o aviso mais abaixo. */
+  const vejoAFolha = useAuth().acesso.folha.tipo === "tudo";
 
   const aberto = !!linha && mes != null;
 
@@ -51,6 +55,13 @@ export function CelulaDialog({
     setLoading(true);
     setBusca("");
     setAberta(null);
+
+    /* A célula do CAC É a folha de um time: nome e valor, pessoa a pessoa. Sem a
+       folha inteira não se abre — nem a do próprio time. A RPC já recusa
+       (devolve zero linhas); parar aqui evita a ida ao banco e, principalmente,
+       evita que a tela mostre "0 pessoa(s) na regra", que faria quem lê achar
+       que a regra está desconfigurada. */
+    if (!vejoAFolha) { setLancs([]); setLoading(false); return; }
 
     void (async () => {
       const { data, error } = await db.rpc("cac_celula", {
@@ -67,7 +78,7 @@ export function CelulaDialog({
     })();
 
     return () => { cancelado = true; };
-  }, [aberto, ano, mes, linha]);
+  }, [aberto, ano, mes, linha, vejoAFolha]);
 
   const resumo = useMemo(() => resumirCelula(lancs), [lancs]);
   const pessoas = useMemo(() => agruparPorPessoa(lancs), [lancs]);
@@ -109,13 +120,27 @@ export function CelulaDialog({
             {linha?.grupo}
             {" · "}
             {dv ? `${pctStr(dv.desvio)} vs média 3m (${brl(dv.media)})` : "sem base de comparação"}
-            {!loading && ` · ${pessoas.length} pessoa(s) na regra`}
+            {!loading && vejoAFolha && ` · ${pessoas.length} pessoa(s) na regra`}
           </p>
         </DialogHeader>
 
         {loading ? (
           <div className="flex items-center justify-center py-12">
             <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
+          </div>
+        ) : !vejoAFolha ? (
+          <div className="space-y-3 py-2">
+            {/* O que a célula VALE continua na matriz atrás deste diálogo; o que
+                não abre é de quem ela é feita. */}
+            <div className="rounded-md border border-border bg-muted/40 px-4 py-6 text-center">
+              <Users className="mx-auto mb-2 h-5 w-5 text-muted-foreground" />
+              <p className="text-[12.5px] font-medium">Esta célula é folha de pagamento.</p>
+              <p className="mx-auto mt-1 max-w-sm text-[11.5px] leading-relaxed text-muted-foreground">
+                O valor e o desvio acima continuam valendo — o que não abre é quem recebeu e
+                quanto. Para o seu time, o histórico por pessoa está em{" "}
+                <strong>Operacional › Remuneração</strong>.
+              </p>
+            </div>
           </div>
         ) : (
           <div className="space-y-3">

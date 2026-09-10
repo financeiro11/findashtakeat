@@ -762,6 +762,13 @@ export async function lancamentosDaRubrica(
   supabase: { from: (t: string) => any; rpc: (f: string, p: Record<string, unknown>) => any },
   procurada: string,
   pedida: Competencia | null,
+  /**
+   * Quem perguntou vê a folha inteira? A função roda com a SERVICE ROLE, onde
+   * `auth.uid()` é nulo e o Postgres não alcança quem está do outro lado —
+   * perguntar "lista os lançamentos de Equipe Comercial" traria a folha por
+   * nome. Padrão `false`: esquecer de passar esconde demais, o que aparece.
+   */
+  comFolha = false,
 ): Promise<Resultado> {
   const [demRes, travasRes] = await Promise.all([
     supabase.from("demonstracoes_contabeis").select("dados, updated_at")
@@ -805,7 +812,7 @@ export async function lancamentosDaRubrica(
   const mesChave = montarColuna(alvo);
 
   const { data, error } = await supabase.rpc("demonstracoes_lancamentos", {
-    p_tipo: "dre", p_rubrica: rubrica, p_mes: mesChave,
+    p_tipo: "dre", p_rubrica: rubrica, p_mes: mesChave, p_com_folha: comFolha,
   });
 
   if (error) {

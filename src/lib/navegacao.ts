@@ -16,7 +16,7 @@ import {
   Palette, Mic, Rocket, Globe2, Paperclip, Radar, Activity,
   type LucideIcon,
 } from "lucide-react";
-import { capacidadeDaRota, podeVerRota, type Acesso, type Capacidade, type ModuleId } from "./modules";
+import { capacidadesDaRota, podeVerRota, type Acesso, type Capacidade, type ModuleId } from "./modules";
 import { normalize } from "./normalize";
 
 export type NavItem = {
@@ -226,7 +226,10 @@ export function itensDe(grupos: NavGrupo[]): NavItem[] {
  */
 export function telasDaCapacidade(cap: Capacidade): string[] {
   const todos = itensDe([...GRUPOS_FINANCEIRO, GRUPO_FACILITIES, GRUPO_BUSCA_EXTRA]);
-  const nomes = todos.filter((i) => capacidadeDaRota(i.url) === cap).map((i) => i.title);
+  // `includes` e não `===`: uma tela pode ter duas portas (Remuneração abre por
+  // `remuneracao` e por `remuneracao_time`), e ela tem de aparecer nas duas
+  // linhas — senão a segunda vira um checkbox que não diz o que faz.
+  const nomes = todos.filter((i) => capacidadesDaRota(i.url)?.includes(cap)).map((i) => i.title);
   return [...new Set(nomes)];
 }
 

@@ -3,7 +3,7 @@ import { useSearchParams } from "react-router-dom";
 import {
   TrendingUp, Search, Download, Loader2, Lock, AlertTriangle, ArrowUpRight,
   ArrowDownRight, Minus, RefreshCw, ArrowUp, ArrowDown, ArrowUpDown, Filter,
-  FilterX, ChevronDown, History, Maximize2, Minimize2,
+  FilterX, ChevronDown, History, Maximize2, Minimize2, UserSearch, Users,
 } from "lucide-react";
 import { toast } from "sonner";
 import * as XLSX from "xlsx";
@@ -18,7 +18,7 @@ import { KpiCard } from "@/components/ui/kpi-card";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import {
   Bar, BarChart, CartesianGrid, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis,
 } from "recharts";
@@ -33,10 +33,11 @@ import {
   abasDaPlanilha, compararComPares, competenciasFechadas, custoPorArea,
   degrausDoFixo, faixaVazia,
   filtrarPessoas, filtrarPorFaixa, filtrosLigados, montarLinhas, ordenarLinhas,
+  pessoasSemTime,
   recortarAte, resumoDaPessoa, rotuloMes, totaisDoMes, ultimaCompetenciaFechada,
   FILTROS_VAZIOS,
   type ColunaFaixa, type ColunaOrdenavel, type Faixa, type Filtros, type Ordem,
-  type PainelRemuneracao, type Pares, type PessoaRemuneracao,
+  type PainelRemuneracao, type Pares, type PessoaRemuneracao, type PessoaSemTime,
 } from "@/lib/remuneracao";
 import { normalize } from "@/lib/normalize";
 
@@ -278,6 +279,176 @@ function EscolherVarios({ rotulo, opcoes, escolhidos, onMudar }: {
   );
 }
 
+/* ─────────────────────────── A fila de classificação ───────────────────────────
+   Quem tem pagamento e não tem time. São 99 fichas e R$ 2,4 milhões de história
+   — gente que saiu antes de abr/2026 e nunca esteve no Portal RH, mais os
+   favorecidos que o RH não cadastra.
+
+   Elas não entram no recorte de líder nenhum enquanto não tiverem time, e essa
+   ausência é silenciosa: o 2025 do Head de Operações aparece 29% menor sem que
+   nada na tela diga que falta alguém. Por isso a classificação vive aqui, ao
+   lado do número que ela conserta, e não numa planilha à parte.
+
+   A SUGESTÃO NÃO SALVA SOZINHA. A área da categoria do Omie serve de palpite
+   quando é inequívoca (Suporte, Onboarding, Sucesso, Marketing e Tecnologia se
+   chamam igual nos dois vocabulários); "Comercial" não é setor — é Field Sales,
+   Inside Sales ou Franquias, e essa é exatamente a informação que só uma pessoa
+   tem. Sugerir ali entregaria o time de um líder para outro. */
+
+function FilaSemTime({
+  pessoas, setores, onFechar, onSalvo,
+}: {
+  pessoas: PessoaSemTime[];
+  setores: string[];
+  onFechar: () => void;
+  onSalvo: () => void;
+}) {
+  /* O rascunho começa com as sugestões JÁ escolhidas — é o que transforma 99
+     decisões em "confira e corrija as que estão erradas". Nada vai ao banco
+     antes do clique em salvar. */
+  const [escolha, setEscolha] = useState<Record<string, string>>(() =>
+    Object.fromEntries(pessoas.filter((p) => p.sugestao).map((p) => [p.id, p.sugestao!])),
+  );
+  const [salvando, setSalvando] = useState(false);
+  const [busca, setBusca] = useState("");
+
+  const visiveis = useMemo(() => {
+    const t = normalize(busca);
+    if (!t) return pessoas;
+    return pessoas.filter((p) => normalize(`${p.nome} ${p.areaPrincipal ?? ""}`).includes(t));
+  }, [pessoas, busca]);
+
+  const decididas = Object.values(escolha).filter(Boolean).length;
+  const dinheiroDecidido = pessoas
+    .filter((p) => escolha[p.id])
+    .reduce((s, p) => s + p.total, 0);
+  const dinheiroTotal = pessoas.reduce((s, p) => s + p.total, 0);
+
+  const salvar = async () => {
+    const alvo = Object.entries(escolha).filter(([, s]) => s);
+    if (!alvo.length) return;
+    setSalvando(true);
+    /* Uma RPC e não 99 updates — e não um `upsert`, que pelo PostgREST exigiria
+       mandar a linha inteira de volta (`chave` e `nome` são obrigatórios no
+       insert) e transformaria uma classificação em reescrita. A função só toca a
+       coluna `setor`, e confere a permissão do lado do servidor. */
+    const { data, error } = await supabase.rpc("remuneracao_classificar", {
+      p_itens: Object.fromEntries(alvo),
+    });
+    setSalvando(false);
+    if (error) return toast.error(error.message);
+    const n = Number(data ?? 0);
+    toast.success(
+      n === 0
+        ? "Nada mudou — os times já estavam assim."
+        : `${n} ficha${n > 1 ? "s" : ""} classificada${n > 1 ? "s" : ""}`,
+    );
+    onSalvo();
+  };
+
+  return (
+    <Dialog open onOpenChange={(v) => { if (!v) onFechar(); }}>
+      <DialogContent className="flex max-h-[85vh] max-w-3xl flex-col">
+        <DialogHeader>
+          <DialogTitle>Quem está sem time</DialogTitle>
+        </DialogHeader>
+
+        <p className="text-[12.5px] leading-relaxed text-muted-foreground">
+          Estas {pessoas.length} fichas têm pagamento e não têm setor — quase todas são de gente
+          que saiu antes de abr/2026 e nunca esteve no Portal RH. Sem time, elas ficam de fora do
+          recorte de qualquer líder, e o histórico do time dele aparece menor do que foi.
+          {" "}<strong className="font-medium text-foreground">A sugestão vem da categoria do
+          Omie</strong> e só aparece quando o nome bate exatamente com um setor; “Comercial” fica
+          em branco de propósito, porque só você sabe se é Field Sales, Inside Sales ou Franquias.
+        </p>
+
+        <div className="flex flex-wrap items-center gap-3">
+          <div className="relative flex-1 min-w-[200px]">
+            <Search className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+            <Input
+              value={busca} onChange={(e) => setBusca(e.target.value)}
+              placeholder="Procurar por nome ou área…" className="h-8 pl-8 text-xs"
+            />
+          </div>
+          <span className="text-xs text-muted-foreground">
+            {decididas} de {pessoas.length} · {fmtBRLStr(dinheiroDecidido)} de {fmtBRLStr(dinheiroTotal)}
+          </span>
+        </div>
+
+        <div className="min-h-0 flex-1 overflow-y-auto rounded-lg border border-border">
+          <Table>
+            <TableHeader className="sticky top-0 z-10 bg-background">
+              <TableRow>
+                <TableHead>Pessoa</TableHead>
+                <TableHead className="hidden sm:table-cell">Quando</TableHead>
+                <TableHead className="text-right">Custou</TableHead>
+                <TableHead className="w-[190px]">Time</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {visiveis.map((p) => (
+                <TableRow key={p.id}>
+                  <TableCell className="py-2">
+                    <div className="font-medium">{p.nome}</div>
+                    <div className="text-[11px] text-muted-foreground">
+                      {p.areaPrincipal ?? "sem área na categoria"}
+                      {!p.ehPessoa && " · balde de área, não é pessoa"}
+                    </div>
+                  </TableCell>
+                  <TableCell className="hidden py-2 text-xs text-muted-foreground sm:table-cell">
+                    {p.de ? rotuloMes(p.de) : "—"} → {p.ate ? rotuloMes(p.ate) : "—"}
+                  </TableCell>
+                  <TableCell className="py-2 text-right text-xs tabular-nums">
+                    {fmtBRL(p.total)}
+                  </TableCell>
+                  <TableCell className="py-2">
+                    <Select
+                      value={escolha[p.id] ?? "__nenhum"}
+                      onValueChange={(v) => setEscolha((e) => {
+                        const novo = { ...e };
+                        if (v === "__nenhum") delete novo[p.id]; else novo[p.id] = v;
+                        return novo;
+                      })}
+                    >
+                      <SelectTrigger className="h-8 text-xs"><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="__nenhum">— deixar sem time —</SelectItem>
+                        {setores.map((s) => (
+                          <SelectItem key={s} value={s}>{s}</SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </TableCell>
+                </TableRow>
+              ))}
+              {!visiveis.length && (
+                <TableRow>
+                  <TableCell colSpan={4} className="py-10 text-center text-sm text-muted-foreground">
+                    Nada com esse nome.
+                  </TableCell>
+                </TableRow>
+              )}
+            </TableBody>
+          </Table>
+        </div>
+
+        <DialogFooter className="flex-row items-center justify-between gap-3 sm:justify-between">
+          <p className="text-[11px] text-muted-foreground">
+            Fica gravado. A carga diária não apaga, e o Portal RH continua mandando em quem tem ficha.
+          </p>
+          <div className="flex gap-2">
+            <Button variant="outline" size="sm" onClick={onFechar} disabled={salvando}>Cancelar</Button>
+            <Button size="sm" onClick={salvar} disabled={salvando || !decididas}>
+              {salvando && <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />}
+              Salvar {decididas || ""}
+            </Button>
+          </div>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 /* ─────────────────────────── Filtros ─────────────────────────── */
 
 const FILTROS_PADRAO: Filtros = FILTROS_VAZIOS;
@@ -286,7 +457,21 @@ const FILTROS_PADRAO: Filtros = FILTROS_VAZIOS;
 
 export default function Remuneracao() {
   const { profile, acesso } = useAuth();
-  const podeVer = acesso.remuneracao;
+
+  /* ESTA TELA TEM DUAS PORTAS.
+     `remuneracao` abre a empresa inteira (financeiro, diretoria, RH).
+     `remuneracao_time` abre a mesma tela recortada nos setores da ficha da
+     conta — é o líder, e ele não tem as outras cinco telas de folha.
+     Quem recorta de verdade é `remuneracao_painel()`, que devolve só as pessoas
+     do escopo; daqui para baixo o `painel` JÁ vem recortado, e é por isso que
+     nenhum KPI, gráfico ou exportação precisou saber que o líder existe. */
+  const folha = acesso.folha;
+  const podeVer = folha.tipo !== "nenhum";
+  const vejoTudo = folha.tipo === "tudo";
+  /* Líder com a capacidade e nenhum time marcado: o painel volta vazio e, sem
+     isto, "nenhuma pessoa" seria indistinguível de "mês sem folha". Decidido
+     pelo ACESSO e não pelo painel — é o que evita a busca que não traria nada. */
+  const semRecorte = folha.tipo === "times" && folha.setores.length === 0;
 
   const [painel, setPainel] = useState<PainelRemuneracao | null>(null);
   const [carregando, setCarregando] = useState(true);
@@ -373,12 +558,26 @@ export default function Remuneracao() {
     if (recarregarDoOmie) toast.success("Recarregado do Omie");
   };
 
-  useEffect(() => { if (podeVer) void carregar(); else setCarregando(false); }, [podeVer]);
+  // Sem times marcados não há o que buscar: a RPC devolveria uma lista vazia e a
+  // tela mostraria "carregando" para chegar a lugar nenhum.
+  useEffect(() => {
+    if (podeVer && !semRecorte) void carregar(); else setCarregando(false);
+  }, [podeVer, semRecorte]);
 
   /* O Omie tem coisa que a carga ainda não pegou. Não é erro — é a janela entre
      a sync do ERP e a carga diária —, mas quem está lendo precisa saber. */
   const atrasada =
     !!frescor?.carga_em && !!frescor?.omie_em && frescor.omie_em > frescor.carga_em;
+
+  /* O RÓTULO DO RECORTE VEM DE QUEM RECORTOU.
+     `acesso.folha` é a leitura do front e serve para decidir se busca; o que a
+     tela ESCREVE é o `escopo` que `remuneracao_painel()` carimbou, porque é ele
+     que mandou nas linhas que chegaram. Se os dois divergirem (ficha editada com
+     a aba aberta), o cabeçalho continua descrevendo o que está na tela em vez de
+     descrever o que o front achava que ia vir. */
+  const meusTimes = painel?.escopo && !painel.escopo.tudo
+    ? painel.escopo.setores ?? []
+    : folha.tipo === "times" ? folha.setores : [];
 
   const meses = useMemo(
     () => [...(painel?.meses ?? [])].sort((a, b) => a.localeCompare(b)),
@@ -420,6 +619,30 @@ export default function Remuneracao() {
     for (const p of painel?.pessoas ?? []) if (p.setor) s.add(p.setor);
     return [...s].sort((a, b) => a.localeCompare(b, "pt-BR"));
   }, [painel]);
+
+  /* ── Quem está sem time ──
+     Só para quem vê a folha inteira: é ele quem classifica, e a RLS de
+     `remuneracao_pessoa` só o deixa gravar. O líder não vê este botão nem a
+     lista — as fichas sem time simplesmente não chegam ao recorte dele.
+
+     Os setores OFERECIDOS não são os que estão na tela (`setores` acima, que só
+     tem quem já tem time): vêm de `remuneracao_setores()`, o vocabulário
+     inteiro do Portal RH. Sem isso, um setor sem nenhuma ficha pendente sumiria
+     da lista justo na hora de atribuir a primeira. */
+  const [setoresConhecidos, setSetoresConhecidos] = useState<string[]>([]);
+  const [classificando, setClassificando] = useState(false);
+
+  useEffect(() => {
+    if (!vejoTudo) return;
+    void supabase.rpc("remuneracao_setores").then(({ data }) => {
+      setSetoresConhecidos((data as string[] | null) ?? []);
+    });
+  }, [vejoTudo]);
+
+  const semTime = useMemo(
+    () => (vejoTudo ? pessoasSemTime(painel?.pessoas ?? [], setoresConhecidos) : []),
+    [vejoTudo, painel, setoresConhecidos],
+  );
 
   const cargos = useMemo(() => {
     const s = new Set<string>();
@@ -677,8 +900,29 @@ export default function Remuneracao() {
         </div>
         <h1 className="text-lg font-semibold">Remuneração é restrita</h1>
         <p className="max-w-md text-sm text-muted-foreground">
-          Esta tela mostra quanto cada pessoa ganha. O acesso é dos cargos
-          Diretoria, CEO e Financeiro. Fale com o financeiro se você precisa dela.
+          Esta tela mostra quanto cada pessoa ganha. Ela abre inteira para o financeiro, a
+          diretoria e o RH, e recortada no próprio time para quem lidera um. Fale com o
+          financeiro se você precisa dela.
+        </p>
+      </div>
+    );
+  }
+
+  /* ── Líder sem times marcados ──
+     A capacidade está ligada e o recorte, vazio. Sem este aviso a tela abriria
+     com zero pessoas e zero reais, indistinguível de um mês sem folha — e a
+     pessoa concluiria que o painel está quebrado, não que falta um cadastro. */
+  if (semRecorte) {
+    return (
+      <div className="flex flex-col items-center justify-center gap-3 py-24 text-center">
+        <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-secondary">
+          <Users className="h-5 w-5 text-muted-foreground" />
+        </div>
+        <h1 className="text-lg font-semibold">Seu recorte ainda não foi definido</h1>
+        <p className="max-w-md text-sm text-muted-foreground">
+          Você tem acesso à folha do seu time, mas nenhum time está marcado na sua ficha —
+          então ainda não há ninguém para mostrar. O financeiro define os times em
+          Configurações › Usuários.
         </p>
       </div>
     );
@@ -697,18 +941,48 @@ export default function Remuneracao() {
             Quanto cada pessoa ganha, mês a mês — fixo e comissão separados.
             Os valores são o que saiu do Omie.
           </p>
+          {/* O RECORTE, DITO EM VOZ ALTA. Um custo de R$ 1,1 M sem esta linha
+              parece o da empresa; é o de três times. Quem vê tudo não ganha
+              rótulo nenhum — dizer "empresa inteira" a quem sempre viu tudo é
+              ruído. */}
+          {!vejoTudo && meusTimes.length > 0 && (
+            <div className="mt-1.5 flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground">
+              <Users className="h-3.5 w-3.5" />
+              <span>Seu time:</span>
+              {meusTimes.map((s) => (
+                <Badge key={s} variant="secondary" className="font-normal">{s}</Badge>
+              ))}
+            </div>
+          )}
         </div>
         <div className="flex items-center gap-2">
-          <Button
-            variant={atrasada ? "default" : "outline"}
-            size="sm"
-            onClick={() => void carregar(true)}
-            disabled={carregando}
-            title="Recarrega do Omie e relê o painel"
-          >
-            <RefreshCw className={cn("mr-1.5 h-3.5 w-3.5", carregando && "animate-spin")} />
-            {atrasada ? "Recarregar do Omie" : "Atualizar"}
-          </Button>
+          {/* Classificar quem está sem time é do financeiro, e só aparece quando
+              há fila. O líder não vê: as fichas sem time nem chegam a ele. */}
+          {vejoTudo && semTime.length > 0 && (
+            <Button
+              variant="outline" size="sm"
+              onClick={() => setClassificando(true)}
+              title="Fichas com pagamento e sem setor — elas ficam fora do recorte de qualquer líder"
+            >
+              <UserSearch className="mr-1.5 h-3.5 w-3.5" />
+              Sem time · {semTime.length}
+            </Button>
+          )}
+          {/* Recarregar do Omie é de quem responde pela folha inteira. A RPC
+              recusaria o líder de qualquer jeito (`remuneracao_atualizar` exige
+              `pode_ver_remuneracao()`); esconder o botão evita o erro. */}
+          {vejoTudo && (
+            <Button
+              variant={atrasada ? "default" : "outline"}
+              size="sm"
+              onClick={() => void carregar(true)}
+              disabled={carregando}
+              title="Recarrega do Omie e relê o painel"
+            >
+              <RefreshCw className={cn("mr-1.5 h-3.5 w-3.5", carregando && "animate-spin")} />
+              {atrasada ? "Recarregar do Omie" : "Atualizar"}
+            </Button>
+          )}
           <Button
             size="sm"
             onClick={() => exportar()}
@@ -731,7 +1005,9 @@ export default function Remuneracao() {
             <p className="text-muted-foreground">
               Última carga: {fmtDataHoraStr(frescor?.carga_em)} · Omie sincronizado em{" "}
               {fmtDataHoraStr(frescor?.omie_em)}. A carga automática roda uma vez por dia;
-              clique em “Recarregar do Omie” para trazer agora.
+              {vejoTudo
+                ? " clique em “Recarregar do Omie” para trazer agora."
+                : " o financeiro pode trazer agora, se você precisar do número de hoje."}
             </p>
           </div>
         </div>
@@ -1197,6 +1473,17 @@ export default function Remuneracao() {
           pessoas={(painel?.pessoas ?? []).filter((p) => selecionadas.has(p.id))}
           meses={meses}
           onClose={() => setComparando(false)}
+        />
+      )}
+
+      {classificando && (
+        <FilaSemTime
+          pessoas={semTime}
+          setores={setoresConhecidos}
+          onFechar={() => setClassificando(false)}
+          // Relê o painel: o time novo muda o filtro por setor, a tabela por
+          // área e — o que importa — o recorte que cada líder passa a enxergar.
+          onSalvo={() => { setClassificando(false); void carregar(); }}
         />
       )}
     </div>

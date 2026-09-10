@@ -79,17 +79,29 @@ describe("a matriz, perfil a perfil", () => {
     expect(podeVerRota(acesso, "/facilities")).toBe(false);
   });
 
-  /* Decisão do Miguel em 10/09/2026: liderança PODE ver a DRE inteira e o BP. */
-  it("liderança vê resultado e plano, não vê folha nem societário", () => {
+  /* Decisão do Miguel em 10/09/2026: liderança PODE ver a DRE inteira e o BP.
+     E, desde a mesma data, a folha do PRÓPRIO time — mas só o painel, e nenhuma
+     das outras cinco telas de folha. */
+  it("liderança vê resultado e plano, não vê societário nem banco", () => {
     const acesso = de("lideranca");
     expect(podeVerRota(acesso, "/demonstracoes/dre")).toBe(true);
     expect(podeVerRota(acesso, "/bp/2026")).toBe(true);
     expect(podeVerRota(acesso, "/assinaturas")).toBe(true);
     expect(podeVerRota(acesso, "/governanca/cac")).toBe(true);
-    expect(podeVerRota(acesso, "/operacional/remuneracao")).toBe(false);
     expect(podeVerRota(acesso, "/captable")).toBe(false);
     expect(podeVerRota(acesso, "/caixa")).toBe(false);
     expect(podeVerRota(acesso, "/governanca/auditoria")).toBe(false);
+  });
+
+  it("liderança abre o painel da folha e NENHUMA outra tela de folha", () => {
+    const acesso = de("lideranca");
+    expect(podeVerRota(acesso, "/operacional/remuneracao")).toBe(true);
+    for (const rota of [
+      "/operacional/colaboradores", "/operacional/variavel", "/operacional/reembolsos",
+      "/automacoes/proporcionais", "/governanca/rescisoes",
+    ]) {
+      expect(podeVerRota(acesso, rota), rota).toBe(false);
+    }
   });
 
   it("RH vê pessoas, não vê os números do negócio", () => {
@@ -271,6 +283,71 @@ describe("as duas listas da folha andam juntas", () => {
     for (const p of PERFIS_ESCOLHIVEIS) {
       expect(de(p.id).remuneracao).toBe(PERFIS_REMUNERACAO.includes(p.id));
     }
+  });
+});
+
+describe("o recorte da folha", () => {
+  /* Quem vê a folha inteira ignora os times da ficha — marcar "Comercial" no
+     perfil do financeiro não pode encolher a tela dele. */
+  it("quem tem `remuneracao` vê tudo, com ou sem times marcados", () => {
+    expect(acessoDe({ perfil: "rh" }).folha).toEqual({ tipo: "tudo" });
+    expect(acessoDe({ perfil: "rh", setores_folha: ["Suporte"] }).folha).toEqual({ tipo: "tudo" });
+    expect(acessoDe({ perfil: "admin", setores_folha: ["Suporte"] }).folha).toEqual({ tipo: "tudo" });
+  });
+
+  it("o líder vê os times da ficha DELE, não os do perfil", () => {
+    const danilo = acessoDe({ perfil: "lideranca", setores_folha: ["Sucesso", "Onboarding", "Suporte"] });
+    const vinicius = acessoDe({ perfil: "lideranca", setores_folha: ["Produto"] });
+    expect(danilo.folha).toEqual({ tipo: "times", setores: ["Sucesso", "Onboarding", "Suporte"] });
+    expect(vinicius.folha).toEqual({ tipo: "times", setores: ["Produto"] });
+  });
+
+  /* O PADRÃO É O MÍNIMO, aqui como no resto do portão. Um líder recém-criado
+     abre a tela e não vê ninguém — a tela explica, e alguém pede o cadastro.
+     O contrário (sem times = todos os times) seria a folha inteira em silêncio. */
+  it("líder sem times marcados não vê ninguém", () => {
+    expect(acessoDe({ perfil: "lideranca" }).folha).toEqual({ tipo: "times", setores: [] });
+    expect(acessoDe({ perfil: "lideranca", setores_folha: [] }).folha).toEqual({ tipo: "times", setores: [] });
+    // Mas a ROTA abre: é lá que o aviso mora. Uma rota vedada mandaria a pessoa
+    // para a home sem dizer o que houve.
+    expect(podeVerRota(acessoDe({ perfil: "lideranca" }), "/operacional/remuneracao")).toBe(true);
+  });
+
+  it("lixo no array não vira setor", () => {
+    const a = acessoDe({ perfil: "lideranca", setores_folha: ["  Suporte  ", "", "   "] });
+    expect(a.folha).toEqual({ tipo: "times", setores: ["Suporte"] });
+  });
+
+  it("quem não tem nenhuma das duas capacidades não abre a folha", () => {
+    for (const id of ["externo", "automacao", "facilities", "parcerias"] as PerfilId[]) {
+      expect(acessoDe({ perfil: id, setores_folha: ["Suporte"] }).folha, id).toEqual({ tipo: "nenhum" });
+      expect(podeVerRota(de(id), "/operacional/remuneracao"), id).toBe(false);
+    }
+  });
+
+  /* A matriz é DADO: tirar "Folha do meu time" da liderança na tela de Perfis
+     tem de fechar a rota, mesmo com os times cadastrados na ficha. */
+  it("a matriz do banco manda no recorte", () => {
+    const semFolha = acessoDe(
+      { perfil: "lideranca", setores_folha: ["Suporte"] },
+      { lideranca: ["metricas"] },
+    );
+    expect(semFolha.folha).toEqual({ tipo: "nenhum" });
+    expect(podeVerRota(semFolha, "/operacional/remuneracao")).toBe(false);
+
+    // E promover o mesmo perfil a `remuneracao` abre a empresa inteira.
+    const cheia = acessoDe(
+      { perfil: "lideranca", setores_folha: ["Suporte"] },
+      { lideranca: ["remuneracao"] },
+    );
+    expect(cheia.folha).toEqual({ tipo: "tudo" });
+  });
+
+  /* A tela tem duas portas e as duas têm de aparecer na aba de Perfis de acesso
+     — uma capacidade sem tela nenhuma é um checkbox que não diz o que faz. */
+  it("as duas capacidades listam o painel de Remuneração", () => {
+    expect(telasDaCapacidade("remuneracao")).toContain("Remuneração");
+    expect(telasDaCapacidade("remuneracao_time")).toEqual(["Remuneração"]);
   });
 });
 

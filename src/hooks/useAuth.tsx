@@ -17,6 +17,12 @@ import { acessoDe, matrizDeLinhas, type Acesso, type MatrizAcesso, type PerfilId
 type Profile = {
   id: string; user_id: string; nome: string; cargo: string | null; email: string;
   perfil?: PerfilId | null;
+  /**
+   * Os times que esta conta enxerga na folha (nome do setor no Portal RH).
+   * Só vale para quem tem a capacidade `remuneracao_time` — o líder. Vazio não
+   * abre ninguém. Ver `Acesso.folha` em lib/modules.ts.
+   */
+  setores_folha?: string[] | null;
 };
 
 type AuthCtx = {
@@ -33,6 +39,12 @@ type AuthCtx = {
    * `useAcesso()`.
    */
   acesso: Acesso;
+  /**
+   * A matriz crua, para quem precisa calcular o acesso de OUTRO perfil — a tela
+   * de Usuários, que decide se o perfil escolhido no seletor pede o campo de
+   * times da folha. `null` = ainda não carregou, ou a leitura falhou.
+   */
+  matriz: MatrizAcesso | null;
   /** Relê a matriz do banco — a tela de Perfis de acesso chama após salvar. */
   recarregarMatriz: () => Promise<void>;
   /**
@@ -138,7 +150,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   return (
     <Ctx.Provider value={{
-      session, user, profile, loading, recuperacao, acesso,
+      session, user, profile, loading, recuperacao, acesso, matriz,
       signIn, signOut, definirNovaSenha, refreshProfile,
       recarregarMatriz: loadMatriz,
     }}>

@@ -8614,6 +8614,7 @@ export type Database = {
           id: string
           nome: string
           perfil: string | null
+          setores_folha: string[]
           updated_at: string
           user_id: string
         }
@@ -8624,6 +8625,7 @@ export type Database = {
           id?: string
           nome: string
           perfil?: string | null
+          setores_folha?: string[]
           updated_at?: string
           user_id: string
         }
@@ -8634,6 +8636,7 @@ export type Database = {
           id?: string
           nome?: string
           perfil?: string | null
+          setores_folha?: string[]
           updated_at?: string
           user_id?: string
         }
@@ -9490,6 +9493,7 @@ export type Database = {
           id: string
           nome: string
           observacao: string | null
+          setor: string | null
         }
         Insert: {
           atualizado_em?: string
@@ -9501,6 +9505,7 @@ export type Database = {
           id?: string
           nome: string
           observacao?: string | null
+          setor?: string | null
         }
         Update: {
           atualizado_em?: string
@@ -9512,6 +9517,7 @@ export type Database = {
           id?: string
           nome?: string
           observacao?: string | null
+          setor?: string | null
         }
         Relationships: []
       }
@@ -13136,6 +13142,7 @@ export type Database = {
           pessoas_novas: number
         }[]
       }
+      remuneracao_classificar: { Args: { p_itens: Json }; Returns: number }
       remuneracao_frescor: { Args: never; Returns: Json }
       remuneracao_fundir: {
         Args: { p_absorve: string; p_mantem: string; p_origem?: string }
@@ -13159,6 +13166,7 @@ export type Database = {
         Args: { p_chave: string }
         Returns: string
       }
+      remuneracao_setores: { Args: never; Returns: string[] }
       remuneracao_sincronizar_rh: { Args: never; Returns: number }
       rescisao_brl: { Args: { n: number }; Returns: string }
       rescisao_nome_chave: { Args: { p_nome: string }; Returns: string }

@@ -12,6 +12,8 @@ import { extDe, nomeSeguroParaOmie, planoDeAnexo, tipoRealDoArquivo } from "./an
 export { nomeSeguroParaOmie, pareceNotaFiscal, tipoRealDoArquivo } from "./anexo-tipo.ts";
 
 import { contarAnexos, ehRespostaQuebrada, omieCall } from "./omie-rpc.ts";
+import { ordemDaVarredura } from "./varredura.ts";
+export { ordemDaVarredura } from "./varredura.ts";
 
 // Reexportado para não quebrar quem já importa daqui — a conversa crua mudou de
 // arquivo, não de endereço.
@@ -562,9 +564,11 @@ export async function listarCodigosDeContaCorrente(): Promise<string[]> {
 export async function listarMovimentosExcluindoContas(
   fora: ReadonlySet<string>,
   limitePaginas = 200,
+  /** Contas que a última varredura viu com movimento. Ver `ordemDaVarredura`. */
+  comMovimento: ReadonlySet<string> = new Set(),
 ): Promise<any[]> {
   const contas = await listarCodigosDeContaCorrente();
-  const alvo = contas.filter((c) => !fora.has(c));
+  const alvo = ordemDaVarredura(contas.filter((c) => !fora.has(c)), comMovimento);
   const out: any[] = [];
   let i = 0;
   // Serial: o Omie tem trava POR MÉTODO, e duas listagens em voo se recusam.

@@ -80,9 +80,19 @@ export async function lerMovimentos(
      uma chamada só. Ela ainda funciona hoje — 17.848 registros em ~158s — e só
      deixa de funcionar quando o espelho linha a linha do Asaas encher a conta.
      Enquanto as duas convivem, ficar sem número é o pior desfecho possível. */
+  /* Quais contas tinham movimento na última varredura. Serve para não fazer duas
+     consultas vazias seguidas, que o Omie recusa como redundantes — ver
+     `ordemDaVarredura`. Sai do próprio cache anterior: nenhum estado novo. */
+  const anterior = await lerLinha(supabase, "movimentos");
+  const comMovimento = new Set<string>();
+  for (const m of (Array.isArray(anterior?.dados) ? anterior!.dados : []) as any[]) {
+    const cc = m?.detalhes?.nCodCC;
+    if (cc != null) comMovimento.add(String(cc));
+  }
+
   let dados: any[];
   try {
-    dados = await listarMovimentosExcluindoContas(CONTAS_FORA_DO_CACHE);
+    dados = await listarMovimentosExcluindoContas(CONTAS_FORA_DO_CACHE, 200, comMovimento);
   } catch (e) {
     console.warn(
       "omie-cache: varredura por conta falhou, caindo para a varredura única:",

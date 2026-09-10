@@ -54,7 +54,21 @@ const json = (body: unknown, status = 200) =>
    lançado no Omie e NÃO gravado aqui. Numa função que escreve no ERP isso é o
    pior desfecho possível, porque a próxima rodada tentaria lançar de novo. Daí
    o relógio ser curto e a gravação ser POR LANÇAMENTO, nunca no fim. */
-const LIMITE_WORKER_MS = 110_000;
+/* 100s, e quem manda neste número NÃO é o gateway — é o intervalo do cron.
+ *
+ * O teto duro do gateway são 150s até a primeira resposta, e caberia bem mais.
+ * Mas a virada roda de 2 em 2 minutos, e o Omie **não aceita duas inclusões
+ * simultâneas**: se uma rodada passar dos 120s, a seguinte entra com a anterior
+ * ainda escrevendo, as duas se recusam por trava de método, e erro repetido é
+ * exatamente o que constrói o bloqueio de 30 minutos.
+ *
+ * 100s garante que a rodada acaba com ~20s de folga antes da próxima, mesmo no
+ * ritmo mais lento já medido (2,07/s, que dá 207 linhas em 100s). No ritmo
+ * normal (2,43/s) as 250 linhas do teto levam 103s e a guarda nem chega a agir —
+ * quando age, o resto vai na rodada seguinte. Nunca há trabalho perdido.
+ *
+ * Mexer no intervalo do cron obriga a mexer aqui junto. */
+const LIMITE_WORKER_MS = 100_000;
 const TETO_PADRAO = 40;
 const PAGINA = 1000;   // o PostgREST corta em 1000 por resposta, calado
 
@@ -72,14 +86,21 @@ const PAGINA = 1000;   // o PostgREST corta em 1000 por resposta, calado
  */
 const CARENCIA_DIAS = 2;
 
-/* Teto de linhas por invocação na virada linha a linha. A 1,63 lançamento/s
-   medidos, 150 levam ~92s — dentro dos 110s do worker. E 150 a cada 5 min é
-   30 req/min, 12,5% do teto de 240/min do Omie: sobra folga para os outros
-   syncs que falam com o mesmo ERP. */
-const TETO_LINHAS = 150;
+/* Teto de linhas por invocação na virada linha a linha. Medido em rodada real
+   depois de tirar as idas ao Postgres do caminho crítico: 250 linhas em 102,8s,
+   ou 2,43/s. A cada 2 minutos dá 7.500 linhas por hora — e 125 requisições por
+   minuto, ~52% do teto de 240/min do Omie. A folga que sobra é para a máquina
+   de NFS-e, que roda das 13h às 22h UTC a ~6/min; os syncs pesados (contas a
+   pagar, caixa) ficam fora da janela do cron de propósito. */
+const TETO_LINHAS = 250;
 
 /** Quantas vezes um mesmo lançamento pode falhar antes de sair da fila. */
 const TETO_TENTATIVAS = 5;
+
+/* De quantos em quantos resultados o lote volta ao Postgres. Se o worker morrer,
+   até este tanto de linhas fica 'pendente' tendo entrado no Omie — e a rodada
+   seguinte se cura pelo `cCodIntLanc` repetido. */
+const FLUSH_RESULTADOS = 25;
 
 const hojeBRT = () => new Date().toLocaleDateString("en-CA", { timeZone: "America/Sao_Paulo" });
 
@@ -358,18 +379,52 @@ Deno.serve(async (req) => {
             ja.set(String(r.cod_int_lanc), String(r.status));
           }
 
-          for (const l of candidatas) {
+          /* AS IDAS AO POSTGRES SAEM DO CAMINHO CRÍTICO.
+           *
+           * Antes era, por linha: um upsert 'pendente', a chamada ao Omie, e um
+           * update com o resultado. Duas idas ao banco por lançamento, dentro de
+           * um laço de dezenas de milhares — medido em 0,483s por linha, das
+           * quais ~0,1s eram só round-trip de banco.
+           *
+           * Agora o lote inteiro é marcado 'pendente' de uma vez, ANTES de
+           * qualquer chamada ao ERP — o que preserva o invariante que importa:
+           * nada é escrito no Omie sem que já exista registro aqui de que ia ser.
+           * Os resultados voltam em blocos de FLUSH_RESULTADOS.
+           *
+           * Se o worker morrer no meio, até FLUSH_RESULTADOS linhas ficam
+           * 'pendente' tendo entrado no Omie. A rodada seguinte tenta de novo, o
+           * Omie recusa por `cCodIntLanc` repetido, e o caminho de autocura marca
+           * 'enviado'. Esse caminho já foi exercitado contra a produção. */
+          const fila = candidatas.filter((l) => ja.get(l.id_transacao) !== "enviado")
+            .slice(0, Math.max(0, teto - enviadas));
+
+          if (fila.length) {
+            const agora = new Date().toISOString();
+            const { error: ePre } = await supabase.from("asaas_omie_lancamento").upsert(
+              fila.map((l) => ({
+                cod_int_lanc: l.id_transacao, dia: l.dia, natureza: l.natureza,
+                categoria: l.categoria, valor: l.valor,
+                entradas: l.valor > 0 ? l.valor : 0, saidas: l.valor < 0 ? -l.valor : 0,
+                lancamentos: 1, ncodcc: NCODCC_ASAAS_DISPONIVEL, modo: "linha",
+                status: "pendente", atualizado_em: agora,
+              })),
+              { onConflict: "cod_int_lanc" },
+            );
+            if (ePre) throw ePre;
+          }
+
+          let porGravar: Record<string, unknown>[] = [];
+          const descarregar = async () => {
+            if (!porGravar.length) return;
+            const { error } = await supabase.from("asaas_omie_lancamento")
+              .upsert(porGravar, { onConflict: "cod_int_lanc" });
+            if (error) throw error;
+            porGravar = [];
+          };
+
+          for (const l of fila) {
             if (enviadas >= teto) break;
             if (Date.now() - inicio > LIMITE_WORKER_MS) { pararRelogio = true; break; }
-            if (ja.get(l.id_transacao) === "enviado") continue;
-
-            await supabase.from("asaas_omie_lancamento").upsert({
-              cod_int_lanc: l.id_transacao, dia: l.dia, natureza: l.natureza,
-              categoria: l.categoria, valor: l.valor,
-              entradas: l.valor > 0 ? l.valor : 0, saidas: l.valor < 0 ? -l.valor : 0,
-              lancamentos: 1, ncodcc: NCODCC_ASAAS_DISPONIVEL, modo: "linha",
-              status: "pendente", atualizado_em: new Date().toISOString(),
-            }, { onConflict: "cod_int_lanc" });
 
             try {
               const r = await omieCall<Record<string, unknown>>(
@@ -380,21 +435,33 @@ Deno.serve(async (req) => {
                   detalhes: { cCodCateg: l.categoria, cTipo: "99999", cObs: l.observacao },
                 },
               );
-              await supabase.from("asaas_omie_lancamento").update({
+              porGravar.push({
+                cod_int_lanc: l.id_transacao, dia: l.dia, natureza: l.natureza,
+                categoria: l.categoria, valor: l.valor,
+                entradas: l.valor > 0 ? l.valor : 0, saidas: l.valor < 0 ? -l.valor : 0,
+                lancamentos: 1, ncodcc: NCODCC_ASAAS_DISPONIVEL, modo: "linha",
                 status: "enviado", n_cod_lanc: String(r?.nCodLanc ?? ""), erro: null, tentativas: 0,
                 enviado_em: new Date().toISOString(), atualizado_em: new Date().toISOString(),
-              }).eq("cod_int_lanc", l.id_transacao);
+              });
               enviadas++; consecutivos = 0;
+              if (porGravar.length >= FLUSH_RESULTADOS) await descarregar();
             } catch (e) {
               const msg = e instanceof Error ? e.message : String(e);
               const repetido = /j(á|a) (existe|cadastrad)|duplicad/i.test(msg);
-              await supabase.from("asaas_omie_lancamento").update({
+              porGravar.push({
+                cod_int_lanc: l.id_transacao, dia: l.dia, natureza: l.natureza,
+                categoria: l.categoria, valor: l.valor,
+                entradas: l.valor > 0 ? l.valor : 0, saidas: l.valor < 0 ? -l.valor : 0,
+                lancamentos: 1, ncodcc: NCODCC_ASAAS_DISPONIVEL, modo: "linha",
                 status: repetido ? "enviado" : "erro",
                 erro: msg.slice(0, 400),
                 enviado_em: repetido ? new Date().toISOString() : null,
                 atualizado_em: new Date().toISOString(),
-              }).eq("cod_int_lanc", l.id_transacao);
+              });
               if (repetido) { enviadas++; consecutivos = 0; continue; }
+              /* Erro de verdade grava NA HORA: o disjuntor pode parar tudo na
+                 linha seguinte, e o rastro não pode ficar preso no buffer. */
+              await descarregar();
               errosV++; consecutivos++;
               /* DISJUNTOR. O Omie bloqueia por 30 MINUTOS na 10ª requisição com
                  erro para a mesma combinação App+IP+Método. Três erros seguidos
@@ -403,6 +470,7 @@ Deno.serve(async (req) => {
               if (consecutivos >= 3) { pararRelogio = true; break; }
             }
           }
+          await descarregar();
         }
 
         /* 2) Só depois que TODAS as linhas do dia entraram, os diários saem. */

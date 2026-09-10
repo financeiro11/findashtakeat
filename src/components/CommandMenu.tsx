@@ -4,16 +4,15 @@ import {
   CommandDialog, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList, CommandSeparator,
 } from "@/components/ui/command";
 import { useAuth } from "@/hooks/useAuth";
-import { acessoDe, currentModule, podeVerRota } from "@/lib/modules";
+import { currentModule, podeVerRota } from "@/lib/modules";
 import { GRUPO_BUSCA_EXTRA, gruposVisiveis, pontuarBusca, termosDeBusca } from "@/lib/navegacao";
 
 export function CommandMenu({ open, onOpenChange }: { open: boolean; onOpenChange: (v: boolean) => void }) {
   const nav = useNavigate();
   const { pathname } = useLocation();
-  const { profile } = useAuth();
+  const { acesso: access } = useAuth();
 
   const grupos = useMemo(() => {
-    const access = acessoDe(profile);
     const mod = access.facilitiesOnly ? "facilities" : currentModule(pathname);
     const doMenu = gruposVisiveis(access, mod);
     if (access.parceriasOnly || access.facilitiesOnly) return doMenu;
@@ -22,7 +21,7 @@ export function CommandMenu({ open, onOpenChange }: { open: boolean; onOpenChang
        no ⌘K seria voltar ao problema que este catálogo existe para resolver. */
     const extras = GRUPO_BUSCA_EXTRA.items.filter((i) => podeVerRota(access, i.url));
     return extras.length ? [...doMenu, { ...GRUPO_BUSCA_EXTRA, items: extras }] : doMenu;
-  }, [profile?.cargo, profile?.perfil, pathname]);
+  }, [access, pathname]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {

@@ -140,17 +140,19 @@ Deno.serve(async (req) => {
     const { data: userData } = await supabase.auth.getUser();
     if (!userData?.user?.id) return jsonResponse({ error: "Unauthorized" }, 401);
 
-    /* O ASSISTENTE É DE CASA (10/09/2026).
+    /* QUEM PODE FALAR COM ELE (10/09/2026).
        O system prompt logo abaixo diz, com todas as letras, que esta IA tem
        acesso a TODOS os dados da empresa — e injeta o contexto organizacional
        inteiro. Esconder a bolinha no front não fecha nada: a função responde a
-       quem a chamar com um token válido. A lista é allowlist e o perfil vazio
-       (conta sem acesso definido) não entra, igual ao portão do front. Espelha
-       `deCasa` em src/lib/modules.ts. */
-    const DE_CASA = ["admin", "diretoria", "lideranca", "rh", "automacao", "facilities", "parcerias"];
-    const { data: quem } = await supabase
-      .from("profiles").select("perfil").eq("user_id", userData.user.id).maybeSingle();
-    if (!DE_CASA.includes((quem?.perfil ?? "").trim().toLowerCase())) {
+       quem a chamar com um token válido.
+
+       A decisão vem da RPC, não de uma lista escrita aqui: `assistente` é uma
+       capacidade como as outras, editada em Usuários › Perfis de acesso, e uma
+       lista repetida neste arquivo divergiria da tela no primeiro ajuste. Erro
+       na chamada nega — é uma conversa com o negócio inteiro, não é lugar de
+       falhar aberto. */
+    const { data: pode, error: erroPode } = await supabase.rpc("pode_usar_assistente");
+    if (erroPode || pode !== true) {
       return jsonResponse({ error: "Seu acesso não inclui o Assistente." }, 403);
     }
 

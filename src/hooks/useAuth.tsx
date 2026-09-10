@@ -1,8 +1,8 @@
-import { createContext, useContext, useEffect, useState, ReactNode } from "react";
+import { createContext, useContext, useEffect, useMemo, useState, ReactNode } from "react";
 import { Session, User } from "@supabase/supabase-js";
 import { supabase } from "@/integrations/supabase/client";
 import { conferirSessao } from "@/lib/sessaoViva";
-import type { PerfilId } from "@/lib/modules";
+import { acessoDe, matrizDeLinhas, type Acesso, type MatrizAcesso, type PerfilId } from "@/lib/modules";
 
 /**
  * `cargo` é o que a pessoa É (texto livre, aparece na tela). `perfil` é o que ela
@@ -25,6 +25,17 @@ type AuthCtx = {
   profile: Profile | null;
   loading: boolean;
   /**
+   * O que esta pessoa vê — perfil + matriz do banco, já resolvidos.
+   *
+   * Vem daqui e não de `acessoDe(profile)` espalhado pelas telas porque a matriz
+   * agora é DADO (tabela `acesso_perfil`, editável em Usuários): cada chamada
+   * solta refaria a leitura ou usaria o padrão do código sem saber. Ver
+   * `useAcesso()`.
+   */
+  acesso: Acesso;
+  /** Relê a matriz do banco — a tela de Perfis de acesso chama após salvar. */
+  recarregarMatriz: () => Promise<void>;
+  /**
    * Verdadeiro quando a pessoa chegou pelo link de "esqueci a senha". Ela TEM
    * sessão (o link autentica), mas ainda não escolheu senha nova — e enquanto
    * não escolher, o Hub não abre. Ver `components/RedefinirSenha.tsx`.
@@ -44,10 +55,22 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [profile, setProfile] = useState<Profile | null>(null);
   const [loading, setLoading] = useState(true);
   const [recuperacao, setRecuperacao] = useState(false);
+  const [matriz, setMatriz] = useState<MatrizAcesso | null>(null);
 
   const loadProfile = async (uid: string) => {
     const { data } = await supabase.from("profiles").select("*").eq("user_id", uid).maybeSingle();
     setProfile((data as Profile) ?? null);
+  };
+
+  /* A matriz de acesso, da tabela `acesso_perfil`.
+     Falha de leitura deixa `matriz` em null DE PROPÓSITO, e null faz `acessoDe`
+     usar o padrão escrito em `PERFIS` — a matriz revisada do repositório. Um
+     objeto vazio aqui trancaria todo mundo fora do Hub por causa de uma queda de
+     rede; o padrão do código é o único fallback que se audita lendo um arquivo. */
+  const loadMatriz = async () => {
+    const { data, error } = await supabase.from("acesso_perfil").select("perfil, capacidades");
+    if (error || !data?.length) return;
+    setMatriz(matrizDeLinhas(data as { perfil: string; capacidades: string[] | null }[]));
   };
 
   useEffect(() => {
@@ -60,13 +83,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
       setSession(s);
       setUser(s?.user ?? null);
-      if (s?.user) setTimeout(() => loadProfile(s.user.id), 0);
+      if (s?.user) setTimeout(() => { void loadProfile(s.user.id); void loadMatriz(); }, 0);
       else setProfile(null);
     });
-    supabase.auth.getSession().then(({ data: { session: s } }) => {
+    supabase.auth.getSession().then(async ({ data: { session: s } }) => {
       setSession(s);
       setUser(s?.user ?? null);
-      if (s?.user) loadProfile(s.user.id);
+      /* ESPERA as duas antes de soltar `loading`. Sem o await, o Hub monta com
+         `matriz` ainda null, calcula o acesso pelo padrão do código e desenha um
+         menu que a matriz do banco pode ter encolhido — a pessoa vê por um
+         instante o item que não é dela, e o clique cai no redirecionamento. */
+      if (s?.user) await Promise.all([loadProfile(s.user.id), loadMatriz()]);
       setLoading(false);
     });
     return () => sub.subscription.unsubscribe();
@@ -107,10 +134,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const refreshProfile = async () => { if (user) await loadProfile(user.id); };
 
+  const acesso = useMemo(() => acessoDe(profile, matriz), [profile, matriz]);
+
   return (
     <Ctx.Provider value={{
-      session, user, profile, loading, recuperacao,
+      session, user, profile, loading, recuperacao, acesso,
       signIn, signOut, definirNovaSenha, refreshProfile,
+      recarregarMatriz: loadMatriz,
     }}>
       {children}
     </Ctx.Provider>
@@ -122,3 +152,12 @@ export const useAuth = () => {
   if (!v) throw new Error("useAuth must be used within AuthProvider");
   return v;
 };
+
+/**
+ * O acesso desta pessoa — perfil e matriz do banco já resolvidos.
+ *
+ * Use SEMPRE isto, nunca `acessoDe(profile)` direto numa tela: a matriz é dado
+ * agora, e quem a carrega é o AuthProvider. Uma chamada solta usaria o padrão do
+ * código e mostraria um menu que a edição em Usuários já tinha encolhido.
+ */
+export const useAcesso = (): Acesso => useAuth().acesso;

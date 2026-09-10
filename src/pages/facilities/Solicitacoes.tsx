@@ -13,7 +13,6 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useAuth } from "@/hooks/useAuth";
-import { acessoDe } from "@/lib/modules";
 import { FacToolbar } from "./NovaSolicitacaoDialog";
 import { CatDot, StatusBadge } from "./components";
 import {
@@ -172,7 +171,7 @@ function SolicitacaoDetail({
   onClose: () => void;
   onChanged: () => void;
 }) {
-  const { profile } = useAuth();
+  const { profile, acesso } = useAuth();
   const navigate = useNavigate();
   const [fornecedores, setFornecedores] = useState<Fornecedor[]>([]);
   const [novoForn, setNovoForn] = useState("");
@@ -405,7 +404,7 @@ function SolicitacaoDetail({
 
         {/* Ações */}
         <div className="flex flex-wrap items-center gap-2 border-t border-border pt-3">
-          {solic.status === "aguardando_aprovacao" && acessoDe(profile).isAdmin && (
+          {solic.status === "aguardando_aprovacao" && acesso.isAdmin && (
             <>
               <Button size="sm" className="gap-1 bg-emerald-600 text-white hover:bg-emerald-700" disabled={busy}
                 onClick={() => setStatus("aprovado", { decidido_por: profile?.nome ?? null, decidido_em: new Date().toISOString() })}>
@@ -417,7 +416,7 @@ function SolicitacaoDetail({
               </Button>
             </>
           )}
-          {solic.status === "aguardando_aprovacao" && !acessoDe(profile).isAdmin && (
+          {solic.status === "aguardando_aprovacao" && !acesso.isAdmin && (
             <span className="rounded-md bg-amber-50 px-2.5 py-1 text-[11.5px] font-medium text-amber-700">
               Aguardando aprovação do financeiro
             </span>

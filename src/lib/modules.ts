@@ -69,7 +69,44 @@ export type Capacidade =
   | "maquinario"     // Monitoramento, Parametrização, Uso de IA, Recargas, Vigilância
   | "usuarios"       // Usuários
   | "parceiros"      // Parceiros
-  | "facilities";    // o módulo Facilities inteiro
+  | "facilities"     // o módulo Facilities inteiro
+  | "assistente";    // a bolinha da IA — não é tela, é a conversa
+
+/**
+ * O texto de cada capacidade na tela de Perfis de acesso.
+ *
+ * As TELAS de cada uma não estão aqui de propósito: saem do `PORTAO`, cruzado
+ * com o catálogo de navegação (ver `telasDaCapacidade`). Escrever a lista à mão
+ * seria um terceiro lugar para a mesma verdade, e o terceiro sempre é o que
+ * envelhece.
+ */
+export const CAPACIDADES: Record<Capacidade, { label: string; descricao: string }> = {
+  metricas:      { label: "Métricas de cliente", descricao: "Dashboard, MRR, churn, estornos e aquisição." },
+  tesouraria:    { label: "Tesouraria",          descricao: "Saldo em banco, cobranças e o briefing do dia." },
+  conciliacao:   { label: "Conciliação",         descricao: "O que se confere lançamento a lançamento: auditoria, cartão, notas." },
+  demonstracoes: { label: "Demonstrações",       descricao: "DRE, DFC, balancete e balanço." },
+  planejamento:  { label: "Plano e projeções",   descricao: "BP, cenários e histórico multianual." },
+  orcamento:     { label: "Orçamento",           descricao: "Orçado × realizado. Sem recorte por centro de custo." },
+  societario:    { label: "Societário",          descricao: "Captable, o flip e as empresas no exterior. O dado mais sensível." },
+  apresentacoes: { label: "Apresentações",       descricao: "Revisão mensal e o material de conselho e investidores." },
+  editais:       { label: "Editais",             descricao: "Radar de fomento e projetos aprovados." },
+  remuneracao:   { label: "Pessoas e folha",     descricao: "Salário por pessoa, rescisões, comissões e reembolsos." },
+  time:          { label: "Time e tarefas",      descricao: "Kanban, projetos e anotações." },
+  biblioteca:    { label: "Biblioteca",          descricao: "Estrutura do time, cargos, políticas e fornecedores." },
+  maquinario:    { label: "Maquinário",          descricao: "Crons, integrações, credenciais, recargas e vigilância." },
+  usuarios:      { label: "Administração",       descricao: "Esta tela: quem entra no Hub e o que cada perfil vê." },
+  parceiros:     { label: "Parceiros",           descricao: "Embaixadores e bonificação." },
+  facilities:    { label: "Facilities",          descricao: "O módulo de compras inteiro." },
+  assistente:    { label: "Assistente (IA)",     descricao: "A bolinha que responde sobre o negócio inteiro. Não é tela: é conversa, e ela sabe o que a tela não mostra." },
+};
+
+/** A ordem em que as capacidades aparecem na tela de Perfis de acesso. */
+export const CAPACIDADES_ORDEM: readonly Capacidade[] = [
+  "metricas", "tesouraria", "conciliacao", "demonstracoes", "planejamento",
+  "orcamento", "societario", "apresentacoes", "editais", "remuneracao",
+  "time", "biblioteca", "maquinario", "parceiros", "facilities",
+  "usuarios", "assistente",
+];
 
 export type PerfilId =
   | "admin" | "diretoria" | "lideranca" | "rh"
@@ -83,74 +120,76 @@ export interface DefPerfil {
   /** Onde esta pessoa cai ao entrar, e para onde volta ao pedir uma rota vedada. */
   home: string;
   /**
-   * Gente da Takeat.
+   * O PADRÃO deste perfil.
    *
-   * O que isto guarda hoje é o ASSISTENTE — a bolinha que responde sobre
-   * qualquer coisa do negócio, com o contexto organizacional inteiro no prompt.
-   * Sem esta distinção, restringir as telas de um convidado não adiantaria nada:
-   * ele perguntaria à IA o que a tela não mostra, e ela responderia.
+   * Desde 10/09/2026 quem manda em produção é a tabela `acesso_perfil`, editada
+   * em Configurações › Usuários › Perfis de acesso. Isto aqui continua sendo a
+   * matriz de referência: é o que vale para perfil sem linha na tabela, e é o
+   * que o Hub usa se a leitura falhar. Um default que se audita lendo um
+   * arquivo é melhor do que um default vazio (que trancaria tudo) ou cheio (que
+   * abriria tudo).
    */
-  deCasa: boolean;
   capacidades: readonly Capacidade[];
 }
 
 /**
- * A matriz, em oito linhas.
+ * A matriz de referência, em oito linhas.
  *
  * A ORDEM é da maior para a menor amplitude — é como a tela de Usuários mostra o
  * seletor, e ler de cima para baixo deve ser ler "do mais para o menos".
  */
 export const PERFIS: Record<PerfilId, DefPerfil> = {
   admin: {
-    id: "admin", label: "Admin", home: "/", deCasa: true,
+    id: "admin", label: "Admin", home: "/",
     resumo: "Tudo, sem exceção. Opera, aprova e configura.",
     capacidades: [
       "metricas", "tesouraria", "conciliacao", "demonstracoes", "planejamento",
       "orcamento", "societario", "apresentacoes", "editais", "remuneracao",
       "time", "biblioteca", "maquinario", "usuarios", "parceiros", "facilities",
+      "assistente",
     ],
   },
   diretoria: {
-    id: "diretoria", label: "Diretoria", home: "/", deCasa: true,
+    id: "diretoria", label: "Diretoria", home: "/",
     resumo: "Todo o número consolidado e o societário. Não opera a rotina do financeiro.",
     capacidades: [
       "metricas", "tesouraria", "demonstracoes", "planejamento", "orcamento",
       "societario", "apresentacoes", "editais", "remuneracao", "time",
-      "biblioteca", "parceiros",
+      "biblioteca", "parceiros", "assistente",
     ],
   },
   lideranca: {
-    id: "lideranca", label: "Liderança", home: "/", deCasa: true,
+    id: "lideranca", label: "Liderança", home: "/",
     resumo: "Resultado e métricas de cliente. Sem societário, sem banco, sem folha.",
-    capacidades: ["metricas", "demonstracoes", "planejamento", "orcamento"],
+    capacidades: ["metricas", "demonstracoes", "planejamento", "orcamento", "assistente"],
   },
   rh: {
-    id: "rh", label: "RH", home: "/operacional/remuneracao", deCasa: true,
+    id: "rh", label: "RH", home: "/operacional/remuneracao",
     resumo: "Pessoas e o que se paga a elas. Sem DRE, sem BP, sem captable.",
-    capacidades: ["remuneracao", "biblioteca"],
+    capacidades: ["remuneracao", "biblioteca", "assistente"],
   },
   automacao: {
-    id: "automacao", label: "Automação", home: "/monitoramento", deCasa: true,
+    id: "automacao", label: "Automação", home: "/monitoramento",
     resumo: "O maquinário: crons, integrações, projetos, recargas. Sem os números do negócio.",
-    capacidades: ["time", "maquinario", "biblioteca"],
+    capacidades: ["time", "maquinario", "biblioteca", "assistente"],
   },
   facilities: {
-    id: "facilities", label: "Facilities", home: "/facilities", deCasa: true,
+    id: "facilities", label: "Facilities", home: "/facilities",
     resumo: "Só o módulo Facilities.",
     capacidades: ["facilities"],
   },
   parcerias: {
-    id: "parcerias", label: "Parcerias", home: "/operacional/parceiros", deCasa: true,
+    id: "parcerias", label: "Parcerias", home: "/operacional/parceiros",
     resumo: "Só a tela de Parceiros.",
     capacidades: ["parceiros"],
   },
   externo: {
-    id: "externo", label: "Externo (consultoria)", home: "/demonstracoes/dre", deCasa: false,
+    id: "externo", label: "Externo (consultoria)", home: "/demonstracoes/dre",
     resumo: "Convidado de fora: demonstrações e plano, nada mais.",
     capacidades: ["demonstracoes", "planejamento"],
   },
   restrito: {
-    id: "restrito", label: "Sem acesso", home: "/", deCasa: false,
+    id: "restrito", label: "Sem acesso", home: "/",
     resumo: "Conta criada, acesso ainda não definido. Não abre nenhuma tela.",
     capacidades: [],
   },
@@ -163,16 +202,41 @@ export const PERFIS_ESCOLHIVEIS: readonly DefPerfil[] = [
 ];
 
 /**
- * Perfis que enxergam remuneração individual.
+ * Perfis que enxergam remuneração individual, POR PADRÃO.
  *
- * Metade de cima da trava — esconde. A metade que PROTEGE é a policy
- * `pode_ver_remuneracao()` no Postgres, que precisa listar exatamente estes
- * mesmos nomes.
+ * Não é mais a palavra final: quem manda é a linha de `acesso_perfil`, e a
+ * policy `pode_ver_remuneracao()` lê essa mesma linha — as duas metades da trava
+ * andam juntas porque leem a mesma fonte, e não porque duas listas foram
+ * mantidas em sincronia à mão.
  */
 export const PERFIS_REMUNERACAO: readonly PerfilId[] =
   (Object.values(PERFIS) as DefPerfil[])
     .filter((p) => p.capacidades.includes("remuneracao"))
     .map((p) => p.id);
+
+/**
+ * A matriz vinda do banco (tabela `acesso_perfil`).
+ *
+ * Parcial de propósito: perfil ausente usa o padrão de `PERFIS`. `null`/undefined
+ * na matriz inteira significa "ainda não carregou, ou a leitura falhou" — e aí
+ * vale o código, que é a matriz revisada e auditável do repositório.
+ */
+export type MatrizAcesso = Partial<Record<PerfilId, readonly Capacidade[]>>;
+
+/** As capacidades válidas, para filtrar o que vier do banco. */
+const CAPACIDADE_VALIDA = new Set<string>(CAPACIDADES_ORDEM);
+
+/** Converte as linhas de `acesso_perfil` na matriz, descartando o que não reconhece. */
+export function matrizDeLinhas(
+  linhas: ReadonlyArray<{ perfil: string; capacidades: string[] | null }> | null | undefined,
+): MatrizAcesso {
+  const m: MatrizAcesso = {};
+  for (const l of linhas ?? []) {
+    if (!ehPerfil(l.perfil) || l.perfil === "restrito") continue;
+    m[l.perfil] = (l.capacidades ?? []).filter((c): c is Capacidade => CAPACIDADE_VALIDA.has(c));
+  }
+  return m;
+}
 
 export function normCargo(cargo?: string | null): string {
   return (cargo ?? "").trim().toLowerCase();
@@ -229,21 +293,27 @@ export interface Acesso {
   home: string;
   /** Nenhuma capacidade: a conta existe e ainda não foi liberada para nada. */
   semAcesso: boolean;
-  /** Gente da Takeat — hoje é o que decide quem tem o Assistente. */
-  deCasa: boolean;
+  /** Fala com a IA. Não é tela — ela responde o que a tela não mostra. */
+  assistente: boolean;
   /** Atalho preservado — a pergunta "vê quanto fulano ganha?" aparece em várias telas. */
   remuneracao: boolean;
 }
 
-export function acessoDe(p: PerfilPortador): Acesso {
+export function acessoDe(p: PerfilPortador, matriz?: MatrizAcesso | null): Acesso {
   const perfil = perfilDe(p);
   const def = PERFIS[perfil];
-  const capacidades = new Set(def.capacidades);
+
+  /* O ADMIN NÃO SE EDITA. A tela esconde os checkboxes dele e o trigger
+     `acesso_perfil_guarda` devolve a linha cheia — mas a garantia mora aqui
+     também, porque é aqui que o Hub decide. Sem isso, uma linha estragada no
+     banco trancaria quem precisa consertá-la. */
+  const doBanco = perfil === "admin" || perfil === "restrito" ? undefined : matriz?.[perfil];
+  const capacidades = new Set<Capacidade>(doBanco ?? def.capacidades);
 
   const modules: ModuleId[] = [];
   if (capacidades.has("facilities")) modules.push("facilities");
   // Quem tem qualquer capacidade que não seja Facilities está no Hub Financeiro.
-  const temFinanceiro = def.capacidades.some((c) => c !== "facilities");
+  const temFinanceiro = [...capacidades].some((c) => c !== "facilities" && c !== "assistente");
   if (temFinanceiro) modules.unshift("financeiro");
 
   return {
@@ -252,11 +322,25 @@ export function acessoDe(p: PerfilPortador): Acesso {
     isAdmin: perfil === "admin",
     facilitiesOnly: perfil === "facilities",
     parceriasOnly: perfil === "parcerias",
-    home: def.home,
+    /* `home` cai para a primeira rota que este perfil ALCANÇA quando a home do
+       padrão foi fechada pela matriz do banco — tirar "Pessoas e folha" do RH
+       deixaria a home dele em /operacional/remuneracao, e o AppLayout
+       redirecionaria para uma rota vedada, em laço. */
+    home: capacidades.size === 0 ? def.home : homeAlcancavel(def.home, capacidades),
     semAcesso: capacidades.size === 0,
-    deCasa: def.deCasa,
+    assistente: capacidades.has("assistente"),
     remuneracao: capacidades.has("remuneracao"),
   };
+}
+
+/** A home do perfil, se ele ainda a alcança; senão, a primeira rota que alcança. */
+function homeAlcancavel(home: string, capacidades: ReadonlySet<Capacidade>): string {
+  const capHome = capacidadeDaRota(home);
+  if (capHome === null || capacidades.has(capHome)) return home;
+  for (const [prefixo, cap] of PORTAO) {
+    if (cap !== null && capacidades.has(cap)) return prefixo;
+  }
+  return home;
 }
 
 export function podeVer(acesso: Acesso, c: Capacidade): boolean {

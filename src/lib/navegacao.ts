@@ -16,7 +16,7 @@ import {
   Palette, Mic, Rocket, Globe2, Paperclip, Radar, Activity,
   type LucideIcon,
 } from "lucide-react";
-import { podeVerRota, type Acesso, type ModuleId } from "./modules";
+import { capacidadeDaRota, podeVerRota, type Acesso, type Capacidade, type ModuleId } from "./modules";
 import { normalize } from "./normalize";
 
 export type NavItem = {
@@ -213,6 +213,21 @@ function permitidos(grupos: NavGrupo[], acesso: Acesso): NavGrupo[] {
 /** Todos os itens de um conjunto de grupos, achatados (pool de favoritos, busca…). */
 export function itensDe(grupos: NavGrupo[]): NavItem[] {
   return grupos.flatMap((g) => g.items);
+}
+
+/**
+ * As telas que uma capacidade abre, pelo nome que está no menu.
+ *
+ * DERIVADO, nunca escrito à mão: cruza o `PORTAO` com este catálogo. A tela de
+ * Perfis de acesso mostra isto embaixo de cada linha, e é o que faz um nome
+ * abstrato como "conciliação" virar uma decisão informada. Escrever a lista à
+ * mão criaria um terceiro lugar para a mesma verdade — e o terceiro é sempre o
+ * que envelhece primeiro.
+ */
+export function telasDaCapacidade(cap: Capacidade): string[] {
+  const todos = itensDe([...GRUPOS_FINANCEIRO, GRUPO_FACILITIES, GRUPO_BUSCA_EXTRA]);
+  const nomes = todos.filter((i) => capacidadeDaRota(i.url) === cap).map((i) => i.title);
+  return [...new Set(nomes)];
 }
 
 /**

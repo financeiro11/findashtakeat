@@ -55,6 +55,8 @@ import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import PerfisAcesso from "@/pages/usuarios/PerfisAcesso";
 import { supabase } from "@/integrations/supabase/client";
 import { gerarSenhaForte } from "@/lib/senha";
 import { PERFIS, PERFIS_ESCOLHIVEIS, type PerfilId } from "@/lib/modules";
@@ -118,6 +120,7 @@ function SenhaParaEntregar({
 }
 
 export default function Usuarios() {
+  const [aba, setAba] = useState("pessoas");
   const [users, setUsers] = useState<Profile[]>([]);
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -224,7 +227,7 @@ export default function Usuarios() {
   };
 
   return (
-    <div className="space-y-6 p-5">
+    <div className="space-y-5 p-5">
       <div>
         <h2 className="text-2xl font-bold tracking-tight">Usuários</h2>
         <p className="max-w-3xl text-sm text-muted-foreground">
@@ -235,6 +238,20 @@ export default function Usuarios() {
         </p>
       </div>
 
+      {/* Duas perguntas diferentes, duas abas: "quem é essa pessoa" e "o que esse
+          perfil enxerga". A segunda mexe em todo mundo que tem o perfil de uma vez,
+          e por isso não cabe dentro do diálogo de editar uma conta. */}
+      <Tabs value={aba} onValueChange={setAba}>
+        <TabsList>
+          <TabsTrigger value="pessoas">Pessoas</TabsTrigger>
+          <TabsTrigger value="perfis">Perfis de acesso</TabsTrigger>
+        </TabsList>
+
+        <TabsContent value="perfis" className="mt-5">
+          <PerfisAcesso />
+        </TabsContent>
+
+        <TabsContent value="pessoas" className="mt-5 space-y-5">
       <Card className="border-border shadow-[var(--shadow-card)]">
         <CardHeader className="flex flex-row items-center justify-between gap-3 space-y-0">
           <span className="text-sm text-muted-foreground">{users.length} usuário(s)</span>
@@ -374,6 +391,8 @@ export default function Usuarios() {
       </Dialog>
 
       {senhaNova && <SenhaParaEntregar dados={senhaNova} onClose={() => setSenhaNova(null)} />}
+        </TabsContent>
+      </Tabs>
     </div>
   );
 }

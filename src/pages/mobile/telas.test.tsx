@@ -28,18 +28,30 @@ vi.mock("@/integrations/supabase/client", () => ({
   },
 }));
 
-vi.mock("@/hooks/useAuth", () => ({
-  useAuth: () => ({
-    user: { id: "u1" },
-    profile: { id: "p1", user_id: "u1", nome: "Júlia Rodrigues", cargo: "financeiro", email: "julia@takeat.app" },
-    loading: false,
-    session: null,
-    signIn: async () => ({}),
-    signOut: async () => {},
-    refreshProfile: async () => {},
-  }),
-  AuthProvider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
-}));
+/* `acesso` entra no dublê porque o MobileLayout decide por ele desde 10/09/2026
+   (ver lib/modules). Sem isso o layout monta com `acesso` undefined e o teste
+   morre em `semAcesso` — que é, no fundo, o teste fazendo o seu trabalho. */
+vi.mock("@/hooks/useAuth", async () => {
+  const { acessoDe } = await import("@/lib/modules");
+  return {
+    useAuth: () => ({
+      user: { id: "u1" },
+      profile: {
+        id: "p1", user_id: "u1", nome: "Júlia Rodrigues",
+        cargo: "financeiro", perfil: "admin", email: "julia@takeat.app",
+      },
+      loading: false,
+      session: null,
+      acesso: acessoDe({ perfil: "admin" }),
+      signIn: async () => ({}),
+      signOut: async () => {},
+      refreshProfile: async () => {},
+      recarregarMatriz: async () => {},
+    }),
+    useAcesso: () => acessoDe({ perfil: "admin" }),
+    AuthProvider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
+  };
+});
 
 import MobileInicio from "./Inicio";
 import MobileTarefas from "./Tarefas";
@@ -71,6 +83,8 @@ afterAll(() => { console.error = erroOriginal; });
 
 describe("shell", () => {
   it("monta o layout com as seis abas", () => {
+    // Admin: as seis. Perfil mais estreito vê menos — ver abasVisiveis, coberto
+    // em lib/modules.test.ts.
     const html = monta(<MobileLayout />);
     for (const aba of ABAS) expect(html).toContain(`>${aba.curto}<`);
     expect(ABAS).toHaveLength(6);

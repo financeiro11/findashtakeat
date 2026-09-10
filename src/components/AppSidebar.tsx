@@ -10,7 +10,7 @@ import { useSinaisContagem } from "@/hooks/useSinais";
 import { Sidebar, SidebarContent, useSidebar } from "@/components/ui/sidebar";
 import { CommandMenu } from "@/components/CommandMenu";
 import { ModuleSwitcher } from "@/components/ModuleSwitcher";
-import { acessoDe, currentModule } from "@/lib/modules";
+import { currentModule } from "@/lib/modules";
 // Os itens de menu moram em @/lib/navegacao — a busca (⌘K) lê o MESMO catálogo.
 import { gruposVisiveis, itemAtivo, itensDe, type NavGrupo, type NavItem } from "@/lib/navegacao";
 
@@ -238,14 +238,13 @@ function sinaisDaRota(porRota: Record<string, number>, url: string): number {
 
 export function AppSidebar() {
   const { pathname } = useLocation();
-  const { user, profile } = useAuth();
+  const { user, profile, acesso: access } = useAuth();
   const [cmdOpen, setCmdOpen] = useState(false);
   // O estado (e o atalho ⌘B) vêm do SidebarProvider; quem persiste é o AppLayout.
   const { open, toggleSidebar } = useSidebar();
   const recolhido = !open;
   const initials = profile?.nome.split(" ").map(p => p[0]).slice(0, 2).join("").toUpperCase() ?? "U";
 
-  const access = acessoDe(profile);
   const mod = access.facilitiesOnly ? "facilities" : currentModule(pathname);
   const { favoritos, toggle: toggleFavorito } = useFavoritos(user?.id);
 

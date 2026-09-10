@@ -1,10 +1,11 @@
 import { describe, it, expect } from "vitest";
 import {
-  PERFIS, PERFIS_ESCOLHIVEIS, PERFIS_REMUNERACAO,
-  acessoDe, perfilDe, podeVerRota, capacidadeDaRota,
-  type PerfilId,
+  CAPACIDADES, CAPACIDADES_ORDEM, PERFIS, PERFIS_ESCOLHIVEIS, PERFIS_REMUNERACAO,
+  acessoDe, perfilDe, podeVerRota, capacidadeDaRota, matrizDeLinhas,
+  type Capacidade, type PerfilId,
 } from "./modules";
-import { GRUPOS_FINANCEIRO, GRUPO_FACILITIES, GRUPO_BUSCA_EXTRA, itensDe } from "./navegacao";
+import { GRUPOS_FINANCEIRO, GRUPO_FACILITIES, GRUPO_BUSCA_EXTRA, itensDe, telasDaCapacidade } from "./navegacao";
+import { abasVisiveis, primeiraAbaDe } from "@/components/mobile/MobileBottomNav";
 
 const de = (perfil: PerfilId) => acessoDe({ perfil });
 
@@ -183,6 +184,81 @@ describe("o portão", () => {
   });
 });
 
+describe("a matriz vinda do banco", () => {
+  it("substitui o padrão do código", () => {
+    const acesso = acessoDe({ perfil: "lideranca" }, { lideranca: ["metricas"] });
+    expect(podeVerRota(acesso, "/assinaturas")).toBe(true);
+    expect(podeVerRota(acesso, "/demonstracoes/dre")).toBe(false); // o padrão dava
+  });
+
+  it("perfil ausente na matriz mantém o padrão", () => {
+    const acesso = acessoDe({ perfil: "rh" }, { lideranca: ["metricas"] });
+    expect(podeVerRota(acesso, "/operacional/remuneracao")).toBe(true);
+  });
+
+  /* Falha de leitura (rede, RLS) chega aqui como null. Cair no padrão do código
+     é o único fallback auditável: vazio trancaria todo mundo, e "tudo" abriria. */
+  it("matriz nula usa o padrão do código", () => {
+    expect(podeVerRota(acessoDe({ perfil: "rh" }, null), "/operacional/remuneracao")).toBe(true);
+    expect(podeVerRota(acessoDe({ perfil: "externo" }, null), "/captable")).toBe(false);
+  });
+
+  /* Se desse para tirar "Administração" do admin, a própria tela que conserta
+     isso ficaria inalcançável. O trigger no Postgres garante o mesmo. */
+  it("o admin ignora a matriz e continua com tudo", () => {
+    const acesso = acessoDe({ perfil: "admin" }, { admin: [] });
+    expect(acesso.semAcesso).toBe(false);
+    expect(podeVerRota(acesso, "/usuarios")).toBe(true);
+    expect(podeVerRota(acesso, "/captable")).toBe(true);
+  });
+
+  it("matriz que zera um perfil deixa a conta sem acesso", () => {
+    const acesso = acessoDe({ perfil: "externo" }, { externo: [] });
+    expect(acesso.semAcesso).toBe(true);
+    expect(podeVerRota(acesso, "/demonstracoes/dre")).toBe(false);
+  });
+
+  /* Fechar a capacidade da home deixaria o AppLayout redirecionando para uma
+     rota vedada — e o navegador em laço. */
+  it("a home acompanha quando a matriz fecha a tela padrão do perfil", () => {
+    const acesso = acessoDe({ perfil: "rh" }, { rh: ["biblioteca"] });
+    expect(acesso.home).not.toBe("/operacional/remuneracao");
+    expect(podeVerRota(acesso, acesso.home)).toBe(true);
+  });
+
+  it("descarta perfil e capacidade que não reconhece", () => {
+    const m = matrizDeLinhas([
+      { perfil: "rh", capacidades: ["remuneracao", "voar"] },
+      { perfil: "presidente", capacidades: ["metricas"] },
+      { perfil: "restrito", capacidades: ["metricas"] },
+    ]);
+    expect(m.rh).toEqual(["remuneracao"]);
+    expect(m).not.toHaveProperty("presidente");
+    expect(m).not.toHaveProperty("restrito");
+  });
+});
+
+describe("o Assistente é capacidade, não exceção", () => {
+  it("externo não fala com a IA; os de dentro falam", () => {
+    expect(acessoDe({ perfil: "externo" }).assistente).toBe(false);
+    for (const id of ["admin", "diretoria", "lideranca", "rh", "automacao"] as PerfilId[]) {
+      expect(acessoDe({ perfil: id }).assistente, id).toBe(true);
+    }
+  });
+
+  it("sai da matriz como qualquer outra", () => {
+    expect(acessoDe({ perfil: "lideranca" }, { lideranca: ["metricas"] }).assistente).toBe(false);
+    expect(acessoDe({ perfil: "externo" }, { externo: ["assistente"] }).assistente).toBe(true);
+  });
+
+  /* Ter só o Assistente não faz de ninguém usuário do Hub Financeiro — senão a
+     pessoa entraria num módulo sem nenhuma tela. */
+  it("não conta como módulo", () => {
+    expect(acessoDe({ perfil: "facilities" }, { facilities: ["facilities", "assistente"] }).modules)
+      .toEqual(["facilities"]);
+  });
+});
+
 describe("as duas listas da folha andam juntas", () => {
   /* A metade que esconde está aqui; a que protege é `pode_ver_remuneracao()` no
      Postgres. Se divergirem, a tela vem vazia para quem deveria ver — ou cheia
@@ -211,6 +287,48 @@ describe("módulos", () => {
     for (const p of PERFIS_ESCOLHIVEIS) {
       expect(de(p.id).isAdmin).toBe(p.id === "admin");
     }
+  });
+});
+
+describe("as abas do celular seguem o mesmo portão", () => {
+  it("admin vê as seis; RH não vê Extratos nem Tarefas", () => {
+    expect(abasVisiveis(de("admin")).map((a) => a.url)).toHaveLength(6);
+    const rh = abasVisiveis(de("rh")).map((a) => a.url);
+    expect(rh).not.toContain("/extratos");
+    expect(rh).not.toContain("/tarefas");
+    expect(rh).toContain("/perfil");
+  });
+
+  /* Chat e Perfil não têm entrada no portão de propósito: sem elas a barra
+     ficaria vazia para quem só tem uma capacidade, e o app pareceria quebrado. */
+  it("todo perfil pousa em alguma aba", () => {
+    for (const p of PERFIS_ESCOLHIVEIS) {
+      const primeira = primeiraAbaDe(de(p.id));
+      expect(podeVerRota(de(p.id), primeira), p.id).toBe(true);
+    }
+  });
+});
+
+describe("a tela de Perfis de acesso tem o que mostrar", () => {
+  it("toda capacidade aparece na ordem da tela, uma vez só", () => {
+    const doTipo = Object.keys(CAPACIDADES) as Capacidade[];
+    expect([...CAPACIDADES_ORDEM].sort()).toEqual([...doTipo].sort());
+    expect(CAPACIDADES_ORDEM).toHaveLength(new Set(CAPACIDADES_ORDEM).size);
+  });
+
+  it("toda capacidade tem rótulo e explicação", () => {
+    for (const c of CAPACIDADES_ORDEM) {
+      expect(CAPACIDADES[c].label.trim(), c).not.toBe("");
+      expect(CAPACIDADES[c].descricao.trim(), c).not.toBe("");
+    }
+  });
+
+  /* A linha da tela lista as telas que a capacidade abre. Uma capacidade sem
+     tela nenhuma seria um checkbox que não explica o que faz — só `assistente`
+     pode estar nessa situação, porque ela não é tela, é conversa. */
+  it("só o Assistente não lista telas", () => {
+    const vazias = CAPACIDADES_ORDEM.filter((c) => telasDaCapacidade(c).length === 0);
+    expect(vazias).toEqual(["assistente"]);
   });
 });
 

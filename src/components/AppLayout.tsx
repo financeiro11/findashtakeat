@@ -11,7 +11,7 @@ import { NovaVersao } from "@/components/NovaVersao";
 import { AbrirNoCelular } from "@/components/AbrirNoCelular";
 import { useAuth } from "@/hooks/useAuth";
 import { SemAcesso } from "@/components/SemAcesso";
-import { acessoDe, currentModule, podeVerRota } from "@/lib/modules";
+import { currentModule, podeVerRota } from "@/lib/modules";
 import { destinoAtual, useVoltarAoDestino } from "@/lib/destinoLogin";
 
 // Menu lateral recolhido. Quem guarda é esta camada: o SidebarProvider escreve um
@@ -20,7 +20,7 @@ import { destinoAtual, useVoltarAoDestino } from "@/lib/destinoLogin";
 const MENU_KEY = "sidebar:recolhido";
 
 export default function AppLayout() {
-  const { user, profile, loading } = useAuth();
+  const { user, loading, acesso: access } = useAuth();
   const location = useLocation();
   const { pathname } = location;
   const [menuAberto, setMenuAberto] = useState(() => {
@@ -36,8 +36,6 @@ export default function AppLayout() {
   // cair NELA depois do login, não na home. Sem isto, todo link compartilhado do Hub
   // acaba no Dashboard e a pessoa precisa procurar a tela na mão.
   if (!user) return <Navigate to="/login" replace state={{ destino: destinoAtual(location) }} />;
-
-  const access = acessoDe(profile);
 
   // Conta sem perfil definido: nada abre, e a tela diz o que fazer. Fica ANTES do
   // portão porque não há para onde redirecionar — `home` dela também é vedada.
@@ -87,12 +85,13 @@ export default function AppLayout() {
             <Outlet />
           </main>
         </div>
-        {/* `deCasa` é o que segura o Assistente longe de um convidado de fora.
-            A bolinha responde sobre o negócio inteiro, com o contexto
-            organizacional no prompt — sem esta condição, restringir as TELAS da
-            consultoria não valeria nada: bastaria perguntar à IA o que a tela
-            não mostra. Ver DefPerfil em lib/modules.ts. */}
-        {access.deCasa && !isParcerias && !emFacilities && (
+        {/* O Assistente é CAPACIDADE, editável em Usuários › Perfis de acesso —
+            não uma exceção escrita aqui. A bolinha responde sobre o negócio
+            inteiro, com o contexto organizacional no prompt: sem esta condição,
+            restringir as TELAS de um convidado não valeria nada, bastaria
+            perguntar à IA o que a tela não mostra. Quem recusa de verdade é
+            `pode_usar_assistente()`, dentro do ai-chat. */}
+        {access.assistente && !isParcerias && !emFacilities && (
           <div data-chrome="assistente" className="contents"><AIAssistant /></div>
         )}
         {/* O aviso do que quebrou. Fica AQUI, no layout, para valer em qualquer

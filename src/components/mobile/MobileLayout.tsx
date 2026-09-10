@@ -2,7 +2,7 @@ import { useEffect } from "react";
 import { Navigate, useLocation } from "react-router-dom";
 import { useAuth } from "@/hooks/useAuth";
 import { SemAcesso } from "@/components/SemAcesso";
-import { acessoDe, podeVerRota } from "@/lib/modules";
+import { podeVerRota } from "@/lib/modules";
 import { destinoAtual, useVoltarAoDestino } from "@/lib/destinoLogin";
 import { observarTema } from "@/lib/tema";
 import { MobileShell } from "./MobileShell";
@@ -19,7 +19,7 @@ import { DesktopOnly } from "./DesktopOnly";
  * útil é Perfil — ou, pior, mostrar número de caixa para quem não deveria ver.
  */
 export default function MobileLayout() {
-  const { user, profile, loading } = useAuth();
+  const { user, loading, acesso } = useAuth();
   const location = useLocation();
 
   useEffect(() => observarTema(), []);
@@ -36,7 +36,6 @@ export default function MobileLayout() {
   // depois de entrar, e não na aba Início (ver lib/destinoLogin).
   if (!user) return <Navigate to="/login" replace state={{ destino: destinoAtual(location) }} />;
 
-  const acesso = acessoDe(profile);
   // Mesma regra do desktop: conta sem perfil não abre tela nenhuma.
   if (acesso.semAcesso) return <SemAcesso />;
   // O portão também vale aqui — as abas do celular são recortes das mesmas rotas.

@@ -69,6 +69,27 @@ export type Database = {
         }
         Relationships: []
       }
+      acesso_perfil: {
+        Row: {
+          atualizado_em: string
+          atualizado_por: string | null
+          capacidades: string[]
+          perfil: string
+        }
+        Insert: {
+          atualizado_em?: string
+          atualizado_por?: string | null
+          capacidades?: string[]
+          perfil: string
+        }
+        Update: {
+          atualizado_em?: string
+          atualizado_por?: string | null
+          capacidades?: string[]
+          perfil?: string
+        }
+        Relationships: []
+      }
       agenda_eventos: {
         Row: {
           atualizado_em: string
@@ -778,6 +799,60 @@ export type Database = {
           ok?: boolean
           operador?: string | null
           referencia?: string
+        }
+        Relationships: []
+      }
+      asaas_omie_lancamento: {
+        Row: {
+          atualizado_em: string
+          categoria: string
+          cod_int_lanc: string
+          criado_em: string
+          dia: string
+          entradas: number
+          enviado_em: string | null
+          erro: string | null
+          lancamentos: number
+          n_cod_lanc: string | null
+          natureza: string
+          saidas: number
+          status: string
+          tentativas: number
+          valor: number
+        }
+        Insert: {
+          atualizado_em?: string
+          categoria: string
+          cod_int_lanc: string
+          criado_em?: string
+          dia: string
+          entradas?: number
+          enviado_em?: string | null
+          erro?: string | null
+          lancamentos?: number
+          n_cod_lanc?: string | null
+          natureza: string
+          saidas?: number
+          status?: string
+          tentativas?: number
+          valor: number
+        }
+        Update: {
+          atualizado_em?: string
+          categoria?: string
+          cod_int_lanc?: string
+          criado_em?: string
+          dia?: string
+          entradas?: number
+          enviado_em?: string | null
+          erro?: string | null
+          lancamentos?: number
+          n_cod_lanc?: string | null
+          natureza?: string
+          saidas?: number
+          status?: string
+          tentativas?: number
+          valor?: number
         }
         Relationships: []
       }
@@ -11180,6 +11255,19 @@ export type Database = {
         }[]
       }
       asaas_metricas: { Args: { p_referencia: string }; Returns: Json }
+      asaas_omie_cobertura: {
+        Args: { p_ate?: string; p_de?: string }
+        Returns: {
+          com_erro: number
+          dia: string
+          diferenca: number
+          lancamentos: number
+          linhas_extrato: number
+          liquido_enviado: number
+          liquido_extrato: number
+          pendentes: number
+        }[]
+      }
       asaas_prazo_credito: { Args: { p_forma: string }; Returns: number }
       asaas_taxas_mes: {
         Args: { p_ate?: string; p_de?: string }
@@ -12928,6 +13016,7 @@ export type Database = {
         }
         Returns: undefined
       }
+      pode_usar_assistente: { Args: never; Returns: boolean }
       pode_ver_remuneracao: { Args: never; Returns: boolean }
       postgres_fdw_disconnect: { Args: { "": string }; Returns: boolean }
       postgres_fdw_disconnect_all: { Args: never; Returns: boolean }

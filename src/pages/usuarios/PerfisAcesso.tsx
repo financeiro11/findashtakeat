@@ -4,12 +4,20 @@
 // e publicar. Agora é esta tela: linhas são capacidades (conjuntos de telas que
 // andam juntas), colunas são os perfis, e cada marca é uma decisão.
 //
-// O QUE ESTA TELA MUDA, E O QUE NÃO MUDA. Ela muda o que aparece no menu, no ⌘K
-// e o que a rota digitada deixa abrir. Ela NÃO muda o que o banco entrega: das
-// 222 tabelas, ~206 respondem a qualquer pessoa autenticada que chame o
-// PostgREST direto. As duas exceções — "Pessoas e folha" e "Assistente" — têm
-// trava de verdade no Postgres e leem a MESMA linha que esta tela escreve, então
-// nelas desmarcar significa mesmo fechar. O selo na tabela diz quais são.
+// DUAS DECISÕES DIFERENTES, NA MESMA LINHA. Os checkboxes dizem QUEM PODE — e
+// isso governa o menu, o ⌘K e a rota digitada. O selo ao lado do nome da
+// capacidade diz SE O BANCO JÁ RECUSA:
+//
+//   • `avisa`    — a checagem registra quem seria barrado (`acesso_negado`) e
+//                  deixa passar. É o estado em que quase tudo nasce.
+//   • `bloqueia` — `pode_ler()`/`exigir()` negam de verdade, e nem a URL nem uma
+//                  chamada direta ao PostgREST trazem o dado.
+//
+// A ordem importa: vira-se para `bloqueia` DEPOIS de olhar a lista de quem
+// apareceu no aviso. Uma tabela é lida por mais telas do que o nome sugere —
+// `demonstracoes_contabeis` é lida por Demonstrações, Apresentações, Dashboard e
+// BP — e fechar por palpite deixa tela vazia sem erro, que ninguém relaciona com
+// a mudança de ontem. Ver `scripts/mapa-acesso.mjs`.
 //
 // A COLUNA DO ADMIN NÃO ABRE. Se desse para tirar "Administração" do admin, esta
 // própria tela ficaria inalcançável e o conserto passaria a exigir SQL direto no
@@ -18,11 +26,10 @@
 // que acontecer com o PATCH.
 
 import { useEffect, useMemo, useState } from "react";
-import { Loader2, RotateCcw, ShieldCheck, Save } from "lucide-react";
+import { Loader2, RotateCcw, ShieldCheck, Save, Eye } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
-import { Badge } from "@/components/ui/badge";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/hooks/useAuth";
 import {
@@ -36,29 +43,26 @@ import {
 } from "./matriz";
 import { toast } from "sonner";
 
-/**
- * As capacidades cuja trava vale também no banco.
- *
- * `pode_ver_remuneracao()` e `pode_usar_assistente()` leem `acesso_perfil` — a
- * mesma linha que esta tela grava. Todo o resto é só vista, e dizer isso na
- * própria tela evita a leitura errada de que desmarcar protege o dado.
- */
-const COM_TRAVA_REAL = new Set<Capacidade>(["remuneracao", "assistente"]);
-
+type Modo = "aviso" | "bloqueio";
+type Negado = { capacidade: string; perfil: string | null; onde: string | null; tentativas: number; ultima: string };
 
 export default function PerfisAcesso() {
   const { user, recarregarMatriz } = useAuth();
   const [salvo, setSalvo] = useState<Linhas | null>(null);
   const [rascunho, setRascunho] = useState<Linhas | null>(null);
   const [pessoas, setPessoas] = useState<Record<string, number>>({});
+  const [modos, setModos] = useState<Record<string, Modo>>({});
+  const [negados, setNegados] = useState<Negado[]>([]);
   const [carregando, setCarregando] = useState(true);
   const [salvando, setSalvando] = useState(false);
 
   const carregar = async () => {
     setCarregando(true);
-    const [{ data: linhas }, { data: perfis }] = await Promise.all([
+    const [{ data: linhas }, { data: perfis }, { data: mm }, { data: neg }] = await Promise.all([
       supabase.from("acesso_perfil").select("perfil, capacidades"),
       supabase.from("profiles").select("perfil"),
+      supabase.from("acesso_modo").select("capacidade, modo"),
+      supabase.from("acesso_negado_resumo").select("*").limit(50),
     ]);
     const m = paraLinhas(matrizDeLinhas(linhas as { perfil: string; capacidades: string[] | null }[]));
     setSalvo(m);
@@ -69,7 +73,28 @@ export default function PerfisAcesso() {
       contagem[k] = (contagem[k] ?? 0) + 1;
     }
     setPessoas(contagem);
+    setModos(Object.fromEntries(((mm ?? []) as { capacidade: string; modo: Modo }[])
+      .map((r) => [r.capacidade, r.modo])));
+    setNegados((neg ?? []) as Negado[]);
     setCarregando(false);
+  };
+
+  /* Virar a chave de uma capacidade: `aviso` registra e deixa passar, `bloqueio`
+     recusa no banco. Grava na hora, sem entrar no rascunho da matriz — são duas
+     decisões diferentes ("quem pode" × "o banco já recusa"), e misturá-las num
+     botão Salvar só faria alguém bloquear sem querer. */
+  const virarModo = async (cap: Capacidade, novo: Modo) => {
+    const anterior = modos[cap] ?? "aviso";
+    setModos((m) => ({ ...m, [cap]: novo }));
+    const { error } = await supabase.from("acesso_modo")
+      .upsert({ capacidade: cap, modo: novo, mudado_em: new Date().toISOString() }, { onConflict: "capacidade" });
+    if (error) {
+      setModos((m) => ({ ...m, [cap]: anterior }));
+      return toast.error(error.message);
+    }
+    toast.success(novo === "bloqueio"
+      ? `${CAPACIDADES[cap].label}: o banco passa a recusar.`
+      : `${CAPACIDADES[cap].label}: voltou a só registrar.`);
   };
 
   useEffect(() => { void carregar(); }, []);
@@ -128,12 +153,59 @@ export default function PerfisAcesso() {
       <div className="flex items-start gap-2.5 rounded-md border border-amber-500/30 bg-amber-500/10 px-3.5 py-2.5 text-[12.5px] leading-relaxed text-amber-900 dark:text-amber-200">
         <ShieldCheck className="mt-0.5 h-4 w-4 shrink-0" />
         <p>
-          <strong className="font-semibold">Esconder não é proteger.</strong> Desmarcar tira a tela da
-          frente da pessoa, mas a maior parte das tabelas ainda responde a quem chamar a API direto.
-          As duas linhas marcadas com <Badge variant="outline" className="mx-0.5 px-1 py-0 text-[10px] align-middle">trava real</Badge>
-          são a exceção: nelas o próprio banco recusa, porque a regra lê esta mesma matriz.
+          <strong className="font-semibold">Marcar decide a vista; o selo decide o banco.</strong> Os
+          checkboxes tiram a tela da frente da pessoa. Quem faz o banco recusar de verdade é o selo de
+          cada linha: <strong>bloqueia</strong> nega a leitura, <strong>avisa</strong> apenas registra
+          quem seria barrado e deixa passar — para você conferir a lista antes de fechar. Uma tabela é
+          lida por mais telas do que parece, e fechar no escuro deixa tela vazia sem erro nenhum.
         </p>
       </div>
+
+      {/* O que o modo aviso pegou. Sem isto o registro existiria e ninguém
+          olharia — e o modo aviso só serve para ser olhado antes de virar a
+          chave. Some quando não há nada, para não virar ruído permanente. */}
+      {negados.length > 0 && (
+        <Card className="border-amber-500/40">
+          <CardContent className="space-y-2 p-4">
+            <div className="flex items-center gap-2">
+              <Eye className="h-4 w-4 text-amber-600 dark:text-amber-400" />
+              <h4 className="text-sm font-semibold text-foreground">Quem seria barrado, se estivesse bloqueado</h4>
+            </div>
+            <p className="text-[12px] text-muted-foreground">
+              Confira antes de virar uma linha para <strong>bloqueia</strong>. Se aparecer aqui alguém
+              que precisa mesmo daquela tela, o certo é dar a capacidade a ele — não desistir de fechar.
+            </p>
+            <div className="overflow-x-auto">
+              <table className="w-full min-w-[520px] text-[12.5px]">
+                <thead>
+                  <tr className="border-b border-border text-left text-[10.5px] uppercase tracking-wider text-muted-foreground">
+                    <th className="py-1.5 pr-3 font-semibold">Capacidade</th>
+                    <th className="py-1.5 pr-3 font-semibold">Perfil</th>
+                    <th className="py-1.5 pr-3 font-semibold">Onde</th>
+                    <th className="py-1.5 pr-3 text-right font-semibold">Vezes</th>
+                    <th className="py-1.5 text-right font-semibold">Última</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {negados.map((n, i) => (
+                    <tr key={i} className="border-b border-border last:border-0">
+                      <td className="py-1.5 pr-3 font-medium text-foreground">
+                        {CAPACIDADES[n.capacidade as Capacidade]?.label ?? n.capacidade}
+                      </td>
+                      <td className="py-1.5 pr-3">{PERFIS[n.perfil as PerfilId]?.label ?? n.perfil ?? "—"}</td>
+                      <td className="py-1.5 pr-3 font-mono text-[11.5px] text-muted-foreground">{n.onde ?? "—"}</td>
+                      <td className="py-1.5 pr-3 text-right tabular-nums">{n.tentativas}</td>
+                      <td className="py-1.5 text-right text-muted-foreground">
+                        {new Date(n.ultima).toLocaleString("pt-BR", { dateStyle: "short", timeStyle: "short" })}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </CardContent>
+        </Card>
+      )}
 
       <Card className="border-border shadow-[var(--shadow-card)]">
         <CardContent className="overflow-x-auto p-0">
@@ -165,15 +237,23 @@ export default function PerfisAcesso() {
                     <td className="sticky left-0 z-10 max-w-[340px] bg-card px-4 py-2.5">
                       <div className="flex items-center gap-2">
                         <span className="font-medium text-foreground">{CAPACIDADES[cap].label}</span>
-                        {COM_TRAVA_REAL.has(cap) && (
-                          <Badge
-                            variant="outline"
-                            className="px-1 py-0 text-[10px]"
-                            title="O banco também recusa — a policy lê esta mesma matriz."
-                          >
-                            trava real
-                          </Badge>
-                        )}
+                        {/* O selo é o interruptor do banco, e é clicável. Fica na
+                            linha da capacidade porque é dela que se trata: o modo
+                            vale para todos os perfis de uma vez. */}
+                        <button
+                          type="button"
+                          onClick={() => virarModo(cap, (modos[cap] ?? "aviso") === "bloqueio" ? "aviso" : "bloqueio")}
+                          className={`rounded border px-1.5 py-0 text-[10px] font-semibold uppercase tracking-wide transition-colors ${
+                            (modos[cap] ?? "aviso") === "bloqueio"
+                              ? "border-emerald-600/40 bg-emerald-600/10 text-emerald-700 hover:bg-emerald-600/20 dark:text-emerald-400"
+                              : "border-amber-500/40 bg-amber-500/10 text-amber-700 hover:bg-amber-500/20 dark:text-amber-400"
+                          }`}
+                          title={(modos[cap] ?? "aviso") === "bloqueio"
+                            ? "O banco recusa quem não tem esta capacidade. Clique para voltar a só registrar."
+                            : "Só registra quem seria barrado, e deixa passar. Clique para o banco passar a recusar."}
+                        >
+                          {(modos[cap] ?? "aviso") === "bloqueio" ? "bloqueia" : "avisa"}
+                        </button>
                       </div>
                       <div className="text-[11.5px] leading-snug text-muted-foreground">
                         {CAPACIDADES[cap].descricao}

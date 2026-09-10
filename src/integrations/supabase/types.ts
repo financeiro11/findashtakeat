@@ -69,6 +69,51 @@ export type Database = {
         }
         Relationships: []
       }
+      acesso_modo: {
+        Row: {
+          capacidade: string
+          modo: string
+          mudado_em: string
+        }
+        Insert: {
+          capacidade: string
+          modo?: string
+          mudado_em?: string
+        }
+        Update: {
+          capacidade?: string
+          modo?: string
+          mudado_em?: string
+        }
+        Relationships: []
+      }
+      acesso_negado: {
+        Row: {
+          capacidade: string
+          id: number
+          onde: string | null
+          perfil: string | null
+          quando: string
+          user_id: string | null
+        }
+        Insert: {
+          capacidade: string
+          id?: number
+          onde?: string | null
+          perfil?: string | null
+          quando?: string
+          user_id?: string | null
+        }
+        Update: {
+          capacidade?: string
+          id?: number
+          onde?: string | null
+          perfil?: string | null
+          quando?: string
+          user_id?: string | null
+        }
+        Relationships: []
+      }
       acesso_perfil: {
         Row: {
           atualizado_em: string
@@ -10851,6 +10896,16 @@ export type Database = {
       }
     }
     Views: {
+      acesso_negado_resumo: {
+        Row: {
+          capacidade: string | null
+          onde: string | null
+          perfil: string | null
+          tentativas: number | null
+          ultima: string | null
+        }
+        Relationships: []
+      }
       agentes_resumo: {
         Row: {
           alcada_maxima: string | null
@@ -11122,6 +11177,7 @@ export type Database = {
     }
     Functions: {
       aceita_recibo_do_app: { Args: { nome: string }; Returns: boolean }
+      acesso_modo_de: { Args: { p_cap: string }; Returns: string }
       achado_do_lancamento: { Args: { p_id_unico: string }; Returns: string }
       agenda_checklist_do_dia: {
         Args: { p_dia: string; p_responsavel?: string }
@@ -11252,6 +11308,15 @@ export type Database = {
           data: string
           qtd: number
           valor: number
+        }[]
+      }
+      asaas_extrato_liquido_total: {
+        Args: never
+        Returns: {
+          linhas: number
+          liquido: number
+          primeiro_dia: string
+          ultimo_dia: string
         }[]
       }
       asaas_metricas: { Args: { p_referencia: string }; Returns: Json }
@@ -11738,6 +11803,23 @@ export type Database = {
           valor: number
         }[]
       }
+      demonstracoes_lancamentos_interno: {
+        Args: { p_mes: string; p_rubrica: string; p_tipo: string }
+        Returns: {
+          categoria_codigo: string
+          categoria_descricao: string
+          cnpj_cpf: string
+          cod_titulo: string
+          contraparte: string
+          data: string
+          documento: string
+          grupo: string
+          status: string
+          titulo: string
+          valor: number
+          vencimento: string
+        }[]
+      }
       demonstracoes_lancamentos_multi: {
         Args: { p_meses: string[]; p_rubricas: string[]; p_tipo: string }
         Returns: {
@@ -11939,6 +12021,7 @@ export type Database = {
         Args: { p_texto: string; p_tipo: string }
         Returns: boolean
       }
+      exigir: { Args: { p_cap: string; p_onde?: string }; Returns: boolean }
       expressao_do_argumento: {
         Args: { p_arg: string; p_comando: string }
         Returns: string
@@ -13016,6 +13099,8 @@ export type Database = {
         }
         Returns: undefined
       }
+      pode: { Args: { p_cap: string }; Returns: boolean }
+      pode_ler: { Args: { p_cap: string }; Returns: boolean }
       pode_usar_assistente: { Args: never; Returns: boolean }
       pode_ver_remuneracao: { Args: never; Returns: boolean }
       postgres_fdw_disconnect: { Args: { "": string }; Returns: boolean }

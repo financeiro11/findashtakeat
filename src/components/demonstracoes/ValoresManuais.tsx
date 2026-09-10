@@ -8,6 +8,7 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { chaveCelula } from "@/components/demonstracoes/Reclassificacoes";
 import { DetalheStatus, SegmentoStatus } from "@/components/demonstracoes/BarraStatus";
 import { paraCampo, paraNumero, rotuloMes } from "@/lib/valoresManuais";
+import { conferirSessao, ehSessaoMorta } from "@/lib/sessaoViva";
 import { ASAAS_META, type AsaasKey } from "@/lib/extratoAsaas";
 
 /* ---------------------------------------------------------------------------
@@ -216,7 +217,14 @@ export function EditorValorManual({
       toast.success(ok);
       await onSalvo();
     } catch (e) {
-      toast.error("Não consegui salvar: " + (e instanceof Error ? e.message : String(e)));
+      const msg = e instanceof Error ? e.message : String(e);
+      /* "Não autenticado." numa tela logada é sessão zumbi, não erro de
+         digitação: o token vale para o PostgREST e a página inteira funciona,
+         mas o GoTrue já apagou a sessão. Dizer só a mensagem crua mandaria a
+         pessoa tentar de novo para sempre — quem resolve é entrar outra vez.
+         Ver lib/sessaoViva.ts. */
+      if (ehSessaoMorta(msg) && await conferirSessao({ agora: true })) return;
+      toast.error("Não consegui salvar: " + msg);
     } finally {
       setSalvando(false);
     }

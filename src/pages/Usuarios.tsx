@@ -15,6 +15,31 @@
 // a tela de login tinha um código de 4 dígitos que trocava a senha de qualquer
 // um. O poder de redefinir a senha de outra pessoa continua existindo — mas
 // agora mora aqui dentro, atrás de login, e não no bundle público.
+//
+// ---------------------------------------------------------------------------
+// A REGRA DAS DUAS TELAS (04/09/2026)
+//
+// SENHA NA TELA SÓ DEPOIS DO SERVIDOR CONFIRMAR. Nunca antes.
+//
+// O diálogo de redefinir sorteava a senha ao ABRIR e a escrevia num campo
+// visível, antes de o servidor saber de coisa alguma. Quem abria copiava dali,
+// mandava para a pessoa e fechava a janela — e nada tinha acontecido. A senha
+// existiu só na conversa: o Auth continuava com a antiga, a pessoa continuava
+// sem entrar, e não havia erro nenhum para explicar por quê.
+//
+// Aconteceu em 04/09/2026 com o acesso do Renan, e custou o dia dele. Os logs
+// contam a história inteira: zero chamadas a `admin-reset-password`, e duas
+// tentativas de login recusadas com a senha que ninguém nunca gravou.
+//
+// Por isso a redefinição virou confirmação, sem campo: `gerarSenhaForte()` roda
+// DENTRO de `confirmarRedefinir`, o valor vai direto para a Edge Function e só
+// chega aos olhos de alguém em `SenhaParaEntregar` — a mesma tela da criação,
+// que já só abre depois do 2xx. Enquanto o diálogo estiver aberto, a verdade é
+// que nada mudou, e ele diz isso com todas as letras.
+//
+// Escrever a senha à mão saiu junto. Era o que exigia o campo, e o campo era a
+// armadilha; quem precisa de uma senha específica redefine e pede a troca no
+// primeiro acesso.
 
 import { useEffect, useState } from "react";
 import { Plus, Trash2, Loader2, Pencil, KeyRound, Copy, Check } from "lucide-react";
@@ -27,8 +52,7 @@ import {
   Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger,
 } from "@/components/ui/dialog";
 import { supabase } from "@/integrations/supabase/client";
-import { BarraDeForca } from "@/components/RedefinirSenha";
-import { MIN_SENHA, gerarSenhaForte, motivoSenhaRuim } from "@/lib/senha";
+import { gerarSenhaForte } from "@/lib/senha";
 import { toast } from "sonner";
 
 type Profile = {
@@ -96,7 +120,6 @@ export default function Usuarios() {
 
   const [senhaNova, setSenhaNova] = useState<{ email: string; senha: string } | null>(null);
   const [redefinindo, setRedefinindo] = useState<Profile | null>(null);
-  const [senhaRedef, setSenhaRedef] = useState("");
   const [redefBusy, setRedefBusy] = useState(false);
 
   const load = async () => {
@@ -138,27 +161,31 @@ export default function Usuarios() {
     setForm(empty); setEditing(null); setOpen(false); load();
   };
 
-  const abrirRedefinir = (p: Profile) => {
-    setRedefinindo(p);
-    setSenhaRedef(gerarSenhaForte());
-  };
+  // Abrir o diálogo não sorteia nada — ver "A REGRA DAS DUAS TELAS" no topo.
+  const abrirRedefinir = (p: Profile) => setRedefinindo(p);
 
   const confirmarRedefinir = async () => {
     if (!redefinindo) return;
-    const ruim = motivoSenhaRuim(senhaRedef, redefinindo.email);
-    if (ruim) return toast.error(ruim);
+
+    // A senha nasce AQUI, no clique, e não numa variável de estado que a tela
+    // pudesse desenhar. Entre este sorteio e a resposta do servidor ela não
+    // existe para ninguém — nem para quem está olhando a página.
+    const senha = gerarSenhaForte();
 
     setRedefBusy(true);
     const { data, error } = await supabase.functions.invoke("admin-reset-password", {
-      body: { email: redefinindo.email, password: senhaRedef },
+      body: { email: redefinindo.email, password: senha },
     });
     setRedefBusy(false);
+    // Recusa do servidor (senha fraca, quem chamou não pode, conta sumida): a
+    // senha sorteada morre aqui, sem nunca ter aparecido. Tentar de novo sorteia
+    // outra — não há nada a recuperar.
     if (error || (data as any)?.error) {
       return toast.error((data as any)?.error || error?.message || "Erro ao redefinir");
     }
     const alvo = redefinindo.email;
     setRedefinindo(null);
-    setSenhaNova({ email: alvo, senha: senhaRedef });
+    setSenhaNova({ email: alvo, senha });
   };
 
   const remove = async (p: Profile) => {
@@ -263,33 +290,17 @@ export default function Usuarios() {
           <DialogHeader>
             <DialogTitle>Redefinir a senha de {redefinindo?.nome}</DialogTitle>
             <DialogDescription>
-              Isso troca a senha de <strong>{redefinindo?.email}</strong> e <strong>encerra todas as
-              sessões abertas</strong> dessa conta — em qualquer aparelho.
+              Uma senha nova será sorteada para <strong>{redefinindo?.email}</strong> e mostrada na
+              tela seguinte, uma única vez, para você copiar e entregar. Isso <strong>encerra todas
+              as sessões abertas</strong> dessa conta — em qualquer aparelho.
             </DialogDescription>
           </DialogHeader>
 
-          <div className="space-y-2 py-1">
-            <div className="flex items-center justify-between">
-              <Label>Nova senha</Label>
-              <button
-                type="button"
-                className="text-xs font-medium text-primary hover:underline"
-                onClick={() => setSenhaRedef(gerarSenhaForte())}
-              >
-                Sortear outra
-              </button>
-            </div>
-            <Input
-              value={senhaRedef}
-              onChange={(e) => setSenhaRedef(e.target.value)}
-              className="font-mono"
-              autoComplete="new-password"
-            />
-            <BarraDeForca senha={senhaRedef} />
-            <p className="text-[11px] text-muted-foreground">
-              Mínimo de {MIN_SENHA} caracteres. Você verá a senha na tela seguinte para copiar.
-            </p>
-          </div>
+          <p className="rounded-md border border-border bg-muted/40 px-3 py-2.5 text-[11.5px] leading-relaxed text-muted-foreground">
+            Enquanto esta janela estiver aberta, <strong className="font-medium text-foreground">nada
+            mudou</strong>: a senha só passa a existir quando você confirmar, e {redefinindo?.nome} continua
+            entrando com a antiga até lá.
+          </p>
 
           <DialogFooter>
             <Button variant="outline" onClick={() => setRedefinindo(null)} disabled={redefBusy}>
@@ -297,7 +308,7 @@ export default function Usuarios() {
             </Button>
             <Button onClick={confirmarRedefinir} disabled={redefBusy}>
               {redefBusy && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-              Redefinir
+              Sortear e redefinir
             </Button>
           </DialogFooter>
         </DialogContent>

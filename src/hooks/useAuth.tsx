@@ -1,6 +1,7 @@
 import { createContext, useContext, useEffect, useState, ReactNode } from "react";
 import { Session, User } from "@supabase/supabase-js";
 import { supabase } from "@/integrations/supabase/client";
+import { conferirSessao } from "@/lib/sessaoViva";
 
 type Profile = { id: string; user_id: string; nome: string; cargo: string | null; email: string };
 
@@ -55,6 +56,26 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setLoading(false);
     });
     return () => sub.subscription.unsubscribe();
+  }, []);
+
+  /* Sessão zumbi (ver lib/sessaoViva.ts): o token continua válido e a página
+     inteira segue funcionando, mas as Edge Functions recusam tudo com "Não
+     autenticado.". Conferir ao VOLTAR para a aba é o momento certo — a sessão
+     morre enquanto a pessoa está noutra aba (saiu, trocou de conta), e é ao
+     voltar que ela vai clicar em algo. O relógio cobre quem nunca sai da tela,
+     caso de quem teve a senha redefinida por um admin. */
+  useEffect(() => {
+    const conferir = () => {
+      if (document.visibilityState === "visible") void conferirSessao();
+    };
+    document.addEventListener("visibilitychange", conferir);
+    window.addEventListener("focus", conferir);
+    const relogio = window.setInterval(conferir, 5 * 60_000);
+    return () => {
+      document.removeEventListener("visibilitychange", conferir);
+      window.removeEventListener("focus", conferir);
+      window.clearInterval(relogio);
+    };
   }, []);
 
   const signIn = async (email: string, password: string) => {

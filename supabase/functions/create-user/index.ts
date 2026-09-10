@@ -47,7 +47,7 @@ Deno.serve(async (req) => {
       Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!,
     );
 
-    const { nome, cargo, email, password, perfil } = await req.json();
+    const { nome, cargo, email, password, perfil, setores } = await req.json();
     if (!email || !nome) throw new Error("Nome e email são obrigatórios");
 
     // A lista fechada, espelhada de src/lib/modules.ts. `perfil` ausente cria a
@@ -61,6 +61,17 @@ Deno.serve(async (req) => {
     if (perfilAlvo && !PERFIS.includes(perfilAlvo)) {
       throw new Error(`Perfil de acesso inválido: ${perfilAlvo}`);
     }
+
+    /* Os times da folha, para quem entra como líder. Vêm junto do perfil porque
+       o `profiles` desta conta ainda não existe quando a tela salva: um segundo
+       update do cliente correria com o INSERT do gatilho `handle_new_user` e
+       daria "0 linhas" em silêncio — o mesmo modo de falhar que já custou um dia
+       de trabalho aqui. Nada de lista fechada: o vocabulário de setores é o do
+       Portal RH e muda sem migration; setor inexistente simplesmente não casa
+       com ninguém, que é o modo seguro de errar. */
+    const setoresAlvo: string[] = Array.isArray(setores)
+      ? [...new Set(setores.map((s: unknown) => String(s ?? "").trim()).filter(Boolean))]
+      : [];
 
     const alvo = String(email).trim().toLowerCase();
 
@@ -100,13 +111,19 @@ Deno.serve(async (req) => {
        entre o INSERT do gatilho e o UPDATE do cliente daria "0 linhas" em
        silêncio — que é exatamente o modo de falhar que a tela de Usuários já
        teve uma vez. */
-    if (perfilAlvo && data.user) {
+    if ((perfilAlvo || setoresAlvo.length) && data.user) {
       const { error: erroPerfil } = await admin
-        .from("profiles").update({ perfil: perfilAlvo }).eq("user_id", data.user.id);
+        .from("profiles")
+        .update({ perfil: perfilAlvo, setores_folha: setoresAlvo })
+        .eq("user_id", data.user.id);
       if (erroPerfil) throw erroPerfil;
     }
 
-    console.log(`[create-user] ${quem.email ?? quem.userId} criou o acesso de ${alvo} (perfil: ${perfilAlvo ?? "não definido"})`);
+    console.log(
+      `[create-user] ${quem.email ?? quem.userId} criou o acesso de ${alvo} ` +
+      `(perfil: ${perfilAlvo ?? "não definido"}` +
+      `${setoresAlvo.length ? `, folha: ${setoresAlvo.join("/")}` : ""})`,
+    );
 
     return json({
       user: data.user,

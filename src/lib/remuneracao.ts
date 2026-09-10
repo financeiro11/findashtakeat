@@ -39,7 +39,17 @@ export type PessoaRemuneracao = {
   doc: string | null;
   eh_pessoa: boolean;
   cargo: string | null;
+  /**
+   * O time EFETIVO: `coalesce(rh_colaboradores.setor, remuneracao_pessoa.setor)`.
+   *
+   * O Portal RH manda; a classificação à mão preenche o buraco de quem ele não
+   * conhece — 99 favorecidos com pagamento e sem ficha, quase todos gente que
+   * saiu antes de abr/2026. É por este campo que o recorte do líder acontece,
+   * então quem fica sem ele não entra em recorte nenhum.
+   */
   setor: string | null;
+  /** De onde veio o time: `"rh"`, `"manual"`, ou nulo quando ninguém o definiu. */
+  setor_fonte: "rh" | "manual" | null;
   modalidade: string | null;
   /** Texto cru do espelho do RH — pode não ser data válida. */
   inicio: string | null;
@@ -48,10 +58,21 @@ export type PessoaRemuneracao = {
   meses: MesRemuneracao[];
 };
 
+/**
+ * O recorte que o SERVIDOR aplicou, dito por ele mesmo.
+ *
+ * A tela não deduz isto do que veio: "vieram 47 pessoas" não distingue um líder
+ * de um mês vazio. `remuneracao_painel()` carimba o que fez, e o cabeçalho
+ * repete em voz alta — quem olha um custo de R$ 1,1 M precisa saber que é o
+ * custo de três times, não o da empresa.
+ */
+export type EscopoPainel = { tudo: boolean; setores?: string[] };
+
 export type PainelRemuneracao = {
   meses: string[];
   pessoas: PessoaRemuneracao[];
   gerado_em: string;
+  escopo?: EscopoPainel;
 };
 
 /** Um reajuste: o fixo mudou de um mês pago para o seguinte. */
@@ -655,6 +676,92 @@ export function custoPorArea(
         pessoasNoMes: a.noMes.size,
       };
     })
+    .sort((a, b) => b.total - a.total);
+}
+
+/* ─────────────────────────── Quem está sem time ───────────────────────────
+   O recorte do líder casa por SETOR, que é o único vocabulário que separa
+   Produto de Tecnologia — na categoria do Omie os dois recebem sob "Tecnologia".
+   Só que o setor vem do Portal RH, e o Portal RH só conhece quem está lá hoje:
+   99 favorecidos têm pagamento e não têm ficha, R$ 2,4 milhões de história, quase
+   todos gente que saiu antes de abr/2026.
+
+   Recortar só pelo que o RH conhece faria o 2025 de um líder aparecer 29% menor,
+   em silêncio. A saída não é adivinhar pela área — "Comercial" é Field Sales,
+   Inside Sales E Franquias, e o palpite mostraria o time de um líder para outro.
+   É classificar à mão, uma vez, e guardar.
+
+   O que esta parte faz é preparar essa mesa: quem falta, quanto pesa, e o que a
+   categoria do Omie sugere quando ela é inequívoca. */
+
+export type PessoaSemTime = {
+  id: string;
+  nome: string;
+  ehPessoa: boolean;
+  /** Primeiro e último mês pagos — dá para reconhecer alguém pela época. */
+  de: string | null;
+  ate: string | null;
+  /** Quanto essa ficha custou no total. É por aqui que a lista se ordena. */
+  total: number;
+  /** A área que mais pagou essa pessoa, pela categoria do Omie. */
+  areaPrincipal: string | null;
+  /**
+   * O setor sugerido: a área, quando existe um setor com esse nome exato.
+   *
+   * Sucesso, Onboarding, Suporte, Marketing e Tecnologia se chamam igual nos
+   * dois vocabulários e a sugestão é segura. "Comercial" e "Novos Canais" não
+   * são setores — ficam sem sugestão de propósito, porque escolher entre Field
+   * Sales e Inside Sales é a informação que só uma pessoa tem, e um palpite aqui
+   * entregaria o time de um líder para o outro.
+   */
+  sugestao: string | null;
+};
+
+/**
+ * Quem tem pagamento e não tem time — a fila da classificação.
+ *
+ * @param setores os setores que existem, para saber quando a área serve de
+ *   sugestão. Sem eles, ninguém recebe sugestão (e não o contrário: sugerir um
+ *   setor que não existe faria a lista inteira parecer resolvida).
+ */
+export function pessoasSemTime(
+  pessoas: PessoaRemuneracao[],
+  setores: readonly string[],
+): PessoaSemTime[] {
+  const conhecidos = new Map(setores.map((s) => [normCargo(s), s]));
+
+  return pessoas
+    .filter((p) => !p.setor && (p.meses?.length ?? 0) > 0)
+    .map((p) => {
+      const meses = p.meses ?? [];
+      // A área principal é a que somou MAIS DINHEIRO, não a mais frequente:
+      // quem passou dez meses no Suporte e fechou o ano com uma premiação
+      // grande do Comercial tem a decisão pendendo para onde o dinheiro foi.
+      const porArea = new Map<string, number>();
+      let total = 0;
+      let de: string | null = null;
+      let ate: string | null = null;
+      for (const m of meses) {
+        const v = num(m.total);
+        total += v;
+        if (m.area) porArea.set(m.area, (porArea.get(m.area) ?? 0) + v);
+        if (de == null || m.competencia < de) de = m.competencia;
+        if (ate == null || m.competencia > ate) ate = m.competencia;
+      }
+      const areaPrincipal =
+        [...porArea.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? null;
+
+      return {
+        id: p.id,
+        nome: p.nome,
+        ehPessoa: p.eh_pessoa,
+        de, ate, total,
+        areaPrincipal,
+        sugestao: areaPrincipal ? conhecidos.get(normCargo(areaPrincipal)) ?? null : null,
+      };
+    })
+    // O que pesa primeiro: classificar em ordem de dinheiro é o que faz parar no
+    // meio ainda deixar o recorte quase certo.
     .sort((a, b) => b.total - a.total);
 }
 

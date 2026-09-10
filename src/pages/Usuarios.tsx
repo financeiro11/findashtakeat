@@ -55,19 +55,76 @@ import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import PerfisAcesso from "@/pages/usuarios/PerfisAcesso";
 import { supabase } from "@/integrations/supabase/client";
+import { useAuth } from "@/hooks/useAuth";
 import { gerarSenhaForte } from "@/lib/senha";
-import { PERFIS, PERFIS_ESCOLHIVEIS, type PerfilId } from "@/lib/modules";
+import { acessoDe, PERFIS, PERFIS_ESCOLHIVEIS, type PerfilId } from "@/lib/modules";
 import { toast } from "sonner";
 
 type Profile = {
   id: string; user_id: string; nome: string; cargo: string | null; email: string;
   perfil?: PerfilId | null;
+  setores_folha?: string[] | null;
 };
 
-const empty = { nome: "", cargo: "", email: "", perfil: "" as PerfilId | "" };
+const empty = {
+  nome: "", cargo: "", email: "", perfil: "" as PerfilId | "",
+  setores: [] as string[],
+};
+
+/**
+ * Os times que esta conta enxerga no painel de Remuneração.
+ *
+ * Só aparece para quem tem a capacidade `remuneracao_time` e NÃO tem a
+ * `remuneracao` — quem vê a folha inteira ignora este campo, e mostrá-lo ali
+ * sugeriria um recorte que não existe.
+ *
+ * O recorte é da PESSOA, não do perfil: os dois Heads de hoje são ambos
+ * `lideranca` e têm times diferentes. Vazio não abre ninguém, e a tela diz isso
+ * — o padrão é o mínimo, aqui como no resto do portão.
+ */
+function TimesDaFolha({
+  setores, escolhidos, onMudar,
+}: {
+  setores: string[];
+  escolhidos: string[];
+  onMudar: (s: string[]) => void;
+}) {
+  return (
+    <div className="space-y-1.5 rounded-md border border-border bg-muted/30 p-3">
+      <Label>Times que enxerga na folha</Label>
+      <p className="text-[11px] leading-relaxed text-muted-foreground">
+        Este perfil abre o painel de Remuneração recortado. Marque os times desta pessoa —
+        o nome é o do setor no Portal RH.
+      </p>
+      {setores.length === 0 ? (
+        <p className="py-2 text-[11px] text-muted-foreground">Carregando os times…</p>
+      ) : (
+        <div className="max-h-44 space-y-0.5 overflow-y-auto pt-1">
+          {setores.map((s) => (
+            <label key={s} className="flex cursor-pointer items-center gap-2 rounded px-1 py-1 text-xs hover:bg-secondary">
+              <Checkbox
+                checked={escolhidos.includes(s)}
+                onCheckedChange={(v) => onMudar(
+                  v === true ? [...escolhidos, s] : escolhidos.filter((x) => x !== s),
+                )}
+              />
+              <span>{s}</span>
+            </label>
+          ))}
+        </div>
+      )}
+      {escolhidos.length === 0 && (
+        <p className="pt-1 text-[11px] font-medium text-destructive">
+          Sem nenhum time marcado, a tela abre e não mostra ninguém.
+        </p>
+      )}
+    </div>
+  );
+}
 
 /** A senha recém-criada, na tela, uma vez só. */
 function SenhaParaEntregar({
@@ -120,8 +177,10 @@ function SenhaParaEntregar({
 }
 
 export default function Usuarios() {
+  const { matriz } = useAuth();
   const [aba, setAba] = useState("pessoas");
   const [users, setUsers] = useState<Profile[]>([]);
+  const [setores, setSetores] = useState<string[]>([]);
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [editing, setEditing] = useState<Profile | null>(null);
@@ -138,10 +197,31 @@ export default function Usuarios() {
   };
   useEffect(() => { load(); }, []);
 
+  /* Os times que existem, para o recorte da folha. Vem de `remuneracao_setores()`
+     e não de `rh_colaboradores` direto: a RPC devolve só NOMES de time — nenhum
+     salário, nenhuma pessoa —, então esta tela não precisa de acesso à folha
+     para oferecer a lista. */
+  useEffect(() => {
+    void supabase.rpc("remuneracao_setores").then(({ data }) => {
+      setSetores((data as string[] | null) ?? []);
+    });
+  }, []);
+
+  /* Este perfil abre a folha RECORTADA? Só então o campo de times faz sentido —
+     quem tem `remuneracao` vê a empresa inteira e ignoraria o que for marcado.
+     Calculado com a matriz do banco (a mesma que a aba ao lado edita), e não com
+     o padrão do código: desmarcar "Folha do meu time" ali tem de sumir com o
+     campo daqui. */
+  const recortaAFolha = (p: PerfilId | "") =>
+    !!p && acessoDe({ perfil: p }, matriz).folha.tipo === "times";
+
   const openNew = () => { setEditing(null); setForm(empty); setOpen(true); };
   const openEdit = (p: Profile) => {
     setEditing(p);
-    setForm({ nome: p.nome, cargo: p.cargo || "", email: p.email, perfil: p.perfil ?? "" });
+    setForm({
+      nome: p.nome, cargo: p.cargo || "", email: p.email, perfil: p.perfil ?? "",
+      setores: p.setores_folha ?? [],
+    });
     setOpen(true);
   };
 
@@ -160,6 +240,10 @@ export default function Usuarios() {
         .update({
           nome: form.nome, cargo: form.cargo, email: form.email,
           perfil: form.perfil || null,
+          /* Perfil que não recorta grava a lista VAZIA, e não o que estava lá:
+             promover um líder a diretoria e depois rebaixá-lo de volta faria o
+             recorte antigo ressuscitar sem ninguém ter pedido. */
+          setores_folha: recortaAFolha(form.perfil) ? form.setores : [],
         })
         .eq("id", editing.id)
         .select("id");
@@ -298,6 +382,17 @@ export default function Usuarios() {
                   </p>
                 </div>
 
+                {/* O RECORTE DA FOLHA é da PESSOA, não do perfil: os dois Heads
+                    de hoje são ambos "Liderança" e têm times diferentes. Por
+                    isso mora aqui, na ficha, e não na aba de Perfis ao lado. */}
+                {recortaAFolha(form.perfil) && (
+                  <TimesDaFolha
+                    setores={setores}
+                    escolhidos={form.setores}
+                    onMudar={(s) => setForm({ ...form, setores: s })}
+                  />
+                )}
+
                 {!editing && (
                   <p className="text-xs text-muted-foreground">
                     Uma senha forte será sorteada e mostrada a você uma única vez, para entregar à pessoa.
@@ -338,6 +433,16 @@ export default function Usuarios() {
                     {u.perfil
                       ? <Badge variant="secondary" title={PERFIS[u.perfil]?.resumo}>{PERFIS[u.perfil]?.label ?? u.perfil}</Badge>
                       : <Badge variant="destructive">Sem acesso</Badge>}
+                    {/* O recorte da folha aparece na linha porque é o tipo de
+                        coisa que se esquece de conferir: um líder com a
+                        capacidade e nenhum time abre a tela e não vê ninguém. */}
+                    {recortaAFolha(u.perfil ?? "") && (
+                      <div className="mt-1 text-[11px] text-muted-foreground">
+                        {u.setores_folha?.length
+                          ? `folha: ${u.setores_folha.join(", ")}`
+                          : <span className="text-destructive">folha: nenhum time</span>}
+                      </div>
+                    )}
                   </TableCell>
                   <TableCell>{u.email}</TableCell>
                   <TableCell className="text-right">

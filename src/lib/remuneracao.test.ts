@@ -4,7 +4,7 @@ import {
   rotuloMes, distanciaEmMeses, ultimaCompetenciaFechada, mudancasDeArea, areaAtual,
   fixoDeReferencia, compararComPares, custoPorArea, competenciasFechadas, abasDaPlanilha,
   FILTROS_VAZIOS, filtrosLigados, montarLinhas, filtrarPorFaixa, ordenarLinhas,
-  recortarAte,
+  recortarAte, pessoasSemTime,
   type MesRemuneracao, type PessoaRemuneracao,
 } from "./remuneracao";
 
@@ -26,7 +26,7 @@ const serieCrua = (s: string): MesRemuneracao[] =>
 
 const pessoa = (over: Partial<PessoaRemuneracao> = {}): PessoaRemuneracao => ({
   id: "p1", nome: "Fulano de Tal", codigo_rh: "COL-1", doc: "12345678000199",
-  eh_pessoa: true, cargo: "Vendedor", setor: "Inside Sales", modalidade: "PJ",
+  eh_pessoa: true, cargo: "Vendedor", setor: "Inside Sales", setor_fonte: "rh", modalidade: "PJ",
   inicio: "2025-03-01", datadesl: null, valor_contrato: 6000,
   meses: [], ...over,
 });
@@ -1124,5 +1124,94 @@ describe("planilha", () => {
     const so1 = pessoa({ nome: "Só Julho", meses: [mes("2026-07-01", 6000)] });
     const [cab, linha] = matrizParaPlanilha([so1], meses);
     expect(linha[cab.indexOf("ago/26 fixo")]).toBeNull();
+  });
+});
+
+/* A FILA DA CLASSIFICAÇÃO.
+   O recorte do líder casa por setor, e o setor vem do Portal RH — que só conhece
+   quem está lá hoje. 99 fichas têm pagamento e nenhum time, R$ 2,4 milhões de
+   história; sem elas o 2025 de um líder aparece 29% menor, calado. */
+describe("quem está sem time", () => {
+  const SETORES = ["Field Sales", "Inside Sales", "Marketing", "Onboarding", "Produto", "Suporte", "Sucesso", "Tecnologia"];
+
+  const orfa = (over: Partial<PessoaRemuneracao>) =>
+    pessoa({ codigo_rh: null, setor: null, setor_fonte: null, ...over });
+
+  it("só entra quem não tem time E tem pagamento", () => {
+    const fila = pessoasSemTime([
+      pessoa({ id: "com-time", meses: [mes("2026-01-01", 5000)] }),
+      orfa({ id: "sem-nada", meses: [] }),
+      orfa({ id: "orfa", meses: [mes("2026-01-01", 5000)] }),
+    ], SETORES);
+    expect(fila.map((p) => p.id)).toEqual(["orfa"]);
+  });
+
+  /* A área que somou mais DINHEIRO, não a mais frequente: quem passou dez meses
+     no Suporte e fechou o ano com uma premiação grande do Comercial tem a
+     decisão pendendo para onde o dinheiro foi. */
+  it("a área principal é a que mais pagou", () => {
+    const [p] = pessoasSemTime([orfa({
+      meses: [
+        mes("2026-01-01", 1000, 0, "Suporte"),
+        mes("2026-02-01", 1000, 0, "Suporte"),
+        mes("2026-03-01", 9000, 0, "Comercial"),
+      ],
+    })], SETORES);
+    expect(p.areaPrincipal).toBe("Comercial");
+    expect(p.total).toBe(11000);
+    expect(p.de).toBe("2026-01-01");
+    expect(p.ate).toBe("2026-03-01");
+  });
+
+  /* A sugestão só vale quando a área TEM nome de setor. "Comercial" é Field
+     Sales, Inside Sales ou Franquias — chutar ali mostraria o time de um líder
+     para outro, que é o erro que este recorte inteiro existe para evitar. */
+  it("sugere quando a área é nome de setor, e cala quando é ambígua", () => {
+    const fila = pessoasSemTime([
+      orfa({ id: "a", nome: "A", meses: [mes("2026-01-01", 3000, 0, "Suporte")] }),
+      orfa({ id: "b", nome: "B", meses: [mes("2026-01-01", 3000, 0, "Comercial")] }),
+      orfa({ id: "c", nome: "C", meses: [mes("2026-01-01", 3000, 0, null)] }),
+    ], SETORES);
+    const por = Object.fromEntries(fila.map((p) => [p.id, p.sugestao]));
+    expect(por.a).toBe("Suporte");
+    expect(por.b).toBeNull();
+    expect(por.c).toBeNull();
+  });
+
+  it("a sugestão ignora caixa e acento, e devolve o nome do setor como ele é", () => {
+    const [p] = pessoasSemTime(
+      [orfa({ meses: [mes("2026-01-01", 3000, 0, "automações")] })],
+      ["Automações", "Suporte"],
+    );
+    expect(p.sugestao).toBe("Automações");
+  });
+
+  /* Sem a lista de setores, ninguém recebe sugestão — e não o contrário.
+     Sugerir um setor que não existe faria a fila inteira parecer resolvida e
+     gravaria times que não casam com pessoa nenhuma. */
+  it("sem setores conhecidos não há sugestão", () => {
+    const [p] = pessoasSemTime([orfa({ meses: [mes("2026-01-01", 3000, 0, "Suporte")] })], []);
+    expect(p.sugestao).toBeNull();
+  });
+
+  /* Ordem de dinheiro: parar no meio da fila ainda deixa o recorte quase certo. */
+  it("o que pesa vem primeiro", () => {
+    const fila = pessoasSemTime([
+      orfa({ id: "pouco", meses: [mes("2026-01-01", 500)] }),
+      orfa({ id: "muito", meses: [mes("2026-01-01", 50000)] }),
+      orfa({ id: "medio", meses: [mes("2026-01-01", 5000)] }),
+    ], SETORES);
+    expect(fila.map((p) => p.id)).toEqual(["muito", "medio", "pouco"]);
+  });
+
+  /* Os baldes de área ("rem comercial") entram na fila: eles custaram dinheiro
+     e têm time. A tela os marca para quem classifica não achar que é gente. */
+  it("balde de área entra, marcado", () => {
+    const [p] = pessoasSemTime(
+      [orfa({ nome: "rem suporte", eh_pessoa: false, meses: [mes("2026-01-01", 8000, 0, "Suporte")] })],
+      SETORES,
+    );
+    expect(p.ehPessoa).toBe(false);
+    expect(p.sugestao).toBe("Suporte");
   });
 });

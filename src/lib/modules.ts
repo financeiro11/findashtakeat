@@ -38,6 +38,12 @@
 // A única capacidade com trava real hoje é `remuneracao`, pela função
 // `pode_ver_remuneracao()` no Postgres — e ela precisa listar exatamente os
 // mesmos perfis que a constante daqui. As duas listas andam juntas.
+//
+// O RECORTE DO LÍDER (`remuneracao_time`) segue a mesma disciplina, e por isso
+// não mora aqui: `remuneracao_painel()` é SECURITY DEFINER e devolve só as
+// pessoas dos setores da conta que chamou. O que esta lista faz é abrir a rota e
+// descrever o recorte na tela; se ela mentisse, a folha inteira estaria a um
+// PostgREST de distância. As tabelas cruas continuam fechadas ao líder.
 
 export type ModuleId = "financeiro" | "facilities";
 
@@ -64,6 +70,7 @@ export type Capacidade =
   | "apresentacoes"  // Revisão Mensal, Reportes
   | "editais"        // Radar de Editais, Projetos Aprovados
   | "remuneracao"    // Remuneração, Colaboradores (RH), Rescisões, Variável, Proporcionais, Reembolsos
+  | "remuneracao_time" // Remuneração, recortada nos times de `profiles.setores_folha`
   | "time"           // Tarefas, Projetos, Anotações
   | "biblioteca"     // Visão do Time, Biblioteca
   | "maquinario"     // Monitoramento, Parametrização, Uso de IA, Recargas, Vigilância
@@ -90,7 +97,8 @@ export const CAPACIDADES: Record<Capacidade, { label: string; descricao: string 
   societario:    { label: "Societário",          descricao: "Captable, o flip e as empresas no exterior. O dado mais sensível." },
   apresentacoes: { label: "Apresentações",       descricao: "Revisão mensal e o material de conselho e investidores." },
   editais:       { label: "Editais",             descricao: "Radar de fomento e projetos aprovados." },
-  remuneracao:   { label: "Pessoas e folha",     descricao: "Salário por pessoa, rescisões, comissões e reembolsos." },
+  remuneracao:   { label: "Pessoas e folha",     descricao: "Salário por pessoa, rescisões, comissões e reembolsos. A empresa inteira." },
+  remuneracao_time: { label: "Folha do meu time", descricao: "Só o painel de Remuneração, e só das pessoas dos times marcados na ficha de cada conta (Usuários › Pessoas). Sem os times definidos, não abre ninguém." },
   time:          { label: "Time e tarefas",      descricao: "Kanban, projetos e anotações." },
   biblioteca:    { label: "Biblioteca",          descricao: "Estrutura do time, cargos, políticas e fornecedores." },
   maquinario:    { label: "Maquinário",          descricao: "Crons, integrações, credenciais, recargas e vigilância." },
@@ -104,6 +112,7 @@ export const CAPACIDADES: Record<Capacidade, { label: string; descricao: string 
 export const CAPACIDADES_ORDEM: readonly Capacidade[] = [
   "metricas", "tesouraria", "conciliacao", "demonstracoes", "planejamento",
   "orcamento", "societario", "apresentacoes", "editais", "remuneracao",
+  "remuneracao_time",
   "time", "biblioteca", "maquinario", "parceiros", "facilities",
   "usuarios", "assistente",
 ];
@@ -145,6 +154,7 @@ export const PERFIS: Record<PerfilId, DefPerfil> = {
     capacidades: [
       "metricas", "tesouraria", "conciliacao", "demonstracoes", "planejamento",
       "orcamento", "societario", "apresentacoes", "editais", "remuneracao",
+      "remuneracao_time",
       "time", "biblioteca", "maquinario", "usuarios", "parceiros", "facilities",
       "assistente",
     ],
@@ -160,8 +170,16 @@ export const PERFIS: Record<PerfilId, DefPerfil> = {
   },
   lideranca: {
     id: "lideranca", label: "Liderança", home: "/",
-    resumo: "Resultado e métricas de cliente. Sem societário, sem banco, sem folha.",
-    capacidades: ["metricas", "demonstracoes", "planejamento", "orcamento", "assistente"],
+    resumo: "Resultado, métricas de cliente e a folha do PRÓPRIO time. Sem societário e sem banco.",
+    capacidades: [
+      "metricas", "demonstracoes", "planejamento", "orcamento",
+      /* A folha do time é uma capacidade separada de propósito: `remuneracao`
+         abre a empresa inteira e mais cinco telas (Colaboradores, Rescisões,
+         Variável, Reembolsos, Proporcionais). O líder abre UMA tela, recortada
+         nos times que estiverem na ficha dele — e sem times marcados, ninguém. */
+      "remuneracao_time",
+      "assistente",
+    ],
   },
   rh: {
     id: "rh", label: "RH", home: "/operacional/remuneracao",
@@ -265,7 +283,19 @@ export function perfilPorCargo(cargo?: string | null): PerfilId {
   }
 }
 
-export type PerfilPortador = { cargo?: string | null; perfil?: PerfilId | string | null } | null | undefined;
+export type PerfilPortador = {
+  cargo?: string | null;
+  perfil?: PerfilId | string | null;
+  /**
+   * Os times que ESTA CONTA enxerga na folha, pelo nome do setor no Portal RH.
+   *
+   * Não é do perfil, é da pessoa: dois Heads têm o mesmo perfil `lideranca` e
+   * times diferentes. Vazio (o padrão) não abre ninguém — errar para o lado de
+   * trancar dá um pedido de ajuda; errar para o outro não dá aviso nenhum.
+   * Ignorado por quem tem `remuneracao`, que vê a empresa inteira.
+   */
+  setores_folha?: string[] | null;
+} | null | undefined;
 
 /**
  * O perfil desta pessoa.
@@ -297,7 +327,37 @@ export interface Acesso {
   assistente: boolean;
   /** Atalho preservado — a pergunta "vê quanto fulano ganha?" aparece em várias telas. */
   remuneracao: boolean;
+  /** O recorte da folha: a empresa inteira, alguns times, ou ninguém. */
+  folha: EscopoFolha;
 }
+
+/**
+ * O RECORTE DA FOLHA.
+ *
+ * `tudo` é a empresa inteira e as seis telas de folha. `times` é UMA tela, com
+ * as pessoas dos setores listados — é o líder. `nenhum` não abre a tela.
+ *
+ * A tela usa isto para se descrever ("Sucesso, Onboarding e Suporte") e para
+ * esconder o que não é do líder. Quem RECORTA de verdade é `remuneracao_painel()`
+ * no Postgres, que devolve só as pessoas do escopo — esconder no front deixaria
+ * a folha inteira a um PostgREST de distância.
+ */
+export type EscopoFolha =
+  | { tipo: "tudo" }
+  | { tipo: "times"; setores: readonly string[] }
+  | { tipo: "nenhum" };
+
+function escopoDaFolha(
+  capacidades: ReadonlySet<Capacidade>,
+  setores: readonly string[],
+): EscopoFolha {
+  if (capacidades.has("remuneracao")) return { tipo: "tudo" };
+  if (capacidades.has("remuneracao_time")) return { tipo: "times", setores };
+  return { tipo: "nenhum" };
+}
+
+/** Abre a tela de Remuneração — vendo tudo ou só o time. */
+export const abreAFolha = (e: EscopoFolha) => e.tipo !== "nenhum";
 
 export function acessoDe(p: PerfilPortador, matriz?: MatrizAcesso | null): Acesso {
   const perfil = perfilDe(p);
@@ -330,15 +390,22 @@ export function acessoDe(p: PerfilPortador, matriz?: MatrizAcesso | null): Acess
     semAcesso: capacidades.size === 0,
     assistente: capacidades.has("assistente"),
     remuneracao: capacidades.has("remuneracao"),
+    /* `filter(Boolean)` porque a coluna é `text[]` e uma linha antiga pode
+       trazer string vazia — um setor "" casaria com quem não tem setor. */
+    folha: escopoDaFolha(
+      capacidades,
+      (p?.setores_folha ?? []).map((s) => (s ?? "").trim()).filter(Boolean),
+    ),
   };
 }
 
 /** A home do perfil, se ele ainda a alcança; senão, a primeira rota que alcança. */
 function homeAlcancavel(home: string, capacidades: ReadonlySet<Capacidade>): string {
-  const capHome = capacidadeDaRota(home);
-  if (capHome === null || capacidades.has(capHome)) return home;
-  for (const [prefixo, cap] of PORTAO) {
-    if (cap !== null && capacidades.has(cap)) return prefixo;
+  const capsHome = capacidadesDaRota(home);
+  if (capsHome === null || capsHome.some((c) => capacidades.has(c))) return home;
+  for (const [prefixo] of PORTAO) {
+    const caps = capacidadesDaRota(prefixo);
+    if (caps !== null && caps.some((c) => capacidades.has(c))) return prefixo;
   }
   return home;
 }
@@ -358,13 +425,20 @@ export function podeVer(acesso: Acesso, c: Capacidade): boolean {
  * A primeira entrada que casa decide, então **o mais específico vem primeiro**:
  * `/briefing/novidades` está acima de `/briefing` justamente para escapar dele.
  *
+ * Uma rota pode listar MAIS DE UMA capacidade, e aí basta ter qualquer uma
+ * delas. Só `/operacional/remuneracao` está assim: quem tem `remuneracao` abre a
+ * folha inteira, quem tem `remuneracao_time` abre a mesma tela recortada no
+ * próprio time. Duas portas para a mesma sala, com o porteiro na sala.
+ *
  * `null` = livre para qualquer pessoa com conta. Rota que não aparece aqui
  * também é livre — vale para as telas de diagnóstico (`/design-system`,
  * `/assistente/*`), que não mostram dado do negócio. Ao criar uma rota que
  * mostre dado, ACRESCENTE A ENTRADA AQUI; o teste `modules.test.ts` cobre todos
  * os itens de menu, mas não adivinha uma tela fora do menu.
  */
-const PORTAO: ReadonlyArray<readonly [string, Capacidade | null]> = [
+type Exigencia = Capacidade | readonly Capacidade[] | null;
+
+const PORTAO: ReadonlyArray<readonly [string, Exigencia]> = [
   // Início
   ["/briefing/novidades", null],
   ["/briefing", "tesouraria"],
@@ -387,7 +461,7 @@ const PORTAO: ReadonlyArray<readonly [string, Capacidade | null]> = [
   ["/apresentacoes", "apresentacoes"],
 
   // Operacional — folha e pessoas
-  ["/operacional/remuneracao", "remuneracao"],
+  ["/operacional/remuneracao", ["remuneracao", "remuneracao_time"]],
   ["/operacional/colaboradores", "remuneracao"],
   ["/operacional/variavel", "remuneracao"],
   ["/operacional/reembolsos", "remuneracao"],
@@ -437,13 +511,34 @@ const PORTAO: ReadonlyArray<readonly [string, Capacidade | null]> = [
   ["/facilities", "facilities"],
 ];
 
-/** De que capacidade esta rota depende — `null` quando é livre. */
+/**
+ * De que capacidades esta rota depende — QUALQUER uma abre. `null` = livre.
+ *
+ * Plural porque `/operacional/remuneracao` tem duas portas. Quem pergunta "de
+ * quem é esta tela?" (a tela de Perfis de acesso) precisa das duas; quem
+ * pergunta "posso entrar?" só precisa de uma casar.
+ */
+export function capacidadesDaRota(pathname: string): readonly Capacidade[] | null {
+  const acha = (): Exigencia => {
+    if (pathname === "/") return "metricas";
+    for (const [prefixo, cap] of PORTAO) {
+      if (pathname === prefixo || pathname.startsWith(prefixo + "/")) return cap;
+    }
+    return null;
+  };
+  const exigencia = acha();
+  if (exigencia === null) return null;
+  return typeof exigencia === "string" ? [exigencia] : exigencia;
+}
+
+/**
+ * A capacidade PRINCIPAL da rota — a primeira, quando são várias.
+ *
+ * Serve para escolher uma home alcançável e para os testes do portão. Não use
+ * para decidir acesso: numa rota de duas portas ela ignoraria a segunda.
+ */
 export function capacidadeDaRota(pathname: string): Capacidade | null {
-  if (pathname === "/") return "metricas";
-  for (const [prefixo, cap] of PORTAO) {
-    if (pathname === prefixo || pathname.startsWith(prefixo + "/")) return cap;
-  }
-  return null;
+  return capacidadesDaRota(pathname)?.[0] ?? null;
 }
 
 /** Esta pessoa pode abrir esta rota? */
@@ -451,8 +546,8 @@ export function podeVerRota(acesso: Acesso, pathname: string): boolean {
   // Sem capacidade nenhuma, nada abre — nem o que é livre. A conta existe, o
   // acesso não; o AppLayout mostra o aviso em vez de rodar a página.
   if (acesso.semAcesso) return false;
-  const cap = capacidadeDaRota(pathname);
-  return cap === null || acesso.capacidades.has(cap);
+  const caps = capacidadesDaRota(pathname);
+  return caps === null || caps.some((c) => acesso.capacidades.has(c));
 }
 
 // Módulo atual inferido pela rota.

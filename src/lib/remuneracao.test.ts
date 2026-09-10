@@ -5,6 +5,7 @@ import {
   fixoDeReferencia, compararComPares, custoPorArea, competenciasFechadas, abasDaPlanilha,
   FILTROS_VAZIOS, filtrosLigados, montarLinhas, filtrarPorFaixa, ordenarLinhas,
   recortarAte, pessoasSemTime, custoNoAno, semReajusteHaMaisTempo, faixaPorCargo, foraDaLinha,
+  quemOFiltroEscondeu, type Filtros,
   type MesRemuneracao, type PessoaRemuneracao,
 } from "./remuneracao";
 
@@ -1408,5 +1409,100 @@ describe("quem está fora da linha", () => {
       noCargo("b", "B", "Analista", 4000),
       noCargo("c", "C", "Gerente", 9000),
     ]), "2026-08-01")).toEqual([]);
+  });
+});
+
+/* O CASO REAL (10/09/2026): procurando "joão guilherme", a tela dizia "Ninguém
+   no recorte atual" e, no bloco ao lado, mostrava os R$ 9.873 dele em
+   Administrativo. Ele está na base (mai/24 a jan/25) — o que o escondia era a
+   caixa "Incluir quem saiu", desmarcada por padrão. */
+describe("quem o filtro escondeu", () => {
+  const saiu = pessoa({
+    id: "jg", nome: "João Guilherme (Financeiro)", codigo_rh: null,
+    meses: [mes("2024-05-01", 1100), mes("2025-01-01", 1100)],
+  });
+  const fica = pessoa({
+    id: "atual", nome: "João Atual",
+    meses: [mes("2026-07-01", 5000), mes("2026-08-01", 5000)],
+  });
+  const empresa = pessoa({
+    id: "balde", nome: "rem financeiro", eh_pessoa: false, codigo_rh: null,
+    meses: [mes("2026-08-01", 800)],
+  });
+  const semFicha = pessoa({
+    id: "sf", nome: "João Sem Ficha", codigo_rh: null,
+    meses: [mes("2026-08-01", 3000)],
+  });
+
+  const f = (over: Partial<Filtros> = {}): Filtros => ({ ...FILTROS_VAZIOS, ...over });
+
+  it("acha quem só a caixa de saídas escondia, e diz o último mês", () => {
+    const e = quemOFiltroEscondeu([saiu, fica], f({ busca: "joão" }), "2026-08-01");
+    expect(e.total).toBe(1);
+    expect(e.saidas).toBe(1);
+    expect(e.exemplos[0].nome).toBe("João Guilherme (Financeiro)");
+    expect(e.exemplos[0].ultimo).toBe("2025-01-01");
+  });
+
+  /* Os motivos SE SOBREPÕEM e `total` é gente distinta: o `saiu` não tem ficha
+     no RH E saiu, então ligar só uma das duas caixas não o traria de volta — e
+     a tela precisa citar as duas. Por isso a soma dos motivos (3) passa do
+     total de pessoas (3) quando alguém acumula dois. */
+  it("separa por MOTIVO, e um mesmo caso pode ter dois", () => {
+    const e = quemOFiltroEscondeu(
+      [saiu, empresa, semFicha],
+      f({ soComFichaRh: true }),
+      "2026-08-01",
+    );
+    expect(e.total).toBe(3);       // três pessoas distintas
+    expect(e.naoPessoas).toBe(1);  // a empresa
+    expect(e.semFicha).toBe(3);    // os três estão sem código do RH — a empresa também
+    expect(e.saidas).toBe(0);      // ninguém escondido SÓ pela caixa de saídas
+  });
+
+  /* O caso do dia a dia, com os filtros no padrão: aí "saiu" é o motivo
+     residual, e é a única caixa que a tela precisa oferecer. */
+  it("com os filtros no padrão, o motivo é a caixa de saídas", () => {
+    const e = quemOFiltroEscondeu([saiu, semFicha], f(), "2026-08-01");
+    expect(e.saidas).toBe(1);
+    expect(e.semFicha).toBe(0);
+    expect(e.total).toBe(1);
+  });
+
+  /* Empresa que também saiu conta como EMPRESA: é a caixa que quem procura
+     ligaria primeiro para achá-la. */
+  it("empresa que saiu conta uma vez só, como empresa", () => {
+    const baldeAntigo = { ...empresa, id: "b2", meses: [mes("2024-05-01", 800)] };
+    const e = quemOFiltroEscondeu([baldeAntigo], f(), "2026-08-01");
+    expect(e.naoPessoas).toBe(1);
+    expect(e.saidas).toBe(0);
+    expect(e.total).toBe(1);
+  });
+
+  /* Com as três caixas abertas não há nada a revelar — e a função sai antes de
+     rodar dois filtros à toa. */
+  it("com tudo ligado, não há escondidos", () => {
+    const e = quemOFiltroEscondeu(
+      [saiu, empresa, semFicha],
+      f({ incluirSaidas: true, incluirNaoPessoas: true }),
+      "2026-08-01",
+    );
+    expect(e).toEqual({ saidas: 0, naoPessoas: 0, semFicha: 0, total: 0, exemplos: [] });
+  });
+
+  it("respeita a busca: quem não casa com o termo não é 'escondido'", () => {
+    const outro = pessoa({ id: "z", nome: "Maria Antiga", codigo_rh: null, meses: [mes("2024-05-01", 900)] });
+    const e = quemOFiltroEscondeu([saiu, outro], f({ busca: "joão" }), "2026-08-01");
+    expect(e.total).toBe(1);
+    expect(e.exemplos.map((x) => x.nome)).toEqual(["João Guilherme (Financeiro)"]);
+  });
+
+  it("no máximo três exemplos, mas o total conta todos", () => {
+    const muitos = [1, 2, 3, 4, 5].map((n) => pessoa({
+      id: `p${n}`, nome: `Antigo ${n}`, codigo_rh: null, meses: [mes("2024-05-01", 900)],
+    }));
+    const e = quemOFiltroEscondeu(muitos, f(), "2026-08-01");
+    expect(e.total).toBe(5);
+    expect(e.exemplos).toHaveLength(3);
   });
 });

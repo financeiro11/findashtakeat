@@ -75,6 +75,7 @@ import { requireUser } from "../_shared/auth.ts";
 import { asaasPut } from "../_shared/asaas.ts";
 import { consultarCnpjPublico } from "../_shared/cnpj-publico.ts";
 import { clienteServico } from "../_shared/firecrawl.ts";
+import { existeNosCorreios, resolverCep, type ViaCep } from "../_shared/cep.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -229,6 +230,12 @@ interface Cadastro {
   cidade_ibge?: string;
   fonte: Fonte;
   situacao_receita?: string;
+  /** Quão exato é o CEP que este cadastro carrega — ver `_shared/cep.ts`.
+   *  `porta` é o CEP daquele endereço; `rua` e `cidade` são aproximações
+   *  assumidas, e existem para que a perda de precisão fique ESCRITA no rastro
+   *  de `nf_cadastro_correcoes` em vez de escondida num campo que parece exato. */
+  cep_via?: ViaCep;
+  cep_detalhe?: string;
 }
 
 /**
@@ -276,92 +283,61 @@ async function ibgePeloCep(cep: string): Promise<string | undefined> {
   return v.ok && doViaCep.length === 7 ? doViaCep : undefined;
 }
 
-/** CEP de município, do tipo `14150000` — o que a Receita devolve para cidade
- *  pequena, e o que a prefeitura recusa quando quer o CEP da rua. */
-const cepDeCidade = (cep: string) => /000$/.test(soDigitos(cep));
+/* `cepDeCidade` e `cepDaRua` saíram daqui em 09/09/2026. O primeiro porque
+ * "termina em 000" deixou de ser o critério — quem decide é existir na base dos
+ * Correios, e `cep_generico` sobrevive só como coluna gerada, para a tela. O
+ * segundo porque virou a escada de `_shared/cep.ts`,
+ * usada por este caminho, pela varredura de validação e pelo pré-voo. Manter
+ * uma cópia local era garantir que as três divergissem. */
 
 /**
- * O CEP DA RUA, quando o que temos é o da cidade.
+ * Troca o CEP quando ele NÃO EXISTE NOS CORREIOS — e não quando termina em 000.
  *
- * POR QUE ISTO EXISTE — medido em 29/08/2026, em 31 notas emitidas pelo Omie
- * depois de corrigir o cadastro: 27 foram recusadas com `E0240` ("o CEP
- * informado não existe ou não pertence ao município"), e **17 das 18 recusas do
- * segundo lote eram cliente com CEP terminado em `000`**. A Receita entrega o
- * CEP genérico do município e a prefeitura quer o da rua.
+ * O GATILHO MUDOU EM 09/09/2026, e é a correção principal deste arquivo. A
+ * versão anterior só agia sobre CEP terminado em `000`, porque a medição de
+ * 29/08 tinha visto `000` em 17 das 18 recusas daquele lote. A correlação era
+ * real e a causa era outra: o que a prefeitura cobra no `E0240` é que o CEP
+ * exista na base dos Correios. Medido em 24 cadastros, 12 de cada lado, a
+ * separação é perfeita — e ela não coincide com o `000`:
  *
- * O ViaCEP tem busca reversa — UF + cidade + logradouro — e ela não custa nada.
+ *   • `45810-000` termina em `000`, existe, e emite. Eram 337 cadastros assim
+ *     sendo mandados para conserto sem ter defeito nenhum.
+ *   • `41750-166`, `90520-002`, `66093-380` têm cara de CEP de rua, não existem
+ *     mais, e a régua velha não os enxergava — 252 OS travadas.
  *
- * A DISAMBIGUAÇÃO É O CUIDADO CENTRAL, porque "Rua Barão do Rio Branco" devolveu
- * TRÊS CEPs no teste. Escolher errado põe um CEP falso num documento fiscal, que
- * é pior do que não mexer. Por isso:
- *
- *   • um resultado só  → é ele;
- *   • vários, e o bairro do cadastro bate com o de UM deles → é esse;
- *   • vários sem desempate → NÃO SE ESCOLHE. Fica o CEP da cidade, e a nota
- *     falha como falhava. Errar para menos aqui custa uma recusa; errar para
- *     mais custa uma nota com endereço de outro lugar.
- *
- * Município de CEP único (Irapuá, Pradópolis) devolve lista vazia — e aí o CEP
- * genérico é mesmo o correto, e a recusa tem outra causa.
- */
-async function cepDaRua(
-  uf: string, cidade: string, logradouro: string, bairro: string,
-): Promise<{ cep: string; bairro?: string } | undefined> {
-  const u = semAcento(limpo(uf)).toUpperCase();
-  const cid = semAcento(limpo(cidade));
-  // O ViaCEP exige 3+ caracteres em cidade e logradouro, e responde 400 abaixo
-  // disso — conferir aqui evita gastar a chamada para receber erro.
-  const rua = semAcento(limpo(logradouro));
-  if (u.length !== 2 || cid.length < 3 || rua.length < 3) return undefined;
-
-  const url = `https://viacep.com.br/ws/${u}/${encodeURIComponent(cid)}/${encodeURIComponent(rua)}/json/`;
-  const r = await buscaJSON(url, 8000);
-  const lista: any[] = Array.isArray(r?.dados) ? r.dados : [];
-  const validos = lista.filter((x) => soDigitos(x?.cep).length === 8 && !cepDeCidade(x?.cep));
-  if (!validos.length) return undefined;
-  if (validos.length === 1) {
-    return { cep: soDigitos(validos[0].cep), bairro: limpo(validos[0].bairro) || undefined };
-  }
-
-  const b = semAcento(limpo(bairro)).toUpperCase();
-  if (b) {
-    const casam = validos.filter((x) => semAcento(limpo(x?.bairro)).toUpperCase() === b);
-    if (casam.length === 1) {
-      return { cep: soDigitos(casam[0].cep), bairro: limpo(casam[0].bairro) || undefined };
-    }
-  }
-  return undefined;   // ambíguo: não se escolhe
-}
-
-/**
- * Troca o CEP da cidade pelo da rua, quando dá — e só então.
- *
- * Roda sobre o cadastro JÁ MONTADO, seja qual for a fonte (Receita, página
- * pública, CEP ou Asaas), porque o problema é o mesmo nas quatro: o CEP
- * genérico. Fazer isto num lugar só é o que garante que a Receita não escape da
- * regra por ser a fonte mais confiável — ela é justamente quem mais entrega CEP
- * de município.
+ * A escada inteira (rua exata → bairro → mesma rua → outra rua do município)
+ * mora em `_shared/cep.ts`, para que a varredura de validação, o pré-voo e este
+ * caminho usem a MESMA decisão. `via` sobe junto e é gravado no rastro: quando
+ * o CEP escrito não é o da porta, isso tem de estar escrito em algum lugar.
  *
  * O `cidade_ibge` é relido do CEP novo. Não é zelo: trocar o CEP e manter o
  * código do município antigo é fabricar exatamente a incoerência que o E0240
  * acusa.
  */
 async function refinarCep(cadastro: Cadastro): Promise<Cadastro> {
-  if (!cepDeCidade(cadastro.cep)) return cadastro;
   try {
-    const achado = await cepDaRua(
-      cadastro.estado, cadastro.cidade, cadastro.endereco, cadastro.bairro,
-    );
-    if (!achado) return cadastro;
+    const achado = await resolverCep({
+      cep: cadastro.cep,
+      uf: cadastro.estado,
+      cidade: cadastro.cidade,
+      logradouro: cadastro.endereco,
+      bairro: cadastro.bairro,
+    });
+    // `resolverCep` devolve o próprio CEP com `via: "porta"` quando ele já vale
+    // (ou quando a rede caiu e não dá para concluir nada) — nos dois casos não
+    // há troca a fazer.
+    if (!achado || soDigitos(achado.cep) === soDigitos(cadastro.cep)) return cadastro;
     return {
       ...cadastro,
       cep: achado.cep,
       bairro: cadastro.bairro || achado.bairro || "",
       cidade_ibge: (await ibgePeloCep(achado.cep)) ?? cadastro.cidade_ibge,
+      cep_via: achado.via,
+      cep_detalhe: achado.detalhe,
       fonte: cadastro.fonte,
     };
   } catch {
-    // Rede caiu: fica o CEP da cidade. O conserto é oportunista, não obrigatório.
+    // Rede caiu: fica o CEP que veio. O conserto é oportunista, não obrigatório.
     return cadastro;
   }
 }
@@ -841,6 +817,23 @@ async function aplicarCorrecao(
             ? "O cadastro do Omie já está completo e igual ao da Receita — nada a corrigir."
             : "O cadastro do Omie já bate com o que a Receita/CEP respondem e continua incompleto. Isto precisa de conferência humana.",
         };
+      } else if ((await existeNosCorreios(cadastro.cep)) === false) {
+        /* A TRAVA DE VALIDAÇÃO — nunca escrever CEP que os Correios não conhecem.
+         *
+         * Ela existe por um sintoma medido em 09/09/2026: treze OS apareciam na
+         * tela como `situacao = 'consertado'` e continuavam recusadas, porque o
+         * conserto tinha gravado com sucesso um CEP que segue não existindo. Um
+         * falso verde é pior que um vermelho — o vermelho alguém trata.
+         *
+         * `=== false` e não `!`: `existeNosCorreios` devolve `null` quando o
+         * ViaCEP não respondeu, e tratar silêncio como reprovação faria uma
+         * queda de rede paralisar todos os consertos da rodada. Na dúvida,
+         * escreve — o pior caso volta a ser a recusa que já existia. */
+        feito.omie = {
+          ok: false, cep_invalido: true, cep: cadastro.cep,
+          motivo: `O CEP ${cadastro.cep} não existe na base dos Correios, e é isso que a prefeitura recusa com E0240. ` +
+            `Nada foi escrito: gravá-lo marcaria este cliente como consertado sem consertar.`,
+        };
       } else {
         const payload: Record<string, unknown> = {
           codigo_cliente_omie: c.n_cod_cli,
@@ -860,7 +853,17 @@ async function aplicarCorrecao(
         if (!limpo(atual.email) && emailAsaas) payload.email = emailAsaas.slice(0, 100);
         try {
           await omieCall("geral/clientes", "AlterarCliente", payload);
-          feito.omie = { ok: true, escrito: payload, fonte: cadastro.fonte };
+          /* `cep_via` sobe para o rastro porque nem todo CEP escrito é o da
+           * porta: `rua` é a rua certa noutra faixa de numeração, `cidade` é
+           * outra rua do mesmo município — o último recurso dos endereços que
+           * não são logradouro (fazenda, praia, estrada). Sem este campo, quem
+           * ler `nf_cadastro_correcoes` depois não tem como saber qual dos três
+           * foi, e um endereço aproximado passaria por exato. */
+          feito.omie = {
+            ok: true, escrito: payload, fonte: cadastro.fonte,
+            cep_via: cadastro.cep_via ?? "porta",
+            cep_detalhe: cadastro.cep_detalhe ?? null,
+          };
           /* O ESPELHO ACOMPANHA A ESCRITA. `omie_clientes_endereco` é lido por
            * semana; sem isto ele passa a mentir no instante em que consertamos
            * algo — e foi exatamente o que rotulou de "caso humano" seis clientes
@@ -872,6 +875,12 @@ async function aplicarCorrecao(
             cidade: cadastro.cidade, estado: cadastro.estado, cep: cadastro.cep,
             email: limpo(atual.email) || limpo(c.dadosAsaas?.email) || null,
             lido_em: new Date().toISOString(),
+            /* O CEP acabou de passar pela trava acima, então é `true` sem
+             * precisar perguntar de novo. Sem gravar isto, o cadastro recém
+             * consertado voltaria à fila de validação e gastaria uma consulta
+             * para descobrir o que esta rodada já sabe. */
+            cep_valido: true,
+            cep_checado_em: new Date().toISOString(),
           }, { onConflict: "codigo" }).then(() => {}, () => { /* espelho não desfaz escrita */ });
         } catch (e) {
           feito.omie = { ok: false, motivo: e instanceof Error ? e.message : String(e) };
@@ -1251,6 +1260,74 @@ Deno.serve(async (req) => {
       if (!cadastro) return json({ status: "erro", erro: `Sem endereço confiável para escrever: ${bloqueio}.` }, 422);
 
       return json({ status: "ok", doc, fonte: cadastro.fonte, resultado: feito });
+    }
+
+    /* --------------------------- validar_ceps ------------------------------ */
+    /**
+     * A VARREDURA QUE FAZ O HUB SABER quais CEPs de cadastro não existem.
+     *
+     * É a peça que generaliza a correção de 09/09/2026: em vez de descobrir o
+     * CEP inválido pela recusa da prefeitura — depois de a nota falhar, com a
+     * receita já recebida —, o Hub pergunta antes e grava a resposta em
+     * `omie_clientes_endereco.cep_valido`. Quem consome isso é
+     * `nfse_preparo_montar` (a fila de pré-voo) e a aba de Recusas.
+     *
+     * SÓ LÊ. Nenhuma escrita no Omie sai daqui: marcar um CEP como inválido é
+     * um fato sobre o cadastro, não uma decisão sobre ele. Quem decide é o
+     * `preparar`, que roda logo depois no mesmo cron.
+     *
+     * O relógio é o de sempre: uma consulta HTTP por CEP, 6.480 cadastros, e o
+     * gateway corta em 150s. `PRAZO_VALIDACAO` para a leva antes disso e devolve
+     * quantos ficaram — a próxima rodada continua pela mesma ordem.
+     */
+    if (action === "validar_ceps") {
+      const teto = Math.max(1, Math.min(600, Number(body?.teto) || 200));
+      const revalidarDias = Math.max(0, Number(body?.revalidar_dias) || 0);
+      const PRAZO_VALIDACAO = 100_000;
+      const comecou = Date.now();
+
+      const { data: fila, error } = await supabase.rpc("ceps_a_validar", {
+        p_limite: teto, p_revalidar_dias: revalidarDias,
+      });
+      if (error) return json({ status: "erro", erro: `ceps_a_validar: ${error.message}` }, 500);
+
+      let validos = 0, invalidos = 0, indeterminados = 0, vistos = 0;
+      const agora = new Date().toISOString();
+      for (const c of (fila ?? []) as any[]) {
+        if (Date.now() - comecou > PRAZO_VALIDACAO) break;
+        vistos++;
+        const existe = await existeNosCorreios(String(c.cep));
+        if (existe === null) {
+          /* ViaCEP fora do ar: NÃO se grava. Escrever `false` aqui marcaria a
+           * base inteira como inválida por causa de uma queda de rede, e a fila
+           * de conserto encheria com 6 mil cadastros bons. */
+          indeterminados++;
+          continue;
+        }
+        existe ? validos++ : invalidos++;
+        await supabase.from("omie_clientes_endereco")
+          .update({ cep_valido: existe, cep_checado_em: agora })
+          .eq("codigo", c.codigo)
+          .then(() => {}, () => { /* uma linha que não gravou volta na próxima leva */ });
+        await dorme(120);   // o ViaCEP é público e gratuito; não se martela
+      }
+
+      /* CONTAGEM POR `count`, NÃO POR `length` DA LISTA. Pedir 5.000 linhas para
+       * medi-las devolve 1.000 caladas — o PostgREST corta e não avisa —, e a
+       * resposta diria "faltam 1000" para sempre, inclusive quando faltassem
+       * 5.867 (que é o número real de 09/09/2026). `head: true` não traz linha
+       * nenhuma, só o total. */
+      const { count: faltam } = await supabase
+        .from("omie_clientes_endereco")
+        .select("codigo", { count: "exact", head: true })
+        .is("cep_valido", null)
+        .not("cep", "is", null);
+      return json({
+        status: "ok",
+        vistos, validos, invalidos, indeterminados,
+        faltam: faltam ?? null,
+        segundos: Math.round((Date.now() - comecou) / 1000),
+      });
     }
 
     /* ----------------------------- preparar -------------------------------- */

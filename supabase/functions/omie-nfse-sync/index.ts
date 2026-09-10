@@ -145,7 +145,18 @@ async function omieCall<T = any>(
     // opção trata o erro procurando o efeito, não insistindo.
     if (!opts.semRetentativa
       && /425|redundante|processando|5020|too many|bloqueada|soap-error|broken response|timeout|50[234]|existe uma requisi/i.test(String(msg)) && i < 4) {
-      await dorme(1500 * 2 ** i);
+      /* O OMIE DIZ QUANTO ESPERAR — e ignorar isso foi metade do prejuízo.
+       *
+       * A frase é literal: "Consumo redundante detectado. Aguarde 13 segundos
+       * para tentar novamente". O degrau cego (1,5·2^i = 1,5+3+6+12) some em
+       * 22,5s e desiste, e em 09/09/2026 as quatro tentativas caíram inteiras
+       * dentro de um espelho que ainda tinha um minuto pela frente. Honrar o
+       * número gasta a espera onde ela resolve.
+       *
+       * O teto de 20s por tentativa é o relógio da Edge: 150s até a primeira
+       * resposta, e uma espera maior que isso troca um erro por um 504. */
+      const pedido = Number(/aguarde\s+(\d+)\s+segundo/i.exec(String(msg))?.[1] ?? 0);
+      await dorme(Math.min(Math.max(pedido * 1000 + 500, 1500 * 2 ** i), 20_000));
       continue;
     }
     throw ultimo;
@@ -155,6 +166,51 @@ async function omieCall<T = any>(
 
 const mensagemDoOmie = (e: unknown): string =>
   (e instanceof Error ? e.message : String(e)).replace(/^Omie \w+ \[\d+\]:\s*/i, "").replace(/^ERROR:\s*/i, "").trim();
+
+/* --------------------------- a trava do `ListarOS` -------------------------
+ *
+ * DOIS PROCESSOS NOSSOS NÃO PODEM VARRER AS OS AO MESMO TEMPO. A trava do Omie é
+ * por MÉTODO: o espelho paginando `ListarOS` e a emissão conferindo o corredor
+ * com `ListarOS` derrubam um ao outro, e quem cai é sorteado. Em 09/09/2026 caiu
+ * a emissão, DEPOIS de criar quatro Ordens de Serviço — o pior lado para cair.
+ *
+ * A concessão vem do Postgres (`omie_trava`, com dono e validade) e não de um
+ * `pg_advisory_lock`: o advisory morre com a conexão, e a conexão do PostgREST
+ * volta para o pool no fim da chamada RPC, não no fim do trabalho no Omie.
+ *
+ * Quem perde a vez NÃO espera de graça: o espelho pula (volta em 10 minutos e
+ * relê tudo), e a emissão desiste ANTES de tocar no Omie — nada criado, nada
+ * órfão, e a mensagem diz quem estava dentro.
+ */
+const RECURSO_LISTAR_OS = "omie:ListarOS";
+
+/** Um nome que identifica a rodada na trava — some do banco, mas aparece no aviso. */
+const donoDaVez = (o: string) => `${o}:${crypto.randomUUID().slice(0, 8)}`;
+
+async function travaTomar(
+  supabase: any, dono: string, segundos: number,
+): Promise<{ ok: boolean; quem: string | null; ate: string | null }> {
+  const { data, error } = await supabase.rpc("omie_trava_tomar", {
+    p_recurso: RECURSO_LISTAR_OS, p_dono: dono, p_segundos: segundos,
+  });
+  /* Erro de leitura NÃO vira "a trava é minha". Se o Postgres não respondeu, o
+   * que não se sabe é se alguém está dentro — e seguir em frente aqui é
+   * exatamente o acidente que a trava existe para impedir. */
+  if (error) return { ok: false, quem: `trava indisponível: ${error.message}`, ate: null };
+  const l = Array.isArray(data) ? data[0] : data;
+  return { ok: l?.tomada === true, quem: l?.dono_atual ?? null, ate: l?.expira_em ?? null };
+}
+
+async function travaSoltar(supabase: any, dono: string) {
+  await supabase.rpc("omie_trava_soltar", { p_recurso: RECURSO_LISTAR_OS, p_dono: dono })
+    .then(() => {}, () => {}); // soltar que falha expira sozinho; não vale derrubar a resposta
+}
+
+/** "rodada-x" segurando até 20:31:07 → frase pronta para quem perdeu a vez. */
+const frasePerdiVez = (t: { quem: string | null; ate: string | null }) =>
+  `outro processo está varrendo as OS no Omie agora (${t.quem ?? "dono desconhecido"}` +
+  `${t.ate ? `, até ${new Date(t.ate).toLocaleTimeString("pt-BR", { timeZone: "America/Sao_Paulo" })}` : ""}). ` +
+  "Nada foi criado nem faturado.";
 
 /* ------------------------------- espelhar -------------------------------- */
 
@@ -1150,6 +1206,150 @@ async function sondarMetodos(extras: Array<[string, string]> = []): Promise<Reco
     }
   }
   return out;
+}
+
+/* ---------------------------------------------------------------------------
+ * EXCLUIR A OS RECUSADA — a porta que destrava o carimbo `pay_`.
+ *
+ * O PROBLEMA, medido em 09/09/2026 e descrito em `devolverAEsteira`: a OS que
+ * carrega `c_cod_int_os = pay_xxx` não volta à esteira. `AlterarOS` não renomeia
+ * o próprio identificador e `IncluirOS` recusa `cCodIntOS` repetido — então a
+ * cobrança fica presa a uma OS morta, com a receita recebida e sem nota.
+ *
+ * A PORTA QUE NINGUÉM TINHA BATIDO. A sonda original testou dezoito métodos, todos
+ * de REENVIO (`ReenviarNFSe`, `RefaturarOS`, `ReenviarRPS`…) e todos "Method not
+ * exists". Nenhum de CANCELAMENTO. Sondando em 10/09/2026:
+ *
+ *     servicos/os/CancelarOS          → não existe
+ *     servicos/oslote/CancelarLoteOS  → não existe
+ *     servicos/os/ExcluirOS           → EXISTE
+ *
+ * Apagada a OS, o `cCodIntOS` fica livre e a esteira emite por uma OS nova com o
+ * MESMO carimbo — sem tocar nas cinco leituras fiscais que casam por
+ * `c_cod_int_os = id_asaas`. Era isso que a alternativa de sufixar o carimbo
+ * custaria, e é por isso que ela tinha sido descartada.
+ *
+ * APAGAR NO ERP É DESTRUTIVO E IRREVERSÍVEL, então as travas são quatro e
+ * nenhuma delas é dispensável:
+ *
+ *   1. `nfse_status = '003'` e sem `nfse_numero` no espelho — só RPS recusado;
+ *   2. `cancelada = false` e `carimbo_liberado_em is null` — nada já resolvido;
+ *   3. **`StatusOS` AO VIVO** antes de cada exclusão. O espelho é lido por sync e
+ *      pode estar velho: a nota pode ter nascido entre a última leitura e agora,
+ *      e apagar uma OS que virou nota fiscal é destruir o documento que prova a
+ *      receita. Esta trava é a que não se negocia;
+ *   4. `ids` explícitos ou teto de 25 por chamada — nada de varrer a base.
+ *
+ * DEPOIS DA EXCLUSÃO o espelho marca `cancelada = true`. Não é eufemismo: as
+ * cinco leituras filtram por `cancelada = false`, então é esse o campo que faz a
+ * OS morta parar de representar a cobrança. `excluida_em` fica ao lado dizendo o
+ * que de fato aconteceu, para quem for ler a linha daqui a seis meses.
+ * ------------------------------------------------------------------------- */
+async function excluirOsRecusada(
+  supabase: any,
+  opts: { ids: number[]; limite: number; seco: boolean; operador: string; usuario: string | null },
+) {
+  const PRAZO_MS = 110_000;
+  const comecou = Date.now();
+  const teto = Math.max(1, Math.min(60, opts.limite));
+
+  /* A lista SEMPRE sai de `nfse_recusas_reemitiveis` — a mesma da devolução, que
+   * já filtra `consertado` / `so_reenviar`. `ids` restringe, nunca amplia: pedir
+   * uma OS que não está na lista não a inclui. */
+  const { data: elegiveis, error } = await supabase.rpc("nfse_recusas_reemitiveis", { p_dias: 120 });
+  if (error) return { erro: `nfse_recusas_reemitiveis: ${error.message}` };
+
+  let candidatas = (elegiveis ?? []) as any[];
+  if (opts.ids.length) {
+    const pedidas = new Set(opts.ids);
+    candidatas = candidatas.filter((c) => pedidas.has(Number(c.n_cod_os)));
+    const achadas = new Set(candidatas.map((c) => Number(c.n_cod_os)));
+    const fora = opts.ids.filter((id) => !achadas.has(id));
+    if (fora.length) {
+      return { erro: `Estas OS não estão na lista de reemitíveis (consertado/só reenviar): ${fora.join(", ")}. Nada foi apagado.` };
+    }
+  }
+
+  const leva = candidatas.slice(0, teto);
+  if (opts.seco) {
+    return {
+      ok: true, seco: true, candidatas: candidatas.length, na_leva: leva.length,
+      amostra: leva.slice(0, 10).map((l) => ({
+        n_cod_os: l.n_cod_os, id_cobranca: l.id_cobranca, nome: l.nome, valor: l.valor, motivo: l.motivo_curto,
+      })),
+    };
+  }
+
+  const apagadas: any[] = [];
+  const falhas: Array<{ n_cod_os: number; erro: string }> = [];
+
+  for (const l of leva) {
+    if (Date.now() - comecou > PRAZO_MS) break;
+    const nCodOS = Number(l.n_cod_os);
+    const id = String(l.id_cobranca ?? "");
+    try {
+      // Trava 1 e 2, no espelho — barato, e barra o engano óbvio.
+      const { data: osLocal } = await supabase
+        .from("nf_os_omie")
+        .select("nfse_status, nfse_numero, cancelada, carimbo_liberado_em, c_cod_int_os, valor")
+        .eq("n_cod_os", nCodOS).maybeSingle();
+      if (!osLocal) { falhas.push({ n_cod_os: nCodOS, erro: "OS não está no espelho local." }); continue; }
+      if (osLocal.cancelada || osLocal.carimbo_liberado_em) {
+        falhas.push({ n_cod_os: nCodOS, erro: "OS já cancelada ou já aposentada — nada a apagar." }); continue;
+      }
+      if (String(osLocal.nfse_status ?? "") !== "003" || String(osLocal.nfse_numero ?? "").trim() !== "") {
+        falhas.push({ n_cod_os: nCodOS, erro: `Espelho diz status ${osLocal.nfse_status} / nota ${osLocal.nfse_numero ?? "—"} — só se apaga RPS recusado sem número.` });
+        continue;
+      }
+
+      /* Trava 3 — A QUE NÃO SE NEGOCIA. O Omie ao vivo, uma OS por vez. */
+      const st = await omieCall<any>("servicos/os", "StatusOS", { nCodOS });
+      const rps = (st?.ListaRpsNfse ?? []) as any[];
+      const jaVirouNota = rps.some((r: any) =>
+        String(r?.cStatusRps ?? "") === "004" || String(r?.nNfse ?? "").trim() !== "");
+      if (jaVirouNota) {
+        falhas.push({
+          n_cod_os: nCodOS,
+          erro: "O Omie diz que esta OS JÁ tem nota autorizada — NADA foi apagado. O espelho estava velho.",
+        });
+        continue;
+      }
+
+      await omieCall<any>("servicos/os", "ExcluirOS", { nCodOS });
+
+      await supabase.from("nf_os_omie").update({
+        cancelada: true,
+        excluida_em: new Date().toISOString(),
+        carimbo_original: id || null,
+        atualizado_em: new Date().toISOString(),
+      }).eq("n_cod_os", nCodOS);
+
+      await supabase.from("nf_emissoes").insert({
+        id_asaas: id || null, n_cod_os: nCodOS, acao: "excluir_os_recusada", resultado: "ok",
+        usuario: opts.usuario, operador: opts.operador,
+        erro: `A OS ${nCodOS} teve o RPS recusado (${l.motivo_curto ?? "sem motivo"}), o cadastro do cliente foi ` +
+          `corrigido e ela foi APAGADA no Omie para liberar o carimbo ${id}. A cobrança volta à esteira e a nota ` +
+          `sai por uma OS nova com o mesmo código de integração.`,
+        payload: { valor: l.valor, motivo: l.motivo_curto, situacao: l.situacao },
+      }).then(() => {}, () => { /* o diário não desfaz a exclusão */ });
+
+      apagadas.push({ n_cod_os: nCodOS, id_cobranca: id, nome: l.nome, valor: l.valor });
+      await dorme(700);
+    } catch (e) {
+      falhas.push({ n_cod_os: nCodOS, erro: mensagemDoOmie(e).slice(0, 200) });
+    }
+  }
+
+  return {
+    ok: true,
+    candidatas: candidatas.length,
+    apagadas: apagadas.length,
+    valor: apagadas.reduce((s, a) => s + Number(a.valor || 0), 0),
+    falhas: falhas.length,
+    faltam: Math.max(0, candidatas.length - leva.length),
+    segundos: Math.round((Date.now() - comecou) / 1000),
+    detalhe: { apagadas: apagadas.slice(0, 30), falhas: falhas.slice(0, 20) },
+  };
 }
 
 /* --------------------------------- a porta -------------------------------- */
@@ -2403,6 +2603,11 @@ async function emitirDia(
     return { execucao: idExec, modo, ...campos };
   };
 
+  /* Quem tem de soltar a trava é quem a tomou, e só no fim — inclusive quando o
+   * fim é uma exceção. A validade da concessão é a rede embaixo disto: worker
+   * morto não solta nada, e sem prazo o recurso ficaria trancado para sempre. */
+  let travaMinha: string | null = null;
+
   try {
     if (modo === "off") return await fechar({ pulada: "emissão automática desligada em Configurações" });
 
@@ -2537,6 +2742,27 @@ async function emitirDia(
      * se limpava sozinho, e a esteira ficava parada até alguém mover a OS na mão
      * no Omie. Agora a sobra nossa volta para a fila e o dia segue; só OS de
      * terceiro (ou já faturada, que não se move) ainda interrompe. */
+    /* A TRAVA ENTRA AQUI: depois de tudo que é de graça, antes do primeiro toque
+     * no Omie — e ANTES DE CRIAR QUALQUER OS.
+     *
+     * Esta ordem é a garantia inteira. Perder a vez agora custa uma rodada (a
+     * próxima é em 10 minutos, e a fila é remontada do zero a cada vez); perder a
+     * vez trinta segundos depois custa OS criada e não faturada, que é o acidente
+     * de 09/09/2026. Por isso não se tenta e se espera: ou o corredor é meu antes
+     * de eu escrever a primeira linha no Omie, ou eu não começo. */
+    const dono = donoDaVez(`emissao:${opts.origem}:${modo}`);
+    const trava = await travaTomar(supabase, dono, 170);
+    if (!trava.ok) {
+      return await fechar({
+        fila: fila.length, bloqueadas: barradas.length,
+        pulada: `${frasePerdiVez(trava)} As cobranças voltam inteiras na próxima rodada.`,
+        ...(manual ? { resultados: liberadas.map((c: any) => ({
+          id_asaas: c.id_asaas, ok: false, erro: frasePerdiVez(trava),
+        })) } : {}),
+      });
+    }
+    travaMinha = dono;
+
     let varridas: number[] = [];
     {
       /* Uma varredura só. `limparCorredor` já lista as OS — perguntar antes com
@@ -2801,6 +3027,8 @@ async function emitirDia(
     });
   } catch (e) {
     return await fechar({ erro: mensagemDoOmie(e).slice(0, 500) });
+  } finally {
+    if (travaMinha) await travaSoltar(supabase, travaMinha);
   }
 }
 
@@ -2893,6 +3121,41 @@ const dataBRAviso = (d: unknown) => {
   const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(s);
   return m ? `${m[3]}/${m[2]}/${m[1]}` : s;
 };
+
+/* A OS QUE FICOU NO MEIO DO CAMINHO — o bloco que só aparece quando existe.
+ *
+ * Recusa é a nota que TENTOU sair; esta é a que nem chegou a ser despachada,
+ * porque a rodada morreu entre criar a OS e disparar o lote. Ela não está no
+ * Registro como falha (não houve passo de faturamento para falhar), não está na
+ * fila (a cobrança já tem OS) e não está em "Recusadas" (a prefeitura nunca a
+ * viu). Sem este bloco, a única pista é um selo cinza "Sem nota" que se lê como
+ * "ainda não chegou a vez dela".
+ *
+ * Só entram as que NINGUÉM resgata (`volta_sozinha = false`) — a recebida volta
+ * pela fila na próxima janela sem que ninguém peça, e avisar sobre ela seria
+ * ensinar a pessoa a ignorar o aviso.
+ */
+function blocoOrfas(orfas: any[]): string {
+  const soma = orfas.reduce((s, o) => s + Number(o.valor ?? 0), 0);
+  const partes: string[] = [
+    `⚠ ${orfas.length} Ordem(ns) de Serviço criada(s) e NUNCA faturada(s) — ${brlAviso(soma)}`,
+    "",
+    "  A OS existe no Omie e a nota não saiu: a emissão parou entre criar e faturar.",
+    "  Nenhuma rodada automática pega estas — a cobrança está confirmada e ainda não",
+    "  liquidada, e nota sobre confirmada só sai quando alguém assina a espera.",
+    "  Onde agir: Notas Fiscais › painel do mês › marcar a cobrança › emitir (avulsa).",
+    "  A OS é reaproveitada, não nasce outra.",
+    "",
+  ];
+  for (const o of orfas.slice(0, 40)) {
+    partes.push(
+      `   OS ${o.n_cod_os} · ${o.cliente ?? "—"} · ${brlAviso(o.valor)} · ${o.status_asaas ?? "—"}` +
+      ` · criada ${new Date(o.criada_em).toLocaleString("pt-BR", { timeZone: "America/Sao_Paulo" })}`,
+    );
+  }
+  if (orfas.length > 40) partes.push(`   … e mais ${orfas.length - 40}.`);
+  return partes.join("\n");
+}
 
 /**
  * O corpo do aviso.
@@ -3650,23 +3913,54 @@ Deno.serve(async (req) => {
       const para = String(body?.para ?? DESTINO_PADRAO);
       const { data: linhas, error } = await supabase.rpc("nfse_recusas_a_avisar", { p_dias: dias });
       if (error) return json({ erro: `nfse_recusas_a_avisar: ${error.message}` }, 400);
-      if (!linhas?.length) {
-        return json({ ok: true, recusas: 0, enviado: false, motivo: "nenhuma recusa nova — nada a avisar." });
+
+      /* A OS parada pega carona no aviso que já existe, em vez de virar um
+       * segundo e-mail: quem recebe dois avisos do mesmo assunto lê um. Uma hora
+       * de carência porque a nota nasce em minutos — abaixo disso, "parada" ainda
+       * pode ser "a caminho". */
+      const { data: orfasTodas } = await supabase.rpc("nf_os_orfas", { p_minutos: 60 });
+      const orfas = (orfasTodas ?? []).filter((o: any) => o.volta_sozinha === false);
+
+      const recusas = linhas ?? [];
+      if (!recusas.length && !orfas.length) {
+        return json({
+          ok: true, recusas: 0, orfas: 0, enviado: false,
+          motivo: "nenhuma recusa nova e nenhuma OS parada — nada a avisar.",
+        });
       }
-      const total = linhas.reduce((s: number, l: any) => s + Number(l.valor ?? 0), 0);
-      const assunto = `[Hub] ${linhas.length} nota(s) recusada(s) pela prefeitura — ${brlAviso(total)}`;
-      const texto = montarTextoAviso(linhas);
+
+      const total = recusas.reduce((s: number, l: any) => s + Number(l.valor ?? 0), 0);
+      const totalOrfas = orfas.reduce((s: number, o: any) => s + Number(o.valor ?? 0), 0);
+      /* O assunto diz o que há, e quando há as duas coisas diz as duas: um e-mail
+       * intitulado só pelas recusas esconderia a OS parada de quem tria pelo
+       * assunto — que é como se tria um e-mail diário. */
+      const assunto = [
+        recusas.length ? `${recusas.length} nota(s) recusada(s) — ${brlAviso(total)}` : "",
+        orfas.length ? `${orfas.length} OS parada(s) sem nota — ${brlAviso(totalOrfas)}` : "",
+      ].filter(Boolean).join(" · ");
+      const texto = [
+        recusas.length ? montarTextoAviso(recusas) : "",
+        orfas.length ? blocoOrfas(orfas) : "",
+      ].filter(Boolean).join("\n\n");
+
       if (body?.enviar !== true) {
-        return json({ ok: true, recusas: linhas.length, enviado: false, assunto, texto });
+        return json({ ok: true, recusas: recusas.length, orfas: orfas.length, enviado: false, assunto: `[Hub] ${assunto}`, texto });
       }
-      await enviarPeloGmail(supabase, para, assunto, texto);
+      await enviarPeloGmail(supabase, para, `[Hub] ${assunto}`, texto);
       // O carimbo vem DEPOIS do envio: se o Gmail recusar, ninguém foi avisado e
       // a lista tem de voltar amanhã inteira.
-      await supabase.from("nfse_recusa_avisada").upsert(
-        linhas.map((l: any) => ({ n_cod_os: l.n_cod_os, motivo: String(l.motivo_curto ?? "").slice(0, 200) })),
-        { onConflict: "n_cod_os" },
-      );
-      return json({ ok: true, recusas: linhas.length, enviado: true, para, assunto });
+      //
+      // E ele é SÓ DAS RECUSAS. A OS parada volta no aviso de amanhã de propósito:
+      // consertar uma recusa é trabalho de cadastro que leva dias, e repetir seria
+      // ruído; a OS parada é um clique, e se ela ainda está aí amanhã é porque
+      // ninguém clicou — que é exatamente a notícia.
+      if (recusas.length) {
+        await supabase.from("nfse_recusa_avisada").upsert(
+          recusas.map((l: any) => ({ n_cod_os: l.n_cod_os, motivo: String(l.motivo_curto ?? "").slice(0, 200) })),
+          { onConflict: "n_cod_os" },
+        );
+      }
+      return json({ ok: true, recusas: recusas.length, orfas: orfas.length, enviado: true, para, assunto: `[Hub] ${assunto}` });
     }
 
     if (action === "espelhar") {
@@ -3679,7 +3973,20 @@ Deno.serve(async (req) => {
       if (body?.so_se_houver_forno === true && !(await haNotaNoForno(supabase).catch(() => true))) {
         return json({ ok: true, pulado: "nenhuma nota no forno — o espelho não teria o que fechar." });
       }
-      const r = await espelhar(supabase, { tetoStatus: Math.min(Number(body?.teto_status ?? 120), 400) });
+
+      /* O ESPELHO É QUEM CEDE A VEZ, e a assimetria é o ponto.
+       *
+       * Ele varre `ListarOS` inteiro; a emissão também. Um dos dois tem de sair, e
+       * a conta não é próxima: o espelho que pula volta em 10 minutos e relê o
+       * mesmo mundo, sem nada perdido — a emissão que cai no meio deixa OS criada
+       * e não faturada. Ceder aqui é o que torna a trava barata. */
+      const donoEspelho = donoDaVez("espelho");
+      const travaEspelho = await travaTomar(supabase, donoEspelho, 150);
+      if (!travaEspelho.ok) {
+        return json({ ok: true, pulado: `o espelho cedeu a vez: ${frasePerdiVez(travaEspelho)}` });
+      }
+      const r = await espelhar(supabase, { tetoStatus: Math.min(Number(body?.teto_status ?? 120), 400) })
+        .finally(() => travaSoltar(supabase, donoEspelho));
 
       /* O anexo mora aqui, e não no `emitir_dia`, por dois motivos.
        *
@@ -3727,8 +4034,16 @@ Deno.serve(async (req) => {
        * rodada. Aqui ele só roda a pedido explícito — a tela, que quer o número
        * na hora e aceita esperar. */
       const espelho = body?.espelhar === true
-        ? await espelhar(supabase, { tetoStatus: Math.min(Number(body?.teto_status ?? 40), 400) })
-            .catch((e) => ({ erro: mensagemDoOmie(e) }))
+        // Mesma trava do cron: aqui a emissão já soltou a dela, mas outra rodada
+        // (ou o espelho dos :05) pode ter entrado no intervalo.
+        ? await (async () => {
+            const d = donoDaVez("espelho:pos-emissao");
+            const t = await travaTomar(supabase, d, 120);
+            if (!t.ok) return { pulado: frasePerdiVez(t) };
+            return await espelhar(supabase, { tetoStatus: Math.min(Number(body?.teto_status ?? 40), 400) })
+              .catch((e) => ({ erro: mensagemDoOmie(e) }))
+              .finally(() => travaSoltar(supabase, d));
+          })()
         : { pulado: "o espelho roda no cron `nf-espelho-rodada`, aos :05 — dentro da rodada ele não cabe nos 150s." };
       return json({ ok: true, ...r, espelho });
     }
@@ -3935,13 +4250,22 @@ Deno.serve(async (req) => {
       if (!id) return json({ erro: "Informe a cobrança (`id`)." }, 400);
 
       const { data: cfgRefazer } = await supabase.from("nf_config").select("*").eq("id", 1).maybeSingle();
+      /* Refazer também varre `ListarOS` (pelo `faturarIsolada`) e também cria OS —
+       * são os dois ingredientes do acidente de 09/09. Ele espera a vez como todo
+       * mundo, e recusar aqui não custa nada: quem clicou está na tela e clica de
+       * novo em um minuto. */
+      const donoRefazer = donoDaVez("refazer");
+      const travaRefazer = await travaTomar(supabase, donoRefazer, 170);
+      if (!travaRefazer.ok) {
+        return json({ erro: `${frasePerdiVez(travaRefazer)} Tente de novo em um minuto.` }, 409);
+      }
       const r = await refazerNota(supabase, cfgRefazer ?? {}, {
         id,
         justificativa: String(body?.justificativa ?? ""),
         observacao: typeof body?.observacao === "string" ? body.observacao : null,
         usuario,
         operador: operador || null,
-      });
+      }).finally(() => travaSoltar(supabase, donoRefazer));
       return json(r, (r as any)?.erro ? 400 : 200);
     }
 
@@ -3954,6 +4278,22 @@ Deno.serve(async (req) => {
      * insiste em recusar, gastando OS e teto do dia a cada volta. Quem devolve
      * assina, e o `seco` existe para conferir a leva antes.
      */
+    if (action === "excluir_os_recusada") {
+      const operador = String(body?.operador ?? "").trim();
+      if (!operador) {
+        return json({
+          erro: "Excluir OS no Omie exige o campo `operador` — é apagar registro no ERP, e quem manda assina.",
+        }, 403);
+      }
+      const r = await excluirOsRecusada(supabase, {
+        ids: Array.isArray(body?.ids) ? body.ids.map(Number).filter(Boolean) : [],
+        limite: Number(body?.limite ?? 25),
+        seco: body?.seco === true,
+        operador, usuario,
+      });
+      return json(r);
+    }
+
     if (action === "devolver_a_esteira") {
       const operador = String(body?.operador ?? "").trim();
       if (ehCron && !operador) {

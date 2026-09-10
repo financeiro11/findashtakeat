@@ -10,7 +10,8 @@ import { AIAssistant } from "@/components/AIAssistant";
 import { NovaVersao } from "@/components/NovaVersao";
 import { AbrirNoCelular } from "@/components/AbrirNoCelular";
 import { useAuth } from "@/hooks/useAuth";
-import { moduleAccess, currentModule } from "@/lib/modules";
+import { SemAcesso } from "@/components/SemAcesso";
+import { acessoDe, currentModule, podeVerRota } from "@/lib/modules";
 import { destinoAtual, useVoltarAoDestino } from "@/lib/destinoLogin";
 
 // Menu lateral recolhido. Quem guarda é esta camada: o SidebarProvider escreve um
@@ -36,20 +37,23 @@ export default function AppLayout() {
   // acaba no Dashboard e a pessoa precisa procurar a tela na mão.
   if (!user) return <Navigate to="/login" replace state={{ destino: destinoAtual(location) }} />;
 
-  const access = moduleAccess(profile?.cargo);
+  const access = acessoDe(profile);
 
-  // Parcerias: travado na área de parceiros (comportamento existente).
-  if (access.parceriasOnly && !pathname.startsWith("/operacional/parceiros")) {
-    return <Navigate to="/operacional/parceiros" replace />;
+  // Conta sem perfil definido: nada abre, e a tela diz o que fazer. Fica ANTES do
+  // portão porque não há para onde redirecionar — `home` dela também é vedada.
+  if (access.semAcesso) return <SemAcesso />;
+
+  /* O PORTÃO. Uma linha, porque a regra mora em lib/modules.ts (PORTAO) e é a
+     mesma que filtra o menu — a tela sumir do menu e continuar respondendo pela
+     URL é o pior dos dois mundos, porque parece protegida.
+
+     Cuidado ao mexer: `home` de cada perfil PRECISA ser uma rota que ele
+     alcança, senão isto vira laço de redirecionamento. O teste
+     `modules.test.ts` cobre exatamente isso. */
+  if (!podeVerRota(access, pathname)) {
+    return <Navigate to={access.home} replace />;
   }
-  // Usuário exclusivo de Facilities: travado no módulo Facilities.
-  if (access.facilitiesOnly && !pathname.startsWith("/facilities")) {
-    return <Navigate to="/facilities" replace />;
-  }
-  // Sem acesso ao módulo Facilities: volta ao Hub Financeiro.
-  if (pathname.startsWith("/facilities") && !access.modules.includes("facilities")) {
-    return <Navigate to="/" replace />;
-  }
+
   const isParcerias = access.parceriasOnly;
   const emFacilities = access.facilitiesOnly || currentModule(pathname) === "facilities";
 
@@ -83,7 +87,12 @@ export default function AppLayout() {
             <Outlet />
           </main>
         </div>
-        {!isParcerias && !emFacilities && (
+        {/* `deCasa` é o que segura o Assistente longe de um convidado de fora.
+            A bolinha responde sobre o negócio inteiro, com o contexto
+            organizacional no prompt — sem esta condição, restringir as TELAS da
+            consultoria não valeria nada: bastaria perguntar à IA o que a tela
+            não mostra. Ver DefPerfil em lib/modules.ts. */}
+        {access.deCasa && !isParcerias && !emFacilities && (
           <div data-chrome="assistente" className="contents"><AIAssistant /></div>
         )}
         {/* O aviso do que quebrou. Fica AQUI, no layout, para valer em qualquer

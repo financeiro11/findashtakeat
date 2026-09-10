@@ -16,7 +16,7 @@ import {
   Palette, Mic, Rocket, Globe2, Paperclip, Radar, Activity,
   type LucideIcon,
 } from "lucide-react";
-import type { ModuleAccess, ModuleId } from "./modules";
+import { podeVerRota, type Acesso, type ModuleId } from "./modules";
 import { normalize } from "./normalize";
 
 export type NavItem = {
@@ -34,19 +34,14 @@ export type NavItem = {
    * o destaque do menu e o Hub pareceria ter saído da tela em que está.
    */
   alias?: string[];
-  /**
-   * Capacidade que o cargo precisa ter para este item aparecer.
-   *
-   * Filtrado em `gruposVisiveis`, que é por onde passam TANTO a barra lateral
-   * quanto o ⌘K — esconder num lugar só deixaria a tela invisível no menu e
-   * achável na busca, que é pior do que não esconder.
-   *
-   * Esconder não é proteger: quem sabe a URL continua chegando na rota. Quem
-   * protege é a policy `pode_ver_remuneracao()` no Postgres, e é ela que faz a
-   * tela vir vazia para quem não pode ver.
-   */
-  requer?: keyof Pick<ModuleAccess, "remuneracao">;
 };
+
+/* QUEM VÊ CADA ITEM NÃO SE DECLARA AQUI.
+   Sai do PORTÃO em lib/modules.ts, pela URL do próprio item — a mesma lista que
+   barra a rota digitada. Este arquivo já nasceu de duas listas divergindo (o menu
+   tinha Parceiros, a busca não); repetir a regra de acesso aqui criaria a mesma
+   divergência num lugar pior, onde a tela some do menu e continua respondendo
+   pela URL. Item novo herda a trava do prefixo dele sem precisar de nada. */
 
 export type NavGrupo = { label: string; items: NavItem[] };
 
@@ -97,7 +92,7 @@ export const GRUPOS_FINANCEIRO: NavGrupo[] = [
     { title: "Estornos", url: "/operacional/estornos", icon: Undo2, busca: ["churn", "refund"] },
     { title: "Notas Fiscais", url: "/operacional/notas-fiscais", icon: FileText, busca: ["nfs-e", "nfse", "emissão"] },
     { title: "Proporcionais", url: "/automacoes/proporcionais", icon: Percent, busca: ["salário", "pró-rata"] },
-    { title: "Remuneração", url: "/operacional/remuneracao", icon: TrendingUp, requer: "remuneracao",
+    { title: "Remuneração", url: "/operacional/remuneracao", icon: TrendingUp,
       busca: ["salário", "salario", "quanto ganha", "evolução", "reajuste", "aumento", "plano de carreira",
               "comissão", "comissao", "premiação", "premiacao", "fixo", "variável", "histórico"] },
   ]},
@@ -152,7 +147,7 @@ export const GRUPOS_FINANCEIRO: NavGrupo[] = [
               "integrações", "gmail", "conectar", "credencial", "chave", "api", "planilha", "omie", "asaas", "token", "oauth"] },
     /* Mostra a coluna `valor` do espelho do RH — o mesmo dado do painel de
        Remuneração, e por isso a mesma trava. */
-    { title: "Colaboradores (RH)", url: "/operacional/colaboradores", icon: Users, requer: "remuneracao",
+    { title: "Colaboradores (RH)", url: "/operacional/colaboradores", icon: Users,
       busca: ["rh", "portal rh", "ficha", "funcionário", "funcionario", "equipe"] },
     { title: "Parametrização", url: "/configuracoes/parametrizacao", icon: Tags, busca: ["apelido", "contraparte", "fornecedor", "de-para", "de para"] },
     /* Quanto a IA gastou e quanto falta para o teto do mês. Sem entrada no menu, a página
@@ -201,16 +196,17 @@ export const GRUPO_BUSCA_EXTRA: NavGrupo = {
 };
 
 /** Os grupos que ESTE usuário enxerga no menu, na ordem do menu. */
-export function gruposVisiveis(access: ModuleAccess, mod: ModuleId): NavGrupo[] {
-  if (access.parceriasOnly) return [GRUPO_PARCERIAS];
+export function gruposVisiveis(acesso: Acesso, mod: ModuleId): NavGrupo[] {
+  if (acesso.semAcesso) return [];
+  if (acesso.parceriasOnly) return [GRUPO_PARCERIAS];
   if (mod === "facilities") return [GRUPO_FACILITIES];
-  return permitidos(GRUPOS_FINANCEIRO, access);
+  return permitidos(GRUPOS_FINANCEIRO, acesso);
 }
 
-/** Tira os itens que o cargo não alcança — e o grupo que ficar vazio junto. */
-function permitidos(grupos: NavGrupo[], access: ModuleAccess): NavGrupo[] {
+/** Tira os itens que este perfil não alcança — e o grupo que ficar vazio junto. */
+function permitidos(grupos: NavGrupo[], acesso: Acesso): NavGrupo[] {
   return grupos
-    .map((g) => ({ ...g, items: g.items.filter((i) => !i.requer || access[i.requer]) }))
+    .map((g) => ({ ...g, items: g.items.filter((i) => podeVerRota(acesso, i.url)) }))
     .filter((g) => g.items.length > 0);
 }
 

@@ -44,7 +44,9 @@ Deno.serve(async (req) => {
     // PORTÃO. Antes de ler o corpo, antes de tudo: quem está chamando?
     // "parcerias" fica de fora porque é o cargo de menor alcance no Hub (ver
     // AppLayout) — quem não pode ver o financeiro não redefine senha de ninguém.
-    const quem = await requireUser(req, { bloquearCargos: ["parcerias"] });
+    // Só admin redefine a senha de outra pessoa. Trocar a PRÓPRIA senha não
+    // passa por aqui — é `supabase.auth.updateUser` no front.
+    const quem = await requireUser(req, { exigirPerfis: ["admin"] });
 
     const { email, password } = await req.json();
     if (!email || !password) throw new Error("Dados incompletos");

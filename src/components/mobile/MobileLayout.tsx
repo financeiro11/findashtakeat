@@ -1,10 +1,12 @@
 import { useEffect } from "react";
 import { Navigate, useLocation } from "react-router-dom";
 import { useAuth } from "@/hooks/useAuth";
-import { moduleAccess } from "@/lib/modules";
+import { SemAcesso } from "@/components/SemAcesso";
+import { acessoDe, podeVerRota } from "@/lib/modules";
 import { destinoAtual, useVoltarAoDestino } from "@/lib/destinoLogin";
 import { observarTema } from "@/lib/tema";
 import { MobileShell } from "./MobileShell";
+import { primeiraAbaDe } from "./MobileBottomNav";
 import { DesktopOnly } from "./DesktopOnly";
 
 /**
@@ -34,7 +36,13 @@ export default function MobileLayout() {
   // depois de entrar, e não na aba Início (ver lib/destinoLogin).
   if (!user) return <Navigate to="/login" replace state={{ destino: destinoAtual(location) }} />;
 
-  const acesso = moduleAccess(profile?.cargo);
+  const acesso = acessoDe(profile);
+  // Mesma regra do desktop: conta sem perfil não abre tela nenhuma.
+  if (acesso.semAcesso) return <SemAcesso />;
+  // O portão também vale aqui — as abas do celular são recortes das mesmas rotas.
+  if (!podeVerRota(acesso, location.pathname)) {
+    return <Navigate to={primeiraAbaDe(acesso)} replace />;
+  }
   if (acesso.parceriasOnly || acesso.facilitiesOnly) {
     return (
       <div className="h-[100dvh] overflow-y-auto bg-background">
@@ -46,5 +54,5 @@ export default function MobileLayout() {
     );
   }
 
-  return <MobileShell />;
+  return <MobileShell acesso={acesso} />;
 }

@@ -4,7 +4,7 @@ import { Check, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useAuth } from "@/hooks/useAuth";
-import { moduleAccess } from "@/lib/modules";
+import { acessoDe } from "@/lib/modules";
 import { FacToolbar } from "./NovaSolicitacaoDialog";
 import { CatDot } from "./components";
 import {
@@ -210,7 +210,7 @@ export default function FacilitiesDashboard() {
                       </div>
                     </div>
                     <div className="num shrink-0 text-[13px] font-semibold text-foreground">{fmtBRL(p.valor)}</div>
-                    {moduleAccess(profile?.cargo).isAdmin ? (
+                    {acessoDe(profile).isAdmin ? (
                       <div className="flex shrink-0 gap-1.5">
                         <Button size="sm" className="h-7 gap-1 bg-emerald-600 px-2 text-white hover:bg-emerald-700" onClick={() => decidir(p.id, true)}>
                           <Check className="h-3.5 w-3.5" /> Aprovar

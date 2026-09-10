@@ -36,15 +36,31 @@ Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response(null, { headers: corsHeaders });
 
   try {
-    const quem = await requireUser(req, { bloquearCargos: ["parcerias"] });
+    // SÓ ADMIN. Antes era "qualquer um que não seja parcerias" — ou seja, a
+    // liderança, o RH e as contas de consultoria podiam criar acesso para
+    // qualquer pessoa. Esconder a tela do menu não bastaria: a função responde a
+    // quem a chamar direto (ver a reescrita de 30/08/2026, logo acima).
+    const quem = await requireUser(req, { exigirPerfis: ["admin"] });
 
     const admin = createClient(
       Deno.env.get("SUPABASE_URL")!,
       Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!,
     );
 
-    const { nome, cargo, email, password } = await req.json();
+    const { nome, cargo, email, password, perfil } = await req.json();
     if (!email || !nome) throw new Error("Nome e email são obrigatórios");
+
+    // A lista fechada, espelhada de src/lib/modules.ts. `perfil` ausente cria a
+    // conta SEM acesso — a pessoa entra e vê o aviso "acesso ainda não
+    // definido", que é melhor do que herdar um acesso que ninguém escolheu.
+    const PERFIS = [
+      "admin", "diretoria", "lideranca", "rh",
+      "automacao", "facilities", "parcerias", "externo",
+    ];
+    const perfilAlvo = perfil ? String(perfil).trim().toLowerCase() : null;
+    if (perfilAlvo && !PERFIS.includes(perfilAlvo)) {
+      throw new Error(`Perfil de acesso inválido: ${perfilAlvo}`);
+    }
 
     const alvo = String(email).trim().toLowerCase();
 
@@ -77,7 +93,20 @@ Deno.serve(async (req) => {
     });
     if (error) throw error;
 
-    console.log(`[create-user] ${quem.email ?? quem.userId} criou o acesso de ${alvo}`);
+    /* O `profiles` nasce do gatilho `handle_new_user`, a partir do
+       `user_metadata` — e o gatilho não conhece `perfil`. Gravar aqui, com a
+       service role, em vez de deixar a tela fazer um segundo update: o trigger
+       `profiles_guard_cargo` só deixa admin mexer nesse campo, e uma corrida
+       entre o INSERT do gatilho e o UPDATE do cliente daria "0 linhas" em
+       silêncio — que é exatamente o modo de falhar que a tela de Usuários já
+       teve uma vez. */
+    if (perfilAlvo && data.user) {
+      const { error: erroPerfil } = await admin
+        .from("profiles").update({ perfil: perfilAlvo }).eq("user_id", data.user.id);
+      if (erroPerfil) throw erroPerfil;
+    }
+
+    console.log(`[create-user] ${quem.email ?? quem.userId} criou o acesso de ${alvo} (perfil: ${perfilAlvo ?? "não definido"})`);
 
     return json({
       user: data.user,

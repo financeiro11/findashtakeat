@@ -7,7 +7,7 @@ import {
   AlertTriangle, ChevronDown, Lock,
 } from "lucide-react";
 import { useAuth } from "@/hooks/useAuth";
-import { moduleAccess } from "@/lib/modules";
+import { acessoDe } from "@/lib/modules";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -391,7 +391,7 @@ export default function ColaboradoresRH() {
      este aviso a tela diria "nenhum colaborador", que é uma mentira difícil de
      investigar: parece sync quebrada, não falta de permissão. */
   const { profile } = useAuth();
-  const podeVer = moduleAccess(profile?.cargo).remuneracao;
+  const podeVer = acessoDe(profile).remuneracao;
 
   const [busca, setBusca] = useState("");
   const [aba, setAba] = useState<"ativos" | "desligados" | "todos">("ativos");

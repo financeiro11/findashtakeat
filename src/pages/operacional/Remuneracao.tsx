@@ -9,7 +9,7 @@ import { toast } from "sonner";
 import * as XLSX from "xlsx";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/hooks/useAuth";
-import { moduleAccess } from "@/lib/modules";
+import { acessoDe } from "@/lib/modules";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
@@ -287,7 +287,7 @@ const FILTROS_PADRAO: Filtros = FILTROS_VAZIOS;
 
 export default function Remuneracao() {
   const { profile } = useAuth();
-  const podeVer = moduleAccess(profile?.cargo).remuneracao;
+  const podeVer = acessoDe(profile).remuneracao;
 
   const [painel, setPainel] = useState<PainelRemuneracao | null>(null);
   const [carregando, setCarregando] = useState(true);

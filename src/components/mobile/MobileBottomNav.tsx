@@ -1,6 +1,7 @@
 import { NavLink } from "react-router-dom";
 import { Home, CheckSquare, Receipt, FileText, Sparkles, User } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { podeVerRota, type Acesso } from "@/lib/modules";
 
 /** As seis abas do app. A ordem aqui é a ordem na barra. */
 export const ABAS = [
@@ -12,19 +13,35 @@ export const ABAS = [
   { url: "/perfil", titulo: "Perfil", curto: "Perfil", icone: User },
 ] as const;
 
+export type Aba = (typeof ABAS)[number];
+
+/* As abas passam pelo MESMO portão do desktop (lib/modules), pela URL de cada uma
+   — Extratos é `conciliacao`, Tarefas e Notas são `time`, Início é `metricas`.
+   Chat e Perfil não têm entrada no portão e sobram para todo mundo, que é o
+   certo: sem elas a barra ficaria vazia para quem só tem uma capacidade. */
+export function abasVisiveis(acesso: Acesso): readonly Aba[] {
+  return ABAS.filter((a) => podeVerRota(acesso, a.url));
+}
+
+/** Onde este perfil pousa no celular — a primeira aba que ele alcança. */
+export function primeiraAbaDe(acesso: Acesso): string {
+  return abasVisiveis(acesso)[0]?.url ?? "/perfil";
+}
+
 export function tituloDaAba(pathname: string): string {
   const aba = ABAS.find((a) => (a.url === "/" ? pathname === "/" : pathname.startsWith(a.url)));
   return aba?.titulo ?? "Hub Financeiro";
 }
 
-export function MobileBottomNav() {
+export function MobileBottomNav({ acesso }: { acesso: Acesso }) {
+  const abas = abasVisiveis(acesso);
   return (
     <nav
       className="shrink-0 border-t border-border bg-card pb-[env(safe-area-inset-bottom)]"
       aria-label="Navegação principal"
     >
       <ul className="flex h-14 items-stretch">
-        {ABAS.map((aba) => (
+        {abas.map((aba) => (
           <li key={aba.url} className="flex-1">
             <NavLink
               to={aba.url}

@@ -12,8 +12,9 @@ Deno.serve(async (req) => {
   try {
     if (req.method !== "POST") throw new Error("Método não permitido");
 
-    // Só um usuário logado (não a anon key pública) e que não seja "parcerias" pode excluir contas.
-    await requireUser(req, { bloquearCargos: ["parcerias"] });
+    // Só admin exclui conta — ver a nota em create-user. A anon key é pública
+    // (está no bundle), então quem decide aqui é este guard, não o gateway.
+    await requireUser(req, { exigirPerfis: ["admin"] });
 
     const { user_id, email } = await req.json();
     const targetEmail = typeof email === "string" ? email.trim().toLowerCase() : "";

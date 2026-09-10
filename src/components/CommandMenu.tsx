@@ -4,7 +4,7 @@ import {
   CommandDialog, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList, CommandSeparator,
 } from "@/components/ui/command";
 import { useAuth } from "@/hooks/useAuth";
-import { moduleAccess, currentModule } from "@/lib/modules";
+import { acessoDe, currentModule, podeVerRota } from "@/lib/modules";
 import { GRUPO_BUSCA_EXTRA, gruposVisiveis, pontuarBusca, termosDeBusca } from "@/lib/navegacao";
 
 export function CommandMenu({ open, onOpenChange }: { open: boolean; onOpenChange: (v: boolean) => void }) {
@@ -13,12 +13,16 @@ export function CommandMenu({ open, onOpenChange }: { open: boolean; onOpenChang
   const { profile } = useAuth();
 
   const grupos = useMemo(() => {
-    const access = moduleAccess(profile?.cargo);
+    const access = acessoDe(profile);
     const mod = access.facilitiesOnly ? "facilities" : currentModule(pathname);
     const doMenu = gruposVisiveis(access, mod);
-    // As telas sem item de menu só fazem sentido para quem enxerga o Hub inteiro.
-    return access.parceriasOnly || access.facilitiesOnly ? doMenu : [...doMenu, GRUPO_BUSCA_EXTRA];
-  }, [profile?.cargo, pathname]);
+    if (access.parceriasOnly || access.facilitiesOnly) return doMenu;
+    /* As telas sem item de menu passam pelo MESMO portão — os dois extratos são
+       `conciliacao`. Sem este filtro, esconder a tela do menu e deixá-la achável
+       no ⌘K seria voltar ao problema que este catálogo existe para resolver. */
+    const extras = GRUPO_BUSCA_EXTRA.items.filter((i) => podeVerRota(access, i.url));
+    return extras.length ? [...doMenu, { ...GRUPO_BUSCA_EXTRA, items: extras }] : doMenu;
+  }, [profile?.cargo, profile?.perfil, pathname]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {

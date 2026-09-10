@@ -2,8 +2,22 @@ import { createContext, useContext, useEffect, useState, ReactNode } from "react
 import { Session, User } from "@supabase/supabase-js";
 import { supabase } from "@/integrations/supabase/client";
 import { conferirSessao } from "@/lib/sessaoViva";
+import type { PerfilId } from "@/lib/modules";
 
-type Profile = { id: string; user_id: string; nome: string; cargo: string | null; email: string };
+/**
+ * `cargo` é o que a pessoa É (texto livre, aparece na tela). `perfil` é o que ela
+ * VÊ (lista fechada, ver lib/modules.ts). São campos diferentes de propósito
+ * desde 10/09/2026 — "Head de Produto" e "Head de Operações" são cargos
+ * distintos com o mesmo acesso.
+ *
+ * `perfil` opcional, e não `| null` apenas: `undefined` significa que a coluna
+ * ainda não existe no banco, e é o que `perfilDe` usa para decidir se cai no
+ * de-para por cargo ou tranca a conta.
+ */
+type Profile = {
+  id: string; user_id: string; nome: string; cargo: string | null; email: string;
+  perfil?: PerfilId | null;
+};
 
 type AuthCtx = {
   session: Session | null;

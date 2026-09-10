@@ -1,0 +1,230 @@
+import { describe, it, expect } from "vitest";
+import {
+  PERFIS, PERFIS_ESCOLHIVEIS, PERFIS_REMUNERACAO,
+  acessoDe, perfilDe, podeVerRota, capacidadeDaRota,
+  type PerfilId,
+} from "./modules";
+import { GRUPOS_FINANCEIRO, GRUPO_FACILITIES, GRUPO_BUSCA_EXTRA, itensDe } from "./navegacao";
+
+const de = (perfil: PerfilId) => acessoDe({ perfil });
+
+describe("perfilDe — o padrão é o mínimo", () => {
+  /* O bug de 10/09/2026: cargo que o código não reconhecia ganhava o Hub inteiro.
+     Sete contas estavam assim, incluindo três de fora da empresa. */
+  it("cargo desconhecido não vira acesso", () => {
+    expect(perfilDe({ cargo: "Head de Produto", perfil: null })).toBe("restrito");
+    expect(perfilDe({ cargo: "", perfil: null })).toBe("restrito");
+    expect(perfilDe({ cargo: null, perfil: null })).toBe("restrito");
+  });
+
+  it("perfil inventado não passa", () => {
+    expect(perfilDe({ perfil: "superadmin" })).toBe("restrito");
+    expect(perfilDe({ perfil: "ADMIN" })).toBe("restrito"); // a lista é exata
+  });
+
+  it("sem profile nenhum, restrito", () => {
+    expect(perfilDe(null)).toBe("restrito");
+    expect(perfilDe(undefined)).toBe("restrito");
+  });
+
+  /* `perfil === undefined` é a COLUNA ausente — front no ar antes da migration.
+     Só aí o cargo antigo vale, e mesmo assim sem reabrir o padrão velho. */
+  it("banco sem a coluna cai no de-para por cargo", () => {
+    expect(perfilDe({ cargo: "CEO" })).toBe("admin");
+    expect(perfilDe({ cargo: "Financeiro" })).toBe("admin");
+    expect(perfilDe({ cargo: "diretoria" })).toBe("diretoria");
+    expect(perfilDe({ cargo: "facilities" })).toBe("facilities");
+    expect(perfilDe({ cargo: "Parcerias" })).toBe("parcerias");
+    expect(perfilDe({ cargo: "Head de RH" })).toBe("restrito");
+  });
+});
+
+describe("restrito não abre nada", () => {
+  const acesso = de("restrito");
+
+  it("nem as rotas livres", () => {
+    for (const rota of ["/", "/briefing/novidades", "/design-system", "/assistente/memoria"]) {
+      expect(podeVerRota(acesso, rota)).toBe(false);
+    }
+    expect(acesso.semAcesso).toBe(true);
+  });
+});
+
+describe("a home de cada perfil é alcançável", () => {
+  /* Se a home de um perfil for uma rota que ele não vê, o AppLayout redireciona
+     para ela, o portão barra de novo, e o navegador entra em laço. */
+  it.each(PERFIS_ESCOLHIVEIS.map((p) => p.id))("%s", (id) => {
+    const acesso = de(id);
+    expect(podeVerRota(acesso, acesso.home)).toBe(true);
+  });
+});
+
+describe("a matriz, perfil a perfil", () => {
+  it("admin vê tudo", () => {
+    const acesso = de("admin");
+    for (const item of itensDe([...GRUPOS_FINANCEIRO, GRUPO_FACILITIES, GRUPO_BUSCA_EXTRA])) {
+      expect(podeVerRota(acesso, item.url), item.url).toBe(true);
+    }
+  });
+
+  it("diretoria vê o número e o societário, não a conciliação nem a administração", () => {
+    const acesso = de("diretoria");
+    expect(podeVerRota(acesso, "/demonstracoes/dre")).toBe(true);
+    expect(podeVerRota(acesso, "/captable")).toBe(true);
+    expect(podeVerRota(acesso, "/apresentacoes/reportes")).toBe(true);
+    expect(podeVerRota(acesso, "/operacional/remuneracao")).toBe(true);
+    expect(podeVerRota(acesso, "/governanca/auditoria")).toBe(false);
+    expect(podeVerRota(acesso, "/usuarios")).toBe(false);
+    expect(podeVerRota(acesso, "/facilities")).toBe(false);
+  });
+
+  /* Decisão do Miguel em 10/09/2026: liderança PODE ver a DRE inteira e o BP. */
+  it("liderança vê resultado e plano, não vê folha nem societário", () => {
+    const acesso = de("lideranca");
+    expect(podeVerRota(acesso, "/demonstracoes/dre")).toBe(true);
+    expect(podeVerRota(acesso, "/bp/2026")).toBe(true);
+    expect(podeVerRota(acesso, "/assinaturas")).toBe(true);
+    expect(podeVerRota(acesso, "/governanca/cac")).toBe(true);
+    expect(podeVerRota(acesso, "/operacional/remuneracao")).toBe(false);
+    expect(podeVerRota(acesso, "/captable")).toBe(false);
+    expect(podeVerRota(acesso, "/caixa")).toBe(false);
+    expect(podeVerRota(acesso, "/governanca/auditoria")).toBe(false);
+  });
+
+  it("RH vê pessoas, não vê os números do negócio", () => {
+    const acesso = de("rh");
+    expect(podeVerRota(acesso, "/operacional/remuneracao")).toBe(true);
+    expect(podeVerRota(acesso, "/operacional/colaboradores")).toBe(true);
+    expect(podeVerRota(acesso, "/governanca/rescisoes")).toBe(true);
+    expect(podeVerRota(acesso, "/time/visao")).toBe(true);
+    expect(podeVerRota(acesso, "/demonstracoes/dre")).toBe(false);
+    expect(podeVerRota(acesso, "/captable")).toBe(false);
+    expect(podeVerRota(acesso, "/caixa")).toBe(false);
+  });
+
+  /* A consultoria estratégica (VPX): demonstrações e plano, nada mais. */
+  it("externo vê demonstrações e plano, e mais nada", () => {
+    const acesso = de("externo");
+    expect(podeVerRota(acesso, "/demonstracoes/dre")).toBe(true);
+    expect(podeVerRota(acesso, "/demonstracoes/balanco")).toBe(true);
+    expect(podeVerRota(acesso, "/bp/2026")).toBe(true);
+    expect(podeVerRota(acesso, "/analise/cenarios")).toBe(true);
+
+    expect(podeVerRota(acesso, "/captable")).toBe(false);
+    expect(podeVerRota(acesso, "/investimentos/flip")).toBe(false);
+    expect(podeVerRota(acesso, "/apresentacoes/reportes")).toBe(false);
+    expect(podeVerRota(acesso, "/operacional/remuneracao")).toBe(false);
+    expect(podeVerRota(acesso, "/caixa")).toBe(false);
+    expect(podeVerRota(acesso, "/governanca/auditoria")).toBe(false);
+    expect(podeVerRota(acesso, "/usuarios")).toBe(false);
+    expect(podeVerRota(acesso, "/orcamento")).toBe(false);
+  });
+
+  it("automação vê o maquinário, não vê os números", () => {
+    const acesso = de("automacao");
+    expect(podeVerRota(acesso, "/monitoramento")).toBe(true);
+    expect(podeVerRota(acesso, "/recargas/celulares")).toBe(true);
+    expect(podeVerRota(acesso, "/tarefas")).toBe(true);
+    expect(podeVerRota(acesso, "/demonstracoes/dre")).toBe(false);
+    expect(podeVerRota(acesso, "/caixa")).toBe(false);
+    expect(podeVerRota(acesso, "/operacional/remuneracao")).toBe(false);
+  });
+
+  it("facilities e parcerias continuam travados no que já era deles", () => {
+    const fac = de("facilities");
+    expect(podeVerRota(fac, "/facilities/cotacoes")).toBe(true);
+    expect(podeVerRota(fac, "/")).toBe(false);
+    expect(podeVerRota(fac, "/demonstracoes/dre")).toBe(false);
+
+    const par = de("parcerias");
+    expect(podeVerRota(par, "/operacional/parceiros")).toBe(true);
+    expect(podeVerRota(par, "/")).toBe(false);
+    expect(podeVerRota(par, "/facilities")).toBe(false);
+  });
+});
+
+describe("a tela de Usuários é só do admin", () => {
+  it.each(PERFIS_ESCOLHIVEIS.filter((p) => p.id !== "admin").map((p) => p.id))(
+    "%s não abre /usuarios",
+    (id) => { expect(podeVerRota(de(id), "/usuarios")).toBe(false); },
+  );
+});
+
+describe("o portão", () => {
+  /* A ordem importa: `/briefing/novidades` tem de escapar de `/briefing`. */
+  it("o mais específico ganha do prefixo", () => {
+    expect(capacidadeDaRota("/briefing")).toBe("tesouraria");
+    expect(capacidadeDaRota("/briefing/novidades")).toBe(null);
+  });
+
+  it("cobre as subrotas, não só o caminho exato", () => {
+    expect(capacidadeDaRota("/caixa/conta-corrente/sicoob")).toBe("tesouraria");
+    expect(capacidadeDaRota("/editais/projetos-aprovados/prestacao")).toBe("editais");
+    expect(capacidadeDaRota("/bp/2027")).toBe("planejamento");
+    expect(capacidadeDaRota("/notas/abc-123")).toBe("time");
+  });
+
+  it("não confunde prefixo de palavra com prefixo de caminho", () => {
+    // "/caixa" não pode capturar uma futura "/caixanova".
+    expect(capacidadeDaRota("/caixanova")).toBe(null);
+  });
+
+  /* Toda tela do menu tem de ter dono. Uma tela nova que caia em `null` sem
+     querer fica visível para os oito perfis — e ninguém percebe. */
+  it("nenhuma tela do menu ficou sem capacidade", () => {
+    const orfas = itensDe([...GRUPOS_FINANCEIRO, GRUPO_FACILITIES, GRUPO_BUSCA_EXTRA])
+      .filter((i) => capacidadeDaRota(i.url) === null)
+      .map((i) => i.url)
+      .sort();
+    /* As exceções CONSCIENTES: o changelog do próprio Hub e as duas telas de
+       diagnóstico de interface, que não mostram dado nenhum do negócio.
+       Qualquer outra que apareça aqui está visível para os oito perfis. */
+    expect(orfas).toEqual(["/assistente/teste-voz", "/briefing/novidades", "/design-system"]);
+  });
+});
+
+describe("as duas listas da folha andam juntas", () => {
+  /* A metade que esconde está aqui; a que protege é `pode_ver_remuneracao()` no
+     Postgres. Se divergirem, a tela vem vazia para quem deveria ver — ou cheia
+     para quem não deveria. */
+  it("PERFIS_REMUNERACAO é exatamente o que a policy lista", () => {
+    expect([...PERFIS_REMUNERACAO].sort()).toEqual(["admin", "diretoria", "rh"]);
+  });
+
+  it("o atalho `remuneracao` do acesso concorda com a capacidade", () => {
+    for (const p of PERFIS_ESCOLHIVEIS) {
+      expect(de(p.id).remuneracao).toBe(PERFIS_REMUNERACAO.includes(p.id));
+    }
+  });
+});
+
+describe("módulos", () => {
+  it("só o admin alterna entre Hub Financeiro e Facilities", () => {
+    expect(de("admin").canSwitch).toBe(true);
+    expect(de("admin").modules).toEqual(["financeiro", "facilities"]);
+    expect(de("facilities").modules).toEqual(["facilities"]);
+    expect(de("diretoria").modules).toEqual(["financeiro"]);
+    expect(de("restrito").modules).toEqual([]);
+  });
+
+  it("isAdmin — quem aprova compra no Facilities — é só o perfil admin", () => {
+    for (const p of PERFIS_ESCOLHIVEIS) {
+      expect(de(p.id).isAdmin).toBe(p.id === "admin");
+    }
+  });
+});
+
+describe("catálogo de perfis", () => {
+  it("restrito não é escolhível na tela de Usuários", () => {
+    expect(PERFIS_ESCOLHIVEIS.map((p) => p.id)).not.toContain("restrito");
+    expect(PERFIS_ESCOLHIVEIS).toHaveLength(8);
+  });
+
+  it("todo perfil tem rótulo, resumo e home", () => {
+    for (const p of Object.values(PERFIS)) {
+      expect(p.label.trim()).not.toBe("");
+      expect(p.resumo.trim()).not.toBe("");
+      expect(p.home.startsWith("/")).toBe(true);
+    }
+  });
+});

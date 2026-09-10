@@ -10,7 +10,7 @@ import { useSinaisContagem } from "@/hooks/useSinais";
 import { Sidebar, SidebarContent, useSidebar } from "@/components/ui/sidebar";
 import { CommandMenu } from "@/components/CommandMenu";
 import { ModuleSwitcher } from "@/components/ModuleSwitcher";
-import { moduleAccess, currentModule } from "@/lib/modules";
+import { acessoDe, currentModule } from "@/lib/modules";
 // Os itens de menu moram em @/lib/navegacao — a busca (⌘K) lê o MESMO catálogo.
 import { gruposVisiveis, itemAtivo, itensDe, type NavGrupo, type NavItem } from "@/lib/navegacao";
 
@@ -245,7 +245,7 @@ export function AppSidebar() {
   const recolhido = !open;
   const initials = profile?.nome.split(" ").map(p => p[0]).slice(0, 2).join("").toUpperCase() ?? "U";
 
-  const access = moduleAccess(profile?.cargo);
+  const access = acessoDe(profile);
   const mod = access.facilitiesOnly ? "facilities" : currentModule(pathname);
   const { favoritos, toggle: toggleFavorito } = useFavoritos(user?.id);
 

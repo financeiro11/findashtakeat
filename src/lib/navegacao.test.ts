@@ -5,7 +5,7 @@ import {
   gruposVisiveis, itensDe, pontuarBusca, termosDeBusca, type NavGrupo, type NavItem,
 } from "./navegacao";
 import { ROTAS, resolverDinamica } from "./rotas";
-import { moduleAccess } from "./modules";
+import { acessoDe } from "./modules";
 
 const TODOS: { grupo: string; item: NavItem }[] = [
   ...GRUPOS_FINANCEIRO, GRUPO_FACILITIES, GRUPO_BUSCA_EXTRA,
@@ -123,20 +123,27 @@ describe("pontuarBusca (o filtro do ⌘K)", () => {
 });
 
 describe("gruposVisiveis", () => {
-  it("cargo de parcerias só enxerga Parceiros", () => {
-    const grupos = gruposVisiveis(moduleAccess("parcerias"), "financeiro");
+  it("parcerias só enxerga Parceiros", () => {
+    const grupos = gruposVisiveis(acessoDe({ perfil: "parcerias" }), "financeiro");
     expect(itensDe(grupos).map((i) => i.url)).toEqual(["/operacional/parceiros"]);
   });
 
-  it("cargo de facilities não enxerga o Hub Financeiro", () => {
-    const grupos = gruposVisiveis(moduleAccess("facilities"), "facilities");
+  it("facilities não enxerga o Hub Financeiro", () => {
+    const grupos = gruposVisiveis(acessoDe({ perfil: "facilities" }), "facilities");
     expect(grupos).toEqual([GRUPO_FACILITIES]);
     expect(itensDe(grupos).every((i) => i.url.startsWith("/facilities"))).toBe(true);
   });
 
   it("admin no módulo financeiro enxerga o menu inteiro", () => {
-    const grupos = gruposVisiveis(moduleAccess("financeiro"), "financeiro");
+    const grupos = gruposVisiveis(acessoDe({ perfil: "admin" }), "financeiro");
     expect(grupos).toEqual(GRUPOS_FINANCEIRO);
     expect(itensDe(grupos).length).toBeGreaterThan(30);
+  });
+
+  /* O caso que motivou a mudança de 10/09/2026: cargo que o Hub não reconhece
+     ganhava o menu inteiro. Agora não ganha nada. */
+  it("perfil ausente não enxerga nada", () => {
+    expect(gruposVisiveis(acessoDe({ cargo: "Head de Produto", perfil: null }), "financeiro")).toEqual([]);
+    expect(gruposVisiveis(acessoDe(null), "financeiro")).toEqual([]);
   });
 });

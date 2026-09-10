@@ -6244,6 +6244,7 @@ export type Database = {
           email_destino: string | null
           email_envio: boolean | null
           etapa: string | null
+          excluida_em: string | null
           faturada: boolean
           n_cod_cli: number | null
           n_cod_os: number
@@ -6278,6 +6279,7 @@ export type Database = {
           email_destino?: string | null
           email_envio?: boolean | null
           etapa?: string | null
+          excluida_em?: string | null
           faturada?: boolean
           n_cod_cli?: number | null
           n_cod_os: number
@@ -6312,6 +6314,7 @@ export type Database = {
           email_destino?: string | null
           email_envio?: boolean | null
           etapa?: string | null
+          excluida_em?: string | null
           faturada?: boolean
           n_cod_cli?: number | null
           n_cod_os?: number
@@ -7139,7 +7142,9 @@ export type Database = {
         Row: {
           bairro: string | null
           cep: string | null
+          cep_checado_em: string | null
           cep_generico: boolean | null
+          cep_valido: boolean | null
           cidade: string | null
           cnpj_cpf: string | null
           codigo: number
@@ -7155,7 +7160,9 @@ export type Database = {
         Insert: {
           bairro?: string | null
           cep?: string | null
+          cep_checado_em?: string | null
           cep_generico?: boolean | null
+          cep_valido?: boolean | null
           cidade?: string | null
           cnpj_cpf?: string | null
           codigo: number
@@ -7171,7 +7178,9 @@ export type Database = {
         Update: {
           bairro?: string | null
           cep?: string | null
+          cep_checado_em?: string | null
           cep_generico?: boolean | null
+          cep_valido?: boolean | null
           cidade?: string | null
           cnpj_cpf?: string | null
           codigo?: number
@@ -8484,6 +8493,7 @@ export type Database = {
           email: string
           id: string
           nome: string
+          perfil: string | null
           updated_at: string
           user_id: string
         }
@@ -8493,6 +8503,7 @@ export type Database = {
           email: string
           id?: string
           nome: string
+          perfil?: string | null
           updated_at?: string
           user_id: string
         }
@@ -8502,6 +8513,7 @@ export type Database = {
           email?: string
           id?: string
           nome?: string
+          perfil?: string | null
           updated_at?: string
           user_id?: string
         }
@@ -11520,6 +11532,19 @@ export type Database = {
         Returns: string
       }
       cartao_series: { Args: never; Returns: Json }
+      ceps_a_validar: {
+        Args: { p_limite?: number; p_revalidar_dias?: number }
+        Returns: {
+          bairro: string
+          cep: string
+          cidade: string
+          cnpj_cpf: string
+          codigo: number
+          logradouro: string
+          prioridade: number
+          uf: string
+        }[]
+      }
       chave_contraparte: { Args: { p: string }; Returns: string }
       churn_fila_sinal: {
         Args: { p_limite?: number }
@@ -11728,6 +11753,7 @@ export type Database = {
           valor_lancamento: number
         }[]
       }
+      eh_admin: { Args: never; Returns: boolean }
       eh_cartao: { Args: { p_contraparte: string }; Returns: boolean }
       email_acao_marcar_enviada: {
         Args: { p_chave: string }
@@ -12284,18 +12310,6 @@ export type Database = {
         }
         Returns: string
       }
-      nfse_cadastros_a_preparar: {
-        Args: { p_desde?: string; p_limite?: number }
-        Returns: {
-          cobrancas: number
-          codigo: number
-          doc: string
-          falta: string
-          id_customer: string
-          nome: string
-          valor_ultimos_meses: number
-        }[]
-      }
       nfse_carencia: {
         Args: { p_erro: string; p_tentativas: number }
         Returns: string
@@ -12342,6 +12356,7 @@ export type Database = {
           c_num_os: string
           cep: string
           cep_generico: boolean
+          cep_valido: boolean
           cnpj_cpf: string
           consertado_em: string
           data_faturamento: string
@@ -12726,6 +12741,7 @@ export type Database = {
         Args: { p_ate: string; p_de: string }
         Returns: Json
       }
+      notas_fiscais_ritmo: { Args: { p_mes?: string }; Returns: Json }
       numero_do_documento: { Args: { txt: string }; Returns: string }
       omie_anexo_link_fila: {
         Args: { p_limite?: number }

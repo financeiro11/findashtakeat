@@ -2,7 +2,7 @@ import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { ArrowLeftRight, ChevronDown, Check, Home, Wrench } from "lucide-react";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { MODULES, type ModuleId, type ModuleAccess } from "@/lib/modules";
+import { MODULES, type ModuleId, type Acesso } from "@/lib/modules";
 
 const MOD_ICON: Record<ModuleId, any> = { financeiro: Home, facilities: Wrench };
 
@@ -10,7 +10,7 @@ const MOD_ICON: Record<ModuleId, any> = { financeiro: Home, facilities: Wrench }
  * `compacto`: menu lateral recolhido — sobra a largura de um ícone. Trocar de módulo
  * continua a um clique (o popover é o mesmo); some só o que estava escrito no botão.
  */
-export function ModuleSwitcher({ current, access, compacto }: { current: ModuleId; access: ModuleAccess; compacto?: boolean }) {
+export function ModuleSwitcher({ current, access, compacto }: { current: ModuleId; access: Acesso; compacto?: boolean }) {
   const nav = useNavigate();
   const [open, setOpen] = useState(false);
 

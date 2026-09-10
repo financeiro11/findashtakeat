@@ -5,6 +5,7 @@ import takeatSymbol from "@/assets/takeat-symbol-white.png";
 import { MobileBottomNav, tituloDaAba } from "./MobileBottomNav";
 import { InstalarBanner } from "./InstalarBanner";
 import { NovaVersao } from "@/components/NovaVersao";
+import type { Acesso } from "@/lib/modules";
 
 /**
  * Moldura do app no celular: cabeçalho fino, conteúdo e a barra de seis abas.
@@ -13,7 +14,7 @@ import { NovaVersao } from "@/components/NovaVersao";
  * `position: fixed`. Assim a barra nunca cobre o final da lista, e quando o teclado sobe
  * o conteúdo encolhe em vez de a barra flutuar no meio da tela.
  */
-export function MobileShell() {
+export function MobileShell({ acesso }: { acesso: Acesso }) {
   const { pathname } = useLocation();
   const online = useOnline();
 
@@ -48,7 +49,7 @@ export function MobileShell() {
         <Outlet />
       </main>
 
-      <MobileBottomNav />
+      <MobileBottomNav acesso={acesso} />
     </div>
   );
 }

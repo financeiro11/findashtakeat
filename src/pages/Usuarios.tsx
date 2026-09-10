@@ -51,15 +51,21 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import {
   Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger,
 } from "@/components/ui/dialog";
+import {
+  Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
+} from "@/components/ui/select";
+import { Badge } from "@/components/ui/badge";
 import { supabase } from "@/integrations/supabase/client";
 import { gerarSenhaForte } from "@/lib/senha";
+import { PERFIS, PERFIS_ESCOLHIVEIS, type PerfilId } from "@/lib/modules";
 import { toast } from "sonner";
 
 type Profile = {
   id: string; user_id: string; nome: string; cargo: string | null; email: string;
+  perfil?: PerfilId | null;
 };
 
-const empty = { nome: "", cargo: "", email: "" };
+const empty = { nome: "", cargo: "", email: "", perfil: "" as PerfilId | "" };
 
 /** A senha recém-criada, na tela, uma vez só. */
 function SenhaParaEntregar({
@@ -132,7 +138,7 @@ export default function Usuarios() {
   const openNew = () => { setEditing(null); setForm(empty); setOpen(true); };
   const openEdit = (p: Profile) => {
     setEditing(p);
-    setForm({ nome: p.nome, cargo: p.cargo || "", email: p.email });
+    setForm({ nome: p.nome, cargo: p.cargo || "", email: p.email, perfil: p.perfil ?? "" });
     setOpen(true);
   };
 
@@ -140,12 +146,25 @@ export default function Usuarios() {
     if (!form.nome || !form.email) return toast.error("Nome e email obrigatórios");
     setBusy(true);
     if (editing) {
-      const { error } = await supabase
+      /* `.select()` no fim NÃO é enfeite: até 10/09/2026 a policy de UPDATE de
+         `profiles` era `auth.uid() = user_id`, então este update casava ZERO
+         linhas para qualquer pessoa que não fosse quem estava logado — e o
+         PostgREST devolvia 200 sem erro, com a tela dizendo "Usuário
+         atualizado". A policy foi corrigida, mas quem confere é isto: se voltar
+         a não gravar, a tela diz. */
+      const { data, error } = await supabase
         .from("profiles")
-        .update({ nome: form.nome, cargo: form.cargo, email: form.email })
-        .eq("id", editing.id);
+        .update({
+          nome: form.nome, cargo: form.cargo, email: form.email,
+          perfil: form.perfil || null,
+        })
+        .eq("id", editing.id)
+        .select("id");
       setBusy(false);
       if (error) return toast.error(error.message);
+      if (!data?.length) {
+        return toast.error("Nada foi salvo — seu acesso não permite editar esta ficha.");
+      }
       toast.success("Usuário atualizado");
     } else {
       // Sem `password`: quem sorteia é o servidor, e devolve em `senhaTemporaria`.
@@ -208,9 +227,11 @@ export default function Usuarios() {
     <div className="space-y-6 p-5">
       <div>
         <h2 className="text-2xl font-bold tracking-tight">Usuários</h2>
-        <p className="text-sm text-muted-foreground">
-          Gerencie quem tem acesso ao Hub. Cada conta nova recebe uma senha sorteada, mostrada uma
-          única vez na hora da criação.
+        <p className="max-w-3xl text-sm text-muted-foreground">
+          Quem entra no Hub e o que cada um enxerga. O <strong className="font-medium text-foreground">cargo</strong> é
+          só o rótulo na tela; quem decide o acesso é o <strong className="font-medium text-foreground">perfil</strong>,
+          escolhido numa lista fechada. Conta sem perfil entra e não abre nada — é o padrão, e é de
+          propósito. Cada conta nova recebe uma senha sorteada, mostrada uma única vez.
         </p>
       </div>
 
@@ -226,10 +247,40 @@ export default function Usuarios() {
               <div className="space-y-3 py-2">
                 <div className="space-y-1.5"><Label>Nome</Label>
                   <Input value={form.nome} onChange={(e) => setForm({ ...form, nome: e.target.value })} /></div>
-                <div className="space-y-1.5"><Label>Cargo</Label>
-                  <Input value={form.cargo} onChange={(e) => setForm({ ...form, cargo: e.target.value })} /></div>
+                <div className="space-y-1.5">
+                  <Label>Cargo</Label>
+                  <Input value={form.cargo} onChange={(e) => setForm({ ...form, cargo: e.target.value })} />
+                  <p className="text-[11px] text-muted-foreground">
+                    Só o rótulo que aparece na tela. Quem decide o que a pessoa enxerga é o perfil abaixo.
+                  </p>
+                </div>
                 <div className="space-y-1.5"><Label>Email</Label>
                   <Input type="email" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} /></div>
+
+                {/* O PERFIL DE ACESSO — lista fechada, nunca campo livre.
+                    Cargo é texto digitado à mão, e "Head de RH" nunca ia bater com
+                    nenhuma trava escrita em código. Ver lib/modules.ts. */}
+                <div className="space-y-1.5">
+                  <Label>Perfil de acesso</Label>
+                  <Select
+                    value={form.perfil || "__nenhum"}
+                    onValueChange={(v) => setForm({ ...form, perfil: v === "__nenhum" ? "" : (v as PerfilId) })}
+                  >
+                    <SelectTrigger><SelectValue placeholder="Escolha o perfil" /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="__nenhum">Sem acesso (não abre nenhuma tela)</SelectItem>
+                      {PERFIS_ESCOLHIVEIS.map((p) => (
+                        <SelectItem key={p.id} value={p.id}>{p.label}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <p className="min-h-[32px] text-[11px] leading-relaxed text-muted-foreground">
+                    {form.perfil
+                      ? PERFIS[form.perfil].resumo
+                      : "A conta é criada, entra no Hub e vê um aviso pedindo que alguém defina o acesso."}
+                  </p>
+                </div>
+
                 {!editing && (
                   <p className="text-xs text-muted-foreground">
                     Uma senha forte será sorteada e mostrada a você uma única vez, para entregar à pessoa.
@@ -252,17 +303,25 @@ export default function Usuarios() {
               <TableRow>
                 <TableHead>Nome</TableHead>
                 <TableHead>Cargo</TableHead>
+                <TableHead>Acesso</TableHead>
                 <TableHead>Email</TableHead>
                 <TableHead className="w-36 text-right">Ações</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
               {users.length === 0 ? (
-                <TableRow><TableCell colSpan={4} className="py-12 text-center text-sm text-muted-foreground">Nenhum usuário cadastrado.</TableCell></TableRow>
+                <TableRow><TableCell colSpan={5} className="py-12 text-center text-sm text-muted-foreground">Nenhum usuário cadastrado.</TableCell></TableRow>
               ) : users.map((u) => (
                 <TableRow key={u.id}>
                   <TableCell className="font-medium">{u.nome}</TableCell>
-                  <TableCell>{u.cargo || "—"}</TableCell>
+                  <TableCell className="text-muted-foreground">{u.cargo || "—"}</TableCell>
+                  <TableCell>
+                    {/* Conta sem perfil fica em vermelho: não é um estado neutro,
+                        é alguém que entra no Hub e não consegue abrir nada. */}
+                    {u.perfil
+                      ? <Badge variant="secondary" title={PERFIS[u.perfil]?.resumo}>{PERFIS[u.perfil]?.label ?? u.perfil}</Badge>
+                      : <Badge variant="destructive">Sem acesso</Badge>}
+                  </TableCell>
                   <TableCell>{u.email}</TableCell>
                   <TableCell className="text-right">
                     <Button

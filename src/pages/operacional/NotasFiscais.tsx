@@ -41,6 +41,7 @@ import {
 import { Input } from "@/components/ui/input";
 import NotasFiscaisLog from "./NotasFiscaisLog";
 import RecusasATratar from "@/components/notas/RecusasATratar";
+import { RitmoEmissao } from "@/components/notas/RitmoEmissao";
 import NotasFiscaisAuditoria from "./NotasFiscaisAuditoria";
 import {
   SITUACOES, motivoBloqueio, motivoCurto, podeEmitir, exigeAvulsa, resumoLote,
@@ -827,6 +828,13 @@ export default function NotasFiscais() {
           </div>
         ))}
       </div>
+
+      {/* ------------------------------- ritmo --------------------------------- */}
+      {/* Depois dos KPIs e ANTES dos filtros, e a ordem é o argumento: os KPIs
+          dizem como o mês está agora, o ritmo diz se isso é bom comparado ao mês
+          passado, e só então a pessoa desce para a lista para agir. Pôr o
+          gráfico depois da tabela seria escondê-lo atrás de 3.000 linhas. */}
+      <RitmoEmissao mes={periodo.de.slice(0, 7)} />
 
       {/* ------------------------------- filtros ------------------------------- */}
       <div className="flex flex-wrap items-center gap-2">

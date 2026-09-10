@@ -297,6 +297,11 @@ Deno.serve(async (req) => {
   const inicio = Date.now();
   try {
     const caller = await requireUser(req);
+    /* A bolinha da IA responde sobre o negócio inteiro, com a SERVICE ROLE —
+       `auth.uid()` é nulo lá dentro e o Postgres não alcança quem perguntou.
+       Sem isto, "quem puxou a Equipe Comercial em julho?" devolveria a folha
+       por nome para quem a tela esconde. */
+    const vejoAFolha = caller.isService || caller.pode("remuneracao");
 
     const body = await req.json().catch(() => ({}));
     const pergunta = String(body?.pergunta ?? "").trim();
@@ -444,7 +449,7 @@ Deno.serve(async (req) => {
           const anterior = fechados.filter((f) =>
             f.ano < atual.ano || (f.ano === atual.ano && f.mes < atual.mes)).pop();
           if (!anterior) return null;
-          return await contrapartesComparadas(supabase, "dre", [rubrica], atual, anterior);
+          return await contrapartesComparadas(supabase, "dre", [rubrica], atual, anterior, vejoAFolha);
         }
         case "rubrica_do_mes": {
           const rubrica = String(item?.rubrica ?? "").trim();
@@ -452,7 +457,7 @@ Deno.serve(async (req) => {
         }
         case "lancamentos_da_rubrica": {
           const rubrica = String(item?.rubrica ?? "").trim();
-          return rubrica ? await lancamentosDaRubrica(supabase, rubrica, pedida) : null;
+          return rubrica ? await lancamentosDaRubrica(supabase, rubrica, pedida, vejoAFolha) : null;
         }
         case "explorar": {
           const fonte = String(item?.fonte ?? "").trim();

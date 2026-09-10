@@ -36,7 +36,7 @@
 // Versão FIXA, como na `demonstracoes-perguntar` e no `_shared/auth.ts`: com `@2`
 // solto o bundler resolve a última do dia e já quebrou um deploy deste projeto.
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.0";
-import { requireUser } from "../_shared/auth.ts";
+import { requireUser, AuthError } from "../_shared/auth.ts";
 // OpenAI, e não Gemini: a redação caía de 429 (cota) no meio do fechamento, que
 // é justamente quando ela é usada. Mesma superfície de `generateJSON`.
 import { generateJSON, handleCors, jsonResponse, errorResponse, DEFAULT_MODEL } from "../_shared/openai.ts";
@@ -351,7 +351,16 @@ Deno.serve(async (req) => {
   );
 
   try {
-    await requireUser(req, { bloquearCargos: ["parcerias"] });
+    /* Era `bloquearCargos: ["parcerias"]` — nomes de CARGO digitados à mão, de
+       antes de o acesso virar perfil. Agora é a capacidade da tela. */
+    const caller = await requireUser(req);
+    if (!caller.isService && !caller.pode("demonstracoes")) {
+      throw new AuthError("Você não tem permissão para esta ação.");
+    }
+    /* As justificativas ficam GRAVADAS e são lidas por quem abre a DRE — quem
+       não vê a folha inteira não pode disparar uma redação que cite salário por
+       nome, porque o texto sobrevive a quem o pediu. */
+    const comFolha = caller.isService || caller.pode("remuneracao");
 
     const body = req.method === "POST" ? await req.json().catch(() => ({})) : {};
     const tipo = body?.tipo === "dfc" ? "dfc" : "dre";
@@ -435,6 +444,7 @@ Deno.serve(async (req) => {
       supabase.rpc("demonstracoes_contrapartes", {
         p_tipo: tipo,
         p_meses: [mesAnterior, mes],
+        p_com_folha: comFolha,
       }),
       /* O de-para "razão social -> pessoa". Entra AQUI, antes de montar os
          drivers, e não só na saída: assim o modelo nunca chega a ver a razão

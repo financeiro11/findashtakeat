@@ -71,7 +71,7 @@
 // Versão FIXA, como no `_shared/auth.ts`: com `@2` solto o bundler resolve a
 // última do dia e já quebrou um deploy deste projeto.
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.0";
-import { requireUser } from "../_shared/auth.ts";
+import { requireUser, AuthError } from "../_shared/auth.ts";
 // OpenAI, e não Gemini: a redação caía de 429 (cota) no meio do fechamento, que
 // é justamente quando ela é usada. Mesma superfície de `generateJSON`.
 import { generateJSON, handleCors, jsonResponse, errorResponse, DEFAULT_MODEL } from "../_shared/openai.ts";
@@ -510,7 +510,19 @@ Deno.serve(async (req) => {
   );
 
   try {
-    const caller = await requireUser(req, { bloquearCargos: ["parcerias"] });
+    /* A guarda era `bloquearCargos: ["parcerias"]` — uma lista de nomes de CARGO
+       digitados à mão, de antes de o acesso virar perfil (10/09/2026). Ela
+       deixava passar liderança, RH, automação e a consultoria de fora. Agora é a
+       capacidade da tela, lida da mesma matriz que o Hub usa. */
+    const caller = await requireUser(req);
+    if (!caller.isService && !caller.pode("demonstracoes")) {
+      throw new AuthError("Você não tem permissão para esta ação.");
+    }
+    /* E a folha é uma segunda pergunta: quem não vê a folha inteira não pode
+       recebê-la pela boca da IA. O modelo recebe contraparte por contraparte e
+       título a título — esconder a lista na tela e mandá-la para cá seria trocar
+       a porta da frente pela dos fundos. */
+    const comFolha = caller.isService || caller.pode("remuneracao");
 
     const body: Corpo = req.method === "POST" ? await req.json().catch(() => ({})) : {};
     const tipo = body?.tipo === "dfc" ? "dfc" : "dre";
@@ -603,6 +615,7 @@ Deno.serve(async (req) => {
       supabase.rpc("demonstracoes_contrapartes", {
         p_tipo: tipo,
         p_meses: meses,
+        p_com_folha: comFolha,
       }),
       /* O de-para "razão social -> pessoa". Esta função é a que mais expõe nome:
          40 contrapartes, 150 lançamentos e a observação CRUA do título. Por isso
@@ -653,6 +666,9 @@ Deno.serve(async (req) => {
       p_tipo: tipo,
       p_rubricas: fontes,
       p_meses: meses,
+      // A função roda com a SERVICE ROLE: `auth.uid()` é nulo e nenhuma checagem
+      // no Postgres alcança quem perguntou. Quem sabe é aqui, e passa adiante.
+      p_com_folha: comFolha,
     });
     if (lancErr) throw lancErr;
 
@@ -726,6 +742,7 @@ Deno.serve(async (req) => {
       termos.length
         ? supabase.rpc("demonstracoes_lancamentos_busca", {
           p_tipo: tipo, p_meses: meses, p_busca: termos, p_limite: MAX_BUSCA_NOMES,
+          p_com_folha: comFolha,
         })
         : Promise.resolve({ data: null, error: null }),
       /* A própria célula só entra no conjunto de candidatos quando há conserto a
@@ -737,6 +754,7 @@ Deno.serve(async (req) => {
       correcao
         ? supabase.rpc("demonstracoes_lancamentos_busca", {
           p_tipo: tipo, p_meses: meses, p_busca: fontes, p_limite: MAX_BUSCA_CELULA,
+          p_com_folha: comFolha,
         })
         : Promise.resolve({ data: null, error: null }),
       // O plano de contas só é carregado quando há proposta a montar: são 133

@@ -11457,6 +11457,22 @@ export type Database = {
           valor: number
         }[]
       }
+      cac_celula_completo: {
+        Args: { p_ano: number; p_linha_id: string; p_mes: number }
+        Returns: {
+          categoria: string
+          categoria_descricao: string
+          cnpj: string
+          cod_titulo: number
+          data_pagamento: string
+          departamento: string
+          favorecido: string
+          natureza: string
+          pessoa: string
+          tipo: string
+          valor: number
+        }[]
+      }
       cac_linha_casa: {
         Args: {
           p_categoria: string
@@ -11691,6 +11707,7 @@ export type Database = {
         Returns: string
       }
       cartao_series: { Args: never; Returns: Json }
+      categoria_e_folha: { Args: { p_descricao: string }; Returns: boolean }
       ceps_a_validar: {
         Args: { p_limite?: number; p_revalidar_dias?: number }
         Returns: {
@@ -11760,6 +11777,23 @@ export type Database = {
         }[]
       }
       demonstracoes_contrapartes: {
+        Args: {
+          p_com_folha?: boolean
+          p_meses: string[]
+          p_rubrica: string
+          p_tipo: string
+        }
+        Returns: {
+          categoria: string
+          cods: string[]
+          contraparte: string
+          lancamentos: number
+          mes: string
+          rubrica: string
+          valor: number
+        }[]
+      }
+      demonstracoes_contrapartes_completo: {
         Args: { p_meses: string[]; p_rubrica?: string; p_tipo: string }
         Returns: {
           categoria: string
@@ -11772,7 +11806,12 @@ export type Database = {
         }[]
       }
       demonstracoes_lancamentos: {
-        Args: { p_mes: string; p_rubrica: string; p_tipo: string }
+        Args: {
+          p_com_folha?: boolean
+          p_mes: string
+          p_rubrica: string
+          p_tipo: string
+        }
         Returns: {
           categoria_codigo: string
           categoria_descricao: string
@@ -11789,6 +11828,28 @@ export type Database = {
         }[]
       }
       demonstracoes_lancamentos_busca: {
+        Args: {
+          p_busca: string[]
+          p_com_folha?: boolean
+          p_limite: number
+          p_meses: string[]
+          p_tipo: string
+        }
+        Returns: {
+          categoria: string
+          cod_titulo: string
+          codigo: string
+          contraparte: string
+          data: string
+          documento: string
+          grupo: string
+          mes: string
+          observacao: string
+          rubrica: string
+          valor: number
+        }[]
+      }
+      demonstracoes_lancamentos_busca_completo: {
         Args: {
           p_busca: string[]
           p_limite?: number
@@ -11827,6 +11888,24 @@ export type Database = {
         }[]
       }
       demonstracoes_lancamentos_multi: {
+        Args: {
+          p_com_folha?: boolean
+          p_meses: string[]
+          p_rubricas: string[]
+          p_tipo: string
+        }
+        Returns: {
+          categoria: string
+          cod_titulo: string
+          contraparte: string
+          data: string
+          mes: string
+          observacao: string
+          rubrica: string
+          valor: number
+        }[]
+      }
+      demonstracoes_lancamentos_multi_completo: {
         Args: { p_meses: string[]; p_rubricas: string[]; p_tipo: string }
         Returns: {
           categoria: string
@@ -13218,6 +13297,7 @@ export type Database = {
         Args: { ate: string; cad: Json; de: string }
         Returns: string[]
       }
+      rubricas_de_folha: { Args: { p_tipo: string }; Returns: string[] }
       salvar_justificativa_via_token: {
         Args: { p_id_unico: string; p_texto: string; p_token: string }
         Returns: Json

@@ -165,6 +165,7 @@ async function extractItems(
   const trimmed = markdown.length > teto ? markdown.slice(0, teto) : markdown;
   try {
     const out = await generateJSON<{ itens: ExtractedItem[] }>({
+      consumidor: "classificacao",
       ...(opts.model ? { model: opts.model } : {}),
       ...(opts.thinking ? { thinking: opts.thinking } : {}),
       messages: [

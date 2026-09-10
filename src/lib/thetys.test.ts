@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
-  classeDe, detalheDe, diaLocal, excecaoVencida, modoDe, periodoDe, periodoManual,
-  resumir, resumirExcecoes, rotuloDe, valorLancado,
+  agruparEmEpisodios, classeDe, detalheDe, diaLocal, excecaoVencida, modoDe, narrativaDe,
+  periodoDe, periodoManual, porQueDe, resumir, resumirExcecoes, rotuloDe, valorLancado,
+  TAREFAS,
   type Excecao, type Execucao,
 } from "./thetys";
 
@@ -116,6 +117,166 @@ describe("detalhe em português", () => {
 
   it("cai no id abreviado quando o fornecedor não está no cadastro", () => {
     expect(detalheDe(exec({ entrada: { fornecedor_id: "abcdef12-3456" } }))).toContain("abcdef12");
+  });
+});
+
+describe("a frase em português", () => {
+  it("toda tarefa do dicionário explica para que serve", () => {
+    for (const [tarefa, v] of Object.entries(TAREFAS)) {
+      expect(v.porQue.length, `${tarefa} sem porQue`).toBeGreaterThan(40);
+    }
+  });
+
+  it("conta o lançamento com fornecedor, valor e vencimento", () => {
+    const texto = narrativaDe(exec(), (id) => (id === "f-1" ? "Central Lola" : null));
+    expect(texto).toContain("Central Lola");
+    expect(texto).toContain("R$ 348,00");
+    expect(texto).toContain("31/08/2026");
+    expect(texto).toContain("5515443850");
+  });
+
+  it("diz que travou no freio de duplicidade em vez de dizer que lançou", () => {
+    const texto = narrativaDe(exec({
+      resultado: "escalado",
+      entrada: { valor: 1574.13, vencimento: "31/08/2026", fornecedor_id: "f-1" },
+      saida: { existentes: [5514033403, 5514043490], bloqueado_por_duplicidade: true },
+    }));
+    expect(texto).toContain("duplicidade");
+    expect(texto).toContain("5514033403");
+    expect(texto).not.toMatch(/^Lançou/);
+  });
+
+  /* Foi o pico de 03/09: 102 edições em quatro minutos, e nenhuma mudou nada.
+     Quem lê a trilha precisa ver isso escrito na linha, não deduzir comparando
+     duas datas iguais no telegrama. */
+  it("acusa a edição que foi ao Omie e não mudou nada", () => {
+    const semEfeito = narrativaDe(exec({
+      tarefa: "editar_lancamento_omie",
+      entrada: { codigo_lancamento: "5479711085", novo_vencimento: "04/09/2026" },
+      saida: { alterado: true, vencimento_anterior: "04/09/2026" },
+    }));
+    expect(semEfeito).toContain("não mudou nada");
+
+    const comEfeito = narrativaDe(exec({
+      tarefa: "editar_lancamento_omie",
+      entrada: { codigo_lancamento: "5479711085", novo_vencimento: "04/09/2026" },
+      saida: { alterado: true, vencimento_anterior: "05/09/2026" },
+    }));
+    expect(comEfeito).toContain("de 05/09/2026 para 04/09/2026");
+    expect(comEfeito).not.toContain("não mudou nada");
+  });
+
+  /* A ORION dá "não existe no Omie" procurada pelo nome e "existe" procurada pelo
+     CNPJ, minutos depois. Sem a ressalva, a linha mente para quem lê. */
+  it("ressalva a busca por nome, e só quando ela não achou", () => {
+    const porNome = narrativaDe(exec({
+      tarefa: "consultar_fornecedor",
+      entrada: { cnpj: null, nome: "Orion" },
+      saida: { existe_no_omie: false, tem_governanca: true },
+    }));
+    expect(porNome).toContain("não é prova");
+
+    const porCnpj = narrativaDe(exec({
+      tarefa: "consultar_fornecedor",
+      entrada: { cnpj: "03.963.421/0001-06", nome: "ORION COMERCIO E INFORMATICA LTDA" },
+      saida: { existe_no_omie: true, tem_governanca: true },
+    }));
+    expect(porCnpj).toContain("03.963.421/0001-06");
+    expect(porCnpj).not.toContain("não é prova");
+  });
+
+  it("não inventa frase para tarefa que o dicionário não conhece", () => {
+    expect(narrativaDe(exec({ tarefa: "pagar_boleto_sozinha" }))).toBe("");
+    expect(porQueDe(exec({ tarefa: "pagar_boleto_sozinha" }))).toBe("");
+  });
+
+  it("aguenta JSON fora do formato sem quebrar a linha", () => {
+    expect(narrativaDe(exec({ entrada: "não é objeto", saida: null }))).toContain("conta a pagar");
+    expect(() => narrativaDe(exec({ entrada: null, saida: null }))).not.toThrow();
+  });
+
+  /* O pedaço vindo do JSON já traz o artigo ("o CNPJ 179…"), porque quem o monta
+     não sabe qual preposição virá antes. Sem a contração, sai "de o CNPJ". */
+  it("contrai a preposição com o artigo", () => {
+    const texto = narrativaDe(exec({
+      tarefa: "consultar_regra_categoria",
+      entrada: { documento_norm: "17990627000130" },
+      saida: { encontrada: true },
+    }));
+    expect(texto).toContain("do CNPJ 17990627000130");
+    expect(texto).not.toContain("de o ");
+  });
+
+  it("não dobra o ponto quando o texto de gente já vem com um", () => {
+    const texto = narrativaDe(exec({
+      tarefa: "resolver_excecao",
+      entrada: { resolucao: "Fornecedor conferido e liberado." },
+      saida: { tipo: "categoria_incerta", titulo: "Confiança abaixo do mínimo" },
+    }));
+    expect(texto).not.toContain('".');
+    expect(texto.endsWith('"')).toBe(true);
+  });
+
+  it("não deixa buraco de pontuação quando o campo falta", () => {
+    const semNada = narrativaDe(exec({
+      tarefa: "listar_emails_novos", entrada: {}, saida: { encontrados: 0 },
+    }));
+    expect(semNada).toBe("Verificação de rotina da caixa de entrada: não havia nada novo para tratar.");
+  });
+});
+
+describe("episódios — a rotina, não o passo", () => {
+  const em = (min: number, seg = 0) =>
+    new Date(2026, 8, 3, 19, min, seg).toISOString();
+
+  const corrente = [
+    exec({ id: "1", tarefa: "conferir_fixos_do_dia", entrada: { data: "2026-09-03", lancar: false }, saida: { pendentes: 1 }, executado_em: em(4, 10) }),
+    exec({ id: "2", tarefa: "ler_documento_email", entrada: { uid: "13728", nome_anexo: "boleto.pdf" }, saida: { caracteres_extraidos: 1599 }, executado_em: em(4, 14) }),
+    exec({ id: "3", tarefa: "consultar_fornecedor", entrada: { cnpj: "03.963.421/0001-06" }, saida: { existe_no_omie: true }, executado_em: em(4, 20) }),
+    exec({ id: "4", tarefa: "criar_conta_pagar", entrada: { valor: 870, vencimento: "15/09/2026", fornecedor_id: "f-1" }, saida: { codigo_omie: "5517219954" }, executado_em: em(5, 3) }),
+    exec({ id: "5", tarefa: "marcar_email_processado", entrada: { uid: "13728" }, saida: { marcado: true }, executado_em: em(5, 17) }),
+    exec({ id: "6", tarefa: "conferir_fixos_do_dia", entrada: { data: "2026-09-03", lancar: false }, saida: { pendentes: 1 }, executado_em: em(49, 2) }),
+  ];
+
+  it("junta a corrente de trabalho e corta quando ela para", () => {
+    const eps = agruparEmEpisodios(corrente);
+    expect(eps).toHaveLength(2);
+    // Mais novo primeiro — a ordem da tela.
+    expect(eps[0].acoes.map((a) => a.id)).toEqual(["6"]);
+    expect(eps[1].acoes.map((a) => a.id)).toEqual(["1", "2", "3", "4", "5"]);
+  });
+
+  it("dá à corrente o nome da rotina, não o da tarefa mais frequente", () => {
+    const [, ciclo] = agruparEmEpisodios(corrente);
+    expect(ciclo.titulo).toBe("Documento que chegou por e-mail");
+    expect(ciclo.porQue).toContain("caixa de entrada");
+  });
+
+  it("o desfecho conta o dinheiro que a corrente lançou", () => {
+    const [ronda, ciclo] = agruparEmEpisodios(corrente);
+    expect(ciclo.desfecho).toContain("lançou R$ 870,00");
+    expect(ronda.desfecho).toBe("só consulta — nada mudou de lado nenhum");
+  });
+
+  /* Fechar o e-mail é o fim do ciclo. Sem esta regra, dois e-mails tratados em
+     seguida viram uma corrente só e a história fica ilegível. */
+  it("marcar o e-mail como lido fecha a corrente", () => {
+    const doisEmails = [
+      exec({ id: "a", tarefa: "ler_documento_email", entrada: { uid: "1" }, executado_em: em(4, 0) }),
+      exec({ id: "b", tarefa: "marcar_email_processado", entrada: { uid: "1" }, executado_em: em(4, 30) }),
+      exec({ id: "c", tarefa: "ler_documento_email", entrada: { uid: "2" }, executado_em: em(5, 20) }),
+    ];
+    const eps = agruparEmEpisodios(doisEmails);
+    expect(eps.map((e) => e.acoes.map((a) => a.id))).toEqual([["c"], ["a", "b"]]);
+  });
+
+  it("aceita a lista fora de ordem e devolve a história na ordem certa", () => {
+    const eps = agruparEmEpisodios([...corrente].reverse());
+    expect(eps[1].acoes.map((a) => a.id)).toEqual(["1", "2", "3", "4", "5"]);
+  });
+
+  it("lista vazia não quebra", () => {
+    expect(agruparEmEpisodios([])).toEqual([]);
   });
 });
 

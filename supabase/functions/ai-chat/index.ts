@@ -153,6 +153,11 @@ Deno.serve(async (req) => {
     return await streamAsOpenAISSE({
       messages: [{ role: "system", content: system }, ...conversa],
       temperature: 0.4,
+      /* O assistente é a IA que mais gente usa e era a única que NUNCA aparecia no razão:
+         stream não passa por `generateText`/`generateJSON`, e até 09/09/2026 o motor só
+         gravava por lá. */
+      consumidor: "assistente",
+      userId: userData.user.id,
     });
   } catch (e) {
     return errorResponse(e);

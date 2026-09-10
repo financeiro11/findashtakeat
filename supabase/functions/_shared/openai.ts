@@ -11,6 +11,11 @@
 // porque o segredo no Supabase é case-sensitive e já foi cadastrado à mão).
 // Modelo: OPENAI_MODEL sobrescreve o padrão sem precisar de deploy.
 
+/* `freioIA` entra como import estático (e não preguiçoso como o `registrarUsoIA` do
+   `anotar`) porque `ia-orcamento.ts` não tem dependência de runtime nenhuma: o
+   `supabase-js` só é carregado lá dentro, por `import()`, quando o cliente é montado.
+   Custa zero para quem nunca chega a gastar. */
+import { freioIA } from "./ia-orcamento.ts";
 import type { ConsumidorIA } from "./ia-orcamento.ts";
 
 export const corsHeaders = {
@@ -148,7 +153,7 @@ interface GenerateOptions {
  * a tentativa que FALHOU também, com zero token: ela não custou dinheiro, mas consumiu a
  * disponibilidade do dia, que é o que o teto por chamadas existe para conter.
  */
-const SEM_ROTULO = "openai_sem_rotulo" as ConsumidorIA;
+const SEM_ROTULO: ConsumidorIA = "openai_sem_rotulo";
 
 async function anotar(
   opts: GenerateOptions,
@@ -161,16 +166,12 @@ async function anotar(
     return;
   }
   try {
-    const url = Deno.env.get("SUPABASE_URL");
-    const chave = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
+    const { clienteDeServico, registrarUsoIA } = await import("./ia-orcamento.ts");
     /* Sem service role não há como gravar: a `ai_usage_log` é fechada por RLS e uma
        chamada com a credencial de quem pediu gravaria nada, em silêncio. */
-    if (!url || !chave) return;
-    const [{ createClient }, { registrarUsoIA }] = await Promise.all([
-      import("https://esm.sh/@supabase/supabase-js@2.45.0"),
-      import("./ia-orcamento.ts"),
-    ]);
-    await registrarUsoIA(createClient(url, chave), {
+    const supa = await clienteDeServico();
+    if (!supa) return;
+    await registrarUsoIA(supa, {
       consumidor: opts.consumidor ?? SEM_ROTULO,
       model,
       promptTokens,
@@ -190,18 +191,30 @@ function tokensDe(data: Record<string, unknown>): { entrada: number; saida: numb
   };
 }
 
+/* TETO DE SAÍDA PADRÃO. Metade do que o `gpt-4.1-mini` aceita gerar (32k) e SEIS VEZES a
+   maior resposta que o razão já registrou em 60 dias (1.248 tokens, do `rotina_diaria`),
+   então nenhuma função existente encosta nele — é rede contra geração em laço, não
+   política editorial. Quem precisa de mais passa `maxTokens` e vence este número; oito das
+   dezesseis funções não passavam nada, e "nada" queria dizer o limite do modelo. */
+const TETO_SAIDA_PADRAO = 8_000;
+
 async function callChat(opts: GenerateOptions): Promise<Record<string, unknown>> {
   const key = getKey();
   const model = opts.model || DEFAULT_MODEL;
+
+  /* O FREIO ANTES DO DINHEIRO. Status 402 (e não 429) de propósito: `valeTentarOutroMotor`
+     manda 429 para o Gemini, e cair para o outro motor por estar sem orçamento é furar o
+     teto pela porta dos fundos — o limite é de gasto, não de fornecedor. */
+  const bloqueio = await freioIA(opts.consumidor ?? SEM_ROTULO);
+  if (bloqueio) throw new OpenAIError(bloqueio, 402);
 
   const payload: Record<string, unknown> = {
     model,
     messages: opts.messages.map((m) => ({ role: m.role, content: m.content ?? "" })),
   };
   if (!familiaRaciocinio(model)) payload.temperature = opts.temperature ?? 0.4;
-  if (opts.maxTokens) {
-    payload[familiaRaciocinio(model) ? "max_completion_tokens" : "max_tokens"] = opts.maxTokens;
-  }
+  payload[familiaRaciocinio(model) ? "max_completion_tokens" : "max_tokens"] =
+    opts.maxTokens ?? TETO_SAIDA_PADRAO;
 
   if (opts.responseSchema) {
     payload.response_format = {

@@ -168,6 +168,7 @@ async function legendar(
 ): Promise<Legenda> {
   try {
     const out = await comPrazo(generateJSON<{ muda_algo?: boolean; repete?: boolean; frase?: string }>({
+      consumidor: "rotina_diaria",
       model: MODELO_LITE,
       messages: [
         {
@@ -268,6 +269,7 @@ async function nomearAssuntos(
   resumo: string,
 ): Promise<Array<{ rotulo: string; termos: string[] }>> {
   const out = await comPrazo(generateJSON<{ assuntos?: Array<{ rotulo?: string; termos?: unknown }> }>({
+    consumidor: "rotina_diaria",
     model: MODELO_LITE,
     messages: [
       {

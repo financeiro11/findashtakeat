@@ -414,6 +414,7 @@ async function lerComprovante(
 
   const chamar = () => generateJSON<Leitura>({
     model: DEFAULT_MODEL,
+    consumidor: "acervo_leitura",
     temperature: 0,
     /* Este trabalho é TRANSCREVER, não deliberar: copiar do papel para um schema
        fechado, com a conta do valor refeita depois em TypeScript, onde ela não

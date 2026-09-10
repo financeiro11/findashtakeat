@@ -355,7 +355,7 @@ Deno.serve(async (req) => {
         if (vd === "responder") responder++; else soAcao++;
       } catch (e) {
         erros.push(`${item.remetente ?? "?"}: ${String((e as Error)?.message ?? e).slice(0, 140)}`);
-        void registrarUsoIA(supa, { consumidor: "email_resposta", model: MODELO_LITE, userId: quem });
+        /* A falha já é gravada pelo motor — ver a nota gêmea em notas-explicar. */
       }
     }
 

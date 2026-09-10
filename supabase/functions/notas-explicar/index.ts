@@ -268,9 +268,9 @@ Deno.serve(async (req) => {
             feito.motivo++;
           } catch (e) {
             erros.push(`motivo #${n.id}: ${String((e as Error)?.message ?? e).slice(0, 120)}`);
-            /* Chamada que falhou consumiu disponibilidade do mesmo jeito — o
-               razão precisa saber, senão o teto diário mente para baixo. */
-            void registrarUsoIA(supa, { consumidor: "notas_motivo", model: MODELO_LITE, userId: quem });
+            /* A FALHA JÁ É GRAVADA PELO MOTOR desde 09/09/2026 (`anotarFalha` em
+               _shared/gemini.ts). Registrar aqui também punia o teto duas vezes
+               pela mesma chamada e dobrava a contagem no vigia `ia_falhas_alerta`. */
           }
         }
       }
@@ -350,7 +350,9 @@ Deno.serve(async (req) => {
             }
           } catch (e) {
             erros.push(`desempate #${n.id}: ${String((e as Error)?.message ?? e).slice(0, 120)}`);
-            void registrarUsoIA(supa, { consumidor: "notas_desempate", model: MODELO_LITE, userId: quem });
+            /* A FALHA JÁ É GRAVADA PELO MOTOR desde 09/09/2026 (`anotarFalha` em
+               _shared/gemini.ts). Registrar aqui também punia o teto duas vezes
+               pela mesma chamada e dobrava a contagem no vigia `ia_falhas_alerta`. */
           }
         }
       }

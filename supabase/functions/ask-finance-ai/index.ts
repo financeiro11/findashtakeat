@@ -10,7 +10,8 @@
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.0";
 import { buildOrgContext } from "../_shared/org-context.ts";
-import { MODELOS_CASCATA } from "../_shared/gemini.ts";
+import { anotarUsoDireto, MODELOS_CASCATA } from "../_shared/gemini.ts";
+import { freioIA } from "../_shared/ia-orcamento.ts";
 import { requireUser } from "../_shared/auth.ts";
 
 const corsHeaders = {
@@ -169,12 +170,24 @@ Deno.serve(async (req) => {
       },
     };
 
+    /* Freio antes da cascata, e não dentro dela: os três modelos e as duas tentativas são
+       a MESMA pergunta insistindo, não três gastos que a pessoa pediu. Esta função fala
+       com o Gemini na mão e não passa pelo motor — ver `anotarUsoDireto`. */
+    const bloqueio = await freioIA("assistente");
+    if (bloqueio) {
+      return new Response(JSON.stringify({ error: bloqueio }), {
+        status: 402, headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
+
     // Tenta sequencialmente modelos para contornar 503 (sobrecarga) / 429 (limite)
     const models = MODELOS_CASCATA;
     let resp: Response | null = null;
+    let modeloUsado = models[0];
     let lastStatus = 0;
     let lastDetail = "";
     for (const model of models) {
+      modeloUsado = model;
       const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
       for (let attempt = 0; attempt < 2; attempt++) {
         const r = await fetch(url, {
@@ -205,6 +218,7 @@ Deno.serve(async (req) => {
     }
 
     const data = await resp.json();
+    await anotarUsoDireto("assistente", modeloUsado, data);
     const text: string = data?.candidates?.[0]?.content?.parts?.map((p: any) => p?.text ?? "").join("") ?? "";
 
     let parsed = extractJson(text);

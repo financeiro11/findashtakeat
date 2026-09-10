@@ -1,7 +1,8 @@
 // deno-lint-ignore-file no-explicit-any
 import { createClient } from "npm:@supabase/supabase-js@2";
 import { extractText, getDocumentProxy } from "npm:unpdf@0.12.1";
-import { MODELO_LITE } from "../_shared/gemini.ts";
+import { anotarUsoDireto, MODELO_LITE } from "../_shared/gemini.ts";
+import { freioIA } from "../_shared/ia-orcamento.ts";
 import { requireUser } from "../_shared/auth.ts";
 
 // EdgeRuntime.waitUntil permite continuar o processamento DEPOIS de responder
@@ -116,6 +117,13 @@ async function processar(supabase: any, tipo: string, periodo: string, pdf_path:
           { inlineData: { mimeType: "application/pdf", data: toBase64(buf) } },
         ];
 
+    /* Freio antes do gasto. Esta função chama o Gemini na mão (não passa por
+       `generateJSON`), então o freio que mora no motor não a alcança — ver
+       `anotarUsoDireto` em `_shared/gemini.ts`. É leitura multimodal: cada PDF escaneado
+       custa por página, e é o tipo de chamada que drenou o crédito em 27–28/08. */
+    const bloqueio = await freioIA("acervo_leitura");
+    if (bloqueio) return await marcarErro(bloqueio, "sem_orcamento");
+
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), 230000);
     let aiResp: Response;
@@ -148,6 +156,7 @@ async function processar(supabase: any, tipo: string, periodo: string, pdf_path:
     }
 
     const aiJson = await aiResp.json();
+    await anotarUsoDireto("acervo_leitura", modelo, aiJson);
     const content = aiJson.candidates?.[0]?.content?.parts?.map((p: any) => p.text).join("") ?? "{}";
     let parsed: any;
     try {

@@ -134,6 +134,7 @@ async function lerNota(bytes: Uint8Array, nome: string, mimeDito?: string) {
   if (!mime) throw new Error(`não sei ler "${nome}" — use PDF, JPG, PNG ou WEBP`);
 
   const chamar = () => generateJSON<any>({
+    consumidor: "classificacao",
     model: DEFAULT_MODEL,
     temperature: 0,
     responseSchema: SCHEMA,

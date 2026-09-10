@@ -63,6 +63,7 @@ async function resumir(nome: string, oQueOlhar: string | null, diff: string): Pr
   const trecho = diff.length > 6000 ? diff.slice(0, 6000) : diff;
   try {
     return (await generateText({
+      consumidor: "rotina_diaria",
       model: MODELO_LITE,
       messages: [
         {

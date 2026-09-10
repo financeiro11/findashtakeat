@@ -187,7 +187,7 @@ Deno.serve(async (req) => {
         escritos++;
       } catch (e) {
         erros.push(`${f.jobname}: ${String((e as Error)?.message ?? e).slice(0, 140)}`);
-        void registrarUsoIA(supa, { consumidor: "automacao_diagnostico", model: MODELO_LITE, userId: quem });
+        /* A falha já é gravada pelo motor — ver a nota gêmea em notas-explicar. */
       }
     }
 

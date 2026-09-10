@@ -40,7 +40,8 @@ import {
   descricaoDaNota, lerDanfes, lerNomeDeArquivo, lerXmlFiscal, tipoDoDocumento,
   type Danfe, type TipoDocumento,
 } from "../_shared/nota-fiscal.ts";
-import { MODELO_LITE } from "../_shared/gemini.ts";
+import { anotarUsoDireto, MODELO_LITE } from "../_shared/gemini.ts";
+import { freioIA } from "../_shared/ia-orcamento.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -198,6 +199,11 @@ let ultimoErroOcr = "";
 
 async function ocr(bytes: Uint8Array, mime: string, dica: string, aiKey: string): Promise<Lido | null> {
   if (!aiKey) { ultimoErroOcr = "GEMINI_API_KEY ausente"; return null; }
+  /* Freio: são ~107 fotos por rodada, cada uma uma leitura multimodal paga por página, e
+     esta função chama o Gemini na mão — o freio do motor não chega aqui. Parar por teto
+     não é defeito do arquivo: a rodada seguinte pega o que sobrou. */
+  const bloqueio = await freioIA("acervo_leitura");
+  if (bloqueio) { ultimoErroOcr = bloqueio; return null; }
   const r = await fetch(
     `https://generativelanguage.googleapis.com/v1beta/models/${MODELO_LITE}:generateContent?key=${aiKey}`,
     {
@@ -222,6 +228,7 @@ async function ocr(bytes: Uint8Array, mime: string, dica: string, aiKey: string)
     return null;
   }
   const j = await r.json();
+  await anotarUsoDireto("acervo_leitura", MODELO_LITE, j);
   const txt = j?.candidates?.[0]?.content?.parts?.map((p: { text?: string }) => p.text ?? "").join("");
   if (!txt) { ultimoErroOcr = "Gemini devolveu resposta vazia"; return null; }
 
@@ -258,6 +265,8 @@ async function ocr(bytes: Uint8Array, mime: string, dica: string, aiKey: string)
  */
 async function lerPeloTexto(texto: string, dica: string, aiKey: string): Promise<Lido | null> {
   if (!aiKey) { ultimoErroOcr = "GEMINI_API_KEY ausente"; return null; }
+  const bloqueio = await freioIA("acervo_leitura");
+  if (bloqueio) { ultimoErroOcr = bloqueio; return null; }
   const r = await fetch(
     `https://generativelanguage.googleapis.com/v1beta/models/${MODELO_LITE}:generateContent?key=${aiKey}`,
     {
@@ -279,6 +288,7 @@ async function lerPeloTexto(texto: string, dica: string, aiKey: string): Promise
   );
   if (!r.ok) { ultimoErroOcr = `Gemini ${r.status}: ${(await r.text()).slice(0, 140)}`; return null; }
   const j = await r.json();
+  await anotarUsoDireto("acervo_leitura", MODELO_LITE, j);
   const txt = j?.candidates?.[0]?.content?.parts?.map((p: { text?: string }) => p.text ?? "").join("");
   if (!txt) { ultimoErroOcr = "Gemini devolveu resposta vazia"; return null; }
   let d: Record<string, unknown>;

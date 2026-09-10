@@ -16,9 +16,9 @@
  */
 
 import {
-  brlStr, classeDe, detalheDe, diaLocal, excecaoAberta, excecaoVencida, horaLocal,
-  modoDe, nomeDoArquivo, resumir, resumirExcecoes, rotuloDe, rotuloExcecao, textoCorrecao,
-  valorLancado,
+  agruparEmEpisodios, brlStr, classeDe, detalheDe, diaLocal, excecaoAberta, excecaoVencida,
+  horaLocal, janelaDoEpisodio, modoDe, narrativaDe, nomeDoArquivo, resumir, resumirExcecoes,
+  rotuloDe, rotuloExcecao, textoCorrecao, valorLancado,
   type Excecao, type Execucao, type NomeDe, type Periodo, type Resumo,
 } from "./thetys";
 
@@ -46,15 +46,29 @@ const RESULTADO_ROTULO: Record<string, string> = {
 
 /* --------------------------------------------------------------- comum */
 
-/** As linhas da trilha, já legíveis — a planilha e o PDF leem exatamente estas. */
+/**
+ * As linhas da trilha, já legíveis — a planilha e o PDF leem exatamente estas.
+ *
+ * Cada linha carrega a rotina a que pertence (o episódio da tela). Na planilha
+ * isso vira coluna filtrável, que é o que permite responder "quantas correntes de
+ * caixa de entrada rodaram na semana" sem reconstruir o agrupamento na mão.
+ */
 function trilha(d: DadosRelatorio) {
+  const rotinaDa = new Map<string, string>();
+  for (const ep of agruparEmEpisodios(d.execucoes, d.nome)) {
+    const marca = `${diaLocal(ep.inicio)} ${janelaDoEpisodio(ep)} · ${ep.titulo}`;
+    for (const a of ep.acoes) rotinaDa.set(a.id, marca);
+  }
+
   return [...d.execucoes]
     .sort((a, b) => a.executado_em.localeCompare(b.executado_em))
     .map((e) => ({
       quando: horaLocal(e.executado_em),
       dia: diaLocal(e.executado_em),
+      rotina: rotinaDa.get(e.id) ?? "",
       tarefa: rotuloDe(e),
       classe: CLASSE_ROTULO[classeDe(e)] ?? classeDe(e),
+      narrativa: narrativaDe(e, d.nome),
       detalhe: detalheDe(e, d.nome),
       resultado: RESULTADO_ROTULO[e.resultado] ?? e.resultado,
       valor: valorLancado(e),
@@ -118,8 +132,10 @@ export async function exportarExcel(d: DadosRelatorio): Promise<void> {
   const acoes = trilha(d).map((l) => ({
     "Quando": l.quando,
     "Dia": l.dia,
+    "Rotina": l.rotina,
     "Ação": l.tarefa,
     "Classe": l.classe,
+    "O que ela fez": l.narrativa,
     "Detalhe": l.detalhe,
     "Resultado": l.resultado,
     "Valor lançado": l.valor ?? "",
@@ -133,8 +149,9 @@ export async function exportarExcel(d: DadosRelatorio): Promise<void> {
     acoes.length ? acoes : [{ "Quando": "sem ações no período" }],
   );
   abaAcoes["!cols"] = [
-    { wch: 14 }, { wch: 11 }, { wch: 30 }, { wch: 16 }, { wch: 60 }, { wch: 12 },
-    { wch: 14 }, { wch: 9 }, { wch: 10 }, { wch: 40 }, { wch: 40 }, { wch: 28 },
+    { wch: 14 }, { wch: 11 }, { wch: 44 }, { wch: 30 }, { wch: 16 }, { wch: 96 },
+    { wch: 48 }, { wch: 12 }, { wch: 14 }, { wch: 9 }, { wch: 10 }, { wch: 40 },
+    { wch: 40 }, { wch: 28 },
   ];
   XLSX.utils.book_append_sheet(wb, abaAcoes, "Ações");
 
@@ -302,6 +319,47 @@ export async function exportarPdf(d: DadosRelatorio): Promise<void> {
     });
   }
 
+  /* ---- por rotina ---- */
+  const episodios = agruparEmEpisodios(d.execucoes, d.nome);
+  if (episodios.length) {
+    /* Agrupado por título de rotina, não uma linha por episódio: numa semana são
+       dezenas de correntes, e o que se quer saber do relatório é quantas vezes
+       cada rotina rodou e o que ela produziu — não o horário de cada uma, que a
+       trilha logo abaixo já dá. */
+    const porRotina = new Map<string, { n: number; passos: number; valor: number }>();
+    for (const ep of episodios) {
+      const linha = porRotina.get(ep.titulo) ?? { n: 0, passos: 0, valor: 0 };
+      linha.n++;
+      linha.passos += ep.acoes.length;
+      for (const a of ep.acoes) linha.valor += valorLancado(a) ?? 0;
+      porRotina.set(ep.titulo, linha);
+    }
+
+    titulo("Por rotina");
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(8.5);
+    doc.setTextColor(110);
+    const nota = doc.splitTextToSize(
+      "Ações seguidas foram juntadas na rotina a que pertencem. O corte é por proximidade no tempo "
+      + "(cinco minutos sem agir começa outra corrente) — o runtime não carimba nada que amarre um passo ao seguinte.",
+      UTIL,
+    );
+    cabe(nota.length * 4 + 2);
+    doc.text(nota, MARGEM + 1, y);
+    y += nota.length * 4 + 1;
+
+    y = tabela(doc, y, {
+      cabecalho: ["Rotina", "Vezes", "Passos", "Lançado"],
+      larguras: [102, 20, 20, 40],
+      alinhar: ["left", "right", "right", "right"],
+      linhas: [...porRotina.entries()]
+        .sort((a, b) => b[1].passos - a[1].passos || a[0].localeCompare(b[0], "pt-BR"))
+        .map(([nomeRotina, r]) => [
+          nomeRotina, String(r.n), String(r.passos), r.valor ? brlStr(r.valor) : "—",
+        ]),
+    });
+  }
+
   /* ---- a trilha ---- */
   const linhas = trilha(d);
   titulo("A trilha, ação a ação");
@@ -312,15 +370,18 @@ export async function exportarPdf(d: DadosRelatorio): Promise<void> {
     doc.text("Nenhuma ação registrada neste período.", MARGEM + 1, y);
     y += 6;
   } else {
+    /* A coluna do meio leva a FRASE, não o telegrama. O PDF é o que se manda para
+       alguém ler; quem precisa conferir campo a campo abre a planilha, que leva as
+       duas colunas. */
     y = tabela(doc, y, {
-      cabecalho: ["Quando", "Ação", "Detalhe", "Resultado"],
-      larguras: [22, 42, 88, 30],
+      cabecalho: ["Quando", "Ação", "O que aconteceu", "Resultado"],
+      larguras: [20, 38, 94, 30],
       alinhar: ["left", "left", "left", "left"],
       linhas: linhas.map((l) => [
         l.quando,
         l.tarefa,
-        [l.detalhe, l.erro && `erro: ${l.erro}`, l.correcao && `corrigido: ${l.correcao}`]
-          .filter(Boolean).join(" — "),
+        [l.narrativa || l.detalhe, l.erro && `erro: ${l.erro}`,
+          l.correcao && `corrigido: ${l.correcao}`].filter(Boolean).join(" — "),
         l.modo === "TESTE" ? `${l.resultado} (teste)` : l.resultado,
       ]),
     });

@@ -79,6 +79,7 @@ async function lerResultados(nome: string, doc: string | null, achados: Array<{ 
     .map((a, i) => `${i + 1}. ${a.titulo}\n   ${a.url}\n   ${a.descricao}`)
     .join("\n");
   const out = await generateJSON<Partial<Leitura>>({
+    consumidor: "rotina_diaria",
     model: MODELO_LITE,
     messages: [
       {

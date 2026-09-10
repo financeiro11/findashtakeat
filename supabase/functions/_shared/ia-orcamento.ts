@@ -50,7 +50,13 @@ export type ConsumidorIA =
   | "cartao_recomendar"
   | "rotina_diaria"    // diagnóstico das notas, novidades do Hub, vigia dos sinais
   | "classificacao"    // tarefas, transações, sugestão de parametrização
-  | "texto_apoio";     // cap table, insight das assinaturas, leitura de PDF da Biblioteca
+  | "texto_apoio"      // cap table, insight das assinaturas, leitura de PDF da Biblioteca
+  /* QUEM NÃO SE IDENTIFICA. Os dois existem em `ia_orcamento` com teto pequeno de
+     propósito: chamada sem rótulo não é bloqueada (isso quebraria função nova de um jeito
+     que ninguém entende), mas é contada, aparece no painel e para de andar se virar
+     enxurrada. Ver a migration `…20260910` para os valores. */
+  | "openai_sem_rotulo"
+  | "gemini_sem_rotulo";
 
 export interface VeredictoIA {
   pode: boolean;
@@ -109,6 +115,21 @@ export async function podeGastarIA(
     return {
       ...base, pode: false,
       motivo: `${linha.rotulo} já gastou US$ ${base.gastoMesUsd.toFixed(2)} dos US$ ${tetoMes.toFixed(2)} do mês`,
+    };
+  }
+
+  /* O TETO DA CONTA INTEIRA, e não só o desta gaveta. Os tetos por consumidor somam mais
+     que o global de propósito — cada um limita a FORMA do gasto daquele consumidor. Sem
+     esta trava, bastava um consumidor novo com teto folgado para furar a conta do mês sem
+     estourar teto nenhum, que é exatamente como um limite deixa de limitar. Até 09/09/2026
+     `ia_teto_global` era lido só pelo sino de 70/90/100%. */
+  const tetoGlobal = Number(linha.teto_global_usd ?? 0);
+  const gastoGlobal = Number(linha.gasto_global_usd ?? 0);
+  if (tetoGlobal > 0 && gastoGlobal >= tetoGlobal) {
+    return {
+      ...base, pode: false,
+      motivo: `o Hub já gastou US$ ${gastoGlobal.toFixed(2)} dos US$ ${tetoGlobal.toFixed(2)} `
+        + `de IA deste mês (teto geral, em Configurações › Uso de IA)`,
     };
   }
 
@@ -185,4 +206,65 @@ export async function registrarUsoIA(supa: SupabaseClient, uso: UsoIA): Promise<
 export function quantasCabem(veredito: VeredictoIA, pedidas: number): number {
   if (!veredito.pode) return 0;
   return Math.max(0, Math.min(pedidas, veredito.restaHoje));
+}
+
+/* ===================================================================== */
+/* ================= o freio, para dentro do motor ===================== */
+/* ===================================================================== */
+/**
+ * 09/09/2026. ATÉ AQUI O FREIO ERA OPT-IN E QUASE NINGUÉM OPTAVA: das 16 funções que
+ * chamam a OpenAI, ZERO chamavam `podeGastarIA`; do lado do Gemini, só `nota-ler-arquivo`
+ * e `anexo-triagem`. O que existia para todas era o SINO (`ia_orcamento_alerta`, de hora
+ * em hora, em 70/90/100%) — e sino não é freio: ele toca depois, e só se alguém estiver
+ * ouvindo. Um laço que descobre trabalho novo às 2h da manhã gasta a noite inteira e o
+ * aviso chega junto com a fatura.
+ *
+ * A LIÇÃO VEIO DE FORA. A conta de 7 dias da OpenAI (US$ 53,98, 113 milhões de tokens em
+ * 1.082 chamadas) não era do Hub — era do runtime da TETS, que roda fora deste repositório
+ * e onde nada disto existe. Mas a pergunta que ela levantou vale aqui igual: o que impede
+ * o Hub de fazer o mesmo? Antes desta função, nada. Cada consumidor tinha teto na tabela e
+ * ninguém lia a tabela antes de gastar.
+ *
+ * MORA NO MOTOR pela terceira vez pelo mesmo motivo (o medidor desceu em 03/09, a queda
+ * para o Gemini em 31/08): dezesseis funções lembrarem de fazer a mesma coisa é exatamente
+ * o que não acontece. Quem chamar a IA daqui em diante ganha o freio sem saber que ele
+ * existe — inclusive a função que ainda não foi escrita.
+ *
+ * DUAS FALHAS, DUAS RESPOSTAS OPOSTAS, e a diferença é deliberada:
+ *
+ *   • **Erro ao LER o orçamento** (banco fora, RPC mudou) → FECHA. É a regra do
+ *     `podeGastarIA` e a do Firecrawl: sem razão não há teto, e sem teto não se gasta.
+ *   • **Sem `SUPABASE_SERVICE_ROLE_KEY`** → DEIXA PASSAR, com um berro no log. Isso não é
+ *     sinal de gasto nenhum: é condição de implantação, idêntica em todas as chamadas da
+ *     função. Fechar aqui transformaria uma variável de ambiente faltando em "toda a IA do
+ *     Hub morreu", que é caro de diagnosticar e não protege de nada — o mesmo motivo pelo
+ *     qual `anotar()` desiste em silêncio quando não consegue montar o cliente.
+ */
+export async function clienteDeServico(): Promise<SupabaseClient | null> {
+  const url = Deno.env.get("SUPABASE_URL");
+  const chave = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
+  if (!url || !chave) return null;
+  const { createClient } = await import("https://esm.sh/@supabase/supabase-js@2.45.0");
+  return createClient(url, chave);
+}
+
+/**
+ * Pode gastar uma chamada agora? Devolve `null` quando sim, e o MOTIVO em português
+ * quando não — que é o texto que a pessoa vai ler na tela, então ele diz qual consumidor
+ * parou e em que número.
+ */
+export async function freioIA(consumidor: ConsumidorIA): Promise<string | null> {
+  let supa: SupabaseClient | null;
+  try {
+    supa = await clienteDeServico();
+  } catch (e) {
+    console.error("freioIA: não consegui montar o cliente", (e as Error)?.message ?? e);
+    return null; // ver o bloco acima: implantação, não gasto.
+  }
+  if (!supa) {
+    console.error("freioIA: sem SUPABASE_SERVICE_ROLE_KEY — gastando SEM teto");
+    return null;
+  }
+  const veredito = await podeGastarIA(supa, consumidor, 1);
+  return veredito.pode ? null : veredito.motivo;
 }

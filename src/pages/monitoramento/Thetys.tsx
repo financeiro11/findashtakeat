@@ -24,15 +24,15 @@ import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/hooks/useAuth";
 import { useApelidosCadastro } from "@/hooks/useApelidos";
 import {
-  brlStr, classeDe, detalheDe, diaLocal, excecaoAberta, excecaoVencida, horaLocal,
-  modoDe, periodoDe, periodoManual, resumir, resumirExcecoes, rotuloDe, rotuloExcecao,
-  textoCorrecao,
-  type Atalho, type Excecao, type Execucao, type NomeDe, type Periodo,
+  agruparEmEpisodios, brlStr, classeDe, detalheDe, diaLocal, excecaoAberta, excecaoVencida,
+  horaLocal, janelaDoEpisodio, modoDe, narrativaDe, periodoDe, periodoManual, porQueDe,
+  resumir, resumirExcecoes, rotuloDe, rotuloExcecao, textoCorrecao,
+  type Atalho, type Episodio, type Excecao, type Execucao, type NomeDe, type Periodo,
 } from "@/lib/thetys";
 import { exportarExcel, exportarPdf } from "@/lib/thetysExport";
 import {
   AlertTriangle, Bot, Check, ChevronDown, ChevronRight, Clock, FileSpreadsheet,
-  FileText, Loader2, PencilLine, RefreshCw, Search, X,
+  FileText, HelpCircle, Loader2, PencilLine, RefreshCw, Search, X,
 } from "lucide-react";
 
 /* `types.ts` é gerado pelo CLI e ainda não conhece as RPCs desta migration.
@@ -116,6 +116,9 @@ const SEVERIDADE_COR: Record<string, string> = {
 
 type Corte = "todas" | "escrita" | "leitura";
 
+/** Um episódio já recortado pelo filtro, e se é a vez dele de explicar a rotina. */
+type Bloco = { ep: Episodio; acoes: Execucao[]; explicar: boolean };
+
 export default function Thetys() {
   const { profile } = useAuth();
   const { cadastro } = useApelidosCadastro();
@@ -134,6 +137,11 @@ export default function Thetys() {
   const [soProblema, setSoProblema] = useState(false);
   const [busca, setBusca] = useState("");
   const [filaAberta, setFilaAberta] = useState(true);
+
+  /* Agrupar é heurística (ver `agruparEmEpisodios`), então tem interruptor: quem
+     audita precisa poder ver os passos crus na ordem em que aconteceram. */
+  const [agrupar, setAgrupar] = useState(true);
+  const [fechados, setFechados] = useState<Set<string>>(new Set());
 
   /* Qual linha está com o campo de correção aberto, e o que já foi digitado. */
   const [corrigindo, setCorrigindo] = useState<string | null>(null);
@@ -208,32 +216,59 @@ export default function Thetys() {
     [excecoes],
   );
 
-  /* A trilha filtrada. A busca varre o detalhe JÁ TRADUZIDO, não o JSON cru:
+  /* A trilha filtrada. A busca varre os textos JÁ TRADUZIDOS, não o JSON cru:
      procurar por "Central Lola" precisa achar a linha em que o banco só guardou
-     o uuid do fornecedor. */
+     o uuid do fornecedor, e procurar por "duplicidade" precisa achar a linha em
+     que essa palavra só existe na frase que a tela escreveu. */
   const trilha = useMemo(() => {
     const alvo = busca.trim().toLowerCase();
     return execucoes.filter((e) => {
       if (corte !== "todas" && classeDe(e) !== corte) return false;
       if (soProblema && e.resultado !== "falhou" && e.resultado !== "escalado") return false;
       if (!alvo) return true;
-      const texto = `${rotuloDe(e)} ${detalheDe(e, nomeDe)} ${e.tarefa} ${e.erro ?? ""} ${textoCorrecao(e)}`;
+      const texto = `${rotuloDe(e)} ${narrativaDe(e, nomeDe)} ${detalheDe(e, nomeDe)} `
+        + `${e.tarefa} ${e.erro ?? ""} ${textoCorrecao(e)}`;
       return texto.toLowerCase().includes(alvo);
     });
   }, [execucoes, corte, soProblema, busca, nomeDe]);
 
+  /* Os episódios saem da lista INTEIRA, não da filtrada: a corrente é o que de
+     fato aconteceu, e recortá-la pelo filtro daria um episódio inventado — "3
+     passos" onde houve 8. O filtro esconde linhas DENTRO do episódio, e o
+     cabeçalho diz quantas ficaram de fora. */
+  const episodios = useMemo(() => agruparEmEpisodios(execucoes, nomeDe), [execucoes, nomeDe]);
+
   /* Agrupada por dia local — ver `diaLocal`: por UTC as ações do fim da tarde
-     cairiam no dia seguinte. */
+     cairiam no dia seguinte. O dia de um episódio é o dia em que ele COMEÇOU. */
   const porDia = useMemo(() => {
-    const mapa = new Map<string, Execucao[]>();
-    for (const e of trilha) {
-      const dia = diaLocal(e.executado_em);
+    const visiveis = new Set(trilha.map((e) => e.id));
+    const mapa = new Map<string, Bloco[]>();
+
+    for (const ep of episodios) {
+      const acoes = ep.acoes.filter((a) => visiveis.has(a.id));
+      if (!acoes.length) continue;
+      const dia = diaLocal(ep.inicio);
       const lista = mapa.get(dia) ?? [];
-      lista.push(e);
+      lista.push({ ep, acoes, explicar: false });
       mapa.set(dia, lista);
     }
+
+    /* A explicação da rotina sai por extenso uma vez por dia, no primeiro
+       episódio dela. O ciclo da caixa de entrada roda seis vezes num dia bom, e
+       o mesmo parágrafo de quatro linhas seis vezes seguidas é parede de texto:
+       da segunda em diante, a explicação fica no ícone de ajuda. */
+    for (const blocos of mapa.values()) {
+      const jaExplicadas = new Set<string>();
+      for (const b of blocos) {
+        b.explicar = !jaExplicadas.has(b.ep.titulo);
+        jaExplicadas.add(b.ep.titulo);
+      }
+    }
+
     return [...mapa.entries()].sort((a, b) => b[0].localeCompare(a[0]));
-  }, [trilha]);
+  }, [episodios, trilha]);
+
+  const totalNoDia = (blocos: Bloco[]) => blocos.reduce((n, b) => n + b.acoes.length, 0);
 
   /* ------------------------------------------------------------- os gestos */
 
@@ -442,7 +477,7 @@ export default function Thetys() {
       <section className="space-y-2.5">
         <div className="flex flex-wrap items-center gap-2">
           <h2 className="text-[13.5px] font-semibold">A trilha</h2>
-          <div className="flex items-center gap-1.5">
+          <div className="flex flex-wrap items-center gap-1.5">
             {([["todas", "Tudo"], ["escrita", "Mudou algo"], ["leitura", "Só consultou"]] as [Corte, string][])
               .map(([chave, texto]) => (
                 <button key={chave} className={pill(corte === chave)} onClick={() => setCorte(chave)}>
@@ -451,6 +486,14 @@ export default function Thetys() {
               ))}
             <button className={pill(soProblema)} onClick={() => setSoProblema((v) => !v)}>
               Falhas e escaladas
+            </button>
+            <span className="mx-0.5 h-4 w-px bg-border" />
+            <button
+              className={pill(agrupar)}
+              onClick={() => setAgrupar((v) => !v)}
+              title="Junta as ações seguidas na rotina a que pertencem. Desligado, a trilha volta a ser a lista crua, passo a passo."
+            >
+              Agrupar por rotina
             </button>
           </div>
 
@@ -479,7 +522,7 @@ export default function Thetys() {
               : "Nenhuma ação registrada neste período."}
           </div>
         ) : (
-          porDia.map(([dia, acoes]) => (
+          porDia.map(([dia, blocos]) => (
             <div key={dia} className="card-surface overflow-hidden">
               <div className="flex items-baseline gap-2 border-b border-border bg-muted/40 px-3 py-1.5">
                 <span className="text-[12px] font-semibold">
@@ -487,10 +530,17 @@ export default function Thetys() {
                     weekday: "long", day: "2-digit", month: "long",
                   })}
                 </span>
-                <span className="text-[11px] text-muted-foreground">{acoes.length} ação(ões)</span>
+                <span className="text-[11px] text-muted-foreground">
+                  {totalNoDia(blocos)} ação(ões)
+                  {agrupar && blocos.length !== totalNoDia(blocos) && ` em ${blocos.length} rotina(s)`}
+                </span>
               </div>
-              <ul className="divide-y divide-border">
-                {acoes.map((e) => (
+
+              {blocos.map(({ ep, acoes, explicar }, i) => {
+                /* O cabeçalho do dia já fecha com uma borda embaixo; o primeiro
+                   bloco não desenha a sua, senão sai linha dupla. */
+                const separador = i > 0 ? "border-t border-border" : "";
+                const linhas = acoes.map((e) => (
                   <LinhaAcao
                     key={e.id}
                     e={e}
@@ -503,8 +553,37 @@ export default function Thetys() {
                     onTexto={setTextoCorrecaoNovo}
                     onSalvar={() => salvarCorrecao(e)}
                   />
-                ))}
-              </ul>
+                ));
+
+                /* Um passo solto não é rotina nenhuma: dar-lhe um cabeçalho de
+                   episódio seria moldura em volta de nada. Ele entra na lista
+                   como sempre entrou. */
+                if (!agrupar || ep.acoes.length < 2) {
+                  return (
+                    <ul key={ep.id} className={cn("divide-y divide-border", separador)}>
+                      {linhas}
+                    </ul>
+                  );
+                }
+
+                const aberto = !fechados.has(ep.id);
+                return (
+                  <div key={ep.id} className={separador}>
+                    <BlocoEpisodio
+                      ep={ep}
+                      mostradas={acoes.length}
+                      explicar={explicar}
+                      aberto={aberto}
+                      onAlternar={() => setFechados((antes) => {
+                        const novo = new Set(antes);
+                        if (novo.has(ep.id)) novo.delete(ep.id); else novo.add(ep.id);
+                        return novo;
+                      })}
+                    />
+                    {aberto && <ul className="divide-y divide-border">{linhas}</ul>}
+                  </div>
+                );
+              })}
             </div>
           ))
         )}
@@ -599,6 +678,61 @@ function ItemExcecao({ x, onMover }: {
   );
 }
 
+/* ------------------------------------------------------ uma rotina */
+
+/**
+ * O cabeçalho de um episódio: qual rotina era, de que tratava e em que deu.
+ *
+ * O `porQue` fica aqui, não repetido em cada linha: a explicação de uma rotina é
+ * a mesma para os oito passos dela, e escrita oito vezes vira ruído que ninguém
+ * lê. Na linha o `porQue` da TAREFA vive no `title` do rótulo, para quem quiser
+ * um passo específico. E mesmo aqui ele só sai por extenso na primeira vez do
+ * dia (`explicar`) — nas repetições fica no ícone de ajuda.
+ */
+function BlocoEpisodio({ ep, mostradas, explicar, aberto, onAlternar }: {
+  ep: Episodio;
+  mostradas: number;
+  explicar: boolean;
+  aberto: boolean;
+  onAlternar: () => void;
+}) {
+  const escondidas = ep.acoes.length - mostradas;
+  const porExtenso = aberto && explicar && !!ep.porQue;
+
+  return (
+    <div className="bg-muted/25 px-3 py-2">
+      <button className="flex w-full items-start gap-2 text-left" onClick={onAlternar}>
+        {aberto ? <ChevronDown className="mt-0.5 h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                : <ChevronRight className="mt-0.5 h-3.5 w-3.5 shrink-0 text-muted-foreground" />}
+        <div className="min-w-0 flex-1">
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
+            <span className="num text-[11px] text-muted-foreground">{janelaDoEpisodio(ep)}</span>
+            <span className="text-[12.5px] font-semibold">{ep.titulo}</span>
+            <span className="text-[11px] text-muted-foreground">
+              {ep.acoes.length} passo{ep.acoes.length === 1 ? "" : "s"}
+              {escondidas > 0 && ` · ${escondidas} fora do filtro`}
+            </span>
+            {ep.porQue && !porExtenso && (
+              <span title={ep.porQue} className="cursor-help text-muted-foreground/70">
+                <HelpCircle className="h-3 w-3" />
+              </span>
+            )}
+          </div>
+          <p className="mt-0.5 text-[11.5px] leading-snug text-muted-foreground">
+            {ep.assunto && <span className="text-foreground/80">{ep.assunto} · </span>}
+            {ep.desfecho}
+          </p>
+        </div>
+      </button>
+      {porExtenso && (
+        <p className="ml-5 mt-1 border-l-2 border-border pl-2 text-[11px] leading-relaxed text-muted-foreground">
+          {ep.porQue}
+        </p>
+      )}
+    </div>
+  );
+}
+
 /* --------------------------------------------------------- uma ação */
 
 function LinhaAcao({ e, nomeDe, corrigindo, texto, salvando, onAbrir, onFechar, onTexto, onSalvar }: {
@@ -613,7 +747,9 @@ function LinhaAcao({ e, nomeDe, corrigindo, texto, salvando, onAbrir, onFechar, 
   onSalvar: () => void;
 }) {
   const classe = classeDe(e);
+  const narrativa = narrativaDe(e, nomeDe);
   const detalhe = detalheDe(e, nomeDe);
+  const porQue = porQueDe(e);
   const correcao = textoCorrecao(e);
   const teste = modoDe(e) === "teste";
 
@@ -626,7 +762,16 @@ function LinhaAcao({ e, nomeDe, corrigindo, texto, salvando, onAbrir, onFechar, 
 
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-1.5">
-            <span className="text-[12.5px] font-medium">{rotuloDe(e)}</span>
+            {/* O `porQue` explica o PAPEL da tarefa na rotina e é o mesmo nas 101
+                vezes em que ela consultou um fornecedor — por isso mora no hover
+                do rótulo, e não numa linha repetida cem vezes. */}
+            <span
+              className={cn("text-[12.5px] font-medium",
+                porQue && "cursor-help decoration-dotted underline-offset-4 hover:underline")}
+              title={porQue || undefined}
+            >
+              {rotuloDe(e)}
+            </span>
             <span className={cn("rounded px-1.5 py-0.5 text-[10px]", SELO_CLASSE[classe])}>
               {TEXTO_CLASSE[classe]}
             </span>
@@ -642,8 +787,14 @@ function LinhaAcao({ e, nomeDe, corrigindo, texto, salvando, onAbrir, onFechar, 
             )}
           </div>
 
+          {/* A frase primeiro, o telegrama depois. Quem lê a trilha para entender
+              o que ela fez lê a frase; quem lê para conferir contra o Omie precisa
+              do CNPJ e do código do título, que só existem na linha telegráfica. */}
+          {narrativa && (
+            <p className="mt-1 text-[12px] leading-relaxed text-foreground/90">{narrativa}</p>
+          )}
           {detalhe && (
-            <p className="mt-0.5 text-[11.5px] leading-snug text-muted-foreground">{detalhe}</p>
+            <p className="mt-0.5 text-[11px] leading-snug text-muted-foreground">{detalhe}</p>
           )}
           {e.erro && (
             <p className="mt-0.5 text-[11.5px] leading-snug text-red-600 dark:text-red-400">{e.erro}</p>

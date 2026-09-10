@@ -2,7 +2,8 @@
 // Recebe uma pergunta + snapshot dos projetos/rubricas/compras e responde via Gemini.
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.0";
-import { MODELOS_CASCATA } from "../_shared/gemini.ts";
+import { anotarUsoDireto, MODELOS_CASCATA } from "../_shared/gemini.ts";
+import { freioIA } from "../_shared/ia-orcamento.ts";
 import { requireUser } from "../_shared/auth.ts";
 
 const corsHeaders = {
@@ -122,6 +123,15 @@ Deno.serve(async (req) => {
       generationConfig: { temperature: 0.3 },
     };
 
+    /* Freio antes da cascata — a mesma pergunta tentada em três modelos é um gasto, não
+       três. Esta função chama o Gemini na mão; ver `anotarUsoDireto` em `gemini.ts`. */
+    const bloqueio = await freioIA("texto_apoio");
+    if (bloqueio) {
+      return new Response(JSON.stringify({ error: bloqueio }), {
+        status: 402, headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
+
     const models = MODELOS_CASCATA;
     let text = "";
     let lastStatus = 0;
@@ -141,6 +151,7 @@ Deno.serve(async (req) => {
         continue;
       }
       const data = await r.json();
+      await anotarUsoDireto("texto_apoio", model, data);
       text = data?.candidates?.[0]?.content?.parts?.map((p: any) => p?.text ?? "").join("") ?? "";
       break;
     }

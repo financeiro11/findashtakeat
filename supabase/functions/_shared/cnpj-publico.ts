@@ -143,6 +143,7 @@ export async function consultarCnpjPublico(supa: SupabaseClient, doc: string): P
     }
     try {
       const out = await generateJSON<Partial<CnpjPublico>>({
+        consumidor: "classificacao",
         /* O modelo leve: o trabalho é COPIAR campos de uma ficha para um schema
            fechado, não deliberar. Quem decide se o resultado presta é `valido`,
            em TypeScript, logo abaixo. */

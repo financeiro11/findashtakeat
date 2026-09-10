@@ -165,6 +165,7 @@ Deno.serve(async (req) => {
     }).join("\n\n---\n\n");
 
     const resposta = await generateJSON<{ sugestoes?: Sugerida[] }>({
+      consumidor: "classificacao",
       messages: [
         { role: "system", content: SISTEMA },
         {

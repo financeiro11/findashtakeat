@@ -4,7 +4,7 @@ import {
   rotuloMes, distanciaEmMeses, ultimaCompetenciaFechada, mudancasDeArea, areaAtual,
   fixoDeReferencia, compararComPares, custoPorArea, competenciasFechadas, abasDaPlanilha,
   FILTROS_VAZIOS, filtrosLigados, montarLinhas, filtrarPorFaixa, ordenarLinhas,
-  recortarAte, pessoasSemTime,
+  recortarAte, pessoasSemTime, custoNoAno, semReajusteHaMaisTempo, faixaPorCargo,
   type MesRemuneracao, type PessoaRemuneracao,
 } from "./remuneracao";
 
@@ -1213,5 +1213,168 @@ describe("quem está sem time", () => {
     );
     expect(p.ehPessoa).toBe(false);
     expect(p.sugestao).toBe("Suporte");
+  });
+});
+
+/* ─── O que ficou no lugar de "Fichas do RH" e "Por área" (10/09/2026) ───
+   Os dois cards não serviam a um Head: a pendência do RH ele não resolve, e a
+   tabela por área num time só dizia "Tecnologia 6, Administrativo 0" com uma
+   variação de +798% que só significava que o time não existia em dez/23. */
+
+describe("custo no ano", () => {
+  const p = (id: string, meses: MesRemuneracao[]) => pessoa({ id, meses });
+
+  /* Ano-CALENDÁRIO do mês em foco, não os últimos doze meses: olhando dez/25 o
+     "no ano" é 2025, e 2026 não existe ainda. */
+  it("soma só o ano do mês em foco, até ele", () => {
+    const gente = [p("a", [
+      mes("2025-11-01", 1000), mes("2025-12-01", 1000),
+      mes("2026-01-01", 2000), mes("2026-02-01", 2000), mes("2026-03-01", 2000),
+    ])];
+    expect(custoNoAno(gente, "2026-02-01")).toEqual({ total: 4000, meses: 2 });
+    expect(custoNoAno(gente, "2025-12-01")).toEqual({ total: 2000, meses: 2 });
+  });
+
+  it("conta meses distintos, não linhas", () => {
+    const gente = [
+      p("a", [mes("2026-01-01", 1000)]),
+      p("b", [mes("2026-01-01", 3000)]),
+    ];
+    expect(custoNoAno(gente, "2026-01-01")).toEqual({ total: 4000, meses: 1 });
+  });
+
+  it("ano sem nada dá zero, não quebra", () => {
+    expect(custoNoAno([p("a", [mes("2024-05-01", 900)])], "2026-08-01"))
+      .toEqual({ total: 0, meses: 0 });
+    expect(custoNoAno([], "2026-08-01")).toEqual({ total: 0, meses: 0 });
+  });
+});
+
+describe("quem está há mais tempo sem reajuste", () => {
+  /* Monta a linha pelo caminho de verdade (`montarLinhas`), senão o teste
+     valida um `resumo` inventado à mão em vez da leitura que a tela faz. */
+  const linhasDe = (ps: PessoaRemuneracao[], hoje = new Date("2026-08-20")) =>
+    montarLinhas(ps, new Map(), hoje);
+
+  /* O primeiro mês NÃO pode ser o mais baixo: `degrausDoFixo` descarta a subida
+     inicial de propósito, porque mês de entrada é proporcional aos dias e
+     contá-lo daria "aumento de 180%" no segundo mês de casa. Por isso a série
+     começa com três meses no mesmo valor antes do reajuste. */
+  const comReajuste = (id: string, nome: string, ate: string) => pessoa({
+    id, nome,
+    meses: [
+      mes("2025-10-01", 3000), mes("2025-11-01", 3000), mes("2025-12-01", 3000),
+      mes("2026-01-01", 3000),
+      mes("2026-02-01", 4000), // o reajuste
+      ...["2026-03-01", "2026-04-01", "2026-05-01", "2026-06-01", "2026-07-01", "2026-08-01"]
+        .filter((m) => m <= ate).map((m) => mes(m, 4000)),
+    ],
+  });
+
+  it("aponta a pessoa e os meses", () => {
+    const r = semReajusteHaMaisTempo(linhasDe([
+      comReajuste("a", "Antiga", "2026-08-01"),   // reajuste em fev, pago até ago = 6
+      comReajuste("b", "Recente", "2026-04-01"),  // reajuste em fev, pago até abr = 2
+    ]));
+    expect(r?.nome).toBe("Antiga");
+    expect(r?.meses).toBe(6);
+  });
+
+  /* Quem NUNCA teve reajuste não está "há muito tempo sem" — está no primeiro
+     salário. Sem esta guarda o recém-contratado lideraria o ranking no próprio
+     mês de entrada. */
+  it("ignora quem nunca teve reajuste", () => {
+    const semNenhum = pessoa({ id: "novo", nome: "Novo", meses: [mes("2026-08-01", 5000)] });
+    expect(semReajusteHaMaisTempo(linhasDe([semNenhum]))).toBeNull();
+
+    const r = semReajusteHaMaisTempo(linhasDe([semNenhum, comReajuste("a", "Antiga", "2026-08-01")]));
+    expect(r?.nome).toBe("Antiga");
+  });
+
+  it("balde de área não recebe reajuste e fica fora", () => {
+    const balde = { ...comReajuste("x", "rem produto", "2026-08-01"), eh_pessoa: false };
+    expect(semReajusteHaMaisTempo(linhasDe([balde]))).toBeNull();
+  });
+
+  it("conta quantos passaram do limiar", () => {
+    const r = semReajusteHaMaisTempo(linhasDe([
+      comReajuste("a", "A", "2026-08-01"),
+      comReajuste("b", "B", "2026-08-01"),
+    ]), 5);
+    expect(r?.acimaDoLimiar).toBe(2);
+    expect(r?.limiar).toBe(5);
+  });
+});
+
+describe("faixa por cargo", () => {
+  const noCargo = (id: string, nome: string, cargo: string, fixo: number) =>
+    pessoa({ id, nome, cargo, meses: [mes("2026-08-01", fixo)] });
+
+  const linhas = (ps: PessoaRemuneracao[]) => montarLinhas(ps, new Map(), new Date("2026-08-20"));
+
+  /* O caso real que motivou o card: dois Product Designers com 20 meses de
+     diferença de casa e R$ 250 entre eles. */
+  it("dá min, max e mediana, e marca a dispersão", () => {
+    const f = faixaPorCargo(linhas([
+      noCargo("a", "Maria", "Product Designer", 4250),
+      noCargo("b", "Clayderman", "Product Designer", 4000),
+      noCargo("c", "Buteri", "Head de Produto", 9500),
+    ]), "2026-08-01");
+
+    // Do cargo mais caro para o mais barato.
+    expect(f.map((x) => x.cargo)).toEqual(["Head de Produto", "Product Designer"]);
+
+    const designers = f[1];
+    expect(designers.min).toBe(4000);
+    expect(designers.max).toBe(4250);
+    expect(designers.mediana).toBe(4125);
+    expect(designers.temDispersao).toBe(true);
+    // Dentro do cargo, do menor para o maior.
+    expect(designers.pessoas.map((p) => p.nome)).toEqual(["Clayderman", "Maria"]);
+
+    expect(f[0].temDispersao).toBe(false);  // um só
+  });
+
+  /* Os dois Product Managers da vida real ganham igual: há duas pessoas e
+     nenhuma dispersão, e a tela precisa saber a diferença. */
+  it("mesmo valor não é dispersão", () => {
+    const f = faixaPorCargo(linhas([
+      noCargo("a", "Jonas", "Product Manager", 6600),
+      noCargo("b", "João", "Product Manager", 6600),
+    ]), "2026-08-01");
+    expect(f[0].temDispersao).toBe(false);
+    expect(f[0].pessoas).toHaveLength(2);
+  });
+
+  it("agrupa cargo por normalização, não por texto cru", () => {
+    const f = faixaPorCargo(linhas([
+      noCargo("a", "A", "Product  Manager", 6000),
+      noCargo("b", "B", "product manager", 7000),
+    ]), "2026-08-01");
+    expect(f).toHaveLength(1);
+    expect(f[0].pessoas).toHaveLength(2);
+  });
+
+  /* O PRÓ-LABORE ENTRA no fixo: o Miguel recebe salário e pró-labore no mesmo
+     mês, e a régua do cargo dele sem o pró-labore mostraria metade. */
+  it("soma o pró-labore ao fixo", () => {
+    const socio = pessoa({
+      id: "s", nome: "Sócio", cargo: "CEO",
+      meses: [{ ...mes("2026-08-01", 22500), prolabore: 4361, total: 26861 }],
+    });
+    expect(faixaPorCargo(linhas([socio]), "2026-08-01")[0].max).toBe(26861);
+  });
+
+  it("quem não recebeu fixo no mês não entra na régua", () => {
+    const soComissao = pessoa({
+      id: "v", nome: "Vendedor", cargo: "Closer",
+      meses: [mes("2026-08-01", 0, 9000)],
+    });
+    expect(faixaPorCargo(linhas([soComissao]), "2026-08-01")).toEqual([]);
+  });
+
+  it("sem cargo não tem régua a que pertencer", () => {
+    const semCargo = pessoa({ id: "x", nome: "X", cargo: null, meses: [mes("2026-08-01", 5000)] });
+    expect(faixaPorCargo(linhas([semCargo]), "2026-08-01")).toEqual([]);
   });
 });

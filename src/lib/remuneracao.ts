@@ -1033,6 +1033,144 @@ export function totaisDoMes(pessoas: PessoaRemuneracao[], competencia: string) {
   };
 }
 
+/**
+ * Quanto a folha custou NO ANO, até o mês em foco.
+ *
+ * Acumulado do ano-calendário do próprio mês — olhando dez/25, o "no ano" é
+ * jan–dez/25, não os últimos doze meses e não 2026. É a mesma disciplina do
+ * resto da tela: o seletor de mês é um corte no tempo, e um número rotulado
+ * "no ano" que somasse o futuro do mês escolhido seria a mentira que o
+ * `recortarAte` existe para evitar.
+ *
+ * Inclui quem foi pago e depois saiu, pelo mesmo motivo de `totaisDoMes`: quem
+ * custou no ano, custou.
+ */
+export function custoNoAno(
+  pessoas: PessoaRemuneracao[],
+  mes: string,
+): { total: number; meses: number } {
+  const ano = mes.slice(0, 4);
+  let total = 0;
+  const vistos = new Set<string>();
+  for (const p of pessoas) {
+    for (const m of p.meses ?? []) {
+      if (m.competencia.slice(0, 4) !== ano || m.competencia > mes) continue;
+      total += num(m.total);
+      vistos.add(m.competencia);
+    }
+  }
+  return { total, meses: vistos.size };
+}
+
+/**
+ * Quem está há mais tempo sem reajuste — o card que pede ação.
+ *
+ * Substituiu "Fichas do RH atrasadas" na visão de líder: aquela é pendência do
+ * RH, e um Head não tem como resolvê-la. Esta ele resolve.
+ *
+ * Só entra quem TEM histórico de reajuste (`mesesSemReajuste` não nulo): quem
+ * nunca teve um não está "há muito tempo sem", está no primeiro salário — e
+ * misturar os dois faria o recém-contratado liderar o ranking do próprio mês
+ * de entrada.
+ */
+export type SemReajuste = {
+  /** Meses desde o último reajuste de quem está há mais tempo sem. */
+  meses: number;
+  nome: string;
+  cargo: string | null;
+  /** Quantos passaram do limiar — o número que transforma um caso em padrão. */
+  acimaDoLimiar: number;
+  limiar: number;
+};
+
+/** A partir de quantos meses sem reajuste a coisa vira assunto. */
+export const LIMIAR_SEM_REAJUSTE = 12;
+
+export function semReajusteHaMaisTempo(
+  linhas: LinhaPessoa[],
+  limiar = LIMIAR_SEM_REAJUSTE,
+): SemReajuste | null {
+  let pior: LinhaPessoa | null = null;
+  let acima = 0;
+  for (const l of linhas) {
+    const m = l.resumo.mesesSemReajuste;
+    if (m == null) continue;
+    if (!l.pessoa.eh_pessoa) continue;  // balde de área não recebe reajuste
+    if (m >= limiar) acima++;
+    if (!pior || m > (pior.resumo.mesesSemReajuste ?? -1)) pior = l;
+  }
+  if (!pior || pior.resumo.mesesSemReajuste == null) return null;
+  return {
+    meses: pior.resumo.mesesSemReajuste,
+    nome: pior.pessoa.nome,
+    cargo: pior.pessoa.cargo,
+    acimaDoLimiar: acima,
+    limiar,
+  };
+}
+
+/**
+ * A faixa de cada cargo — a régua do time, do menor ao maior fixo.
+ *
+ * Ficou no lugar da tabela "Por área", que num recorte de um time só dizia
+ * "Tecnologia 6, Administrativo 0, Onboarding 0" e uma variação de +798% que só
+ * significava que o time não existia em dez/23.
+ *
+ * O FIXO, não o total: comparar cargos pelo total misturaria a comissão de
+ * quem vende com o salário de quem não tem variável, e o Product Designer
+ * apareceria "abaixo" de um vendedor num mês bom. Para a comissão existe o card
+ * de comissão sobre o total.
+ */
+export type PessoaNaFaixa = { id: string; nome: string; fixo: number; tempoDeCasa: number | null };
+
+export type FaixaDeCargo = {
+  cargo: string;
+  min: number;
+  max: number;
+  mediana: number;
+  pessoas: PessoaNaFaixa[];
+  /** `true` quando há mais de uma pessoa e elas não ganham igual. */
+  temDispersao: boolean;
+};
+
+export function faixaPorCargo(linhas: LinhaPessoa[], mes: string): FaixaDeCargo[] {
+  const porCargo = new Map<string, { rotulo: string; gente: PessoaNaFaixa[] }>();
+
+  for (const l of linhas) {
+    if (!l.pessoa.eh_pessoa) continue;
+    const rotulo = (l.pessoa.cargo ?? "").trim();
+    if (!rotulo) continue;  // sem cargo não há régua a que pertencer
+    const m = l.pessoa.meses?.find((x) => x.competencia === mes);
+    // O fixo do MÊS EM FOCO, e não o `fixoAtual` do resumo: numa viagem no
+    // tempo o resumo já vem recortado, mas quem não recebeu fixo no mês (só
+    // comissão, ou entrou depois) não tem posição nesta régua.
+    const fixo = num(m?.fixo) + num(m?.prolabore);
+    if (fixo <= 0) continue;
+    const balde = porCargo.get(normCargo(rotulo)) ?? { rotulo, gente: [] };
+    balde.gente.push({ id: l.pessoa.id, nome: l.pessoa.nome, fixo, tempoDeCasa: l.tempoDeCasa });
+    porCargo.set(normCargo(rotulo), balde);
+  }
+
+  return [...porCargo.values()]
+    .map(({ rotulo, gente }) => {
+      const ordenada = [...gente].sort((a, b) => a.fixo - b.fixo);
+      const vals = ordenada.map((g) => g.fixo);
+      const meio = Math.floor(vals.length / 2);
+      return {
+        cargo: rotulo,
+        min: vals[0],
+        max: vals[vals.length - 1],
+        mediana: vals.length % 2 ? vals[meio] : (vals[meio - 1] + vals[meio]) / 2,
+        pessoas: ordenada,
+        temDispersao: vals.length > 1 && vals[0] !== vals[vals.length - 1],
+      };
+    })
+    // Do cargo mais caro para o mais barato: é a leitura de "onde está o
+    // dinheiro", e põe a diretoria no topo em vez de espalhá-la por ordem
+    // alfabética.
+    .sort((a, b) => b.max - a.max || a.cargo.localeCompare(b.cargo, "pt-BR"));
+}
+
 export type CelulaPlanilha = string | number | null;
 
 /** Uma aba da planilha, já descrita: o que tem, o que é dinheiro, que largura. */

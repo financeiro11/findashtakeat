@@ -30,14 +30,14 @@ import { comValorExato } from "@/components/ValorExato";
 import { valorExato } from "@/lib/valor";
 import { mesesDeCasa, parseISO } from "@/lib/rescisao";
 import {
-  abasDaPlanilha, compararComPares, competenciasFechadas, custoPorArea,
-  degrausDoFixo, faixaVazia,
+  abasDaPlanilha, compararComPares, competenciasFechadas, custoNoAno, custoPorArea,
+  degrausDoFixo, faixaPorCargo, faixaVazia,
   filtrarPessoas, filtrarPorFaixa, filtrosLigados, montarLinhas, ordenarLinhas,
-  pessoasSemTime,
+  pessoasSemTime, semReajusteHaMaisTempo,
   recortarAte, resumoDaPessoa, rotuloMes, totaisDoMes, ultimaCompetenciaFechada,
   FILTROS_VAZIOS,
-  type ColunaFaixa, type ColunaOrdenavel, type Faixa, type Filtros, type Ordem,
-  type PainelRemuneracao, type Pares, type PessoaRemuneracao, type PessoaSemTime,
+  type ColunaFaixa, type ColunaOrdenavel, type Faixa, type FaixaDeCargo, type Filtros,
+  type Ordem, type PainelRemuneracao, type Pares, type PessoaRemuneracao, type PessoaSemTime,
 } from "@/lib/remuneracao";
 import { normalize } from "@/lib/normalize";
 
@@ -449,6 +449,108 @@ function FilaSemTime({
   );
 }
 
+/* ─────────────────────────── Faixa por cargo ───────────────────────────
+   A régua do time: cada cargo numa linha, com as pessoas posicionadas entre o
+   menor e o maior fixo do PRÓPRIO cargo — não entre o menor e o maior da tela.
+   Normalizar por cargo é o que faz a pergunta ser "quem está fora da linha dos
+   pares", e não "quem ganha mais", que já é a ordenação da tabela.
+
+   O caso que motivou o card: dois Product Designers com R$ 250 entre eles e 20
+   meses de diferença de casa — a mais antiga é a que ganha menos. Sem esta
+   leitura isso mora numa coluna da tabela e ninguém repara.
+
+   Cargo com uma pessoa só não tem régua: mostra o valor e nada mais, porque uma
+   bolinha sozinha numa barra sugere uma faixa que não existe. */
+
+function FaixaPorCargo({ faixas, mes }: { faixas: FaixaDeCargo[]; mes: string | null }) {
+  return (
+    <div className="card-surface overflow-hidden p-4">
+      <div className="eyebrow">Faixa por cargo · {rotuloMes(mes ?? "")}</div>
+
+      {!faixas.length ? (
+        <p className="py-10 text-center text-[12px] text-muted-foreground">
+          Ninguém com cargo e fixo neste mês.
+        </p>
+      ) : (
+        <div className="mt-2 max-h-[210px] space-y-2.5 overflow-y-auto pr-1">
+          {faixas.map((f) => {
+            const amplitude = f.max - f.min;
+            return (
+              <div key={f.cargo}>
+                <div className="flex items-baseline justify-between gap-2">
+                  <span className="truncate text-xs font-medium">{f.cargo}</span>
+                  <span className="num shrink-0 text-[11px] text-muted-foreground">
+                    {f.temDispersao
+                      ? <>{fmtBRL(f.min)} – {fmtBRL(f.max)}</>
+                      : fmtBRL(f.max)}
+                  </span>
+                </div>
+
+                {f.temDispersao ? (
+                  <>
+                    {/* A barra vai do menor ao maior DESTE cargo. Cada pessoa é
+                        um traço na posição dela; quem está no piso encosta na
+                        esquerda, quem está no teto na direita. */}
+                    <div className="relative mt-1 h-[18px]">
+                      <div className="absolute inset-x-0 top-[8px] h-[3px] rounded-full bg-secondary" />
+                      {f.pessoas.map((p) => {
+                        const pos = amplitude > 0 ? ((p.fixo - f.min) / amplitude) * 100 : 50;
+                        return (
+                          <div
+                            key={p.id}
+                            className="absolute top-[3px] h-[13px] w-[3px] -translate-x-1/2 rounded-full bg-[hsl(var(--serie-fixo))]"
+                            style={{ left: `${pos}%` }}
+                            title={`${p.nome} — ${fmtBRLStr(p.fixo)}${
+                              p.tempoDeCasa != null ? ` · ${p.tempoDeCasa} meses de casa` : ""
+                            }`}
+                          />
+                        );
+                      })}
+                    </div>
+                    <div className="mt-0.5 flex items-baseline justify-between gap-2 text-[10.5px] text-muted-foreground">
+                      {/* Quem está no PISO da faixa, com o tempo de casa ao
+                          lado: é a combinação que vira conversa. Um piso de
+                          três anos de casa não é o mesmo que um piso de três
+                          meses. */}
+                      <span className="truncate">
+                        piso: {f.pessoas[0].nome}
+                        {f.pessoas[0].tempoDeCasa != null && ` · ${mesesEmTexto(f.pessoas[0].tempoDeCasa)} de casa`}
+                      </span>
+                      <span className="num shrink-0">
+                        {f.pessoas.length} pessoas · mediana {fmtBRLStr(f.mediana)}
+                      </span>
+                    </div>
+                  </>
+                ) : (
+                  <div className="mt-0.5 text-[10.5px] text-muted-foreground">
+                    {f.pessoas.length === 1
+                      ? <>{f.pessoas[0].nome}
+                          {f.pessoas[0].tempoDeCasa != null && ` · ${mesesEmTexto(f.pessoas[0].tempoDeCasa)} de casa`}</>
+                      : `${f.pessoas.length} pessoas, todas no mesmo valor`}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      <p className="mt-2 text-[10px] text-muted-foreground">
+        Fixo do mês (com pró-labore), por cargo. A barra é a faixa do próprio cargo —
+        quem está à esquerda é o piso dele, não o da empresa.
+      </p>
+    </div>
+  );
+}
+
+/** "20 meses" → "1a8m". O tempo de casa aparece ao lado de nome, e cabe pouco. */
+function mesesEmTexto(meses: number): string {
+  if (meses < 12) return `${meses}m`;
+  const anos = Math.floor(meses / 12);
+  const resto = meses % 12;
+  return `${anos}a${resto ? `${resto}m` : ""}`;
+}
+
 /* ─────────────────────────── Filtros ─────────────────────────── */
 
 const FILTROS_PADRAO: Filtros = FILTROS_VAZIOS;
@@ -782,6 +884,31 @@ export default function Remuneracao() {
     [pessoasDoPeriodo, mesesDaSerie, mes],
   );
 
+  /* Quanto a folha custou NO ANO até o mês em foco. Vai embaixo do custo do mês,
+     no mesmo card: a pergunta "e no ano?" vem imediatamente depois de "quanto
+     custou este mês", e hoje ela exigia somar doze barras do gráfico à mão.
+     Mesmo conjunto do KPI (`pessoasDoPeriodo`), então os dois números falam da
+     mesma folha. */
+  const noAno = useMemo(
+    () => (mes ? custoNoAno(pessoasDoPeriodo, mes) : null),
+    [pessoasDoPeriodo, mes],
+  );
+
+  /* ── O que ficou no lugar de "Fichas do RH" e "Por área" na visão de líder ──
+     Aquela é pendência do RH, que um Head não resolve; esta é dele. E a tabela
+     por área, num recorte de um time, dizia "Tecnologia 6, Administrativo 0" com
+     uma variação de +798% que só significava que o time não existia em dez/23.
+
+     As duas leem `linhas` — o recorte JÁ filtrado e ordenado da tela —, não o
+     painel cru: "sem reajuste" e "faixa do cargo" são leituras de quem está na
+     lista, e responder sobre gente que o filtro tirou seria responder outra
+     pergunta. */
+  const semReajuste = useMemo(() => semReajusteHaMaisTempo(linhas), [linhas]);
+  const faixas = useMemo(
+    () => (mes ? faixaPorCargo(linhas, mes) : []),
+    [linhas, mes],
+  );
+
   /* A série do gráfico do topo: o custo do período, decomposto nas mesmas três
      séries da ficha. `iso` viaja junto do rótulo para a barra saber que mês ela
      é quando alguém clica nela. */
@@ -1039,6 +1166,14 @@ export default function Remuneracao() {
               <KpiCard
                 label={`Custo de pessoas · ${rotuloMes(mes)}`}
                 value={fmtBRL(totais.total)}
+                /* O acumulado do ano logo abaixo do mês: é a pergunta seguinte,
+                   e somá-la à mão exigia ler doze barras do gráfico. Ano-
+                   calendário do mês em foco — em dez/25 é 2025, não os últimos
+                   doze meses. */
+                subline={noAno && noAno.meses > 0
+                  ? <>no ano até {rotuloMes(mes)}: {fmtBRL(noAno.total)}
+                      <span className="text-muted-foreground"> · {noAno.meses} {noAno.meses === 1 ? "mês" : "meses"}</span></>
+                  : undefined}
                 stats={[
                   { label: "Fixo", value: fmtBRL(totais.fixo) },
                   { label: "Variável", value: fmtBRL(totais.premiacao) },
@@ -1060,13 +1195,35 @@ export default function Remuneracao() {
                 value={totais.total ? `${Math.round((totais.premiacao / totais.total) * 100)}%` : "—"}
                 subline={`${fmtBRLStr(totais.premiacao)} de ${fmtBRLStr(totais.total)}`}
               />
-              <KpiCard
-                label="Fichas do RH atrasadas"
-                value={String(fichasAtrasadas)}
-                valueTone={fichasAtrasadas > 0 ? "neg" : "neutral"}
-                subline="contrato no RH ≠ pago no Omie"
-                footnote="O Omie manda. A ficha é que precisa ser corrigida."
-              />
+              {/* O QUARTO CARD MUDA COM O PÚBLICO.
+                  Quem vê a empresa inteira (financeiro, diretoria, RH) fica com
+                  a pendência do RH — lá ela tem dono e alguém a conserta. O
+                  líder fica com o tempo sem reajuste, que é o que ELE resolve:
+                  a ficha desatualizada de outra pessoa não é ação dele, e um
+                  card que não vira ação vira ruído. */}
+              {vejoTudo ? (
+                <KpiCard
+                  label="Fichas do RH atrasadas"
+                  value={String(fichasAtrasadas)}
+                  valueTone={fichasAtrasadas > 0 ? "neg" : "neutral"}
+                  subline="contrato no RH ≠ pago no Omie"
+                  footnote="O Omie manda. A ficha é que precisa ser corrigida."
+                />
+              ) : (
+                <KpiCard
+                  label="Mais tempo sem reajuste"
+                  value={semReajuste ? `${semReajuste.meses} ${semReajuste.meses === 1 ? "mês" : "meses"}` : "—"}
+                  valueTone={semReajuste && semReajuste.meses >= semReajuste.limiar ? "neg" : "neutral"}
+                  subline={semReajuste
+                    ? <>{semReajuste.nome}{semReajuste.cargo ? ` · ${semReajuste.cargo}` : ""}</>
+                    : "ninguém do time tem histórico de reajuste ainda"}
+                  footnote={semReajuste
+                    ? (semReajuste.acimaDoLimiar > 0
+                        ? `${semReajuste.acimaDoLimiar} ${semReajuste.acimaDoLimiar === 1 ? "pessoa passou" : "pessoas passaram"} de ${semReajuste.limiar} meses sem reajuste.`
+                        : `Ninguém passou de ${semReajuste.limiar} meses.`)
+                    : "Quem nunca teve reajuste não entra: está no primeiro salário, não parado."}
+                />
+              )}
             </div>
           )}
 
@@ -1110,6 +1267,16 @@ export default function Remuneracao() {
                 </div>
               </div>
 
+              {/* O BLOCO DA DIREITA TAMBÉM MUDA COM O PÚBLICO.
+                  "Por área" só diz alguma coisa com a empresa inteira, onde há
+                  nove áreas e cada uma tem curva. Recortado num time, virava
+                  "Tecnologia 6, Administrativo 0, Onboarding 0" com um +798% que
+                  só significava que o time não existia em dez/23. No lugar dele,
+                  a régua dos cargos DO TIME — que é a pergunta que um Head faz
+                  olhando a folha: quem está fora da linha do próprio cargo. */}
+              {!vejoTudo ? (
+                <FaixaPorCargo faixas={faixas} mes={mes} />
+              ) : (
               <div className="card-surface overflow-hidden p-4">
                 <div className="eyebrow">
                   Por área · {rotuloMes(mesesDaSerie[0])} a{" "}
@@ -1149,6 +1316,7 @@ export default function Remuneracao() {
                   em vermelho — é despesa, não resultado.
                 </p>
               </div>
+              )}
             </div>
           )}
 

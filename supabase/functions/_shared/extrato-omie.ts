@@ -269,6 +269,72 @@ export function agruparPorDia(linhas: LinhaExtrato[]): LancamentoDiario[] {
     a.dia === b.dia ? SIGLA[a.natureza].localeCompare(SIGLA[b.natureza]) : a.dia.localeCompare(b.dia));
 }
 
+/* ==========================================================================
+ * LINHA A LINHA — a exigência da contabilidade.
+ *
+ * 10/09/2026, Alessandra Azevedo (Hult): "os lançamentos no Omie devem ser um
+ * espelho do Asaas... todas as movimentações lançadas no Asaas também devem
+ * constar no Omie, com os mesmos valores e informações". O resumo diário
+ * (`agruparPorDia`) deixa de bastar: cada linha do extrato vira um lançamento.
+ *
+ * A chave de integração é o **`id_transacao` do próprio Asaas** (`ftn_...`, 16
+ * caracteres, cabe nos 20 do `cCodIntLanc`). Não é só conveniente: é a única
+ * chave que sobrevive a qualquer reprocessamento, porque nasce do outro lado.
+ *
+ * O `cObs` leva o histórico ORIGINAL, sem reescrita — é o "com as mesmas
+ * informações" do pedido, e é o que permite alguém no ERP achar a fatura.
+ *
+ * A categoria sai da mesma escada de sempre (`classificar` + `categoriaDe`), a
+ * mesma do resumo diário e a mesma do painel: taxa vai na categoria real, o
+ * resto no par neutro. Uma régua só para as três leituras.
+ * ========================================================================== */
+
+export type LancamentoLinha = {
+  /** `cCodIntLanc` no Omie e chave primária aqui. */
+  id_transacao: string;
+  /** 'YYYY-MM-DD' */
+  dia: string;
+  natureza: Natureza;
+  categoria: string;
+  /** ASSINADO: positivo entra na conta, negativo sai. */
+  valor: number;
+  /** O histórico do Asaas, como ele veio. */
+  observacao: string;
+};
+
+/** Teto do `cObs` — o Omie não documenta limite, e frase gigante não ajuda ninguém. */
+const OBS_MAX = 300;
+
+/**
+ * Uma linha do extrato → um lançamento do Omie. Linha sem id, sem data válida
+ * ou de valor zero fica de fora: não há o que espelhar, e um lançamento de zero
+ * só sujaria o razão que a contabilidade vai ler.
+ */
+export function linhasParaOmie(linhas: LinhaExtrato[]): LancamentoLinha[] {
+  const out: LancamentoLinha[] = [];
+  for (const l of linhas) {
+    const id = String(l.id_transacao ?? "").trim();
+    const dia = String(l.data_movimento ?? "").slice(0, 10);
+    const bruto = Math.abs(Number(l.valor) || 0);
+    if (!id || !/^\d{4}-\d{2}-\d{2}$/.test(dia) || !bruto) continue;
+
+    const natureza = classificar(l.historico);
+    const valor = cent(ehCredito(l.tipo) ? bruto : -bruto);
+    out.push({
+      id_transacao: id,
+      dia,
+      natureza,
+      categoria: categoriaDe(natureza, valor),
+      valor,
+      observacao: String(l.historico ?? ROTULO[natureza]).slice(0, OBS_MAX),
+    });
+  }
+  // Ordem estável: por dia e, dentro do dia, pelo id — a fila de envio e o
+  // relatório precisam sair sempre iguais para dar para comparar duas rodadas.
+  return out.sort((a, b) =>
+    a.dia === b.dia ? a.id_transacao.localeCompare(b.id_transacao) : a.dia.localeCompare(b.dia));
+}
+
 /** Soma assinada do que o Asaas movimentou — é o que o saldo do Omie tem de andar. */
 export const liquidoDe = (ls: LancamentoDiario[]): number =>
   cent(ls.reduce((s, l) => s + l.valor, 0));

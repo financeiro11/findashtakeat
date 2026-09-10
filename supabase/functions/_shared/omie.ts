@@ -566,10 +566,26 @@ export async function listarMovimentosExcluindoContas(
   const contas = await listarCodigosDeContaCorrente();
   const alvo = contas.filter((c) => !fora.has(c));
   const out: any[] = [];
+  let i = 0;
   // Serial: o Omie tem trava POR MÉTODO, e duas listagens em voo se recusam.
   for (const cc of alvo) {
+    /* CADA CONTA PEDE UM TAMANHO DE PÁGINA DIFERENTE, e isso não é capricho.
+     *
+     * Reproduzido em 10/09/2026: varrendo conta a conta, as onze primeiras
+     * passam e a décima segunda falha com "Consumo redundante detectado" —
+     * sempre logo depois de uma conta que devolve ZERO registros. Duas consultas
+     * seguidas que não retornam nada o Omie não distingue, mesmo com `nCodCC`
+     * diferente, e a segunda é recusada.
+     *
+     * Insistir seria pior que inútil: repetir a chamada recusada reinicia a
+     * janela de 60s, e na 10ª requisição com erro o bloqueio é de 30 MINUTOS.
+     * Variar o tamanho da página torna cada requisição distinta por construção,
+     * e custa nada — o número de páginas muda em um, no máximo. */
+    const tamanhoDaConta = 500 - (i++ % 50);
     try {
-      const parte = await listarMovimentos({ nCodCC: Number(cc) }, limitePaginas);
+      const parte = await listarMovimentos(
+        { nCodCC: Number(cc) }, limitePaginas, [tamanhoDaConta, 100, 50],
+      );
       for (const m of parte) out.push(m);
     } catch (e) {
       /* Conta que o cadastro lista mas o movimento não reconhece: não há o que
@@ -590,6 +606,11 @@ export async function listarMovimentosExcluindoContas(
 export async function listarMovimentos(
   filtros: Record<string, unknown> = {},
   limitePaginas = 200,
+  /* Tamanhos de página a tentar, do maior para o menor. Parametrizável porque a
+     varredura conta a conta precisa que contas diferentes usem tamanhos
+     diferentes — duas consultas seguidas que devolvem ZERO registros o Omie
+     recusa como redundantes, mesmo com nCodCC diferente. */
+  tamanhos: number[] = [500, 100, 50],
 ): Promise<any[]> {
   // Uma passada completa com um tamanho de página fixo.
   // Nota: `cExibirDadosCategoria` NÃO faz parte do request de financas/mf/ListarMovimentos
@@ -617,7 +638,6 @@ export async function listarMovimentos(
   // listagem inteira com página menor — como é só leitura, repetir é seguro, e recomeçar
   // do zero evita a aritmética de "de qual registro eu parei", que erraria calado e
   // duplicaria ou perderia movimentos (corrompendo o casamento com o cartão).
-  const tamanhos = [500, 100, 50];
   let ultimoErro: unknown = null;
 
   for (const n of tamanhos) {

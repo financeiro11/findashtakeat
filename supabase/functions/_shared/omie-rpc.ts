@@ -81,6 +81,24 @@ export async function omieCall<T = any>(
     const msg = fault || (typeof data === "string" ? data : JSON.stringify(data));
     lastErr = new Error(`Omie ${call} [${res.status}]: ${msg}`);
 
+    /* CONSUMO REDUNDANTE NÃO SE REPETE — NUNCA.
+     *
+     * "Consumo redundante detectado. Aguarde 43 segundos" quer dizer que ESTA
+     * chamada, idêntica, já foi feita há menos de 60s. Repetir dentro da janela
+     * não só falha de novo: **reinicia o contador**, estendendo o bloqueio por
+     * mais 60s a partir da última tentativa com erro. E na 10ª requisição com
+     * erro para a mesma combinação (App + IP + Método) o Omie bloqueia por 30
+     * MINUTOS.
+     *
+     * Ou seja, o backoff — exponencial ou obedecendo ao tempo pedido — é o que
+     * CONSTRÓI o bloqueio. Medido em campo em 10/09/2026: três tentativas de
+     * refazer a mesma varredura em quatro minutos mantiveram a janela sempre
+     * aberta, com o tempo pedido subindo de 43s para 58s.
+     *
+     * Sair na hora é barato: a resposta que se queria já foi obtida por alguém
+     * há segundos, e a próxima rodada do cron — daqui a horas — passa limpa. */
+    if (/redundante|redundant/i.test(msg)) throw lastErr;
+
     if (ehTransitorio(msg) && attempt < TENTATIVAS - 1) {
       // backoff exponencial: 1,2s · 2,4s · 4,8s · 9,6s
       await new Promise((r) => setTimeout(r, 1200 * 2 ** attempt));

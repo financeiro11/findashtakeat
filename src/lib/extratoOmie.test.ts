@@ -6,6 +6,7 @@ import {
   categoriaDe,
   codIntLanc,
   contrapartidasNoPago,
+  linhasParaOmie,
   dataOmie,
   liquidoDe,
   CATEGORIA_ENTRADA,
@@ -200,6 +201,56 @@ describe("a chave de idempotência cabe no campo do Omie", () => {
   it("o mesmo dia e a mesma natureza dão sempre a mesma chave", () => {
     expect(codIntLanc("2026-09-03", "recebimento")).toBe(codIntLanc("2026-09-03", "recebimento"));
     expect(codIntLanc("2026-09-03", "recebimento")).not.toBe(codIntLanc("2026-09-03", "taxa_meios"));
+  });
+});
+
+describe("linhasParaOmie — o espelho linha a linha que a contabilidade exige", () => {
+  const bruto = [
+    linha("ftn_000000000001", "2026-09-03", "credito", 449, "Cobrança recebida - fatura nr. 1 GoJuice"),
+    linha("ftn_000000000002", "2026-09-03", "debito", 1.99, "Taxa de boleto - fatura nr. 1 GoJuice"),
+    linha("ftn_000000000003", "2026-09-04", "debito", 60000, "Transação via Pix com chave para TAKEAT TECNOLOGIA LTDA"),
+  ];
+
+  it("uma linha do extrato vira um lançamento, com a chave do próprio Asaas", () => {
+    const ls = linhasParaOmie(bruto);
+    expect(ls).toHaveLength(3);
+    expect(ls[0].id_transacao).toBe("ftn_000000000001");
+    expect(ls[0].id_transacao.length).toBeLessThanOrEqual(20);
+  });
+
+  it("o valor é assinado pelo tipo, e a categoria sai da mesma escada de sempre", () => {
+    const [rec, taxa, transf] = linhasParaOmie(bruto);
+    expect(rec.valor).toBe(449);
+    expect(rec.categoria).toBe(CATEGORIA_ENTRADA);
+    expect(taxa.valor).toBe(-1.99);
+    expect(taxa.categoria).toBe("2.01.03");
+    expect(transf.valor).toBe(-60000);
+    expect(transf.categoria).toBe(CATEGORIA_SAIDA);
+  });
+
+  it("o histórico original vai inteiro para a observação — é o 'mesmas informações'", () => {
+    expect(linhasParaOmie(bruto)[0].observacao)
+      .toBe("Cobrança recebida - fatura nr. 1 GoJuice");
+  });
+
+  it("o total linha a linha bate com o total do resumo diário", () => {
+    const porLinha = linhasParaOmie(bruto).reduce((s, l) => s + l.valor, 0);
+    expect(Math.round(porLinha * 100) / 100).toBe(liquidoDe(agruparPorDia(bruto)));
+  });
+
+  it("descarta o que não dá para espelhar, sem derrubar o resto", () => {
+    const ls = linhasParaOmie([
+      linha("", "2026-09-03", "credito", 10, "Cobrança recebida - fatura nr. 1 X"),
+      linha("ftn_x", "", "credito", 10, "Cobrança recebida - fatura nr. 2 X"),
+      linha("ftn_y", "2026-09-03", "credito", 0, "Cobrança recebida - fatura nr. 3 X"),
+      linha("ftn_z", "2026-09-03", "credito", 10, "Cobrança recebida - fatura nr. 4 X"),
+    ]);
+    expect(ls.map((l) => l.id_transacao)).toEqual(["ftn_z"]);
+  });
+
+  it("a ordem é estável: por dia, depois por id", () => {
+    const ids = linhasParaOmie([...bruto].reverse()).map((l) => l.id_transacao);
+    expect(ids).toEqual(["ftn_000000000001", "ftn_000000000002", "ftn_000000000003"]);
   });
 });
 

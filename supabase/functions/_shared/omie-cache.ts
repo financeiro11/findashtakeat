@@ -10,7 +10,7 @@
 // consumidores leem do cache (recálculo local, ~0 chamadas ao Omie) e só repuxam
 // do Omie quando o cache está velho (> maxIdadeMin) ou quando forçado (atualizar=true).
 
-import { listarMovimentosExcluindoContas, listarCategorias, type OmieCategoria } from "./omie.ts";
+import { listarMovimentos, listarMovimentosExcluindoContas, listarCategorias, type OmieCategoria } from "./omie.ts";
 
 /**
  * A conta "ASAAS Disponível" fica FORA do cache — e SÓ ela.
@@ -74,7 +74,22 @@ export async function lerMovimentos(
       if (idade <= maxIdade) return { dados: row.dados, origem: "cache", idadeMin: idade, atualizadoEm: row.atualizado_em };
     }
   }
-  const dados = await listarMovimentosExcluindoContas(CONTAS_FORA_DO_CACHE);
+  /* A varredura conta a conta é o caminho novo, e ela ainda pode esbarrar na
+     regra de "consumo redundante" do Omie (chamadas parecidas em menos de 60s).
+     Se esbarrar, o certo NÃO é ficar sem DRE: é cair para a varredura antiga, de
+     uma chamada só. Ela ainda funciona hoje — 17.848 registros em ~158s — e só
+     deixa de funcionar quando o espelho linha a linha do Asaas encher a conta.
+     Enquanto as duas convivem, ficar sem número é o pior desfecho possível. */
+  let dados: any[];
+  try {
+    dados = await listarMovimentosExcluindoContas(CONTAS_FORA_DO_CACHE);
+  } catch (e) {
+    console.warn(
+      "omie-cache: varredura por conta falhou, caindo para a varredura única:",
+      e instanceof Error ? e.message : String(e),
+    );
+    dados = await listarMovimentos({});
+  }
   const atualizadoEm = await gravar(supabase, "movimentos", dados);
   return { dados, origem: "omie", idadeMin: 0, atualizadoEm };
 }

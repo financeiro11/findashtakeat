@@ -31,6 +31,7 @@ import { omieCall } from "../_shared/omie-rpc.ts";
 import {
   agruparPorDia,
   contrapartidasNoPago,
+  linhasParaOmie,
   dataOmie,
   liquidoDe,
   NCODCC_ASAAS_DISPONIVEL,
@@ -70,6 +71,12 @@ const PAGINA = 1000;   // o PostgREST corta em 1000 por resposta, calado
  * "certo". O preview mostra os dias em carência para ninguém achar que sumiram.
  */
 const CARENCIA_DIAS = 2;
+
+/* Teto de linhas por invocação na virada linha a linha. A 1,63 lançamento/s
+   medidos, 150 levam ~92s — dentro dos 110s do worker. E 150 a cada 5 min é
+   30 req/min, 12,5% do teto de 240/min do Omie: sobra folga para os outros
+   syncs que falam com o mesmo ERP. */
+const TETO_LINHAS = 150;
 
 /** Quantas vezes um mesmo lançamento pode falhar antes de sair da fila. */
 const TETO_TENTATIVAS = 5;
@@ -309,6 +316,159 @@ Deno.serve(async (req) => {
         { ...cadastro, saldo_inicial: abertura, saldo_data: dataOmie(vespera) },
       );
       return json({ ok: true, conta: ncodcc, antes: atual, depois: proposto, resposta: r });
+    }
+
+    /* ---------------- VIRAR: do resumo diário para linha a linha ----------
+     * A contabilidade exige espelho linha a linha. A virada é DIA A DIA: entram
+     * todas as linhas do dia e só então saem os lançamentos-resumo daquele mesmo
+     * dia. Carregar tudo antes de apagar deixaria a conta dobrada pelas ~26h do
+     * backfill; apagar antes de carregar a deixaria zerada. Assim o pior estado
+     * possível é UM dia dobrado, e ele se resolve na rodada seguinte.
+     */
+    if (action === "virar") {
+      const teto = Math.max(1, Math.min(Number(body?.teto ?? TETO_LINHAS), 400));
+      const carenciaV = Math.max(0, Number(body?.carencia ?? CARENCIA_DIAS));
+      const limiteV = new Date(new Date(hojeBRT() + "T00:00:00Z").getTime() - carenciaV * 86400000)
+        .toISOString().slice(0, 10);
+
+      const { data: diasRaw, error: eDias } = await supabase.rpc("asaas_omie_virada", { p_limite: 400 });
+      if (eDias) throw eDias;
+      const dias = (diasRaw ?? []) as Record<string, unknown>[];
+      const aFazer = dias.filter((d) => d.virado !== true && String(d.dia) < limiteV);
+
+      let enviadas = 0, removidos = 0, errosV = 0, consecutivos = 0;
+      const relatorio: Record<string, unknown>[] = [];
+      let pararRelogio = false;
+
+      for (const d of aFazer) {
+        if (Date.now() - inicio > LIMITE_WORKER_MS) { pararRelogio = true; break; }
+        if (enviadas >= teto) break;
+        const dia = String(d.dia);
+
+        /* 1) As linhas que faltam desse dia. */
+        if (Number(d.linhas_faltando ?? 0) > 0) {
+          const linhasDoDia = await lerExtrato(supabase, dia, dia);
+          const candidatas = linhasParaOmie(linhasDoDia);
+
+          const { data: jaRaw } = await supabase
+            .from("asaas_omie_lancamento").select("cod_int_lanc,status")
+            .eq("modo", "linha").eq("dia", dia);
+          const ja = new Map<string, string>();
+          for (const r of (jaRaw ?? []) as Record<string, unknown>[]) {
+            ja.set(String(r.cod_int_lanc), String(r.status));
+          }
+
+          for (const l of candidatas) {
+            if (enviadas >= teto) break;
+            if (Date.now() - inicio > LIMITE_WORKER_MS) { pararRelogio = true; break; }
+            if (ja.get(l.id_transacao) === "enviado") continue;
+
+            await supabase.from("asaas_omie_lancamento").upsert({
+              cod_int_lanc: l.id_transacao, dia: l.dia, natureza: l.natureza,
+              categoria: l.categoria, valor: l.valor,
+              entradas: l.valor > 0 ? l.valor : 0, saidas: l.valor < 0 ? -l.valor : 0,
+              lancamentos: 1, ncodcc: NCODCC_ASAAS_DISPONIVEL, modo: "linha",
+              status: "pendente", atualizado_em: new Date().toISOString(),
+            }, { onConflict: "cod_int_lanc" });
+
+            try {
+              const r = await omieCall<Record<string, unknown>>(
+                "financas/contacorrentelancamentos", "IncluirLancCC",
+                {
+                  cCodIntLanc: l.id_transacao,
+                  cabecalho: { nCodCC: Number(NCODCC_ASAAS_DISPONIVEL), dDtLanc: dataOmie(l.dia), nValorLanc: Math.abs(l.valor) },
+                  detalhes: { cCodCateg: l.categoria, cTipo: "99999", cObs: l.observacao },
+                },
+              );
+              await supabase.from("asaas_omie_lancamento").update({
+                status: "enviado", n_cod_lanc: String(r?.nCodLanc ?? ""), erro: null, tentativas: 0,
+                enviado_em: new Date().toISOString(), atualizado_em: new Date().toISOString(),
+              }).eq("cod_int_lanc", l.id_transacao);
+              enviadas++; consecutivos = 0;
+            } catch (e) {
+              const msg = e instanceof Error ? e.message : String(e);
+              const repetido = /j(á|a) (existe|cadastrad)|duplicad/i.test(msg);
+              await supabase.from("asaas_omie_lancamento").update({
+                status: repetido ? "enviado" : "erro",
+                erro: msg.slice(0, 400),
+                enviado_em: repetido ? new Date().toISOString() : null,
+                atualizado_em: new Date().toISOString(),
+              }).eq("cod_int_lanc", l.id_transacao);
+              if (repetido) { enviadas++; consecutivos = 0; continue; }
+              errosV++; consecutivos++;
+              /* DISJUNTOR. O Omie bloqueia por 30 MINUTOS na 10ª requisição com
+                 erro para a mesma combinação App+IP+Método. Três erros seguidos
+                 já dizem que o problema não é da linha — é da categoria, da
+                 conta ou do próprio Omie —, e insistir só constrói o bloqueio. */
+              if (consecutivos >= 3) { pararRelogio = true; break; }
+            }
+          }
+        }
+
+        /* 2) Só depois que TODAS as linhas do dia entraram, os diários saem. */
+        const { count: faltam } = await supabase
+          .from("asaas_omie_lancamento").select("cod_int_lanc", { count: "exact", head: true })
+          .eq("modo", "linha").eq("dia", dia).neq("status", "enviado");
+        const { data: linhasDia } = await supabase
+          .from("asaas_extrato").select("id_transacao").eq("data_movimento", dia).limit(1);
+        const temExtrato = (linhasDia ?? []).length > 0;
+
+        const { data: enviadasDia, count: nEnviadas } = await supabase
+          .from("asaas_omie_lancamento").select("cod_int_lanc", { count: "exact" })
+          .eq("modo", "linha").eq("dia", dia).eq("status", "enviado").limit(1);
+        void enviadasDia;
+
+        const { count: totalExtrato } = await supabase
+          .from("asaas_extrato").select("id_transacao", { count: "exact", head: true })
+          .eq("data_movimento", dia);
+
+        const completo = temExtrato && (faltam ?? 0) === 0 && (nEnviadas ?? 0) >= (totalExtrato ?? 0);
+        if (!completo) { relatorio.push({ dia, estado: "linhas incompletas", enviadas_ate_agora: nEnviadas ?? 0, no_extrato: totalExtrato ?? 0 }); continue; }
+
+        const { data: diarios } = await supabase
+          .from("asaas_omie_lancamento").select("cod_int_lanc,n_cod_lanc")
+          .eq("modo", "diario").eq("dia", dia).eq("status", "enviado").eq("ncodcc", NCODCC_ASAAS_DISPONIVEL);
+
+        for (const x of (diarios ?? []) as Record<string, unknown>[]) {
+          if (Date.now() - inicio > LIMITE_WORKER_MS) { pararRelogio = true; break; }
+          try {
+            await omieCall("financas/contacorrentelancamentos", "ExcluirLancCC", {
+              cCodIntLanc: String(x.cod_int_lanc),
+            });
+            await supabase.from("asaas_omie_lancamento").update({
+              status: "removido", erro: "Substituído pelo espelho linha a linha.",
+              atualizado_em: new Date().toISOString(),
+            }).eq("cod_int_lanc", String(x.cod_int_lanc));
+            removidos++;
+          } catch (e) {
+            const msg = e instanceof Error ? e.message : String(e);
+            /* Já não existe no ERP: o objetivo era esse. Marcar removido. */
+            if (/n(ã|a)o (foi )?(encontrad|localizad)|inexistente/i.test(msg)) {
+              await supabase.from("asaas_omie_lancamento").update({
+                status: "removido", erro: `Não estava mais no Omie. ${msg.slice(0, 200)}`,
+                atualizado_em: new Date().toISOString(),
+              }).eq("cod_int_lanc", String(x.cod_int_lanc));
+              removidos++;
+              continue;
+            }
+            errosV++; consecutivos++;
+            if (consecutivos >= 3) { pararRelogio = true; break; }
+          }
+        }
+        relatorio.push({ dia, estado: "virado", diarios_removidos: (diarios ?? []).length });
+        if (pararRelogio) break;
+      }
+
+      return json({
+        ok: true, acao: "virar",
+        dias_pendentes: aFazer.length,
+        linhas_enviadas: enviadas,
+        diarios_removidos: removidos,
+        erros: errosV,
+        parou: pararRelogio ? (consecutivos >= 3 ? "3 erros seguidos (disjuntor)" : "relógio") : null,
+        carencia_desde: limiteV,
+        dias: relatorio.slice(0, 20),
+      });
     }
 
     /* ---------------- o que o extrato manda lançar ---------------- */

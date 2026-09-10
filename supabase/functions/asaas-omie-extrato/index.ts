@@ -71,6 +71,9 @@ const PAGINA = 1000;   // o PostgREST corta em 1000 por resposta, calado
  */
 const CARENCIA_DIAS = 2;
 
+/** Quantas vezes um mesmo lançamento pode falhar antes de sair da fila. */
+const TETO_TENTATIVAS = 5;
+
 const hojeBRT = () => new Date().toLocaleDateString("en-CA", { timeZone: "America/Sao_Paulo" });
 
 // deno-lint-ignore no-explicit-any
@@ -324,7 +327,7 @@ Deno.serve(async (req) => {
     // O que já foi para o Omie — a trava barata, antes de gastar a chamada.
     const { data: jaRegistrados, error: eReg } = await supabase
       .from("asaas_omie_lancamento")
-      .select("cod_int_lanc,status,valor,n_cod_lanc")
+      .select("cod_int_lanc,status,valor,n_cod_lanc,tentativas")
       .gte("dia", de!).lte("dia", ate);
     if (eReg) throw eReg;
 
@@ -339,6 +342,12 @@ Deno.serve(async (req) => {
        decisão. Aqui ele é só REPORTADO, para ninguém descobrir pelo saldo. */
     const pendentes: LancamentoDiario[] = [];
     const divergentes: { cod_int_lanc: string; enviado: number; extrato_agora: number }[] = [];
+    /* Lançamento que falhou TETO_TENTATIVAS vezes sai da fila. Sem isso ele volta
+       todo dia, para sempre, e o relatório do cron passa a ter um erro fixo — que
+       em pouco tempo vira ruído que ninguém lê, escondendo o erro do dia. Sair da
+       fila NÃO é desistir: ele aparece em `desistidos`, e some sozinho quando a
+       causa for corrigida, porque `tentativas` é zerado a cada envio bem-sucedido. */
+    const desistidos: { cod_int_lanc: string; dia: string; tentativas: number }[] = [];
     for (const l of todos) {
       const r = registrado.get(l.cod_int_lanc);
       if (!r) { pendentes.push(l); continue; }
@@ -346,6 +355,11 @@ Deno.serve(async (req) => {
         if (Math.abs(Number(r.valor ?? 0) - l.valor) >= 0.005) {
           divergentes.push({ cod_int_lanc: l.cod_int_lanc, enviado: Number(r.valor ?? 0), extrato_agora: l.valor });
         }
+        continue;
+      }
+      const tentativas = Number(r.tentativas ?? 0);
+      if (tentativas >= TETO_TENTATIVAS) {
+        desistidos.push({ cod_int_lanc: l.cod_int_lanc, dia: l.dia, tentativas });
         continue;
       }
       pendentes.push(l);   // 'pendente' ou 'erro': tenta de novo
@@ -369,6 +383,7 @@ Deno.serve(async (req) => {
       liquido_do_periodo: liquidoDe(todos),
       por_natureza: porNatureza,
       divergentes,
+      desistidos,
       /* Não é erro, é espera: o dia ainda pode crescer. Vai no relatório para
          ninguém somar o que está na tela e achar que falta lançamento. */
       em_carencia: {
@@ -425,12 +440,39 @@ Deno.serve(async (req) => {
           status: "enviado",
           n_cod_lanc: nCodLanc === null ? null : String(nCodLanc),
           erro: null,
+          // Zera o orçamento de tentativas: o próximo tropeço nesta linha começa
+          // do zero, e o teto não vira uma sentença permanente.
+          tentativas: 0,
           enviado_em: new Date().toISOString(),
           atualizado_em: new Date().toISOString(),
         }).eq("cod_int_lanc", l.cod_int_lanc);
         enviados.push({ cod_int_lanc: l.cod_int_lanc, dia: l.dia, valor: l.valor, n_cod_lanc: nCodLanc });
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
+
+        /* "JÁ CADASTRADO" NÃO É FALHA, É A TRAVA FUNCIONANDO.
+         *
+         * O caminho: gravamos 'pendente', o Omie criou o lançamento, e a resposta
+         * se perdeu (worker morto no relógio, rede caindo). Na rodada seguinte o
+         * `cCodIntLanc` é recusado por repetido — e o lançamento ESTÁ no ERP.
+         * Marcar 'erro' aqui deixaria a linha voltando para a fila todo dia, para
+         * sempre, colecionando o mesmo erro e escondendo os erros de verdade no
+         * meio. Fica 'enviado', sem `n_cod_lanc`, com o rastro na observação.
+         *
+         * A mensagem exata do Omie, exercitada contra a produção em 10/09/2026:
+         *   "Lançamento de Conta Corrente já cadastrado para o Código de
+         *    Integração [ASAAS-20260901-EST] !" */
+        if (/j(á|a) (existe|cadastrad)|duplicad|c(ó|o)digo de integra(ç|c)(ã|a)o.*(existe|utilizado)/i.test(msg)) {
+          await supabase.from("asaas_omie_lancamento").update({
+            status: "enviado",
+            erro: `Recusado como repetido — já estava no Omie. ${msg.slice(0, 300)}`,
+            enviado_em: new Date().toISOString(),
+            atualizado_em: new Date().toISOString(),
+          }).eq("cod_int_lanc", l.cod_int_lanc);
+          enviados.push({ cod_int_lanc: l.cod_int_lanc, dia: l.dia, valor: l.valor, n_cod_lanc: null, ja_existia: true });
+          continue;
+        }
+
         await supabase.from("asaas_omie_lancamento").update({
           status: "erro",
           erro: msg.slice(0, 500),

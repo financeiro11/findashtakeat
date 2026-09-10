@@ -209,3 +209,11 @@ verify_jwt = false
 # continua sendo `requireUser` para quem chama pela tela.
 [functions.asaas-omie-extrato]
 verify_jwt = false
+
+# A DRE/DFC passa a ter rotina. Ate 10/09/2026 o omie-sync so rodava por clique
+# na tela, e ficou seis dias parado sem nada acusar — o `updated_at` do blob
+# continuava fresco porque o cron de Meios de Pagamento reescreve todo dia.
+# `disparar_automacao` manda so o `x-cron-token`; sem esta linha o gateway
+# devolve UNAUTHORIZED_NO_AUTH_HEADER e a funcao nem roda.
+[functions.omie-sync]
+verify_jwt = false

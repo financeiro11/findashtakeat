@@ -4422,6 +4422,8 @@ export type Database = {
       facilities_radar_alertas: {
         Row: {
           alvo_id: string
+          avisado_em: string | null
+          avisado_preco: number | null
           cotacao_id: string | null
           created_at: string
           economia: number | null
@@ -4440,6 +4442,8 @@ export type Database = {
         }
         Insert: {
           alvo_id: string
+          avisado_em?: string | null
+          avisado_preco?: number | null
           cotacao_id?: string | null
           created_at?: string
           economia?: number | null
@@ -4458,6 +4462,8 @@ export type Database = {
         }
         Update: {
           alvo_id?: string
+          avisado_em?: string | null
+          avisado_preco?: number | null
           cotacao_id?: string | null
           created_at?: string
           economia?: number | null
@@ -6229,6 +6235,8 @@ export type Database = {
           c_cod_int_os: string | null
           c_num_os: string | null
           cancelada: boolean
+          carimbo_liberado_em: string | null
+          carimbo_original: string | null
           cnpj_cpf: string | null
           dados: Json | null
           data_faturamento: string | null
@@ -6261,6 +6269,8 @@ export type Database = {
           c_cod_int_os?: string | null
           c_num_os?: string | null
           cancelada?: boolean
+          carimbo_liberado_em?: string | null
+          carimbo_original?: string | null
           cnpj_cpf?: string | null
           dados?: Json | null
           data_faturamento?: string | null
@@ -6293,6 +6303,8 @@ export type Database = {
           c_cod_int_os?: string | null
           c_num_os?: string | null
           cancelada?: boolean
+          carimbo_liberado_em?: string | null
+          carimbo_original?: string | null
           cnpj_cpf?: string | null
           dados?: Json | null
           data_faturamento?: string | null
@@ -7681,6 +7693,27 @@ export type Database = {
             referencedColumns: ["id"]
           },
         ]
+      }
+      omie_trava: {
+        Row: {
+          dono: string
+          expira_em: string
+          recurso: string
+          tomada_em: string
+        }
+        Insert: {
+          dono: string
+          expira_em: string
+          recurso: string
+          tomada_em?: string
+        }
+        Update: {
+          dono?: string
+          expira_em?: string
+          recurso?: string
+          tomada_em?: string
+        }
+        Relationships: []
       }
       orcamento_area_linha: {
         Row: {
@@ -10772,6 +10805,7 @@ export type Database = {
           competencia: string | null
           conta: string | null
           conta_codigo: string | null
+          desconto: number | null
           doc: string | null
           documento: string | null
           documento_classe: string | null
@@ -10782,6 +10816,8 @@ export type Database = {
           favorecido_cru: string | null
           fornecedor_emite_nf: boolean | null
           gravidade: string | null
+          juros_multa: number | null
+          liquidado: boolean | null
           nf_no_campo: string | null
           nota_no_hub: string | null
           pagamento: string | null
@@ -10791,6 +10827,8 @@ export type Database = {
           status: string | null
           tem_apelido: boolean | null
           valor: number | null
+          valor_pago: number | null
+          valor_principal_pago: number | null
           vencimento: string | null
         }
         Relationships: []
@@ -10973,6 +11011,7 @@ export type Database = {
           outro: number | null
           pessoa_id: string | null
           premiacao: number | null
+          prolabore: number | null
           total: number | null
         }
         Relationships: []
@@ -11002,6 +11041,10 @@ export type Database = {
         Returns: Json
       }
       agente_colaborador_atual: { Args: never; Returns: string }
+      agente_contexto: {
+        Args: { p_dias_atras?: number; p_dias_frente?: number }
+        Returns: Json
+      }
       agente_edicao_sem_efeito: {
         Args: { p_entrada: Json; p_saida: Json }
         Returns: boolean
@@ -11019,6 +11062,7 @@ export type Database = {
         Returns: Json
       }
       agente_mesmo_valor: { Args: { a: string; b: string }; Returns: boolean }
+      agente_volume_alerta: { Args: { p_teto?: number }; Returns: Json }
       anexo_classe: { Args: { p_nome: string }; Returns: string }
       anexo_documento_classe: {
         Args: {
@@ -11101,6 +11145,14 @@ export type Database = {
         Args: { p_limite?: number }
         Returns: {
           assinatura: string
+          cobrancas: number
+          ultima: string
+        }[]
+      }
+      asaas_clientes_a_espelhar: {
+        Args: { p_limite?: number }
+        Returns: {
+          cliente_ref: string
           cobrancas: number
           ultima: string
         }[]
@@ -12100,17 +12152,23 @@ export type Database = {
       hub_automacoes: { Args: never; Returns: Json }
       hub_base_url: { Args: never; Returns: string }
       ia_consumo_mes: { Args: never; Returns: Json }
+      ia_falhas_alerta: {
+        Args: { p_minimo?: number; p_pct?: number }
+        Returns: Json
+      }
       ia_orcamento_alerta: { Args: never; Returns: Json }
       ia_orcamento_status: {
         Args: never
         Returns: {
           ativo: boolean
           consumidor: string
+          gasto_global_usd: number
           gasto_mes_usd: number
           para_que: string
           resta_hoje: number
           rotulo: string
           teto_dia: number
+          teto_global_usd: number
           teto_mes_usd: number
           usadas_hoje: number
         }[]
@@ -12199,6 +12257,19 @@ export type Database = {
           ultima_recusa: string
         }[]
       }
+      nf_os_orfas: {
+        Args: { p_minutos?: number }
+        Returns: {
+          cliente: string
+          criada_em: string
+          etapa: string
+          id_asaas: string
+          n_cod_os: number
+          status_asaas: string
+          valor: number
+          volta_sozinha: boolean
+        }[]
+      }
       nfse_avisar_nota_antes_do_pagamento: {
         Args: { p_dias?: number }
         Returns: number
@@ -12228,6 +12299,20 @@ export type Database = {
       nfse_carencia: {
         Args: { p_erro: string; p_tentativas: number }
         Returns: string
+      }
+      nfse_devolvidas_a_esteira: {
+        Args: { p_dias?: number }
+        Returns: {
+          id_cobranca: string
+          liberada_em: string
+          motivo_da_recusa: string
+          n_cod_os: number
+          nome: string
+          nota_nova: string
+          os_nova: number
+          situacao: string
+          valor: number
+        }[]
       }
       nfse_fila_resumo_recalcular: { Args: never; Returns: undefined }
       nfse_preparo_montar: { Args: { p_desde?: string }; Returns: number }
@@ -12268,6 +12353,18 @@ export type Database = {
           nome: string
           o_que_foi_feito: string
           situacao: string
+          valor: number
+        }[]
+      }
+      nfse_recusas_reemitiveis: {
+        Args: { p_dias?: number }
+        Returns: {
+          id_cobranca: string
+          motivo_curto: string
+          n_cod_os: number
+          nome: string
+          situacao: string
+          tem_carimbo: boolean
           valor: number
         }[]
       }
@@ -12706,6 +12803,18 @@ export type Database = {
           cod_titulo: number
           contraparte: string
           dt: string
+        }[]
+      }
+      omie_trava_soltar: {
+        Args: { p_dono: string; p_recurso: string }
+        Returns: boolean
+      }
+      omie_trava_tomar: {
+        Args: { p_dono: string; p_recurso: string; p_segundos?: number }
+        Returns: {
+          dono_atual: string
+          expira_em: string
+          tomada: boolean
         }[]
       }
       pagamentos_previstos: {

@@ -958,7 +958,10 @@ export default function Remuneracao() {
         <div className="flex items-center gap-2">
           {/* Classificar quem está sem time é do financeiro, e só aparece quando
               há fila. O líder não vê: as fichas sem time nem chegam a ele. */}
-          {vejoTudo && semTime.length > 0 && (
+          {/* `setoresConhecidos` na condição, e não só na fila: abrir o diálogo
+              antes de a lista de times chegar daria seletores vazios e nenhuma
+              sugestão — o rascunho é montado uma vez, na abertura. */}
+          {vejoTudo && semTime.length > 0 && setoresConhecidos.length > 0 && (
             <Button
               variant="outline" size="sm"
               onClick={() => setClassificando(true)}

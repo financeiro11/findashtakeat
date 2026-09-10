@@ -3,7 +3,7 @@ import { useSearchParams } from "react-router-dom";
 import {
   TrendingUp, Search, Download, Loader2, Lock, AlertTriangle, ArrowUpRight,
   ArrowDownRight, Minus, RefreshCw, ArrowUp, ArrowDown, ArrowUpDown, Filter,
-  FilterX, ChevronDown, History, Maximize2, Minimize2, UserSearch, Users,
+  FilterX, ChevronDown, History, Maximize2, Minimize2, UserSearch, Users, Check,
 } from "lucide-react";
 import { toast } from "sonner";
 import * as XLSX from "xlsx";
@@ -31,7 +31,7 @@ import { valorExato } from "@/lib/valor";
 import { mesesDeCasa, parseISO } from "@/lib/rescisao";
 import {
   abasDaPlanilha, compararComPares, competenciasFechadas, custoNoAno, custoPorArea,
-  degrausDoFixo, faixaPorCargo, faixaVazia,
+  degrausDoFixo, faixaVazia, foraDaLinha,
   filtrarPessoas, filtrarPorFaixa, filtrosLigados, montarLinhas, ordenarLinhas,
   pessoasSemTime, semReajusteHaMaisTempo,
   recortarAte, resumoDaPessoa, rotuloMes, totaisDoMes, ultimaCompetenciaFechada,
@@ -449,6 +449,28 @@ function FilaSemTime({
   );
 }
 
+/**
+ * De onde veio cada lançamento, pelo nome que a pessoa reconhece.
+ *
+ * Só o Omie tem código que existe no ERP; nas outras fontes o `origem_ref` é
+ * uma impressão digital deste repositório ("2024-01-05-12a1c9e5db06") e
+ * estampá-la como "código no Omie" mandaria procurar por algo que não está lá.
+ */
+const FONTE: Record<string, { rotulo: string; ajuda: string }> = {
+  conta_azul: {
+    rotulo: "Conta Azul",
+    ajuda: "Veio do export de contas a pagar do Conta Azul, antes da migração para o Omie. Não há título no ERP para procurar.",
+  },
+  manual: {
+    rotulo: "lançado à mão",
+    ajuda: "Gravado direto no Hub, sem título correspondente no ERP.",
+  },
+  nf_drive: {
+    rotulo: "NF no Drive",
+    ajuda: "Veio de uma nota fiscal lida do Drive, não de um título do Omie.",
+  },
+};
+
 /* ─────────────────────────── Faixa por cargo ───────────────────────────
    A régua do time: cada cargo numa linha, com as pessoas posicionadas entre o
    menor e o maior fixo do PRÓPRIO cargo — não entre o menor e o maior da tela.
@@ -465,68 +487,71 @@ function FilaSemTime({
 function FaixaPorCargo({ faixas, mes }: { faixas: FaixaDeCargo[]; mes: string | null }) {
   return (
     <div className="card-surface overflow-hidden p-4">
-      <div className="eyebrow">Faixa por cargo · {rotuloMes(mes ?? "")}</div>
+      <div className="eyebrow">Quem está fora da linha · {rotuloMes(mes ?? "")}</div>
 
       {!faixas.length ? (
-        <p className="py-10 text-center text-[12px] text-muted-foreground">
-          Ninguém com cargo e fixo neste mês.
-        </p>
+        /* Nada aqui é BOA notícia, e a tela tem de dizer isso. Um bloco vazio
+           sem explicação parece defeito; com ela, é o veredito. */
+        <div className="flex flex-col items-center justify-center gap-1.5 py-12 text-center">
+          <Check className="h-5 w-5 text-pos" />
+          <p className="text-[12.5px] font-medium">Ninguém fora da linha.</p>
+          <p className="max-w-[220px] text-[11px] leading-relaxed text-muted-foreground">
+            Em todo cargo com mais de uma pessoa, todas ganham o mesmo fixo neste mês.
+          </p>
+        </div>
       ) : (
         <div className="mt-2 max-h-[210px] space-y-2.5 overflow-y-auto pr-1">
           {faixas.map((f) => {
             const amplitude = f.max - f.min;
+            const piso = f.pessoas[0];
+            const teto = f.pessoas[f.pessoas.length - 1];
             return (
               <div key={f.cargo}>
                 <div className="flex items-baseline justify-between gap-2">
                   <span className="truncate text-xs font-medium">{f.cargo}</span>
-                  <span className="num shrink-0 text-[11px] text-muted-foreground">
-                    {f.temDispersao
-                      ? <>{fmtBRL(f.min)} – {fmtBRL(f.max)}</>
-                      : fmtBRL(f.max)}
+                  {/* A DIFERENÇA em reais é a manchete, não a faixa: é ela que
+                      ordena o bloco e é ela que se leva para a conversa. */}
+                  <span className="num shrink-0 text-[11px] font-medium">
+                    {fmtBRL(amplitude)}
+                    <span className="font-normal text-muted-foreground"> de diferença</span>
                   </span>
                 </div>
 
-                {f.temDispersao ? (
-                  <>
-                    {/* A barra vai do menor ao maior DESTE cargo. Cada pessoa é
-                        um traço na posição dela; quem está no piso encosta na
-                        esquerda, quem está no teto na direita. */}
-                    <div className="relative mt-1 h-[18px]">
-                      <div className="absolute inset-x-0 top-[8px] h-[3px] rounded-full bg-secondary" />
-                      {f.pessoas.map((p) => {
-                        const pos = amplitude > 0 ? ((p.fixo - f.min) / amplitude) * 100 : 50;
-                        return (
-                          <div
-                            key={p.id}
-                            className="absolute top-[3px] h-[13px] w-[3px] -translate-x-1/2 rounded-full bg-[hsl(var(--serie-fixo))]"
-                            style={{ left: `${pos}%` }}
-                            title={`${p.nome} — ${fmtBRLStr(p.fixo)}${
-                              p.tempoDeCasa != null ? ` · ${p.tempoDeCasa} meses de casa` : ""
-                            }`}
-                          />
-                        );
-                      })}
-                    </div>
-                    <div className="mt-0.5 flex items-baseline justify-between gap-2 text-[10.5px] text-muted-foreground">
-                      {/* Quem está no PISO da faixa, com o tempo de casa ao
-                          lado: é a combinação que vira conversa. Um piso de
-                          três anos de casa não é o mesmo que um piso de três
-                          meses. */}
-                      <span className="truncate">
-                        piso: {f.pessoas[0].nome}
-                        {f.pessoas[0].tempoDeCasa != null && ` · ${mesesEmTexto(f.pessoas[0].tempoDeCasa)} de casa`}
-                      </span>
-                      <span className="num shrink-0">
-                        {f.pessoas.length} pessoas · mediana {fmtBRLStr(f.mediana)}
-                      </span>
-                    </div>
-                  </>
-                ) : (
-                  <div className="mt-0.5 text-[10.5px] text-muted-foreground">
-                    {f.pessoas.length === 1
-                      ? <>{f.pessoas[0].nome}
-                          {f.pessoas[0].tempoDeCasa != null && ` · ${mesesEmTexto(f.pessoas[0].tempoDeCasa)} de casa`}</>
-                      : `${f.pessoas.length} pessoas, todas no mesmo valor`}
+                {/* A barra vai do menor ao maior DESTE cargo. Cada pessoa é um
+                    traço na posição dela; quem está no piso encosta na esquerda,
+                    quem está no teto na direita. */}
+                <div className="relative mt-1.5 h-[18px]">
+                  <div className="absolute inset-x-0 top-[8px] h-[3px] rounded-full bg-secondary" />
+                  {f.pessoas.map((p) => (
+                    <div
+                      key={p.id}
+                      className="absolute top-[3px] h-[13px] w-[3px] -translate-x-1/2 rounded-full bg-[hsl(var(--serie-fixo))]"
+                      style={{ left: `${amplitude > 0 ? ((p.fixo - f.min) / amplitude) * 100 : 50}%` }}
+                      title={`${p.nome} — ${fmtBRLStr(p.fixo)}${
+                        p.tempoDeCasa != null ? ` · ${mesesEmTexto(p.tempoDeCasa)} de casa` : ""
+                      }`}
+                    />
+                  ))}
+                </div>
+
+                {/* Piso e teto NOMEADOS, com o tempo de casa ao lado. É a
+                    combinação que vira conversa: um piso de três anos de casa
+                    não é o mesmo que um piso de três meses. */}
+                <div className="mt-1 flex items-baseline justify-between gap-3 text-[10.5px]">
+                  <span className="truncate text-muted-foreground">
+                    <span className="num text-foreground">{fmtBRLStr(piso.fixo)}</span>{" "}
+                    {piso.nome}
+                    {piso.tempoDeCasa != null && ` · ${mesesEmTexto(piso.tempoDeCasa)}`}
+                  </span>
+                  <span className="shrink-0 truncate text-right text-muted-foreground">
+                    {teto.nome}
+                    {teto.tempoDeCasa != null && ` · ${mesesEmTexto(teto.tempoDeCasa)}`}{" "}
+                    <span className="num text-foreground">{fmtBRLStr(teto.fixo)}</span>
+                  </span>
+                </div>
+                {f.pessoas.length > 2 && (
+                  <div className="mt-0.5 text-[10px] text-muted-foreground">
+                    {f.pessoas.length} pessoas no cargo · mediana {fmtBRLStr(f.mediana)}
                   </div>
                 )}
               </div>
@@ -536,8 +561,8 @@ function FaixaPorCargo({ faixas, mes }: { faixas: FaixaDeCargo[]; mes: string | 
       )}
 
       <p className="mt-2 text-[10px] text-muted-foreground">
-        Fixo do mês (com pró-labore), por cargo. A barra é a faixa do próprio cargo —
-        quem está à esquerda é o piso dele, não o da empresa.
+        Cargos com mais de uma pessoa e valores diferentes, do maior desvio para o menor.
+        Fixo do mês, com pró-labore. A barra é a faixa do próprio cargo — não a da empresa.
       </p>
     </div>
   );
@@ -904,8 +929,12 @@ export default function Remuneracao() {
      lista, e responder sobre gente que o filtro tirou seria responder outra
      pergunta. */
   const semReajuste = useMemo(() => semReajusteHaMaisTempo(linhas), [linhas]);
+  /* `foraDaLinha` e não `faixaPorCargo`: a régua completa, num time pequeno,
+     ficava com uma barra e quatro linhas de "uma pessoa só". O que se veio ver
+     são os cargos onde HÁ diferença — e não haver nenhuma é uma resposta, não
+     um bloco vazio. */
   const faixas = useMemo(
-    () => (mes ? faixaPorCargo(linhas, mes) : []),
+    () => (mes ? foraDaLinha(linhas, mes) : []),
     [linhas, mes],
   );
 
@@ -2431,11 +2460,17 @@ function FichaDaPessoa({ pessoa, par, referencia, onClose, onExportar }: {
                                   #{t.cod_titulo}
                                 </span>
                               ) : (
+                                /* O `else` era "Conta Azul" fixo, porque só
+                                   existiam duas fontes. Já são quatro
+                                   (`manual` e `nf_drive` entraram depois), e
+                                   um lançamento de 2026 estampado "Conta Azul"
+                                   manda procurar num sistema desligado em
+                                   fevereiro. Cada fonte diz o que é. */
                                 <span
                                   className="text-muted-foreground/70"
-                                  title="Veio do export de contas a pagar do Conta Azul, antes da migração para o Omie. Não há título no ERP para procurar."
+                                  title={FONTE[t.fonte]?.ajuda ?? "Origem não identificada."}
                                 >
-                                  Conta Azul
+                                  {FONTE[t.fonte]?.rotulo ?? t.fonte}
                                 </span>
                               )}
                             </div>

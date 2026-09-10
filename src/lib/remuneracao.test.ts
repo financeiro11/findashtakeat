@@ -4,7 +4,7 @@ import {
   rotuloMes, distanciaEmMeses, ultimaCompetenciaFechada, mudancasDeArea, areaAtual,
   fixoDeReferencia, compararComPares, custoPorArea, competenciasFechadas, abasDaPlanilha,
   FILTROS_VAZIOS, filtrosLigados, montarLinhas, filtrarPorFaixa, ordenarLinhas,
-  recortarAte, pessoasSemTime, custoNoAno, semReajusteHaMaisTempo, faixaPorCargo,
+  recortarAte, pessoasSemTime, custoNoAno, semReajusteHaMaisTempo, faixaPorCargo, foraDaLinha,
   type MesRemuneracao, type PessoaRemuneracao,
 } from "./remuneracao";
 
@@ -1376,5 +1376,37 @@ describe("faixa por cargo", () => {
   it("sem cargo não tem régua a que pertencer", () => {
     const semCargo = pessoa({ id: "x", nome: "X", cargo: null, meses: [mes("2026-08-01", 5000)] });
     expect(faixaPorCargo(linhas([semCargo]), "2026-08-01")).toEqual([]);
+  });
+});
+
+describe("quem está fora da linha", () => {
+  const noCargo = (id: string, nome: string, cargo: string, fixo: number) =>
+    pessoa({ id, nome, cargo, meses: [mes("2026-08-01", fixo)] });
+  const linhas = (ps: PessoaRemuneracao[]) => montarLinhas(ps, new Map(), new Date("2026-08-20"));
+
+  /* Ordena pela diferença em REAIS, não pelo percentual: R$ 3.000 entre dois
+     gerentes pesa mais na conversa que R$ 250 entre dois analistas, e o
+     percentual (6% contra 25%) inverteria a ordem. */
+  it("mostra só quem tem diferença, do maior desvio para o menor", () => {
+    const f = foraDaLinha(linhas([
+      noCargo("a", "Ana", "Analista", 4000),
+      noCargo("b", "Bia", "Analista", 5000),   // R$ 1.000, 25%
+      noCargo("c", "Caio", "Gerente", 50000),
+      noCargo("d", "Dani", "Gerente", 53000),  // R$ 3.000, 6%
+      noCargo("e", "Edu", "Estagiário", 2000), // sozinho
+      noCargo("f", "Fabi", "Diretor", 9000),
+      noCargo("g", "Gil", "Diretor", 9000),    // iguais
+    ]), "2026-08-01");
+
+    expect(f.map((x) => x.cargo)).toEqual(["Gerente", "Analista"]);
+    expect(f[0].max - f[0].min).toBe(3000);
+  });
+
+  it("time inteiramente alinhado devolve vazio", () => {
+    expect(foraDaLinha(linhas([
+      noCargo("a", "A", "Analista", 4000),
+      noCargo("b", "B", "Analista", 4000),
+      noCargo("c", "C", "Gerente", 9000),
+    ]), "2026-08-01")).toEqual([]);
   });
 });

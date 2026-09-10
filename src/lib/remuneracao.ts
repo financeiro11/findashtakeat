@@ -1133,6 +1133,26 @@ export type FaixaDeCargo = {
   temDispersao: boolean;
 };
 
+/**
+ * Só os cargos em que há DIFERENÇA — a leitura direta de "quem está fora da
+ * linha".
+ *
+ * A régua completa tinha um defeito num time pequeno: no Produto, quatro dos
+ * cinco cargos têm uma pessoa só, e o bloco ficava com uma barra e quatro
+ * linhas de texto. Esta versão mostra o que se veio ver e some quando não há
+ * nada — um bloco vazio dizendo "nenhum caso" informa mais do que quatro linhas
+ * que não são caso nenhum.
+ *
+ * Ordenado pela DIFERENÇA EM REAIS, não pelo percentual: R$ 250 entre dois
+ * analistas pesa menos na conversa do que R$ 3.000 entre dois gerentes, e o
+ * percentual inverteria essa ordem.
+ */
+export function foraDaLinha(linhas: LinhaPessoa[], mes: string): FaixaDeCargo[] {
+  return faixaPorCargo(linhas, mes)
+    .filter((f) => f.temDispersao)
+    .sort((a, b) => (b.max - b.min) - (a.max - a.min));
+}
+
 export function faixaPorCargo(linhas: LinhaPessoa[], mes: string): FaixaDeCargo[] {
   const porCargo = new Map<string, { rotulo: string; gente: PessoaNaFaixa[] }>();
 

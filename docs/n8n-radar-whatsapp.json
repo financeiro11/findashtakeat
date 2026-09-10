@@ -1,0 +1,152 @@
+{
+  "name": "Hub — WhatsApp (UAZAPI)",
+  "nodes": [
+    {
+      "parameters": {
+        "content": "## Canal de WhatsApp do Hub\n\nRecebe `{ telefone, mensagem, origem }` do Supabase e manda pela UAZAPI.\nPrimeiro consumidor: o Radar de Preços (avisa o Renan quando um achado é confirmado).\n\n### O que preencher (3 coisas)\n\n**1. Nó \"UAZAPI — enviar texto\": troque `SEU-SUBDOMINIO` na URL**\npelo subdomínio da instância (ex.: `takeat.uazapi.com`, ou `free` na conta gratuita).\n\n**2. Credencial da UAZAPI** — crie uma *Header Auth*:\n  - Name: `token`\n  - Value: o token DA INSTÂNCIA (não o admin token)\n  Selecione-a no nó \"UAZAPI — enviar texto\".\n\n**3. Credencial do webhook** — crie outra *Header Auth*:\n  - Name: `Authorization`\n  - Value: `Bearer <invente-um-segredo-longo>`\n  Selecione-a no nó \"Hub Takeat (POST)\" e guarde o MESMO segredo no Supabase\n  como `N8N_WHATSAPP_TOKEN`.\n\n### Depois: copie a Production URL do webhook\ne guarde no Supabase como `N8N_WHATSAPP_URL`.\n\n```\nnpx supabase secrets set --project-ref lgcxyxyidoirqmbdlldh \\\n  N8N_WHATSAPP_URL='https://SEU-N8N/webhook/radar-whatsapp' \\\n  N8N_WHATSAPP_TOKEN='o-mesmo-segredo-do-Bearer'\n```\n\n### NÃO responda 200 quando a UAZAPI falhar\nO Hub só carimba o achado como \"avisado\" se esta resposta for 2xx. Um 200\nmentiroso faz o achado ser marcado como enviado e nunca mais falar — foi\nexatamente esse o defeito da auditoria. Por isso o caminho de erro devolve 502.",
+        "height": 720,
+        "width": 460
+      },
+      "id": "a1b2c3d4-0000-4000-8000-000000000001",
+      "name": "Leia-me",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [-620, -120]
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "radar-whatsapp",
+        "authentication": "headerAuth",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "a1b2c3d4-0000-4000-8000-000000000002",
+      "name": "Hub Takeat (POST)",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [-120, 60],
+      "webhookId": "a1b2c3d4-0000-4000-8000-00000000000a"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Normaliza e RECUSA o que não dá para enviar.\n//\n// Um telefone curto não dá erro na UAZAPI: ela entrega a mensagem para OUTRA\n// pessoa. Mensagem que sai não se desfaz, então a validação é aqui, antes de\n// gastar a chamada.\n\nconst entrada = $input.first().json;\n// O nó Webhook entrega o corpo em `.body`; o `?? entrada` cobre um teste manual\n// em que alguém executa este nó com o JSON solto.\nconst body = entrada.body ?? entrada;\n\nconst telefone = String(body.telefone ?? '').replace(/\\D/g, '');\nconst mensagem = String(body.mensagem ?? '').trim();\nconst origem = String(body.origem ?? 'hub');\n\n// 55 + DDD (2) + número (8 ou 9).\nif (telefone.length < 12 || telefone.length > 13) {\n  throw new Error(`telefone inválido: \"${body.telefone ?? ''}\"`);\n}\nif (!mensagem) {\n  throw new Error('mensagem vazia');\n}\n\n// O WhatsApp corta em 4096 caracteres. Cortar aqui, avisando, é melhor do que\n// deixar a API cortar em silêncio no meio de um link de anúncio.\nconst LIMITE = 4000;\nconst texto = mensagem.length > LIMITE\n  ? mensagem.slice(0, LIMITE - 24) + '\\n\\n…(mensagem cortada)'\n  : mensagem;\n\nreturn [{ json: { telefone, texto, origem } }];"
+      },
+      "id": "a1b2c3d4-0000-4000-8000-000000000003",
+      "name": "Validar e normalizar",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [120, 60]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://SEU-SUBDOMINIO.uazapi.com/send/text",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "number",
+              "value": "={{ $json.telefone }}"
+            },
+            {
+              "name": "text",
+              "value": "={{ $json.texto }}"
+            },
+            {
+              "name": "track_source",
+              "value": "={{ $json.origem }}"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 20000
+        }
+      },
+      "id": "a1b2c3d4-0000-4000-8000-000000000004",
+      "name": "UAZAPI — enviar texto",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [380, 60],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ ok: true, uazapi: $json }) }}",
+        "options": {}
+      },
+      "id": "a1b2c3d4-0000-4000-8000-000000000005",
+      "name": "200 — enviado",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [660, -40]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ ok: false, erro: ($json.error && ($json.error.message || $json.error)) || $json.message || 'a UAZAPI não aceitou o envio' }) }}",
+        "options": {
+          "responseCode": 502
+        }
+      },
+      "id": "a1b2c3d4-0000-4000-8000-000000000006",
+      "name": "502 — não enviado",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [660, 160]
+    }
+  ],
+  "connections": {
+    "Hub Takeat (POST)": {
+      "main": [
+        [
+          {
+            "node": "Validar e normalizar",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validar e normalizar": {
+      "main": [
+        [
+          {
+            "node": "UAZAPI — enviar texto",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "UAZAPI — enviar texto": {
+      "main": [
+        [
+          {
+            "node": "200 — enviado",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "502 — não enviado",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "meta": {
+    "instanceId": "hub-takeat-radar-whatsapp"
+  },
+  "tags": []
+}

@@ -950,6 +950,52 @@ export function avaliar(alvo: AlvoSpecs, precoAlvo: number, o: OfertaBruta, pref
 
 export type TipoAlerta = "alvo_batido" | "minimo_historico" | "queda_forte";
 
+/**
+ * O nome de cada tipo, UMA vez só. A tela põe um ícone ao lado e a mensagem de
+ * WhatsApp põe um emoji, mas o texto é o mesmo nos dois — o card dizendo "Caiu
+ * forte" e a mensagem dizendo outra coisa sobre o mesmo achado é o tipo de
+ * divergência que faz alguém abrir o Hub para conferir se são a mesma oferta.
+ */
+export const TIPO_ALERTA_LABEL: Record<TipoAlerta, string> = {
+  minimo_historico: "Menor preço já visto",
+  queda_forte: "Caiu forte",
+  alvo_batido: "Entrou no teto",
+};
+
+/**
+ * QUANTO O PREÇO PRECISA CAIR PARA O MESMO ACHADO AVISAR DE NOVO.
+ *
+ * A regra pedida é "repete se cair mais", e sem um piso ela seria "repete
+ * sempre": a reconferência reescreve o preço a cada 24h, e um centavo de
+ * diferença — um frete recalculado, um arredondamento — bastaria para remandar
+ * a mesma oferta com a mesma cara. Três por cento é o menor desconto que ainda
+ * muda a decisão de comprar num item de mil reais (R$ 30) e que ninguém
+ * confunde com ruído.
+ */
+export const QUEDA_MINIMA_PARA_REAVISAR = 0.03;
+
+/**
+ * Este achado deve ser avisado agora?
+ *
+ * `avisadoPreco` é o preço do ÚLTIMO aviso, e a comparação é sempre contra ele
+ * — nunca contra o preço anterior do alerta, que a reconferência acabou de
+ * reescrever com o valor de hoje (daria "igual" sempre, e a queda nunca sairia).
+ *
+ * Sem aviso anterior, avisa: é o caso do achado recém-confirmado e também o do
+ * que ficou mudo porque o canal estava fora do ar no dia — o silêncio não pode
+ * virar definitivo por acidente. Na dúvida, esta função erra para o lado de
+ * falar, que é o lado recuperável.
+ *
+ * `comparavel` e `avisadoPreco` têm de estar na MESMA moeda: unitário em alvo
+ * recorrente, total com frete nos demais. É o que `alertas.preco` guarda.
+ */
+export function deveAvisar(comparavel: number, avisadoPreco: number | null | undefined): boolean {
+  const antes = Number(avisadoPreco ?? 0);
+  if (!(antes > 0)) return true;
+  if (!(comparavel > 0)) return false;
+  return comparavel <= antes * (1 - QUEDA_MINIMA_PARA_REAVISAR);
+}
+
 export interface Historico { preco: number; coletado_em: string }
 
 /**
@@ -1091,38 +1137,104 @@ export function sugerirTeto(dados: PontoHistorico[], digitado?: number | null): 
   return { pode, dias, minimo, tipico, teto, veredito, resumo };
 }
 
+/* --------------------------------------------------- nome amigável da fonte */
+
+/**
+ * Mora aqui, e não no `src/lib`, porque o texto do WhatsApp é montado NO
+ * SERVIDOR desde que o radar passou a avisar sozinho — e "kabum" cru numa
+ * mensagem que vai para fora do Hub é pior do que na tela, onde há contexto em
+ * volta. O front reexporta este arquivo inteiro, então nada mudou para ele.
+ */
+export const FONTE_LABEL: Record<string, string> = {
+  kabum: "Kabum",
+  terabyte: "Terabyte",
+  zoom: "Zoom",
+  buscape: "Buscapé",
+  bondfaro: "Bondfaro",
+  pichau: "Pichau",
+  balao: "Balão da Informática",
+  americanas: "Americanas",
+  casasbahia: "Casas Bahia",
+  carrefour: "Carrefour",
+  fastshop: "Fast Shop",
+  amazon: "Amazon",
+  magalu: "Magalu",
+  mercado_livre: "Mercado Livre",
+};
+
+export function fonteLabel(f: string | null | undefined): string {
+  if (!f) return "—";
+  return FONTE_LABEL[f] ?? f.replace(/_/g, " ");
+}
+
 /* ---------------------------------------------- texto pronto para o WhatsApp */
 
 const brl = (v: number) => "R$ " + v.toLocaleString("pt-BR", { minimumFractionDigits: 0, maximumFractionDigits: 0 });
+
+/**
+ * O emoji do tipo. Só na mensagem — na tela o mesmo papel é do ícone colorido
+ * do `TIPO_STYLE`. O texto ao lado sai de `TIPO_ALERTA_LABEL`, que é comum aos
+ * dois.
+ */
+const TIPO_ALERTA_EMOJI: Record<TipoAlerta, string> = {
+  minimo_historico: "🔻",
+  queda_forte: "📉",
+  alvo_batido: "🎯",
+};
 
 export interface ParaWhats {
   alvo_titulo: string;
   preco_alvo: number;
   quantidade?: number;
+  /**
+   * Só em alvo de compra recorrente. Quando vem, `preco_alvo` é teto POR
+   * UNIDADE e a comparação usa `comparavel` — ver `blocoDoAlvo`.
+   */
+  unidade?: UnidadeBase | null;
   ofertas: Array<{
     titulo: string; preco: number; url: string; fonte: string;
     vendedor?: string | null; motivo?: string | null; conferir?: string[];
     frete_valor?: number | null; frete_texto?: string | null;
+    /** Por que este achado virou aviso — vira o selo da primeira linha. */
+    tipo?: TipoAlerta | null;
+    /** R$ por unidade (com frete rateado). Obrigatório quando o alvo tem `unidade`. */
+    comparavel?: number | null;
+    /** "pacote de 3 kg" — o que o preço unitário está dividindo. */
+    embalagem?: string | null;
   }>;
 }
 
-/**
- * O texto que o Facilities cola no grupo. Mesmo padrão do Cartão e da Ponte:
- * o Hub escreve, a pessoa confere e manda — envio automático de WhatsApp não
- * existe neste projeto.
- */
-export function textoWhats(p: ParaWhats): string {
+const UNIDADE_TEXTO: Record<UnidadeBase, string> = { kg: "kg", l: "L", un: "un" };
+
+/** O bloco de UM alvo, sem cabeçalho de mensagem nem rodapé. */
+function blocoDoAlvo(p: ParaWhats): string[] {
   const qtd = Math.max(p.quantidade ?? 1, 1);
+  const un = p.unidade ? UNIDADE_TEXTO[p.unidade] : null;
   const linhas: string[] = [];
   linhas.push(`*Radar de preços — ${p.alvo_titulo}*`);
-  linhas.push(`Teto: ${brl(p.preco_alvo)}${qtd > 1 ? ` · ${qtd} unidades` : ""}`);
+  /* O TETO DO ALVO RECORRENTE É POR UNIDADE, e a mensagem tem de dizer isso.
+     Sem o "/kg", "Teto: R$ 60" ao lado de um pacote de R$ 210 se lê como um
+     achado que estourou o teto — quando o que houve foi a mensagem comparando
+     duas moedas diferentes. É o mesmo cuidado que a conferência já toma. */
+  linhas.push(`Teto: ${brl(p.preco_alvo)}${un ? `/${un}` : ""}${qtd > 1 ? ` · ${qtd} unidades` : ""}`);
   linhas.push("");
   for (const o of p.ofertas) {
     const frete = o.frete_valor;
     const total = o.preco + (frete ?? 0);
+    // Em alvo recorrente quem decide é o preço por unidade; nos demais, o total.
+    const contra = un ? Number(o.comparavel ?? total) : total;
+    /* O SELO VEM ANTES DO PREÇO porque é ele que responde "por que estou
+       recebendo isto agora?". Um total dentro do teto pode estar assim há três
+       meses; "menor preço já visto" é o que separa a notícia da repetição. */
+    const selo = o.tipo ? `${TIPO_ALERTA_EMOJI[o.tipo]} ${TIPO_ALERTA_LABEL[o.tipo]} · ` : "";
     // O total vem na frente porque é ele que decide a compra. O preço sozinho,
     // sem o frete, é a metade da conta que faz a pessoa escolher errado.
-    linhas.push(`• *${brl(total)}* — ${o.titulo}`);
+    linhas.push(`• ${selo}*${brl(total)}* — ${o.titulo}`);
+    // E logo abaixo, na moeda do teto: é ela que explica por que isto é barato.
+    if (un) {
+      const porUn = `R$ ${contra.toFixed(2).replace(".", ",")}/${un}`;
+      linhas.push(`  ${porUn}${o.embalagem ? ` · ${o.embalagem}` : ""}`);
+    }
     const detalhe = frete === 0
       ? `${brl(o.preco)} + frete grátis`
       : frete && frete > 0
@@ -1132,12 +1244,41 @@ export function textoWhats(p: ParaWhats): string {
     const rodape = [o.fonte, o.vendedor || null].filter(Boolean).join(" · ");
     if (rodape) linhas.push(`  ${rodape}`);
     if (o.motivo) linhas.push(`  ${o.motivo}`);
-    const economia = economiaDe(p.preco_alvo, total, qtd);
-    if (economia > 0) linhas.push(`  💰 economia de ${brl(economia)}${qtd > 1 ? ` (${qtd} un.)` : ""}`);
+    const economia = economiaDe(p.preco_alvo, contra, qtd);
+    if (economia > 0) {
+      linhas.push(`  💰 economia de ${brl(economia)}${un ? `/${un}` : ""}${qtd > 1 ? ` (${qtd} un.)` : ""}`);
+    }
     if (o.conferir?.length) linhas.push(`  ⚠ conferir no anúncio: ${o.conferir.join(", ")}`);
     linhas.push(`  ${o.url}`);
     linhas.push("");
   }
-  linhas.push("_Enviado pelo Radar do Hub Facilities._");
+  return linhas;
+}
+
+const RODAPE = "_Enviado pelo Radar do Hub Facilities._";
+
+/**
+ * O texto de UM alvo — o que o botão "Copiar p/ WhatsApp" da tela produz, para
+ * a pessoa colar no grupo.
+ */
+export function textoWhats(p: ParaWhats): string {
+  return [...blocoDoAlvo(p), RODAPE].join("\n").trim();
+}
+
+/**
+ * VÁRIOS ALVOS NUMA MENSAGEM SÓ — o que o radar manda sozinho depois da
+ * conferência.
+ *
+ * Uma mensagem por alvo seria mais simples de escrever e pior de receber: a
+ * conferência promove os achados de dois ou três alvos na mesma rodada, e três
+ * notificações seguidas às 09:15 leem-se como spam mesmo quando as três são
+ * boas. Um bloco por alvo, um rodapé só.
+ */
+export function textoWhatsLote(alvos: ParaWhats[]): string {
+  const cheios = alvos.filter((a) => a.ofertas.length > 0);
+  if (!cheios.length) return "";
+  const linhas: string[] = [];
+  for (const a of cheios) linhas.push(...blocoDoAlvo(a));
+  linhas.push(RODAPE);
   return linhas.join("\n").trim();
 }

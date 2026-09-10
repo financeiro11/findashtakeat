@@ -15,7 +15,7 @@ import { comValorExato } from "@/components/ValorExato";
 import { CatDot } from "./components";
 import { NovoAlvoDialog, type AlvoRow } from "./NovoAlvoDialog";
 import { db, fmtBRL as fmtBRLStr, fmtData } from "./lib";
-import { resumoDoAlvo, fonteLabel, textoFrete, textoNota, textoWhats } from "@/lib/radarPrecos";
+import { resumoDoAlvo, fonteLabel, textoFrete, textoNota, textoWhats, TIPO_ALERTA_LABEL, type TipoAlerta, type UnidadeBase } from "@/lib/radarPrecos";
 import { invalidarRadarAlertas } from "@/hooks/useRadarAlertas";
 import { ProximaVarredura } from "./ProximaVarredura";
 import { SaldoRaspagem } from "./SaldoRaspagem";
@@ -71,10 +71,14 @@ interface PainelLinha {
   menor_fora_do_teto: number | null;
 }
 
+/* O RÓTULO VEM DO `_shared`, e só a cor e o ícone moram aqui. O radar agora
+   avisa por WhatsApp sozinho, e o card dizendo "Caiu forte" enquanto a
+   mensagem sobre o MESMO achado dissesse outra coisa faria alguém abrir o Hub
+   só para conferir se são a mesma oferta. */
 const TIPO_STYLE: Record<string, { label: string; cls: string; Icon: typeof TrendingDown }> = {
-  minimo_historico: { label: "Menor preço já visto", cls: "bg-emerald-50 text-emerald-700 border-emerald-200", Icon: TrendingDown },
-  queda_forte:      { label: "Caiu forte",           cls: "bg-violet-50 text-violet-700 border-violet-200",   Icon: ArrowDownRight },
-  alvo_batido:      { label: "Entrou no teto",       cls: "bg-amber-50 text-amber-700 border-amber-200",      Icon: Sparkles },
+  minimo_historico: { label: TIPO_ALERTA_LABEL.minimo_historico, cls: "bg-emerald-50 text-emerald-700 border-emerald-200", Icon: TrendingDown },
+  queda_forte:      { label: TIPO_ALERTA_LABEL.queda_forte,      cls: "bg-violet-50 text-violet-700 border-violet-200",   Icon: ArrowDownRight },
+  alvo_batido:      { label: TIPO_ALERTA_LABEL.alvo_batido,      cls: "bg-amber-50 text-amber-700 border-amber-200",      Icon: Sparkles },
 };
 
 export default function Radar() {
@@ -363,17 +367,25 @@ export default function Radar() {
     }
   }
 
-  function copiar(lista: Alerta[], tituloAlvo: string, precoAlvo: number, quantidade = 1) {
+  /* O MESMO TEXTO QUE O RADAR MANDA SOZINHO. Este botão continua existindo para
+     colar num grupo ou noutra conversa, mas o formato é um só: duas versões da
+     mesma mensagem divergiriam na primeira vez que alguém mexesse numa delas. */
+  function copiar(lista: Alerta[], tituloAlvo: string, precoAlvo: number, quantidade = 1, unidade?: UnidadeBase | null) {
     const txt = textoWhats({
       alvo_titulo: tituloAlvo,
       preco_alvo: precoAlvo,
       quantidade,
+      unidade,
       ofertas: lista.filter((a) => a.oferta).map((a) => ({
         // `preco` aqui é o do PRODUTO; o texto soma o frete e mostra a conta.
         titulo: a.oferta!.titulo, preco: Number(a.oferta!.preco), url: a.oferta!.url,
         fonte: fonteLabel(a.oferta!.fonte), vendedor: a.oferta!.vendedor,
         motivo: a.texto, conferir: a.oferta!.conferir ?? [],
         frete_valor: a.frete_valor, frete_texto: a.oferta!.frete_texto,
+        tipo: a.tipo as TipoAlerta,
+        // `alertas.preco` JÁ É o comparável (unitário no alvo recorrente, total
+        // com frete nos demais) — é o que a conferência grava.
+        comparavel: Number(a.preco), embalagem: a.oferta!.embalagem_texto,
       })),
     });
     navigator.clipboard.writeText(txt)
@@ -659,7 +671,7 @@ export default function Radar() {
                         <span className="text-[13px] font-medium text-foreground">{tituloAlvo}</span>
                         <span className="text-[11.5px] text-muted-foreground">teto {fmtBRL(teto)}</span>
                       </div>
-                      <Button size="sm" variant="ghost" onClick={() => copiar(lista, tituloAlvo, teto, linha?.alvo.quantidade ?? 1)}>
+                      <Button size="sm" variant="ghost" onClick={() => copiar(lista, tituloAlvo, teto, linha?.alvo.quantidade ?? 1, linha?.alvo.specs?.unidade ?? null)}>
                         <Copy className="mr-1.5 h-3.5 w-3.5" /> Copiar p/ WhatsApp
                       </Button>
                     </div>

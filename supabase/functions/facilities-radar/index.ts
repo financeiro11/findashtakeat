@@ -76,9 +76,10 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.0";
 import { requireUser } from "../_shared/auth.ts";
 import { generateJSON, generateText, MODELO_LITE } from "../_shared/gemini.ts";
 import {
-  avaliar, chaveDoProduto, classificar, condicaoDoTitulo, disponibilidade, DIAS_PARA_SUGERIR, economiaDe, emCentavos, lerSpecs, MIN_AVALIACOES, norm, pisoDePreco, sugerirTeto, totalDaOferta,
-  type AlvoSpecs, type OfertaBruta, type Preferencias,
+  avaliar, chaveDoProduto, classificar, condicaoDoTitulo, deveAvisar, disponibilidade, DIAS_PARA_SUGERIR, economiaDe, emCentavos, fonteLabel, lerSpecs, MIN_AVALIACOES, norm, pisoDePreco, sugerirTeto, textoWhatsLote, totalDaOferta,
+  type AlvoSpecs, type OfertaBruta, type ParaWhats, type Preferencias, type TipoAlerta,
 } from "../_shared/radar-precos.ts";
+import { enviarWhatsApp } from "../_shared/whatsapp.ts";
 /* O saldo e o freio moram no módulo compartilhado desde que o Firecrawl passou a
    ter cinco consumidores no Hub. O radar deixou de ser o único que gasta, e o
    número que decide "posso?" não pode viver dentro de quem pergunta. */
@@ -109,6 +110,22 @@ const MAX_ALERTAS_POR_ALVO = 3;
  * ignorar como acaso.
  */
 const LIMIAR_PROPOR_MARCA = 3;
+
+/**
+ * QUEM RECEBE O AVISO DE COMPRA. Fixo no código, como o número do Miguel no
+ * relatório do Caixa (`RelatorioCaixaModal.tsx`) — é uma pessoa só e o Hub não
+ * tem cadastro de destinatário de mensagem. O dia em que forem dois, isto vira
+ * lista; o dia em que for "o gestor da área", vira consulta a
+ * `lib_colaboradores` como faz a auditoria.
+ */
+const AVISAR = { nome: "Renan", telefone: "5527988643343" };
+
+/**
+ * O prazo do POST no n8n. Vem DEPOIS de a rodada já ter gravado tudo, então o
+ * pior caso de estourar é um aviso que sai na rodada seguinte — nunca um
+ * relatório perdido. Ver `LIMITE_WORKER_MS`.
+ */
+const PRAZO_AVISO_MS = 10_000;
 /**
  * Quantas fontes por alvo por rodada. Cada uma custa um crédito de Firecrawl,
  * uma chamada de IA e ~40s de espera — e são doze cadastradas.
@@ -944,6 +961,7 @@ async function extrairDaLoja(markdown: string, baseUrl: string, loja: string): P
   const trecho = markdown.length > 16000 ? markdown.slice(0, 16000) : markdown;
 
   const chamar = (ms: number) => comPrazo(generateJSON<{ itens: ItemLido[] }>({
+      consumidor: "classificacao",
       /* O MODELO LEVE, e isto é medição, não economia de estilo. O padrão
          (`gemini-3.6-flash`) leva ~50s para transcrever UMA vitrine de 16 000
          caracteres — medido em 27/08/2026 numa rodada de fonte única, e sem
@@ -1267,6 +1285,7 @@ async function confirmarNoAnuncio(
   const tIA = Date.now();
   const pedaco = trechoDaConferencia(markdown);
   const chamarConferencia = (ms: number) => comPrazo(generateJSON<any>({
+      consumidor: "classificacao",
       /* O MESMO modelo leve da extração, e o risco aqui é menor do que parece:
          quem decide são os três degraus logo abaixo, em TypeScript. O `false`
          da IA só vale acompanhado de prova (`temPreco`), o `dizEsgotado` por
@@ -1417,6 +1436,7 @@ const SCHEMA_SPECS = {
 
 async function interpretar(pedido: string, referencia: string | null) {
   const out = await generateJSON<any>({
+    consumidor: "classificacao",
     messages: [
       {
         role: "system",
@@ -2364,7 +2384,7 @@ Deno.serve(async (req) => {
       const limiteReconferir = new Date(Date.now() - HORAS_PARA_RECONFERIR * 3600 * 1000).toISOString();
       let qr = supabase
         .from("facilities_radar_alertas")
-        .select("id, alvo_id, oferta_id, preco, preco_total, preco_alvo, texto, tipo, status, facilities_radar_ofertas!inner(id,url,titulo,preco,preco_total,embalagem_qtd,embalagem_unidade,embalagem_texto,conferir,confirmado_em,score,avaliacao,avaliacoes), facilities_radar_alvos(quantidade,specs)")
+        .select("id, alvo_id, oferta_id, preco, preco_total, preco_alvo, texto, tipo, status, avisado_em, avisado_preco, facilities_radar_ofertas!inner(id,url,titulo,preco,preco_total,fonte,vendedor,embalagem_qtd,embalagem_unidade,embalagem_texto,conferir,confirmado_em,score,avaliacao,avaliacoes), facilities_radar_alvos(titulo,quantidade,specs)")
         .in("status", ["novo", "visto"])
         .lt("facilities_radar_ofertas.confirmado_em", limiteReconferir)
         .order("created_at", { ascending: true })
@@ -2380,7 +2400,7 @@ Deno.serve(async (req) => {
       const vagasQuarentena = Math.max(1, limite - (reconferir?.length ?? 0));
       let q = supabase
         .from("facilities_radar_alertas")
-        .select("id, alvo_id, oferta_id, preco, preco_total, preco_alvo, texto, tipo, status, tentativas, facilities_radar_ofertas(id,url,titulo,preco,preco_total,embalagem_qtd,embalagem_unidade,embalagem_texto,conferir,score,avaliacao,avaliacoes), facilities_radar_alvos(quantidade,specs)")
+        .select("id, alvo_id, oferta_id, preco, preco_total, preco_alvo, texto, tipo, status, tentativas, avisado_em, avisado_preco, facilities_radar_ofertas(id,url,titulo,preco,preco_total,fonte,vendedor,embalagem_qtd,embalagem_unidade,embalagem_texto,conferir,score,avaliacao,avaliacoes), facilities_radar_alvos(titulo,quantidade,specs)")
         .eq("status", "a_confirmar")
         .order("created_at", { ascending: true })
         .limit(vagasQuarentena);
@@ -2657,6 +2677,13 @@ Deno.serve(async (req) => {
           return { id: al.id, desfecho: modo === "quarentena" ? "passou do teto ao conferir" : "subiu de preço" };
         }
 
+        /* A observação só entra na quarentena — é a mesma regra do `texto`
+           abaixo, e aqui ela serve para o WhatsApp dizer exatamente o que o
+           card diz. */
+        const textoFinal = modo === "quarentena"
+          ? al.texto + (c.observacao ? ` · ${c.observacao}` : "")
+          : al.texto;
+
         await supabase.from("facilities_radar_alertas").update({
           /* Na reconferência o STATUS NÃO VOLTA A `novo`. O achado já foi visto;
              remarcá-lo como novo faria o selo do menu piscar todo dia por causa
@@ -2667,9 +2694,48 @@ Deno.serve(async (req) => {
           economia: economiaDe(teto, comparavel, qtd),
           /* E o texto também não: a observação seria acrescentada de novo a cada
              reconferência, e em uma semana o aviso viraria uma fita. */
-          ...(modo === "quarentena" ? { texto: al.texto + (c.observacao ? ` · ${c.observacao}` : "") } : {}),
+          ...(modo === "quarentena" ? { texto: textoFinal } : {}),
         }).eq("id", al.id);
-        return { id: al.id, desfecho: modo === "quarentena" ? "confirmado" : "segue de pé" };
+
+        /* AVISAR OU NÃO — e a pergunta não é "virou novo?", é "quem recebe já
+           ouviu isto por este preço?".
+           Achado nunca avisado fala, inclusive o que ficou mudo porque o canal
+           estava fora do ar no dia em que foi confirmado (a reconferência o
+           reapresenta 24h depois — o silêncio não vira definitivo por acidente).
+           Achado já avisado só volta se tiver caído DE VERDADE. A regra mora
+           em `deveAvisar` (`_shared`), testada, pelo mesmo motivo de `avaliar`:
+           ela decide o que sai do Hub e precisa poder ser contestada sem subir
+           uma função. */
+        const avisar = deveAvisar(comparavel, al.avisado_preco);
+
+        return {
+          id: al.id,
+          desfecho: modo === "quarentena" ? "confirmado" : "segue de pé",
+          aviso: !avisar ? null : {
+            alerta_id: al.id,
+            alvo_id: al.alvo_id,
+            alvo_titulo: String(al.facilities_radar_alvos?.titulo ?? "alvo"),
+            preco_alvo: teto,
+            quantidade: qtd,
+            unidade: specsAlvo?.unidade ?? null,
+            comparavel,
+            oferta: {
+              titulo: of.titulo,
+              preco,
+              // O endereço RESOLVIDO, não o do redirecionador do comparador:
+              // quem recebe abre o link direto na loja.
+              url: c.url || of.url,
+              fonte: fonteLabel(of.fonte),
+              vendedor: c.loja ?? of.vendedor ?? null,
+              motivo: textoFinal,
+              conferir,
+              frete_valor: c.frete_valor ?? null,
+              frete_texto: c.frete_texto ?? null,
+              tipo: (al.tipo ?? null) as TipoAlerta | null,
+              embalagem: of.embalagem_texto ?? null,
+            },
+          },
+        };
       };
 
       /* INTERCALADAS, e não uma fila depois da outra. As duas disputam o mesmo
@@ -2717,9 +2783,68 @@ Deno.serve(async (req) => {
          isso que o quinhão dela (900) tem folga sobre a conta nominal (~640). */
       await registrarGasto(supabase, "radar_conferir", daRodada(), { desfechos: conta, quem });
 
+      /* ------------------------------------------ o aviso no WhatsApp -----
+         DEPOIS DE TUDO GRAVADO, e nunca antes. Se o n8n demorar e o worker for
+         derrubado, o pior que acontece é o aviso sair na rodada seguinte — a
+         conferência, que é a metade cara, já está salva. É a mesma lição do
+         `LIMITE_WORKER_MS`: trabalho extra no fim de uma função que já roda
+         perto do limite precisa de relógio próprio.
+
+         E O CARIMBO SÓ É ESCRITO DEPOIS DE O n8n CONFIRMAR. Marcar antes seria
+         repetir exatamente o defeito do `enviar-ajuste` da auditoria, que
+         gravava "Mensagem enviada para 27…" na trilha enquanto o provider não
+         existia: o registro dizia uma coisa e o destinatário vivia outra. Sem
+         `N8N_WHATSAPP_URL` configurada o helper devolve `sem_canal`, nada é
+         carimbado, e a próxima rodada tenta de novo. */
+      const avisos = (saidas as any[]).map((s) => s.aviso).filter(Boolean);
+      let whatsapp: Record<string, unknown> | null = null;
+      if (avisos.length) {
+        if (sobramMs() < PRAZO_AVISO_MS + 5_000) {
+          whatsapp = { ok: false, desfecho: "sem_tempo", achados: avisos.length };
+        } else {
+          /* UM BLOCO POR ALVO. Dois achados do mesmo notebook não viram duas
+             mensagens, e o teto do alvo aparece uma vez só — repetido a cada
+             oferta, ele passa a parecer parte do anúncio. */
+          const porAlvo = new Map<string, ParaWhats>();
+          for (const a of avisos as any[]) {
+            const bloco = porAlvo.get(a.alvo_id) ?? {
+              alvo_titulo: a.alvo_titulo,
+              preco_alvo: a.preco_alvo,
+              quantidade: a.quantidade,
+              unidade: a.unidade,
+              ofertas: [],
+            };
+            bloco.ofertas.push({ ...a.oferta, comparavel: a.comparavel });
+            porAlvo.set(a.alvo_id, bloco);
+          }
+          const r = await enviarWhatsApp(
+            {
+              telefone: AVISAR.telefone,
+              mensagem: textoWhatsLote([...porAlvo.values()]),
+              origem: "radar-precos",
+            },
+            PRAZO_AVISO_MS,
+          );
+          if (r.ok) {
+            const agora = new Date().toISOString();
+            /* Um update por alerta porque `avisado_preco` é diferente em cada
+               linha — e é ele, não a data, que decide o próximo reaviso. */
+            await Promise.all((avisos as any[]).map((a) =>
+              supabase.from("facilities_radar_alertas")
+                .update({ avisado_em: agora, avisado_preco: a.comparavel })
+                .eq("id", a.alerta_id)));
+          }
+          whatsapp = { ...r, para: AVISAR.nome, achados: avisos.length, alvos: porAlvo.size };
+        }
+      }
+
       return json({
         ok: true,
         confirmados: conta["confirmado"] ?? 0,
+        // O que saiu (ou não) para o WhatsApp. Fica no relatório da rodada
+        // porque `sem_canal` e `erro` são mudos de outra forma: a conferência
+        // termina bem, o painel de automações fica verde, e ninguém recebe nada.
+        whatsapp,
         // Quantos achados saíram da tela por terem acabado depois de subir.
         // É o número que diz se a reconferência está pagando o crédito dela.
         sumiram: conta["esgotou depois"] ?? 0,

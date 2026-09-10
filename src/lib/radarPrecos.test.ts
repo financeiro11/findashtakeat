@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
-  lerSpecs, avaliar, classificar, pisoDePreco, condicaoDoTitulo, textoWhats, resumoDoAlvo,
+  lerSpecs, avaliar, classificar, pisoDePreco, condicaoDoTitulo, textoWhats, textoWhatsLote,
+  deveAvisar, resumoDoAlvo,
   disponibilidade, totalDaOferta, economiaDe, pesoDaNota, textoNota, sugerirTeto, lerEmbalagem,
   type AlvoSpecs, type OfertaBruta,
 } from "./radarPrecos";
@@ -488,6 +489,86 @@ describe("textoWhats", () => {
     expect(t).toContain("Loja Oficial Lenovo");
     expect(t).toContain("conferir no anúncio");
     expect(t).toContain("Teto: R$ 3.000");
+  });
+
+  it("marca por que o achado virou aviso", () => {
+    const t = textoWhats({
+      alvo_titulo: "Monitor",
+      preco_alvo: 900,
+      ofertas: [{
+        titulo: "Dell P2422H", preco: 700, url: "https://x", fonte: "Kabum",
+        frete_valor: 0, tipo: "minimo_historico",
+      }],
+    });
+    expect(t).toContain("Menor preço já visto");
+    expect(t).toContain("💰 economia de R$ 200");
+  });
+
+  /* O caso que fazia a mensagem comparar duas moedas: em alvo recorrente o teto
+     é POR QUILO, e o total do pacote ao lado dele se lê como estouro. */
+  it("em compra recorrente mostra o teto e a economia por unidade", () => {
+    const t = textoWhats({
+      alvo_titulo: "Café para a copa",
+      preco_alvo: 60,
+      unidade: "kg",
+      ofertas: [{
+        titulo: "Café Torrado 3kg", preco: 140, url: "https://x", fonte: "Carrefour",
+        frete_valor: 10, comparavel: 50, embalagem: "pacote de 3 kg",
+      }],
+    });
+    expect(t).toContain("Teto: R$ 60/kg");
+    expect(t).toContain("R$ 50,00/kg");
+    expect(t).toContain("pacote de 3 kg");
+    // O que se paga continua na frente: R$ 140 + R$ 10 de frete.
+    expect(t).toContain("R$ 150");
+    // A economia é na moeda do teto (60 − 50), não 60 − 150.
+    expect(t).toContain("💰 economia de R$ 10/kg");
+  });
+});
+
+describe("textoWhatsLote", () => {
+  const alvo = (titulo: string, preco: number) => ({
+    alvo_titulo: titulo,
+    preco_alvo: 5000,
+    ofertas: [{ titulo: `${titulo} XPTO`, preco, url: "https://x", fonte: "Kabum", frete_valor: 0 }],
+  });
+
+  it("junta vários alvos numa mensagem só, com um rodapé", () => {
+    const t = textoWhatsLote([alvo("Notebook", 3000), alvo("Monitor", 800)]);
+    expect(t).toContain("Radar de preços — Notebook");
+    expect(t).toContain("Radar de preços — Monitor");
+    expect(t.match(/Enviado pelo Radar/g)?.length).toBe(1);
+  });
+
+  /* Alvo sem oferta não pode virar cabeçalho sozinho: a mensagem anunciaria um
+     alvo e não diria nada sobre ele. */
+  it("ignora alvo sem oferta e devolve vazio quando não sobra nada", () => {
+    const vazio = { alvo_titulo: "Mouse", preco_alvo: 90, ofertas: [] };
+    expect(textoWhatsLote([alvo("Notebook", 3000), vazio])).not.toContain("Mouse");
+    expect(textoWhatsLote([vazio])).toBe("");
+  });
+});
+
+describe("deveAvisar — repete só se cair mais", () => {
+  it("avisa o que nunca foi avisado", () => {
+    expect(deveAvisar(2500, null)).toBe(true);
+    expect(deveAvisar(2500, 0)).toBe(true);
+  });
+
+  it("cala no mesmo preço e na queda de ruído", () => {
+    expect(deveAvisar(2500, 2500)).toBe(false);
+    // 1% abaixo: frete recalculado, arredondamento. Não é notícia.
+    expect(deveAvisar(2475, 2500)).toBe(false);
+  });
+
+  it("volta a falar quando cai de verdade", () => {
+    // Exatamente no limiar de 3% ainda conta.
+    expect(deveAvisar(2425, 2500)).toBe(true);
+    expect(deveAvisar(2200, 2500)).toBe(true);
+  });
+
+  it("cala quando o preço subiu", () => {
+    expect(deveAvisar(2800, 2500)).toBe(false);
   });
 });
 

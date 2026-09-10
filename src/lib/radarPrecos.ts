@@ -28,23 +28,9 @@ export function resumoDoAlvo(s: AlvoSpecs | null | undefined): string {
   return p.join(" · ");
 }
 
-/** Nome amigável da fonte para a tela. */
-export const FONTE_LABEL: Record<string, string> = {
-  kabum: "Kabum",
-  terabyte: "Terabyte",
-  zoom: "Zoom",
-  buscape: "Buscapé",
-  bondfaro: "Bondfaro",
-  pichau: "Pichau",
-  balao: "Balão da Informática",
-  americanas: "Americanas",
-  casasbahia: "Casas Bahia",
-  carrefour: "Carrefour",
-  fastshop: "Fast Shop",
-  amazon: "Amazon",
-  magalu: "Magalu",
-  mercado_livre: "Mercado Livre",
-};
+/* `FONTE_LABEL` e `fonteLabel` MUDARAM DE CASA para o `_shared` quando o radar
+   passou a montar a mensagem de WhatsApp no servidor — e continuam saindo
+   daqui pelo `export *` acima, então nenhum import mudou. */
 
 /** "R$ 2.590 + R$ 120 de frete" — a conta inteira, do jeito que decide a compra. */
 export function textoFrete(frete: number | null | undefined, texto?: string | null): string {
@@ -56,9 +42,4 @@ export function textoFrete(frete: number | null | undefined, texto?: string | nu
   // leitura de página. Dizer isso é melhor que deixar o campo em branco, que a
   // pessoa leria como "sem frete".
   return texto ? `frete: ${texto.toLowerCase()}` : "frete não informado";
-}
-
-export function fonteLabel(f: string | null | undefined): string {
-  if (!f) return "—";
-  return FONTE_LABEL[f] ?? f.replace(/_/g, " ");
 }

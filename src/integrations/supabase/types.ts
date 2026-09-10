@@ -860,6 +860,7 @@ export type Database = {
           lancamentos: number
           n_cod_lanc: string | null
           natureza: string
+          ncodcc: string
           saidas: number
           status: string
           tentativas: number
@@ -877,6 +878,7 @@ export type Database = {
           lancamentos?: number
           n_cod_lanc?: string | null
           natureza: string
+          ncodcc?: string
           saidas?: number
           status?: string
           tentativas?: number
@@ -894,6 +896,7 @@ export type Database = {
           lancamentos?: number
           n_cod_lanc?: string | null
           natureza?: string
+          ncodcc?: string
           saidas?: number
           status?: string
           tentativas?: number
@@ -11321,7 +11324,7 @@ export type Database = {
       }
       asaas_metricas: { Args: { p_referencia: string }; Returns: Json }
       asaas_omie_cobertura: {
-        Args: { p_ate?: string; p_de?: string }
+        Args: { p_ate?: string; p_de?: string; p_ncodcc?: string }
         Returns: {
           com_erro: number
           dia: string

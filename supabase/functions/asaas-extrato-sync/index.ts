@@ -9,7 +9,16 @@
 //
 // Ações (body.action):
 //   "preview" → amostra crua de financialTransactions + saldo (validar campos)
-//   "sync"    → incremental. Params opcionais: { desde?: "YYYY-MM-DD" } (força início)
+//   "sync"    → incremental. Params opcionais:
+//               { desde?: "YYYY-MM-DD" }  força o início
+//               { ate?: "YYYY-MM-DD" }    força o FIM — é o que torna possível
+//                 carregar história antiga em fatias. Sem ele, uma carga de
+//                 meses vira uma chamada só, e o gateway corta em 150s com o
+//                 trabalho todo feito e nada gravado. Com ele, dá para varrer
+//                 abril→julho em pedaços de dez dias, cada um dentro do relógio.
+//               { pularSaldo?: true }     não grava snapshot de saldo — numa
+//                 fatia de história o saldo de HOJE não diz nada sobre ela, e
+//                 gravar um snapshot por fatia sujaria a série.
 //
 // Auth: usuário logado (botão "Sincronizar") OU cron (header x-cron-token) — mesmo
 // esquema do omie-caixa-sync, sem expor a service key.
@@ -101,17 +110,27 @@ Deno.serve(async (req) => {
     }
 
     /* ---------------- SYNC (incremental) ---------------- */
-    const ate = hojeBRT();
+    const ate = isoDate(body?.ate) ?? hojeBRT();
 
-    // Marca d'água = maior data já gravada; recua OVERLAP p/ pegar lançamentos atrasados.
+    /* Marca d'água = maior data já gravada; recua OVERLAP p/ pegar lançamentos
+       atrasados. NÃO vale quando pediram um `ate` no passado: aí a marca d'água
+       é de DEPOIS do fim da fatia, e o intervalo sairia invertido (desde > ate),
+       que o Asaas aceita devolvendo vazio — a fatia "rodaria com sucesso" e não
+       traria nada. Numa carga de história isso é o pior desfecho: parece pronto. */
     const { data: ultimo } = await supabase
       .from("asaas_extrato").select("data_movimento")
       .not("data_movimento", "is", null)
       .order("data_movimento", { ascending: false }).limit(1).maybeSingle();
 
     const desdeForcado = isoDate(body?.desde);
-    const desde = desdeForcado
-      ?? (ultimo?.data_movimento ? subDias(String(ultimo.data_movimento).slice(0, 10), OVERLAP_DIAS) : subDias(ate, JANELA_INICIAL_DIAS));
+    const marcaDagua = ultimo?.data_movimento
+      ? subDias(String(ultimo.data_movimento).slice(0, 10), OVERLAP_DIAS)
+      : subDias(ate, JANELA_INICIAL_DIAS);
+    const desde = desdeForcado ?? (marcaDagua <= ate ? marcaDagua : subDias(ate, JANELA_INICIAL_DIAS));
+
+    if (desde > ate) {
+      return json({ error: `Intervalo invertido: desde ${desde} é depois de ate ${ate}.` }, 200);
+    }
 
     // Extrato do período (startDate/finishDate) — asaasList paraleliza as páginas.
     const brutos = await asaasList("/financialTransactions", { startDate: desde, finishDate: ate }, MAX_PAGINAS);
@@ -128,7 +147,20 @@ Deno.serve(async (req) => {
     }
 
     // Saldo: snapshot append-only (o atual é sempre o de maior atualizado_em).
+    // Numa fatia de história o saldo de HOJE não descreve a fatia; gravar um
+    // snapshot por pedaço encheria a série de leituras idênticas no mesmo dia.
     let saldoAtual: number | null = null;
+    if (body?.pularSaldo === true) {
+      return json({
+        ok: true,
+        periodo: { desde, ate },
+        recebidos_da_api: linhas.length,
+        novos_gravados: gravados,
+        saldo_atual: null,
+        saldo_pulado: true,
+        trigger: body?.trigger ?? "manual",
+      });
+    }
     try {
       const bal = await asaasGet<any>("/finance/balance");
       saldoAtual = num(bal?.balance);

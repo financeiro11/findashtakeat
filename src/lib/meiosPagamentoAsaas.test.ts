@@ -4,8 +4,21 @@ import {
   decidirMeses,
   aplicaveis,
   RUBRICA_MEIOS_PAGAMENTO,
+  type Decisao,
+  type Pulado,
   type TaxaDoMes,
 } from "../../supabase/functions/_shared/meios-pagamento-asaas.ts";
+
+/* `tsconfig.app.json` tem `strict: false`, e sem `strictNullChecks` o TypeScript
+   não estreita união discriminada por booleano: depois de `if (d.aplicar) return`
+   o tipo continua `Decisao`, e ler `.motivo` vira erro de tipo. Este ajudante
+   troca o `if` por uma afirmação que serve às duas coisas ao mesmo tempo —
+   falha o teste em runtime se o mês tiver sido aplicado, e entrega `Pulado` ao
+   compilador. */
+function pulado(d: Decisao): Pulado {
+  expect(d.aplicar).toBe(false);
+  return d as Pulado;
+}
 
 /* Os números são os reais do extrato do Asaas em 2026 — inclusive o que faz o
    teste existir: julho tem R$ 5.682,81 porque o espelho só começou no dia 25.
@@ -64,9 +77,7 @@ describe("decidirMeses", () => {
   });
 
   it("PULA o mês que o espelho não cobre desde o dia 1, e diz por quê", () => {
-    const [d] = decidirMeses([jul], HOJE, ESPELHO);
-    expect(d.aplicar).toBe(false);
-    if (d.aplicar) return;
+    const d = pulado(decidirMeses([jul], HOJE, ESPELHO)[0]);
     expect(d.motivo).toContain("25/07/2026");
     expect(d.motivo).toContain("31/07/2026");
   });
@@ -80,16 +91,12 @@ describe("decidirMeses", () => {
   });
 
   it("não cria coluna no futuro quando uma data do extrato vem errada", () => {
-    const [d] = decidirMeses([mes({ mes: "2026-11", total: 900, coberto: true })], HOJE, ESPELHO);
-    expect(d.aplicar).toBe(false);
-    if (d.aplicar) return;
+    const d = pulado(decidirMeses([mes({ mes: "2026-11", total: 900, coberto: true })], HOJE, ESPELHO)[0]);
     expect(d.motivo).toBe("mês no futuro");
   });
 
   it("não escreve zero: mês com cobrança tem taxa, então zero é extrato faltando", () => {
-    const [d] = decidirMeses([mes({ mes: "2026-08", total: 0, coberto: true })], HOJE, ESPELHO);
-    expect(d.aplicar).toBe(false);
-    if (d.aplicar) return;
+    const d = pulado(decidirMeses([mes({ mes: "2026-08", total: 0, coberto: true })], HOJE, ESPELHO)[0]);
     expect(d.motivo).toBe("nenhuma taxa no mês");
   });
 
@@ -97,6 +104,26 @@ describe("decidirMeses", () => {
     const d = decidirMeses([set, jul, ago], HOJE, ESPELHO);
     expect(d.map((x) => x.mes)).toEqual(["2026-07", "2026-08", "2026-09"]);
     expect(d.map((x) => x.aplicar)).toEqual([false, true, true]);
+  });
+
+  /* O backfill de 10/09/2026 levou o espelho de 25/07 para 01/04, e abril a
+     julho passaram a ser "cobertos" no mesmo instante. A camada de valor manual
+     não é freada pela trava do mês, então sem esta guarda a rotina reescreveria
+     demonstração já assinada — por R$ 94 a R$ 239 no mês, diferença pequena
+     demais para alguém notar na tela. */
+  it("PULA mês travado, mesmo coberto e com taxa", () => {
+    const d = pulado(decidirMeses([ago], HOJE, ESPELHO, new Set(["Aug-26"]))[0]);
+    expect(d.motivo).toContain("travado");
+  });
+
+  it("a trava é por coluna: travar agosto não impede setembro", () => {
+    const d = aplicaveis(decidirMeses([ago, set], HOJE, ESPELHO, new Set(["Aug-26"])));
+    expect(d.map((x) => x.col_key)).toEqual(["Sep-26"]);
+  });
+
+  it("sem trava, nada muda — o conjunto vazio é o padrão", () => {
+    expect(aplicaveis(decidirMeses([ago], HOJE, ESPELHO, new Set())))
+      .toEqual(aplicaveis(decidirMeses([ago], HOJE, ESPELHO)));
   });
 
   it("a rubrica é a mesma dos dois esquemas", () => {

@@ -82,11 +82,23 @@ const ptBR = (iso: string | null) =>
  * `primeiroDoEspelho` é a menor data do extrato inteiro; entra só para o motivo
  * do pulo ser legível na tela ("o extrato só começa em 25/07/2026") em vez de um
  * "mês descoberto" que ninguém sabe interpretar.
+ *
+ * `travados` são as `col_key` de `demonstracoes_mes_trancado`, e MÊS TRAVADO NÃO
+ * ENTRA. A camada de valor manual não é freada pela trava — ela reaplica por
+ * cima do blob depois de todo sync e de todo import —, então sem esta guarda a
+ * rotina reescreveria mês assinado sozinha, de madrugada, sem ninguém pedir.
+ *
+ * Não é hipótese: em 10/09/2026 o espelho do extrato foi estendido de 25/07 para
+ * 01/04, e no instante seguinte abril, maio, junho e julho passaram no teste de
+ * cobertura. A diferença contra o número do tracker era de 0,5% (R$ 94 a R$ 239
+ * no mês) — pequena demais para alguém notar na tela, e grande o bastante para
+ * fazer a demonstração deixar de bater com a que já foi entregue.
  */
 export function decidirMeses(
   linhas: TaxaDoMes[],
   hoje: string,
   primeiroDoEspelho: string | null,
+  travados: ReadonlySet<string> = new Set(),
 ): Decisao[] {
   const mesCorrente = String(hoje ?? "").slice(0, 7);
 
@@ -101,6 +113,9 @@ export function decidirMeses(
       // criaria uma coluna à frente do fechamento — a demonstração ganharia um
       // mês que ainda não aconteceu.
       if (l.mes > mesCorrente) return { aplicar: false, mes: l.mes, motivo: "mês no futuro" };
+
+      // Antes da cobertura: mês assinado não se reescreve por rotina.
+      if (travados.has(col)) return { aplicar: false, mes: l.mes, motivo: "mês travado (demonstração assinada)" };
 
       if (!l.coberto) {
         return {

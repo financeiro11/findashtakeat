@@ -202,3 +202,10 @@ verify_jwt = false
 # continua sendo o `requireUser` para quem chama pela tela.
 [functions.demonstracoes-meios-pagamento]
 verify_jwt = false
+
+# Mesma razao da funcao acima: o cron que leva o extrato do Asaas para o Omie e
+# disparado por `disparar_automacao`, que manda so o `x-cron-token`. Com
+# verify_jwt = true o gateway barra antes da funcao rodar. O portao interno
+# continua sendo `requireUser` para quem chama pela tela.
+[functions.asaas-omie-extrato]
+verify_jwt = false

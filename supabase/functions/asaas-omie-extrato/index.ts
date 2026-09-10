@@ -158,6 +158,28 @@ Deno.serve(async (req) => {
      * peneira na memória. `param` cru é aceito para não precisar de um deploy a
      * cada hipótese enquanto a convenção de sinal não estiver provada. */
     if (action === "sondar") {
+      /* Sonda de LEITURA do `financas/mf`, separada e nominal — a pergunta que ela
+         responde decide se dá para espelhar o Asaas linha a linha: se
+         `ListarMovimentos` aceitar `nCodCC` ou recorte de data, os consumidores
+         do cache conseguem parar de baixar o ERP inteiro. */
+      if (body?.movimentos === true) {
+        const p = (body?.param as Record<string, unknown>) ?? { nPagina: 1, nRegPorPagina: 5 };
+        const m = await omieCall<Record<string, unknown>>("financas/mf", "ListarMovimentos", p);
+        const lista = (m?.movimentos ?? []) as Record<string, unknown>[];
+        const contas: Record<string, number> = {};
+        for (const x of lista) {
+          const cc = String((x?.detalhes as Record<string, unknown>)?.nCodCC ?? "?");
+          contas[cc] = (contas[cc] ?? 0) + 1;
+        }
+        return json({
+          ok: true, sondagem: "movimentos", param: p,
+          nTotRegistros: m?.nTotRegistros ?? null,
+          nTotPaginas: m?.nTotPaginas ?? null,
+          nRegistros: m?.nRegistros ?? null,
+          contas_na_amostra: contas,
+        });
+      }
+
       /* Lista fechada, e não `body.metodo` solto: o recurso
          `contacorrentelancamentos` também expõe `ExcluirLancCC` e
          `AlterarLancCC`, e a sondagem é aberta a qualquer pessoa logada que não

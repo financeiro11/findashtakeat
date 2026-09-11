@@ -217,3 +217,85 @@ verify_jwt = false
 # devolve UNAUTHORIZED_NO_AUTH_HEADER e a funcao nem roda.
 [functions.omie-sync]
 verify_jwt = false
+
+# =============================================================================
+# O RESTO DAS FUNCOES QUE CARREGAM `_shared/gemini.ts` (11/09/2026).
+#
+# Mesmo caso do bloco acima, e pela mesma razao pratica: a queda do Gemini para a
+# OpenAI entrou no motor compartilhado, e motor compartilhado se publica em TODAS
+# as funcoes que o carregam — 26 ao todo. Destas, dezoito nunca tinham sido
+# publicadas pela CLI e por isso nunca apareceram neste arquivo, embora estejam
+# com verify_jwt = false no projeto hospedado desde que nasceram (conferido uma a
+# uma em `list_edge_functions` antes de escrever estas linhas).
+#
+# Sem elas a CLI subiria as dezoito com verify_jwt = true e ligaria no gateway
+# uma checagem que nunca tiveram. O que quebraria na hora: o cron do
+# `anexo-triagem`, o do `comprovantes-drive-sync` e os seis `editais-fonte-*`
+# chamados pelo `editais-sync` — todos por `disparar_automacao`, que manda o
+# `x-cron-token` e NUNCA um `Authorization`. Morreriam em
+# UNAUTHORIZED_NO_AUTH_HEADER, sem uma linha no log da funcao, porque ela nem
+# chega a rodar.
+#
+# Como no bloco acima: isto ESCREVE O ESTADO ATUAL, nao decide seguranca nova.
+# Cada uma confere a pessoa por dentro (requireUser, `supabase.auth.getUser`, ou
+# `pode_usar_assistente` no caso do ai-chat). Endurecer o gateway destas rotas e
+# uma mudanca a se fazer de proposito, uma por uma — nao de carona num deploy de
+# rede de protecao.
+
+[functions.ai-chat]
+verify_jwt = false
+
+[functions.anexo-triagem]
+verify_jwt = false
+
+[functions.ask-finance-ai]
+verify_jwt = false
+
+[functions.auditoria-conferir-comprovante]
+verify_jwt = false
+
+[functions.cartao-fatura-rateio]
+verify_jwt = false
+
+[functions.cartao-omie-sugerir]
+verify_jwt = false
+
+[functions.comprovantes-drive-sync]
+verify_jwt = false
+
+[functions.editais-edi-consult]
+verify_jwt = false
+
+[functions.facilities-nf-auditoria]
+verify_jwt = false
+
+[functions.facilities-radar]
+verify_jwt = false
+
+[functions.parse-balancete-pdf]
+verify_jwt = false
+
+# Os seis coletores do radar de editais. Nao importam o motor direto: chegam nele
+# por `_shared/firecrawl-collector.ts`, e e por isso que passam despercebidos numa
+# busca por "gemini.ts". Todos sao chamados pelo `editais-sync`.
+[functions.editais-fonte-bndes]
+verify_jwt = false
+
+[functions.editais-fonte-embrapii]
+verify_jwt = false
+
+[functions.editais-fonte-finep]
+verify_jwt = false
+
+[functions.editais-fonte-govbr]
+verify_jwt = false
+
+[functions.editais-fonte-inovativa]
+verify_jwt = false
+
+[functions.editais-fonte-sebrae]
+verify_jwt = false
+
+# Chega ao motor por `_shared/cnpj-publico.ts` (o plano B da raspagem do CNPJ).
+[functions.omie-clientes-criar]
+verify_jwt = false

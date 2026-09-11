@@ -105,6 +105,12 @@ interface GenerateOptions {
   consumidor?: ConsumidorIA;
   /** Quem pediu, quando foi gente. Omitido = foi o servidor. */
   userId?: string | null;
+  /** Não cai para a OpenAI se esta chamada falhar.
+   *
+   *  É o que a PRÓPRIA `openai.ts` passa quando ela já caiu para cá: desde
+   *  11/09/2026 a queda existe nos dois sentidos, e sem esta trava os dois
+   *  motores ficariam devolvendo a mesma chamada um para o outro. */
+  semQueda?: boolean;
   /** Recebe os tokens da chamada, para quem grava o razão por conta própria.
    *  Dado isto, o motor NÃO grava sozinho — senão a chamada contaria duas vezes. */
   onUso?: (uso: { model: string; promptTokens: number; completionTokens: number }) => void;
@@ -329,21 +335,123 @@ function tryParseJson(text: string): any | null {
   return null;
 }
 
+/* ===================================================================== */
+/* ==================== a rede de proteção da OpenAI ==================== */
+/* ===================================================================== */
+/**
+ * A METADE QUE FALTAVA, e ela custou um dia inteiro de IA.
+ *
+ * Desde 31/08/2026 o `openai.ts` cai para o Gemini quando a conta da OpenAI falha. O
+ * contrário nunca existiu — e em 11/09/2026 a conta pré-paga do Gemini ficou sem crédito
+ * (429 `RESOURCE_EXHAUSTED`, "Your prepayment credits are depleted"). **1.140 chamadas em
+ * sete dias, UMA respondida.** As 19 funções que importam este arquivo apagaram juntas:
+ * leitura do acervo, triagem de anexo, conferência de comprovante, diagnóstico das
+ * automações, o Assistente — e o "Interpretar o pedido" do radar, que foi por onde a falha
+ * chegou à tela, como um toast dizendo "Falha ao consultar a IA". Do outro lado do
+ * corredor a OpenAI estava de pé, respondendo e cobrando US$ 0,21 no mês contra um teto de
+ * US$ 60. Uma rede de proteção que só funciona num sentido protege metade do Hub.
+ *
+ * A queda mora AQUI, e não nos call sites, pela mesma razão do medidor e do freio:
+ * dezenove funções lembrarem da mesma coisa é exatamente o que não acontece.
+ *
+ * O QUE NÃO ATRAVESSA PARA O OUTRO MOTOR:
+ *
+ * • **`model`** — é nome de modelo do GEMINI. Mandar `gemini-3.5-flash-lite` à OpenAI é um
+ *   404 certo, e a chamada morreria dentro da rede de proteção em vez de na falha original.
+ *   Cada motor escolhe o modelo dele. (Foi assim que o `projetar-cenario` quase quebrou na
+ *   migração, pedindo `gemini-2.5-pro` na mão.)
+ * • **`thinking`** — não existe do outro lado.
+ * • **402 do freio** — teto estourado é limite de GASTO, não de fornecedor. Cair para o
+ *   outro motor por falta de orçamento é furar o teto pela porta dos fundos. Mesma regra do
+ *   gêmeo, que por isso devolve 402 e não 429.
+ */
+function valeTentarOutroMotor(e: unknown): boolean {
+  if (!(e instanceof GeminiError)) return false;
+  /* Recusa é RESPOSTA, não falha — perguntar a mesma coisa ao outro motor para ver se ele
+     topa é justamente o que não se deve fazer. */
+  if (/recus/i.test(e.message)) return false;
+  // 429 = cota/crédito · 502 = erro do fornecedor · 504 = demorou demais
+  // 500 = chave ausente (é o código que o `getKey` usa)
+  return e.status === 429 || e.status === 500 || e.status === 502 || e.status === 504;
+}
+
+/** As opções que atravessam. Ver o bloco acima para o que fica. */
+function paraOpenAI(opts: GenerateOptions): Record<string, unknown> {
+  return {
+    messages: opts.messages,
+    temperature: opts.temperature,
+    responseSchema: opts.responseSchema,
+    json: opts.json,
+    maxTokens: opts.maxTokens,
+    consumidor: opts.consumidor,
+    userId: opts.userId,
+    onUso: opts.onUso,
+    semQueda: true,
+  };
+}
+
+async function comQuedaParaOpenAI<T>(
+  tentarGemini: () => Promise<T>,
+  tentarOpenAI: () => Promise<T>,
+  semQueda?: boolean,
+): Promise<T> {
+  try {
+    return await tentarGemini();
+  } catch (e) {
+    if (semQueda || !valeTentarOutroMotor(e)) throw e;
+    console.error("Gemini indisponível; caindo para a OpenAI.", e instanceof Error ? e.message : e);
+    try {
+      return await tentarOpenAI();
+    } catch (e2) {
+      /* A FALHA QUE VAI PARA A TELA É A ORIGINAL. Se o socorro também cai, quem lê precisa
+         saber o que derrubou a chamada — "credits depleted" —, e não o efeito colateral de
+         faltar a chave da OpenAI ou de ela não aceitar um anexo. Trocar a causa pelo
+         sintoma é como se perde uma tarde procurando defeito no lugar errado.
+         A exceção é o freio (402): "teto do mês estourado" é a única mensagem aqui que diz
+         a uma pessoa o que fazer a seguir, e ela não pode ser engolida. */
+      if ((e2 as { status?: number })?.status === 402) throw e2;
+      console.error("A OpenAI também não respondeu.", e2 instanceof Error ? e2.message : e2);
+      throw e;
+    }
+  }
+}
+
 export async function generateText(opts: GenerateOptions): Promise<string> {
-  const resp = await callGenerate(opts, false);
-  const data = await resp.json();
-  await anotar(opts, data);
-  return extractTextFromResponse(data);
+  return await comQuedaParaOpenAI(
+    async () => {
+      const resp = await callGenerate(opts, false);
+      const data = await resp.json();
+      await anotar(opts, data);
+      return extractTextFromResponse(data);
+    },
+    async () => {
+      const o = await import("./openai.ts");
+      return await o.generateText(paraOpenAI(opts) as any);
+    },
+    opts.semQueda,
+  );
 }
 
 export async function generateJSON<T = any>(opts: GenerateOptions): Promise<T> {
-  const resp = await callGenerate({ ...opts, json: true }, false);
-  const data = await resp.json();
-  await anotar(opts, data);
-  const txt = extractTextFromResponse(data);
-  const parsed = tryParseJson(txt);
-  if (!parsed) throw new GeminiError("IA retornou resposta inválida", 502, txt.slice(0, 500));
-  return parsed as T;
+  return await comQuedaParaOpenAI(
+    async () => {
+      const resp = await callGenerate({ ...opts, json: true }, false);
+      const data = await resp.json();
+      await anotar(opts, data);
+      const txt = extractTextFromResponse(data);
+      const parsed = tryParseJson(txt);
+      if (!parsed) throw new GeminiError("IA retornou resposta inválida", 502, txt.slice(0, 500));
+      return parsed as T;
+    },
+    /* `responseSchema` vai CRU, na forma do Gemini: é o `paraStrict()` de lá que o converte
+       para o modo estrito da OpenAI. Repassar já convertido daria schema convertido duas
+       vezes. */
+    async () => {
+      const o = await import("./openai.ts");
+      return await o.generateJSON<T>(paraOpenAI(opts) as any);
+    },
+    opts.semQueda,
+  );
 }
 
 /**
@@ -351,8 +459,28 @@ export async function generateJSON<T = any>(opts: GenerateOptions): Promise<T> {
  *  → data: {"choices":[{"delta":{"content":"..."}}]}\n\n
  *  → data: [DONE]\n\n
  * Assim qualquer cliente que já consumia o gateway OpenAI-compatível continua funcionando.
+ *
+ * Com o Gemini fora do ar, quem responde é a OpenAI, no MESMO formato — quem está no chat
+ * não tem como saber qual motor escreveu. Até 11/09/2026 o Assistente simplesmente não
+ * abria, porque era o único recurso de IA sem alternativa: stream não passa por
+ * `generateText` nem por `generateJSON`, e o `openai.ts` não sabia transmitir.
  */
 export async function streamAsOpenAISSE(opts: GenerateOptions): Promise<Response> {
+  return await comQuedaParaOpenAI(
+    () => streamDoGemini(opts),
+    async () => {
+      const o = await import("./openai.ts");
+      return await o.streamSSE(paraOpenAI(opts) as any);
+    },
+    opts.semQueda,
+  );
+}
+
+/* A QUEDA CABE AQUI PORQUE NENHUM BYTE SAIU AINDA. `callGenerate` é a primeira linha e é
+   onde o 429 estoura — antes disso a `Response` nem existe. Se a troca de motor fosse
+   possível no meio do stream, não valeria a pena: metade de uma resposta seguida da metade
+   de outra é pior que uma falha. */
+async function streamDoGemini(opts: GenerateOptions): Promise<Response> {
   const upstream = await callGenerate(opts, true);
   const reader = upstream.body!.getReader();
   const decoder = new TextDecoder();

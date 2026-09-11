@@ -30,7 +30,14 @@ export const corsHeaders = {
 export const DEFAULT_MODEL = Deno.env.get("OPENAI_MODEL") || "gpt-4.1-mini";
 
 export type ChatRole = "system" | "user" | "assistant";
-export interface ChatMessage { role: ChatRole; content: string }
+
+/** Documento anexado à mensagem: base64 puro, sem o prefixo `data:...;base64,`.
+ *  Mesma forma do `gemini.ts` de propósito — a queda de um motor para o outro
+ *  repassa `messages` inteiro, e um campo com nome diferente seria um anexo
+ *  perdido em silêncio. */
+export interface ChatImage { mimeType: string; data: string }
+
+export interface ChatMessage { role: ChatRole; content: string; imagens?: ChatImage[] }
 
 export class OpenAIError extends Error {
   status: number;
@@ -100,6 +107,35 @@ function anulavel(esquema: unknown): unknown {
   return e;
 }
 
+/**
+ * O CONTEÚDO DE UMA MENSAGEM, com ou sem anexo.
+ *
+ * Este arquivo só sabia mandar texto, e isso bastou enquanto a queda existia num sentido
+ * só: quem tinha documento para ler (leitura do acervo, triagem de anexo, conferência de
+ * comprovante, rateio da fatura) chamava o Gemini direto e nunca passava por aqui. Agora
+ * que o Gemini também cai para cá, essas chamadas chegam COM anexo — e sem esta conversão
+ * o motor mandaria só a pergunta, o modelo responderia sobre o nada e a resposta voltaria
+ * com cara de resposta. Anexo perdido em silêncio é pior que chamada que falha.
+ *
+ * A ordem é a mesma do outro lado: o documento antes da pergunta sobre ele.
+ */
+function conteudo(m: ChatMessage): unknown {
+  const anexos = (m.imagens ?? []).filter((a) => a?.data);
+  if (!anexos.length) return m.content ?? "";
+
+  const partes: unknown[] = anexos.map((a) => {
+    const mime = a.mimeType || "image/jpeg";
+    const url = `data:${mime};base64,${a.data}`;
+    /* PDF não é imagem para a OpenAI: vai como `file`, e não como `image_url`.
+       O nome do arquivo é obrigatório no formato e não é lido por ninguém. */
+    return mime === "application/pdf"
+      ? { type: "file", file: { filename: "documento.pdf", file_data: url } }
+      : { type: "image_url", image_url: { url } };
+  });
+  if (m.content) partes.push({ type: "text", text: m.content });
+  return partes;
+}
+
 /** Famílias de raciocínio (o*, gpt-5*): recusam `temperature` e trocaram
  *  `max_tokens` por `max_completion_tokens`. */
 const familiaRaciocinio = (model: string) => /^(o\d|gpt-5)/i.test(model);
@@ -122,6 +158,13 @@ interface GenerateOptions {
   /** Pula a OpenAI e vai direto ao Gemini, pela MESMA rota da queda automática.
    *  Para exercitar a rede de proteção sem mexer na chave de produção. */
   preferirGemini?: boolean;
+  /** Não cai para o Gemini se esta chamada falhar.
+   *
+   *  É o que o PRÓPRIO `gemini.ts` passa quando ele já caiu para cá: desde
+   *  11/09/2026 a queda existe nos dois sentidos, e sem esta trava os dois
+   *  motores ficariam devolvendo a mesma chamada um para o outro — um laço que,
+   *  com os dois fora do ar, só terminaria quando o worker morresse. */
+  semQueda?: boolean;
   /** Quem está gastando. Vai para `ai_usage_log.feature` e é por onde o painel
    *  Configurações › Uso de IA e o sino do orçamento enxergam esta chamada. */
   consumidor?: ConsumidorIA;
@@ -210,7 +253,7 @@ async function callChat(opts: GenerateOptions): Promise<Record<string, unknown>>
 
   const payload: Record<string, unknown> = {
     model,
-    messages: opts.messages.map((m) => ({ role: m.role, content: m.content ?? "" })),
+    messages: opts.messages.map((m) => ({ role: m.role, content: conteudo(m) })),
   };
   if (!familiaRaciocinio(model)) payload.temperature = opts.temperature ?? 0.4;
   payload[familiaRaciocinio(model) ? "max_completion_tokens" : "max_tokens"] =
@@ -317,7 +360,11 @@ async function comQuedaParaGemini<T>(
   tentarOpenAI: () => Promise<T>,
   tentarGemini: () => Promise<T>,
   preferirGemini?: boolean,
+  semQueda?: boolean,
 ): Promise<T> {
+  /* SEM REDE, de propósito: quem chega aqui com `semQueda` é o Gemini, que já tentou e já
+     caiu para cá. Devolver a chamada para ele fecharia o laço. */
+  if (semQueda) return await tentarOpenAI();
   /* O DESVIO EXISTE PARA PODER TESTAR A QUEDA. Uma rede de proteção que nunca
      foi vista funcionando não é rede: o caminho do Gemini só roda quando a
      OpenAI quebra, ou seja, no pior momento possível e sem ninguém olhando.
@@ -355,12 +402,15 @@ export async function generateText(opts: GenerateOptions): Promise<string> {
       const txt = await g.generateText({
         messages: opts.messages,
         temperature: opts.temperature,
+        /* Ele agora tem a queda dele para cá. Sem isto, a nossa queda cairia de volta. */
+        semQueda: true,
         onUso: (u) => { uso = u; },
       });
       await anotar(opts, uso.model || "gemini", uso.promptTokens, uso.completionTokens);
       return txt;
     },
     opts.preferirGemini,
+    opts.semQueda,
   );
 }
 
@@ -387,13 +437,124 @@ export async function generateJSON<T = unknown>(opts: GenerateOptions): Promise<
            `json: true` é o `responseMimeType` dele. Na OpenAI isso já vinha
            embutido no `callChat({ ...opts, json: true })` acima. */
         json: !opts.responseSchema,
+        semQueda: true,
         onUso: (u) => { uso = u; },
       });
       await anotar(opts, uso.model || "gemini", uso.promptTokens, uso.completionTokens);
       return out;
     },
     opts.preferirGemini,
+    opts.semQueda,
   );
+}
+
+/**
+ * Stream da OpenAI no formato que o Hub já consome.
+ *
+ * O `streamAsOpenAISSE` do `gemini.ts` existe porque o Gemini fala outro dialeto e precisa
+ * ser TRADUZIDO para este. Aqui não há tradução a fazer — o formato de destino é o desta
+ * própria API —, mas ainda assim os chunks são lidos e reemitidos em vez de repassados
+ * crus, por dois motivos: o que sai daqui fica byte a byte igual ao que sai de lá (o
+ * cliente não tem como saber qual motor respondeu), e o `usage` do último chunk é o único
+ * lugar onde o custo de um stream aparece.
+ *
+ * Quem chama é a queda do `gemini.ts` — é o que mantém o Assistente de pé quando o crédito
+ * do Gemini acaba. Não cai de volta para ele: a rede é de lá para cá.
+ */
+export async function streamSSE(opts: GenerateOptions): Promise<Response> {
+  const key = getKey();
+  const model = opts.model || DEFAULT_MODEL;
+
+  const bloqueio = await freioIA(opts.consumidor ?? SEM_ROTULO);
+  if (bloqueio) throw new OpenAIError(bloqueio, 402);
+
+  const payload: Record<string, unknown> = {
+    model,
+    messages: opts.messages.map((m) => ({ role: m.role, content: conteudo(m) })),
+    stream: true,
+    /* Sem isto a OpenAI não manda `usage` nenhum num stream, e o Assistente — a IA que mais
+       gente usa — voltaria a ser a única que não aparece no razão. */
+    stream_options: { include_usage: true },
+  };
+  if (!familiaRaciocinio(model)) payload.temperature = opts.temperature ?? 0.4;
+  payload[familiaRaciocinio(model) ? "max_completion_tokens" : "max_tokens"] =
+    opts.maxTokens ?? TETO_SAIDA_PADRAO;
+
+  let resp: Response;
+  try {
+    /* SEM `AbortSignal.timeout` AQUI, ao contrário do `callChat`. Lá o relógio mede uma
+       espera; aqui mediria a conversa inteira, e uma resposta longa seria cortada no meio
+       da frase por um limite que existe para pegar chamada pendurada. */
+    resp = await fetch("https://api.openai.com/v1/chat/completions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` },
+      body: JSON.stringify(payload),
+    });
+  } catch (e) {
+    await anotar(opts, model, 0, 0);
+    throw new OpenAIError("Não consegui falar com a IA", 502, String((e as Error)?.message ?? e));
+  }
+
+  if (!resp.ok) {
+    const detail = await resp.text();
+    console.error("OpenAI stream error", resp.status, detail);
+    await anotar(opts, model, 0, 0);
+    throw new OpenAIError("Falha ao consultar a IA", resp.status === 429 ? 429 : 502, detail);
+  }
+
+  const reader = resp.body!.getReader();
+  const decoder = new TextDecoder();
+  const encoder = new TextEncoder();
+
+  const stream = new ReadableStream({
+    async start(controller) {
+      let buffer = "";
+      let ultimoUso: Record<string, unknown> | null = null;
+      const sendChunk = (text: string) => {
+        if (!text) return;
+        const p = { choices: [{ delta: { content: text } }] };
+        controller.enqueue(encoder.encode(`data: ${JSON.stringify(p)}\n\n`));
+      };
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          let idx: number;
+          while ((idx = buffer.indexOf("\n")) !== -1) {
+            let line = buffer.slice(0, idx);
+            buffer = buffer.slice(idx + 1);
+            if (line.endsWith("\r")) line = line.slice(0, -1);
+            if (!line.startsWith("data: ")) continue;
+            const json = line.slice(6).trim();
+            if (!json || json === "[DONE]") continue;
+            try {
+              const p = JSON.parse(json) as Record<string, any>;
+              /* O chunk do `usage` vem com `choices: []` — não é um pedaço de texto. */
+              if (p?.usage) ultimoUso = p.usage;
+              const texto = p?.choices?.[0]?.delta?.content;
+              if (typeof texto === "string") sendChunk(texto);
+            } catch { /* chunk partido ao meio pelo TCP; o resto vem no próximo */ }
+          }
+        }
+        controller.enqueue(encoder.encode("data: [DONE]\n\n"));
+      } catch (e) {
+        console.error("stream error (openai)", e);
+        controller.enqueue(encoder.encode(`data: ${JSON.stringify({ error: "stream_error" })}\n\n`));
+      } finally {
+        /* GRAVA ANTES DE FECHAR: depois do `close()` o isolate pode morrer antes do INSERT. */
+        if (ultimoUso) {
+          const { entrada, saida } = tokensDe({ usage: ultimoUso });
+          await anotar(opts, model, entrada, saida);
+        }
+        controller.close();
+      }
+    },
+  });
+
+  return new Response(stream, {
+    headers: { ...corsHeaders, "Content-Type": "text/event-stream", "Cache-Control": "no-cache" },
+  });
 }
 
 export function jsonResponse(body: unknown, status = 200): Response {

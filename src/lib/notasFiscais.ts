@@ -312,20 +312,102 @@ export const podeEmitir = (
   opts: { avulsa?: boolean; antesDoPagamento?: boolean } = {},
 ): boolean => motivoBloqueio(l, opts) === null;
 
+/* ---------------------------------------------------------------------------
+ * AS DUAS POPULAÇÕES DA MESMA RÉGUA.
+ *
+ * A lista `nf_nota_antes_do_pagamento` nasceu com uma só — os quatro clientes
+ * cujo processo interno exige a NFS-e para liberar o pagamento — e o Hub inteiro
+ * escrevia essa frase em texto fixo. Desde 11/09/2026 ela tem duas, e a segunda
+ * é o oposto da primeira: parceiro que nos DEVE comissão de indicação, onde a
+ * nota acompanha a cobrança porque é assim que nós faturamos, não porque ele
+ * esteja esperando.
+ *
+ * A régua não se duplica (as duas alcançam PENDING e OVERDUE, as duas só saem
+ * por ato humano). O que se separa é a FRASE — e separar frase não é cosmética
+ * aqui: o sino acende às 8h todo dia, e um aviso que erra o motivo treina quem
+ * lê a ignorar a série inteira.
+ * ------------------------------------------------------------------------- */
+
+export type TipoAntesDoPagamento = "paga_contra_nota" | "comissao";
+
 /**
- * Este cliente está na lista dos que pagam CONTRA a nota?
+ * A lista, como a tela a carrega.
+ *
+ * `Map` quando o tipo importa, `Set` quando não — as duas têm `.has`, e é só
+ * isso que a régua pergunta. O `Set` continua valendo como "está na lista, tipo
+ * não informado", que é o que ele sempre significou.
+ */
+export type DocsAntesDoPagamento = Map<string, TipoAntesDoPagamento> | Set<string>;
+
+export const TIPOS_ANTES_DO_PAGAMENTO: Record<TipoAntesDoPagamento, {
+  /** Como a lista de gestão chama este tipo. */
+  rotulo: string;
+  /** O selo na linha da tabela — curto, porque divide espaço com o status. */
+  selo: string;
+  /** O hover do selo e da caixa de seleção. */
+  ajuda: string;
+  /** O que a caixa de motivo sugere como ponto de partida. */
+  motivoExemplo: string;
+}> = {
+  paga_contra_nota: {
+    rotulo: "Cliente que paga contra a nota",
+    selo: "nota antes do pagamento",
+    ajuda:
+      "Este cliente precisa da NFS-e em mãos para conseguir pagar — a nota sai antes da cobrança ser " +
+      "quitada. Está na lista de \"antes do pagamento\", com o motivo registrado.",
+    motivoExemplo:
+      "O processo interno do cliente exige a NFS-e para liberar o pagamento (nota, depois boleto).",
+  },
+  comissao: {
+    rotulo: "Parceiro de comissão de indicação",
+    selo: "comissão · nota antes de receber",
+    ajuda:
+      "Parceiro que nos deve comissão de indicação: a NFS-e acompanha a cobrança, em vez de esperar o " +
+      "pagamento. A liberação é por CNPJ — confira se ESTA cobrança é a comissão antes de emitir.",
+    motivoExemplo:
+      "Parceiro que nos paga comissão por indicação de cliente. A nota sai junto com o boleto, antes do recebimento.",
+  },
+};
+
+/** O tipo de uma chave da lista, com o default de quem veio sem ele. */
+export const tipoConhecido = (t: string | null | undefined): TipoAntesDoPagamento =>
+  t === "comissao" ? "comissao" : "paga_contra_nota";
+
+/**
+ * Este documento está na lista dos que recebem nota antes do pagamento?
  *
  * Por CNPJ/CPF e nunca por nome — é a regra do módulo inteiro, e aqui ela pesa
  * mais do que em qualquer outro lugar: o nome fantasia do Asaas e a razão social
  * do Omie divergem, e a consequência de casar errado seria emitir nota de
  * cobrança não paga para quem não pediu isso.
+ *
+ * O NOME FICOU, e ele hoje é mais estreito do que a coisa que nomeia (metade da
+ * lista não "paga contra nota", nos deve comissão). Vale a inconsistência: é a
+ * função chamada uma vez por linha renderizada em três arquivos, e renomear por
+ * precisão de rótulo custaria mais do que o rótulo vale — `tipoAntesDoPagamento`
+ * abaixo é quem responde qual dos dois é.
  */
 export const pagaContraNota = (
   l: { cnpj_cpf?: string | null },
-  docs?: Set<string> | null,
+  docs?: DocsAntesDoPagamento | null,
 ): boolean => {
   const d = String(l.cnpj_cpf ?? "").replace(/\D/g, "");
   return !!d && !!docs?.has(d);
+};
+
+/**
+ * POR QUE esta linha está destravada — ou `null` se não está na lista.
+ *
+ * Um `Set` responde `paga_contra_nota`, que é o que ele sempre quis dizer: a
+ * lista tinha uma população só até 11/09/2026.
+ */
+export const tipoAntesDoPagamento = (
+  l: { cnpj_cpf?: string | null },
+  docs?: DocsAntesDoPagamento | null,
+): TipoAntesDoPagamento | null => {
+  const d = String(l.cnpj_cpf ?? "").replace(/\D/g, "");
+  if (!d || !docs?.has(d)) return null;
+  return docs instanceof Map ? tipoConhecido(docs.get(d)) : "paga_contra_nota";
 };
 
 /**
@@ -338,7 +420,7 @@ export const pagaContraNota = (
  */
 export const reguaDaLinha = (
   l: { cnpj_cpf?: string | null },
-  opts: { avulsa?: boolean; docsAntesDoPagamento?: Set<string> | null } = {},
+  opts: { avulsa?: boolean; docsAntesDoPagamento?: DocsAntesDoPagamento | null } = {},
 ) => ({
   avulsa: opts.avulsa === true,
   antesDoPagamento: pagaContraNota(l, opts.docsAntesDoPagamento),
@@ -379,7 +461,7 @@ export const exigeAntesDoPagamento = (l: Parameters<typeof motivoBloqueio>[0]): 
  */
 export function resumoLote(
   linhas: LinhaNota[], selecionados: Set<string>,
-  opts: { avulsa?: boolean; docsAntesDoPagamento?: Set<string> | null } = {},
+  opts: { avulsa?: boolean; docsAntesDoPagamento?: DocsAntesDoPagamento | null } = {},
 ) {
   const sel = linhas.filter((l) => selecionados.has(l.id_asaas));
   const podem = sel.filter((l) => podeEmitir(l, reguaDaLinha(l, opts)));
@@ -401,10 +483,52 @@ export function resumoLote(
      * pagamento autorizado e falta liquidar; esta não tem pagamento nenhum. */
     antesDoPagamento: antes.length,
     valorAntesDoPagamento: antes.reduce((s, l) => s + Number(l.valor || 0), 0),
+    /* QUAIS DOS DOIS MOTIVOS estão neste lote — em ordem fixa, e não na ordem em
+     * que as linhas apareceram: este arranjo vira texto de confirmação, e texto
+     * de confirmação que muda de ordem a cada clique é texto que ninguém relê. */
+    tiposAntesDoPagamento: (["paga_contra_nota", "comissao"] as TipoAntesDoPagamento[])
+      .filter((t) => antes.some((l) => tipoAntesDoPagamento(l, opts.docsAntesDoPagamento) === t)),
     valor: podem.reduce((s, l) => s + Number(l.valor || 0), 0),
     valorConfirmadas: podem.filter((l) => exigeAvulsa(l)).reduce((s, l) => s + Number(l.valor || 0), 0),
     motivos: [...motivos.entries()].sort((a, b) => b[1] - a[1]),
   };
+}
+
+/**
+ * O PARÁGRAFO DA RÉGUA MAIS LARGA no aviso que antecede o clique.
+ *
+ * Sai daqui e não do JSX por um motivo só: é a frase que afirma, para alguém que
+ * está a um "OK" de uma escrita fiscal irreversível, POR QUE aquela nota pode
+ * sair sem o dinheiro ter entrado. Afirmação assim se testa.
+ *
+ * E ela tem de dizer o motivo CERTO. Até 11/09/2026 o texto era fixo — "esses
+ * clientes precisam da nota para pagar" — e com um parceiro de comissão no lote
+ * viraria mentira exatamente no instante em que a pessoa está conferindo. Sobre
+ * comissão a frase é o contrário: quem espera não é ele; é a nossa nota que
+ * acompanha a cobrança.
+ *
+ * O lote MISTO não costura os dois casos numa frase só: diz que há os dois. Quem
+ * precisa do detalhe tem o selo em cada linha, que é onde o detalhe pertence.
+ */
+export function fraseAntesDoPagamento(
+  quantas: number, valorStr: string, tipos: TipoAntesDoPagamento[],
+): string {
+  if (quantas <= 0) return "";
+  const p = quantas > 1;
+  const abertura = `${quantas} ${p ? "delas" : "dela"} (${valorStr}) ${p ? "saem" : "sai"} ANTES DO PAGAMENTO`;
+  const soComissao = tipos.length === 1 && tipos[0] === "comissao";
+  const soCliente = tipos.length === 1 && tipos[0] === "paga_contra_nota";
+
+  const porque = soComissao
+    ? `: ${p ? "são comissões" : "é comissão"} de indicação, e nesse fluxo a nota acompanha a cobrança. ` +
+      `Confira se ${p ? "as cobranças são" : "a cobrança é"} mesmo a comissão — a liberação é por CNPJ e ` +
+      "alcança tudo o que o parceiro tem em aberto, mensalidade inclusive."
+    : soCliente
+    ? `, porque ${p ? "esses clientes precisam" : "esse cliente precisa"} da nota para poder pagar.`
+    : ": há cliente que precisa da nota para pagar e parceiro de comissão de indicação no mesmo lote.";
+
+  return `${abertura}${porque} ` +
+    "Quem está liberado está na lista de \"antes do pagamento\" desta tela, com o motivo registrado.\n\n";
 }
 
 /**

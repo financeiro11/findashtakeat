@@ -50,8 +50,13 @@ import {
   linkPortalNacional, chaveEmBlocos,
   somarBloco, precisaEsperarOLote, tetoDoDiaAtingido,
   esperaAntesDeRepetir, PROGRESSO_ZERO, CABEM_NUMA_CHAMADA,
-  type LinhaNota, type Situacao, type ProgressoMassa,
+  fraseAntesDoPagamento, tipoAntesDoPagamento, TIPOS_ANTES_DO_PAGAMENTO,
+  type LinhaNota, type Situacao, type ProgressoMassa, type TipoAntesDoPagamento,
 } from "@/lib/notasFiscais";
+import {
+  LiberarAntesDoPagamento, ListaAntesDoPagamento, lerAntesDoPagamento, ICONE_TIPO,
+  type EntradaAntesDoPagamento, type CobrancaParaLiberar,
+} from "@/components/notas/AntesDoPagamento";
 
 const dorme = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -140,13 +145,28 @@ export default function NotasFiscais() {
    * números são diferentes de propósito e por muito: em agosto, 1.989 contra
    * 1.004. Quem oferece o botão de massa é a fila. */
   const [filaResumo, setFilaResumo] = useState<{ cobrancas: number; valor: number } | null>(null);
-  /* OS CLIENTES QUE PAGAM CONTRA NOTA — os documentos, não os nomes.
+  /* QUEM RECEBE NOTA ANTES DO PAGAMENTO — os documentos, não os nomes.
    *
-   * São quatro hoje (Banestes, Gojuice, New Bowling, Menu Beach), e a lista veio
-   * da foto do `invoiceSettings` que o Asaas tinha antes do desligamento de
-   * 01/09/2026. Fica em `Set` porque a régua é consultada uma vez por linha
-   * renderizada e o mês tem 3.600. */
-  const [docsAntes, setDocsAntes] = useState<Set<string>>(new Set());
+   * Começou com quatro, da foto do `invoiceSettings` que o Asaas tinha antes do
+   * desligamento de 01/09/2026 — clientes cujo processo exige a NFS-e para
+   * liberar o pagamento. Desde 11/09/2026 a lista tem uma segunda população, e
+   * oposta: parceiros que nos devem comissão de indicação, onde a nota acompanha
+   * a cobrança porque é assim que faturamos.
+   *
+   * `Map` de documento → tipo, e não `Set`: a régua é a mesma para os dois, mas a
+   * FRASE não pode ser (o selo da linha, o aviso antes de emitir). Continua sendo
+   * uma estrutura de acesso O(1) porque é consultada uma vez por linha renderizada
+   * e o mês tem 3.600. */
+  const [docsAntes, setDocsAntes] = useState<Map<string, TipoAntesDoPagamento>>(new Map());
+  /* A lista inteira — com motivo e quem liberou — para o diálogo de revisão.
+   * Vem da mesma leitura que alimenta o `docsAntes`: duas consultas à mesma
+   * tabela seriam duas chances de a tela discordar de si mesma. */
+  const [entradasAntes, setEntradasAntes] = useState<EntradaAntesDoPagamento[]>([]);
+  const [listaAntesAberta, setListaAntesAberta] = useState(false);
+  /* A cobrança que abriu o diálogo de liberação. Guarda a LINHA e não só o
+   * documento porque o diálogo mostra a cobrança na mesa — sem ela, ele pediria
+   * uma decisão fiscal sobre um CNPJ solto. */
+  const [liberando, setLiberando] = useState<CobrancaParaLiberar | null>(null);
   /* O TEXTO QUE VAI DENTRO DA NOTA, e ele nasce vazio a cada emissão.
    *
    * Mesmo raciocínio da chave da avulsa: observação é do ATO. Lembrar a de
@@ -209,12 +229,22 @@ export default function NotasFiscais() {
       const linha = Array.isArray(fr) ? fr[0] : fr;
       setFilaResumo(linha ? { cobrancas: Number(linha.cobrancas ?? 0), valor: Number(linha.valor ?? 0) } : null);
 
-      /* A lista dos que pagam contra nota. Quatro linhas; ler junto com o painel
-         é mais barato do que qualquer cache, e garante que a régua da tela e a
-         do banco estejam falando do mesmo conjunto no mesmo instante. */
-      const { data: antes } = await sb
-        .from("nf_nota_antes_do_pagamento").select("doc").eq("ativo", true);
-      setDocsAntes(new Set((antes ?? []).map((a: any) => String(a.doc))));
+      /* A lista de quem recebe nota antes do pagamento. Poucas linhas; ler junto
+         com o painel é mais barato do que qualquer cache, e garante que a régua
+         da tela e a do banco estejam falando do mesmo conjunto no mesmo instante.
+         Falhar aqui não derruba o painel — sem a lista, as pendentes ficam
+         bloqueadas, que é o estado seguro. */
+      try {
+        const antes = await lerAntesDoPagamento();
+        setEntradasAntes(antes);
+        setDocsAntes(new Map(antes.map((a) => [String(a.doc), a.tipo])));
+      } catch (e: any) {
+        setEntradasAntes([]);
+        setDocsAntes(new Map());
+        toast.error("Não deu para ler a lista de \"antes do pagamento\".", {
+          description: (e?.message ?? "") + " As cobranças pendentes seguem bloqueadas.",
+        });
+      }
 
       /* O trabalho DO MÊS, que não sai das linhas da tela: as linhas são as
          cobranças da competência, e as notas que saíram este mês são de outras
@@ -280,6 +310,20 @@ export default function NotasFiscais() {
     [linhas, sel, avulsa, docsAntes],
   );
 
+  /**
+   * Liberou o CNPJ — recarrega e deixa a linha marcada.
+   *
+   * `carregar` limpa a seleção, e está certo que limpe: ela é do mês que se
+   * acabou de abrir. Mas quem passou por aqui já disse o que queria — achou a
+   * cobrança, escreveu o motivo, liberou — e mandá-lo procurar a linha de novo no
+   * meio de 3.600 seria cobrar duas vezes o mesmo trabalho. A nota ainda não sai:
+   * o que fica na tela é a barra do lote, com o aviso e o botão de emitir.
+   */
+  const aposLiberar = async (_doc: string, idAsaas: string) => {
+    await carregar();
+    setSel(new Set([idAsaas]));
+  };
+
   const alternar = (id: string) => {
     setSel((s) => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
   };
@@ -329,13 +373,14 @@ export default function NotasFiscais() {
       /* A régua mais larga das três precisa dizer o próprio nome em voz alta.
        * "Confirmada" e "pendente" são riscos de naturezas diferentes: na
        * primeira o pagamento foi autorizado e falta liquidar; na segunda não há
-       * pagamento nenhum, e a nota está saindo justamente para que ele aconteça. */
-      (lote.antesDoPagamento
-        ? `${lote.antesDoPagamento} dela${lote.antesDoPagamento > 1 ? "s" : ""} ` +
-          `(${brlStr(lote.valorAntesDoPagamento)}) ${lote.antesDoPagamento > 1 ? "saem" : "sai"} ` +
-          `ANTES DO PAGAMENTO, porque ${lote.antesDoPagamento > 1 ? "esses clientes precisam" : "esse cliente precisa"} ` +
-          `da nota para pagar. Está na lista de Parametrização, com o motivo escrito.\n\n`
-        : "") +
+       * pagamento nenhum, e a nota está saindo justamente para que ele aconteça.
+       *
+       * A frase mora em `fraseAntesDoPagamento` porque ela depende de QUAL dos
+       * dois motivos está no lote — e porque afirmação dita a um clique de uma
+       * escrita fiscal irreversível merece teste, não confiança. */
+      fraseAntesDoPagamento(
+        lote.antesDoPagamento, brlStr(lote.valorAntesDoPagamento), lote.tiposAntesDoPagamento,
+      ) +
       (observacao.trim()
         ? `O corpo da nota vai levar: "${observacao.trim()}"\n\n`
         : "") +
@@ -931,6 +976,27 @@ export default function NotasFiscais() {
             </>
           )}
         </p>
+        {/* A TERCEIRA RÉGUA MORA AO LADO DA SEGUNDA, e não numa tela de
+            configuração: as duas respondem a mesma pergunta ("o que dá para
+            emitir sem o dinheiro ter entrado?") e separá-las faria a mais larga
+            das duas ser a que ninguém encontra. Não é chave — é uma lista, e por
+            isso abre um diálogo em vez de ligar algo. O contador é o que faz
+            alguém clicar para revisar; sem ele a exceção seria permanente por
+            falta de quem a visse. */}
+        <button
+          onClick={() => setListaAntesAberta(true)}
+          className="flex items-center gap-1.5 rounded-md border border-sky-500/40 px-2 py-1 text-xs font-medium text-sky-700 hover:bg-sky-500/10 dark:text-sky-400"
+          title={
+            "Quem recebe a NFS-e ANTES de pagar: cliente cujo processo exige a nota para liberar o pagamento, " +
+            "e parceiro que nos deve comissão de indicação.\n\n" +
+            "Abre a lista para revisar e tirar. Para incluir alguém, use o botão \"Nota antes de receber\" na " +
+            "linha da cobrança — de lá o CNPJ vem da própria cobrança, sem digitação."
+          }
+        >
+          <FileClock className="h-3.5 w-3.5" />
+          Antes do pagamento
+          <span className="num rounded bg-sky-500/15 px-1">{entradasAntes.length}</span>
+        </button>
       </div>
 
       {/* ---------------------------- emissão em massa ------------------------- */}
@@ -1045,7 +1111,12 @@ export default function NotasFiscais() {
             {lote.antesDoPagamento > 0 && (
               <span
                 className="ml-2 font-medium text-sky-700 dark:text-sky-400"
-                title="Clientes que precisam da NFS-e para conseguir pagar. A nota sai antes da cobrança ser quitada, por decisão registrada em Parametrização."
+                title={
+                  "A nota sai antes de a cobrança ser quitada, por decisão registrada na lista de \"antes do " +
+                  "pagamento\" desta tela: " +
+                  lote.tiposAntesDoPagamento.map((t) => TIPOS_ANTES_DO_PAGAMENTO[t].rotulo.toLowerCase()).join(" · ") +
+                  "."
+                }
               >
                 <FileClock className="mr-1 inline h-3 w-3" />
                 {lote.antesDoPagamento} antes do pagamento · {brl(lote.valorAntesDoPagamento)}
@@ -1129,16 +1200,29 @@ export default function NotasFiscais() {
               // Esta linha só está marcável porque a chave está ligada? É o que o
               // selo âmbar mais abaixo anuncia, e o que muda a cor da caixa.
               const soAvulsa = exigeAvulsa(l);
-              /* E esta só está marcável porque o cliente paga contra nota? O selo
-                 é sempre visível (ao contrário do da avulsa, que depende da
-                 chave): não há chave para ligar, então sem o selo a caixa
-                 acenderia sozinha no meio de uma coluna de caixas apagadas. */
-              const contraNota = pagaContraNota(l, docsAntes) && exigeAntesDoPagamento(l);
+              /* E esta só está marcável porque quem cobra está na lista de "antes
+                 do pagamento"? O selo é sempre visível (ao contrário do da
+                 avulsa, que depende da chave): não há chave para ligar, então sem
+                 o selo a caixa acenderia sozinha no meio de uma coluna de caixas
+                 apagadas.
+
+                 `destravavel` é a mesma pergunta feita de fora da lista — "a
+                 régua abriria esta linha, se o CNPJ estivesse lá?". É ela que
+                 decide o botão de liberação: oferecê-lo onde a régua não alcança
+                 (estornada, já com nota, sem documento) seria prometer o que o
+                 servidor vai recusar. */
+              const naLista = pagaContraNota(l, docsAntes);
+              const destravavel = exigeAntesDoPagamento(l);
+              const contraNota = naLista && destravavel;
+              const tipoAntes = contraNota ? tipoAntesDoPagamento(l, docsAntes) : null;
+              const liberavel = !naLista && destravavel;
               return (
                 <tr
                   key={l.id_asaas}
                   className={cn(
-                    "border-b border-border/50 last:border-0 hover:bg-muted/30",
+                    // `group` serve ao botão de liberação, que só aparece no hover
+                    // da linha — ver o comentário na coluna Situação.
+                    "group border-b border-border/50 last:border-0 hover:bg-muted/30",
                     avulsa && soAvulsa && "bg-amber-500/[0.04]",
                     contraNota && "bg-sky-500/[0.05]",
                   )}
@@ -1150,12 +1234,23 @@ export default function NotasFiscais() {
                       onChange={() => alternar(l.id_asaas)}
                       disabled={!!bloqueio}
                       title={
-                        bloqueio ??
-                        (contraNota
-                          ? "Selecionar para emitir ANTES DO PAGAMENTO — este cliente precisa da nota para pagar."
+                        bloqueio
+                          /* O BLOQUEIO APONTA A SAÍDA quando ela existe. "A
+                             cobrança não foi recebida." é verdade e é um beco sem
+                             saída: quem chega aqui com uma comissão a faturar não
+                             tem como adivinhar que há um botão de hover na outra
+                             ponta da linha. O hint só aparece onde a régua
+                             realmente abriria. */
+                          ? bloqueio + (liberavel
+                            ? "\n\nSe esta nota tem de sair ANTES de o dinheiro entrar — comissão de indicação que " +
+                              "um parceiro nos deve, ou cliente cujo processo exige a NFS-e para pagar — use o botão " +
+                              "\"Nota antes de receber\", na coluna Situação desta linha."
+                            : "")
+                          : tipoAntes
+                          ? `Selecionar para emitir ANTES DO PAGAMENTO. ${TIPOS_ANTES_DO_PAGAMENTO[tipoAntes].ajuda}`
                           : soAvulsa
                           ? "Selecionar para emitir como AVULSA — a cobrança ainda não liquidou."
-                          : "Selecionar para emitir")
+                          : "Selecionar para emitir"
                       }
                       className={cn(
                         "h-3.5 w-3.5 disabled:opacity-30",
@@ -1213,15 +1308,25 @@ export default function NotasFiscais() {
                         avulsa
                       </span>
                     )}
-                    {contraNota && (
-                      <span
-                        className="ml-1 mt-0.5 inline-flex items-center gap-0.5 whitespace-nowrap rounded border border-sky-500/30 bg-sky-500/10 px-1.5 py-0.5 text-[10px] font-medium text-sky-700 dark:text-sky-400"
-                        title="Este cliente precisa da NFS-e para conseguir pagar — a nota sai antes da cobrança ser quitada. Está na lista de Parametrização, com o motivo registrado."
-                      >
-                        <FileClock className="h-2.5 w-2.5" />
-                        nota antes do pagamento
-                      </span>
-                    )}
+                    {/* O SELO DIZ QUAL DOS DOIS MOTIVOS destravou a linha, e não
+                        só que ela está destravada. São situações opostas com a
+                        mesma trava — cliente que espera a nota para pagar,
+                        parceiro que nos deve comissão —, e quem confere o lote
+                        precisa da diferença: só num dos dois casos a pergunta
+                        "esta cobrança é mesmo a comissão?" faz sentido. */}
+                    {tipoAntes && (() => {
+                      const info = TIPOS_ANTES_DO_PAGAMENTO[tipoAntes];
+                      const Icone = ICONE_TIPO[tipoAntes];
+                      return (
+                        <span
+                          className="ml-1 mt-0.5 inline-flex items-center gap-0.5 whitespace-nowrap rounded border border-sky-500/30 bg-sky-500/10 px-1.5 py-0.5 text-[10px] font-medium text-sky-700 dark:text-sky-400"
+                          title={info.ajuda}
+                        >
+                          <Icone className="h-2.5 w-2.5" />
+                          {info.selo}
+                        </span>
+                      );
+                    })()}
                   </td>
                   <td className="num p-2 text-right">{brl(Number(l.valor))}</td>
                   {/* A linha entra no mês por pagamento OU por vencimento (o que
@@ -1340,6 +1445,40 @@ export default function NotasFiscais() {
                         existe `CancelarOS` nem `servicos/nfse/`, foi varrido
                         método a método —, então oferecer o botão ali seria
                         prometer o que o servidor vai recusar. */}
+                    {/* A PORTA PARA A EXCEÇÃO, e ela fica aqui porque é aqui que a
+                        pergunta nasce: a caixa não marca, o hover diz "a cobrança
+                        não foi recebida", e até 11/09/2026 o caminho seguinte era
+                        uma migration. Só aparece onde a régua realmente abriria
+                        (`liberavel`) — numa estornada ou numa que já tem nota, o
+                        botão seria uma promessa que o servidor recusa.
+
+                        NO HOVER, E NÃO FIXO. `liberavel` é verdade em toda
+                        pendente e toda vencida: setembro tem 1.554 delas, e 1.420
+                        são mensalidade que simplesmente ainda não foi paga. Um
+                        botão permanente ali seria propaganda de "emitir antes de
+                        receber" em mil e quatrocentas linhas onde a resposta certa
+                        é esperar. Aparece no hover — a convenção da estrela de
+                        favorito da barra lateral — e no foco, para não sumir para
+                        quem navega pelo teclado. */}
+                    {liberavel && (
+                      <button
+                        onClick={() => setLiberando({
+                          id_asaas: l.id_asaas, cliente_asaas: l.cliente_asaas, cnpj_cpf: l.cnpj_cpf,
+                          valor: Number(l.valor), descricao: l.descricao,
+                          data_vencimento: l.data_vencimento, status_asaas: l.status_asaas,
+                        })}
+                        className="ghost-btn mt-1 flex items-center gap-1 rounded border border-sky-500/40 px-1.5 py-0.5 text-[10px] text-sky-700 opacity-0 transition-opacity focus-visible:opacity-100 group-hover:opacity-100 dark:text-sky-400"
+                        title={
+                          "Para quando a nota tem de sair ANTES do dinheiro entrar — comissão de indicação que " +
+                          "um parceiro nos deve, ou cliente cujo processo exige a NFS-e para liberar o pagamento.\n\n" +
+                          "Abre um cadastro com motivo obrigatório. A liberação é por CNPJ e não emite nada sozinha: " +
+                          "a nota continua saindo de um clique seu."
+                        }
+                      >
+                        <FileClock className="h-2.5 w-2.5" />
+                        Nota antes de receber
+                      </button>
+                    )}
                     {l.situacao === "emitida_asaas" && (
                       <button
                         onClick={() => refazer(l)}
@@ -1376,6 +1515,23 @@ export default function NotasFiscais() {
       )}
       </>
       )}
+
+      {/* Os dois diálogos da terceira régua. Ficam FORA do `aba === "painel"`
+          porque o contador da lista é lido pelo cabeçalho e a leitura é a mesma
+          do painel — e porque um diálogo que desmonta ao trocar de aba fecharia
+          no meio da digitação do motivo. */}
+      <LiberarAntesDoPagamento
+        cobranca={liberando}
+        aberto={liberando !== null}
+        onFechar={() => setLiberando(null)}
+        onLiberado={aposLiberar}
+      />
+      <ListaAntesDoPagamento
+        aberto={listaAntesAberta}
+        onFechar={() => setListaAntesAberta(false)}
+        entradas={entradasAntes}
+        onMudou={carregar}
+      />
     </div>
   );
 }

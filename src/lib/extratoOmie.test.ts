@@ -233,6 +233,22 @@ describe("linhasParaOmie — o espelho linha a linha que a contabilidade exige",
       .toBe("Cobrança recebida - fatura nr. 1 GoJuice");
   });
 
+  /* O Asaas escreve parte dos nomes na forma DECOMPOSTA: "Café" chega como
+     `Cafe` + U+0301 (acento combinante). Visualmente igual, em bytes não — e o
+     Omie responde "Parâmetro informado não é um hash válido! => null", que não
+     fala em acento nenhum. Dez linhas do mesmo cliente travaram o backfill
+     inteiro por 6h23 em 11/09/2026. */
+  it("acento DECOMPOSTO do Asaas vira precomposto antes de ir ao Omie", () => {
+    const decomposto = "Cobranca recebida - fatura nr. 9 Santa Clara Padoca e Cafe\u0301";
+    const [l] = linhasParaOmie([linha("ftn_nfc", "2026-04-24", "credito", 648, decomposto)]);
+
+    // O que o Asaas mandou tem um caractere a mais que o que sai daqui.
+    expect(decomposto.length).toBe(l.observacao.length + 1);
+    expect(l.observacao).toBe(decomposto.normalize("NFC"));
+    expect(l.observacao.endsWith("Café")).toBe(true);
+    expect(/[\u0300-\u036f]/.test(l.observacao)).toBe(false);
+  });
+
   it("o total linha a linha bate com o total do resumo diário", () => {
     const porLinha = linhasParaOmie(bruto).reduce((s, l) => s + l.valor, 0);
     expect(Math.round(porLinha * 100) / 100).toBe(liquidoDe(agruparPorDia(bruto)));

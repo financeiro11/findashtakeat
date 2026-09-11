@@ -306,6 +306,24 @@ export type LancamentoLinha = {
 const OBS_MAX = 300;
 
 /**
+ * O TEXTO VAI PARA O OMIE EM NFC, SEMPRE.
+ *
+ * O Asaas escreve parte dos nomes na forma DECOMPOSTA: "Café" chega como `Cafe`
+ * mais U+0301 (acento agudo combinante, `cc81` em UTF-8) em vez do `é`
+ * precomposto (`c3a9`). Visualmente é idêntico; em bytes não é — e o parser do
+ * Omie engasga, respondendo *"Parâmetro informado não é um hash válido! => null"*,
+ * que não diz nada sobre acento.
+ *
+ * Custou caro: 10 lançamentos do mesmo cliente ("Santa Clara Padoca e Café")
+ * falharam, ficaram na cabeça da fila, derrubaram o disjuntor de 3 erros
+ * seguidos a cada rodada e travaram o backfill inteiro por 6h23 — com o cron
+ * firmando normalmente e respondendo 200 o tempo todo.
+ *
+ * `normalize("NFC")` recompõe. É barato e vale para todo texto que sai daqui.
+ */
+const paraOmie = (s: string): string => s.normalize("NFC").slice(0, OBS_MAX);
+
+/**
  * Uma linha do extrato → um lançamento do Omie. Linha sem id, sem data válida
  * ou de valor zero fica de fora: não há o que espelhar, e um lançamento de zero
  * só sujaria o razão que a contabilidade vai ler.
@@ -326,7 +344,7 @@ export function linhasParaOmie(linhas: LinhaExtrato[]): LancamentoLinha[] {
       natureza,
       categoria: categoriaDe(natureza, valor),
       valor,
-      observacao: String(l.historico ?? ROTULO[natureza]).slice(0, OBS_MAX),
+      observacao: paraOmie(String(l.historico ?? ROTULO[natureza])),
     });
   }
   // Ordem estável: por dia e, dentro do dia, pelo id — a fila de envio e o

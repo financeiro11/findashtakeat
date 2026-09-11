@@ -138,6 +138,33 @@ async function lerExtrato(supabase: any, de: string, ate: string): Promise<Linha
   return out;
 }
 
+/**
+ * O que já está registrado, em páginas.
+ *
+ * `.select()` sem `range` devolve no MÁXIMO 1000 linhas, e devolve calado. Dois
+ * dias do extrato passam de mil lançamentos (o maior tem 1.085), e a tabela
+ * inteira já passa de 43 mil: sem paginar, as linhas além da milésima somem do
+ * mapa de "já enviado" e voltam para a fila em TODA rodada — gastando chamada do
+ * Omie para colher "já cadastrado", para sempre.
+ */
+// deno-lint-ignore no-explicit-any
+async function lerRegistrados(
+  supabase: any,
+  filtrar: (q: any) => any,
+): Promise<Record<string, unknown>[]> {
+  const out: Record<string, unknown>[] = [];
+  for (let inicio = 0; ; inicio += PAGINA) {
+    const { data, error } = await filtrar(
+      supabase.from("asaas_omie_lancamento").select("cod_int_lanc,status,valor,n_cod_lanc,tentativas"),
+    ).order("cod_int_lanc", { ascending: true }).range(inicio, inicio + PAGINA - 1);
+    if (error) throw error;
+    const linhas = (data ?? []) as Record<string, unknown>[];
+    out.push(...linhas);
+    if (linhas.length < PAGINA) break;
+  }
+  return out;
+}
+
 /** O tipo de documento do Omie. Resumo diário não tem documento: é "Outros". */
 const tipoDoc = (l: LancamentoDiario) => (l.natureza === "transferencia" ? "TRA" : "99999");
 
@@ -352,13 +379,14 @@ Deno.serve(async (req) => {
       const limiteV = new Date(new Date(hojeBRT() + "T00:00:00Z").getTime() - carenciaV * 86400000)
         .toISOString().slice(0, 10);
 
-      const { data: diasRaw, error: eDias } = await supabase.rpc("asaas_omie_virada", { p_limite: 400 });
+      const { data: diasRaw, error: eDias } = await supabase.rpc("asaas_omie_virada", { p_limite: 2000 });
       if (eDias) throw eDias;
       const dias = (diasRaw ?? []) as Record<string, unknown>[];
       const aFazer = dias.filter((d) => d.virado !== true && String(d.dia) < limiteV);
 
       let enviadas = 0, removidos = 0, errosV = 0, consecutivos = 0;
       const relatorio: Record<string, unknown>[] = [];
+      const desistidasV: { cod_int_lanc: string; dia: string; tentativas: number }[] = [];
       let pararRelogio = false;
 
       for (const d of aFazer) {
@@ -371,12 +399,23 @@ Deno.serve(async (req) => {
           const linhasDoDia = await lerExtrato(supabase, dia, dia);
           const candidatas = linhasParaOmie(linhasDoDia);
 
-          const { data: jaRaw } = await supabase
-            .from("asaas_omie_lancamento").select("cod_int_lanc,status")
-            .eq("modo", "linha").eq("dia", dia);
-          const ja = new Map<string, string>();
-          for (const r of (jaRaw ?? []) as Record<string, unknown>[]) {
-            ja.set(String(r.cod_int_lanc), String(r.status));
+          const jaRaw = await lerRegistrados(supabase, (q: any) => q.eq("modo", "linha").eq("dia", dia));
+          /* 'pular' = já entrou, ou já falhou vezes demais. A SEGUNDA metade
+             faltava, e foi ela que travou o backfill por 6h23 em 11/09/2026: dez
+             linhas com acento decomposto eram recusadas pelo Omie, voltavam para
+             a cabeça da fila a cada rodada, derrubavam o disjuntor de 3 erros
+             seguidos — e nenhuma das outras 3.737 linhas saía. O cron respondia
+             200 o tempo todo, com `linhas_enviadas: 0`. */
+          const pular = new Set<string>();
+          for (const r of jaRaw) {
+            const st = String(r.status);
+            if (st === "enviado" || Number(r.tentativas ?? 0) >= TETO_TENTATIVAS) {
+              pular.add(String(r.cod_int_lanc));
+            }
+          }
+          const tentativasDe = new Map<string, number>();
+          for (const r of jaRaw) {
+            tentativasDe.set(String(r.cod_int_lanc), Number(r.tentativas ?? 0));
           }
 
           /* AS IDAS AO POSTGRES SAEM DO CAMINHO CRÍTICO.
@@ -395,8 +434,13 @@ Deno.serve(async (req) => {
            * 'pendente' tendo entrado no Omie. A rodada seguinte tenta de novo, o
            * Omie recusa por `cCodIntLanc` repetido, e o caminho de autocura marca
            * 'enviado'. Esse caminho já foi exercitado contra a produção. */
-          const fila = candidatas.filter((l) => ja.get(l.id_transacao) !== "enviado")
+          const fila = candidatas.filter((l) => !pular.has(l.id_transacao))
             .slice(0, Math.max(0, teto - enviadas));
+          for (const l of candidatas) {
+            if (pular.has(l.id_transacao) && (tentativasDe.get(l.id_transacao) ?? 0) >= TETO_TENTATIVAS) {
+              desistidasV.push({ cod_int_lanc: l.id_transacao, dia, tentativas: tentativasDe.get(l.id_transacao) ?? 0 });
+            }
+          }
 
           if (fila.length) {
             const agora = new Date().toISOString();
@@ -455,6 +499,8 @@ Deno.serve(async (req) => {
                 lancamentos: 1, ncodcc: NCODCC_ASAAS_DISPONIVEL, modo: "linha",
                 status: repetido ? "enviado" : "erro",
                 erro: msg.slice(0, 400),
+                // Sem incrementar, a linha ruim volta para sempre. Ver `pular`.
+                tentativas: repetido ? 0 : (tentativasDe.get(l.id_transacao) ?? 0) + 1,
                 enviado_em: repetido ? new Date().toISOString() : null,
                 atualizado_em: new Date().toISOString(),
               });
@@ -533,6 +579,10 @@ Deno.serve(async (req) => {
         linhas_enviadas: enviadas,
         diarios_removidos: removidos,
         erros: errosV,
+        /* Linha que falhou TETO_TENTATIVAS vezes sai da fila e aparece aqui. Sem
+           isso ela bloqueia todas as outras, que foi o que aconteceu. */
+        desistidas: desistidasV.slice(0, 30),
+        desistidas_total: desistidasV.length,
         parou: pararRelogio ? (consecutivos >= 3 ? "3 erros seguidos (disjuntor)" : "relógio") : null,
         carencia_desde: limiteV,
         dias: relatorio.slice(0, 20),
@@ -575,16 +625,16 @@ Deno.serve(async (req) => {
         : doExtrato;
 
     // O que já foi para o Omie — a trava barata, antes de gastar a chamada.
-    const { data: jaRegistrados, error: eReg } = await supabase
-      .from("asaas_omie_lancamento")
-      .select("cod_int_lanc,status,valor,n_cod_lanc,tentativas")
-      .gte("dia", de!).lte("dia", ate);
-    if (eReg) throw eReg;
+    /* Só `modo='diario'`: é o que esta ação trata. Sem o filtro a consulta varre
+       as dezenas de milhares de linhas do espelho e o teto de 1000 do PostgREST
+       corta justamente as que interessam. */
+    const jaRegistrados = await lerRegistrados(
+      supabase,
+      (q: any) => q.eq("modo", "diario").gte("dia", de!).lte("dia", ate),
+    );
 
     const registrado = new Map<string, Record<string, unknown>>();
-    for (const r of (jaRegistrados ?? []) as Record<string, unknown>[]) {
-      registrado.set(String(r.cod_int_lanc), r);
-    }
+    for (const r of jaRegistrados) registrado.set(String(r.cod_int_lanc), r);
 
     /* Um dia que se corrigiu DEPOIS de enviado (o Asaas lança atrasado, e o sync
        reprocessa 3 dias) fica com valor diferente do que foi ao ERP. Isso não é

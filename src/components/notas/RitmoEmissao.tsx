@@ -71,6 +71,15 @@ function nomeDoMes(iso: string): string {
   return new Date(a, m - 1, 1).toLocaleDateString("pt-BR", { month: "long" });
 }
 
+/** A tela manda o mês ("2026-09"), a RPC recebe `date` — e Postgres recusa
+ *  "2026-09" com `invalid input syntax for type date`, que subia como a faixa
+ *  vermelha no topo do painel. Mês vira o primeiro dia dele antes de sair daqui;
+ *  data cheia passa direto. */
+function primeiroDiaDoMes(mes?: string): string | null {
+  if (!mes) return null;
+  return /^\d{4}-\d{2}$/.test(mes) ? `${mes}-01` : mes;
+}
+
 type Metrica = "cobertura" | "emitidas";
 
 export function RitmoEmissao({ mes }: { mes?: string }) {
@@ -82,7 +91,7 @@ export function RitmoEmissao({ mes }: { mes?: string }) {
   useEffect(() => {
     let vivo = true;
     (async () => {
-      const { data, error } = await sb.rpc("notas_fiscais_ritmo", { p_mes: mes ?? null });
+      const { data, error } = await sb.rpc("notas_fiscais_ritmo", { p_mes: primeiroDiaDoMes(mes) });
       if (!vivo) return;
       if (error) { setErro(error.message); return; }
       setDados(data as Ritmo);

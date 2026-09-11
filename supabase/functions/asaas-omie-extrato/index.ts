@@ -72,19 +72,31 @@ const LIMITE_WORKER_MS = 100_000;
 const TETO_PADRAO = 40;
 const PAGINA = 1000;   // o PostgREST corta em 1000 por resposta, calado
 
-/* SÓ DIA FECHADO VAI PARA O ERP.
+/* SÃO DUAS CARÊNCIAS, porque são dois modelos — e confundi-las custou dois dias
+ * de atraso sem necessidade.
  *
- * O lançamento é o LÍQUIDO do dia, e um dia que ainda pode crescer produziria
- * um lançamento incompleto — que nenhuma rodada seguinte conserta, porque a
- * chave `ASAAS-<dia>-<sigla>` já existe e o Omie recusa a repetida. Consertar
- * seria `AlterarLancCC`, que é decisão de gente, não de cron.
+ * RESUMO DIÁRIO (a contrapartida da "ASAAS Pago"): o lançamento é o LÍQUIDO do
+ * dia. Linha que chega atrasada torna o lançamento errado e SEM CONSERTO, porque
+ * a chave `ASAAS-<dia>-<sigla>` já existe e o Omie recusa a repetida — arrumar
+ * seria `AlterarLancCC`, decisão de gente, não de cron. Essa perna precisa mesmo
+ * esperar.
  *
- * Dois dias, e não um, porque o `asaas-extrato-sync` reprocessa os últimos 3
- * dias de propósito (OVERLAP_DIAS) para pegar o que o Asaas lança atrasado.
- * Esperar a sobreposição passar é o que transforma "quase sempre certo" em
- * "certo". O preview mostra os dias em carência para ninguém achar que sumiram.
- */
-const CARENCIA_DIAS = 2;
+ * Medido em 11/09/2026, sobre 47 dias de fluxo normal: 50,5% das linhas entram
+ * no espelho no mesmo dia, 42,0% no dia seguinte, 7,0% em dois dias e 0,45% em
+ * três ou quatro. Em VALOR de recebimento, o que chega depois de três dias é
+ * **0,28%** (R$ 5.003,85 de R$ 1,77 mi). Com carência de 2 esse pedaço se perdia
+ * todo dia; com 5 ele praticamente some. A "ASAAS Pago" é conta de trânsito
+ * interna, então atrasar o espelho dela não atrapalha ninguém.
+ *
+ * LINHA A LINHA (a "ASAAS Disponível", que é o que a contabilidade lê): cada
+ * linha tem chave própria — o `id_transacao` do Asaas. A que chega atrasada
+ * simplesmente ENTRA DEPOIS, sem corromper nada; o dia fica incompleto por uma
+ * rodada e completa sozinho. Aqui a carência não protege de nada, e custava dois
+ * dias de atraso. Zero significa "tudo que não é hoje" — o dia de ontem entra
+ * na primeira rodada depois da virada do dia, que é o que o financeiro pediu.
+ * HOJE continua de fora, porque ainda está crescendo. */
+const CARENCIA_DIAS = 5;
+const CARENCIA_LINHAS = 0;
 
 /* Teto de linhas por invocação na virada linha a linha. Medido em rodada real
    depois de tirar as idas ao Postgres do caminho crítico: 250 linhas em 102,8s,
@@ -375,7 +387,7 @@ Deno.serve(async (req) => {
      */
     if (action === "virar") {
       const teto = Math.max(1, Math.min(Number(body?.teto ?? TETO_LINHAS), 400));
-      const carenciaV = Math.max(0, Number(body?.carencia ?? CARENCIA_DIAS));
+      const carenciaV = Math.max(0, Number(body?.carencia ?? CARENCIA_LINHAS));
       const limiteV = new Date(new Date(hojeBRT() + "T00:00:00Z").getTime() - carenciaV * 86400000)
         .toISOString().slice(0, 10);
 

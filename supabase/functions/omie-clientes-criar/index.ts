@@ -58,6 +58,12 @@
 //   "corrigir_cadastro"→ escreve o endereço no Omie e/ou no Asaas, um cliente por
 //                        chamada. Params: { doc, alvos[], ids[] }. É o caminho
 //                        para o cadastro ANTIGO — ver o bloco que o explica.
+//   "editar_cadastro"  → o mesmo, mas com o que UMA PESSOA digitou, e não com o
+//                        que a Receita respondeu. Params:
+//                        { doc, alvos[], ids[], campos: { email, telefone, … } }.
+//                        Existe porque há recusa que consulta nenhuma resolve —
+//                        "falta preencher o E-mail" é a principal. Campo vazio
+//                        não apaga nada. Ver `editarCadastro`.
 //   "corrigir_recusados"→ a mesma escrita, sozinha, para TODO cliente cuja última
 //                        tentativa de faturamento o Omie ou a prefeitura recusou
 //                        por endereço. Roda dentro da `criar` (12:45 UTC, quinze
@@ -74,6 +80,7 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.0";
 import { requireUser } from "../_shared/auth.ts";
 import { asaasPut } from "../_shared/asaas.ts";
 import { consultarCnpjPublico } from "../_shared/cnpj-publico.ts";
+import { contatoDoCnpj } from "../_shared/cnpj-contato.ts";
 import { clienteServico } from "../_shared/firecrawl.ts";
 import { existeNosCorreios, resolverCep, type ViaCep } from "../_shared/cep.ts";
 
@@ -607,6 +614,123 @@ const NO_ASAAS: Record<string, string> = {
   bairro: "province", cep: "postalCode",
 };
 
+/* ------------------------- a edição digitada à mão ------------------------- */
+/**
+ * O QUE CONSULTA NENHUMA RESOLVE.
+ *
+ * Tudo acima parte de um pressuposto: o dado certo existe em algum lugar
+ * (Receita, Correios, Asaas) e o conserto é copiá-lo para o ERP. Há um caso em
+ * que isso é falso, e ele aparece escrito na própria tela — "o cadastro do Omie
+ * já bate com a Receita/CEP e mesmo assim a nota não saiu". O exemplo que trouxe
+ * este bloco é o mais simples possível: o Omie recusa o faturamento com "falta
+ * preencher o E-mail", e e-mail não está em cadastro federal nenhum. Sem um
+ * lugar para digitar, o conserto sai do Hub (abre o Omie, acha o cliente, digita,
+ * volta, reemite) e o Asaas continua torto para a próxima cobrança.
+ *
+ * AS GUARDAS SÃO AS MESMAS de `aplicarCorrecao`, e valem ainda mais aqui, porque
+ * agora a origem do dado é uma pessoa:
+ *
+ *   • Um cliente por chamada, nomeado pelo documento.
+ *   • Lê-se o cadastro atual ANTES e escreve-se só o que de fato muda — um
+ *     `AlterarCliente` com campo igual ao que já está lá é escrita sem motivo em
+ *     cadastro de terceiro.
+ *   • CEP que os Correios não conhecem não é gravado, nem digitado à mão: é
+ *     exatamente o E0240, e gravá-lo marcaria o cliente como consertado sem
+ *     consertar (ver a trava de 09/09/2026).
+ *
+ * E A DECISÃO PRÓPRIA DESTE CAMINHO: **campo vazio não apaga**. Só se escreve o
+ * que veio preenchido. Esta tela existe para completar o que falta; esvaziar
+ * campo de cadastro alheio não pode estar a um backspace de distância, e nenhuma
+ * recusa de NFS-e se resolve apagando dado.
+ */
+const CAMPOS_EDICAO = [
+  "razao_social", "nome_fantasia", "email", "telefone",
+  "endereco", "endereco_numero", "complemento", "bairro", "cidade", "estado", "cep",
+] as const;
+type CampoEdicao = typeof CAMPOS_EDICAO[number];
+
+/** O que o Omie corta. Mandar mais é perder o resto sem aviso nenhum. */
+const LIMITE_OMIE: Record<CampoEdicao, number> = {
+  razao_social: 60, nome_fantasia: 60, email: 100, telefone: 11,
+  endereco: 60, endereco_numero: 10, complemento: 40, bairro: 40,
+  cidade: 40, estado: 2, cep: 8,
+};
+
+/**
+ * Onde cada campo digitado cabe no Asaas. O que não está aqui é só do Omie, e
+ * por motivo: razão social e nome fantasia porque lá o `name` é o fantasia que a
+ * equipe de cobrança reconhece na tela (trocá-lo pela razão social torna a
+ * cobrança irreconhecível para quem cobra); cidade e UF porque lá elas vêm do
+ * CEP — é o CEP que as muda.
+ */
+const EDICAO_NO_ASAAS: Partial<Record<CampoEdicao, string>> = {
+  ...(NO_ASAAS as Partial<Record<CampoEdicao, string>>),
+  email: "email", telefone: "mobilePhone",
+};
+
+/** Régua frouxa de propósito: pega erro de digitação (espaço no meio, domínio
+ *  sem ponto) sem brigar com endereço exótico que é válido. */
+const UM_EMAIL = /^[^\s@;,]+@[^\s@;,.]+(\.[^\s@;,.]+)+$/;
+/** O Omie aceita vários e-mails no mesmo campo, separados por ";". */
+const emailsDe = (v: unknown) => String(v ?? "").split(/[;,]/).map((s) => s.trim()).filter(Boolean);
+/** "BRASILIA (DF)" → "BRASILIA". O parêntese é formato do Omie, não é a cidade. */
+const semUf = (v: unknown) => limpo(String(v ?? "").replace(/\s*\([A-Za-z]{2}\)\s*$/, ""));
+
+/** O valor como ele será guardado — espelha `src/lib/cadastroCliente.ts`, que é
+ *  o que a tela usa para dizer "3 campos alterados" antes do clique. */
+function normalizarEdicao(campo: CampoEdicao, valor: unknown): string {
+  const v = String(valor ?? "");
+  switch (campo) {
+    case "cep": return soDigitos(v).slice(0, 8);
+    case "telefone": return soDigitos(v).slice(0, 11);
+    case "estado": return semAcento(v).replace(/[^A-Za-z]/g, "").toUpperCase().slice(0, 2);
+    // A caixa do e-mail não se mexe: a parte antes do @ é sensível a ela pela
+    // norma, e "consertar" o que a pessoa digitou é mexer sem ser pedido.
+    case "email": return emailsDe(v).join(";").slice(0, 100);
+    case "cidade": return semUf(v).slice(0, 40);
+    default: return limpo(v).slice(0, LIMITE_OMIE[campo]);
+  }
+}
+
+/** O que impede de gravar — `null` quando está bom. A tela já barra antes, mas
+ *  validação que só existe no navegador é validação que não existe. */
+function erroDeEdicao(campo: CampoEdicao, v: string): string | null {
+  if (!v) return null;
+  if (campo === "cep" && v.length !== 8) return "o CEP tem 8 dígitos.";
+  if (campo === "telefone" && (v.length < 10 || v.length > 11)) return "o telefone é DDD + 8 ou 9 dígitos.";
+  if (campo === "estado" && v.length !== 2) return "a UF tem 2 letras.";
+  if (campo === "email") {
+    const ruins = emailsDe(v).filter((e) => !UM_EMAIL.test(e));
+    if (ruins.length) return `e-mail inválido: ${ruins.join(", ")}.`;
+  }
+  return null;
+}
+
+/** Comparar cru diria que todo cliente mudou: o Omie guarda "VITORIA" onde a
+ *  pessoa digita "Vitória", e "(61) 3245-1122" é o mesmo telefone que
+ *  "6132451122". A régua é a mesma do `diffCadastro`, campo a campo. */
+function mesmoValorEdicao(campo: CampoEdicao, a: string, b: string): boolean {
+  if (campo === "telefone" || campo === "cep") return soDigitos(a) === soDigitos(b);
+  if (campo === "email") return a.trim().toLowerCase() === b.trim().toLowerCase();
+  return semAcento(limpo(a)).toUpperCase() === semAcento(limpo(b)).toUpperCase();
+}
+
+/** O valor de hoje no Omie, na mesma forma em que a pessoa digita. */
+function doOmie(atual: any, campo: CampoEdicao): string {
+  if (campo === "telefone") return soDigitos(`${limpo(atual?.telefone1_ddd)}${limpo(atual?.telefone1_numero)}`);
+  if (campo === "cidade") return semUf(atual?.cidade);
+  if (campo === "cep") return soDigitos(atual?.cep);
+  return limpo(atual?.[campo]);
+}
+
+/** O valor de hoje no Asaas, idem. */
+function doAsaas(d: any, campo: CampoEdicao): string {
+  if (campo === "telefone") return soDigitos(d?.mobilePhone ?? d?.phone);
+  if (campo === "cep") return soDigitos(d?.postalCode);
+  const alvo = EDICAO_NO_ASAAS[campo];
+  return alvo ? limpo(d?.[alvo]) : "";
+}
+
 /**
  * O cadastro do cliente no Omie — e a falha de leitura DITA, nunca engolida.
  *
@@ -725,6 +849,10 @@ async function clientesTravados(supabase: any, ids: string[]) {
           complemento: d?.complement ?? null, bairro: d?.province ?? null,
           cidade: d?.cityName ?? null, estado: d?.state ?? null, cep: d?.postalCode ?? null,
           email: d?.email ?? null,
+          // Sobe para a edição à mão poder oferecer "usar o do Asaas" no contato
+          // que falta no ERP — que é o caso mais comum do e-mail.
+          telefone: d?.mobilePhone ?? d?.phone ?? null,
+          razao_social: d?.company ?? null,
         },
         _dados: d,
         cobrancas: [] as any[],
@@ -761,7 +889,14 @@ async function clientesTravados(supabase: any, ids: string[]) {
 async function aplicarCorrecao(
   supabase: any,
   c: { doc: string; nome: string; n_cod_cli: number | null; id_customer: string; dadosAsaas: any },
-  opts: { alvos: string[]; ids: string[]; origem: "manual" | "automatico"; operador: string | null },
+  opts: {
+    alvos: string[]; ids: string[]; origem: "manual" | "automatico" | "preventivo";
+    operador: string | null;
+    /** O e-mail e o telefone do cadastro federal, quando quem chama já os buscou
+     *  (ver `_shared/cnpj-contato.ts`). Opcional porque a busca tem limite de
+     *  taxa e nem toda rodada tem prazo para ela. */
+    contato?: { email: string; telefone: string; fonte: string } | null;
+  },
 ): Promise<{ feito: Record<string, unknown>; cadastro: Cadastro | null; bloqueio?: string }> {
   const { cadastro, bloqueio } = await montarCadastro(filaDoCliente(c.id_customer, c.doc, c.dadosAsaas));
   const registrar = async (feito: Record<string, unknown>) => {
@@ -792,6 +927,30 @@ async function aplicarCorrecao(
        * pode, porque lá o cadastro nasceu aqui) apagaria vendedor, observação e
        * condição de pagamento de um cadastro alheio. */
       const { cadastro: atual, erro: erroLeitura } = await cadastroOmie(c.n_cod_cli);
+
+      /* O CONTATO QUE FALTA — e que sozinho responde por 57% da fila.
+       *
+       * Medido em 11/09/2026: dos 616 cadastros do Omie que não emitem NFS-e,
+       * **354 estão travados só pelo e-mail** — endereço completo, número no
+       * lugar, CEP válido. Até aqui esses 354 caíam no `nada_a_propor` abaixo e
+       * viravam "precisa de conferência humana", porque `diffCadastro` compara
+       * ENDEREÇO e o e-mail não é endereço: o único campo capaz de destravá-los
+       * era o único que o diff não olhava.
+       *
+       * SÓ SOBRE CAMPO VAZIO, e a ordem das fontes é a da utilidade para quem
+       * recebe a nota: o e-mail do Asaas é o que o cliente de fato abre (é por
+       * ele que a cobrança chega); o do cadastro federal costuma ser o do
+       * contador, e serve quando não há outro. Um e-mail já preenchido no ERP
+       * nunca é sobrescrito — pode ser o comercial certo, e trocá-lo mandaria a
+       * nota para o lugar errado sem ninguém pedir. */
+      const emailNovo = atual && !limpo(atual.email)
+        ? (limpo(c.dadosAsaas?.email) || limpo(opts.contato?.email)).slice(0, 100)
+        : "";
+      const telNovo = atual && !limpo(atual.telefone1_numero)
+        ? limpo(opts.contato?.telefone)
+        : "";
+      const mudaEndereco = !!atual && diffCadastro(atual, cadastro).some((l) => l.muda);
+
       if (!atual) {
         // Não se escreve às cegas: sem saber o que está lá, não há como afirmar
         // que a escrita preenche buraco em vez de desfazer decisão.
@@ -799,7 +958,7 @@ async function aplicarCorrecao(
           ok: false,
           motivo: `Não foi possível ler o cadastro atual no Omie${erroLeitura ? `: ${erroLeitura}` : ""}. Nada foi escrito — tente de novo em alguns segundos.`,
         };
-      } else if (!diffCadastro(atual, cadastro).some((l) => l.muda)) {
+      } else if (!mudaEndereco && !emailNovo && !telNovo) {
         /* NADA A PROPOR TEM DOIS SENTIDOS, e confundi-los rotulava de "caso
          * humano" o cliente que alguém acabou de consertar. Decide o estado do
          * cadastro que está lá AGORA:
@@ -815,9 +974,9 @@ async function aplicarCorrecao(
           ok: false, nada_a_propor: true, completo,
           motivo: completo
             ? "O cadastro do Omie já está completo e igual ao da Receita — nada a corrigir."
-            : "O cadastro do Omie já bate com o que a Receita/CEP respondem e continua incompleto. Isto precisa de conferência humana.",
+            : "O cadastro do Omie bate com a Receita/CEP, continua incompleto, e nem o Asaas nem o cadastro federal publicam o contato que falta. Isto precisa de conferência humana.",
         };
-      } else if ((await existeNosCorreios(cadastro.cep)) === false) {
+      } else if (mudaEndereco && (await existeNosCorreios(cadastro.cep)) === false) {
         /* A TRAVA DE VALIDAÇÃO — nunca escrever CEP que os Correios não conhecem.
          *
          * Ela existe por um sintoma medido em 09/09/2026: treze OS apareciam na
@@ -835,22 +994,30 @@ async function aplicarCorrecao(
             `Nada foi escrito: gravá-lo marcaria este cliente como consertado sem consertar.`,
         };
       } else {
-        const payload: Record<string, unknown> = {
-          codigo_cliente_omie: c.n_cod_cli,
-          endereco: cadastro.endereco.slice(0, 60),
-          endereco_numero: cadastro.endereco_numero.slice(0, 10),
-          bairro: cadastro.bairro.slice(0, 40),
-          cidade: `${semAcento(cadastro.cidade).toUpperCase()} (${cadastro.estado})`,
-          estado: cadastro.estado,
-          cep: cadastro.cep,
-        };
-        if (cadastro.cidade_ibge) payload.cidade_ibge = cadastro.cidade_ibge;
-        if (cadastro.complemento) payload.complemento = cadastro.complemento.slice(0, 40);
-        /* O e-mail entra porque o Omie o exige para a NFS-e ("falta preencher o
-         * Número do Endereço E O E-MAIL") — mas só quando está vazio lá: e-mail
-         * é contato, não endereço, e o do ERP pode ser o certo. */
-        const emailAsaas = limpo(c.dadosAsaas?.email);
-        if (!limpo(atual.email) && emailAsaas) payload.email = emailAsaas.slice(0, 100);
+        const payload: Record<string, unknown> = { codigo_cliente_omie: c.n_cod_cli };
+        /* O ENDEREÇO SÓ ENTRA SE FOR MUDAR. Antes ele ia sempre, porque escrever
+         * só acontecia quando o diff acusava diferença — agora um cliente pode
+         * chegar aqui só para ganhar o e-mail, e reenviar os seis campos de
+         * endereço iguais ao que já está lá seria escrita sem motivo no cadastro
+         * de terceiro. Também é o que mantém honesto o `escrito` do rastro. */
+        if (mudaEndereco) {
+          payload.endereco = cadastro.endereco.slice(0, 60);
+          payload.endereco_numero = cadastro.endereco_numero.slice(0, 10);
+          payload.bairro = cadastro.bairro.slice(0, 40);
+          payload.cidade = `${semAcento(cadastro.cidade).toUpperCase()} (${cadastro.estado})`;
+          payload.estado = cadastro.estado;
+          payload.cep = cadastro.cep;
+          if (cadastro.cidade_ibge) payload.cidade_ibge = cadastro.cidade_ibge;
+          if (cadastro.complemento) payload.complemento = cadastro.complemento.slice(0, 40);
+        }
+        /* O contato entra porque o Omie o exige para a NFS-e ("falta preencher o
+         * Número do Endereço E O E-MAIL"). `emailNovo`/`telNovo` já nascem
+         * vazios quando o ERP tem o campo preenchido — ver o bloco acima. */
+        if (emailNovo) payload.email = emailNovo;
+        if (telNovo) {
+          const t = telefoneBR(telNovo);
+          if (t) { payload.telefone1_ddd = t.ddd; payload.telefone1_numero = t.numero; }
+        }
         try {
           await omieCall("geral/clientes", "AlterarCliente", payload);
           /* `cep_via` sobe para o rastro porque nem todo CEP escrito é o da
@@ -861,26 +1028,38 @@ async function aplicarCorrecao(
            * foi, e um endereço aproximado passaria por exato. */
           feito.omie = {
             ok: true, escrito: payload, fonte: cadastro.fonte,
+            contato_de: emailNovo ? (limpo(c.dadosAsaas?.email) ? "asaas" : (opts.contato?.fonte ?? null)) : null,
             cep_via: cadastro.cep_via ?? "porta",
             cep_detalhe: cadastro.cep_detalhe ?? null,
           };
           /* O ESPELHO ACOMPANHA A ESCRITA. `omie_clientes_endereco` é lido por
            * semana; sem isto ele passa a mentir no instante em que consertamos
            * algo — e foi exatamente o que rotulou de "caso humano" seis clientes
-           * que tinham acabado de ser arrumados. */
-          await supabase.from("omie_clientes_endereco").upsert({
-            codigo: c.n_cod_cli, cnpj_cpf: c.doc, nome: c.nome,
+           * que tinham acabado de ser arrumados.
+           *
+           * E ELE ESPELHA O QUE FOI ESCRITO, não o que foi proposto: quando só o
+           * contato mudou, o endereço que vale é o que continua no Omie. Gravar
+           * a proposta aqui faria o espelho afirmar um endereço que o ERP não
+           * tem — e é ele que decide quem entra na fila de pré-voo. */
+          const end = mudaEndereco ? {
             endereco: cadastro.endereco, endereco_numero: cadastro.endereco_numero,
             complemento: cadastro.complemento || null, bairro: cadastro.bairro,
             cidade: cadastro.cidade, estado: cadastro.estado, cep: cadastro.cep,
-            email: limpo(atual.email) || limpo(c.dadosAsaas?.email) || null,
+          } : {
+            endereco: limpo(atual.endereco), endereco_numero: limpo(atual.endereco_numero),
+            complemento: limpo(atual.complemento) || null, bairro: limpo(atual.bairro),
+            cidade: limpo(atual.cidade), estado: limpo(atual.estado), cep: soDigitos(atual.cep),
+          };
+          await supabase.from("omie_clientes_endereco").upsert({
+            codigo: c.n_cod_cli, cnpj_cpf: c.doc, nome: c.nome,
+            ...end,
+            email: limpo(atual.email) || emailNovo || null,
             lido_em: new Date().toISOString(),
-            /* O CEP acabou de passar pela trava acima, então é `true` sem
-             * precisar perguntar de novo. Sem gravar isto, o cadastro recém
-             * consertado voltaria à fila de validação e gastaria uma consulta
-             * para descobrir o que esta rodada já sabe. */
-            cep_valido: true,
-            cep_checado_em: new Date().toISOString(),
+            /* `cep_valido` só quando o CEP foi de fato escrito — foi ele que
+             * acabou de passar pela trava acima. Numa escrita que só acrescentou
+             * o e-mail ninguém conferiu CEP nenhum, e carimbá-lo de válido seria
+             * o mesmo falso verde que a trava de 09/09/2026 veio matar. */
+            ...(mudaEndereco ? { cep_valido: true, cep_checado_em: new Date().toISOString() } : {}),
           }, { onConflict: "codigo" }).then(() => {}, () => { /* espelho não desfaz escrita */ });
         } catch (e) {
           feito.omie = { ok: false, motivo: e instanceof Error ? e.message : String(e) };
@@ -909,6 +1088,207 @@ async function aplicarCorrecao(
 
   await registrar(feito);
   return { feito, cadastro };
+}
+
+/**
+ * A ESCRITA DO QUE FOI DIGITADO — Omie e/ou Asaas, um cliente por chamada.
+ *
+ * Irmã de `aplicarCorrecao`, e separada dela de propósito: lá a proposta vem de
+ * uma consulta e o conjunto de campos é fixo (endereço); aqui a proposta vem de
+ * uma pessoa e o conjunto é o que ela mexeu. Fundir as duas faria o caminho
+ * automático herdar um parâmetro "campos" que ninguém preencheria, e o caminho
+ * manual herdar uma consulta à Receita que ele não quer — o endereço que a
+ * pessoa digitou é justamente aquele que a Receita não sabe.
+ *
+ * O que as duas compartilham continua compartilhado: `cadastroOmie` (ler antes de
+ * escrever), a trava do CEP inexistente, o espelho `omie_clientes_endereco` e o
+ * rastro em `nf_cadastro_correcoes` — este com `origem = 'edicao'`, que é o que
+ * faz a rodada automática parar de mexer no endereço deste cliente. Ver a
+ * migration `20260911140000`: depois que uma pessoa digitou, a máquina não
+ * desmancha.
+ */
+async function editarCadastro(
+  supabase: any,
+  c: { doc: string; nome: string; n_cod_cli: number | null; id_customer: string; dadosAsaas: any },
+  opts: { campos: Record<string, unknown>; alvos: string[]; ids: string[]; operador: string | null },
+): Promise<{ feito: Record<string, unknown>; erro?: string }> {
+  /* 1. O QUE VEIO — normalizado e validado antes de qualquer chamada externa.
+   *    Campo ausente ou vazio some aqui: vazio é "não mexi", nunca "apague". */
+  const pedido: Partial<Record<CampoEdicao, string>> = {};
+  for (const campo of CAMPOS_EDICAO) {
+    if (!(campo in opts.campos)) continue;
+    const v = normalizarEdicao(campo, opts.campos[campo]);
+    if (!v) continue;
+    const erro = erroDeEdicao(campo, v);
+    if (erro) return { feito: {}, erro: `Campo "${campo}": ${erro}` };
+    pedido[campo] = v;
+  }
+  const pedidos = Object.keys(pedido) as CampoEdicao[];
+  if (!pedidos.length) {
+    return { feito: {}, erro: "Nenhum campo preenchido — não há o que escrever." };
+  }
+
+  const feito: Record<string, unknown> = {};
+
+  /* 2. OMIE — quem emite a nota. */
+  if (opts.alvos.includes("omie")) {
+    if (!c.n_cod_cli) {
+      feito.omie = { ok: false, motivo: "Este cliente não tem cadastro no Omie — o caminho aqui é Cadastrar, não Editar." };
+    } else {
+      const { cadastro: atual, erro: erroLeitura } = await cadastroOmie(c.n_cod_cli);
+      if (!atual) {
+        // Mesmo motivo de sempre: sem saber o que está lá, não dá para afirmar
+        // que a escrita preenche buraco em vez de desfazer decisão de alguém.
+        feito.omie = {
+          ok: false,
+          motivo: `Não foi possível ler o cadastro atual no Omie${erroLeitura ? `: ${erroLeitura}` : ""}. Nada foi escrito — tente de novo em alguns segundos.`,
+        };
+      } else {
+        const mudou = pedidos.filter((k) => !mesmoValorEdicao(k, doOmie(atual, k), pedido[k]!));
+        /* A checagem do CEP só acontece quando o CEP é um dos campos alterados.
+         * Barrar quem veio só acrescentar o e-mail por causa de um CEP ruim que
+         * já estava lá seria impedir o conserto em nome do defeito. */
+        let cepChecado: boolean | null = null;
+        if (mudou.includes("cep")) cepChecado = await existeNosCorreios(pedido.cep!);
+
+        if (!mudou.length) {
+          feito.omie = {
+            ok: false, nada_mudou: true,
+            motivo: "Nada a escrever no Omie: o que foi digitado já é o que está no cadastro.",
+          };
+        } else if (cepChecado === false) {
+          /* `=== false` e não `!`: `null` é o ViaCEP fora do ar, e tratar
+           * silêncio como reprovação faria uma queda de rede travar o conserto. */
+          feito.omie = {
+            ok: false, cep_invalido: true, cep: pedido.cep,
+            motivo: `O CEP ${pedido.cep} não existe na base dos Correios, e é isso que a prefeitura recusa com E0240. ` +
+              `Nada foi escrito: gravá-lo marcaria este cliente como consertado sem consertar.`,
+          };
+        } else {
+          const payload: Record<string, unknown> = { codigo_cliente_omie: c.n_cod_cli };
+          const uf = pedido.estado ?? limpo(atual.estado).toUpperCase();
+          for (const k of mudou) {
+            const v = pedido[k]!;
+            if (k === "telefone") {
+              const t = telefoneBR(v);
+              if (t) { payload.telefone1_ddd = t.ddd; payload.telefone1_numero = t.numero; }
+            } else if (k === "cidade") {
+              // O Omie guarda a cidade com a UF colada: "VITORIA (ES)".
+              payload.cidade = `${semAcento(v).toUpperCase()} (${uf})`;
+            } else {
+              payload[k] = v;
+            }
+          }
+          /* A UF mudou e a cidade não foi redigitada: o rótulo do Omie carrega as
+           * duas ("BRASILIA (DF)"), e deixá-lo com a UF velha é gravar uma
+           * contradição dentro do mesmo campo. */
+          if (mudou.includes("estado") && !mudou.includes("cidade")) {
+            const cid = doOmie(atual, "cidade");
+            if (cid) payload.cidade = `${semAcento(cid).toUpperCase()} (${uf})`;
+          }
+          /* O CÓDIGO DO MUNICÍPIO ACOMPANHA O CEP. Trocar o endereço e manter o
+           * `cidade_ibge` antigo é fabricar o E0921 de amanhã — a mesma lição do
+           * `refinarCep`. A consulta de CEP não custa crédito de raspagem. */
+          if (mudou.includes("cep") || mudou.includes("cidade") || mudou.includes("estado")) {
+            const ibge = await ibgePeloCep(pedido.cep ?? doOmie(atual, "cep"));
+            if (ibge && ibge !== soDigitos(atual.cidade_ibge)) payload.cidade_ibge = ibge;
+          }
+
+          try {
+            await omieCall("geral/clientes", "AlterarCliente", payload);
+            feito.omie = { ok: true, escrito: payload, campos: mudou };
+
+            /* O ESPELHO ACOMPANHA A ESCRITA — sem isto `omie_clientes_endereco`
+             * passa a mentir no instante do conserto, e é ele que decide quem
+             * entra na fila de pré-voo (`emitivel` exige logradouro, número, CEP
+             * e e-mail). Um e-mail gravado aqui e não espelhado deixaria o
+             * cliente na fila para ser "consertado" amanhã de novo. */
+            const valorFinal = (k: CampoEdicao) => pedido[k] ?? doOmie(atual, k);
+            await supabase.from("omie_clientes_endereco").upsert({
+              codigo: c.n_cod_cli, cnpj_cpf: c.doc, nome: c.nome,
+              endereco: valorFinal("endereco") || null,
+              endereco_numero: valorFinal("endereco_numero") || null,
+              complemento: valorFinal("complemento") || null,
+              bairro: valorFinal("bairro") || null,
+              cidade: valorFinal("cidade") || null,
+              estado: valorFinal("estado") || null,
+              cep: valorFinal("cep") || null,
+              email: valorFinal("email") || null,
+              lido_em: new Date().toISOString(),
+              /* Só quando a consulta RESPONDEU que existe. Com o ViaCEP fora do
+               * ar (`null`) a escrita passa, mas afirmar que o CEP é válido seria
+               * inventar o que ninguém conferiu — e o falso verde é o defeito que
+               * a trava de 09/09/2026 veio matar. */
+              ...(cepChecado === true ? { cep_valido: true, cep_checado_em: new Date().toISOString() } : {}),
+            }, { onConflict: "codigo" }).then(() => {}, () => { /* espelho não desfaz escrita */ });
+          } catch (e) {
+            feito.omie = { ok: false, motivo: e instanceof Error ? e.message : String(e) };
+          }
+        }
+      }
+    }
+  }
+
+  /* 3. ASAAS — a origem do dado. Sem consertar aqui, o mesmo cliente volta torto
+   *    na próxima cobrança e o conserto no ERP vira rotina mensal. */
+  if (opts.alvos.includes("asaas")) {
+    if (!c.id_customer) {
+      feito.asaas = { ok: false, motivo: "Este cliente não está no espelho do Asaas." };
+    } else {
+      const corpo: Record<string, unknown> = {};
+      const campos: string[] = [];
+      for (const k of pedidos) {
+        const alvo = EDICAO_NO_ASAAS[k];
+        if (!alvo) continue;                    // razão social, cidade e UF não atravessam
+        const v = pedido[k]!;
+        if (mesmoValorEdicao(k, doAsaas(c.dadosAsaas, k), v)) continue;
+        // O Asaas guarda UM e-mail; quando o Omie leva vários, lá vai o primeiro.
+        corpo[alvo] = k === "email" ? emailsDe(v)[0] : v;
+        campos.push(k);
+      }
+      if (!campos.length) {
+        feito.asaas = {
+          ok: false, nada_mudou: true,
+          motivo: "Nada a escrever no Asaas: o que mudou ou já está igual lá, ou é campo que só existe no Omie.",
+        };
+      } else {
+        try {
+          await asaasPut(`/customers/${c.id_customer}`, corpo);
+          feito.asaas = { ok: true, escrito: corpo, campos };
+          /* O espelho local também: `asaas_cache` é semanal, e sem isto a própria
+           * tela que acabou de gravar mostraria o valor velho ao reler. O que o
+           * Asaas normalizar por conta dele volta na próxima sync. */
+          await supabase.from("asaas_cache")
+            .update({ dados: { ...(c.dadosAsaas ?? {}), ...corpo } })
+            .eq("tipo", "customer").eq("id_asaas", c.id_customer)
+            .then(() => {}, () => { /* espelho não desfaz escrita */ });
+        } catch (e) {
+          feito.asaas = { ok: false, motivo: e instanceof Error ? e.message : String(e) };
+        }
+      }
+    }
+  }
+
+  /* 4. O RASTRO. "Por que o e-mail deste cliente mudou?" tem de ter resposta em
+   *    três meses, com quem digitou e o que cada sistema respondeu.
+   *
+   *    E A ORIGEM DEPENDE DO DESFECHO, que é o detalhe que faz a diferença.
+   *    `edicao` é o que tira o cliente da fila do conserto automático, e tira
+   *    para sempre (migration 20260911140000) — porque decisão de gente não se
+   *    desmancha sozinha. Uma tentativa que NÃO escreveu nada não é decisão
+   *    nenhuma: se o Omie recusou, se o CEP digitado não existe, ou se os
+   *    valores já eram iguais, gravar `edicao` desligaria a rodada automática
+   *    deste cliente para sempre com base num clique que não fez nada. Fica
+   *    `edicao_falhou`: aparece no rastro, não tranca a máquina. */
+  const escreveu = ["omie", "asaas"].some((a) => (feito as any)[a]?.ok === true);
+  await supabase.from("nf_cadastro_correcoes").insert({
+    doc: c.doc, nome: c.nome, n_cod_cli: c.n_cod_cli, id_customer: c.id_customer,
+    alvos: opts.alvos, fonte: "manual", proposta: pedido,
+    resultado: feito, ids_cobranca: opts.ids, operador: opts.operador,
+    origem: escreveu ? "edicao" : "edicao_falhou",
+  }).then(() => {}, () => { /* a escrita já foi feita; o log não a desfaz */ });
+
+  return { feito };
 }
 
 /**
@@ -982,8 +1362,17 @@ async function corrigirRecusados(
  * número do endereço. Sem o pré-voo, são 564 recusas no primeiro dia de setembro,
  * cada uma consumindo uma OS criada e um lugar no teto do dia.
  *
- * NENHUMA CHAMADA AO ASAAS. Só Omie (ler + escrever o cadastro) e BrasilAPI (a
- * Receita). O `id_customer` vem do espelho local, não da API do Asaas.
+ * NENHUMA CHAMADA AO ASAAS. Só Omie (ler + escrever o cadastro), BrasilAPI (a
+ * Receita) e, para quem está travado no e-mail, `contatoDoCnpj`. O
+ * `id_customer` vem do espelho local, não da API do Asaas.
+ *
+ * O E-MAIL ENTROU EM 11/09/2026, e mudou a natureza desta rodada. Ela nasceu
+ * para consertar ENDEREÇO, e a medição mostrou que endereço não é o gargalo:
+ * dos 616 cadastros que não emitem, **354 (57%) estão travados só pelo e-mail**,
+ * com o endereço inteiro. Esses caíam em `nada_a_propor` e viravam pendência
+ * humana — o campo mais fácil de achar na internet sendo o único que a máquina
+ * não sabia buscar. Ver `_shared/cnpj-contato.ts` para por que a BrasilAPI não
+ * resolve isso e quem resolve.
  *
  * A RECEITA É EXIGIDA PARA CNPJ, e este é o ponto que separa o pré-voo do
  * conserto de emergência. `montarCadastro` cai para o CEP quando a Receita não
@@ -1009,11 +1398,20 @@ async function prepararCadastros(
   if (error) return { erro: `nfse_preparo_fila: ${error.message}` };
   if (!lista?.length) return { alvos: 0, corrigidos: 0, resultados: [] };
 
-  /** O desfecho de cada cliente volta para a fila — é o que a faz andar. */
-  const marcar = async (doc: string, situacao: string, motivo: string | null, tentativas: number) => {
+  /** O desfecho de cada cliente volta para a fila — é o que a faz andar.
+   *
+   *  `gastaTentativa` existe por causa do teto de três: quem não foi tratado
+   *  porque a leva acabou antes da vez dele não pode queimar uma das três, ou em
+   *  três passadas cheias ele vai para `humano` sem que ninguém tenha tentado
+   *  nada. O teto é para falha repetida, não para fila comprida. */
+  const marcar = async (
+    doc: string, situacao: string, motivo: string | null, tentativas: number,
+    gastaTentativa = true,
+  ) => {
     await supabase.from("nfse_preparo_fila").update({
       situacao, motivo: motivo ? motivo.slice(0, 400) : null,
-      tentativas: tentativas + 1, tratada_em: new Date().toISOString(),
+      tentativas: gastaTentativa ? tentativas + 1 : tentativas,
+      tratada_em: new Date().toISOString(),
     }).eq("doc", doc);
   };
 
@@ -1056,7 +1454,16 @@ async function prepararCadastros(
       await dorme(900);
       continue;
     }
-    if (pj && !FONTES_OFICIAIS.includes(cadastro.fonte)) {
+    /* SÓ FALTA O CONTATO? Então a exigência da Receita abaixo não se aplica.
+     *
+     * `falta` é montado por `nfse_preparo_montar` juntando o que o cadastro não
+     * tem, e quando ele é exatamente "e-mail" o endereço está inteiro — não há
+     * nada de endereço a escrever, logo não há risco de gravar "S/N" por cima de
+     * um número real. Exigir a Receita aqui deixava 354 clientes presos numa
+     * guarda que existe para proteger um campo que ninguém ia tocar. */
+    const soFaltaContato = String(c.falta ?? "").trim() === "e-mail";
+
+    if (pj && !FONTES_OFICIAIS.includes(cadastro.fonte) && !soFaltaContato) {
       /* Fica PENDENTE de propósito: sem marcar, ele volta na próxima passada.
        * Escrever daqui gravaria "S/N" por cima de um número que a Receita
        * conhece — e o cliente sairia da fila carregando um endereço inventado. */
@@ -1084,16 +1491,36 @@ async function prepararCadastros(
       continue;
     }
 
+    /* O CONTATO, ANTES DA ESCRITA — e só para quem precisa dele.
+     *
+     * É a consulta mais cara em RELÓGIO de toda esta função (13s entre chamadas,
+     * porque o limite do plano aberto é 5 por minuto), e é o que dita quantos
+     * clientes cabem numa leva. Por isso as três condições: só quando a fila diz
+     * que o e-mail falta, só quando o Asaas também não o tem (esse é de graça e
+     * vem antes), e só para CNPJ. `contatoDoCnpj` devolve `null` sem reclamar
+     * quando não há prazo — o cliente fica pendente e volta na próxima passada,
+     * que acontece de hora em hora. */
+    const busca = (pj && /e-?mail/i.test(String(c.falta ?? "")) && !limpo(dadosAsaas?.email))
+      ? await contatoDoCnpj(supabase, c.doc, { ate: inicio + PRAZO })
+      : null;
+
     const { feito } = await aplicarCorrecao(supabase, {
       doc: c.doc, nome: c.nome, n_cod_cli: c.codigo, id_customer: c.id_customer, dadosAsaas,
-    }, { alvos: opts.alvos, ids: [], origem: "preventivo", operador: opts.operador });
+    }, {
+      alvos: opts.alvos, ids: [], origem: "preventivo", operador: opts.operador,
+      contato: busca?.contato ?? null,
+    });
 
     const om: any = (feito as any).omie ?? {};
     saida.push({
       doc: c.doc, nome: c.nome, ok: om.ok === true, pulado: false, falta: c.falta,
       numero: om?.escrito?.endereco_numero ?? null, fonte: cadastro.fonte,
-      precisa_de_gente: om.nada_a_propor === true,
-      motivo: om.motivo ?? null,
+      email: om?.escrito?.email ?? null,
+      contato: busca ? busca.motivo : null,
+      contato_de: om?.contato_de ?? null,
+      // Adiado por relógio não é pendência humana — ver o `situacao` abaixo.
+      precisa_de_gente: om.nada_a_propor === true && !busca?.adiado,
+      motivo: busca?.adiado ? busca.motivo : (om.motivo ?? null),
       valor: c.valor,
     });
     /* O teto de tentativas não é zelo: a fila é ordenada por VALOR, e um cliente
@@ -1102,12 +1529,23 @@ async function prepararCadastros(
      * sai para a pilha humana, que é onde uma falha repetida pertence. */
     const tentativas = Number(c.tentativas ?? 0);
     const situacao = om.ok === true ? "corrigido"
+      /* O RELÓGIO NÃO É DESISTÊNCIA. A busca de contato tem limite de taxa (5
+       * por minuto) e devolve `adiado` quando a leva acabou antes da vez deste
+       * cliente — ninguém consultou nada, então não há o que um humano saiba que
+       * a máquina não saiba. Sem esta linha ele caía no `nada_a_propor` abaixo e
+       * ia parar em `humano`: medido na primeira rodada real (11/09/2026), 3 dos
+       * 10 clientes ficariam esperando uma pessoa por causa de 30 segundos. */
+      : busca?.adiado ? "pendente"
       // "Nada a propor" com o cadastro COMPLETO é serviço já feito, não caso
       // humano — a lista de trabalho é que estava velha.
       : om.nada_a_propor === true ? (om.completo === true ? "corrigido" : "humano")
       : tentativas + 1 >= 3 ? "humano"
       : "pendente";
-    await marcar(c.doc, situacao, om.motivo ?? null, tentativas);
+    await marcar(
+      c.doc, situacao,
+      busca?.adiado ? busca.motivo : (om.motivo ?? null),
+      tentativas, !busca?.adiado,
+    );
     /* 900ms entre clientes: cada volta são três chamadas externas (Consultar e
      * Alterar no Omie, mais a Receita). O Omie tranca por método e a BrasilAPI
      * tem limite por IP — o custo de ir devagar aqui é tempo, e tempo é o que
@@ -1119,7 +1557,13 @@ async function prepararCadastros(
     alvos: lista.length,
     tratados: saida.length,
     corrigidos: saida.filter((s) => s.ok).length,
+    // O que o campo mais fácil de achar na internet estava travando: conta-se à
+    // parte para dar para ver, leva a leva, a fila de 354 andando.
+    emails_preenchidos: saida.filter((s) => s.ok && s.email).length,
     pulados_sem_receita: saida.filter((s) => s.pulado).length,
+    // Ficaram para a próxima passada porque a cota de consultas por minuto
+    // acabou — é fila andando, não problema.
+    adiados_sem_prazo: saida.filter((s) => !s.ok && !s.pulado && !s.precisa_de_gente).length,
     // Só conta quem ficou de fato para gente: cadastro que bate com a Receita E
     // continua incompleto. "Completo e igual" é serviço feito, não pendência.
     precisam_de_gente: saida.filter((s) => s.precisa_de_gente && !s.ok).length,
@@ -1177,7 +1621,10 @@ Deno.serve(async (req) => {
 
   try {
     const ehCron = await chamadaDeCron(req, supabase);
-    if (!ehCron) await requireUser(req, { bloquearCargos: ["parcerias"] });
+    /* Quem chamou sobe junto: a edição à mão escreve em cadastro de terceiro, e
+       o rastro sem nome responde "o que mudou" sem responder "quem mudou". */
+    let quem: Awaited<ReturnType<typeof requireUser>> | null = null;
+    if (!ehCron) quem = await requireUser(req, { bloquearCargos: ["parcerias"] });
 
     const body = await req.json().catch(() => ({}));
     const action = body?.action ?? "previa";
@@ -1214,9 +1661,14 @@ Deno.serve(async (req) => {
           // Leitura que falhou NÃO vira diff vazio: quem consome tem de saber que
           // a comparação não aconteceu, em vez de ler "não há o que mudar".
           erro_leitura_omie: lido.erro,
-          omie: atual ? Object.fromEntries(
-            [...CAMPOS_ENDERECO, "razao_social", "nome_fantasia", "email"].map((k) => [k, limpo(atual[k])]),
-          ) : null,
+          omie: atual ? {
+            ...Object.fromEntries(
+              [...CAMPOS_ENDERECO, "razao_social", "nome_fantasia", "email"].map((k) => [k, limpo(atual[k])]),
+            ),
+            /* O Omie guarda o telefone em dois campos; quem digita pensa num só.
+               Junto aqui para a edição à mão comparar o que mostra. */
+            telefone: doOmie(atual, "telefone"),
+          } : null,
           asaas: c.asaas,
           proposta: cadastro ?? null,
           bloqueio: bloqueio ?? null,
@@ -1256,10 +1708,45 @@ Deno.serve(async (req) => {
        * ninguém revisa é sempre o automático. */
       const { feito, cadastro, bloqueio } = await aplicarCorrecao(supabase, {
         doc, nome: c.nome, n_cod_cli: c.n_cod_cli, id_customer: c.id_customer, dadosAsaas: c._dados,
-      }, { alvos, ids, origem: "manual", operador: body?.operador ?? null });
+      }, { alvos, ids, origem: "manual", operador: body?.operador ?? quem?.email ?? null });
       if (!cadastro) return json({ status: "erro", erro: `Sem endereço confiável para escrever: ${bloqueio}.` }, 422);
 
       return json({ status: "ok", doc, fonte: cadastro.fonte, resultado: feito });
+    }
+
+    /* ---------------------------- editar_cadastro -------------------------- */
+    /* O que a pessoa digitou, escrito nos dois sistemas. Um cliente por chamada,
+     * nomeado, e só os campos que vieram preenchidos — ver `editarCadastro`.
+     *
+     * NÃO É CRON. Nada aqui roda sozinho: o dado vem de alguém que olhou o
+     * cadastro e decidiu. Uma rodada automática que "digita" é a rodada que
+     * `corrigir_recusados` já é, com fonte conferível. */
+    if (action === "editar_cadastro") {
+      const doc = soDigitos(body?.doc);
+      const alvos: string[] = Array.isArray(body?.alvos) ? body.alvos.map(String) : [];
+      const ids: string[] = (Array.isArray(body?.ids) ? body.ids : []).map(String).filter(Boolean);
+      const campos = body?.campos && typeof body.campos === "object" && !Array.isArray(body.campos)
+        ? (body.campos as Record<string, unknown>) : null;
+      if (!doc) return json({ status: "erro", erro: "Informe { doc }." }, 400);
+      if (!alvos.length) return json({ status: "erro", erro: 'Informe { alvos: ["omie"] } e/ou "asaas".' }, 400);
+      if (alvos.some((a) => a !== "omie" && a !== "asaas")) {
+        return json({ status: "erro", erro: 'Alvo desconhecido — só existem "omie" e "asaas".' }, 400);
+      }
+      if (!ids.length) return json({ status: "erro", erro: "Informe { ids } das cobranças que esta edição destrava." }, 400);
+      if (!campos) return json({ status: "erro", erro: "Informe { campos: { email: \"…\" } }." }, 400);
+
+      const clientes = await clientesTravados(supabase, ids.slice(0, 60));
+      const c = clientes.find((x: any) => x.doc === doc);
+      if (!c) return json({ status: "erro", erro: `Nenhuma das cobranças informadas é do documento ${doc}.` }, 400);
+
+      const { feito, erro } = await editarCadastro(supabase, {
+        doc, nome: c.nome, n_cod_cli: c.n_cod_cli, id_customer: c.id_customer, dadosAsaas: c._dados,
+      }, { campos, alvos, ids, operador: body?.operador ?? quem?.email ?? null });
+      // 422 e não 500: o corpo chegou, foi lido e recusado por conteúdo. Nada
+      // foi escrito em sistema nenhum quando este caminho dispara.
+      if (erro) return json({ status: "erro", erro }, 422);
+
+      return json({ status: "ok", doc, resultado: feito });
     }
 
     /* --------------------------- validar_ceps ------------------------------ */

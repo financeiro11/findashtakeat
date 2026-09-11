@@ -3218,7 +3218,16 @@ function montarTextoAviso(linhas: any[]): string {
     for (const [motivo, itens] of [...porMotivo].sort((a, b) => b[1].length - a[1].length)) {
       partes.push(`  ── ${motivo} (${itens.length})`);
       for (const l of itens.slice(0, 25)) {
-        const pista = l.cep_generico ? "  [CEP de cidade]" : l.emitivel === false ? "  [cadastro incompleto]" : "";
+        /* A pista mais FORTE primeiro. `cep_valido = false` é o CEP que não existe
+         * nos Correios: é ele que a prefeitura devolve como E0240, e é o único dos
+         * três que diz à pessoa exatamente o que corrigir. `cep_generico` (o CEP
+         * terminado em 000) desceu para segundo porque mente nos dois sentidos —
+         * aparece em cadastro que emite bem e falta justamente nos que travam. */
+        const pista =
+          l.cep_valido === false ? "  [CEP não existe nos Correios]"
+          : l.cep_generico ? "  [CEP de cidade]"
+          : l.emitivel === false ? "  [cadastro incompleto]"
+          : "";
         partes.push(linha(l) + pista);
       }
       if (itens.length > 25) partes.push(`   … e mais ${itens.length - 25}.`);

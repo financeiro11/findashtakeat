@@ -26,6 +26,10 @@
 //
 // Ações (body.action):
 //   "atualizar"  → Asaas + planilha + conciliação.  { desde?, ate?, completo? }
+//                  A janela vai FATIADA e com relógio (ver "o relógio e a fatia"):
+//                  o que não couber em 150s fica anotado num cursor e a rodada
+//                  seguinte retoma dali. `completo:true` desliga o relógio;
+//                  `{desde,ate}` puxa história à mão e não mexe no cursor.
 //   "recalcular" → só relê a planilha e reconcilia. ZERO requisições ao Asaas.
 //   "conciliar"  → só a conciliação, do espelho local. Zero requisições.
 //   "preview"    → amostra crua, para conferir campos.
@@ -52,16 +56,69 @@ const ABA = "ESTORNOS";
 // 90 dias para trás cobrem o mês corrente e os dois anteriores; 45 para a frente pegam
 // a parcela que o Asaas já cancelou lá na frente — o caso que motivou a competência
 // por vencimento.
-//
-// O TAMANHO NÃO É GOSTO: a Edge Function morre com "Request idle timeout limit (150s)"
-// e uma janela de 200 dias (~20 mil cobranças) bateu nisso — medido. Em ~135 dias são
-// ~8 mil cobranças / ~80 requisições, que rodam com folga. Para trazer história mais
-// antiga, chame com { desde, ate } em blocos de até uns 90 dias; os estornos TOTAIS
-// (que são a maioria) já vêm inteiros de qualquer forma, porque `status=REFUNDED` não
-// tem recorte de data.
 const JANELA_ANTES = 90;
 const JANELA_DEPOIS = 45;
 const TETO_CLIENTES = 250;
+
+/* ---------------------------- o relógio e a fatia --------------------------
+ *
+ * ESTA FUNÇÃO JÁ MORREU DE VELHICE UMA VEZ. Entre 04 e 10/09/2026 ela falhou 21
+ * vezes seguidas — 100% das rodadas — sempre com `IDLE_TIMEOUT (150s)`, e o
+ * espelho de estornos ficou parado no dia 05 enquanto o mês corria. Não houve
+ * defeito nenhum: houve CRESCIMENTO. A janela de 135 dias custava ~8 mil
+ * cobranças quando o número foi escolhido; em 03/09 já eram 12.720, e o custo de
+ * uma página piora com o offset — a página 127 é muito mais cara que a 3.
+ *
+ * Um número fixo de DIAS não é um orçamento de tempo. Este bloco é o orçamento.
+ *
+ * FATIAR resolve as duas coisas de uma vez: dentro de uma fatia o offset nunca
+ * passa de ~2,8 mil (páginas baratas de novo), e cada fatia GRAVA o que trouxe
+ * antes de começar a próxima — então o corte do gateway custa a última fatia, e
+ * não a rodada inteira, que era o pior do desenho antigo: 140 requisições feitas
+ * e jogadas fora no instante de escrever.
+ *
+ * O CURSOR é o que fecha o desenho. A fatia que não coube fica anotada em
+ * `asaas_sync_estado`, e a próxima rodada COMEÇA por ela em vez de recomeçar do
+ * início — sem isso, um dia ruim faria as últimas fatias nunca serem visitadas.
+ * São 3 rodadas por dia e 5 fatias, então a volta se fecha várias vezes ao dia.
+ *
+ * Os 150s valem em QUALQUER PLANO: o Pro esticou a vida do worker (400s), não o
+ * tempo até a primeira resposta. Quem responde depois disso é o gateway, com 504,
+ * e a função nem fica sabendo — por isso o corte tem que ser decidido aqui dentro.
+ */
+const FATIA_DIAS = 30;
+
+/** Onde o gateway corta a RESPOSTA — 150s, em qualquer plano. Não confundir com a
+ *  vida do worker (400s no Pro): esta é a que mata esta função. */
+const CORTE_GATEWAY_MS = 150_000;
+
+/** Reserva para o fim da rodada (planilha + conciliação). Medido em ~7s. */
+const RESERVA_FIM_MS = 20_000;
+
+/** Margem sobre a fatia mais lenta já vista — a próxima pode ser mais gorda. */
+const FOLGA_FATIA = 1.35;
+
+/** Chute para a PRIMEIRA fatia, quando ainda não há medição nesta rodada. */
+const PALPITE_FATIA_MS = 35_000;
+
+/** Depois disto, nem se tenta resolver nome de cliente — a próxima rodada resolve.
+ *  O casamento por LINK, que é o exato, não depende de nome nenhum. */
+const LIMITE_CLIENTES_MS = 105_000;
+
+type Fatia = { de: string; ate: string };
+
+/** A janela quebrada em pedaços de FATIA_DIAS, em ordem cronológica. */
+function fatiar(de: string, ate: string): Fatia[] {
+  const out: Fatia[] = [];
+  let ini = de;
+  // Datas ISO comparam como texto, e é por isso que elas circulam como texto aqui.
+  while (ini <= ate) {
+    const fim = somaDias(ini, FATIA_DIAS - 1);
+    out.push({ de: ini, ate: fim > ate ? ate : fim });
+    ini = somaDias(ini, FATIA_DIAS);
+  }
+  return out;
+}
 
 /* --------------------------------- helpers -------------------------------- */
 
@@ -295,7 +352,9 @@ function estornosDaCobranca(p: any): Estorno[] {
  * tempo da função. Cada chamada resolve até TETO_CLIENTES e as seguintes completam —
  * enquanto isso o casamento por link (que é o exato) já funciona.
  */
-async function resolverClientes(supabase: any, ids: string[]): Promise<{ mapa: Map<string, any>; resolvidos: number; faltam: number }> {
+async function resolverClientes(
+  supabase: any, ids: string[], teto = TETO_CLIENTES,
+): Promise<{ mapa: Map<string, any>; resolvidos: number; faltam: number }> {
   const unicos = [...new Set(ids.filter(Boolean))];
   const mapa = new Map<string, any>();
 
@@ -305,8 +364,13 @@ async function resolverClientes(supabase: any, ids: string[]): Promise<{ mapa: M
     for (const r of (data ?? []) as any[]) mapa.set(r.id_asaas, r.dados);
   }
 
+  // O cache é local e barato; a ida ao Asaas é que custa — uma requisição por nome.
+  // O `teto` é ORÇAMENTO DA RODADA e não da chamada: com a janela fatiada esta função
+  // é chamada seis vezes por rodada, e um teto por chamada viraria 1.500 requisições
+  // onde o desenho previa 250. Quem chama desconta o que gastou. Teto 0 = não busca
+  // nada agora (relógio apertado); a próxima rodada completa, como sempre foi.
   const faltantes = unicos.filter((id) => !mapa.has(id));
-  const lote = faltantes.slice(0, TETO_CLIENTES);
+  const lote = faltantes.slice(0, Math.max(0, teto));
   if (lote.length) {
     const buscados = await Promise.all(lote.map(async (id) => {
       try { return await asaasGet<any>(`/customers/${id}`); } catch { return null; }
@@ -340,6 +404,60 @@ async function gravarEstornos(supabase: any, estornos: Estorno[], mapaClientes: 
     if (error) throw new Error(`gravar estornos_asaas: ${error.message}`);
   }
   return linhas.length;
+}
+
+/**
+ * Apaga o estorno que sumiu do Asaas — só entre as cobranças que ACABAMOS de ver.
+ *
+ * Estorno cancelado no Asaas some do array `refunds`; a linha antiga ficaria viva
+ * no espelho somando um dinheiro que voltou. O recorte por cobrança visitada é o
+ * que torna isso seguro sob fatiamento: uma rodada que só viu março não pode
+ * concluir nada sobre abril, e por não concluir, não apaga.
+ */
+async function limparOrfaos(supabase: any, visitados: string[], vivos: Set<string>): Promise<number> {
+  let removidos = 0;
+  for (let i = 0; i < visitados.length; i += 300) {
+    const { data } = await supabase.from("estornos_asaas").select("id").in("id_pagamento", visitados.slice(i, i + 300));
+    const orfaos = (data ?? []).map((r: any) => r.id).filter((id: string) => !vivos.has(id));
+    if (orfaos.length) {
+      await supabase.from("estornos_asaas").delete().in("id", orfaos);
+      removidos += orfaos.length;
+    }
+  }
+  return removidos;
+}
+
+/* ------------------------------ estado/cursor ------------------------------ */
+
+type Estado = { ultima_completa: string | null; detalhe: Record<string, unknown> };
+
+async function lerEstado(supabase: any): Promise<Estado> {
+  const { data } = await supabase.from("asaas_sync_estado")
+    .select("ultima_completa, detalhe").eq("escopo", "estornos").maybeSingle();
+  return {
+    ultima_completa: data?.ultima_completa ?? null,
+    detalhe: (data?.detalhe ?? {}) as Record<string, unknown>,
+  };
+}
+
+/**
+ * Grava o estado — e é gravado A CADA FATIA, de propósito.
+ *
+ * O cursor só serve para alguma coisa se sobreviver ao corte do gateway, e o corte
+ * chega sem aviso: não há exceção para capturar, o processo é derrubado. Um cursor
+ * escrito só no fim seria escrito exatamente nas rodadas que não precisavam dele.
+ */
+async function gravarEstado(supabase: any, patch: Record<string, unknown>, completou: boolean) {
+  const agora = new Date().toISOString();
+  await supabase.from("asaas_sync_estado").upsert({
+    escopo: "estornos",
+    ultima_incremental: agora,
+    // `ultima_completa` é o que diz se o desenho ainda dá conta: ela só anda quando
+    // a volta INTEIRA se fecha. Se parar de andar, as fatias deixaram de acompanhar
+    // o crescimento — e é isso que faz a automação ficar vermelha, lá embaixo.
+    ...(completou ? { ultima_completa: agora } : {}),
+    detalhe: patch,
+  }, { onConflict: "escopo" });
 }
 
 /* ------------------------------- conciliação ------------------------------- */
@@ -407,66 +525,136 @@ Deno.serve(async (req) => {
     }
 
     if (action === "atualizar" || action === "sync") {
+      const t0 = Date.now();
+      const decorrido = () => Date.now() - t0;
+
       const hoje = hojeBRT();
       const de = isoDate(body?.desde) ?? somaDias(hoje, -JANELA_ANTES);
       const ate = isoDate(body?.ate) ?? somaDias(hoje, JANELA_DEPOIS);
 
-      // (1) todos os estornos TOTAIS de todos os tempos — 13 requisições, e é a única
-      //     forma de o painel enxergar um mês antigo sem varrer o ano inteiro.
-      // (2) a janela de vencimento — é aqui que os PARCIAIS aparecem, já que eles não
-      //     têm status próprio para filtrar.
-      const [totais, janela] = await Promise.all([
-        asaasList("/payments", { status: "REFUNDED" }),
-        asaasList("/payments", { "dueDate[ge]": de, "dueDate[le]": ate }),
-      ]);
+      // Janela pedida à mão é outra coisa: é alguém puxando história de propósito, e
+      // quem chama assim sabe o tamanho do pedido. Ela não mexe no cursor da rotina
+      // (seria corromper a volta padrão com um recorte que não é dela) e não pode
+      // declarar a volta fechada. `completo:true` só desliga o relógio.
+      const janelaCustom = !!(body?.desde || body?.ate);
+      const semRelogio = janelaCustom || !!body?.completo;
 
-      const cobrancas = new Map<string, any>();
-      for (const p of [...totais, ...janela]) if (p?.id) cobrancas.set(String(p.id), p);
+      const estadoAnterior = await lerEstado(supabase);
+      const todas = fatiar(de, ate);
 
-      const estornos: Estorno[] = [];
-      for (const p of cobrancas.values()) estornos.push(...estornosDaCobranca(p));
+      // O cursor guarda a PRÓXIMA fatia pela data de início. Como a janela é relativa
+      // a hoje, ela anda todo dia e o cursor de ontem pode não existir mais na lista —
+      // aí recomeça do início, em vez de pular um pedaço calado.
+      const cursorSalvo = String(estadoAnterior.detalhe?.cursor ?? "");
+      const partida = janelaCustom ? -1 : todas.findIndex((f) => f.de === cursorSalvo);
+      const ordem = partida < 0 ? todas : [...todas.slice(partida), ...todas.slice(0, partida)];
 
-      const clientes = await resolverClientes(supabase, estornos.map((e) => e.cliente_id ?? ""));
-      const gravados = await gravarEstornos(supabase, estornos, clientes.mapa);
+      let cobrancasVistas = 0, gravados = 0, removidos = 0;
+      let clientesResolvidos = 0, clientesFaltam = 0;
+      let orcamentoClientes = TETO_CLIENTES; // da RODADA inteira, não de cada fatia
+      let cursor = cursorSalvo || (ordem[0]?.de ?? de);
+      const feitas: string[] = [];
 
-      // Estorno cancelado no Asaas some do array `refunds`; a linha antiga ficaria viva
-      // no espelho somando um dinheiro que voltou. Some com o que não voltou na leitura
-      // das cobranças que acabamos de visitar.
-      const vivos = new Set(estornos.map((e) => e.id));
-      const visitados = [...cobrancas.keys()];
-      let removidos = 0;
-      for (let i = 0; i < visitados.length; i += 300) {
-        const { data } = await supabase.from("estornos_asaas").select("id").in("id_pagamento", visitados.slice(i, i + 300));
-        const orfaos = (data ?? []).map((r: any) => r.id).filter((id: string) => !vivos.has(id));
-        if (orfaos.length) {
-          await supabase.from("estornos_asaas").delete().in("id", orfaos);
-          removidos += orfaos.length;
-        }
+      const resumo = () => ({
+        de, ate, cursor, fatias: todas.length, fatias_feitas: feitas.length,
+        cobrancas: cobrancasVistas, estornos: gravados, clientes_faltando: clientesFaltam,
+      });
+
+      /** Uma leva de cobranças vira estornos gravados — na hora, não no fim. */
+      const processar = async (pagamentos: any[]) => {
+        const cobrancas = new Map<string, any>();
+        for (const p of pagamentos) if (p?.id) cobrancas.set(String(p.id), p);
+
+        const estornos: Estorno[] = [];
+        for (const p of cobrancas.values()) estornos.push(...estornosDaCobranca(p));
+
+        const clientes = await resolverClientes(
+          supabase, estornos.map((e) => e.cliente_id ?? ""),
+          semRelogio || decorrido() < LIMITE_CLIENTES_MS ? orcamentoClientes : 0,
+        );
+        orcamentoClientes -= clientes.resolvidos;
+        clientesResolvidos += clientes.resolvidos;
+        // MAIOR e não "o da última fatia": quem sobrou na fatia 1 continua faltando
+        // depois de uma fatia 5 que não tinha nome nenhum pendente.
+        clientesFaltam = Math.max(clientesFaltam, clientes.faltam);
+
+        gravados += await gravarEstornos(supabase, estornos, clientes.mapa);
+        removidos += await limparOrfaos(supabase, [...cobrancas.keys()], new Set(estornos.map((e) => e.id)));
+        cobrancasVistas += cobrancas.size;
+      };
+
+      // (1) OS TOTAIS, DE TODOS OS TEMPOS — ~15 requisições, sem recorte de data, e é
+      //     a única forma de o painel enxergar um mês antigo sem varrer o ano inteiro.
+      //     Vem inteira em toda rodada porque é barata e traz a grande maioria: uma
+      //     rodada que só conseguisse fazer isto já deixaria os totais em dia.
+      await processar(await asaasList("/payments", { status: "REFUNDED" }));
+
+      // (2) AS FATIAS DA JANELA — é aqui que os PARCIAIS aparecem, já que eles não têm
+      //     status próprio para filtrar e continuam RECEIVED/CONFIRMED na lista.
+      /* O relógio PERGUNTA se a próxima fatia cabe, em vez de confiar num horário
+       * fixo. Um "pare aos 80s" é o mesmo tipo de número que quebrou esta função:
+       * fica certo enquanto o volume não muda e erra calado quando muda. Medindo a
+       * fatia mais lenta desta rodada e exigindo que ela caiba antes dos 150s, o
+       * corte se ajusta sozinho conforme a base cresce — e o 504 deixa de ser
+       * possível, porque a rodada só começa trabalho que sabe terminar. */
+      let fatiaMaisLenta = 0;
+      for (let i = 0; i < ordem.length; i++) {
+        const previsao = fatiaMaisLenta ? fatiaMaisLenta * FOLGA_FATIA : PALPITE_FATIA_MS;
+        if (!semRelogio && decorrido() + previsao + RESERVA_FIM_MS > CORTE_GATEWAY_MS) break;
+
+        const f = ordem[i];
+        const marca = Date.now();
+        await processar(await asaasList("/payments", { "dueDate[ge]": f.de, "dueDate[le]": f.ate }));
+        fatiaMaisLenta = Math.max(fatiaMaisLenta, Date.now() - marca);
+
+        feitas.push(f.de);
+        cursor = ordem[(i + 1) % ordem.length].de;
+        if (!janelaCustom) await gravarEstado(supabase, resumo(), false);
       }
 
+      const completou = !janelaCustom && feitas.length >= todas.length;
+
+      // (3) PLANILHA E CONCILIAÇÃO RODAM SEMPRE, inclusive em rodada incompleta: são
+      //     baratas e são o que a tela lê. Conciliar sobre um espelho parcial é melhor
+      //     que deixar a conciliação velha — nenhuma das duas inventa estorno, e a
+      //     fatia que faltou entra na próxima rodada.
       const plan = await lerPlanilha();
       const linhasPlan = parsePlanilha(plan.headers, plan.rows);
       const gravadasPlan = await gravarPlanilha(supabase, linhasPlan);
+      const conciliacao = await conciliar(supabase);
 
-      await supabase.from("asaas_sync_estado").upsert({
-        escopo: "estornos",
-        ultima_completa: new Date().toISOString(),
-        ultima_incremental: new Date().toISOString(),
-        detalhe: { de, ate, cobrancas: cobrancas.size, estornos: gravados, clientes_faltando: clientes.faltam },
-      }, { onConflict: "escopo" });
+      if (!janelaCustom) {
+        await gravarEstado(supabase, { ...resumo(), planilha: gravadasPlan }, completou);
+      }
+
+      /* VERMELHO SÓ QUANDO O DESENHO PAROU DE DAR CONTA.
+       *
+       * Rodada incompleta é normal — é para isso que o cursor existe, e chamar isso de
+       * falha ensinaria a ignorar o painel. O que NÃO é normal é a volta inteira não
+       * se fechar por um dia: aí as fatias deixaram de acompanhar o crescimento, que é
+       * exatamente o que aconteceu em 04/09 sem ninguém ver. Isso não pode sair verde
+       * só porque a função respondeu. */
+      const ultimaCompleta = completou ? new Date().toISOString() : estadoAnterior.ultima_completa;
+      const atrasada = !janelaCustom &&
+        (!ultimaCompleta || Date.now() - new Date(ultimaCompleta).getTime() > 24 * 3600 * 1000);
 
       return json({
-        ok: true, origem: "asaas",
+        ok: !atrasada, origem: "asaas",
         detalhe: {
           janela: { de, ate },
-          cobrancas_visitadas: cobrancas.size,
+          fatias: { total: todas.length, feitas: feitas.length, proxima: cursor },
+          completou,
+          ultima_volta_completa: ultimaCompleta,
+          segundos: Math.round(decorrido() / 1000),
+          cobrancas_visitadas: cobrancasVistas,
           estornos_gravados: gravados,
           estornos_removidos: removidos,
-          clientes: { resolvidos: clientes.resolvidos, faltam: clientes.faltam },
+          clientes: { resolvidos: clientesResolvidos, faltam: clientesFaltam },
           planilha: { linhas: gravadasPlan },
         },
-        conciliacao: await conciliar(supabase),
-      });
+        ...(atrasada ? { erro: "a volta completa não se fecha há mais de 24h — as fatias não estão acompanhando o volume." } : {}),
+        conciliacao,
+      }, atrasada ? 500 : 200);
     }
 
     return json({ error: `ação desconhecida: ${action}` });

@@ -21,6 +21,11 @@
  *     apaga; juntar os dois num clique só faria a correção arrastar a emissão
  *     junto, sem ninguém conferir se o cadastro ficou como devia.
  *
+ * O QUE A CONSULTA NÃO SABE vai para `EditarCadastroCliente`, que fica dentro de
+ * cada cliente daqui: e-mail (a recusa mais comum, e que não existe em cadastro
+ * federal), telefone, nome e o endereço que a Receita tem errado. A régua é a
+ * mesma — diff antes do botão, campo vazio não apaga, Omie e Asaas separados.
+ *
  * O que este componente NÃO resolve, e diz na cara: OS já faturada. Aí a nota
  * saiu do nosso alcance (o Omie só a deixa ir para a etapa 60) e não existe
  * reenvio pela API — é o botão "Reenviar NFS-e" da tela do Omie.
@@ -36,6 +41,7 @@ import {
 import {
   Loader2, RefreshCw, Building2, CheckCircle2, TriangleAlert, ArrowRight, Send, Lock,
 } from "lucide-react";
+import { EditarCadastroCliente } from "./EditarCadastroCliente";
 
 const sb = supabase as any;
 
@@ -215,6 +221,8 @@ export function CorrigirCadastro({
             O endereço proposto vem da <strong>Receita Federal</strong> (CNPJ) ou da consulta de{" "}
             <strong>CEP</strong>, nunca do Asaas — foi o dado do Asaas que produziu a fila de notas
             recusadas por município. A escrita é por cima do cadastro atual: só os campos abaixo.
+            O que nenhuma consulta sabe — e-mail, telefone, o endereço que a Receita tem errado —
+            se digita em <strong>Editar cadastro à mão</strong>, dentro de cada cliente.
           </DialogDescription>
         </DialogHeader>
 
@@ -318,10 +326,12 @@ export function CorrigirCadastro({
               )}
               {!muda.length && !c.erro_leitura_omie && !c.sem_cadastro_omie && c.proposta && (
                 <p className="mt-2 rounded border border-amber-500/30 bg-amber-500/5 p-2 text-[11px] text-amber-700 dark:text-amber-400">
-                  O cadastro do Omie <strong>já bate</strong> com a Receita/CEP — não há campo a corrigir daqui,
-                  e mesmo assim a nota não saiu. Ou o endereço está formalmente completo e materialmente errado
-                  (logradouro preenchido com o nome da cidade, número "00"), ou a recusa é da prefeitura e não do
-                  cadastro. Este é caso de olhar um a um.
+                  O cadastro do Omie <strong>já bate</strong> com a Receita/CEP — não há nada que o botão
+                  automático possa propor, e mesmo assim a nota não saiu. Ou falta um campo que consulta
+                  nenhuma sabe (o <strong>e-mail</strong> é a recusa mais comum), ou o endereço está
+                  formalmente completo e materialmente errado (logradouro preenchido com o nome da cidade,
+                  número "00"), ou a recusa é da prefeitura e não do cadastro. Os dois primeiros se resolvem
+                  em <strong>Editar cadastro à mão</strong>, logo abaixo.
                 </p>
               )}
 
@@ -365,6 +375,24 @@ export function CorrigirCadastro({
                     </button>
                   )}
                 </div>
+              )}
+
+              {/* O CAMINHO PARA O QUE CONSULTA NENHUMA RESOLVE.
+                  Fica FORA do `consertavel` de propósito: quem mais precisa dele
+                  é justamente o cliente sobre quem a tela acabou de dizer "já
+                  bate com a Receita e mesmo assim não emite" — e o e-mail, que é
+                  a recusa mais comum, não está em cadastro federal nenhum. Só
+                  desaparece quando a leitura do Omie falhou, que é quando não se
+                  sabe o que está lá para comparar. */}
+              {!c.erro_leitura_omie && (
+                <EditarCadastroCliente
+                  cliente={c}
+                  ids={c.cobrancas.map((x) => x.id_asaas)}
+                  onGravado={() => {
+                    setCorrigidos((s) => new Set(s).add(c.doc));
+                    onFeito();
+                  }}
+                />
               )}
             </div>
           );

@@ -21,11 +21,12 @@
 // imagem — um valor que a IA enxergou num print não tem a mesma procedência de um que
 // veio do Omie, e a tela não pode deixar os dois parecerem a mesma coisa.
 
-import { useEffect, useRef, useState } from "react";
-import { Link, useLocation } from "react-router-dom";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { Link, useLocation, useNavigate } from "react-router-dom";
 import {
   Sparkles, X, Send, Loader2, Trash2, Plus, MessageSquare, Mic, Square,
-  Volume2, VolumeX, ShieldCheck, AlertTriangle, Brain, Database, ImagePlus, Eye,
+  Volume2, VolumeX, ShieldCheck, AlertTriangle, Brain, Database, ImagePlus, Eye, BookOpen,
+  Pencil,
 } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import takeatSymbol from "@/assets/takeat-symbol-white.png";
@@ -40,6 +41,7 @@ import {
   prepararImagens, triarArquivos, type ImagemAnexada, type ImagemMsg,
 } from "@/lib/assistente-imagens";
 import { contextoDaPagina } from "@/lib/contexto-pagina";
+import { aoParar, retirarUltimaPergunta, type Retirada } from "@/lib/assistente-conversa";
 import { urlDaFuncao } from "@/lib/urlFuncao";
 
 type Numero = {
@@ -58,15 +60,30 @@ type Msg = {
   avisos?: string[];
   /** true = veio de uma consulta ao banco nesta requisição; false = caminho geral. */
   verificado?: boolean;
-  /** "conferido" (soma validada) ou "consultado" (leitura do banco, sem validação). */
-  nivel?: "conferido" | "consultado";
+  /**
+   * "conferido" (soma validada), "consultado" (leitura do banco, sem validação) ou
+   * "guia" (não são números: é procedimento lido do guia do Hub).
+   */
+  nivel?: "conferido" | "consultado" | "guia";
   /** Qual modelo respondeu — "openai" ou "gemini". */
   provedor?: string;
   /** Imagens da pergunta (role user) ou o que a resposta leu (role assistant). */
   imagens?: ImagemMsg[];
   /** Resposta escrita olhando para uma imagem: número lido não é número conferido. */
   leuImagem?: boolean;
+  /** A resposta é um aviso de falha, não conteúdo — não vale como contexto da conversa. */
+  erro?: boolean;
 };
+
+/**
+ * Teto de espera de uma pergunta.
+ *
+ * Acima dos 150s em que o gateway do Supabase desiste, de propósito: cortar antes faria o
+ * painel chamar de erro uma resposta que ainda estava vindo. O que este relógio impede é o
+ * outro caso — a função que morre sem responder e deixa o painel girando até alguém
+ * recarregar o Hub.
+ */
+const TEMPO_LIMITE_MS = 170_000;
 
 type Conv = { id: string; titulo: string; created_at: string; updated_at: string };
 
@@ -122,6 +139,31 @@ export function AIAssistant({ initialPrompt }: { initialPrompt?: string } = {}) 
   const [arrastando, setArrastando] = useState(false);
   /** Imagem aberta em tamanho grande — print de DRE em miniatura não se lê. */
   const [ampliada, setAmpliada] = useState<string | null>(null);
+
+  /* Link de tela dentro da resposta.
+   *
+   * O guia do Hub responde "isso se faz em tal tela" e escreve a rota como link. Um <a>
+   * cru recarregaria o Hub inteiro — sessão, contexto e a própria conversa embaixo de uma
+   * tela branca de dois segundos. Aqui ele navega pelo router e fecha o painel, que é o que
+   * a pessoa quer quando clica: chegar na tela. Link externo continua abrindo noutra aba. */
+  const navigate = useNavigate();
+  const MD = useMemo(() => ({
+    a({ href, children, ...props }: { href?: string; children?: React.ReactNode }) {
+      const interno = typeof href === "string" && href.startsWith("/");
+      if (!interno) {
+        return <a href={href} target="_blank" rel="noreferrer" {...props}>{children}</a>;
+      }
+      return (
+        <a
+          href={href}
+          onClick={(e) => { e.preventDefault(); setOpen(false); navigate(href!); }}
+          {...props}
+        >
+          {children}
+        </a>
+      );
+    },
+  }), [navigate]);
   const scrollRef = useRef<HTMLDivElement>(null);
   const seletorRef = useRef<HTMLInputElement>(null);
 
@@ -281,7 +323,9 @@ export function AIAssistant({ initialPrompt }: { initialPrompt?: string } = {}) 
    * ou quando há imagem, que nenhuma consulta nomeada sabe ler.
    * Retorna o texto acumulado para persistência.
    */
-  async function responderGeral(historico: Msg[], leuImagem = false): Promise<string> {
+  async function responderGeral(
+    historico: Msg[], leuImagem = false, sinal?: AbortSignal,
+  ): Promise<string> {
     const { data: { session } } = await supabase.auth.getSession();
     const url = urlDaFuncao("ai-chat");
     // Só as imagens mais recentes seguem, e as reabertas do histórico voltam a ter bytes:
@@ -291,18 +335,32 @@ export function AIAssistant({ initialPrompt }: { initialPrompt?: string } = {}) 
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${session?.access_token}` },
       body: JSON.stringify({
-        messages: legivel.map(m => ({
+        // Aviso de falha não é conteúdo: mandá-lo de volta ensinaria o modelo a conversar
+        // sobre o próprio erro em vez de responder a pergunta.
+        messages: legivel.filter(m => !m.erro).map(m => ({
           role: m.role, content: m.content, imagens: paraRequisicao(m.imagens),
         })),
         pagina: contextoDaPagina(pathname),
       }),
+      signal: sinal,
     });
 
     if (!resp.ok || !resp.body) {
-      if (resp.status === 429) toast({ title: "Muitas requisições", description: "Aguarde alguns segundos e tente novamente.", variant: "destructive" });
-      else if (resp.status === 402) toast({ title: "Sem créditos de IA", description: "Adicione saldo em Configurações da workspace.", variant: "destructive" });
-      // O status na frase: sem ele, um 401 de endereço errado passa por "a IA engasgou".
-      else toast({ title: "Erro", description: `Não foi possível obter resposta (erro ${resp.status}).`, variant: "destructive" });
+      const motivo =
+        resp.status === 429 ? "Muitas perguntas seguidas. Espere alguns segundos e tente de novo."
+        : resp.status === 402 ? "A IA está sem créditos. Veja Configurações › Uso de IA."
+        : resp.status === 401 || resp.status === 403 ? "Sua sessão expirou. Saia e entre de novo."
+        // O status na frase: sem ele, um 401 de endereço errado passa por "a IA engasgou".
+        : `Não consegui responder agora (erro ${resp.status}).`;
+      toast({ title: "Erro", description: motivo, variant: "destructive" });
+      /* A falha entra na CONVERSA, e não só no toast que some em cinco segundos. A pergunta
+         ficava na tela sem resposta nenhuma, e o que se lê nisso é "ele me ignorou" — foi
+         daí que saíram os relatos de "a IA não responde" sem nada para investigar. */
+      setMessages(prev => [...prev, {
+        role: "assistant",
+        content: `${motivo} A pergunta continua aqui: dá para reenviar no botão de editar.`,
+        erro: true,
+      }]);
       return "";
     }
 
@@ -350,6 +408,59 @@ export function AIAssistant({ initialPrompt }: { initialPrompt?: string } = {}) 
     return acumulado;
   }
 
+  /* ---- Voltar atrás -----------------------------------------------------------------
+   * Enviar por engano é o acidente mais comum do painel: Enter envia, e "O q" vira uma
+   * pergunta em curso sem nenhum jeito de parar — o botão já virou spinner. Duas saídas,
+   * que na prática são a mesma: a pergunta volta para a caixa de texto, de onde ela nunca
+   * deveria ter saído, e some da conversa (da tela e do banco, senão ela reaparece inteira
+   * na próxima vez que a conversa for reaberta).
+   *
+   * `parar()` sozinho não desfaz nada: quando a resposta já começou a chegar, o que chegou
+   * fica. Texto pela metade é informação; apagá-lo porque a pessoa mandou parar seria
+   * cobrar a espera e não entregar nada. */
+  const abortRef = useRef<AbortController | null>(null);
+  /** A pergunta em voo, para voltar INTEIRA — com os anexos, que o envio já tinha limpado. */
+  const emCursoRef = useRef<{ texto: string; imagens: ImagemAnexada[] } | null>(null);
+
+  /**
+   * Aplica uma retirada: a conversa encolhe, o texto volta para a caixa e as linhas sem
+   * dono saem do banco.
+   *
+   * O apagar é pelo CONTEÚDO e não pelo id: a linha é gravada de forma assíncrona, e
+   * guardar o id devolvido daria uma corrida contra o próprio clique de cancelar. Sem este
+   * apagar, a pergunta sai da tela e volta inteira na reabertura da conversa — junto com a
+   * resposta que a pessoa acabou de descartar.
+   */
+  async function aplicarRetirada(r: Retirada<Msg>) {
+    if (r.pergunta === null) return;
+    setMessages(r.mensagens);
+    setInput(r.pergunta);
+    if (convId && r.removidas.length) {
+      await supabase.from("ai_messages" as any)
+        .delete()
+        .eq("conversation_id", convId)
+        .in("content", r.removidas)
+        .then(() => loadConversations(), () => {});
+    }
+  }
+
+  /** Devolve a última pergunta à caixa de texto e a retira da conversa (com a resposta). */
+  const retomarPergunta = () => aplicarRetirada(retirarUltimaPergunta(messagesRef.current));
+
+  /** Para a resposta em curso. Sem texto nenhum na tela, devolve a pergunta para edição. */
+  async function parar() {
+    abortRef.current?.abort();
+    abortRef.current = null;
+    setLoading(false);
+
+    const pendente = emCursoRef.current;
+    emCursoRef.current = null;
+    const r = aoParar(messagesRef.current);
+    await aplicarRetirada(r);
+    // As imagens voltam junto: reenviar sem elas mandaria outra pergunta.
+    if (r.pergunta !== null && pendente) setAnexos(pendente.imagens);
+  }
+
   async function enviar(texto: string, imagens: ImagemAnexada[] = anexosRef.current) {
     const text = texto.trim();
     // Imagem sozinha é pergunta válida ("o que é isso?" está implícito no print).
@@ -362,6 +473,15 @@ export function AIAssistant({ initialPrompt }: { initialPrompt?: string } = {}) 
     setAnexos([]);
     setLoading(true);
     pararFala();
+
+    /* O relógio existe porque a alternativa é o painel girando para sempre: uma função que
+       morre no gateway não devolve nada, e sem teto o "Consultando os dados…" fica na tela
+       até a pessoa recarregar o Hub. TEMPO_LIMITE_MS é maior que o do gateway (150s) de
+       propósito — cortar antes transformaria resposta lenta em erro. */
+    const controle = new AbortController();
+    abortRef.current = controle;
+    emCursoRef.current = { texto: text, imagens };
+    const relogio = setTimeout(() => controle.abort(), TEMPO_LIMITE_MS);
 
     const cid = await ensureConversation(text || "Imagem");
     // A gravação da imagem no bucket é efeito colateral: se falhar, a conversa continua
@@ -379,7 +499,7 @@ export function AIAssistant({ initialPrompt }: { initialPrompt?: string } = {}) 
       // Com imagem, o roteador nem é consultado: nenhuma consulta nomeada lê figura, e
       // chamá-lo só somaria segundos antes de cair no caminho geral do mesmo jeito.
       if (imagens.length > 0) {
-        const acumulado = await responderGeral(next, true);
+        const acumulado = await responderGeral(next, true, controle.signal);
         if (cid && acumulado) { await persistMessage(cid, "assistant", acumulado); loadConversations(); }
         if (vozLigada && acumulado) falar(acumulado);
         return;
@@ -403,16 +523,31 @@ export function AIAssistant({ initialPrompt }: { initialPrompt?: string } = {}) 
           conversa_id: cid,
           pagina: contextoDaPagina(pathname),
         },
+        signal: controle.signal,
       });
 
       const resp = data as {
         ok?: boolean; consulta?: string; resposta?: string; numeros?: Numero[];
-        avisos?: string[]; provedor?: string; nivel?: "conferido" | "consultado";
+        avisos?: string[]; provedor?: string; nivel?: "conferido" | "consultado" | "guia";
+        escopo?: "fora";
       } | null;
+
+      /* Pergunta fora do trabalho: o servidor já recusou, e a recusa É a resposta.
+         Cair no caminho geral aqui desfaria a recusa — o `ai-chat` responde o que sabe, e
+         "o que é um pteridófita?" voltaria com a aula de botânica pela porta dos fundos. */
+      if (resp?.escopo === "fora") {
+        /* Sem selo: `verificado: false` acenderia "sem números verificados — confira antes
+           de usar", e não há o que conferir numa recusa. Selo que não diz nada treina a
+           pessoa a não ler selo nenhum, inclusive o que importa. */
+        const recusa: Msg = { role: "assistant", content: resp.resposta ?? "" };
+        setMessages(prev => [...prev, recusa]);
+        if (cid && recusa.content) { await persistMessage(cid, "assistant", recusa.content); loadConversations(); }
+        return;
+      }
 
       // Fora das consultas nomeadas (ou função indisponível) → caminho geral.
       if (error || !resp || resp.consulta === "nenhuma") {
-        const acumulado = await responderGeral(next);
+        const acumulado = await responderGeral(next, false, controle.signal);
         if (cid && acumulado) { await persistMessage(cid, "assistant", acumulado); loadConversations(); }
         if (vozLigada && acumulado) falar(acumulado);
         return;
@@ -431,9 +566,23 @@ export function AIAssistant({ initialPrompt }: { initialPrompt?: string } = {}) 
       if (cid && msg.content) { await persistMessage(cid, "assistant", msg.content); loadConversations(); }
       if (vozLigada && msg.content) falar(msg.content);
     } catch (e) {
+      // Cancelamento não é erro: quem apertou parar já sabe o que aconteceu, e `parar()`
+      // cuidou da tela. Um toast vermelho aqui acusaria a pessoa de ter quebrado algo.
+      if (controle.signal.aborted) return;
       console.error(e);
+      /* A falha vai para DENTRO da conversa, e não só num toast que some em cinco segundos.
+         A pergunta fica na tela sem resposta nenhuma, e o que se lê é "ele ignorou" — foi
+         assim que "a IA não responde" chegou como relato sem nada para investigar. */
+      setMessages(prev => [...prev, {
+        role: "assistant",
+        content: "Não consegui responder agora — a conexão com o servidor falhou. "
+          + "A pergunta continua aqui: dá para reenviar no botão de editar.",
+        erro: true,
+      }]);
       toast({ title: "Erro", description: "Falha de conexão", variant: "destructive" });
     } finally {
+      clearTimeout(relogio);
+      if (abortRef.current === controle) { abortRef.current = null; emCursoRef.current = null; }
       setLoading(false);
     }
   }
@@ -656,7 +805,7 @@ export function AIAssistant({ initialPrompt }: { initialPrompt?: string } = {}) 
                       <div className="max-w-[92%] space-y-2">
                         <div className="rounded-lg bg-secondary px-3 py-2 text-[12.5px] text-foreground">
                           <div className="prose prose-sm max-w-none prose-p:my-1 prose-ul:my-1 prose-headings:my-1.5 prose-headings:text-[13px]">
-                            <ReactMarkdown>{m.content || "…"}</ReactMarkdown>
+                            <ReactMarkdown components={MD}>{m.content || "…"}</ReactMarkdown>
                           </div>
                           <div className="mt-1.5 flex items-center gap-2">
                             <Selo verificado={m.verificado} nivel={m.nivel} provedor={m.provedor} leuImagem={m.leuImagem} />
@@ -685,9 +834,32 @@ export function AIAssistant({ initialPrompt }: { initialPrompt?: string } = {}) 
                   </div>
                 )}
 
+                {/* O "parar" fica JUNTO do spinner, e não só no lugar do botão de enviar:
+                    é para o spinner que a pessoa está olhando enquanto espera. */}
                 {loading && messages[messages.length - 1]?.role === "user" && (
                   <div className="flex items-center gap-2 text-[12px] text-muted-foreground">
                     <Loader2 className="h-3.5 w-3.5 animate-spin" /> Consultando os dados…
+                    <button
+                      onClick={parar}
+                      className="inline-flex items-center gap-1 rounded border border-border px-1.5 py-0.5 text-[11px] hover:bg-secondary hover:text-foreground"
+                    >
+                      <Square className="h-2.5 w-2.5" /> Parar
+                    </button>
+                  </div>
+                )}
+
+                {/* Editar a última pergunta. Só quando a conversa está parada e a última
+                    pergunta já teve resposta: no meio da espera quem manda é o "Parar". */}
+                {!loading && messages.length > 0
+                  && messages[messages.length - 1]?.role === "assistant" && (
+                  <div className="flex justify-end">
+                    <button
+                      onClick={retomarPergunta}
+                      title="Devolve a última pergunta para a caixa de texto e apaga esta resposta"
+                      className="inline-flex items-center gap-1 text-[11px] text-muted-foreground hover:text-foreground"
+                    >
+                      <Pencil className="h-3 w-3" /> Editar a pergunta
+                    </button>
                   </div>
                 )}
               </div>
@@ -771,13 +943,21 @@ export function AIAssistant({ initialPrompt }: { initialPrompt?: string } = {}) 
                 rows={2}
                 disabled={ouvindo}
               />
-              <Button
-                size="sm"
-                onClick={() => enviar(input)}
-                disabled={loading || ouvindo || preparando || (!input.trim() && anexos.length === 0)}
-              >
-                {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
-              </Button>
+              {/* Enquanto responde, o botão é de PARAR — não um spinner desabilitado. Um
+                  botão que só gira diz "espere" a quem já decidiu não esperar. */}
+              {loading ? (
+                <Button size="sm" variant="outline" onClick={parar} title="Parar a resposta">
+                  <Square className="h-4 w-4" />
+                </Button>
+              ) : (
+                <Button
+                  size="sm"
+                  onClick={() => enviar(input)}
+                  disabled={ouvindo || preparando || (!input.trim() && anexos.length === 0)}
+                >
+                  <Send className="h-4 w-4" />
+                </Button>
+              )}
             </div>
             <div className="mt-1.5 flex items-center justify-between gap-2 text-[10.5px] text-muted-foreground">
               <span>⌘/Ctrl + I para abrir/fechar</span>
@@ -825,19 +1005,16 @@ export function AIAssistant({ initialPrompt }: { initialPrompt?: string } = {}) 
 }
 
 /**
- * Diz de onde veio a resposta.
- *
- * Sem este selo os dois caminhos ficariam indistinguíveis, e um número sem procedência
- * pareceria tão confiável quanto um conferido — exatamente o que não pode acontecer com
- * dado que vai para diretoria.
- */
-/**
- * Diz de onde veio a resposta. TRÊS níveis, não dois:
+ * Diz de onde veio a resposta. QUATRO níveis, não dois:
  *
  *   conferido  — consulta nomeada (DRE, caixa, EBITDA, lançamentos): a soma das partes
  *                foi validada contra o total. É o que pode ir para diretoria.
  *   consultado — explorador genérico: os dados vieram do banco agora, mas ninguém validou
  *                se a agregação responde à pergunta. Origem confiável, leitura por sua conta.
+ *   guia       — não há números: a resposta é procedimento lido do guia do Hub, texto
+ *                escrito e revisado. A garantia é sobre o CAMINHO, não sobre valor, e
+ *                precisa dizer isso: "números conferidos" numa resposta sem número seria
+ *                um selo verde prometendo o que a resposta nem tenta entregar.
  *   nenhum     — caminho geral, sem consulta ao banco.
  *
  * Achatar isso em "confiável / não confiável" perderia a distinção que mais importa: um
@@ -846,7 +1023,10 @@ export function AIAssistant({ initialPrompt }: { initialPrompt?: string } = {}) 
 function Selo({
   verificado, nivel, provedor, leuImagem,
 }: {
-  verificado?: boolean; nivel?: "conferido" | "consultado"; provedor?: string; leuImagem?: boolean;
+  verificado?: boolean;
+  nivel?: "conferido" | "consultado" | "guia";
+  provedor?: string;
+  leuImagem?: boolean;
 }) {
   if (verificado === undefined) return null; // conversa recarregada do histórico
 
@@ -868,6 +1048,11 @@ function Selo({
         <span className="inline-flex items-center gap-1 text-muted-foreground">
           <AlertTriangle className="h-3 w-3" />
           sem números verificados — confira antes de usar
+        </span>
+      ) : nivel === "guia" ? (
+        <span className="inline-flex items-center gap-1 text-sky-700">
+          <BookOpen className="h-3 w-3" />
+          passo a passo do guia do Hub
         </span>
       ) : nivel === "consultado" ? (
         <span className="inline-flex items-center gap-1 text-amber-700">

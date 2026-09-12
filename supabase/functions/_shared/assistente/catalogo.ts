@@ -18,6 +18,50 @@
 // types.ts). Coluna que não existe faz a consulta falhar em vez de mentir, mas o certo é
 // conferir contra o types.ts ao editar.
 
+/**
+ * De que capacidade depende cada ÁREA do catálogo.
+ *
+ * O catálogo sempre soube de que área é cada tabela; ninguém perguntava quem pode ler a
+ * área. Enquanto só o financeiro alcançava o Assistente isso não aparecia — e é
+ * exatamente o tipo de proteção que só existe até o dia em que se abre a porta, que é o
+ * que se quer fazer agora.
+ *
+ * O mapa é por ÁREA e não por tabela de propósito: são dezoito áreas contra dezenas de
+ * tabelas, e área nova sem entrada aqui NÃO abre (ver `capacidadeDaFonte`). Fechar por
+ * omissão é a direção certa de errar — tabela que ninguém alcança vira um chamado; tabela
+ * que todo mundo alcança não vira nada até virar notícia.
+ */
+const CAPACIDADE_POR_AREA: Record<string, string> = {
+  "Anotações": "time",
+  "Análise Preditiva": "planejamento",
+  "Auditoria": "conciliacao",
+  "Automações": "time",
+  "Biblioteca": "biblioteca",
+  "Caixa": "tesouraria",
+  "Cartão de Crédito": "conciliacao",
+  "Configurações": "maquinario",
+  "Contas a pagar": "tesouraria",
+  "Facilities": "facilities",
+  "Financeiro": "demonstracoes",
+  "Governança": "conciliacao",
+  "Notas fiscais": "conciliacao",
+  "Parceiros": "parceiros",
+  "Radar de Editais": "editais",
+  "Recargas": "maquinario",
+  "Recebimentos": "tesouraria",
+  "Time Financeiro": "time",
+};
+
+/**
+ * A capacidade que abre esta fonte. `null` quando a fonte não existe ou a área dela não
+ * está mapeada — e `null` aqui quer dizer NÃO ABRE, nunca "livre".
+ */
+export function capacidadeDaFonte(id: string): string | null {
+  const fonte = CATALOGO.find((f) => f.id === id);
+  if (!fonte) return null;
+  return CAPACIDADE_POR_AREA[fonte.area] ?? null;
+}
+
 export type Fonte = {
   /** Nome exato da tabela ou view. */
   id: string;
@@ -320,10 +364,15 @@ export const CATALOGO: Fonte[] = [
     area: "Automações",
     descricao:
       "Catálogo de automações do time: dor que resolve, solução, ferramentas, esforço, " +
-      "impacto, horas economizadas por mês e nível de maturidade.",
+      "impacto, horas economizadas por mês e nível de maturidade. " +
+      "São DUAS perguntas diferentes: `status` diz até onde a construção chegou " +
+      "(Ideias → A fazer → Em andamento → Em teste → Rodando) e é o histórico do que já foi " +
+      "feito; `ativa` diz se aquilo roda HOJE. Automação desativada guarda o status " +
+      "'Rodando' de quando parou, então 'quantas rodam hoje' é status='Rodando' E ativa=true, " +
+      "e as horas economizadas por mês só contam as ativas.",
     valor: "horas_mes",
-    dimensoes: ["categoria", "status", "responsavel", "nivel", "impacto", "esforco"],
-    listar: ["automacao", "dor", "solucao", "responsavel", "status", "horas_mes", "nivel"],
+    dimensoes: ["categoria", "status", "ativa", "responsavel", "nivel", "impacto", "esforco"],
+    listar: ["automacao", "dor", "solucao", "responsavel", "status", "ativa", "desativada_motivo", "horas_mes", "nivel"],
   },
 
   // --- Time ---
@@ -443,9 +492,23 @@ export const CATALOGO: Fonte[] = [
 ];
 
 /** Bloco de fontes para o prompt do roteador. Só id, área e descrição — nada de colunas. */
-export function catalogoParaPrompt(): string {
+/**
+ * O catálogo como o planejador o vê — só as fontes que ESTA pessoa alcança.
+ *
+ * Filtrar aqui, e não só na hora de executar, é o que evita o pior desenho possível: o
+ * modelo escolher uma fonte proibida, a execução recusar, e a pessoa receber "não consegui"
+ * sobre uma tabela cuja existência ela acabou de descobrir pela recusa. Sem a fonte no
+ * prompt, ela simplesmente não entra na conversa.
+ *
+ * Sem `pode`, devolve tudo — é como as chamadas de sistema (service role) usam.
+ */
+export function catalogoParaPrompt(pode?: (c: string) => boolean): string {
   const porArea = new Map<string, Fonte[]>();
   for (const f of CATALOGO) {
+    if (pode) {
+      const cap = CAPACIDADE_POR_AREA[f.area];
+      if (!cap || !pode(cap)) continue;
+    }
     const lista = porArea.get(f.area) ?? [];
     lista.push(f);
     porArea.set(f.area, lista);

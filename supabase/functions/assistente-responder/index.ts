@@ -17,6 +17,13 @@
 // Quando nada é coletado, a síntese NEM RODA — a resposta é montada aqui, para que
 // "não tenho esse dado" não passe por um redator criativo.
 //
+// A consulta `como_fazer` é a exceção que confirma a regra: ela não lê o banco, lê o GUIA DO
+// HUB (_shared/assistente/guia.ts) — texto escrito e revisado sobre em que tela se faz o quê.
+// Existe porque a mesma máquina que não deixa inventar número deixava inventar PROCEDIMENTO:
+// "como eu emito a nota de comissão?" não casava consulta nenhuma, caía no caminho geral, e
+// voltava um passo a passo plausível e falso. O guia é filtrado pelas capacidades de quem
+// perguntou, então explicar uma tela nunca vaza o que a barra lateral esconde.
+//
 // Memória e log são efeitos colaterais NÃO-BLOQUEANTES: falha neles nunca derruba uma
 // resposta sobre números.
 
@@ -34,8 +41,9 @@ import {
   panoramaDFC, snapshotKpis,
 } from "../_shared/assistente/consultas-hub.ts";
 import { cartaoFatura } from "../_shared/assistente/consultas-cartao.ts";
+import { comoFazer } from "../_shared/assistente/consultas-guia.ts";
 import { mesesFechados, estruturar } from "../_shared/assistente/dre.ts";
-import { catalogoParaPrompt } from "../_shared/assistente/catalogo.ts";
+import { capacidadeDaFonte, catalogoParaPrompt } from "../_shared/assistente/catalogo.ts";
 import { blocoDeMemoria, memorizar, registrarExecucao } from "../_shared/assistente/memoria.ts";
 import { Competencia, competenciaExtenso } from "../_shared/assistente/dre.ts";
 
@@ -43,9 +51,48 @@ const CONSULTAS = [
   "caixa_do_mes", "variacao_ebitda", "panorama_do_mes", "rubrica_do_mes",
   "lancamentos_da_rubrica", "radar", "dfc_do_mes", "orcamento_por_area",
   "pagamentos_previstos", "assinaturas", "churn", "investimentos", "briefing",
-  "dre_completa", "contrapartes", "cartao_fatura", "explorar",
+  "dre_completa", "contrapartes", "cartao_fatura", "explorar", "como_fazer",
 ] as const;
 type NomeConsulta = typeof CONSULTAS[number];
+
+/**
+ * DE QUE CAPACIDADE DEPENDE CADA CONSULTA — a mesma que abre a tela equivalente.
+ *
+ * O Assistente responde com a SERVICE ROLE em boa parte do caminho, e o que ele alcança
+ * passa por RPC `security definer`, que fura a RLS por construção. Sem esta tabela, quem
+ * tivesse a capacidade `assistente` alcançava por conversa tudo o que o Hub sabe — inclusive
+ * telas que o menu esconde dele. Enquanto só o financeiro tinha acesso à bolinha isso não
+ * aparecia; abrir o Assistente para quem não é do financeiro é justamente o que o torna
+ * visível.
+ *
+ * `null` = não depende de tela nenhuma. Só `como_fazer`, que é o guia — e ele já se recorta
+ * por dentro, verbete a verbete.
+ *
+ * Consulta nova sem entrada aqui NÃO RODA (ver `capacidadeDaConsulta`): fechar por omissão
+ * é a direção certa de errar.
+ */
+const CAPACIDADE_DA_CONSULTA: Record<string, string | null> = {
+  como_fazer: null,
+  caixa_do_mes: "tesouraria",
+  briefing: "tesouraria",
+  pagamentos_previstos: "tesouraria",
+  panorama_do_mes: "demonstracoes",
+  variacao_ebitda: "demonstracoes",
+  rubrica_do_mes: "demonstracoes",
+  lancamentos_da_rubrica: "demonstracoes",
+  dre_completa: "demonstracoes",
+  contrapartes: "demonstracoes",
+  dfc_do_mes: "demonstracoes",
+  radar: "demonstracoes",
+  orcamento_por_area: "orcamento",
+  assinaturas: "metricas",
+  churn: "metricas",
+  investimentos: "societario",
+  cartao_fatura: "conciliacao",
+  // "explorar" é a única cuja porta depende do PARÂMETRO: a capacidade sai da fonte pedida,
+  // resolvida pelo catálogo na hora de executar.
+  explorar: null,
+};
 
 /** Teto do plano inicial: cobre perguntas compostas sem virar varredura. */
 const MAX_CONSULTAS = 3;
@@ -54,10 +101,21 @@ const MAX_RODADAS = 2;
 /** Teto absoluto de consultas na pergunta inteira — latência é sentida pela pessoa. */
 const MAX_TOTAL_CONSULTAS = 8;
 
-const PROMPT_PLANEJADOR = `Você planeja quais consultas de dados respondem a uma pergunta do time
-financeiro da Takeat. Hoje é {HOJE}.
+const PROMPT_PLANEJADOR = `Você planeja quais consultas respondem a uma pergunta de alguém da
+Takeat sobre o Hub — os números da empresa ou o jeito de fazer as coisas. Hoje é {HOJE}.
+
+Quem pergunta nem sempre é do financeiro. Muita pergunta não é sobre número nenhum: é "como
+eu peço isso", "onde eu vejo aquilo", "por que não consigo abrir esta tela". Essas têm
+consulta própria ("como_fazer") e NUNCA devem ser respondidas por uma consulta de dados.
 
 Consultas disponíveis:
+- "como_fazer": o GUIA DO HUB — o que cada tela é, quem usa, o passo a passo e as
+  armadilhas. É a consulta de PROCEDIMENTO, e a única que responde "como se faz". Use
+  sempre que a pergunta for sobre USAR o Hub e não sobre o valor de alguma coisa:
+  "como eu emito a nota de comissão", "como peço uma compra", "onde lanço reembolso",
+  "como abro uma tarefa", "não consigo abrir a tela X", "onde vejo o MRR", "o que é esta
+  tela", "quem usa isso", "como funciona o assistente". Na dúvida entre explicar o caminho
+  e trazer o número, traga as duas: "como_fazer" mais a consulta da área.
 - "panorama_do_mes": totais do mês no DRE (receita, margem, EBITDA, lucro). Para "como foi
   julho", "resumo do mês".
 - "variacao_ebitda": compara o EBITDA dos dois últimos meses FECHADOS e atribui a variação
@@ -111,7 +169,9 @@ COMO PLANEJAR:
 - Use UMA só quando a pergunta é direta e cabe numa fonte.
 - Não peça a mesma consulta duas vezes.
 - Para DRE ou caixa, prefira sempre a consulta específica em vez de "explorar".
-- Se a pergunta não é sobre nenhuma dessas áreas, devolva a lista vazia.
+- Pergunta sobre COMO USAR o Hub vai para "como_fazer", mesmo que cite uma área com
+  consulta própria: "como emito a nota" é caminho, não é número.
+- Se a pergunta não é sobre a Takeat nem sobre o Hub, devolva a lista vazia.
 
 DE ONDE VEM A PERGUNTA: junto com ela pode chegar a TELA que a pessoa está olhando, com o
 período e os filtros à vista. Isso é contexto forte, não decoração — quem pergunta "por
@@ -129,9 +189,21 @@ diferentes a menos que a pergunta peça isso com todas as letras.
 
 Se a pergunta citar um mês, devolva "ano" e "mes" na consulta a que se aplica.
 
+ASSUNTO — classifique antes de escolher consulta:
+- "trabalho": qualquer coisa da Takeat (números, clientes, fornecedores, pessoas, processos),
+  qualquer coisa sobre USAR o Hub, e conceitos de finanças, contabilidade ou operação que a
+  pessoa precisa para o trabalho ("o que é EBITDA?", "como se calcula churn?"). Também conta
+  pedido de ajuda com um texto de trabalho — escrever um e-mail de cobrança, resumir uma ata.
+- "fora": o que não tem nada a ver com o trabalho na Takeat — curiosidade geral, ciência,
+  história, esporte, receita de bolo, opinião, conversa fiada, código de programação sem
+  relação com o Hub. Se a pergunta só faria sentido feita a uma enciclopédia, é "fora".
+Na dúvida entre os dois, responda "trabalho": recusar pergunta legítima é pior que responder
+uma curiosidade. Mas não force — pergunta claramente de enciclopédia é "fora" mesmo que
+contenha uma palavra que também existe no financeiro.
+
 Responda SOMENTE com JSON:
-{"consultas": [{"consulta": "...", "ano": null, "mes": null, "rubrica": null, "fonte": null,
-"agrupar_por": null, "de": null, "ate": null}]}`;
+{"assunto": "trabalho", "consultas": [{"consulta": "...", "ano": null, "mes": null,
+"rubrica": null, "fonte": null, "agrupar_por": null, "de": null, "ate": null}]}`;
 
 const PROMPT_INVESTIGADOR = `Você decide se os dados já coletados respondem à pergunta, ou se
 falta buscar mais. Hoje é {HOJE}.
@@ -142,7 +214,8 @@ quais consultas ainda faltam.
 Consultas disponíveis: panorama_do_mes, variacao_ebitda, rubrica_do_mes,
 lancamentos_da_rubrica (devolva "rubrica"), contrapartes (devolva "rubrica"), caixa_do_mes,
 dfc_do_mes, orcamento_por_area, pagamentos_previstos, radar, dre_completa, cartao_fatura,
-assinaturas, churn, investimentos, briefing, explorar (devolva "fonte").
+assinaturas, churn, investimentos, briefing, como_fazer (o guia do Hub: telas, passo a
+passo e acesso), explorar (devolva "fonte").
 
 FONTES para "explorar":
 {CATALOGO}
@@ -166,12 +239,23 @@ NÃO PEÇA MAIS quando:
 Responda SOMENTE com JSON:
 {"suficiente": true|false, "lacuna": "o que falta, em uma frase", "consultas": [{"consulta":"...","rubrica":null,"fonte":null,"ano":null,"mes":null}]}`;
 
-const PROMPT_SINTESE = `Você é analista financeiro do time da Takeat. Escreve em português do Brasil,
-direto e sem enrolação, como quem conhece os números da casa.
+const PROMPT_SINTESE = `Você é do time financeiro da Takeat e atende quem pergunta — do próprio
+time ou de qualquer outra área. Escreve em português do Brasil, direto e sem enrolação, como
+quem conhece a casa. Quem pergunta pode não ser do financeiro: explique sem jargão e sem
+supor que a pessoa já sabe onde ficam as coisas.
 
-REGRA ABSOLUTA: os únicos números que você pode escrever são os que aparecem nos blocos DADOS.
-Não calcule números novos, não estime, não arredonde para um valor que não está lá, não traga
-nada de memória nem de conversas anteriores. Se algo não está nos blocos, diga que não tem.
+REGRA ABSOLUTA (números): os únicos números que você pode escrever são os que aparecem nos
+blocos DADOS. Não calcule números novos, não estime, não arredonde para um valor que não está
+lá, não traga nada de memória nem de conversas anteriores. Se algo não está nos blocos, diga
+que não tem.
+
+REGRA ABSOLUTA (procedimento): os únicos caminhos, telas, botões e passos que você pode
+descrever são os que estão escritos no bloco do GUIA DO HUB. Não deduza um passo a passo da
+sua experiência com outros sistemas, não invente nome de botão, de aba ou de menu, e nunca
+mande a pessoa fazer no Omie, no Asaas ou em qualquer sistema de fora o que você não leu no
+guia. Se o guia disser "PASSO A PASSO: não está escrito no guia para esta tela", diga
+exatamente isso — qual é a tela, o que ela faz, e que o passo a passo ainda não está no guia.
+Um procedimento inventado é pior que um "não sei": quem perguntou vai executá-lo.
 
 Como responder:
 - Comece pelo veredito em uma frase. Depois explique.
@@ -202,7 +286,18 @@ Como responder:
 - Se a pergunta tinha DUAS partes e os dados só cobrem uma, responda a que dá e diga
   claramente qual ficou sem resposta e por quê. Responder metade em silêncio é pior que
   responder metade avisando: quem lê assume que foi tudo coberto.
-- Máximo 8 linhas.`;
+- Num bloco do GUIA DO HUB: diga primeiro a TELA (com o caminho do menu e a rota, escrita
+  como link markdown — [Operacional › Notas Fiscais](/operacional/notas-fiscais) —, porque
+  o link abre a tela), depois os passos na ordem do guia, e por fim o cuidado que importa
+  para esta pergunta. O mapa de telas que vem no bloco é para você ACHAR a tela certa, não
+  para listar de volta: nunca despeje o menu inteiro na resposta.
+- O guia já está recortado no que ESTA pessoa pode abrir. Tela que não está no bloco, ela
+  não alcança — não a cite como se fosse o caminho dela. Se o que a pessoa quer claramente
+  mora numa tela que não está ali, diga que o acesso é que falta e que ele se pede a quem
+  administra o Hub.
+- Passo a passo pode passar de 8 linhas se cada linha for um passo. O limite existe contra
+  enrolação, não contra instrução.
+- Máximo 8 linhas fora isso.`;
 
 /**
  * A tela de onde a pergunta saiu.
@@ -248,12 +343,17 @@ function normalizarCompetencia(ano: unknown, mes: unknown): Competencia | null {
  * modelo compôs um valor por conta própria (somando dois blocos, por exemplo), que é o
  * modo de falha que sobra depois de tirar dele o acesso à busca.
  */
-function valoresNaoReconhecidos(texto: string, numeros: Numero[]): string[] {
+function valoresNaoReconhecidos(texto: string, numeros: Numero[], literais = ""): string[] {
   const conhecidos = numeros.map((n) => Math.abs(n.valor));
   const achados: string[] = [];
 
+  /* `literais` é o texto dos blocos que não trazem `numeros` — hoje, o guia do Hub, onde
+     um valor aparece escrito na regra ("compras acima de R$ 500 passam por aprovação").
+     Sem isto, repetir corretamente uma regra do guia viraria acusação de número inventado.
+     A comparação é pela GRAFIA exata, e não por tolerância: é citação, não aritmética. */
   const confere = (bruto: string, valor: number, rotulo: string, tolerancia: number) => {
     if (!Number.isFinite(valor)) return;
+    if (literais.includes(bruto)) return;
     const bate = conhecidos.some((c) => Math.abs(c - valor) / Math.max(c, 1) <= tolerancia);
     if (!bate) achados.push(rotulo);
   };
@@ -297,6 +397,20 @@ Deno.serve(async (req) => {
   const inicio = Date.now();
   try {
     const caller = await requireUser(req);
+
+    /* QUEM PODE FALAR COM ELE.
+       O `ai-chat` exigia a capacidade `assistente` desde 10/09/2026; ESTA função, que é o
+       caminho principal e a que de fato lê o banco, nunca exigiu — o portão estava na porta
+       dos fundos e a da frente ficou encostada. Esconder a bolinha no front não fecha nada:
+       a função responde a quem a chamar com um token válido, e boa parte do que ela alcança
+       passa por RPC `security definer`, que fura a RLS por construção.
+
+       A decisão vem da matriz de Perfis de acesso, como no `ai-chat` — a mesma capacidade,
+       lida do mesmo lugar, para as duas portas não divergirem no primeiro ajuste. */
+    if (!caller.isService && !caller.pode("assistente")) {
+      return jsonResponse({ error: "Seu acesso não inclui o Assistente." }, 403);
+    }
+
     /* A bolinha da IA responde sobre o negócio inteiro, com a SERVICE ROLE —
        `auth.uid()` é nulo lá dentro e o Postgres não alcança quem perguntou.
        Sem isto, "quem puxou a Equipe Comercial em julho?" devolveria a folha
@@ -334,15 +448,22 @@ Deno.serve(async (req) => {
     // ---- Etapa 1: planejar (o modelo não vê nenhum dado financeiro aqui) --------------
     const hoje = new Date().toLocaleDateString("pt-BR", { timeZone: "America/Sao_Paulo" });
     let plano: ItemPlano[] = [];
+    /* "fora" = pergunta que não é de trabalho. Quem classifica é o planejador, que já lê a
+       pergunta e mais nada — nenhuma chamada a mais, nenhum segundo a mais. Indefinido
+       (planejador fora do ar) NÃO recusa: falhar fechado aqui transformaria uma queda de
+       modelo numa recusa a perguntas legítimas, que é o pior jeito de errar. */
+    let assunto: "trabalho" | "fora" | "indefinido" = "indefinido";
     try {
-      const resposta = await gerarJSON<{ consultas?: ItemPlano[] }>({
+      const resposta = await gerarJSON<{ consultas?: ItemPlano[]; assunto?: string }>({
         temperature: 0,
         messages: [
           {
             role: "system",
             content: PROMPT_PLANEJADOR
               .replaceAll("{HOJE}", hoje)
-              .replace("{CATALOGO}", catalogoParaPrompt()),
+              // O catálogo já chega recortado: fonte que esta pessoa não abre nem aparece
+              // como opção, em vez de ser escolhida e recusada depois.
+              .replace("{CATALOGO}", catalogoParaPrompt((c) => caller.isService || caller.pode(c))),
           },
           {
             role: "user",
@@ -352,14 +473,39 @@ Deno.serve(async (req) => {
         ],
       });
       plano = Array.isArray(resposta?.consultas) ? resposta.consultas : [];
+      if (resposta?.assunto === "fora" || resposta?.assunto === "trabalho") assunto = resposta.assunto;
     } catch {
       plano = [];
     }
 
-    // Só consultas conhecidas, sem repetição, respeitando o teto.
+    /* ESTA PESSOA PODE RODAR ESTA CONSULTA?
+     *
+     * Fecha por omissão: consulta que não esteja no mapa não roda, e `explorar` só roda se
+     * a fonte pedida existir no catálogo e a área dela abrir para quem perguntou. O
+     * `undefined` do `Record` e o `null` do catálogo significam a mesma coisa aqui — não
+     * sei de que porta isto depende, logo não abro. */
+    const podeConsulta = (p: ItemPlano): boolean => {
+      if (caller.isService) return true;
+      const nome = String(p?.consulta);
+      if (nome === "explorar") {
+        const cap = capacidadeDaFonte(String(p?.fonte ?? ""));
+        return cap !== null && caller.pode(cap);
+      }
+      if (!(nome in CAPACIDADE_DA_CONSULTA)) return false;
+      const cap = CAPACIDADE_DA_CONSULTA[nome];
+      return cap === null || caller.pode(cap);
+    };
+
+    // Só consultas conhecidas, permitidas, sem repetição, respeitando o teto.
+    const conhecidas = plano.filter((p) => (CONSULTAS as readonly string[]).includes(String(p?.consulta)));
+    /* O que o planejador pediu e esta pessoa não abre. Guardado porque a mensagem de "não
+       consegui" muda completamente: "ainda não sei responder isso" manda a pessoa
+       reformular uma pergunta que estava perfeita, quando o que falta é crachá. */
+    const barradas = conhecidas.filter((p) => !podeConsulta(p)).map((p) => String(p.consulta));
+
     const vistas = new Set<string>();
-    plano = plano
-      .filter((p) => (CONSULTAS as readonly string[]).includes(String(p?.consulta)))
+    plano = conhecidas
+      .filter(podeConsulta)
       .filter((p) => {
         const chave = `${p.consulta}|${p.rubrica ?? ""}|${p.fonte ?? ""}|${p.ano ?? ""}-${p.mes ?? ""}`;
         if (vistas.has(chave)) return false;
@@ -368,11 +514,11 @@ Deno.serve(async (req) => {
       })
       .slice(0, MAX_CONSULTAS);
 
-    const responderSemDados = (texto: string, avisos: string[] = []) => {
+    const responderSemDados = (texto: string, avisos: string[] = [], escopo?: "fora") => {
       const resp = {
         ok: false, provedor: provedorAtual(), nivel: "conferido" as const,
-        consulta: plano.map((p) => p.consulta).join("+") || "nenhuma",
-        resposta: texto, numeros: [], avisos,
+        consulta: escopo === "fora" ? "fora_de_escopo" : (plano.map((p) => p.consulta).join("+") || "nenhuma"),
+        escopo, resposta: texto, numeros: [], avisos,
       };
       registrarExecucao(admin, {
         user_id: caller.userId ?? "", conversa_id: conversaId, pergunta,
@@ -382,13 +528,54 @@ Deno.serve(async (req) => {
       return jsonResponse(resp);
     };
 
+    /* PERGUNTA FORA DO TRABALHO PARA AQUI.
+     *
+     * Não é preciosismo: até 12/09/2026 "o que é um pteridófita?" vinha respondida com uma
+     * aula de botânica, porque o planejador não achava consulta, o painel caía no caminho
+     * geral e lá o modelo responde o que sabe. Três estragos, nesta ordem de gravidade:
+     * gasta a cota de IA do mês num assunto que não é da empresa; ensina que a bolinha é um
+     * chatbot de uso livre, e o próximo prompt vai junto com o contexto da empresa inteira;
+     * e faz a resposta errada parecer institucional, porque ela sai dentro do Hub.
+     *
+     * O corte é AQUI e não no caminho geral porque aqui ele custa zero: o planejador já leu
+     * a pergunta. O `escopo` na resposta é o que faz o painel parar em vez de seguir para o
+     * `ai-chat` — sem ele, recusar aqui só adiaria a mesma resposta em um salto. */
+    if (assunto === "fora") {
+      return responderSemDados(
+        "Só respondo sobre a Takeat e sobre o Hub — números, processos, e como fazer as " +
+        "coisas por aqui. Essa pergunta está fora disso, então prefiro não responder: uma " +
+        "resposta minha aqui dentro parece resposta da empresa, e para isso o lugar certo é " +
+        "outro. Se for trabalho e eu tiver entendido errado, reformule dizendo do que se " +
+        "trata na Takeat.",
+        [],
+        "fora",
+      );
+    }
+
+    /* A pergunta era boa, o acesso é que não alcança. Dizer isso — e não "não sei" — é a
+       diferença entre a pessoa pedir a capacidade a quem administra o Hub e ficar
+       reformulando para sempre uma pergunta que já estava certa. */
+    if (plano.length === 0 && barradas.length > 0) {
+      return responderSemDados(
+        "Essa informação existe no Hub, mas não está no seu acesso — por isso eu não posso " +
+        "buscá-la nem resumi-la aqui. Se você precisa dela para o seu trabalho, peça a " +
+        "capacidade correspondente a quem administra o Hub (Configurações › Usuários), " +
+        "dizendo qual tela você precisa abrir. O que eu posso fazer agora é explicar onde " +
+        "cada coisa fica e como se faz.",
+        ["Consulta(s) fora do seu acesso: " + [...new Set(barradas)].join(", ") + "."],
+      );
+    }
+
     if (plano.length === 0) {
       return responderSemDados(
-        "Ainda não sei responder isso. Hoje eu alcanço: DRE e caixa (totais do mês, " +
-        "rubricas, variação do EBITDA, lançamentos do Omie, extratos Sicoob e Asaas) e as " +
-        "áreas de tarefas, auditoria, cartão, facilities, parceiros, editais, projetos " +
-        "aprovados, recargas, biblioteca e uso de IA. Se a área que você precisa não está " +
-        "aí, me diga qual — dá para incluir.",
+        "Ainda não sei responder isso. Hoje eu alcanço duas coisas: os NÚMEROS (DRE e caixa " +
+        "— totais do mês, rubricas, variação do EBITDA, lançamentos do Omie, extratos " +
+        "Sicoob e Asaas — além de tarefas, auditoria, cartão, facilities, parceiros, " +
+        "editais, projetos aprovados, recargas, biblioteca e uso de IA) e o CAMINHO das " +
+        "coisas no Hub — em que tela se faz o quê, o passo a passo e por que uma tela não " +
+        "abre para você. Se for isso, me pergunte com o nome da coisa (\"como eu peço uma " +
+        "compra\", \"onde lanço reembolso\"). Se for uma área que não está aí, me diga qual — " +
+        "dá para incluir.",
       );
     }
 
@@ -405,6 +592,13 @@ Deno.serve(async (req) => {
           }
           return r;
         }
+        /* O guia não lê o banco — ele é texto revisado, e a filtragem por capacidade é o
+           que impede a conversa de contar a alguém do Facilities como se lê a folha. */
+        case "como_fazer":
+          return comoFazer(pergunta, {
+            rotaAtual: pagina?.rota ?? null,
+            pode: (c) => caller.isService || caller.pode(c),
+          });
         case "panorama_do_mes":
           return await panoramaDoMes(supabase, pedida);
         case "radar":
@@ -476,7 +670,18 @@ Deno.serve(async (req) => {
     };
 
     const coletados = (await Promise.all(plano.map(executar))).filter((r): r is Resultado => r !== null);
-    const jaConsultadas = new Set(coletados.map((r) => r.consulta));
+
+    /* O QUE JÁ FOI PEDIDO — pelo nome E pelos parâmetros.
+     * O conjunto nascia só com os NOMES (`r.consulta`) e o investigador consultava com uma
+     * chave composta ("nome|rubrica|fonte"), que nunca casava com nada: ele podia repetir
+     * inteira uma consulta já feita, e o mesmo bloco entrava duas vezes no prompt da
+     * síntese. Guardar as duas formas mantém a distinção que importa: `lancamentos_da_rubrica`
+     * de OUTRA rubrica é uma pergunta nova; da mesma, não é. */
+    const chaveDe = (p: ItemPlano) => `${p.consulta}|${p.rubrica ?? ""}|${p.fonte ?? ""}`;
+    const jaConsultadas = new Set([
+      ...coletados.map((r) => r.consulta),
+      ...plano.map(chaveDe),
+    ]);
 
     // ---- Etapa 3: aprofundar (quem produziu o dado diz qual é o próximo passo) --------
     for (const r of coletados.filter((x) => x.ok && x.aprofundar)) {
@@ -515,7 +720,9 @@ Deno.serve(async (req) => {
               role: "system",
               content: PROMPT_INVESTIGADOR
                 .replace("{HOJE}", hoje)
-                .replace("{CATALOGO}", catalogoParaPrompt()),
+                // O catálogo já chega recortado: fonte que esta pessoa não abre nem aparece
+              // como opção, em vez de ser escolhida e recusada depois.
+              .replace("{CATALOGO}", catalogoParaPrompt((c) => caller.isService || caller.pode(c))),
             },
             {
               role: "user",
@@ -537,8 +744,11 @@ Deno.serve(async (req) => {
 
       const novas = (Array.isArray(decisao.consultas) ? decisao.consultas : [])
         .filter((p) => (CONSULTAS as readonly string[]).includes(String(p?.consulta)))
+        // O investigador escolhe sozinho, então ele também passa pela porta. Sem isto, a
+        // trava do plano inicial seria contornada por uma segunda rodada.
+        .filter(podeConsulta)
         .filter((p) => {
-          const chave = `${p.consulta}|${p.rubrica ?? ""}|${p.fonte ?? ""}`;
+          const chave = chaveDe(p);
           if (jaConsultadas.has(chave)) return false;
           jaConsultadas.add(chave);
           return true;
@@ -599,7 +809,8 @@ Deno.serve(async (req) => {
     const numeros = uteis.flatMap((r) => r.numeros);
     const avisos = uteis.flatMap((r) => r.avisos);
 
-    const inventados = valoresNaoReconhecidos(resposta, numeros);
+    const doGuia = uteis.filter((r) => r.nivel === "guia").map((r) => r.paraModelo).join("\n");
+    const inventados = valoresNaoReconhecidos(resposta, numeros, doGuia);
     if (inventados.length > 0) {
       avisos.push(
         `Confira: ${inventados.join(", ")} não corresponde a nenhum número consultado. ` +
@@ -607,8 +818,14 @@ Deno.serve(async (req) => {
       );
     }
 
-    // Um bloco "consultado" rebaixa a resposta inteira: a garantia vale pelo elo mais fraco.
-    const nivel = uteis.some((r) => r.nivel === "consultado") ? "consultado" : "conferido";
+    /* Um bloco "consultado" rebaixa a resposta inteira: a garantia vale pelo elo mais fraco.
+       "guia" não é um degrau nessa escada — é outra escada, sobre caminho e não sobre valor.
+       Por isso ele só vira o selo da resposta quando TODOS os blocos são dele; misturado com
+       número, quem manda é a régua dos números, que é a que pode estar errada num slide. */
+    const semGuia = uteis.filter((r) => r.nivel !== "guia");
+    const nivel = semGuia.length === 0
+      ? "guia"
+      : semGuia.some((r) => r.nivel === "consultado") ? "consultado" : "conferido";
     const consulta = uteis.map((r) => r.consulta).join(" + ");
 
     if (caller.userId) {

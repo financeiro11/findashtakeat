@@ -188,8 +188,21 @@ export const PERFIS: Record<PerfilId, DefPerfil> = {
   },
   automacao: {
     id: "automacao", label: "Automação", home: "/monitoramento",
-    resumo: "O maquinário: crons, integrações, projetos, recargas. Sem os números do negócio.",
-    capacidades: ["time", "maquinario", "biblioteca", "assistente"],
+    resumo: "O maquinário: crons, integrações, projetos, recargas. Dos números, só a folha do próprio time.",
+    capacidades: [
+      "time", "maquinario", "biblioteca",
+      /* 11/09/2026: LIDERANÇA NÃO É UM PERFIL, É TER UM TIME. O recorte da folha
+         nasceu colado em `lideranca` (10/09) e deixou de fora o Head de RPA, que
+         tem este perfil porque o trabalho dele É o maquinário — e mesmo assim
+         lidera as quatro pessoas do setor RPA.
+
+         Conceder a capacidade ao perfil não abre nada sozinho: quem recorta é
+         `setores_folha` na ficha DAQUELA CONTA, e vazio (o padrão) devolve zero
+         pessoas. A outra conta `automacao` continua vendo ninguém até alguém
+         marcar um time para ela, de propósito. */
+      "remuneracao_time",
+      "assistente",
+    ],
   },
   facilities: {
     id: "facilities", label: "Facilities", home: "/facilities",

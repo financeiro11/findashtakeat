@@ -8,6 +8,7 @@ import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import { corDaArea } from "@/lib/tarefas/classificacao";
 import { Cadencia, deIso, descreverCadenciaLonga, lerCadencia } from "@/lib/tarefas/rotina";
+import { lerPrazo } from "@/lib/tarefas/prazo";
 
 /**
  * O painel de rotinas: uma linha por rotina, não por tarefa.
@@ -22,6 +23,11 @@ import { Cadencia, deIso, descreverCadenciaLonga, lerCadencia } from "@/lib/tare
  * série na ocorrência mais recente — a mesma que o gerador usa como modelo. Ler
  * daqui em vez de reagrupar no cliente é o que garante que o painel mostre a
  * rotina que o cron vai de fato executar.
+ *
+ * "Próxima" é a próxima que o Hub vai CRIAR, não a próxima data do calendário
+ * (migration 20260911170000): dia de cadência que já tem card — aberto no quadro
+ * ou concluído no dia — não é anunciado aqui, senão a linha promete uma tarefa
+ * que o gerador vai pular, e é exatamente assim que se conclui que ele quebrou.
  */
 
 type LinhaRotina = {
@@ -50,19 +56,10 @@ function fmtData(s: string | null): string {
   return d.toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit", year: "2-digit" });
 }
 
-/** "em 3 dias" / "hoje" / "amanhã" — a distância é o que se lê primeiro. */
+/** "em 3 d" / "hoje" / "amanhã" — a distância é o que se lê primeiro.
+    A conta é a mesma do card no quadro, para as duas telas não discordarem. */
 function distancia(iso: string | null): string {
-  if (!iso) return "";
-  const hoje = new Date();
-  const alvo = deIso(iso);
-  const dias = Math.round(
-    (new Date(alvo.getFullYear(), alvo.getMonth(), alvo.getDate()).getTime()
-      - new Date(hoje.getFullYear(), hoje.getMonth(), hoje.getDate()).getTime()) / 86400000,
-  );
-  if (dias === 0) return "hoje";
-  if (dias === 1) return "amanhã";
-  if (dias < 0) return `há ${-dias} d`;
-  return `em ${dias} d`;
+  return iso ? lerPrazo(iso).distancia : "";
 }
 
 export function RotinasPanel({ onAbrirTarefa }: { onAbrirTarefa?: (id: string) => void }) {
@@ -95,7 +92,7 @@ export function RotinasPanel({ onAbrirTarefa }: { onAbrirTarefa?: (id: string) =
     if (error) { toast.error(error.message); return; }
     const n = Number(data) || 0;
     toast.success(n === 0
-      ? "Nada a criar agora — nenhuma rotina cai na janela de hoje"
+      ? "Nada a criar agora — as rotinas da janela de hoje já estão no quadro"
       : `${n} tarefa${n === 1 ? "" : "s"} criada${n === 1 ? "" : "s"} no Backlog`);
     carregar();
   };
@@ -149,7 +146,9 @@ export function RotinasPanel({ onAbrirTarefa }: { onAbrirTarefa?: (id: string) =
             <TableRow>
               <TableHead>Rotina</TableHead>
               <TableHead>Quando volta</TableHead>
-              <TableHead>Próxima</TableHead>
+              <TableHead title="A próxima ocorrência que o Hub vai CRIAR — dia de cadência que ainda não tem card. Se a de hoje já está no quadro (ou já foi concluída), aqui aparece a seguinte.">
+                Próxima
+              </TableHead>
               <TableHead>Checklist</TableHead>
               <TableHead>Aberta agora</TableHead>
               <TableHead>Última conclusão</TableHead>
@@ -197,7 +196,7 @@ export function RotinasPanel({ onAbrirTarefa }: { onAbrirTarefa?: (id: string) =
                         <span className="ml-1.5 text-[10px] text-muted-foreground">{distancia(l.proxima_data)}</span>
                       </>
                     ) : (
-                      <span className="text-[11px] font-medium text-warning">pausada</span>
+                      <span className="text-[11px] font-medium text-warn">pausada</span>
                     )}
                   </TableCell>
                   <TableCell className="text-xs">
@@ -208,7 +207,7 @@ export function RotinasPanel({ onAbrirTarefa }: { onAbrirTarefa?: (id: string) =
                          nasceria com a lista vazia. */
                       <span
                         className={cn("inline-flex items-center gap-1",
-                          l.proxima_itens > 0 ? "text-foreground" : "text-warning")}
+                          l.proxima_itens > 0 ? "text-foreground" : "text-warn")}
                         title="Uma subtarefa por pagamento de dia inteiro marcado no Google Calendar naquele dia"
                       >
                         <CalendarClock className="h-3 w-3" />
@@ -222,7 +221,12 @@ export function RotinasPanel({ onAbrirTarefa }: { onAbrirTarefa?: (id: string) =
                   </TableCell>
                   <TableCell className="num text-xs">
                     {l.aberta_id
-                      ? <span className="text-foreground">{fmtData(l.aberta_prazo)}</span>
+                      ? (
+                        <span className="text-foreground">
+                          {fmtData(l.aberta_prazo)}
+                          <span className="ml-1.5 text-[10px] text-muted-foreground">{distancia(l.aberta_prazo)}</span>
+                        </span>
+                      )
                       : <span className="text-muted-foreground">—</span>}
                   </TableCell>
                   <TableCell className="num text-xs text-muted-foreground">{fmtData(l.ultima_conclusao)}</TableCell>

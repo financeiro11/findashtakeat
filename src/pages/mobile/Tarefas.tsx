@@ -8,7 +8,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import {
   Plus, AlertTriangle, ChevronDown, ListChecks, Loader2, CalendarDays, Check, X,
-  Pencil, Archive, Share2, Trash2,
+  Pencil, Archive, Share2, Trash2, Clock,
 } from "lucide-react";
 import { toast } from "sonner";
 import { supabase } from "@/integrations/supabase/client";
@@ -23,6 +23,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { compartilharNativo, copiar, temCompartilhamentoNativo } from "@/lib/compartilhar";
 import { mensagemDaTarefa, urlDaTarefa } from "@/lib/tarefas/link";
 import { emDias, fmtData, hojeISO } from "@/lib/mobile/formato";
+import { lerPrazo } from "@/lib/tarefas/prazo";
 import { iniciais, mesmaPessoa, pessoasConhecidas, rotuloResponsavel, type Pessoa } from "@/lib/mobile/responsavel";
 import {
   agrupar, aplicarFiltro, estaAtrasada, statusDisponiveis,
@@ -179,6 +180,15 @@ export default function MobileTarefas() {
 
   async function trocarStatus(alvo: Tarefa, status: string) {
     if (status === alvo.status) return;
+    /* Concluir o que só vence adiante tem de ser escolha, não toque errado — no
+       celular menos ainda se lê a data. Mesma confirmação do quadro. */
+    if (status === STATUS_CONCLUIDO && alvo.status !== STATUS_CONCLUIDO) {
+      const p = lerPrazo(alvo.prazo);
+      if ((p.dias ?? 0) > 0 &&
+          !confirm(`"${alvo.titulo}" só vence em ${p.data} (${p.distancia}). Concluir mesmo assim?`)) {
+        return;
+      }
+    }
     const patch: Partial<Tarefa> = { status };
     // `concluido_em` é o carimbo de quando saiu da fila. Reabrir limpa: um carimbo velho
     // numa tarefa aberta bagunça a ordenação da lista de concluídas.
@@ -473,7 +483,7 @@ function Chip({ ativo, onClick, children }: { ativo: boolean; onClick: () => voi
 }
 
 function CardTarefa({ t, hoje, onAbrir }: { t: Tarefa; hoje: string; onAbrir: () => void }) {
-  const atrasada = estaAtrasada(t, hoje);
+  const leitura = lerPrazo(t.prazo, { hoje, concluida: t.status === STATUS_CONCLUIDO });
   const total = t.subtarefas?.length ?? 0;
   const feitas = t.subtarefas?.filter((s) => s.done).length ?? 0;
 
@@ -496,9 +506,24 @@ function CardTarefa({ t, hoje, onAbrir }: { t: Tarefa; hoje: string; onAbrir: ()
             </span>
             {rotuloResponsavel(t.responsavel)}
           </span>
-          <span className={cn("num flex items-center gap-1 text-[11.5px]", atrasada ? "font-semibold text-destructive" : "text-muted-foreground")}>
-            {atrasada && <AlertTriangle className="h-3 w-3" />}
+          {/* A data sozinha não diz se é para agora: no dedo, "11/09" e "18/09"
+              se parecem ainda mais que no desktop. A distância vem junto, e o
+              futuro ganha relógio — ver src/lib/tarefas/prazo.ts. */}
+          <span
+            className={cn("num flex items-center gap-1 text-[11.5px]",
+              leitura.tom === "atrasado" ? "font-semibold text-destructive"
+                : leitura.tom === "hoje" ? "font-semibold text-warn"
+                : "text-muted-foreground")}
+          >
+            {leitura.tom === "atrasado" ? <AlertTriangle className="h-3 w-3" />
+              : (leitura.dias ?? 0) > 0 ? <Clock className="h-3 w-3" />
+              : null}
             {fmtData(t.prazo)}
+            {leitura.distancia && (
+              <span className="opacity-75">
+                · {leitura.tom === "concluida" && (leitura.dias ?? 0) > 0 ? "adiantada" : leitura.distancia}
+              </span>
+            )}
           </span>
           {total > 0 && (
             <span className="num flex items-center gap-1 text-[11.5px] text-muted-foreground">

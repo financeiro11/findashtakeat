@@ -1475,10 +1475,13 @@ export type Database = {
       }
       automacoes_catalogo: {
         Row: {
+          ativa: boolean
           automacao: string
           categoria: string | null
           created_at: string
           depende_de: string | null
+          desativada_em: string | null
+          desativada_motivo: string | null
           dor: string | null
           esforco: string | null
           esteira_ordem: number | null
@@ -1503,10 +1506,13 @@ export type Database = {
           upgrade: string | null
         }
         Insert: {
+          ativa?: boolean
           automacao: string
           categoria?: string | null
           created_at?: string
           depende_de?: string | null
+          desativada_em?: string | null
+          desativada_motivo?: string | null
           dor?: string | null
           esforco?: string | null
           esteira_ordem?: number | null
@@ -1531,10 +1537,13 @@ export type Database = {
           upgrade?: string | null
         }
         Update: {
+          ativa?: boolean
           automacao?: string
           categoria?: string | null
           created_at?: string
           depende_de?: string | null
+          desativada_em?: string | null
+          desativada_motivo?: string | null
           dor?: string | null
           esforco?: string | null
           esteira_ordem?: number | null
@@ -7040,6 +7049,7 @@ export type Database = {
         Row: {
           atualizado_em: string
           banco: string | null
+          exige_nota: boolean
           id: number
           incluir: boolean
           ncodcc: string
@@ -7053,6 +7063,7 @@ export type Database = {
         Insert: {
           atualizado_em?: string
           banco?: string | null
+          exige_nota?: boolean
           id?: never
           incluir?: boolean
           ncodcc: string
@@ -7066,6 +7077,7 @@ export type Database = {
         Update: {
           atualizado_em?: string
           banco?: string | null
+          exige_nota?: boolean
           id?: never
           incluir?: boolean
           ncodcc?: string
@@ -10312,6 +10324,7 @@ export type Database = {
           concluido_em: string | null
           created_at: string
           facilities_solicitacao_id: string | null
+          horas_gastas: number | null
           id: string
           observacao: string | null
           ordem: number
@@ -10339,6 +10352,7 @@ export type Database = {
           concluido_em?: string | null
           created_at?: string
           facilities_solicitacao_id?: string | null
+          horas_gastas?: number | null
           id?: string
           observacao?: string | null
           ordem?: number
@@ -10366,6 +10380,7 @@ export type Database = {
           concluido_em?: string | null
           created_at?: string
           facilities_solicitacao_id?: string | null
+          horas_gastas?: number | null
           id?: string
           observacao?: string | null
           ordem?: number
@@ -10986,6 +11001,7 @@ export type Database = {
           competencia: string | null
           conta: string | null
           conta_codigo: string | null
+          conta_exige_nota: boolean | null
           desconto: number | null
           doc: string | null
           documento: string | null
@@ -12833,7 +12849,36 @@ export type Database = {
         }[]
       }
       fn_familia_texto: { Args: { p_texto: string }; Returns: string }
+      fn_horas_uteis: {
+        Args: { p_fim: string; p_ini: string }
+        Returns: number
+      }
       fn_resumo_tarefas_semana: { Args: { p_ref?: string }; Returns: Json }
+      fn_tarefas_da_semana: {
+        Args: { p_fim: string; p_ini: string }
+        Returns: {
+          area: string
+          cat_origem: string
+          concluida_em: string
+          criada_em: string
+          familia: string
+          horas: number
+          horas_abertas: number
+          horas_apontadas: number
+          horas_board: number
+          horas_paradas: number
+          id: string
+          lead_dias: number
+          natureza: string
+          peso: number
+          pessoa: string
+          prioridade: string
+          responsavel: string
+          rotina: boolean
+          subtarefas: number
+          titulo: string
+        }[]
+      }
       fornecedor_emite_nf: { Args: { p_nome: string }; Returns: boolean }
       garantir_links_dos_cartoes: { Args: never; Returns: number }
       hub_automacoes: { Args: never; Returns: Json }
@@ -13989,6 +14034,10 @@ export type Database = {
       rotina_datas: {
         Args: { ate: string; cad: Json; de: string }
         Returns: string[]
+      }
+      rotina_dia_ocupado: {
+        Args: { p_dia: string; p_serie: string }
+        Returns: boolean
       }
       rubricas_de_folha: { Args: { p_tipo: string }; Returns: string[] }
       salvar_justificativa_via_token: {

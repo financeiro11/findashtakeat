@@ -156,7 +156,17 @@ async function requisitar<T = any>(
     lastErr = new Error(`Asaas ${path} [${res.status}]: ${typeof data === "string" ? data : JSON.stringify(data)}`);
     const bloqueado = eBloqueioDeTaxa(res.status, data);
     if (repetivel(escrita, res.status, bloqueado) && !ultima) {
-      await dorme(esperaSugerida(res, tentativa, bloqueado));
+      const espera = esperaSugerida(res, tentativa, bloqueado);
+      /* ESTA LINHA CUSTOU UMA SEMANA DE 504. Entre 04 e 11/09/2026 três crons do
+         Asaas caíram juntos por `IDLE_TIMEOUT (150s)` e não havia como provar o
+         porquê: a espera de bloqueio (até 75s, ver esperaSugerida) acontecia em
+         silêncio absoluto. Do lado de fora só se via "demorou" — indistinguível de
+         API lenta, de banco lento ou de defeito nosso. Uma espera de 75s dentro de
+         um orçamento de 150s é metade da rodada, e merece aparecer. */
+      if (bloqueado) {
+        console.warn(`asaas: ${path} [${res.status}] barrado, esperando ${Math.round(espera / 1000)}s (tentativa ${tentativa + 1})`);
+      }
+      await dorme(espera);
       continue;
     }
     throw lastErr;

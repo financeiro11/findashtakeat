@@ -13,11 +13,15 @@
 //
 //   "recalcular" (padrão) → só lê o espelho local. ZERO requisições ao Asaas.
 //   "atualizar"           → puxa da API o que mudou, grava no espelho, recalcula.
+//   "janela"              → só a faixa de vencimento do /caixa (ver puxarJanela)
 //   "clientes"            → só a recuperação de cadastros (ver espelharClientes)
 //   "preview"             → amostras cruas (validar campos da API)
 //
 // Params de "atualizar": { referencia?: "YYYY-MM", completo?: boolean }
 //   completo:true ignora os atalhos abaixo e re-puxa o mês inteiro.
+//
+// O "atualizar" é CRON — a tela /asaas só chama "recalcular" (o botão "Atualizar
+// do Asaas" foi removido de propósito, ver src/pages/Asaas.tsx).
 //
 // Auth: usuário logado OU cron (header x-cron-token), como no asaas-extrato-sync.
 
@@ -34,6 +38,8 @@ const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: { ...corsHeaders, "Content-Type": "application/json" } });
 
 const num = (v: unknown) => { const n = typeof v === "number" ? v : parseFloat(String(v ?? "")); return isNaN(n) ? 0 : n; };
+/** Só os dígitos — o CNPJ chega da tela formatado ou cru, e o Asaas filtra por cru. */
+const soDigitos = (v: unknown) => String(v ?? "").replace(/\D/g, "");
 
 function mesAtual(): string {
   const hoje = new Date().toLocaleDateString("en-CA", { timeZone: "America/Sao_Paulo" });
@@ -76,6 +82,100 @@ const CARENCIA_PUXADA_S = 120;
 // diárias o zeram em um dia; e 150 requisições no portão de 8 concorrentes levam ~6s,
 // que cabem folgados no que sobra do relógio do gateway. Ver espelharClientes.
 const TETO_CLIENTES = 150;
+
+/* ---------------------------- o relógio da rodada ---------------------------
+ *
+ * ESTA RODADA MORREU 17 VEZES EM 24. Entre 04 e 11/09/2026 o `asaas-sync-diario`
+ * devolveu `IDLE_TIMEOUT (150s)` em 17 das 24 execuções, e não sozinho: as falhas
+ * vinham em BLOCO, no mesmo slot, junto com a `asaas-janela-sync-diaria` (13/24) e
+ * a `estornos-sync` (22/24). No mesmo minuto, a `asaas-extrato-sync` nunca falhou
+ * — e é a única das quatro que NÃO pagina `/payments`.
+ *
+ * A causa é a soma de duas coisas que sozinhas não apareciam:
+ *
+ * 1) OS CRONS COLIDIAM. A migration 20260903250000 pôs cinco jobs no MESMO minuto
+ *    (10:45 / 15:30 / 20:00 UTC). Três deles varrem `/payments`, e o portão de
+ *    concorrência do `_shared/asaas.ts` é por ISOLATE, não por conta: são 8 vagas
+ *    em cada um dos três, logo 24 requisições simultâneas no mesmo endpoint — o
+ *    que o limite por endpoint do Asaas pune com espera (`esperaSugerida` chega a
+ *    dormir 75s). Ver a migration 20260911200000, que espalha os horários.
+ *
+ * 2) A RODADA JÁ NASCIA GORDA. Medido nos logs de 11/09, um "atualizar" bom levava
+ *    ~100s dentro de um orçamento de 150s — 50s de folga para ~160 requisições.
+ *    Setenta delas eram a `puxarJanela`, que o cron `asaas-janela-sync-diaria`
+ *    refazia inteira no mesmo instante. Trabalho duplicado, pago duas vezes, e
+ *    ainda por cima em cima do endpoint disputado.
+ *
+ * E o 504 não é só um número feio no painel: o gateway corta a RESPOSTA depois de
+ * o espelho já ter sido gravado, e o `recalcular` do fim nunca roda — a tela fica
+ * com o snapshot velho mesmo com o espelho fresco.
+ *
+ * O CONSERTO tem três partes, e esta é a terceira: a rodada agora tem ORÇAMENTO.
+ * Cada puxada grava o que traz antes de terminar, então o que o relógio corta é
+ * frescor, nunca consistência; no prazo, a função devolve o que já fechou, marca
+ * `parcial` e deixa o resto correndo em `EdgeRuntime.waitUntil` (o worker vive
+ * 400s no plano Pro). Os 150s do gateway, esses, não mudam com plano nenhum — ver
+ * "São DOIS relógios" no CLAUDE.md.
+ */
+const LIMITE_WORKER_MS = 120_000;
+
+/** Reserva para o fim da rodada: `recalcular` é a RPC `asaas_metricas`, medida em
+ *  ~1,6s (máx. 2,7s). Dez segundos cobrem ela e o upsert do snapshot com folga. */
+const RESERVA_FIM_MS = 10_000;
+
+/** Abaixo disto nem se tenta a fila de cadastros: são até TETO_CLIENTES GETs de
+ *  1 registro, e começar o que não cabe é gastar cota para jogar fora. A fila não
+ *  se perde — o cliente continua nela até alguém conseguir buscá-lo. */
+const MIN_CLIENTES_MS = 20_000;
+
+/** Depois de quanto tempo sem uma rodada INTEIRA a falha vira vermelho no painel.
+ *  Uma rodada parcial é degradação normal (a seguinte alcança); o que não pode é
+ *  a volta nunca se fechar — mesmo raciocínio do `ultima_volta_completa` da
+ *  estornos-sync. Sem isto, esconder o 504 atrás de um 200 seria só apagar o
+ *  aviso, e tela que some do painel é pior que tela quebrada. */
+const SEM_RODADA_COMPLETA_H = 24;
+
+/** Mantém o isolate de pé para o que ficou correndo depois da resposta. */
+function manterVivo(p: Promise<unknown>) {
+  const rt = (globalThis as { EdgeRuntime?: { waitUntil?: (p: Promise<unknown>) => void } }).EdgeRuntime;
+  if (rt?.waitUntil) rt.waitUntil(p.catch(() => {}));
+}
+
+/**
+ * Roda as puxadas em paralelo com prazo, e devolve o que couber.
+ *
+ * Duas diferenças para o `Promise.all` que havia aqui, e as duas importam:
+ *   • o prazo — quem não terminar entra como `{ pendente: true }` e segue vivo;
+ *   • o erro de UMA puxada não derruba as outras. Antes, um 403 nos estornos
+ *     rejeitava o `Promise.all` inteiro e a rodada respondia `{error}`: as linhas
+ *     de pagamentos e assinaturas já estavam gravadas, mas o snapshot da tela não
+ *     era recalculado e o painel via uma falha total onde houve uma parcial.
+ */
+async function comOrcamento(
+  tarefas: Array<[string, Promise<unknown>]>,
+  msRestantes: number,
+): Promise<{ feito: Record<string, unknown>; pendentes: string[]; resto: Promise<unknown> }> {
+  // Semeado na ordem declarada, e não na de chegada: a resposta vira o registro da
+  // rodada no painel de automações, e duas rodadas só se comparam de bate-pronto se
+  // as chaves saírem sempre na mesma ordem.
+  const feito: Record<string, unknown> = {};
+  for (const [nome] of tarefas) feito[nome] = { pendente: true };
+
+  const prontas = new Set<string>();
+  const todas = Promise.all(tarefas.map(([nome, p]) =>
+    p.then((v) => { feito[nome] = v; })
+     .catch((e) => { feito[nome] = { erro: e instanceof Error ? e.message : String(e) }; })
+     .finally(() => { prontas.add(nome); })));
+
+  let relogio: number | undefined;
+  const prazo = new Promise<void>((r) => { relogio = setTimeout(r, Math.max(msRestantes, 0)); });
+  // O clearTimeout não é higiene: um setTimeout pendente segura o event loop do
+  // isolate, e a rodada que terminou em 40s ficaria de pé até os 120s.
+  await Promise.race([todas.then(() => clearTimeout(relogio)), prazo]);
+
+  const pendentes = tarefas.map(([n]) => n).filter((n) => !prontas.has(n));
+  return { feito, pendentes, resto: todas };
+}
 
 /* -------------------------------- mapeamento ------------------------------- */
 
@@ -189,6 +289,18 @@ async function estado(supabase: any, escopo: string): Promise<any> {
 }
 async function marcar(supabase: any, escopo: string, campos: Record<string, unknown>) {
   await supabase.from("asaas_sync_estado").upsert({ escopo, ...campos }, { onConflict: "escopo" });
+}
+
+/** Há quanto tempo uma rodada de "atualizar" terminou INTEIRA — ver
+ *  SEM_RODADA_COMPLETA_H. Escopo nunca visto vale zero: uma função recém-publicada
+ *  não deve nascer gritando que está parada há dias. */
+async function horasDesdeRodadaInteira(supabase: any): Promise<number> {
+  const est = await estado(supabase, "rodada");
+  if (!est?.ultima_completa) {
+    await marcar(supabase, "rodada", { ultima_completa: new Date().toISOString() });
+    return 0;
+  }
+  return (Date.now() - new Date(est.ultima_completa).getTime()) / 3_600_000;
 }
 
 /* ------------------------------ as três puxadas ---------------------------- */
@@ -306,6 +418,12 @@ async function puxarEstornos(supabase: any) {
  * cobrança gravada como PENDING que depois foi paga volta nesta varredura com o
  * status novo; com filtro `status=PENDING` ela nunca mais seria visitada e ficaria
  * viva no espelho, somando no fluxo um dinheiro que já entrou.
+ *
+ * QUEM CHAMA: só a action "janela", e só o cron `asaas-janela-sync-diaria`. O
+ * "atualizar" chamava isto TAMBÉM, no mesmo minuto em que o cron da janela rodava
+ * — as mesmas ~70 páginas de `/payments` e os mesmos ~7.000 upserts, duas vezes,
+ * em paralelo, disputando o limite por endpoint um com o outro. Era metade do
+ * custo da rodada e valia zero: ver o relógio lá em cima.
  */
 const JANELA_ANTES = 45;
 const JANELA_DEPOIS = 31;
@@ -489,6 +607,8 @@ async function chamadaDeCron(req: Request, supabase: any): Promise<boolean> {
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
 
+  const t0 = Date.now();
+  const sobra = () => LIMITE_WORKER_MS - (Date.now() - t0);
   const supabase = createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!);
 
   try {
@@ -535,6 +655,86 @@ Deno.serve(async (req) => {
       return json({ ok: true, origem: "asaas", clientes: await espelharClientes(supabase, teto) });
     }
 
+    /* ------------- COBRANCA — UMA cobrança, agora, sem esperar a rodada -------------
+     *
+     * O BOTÃO GERAL "Atualizar do Asaas" FOI REMOVIDO DE PROPÓSITO e continua
+     * removido: ele varria ~70 páginas de `/payments` e queimava cota na mão.
+     * Esta ação é o oposto dele — uma a três requisições, nomeadas.
+     *
+     * POR QUE ELA PRECISA EXISTIR. O espelho enche três vezes por dia (07:45,
+     * 12:30 e 17:00 BRT). Quem cria uma cobrança às 10h e vai emitir a nota dela
+     * não encontra a linha em lugar nenhum — nem no painel do mês, nem na busca —
+     * e não há nada na tela dizendo por quê. Foi o que aconteceu em 11/09/2026 com
+     * a comissão do INFOSS: cobrança criada, e a linha só apareceu na varredura
+     * seguinte. "Espere até amanhã" é exatamente o tipo de resposta que faz alguém
+     * abrir o Asaas e resolver por fora.
+     *
+     * TRÊS ENTRADAS, porque quem procura raramente tem o `pay_`: o id da cobrança,
+     * o CNPJ/CPF do cliente (o caminho mais comum — é o que se digita na busca do
+     * painel) ou o nome. Com cliente, traz as cobranças dele; a janela é curta de
+     * propósito (as 20 mais recentes), porque isto é "achar o que acabou de
+     * nascer", não carga histórica — para essa existe a `asaas-carga-historica`.
+     *
+     * O CLIENTE VEM JUNTO, sempre. Cobrança cujo `customer` não está no espelho
+     * aparece no painel como "cadastro ainda não espelhado" e não emite: gravar a
+     * cobrança sem o cliente trocaria um buraco por outro. */
+    if (action === "cobranca") {
+      const id = String(body?.id ?? "").trim();
+      const documento = soDigitos(body?.documento);
+      const nome = String(body?.nome ?? "").trim();
+      if (!id && !documento && !nome) {
+        return json({ ok: false, erro: "Informe { id: \"pay_…\" }, { documento } ou { nome }." }, 400);
+      }
+
+      const pagamentos: any[] = [];
+      const clientes: any[] = [];
+
+      if (id) {
+        const p = await asaasGet<any>(`/payments/${encodeURIComponent(id)}`).catch(() => null);
+        if (p?.id) pagamentos.push(p);
+      } else {
+        /* `cpfCnpj` é filtro exato no Asaas; `name` é busca parcial. O documento
+           vem primeiro porque é o que casa com a regra do módulo inteiro (por
+           CNPJ e nunca por nome — o fantasia do Asaas e a razão social do Omie
+           divergem). */
+        const busca = await asaasGet<any>("/customers", documento ? { cpfCnpj: documento } : { name: nome, limit: 10 })
+          .catch(() => null);
+        for (const c of (busca?.data ?? []).slice(0, 5)) {
+          clientes.push(c);
+          const lista = await asaasGet<any>("/payments", { customer: c.id, limit: 20, offset: 0 }).catch(() => null);
+          for (const p of lista?.data ?? []) pagamentos.push(p);
+        }
+      }
+
+      // Do lado da cobrança achada por id, o cliente ainda falta.
+      const jaTem = new Set(clientes.map((c) => String(c?.id)));
+      for (const cus of [...new Set(pagamentos.map((p) => String(p?.customer ?? "")).filter(Boolean))]) {
+        if (jaTem.has(cus)) continue;
+        const c = await asaasGet<any>(`/customers/${encodeURIComponent(cus)}`).catch(() => null);
+        if (c?.id) clientes.push(c);
+      }
+
+      const gravados = await gravar(supabase, [
+        ...clientes.map(mapCustomer),
+        ...pagamentos.map(mapPayment),
+      ]);
+
+      return json({
+        ok: true, origem: "asaas",
+        cobrancas: pagamentos.length,
+        clientes: clientes.length,
+        gravados,
+        // A tela precisa saber O QUE achou para poder levar a pessoa até lá.
+        achadas: pagamentos.slice(0, 20).map((p) => ({
+          id_asaas: String(p?.id ?? ""),
+          valor: num(p?.value),
+          status: String(p?.status ?? ""),
+          data_vencimento: isoDate(p?.dueDate),
+          descricao: p?.description ?? null,
+        })),
+      });
+    }
+
     /* ------------- ATUALIZAR (única ação que fala com o Asaas) ------------- */
     if (action === "atualizar" || action === "sync") {
       const completo = body?.completo === true;
@@ -553,24 +753,61 @@ Deno.serve(async (req) => {
         });
       }
 
-      const [pagamentos, assinaturas, notas, janela, estornos] = await Promise.all([
-        puxarPagamentos(supabase, ref, completo),
-        puxarAssinaturas(supabase, completo),
-        puxarNotas(supabase, ref, completo),
-        // A janela não tem mês — é sempre em torno de hoje. Só vale reatualizar quando
-        // se está olhando o mês corrente.
-        ref === mesAtual() ? puxarJanela(supabase) : Promise.resolve(null),
-        // Estornos também não têm mês, mas ao contrário da janela valem para QUALQUER
-        // referência: o estorno que interessa a julho pode ter sido feito hoje.
-        puxarEstornos(supabase),
-      ]);
+      // A janela NÃO entra aqui — ela é do cron `asaas-janela-sync-diaria`, que
+      // roda nos mesmos três horários. Ver puxarJanela.
+      const { feito, pendentes, resto } = await comOrcamento([
+        ["pagamentos", puxarPagamentos(supabase, ref, completo)],
+        ["assinaturas", puxarAssinaturas(supabase, completo)],
+        ["notas", puxarNotas(supabase, ref, completo)],
+        // Estornos não têm mês e valem para QUALQUER referência: o estorno que
+        // interessa a julho pode ter sido feito hoje.
+        ["estornos", puxarEstornos(supabase)],
+      ], sobra() - RESERVA_FIM_MS);
+
       // DEPOIS das puxadas, e não junto: a fila de cadastros é lida do espelho, e
       // o cliente da cobrança que acabou de chegar só entra nela depois que a
       // cobrança está gravada. Em paralelo, a rodada de hoje sempre acharia o
       // cliente novo só amanhã.
-      const clientes = await espelharClientes(supabase);
+      // O catch é pelo mesmo motivo do `comOrcamento`: a fila de cadastros é a
+      // última e a menos importante das puxadas, e não pode levar embora o
+      // recálculo de tudo que já está gravado.
+      feito.clientes = pendentes.length > 0 || sobra() < MIN_CLIENTES_MS + RESERVA_FIM_MS
+        ? { pendente: true }
+        : await espelharClientes(supabase).catch((e) =>
+            ({ erro: e instanceof Error ? e.message : String(e) }));
+
+      // O recálculo roda SEMPRE, inclusive na rodada parcial: o que já foi gravado
+      // merece aparecer na tela. Era exatamente isto que o 504 comia.
       const { dados } = await recalcular(supabase, ref);
-      return json({ ok: true, referencia: ref, origem: "asaas", detalhe: { pagamentos, assinaturas, notas, janela, estornos, clientes }, dados });
+
+      // "Inteira" se lê do RESULTADO de cada passo, e não da lista de pendentes:
+      // quem estourou terminou (está em `pendentes`? não) mas entregou `{erro}`, e
+      // dar essa rodada por completa esconderia uma puxada quebrada para sempre.
+      const incompleto = (v: unknown) => !!(v as any)?.pendente || !!(v as any)?.erro;
+      const incompletas = Object.entries(feito).filter(([, v]) => incompleto(v)).map(([n]) => n);
+      const inteira = incompletas.length === 0;
+
+      if (inteira) await marcar(supabase, "rodada", { ultima_completa: new Date().toISOString() });
+      else manterVivo(resto);
+
+      const corpo = {
+        ok: true, referencia: ref, origem: "asaas",
+        parcial: !inteira, incompletas,
+        segundos: Math.round((Date.now() - t0) / 1000),
+        detalhe: feito, dados,
+      };
+      if (inteira) return json(corpo);
+
+      // Parcial é degradação aceitável — a rodada seguinte alcança, e o espelho já
+      // recebeu o que deu tempo. O que NÃO pode passar calado é a volta nunca se
+      // fechar: aí o painel precisa ficar vermelho, ou trocar o 504 por um 200
+      // teria sido só apagar o aviso.
+      const desdeInteira = await horasDesdeRodadaInteira(supabase);
+      if (desdeInteira > SEM_RODADA_COMPLETA_H) {
+        return json({ ...corpo, ok: false,
+          erro: `rodada incompleta (${incompletas.join(", ")}) e nenhuma rodada inteira há ${Math.round(desdeInteira)}h` }, 500);
+      }
+      return json(corpo);
     }
 
     /* ------------- RECALCULAR (padrão) — 0 requisições ------------- */

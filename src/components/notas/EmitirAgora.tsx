@@ -40,10 +40,10 @@ import {
   Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle,
 } from "@/components/ui/dialog";
 import {
-  Loader2, Check, TriangleAlert, Hourglass, Zap, FileText, UserPlus, Send, Info, X,
+  Loader2, Check, TriangleAlert, Hourglass, Zap, FileText, UserPlus, Send, Info, X, Unlock, Minus,
 } from "lucide-react";
 import {
-  BLOQUEIOS_CADASTRO, formatarDoc, precisaEsperarOLote, esperaAntesDeRepetir,
+  BLOQUEIOS_CADASTRO, formatarDoc, motivoCurto, precisaEsperarOLote, esperaAntesDeRepetir,
   type LinhaNota,
 } from "@/lib/notasFiscais";
 
@@ -59,10 +59,11 @@ const brl = (n: number) =>
  * onde parou quando para — e "parou no passo 3 de 4" é uma informação diferente
  * de "falhou".
  * ------------------------------------------------------------------------- */
-export type PassoId = "cadastro" | "emissao" | "nota" | "espelho";
-type Estado = "espera" | "correndo" | "ok" | "atencao" | "falhou";
+export type PassoId = "destravar" | "cadastro" | "emissao" | "nota" | "espelho";
+type Estado = "espera" | "correndo" | "ok" | "atencao" | "falhou" | "pulado";
 
 const PASSOS: Array<{ id: PassoId; titulo: string; icone: typeof UserPlus }> = [
+  { id: "destravar", titulo: "Ordem de serviço recusada, aposentada", icone: Unlock },
   { id: "cadastro", titulo: "Cadastro do tomador no Omie", icone: UserPlus },
   { id: "emissao", titulo: "Ordem de serviço e faturamento", icone: Send },
   { id: "nota", titulo: "NFS-e autorizada pela prefeitura", icone: FileText },
@@ -73,6 +74,7 @@ interface Passo { estado: Estado; detalhe: string | null }
 type Painel = Record<PassoId, Passo>;
 
 const PAINEL_ZERO: Painel = {
+  destravar: { estado: "espera", detalhe: null },
   cadastro: { estado: "espera", detalhe: null },
   emissao: { estado: "espera", detalhe: null },
   nota: { estado: "espera", detalhe: null },
@@ -97,13 +99,25 @@ const ESPERA_NOTA_MS = 5 * 60_000;
 const INTERVALO_NOTA_MS = 20_000;
 
 export function EmitirAgora({
-  aberto, ids, linhas, observacao, avulsa, onFechar, onTerminou,
+  aberto, ids, linhas, observacao, avulsa, osRecusadas, onFechar, onTerminou,
 }: {
   aberto: boolean;
   ids: string[];
   linhas: LinhaNota[];
   observacao?: string | null;
   avulsa?: boolean;
+  /**
+   * As OS já FATURADAS cuja NFS-e a prefeitura recusou (`nfse_status = '003'`).
+   *
+   * Elas precisam ser aposentadas antes de qualquer emissão, e é por isso que
+   * viraram um degrau em vez de um erro: enquanto o carimbo `cCodIntOS` estiver
+   * na OS velha, a cobrança está "representada" por ela — a fila não a oferece e
+   * a emissão manual tenta faturar uma OS que o Omie já faturou. O Omie recusa, e
+   * o recado que chega é "emitir aqui duplicaria a OS", que manda a pessoa para
+   * uma tela que não resolve (a OS faturada só sai da etapa 60 pelo botão
+   * "Reenviar NFS-e", que não existe na API).
+   */
+  osRecusadas?: number[];
   onFechar: () => void;
   onTerminou: () => void | Promise<void>;
 }) {
@@ -125,6 +139,82 @@ export function EmitirAgora({
 
   const marcar = (id: PassoId, estado: Estado, detalhe: string | null = null) =>
     setPainel((p) => ({ ...p, [id]: { estado, detalhe } }));
+
+  /* ------------------------------------------------------------------------
+   * PASSO 0 — a OS recusada que está segurando a cobrança.
+   *
+   * `devolver_a_esteira` solta o carimbo da OS velha. Ele só aceita OS que a RPC
+   * `nfse_recusas_reemitiveis` classifica como `consertado` ou `so_reenviar` —
+   * ou seja, casos em que o cadastro já foi corrigido ou em que a prefeitura
+   * apenas oscilou. E isso é a guarda certa: soltar o carimbo de uma OS cujo
+   * cadastro continua torto produziria uma segunda OS para colher a mesma
+   * recusa.
+   *
+   * Quando ele recusa, portanto, a resposta não é "tente de novo" — é que falta
+   * consertar o cadastro, e o motivo veio da prefeitura. Isso sobe para a pessoa
+   * pela regra 2 (a informação que só ela tem), com o motivo escrito.
+   * --------------------------------------------------------------------- */
+  const destravarOsRecusadas = async (): Promise<{ ok: boolean; pendencias: ParaVoce[] }> => {
+    const alvo = (osRecusadas ?? []).filter((n) => Number(n) > 0);
+    if (!alvo.length) {
+      marcar("destravar", "pulado", "Nenhuma OS recusada segurando estas cobranças.");
+      return { ok: true, pendencias: [] };
+    }
+    marcar("destravar", "correndo", `Soltando ${alvo.length} ordem(ns) de serviço recusada(s)…`);
+    try {
+      const { data, error } = await sb.functions.invoke("omie-nfse-sync", {
+        body: { action: "devolver_a_esteira", dias: 180, limite: Math.max(alvo.length, 1), ids: alvo },
+      });
+      if (error || data?.erro) throw new Error(error?.message ?? data?.erro);
+
+      const soltas = Number(data?.devolvidas ?? 0);
+      if (soltas > 0) {
+        marcar("destravar", "ok", `${soltas} OS aposentada(s) — a cobrança voltou a poder virar nota.`);
+        return { ok: true, pendencias: [] };
+      }
+      /* O CARIMBO OCUPADO É OUTRA CONVERSA, e não se conserta consertando
+         cadastro: o `cCodIntOS` daquela cobrança ficou preso na OS velha no Omie
+         e não se libera por API. Confundir com "falta corrigir o cadastro"
+         mandaria a pessoa fazer um trabalho que não destrava nada. */
+      if (Number(data?.com_carimbo_impossivel ?? 0) > 0) {
+        marcar("destravar", "atencao", "A OS recusada tem o carimbo desta cobrança preso no Omie.");
+        return { ok: false, pendencias: [{
+          id_asaas: ids[0] ?? null, nome: nomeDe(ids[0] ?? ""),
+          titulo: "O carimbo desta cobrança ficou preso numa OS recusada",
+          oQueFazer:
+            "O Omie não libera o `cCodIntOS` de uma OS faturada por API, e sem ele uma OS nova não pode " +
+            "carregar o carimbo desta cobrança. Esta nota sai pelo botão \"Reenviar NFS-e\" na tela do Omie, " +
+            "depois de corrigir o que a prefeitura recusou.",
+          tentado: ["aposentar a OS recusada (o Omie não libera o carimbo de OS faturada)"],
+        }] };
+      }
+
+      /* Não soltou: quase sempre porque o cadastro ainda não foi corrigido e a
+         RPC não classifica a linha como reemitível. Dizer isso, com o motivo da
+         prefeitura, é o que separa "o Hub falhou" de "falta uma informação". */
+      const linha = linhas.find((l) => ids.includes(l.id_asaas) && l.nfse_mensagem);
+      marcar("destravar", "atencao", "Nenhuma OS pôde ser aposentada.");
+      return { ok: false, pendencias: [{
+        id_asaas: ids[0] ?? null,
+        nome: nomeDe(ids[0] ?? ""),
+        titulo: "A nota anterior foi recusada e o cadastro ainda não foi corrigido",
+        oQueFazer:
+          (motivoCurto(linha?.nfse_mensagem ?? null) ?? "A prefeitura recusou o RPS") +
+          ". Enquanto o cadastro não for corrigido, soltar esta OS só produziria outra com a mesma recusa. " +
+          "Use \"Consertar cadastro\" na aba Recusas a tratar: de lá o Hub escreve a correção no Omie e no Asaas, " +
+          "e depois esta emissão passa.",
+        tentado: ["aposentar a OS recusada (recusado: cadastro ainda não consertado)"],
+      }] };
+    } catch (e: any) {
+      marcar("destravar", "falhou", e?.message ?? "Falhou.");
+      return { ok: false, pendencias: [{
+        id_asaas: null, nome: "—",
+        titulo: "Não deu para soltar a OS recusada",
+        oQueFazer: `${e?.message ?? "Erro sem mensagem."} Nada foi alterado no Omie.`,
+        tentado: ["devolver_a_esteira"],
+      }] };
+    }
+  };
 
   /* ------------------------------------------------------------------------
    * PASSO 1 — o cadastro do tomador.
@@ -374,6 +464,14 @@ export function EmitirAgora({
     vivo.current = true;
     const pendencias: ParaVoce[] = [];
     try {
+      const destrava = await destravarOsRecusadas();
+      pendencias.push(...destrava.pendencias);
+      if (!destrava.ok) {
+        marcar("cadastro", "espera", "A OS recusada ainda está segurando a cobrança.");
+        return;
+      }
+      if (!vivo.current) return;
+
       const cad = await garantirCadastros();
       pendencias.push(...cad.pendencias);
       if (!cad.ok) {
@@ -439,7 +537,7 @@ export function EmitirAgora({
                   e.estado === "ok" && "border-emerald-500/30 bg-emerald-500/5",
                   e.estado === "atencao" && "border-amber-500/40 bg-amber-500/5",
                   e.estado === "falhou" && "border-destructive/40 bg-destructive/5",
-                  e.estado === "espera" && "border-border opacity-60",
+                  (e.estado === "espera" || e.estado === "pulado") && "border-border opacity-60",
                 )}
               >
                 <span className="mt-px shrink-0">
@@ -447,6 +545,10 @@ export function EmitirAgora({
                     : e.estado === "ok" ? <Check className="h-3.5 w-3.5 text-emerald-600 dark:text-emerald-400" />
                     : e.estado === "atencao" ? <TriangleAlert className="h-3.5 w-3.5 text-amber-600 dark:text-amber-400" />
                     : e.estado === "falhou" ? <X className="h-3.5 w-3.5 text-destructive" />
+                    /* "Pulado" é diferente de "esperando": o degrau foi conferido
+                       e não se aplica a este caso. Com a mesma ampulheta dos
+                       outros, ele pareceria travado para sempre. */
+                    : e.estado === "pulado" ? <Minus className="h-3.5 w-3.5 text-muted-foreground" />
                     : <Hourglass className="h-3.5 w-3.5 text-muted-foreground" />}
                 </span>
                 <span className="min-w-0 flex-1">

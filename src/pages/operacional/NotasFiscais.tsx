@@ -172,7 +172,9 @@ export default function NotasFiscais() {
    * `null` = ninguém emitindo. Ver `EmitirAgora`: é ele que cadastra o tomador
    * que falta, dispara o lote, espera a prefeitura e grava o número, em vez de
    * devolver um erro por pré-requisito. */
-  const [emitindoAgora, setEmitindoAgora] = useState<string[] | null>(null);
+  const [emitindoAgora, setEmitindoAgora] = useState<{ ids: string[]; osRecusadas?: number[] } | null>(null);
+  /** Indo buscar no Asaas a cobrança que o espelho ainda não tem — ver `buscarNoAsaas`. */
+  const [buscandoAsaas, setBuscandoAsaas] = useState(false);
   /* O TEXTO QUE VAI DENTRO DA NOTA, e ele nasce vazio a cada emissão.
    *
    * Mesmo raciocínio da chave da avulsa: observação é do ATO. Lembrar a de
@@ -325,6 +327,65 @@ export default function NotasFiscais() {
    * meio de 3.600 seria cobrar duas vezes o mesmo trabalho. A nota ainda não sai:
    * o que fica na tela é a barra do lote, com o aviso e o botão de emitir.
    */
+  /**
+   * A COBRANÇA QUE AINDA NÃO EXISTE AQUI — o Hub vai buscá-la em vez de dizer
+   * "nenhuma cobrança neste recorte".
+   *
+   * O espelho do Asaas enche três vezes por dia (07:45, 12:30 e 17:00 BRT). Quem
+   * cria uma cobrança às 10h e vem emitir a nota dela não encontra a linha em
+   * lugar nenhum, e nada na tela diz por quê — a lista simplesmente vem vazia,
+   * que se lê como "essa cobrança não existe". Foi o que aconteceu em 11/09/2026
+   * com a comissão do INFOSS.
+   *
+   * É UMA BUSCA NOMEADA, não a volta do botão "Atualizar do Asaas" (removido de
+   * propósito: varria ~70 páginas e queimava cota). Aqui são uma a três
+   * requisições, com o termo que a pessoa digitou.
+   */
+  const buscarNoAsaas = async () => {
+    const termo = busca.trim();
+    if (!termo) return;
+    const digitos = termo.replace(/\D/g, "");
+    const corpo = termo.startsWith("pay_")
+      ? { id: termo }
+      : digitos.length === 11 || digitos.length === 14
+      ? { documento: digitos }
+      : { nome: termo };
+
+    setBuscandoAsaas(true);
+    try {
+      const { data, error } = await sb.functions.invoke("asaas-sync", { body: { action: "cobranca", ...corpo } });
+      if (error) throw error;
+      if (data?.erro) throw new Error(data.erro);
+
+      const achadas = Number(data?.cobrancas ?? 0);
+      if (!achadas) {
+        toast.info("O Asaas também não tem nada com esse termo.", {
+          description: "Confira o nome, o CNPJ ou o id da cobrança. Nada foi alterado.",
+          duration: 10000,
+        });
+        return;
+      }
+      /* O MÊS PODE SER OUTRO, e dizer isso evita o segundo "sumiu". A cobrança
+         entra no painel pelo pagamento ou pelo vencimento; achar 3 e continuar
+         vendo 0 na tela é o mesmo susto de novo, uma tela adiante. */
+      const meses = [...new Set((data?.achadas ?? [])
+        .map((a: any) => String(a.data_vencimento ?? "").slice(0, 7)).filter(Boolean))] as string[];
+      const aqui = `${ano}-${String(mes + 1).padStart(2, "0")}`;
+      const fora = meses.filter((m) => m !== aqui);
+      toast.success(`${achadas} cobrança(s) trazida(s) do Asaas.`, {
+        description: fora.length
+          ? `Vencimento em ${fora.join(", ")} — troque o mês no topo para ver.`
+          : "Já estão na lista deste mês.",
+        duration: 14000,
+      });
+      await carregar();
+    } catch (e: any) {
+      toast.error("Não deu para buscar no Asaas.", { description: e?.message });
+    } finally {
+      setBuscandoAsaas(false);
+    }
+  };
+
   const aposLiberar = async (_doc: string, idAsaas: string, emitirAgora: boolean) => {
     await carregar();
     setSel(new Set([idAsaas]));
@@ -335,7 +396,7 @@ export default function NotasFiscais() {
      * sozinho). Repetir um `window.confirm` aqui seria pedir a mesma autorização
      * duas vezes em dez segundos, que é como se ensina alguém a clicar em OK sem
      * ler. */
-    if (emitirAgora) setEmitindoAgora([idAsaas]);
+    if (emitirAgora) setEmitindoAgora({ ids: [idAsaas] });
   };
 
   const alternar = (id: string) => {
@@ -421,7 +482,7 @@ export default function NotasFiscais() {
      * A CONFIRMAÇÃO ACIMA FICA, e fica antes: ela é a única coisa nesta tela que
      * fala de uma escrita fiscal irreversível, e não pode virar um passo de uma
      * barra de progresso que já está rodando. */
-    setEmitindoAgora(ids);
+    setEmitindoAgora({ ids });
   };
 
   /* --------------------------- refazer a nota ---------------------------- */
@@ -438,10 +499,44 @@ export default function NotasFiscais() {
    * (o cliente lê). Um campo só faria as duas coisas mal.
    */
   const refazer = async (l: LinhaNota) => {
+    /* O HUB VAI CONFERIR O VALOR, EM VEZ DE MANDAR VOCÊ CONFERIR.
+     *
+     * A frase daqui era "antes de continuar, corrija o valor no Asaas se for o
+     * caso" — e ela empurrava para fora do Hub a única informação que decide se
+     * vale cancelar: quanto a cobrança vale AGORA. O espelho local é de até 8h
+     * atrás (três varreduras por dia), então o número que a tela mostra pode ser
+     * o velho, e foi exatamente assim que a nota do Banestes saiu com o valor
+     * errado em 02/09/2026.
+     *
+     * Uma requisição resolve. E ela não só informa: `asaas-sync` grava o que
+     * leu, então o espelho fica curado antes de qualquer escrita fiscal. Falhar
+     * aqui não impede refazer — segue com o aviso de que o valor não pôde ser
+     * conferido, porque a leitura ao vivo da porta de emissão ainda vai barrar a
+     * leva se divergir. */
+    let valorAgora: number | null = null;
+    setEmitindo(true);
+    try {
+      const { data } = await sb.functions.invoke("asaas-sync", {
+        body: { action: "cobranca", id: l.id_asaas },
+      });
+      const achada = (data?.achadas ?? []).find((a: any) => a.id_asaas === l.id_asaas);
+      if (achada) valorAgora = Number(achada.valor);
+    } catch { /* segue sem o número; a frase abaixo diz que não deu */ }
+    finally { setEmitindo(false); }
+
+    const mudou = valorAgora != null && Math.abs(valorAgora - Number(l.valor)) > 0.005;
+    const linhaValor = valorAgora == null
+      ? "NÃO consegui conferir o valor no Asaas agora — confira antes de seguir.\n"
+      : mudou
+      ? `ATENÇÃO: o valor no Asaas é ${brlStr(valorAgora)}, e o Hub mostrava ${brlStr(Number(l.valor))}. ` +
+        "Já corrigi o espelho; a nota nova sai com o valor de agora.\n"
+      : `Conferido no Asaas agora: ${brlStr(valorAgora)} — o mesmo que o Hub mostra.\n`;
+
     const justificativa = window.prompt(
       `Refazer a nota ${l.nf_asaas_numero ?? ""} de ${l.cliente_asaas ?? l.id_asaas}?\n\n` +
       "Isto CANCELA a nota no Asaas e emite outra pelo Omie, com o valor que a cobrança tem agora.\n" +
-      "Antes de continuar, corrija o valor no Asaas se for o caso — o cancelamento não tem volta.\n\n" +
+      linhaValor +
+      "O cancelamento não tem volta.\n\n" +
       "Por que esta nota está sendo cancelada?",
       "",
     );
@@ -1160,7 +1255,35 @@ export default function NotasFiscais() {
             )}
             {!carregando && visiveis.length === 0 && (
               <tr><td colSpan={7} className="p-8 text-center text-muted-foreground">
-                Nenhuma cobrança neste recorte.
+                {/* LISTA VAZIA COM BUSCA DIGITADA NÃO É RESPOSTA, é uma pergunta
+                    sem resposta. O espelho do Asaas enche 3×/dia; a cobrança
+                    criada hoje de manhã não está aqui, e "Nenhuma cobrança neste
+                    recorte" se lê como "essa cobrança não existe" — que é o
+                    convite direto para ir resolver por fora do Hub. */}
+                {busca.trim() ? (
+                  <span className="flex flex-col items-center gap-2">
+                    <span>Nada com “{busca.trim()}” neste mês.</span>
+                    <button
+                      onClick={buscarNoAsaas}
+                      disabled={buscandoAsaas}
+                      className="flex items-center gap-1.5 rounded-md border border-primary/40 px-3 py-1.5 text-xs font-medium text-primary hover:bg-primary/5 disabled:opacity-50"
+                      title={
+                        "Procura no Asaas e traz a cobrança para cá, com o cadastro do cliente junto.\n\n" +
+                        "O espelho local é atualizado três vezes por dia (07:45, 12:30 e 17:00), então " +
+                        "cobrança criada hoje pode ainda não estar aqui. São uma a três requisições, " +
+                        "não a varredura completa."
+                      }
+                    >
+                      {buscandoAsaas
+                        ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                        : <Search className="h-3.5 w-3.5" />}
+                      Buscar no Asaas agora
+                    </button>
+                    <span className="text-[11px] text-muted-foreground/70">
+                      Aceita o nome, o CNPJ/CPF ou o id da cobrança (pay_…).
+                    </span>
+                  </span>
+                ) : "Nenhuma cobrança neste recorte."}
               </td></tr>
             )}
             {!carregando && visiveis.map((l) => {
@@ -1448,6 +1571,30 @@ export default function NotasFiscais() {
                         Nota antes de receber
                       </button>
                     )}
+                    {/* A NOTA REJEITADA DEIXA DE SER UM BECO.
+                        Até 11/09/2026 esta linha mostrava o selo vermelho, o
+                        motivo da prefeitura e NADA MAIS — a ajuda mandava
+                        "corrigir e reenviar no Omie", que é um lugar fora do Hub
+                        e, para OS já faturada, o único que resolve mesmo. O que
+                        faltava aqui era o degrau anterior: aposentar a OS
+                        recusada para a cobrança poder virar nota de novo. Agora
+                        isso é o passo 1 da mesma corrente de emissão. */}
+                    {l.situacao === "nota_rejeitada" && l.n_cod_os && (
+                      <button
+                        onClick={() => setEmitindoAgora({ ids: [l.id_asaas], osRecusadas: [Number(l.n_cod_os)] })}
+                        disabled={emitindo}
+                        className="ghost-btn mt-1 flex items-center gap-1 rounded border border-primary/40 px-1.5 py-0.5 text-[10px] text-primary disabled:opacity-40"
+                        title={
+                          "Aposenta a OS recusada e emite de novo, do começo: cadastro do tomador, OS, faturamento " +
+                          "e o número da nota.\n\n" +
+                          "Se o cadastro ainda não tiver sido corrigido, o Hub para no primeiro passo e diz o que " +
+                          "a prefeitura recusou — soltar a OS sem corrigir só produziria outra com a mesma recusa."
+                        }
+                      >
+                        <RefreshCw className="h-2.5 w-2.5" />
+                        Destravar e reemitir
+                      </button>
+                    )}
                     {l.situacao === "emitida_asaas" && (
                       <button
                         onClick={() => refazer(l)}
@@ -1455,7 +1602,8 @@ export default function NotasFiscais() {
                         className="ghost-btn mt-1 flex items-center gap-1 rounded border border-border px-1.5 py-0.5 text-[10px] text-muted-foreground disabled:opacity-40"
                         title={
                           "Cancela esta nota no Asaas e emite outra pelo Omie, com o valor que a cobrança tem agora.\n" +
-                          "Use quando a nota saiu errada. Corrija o valor no Asaas ANTES — o cancelamento não tem volta."
+                          "Use quando a nota saiu errada. O Hub confere o valor no Asaas antes de perguntar " +
+                          "qualquer coisa e mostra se ele mudou — o cancelamento não tem volta."
                         }
                       >
                         <RefreshCw className="h-2.5 w-2.5" />
@@ -1507,7 +1655,8 @@ export default function NotasFiscais() {
       {emitindoAgora && (
         <EmitirAgora
           aberto
-          ids={emitindoAgora}
+          ids={emitindoAgora.ids}
+          osRecusadas={emitindoAgora.osRecusadas}
           linhas={linhas}
           observacao={observacao}
           avulsa={avulsa}

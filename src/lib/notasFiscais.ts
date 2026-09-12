@@ -88,10 +88,17 @@ export const SITUACOES: Record<Situacao, { rotulo: string; tom: "ok" | "aviso" |
   // cStatusRps '003'. A OS foi faturada, o RPS foi enviado e a prefeitura
   // RECUSOU — sem número, sem XML. Chamar isso de "em processamento" sugeriria
   // que o tempo resolve, e não resolve: é receita faturada sem nota válida.
+  // A AJUDA MANDAVA PARA FORA DO HUB ("precisa ser corrigida e reenviada no
+  // Omie") desde antes de existir caminho aqui dentro. Existe desde 11/09/2026:
+  // "Destravar e reemitir" aposenta a OS recusada e refaz a emissão do começo.
+  // O Omie continua sendo a saída de um caso — a OS cujo carimbo ficou preso —,
+  // e é só esse que a tela ainda manda para lá, dizendo por quê.
   nota_rejeitada: {
     rotulo: "NFS-e rejeitada",
     tom: "erro",
-    ajuda: "A prefeitura recusou o RPS. A OS consta faturada mas não existe nota fiscal válida — precisa ser corrigida e reenviada no Omie.",
+    ajuda: "A prefeitura recusou o RPS. A OS consta faturada mas não existe nota fiscal válida. " +
+      "\"Destravar e reemitir\" aposenta essa OS e refaz a emissão — se o cadastro ainda não foi corrigido, " +
+      "o Hub para antes de tocar no Omie e diz o que a prefeitura recusou.",
   },
   // "NO FORNO" E NÃO "EM PROCESSAMENTO", desde 09/09/2026 — é o nome que o
   // Registro de emissões e a Auditoria já davam ao mesmo estado, e três nomes
@@ -260,11 +267,14 @@ export function motivoBloqueio(
   // novo criaria uma segunda OS para a mesma cobrança. O conserto é reenviar o
   // RPS no Omie, corrigindo o que a prefeitura recusou.
   if (l.situacao === "nota_rejeitada") {
-    // Com o motivo em mãos, o bloqueio deixa de ser "não pode" e vira instrução.
+    // Com o motivo em mãos, o bloqueio deixa de ser "não pode" e vira instrução —
+    // e a instrução agora aponta para dentro do Hub: marcar a caixa continuaria
+    // duplicando a OS, mas o botão "Destravar e reemitir" da própria linha
+    // aposenta a OS recusada antes de emitir, que é o degrau que faltava.
     const m = motivoCurto(l.nfse_mensagem ?? null);
     return m
-      ? `${m}. Corrija o cadastro e reenvie pelo Omie — emitir aqui duplicaria a OS.`
-      : "A prefeitura rejeitou o RPS. Corrija e reenvie pelo Omie — emitir aqui duplicaria a OS.";
+      ? `${m}. Use "Destravar e reemitir" nesta linha — marcar a caixa duplicaria a OS.`
+      : 'A prefeitura rejeitou o RPS. Use "Destravar e reemitir" nesta linha — marcar a caixa duplicaria a OS.';
   }
   /* O forno tem duas entradas — o lote acabado de despachar (o diário) e a OS
      já faturada (o espelho) —, e a frase não pode afirmar a segunda quando é a

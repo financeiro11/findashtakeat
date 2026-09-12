@@ -31,6 +31,30 @@ describe("motivoCurto", () => {
       .toMatch(/403/);
   });
 
+  /* AS TREZE QUE ESTAVAM NA FILA ERRADA. Medido em 12/09/2026: todas as OS em
+     "Ver mensagem da prefeitura" eram instabilidade, nenhuma era cadastro —
+     doze por indisponibilidade da NFS-e Nacional e uma por um 502 de gateway.
+     A fila que a tela oferecia era a que ninguém consegue trabalhar. */
+  it("reconhece a indisponibilidade da NFS-e Nacional", () => {
+    expect(motivoCurto("Falha no processamento da NFS-e por indisponibilidade na NFS-e Nacional."))
+      .toMatch(/reenviar/);
+  });
+
+  /* A frase "recusa do webservice" é NOSSA (`textoDaMensagem`), e por isso vale
+     mais que o número: quem a escreve já concluiu que é página de erro. Sem esta
+     linha, todo código HTTP que não fosse 403 caía em "mensagem desconhecida". */
+  it("qualquer código de gateway, e não só o 403, é webservice fora do ar", () => {
+    const m = 'A prefeitura respondeu "502 - Web server received an invalid response while '
+      + 'acting as a gateway or proxy server." (recusa do webservice, não crítica da nota).';
+    expect(motivoCurto(m)).toMatch(/reenviar/);
+  });
+
+  it("a recusa de telefone tem nome, pelo código e pelo campo do esquema", () => {
+    expect(motivoCurto("E1235 : Falha no esquema XML do DF-e.")).toMatch(/[Tt]elefone/);
+    expect(motivoCurto("O campo 'http://www.sped.fazenda.gov.br/nfse:fone' foi preenchido com um valor inválido"))
+      .toMatch(/[Tt]elefone/);
+  });
+
   it("mensagem desconhecida volta sem o código, e não vazia", () => {
     const m = motivoCurto("E0999 : Alguma crítica nova que ninguém mapeou ainda.");
     expect(m).toBe("Alguma crítica nova que ninguém mapeou ainda.");

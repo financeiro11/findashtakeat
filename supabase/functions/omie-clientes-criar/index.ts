@@ -83,6 +83,13 @@ import { consultarCnpjPublico } from "../_shared/cnpj-publico.ts";
 import { contatoDoCnpj } from "../_shared/cnpj-contato.ts";
 import { clienteServico } from "../_shared/firecrawl.ts";
 import { existeNosCorreios, resolverCep, type ViaCep } from "../_shared/cep.ts";
+/* O QUE A RECUSA AUTORIZA A CONSERTAR — módulo puro e testado
+ * (`src/lib/nfse/recusaCadastro.test.ts`). Ele decide sobrescrita em cadastro
+ * de terceiro num sistema fiscal, e por isso não mora aqui: este arquivo
+ * importa por URL e o vitest não o alcança. */
+import {
+  camposAcusados, telefoneBR, telefoneQueSubstitui,
+} from "../_shared/recusa-cadastro.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -502,13 +509,11 @@ async function montarCadastroBruto(c: Fila): Promise<{ cadastro?: Cadastro; bloq
 
 /* -------------------------------- payload --------------------------------- */
 
-/** "27997456386" → { ddd: "27", numero: "997456386" }. Fora do formato, nada:
- *  telefone é opcional no cadastro e não vale a pena mandar torto. */
-function telefoneBR(bruto: string | null): { ddd: string; numero: string } | null {
-  const d = soDigitos(bruto);
-  if (d.length < 10 || d.length > 11) return null;
-  return { ddd: d.slice(0, 2), numero: d.slice(2) };
-}
+/* `telefoneBR` e a familia de regras do telefone saíram daqui em 12/09/2026,
+ * para `_shared/recusa-cadastro.ts`. Não foi arrumação: elas passaram a decidir
+ * SOBRESCRITA em cadastro de terceiro, e `index.ts` importa por URL — logo o
+ * vitest não consegue lê-lo. Regra de escrita fiscal sem teste é como se
+ * descobre, semanas depois, que 158 notas ficaram presas. */
 
 /** "49669589000104" → "49.669.589/0001-04". O Omie guarda o documento pontuado
  *  (lido do cadastro-molde) e é assim que ele volta no ConsultarCliente. */
@@ -896,6 +901,11 @@ async function aplicarCorrecao(
      *  (ver `_shared/cnpj-contato.ts`). Opcional porque a busca tem limite de
      *  taxa e nem toda rodada tem prazo para ela. */
     contato?: { email: string; telefone: string; fonte: string } | null;
+    /** A recusa da prefeitura, crua. É o que AUTORIZA sobrescrever o campo que
+     *  ela nomeia — ver `camposAcusados`. O pré-voo não passa nada aqui, de
+     *  propósito: ele age antes de existir recusa, então não há ninguém
+     *  afirmando que algum valor preenchido está errado. */
+    motivoRecusa?: string | null;
   },
 ): Promise<{ feito: Record<string, unknown>; cadastro: Cadastro | null; bloqueio?: string }> {
   const { cadastro, bloqueio } = await montarCadastro(filaDoCliente(c.id_customer, c.doc, c.dadosAsaas));
@@ -946,10 +956,59 @@ async function aplicarCorrecao(
       const emailNovo = atual && !limpo(atual.email)
         ? (limpo(c.dadosAsaas?.email) || limpo(opts.contato?.email)).slice(0, 100)
         : "";
-      const telNovo = atual && !limpo(atual.telefone1_numero)
-        ? limpo(opts.contato?.telefone)
-        : "";
+
+      /* O QUE A PREFEITURA NOMEOU — ver `_shared/recusa-cadastro.ts`. Vazio
+         quando quem chama não tem recusa em mãos (é o caso do pré-voo). */
+      const acusado = camposAcusados(opts.motivoRecusa);
+
+      /* O TELEFONE, E A ÚNICA REGRA QUE MUDOU AQUI EM 12/09/2026.
+       *
+       * ACUSADO vem primeiro, e não o campo vazio, porque a recusa real diz
+       * "preenchido com um valor inválido OU DEIXADO EM BRANCO" — o E1235 é
+       * falha de esquema no campo `nfse:fone`, e ela acusa os dois estados. Ler
+       * "vazio" antes de "acusado" restringiria o buraco acusado à fonte oficial
+       * e deixaria de fora o telefone do Asaas, que é de graça e está ali.
+       *
+       * Sem acusação, o campo vazio continua sendo preenchido só com o do
+       * cadastro federal, como sempre: é preenchimento oportunista, ninguém
+       * reclamou de nada, e telefone não trava NFS-e por si (o que o Omie exige
+       * é o e-mail). Com acusação, todo candidato plausível serve — inclusive o
+       * do Asaas, que ninguém conferiu mas também não foi recusado por
+       * prefeitura nenhuma.
+       *
+       * `telefoneQueSubstitui` tenta primeiro reagrupar os próprios dígitos
+       * (DDD no campo certo), que é conserto sem informação nova, e cada
+       * candidato passa por `telefonePlausivel` antes de entrar. */
+      const telVazio = !!atual && !limpo(atual.telefone1_numero);
+      const candidatosDeFora = [
+        { de: opts.contato?.fonte ?? "cadastro federal", valor: opts.contato?.telefone },
+        { de: "asaas", valor: c.dadosAsaas?.mobilePhone ?? c.dadosAsaas?.phone },
+      ];
+      const telPara = !atual ? null
+        : acusado.has("telefone")
+          ? telefoneQueSubstitui(atual, candidatosDeFora)
+          : telVazio
+            ? telefoneQueSubstitui(atual, candidatosDeFora.slice(0, 1))
+            : null;
+
       const mudaEndereco = !!atual && diffCadastro(atual, cadastro).some((l) => l.muda);
+
+      /* O CÓDIGO DO MUNICÍPIO, quando é ELE o acusado.
+       *
+       * Ele já ia no payload junto com o endereço; o que faltava era poder ir
+       * SOZINHO. Doze OS estavam presas assim: endereço idêntico ao da Receita
+       * (logo `mudaEndereco` falso), CEP existindo nos Correios, e o
+       * `cidade_ibge` do Omie vazio ou de outro município. `diffCadastro` não o
+       * olha — ele não é campo de endereço —, então o diagnóstico da máquina era
+       * "nada a propor" sobre a única coisa que havia a propor.
+       *
+       * A consulta ao CEP só acontece se a proposta não trouxer o código (a
+       * Receita traz; a página pública, não) e não custa crédito de raspagem. */
+      const ibgeAtual = soDigitos(atual?.cidade_ibge);
+      const ibgeProposto = atual && acusado.has("cidade_ibge")
+        ? soDigitos(cadastro.cidade_ibge) || soDigitos(await ibgePeloCep(cadastro.cep))
+        : "";
+      const ibgeNovo = ibgeProposto.length === 7 && ibgeProposto !== ibgeAtual ? ibgeProposto : "";
 
       if (!atual) {
         // Não se escreve às cegas: sem saber o que está lá, não há como afirmar
@@ -958,7 +1017,7 @@ async function aplicarCorrecao(
           ok: false,
           motivo: `Não foi possível ler o cadastro atual no Omie${erroLeitura ? `: ${erroLeitura}` : ""}. Nada foi escrito — tente de novo em alguns segundos.`,
         };
-      } else if (!mudaEndereco && !emailNovo && !telNovo) {
+      } else if (!mudaEndereco && !emailNovo && !telPara && !ibgeNovo) {
         /* NADA A PROPOR TEM DOIS SENTIDOS, e confundi-los rotulava de "caso
          * humano" o cliente que alguém acabou de consertar. Decide o estado do
          * cadastro que está lá AGORA:
@@ -967,16 +1026,39 @@ async function aplicarCorrecao(
          *    foi resolvido e a lista de trabalho é que estava velha);
          *  • incompleto → o cadastro bate com a Receita E MESMO ASSIM não emite:
          *    endereço formalmente completo e materialmente errado (logradouro
-         *    preenchido com o nome da cidade, número "00"). Isso é gente. */
+         *    preenchido com o nome da cidade, número "00"). Isso é gente.
+         *
+         * E A MENSAGEM DIZ O QUE A MÁQUINA TENTOU, quando havia acusação. Ficar
+         * em "precisa de conferência humana" sobre uma recusa de telefone é
+         * pedir que alguém redescubra, olhando, que não existe telefone válido
+         * publicado desta empresa — a máquina acabou de olhar. */
         const completo = [atual.endereco, atual.endereco_numero, atual.cep, atual.email]
           .every((v) => limpo(v) !== "");
+        const foneAtual = `${soDigitos(atual.telefone1_ddd)}${soDigitos(atual.telefone1_numero)}`;
+        const tentou = [
+          acusado.has("telefone")
+            /* NOMEIA O NÚMERO RUIM. "Não achei telefone" manda investigar; "o
+               cadastro tem 0000000000, que é preenchimento" manda pedir o
+               número ao cliente — uma frase em vez de uma investigação. */
+            ? `o telefone é o campo acusado e não há substituto plausível (`
+              + `no cadastro do Omie está "${foneAtual || "vazio"}"; `
+              + `nem o cadastro federal nem o Asaas publicam um número válido). `
+              + `Peça o telefone ao cliente`
+            : "",
+          acusado.has("cidade_ibge")
+            ? `o código do município já é o certo (${ibgeAtual || "vazio e o CEP não devolveu nenhum"})`
+            : "",
+        ].filter(Boolean).join("; ");
         feito.omie = {
           ok: false, nada_a_propor: true, completo,
-          motivo: completo
+          acusado: [...acusado],
+          motivo: completo && !tentou
             ? "O cadastro do Omie já está completo e igual ao da Receita — nada a corrigir."
-            : "O cadastro do Omie bate com a Receita/CEP, continua incompleto, e nem o Asaas nem o cadastro federal publicam o contato que falta. Isto precisa de conferência humana.",
+            : tentou
+              ? `A prefeitura acusa um campo que a máquina já conferiu: ${tentou}. Isto precisa de gente.`
+              : "O cadastro do Omie bate com a Receita/CEP, continua incompleto, e nem o Asaas nem o cadastro federal publicam o contato que falta. Isto precisa de conferência humana.",
         };
-      } else if (mudaEndereco && (await existeNosCorreios(cadastro.cep)) === false) {
+      } else if ((mudaEndereco || ibgeNovo) && (await existeNosCorreios(cadastro.cep)) === false) {
         /* A TRAVA DE VALIDAÇÃO — nunca escrever CEP que os Correios não conhecem.
          *
          * Ela existe por um sintoma medido em 09/09/2026: treze OS apareciam na
@@ -1011,13 +1093,20 @@ async function aplicarCorrecao(
           if (cadastro.complemento) payload.complemento = cadastro.complemento.slice(0, 40);
         }
         /* O contato entra porque o Omie o exige para a NFS-e ("falta preencher o
-         * Número do Endereço E O E-MAIL"). `emailNovo`/`telNovo` já nascem
-         * vazios quando o ERP tem o campo preenchido — ver o bloco acima. */
+         * Número do Endereço E O E-MAIL"). `emailNovo` já nasce vazio quando o
+         * ERP tem o campo preenchido; `telPara` já vem validado e só é
+         * diferente de null quando há de fato o que escrever — ver o bloco
+         * acima. */
         if (emailNovo) payload.email = emailNovo;
-        if (telNovo) {
-          const t = telefoneBR(telNovo);
-          if (t) { payload.telefone1_ddd = t.ddd; payload.telefone1_numero = t.numero; }
+        if (telPara) {
+          payload.telefone1_ddd = telPara.ddd;
+          payload.telefone1_numero = telPara.numero;
         }
+        /* O CÓDIGO DO MUNICÍPIO SOZINHO, quando a prefeitura o acusou e o
+         * endereço não muda. Vem depois do bloco do endereço de propósito: se os
+         * dois valerem, o que a consulta do CEP achou vence o que a proposta
+         * trouxe vazio. */
+        if (ibgeNovo) payload.cidade_ibge = ibgeNovo;
         try {
           await omieCall("geral/clientes", "AlterarCliente", payload);
           /* `cep_via` sobe para o rastro porque nem todo CEP escrito é o da
@@ -1031,6 +1120,14 @@ async function aplicarCorrecao(
             contato_de: emailNovo ? (limpo(c.dadosAsaas?.email) ? "asaas" : (opts.contato?.fonte ?? null)) : null,
             cep_via: cadastro.cep_via ?? "porta",
             cep_detalhe: cadastro.cep_detalhe ?? null,
+            /* QUEM AUTORIZOU A ESCRITA, no rastro. Sobrescrever campo preenchido
+             * em cadastro de terceiro só é defensável porque a prefeitura o
+             * nomeou; sem isto gravado, daqui a três meses "por que o telefone
+             * deste cliente mudou?" não tem resposta. `telefone_de` diz se foi
+             * conserto de formato (os mesmos dígitos) ou número novo. */
+            acusado: acusado.size ? [...acusado] : null,
+            telefone_de: telPara?.de ?? null,
+            ibge_de: ibgeNovo ? (ibgeAtual ? `trocado de ${ibgeAtual}` : "estava vazio") : null,
           };
           /* O ESPELHO ACOMPANHA A ESCRITA. `omie_clientes_endereco` é lido por
            * semana; sem isto ele passa a mentir no instante em que consertamos
@@ -1327,13 +1424,26 @@ async function corrigirRecusados(
     const { feito } = await aplicarCorrecao(supabase, {
       doc: c.doc, nome: c.nome, n_cod_cli: c.n_cod_cli, id_customer: c.id_customer,
       dadosAsaas: dadosPor.get(c.id_customer) ?? {},
-    }, { alvos, ids: c.ids ?? [], origem: "automatico", operador: opts.operador });
+    }, {
+      alvos, ids: c.ids ?? [], origem: "automatico", operador: opts.operador,
+      /* A RECUSA VIAJA COM O CLIENTE. `nf_cadastros_a_corrigir` já devolvia
+       * `motivo` (a última frase da prefeitura ou do Asaas) e ninguém a lia:
+       * ela era exibida e descartada. É ela que autoriza a máquina a tocar no
+       * telefone e no código do município — ver `camposAcusados`. */
+      motivoRecusa: c.motivo ?? null,
+    });
 
     const om: any = (feito as any).omie ?? {};
     saida.push({
       doc: c.doc, nome: c.nome, ok: om.ok === true,
       numero: om?.escrito?.endereco_numero ?? null,
       precisa_de_gente: om.nada_a_propor === true,
+      /* O que a recusa nomeou e o que foi escrito por causa disso. Sem estas
+         duas linhas, a rodada diz "corrigido" sem dizer o que ela consertou —
+         e o conserto de telefone é invisível num relatório de endereço. */
+      acusado: om.acusado ?? null,
+      telefone_de: om.telefone_de ?? null,
+      ibge_de: om.ibge_de ?? null,
       motivo: om.motivo ?? null,
       /* A OS já faturada não volta pela API (ver nfse-presas-cadastro-do-tomador):
        * o conserto vale para as PRÓXIMAS notas deste cliente, e esta sai só pelo
@@ -1857,9 +1967,21 @@ Deno.serve(async (req) => {
       /* Mesma escrita da rodada automática, de propósito — ver `aplicarCorrecao`.
        * Dois códigos para o mesmo ato virariam dois comportamentos, e o que
        * ninguém revisa é sempre o automático. */
+      /* A recusa das cobranças que ESTE clique destrava. Vem de
+       * `clientesTravados`, que já a carrega por cobrança, e autoriza a máquina
+       * a tocar no campo que a prefeitura nomeou (`camposAcusados`).
+       *
+       * Aqui a autorização é mais forte que na rodada automática, não mais
+       * fraca: alguém abriu a tela, leu a recusa e clicou em corrigir. */
+      const motivoRecusa = (c.cobrancas ?? [])
+        .map((b: any) => limpo(b?.motivo)).find((m: string) => m) ?? null;
+
       const { feito, cadastro, bloqueio } = await aplicarCorrecao(supabase, {
         doc, nome: c.nome, n_cod_cli: c.n_cod_cli, id_customer: c.id_customer, dadosAsaas: c._dados,
-      }, { alvos, ids, origem: "manual", operador: body?.operador ?? quem?.email ?? null });
+      }, {
+        alvos, ids, origem: "manual", operador: body?.operador ?? quem?.email ?? null,
+        motivoRecusa,
+      });
       if (!cadastro) return json({ status: "erro", erro: `Sem endereço confiável para escrever: ${bloqueio}.` }, 422);
 
       return json({ status: "ok", doc, fonte: cadastro.fonte, resultado: feito });

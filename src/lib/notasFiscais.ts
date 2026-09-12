@@ -57,10 +57,27 @@ export interface LinhaNota {
 export function motivoCurto(msg: string | null): string | null {
   if (!msg) return null;
   const s = msg.trim();
-  if (/E0240/.test(s)) return "CEP do tomador não confere com o município";
-  if (/E092[12]/.test(s)) return "Código do município do tomador";
+  /* A INSTABILIDADE VEM PRIMEIRO, e essa ordem é uma correção de 12/09/2026.
+   *
+   * Uma resposta de webservice fora do ar é uma PÁGINA — pode conter qualquer
+   * coisa no corpo, inclusive o código de uma crítica anterior citada no HTML —,
+   * e julgar pelo código antes de julgar pela natureza da resposta rotulava
+   * defeito de cadastro sobre um servidor caído. A frase "recusa do webservice"
+   * é a NOSSA conclusão, escrita por `textoDaMensagem` na omie-nfse-sync: quem a
+   * escreve já sabe que é página de erro, então ela vale mais que o número.
+   *
+   * Medido no mesmo dia: treze OS (R$ 4.360) estavam em "Precisam de você" por
+   * falta desta linha — doze por indisponibilidade da NFS-e Nacional e uma por
+   * um 502 de gateway. Ver a migration
+   * `20260912130000_instabilidade_da_prefeitura_nao_e_trabalho_de_gente`, que
+   * faz a mesma correção na régua do banco. */
   if (/403|acesso negado|forbidden/i.test(s)) return "Prefeitura recusou a conexão (403)";
   if (/nenhuma resposta/i.test(s)) return "Prefeitura não respondeu";
+  if (/recusa do webservice/i.test(s)) return "Webservice da prefeitura fora do ar — reenviar";
+  if (/indisponibilidade|indispon[íi]vel/i.test(s)) return "NFS-e Nacional indisponível — reenviar";
+  if (/E0240/.test(s)) return "CEP do tomador não confere com o município";
+  if (/E092[12]/.test(s)) return "Código do município do tomador";
+  if (/E1235|nfse:fone/.test(s)) return "Telefone do tomador inválido";
   if (/e-?mail/i.test(s)) return "Cliente sem e-mail";
   // Sem regra conhecida: mostra o começo da frase do Omie, sem o código.
   return s.replace(/^E\d+\s*:\s*/, "").slice(0, 60);

@@ -11,12 +11,12 @@ import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import {
   Zap, Minus, Plus, Maximize2, Sparkles, Loader2, X,
-  Link2, MousePointer2, ArrowUp, Layers, Maximize, Minimize, ChevronDown, Search,
+  Link2, MousePointer2, ArrowUp, Layers, Maximize, Minimize, ChevronDown, Search, PowerOff,
 } from "lucide-react";
 import {
   montarLayout, correnteDe, destravadasPor, resumoTrilhas, alvosValidos, bandaNoY,
   fiosDoTronco, caminhoSuave, inversoesDe,
-  corTrilha, trilhaDe, tierDe, horasDe, iniciaisDe,
+  corTrilha, trilhaDe, tierDe, horasDe, iniciaisDe, estaAtiva, DESATIVADA_COR,
   TIER_META, TRILHAS, NIVEIS_PADRAO, STATUS_OPTS, temUpgrade, IMPACTO_OPTS, ESFORCO_OPTS,
   type Automacao, type NoPos, type Nivel, type Faixa,
 } from "./arvore-layout";
@@ -52,7 +52,7 @@ import takeatSymbol from "@/assets/takeat-symbol-white.png";
    ficha ofereceria "ver a tarefa" sobre algo que sumiu do quadro. */
 // Template literal e não `+`: concatenar com `+` devolve `string` solto e o
 // supabase-js para de conferir os nomes das colunas contra o types.ts.
-const CAMPOS = `id,automacao,categoria,nivel,status,horas_mes,ferramentas,responsavel,impacto,esforco,dor,solucao,observacao,upgrade,depende_de,pos_x,pos_y,icone,ordem,esteira_ordem,esteira_upgrade,tarefa_id,${EMBED_TAREFA}` as const;
+const CAMPOS = `id,automacao,categoria,nivel,status,horas_mes,ferramentas,responsavel,impacto,esforco,dor,solucao,observacao,upgrade,ativa,desativada_em,desativada_motivo,depende_de,pos_x,pos_y,icone,ordem,esteira_ordem,esteira_upgrade,tarefa_id,${EMBED_TAREFA}` as const;
 
 /* A escolha de recolher as trilhas fica salva por navegador — é preferência de
    quem está olhando, não dado do catálogo. */
@@ -68,6 +68,7 @@ const vazia = (nivel: number | null): Automacao => ({
   horas_mes: null, ferramentas: "", responsavel: "", impacto: "Médio", esforco: "Médio",
   dor: "", solucao: "", observacao: "", upgrade: "", depende_de: null, pos_x: null, pos_y: null,
   icone: null, ordem: 0, esteira_ordem: null, esteira_upgrade: false,
+  ativa: true, desativada_em: null, desativada_motivo: null,
 });
 
 export default function ArvoreAutomacoes() {
@@ -150,12 +151,17 @@ export default function ArvoreAutomacoes() {
   const trilhas = useMemo(() => resumoTrilhas(rows), [rows]);
   const temPrereq = useMemo(() => rows.some((r) => r.depende_de), [rows]);
   const inversoes = useMemo(() => inversoesDe(rows, niveis), [rows, niveis]);
+  /* O placar do topo é sobre HOJE: desativada continua no total (ela foi
+     construída, e isso não se apaga) mas sai de "desbloqueadas" e das horas
+     poupadas — automação desligada não poupa hora nenhuma, e somar as dela é a
+     maneira mais fácil de o número do cabeçalho começar a mentir. */
   const kpi = useMemo(() => {
-    const on = rows.filter((r) => tierDe(r.status) === "on");
+    const on = rows.filter((r) => tierDe(r.status) === "on" && estaAtiva(r));
     return {
       total: rows.length, on: on.length,
       horas: on.reduce((s, r) => s + horasDe(r), 0),
-      upgrades: rows.filter(temUpgrade).length,
+      upgrades: rows.filter((r) => temUpgrade(r) && estaAtiva(r)).length,
+      desativadas: rows.filter((r) => !estaAtiva(r)).length,
     };
   }, [rows]);
   const categorias = useMemo(
@@ -468,6 +474,42 @@ export default function ArvoreAutomacoes() {
     toast.success(entrando ? "Upgrade entrou na linha de produção." : "Upgrade saiu da linha de produção.");
   };
 
+  /* Liga/desliga — o oposto de excluir.
+     Excluir apaga o registro de que a automação existiu; desativar diz "não roda
+     mais" e deixa tudo no lugar: o nó continua na árvore, a dependência continua
+     valendo, e o histórico do que já foi construído fica inteiro. O motivo é
+     perguntado na hora porque é a pergunta que ninguém consegue responder seis
+     meses depois; a data quem carimba é o gatilho no banco. */
+  const alternarAtiva = async (r: Automacao) => {
+    const desligando = estaAtiva(r);
+    let motivo: string | null = null;
+    if (desligando) {
+      const resposta = prompt(
+        `Por que "${r.automacao}" não roda mais?\n\nEla continua na árvore e no histórico — só sai do placar e da linha de produção.`,
+        "",
+      );
+      if (resposta === null) return;              // cancelou: nada muda
+      motivo = resposta.trim() || null;
+    }
+    const { error } = await supabase
+      .from("automacoes_catalogo")
+      .update({
+        ativa: !desligando,
+        // Religar limpa o motivo no gatilho; mandar aqui só serve ao desligar.
+        ...(desligando ? { desativada_motivo: motivo } : {}),
+        // Desligada sai da fila; o pino da posição antiga não quer dizer mais nada.
+        ...(desligando ? { esteira_upgrade: false, esteira_ordem: null } : {}),
+      } as never)
+      .eq("id", r.id);
+    if (error) { toast.error(error.message); return; }
+    await carregar();
+    toast.success(
+      desligando
+        ? `"${r.automacao}" marcada como desativada — continua na árvore, fora do placar.`
+        : `"${r.automacao}" voltou a rodar.`,
+    );
+  };
+
   const excluir = async (id: string) => {
     if (!confirm("Excluir esta automação da árvore e do catálogo?")) return;
     const { error } = await supabase.from("automacoes_catalogo").delete().eq("id", id);
@@ -550,6 +592,19 @@ export default function ArvoreAutomacoes() {
                   <ArrowUp className="h-4 w-4" strokeWidth={3} />{kpi.upgrades}
                 </div>
                 <div className="text-[9px] font-bold tracking-[0.16em] text-slate-600">UPGRADES</div>
+              </div>
+            </>
+          )}
+          {/* Só aparece quando existe alguma — enquanto ninguém desligou nada, um
+              "0 DESATIVADAS" seria mais uma coluna para ler sem dizer nada. */}
+          {kpi.desativadas > 0 && (
+            <>
+              <div className="h-8 w-px bg-white/10" />
+              <div className="text-right" title="Construídas que hoje não rodam — continuam na árvore, fora do placar">
+                <div className="num inline-flex items-center gap-1 text-[20px] font-bold leading-none" style={{ color: DESATIVADA_COR }}>
+                  <PowerOff className="h-4 w-4" />{kpi.desativadas}
+                </div>
+                <div className="text-[9px] font-bold tracking-[0.16em] text-slate-600">DESATIVADAS</div>
               </div>
             </>
           )}
@@ -775,6 +830,12 @@ export default function ArvoreAutomacoes() {
               const off = apagado(n);
               const meta = TIER_META[n.tier];
               const Icone = iconeDe(n.r);
+              /* Desligada perde a cor da trilha e o brilho, mas continua no
+                 lugar dela na árvore, com o mesmo tamanho: é o desenho de
+                 "isto foi construído e hoje não roda", que é diferente tanto de
+                 "ainda não existe" (tracejado) quanto de sumir do mapa. */
+              const viva = estaAtiva(n.r);
+              const corNo = viva ? n.cor : DESATIVADA_COR;
               const ehSel = sel === n.r.id;
               const novo = simular && sel && destrava.ids.has(n.r.id);
               const achado = !!idsAchados?.has(n.r.id); // casou com a busca
@@ -796,44 +857,59 @@ export default function ArvoreAutomacoes() {
                     <div
                       className="flex h-[48px] w-[48px] items-center justify-center rounded-full transition-all"
                       style={{
-                        background: n.tier === "on" ? `radial-gradient(circle at 50% 35%, ${n.cor}33, #10131c)` : "#0d1017",
-                        border: `2px ${n.tier === "todo" ? "dashed" : "solid"} ${n.tier === "todo" ? "#3d465a" : n.cor}`,
+                        background: viva && n.tier === "on" ? `radial-gradient(circle at 50% 35%, ${n.cor}33, #10131c)` : "#0d1017",
+                        border: `2px ${n.tier === "todo" ? "dashed" : "solid"} ${n.tier === "todo" ? "#3d465a" : corNo}`,
                         boxShadow: ehSel
-                          ? `0 0 0 3px ${n.cor}55, 0 0 28px ${n.cor}cc`
+                          ? `0 0 0 3px ${corNo}55, 0 0 28px ${corNo}cc`
                           : novo || (alvoConexao && hover === n.r.id)
                           ? `0 0 0 3px ${TIER_META.on.cor}66, 0 0 24px ${TIER_META.on.cor}aa`
                           : achado
                           // mesmo âmbar do grifo na lista de resultados
                           ? "0 0 0 3px rgba(251,191,36,.45), 0 0 26px rgba(251,191,36,.6)"
+                          : !viva
+                          ? "none"
                           : n.tier === "on"
                           ? `0 0 16px ${n.cor}66`
                           : n.tier === "wip"
                           ? `0 0 12px ${meta.cor}44`
                           : "none",
+                        opacity: viva ? 1 : 0.75,
                       }}
                     >
-                      <Icone className="h-[19px] w-[19px]" style={{ color: n.tier === "todo" ? "#6b7689" : n.cor }} />
+                      <Icone className="h-[19px] w-[19px]" style={{ color: n.tier === "todo" ? "#6b7689" : corNo }} />
                     </div>
                     {/* responsável */}
                     {ini && (
                       <span
                         className="absolute -right-1.5 -top-1.5 flex h-[17px] w-[17px] items-center justify-center rounded-full text-[7.5px] font-bold text-slate-200"
-                        style={{ background: "#161a24", border: `1px solid ${n.cor}77` }}
+                        style={{ background: "#161a24", border: `1px solid ${corNo}77` }}
                         title={n.r.responsavel || ""}
                       >
                         {ini[0]}
                       </span>
                     )}
-                    {/* status */}
-                    {n.tier !== "todo" && (
+                    {/* status — desligada troca a bolinha viva pelo símbolo de
+                        desligado, no mesmo canto: é a leitura que se faz de
+                        longe, sem abrir a ficha. */}
+                    {!viva ? (
+                      <span
+                        className="absolute -bottom-1 -right-1 flex h-[15px] w-[15px] items-center justify-center rounded-full"
+                        style={{ background: "#0d1017", border: `1.5px solid ${DESATIVADA_COR}` }}
+                        title={`Desativada — chegou a "${n.r.status}" e hoje não roda`}
+                      >
+                        <PowerOff className="h-[9px] w-[9px]" style={{ color: DESATIVADA_COR }} />
+                      </span>
+                    ) : n.tier !== "todo" && (
                       <span
                         className="absolute -bottom-0.5 -right-0.5 h-[11px] w-[11px] rounded-full"
                         style={{ background: meta.cor, border: "2px solid #06070b", boxShadow: `0 0 8px ${meta.cor}` }}
                         title={n.r.status}
                       />
                     )}
-                    {/* oportunidade de upgrade — seta verde para cima */}
-                    {temUpgrade(n.r) && (
+                    {/* oportunidade de upgrade — seta verde para cima.
+                        Some quando está desligada: melhorar o que não roda não
+                        é oportunidade nenhuma enquanto ninguém religar. */}
+                    {temUpgrade(n.r) && viva && (
                       <span
                         className="absolute -left-1.5 -top-1.5 flex h-[18px] w-[18px] animate-pulse items-center justify-center rounded-full"
                         style={{ background: "#0b1a14", border: "1.5px solid #34d399", boxShadow: "0 0 12px rgba(52,211,153,.85)" }}
@@ -845,7 +921,10 @@ export default function ArvoreAutomacoes() {
                   </div>
                   <div
                     className="mt-2 line-clamp-2 text-center text-[10.5px] font-medium leading-tight"
-                    style={{ color: n.tier === "todo" ? "#7d879b" : "#dde5f2", textShadow: "0 1px 6px rgba(0,0,0,.9)" }}
+                    style={{
+                      color: !viva ? "#8794a8" : n.tier === "todo" ? "#7d879b" : "#dde5f2",
+                      textShadow: "0 1px 6px rgba(0,0,0,.9)",
+                    }}
                   >
                     {n.r.automacao}
                   </div>
@@ -869,7 +948,8 @@ export default function ArvoreAutomacoes() {
             onSoltar={() => soltarPosicao(selNo.r.id)}
             onExcluir={() => excluir(selNo.r.id)}
             onFechar={() => setSel(null)}
-            onEsteira={tierDe(selNo.r.status) === "on" ? () => alternarEsteira(selNo.r) : undefined}
+            onEsteira={tierDe(selNo.r.status) === "on" && estaAtiva(selNo.r) ? () => alternarEsteira(selNo.r) : undefined}
+            onAlternarAtiva={() => alternarAtiva(selNo.r)}
             onCriarTarefa={async (resp) => {
               await criarTarefaDaAutomacao(selNo.r.id, resp);
               await carregar();
@@ -1090,6 +1170,13 @@ export default function ArvoreAutomacoes() {
                   <SelectTrigger><SelectValue /></SelectTrigger>
                   <SelectContent>{STATUS_OPTS.map((s) => <SelectItem key={s} value={s}>{s}</SelectItem>)}</SelectContent>
                 </Select>
+                {/* O liga/desliga não entra aqui de propósito: são duas perguntas
+                    diferentes, e quem voltasse o status para "Em teste" só para
+                    dizer "parou" jogaria a automação de volta na fila como se
+                    faltasse construir. Uma porta só, e ela carimba a data. */}
+                <p className="mt-1 text-[10.5px] text-muted-foreground">
+                  Até onde a construção chegou. Parou de rodar? O botão <b>Desativar</b> fica na ficha — o status guarda a história.
+                </p>
               </div>
               <div>
                 <Label>Nível (altura na árvore)</Label>
@@ -1208,6 +1295,7 @@ export default function ArvoreAutomacoes() {
           onEditar={(r) => { setEditando({ ...r }); setCriando(false); }}
           onExcluir={excluir}
           onDesligar={desligar}
+          onAlternarAtiva={alternarAtiva}
           onRecarregar={carregar}
         />
       )}

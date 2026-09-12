@@ -44,7 +44,12 @@ type Cargo = {
   tipo: TipoCargo; agente_ref: string | null; agente_canal: string | null; agente_automacoes: string[];
 };
 // Uma automação do catálogo, do jeito que o card do agente precisa dela.
-type Automacao = { id: string; automacao: string; categoria: string | null; status: string; nivel: number | null; horas_mes: number | null };
+// `ativa` é "roda hoje?" — separado de `status`, que é até onde a construção foi.
+type Automacao = { id: string; automacao: string; categoria: string | null; status: string; nivel: number | null; horas_mes: number | null; ativa?: boolean | null };
+// Coluna nova: linha ainda não tocada vem sem o campo, e isso vale "ativa".
+const autoAtiva = (a: { ativa?: boolean | null }) => a.ativa !== false;
+// Rodando de verdade hoje — o que os placares desta página contam.
+const autoRodando = (a: Automacao) => a.status === "Rodando" && autoAtiva(a);
 // Linha da view `agentes_resumo` — contagem por resultado, que o PostgREST não agrupa.
 type AgenteResumo = {
   id: string; nome: string; descricao: string | null; alcada_maxima: string; ativo: boolean;
@@ -326,7 +331,8 @@ function CargoCard({ c, selected, onClick, autos }: {
   const agente = c.tipo === "agente";
   // Só as automações que existem hoje no catálogo — id órfão não vira número na tela.
   const minhas = agente ? (autos ?? []).filter((a) => c.agente_automacoes?.includes(a.id)) : [];
-  const horas = minhas.reduce((s, a) => s + Math.max(0, a.horas_mes ?? 0), 0);
+  // Desativada não devolve hora nenhuma neste mês — soma só o que roda hoje.
+  const horas = minhas.filter(autoAtiva).reduce((s, a) => s + Math.max(0, a.horas_mes ?? 0), 0);
   return (
     <button
       onClick={onClick}
@@ -570,7 +576,7 @@ export default function TimeFinanceiro() {
       sb.from("time_cargos").select("*").order("ordem", { ascending: true }),
       sb.from("time_passos").select("*").order("ordem", { ascending: true }),
       sb.from("time_rituais").select("*").order("ordem", { ascending: true }),
-      sb.from("automacoes_catalogo").select("id,automacao,categoria,status,nivel,horas_mes").order("ordem"),
+      sb.from("automacoes_catalogo").select("id,automacao,categoria,status,nivel,horas_mes,ativa").order("ordem"),
       sb.from("automacoes_niveis").select("n,nome,bullets").order("n"),
       sb.from("time_escopos").select("*").order("ordem", { ascending: true }),
       sb.from("agentes_resumo").select("*"),
@@ -624,7 +630,12 @@ export default function TimeFinanceiro() {
     const agentes = cargosDoAno.filter((c) => c.tipo === "agente");
     const humanos = cargosDoAno.filter((c) => c.tipo !== "agente");
     const ids = new Set(agentes.flatMap((c) => c.agente_automacoes ?? []));
-    const horas = [...ids].reduce((s, id) => s + Math.max(0, autoById.get(id)?.horas_mes ?? 0), 0);
+    // A contagem de automações fica cheia (o agente construiu aquilo), mas as
+    // horas somam só o que roda hoje — desativada parou de devolver tempo.
+    const horas = [...ids].reduce((s, id) => {
+      const a = autoById.get(id);
+      return s + (a && autoAtiva(a) ? Math.max(0, a.horas_mes ?? 0) : 0);
+    }, 0);
     const refs = new Set(agentes.map((c) => c.agente_ref).filter(Boolean) as string[]);
     const execucoes = agentesResumo.filter((a) => refs.has(a.id)).reduce((s, a) => s + Number(a.execucoes ?? 0), 0);
     return {
@@ -1077,7 +1088,7 @@ export default function TimeFinanceiro() {
   }
 
   const nivel = niveisDb.find((n) => n.n === nivelSel) ?? niveisDb[0] ?? NIVEIS[0];
-  const autosNivel = automacoes.filter((a) => a.nivel === nivelSel && a.status === "Rodando").length;
+  const autosNivel = automacoes.filter((a) => a.nivel === nivelSel && autoRodando(a)).length;
 
   const atbCargo = cargos.find((c) => c.id === atbCargoId) ?? null;
   const pullSource = cargos.find((c) => c.id === pullSourceId) ?? null;
@@ -1273,7 +1284,7 @@ export default function TimeFinanceiro() {
                 {selCargo.tipo === "agente" && (() => {
                   const meus = autosDoAgente(selCargo);
                   const r = resumoDoAgente(selCargo);
-                  const horas = meus.reduce((s, a) => s + Math.max(0, a.horas_mes ?? 0), 0);
+                  const horas = meus.filter(autoAtiva).reduce((s, a) => s + Math.max(0, a.horas_mes ?? 0), 0);
                   const alc = r ? ALCADA_META[r.alcada_maxima] : null;
                   return (
                     <div className="mt-3 space-y-2.5 rounded-lg border p-2.5" style={{ borderColor: `color-mix(in srgb, ${AGENTE_COR} 30%, transparent)`, background: `color-mix(in srgb, ${AGENTE_COR} 5%, transparent)` }}>
@@ -1307,8 +1318,13 @@ export default function TimeFinanceiro() {
                           <ul className="mt-1 space-y-1">
                             {meus.map((a) => (
                               <li key={a.id} className="flex items-start gap-1.5 text-[11.5px] leading-snug">
-                                <span className="mt-1 h-1.5 w-1.5 shrink-0 rounded-full" style={{ background: a.status === "Rodando" ? "hsl(var(--success))" : "hsl(var(--muted-foreground))" }} />
-                                <span className="min-w-0 flex-1 text-foreground">{a.automacao}</span>
+                                <span className="mt-1 h-1.5 w-1.5 shrink-0 rounded-full" style={{ background: autoRodando(a) ? "hsl(var(--success))" : "hsl(var(--muted-foreground))" }} />
+                                <span className={cn("min-w-0 flex-1", autoAtiva(a) ? "text-foreground" : "text-muted-foreground")}>
+                                  {a.automacao}
+                                  {/* O agente continua "executando" isto no papel — dizer que
+                                      está desativada é a diferença entre a lista e a realidade. */}
+                                  {!autoAtiva(a) && <span className="ml-1 text-[9.5px] font-semibold uppercase tracking-wider">· desativada</span>}
+                                </span>
                                 {a.nivel != null && <span className="num shrink-0 rounded bg-muted px-1 text-[9.5px] font-semibold text-muted-foreground" title={`Nível ${a.nivel} de maturidade`}>N{a.nivel}</span>}
                               </li>
                             ))}

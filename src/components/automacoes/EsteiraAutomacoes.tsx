@@ -31,7 +31,7 @@ function corResp(nome: string): string {
  * divergirem na primeira mudança.
  * ------------------------------------------------------------------------- */
 export default function EsteiraAutomacoes({
-  rows, niveis, porId, onEditar, onExcluir, onDesligar, onRecarregar,
+  rows, niveis, porId, onEditar, onExcluir, onDesligar, onAlternarAtiva, onRecarregar,
 }: {
   rows: Automacao[];
   niveis: Nivel[];
@@ -39,6 +39,8 @@ export default function EsteiraAutomacoes({
   onEditar: (r: Automacao) => void;
   onExcluir: (id: string) => void;
   onDesligar: (id: string) => void;
+  /** desativar daqui tira o item da fila — quem já estava desligada nem aparece */
+  onAlternarAtiva: (r: Automacao) => void;
   onRecarregar: () => Promise<void> | void;
 }) {
   const navigate = useNavigate();
@@ -388,6 +390,7 @@ export default function EsteiraAutomacoes({
               await onRecarregar();
             }}
             onVerTarefa={() => navigate(`/tarefas?tarefa=${aberta.item.r.tarefa_id}`)}
+            onAlternarAtiva={() => onAlternarAtiva(aberta.item.r)}
             onEsteira={
               tierDe(aberta.item.r.status) === "on"
                 ? () => gravar(aberta.item.r.id, { esteira_upgrade: false, esteira_ordem: null })

@@ -9,7 +9,7 @@
  * ========================================================================== */
 import {
   type Automacao, type Nivel,
-  NIVEIS_PADRAO, bandaDe, tierDe, impactoDe, esforcoDe, temUpgrade,
+  NIVEIS_PADRAO, bandaDe, tierDe, impactoDe, esforcoDe, temUpgrade, estaAtiva,
 } from "./arvore-layout";
 
 /** "novo" = construir do zero; "upgrade" = melhorar algo que já roda. */
@@ -39,8 +39,14 @@ export const scoreEsteira = (r: Automacao) =>
  * Quem ocupa a linha: tudo que ainda não está rodando, mais as que já rodam e
  * foram postas na fila pelo upgrade delas. Automação rodando sem upgrade
  * marcado não aparece — já está pronta, não é trabalho pendente.
+ *
+ * Desativada também sai, qualquer que seja o status: a fila é o que o time vai
+ * tocar agora, e algo que foi desligado de propósito não é trabalho em curso.
+ * Ela continua inteira na árvore e no catálogo — o registro do que já foi feito
+ * é justamente o que não se perde ao desligar. Religar devolve à fila.
  */
 export function itemDe(r: Automacao): ItemEsteira | null {
+  if (!estaAtiva(r)) return null;
   const rodando = tierDe(r.status) === "on";
   if (rodando && !(r.esteira_upgrade && temUpgrade(r))) return null;
   return {

@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   montarLayout, correnteDe, destravadasPor, resumoTrilhas, alvosValidos, trilhaDe, bandaNoY,
   fiosDoTronco, caminhoSuave, temUpgrade, impactoDe, inversoesDe, LANE_W,
+  estaAtiva, foiConstruida,
   type Automacao,
 } from "./arvore-layout";
 import { iconeDe, nomeIconeDe, ICONES } from "./arvore-icones";
@@ -43,6 +44,35 @@ describe("resumoTrilhas", () => {
     expect(tr.on).toBe(2);
     expect(tr.total).toBe(3);
     expect(tr.categorias.sort()).toEqual(["Notas Fiscais", "Pagamentos & Cobrança"]);
+  });
+
+  /* A regra do placar: desativada sai do "rodando" e FICA no total. Contá-la
+     como rodando faria o cartão prometer um trabalho que não acontece mais;
+     tirá-la do total apagaria da tela que ela chegou a ser construída. */
+  it("desativada sai do rodando, fica no total e é contada à parte", () => {
+    const [tr] = resumoTrilhas([
+      auto({ id: "a", categoria: "Notas Fiscais", status: "Rodando" }),
+      auto({ id: "b", categoria: "Notas Fiscais", status: "Rodando", ativa: false }),
+    ]);
+    expect(tr.on).toBe(1);
+    expect(tr.off).toBe(1);
+    expect(tr.total).toBe(2);
+  });
+});
+
+describe("ligada ou desligada", () => {
+  it("coluna nova: ausente e nula valem ativa — linha antiga não nasce desligada", () => {
+    expect(estaAtiva(auto({ id: "a" }))).toBe(true);
+    expect(estaAtiva(auto({ id: "b", ativa: null }))).toBe(true);
+    expect(estaAtiva(auto({ id: "c", ativa: true }))).toBe(true);
+    expect(estaAtiva(auto({ id: "d", ativa: false }))).toBe(false);
+  });
+
+  it("só o que saiu do papel pode ser ligado/desligado", () => {
+    expect(foiConstruida(auto({ id: "a", status: "Rodando" }))).toBe(true);
+    expect(foiConstruida(auto({ id: "b", status: "Em teste" }))).toBe(true);
+    expect(foiConstruida(auto({ id: "c", status: "Ideias" }))).toBe(false);
+    expect(foiConstruida(auto({ id: "d", status: "A fazer" }))).toBe(false);
   });
 });
 

@@ -27,6 +27,10 @@ export type Automacao = {
   observacao: string | null;
   /** melhoria possível numa automação que já roda — acende a seta de oportunidade */
   upgrade?: string | null;
+  /** está em uso HOJE — ver `estaAtiva`. Nada a ver com `status`, que é a história */
+  ativa?: boolean | null;
+  desativada_em?: string | null;
+  desativada_motivo?: string | null;
   /** posição fixada na mão na esteira; null = a esteira ordena sozinha */
   esteira_ordem?: number | null;
   /** automação que já roda e entrou na fila pelo upgrade dela (opt-in) */
@@ -91,6 +95,29 @@ export const TIER_META: Record<Tier, { cor: string; label: string }> = {
   wip: { cor: "#fbbf24", label: "Em teste / andamento" },
   todo: { cor: "#7c8698", label: "Ideia / a fazer" },
 };
+
+/* ------------------------- ligada ou desligada -------------------------
+ * A segunda pergunta, e ela é independente do status. O status diz até onde a
+ * CONSTRUÇÃO chegou e não se reescreve — é o histórico do que já foi feito.
+ * `ativa` diz se aquilo está em uso HOJE.
+ *
+ * Coluna nova: linha antiga vem sem o campo (undefined) ou com null, e as duas
+ * valem "ativa" — o default do banco é `true`, e um registro de 2025 que ainda
+ * não foi tocado não pode aparecer desligado por acaso.
+ */
+export const estaAtiva = (r: { ativa?: boolean | null }) => r.ativa !== false;
+export const DESATIVADA_COR = "#64748b";
+
+/** Chegou a sair do papel? Só o que foi construído pode ser ligado/desligado —
+ *  "desativar uma ideia" não quer dizer nada, e a palavra perderia o sentido. */
+export const foiConstruida = (r: { status: string }) => tierDe(r.status) !== "todo";
+
+/** "desde 12/09/2026 · trocamos pelo n8n" — o que a ficha mostra abaixo do selo. */
+export function desdeQuando(r: { desativada_em?: string | null }): string | null {
+  if (!r.desativada_em) return null;
+  const d = new Date(r.desativada_em);
+  return Number.isNaN(d.getTime()) ? null : d.toLocaleDateString("pt-BR");
+}
 
 /* -------------------------- impacto & esforço --------------------------
  * As duas metades da prioridade na esteira. Mesma escala de três degraus do
@@ -400,7 +427,8 @@ export function bandaNoY(faixas: Faixa[], y: number): Faixa | null {
   return y < maisAlta.topo ? maisAlta : y > maisBaixa.base ? maisBaixa : null;
 }
 
-/** Resumo por trilha para os cartões do topo. */
+/** Resumo por trilha para os cartões do topo. O `on` conta o que está rodando
+ *  DE VERDADE hoje: desativada continua no total (é história) e sai do placar. */
 export function resumoTrilhas(rows: Automacao[]) {
   const nomes = Array.from(new Set(rows.map((r) => trilhaDe(r.categoria)))).sort((a, b) => {
     const ia = TRILHAS.findIndex((t) => t.nome === a), ib = TRILHAS.findIndex((t) => t.nome === b);
@@ -411,7 +439,8 @@ export function resumoTrilhas(rows: Automacao[]) {
     return {
       nome,
       cor: corTrilha(nome),
-      on: meus.filter((r) => tierDe(r.status) === "on").length,
+      on: meus.filter((r) => tierDe(r.status) === "on" && estaAtiva(r)).length,
+      off: meus.filter((r) => !estaAtiva(r)).length,
       total: meus.length,
       categorias: Array.from(new Set(meus.map((r) => r.categoria || "Sem categoria"))),
     };

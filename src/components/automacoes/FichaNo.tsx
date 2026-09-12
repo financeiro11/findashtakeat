@@ -1,7 +1,8 @@
 import { useLayoutEffect, useRef, useState } from "react";
-import { ArrowUp, Link2, Unlink, Pencil, Maximize2, Trash2, X, ListPlus, ListChecks, ClipboardCheck, ClipboardPlus, Loader2 } from "lucide-react";
+import { ArrowUp, Link2, Unlink, Pencil, Maximize2, Trash2, X, ListPlus, ListChecks, ClipboardCheck, ClipboardPlus, Loader2, Power, PowerOff } from "lucide-react";
 import {
   TIER_META, nomeNivel, bandaDe, horasDe, listaFerramentas, temUpgrade, impactoDe, esforcoDe,
+  estaAtiva, foiConstruida, desdeQuando, DESATIVADA_COR,
   type NoPos, type Nivel,
 } from "./arvore-layout";
 import { quadranteDe } from "./esteira";
@@ -17,7 +18,7 @@ import { canonResp, PESSOAS, AMBOS } from "@/lib/responsavel";
 export default function FichaNo({
   n, niveis, prereq, ancora, caixa,
   onEditar, onConectar, onDesligar, onSoltar, onExcluir, onFechar, onEsteira,
-  onCriarTarefa, onVerTarefa,
+  onCriarTarefa, onVerTarefa, onAlternarAtiva,
 }: {
   n: NoPos; niveis: Nivel[]; prereq: string | null;
   ancora: { x: number; y: number };   // posição do nó em coordenadas de tela
@@ -26,6 +27,8 @@ export default function FichaNo({
   onDesligar: () => void;
   onExcluir: () => void;
   onFechar: () => void;
+  /** liga/desliga a automação — quem chama pergunta o motivo e grava */
+  onAlternarAtiva?: () => void;
   /** ações da árvore — a esteira não passa, porque lá elas não teriam onde acontecer */
   onConectar?: () => void;
   onSoltar?: () => void;
@@ -42,6 +45,12 @@ export default function FichaNo({
   const esforco = esforcoDe(n.r);
   const quadrante = quadranteDe(n.r);
   const naEsteira = !!n.r.esteira_upgrade;
+
+  /* Desligada: o selo do cabeçalho passa a dizer isso, e o status vira o que
+     ela ERA quando parou — as duas informações cabem em um chip só porque a
+     segunda é a explicação da primeira ("desativada, e rodava"). */
+  const ativa = estaAtiva(n.r);
+  const desde = desdeQuando(n.r);
 
   /* "Começar a fazer isto".
      O dono já cadastrado resolve o caso comum num clique só. Quando ele é
@@ -115,12 +124,19 @@ export default function FichaNo({
       {/* cabeçalho fixo */}
       <div className="shrink-0 px-4 pb-2 pt-4">
         <div className="flex items-start justify-between gap-2">
-          <div className="text-[15px] font-bold leading-tight text-white">{n.r.automacao}</div>
+          <div className={`text-[15px] font-bold leading-tight ${ativa ? "text-white" : "text-slate-400"}`}>
+            {n.r.automacao}
+          </div>
           <span
-            className="shrink-0 rounded-full border px-2 py-0.5 text-[9px] font-bold tracking-wider"
-            style={{ color: meta.cor, borderColor: `${meta.cor}66`, background: `${meta.cor}14` }}
+            className="inline-flex shrink-0 items-center gap-1 rounded-full border px-2 py-0.5 text-[9px] font-bold tracking-wider"
+            style={
+              ativa
+                ? { color: meta.cor, borderColor: `${meta.cor}66`, background: `${meta.cor}14` }
+                : { color: DESATIVADA_COR, borderColor: `${DESATIVADA_COR}66`, background: `${DESATIVADA_COR}14` }
+            }
+            title={ativa ? undefined : `Não está em uso. Quando parou, estava em "${n.r.status}".`}
           >
-            {n.r.status.toUpperCase()}
+            {ativa ? n.r.status.toUpperCase() : <><PowerOff className="h-2.5 w-2.5" /> DESATIVADA</>}
           </span>
         </div>
         <div className="mt-1.5 font-mono text-[9.5px] leading-relaxed tracking-[0.09em] text-slate-500">
@@ -130,6 +146,27 @@ export default function FichaNo({
 
       {/* miolo rolável — é o que cresce quando o Upgrade é longo */}
       <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 pb-3">
+      {/* Primeira coisa do miolo quando está desligada: o resto da ficha
+          (impacto, horas poupadas, upgrade) descreve uma automação que hoje não
+          acontece, e ler isso sem o aviso na frente engana. */}
+      {!ativa && (
+        <div
+          className="mt-3 rounded-md px-2.5 py-2 text-[11px] leading-relaxed"
+          style={{ background: `${DESATIVADA_COR}14`, border: `1px solid ${DESATIVADA_COR}44` }}
+        >
+          <div className="font-semibold text-slate-300">
+            Não está em uso{desde ? ` desde ${desde}` : ""}
+          </div>
+          <div className="mt-0.5 text-slate-400">
+            {n.r.desativada_motivo?.trim()
+              ? n.r.desativada_motivo
+              : <span className="text-slate-500">Sem motivo anotado.</span>}
+          </div>
+          <div className="mt-1 text-[10px] text-slate-600">
+            Continua no histórico — chegou a “{n.r.status}” e não conta mais no placar.
+          </div>
+        </div>
+      )}
       {/* As duas metades da prioridade, lado a lado: é o par que decide a posição
           na esteira, então mostrar separado esconderia a leitura. */}
       <div className="mt-3 grid grid-cols-2 gap-1.5">
@@ -203,7 +240,12 @@ export default function FichaNo({
       <div className="mt-3 flex flex-wrap items-center justify-between gap-x-3 gap-y-1 border-t border-white/[0.08] pt-2.5 text-[10.5px]">
         <span className="min-w-0 truncate text-slate-500">{n.r.responsavel ? `Construída por ${n.r.responsavel}` : "Sem responsável"}</span>
         {horas > 0 && (
-          <span className="num inline-flex shrink-0 items-center gap-0.5 font-semibold text-emerald-400">
+          /* Desligada, as horas viram histórico: o número continua à vista (é o
+             que ela poupava), mas sem o verde de "isto está acontecendo". */
+          <span
+            className={`num inline-flex shrink-0 items-center gap-0.5 font-semibold ${ativa ? "text-emerald-400" : "text-slate-500 line-through"}`}
+            title={ativa ? undefined : "Não está poupando estas horas hoje — a automação está desativada"}
+          >
             <ArrowUp className="h-3 w-3" /> {horas} h/mês
           </span>
         )}
@@ -280,6 +322,24 @@ export default function FichaNo({
         {onConectar && (
           <button onClick={onConectar} className="inline-flex items-center gap-1 rounded-md border border-white/[0.12] px-2.5 py-1.5 text-[11px] font-medium text-slate-300 transition hover:bg-white/[0.07]">
             <Link2 className="h-3 w-3" /> Conectar
+          </button>
+        )}
+        {/* Liga/desliga. Só aparece no que saiu do papel: "desativar uma ideia"
+            não quer dizer nada — para engavetar ideia existe o próprio status. */}
+        {onAlternarAtiva && foiConstruida(n.r) && (
+          <button
+            onClick={onAlternarAtiva}
+            title={ativa
+              ? "Marcar que esta automação não roda mais — ela continua na árvore e no histórico"
+              : "Voltou a rodar"}
+            className="inline-flex items-center gap-1 rounded-md border px-2.5 py-1.5 text-[11px] font-medium transition"
+            style={
+              ativa
+                ? { borderColor: "rgba(255,255,255,.12)", color: "#94a3b8" }
+                : { borderColor: "#34d39955", color: "#34d399", background: "#34d3991a" }
+            }
+          >
+            {ativa ? <><PowerOff className="h-3 w-3" /> Desativar</> : <><Power className="h-3 w-3" /> Reativar</>}
           </button>
         )}
         {onSoltar && n.fixo && (

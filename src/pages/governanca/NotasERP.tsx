@@ -9,10 +9,14 @@
  * O NÚMERO PRECISA SOBREVIVER A UMA PERGUNTA. Por isso a tela é construída em
  * cima de duas coisas que não são opinião:
  *
- *   • o DENOMINADOR vem da régua (`omie_categoria_regra`), e a régua é visível e
- *     editável na última aba. Transferência entre contas próprias, folha, tributo
- *     e tarifa bancária não têm nota de fornecedor; contá-las como "faltando"
- *     derruba a cobertura por um motivo que não é problema.
+ *   • o DENOMINADOR vem da régua, e a régua é visível e editável na última aba.
+ *     Transferência entre contas próprias, folha, tributo e tarifa bancária não
+ *     têm nota de fornecedor; contá-las como "faltando" derruba a cobertura por
+ *     um motivo que não é problema. A régua tem DOIS eixos, e a CONTA vence a
+ *     CATEGORIA: `omie_categoria_regra` diz o que a rubrica exige, e
+ *     `omie_caixa_conta.exige_nota` desliga uma conta inteira (12/09/2026 —
+ *     aplicação e resgate de CDB no BTG eram R$ 406 mil de "falta nota" com 0%
+ *     de cobertura, dinheiro nosso indo para dinheiro nosso).
  *
  *   • o NUMERADOR vem de `ListarAnexo` chamado no Omie, título a título, e não
  *     do que o Hub acha que mandou. Anexo posto à mão por alguém conta; anexo que
@@ -1217,7 +1221,7 @@ export default function NotasERP() {
       {aba === "revisar" && <Revisar de={de} ate={ate} aoRevisar={carregar} />}
       {aba === "parcelas" && <Parcelas />}
       {aba === "quase" && <QuaseLa irPara={irPara} />}
-      {aba === "regua" && <Regua aoMudar={carregar} />}
+      {aba === "regua" && <Regua de={de} ate={ate} aoMudar={carregar} />}
     </div>
   );
 }
@@ -1236,6 +1240,29 @@ const TAG_MES: Record<EstadoMes, { rotulo: string; ajuda: string } | null> = {
   },
 };
 
+/**
+ * AS CONTAS QUE NÃO ENTRAM NA MEDIÇÃO, pelo nome.
+ *
+ * Existe por causa de um jeito de mentir que o quadro "Por conta de pagamento"
+ * tinha: conta dispensada simplesmente DESAPARECE da tabela (o bloco `contas` do
+ * resumo agrega só o exigível), e uma tabela que se apresenta como "por conta de
+ * pagamento" sem dizer que omite contas é uma tabela que parece completa. Uma
+ * linha de rodapé com o nome delas custa uma consulta a uma tabela de 14 linhas.
+ */
+function useContasSemNota(): string[] {
+  const [nomes, setNomes] = useState<string[]>([]);
+  useEffect(() => {
+    let vivo = true;
+    (async () => {
+      const { data } = await sb.from("omie_caixa_conta")
+        .select("nome").eq("exige_nota", false).order("nome");
+      if (vivo) setNomes(((data ?? []) as Array<{ nome: string | null }>).map((c) => c.nome ?? "").filter(Boolean));
+    })();
+    return () => { vivo = false; };
+  }, []);
+  return nomes;
+}
+
 function Panorama({ resumo, verMes }: {
   resumo: ResumoNotas | null;
   /** Clicar num mês estreita o período da tela inteira para aquele mês. */
@@ -1245,6 +1272,7 @@ function Panorama({ resumo, verMes }: {
      (59,4% × 34,6% em ago/26): o dinheiro está documentado, os documentos não.
      Quem pergunta se o controle está melhorando precisa das duas. */
   const [medida, setMedida] = useState<MedidaCobertura>("valor");
+  const semNota = useContasSemNota();
   const ev = useMemo(() => evolucaoMensal(resumo, medida), [resumo, medida]);
   const nEsteMes = (n: number) => (medida === "valor" ? brlStr(n) : `${n.toLocaleString("pt-BR")} títulos`);
 
@@ -1394,6 +1422,13 @@ function Panorama({ resumo, verMes }: {
             ))}
           </tbody>
         </table>
+        {semNota.length > 0 && (
+          <p className="border-t border-border/60 px-4 py-2.5 text-[12px] text-muted-foreground">
+            Fora da medição: <b className="text-foreground">{semNota.join(", ")}</b> — conta de
+            aplicação e de investimento move dinheiro nosso para dinheiro nosso, e não há nota de
+            fornecedor para pedir. Quem entra é decisão da aba <b className="text-foreground">Régua</b>.
+          </p>
+        )}
       </div>
     </div>
   );
@@ -3862,7 +3897,151 @@ type LinhaRegua = {
   motivo: string | null; origem: string;
 };
 
-function Regua({ aoMudar }: { aoMudar: () => void }) {
+/**
+ * O SEGUNDO EIXO DA RÉGUA: a conta de pagamento.
+ *
+ * PEDIDO DE 12/09/2026: *"Os valores do BTG e do Itaú não devem ser
+ * contabilizados para este cálculo. Nada ali é do meu interesse saber se tem
+ * nota."* Ele estava certo e o número era grande: os oito títulos exigíveis da
+ * "BTG - Conta Investimento" somavam R$ 406.018 com 0% de cobertura — o segundo
+ * maior monte de "falta nota" do Hub, atrás só da conta corrente do Sicoob —, e
+ * eram todos aplicação e resgate de CDB. Dinheiro nosso indo para dinheiro
+ * nosso; não existe nota de fornecedor para pedir. Tirá-los levou a cobertura do
+ * período de 53,6% para 58,6%, e a diferença não é cosmética: é a parte do número
+ * que não se conseguia explicar numa reunião.
+ *
+ * POR QUE AQUI E NÃO NA RÉGUA DE CATEGORIA. Daria para marcar a categoria
+ * `2.10.93` como "não exige" e o resultado de hoje seria o mesmo. Mas é a regra
+ * certa no lugar errado: aquele código não tem nome no plano de contas, e no dia
+ * em que alguém o batizar e usar numa despesa de verdade a dispensa viajaria
+ * junto, calada. O que se afirmou é sobre a CONTA — "nada ali" — e é na conta que
+ * a regra mora.
+ *
+ * CONTA VENCE CATEGORIA, e por isso a lista de baixo mostra a contagem de
+ * títulos: desligar uma conta apaga da medição tudo que passa por ela, inclusive
+ * o que a categoria exigiria. É uma decisão de fechar os olhos, e quem fecha
+ * precisa ver o tamanho do que está fechando.
+ */
+type LinhaContaRegua = {
+  ncodcc: string; banco: string | null; nome: string | null; exige_nota: boolean;
+};
+
+function ReguaDeContas({ de, ate, aoMudar }: {
+  de: string; ate: string; aoMudar: () => void;
+}) {
+  const [linhas, setLinhas] = useState<LinhaContaRegua[]>([]);
+  const [porConta, setPorConta] = useState<Record<string, number>>({});
+  const [salvando, setSalvando] = useState<string | null>(null);
+
+  const ler = useCallback(async () => {
+    const { data, error } = await sb.from("omie_caixa_conta")
+      .select("ncodcc, banco, nome, exige_nota").order("nome");
+    if (error) { toast.error(`Não deu para ler as contas: ${error.message}`); return; }
+    setLinhas((data as LinhaContaRegua[]) ?? []);
+  }, []);
+
+  useEffect(() => { void ler(); }, [ler]);
+
+  /* A contagem sai das MESMAS facetas da aba Títulos, que contam o período
+     inteiro incluindo o que está dispensado — é justamente o dispensado que
+     precisa aparecer aqui, senão a conta desligada some da tela que decide
+     desligá-la. */
+  useEffect(() => {
+    let vivo = true;
+    (async () => {
+      const { data } = await sb.rpc("cap_notas_facetas", { p_de: de, p_ate: ate });
+      if (!vivo) return;
+      const mapa: Record<string, number> = {};
+      for (const c of ((data as FacetasNotas | null)?.contas ?? [])) mapa[c.valor] = c.titulos;
+      setPorConta(mapa);
+    })();
+    return () => { vivo = false; };
+  }, [de, ate]);
+
+  const trocar = async (ncodcc: string, exige: boolean) => {
+    setSalvando(ncodcc);
+    const { error } = await sb.from("omie_caixa_conta")
+      .update({ exige_nota: exige, atualizado_em: new Date().toISOString() })
+      .eq("ncodcc", ncodcc);
+    setSalvando(null);
+    if (error) { toast.error(`Não deu para salvar: ${error.message}`); return; }
+    setLinhas((l) => l.map((x) => (x.ncodcc === ncodcc ? { ...x, exige_nota: exige } : x)));
+    toast.success(
+      exige
+        ? "Conta de volta à medição — a cobertura já reflete isso."
+        : "Conta fora da medição. Os títulos dela viram “Não exige” e a varredura para de perguntar ao Omie por eles.",
+    );
+    aoMudar();
+  };
+
+  return (
+    <div className="space-y-3">
+      <div className="card-surface p-4">
+        <h3 className="flex items-center gap-1.5 text-sm font-semibold">
+          <CreditCard className="h-4 w-4" /> Quais contas entram na medição
+        </h3>
+        <p className="mt-0.5 max-w-3xl text-[12.5px] text-muted-foreground">
+          Conta de aplicação e de investimento move dinheiro nosso para dinheiro nosso — não há nota de
+          fornecedor para pedir, e cobrá-la derruba a cobertura por um motivo que não é problema.
+          Desligar uma conta <b>vence a categoria</b>: todo título pago por ela passa a contar como
+          “Não exige”, sai dos dois lados da cobertura e a varredura para de gastar chamada ao Omie
+          perguntando por ele. Os títulos continuam na aba Títulos, pelo recorte “Não exige”.
+        </p>
+      </div>
+
+      <div className="card-surface overflow-x-auto p-0">
+        <table className="w-full text-[13px]">
+          <thead>
+            <tr className="border-b border-border text-left text-[11px] uppercase tracking-wide text-muted-foreground">
+              <th className="px-4 py-2 font-medium">Conta</th>
+              <th className="px-3 py-2 text-right font-medium">Títulos no período</th>
+              <th className="px-4 py-2 font-medium">Exige nota?</th>
+            </tr>
+          </thead>
+          <tbody>
+            {linhas.map((c) => (
+              <tr key={c.ncodcc} className="border-b border-border/60 last:border-0">
+                <td className="px-4 py-2">
+                  <span className="block">{c.nome ?? "(sem nome)"}</span>
+                  <span className="block font-mono text-[11px] text-muted-foreground">
+                    {c.banco ? `banco ${c.banco} · ` : ""}{c.ncodcc}
+                  </span>
+                </td>
+                <td className="px-3 py-2 text-right tabular-nums text-muted-foreground">
+                  {porConta[c.ncodcc]?.toLocaleString("pt-BR") ?? "—"}
+                </td>
+                <td className="px-4 py-2">
+                  <span className="flex gap-1">
+                    {([true, false] as const).map((v) => (
+                      <button
+                        key={String(v)}
+                        disabled={salvando === c.ncodcc}
+                        onClick={() => trocar(c.ncodcc, v)}
+                        className={cn(
+                          "rounded border px-1.5 py-0.5 text-[11px] transition",
+                          c.exige_nota === v
+                            ? v ? TOM.falta : TOM.fora
+                            : "border-border text-muted-foreground hover:bg-muted",
+                        )}
+                        title={v
+                          ? "Os títulos desta conta entram na cobertura e viram cobrança quando falta nota."
+                          : "Fora dos dois lados da conta — nem cobertos, nem faltando. Para conta de aplicação e investimento."}
+                      >
+                        {v ? "Exige nota" : "Não exige"}
+                      </button>
+                    ))}
+                  </span>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+function Regua({ de, ate, aoMudar }: { de: string; ate: string; aoMudar: () => void }) {
   const [linhas, setLinhas] = useState<LinhaRegua[]>([]);
   const [busca, setBusca] = useState("");
   const [salvando, setSalvando] = useState<string | null>(null);
@@ -3896,7 +4075,13 @@ function Regua({ aoMudar }: { aoMudar: () => void }) {
   }, [linhas, busca]);
 
   return (
+    /* Os dois eixos na mesma aba, contas primeiro: desligar uma conta apaga da
+       medição tudo que passa por ela, inclusive o que a categoria exigiria — é a
+       decisão mais larga das duas, e quem chega aqui procurando "por que este
+       título não conta" precisa topar com ela antes de varrer 300 categorias. */
     <div className="space-y-3">
+      <ReguaDeContas de={de} ate={ate} aoMudar={aoMudar} />
+
       <div className="card-surface p-4">
         <h3 className="flex items-center gap-1.5 text-sm font-semibold"><Scale className="h-4 w-4" /> O que exige nota</h3>
         <p className="mt-0.5 max-w-3xl text-[12.5px] text-muted-foreground">

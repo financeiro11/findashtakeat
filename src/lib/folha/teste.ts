@@ -16,6 +16,16 @@ export type Candidato = {
   cnpj: string;
   /** Fornecedor, categoria e departamento resolvidos no Omie. */
   pronto: boolean;
+  /**
+   * Não está pronto, mas o que falta é o CADASTRO do fornecedor — e o envio
+   * tenta isso sozinho (degrau de cadastro em `folha-omie-enviar`, 12/09/2026).
+   * Quem é tentável vai na chamada; quem não é fica de fora, porque mandá-lo só
+   * gasta uma consulta ao Omie para receber a mesma recusa.
+   *
+   * Opcional para não quebrar quem monta `Candidato` sem saber disto — ausente
+   * vale `false`, que é o comportamento de antes.
+   */
+  tentavel?: boolean;
   /** Já existe como título no Omie? Separa "criar" de "corrigir". */
   noOmie?: boolean;
 };

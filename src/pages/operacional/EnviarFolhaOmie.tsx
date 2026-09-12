@@ -52,6 +52,17 @@ type Resposta = {
   /** Só de `corrigir`. */
   corrigidos?: number;
   ausentes?: number;
+  /**
+   * O degrau de cadastro do fornecedor (12/09/2026). `destravados` é quem entrou
+   * na folha por causa dele, e `ja_existiam` é o caso barato: o cadastro estava
+   * no ERP e era o cache de clientes do Hub que não sabia.
+   */
+  cadastro_de_fornecedor?: {
+    criados: number; pix_gravado: number; ja_existiam: number;
+    bloqueados: number; destravados: number; com_erro: number;
+    interrompido: string | null;
+    resultados: { codigo: string; nome: string; acao: string; motivo?: string; erro?: string }[];
+  } | null;
 };
 
 export default function EnviarFolhaOmie({
@@ -75,7 +86,10 @@ export default function EnviarFolhaOmie({
      desligar a trava — é mandar quem está pronto e deixar o resto pendente.
      Uma pessoa com cadastro errado não pode segurar a folha de outras cem. */
   const prontos = candidatos.filter((c) => c.pronto);
-  const pendentes = candidatos.length - prontos.length;
+  /* Quem fica de fora DE VERDADE: nem pronto, nem destravável pelo degrau de
+     cadastro. Contar os tentáveis aqui faria a tela anunciar como abandonada
+     gente que o envio está justamente indo cadastrar. */
+  const pendentes = candidatos.filter((c) => !c.pronto && !c.tentavel).length;
   const parcial = !!recusa && prontos.length > 0 && pendentes > 0;
 
   /* Quem FALTA criar, e quem já está lá.
@@ -85,7 +99,15 @@ export default function EnviarFolhaOmie({
    * ninguém enxergava. Agora criar mira quem falta e corrigir mira quem subiu
    * — que é o que faz esta tela servir em qualquer mês, e não só num que
    * começou vazio. */
-  const faltamCriar = prontos.filter((c) => !c.noOmie);
+  /* QUEM O BOTÃO MANDA passou a ser mais que "os prontos", em 12/09/2026.
+   *
+   * O envio ganhou um degrau que tenta cadastrar o fornecedor que falta no Omie
+   * (ver `faltaEhDeCadastro`), e o degrau só pode destravar quem chega até ele.
+   * Enquanto a tela mandasse só os prontos, o degrau era código morto: a pessoa
+   * sem fornecedor era filtrada AQUI, antes da chamada, e continuava esperando
+   * alguém abrir o ERP — que é exatamente o trabalho manual que ele apaga. */
+  const tentaveis = candidatos.filter((c) => !c.noOmie && !c.pronto && c.tentavel);
+  const faltamCriar = candidatos.filter((c) => !c.noOmie && (c.pronto || c.tentavel));
   const jaNoOmie = candidatos.filter((c) => c.noOmie);
 
   /* `invocar` desembrulha o corpo do erro. Sem ele, qualquer recusa do Omie
@@ -234,6 +256,7 @@ export default function EnviarFolhaOmie({
       const todosRuins: Resultado[] = [];
       const todasChaves: string[] = [];
       let ultimo: Resposta | null = null;
+      const todosCadastros = { criados: 0, pixGravado: 0, jaExistiam: 0 };
 
       for (let rodada = 0; rodada < MAX_RODADAS; rodada++) {
         const r: Resposta = await chamar(pendentesCodigos
@@ -243,6 +266,11 @@ export default function EnviarFolhaOmie({
         totalCriados += r.titulos ?? 0;
         todosRuins.push(...(r.resultados ?? []).filter((x) => !x.criado));
         todasChaves.push(...(r.integracoes ?? []));
+        if (r.cadastro_de_fornecedor) {
+          todosCadastros.criados += r.cadastro_de_fornecedor.criados;
+          todosCadastros.pixGravado += r.cadastro_de_fornecedor.pix_gravado;
+          todosCadastros.jaExistiam += r.cadastro_de_fornecedor.ja_existiam;
+        }
 
         const faltam = r.restantes_codigos ?? [];
         if (!faltam.length) break;
@@ -260,6 +288,27 @@ export default function EnviarFolhaOmie({
 
       const bloqueio = ultimo?.interrompido?.motivo === "bloqueio";
       const faltaram = ultimo?.restantes_codigos?.length ?? 0;
+
+      /* O QUE O DEGRAU DE CADASTRO FEZ, dito à parte dos títulos.
+       *
+       * Some das rodadas seguintes por construção — a primeira já destrava ou
+       * bloqueia cada pessoa —, então soma-se o de todas em vez de ler só o
+       * último. E é um toast separado de propósito: "criei 4 fornecedores no
+       * Omie" é escrita em cadastro de terceiro, não um detalhe de progresso. */
+      const cad = todosCadastros;
+      if (cad.criados || cad.pixGravado) {
+        toast.info(
+          [
+            cad.criados ? `${cad.criados} fornecedor(es) criados no Omie` : "",
+            cad.pixGravado ? `${cad.pixGravado} com a chave PIX gravada` : "",
+          ].filter(Boolean).join(" · "),
+          {
+            description: "Eram pessoas que ficariam de fora esperando alguém abrir o ERP. "
+              + "Confira o cadastro no Omie quando puder.",
+            duration: 10_000,
+          },
+        );
+      }
       if (bloqueio) {
         const min = Math.ceil((ultimo?.interrompido?.segundos ?? 0) / 60);
         toast.error(`${totalCriados} criados — o Omie bloqueou a API por consumo`, {
@@ -411,7 +460,14 @@ export default function EnviarFolhaOmie({
               ? `${pendentes} pessoa(s) com cadastro incompleto ficam de fora — o resto vai.`
               : recusa
                 ? "Resolva o que está acima para liberar."
-                : "Lote em ordem. Nada é criado até você clicar."}
+                : tentaveis.length > 0
+                  /* Dito antes do clique porque é escrita em cadastro de
+                     terceiro no ERP, e quem clica tem de saber que ela vai
+                     acontecer — mesmo sendo o degrau que tira a pessoa da fila
+                     manual. */
+                  ? `Lote em ordem. ${tentaveis.length} sem fornecedor no Omie: o envio tenta `
+                    + "cadastrar antes de pular."
+                  : "Lote em ordem. Nada é criado até você clicar."}
         </p>
         <div className="flex gap-2">
           {/* Discreto de propósito: apagar a folha inteira não é operação de

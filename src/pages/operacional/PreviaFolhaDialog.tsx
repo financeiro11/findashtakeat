@@ -26,7 +26,7 @@ import { toast } from "sonner";
 import AjustarSalarioDialog, { type AlvoDoAjuste } from "./AjustarSalarioDialog";
 import EnviarFolhaOmie from "./EnviarFolhaOmie";
 import { cn } from "@/lib/utils";
-import { bloqueioDaFolha, type ItemDaFolha } from "../../../supabase/functions/_shared/folha-envio";
+import { bloqueioDaFolha, faltaEhDeCadastro, type ItemDaFolha } from "../../../supabase/functions/_shared/folha-envio";
 
 const BRL = (n: number) =>
   n.toLocaleString("pt-BR", { style: "currency", currency: "BRL", minimumFractionDigits: 2 });
@@ -623,6 +623,16 @@ export default function PreviaFolhaDialog({
                    A chave entra porque sem ela o título é recusado um a um, e
                    com a chave errada ele trava o pagamento do lote inteiro. */
                 pronto: !!l.codigoFornecedor && !!l.codigoCategoria && !l.chavePixBloqueio,
+                /* TENTÁVEL É DIFERENTE DE PRONTO, e a diferença é quem faz o
+                   trabalho. Desde 12/09/2026 o envio tem um degrau que tenta
+                   cadastrar o fornecedor que falta (ver `faltaEhDeCadastro` e o
+                   degrau em `folha-omie-enviar`). Sem esta linha o degrau seria
+                   código morto: a tela nunca manda quem não está "pronto", e o
+                   servidor só pode destravar quem chega até ele.
+                   A categoria continua exigida — essa vem do de-para e o envio
+                   não a inventa. */
+                tentavel: !!l.codigoCategoria
+                  && (!l.codigoFornecedor || faltaEhDeCadastro(l.chavePixBloqueio)),
                 /* Quem já está no ERP não é candidato a criar — é candidato a
                    corrigir. Sem esta separação o botão "provisionar" reenviava
                    cem títulos para colher cem recusas por duplicidade. */

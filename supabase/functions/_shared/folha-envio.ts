@@ -621,10 +621,26 @@ export function pendenciasDoLote(itens: PendenciaDoItem[]): string | null {
       + "Sem CNPJ ou CPF válido não há fornecedor no Omie.";
   }
 
+  /* "CADASTRE O CNPJ NO OMIE" SAIU DAQUI EM 12/09/2026.
+   *
+   * Era um pré-requisito devolvido a uma pessoa, e a peça que o cumpre já
+   * existia: `_shared/colaborador-omie.ts` decide e a `omie-colaboradores-
+   * cadastrar` a usa pela tela do DH. Desde 12/09 o próprio "Enviar folha"
+   * tenta o cadastro antes de desistir da pessoa (ver o degrau de cadastro em
+   * `folha-omie-enviar`), e os três desfechos dele resolvem a maioria: criar o
+   * fornecedor, gravar a chave PIX que falta, ou simplesmente descobrir que o
+   * cadastro já existia e era o cache de clientes que estava velho.
+   *
+   * A frase continua existindo porque a PRÉVIA a mostra antes de qualquer
+   * clique, e ali ela é informação verdadeira: hoje não há fornecedor. O que
+   * mudou é o que ela manda fazer — clicar, não abrir o ERP. Só o que o módulo
+   * bloqueia (desligado, CPF de quem não é estagiário, PIX divergente) volta a
+   * ser trabalho de gente, e aí com o motivo no lugar do sintoma. */
   const semFornecedor = itens.filter((i) => !i.codigoFornecedor).length;
   if (semFornecedor) {
     return `${semFornecedor} colaborador(es) sem fornecedor correspondente no Omie. `
-      + "Cadastre o CNPJ no Omie (ou corrija no RH) antes de enviar.";
+      + "O envio tenta cadastrar sozinho antes de pular a pessoa — se sobrar, "
+      + "ele diz o motivo (desligado, documento errado, PIX divergente do RH).";
   }
 
   const semCategoria = itens.filter((i) => !String(i.codigoCategoria ?? "").trim()).length;
@@ -710,10 +726,24 @@ export const FINALIDADE_PIX_FOLHA = "01.3";
  * campo, porque a folha não pode esperar por isso.
  *
  * O QUE ISSO CUSTA, para ficar escrito: os títulos nascem sem centro de custo,
- * e a distribuição por área precisa ser feita no Omie depois — ou por outra
- * chamada, quando alguém achar o nome certo do campo. O departamento continua
- * no de-para e na prévia (é dele que sai a folha por área na faixa), então
- * quando o campo aparecer é só voltar a montá-lo aqui.
+ * e a distribuição por área precisa ser feita no Omie depois. O departamento
+ * continua no de-para e na prévia (é dele que sai a folha por área na faixa),
+ * então quando o campo aparecer é só voltar a montá-lo aqui.
+ *
+ * "QUANDO ALGUÉM ACHAR O NOME CERTO" DEIXOU DE SER ESPERA EM 12/09/2026.
+ * `folha-omie-enviar` ganhou a ação `sondar_departamento`, que pergunta ao
+ * próprio Omie por dois caminhos: lê um título de folha lançado PELA PLANILHA
+ * (esses têm o campo preenchido, e `ConsultarContaPagar` devolve o nome real da
+ * tag e dos campos dos itens) e, como segunda opinião, testa candidatos contra
+ * a crítica de estrutura, com um nome-controle para provar que a sonda
+ * discrimina. É a mesma técnica do `sondarMetodos` da `omie-nfse-sync`.
+ *
+ * QUANDO A SONDA RESPONDER, o conserto é aqui: acrescentar a tag ao retorno de
+ * `montarTituloFolha`, com a data da medição e o título de onde ela foi lida —
+ * `codigoDepartamento` já vem resolvido no `TituloDaFolha` e a prévia já o
+ * mostra. Não invente o nome a partir da lista de candidatos da sonda: escreva
+ * o que ela LEU. Foi adivinhar formato de campo em escrita fiscal que prendeu
+ * 158 notas por semanas (ver `payloadOmie` na `omie-clientes-criar`).
  */
 
 /**
@@ -1004,4 +1034,32 @@ export function chaveDoTitulo(args: {
   }
 
   return { chave };
+}
+
+/**
+ * ESTA PENDÊNCIA O ENVIO RESOLVE SOZINHO — não mande ninguém ao ERP por ela.
+ *
+ * Mora aqui, e não na Edge Function, porque tem DOIS leitores que precisam
+ * concordar: o degrau de cadastro da `folha-omie-enviar`, que age sobre ela, e
+ * a prévia, que decide quem o botão manda. Em lugares separados eles divergem
+ * na primeira frase nova — e a divergência tem um lado ruim silencioso: a tela
+ * deixa de mandar quem o servidor saberia destravar, e o degrau vira código
+ * morto sem que nada quebre.
+ *
+ * As três frases vêm de dois lugares: `"fornecedor no Omie"` é da montagem do
+ * título, as outras duas são de `chaveDoTitulo`, logo acima. Casar por texto é
+ * feio; o que segura é o teste em `provisionar.test.ts`, que compara com as
+ * frases de verdade em vez de com uma cópia delas.
+ *
+ * O QUE NÃO ENTRA: categoria (vem do de-para, o envio não a inventa), documento
+ * inválido, e a chave do cadastro que existe e não serve (CPF de quem não é
+ * estagiário, chave de terceiro, telefone sem +55). Nesses o envio não tem o
+ * que fazer, e mandar a pessoa só gasta uma consulta ao Omie para recusá-la.
+ */
+export function faltaEhDeCadastro(falta: string | null | undefined): boolean {
+  const f = String(falta ?? "");
+  if (!f) return false;
+  return f === "fornecedor no Omie"
+    || /n[ãa]o tem fornecedor cadastrado no Omie/i.test(f)
+    || /sem chave PIX/i.test(f);
 }

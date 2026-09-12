@@ -1689,6 +1689,157 @@ Deno.serve(async (req) => {
       return json({ status: "ok", clientes: saida });
     }
 
+    /* ------------------------------- garantir ------------------------------ */
+    /**
+     * O CADASTRO QUE FALTA, CRIADO AGORA, PARA ESTAS COBRANÇAS.
+     *
+     * POR QUE NÃO DAVA PARA USAR A `criar`. Ela serve a fila
+     * (`omie_clientes_a_criar`), que é construída a partir de
+     * `notas_fiscais_auditoria(...)->'clientes'` — e essa não enxerga cobrança
+     * PENDENTE. Quem só tem cobrança pendente nunca entra na fila, então
+     * `criar` com `docs: [...]` filtra uma lista que não o contém e devolve
+     * "nada a fazer". É exatamente o caso do parceiro de comissão de indicação:
+     * ele nunca foi cliente, só nos deve uma comissão, e a nota dele sai ANTES
+     * do pagamento — a única cobrança que ele tem é pendente.
+     *
+     * O SINTOMA ERA UM BECO SEM SAÍDA. Liberar → marcar → emitir → "Cliente sem
+     * cadastro no Omie", com o botão de cadastrar ausente da tela porque a aba
+     * Auditoria também bebe da mesma fila. Erro no fim de um fluxo de quatro
+     * passos, e sem lugar para resolver.
+     *
+     * ENTÃO A ENTRADA AQUI É A COBRANÇA, não a fila: `clientesTravados` resolve
+     * cobrança → cliente do Asaas → documento → cadastro do Omie sem perguntar
+     * nada à auditoria. O resto é o MESMO caminho da `criar`, helper por helper
+     * (`montarCadastro` → `payloadOmie` → `IncluirCliente` → `omie_clientes_criados`
+     * → `apendarNoEspelho`) — não há uma segunda régua de cadastro aqui, e é de
+     * propósito: duas réguas divergem no primeiro conserto que alguém esquecer
+     * de repetir.
+     *
+     * A CORRENTE FECHA DENTRO DO CLIQUE. `apendarNoEspelho` escreve em
+     * `omie_cache`/"clientes", e o gatilho `omie_clientes_doc_do_cache` refaz
+     * `omie_clientes_doc` na mesma transação — que é a tabela onde
+     * `notas_fiscais_candidatas` procura o `n_cod_cli`. Quem chamar a emissão
+     * logo depois já encontra o cadastro. Sem esse gatilho, cadastrar hoje
+     * emitiria só depois da leitura semanal do cadastro do Omie.
+     *
+     * O QUE ELE DEVOLVE QUANDO NÃO DÁ é a parte que importa para a tela: além do
+     * `bloqueio`, vai `tentado[]` — as fontes que foram consultadas antes de
+     * desistir. Quem lê precisa saber que a Receita e o CEP já foram perguntados,
+     * senão "não deu" se lê como "ninguém tentou".
+     */
+    if (action === "garantir") {
+      const ids: string[] = (Array.isArray(body?.ids) ? body.ids : body?.id ? [String(body.id)] : [])
+        .map(String).filter(Boolean);
+      if (!ids.length) return json({ status: "erro", erro: "Informe { ids: [\"pay_…\"] } ou { id }." }, 400);
+
+      const clientes = await clientesTravados(supabase, ids.slice(0, 20));
+      if (!clientes.length) {
+        return json({ status: "erro", erro: "Nenhuma das cobranças informadas tem cliente com CNPJ/CPF no espelho do Asaas." }, 400);
+      }
+
+      /* O RELÓGIO, pelo mesmo motivo de `prepararCadastros`: cada cadastro custa
+         entre 2s (tudo respondendo) e 40s (BrasilAPI recusando e o plano B por
+         raspagem entrando), e o gateway corta em 150s. Quem não couber volta
+         como `nao_tentado` — sem ter sido tocado, para a tela poder repetir. */
+      const inicio = Date.now();
+      const PRAZO = 105_000;
+      fimDaLeva = inicio + PRAZO;
+
+      const saida: any[] = [];
+      const novosNoEspelho: { codigo: string; nome: string; cnpj_cpf: string }[] = [];
+      const origem = ehCron ? "cron" : "tela";
+
+      for (const c of clientes) {
+        const base = { doc: c.doc, nome: c.nome, id_customer: c.id_customer };
+
+        // Já tinha: é a resposta mais comum e não é trabalho nenhum.
+        if (c.n_cod_cli) { saida.push({ ...base, situacao: "ja_tinha", n_cod_cli: c.n_cod_cli }); continue; }
+
+        if (Date.now() - inicio > PRAZO) {
+          saida.push({ ...base, situacao: "nao_tentado", motivo: "A chamada acabou antes da vez deste. Nada foi tocado — repita." });
+          continue;
+        }
+
+        const registrar = async (situacao: string, motivo: string | null, extras: Record<string, unknown> = {}) => {
+          await supabase.from("omie_clientes_criados").upsert({
+            doc: c.doc, id_asaas: c.id_customer, nome: c.nome,
+            situacao, motivo, origem,
+            atualizado_em: new Date().toISOString(),
+            ...extras,
+          }, { onConflict: "doc" });
+        };
+
+        const { cadastro, bloqueio } = await montarCadastro(filaDoCliente(c.id_customer, c.doc, c._dados));
+        if (!cadastro) {
+          await registrar("bloqueado", bloqueio ?? "endereco_incompleto");
+          saida.push({
+            ...base, situacao: "bloqueado", motivo: bloqueio ?? "endereco_incompleto",
+            /* O que já foi perguntado, para a tela não mandar a pessoa "tentar de
+               novo" aquilo que a máquina acabou de tentar. */
+            tentado: ["Receita Federal (CNPJ)", "Correios (CEP)", "cadastro do Asaas"],
+            asaas: c.asaas,
+          });
+          await dorme(400);
+          continue;
+        }
+
+        const payload = payloadOmie(filaDoCliente(c.id_customer, c.doc, c._dados), cadastro);
+        try {
+          const r = await omieCall("geral/clientes", "IncluirCliente", payload);
+          const codigo = Number(r?.codigo_cliente_omie ?? 0);
+          await registrar("criado", null, {
+            n_cod_cli: codigo || null,
+            fonte_endereco: cadastro.fonte,
+            payload: { ...payload, situacao_receita: cadastro.situacao_receita ?? null },
+          });
+          if (codigo) {
+            novosNoEspelho.push({
+              codigo: String(codigo),
+              nome: String(payload.nome_fantasia ?? payload.razao_social),
+              cnpj_cpf: c.doc,
+            });
+          }
+          saida.push({ ...base, situacao: "criado", n_cod_cli: codigo || null, fonte_endereco: cadastro.fonte });
+        } catch (e) {
+          const msg = e instanceof Error ? e.message : String(e);
+          if (ehDocumentoRepetido(msg)) {
+            // O cadastro existe — o espelho é que estava velho. Boa notícia.
+            const codigo = codigoNaRecusa(msg);
+            await registrar("ja_existia", msg.slice(0, 400), {
+              n_cod_cli: codigo && String(codigo) !== c.doc ? codigo : null,
+            });
+            if (codigo && String(codigo) !== c.doc) {
+              novosNoEspelho.push({ codigo: String(codigo), nome: limpo(c.nome), cnpj_cpf: c.doc });
+            }
+            saida.push({ ...base, situacao: "ja_existia", n_cod_cli: codigo ?? null });
+          } else {
+            await registrar("falhou", msg.slice(0, 400), { fonte_endereco: cadastro.fonte, payload });
+            saida.push({ ...base, situacao: "falhou", motivo: msg.slice(0, 400) });
+          }
+        }
+        // O Omie tranca por MÉTODO: duas IncluirCliente coladas viram "consumo
+        // redundante" e queimam as retentativas do backoff sem necessidade.
+        await dorme(400);
+      }
+
+      // É esta escrita que o gatilho converte em `omie_clientes_doc` — sem ela a
+      // emissão logo abaixo continuaria sem enxergar o cadastro recém-criado.
+      await apendarNoEspelho(supabase, novosNoEspelho);
+
+      const conta = (s: string) => saida.filter((r) => r.situacao === s).length;
+      return json({
+        status: "ok",
+        ja_tinham: conta("ja_tinha") + conta("ja_existia"),
+        criados: conta("criado"),
+        bloqueados: conta("bloqueado"),
+        falhas: conta("falhou"),
+        nao_tentados: conta("nao_tentado"),
+        // Quem pode emitir agora: a tela usa isto para decidir se segue.
+        prontos: saida.filter((r) => ["ja_tinha", "criado", "ja_existia"].includes(r.situacao)).length,
+        resultados: saida,
+      });
+    }
+
     /* --------------------------- corrigir_cadastro ------------------------- */
     /* A escrita. Um cliente por chamada, nomeado, com os alvos explícitos. */
     if (action === "corrigir_cadastro") {

@@ -57,6 +57,7 @@ import {
   LiberarAntesDoPagamento, ListaAntesDoPagamento, lerAntesDoPagamento, ICONE_TIPO,
   type EntradaAntesDoPagamento, type CobrancaParaLiberar,
 } from "@/components/notas/AntesDoPagamento";
+import { EmitirAgora } from "@/components/notas/EmitirAgora";
 
 const dorme = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -167,6 +168,11 @@ export default function NotasFiscais() {
    * documento porque o diálogo mostra a cobrança na mesa — sem ela, ele pediria
    * uma decisão fiscal sobre um CNPJ solto. */
   const [liberando, setLiberando] = useState<CobrancaParaLiberar | null>(null);
+  /* AS COBRANÇAS QUE ESTÃO SAINDO AGORA — a corrente inteira, com passos à vista.
+   * `null` = ninguém emitindo. Ver `EmitirAgora`: é ele que cadastra o tomador
+   * que falta, dispara o lote, espera a prefeitura e grava o número, em vez de
+   * devolver um erro por pré-requisito. */
+  const [emitindoAgora, setEmitindoAgora] = useState<string[] | null>(null);
   /* O TEXTO QUE VAI DENTRO DA NOTA, e ele nasce vazio a cada emissão.
    *
    * Mesmo raciocínio da chave da avulsa: observação é do ATO. Lembrar a de
@@ -319,9 +325,17 @@ export default function NotasFiscais() {
    * meio de 3.600 seria cobrar duas vezes o mesmo trabalho. A nota ainda não sai:
    * o que fica na tela é a barra do lote, com o aviso e o botão de emitir.
    */
-  const aposLiberar = async (_doc: string, idAsaas: string) => {
+  const aposLiberar = async (_doc: string, idAsaas: string, emitirAgora: boolean) => {
     await carregar();
     setSel(new Set([idAsaas]));
+    /* "Liberar e emitir agora" não volta para a tela pedindo mais um clique: a
+     * pessoa já disse o que queria quando escreveu o motivo. A confirmação de
+     * escrita fiscal não é pulada — ela está DENTRO do diálogo que acabou de ser
+     * respondido (o raio da liberação, o que a régua alcança, o que não sai
+     * sozinho). Repetir um `window.confirm` aqui seria pedir a mesma autorização
+     * duas vezes em dez segundos, que é como se ensina alguém a clicar em OK sem
+     * ler. */
+    if (emitirAgora) setEmitindoAgora([idAsaas]);
   };
 
   const alternar = (id: string) => {
@@ -388,71 +402,26 @@ export default function NotasFiscais() {
       `Nota emitida não se apaga — cancela-se, com prazo e justificativa.`;
     if (!window.confirm(aviso)) return;
 
-    setEmitindo(true);
-    try {
-      const { data, error } = await sb.functions.invoke("omie-nfse-sync", {
-        // `avulsa` viaja no corpo e não é lido de configuração nenhuma: é a
-        // decisão desta chamada, e o servidor confere a régua de novo do lado de
-        // lá (ver `bloqueioDeEmissao` na edge function). A tela explica; ela não
-        // é a guarda.
-        // `antes_pagamento` NÃO viaja: o servidor o resolve sozinho contra a
-        // lista, e é por isso que ele não é uma chave que a tela possa ligar.
-        body: { action: "emitir", ids, avulsa, observacao: observacao.trim() || null },
-      });
-      if (error) throw error;
-      if (data?.erro) throw new Error(data.erro);
-
-      /* Três desfechos, três avisos. "Em processamento" é o que mais importa
-       * separar: o faturamento do Omie é assíncrono e a nota costuma nascer
-       * minutos depois do disparo. Chamar isso de falha faz o operador mandar
-       * emitir de novo — e a segunda nota da mesma cobrança não se apaga. */
-      const emProcesso = (data.resultados ?? []).filter((r: any) => r.em_processamento);
-      const barradas = (data.resultados ?? []).filter((r: any) => r.bloqueado);
-      const falhas = (data.resultados ?? []).filter((r: any) => !r.ok && !r.em_processamento && !r.bloqueado);
-      const jaEmitidas = (data.resultados ?? []).filter((r: any) => r.ja_emitida);
-
-      if (data.emitidas) toast.success(`${data.emitidas} nota(s) emitida(s) no Omie.`);
-      if (jaEmitidas.length) {
-        toast.info(`${jaEmitidas.length} já tinha(m) nota.`, {
-          description: jaEmitidas.slice(0, 3).map((r: any) => r.aviso).join(" · "),
-          duration: 10000,
-        });
-      }
-      if (emProcesso.length) {
-        toast.warning(`${emProcesso.length} ainda no forno do Omie.`, {
-          description: `${emProcesso.slice(0, 2).map((r: any) => r.erro).join(" · ")} Atualize em alguns minutos — não emita de novo.`,
-          duration: 15000,
-        });
-      }
-      /* Barrada não é falha, e misturar as duas mandaria o operador tentar de
-       * novo o que nunca vai passar. A conferência da porta lê o Asaas no
-       * instante da emissão: se ela barrou, a cobrança foi estornada ou o
-       * dinheiro ainda não entrou — e o espelho da tela pode estar mostrando o
-       * estado de ontem, por isso o recarregamento abaixo. */
-      if (barradas.length) {
-        toast.warning(`${barradas.length} barrada(s) na conferência com o Asaas.`, {
-          description: `${barradas.slice(0, 3).map((b: any) => b.erro).join(" · ")} Nada foi mandado ao Omie.`,
-          duration: 15000,
-        });
-      }
-      if (falhas.length) {
-        toast.error(`${falhas.length} não saíram.`, {
-          description: falhas.slice(0, 3).map((f: any) => f.erro).join(" · "),
-          duration: 12000,
-        });
-      }
-      if (data.nao_tentadas?.length) {
-        toast.info(`${data.nao_tentadas.length} não couberam nesta chamada.`, {
-          description: "Cada emissão espera o Omie faturar (~2 min) e a função tem 150s. Estas não foram tocadas — mande de novo.",
-          duration: 15000,
-        });
-      }
-      await carregar();
-    } catch (e: any) {
-      toast.error("Falha na emissão.", { description: e?.message });
-    } finally {
-      setEmitindo(false);
-    }
+    /* DAQUI PARA A FRENTE QUEM CONDUZ É O `EmitirAgora`, e a mudança é de
+     * natureza, não de embalagem (11/09/2026).
+     *
+     * Antes, este botão fazia UMA chamada e traduzia a resposta em cinco toasts.
+     * Funcionava para o caso feliz e falhava mal em todos os outros: cada
+     * pré-requisito aparecia como um toast vermelho mandando a pessoa resolver
+     * noutro lugar — "Cliente sem cadastro no Omie" (sem botão para cadastrar),
+     * "o lote N ainda está em processamento" (que é ESPERA, não falha), "teto do
+     * dia atingido", "a emissão está desligada". Quatro paredes, nenhuma delas o
+     * fim do trabalho.
+     *
+     * O pedido do Henrique foi explícito: se ele mandou emitir, o Hub faz o que
+     * for preciso — inclusive cadastrar o tomador — e só o chama quando sobra
+     * decisão humana de verdade. O `EmitirAgora` é essa corrente: cadastro →
+     * OS + faturamento → espera pela prefeitura → número gravado aqui dentro.
+     *
+     * A CONFIRMAÇÃO ACIMA FICA, e fica antes: ela é a única coisa nesta tela que
+     * fala de uma escrita fiscal irreversível, e não pode virar um passo de uma
+     * barra de progresso que já está rodando. */
+    setEmitindoAgora(ids);
   };
 
   /* --------------------------- refazer a nota ---------------------------- */
@@ -1532,6 +1501,20 @@ export default function NotasFiscais() {
         entradas={entradasAntes}
         onMudou={carregar}
       />
+      {/* A corrente da emissão manual. Montado só quando há o que emitir: o
+          `EmitirAgora` começa a correr no `useEffect` de abertura, então deixá-lo
+          montado com a lista vazia dispararia uma rodada sem cobranças. */}
+      {emitindoAgora && (
+        <EmitirAgora
+          aberto
+          ids={emitindoAgora}
+          linhas={linhas}
+          observacao={observacao}
+          avulsa={avulsa}
+          onFechar={() => setEmitindoAgora(null)}
+          onTerminou={carregar}
+        />
+      )}
     </div>
   );
 }

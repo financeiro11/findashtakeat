@@ -43,7 +43,7 @@ import {
 } from "@/components/ui/dialog";
 import { Textarea } from "@/components/ui/textarea";
 import {
-  FileClock, HandCoins, Loader2, Trash2, TriangleAlert, Info, Check,
+  FileClock, HandCoins, Loader2, Trash2, TriangleAlert, Info, Check, UserPlus,
 } from "lucide-react";
 import {
   TIPOS_ANTES_DO_PAGAMENTO, tipoConhecido, formatarDoc, statusAsaas,
@@ -110,8 +110,12 @@ export function LiberarAntesDoPagamento({
   cobranca: CobrancaParaLiberar | null;
   aberto: boolean;
   onFechar: () => void;
-  /** Chamado depois de gravar, para a tela recarregar e já marcar a linha. */
-  onLiberado: (doc: string, idAsaas: string) => void | Promise<void>;
+  /**
+   * Chamado depois de gravar. `emitirAgora` diz o que fazer em seguida — marcar a
+   * linha e parar, ou sair emitindo a nota inteira (cadastro do tomador
+   * incluído). São dois pedidos diferentes e o botão clicado é quem os separa.
+   */
+  onLiberado: (doc: string, idAsaas: string, emitirAgora: boolean) => void | Promise<void>;
 }) {
   const { profile, user } = useAuth();
   /* O TIPO NASCE EM COMISSÃO, e não é preguiça de default: a régua de cliente
@@ -167,7 +171,7 @@ export function LiberarAntesDoPagamento({
     return () => { vivo = false; };
   }, [aberto, doc]);
 
-  const liberar = async () => {
+  const liberar = async (emitirAgora: boolean) => {
     if (!cobranca || !doc) return;
     if (!motivo.trim()) {
       toast.error("Escreva o motivo.", {
@@ -199,7 +203,7 @@ export function LiberarAntesDoPagamento({
           "Nenhuma sai sozinha — a rodada automática continua só em recebida.",
         duration: 12000,
       });
-      await onLiberado(doc, cobranca.id_asaas);
+      await onLiberado(doc, cobranca.id_asaas, emitirAgora);
       onFechar();
     } catch (e: any) {
       toast.error("Não deu para liberar.", { description: e?.message, duration: 15000 });
@@ -297,14 +301,14 @@ export function LiberarAntesDoPagamento({
             `cadastroOmie`: para o parceiro de comissão este é o caso provável, e
             é o único degrau do fluxo que o Hub não consegue resolver sozinho. */}
         {cadastroOmie === "falta" && (
-          <div className="flex items-start gap-2 rounded-md border border-destructive/30 bg-destructive/5 p-2.5 text-[11px] leading-relaxed text-destructive">
-            <TriangleAlert className="mt-px h-3.5 w-3.5 shrink-0" />
+          <div className="flex items-start gap-2 rounded-md border border-sky-500/30 bg-sky-500/5 p-2.5 text-[11px] leading-relaxed text-sky-800 dark:text-sky-300">
+            <UserPlus className="mt-px h-3.5 w-3.5 shrink-0" />
             <span>
-              <strong>Este CNPJ ainda não tem cadastro no Omie.</strong> Pode liberar — o registro fica
-              feito —, mas a emissão vai voltar com “Cliente sem cadastro no Omie” até o cadastro existir.
-              E ele precisa ser criado <strong>no Omie</strong>: o cadastro automático do Hub é alimentado
-              pela auditoria, que só olha cobrança recebida, então um parceiro que só tem cobrança pendente
-              não entra nessa fila nem aparece na aba Auditoria.
+              <strong>Este CNPJ ainda não tem cadastro no Omie — e o Hub cria antes de emitir.</strong> É o
+              primeiro passo de “Liberar e emitir agora”: endereço e razão social saem da Receita Federal, a
+              cidade é conferida pelo CEP nos Correios, e o cadastro nasce no ERP. Só para se faltar algo que
+              nenhuma dessas fontes tem — e aí a tela diz o que falta, em vez de devolver “cliente sem
+              cadastro”.
             </span>
           </div>
         )}
@@ -329,7 +333,13 @@ export function LiberarAntesDoPagamento({
           </span>
         </div>
 
-        <DialogFooter>
+        {/* DOIS BOTÕES, E O PRINCIPAL É O QUE EMITE.
+            Quem abriu este diálogo veio de uma linha bloqueada querendo uma nota
+            — não querendo cadastrar um CNPJ numa lista. "Liberar e emitir agora"
+            é o pedido inteiro; "só liberar" existe para quem está arrumando a
+            lista antes do tempo (o parceiro assinou, a cobrança sai semana que
+            vem) e não quer nota nenhuma hoje. */}
+        <DialogFooter className="sm:justify-between">
           <button
             onClick={onFechar}
             disabled={salvando}
@@ -337,15 +347,27 @@ export function LiberarAntesDoPagamento({
           >
             Cancelar
           </button>
-          <button
-            onClick={liberar}
-            disabled={salvando || !motivo.trim() || !doc}
-            className="flex items-center gap-1.5 rounded-md bg-sky-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-sky-700 disabled:opacity-50"
-            title={!doc ? "A cobrança está sem CNPJ/CPF — sem documento não há o que liberar." : undefined}
-          >
-            {salvando ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Check className="h-3.5 w-3.5" />}
-            Liberar e selecionar
-          </button>
+          <span className="flex gap-2">
+            <button
+              onClick={() => liberar(false)}
+              disabled={salvando || !motivo.trim() || !doc}
+              className="ghost-btn rounded-md border border-border px-3 py-1.5 text-xs disabled:opacity-50"
+              title="Grava a liberação e marca a linha. A nota não sai agora — você emite quando quiser."
+            >
+              Só liberar
+            </button>
+            <button
+              onClick={() => liberar(true)}
+              disabled={salvando || !motivo.trim() || !doc}
+              className="flex items-center gap-1.5 rounded-md bg-sky-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-sky-700 disabled:opacity-50"
+              title={!doc
+                ? "A cobrança está sem CNPJ/CPF — sem documento não há o que liberar."
+                : "Libera e emite: o Hub cadastra o tomador no Omie se faltar, cria a OS, fatura e acompanha até o número da nota."}
+            >
+              {salvando ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Check className="h-3.5 w-3.5" />}
+              Liberar e emitir agora
+            </button>
+          </span>
         </DialogFooter>
       </DialogContent>
     </Dialog>

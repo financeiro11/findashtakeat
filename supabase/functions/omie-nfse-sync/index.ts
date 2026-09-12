@@ -2649,9 +2649,26 @@ async function emitirDia(
      */
     const { data: jaHoje } = await supabase.rpc("notas_fiscais_emitidas_hoje");
     const resta = tetoDia - Number(jaHoje ?? 0);
-    if (resta <= 0) {
+    /* O TETO DO DIA É FREIO DE VAZÃO, E VAZÃO É PROBLEMA DO CRON.
+     *
+     * Ele existe para que um defeito na fila não vire 3.000 notas numa tarde —
+     * risco de uma máquina que decide sozinha 54 vezes por dia. Quem clicou numa
+     * cobrança específica não é esse risco: é uma pessoa, uma nota, com nome no
+     * diário.
+     *
+     * Até 11/09/2026 o `forcar` vencia a chave geral e parava aqui, o que fazia o
+     * teto ser a única trava do Hub que respondia "não" a um pedido humano
+     * explícito sem oferecer saída nenhuma — e num dia de fechamento de mês, com
+     * a esteira drenando backlog, é justamente quando alguém precisa emitir UMA
+     * nota urgente. Agora o clique vence os dois, e o que sobra é o registro:
+     * `pulada` deixa de acontecer e o diário guarda que o teto foi furado, por
+     * quem. Freio que ninguém pode furar conscientemente vira freio que alguém
+     * desliga em Configurações e esquece ligado — o que é pior, porque aí ele
+     * some para o cron também. */
+    if (resta <= 0 && opts.forcar !== true) {
       return await fechar({ pulada: `teto do dia atingido (${jaHoje}/${tetoDia}).` });
     }
+    const tetoFurado = resta <= 0;
 
     /* DE ONDE VEM A LEVA — e por que a emissão manual passa a entrar por aqui.
      *
@@ -2666,7 +2683,13 @@ async function emitirDia(
      * número de lotes, não o rigor.
      */
     const tetoLote = Number(cfg?.teto_lote ?? 50);
-    const limite = Math.max(0, Math.min(manual ? tetoLote : tetoRodada, resta));
+    /* `resta` some da conta quando o teto foi furado conscientemente — senão o
+       `min` faria `limite = 0` e a leva sairia VAZIA, que é a pior forma de
+       "furar": a função responderia 200, sem nota e sem `pulada`, e quem clicou
+       concluiria que o Hub simplesmente não fez nada. */
+    const limite = manual && tetoFurado
+      ? tetoLote
+      : Math.max(0, Math.min(manual ? tetoLote : tetoRodada, resta));
 
     let fila: any[];
     let jaComNota: any[] = [];
@@ -2989,14 +3012,34 @@ async function emitirDia(
        * confirmada de hoje é a recebida de amanhã), então perguntar depois não
        * reconstitui nada. Aqui é a única hora em que a resposta existe. */
       const st = String(x.cob.status_asaas ?? "").toUpperCase();
+      /* A PERGUNTA NÃO É "FOI AVULSA?", É "O DINHEIRO TINHA ENTRADO?".
+       *
+       * Este registro só existia para a avulsa, e por isso a nota emitida sobre
+       * cobrança PENDENTE — a régua de "antes do pagamento" — ficava gravada
+       * IDÊNTICA a uma de cobrança recebida: `avulsa` é false ali (ela não é
+       * parâmetro da chamada, o servidor a resolve pela lista). E essa é a única
+       * hora em que a resposta existe: a cobrança vira `RECEIVED` dias depois, o
+       * `asaas_cache` é sobrescrito, e aí não há mais como saber que a nota
+       * precedeu o pagamento. Agora quem manda no registro é o status. */
+      const semDinheiro = !RECEBIDAS.includes(st);
+      const antesDoPagamento = x.cob.antes_pagamento === true;
       return {
         id_asaas: x.cob.id_asaas, n_cod_os: x.nCodOS, acao: x.acao, resultado: "em_processamento",
         erro: `Lote ${nIdLoteFat} disparado com ${entraram.length} OS. A nota nasce em alguns minutos; o próximo sync grava o número.`
-          + (avulsa ? ` Avulsa: emitida com a cobrança em ${st || "status desconhecido"}.` : ""),
+          + (avulsa ? ` Avulsa: emitida com a cobrança em ${st || "status desconhecido"}.` : "")
+          + (antesDoPagamento && semDinheiro
+            ? ` Nota antes do pagamento: emitida com a cobrança em ${st || "status desconhecido"}.` : "")
+          + (tetoFurado ? ` Teto do dia furado por decisão de quem clicou (${jaHoje}/${tetoDia}).` : ""),
         avulsa,
         // O lote em coluna e não só na frase: é por ele que o `fecharRecusadas` vai
         // reler o `detalhes[]` e descobrir quem o Omie recusou no faturamento.
-        payload: { lote: nIdLoteFat, ...(avulsa ? { avulsa: true, status_na_emissao: st || null } : {}) },
+        payload: {
+          lote: nIdLoteFat,
+          ...(avulsa ? { avulsa: true } : {}),
+          ...(antesDoPagamento ? { antes_pagamento: true } : {}),
+          ...(tetoFurado ? { teto_furado: true } : {}),
+          ...(avulsa || semDinheiro ? { status_na_emissao: st || null } : {}),
+        },
         usuario: opts.usuario, operador: opts.operador,
       };
     }));
@@ -3005,6 +3048,21 @@ async function emitirDia(
       fila: fila.length, bloqueadas: barradas.length,
       emitidas: entraram.length, falhas: falhas.length,
       lote: nIdLoteFat,
+      /* QUAL FREIO FOI FURADO — na resposta, e não só no diário.
+       *
+       * `forcar: true` faz a emissão passar por cima da chave geral e do teto do
+       * dia. Isso é o pedido de quem clicou, mas furar em SILÊNCIO é outra
+       * coisa: a pessoa mandaria emitir sem saber que a emissão estava desligada
+       * em Configurações — e é justamente aí que ela precisa saber, porque
+       * "desligada" costuma querer dizer que alguém está mexendo em algo. A tela
+       * diz o que venceu; o diário guarda quem venceu. */
+      ...(manual && opts.forcar === true ? {
+        freios_furados: [
+          ...(String(cfg?.emissao_automatica ?? "") === "off"
+            ? ["A emissão automática está DESLIGADA em Configurações."] : []),
+          ...(tetoFurado ? [`O teto do dia já tinha sido atingido (${jaHoje}/${tetoDia}).`] : []),
+        ],
+      } : {}),
       detalhe: {
         falhas: falhas.slice(0, 20),
         ...(barradas.length ? { barradas: barradas.slice(0, 20) } : {}),

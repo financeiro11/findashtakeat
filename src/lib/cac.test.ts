@@ -2,13 +2,100 @@ import { describe, expect, it } from "vitest";
 import {
   montarMatriz, agruparMatriz, totalGeral, agruparPorPessoa,
   resumirCelula, matrizParaAOA, conferir, parseValorBR, parsePainelAOA,
-  planoDeImportacao,
-  type PainelRow, type Lancamento, type Linha,
+  planoDeImportacao, seloDaLinha, linhaTemRegra, conflitosDeRegra,
+  colunaDoMes, mesAnteriorDe, lancamentosParaPonte, conferenciaDoMes,
+  type PainelRow, type Lancamento, type Linha, type ConferenciaDre,
 } from "./cac";
+import { montarPonte } from "./ponteVariacao";
+import { mesCurto } from "./demonstracoes-schema";
 
 const linha = (over: Partial<PainelRow>): PainelRow => ({
   linha_id: "a", grupo: "Equipes", rotulo: "Inside Sales", ordem: 80,
   regra_nota: null, mes: 1, valor: 0, origem: "omie", ...over,
+});
+
+const regra = (over: Partial<Linha>): Linha => ({
+  id: "x", grupo: "Equipes", rotulo: "Linha", ordem: 1,
+  departamentos: [], categorias: [], categorias_inteiras: [], categorias_sem_cadastro: [],
+  manual: false, regra_nota: null, ativo: true, ...over,
+});
+
+/* -------------------------------------------------------------------------
+ * Selo e conflito de regra
+ * ----------------------------------------------------------------------- */
+
+describe("seloDaLinha", () => {
+  it("linha manual é manual, não 'sem regra'", () => {
+    // Agência, Contadores e Comissão de MGM não têm regra de propósito — a
+    // skill manda digitar. Pintá-las de vermelho acusaria defeito que não há.
+    expect(seloDaLinha(null, false, 0, true)).toBe("manual");
+  });
+
+  it("sem regra vem antes de zero, e CONFERIR antes dos dois", () => {
+    expect(seloDaLinha(null, false, 0)).toBe("semregra");
+    expect(seloDaLinha("CONFERIR: x", true, 0)).toBe("conferir");
+    expect(seloDaLinha(null, true, 0)).toBe("zero");
+    expect(seloDaLinha(null, true, 10)).toBe("ok");
+  });
+});
+
+describe("linhaTemRegra", () => {
+  it("uma lista de categoria inteira ou sem cadastro já é regra", () => {
+    expect(linhaTemRegra(regra({}))).toBe(false);
+    expect(linhaTemRegra(regra({ categorias_inteiras: ["2.01.98"] }))).toBe(true);
+    expect(linhaTemRegra(regra({ categorias_sem_cadastro: ["2.03.11"] }))).toBe(true);
+  });
+});
+
+describe("conflitosDeRegra", () => {
+  const FOLHA = ["2.03.11", "2.01.98"];
+
+  it("a regra da skill não tem conflito", () => {
+    const ls = [
+      regra({ rotulo: "Field Sales", departamentos: ["Field Sales"], categorias: ["2.03.11"], categorias_sem_cadastro: ["2.03.11"] }),
+      regra({ rotulo: "Inside Sales", departamentos: ["Inside Sales"], categorias: ["2.03.11"] }),
+      regra({ rotulo: "Suporte", departamentos: ["Suporte"], categorias: ["2.03.11"], categorias_inteiras: ["2.01.98"] }),
+      regra({ grupo: "Investimentos", rotulo: "Eventos", categorias: ["2.02.94"] }),
+    ];
+    expect(conflitosDeRegra(ls)).toEqual([]);
+  });
+
+  it("acusa a categoria inteira que ficou na folha de outra linha", () => {
+    // Foi o que a migration precisou evitar: 3.2.7.2 inteira em Suporte e ainda
+    // na lista de Onboarding contaria o salário duas vezes.
+    const ls = [
+      regra({ rotulo: "Onboarding", departamentos: ["Onboarding e Setup"], categorias: FOLHA }),
+      regra({ rotulo: "Suporte", departamentos: ["Suporte"], categorias_inteiras: ["2.01.98"] }),
+    ];
+    const [c] = conflitosDeRegra(ls);
+    expect(c.categoria).toBe("2.01.98");
+    expect(c.linhas).toEqual(["Equipes › Onboarding", "Equipes › Suporte"]);
+  });
+
+  it("acusa o mesmo fallback em duas linhas", () => {
+    const ls = [
+      regra({ rotulo: "A", categorias_sem_cadastro: ["2.03.11"] }),
+      regra({ rotulo: "B", categorias_sem_cadastro: ["2.03.11"] }),
+    ];
+    expect(conflitosDeRegra(ls)).toHaveLength(1);
+  });
+
+  it("acusa o mesmo departamento em duas linhas com categoria em comum", () => {
+    const ls = [
+      regra({ rotulo: "Franquia", departamentos: ["Franquia", "Franquias"], categorias: ["2.03.11"] }),
+      regra({ rotulo: "Outra", departamentos: ["Franquias"], categorias: ["2.03.11"] }),
+    ];
+    expect(conflitosDeRegra(ls)[0].motivo).toContain("Franquias");
+  });
+
+  it("ignora linha manual e linha inativa", () => {
+    const ls = [
+      regra({ rotulo: "A", categorias: ["2.02.02"] }),
+      regra({ rotulo: "B", categorias: ["2.02.02"], manual: true }),
+      regra({ rotulo: "C", categorias: ["2.02.02"], ativo: false }),
+    ];
+    expect(conflitosDeRegra(ls)).toEqual([]);
+  });
 });
 
 describe("montarMatriz", () => {
@@ -131,6 +218,68 @@ describe("agruparPorPessoa", () => {
     ]);
     expect(ps).toHaveLength(1);
     expect(ps[0].total).toBe(100);
+  });
+});
+
+describe("a ponte da célula", () => {
+  it("a chave do mês é a que a DRE entende, e janeiro olha dezembro", () => {
+    expect(colunaDoMes(2026, 8)).toBe("Aug-26");
+    expect(mesCurto(colunaDoMes(2026, 8))).not.toBe("Aug-26");
+    expect(mesAnteriorDe(2026, 1)).toEqual({ ano: 2025, mes: 12 });
+    expect(mesAnteriorDe(2026, 8)).toEqual({ ano: 2026, mes: 7 });
+  });
+
+  it("quem saiu e quem entrou somam a variação inteira, como custo", () => {
+    // Canais Indiretos jul → ago/26: a Ingra sai, a Rita repete, o Lucas entra.
+    const jul = [
+      lanc({ cod_titulo: 1, cnpj: "1", pessoa: "Rita", valor: 5500 }),
+      lanc({ cod_titulo: 2, cnpj: "2", pessoa: "Ingra", valor: 3225 }),
+    ];
+    const ago = [
+      lanc({ cod_titulo: 3, cnpj: "1", pessoa: "Rita", valor: 5500 }),
+      lanc({ cod_titulo: 4, cnpj: "3", pessoa: "Lucas", valor: 4500 }),
+      lanc({ tipo: "sem_pagamento", cnpj: "9", pessoa: "Ausente", natureza: null, valor: 2000 }),
+    ];
+    const p = montarPonte(lancamentosParaPonte(ago), lancamentosParaPonte(jul), {
+      mes: "Aug-26", mesAnterior: "Jul-26", nomeDe: (l) => l.contraparte ?? "",
+    });
+    expect(p.despesa).toBe(true);
+    expect(p.delta).toBeCloseTo(-(10000 - 8725), 2);      // custou R$ 1.275 a mais
+    expect(p.totalPiora + p.totalMelhora).toBeCloseTo(p.delta, 2);
+    expect(p.piora.map((x) => [x.nome, x.movimento])).toEqual([["Lucas", "entrou"]]);
+    expect(p.melhora.map((x) => [x.nome, x.movimento])).toEqual([["Ingra", "saiu"]]);
+    expect(p.iguais.map((x) => x.nome)).toEqual(["Rita"]);
+  });
+});
+
+describe("conferenciaDoMes", () => {
+  const conf = (over: Partial<ConferenciaDre>): ConferenciaDre => ({
+    rubrica: "Eventos e Feiras", mes: 8, dre: 0, omie: 0, no_cac: 0, fora_do_cac: 0,
+    valor_manual_na_dre: false, mes_travado: false, ...over,
+  });
+
+  it("agosto/26 de Eventos: a DRE e a base batem, e o CAC pega tudo", () => {
+    const r = conferenciaDoMes([
+      conf({ rubrica: "Eventos e Feiras", dre: 85879.02, omie: 85879.02, no_cac: 85879.02 }),
+      conf({ rubrica: "Viagens & Transportes Mkt", dre: 40642.54, omie: 40642.54, no_cac: 40642.54 }),
+      conf({ rubrica: "Equipe Tecnologia", mes: 7, dre: 1, omie: 1 }),
+    ], 8);
+    expect(r.linhas.map((l) => l.rubrica)).toEqual(["Eventos e Feiras", "Viagens & Transportes Mkt"]);
+    expect(r.noCac).toBeCloseTo(126521.56, 2);
+    expect(r.linhas.every((l) => !l.inexplicada)).toBe(true);
+  });
+
+  it("diferença só é alerta quando nem valor digitado nem mês travado a explicam", () => {
+    const r = conferenciaDoMes([
+      conf({ rubrica: "MGM", dre: 4700, omie: 1300, valor_manual_na_dre: true }),
+      conf({ rubrica: "Premiações", dre: 76649, omie: 76294.4, mes_travado: true }),
+      conf({ rubrica: "Equipe Comercial", dre: 144969, omie: 140000 }),
+    ], 8);
+    expect(r.linhas.filter((l) => l.inexplicada).map((l) => l.rubrica)).toEqual(["Equipe Comercial"]);
+  });
+
+  it("some a rubrica que não tem nada no mês", () => {
+    expect(conferenciaDoMes([conf({ dre: null, omie: 0 })], 8).linhas).toEqual([]);
   });
 });
 
@@ -301,8 +450,8 @@ describe("parsePainelAOA", () => {
 
 describe("planoDeImportacao", () => {
   const linhas: Linha[] = [
-    { id: "eq-ev", grupo: "Equipes", rotulo: "Eventos", ordem: 60, departamentos: ["Eventos"], categorias: [], regra_nota: null, ativo: true },
-    { id: "in-ev", grupo: "Investimentos", rotulo: "Eventos", ordem: 200, departamentos: [], categorias: ["2.02.94"], regra_nota: null, ativo: true },
+    regra({ id: "eq-ev", grupo: "Equipes", rotulo: "Eventos", ordem: 60, departamentos: ["Eventos"] }),
+    regra({ id: "in-ev", grupo: "Investimentos", rotulo: "Eventos", ordem: 200, categorias: ["2.02.94"] }),
   ];
 
   const importadas = [

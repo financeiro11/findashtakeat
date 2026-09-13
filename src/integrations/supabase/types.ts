@@ -1857,10 +1857,13 @@ export type Database = {
           ativo: boolean
           atualizado_em: string
           categorias: string[]
+          categorias_inteiras: string[]
+          categorias_sem_cadastro: string[]
           criado_em: string
           departamentos: string[]
           grupo: string
           id: string
+          manual: boolean
           ordem: number
           regra_nota: string | null
           rotulo: string
@@ -1869,10 +1872,13 @@ export type Database = {
           ativo?: boolean
           atualizado_em?: string
           categorias?: string[]
+          categorias_inteiras?: string[]
+          categorias_sem_cadastro?: string[]
           criado_em?: string
           departamentos?: string[]
           grupo: string
           id?: string
+          manual?: boolean
           ordem: number
           regra_nota?: string | null
           rotulo: string
@@ -1881,10 +1887,13 @@ export type Database = {
           ativo?: boolean
           atualizado_em?: string
           categorias?: string[]
+          categorias_inteiras?: string[]
+          categorias_sem_cadastro?: string[]
           criado_em?: string
           departamentos?: string[]
           grupo?: string
           id?: string
+          manual?: boolean
           ordem?: number
           regra_nota?: string | null
           rotulo?: string
@@ -1897,6 +1906,7 @@ export type Database = {
           atualizado_em: string
           categoria_omie: string | null
           cnpj: string
+          codigos_omie: number[]
           criado_em: string
           departamento: string
           id: string
@@ -1910,6 +1920,7 @@ export type Database = {
           atualizado_em?: string
           categoria_omie?: string | null
           cnpj: string
+          codigos_omie?: number[]
           criado_em?: string
           departamento: string
           id?: string
@@ -1923,6 +1934,7 @@ export type Database = {
           atualizado_em?: string
           categoria_omie?: string | null
           cnpj?: string
+          codigos_omie?: number[]
           criado_em?: string
           departamento?: string
           id?: string
@@ -1930,6 +1942,24 @@ export type Database = {
           observacao?: string | null
           planilha_comissao?: string | null
           remuneracao?: number | null
+        }
+        Relationships: []
+      }
+      cac_setor_rh: {
+        Row: {
+          atualizado_em: string
+          departamento: string
+          setor: string
+        }
+        Insert: {
+          atualizado_em?: string
+          departamento: string
+          setor: string
+        }
+        Update: {
+          atualizado_em?: string
+          departamento?: string
+          setor?: string
         }
         Relationships: []
       }
@@ -4666,6 +4696,7 @@ export type Database = {
           criado_por: string | null
           favorito: boolean
           fontes: string[]
+          fontes_rendimento: Json
           id: string
           link_ref: string | null
           modo: string
@@ -4690,6 +4721,7 @@ export type Database = {
           criado_por?: string | null
           favorito?: boolean
           fontes?: string[]
+          fontes_rendimento?: Json
           id?: string
           link_ref?: string | null
           modo?: string
@@ -4714,6 +4746,7 @@ export type Database = {
           criado_por?: string | null
           favorito?: boolean
           fontes?: string[]
+          fontes_rendimento?: Json
           id?: string
           link_ref?: string | null
           modo?: string
@@ -10975,12 +11008,29 @@ export type Database = {
         }
         Relationships: []
       }
+      assistente_lacunas_do_guia: {
+        Row: {
+          consulta: string | null
+          criado_em: string | null
+          dia: string | null
+          perfil: string | null
+          pergunta: string | null
+          resposta: string | null
+          tipo: string | null
+          verbete: string | null
+        }
+        Relationships: []
+      }
       cac_pagamentos: {
         Row: {
           categoria: string | null
           cnpj: string | null
+          cnpj_omie: string | null
+          cod_cliente: string | null
           cod_titulo: number | null
+          competencia: string | null
           data_pagamento: string | null
+          status: string | null
           valor: number | null
           vencimento: string | null
         }
@@ -11576,12 +11626,24 @@ export type Database = {
           valor: number
         }[]
       }
+      cac_conferencia_dre: {
+        Args: { p_ano: number }
+        Returns: {
+          dre: number
+          fora_do_cac: number
+          mes: number
+          mes_travado: boolean
+          no_cac: number
+          omie: number
+          rubrica: string
+          valor_manual_na_dre: boolean
+        }[]
+      }
       cac_linha_casa: {
         Args: {
           p_categoria: string
-          p_categorias: string[]
           p_cnpj: string
-          p_departamentos: string[]
+          p_linha: Database["public"]["Tables"]["cac_linhas"]["Row"]
         }
         Returns: boolean
       }
@@ -11598,6 +11660,17 @@ export type Database = {
           valor: number
         }[]
       }
+      cac_pessoas_rh: {
+        Args: never
+        Returns: {
+          cnpj: string
+          datadesl: string
+          departamento_rh: string
+          nome_rh: string
+          setor_rh: string
+        }[]
+      }
+      cac_sincronizar_rh: { Args: never; Returns: Json }
       caixa_nota_apontar: {
         Args: { p_cod_titulo: number; p_id: number }
         Returns: Json
@@ -12682,6 +12755,7 @@ export type Database = {
           criado_por: string | null
           favorito: boolean
           fontes: string[]
+          fontes_rendimento: Json
           id: string
           link_ref: string | null
           modo: string
@@ -12715,6 +12789,7 @@ export type Database = {
           criado_por: string | null
           favorito: boolean
           fontes: string[]
+          fontes_rendimento: Json
           id: string
           link_ref: string | null
           modo: string

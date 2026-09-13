@@ -48,6 +48,16 @@ export type Verbete = {
   quemUsa: string;
   /** O passo a passo, quando foi verificado no código. Ausente ≠ inexistente: ver o cabeçalho. */
   passos?: string[];
+  /**
+   * Como LER a tela — de onde vem o número, o que ele inclui e o que deixa de fora.
+   *
+   * Separado de `passos` porque responde outra pergunta. "Como faço" pede um caminho; "por
+   * que esse total não bate?" ou "o que conta como pendência?" pede a DEFINIÇÃO, e numa tela
+   * que se lê mais do que se opera ela é a instrução que importa. Quem mais pergunta isso é
+   * quem lê o número sem tê-lo produzido — a liderança e a Consultoria Estratégica. Numa
+   * lista só, o modelo apresentaria uma definição como um passo a executar.
+   */
+  comoLer?: string[];
   /** As armadilhas — o que faz a pessoa achar que deu certo quando não deu. */
   cuidados?: string[];
   /** Sinônimos e o jeito como as pessoas falam da coisa. Alimenta a busca do guia. */
@@ -254,9 +264,25 @@ export const GUIA: readonly Verbete[] = [
     titulo: "Reembolsos",
     grupo: "Operacional",
     capacidades: ["remuneracao"],
-    oQueE: "Os reembolsos a colaboradores: o que foi pedido, o que foi aprovado e o que entra na folha.",
-    quemUsa: "Financeiro e RH. Quem pediu o reembolso normalmente não abre esta tela — o pedido chega por fora.",
-    termos: ["reembolso", "despesa do colaborador", "gastei do meu", "ressarcimento", "prestação de contas"],
+    oQueE: "A conferência dos reembolsos pedidos pelo formulário de reembolso: quem pediu, quanto, com qual comprovante, e se já foi lançado no ERP.",
+    quemUsa: "Financeiro e RH conferem. Quem pede o reembolso não usa esta tela: o pedido é feito no formulário, e as respostas dele é que aparecem aqui.",
+    passos: [
+      "Abra Operacional › Reembolsos. A tela lê as respostas do formulário de reembolso direto da planilha.",
+      "Escolha o mês no seletor do topo — ele filtra pela data em que o pedido foi enviado.",
+      "Em cada linha: quem pediu (e o setor), o motivo, o status no ERP, o valor e, na coluna Nota, 'Abrir' para ver o comprovante anexado.",
+      "O botão 'Atualizar' relê a planilha; o botão 'Abrir planilha' leva às respostas do formulário no Google.",
+    ],
+    comoLer: [
+      "'Total a pagar no período' soma o valor de todos os pedidos do mês escolhido, qualquer que seja o status.",
+      "'Conferidos' conta os pedidos cujo status diz conferido, lançado ou ok; 'Pendências' conta os que dizem pendente, erro ou falha.",
+      "Pedido SEM status nenhum aparece na linha como 'Pendente', mas não entra na contagem de 'Pendências' — o card pode dizer zero com linhas pendentes na tela.",
+    ],
+    cuidados: [
+      "O formulário em si não está no Hub: esta tela só lê as respostas dele.",
+      "O status do ERP é o que está escrito na planilha, e não uma consulta ao Omie feita na hora.",
+      "O reembolso não tem categoria própria no Omie: ele entra na categoria de pessoal da própria pessoa, e só o número do título (começando com REIMB-) o identifica. Procurar pela categoria não acha.",
+    ],
+    termos: ["reembolso", "despesa do colaborador", "gastei do meu", "ressarcimento", "prestação de contas", "pedir reembolso", "formulário", "comprovante", "conferência", "pendências"],
   },
   {
     rota: "/operacional/estornos",
@@ -310,13 +336,33 @@ export const GUIA: readonly Verbete[] = [
     titulo: "Remuneração",
     grupo: "Operacional",
     capacidades: ["remuneracao", "remuneracao_time"],
-    oQueE: "Quanto cada pessoa ganha, mês a mês, com fixo e variável separados, evolução e reajustes.",
-    quemUsa: "RH, financeiro e diretoria. Líderes abrem a mesma tela recortada no próprio time.",
-    cuidados: [
-      "Há duas portas para esta sala: quem tem 'Pessoas e folha' vê a empresa inteira; quem tem 'Folha do meu time' vê só os setores marcados na própria ficha — e sem setores marcados, ninguém.",
-      "A competência é a data de registro do lançamento, não o mês em que o dinheiro saiu.",
+    oQueE: "Quanto cada pessoa ganha, mês a mês, com fixo e variável separados, evolução, reajustes e comparação com quem ocupa o mesmo cargo.",
+    quemUsa: "RH, financeiro e diretoria veem a empresa inteira. Os líderes abrem a mesma tela recortada no próprio time.",
+    passos: [
+      "Abra Operacional › Remuneração. Se aparecer 'Seu recorte ainda não foi definido', você tem a folha do time mas nenhum time está marcado na sua ficha — quem marca é o financeiro, em Configurações › Usuários.",
+      "Escolha o mês no seletor. Ele é um corte no tempo: a lista, os indicadores e os reajustes passam a mostrar só o que já tinha acontecido até aquele mês.",
+      "Procure pela busca (nome, cargo, setor ou código do RH) e pelo filtro de Setores. As caixas 'Incluir quem saiu', 'Só com ficha no RH' e 'Incluir empresas' mudam quem entra na lista.",
+      "Clique numa pessoa para abrir a ficha com a trajetória. Para ver pessoas lado a lado, selecione e use 'Comparar'.",
+      "'Exportar planilha' baixa o histórico; com pessoas selecionadas, o botão vira 'Exportar N selecionadas'.",
     ],
-    termos: ["salário", "quanto ganha", "folha", "reajuste", "aumento", "plano de carreira", "remuneração", "pró-labore"],
+    comoLer: [
+      "A competência é a data em que o lançamento foi REGISTRADO no Omie, não o dia do pagamento. É a mesma âncora da DRE, e por isso os totais batem com ela.",
+      "A tela abre no último mês FECHADO, e não no mês corrente: o mês em curso ainda não tem o variável lançado.",
+      "A comparação com quem ocupa o mesmo cargo usa a remuneração inteira (fixo + variável). No comercial o fixo é quase igual para todos, e a diferença mora na comissão.",
+      "O último mês de quem saiu é o acerto de contas e sai maior; o primeiro de quem entrou é proporcional aos dias. Nenhum dos dois conta como reajuste.",
+      "O custo de pessoas soma todo o dinheiro, inclusive lançamentos que não são de uma pessoa. 'Incluir empresas' muda só a lista, não o custo.",
+      "Até fevereiro de 2026 os valores vêm do Conta Azul; de março em diante, do Omie.",
+    ],
+    cuidados: [
+      "'Ninguém neste recorte — mas há N pessoas fora dele' não é falta de dado: quem saiu fica escondido por padrão, e o próprio aviso oferece 'Incluir quem saiu'.",
+      "A tela lê uma cópia do Omie que se atualiza todo dia. Quem vê a folha inteira tem 'Atualizar' (ou 'Recarregar do Omie', quando a cópia está atrasada); o líder não recarrega, mas vê se o número está velho.",
+      "'Sem time · N' só aparece para quem vê a folha inteira: são fichas com pagamento e sem setor, que ficam fora do recorte de qualquer líder até alguém classificar.",
+      "Há duas portas para esta sala: 'Pessoas e folha' abre a empresa inteira; 'Folha do meu time' abre só os setores marcados na ficha da conta — e, sem setor marcado, ninguém.",
+    ],
+    termos: [
+      "salário", "quanto ganha", "folha", "reajuste", "aumento", "plano de carreira", "remuneração", "pró-labore",
+      "meu time", "folha do time", "recorte", "não aparece ninguém", "sem time", "comparar", "trajetória", "competência",
+    ],
   },
 
   // ---- Recargas -------------------------------------------------------------------------
@@ -569,12 +615,26 @@ export const GUIA: readonly Verbete[] = [
     titulo: "Rescisões",
     grupo: "Governança",
     capacidades: ["remuneracao"],
-    oQueE: "Os desligamentos e as verbas de cada um.",
+    oQueE: "O acerto de cada desligamento: as parcelas que a skill 'Rescisão PJ' calculou, as fontes que ela consultou, a conferência da soma e o controle do pagamento.",
     quemUsa: "RH e financeiro.",
-    cuidados: [
-      "A multa sai do tipo de rescisão; o pagamento em si é lançado pelo Hub.",
+    passos: [
+      "O cálculo não é feito nesta tela: ele vem da skill 'Rescisão PJ', que grava o resultado no Hub. Rescisão que ainda não aparece aqui é rescisão que a skill não registrou.",
+      "Abra Governança › Rescisões e ache o caso pela busca, pelo filtro de motivo ou pelo botão que alterna entre 'Só a pagar' e 'Todas'.",
+      "Clique na linha para abrir o detalhe: as parcelas, as fontes, os alertas e a conferência do total.",
+      "Quando o pagamento sair, no detalhe escolha a data e clique 'Marcar paga'. Marcou errado? 'Desfazer pagamento'.",
+      "'Exportar' gera a planilha do que está na tela. 'Contrato da skill' mostra o formato que a skill precisa gravar, com 'Copiar instrução para a skill'.",
     ],
-    termos: ["rescisão", "desligamento", "demissão", "verbas", "saiu da empresa", "acerto"],
+    comoLer: [
+      "PJ não tem FGTS nem encargos: o custo para a empresa é o próprio total a receber. A coluna de custo da empresa só aparece se houver alguém CLT no período.",
+      "'A pagar' soma o que ainda não tem pagamento registrado; o que passou do prazo aparece destacado.",
+      "Em PJ o prazo mostrado é uma previsão (desligamento + 10 dias quando a skill não informa data). 'Prazo legal' só aparece em vínculo CLT.",
+    ],
+    cuidados: [
+      "É o tipo de desligamento (voluntário ou involuntário) que liga a multa de uma remuneração.",
+      "Se o total declarado pela skill não bater com a soma das parcelas, a tela mostra a divergência e não corrige por cima. Confira antes de pagar.",
+      "Regravar o cálculo pela skill não apaga o pagamento marcado aqui: a data e a situação do pagamento são do Hub.",
+    ],
+    termos: ["rescisão", "desligamento", "demissão", "verbas", "saiu da empresa", "acerto", "marcar como paga", "pagar rescisão", "skill", "rescisão pj", "multa", "divergência"],
   },
 
   // ---- Configurações --------------------------------------------------------------------
@@ -596,9 +656,31 @@ export const GUIA: readonly Verbete[] = [
     titulo: "Colaboradores (RH)",
     grupo: "Configurações",
     capacidades: ["remuneracao"],
-    oQueE: "O espelho da planilha do RH: a ficha de cada colaborador, incluindo a coluna de valor.",
+    oQueE: "O espelho do Portal RH — a ficha de cada colaborador, com valor, PIX e documento — e o ponto de partida da folha: é daqui que se monta e se provisiona a folha no Omie.",
     quemUsa: "RH e financeiro.",
-    termos: ["rh", "ficha", "colaborador", "funcionário", "equipe", "admissão", "cadastro de pessoa"],
+    passos: [
+      "Abra Configurações › Colaboradores (RH). As abas Ativos, Desligados e Todos separam a lista; a busca acha por nome, código ou documento. Clique numa pessoa para abrir a ficha.",
+      "Para a folha do mês, clique 'Provisionar folha'. Ele abre a prévia da competência, título a título — nada é criado no Omie nesse passo.",
+      "Na prévia, o que estiver errado se conserta em 'Corrigir dados' da pessoa: a correção fica no Hub e sobrevive à próxima sincronização do RH.",
+      "Antes de mandar tudo, use 'Testar com N', que cria só uma ou duas pessoas no Omie para conferir o formato.",
+      "Depois, 'Provisionar N no Omie' e confirme em 'Confirmo, provisionar'. Isso marca a competência como enviada e passa a recusar um segundo envio.",
+      "'Cadastrar no Omie' cria o fornecedor de quem entrou no mês e grava a chave PIX de quem estiver sem — mostrando uma prévia antes de criar.",
+    ],
+    comoLer: [
+      "'N cadastro(s) com algo a conferir' junta três avisos: defeito no cadastro do Portal RH, dados que o Hub corrigiu por cima e chave PIX que diverge do Omie. O que vier marcado como 'impedem o pagamento' segura salário.",
+      "A lista é um espelho: o horário em 'Sincronizado' diz quando o Portal RH foi lido pela última vez.",
+    ],
+    cuidados: [
+      "Os títulos vão ao Omie sem departamento — o Omie recusa esse campo pela API. A distribuição por área tem de ser feita no ERP depois.",
+      "Com gente de cadastro incompleto, o resto vai e os pendentes ficam de fora; nesse caso a competência NÃO é marcada como enviada, e os pendentes podem ir depois sem duplicar quem já entrou.",
+      "Quem não entrou no Omie fica listado no topo ('N pessoa(s) não entraram no Omie…'), com o motivo na linha de cada um e 'Copiar a lista' para mandar adiante. Some sozinho quando o título entra.",
+      "Se o Omie bloquear a API por excesso de chamadas, o aviso diz em quantos minutos tentar de novo; os títulos que já entraram não se repetem.",
+      "Errou a competência inteira? 'Apagar a folha de <mês>' apaga do Omie só os títulos da folha daquele mês. Título já baixado ou conciliado o Omie recusa apagar.",
+    ],
+    termos: [
+      "rh", "ficha", "colaborador", "funcionário", "equipe", "admissão", "cadastro de pessoa",
+      "provisionar folha", "enviar folha", "folha no omie", "prévia da folha", "chave pix", "cadastrar no omie", "corrigir salário",
+    ],
   },
   {
     rota: "/configuracoes/parametrizacao",
@@ -713,26 +795,50 @@ export const GUIA: readonly Verbete[] = [
     titulo: "Radar de preços",
     grupo: "Facilities",
     capacidades: ["facilities"],
-    oQueE: "O acompanhamento do preço de equipamentos em lojas online: você cadastra o alvo e o Hub varre periodicamente para avisar quando o preço cai.",
+    oQueE: "O acompanhamento de preço do que se quer comprar em lojas online: você descreve o produto e o teto, e o Hub varre as lojas, confere estoque e frete no próprio anúncio e mostra o que cabe no teto.",
     quemUsa: "Quem toca compras.",
-    cuidados: [
-      "Um alvo novo nasce em quarentena até a primeira conferência.",
-      "'Bloqueada' não é o mesmo que 'esgotado' — uma é a loja recusando a leitura, a outra é o produto sem estoque.",
-      "O aviso de queda tem gatilho na CONFERÊNCIA, e só repete se cair mais 3%.",
+    passos: [
+      "Abra Facilities › Radar de preços e clique 'Novo alvo'.",
+      "Em 'O que você quer comprar', escreva como escreveria para um colega (ex.: notebook i5, 16GB de RAM, SSD de 512GB, até R$ 3.000). Se tiver, cole o link de um produto parecido.",
+      "Clique 'Interpretar o pedido' e confira o que o radar entendeu antes de salvar.",
+      "Escolha o regime: 'Estou comprando' (várias varreduras por dia, confere estoque e avisa) ou 'Vigia permanente' (uma vez por semana, só acompanha a curva, sem aviso).",
+      "Salve com 'Criar e esperar o horário' ou, se precisa do preço agora, 'Criar e buscar agora' (leva uns dois minutos).",
+      "Achado bom aparece no card do alvo: 'Virar cotação' leva o achado para uma solicitação; 'Dispensar' tira da mesa.",
     ],
-    termos: ["radar de preço", "monitorar preço", "promoção", "notebook", "mercado livre", "baixou de preço", "oferta", "alvo"],
+    comoLer: [
+      "O frete entra no total: teto, ranking e economia são medidos pelo preço com frete. Frete que a loja só calcula depois do CEP aparece 'a calcular', nunca como zero.",
+      "Em 'Vigia permanente' o preço não passa pela conferência de estoque: o card mostra o menor visto, não 'dá para comprar'.",
+    ],
+    cuidados: [
+      "Achado novo não aparece na hora: ele nasce em quarentena e só vai para a tela depois que o anúncio é aberto e o estoque e o frete são conferidos.",
+      "'Bloqueada' não é o mesmo que 'esgotado' — uma é a loja recusando a leitura, a outra é o produto sem estoque.",
+      "O aviso de oportunidade sai na conferência, e só se repete se o preço cair mais 3%. Alvo em vigia nunca avisa.",
+      "Café, copa e limpeza não entram na vigia permanente — a Takeat já tem fornecedor fechado. Para comparar uma vez, deixe em compra e use 'Criar e buscar agora'.",
+      "Com uma solicitação vinculada, o achado vira cotação nela num clique; sem vínculo, o Hub pergunta antes de criar a solicitação.",
+    ],
+    termos: ["radar de preço", "monitorar preço", "promoção", "notebook", "mercado livre", "baixou de preço", "oferta", "alvo", "novo alvo", "cadastrar alvo", "buscar preço", "vigia", "quanto custa"],
   },
   {
     rota: "/facilities/passagens",
     titulo: "Passagens",
     grupo: "Facilities",
     capacidades: ["facilities"],
-    oQueE: "O acompanhamento de preço de passagem aérea para as rotas que interessam.",
+    oQueE: "O acompanhamento de preço de passagem aérea para viagens marcadas: você cadastra origem, destino, datas e teto, e o Hub avisa quando o preço entra no teto.",
     quemUsa: "Quem organiza viagens.",
-    cuidados: [
-      "As APIs de voo fecharam em 2026: o preço aqui vem do alerta do Google Voos que chega por e-mail, não de consulta direta a companhia aérea.",
+    passos: [
+      "Abra Facilities › Passagens e clique 'Nova viagem'.",
+      "Preencha origem e destino (sigla do aeroporto ou nome da cidade), as datas, o teto, a área, quem viaja (opcional) e o motivo.",
+      "Salve, abra a busca pelo botão 'Google' da linha e, no Google Voos, ligue o rastreamento de preços. Volte e clique 'Já liguei o alerta no Google'.",
+      "Viu um preço por conta própria? Registre em 'preço que vi' — ele passa pelo mesmo teto e pelo mesmo aviso.",
+      "Comprou? 'Comprei'. Desistiu? 'Cancelar viagem'.",
+      "Viagem encerrada que ainda aparece com 'Google ainda rastreia': 'Abrir no Google', desligue o alerta lá e clique 'Já desliguei lá'.",
     ],
-    termos: ["passagem", "voo", "aérea", "viagem", "bilhete", "google flights", "aeroporto", "comprar passagem"],
+    cuidados: [
+      "Ligar o alerta no Google é o único passo que não dá para automatizar. Viagem sem alerta ligado parece monitorada e nunca recebe preço — a tela cobra isso com uma faixa âmbar.",
+      "O preço vem do e-mail de alerta do Google Voos, não de consulta direta à companhia: as APIs de voo fecharam em 2026. O Hub lê esses e-mails de manhã e no fim da tarde.",
+      "O aviso só sai quando o preço entra no teto ou bate um novo menor — e não a cada e-mail que o Google manda.",
+    ],
+    termos: ["passagem", "voo", "aérea", "viagem", "bilhete", "google flights", "aeroporto", "comprar passagem", "nova viagem", "alerta", "rastrear preços", "voo barato"],
   },
   {
     rota: "/facilities/fornecedores",
@@ -741,7 +847,16 @@ export const GUIA: readonly Verbete[] = [
     capacidades: ["facilities"],
     oQueE: "O cadastro de fornecedores de compras: contato, CNPJ, categoria e os contratos anexados.",
     quemUsa: "Quem toca compras.",
-    termos: ["fornecedor", "cadastrar fornecedor", "cnpj do fornecedor", "contato", "contrato anexado"],
+    passos: [
+      "Abra Facilities › Fornecedores e clique 'Novo fornecedor'.",
+      "Preencha nome, CNPJ, categoria, contato (telefone, e-mail ou site) e observação.",
+      "Dentro do cadastro dá para anexar os contratos e ver o histórico de compras com aquele fornecedor.",
+      "A lista alterna entre 'Cards' e 'Lista'. Para remover, abra o fornecedor e use 'Excluir'.",
+    ],
+    cuidados: [
+      "Este é o cadastro de compras do Facilities — não é o mesmo cadastro de fornecedores que o financeiro usa para dar nome às linhas dos extratos.",
+    ],
+    termos: ["fornecedor", "cadastrar fornecedor", "novo fornecedor", "cnpj do fornecedor", "contato", "contrato anexado"],
   },
   {
     rota: "/facilities/historico",
@@ -759,7 +874,15 @@ export const GUIA: readonly Verbete[] = [
     capacidades: ["facilities"],
     oQueE: "Os contratos recorrentes com fornecedores e o que cada um custa por mês.",
     quemUsa: "Quem toca compras e o financeiro.",
-    termos: ["contrato", "recorrente", "mensalidade do fornecedor", "renovação", "assinatura de serviço"],
+    passos: [
+      "Abra Facilities › Contratos e clique 'Novo contrato'.",
+      "Escolha ou digite o fornecedor, descreva o serviço (ex.: 'Internet dedicada 500 Mb — escritório'), a categoria, o valor mensal, o status e o vencimento.",
+      "Para mudar ou encerrar, abra o contrato e altere o status; 'Excluir' remove de vez.",
+    ],
+    cuidados: [
+      "Encerrar é trocar o status e mantém o registro; 'Excluir' apaga.",
+    ],
+    termos: ["contrato", "recorrente", "mensalidade do fornecedor", "renovação", "assinatura de serviço", "novo contrato", "cadastrar contrato"],
   },
 
   // ---- Telas fora do menu ---------------------------------------------------------------
@@ -891,14 +1014,27 @@ function palavras(texto: string): string[] {
 /**
  * Duas palavras são a mesma coisa?
  *
- * Prefixo comum de 4 letras, e não igualdade: "emitir", "emito" e "emitida" são a mesma
- * pergunta, e exigir a forma exata faria o guia errar justamente quem escreve como fala.
- * Quatro é o piso que separa "emit-" de casos como "para"/"parceiro".
+ * DUAS RÉGUAS, e a segunda existe porque a primeira já foi a única e o comentário dela
+ * mentia. Ele prometia "prefixo comum de 4 letras"; o código exigia que a palavra MENOR
+ * inteira fosse prefixo da maior. Resultado: "provisiono" não achava "provisionar",
+ * "reembolsar" não achava "reembolso", e os testes só passavam porque os verbetes listavam
+ * as conjugações à mão nos `termos` — que é justamente o trabalho que a régua devia poupar.
+ *
+ *   1. A menor é prefixo da maior (≥ 4 letras): "nota"/"notas", "compra"/"comprar".
+ *   2. Raiz comum de ≥ 5 letras cobrindo ≥ 75% da menor: "provisiono"/"provisionar",
+ *      "reembolsar"/"reembolso", "cadastro"/"cadastrar".
+ *
+ * A régua 2 não desce para 4 letras de propósito: "conta" e "contrato" dividem só "cont", e
+ * a pergunta sobre conta corrente iria parar em Contratos. Conjugação de raiz curta
+ * ("emito"/"emitir", "marco"/"marcar") continua dependendo de estar escrita nos `termos`.
  */
 function casa(a: string, b: string): boolean {
   if (a === b) return true;
   const menor = Math.min(a.length, b.length);
-  return menor >= 4 && (a.startsWith(b.slice(0, menor)) && b.startsWith(a.slice(0, menor)));
+  let comum = 0;
+  while (comum < menor && a[comum] === b[comum]) comum++;
+  if (menor >= 4 && comum === menor) return true;
+  return comum >= 5 && comum / menor >= 0.75;
 }
 
 function achouEm(termo: string, alvos: string[]): boolean {
@@ -930,7 +1066,9 @@ export function buscarNoGuia(
   const achados = visiveis.map((v) => {
     const noTitulo = palavras(v.titulo);
     const nosTermos = (v.termos ?? []).flatMap(palavras);
-    const noTexto = palavras([v.oQueE, v.quemUsa, ...(v.passos ?? []), ...(v.cuidados ?? [])].join(" "));
+    const noTexto = palavras([
+      v.oQueE, v.quemUsa, ...(v.passos ?? []), ...(v.comoLer ?? []), ...(v.cuidados ?? []),
+    ].join(" "));
 
     let pontos = 0;
     let casados = 0;
@@ -983,6 +1121,9 @@ function verbeteEmTexto(v: Verbete): string {
   const linhas = [`## ${ondeFica(v)}`, v.oQueE, `Quem usa: ${v.quemUsa}`];
   if (v.passos?.length) linhas.push("Passo a passo:", ...v.passos.map((p, i) => `${i + 1}. ${p}`));
   else linhas.push("PASSO A PASSO: não está escrito no guia para esta tela.");
+  // Rótulo próprio, e não mais itens na lista de passos: é definição, não ação — o modelo
+  // precisa saber a diferença para não mandar a pessoa "executar" o que é só leitura.
+  if (v.comoLer?.length) linhas.push("Como ler esta tela:", ...v.comoLer.map((c) => `- ${c}`));
   if (v.cuidados?.length) linhas.push("Cuidados:", ...v.cuidados.map((c) => `- ${c}`));
   return linhas.join("\n");
 }

@@ -16,7 +16,11 @@ import { describe, expect, it } from "vitest";
 import {
   GUIA, buscarNoGuia, mapaDoHub, verbeteVisivel,
 } from "../../supabase/functions/_shared/assistente/guia.ts";
-import { comoFazer } from "../../supabase/functions/_shared/assistente/consultas-guia.ts";
+import { readdirSync, readFileSync } from "node:fs";
+import { join } from "node:path";
+import {
+  AVISO_SEM_PASSOS, AVISO_SEM_VERBETE, comoFazer,
+} from "../../supabase/functions/_shared/assistente/consultas-guia.ts";
 import {
   GRUPOS_FINANCEIRO, GRUPO_FACILITIES, GRUPO_BUSCA_EXTRA, itensDe,
 } from "./navegacao";
@@ -161,5 +165,108 @@ describe("consulta como_fazer", () => {
     const r = comoFazer(semPassos.titulo, { pode: tudoLiberado });
     expect(r.paraModelo).toContain("PASSO A PASSO: não está escrito no guia");
     expect(r.avisos.join(" ")).toContain("ainda não tem o passo a passo");
+  });
+});
+
+describe("lote 1 — quem não é do financeiro e faz alguma coisa", () => {
+  const acha = (pergunta: string) =>
+    buscarNoGuia(pergunta, { pode: tudoLiberado }).map((a) => a.verbete.titulo);
+
+  /* Travado de propósito. São as telas de quem opera sem ser do financeiro — os Heads, a
+     Head de RH, o Facilities —, e um verbete destes perdendo o passo a passo numa edição
+     devolveria essa pessoa ao "não sei", sem erro nenhum que avise. */
+  const LOTE_1 = [
+    "/operacional/remuneracao", "/operacional/reembolsos", "/governanca/rescisoes",
+    "/operacional/colaboradores", "/facilities/radar", "/facilities/passagens",
+    "/facilities/fornecedores", "/facilities/contratos",
+  ];
+
+  it.each(LOTE_1)("%s tem passo a passo", (rota) => {
+    expect(GUIA.find((v) => v.rota === rota)?.passos?.length ?? 0).toBeGreaterThan(0);
+  });
+
+  it("o Head que não vê o próprio time chega na Remuneração", () => {
+    expect(acha("por que não aparece ninguém do meu time na remuneração?")).toContain("Remuneração");
+  });
+
+  it("acha a tela pelo que a pessoa quer fazer", () => {
+    expect(acha("como peço reembolso")).toContain("Reembolsos");
+    expect(acha("quero comprar passagem aérea")).toContain("Passagens");
+    expect(acha("como marco a rescisão como paga?")).toContain("Rescisões");
+    expect(acha("como provisiono a folha no omie")).toContain("Colaboradores (RH)");
+    expect(acha("como cadastro um produto no radar de preços")).toContain("Radar de preços");
+    expect(acha("cadastrar contrato de internet")).toContain("Contratos (Facilities)");
+  });
+
+  it("conjugação de raiz longa casa sem estar escrita nos termos", () => {
+    // O comentário de `casa` prometia isto e o código não fazia: nenhuma destas formas está
+    // nos `termos`, e as duas caíam no vazio.
+    expect(acha("provisiono")).toContain("Colaboradores (RH)");
+    expect(acha("reembolsar")).toContain("Reembolsos");
+  });
+
+  it("raiz curta não gruda palavras diferentes", () => {
+    // "conta" e "contrato" dividem só "cont": a pergunta de conta corrente não pode cair em
+    // Contratos.
+    expect(acha("saldo da conta corrente")).not.toContain("Contratos (Facilities)");
+  });
+});
+
+describe("como ler", () => {
+  it("vai ao modelo com rótulo próprio, separado do passo a passo", () => {
+    const r = comoFazer("reembolsos", { pode: tudoLiberado });
+    expect(r.paraModelo).toContain("Passo a passo:");
+    expect(r.paraModelo).toContain("Como ler esta tela:");
+    // A armadilha que o card esconde tem de chegar inteira ao modelo.
+    expect(r.paraModelo).toContain("não entra na contagem de 'Pendências'");
+  });
+
+  it("sai recortado junto com o verbete — quem não abre a tela não lê a definição", () => {
+    const r = comoFazer("reembolsos", { pode: (c) => c === "facilities" });
+    expect(r.paraModelo).not.toContain("Como ler esta tela:");
+  });
+});
+
+describe("lacunas do guia — a view lê os avisos pelo texto", () => {
+  /* A view `assistente_lacunas_do_guia` classifica com `like` sobre o texto dos avisos.
+     Reescrever uma frase de `consultas-guia.ts` sem reescrever a view não dá erro nenhum:
+     a lista volta vazia, e vazio se lê exatamente como "o guia respondeu tudo". */
+  const pasta = join(process.cwd(), "supabase/migrations");
+  const migration = readdirSync(pasta)
+    .filter((f) => f.endsWith(".sql"))
+    .map((f) => readFileSync(join(pasta, f), "utf8"))
+    .find((sql) => sql.includes("create or replace view public.assistente_lacunas_do_guia"));
+
+  it("a migration da view existe", () => {
+    expect(migration).toBeDefined();
+  });
+
+  it("a view procura exatamente as frases que a consulta escreve", () => {
+    expect(migration).toContain(AVISO_SEM_VERBETE);
+    expect(migration).toContain(AVISO_SEM_PASSOS);
+  });
+
+  it("sem verbete, o aviso carrega a frase que a view procura", () => {
+    const r = comoFazer("como faço para trocar o pneu do carro", { pode: tudoLiberado });
+    expect(r.avisos.join(" ")).toContain(AVISO_SEM_VERBETE);
+  });
+
+  it("o título do verbete sai do aviso pelo mesmo padrão que a view extrai", () => {
+    const semPassos = GUIA.find((v) => v.rota && !v.passos?.length)!;
+    const aviso = comoFazer(semPassos.titulo, { pode: tudoLiberado }).avisos
+      .find((a) => a.includes(AVISO_SEM_PASSOS));
+    expect(aviso).toMatch(/o que é "([^"]+)"/);
+    expect(migration).toContain(`'o que é "([^"]+)"'`);
+  });
+});
+
+describe("o aviso de 'sem passo a passo' só fala do verbete principal", () => {
+  it("pergunta bem respondida pelo primeiro verbete não ganha ressalva por causa do terceiro", () => {
+    const r = comoFazer("orçamento do fornecedor", { pode: tudoLiberado });
+    // Pré-condições. Se a busca mudar e elas deixarem de valer, o teste precisa de outra
+    // pergunta — não de um aviso a mais.
+    expect(r.achados[0]?.verbete.passos?.length ?? 0).toBeGreaterThan(0);
+    expect(r.achados.some((a) => !a.verbete.passos?.length)).toBe(true);
+    expect(r.avisos.join(" ")).not.toContain(AVISO_SEM_PASSOS);
   });
 });

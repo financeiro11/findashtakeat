@@ -319,16 +319,26 @@ export default function Radar() {
       /* Fonte que falhou não pode sumir calada: é assim que um radar "funciona"
          por semanas devolvendo zero. */
       const falhas: string[] = [];
+      const foraDoAssunto = new Set<string>();
       for (const pa of r.por_alvo ?? []) {
         for (const [fonte, txt] of Object.entries(pa.fontes ?? {})) {
           const s = String(txt);
+          if (s.startsWith("fora do assunto")) { foraDoAssunto.add(fonteLabel(fonte)); continue; }
           // "fora do rodízio" é desenho, não falha — avisar disso ensinaria a
           // pessoa a ignorar o aviso amarelo, que é onde moram os problemas reais.
-          if (/^\d+ anúncios/.test(s) || s.startsWith("fora do rodízio")) continue;
+          if (/^\d+ anúncios/.test(s) || s.startsWith("fora do rodízio") || s.startsWith("mesmo estoque de")) continue;
           falhas.push(`${fonteLabel(fonte)}: ${s}`);
         }
       }
       if (falhas.length) toast.warning([...new Set(falhas)].join("\n"), { duration: 10000 });
+      // Loja que saiu sozinha precisa ser dita, senão parece que alguém a desmarcou.
+      if (foraDoAssunto.size) {
+        toast.info(
+          `${[...foraDoAssunto].join(", ")} ficaram de fora: nas últimas leituras nenhum anúncio delas era o produto. ` +
+          "Voltam a ser consultadas em uma semana.",
+          { duration: 9000 },
+        );
+      }
 
       setOfertas({});
       await load();
@@ -1062,7 +1072,7 @@ export default function Radar() {
                         ) : (
                           <div className="max-h-[420px] overflow-y-auto">
                             <table className="w-full border-collapse">
-                              <thead className="sticky top-0 bg-muted/50">
+                              <thead className="sticky top-0 z-10 bg-muted">
                                 <tr className="text-left text-[10.5px] uppercase tracking-wide text-muted-foreground">
                                   <th className="px-4 py-2 font-semibold">Anúncio</th>
                                   <th className="px-3 py-2 font-semibold">Onde</th>

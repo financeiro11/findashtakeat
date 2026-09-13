@@ -76,7 +76,7 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.0";
 import { requireUser } from "../_shared/auth.ts";
 import { generateJSON, generateText, MODELO_LITE } from "../_shared/gemini.ts";
 import {
-  avaliar, chaveDoProduto, classificar, condicaoDoTitulo, deveAvisar, disponibilidade, DIAS_PARA_SUGERIR, economiaDe, emCentavos, fonteLabel, lerSpecs, MIN_AVALIACOES, norm, pisoDePreco, sugerirTeto, textoWhatsLote, totalDaOferta,
+  avaliar, chaveDoProduto, classificar, condicaoDoTitulo, deveAvisar, disponibilidade, DIAS_PARA_SUGERIR, economiaDe, emCentavos, fonteForaDoAssunto, fonteLabel, lerSpecs, MIN_AVALIACOES, nomeNoEndereco, norm, pisoDePreco, somarRendimento, sugerirTeto, textoWhatsLote, totalDaOferta, type RendimentoFonte,
   type AlvoSpecs, type OfertaBruta, type ParaWhats, type Preferencias, type TipoAlerta,
 } from "../_shared/radar-precos.ts";
 import { enviarWhatsApp } from "../_shared/whatsapp.ts";
@@ -269,7 +269,11 @@ async function tokenML(): Promise<{ token: string | null; erro: string | null }>
 
 /** Anúncio de referência que a pessoa colou: dá para ler direto pela API. */
 async function itemML(link: string, token: string): Promise<string | null> {
-  const m = link.match(/\bMLB-?(\d{6,})/i);
+  /* Decodificar antes: o link de catálogo (/up/MLBU…) só traz o anúncio em
+     `item_id%3AMLB…`, e sem decodificar o `%3A` o número nunca casava. */
+  let texto = link;
+  try { texto = decodeURIComponent(link); } catch { /* segue com o link cru */ }
+  const m = texto.match(/(?:^|[^A-Z0-9])MLB-?(\d{6,})/i);
   if (!m) return null;
   try {
     const r = await fetch(`https://api.mercadolibre.com/items/MLB${m[1]}`, {
@@ -1418,6 +1422,10 @@ const SCHEMA_SPECS = {
     tela_pol_max: { type: "number" },
     termos_obrigatorios: { type: "array", items: { type: "string" } },
     termos_proibidos: { type: "array", items: { type: "string" } },
+    grupos_obrigatorios: {
+      type: "array", items: { type: "string" },
+      description: "O que o anúncio TEM de ser. Cada item é um grupo de sinônimos separados por '|', ex: 'bolsa|bag|case|estojo'. Basta um termo de cada grupo; todos os grupos precisam aparecer no título.",
+    },
     condicoes: { type: "array", items: { type: "string", enum: ["novo", "usado", "recondicionado"] } },
     buscas: { type: "array", items: { type: "string" }, description: "2 a 4 consultas de busca, da mais específica para a mais ampla" },
     preco_alvo: { type: "number", description: "Teto em reais. Em consumível, o teto POR UNIDADE (o quilo, o litro, a peça)." },
@@ -1449,6 +1457,18 @@ async function interpretar(pedido: string, referencia: string | null) {
           "(ex: 'notebook i5 16gb ssd 512'), da mais específica para a mais ampla. " +
           "Nunca inclua preço nas buscas.\n" +
           "- `termos_obrigatorios` só para palavra que TEM de estar no título do anúncio.\n" +
+          "O QUE O PRODUTO É (`grupos_obrigatorios`) — OBRIGATÓRIO quando a categoria for 'outro' ou 'consumivel':\n" +
+          "- As demais categorias têm regra própria. Nessas duas, sem grupos o radar aceita QUALQUER anúncio " +
+          "dentro da faixa de preço — uma busca de bolsa de câmera trouxe mouse, gabinete e carregador.\n" +
+          "- Primeiro grupo: o substantivo do produto com os sinônimos que as lojas usam no título, " +
+          "ex: 'bolsa|bag|case|estojo|maleta'.\n" +
+          "- Mais um grupo para cada qualificador que MUDA o produto: bolsa PARA CÂMERA → 'camera|fotografic|dslr|mirrorless'. " +
+          "Não crie grupo para cor, tamanho, material ou marca.\n" +
+          "- Termos em minúsculas e sem acento; use o radical quando a palavra flexiona ('fotografic' cobre " +
+          "fotográfica e fotográfico). Cada termo precisa abrir uma palavra do título.\n" +
+          "- Havendo anúncio de referência, aproveite o vocabulário do título dele.\n" +
+          "- Marca citada como COMPATIBILIDADE ('para Sony, Canon, Nikon') NÃO vai em `marcas`: diz para qual " +
+          "equipamento o produto serve, não quem o fabrica.\n" +
           "- Se a pessoa não falou de condição, use ['novo'].\n" +
           "- `cpu_geracao_min` só quando ela citar geração explicitamente.\n" +
           "COMPRA RECORRENTE (café, açúcar, papel higiênico, detergente, sulfite, copo):\n" +
@@ -1481,6 +1501,9 @@ async function interpretar(pedido: string, referencia: string | null) {
     tela_pol_max: out?.tela_pol_max ?? null,
     termos_obrigatorios: (out?.termos_obrigatorios ?? []).map((s: string) => norm(s)).filter(Boolean),
     termos_proibidos: (out?.termos_proibidos ?? []).map((s: string) => norm(s)).filter(Boolean),
+    grupos_obrigatorios: (out?.grupos_obrigatorios ?? [])
+      .map((g: string) => String(g).split("|").map((s) => norm(s)).filter(Boolean))
+      .filter((g: string[]) => g.length),
     condicoes: out?.condicoes?.length ? out.condicoes : ["novo"],
     buscas: (out?.buscas ?? []).filter(Boolean).slice(0, 4),
     /* A UNIDADE É O QUE LIGA O MODO RECORRENTE, então ela só entra quando a
@@ -1587,7 +1610,30 @@ async function varrerAlvo(
      por rodada, girando com `rodadas` — assim a queda de uma não tira a família
      da varredura, e nenhuma delas fica cadastrada e muda para sempre. */
   const rodada = Number(alvo.rodadas ?? 0);
-  const cadastradas = fontes.filter((f) => f in LOJAS);
+  /* LOJA QUE NÃO TEM O PRODUTO SAI DESTE ALVO por uma semana — ver
+     `fonteForaDoAssunto`. Medido por família: Zoom, Buscapé e Bondfaro são o
+     mesmo estoque. Nunca todas: um alvo sem fonte ficaria mudo, e mudo aqui é
+     indistinguível de "o mercado não tem preço bom". */
+  const momentoDaLeitura = new Date();
+  const rendimentoDoAlvo: Record<string, RendimentoFonte> = alvo.fontes_rendimento ?? {};
+  const chaveDaFonte = (f: string) => LOJAS[f]?.familia ?? f;
+  const anunciosPorFonte = new Map<string, number>();
+  const todasCadastradas = fontes.filter((f) => f in LOJAS);
+  const voltaDaFonte = new Map<string, Date>();
+  for (const f of todasCadastradas) {
+    const volta = fonteForaDoAssunto(rendimentoDoAlvo[chaveDaFonte(f)], momentoDaLeitura);
+    if (volta) voltaDaFonte.set(f, volta);
+  }
+  const tirarAlgumas = voltaDaFonte.size > 0 && voltaDaFonte.size < todasCadastradas.length;
+  const cadastradas = tirarAlgumas ? todasCadastradas.filter((f) => !voltaDaFonte.has(f)) : todasCadastradas;
+  if (tirarAlgumas) {
+    for (const [f, volta] of voltaDaFonte) {
+      const r = rendimentoDoAlvo[chaveDaFonte(f)];
+      res.fontes[f] =
+        `fora do assunto deste alvo — ${r.anuncios} anúncios lidos e nenhum era o produto; ` +
+        `volta a ser consultada em ${volta.toLocaleDateString("pt-BR", { timeZone: "America/Sao_Paulo" })}`;
+    }
+  }
   const familias = new Map<string, string[]>();
   for (const f of cadastradas) {
     const fam = LOJAS[f].familia ?? f;
@@ -1736,7 +1782,10 @@ async function varrerAlvo(
          texto, e bastou a nota de zero começar com "0 anúncios" para que um muro
          de robô ganhasse o direito de limpar a tela. Permissão destrutiva não se
          deduz de string. */
-      if (ofertas.length && /^\d+ anúncios/.test(nota)) lidas.add(loja);
+      if (ofertas.length && /^\d+ anúncios/.test(nota)) {
+        lidas.add(loja);
+        anunciosPorFonte.set(loja, ofertas.length);
+      }
       for (const o of ofertas) {
         const k = `${o.fonte}|${o.id_externo}`;
         const antes = brutas.get(k);
@@ -2012,7 +2061,8 @@ async function varrerAlvo(
      rodada inteira tendo corrido bem. Card amarelo por desenho é card amarelo
      que ninguém mais lê. */
   const ehOk = (v: string) =>
-    /^\d+ anúncios/.test(v) || v.startsWith("fora do rodízio") || v.startsWith("mesmo estoque de");
+    /^\d+ anúncios/.test(v) || v.startsWith("fora do rodízio") || v.startsWith("mesmo estoque de") ||
+    v.startsWith("fora do assunto");
   const falhas = Object.entries(res.fontes).filter(([, v]) => !ehOk(v));
 
   /* AGRUPADO PELO MOTIVO, não uma linha por fonte. Quando a IA está fora do ar
@@ -2032,11 +2082,26 @@ async function varrerAlvo(
     .join(" | ")
     .slice(0, 500);
 
+  /* O que cada loja rendeu NESTA rodada, por família: anúncios lidos e quantos
+     atendiam ao pedido, no teto ou acima dele. Só entra loja lida de verdade —
+     muro de robô e erro de IA não são "a loja não tem o produto". */
+  const uteisPorLoja = new Map<string, number>();
+  for (const { o } of [...aprovadas, ...soPreco]) uteisPorLoja.set(o.fonte, (uteisPorLoja.get(o.fonte) ?? 0) + 1);
+  const leituraPorFonte: Record<string, { anuncios: number; uteis: number }> = {};
+  for (const [loja, anuncios] of anunciosPorFonte) {
+    const k = chaveDaFonte(loja);
+    leituraPorFonte[k] = {
+      anuncios: (leituraPorFonte[k]?.anuncios ?? 0) + anuncios,
+      uteis: (leituraPorFonte[k]?.uteis ?? 0) + (uteisPorLoja.get(loja) ?? 0),
+    };
+  }
+
   await supabase.from("facilities_radar_alvos").update({
     ultima_varredura: new Date().toISOString(),
     ultimo_erro: falhas.length ? resumoDasFalhas : null,
     rodadas: Number(alvo.rodadas ?? 0) + 1,
     updated_at: new Date().toISOString(),
+    fontes_rendimento: somarRendimento(rendimentoDoAlvo, leituraPorFonte, momentoDaLeitura),
   }).eq("id", alvo.id);
 
   return res;
@@ -2096,18 +2161,31 @@ Deno.serve(async (req) => {
       if (!pedido) return json({ ok: false, erro: "Escreva o que você quer monitorar." }, 400);
 
       let referencia: string | null = null;
+      let referenciaDe: "anuncio" | "pagina" | "endereco" | null = null;
       const link = String(body?.link_ref ?? "").trim();
       if (link) {
         const { token } = await tokenML();
         if (token) referencia = await itemML(link, token);
+        if (referencia) referenciaDe = "anuncio";
         if (!referencia) {
           const { markdown } = await firecrawl(link, 2500);
-          if (markdown) referencia = markdown.slice(0, 4000);
+          // Página sem preço escrito é muro de robô ou login, não anúncio.
+          if (markdown && /r\$\s?\d/i.test(markdown)) {
+            referencia = markdown.slice(0, 4000);
+            referenciaDe = "pagina";
+          }
+        }
+        if (!referencia) {
+          const nome = nomeNoEndereco(link);
+          if (nome) {
+            referencia = `Nome do produto, tirado do endereço do link (a página não pôde ser lida): ${nome}`;
+            referenciaDe = "endereco";
+          }
         }
       }
 
       const out = await interpretar(pedido, referencia);
-      return json({ ok: true, ...out, leu_referencia: !!referencia, duracao_ms: Date.now() - t0 });
+      return json({ ok: true, ...out, leu_referencia: !!referencia, referencia_de: referenciaDe, duracao_ms: Date.now() - t0 });
     }
 
     /* --------------------------------------------------- sugerir teto */

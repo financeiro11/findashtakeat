@@ -72,19 +72,31 @@ const LIMITE_WORKER_MS = 100_000;
 const TETO_PADRAO = 40;
 const PAGINA = 1000;   // o PostgREST corta em 1000 por resposta, calado
 
-/* SÓ DIA FECHADO VAI PARA O ERP.
+/* SÃO DUAS CARÊNCIAS, porque são dois modelos — e confundi-las custou dois dias
+ * de atraso sem necessidade.
  *
- * O lançamento é o LÍQUIDO do dia, e um dia que ainda pode crescer produziria
- * um lançamento incompleto — que nenhuma rodada seguinte conserta, porque a
- * chave `ASAAS-<dia>-<sigla>` já existe e o Omie recusa a repetida. Consertar
- * seria `AlterarLancCC`, que é decisão de gente, não de cron.
+ * RESUMO DIÁRIO (a contrapartida da "ASAAS Pago"): o lançamento é o LÍQUIDO do
+ * dia. Linha que chega atrasada torna o lançamento errado e SEM CONSERTO, porque
+ * a chave `ASAAS-<dia>-<sigla>` já existe e o Omie recusa a repetida — arrumar
+ * seria `AlterarLancCC`, decisão de gente, não de cron. Essa perna precisa mesmo
+ * esperar.
  *
- * Dois dias, e não um, porque o `asaas-extrato-sync` reprocessa os últimos 3
- * dias de propósito (OVERLAP_DIAS) para pegar o que o Asaas lança atrasado.
- * Esperar a sobreposição passar é o que transforma "quase sempre certo" em
- * "certo". O preview mostra os dias em carência para ninguém achar que sumiram.
- */
-const CARENCIA_DIAS = 2;
+ * Medido em 11/09/2026, sobre 47 dias de fluxo normal: 50,5% das linhas entram
+ * no espelho no mesmo dia, 42,0% no dia seguinte, 7,0% em dois dias e 0,45% em
+ * três ou quatro. Em VALOR de recebimento, o que chega depois de três dias é
+ * **0,28%** (R$ 5.003,85 de R$ 1,77 mi). Com carência de 2 esse pedaço se perdia
+ * todo dia; com 5 ele praticamente some. A "ASAAS Pago" é conta de trânsito
+ * interna, então atrasar o espelho dela não atrapalha ninguém.
+ *
+ * LINHA A LINHA (a "ASAAS Disponível", que é o que a contabilidade lê): cada
+ * linha tem chave própria — o `id_transacao` do Asaas. A que chega atrasada
+ * simplesmente ENTRA DEPOIS, sem corromper nada; o dia fica incompleto por uma
+ * rodada e completa sozinho. Aqui a carência não protege de nada, e custava dois
+ * dias de atraso. Zero significa "tudo que não é hoje" — o dia de ontem entra
+ * na primeira rodada depois da virada do dia, que é o que o financeiro pediu.
+ * HOJE continua de fora, porque ainda está crescendo. */
+const CARENCIA_DIAS = 5;
+const CARENCIA_LINHAS = 0;
 
 /* Teto de linhas por invocação na virada linha a linha. Medido em rodada real
    depois de tirar as idas ao Postgres do caminho crítico: 250 linhas em 102,8s,
@@ -132,6 +144,33 @@ async function lerExtrato(supabase: any, de: string, ate: string): Promise<Linha
       .range(inicio, inicio + PAGINA - 1);
     if (error) throw error;
     const linhas = (data ?? []) as LinhaExtrato[];
+    out.push(...linhas);
+    if (linhas.length < PAGINA) break;
+  }
+  return out;
+}
+
+/**
+ * O que já está registrado, em páginas.
+ *
+ * `.select()` sem `range` devolve no MÁXIMO 1000 linhas, e devolve calado. Dois
+ * dias do extrato passam de mil lançamentos (o maior tem 1.085), e a tabela
+ * inteira já passa de 43 mil: sem paginar, as linhas além da milésima somem do
+ * mapa de "já enviado" e voltam para a fila em TODA rodada — gastando chamada do
+ * Omie para colher "já cadastrado", para sempre.
+ */
+// deno-lint-ignore no-explicit-any
+async function lerRegistrados(
+  supabase: any,
+  filtrar: (q: any) => any,
+): Promise<Record<string, unknown>[]> {
+  const out: Record<string, unknown>[] = [];
+  for (let inicio = 0; ; inicio += PAGINA) {
+    const { data, error } = await filtrar(
+      supabase.from("asaas_omie_lancamento").select("cod_int_lanc,status,valor,n_cod_lanc,tentativas"),
+    ).order("cod_int_lanc", { ascending: true }).range(inicio, inicio + PAGINA - 1);
+    if (error) throw error;
+    const linhas = (data ?? []) as Record<string, unknown>[];
     out.push(...linhas);
     if (linhas.length < PAGINA) break;
   }
@@ -348,17 +387,18 @@ Deno.serve(async (req) => {
      */
     if (action === "virar") {
       const teto = Math.max(1, Math.min(Number(body?.teto ?? TETO_LINHAS), 400));
-      const carenciaV = Math.max(0, Number(body?.carencia ?? CARENCIA_DIAS));
+      const carenciaV = Math.max(0, Number(body?.carencia ?? CARENCIA_LINHAS));
       const limiteV = new Date(new Date(hojeBRT() + "T00:00:00Z").getTime() - carenciaV * 86400000)
         .toISOString().slice(0, 10);
 
-      const { data: diasRaw, error: eDias } = await supabase.rpc("asaas_omie_virada", { p_limite: 400 });
+      const { data: diasRaw, error: eDias } = await supabase.rpc("asaas_omie_virada", { p_limite: 2000 });
       if (eDias) throw eDias;
       const dias = (diasRaw ?? []) as Record<string, unknown>[];
       const aFazer = dias.filter((d) => d.virado !== true && String(d.dia) < limiteV);
 
       let enviadas = 0, removidos = 0, errosV = 0, consecutivos = 0;
       const relatorio: Record<string, unknown>[] = [];
+      const desistidasV: { cod_int_lanc: string; dia: string; tentativas: number }[] = [];
       let pararRelogio = false;
 
       for (const d of aFazer) {
@@ -371,12 +411,23 @@ Deno.serve(async (req) => {
           const linhasDoDia = await lerExtrato(supabase, dia, dia);
           const candidatas = linhasParaOmie(linhasDoDia);
 
-          const { data: jaRaw } = await supabase
-            .from("asaas_omie_lancamento").select("cod_int_lanc,status")
-            .eq("modo", "linha").eq("dia", dia);
-          const ja = new Map<string, string>();
-          for (const r of (jaRaw ?? []) as Record<string, unknown>[]) {
-            ja.set(String(r.cod_int_lanc), String(r.status));
+          const jaRaw = await lerRegistrados(supabase, (q: any) => q.eq("modo", "linha").eq("dia", dia));
+          /* 'pular' = já entrou, ou já falhou vezes demais. A SEGUNDA metade
+             faltava, e foi ela que travou o backfill por 6h23 em 11/09/2026: dez
+             linhas com acento decomposto eram recusadas pelo Omie, voltavam para
+             a cabeça da fila a cada rodada, derrubavam o disjuntor de 3 erros
+             seguidos — e nenhuma das outras 3.737 linhas saía. O cron respondia
+             200 o tempo todo, com `linhas_enviadas: 0`. */
+          const pular = new Set<string>();
+          for (const r of jaRaw) {
+            const st = String(r.status);
+            if (st === "enviado" || Number(r.tentativas ?? 0) >= TETO_TENTATIVAS) {
+              pular.add(String(r.cod_int_lanc));
+            }
+          }
+          const tentativasDe = new Map<string, number>();
+          for (const r of jaRaw) {
+            tentativasDe.set(String(r.cod_int_lanc), Number(r.tentativas ?? 0));
           }
 
           /* AS IDAS AO POSTGRES SAEM DO CAMINHO CRÍTICO.
@@ -395,8 +446,13 @@ Deno.serve(async (req) => {
            * 'pendente' tendo entrado no Omie. A rodada seguinte tenta de novo, o
            * Omie recusa por `cCodIntLanc` repetido, e o caminho de autocura marca
            * 'enviado'. Esse caminho já foi exercitado contra a produção. */
-          const fila = candidatas.filter((l) => ja.get(l.id_transacao) !== "enviado")
+          const fila = candidatas.filter((l) => !pular.has(l.id_transacao))
             .slice(0, Math.max(0, teto - enviadas));
+          for (const l of candidatas) {
+            if (pular.has(l.id_transacao) && (tentativasDe.get(l.id_transacao) ?? 0) >= TETO_TENTATIVAS) {
+              desistidasV.push({ cod_int_lanc: l.id_transacao, dia, tentativas: tentativasDe.get(l.id_transacao) ?? 0 });
+            }
+          }
 
           if (fila.length) {
             const agora = new Date().toISOString();
@@ -455,6 +511,8 @@ Deno.serve(async (req) => {
                 lancamentos: 1, ncodcc: NCODCC_ASAAS_DISPONIVEL, modo: "linha",
                 status: repetido ? "enviado" : "erro",
                 erro: msg.slice(0, 400),
+                // Sem incrementar, a linha ruim volta para sempre. Ver `pular`.
+                tentativas: repetido ? 0 : (tentativasDe.get(l.id_transacao) ?? 0) + 1,
                 enviado_em: repetido ? new Date().toISOString() : null,
                 atualizado_em: new Date().toISOString(),
               });
@@ -533,6 +591,10 @@ Deno.serve(async (req) => {
         linhas_enviadas: enviadas,
         diarios_removidos: removidos,
         erros: errosV,
+        /* Linha que falhou TETO_TENTATIVAS vezes sai da fila e aparece aqui. Sem
+           isso ela bloqueia todas as outras, que foi o que aconteceu. */
+        desistidas: desistidasV.slice(0, 30),
+        desistidas_total: desistidasV.length,
         parou: pararRelogio ? (consecutivos >= 3 ? "3 erros seguidos (disjuntor)" : "relógio") : null,
         carencia_desde: limiteV,
         dias: relatorio.slice(0, 20),
@@ -575,16 +637,16 @@ Deno.serve(async (req) => {
         : doExtrato;
 
     // O que já foi para o Omie — a trava barata, antes de gastar a chamada.
-    const { data: jaRegistrados, error: eReg } = await supabase
-      .from("asaas_omie_lancamento")
-      .select("cod_int_lanc,status,valor,n_cod_lanc,tentativas")
-      .gte("dia", de!).lte("dia", ate);
-    if (eReg) throw eReg;
+    /* Só `modo='diario'`: é o que esta ação trata. Sem o filtro a consulta varre
+       as dezenas de milhares de linhas do espelho e o teto de 1000 do PostgREST
+       corta justamente as que interessam. */
+    const jaRegistrados = await lerRegistrados(
+      supabase,
+      (q: any) => q.eq("modo", "diario").gte("dia", de!).lte("dia", ate),
+    );
 
     const registrado = new Map<string, Record<string, unknown>>();
-    for (const r of (jaRegistrados ?? []) as Record<string, unknown>[]) {
-      registrado.set(String(r.cod_int_lanc), r);
-    }
+    for (const r of jaRegistrados) registrado.set(String(r.cod_int_lanc), r);
 
     /* Um dia que se corrigiu DEPOIS de enviado (o Asaas lança atrasado, e o sync
        reprocessa 3 dias) fica com valor diferente do que foi ao ERP. Isso não é

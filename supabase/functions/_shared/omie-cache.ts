@@ -10,7 +10,7 @@
 // consumidores leem do cache (recálculo local, ~0 chamadas ao Omie) e só repuxam
 // do Omie quando o cache está velho (> maxIdadeMin) ou quando forçado (atualizar=true).
 
-import { listarMovimentos, listarMovimentosExcluindoContas, listarCategorias, type OmieCategoria } from "./omie.ts";
+import { listarMovimentosExcluindoContas, listarCategorias, type OmieCategoria } from "./omie.ts";
 
 /**
  * A conta "ASAAS Disponível" fica FORA do cache — e SÓ ela.
@@ -74,12 +74,6 @@ export async function lerMovimentos(
       if (idade <= maxIdade) return { dados: row.dados, origem: "cache", idadeMin: idade, atualizadoEm: row.atualizado_em };
     }
   }
-  /* A varredura conta a conta é o caminho novo, e ela ainda pode esbarrar na
-     regra de "consumo redundante" do Omie (chamadas parecidas em menos de 60s).
-     Se esbarrar, o certo NÃO é ficar sem DRE: é cair para a varredura antiga, de
-     uma chamada só. Ela ainda funciona hoje — 17.848 registros em ~158s — e só
-     deixa de funcionar quando o espelho linha a linha do Asaas encher a conta.
-     Enquanto as duas convivem, ficar sem número é o pior desfecho possível. */
   /* Quais contas tinham movimento na última varredura. Serve para não fazer duas
      consultas vazias seguidas, que o Omie recusa como redundantes — ver
      `ordemDaVarredura`. Sai do próprio cache anterior: nenhum estado novo. */
@@ -90,16 +84,24 @@ export async function lerMovimentos(
     if (cc != null) comMovimento.add(String(cc));
   }
 
-  let dados: any[];
-  try {
-    dados = await listarMovimentosExcluindoContas(CONTAS_FORA_DO_CACHE, 200, comMovimento);
-  } catch (e) {
-    console.warn(
-      "omie-cache: varredura por conta falhou, caindo para a varredura única:",
-      e instanceof Error ? e.message : String(e),
-    );
-    dados = await listarMovimentos({});
-  }
+  /* SEM FALLBACK PARA A VARREDURA ÚNICA — e a ausência é deliberada.
+   *
+   * Até 11/09/2026 havia um: se a varredura conta a conta falhasse, caía para
+   * `listarMovimentos({})`, que ainda dava conta dos 17.848 registros de então.
+   * Com o espelho linha a linha do Asaas no ar, o ERP passou a ter **62.915**
+   * movimentos, e essa chamada levaria mais de nove minutos — acima dos 400s de
+   * vida do worker. Ela não devolveria nada: morreria no meio, sem gravar o
+   * cache, depois de queimar o tempo todo e de o gateway já ter desistido aos
+   * 150s.
+   *
+   * Ou seja, o fallback deixou de ser rede de proteção e virou um jeito caro de
+   * falhar mais tarde. Falhar aqui, na hora, é melhor: o cache anterior continua
+   * servindo quem não força, o painel de automações pinta a falha, e a rodada
+   * seguinte tenta de novo.
+   *
+   * Se um dia a varredura por conta precisar de substituto, ele tem de ser outro
+   * RECORTE — por data de inclusão, por exemplo —, nunca o ERP inteiro. */
+  const dados = await listarMovimentosExcluindoContas(CONTAS_FORA_DO_CACHE, 200, comMovimento);
   const atualizadoEm = await gravar(supabase, "movimentos", dados);
   return { dados, origem: "omie", idadeMin: 0, atualizadoEm };
 }

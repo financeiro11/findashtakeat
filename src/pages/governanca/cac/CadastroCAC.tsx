@@ -5,11 +5,11 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
-import { Loader2, Search, Pencil, Check, AlertTriangle } from "lucide-react";
+import { Loader2, Search, Pencil, Check, AlertTriangle, RefreshCw } from "lucide-react";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import { comValorExato } from "@/components/ValorExato";
-import { seloDaLinha, type Linha, type Pessoa } from "@/lib/cac";
+import { seloDaLinha, linhaTemRegra, conflitosDeRegra, type Linha, type Pessoa } from "@/lib/cac";
 import { SeloRegra } from "./SeloRegra";
 
 const db = supabase as unknown as {
@@ -31,6 +31,16 @@ function milStr(n: number) {
 /** Só dígitos — a mesma normalização que a coluna `cnpj` exige no banco. */
 const soDigitos = (s: string) => String(s ?? "").replace(/[^0-9]/g, "");
 
+/** O que `cac_pessoas_rh()` devolve: o setor do Portal RH de cada pessoa do cadastro. */
+type SetorNoRh = {
+  cnpj: string;
+  nome_rh: string | null;
+  setor_rh: string | null;
+  /** O setor já traduzido para o departamento que as linhas procuram. */
+  departamento_rh: string | null;
+  datadesl: string | null;
+};
+
 function fmtCNPJ(d: string) {
   if (d.length === 14) return d.replace(/^(\d{2})(\d{3})(\d{3})(\d{4})(\d{2})$/, "$1.$2.$3/$4-$5");
   if (d.length === 11) return d.replace(/^(\d{3})(\d{3})(\d{3})(\d{2})$/, "$1.$2.$3-$4");
@@ -45,6 +55,8 @@ export function CadastroCAC({ onMudou, totaisPorLinha }: {
   const [pessoas, setPessoas] = useState<Pessoa[]>([]);
   const [linhas, setLinhas] = useState<Linha[]>([]);
   const [categorias, setCategorias] = useState<{ codigo: string; descricao: string }[]>([]);
+  const [rh, setRh] = useState<Map<string, SetorNoRh>>(new Map());
+  const [sincronizando, setSincronizando] = useState(false);
   const [loading, setLoading] = useState(true);
   const [busca, setBusca] = useState("");
   const [editandoPessoa, setEditandoPessoa] = useState<Pessoa | null>(null);
@@ -52,22 +64,41 @@ export function CadastroCAC({ onMudou, totaisPorLinha }: {
 
   const carregar = useCallback(async () => {
     setLoading(true);
-    const [p, l, c] = await Promise.all([
+    const [p, l, c, r] = await Promise.all([
       db.from("cac_pessoas").select("*").order("nome"),
       db.from("cac_linhas").select("*").order("ordem"),
       db.rpc("omie_categorias_disponiveis"),
+      db.rpc("cac_pessoas_rh"),
     ]);
     if (p.error) toast.error("Não consegui carregar as pessoas", { description: p.error.message });
     if (l.error) toast.error("Não consegui carregar as linhas", { description: l.error.message });
     setPessoas((p.data ?? []) as Pessoa[]);
     setLinhas((l.data ?? []) as Linha[]);
     setCategorias(c.error ? [] : ((c.data ?? []) as { codigo: string; descricao: string }[]));
+    setRh(new Map(((r.error ? [] : r.data ?? []) as SetorNoRh[]).map((x) => [x.cnpj, x])));
     setLoading(false);
   }, []);
 
   useEffect(() => { void carregar(); }, [carregar]);
 
   const recarregar = () => { void carregar(); onMudou(); };
+
+  /* A mesma função roda todo dia às 09:50; o botão existe para quem acabou de
+     contratar alguém e não quer esperar amanhã. */
+  async function trazerDoRh() {
+    setSincronizando(true);
+    const { data, error } = await db.rpc("cac_sincronizar_rh");
+    setSincronizando(false);
+    if (error) {
+      toast.error("Não consegui ler o RH", { description: error.message });
+      return;
+    }
+    const res = (data ?? {}) as { inseridos?: number; desativados?: number };
+    toast.success("Cadastro conferido com o RH", {
+      description: `${res.inseridos ?? 0} pessoa(s) nova(s) · ${res.desativados ?? 0} marcada(s) como desligada(s)`,
+    });
+    recarregar();
+  }
 
   /* Em qual célula da matriz cada departamento cai. É a pergunta que a aba
      inteira existe para responder: a pessoa está cadastrada, mas o número dela
@@ -90,6 +121,24 @@ export function CadastroCAC({ onMudou, totaisPorLinha }: {
     return [...conta.entries()].sort((a, b) => b[1] - a[1]);
   }, [pessoas, linhaDoDepto]);
 
+  /* O RH é o APOIO, não o dono: a planilha manda no departamento (o Eduardo é
+     Comunidade na planilha e Performance no RH, e é a planilha que bate com o
+     oficial). O que o RH faz aqui é acusar quando o setor dele cairia em OUTRA
+     linha do painel — a pergunta que vale a pena alguém responder. */
+  const divergeDoRh = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const p of pessoas) {
+      const x = rh.get(p.cnpj);
+      if (!x?.departamento_rh) continue;
+      const pelaPlanilha = linhaDoDepto.get(p.departamento);
+      const peloRh = linhaDoDepto.get(x.departamento_rh);
+      if (pelaPlanilha?.id !== peloRh?.id) {
+        m.set(p.cnpj, peloRh ? `${peloRh.grupo} › ${peloRh.rotulo}` : "fora do painel");
+      }
+    }
+    return m;
+  }, [pessoas, rh, linhaDoDepto]);
+
   const dentro = useMemo(
     () => pessoas.filter((p) => linhaDoDepto.has(p.departamento)),
     [pessoas, linhaDoDepto],
@@ -102,19 +151,28 @@ export function CadastroCAC({ onMudou, totaisPorLinha }: {
   const selos = useMemo(() => {
     const m = new Map<string, ReturnType<typeof seloDaLinha>>();
     for (const l of linhas) {
-      m.set(l.id, seloDaLinha(
-        l.regra_nota,
-        !!(l.departamentos?.length || l.categorias?.length),
-        totaisPorLinha?.get(l.id) ?? 1,
-      ));
+      m.set(l.id, seloDaLinha(l.regra_nota, linhaTemRegra(l), totaisPorLinha?.get(l.id) ?? 1, l.manual));
     }
     return m;
   }, [linhas, totaisPorLinha]);
 
+  /* Linha digitada não é pendência: ela não tem regra de propósito. */
   const aConferir = useMemo(
-    () => [...selos.values()].filter((s) => s !== "ok").length,
+    () => [...selos.values()].filter((s) => s !== "ok" && s !== "manual").length,
     [selos],
   );
+
+  /* Categoria que duas linhas pegam entra duas vezes no total, e nada mais avisa. */
+  const conflitos = useMemo(() => conflitosDeRegra(linhas), [linhas]);
+
+  const descricaoDe = useMemo(
+    () => new Map(categorias.map((c) => [c.codigo, c.descricao])),
+    [categorias],
+  );
+  const listaCats = (cs: string[]) => ({
+    texto: !cs.length ? "—" : cs.length <= 2 ? cs.join(" · ") : `${cs.length} cats`,
+    titulo: cs.map((c) => `${c} ${descricaoDe.get(c) ?? ""}`.trim()).join("\n") || undefined,
+  });
 
   const porDepto = useMemo(() => {
     const m = new Map<string, number>();
@@ -133,9 +191,10 @@ export function CadastroCAC({ onMudou, totaisPorLinha }: {
       return [
         p.nome, p.cnpj, p.departamento, p.categoria_omie ?? "", p.planilha_comissao ?? "",
         l ? `${l.grupo} ${l.rotulo}` : "fora do painel",
+        rh.get(p.cnpj)?.setor_rh ?? "",
       ].join(" ").toLowerCase().includes(q);
     });
-  }, [pessoas, busca, linhaDoDepto]);
+  }, [pessoas, busca, linhaDoDepto, rh]);
 
   if (loading) {
     return <div className="flex justify-center py-12"><Loader2 className="h-5 w-5 animate-spin text-muted-foreground" /></div>;
@@ -185,6 +244,17 @@ export function CadastroCAC({ onMudou, totaisPorLinha }: {
           <span className="text-[11.5px] text-muted-foreground">
             Coluna “Linha do painel” diz em qual célula cada pessoa cai
           </span>
+          {divergeDoRh.size > 0 && (
+            <span className="text-[11.5px] text-warn">
+              · {divergeDoRh.size} com o setor do RH em outra linha
+            </span>
+          )}
+          <Button size="sm" variant="outline" className="ml-auto h-8 gap-1.5 text-[12px]"
+            onClick={trazerDoRh} disabled={sincronizando}
+            title="Traz do Portal RH quem falta no cadastro e marca quem o RH dá como desligado. Não muda o departamento de quem já está aqui.">
+            {sincronizando ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
+            Trazer do RH
+          </Button>
         </div>
 
         <div className="max-h-[420px] overflow-y-auto">
@@ -208,7 +278,23 @@ export function CadastroCAC({ onMudou, totaisPorLinha }: {
                       <span className="block">{p.nome}</span>
                       <span className="num block text-[11px] text-muted-foreground">{fmtCNPJ(p.cnpj)}</span>
                     </td>
-                    <td className="px-3 py-1.5">{p.departamento}</td>
+                    <td className="px-3 py-1.5">
+                      <span className="block">{p.departamento}</span>
+                      {(() => {
+                        const x = rh.get(p.cnpj);
+                        if (!x?.setor_rh) return null;
+                        const outra = divergeDoRh.get(p.cnpj);
+                        return (
+                          <span
+                            className={cn("block text-[11px]", outra ? "text-warn" : "text-muted-foreground")}
+                            title={outra ? `Pelo setor do RH, cairia em ${outra}` : undefined}
+                          >
+                            RH: {x.setor_rh}
+                            {x.datadesl ? ` · saiu ${x.datadesl.split("-").reverse().join("/")}` : ""}
+                          </span>
+                        );
+                      })()}
+                    </td>
                     <td className="px-3 py-1.5">
                       <span className={cn(
                         "inline-flex items-center rounded-full px-1.5 py-0.5 text-[11px] font-semibold",
@@ -239,9 +325,25 @@ export function CadastroCAC({ onMudou, totaisPorLinha }: {
         <div className="border-b border-border px-3.5 py-2.5">
           <p className="text-[13px] font-semibold">Regras das linhas</p>
           <p className="mt-0.5 text-[11.5px] text-muted-foreground">
-            O selo é o mesmo que aparece na matriz — conferido, a conferir ou sem regra
+            O selo é o mesmo que aparece na matriz · o mês é o de competência (registro no Omie), como na skill custos-cac-mensal
           </p>
         </div>
+
+        {conflitos.length > 0 && (
+          <div className="border-b border-border bg-neg-soft px-3.5 py-2 text-[12px]">
+            <p className="flex items-center gap-1.5 font-medium text-neg">
+              <AlertTriangle className="h-3.5 w-3.5" />
+              {conflitos.length === 1 ? "Um pagamento seria contado duas vezes" : `${conflitos.length} categorias seriam contadas duas vezes`}
+            </p>
+            <ul className="mt-1 space-y-0.5 text-muted-foreground">
+              {conflitos.map((c) => (
+                <li key={`${c.categoria}-${c.linhas.join()}`}>
+                  <span className="num">{c.categoria}</span> {descricaoDe.get(c.categoria) ?? ""} — {c.linhas.join(" e ")}: {c.motivo}
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
 
         <table className="w-full text-[12.5px]">
           <thead className="bg-muted text-muted-foreground">
@@ -257,7 +359,9 @@ export function CadastroCAC({ onMudou, totaisPorLinha }: {
             {linhas.map((l) => {
               const selo = selos.get(l.id) ?? "ok";
               const conferir = (l.regra_nota ?? "").startsWith("CONFERIR");
-              const cats = l.categorias ?? [];
+              const cats = listaCats(l.categorias ?? []);
+              const inteiras = listaCats(l.categorias_inteiras ?? []);
+              const semCadastro = listaCats(l.categorias_sem_cadastro ?? []);
               return (
                 <tr key={l.id} className="border-t border-border align-top hover:bg-muted/20">
                   <td className="px-3.5 py-2">
@@ -267,7 +371,9 @@ export function CadastroCAC({ onMudou, totaisPorLinha }: {
                     </span>
                   </td>
                   <td className="px-3 py-2">
-                    {l.departamentos?.length ? (
+                    {l.manual ? (
+                      <span className="text-muted-foreground">digitada todo mês</span>
+                    ) : l.departamentos?.length ? (
                       <span className="flex flex-wrap gap-1">
                         {l.departamentos.map((d) => (
                           <Badge key={d} variant="outline" className="text-[10.5px]"
@@ -280,9 +386,20 @@ export function CadastroCAC({ onMudou, totaisPorLinha }: {
                     ) : <span className="text-muted-foreground">—</span>}
                   </td>
                   {/* Até duas categorias cabem por extenso, e o código é o que
-                      se procura no Omie. Acima disso vira contagem. */}
-                  <td className="num px-3 py-2 text-[11.5px] text-muted-foreground">
-                    {!cats.length ? "—" : cats.length <= 2 ? cats.join(" · ") : `${cats.length} cats`}
+                      se procura no Omie. Acima disso vira contagem, e o nome de
+                      cada uma fica no hover. */}
+                  <td className="px-3 py-2 text-[11.5px] text-muted-foreground">
+                    {l.manual ? "—" : (
+                      <span className="flex flex-col gap-0.5">
+                        <span className="num" title={cats.titulo}>{cats.texto}</span>
+                        {inteiras.titulo && (
+                          <span title={inteiras.titulo}>todas as pessoas: <span className="num">{inteiras.texto}</span></span>
+                        )}
+                        {semCadastro.titulo && (
+                          <span title={semCadastro.titulo}>fora do cadastro: <span className="num">{semCadastro.texto}</span></span>
+                        )}
+                      </span>
+                    )}
                   </td>
                   <td className={cn("px-3 py-2 text-[11.5px] leading-relaxed", conferir ? "text-warn" : "text-muted-foreground")}>
                     {l.regra_nota ?? "—"}
@@ -307,6 +424,7 @@ export function CadastroCAC({ onMudou, totaisPorLinha }: {
 
       <LinhaDialog
         linha={editandoLinha}
+        linhas={linhas}
         departamentos={[...porDepto.keys()].sort((a, b) => a.localeCompare(b, "pt-BR"))}
         categorias={categorias}
         onClose={() => setEditandoLinha(null)}
@@ -334,9 +452,13 @@ function PessoaDialog({ pessoa, onClose, onSalvou }: {
   pessoa: Pessoa | null; onClose: () => void; onSalvou: () => void;
 }) {
   const [form, setForm] = useState<Partial<Pessoa>>({});
+  const [codigos, setCodigos] = useState("");
   const [salvando, setSalvando] = useState(false);
 
-  useEffect(() => { setForm(pessoa ?? {}); }, [pessoa]);
+  useEffect(() => {
+    setForm(pessoa ?? {});
+    setCodigos((pessoa?.codigos_omie ?? []).join(", "));
+  }, [pessoa]);
 
   async function salvar() {
     if (!pessoa) return;
@@ -354,6 +476,7 @@ function PessoaDialog({ pessoa, onClose, onSalvou }: {
       remuneracao: form.remuneracao == null || form.remuneracao === ("" as unknown) ? null : Number(form.remuneracao),
       planilha_comissao: form.planilha_comissao || null,
       observacao: form.observacao || null,
+      codigos_omie: codigos.split(/[^0-9]+/).filter(Boolean).map(Number),
       ativo: form.ativo ?? true,
       atualizado_em: new Date().toISOString(),
     }).eq("id", pessoa.id);
@@ -385,9 +508,17 @@ function PessoaDialog({ pessoa, onClose, onSalvou }: {
           <Campo rotulo="Planilha de comissão">
             <Input value={String(form.planilha_comissao ?? "")} onChange={(e) => setForm({ ...form, planilha_comissao: e.target.value })} className="h-8 text-[12.5px]" />
           </Campo>
-          <label className="flex items-center gap-2 text-[12.5px]">
-            <input type="checkbox" checked={form.ativo ?? true} onChange={(e) => setForm({ ...form, ativo: e.target.checked })} />
-            Ativo — desmarcar tira a pessoa das somas dos próximos meses
+          <Campo rotulo="Cadastros do Omie sem documento" ajuda="Códigos de cliente do Omie, separados por vírgula. O pagamento feito a eles casa como se tivesse o CNPJ desta pessoa.">
+            <Input value={codigos} onChange={(e) => setCodigos(e.target.value)} placeholder="ex.: 5478966648" className="h-8 text-[12.5px]" />
+          </Campo>
+          <label className="flex items-start gap-2 text-[12.5px]">
+            <input type="checkbox" className="mt-0.5" checked={form.ativo ?? true} onChange={(e) => setForm({ ...form, ativo: e.target.checked })} />
+            <span>
+              Ativo — está no time hoje
+              <span className="block text-[11px] text-muted-foreground">
+                Desmarcar tira a pessoa da lista de quem deveria ter recebido. O que ela recebeu continua somando.
+              </span>
+            </span>
           </label>
         </div>
         <DialogFooter>
@@ -405,25 +536,61 @@ function PessoaDialog({ pessoa, onClose, onSalvou }: {
  * Regra da linha
  * ======================================================================== */
 
-function LinhaDialog({ linha, departamentos, categorias, onClose, onSalvou }: {
+type ListaCat = "categorias" | "categorias_inteiras" | "categorias_sem_cadastro";
+
+/* As três listas alcançam públicos diferentes, e é isso que deixa a mesma
+   categoria na folha de Field Sales e no fallback de Field Sales sem contar
+   duas vezes. A regra de colisão está em `conflitosDeRegra`. */
+const LISTAS: { chave: ListaCat; rotulo: string; ajuda: string }[] = [
+  { chave: "categorias", rotulo: "Do departamento",
+    ajuda: "Pagamento a quem está no cadastro, num dos departamentos marcados acima, nesta categoria." },
+  { chave: "categorias_inteiras", rotulo: "Todas as pessoas",
+    ajuda: "Entra inteira, seja quem for que recebeu — como 3.2.7.2 Pessoal - Suporte. Nenhuma outra linha pode ter a categoria." },
+  { chave: "categorias_sem_cadastro", rotulo: "Fora do cadastro",
+    ajuda: "Pagamento a quem NÃO está no cadastro: o desligado que ainda recebe, o PJ que ninguém cadastrou." },
+];
+
+function LinhaDialog({ linha, linhas, departamentos, categorias, onClose, onSalvou }: {
   linha: Linha | null;
+  linhas: Linha[];
   departamentos: string[];
   categorias: { codigo: string; descricao: string }[];
   onClose: () => void;
   onSalvou: () => void;
 }) {
   const [deps, setDeps] = useState<string[]>([]);
-  const [cats, setCats] = useState<string[]>([]);
+  const [listas, setListas] = useState<Record<ListaCat, string[]>>({
+    categorias: [], categorias_inteiras: [], categorias_sem_cadastro: [],
+  });
+  const [aba, setAba] = useState<ListaCat>("categorias");
+  const [manual, setManual] = useState(false);
   const [nota, setNota] = useState("");
   const [buscaCat, setBuscaCat] = useState("");
   const [salvando, setSalvando] = useState(false);
 
   useEffect(() => {
     setDeps(linha?.departamentos ?? []);
-    setCats(linha?.categorias ?? []);
+    setListas({
+      categorias: linha?.categorias ?? [],
+      categorias_inteiras: linha?.categorias_inteiras ?? [],
+      categorias_sem_cadastro: linha?.categorias_sem_cadastro ?? [],
+    });
+    setManual(!!linha?.manual);
+    setAba("categorias");
     setNota(linha?.regra_nota ?? "");
     setBuscaCat("");
   }, [linha]);
+
+  const cats = listas[aba];
+
+  /* Confere a regra COMO FICARIA contra as outras linhas como estão — é antes
+     de salvar que a contagem dupla precisa aparecer. */
+  const conflitos = useMemo(() => {
+    if (!linha) return [];
+    const nome = `${linha.grupo} › ${linha.rotulo}`;
+    const simuladas = linhas.map((l) => (l.id === linha.id ? { ...l, departamentos: deps, ...listas, manual } : l));
+    return conflitosDeRegra(simuladas).filter((c) => c.linhas.includes(nome));
+  }, [linha, linhas, deps, listas, manual]);
 
   const catsFiltradas = useMemo(() => {
     const q = buscaCat.trim().toLowerCase();
@@ -439,10 +606,19 @@ function LinhaDialog({ linha, departamentos, categorias, onClose, onSalvou }: {
 
   async function salvar() {
     if (!linha) return;
+    if (conflitos.length) {
+      toast.error("A regra contaria o mesmo pagamento duas vezes", {
+        description: conflitos.map((c) => `${c.categoria}: ${c.motivo}`).join(" · "),
+      });
+      return;
+    }
     setSalvando(true);
     const { error } = await db.from("cac_linhas").update({
-      departamentos: deps,
-      categorias: cats,
+      departamentos: manual ? [] : deps,
+      categorias: manual ? [] : listas.categorias,
+      categorias_inteiras: manual ? [] : listas.categorias_inteiras,
+      categorias_sem_cadastro: manual ? [] : listas.categorias_sem_cadastro,
+      manual,
       regra_nota: nota.trim() || null,
       atualizado_em: new Date().toISOString(),
     }).eq("id", linha.id);
@@ -451,7 +627,7 @@ function LinhaDialog({ linha, departamentos, categorias, onClose, onSalvou }: {
     else { toast.success("Regra atualizada"); onSalvou(); }
   }
 
-  const vazia = !deps.length && !cats.length;
+  const vazia = !manual && !deps.length && !Object.values(listas).some((l) => l.length);
 
   return (
     <Dialog open={!!linha} onOpenChange={(o) => !o && onClose()}>
@@ -461,8 +637,19 @@ function LinhaDialog({ linha, departamentos, categorias, onClose, onSalvou }: {
         </DialogHeader>
 
         <div className="space-y-3">
+          <label className="flex items-start gap-2 text-[12.5px]">
+            <input type="checkbox" className="mt-0.5" checked={manual} onChange={(e) => setManual(e.target.checked)} />
+            <span>
+              Linha digitada todo mês
+              <span className="block text-[11px] text-muted-foreground">
+                Não soma nada do Omie. O valor se digita clicando na célula da matriz.
+              </span>
+            </span>
+          </label>
+
+          {!manual && (<>
           <p className="text-[12px] text-muted-foreground">
-            Quando os dois filtros estão preenchidos eles se combinam com <strong>E</strong>: pagamento
+            Departamento e categoria "do departamento" se combinam com <strong>E</strong>: pagamento
             a alguém <em>daquele departamento</em> <em>e</em> numa <em>daquelas categorias</em>.
           </p>
 
@@ -490,17 +677,30 @@ function LinhaDialog({ linha, departamentos, categorias, onClose, onSalvou }: {
           </div>
 
           <div>
-            <div className="mb-1.5 flex items-center justify-between gap-2">
-              <p className="text-[12px] font-medium">Categorias do Omie ({cats.length})</p>
+            <div className="mb-1.5 flex flex-wrap items-center justify-between gap-2">
+              <div className="inline-flex h-7 items-center gap-0.5 rounded-lg border border-border bg-card p-[3px]">
+                {LISTAS.map((x) => (
+                  <button key={x.chave} type="button" onClick={() => setAba(x.chave)}
+                    className={cn(
+                      "h-5 rounded-[5px] px-2 text-[11.5px] font-medium transition-colors",
+                      aba === x.chave ? "bg-foreground text-background" : "text-muted-foreground hover:text-foreground",
+                    )}>
+                    {x.rotulo} ({listas[x.chave].length})
+                  </button>
+                ))}
+              </div>
               <Input value={buscaCat} onChange={(e) => setBuscaCat(e.target.value)}
                 placeholder="Filtrar…" className="h-7 w-48 text-[12px]" />
             </div>
+            <p className="mb-1.5 text-[11px] text-muted-foreground">
+              {LISTAS.find((x) => x.chave === aba)?.ajuda}
+            </p>
             <div className="max-h-56 overflow-y-auto rounded-md border border-border">
               {catsFiltradas.map((c) => (
                 <label key={c.codigo}
                   className="flex cursor-pointer items-center gap-2 border-b border-border/50 px-2.5 py-1.5 text-[12px] last:border-0 hover:bg-muted/30">
                   <input type="checkbox" checked={cats.includes(c.codigo)}
-                    onChange={() => setCats(alterna(cats, c.codigo))} />
+                    onChange={() => setListas((ls) => ({ ...ls, [aba]: alterna(ls[aba], c.codigo) }))} />
                   <span className="text-muted-foreground">{c.codigo}</span>
                   <span>{c.descricao}</span>
                 </label>
@@ -510,6 +710,20 @@ function LinhaDialog({ linha, departamentos, categorias, onClose, onSalvou }: {
               )}
             </div>
           </div>
+          </>)}
+
+          {conflitos.length > 0 && (
+            <div className="rounded-md border border-neg/40 bg-neg-soft px-3 py-2 text-[12px]">
+              <p className="font-medium text-neg">Assim o mesmo pagamento entraria em duas linhas:</p>
+              <ul className="mt-1 space-y-0.5 text-muted-foreground">
+                {conflitos.map((c) => (
+                  <li key={`${c.categoria}-${c.linhas.join()}`}>
+                    <span className="num">{c.categoria}</span> — {c.linhas.join(" e ")}: {c.motivo}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
 
           <Campo rotulo="Nota" ajuda="Aparece no hover do selo, na coluna “Nota da regra” e dentro do drill-down. Começar com “CONFERIR” marca a linha como não validada.">
             <Input value={nota} onChange={(e) => setNota(e.target.value)} className="h-8 text-[12.5px]" />

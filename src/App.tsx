@@ -77,7 +77,7 @@ import FacilitiesDashboard from "./pages/facilities/FacilitiesDashboard";
 import FacilitiesSolicitacoes from "./pages/facilities/Solicitacoes";
 import FacilitiesCotacoes from "./pages/facilities/Cotacoes";
 import FacilitiesRadar from "./pages/facilities/Radar";
-import FacilitiesPassagens from "./pages/facilities/Passagens";
+import RadarDeCompras, { RedirecionaPassagens } from "./pages/facilities/RadarDeCompras";
 import FacilitiesFornecedores from "./pages/facilities/Fornecedores";
 import FacilitiesHistorico from "./pages/facilities/Historico";
 import FacilitiesContratos from "./pages/facilities/Contratos";
@@ -297,8 +297,10 @@ function Rotas() {
               <Route path="/facilities" element={<FacilitiesDashboard />} />
               <Route path="/facilities/solicitacoes" element={<FacilitiesSolicitacoes />} />
               <Route path="/facilities/cotacoes" element={<FacilitiesCotacoes />} />
-              <Route path="/facilities/radar" element={<FacilitiesRadar />} />
-              <Route path="/facilities/passagens" element={<FacilitiesPassagens />} />
+              {/* Radar de compras: produtos e passagens são abas do mesmo lugar. */}
+              <Route path="/facilities/radar" element={<RadarDeCompras aba="produtos" />} />
+              <Route path="/facilities/radar/passagens" element={<RadarDeCompras aba="passagens" />} />
+              <Route path="/facilities/passagens" element={<RedirecionaPassagens />} />
               <Route path="/facilities/fornecedores" element={<FacilitiesFornecedores />} />
               <Route path="/facilities/historico" element={<FacilitiesHistorico />} />
               <Route path="/facilities/contratos" element={<FacilitiesContratos />} />

@@ -166,8 +166,11 @@ export const GRUPO_FACILITIES: NavGrupo = {
     { title: "Dashboard", url: "/facilities", icon: LayoutDashboard, busca: ["compras"] },
     { title: "Solicitações", url: "/facilities/solicitacoes", icon: Kanban, busca: ["pedido", "compra"] },
     { title: "Cotações", url: "/facilities/cotacoes", icon: FileSpreadsheet, busca: ["orçamento", "comparativo"] },
-    { title: "Radar de preços", url: "/facilities/radar", icon: Radar, busca: ["monitorar preço", "notebook", "equipamento", "promoção", "mercado livre", "oferta"] },
-    { title: "Passagens", url: "/facilities/passagens", icon: Plane, busca: ["viagem", "voo", "aérea", "passagem", "google flights", "aeroporto", "bilhete"] },
+    /* Uma entrada só: Passagens virou aba do Radar de compras (14/09/2026). A busca
+       do ⌘K continua achando pelo vocabulário das duas. */
+    { title: "Radar de compras", url: "/facilities/radar", icon: Radar,
+      busca: ["radar de preços", "monitorar preço", "notebook", "equipamento", "promoção", "mercado livre", "oferta",
+        "passagens", "viagem", "voo", "aérea", "passagem", "google flights", "aeroporto", "bilhete"] },
     { title: "Fornecedores", url: "/facilities/fornecedores", icon: Truck },
     { title: "Histórico", url: "/facilities/historico", icon: History, busca: ["compras realizadas"] },
     { title: "Contratos", url: "/facilities/contratos", icon: FileSignature, busca: ["recorrentes"] },

@@ -13,6 +13,7 @@ import { normalize } from "@/lib/normalize";
 import { apelidoDe, nomeDoCadastro } from "@/lib/apelidos";
 import { useApelidos } from "@/hooks/useApelidos";
 import { useNomesContraparte, type FonteNome } from "@/hooks/useNomesContraparte";
+import { dentroDoIntervalo, intervaloDoPeriodo, type PeriodoExtrato } from "@/lib/periodoExtrato";
 
 /* Extrato de conta corrente de um banco (Sicoob / Asaas), na página própria aberta
    pelo seletor do Caixa. Cada fonte tem duas tabelas de mesmo formato, populadas por
@@ -92,7 +93,7 @@ const ROTULO_FONTE: Record<FonteNome, string> = {
 };
 
 type FiltroTipo = "todos" | "credito" | "debito";
-type Periodo = "tudo" | "hoje" | "7d" | "30d" | "mes";
+type Periodo = PeriodoExtrato;
 
 const sb = supabase as any;
 
@@ -102,11 +103,6 @@ const sb = supabase as any;
    src/lib/extratoAsaas.ts. */
 
 const hojeISO = () => new Date().toLocaleDateString("en-CA");
-function menosDias(n: number) {
-  const d = new Date();
-  d.setDate(d.getDate() - n);
-  return d.toLocaleDateString("en-CA");
-}
 
 const PAGINA = 30;
 const OPCOES_POR_PAGINA = [30, 50, 100, 200];
@@ -203,6 +199,8 @@ export default function ContaCorrenteBancaria({ banco }: { banco: FonteCCKey }) 
   const [loading, setLoading] = useState(true);
   const [syncing, setSyncing] = useState(false);
   const [periodo, setPeriodo] = useState<Periodo>("tudo");
+  const [deData, setDeData] = useState("");
+  const [ateData, setAteData] = useState("");
   const [tipo, setTipo] = useState<FiltroTipo>("todos");
   const [busca, setBusca] = useState("");
   const [porPagina, setPorPagina] = useState(PAGINA);
@@ -234,7 +232,7 @@ export default function ContaCorrenteBancaria({ banco }: { banco: FonteCCKey }) 
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [fonte.tabelaSaldo, fonte.tabelaExtrato]);
 
-  useEffect(() => setPaginaAtual(1), [periodo, tipo, busca, banco, porPagina]);
+  useEffect(() => setPaginaAtual(1), [periodo, deData, ateData, tipo, busca, banco, porPagina]);
 
   async function sincronizar() {
     if (!fonte.sync) {
@@ -354,21 +352,16 @@ export default function ContaCorrenteBancaria({ banco }: { banco: FonteCCKey }) 
     // Por TERMO, e não por trecho: quem procura de memória raramente acerta a
     // ordem das palavras — a mesma regra do drill-down da DRE.
     const termos = normalize(busca).split(" ").filter(Boolean);
-    const de =
-      periodo === "hoje" ? hojeISO()
-      : periodo === "7d" ? menosDias(7)
-      : periodo === "30d" ? menosDias(30)
-      : periodo === "mes" ? hojeISO().slice(0, 7) + "-01"
-      : "";
+    const intervalo = intervaloDoPeriodo(periodo, hojeISO(), { de: deData, ate: ateData });
     return comSaldo.filter((m) => {
       const dm = m.data_movimento?.slice(0, 10) ?? "";
-      if (de && dm < de) return false;
+      if (!dentroDoIntervalo(dm, intervalo)) return false;
       if (tipo === "credito" && !eCredito(m.tipo)) return false;
       if (tipo === "debito" && eCredito(m.tipo)) return false;
       if (termos.length && !termos.every((t) => m.busca.includes(t))) return false;
       return true;
     });
-  }, [comSaldo, periodo, tipo, busca]);
+  }, [comSaldo, periodo, deData, ateData, tipo, busca]);
 
   const totais = useMemo(
     () =>
@@ -515,11 +508,38 @@ export default function ContaCorrenteBancaria({ banco }: { banco: FonteCCKey }) 
         />
       </div>
       <div className="flex flex-wrap items-center gap-2">
+        {periodo === "personalizado" && (
+          <div className="flex items-center gap-1.5 text-[11.5px] text-muted-foreground">
+            <input
+              type="date"
+              value={deData}
+              onChange={(e) => setDeData(e.target.value)}
+              aria-label="Data inicial"
+              className="num h-7 rounded-md border border-border bg-background px-1.5 text-[11.5px] text-foreground outline-none focus:ring-1 focus:ring-ring"
+            />
+            <span>até</span>
+            <input
+              type="date"
+              value={ateData}
+              onChange={(e) => setAteData(e.target.value)}
+              aria-label="Data final"
+              className="num h-7 rounded-md border border-border bg-background px-1.5 text-[11.5px] text-foreground outline-none focus:ring-1 focus:ring-ring"
+            />
+          </div>
+        )}
         <div className="flex rounded-md border border-border bg-card p-0.5">
-          {([["hoje", "Hoje"], ["7d", "7 dias"], ["30d", "30 dias"], ["mes", "Mês atual"], ["tudo", "Tudo"]] as const).map(([k, rot]) => (
+          {([["hoje", "Hoje"], ["7d", "7 dias"], ["30d", "30 dias"], ["mes", "Mês atual"], ["tudo", "Tudo"], ["personalizado", "Personalizado"]] as const).map(([k, rot]) => (
             <button
               key={k}
-              onClick={() => setPeriodo(k)}
+              onClick={() => {
+                // Abre já com o mês corrente preenchido: a lista não pisca vazia
+                // e quase sempre só uma das pontas muda.
+                if (k === "personalizado" && !deData && !ateData) {
+                  setDeData(hojeISO().slice(0, 7) + "-01");
+                  setAteData(hojeISO());
+                }
+                setPeriodo(k);
+              }}
               className={cn(
                 "rounded px-2.5 py-1 text-[11.5px] font-medium transition",
                 periodo === k ? "bg-secondary text-foreground" : "text-muted-foreground hover:text-foreground",

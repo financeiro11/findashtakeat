@@ -313,7 +313,28 @@ Deno.serve(async (req) => {
        * aberto?", porque abri-lo não custa nada: é decodificar bytes e casar
        * tag, sem Gemini, sem cota e sem chance de erro de transcrição. O
        * `lido_do_arquivo_em is null` logo abaixo é o que garante uma vez só. */
-      q = q.or("valor.is.null,and(cnpj.is.null,chave_fiscal.is.null),arquivo_bucket.ilike.*.xml,link.ilike.*.xml");
+      /* E FALTA DE DATA TAMBÉM PEDE LEITURA — a terceira pergunta, acrescentada
+       * em 11/09/2026.
+       *
+       * As duas condições acima perguntam "falta valor?" e "falta identidade?", e
+       * havia **1.562 notas com arquivo no bucket que nunca foram abertas** por
+       * responderem não às duas: já tinham valor e CNPJ. Só que **1.523 delas
+       * estavam sem `vencimento`** — e o parágrafo do XML, três blocos abaixo, já
+       * explica por que isso é caro: `vencimento` é a âncora das janelas do
+       * casador (`data_ref = coalesce(vencimento, enviado_em)`), e sem ela uma
+       * nota de março procura o título dela na janela do dia em que o arquivo
+       * chegou. A mesma razão que fez o XML furar a fila vale para qualquer
+       * documento: ter identidade não adianta se a busca acontece no mês errado.
+       * (Iam de 05/05/2025 até hoje — não era um resíduo antigo, era o normal.)
+       *
+       * É AUTO-LIMITANTE, e é isso que a torna segura: quem é lido recebe
+       * `lido_do_arquivo_em` e não volta, tenha a leitura achado data ou não. E
+       * `manterValor` continua valendo — leitura comum só PREENCHE o que falta,
+       * quem substitui é `releitura: true`. O valor que já estava certo fica.
+       *
+       * Custo do mutirão, medido: ~US$ 0,39 pelas 1.562, a US$ 0,00025 cada. O
+       * teto de 800 chamadas/dia é quem dita o ritmo — dois dias. */
+      q = q.or("valor.is.null,vencimento.is.null,and(cnpj.is.null,chave_fiscal.is.null),arquivo_bucket.ilike.*.xml,link.ilike.*.xml");
       if (body?.releitura !== true) q = q.is("lido_do_arquivo_em", null);
       /* SÓ QUEM TEM CÓPIA NO BUCKET ENTRA. O `catch` lá embaixo carimba
          `lido_do_arquivo_em` mesmo falhando — de propósito, para arquivo

@@ -10,6 +10,8 @@ const UI: Record<Selo, { curto: string; longo: string; classe: string }> = {
   conferir: { curto: "conferir",   longo: "conferir",  classe: "bg-warn-soft text-warn" },
   semregra: { curto: "sem regra",  longo: "sem regra", classe: "bg-neg-soft text-neg" },
   zero:     { curto: "zero",       longo: "zero",      classe: "bg-muted text-muted-foreground" },
+  // Não há classe Tailwind para o --info; a cor sai do token mesmo assim.
+  manual:   { curto: "manual",     longo: "digitada",  classe: "bg-[hsl(var(--info)/0.12)] text-[hsl(var(--info))]" },
 };
 
 export function SeloRegra({ selo, nota, longo, className }: {

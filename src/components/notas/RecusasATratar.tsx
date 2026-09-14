@@ -76,8 +76,14 @@ const GRUPOS = [
   {
     chave: "precisa_de_gente" as const,
     titulo: "Precisam de você",
+    /* O TEXTO ENCOLHEU EM 12/09/2026, e encolheu porque a máquina cresceu.
+       Telefone inválido e código do município eram "conferir com o cliente" e
+       viraram conserto automático — a lista aqui é o que sobra de verdade, e
+       dizer isso é o que evita alguém ir conferir um telefone que a rodada das
+       12:45 já vai trocar. Se a linha estiver aqui e a causa for uma dessas,
+       clique em "Consertar cadastros" acima em vez de ligar para o cliente. */
     ajuda:
-      "O cadastro bate com a Receita e a prefeitura recusa mesmo assim — em geral endereço materialmente errado (logradouro com nome de cidade, número “00”). Conferir com o cliente.",
+      "A máquina olhou e não soube resolver. O que sobra aqui é endereço materialmente errado (logradouro com nome de cidade, número “00”), CEP que não existe nos Correios e a Receita não substitui, e CPF que a Receita não reconhece. Conferir com o cliente.",
     Icone: AlertTriangle,
     cor: "text-amber-600 dark:text-amber-400",
     borda: "border-l-amber-500",
@@ -191,6 +197,71 @@ export default function RecusasATratar() {
     }
   };
 
+  /* TENTAR O CONSERTO AGORA, em vez de esperar as 12:45 UTC.
+   *
+   * A rodada automática existe desde 29/08/2026 e roda uma vez por dia, com teto
+   * de quinze cadastros. Quem abre esta tela com sessenta e duas recusas na mão
+   * não tinha como dizer "tente estas agora" — e a partir de 12/09/2026 isso
+   * passou a importar, porque a rodada aprendeu a consertar telefone e código do
+   * município (ver `camposAcusados`): dezessete das sessenta e duas eram
+   * conserto de máquina esperando o relógio.
+   *
+   * EM LEVAS, e o laço mora aqui, pelo mesmo motivo da devolução à esteira: cada
+   * cliente custa três chamadas externas e a Edge morre aos 150s. O teto de
+   * voltas impede laço infinito quando o servidor deixa de avançar — o que
+   * acontece por desenho: quem foi tentado sai da fila até a recusa seguinte.
+   *
+   * NÃO REEMITE NADA. Conserta o CADASTRO; a nota sai depois, pelo "Devolver à
+   * esteira" ao lado ou pelo reenvio na tela do Omie. Dizer isso no toast é o
+   * que evita alguém ficar esperando a nota aparecer sozinha. */
+  const [consertando, setConsertando] = useState(false);
+  const [consertado, setConsertado] = useState<
+    { corrigidos: number; alvos: number; precisam: number } | null
+  >(null);
+
+  const consertarCadastros = async () => {
+    setConsertando(true);
+    let corrigidos = 0;
+    let alvos = 0;
+    let precisam = 0;
+    try {
+      for (let volta = 0; volta < 6; volta++) {
+        const { data, error } = await sb.functions.invoke("omie-clientes-criar", {
+          body: { action: "corrigir_recusados", operador: "tela-recusas" },
+        });
+        if (error) throw error;
+        if (data?.erro) throw new Error(data.erro);
+        if (data?.pulada) throw new Error(String(data.pulada));
+        const nesta = Number(data?.alvos ?? 0);
+        alvos += nesta;
+        corrigidos += Number(data?.corrigidos ?? 0);
+        precisam += Number(data?.precisam_de_gente ?? 0);
+        setConsertado({ corrigidos, alvos, precisam });
+        // Fila vazia: nada mais a tentar até a próxima recusa.
+        if (!nesta) break;
+      }
+      if (!alvos) {
+        toast.info("Nenhum cadastro na fila do conserto.", {
+          description: "Ou já foram tentados depois da última recusa, ou alguém os editou à mão — "
+            + "nos dois casos a máquina não redecide.",
+        });
+      } else {
+        toast.success(`${corrigidos} de ${alvos} cadastro(s) corrigidos no Omie.`, {
+          description: "Isto conserta o CADASTRO, não emite nota. Use “Devolver à esteira” para a "
+            + "nota sair de novo — ou o “Reenviar NFS-e” do Omie, na OS que já faturou.",
+          duration: 12000,
+        });
+      }
+      await carregar();
+    } catch (e) {
+      toast.error("Não deu para consertar os cadastros.", {
+        description: e instanceof Error ? e.message : String(e),
+      });
+    } finally {
+      setConsertando(false);
+    }
+  };
+
   if (carregando) {
     return (
       <div className="flex items-center gap-2 p-6 text-sm text-muted-foreground">
@@ -281,6 +352,40 @@ export default function RecusasATratar() {
           >
             {devolvendo ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
             {devolvendo ? "Devolvendo…" : "Devolver à esteira"}
+          </button>
+        </div>
+      )}
+
+      {/* O CONSERTO DO CADASTRO, antes de devolver à esteira.
+          A ordem dos dois blocos é a ordem do trabalho: devolver uma OS cujo
+          cadastro continua torto só produz a mesma recusa mais tarde. */}
+      {linhas.length > 0 && (
+        <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-border bg-card p-3">
+          <div className="min-w-[260px] flex-1">
+            <p className="text-xs font-semibold text-foreground">Tentar consertar o cadastro agora</p>
+            <p className="mt-0.5 text-[11px] leading-relaxed text-muted-foreground">
+              A mesma rodada que corre às 12:45 UTC, disparada na hora. Ela lê a recusa e escreve no
+              cadastro do cliente o que a prefeitura nomeou: endereço e CEP pela Receita, o e-mail que
+              falta, e — desde 12/09/2026 — o telefone inválido e o código do município. Não emite nota:
+              depois dela, use “Devolver à esteira”.
+              {consertado && (
+                <>
+                  {" "}
+                  <strong className="text-foreground">
+                    {consertado.corrigidos} de {consertado.alvos} corrigido(s)
+                  </strong>
+                  {consertado.precisam > 0 ? ` · ${consertado.precisam} seguem precisando de gente` : ""}
+                </>
+              )}
+            </p>
+          </div>
+          <button
+            onClick={consertarCadastros}
+            disabled={consertando || devolvendo}
+            className="flex shrink-0 items-center gap-1.5 rounded border border-border bg-muted/60 px-3 py-1.5 text-[11px] font-medium text-foreground hover:bg-muted disabled:opacity-60"
+          >
+            {consertando ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Check className="h-3.5 w-3.5" />}
+            {consertando ? "Consertando…" : "Consertar cadastros"}
           </button>
         </div>
       )}

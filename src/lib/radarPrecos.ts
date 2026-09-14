@@ -12,7 +12,11 @@ import type { AlvoSpecs } from "../../supabase/functions/_shared/radar-precos";
 /** Resumo em uma linha do que o radar entendeu do pedido — para a prévia e para o card. */
 export function resumoDoAlvo(s: AlvoSpecs | null | undefined): string {
   if (!s) return "—";
-  const p: string[] = [s.categoria];
+  const grupos = (s.grupos_obrigatorios ?? []).filter((g) => g.length);
+  // "outro" não diz nada no card; o primeiro termo de cada grupo diz o que é.
+  const p: string[] = [grupos.length && (s.categoria === "outro" || s.categoria === "consumivel")
+    ? grupos.map((g) => g[0]).join(" + ")
+    : s.categoria];
   if (s.marcas?.length) p.push(s.marcas.join("/"));
   if (s.cpu_tier_min) {
     const nome = { 1: "entrada", 3: "i3", 5: "i5", 7: "i7", 9: "i9" }[s.cpu_tier_min] ?? `tier ${s.cpu_tier_min}`;

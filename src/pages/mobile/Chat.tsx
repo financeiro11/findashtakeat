@@ -10,10 +10,11 @@
 // A câmera vem de graça no seletor do próprio sistema (`accept="image/*"`).
 
 import { useEffect, useRef, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import ReactMarkdown from "react-markdown";
 import {
   Send, Loader2, Plus, MessageSquare, Trash2, ShieldCheck, AlertTriangle,
-  Database, RotateCcw, X, ImagePlus, Eye,
+  Database, RotateCcw, X, ImagePlus, Eye, BookOpen, Pencil, Square,
 } from "lucide-react";
 import { toast } from "sonner";
 import { supabase } from "@/integrations/supabase/client";
@@ -25,6 +26,7 @@ import {
   ErroAssistente, TIMEOUT_MS, criarConversa, gravarMensagem, perguntarConferido, streamAiChat,
   type MsgAssistente, type NumeroConferido,
 } from "@/lib/assistente";
+import { aoParar, retirarUltimaPergunta, type Retirada } from "@/lib/assistente-conversa";
 import {
   abrirImagens, anexarImagens, guardarImagens, prepararImagens, triarArquivos,
   type ImagemAnexada, type ImagemMsg,
@@ -47,6 +49,7 @@ const SUGESTOES = [
 ];
 
 export default function MobileChat() {
+  const navigate = useNavigate();
   const [mensagens, setMensagens] = useState<Msg[]>([]);
   const [entrada, setEntrada] = useState("");
   const [pensando, setPensando] = useState(false);
@@ -163,6 +166,50 @@ export default function MobileChat() {
     carregarConversas();
   }
 
+  /* Parar a resposta em curso.
+   *
+   * O mesmo acidente do desktop acontece mais no celular, não menos: o teclado virtual põe
+   * o "enviar" debaixo do polegar e meia pergunta sai sozinha. Parar devolve o texto à
+   * caixa — com as imagens —, que é de onde ele nunca deveria ter saído. O que já chegou na
+   * tela fica: texto pela metade é informação. */
+  const abortoRef = useRef<AbortController | null>(null);
+  const emCursoRef = useRef<{ texto: string; imagens: ImagemAnexada[] } | null>(null);
+
+  async function parar() {
+    abortoRef.current?.abort();
+    abortoRef.current = null;
+    setPensando(false);
+
+    const pendente = emCursoRef.current;
+    emCursoRef.current = null;
+
+    const r = aoParar(mensagensRef.current);
+    if (r.pergunta === null) return; // já veio texto: fica o que veio
+    await aplicarRetirada(r);
+    // As imagens voltam com a pergunta: reenviar sem elas mandaria outra pergunta.
+    if (pendente) setAnexos(pendente.imagens);
+  }
+
+  /** A conversa encolhe, o texto volta para a caixa, e as linhas sem dono saem do banco. */
+  async function aplicarRetirada(r: Retirada<Msg>) {
+    if (r.pergunta === null) return;
+    setMensagens(r.mensagens);
+    setEntrada(r.pergunta);
+    if (conversaId && r.removidas.length) {
+      await supabase.from("ai_messages" as any)
+        .delete()
+        .eq("conversation_id", conversaId)
+        .in("content", r.removidas)
+        .then(() => carregarConversas(), () => {});
+    }
+  }
+
+  /** Devolve a última pergunta à caixa e tira da conversa a pergunta e a resposta dela. */
+  async function editarPergunta() {
+    await aplicarRetirada(retirarUltimaPergunta(mensagensRef.current));
+    campo.current?.focus();
+  }
+
   async function enviar(texto: string, imagens: ImagemAnexada[] = anexos) {
     const pergunta = texto.trim();
     // Imagem sozinha é pergunta válida: a foto da nota já diz o que se quer saber.
@@ -209,6 +256,8 @@ export default function MobileChat() {
     }
 
     const controle = new AbortController();
+    abortoRef.current = controle;
+    emCursoRef.current = { texto: pergunta, imagens };
     // O relógio começa só quando o streaming começa. Ligado antes, um caminho conferido
     // lento comia o tempo do outro e o stream nascia com poucos segundos de vida.
     let relogio: ReturnType<typeof setTimeout> | undefined;
@@ -218,7 +267,8 @@ export default function MobileChat() {
       // chamá-lo só somaria segundos antes de cair no caminho geral do mesmo jeito.
       const conferida = imagens.length > 0
         ? null
-        : await perguntarConferido(pergunta, contexto, cid).catch(() => null);
+        : await perguntarConferido(pergunta, contexto, cid, controle.signal).catch(() => null);
+      if (controle.signal.aborted) return;
 
       if (conferida) {
         const msg: Msg = {
@@ -251,6 +301,9 @@ export default function MobileChat() {
       if (!acumulado) throw new ErroAssistente("O assistente não respondeu nada.", "servidor");
       if (cid) { await gravarMensagem(cid, "assistant", acumulado); carregarConversas(); }
     } catch (e) {
+      // Quem apertou "Parar" já sabe o que aconteceu, e `parar()` já arrumou a tela.
+      // Marcar falha aqui acusaria a pessoa de ter quebrado alguma coisa.
+      if (controle.signal.aborted) return;
       const motivo = e instanceof ErroAssistente
         ? e.message
         : "Falha de conexão. Verifique a internet e tente de novo.";
@@ -261,6 +314,7 @@ export default function MobileChat() {
       setFalhou({ texto: pergunta, motivo, imagens });
     } finally {
       if (relogio) clearTimeout(relogio);
+      if (abortoRef.current === controle) { abortoRef.current = null; emCursoRef.current = null; }
       setPensando(false);
     }
   }
@@ -350,7 +404,20 @@ export default function MobileChat() {
                     <div className="prose prose-sm max-w-none break-words text-[14px] prose-p:my-1.5 prose-ul:my-1.5 prose-headings:my-2 prose-headings:text-[15px] dark:prose-invert">
                       <ReactMarkdown
                         components={{
-                          a: (props) => <a {...props} target="_blank" rel="noreferrer" className="text-primary" />,
+                          /* Rota do Hub navega por dentro; link de fora abre noutra aba.
+                             O guia responde com a rota da tela, e recarregar o app inteiro
+                             no celular é o caminho mais lento possível para chegar nela. */
+                          a: ({ href, ...props }) =>
+                            typeof href === "string" && href.startsWith("/") ? (
+                              <a
+                                href={href}
+                                className="text-primary"
+                                onClick={(e) => { e.preventDefault(); navigate(href); }}
+                                {...props}
+                              />
+                            ) : (
+                              <a href={href} {...props} target="_blank" rel="noreferrer" className="text-primary" />
+                            ),
                           table: (props) => <div className="overflow-x-auto"><table {...props} /></div>,
                         }}
                       >
@@ -368,6 +435,27 @@ export default function MobileChat() {
           {pensando && mensagens[mensagens.length - 1]?.role === "user" && (
             <div className="flex items-center gap-2 text-[12.5px] text-muted-foreground">
               <Loader2 className="h-3.5 w-3.5 animate-spin" /> Consultando os dados…
+              <button
+                onClick={parar}
+                className="rounded border border-border px-2 py-0.5 text-[12px] active:bg-secondary"
+              >
+                Parar
+              </button>
+            </div>
+          )}
+
+          {/* Editar a última pergunta: ela volta para a caixa e a resposta sai da conversa.
+              Fica depois da última resposta, que é onde a pessoa percebe que perguntou
+              errado — e não escondido num menu. */}
+          {!pensando && !falhou && mensagens.length > 0
+            && mensagens[mensagens.length - 1]?.role === "assistant" && (
+            <div className="flex justify-end">
+              <button
+                onClick={editarPergunta}
+                className="inline-flex items-center gap-1 text-[12px] text-muted-foreground active:text-foreground"
+              >
+                <Pencil className="h-3 w-3" /> Editar a pergunta
+              </button>
             </div>
           )}
 
@@ -450,14 +538,27 @@ export default function MobileChat() {
               el.style.height = `${Math.min(128, el.scrollHeight)}px`;
             }}
           />
-          <button
-            type="submit"
-            disabled={pensando || preparando || (!entrada.trim() && anexos.length === 0)}
-            aria-label="Enviar"
-            className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-primary text-primary-foreground disabled:opacity-40"
-          >
-            {pensando ? <Loader2 className="h-5 w-5 animate-spin" /> : <Send className="h-5 w-5" />}
-          </button>
+          {/* Enquanto responde, o botão PARA em vez de girar: um spinner desabilitado
+              debaixo do polegar é o pedido de cancelar que não tem para onde ir. */}
+          {pensando ? (
+            <button
+              type="button"
+              onClick={parar}
+              aria-label="Parar"
+              className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full border border-input text-foreground"
+            >
+              <Square className="h-4 w-4" />
+            </button>
+          ) : (
+            <button
+              type="submit"
+              disabled={preparando || (!entrada.trim() && anexos.length === 0)}
+              aria-label="Enviar"
+              className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-primary text-primary-foreground disabled:opacity-40"
+            >
+              <Send className="h-5 w-5" />
+            </button>
+          )}
         </form>
       </div>
 
@@ -519,9 +620,12 @@ export default function MobileChat() {
   );
 }
 
-/** Espelha o selo do painel do desktop: conferido / consultado / lido da imagem / nada. */
+/** Espelha o selo do desktop: conferido / consultado / guia / lido da imagem / nada. */
 function Selo({ verificado, nivel, provedor, leuImagem }: {
-  verificado?: boolean; nivel?: "conferido" | "consultado"; provedor?: string; leuImagem?: boolean;
+  verificado?: boolean;
+  nivel?: "conferido" | "consultado" | "guia";
+  provedor?: string;
+  leuImagem?: boolean;
 }) {
   if (verificado === undefined) return null; // conversa recarregada do histórico
   const modelo = provedor === "openai" ? "GPT" : provedor === "gemini" ? "Gemini" : null;
@@ -535,6 +639,10 @@ function Selo({ verificado, nivel, provedor, leuImagem }: {
       ) : !verificado ? (
         <span className="inline-flex items-center gap-1 text-muted-foreground">
           <AlertTriangle className="h-3 w-3" /> sem números verificados
+        </span>
+      ) : nivel === "guia" ? (
+        <span className="inline-flex items-center gap-1 text-sky-600 dark:text-sky-400">
+          <BookOpen className="h-3 w-3" /> passo a passo do guia do Hub
         </span>
       ) : nivel === "consultado" ? (
         <span className="inline-flex items-center gap-1 text-amber-600 dark:text-amber-400">

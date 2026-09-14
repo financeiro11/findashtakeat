@@ -14,10 +14,11 @@ import { valorExato } from "@/lib/valor";
 import * as XLSX from "xlsx";
 import {
   MESES, montarMatriz, agruparMatriz, totalGeral, matrizParaAOA,
-  ultimoMesFechado, mesesDoPeriodo, desvioVsMedia, seloDaLinha,
+  ultimoMesFechado, mesesDoPeriodo, desvioVsMedia, seloDaLinha, linhaTemRegra,
   type PainelRow, type LinhaMatriz, type GrupoMatriz, type Linha,
-  type Periodo, type Selo, type Desvio,
+  type Periodo, type Selo, type Desvio, type ConferenciaDre,
 } from "@/lib/cac";
+import { ConferenciaDRE } from "./cac/ConferenciaDRE";
 import { useAuth } from "@/hooks/useAuth";
 import { CelulaDialog } from "./cac/CelulaDialog";
 import { CadastroCAC } from "./cac/CadastroCAC";
@@ -93,6 +94,7 @@ export default function PainelCAC() {
   const [heatmap, setHeatmap] = useState(true);
   const [rows, setRows] = useState<PainelRow[]>([]);
   const [linhasRegra, setLinhasRegra] = useState<Linha[]>([]);
+  const [conferencia, setConferencia] = useState<ConferenciaDre[]>([]);
   const [loading, setLoading] = useState(true);
   const [celula, setCelula] = useState<{ linha: LinhaMatriz; mes: number } | null>(null);
   const [importando, setImportando] = useState(false);
@@ -102,10 +104,14 @@ export default function PainelCAC() {
     /* As regras vêm junto com os números: sem elas não dá para dizer se uma
        linha zerada está zerada porque ninguém recebeu ou porque a regra nunca
        foi preenchida — e essa é exatamente a diferença que o selo mostra. */
-    const [p, l] = await Promise.all([
+    /* A conferência com a DRE vem no mesmo carregamento: mudou uma regra, os
+       dois lados do quadro mudam juntos com a matriz. */
+    const [p, l, c] = await Promise.all([
       db.rpc("cac_painel", { p_ano: ano }),
-      db.from("cac_linhas").select("id, departamentos, categorias"),
+      db.from("cac_linhas").select("id, departamentos, categorias, categorias_inteiras, categorias_sem_cadastro, manual"),
+      db.rpc("cac_conferencia_dre", { p_ano: ano }),
     ]);
+    setConferencia(c.error ? [] : ((c.data ?? []) as ConferenciaDre[]));
     if (p.error) {
       toast.error("Não consegui carregar o painel", { description: p.error.message });
       setRows([]);
@@ -124,23 +130,21 @@ export default function PainelCAC() {
   const fechado = useMemo(() => ultimoMesFechado(ano), [ano]);
   const idx = useMemo(() => mesesDoPeriodo(periodo, fechado), [periodo, fechado]);
 
-  /* Uma linha "tem regra" quando aponta departamento OU categoria. Sem nenhum
-     dos dois ela vale zero por construção, e o selo precisa dizer isso. */
-  const temRegra = useMemo(() => {
-    const m = new Map<string, boolean>();
-    for (const l of linhasRegra) m.set(l.id, !!(l.departamentos?.length || l.categorias?.length));
-    return m;
-  }, [linhasRegra]);
+  /* Uma linha "tem regra" quando aponta departamento ou alguma lista de
+     categoria. Sem nenhuma ela vale zero por construção, e o selo precisa dizer
+     isso — a menos que seja digitada, que é não ter regra de propósito. */
+  const regraPorLinha = useMemo(() => new Map(linhasRegra.map((l) => [l.id, l])), [linhasRegra]);
 
   const selos = useMemo(() => {
     const m = new Map<string, Selo>();
     for (const g of grupos) {
       for (const l of g.linhas) {
-        m.set(l.linha_id, seloDaLinha(l.regra_nota, temRegra.get(l.linha_id) ?? true, l.total));
+        const r = regraPorLinha.get(l.linha_id);
+        m.set(l.linha_id, seloDaLinha(l.regra_nota, r ? linhaTemRegra(r) : true, l.total, r?.manual ?? false));
       }
     }
     return m;
-  }, [grupos, temRegra]);
+  }, [grupos, regraPorLinha]);
 
   /* O total do que está NA TELA, não do ano — é o divisor da participação e do
      "% do período" do grupo. No recorte de um mês, participação anual não
@@ -166,7 +170,7 @@ export default function PainelCAC() {
      acreditar hoje. Uma regra a conferir é a diferença entre um número e um
      palpite, e quem abre a tela tem de saber disso antes de rolar. */
   const aConferir = useMemo(
-    () => [...selos.values()].filter((s) => s !== "ok").length,
+    () => [...selos.values()].filter((s) => s !== "ok" && s !== "manual").length,
     [selos],
   );
   const totalLinhas = selos.size;
@@ -375,6 +379,8 @@ export default function PainelCAC() {
               Nenhuma linha cadastrada. Configure em “Pessoas e regras”.
             </p>
           )}
+
+          <ConferenciaDRE ano={ano} rows={conferencia} mesPadrao={fechado >= 0 ? fechado + 1 : 12} />
         </TabsContent>
 
         {vejoAFolha && (
@@ -388,7 +394,9 @@ export default function PainelCAC() {
         ano={ano}
         linha={celula?.linha ?? null}
         mes={celula?.mes ?? null}
+        manual={!!celula && (regraPorLinha.get(celula.linha.linha_id)?.manual ?? false)}
         onClose={() => setCelula(null)}
+        onMudou={() => { setCelula(null); void carregar(); }}
       />
 
       <ImportarPainelDialog

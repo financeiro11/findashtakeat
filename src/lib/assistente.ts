@@ -20,7 +20,7 @@ export type MsgAssistente = {
   content: string;
   /** true = números vieram de consulta ao banco nesta requisição. */
   verificado?: boolean;
-  nivel?: "conferido" | "consultado";
+  nivel?: "conferido" | "consultado" | "guia";
   provedor?: string;
   erro?: boolean;
   /** Imagens anexadas à pergunta. Só o caminho geral as recebe. */
@@ -36,11 +36,17 @@ export type NumeroConferido = {
 export type RespostaConferida = {
   ok?: boolean;
   consulta?: string;
+  /**
+   * "fora" = o servidor recusou a pergunta por não ser de trabalho, e a recusa já É a
+   * resposta. Quem receber isto NÃO pode cair no caminho geral: o `ai-chat` responderia o
+   * que sabe e desfaria a recusa em um salto.
+   */
+  escopo?: "fora";
   resposta?: string;
   numeros?: NumeroConferido[];
   avisos?: string[];
   provedor?: string;
-  nivel?: "conferido" | "consultado";
+  nivel?: "conferido" | "consultado" | "guia";
 };
 
 export class ErroAssistente extends Error {
@@ -71,10 +77,14 @@ export async function perguntarConferido(
   pergunta: string,
   historico: { pergunta: string; resposta: string }[],
   conversaId: string | null,
+  sinal?: AbortSignal,
 ): Promise<RespostaConferida | null> {
   const { data, error } = await comTimeout(
     supabase.functions.invoke("assistente-responder", {
       body: { pergunta, historico: historico.slice(-4), conversa_id: conversaId },
+      // Sem o sinal aqui, "Parar" só alcançaria o streaming — e a espera mais longa é
+      // justamente esta, antes de o primeiro caractere aparecer.
+      signal: sinal,
     }),
   );
   const resp = data as RespostaConferida | null;

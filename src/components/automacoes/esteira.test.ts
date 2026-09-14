@@ -109,6 +109,38 @@ describe("quem ocupa a esteira", () => {
   it("pendente é sempre item novo, mesmo tendo upgrade escrito", () => {
     expect(itemDe(auto({ automacao: "x", status: "Ideias", upgrade: "algo" }))?.tipo).toBe("novo");
   });
+
+  /* Desativar é o oposto de excluir: some da FILA (não é trabalho em curso) e
+     continua inteira na árvore e no catálogo, que é o histórico. */
+  it("desativada sai da fila, mesmo estando só na ideia", () => {
+    expect(itemDe(auto({ automacao: "engavetada", status: "Ideias", ativa: false }))).toBeNull();
+    expect(nomes([
+      auto({ automacao: "desligada", ativa: false }),
+      auto({ automacao: "viva" }),
+    ])).toEqual(["viva"]);
+  });
+
+  it("desativada leva junto o upgrade que estava na fila", () => {
+    const r = auto({ automacao: "parada", status: "Rodando", upgrade: "dava para melhorar", esteira_upgrade: true, ativa: false });
+    expect(itemDe(r)).toBeNull();
+  });
+
+  it("coluna nova: sem valor ou nulo conta como ativa, não como desligada", () => {
+    expect(itemDe(auto({ automacao: "antiga" }))).not.toBeNull();
+    expect(itemDe(auto({ automacao: "nula", ativa: null }))).not.toBeNull();
+    expect(itemDe(auto({ automacao: "explicita", ativa: true }))).not.toBeNull();
+  });
+
+  it("religar devolve o item para a fila, na mesma posição da regra", () => {
+    const rows = [
+      auto({ automacao: "a", impacto: "Alto", esforco: "Baixo" }),
+      auto({ automacao: "b", impacto: "Médio", esforco: "Médio", ativa: false }),
+      auto({ automacao: "c", impacto: "Baixo", esforco: "Alto" }),
+    ];
+    expect(nomes(rows)).toEqual(["a", "c"]);
+    rows[1].ativa = true;
+    expect(nomes(rows)).toEqual(["a", "b", "c"]);
+  });
 });
 
 /* --------------------------- pino manual --------------------------- */

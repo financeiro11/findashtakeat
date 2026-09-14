@@ -174,9 +174,19 @@ export const SITUACAO: Record<SituacaoTitulo, {
     rotulo: "Com nota no ERP", tom: "ok",
     ajuda: "O Omie confirmou que existe anexo neste título. É o único estado verde.",
   },
+  /* O TEXTO MANDAVA UMA PESSOA FAZER O QUE A MÁQUINA JÁ FAZ, e isso enganou até
+     quem varreu o Hub procurando trabalho manual a automatizar. Desde 26/08/2026
+     a `anexo-triagem` abre estes arquivos sozinha, quatro vezes por hora: o
+     Gemini TRANSCREVE e a regra em `_shared/anexo-triagem.ts` decide. Documento
+     fiscal do valor certo sai da fila como nota; boleto, contrato, print e foto
+     de coisa nenhuma saem como "não é nota". Quem fica é só o que ela
+     deliberadamente não decide — valor divergente, arquivo ilegível, tipo
+     incerto —, e fica COM A LEITURA À MOSTRA na linha. Dizer "alguém precisa
+     abrir" convidava a pessoa a refazer a leitura em vez de conferir um
+     veredito. */
   anexo_suspeito: {
     rotulo: "Anexo a conferir", tom: "atencao",
-    ajuda: "Tem arquivo no ERP, mas o nome não identifica documento nenhum (\"nf_undefined_correta.pdf\", foto solta). Alguém precisa abrir e dizer se é a nota.",
+    ajuda: "Tem arquivo no ERP e o nome não identifica documento nenhum (\"nf_undefined_correta.pdf\", foto solta). A triagem já abriu e leu — o que sobra aqui é o que ela não quis decidir sozinha (valor diferente do título, arquivo ilegível, tipo incerto). A leitura aparece na linha: você confere e carimba, não precisa abrir de novo.",
   },
   /* OS DOIS ESTADOS DE COMPROVANTE, e a diferença entre eles é quem emitiu.
      Onde o fornecedor não emite nota, o recibo É o documento e o título está

@@ -140,7 +140,21 @@ describe("a matriz, perfil a perfil", () => {
     expect(podeVerRota(acesso, "/tarefas")).toBe(true);
     expect(podeVerRota(acesso, "/demonstracoes/dre")).toBe(false);
     expect(podeVerRota(acesso, "/caixa")).toBe(false);
-    expect(podeVerRota(acesso, "/operacional/remuneracao")).toBe(false);
+  });
+
+  /* O Head de RPA é líder e tem este perfil. Abre O PAINEL recortado no time
+     dele — e nenhuma das outras cinco telas de folha, que é exatamente a
+     diferença entre as duas capacidades. */
+  it("automação abre a folha do time, não a da empresa", () => {
+    const acesso = de("automacao");
+    expect(podeVerRota(acesso, "/operacional/remuneracao")).toBe(true);
+    expect(acesso.remuneracao).toBe(false);
+    for (const rota of [
+      "/operacional/colaboradores", "/operacional/variavel", "/operacional/reembolsos",
+      "/automacoes/proporcionais", "/governanca/rescisoes",
+    ]) {
+      expect(podeVerRota(acesso, rota), rota).toBe(false);
+    }
   });
 
   it("facilities e parcerias continuam travados no que já era deles", () => {
@@ -319,10 +333,22 @@ describe("o recorte da folha", () => {
   });
 
   it("quem não tem nenhuma das duas capacidades não abre a folha", () => {
-    for (const id of ["externo", "automacao", "facilities", "parcerias"] as PerfilId[]) {
+    for (const id of ["externo", "facilities", "parcerias"] as PerfilId[]) {
       expect(acessoDe({ perfil: id, setores_folha: ["Suporte"] }).folha, id).toEqual({ tipo: "nenhum" });
       expect(podeVerRota(de(id), "/operacional/remuneracao"), id).toBe(false);
     }
+  });
+
+  /* LIDERANÇA NÃO É UM PERFIL, É TER UM TIME. O recorte pertence à capacidade,
+     não a `lideranca` — o Head de RPA lidera com o perfil do maquinário. */
+  it("o recorte vale para qualquer perfil com a capacidade", () => {
+    const brittes = acessoDe({ perfil: "automacao", setores_folha: ["RPA"] });
+    expect(brittes.folha).toEqual({ tipo: "times", setores: ["RPA"] });
+    expect(podeVerRota(brittes, "/operacional/remuneracao")).toBe(true);
+
+    /* E a capacidade sozinha não abre nada: a outra conta `automacao` tem a
+       mesma linha da matriz e nenhum time marcado. */
+    expect(acessoDe({ perfil: "automacao" }).folha).toEqual({ tipo: "times", setores: [] });
   });
 
   /* A matriz é DADO: tirar "Folha do meu time" da liderança na tela de Perfis

@@ -73,6 +73,12 @@ export interface AlvoSpecs {
   termos_obrigatorios?: string[];
   /** Palavras que reprovam o anúncio (já normalizadas). */
   termos_proibidos?: string[];
+  /**
+   * O que o anúncio TEM de ser, em grupos de sinônimos: basta um termo de cada
+   * grupo, e todos os grupos precisam aparecer — `[["bolsa","bag","case"],["camera","fotografic"]]`.
+   * É a identidade do produto nas categorias sem regra própria (`outro`, `consumivel`).
+   */
+  grupos_obrigatorios?: string[][];
   /** Condições aceitas. Default: só novo. */
   condicoes?: Condicao[];
   /** Termos de busca sugeridos pela IA, um por consulta. */
@@ -723,6 +729,90 @@ export function pisoDePreco(precoAlvo: number): number {
   return Math.round(precoAlvo * FATOR_PISO);
 }
 
+/** O termo abre alguma palavra do título: "fotografic" casa com "fotograficos", "bag" não casa com "embagem". */
+function abrePalavra(t: string, termo: string): boolean {
+  const esc = termo.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`(?:^|[^a-z0-9])${esc}`).test(t);
+}
+
+/**
+ * Categoria sem regra própria e nenhum termo exigido: o radar aceitaria
+ * qualquer anúncio que caiba entre o piso e o teto. Foi assim que uma busca de
+ * bolsa de câmera trouxe mouse, gabinete e carregador portátil.
+ */
+export function faltaIdentidade(s: AlvoSpecs | null | undefined): boolean {
+  if (!s || (s.categoria !== "outro" && s.categoria !== "consumivel")) return false;
+  return !(s.termos_obrigatorios ?? []).some(Boolean)
+    && !(s.grupos_obrigatorios ?? []).some((g) => g.some(Boolean));
+}
+
+/**
+ * O nome do produto que a loja escreve no próprio endereço. É a última saída
+ * quando o anúncio de referência não se deixa ler — em 13/09/2026 a API do
+ * Mercado Livre respondeu 403 e a página redirecionou o robô —, e não custa raspagem.
+ */
+export function nomeNoEndereco(link: string): string | null {
+  let url: URL;
+  try { url = new URL(link); } catch { return null; }
+  let melhor: string[] = [];
+  for (const cru of url.pathname.split("/")) {
+    let parte = cru;
+    try { parte = decodeURIComponent(cru); } catch { /* segue cru */ }
+    const palavras = parte.replace(/_jm$/i, "").split(/[-_+]+/)
+      .filter((w) => /[a-zà-ú]/i.test(w) && !/^mlb[a-z]?\d*$/i.test(w) && !/\d{5,}/.test(w));
+    if (palavras.length > melhor.length) melhor = palavras;
+  }
+  return melhor.length >= 2 ? melhor.join(" ").toLowerCase() : null;
+}
+
+/* ------------------------------------------------- loja fora do assunto do alvo */
+
+/** O que uma loja (ou família de lojas gêmeas) já devolveu para UM alvo. */
+export interface RendimentoFonte {
+  anuncios: number;
+  /** Quantos atendiam ao pedido, em qualquer preço. */
+  uteis: number;
+  /** Última leitura desta loja para este alvo (ISO). */
+  ultima: string;
+}
+
+/** Abaixo disto a amostra é pequena demais para concluir que a loja não tem o produto. */
+export const ANUNCIOS_PARA_TIRAR_FONTE = 10;
+/** Quanto a loja fica fora antes de ser consultada de novo. */
+export const DIAS_FORA_DO_ASSUNTO = 7;
+
+/**
+ * Até quando esta loja fica fora do alvo — `null` quando deve ser lida.
+ *
+ * Loja de informática buscando "bolsa para câmera" devolve o próprio catálogo
+ * na faixa de preço: 20 anúncios, nenhum é bolsa, e o crédito é gasto para
+ * tudo ser recusado. Fora por uma semana, e não para sempre: a volta é o que
+ * descobre a loja que passou a vender o produto.
+ */
+export function fonteForaDoAssunto(r: RendimentoFonte | null | undefined, agora = new Date()): Date | null {
+  if (!r || r.uteis > 0 || r.anuncios < ANUNCIOS_PARA_TIRAR_FONTE) return null;
+  const volta = new Date(new Date(r.ultima).getTime() + DIAS_FORA_DO_ASSUNTO * 86_400_000);
+  return volta > agora ? volta : null;
+}
+
+/** Soma a leitura desta rodada ao que o alvo já sabia de cada loja. Loja não lida fica como estava. */
+export function somarRendimento(
+  atual: Record<string, RendimentoFonte> | null | undefined,
+  lidas: Record<string, { anuncios: number; uteis: number }>,
+  agora = new Date(),
+): Record<string, RendimentoFonte> {
+  const novo: Record<string, RendimentoFonte> = { ...(atual ?? {}) };
+  for (const [k, l] of Object.entries(lidas)) {
+    const antes = novo[k];
+    novo[k] = {
+      anuncios: (antes?.anuncios ?? 0) + l.anuncios,
+      uteis: (antes?.uteis ?? 0) + l.uteis,
+      ultima: agora.toISOString(),
+    };
+  }
+  return novo;
+}
+
 /* ------------------------------------------------------------- a avaliação */
 
 const CONDICAO_LABEL: Record<Condicao, string> = {
@@ -806,6 +896,12 @@ export function avaliar(alvo: AlvoSpecs, precoAlvo: number, o: OfertaBruta, pref
   }
   for (const ob of alvo.termos_obrigatorios ?? []) {
     if (ob && !t.includes(norm(ob))) return nao(`não menciona “${ob}”`);
+  }
+  for (const grupo of alvo.grupos_obrigatorios ?? []) {
+    const termos = grupo.map((g) => norm(g)).filter(Boolean);
+    if (termos.length && !termos.some((g) => abrePalavra(t, g))) {
+      return nao(`não menciona nenhum de “${termos.join(", ")}”`);
+    }
   }
 
   /* 3. Piso — guarda de acessório, e por isso continua cedo: não adianta olhar

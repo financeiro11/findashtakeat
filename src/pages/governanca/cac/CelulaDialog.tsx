@@ -14,10 +14,14 @@ import { useAuth } from "@/hooks/useAuth";
 import { nomeExibido } from "@/lib/apelidos";
 import {
   MESES, agruparPorPessoa, resumirCelula, desvioVsMedia,
+  colunaDoMes, mesAnteriorDe, lancamentosParaPonte,
   type Lancamento, type LinhaMatriz,
 } from "@/lib/cac";
+import { montarPonte } from "@/lib/ponteVariacao";
+import { PonteVariacao } from "@/components/demonstracoes/PonteVariacao";
 
 const db = supabase as unknown as {
+  from: (t: string) => any;
   rpc: (n: string, a?: Record<string, unknown>) => any;
 };
 
@@ -27,18 +31,29 @@ function brl(n: number | null | undefined) {
   return v.toLocaleString("pt-BR", { style: "currency", currency: "BRL", minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
+function brlSemCentavos(n: number) {
+  const v = Number(n);
+  if (!isFinite(v)) return "—";
+  return v.toLocaleString("pt-BR", { style: "currency", currency: "BRL", minimumFractionDigits: 0, maximumFractionDigits: 0 });
+}
+
 const pctStr = (v: number) =>
   (v > 0 ? "+" : "") + (v * 100).toLocaleString("pt-BR", { minimumFractionDigits: 1, maximumFractionDigits: 1 }) + "%";
 
 export function CelulaDialog({
-  ano, linha, mes, onClose,
+  ano, linha, mes, manual = false, onClose, onMudou,
 }: {
   ano: number;
   linha: LinhaMatriz | null;
   mes: number | null;
+  /** Linha digitada: a célula abre o campo de valor em vez dos lançamentos. */
+  manual?: boolean;
   onClose: () => void;
+  /** Chamado depois de gravar ou apagar um valor digitado. */
+  onMudou?: () => void;
 }) {
   const [lancs, setLancs] = useState<Lancamento[]>([]);
+  const [lancsAnt, setLancsAnt] = useState<Lancamento[]>([]);
   const [loading, setLoading] = useState(false);
   const [busca, setBusca] = useState("");
   const [aberta, setAberta] = useState<string | null>(null);
@@ -61,27 +76,44 @@ export function CelulaDialog({
        (devolve zero linhas); parar aqui evita a ida ao banco e, principalmente,
        evita que a tela mostre "0 pessoa(s) na regra", que faria quem lê achar
        que a regra está desconfigurada. */
-    if (!vejoAFolha) { setLancs([]); setLoading(false); return; }
+    if (!vejoAFolha || manual) { setLancs([]); setLancsAnt([]); setLoading(false); return; }
 
+    /* O mês anterior vem junto: a ponte precisa dos dois, e com um lado vazio
+       ela diria que todo mundo entrou. */
+    const ant = mesAnteriorDe(ano, mes!);
     void (async () => {
-      const { data, error } = await db.rpc("cac_celula", {
-        p_ano: ano, p_mes: mes, p_linha_id: linha!.linha_id,
-      });
+      const [atual, anterior] = await Promise.all([
+        db.rpc("cac_celula", { p_ano: ano, p_mes: mes, p_linha_id: linha!.linha_id }),
+        db.rpc("cac_celula", { p_ano: ant.ano, p_mes: ant.mes, p_linha_id: linha!.linha_id }),
+      ]);
       if (cancelado) return;
-      if (error) {
-        toast.error("Não consegui abrir a célula", { description: error.message });
+      if (atual.error) {
+        toast.error("Não consegui abrir a célula", { description: atual.error.message });
         setLancs([]);
       } else {
-        setLancs((data ?? []) as Lancamento[]);
+        setLancs((atual.data ?? []) as Lancamento[]);
       }
+      setLancsAnt(anterior.error ? [] : ((anterior.data ?? []) as Lancamento[]));
       setLoading(false);
     })();
 
     return () => { cancelado = true; };
-  }, [aberto, ano, mes, linha, vejoAFolha]);
+  }, [aberto, ano, mes, linha, vejoAFolha, manual]);
 
   const resumo = useMemo(() => resumirCelula(lancs), [lancs]);
   const pessoas = useMemo(() => agruparPorPessoa(lancs), [lancs]);
+
+  /* A mesma ponte da DRE/DFC: quem entrou, saiu, aumentou ou reduziu contra o
+     mês anterior, somando no centavo a variação da célula. */
+  const ponte = useMemo(() => {
+    if (!linha || mes == null) return null;
+    const ant = mesAnteriorDe(ano, mes);
+    return montarPonte(lancamentosParaPonte(lancs), lancamentosParaPonte(lancsAnt), {
+      mes: colunaDoMes(ano, mes),
+      mesAnterior: colunaDoMes(ant.ano, ant.mes),
+      nomeDe: (l) => l.contraparte ?? "",
+    });
+  }, [linha, mes, ano, lancs, lancsAnt]);
 
   /* O mesmo desvio que pinta a célula na matriz. Quem clicou clicou POR CAUSA
      da cor — a explicação tem de estar aqui dentro, não só no hover que ficou
@@ -111,7 +143,7 @@ export function CelulaDialog({
 
   return (
     <Dialog open={aberto} onOpenChange={(o) => !o && onClose()}>
-      <DialogContent className="max-w-3xl">
+      <DialogContent className="max-h-[92vh] max-w-3xl overflow-y-auto">
         <DialogHeader>
           <DialogTitle className="text-[15px]">
             {linha?.rotulo} · {mes ? MESES[mes - 1] : ""}/{String(ano).slice(2)}
@@ -120,11 +152,13 @@ export function CelulaDialog({
             {linha?.grupo}
             {" · "}
             {dv ? `${pctStr(dv.desvio)} vs média 3m (${brl(dv.media)})` : "sem base de comparação"}
-            {!loading && vejoAFolha && ` · ${pessoas.length} pessoa(s) na regra`}
+            {!loading && vejoAFolha && !manual && ` · ${pessoas.length} pessoa(s) na regra`}
           </p>
         </DialogHeader>
 
-        {loading ? (
+        {manual && linha && mes ? (
+          <EditorManual ano={ano} mes={mes} linha={linha} onMudou={onMudou} />
+        ) : loading ? (
           <div className="flex items-center justify-center py-12">
             <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
           </div>
@@ -161,6 +195,28 @@ export function CelulaDialog({
               </div>
             </div>
 
+            {/* O sinal é o da DRE: custo negativo, e o grupo diz o que ele
+                significa. A grade do CAC mostra o custo positivo, por isso a
+                célula entra aqui com o sinal trocado. */}
+            {ponte && linha && mes != null && (
+              <PonteVariacao
+                ponte={ponte}
+                comp={null}
+                carregando={false}
+                celula={-linha.meses[mes - 1]}
+                celulaAnterior={mes > 1 ? -linha.meses[mes - 2] : undefined}
+                travado={false}
+                travadoAnterior={false}
+                moeda={brl}
+                moedaSemCentavos={brlSemCentavos}
+                obsDe={() => null}
+                rubrica={`${linha.grupo} › ${linha.rotulo}`}
+                mesLabel={`${MESES[mes - 1]}/${String(ano).slice(2)}`}
+                entidade={{ um: "pessoa", varios: "pessoas" }}
+                className="max-h-[340px] rounded-md border"
+              />
+            )}
+
             {resumo.semPagamento.length > 0 && (
               <div className="rounded-md border border-warn/40 bg-warn/5 px-3 py-2">
                 <p className="flex items-center gap-1.5 text-[12.5px] font-medium text-warn">
@@ -188,7 +244,7 @@ export function CelulaDialog({
               </div>
             )}
 
-            <div className="max-h-[46vh] overflow-y-auto rounded-md border border-border">
+            <div className="max-h-[36vh] overflow-y-auto rounded-md border border-border">
               <table className="w-full text-[12.5px]">
                 <thead className="sticky top-0 bg-muted/60 text-muted-foreground">
                   <tr>
@@ -229,6 +285,77 @@ export function CelulaDialog({
         )}
       </DialogContent>
     </Dialog>
+  );
+}
+
+/* Agência de Marketing, Contadores e Comissão de MGM não saem do Omie — a skill
+   manda digitar. O valor gravado aqui é o mesmo `cac_valores_manuais` que a
+   importação usa, e vence o cálculo daquela célula. */
+function EditorManual({ ano, mes, linha, onMudou }: {
+  ano: number;
+  mes: number;
+  linha: LinhaMatriz;
+  onMudou?: () => void;
+}) {
+  const atual = linha.origens[mes - 1] === "manual" ? linha.meses[mes - 1] : null;
+  const [valor, setValor] = useState(atual == null ? "" : String(atual));
+  const [nota, setNota] = useState("");
+  const [salvando, setSalvando] = useState(false);
+
+  useEffect(() => {
+    setValor(atual == null ? "" : String(atual));
+    setNota("");
+  }, [atual, linha.linha_id, mes]);
+
+  async function salvar() {
+    const n = Number(valor);
+    if (valor.trim() === "" || !isFinite(n)) {
+      toast.error("Digite um valor", { description: "Use ponto para os centavos: 1234.56" });
+      return;
+    }
+    setSalvando(true);
+    const { data: sessao } = await supabase.auth.getUser();
+    const { error } = await db.from("cac_valores_manuais").upsert({
+      ano, mes, linha_id: linha.linha_id, valor: n,
+      nota: nota.trim() || "Digitado no painel",
+      autor: sessao?.user?.id ?? null,
+      autor_nome: sessao?.user?.email ?? null,
+      atualizado_em: new Date().toISOString(),
+    }, { onConflict: "ano,mes,linha_id" });
+    setSalvando(false);
+    if (error) toast.error("Não consegui gravar", { description: error.message });
+    else { toast.success("Valor gravado"); onMudou?.(); }
+  }
+
+  async function apagar() {
+    setSalvando(true);
+    const { error } = await db.from("cac_valores_manuais").delete()
+      .eq("ano", ano).eq("mes", mes).eq("linha_id", linha.linha_id);
+    setSalvando(false);
+    if (error) toast.error("Não consegui apagar", { description: error.message });
+    else { toast.success("Valor apagado"); onMudou?.(); }
+  }
+
+  return (
+    <div className="space-y-3">
+      <p className="text-[12px] text-muted-foreground">
+        Linha digitada todo mês — não há lançamento do Omie por trás dela.
+      </p>
+      <div className="grid gap-2 sm:grid-cols-[180px_1fr]">
+        <Input type="number" step="0.01" value={valor} onChange={(e) => setValor(e.target.value)}
+          placeholder="0.00" className="num h-8 text-[12.5px]" autoFocus />
+        <Input value={nota} onChange={(e) => setNota(e.target.value)}
+          placeholder="De onde veio o número (opcional)" className="h-8 text-[12.5px]" />
+      </div>
+      <div className="flex justify-end gap-2">
+        {atual != null && (
+          <Button variant="outline" size="sm" onClick={apagar} disabled={salvando}>Apagar</Button>
+        )}
+        <Button size="sm" onClick={salvar} disabled={salvando}>
+          {salvando && <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />}Gravar
+        </Button>
+      </div>
+    </div>
   );
 }
 
@@ -276,7 +403,9 @@ function PessoaLinha({ p, aberta, onToggle, apelidos }: {
           <tr key={l.cod_titulo ?? `${l.cnpj}-${l.categoria}`} className="border-t border-border/50 bg-muted/10">
             <td className="px-3 py-1.5 pl-9">
               <span className="block text-[12px]">
-                {l.data_pagamento ? new Date(`${l.data_pagamento}T12:00:00`).toLocaleDateString("pt-BR") : "—"}
+                {/* O CAC é por competência: título lançado e ainda não pago
+                    entra na célula, como na DRE. */}
+                {l.data_pagamento ? new Date(`${l.data_pagamento}T12:00:00`).toLocaleDateString("pt-BR") : "a vencer"}
                 {" · "}
                 <span className="text-muted-foreground">{l.categoria_descricao ?? l.categoria ?? "—"}</span>
               </span>

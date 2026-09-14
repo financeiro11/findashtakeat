@@ -11,7 +11,7 @@ import { useAuth } from "@/hooks/useAuth";
 import { cn } from "@/lib/utils";
 import { invocar } from "@/lib/erroEdge";
 import { db, parseValor, fmtBRL, CATEGORIAS, type Solicitacao } from "./lib";
-import { resumoDoAlvo, fonteLabel, pisoDePreco, UNIDADE_LABEL, type AlvoSpecs } from "@/lib/radarPrecos";
+import { resumoDoAlvo, faltaIdentidade, fonteLabel, pisoDePreco, UNIDADE_LABEL, type AlvoSpecs } from "@/lib/radarPrecos";
 
 /**
  * As fontes, com o estado REAL de cada uma medido em 26/08/2026 — não a lista
@@ -179,7 +179,13 @@ export function NovoAlvoDialog({ alvo, open, onOpenChange, onSaved, onBuscarAgor
       if (r.preco_alvo && !precoTxt) setPrecoTxt(String(r.preco_alvo));
       if (r.quantidade) setQuantidade(String(r.quantidade));
       if (Number.isFinite(r.cadencia_dias)) setCadencia(r.cadencia_dias);
-      toast.success(r.leu_referencia ? "Li o pedido e o anúncio de referência." : "Pedido interpretado.");
+      toast.success(
+        r.referencia_de === "endereco"
+          ? "Li o pedido e o nome do produto no endereço do link — a loja não deixa ler a página."
+          : r.leu_referencia
+            ? "Li o pedido e o anúncio de referência."
+            : linkRef ? "Pedido interpretado — não consegui ler o link." : "Pedido interpretado.",
+      );
     } catch (e: any) {
       toast.error(e.message ?? "Não consegui interpretar o pedido.");
     } finally { setLendo(false); }
@@ -196,6 +202,10 @@ export function NovoAlvoDialog({ alvo, open, onOpenChange, onSaved, onBuscarAgor
    */
   async function salvar(buscarDepois = false) {
     if (!specs) { toast.error("Interprete o pedido antes de salvar — é dele que saem os filtros."); return; }
+    if (faltaIdentidade(specs)) {
+      toast.error("O radar ainda não sabe o que é o produto — descreva melhor o pedido e interprete de novo.");
+      return;
+    }
     if (!preco || preco <= 0) { toast.error("Defina o preço-teto."); return; }
     if (!fontes.length) { toast.error("Escolha pelo menos uma fonte."); return; }
     /* A PROIBIÇÃO DO CAFÉ, dita aqui em português. O banco tem o mesmo check
@@ -234,6 +244,8 @@ export function NovoAlvoDialog({ alvo, open, onOpenChange, onSaved, onBuscarAgor
          e decisão de gente não expira sozinha. */
       ...(alvo && alvo.modo === modo ? {} : { compra_ate: null }),
       solicitacao_id: solicId || null, fontes, updated_at: new Date().toISOString(),
+      // Pedido novo, medida nova: loja que não tinha a bolsa pode ter o que se pede agora.
+      ...(alvo && JSON.stringify(alvo.specs) === JSON.stringify(specs) ? {} : { fontes_rendimento: {} }),
       /* Quem cadastrou vira o solicitante quando o achado virar cotação — é o
          que `facilities_radar_virar_cotacao` usa. Sem isso a solicitação nasce
          órfã e ninguém sabe a quem perguntar. Só na criação: editar um alvo não
@@ -299,7 +311,8 @@ export function NovoAlvoDialog({ alvo, open, onOpenChange, onSaved, onBuscarAgor
               placeholder="https://www.mercadolivre.com.br/..."
             />
             <p className="mt-1 text-[11.5px] text-muted-foreground">
-              Se colar um link do Mercado Livre, o radar lê a ficha técnica dele pela API e aproveita as specs.
+              O radar tenta ler o anúncio para aproveitar o vocabulário e as specs. Quando a loja bloqueia a leitura
+              (Mercado Livre, Amazon), usa o nome do produto que vem escrito no endereço.
             </p>
           </div>
 
@@ -323,9 +336,28 @@ export function NovoAlvoDialog({ alvo, open, onOpenChange, onSaved, onBuscarAgor
                   ))}
                 </div>
               )}
+              {!!specs.grupos_obrigatorios?.length && (
+                <div className="mt-1.5 text-[11.5px] text-muted-foreground">
+                  O título precisa dizer:{" "}
+                  <span className="text-foreground">
+                    {specs.grupos_obrigatorios.map((g) => g.join(" ou ")).join("  +  ")}
+                  </span>
+                </div>
+              )}
+              {!!specs.termos_obrigatorios?.length && (
+                <div className="mt-1.5 text-[11.5px] text-muted-foreground">
+                  Exige: {specs.termos_obrigatorios.join(", ")}
+                </div>
+              )}
               {!!specs.termos_proibidos?.length && (
                 <div className="mt-1.5 text-[11.5px] text-muted-foreground">
                   Exclui: {specs.termos_proibidos.join(", ")}
+                </div>
+              )}
+              {faltaIdentidade(specs) && (
+                <div className="mt-2 rounded border border-amber-200 bg-amber-50 px-2 py-1.5 text-[11.5px] text-amber-800 dark:border-amber-900 dark:bg-amber-950/40 dark:text-amber-300">
+                  O radar não tem como saber se o anúncio é este produto — qualquer coisa dentro da faixa de preço passaria.
+                  Descreva o que é o produto (ex.: “bolsa para câmera fotográfica”) e interprete de novo.
                 </div>
               )}
               <p className="mt-2 text-[11.5px] text-muted-foreground">

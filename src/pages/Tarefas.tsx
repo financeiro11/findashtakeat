@@ -4,6 +4,7 @@ import {
   Plus, Trash2, ChevronDown, ChevronRight, Filter, X, LayoutGrid,
   Table as TableIcon, AlertTriangle, MoreHorizontal,
   Search, GripVertical, Pencil, Palette, Check, Target, BarChart3, History, Pause, Zap, Tags, CalendarClock,
+  Clock,
 } from "lucide-react";
 import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger,
@@ -37,6 +38,7 @@ import {
 import { AnaliseSemanal } from "@/components/tarefas/AnaliseSemanal";
 import { HistoricoTarefas } from "@/components/tarefas/HistoricoTarefas";
 import { calcIdade, explicaIdade } from "@/lib/tarefas/idade";
+import { lerPrazo, prazoAtrasado } from "@/lib/tarefas/prazo";
 import { comparaPrioridade } from "@/lib/tarefas/prioridade";
 import { AREAS, AREA_NAO_CLASSIFICADA, corDaArea, rotuloClassificacao } from "@/lib/tarefas/classificacao";
 import { RevisaoClassificacao } from "@/components/tarefas/RevisaoClassificacao";
@@ -213,8 +215,65 @@ function fmtDate(d: string | null) {
   return `${day}/${m}/${y}`;
 }
 function isAtrasada(t: Tarefa) {
-  if (!t.prazo || t.status === "Concluído") return false;
-  return new Date(t.prazo) < new Date(new Date().toDateString());
+  return prazoAtrasado(t.prazo, t.status === "Concluído");
+}
+
+/**
+ * Concluir um card que só vence lá na frente quase sempre é engano de faxina: a
+ * pessoa está limpando o quadro e não leu a data. Não é proibido — quem adianta
+ * trabalho existe —, mas tem de ser escolha, e não efeito colateral de um
+ * arrastão. Foi assim que a Pauta de 11/09 foi fechada no dia 09, e por dois dias
+ * ninguém soube que o card de sexta não viria.
+ * Devolve `false` quando a pessoa desiste.
+ */
+function confirmaConclusaoAdiantada(antes: Tarefa, patch: Partial<Tarefa>): boolean {
+  if (patch.status !== "Concluído" || antes.status === "Concluído") return true;
+  /* O prazo que vale é o que está sendo gravado: no diálogo dá para mudar a data
+     e concluir no mesmo salvar, e perguntar sobre a data velha seria ruído. */
+  const prazo = "prazo" in patch ? patch.prazo ?? null : antes.prazo;
+  const p = lerPrazo(prazo);
+  if ((p.dias ?? 0) <= 0) return true;
+  return confirm(`"${antes.titulo}" só vence em ${p.data} (${p.distancia}). Concluir mesmo assim?`);
+}
+
+/**
+ * O prazo como ele é lido no quadro: a DISTÂNCIA ao lado da data.
+ *
+ * Duas datas cinzas do mesmo tamanho não dizem qual é de ontem e qual é da
+ * semana que vem — e card de rotina fechado antes da hora custou uma ocorrência
+ * inteira (ver src/lib/tarefas/prazo.ts). Cada leitura tem cor própria: vencido
+ * em vermelho, hoje em âmbar, futuro em cinza com relógio. O card concluído fica
+ * neutro, mas diz "adiantada" quando foi fechado antes do próprio prazo.
+ */
+function PrazoTag({ t, className }: { t: Tarefa; className?: string }) {
+  const p = lerPrazo(t.prazo, { concluida: t.status === "Concluído" });
+  const adiantada = p.tom === "concluida" && (p.dias ?? 0) > 0;
+
+  if (p.tom === "sem") {
+    return <span className={cn("num text-[10px] text-muted-foreground", className)} title={p.titulo}>—</span>;
+  }
+
+  return (
+    <span
+      title={p.titulo}
+      className={cn(
+        "num inline-flex shrink-0 items-center gap-1 rounded px-1 py-px text-[10px]",
+        p.tom === "atrasado" && "bg-destructive/10 font-semibold text-destructive",
+        p.tom === "hoje" && "bg-warn-soft font-semibold text-warn",
+        p.tom === "amanha" && "text-foreground",
+        (p.tom === "futuro" || p.tom === "concluida") && "text-muted-foreground",
+        className,
+      )}
+    >
+      {p.tom === "atrasado" ? <AlertTriangle className="h-2.5 w-2.5 shrink-0" />
+        : (p.dias ?? 0) > 0 ? <Clock className="h-2.5 w-2.5 shrink-0" />
+        : null}
+      {p.curta}
+      <span className={cn("font-normal opacity-75", adiantada && "italic")}>
+        {adiantada ? "adiantada" : p.distancia}
+      </span>
+    </span>
+  );
 }
 
 // Descreve, em texto legível, o que mudou de `old` para `patch` — usado no log de histórico.
@@ -688,6 +747,12 @@ export default function Tarefas() {
     return true;
   };
 
+  const mover = (id: string, status: string) => {
+    const t = rows.find(r => r.id === id);
+    if (t && !confirmaConclusaoAdiantada(t, { status })) return;
+    update(id, { status });
+  };
+
   /**
    * Arquiva em vez de apagar.
    *
@@ -910,7 +975,7 @@ export default function Tarefas() {
           onToggleConcluido={() => setConcluidoCollapsed(v => !v)}
           onOpen={setEditing}
           onAdd={openCreate}
-          onMove={(id, status) => update(id, { status })}
+          onMove={mover}
           onRemove={remove}
           onAddColumn={addColumn}
           onRemoveColumn={removeColumn}
@@ -944,7 +1009,14 @@ export default function Tarefas() {
           else toast.info("A ocorrência dessa rotina não está no quadro (concluída ou arquivada).");
         }} />
       ) : view === "analise" ? (
-        <AnaliseSemanal />
+        /* O drill-down da análise abre a tarefa no MESMO diálogo do quadro —
+           mesmo desenho do painel de rotinas, e pelo mesmo motivo: a tarefa se
+           edita num lugar só. */
+        <AnaliseSemanal onAbrirTarefa={(id) => {
+          const t = rows.find(r => r.id === id);
+          if (t) setEditing(t);
+          else toast.info("Essa tarefa não está no quadro (arquivada).");
+        }} />
       ) : (
         <HistoricoTarefas />
       )}
@@ -976,6 +1048,7 @@ export default function Tarefas() {
            arraste seria barulho. */
         onSave={async (patch) => {
           if (!editing) return;
+          if (!confirmaConclusaoAdiantada(editing, patch)) return;
           if (await update(editing.id, patch)) {
             toast.success("Tarefa salva");
             setEditing(null);
@@ -1252,7 +1325,6 @@ function KanbanView({
 function KanbanCard({ t, bar, onClick, onRemove }: { t: Tarefa; bar: string; onClick: () => void; onRemove: () => void }) {
   const tags = tagsFor(t);
   const progress = progressFor(t);
-  const overdue = isAtrasada(t);
   const subsTotal = t.subtarefas?.length || 0;
   const subsDone = t.subtarefas?.filter(s => s.done).length || 0;
   const showProgress = subsTotal > 0;
@@ -1352,11 +1424,7 @@ function KanbanCard({ t, bar, onClick, onRemove }: { t: Tarefa; bar: string; onC
           <span className={cn("h-1.5 w-1.5 rounded-full", PRIO_DOT[t.prioridade])} />
           {t.prioridade}
         </div>
-        <div className={cn("num flex items-center gap-1 text-[10px]",
-          overdue ? "font-semibold text-destructive" : "text-muted-foreground")}>
-          {overdue && <AlertTriangle className="h-2.5 w-2.5" />}
-          {fmtDate(t.prazo)}
-        </div>
+        <PrazoTag t={t} />
         <Avatar name={t.responsavel} />
       </div>
     </div>
@@ -1452,7 +1520,6 @@ function TableView({
                 </TableRow>
                 {g.items.map(t => {
                   const tags = tagsFor(t);
-                  const overdueRow = isAtrasada(t);
                   const idade = calcIdade(t, pausaIdade);
                   return (
                     <TableRow key={t.id} className="cursor-pointer text-xs" onClick={() => onOpen(t)}>
@@ -1486,11 +1553,8 @@ function TableView({
                           <span className={PRIO_TEXT[t.prioridade]}>{t.prioridade}</span>
                         </div>
                       </TableCell>
-                      <TableCell className={cn("num text-xs", overdueRow && "font-semibold text-destructive")}>
-                        <span className="inline-flex items-center gap-1">
-                          {overdueRow && <AlertTriangle className="h-2.5 w-2.5" />}
-                          {fmtDate(t.prazo)}
-                        </span>
+                      <TableCell className="num text-xs">
+                        <PrazoTag t={t} />
                       </TableCell>
                       <TableCell className="num text-xs text-muted-foreground">
                         {new Date(t.created_at).toLocaleDateString("pt-BR")}

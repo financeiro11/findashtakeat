@@ -18,16 +18,20 @@ export type Resultado = {
   consulta: string;
   ok: boolean;
   /**
-   * Quão forte é a garantia por trás dos números.
+   * Quão forte é a garantia por trás do que este bloco afirma.
    *
    * "conferido"  — consulta nomeada: o código conhece a semântica e CONFERIU que a soma
    *                das partes bate com o total. É o que pode ir para diretoria.
    * "consultado" — leitura do banco sem validação semântica da agregação. Confiável quanto
    *                à origem, não quanto à interpretação.
+   * "guia"       — não são números: é procedimento lido do guia do Hub (`guia.ts`), texto
+   *                escrito e revisado por gente. A garantia é a mesma em espécie — o
+   *                conteúdo não foi gerado —, mas ela é sobre o CAMINHO, não sobre valor,
+   *                e a tela precisa dizer isso com outras palavras.
    *
    * Ausente equivale a "conferido".
    */
-  nivel?: "conferido" | "consultado";
+  nivel?: "conferido" | "consultado" | "guia";
   /** Vão para a tabela na tela, ao lado do texto. */
   numeros: Numero[];
   /** Bloco fechado entregue ao modelo. É a única coisa que ele sabe sobre os dados. */

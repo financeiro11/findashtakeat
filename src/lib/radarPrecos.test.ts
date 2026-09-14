@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   lerSpecs, avaliar, classificar, pisoDePreco, condicaoDoTitulo, textoWhats, textoWhatsLote,
-  deveAvisar, resumoDoAlvo,
+  deveAvisar, resumoDoAlvo, faltaIdentidade, nomeNoEndereco, fonteForaDoAssunto, somarRendimento,
   disponibilidade, totalDaOferta, economiaDe, pesoDaNota, textoNota, sugerirTeto, lerEmbalagem,
   type AlvoSpecs, type OfertaBruta,
 } from "./radarPrecos";
@@ -223,6 +223,104 @@ describe("avaliar — o que TEM de passar", () => {
     const r = avaliar({ ...ALVO, condicoes: ["novo", "recondicionado"] }, TETO,
       oferta("Notebook Dell i5 16GB RAM 512GB SSD Recondicionado", 1900));
     expect(r.aprovado).toBe(true);
+  });
+});
+
+/* Títulos reais da varredura de 13/09/2026 do alvo "Bolsa Bag Máquina
+   Fotográfica": sem grupos, todos os recusados abaixo tinham passado. */
+const BOLSA: AlvoSpecs = {
+  categoria: "outro",
+  grupos_obrigatorios: [["bolsa", "bag", "case", "estojo", "mochila"], ["camera", "fotografic", "dslr"]],
+  condicoes: ["novo"],
+};
+
+describe("avaliar — grupos: o anúncio tem de ser o produto pedido", () => {
+  it.each([
+    ["Mouse Gamer Ajazz AJ179P MC, 18000DPI, 6 Botoes, Wireless, Branco", 130],
+    ["Gabinete Gamer Pichau Magpie 4B, Mini-Tower, Lateral de Vidro, Com 2 Fans", 155],
+    ["Carregador Portátil Universal, PowerBank, Display Indicador, 10200MAH, 22.5W", 110],
+    ["Bolsa de Praia Bolsa Beach Bag Street", 256],
+    ["Máquina de Gelo HQ 12kg Turbo Ice Premium, 127V, Preta", 460],
+  ])("recusa “%s”", (titulo, preco) => {
+    const r = avaliar(BOLSA, 400, oferta(titulo, preco));
+    expect(r.aprovado).toBe(false);
+    expect(r.recusa).toMatch(/não menciona nenhum de/);
+    // Coisa errada não vira ponto da curva, nem quando passa do teto.
+    expect(r.apenas_preco).toBe(false);
+  });
+
+  it.each([
+    ["Bolsa Ikon Nca355/c Para Câmera Dslr", 117],
+    ["Bag De Transporte Para Câmera De Ação Insta360 One X2", 109],
+    ["Mochila Bolsa Profissional Fotográfica Universal Para Câmera Dslr Mirrorless", 385],
+  ])("aprova “%s”", (titulo, preco) => {
+    expect(avaliar(BOLSA, 400, oferta(titulo, preco)).aprovado).toBe(true);
+  });
+
+  it("o produto certo acima do teto continua indo para o histórico", () => {
+    const r = avaliar(BOLSA, 400, oferta("Bolsa De Ombro 4l - Pgytech Onego Solo V2 Para Câmera", 722));
+    expect(r.aprovado).toBe(false);
+    expect(r.apenas_preco).toBe(true);
+  });
+
+  it("casa pelo começo da palavra, não no meio dela", () => {
+    const alvo: AlvoSpecs = { categoria: "outro", grupos_obrigatorios: [["bag"]] };
+    expect(avaliar(alvo, 400, oferta("Embagem plástica rolo", 200)).aprovado).toBe(false);
+    expect(avaliar(alvo, 400, oferta("Shoulder Bags couro", 200)).aprovado).toBe(true);
+  });
+});
+
+describe("faltaIdentidade — alvo que aceitaria qualquer coisa", () => {
+  it("acusa 'outro' sem termo nem grupo", () => {
+    expect(faltaIdentidade({ categoria: "outro", buscas: ["bolsa camera"] })).toBe(true);
+    expect(faltaIdentidade({ categoria: "outro", grupos_obrigatorios: [[""]] })).toBe(true);
+  });
+  it("não acusa quem tem identidade", () => {
+    expect(faltaIdentidade(BOLSA)).toBe(false);
+    expect(faltaIdentidade({ categoria: "outro", termos_obrigatorios: ["mouse"] })).toBe(false);
+    expect(faltaIdentidade(ALVO)).toBe(false); // notebook tem regra própria
+  });
+});
+
+describe("nomeNoEndereco — o nome que a loja escreve no link", () => {
+  it("lê o link de catálogo do Mercado Livre colado no alvo da bolsa", () => {
+    expect(nomeNoEndereco(
+      "https://www.mercadolivre.com.br/bolsa-bag-maquina-fotografica-sony-canon-nikon-drone-dji-kf/up/MLBU2924891511?pdp_filters=item_id%3AMLB3945084677",
+    )).toBe("bolsa bag maquina fotografica sony canon nikon drone dji kf");
+  });
+  it("tira o código do anúncio no formato antigo", () => {
+    expect(nomeNoEndereco("https://produto.mercadolivre.com.br/MLB-3945084677-bolsa-para-camera-dslr-_JM"))
+      .toBe("bolsa para camera dslr");
+  });
+  it("devolve null quando o endereço não traz nome", () => {
+    expect(nomeNoEndereco("https://loja.com/p/123456")).toBeNull();
+    expect(nomeNoEndereco("não é link")).toBeNull();
+  });
+});
+
+describe("fonteForaDoAssunto — loja que não tem o produto sai do alvo", () => {
+  const agora = new Date("2026-09-14T12:00:00Z");
+  it("não tira loja que nunca foi lida, nem com amostra pequena", () => {
+    expect(fonteForaDoAssunto(undefined, agora)).toBeNull();
+    expect(fonteForaDoAssunto({ anuncios: 6, uteis: 0, ultima: "2026-09-13T03:25:00Z" }, agora)).toBeNull();
+  });
+  it("tira por uma semana a loja que leu 20 e nenhum era o produto", () => {
+    const volta = fonteForaDoAssunto({ anuncios: 20, uteis: 0, ultima: "2026-09-13T03:25:00Z" }, agora);
+    expect(volta?.toISOString()).toBe("2026-09-20T03:25:00.000Z");
+  });
+  it("devolve a loja depois da semana, para descobrir se passou a ter", () => {
+    expect(fonteForaDoAssunto({ anuncios: 20, uteis: 0, ultima: "2026-09-05T00:00:00Z" }, agora)).toBeNull();
+  });
+  it("um anúncio útil basta para a loja ficar", () => {
+    expect(fonteForaDoAssunto({ anuncios: 32, uteis: 1, ultima: "2026-09-13T03:25:00Z" }, agora)).toBeNull();
+  });
+  it("soma a leitura nova e não mexe em quem não foi lido", () => {
+    const antes = { pichau: { anuncios: 20, uteis: 0, ultima: "2026-09-05T00:00:00Z" }, kabum: { anuncios: 32, uteis: 10, ultima: "2026-09-13T03:25:00Z" } };
+    const depois = somarRendimento(antes, { pichau: { anuncios: 18, uteis: 0 } }, agora);
+    expect(depois.pichau).toEqual({ anuncios: 38, uteis: 0, ultima: agora.toISOString() });
+    expect(depois.kabum).toEqual(antes.kabum);
+    // Relida e ainda sem produto: sai por mais uma semana a partir de agora.
+    expect(fonteForaDoAssunto(depois.pichau, agora)).not.toBeNull();
   });
 });
 

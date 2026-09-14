@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   norm, precosNoTexto, formasDaData, casarEmail, deveAvisar, linkGoogleFlights,
   aeroporto, rotaTexto, diasAte, lerTeto, janelaDeCompra, pendenciasDaViagem,
-  lerDesfecho, agruparPorEvento, PRECO_MIN_PLAUSIVEL,
+  lerDesfecho, agruparPorEvento, PRECO_MIN_PLAUSIVEL, precoDoAlerta,
   type ViagemParaCasar,
 } from "./passagens";
 import { sugerirTeto } from "./radarPrecos";
@@ -46,6 +46,45 @@ describe("precosNoTexto", () => {
     expect(precosNoTexto(`R$ ${PRECO_MIN_PLAUSIVEL - 1}`)).toEqual([]);
     expect(precosNoTexto("R$ 45")).toEqual([]);   // taxa de bagagem
     expect(precosNoTexto("R$ 999.999")).toEqual([]);
+  });
+});
+
+/* Os três alertas REAIS que o Google mandou para a caixa do financeiro@ (fev/2026),
+   assunto e começo do corpo copiados como chegaram. Até 14/09/2026 o parser nunca
+   tinha sido conferido contra um e-mail de verdade — e errava a previsão. */
+const REAL_MUDANCA = {
+  assunto: "Agora, o preço do seu voo monitorado para Vitória é R$ 2.332 (o preço era R$ 1.397)",
+  corpo: "Olá, Houve uma mudança no preço para os seguintes destinos e datas: Porto Seguro para Vitória qui., 19 de fev. Só ida · 1 adulto trending up R$ 2.332 R$ 1.397 -1 03:30 – 07:40 LATAM · 1 parada",
+};
+const REAL_PREVISAO_2D = {
+  assunto: "Voos de Porto Seguro para Vitória: aumento aproximado de R$ 350 esperado nos próximos 2 dias",
+  corpo: "17 Aumento aproximado de R$ 350 esperado nos próximos 2 dias Porto Seguro para Vitória quinta-feira, 19 de fev. now R$ 1.610 em 2 dias R$ 1.960 dom. seg. ter.",
+};
+const REAL_PREVISAO_3D = {
+  assunto: "Voos de Porto Seguro para Vitória: aumento aproximado de R$ 250 esperado nos próximos 3 dias",
+  corpo: "15 Aumento aproximado de R$ 250 esperado nos próximos 3 dias Porto Seguro para Vitória quinta-feira, 19 de fev. now R$ 1.558 em 3 dias R$ 1.808 dom. seg.",
+};
+
+describe("precoDoAlerta — os formatos reais do Google", () => {
+  it("mudança de preço: o atual, não o antigo", () => {
+    expect(precoDoAlerta(REAL_MUDANCA.assunto, REAL_MUDANCA.corpo)).toBe(2332);
+  });
+
+  it("previsão: o 'now', nunca o aumento esperado nem o preço daqui a N dias", () => {
+    expect(precoDoAlerta(REAL_PREVISAO_2D.assunto, REAL_PREVISAO_2D.corpo)).toBe(1610);
+    expect(precoDoAlerta(REAL_PREVISAO_3D.assunto, REAL_PREVISAO_3D.corpo)).toBe(1558);
+  });
+
+  it("variação sozinha não vira preço", () => {
+    expect(precoDoAlerta("Voos para Recife: queda aproximada de R$ 300 esperada", "")).toBeNull();
+  });
+
+  it("o casamento grava o preço de agora na viagem certa", () => {
+    const r = casarEmail(REAL_PREVISAO_2D.assunto, REAL_PREVISAO_2D.corpo, [
+      { id: "v-vix", origem: "BPS", destino: "VIX", data_ida: "2026-02-19", data_volta: null },
+    ]);
+    expect(r.viagem_id).toBe("v-vix");
+    expect(r.preco).toBe(1610);
   });
 });
 

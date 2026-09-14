@@ -5,7 +5,7 @@ import {
   fixoDeReferencia, compararComPares, custoPorArea, competenciasFechadas, abasDaPlanilha,
   FILTROS_VAZIOS, filtrosLigados, montarLinhas, filtrarPorFaixa, ordenarLinhas,
   recortarAte, pessoasSemTime, custoNoAno, semReajusteHaMaisTempo, faixaPorCargo, foraDaLinha,
-  quemOFiltroEscondeu, type Filtros,
+  quemOFiltroEscondeu, nomeParaSeparar, type Filtros,
   type MesRemuneracao, type PessoaRemuneracao,
 } from "./remuneracao";
 
@@ -1132,6 +1132,21 @@ describe("planilha", () => {
    O recorte do líder casa por setor, e o setor vem do Portal RH — que só conhece
    quem está lá hoje. 99 fichas têm pagamento e nenhum time, R$ 2,4 milhões de
    história; sem elas o 2025 de um líder aparece 29% menor, calado. */
+describe("nome da ficha separada", () => {
+  it("primeiro nome e a área do trecho, no padrão de quem saiu", () => {
+    expect(nomeParaSeparar("RENATA RUAS PESSOA", "Administrativo")).toBe("Renata (Administrativo)");
+    expect(nomeParaSeparar("João Vitor Clasen de Andrades", "Tecnologia")).toBe("João (Tecnologia)");
+  });
+
+  it("o parêntese antigo não entra no nome novo", () => {
+    expect(nomeParaSeparar("Juliane (Marketing)", "Suporte")).toBe("Juliane (Suporte)");
+  });
+
+  it("sem área, fica só o nome", () => {
+    expect(nomeParaSeparar("luis guilherme", null)).toBe("Luis");
+  });
+});
+
 describe("quem está sem time", () => {
   const SETORES = ["Field Sales", "Inside Sales", "Marketing", "Onboarding", "Produto", "Suporte", "Sucesso", "Tecnologia"];
 

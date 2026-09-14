@@ -19,6 +19,8 @@ import {
   CADENCIA_PADRAO, Cadencia, ajustarPrazoACadencia, cadenciaValida, deIso, descreverCadencia,
   ehDataDaCadencia, iso, lerCadencia, proximaData,
 } from "@/lib/tarefas/rotina";
+import { lerPrazo } from "@/lib/tarefas/prazo";
+import { lerHoras } from "@/lib/tarefas/recorte";
 import { CadenciaEditor, PagamentoDoDia } from "@/components/tarefas/CadenciaEditor";
 
 /* Tipos e helpers de Tarefas compartilhados entre a página Tarefas e o Briefing. */
@@ -45,6 +47,10 @@ export type Tarefa = {
   cat_area?: string | null;
   cat_origem?: string | null;
   rotina?: boolean | null;
+  /* Horas que a tarefa consumiu, apontadas por quem fez. `null` = não apontado, e
+     aí a Análise Semanal usa a estimativa do board DIZENDO que é estimativa — é o
+     único jeito de o mix por tempo virar medida em vez de palpite. */
+  horas_gastas?: number | null;
   /* A agenda da rotina. `rotina` acima diz "isto se repete" (e é o que a Análise
      soma); estes dizem QUANDO — e é o que o cron `tarefas_rotinas_gerar` executa
      para criar a próxima ocorrência. Sem cadência, `rotina` continua valendo
@@ -100,6 +106,9 @@ export function TaskDialog({ columns, open, tarefa, defaultStatus, onClose, onSa
   const [natureza, setNatureza] = useState<string>("");
   const [area, setArea] = useState<string>("");
   const [rotina, setRotina] = useState(false);
+  /* Texto, não número: quem digita escreve "1,5" e um <input type=number> com
+     locale pt-BR devolve string vazia para a vírgula. A leitura é de lerHoras. */
+  const [horas, setHoras] = useState("");
   const [cadencia, setCadencia] = useState<Cadencia | null>(null);
   const [rotinaAtiva, setRotinaAtiva] = useState(true);
   const [antecedencia, setAntecedencia] = useState(0);
@@ -133,6 +142,7 @@ export function TaskDialog({ columns, open, tarefa, defaultStatus, onClose, onSa
       setNatureza(tarefa?.cat_natureza || "");
       setArea(tarefa?.cat_area || "");
       setRotina(!!tarefa?.rotina);
+      setHoras(tarefa?.horas_gastas != null ? String(tarefa.horas_gastas).replace(".", ",") : "");
       setCadencia(lerCadencia(tarefa?.rotina_cadencia));
       setRotinaAtiva(tarefa?.rotina_ativa ?? true);
       setAntecedencia(tarefa?.rotina_antecedencia_dias ?? 0);
@@ -210,6 +220,10 @@ export function TaskDialog({ columns, open, tarefa, defaultStatus, onClose, onSa
   /* Divergencia que a pessoa PRECISA ver: ela digitou uma data, e a regra que
      ela mesma escreveu nao produz aquele dia. */
   const prazoDiverge = !!cadenciaAtiva && !!prazo && !ehDataDaCadencia(cadenciaAtiva, deIso(prazo));
+  /* A distancia ao lado do campo: "em 7 d" / "hoje" / "há 3 d". O input de data
+     mostra 11/09/2026 e 18/09/2026 com a mesma cara, e é aqui que a pessoa
+     decide concluir — ver src/lib/tarefas/prazo.ts. */
+  const leituraPrazo = lerPrazo(prazoEfetivo || null, { concluida: status === "Concluído" });
 
   useEffect(() => {
     if (!cadenciaAtiva) return;
@@ -260,6 +274,8 @@ export function TaskDialog({ columns, open, tarefa, defaultStatus, onClose, onSa
     setTimeout(() => setLinkCopiado(false), 1800);
   };
 
+  /* `undefined` = não entendi (não grava nada); `null` = apagar o apontamento. */
+  const horasLidas = lerHoras(horas);
   const canSave = !!titulo.trim() && !!responsavel && !!prazoEfetivo;
   const submit = () => {
     if (!canSave) {
@@ -295,6 +311,9 @@ export function TaskDialog({ columns, open, tarefa, defaultStatus, onClose, onSa
             cat_origem: "manual",
           }
         : {}),
+      /* A hora vai sempre — não é carimbo de gatilho, é apontamento. Texto
+         ilegível preserva o que estava gravado em vez de apagá-lo. */
+      ...(horasLidas === undefined ? {} : { horas_gastas: horasLidas }),
     });
   };
 
@@ -333,9 +352,24 @@ export function TaskDialog({ columns, open, tarefa, defaultStatus, onClose, onSa
             </div>
             <div>
               <div className="flex items-baseline justify-between gap-2">
-                <Label>Prazo</Label>
+                <Label className="flex items-baseline gap-1.5">
+                  Prazo
+                  {leituraPrazo.distancia && (
+                    <span
+                      title={leituraPrazo.titulo}
+                      className={cn("text-[10px] font-normal",
+                        leituraPrazo.tom === "atrasado" ? "text-destructive"
+                          : leituraPrazo.tom === "hoje" ? "text-warn"
+                          : "text-muted-foreground")}
+                    >
+                      {leituraPrazo.tom === "concluida" && (leituraPrazo.dias ?? 0) > 0
+                        ? `concluída adiantada · ${leituraPrazo.distancia}`
+                        : leituraPrazo.distancia}
+                    </span>
+                  )}
+                </Label>
                 {prazoDaRotina && (
-                  <span className={cn("text-[10px]", prazoDiverge ? "text-warning" : "text-muted-foreground")}>
+                  <span className={cn("text-[10px]", prazoDiverge ? "text-warn" : "text-muted-foreground")}>
                     {prazoDiverge ? "não é dia da rotina" : "pela rotina"}
                   </span>
                 )}
@@ -344,13 +378,13 @@ export function TaskDialog({ columns, open, tarefa, defaultStatus, onClose, onSa
                 type="date"
                 value={prazo}
                 onChange={(e) => setPrazo(e.target.value)}
-                className={cn(prazoDiverge && "border-warning")}
+                className={cn(prazoDiverge && "border-warn")}
               />
               {prazoDiverge && prazoSugerido && (
                 <button
                   type="button"
                   onClick={() => setPrazo(prazoSugerido)}
-                  className="mt-1 text-left text-[10px] text-warning underline-offset-2 hover:underline"
+                  className="mt-1 text-left text-[10px] text-warn underline-offset-2 hover:underline"
                 >
                   {descreverCadencia(cadenciaAtiva)} não cai nesse dia — usar{" "}
                   {deIso(prazoSugerido).toLocaleDateString("pt-BR")}
@@ -419,6 +453,27 @@ export function TaskDialog({ columns, open, tarefa, defaultStatus, onClose, onSa
                     {AREAS.map(a => <SelectItem key={a} value={a}>{a}</SelectItem>)}
                   </SelectContent>
                 </Select>
+              </div>
+            </div>
+            {/* O tempo que a tarefa consumiu. É o único número da Análise que
+                ninguém consegue estimar de fora: o board sabe quando o card foi
+                criado e quando fechou, não quanto tempo a pessoa passou nele. Em
+                branco, a aba usa a estimativa e diz que é estimativa. */}
+            <div>
+              <Label className="text-xs text-muted-foreground">Tempo gasto</Label>
+              <div className="flex items-center gap-2">
+                <Input
+                  value={horas}
+                  onChange={(e) => setHoras(e.target.value)}
+                  placeholder="—"
+                  className={cn("h-8 w-24 text-xs", horasLidas === undefined && "border-destructive")}
+                />
+                <span className="text-xs text-muted-foreground">
+                  horas
+                  {horasLidas === undefined
+                    ? " · não entendi esse valor — use um número, como 1,5"
+                    : " · em branco, a Análise estima pelo tempo no board"}
+                </span>
               </div>
             </div>
             <label className="flex cursor-pointer items-start gap-2 pt-1">

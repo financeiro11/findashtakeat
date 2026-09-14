@@ -74,8 +74,11 @@ export async function saldoFirecrawl(): Promise<Saldo> {
   const vazio = { restantes: null, plano: null, ate: null };
   if (!key) return { ...vazio, erro: "CHAVE_API_FIRCRAWL não configurada" };
   try {
+    /* Com prazo: o saldo é lido antes E depois de toda rodada, e um endpoint
+       pendurado aqui segurava a requisição inteira além dos 150s do gateway. */
     const r = await fetch(`${API}/team/credit-usage`, {
       headers: { Authorization: `Bearer ${key}`, accept: "application/json" },
+      signal: AbortSignal.timeout(8_000),
     });
     const d = await r.json().catch(() => ({} as any));
     if (!r.ok || !d?.data) {

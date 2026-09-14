@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { chaveDoTitulo } from "../../../supabase/functions/_shared/folha-envio";
+import { chaveDoTitulo, faltaEhDeCadastro } from "../../../supabase/functions/_shared/folha-envio";
 
 const CNPJ = "65134410000170";
 const cad = (chave: string, existe = true) => ({ chave, existe });
@@ -116,5 +116,60 @@ describe("chaveDoTitulo — bloqueia em vez de substituir", () => {
       const r = chaveDoTitulo({ documento: CNPJ, cadastro: cad(chave), estagiario: false });
       expect(r.bloqueio?.toLowerCase()).toContain("omie");
     }
+  });
+});
+
+/* O QUE SEPARA "O ENVIO RESOLVE" DE "É TRABALHO DE GENTE".
+ *
+ * `faltaEhDeCadastro` casa por TEXTO com o bloqueio de `chaveDoTitulo`, o que é
+ * frágil por natureza — e é justamente por isso que ele se testa contra as
+ * frases DE VERDADE, geradas aqui pela própria função, em vez de contra uma
+ * cópia delas. Um dia em que alguém reescrever a mensagem, é este teste que
+ * avisa antes de o degrau de cadastro virar código morto em silêncio.
+ *
+ * A consequência de errar tem lados diferentes: um falso positivo manda uma
+ * consulta ao Omie para receber a mesma recusa (barato); um falso negativo
+ * mantém a pessoa fora da folha esperando alguém abrir o ERP (que é o trabalho
+ * manual que o degrau existe para apagar). */
+describe("faltaEhDeCadastro — quem o envio tenta destravar sozinho", () => {
+  it("pega o 'sem fornecedor' da montagem do título", () => {
+    expect(faltaEhDeCadastro("fornecedor no Omie")).toBe(true);
+  });
+
+  it("pega os DOIS bloqueios de cadastro que a chaveDoTitulo escreve", () => {
+    const semCadastro = chaveDoTitulo({ documento: CNPJ, cadastro: cad("", false), estagiario: false });
+    const semChave = chaveDoTitulo({ documento: CNPJ, cadastro: cad(""), estagiario: false });
+    expect(faltaEhDeCadastro(semCadastro.bloqueio)).toBe(true);
+    expect(faltaEhDeCadastro(semChave.bloqueio)).toBe(true);
+  });
+
+  it("NÃO pega a chave que existe e não serve — ali o envio não tem o que fazer", () => {
+    const casos = [
+      // CPF de quem não é estagiário
+      chaveDoTitulo({ documento: "15447902797", cadastro: cad("15447902797"), estagiario: false }),
+      // estagiário com CNPJ
+      chaveDoTitulo({ documento: CNPJ, cadastro: cad(CNPJ), estagiario: true }),
+      // documento de terceiro
+      chaveDoTitulo({ documento: CNPJ, cadastro: cad("37511891000150"), estagiario: false }),
+      // telefone sem +55
+      chaveDoTitulo({ documento: "65677373000147", cadastro: cad("11957054393"), estagiario: false }),
+      // e-mail sem TLD
+      chaveDoTitulo({ documento: "66395343000100", cadastro: cad("scaetano.takeat@gnm"), estagiario: false }),
+    ];
+    for (const c of casos) {
+      expect(c.bloqueio, "o caso precisa de fato bloquear").toBeTruthy();
+      expect(faltaEhDeCadastro(c.bloqueio), `não devia tentar cadastro: ${c.bloqueio}`).toBe(false);
+    }
+  });
+
+  it("categoria e documento inválido ficam de fora — não é cadastro de fornecedor", () => {
+    expect(faltaEhDeCadastro("categoria")).toBe(false);
+    expect(faltaEhDeCadastro("documento ausente ou incompleto")).toBe(false);
+  });
+
+  it("vazio, nulo e indefinido são 'não falta nada', nunca 'tente cadastrar'", () => {
+    expect(faltaEhDeCadastro("")).toBe(false);
+    expect(faltaEhDeCadastro(null)).toBe(false);
+    expect(faltaEhDeCadastro(undefined)).toBe(false);
   });
 });

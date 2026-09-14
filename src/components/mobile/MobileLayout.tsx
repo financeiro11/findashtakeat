@@ -25,13 +25,9 @@ export default function MobileLayout() {
   useEffect(() => observarTema(), []);
   useVoltarAoDestino(!!user);
 
-  if (loading) {
-    return (
-      <div className="flex h-[100dvh] items-center justify-center text-sm text-muted-foreground">
-        Carregando…
-      </div>
-    );
-  }
+  // Mesma decisão do desktop (ver AppLayout): tela lisa em vez de "Carregando…", porque
+  // o texto some antes de dar tempo de ler e só pisca.
+  if (loading) return <div className="h-[100dvh] bg-background" />;
   // Com o destino junto — quem abre `/notas/<id>` no celular sem sessão volta NA nota
   // depois de entrar, e não na aba Início (ver lib/destinoLogin).
   if (!user) return <Navigate to="/login" replace state={{ destino: destinoAtual(location) }} />;

@@ -26,6 +26,7 @@ import { supabase } from "@/integrations/supabase/client";
 import { cn } from "@/lib/utils";
 import { useContextoDaPagina } from "@/lib/contexto-pagina";
 import { analisar, type Fatura, type Lancamento, type Marcacao } from "./cartao/analise";
+import { unificarEstabelecimentos } from "@/lib/cartao/unificar";
 import { abrevStr, fmtBRLStr, intStr, milStr, pctStr } from "./cartao/fmt";
 import { abrev, fmtBRL } from "./cartao/valores";
 import { Matriz, ORDENS, type Ordem, type Realce } from "./cartao/Matriz";
@@ -123,7 +124,10 @@ export default function Cartao() {
       if (!lote.length || lote.length < pagina) break;
     }
 
-    setLancamentos(todos.map((l) => ({ ...l, valor: Number(l.valor) })));
+    /* O nome gravado depende de quem importou a fatura; a linha da fatura, não.
+       Unificar aqui, e não em `analisar`, faz matriz, detalhe e exportação
+       falarem do mesmo nome — senão "ver lançamentos" filtraria pelo nome antigo. */
+    setLancamentos(unificarEstabelecimentos(todos.map((l) => ({ ...l, valor: Number(l.valor) }))));
   }, []);
 
   const carregarMarcacoes = useCallback(async () => {

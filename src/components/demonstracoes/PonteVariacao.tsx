@@ -43,6 +43,10 @@ import type { BlocoCopia } from "@/lib/copiarPonte";
 
 const dataCurta = (d: string | null) => (d ? d.slice(8, 10) + "/" + d.slice(5, 7) : "—");
 
+/** Quem é a contraparte da ponte: fornecedor na DRE/DFC, pessoa no CAC. */
+export type Entidade = { um: string; varios: string };
+const ENTIDADE_PADRAO: Entidade = { um: "fornecedor", varios: "fornecedores" };
+
 /* ----- o chip da peça ----------------------------------------------------
  * A ponte enxerga dois meses; "novo" é uma afirmação sobre doze. Quando o
  * comparativo já carregou, ele refina: o que entrou pode ser "voltou · Abr 26",
@@ -242,8 +246,9 @@ function LinhaPeca({
 
 function Grupo({
   titulo, pecas, total, favoravel, ponte, comp, abertas, onAlternar, moeda, moedaSemCentavos, obsDe,
-  bloco, rubrica, mesLabel,
+  bloco, rubrica, mesLabel, entidade,
 }: {
+  entidade: Entidade;
   titulo: string;
   pecas: PecaDaPonte[];
   total: number;
@@ -275,7 +280,7 @@ function Grupo({
         <td colSpan={2} className={cn("px-5 py-1 text-[9.5px] font-bold uppercase tracking-[0.1em]", texto)}>
           {titulo}
           <span className="ml-1.5 font-medium normal-case tracking-normal opacity-80">
-            · {pecas.length} {pecas.length === 1 ? "fornecedor" : "fornecedores"}
+            · {pecas.length} {pecas.length === 1 ? entidade.um : entidade.varios}
           </span>
           {/* O clipe do bloco: esta lista, num clique, no formato do tracker. */}
           {bloco && <CopiarBloco ponte={ponte} bloco={bloco} rubrica={rubrica} mesLabel={mesLabel} />}
@@ -304,9 +309,13 @@ function Grupo({
 
 export function PonteVariacao({
   ponte, comp, carregando, celula, celulaAnterior, travado, travadoAnterior,
-  moeda, moedaSemCentavos, obsDe, rubrica, mesLabel,
+  moeda, moedaSemCentavos, obsDe, rubrica, mesLabel, entidade = ENTIDADE_PADRAO, className,
 }: {
   ponte: Ponte;
+  /** Quem é a contraparte — "fornecedor" por padrão; o CAC passa "pessoa". */
+  entidade?: Entidade;
+  /** Troca o teto de altura quando a faixa não mora no painel lateral da DRE. */
+  className?: string;
   /** Rubrica e mês da célula — só o texto copiado usa, para dizer de onde saiu. */
   rubrica?: string | null;
   mesLabel?: string | null;
@@ -350,7 +359,7 @@ export function PonteVariacao({
      empurra a lista para fora da tela — e a lista é o que se veio conferir. O
      que não cabe rola aqui dentro; nada é escondido. */
   return (
-    <div className="flex max-h-[min(32%,260px)] shrink-0 flex-col overflow-hidden border-b border-border bg-muted/30">
+    <div className={cn("flex max-h-[min(32%,260px)] shrink-0 flex-col overflow-hidden border-b border-border bg-muted/30", className)}>
       {/* Enquanto o mês anterior não chegou, a ponte diria que TUDO entrou — é o
           mesmo dado com o outro lado vazio. Cala até ter os dois. */}
       {carregando && (
@@ -406,14 +415,14 @@ export function PonteVariacao({
             <div className="shrink-0 border-t border-border px-5 py-4 text-center text-[11.5px] text-muted-foreground">
               {ponte.soma === 0 && ponte.somaAnterior === 0
                 ? "Nenhum lançamento nos dois meses."
-                : `Nenhum fornecedor mudou de valor entre ${mesCurto(ponte.mesAnterior)} e ${mesCurto(ponte.mes)}.`}
+                : `Nada mudou de valor entre ${mesCurto(ponte.mesAnterior)} e ${mesCurto(ponte.mes)}.`}
             </div>
           ) : (
             <div className="min-h-0 flex-1 overflow-auto border-t border-border">
               <table className="w-full border-collapse">
                 <thead className="sticky top-0 z-10 bg-muted/95 backdrop-blur">
                   <tr className="border-b border-border text-[9px] font-semibold tracking-[0.06em] text-muted-foreground">
-                    <th className="px-5 py-1.5 text-left">FORNECEDOR</th>
+                    <th className="px-5 py-1.5 text-left uppercase">{entidade.um}</th>
                     <th className="px-2 py-1.5 text-right uppercase">{mesCurto(ponte.mesAnterior)}</th>
                     <th className="px-2 py-1.5 text-right uppercase">{mesCurto(ponte.mes)}</th>
                     <th className="px-5 py-1.5 text-right">DIFERENÇA</th>
@@ -426,7 +435,7 @@ export function PonteVariacao({
                     total={ponte.totalPiora}
                     favoravel={false}
                     bloco="piora" rubrica={rubrica} mesLabel={mesLabel}
-                    ponte={ponte} comp={comp} abertas={abertas} onAlternar={alternar}
+                    ponte={ponte} comp={comp} abertas={abertas} onAlternar={alternar} entidade={entidade}
                     moeda={moeda} moedaSemCentavos={moedaSemCentavos} obsDe={obsDe}
                   />
                   <Grupo
@@ -435,7 +444,7 @@ export function PonteVariacao({
                     total={ponte.totalMelhora}
                     favoravel
                     bloco="melhora" rubrica={rubrica} mesLabel={mesLabel}
-                    ponte={ponte} comp={comp} abertas={abertas} onAlternar={alternar}
+                    ponte={ponte} comp={comp} abertas={abertas} onAlternar={alternar} entidade={entidade}
                     moeda={moeda} moedaSemCentavos={moedaSemCentavos} obsDe={obsDe}
                   />
                   {/* Quem repetiu o valor não explica nada — mas sumir com ele
@@ -450,7 +459,7 @@ export function PonteVariacao({
                       /* Sem clipe: quem repetiu o valor não é uma lista que se
                          manda para alguém — vai junto no "Tudo" da prévia. */
                       bloco={null}
-                      ponte={ponte} comp={comp} abertas={abertas} onAlternar={alternar}
+                      ponte={ponte} comp={comp} abertas={abertas} onAlternar={alternar} entidade={entidade}
                       moeda={moeda} moedaSemCentavos={moedaSemCentavos} obsDe={obsDe}
                     />
                   )}
@@ -464,7 +473,7 @@ export function PonteVariacao({
             <span>
               <Check className="mr-1 inline h-3 w-3" />
               {mexeu === 0
-                ? `Os ${ponte.iguais.length} fornecedores repetiram o valor de ${mesCurto(ponte.mesAnterior)}.`
+                ? `Todos (${ponte.iguais.length} ${ponte.iguais.length === 1 ? entidade.um : entidade.varios}) repetiram o valor de ${mesCurto(ponte.mesAnterior)}.`
                 : <>
                     As duas listas somam <b className="num">{moeda(ponte.delta)}</b> — a variação inteira, no centavo.
                   </>}
@@ -474,7 +483,7 @@ export function PonteVariacao({
                   <button
                     onClick={() => setVerIguais((v) => !v)}
                     className="font-medium underline-offset-2 transition hover:underline"
-                    title="Fornecedores com o mesmo valor nos dois meses: não movem a variação, mas fazem parte da célula."
+                    title={`${entidade.varios[0].toUpperCase()}${entidade.varios.slice(1)} com o mesmo valor nos dois meses: não movem a variação, mas fazem parte da célula.`}
                   >
                     {verIguais ? "esconder" : "ver"} os {ponte.iguais.length}{" "}
                     {ponte.iguais.length === 1 ? "que repetiu" : "que repetiram"} o valor

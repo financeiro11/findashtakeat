@@ -31,7 +31,12 @@ export default function AppLayout() {
     try { localStorage.setItem(MENU_KEY, aberto ? "0" : "1"); } catch { /* localStorage indisponível */ }
   };
   useVoltarAoDestino(!!user);
-  if (loading) return <div className="flex min-h-screen items-center justify-center text-sm text-muted-foreground">Carregando…</div>;
+  // Tela lisa, sem texto, enquanto a sessão é conferida. É uma fração de segundo: um
+  // "Carregando…" que aparece e some antes de dar tempo de ler não informa nada, só
+  // pisca — e piscar na abertura faz o Hub parecer que engasgou. O fundo é pintado de
+  // propósito (`bg-background`), senão a fração de segundo vira um flash branco no
+  // tema escuro, que é justamente o que se está tentando evitar.
+  if (loading) return <div className="min-h-screen bg-background" />;
   // O destino vai junto: quem recebe o link de uma anotação e ainda não entrou tem de
   // cair NELA depois do login, não na home. Sem isto, todo link compartilhado do Hub
   // acaba no Dashboard e a pessoa precisa procurar a tela na mão.

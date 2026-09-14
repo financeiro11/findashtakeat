@@ -36,7 +36,7 @@ import { comValorExato } from "@/components/ValorExato";
 import {
   FileText, RefreshCw, Loader2, Search, FileCode2, AlertTriangle,
   ChevronLeft, ChevronRight, CheckCircle2, Send, Info, Zap, Layers, Square,
-  FileClock, MessageSquareText,
+  FileClock, MessageSquareText, FilePlus,
 } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import NotasFiscaisLog from "./NotasFiscaisLog";
@@ -50,8 +50,15 @@ import {
   linkPortalNacional, chaveEmBlocos,
   somarBloco, precisaEsperarOLote, tetoDoDiaAtingido,
   esperaAntesDeRepetir, PROGRESSO_ZERO, CABEM_NUMA_CHAMADA,
-  type LinhaNota, type Situacao, type ProgressoMassa,
+  fraseAntesDoPagamento, tipoAntesDoPagamento, TIPOS_ANTES_DO_PAGAMENTO,
+  type LinhaNota, type Situacao, type ProgressoMassa, type TipoAntesDoPagamento,
 } from "@/lib/notasFiscais";
+import {
+  LiberarAntesDoPagamento, ListaAntesDoPagamento, lerAntesDoPagamento, ICONE_TIPO,
+  type EntradaAntesDoPagamento, type CobrancaParaLiberar,
+} from "@/components/notas/AntesDoPagamento";
+import { EmitirAgora, type EmissaoSemCobranca } from "@/components/notas/EmitirAgora";
+import { NotaSemCobranca } from "@/components/notas/NotaSemCobranca";
 
 const dorme = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -140,13 +147,40 @@ export default function NotasFiscais() {
    * números são diferentes de propósito e por muito: em agosto, 1.989 contra
    * 1.004. Quem oferece o botão de massa é a fila. */
   const [filaResumo, setFilaResumo] = useState<{ cobrancas: number; valor: number } | null>(null);
-  /* OS CLIENTES QUE PAGAM CONTRA NOTA — os documentos, não os nomes.
+  /* QUEM RECEBE NOTA ANTES DO PAGAMENTO — os documentos, não os nomes.
    *
-   * São quatro hoje (Banestes, Gojuice, New Bowling, Menu Beach), e a lista veio
-   * da foto do `invoiceSettings` que o Asaas tinha antes do desligamento de
-   * 01/09/2026. Fica em `Set` porque a régua é consultada uma vez por linha
-   * renderizada e o mês tem 3.600. */
-  const [docsAntes, setDocsAntes] = useState<Set<string>>(new Set());
+   * Começou com quatro, da foto do `invoiceSettings` que o Asaas tinha antes do
+   * desligamento de 01/09/2026 — clientes cujo processo exige a NFS-e para
+   * liberar o pagamento. Desde 11/09/2026 a lista tem uma segunda população, e
+   * oposta: parceiros que nos devem comissão de indicação, onde a nota acompanha
+   * a cobrança porque é assim que faturamos.
+   *
+   * `Map` de documento → tipo, e não `Set`: a régua é a mesma para os dois, mas a
+   * FRASE não pode ser (o selo da linha, o aviso antes de emitir). Continua sendo
+   * uma estrutura de acesso O(1) porque é consultada uma vez por linha renderizada
+   * e o mês tem 3.600. */
+  const [docsAntes, setDocsAntes] = useState<Map<string, TipoAntesDoPagamento>>(new Map());
+  /* A lista inteira — com motivo e quem liberou — para o diálogo de revisão.
+   * Vem da mesma leitura que alimenta o `docsAntes`: duas consultas à mesma
+   * tabela seriam duas chances de a tela discordar de si mesma. */
+  const [entradasAntes, setEntradasAntes] = useState<EntradaAntesDoPagamento[]>([]);
+  const [listaAntesAberta, setListaAntesAberta] = useState(false);
+  /* A cobrança que abriu o diálogo de liberação. Guarda a LINHA e não só o
+   * documento porque o diálogo mostra a cobrança na mesa — sem ela, ele pediria
+   * uma decisão fiscal sobre um CNPJ solto. */
+  const [liberando, setLiberando] = useState<CobrancaParaLiberar | null>(null);
+  /* AS COBRANÇAS QUE ESTÃO SAINDO AGORA — a corrente inteira, com passos à vista.
+   * `null` = ninguém emitindo. Ver `EmitirAgora`: é ele que cadastra o tomador
+   * que falta, dispara o lote, espera a prefeitura e grava o número, em vez de
+   * devolver um erro por pré-requisito. */
+  const [emitindoAgora, setEmitindoAgora] = useState<{
+    ids: string[]; osRecusadas?: number[]; semCobranca?: EmissaoSemCobranca;
+  } | null>(null);
+  /* A NOTA QUE NÃO NASCE DE COBRANÇA (14/09/2026) — o diálogo que monta o
+   * tomador (do Asaas ou digitado) e entrega o carimbo `avl_…` ao `EmitirAgora`. */
+  const [semCobrancaAberto, setSemCobrancaAberto] = useState(false);
+  /** Indo buscar no Asaas a cobrança que o espelho ainda não tem — ver `buscarNoAsaas`. */
+  const [buscandoAsaas, setBuscandoAsaas] = useState(false);
   /* O TEXTO QUE VAI DENTRO DA NOTA, e ele nasce vazio a cada emissão.
    *
    * Mesmo raciocínio da chave da avulsa: observação é do ATO. Lembrar a de
@@ -209,12 +243,22 @@ export default function NotasFiscais() {
       const linha = Array.isArray(fr) ? fr[0] : fr;
       setFilaResumo(linha ? { cobrancas: Number(linha.cobrancas ?? 0), valor: Number(linha.valor ?? 0) } : null);
 
-      /* A lista dos que pagam contra nota. Quatro linhas; ler junto com o painel
-         é mais barato do que qualquer cache, e garante que a régua da tela e a
-         do banco estejam falando do mesmo conjunto no mesmo instante. */
-      const { data: antes } = await sb
-        .from("nf_nota_antes_do_pagamento").select("doc").eq("ativo", true);
-      setDocsAntes(new Set((antes ?? []).map((a: any) => String(a.doc))));
+      /* A lista de quem recebe nota antes do pagamento. Poucas linhas; ler junto
+         com o painel é mais barato do que qualquer cache, e garante que a régua
+         da tela e a do banco estejam falando do mesmo conjunto no mesmo instante.
+         Falhar aqui não derruba o painel — sem a lista, as pendentes ficam
+         bloqueadas, que é o estado seguro. */
+      try {
+        const antes = await lerAntesDoPagamento();
+        setEntradasAntes(antes);
+        setDocsAntes(new Map(antes.map((a) => [String(a.doc), a.tipo])));
+      } catch (e: any) {
+        setEntradasAntes([]);
+        setDocsAntes(new Map());
+        toast.error("Não deu para ler a lista de \"antes do pagamento\".", {
+          description: (e?.message ?? "") + " As cobranças pendentes seguem bloqueadas.",
+        });
+      }
 
       /* O trabalho DO MÊS, que não sai das linhas da tela: as linhas são as
          cobranças da competência, e as notas que saíram este mês são de outras
@@ -280,6 +324,87 @@ export default function NotasFiscais() {
     [linhas, sel, avulsa, docsAntes],
   );
 
+  /**
+   * Liberou o CNPJ — recarrega e deixa a linha marcada.
+   *
+   * `carregar` limpa a seleção, e está certo que limpe: ela é do mês que se
+   * acabou de abrir. Mas quem passou por aqui já disse o que queria — achou a
+   * cobrança, escreveu o motivo, liberou — e mandá-lo procurar a linha de novo no
+   * meio de 3.600 seria cobrar duas vezes o mesmo trabalho. A nota ainda não sai:
+   * o que fica na tela é a barra do lote, com o aviso e o botão de emitir.
+   */
+  /**
+   * A COBRANÇA QUE AINDA NÃO EXISTE AQUI — o Hub vai buscá-la em vez de dizer
+   * "nenhuma cobrança neste recorte".
+   *
+   * O espelho do Asaas enche três vezes por dia (07:45, 12:30 e 17:00 BRT). Quem
+   * cria uma cobrança às 10h e vem emitir a nota dela não encontra a linha em
+   * lugar nenhum, e nada na tela diz por quê — a lista simplesmente vem vazia,
+   * que se lê como "essa cobrança não existe". Foi o que aconteceu em 11/09/2026
+   * com a comissão do INFOSS.
+   *
+   * É UMA BUSCA NOMEADA, não a volta do botão "Atualizar do Asaas" (removido de
+   * propósito: varria ~70 páginas e queimava cota). Aqui são uma a três
+   * requisições, com o termo que a pessoa digitou.
+   */
+  const buscarNoAsaas = async () => {
+    const termo = busca.trim();
+    if (!termo) return;
+    const digitos = termo.replace(/\D/g, "");
+    const corpo = termo.startsWith("pay_")
+      ? { id: termo }
+      : digitos.length === 11 || digitos.length === 14
+      ? { documento: digitos }
+      : { nome: termo };
+
+    setBuscandoAsaas(true);
+    try {
+      const { data, error } = await sb.functions.invoke("asaas-sync", { body: { action: "cobranca", ...corpo } });
+      if (error) throw error;
+      if (data?.erro) throw new Error(data.erro);
+
+      const achadas = Number(data?.cobrancas ?? 0);
+      if (!achadas) {
+        toast.info("O Asaas também não tem nada com esse termo.", {
+          description: "Confira o nome, o CNPJ ou o id da cobrança. Nada foi alterado.",
+          duration: 10000,
+        });
+        return;
+      }
+      /* O MÊS PODE SER OUTRO, e dizer isso evita o segundo "sumiu". A cobrança
+         entra no painel pelo pagamento ou pelo vencimento; achar 3 e continuar
+         vendo 0 na tela é o mesmo susto de novo, uma tela adiante. */
+      const meses = [...new Set((data?.achadas ?? [])
+        .map((a: any) => String(a.data_vencimento ?? "").slice(0, 7)).filter(Boolean))] as string[];
+      const aqui = `${ano}-${String(mes + 1).padStart(2, "0")}`;
+      const fora = meses.filter((m) => m !== aqui);
+      toast.success(`${achadas} cobrança(s) trazida(s) do Asaas.`, {
+        description: fora.length
+          ? `Vencimento em ${fora.join(", ")} — troque o mês no topo para ver.`
+          : "Já estão na lista deste mês.",
+        duration: 14000,
+      });
+      await carregar();
+    } catch (e: any) {
+      toast.error("Não deu para buscar no Asaas.", { description: e?.message });
+    } finally {
+      setBuscandoAsaas(false);
+    }
+  };
+
+  const aposLiberar = async (_doc: string, idAsaas: string, emitirAgora: boolean) => {
+    await carregar();
+    setSel(new Set([idAsaas]));
+    /* "Liberar e emitir agora" não volta para a tela pedindo mais um clique: a
+     * pessoa já disse o que queria quando escreveu o motivo. A confirmação de
+     * escrita fiscal não é pulada — ela está DENTRO do diálogo que acabou de ser
+     * respondido (o raio da liberação, o que a régua alcança, o que não sai
+     * sozinho). Repetir um `window.confirm` aqui seria pedir a mesma autorização
+     * duas vezes em dez segundos, que é como se ensina alguém a clicar em OK sem
+     * ler. */
+    if (emitirAgora) setEmitindoAgora({ ids: [idAsaas] });
+  };
+
   const alternar = (id: string) => {
     setSel((s) => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
   };
@@ -329,13 +454,14 @@ export default function NotasFiscais() {
       /* A régua mais larga das três precisa dizer o próprio nome em voz alta.
        * "Confirmada" e "pendente" são riscos de naturezas diferentes: na
        * primeira o pagamento foi autorizado e falta liquidar; na segunda não há
-       * pagamento nenhum, e a nota está saindo justamente para que ele aconteça. */
-      (lote.antesDoPagamento
-        ? `${lote.antesDoPagamento} dela${lote.antesDoPagamento > 1 ? "s" : ""} ` +
-          `(${brlStr(lote.valorAntesDoPagamento)}) ${lote.antesDoPagamento > 1 ? "saem" : "sai"} ` +
-          `ANTES DO PAGAMENTO, porque ${lote.antesDoPagamento > 1 ? "esses clientes precisam" : "esse cliente precisa"} ` +
-          `da nota para pagar. Está na lista de Parametrização, com o motivo escrito.\n\n`
-        : "") +
+       * pagamento nenhum, e a nota está saindo justamente para que ele aconteça.
+       *
+       * A frase mora em `fraseAntesDoPagamento` porque ela depende de QUAL dos
+       * dois motivos está no lote — e porque afirmação dita a um clique de uma
+       * escrita fiscal irreversível merece teste, não confiança. */
+      fraseAntesDoPagamento(
+        lote.antesDoPagamento, brlStr(lote.valorAntesDoPagamento), lote.tiposAntesDoPagamento,
+      ) +
       (observacao.trim()
         ? `O corpo da nota vai levar: "${observacao.trim()}"\n\n`
         : "") +
@@ -343,71 +469,26 @@ export default function NotasFiscais() {
       `Nota emitida não se apaga — cancela-se, com prazo e justificativa.`;
     if (!window.confirm(aviso)) return;
 
-    setEmitindo(true);
-    try {
-      const { data, error } = await sb.functions.invoke("omie-nfse-sync", {
-        // `avulsa` viaja no corpo e não é lido de configuração nenhuma: é a
-        // decisão desta chamada, e o servidor confere a régua de novo do lado de
-        // lá (ver `bloqueioDeEmissao` na edge function). A tela explica; ela não
-        // é a guarda.
-        // `antes_pagamento` NÃO viaja: o servidor o resolve sozinho contra a
-        // lista, e é por isso que ele não é uma chave que a tela possa ligar.
-        body: { action: "emitir", ids, avulsa, observacao: observacao.trim() || null },
-      });
-      if (error) throw error;
-      if (data?.erro) throw new Error(data.erro);
-
-      /* Três desfechos, três avisos. "Em processamento" é o que mais importa
-       * separar: o faturamento do Omie é assíncrono e a nota costuma nascer
-       * minutos depois do disparo. Chamar isso de falha faz o operador mandar
-       * emitir de novo — e a segunda nota da mesma cobrança não se apaga. */
-      const emProcesso = (data.resultados ?? []).filter((r: any) => r.em_processamento);
-      const barradas = (data.resultados ?? []).filter((r: any) => r.bloqueado);
-      const falhas = (data.resultados ?? []).filter((r: any) => !r.ok && !r.em_processamento && !r.bloqueado);
-      const jaEmitidas = (data.resultados ?? []).filter((r: any) => r.ja_emitida);
-
-      if (data.emitidas) toast.success(`${data.emitidas} nota(s) emitida(s) no Omie.`);
-      if (jaEmitidas.length) {
-        toast.info(`${jaEmitidas.length} já tinha(m) nota.`, {
-          description: jaEmitidas.slice(0, 3).map((r: any) => r.aviso).join(" · "),
-          duration: 10000,
-        });
-      }
-      if (emProcesso.length) {
-        toast.warning(`${emProcesso.length} ainda no forno do Omie.`, {
-          description: `${emProcesso.slice(0, 2).map((r: any) => r.erro).join(" · ")} Atualize em alguns minutos — não emita de novo.`,
-          duration: 15000,
-        });
-      }
-      /* Barrada não é falha, e misturar as duas mandaria o operador tentar de
-       * novo o que nunca vai passar. A conferência da porta lê o Asaas no
-       * instante da emissão: se ela barrou, a cobrança foi estornada ou o
-       * dinheiro ainda não entrou — e o espelho da tela pode estar mostrando o
-       * estado de ontem, por isso o recarregamento abaixo. */
-      if (barradas.length) {
-        toast.warning(`${barradas.length} barrada(s) na conferência com o Asaas.`, {
-          description: `${barradas.slice(0, 3).map((b: any) => b.erro).join(" · ")} Nada foi mandado ao Omie.`,
-          duration: 15000,
-        });
-      }
-      if (falhas.length) {
-        toast.error(`${falhas.length} não saíram.`, {
-          description: falhas.slice(0, 3).map((f: any) => f.erro).join(" · "),
-          duration: 12000,
-        });
-      }
-      if (data.nao_tentadas?.length) {
-        toast.info(`${data.nao_tentadas.length} não couberam nesta chamada.`, {
-          description: "Cada emissão espera o Omie faturar (~2 min) e a função tem 150s. Estas não foram tocadas — mande de novo.",
-          duration: 15000,
-        });
-      }
-      await carregar();
-    } catch (e: any) {
-      toast.error("Falha na emissão.", { description: e?.message });
-    } finally {
-      setEmitindo(false);
-    }
+    /* DAQUI PARA A FRENTE QUEM CONDUZ É O `EmitirAgora`, e a mudança é de
+     * natureza, não de embalagem (11/09/2026).
+     *
+     * Antes, este botão fazia UMA chamada e traduzia a resposta em cinco toasts.
+     * Funcionava para o caso feliz e falhava mal em todos os outros: cada
+     * pré-requisito aparecia como um toast vermelho mandando a pessoa resolver
+     * noutro lugar — "Cliente sem cadastro no Omie" (sem botão para cadastrar),
+     * "o lote N ainda está em processamento" (que é ESPERA, não falha), "teto do
+     * dia atingido", "a emissão está desligada". Quatro paredes, nenhuma delas o
+     * fim do trabalho.
+     *
+     * O pedido do Henrique foi explícito: se ele mandou emitir, o Hub faz o que
+     * for preciso — inclusive cadastrar o tomador — e só o chama quando sobra
+     * decisão humana de verdade. O `EmitirAgora` é essa corrente: cadastro →
+     * OS + faturamento → espera pela prefeitura → número gravado aqui dentro.
+     *
+     * A CONFIRMAÇÃO ACIMA FICA, e fica antes: ela é a única coisa nesta tela que
+     * fala de uma escrita fiscal irreversível, e não pode virar um passo de uma
+     * barra de progresso que já está rodando. */
+    setEmitindoAgora({ ids });
   };
 
   /* --------------------------- refazer a nota ---------------------------- */
@@ -424,10 +505,44 @@ export default function NotasFiscais() {
    * (o cliente lê). Um campo só faria as duas coisas mal.
    */
   const refazer = async (l: LinhaNota) => {
+    /* O HUB VAI CONFERIR O VALOR, EM VEZ DE MANDAR VOCÊ CONFERIR.
+     *
+     * A frase daqui era "antes de continuar, corrija o valor no Asaas se for o
+     * caso" — e ela empurrava para fora do Hub a única informação que decide se
+     * vale cancelar: quanto a cobrança vale AGORA. O espelho local é de até 8h
+     * atrás (três varreduras por dia), então o número que a tela mostra pode ser
+     * o velho, e foi exatamente assim que a nota do Banestes saiu com o valor
+     * errado em 02/09/2026.
+     *
+     * Uma requisição resolve. E ela não só informa: `asaas-sync` grava o que
+     * leu, então o espelho fica curado antes de qualquer escrita fiscal. Falhar
+     * aqui não impede refazer — segue com o aviso de que o valor não pôde ser
+     * conferido, porque a leitura ao vivo da porta de emissão ainda vai barrar a
+     * leva se divergir. */
+    let valorAgora: number | null = null;
+    setEmitindo(true);
+    try {
+      const { data } = await sb.functions.invoke("asaas-sync", {
+        body: { action: "cobranca", id: l.id_asaas },
+      });
+      const achada = (data?.achadas ?? []).find((a: any) => a.id_asaas === l.id_asaas);
+      if (achada) valorAgora = Number(achada.valor);
+    } catch { /* segue sem o número; a frase abaixo diz que não deu */ }
+    finally { setEmitindo(false); }
+
+    const mudou = valorAgora != null && Math.abs(valorAgora - Number(l.valor)) > 0.005;
+    const linhaValor = valorAgora == null
+      ? "NÃO consegui conferir o valor no Asaas agora — confira antes de seguir.\n"
+      : mudou
+      ? `ATENÇÃO: o valor no Asaas é ${brlStr(valorAgora)}, e o Hub mostrava ${brlStr(Number(l.valor))}. ` +
+        "Já corrigi o espelho; a nota nova sai com o valor de agora.\n"
+      : `Conferido no Asaas agora: ${brlStr(valorAgora)} — o mesmo que o Hub mostra.\n`;
+
     const justificativa = window.prompt(
       `Refazer a nota ${l.nf_asaas_numero ?? ""} de ${l.cliente_asaas ?? l.id_asaas}?\n\n` +
       "Isto CANCELA a nota no Asaas e emite outra pelo Omie, com o valor que a cobrança tem agora.\n" +
-      "Antes de continuar, corrija o valor no Asaas se for o caso — o cancelamento não tem volta.\n\n" +
+      linhaValor +
+      "O cancelamento não tem volta.\n\n" +
       "Por que esta nota está sendo cancelada?",
       "",
     );
@@ -931,6 +1046,41 @@ export default function NotasFiscais() {
             </>
           )}
         </p>
+        {/* A TERCEIRA RÉGUA MORA AO LADO DA SEGUNDA, e não numa tela de
+            configuração: as duas respondem a mesma pergunta ("o que dá para
+            emitir sem o dinheiro ter entrado?") e separá-las faria a mais larga
+            das duas ser a que ninguém encontra. Não é chave — é uma lista, e por
+            isso abre um diálogo em vez de ligar algo. O contador é o que faz
+            alguém clicar para revisar; sem ele a exceção seria permanente por
+            falta de quem a visse. */}
+        <button
+          onClick={() => setListaAntesAberta(true)}
+          className="flex items-center gap-1.5 rounded-md border border-sky-500/40 px-2 py-1 text-xs font-medium text-sky-700 hover:bg-sky-500/10 dark:text-sky-400"
+          title={
+            "Quem recebe a NFS-e ANTES de pagar: cliente cujo processo exige a nota para liberar o pagamento, " +
+            "e parceiro que nos deve comissão de indicação.\n\n" +
+            "Abre a lista para revisar e tirar. Para incluir alguém, use o botão \"Nota antes de receber\" na " +
+            "linha da cobrança — de lá o CNPJ vem da própria cobrança, sem digitação."
+          }
+        >
+          <FileClock className="h-3.5 w-3.5" />
+          Antes do pagamento
+          <span className="num rounded bg-sky-500/15 px-1">{entradasAntes.length}</span>
+        </button>
+        {/* A QUARTA PORTA NÃO É RÉGUA: não há cobrança a destravar. É a nota que
+            nasce do nada — cliente do Asaas sem cobrança, ou tomador digitado. */}
+        <button
+          onClick={() => setSemCobrancaAberto(true)}
+          disabled={emitindoAgora !== null}
+          className="flex items-center gap-1.5 rounded-md border border-border px-2 py-1 text-xs font-medium text-foreground hover:bg-muted disabled:opacity-50"
+          title={
+            "Emite uma NFS-e que não tem cobrança no Asaas: puxe o cliente de lá ou digite o tomador inteiro.\n\n" +
+            "Sai com a mesma classificação fiscal das mensalidades, e o título a receber no Omie fica em aberto."
+          }
+        >
+          <FilePlus className="h-3.5 w-3.5" />
+          Nota sem cobrança
+        </button>
       </div>
 
       {/* ---------------------------- emissão em massa ------------------------- */}
@@ -1045,7 +1195,12 @@ export default function NotasFiscais() {
             {lote.antesDoPagamento > 0 && (
               <span
                 className="ml-2 font-medium text-sky-700 dark:text-sky-400"
-                title="Clientes que precisam da NFS-e para conseguir pagar. A nota sai antes da cobrança ser quitada, por decisão registrada em Parametrização."
+                title={
+                  "A nota sai antes de a cobrança ser quitada, por decisão registrada na lista de \"antes do " +
+                  "pagamento\" desta tela: " +
+                  lote.tiposAntesDoPagamento.map((t) => TIPOS_ANTES_DO_PAGAMENTO[t].rotulo.toLowerCase()).join(" · ") +
+                  "."
+                }
               >
                 <FileClock className="mr-1 inline h-3 w-3" />
                 {lote.antesDoPagamento} antes do pagamento · {brl(lote.valorAntesDoPagamento)}
@@ -1120,7 +1275,35 @@ export default function NotasFiscais() {
             )}
             {!carregando && visiveis.length === 0 && (
               <tr><td colSpan={7} className="p-8 text-center text-muted-foreground">
-                Nenhuma cobrança neste recorte.
+                {/* LISTA VAZIA COM BUSCA DIGITADA NÃO É RESPOSTA, é uma pergunta
+                    sem resposta. O espelho do Asaas enche 3×/dia; a cobrança
+                    criada hoje de manhã não está aqui, e "Nenhuma cobrança neste
+                    recorte" se lê como "essa cobrança não existe" — que é o
+                    convite direto para ir resolver por fora do Hub. */}
+                {busca.trim() ? (
+                  <span className="flex flex-col items-center gap-2">
+                    <span>Nada com “{busca.trim()}” neste mês.</span>
+                    <button
+                      onClick={buscarNoAsaas}
+                      disabled={buscandoAsaas}
+                      className="flex items-center gap-1.5 rounded-md border border-primary/40 px-3 py-1.5 text-xs font-medium text-primary hover:bg-primary/5 disabled:opacity-50"
+                      title={
+                        "Procura no Asaas e traz a cobrança para cá, com o cadastro do cliente junto.\n\n" +
+                        "O espelho local é atualizado três vezes por dia (07:45, 12:30 e 17:00), então " +
+                        "cobrança criada hoje pode ainda não estar aqui. São uma a três requisições, " +
+                        "não a varredura completa."
+                      }
+                    >
+                      {buscandoAsaas
+                        ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                        : <Search className="h-3.5 w-3.5" />}
+                      Buscar no Asaas agora
+                    </button>
+                    <span className="text-[11px] text-muted-foreground/70">
+                      Aceita o nome, o CNPJ/CPF ou o id da cobrança (pay_…).
+                    </span>
+                  </span>
+                ) : "Nenhuma cobrança neste recorte."}
               </td></tr>
             )}
             {!carregando && visiveis.map((l) => {
@@ -1129,16 +1312,29 @@ export default function NotasFiscais() {
               // Esta linha só está marcável porque a chave está ligada? É o que o
               // selo âmbar mais abaixo anuncia, e o que muda a cor da caixa.
               const soAvulsa = exigeAvulsa(l);
-              /* E esta só está marcável porque o cliente paga contra nota? O selo
-                 é sempre visível (ao contrário do da avulsa, que depende da
-                 chave): não há chave para ligar, então sem o selo a caixa
-                 acenderia sozinha no meio de uma coluna de caixas apagadas. */
-              const contraNota = pagaContraNota(l, docsAntes) && exigeAntesDoPagamento(l);
+              /* E esta só está marcável porque quem cobra está na lista de "antes
+                 do pagamento"? O selo é sempre visível (ao contrário do da
+                 avulsa, que depende da chave): não há chave para ligar, então sem
+                 o selo a caixa acenderia sozinha no meio de uma coluna de caixas
+                 apagadas.
+
+                 `destravavel` é a mesma pergunta feita de fora da lista — "a
+                 régua abriria esta linha, se o CNPJ estivesse lá?". É ela que
+                 decide o botão de liberação: oferecê-lo onde a régua não alcança
+                 (estornada, já com nota, sem documento) seria prometer o que o
+                 servidor vai recusar. */
+              const naLista = pagaContraNota(l, docsAntes);
+              const destravavel = exigeAntesDoPagamento(l);
+              const contraNota = naLista && destravavel;
+              const tipoAntes = contraNota ? tipoAntesDoPagamento(l, docsAntes) : null;
+              const liberavel = !naLista && destravavel;
               return (
                 <tr
                   key={l.id_asaas}
                   className={cn(
-                    "border-b border-border/50 last:border-0 hover:bg-muted/30",
+                    // `group` serve ao botão de liberação, que só aparece no hover
+                    // da linha — ver o comentário na coluna Situação.
+                    "group border-b border-border/50 last:border-0 hover:bg-muted/30",
                     avulsa && soAvulsa && "bg-amber-500/[0.04]",
                     contraNota && "bg-sky-500/[0.05]",
                   )}
@@ -1150,12 +1346,23 @@ export default function NotasFiscais() {
                       onChange={() => alternar(l.id_asaas)}
                       disabled={!!bloqueio}
                       title={
-                        bloqueio ??
-                        (contraNota
-                          ? "Selecionar para emitir ANTES DO PAGAMENTO — este cliente precisa da nota para pagar."
+                        bloqueio
+                          /* O BLOQUEIO APONTA A SAÍDA quando ela existe. "A
+                             cobrança não foi recebida." é verdade e é um beco sem
+                             saída: quem chega aqui com uma comissão a faturar não
+                             tem como adivinhar que há um botão de hover na outra
+                             ponta da linha. O hint só aparece onde a régua
+                             realmente abriria. */
+                          ? bloqueio + (liberavel
+                            ? "\n\nSe esta nota tem de sair ANTES de o dinheiro entrar — comissão de indicação que " +
+                              "um parceiro nos deve, ou cliente cujo processo exige a NFS-e para pagar — use o botão " +
+                              "\"Nota antes de receber\", na coluna Situação desta linha."
+                            : "")
+                          : tipoAntes
+                          ? `Selecionar para emitir ANTES DO PAGAMENTO. ${TIPOS_ANTES_DO_PAGAMENTO[tipoAntes].ajuda}`
                           : soAvulsa
                           ? "Selecionar para emitir como AVULSA — a cobrança ainda não liquidou."
-                          : "Selecionar para emitir")
+                          : "Selecionar para emitir"
                       }
                       className={cn(
                         "h-3.5 w-3.5 disabled:opacity-30",
@@ -1213,15 +1420,25 @@ export default function NotasFiscais() {
                         avulsa
                       </span>
                     )}
-                    {contraNota && (
-                      <span
-                        className="ml-1 mt-0.5 inline-flex items-center gap-0.5 whitespace-nowrap rounded border border-sky-500/30 bg-sky-500/10 px-1.5 py-0.5 text-[10px] font-medium text-sky-700 dark:text-sky-400"
-                        title="Este cliente precisa da NFS-e para conseguir pagar — a nota sai antes da cobrança ser quitada. Está na lista de Parametrização, com o motivo registrado."
-                      >
-                        <FileClock className="h-2.5 w-2.5" />
-                        nota antes do pagamento
-                      </span>
-                    )}
+                    {/* O SELO DIZ QUAL DOS DOIS MOTIVOS destravou a linha, e não
+                        só que ela está destravada. São situações opostas com a
+                        mesma trava — cliente que espera a nota para pagar,
+                        parceiro que nos deve comissão —, e quem confere o lote
+                        precisa da diferença: só num dos dois casos a pergunta
+                        "esta cobrança é mesmo a comissão?" faz sentido. */}
+                    {tipoAntes && (() => {
+                      const info = TIPOS_ANTES_DO_PAGAMENTO[tipoAntes];
+                      const Icone = ICONE_TIPO[tipoAntes];
+                      return (
+                        <span
+                          className="ml-1 mt-0.5 inline-flex items-center gap-0.5 whitespace-nowrap rounded border border-sky-500/30 bg-sky-500/10 px-1.5 py-0.5 text-[10px] font-medium text-sky-700 dark:text-sky-400"
+                          title={info.ajuda}
+                        >
+                          <Icone className="h-2.5 w-2.5" />
+                          {info.selo}
+                        </span>
+                      );
+                    })()}
                   </td>
                   <td className="num p-2 text-right">{brl(Number(l.valor))}</td>
                   {/* A linha entra no mês por pagamento OU por vencimento (o que
@@ -1340,6 +1557,64 @@ export default function NotasFiscais() {
                         existe `CancelarOS` nem `servicos/nfse/`, foi varrido
                         método a método —, então oferecer o botão ali seria
                         prometer o que o servidor vai recusar. */}
+                    {/* A PORTA PARA A EXCEÇÃO, e ela fica aqui porque é aqui que a
+                        pergunta nasce: a caixa não marca, o hover diz "a cobrança
+                        não foi recebida", e até 11/09/2026 o caminho seguinte era
+                        uma migration. Só aparece onde a régua realmente abriria
+                        (`liberavel`) — numa estornada ou numa que já tem nota, o
+                        botão seria uma promessa que o servidor recusa.
+
+                        NO HOVER, E NÃO FIXO. `liberavel` é verdade em toda
+                        pendente e toda vencida: setembro tem 1.554 delas, e 1.420
+                        são mensalidade que simplesmente ainda não foi paga. Um
+                        botão permanente ali seria propaganda de "emitir antes de
+                        receber" em mil e quatrocentas linhas onde a resposta certa
+                        é esperar. Aparece no hover — a convenção da estrela de
+                        favorito da barra lateral — e no foco, para não sumir para
+                        quem navega pelo teclado. */}
+                    {liberavel && (
+                      <button
+                        onClick={() => setLiberando({
+                          id_asaas: l.id_asaas, cliente_asaas: l.cliente_asaas, cnpj_cpf: l.cnpj_cpf,
+                          valor: Number(l.valor), descricao: l.descricao,
+                          data_vencimento: l.data_vencimento, status_asaas: l.status_asaas,
+                        })}
+                        className="ghost-btn mt-1 flex items-center gap-1 rounded border border-sky-500/40 px-1.5 py-0.5 text-[10px] text-sky-700 opacity-0 transition-opacity focus-visible:opacity-100 group-hover:opacity-100 dark:text-sky-400"
+                        title={
+                          "Para quando a nota tem de sair ANTES do dinheiro entrar — comissão de indicação que " +
+                          "um parceiro nos deve, ou cliente cujo processo exige a NFS-e para liberar o pagamento.\n\n" +
+                          "Abre um cadastro com motivo obrigatório. A liberação é por CNPJ e não emite nada sozinha: " +
+                          "a nota continua saindo de um clique seu."
+                        }
+                      >
+                        <FileClock className="h-2.5 w-2.5" />
+                        Nota antes de receber
+                      </button>
+                    )}
+                    {/* A NOTA REJEITADA DEIXA DE SER UM BECO.
+                        Até 11/09/2026 esta linha mostrava o selo vermelho, o
+                        motivo da prefeitura e NADA MAIS — a ajuda mandava
+                        "corrigir e reenviar no Omie", que é um lugar fora do Hub
+                        e, para OS já faturada, o único que resolve mesmo. O que
+                        faltava aqui era o degrau anterior: aposentar a OS
+                        recusada para a cobrança poder virar nota de novo. Agora
+                        isso é o passo 1 da mesma corrente de emissão. */}
+                    {l.situacao === "nota_rejeitada" && l.n_cod_os && (
+                      <button
+                        onClick={() => setEmitindoAgora({ ids: [l.id_asaas], osRecusadas: [Number(l.n_cod_os)] })}
+                        disabled={emitindo}
+                        className="ghost-btn mt-1 flex items-center gap-1 rounded border border-primary/40 px-1.5 py-0.5 text-[10px] text-primary disabled:opacity-40"
+                        title={
+                          "Aposenta a OS recusada e emite de novo, do começo: cadastro do tomador, OS, faturamento " +
+                          "e o número da nota.\n\n" +
+                          "Se o cadastro ainda não tiver sido corrigido, o Hub para no primeiro passo e diz o que " +
+                          "a prefeitura recusou — soltar a OS sem corrigir só produziria outra com a mesma recusa."
+                        }
+                      >
+                        <RefreshCw className="h-2.5 w-2.5" />
+                        Destravar e reemitir
+                      </button>
+                    )}
                     {l.situacao === "emitida_asaas" && (
                       <button
                         onClick={() => refazer(l)}
@@ -1347,7 +1622,8 @@ export default function NotasFiscais() {
                         className="ghost-btn mt-1 flex items-center gap-1 rounded border border-border px-1.5 py-0.5 text-[10px] text-muted-foreground disabled:opacity-40"
                         title={
                           "Cancela esta nota no Asaas e emite outra pelo Omie, com o valor que a cobrança tem agora.\n" +
-                          "Use quando a nota saiu errada. Corrija o valor no Asaas ANTES — o cancelamento não tem volta."
+                          "Use quando a nota saiu errada. O Hub confere o valor no Asaas antes de perguntar " +
+                          "qualquer coisa e mostra se ele mudou — o cancelamento não tem volta."
                         }
                       >
                         <RefreshCw className="h-2.5 w-2.5" />
@@ -1375,6 +1651,51 @@ export default function NotasFiscais() {
         </p>
       )}
       </>
+      )}
+
+      {/* Os dois diálogos da terceira régua. Ficam FORA do `aba === "painel"`
+          porque o contador da lista é lido pelo cabeçalho e a leitura é a mesma
+          do painel — e porque um diálogo que desmonta ao trocar de aba fecharia
+          no meio da digitação do motivo. */}
+      <LiberarAntesDoPagamento
+        cobranca={liberando}
+        aberto={liberando !== null}
+        onFechar={() => setLiberando(null)}
+        onLiberado={aposLiberar}
+      />
+      <ListaAntesDoPagamento
+        aberto={listaAntesAberta}
+        onFechar={() => setListaAntesAberta(false)}
+        entradas={entradasAntes}
+        onMudou={carregar}
+      />
+      {/* A corrente da emissão manual. Montado só quando há o que emitir: o
+          `EmitirAgora` começa a correr no `useEffect` de abertura, então deixá-lo
+          montado com a lista vazia dispararia uma rodada sem cobranças. */}
+      <NotaSemCobranca
+        aberto={semCobrancaAberto}
+        onFechar={() => setSemCobrancaAberto(false)}
+        onPronto={(nota) => {
+          setSemCobrancaAberto(false);
+          setEmitindoAgora({ ids: [nota.id], semCobranca: nota });
+        }}
+      />
+      {emitindoAgora && (
+        <EmitirAgora
+          aberto
+          ids={emitindoAgora.ids}
+          osRecusadas={emitindoAgora.osRecusadas}
+          semCobranca={emitindoAgora.semCobranca ?? null}
+          linhas={linhas}
+          /* A observação e a chave da avulsa são da tela do mês, feitas para
+             cobranças. A nota sem cobrança já traz a descrição inteira que a
+             pessoa digitou — somar a observação de outra seleção seria texto de
+             outro ato dentro desta nota. */
+          observacao={emitindoAgora.semCobranca ? null : observacao}
+          avulsa={emitindoAgora.semCobranca ? false : avulsa}
+          onFechar={() => setEmitindoAgora(null)}
+          onTerminou={carregar}
+        />
       )}
     </div>
   );

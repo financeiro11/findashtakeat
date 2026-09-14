@@ -78,6 +78,33 @@ const json = (body: unknown, status = 200) =>
 
 const BASE = "https://app.omie.com.br/api/v1";
 const soDigitos = (s: unknown) => String(s ?? "").replace(/\D/g, "");
+
+/** CPF ou CNPJ com dígito verificador certo. Gêmea de `docValido` em
+ *  [src/lib/notaSemCobranca.ts], que tem os testes. */
+function docValido(doc: string): boolean {
+  const d = soDigitos(doc);
+  if (d.length === 11) {
+    if (/^(\d)\1{10}$/.test(d)) return false;
+    const dv = (n: number) => {
+      let s = 0;
+      for (let i = 0; i < n; i++) s += Number(d[i]) * (n + 1 - i);
+      const r = (s * 10) % 11;
+      return r === 10 ? 0 : r;
+    };
+    return dv(9) === Number(d[9]) && dv(10) === Number(d[10]);
+  }
+  if (d.length === 14) {
+    if (/^(\d)\1{13}$/.test(d)) return false;
+    const dv = (n: number) => {
+      const pesos = n === 12 ? [5, 4, 3, 2, 9, 8, 7, 6, 5, 4, 3, 2] : [6, 5, 4, 3, 2, 9, 8, 7, 6, 5, 4, 3, 2];
+      const s = pesos.reduce((t, p, i) => t + Number(d[i]) * p, 0);
+      const r = s % 11;
+      return r < 2 ? 0 : 11 - r;
+    };
+    return dv(12) === Number(d[12]) && dv(13) === Number(d[13]);
+  }
+  return false;
+}
 const dorme = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 /** "16/05/2026" → "2026-05-16". O Omie fala pt-BR em toda data. */
@@ -1982,6 +2009,8 @@ function corpoDaNota(descricao: string, observacao?: string | null): string {
 function montarOS(molde: any, cob: {
   id_asaas: string; nCodCli: number; valor: number; vencimento: string; descricao: string;
   email?: string | null; observacao?: string | null;
+  /** Nota sem cobrança no Asaas: `id_asaas` é o carimbo `avl_…`. */
+  sem_cobranca?: boolean;
 }): Record<string, unknown> {
   const servicoMolde = molde.ServicosPrestados[0];
   const dtBR = brDeISO(cob.vencimento);
@@ -2062,7 +2091,9 @@ function montarOS(molde: any, cob: {
     Observacoes: {
       // Interno do Omie: não sai na nota, mas é onde quem abrir a OS meses
       // depois descobre de onde ela veio — e, agora, o que foi pedido no ato.
-      cObsOS: `Emitida pelo Hub a partir da cobrança ${cob.id_asaas} do Asaas.`
+      cObsOS: (cob.sem_cobranca
+        ? `Nota avulsa emitida pelo Hub SEM cobrança no Asaas (carimbo ${cob.id_asaas}). O título a receber não é baixado automaticamente.`
+        : `Emitida pelo Hub a partir da cobrança ${cob.id_asaas} do Asaas.`)
         + (cob.observacao ? ` Observação de quem emitiu: ${String(cob.observacao).trim()}` : ""),
     },
   };
@@ -2546,6 +2577,10 @@ async function emitirDia(
      * na rota manual: numa rodada de cron não há quem escreva, e um texto fixo
      * de configuração cairia em milhares de notas sem ninguém reler. */
     observacao?: string | null;
+    /* O carimbo `avl_…` de uma nota SEM cobrança no Asaas (`nf_notas_sem_cobranca`).
+     * Quando vem, a leva é só ela e não passa pela porta do Asaas: não existe
+     * pagamento a conferir. Todo o resto — trava, corredor, lote, diário — é igual. */
+    semCobranca?: string | null;
   },
 ) {
   /* `emissao_automatica` governa o CRON, não a pessoa.
@@ -2649,9 +2684,26 @@ async function emitirDia(
      */
     const { data: jaHoje } = await supabase.rpc("notas_fiscais_emitidas_hoje");
     const resta = tetoDia - Number(jaHoje ?? 0);
-    if (resta <= 0) {
+    /* O TETO DO DIA É FREIO DE VAZÃO, E VAZÃO É PROBLEMA DO CRON.
+     *
+     * Ele existe para que um defeito na fila não vire 3.000 notas numa tarde —
+     * risco de uma máquina que decide sozinha 54 vezes por dia. Quem clicou numa
+     * cobrança específica não é esse risco: é uma pessoa, uma nota, com nome no
+     * diário.
+     *
+     * Até 11/09/2026 o `forcar` vencia a chave geral e parava aqui, o que fazia o
+     * teto ser a única trava do Hub que respondia "não" a um pedido humano
+     * explícito sem oferecer saída nenhuma — e num dia de fechamento de mês, com
+     * a esteira drenando backlog, é justamente quando alguém precisa emitir UMA
+     * nota urgente. Agora o clique vence os dois, e o que sobra é o registro:
+     * `pulada` deixa de acontecer e o diário guarda que o teto foi furado, por
+     * quem. Freio que ninguém pode furar conscientemente vira freio que alguém
+     * desliga em Configurações e esquece ligado — o que é pior, porque aí ele
+     * some para o cron também. */
+    if (resta <= 0 && opts.forcar !== true) {
       return await fechar({ pulada: `teto do dia atingido (${jaHoje}/${tetoDia}).` });
     }
+    const tetoFurado = resta <= 0;
 
     /* DE ONDE VEM A LEVA — e por que a emissão manual passa a entrar por aqui.
      *
@@ -2666,7 +2718,13 @@ async function emitirDia(
      * número de lotes, não o rigor.
      */
     const tetoLote = Number(cfg?.teto_lote ?? 50);
-    const limite = Math.max(0, Math.min(manual ? tetoLote : tetoRodada, resta));
+    /* `resta` some da conta quando o teto foi furado conscientemente — senão o
+       `min` faria `limite = 0` e a leva sairia VAZIA, que é a pior forma de
+       "furar": a função responderia 200, sem nota e sem `pulada`, e quem clicou
+       concluiria que o Hub simplesmente não fez nada. */
+    const limite = manual && tetoFurado
+      ? tetoLote
+      : Math.max(0, Math.min(manual ? tetoLote : tetoRodada, resta));
 
     let fila: any[];
     let jaComNota: any[] = [];
@@ -2675,7 +2733,18 @@ async function emitirDia(
       // jeito nenhum: é a trava contra a segunda nota da mesma cobrança. Elas não
       // somem da resposta, porém: voltam marcadas, senão a tela anunciaria menos
       // cobranças tratadas do que o operador mandou e ninguém saberia por quê.
-      const linhas = await candidatas(supabase, opts.ids!.slice(0, limite), avulsa);
+      let linhas: any[];
+      if (opts.semCobranca) {
+        /* NOTA SEM COBRANÇA: a linha sai de `nf_notas_sem_cobranca`, não da RPC
+         * de candidatas (que parte de `asaas_cache`). As perguntas são as mesmas
+         * — tem cadastro? já tem OS? já tem nota? está no forno? —, feitas sobre
+         * o carimbo `avl_…`. */
+        const r = await candidataSemCobranca(supabase, opts.semCobranca);
+        if (r.motivo) return await fechar({ fila: 0, pulada: r.motivo });
+        linhas = r.linhas;
+      } else {
+        linhas = await candidatas(supabase, opts.ids!.slice(0, limite), avulsa);
+      }
       jaComNota = (linhas ?? []).filter((c: any) => c.ja_tem_nota);
       fila = (linhas ?? []).filter((c: any) => !c.ja_tem_nota);
     } else {
@@ -2705,9 +2774,14 @@ async function emitirDia(
      * cobrança ao Asaas responde o que nenhum espelho responde: o dinheiro ainda
      * está aqui AGORA? No ensaio a porta também vale — e registra —, senão o
      * ensaio prometeria emitir o que a emissão de verdade recusaria. */
-    const { liberadas, barradas } = await passarPelaPorta(supabase, fila, {
-      seco: false, usuario: opts.usuario, operador: opts.operador, avulsa,
-    });
+    /* Nota sem cobrança não tem porta: a pergunta dela é "o dinheiro ainda está
+     * no Asaas?", e aqui não existe dinheiro no Asaas. Quem responde pela nota é
+     * a pessoa que a pediu, com nome no diário. */
+    const { liberadas, barradas } = opts.semCobranca
+      ? { liberadas: fila, barradas: [] as Array<{ id_asaas: string; motivo: string }> }
+      : await passarPelaPorta(supabase, fila, {
+        seco: false, usuario: opts.usuario, operador: opts.operador, avulsa,
+      });
     if (!liberadas.length) {
       return await fechar({
         fila: fila.length, bloqueadas: barradas.length,
@@ -2800,6 +2874,7 @@ async function emitirDia(
             descricao: cob.descricao ?? "Serviço prestado",
             email: cob.email,
             observacao: opts.observacao,
+            sem_cobranca: cob.sem_cobranca === true,
           }));
           nCodOS = Number(r?.nCodOS ?? 0);
           if (!nCodOS) throw new Error(`IncluirOS não devolveu nCodOS`);
@@ -2814,6 +2889,7 @@ async function emitirDia(
               observacao: opts.observacao ?? null,
               antes_pagamento: cob.antes_pagamento === true,
               status_no_disparo: cob.status_asaas ?? null,
+              ...(cob.sem_cobranca ? { sem_cobranca: true, valor: Number(cob.valor), descricao: cob.descricao } : {}),
             },
           });
           /* O destinatário fica gravado no NASCIMENTO da OS, não depois.
@@ -2989,14 +3065,38 @@ async function emitirDia(
        * confirmada de hoje é a recebida de amanhã), então perguntar depois não
        * reconstitui nada. Aqui é a única hora em que a resposta existe. */
       const st = String(x.cob.status_asaas ?? "").toUpperCase();
+      /* A PERGUNTA NÃO É "FOI AVULSA?", É "O DINHEIRO TINHA ENTRADO?".
+       *
+       * Este registro só existia para a avulsa, e por isso a nota emitida sobre
+       * cobrança PENDENTE — a régua de "antes do pagamento" — ficava gravada
+       * IDÊNTICA a uma de cobrança recebida: `avulsa` é false ali (ela não é
+       * parâmetro da chamada, o servidor a resolve pela lista). E essa é a única
+       * hora em que a resposta existe: a cobrança vira `RECEIVED` dias depois, o
+       * `asaas_cache` é sobrescrito, e aí não há mais como saber que a nota
+       * precedeu o pagamento. Agora quem manda no registro é o status. */
+      const semCobranca = x.cob.sem_cobranca === true;
+      // Sem cobrança não há status a registrar — "sem dinheiro" ali seria inventado.
+      const semDinheiro = !semCobranca && !RECEBIDAS.includes(st);
+      const antesDoPagamento = x.cob.antes_pagamento === true;
       return {
         id_asaas: x.cob.id_asaas, n_cod_os: x.nCodOS, acao: x.acao, resultado: "em_processamento",
         erro: `Lote ${nIdLoteFat} disparado com ${entraram.length} OS. A nota nasce em alguns minutos; o próximo sync grava o número.`
-          + (avulsa ? ` Avulsa: emitida com a cobrança em ${st || "status desconhecido"}.` : ""),
+          + (semCobranca ? " Nota sem cobrança no Asaas: nenhum pagamento foi conferido, e o título no Omie fica em aberto." : "")
+          + (avulsa ? ` Avulsa: emitida com a cobrança em ${st || "status desconhecido"}.` : "")
+          + (antesDoPagamento && semDinheiro
+            ? ` Nota antes do pagamento: emitida com a cobrança em ${st || "status desconhecido"}.` : "")
+          + (tetoFurado ? ` Teto do dia furado por decisão de quem clicou (${jaHoje}/${tetoDia}).` : ""),
         avulsa,
         // O lote em coluna e não só na frase: é por ele que o `fecharRecusadas` vai
         // reler o `detalhes[]` e descobrir quem o Omie recusou no faturamento.
-        payload: { lote: nIdLoteFat, ...(avulsa ? { avulsa: true, status_na_emissao: st || null } : {}) },
+        payload: {
+          lote: nIdLoteFat,
+          ...(avulsa ? { avulsa: true } : {}),
+          ...(antesDoPagamento ? { antes_pagamento: true } : {}),
+          ...(tetoFurado ? { teto_furado: true } : {}),
+          ...(avulsa || semDinheiro ? { status_na_emissao: st || null } : {}),
+          ...(semCobranca ? { sem_cobranca: true } : {}),
+        },
         usuario: opts.usuario, operador: opts.operador,
       };
     }));
@@ -3005,6 +3105,21 @@ async function emitirDia(
       fila: fila.length, bloqueadas: barradas.length,
       emitidas: entraram.length, falhas: falhas.length,
       lote: nIdLoteFat,
+      /* QUAL FREIO FOI FURADO — na resposta, e não só no diário.
+       *
+       * `forcar: true` faz a emissão passar por cima da chave geral e do teto do
+       * dia. Isso é o pedido de quem clicou, mas furar em SILÊNCIO é outra
+       * coisa: a pessoa mandaria emitir sem saber que a emissão estava desligada
+       * em Configurações — e é justamente aí que ela precisa saber, porque
+       * "desligada" costuma querer dizer que alguém está mexendo em algo. A tela
+       * diz o que venceu; o diário guarda quem venceu. */
+      ...(manual && opts.forcar === true ? {
+        freios_furados: [
+          ...(String(cfg?.emissao_automatica ?? "") === "off"
+            ? ["A emissão automática está DESLIGADA em Configurações."] : []),
+          ...(tetoFurado ? [`O teto do dia já tinha sido atingido (${jaHoje}/${tetoDia}).`] : []),
+        ],
+      } : {}),
       detalhe: {
         falhas: falhas.slice(0, 20),
         ...(barradas.length ? { barradas: barradas.slice(0, 20) } : {}),
@@ -3045,6 +3160,77 @@ async function candidatas(supabase: any, ids: string[], avulsa = false) {
   });
   if (error) throw new Error(`notas_fiscais_candidatas: ${error.message}`);
   return linhas ?? [];
+}
+
+/** Carimbo de nota sem cobrança: `avl_` + aleatório. Ver `nf_notas_sem_cobranca`. */
+const EH_SEM_COBRANCA = /^avl_[a-z0-9]{12,40}$/;
+
+/**
+ * A linha de uma nota SEM cobrança, no formato que `emitirDia` lê das candidatas.
+ *
+ * As quatro perguntas das candidatas, sobre o carimbo `avl_…`:
+ *   • tem cadastro no Omie? — sem ele não há `nCodCli`; o degrau de cadastro do
+ *     `EmitirAgora` vem antes, então chegar aqui sem é recado, não exceção;
+ *   • já tem OS? — OS nossa e não faturada é REAPROVEITADA (worker que morreu
+ *     entre criar e faturar): criar outra daria "cCodIntOS já cadastrado";
+ *   • já tem nota? — OS faturada com esse carimbo é a nota; não se fatura de novo;
+ *   • está no forno? — lote disparado há menos de 2h sem desfecho. Disparar de
+ *     novo seria apostar que o primeiro falhou, e foi assim que nasceram as 14
+ *     notas de 26/08.
+ */
+async function candidataSemCobranca(
+  supabase: any, id: string,
+): Promise<{ linhas: any[]; motivo?: string }> {
+  if (!EH_SEM_COBRANCA.test(id)) return { linhas: [], motivo: `Carimbo de nota sem cobrança inválido: ${id}.` };
+
+  const { data: nota, error } = await supabase
+    .from("nf_notas_sem_cobranca").select("*").eq("id", id).maybeSingle();
+  if (error) throw new Error(`nf_notas_sem_cobranca: ${error.message}`);
+  if (!nota) return { linhas: [], motivo: `A nota sem cobrança ${id} não existe.` };
+
+  const [{ data: cli }, { data: oss }, { data: diario }] = await Promise.all([
+    supabase.from("omie_clientes_doc").select("codigo").eq("doc", nota.doc).order("codigo").limit(1),
+    supabase.from("nf_os_omie").select("n_cod_os, faturada, cancelada, carimbo_liberado_em").eq("c_cod_int_os", id),
+    supabase.from("nf_emissoes").select("acao, resultado, criado_em").eq("id_asaas", id)
+      .in("acao", ["faturar", "criar_e_faturar"]).order("criado_em", { ascending: false }).limit(1),
+  ]);
+
+  const nCodCli = Number(cli?.[0]?.codigo ?? 0);
+  if (!nCodCli) {
+    return {
+      linhas: [],
+      motivo: `O tomador ${nota.nome} (${nota.doc}) ainda não tem cadastro no Omie. Nada foi criado — ` +
+        "o cadastro é o degrau anterior; repita a emissão depois dele.",
+    };
+  }
+
+  const ultimo = diario?.[0];
+  if (ultimo?.resultado === "em_processamento" && Date.now() - new Date(ultimo.criado_em).getTime() < 2 * 3600_000) {
+    return {
+      linhas: [],
+      motivo: "O lote desta nota já foi disparado e ainda está no forno. Nada foi disparado de novo — " +
+        "a nota nasce em alguns minutos e o espelho grava o número.",
+    };
+  }
+
+  const vivas = (oss ?? []).filter((o: any) => !o.cancelada && !o.carimbo_liberado_em);
+  const faturada = vivas.find((o: any) => o.faturada === true);
+  const aberta = vivas.find((o: any) => o.faturada !== true);
+
+  return {
+    linhas: [{
+      id_asaas: id,
+      n_cod_cli: nCodCli,
+      n_cod_os: faturada?.n_cod_os ?? aberta?.n_cod_os ?? null,
+      ja_tem_nota: !!faturada,
+      valor: Number(nota.valor),
+      data_vencimento: nota.vencimento,
+      descricao: nota.descricao,
+      email: nota.tomador?.email || null,
+      status_asaas: null,
+      sem_cobranca: true,
+    }],
+  };
 }
 
 /**
@@ -3218,7 +3404,16 @@ function montarTextoAviso(linhas: any[]): string {
     for (const [motivo, itens] of [...porMotivo].sort((a, b) => b[1].length - a[1].length)) {
       partes.push(`  ── ${motivo} (${itens.length})`);
       for (const l of itens.slice(0, 25)) {
-        const pista = l.cep_generico ? "  [CEP de cidade]" : l.emitivel === false ? "  [cadastro incompleto]" : "";
+        /* A pista mais FORTE primeiro. `cep_valido = false` é o CEP que não existe
+         * nos Correios: é ele que a prefeitura devolve como E0240, e é o único dos
+         * três que diz à pessoa exatamente o que corrigir. `cep_generico` (o CEP
+         * terminado em 000) desceu para segundo porque mente nos dois sentidos —
+         * aparece em cadastro que emite bem e falta justamente nos que travam. */
+        const pista =
+          l.cep_valido === false ? "  [CEP não existe nos Correios]"
+          : l.cep_generico ? "  [CEP de cidade]"
+          : l.emitivel === false ? "  [cadastro incompleto]"
+          : "";
         partes.push(linha(l) + pista);
       }
       if (itens.length > 25) partes.push(`   … e mais ${itens.length - 25}.`);
@@ -4312,6 +4507,94 @@ Deno.serve(async (req) => {
       return json(r);
     }
 
+    /* ---------------------- nota sem cobrança: preparar ----------------------
+     *
+     * GRAVA O PEDIDO, NÃO EMITE. Devolve o carimbo `avl_…` que a tela entrega ao
+     * `EmitirAgora`, e é esse carimbo que torna a corrente repetível: a retentativa
+     * de "lote em voo" e a de um worker que morreu reencontram a mesma nota e a
+     * mesma OS, em vez de nascer uma segunda.
+     *
+     * A conferência da tela (`faltasDaNota`) é refeita aqui inteira — guarda de
+     * tela vale só para quem passa pela tela. */
+    if (action === "sem_cobranca_preparar") {
+      if (ehCron) {
+        return json({ erro: "Nota sem cobrança é pedida por uma pessoa, não por token de sistema." }, 403);
+      }
+      const digitos = (v: unknown) => String(v ?? "").replace(/\D/g, "");
+      const texto = (v: unknown, n: number) => String(v ?? "").replace(/\s+/g, " ").trim().slice(0, n);
+
+      const origem = body?.origem === "asaas" || body?.origem === "manual" ? body.origem : null;
+      if (!origem) return json({ erro: "Informe origem: 'asaas' ou 'manual'." }, 400);
+
+      const t = body?.tomador ?? {};
+      const tomador = {
+        name: texto(t.name, 100), cpfCnpj: digitos(t.cpfCnpj), email: texto(t.email, 100),
+        mobilePhone: digitos(t.mobilePhone).slice(0, 13), postalCode: digitos(t.postalCode),
+        address: texto(t.address, 60), addressNumber: texto(t.addressNumber, 10),
+        complement: texto(t.complement, 40), province: texto(t.province, 40),
+        cityName: texto(t.cityName, 60), state: texto(t.state, 2).toUpperCase(),
+      };
+      const doc = tomador.cpfCnpj;
+      if (!docValido(doc)) return json({ erro: "CPF/CNPJ do tomador inválido." }, 400);
+      if (tomador.name.length < 2) return json({ erro: "Informe o nome do tomador." }, 400);
+
+      const valor = Math.round(Number(body?.valor) * 100) / 100;
+      if (!Number.isFinite(valor) || valor <= 0) return json({ erro: "Valor da nota inválido." }, 400);
+
+      const descricao = texto(body?.descricao, 1000);
+      if (descricao.length < 3) return json({ erro: "Informe a descrição do serviço." }, 400);
+      if (descricao.length > CABE_NO_CORPO_DA_NOTA) {
+        return json({ erro: `A descrição tem ${descricao.length} caracteres; a nota aceita ${CABE_NO_CORPO_DA_NOTA}.` }, 400);
+      }
+      const vencimento = String(body?.vencimento ?? "");
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(vencimento) || Number.isNaN(Date.parse(vencimento))) {
+        return json({ erro: "Vencimento inválido (AAAA-MM-DD)." }, 400);
+      }
+
+      /* Do Asaas, o documento tem de ser o do cliente escolhido. A tela trava o
+       * campo; aqui é o que impede um corpo montado à mão de emitir para outro
+       * CNPJ carregando o `cus_` de um cliente conhecido. */
+      let idCustomer: string | null = null;
+      if (origem === "asaas") {
+        idCustomer = String(body?.id_customer ?? "").trim();
+        const { data: cus } = await supabase.from("asaas_cache")
+          .select("id_asaas, documento, dados").eq("tipo", "customer").eq("id_asaas", idCustomer).maybeSingle();
+        if (!cus) return json({ erro: `O cliente ${idCustomer || "(vazio)"} não está no espelho do Asaas.` }, 400);
+        if (digitos(cus.documento ?? cus.dados?.cpfCnpj) !== doc) {
+          return json({ erro: "O documento do formulário não é o do cliente escolhido no Asaas." }, 400);
+        }
+      }
+
+      /* Com cadastro no Omie, a nota sai para o de lá e o endereço não é usado.
+       * Sem cadastro, é deste formulário que ele nasce — e a prefeitura recusa
+       * sem e-mail, número e CEP. */
+      const { data: cli } = await supabase.from("omie_clientes_doc")
+        .select("codigo").eq("doc", doc).order("codigo").limit(1);
+      const temCadastro = Number(cli?.[0]?.codigo ?? 0) > 0;
+      if (!temCadastro) {
+        const faltam: string[] = [];
+        if (!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(tomador.email)) faltam.push("e-mail");
+        if (tomador.postalCode.length !== 8) faltam.push("CEP");
+        if (!tomador.address) faltam.push("logradouro");
+        if (!tomador.addressNumber) faltam.push("número");
+        if (!tomador.province) faltam.push("bairro");
+        if (!tomador.cityName) faltam.push("cidade");
+        if (!/^[A-Z]{2}$/.test(tomador.state)) faltam.push("UF");
+        if (faltam.length) {
+          return json({ erro: `Sem cadastro no Omie, o tomador precisa de: ${faltam.join(", ")}.` }, 400);
+        }
+      }
+
+      const id = `avl_${crypto.randomUUID().replace(/-/g, "").slice(0, 24)}`;
+      const { error } = await supabase.from("nf_notas_sem_cobranca").insert({
+        id, origem, id_customer: idCustomer, doc, nome: tomador.name, tomador,
+        valor, descricao, vencimento, usuario,
+        operador: typeof body?.operador === "string" ? body.operador.slice(0, 120) : null,
+      });
+      if (error) return json({ erro: `Não deu para gravar a nota: ${error.message}` }, 500);
+      return json({ ok: true, id, tem_cadastro_omie: temCadastro });
+    }
+
     if (action === "previa" || action === "emitir") {
       /* Emitir é ato fiscal: nenhum job automático emite sozinho.
        *
@@ -4329,7 +4612,16 @@ Deno.serve(async (req) => {
         }, 403);
       }
 
-      const ids: string[] = Array.isArray(body?.ids) ? body.ids.map(String) : [];
+      /* NOTA SEM COBRANÇA: o carimbo `avl_…` faz o papel do id da cobrança, e a
+       * leva é só ela. Não tem prévia — a prévia existe para mostrar o payload
+       * de cobranças que a pessoa não digitou; aqui ela acabou de digitar tudo. */
+      const semCobranca = typeof body?.sem_cobranca === "string" ? body.sem_cobranca.trim() : "";
+      if (semCobranca && action !== "emitir") {
+        return json({ erro: "Nota sem cobrança só vai pela ação `emitir`." }, 400);
+      }
+      const ids: string[] = semCobranca
+        ? [semCobranca]
+        : Array.isArray(body?.ids) ? body.ids.map(String) : [];
       if (!ids.length) return json({ erro: "Nenhuma cobrança informada." }, 400);
 
       /* A RÉGUA LARGA, e só quando pedida por escrito.
@@ -4374,6 +4666,7 @@ Deno.serve(async (req) => {
           // desligada. Quem manda isto sabe que o outro lado pode estar vivo.
           forcar: body?.forcar === true,
           observacao: typeof body?.observacao === "string" ? body.observacao : null,
+          semCobranca: semCobranca || null,
         });
         const despachadas = Number((r as any)?.emitidas ?? 0);
         /* Rodada que não produziu nada precisa DIZER. Sem isto, uma recusa do

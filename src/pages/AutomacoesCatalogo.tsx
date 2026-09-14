@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Plus, Trash2, Upload, Search, X, LayoutGrid, List as ListIcon, ChevronLeft, ChevronRight, Waypoints, Link2, Pencil } from "lucide-react";
+import { Plus, Trash2, Upload, Search, X, LayoutGrid, List as ListIcon, ChevronLeft, ChevronRight, Waypoints, Link2, Pencil, PowerOff } from "lucide-react";
 import * as XLSX from "xlsx";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -33,7 +33,29 @@ type Automacao = {
   nivel: number | null;
   depende_de?: string | null;
   created_at?: string;
+  /** roda hoje? `status` é outra pergunta — ele guarda até onde a construção foi */
+  ativa?: boolean | null;
+  desativada_em?: string | null;
+  desativada_motivo?: string | null;
 };
+
+/* Liga/desliga mora na ficha da Árvore (é lá que se carimba a data e o motivo);
+   aqui o catálogo só PRECISA saber, senão os KPIs contam como economia de tempo
+   o que ninguém está mais rodando. Coluna nova: sem valor = ativa. */
+const emUso = (r: { ativa?: boolean | null }) => r.ativa !== false;
+
+function SeloDesativada({ r, className }: { r: Automacao; className?: string }) {
+  if (emUso(r)) return null;
+  const desde = r.desativada_em ? new Date(r.desativada_em).toLocaleDateString("pt-BR") : null;
+  return (
+    <span
+      className={cn("inline-flex shrink-0 items-center gap-0.5 rounded bg-slate-200 px-1 py-px text-[9px] font-bold uppercase tracking-wider text-slate-600", className)}
+      title={[desde ? `Não roda desde ${desde}` : "Não roda hoje", r.desativada_motivo?.trim()].filter(Boolean).join(" · ")}
+    >
+      <PowerOff className="h-2.5 w-2.5" /> Desativada
+    </span>
+  );
+}
 
 // Nível de maturidade (pirâmide) — mesmo esquema de cor da aba IA & Automação.
 const NIVEL_COR = ["hsl(0 62% 20%)", "hsl(0 65% 31%)", "hsl(0 84% 51%)", "hsl(0 70% 68%)", "hsl(0 0% 12%)"];
@@ -279,12 +301,14 @@ export default function AutomacoesCatalogo({ embedded = false }: { embedded?: bo
   // Mantém a página dentro do intervalo válido quando a lista encolhe
   useEffect(() => { if (page > totalPages) setPage(totalPages); }, [page, totalPages]);
 
-  // KPIs
-  const rodandoCount = useMemo(() => rows.filter((r) => r.status === "Rodando").length, [rows]);
-  const horasMes = useMemo(() => rows.filter((r) => r.status === "Rodando").reduce((s, r) => s + (Number(r.horas_mes) || 0), 0), [rows]);
+  // KPIs. "Rodando" aqui quer dizer rodando HOJE: o que foi desativado continua
+  // no catálogo (é o registro do que já foi feito) e sai destes dois números.
+  const rodandoCount = useMemo(() => rows.filter((r) => r.status === "Rodando" && emUso(r)).length, [rows]);
+  const desativadasCount = useMemo(() => rows.filter((r) => !emUso(r)).length, [rows]);
+  const horasMes = useMemo(() => rows.filter((r) => r.status === "Rodando" && emUso(r)).reduce((s, r) => s + (Number(r.horas_mes) || 0), 0), [rows]);
   const execucoesTotal = useMemo(() => rows.reduce((s, r) => s + (Number(r.execucoes) || 0), 0), [rows]);
   const diasMedios = useMemo(() => {
-    const ativas = rows.filter((r) => r.status === "Rodando");
+    const ativas = rows.filter((r) => r.status === "Rodando" && emUso(r));
     if (!ativas.length) return 0;
     const today = new Date();
     const dias = ativas.map((r) => {
@@ -442,7 +466,12 @@ export default function AutomacoesCatalogo({ embedded = false }: { embedded?: bo
 
       {/* KPI Strip */}
       <div className="grid grid-cols-2 gap-3 md:grid-cols-5">
-        <Kpi label="RODANDO" value={String(rodandoCount)} hint="automações ativas" valueClass="text-foreground" />
+        <Kpi
+          label="RODANDO"
+          value={String(rodandoCount)}
+          hint={desativadasCount ? `${desativadasCount} desativada${desativadasCount > 1 ? "s" : ""} fora da conta` : "automações ativas"}
+          valueClass="text-foreground"
+        />
         <Kpi label="HORAS/MÊS" value={horasMes ? horasMes.toLocaleString("pt-BR") : "—"} hint="economizadas pelo time" valueClass="text-rose-600" />
         <Kpi label="EXECUÇÕES" value={execucoesTotal ? execucoesTotal.toLocaleString("pt-BR") : "—"} hint="acumuladas no programa" valueClass="text-foreground" />
         <Kpi label="DIAS MÉDIOS" value={diasMedios ? String(diasMedios) : "—"} hint="rodando sem falhar" valueClass="text-foreground" />
@@ -537,11 +566,12 @@ export default function AutomacoesCatalogo({ embedded = false }: { embedded?: bo
                 const ts = parseTools(r.ferramentas);
                 const statusCol = STATUS_COLS.find((s) => s.key === r.status);
                 return (
-                  <TableRow key={r.id} className="cursor-pointer" onClick={() => openEdit(r)}>
+                  <TableRow key={r.id} className={cn("cursor-pointer", !emUso(r) && "opacity-60")} onClick={() => openEdit(r)}>
                     <TableCell className="font-medium">
                       <span className="inline-flex items-center gap-1.5">
                         <NivelBadge n={r.nivel} />
                         {r.automacao || "(sem nome)"}
+                        <SeloDesativada r={r} />
                       </span>
                     </TableCell>
                     <TableCell>
@@ -656,7 +686,7 @@ export default function AutomacoesCatalogo({ embedded = false }: { embedded?: bo
                     <div className="border-b border-r border-border/60 bg-secondary/20" />
                     {roadCats.map((cat) => {
                       const catRows = filtered.filter((r) => (r.categoria || "Sem categoria") === cat);
-                      const rod = catRows.filter((r) => r.status === "Rodando").length;
+                      const rod = catRows.filter((r) => r.status === "Rodando" && emUso(r)).length;
                       const c = colorForCategoria(cat === "Sem categoria" ? "" : cat);
                       const fullBorder = c.border.replace("border-l-", "border-");
                       return (
@@ -698,10 +728,12 @@ export default function AutomacoesCatalogo({ embedded = false }: { embedded?: bo
                                   const sel = roadSel === r.id;
                                   const prereq = nomeAuto(r.depende_de);
                                   return (
-                                    <div key={r.id} className={cn("group/rc relative rounded-lg border border-l-[3px] bg-card px-2 py-1.5 shadow-sm transition", STATUS_BORDER[r.status] || "border-l-slate-300", dim && "opacity-30", sel && "ring-2 ring-primary/50")}>
+                                    <div key={r.id} className={cn("group/rc relative rounded-lg border border-l-[3px] bg-card px-2 py-1.5 shadow-sm transition", emUso(r) ? (STATUS_BORDER[r.status] || "border-l-slate-300") : "border-l-slate-300", dim && "opacity-30", sel && "ring-2 ring-primary/50")}>
                                       <button onClick={() => toggleRoadSel(r.id)} className="flex w-full items-start gap-1.5 text-left" title={prereq ? `Pré-requisito: ${prereq}` : (r.solucao || "Ver a corrente de pré-requisitos")}>
-                                        <span className={cn("mt-1 h-2 w-2 shrink-0 rounded-full", statusAccent(r.status))} />
-                                        <span className="min-w-0 flex-1 text-[11.5px] font-medium leading-tight text-foreground">{r.automacao || "(sem nome)"}</span>
+                                        <span className={cn("mt-1 h-2 w-2 shrink-0 rounded-full", emUso(r) ? statusAccent(r.status) : "bg-slate-300")} />
+                                        <span className={cn("min-w-0 flex-1 text-[11.5px] font-medium leading-tight", emUso(r) ? "text-foreground" : "text-muted-foreground line-through")}>
+                                          {r.automacao || "(sem nome)"}
+                                        </span>
                                         {r.responsavel && <span title={r.responsavel} className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-primary/15 text-[8px] font-bold text-primary">{initials(r.responsavel)}</span>}
                                       </button>
                                       {prereq && <div className="mt-0.5 flex items-center gap-0.5 truncate pl-3.5 text-[9px] text-muted-foreground"><Link2 className="h-2.5 w-2.5 shrink-0" /> {prereq}</div>}
@@ -770,6 +802,7 @@ export default function AutomacoesCatalogo({ embedded = false }: { embedded?: bo
                       className={cn(
                         "group cursor-grab active:cursor-grabbing rounded-md border bg-card border-l-4 px-3 py-2.5 shadow-sm hover:shadow transition select-none",
                         cat.border,
+                        !emUso(r) && "opacity-70",
                         draggingId === r.id && "opacity-40 ring-2 ring-primary"
                       )}>
                       <div className="flex items-center justify-between gap-2">
@@ -778,13 +811,16 @@ export default function AutomacoesCatalogo({ embedded = false }: { embedded?: bo
                           <span className="truncate">{r.categoria || "Sem categoria"}</span>
                         </div>
                         <div className="flex shrink-0 items-center gap-1">
+                          <SeloDesativada r={r} />
                           <NivelBadge n={r.nivel} className="h-4 px-1 text-[9px]" />
                           <Badge className={cn("text-[10px] px-1.5 h-4", IMPACTO_CLS[r.impacto || "Médio"])}>
                             {(r.impacto || "Médio").toUpperCase()}
                           </Badge>
                         </div>
                       </div>
-                      <div className="mt-1.5 text-[13px] font-semibold leading-snug text-foreground">{r.automacao || "(sem nome)"}</div>
+                      <div className={cn("mt-1.5 text-[13px] font-semibold leading-snug", emUso(r) ? "text-foreground" : "text-muted-foreground")}>
+                        {r.automacao || "(sem nome)"}
+                      </div>
                       {(r.dor || r.solucao) && (
                         <div className="mt-1 text-[11.5px] text-muted-foreground line-clamp-2">{r.dor || r.solucao}</div>
                       )}

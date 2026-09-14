@@ -6,6 +6,8 @@
  * precisa de teste tem de ser um módulo .ts puro.
  * ------------------------------------------------------------------------- */
 
+import type { LancamentoDaPonte } from "@/lib/ponteVariacao";
+
 export const MESES = ["Jan","Fev","Mar","Abr","Mai","Jun","Jul","Ago","Set","Out","Nov","Dez"] as const;
 
 /** A ordem em que os grupos aparecem, que não é alfabética nem vem do banco. */
@@ -30,8 +32,15 @@ export type Linha = {
   grupo: string;
   rotulo: string;
   ordem: number;
+  /** Quem está no cadastro: departamento E categoria. */
   departamentos: string[];
   categorias: string[];
+  /** Entram inteiras, seja quem for que recebeu — 3.2.7.2 Pessoal - Suporte é sempre Suporte. */
+  categorias_inteiras: string[];
+  /** Só para quem NÃO está no cadastro: o desligado que ainda recebe, o PJ que ninguém cadastrou. */
+  categorias_sem_cadastro: string[];
+  /** Digitada todo mês (Agência, Contadores, Comissão de MGM): não soma nada do Omie. */
+  manual: boolean;
   regra_nota: string | null;
   ativo: boolean;
 };
@@ -45,6 +54,8 @@ export type Pessoa = {
   remuneracao: number | null;
   planilha_comissao: string | null;
   observacao: string | null;
+  /** Cadastros do Omie SEM documento que também são esta pessoa. */
+  codigos_omie: number[];
   ativo: boolean;
 };
 
@@ -203,6 +214,116 @@ export function agruparPorPessoa(lancs: Lancamento[]): PessoaAgrupada[] {
   }
 
   return [...porCnpj.values()].sort((a, b) => b.total - a.total);
+}
+
+/* --------------------------------------------------------------------------
+ * A ponte: o que entrou e o que saiu da célula de um mês para o outro.
+ *
+ * É a MESMA ponte da DRE/DFC (`montarPonte`), para a leitura ser a mesma nas
+ * duas telas. Duas traduções fazem ela servir aqui:
+ *   • o valor vira NEGATIVO — CAC é custo, e a ponte decide "gastou a mais" ×
+ *     "economizou" pelo sinal, como numa rubrica de despesa da DRE;
+ *   • a contraparte é a PESSOA do cadastro, não o favorecido do Omie: o mesmo
+ *     CNPJ aparece com três grafias, e a ponte agrupa pelo nome.
+ * ------------------------------------------------------------------------ */
+
+/** A chave de coluna que a ponte (e `mesCurto`) entende: "Jun-26", em inglês. */
+const MES_COLUNA = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"] as const;
+
+export function colunaDoMes(ano: number, mes: number): string {
+  return `${MES_COLUNA[mes - 1]}-${String(ano % 100).padStart(2, "0")}`;
+}
+
+/** Janeiro compara com dezembro do ano anterior. */
+export function mesAnteriorDe(ano: number, mes: number): { ano: number; mes: number } {
+  return mes === 1 ? { ano: ano - 1, mes: 12 } : { ano, mes: mes - 1 };
+}
+
+export function lancamentosParaPonte(lancs: Lancamento[]): LancamentoDaPonte[] {
+  return lancs
+    .filter((l) => l.tipo === "lancamento")
+    .map((l) => ({
+      data: l.data_pagamento,
+      titulo: null,
+      documento: null,
+      contraparte: l.pessoa || l.favorecido || "(sem cadastro)",
+      cnpj_cpf: l.cnpj,
+      categoria_codigo: l.categoria,
+      categoria_descricao: l.categoria_descricao,
+      status: l.natureza,
+      valor: -(Number(l.valor) || 0),
+      cod_titulo: l.cod_titulo == null ? null : String(l.cod_titulo),
+    }));
+}
+
+/* --------------------------------------------------------------------------
+ * Conferência com a DRE.
+ * ------------------------------------------------------------------------ */
+
+/** Uma linha de `cac_conferencia_dre`: uma rubrica da DRE num mês. */
+export type ConferenciaDre = {
+  rubrica: string;
+  mes: number;
+  /** O que a DRE mostra. null quando a rubrica não tem célula no mês. */
+  dre: number | null;
+  /** A mesma rubrica refeita da base do CAC. */
+  omie: number;
+  /** A parte que alguma linha do painel pega. */
+  no_cac: number;
+  /** O resto: folha de quem não é de aquisição, e o que nenhuma regra alcança. */
+  fora_do_cac: number;
+  valor_manual_na_dre: boolean;
+  mes_travado: boolean;
+};
+
+export type LinhaConferencia = ConferenciaDre & {
+  /** `dre − omie`. Só é explicado por valor digitado ou mês travado. */
+  diferenca: number;
+  /** A diferença passa de R$ 1 e nada na DRE a justifica. */
+  inexplicada: boolean;
+};
+
+export type ResumoConferencia = {
+  linhas: LinhaConferencia[];
+  dre: number;
+  omie: number;
+  noCac: number;
+  foraDoCac: number;
+};
+
+/**
+ * As rubricas de UM mês, da maior para a menor, com os totais.
+ *
+ * Rubrica sem nada no mês (nem na DRE, nem no Omie) sai: doze rubricas zeradas
+ * empurrariam para baixo as que explicam o número. E a diferença só vira alerta
+ * quando nada a justifica — mês travado vem do tracker e valor digitado substitui
+ * o Omie; em ambos a DRE e o Omie DEVEM discordar.
+ */
+export function conferenciaDoMes(rows: ConferenciaDre[], mes: number): ResumoConferencia {
+  const linhas = rows
+    .filter((r) => r.mes === mes && (Number(r.dre) || Number(r.omie)))
+    .map((r) => {
+      const diferenca = (Number(r.dre) || 0) - (Number(r.omie) || 0);
+      return {
+        ...r,
+        dre: r.dre == null ? null : Number(r.dre),
+        omie: Number(r.omie) || 0,
+        no_cac: Number(r.no_cac) || 0,
+        fora_do_cac: Number(r.fora_do_cac) || 0,
+        diferenca,
+        inexplicada: Math.abs(diferenca) > 1 && !r.valor_manual_na_dre && !r.mes_travado,
+      };
+    })
+    .sort((a, b) => Math.max(b.dre ?? 0, b.omie) - Math.max(a.dre ?? 0, a.omie));
+
+  const soma = (f: (l: LinhaConferencia) => number) => linhas.reduce((s, l) => s + f(l), 0);
+  return {
+    linhas,
+    dre: soma((l) => l.dre ?? 0),
+    omie: soma((l) => l.omie),
+    noCac: soma((l) => l.no_cac),
+    foraDoCac: soma((l) => l.fora_do_cac),
+  };
 }
 
 export type ResumoCelula = {
@@ -515,24 +636,98 @@ export function desvioVsMedia(meses: number[], i: number, janela = 3): Desvio | 
   return { media, desvio: (meses[i] - media) / media };
 }
 
-export type Selo = "ok" | "conferir" | "semregra" | "zero";
+export type Selo = "ok" | "conferir" | "semregra" | "zero" | "manual";
+
+/** A linha aponta para alguma coisa — departamento ou qualquer das três listas de categoria. */
+export function linhaTemRegra(
+  l: Partial<Pick<Linha, "departamentos" | "categorias" | "categorias_inteiras" | "categorias_sem_cadastro">>,
+): boolean {
+  return !!(
+    l.departamentos?.length || l.categorias?.length ||
+    l.categorias_inteiras?.length || l.categorias_sem_cadastro?.length
+  );
+}
 
 /**
  * Quanto se pode confiar no número daquela linha.
  *
- * A ordem importa: uma linha SEM regra vale zero por construção, e chamá-la de
- * "zero" esconderia que o problema é a regra em branco, não a ausência de
- * pagamento. Por isso "sem regra" vem antes de "zero", e o "CONFERIR" da nota
- * — que é como a migration marca uma regra apontada por semelhança de nome e
- * ainda não batida contra o painel antigo — vem antes dos dois.
+ * A ordem importa: a linha MANUAL não tem regra de propósito, e chamá-la de
+ * "sem regra" a pintaria de defeito. Uma linha sem regra vale zero por
+ * construção, e chamá-la de "zero" esconderia que o problema é a regra em
+ * branco, não a ausência de pagamento. Por isso "sem regra" vem antes de
+ * "zero", e o "CONFERIR" da nota — regra ainda não batida contra o painel
+ * oficial — vem antes dos dois.
  */
 export function seloDaLinha(
   regra_nota: string | null | undefined,
   temRegra: boolean,
   total: number,
+  manual = false,
 ): Selo {
+  if (manual) return "manual";
   if (!temRegra) return "semregra";
   if ((regra_nota ?? "").startsWith("CONFERIR")) return "conferir";
   if (!total) return "zero";
   return "ok";
+}
+
+export type ConflitoRegra = {
+  categoria: string;
+  linhas: [string, string];
+  motivo: string;
+};
+
+/**
+ * Categoria que duas linhas pegam para o MESMO pagamento — o número entraria duas
+ * vezes no total, sem erro nenhum.
+ *
+ * Cada lista alcança um público diferente, e só alcances que se cruzam colidem:
+ *   • inteira, ou categoria numa linha sem departamento → todo mundo;
+ *   • categoria com departamento → quem está no cadastro naquele departamento;
+ *   • sem cadastro → quem não está no cadastro.
+ * "Departamento" e "sem cadastro" nunca se cruzam: um exige o cadastro, o outro
+ * a falta dele. É isso que deixa 2.03.11 na folha de Field Sales E no fallback de
+ * Field Sales sem contar duas vezes.
+ */
+export function conflitosDeRegra(linhas: Linha[]): ConflitoRegra[] {
+  type Alcance = { linha: string; tipo: "todos" | "depto" | "semcadastro"; deptos: string[] };
+  const porCategoria = new Map<string, Alcance[]>();
+  const junta = (c: string, a: Alcance) => {
+    const lista = porCategoria.get(c);
+    if (lista) lista.push(a);
+    else porCategoria.set(c, [a]);
+  };
+
+  for (const l of linhas) {
+    if (!l.ativo || l.manual) continue;
+    const linha = `${l.grupo} › ${l.rotulo}`;
+    const deptos = l.departamentos ?? [];
+    for (const c of l.categorias_inteiras ?? []) junta(c, { linha, tipo: "todos", deptos: [] });
+    for (const c of l.categorias_sem_cadastro ?? []) junta(c, { linha, tipo: "semcadastro", deptos: [] });
+    for (const c of l.categorias ?? []) {
+      junta(c, deptos.length ? { linha, tipo: "depto", deptos } : { linha, tipo: "todos", deptos: [] });
+    }
+  }
+
+  const out: ConflitoRegra[] = [];
+  for (const [categoria, alcances] of porCategoria) {
+    for (let i = 0; i < alcances.length; i++) {
+      for (let j = i + 1; j < alcances.length; j++) {
+        const a = alcances[i];
+        const b = alcances[j];
+        if (a.linha === b.linha) continue;
+        let motivo: string | null = null;
+        if (a.tipo === "todos" || b.tipo === "todos") {
+          motivo = "uma das linhas pega a categoria de todo mundo";
+        } else if (a.tipo === "semcadastro" && b.tipo === "semcadastro") {
+          motivo = "quem não está no cadastro cairia nas duas";
+        } else if (a.tipo === "depto" && b.tipo === "depto") {
+          const d = a.deptos.find((x) => b.deptos.includes(x));
+          if (d) motivo = `o departamento ${d} está nas duas`;
+        }
+        if (motivo) out.push({ categoria, linhas: [a.linha, b.linha], motivo });
+      }
+    }
+  }
+  return out;
 }

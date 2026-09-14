@@ -4,7 +4,9 @@ import {
   pagaContraNota, reguaDaLinha, exigeAntesDoPagamento, clienteForaDoEspelho,
   vereditoProntidao, oQueFazer, diasDoCadastro, clientesEmTexto, recadoDoCadastro,
   chaveNfseValida, linkPortalNacional, chaveEmBlocos,
+  tipoConhecido, tipoAntesDoPagamento, fraseAntesDoPagamento,
   type LinhaNota, type Situacao, type ClienteFaltante, type CadastroNoOmie,
+  type TipoAntesDoPagamento,
 } from "./notasFiscais";
 
 const linha = (over: Partial<LinhaNota> = {}): LinhaNota => ({
@@ -27,6 +29,30 @@ describe("motivoCurto", () => {
   it("reconhece a recusa de conexão, que não é crítica da nota", () => {
     expect(motivoCurto('A prefeitura respondeu "403 - Forbidden: Access is denied." (recusa do webservice, não crítica da nota).'))
       .toMatch(/403/);
+  });
+
+  /* AS TREZE QUE ESTAVAM NA FILA ERRADA. Medido em 12/09/2026: todas as OS em
+     "Ver mensagem da prefeitura" eram instabilidade, nenhuma era cadastro —
+     doze por indisponibilidade da NFS-e Nacional e uma por um 502 de gateway.
+     A fila que a tela oferecia era a que ninguém consegue trabalhar. */
+  it("reconhece a indisponibilidade da NFS-e Nacional", () => {
+    expect(motivoCurto("Falha no processamento da NFS-e por indisponibilidade na NFS-e Nacional."))
+      .toMatch(/reenviar/);
+  });
+
+  /* A frase "recusa do webservice" é NOSSA (`textoDaMensagem`), e por isso vale
+     mais que o número: quem a escreve já concluiu que é página de erro. Sem esta
+     linha, todo código HTTP que não fosse 403 caía em "mensagem desconhecida". */
+  it("qualquer código de gateway, e não só o 403, é webservice fora do ar", () => {
+    const m = 'A prefeitura respondeu "502 - Web server received an invalid response while '
+      + 'acting as a gateway or proxy server." (recusa do webservice, não crítica da nota).';
+    expect(motivoCurto(m)).toMatch(/reenviar/);
+  });
+
+  it("a recusa de telefone tem nome, pelo código e pelo campo do esquema", () => {
+    expect(motivoCurto("E1235 : Falha no esquema XML do DF-e.")).toMatch(/[Tt]elefone/);
+    expect(motivoCurto("O campo 'http://www.sped.fazenda.gov.br/nfse:fone' foi preenchido com um valor inválido"))
+      .toMatch(/[Tt]elefone/);
   });
 
   it("mensagem desconhecida volta sem o código, e não vazia", () => {
@@ -329,6 +355,95 @@ describe("exigeAntesDoPagamento", () => {
   });
 });
 
+/* -----------------------------------------------------------------------------
+ * AS DUAS POPULAÇÕES DA MESMA RÉGUA (11/09/2026).
+ *
+ * A lista `nf_nota_antes_do_pagamento` passou a ter dois motivos opostos com a
+ * mesma trava: cliente que precisa da nota para conseguir pagar, e parceiro que
+ * nos deve comissão de indicação. A régua não mudou — o que se testa aqui é que a
+ * FRASE não erra qual dos dois é, porque ela é dita a um clique de uma escrita
+ * fiscal que não se apaga.
+ * -------------------------------------------------------------------------- */
+describe("tipoConhecido", () => {
+  it("o desconhecido e o ausente caem no tipo que a lista tinha antes", () => {
+    expect(tipoConhecido("comissao")).toBe("comissao");
+    expect(tipoConhecido("paga_contra_nota")).toBe("paga_contra_nota");
+    // Tipo novo vindo do banco sem a tela saber dele: cai no antigo em vez de
+    // virar `undefined` e apagar o selo da linha.
+    expect(tipoConhecido("algo_que_ninguem_escreveu_ainda")).toBe("paga_contra_nota");
+    expect(tipoConhecido(null)).toBe("paga_contra_nota");
+    expect(tipoConhecido(undefined)).toBe("paga_contra_nota");
+  });
+});
+
+describe("tipoAntesDoPagamento", () => {
+  const mapa = new Map<string, TipoAntesDoPagamento>([
+    ["28127603000178", "paga_contra_nota"],
+    ["29889991000197", "comissao"],
+  ]);
+
+  it("diz qual dos dois motivos destravou a linha", () => {
+    expect(tipoAntesDoPagamento({ cnpj_cpf: "28.127.603/0001-78" }, mapa)).toBe("paga_contra_nota");
+    expect(tipoAntesDoPagamento({ cnpj_cpf: "29889991000197" }, mapa)).toBe("comissao");
+  });
+
+  it("fora da lista é null, e não um tipo qualquer", () => {
+    expect(tipoAntesDoPagamento({ cnpj_cpf: "37511891000150" }, mapa)).toBeNull();
+    expect(tipoAntesDoPagamento({ cnpj_cpf: null }, mapa)).toBeNull();
+    expect(tipoAntesDoPagamento({ cnpj_cpf: "28127603000178" }, null)).toBeNull();
+  });
+
+  /* O `Set` é como a lista era lida até 11/09/2026, e continua valendo: "está na
+   * lista, tipo não informado" só pode significar a população que existia. */
+  it("um Set responde a população antiga", () => {
+    expect(tipoAntesDoPagamento({ cnpj_cpf: "28127603000178" }, new Set(["28127603000178"])))
+      .toBe("paga_contra_nota");
+    expect(tipoAntesDoPagamento({ cnpj_cpf: "28127603000178" }, new Set())).toBeNull();
+  });
+});
+
+describe("fraseAntesDoPagamento", () => {
+  it("lote sem nada da terceira régua não diz nada", () => {
+    expect(fraseAntesDoPagamento(0, "R$ 0", [])).toBe("");
+    expect(fraseAntesDoPagamento(0, "R$ 0", ["comissao"])).toBe("");
+  });
+
+  /* A frase antiga, que era fixa. Ela continua certa para a população dela. */
+  it("para o cliente que paga contra nota, diz que ELE espera a nota", () => {
+    const f = fraseAntesDoPagamento(1, "R$ 52.855", ["paga_contra_nota"]);
+    expect(f).toMatch(/ANTES DO PAGAMENTO/);
+    expect(f).toMatch(/esse cliente precisa da nota para poder pagar/);
+    expect(f).not.toMatch(/comiss/i);
+  });
+
+  /* O CASO QUE MOTIVOU A FUNÇÃO. Dita sobre uma comissão, a frase de cima é
+   * falsa nas duas pontas: o parceiro não está esperando nota nenhuma para
+   * pagar, e não é ele quem espera — é a nossa nota que acompanha a cobrança. */
+  it("para a comissão, não diz que o parceiro está esperando a nota", () => {
+    const f = fraseAntesDoPagamento(1, "R$ 350", ["comissao"]);
+    expect(f).toMatch(/é comissão de indicação/);
+    expect(f).toMatch(/a nota acompanha a cobrança/);
+    expect(f).not.toMatch(/precisa da nota para poder pagar/);
+    // O raio da liberação é por CNPJ, e o aviso tem de dizê-lo: é o que impede
+    // emitir a mensalidade do parceiro achando que é a comissão.
+    expect(f).toMatch(/mensalidade inclusive/);
+  });
+
+  it("concorda em número nos dois tipos", () => {
+    expect(fraseAntesDoPagamento(2, "R$ 700", ["comissao"])).toMatch(/2 delas .* saem ANTES/);
+    expect(fraseAntesDoPagamento(2, "R$ 700", ["comissao"])).toMatch(/são comissões/);
+    expect(fraseAntesDoPagamento(1, "R$ 350", ["comissao"])).toMatch(/1 dela .* sai ANTES/);
+    expect(fraseAntesDoPagamento(3, "R$ 1", ["paga_contra_nota"])).toMatch(/esses clientes precisam/);
+  });
+
+  /* Lote misto não costura as duas explicações numa frase só: avisa que há as
+   * duas e deixa o detalhe para o selo de cada linha, que é onde ele cabe. */
+  it("lote misto avisa que há os dois motivos, sem escolher um", () => {
+    const f = fraseAntesDoPagamento(2, "R$ 53.205", ["paga_contra_nota", "comissao"]);
+    expect(f).toMatch(/cliente que precisa da nota para pagar e parceiro de comissão/);
+  });
+});
+
 describe("resumoLote", () => {
   const linhas = [
     linha({ id_asaas: "a" }),
@@ -408,6 +523,53 @@ describe("resumoLote", () => {
     expect(r.emitiveis).toBe(0);
     expect(r.confirmadas).toBe(0);
     expect(r.valorConfirmadas).toBe(0);
+  });
+
+  /* A TERCEIRA RÉGUA NO RESUMO, com os dois motivos.
+   *
+   * `tiposAntesDoPagamento` existe para o aviso saber qual frase dizer, e vem em
+   * ordem FIXA — o texto de confirmação não pode trocar de ordem a cada clique,
+   * senão ninguém o relê. */
+  it("conta as que saem antes do pagamento e diz por quais motivos", () => {
+    const BANESTES = "28127603000178";
+    const PARCEIRO = "29889991000197";
+    const mapa = new Map<string, TipoAntesDoPagamento>([
+      [BANESTES, "paga_contra_nota"],
+      [PARCEIRO, "comissao"],
+    ]);
+    const mistas = [
+      linha({ id_asaas: "p1", valor: 350, status_asaas: "PENDING", situacao: "nao_exige", cnpj_cpf: PARCEIRO }),
+      linha({ id_asaas: "b1", valor: 52855, status_asaas: "PENDING", situacao: "nao_exige", cnpj_cpf: BANESTES }),
+      // Pendente de quem NÃO está na lista: fica fora, e é o ponto da lista.
+      linha({ id_asaas: "f1", valor: 99, status_asaas: "PENDING", situacao: "nao_exige" }),
+      linha({ id_asaas: "r1", valor: 100 }),                                     // recebida, régua estreita
+    ];
+    const todas = new Set(["p1", "b1", "f1", "r1"]);
+
+    const semLista = resumoLote(mistas, todas);
+    expect(semLista.emitiveis).toBe(1);              // só a recebida
+    expect(semLista.antesDoPagamento).toBe(0);
+    expect(semLista.tiposAntesDoPagamento).toEqual([]);
+
+    const comLista = resumoLote(mistas, todas, { docsAntesDoPagamento: mapa });
+    expect(comLista.emitiveis).toBe(3);              // recebida + as duas da lista
+    expect(comLista.antesDoPagamento).toBe(2);
+    expect(comLista.valorAntesDoPagamento).toBe(53205);
+    expect(comLista.tiposAntesDoPagamento).toEqual(["paga_contra_nota", "comissao"]);
+    // A pendente de fora da lista continua barrada, e pelo motivo certo.
+    expect(comLista.bloqueadas).toBe(1);
+    expect(comLista.motivos[0][0]).toMatch(/não foi recebida/i);
+  });
+
+  it("só comissão no lote devolve só esse motivo", () => {
+    const PARCEIRO = "29889991000197";
+    const r = resumoLote(
+      [linha({ id_asaas: "p1", valor: 350, status_asaas: "PENDING", situacao: "nao_exige", cnpj_cpf: PARCEIRO })],
+      new Set(["p1"]),
+      { docsAntesDoPagamento: new Map<string, TipoAntesDoPagamento>([[PARCEIRO, "comissao"]]) },
+    );
+    expect(r.antesDoPagamento).toBe(1);
+    expect(r.tiposAntesDoPagamento).toEqual(["comissao"]);
   });
 });
 

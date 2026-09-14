@@ -108,12 +108,12 @@ export default function BaseCartao({ abas }: { abas?: React.ReactNode }) {
   const abrirAnexo = (r: Lanc) =>
     anexo.abrirSeletor({ origem: "cartao", id_unico: r.id_unico, rotulo: nomeDaLinha(r).exibido || r.descricao_original || "lançamento" });
 
-  // Excluir o comprovante enviado errado. A linha só volta a SEM NF se o título
-  // do Omie ficou sem anexo — é o que o servidor gravou.
+  // Excluir o comprovante enviado errado. A linha volta a SEM NF — é o que o
+  // servidor gravou.
   const exclusao = useExcluirComprovante(({ alvo, resultado }) => {
     setRows(rs => rs.map(r => {
       if (r.id_unico !== alvo.id_unico) return r;
-      const perdeuPapel = resultado.sem_papel && ["OK", "OK (conferir)", "SÓ COMPROVANTE"].includes(r.status_nf);
+      const perdeuPapel = ["OK", "OK (conferir)", "SÓ COMPROVANTE"].includes(r.status_nf);
       return {
         ...r,
         ...(resultado.hub_removido ? { link_comprovante: null, arquivo_comprovante: null } : {}),

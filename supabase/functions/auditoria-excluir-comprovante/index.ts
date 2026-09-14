@@ -21,9 +21,9 @@
 // tem o que reenviar — limpar só o carimbo e manter o arquivo faria o cron
 // mandar o mesmo PDF errado de volta em 15 minutos.
 //
-// A categoria só volta a SEM NF se o título do Omie ficou sem anexo: a nota
-// posta à mão no ERP continua sendo nota. E a aprovação automática que leu o
-// arquivo excluído é desfeita (ver `desfazerAprovacao`).
+// E o lançamento VOLTA PARA A FILA: SEM NF e Pendente, seja qual for o status
+// de antes (ver `achadoSemComprovante`). Aprovar ou reprovar foi decidido
+// olhando para o papel que acabou de sair.
 //
 // Body:
 //   { origem: "achado" | "cartao" | "pix", id_unico: string,
@@ -33,8 +33,8 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.0";
 import { AuthError, requireUser } from "../_shared/auth.ts";
 import { listarAnexos, omieCall, type AnexoDoOmie } from "../_shared/omie-rpc.ts";
 import {
+  achadoSemComprovante,
   anexosParaEscolher,
-  desfazerAprovacao,
   fraseDaRecusa,
   leituraDoTitulo,
   nomeDoCaminho,
@@ -78,6 +78,18 @@ type Alvo = {
   pix: any | null;
 };
 
+/**
+ * O arquivo que a varredura de envio registrou na trilha do achado.
+ *
+ * Os carimbos (`omie_anexo_nome`) somem numa exclusão anterior, mas a trilha
+ * fica — e é por ela que dá para pré-marcar o arquivo que o cron pôs no título
+ * mesmo quando a primeira tentativa só tirou o link do Hub.
+ */
+const enviadoPeloCron = (trilha: unknown): string | null => {
+  const eventos = (Array.isArray(trilha) ? trilha : []) as { tipo?: string; arquivo?: string }[];
+  return [...eventos].reverse().find((e) => e?.tipo === "comprovante_enviado_omie" && e.arquivo)?.arquivo ?? null;
+};
+
 const codNumerico = (v: unknown) => {
   const s = String(v ?? "").trim();
   return /^\d+$/.test(s) ? s : null;
@@ -113,7 +125,8 @@ async function carregarAlvo(supa: any, origem: Origem, idUnico: string): Promise
       link,
       arquivo: nomeDoCaminho(link) || c?.arquivo_comprovante || link,
       codTitulo: codNumerico(c?.omie_cod_titulo ?? a.omie_cod_titulo),
-      nomeNoOmie: a.omie_anexo_nome || c?.omie_anexo_nome || nomeDoCaminho(link) || c?.arquivo_comprovante || null,
+      nomeNoOmie: a.omie_anexo_nome || c?.omie_anexo_nome || enviadoPeloCron(a.trilha)
+        || nomeDoCaminho(link) || c?.arquivo_comprovante || null,
       achados: [a], cartoes: c ? [c] : [], pix: null,
     };
   }
@@ -289,7 +302,8 @@ Deno.serve(async (req) => {
         comprovante_url: null,
         anexo_verificado: semPapel,
       };
-      if (semPapel && p.status === "Aprovado") { patch.status = "Pendente"; statusNovo = "Pendente"; }
+      patch.status = "Pendente";
+      statusNovo = "Pendente";
       const { error } = await supabase.from("auditoria_pix_lancamentos").update(patch).eq("id", p.id);
       if (error) return json({ error: `Anexo removido do Omie, mas falhou ao gravar a linha do PIX: ${error.message}` });
     }
@@ -306,7 +320,7 @@ Deno.serve(async (req) => {
         const patch: Record<string, unknown> = { updated_at: agora };
         if (hubSaiu) Object.assign(patch, { link_comprovante: null, arquivo_comprovante: null });
         if (hubSaiu || removidos.length) Object.assign(patch, { omie_anexo_enviado_em: null, omie_anexo_nome: null });
-        if (semPapel && STATUS_NF_COM_PAPEL.has(c.status_nf)) patch.status_nf = "SEM NF";
+        if (STATUS_NF_COM_PAPEL.has(c.status_nf)) patch.status_nf = "SEM NF";
         const { error } = await supabase.from("auditoria_cartao_lancamentos").update(patch).eq("id", c.id);
         if (error) {
           if (principal === "cartao") return json({ error: `Não consegui gravar o lançamento do cartão: ${error.message}` });
@@ -319,23 +333,20 @@ Deno.serve(async (req) => {
         const patch: Record<string, unknown> = {
           updated_at: agora, omie_anexo_enviado_em: null, omie_anexo_nome: null,
         };
-        const mudancas: string[] = [];
         if (hubSaiu) patch.link_comprovante = null;
-        if (semPapel && a.categoria === "COM NF") { patch.categoria = "SEM NF"; mudancas.push("categoria → SEM NF"); }
-        const volta = desfazerAprovacao(a, alvo.link);
-        if (volta) {
-          patch.status = volta.status;
-          patch.ia_aprovado_em = null;
-          mudancas.push(`status → ${volta.status} (a aprovação automática tinha lido este arquivo)`);
-          if (origem === "achado") statusNovo = volta.status;
-        }
+        const fila = achadoSemComprovante(a);
+        const { mudancas } = fila;
+        patch.status = fila.status;
+        patch.categoria = fila.categoria;
+        patch.ia_aprovado_em = null;
+        statusNovo = fila.status;
         const trilha = Array.isArray(a.trilha) ? a.trilha : [];
         patch.trilha = [...trilha, {
           em: agora,
           por,
           tipo: "comprovante_excluido",
           arquivo: alvo.arquivo,
-          ...(volta ? { de: "Aprovado", para: volta.status } : {}),
+          ...(a.status !== fila.status ? { de: a.status, para: fila.status } : {}),
           texto: `Comprovante excluído pelo Hub: ${hubSaiu ? alvo.arquivo ?? "arquivo" : "só no Omie"}${doOmie}` +
             (mudancas.length ? ` · ${mudancas.join(" · ")}` : ""),
         }];

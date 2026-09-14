@@ -91,8 +91,7 @@ export function useExcluirComprovante(
       const frase = partes.join(" · ");
       toast.success(
         frase.charAt(0).toUpperCase() + frase.slice(1) +
-        (r.sem_papel ? " · volta a cobrar a nota" : "") +
-        (r.status_novo ? ` · status → ${r.status_novo}` : "") + ".",
+        (r.status_novo ? " · de volta a SEM NF e Pendente" : "") + ".",
       );
       if (r.omie.falhas.length) toast.error(`Não saiu do Omie: ${r.omie.falhas.join("; ")}`, { duration: 12000 });
       if (r.aviso) toast.message(r.aviso, { duration: 9000 });

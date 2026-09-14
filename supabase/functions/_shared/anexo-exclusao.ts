@@ -26,9 +26,6 @@ export type AnexoParaEscolher = {
 
 export type Recusa = { nome: string; motivo: "nao_achei" | "nome_repetido" | "sem_id" };
 
-/** Status em que um achado estava antes de a conferência aprovar sozinha. */
-const STATUS_ABERTOS = ["Pendente", "Em análise", "Ajuste solicitado"];
-
 /**
  * O nome do arquivo a partir do caminho no bucket.
  *
@@ -129,27 +126,25 @@ export function leituraDoTitulo(anexos: AnexoNoTitulo[]): {
   return { qtd: anexos.length, parece_nota: classe === "nota", classe };
 }
 
-type TrilhaEvento = { tipo?: string; de?: string };
-
 /**
- * A aprovação que o arquivo errado comprou, desfeita.
+ * O achado depois de perder o comprovante: volta para a fila.
  *
- * A conferência aprova sozinha quando o documento bate em valor e fornecedor —
- * e ela leu o arquivo que acabou de ser excluído por estar errado. Deixar o
- * "Aprovado" é deixar de pé uma decisão cuja prova foi para o lixo.
+ * Decisão do usuário em 14/09/2026. A primeira versão só voltava a SEM NF se o
+ * título do Omie ficasse sem anexo, e só desfazia aprovação automática — e o
+ * Mage Burger ficou "COM NF · Reprovado" depois de ter o link excluído, sem
+ * lixeira nenhuma para tentar de novo. Quem aprovou ou reprovou olhou para um
+ * papel que acabou de ir para o lixo: a decisão cai junto, seja de gente ou
+ * da conferência.
  *
- * Só desfaz o que foi AUTOMÁTICO e leu ESTE arquivo: aprovação de gente fica
- * (`ia_aprovado_em` nulo), e aprovação sobre outro documento também. Volta
- * para o status que a trilha registrou antes; sem registro, "Pendente".
+ * FORA DE ESCOPO é a exceção — aquilo é sobre escopo, não sobre nota, e é a
+ * mesma exceção que a tela já faz ao promover os anexados a COM NF.
  */
-export function desfazerAprovacao(
-  achado: { status?: string | null; ia_aprovado_em?: string | null; ia_arquivo?: string | null; trilha?: unknown },
-  arquivoExcluido: string | null | undefined,
-): { status: string } | null {
-  if (achado.status !== "Aprovado" || !achado.ia_aprovado_em) return null;
-  if (!arquivoExcluido || achado.ia_arquivo !== arquivoExcluido) return null;
-  const trilha = (Array.isArray(achado.trilha) ? achado.trilha : []) as TrilhaEvento[];
-  const aprovacao = [...trilha].reverse().find((e) => e?.tipo === "aprovacao_automatica");
-  const de = aprovacao?.de;
-  return { status: de && STATUS_ABERTOS.includes(de) ? de : "Pendente" };
+export function achadoSemComprovante(
+  achado: { status?: string | null; categoria?: string | null },
+): { status: string; categoria: string | null; mudancas: string[] } {
+  const categoria = achado.categoria === "FORA DE ESCOPO" ? achado.categoria : "SEM NF";
+  const mudancas: string[] = [];
+  if (achado.categoria !== categoria) mudancas.push(`categoria → ${categoria}`);
+  if (achado.status !== "Pendente") mudancas.push("status → Pendente");
+  return { status: "Pendente", categoria, mudancas };
 }

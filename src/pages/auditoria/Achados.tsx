@@ -584,14 +584,14 @@ export default function Achados({ abas }: { abas?: React.ReactNode }) {
     void load();
   });
   // Excluir o comprovante enviado errado. Reflete na hora o que o servidor gravou:
-  // sem link, sem carimbo de envio, e SEM NF só se o Omie ficou sem papel nenhum
-  // (nota posta à mão no ERP continua valendo).
+  // sem link, sem carimbo de envio, e de volta à fila — SEM NF e Pendente
+  // (FORA DE ESCOPO fica; ver `achadoSemComprovante`).
   const exclusao = useExcluirComprovante(({ alvo, resultado }) => {
     const semComprovante = (r: Row): Row => ({
       ...r,
       link_comprovante: resultado.hub_removido ? null : r.link_comprovante,
       omie_anexo_enviado_em: null,
-      ...(resultado.sem_papel && r.categoria === "COM NF" ? { categoria: "SEM NF" as Categoria } : {}),
+      categoria: r.categoria === "FORA DE ESCOPO" ? r.categoria : "SEM NF",
       ...(resultado.status_novo ? { status: resultado.status_novo as Status } : {}),
     });
     setRows(rs => rs.map(r => (r.id_unico === alvo.id_unico ? semComprovante(r) : r)));
@@ -1833,7 +1833,11 @@ export default function Achados({ abas }: { abas?: React.ReactNode }) {
                               ? "Anexar outro comprovante"
                               : "Anexar comprovante"}</>}
                     </Button>
-                    {(podeAbrirComprovante(selected.link_comprovante || origemCart?.link_comprovante) || !!selected.omie_anexo_enviado_em) && (
+                    {/* Também sem comprovante no Hub, havendo título: o envio automático
+                        já pôs arquivo errado no Omie (a escala de um colaborador no título
+                        do Mage Burger, 11/09/2026) e, sem este botão, não havia como tirar. */}
+                    {(podeAbrirComprovante(selected.link_comprovante || origemCart?.link_comprovante)
+                      || !!selected.omie_anexo_enviado_em || !!selected.omie_cod_titulo) && (
                       <Button
                         variant="outline"
                         size="sm"

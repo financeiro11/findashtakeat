@@ -8,8 +8,8 @@
  */
 import { describe, expect, it } from "vitest";
 import {
+  achadoSemComprovante,
   anexosParaEscolher,
-  desfazerAprovacao,
   leituraDoTitulo,
   nomeDoCaminho,
   nomesDoHubNoOmie,
@@ -90,27 +90,21 @@ describe("leituraDoTitulo", () => {
   });
 });
 
-describe("desfazerAprovacao", () => {
-  const link = "hub/ACH-1/1787000000000_errado.pdf";
-  const aprovadoPelaIa = {
-    status: "Aprovado",
-    ia_aprovado_em: "2026-09-10T10:00:00Z",
-    ia_arquivo: link,
-    trilha: [
-      { tipo: "comprovante_anexado" },
-      { tipo: "aprovacao_automatica", de: "Em análise", para: "Aprovado" },
-    ],
-  };
-  it("volta para o status de antes da aprovação automática", () => {
-    expect(desfazerAprovacao(aprovadoPelaIa, link)).toEqual({ status: "Em análise" });
+describe("achadoSemComprovante", () => {
+  it("o reprovado COM NF volta para SEM NF e Pendente (o caso do Mage Burger)", () => {
+    expect(achadoSemComprovante({ status: "Reprovado", categoria: "COM NF" })).toEqual({
+      status: "Pendente",
+      categoria: "SEM NF",
+      mudancas: ["categoria → SEM NF", "status → Pendente"],
+    });
   });
-  it("sem registro na trilha, volta para Pendente", () => {
-    expect(desfazerAprovacao({ ...aprovadoPelaIa, trilha: [] }, link)).toEqual({ status: "Pendente" });
+  it("aprovação de gente também cai", () => {
+    expect(achadoSemComprovante({ status: "Aprovado", categoria: "A CONFERIR" }).status).toBe("Pendente");
   });
-  it("não mexe em aprovação de gente", () => {
-    expect(desfazerAprovacao({ ...aprovadoPelaIa, ia_aprovado_em: null }, link)).toBeNull();
+  it("FORA DE ESCOPO continua fora de escopo", () => {
+    expect(achadoSemComprovante({ status: "Aprovado", categoria: "FORA DE ESCOPO" }).categoria).toBe("FORA DE ESCOPO");
   });
-  it("não mexe em aprovação que leu outro arquivo", () => {
-    expect(desfazerAprovacao({ ...aprovadoPelaIa, ia_arquivo: "hub/ACH-1/outro.pdf" }, link)).toBeNull();
+  it("já na fila, não inventa mudança para a trilha", () => {
+    expect(achadoSemComprovante({ status: "Pendente", categoria: "SEM NF" }).mudancas).toEqual([]);
   });
 });

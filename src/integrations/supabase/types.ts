@@ -6448,6 +6448,51 @@ export type Database = {
         }
         Relationships: []
       }
+      nf_notas_sem_cobranca: {
+        Row: {
+          criado_em: string
+          descricao: string
+          doc: string
+          id: string
+          id_customer: string | null
+          nome: string
+          operador: string | null
+          origem: string
+          tomador: Json
+          usuario: string | null
+          valor: number
+          vencimento: string
+        }
+        Insert: {
+          criado_em?: string
+          descricao: string
+          doc: string
+          id: string
+          id_customer?: string | null
+          nome: string
+          operador?: string | null
+          origem: string
+          tomador: Json
+          usuario?: string | null
+          valor: number
+          vencimento: string
+        }
+        Update: {
+          criado_em?: string
+          descricao?: string
+          doc?: string
+          id?: string
+          id_customer?: string | null
+          nome?: string
+          operador?: string | null
+          origem?: string
+          tomador?: Json
+          usuario?: string | null
+          valor?: number
+          vencimento?: string
+        }
+        Relationships: []
+      }
       nf_os_omie: {
         Row: {
           asaas_anexado_em: string | null

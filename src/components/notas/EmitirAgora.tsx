@@ -98,14 +98,29 @@ export interface ParaVoce {
 const ESPERA_NOTA_MS = 5 * 60_000;
 const INTERVALO_NOTA_MS = 20_000;
 
+/** A nota que não nasce de cobrança — ver `NotaSemCobranca`. */
+export interface EmissaoSemCobranca {
+  /** O carimbo `avl_…`, que faz o papel do id da cobrança em toda a corrente. */
+  id: string;
+  nome: string;
+  doc: string;
+  valor: number;
+}
+
 export function EmitirAgora({
-  aberto, ids, linhas, observacao, avulsa, osRecusadas, onFechar, onTerminou,
+  aberto, ids, linhas, observacao, avulsa, osRecusadas, semCobranca, onFechar, onTerminou,
 }: {
   aberto: boolean;
   ids: string[];
   linhas: LinhaNota[];
   observacao?: string | null;
   avulsa?: boolean;
+  /**
+   * Emissão SEM cobrança no Asaas. Muda a entrada de dois degraus — o cadastro
+   * lê o tomador conferido no Hub, e a emissão não tem pagamento a conferir — e
+   * nenhum outro: OS, lote, espera pela prefeitura e espelho são os mesmos.
+   */
+  semCobranca?: EmissaoSemCobranca | null;
   /**
    * As OS já FATURADAS cuja NFS-e a prefeitura recusou (`nfse_status = '003'`).
    *
@@ -133,8 +148,10 @@ export function EmitirAgora({
   const vivo = useRef(true);
 
   const nomeDe = useCallback(
-    (id: string) => linhas.find((l) => l.id_asaas === id)?.cliente_asaas ?? id,
-    [linhas],
+    (id: string) =>
+      (semCobranca && semCobranca.id === id ? semCobranca.nome : null)
+      ?? linhas.find((l) => l.id_asaas === id)?.cliente_asaas ?? id,
+    [linhas, semCobranca],
   );
 
   const marcar = (id: PassoId, estado: Estado, detalhe: string | null = null) =>
@@ -227,7 +244,9 @@ export function EmitirAgora({
   const garantirCadastros = async (): Promise<{ ok: boolean; pendencias: ParaVoce[] }> => {
     marcar("cadastro", "correndo", "Conferindo no Omie e criando o que faltar…");
     const { data, error } = await sb.functions.invoke("omie-clientes-criar", {
-      body: { action: "garantir", ids },
+      body: semCobranca
+        ? { action: "garantir", sem_cobranca: [semCobranca.id] }
+        : { action: "garantir", ids },
     });
     if (error || data?.erro) {
       marcar("cadastro", "falhou", error?.message ?? data?.erro);
@@ -287,6 +306,7 @@ export function EmitirAgora({
       const { data, error } = await sb.functions.invoke("omie-nfse-sync", {
         body: {
           action: "emitir", ids, avulsa: avulsa === true,
+          ...(semCobranca ? { sem_cobranca: semCobranca.id } : {}),
           observacao: observacao?.trim() || null,
           /* O CLIQUE É A AUTORIZAÇÃO (decisão do Henrique, 11/09/2026): a chave
              geral e o teto do dia são freios de VAZÃO, feitos para a máquina que
@@ -517,7 +537,9 @@ export function EmitirAgora({
             Emitindo {ids.length === 1 ? "a nota" : `${ids.length} notas`}
           </DialogTitle>
           <DialogDescription className="text-xs">
-            {ids.length === 1
+            {semCobranca
+              ? `${semCobranca.nome} · ${formatarDoc(semCobranca.doc)} · ${brl(semCobranca.valor)} · sem cobrança no Asaas`
+              : ids.length === 1
               ? `${selecionadas[0]?.cliente_asaas ?? ids[0]} · ${brl(total)}`
               : `${ids.length} cobranças · ${brl(total)}`}
             {" — o Hub cuida de tudo: cadastro do tomador, ordem de serviço, faturamento e o número da nota."}

@@ -36,7 +36,7 @@ import { comValorExato } from "@/components/ValorExato";
 import {
   FileText, RefreshCw, Loader2, Search, FileCode2, AlertTriangle,
   ChevronLeft, ChevronRight, CheckCircle2, Send, Info, Zap, Layers, Square,
-  FileClock, MessageSquareText,
+  FileClock, MessageSquareText, FilePlus,
 } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import NotasFiscaisLog from "./NotasFiscaisLog";
@@ -57,7 +57,8 @@ import {
   LiberarAntesDoPagamento, ListaAntesDoPagamento, lerAntesDoPagamento, ICONE_TIPO,
   type EntradaAntesDoPagamento, type CobrancaParaLiberar,
 } from "@/components/notas/AntesDoPagamento";
-import { EmitirAgora } from "@/components/notas/EmitirAgora";
+import { EmitirAgora, type EmissaoSemCobranca } from "@/components/notas/EmitirAgora";
+import { NotaSemCobranca } from "@/components/notas/NotaSemCobranca";
 
 const dorme = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -172,7 +173,12 @@ export default function NotasFiscais() {
    * `null` = ninguém emitindo. Ver `EmitirAgora`: é ele que cadastra o tomador
    * que falta, dispara o lote, espera a prefeitura e grava o número, em vez de
    * devolver um erro por pré-requisito. */
-  const [emitindoAgora, setEmitindoAgora] = useState<{ ids: string[]; osRecusadas?: number[] } | null>(null);
+  const [emitindoAgora, setEmitindoAgora] = useState<{
+    ids: string[]; osRecusadas?: number[]; semCobranca?: EmissaoSemCobranca;
+  } | null>(null);
+  /* A NOTA QUE NÃO NASCE DE COBRANÇA (14/09/2026) — o diálogo que monta o
+   * tomador (do Asaas ou digitado) e entrega o carimbo `avl_…` ao `EmitirAgora`. */
+  const [semCobrancaAberto, setSemCobrancaAberto] = useState(false);
   /** Indo buscar no Asaas a cobrança que o espelho ainda não tem — ver `buscarNoAsaas`. */
   const [buscandoAsaas, setBuscandoAsaas] = useState(false);
   /* O TEXTO QUE VAI DENTRO DA NOTA, e ele nasce vazio a cada emissão.
@@ -1061,6 +1067,20 @@ export default function NotasFiscais() {
           Antes do pagamento
           <span className="num rounded bg-sky-500/15 px-1">{entradasAntes.length}</span>
         </button>
+        {/* A QUARTA PORTA NÃO É RÉGUA: não há cobrança a destravar. É a nota que
+            nasce do nada — cliente do Asaas sem cobrança, ou tomador digitado. */}
+        <button
+          onClick={() => setSemCobrancaAberto(true)}
+          disabled={emitindoAgora !== null}
+          className="flex items-center gap-1.5 rounded-md border border-border px-2 py-1 text-xs font-medium text-foreground hover:bg-muted disabled:opacity-50"
+          title={
+            "Emite uma NFS-e que não tem cobrança no Asaas: puxe o cliente de lá ou digite o tomador inteiro.\n\n" +
+            "Sai com a mesma classificação fiscal das mensalidades, e o título a receber no Omie fica em aberto."
+          }
+        >
+          <FilePlus className="h-3.5 w-3.5" />
+          Nota sem cobrança
+        </button>
       </div>
 
       {/* ---------------------------- emissão em massa ------------------------- */}
@@ -1652,14 +1672,27 @@ export default function NotasFiscais() {
       {/* A corrente da emissão manual. Montado só quando há o que emitir: o
           `EmitirAgora` começa a correr no `useEffect` de abertura, então deixá-lo
           montado com a lista vazia dispararia uma rodada sem cobranças. */}
+      <NotaSemCobranca
+        aberto={semCobrancaAberto}
+        onFechar={() => setSemCobrancaAberto(false)}
+        onPronto={(nota) => {
+          setSemCobrancaAberto(false);
+          setEmitindoAgora({ ids: [nota.id], semCobranca: nota });
+        }}
+      />
       {emitindoAgora && (
         <EmitirAgora
           aberto
           ids={emitindoAgora.ids}
           osRecusadas={emitindoAgora.osRecusadas}
+          semCobranca={emitindoAgora.semCobranca ?? null}
           linhas={linhas}
-          observacao={observacao}
-          avulsa={avulsa}
+          /* A observação e a chave da avulsa são da tela do mês, feitas para
+             cobranças. A nota sem cobrança já traz a descrição inteira que a
+             pessoa digitou — somar a observação de outra seleção seria texto de
+             outro ato dentro desta nota. */
+          observacao={emitindoAgora.semCobranca ? null : observacao}
+          avulsa={emitindoAgora.semCobranca ? false : avulsa}
           onFechar={() => setEmitindoAgora(null)}
           onTerminou={carregar}
         />

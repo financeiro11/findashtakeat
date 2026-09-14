@@ -882,6 +882,52 @@ async function clientesTravados(supabase: any, ids: string[]) {
 }
 
 /**
+ * Notas sem cobrança → clientes, no MESMO formato de `clientesTravados`.
+ *
+ * O tomador sai de `nf_notas_sem_cobranca.tomador`, gravado no formato de
+ * cliente do Asaas justamente para caber aqui: `filaDoCliente` e
+ * `montarCadastro` o leem como leriam o do Asaas, e a Receita e os Correios
+ * conferem o endereço digitado como conferem qualquer outro. O "id do cliente"
+ * é o `cus_` quando a nota puxou o cliente do Asaas, e o próprio carimbo
+ * `avl_…` quando foi digitada — é o que vira `codigo_cliente_integracao`.
+ */
+async function clientesSemCobranca(supabase: any, ids: string[]) {
+  const { data: notas } = await supabase
+    .from("nf_notas_sem_cobranca").select("id, id_customer, doc, nome, tomador").in("id", ids);
+
+  const { data: cache } = await supabase.from("omie_cache").select("dados").eq("chave", "clientes").maybeSingle();
+  const codigoPor = new Map<string, number>();
+  for (const c of ((cache?.dados as any[]) ?? [])) {
+    const d = soDigitos(c?.cnpj_cpf);
+    if (!d || !c?.codigo) continue;
+    const atual = codigoPor.get(d);
+    if (atual == null || Number(c.codigo) < atual) codigoPor.set(d, Number(c.codigo));
+  }
+
+  const porDoc = new Map<string, any>();
+  for (const n of notas ?? []) {
+    const doc = soDigitos(n.doc);
+    if (!doc || porDoc.has(doc)) continue;
+    const d = n.tomador ?? {};
+    porDoc.set(doc, {
+      doc, id_customer: n.id_customer ?? n.id, nome: limpo(n.nome) || limpo(d?.name),
+      pessoa_fisica: doc.length === 11,
+      n_cod_cli: codigoPor.get(doc) ?? null,
+      asaas: {
+        endereco: d?.address ?? null, endereco_numero: d?.addressNumber ?? null,
+        complemento: d?.complement ?? null, bairro: d?.province ?? null,
+        cidade: d?.cityName ?? null, estado: d?.state ?? null, cep: d?.postalCode ?? null,
+        email: d?.email ?? null, telefone: d?.mobilePhone ?? d?.phone ?? null,
+        razao_social: d?.company ?? null,
+      },
+      _dados: d,
+      cobrancas: [] as any[],
+    });
+  }
+  return [...porDoc.values()];
+}
+
+/**
  * A ESCRITA, num lugar só — porque agora ela tem dois chamadores.
  *
  * O diálogo (uma pessoa que leu o diff e clicou) e a rodada diária
@@ -1799,6 +1845,155 @@ Deno.serve(async (req) => {
       return json({ status: "ok", clientes: saida });
     }
 
+    /* --------------------------- consultar_tomador ------------------------- */
+    /**
+     * DIGITOU O CNPJ, O RESTO SE PREENCHE (14/09/2026). Não escreve nada.
+     *
+     * Serve o formulário da nota sem cobrança. Cada campo vem da primeira fonte
+     * que o tem, nesta ordem, e a ordem é o argumento:
+     *   1. o cadastro do OMIE — se ele existe, é para ele que a nota sai, então é
+     *      ele que a pessoa tem de ver;
+     *   2. a RECEITA (BrasilAPI; página pública se ela recusar por limite) — o
+     *      endereço oficial, o mesmo que `montarCadastro` vai usar;
+     *   3. o ASAAS — nome fantasia, e-mail e telefone que o cliente usa;
+     *   4. o cadastro federal de contato (`contatoDoCnpj`) — o e-mail que a
+     *      BrasilAPI não traz, e que é o campo que mais trava nota.
+     *
+     * O ENDEREÇO VEM EM BLOCO, de uma fonte só. Preencher campo a campo misturaria
+     * o logradouro da Receita com o bairro do Asaas — um endereço que não existe,
+     * num documento fiscal.
+     *
+     * Com `{ cep }` (o caminho do CPF, que não tem cadastro público), os Correios
+     * dão logradouro, bairro, cidade e UF.
+     */
+    if (action === "consultar_tomador") {
+      const doc = soDigitos(body?.doc);
+      const cep = soDigitos(body?.cep);
+      if (doc.length !== 11 && doc.length !== 14 && cep.length !== 8) {
+        return json({ status: "erro", erro: "Informe { doc } (CPF/CNPJ) ou { cep }." }, 400);
+      }
+
+      const t: Record<string, string> = {};
+      const fontes: Record<string, string> = {};
+      const por = (campo: string, valor: unknown, fonte: string) => {
+        const v = limpo(valor);
+        if (v && !t[campo]) { t[campo] = v; fontes[campo] = fonte; }
+      };
+      const porEndereco = (e: Record<string, unknown>, fonte: string) => {
+        if (t.endereco || !limpo(e.endereco) || !limpo(e.cidade)) return;
+        por("cep", soDigitos(e.cep), fonte);
+        por("endereco", e.endereco, fonte);
+        por("numero", e.numero, fonte);
+        por("complemento", e.complemento, fonte);
+        por("bairro", e.bairro, fonte);
+        por("cidade", e.cidade, fonte);
+        por("uf", limpo(e.uf).toUpperCase(), fonte);
+      };
+      const avisos: string[] = [];
+      let codigoOmie: number | null = null;
+      let idCustomer: string | null = null;
+
+      if (doc.length === 11 || doc.length === 14) {
+        // 1. OMIE — o espelho completo do cadastro (`ListarClientes`).
+        const { data: oe } = await supabase.from("omie_clientes_endereco")
+          .select("codigo, nome, email, cep, endereco, endereco_numero, complemento, bairro, cidade, estado")
+          .in("cnpj_cpf", [doc, docFormatado(doc)]).order("codigo").limit(1);
+        const o = oe?.[0];
+        if (o) {
+          codigoOmie = Number(o.codigo);
+          por("nome", o.nome, "omie");
+          por("email", o.email, "omie");
+          porEndereco({
+            cep: o.cep, endereco: o.endereco, numero: o.endereco_numero, complemento: o.complemento,
+            bairro: o.bairro,
+            // O Omie guarda "VITORIA (ES)"; a UF já vem em `estado`.
+            cidade: limpo(o.cidade).replace(/\s*\([A-Za-z]{2}\)\s*$/, ""), uf: o.estado,
+          }, "omie");
+        } else {
+          const { data: cd } = await supabase.from("omie_clientes_doc").select("codigo").eq("doc", doc).order("codigo").limit(1);
+          codigoOmie = cd?.[0]?.codigo ? Number(cd[0].codigo) : null;
+        }
+
+        const { data: ca } = await supabase.from("asaas_cache")
+          .select("id_asaas, dados").eq("tipo", "customer").eq("documento", doc).limit(1);
+        const a = ca?.[0]?.dados ?? null;
+        if (ca?.[0]) idCustomer = ca[0].id_asaas;
+        if (a) por("nome", a.name || a.company, "asaas");
+
+        // 2. RECEITA — só PJ.
+        if (doc.length === 14) {
+          const r = await buscaJSON(`https://brasilapi.com.br/api/cnpj/v1/${doc}`);
+          if (r.naoExiste) {
+            avisos.push("A Receita não conhece este CNPJ — confira o número. Com ele, o cadastro no Omie é recusado.");
+          } else if (r.ok && r.dados) {
+            const d = r.dados;
+            const situacao = limpo(d.descricao_situacao_cadastral);
+            if (situacao && situacao.toUpperCase() !== "ATIVA") avisos.push(`Situação na Receita: ${situacao}.`);
+            por("nome", d.nome_fantasia || d.razao_social, "receita");
+            por("email", d.email, "receita");
+            por("telefone", soDigitos(d.ddd_telefone_1), "receita");
+            porEndereco({
+              cep: d.cep, endereco: logradouroDaReceita(d), numero: d.numero, complemento: d.complemento,
+              bairro: d.bairro, cidade: d.municipio, uf: d.uf,
+            }, "receita");
+          } else {
+            try {
+              const alt = await consultarCnpjPublico(clienteServico(), doc);
+              if (alt.dados) {
+                const p = alt.dados;
+                por("nome", p.nome_fantasia || p.razao_social, "receita");
+                porEndereco({
+                  cep: p.cep, endereco: p.logradouro, numero: p.numero, complemento: p.complemento,
+                  bairro: p.bairro, cidade: p.municipio, uf: p.uf,
+                }, "receita");
+              } else {
+                avisos.push("A Receita não respondeu agora; preencha o endereço ou tente de novo em um minuto.");
+              }
+            } catch {
+              avisos.push("A Receita não respondeu agora; preencha o endereço ou tente de novo em um minuto.");
+            }
+          }
+        }
+
+        // 3. ASAAS — contato, e o endereço só se ninguém acima o tinha.
+        if (a) {
+          por("email", String(a.email ?? "").split(/[,;\s]+/)[0], "asaas");
+          por("telefone", soDigitos(a.mobilePhone ?? a.phone), "asaas");
+          porEndereco({
+            cep: a.postalCode, endereco: a.address, numero: a.addressNumber, complemento: a.complement,
+            bairro: a.province, cidade: a.cityName, uf: a.state,
+          }, "asaas");
+        }
+
+        // 4. CONTATO FEDERAL — só se ainda falta. Tem limite de taxa e cache.
+        if (doc.length === 14 && (!t.email || !t.telefone)) {
+          try {
+            const c = await contatoDoCnpj(supabase, doc, { ate: Date.now() + 25_000 });
+            if (c.contato) {
+              por("email", c.contato.email, c.contato.fonte);
+              por("telefone", c.contato.telefone, c.contato.fonte);
+            }
+          } catch { /* contato é enfeite do preenchimento, nunca motivo de falha */ }
+        }
+      }
+
+      if (cep.length === 8) {
+        const r = await buscaJSON(`https://brasilapi.com.br/api/cep/v2/${cep}`);
+        if (r.naoExiste) {
+          avisos.push("Este CEP não existe nos Correios — a prefeitura recusa a nota com ele.");
+        } else if (r.ok && r.dados) {
+          const d = r.dados;
+          por("cep", cep, "correios");
+          por("endereco", d.street, "correios");
+          por("bairro", d.neighborhood, "correios");
+          por("cidade", d.city, "correios");
+          por("uf", limpo(d.state).toUpperCase(), "correios");
+        }
+      }
+
+      return json({ status: "ok", tomador: t, fontes, codigo_omie: codigoOmie, id_customer: idCustomer, avisos });
+    }
+
     /* ------------------------------- garantir ------------------------------ */
     /**
      * O CADASTRO QUE FALTA, CRIADO AGORA, PARA ESTAS COBRANÇAS.
@@ -1840,11 +2035,25 @@ Deno.serve(async (req) => {
     if (action === "garantir") {
       const ids: string[] = (Array.isArray(body?.ids) ? body.ids : body?.id ? [String(body.id)] : [])
         .map(String).filter(Boolean);
-      if (!ids.length) return json({ status: "erro", erro: "Informe { ids: [\"pay_…\"] } ou { id }." }, 400);
+      /* NOTA SEM COBRANÇA (14/09/2026): a entrada é o carimbo `avl_…`, e o
+         tomador vem do que a pessoa conferiu no Hub (`nf_notas_sem_cobranca`),
+         não de uma cobrança. Daqui para baixo o caminho é o MESMO. */
+      const semCobranca: string[] = (Array.isArray(body?.sem_cobranca) ? body.sem_cobranca : [])
+        .map(String).filter(Boolean);
+      if (!ids.length && !semCobranca.length) {
+        return json({ status: "erro", erro: "Informe { ids: [\"pay_…\"] }, { id } ou { sem_cobranca: [\"avl_…\"] }." }, 400);
+      }
 
-      const clientes = await clientesTravados(supabase, ids.slice(0, 20));
+      const clientes = semCobranca.length
+        ? await clientesSemCobranca(supabase, semCobranca.slice(0, 20))
+        : await clientesTravados(supabase, ids.slice(0, 20));
       if (!clientes.length) {
-        return json({ status: "erro", erro: "Nenhuma das cobranças informadas tem cliente com CNPJ/CPF no espelho do Asaas." }, 400);
+        return json({
+          status: "erro",
+          erro: semCobranca.length
+            ? "Nenhuma das notas sem cobrança informadas foi encontrada."
+            : "Nenhuma das cobranças informadas tem cliente com CNPJ/CPF no espelho do Asaas.",
+        }, 400);
       }
 
       /* O RELÓGIO, pelo mesmo motivo de `prepararCadastros`: cada cadastro custa

@@ -299,3 +299,10 @@ verify_jwt = false
 # Chega ao motor por `_shared/cnpj-publico.ts` (o plano B da raspagem do CNPJ).
 [functions.omie-clientes-criar]
 verify_jwt = false
+
+# Cron 2x/dia (11:20 e 20:20 UTC) com `x-cron-token` e sem Authorization. Estava
+# com verify_jwt = false no projeto hospedado (os crons respondem 200), mas nunca
+# escrito aqui — o primeiro deploy pela CLI trancaria a leitura da caixa. Achado
+# na revisão de 14/09/2026, antes de publicar.
+[functions.passagens-gmail-sync]
+verify_jwt = false

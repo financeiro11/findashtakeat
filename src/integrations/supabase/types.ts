@@ -4779,6 +4779,33 @@ export type Database = {
           },
         ]
       }
+      facilities_radar_destinatarios: {
+        Row: {
+          ativo: boolean
+          created_at: string
+          criado_por: string | null
+          id: string
+          nome: string
+          telefone: string
+        }
+        Insert: {
+          ativo?: boolean
+          created_at?: string
+          criado_por?: string | null
+          id?: string
+          nome: string
+          telefone: string
+        }
+        Update: {
+          ativo?: boolean
+          created_at?: string
+          criado_por?: string | null
+          id?: string
+          nome?: string
+          telefone?: string
+        }
+        Relationships: []
+      }
       facilities_radar_execucoes: {
         Row: {
           alertas: number
@@ -9500,6 +9527,45 @@ export type Database = {
           },
         ]
       }
+      remuneracao_emenda_confirmada: {
+        Row: {
+          confirmado_por: string | null
+          criado_em: string
+          depois_de: string
+          observacao: string | null
+          pessoa_id: string
+        }
+        Insert: {
+          confirmado_por?: string | null
+          criado_em?: string
+          depois_de: string
+          observacao?: string | null
+          pessoa_id: string
+        }
+        Update: {
+          confirmado_por?: string | null
+          criado_em?: string
+          depois_de?: string
+          observacao?: string | null
+          pessoa_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "remuneracao_emenda_confirmada_pessoa_id_fkey"
+            columns: ["pessoa_id"]
+            isOneToOne: false
+            referencedRelation: "remuneracao_pessoa"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "remuneracao_emenda_confirmada_pessoa_id_fkey"
+            columns: ["pessoa_id"]
+            isOneToOne: false
+            referencedRelation: "vw_remuneracao_mensal"
+            referencedColumns: ["pessoa_id"]
+          },
+        ]
+      }
       remuneracao_lancamento: {
         Row: {
           atualizado_em: string
@@ -14021,6 +14087,14 @@ export type Database = {
         Args: { p_id_unico: string; p_storage_path: string; p_token: string }
         Returns: Json
       }
+      remuneracao__checar_chegada: {
+        Args: { p_chegou: Json }
+        Returns: undefined
+      }
+      remuneracao__inicio_do_trecho: {
+        Args: { p_depois_de: string; p_pessoa: string }
+        Returns: string
+      }
       remuneracao_atualizar: { Args: never; Returns: Json }
       remuneracao_carregar_omie: {
         Args: never
@@ -14030,6 +14104,25 @@ export type Database = {
         }[]
       }
       remuneracao_classificar: { Args: { p_itens: Json }; Returns: number }
+      remuneracao_confirmar_emenda: {
+        Args: { p_depois_de: string; p_observacao?: string; p_pessoa: string }
+        Returns: undefined
+      }
+      remuneracao_emendas: {
+        Args: { p_pessoas?: string[] }
+        Returns: {
+          area_antes: string
+          area_depois: string
+          codigo_rh: string
+          confirmada: boolean
+          depois_de: string
+          meses_sem: number
+          nome: string
+          pessoa_id: string
+          retoma_em: string
+        }[]
+      }
+      remuneracao_emendas_suspeitas: { Args: never; Returns: Json }
       remuneracao_frescor: { Args: never; Returns: Json }
       remuneracao_fundir: {
         Args: { p_absorve: string; p_mantem: string; p_origem?: string }
@@ -14051,6 +14144,10 @@ export type Database = {
       remuneracao_painel: { Args: never; Returns: Json }
       remuneracao_pessoa_por_chave: {
         Args: { p_chave: string }
+        Returns: string
+      }
+      remuneracao_separar_emenda: {
+        Args: { p_depois_de: string; p_nome: string; p_pessoa: string }
         Returns: string
       }
       remuneracao_setores: { Args: never; Returns: string[] }

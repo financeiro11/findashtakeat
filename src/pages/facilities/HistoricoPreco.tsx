@@ -145,7 +145,12 @@ export function HistoricoPreco({ alvoId, precoAlvo, pontos }: Props) {
                    de preço, começar em zero achata a linha e esconde justamente
                    a variação que se quer enxergar. É linha, não barra — barra
                    truncada mentiria sobre a proporção. */
-                domain={["dataMin - 150", "dataMax + 150"]}
+                /* A folga é PROPORCIONAL e o piso é zero: com o ±150 fixo de
+                   antes, o mouse de teto R$ 20 ganhava eixo em "R$ -130". */
+                domain={[
+                  (min: number) => Math.max(0, Math.floor(min - Math.max(5, min * 0.1))),
+                  (max: number) => Math.ceil(max + Math.max(5, max * 0.1)),
+                ]}
                 tickFormatter={(v) => fmtBRL(Number(v))}
                 width={58}
               />
@@ -171,6 +176,8 @@ export function HistoricoPreco({ alvoId, precoAlvo, pontos }: Props) {
               {/* O teto é referência, não série: recessivo e tracejado. */}
               <ReferenceLine
                 y={precoAlvo}
+                // O teto sempre no quadro, mesmo quando o mercado inteiro está acima dele.
+                ifOverflow="extendDomain"
                 stroke="hsl(var(--muted-foreground))"
                 strokeDasharray="4 4"
                 strokeOpacity={0.6}

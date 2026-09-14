@@ -456,7 +456,7 @@ function SolicitacaoDetail({
           {solic.status !== "comprado" && (
             <Button
               size="sm" variant="outline" className="gap-1"
-              onClick={() => navigate(`/facilities/passagens?solicitacao=${solic.id}`)}
+              onClick={() => navigate(`/facilities/radar/passagens?solicitacao=${solic.id}`)}
               title="Abre o cadastro de viagem já com esta solicitação vinculada"
             >
               <Plane className="h-4 w-4" /> Virar viagem

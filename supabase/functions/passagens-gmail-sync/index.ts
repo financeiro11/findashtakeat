@@ -70,7 +70,14 @@ Deno.serve(async (req) => {
         .select("name").eq("name", "passagens-gmail-sync").eq("token", tok).maybeSingle();
       ehCron = !!data;
     }
-    if (!ehCron) await requireUser(req, { bloquearCargos: ["parcerias"] });
+    if (!ehCron) {
+      const caller = await requireUser(req);
+      /* A capacidade, não o cargo: `bloquearCargos` deixava qualquer conta logada
+         (até perfil `externo`) gravar preço e abrir sinal com service role. */
+      if (!caller.pode("facilities")) {
+        return json({ ok: false, erro: "Seu perfil de acesso não inclui o Facilities." }, 403);
+      }
+    }
 
     const body = req.method === "POST" ? await req.json().catch(() => ({})) : {};
     const action = body?.action ?? "sync";
@@ -205,7 +212,16 @@ Deno.serve(async (req) => {
         if (!c.viagem_id || c.preco == null) { res.orfaos++; continue; }
 
         const v = abertas.find((x) => x.id === c.viagem_id)!;
-        const g = await gravarPreco(supabase, c.viagem_id, c.preco, "email_google", v, linha?.id);
+        let g: Awaited<ReturnType<typeof gravarPreco>>;
+        try {
+          g = await gravarPreco(supabase, c.viagem_id, c.preco, "email_google", v, linha?.id);
+        } catch (e) {
+          /* O e-mail já entrou em `passagens_emails`, que é o "já lido". Se o preço
+             não gravou, apagar a linha é o que faz a próxima rodada ler de novo —
+             senão o preço se perdia calado. */
+          if (linha?.id) await supabase.from("passagens_emails").delete().eq("id", linha.id);
+          throw e;
+        }
         res.casados++;
         if (g.avisou) res.avisos++;
       } catch (e) {

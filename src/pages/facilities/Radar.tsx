@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { formatDistanceToNowStrict } from "date-fns";
+import { ptBR } from "date-fns/locale";
 import {
   AlertTriangle, ArrowDownRight, ChevronDown, ChevronRight, Copy, Eye, ExternalLink,
   Loader2, PackageCheck, PackageX, Pause, PiggyBank, Play, Plus, Radar as RadarIcon, RefreshCw, ShoppingCart,
-  Sparkles, Star, ThumbsDown, ThumbsUp, Trash2, TrendingDown,
+  Sparkles, Star, ThumbsDown, ThumbsUp, Trash2, TrendingDown, Wand2,
 } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -21,6 +23,16 @@ import { ProximaVarredura } from "./ProximaVarredura";
 import { SaldoRaspagem } from "./SaldoRaspagem";
 import { HistoricoPreco } from "./HistoricoPreco";
 import { Kits } from "./Kits";
+import { UltimaRodada } from "./UltimaRodada";
+import { lerFontes } from "@/lib/radarRodada";
+import { Destinatarios } from "./Destinatarios";
+
+/** O que `sugerir_busca` devolve — a IA propõe, a pessoa carimba. */
+interface SugestaoBusca {
+  ok?: boolean; erro?: string; pode?: boolean; texto?: string;
+  atual?: string; proposta?: string; mudou?: boolean; porque?: string;
+  recusados?: number; evitaveis?: number;
+}
 
 /* Valor compacto na tela, número cheio no hover — convenção do Hub.
    Onde precisa ser string mesmo (toast, title, template), use fmtBRLStr. */
@@ -48,6 +60,10 @@ interface Oferta {
   reclamacoes: string | null;
   porque_barato: string | null;
   visto_em: string; primeiro_visto_em: string;
+  /* A tabela do card lista TAMBÉM o que ficou acima do teto (é o "produto
+     certo, preço errado" que alimenta a curva); o contador do card conta só
+     o que coube. Sem marcar a linha, os dois números não batem na tela. */
+  dentro_do_teto: boolean | null;
 }
 
 interface Alerta {
@@ -94,6 +110,10 @@ export default function Radar() {
   const [dialogAberto, setDialogAberto] = useState(false);
   /** alvo_id → oferta_id → o que a pessoa já votou. Só do alvo aberto por vez. */
   const [feedback, setFeedback] = useState<Record<string, Record<number, "gostei" | "nao_gostei">>>({});
+  /* A tabela do card abre mostrando o que CABE no teto — o mesmo que o contador
+     do card conta. O resto (produto certo, preço errado) fica a um clique. */
+  const [soNoTeto, setSoNoTeto] = useState(true);
+  const [sugestoes, setSugestoes] = useState<Record<string, { carregando: boolean; dados?: SugestaoBusca }>>({});
 
   /* Quantos alvos em cada regime. Sai daqui e não de dentro dos componentes
      porque três lugares fazem a mesma pergunta e por motivos diferentes: o
@@ -142,10 +162,19 @@ export default function Radar() {
   }, []);
   useEffect(() => { load(); }, [load]);
 
-  async function abrirAlvo(id: string) {
-    if (aberto === id) { setAberto(null); return; }
-    setAberto(id);
-    if (ofertas[id]) return;
+  function abrirAlvo(id: string) {
+    setAberto((atual) => (atual === id ? null : id));
+  }
+
+  /* A LISTA DO CARD ABERTO SE REBUSCA SOZINHA. Toda ação que muda o alvo
+     (⟳, "Estou comprando", Salvar) limpa `ofertas` para não mostrar anúncio
+     velho — e antes só o clique de abrir buscava de novo, então o card aberto
+     ficava no skeleton até alguém fechar e reabrir. */
+  useEffect(() => {
+    if (aberto && !ofertas[aberto]) carregarOfertas(aberto);
+  }, [aberto, ofertas]);
+
+  async function carregarOfertas(id: string) {
     const [{ data }, { data: votos }] = await Promise.all([
       db.from("facilities_radar_ofertas")
         .select("*").eq("alvo_id", id).eq("ativo", true)
@@ -246,10 +275,14 @@ export default function Radar() {
 
   async function varrer(alvoId?: string) {
     setVarrendo(alvoId ?? "todos");
+    /* A rodada manual leva de meio a dois minutos por metade. Sem um aviso que
+       diga em que etapa está, a pessoa só vê um ícone girando e clica de novo. */
+    const progresso = toast.loading("Buscando nas lojas… (costuma levar até 2 min)");
     try {
       const r = await invocar<any>(supabase.functions.invoke("facilities-radar", {
         body: alvoId ? { action: "varrer", alvo_id: alvoId } : { action: "varrer" },
       }));
+      toast.loading("Conferindo estoque e frete dos achados…", { id: progresso });
 
       /* O FREIO DE CRÉDITO NÃO PODE PARECER "NÃO ACHEI NADA". São diagnósticos
          opostos: um diz que o mercado não tem preço bom, o outro que o radar
@@ -288,7 +321,11 @@ export default function Radar() {
       if (!r.alvos) {
         const { vigia: emVigia, compra: emCompra } = regimes;
         toast.info(
-          !alvoId && emVigia && !emCompra
+          /* Fila com alvo e zero varridos = o relógio da rodada já tinha acabado,
+             quase sempre porque um cron (ou outra pessoa) está varrendo agora. */
+          r.restante
+            ? "O radar está no meio de outra rodada agora — tente de novo em 2 minutos."
+            : !alvoId && emVigia && !emCompra
             ? `Nenhum alvo em modo compra — os ${emVigia} em vigia são varridos uma vez por semana, e "Varrer agora" não os acorda. ` +
               "Para varrer um deles agora, use o ⟳ do card."
             : (r.mensagem ?? "Nenhum alvo na hora de varrer."),
@@ -317,24 +354,14 @@ export default function Radar() {
       }
 
       /* Fonte que falhou não pode sumir calada: é assim que um radar "funciona"
-         por semanas devolvendo zero. */
-      const falhas: string[] = [];
-      const foraDoAssunto = new Set<string>();
-      for (const pa of r.por_alvo ?? []) {
-        for (const [fonte, txt] of Object.entries(pa.fontes ?? {})) {
-          const s = String(txt);
-          if (s.startsWith("fora do assunto")) { foraDoAssunto.add(fonteLabel(fonte)); continue; }
-          // "fora do rodízio" é desenho, não falha — avisar disso ensinaria a
-          // pessoa a ignorar o aviso amarelo, que é onde moram os problemas reais.
-          if (/^\d+ anúncios/.test(s) || s.startsWith("fora do rodízio") || s.startsWith("mesmo estoque de")) continue;
-          falhas.push(`${fonteLabel(fonte)}: ${s}`);
-        }
-      }
-      if (falhas.length) toast.warning([...new Set(falhas)].join("\n"), { duration: 10000 });
+         por semanas devolvendo zero. A mesma leitura alimenta o resumo fixo
+         "Última rodada" do topo, que continua lá depois que o toast some. */
+      const { falhas, foraDoAssunto } = lerFontes(r.por_alvo);
+      if (falhas.length) toast.warning(falhas.join("\n"), { duration: 10000 });
       // Loja que saiu sozinha precisa ser dita, senão parece que alguém a desmarcou.
-      if (foraDoAssunto.size) {
+      if (foraDoAssunto.length) {
         toast.info(
-          `${[...foraDoAssunto].join(", ")} ficaram de fora: nas últimas leituras nenhum anúncio delas era o produto. ` +
+          `${foraDoAssunto.join(", ")} ficaram de fora: nas últimas leituras nenhum anúncio delas era o produto. ` +
           "Voltam a ser consultadas em uma semana.",
           { duration: 9000 },
         );
@@ -344,7 +371,50 @@ export default function Radar() {
       await load();
     } catch (e: any) {
       toast.error(e.message ?? "A varredura falhou.");
-    } finally { setVarrendo(null); }
+      /* O servidor grava por alvo antes de terminar: mesmo com erro (ou 504 do
+         gateway) parte da rodada já está no banco, e o card precisa mostrar. */
+      setOfertas({});
+      load();
+    } finally {
+      toast.dismiss(progresso);
+      setVarrendo(null);
+    }
+  }
+
+  /* O TERMO DE BUSCA ENVELHECE CALADO — ver `sugerir_busca` na função. A IA lê
+     as recusas das últimas rodadas e propõe; nada muda até a pessoa aplicar. */
+  async function sugerirBusca(l: PainelLinha) {
+    const id = l.alvo.id;
+    setSugestoes((p) => ({ ...p, [id]: { carregando: true } }));
+    try {
+      const r = await invocar<SugestaoBusca>(supabase.functions.invoke("facilities-radar", {
+        body: { action: "sugerir_busca", alvo_id: id },
+      }));
+      if (r?.ok === false) throw new Error(r.erro ?? "Não deu para sugerir agora.");
+      setSugestoes((p) => ({ ...p, [id]: { carregando: false, dados: r } }));
+    } catch (e: any) {
+      toast.error(e.message ?? "Não deu para sugerir agora.");
+      setSugestoes((p) => ({ ...p, [id]: { carregando: false } }));
+    }
+  }
+
+  async function aplicarBusca(l: PainelLinha, proposta: string) {
+    // Lê o `specs` fresco: a cópia do painel pode estar velha (mesmo cuidado de `aplicarPreferencia`).
+    const { data: atual, error: eLer } = await db.from("facilities_radar_alvos")
+      .select("specs").eq("id", l.alvo.id).single();
+    if (eLer) { toast.error(eLer.message); return; }
+    const specs = atual.specs ?? {};
+    const outras = ((specs.buscas ?? []) as string[]).filter((b) => b.toLowerCase() !== proposta.toLowerCase());
+    const { error } = await db.from("facilities_radar_alvos")
+      /* Busca nova, medida nova: zera `fontes_rendimento` como o formulário faz
+         quando o pedido muda — loja que era "fora do assunto" pode render agora. */
+      .update({ specs: { ...specs, buscas: [proposta, ...outras] }, fontes_rendimento: {}, updated_at: new Date().toISOString() })
+      .eq("id", l.alvo.id);
+    if (error) { toast.error(error.message); return; }
+    toast.success("Busca trocada — vale a partir da próxima varredura.");
+    setSugestoes((p) => { const n = { ...p }; delete n[l.alvo.id]; return n; });
+    setOfertas({});
+    load();
   }
 
   async function virarCotacao(al: Alerta) {
@@ -367,6 +437,21 @@ export default function Radar() {
     const { error } = await db.from("facilities_radar_alertas")
       .update({ status, visto_em: new Date().toISOString() }).eq("id", id);
     if (error) { toast.error(error.message); return; }
+    /* DISPENSAR TEM VOLTA. Um clique errado sumia com um achado conferido, e o
+       próximo só aparece depois de outra varredura e outra conferência. */
+    if (alvo && status === "arquivado") {
+      toast.success("Achado dispensado.", {
+        duration: 8000,
+        action: {
+          label: "Desfazer",
+          onClick: async () => {
+            const { error: e } = await db.from("facilities_radar_alertas").update({ status: alvo.status }).eq("id", id);
+            if (e) { toast.error(e.message); return; }
+            load();
+          },
+        },
+      });
+    }
     setAlertas((p) => p.filter((a) => a.id !== id));
     invalidarRadarAlertas();
     // Só o alvo dono do alerta perde um do contador — e só se ele ainda era "novo".
@@ -589,11 +674,12 @@ export default function Radar() {
   ), [painel]);
 
   return (
-    <div className="space-y-4 p-5">
+    <div className="space-y-4">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <h1 className="text-[28px] font-semibold tracking-tight text-foreground">Radar de preços</h1>
-          <p className="mt-1 max-w-2xl text-[14px] text-muted-foreground">
+          {/* O título da página é da moldura (RadarDeCompras); aqui é o da aba. */}
+          <h2 className="text-[18px] font-semibold tracking-tight text-foreground">Produtos e equipamentos</h2>
+          <p className="mt-1 max-w-2xl text-[13px] text-muted-foreground">
             Registre o equipamento e o quanto vale a pena pagar. O Hub olha as lojas e os comparadores em dois regimes: em{" "}
             <span className="font-medium text-foreground">vigia</span>, uma vez por semana e em silêncio, só para construir a curva do
             que a empresa compra sempre; em <span className="font-medium text-foreground">compra</span>, quatro vezes ao dia, com
@@ -606,6 +692,7 @@ export default function Radar() {
             <ProximaVarredura emCompra={regimes.compra} emVigia={regimes.vigia} />
             <SaldoRaspagem />
           </div>
+          <UltimaRodada versao={versao} />
         </div>
         <div className="flex items-center gap-2">
           <Button variant="outline" onClick={() => varrer()} disabled={!!varrendo}>
@@ -618,7 +705,10 @@ export default function Radar() {
         </div>
       </div>
 
-      {loading ? (
+      {/* Skeleton só na PRIMEIRA carga. Nas recargas (pausar, varrer, salvar) a
+          tela fica onde está: trocar tudo por um bloco cinza fazia a página
+          piscar e a rolagem pular para o topo a cada clique. */}
+      {loading && painel.length === 0 ? (
         <Skeleton className="h-80 rounded-lg" />
       ) : (
         <>
@@ -899,6 +989,15 @@ export default function Radar() {
                 const uAlvo = (l.alvo.specs as any)?.unidade as string | undefined;
                 const unidadeDoAlvo = uAlvo ? (uAlvo === "l" ? "L" : uAlvo) : null;
                 const folga = melhorTotal != null ? (Number(l.alvo.preco_alvo) - melhorTotal) / Number(l.alvo.preco_alvo) : null;
+                /* O filtro "só no teto" só vale quando há algo no teto: com zero,
+                   esconder tudo daria uma tabela vazia com cara de radar quebrado. */
+                const listaDoAlvo = ofertas[l.alvo.id];
+                const acimaDoTeto = listaDoAlvo?.filter((o) => o.dentro_do_teto === false).length ?? 0;
+                const cabemNoTeto = (listaDoAlvo?.length ?? 0) - acimaDoTeto;
+                const filtrando = soNoTeto && cabemNoTeto > 0;
+                const visiveis = listaDoAlvo?.filter((o) => !filtrando || o.dentro_do_teto !== false) ?? [];
+                const sugestao = sugestoes[l.alvo.id];
+                const buscaAtual = ((l.alvo.specs as any)?.buscas?.[0] as string | undefined) ?? l.alvo.titulo;
                 return (
                   <div
                     key={l.alvo.id}
@@ -1007,8 +1106,13 @@ export default function Radar() {
                       </div>
 
                       <div className="text-right text-[11px] text-muted-foreground">
-                        <div>{l.ofertas_ativas} anúncio(s)</div>
-                        <div>{l.alvo.ultima_varredura ? fmtData(l.alvo.ultima_varredura) : "nunca varrido"}</div>
+                        <div title="Anúncios ativos que cabem no teto">{l.ofertas_ativas} no teto</div>
+                        {/* "há 3 horas" diz se dá para confiar no número; a data cheia fica no hover. */}
+                        <div title={l.alvo.ultima_varredura ? new Date(l.alvo.ultima_varredura).toLocaleString("pt-BR") : undefined}>
+                          {l.alvo.ultima_varredura
+                            ? `varrido ${formatDistanceToNowStrict(new Date(l.alvo.ultima_varredura), { locale: ptBR, addSuffix: true })}`
+                            : "nunca varrido"}
+                        </div>
                       </div>
 
                       <div className="flex items-center gap-1">
@@ -1028,8 +1132,9 @@ export default function Radar() {
                             ? <><ShoppingCart className="mr-1.5 h-3.5 w-3.5" /> Estou comprando</>
                             : <><Eye className="mr-1.5 h-3.5 w-3.5" /> Voltar a vigiar</>}
                         </Button>
-                        <Button size="sm" variant="ghost" className="ghost-icone" title="Varrer só este alvo"
-                          onClick={() => varrer(l.alvo.id)} disabled={!!varrendo}>
+                        <Button size="sm" variant="ghost" className="ghost-icone"
+                          title={l.alvo.ativo ? "Varrer só este alvo" : "Alvo pausado — retome para varrer"}
+                          onClick={() => varrer(l.alvo.id)} disabled={!!varrendo || !l.alvo.ativo}>
                           {varrendo === l.alvo.id ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
                         </Button>
                         <Button size="sm" variant="ghost" className="ghost-icone" title={l.alvo.ativo ? "Pausar" : "Retomar"}
@@ -1062,14 +1167,70 @@ export default function Radar() {
                             pontos={l.pontos_historico ?? 0}
                           />
                         </div>
-                        {!ofertas[l.alvo.id] ? (
+                        {/* O TERMO QUE AS LOJAS RECEBEM, à vista. Um termo ruim não
+                            dá erro, dá silêncio — e é daqui que se pede outro. */}
+                        <div className="border-b border-border px-4 py-2 text-[11.5px] text-muted-foreground">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <span>Busca usada nas lojas: <span className="font-medium text-foreground">"{buscaAtual}"</span></span>
+                            <Button
+                              size="sm" variant="ghost" className="h-6 px-2 text-[11px]"
+                              disabled={sugestao?.carregando}
+                              onClick={() => sugerirBusca(l)}
+                              title="A IA lê o que foi recusado nas últimas rodadas e propõe um termo melhor. Nada muda até você aplicar."
+                            >
+                              {sugestao?.carregando
+                                ? <Loader2 className="mr-1 h-3 w-3 animate-spin" />
+                                : <Wand2 className="mr-1 h-3 w-3" />}
+                              Melhorar a busca
+                            </Button>
+                          </div>
+                          {sugestao?.dados && (
+                            <div className="mt-1.5 rounded-md border border-border bg-muted/30 px-3 py-2">
+                              {!sugestao.dados.pode ? (
+                                <span>{sugestao.dados.texto}</span>
+                              ) : !sugestao.dados.mudou ? (
+                                <span>A busca atual já está boa. {sugestao.dados.porque}</span>
+                              ) : (
+                                <div className="flex flex-wrap items-center gap-2">
+                                  <span>
+                                    Sugestão: <span className="font-medium text-foreground">"{sugestao.dados.proposta}"</span> — {sugestao.dados.porque}
+                                    {!!sugestao.dados.recusados && ` (${sugestao.dados.evitaveis ?? 0} de ${sugestao.dados.recusados} recusas seriam evitadas)`}
+                                  </span>
+                                  <Button size="sm" variant="outline" className="h-6 px-2 text-[11px]"
+                                    onClick={() => aplicarBusca(l, sugestao.dados!.proposta!)}>
+                                    Aplicar
+                                  </Button>
+                                  <Button size="sm" variant="ghost" className="h-6 px-2 text-[11px]"
+                                    onClick={() => setSugestoes((p) => { const n = { ...p }; delete n[l.alvo.id]; return n; })}>
+                                    Manter a atual
+                                  </Button>
+                                </div>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                        {!listaDoAlvo ? (
                           <div className="p-4"><Skeleton className="h-24 rounded" /></div>
-                        ) : ofertas[l.alvo.id].length === 0 ? (
+                        ) : listaDoAlvo.length === 0 ? (
                           <div className="p-6 text-center text-[12.5px] text-muted-foreground">
                             Nenhum anúncio passou nos filtros na última varredura. Se isso persistir, o pedido pode estar exigindo demais —
                             edite e afrouxe uma spec.
                           </div>
                         ) : (
+                          <>
+                          {acimaDoTeto > 0 && (
+                            <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border px-4 py-1.5 text-[11.5px] text-muted-foreground">
+                              <span>
+                                {cabemNoTeto} no teto · {acimaDoTeto} acima do teto
+                                {filtrando && " (ocultos)"}
+                              </span>
+                              {cabemNoTeto > 0 && (
+                                <button type="button" className="text-primary hover:underline" onClick={() => setSoNoTeto((v) => !v)}>
+                                  {soNoTeto ? `ver também os ${acimaDoTeto} acima do teto` : "mostrar só o que cabe no teto"}
+                                </button>
+                              )}
+                            </div>
+                          )}
                           <div className="max-h-[420px] overflow-y-auto">
                             <table className="w-full border-collapse">
                               <thead className="sticky top-0 z-10 bg-muted">
@@ -1083,7 +1244,7 @@ export default function Radar() {
                                 </tr>
                               </thead>
                               <tbody>
-                                {ofertas[l.alvo.id].map((o) => (
+                                {visiveis.map((o) => (
                                   <tr key={o.id} className="border-t border-border/60">
                                     <td className="px-4 py-2">
                                       <div className="flex items-start gap-2">
@@ -1129,9 +1290,14 @@ export default function Radar() {
                                       {o.preco_min != null ? fmtBRL(Number(o.preco_min)) : "—"}
                                     </td>
                                     <td className="px-3 py-2 text-right">
-                                      <div className="num text-[13px] font-semibold text-foreground">
+                                      <div className={cn("num text-[13px] font-semibold", o.dentro_do_teto === false ? "text-muted-foreground" : "text-foreground")}>
                                         {fmtBRL(Number(o.preco_total ?? o.preco))}
                                       </div>
+                                      {o.dentro_do_teto === false && (
+                                        <div className="text-[10.5px] text-amber-700 dark:text-amber-400" title="Produto certo, preço acima do teto: entra na curva, não no contador do card.">
+                                          acima do teto
+                                        </div>
+                                      )}
                                       {o.frete_valor != null && o.frete_valor > 0 && (
                                         <div className="num text-[10.5px] text-muted-foreground">{fmtBRLStr(Number(o.preco))} + frete</div>
                                       )}
@@ -1194,6 +1360,7 @@ export default function Radar() {
                               </tbody>
                             </table>
                           </div>
+                          </>
                         )}
                       </div>
                     )}
@@ -1202,6 +1369,8 @@ export default function Radar() {
               })}
             </div>
           )}
+
+          <Destinatarios />
         </>
       )}
 

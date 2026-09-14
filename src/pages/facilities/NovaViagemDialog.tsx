@@ -373,6 +373,11 @@ export function NovaViagemDialog({ aberto, onFechar, onSalvo, viagem, daSolicita
                 {oIata} → {dIata} <ExternalLink className="h-3 w-3" />
               </a>
               <div className="mt-1">Depois de salvar, abra esse link e clique em <span className="font-medium text-foreground">Rastrear preços</span> — é o passo que faz o e-mail chegar.</div>
+              {/* Achado em 14/09/2026: os alertas reais que existiam tinham ido para uma
+                  conta pessoal. O Hub só lê a caixa do financeiro@. */}
+              <div className="mt-1 font-medium text-amber-700 dark:text-amber-400">
+                Ligue o alerta logado como financeiro@takeat.app — é essa caixa que o Hub lê. Em outra conta o e-mail nunca chega.
+              </div>
             </div>
           )}
         </div>

@@ -111,14 +111,12 @@ const MAX_ALERTAS_POR_ALVO = 3;
  */
 const LIMIAR_PROPOR_MARCA = 3;
 
-/**
- * QUEM RECEBE O AVISO DE COMPRA. Fixo no código, como o número do Miguel no
- * relatório do Caixa (`RelatorioCaixaModal.tsx`) — é uma pessoa só e o Hub não
- * tem cadastro de destinatário de mensagem. O dia em que forem dois, isto vira
- * lista; o dia em que for "o gestor da área", vira consulta a
- * `lib_colaboradores` como faz a auditoria.
+/*
+ * QUEM RECEBE O AVISO DE COMPRA mora em `facilities_radar_destinatarios` desde
+ * 14/09/2026, editado na própria tela do radar. Era uma constante (o Renan) —
+ * e o time de Facilities, que é quem compra, não tinha como se pôr na lista sem
+ * deploy.
  */
-const AVISAR = { nome: "Renan", telefone: "5527988643343" };
 
 /**
  * O prazo do POST no n8n. Vem DEPOIS de a rodada já ter gravado tudo, então o
@@ -278,6 +276,8 @@ async function itemML(link: string, token: string): Promise<string | null> {
   try {
     const r = await fetch(`https://api.mercadolibre.com/items/MLB${m[1]}`, {
       headers: { Authorization: `Bearer ${token}`, accept: "application/json" },
+      // A pessoa está esperando no formulário; sem prazo, um ML lento segurava o "Interpretar".
+      signal: AbortSignal.timeout(10_000),
     });
     if (!r.ok) return null;
     const d = await r.json();
@@ -2141,7 +2141,14 @@ Deno.serve(async (req) => {
     }
     let quem: string | null = null;
     if (!ehCron) {
-      const caller = await requireUser(req, { bloquearCargos: ["parcerias"] });
+      const caller = await requireUser(req);
+      /* A CAPACIDADE, NÃO O CARGO. `bloquearCargos: ["parcerias"]` comparava o
+         texto livre do cargo, e qualquer conta logada — até perfil `restrito` —
+         disparava varredura e escrevia com service role. É a mesma capacidade
+         que o PORTÃO exige de /facilities: esconder a tela não fechava a função. */
+      if (!caller.pode("facilities")) {
+        return json({ ok: false, erro: "Seu perfil de acesso não inclui o Facilities." }, 403);
+      }
       quem = caller.email ?? null;
     }
 
@@ -2153,6 +2160,12 @@ Deno.serve(async (req) => {
     if (action === "saldo") {
       const s = await saldoFirecrawl();
       return json({ ok: !s.erro, ...s, duracao_ms: Date.now() - t0 });
+    }
+
+    /* O canal de WhatsApp está ligado? A tela não lê segredo; sem esta pergunta,
+       a lista de destinatários parecia funcionar enquanto nada saía. */
+    if (action === "canal") {
+      return json({ ok: true, configurado: !!Deno.env.get("N8N_WHATSAPP_URL") });
     }
 
     /* ---------------------------------------------------- interpretar */
@@ -2184,7 +2197,9 @@ Deno.serve(async (req) => {
         }
       }
 
-      const out = await interpretar(pedido, referencia);
+      /* A pessoa está olhando um spinner. Sem prazo, uma IA travada segurava a
+         requisição até o gateway devolver 504 aos 150s — sem mensagem nenhuma. */
+      const out = await comPrazo(interpretar(pedido, referencia), 60_000, "a interpretação do pedido");
       return json({ ok: true, ...out, leu_referencia: !!referencia, referencia_de: referenciaDe, duracao_ms: Date.now() - t0 });
     }
 
@@ -2214,7 +2229,11 @@ Deno.serve(async (req) => {
 
       let texto = s.resumo;
       try {
-        texto = (await generateText({
+        /* Modelo leve e prazo curto: dispara a cada pausa de digitação no
+           formulário, e a frase é só enfeite dos números da regra. */
+        texto = (await comPrazo(generateText({
+          model: MODELO_LITE,
+          thinking: "low",
           messages: [
             {
               role: "system",
@@ -2226,7 +2245,7 @@ Deno.serve(async (req) => {
             { role: "user", content: `Reescreva de forma natural, em uma frase: ${s.resumo}` },
           ],
           temperature: 0.3,
-        })).trim();
+        }), 12_000, "a frase da sugestão de teto")).trim();
       } catch { /* a frase é enfeite; os números é que decidem */ }
 
       return json({ ok: true, ...s, texto, duracao_ms: Date.now() - t0 });
@@ -2895,14 +2914,25 @@ Deno.serve(async (req) => {
             bloco.ofertas.push({ ...a.oferta, comparavel: a.comparavel });
             porAlvo.set(a.alvo_id, bloco);
           }
-          const r = await enviarWhatsApp(
-            {
-              telefone: AVISAR.telefone,
-              mensagem: textoWhatsLote([...porAlvo.values()]),
-              origem: "radar-precos",
-            },
-            PRAZO_AVISO_MS,
-          );
+          const { data: destinos } = await supabase
+            .from("facilities_radar_destinatarios").select("nome, telefone").eq("ativo", true);
+          const lista = (destinos ?? []) as { nome: string; telefone: string }[];
+          const mensagem = textoWhatsLote([...porAlvo.values()]);
+          /* Em PARALELO: o prazo de cada POST já é `PRAZO_AVISO_MS`, e em fila
+             três destinatários triplicariam o tempo pendurado no fim da rodada. */
+          const envios = await Promise.all(lista.map(async (d) => ({
+            para: d.nome,
+            ...await enviarWhatsApp({ telefone: d.telefone, mensagem, origem: "radar-precos" }, PRAZO_AVISO_MS),
+          })));
+          /* O carimbo sai se ALGUÉM recebeu. Sem isso, um número errado na lista
+             faria o achado ser reenviado a cada 24h para todos os outros. */
+          const r = lista.length
+            ? {
+              ok: envios.some((e) => e.ok),
+              desfecho: envios.some((e) => e.ok) ? "enviado" : envios[0].desfecho,
+              detalhe: envios.filter((e) => !e.ok).map((e) => `${e.para}: ${e.detalhe}`).join(" · ") || undefined,
+            }
+            : { ok: false, desfecho: "sem_destinatario", detalhe: "ninguém ativo em facilities_radar_destinatarios" };
           if (r.ok) {
             const agora = new Date().toISOString();
             /* Um update por alerta porque `avisado_preco` é diferente em cada
@@ -2912,7 +2942,7 @@ Deno.serve(async (req) => {
                 .update({ avisado_em: agora, avisado_preco: a.comparavel })
                 .eq("id", a.alerta_id)));
           }
-          whatsapp = { ...r, para: AVISAR.nome, achados: avisos.length, alvos: porAlvo.size };
+          whatsapp = { ...r, para: envios.map((e) => e.para), envios, achados: avisos.length, alvos: porAlvo.size };
         }
       }
 

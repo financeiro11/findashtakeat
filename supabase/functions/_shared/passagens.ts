@@ -197,6 +197,37 @@ export function precosNoTexto(texto: string): number[] {
   return out;
 }
 
+/**
+ * O preço ATUAL que o alerta anuncia — e não o primeiro "R$" que aparece.
+ *
+ * CONFERIDO CONTRA E-MAIL REAL em 14/09/2026 (três alertas do Google na caixa
+ * do financeiro@, fev/2026). O Google manda dois formatos, e pegar o primeiro
+ * valor errava um deles de um jeito que dispara aviso:
+ *   • mudança — "o preço ... é R$ 2.332 (o preço era R$ 1.397)": o primeiro serve;
+ *   • previsão — "aumento aproximado de R$ 350 esperado nos próximos 2 dias …
+ *     now R$ 1.610 em 2 dias R$ 1.960": o primeiro é o AUMENTO. Gravava R$ 350
+ *     como passagem, abria "primeiro preço dentro do teto" no sino e envenenava
+ *     o "menor visto" para sempre.
+ *
+ * Por isso: o valor depois de "now"/"agora" ganha; sem ele, sai do texto tudo o
+ * que é variação ("aumento de", "queda de"), previsão ("em 2 dias R$") e passado
+ * ("era R$"), e só então vale o primeiro.
+ */
+export function precoDoAlerta(assunto: string, corpo: string): number | null {
+  const texto = `${assunto ?? ""} ${corpo ?? ""}`;
+  const agora = /\b(?:now|agora)\s*:?\s*(R\$\s*[\d.]+(?:,\d{2})?)/i.exec(texto);
+  if (agora) {
+    const p = precosNoTexto(agora[1]);
+    if (p.length) return p[0];
+  }
+  const limpo = texto
+    .replace(/(?:aumento|queda|redu[cç][aã]o|diminui[cç][aã]o|increase|drop|decrease)\s+(?:aproximad[ao]\s+)?(?:de\s+|of\s+)?R\$\s*[\d.,]+/gi, " ")
+    .replace(/\b(?:em|in)\s+\d+\s+(?:dias?|days?)\s*R\$\s*[\d.,]+/gi, " ")
+    .replace(/(?:o\s+pre[cç]o\s+era|\bera|\bwas)\s*R\$\s*[\d.,]+/gi, " ");
+  const precos = precosNoTexto(limpo);
+  return precos.length ? precos[0] : null;
+}
+
 /* ------------------------------------------------------------ o casamento */
 
 const MESES_PT = [
@@ -257,10 +288,8 @@ export function casarEmail(
   viagens: ViagemParaCasar[],
 ): Casamento {
   const texto = norm(`${assunto ?? ""} ${corpo ?? ""}`);
-  const precos = precosNoTexto(`${assunto ?? ""} ${corpo ?? ""}`);
-  // O primeiro é a manchete: o alerta abre com o preço de que veio falar, e os
-  // seguintes são as outras opções que ele lista embaixo.
-  const preco = precos.length ? precos[0] : null;
+  // O preço de AGORA, não o primeiro "R$" — ver `precoDoAlerta`.
+  const preco = precoDoAlerta(assunto, corpo);
 
   if (!viagens.length) {
     return { viagem_id: null, preco, confianca: null, motivo: "não há viagem em rastreamento para casar" };

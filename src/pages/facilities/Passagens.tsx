@@ -129,6 +129,10 @@ export default function Passagens() {
         .order("created_at", { ascending: false }).limit(30),
       db.from("passagens_areas").select("chave, nome, ordem").eq("ativa", true).order("ordem"),
     ]);
+    /* Falha de leitura não pode parecer "Nenhuma viagem ainda" — são diagnósticos
+       opostos, e o segundo manda a pessoa recadastrar o que já existe. */
+    const erro = p.error ?? o.error ?? a.error;
+    if (erro) toast.error(`Não consegui carregar as viagens: ${erro.message}`);
     setLinhas((p.data as Linha[]) ?? []);
     setOrfaos((o.data as EmailOrfao[]) ?? []);
     setAreas((a.data as Area[]) ?? []);
@@ -380,8 +384,9 @@ export default function Passagens() {
     <div className="space-y-4">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <h1 className="text-[26px] font-semibold tracking-tight text-foreground">Passagens</h1>
-          <p className="mt-1 max-w-2xl text-[14px] text-muted-foreground">
+          {/* O título da página é da moldura (RadarDeCompras); aqui é o da aba. */}
+          <h2 className="text-[18px] font-semibold tracking-tight text-foreground">Passagens aéreas</h2>
+          <p className="mt-1 max-w-2xl text-[13px] text-muted-foreground">
             Registre a viagem marcada e o quanto vale a pena pagar. Quem vigia o preço é o{" "}
             <span className="font-medium text-foreground">alerta do Google Flights</span>, de graça; o Hub lê os
             e-mails que ele manda e só faz barulho quando o preço entra no seu teto — não a cada vez que ele mexe.
@@ -731,11 +736,25 @@ export default function Passagens() {
                         </div>
                         <Button
                           size="sm" variant="outline"
-                          onClick={() => mudarStatus(l, "comprada", Number(l.ultimo_preco ?? 0) || undefined)}
+                          onClick={() => {
+                            /* QUANTO FOI PAGO É DIGITADO, não copiado do último alerta.
+                               O último preço lido pode ser de ontem, de outra tarifa ou
+                               nenhum — e é este número que vira o desfecho e a cotação
+                               na solicitação. */
+                            const sugerido = l.ultimo_preco != null ? String(Math.round(Number(l.ultimo_preco))) : "";
+                            const digitado = window.prompt("Quanto foi pago, no total (R$)?", sugerido);
+                            if (digitado == null) return;
+                            const valor = Number(digitado.replace(/[^\d,]/g, "").replace(",", "."));
+                            if (!(valor > 0)) { toast.error("Informe o valor pago para registrar a compra."); return; }
+                            mudarStatus(l, "comprada", valor);
+                          }}
                         >
                           <Check className="mr-1 h-3.5 w-3.5" /> Comprei
                         </Button>
-                        <Button size="sm" variant="ghost" onClick={() => mudarStatus(l, "cancelada")}>
+                        <Button
+                          size="sm" variant="ghost"
+                          onClick={() => { if (window.confirm("Cancelar esta viagem? Ela para de receber preço.")) mudarStatus(l, "cancelada"); }}
+                        >
                           <X className="mr-1 h-3.5 w-3.5" /> Cancelar viagem
                         </Button>
                       </div>

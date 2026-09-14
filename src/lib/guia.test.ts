@@ -177,7 +177,7 @@ describe("lote 1 — quem não é do financeiro e faz alguma coisa", () => {
      devolveria essa pessoa ao "não sei", sem erro nenhum que avise. */
   const LOTE_1 = [
     "/operacional/remuneracao", "/operacional/reembolsos", "/governanca/rescisoes",
-    "/operacional/colaboradores", "/facilities/radar", "/facilities/passagens",
+    "/operacional/colaboradores", "/facilities/radar", "/facilities/radar/passagens",
     "/facilities/fornecedores", "/facilities/contratos",
   ];
 
@@ -194,7 +194,7 @@ describe("lote 1 — quem não é do financeiro e faz alguma coisa", () => {
     expect(acha("quero comprar passagem aérea")).toContain("Passagens");
     expect(acha("como marco a rescisão como paga?")).toContain("Rescisões");
     expect(acha("como provisiono a folha no omie")).toContain("Colaboradores (RH)");
-    expect(acha("como cadastro um produto no radar de preços")).toContain("Radar de preços");
+    expect(acha("como cadastro um produto no radar de preços")).toContain("Radar de compras");
     expect(acha("cadastrar contrato de internet")).toContain("Contratos (Facilities)");
   });
 

@@ -88,6 +88,7 @@ export function useExcluirComprovante(
       if (r.omie.removidos.length) {
         partes.push(`${r.omie.removidos.length} anexo${r.omie.removidos.length > 1 ? "s" : ""} removido${r.omie.removidos.length > 1 ? "s" : ""} do Omie`);
       }
+      if (!partes.length) partes.push("lançamento sem comprovante");
       const frase = partes.join(" · ");
       toast.success(
         frase.charAt(0).toUpperCase() + frase.slice(1) +
@@ -105,7 +106,10 @@ export function useExcluirComprovante(
     }
   };
 
-  const nadaMarcado = !previa?.hub && marcados.size === 0;
+  // No PIX é preciso marcar um anexo. No achado e no cartão, sem nada para apagar,
+  // confirmar ainda devolve o lançamento à fila (SEM NF e Pendente).
+  const nadaMarcado = alvo?.origem === "pix" && marcados.size === 0;
+  const soDevolver = alvo?.origem !== "pix" && !previa?.hub && marcados.size === 0;
 
   const elementos = (
     <Dialog open={!!alvo} onOpenChange={(o) => { if (!o) fechar(); }}>
@@ -135,6 +139,9 @@ export function useExcluirComprovante(
                 ) : (
                   <p className="mt-1 text-muted-foreground">Nenhum comprovante guardado no Hub.</p>
                 )}
+                <p className="mt-1 text-[11px] text-muted-foreground">
+                  Ao confirmar, o lançamento volta para <b>SEM NF</b> e <b>Pendente</b>.
+                </p>
               </section>
             )}
 
@@ -199,7 +206,9 @@ export function useExcluirComprovante(
           <Button variant="destructive" onClick={confirmar} disabled={!previa || nadaMarcado || !!excluindo}>
             {excluindo
               ? <><Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> Excluindo…</>
-              : <><Trash2 className="mr-1.5 h-3.5 w-3.5" /> Excluir</>}
+              : soDevolver
+                ? <>Devolver à fila</>
+                : <><Trash2 className="mr-1.5 h-3.5 w-3.5" /> Excluir</>}
           </Button>
         </DialogFooter>
       </DialogContent>

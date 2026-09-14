@@ -225,8 +225,13 @@ Deno.serve(async (req) => {
     }
 
     /* ------------------------------ aplicar ----------------------------- */
-    if (!alvo.link && !pedidos.length) {
-      return json({ error: "Nada para excluir: não há comprovante no Hub e nenhum anexo do Omie foi marcado." });
+    /* Sem arquivo e sem anexo marcado, o achado e o cartão ainda têm o que fazer:
+       voltar para a fila. É o caso de quem foi excluído pela regra antiga (que só
+       tirava o link) e ficou "COM NF · Reprovado" sem nada para apagar — sem este
+       caminho, o botão ficava desabilitado e a linha, presa. O PIX não tem categoria:
+       lá, sem anexo marcado, não há o que fazer. */
+    if (origem === "pix" && !pedidos.length) {
+      return json({ error: "Marque qual anexo do Omie sai." });
     }
 
     const removidos: { nome: string; id: string }[] = [];
@@ -272,7 +277,8 @@ Deno.serve(async (req) => {
     }
 
     const hubSaiu = !!alvo.link;
-    if (!hubSaiu && !removidos.length) {
+    // Pediu para apagar no Omie e nada saiu: não finge que deu certo.
+    if (!hubSaiu && pedidos.length && !removidos.length) {
       return json({ error: `Nada foi apagado. ${falhas.join("; ")}` });
     }
 
@@ -347,7 +353,10 @@ Deno.serve(async (req) => {
           tipo: "comprovante_excluido",
           arquivo: alvo.arquivo,
           ...(a.status !== fila.status ? { de: a.status, para: fila.status } : {}),
-          texto: `Comprovante excluído pelo Hub: ${hubSaiu ? alvo.arquivo ?? "arquivo" : "só no Omie"}${doOmie}` +
+          texto: (hubSaiu
+            ? `Comprovante excluído pelo Hub: ${alvo.arquivo ?? "arquivo"}`
+            : removidos.length ? "Exclusão pelo Hub" : "Sem comprovante: lançamento devolvido à fila pelo Hub") +
+            doOmie +
             (mudancas.length ? ` · ${mudancas.join(" · ")}` : ""),
         }];
         const { error } = await supabase.from("auditoria").update(patch).eq("id", a.id);

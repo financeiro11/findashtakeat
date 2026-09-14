@@ -5,12 +5,13 @@ import { cn } from "@/lib/utils";
 import { toast } from "sonner";
 import { brl, brlAbbr, fmtDateBR } from "./utils";
 import { comValorExato } from "@/components/ValorExato";
-import { Search, RefreshCw, Loader2, ExternalLink, FileWarning, FileCheck2, FileSearch, Upload, CheckCircle2 } from "lucide-react";
+import { Search, RefreshCw, Loader2, ExternalLink, FileWarning, FileCheck2, FileSearch, Upload, CheckCircle2, Trash2 } from "lucide-react";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { useApelidos } from "@/hooks/useApelidos";
 import { apelidoDe } from "@/lib/apelidos";
 import { ComprovanteLink } from "@/components/ComprovanteLink";
+import { useExcluirComprovante } from "./useExcluirComprovante";
 
 type Lanc = {
   id: number;
@@ -132,6 +133,10 @@ export default function BasePix({ abas }: { abas?: React.ReactNode }) {
     setLoading(false);
   };
   useEffect(() => { load(); }, []);
+
+  // Excluir o anexo errado do título. No PIX o comprovante mora só no Omie, então
+  // não há o que refletir na mão: a linha é recarregada com o que o servidor gravou.
+  const exclusao = useExcluirComprovante(() => { void load(); });
 
   /* As notas das planilhas e do Drive, agrupadas pelo lançamento que explicam.
      Uma leitura só para a tabela inteira — a lição do `useApelidos`: 50 linhas
@@ -412,6 +417,7 @@ export default function BasePix({ abas }: { abas?: React.ReactNode }) {
   return (
     <div className="mx-auto max-w-[1400px] px-6 pt-3 pb-6 space-y-5">
       <input ref={fileRef} type="file" accept=".pdf,.jpg,.jpeg,.png,application/pdf,image/jpeg,image/png" hidden onChange={onArquivo} />
+      {exclusao.elementos}
 
       <Dialog open={!!askReplace} onOpenChange={(o) => { if (!o) setAskReplace(null); }}>
         <DialogContent>
@@ -571,6 +577,8 @@ export default function BasePix({ abas }: { abas?: React.ReactNode }) {
             {paged.map(r => (
               <PixRow
                 key={r.id} r={r} onAnexar={abrirSeletor} uploading={uploadingId === r.id}
+                onExcluir={(x) => exclusao.abrir({ origem: "pix", id_unico: x.id_unico, rotulo: x.favorecido || x.cnpj_cpf || undefined })}
+                excluindo={exclusao.excluindo === r.id_unico}
                 notas={notas[r.id_unico] ?? []}
                 onEnviarErp={enviarAoErp} enviandoErp={enviandoErp}
               />
@@ -593,8 +601,9 @@ export default function BasePix({ abas }: { abas?: React.ReactNode }) {
   );
 }
 
-function PixRow({ r, onAnexar, uploading, notas, onEnviarErp, enviandoErp }: {
+function PixRow({ r, onAnexar, uploading, onExcluir, excluindo, notas, onEnviarErp, enviandoErp }: {
   r: Lanc; onAnexar: (r: Lanc) => void; uploading: boolean;
+  onExcluir: (r: Lanc) => void; excluindo: boolean;
   notas: NotaExterna[]; onEnviarErp: (ids: number[]) => void; enviandoErp: boolean;
 }) {
   const ap = apelidoDe(useApelidos(), r.favorecido, r.cnpj_cpf);
@@ -649,6 +658,14 @@ function PixRow({ r, onAnexar, uploading, notas, onEnviarErp, enviandoErp }: {
               className="inline-flex items-center justify-center h-5 w-5 rounded-full border border-border text-muted-foreground hover:bg-accent disabled:opacity-60"
             >
               {uploading ? <Loader2 className="h-3 w-3 animate-spin" /> : <Upload className="h-3 w-3" />}
+            </button>
+            <button
+              onClick={() => onExcluir(r)}
+              disabled={excluindo}
+              title="Excluir anexo errado do Omie"
+              className="inline-flex items-center justify-center h-5 w-5 rounded-full border border-border text-muted-foreground hover:bg-accent hover:text-destructive disabled:opacity-60"
+            >
+              {excluindo ? <Loader2 className="h-3 w-3 animate-spin" /> : <Trash2 className="h-3 w-3" />}
             </button>
           </div>
         ) : (

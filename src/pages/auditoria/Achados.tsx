@@ -9,7 +9,7 @@ import { Sheet, SheetContent } from "@/components/ui/sheet";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Textarea } from "@/components/ui/textarea";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Download, X, ChevronRight, Check, ExternalLink, Search, RefreshCw, Loader2, Paperclip, Copy, Upload, Sparkles, AlertCircle, SlidersHorizontal } from "lucide-react";
+import { Download, X, ChevronRight, Check, ExternalLink, Search, RefreshCw, Loader2, Paperclip, Copy, Upload, Sparkles, AlertCircle, SlidersHorizontal, Trash2 } from "lucide-react";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { cn } from "@/lib/utils";
@@ -25,6 +25,7 @@ import FacilitiesNfPropostas from "./FacilitiesNfPropostas";
 import { enviarProntos, enviarUnitario } from "@/lib/omieAnexos";
 import { WhatsAppLogo, OmieLogo } from "@/components/brand-logos";
 import { useAnexarComprovante } from "./useAnexarComprovante";
+import { useExcluirComprovante } from "./useExcluirComprovante";
 
 type Severidade = "Crítico" | "Alto" | "Médio" | "Baixo";
 type Status = "Pendente" | "Em análise" | "Aprovado" | "Reprovado" | "Ajuste solicitado";
@@ -582,6 +583,34 @@ export default function Achados({ abas }: { abas?: React.ReactNode }) {
     setSelected(s => (s && s.id_unico === alvo.id_unico ? { ...s, ...patch } : s));
     void load();
   });
+  // Excluir o comprovante enviado errado. Reflete na hora o que o servidor gravou:
+  // sem link, sem carimbo de envio, e SEM NF só se o Omie ficou sem papel nenhum
+  // (nota posta à mão no ERP continua valendo).
+  const exclusao = useExcluirComprovante(({ alvo, resultado }) => {
+    const semComprovante = (r: Row): Row => ({
+      ...r,
+      link_comprovante: resultado.hub_removido ? null : r.link_comprovante,
+      omie_anexo_enviado_em: null,
+      ...(resultado.sem_papel && r.categoria === "COM NF" ? { categoria: "SEM NF" as Categoria } : {}),
+      ...(resultado.status_novo ? { status: resultado.status_novo as Status } : {}),
+    });
+    setRows(rs => rs.map(r => (r.id_unico === alvo.id_unico ? semComprovante(r) : r)));
+    setSelected(s => (s && s.id_unico === alvo.id_unico ? semComprovante(s) : s));
+    if (resultado.hub_removido) setOrigemCart(c => (c ? { ...c, link_comprovante: null, arquivo_comprovante: null } : c));
+    // O clipe cinza lê `omie_titulo_anexo`, que só é relido quando a lista de
+    // títulos muda — e excluir não muda a lista. Aplica a releitura do servidor.
+    const k = chaveTitulo(rows.find(r => r.id_unico === alvo.id_unico)?.omie_cod_titulo);
+    const depois = resultado.omie.depois;
+    if (k && depois) {
+      setAnexoErp(m => {
+        const n = { ...m };
+        if (depois.qtd > 0) n[k] = { qtd: depois.qtd, parece_nota: depois.parece_nota, lido_em: depois.lido_em };
+        else delete n[k];
+        return n;
+      });
+    }
+    void load();
+  });
   /** O nome que a linha escreve: apelido > lojista limpo > o título como veio. */
   const nomeDaLinha = useCallback(
     (r: Row): NomeContraparte =>
@@ -1091,6 +1120,7 @@ export default function Achados({ abas }: { abas?: React.ReactNode }) {
     <div className="mx-auto max-w-[1400px] px-6 pt-3 pb-6 space-y-5">
       {/* seletor de arquivo + diálogo "já tem anexo no Omie" do fluxo de anexar */}
       {anexo.elementos}
+      {exclusao.elementos}
 
       {/* Header row */}
       <div className="flex items-start justify-between gap-6 flex-wrap">
@@ -1573,6 +1603,23 @@ export default function Achados({ abas }: { abas?: React.ReactNode }) {
                       {podeAbrirComprovante(r.link_comprovante) ? "Anexar outro comprovante" : "Anexar comprovante"}
                     </TooltipContent>
                   </Tooltip>
+                  {/* Excluir o comprovante enviado errado — do Hub e, marcando, do Omie. */}
+                  {(podeAbrirComprovante(r.link_comprovante) || !!r.omie_anexo_enviado_em) && (
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <button
+                          onClick={() => exclusao.abrir(alvoAnexo(r))}
+                          disabled={exclusao.excluindo === r.id_unico}
+                          className="text-muted-foreground hover:text-destructive transition-colors shrink-0 mt-0.5 disabled:opacity-50"
+                        >
+                          {exclusao.excluindo === r.id_unico
+                            ? <Loader2 className="h-4 w-4 animate-spin" />
+                            : <Trash2 className="h-4 w-4" />}
+                        </button>
+                      </TooltipTrigger>
+                      <TooltipContent>Excluir comprovante</TooltipContent>
+                    </Tooltip>
+                  )}
                 </TooltipProvider>
               </div>
               <div className="min-w-0" title={r.omie_categoria || ""}>
@@ -1619,13 +1666,13 @@ export default function Achados({ abas }: { abas?: React.ReactNode }) {
 
 
       {/* Drawer */}
-      <Sheet open={!!selected && !ajusteOpen && !sheetHidden} onOpenChange={(o) => { if (!o && !ajusteOpen && !sheetHidden && !anexo.perguntando) setSelected(null); }}>
+      <Sheet open={!!selected && !ajusteOpen && !sheetHidden} onOpenChange={(o) => { if (!o && !ajusteOpen && !sheetHidden && !anexo.perguntando && !exclusao.aberto) setSelected(null); }}>
         <SheetContent
           side="right"
           className="w-full sm:max-w-[620px] p-0 flex flex-col"
-          onPointerDownOutside={(e) => { if (ajusteOpen || anexo.perguntando) e.preventDefault(); }}
-          onInteractOutside={(e) => { if (ajusteOpen || anexo.perguntando) e.preventDefault(); }}
-          onEscapeKeyDown={(e) => { if (ajusteOpen || anexo.perguntando) e.preventDefault(); }}
+          onPointerDownOutside={(e) => { if (ajusteOpen || anexo.perguntando || exclusao.aberto) e.preventDefault(); }}
+          onInteractOutside={(e) => { if (ajusteOpen || anexo.perguntando || exclusao.aberto) e.preventDefault(); }}
+          onEscapeKeyDown={(e) => { if (ajusteOpen || anexo.perguntando || exclusao.aberto) e.preventDefault(); }}
         >
           {selected && (
             <>
@@ -1786,6 +1833,19 @@ export default function Achados({ abas }: { abas?: React.ReactNode }) {
                               ? "Anexar outro comprovante"
                               : "Anexar comprovante"}</>}
                     </Button>
+                    {(podeAbrirComprovante(selected.link_comprovante || origemCart?.link_comprovante) || !!selected.omie_anexo_enviado_em) && (
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => exclusao.abrir(alvoAnexo(selected))}
+                        disabled={exclusao.excluindo === selected.id_unico}
+                        className="mt-2 ml-2 h-8 text-[12px] text-destructive hover:text-destructive"
+                      >
+                        {exclusao.excluindo === selected.id_unico
+                          ? <><Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> Excluindo…</>
+                          : <><Trash2 className="mr-1.5 h-3.5 w-3.5" /> Excluir comprovante</>}
+                      </Button>
+                    )}
                     <div className="text-[11px] text-muted-foreground mt-1">PDF, JPG, PNG ou WEBP · até 10 MB</div>
                     {/* Envio individual: manda SÓ o anexo deste lançamento para o título do Omie.
                         Só aparece com comprovante + título do Omie e enquanto não foi enviado.

@@ -9,10 +9,12 @@
 // DUAS CHAMADAS, PORQUE APAGAR NO ERP NÃO TEM DESFAZER:
 //   1. sem `aplicar` → só LÊ: o arquivo do Hub e a lista de anexos do título,
 //      cada um dizendo se foi o Hub que mandou. A tela pré-marca esses.
-//   2. com `aplicar: true` + `omie_nomes` → apaga o que foi marcado, um a um,
-//      com as guardas da `omie-anexo-remover` (nome único, resolve tudo contra
-//      uma leitura só, e confere relendo — o Omie responde 200 para coisa que
-//      não fez). Se algum nome pedido não passa na guarda, NADA é apagado.
+//   2. com `aplicar: true` + `omie_anexos` → apaga o que foi marcado, pelo id
+//      que a prévia leu (nome repetido e anexo sem id saem travados de lá), e
+//      confere relendo — o Omie responde 200 para coisa que não fez. Sem reler
+//      antes de apagar: três leituras seguidas do mesmo título dão "consumo
+//      redundante". Se a releitura for recusada, o que o Omie aceitou apagar
+//      volta como `sem_conferencia`, e a linha segue para a fila mesmo assim.
 //
 // O QUE ACONTECE COM A LINHA. O arquivo do Hub sempre sai (é ele o errado): o
 // caminho some de `link_comprovante` nos dois lados da mesma nota (achado e
@@ -27,7 +29,7 @@
 //
 // Body:
 //   { origem: "achado" | "cartao" | "pix", id_unico: string,
-//     aplicar?: boolean, omie_nomes?: string[] }
+//     aplicar?: boolean, omie_anexos?: { nome: string; id: string }[] }
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.0";
 import { AuthError, requireUser } from "../_shared/auth.ts";
@@ -35,10 +37,8 @@ import { listarAnexos, omieCall, type AnexoDoOmie } from "../_shared/omie-rpc.ts
 import {
   achadoSemComprovante,
   anexosParaEscolher,
-  fraseDaRecusa,
   leituraDoTitulo,
   nomeDoCaminho,
-  resolverExclusao,
 } from "../_shared/anexo-exclusao.ts";
 
 const corsHeaders = {
@@ -195,9 +195,22 @@ Deno.serve(async (req) => {
     const origem = String(body?.origem ?? "") as Origem;
     const idUnico = String(body?.id_unico ?? "").trim();
     const aplicar = body?.aplicar === true;
-    const pedidos: string[] = Array.isArray(body?.omie_nomes)
-      ? [...new Set((body.omie_nomes as unknown[]).map((n) => String(n ?? "").trim()).filter(Boolean))].slice(0, 20)
-      : [];
+    /* O que sai do Omie chega com o id que a PRÉVIA leu. A exclusão não relê o
+       título antes de apagar: a prévia acabou de ler, e uma segunda leitura
+       igual em poucos segundos é o que o Omie recusa como "consumo redundante"
+       (APPLE.COM/BILL, 14/09/2026 — três leituras do mesmo título em ~10s).
+       Nome repetido e anexo sem id já saem travados da prévia, e o ExcluirAnexo
+       é sempre dentro do título (`nId`), então o id não alcança outro lançamento. */
+    const pedidos: { nome: string; id: string }[] = [];
+    if (Array.isArray(body?.omie_anexos)) {
+      const vistos = new Set<string>();
+      for (const it of body.omie_anexos as { nome?: unknown; id?: unknown }[]) {
+        const id = String(it?.id ?? "").trim();
+        if (!id || vistos.has(id) || pedidos.length >= 20) continue;
+        vistos.add(id);
+        pedidos.push({ id, nome: String(it?.nome ?? "").trim() || `anexo ${id}` });
+      }
+    }
 
     if (!["achado", "cartao", "pix"].includes(origem)) return json({ error: "Origem inválida." });
     if (!idUnico) return json({ error: "Falta o id_unico do lançamento." });
@@ -205,10 +218,9 @@ Deno.serve(async (req) => {
     const alvo = await carregarAlvo(supabase, origem, idUnico);
     if (!alvo) return json({ error: `Lançamento ${idUnico} não encontrado.` });
 
-    const antes = alvo.codTitulo ? await listarAnexos(alvo.codTitulo, TABELA_OMIE) : null;
-
     /* ------------------------------ prévia ------------------------------ */
     if (!aplicar) {
+      const antes = alvo.codTitulo ? await listarAnexos(alvo.codTitulo, TABELA_OMIE) : null;
       return json({
         ok: true,
         aplicou: false,
@@ -235,74 +247,81 @@ Deno.serve(async (req) => {
     }
 
     const removidos: { nome: string; id: string }[] = [];
+    /* O Omie aceitou apagar (sem exceção) e a releitura não pôde ser feita. */
+    const semConferencia: { nome: string; id: string }[] = [];
     const falhas: string[] = [];
     let depois: { anexos: AnexoDoOmie[]; lido_em: string } | null = null;
 
     if (pedidos.length) {
-      if (!alvo.codTitulo || !antes) return json({ error: "Este lançamento não tem título casado no Omie." });
-      if (!antes.ok) {
-        return json({ error: `Não consegui ler os anexos do título no Omie (${antes.erro}). Nada foi apagado — tente de novo em instantes.` });
-      }
-      // Tudo ou nada na guarda: um nome que não passa trava a exclusão inteira,
-      // antes de qualquer chamada que não se desfaz.
-      const { apagar, recusas } = resolverExclusao(antes.anexos, pedidos);
-      if (recusas.length) return json({ error: `Nada foi apagado: ${recusas.map(fraseDaRecusa).join("; ")}.` });
+      if (!alvo.codTitulo) return json({ error: "Este lançamento não tem título casado no Omie." });
 
       const erroDe = new Map<string, string>();
-      for (const [i, a] of apagar.entries()) {
+      for (const [i, a] of pedidos.entries()) {
         if (i > 0) await espera(1_200);
         try {
           await omieCall("geral/anexo", "ExcluirAnexo", { nId: Number(alvo.codTitulo), cTabela: TABELA_OMIE, nIdAnexo: a.id });
         } catch (e) {
-          erroDe.set(a.nome, msgDe(e).slice(0, 200));
+          erroDe.set(a.id, msgDe(e).slice(0, 200));
         }
       }
 
-      /* O 200 do Omie não é prova. Reler é — depois de esperar, porque reler o
-         mesmo título colado na leitura anterior é o que ele chama de redundante. */
-      await espera(4_000);
-      const releitura = await listarAnexos(alvo.codTitulo, TABELA_OMIE);
+      /* O 200 do Omie não é prova; reler é. Com OUTRO tamanho de página, para esta
+         leitura não ser idêntica à da prévia (ver `listarAnexos`). */
+      await espera(3_000);
+      const releitura = await listarAnexos(alvo.codTitulo, TABELA_OMIE, 49);
       if (releitura.ok) {
         depois = { anexos: releitura.anexos, lido_em: new Date().toISOString() };
-        const ficou = new Set(releitura.anexos.map((a) => a.nome ?? ""));
-        for (const a of apagar) {
-          if (!ficou.has(a.nome)) removidos.push(a);
-          else falhas.push(`${a.nome}: ${erroDe.get(a.nome) ?? "continua no título"}`);
+        const ficou = new Set(releitura.anexos.map((a) => a.id ?? ""));
+        for (const a of pedidos) {
+          if (!ficou.has(a.id)) removidos.push(a);
+          else falhas.push(`${a.nome}: ${erroDe.get(a.id) ?? "continua no título"}`);
         }
         if (removidos.length) await gravarLeituraDoTitulo(supabase, alvo.codTitulo, releitura.anexos, removidos);
       } else {
-        // Sem releitura não se afirma nada — nem que saiu, nem que ficou.
-        for (const a of apagar) falhas.push(`${a.nome}: ${erroDe.get(a.nome) ?? `não deu para conferir (${releitura.erro})`}`);
+        /* Sem releitura, o que o Omie aceitou apagar conta como excluído com a
+           conferência pendente — a varredura de anexos relê o título depois. A
+           primeira versão tratava isso como "não saiu" e recusava a linha inteira:
+           o lançamento ficava preso com o arquivo, talvez, já fora do ERP. */
+        for (const a of pedidos) {
+          const erro = erroDe.get(a.id);
+          if (erro) falhas.push(`${a.nome}: ${erro}`);
+          else semConferencia.push(a);
+        }
       }
     }
 
+    const saiuDoOmie = [...removidos, ...semConferencia];
     const hubSaiu = !!alvo.link;
-    // Pediu para apagar no Omie e nada saiu: não finge que deu certo.
-    if (!hubSaiu && pedidos.length && !removidos.length) {
+    // Pediu para apagar no Omie e o Omie recusou tudo: não finge que deu certo.
+    if (!hubSaiu && pedidos.length && !saiuDoOmie.length) {
       return json({ error: `Nada foi apagado. ${falhas.join("; ")}` });
     }
 
-    // O que sobrou de papel no título. Sem título casado, o Hub era o único papel.
-    const restantes: string[] = depois
-      ? depois.anexos.map((a) => a.nome ?? "?")
-      : antes?.ok ? antes.anexos.map((a) => a.nome ?? "?") : [];
-    const semPapel = restantes.length === 0;
+    // O que sobrou no título — só quando deu para reler; nulo é "não sei".
+    const restantes: string[] | null = depois ? depois.anexos.map((a) => a.nome ?? "?") : null;
+    const semPapel = restantes !== null && restantes.length === 0;
 
     const agora = new Date().toISOString();
     const por = caller.email ?? "hub";
-    const doOmie = removidos.length ? ` · removido do Omie: ${removidos.map((r) => r.nome).join(", ")}` : "";
+    const doOmie =
+      (removidos.length ? ` · removido do Omie: ${removidos.map((r) => r.nome).join(", ")}` : "") +
+      (semConferencia.length
+        ? ` · excluído no Omie, conferência pendente: ${semConferencia.map((r) => r.nome).join(", ")}`
+        : "");
     let aviso: string | null = null;
     let statusNovo: string | null = null;
 
     /* ------------------------------- PIX -------------------------------- */
-    if (origem === "pix" && alvo.pix && removidos.length) {
+    if (origem === "pix" && alvo.pix && saiuDoOmie.length) {
       const p = alvo.pix;
       const patch: Record<string, unknown> = {
         updated_at: agora,
         omie_anexo_enviado_em: null,
         omie_anexo_nome: null,
-        tem_comprovante: !semPapel,
-        anexo_nome: restantes[0] ?? null,
+        // Sem releitura não se sabe o que ficou: mantém o que havia e deixa o
+        // `anexo_verificado = false` pôr a linha de volta no passo "anexos".
+        tem_comprovante: restantes === null ? p.tem_comprovante : !semPapel,
+        anexo_nome: restantes === null ? p.anexo_nome : restantes[0] ?? null,
         // Era o link do primeiro anexo — talvez o que saiu. Com anexo sobrando,
         // `anexo_verificado = false` faz o passo "anexos" buscar o link do que ficou.
         comprovante_url: null,
@@ -325,7 +344,7 @@ Deno.serve(async (req) => {
         if (c.link_comprovante && c.link_comprovante !== alvo.link) continue;
         const patch: Record<string, unknown> = { updated_at: agora };
         if (hubSaiu) Object.assign(patch, { link_comprovante: null, arquivo_comprovante: null });
-        if (hubSaiu || removidos.length) Object.assign(patch, { omie_anexo_enviado_em: null, omie_anexo_nome: null });
+        if (hubSaiu || saiuDoOmie.length) Object.assign(patch, { omie_anexo_enviado_em: null, omie_anexo_nome: null });
         if (STATUS_NF_COM_PAPEL.has(c.status_nf)) patch.status_nf = "SEM NF";
         const { error } = await supabase.from("auditoria_cartao_lancamentos").update(patch).eq("id", c.id);
         if (error) {
@@ -355,7 +374,7 @@ Deno.serve(async (req) => {
           ...(a.status !== fila.status ? { de: a.status, para: fila.status } : {}),
           texto: (hubSaiu
             ? `Comprovante excluído pelo Hub: ${alvo.arquivo ?? "arquivo"}`
-            : removidos.length ? "Exclusão pelo Hub" : "Sem comprovante: lançamento devolvido à fila pelo Hub") +
+            : saiuDoOmie.length ? "Exclusão pelo Hub" : "Sem comprovante: lançamento devolvido à fila pelo Hub") +
             doOmie +
             (mudancas.length ? ` · ${mudancas.join(" · ")}` : ""),
         }];
@@ -379,6 +398,7 @@ Deno.serve(async (req) => {
       hub_removido: hubSaiu && origem !== "pix",
       omie: {
         removidos: removidos.map((r) => r.nome),
+        sem_conferencia: semConferencia.map((r) => r.nome),
         falhas,
         restantes,
         depois: depois ? { ...leituraDoTitulo(depois.anexos), lido_em: depois.lido_em } : null,

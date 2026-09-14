@@ -148,10 +148,15 @@ const campoTexto = (a: any, ...chaves: string[]): string | null => {
 export async function listarAnexos(
   nId: number | string,
   cTabela = "conta-pagar",
+  /* Mudar o tamanho da página muda a requisição. O Omie recusa como "consumo
+     redundante" a MESMA chamada repetida dentro de ~60s — e conferir uma
+     exclusão é justamente reler o título que acabou de ser lido. Quem relê
+     passa outro número aqui (ver `auditoria-excluir-comprovante`). */
+  porPagina = 50,
 ): Promise<LeituraDeAnexos> {
   try {
     const r = await omieCall<any>("geral/anexo", "ListarAnexo", {
-      nId: Number(nId), cTabela, nPagina: 1, nRegPorPagina: 50,
+      nId: Number(nId), cTabela, nPagina: 1, nRegPorPagina: porPagina,
     });
     const arr = r?.listaAnexos ?? r?.anexos ?? r?.arquivos ?? [];
     const anexos: AnexoDoOmie[] = (Array.isArray(arr) ? arr : []).map((a: any) => ({

@@ -16,6 +16,8 @@ export type OrigemExclusao = "achado" | "cartao" | "pix";
 
 export type AnexoParaEscolher = {
   nome: string;
+  /** o id no Omie — volta na exclusão, para ela não precisar reler o título */
+  id: string | null;
   /** o nome bate com o que o Hub mandou — vem pré-marcado */
   do_hub: boolean;
   repetido: boolean;
@@ -30,9 +32,13 @@ export type PreviaExclusao = {
 export type ResultadoExclusao = {
   hub_removido: boolean;
   omie: {
+    /** saiu, e a releitura confirmou */
     removidos: string[];
+    /** o Omie aceitou apagar, mas pediu para esperar antes de reler */
+    sem_conferencia: string[];
     falhas: string[];
-    restantes: string[];
+    /** nulo quando não deu para reler o título */
+    restantes: string[] | null;
     /** a releitura do título, quando houve exclusão no Omie */
     depois: { qtd: number; parece_nota: boolean | null; lido_em: string } | null;
   };
@@ -77,5 +83,8 @@ async function invocar<T>(body: Record<string, unknown>): Promise<T> {
 export const previaExclusao = (origem: OrigemExclusao, id_unico: string) =>
   invocar<PreviaExclusao>({ origem, id_unico });
 
-export const excluirComprovante = (origem: OrigemExclusao, id_unico: string, omie_nomes: string[]) =>
-  invocar<ResultadoExclusao>({ origem, id_unico, omie_nomes, aplicar: true });
+export const excluirComprovante = (
+  origem: OrigemExclusao,
+  id_unico: string,
+  omie_anexos: { nome: string; id: string }[],
+) => invocar<ResultadoExclusao>({ origem, id_unico, omie_anexos, aplicar: true });

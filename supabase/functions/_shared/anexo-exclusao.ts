@@ -16,6 +16,8 @@ export type AnexoNoTitulo = { id: string | null; nome: string | null };
 /** Um anexo do título como a tela o oferece para marcar. */
 export type AnexoParaEscolher = {
   nome: string;
+  /** o id no Omie — a exclusão manda este de volta, sem reler o título */
+  id: string | null;
   /** o nome bate com o arquivo que o Hub mandou — vem pré-marcado */
   do_hub: boolean;
   /** mais de um arquivo com este nome: não dá para apagar pelo Hub */
@@ -23,8 +25,6 @@ export type AnexoParaEscolher = {
   /** o Omie não devolveu id: não dá para mandar o ExcluirAnexo */
   sem_id: boolean;
 };
-
-export type Recusa = { nome: string; motivo: "nao_achei" | "nome_repetido" | "sem_id" };
 
 /**
  * O nome do arquivo a partir do caminho no bucket.
@@ -70,40 +70,12 @@ export function anexosParaEscolher(
     const nome = a.nome ?? "";
     return {
       nome,
+      id: a.id,
       do_hub: !!nome && doHub.has(nome),
       repetido: (contagem.get(nome) ?? 0) > 1,
       sem_id: !a.id,
     };
   });
-}
-
-/**
- * Resolve os nomes pedidos contra UMA leitura do título.
- *
- * Tudo ou nada fica a cargo de quem chama: aqui só se separa o que dá para
- * apagar do que precisa ser recusado, e o motivo de cada recusa.
- */
-export function resolverExclusao(
-  anexos: AnexoNoTitulo[],
-  pedidos: string[],
-): { apagar: { nome: string; id: string }[]; recusas: Recusa[] } {
-  const apagar: { nome: string; id: string }[] = [];
-  const recusas: Recusa[] = [];
-  for (const nome of new Set(pedidos.map((p) => String(p ?? "").trim()).filter(Boolean))) {
-    const achados = anexos.filter((a) => (a.nome ?? "") === nome);
-    if (achados.length === 0) recusas.push({ nome, motivo: "nao_achei" });
-    else if (achados.length > 1) recusas.push({ nome, motivo: "nome_repetido" });
-    else if (!achados[0].id) recusas.push({ nome, motivo: "sem_id" });
-    else apagar.push({ nome, id: achados[0].id });
-  }
-  return { apagar, recusas };
-}
-
-/** A frase de uma recusa, para o toast. */
-export function fraseDaRecusa(r: Recusa): string {
-  if (r.motivo === "nao_achei") return `"${r.nome}" não está mais no título`;
-  if (r.motivo === "nome_repetido") return `há mais de um "${r.nome}" no título — remova direto no Omie`;
-  return `o Omie não informou o id de "${r.nome}"`;
 }
 
 /**

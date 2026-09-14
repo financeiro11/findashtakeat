@@ -82,12 +82,17 @@ export function useExcluirComprovante(
     const a = alvo;
     setExcluindo(a.id_unico);
     try {
-      const r = await excluirComprovante(a.origem, a.id_unico, [...marcados]);
+      const escolhidos = (previa.omie?.anexos ?? [])
+        .filter(x => marcados.has(x.nome) && x.id)
+        .map(x => ({ nome: x.nome, id: x.id as string }));
+      const r = await excluirComprovante(a.origem, a.id_unico, escolhidos);
       const partes: string[] = [];
       if (r.hub_removido) partes.push("comprovante excluído do Hub");
       if (r.omie.removidos.length) {
         partes.push(`${r.omie.removidos.length} anexo${r.omie.removidos.length > 1 ? "s" : ""} removido${r.omie.removidos.length > 1 ? "s" : ""} do Omie`);
       }
+      const n = r.omie.sem_conferencia.length;
+      if (n) partes.push(`${n} anexo${n > 1 ? "s" : ""} excluído${n > 1 ? "s" : ""} no Omie (conferência pendente)`);
       if (!partes.length) partes.push("lançamento sem comprovante");
       const frase = partes.join(" · ");
       toast.success(
@@ -208,7 +213,7 @@ export function useExcluirComprovante(
               ? <><Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> Excluindo…</>
               : soDevolver
                 ? <>Devolver à fila</>
-                : <><Trash2 className="mr-1.5 h-3.5 w-3.5" /> Excluir</>}
+                : <><Trash2 className="mr-1.5 h-3.5 w-3.5" /> {alvo?.origem === "pix" ? "Excluir" : "Excluir e devolver à fila"}</>}
           </Button>
         </DialogFooter>
       </DialogContent>

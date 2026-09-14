@@ -13,7 +13,6 @@ import {
   leituraDoTitulo,
   nomeDoCaminho,
   nomesDoHubNoOmie,
-  resolverExclusao,
 } from "../../supabase/functions/_shared/anexo-exclusao";
 
 describe("nomeDoCaminho", () => {
@@ -47,6 +46,8 @@ describe("anexosParaEscolher", () => {
       "nota errada.pdf",
     );
     expect(lista.map((a) => a.do_hub)).toEqual([true, false]);
+    // o id vai para a tela e volta na exclusão — é o que evita reler o título
+    expect(lista.map((a) => a.id)).toEqual(["1", "2"]);
   });
   it("aponta nome repetido e anexo sem id", () => {
     const lista = anexosParaEscolher(
@@ -54,27 +55,6 @@ describe("anexosParaEscolher", () => {
       null,
     );
     expect(lista.map((a) => [a.repetido, a.sem_id])).toEqual([[true, false], [true, false], [false, true]]);
-  });
-});
-
-describe("resolverExclusao", () => {
-  const anexos = [
-    { id: "10", nome: "certo.pdf" },
-    { id: "11", nome: "dup.pdf" },
-    { id: "12", nome: "dup.pdf" },
-    { id: null, nome: "sem-id.pdf" },
-  ];
-  it("apaga o que é único e recusa o resto com o motivo", () => {
-    const r = resolverExclusao(anexos, ["certo.pdf", "dup.pdf", "sem-id.pdf", "sumiu.pdf"]);
-    expect(r.apagar).toEqual([{ nome: "certo.pdf", id: "10" }]);
-    expect(r.recusas).toEqual([
-      { nome: "dup.pdf", motivo: "nome_repetido" },
-      { nome: "sem-id.pdf", motivo: "sem_id" },
-      { nome: "sumiu.pdf", motivo: "nao_achei" },
-    ]);
-  });
-  it("pedido repetido não vira duas exclusões", () => {
-    expect(resolverExclusao(anexos, ["certo.pdf", "certo.pdf", " "]).apagar).toHaveLength(1);
   });
 });
 

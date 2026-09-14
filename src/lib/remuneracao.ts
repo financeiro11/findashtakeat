@@ -694,6 +694,45 @@ export function custoPorArea(
    O que esta parte faz é preparar essa mesa: quem falta, quanto pesa, e o que a
    categoria do Omie sugere quando ela é inequívoca. */
 
+/* ─────────────────────────── Histórico com buraco ───────────────────────────
+   As cargas do Conta Azul casaram apelido de extrato com a ficha do RH de mesmo
+   primeiro nome, e em 14/09/2026 seis de oito fichas com 3+ meses sem pagamento
+   eram DUAS pessoas coladas. A lista vem de `remuneracao_emendas_suspeitas()`;
+   o banco recusa emenda nova por nome sem confirmação. */
+
+export type EmendaSuspeita = {
+  pessoa_id: string;
+  nome: string;
+  codigo_rh: string | null;
+  cargo: string | null;
+  /** Primeiro mês do trecho antes do buraco — é o que "separar" leva. */
+  desde: string;
+  /** Último mês pago antes do buraco. */
+  depois_de: string;
+  /** Primeiro mês pago depois dele. */
+  retoma_em: string;
+  meses_sem: number;
+  area_antes: string | null;
+  area_depois: string | null;
+  total_antes: number | null;
+  fixo_antes: number | null;
+  fixo_depois: number | null;
+  /** Trecho com título do Omie não se separa aqui: a carga diária o devolveria. */
+  tem_omie: boolean;
+};
+
+/**
+ * O nome sugerido para a ficha que recebe o trecho separado: primeiro nome e
+ * área, o padrão das fichas de quem saiu antes de abr/2026 ("Renata
+ * (Administrativo)"). É só o ponto de partida — a pessoa edita antes de gravar.
+ */
+export function nomeParaSeparar(nome: string, area: string | null): string {
+  const primeiro = nome.replace(/\(.*?\)/g, " ").trim().split(/\s+/)[0] ?? "";
+  const capitalizado = primeiro.charAt(0).toLocaleUpperCase("pt-BR") + primeiro.slice(1).toLocaleLowerCase("pt-BR");
+  const a = area?.trim();
+  return a ? `${capitalizado} (${a})` : capitalizado;
+}
+
 export type PessoaSemTime = {
   id: string;
   nome: string;

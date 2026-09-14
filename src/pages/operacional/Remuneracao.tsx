@@ -3,7 +3,7 @@ import { useSearchParams } from "react-router-dom";
 import {
   TrendingUp, Search, Download, Loader2, Lock, AlertTriangle, ArrowUpRight,
   ArrowDownRight, Minus, RefreshCw, ArrowUp, ArrowDown, ArrowUpDown, Filter,
-  FilterX, ChevronDown, History, Maximize2, Minimize2, UserSearch, Users, Check,
+  FilterX, ChevronDown, History, Maximize2, Minimize2, UserSearch, Users, Check, Unlink,
 } from "lucide-react";
 import { toast } from "sonner";
 import * as XLSX from "xlsx";
@@ -33,11 +33,12 @@ import {
   abasDaPlanilha, compararComPares, competenciasFechadas, custoNoAno, custoPorArea,
   degrausDoFixo, faixaVazia, foraDaLinha,
   filtrarPessoas, filtrarPorFaixa, filtrosLigados, montarLinhas, ordenarLinhas,
-  pessoasSemTime, quemOFiltroEscondeu, semReajusteHaMaisTempo,
+  nomeParaSeparar, pessoasSemTime, quemOFiltroEscondeu, semReajusteHaMaisTempo,
   recortarAte, resumoDaPessoa, rotuloMes, totaisDoMes, ultimaCompetenciaFechada,
   FILTROS_VAZIOS,
   type ColunaFaixa, type ColunaOrdenavel, type Faixa, type FaixaDeCargo, type Filtros,
   type Ordem, type PainelRemuneracao, type Pares, type PessoaRemuneracao, type PessoaSemTime,
+  type EmendaSuspeita,
 } from "@/lib/remuneracao";
 import { normalize } from "@/lib/normalize";
 
@@ -449,6 +450,169 @@ function FilaSemTime({
   );
 }
 
+/* ─────────────────────────── Conferir históricos ───────────────────────────
+   Uma ficha que para de receber, fica 3+ meses sem nada e recomeça pode ser a
+   mesma pessoa que voltou — ou outra com o mesmo primeiro nome, que a carga do
+   Conta Azul colou. Em 14/09/2026 eram seis em oito. Só quem conhece as pessoas
+   decide; a tela mostra o que ajuda a decidir (época, área e valor dos dois
+   lados) e grava a decisão, que o banco passa a exigir antes de emendar. */
+
+function FilaEmendas({ emendas, onFechar, onMudou }: {
+  emendas: EmendaSuspeita[];
+  onFechar: () => void;
+  onMudou: () => void;
+}) {
+  const chave = (e: EmendaSuspeita) => `${e.pessoa_id}|${e.depois_de}`;
+  const [separando, setSeparando] = useState<Record<string, string>>({});
+  const [gravando, setGravando] = useState<string | null>(null);
+
+  const confirmar = async (e: EmendaSuspeita) => {
+    setGravando(chave(e));
+    const { error } = await supabase.rpc("remuneracao_confirmar_emenda", {
+      p_pessoa: e.pessoa_id, p_depois_de: e.depois_de,
+    });
+    setGravando(null);
+    if (error) return toast.error(error.message);
+    toast.success(`${e.nome}: histórico confirmado como uma pessoa só`);
+    onMudou();
+  };
+
+  const separar = async (e: EmendaSuspeita) => {
+    const nome = separando[chave(e)]?.trim();
+    if (!nome) return;
+    setGravando(chave(e));
+    const { error } = await supabase.rpc("remuneracao_separar_emenda", {
+      p_pessoa: e.pessoa_id, p_depois_de: e.depois_de, p_nome: nome,
+    });
+    setGravando(null);
+    if (error) return toast.error(error.message);
+    toast.success(`${rotuloMes(e.desde)}–${rotuloMes(e.depois_de)} foi para "${nome}"`);
+    onMudou();
+  };
+
+  return (
+    <Dialog open onOpenChange={(v) => { if (!v) onFechar(); }}>
+      <DialogContent className="flex max-h-[85vh] max-w-4xl flex-col">
+        <DialogHeader>
+          <DialogTitle>Históricos para conferir</DialogTitle>
+        </DialogHeader>
+
+        <p className="text-[12.5px] leading-relaxed text-muted-foreground">
+          Estas fichas ficam <strong className="font-medium text-foreground">3 meses ou mais sem
+          pagamento</strong> e depois recomeçam. Pode ser alguém que saiu e voltou — ou outra pessoa
+          com o mesmo primeiro nome, colada pela carga do Conta Azul. <strong className="font-medium
+          text-foreground">Separar</strong> leva o trecho de antes do buraco para uma ficha própria;
+          {" "}<strong className="font-medium text-foreground">mesma pessoa</strong> grava a decisão e
+          a ficha sai da lista.
+        </p>
+
+        <div className="min-h-0 flex-1 overflow-y-auto rounded-lg border border-border">
+          <Table>
+            <TableHeader className="sticky top-0 z-10 bg-background">
+              <TableRow>
+                <TableHead>Ficha</TableHead>
+                <TableHead>Antes do buraco</TableHead>
+                <TableHead className="text-center">Sem pagamento</TableHead>
+                <TableHead>Depois</TableHead>
+                <TableHead className="w-[250px] text-right">Decisão</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {emendas.map((e) => {
+                const k = chave(e);
+                const nomeNovo = separando[k];
+                const ocupado = gravando === k;
+                return (
+                  <TableRow key={k}>
+                    <TableCell className="py-2 align-top">
+                      <div className="font-medium">{e.nome}</div>
+                      <div className="text-[11px] text-muted-foreground">
+                        {e.codigo_rh ? (e.cargo ?? e.codigo_rh) : "sem ficha no RH"}
+                      </div>
+                    </TableCell>
+                    <TableCell className="py-2 align-top text-xs">
+                      <div>{rotuloMes(e.desde)} → {rotuloMes(e.depois_de)}</div>
+                      <div className="text-[11px] text-muted-foreground">
+                        {e.area_antes ?? "sem área"} · fixo {fmtBRL(e.fixo_antes)} · somou {fmtBRL(e.total_antes)}
+                      </div>
+                    </TableCell>
+                    <TableCell className="py-2 text-center align-top text-xs tabular-nums">
+                      {e.meses_sem} {e.meses_sem === 1 ? "mês" : "meses"}
+                    </TableCell>
+                    <TableCell className="py-2 align-top text-xs">
+                      <div>desde {rotuloMes(e.retoma_em)}</div>
+                      <div className="text-[11px] text-muted-foreground">
+                        {e.area_depois ?? "sem área"} · fixo {fmtBRL(e.fixo_depois)}
+                      </div>
+                    </TableCell>
+                    <TableCell className="py-2 align-top">
+                      {nomeNovo == null ? (
+                        <div className="flex justify-end gap-1.5">
+                          <Button size="sm" variant="outline" className="h-7 text-xs"
+                                  disabled={ocupado} onClick={() => void confirmar(e)}>
+                            {ocupado && <Loader2 className="mr-1.5 h-3 w-3 animate-spin" />}
+                            Mesma pessoa
+                          </Button>
+                          {/* O título do Omie volta para a ficha na carga do dia
+                              seguinte; separar ali seria um conserto que se desfaz. */}
+                          <Button size="sm" variant="outline" className="h-7 text-xs"
+                                  disabled={ocupado || e.tem_omie}
+                                  title={e.tem_omie
+                                    ? "O trecho tem título do Omie — a carga diária o devolveria. O conserto é no favorecido do ERP."
+                                    : "Levar o trecho de antes do buraco para uma ficha própria"}
+                                  onClick={() => setSeparando((s) => ({ ...s, [k]: nomeParaSeparar(e.nome, e.area_antes) }))}>
+                            Separar
+                          </Button>
+                        </div>
+                      ) : (
+                        <div className="flex flex-col items-end gap-1.5">
+                          <Input
+                            autoFocus value={nomeNovo} className="h-7 text-xs"
+                            onChange={(ev) => setSeparando((s) => ({ ...s, [k]: ev.target.value }))}
+                            onKeyDown={(ev) => { if (ev.key === "Enter") void separar(e); }}
+                          />
+                          <span className="text-[10.5px] text-muted-foreground">
+                            Nome de ficha que já existe recebe o trecho nela.
+                          </span>
+                          <div className="flex gap-1.5">
+                            <Button size="sm" variant="ghost" className="h-7 text-xs" disabled={ocupado}
+                                    onClick={() => setSeparando((s) => { const n = { ...s }; delete n[k]; return n; })}>
+                              Voltar
+                            </Button>
+                            <Button size="sm" className="h-7 text-xs" disabled={ocupado || !nomeNovo.trim()}
+                                    onClick={() => void separar(e)}>
+                              {ocupado && <Loader2 className="mr-1.5 h-3 w-3 animate-spin" />}
+                              Separar
+                            </Button>
+                          </div>
+                        </div>
+                      )}
+                    </TableCell>
+                  </TableRow>
+                );
+              })}
+              {!emendas.length && (
+                <TableRow>
+                  <TableCell colSpan={5} className="py-10 text-center text-sm text-muted-foreground">
+                    Nenhum histórico com buraco esperando decisão.
+                  </TableCell>
+                </TableRow>
+              )}
+            </TableBody>
+          </Table>
+        </div>
+
+        <DialogFooter className="flex-row items-center justify-between gap-3 sm:justify-between">
+          <p className="text-[11px] text-muted-foreground">
+            A decisão fica gravada, e o banco recusa emendar um histórico novo por nome sem ela.
+          </p>
+          <Button variant="outline" size="sm" onClick={onFechar}>Fechar</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 /**
  * De onde veio cada lançamento, pelo nome que a pessoa reconhece.
  *
@@ -770,6 +934,21 @@ export default function Remuneracao() {
     () => (vejoTudo ? pessoasSemTime(painel?.pessoas ?? [], setoresConhecidos) : []),
     [vejoTudo, painel, setoresConhecidos],
   );
+
+  /* ── Históricos com buraco ──
+     Também só para quem vê tudo: separar mexe na ficha de gente de outros
+     times, e as RPCs exigem `pode_ver_remuneracao()` do lado do servidor. */
+  const [emendas, setEmendas] = useState<EmendaSuspeita[]>([]);
+  const [conferindo, setConferindo] = useState(false);
+
+  const carregarEmendas = async () => {
+    const { data, error } = await supabase.rpc("remuneracao_emendas_suspeitas");
+    if (!error) setEmendas((data as unknown as EmendaSuspeita[] | null) ?? []);
+  };
+
+  useEffect(() => {
+    if (vejoTudo) void carregarEmendas();
+  }, [vejoTudo]);
 
   const cargos = useMemo(() => {
     const s = new Set<string>();
@@ -1133,6 +1312,16 @@ export default function Remuneracao() {
             >
               <UserSearch className="mr-1.5 h-3.5 w-3.5" />
               Sem time · {semTime.length}
+            </Button>
+          )}
+          {vejoTudo && emendas.length > 0 && (
+            <Button
+              variant="outline" size="sm"
+              onClick={() => setConferindo(true)}
+              title="Fichas com 3+ meses sem pagamento no meio — podem ser duas pessoas com o mesmo nome"
+            >
+              <Unlink className="mr-1.5 h-3.5 w-3.5" />
+              Conferir históricos · {emendas.length}
             </Button>
           )}
           {/* Recarregar do Omie é de quem responde pela folha inteira. A RPC
@@ -1737,6 +1926,16 @@ export default function Remuneracao() {
         />
       )}
 
+      {conferindo && (
+        <FilaEmendas
+          emendas={emendas}
+          onFechar={() => setConferindo(false)}
+          // Relê as duas coisas: a lista perde a linha decidida, e o painel
+          // precisa mostrar a ficha nova e a antiga já sem o trecho.
+          onMudou={() => { void carregarEmendas(); void carregar(); }}
+        />
+      )}
+
       {classificando && (
         <FilaSemTime
           pessoas={semTime}
@@ -1755,7 +1954,7 @@ export default function Remuneracao() {
    O pedido que originou o painel era sobre duas pessoas ("Sara e Karol"). Sem
    isto a comparação é abrir uma ficha, decorar e abrir a outra. */
 
-function Comparacao({ pessoas, meses, onClose }: {
+function Comparacao({ pessoas, meses: todosOsMeses, onClose }: {
   pessoas: PessoaRemuneracao[]; meses: string[]; onClose: () => void;
 }) {
   if (pessoas.length < 2) return null;
@@ -1763,7 +1962,14 @@ function Comparacao({ pessoas, meses, onClose }: {
   /* Uma cor por PESSOA, na ordem em que foram escolhidas — as mesmas três
      séries validadas. Aqui a identidade é a pessoa, não o bloco. */
   const cores = SERIES.map((s) => s.cor);
-  const referencia = ultimaCompetenciaFechada(meses);
+  const referencia = ultimaCompetenciaFechada(todosOsMeses);
+  /* A série começa no primeiro mês em que ALGUMA das escolhidas recebeu. O
+     painel vai até dez/23, e comparar duas pessoas de 2026 abria dois anos de
+     traços antes do primeiro número — a tabela rolava de lado para mostrar nada. */
+  const primeiro = todosOsMeses.findIndex((m) =>
+    pessoas.some((p) => (Number(p.meses?.find((x) => x.competencia === m)?.total) || 0) > 0),
+  );
+  const meses = primeiro > 0 ? todosOsMeses.slice(primeiro) : todosOsMeses;
   const dados = meses.map((m) => {
     const linha: Record<string, string | number> = { mes: rotuloMes(m) };
     for (const p of pessoas) {
@@ -1814,11 +2020,13 @@ function Comparacao({ pessoas, meses, onClose }: {
           <table className="w-full text-xs">
             <thead>
               <tr className="border-b border-border/60 text-[10px] uppercase tracking-wider text-muted-foreground">
-                <th className="py-1.5 text-left font-medium">Pessoa</th>
+                {/* Pessoa fica PRESA à esquerda: com trinta meses a tabela rola de
+                    lado, e sem o nome à vista uma linha de valores não diz de quem é. */}
+                <th className="sticky left-0 z-10 bg-background py-1.5 pr-3 text-left font-medium">Pessoa</th>
                 {meses.map((m) => (
-                  <th key={m} className="py-1.5 text-right font-medium">{rotuloMes(m)}</th>
+                  <th key={m} className="whitespace-nowrap px-2 py-1.5 text-right font-medium">{rotuloMes(m)}</th>
                 ))}
-                <th className="py-1.5 text-right font-medium">No período</th>
+                <th className="whitespace-nowrap py-1.5 pl-3 text-right font-medium">No período</th>
               </tr>
             </thead>
             <tbody>
@@ -1826,7 +2034,7 @@ function Comparacao({ pessoas, meses, onClose }: {
                 const r = resumoDaPessoa(p, referencia);
                 return (
                   <tr key={p.id} className="border-b border-border/30 last:border-0">
-                    <td className="py-1.5">
+                    <td className="sticky left-0 z-10 whitespace-nowrap bg-background py-1.5 pr-3 shadow-[1px_0_0_hsl(var(--border))]">
                       <span className="mr-1.5 inline-block h-2 w-2 rounded-[2px] align-middle"
                             style={{ background: cores[i] }} />
                       {p.nome}
@@ -1834,12 +2042,12 @@ function Comparacao({ pessoas, meses, onClose }: {
                     {meses.map((m) => {
                       const mes = p.meses?.find((x) => x.competencia === m);
                       return (
-                        <td key={m} className="num py-1.5 text-right">
+                        <td key={m} className="num whitespace-nowrap px-2 py-1.5 text-right">
                           {mes ? fmtBRL(mes.fixo) : <span className="text-muted-foreground">—</span>}
                         </td>
                       );
                     })}
-                    <td className="num py-1.5 text-right font-semibold">{fmtBRL(r.totalPeriodo)}</td>
+                    <td className="num whitespace-nowrap py-1.5 pl-3 text-right font-semibold">{fmtBRL(r.totalPeriodo)}</td>
                   </tr>
                 );
               })}

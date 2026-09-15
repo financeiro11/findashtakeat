@@ -181,16 +181,32 @@ describe("devolução do Flash", () => {
   });
 });
 
-describe("variável e liberalidade", () => {
+describe("variável e acerto do RH", () => {
   it("a linha da variável existe mesmo zerada, com o aviso", () => {
     const r = calcularRescisao(ficha(), { diasDeFeriasTirados: 0 })!;
     expect(r.linhas.some((l) => l.chave === "variavel")).toBe(true);
     expect(r.avisos.join(" ")).toMatch(/Variável/);
   });
 
-  it("a liberalidade da ficha entra somando", () => {
-    const r = calcularRescisao(ficha({ valor_liberalidade: 1500 }), completo)!;
-    expect(r.linhas.find((l) => l.chave === "liberalidade")?.valor).toBe(1500);
+  it("valor_liberalidade é o acerto que o RH já calculou — NÃO entra na soma", () => {
+    const sem = calcularRescisao(ficha(), completo)!;
+    const com = calcularRescisao(ficha({ valor_liberalidade: 1500 }), completo)!;
+    perto(com.total, sem.total);
+    expect(com.linhas.some((l) => l.chave === "liberalidade")).toBe(false);
+    expect(com.acertoDoRH).toBe(1500);
+    perto(com.diferencaDoRH!, 1500 - sem.total);
+    expect(com.avisos.join(" ")).toMatch(/RH lançou/);
+  });
+
+  it("bate no centavo com o acerto do RH quando os dois consideram as mesmas coisas", () => {
+    // Caso real de 03/08/2026, sem nome: involuntário, R$ 3.700, entrou em 14/04.
+    const r = calcularRescisao(
+      ficha({ inicio: "2026-04-14", datadesl: "2026-08-03", valor: 3700, valor_liberalidade: 4839.78 }),
+      completo,
+    )!;
+    perto(r.total, 4839.78);
+    perto(r.diferencaDoRH!, 0);
+    expect(r.avisos.join(" ")).not.toMatch(/RH lançou/);
   });
 });
 

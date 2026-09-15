@@ -43,6 +43,12 @@ export type FichaDoDesligado = {
   tipodesl?: unknown;
   /** Só distingue quem tem Flash de quem não tem; o valor da coluna às vezes já vem rateado. */
   flash?: unknown;
+  /**
+   * NÃO é um pagamento a mais: é o acerto que o RH já calculou para a saída.
+   * Conferido em 15/09/2026 contra onze desligados — bate no centavo com esta
+   * conta quando os dois lados consideram as mesmas coisas, e a diferença,
+   * quando há, é do tamanho de uma comissão do e-mail. Entra só na conferência.
+   */
   valor_liberalidade?: unknown;
   /** A ficha chega inteira, com as outras ~60 colunas do RH junto. */
   [outraColuna: string]: unknown;
@@ -96,7 +102,10 @@ export type Rescisao = {
   origemDaClassificacao: "rh" | "usuario" | null;
   multa: number;
   descontoFlash: number;
-  liberalidade: number;
+  /** O acerto que o RH lançou na ficha (`valor_liberalidade`). Não soma: confere. */
+  acertoDoRH: number | null;
+  /** `acertoDoRH − total`. Positivo: o RH chegou num valor maior que esta conta. */
+  diferencaDoRH: number | null;
   linhas: LinhaDaRescisao[];
   total: number;
   /** Impedem fechar o total. */
@@ -288,7 +297,6 @@ export function calcularRescisao(
   const temFlash = ficha.flash === null || ficha.flash === undefined || num(ficha.flash) > 0;
   const descontoFlash = temFlash ? FLASH_MENSAL * (diasNaoTrabalhados / diasDoMes) : 0;
 
-  const liberalidade = num(ficha.valor_liberalidade);
 
   const linhas: LinhaDaRescisao[] = [];
   if (inicio) {
@@ -337,11 +345,19 @@ export function calcularRescisao(
       desconto: true,
     });
   }
-  if (liberalidade > 0) {
-    linhas.push({ chave: "liberalidade", rotulo: "Liberalidade", valor: liberalidade });
-  }
 
   const total = linhas.reduce((s, l) => s + (l.desconto ? -l.valor : l.valor), 0);
+
+  /* A conferência com o que o RH já calculou. A primeira versão desta tela
+     SOMAVA esse valor como "liberalidade" — o acerto saía pago duas vezes. */
+  const acertoDoRH = num(ficha.valor_liberalidade) > 0 ? num(ficha.valor_liberalidade) : null;
+  const diferencaDoRH = acertoDoRH === null ? null : acertoDoRH - total;
+  if (diferencaDoRH !== null && !pendencias.length && Math.abs(diferencaDoRH) >= 0.005) {
+    avisos.push(
+      `O RH lançou ${fmt(acertoDoRH!)} de acerto na ficha e esta conta dá ${fmt(total)}. ` +
+        `A diferença (${fmt(Math.abs(diferencaDoRH))}) costuma ser comissão ou férias que só um dos lados considerou.`,
+    );
+  }
 
   return {
     valor,
@@ -360,7 +376,8 @@ export function calcularRescisao(
     origemDaClassificacao,
     multa,
     descontoFlash,
-    liberalidade,
+    acertoDoRH,
+    diferencaDoRH,
     linhas,
     total,
     pendencias,
@@ -372,7 +389,7 @@ export function calcularRescisao(
  * O acerto em texto plano, componente a componente, como manda o formato de
  * saída da rescisão — é o que se cola no e-mail de aprovação.
  */
-export function rescisaoEmTexto(nome: string, r: Rescisao): string {
+export function rescisaoEmTexto(nome: string, r: Rescisao, fontes: string[] = []): string {
   const linhas = r.linhas.map(
     (l) =>
       `${l.desconto ? "− " : "+ "}${l.rotulo}${l.detalhe ? ` (${l.detalhe})` : ""}: ${fmt(l.valor)}`,
@@ -386,9 +403,14 @@ export function rescisaoEmTexto(nome: string, r: Rescisao): string {
     "",
     ...linhas,
     `TOTAL: ${fmt(r.total)}`,
+    ...(r.acertoDoRH !== null
+      ? [`Acerto lançado pelo RH (conferência, não soma): ${fmt(r.acertoDoRH)} — diferença ${fmt(r.diferencaDoRH ?? 0)}`]
+      : []),
     ...(r.pendencias.length ? ["", "Pendências:", ...r.pendencias.map((p) => `- ${p}`)] : []),
     ...(r.avisos.length ? ["", "Avisos:", ...r.avisos.map((a) => `- ${a}`)] : []),
     "",
-    "Fontes: ficha do RH (Central do Financeiro) e e-mail de desligamento.",
+    "Fontes:",
+    "- ficha do RH (Central do Financeiro)",
+    ...(fontes.length ? fontes.map((f) => `- ${f}`) : ["- e-mail de desligamento (não localizado pelo Hub)"]),
   ].join("\n");
 }

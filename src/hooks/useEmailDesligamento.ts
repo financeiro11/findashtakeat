@@ -1,21 +1,19 @@
 /**
  * O e-mail de desligamento, buscado sozinho quando a ficha do desligado abre.
  *
- * O painel de rescisão precisa de três coisas que a ficha do RH não guarda —
- * dias de férias já tirados, variável do mês e o motivo, que decide a multa de
- * uma remuneração inteira. Todas estão no e-mail que o gestor mandou. Antes
- * disso, alguém abria o Gmail numa aba, procurava o e-mail e digitava na tela
- * na outra; agora o Hub vai ler.
+ * O painel de rescisão precisa de coisas que a ficha do RH não guarda — dias de
+ * férias já tirados, comissão a receber e o tipo de saída, que decide a multa
+ * de uma remuneração inteira. Todas estão no e-mail que o gestor mandou, e a
+ * `rescisao-email` vai ler: as conversas de desligamento em volta da data de
+ * saída, inteiras, porque a resposta corrige o formulário.
  *
- * CACHE EM NÍVEL DE MÓDULO. Cada busca é uma ida ao Gmail mais uma leitura de
- * IA, e a ficha do mesmo desligado se abre várias vezes numa conferência —
- * clicando de um nome para o outro e voltando. Guardar por colaborador na vida
- * da aba evita repetir a conta; `reler` força a ida de novo, para quando o
- * gestor corrige o e-mail depois de mandar.
+ * CACHE EM NÍVEL DE MÓDULO. Cada busca lê a caixa e passa por IA, e a ficha do
+ * mesmo desligado se abre várias vezes numa conferência. Guardar por
+ * colaborador na vida da aba evita repetir; `reler` força, para quando o gestor
+ * corrige o e-mail depois.
  *
- * O QUE VOLTA É SUGESTÃO. Nada disto grava no RH nem fecha o cálculo sozinho:
- * preenche os campos da tela, que continuam editáveis, e diz de qual e-mail
- * veio — sem essa linha, quem confere não tem como auditar o número.
+ * O QUE VOLTA É SUGESTÃO. Preenche campos que continuam editáveis e diz de
+ * quais mensagens veio — sem essa linha, quem confere não tem como auditar.
  */
 
 import { useCallback, useEffect, useState } from "react";
@@ -24,27 +22,37 @@ import { mensagemDaFuncao } from "@/lib/erroEdge";
 import type { Classificacao } from "@/lib/rescisao";
 
 export type EmailDeDesligamento = {
+  /** Id da CONVERSA (thread) — é o que se devolve para escolher. */
   id: string;
   assunto: string;
   data: string | null;
   remetente: string;
+  /** "Nome no e-mail: …", quando a escolha depende de alguém olhar. */
+  trecho?: string | null;
 };
 
 export type CamposDoEmail = {
+  nomeNoEmail: string | null;
   ultimoDia: string | null;
   remuneracao: number | null;
   variavel: number | null;
+  variavelTexto: string | null;
   diasDeFeriasTirados: number | null;
+  feriasTexto: string | null;
+  tipo: string | null;
   motivo: string | null;
 };
 
 export type RespostaDoEmail = {
   achou: boolean;
+  /** A mensagem mais nova entre as lidas. */
   email?: EmailDeDesligamento;
+  /** Todas as mensagens lidas, em ordem de chegada. */
+  fontes?: EmailDeDesligamento[];
   campos?: CamposDoEmail;
   classificacao?: Classificacao | null;
   avisos?: string[];
-  /** Por que não achou — some ou é ambíguo. */
+  /** Por que não achou — nenhum, ou só o primeiro nome bateu. */
   motivo?: string;
   ambiguos?: EmailDeDesligamento[];
 };
@@ -56,50 +64,47 @@ export type EstadoDoEmail = {
 };
 
 /* A vida da aba basta: a caixa não muda no meio de uma conferência, e um
-   refresh já é o botão de "esquece o que você leu". */
+   refresh já é o "esquece o que você leu". */
 const cache = new Map<string, RespostaDoEmail>();
-
-const chave = (id: string, emailId?: string) => (emailId ? `${id}:${emailId}` : id);
 
 export function useEmailDesligamento(
   colaboradorId: string,
   nome: string,
-  /** `false` deixa a busca só no botão — útil enquanto o Gmail não está ligado. */
+  /** A data de saída da ficha: é em volta dela que se procura. */
+  datadesl: string | null,
   automatico = true,
 ) {
   const [estado, setEstado] = useState<EstadoDoEmail>({
     carregando: false,
-    resposta: cache.get(chave(colaboradorId)) ?? null,
+    resposta: cache.get(colaboradorId) ?? null,
     erro: null,
   });
 
   const buscar = useCallback(
-    async (opts: { emailId?: string; reler?: boolean } = {}) => {
-      const k = chave(colaboradorId, opts.emailId);
-      if (!opts.reler && cache.has(k)) {
-        setEstado({ carregando: false, resposta: cache.get(k)!, erro: null });
+    async (opts: { threadId?: string; reler?: boolean } = {}) => {
+      if (!opts.reler && !opts.threadId && cache.has(colaboradorId)) {
+        setEstado({ carregando: false, resposta: cache.get(colaboradorId)!, erro: null });
         return;
       }
       setEstado((e) => ({ ...e, carregando: true, erro: null }));
       const { data, error } = await supabase.functions.invoke("rescisao-email", {
-        body: { nome, emailId: opts.emailId },
+        body: { nome, datadesl, threadId: opts.threadId },
       });
       if (error) {
         setEstado({ carregando: false, resposta: null, erro: await mensagemDaFuncao(error) });
         return;
       }
       const resposta = data as RespostaDoEmail;
-      cache.set(k, resposta);
-      // A escolha do homônimo passa a valer como a resposta do colaborador.
-      if (opts.emailId) cache.set(chave(colaboradorId), resposta);
+      // A conversa escolhida passa a ser a resposta deste colaborador.
+      cache.set(colaboradorId, resposta);
       setEstado({ carregando: false, resposta, erro: null });
     },
-    [colaboradorId, nome],
+    [colaboradorId, nome, datadesl],
   );
 
   useEffect(() => {
     if (!automatico || !nome) return;
-    if (cache.has(chave(colaboradorId))) return;
+    if (cache.has(colaboradorId)) return;
     void buscar();
   }, [automatico, buscar, colaboradorId, nome]);
 

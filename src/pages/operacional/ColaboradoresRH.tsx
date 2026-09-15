@@ -33,7 +33,7 @@ import {
 } from "@/lib/folha/chaves-pix";
 import { invocar } from "@/lib/erroEdge";
 import {
-  calcularRescisao, mesesDeCasa, parseISO, rescisaoEmTexto, type Classificacao,
+  calcularRescisao, classificacaoDoRH, mesesDeCasa, parseISO, rescisaoEmTexto, type Classificacao,
 } from "@/lib/rescisao";
 import { useEmailDesligamento } from "@/hooks/useEmailDesligamento";
 import {
@@ -2110,7 +2110,7 @@ function Ladrilho({ rotulo, valor, tom }: { rotulo: string; valor: string; tom?:
 
 /** Campo de número do acerto — vazio quer dizer "ainda não informado", não zero. */
 function CampoDoAcerto({
-  rotulo, ajuda, prefixo, valor, onChange, pendente, doEmail,
+  rotulo, ajuda, prefixo, valor, onChange, pendente, doEmail, nota,
 }: {
   rotulo: string;
   ajuda: string;
@@ -2118,14 +2118,16 @@ function CampoDoAcerto({
   valor: string;
   onChange: (v: string) => void;
   pendente?: boolean;
-  /** Valor que a leitura do e-mail trouxe, ainda sem ninguem corrigir. */
+  /** Valor que a leitura do e-mail trouxe, ainda sem ninguém corrigir. */
   doEmail?: boolean;
+  /** O que o e-mail escreveu sobre o campo, como está — "396 (comissão) + 210,00 (plantão)". */
+  nota?: string | null;
 }) {
   return (
-    <label className="flex-1">
+    <label className="min-w-0 flex-1">
       <span className="block text-[11px] font-medium text-muted-foreground">
         {rotulo}
-        {doEmail && <span className="ml-1 text-amber-700 dark:text-amber-400">· do e-mail</span>}
+        {doEmail && <MarcaDoEmail />}
       </span>
       <span className="relative mt-1 flex items-center">
         {prefixo && (
@@ -2144,27 +2146,36 @@ function CampoDoAcerto({
           )}
         />
       </span>
+      {nota && (
+        <span className="mt-1 block text-[11px] leading-snug text-muted-foreground">“{nota}”</span>
+      )}
     </label>
   );
 }
 
+const MarcaDoEmail = () => (
+  <span className="ml-1 text-[11px] font-normal text-amber-700 dark:text-amber-400">· do e-mail</span>
+);
+
 /**
  * O acerto de saída, conforme a regra de rescisão PJ.
  *
- * Três coisas que a conta precisa a ficha do RH não guarda — dias de férias já
- * tirados, variável do mês e, quando `tipodesl` vem vazio, se a saída foi
- * voluntária ou involuntária. As três estão no e-mail de desligamento, e é o
- * Hub que vai buscá-las: quando a ficha abre, a `rescisao-email` procura o
- * e-mail na caixa financeiro@ e preenche o que achou.
+ * Dias de férias tirados, comissão e — quando `tipodesl` vem vazio — o tipo de
+ * saída não estão na ficha do RH; estão no e-mail de desligamento, e é o Hub
+ * que vai buscá-los: quando a ficha abre, a `rescisao-email` lê as conversas de
+ * desligamento em volta da data de saída e preenche o que achou.
  *
- * O QUE VEM DO E-MAIL É SUGESTÃO, NÃO VEREDITO. Todo campo continua editável, e
- * a linha de origem diz de qual e-mail o número saiu — sem ela, quem confere
- * não tem como auditar. E o que nem o e-mail responde continua sem resposta:
- * enquanto faltar dado que muda o valor, o total não aparece. É o "parar e
- * perguntar" da regra, na tela.
+ * O QUE VEM DO E-MAIL É SUGESTÃO. Todo campo continua editável, cada um diz se
+ * veio de lá, e a linha de origem diz de quais mensagens. O que nem o e-mail
+ * responde continua sem resposta: faltando dado que muda o valor, o total não
+ * aparece.
  *
- * Nada disto grava no RH — a tela é espelho. O que sai daqui é o texto
- * discriminado do botão de copiar, que vai no e-mail de aprovação.
+ * O ACERTO DO RH NÃO SE SOMA. `valor_liberalidade` é a conta que o RH já fez da
+ * rescisão — bate no centavo com esta quando os dois consideram as mesmas
+ * coisas (conferido em 15/09/2026 em onze desligados). Somá-lo, como a primeira
+ * versão fazia, pagava o acerto duas vezes. Ele aparece embaixo, para conferir.
+ *
+ * Nada disto grava no RH — a tela é espelho.
  */
 function PainelRescisao({
   c, nome, onCopiar,
@@ -2179,8 +2190,11 @@ function PainelRescisao({
   const [variavel, setVariavel] = useState<string | null>(null);
   const [escolha, setEscolha] = useState<Classificacao | null>(null);
 
-  const { carregando, resposta, erro, buscar } = useEmailDesligamento(String(c.id), nome);
+  const datadesl = typeof c.datadesl === "string" ? c.datadesl : null;
+  const { carregando, resposta, erro, buscar } = useEmailDesligamento(String(c.id), nome, datadesl);
   const doEmail = resposta?.achou ? resposta.campos ?? null : null;
+  const fontes = resposta?.achou ? resposta.fontes ?? (resposta.email ? [resposta.email] : []) : [];
+  const ultimaFonte = fontes[fontes.length - 1];
 
   const numero = (s: string) => {
     if (!s.trim()) return null;
@@ -2210,7 +2224,17 @@ function PainelRescisao({
 
   const fechado = r.pendencias.length === 0;
   const faltaFerias = r.pendencias.some((p) => p.includes("férias"));
-  const vindoDoEmail = (v: unknown) => v !== null && v !== undefined;
+  const temValor = (v: unknown) => v !== null && v !== undefined;
+  const origemDoTipo = escolha
+    ? null
+    : classificacaoDoEmail
+      ? "do e-mail"
+      : classificacaoDoRH(c.tipodesl)
+        ? "do RH"
+        : null;
+  const descricaoDasFontes = fontes.map(
+    (f) => `e-mail "${f.assunto}" de ${f.remetente}${f.data ? `, ${fmtDate(f.data)}` : ""}`,
+  );
 
   return (
     <div className="space-y-2.5 rounded-xl border border-amber-500/40 bg-amber-500/5 p-3">
@@ -2219,7 +2243,7 @@ function PainelRescisao({
           Acerto da rescisão
         </p>
         <button
-          onClick={() => onCopiar(rescisaoEmTexto(nome, r), "cálculo da rescisão")}
+          onClick={() => onCopiar(rescisaoEmTexto(nome, r, descricaoDasFontes), "cálculo da rescisão")}
           className="inline-flex h-7 items-center gap-1.5 rounded-lg border bg-card px-2.5 text-[12px] transition-colors hover:bg-muted"
         >
           <Copy className="size-3" />
@@ -2232,7 +2256,7 @@ function PainelRescisao({
         {carregando ? (
           <span className="flex items-center gap-1.5 text-muted-foreground">
             <Loader2 className="size-3.5 animate-spin" />
-            Procurando o e-mail de desligamento na caixa financeiro@…
+            Lendo os e-mails de desligamento da caixa financeiro@…
           </span>
         ) : erro ? (
           <span className="flex items-start justify-between gap-2">
@@ -2241,18 +2265,20 @@ function PainelRescisao({
               tentar de novo
             </button>
           </span>
-        ) : resposta?.achou && resposta.email ? (
+        ) : resposta?.achou && ultimaFonte ? (
           <span className="flex items-start justify-between gap-2">
             <span className="min-w-0 text-muted-foreground">
               <Mail className="mr-1 inline size-3.5 -translate-y-px" />
-              <span className="font-medium text-foreground">{resposta.email.assunto}</span>
+              <span className="font-medium text-foreground">{ultimaFonte.assunto}</span>
               {" — "}
-              {resposta.email.remetente}
-              {resposta.email.data ? `, ${fmtDate(resposta.email.data)}` : ""}
+              {ultimaFonte.remetente}
+              {ultimaFonte.data ? `, ${fmtDate(ultimaFonte.data)}` : ""}
+              {fontes.length > 1 && ` · ${fontes.length} mensagens lidas, a mais nova manda`}
+              {doEmail?.nomeNoEmail && <span className="block">Nome no e-mail: {doEmail.nomeNoEmail}</span>}
             </span>
             <button
               onClick={() => void buscar({ reler: true })}
-              title="Ler o e-mail de novo"
+              title="Ler os e-mails de novo"
               className="flex-none text-muted-foreground hover:text-foreground"
             >
               <RefreshCw className="size-3.5" />
@@ -2264,7 +2290,7 @@ function PainelRescisao({
             {resposta.ambiguos.map((e) => (
               <button
                 key={e.id}
-                onClick={() => void buscar({ emailId: e.id })}
+                onClick={() => void buscar({ threadId: e.id })}
                 className="block w-full rounded-md border bg-card px-2 py-1 text-left transition-colors hover:bg-muted"
               >
                 <span className="font-medium">{e.assunto}</span>
@@ -2273,6 +2299,7 @@ function PainelRescisao({
                   {e.remetente}
                   {e.data ? `, ${fmtDate(e.data)}` : ""}
                 </span>
+                {e.trecho && <span className="block text-muted-foreground">{e.trecho}</span>}
               </button>
             ))}
           </div>
@@ -2297,7 +2324,8 @@ function PainelRescisao({
             valor={diasNaTela}
             onChange={setDiasFerias}
             pendente={faltaFerias}
-            doEmail={diasFerias === null && vindoDoEmail(doEmail?.diasDeFeriasTirados)}
+            doEmail={diasFerias === null && temValor(doEmail?.diasDeFeriasTirados)}
+            nota={diasFerias === null ? doEmail?.feriasTexto : null}
           />
           <CampoDoAcerto
             rotulo="Variável / comissão"
@@ -2305,17 +2333,15 @@ function PainelRescisao({
             prefixo="R$"
             valor={variavelNaTela}
             onChange={setVariavel}
-            doEmail={variavel === null && vindoDoEmail(doEmail?.variavel)}
+            doEmail={variavel === null && temValor(doEmail?.variavel)}
+            nota={variavel === null ? doEmail?.variavelTexto : null}
           />
         </div>
         <div>
           <span className="block text-[11px] font-medium text-muted-foreground">
             Tipo de desligamento
-            {r.origemDaClassificacao === "rh" && " (do RH)"}
-            {!escolha && classificacaoDoEmail && " (do e-mail)"}
-            {doEmail?.motivo && (
-              <span className="normal-case"> — “{doEmail.motivo}”</span>
-            )}
+            {origemDoTipo && ` (${origemDoTipo})`}
+            {doEmail?.motivo && <span> — “{doEmail.motivo}”</span>}
           </span>
           <div className="mt-1 flex gap-1.5">
             {(["voluntario", "involuntario"] as const).map((op) => (
@@ -2340,7 +2366,17 @@ function PainelRescisao({
       {/* A conta, componente a componente */}
       <div className="space-y-1 text-sm">
         <div className="flex justify-between">
-          <span className="text-muted-foreground">Remuneração mensal</span>
+          <span className="text-muted-foreground">
+            Último dia trabalhado
+            {doEmail?.ultimoDia && <MarcaDoEmail />}
+          </span>
+          <span className="tabular-nums">{fmtDate(r.ultimoDia)}</span>
+        </div>
+        <div className="flex justify-between">
+          <span className="text-muted-foreground">
+            Remuneração mensal
+            {temValor(doEmail?.remuneracao) && <MarcaDoEmail />}
+          </span>
           <span className="tabular-nums">{BRL(r.valor)}</span>
         </div>
         {r.linhas.map((l) => (
@@ -2369,6 +2405,23 @@ function PainelRescisao({
             <span className="text-[12px] font-medium text-destructive">falta informar acima</span>
           )}
         </div>
+        {r.acertoDoRH !== null && (
+          <div className="flex items-baseline justify-between gap-4 text-[12.5px]">
+            <span className="text-muted-foreground">Acerto lançado pelo RH (não soma)</span>
+            <span className="whitespace-nowrap tabular-nums">
+              {BRL(r.acertoDoRH)}
+              {fechado && r.diferencaDoRH !== null && (
+                Math.abs(r.diferencaDoRH) < 0.005 ? (
+                  <span className="ml-1.5 font-medium text-pos">confere</span>
+                ) : (
+                  <span className="ml-1.5 text-amber-700 dark:text-amber-400">
+                    ({r.diferencaDoRH > 0 ? "RH +" : "RH −"}{BRL(Math.abs(r.diferencaDoRH))})
+                  </span>
+                )
+              )}
+            </span>
+          </div>
+        )}
       </div>
 
       {r.pendencias.map((p) => (

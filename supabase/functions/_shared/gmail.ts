@@ -243,6 +243,25 @@ export async function mensagem(token: string, id: string): Promise<Mensagem> {
   };
 }
 
+/**
+ * A conversa inteira, na ordem de chegada.
+ *
+ * Existe porque uma mensagem sozinha mente por omissão: no desligamento, a
+ * resposta corrige a data, troca "tem comissão" por "não tem" e muda o tipo de
+ * saída. A busca devolve a mensagem que casou com a consulta — que pode ser o
+ * rascunho, e não a versão que vale.
+ *
+ * Só as mensagens que estão NESTA caixa: se o original foi para outra pessoa e
+ * a financeiro@ só entrou em cópia na resposta, o original aparece apenas como
+ * citação dentro dela.
+ */
+export async function conversa(token: string, threadId: string): Promise<Mensagem[]> {
+  const j = await api(token, `threads/${threadId}?format=minimal`);
+  const ids = ((j.messages ?? []) as { id: string }[]).map((m) => m.id);
+  // A API já devolve em ordem cronológica; não reordenar por `data`, que é só o dia.
+  return await Promise.all(ids.map((id) => mensagem(token, id)));
+}
+
 export async function baixarAnexo(token: string, msgId: string, anexoId: string): Promise<Uint8Array> {
   const j = await api(token, `messages/${msgId}/attachments/${anexoId}`);
   if (!j.data) throw new Error("anexo sem conteúdo");

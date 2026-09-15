@@ -1,45 +1,53 @@
 // Edge Function: rescisao-email
 //
-// Acha na caixa `financeiro@` o e-mail de desligamento de uma pessoa e devolve
-// os campos do acerto que a ficha do RH não guarda.
+// Acha na caixa `financeiro@` as conversas de desligamento de uma pessoa e
+// devolve os campos do acerto que a ficha do RH não guarda.
 //
 // POR QUE ISTO EXISTE: o painel de rescisão da ficha do desligado precisa de
-// três dados que só o gestor escreveu no e-mail — dias de férias já tirados,
-// variável do mês e o motivo, que é quem define a multa de uma remuneração
-// inteira. Até aqui alguém abria o Gmail, procurava o e-mail e digitava na mão
-// na tela. Digitar na mão é onde o número erra, e o erro é dinheiro que sai.
+// dados que só o gestor escreveu — dias de férias já tirados, comissão a
+// receber e o tipo de saída, que decide a multa de uma remuneração inteira.
 //
-// A DIVISÃO DE TRABALHO: esta função LÊ e EXTRAI, nada mais. Não calcula o
-// acerto (isso é `src/lib/rescisao.ts`, no navegador, com teste em cima), não
-// grava no RH e não escreve na caixa — o escopo do Gmail é `readonly`. O que
-// ela devolve entra na tela como sugestão editável, nunca como fato consumado.
+// COMO ACHA: não pelo nome no assunto, que quase nunca está lá ("Solicitação de
+// Desligamento"). Busca todo e-mail de desligamento na janela da data de saída,
+// lê cada conversa inteira e reconhece a pessoa pela linha "Nome do
+// colaborador" do corpo — primeiro nome e sobrenome, com uma letra de folga
+// para a grafia do gestor. Detalhes e testes em `_shared/rescisao-email.ts`.
 //
-// A CLASSIFICAÇÃO DO MOTIVO NÃO É DA IA. O modelo copia o motivo como está
-// escrito; quem decide se aquilo é voluntário ou involuntário é a tabela
-// determinística de `_shared/rescisao-email.ts`. Quando não dá para decidir,
-// volta nulo e a tela pergunta — que é o certo, porque a diferença entre os
-// dois é uma remuneração.
+// POR QUE A CONVERSA INTEIRA: a resposta corrige. A data passa de 31/08 para
+// 16/08, "tem comissão" vira "não tem", "involuntário" vira "é voluntário
+// então". A mensagem que a busca acha é, muitas vezes, o rascunho.
 //
-// Body: { nome: string, emailId?: string }
-//   `emailId` fecha a desambiguação: quando voltou mais de um e-mail possível,
-//   a tela devolve qual deles é.
+// A DIVISÃO DE TRABALHO: esta função LÊ e EXTRAI. Não calcula o acerto (isso é
+// `src/lib/rescisao.ts`, com teste em cima), não grava no RH e não escreve na
+// caixa — o escopo do Gmail é `readonly`. O que ela devolve entra na tela como
+// sugestão editável.
+//
+// A CLASSIFICAÇÃO NÃO É DA IA. O modelo copia o tipo e o motivo como estão;
+// quem decide é `classificarDesligamento`, determinística. Tipo e motivo
+// discordando voltam nulos, e a tela pergunta.
+//
+// Body: { nome: string, datadesl?: string, threadId?: string }
+//   `threadId` fecha a desambiguação: quando só o primeiro nome bateu, a tela
+//   devolve qual conversa é.
 
 import { requireUser } from "../_shared/auth.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.0";
 import { errorResponse, generateJSON, handleCors, jsonResponse, MODELO_LITE } from "../_shared/gemini.ts";
-import { listar, mensagem, segredosDoGmail, tokenDeAcesso } from "../_shared/gmail.ts";
+import { conversa, listar, segredosDoGmail, tokenDeAcesso, type Mensagem } from "../_shared/gmail.ts";
 import {
-  INSTRUCAO_EXTRACAO, SCHEMA_EXTRACAO, classificarMotivo, consultasDoDesligamento,
-  escolherEmail, normalizarExtracao, type EmailCandidato,
+  INSTRUCAO_EXTRACAO, JANELA_ANTES_DIAS, JANELA_DEPOIS_DIAS, SCHEMA_EXTRACAO,
+  classificarDesligamento, consultaDoDesligamento, nomesDeclarados, normalizarExtracao,
+  textoParaExtracao, triarConversas, type ConversaCandidata,
 } from "../_shared/rescisao-email.ts";
 
-/** Quantos e-mails cada consulta traz. O assunto é específico; não precisa mais. */
-const POR_CONSULTA = 20;
+/** Conversas lidas por busca. Numa janela de três meses a caixa tem uma dúzia. */
+const MAX_CONVERSAS = 25;
+/** Leituras em paralelo no Gmail — a cota é por usuário e por segundo. */
+const LOTE = 5;
 
-/** O corpo que vai à IA. Um e-mail de desligamento não passa disso. */
-const CORPO_MAX = 8_000;
+type Lida = ConversaCandidata & { mensagens: Mensagem[] };
 
-type Candidato = EmailCandidato & { remetente: string; corpo: string };
+const ddmm = (iso: string) => iso.slice(0, 10).split("-").reverse().join("/");
 
 Deno.serve(async (req) => {
   const pre = handleCors(req);
@@ -54,10 +62,11 @@ Deno.serve(async (req) => {
       return jsonResponse({ erro: "Seu perfil não tem acesso à remuneração dos colaboradores." }, 403);
     }
 
-    const { nome, emailId } = await req.json().catch(() => ({}));
-    if (!nome || typeof nome !== "string") {
-      return jsonResponse({ erro: "informe o nome do colaborador" }, 400);
-    }
+    const body = await req.json().catch(() => ({}));
+    const nome = typeof body?.nome === "string" ? body.nome.trim() : "";
+    const datadesl = typeof body?.datadesl === "string" ? body.datadesl.slice(0, 10) : null;
+    const threadId = typeof body?.threadId === "string" ? body.threadId : null;
+    if (!nome) return jsonResponse({ erro: "informe o nome do colaborador" }, 400);
 
     const supabase = createClient(
       Deno.env.get("SUPABASE_URL") ?? "",
@@ -69,51 +78,71 @@ Deno.serve(async (req) => {
     }
     const token = await tokenDeAcesso(segredos);
 
-    /* 1. Achar o e-mail. A segunda consulta só roda se a primeira não trouxe
-       nada: ela é mais aberta e custa uma leitura a mais por candidato. */
-    const vistos = new Map<string, Candidato>();
-    for (const q of consultasDoDesligamento(nome)) {
-      const { ids } = await listar(token, q, undefined, POR_CONSULTA);
-      for (const ref of ids) {
-        if (vistos.has(ref.id)) continue;
-        const m = await mensagem(token, ref.id);
-        vistos.set(ref.id, {
-          id: m.id, assunto: m.assunto, data: m.data,
-          remetente: m.remetente, corpo: m.corpo.slice(0, CORPO_MAX),
+    /* 1. As conversas da janela. Com `threadId`, só a que alguém escolheu. */
+    let ids: string[];
+    if (threadId) {
+      ids = [threadId];
+    } else {
+      const { ids: refs } = await listar(token, consultaDoDesligamento(datadesl), undefined, 100);
+      ids = [...new Set(refs.map((r) => r.threadId))].slice(0, MAX_CONVERSAS);
+    }
+
+    const lidas: Lida[] = [];
+    for (let i = 0; i < ids.length; i += LOTE) {
+      const lote = await Promise.all(ids.slice(i, i + LOTE).map(async (id): Promise<Lida> => {
+        const mensagens = await conversa(token, id);
+        const ultima = mensagens[mensagens.length - 1];
+        return {
+          threadId: id,
+          assunto: mensagens[0]?.assunto ?? "",
+          data: ultima?.data ?? null,
+          remetente: ultima?.remetente ?? "",
+          texto: mensagens.map((m) => m.corpo).join("\n"),
+          mensagens,
+        };
+      }));
+      lidas.push(...lote);
+    }
+
+    const janela = datadesl
+      ? ` entre ${JANELA_ANTES_DIAS} dias antes e ${JANELA_DEPOIS_DIAS} dias depois de ${ddmm(datadesl)}`
+      : "";
+
+    if (!lidas.length) {
+      return jsonResponse({
+        achou: false,
+        motivo: `Nenhum e-mail de desligamento na caixa financeiro@${janela}.`,
+      });
+    }
+
+    /* 2. Quais são desta pessoa. Só o primeiro nome volta para alguém escolher. */
+    const { certas, duvidosas } = threadId
+      ? { certas: lidas, duvidosas: [] as Lida[] }
+      : triarConversas(nome, datadesl, lidas);
+
+    if (!certas.length) {
+      if (duvidosas.length) {
+        return jsonResponse({
+          achou: false,
+          motivo: "Achei e-mail de desligamento que bate só no primeiro nome — confira se é esta pessoa.",
+          ambiguos: duvidosas.map((c) => ({
+            id: c.threadId,
+            assunto: c.assunto,
+            data: c.data,
+            remetente: c.remetente,
+            trecho: nomesDeclarados(c.texto)[0] ? `Nome no e-mail: ${nomesDeclarados(c.texto)[0]}` : null,
+          })),
         });
       }
-      if (vistos.size) break;
-    }
-
-    const candidatos = [...vistos.values()];
-    if (!candidatos.length) {
       return jsonResponse({
         achou: false,
-        motivo: `Nenhum e-mail com "Desligamento ${nome}" (nem com o typo "Delisgamento") na caixa financeiro@.`,
+        motivo: `${lidas.length} e-mail(s) de desligamento${janela}, nenhum com o nome de ${nome}.`,
       });
     }
 
-    /* 2. Qual deles é. Homônimo volta para alguém escolher. */
-    const triagem = escolherEmail(nome, candidatos);
-    const escolhido = emailId
-      ? candidatos.find((c) => c.id === emailId) ?? null
-      : triagem.escolhido;
-
-    if (!escolhido) {
-      const { ambiguos } = triagem;
-      const lista = ambiguos.length ? ambiguos : candidatos;
-      return jsonResponse({
-        achou: false,
-        ambiguos: lista.map((c) => ({ id: c.id, assunto: c.assunto, data: c.data, remetente: c.remetente })),
-        motivo: ambiguos.length
-          ? "Mais de um e-mail de desligamento com esse nome — escolha qual é."
-          : `Achei e-mails de desligamento, mas nenhum com o nome "${nome}" no assunto.`,
-      });
-    }
-
-    /* 3. Transcrever o corpo. `thinking: "low"` porque copiar campo de um
-       texto para um schema fechado é leitura, não deliberação — e o raciocínio
-       do modelo cheio é descartado depois de custar os segundos. */
+    /* 3. Transcrever. `thinking: "low"`: copiar campo para um schema fechado é
+       leitura, não deliberação — o raciocínio do modelo cheio seria descartado
+       depois de custar os segundos. */
     const bruto = await generateJSON({
       model: MODELO_LITE,
       thinking: "low",
@@ -123,34 +152,45 @@ Deno.serve(async (req) => {
         { role: "system", content: INSTRUCAO_EXTRACAO },
         {
           role: "user",
-          content: [
-            `Colaborador: ${nome}`,
-            `Assunto: ${escolhido.assunto}`,
-            `Data do e-mail: ${escolhido.data ?? "—"}`,
-            "",
-            escolhido.corpo,
-          ].join("\n"),
+          content: textoParaExtracao(nome, certas.map((c) => ({
+            assunto: c.assunto,
+            mensagens: c.mensagens.map((m) => ({ data: m.data, remetente: m.remetente, corpo: m.corpo })),
+          }))),
         },
       ],
     });
 
     const campos = normalizarExtracao(bruto);
+    const { classificacao, conflito } = classificarDesligamento(campos.tipo, campos.motivo);
+
+    /* Os avisos daqui são os que só quem leu o e-mail sabe dar. O "não
+       informado" genérico é da conta, no navegador — repetir aqui é ruído. */
     const avisos: string[] = [];
-    if (!campos.ultimoDia) avisos.push("O e-mail não traz o último dia trabalhado — a conta usou a data da ficha do RH.");
-    if (campos.diasDeFeriasTirados === null) avisos.push("O e-mail não fala de férias tiradas — confirme com o gestor.");
-    if (!campos.motivo) avisos.push("O e-mail não traz o motivo do desligamento — sem ele não dá para saber se cabe multa.");
+    if (!campos.ultimoDia) {
+      avisos.push("O e-mail não traz a data da rescisão — a conta usou a da ficha do RH.");
+    }
+    if (campos.diasDeFeriasTirados === null && campos.feriasTexto) {
+      avisos.push(`Sobre férias, o e-mail diz "${campos.feriasTexto}" — confirme com o gestor.`);
+    }
+    if (campos.variavel === null && campos.variavelTexto) {
+      avisos.push(`Sobre comissão, o e-mail diz "${campos.variavelTexto}", sem valor — confirme com o gestor.`);
+    }
+    if (conflito) {
+      avisos.push(
+        `O e-mail marca "${campos.tipo}", mas o motivo ("${campos.motivo}") aponta para o outro lado — classifique na mão.`,
+      );
+    }
+
+    const fontes = certas.flatMap((c) =>
+      c.mensagens.map((m) => ({ id: c.threadId, assunto: m.assunto, data: m.data, remetente: m.remetente })),
+    );
 
     return jsonResponse({
       achou: true,
-      email: {
-        id: escolhido.id,
-        assunto: escolhido.assunto,
-        data: escolhido.data,
-        remetente: escolhido.remetente,
-      },
+      email: fontes[fontes.length - 1],
+      fontes,
       campos,
-      // A classificação sai daqui determinística; `null` é "não deu para saber".
-      classificacao: classificarMotivo(campos.motivo),
+      classificacao,
       avisos,
     });
   } catch (e) {

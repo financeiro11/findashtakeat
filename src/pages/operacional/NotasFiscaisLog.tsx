@@ -34,7 +34,7 @@ import { comValorExato } from "@/components/ValorExato";
 import {
   RefreshCw, Loader2, CheckCircle2, XCircle, Clock, FlaskConical,
   PlayCircle, CalendarClock, Info, Power, FileText, ChevronRight, ChevronDown, ShieldAlert, Mail,
-  AlertTriangle, Building2,
+  AlertTriangle, Building2, Search, X,
 } from "lucide-react";
 import { linkPortalNacional, chaveEmBlocos } from "@/lib/notasFiscais";
 import { CorrigirCadastro } from "@/components/notas/CorrigirCadastro";
@@ -313,6 +313,20 @@ function agrupar(linhas: LinhaLog[]): Grupo[] {
   return grupos.sort((a, b) => b.ultimo.criado_em.localeCompare(a.ultimo.criado_em));
 }
 
+/* ---------------------------------- a busca ----------------------------------
+ *
+ * A lista sem busca traz os LIMITE passos mais recentes — e o diário é por passo:
+ * ~460 por dia em set/26, então 400 não cobrem nem um dia. Filtrar isso no
+ * navegador responderia "nada encontrado" para a nota de anteontem. A busca é
+ * outra consulta (`notas_fiscais_busca`), que olha o registro INTEIRO no banco e
+ * devolve todos os passos de cada cobrança que casou.
+ *
+ * LIMITE fica abaixo de 1000 de propósito: o PostgREST corta qualquer RPC em mil
+ * calado, e um teto nosso acima disso esconderia o corte em vez de acusá-lo.
+ */
+const LIMITE = 400;
+const COBRANCAS_NA_BUSCA = 60;
+
 /** Os três estados da emissão automática, do ponto de vista de quem decide. */
 const MODOS: Record<string, { rotulo: string; ajuda: string; tom: string }> = {
   off: {
@@ -400,6 +414,10 @@ export default function NotasFiscaisLog() {
   const [salvandoModo, setSalvandoModo] = useState(false);
   const [dias, setDias] = useState(7);
   const [filtro, setFiltro] = useState<"todas" | EstadoKey>("todas");
+  const [busca, setBusca] = useState("");
+  const [achados, setAchados] = useState<LinhaLog[] | null>(null);
+  const [buscando, setBuscando] = useState(false);
+  const [erroBusca, setErroBusca] = useState<string | null>(null);
   const [abertos, setAbertos] = useState<Set<string>>(new Set());
   const [rodadasAbertas, setRodadasAbertas] = useState(false);
 
@@ -407,7 +425,7 @@ export default function NotasFiscaisLog() {
     setCarregando(true);
     try {
       const [log, exec, conf] = await Promise.all([
-        sb.rpc("notas_fiscais_log", { p_dias: dias, p_limite: 400 }),
+        sb.rpc("notas_fiscais_log", { p_dias: dias, p_limite: LIMITE }),
         sb.from("nf_execucoes").select("*").order("iniciada_em", { ascending: false }).limit(30),
         sb.from("nf_config").select("emissao_automatica, teto_dia, teto_rodada, data_corte, cadastro_auto").eq("id", 1).maybeSingle(),
       ]);
@@ -532,7 +550,34 @@ export default function NotasFiscaisLog() {
   const semMotivo = travadas.filter((g) => g.ultimo.resultado === "em_processamento").length;
   const ultima = rodadas[0] ?? null;
   const gruposRodada = useMemo(() => agruparRodadas(rodadas), [rodadas]);
-  const visiveis = filtro === "todas" ? grupos : grupos.filter((g) => g.estado === filtro);
+  /* A busca roda no banco, com uma folga de digitação. Refaz também quando a
+     lista recarrega (depois de "Conferir no Omie" ou de corrigir um cadastro),
+     senão o resultado da busca ficaria com o estado de antes do conserto. */
+  const termo = busca.trim();
+  const emBusca = termo.length >= 2;
+  useEffect(() => {
+    if (!emBusca) { setAchados(null); setBuscando(false); setErroBusca(null); return; }
+    let vivo = true;
+    setBuscando(true);
+    const t = setTimeout(async () => {
+      const { data, error } = await sb.rpc("notas_fiscais_busca", { p_termo: termo, p_cobrancas: COBRANCAS_NA_BUSCA });
+      if (!vivo) return;
+      setBuscando(false);
+      setErroBusca(error ? error.message : null);
+      setAchados(error ? [] : ((data ?? []) as LinhaLog[]));
+    }, 350);
+    return () => { vivo = false; clearTimeout(t); };
+  }, [termo, emBusca, linhas]);
+
+  // Os chips contam o que a busca achou: "Emitida 1" depois de digitar o
+  // cliente é a resposta que se queria.
+  const gruposAchados = useMemo(() => agrupar(achados ?? []), [achados]);
+  const buscados = emBusca ? gruposAchados : grupos;
+  const visiveis = filtro === "todas" ? buscados : buscados.filter((g) => g.estado === filtro);
+  const cobrancasAchadas = useMemo(() => new Set((achados ?? []).map((l) => l.id_asaas)).size, [achados]);
+  const carregandoLista = emBusca ? buscando && achados === null : carregando;
+  // A lista sem busca veio no teto: o que está abaixo não é "não houve", é "não veio".
+  const cortado = !emBusca && linhas.length >= LIMITE;
 
   const alternar = (chave: string) =>
     setAbertos((s) => {
@@ -768,7 +813,7 @@ export default function NotasFiscaisLog() {
                 Corrigir cadastro e reemitir
               </button>
               <button
-                onClick={() => setFiltro("travada")}
+                onClick={() => { setBusca(""); setFiltro("travada"); }}
                 className="rounded border border-destructive/30 px-2 py-1 text-[11px] text-destructive hover:bg-destructive/10"
               >
                 Ver as {travadas.length}
@@ -791,8 +836,31 @@ export default function NotasFiscaisLog() {
           notas na rua. Contar linhas era o que fazia dois clientes virarem
           quatro emitidas, somando o passo da OS ao faturamento que a emitiu. */}
       <div className="flex flex-wrap items-center gap-1.5">
+        <div className="relative w-full sm:w-72">
+          {buscando
+            ? <Loader2 className="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 animate-spin text-muted-foreground" />
+            : <Search className="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />}
+          <input
+            value={busca}
+            onChange={(e) => setBusca(e.target.value)}
+            onKeyDown={(e) => { if (e.key === "Escape") setBusca(""); }}
+            placeholder="Cliente, CNPJ, nº da nota, OS, cobrança ou chave…"
+            title="Procura no registro inteiro, não só no período escolhido."
+            aria-label="Buscar nota"
+            className="h-7 w-full rounded border border-border bg-background pl-7 pr-7 text-[11px] text-foreground placeholder:text-muted-foreground focus:border-primary focus:outline-none"
+          />
+          {busca && (
+            <button
+              onClick={() => setBusca("")}
+              className="absolute right-1.5 top-1/2 -translate-y-1/2 rounded p-0.5 text-muted-foreground hover:bg-muted"
+              title="Limpar a busca"
+            >
+              <X className="h-3 w-3" />
+            </button>
+          )}
+        </div>
         {(["todas", "emitida", "no_forno", "travada", "falhou", "barrada", "sem_nota", "ensaio"] as const).map((f) => {
-          const n = f === "todas" ? grupos.length : grupos.filter((g) => g.estado === f).length;
+          const n = f === "todas" ? buscados.length : buscados.filter((g) => g.estado === f).length;
           // Os estados de canto só aparecem quando existem — barra curta dia
           // normal, completa no dia em que algo ficou pelo caminho.
           if (n === 0 && (f === "sem_nota" || f === "ensaio" || f === "barrada" || f === "travada")) return null;
@@ -823,9 +891,11 @@ export default function NotasFiscaisLog() {
             <button
               key={d}
               onClick={() => setDias(d)}
+              title={emBusca ? "A busca olha o registro inteiro; o período vale para a lista sem busca." : undefined}
               className={cn(
                 "rounded border px-2 py-1 text-[11px]",
                 dias === d ? "border-primary bg-primary/10 text-primary" : "border-border text-muted-foreground hover:bg-muted",
+                emBusca && "opacity-40",
               )}
             >
               {d === 1 ? "hoje" : `${d} dias`}
@@ -848,17 +918,43 @@ export default function NotasFiscaisLog() {
             </tr>
           </thead>
           <tbody>
-            {carregando && (
+            {carregandoLista && (
               <tr><td colSpan={6} className="p-8 text-center text-muted-foreground">
                 <Loader2 className="mx-auto h-5 w-5 animate-spin" />
               </td></tr>
             )}
-            {!carregando && visiveis.length === 0 && (
+            {!carregandoLista && visiveis.length === 0 && (
               <tr><td colSpan={6} className="p-8 text-center text-muted-foreground">
-                Nenhum registro neste recorte.
+                {!emBusca ? "Nenhum registro neste recorte."
+                  : erroBusca ? <span className="text-destructive">Não foi possível buscar: {erroBusca}</span>
+                  : (
+                    <>
+                      Nenhuma emissão com “{termo}” no registro
+                      {filtro !== "todas" && <> em “{ESTADO[filtro].rotulo}”</>}.
+                      {filtro !== "todas" && (
+                        <span className="mt-2 flex justify-center">
+                          <button onClick={() => setFiltro("todas")} className="rounded border border-border px-2 py-1 text-[11px] hover:bg-muted">
+                            Buscar em todos os estados
+                          </button>
+                        </span>
+                      )}
+                    </>
+                  )}
               </td></tr>
             )}
-            {!carregando && visiveis.map((g) => {
+            {!carregandoLista && emBusca && cobrancasAchadas >= COBRANCAS_NA_BUSCA && (
+              <tr><td colSpan={6} className="bg-amber-500/5 px-2 py-1.5 text-center text-[11px] text-amber-600 dark:text-amber-400">
+                Vieram as {COBRANCAS_NA_BUSCA} cobranças mais recentes que casam com “{termo}” — digite mais para estreitar.
+              </td></tr>
+            )}
+            {!carregandoLista && cortado && (
+              <tr><td colSpan={6} className="bg-muted/30 px-2 py-1.5 text-center text-[11px] text-muted-foreground">
+                A lista mostra só os {LIMITE} passos mais recentes, desde{" "}
+                <span className="num">{hora(linhas[linhas.length - 1].criado_em)}</span>. Para uma nota mais
+                antiga, use a busca — ela olha o registro inteiro.
+              </td></tr>
+            )}
+            {!carregandoLista && visiveis.map((g) => {
               const aberto = abertos.has(g.chave);
               const varias = g.cobrancas.length > 1;
               return (

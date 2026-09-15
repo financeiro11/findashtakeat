@@ -1,7 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { Link, useSearchParams } from "react-router-dom";
 import {
-  Upload, ChevronDown, ChevronRight, Search, Sparkles, Loader2, RefreshCw,
+  Upload, ChevronDown, ChevronRight, Search, Sparkles, Loader2, RefreshCw, ListTree,
 } from "lucide-react";
+import { lerAlvoDaUrl, limparAlvoDaUrl, linkPlanoContas } from "@/lib/linksPlanoContas";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { supabase } from "@/integrations/supabase/client";
@@ -695,6 +697,29 @@ export default function DRE() {
     return { celulaAnterior: valueAt(label, ant), travadoAnterior: travados.has(ant) };
   };
 
+  /* ----- Célula pedida no endereço -----------------------------------------
+   * `?rubrica=&mes=Aug-26&categoria=2.04.07` — é o que o Plano de contas manda
+   * quando alguém quer ver a categoria DENTRO da demonstração. Abre o mesmo
+   * painel do clique, já filtrado nas categorias, e tira o pedido do endereço:
+   * recarregar a página não pode reabrir o painel. Espera o blob carregar, senão
+   * o "NA TELA" do painel sairia vazio. */
+  const [params, setParams] = useSearchParams();
+  useEffect(() => {
+    const alvo = lerAlvoDaUrl(params);
+    if (!alvo || !columns.length) return;
+    setView("dre");
+    setTab("valores");
+    setAuditando({
+      tipo: "dre", rubrica: alvo.rubrica, mes: alvo.mes,
+      mesLabel: ptLabelFromKey(alvo.mes).replace("/", " "),
+      celula: valueAt(alvo.rubrica, alvo.mes), travado: travados.has(alvo.mes),
+      categorias: alvo.categorias,
+      ...parAnterior(alvo.rubrica, alvo.mes),
+    });
+    setParams(limparAlvoDaUrl(params), { replace: true });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [params, columns, travados]);
+
   /* ============================================================
    *  UI
    * ============================================================ */
@@ -737,6 +762,13 @@ export default function DRE() {
               DE-PARA
             </button>
           </div>
+          {/* A conferência por categoria: o que o Omie soma em cada rubrica × o que
+              a DRE mostra, com o porquê de cada diferença. */}
+          <Button asChild variant="outline" size="sm" className="h-8 gap-1.5 text-[12px]">
+            <Link to={linkPlanoContas({ visao: "conferencia", base: "competencia" })} title="Categorias do Omie × DRE, rubrica a rubrica — e o DE-PARA que ficou órfão">
+              <ListTree className="h-3.5 w-3.5" /> Conferir com o plano de contas
+            </Link>
+          </Button>
           <span className="inline-flex items-center gap-1.5 rounded-md bg-emerald-50 border border-emerald-200 px-2.5 h-8 text-[11.5px] font-medium text-emerald-700">
             <Sparkles className="h-3.5 w-3.5" />
             Tracker vOMIE ativo · sincronizado

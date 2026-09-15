@@ -4,7 +4,9 @@ import {
   ArrowRight, RefreshCw, ListChecks, Check,
 } from "lucide-react";
 import { toast } from "sonner";
+import { Link } from "react-router-dom";
 import { supabase } from "@/integrations/supabase/client";
+import { baseDoTipo, linkPlanoContas } from "@/lib/linksPlanoContas";
 import { cn } from "@/lib/utils";
 import { Sheet, SheetContent } from "@/components/ui/sheet";
 import { mesCurto } from "@/lib/demonstracoes-schema";
@@ -275,6 +277,18 @@ export function PainelFechamento({
                             >
                               Ver na célula <ArrowRight className="h-2.5 w-2.5" />
                             </button>
+                          )}
+                          {/* Categoria órfã não tem célula: o lugar de decidir se ela entra
+                              na demonstração é o Plano de contas, que mostra de que ela é
+                              feita e onde se escolhe a linha dela. */}
+                          {p.categoria && (
+                            <Link
+                              to={linkPlanoContas({ categoria: p.categoria, base: baseDoTipo(tipo) })}
+                              onClick={onFechar}
+                              className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10.5px] font-medium text-sky-800 transition hover:bg-sky-50"
+                            >
+                              Abrir no Plano de contas <ArrowRight className="h-2.5 w-2.5" />
+                            </Link>
                           )}
                           <button
                             onClick={() => enfileirar(p)}

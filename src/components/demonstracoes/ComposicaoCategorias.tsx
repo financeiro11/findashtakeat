@@ -1,5 +1,7 @@
-import { Filter } from "lucide-react";
+import { ArrowUpRight, Filter } from "lucide-react";
+import { Link } from "react-router-dom";
 import { cn } from "@/lib/utils";
+import { linkPlanoContas, type BaseDemonstracao } from "@/lib/linksPlanoContas";
 import { mesCurto } from "@/lib/demonstracoes-schema";
 import { ChipSituacao } from "@/components/demonstracoes/ChipSituacao";
 import {
@@ -30,7 +32,7 @@ const pctCurto = (p: number): string => {
 };
 
 function LinhaCategoria({
-  c, comp, marcada, onClicar, moeda, moedaSemCentavos,
+  c, comp, marcada, onClicar, moeda, moedaSemCentavos, base,
 }: {
   c: Categoria;
   comp: Composicao;
@@ -38,6 +40,7 @@ function LinhaCategoria({
   onClicar: (() => void) | null;
   moeda: (n: number) => string;
   moedaSemCentavos: (n: number) => string;
+  base?: BaseDemonstracao;
 }) {
   const celula = (v: number, tem: boolean) =>
     tem ? <span title={moeda(v)}>{moedaSemCentavos(v)}</span> : <span className="text-muted-foreground/50">—</span>;
@@ -66,6 +69,18 @@ function LinhaCategoria({
           <span className={cn("truncate text-[11px]", sumiu ? "text-muted-foreground" : "text-foreground")}>
             {c.descricao}
           </span>
+          {/* A categoria inteira — todos os meses, quem recebe, se mudou — mora no
+              Plano de contas. O clique na linha continua sendo o filtro da lista. */}
+          {c.codigos.length > 0 && (
+            <Link
+              to={linkPlanoContas({ categoria: c.codigos[0], base })}
+              onClick={(e) => e.stopPropagation()}
+              title="Abrir esta categoria no Plano de contas"
+              className="shrink-0 rounded p-0.5 text-muted-foreground transition hover:bg-muted hover:text-foreground"
+            >
+              <ArrowUpRight className="h-3 w-3" />
+            </Link>
+          )}
         </div>
         {/* A barra é a leitura de um relance: qual categoria é a linha. O código
             do Omie fica no hover — ele importa na hora de corrigir, não na de ler. */}
@@ -129,8 +144,10 @@ export function resumoDaComposicao(comp: Composicao, marcadas: Set<string>): str
  * fatias somarem 100% de um pedaço escolhido a dedo.
  */
 export function ComposicaoCategorias({
-  comp, marcadas, onMarcadas, moeda, moedaSemCentavos,
+  comp, marcadas, onMarcadas, moeda, moedaSemCentavos, base,
 }: {
+  /** competência (DRE) ou caixa (DFC) — o link abre o Plano de contas na mesma régua */
+  base?: BaseDemonstracao;
   comp: Composicao;
   /** As chaves de categoria marcadas no filtro da lista. */
   marcadas: Set<string>;
@@ -179,6 +196,7 @@ export function ComposicaoCategorias({
                 onClicar={c.chaves.length ? () => onMarcadas(alternarCategoriaNoFiltro(c, marcadas)) : null}
                 moeda={moeda}
                 moedaSemCentavos={moedaSemCentavos}
+                base={base}
               />
             ))}
           </tbody>

@@ -495,6 +495,9 @@ const PORTAO: ReadonlyArray<readonly [string, Exigencia]> = [
 
   // Números
   ["/demonstracoes", "demonstracoes"],
+  /* O plano de contas mostra os mesmos lançamentos do drill-down da DRE, só que
+     por categoria — e a RPC exige a mesma capacidade. */
+  ["/governanca/plano-de-contas", "demonstracoes"],
   ["/bp", "planejamento"],
   ["/analise/cenarios", "planejamento"],
   ["/analise/historico", "planejamento"],

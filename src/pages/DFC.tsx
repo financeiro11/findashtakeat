@@ -1,7 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { Link, useSearchParams } from "react-router-dom";
 import {
-  Upload, ChevronDown, ChevronRight, Search, Sparkles, Loader2, RefreshCw,
+  Upload, ChevronDown, ChevronRight, Search, Sparkles, Loader2, RefreshCw, ListTree,
 } from "lucide-react";
+import { lerAlvoDaUrl, limparAlvoDaUrl, linkPlanoContas } from "@/lib/linksPlanoContas";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { supabase } from "@/integrations/supabase/client";
@@ -626,6 +628,26 @@ export default function DFC() {
     return { celulaAnterior: valueAt(label, ant), travadoAnterior: travados.has(ant) };
   };
 
+  /* Célula pedida no endereço (`?rubrica=&mes=Aug-26&categoria=`) — o mesmo
+     contrato da DRE, montado e lido por lib/linksPlanoContas. Abre o painel já
+     filtrado e tira o pedido do endereço para o recarregar não reabrir. */
+  const [params, setParams] = useSearchParams();
+  useEffect(() => {
+    const alvo = lerAlvoDaUrl(params);
+    if (!alvo || !columns.length) return;
+    setView("dfc");
+    setTab("valores");
+    setAuditando({
+      tipo: "dfc", rubrica: alvo.rubrica, mes: alvo.mes,
+      mesLabel: ptLabelFromKey(alvo.mes).replace("/", " "),
+      celula: valueAt(alvo.rubrica, alvo.mes), travado: travados.has(alvo.mes),
+      categorias: alvo.categorias,
+      ...parAnterior(alvo.rubrica, alvo.mes),
+    });
+    setParams(limparAlvoDaUrl(params), { replace: true });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [params, columns, travados]);
+
   /* Derivados: o valor GRAVADO manda (é o que a diretoria assinou) e a soma só
      entra quando não há gravado. O apelido resolve o nome que o tracker usa —
      as três grafias à mão que havia aqui ("Entradas", "Saídas", "Saidas") viraram
@@ -786,6 +808,11 @@ export default function DFC() {
               DE-PARA
             </button>
           </div>
+          <Button asChild variant="outline" size="sm" className="h-8 gap-1.5 text-[12px]">
+            <Link to={linkPlanoContas({ visao: "conferencia", base: "caixa" })} title="Categorias do Omie × DFC, rubrica a rubrica — e o DE-PARA que ficou órfão">
+              <ListTree className="h-3.5 w-3.5" /> Conferir com o plano de contas
+            </Link>
+          </Button>
           <span className="inline-flex items-center gap-1.5 rounded-md bg-emerald-50 border border-emerald-200 px-2.5 h-8 text-[11.5px] font-medium text-emerald-700">
             <Sparkles className="h-3.5 w-3.5" />
             Tracker vOMIE ativo · sincronizado

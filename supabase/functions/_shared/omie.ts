@@ -492,6 +492,73 @@ export interface OmieCategoria {
   nao_exibir?: string;
 }
 
+/* ============================================================
+ *  Cadastro de categorias (geral/categorias)
+ *
+ *  Não existe ExcluirCategoria: o Omie só desativa (`conta_inativa`). As três
+ *  escritas devolvem `categoria_cadastro_response` { codigo, codigo_status,
+ *  descricao_status }. Todo texto vai em NFC — o Omie recusa acento decomposto
+ *  com "hash inválido" (ver omie-api-limites-e-redundancia).
+ * ============================================================ */
+
+type RespostaCategoria = { codigo: string; status: string; mensagem: string; bruto: unknown };
+
+function lerRespostaCategoria(r: any, acao: string): RespostaCategoria {
+  const codigo = String(r?.codigo ?? "").trim();
+  if (!codigo) {
+    throw new Error(`O Omie não confirmou ${acao}: ${String(r?.descricao_status ?? JSON.stringify(r ?? null)).slice(0, 240)}`);
+  }
+  return { codigo, status: String(r?.codigo_status ?? ""), mensagem: String(r?.descricao_status ?? ""), bruto: r };
+}
+
+/** Cria uma categoria dentro de um grupo. Quem escolhe o código é o Omie. */
+export async function incluirCategoria(opts: { superior: string; descricao: string }): Promise<RespostaCategoria> {
+  let r: any;
+  try {
+    r = await omieCall<any>("geral/categorias", "IncluirCategoria", {
+      categoria_superior: opts.superior,
+      descricao: opts.descricao.normalize("NFC"),
+    });
+  } catch (e) {
+    throw new Error(`O Omie recusou a criação: ${mensagemDoOmie(e)}`);
+  }
+  return lerRespostaCategoria(r, "a criação");
+}
+
+/**
+ * Renomeia. Os opcionais que a categoria já tem (observação, tipo, código da DRE
+ * do Omie) vão repetidos, para a alteração não os apagar por omissão.
+ *
+ * SEM `conta_inativa`, de propósito: a documentação aceita o campo, mas medido em
+ * 15/09/2026 o Omie responde "Categoria alterada com sucesso!" e NÃO desativa
+ * (duas tentativas, relidas cinco minutos depois). Desativar é só no Omie.
+ * A leitura logo depois de renomear devolve o nome antigo por um ou dois minutos.
+ */
+export async function alterarCategoria(opts: {
+  codigo: string;
+  descricao: string;
+  natureza?: string | null;
+  tipoCategoria?: string | null;
+  codigoDre?: string | null;
+}): Promise<RespostaCategoria> {
+  const param: Record<string, unknown> = { codigo: opts.codigo, descricao: opts.descricao.normalize("NFC") };
+  if (opts.natureza) param.natureza = String(opts.natureza).normalize("NFC");
+  if (opts.tipoCategoria) param.tipo_categoria = opts.tipoCategoria;
+  if (opts.codigoDre) param.codigo_dre = opts.codigoDre;
+  let r: any;
+  try {
+    r = await omieCall<any>("geral/categorias", "AlterarCategoria", param);
+  } catch (e) {
+    throw new Error(`O Omie recusou a alteração: ${mensagemDoOmie(e)}`);
+  }
+  return lerRespostaCategoria(r, "a alteração");
+}
+
+/** Cadastro de uma categoria como o Omie o tem agora. */
+export async function consultarCategoria(codigo: string): Promise<any> {
+  return await omieCall<any>("geral/categorias", "ConsultarCategoria", { codigo });
+}
+
 /** Lista TODAS as categorias (plano de contas) do Omie, paginando. */
 export async function listarCategorias(): Promise<OmieCategoria[]> {
   const out: OmieCategoria[] = [];
@@ -628,6 +695,13 @@ export async function listarMovimentos(
       const r = await omieCall<any>("financas/mf", "ListarMovimentos", {
         nPagina,
         nRegPorPagina,
+        /* A distribuição por departamento vem junto (array `departamentos` em cada
+           movimento) — é o que abre Governança › Plano de contas por departamento.
+           Medido em 15/09/2026: com e sem o parâmetro o Omie devolveu o mesmo
+           tamanho de página e o mesmo tempo (~1,1 s), então a varredura não fica
+           mais cara. `omie-orcamento-sync` tem cópia própria desta chamada e
+           precisa do mesmo parâmetro, senão regrava o cache sem departamentos. */
+        cExibirDepartamentos: "S",
         ...filtros,
       });
       for (const m of (r?.movimentos ?? [])) out.push(m);

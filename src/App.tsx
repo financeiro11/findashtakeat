@@ -64,6 +64,7 @@ import PainelCAC from "./pages/governanca/PainelCAC";
 import Rescisoes from "./pages/governanca/Rescisoes";
 import NotasERP from "./pages/governanca/NotasERP";
 import Vigilancia from "./pages/governanca/Vigilancia";
+import PlanoContas from "./pages/governanca/PlanoContas";
 import PainelAutomacoes from "./pages/PainelAutomacoes";
 import MonitoramentoLayout from "./pages/monitoramento/MonitoramentoLayout";
 import Thetys from "./pages/monitoramento/Thetys";
@@ -284,6 +285,7 @@ function Rotas() {
                   inteiro ("está tudo no ERP?"), não de um achado. */}
               <Route path="/governanca/notas-erp" element={<NotasERP />} />
               <Route path="/governanca/vigilancia" element={<Vigilancia />} />
+              <Route path="/governanca/plano-de-contas" element={<PlanoContas />} />
               {/* A aba Extratos existe só no celular; no computador cada fonte tem a sua
                   página própria, e a do cartão é a mais parecida com ela. */}
               <Route path="/extratos" element={<Navigate to="/governanca/cartao" replace />} />

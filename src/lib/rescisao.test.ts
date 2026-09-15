@@ -14,7 +14,7 @@ import {
   classificacaoDoRH,
   mesesParaFerias,
   parseISO,
-  rescisaoEmTexto,
+  rescisaoParaRH,
   type EntradasDaRescisao,
   type FichaDoDesligado,
 } from "./rescisao";
@@ -262,14 +262,71 @@ describe("o que o e-mail sobrepõe", () => {
   });
 });
 
-describe("texto para auditoria", () => {
-  it("discrimina componente a componente e lista a fonte", () => {
-    const r = calcularRescisao(ficha(), completo)!;
-    const t = rescisaoEmTexto("Maria Silva", r);
-    expect(t).toContain("Rescisão — Maria Silva");
-    expect(t).toContain("18/07/2026");
-    expect(t).toContain("Multa de rescisão");
-    expect(t).toContain("TOTAL:");
-    expect(t).toContain("Fontes:");
+describe("texto para o chat do RH", () => {
+  const ricardo = () =>
+    calcularRescisao(
+      ficha({ inicio: "2026-08-03", datadesl: "2026-09-10", valor: 3700, tipodesl: "Voluntário" }),
+      { diasDeFeriasTirados: 0, variavel: 1000 },
+    )!;
+
+  it("sai no formato que o financeiro já mandava, coluna por coluna", () => {
+    // O acerto de 09/2026 que o RH lançou (R$ 2.208,33), com o nome trocado.
+    expect(rescisaoParaRH("Maria Silva ", ricardo())).toBe(
+      [
+        "RESCISÃO — MARIA SILVA",
+        "",
+        "Período trabalhado: 03/08/2026 a 10/09/2026 (39 dias)",
+        "Remuneração de referência: R$ 3.700,00",
+        "Tipo de desligamento: Voluntário",
+        "",
+        "Férias proporcionais (1 mês)" + ".".repeat(14) + " R$   308,33",
+        "Proporcional do mês de saída (10/30)" + ".".repeat(6) + " R$ 1.233,33",
+        "Variável / Comissão" + ".".repeat(23) + " R$ 1.000,00",
+        "(-) Desconto Flash (20 dias)" + ".".repeat(13) + " (R$   333,33)",
+        " ".repeat(42) + "-".repeat(12),
+        "TOTAL A RECEBER" + ".".repeat(27) + " R$ 2.208,33",
+      ].join("\n"),
+    );
+  });
+
+  it("os números caem na mesma coluna, com desconto ou sem", () => {
+    const linhas = rescisaoParaRH("Maria Silva", ricardo())
+      .split("\n")
+      .filter((l) => l.includes("R$ ") && l.includes("..."));
+    const fimDoNumero = linhas.map((l) => l.replace(/\)$/, "").length);
+    expect(new Set(fimDoNumero).size).toBe(1);
+  });
+
+  it("o total do texto é a soma das linhas escritas nele, no centavo", () => {
+    const r = calcularRescisao(ficha({ datadesl: "2026-07-18" }), { diasDeFeriasTirados: 5, variavel: 800 })!;
+    const soma = r.linhas.reduce((s, l) => s + (l.desconto ? -l.valor : l.valor), 0);
+    expect(Math.round(soma * 100)).toBe(Math.round(r.total * 100));
+  });
+
+  it("multa só no involuntário; férias tiradas só quando há", () => {
+    const inv = rescisaoParaRH("X", calcularRescisao(ficha(), { diasDeFeriasTirados: 5, variavel: 0 })!);
+    expect(inv).toContain("Multa de rescisão (1 remuneração)");
+    expect(inv).toContain("(-) Férias já tiradas (5 dias)");
+    expect(inv).toContain("Tipo de desligamento: Involuntário");
+    const vol = rescisaoParaRH("X", ricardo());
+    expect(vol).not.toContain("Multa");
+    expect(vol).not.toContain("Férias já tiradas");
+  });
+
+  it("a variável aparece mesmo zerada; o Flash some quando não há o que devolver", () => {
+    const t = rescisaoParaRH("X", calcularRescisao(ficha({ datadesl: "2026-07-31" }), completo)!);
+    expect(t).toContain("Variável / Comissão");
+    expect(t).not.toContain("Flash");
+  });
+
+  it("com pendência, o total sai 'a definir' e o tipo 'a classificar'", () => {
+    const t = rescisaoParaRH("X", calcularRescisao(ficha({ tipodesl: "" }), completo)!);
+    expect(t).toContain("Tipo de desligamento: a classificar");
+    expect(t).toMatch(/TOTAL A RECEBER\.+ a definir$/);
+  });
+
+  it("não leva avisos, fontes nem a conferência com o RH — é texto para lançar", () => {
+    const t = rescisaoParaRH("X", calcularRescisao(ficha({ valor_liberalidade: 9999 }), completo)!);
+    expect(t).not.toMatch(/Fontes|Aviso|RH lançou|Pendência/);
   });
 });

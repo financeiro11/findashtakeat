@@ -85,6 +85,8 @@ export type Rescisao = {
   valor: number;
   /** Último dia trabalhado que a conta usou (o do e-mail, se houver). ISO. */
   ultimoDia: string;
+  /** Início da ficha, ISO — só para o período trabalhado no texto do RH. */
+  inicio: string | null;
   /** Meses completos de casa, para "6 meses" e para o aviso de antecipação. */
   mesesDeCasa: number;
   /** Meses que contam para férias pela regra do mês cheio. */
@@ -127,6 +129,8 @@ const num = (v: unknown) => {
 
 const fmt = (n: number) =>
   n.toLocaleString("pt-BR", { style: "currency", currency: "BRL", minimumFractionDigits: 2 });
+
+const centavos = (n: number) => Math.round(n * 100) / 100;
 
 const isoDe = (d: Date) =>
   `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
@@ -346,7 +350,11 @@ export function calcularRescisao(
     });
   }
 
-  const total = linhas.reduce((s, l) => s + (l.desconto ? -l.valor : l.valor), 0);
+  /* Cada componente fecha no centavo ANTES de somar. É assim que o RH lança,
+     linha a linha: somar os valores cheios e arredondar só o total deixava o
+     texto com um total um centavo diferente da soma das linhas escritas nele. */
+  for (const l of linhas) l.valor = centavos(l.valor);
+  const total = centavos(linhas.reduce((s, l) => s + (l.desconto ? -l.valor : l.valor), 0));
 
   /* A conferência com o que o RH já calculou. A primeira versão desta tela
      SOMAVA esse valor como "liberalidade" — o acerto saía pago duas vezes. */
@@ -362,6 +370,7 @@ export function calcularRescisao(
   return {
     valor,
     ultimoDia: isoDe(desl),
+    inicio: inicio ? isoDe(inicio) : null,
     mesesDeCasa: casa,
     mesesDeFerias: meses,
     diasDoMes,
@@ -385,32 +394,89 @@ export function calcularRescisao(
   };
 }
 
+/** "1.233,33" — o número sem o "R$", para alinhar em coluna. */
+const numeroBR = (n: number) =>
+  n.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
+const dataBR = (iso: string) => iso.slice(0, 10).split("-").reverse().join("/");
+
+/** Dias corridos, contando o primeiro e o último: 03/08 a 10/09 são 39. */
+const diasCorridos = (de: string, ate: string) => {
+  const utc = (iso: string) => {
+    const [y, m, d] = iso.slice(0, 10).split("-").map(Number);
+    return Date.UTC(y, m - 1, d);
+  };
+  return Math.round((utc(ate) - utc(de)) / 86_400_000) + 1;
+};
+
+const plural = (n: number, um: string, varios: string) => `${n} ${n === 1 ? um : varios}`;
+
+/** Como cada componente se chama no texto que vai para o RH. */
+const ROTULO_PARA_RH: Record<string, (r: Rescisao) => string> = {
+  ferias: (r) => `Férias proporcionais (${plural(r.mesesDeFerias, "mês", "meses")})`,
+  "ferias-tiradas": (r) => `(-) Férias já tiradas (${plural(r.diasDeFeriasTirados, "dia", "dias")})`,
+  proporcional: (r) => `Proporcional do mês de saída (${r.diasTrabalhadosNoMes}/${r.diasDoMes})`,
+  variavel: () => "Variável / Comissão",
+  multa: () => "Multa de rescisão (1 remuneração)",
+  flash: (r) => `(-) Desconto Flash (${plural(r.diasNaoTrabalhadosNoMes, "dia", "dias")})`,
+};
+
+/** Largura mínima da coluna de rótulos — a do texto que o financeiro já mandava à mão. */
+const COLUNA_MINIMA = 42;
+
 /**
- * O acerto em texto plano, componente a componente, como manda o formato de
- * saída da rescisão — é o que se cola no e-mail de aprovação.
+ * O acerto no formato que vai para o chat do RH, que lança no sistema de lá.
+ *
+ * É o formato que o financeiro já mandava à mão (o do Ricardo, em 09/2026),
+ * para que quem recebe não precise reaprender a ler: cabeçalho com período,
+ * remuneração e tipo; uma linha por componente com pontilhado até o valor;
+ * desconto entre parênteses; total sob o traço. Multa só no involuntário,
+ * férias tiradas e Flash só quando há — a variável sempre, mesmo zerada.
+ *
+ * O alinhamento é de fonte monoespaçada, e a tela mostra o texto numa: o que
+ * se vê é o que se cola.
+ *
+ * Avisos, fontes e a conferência com o RH ficam FORA de propósito — o texto é
+ * para lançar; a auditoria mora no painel. Com pendência, o total sai "a
+ * definir", e a tela nem deixa copiar.
  */
-export function rescisaoEmTexto(nome: string, r: Rescisao, fontes: string[] = []): string {
-  const linhas = r.linhas.map(
-    (l) =>
-      `${l.desconto ? "− " : "+ "}${l.rotulo}${l.detalhe ? ` (${l.detalhe})` : ""}: ${fmt(l.valor)}`,
-  );
-  const data = r.ultimoDia.split("-").reverse().join("/");
+export function rescisaoParaRH(nome: string, r: Rescisao): string {
+  type Linha = { rotulo: string; valor: number; desconto: boolean };
+  const linhas: Linha[] = r.linhas.map((l) => ({
+    rotulo: ROTULO_PARA_RH[l.chave]?.(r) ?? l.rotulo,
+    valor: l.valor,
+    desconto: Boolean(l.desconto),
+  }));
+  const total: Linha = { rotulo: "TOTAL A RECEBER", valor: Math.abs(r.total), desconto: r.total < 0 };
+  const todas = [...linhas, total];
+
+  const largura = Math.max(COLUNA_MINIMA, ...todas.map((l) => l.rotulo.length + 3));
+  const casas = Math.max(...todas.map((l) => numeroBR(l.valor).length));
+
+  /* "rótulo.... R$ 1.233,33" e "rótulo... (R$   333,33)": o desconto leva um
+     ponto a menos para caber o parêntese, e os números caem na mesma coluna. */
+  const escrever = (l: Linha) => {
+    const n = numeroBR(l.valor).padStart(casas);
+    return l.desconto
+      ? `${l.rotulo.padEnd(largura - 1, ".")} (R$ ${n})`
+      : `${l.rotulo.padEnd(largura, ".")} R$ ${n}`;
+  };
+
+  const periodo = r.inicio
+    ? `${dataBR(r.inicio)} a ${dataBR(r.ultimoDia)} (${plural(diasCorridos(r.inicio, r.ultimoDia), "dia", "dias")})`
+    : `até ${dataBR(r.ultimoDia)}`;
+  const tipo =
+    r.classificacao === "involuntario" ? "Involuntário" : r.classificacao === "voluntario" ? "Voluntário" : "a classificar";
+
   return [
-    `Rescisão — ${nome}`,
-    `Último dia trabalhado: ${data}`,
-    `Remuneração mensal: ${fmt(r.valor)}`,
-    r.classificacao ? `Tipo: ${r.classificacao === "involuntario" ? "involuntário" : "voluntário"}` : "Tipo: não classificado",
+    `RESCISÃO — ${nome.trim().toLocaleUpperCase("pt-BR")}`,
     "",
-    ...linhas,
-    `TOTAL: ${fmt(r.total)}`,
-    ...(r.acertoDoRH !== null
-      ? [`Acerto lançado pelo RH (conferência, não soma): ${fmt(r.acertoDoRH)} — diferença ${fmt(r.diferencaDoRH ?? 0)}`]
-      : []),
-    ...(r.pendencias.length ? ["", "Pendências:", ...r.pendencias.map((p) => `- ${p}`)] : []),
-    ...(r.avisos.length ? ["", "Avisos:", ...r.avisos.map((a) => `- ${a}`)] : []),
+    `Período trabalhado: ${periodo}`,
+    `Remuneração de referência: R$ ${numeroBR(r.valor)}`,
+    `Tipo de desligamento: ${tipo}`,
     "",
-    "Fontes:",
-    "- ficha do RH (Central do Financeiro)",
-    ...(fontes.length ? fontes.map((f) => `- ${f}`) : ["- e-mail de desligamento (não localizado pelo Hub)"]),
+    ...linhas.map(escrever),
+    `${" ".repeat(largura)}${"-".repeat(casas + 4)}`,
+    r.pendencias.length ? `${total.rotulo.padEnd(largura, ".")} a definir` : escrever(total),
   ].join("\n");
 }

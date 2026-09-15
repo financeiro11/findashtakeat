@@ -33,7 +33,7 @@ import {
 } from "@/lib/folha/chaves-pix";
 import { invocar } from "@/lib/erroEdge";
 import {
-  calcularRescisao, classificacaoDoRH, mesesDeCasa, parseISO, rescisaoEmTexto, type Classificacao,
+  calcularRescisao, classificacaoDoRH, mesesDeCasa, parseISO, rescisaoParaRH, type Classificacao,
 } from "@/lib/rescisao";
 import { useEmailDesligamento } from "@/hooks/useEmailDesligamento";
 import {
@@ -2153,27 +2153,40 @@ function CampoDoAcerto({
   );
 }
 
+/** O que a conta usa e não se digita aqui: vem da ficha ou do e-mail. */
+function FatoDoAcerto({ rotulo, valor, doEmail }: { rotulo: string; valor: string; doEmail?: boolean }) {
+  return (
+    <div className="min-w-0 flex-1">
+      <span className="block text-[11px] font-medium text-muted-foreground">
+        {rotulo}
+        {doEmail && <MarcaDoEmail />}
+      </span>
+      <span className="mt-0.5 block text-[13px] tabular-nums">{valor}</span>
+    </div>
+  );
+}
+
 const MarcaDoEmail = () => (
   <span className="ml-1 text-[11px] font-normal text-amber-700 dark:text-amber-400">· do e-mail</span>
 );
 
 /**
- * O acerto de saída, conforme a regra de rescisão PJ.
+ * O acerto de saída, conforme a regra de rescisão PJ — e o texto que vai para
+ * o chat do RH, que lança no sistema de lá.
+ *
+ * O PAINEL EXISTE PARA PRODUZIR UM TEXTO. O financeiro calculava à mão e colava
+ * no chat; aqui a conta sai pronta, no mesmo formato, numa prévia monoespaçada
+ * que é exatamente o que o botão copia. Enquanto faltar dado que muda o valor,
+ * o botão fica desligado: texto incompleto no chat vira lançamento errado lá.
  *
  * Dias de férias tirados, comissão e — quando `tipodesl` vem vazio — o tipo de
- * saída não estão na ficha do RH; estão no e-mail de desligamento, e é o Hub
- * que vai buscá-los: quando a ficha abre, a `rescisao-email` lê as conversas de
- * desligamento em volta da data de saída e preenche o que achou.
+ * saída não estão na ficha; estão no e-mail de desligamento, que a
+ * `rescisao-email` lê quando a ficha abre. Todo campo lido continua editável e
+ * diz de onde veio.
  *
- * O QUE VEM DO E-MAIL É SUGESTÃO. Todo campo continua editável, cada um diz se
- * veio de lá, e a linha de origem diz de quais mensagens. O que nem o e-mail
- * responde continua sem resposta: faltando dado que muda o valor, o total não
- * aparece.
- *
- * O ACERTO DO RH NÃO SE SOMA. `valor_liberalidade` é a conta que o RH já fez da
- * rescisão — bate no centavo com esta quando os dois consideram as mesmas
- * coisas (conferido em 15/09/2026 em onze desligados). Somá-lo, como a primeira
- * versão fazia, pagava o acerto duas vezes. Ele aparece embaixo, para conferir.
+ * O ACERTO DO RH NÃO SE SOMA. `valor_liberalidade` é a conta que o RH já fez;
+ * aparece embaixo, para conferir antes de mandar. No Ricardo (09/2026) foi essa
+ * linha que mostrou os R$ 1.000 de comissão que não tinham chegado ao e-mail.
  *
  * Nada disto grava no RH — a tela é espelho.
  */
@@ -2220,6 +2233,8 @@ function PainelRescisao({
     [c, diasNaTela, variavelNaTela, escolha, classificacaoDoEmail, doEmail],
   );
 
+  const texto = useMemo(() => (r ? rescisaoParaRH(nome, r) : ""), [nome, r]);
+
   if (!r) return null;
 
   const fechado = r.pendencias.length === 0;
@@ -2232,24 +2247,12 @@ function PainelRescisao({
       : classificacaoDoRH(c.tipodesl)
         ? "do RH"
         : null;
-  const descricaoDasFontes = fontes.map(
-    (f) => `e-mail "${f.assunto}" de ${f.remetente}${f.data ? `, ${fmtDate(f.data)}` : ""}`,
-  );
 
   return (
     <div className="space-y-2.5 rounded-xl border border-amber-500/40 bg-amber-500/5 p-3">
-      <div className="flex items-center justify-between gap-2">
-        <p className="text-xs font-semibold uppercase tracking-wider text-amber-700 dark:text-amber-400">
-          Acerto da rescisão
-        </p>
-        <button
-          onClick={() => onCopiar(rescisaoEmTexto(nome, r, descricaoDasFontes), "cálculo da rescisão")}
-          className="inline-flex h-7 items-center gap-1.5 rounded-lg border bg-card px-2.5 text-[12px] transition-colors hover:bg-muted"
-        >
-          <Copy className="size-3" />
-          Copiar cálculo
-        </button>
-      </div>
+      <p className="text-xs font-semibold uppercase tracking-wider text-amber-700 dark:text-amber-400">
+        Acerto da rescisão
+      </p>
 
       {/* De onde vieram os números — a linha que permite auditar */}
       <div className="rounded-lg border border-border/70 bg-background/60 px-2.5 py-2 text-[11.5px]">
@@ -2315,8 +2318,12 @@ function PainelRescisao({
         )}
       </div>
 
-      {/* O que o e-mail respondeu, aberto para correção */}
-      <div className="space-y-2 rounded-lg border border-border/70 bg-background/60 p-2.5">
+      {/* O que a conta usa — lido da ficha e do e-mail, aberto para correção */}
+      <div className="space-y-2.5 rounded-lg border border-border/70 bg-background/60 p-2.5">
+        <div className="flex gap-2">
+          <FatoDoAcerto rotulo="Último dia trabalhado" valor={fmtDate(r.ultimoDia)} doEmail={!!doEmail?.ultimoDia} />
+          <FatoDoAcerto rotulo="Remuneração" valor={BRL(r.valor)} doEmail={temValor(doEmail?.remuneracao)} />
+        </div>
         <div className="flex gap-2">
           <CampoDoAcerto
             rotulo="Dias de férias já tirados"
@@ -2363,81 +2370,63 @@ function PainelRescisao({
         </div>
       </div>
 
-      {/* A conta, componente a componente */}
-      <div className="space-y-1 text-sm">
-        <div className="flex justify-between">
-          <span className="text-muted-foreground">
-            Último dia trabalhado
-            {doEmail?.ultimoDia && <MarcaDoEmail />}
-          </span>
-          <span className="tabular-nums">{fmtDate(r.ultimoDia)}</span>
-        </div>
-        <div className="flex justify-between">
-          <span className="text-muted-foreground">
-            Remuneração mensal
-            {temValor(doEmail?.remuneracao) && <MarcaDoEmail />}
-          </span>
-          <span className="tabular-nums">{BRL(r.valor)}</span>
-        </div>
-        {r.linhas.map((l) => (
-          <div key={l.chave} className="flex justify-between gap-4">
-            <span className="text-muted-foreground">
-              {l.desconto ? "− " : ""}
-              {l.rotulo}
-              {l.detalhe && <span className="text-[11.5px] opacity-70"> ({l.detalhe})</span>}
-            </span>
-            <span
-              className={cn(
-                "whitespace-nowrap font-medium tabular-nums",
-                l.desconto && "text-destructive",
-              )}
-            >
-              {l.desconto ? "− " : ""}
-              {BRL(l.valor)}
-            </span>
-          </div>
-        ))}
-        <div className="mt-1.5 flex items-baseline justify-between border-t pt-1.5">
-          <span className="font-semibold">Total a receber</span>
-          {fechado ? (
-            <span className="text-base font-bold tabular-nums">{BRL(r.total)}</span>
-          ) : (
-            <span className="text-[12px] font-medium text-destructive">falta informar acima</span>
-          )}
-        </div>
-        {r.acertoDoRH !== null && (
-          <div className="flex items-baseline justify-between gap-4 text-[12.5px]">
-            <span className="text-muted-foreground">Acerto lançado pelo RH (não soma)</span>
-            <span className="whitespace-nowrap tabular-nums">
-              {BRL(r.acertoDoRH)}
-              {fechado && r.diferencaDoRH !== null && (
-                Math.abs(r.diferencaDoRH) < 0.005 ? (
-                  <span className="ml-1.5 font-medium text-pos">confere</span>
-                ) : (
-                  <span className="ml-1.5 text-amber-700 dark:text-amber-400">
-                    ({r.diferencaDoRH > 0 ? "RH +" : "RH −"}{BRL(Math.abs(r.diferencaDoRH))})
-                  </span>
-                )
-              )}
-            </span>
-          </div>
-        )}
-      </div>
-
       {r.pendencias.map((p) => (
         <p key={p} className="flex gap-1.5 text-[11.5px] text-destructive">
           <AlertTriangle className="mt-[1px] size-3.5 flex-none" />
           {p}
         </p>
       ))}
+
+      {/* O texto que vai para o chat do RH — o que se vê é o que se cola */}
+      <div className="overflow-hidden rounded-lg border bg-background">
+        <div className="flex items-center justify-between gap-2 border-b bg-muted/40 px-2.5 py-1.5">
+          <span className="text-[11.5px] font-medium">
+            {fechado ? "Texto para o RH" : "Texto para o RH — falta informar acima"}
+          </span>
+          <Button
+            size="sm"
+            className="h-7 gap-1.5 px-2.5 text-[12px]"
+            disabled={!fechado}
+            title={fechado ? "Copia exatamente o texto abaixo" : "Resolva o que está em vermelho para copiar"}
+            onClick={() => onCopiar(texto, "cálculo da rescisão")}
+          >
+            <Copy className="size-3" />
+            Copiar para o RH
+          </Button>
+        </div>
+        <pre
+          className={cn(
+            "overflow-x-auto px-3 py-2.5 font-mono text-[11.5px] leading-[1.6] text-foreground",
+            !fechado && "opacity-50",
+          )}
+        >
+          {texto}
+        </pre>
+      </div>
+
+      {r.acertoDoRH !== null && (
+        <div className="flex items-baseline justify-between gap-3 rounded-lg border border-border/70 bg-background/60 px-2.5 py-1.5 text-[12px]">
+          <span className="text-muted-foreground">Acerto que o RH lançou na ficha</span>
+          <span className="whitespace-nowrap tabular-nums">
+            {BRL(r.acertoDoRH)}
+            {fechado && r.diferencaDoRH !== null && (
+              Math.abs(r.diferencaDoRH) < 0.005 ? (
+                <span className="ml-1.5 font-medium text-pos">confere</span>
+              ) : (
+                <span className="ml-1.5 text-amber-700 dark:text-amber-400">
+                  ({r.diferencaDoRH > 0 ? "RH +" : "RH −"}{BRL(Math.abs(r.diferencaDoRH))})
+                </span>
+              )
+            )}
+          </span>
+        </div>
+      )}
+
       {[...(resposta?.avisos ?? []), ...r.avisos].map((a) => (
         <p key={a} className="text-[11px] text-muted-foreground">
           {a}
         </p>
       ))}
-      <p className="text-[11px] text-muted-foreground">
-        Estimativa a partir da ficha do RH e do e-mail de desligamento — confira antes de pagar.
-      </p>
     </div>
   );
 }

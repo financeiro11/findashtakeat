@@ -67,6 +67,9 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.0";
 import { asaasGet, asaasPost, asaasUpload } from "../_shared/asaas.ts";
 import { espelhoPdf, lerXmlNfse } from "../_shared/danfse.ts";
 import { segredosDoGmail, tokenDeAcesso } from "../_shared/gmail.ts";
+import {
+  FIM_DA_LISTA, conferirLeituraCompleta, janelaDeAlteracao, osAindaNoForno, statusPendenteDoEspelho, tamanhoDePagina,
+} from "../_shared/listar-os.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -241,76 +244,79 @@ const frasePerdiVez = (t: { quem: string | null; ate: string | null }) =>
 
 /* ------------------------------- espelhar -------------------------------- */
 
-/* Todas as OS, paginadas.
+/* As OS, paginadas — de UMA etapa (`etapa`) ou do acervo inteiro (sem ela).
  *
- * CUIDADO — ESTA FUNÇÃO CUSTA O ACERVO INTEIRO, NÃO O TRABALHO DO DIA. São 500 OS
- * por página, e ela roda de 2 a 4 vezes por rodada de emissão (`limparCorredor` e
- * `ocupantesDaEtapa`) mais uma no espelho. Com 1.287 OS são 3 páginas e ninguém
- * sente; o custo dobra sozinho a cada poucos meses porque cresce com o total de
- * OS já criadas. O teto de 40 páginas (20.000 OS) TRUNCA EM SILÊNCIO — e a trava
- * de raio, que é o que impede faturar OS de terceiro, ficaria cega.
+ * O CORREDOR LÊ SÓ A ETAPA DELE. `filtrar_por_etapa` funciona — sondado em
+ * 28/08/2026 e de novo em 15/09/2026 (etapa 20 → 16 OS, 50 → 550, 60 → 3.448, a
+ * primeira de cada resposta na etapa pedida). `limparCorredor` e
+ * `ocupantesDaEtapa` custam os OCUPANTES, uma chamada; o acervo inteiro ficou só
+ * para o espelho e o diagnóstico `etapas`.
  *
- * O comentário que estava aqui dizia que `ListarOS` só aceita paginação. ESTÁ
- * ERRADO — sondado em 28/08/2026 (`action: "sondar_listaros"`): `filtrar_por_etapa`
- * funciona (etapa 50 → 523 OS, etapa 60 → 763, etapa 20 → vazia, e a primeira OS
- * de cada resposta traz a etapa pedida), e `filtrar_por_data_de` também
- * (1.287 → 81). `etapa` solto é recusado como tag inválida, que é o controle.
+ * 15/09/2026 — O DIA EM QUE A GUARDA ANTIGA PAROU A EMISSÃO. Ela contava páginas
+ * ("teto de 40 páginas de 500 = 20.000 OS"), mas o Omie devolve 100 OS por
+ * página, peça-se 500 ou não: o teto real eram 4.000 OS. O acervo tinha 4.000
+ * exatas; a rodada das 10:00 criou 16, a leitura seguinte veio com 41 páginas e
+ * TODA rodada depois disso abortou — emissão e espelho. E como todo chamador
+ * varria o acervo, eram 41 chamadas por leitura, duas a três vezes por rodada.
  *
- * Quem só precisa saber quem está NUMA etapa deve passar `etapa` e pagar
- * O(ocupantes) em vez de O(acervo). */
-/** Páginas de 500 que a varredura aceita ler. Acima disso ela estoura — ver abaixo. */
-const TETO_PAGINAS_OS = 40;
+ * A GUARDA AGORA É POR REGISTRO (`conferirLeituraCompleta`): "li as N OS que o
+ * próprio Omie diz que existem?". Página é unidade do Omie e ele a muda sem
+ * avisar. Lista cortada continua ESTOURANDO em vez de voltar — a trava de raio
+ * decidindo sobre meio corredor fatura OS de terceiro, e nota não se apaga.
+ *
+ * `prazoMs` é o relógio do espelho: o acervo cresce ~150 OS por dia de emissão
+ * em massa, e a varredura completa um dia não cabe nos 150s. Passado o prazo ela
+ * estoura com a frase dizendo isso — e o forno já foi fechado antes, pelo
+ * `StatusOS` (ver `fecharFornoPeloStatus`), então a nota que nasceu não depende
+ * desta varredura para aparecer. */
+let seqListarOS = 0;
 
-async function listarOS(opts: { etapa?: string } = {}): Promise<any[]> {
-  const out: any[] = [];
+async function listarOS(
+  opts: { etapa?: string; prazoMs?: number; alteradas?: { de: string; ate: string } } = {},
+): Promise<any[]> {
+  const inicio = Date.now();
+  const porCodigo = new Map<number, any>();
+  const tamanho = tamanhoDePagina(seqListarOS++);
   let pagina = 1, totalPaginas = 1;
+  let totalDeRegistros: number | null = null;
   do {
     const r = await omieCall<any>("servicos/os", "ListarOS", {
-      pagina, registros_por_pagina: 500, apenas_importado_api: "N",
+      pagina, registros_por_pagina: tamanho, apenas_importado_api: "N",
       ...(opts.etapa ? { filtrar_por_etapa: opts.etapa } : {}),
+      ...(opts.alteradas ? { filtrar_por_data_de: opts.alteradas.de, filtrar_por_data_ate: opts.alteradas.ate } : {}),
     }).catch((e) => {
-      /* Etapa vazia não é erro: o Omie responde "Não existem registros para a
-         página [1]!" quando o filtro não casa com nada, e para o corredor de
-         isolamento vazio essa é a resposta BOA — a mais comum, aliás. */
-      if (opts.etapa && /não existem registros|nao existem registros/i.test(mensagemDoOmie(e))) return null;
+      /* "Não existem registros para a página [N]!" é o Omie dizendo que acabou —
+         na etapa vazia (a resposta BOA do corredor, a mais comum) ou numa página
+         além do fim. Quem decide se a lista veio inteira é a contagem, abaixo. */
+      if (FIM_DA_LISTA.test(mensagemDoOmie(e)) && (opts.etapa || opts.alteradas || pagina > 1)) return null;
       throw e;
     });
     if (!r) break;
-    out.push(...(r?.osCadastro ?? []));
+    const lista: any[] = r?.osCadastro ?? [];
+    // Por código: página que desliza no meio da leitura repete OS, e contar a
+    // repetida duas vezes esconderia a que ficou de fora.
+    for (const os of lista) {
+      const k = Number(os?.Cabecalho?.nCodOS ?? 0);
+      if (k) porCodigo.set(k, os);
+    }
     totalPaginas = Number(r?.total_de_paginas ?? 1);
+    if (totalDeRegistros === null) totalDeRegistros = Number(r?.total_de_registros ?? Number.NaN);
+    if (!lista.length) break;
 
-    /* TRUNCAMENTO NÃO PASSA CALADO — e este é o modo de falha mais perigoso
-     * desta função inteira.
-     *
-     * Sem esta guarda, passar de `TETO_PAGINAS_OS` devolvia uma lista CORTADA com
-     * cara de lista completa. Quem chama não tem como perceber: `limparCorredor`
-     * e `ocupantesDaEtapa` leriam um corredor que não viram inteiro, concluiriam
-     * "não há mais ninguém aqui" e o `FaturarLoteOS` seguinte fatura a ETAPA —
-     * emitindo nota de OS que não é nossa. Nota não se apaga: cancela-se, com
-     * prazo e justificativa, e a de terceiro nem isso.
-     *
-     * Por isso ela ESTOURA em vez de devolver o que deu. A esteira parar é
-     * recuperável e barulhento; a esteira decidir sobre meia lista, não. E vale
-     * para todos os chamadores, inclusive o espelho: espelhar 20.000 de 25.000 OS
-     * marcaria `faturada` errado e a fila voltaria a servir cobrança que já virou
-     * nota — que foi exatamente o acidente de 27/08.
-     *
-     * Hoje são 3 páginas (1.287 OS), então esta condição não tem como disparar.
-     * Ela é seguro para o dia em que o acervo dobrar algumas vezes — e a saída
-     * desse dia está escrita na mensagem, não numa investigação. */
-    if (totalPaginas > TETO_PAGINAS_OS) {
+    if (opts.prazoMs && pagina < totalPaginas && Date.now() - inicio > opts.prazoMs) {
       throw new Error(
-        `ListarOS devolveu ${totalPaginas} páginas de 500 (~${totalPaginas * 500} OS) e o teto desta função é ` +
-        `${TETO_PAGINAS_OS}. Nada foi lido pela metade de propósito: uma lista cortada faria a trava de raio ` +
-        `decidir sobre um corredor que ela não viu inteiro, e faturar a etapa emitiria nota de OS de terceiro. ` +
-        `A saída é parar de varrer o acervo: passe \`{ etapa }\` em \`listarOS\` nos chamadores do corredor ` +
-        `(\`ocupantesDaEtapa\` e \`limparCorredor\`) — o Omie aceita \`filtrar_por_etapa\`, conferido em 28/08/2026 ` +
-        `com \`action: "sondar_listaros"\`, e aí a varredura passa a custar os ocupantes em vez do acervo.`,
+        `A varredura do acervo passou de ${Math.round(opts.prazoMs / 1000)}s na página ${pagina} de ` +
+        `${totalPaginas} (${totalDeRegistros} OS). O acervo cresceu além do que o espelho completo lê dentro ` +
+        `do relógio da Edge Function — nada foi gravado pela metade. O forno continua fechando pelo StatusOS, ` +
+        `e o espelho de rotina lê só a janela de alteração; o acervo completo (\`completo: true\`) é que não cabe mais.`,
       );
     }
     pagina++;
-  } while (pagina <= totalPaginas && pagina <= TETO_PAGINAS_OS);
-  return out;
+  } while (pagina <= totalPaginas);
+
+  const falta = conferirLeituraCompleta({ lidos: porCodigo.size, totalDeRegistros, etapa: opts.etapa });
+  if (falta) throw new Error(falta);
+  return [...porCodigo.values()];
 }
 
 /**
@@ -422,7 +428,7 @@ async function lerEspelho(supabase: any): Promise<any[]> {
   for (let de = 0; ; de += PAGINA) {
     const { data, error } = await supabase
       .from("nf_os_omie")
-      .select("n_cod_os, nfse_status, status_lido_em")
+      .select("n_cod_os, nfse_status, status_lido_em, faturada, data_faturamento, cancelada, excluida_em")
       .order("n_cod_os", { ascending: true })
       .range(de, de + PAGINA - 1);
     if (error) throw new Error(`nf_os_omie select: ${error.message}`);
@@ -676,12 +682,110 @@ async function fecharRecusadas(supabase: any): Promise<Record<string, unknown>> 
   return { abertas: porOS.size, fechadas: novas.length, lotes_lidos: lotes.size };
 }
 
-async function espelhar(supabase: any, opts: { tetoStatus: number }) {
+/**
+ * O FORNO SE FECHA PELO STATUS DA OS, NÃO PELA VARREDURA DO ACERVO.
+ *
+ * Em 15/09/2026 a varredura do acervo quebrou às 10:02 e o espelho parou junto. A
+ * NFS-e 20274 da AEVO (R$ 14.880), autorizada na véspera às 23:21, passou o dia
+ * na faixa vermelha "parou no meio da emissão" — com o cliente já respondendo o
+ * e-mail da nota. O Hub não sabia porque não tinha voltado para olhar, e a tela
+ * leu o silêncio como falha.
+ *
+ * O que está no forno o Hub SABE qual é (ele mesmo disparou), e perguntar por
+ * cada uma custa um `StatusOS` — método diferente do `ListarOS`, sem disputar a
+ * trava dele. Então isto roda PRIMEIRO e sozinho: o que der errado depois não
+ * desfaz o que foi fechado aqui.
+ */
+async function fecharFornoPeloStatus(supabase: any, teto = 40): Promise<Record<string, unknown>> {
+  const desde = new Date(Date.now() - 7 * 864e5).toISOString();
+  // As mesmas duas ações que `fecharEmProcessamento` sabe fechar.
+  const ACOES = ["faturar", "criar_e_faturar"];
+  const { data: abertas, error } = await supabase
+    .from("nf_emissoes")
+    .select("n_cod_os, criado_em")
+    .eq("resultado", "em_processamento")
+    .in("acao", ACOES)
+    .gte("criado_em", desde)
+    .not("n_cod_os", "is", null)
+    .order("criado_em", { ascending: false })
+    .range(0, 499);
+  if (error) throw new Error(`nf_emissoes (forno): ${error.message}`);
+  if (!abertas?.length) return { no_forno: 0, lidos: 0, com_nota: 0 };
+
+  const { data: desfechos } = await supabase
+    .from("nf_emissoes")
+    .select("n_cod_os, criado_em")
+    .in("n_cod_os", [...new Set(abertas.map((a: any) => Number(a.n_cod_os)))])
+    .in("acao", ACOES)
+    .neq("resultado", "em_processamento")
+    .range(0, 999);
+
+  const alvos = osAindaNoForno(abertas, desfechos ?? [], teto);
+  let lidos = 0, comNota = 0;
+  const erros: string[] = [];
+  for (const nCodOS of alvos) {
+    try {
+      const s = await omieCall<any>("servicos/os", "StatusOS", { nCodOS });
+      const nfse = nfseDoStatus(s);
+      await supabase.from("nf_os_omie").update({
+        ...nfse,
+        c_cod_int_os: String(s?.cCodIntOS ?? "") || null,
+        etapa: String(s?.cEtapa ?? "") || null,
+        faturada: String(s?.cFaturada ?? "N") === "S",
+        cancelada: String(s?.cCancelada ?? "N") === "S",
+        data_faturamento: isoDeBR(s?.dDtFat),
+        status_lido_em: new Date().toISOString(),
+        atualizado_em: new Date().toISOString(),
+      }).eq("n_cod_os", nCodOS);
+      if (nfse.nfse_status === "004") {
+        comNota++;
+        await fecharEmProcessamento(supabase, nCodOS, nfse.nfse_numero as string | null);
+      }
+      lidos++;
+    } catch (e) {
+      erros.push(`${nCodOS}: ${mensagemDoOmie(e).slice(0, 120)}`);
+      if (erros.length >= 3) break; // o Omie está barrando; a próxima rodada retoma
+    }
+  }
+  return { no_forno: alvos.length, lidos, com_nota: comNota, ...(erros.length ? { erros } : {}) };
+}
+
+/** Quanto do relógio da Edge Function a varredura do acervo pode gastar. */
+const PRAZO_VARREDURA_ESPELHO_MS = 90_000;
+
+/**
+ * Quantos dias de alteração o espelho lê. `null` = o acervo inteiro.
+ *
+ * O cron de rodada (10 em 10 min) usa 3: cobre um dia inteiro sem cron e sobra.
+ * O das 18h, que não passa `so_se_houver_forno`, usa 10 — é a rede para qualquer
+ * buraco maior. O acervo inteiro só a pedido (`completo: true`): em 15/09/2026 ele
+ * eram 41 páginas e 77s, crescendo ~1,5 página por dia.
+ */
+function janelaDoEspelho(body: any): number | null {
+  if (body?.completo === true) return null;
+  const pedida = Number(body?.janela_dias);
+  if (Number.isFinite(pedida) && pedida >= 0) return Math.min(pedida, 60);
+  return body?.so_se_houver_forno === true ? 3 : 10;
+}
+
+async function espelhar(supabase: any, opts: { tetoStatus: number; janelaDias?: number | null }) {
+  const janela = opts.janelaDias === null || opts.janelaDias === undefined
+    ? null
+    : janelaDeAlteracao(Date.now(), opts.janelaDias);
+  const forno = await fecharFornoPeloStatus(supabase)
+    .catch((e) => ({ erro: mensagemDoOmie(e).slice(0, 200) }));
+
+  const inicioListagem = Date.now();
   const [osLista, gravadas, { data: cacheClientes }] = await Promise.all([
-    listarOS(),
+    listarOS({ prazoMs: PRAZO_VARREDURA_ESPELHO_MS, ...(janela ? { alteradas: janela } : {}) }),
     lerEspelho(supabase),
     supabase.from("omie_cache").select("dados").eq("chave", "clientes").maybeSingle(),
-  ]);
+  ]).catch((e) => {
+    // A resposta continua sendo falha (a volta não se fechou), mas conta o que o
+    // forno já resolveu antes — senão quem lê o erro acha que nada andou.
+    throw new Error(`${mensagemDoOmie(e)} [antes disso o forno foi conferido pelo StatusOS: ${JSON.stringify(forno)}]`);
+  });
+  const listagemMs = Date.now() - inicioListagem;
 
   // Código do cliente no Omie → CNPJ/CPF. É esse documento que casa com o Asaas;
   // por nome não casa (o Asaas guarda o fantasia, o Omie a razão social).
@@ -720,6 +824,15 @@ async function espelhar(supabase: any, opts: { tetoStatus: number }) {
     });
 
     if (ehStatusPendente(os, jaPor.get(nCodOS))) paraStatus.push(nCodOS);
+  }
+
+  /* A NOTA PRESA NÃO MUDA NO OMIE, e por isso não vem na janela. Quem escolhe
+   * as que precisam de StatusOS, além das listadas, é o espelho GRAVADO — mesma
+   * regra de `ehStatusPendente`. Sem isto, o RPS preso em '003' de junho nunca
+   * mais seria relido depois que o espelho deixou de varrer o acervo. */
+  const listadas = new Set(linhas.map((l) => Number(l.n_cod_os)));
+  for (const n of statusPendenteDoEspelho(gravadas, Date.now(), { carenciaH: CARENCIA_STATUS_H, nascendoDias: NASCENDO_DIAS })) {
+    if (!listadas.has(n)) paraStatus.push(n);
   }
 
   // Grava a listagem primeiro: mesmo que a leitura de status pare no meio (trava
@@ -778,7 +891,12 @@ async function espelhar(supabase: any, opts: { tetoStatus: number }) {
     .catch((e) => ({ erro: mensagemDoOmie(e).slice(0, 200) }));
 
   return {
+    forno,
+    janela: janela ?? "acervo completo",
     os_listadas: linhas.length,
+    // A tendência do relógio: quando isto chegar perto de PRAZO_VARREDURA_ESPELHO_MS,
+    // é hora do espelho incremental — antes de ele estourar.
+    listagem_ms: listagemMs,
     status_pendentes: paraStatus.length,
     status_lidos: lidos,
     com_nota: comNota,
@@ -2114,7 +2232,9 @@ const ETAPA_FILA = "50";
 /** Quem está em cada etapa AGORA, direto do Omie. É o que mede o raio do lote. */
 async function ocupantesDaEtapa(etapa: string): Promise<number[]> {
   const out: number[] = [];
-  for (const os of await listarOS()) {
+  // Só a etapa pedida. O filtro de `cEtapa` abaixo fica: se o Omie um dia ignorar
+  // `filtrar_por_etapa`, a leitura fica cara, mas não errada.
+  for (const os of await listarOS({ etapa })) {
     const cab = os?.Cabecalho ?? {};
     if (String(os?.InfoCadastro?.cCancelada ?? "N") === "S") continue;
     if (String(cab.cEtapa ?? "") === etapa) out.push(Number(cab.nCodOS));
@@ -2183,7 +2303,7 @@ async function limparCorredor(
 
   // Quem está lá, com o que decide o destino de cada um.
   const ocupantes: Array<{ nCodOS: number; faturada: boolean }> = [];
-  for (const os of await listarOS()) {
+  for (const os of await listarOS({ etapa })) {
     const cab = os?.Cabecalho ?? {};
     const info = os?.InfoCadastro ?? {};
     if (String(info.cCancelada ?? "N") === "S") continue;
@@ -4180,7 +4300,10 @@ Deno.serve(async (req) => {
       if (!travaEspelho.ok) {
         return json({ ok: true, pulado: `o espelho cedeu a vez: ${frasePerdiVez(travaEspelho)}` });
       }
-      const r = await espelhar(supabase, { tetoStatus: Math.min(Number(body?.teto_status ?? 120), 400) })
+      const r = await espelhar(supabase, {
+        tetoStatus: Math.min(Number(body?.teto_status ?? 120), 400),
+        janelaDias: janelaDoEspelho(body),
+      })
         .finally(() => travaSoltar(supabase, donoEspelho));
 
       /* O anexo mora aqui, e não no `emitir_dia`, por dois motivos.
@@ -4235,7 +4358,7 @@ Deno.serve(async (req) => {
             const d = donoDaVez("espelho:pos-emissao");
             const t = await travaTomar(supabase, d, 120);
             if (!t.ok) return { pulado: frasePerdiVez(t) };
-            return await espelhar(supabase, { tetoStatus: Math.min(Number(body?.teto_status ?? 40), 400) })
+            return await espelhar(supabase, { tetoStatus: Math.min(Number(body?.teto_status ?? 40), 400), janelaDias: 3 })
               .catch((e) => ({ erro: mensagemDoOmie(e) }))
               .finally(() => travaSoltar(supabase, d));
           })()
@@ -4392,9 +4515,49 @@ Deno.serve(async (req) => {
      *
      * Como se prova sem confiar na documentação: compara-se `total_de_registros`
      * do filtrado com o do cru. Parâmetro ignorado devolve o mesmo total. */
+    /* `sondar_listaros` com `testes` + `procurar`: filtros livres, e para cada um
+     * se as OS procuradas vieram na lista (lê até 6 páginas). É a prova de que
+     * `filtrar_por_data_de` pega OS ALTERADA no período, e não só incluída — a
+     * condição para o espelho deixar de varrer o acervo inteiro. Leitura pura. */
+    if (action === "sondar_listaros" && Array.isArray(body?.testes)) {
+      const procurar = new Set((Array.isArray(body?.procurar) ? body.procurar : []).map(Number));
+      const out: Record<string, unknown> = {};
+      for (const [i, t] of body.testes.entries()) {
+        const filtros = (t && typeof t === "object") ? t as Record<string, unknown> : {};
+        const achadas = new Set<number>();
+        let total: unknown = null, paginas: unknown = null, lidas = 0, erro: string | null = null;
+        for (let pagina = 1; pagina <= 6; pagina++) {
+          try {
+            const r = await omieCall<any>("servicos/os", "ListarOS", {
+              pagina, registros_por_pagina: 480 - i, apenas_importado_api: "N", ...filtros,
+            });
+            total = r?.total_de_registros ?? null;
+            paginas = r?.total_de_paginas ?? null;
+            for (const os of (r?.osCadastro ?? [])) {
+              lidas++;
+              const k = Number(os?.Cabecalho?.nCodOS ?? 0);
+              if (procurar.has(k)) achadas.add(k);
+            }
+            if (pagina >= Number(r?.total_de_paginas ?? 1)) break;
+          } catch (e) {
+            const m = mensagemDoOmie(e);
+            if (!FIM_DA_LISTA.test(m)) erro = m.slice(0, 160);
+            break;
+          }
+          await dorme(1500);
+        }
+        out[JSON.stringify(filtros)] = { total_de_registros: total, total_de_paginas: paginas, lidas, achadas: [...achadas], erro };
+        await dorme(12_000);
+      }
+      return json({ ok: true, listaros: out });
+    }
+
     if (action === "sondar_listaros") {
       const base = { pagina: 1, registros_por_pagina: 1, apenas_importado_api: "N" };
       const testes: Array<[string, Record<string, unknown>]> = [
+        // O tamanho REAL da página: pede 500 e conta quantas vieram. Foi a
+        // diferença entre o pedido e o entregue que parou a emissão em 15/09/2026.
+        ["página de 500 (tamanho real)", { registros_por_pagina: 500 }],
         ["cru (referência)", {}],
         ["etapa 20 (corredor)", { filtrar_por_etapa: "20" }],
         ["etapa 50 (a faturar)", { filtrar_por_etapa: "50" }],
@@ -4407,6 +4570,7 @@ Deno.serve(async (req) => {
           out[nome] = {
             total_de_registros: r?.total_de_registros ?? null,
             total_de_paginas: r?.total_de_paginas ?? null,
+            registros_na_pagina: r?.osCadastro?.length ?? null,
             primeira_os: r?.osCadastro?.[0]?.Cabecalho?.nCodOS ?? null,
             etapa_da_primeira: r?.osCadastro?.[0]?.Cabecalho?.cEtapa ?? null,
           };

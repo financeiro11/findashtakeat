@@ -4,7 +4,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/u
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Loader2, ChevronRight, AlertTriangle, Search, Users } from "lucide-react";
+import { Loader2, ChevronRight, AlertTriangle, Search, TriangleAlert, Users } from "lucide-react";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import { valorExato } from "@/lib/valor";
@@ -15,7 +15,7 @@ import { nomeExibido } from "@/lib/apelidos";
 import {
   MESES, agruparPorPessoa, resumirCelula, desvioVsMedia,
   colunaDoMes, mesAnteriorDe, lancamentosParaPonte,
-  type Lancamento, type LinhaMatriz,
+  type Lancamento, type LinhaMatriz, type SuspeitaDepartamento,
 } from "@/lib/cac";
 import { montarPonte } from "@/lib/ponteVariacao";
 import { PonteVariacao } from "@/components/demonstracoes/PonteVariacao";
@@ -41,17 +41,24 @@ const pctStr = (v: number) =>
   (v > 0 ? "+" : "") + (v * 100).toLocaleString("pt-BR", { minimumFractionDigits: 1, maximumFractionDigits: 1 }) + "%";
 
 export function CelulaDialog({
-  ano, linha, mes, manual = false, onClose, onMudou,
+  ano, linha, mes, manual = false, suspeitas = [], onClose, onMudou,
 }: {
   ano: number;
   linha: LinhaMatriz | null;
   mes: number | null;
   /** Linha digitada: a célula abre o campo de valor em vez dos lançamentos. */
   manual?: boolean;
+  /** Os casos de departamento fora do padrão que marcam ESTA célula. */
+  suspeitas?: SuspeitaDepartamento[];
   onClose: () => void;
   /** Chamado depois de gravar ou apagar um valor digitado. */
   onMudou?: () => void;
 }) {
+  /* Por título: é a chave que casa a lista da célula com o quadro abaixo da matriz. */
+  const suspeitaPorTitulo = useMemo(
+    () => new Map(suspeitas.filter((s) => !s.decisao_id).map((s) => [s.cod_titulo, s])),
+    [suspeitas],
+  );
   const [lancs, setLancs] = useState<Lancamento[]>([]);
   const [lancsAnt, setLancsAnt] = useState<Lancamento[]>([]);
   const [loading, setLoading] = useState(false);
@@ -217,6 +224,21 @@ export function CelulaDialog({
               />
             )}
 
+            {suspeitaPorTitulo.size > 0 && (
+              <div className="rounded-md border border-warn/40 bg-warn/5 px-3 py-2">
+                <p className="flex items-center gap-1.5 text-[12.5px] font-medium text-warn">
+                  <TriangleAlert className="h-3.5 w-3.5" />
+                  {suspeitaPorTitulo.size === 1 ? "1 lançamento" : `${suspeitaPorTitulo.size} lançamentos`} na categoria de outro departamento
+                </p>
+                <p className="mt-1 text-[12px] text-muted-foreground">
+                  {[...new Set([...suspeitaPorTitulo.values()].map((s) =>
+                    `${s.pessoa} (${s.departamento}) pago em ${s.familia}${s.linha_id ? "" : ", fora desta célula"}`,
+                  ))].join(" · ")}
+                  . O porquê e o botão de ignorar ficam no quadro “Departamento fora do padrão”, abaixo da matriz.
+                </p>
+              </div>
+            )}
+
             {resumo.semPagamento.length > 0 && (
               <div className="rounded-md border border-warn/40 bg-warn/5 px-3 py-2">
                 <p className="flex items-center gap-1.5 text-[12.5px] font-medium text-warn">
@@ -262,6 +284,7 @@ export function CelulaDialog({
                       aberta={aberta === p.chave}
                       onToggle={() => setAberta(aberta === p.chave ? null : p.chave)}
                       apelidos={apelidos}
+                      suspeitaPorTitulo={suspeitaPorTitulo}
                     />
                   ))}
                   {!filtradas.length && (
@@ -374,12 +397,17 @@ function Resumo({ rotulo, valor, total, destaque }: {
   );
 }
 
-function PessoaLinha({ p, aberta, onToggle, apelidos }: {
+function PessoaLinha({ p, aberta, onToggle, apelidos, suspeitaPorTitulo }: {
   p: ReturnType<typeof agruparPorPessoa>[number];
   aberta: boolean;
   onToggle: () => void;
   apelidos: ReturnType<typeof useApelidos>;
+  suspeitaPorTitulo: Map<number, SuspeitaDepartamento>;
 }) {
+  /* A marca sobe para a pessoa: com a linha fechada, o lançamento suspeito não
+     aparece, e a lista de uma célula de Suporte tem trinta nomes. */
+  const suspeitos = p.lancamentos.filter((l) => l.cod_titulo != null && suspeitaPorTitulo.has(l.cod_titulo)).length;
+
   return (
     <>
       <tr className="cursor-pointer border-t border-border hover:bg-muted/30" onClick={onToggle}>
@@ -387,6 +415,11 @@ function PessoaLinha({ p, aberta, onToggle, apelidos }: {
           <span className="inline-flex items-center gap-1">
             <ChevronRight className={cn("h-3 w-3 text-muted-foreground transition-transform", aberta && "rotate-90")} />
             {p.pessoa}
+            {suspeitos > 0 && (
+              <span title={`${suspeitos} lançamento(s) na categoria de outro departamento`}>
+                <TriangleAlert strokeWidth={2.2} className="h-3.5 w-3.5 fill-warn/30 text-warn" />
+              </span>
+            )}
           </span>
         </td>
         <td className="px-3 py-1.5 text-right num text-muted-foreground">{p.folha ? comValorExato(p.folha, brl(p.folha)) : "—"}</td>
@@ -399,6 +432,7 @@ function PessoaLinha({ p, aberta, onToggle, apelidos }: {
            Omie, então ele não pode sumir da tela. */
         const cru = l.favorecido ?? "";
         const exibido = nomeExibido(apelidos, cru, l.cnpj);
+        const suspeita = l.cod_titulo != null ? suspeitaPorTitulo.get(l.cod_titulo) : undefined;
         return (
           <tr key={l.cod_titulo ?? `${l.cnpj}-${l.categoria}`} className="border-t border-border/50 bg-muted/10">
             <td className="px-3 py-1.5 pl-9">
@@ -407,7 +441,14 @@ function PessoaLinha({ p, aberta, onToggle, apelidos }: {
                     entra na célula, como na DRE. */}
                 {l.data_pagamento ? new Date(`${l.data_pagamento}T12:00:00`).toLocaleDateString("pt-BR") : "a vencer"}
                 {" · "}
-                <span className="text-muted-foreground">{l.categoria_descricao ?? l.categoria ?? "—"}</span>
+                <span
+                  className={suspeita ? "font-medium text-warn" : "text-muted-foreground"}
+                  title={suspeita
+                    ? `${suspeita.pessoa} está no cadastro em ${suspeita.departamento}; esta categoria é de ${suspeita.familia}`
+                    : undefined}
+                >
+                  {l.categoria_descricao ?? l.categoria ?? "—"}
+                </span>
               </span>
               <span className="block text-[11px] text-muted-foreground">
                 {exibido !== cru ? `${exibido} · ${cru}` : cru}

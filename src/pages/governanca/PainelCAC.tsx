@@ -15,10 +15,16 @@ import * as XLSX from "xlsx";
 import {
   MESES, montarMatriz, agruparMatriz, totalGeral, matrizParaAOA,
   ultimoMesFechado, mesesDoPeriodo, desvioVsMedia, seloDaLinha, linhaTemRegra,
+  marcasDepartamento, chaveMarcaDepartamento, linhaDaMarca,
   type PainelRow, type LinhaMatriz, type GrupoMatriz, type Linha,
   type Periodo, type Selo, type Desvio, type ConferenciaDre,
+  type SuspeitaDepartamento, type MarcaDepartamento,
 } from "@/lib/cac";
 import { ConferenciaDRE } from "./cac/ConferenciaDRE";
+import { DepartamentoForaDoPadrao } from "./cac/DepartamentoForaDoPadrao";
+import { CorrigirNoOmie } from "./cac/CorrigirNoOmie";
+import { runOmieSync } from "@/lib/omieSync";
+import { MarcaReclassificacao } from "@/components/demonstracoes/Reclassificacoes";
 import { useAuth } from "@/hooks/useAuth";
 import { CelulaDialog } from "./cac/CelulaDialog";
 import { CadastroCAC } from "./cac/CadastroCAC";
@@ -98,6 +104,21 @@ export default function PainelCAC() {
   const [loading, setLoading] = useState(true);
   const [celula, setCelula] = useState<{ linha: LinhaMatriz; mes: number } | null>(null);
   const [importando, setImportando] = useState(false);
+  const [suspeitas, setSuspeitas] = useState<SuspeitaDepartamento[]>([]);
+
+  /* Separado do `carregar`: ignorar um caso não precisa refazer a matriz. E só
+     quem vê a folha pede — é nome e valor de pessoa, e a RPC recusaria igual. */
+  const carregarSuspeitas = useCallback(async () => {
+    if (!vejoAFolha) { setSuspeitas([]); return; }
+    const { data, error } = await db.rpc("cac_departamento_suspeitos", { p_ano: ano });
+    // Alerta é acessório: se a consulta falhar, a matriz segue sem marca.
+    setSuspeitas(error ? [] : ((data ?? []) as SuspeitaDepartamento[]));
+  }, [ano, vejoAFolha]);
+
+  useEffect(() => { void carregarSuspeitas(); }, [carregarSuspeitas]);
+
+  const marcas = useMemo(() => marcasDepartamento(suspeitas), [suspeitas]);
+  const suspeitasAbertas = useMemo(() => suspeitas.filter((s) => !s.decisao_id).length, [suspeitas]);
 
   const carregar = useCallback(async () => {
     setLoading(true);
@@ -123,6 +144,23 @@ export default function PainelCAC() {
   }, [ano]);
 
   useEffect(() => { void carregar(); }, [carregar]);
+
+  /* O que o diálogo "Corrigir no Omie" está mostrando. Nulo: fechado. */
+  const [corrigindo, setCorrigindo] = useState<SuspeitaDepartamento[] | null>(null);
+
+  /* A troca já mudou o ERP e o cache: matriz e quadro releem na hora. A DRE é
+     outro assunto — ela lê o blob que o omie-sync grava, e sem recalcular a
+     "Conferência com a DRE" acusaria exatamente a diferença que acabou de ser
+     corrigida. O recálculo usa só o cache (não gasta API) e roda em segundo
+     plano; quando termina, a conferência relê. */
+  const depoisDeCorrigir = useCallback(async () => {
+    await Promise.all([carregar(), carregarSuspeitas()]);
+    toast.message("Recalculando a DRE com o cache do Omie…");
+    void runOmieSync({ forcar: false }).then((r) => {
+      if (r.status === "ok") void carregar();
+      else if (r.status === "erro") toast.error("A DRE não recalculou: " + (r.erro || "erro desconhecido"));
+    });
+  }, [carregar, carregarSuspeitas]);
 
   const grupos = useMemo(() => agruparMatriz(montarMatriz(rows)), [rows]);
   const geral = useMemo(() => totalGeral(grupos), [grupos]);
@@ -240,6 +278,20 @@ export default function PainelCAC() {
               {manuais} {manuais === 1 ? "célula digitada" : "células digitadas"}
             </Badge>
           )}
+          {/* Sem este aviso, triângulos espalhados na grade passam batido — a
+              mesma lição do resumo de reclassificações da DRE. */}
+          {suspeitasAbertas > 0 && (
+            <a href="#departamento-fora-do-padrao">
+              <Badge
+                variant="outline"
+                className="gap-1.5 border-warn/40 text-[11.5px] text-warn"
+                title="Lançamentos pagos na categoria de outro departamento — o quadro fica abaixo da matriz"
+              >
+                <span className="h-1.5 w-1.5 rounded-full bg-warn" />
+                {suspeitasAbertas} fora do departamento
+              </Badge>
+            </a>
+          )}
           <Button size="sm" variant="outline" className="h-8 gap-1.5 text-[12.5px]" onClick={() => setImportando(true)}>
             <Upload className="h-3.5 w-3.5" /> Importar
           </Button>
@@ -351,6 +403,7 @@ export default function PainelCAC() {
                       compacto={compacto}
                       totalPeriodo={totalPeriodo}
                       selos={selos}
+                      marcas={marcas}
                       onCelula={(linha, mes) => setCelula({ linha, mes })}
                     />
                   ))}
@@ -380,12 +433,27 @@ export default function PainelCAC() {
             </p>
           )}
 
+          {/* Antes da conferência com a DRE: este quadro é o que se CORRIGE; a
+              conferência é o que se confere. */}
+          {vejoAFolha && (
+            <DepartamentoForaDoPadrao
+              ano={ano}
+              suspeitas={suspeitas}
+              onMudou={() => void carregarSuspeitas()}
+              onCorrigir={(ls) => setCorrigindo(ls.filter((l) => !l.decisao_id))}
+            />
+          )}
+
           <ConferenciaDRE ano={ano} rows={conferencia} mesPadrao={fechado >= 0 ? fechado + 1 : 12} />
         </TabsContent>
 
         {vejoAFolha && (
           <TabsContent value="cadastro" className="mt-3.5">
-            <CadastroCAC onMudou={carregar} totaisPorLinha={totaisPorLinha} />
+            {/* Mudar o departamento de alguém muda a régua do alerta junto. */}
+            <CadastroCAC
+              onMudou={() => { void carregar(); void carregarSuspeitas(); }}
+              totaisPorLinha={totaisPorLinha}
+            />
           </TabsContent>
         )}
       </Tabs>
@@ -395,9 +463,21 @@ export default function PainelCAC() {
         linha={celula?.linha ?? null}
         mes={celula?.mes ?? null}
         manual={!!celula && (regraPorLinha.get(celula.linha.linha_id)?.manual ?? false)}
+        suspeitas={celula
+          ? suspeitas.filter((s) => s.mes === celula.mes && linhaDaMarca(s) === celula.linha.linha_id)
+          : []}
         onClose={() => setCelula(null)}
         onMudou={() => { setCelula(null); void carregar(); }}
       />
+
+      {vejoAFolha && (
+        <CorrigirNoOmie
+          ano={ano}
+          lancamentos={corrigindo}
+          onClose={() => setCorrigindo(null)}
+          onConcluido={depoisDeCorrigir}
+        />
+      )}
 
       <ImportarPainelDialog
         aberto={importando}
@@ -454,7 +534,7 @@ function Numeros({
 }
 
 function GrupoBloco({
-  grupo, idx, fechado, periodo, heatmap, fmtStr, compacto, totalPeriodo, selos, onCelula,
+  grupo, idx, fechado, periodo, heatmap, fmtStr, compacto, totalPeriodo, selos, marcas, onCelula,
 }: {
   grupo: GrupoMatriz;
   idx: number[];
@@ -465,6 +545,7 @@ function GrupoBloco({
   compacto: boolean;
   totalPeriodo: number;
   selos: Map<string, Selo>;
+  marcas: Map<string, MarcaDepartamento>;
   onCelula: (linha: LinhaMatriz, mes: number) => void;
 }) {
   const totalGrupo = idx.reduce((s, i) => s + grupo.meses[i], 0);
@@ -507,6 +588,7 @@ function GrupoBloco({
           compacto={compacto}
           totalPeriodo={totalPeriodo}
           selo={selos.get(l.linha_id) ?? "ok"}
+          marcas={marcas}
           onCelula={onCelula}
         />
       ))}
@@ -515,7 +597,7 @@ function GrupoBloco({
 }
 
 function LinhaTR({
-  l, idx, fechado, periodo, heatmap, fmtStr, compacto, totalPeriodo, selo, onCelula,
+  l, idx, fechado, periodo, heatmap, fmtStr, compacto, totalPeriodo, selo, marcas, onCelula,
 }: {
   l: LinhaMatriz;
   idx: number[];
@@ -526,6 +608,7 @@ function LinhaTR({
   compacto: boolean;
   totalPeriodo: number;
   selo: Selo;
+  marcas: Map<string, MarcaDepartamento>;
   onCelula: (linha: LinhaMatriz, mes: number) => void;
 }) {
   const total = idx.reduce((s, i) => s + l.meses[i], 0);
@@ -556,18 +639,26 @@ function LinhaTR({
             } · clique para ver os lançamentos`
           : "Sem lançamentos neste mês";
 
+        /* A mesma marca da DRE, no mesmo lugar: à esquerda do número. Fica na
+           linha onde o dinheiro caiu — ou de onde faltou, se caiu fora do CAC. */
+        const marca = marcas.get(chaveMarcaDepartamento(l.linha_id, i + 1));
+        const tituloMarca = marca
+          ? `\n${marca.alertas === 1 ? "1 lançamento" : `${marca.alertas} lançamentos`} na categoria de outro departamento (${valorExato(marca.valorTotal)}) — ver o quadro abaixo da matriz`
+          : "";
+
         return (
           <td key={i} className="p-0 text-right" style={{ background: tintDesvio(dv?.desvio, heatmap) }}>
             <button
               type="button"
               onClick={() => onCelula(l, i + 1)}
-              title={titulo}
+              title={titulo + tituloMarca}
               className={cn(
-                "num w-full px-2.5 py-[7px] text-right transition-colors hover:bg-muted/40",
+                "num flex w-full items-center justify-end gap-0.5 px-2.5 py-[7px] text-right transition-colors hover:bg-muted/40",
                 l.origens[i] === "manual" && "text-primary underline decoration-dotted underline-offset-2",
                 dv && Math.abs(dv.desvio) > 0.15 && "font-semibold",
               )}
             >
+              {marca && <MarcaReclassificacao alerta={marca} />}
               {fmtStr(v)}
             </button>
           </td>

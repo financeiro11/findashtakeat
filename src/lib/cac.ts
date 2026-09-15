@@ -7,6 +7,7 @@
  * ------------------------------------------------------------------------- */
 
 import type { LancamentoDaPonte } from "@/lib/ponteVariacao";
+import { valorExato } from "@/lib/valor";
 
 export const MESES = ["Jan","Fev","Mar","Abr","Mai","Jun","Jul","Ago","Set","Out","Nov","Dez"] as const;
 
@@ -730,4 +731,271 @@ export function conflitosDeRegra(linhas: Linha[]): ConflitoRegra[] {
     }
   }
   return out;
+}
+
+/* --------------------------------------------------------------------------
+ * Departamento fora do padrão.
+ *
+ * O título do Omie não tem departamento: ele mora no NOME da categoria —
+ * "3.2.7.2. Pessoal - Suporte", "3.1.1.5. Premiação - Comercial". A "família"
+ * é esse sufixo. `cac_departamento_suspeitos` devolve o lançamento de quem está
+ * no cadastro pago na família de OUTRO departamento; aqui ele vira marca na
+ * célula, grupo por pessoa e a frase que explica.
+ *
+ * A âncora é o CADASTRO, não o histórico (na DRE é o histórico do fornecedor).
+ * Medido em 14/09/2026: quatro pessoas de Onboarding pagas em Suporte de março a
+ * julho formavam um "padrão" — o histórico as daria por certas, e são justamente
+ * elas que tiram dinheiro da linha de Onboarding. O histórico entra como
+ * confiança, não como régua.
+ * ------------------------------------------------------------------------ */
+
+export type SeveridadeDepartamento = "alta" | "media" | "baixa";
+export type EscopoDecisao = "lancamento" | "pessoa" | "departamento";
+
+/** Uma linha de `cac_departamento_suspeitos`: um título na família de outro departamento. */
+export type SuspeitaDepartamento = {
+  cod_titulo: number;
+  mes: number;
+  cnpj: string;
+  pessoa: string;
+  departamento: string;
+  departamento_rh: string | null;
+  /** As famílias do departamento que o Portal RH dá para a pessoa. */
+  familias_rh: string[] | null;
+  categoria: string;
+  categoria_descricao: string | null;
+  familia: string;
+  familias_esperadas: string[];
+  valor: number;
+  /** A linha do CAC que conta o lançamento hoje. Nula: nenhuma conta. */
+  linha_id: string | null;
+  linha_rotulo: string | null;
+  /** A linha do departamento da pessoa. Nula: a pessoa não é de aquisição. */
+  linha_propria_id: string | null;
+  linha_propria_rotulo: string | null;
+  hist_lancamentos: number;
+  hist_esperados: number;
+  severidade: SeveridadeDepartamento;
+  mes_travado: boolean;
+  decisao_id: string | null;
+  decisao_escopo: EscopoDecisao | null;
+  decisao_motivo: string | null;
+};
+
+const PESO_SEVERIDADE: Record<SeveridadeDepartamento, number> = { alta: 0, media: 1, baixa: 2 };
+
+export const piorSeveridade = (a: SeveridadeDepartamento, b: SeveridadeDepartamento) =>
+  PESO_SEVERIDADE[a] <= PESO_SEVERIDADE[b] ? a : b;
+
+/** O mesmo formato do alerta da DRE — a marca na célula é a mesma. */
+export type MarcaDepartamento = {
+  alertas: number;
+  severidade: SeveridadeDepartamento;
+  valorTotal: number;
+};
+
+export const chaveMarcaDepartamento = (linhaId: string, mes: number) => `${linhaId}|${mes}`;
+
+/**
+ * A célula que leva a marca: a linha onde o dinheiro CAIU. Quando ele não caiu
+ * em linha nenhuma (categoria que o CAC não conta), a marca vai para a linha de
+ * onde ele FALTOU — senão o lançamento só existiria no quadro, e a matriz não
+ * diria que aquele número está baixo por causa dele.
+ */
+export function linhaDaMarca(s: Pick<SuspeitaDepartamento, "linha_id" | "linha_propria_id">): string | null {
+  return s.linha_id ?? s.linha_propria_id;
+}
+
+/** Só as abertas marcam: o que alguém já deu por normal não pisca de novo. */
+export function marcasDepartamento(suspeitas: SuspeitaDepartamento[]): Map<string, MarcaDepartamento> {
+  const m = new Map<string, MarcaDepartamento>();
+  for (const s of suspeitas) {
+    const linha = linhaDaMarca(s);
+    if (s.decisao_id || !linha) continue;
+    const k = chaveMarcaDepartamento(linha, s.mes);
+    const v = Number(s.valor) || 0;
+    const a = m.get(k);
+    if (!a) {
+      m.set(k, { alertas: 1, severidade: s.severidade, valorTotal: v });
+    } else {
+      a.alertas += 1;
+      a.valorTotal += v;
+      a.severidade = piorSeveridade(a.severidade, s.severidade);
+    }
+  }
+  return m;
+}
+
+export type GrupoSuspeita = {
+  chave: string;
+  cnpj: string;
+  pessoa: string;
+  departamento: string;
+  departamento_rh: string | null;
+  familia: string;
+  familias_esperadas: string[];
+  severidade: SeveridadeDepartamento;
+  valor: number;
+  meses: number[];
+  lancamentos: SuspeitaDepartamento[];
+  /** O RH põe a pessoa num departamento cuja família É a do lançamento. */
+  rhConcorda: boolean;
+};
+
+/**
+ * Pessoa × família: "Leonardo pago em Suporte" é UM caso com quinze lançamentos,
+ * não quinze casos. `ignoradas` escolhe o lado — a tela mostra um de cada vez.
+ * O pior primeiro; entre iguais, o que pesa mais.
+ */
+export function agruparSuspeitas(suspeitas: SuspeitaDepartamento[], ignoradas = false): GrupoSuspeita[] {
+  const porChave = new Map<string, GrupoSuspeita>();
+
+  for (const s of suspeitas) {
+    if (!!s.decisao_id !== ignoradas) continue;
+    const chave = `${s.cnpj}|${s.familia}`;
+    let g = porChave.get(chave);
+    if (!g) {
+      g = {
+        chave,
+        cnpj: s.cnpj,
+        pessoa: s.pessoa,
+        departamento: s.departamento,
+        departamento_rh: s.departamento_rh,
+        familia: s.familia,
+        familias_esperadas: s.familias_esperadas ?? [],
+        severidade: s.severidade,
+        valor: 0,
+        meses: [],
+        lancamentos: [],
+        rhConcorda: !!s.familias_rh?.includes(s.familia),
+      };
+      porChave.set(chave, g);
+    }
+    g.valor += Number(s.valor) || 0;
+    g.severidade = piorSeveridade(g.severidade, s.severidade);
+    if (!g.meses.includes(s.mes)) g.meses.push(s.mes);
+    g.lancamentos.push(s);
+  }
+
+  const grupos = [...porChave.values()];
+  for (const g of grupos) {
+    g.meses.sort((a, b) => a - b);
+    g.lancamentos.sort((a, b) => a.mes - b.mes || (Number(b.valor) || 0) - (Number(a.valor) || 0));
+  }
+  return grupos.sort(
+    (a, b) => PESO_SEVERIDADE[a.severidade] - PESO_SEVERIDADE[b.severidade] || b.valor - a.valor,
+  );
+}
+
+/**
+ * O porquê, em frases. A primeira diz o fato; a segunda, o que ele faz com o
+ * CAC — que é a pergunta de quem está nesta tela: um lançamento em Escala -
+ * Suporte de alguém de Onboarding NÃO muda o painel (a linha conta a pessoa pelo
+ * cadastro), só a DRE; um em 3.2.7.2 Pessoal - Suporte muda, porque essa
+ * categoria entra inteira em Suporte.
+ */
+export function leituraDoGrupo(g: GrupoSuspeita): string[] {
+  const frases: string[] = [];
+  const n = g.lancamentos.length;
+  const esperadas = g.familias_esperadas.join(" ou ") || "nenhuma família definida";
+
+  frases.push(
+    `${g.pessoa} está no cadastro em ${g.departamento}, que é pago em ${esperadas}; ` +
+    `${n === 1 ? "este lançamento foi" : `estes ${n} lançamentos foram`} para ${g.familia}.`,
+  );
+
+  const mudam = g.lancamentos.filter((l) => l.linha_id !== l.linha_propria_id);
+  if (mudam.length) {
+    const pares = new Map<string, { destino: string | null; origem: string | null; valor: number }>();
+    for (const l of mudam) {
+      const k = `${l.linha_rotulo ?? ""}|${l.linha_propria_rotulo ?? ""}`;
+      const p = pares.get(k) ?? { destino: l.linha_rotulo, origem: l.linha_propria_rotulo, valor: 0 };
+      p.valor += Number(l.valor) || 0;
+      pares.set(k, p);
+    }
+    for (const p of pares.values()) {
+      const v = valorExato(p.valor);
+      if (p.destino && p.origem) frases.push(`${v} contam na linha ${p.destino}, e não em ${p.origem}.`);
+      else if (p.destino) frases.push(`${v} contam na linha ${p.destino}, e a pessoa não é de aquisição.`);
+      else if (p.origem) frases.push(`${v} ficam fora do CAC, e deviam contar em ${p.origem}.`);
+    }
+  } else if (g.lancamentos.some((l) => l.linha_propria_id)) {
+    frases.push(
+      "O número do CAC não muda: a linha conta a pessoa pelo cadastro, seja qual for a categoria. " +
+      "Quem sai torta é a DRE, que separa as equipes pela categoria.",
+    );
+  }
+
+  const habito = g.lancamentos.find((l) => l.severidade === "media");
+  if (habito) {
+    frases.push(
+      `Nos 6 meses anteriores, ${habito.hist_esperados} de ${habito.hist_lancamentos} lançamentos ` +
+      `da pessoa foram em ${esperadas} — este destoa do hábito.`,
+    );
+  }
+
+  if (g.rhConcorda && g.departamento_rh) {
+    frases.push(
+      `O Portal RH põe a pessoa em ${g.departamento_rh}, que combina com ${g.familia}: ` +
+      "talvez o desatualizado seja o cadastro, e não o lançamento.",
+    );
+  }
+
+  return frases;
+}
+
+/* --------------------------------------------------------------------------
+ * Corrigir no Omie: para qual categoria o lançamento vai.
+ *
+ * Quem escreve no ERP é `omie-trocar-categoria`, a mesma da DRE (ver
+ * `loteCategoria.ts`). Aqui só se decide o DESTINO, e a regra é conservar o tipo
+ * do pagamento: "Escala - Suporte" de alguém de Onboarding vai para "Escala -
+ * Onboarding", não para "Pessoal - Onboarding". Trocar o tipo mudaria a rubrica
+ * da DRE por outro motivo que não o departamento.
+ * ------------------------------------------------------------------------ */
+
+/** O mínimo de `omie_categorias_disponiveis` que a sugestão usa. */
+export type CategoriaDestino = { codigo: string; descricao: string; rubrica_dre: string | null };
+
+/** O mesmo recorte de `cac_departamento_suspeitos` (e de `categoria_e_folha`). */
+const TIPO_E_FAMILIA = /(Pessoal|Premia[çc][ãa]o|Escala)\s*-\s*(.+)$/;
+
+/** "3.1.1.6. Premiação - Onboarding" → { tipo: "premiacao", familia: "Onboarding" }. */
+export function tipoEFamilia(descricao: string | null | undefined): { tipo: string; familia: string } | null {
+  const m = TIPO_E_FAMILIA.exec(descricao ?? "");
+  if (!m) return null;
+  const tipo = m[1].toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "");
+  return { tipo, familia: m[2].trim() };
+}
+
+export type DestinoSugerido = {
+  /** A categoria do mesmo tipo na família do cadastro — só quando é UMA. */
+  sugerida: CategoriaDestino | null;
+  /** O que a tela oferece: as do mesmo tipo; sem nenhuma, qualquer uma das famílias certas. */
+  candidatas: CategoriaDestino[];
+  /** Não existe o mesmo tipo na família certa (não há "Escala - Sucesso"): a troca muda a natureza. */
+  mudaTipo: boolean;
+};
+
+/**
+ * Sugestão só quando não há o que decidir. Liderança OPS aceita três famílias —
+ * "Pessoal - Comercial" dela vai para Onboarding, Sucesso ou Suporte, e escolher
+ * por ela seria o Hub inventando o time de alguém.
+ */
+export function destinoSugerido(
+  s: Pick<SuspeitaDepartamento, "categoria" | "categoria_descricao" | "familias_esperadas">,
+  categorias: CategoriaDestino[],
+): DestinoSugerido {
+  const origem = tipoEFamilia(s.categoria_descricao);
+  const daFamilia = categorias
+    .map((c) => ({ c, tf: tipoEFamilia(c.descricao) }))
+    .filter((x): x is { c: CategoriaDestino; tf: { tipo: string; familia: string } } =>
+      !!x.tf && (s.familias_esperadas ?? []).includes(x.tf.familia) && x.c.codigo !== s.categoria)
+    .sort((a, b) => a.c.descricao.localeCompare(b.c.descricao, "pt-BR"));
+
+  const mesmoTipo = origem ? daFamilia.filter((x) => x.tf.tipo === origem.tipo).map((x) => x.c) : [];
+  if (mesmoTipo.length) {
+    return { sugerida: mesmoTipo.length === 1 ? mesmoTipo[0] : null, candidatas: mesmoTipo, mudaTipo: false };
+  }
+  return { sugerida: null, candidatas: daFamilia.map((x) => x.c), mudaTipo: daFamilia.length > 0 };
 }

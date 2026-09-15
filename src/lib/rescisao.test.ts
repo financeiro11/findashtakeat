@@ -218,10 +218,38 @@ describe("total", () => {
   });
 });
 
+describe("o que o e-mail sobrepõe", () => {
+  it("a remuneração do e-mail manda mais que a da ficha, com aviso", () => {
+    const r = calcularRescisao(ficha(), { ...completo, remuneracao: 7000 })!;
+    expect(r.valor).toBe(7000);
+    expect(r.multa).toBe(7000);
+    expect(r.avisos.join(" ")).toMatch(/e-mail diz/);
+  });
+
+  it("o último dia do e-mail manda mais que `datadesl`, com aviso", () => {
+    const r = calcularRescisao(ficha({ datadesl: "2026-07-31" }), {
+      ...completo,
+      ultimoDia: "2026-07-18",
+    })!;
+    expect(r.ultimoDia).toBe("2026-07-18");
+    expect(r.diasTrabalhadosNoMes).toBe(18);
+    expect(r.avisos.join(" ")).toMatch(/último dia/);
+  });
+
+  it("valores iguais aos da ficha não geram aviso nenhum", () => {
+    const r = calcularRescisao(ficha(), {
+      ...completo,
+      remuneracao: 6000,
+      ultimoDia: "2026-07-18",
+    })!;
+    expect(r.avisos.join(" ")).not.toMatch(/e-mail diz|último dia/);
+  });
+});
+
 describe("texto para auditoria", () => {
   it("discrimina componente a componente e lista a fonte", () => {
     const r = calcularRescisao(ficha(), completo)!;
-    const t = rescisaoEmTexto("Maria Silva", r, "2026-07-18");
+    const t = rescisaoEmTexto("Maria Silva", r);
     expect(t).toContain("Rescisão — Maria Silva");
     expect(t).toContain("18/07/2026");
     expect(t).toContain("Multa de rescisão");

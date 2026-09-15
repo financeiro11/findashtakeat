@@ -4,7 +4,7 @@ import {
   Search, Users, Columns3, Filter, FilterX, X,
   ChevronLeft, ChevronRight, Copy, Receipt, PanelRightOpen, Maximize2,
   UserPlus, UserMinus, CalendarClock, Building2, FileSpreadsheet,
-  AlertTriangle, ChevronDown, Lock,
+  AlertTriangle, ChevronDown, Lock, Mail, RefreshCw, Loader2,
 } from "lucide-react";
 import { useAuth } from "@/hooks/useAuth";
 import { toast } from "sonner";
@@ -33,9 +33,9 @@ import {
 } from "@/lib/folha/chaves-pix";
 import { invocar } from "@/lib/erroEdge";
 import {
-  calcularRescisao, classificacaoDoRH, mesesDeCasa, parseISO, rescisaoEmTexto,
-  type Classificacao,
+  calcularRescisao, mesesDeCasa, parseISO, rescisaoEmTexto, type Classificacao,
 } from "@/lib/rescisao";
+import { useEmailDesligamento } from "@/hooks/useEmailDesligamento";
 import {
   montarLote, type ColaboradorDaFolha, type ResolveDePara,
 } from "../../../supabase/functions/_shared/folha-envio";
@@ -2110,7 +2110,7 @@ function Ladrilho({ rotulo, valor, tom }: { rotulo: string; valor: string; tom?:
 
 /** Campo de número do acerto — vazio quer dizer "ainda não informado", não zero. */
 function CampoDoAcerto({
-  rotulo, ajuda, prefixo, valor, onChange, pendente,
+  rotulo, ajuda, prefixo, valor, onChange, pendente, doEmail,
 }: {
   rotulo: string;
   ajuda: string;
@@ -2118,10 +2118,15 @@ function CampoDoAcerto({
   valor: string;
   onChange: (v: string) => void;
   pendente?: boolean;
+  /** Valor que a leitura do e-mail trouxe, ainda sem ninguem corrigir. */
+  doEmail?: boolean;
 }) {
   return (
     <label className="flex-1">
-      <span className="block text-[11px] font-medium text-muted-foreground">{rotulo}</span>
+      <span className="block text-[11px] font-medium text-muted-foreground">
+        {rotulo}
+        {doEmail && <span className="ml-1 text-amber-700 dark:text-amber-400">· do e-mail</span>}
+      </span>
       <span className="relative mt-1 flex items-center">
         {prefixo && (
           <span className="pointer-events-none absolute left-2 text-[12px] text-muted-foreground">{prefixo}</span>
@@ -2134,6 +2139,7 @@ function CampoDoAcerto({
           className={cn(
             "h-8 bg-background text-[13px] tabular-nums",
             prefixo && "pl-8",
+            doEmail && "border-amber-500/50",
             pendente && "border-destructive/60",
           )}
         />
@@ -2145,11 +2151,17 @@ function CampoDoAcerto({
 /**
  * O acerto de saída, conforme a regra de rescisão PJ.
  *
- * A ficha do RH não guarda três coisas que a conta precisa — dias de férias já
+ * Três coisas que a conta precisa a ficha do RH não guarda — dias de férias já
  * tirados, variável do mês e, quando `tipodesl` vem vazio, se a saída foi
- * voluntária ou involuntária. Elas são perguntadas aqui, e nada é chutado:
- * enquanto faltar resposta que muda o valor, o total não aparece. É o mesmo
- * "parar e perguntar" que a regra manda, só que na tela.
+ * voluntária ou involuntária. As três estão no e-mail de desligamento, e é o
+ * Hub que vai buscá-las: quando a ficha abre, a `rescisao-email` procura o
+ * e-mail na caixa financeiro@ e preenche o que achou.
+ *
+ * O QUE VEM DO E-MAIL É SUGESTÃO, NÃO VEREDITO. Todo campo continua editável, e
+ * a linha de origem diz de qual e-mail o número saiu — sem ela, quem confere
+ * não tem como auditar. E o que nem o e-mail responde continua sem resposta:
+ * enquanto faltar dado que muda o valor, o total não aparece. É o "parar e
+ * perguntar" da regra, na tela.
  *
  * Nada disto grava no RH — a tela é espelho. O que sai daqui é o texto
  * discriminado do botão de copiar, que vai no e-mail de aprovação.
@@ -2161,9 +2173,14 @@ function PainelRescisao({
   nome: string;
   onCopiar: (valor: string, rotulo: string) => void;
 }) {
-  const [diasFerias, setDiasFerias] = useState("");
-  const [variavel, setVariavel] = useState("");
+  /* `null` quer dizer "quem responde é o e-mail"; string quer dizer que alguém
+     digitou por cima, e aí o que a pessoa escreveu manda. */
+  const [diasFerias, setDiasFerias] = useState<string | null>(null);
+  const [variavel, setVariavel] = useState<string | null>(null);
   const [escolha, setEscolha] = useState<Classificacao | null>(null);
+
+  const { carregando, resposta, erro, buscar } = useEmailDesligamento(String(c.id), nome);
+  const doEmail = resposta?.achou ? resposta.campos ?? null : null;
 
   const numero = (s: string) => {
     if (!s.trim()) return null;
@@ -2171,21 +2188,29 @@ function PainelRescisao({
     return Number.isFinite(n) ? n : null;
   };
 
+  const emTexto = (n: number | null | undefined) => (n === null || n === undefined ? "" : String(n));
+
+  const diasNaTela = diasFerias ?? emTexto(doEmail?.diasDeFeriasTirados);
+  const variavelNaTela = variavel ?? emTexto(doEmail?.variavel);
+  const classificacaoDoEmail = resposta?.achou ? resposta.classificacao ?? null : null;
+
   const r = useMemo(
     () =>
       calcularRescisao(c, {
-        diasDeFeriasTirados: numero(diasFerias),
-        variavel: numero(variavel),
-        classificacao: escolha,
+        diasDeFeriasTirados: numero(diasNaTela),
+        variavel: numero(variavelNaTela),
+        classificacao: escolha ?? classificacaoDoEmail,
+        remuneracao: doEmail?.remuneracao ?? null,
+        ultimoDia: doEmail?.ultimoDia ?? null,
       }),
-    [c, diasFerias, variavel, escolha],
+    [c, diasNaTela, variavelNaTela, escolha, classificacaoDoEmail, doEmail],
   );
 
   if (!r) return null;
 
-  const doRH = classificacaoDoRH(c.tipodesl);
   const fechado = r.pendencias.length === 0;
   const faltaFerias = r.pendencias.some((p) => p.includes("férias"));
+  const vindoDoEmail = (v: unknown) => v !== null && v !== undefined;
 
   return (
     <div className="space-y-2.5 rounded-xl border border-amber-500/40 bg-amber-500/5 p-3">
@@ -2194,7 +2219,7 @@ function PainelRescisao({
           Acerto da rescisão
         </p>
         <button
-          onClick={() => onCopiar(rescisaoEmTexto(nome, r, c.datadesl), "cálculo da rescisão")}
+          onClick={() => onCopiar(rescisaoEmTexto(nome, r), "cálculo da rescisão")}
           className="inline-flex h-7 items-center gap-1.5 rounded-lg border bg-card px-2.5 text-[12px] transition-colors hover:bg-muted"
         >
           <Copy className="size-3" />
@@ -2202,31 +2227,95 @@ function PainelRescisao({
         </button>
       </div>
 
-      {/* O que só o e-mail de desligamento sabe */}
+      {/* De onde vieram os números — a linha que permite auditar */}
+      <div className="rounded-lg border border-border/70 bg-background/60 px-2.5 py-2 text-[11.5px]">
+        {carregando ? (
+          <span className="flex items-center gap-1.5 text-muted-foreground">
+            <Loader2 className="size-3.5 animate-spin" />
+            Procurando o e-mail de desligamento na caixa financeiro@…
+          </span>
+        ) : erro ? (
+          <span className="flex items-start justify-between gap-2">
+            <span className="text-destructive">{erro}</span>
+            <button onClick={() => void buscar({ reler: true })} className="flex-none underline">
+              tentar de novo
+            </button>
+          </span>
+        ) : resposta?.achou && resposta.email ? (
+          <span className="flex items-start justify-between gap-2">
+            <span className="min-w-0 text-muted-foreground">
+              <Mail className="mr-1 inline size-3.5 -translate-y-px" />
+              <span className="font-medium text-foreground">{resposta.email.assunto}</span>
+              {" — "}
+              {resposta.email.remetente}
+              {resposta.email.data ? `, ${fmtDate(resposta.email.data)}` : ""}
+            </span>
+            <button
+              onClick={() => void buscar({ reler: true })}
+              title="Ler o e-mail de novo"
+              className="flex-none text-muted-foreground hover:text-foreground"
+            >
+              <RefreshCw className="size-3.5" />
+            </button>
+          </span>
+        ) : resposta?.ambiguos?.length ? (
+          <div className="space-y-1.5">
+            <p className="text-muted-foreground">{resposta.motivo}</p>
+            {resposta.ambiguos.map((e) => (
+              <button
+                key={e.id}
+                onClick={() => void buscar({ emailId: e.id })}
+                className="block w-full rounded-md border bg-card px-2 py-1 text-left transition-colors hover:bg-muted"
+              >
+                <span className="font-medium">{e.assunto}</span>
+                <span className="text-muted-foreground">
+                  {" — "}
+                  {e.remetente}
+                  {e.data ? `, ${fmtDate(e.data)}` : ""}
+                </span>
+              </button>
+            ))}
+          </div>
+        ) : (
+          <span className="flex items-start justify-between gap-2">
+            <span className="text-muted-foreground">
+              {resposta?.motivo ?? "Nenhum e-mail de desligamento encontrado — preencha na mão."}
+            </span>
+            <button onClick={() => void buscar({ reler: true })} className="flex-none underline">
+              procurar de novo
+            </button>
+          </span>
+        )}
+      </div>
+
+      {/* O que o e-mail respondeu, aberto para correção */}
       <div className="space-y-2 rounded-lg border border-border/70 bg-background/60 p-2.5">
-        <p className="text-[11px] text-muted-foreground">
-          Do e-mail de desligamento{doRH ? "" : " — o tipo não veio preenchido do RH"}:
-        </p>
         <div className="flex gap-2">
           <CampoDoAcerto
             rotulo="Dias de férias já tirados"
             ajuda={faltaFerias ? "obrigatório" : "0"}
-            valor={diasFerias}
+            valor={diasNaTela}
             onChange={setDiasFerias}
             pendente={faltaFerias}
+            doEmail={diasFerias === null && vindoDoEmail(doEmail?.diasDeFeriasTirados)}
           />
           <CampoDoAcerto
             rotulo="Variável / comissão"
             ajuda="0,00"
             prefixo="R$"
-            valor={variavel}
+            valor={variavelNaTela}
             onChange={setVariavel}
+            doEmail={variavel === null && vindoDoEmail(doEmail?.variavel)}
           />
         </div>
         <div>
           <span className="block text-[11px] font-medium text-muted-foreground">
             Tipo de desligamento
             {r.origemDaClassificacao === "rh" && " (do RH)"}
+            {!escolha && classificacaoDoEmail && " (do e-mail)"}
+            {doEmail?.motivo && (
+              <span className="normal-case"> — “{doEmail.motivo}”</span>
+            )}
           </span>
           <div className="mt-1 flex gap-1.5">
             {(["voluntario", "involuntario"] as const).map((op) => (
@@ -2288,13 +2377,13 @@ function PainelRescisao({
           {p}
         </p>
       ))}
-      {r.avisos.map((a) => (
+      {[...(resposta?.avisos ?? []), ...r.avisos].map((a) => (
         <p key={a} className="text-[11px] text-muted-foreground">
           {a}
         </p>
       ))}
       <p className="text-[11px] text-muted-foreground">
-        Estimativa a partir da ficha do RH — confira contra o e-mail de desligamento antes de pagar.
+        Estimativa a partir da ficha do RH e do e-mail de desligamento — confira antes de pagar.
       </p>
     </div>
   );

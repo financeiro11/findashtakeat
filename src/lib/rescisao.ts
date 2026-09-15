@@ -56,6 +56,14 @@ export type EntradasDaRescisao = {
   variavel?: number | null;
   /** Preenche o que falta em `tipodesl`; sobrepõe o campo do RH quando informado. */
   classificacao?: Classificacao | null;
+  /**
+   * Remuneração dita no e-mail de desligamento. SOBREPÕE a da ficha do RH — o
+   * e-mail é mais novo que o cadastro e costuma trazer o aditivo que ninguém
+   * lançou. Divergência vira aviso, nunca troca silenciosa.
+   */
+  remuneracao?: number | null;
+  /** Último dia trabalhado dito no e-mail. Sobrepõe `datadesl` da ficha, com aviso. */
+  ultimoDia?: string | null;
 };
 
 export type LinhaDaRescisao = {
@@ -69,6 +77,8 @@ export type LinhaDaRescisao = {
 
 export type Rescisao = {
   valor: number;
+  /** Último dia trabalhado que a conta usou (o do e-mail, se houver). ISO. */
+  ultimoDia: string;
   /** Meses completos de casa, para "6 meses" e para o aviso de antecipação. */
   mesesDeCasa: number;
   /** Meses que contam para férias pela regra do mês cheio. */
@@ -108,6 +118,12 @@ const num = (v: unknown) => {
 
 const fmt = (n: number) =>
   n.toLocaleString("pt-BR", { style: "currency", currency: "BRL", minimumFractionDigits: 2 });
+
+const isoDe = (d: Date) =>
+  `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+
+const diaEMes = (d: Date) =>
+  `${String(d.getDate()).padStart(2, "0")}/${String(d.getMonth() + 1).padStart(2, "0")}/${d.getFullYear()}`;
 
 /**
  * Lê `tipodesl`. Só reconhece o que é inequívoco: "saída acordada", "não está
@@ -166,12 +182,37 @@ export function calcularRescisao(
   entradas: EntradasDaRescisao = {},
 ): Rescisao | null {
   const inicio = parseISO(ficha.inicio);
-  const desl = parseISO(ficha.datadesl);
-  const valor = num(ficha.valor);
+
+  /* O e-mail de desligamento manda mais que a ficha nas duas coisas que ele
+     também diz: o último dia trabalhado e a remuneração. A ficha é cadastro, e
+     cadastro atrasa; o e-mail é o que o gestor afirmou na saída. */
+  const deslDoEmail = parseISO(entradas.ultimoDia);
+  const deslDaFicha = parseISO(ficha.datadesl);
+  const desl = deslDoEmail ?? deslDaFicha;
+
+  const valorDaFicha = num(ficha.valor);
+  const valorDoEmail =
+    entradas.remuneracao !== null && entradas.remuneracao !== undefined && num(entradas.remuneracao) > 0
+      ? num(entradas.remuneracao)
+      : null;
+  const valor = valorDoEmail ?? valorDaFicha;
   if (!desl || !valor) return null;
 
   const pendencias: string[] = [];
   const avisos: string[] = [];
+
+  if (valorDoEmail && valorDaFicha && Math.abs(valorDoEmail - valorDaFicha) > 0.01) {
+    avisos.push(
+      `O e-mail diz ${fmt(valorDoEmail)} de remuneração e a ficha do RH tem ${fmt(valorDaFicha)}. ` +
+        "A conta está usando a do e-mail.",
+    );
+  }
+  if (deslDoEmail && deslDaFicha && deslDoEmail.getTime() !== deslDaFicha.getTime()) {
+    avisos.push(
+      `O e-mail dá ${diaEMes(deslDoEmail)} como último dia e a ficha do RH tem ${diaEMes(deslDaFicha)}. ` +
+        "A conta está usando a do e-mail.",
+    );
+  }
 
   const diasDoMes = ultimoDiaDoMes(desl);
   const diasTrabalhados = diasTrabalhadosNoMesDaSaida(inicio, desl);
@@ -304,6 +345,7 @@ export function calcularRescisao(
 
   return {
     valor,
+    ultimoDia: isoDe(desl),
     mesesDeCasa: casa,
     mesesDeFerias: meses,
     diasDoMes,
@@ -330,12 +372,12 @@ export function calcularRescisao(
  * O acerto em texto plano, componente a componente, como manda o formato de
  * saída da rescisão — é o que se cola no e-mail de aprovação.
  */
-export function rescisaoEmTexto(nome: string, r: Rescisao, datadesl: unknown): string {
+export function rescisaoEmTexto(nome: string, r: Rescisao): string {
   const linhas = r.linhas.map(
     (l) =>
       `${l.desconto ? "− " : "+ "}${l.rotulo}${l.detalhe ? ` (${l.detalhe})` : ""}: ${fmt(l.valor)}`,
   );
-  const data = typeof datadesl === "string" ? datadesl.slice(0, 10).split("-").reverse().join("/") : "—";
+  const data = r.ultimoDia.split("-").reverse().join("/");
   return [
     `Rescisão — ${nome}`,
     `Último dia trabalhado: ${data}`,

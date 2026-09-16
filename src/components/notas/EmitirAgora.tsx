@@ -283,6 +283,8 @@ export function EmitirAgora({
       nome: `${r.nome ?? "cliente sem nome"} · ${formatarDoc(r.doc)}`,
       titulo: r.situacao === "bloqueado"
         ? "O cadastro deste tomador não pode ser montado sozinho"
+        : r.situacao === "nao_tentado" && r.motivo === "omie_pausa"
+        ? "O Omie pediu uma pausa — tente em alguns minutos"
         : r.situacao === "nao_tentado"
         ? "Não deu tempo de conferir este cadastro — mande de novo"
         : r.n_cod_cli

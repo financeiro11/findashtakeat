@@ -89,6 +89,7 @@ import { consultarCnpjPublico } from "../_shared/cnpj-publico.ts";
 import { contatoDoCnpj } from "../_shared/cnpj-contato.ts";
 import { clienteServico } from "../_shared/firecrawl.ts";
 import { existeNosCorreios, resolverCep, type ViaCep } from "../_shared/cep.ts";
+import { codigoNaRecusa, ehDocumentoRepetido, omiePediuPausa, segundosDePausa } from "../_shared/omie-recusas.ts";
 /* O QUE A RECUSA AUTORIZA A CONSERTAR — módulo puro e testado
  * (`src/lib/nfse/recusaCadastro.test.ts`). Ele decide sobrescrita em cadastro
  * de terceiro num sistema fiscal, e por isso não mora aqui: este arquivo
@@ -141,7 +142,10 @@ async function omieCall(path: string, call: string, param: Record<string, unknow
 
     const msg = fault || (typeof data === "string" ? data : JSON.stringify(data));
     ultimo = new Error(String(msg));
-    const transitorio = /425|redundante|processando|5020|too many|bloqueada|soap-error|broken response|timeout|50[234]/i.test(String(msg));
+    /* Pausa pedida pelo Omie NÃO se repete: cada nova tentativa com erro reinicia
+       a janela, e a 10ª tranca o método por 30 min (ver `omiePediuPausa`). */
+    if (omiePediuPausa(String(msg)) || res.status === 425) throw ultimo;
+    const transitorio = /processando|5020|too many|soap-error|broken response|timeout|50[234]/i.test(String(msg));
     if (transitorio && tentativa < 4) {
       await new Promise((r) => setTimeout(r, 1200 * 2 ** tentativa));
       continue;
@@ -151,14 +155,28 @@ async function omieCall(path: string, call: string, param: Record<string, unknow
   throw ultimo;
 }
 
-/** O Omie recusa documento repetido dizendo qual cadastro já o tem. É a resposta
- *  mais útil que ele dá: o cliente existe, e o código dele vem junto. */
-function codigoNaRecusa(msg: string): number | null {
-  const nums = [...String(msg).matchAll(/\[(\d{6,})\]/g)].map((m) => Number(m[1]));
-  return nums.length ? nums[nums.length - 1] : null;
+/* A leitura das recusas (`_shared/omie-recusas.ts`) é a SEGUNDA defesa contra
+ * criar de novo quem existe — texto do Omie muda sem aviso. A primeira é
+ * `codigoNosEspelhos`, antes de tentar criar. A pausa pedida pelo Omie não se
+ * registra como `falhou` e encerra a leva. */
+
+/**
+ * O cadastro deste documento em QUALQUER espelho local do Omie — o menor código,
+ * como a fila de emissão. São três espelhos com atualizações diferentes
+ * (`omie_cache`/clientes, `omie_clientes_doc` e o completo
+ * `omie_clientes_endereco`), e ler só um deles foi o que mandou criar de novo
+ * clientes que os outros dois já conheciam.
+ */
+async function codigoNosEspelhos(supabase: any, doc: string): Promise<number | null> {
+  const [a, b] = await Promise.all([
+    supabase.from("omie_clientes_doc").select("codigo").eq("doc", doc),
+    supabase.from("omie_clientes_endereco").select("codigo").eq("cnpj_cpf", doc),
+  ]);
+  const cods = [...(a.data ?? []), ...(b.data ?? [])]
+    .map((r: any) => Number(r?.codigo))
+    .filter((n) => Number.isFinite(n) && n > 0);
+  return cods.length ? Math.min(...cods) : null;
 }
-const ehDocumentoRepetido = (msg: string) =>
-  /j[áa] (consta|existe)|already|duplicad|cadastrado para o c[óo]digo/i.test(String(msg));
 
 /** Bloqueios que nem a decisão de quem olhou destrava — ver o `forcar` na rota. */
 const NAO_FORCAVEL = ["documento_invalido", "sem_cliente_no_espelho"];
@@ -2150,6 +2168,7 @@ Deno.serve(async (req) => {
       const saida: any[] = [];
       const novosNoEspelho: { codigo: string; nome: string; cnpj_cpf: string }[] = [];
       const origem = ehCron ? "cron" : "tela";
+      let pausaDoOmie: { segundos: number | null } | null = null;
 
       for (const c of clientes) {
         /* `ids` sobe em TODA linha: é por ele que a tela tira da emissão a
@@ -2182,9 +2201,9 @@ Deno.serve(async (req) => {
          * Omie diverge do endereço informado é emitir o erro de propósito, e nota
          * não se corrige, cancela-se. Sem proposta confiável (sem endereço
          * completo em lugar nenhum), segue com o que o Omie tem, como antes. */
-        if (c.n_cod_cli) {
+        const conferirExistente = async (nCodCli: number, situacao: "ja_tinha" | "ja_existia") => {
           const { feito, cadastro, bloqueio } = await aplicarCorrecao(supabase, {
-            doc: c.doc, nome: c.nome, n_cod_cli: c.n_cod_cli, id_customer: c.id_customer, dadosAsaas: c._dados,
+            doc: c.doc, nome: c.nome, n_cod_cli: nCodCli, id_customer: c.id_customer, dadosAsaas: c._dados,
           }, {
             alvos: ["omie"], ids, origem: "emissao",
             operador: quem?.email ?? (ehCron ? "cron" : null),
@@ -2199,18 +2218,22 @@ Deno.serve(async (req) => {
           }
           if (cadastro && om.ok === false && !om.nada_a_propor) {
             saida.push({
-              ...base, situacao: "falhou", n_cod_cli: c.n_cod_cli,
+              ...base, situacao: "falhou", n_cod_cli: nCodCli,
               motivo: `O cadastro deste cliente no Omie tem outro endereço e não pôde ser atualizado antes de emitir ` +
                 `(${om.motivo ?? "sem motivo"}). A nota não sai com o endereço velho.`,
             });
           } else {
             saida.push({
-              ...base, situacao: "ja_tinha", n_cod_cli: c.n_cod_cli,
+              ...base, situacao, n_cod_cli: nCodCli,
               cadastro_atualizado: om.ok === true,
               ...(om.ok === true ? { escrito: om.escrito } : {}),
               ...(cadastro ? {} : { sem_proposta: bloqueio ?? null }),
             });
           }
+        };
+
+        if (c.n_cod_cli) {
+          await conferirExistente(c.n_cod_cli, "ja_tinha");
           await dorme(400);
           continue;
         }
@@ -2223,6 +2246,22 @@ Deno.serve(async (req) => {
             ...extras,
           }, { onConflict: "doc" });
         };
+
+        // O Omie pediu pausa numa volta anterior: não se toca em mais ninguém.
+        if (pausaDoOmie) {
+          saida.push({ ...base, situacao: "nao_tentado", motivo: "omie_pausa", espera_s: pausaDoOmie.segundos });
+          continue;
+        }
+
+        // Outro espelho já o conhece: é cadastro existente, não cadastro a criar.
+        const doEspelho = await codigoNosEspelhos(supabase, c.doc);
+        if (doEspelho) {
+          await registrar("ja_existia", "encontrado no espelho local do Omie", { n_cod_cli: doEspelho });
+          novosNoEspelho.push({ codigo: String(doEspelho), nome: limpo(c.nome), cnpj_cpf: c.doc });
+          await conferirExistente(doEspelho, "ja_existia");
+          await dorme(400);
+          continue;
+        }
 
         const { cadastro, bloqueio } = await montarCadastro(filaDoCliente(c.id_customer, c.doc, c._dados));
         if (!cadastro) {
@@ -2268,8 +2307,17 @@ Deno.serve(async (req) => {
             });
             if (codigo && String(codigo) !== c.doc) {
               novosNoEspelho.push({ codigo: String(codigo), nome: limpo(c.nome), cnpj_cpf: c.doc });
+              /* Descoberto agora, conferido agora: a mesma régua do "já tinha" —
+                 senão a nota sairia com o endereço que o Omie tiver. */
+              await dorme(400);
+              await conferirExistente(codigo, "ja_existia");
+            } else {
+              saida.push({ ...base, situacao: "ja_existia", n_cod_cli: codigo ?? null });
             }
-            saida.push({ ...base, situacao: "ja_existia", n_cod_cli: codigo ?? null });
+          } else if (omiePediuPausa(msg)) {
+            // Nada foi escrito e o cadastro não tem defeito: fica como estava.
+            pausaDoOmie = { segundos: segundosDePausa(msg) };
+            saida.push({ ...base, situacao: "nao_tentado", motivo: "omie_pausa", espera_s: pausaDoOmie.segundos });
           } else {
             await registrar("falhou", msg.slice(0, 400), { fonte_endereco: cadastro.fonte, payload });
             saida.push({ ...base, situacao: "falhou", motivo: msg.slice(0, 400) });
@@ -2829,6 +2877,7 @@ Deno.serve(async (req) => {
     const resultados: any[] = [];
     const novosNoEspelho: { codigo: string; nome: string; cnpj_cpf: string }[] = [];
     const origem = ehCron ? "cron" : "tela";
+    let pausaDoOmie: { segundos: number | null } | null = null;
 
     for (const c of rodada) {
       const registrar = async (
@@ -2844,6 +2893,18 @@ Deno.serve(async (req) => {
         }, { onConflict: "doc" });
         resultados.push({ doc: c.doc, nome: c.nome, situacao, motivo, valor: c.valor });
       };
+
+      if (pausaDoOmie) {
+        resultados.push({ doc: c.doc, nome: c.nome, situacao: "nao_tentado", motivo: "omie_pausa", valor: c.valor });
+        continue;
+      }
+
+      const doEspelho = await codigoNosEspelhos(supabase, c.doc);
+      if (doEspelho) {
+        await registrar("ja_existia", "encontrado no espelho local do Omie", { n_cod_cli: doEspelho });
+        novosNoEspelho.push({ codigo: String(doEspelho), nome: limpo(c.nome), cnpj_cpf: c.doc });
+        continue;
+      }
 
       const { cadastro, bloqueio } = await montarCadastro(c);
       if (!cadastro) {
@@ -2878,6 +2939,9 @@ Deno.serve(async (req) => {
           if (codigo && String(codigo) !== c.doc) {
             novosNoEspelho.push({ codigo: String(codigo), nome: limpo(c.nome), cnpj_cpf: c.doc });
           }
+        } else if (omiePediuPausa(msg)) {
+          pausaDoOmie = { segundos: segundosDePausa(msg) };
+          resultados.push({ doc: c.doc, nome: c.nome, situacao: "nao_tentado", motivo: "omie_pausa", valor: c.valor });
         } else {
           await registrar("falhou", msg.slice(0, 400), {
             fonte_endereco: cadastro.fonte,
@@ -2915,6 +2979,7 @@ Deno.serve(async (req) => {
       ja_existiam: conta("ja_existia"),
       bloqueados: conta("bloqueado"),
       falhas: conta("falhou"),
+      adiados_pelo_omie: conta("nao_tentado"),
       restantes,
       resultados,
       recusados,

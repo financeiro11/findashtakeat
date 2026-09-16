@@ -3189,11 +3189,39 @@ async function emitirDia(
     /* Nota sem cobrança não tem porta: a pergunta dela é "o dinheiro ainda está
      * no Asaas?", e aqui não existe dinheiro no Asaas. Quem responde pela nota é
      * a pessoa que a pediu, com nome no diário. */
-    const { liberadas, barradas } = opts.semCobranca
+    const porta = opts.semCobranca
       ? { liberadas: fila, barradas: [] as Array<{ id_asaas: string; motivo: string }> }
       : await passarPelaPorta(supabase, fila, {
         seco: false, usuario: opts.usuario, operador: opts.operador, avulsa,
       });
+    const barradas = porta.barradas;
+    let liberadas = porta.liberadas;
+
+    /* O CADASTRO PRECISA TER SIDO CONFERIDO (16/09/2026). Cliente cujo endereço no
+     * Asaas mudou desde a última conferência do cadastro do Omie espera a
+     * `sincronizar_fila` (omie-clientes-criar, de 30 em 30 min) — foi assim que a
+     * AEVO ganhou duas notas com a sala antiga. Ver a migration 20260916140000.
+     * Pela tela, o passo de cadastro do `EmitirAgora` confere e marca antes de
+     * chegar aqui; isto segura a esteira do cron e a emissão em massa.
+     * Falhar a consulta derruba a rodada: emitir sem saber é o que se quer evitar. */
+    if (!opts.semCobranca && liberadas.length) {
+      const { data: pend, error: ePend } = await supabase.rpc("nfse_cadastro_a_sincronizar", {
+        p_ids: liberadas.map((c: any) => String(c.id_asaas)),
+      });
+      if (ePend) throw new Error(`nfse_cadastro_a_sincronizar: ${ePend.message}`);
+      const segurar = new Set(((pend ?? []) as any[]).map((p) => String(p.id_asaas)));
+      if (segurar.size) {
+        for (const c of liberadas) {
+          if (!segurar.has(String(c.id_asaas))) continue;
+          barradas.push({
+            id_asaas: c.id_asaas,
+            motivo: "O endereço deste cliente no Asaas mudou e o cadastro do Omie ainda não foi conferido. " +
+              "A nota espera a próxima sincronização (de 30 em 30 minutos) — ou emita pela tela, que confere na hora.",
+          });
+        }
+        liberadas = liberadas.filter((c: any) => !segurar.has(String(c.id_asaas)));
+      }
+    }
     if (!liberadas.length) {
       return await fechar({
         fila: fila.length, bloqueadas: barradas.length,

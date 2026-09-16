@@ -18,6 +18,8 @@ import { FONTES_CC } from "@/components/ContaCorrenteBancaria";
 import { useApelidos } from "@/hooks/useApelidos";
 import { apelidoDe, type MapaApelidos } from "@/lib/apelidos";
 import { ehCartao, lerGastoDeCartao } from "@/lib/observacaoTitulo";
+import { lidoDoAsaas } from "@/lib/asaasFrescor";
+import { comAsaasAoVivo, type LinhaEntradaAsaas } from "@/lib/caixaAsaas";
 
 /* ------------------------------ formatters ------------------------------ */
 /* O abreviado (R$ 1,23 M) esconde a ordem de grandeza real, então na tela ele
@@ -162,10 +164,35 @@ export default function Caixa() {
     const { data, error } = await sb
       .from("omie_caixa_snapshot").select("dados,gerado_em").order("gerado_em", { ascending: false }).limit(1).maybeSingle();
     if (error) toast.error("Falha ao carregar o caixa: " + error.message);
-    setSnap((data?.dados as Snapshot) ?? null);
+    const s = (data?.dados as Snapshot) ?? null;
+    setSnap(s);
+    setFluxoVivo(null);
     setLoading(false);
+    if (s) void lerAsaasAoVivo(s);
   }
   useEffect(() => { carregar(); }, []);
+
+  /* O Asaas do fluxo projetado, relido na hora — ver `comAsaasAoVivo`. Fica num
+     estado à parte, e não dentro de `snap`: trocar `snap` refaria as leituras que
+     dependem dele (observações do cartão) só por causa do gráfico. Falhar aqui
+     deixa a foto como está, com o aviso de frescor que ela já tinha. */
+  const [fluxoVivo, setFluxoVivo] = useState<Snapshot["fluxo_projetado"] | null>(null);
+  async function lerAsaasAoVivo(s: Snapshot) {
+    const pts = s.fluxo_projetado?.pontos ?? [];
+    if (!pts.length) return;
+    try {
+      const [{ data: linhas, error }, { data: est }] = await Promise.all([
+        sb.rpc("asaas_entradas_projetadas", { p_de: pts[0].data, p_ate: pts[pts.length - 1].data }),
+        sb.from("asaas_sync_estado").select("escopo, ultima_incremental").in("escopo", ["payment:janela", "webhook"]),
+      ]);
+      if (error) throw error;
+      const lido = lidoDoAsaas(est ?? []);
+      setFluxoVivo(comAsaasAoVivo(s.fluxo_projetado, (linhas ?? []) as LinhaEntradaAsaas[], lido?.em ?? null));
+    } catch (e) {
+      console.warn("[caixa] Asaas ao vivo indisponível; fica a foto:", e instanceof Error ? e.message : e);
+    }
+  }
+  const fluxo = fluxoVivo ?? snap?.fluxo_projetado ?? null;
 
   // 1ª carga: se o usuário nunca escolheu, herda o `incluir` do snapshot.
   useEffect(() => {
@@ -327,9 +354,9 @@ export default function Caixa() {
      receita). Snapshot antigo não tem os campos do Asaas: cai em zero e as duas
      séries se sobrepõem, que é exatamente o desenho de antes. */
   const projData = useMemo(() => {
-    const pts = snap?.fluxo_projetado?.pontos ?? [];
+    const pts = fluxo?.pontos ?? [];
     const atual = contasView.consolidado;
-    const maiorData = snap?.fluxo_projetado?.maior_desembolso?.data;
+    const maiorData = fluxo?.maior_desembolso?.data;
     return pts.map((pt) => {
       const saldo = pt.saldo - contasView.delta;
       const entradasAsaas = pt.entradas_asaas ?? 0;
@@ -343,7 +370,7 @@ export default function Caixa() {
         cor: pt.data === maiorData && pt.saidas > 0 ? "maior" : saldo >= atual ? "acima" : "abaixo",
       };
     });
-  }, [snap, contasView]);
+  }, [fluxo, contasView]);
   /* O piso do eixo tem que caber nas DUAS séries: sem o Asaas o saldo desce mais, e
      um domínio calculado só pelas barras cortaria a linha de referência.
      A folga é `− 4% do módulo` e não `× 0,96`: com saldo negativo, multiplicar por
@@ -365,16 +392,16 @@ export default function Caixa() {
      linha, um espelho vazio vira "não há nada a receber" — que é a leitura errada
      mais cara desta tela. */
   const avisoAsaas = useMemo(() => {
-    const a = snap?.fluxo_projetado?.asaas;
+    const a = fluxo?.asaas;
     if (!a) return "Snapshot anterior ao cruzamento com o Asaas — sincronize o caixa para incluir as cobranças a receber.";
     if (a.origem === "erro") return "Não foi possível ler as cobranças do Asaas: o gráfico está só com os títulos do Omie.";
-    if (a.origem === "vazio" || a.cobrancas === 0) return "Nenhuma cobrança do Asaas espelhada para os próximos 30 dias — atualize em Asaas › Atualizar do Asaas.";
+    if (a.origem === "vazio" || a.cobrancas === 0) return "Nenhuma cobrança do Asaas espelhada para os próximos 30 dias — confira em Asaas se os avisos e as varreduras estão chegando.";
     const dias = a.atualizado_em ? (Date.now() - new Date(a.atualizado_em).getTime()) / 86_400_000 : null;
     if (dias != null && dias > 2) {
       return `Cobranças do Asaas lidas em ${new Date(a.atualizado_em!).toLocaleDateString("pt-BR")} — cobranças criadas depois disso não estão no gráfico.`;
     }
     return null;
-  }, [snap]);
+  }, [fluxo]);
 
   /* ---------- movimentações filtradas (modal "ver tudo") ---------- */
   const movFiltradas = useMemo(() => {
@@ -889,7 +916,7 @@ export default function Caixa() {
             <div>
               <div className="eyebrow">Menor saldo projetado</div>
               <div className="num text-[18px] font-semibold text-foreground">
-                {fmtBRLShort(snap.fluxo_projetado.menor.valor - contasView.delta)} <span className="text-[12px] font-normal text-muted-foreground">· {fmtDiaMes(snap.fluxo_projetado.menor.data)}</span>
+                {fmtBRLShort(fluxo!.menor.valor - contasView.delta)} <span className="text-[12px] font-normal text-muted-foreground">· {fmtDiaMes(fluxo!.menor.data)}</span>
               </div>
             </div>
             <div className="flex gap-4">
@@ -933,7 +960,7 @@ export default function Caixa() {
             <span className="flex items-center gap-1"><span className="h-2 w-2 rounded-full bg-muted-foreground/40" /> abaixo do atual</span>
             <span className="flex items-center gap-1"><span className="h-2 w-2 rounded-full bg-neg" /> maior desembolso</span>
             <span className="flex items-center gap-1"><span className="h-px w-4 border-t border-dashed border-neg" /> sem o Asaas</span>
-            <span className="ml-auto num">saldo em {fmtDiaMes(snap.fluxo_projetado.saldo_final.data)}: {fmtBRLShort(snap.fluxo_projetado.saldo_final.saldo - contasView.delta)}</span>
+            <span className="ml-auto num">saldo em {fmtDiaMes(fluxo!.saldo_final.data)}: {fmtBRLShort(fluxo!.saldo_final.saldo - contasView.delta)}</span>
           </div>
           {avisoAsaas && <Footnote>{avisoAsaas}</Footnote>}
         </SectionCard>
@@ -1020,7 +1047,7 @@ export default function Caixa() {
           </DialogHeader>
           <div className="mb-3 grid grid-cols-2 gap-3 sm:grid-cols-5">
             <MiniStat label="Saldo atual" value={fmtBRLShort(contasView.consolidado)} />
-            <MiniStat label="Menor saldo" value={<>{fmtBRLShort(snap.fluxo_projetado.menor.valor - contasView.delta)} · {fmtDiaMes(snap.fluxo_projetado.menor.data)}</>} tone="neg" />
+            <MiniStat label="Menor saldo" value={<>{fmtBRLShort(fluxo!.menor.valor - contasView.delta)} · {fmtDiaMes(fluxo!.menor.data)}</>} tone="neg" />
             <MiniStat label="A receber Omie" value={<>+{fmtBRLShort(projTotais.entradas)}</>} tone="pos" />
             <MiniStat
               label="A receber Asaas"

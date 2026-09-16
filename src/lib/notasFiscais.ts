@@ -278,6 +278,9 @@ export function motivoBloqueio(
   // O estorno é o primeiro e é o que a avulsa NÃO alcança — de propósito, e
   // acima de tudo o resto.
   if (l.estornado) return "Cobrança estornada — emitir criaria imposto sobre receita devolvida.";
+  // Gêmea de `bloqueioDeEmissao` (omie-nfse-sync): o espelho marca a apagada
+  // como DELETED desde 15/09/2026, e sem esta linha a frase seria "não recebida".
+  if (String(l.status_asaas ?? "").toUpperCase() === "DELETED") return "Cobrança excluída no Asaas — não há cobrança para faturar.";
   if (l.situacao === "emitida_omie") return "Já tem NFS-e autorizada no Omie.";
   if (l.situacao === "emitida_asaas") return "Já tem nota autorizada no Asaas.";
   // Rejeitada NÃO libera emissão daqui: a OS já está faturada no Omie: emitir de

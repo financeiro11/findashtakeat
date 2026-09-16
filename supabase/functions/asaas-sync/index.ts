@@ -678,6 +678,10 @@ Deno.serve(async (req) => {
           "PAYMENT_AUTHORIZED", "PAYMENT_CREDIT_CARD_CAPTURE_REFUSED", "PAYMENT_BANK_SLIP_CANCELLED",
           "INVOICE_CREATED", "INVOICE_UPDATED", "INVOICE_SYNCHRONIZED", "INVOICE_AUTHORIZED",
           "INVOICE_PROCESSING_CANCELLATION", "INVOICE_CANCELED", "INVOICE_CANCELLATION_DENIED", "INVOICE_ERROR",
+          // 16/09/2026. Os de split ficam de fora: não mexem em nada que o Hub leia.
+          // Não existe família de CLIENTES na documentação — não inventar nome aqui:
+          // evento desconhecido pode fazer o Asaas recusar o cadastro inteiro.
+          "SUBSCRIPTION_CREATED", "SUBSCRIPTION_UPDATED", "SUBSCRIPTION_INACTIVATED", "SUBSCRIPTION_DELETED",
         ],
       };
       try {

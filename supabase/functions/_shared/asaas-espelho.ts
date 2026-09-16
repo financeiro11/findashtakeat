@@ -61,7 +61,10 @@ export function mapSubscription(s: any): Linha {
   return {
     tipo: "subscription",
     id_asaas: String(s?.id ?? ""),
-    status: String(s?.status ?? ""),
+    // Apagada vira 'DELETED', como a cobrança e o cliente: quem a vê é o webhook
+    // (SUBSCRIPTION_DELETED, desde 16/09/2026) e a leitura por id. Fora de
+    // 'ACTIVE', ela sai do MRR da `asaas_metricas` e da contagem da `asaas-sync`.
+    status: s?.deleted ? "DELETED" : String(s?.status ?? ""),
     valor: num(s?.value),
     valor_liquido: null,
     ciclo: s?.cycle ?? null,

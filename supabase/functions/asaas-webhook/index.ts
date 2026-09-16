@@ -13,11 +13,17 @@
 //   PAYMENT_*   → upsert de `mapPayment(payment)`; cobrança apagada vira
 //                 status 'DELETED' (ver `linhaDaCobranca`)
 //   INVOICE_*   → upsert de `mapInvoice(invoice)`
-//   CUSTOMER_*  → upsert de `mapCustomer(customer)`, se o Asaas mandar (a
-//                 documentação de 09/2026 não lista essa família)
+//   SUBSCRIPTION_* → upsert de `mapSubscription`, SEMPRE relida na API (16/09/2026;
+//                 ver `RELER_SEMPRE`); apagada vira 'DELETED'
+//   CUSTOMER_*  → upsert de `mapCustomer(customer)`, se o Asaas mandar. Em
+//                 16/09/2026 a documentação NÃO tem essa família (a lista de
+//                 categorias não traz "clientes"), e por isso ela não está no
+//                 cadastro do webhook: edição de cliente segue vindo da varredura.
 //   o resto     → 200, 'ignorado', registrado
-// Depois de gravar cobrança ou nota, o cadastro do cliente é conferido e, se
-// faltar no espelho, buscado — em segundo plano, depois da resposta.
+// Depois de gravar cobrança, nota ou assinatura, em segundo plano e depois da
+// resposta: o cadastro do cliente é conferido (e buscado se faltar), a cobrança
+// com estorno vai para `estornos_asaas`, e `asaas_sync_estado` ('webhook') ganha a
+// hora do último aviso — é ela que a tela mostra como "Asaas lido às".
 //
 // AUTENTICAÇÃO. O Asaas manda o `authToken` configurado no webhook no header
 // `asaas-access-token`. Ele é comparado em tempo constante com o secret
@@ -48,7 +54,12 @@
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.0";
 import { asaasGet } from "../_shared/asaas.ts";
-import { gravar, mapCustomer, mapInvoice, mapPayment, type Linha } from "../_shared/asaas-espelho.ts";
+import {
+  gravar, mapCustomer, mapInvoice, mapPayment, mapSubscription, type Linha,
+} from "../_shared/asaas-espelho.ts";
+import {
+  clientesDoEspelho, conciliar, estornosDaCobranca, gravarEstornos, limparOrfaos,
+} from "../_shared/estornos-asaas.ts";
 
 const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
@@ -175,18 +186,48 @@ function valeRepetir(e: unknown): boolean {
 
 /* ---------------------------------- eventos -------------------------------- */
 
-type Alvo = { tipo: "payment" | "invoice" | "customer"; objeto: any };
+type Alvo = { tipo: "payment" | "invoice" | "customer" | "subscription"; objeto: any };
 
 const CAMINHO: Record<Alvo["tipo"], string> = {
-  payment: "/payments", invoice: "/invoices", customer: "/customers",
+  payment: "/payments", invoice: "/invoices", customer: "/customers", subscription: "/subscriptions",
 };
+
+/**
+ * Tipos cujo retrato do evento NÃO é gravado sem reler.
+ *
+ * O exemplo da documentação de SUBSCRIPTION_* traz seis campos (id, customer,
+ * value, status, cycle...). Se o evento real vier assim, gravá-lo apagaria de
+ * `dados` o `nextDueDate`, a descrição e tudo que as colunas geradas leem. Uma
+ * leitura por evento de assinatura é pouco (dezenas por dia contra 25 mil por
+ * 12h) e tira a dúvida. Se a releitura falhar, o retrato é MESCLADO sobre o que o
+ * espelho já tinha, nunca gravado cru.
+ */
+const RELER_SEMPRE = new Set<Alvo["tipo"]>(["subscription"]);
 
 function alvoDoEvento(ev: any): Alvo | null {
   const nome = String(ev?.event ?? "");
   if (nome.startsWith("PAYMENT_") && ev?.payment?.id) return { tipo: "payment", objeto: ev.payment };
   if (nome.startsWith("INVOICE_") && ev?.invoice?.id) return { tipo: "invoice", objeto: ev.invoice };
+  if (nome.startsWith("SUBSCRIPTION_") && ev?.subscription?.id) return { tipo: "subscription", objeto: ev.subscription };
   if (nome.startsWith("CUSTOMER_") && ev?.customer?.id) return { tipo: "customer", objeto: ev.customer };
   return null;
+}
+
+/** O que o espelho já sabe deste objeto — `dados` e, para cobrança, se há
+ *  estorno lá ou em `estornos_asaas`. Uma ou duas leituras locais por evento. */
+async function noEspelho(supabase: any, alvo: Alvo): Promise<{ dados: any | null; temEstorno: boolean }> {
+  const id = String(alvo.objeto.id);
+  const { data, error } = await supabase.from("asaas_cache")
+    .select("dados, estornos").eq("tipo", alvo.tipo).eq("id_asaas", id).maybeSingle();
+  if (error) throw Object.assign(new Error(`asaas_cache select: ${error.message}`), { codigo: String(error.code ?? "") });
+  let temEstorno = alvo.tipo === "payment" && Number(data?.estornos ?? 0) > 0;
+  if (alvo.tipo === "payment" && !temEstorno) {
+    const { count, error: e2 } = await supabase.from("estornos_asaas")
+      .select("id", { count: "exact", head: true }).eq("id_pagamento", id);
+    if (e2) throw Object.assign(new Error(`estornos_asaas select: ${e2.message}`), { codigo: String(e2.code ?? "") });
+    temEstorno = (count ?? 0) > 0;
+  }
+  return { dados: data?.dados ?? null, temEstorno };
 }
 
 /** O id do objeto de qualquer evento, inclusive dos ignorados — para o diário
@@ -255,6 +296,47 @@ async function espelharCliente(supabase: any, idEvento: string, cus: string) {
   }
 }
 
+/**
+ * O estorno em `estornos_asaas` no minuto em que acontece (16/09/2026).
+ *
+ * Só com a cobrança RELIDA na API — é a única que diz com certeza o que há em
+ * `refunds[]` (o evento chega com `refunds: null` até em cobrança estornada), e
+ * por isso a única que pode APAGAR o estorno cancelado (`limparOrfaos`). A
+ * conciliação com a planilha roda em seguida: é um join no Postgres, e estorno é
+ * coisa de poucos por dia. Falha aqui não mexe no evento — a rodada da
+ * `estornos-sync` refaz tudo do espelho três vezes ao dia.
+ */
+async function atualizarEstornos(supabase: any, idEvento: string, pagamento: any) {
+  try {
+    const estornos = estornosDaCobranca(pagamento);
+    const clientes = await clientesDoEspelho(supabase, estornos.map((e) => e.cliente_id ?? ""));
+    await gravarEstornos(supabase, estornos, clientes);
+    await limparOrfaos(supabase, [String(pagamento.id)], new Set(estornos.map((e) => e.id)));
+    await conciliar(supabase);
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    console.error(`asaas-webhook: estornos de ${pagamento?.id} (evento ${idEvento}):`, msg);
+    await fecharEvento(supabase, idEvento, { erro: `estornos: ${msg}` });
+  }
+}
+
+/**
+ * A hora do último aviso, onde as telas já procuram frescor.
+ *
+ * `asaas_sync_estado` era só das varreduras, e a tela de Notas Fiscais dizia
+ * "Asaas lido às 17:07" sobre um espelho que o webhook tinha atualizado há um
+ * minuto. Escopo próprio ('webhook'), só `ultima_incremental`: não é volta
+ * completa de nada, e o `recalcular` da `asaas-sync` não pode confundi-lo com uma.
+ */
+async function carimbar(supabase: any, evento: string, objetoId: string) {
+  const agora = new Date().toISOString();
+  const { error } = await supabase.from("asaas_sync_estado").upsert({
+    escopo: "webhook", ultima_incremental: agora,
+    detalhe: { evento, objeto_id: objetoId, em: agora },
+  }, { onConflict: "escopo" });
+  if (error) console.warn("asaas-webhook: carimbo não gravou:", error.message);
+}
+
 /* --------------------------------- handler -------------------------------- */
 
 Deno.serve(async (req) => {
@@ -311,10 +393,20 @@ Deno.serve(async (req) => {
     let objeto = alvo.objeto;
     let fonte: "evento" | "releitura" = "evento";
 
+    // O que o espelho já sabe — só quem precisa (cobrança e assinatura).
+    const precisaEspelho = alvo.tipo === "payment" || RELER_SEMPRE.has(alvo.tipo);
+    const antes = precisaEspelho ? await noEspelho(supabase, alvo) : { dados: null, temEstorno: false };
+
     const idade = idadeDoEventoMs(ev?.dateCreated);
     const velho = idade != null && idade > IDADE_CONFIAVEL_MS;
-    const semEstornos = EVENTOS_DE_ESTORNO.has(nome) && !Array.isArray(objeto?.refunds);
-    if (velho || semEstornos) {
+    /* O EVENTO CHEGA COM `refunds: null` ATÉ EM COBRANÇA ESTORNADA (medido em
+     * 16/09/2026: 345 eventos, nenhum com o array). Gravar esse retrato por cima
+     * de uma cobrança com estorno parcial zeraria o estorno no espelho — então,
+     * se ela tem estorno aqui ou em `estornos_asaas`, relê-se. É raro: 1.554 das
+     * 61 mil cobranças do espelho. */
+    const semRefunds = alvo.tipo === "payment" && !Array.isArray(objeto?.refunds);
+    const semEstornos = semRefunds && (EVENTOS_DE_ESTORNO.has(nome) || antes.temEstorno);
+    if (velho || semEstornos || RELER_SEMPRE.has(alvo.tipo)) {
       try {
         const atual = await comPrazo(
           asaasGet<any>(`${CAMINHO[alvo.tipo]}/${encodeURIComponent(String(objeto.id))}`),
@@ -327,6 +419,14 @@ Deno.serve(async (req) => {
       }
     }
 
+    /* A RELEITURA FALHOU: o retrato do evento não pode apagar o que o espelho
+     * sabia. Assinatura se mescla por cima do que havia; cobrança conserva o
+     * `refunds[]` do espelho (a `estornos-sync` da fonte "api" corrige, se for o caso). */
+    if (fonte === "evento" && antes.dados) {
+      if (RELER_SEMPRE.has(alvo.tipo)) objeto = { ...antes.dados, ...objeto };
+      if (semRefunds && Array.isArray(antes.dados.refunds)) objeto = { ...objeto, refunds: antes.dados.refunds };
+    }
+
     let linha: Linha;
     if (alvo.tipo === "payment") {
       // Relido, vale o que a API diz AGORA (pode ter sido restaurada depois).
@@ -335,6 +435,10 @@ Deno.serve(async (req) => {
       linha = linhaDaCobranca(objeto, apagada);
     } else if (alvo.tipo === "invoice") {
       linha = mapInvoice(objeto);
+    } else if (alvo.tipo === "subscription") {
+      const apagada = objeto?.deleted === true || (fonte === "evento" && nome === "SUBSCRIPTION_DELETED");
+      linha = mapSubscription(objeto);
+      if (apagada) linha = { ...linha, status: "DELETED" };
     } else {
       linha = mapCustomer(objeto);
     }
@@ -342,8 +446,16 @@ Deno.serve(async (req) => {
     await gravar(supabase, [linha]);
     await fecharEvento(supabase, idEvento, { resultado: "gravado", erro: null });
 
+    /* SEGUNDO PLANO, EM SÉRIE: o cliente primeiro, porque o estorno lê o nome
+     * dele do espelho. Nada aqui lança (cada passo anota o próprio erro). */
     const cus = alvo.tipo !== "customer" && linha.status !== "DELETED" ? String(objeto?.customer ?? "") : "";
-    if (cus) manterVivo(espelharCliente(supabase, idEvento, cus));
+    const estornar = alvo.tipo === "payment" && fonte === "releitura" && linha.status !== "DELETED" &&
+      (antes.temEstorno || estornosDaCobranca(objeto).length > 0);
+    manterVivo((async () => {
+      await carimbar(supabase, nome, String(linha.id_asaas));
+      if (cus) await espelharCliente(supabase, idEvento, cus);
+      if (estornar) await atualizarEstornos(supabase, idEvento, objeto);
+    })());
 
     return json({ ok: true, resultado: "gravado", tipo: alvo.tipo, id_asaas: linha.id_asaas, status: linha.status, fonte });
   } catch (e) {

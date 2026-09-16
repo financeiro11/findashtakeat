@@ -217,8 +217,8 @@ export function NotaSemCobranca({
     }
   };
 
-  /* O espelho enche três vezes por dia; cliente cadastrado hoje de manhã não
-     está nele. A ação `cobranca` da `asaas-sync` busca por documento ou nome, com
+  /* Cliente SEM cobrança não chega pelo webhook (o Asaas não tem aviso de
+     cliente) e só entra no espelho na varredura. A ação `cobranca` da `asaas-sync` busca por documento ou nome, com
      meia dúzia de requisições, e grava o que achar — depois é só reler. */
   const procurarNoAsaas = async () => {
     const q = busca.trim();

@@ -32,6 +32,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
+import { lidoDoAsaas, tituloLidoDoAsaas, type LidoDoAsaas } from "@/lib/asaasFrescor";
 import { comValorExato } from "@/components/ValorExato";
 import {
   FileText, RefreshCw, Loader2, Search, FileCode2, AlertTriangle,
@@ -60,6 +61,7 @@ import {
 import { EmitirAgora, type EmissaoSemCobranca } from "@/components/notas/EmitirAgora";
 import { NotaSemCobranca } from "@/components/notas/NotaSemCobranca";
 import { RefazerNotaOmie } from "@/components/notas/RefazerNotaOmie";
+import { FichaCliente } from "@/components/notas/FichaCliente";
 
 const dorme = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -181,14 +183,19 @@ export default function NotasFiscais() {
   } | null>(null);
   /** A nota do Omie sendo refeita — ver `RefazerNotaOmie`. */
   const [refazendoOmie, setRefazendoOmie] = useState<LinhaNota | null>(null);
+  /* A FICHA DO CLIENTE aberta — o que buscar (documento, nome, pay_/cus_);
+     `null` = fechada. Nasce do `?cliente=` para o link da ficha abrir direto. */
+  const [fichaBusca, setFichaBusca] = useState<string | null>(() => {
+    try { return new URLSearchParams(window.location.search).get("cliente"); } catch { return null; }
+  });
   /* A NOTA QUE NÃO NASCE DE COBRANÇA (14/09/2026) — o diálogo que monta o
    * tomador (do Asaas ou digitado) e entrega o carimbo `avl_…` ao `EmitirAgora`. */
   const [semCobrancaAberto, setSemCobrancaAberto] = useState(false);
   /** Indo buscar no Asaas a cobrança que o espelho ainda não tem — ver `buscarNoAsaas`. */
   const [buscandoAsaas, setBuscandoAsaas] = useState(false);
-  /** Quando a varredura das cobranças do Asaas passou pela última vez — é o que
-   *  explica, na cara, por que a cobrança criada há dez minutos não está na lista. */
-  const [asaasLidoEm, setAsaasLidoEm] = useState<string | null>(null);
+  /** Quando o espelho do Asaas mudou pela última vez (aviso ou varredura) — ver
+   *  `lidoDoAsaas`. */
+  const [asaasLidoEm, setAsaasLidoEm] = useState<LidoDoAsaas | null>(null);
   /* O TEXTO QUE VAI DENTRO DA NOTA, e ele nasce vazio a cada emissão.
    *
    * Mesmo raciocínio da chave da avulsa: observação é do ATO. Lembrar a de
@@ -244,11 +251,13 @@ export default function NotasFiscais() {
       const { data: cfg } = await sb.from("nf_config").select("data_corte").eq("id", 1).maybeSingle();
       setCorte(cfg?.data_corte ?? null);
 
-      // A janela de cobranças (mês passado → próximo mês) é a varredura que
-      // alimenta esta lista; falhar aqui só esconde o horário.
+      // Duas fontes enchem esta lista: o aviso do Asaas (webhook, desde
+      // 15/09/2026) e a varredura da janela, que é a rede. O horário mostrado é o
+      // mais recente dos dois — só a varredura fazia a tela parecer horas mais
+      // velha do que o dado. Falhar aqui só esconde o horário.
       const { data: est } = await sb.from("asaas_sync_estado")
-        .select("ultima_incremental").eq("escopo", "payment:janela").maybeSingle();
-      setAsaasLidoEm(est?.ultima_incremental ?? null);
+        .select("escopo, ultima_incremental").in("escopo", ["payment:janela", "webhook"]);
+      setAsaasLidoEm(lidoDoAsaas(est ?? []));
 
       /* A fila é do dia, não do mês em foco — por isso ela é lida aqui e não
          derivada das linhas. Falhar aqui não pode derrubar a tela: sem o número
@@ -351,9 +360,10 @@ export default function NotasFiscais() {
    * A COBRANÇA QUE AINDA NÃO EXISTE AQUI — o Hub vai buscá-la em vez de dizer
    * "nenhuma cobrança neste recorte".
    *
-   * O espelho do Asaas enche três vezes por dia (07:45, 12:30 e 17:00 BRT). Quem
-   * cria uma cobrança às 10h e vem emitir a nota dela não encontra a linha em
-   * lugar nenhum, e nada na tela diz por quê — a lista simplesmente vem vazia,
+   * Até 15/09/2026 o espelho do Asaas enchia só três vezes por dia. Quem
+   * criava uma cobrança às 10h e vinha emitir a nota dela não encontrava a linha em
+   * lugar nenhum, e nada na tela dizia por quê. Hoje o webhook a traz em segundos,
+   * e isto ficou como plano B para o aviso que não chegou — a lista simplesmente vem vazia,
    * que se lê como "essa cobrança não existe". Foi o que aconteceu em 11/09/2026
    * com a comissão do INFOSS.
    *
@@ -523,10 +533,10 @@ export default function NotasFiscais() {
      *
      * A frase daqui era "antes de continuar, corrija o valor no Asaas se for o
      * caso" — e ela empurrava para fora do Hub a única informação que decide se
-     * vale cancelar: quanto a cobrança vale AGORA. O espelho local é de até 8h
-     * atrás (três varreduras por dia), então o número que a tela mostra pode ser
-     * o velho, e foi exatamente assim que a nota do Banestes saiu com o valor
-     * errado em 02/09/2026.
+     * vale cancelar: quanto a cobrança vale AGORA. O espelho local anda com os
+     * avisos do Asaas (desde 15/09/2026), mas aviso se perde, e antes de uma
+     * escrita fiscal irreversível a leitura ao vivo é barata. Foi com o número
+     * velho que a nota do Banestes saiu com o valor errado em 02/09/2026.
      *
      * Uma requisição resolve. E ela não só informa: `asaas-sync` grava o que
      * leu, então o espelho fica curado antes de qualquer escrita fiscal. Falhar
@@ -990,19 +1000,16 @@ export default function NotasFiscais() {
           title={
             busca.trim().length < 3
               ? "Digite o nome, o CNPJ/CPF ou o id da cobrança (pay_…) para reler no Asaas."
-              : `Relê no Asaas as cobranças de “${busca.trim()}” e traz para cá o que foi criado ou editado desde a última leitura.\n\n` +
-                "O espelho completo roda três vezes por dia (07:45, 12:30 e 17:00). Isto são uma a três requisições, só do que foi digitado."
+              : `Relê no Asaas as cobranças de “${busca.trim()}” e traz para cá o que ainda não estiver na lista.\n\n` +
+                "O Asaas avisa o Hub a cada mudança, então isto é o plano B — para quando um aviso não chegou. São uma a três requisições, só do que foi digitado."
           }
         >
           {buscandoAsaas ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
           Atualizar do Asaas
         </button>
         {asaasLidoEm && (
-          <span
-            className="text-[10px] text-muted-foreground"
-            title="Última varredura automática das cobranças do Asaas. O que foi criado ou editado depois disso só aparece com “Atualizar do Asaas”."
-          >
-            Asaas lido às {new Date(asaasLidoEm).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}
+          <span className="text-[10px] text-muted-foreground" title={tituloLidoDoAsaas(asaasLidoEm)}>
+            Asaas lido às {new Date(asaasLidoEm.em).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}
           </span>
         )}
         <div className="flex flex-wrap gap-1">
@@ -1123,6 +1130,14 @@ export default function NotasFiscais() {
         >
           <FilePlus className="h-3.5 w-3.5" />
           Nota sem cobrança
+        </button>
+        <button
+          onClick={() => setFichaBusca("")}
+          className="flex items-center gap-1.5 rounded-md border border-border px-2 py-1 text-xs font-medium text-foreground hover:bg-muted"
+          title="O cadastro completo de qualquer cliente: Asaas, Omie (o que vai na nota) e Receita lado a lado, com cobranças, notas e o histórico de correções."
+        >
+          <Search className="h-3.5 w-3.5" />
+          Ficha do cliente
         </button>
       </div>
 
@@ -1319,8 +1334,8 @@ export default function NotasFiscais() {
             {!carregando && visiveis.length === 0 && (
               <tr><td colSpan={7} className="p-8 text-center text-muted-foreground">
                 {/* LISTA VAZIA COM BUSCA DIGITADA NÃO É RESPOSTA, é uma pergunta
-                    sem resposta. O espelho do Asaas enche 3×/dia; a cobrança
-                    criada hoje de manhã não está aqui, e "Nenhuma cobrança neste
+                    sem resposta. O aviso do Asaas pode não ter chegado, e
+                    "Nenhuma cobrança neste
                     recorte" se lê como "essa cobrança não existe" — que é o
                     convite direto para ir resolver por fora do Hub. */}
                 {busca.trim() ? (
@@ -1332,9 +1347,9 @@ export default function NotasFiscais() {
                       className="flex items-center gap-1.5 rounded-md border border-primary/40 px-3 py-1.5 text-xs font-medium text-primary hover:bg-primary/5 disabled:opacity-50"
                       title={
                         "Procura no Asaas e traz a cobrança para cá, com o cadastro do cliente junto.\n\n" +
-                        "O espelho local é atualizado três vezes por dia (07:45, 12:30 e 17:00), então " +
-                        "cobrança criada hoje pode ainda não estar aqui. São uma a três requisições, " +
-                        "não a varredura completa."
+                        "O Asaas avisa o Hub a cada cobrança criada ou editada; se ela não está aqui, " +
+                        "o aviso pode não ter chegado, ou a cobrança é de outro mês. São uma a três " +
+                        "requisições, não a varredura completa."
                       }
                     >
                       {buscandoAsaas
@@ -1418,7 +1433,13 @@ export default function NotasFiscais() {
                     />
                   </td>
                   <td className="max-w-[220px] p-2">
-                    <div className="truncate font-medium text-foreground">{l.cliente_asaas ?? "—"}</div>
+                    <button
+                      onClick={() => setFichaBusca(l.cnpj_cpf || l.id_asaas)}
+                      className="block max-w-full truncate text-left font-medium text-foreground hover:text-primary hover:underline"
+                      title="Abrir a ficha do cliente — Asaas, Omie e Receita lado a lado"
+                    >
+                      {l.cliente_asaas ?? "—"}
+                    </button>
                     {/* SEM NOME E SEM DOCUMENTO NÃO É CADASTRO INCOMPLETO — é
                         cadastro ausente daqui. O Asaas não deixa criar cliente
                         sem nome, então a linha em branco só pode significar que
@@ -1765,6 +1786,7 @@ export default function NotasFiscais() {
           setEmitindoAgora({ ids: [id], observacao: obs });
         }}
       />
+      <FichaCliente busca={fichaBusca} onFechar={() => setFichaBusca(null)} />
     </div>
   );
 }

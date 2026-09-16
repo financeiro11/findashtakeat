@@ -1544,6 +1544,13 @@ function bloqueioDeEmissao(
   status: unknown, cobranca: any, estornoRegistrado = false, avulsa = false,
   antesPagamento = false,
 ): string | null {
+  /* APAGADA PRIMEIRO (16/09/2026). A cobrança excluída no Asaas continua com o
+   * último status — RECEIVED inclusive — e só o `deleted: true` diz que ela não
+   * existe mais. Esta porta olhava só o status, e a leitura ao vivo deixava passar
+   * a apagada que o webhook tinha acabado de marcar DELETED no espelho. */
+  if (cobranca?.deleted === true || String(status ?? "").toUpperCase() === "DELETED") {
+    return "Cobrança excluída no Asaas — não há cobrança para faturar.";
+  }
   const st = String(status ?? "").toUpperCase();
   const temRefunds = Array.isArray(cobranca?.refunds) && cobranca.refunds.length > 0;
   if (estornoRegistrado || temRefunds || ESTORNADAS.includes(st)) {
@@ -1598,7 +1605,10 @@ async function curarEspelho(supabase: any, idAsaas: string, cobranca: any) {
   const vencimento = String(cobranca?.dueDate ?? "").slice(0, 10);
   await supabase.from("asaas_cache")
     .update({
-      status: String(cobranca?.status ?? ""),
+      /* APAGADA VIRA 'DELETED', como no `mapPayment` do `_shared/asaas-espelho.ts`.
+       * Copiar só o `status` desfazia a marca que o webhook acabou de gravar: a
+       * cobrança apagada volta da API com o último status que tinha. */
+      status: cobranca?.deleted === true ? "DELETED" : String(cobranca?.status ?? ""),
       dados: cobranca,
       ...(Number.isFinite(valor) && valor > 0 ? { valor } : {}),
       ...(/^\d{4}-\d{2}-\d{2}$/.test(vencimento) ? { data_vencimento: vencimento } : {}),
@@ -1992,6 +2002,73 @@ async function cancelarNotaOmie(supabase: any, opts: {
   return { ok: true, cancelada: true, n_cod_os: nCodOS, nfse_numero: numero };
 }
 
+/**
+ * A OS que se vai reaproveitar ainda é desta cobrança? `null` = sim.
+ * Lida AO VIVO (`ConsultarOS`): o espelho guarda o cliente do dia em que a OS
+ * nasceu, e é justamente essa foto que envelhece. Falha de leitura sobe como
+ * erro — sem saber, não se fatura.
+ */
+async function osNaoBateComACobranca(nCodOS: number, cob: any): Promise<string | null> {
+  const r = await omieCall<any>("servicos/os", "ConsultarOS", { nCodOS });
+  const cab = r?.Cabecalho ?? {};
+  if (String(r?.InfoCadastro?.cFaturada ?? "N") === "S") return null; // faturada não se reaproveita aqui
+  const motivos: string[] = [];
+  const cliOs = Number(cab.nCodCli ?? 0);
+  const cliAgora = Number(cob.n_cod_cli ?? 0);
+  if (cliAgora && cliOs !== cliAgora) {
+    motivos.push(`a OS aponta para o cliente ${cliOs} do Omie e a cobrança hoje é do ${cliAgora}`);
+  }
+  const valorOs = Number(cab.nValorTotal ?? 0);
+  const valorAgora = Number(cob.valor ?? 0);
+  if (valorAgora > 0 && Math.abs(valorOs - valorAgora) > 0.005) {
+    motivos.push(`a OS vale ${valorOs.toFixed(2)} e a cobrança hoje vale ${valorAgora.toFixed(2)}`);
+  }
+  return motivos.length ? motivos.join("; ") : null;
+}
+
+/**
+ * Tira de cena a OS que não é mais desta cobrança, para nascer outra.
+ *
+ * O carimbo é trocado primeiro (`AssociarCodIntOS`) — sem isso o `IncluirOS` da
+ * OS nova é recusado. Depois tenta-se apagar a velha (`ExcluirOS`; ela nunca foi
+ * faturada, então não é documento fiscal). Se o Omie não apagar, ela fica com o
+ * carimbo trocado, fora do corredor, e ninguém a fatura por engano.
+ */
+async function aposentarOsObsoleta(
+  supabase: any, nCodOS: number, id: string, motivo: string,
+  opts: { usuario: string | null; operador: string | null },
+) {
+  const novo = `${id}-obsoleta-${nCodOS}`.slice(0, 60);
+  try {
+    await omieCall<any>("servicos/osp", "AssociarCodIntOS", { nCodOS, cCodIntOS: novo }, { semRetentativa: true });
+  } catch (e) {
+    throw new Error(`A OS ${nCodOS} não é mais desta cobrança (${motivo}) e o Omie não deixou soltar o carimbo: ${mensagemDoOmie(e).slice(0, 200)}. Nada foi faturado.`);
+  }
+  const conferido = await omieCall<any>("servicos/os", "StatusOS", { nCodOS }).then((s) => String(s?.cCodIntOS ?? ""), () => "");
+  if (conferido !== novo) {
+    throw new Error(`A OS ${nCodOS} não é mais desta cobrança (${motivo}); o Omie aceitou trocar o carimbo mas a OS segue com "${conferido || "?"}". Nada foi faturado.`);
+  }
+  let apagada = false;
+  try {
+    await omieCall<any>("servicos/os", "ExcluirOS", { nCodOS }, { semRetentativa: true });
+    apagada = true;
+  } catch { /* fica com o carimbo trocado — ver o comentário da função */ }
+
+  await supabase.from("nf_os_omie").update({
+    c_cod_int_os: novo, carimbo_original: id, cancelada: true,
+    ...(apagada ? { excluida_em: new Date().toISOString() } : {}),
+    atualizado_em: new Date().toISOString(),
+  }).eq("n_cod_os", nCodOS);
+  await supabase.from("nf_emissoes").insert({
+    id_asaas: id, n_cod_os: nCodOS, acao: "soltar_carimbo", resultado: "ok",
+    usuario: opts.usuario, operador: opts.operador,
+    erro: `OS ${nCodOS} aposentada antes de faturar: ${motivo}. Carimbo trocado para ${novo}` +
+      (apagada ? " e a OS foi apagada no Omie." : "; o Omie não a apagou, mas ela saiu do caminho.") +
+      " Uma OS nova nasce com os dados de hoje.",
+    payload: { motivo, carimbo_novo: novo, apagada },
+  }).then(() => {}, () => {});
+}
+
 async function refazerNotaOmie(supabase: any, opts: {
   id: string; justificativa: string; usuario: string | null; operador: string | null;
 }) {
@@ -2147,10 +2224,12 @@ async function refazerNotaOmie(supabase: any, opts: {
 /**
  * A CONFERÊNCIA DA PORTA — o estado da cobrança no Asaas AGORA.
  *
- * Por que não basta o espelho. A `asaas-sync` roda às 12:15 UTC e a emissão às
- * 13h: um estorno registrado às 12:30 chega ao espelho só no dia seguinte, e
- * nesse intervalo o banco diz "recebida" sobre dinheiro que já voltou. A janela
- * é de horas, e o que cabe nela é uma nota fiscal que não se apaga.
+ * Por que não basta o espelho. Até 15/09/2026 ele era de horas atrás (três
+ * varreduras por dia); desde então o `asaas-webhook` o atualiza em segundos.
+ * Mesmo assim a porta fica: evento que se perde, fila do webhook interrompida ou
+ * um estorno registrado no minuto da rodada fariam o banco dizer "recebida"
+ * sobre dinheiro que já voltou — e o que cabe nesse buraco é uma nota fiscal
+ * que não se apaga.
  *
  * O custo é UMA requisição por cobrança — no máximo `teto_rodada` (20) por
  * rodada, contra a cota de 25.000 por 12h do Asaas. É a requisição mais barata
@@ -2190,8 +2269,8 @@ async function conferirNoAsaas(
       /* 2b) O VALOR MUDOU DESDE O ESPELHO — não se emite, cura-se e espera.
        *
        * Mesma lógica da leitura ao vivo do status, aplicada ao número que vai
-       * dentro da nota. O espelho é de 12:15 e a emissão é 13h; entre um e outro
-       * cabe alguém corrigindo o valor da cobrança no Asaas, que é operação
+       * dentro da nota. Mesmo com o webhook, entre o espelho e a rodada cabe
+       * alguém corrigindo o valor da cobrança no Asaas, que é operação
        * rotineira em contrato grande. O que NÃO cabe é emitir com o valor velho:
        * a nota sai autorizada, no valor errado, e o conserto é cancelar com
        * prazo e justificativa.
@@ -3310,6 +3389,20 @@ async function emitirDia(
     for (const cob of liberadas) {
       try {
         let nCodOS = cob.n_cod_os ? Number(cob.n_cod_os) : 0;
+        /* A OS REAPROVEITADA TEM DE SER DESTA COBRANÇA COMO ELA É HOJE (16/09/2026).
+         * A OS guarda o cliente e o valor do dia em que nasceu. A da EMME nasceu em
+         * 09/09 apontando para o cadastro da Vespera; a cobrança trocou de CNPJ no
+         * Asaas, e o reaproveitamento faturou a OS velha — a NFS-e 20468 saiu para
+         * a empresa errada. Conferida ao vivo; divergindo, é aposentada e nasce outra. */
+        if (nCodOS) {
+          const motivo = await osNaoBateComACobranca(nCodOS, cob);
+          if (motivo) {
+            await aposentarOsObsoleta(supabase, nCodOS, String(cob.id_asaas), motivo, {
+              usuario: opts.usuario, operador: opts.operador,
+            });
+            nCodOS = 0;
+          }
+        }
         const acao = nCodOS ? "faturar" : "criar_e_faturar";
         if (!nCodOS) {
           const r = await omieCall<any>("servicos/os", "IncluirOS", montarOS(molde, {
@@ -4978,8 +5071,8 @@ Deno.serve(async (req) => {
      * emissão da certa é o passo seguinte, na tela. Ver `refazerNotaOmie`. Uma
      * cobrança por chamada e nunca por token, pelo mesmo motivo do `refazer`. */
     if (action === "refazer_omie") {
-      if (ehCron) {
-        return json({ erro: "Cancelar nota fiscal é ato de pessoa: não sai por token de sistema." }, 403);
+      if (ehCron && !String(body?.operador ?? "").trim()) {
+        return json({ erro: "Cancelar nota por token exige `operador` — quem mandou cancelar assina no diário." }, 403);
       }
       const id = String(body?.id ?? "").trim();
       if (!id) return json({ erro: "Informe a cobrança (`id`)." }, 400);

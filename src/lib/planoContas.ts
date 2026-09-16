@@ -35,6 +35,22 @@ export type CelulaDepartamento = [string, string | null, string, number, number]
 /** Chave de "sem departamento" — no filtro da RPC e nas linhas da tela. */
 export const SEM_DEPARTAMENTO = "__sem__";
 
+/**
+ * A decisão do financeiro de que a categoria fica fora da DRE/DFC de propósito
+ * (`plano_contas_fora_da_demonstracao`). Cala o aviso "fora do DE-PARA" — não
+ * muda número nenhum.
+ */
+export type MarcaFora = {
+  codigo: string;
+  demonstrativo: "dre" | "dfc";
+  descricao: string | null;
+  motivo: string | null;
+  marcado_por_email: string | null;
+  marcado_em: string;
+};
+
+export const chaveMarca = (codigo: string, tipo: "dre" | "dfc") => `${codigo}|${tipo}`;
+
 export type CategoriaPlano = {
   codigo: string;
   descricao: string;
@@ -810,6 +826,8 @@ export function sinaisDaCategoria(
   base: Base,
   contrapartes: LinhaContraparte[] | null,
   fmt: (v: number) => string,
+  /** o financeiro marcou que a categoria fica fora desta demonstração de propósito */
+  foraDeProposito = false,
 ): Sinal[] {
   const out: Sinal[] = [];
   const c = no.categoria;
@@ -818,7 +836,7 @@ export function sinaisDaCategoria(
 
   if (c && !c.totalizadora && temValor) {
     const rubrica = base === "competencia" ? c.rubrica_dre : c.rubrica_dfc;
-    if (!rubrica) {
+    if (!rubrica && !foraDeProposito) {
       out.push({
         tipo: "sem_de_para", gravidade: "atencao",
         texto: `Fora do DE-PARA da ${base === "competencia" ? "DRE" : "DFC"}: ${fmt(total)} no período não aparecem na demonstração.`,

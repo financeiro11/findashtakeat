@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
-import { ArrowUpRight, Check, Loader2, Lock, PenLine, Tags, TriangleAlert, Unlink } from "lucide-react";
+import { ArrowUpRight, Check, EyeOff, Loader2, Lock, PenLine, Tags, TriangleAlert, Undo2, Unlink } from "lucide-react";
 import { toast } from "sonner";
 import { supabase } from "@/integrations/supabase/client";
 import { cn } from "@/lib/utils";
@@ -13,7 +13,10 @@ import {
   type CelulaConferencia, type SaudeDePara, type SituacaoConferencia,
 } from "@/lib/conferenciaDemonstracao";
 import { linkCelula, tipoDaBase } from "@/lib/linksPlanoContas";
-import { rotuloMes, rotuloPeriodo, type Base, type CategoriaPlano, type Recorte, type ResumoPlano } from "@/lib/planoContas";
+import {
+  chaveMarca, dataCurta, rotuloMes, rotuloPeriodo,
+  type Base, type CategoriaPlano, type MarcaFora, type Recorte, type ResumoPlano,
+} from "@/lib/planoContas";
 import { Secao } from "./comum";
 
 /* ---------------------------------------------------------------------------
@@ -24,7 +27,9 @@ import { Secao } from "./comum";
  *      é valor digitado, mês travado ou algo que ninguém explicou?
  *   2. o DE-PARA ainda aponta para categorias que existem? (nome mudado no Omie
  *      tira a categoria da DRE sem erro)
- *   3. que categorias com dinheiro no período não entram na demonstração?
+ *   3. que categorias com dinheiro no período não entram na demonstração — e,
+ *      delas, quais ficam fora DE PROPÓSITO (a marca do financeiro, que cala o
+ *      aviso aqui e no "O que falta fechar")?
  *
  * A base escolhida no topo decide a demonstração: competência confere a DRE,
  * caixa confere a DFC — é a mesma régua dos dois lados.
@@ -44,12 +49,18 @@ const TOM: Record<SituacaoConferencia, string> = {
   diverge: "bg-amber-50 font-semibold text-amber-900 hover:bg-amber-100",
 };
 
-export function Conferencia({ resumo, recorte, base, rubricaFoco, podeEditar, onAbrirCategoria, onMapear, onLimparRubrica }: {
+const MOTIVO_PADRAO = "Fica fora de propósito";
+
+export function Conferencia({
+  resumo, recorte, base, rubricaFoco, podeEditar, marcas, onMarcasMudaram, onAbrirCategoria, onMapear, onLimparRubrica,
+}: {
   resumo: ResumoPlano;
   recorte: Recorte;
   base: Base;
   rubricaFoco: string | null;
   podeEditar: boolean;
+  marcas: Map<string, MarcaFora>;
+  onMarcasMudaram: () => void;
   onAbrirCategoria: (codigo: string) => void;
   onMapear: (c: CategoriaPlano) => void;
   onLimparRubrica: () => void;
@@ -62,7 +73,9 @@ export function Conferencia({ resumo, recorte, base, rubricaFoco, podeEditar, on
   const [saude, setSaude] = useState<SaudeDePara[]>([]);
   const [soDiverge, setSoDiverge] = useState(true);
   const [recarga, setRecarga] = useState(0);
-  const [apontando, setApontando] = useState<string | null>(null);
+  const [ocupado, setOcupado] = useState<string | null>(null);
+  const [marcando, setMarcando] = useState<{ codigo: string; motivo: string } | null>(null);
+  const [verMarcadas, setVerMarcadas] = useState(false);
 
   useEffect(() => {
     let vivo = true;
@@ -112,12 +125,16 @@ export function Conferencia({ resumo, recorte, base, rubricaFoco, podeEditar, on
       const a = soma.get(c) ?? { v: 0, n: 0 };
       soma.set(c, { v: a.v + Number(v), n: a.n + Number(n) });
     }
-    return resumo.categorias
+    const todas = resumo.categorias
       .filter((c) => !c.totalizadora && !c[campo])
-      .map((c) => ({ c, ...(soma.get(c.codigo) ?? { v: 0, n: 0 }) }))
-      .filter((x) => Math.abs(x.v) >= 0.005)
+      .map((c) => ({ c, ...(soma.get(c.codigo) ?? { v: 0, n: 0 }), marca: marcas.get(chaveMarca(c.codigo, tipo)) ?? null }))
       .sort((a, b) => Math.abs(b.v) - Math.abs(a.v));
-  }, [resumo, recorte.meses, tipo]);
+    return {
+      pendentes: todas.filter((x) => !x.marca && Math.abs(x.v) >= 0.005),
+      // As marcadas aparecem todas, com ou sem valor no período — a decisão é o registro.
+      marcadas: todas.filter((x) => x.marca),
+    };
+  }, [resumo, recorte.meses, tipo, marcas]);
 
   const linhas = useMemo(() => {
     let l = conferencia?.linhas ?? [];
@@ -128,16 +145,44 @@ export function Conferencia({ resumo, recorte, base, rubricaFoco, podeEditar, on
 
   async function apontar(s: SaudeDePara) {
     if (!s.sugestao_descricao) return;
-    setApontando(s.id);
+    setOcupado(s.id);
     const { error } = await db.from("omie_dre_mapa")
       .update({ codigo_categoria: s.sugestao_descricao, descricao_categoria: s.sugestao_descricao, updated_at: new Date().toISOString() })
       .eq("id", s.id);
-    setApontando(null);
+    setOcupado(null);
     if (error) { toast.error(error.message); return; }
     toast.success(`"${s.codigo_categoria}" agora aponta para "${s.sugestao_descricao}".`, {
       description: `A ${s.demonstrativo === "dfc" ? "DFC" : "DRE"} muda depois de recalcular (botão Recalcular na tela dela).`,
     });
     setRecarga((n) => n + 1);
+  }
+
+  async function marcar(c: CategoriaPlano, motivo: string) {
+    setOcupado(c.codigo);
+    const { data: u } = await supabase.auth.getUser();
+    const { error } = await db.from("plano_contas_fora_da_demonstracao").upsert({
+      codigo: c.codigo,
+      demonstrativo: tipo,
+      descricao: c.descricao,
+      motivo: motivo.trim() || MOTIVO_PADRAO,
+      marcado_por: u?.user?.id ?? null,
+      marcado_por_email: u?.user?.email ?? null,
+      marcado_em: new Date().toISOString(),
+    }, { onConflict: "codigo,demonstrativo" });
+    setOcupado(null);
+    if (error) { toast.error(`Não consegui marcar: ${error.message}`); return; }
+    setMarcando(null);
+    toast.success(`${c.descricao} fica fora da ${tipo.toUpperCase()} de propósito — o aviso some daqui e do "O que falta fechar".`);
+    onMarcasMudaram();
+  }
+
+  async function desmarcar(m: MarcaFora) {
+    setOcupado(m.codigo);
+    const { error } = await db.from("plano_contas_fora_da_demonstracao").delete().eq("codigo", m.codigo).eq("demonstrativo", m.demonstrativo);
+    setOcupado(null);
+    if (error) { toast.error(`Não consegui desmarcar: ${error.message}`); return; }
+    toast.success(`${m.descricao ?? m.codigo} volta a ser acusada como fora da ${m.demonstrativo.toUpperCase()}.`);
+    onMarcasMudaram();
   }
 
   const nome = tipo.toUpperCase();
@@ -224,8 +269,8 @@ export function Conferencia({ resumo, recorte, base, rubricaFoco, podeEditar, on
       <Secao
         titulo="DE-PARA que perdeu a categoria"
         nota={saudeDoTipo.orfas.length
-          ? `${saudeDoTipo.orfas.length} linha(s) da ${nome} apontam para nomes que não existem mais no Omie — o que cair nelas fica fora da demonstração`
-          : `Toda linha do DE-PARA da ${nome} aponta para uma categoria que existe`}
+          ? `${saudeDoTipo.orfas.length} linha(s) ativas da ${nome} apontam para nomes que não existem mais no Omie`
+          : `Toda linha ativa do DE-PARA da ${nome} aponta para uma categoria que existe`}
       >
         {saudeDoTipo.orfas.length > 0 && (
           <ul className="divide-y divide-border/60">
@@ -240,13 +285,13 @@ export function Conferencia({ resumo, recorte, base, rubricaFoco, podeEditar, on
                       <span className="text-muted-foreground">→ {s.rubrica}</span>
                     </div>
                     <div className="text-[11px] text-muted-foreground">
-                      {!s.sugestao_codigo ? "Sem categoria parecida no Omie — provavelmente uma categoria antiga; a linha pode sair."
+                      {!s.sugestao_codigo ? "Sem categoria parecida no Omie."
                         : <>
                             {s.sugestao_motivo === "pontuacao" ? "Só a pontuação mudou: " : "Mesmo nome, outro número — confira: "}
                             <button type="button" onClick={() => onAbrirCategoria(s.sugestao_codigo!)} className="font-medium text-foreground hover:underline">
                               {s.sugestao_descricao}
                             </button>
-                            {s.sugestao_ja_mapeada && " · ela já tem linha própria no DE-PARA, esta é duplicata"}
+                            {s.sugestao_ja_mapeada && " · ela já tem linha própria no DE-PARA"}
                           </>}
                     </div>
                   </div>
@@ -254,46 +299,102 @@ export function Conferencia({ resumo, recorte, base, rubricaFoco, podeEditar, on
                     <button
                       type="button"
                       onClick={() => apontar(s)}
-                      disabled={apontando === s.id}
+                      disabled={ocupado === s.id}
                       className="rounded-md border border-border bg-card px-2 py-0.5 text-[11px] font-medium hover:bg-secondary disabled:opacity-50"
                     >
-                      {apontando === s.id ? <Loader2 className="h-3 w-3 animate-spin" /> : "Apontar para ela"}
+                      {ocupado === s.id ? <Loader2 className="h-3 w-3 animate-spin" /> : "Apontar para ela"}
                     </button>
                   )}
                 </li>
               ))}
           </ul>
         )}
-        {saudeDoTipo.orfas.length > 0 && (
-          <p className="mt-2 text-[11px] text-muted-foreground">
-            As que não têm par e as duplicatas se removem no painel DE-PARA da tela da {nome}.
-          </p>
-        )}
+        <p className={cn("text-[11px] text-muted-foreground", saudeDoTipo.orfas.length > 0 && "mt-2")}>
+          As órfãs sem conserto ficam arquivadas, com o motivo, no painel DE-PARA da tela da {nome} (botão “Arquivadas”).
+        </p>
       </Secao>
 
       <Secao
         titulo={`Com valor em ${periodo} e fora da ${nome}`}
-        nota={fora.length ? `${fora.length} categoria(s) · transferência, aporte e CAPEX costumam ficar fora de propósito` : undefined}
+        nota={fora.pendentes.length
+          ? `${fora.pendentes.length} categoria(s) sem decisão · marque as que ficam fora de propósito para o aviso sumir`
+          : `Nenhuma categoria com valor fora da ${nome} sem decisão`}
+        acao={fora.marcadas.length > 0 && (
+          <button type="button" onClick={() => setVerMarcadas((v) => !v)} className="inline-flex items-center gap-1 text-[11.5px] font-medium text-primary hover:underline">
+            <EyeOff className="h-3 w-3" /> {verMarcadas ? "Esconder" : "Ver"} as {fora.marcadas.length} fora de propósito
+          </button>
+        )}
       >
-        {fora.length === 0 ? (
-          <p className="text-[12.5px] text-muted-foreground">Toda categoria com lançamento no período entra na {nome}.</p>
-        ) : (
+        {fora.pendentes.length > 0 && (
           <div className="overflow-x-auto">
             <table className="w-full text-[12px]">
               <tbody>
-                {fora.map(({ c, v, n }) => (
-                  <tr key={c.codigo} className="border-t border-border/60 first:border-t-0">
+                {fora.pendentes.map(({ c, v, n }) => (
+                  <tr key={c.codigo} className="border-t border-border/60 align-top first:border-t-0">
                     <td className="max-w-[340px] py-1.5 pr-2">
                       <button type="button" onClick={() => onAbrirCategoria(c.codigo)} className="block truncate text-left font-medium text-foreground hover:underline">
                         {c.descricao}
                       </button>
                       <div className="font-mono text-[10px] text-muted-foreground">{c.codigo} · {n} lanç.</div>
+                      {marcando?.codigo === c.codigo && (
+                        <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+                          <input
+                            autoFocus
+                            value={marcando.motivo}
+                            onChange={(e) => setMarcando({ codigo: c.codigo, motivo: e.target.value })}
+                            onKeyDown={(e) => { if (e.key === "Enter") void marcar(c, marcando.motivo); if (e.key === "Escape") setMarcando(null); }}
+                            placeholder="Por que fica fora?"
+                            className="h-7 w-[260px] rounded-md border border-input bg-background px-2 text-[12px]"
+                          />
+                          <button type="button" onClick={() => marcar(c, marcando.motivo)} disabled={ocupado === c.codigo}
+                            className="rounded-md bg-foreground px-2 py-1 text-[11px] font-medium text-background disabled:opacity-50">
+                            {ocupado === c.codigo ? <Loader2 className="h-3 w-3 animate-spin" /> : "Confirmar"}
+                          </button>
+                          <button type="button" onClick={() => setMarcando(null)} className="text-[11px] text-muted-foreground hover:underline">Cancelar</button>
+                        </div>
+                      )}
                     </td>
                     <td className="num py-1.5 text-right">{abrev(v)}</td>
+                    <td className="whitespace-nowrap py-1.5 pl-3 text-right">
+                      {podeEditar && (
+                        <div className="inline-flex gap-1.5">
+                          <button type="button" onClick={() => onMapear(c)} className="inline-flex items-center gap-1 rounded-md border border-border bg-card px-2 py-0.5 text-[11px] font-medium hover:bg-secondary">
+                            <Tags className="h-3 w-3" /> Escolher a linha
+                          </button>
+                          <button type="button" onClick={() => setMarcando({ codigo: c.codigo, motivo: MOTIVO_PADRAO })} className="inline-flex items-center gap-1 rounded-md border border-border bg-card px-2 py-0.5 text-[11px] font-medium hover:bg-secondary">
+                            <EyeOff className="h-3 w-3" /> Fora de propósito
+                          </button>
+                        </div>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+
+        {verMarcadas && fora.marcadas.length > 0 && (
+          <div className={cn("overflow-x-auto", fora.pendentes.length > 0 && "mt-3 border-t border-border pt-2")}>
+            <div className="mb-1 text-[10.5px] font-bold uppercase tracking-wider text-muted-foreground">Fora de propósito</div>
+            <table className="w-full text-[12px]">
+              <tbody>
+                {fora.marcadas.map(({ c, v, marca }) => (
+                  <tr key={c.codigo} className="border-t border-border/60 align-top text-muted-foreground first:border-t-0">
+                    <td className="max-w-[340px] py-1.5 pr-2">
+                      <button type="button" onClick={() => onAbrirCategoria(c.codigo)} className="block truncate text-left text-foreground/80 hover:underline">
+                        {c.descricao}
+                      </button>
+                      <div className="text-[10.5px]">
+                        <span className="font-mono">{c.codigo}</span> · “{marca!.motivo ?? MOTIVO_PADRAO}” · {marca!.marcado_por_email ?? "—"} em {dataCurta(marca!.marcado_em)}
+                      </div>
+                    </td>
+                    <td className="num py-1.5 text-right">{Math.abs(v) >= 0.005 ? abrev(v) : "—"}</td>
                     <td className="py-1.5 pl-3 text-right">
                       {podeEditar && (
-                        <button type="button" onClick={() => onMapear(c)} className="inline-flex items-center gap-1 rounded-md border border-border bg-card px-2 py-0.5 text-[11px] font-medium hover:bg-secondary">
-                          <Tags className="h-3 w-3" /> Escolher a linha
+                        <button type="button" onClick={() => desmarcar(marca!)} disabled={ocupado === c.codigo}
+                          className="inline-flex items-center gap-1 rounded-md border border-border bg-card px-2 py-0.5 text-[11px] font-medium hover:bg-secondary disabled:opacity-50">
+                          <Undo2 className="h-3 w-3" /> Voltar a acusar
                         </button>
                       )}
                     </td>

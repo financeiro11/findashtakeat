@@ -11,6 +11,7 @@ import { abrev } from "@/pages/cartao/valores";
 import {
   FILTROS_ARVORE, PERIODOS, SEM_DEPARTAMENTO, contarFiltros, departamentosDaCategoria, ehPosicaoLivre, inicioDosDados,
   montarArvore, montarDepartamentos, montarRecorte, nosDaArvore, passaNoFiltro, rotuloMes, rotuloPeriodo, situacaoCadastro,
+  chaveMarca, type MarcaFora,
   type Base, type CategoriaPlano, type FiltroArvore, type LinhaDepartamento, type NoPlano, type Periodo, type ResumoPlano, type Secao,
 } from "@/lib/planoContas";
 import { AnaliseCategoria } from "./plano-contas/AnaliseCategoria";
@@ -20,6 +21,7 @@ import { AnaliseDepartamento, PanoramaDepartamentos } from "./plano-contas/Anali
 import { EditarCategoria, type Operacao } from "./plano-contas/EditarCategoria";
 import { Panorama } from "./plano-contas/Panorama";
 import { Variacao } from "./plano-contas/comum";
+import { tipoDaBase } from "@/lib/linksPlanoContas";
 
 /* ---------------------------------------------------------------------------
  * Governança › Plano de contas.
@@ -99,6 +101,21 @@ export default function PlanoContas() {
   const [recarga, setRecarga] = useState(0);
   const [operacao, setOperacao] = useState<Operacao | null>(null);
   const [mapeando, setMapeando] = useState<CategoriaPlano | null>(null);
+  const [marcas, setMarcas] = useState<Map<string, MarcaFora>>(new Map());
+  const [recargaMarcas, setRecargaMarcas] = useState(0);
+
+  /* As categorias que o financeiro decidiu deixar fora da DRE/DFC. Acessório: se a
+     leitura falhar, os avisos de "fora do DE-PARA" voltam a aparecer — nada some. */
+  useEffect(() => {
+    let vivo = true;
+    (supabase.from("plano_contas_fora_da_demonstracao" as never) as unknown as {
+      select: (c: string) => PromiseLike<{ data: MarcaFora[] | null; error: unknown }>;
+    }).select("codigo, demonstrativo, descricao, motivo, marcado_por_email, marcado_em").then(({ data, error }) => {
+      if (!vivo) return;
+      setMarcas(error ? new Map() : new Map((data ?? []).map((m) => [chaveMarca(m.codigo, m.demonstrativo), m])));
+    });
+    return () => { vivo = false; };
+  }, [recargaMarcas]);
   const selecionado = params.get("categoria");
   const departamentoSel = params.get("departamento");
 
@@ -190,6 +207,16 @@ export default function PlanoContas() {
   const totalCategorias = resumo?.categorias.filter((c) => !c.totalizadora).length ?? 0;
   const totalGrupos = resumo?.categorias.filter((c) => c.totalizadora).length ?? 0;
 
+  /* O triângulo da árvore fala da demonstração da base em foco, e cala a categoria
+     que o financeiro marcou como fora de propósito. */
+  const tipoAtual = tipoDaBase(base);
+  const semDeParaNo = (n: NoPlano) => {
+    const c = n.categoria;
+    if (!c || c.totalizadora || Math.abs(n.stats.total) < 0.005) return false;
+    const rubrica = tipoAtual === "dre" ? c.rubrica_dre : c.rubrica_dfc;
+    return !rubrica && !marcas.has(chaveMarca(c.codigo, tipoAtual));
+  };
+
   const alternar = (codigo: string) =>
     setFechados((s) => {
       const n = new Set(s);
@@ -252,6 +279,8 @@ export default function PlanoContas() {
           base={base}
           rubricaFoco={params.get("rubrica")}
           podeEditar={podeEditar}
+          marcas={marcas}
+          onMarcasMudaram={() => setRecargaMarcas((n) => n + 1)}
           onAbrirCategoria={abrirCategoria}
           onMapear={setMapeando}
           onLimparRubrica={() => {
@@ -353,7 +382,7 @@ export default function PlanoContas() {
                               )}
                             />
                             {aberto && filhos.map((f) => (
-                              <LinhaArvore key={f.codigo} no={f} nivel={1} ativo={selecionado === f.codigo} onClick={() => selecionar(f.codigo)} />
+                              <LinhaArvore key={f.codigo} no={f} nivel={1} ativo={selecionado === f.codigo} onClick={() => selecionar(f.codigo)} semDePara={semDeParaNo(f)} />
                             ))}
                           </div>
                         );
@@ -391,12 +420,13 @@ export default function PlanoContas() {
                 no={noSelecionado} base={base} recorte={recorte} hoje={resumo.hoje} onSelecionar={selecionar}
                 podeEditar={podeEditar} onEditar={setOperacao}
                 onMapear={podeEditar ? setMapeando : undefined}
+                marcas={marcas}
                 cadastro={(resumo.cadastro ?? []).filter((a) => a.codigo === noSelecionado.codigo || a.superior === noSelecionado.codigo)}
                 departamentos={departamentosDaAberta}
                 nomesDepartamento={nomesDepartamento}
               />
             ) : (
-              <Panorama folhas={folhas} base={base} recorte={recorte} onSelecionar={selecionar} />
+              <Panorama folhas={folhas} base={base} recorte={recorte} onSelecionar={selecionar} marcas={marcas} />
             )}
           </main>
         </div>
@@ -424,11 +454,12 @@ export default function PlanoContas() {
   );
 }
 
-function LinhaArvore({ no, nivel, ativo, onClick, antes, depois }: {
+function LinhaArvore({ no, nivel, ativo, onClick, antes, depois, semDePara = false }: {
   no: NoPlano; nivel: 0 | 1; ativo: boolean; onClick: () => void; antes?: React.ReactNode; depois?: React.ReactNode;
+  /** com valor, fora da demonstração em foco e sem a marca de "fora de propósito" */
+  semDePara?: boolean;
 }) {
   const c = no.categoria;
-  const semDePara = !!c && !c.totalizadora && !c.rubrica_dre && !c.rubrica_dfc && Math.abs(no.stats.total) >= 0.005;
   const situacao = nivel === 1 ? situacaoCadastro(no) : null;
   const livre = !!c && ehPosicaoLivre(c.descricao);
   return (

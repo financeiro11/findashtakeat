@@ -17,6 +17,7 @@ import { abrevStr, intStr } from "@/pages/cartao/fmt";
 import {
   SEM_DEPARTAMENTO, concentracao, coberturaDepartamento, dataCurta, ehPosicaoLivre, fimDoMes, noSentido, porStatus,
   rotularLancamento, rotuloMes, rotuloPeriodo, sinaisDaCategoria,
+  chaveMarca, type MarcaFora,
   type AlteracaoCadastro, type Base, type CategoriaPlano, type SuspeitoReclassificacao, type LancamentoPlano, type LancamentosPlano, type LinhaContraparte,
   type LinhaDepartamentoDaCategoria, type NoPlano, type Recorte, type RotuloLancamento,
 } from "@/lib/planoContas";
@@ -37,7 +38,7 @@ const REGRA_NOTA: Record<string, { rotulo: string; dica: string }> = {
 type Linha = { l: LancamentoPlano } & RotuloLancamento;
 
 export function AnaliseCategoria({
-  no, base, recorte, hoje, onSelecionar, podeEditar, onEditar, cadastro, departamentos, nomesDepartamento, onMapear,
+  no, base, recorte, hoje, onSelecionar, podeEditar, onEditar, cadastro, departamentos, nomesDepartamento, onMapear, marcas,
 }: {
   no: NoPlano;
   base: Base;
@@ -54,6 +55,8 @@ export function AnaliseCategoria({
   nomesDepartamento: Map<string, string>;
   /** abre o DE-PARA desta categoria; ausente para quem não pode editar */
   onMapear?: (c: CategoriaPlano) => void;
+  /** as marcas "fora de propósito", por `codigo|dre|dfc` */
+  marcas: ReadonlyMap<string, MarcaFora>;
 }) {
   const mapa = useApelidos();
   const [dados, setDados] = useState<LancamentosPlano | null>(null);
@@ -106,7 +109,11 @@ export function AnaliseCategoria({
     [dados, nomePorLancamento, no.despesa, recorte.meses, anteriores],
   );
 
-  const sinais = useMemo(() => sinaisDaCategoria(no, base, contrapartes, abrevStr), [no, base, contrapartes]);
+  const marcaAtual = marcas.get(chaveMarca(no.codigo, tipoDaBase(base)));
+  const sinais = useMemo(
+    () => sinaisDaCategoria(no, base, contrapartes, abrevStr, !!marcaAtual),
+    [no, base, contrapartes, marcaAtual],
+  );
   const status = useMemo(
     () => (dados ? porStatus(dados.lancamentos, no.despesa, recorte.meses) : []),
     [dados, no.despesa, recorte.meses],
@@ -172,8 +179,8 @@ export function AnaliseCategoria({
         </div>
         {c && !ehGrupo && (
           <div className="mt-1.5 flex flex-wrap items-center gap-x-4 gap-y-1 text-[12px] text-muted-foreground">
-            <RubricaLink tipo="dre" rubrica={c.rubrica_dre} mes={mesLink} codigo={c.codigo} />
-            <RubricaLink tipo="dfc" rubrica={c.rubrica_dfc} mes={mesLink} codigo={c.codigo} />
+            <RubricaLink tipo="dre" rubrica={c.rubrica_dre} mes={mesLink} codigo={c.codigo} marca={marcas.get(chaveMarca(c.codigo, "dre"))} />
+            <RubricaLink tipo="dfc" rubrica={c.rubrica_dfc} mes={mesLink} codigo={c.codigo} marca={marcas.get(chaveMarca(c.codigo, "dfc"))} />
             {onMapear && !ehPosicaoLivre(c.descricao) && (
               <button
                 type="button"
@@ -492,10 +499,17 @@ function PorDepartamento({ dados, comBase, despesa }: {
 
 /* ───────────────────────── Ligações com a DRE/DFC ───────────────────────── */
 
-function RubricaLink({ tipo, rubrica, mes, codigo }: {
-  tipo: "dre" | "dfc"; rubrica: string | null; mes: string; codigo: string;
+function RubricaLink({ tipo, rubrica, mes, codigo, marca }: {
+  tipo: "dre" | "dfc"; rubrica: string | null; mes: string; codigo: string; marca?: MarcaFora;
 }) {
   const nome = tipo.toUpperCase();
+  if (!rubrica && marca) {
+    return (
+      <span title={`${marca.motivo ?? "Fica fora de propósito"} — ${marca.marcado_por_email ?? "financeiro"} em ${dataCurta(marca.marcado_em)}`}>
+        {nome} → <span className="text-muted-foreground">fora de propósito</span>
+      </span>
+    );
+  }
   if (!rubrica) return <span>{nome} → <span className="text-warn">fora do DE-PARA</span></span>;
   return (
     <span>

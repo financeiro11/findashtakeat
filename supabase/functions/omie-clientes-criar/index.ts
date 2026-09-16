@@ -984,6 +984,20 @@ async function clientesSemCobranca(supabase: any, ids: string[]) {
 }
 
 /**
+ * Registra a conferência do cadastro para a esteira do cron (migration
+ * 20260916140000): com qual endereço do Asaas o Omie foi conferido. A esteira
+ * segura a cobrança cujo cliente mudou de endereço desde então.
+ */
+async function marcarConferencia(
+  supabase: any, doc: string, idCustomer: string, resultado: string, detalhe: string | null,
+) {
+  const { error } = await supabase.rpc("nfse_cadastro_marcar", {
+    p_doc: doc, p_id_customer: idCustomer, p_resultado: resultado, p_detalhe: detalhe,
+  });
+  if (error) console.error(`nfse_cadastro_marcar ${doc}: ${error.message}`);
+}
+
+/**
  * A ESCRITA, num lugar só — porque agora ela tem dois chamadores.
  *
  * O diálogo (uma pessoa que leu o diff e clicou) e a rodada diária
@@ -2175,6 +2189,13 @@ Deno.serve(async (req) => {
             operador: quem?.email ?? (ehCron ? "cron" : null),
           });
           const om: any = (feito as any).omie ?? {};
+          /* A conferência vira assinatura para a esteira do cron — só de cliente
+             do Asaas: a nota sem cobrança traz endereço digitado, não o do cliente. */
+          if (!semCobranca.length && String(c.id_customer ?? "").startsWith("cus_")) {
+            await marcarConferencia(supabase, c.doc, c.id_customer,
+              !cadastro ? "sem_proposta" : om.ok === true ? "ok" : om.nada_a_propor ? "igual" : "falhou",
+              om.motivo ?? bloqueio ?? null);
+          }
           if (cadastro && om.ok === false && !om.nada_a_propor) {
             saida.push({
               ...base, situacao: "falhou", n_cod_cli: c.n_cod_cli,
@@ -2233,6 +2254,9 @@ Deno.serve(async (req) => {
             });
           }
           saida.push({ ...base, situacao: "criado", n_cod_cli: codigo || null, fonte_endereco: cadastro.fonte });
+          if (!semCobranca.length && String(c.id_customer ?? "").startsWith("cus_")) {
+            await marcarConferencia(supabase, c.doc, c.id_customer, "ok", `criado com fonte ${cadastro.fonte}`);
+          }
         } catch (e) {
           const msg = e instanceof Error ? e.message : String(e);
           if (ehDocumentoRepetido(msg)) {
@@ -2308,6 +2332,81 @@ Deno.serve(async (req) => {
       if (!cadastro) return json({ status: "erro", erro: `Sem endereço confiável para escrever: ${bloqueio}.` }, 422);
 
       return json({ status: "ok", doc, fonte: cadastro.fonte, resultado: feito });
+    }
+
+    /* --------------------------- sincronizar_fila -------------------------- */
+    /* A CONFERÊNCIA QUE A ESTEIRA DO CRON ESPERA (16/09/2026) — ver a migration
+     * 20260916140000. Pega as cobranças da fila de emissão cujo cliente mudou de
+     * endereço no Asaas desde a última conferência e alinha o cadastro do Omie
+     * com `aplicarCorrecao`, a mesma régua da tela. Três falhas seguidas param as
+     * tentativas: a cobrança continua segura (não sai com endereço velho) e o
+     * cliente aparece em `precisam_de_gente`. */
+    if (action === "sincronizar_fila") {
+      const inicio = Date.now();
+      const PRAZO = 100_000;
+      fimDaLeva = inicio + PRAZO;
+
+      let ids: string[] = Array.isArray(body?.ids) ? body.ids.map(String) : [];
+      if (!ids.length) {
+        const { data: fila, error: eFila } = await supabase.rpc("notas_fiscais_fila_emissao", { p_limite: 300 });
+        if (eFila) return json({ status: "erro", erro: `fila: ${eFila.message}` }, 500);
+        ids = (fila ?? []).map((f: any) => String(f.id_asaas));
+      }
+      if (!ids.length) return json({ status: "ok", pendentes: 0 });
+
+      const { data: pend, error: ePend } = await supabase.rpc("nfse_cadastro_a_sincronizar", { p_ids: ids });
+      if (ePend) return json({ status: "erro", erro: `nfse_cadastro_a_sincronizar: ${ePend.message}` }, 500);
+
+      // Um cliente por conferência, com todas as cobranças dele na fila.
+      const porCliente = new Map<string, any>();
+      for (const p of (pend ?? []) as any[]) {
+        const k = `${p.doc}|${p.id_customer}`;
+        if (!porCliente.has(k)) porCliente.set(k, { ...p, ids: [] as string[] });
+        porCliente.get(k).ids.push(String(p.id_asaas));
+      }
+      const alvos = [...porCliente.values()];
+      const desistidos = alvos.filter((a) => Number(a.tentativas) >= 3);
+      const aConferir = alvos.filter((a) => Number(a.tentativas) < 3);
+
+      const { data: cus } = aConferir.length
+        ? await supabase.from("asaas_cache").select("id_asaas, dados")
+          .eq("tipo", "customer").in("id_asaas", aConferir.map((a) => a.id_customer))
+        : { data: [] as any[] };
+      const dadosPor = new Map((cus ?? []).map((c: any) => [c.id_asaas, c.dados]));
+
+      const saida: any[] = [];
+      let interrompido = false;
+      for (const a of aConferir) {
+        if (Date.now() - inicio > PRAZO) { interrompido = true; break; }
+        const dados: any = dadosPor.get(a.id_customer) ?? {};
+        const { feito, cadastro, bloqueio } = await aplicarCorrecao(supabase, {
+          doc: a.doc, nome: limpo(dados?.name) || a.doc,
+          n_cod_cli: a.n_cod_cli ? Number(a.n_cod_cli) : null,
+          id_customer: a.id_customer, dadosAsaas: dados,
+        }, {
+          alvos: ["omie"], ids: a.ids, origem: "emissao",
+          operador: body?.operador ?? (ehCron ? "cron" : quem?.email ?? null),
+        });
+        const om: any = (feito as any).omie ?? {};
+        const resultado = !cadastro ? "sem_proposta" : om.ok === true ? "ok" : om.nada_a_propor ? "igual" : "falhou";
+        await marcarConferencia(supabase, a.doc, a.id_customer, resultado, om.motivo ?? bloqueio ?? null);
+        saida.push({
+          doc: a.doc, cobrancas: a.ids.length, resultado,
+          motivo: om.motivo ?? bloqueio ?? null, escrito: om.escrito ?? null,
+        });
+        await dorme(700);
+      }
+
+      return json({
+        status: "ok",
+        pendentes: alvos.length,
+        conferidos: saida.length,
+        atualizados: saida.filter((s) => s.resultado === "ok").length,
+        falhas: saida.filter((s) => s.resultado === "falhou").length,
+        precisam_de_gente: desistidos.map((d) => ({ doc: d.doc, cobrancas: d.ids })),
+        interrompido,
+        resultados: saida,
+      });
     }
 
     /* ---------------------------- editar_cadastro -------------------------- */

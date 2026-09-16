@@ -83,7 +83,8 @@
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.0";
 import { requireUser } from "../_shared/auth.ts";
-import { asaasPut } from "../_shared/asaas.ts";
+import { asaasGet, asaasPut } from "../_shared/asaas.ts";
+import { gravar, mapCustomer } from "../_shared/asaas-espelho.ts";
 import { consultarCnpjPublico } from "../_shared/cnpj-publico.ts";
 import { contatoDoCnpj } from "../_shared/cnpj-contato.ts";
 import { clienteServico } from "../_shared/firecrawl.ts";
@@ -2332,6 +2333,198 @@ Deno.serve(async (req) => {
       if (!cadastro) return json({ status: "erro", erro: `Sem endereço confiável para escrever: ${bloqueio}.` }, 422);
 
       return json({ status: "ok", doc, fonte: cadastro.fonte, resultado: feito });
+    }
+
+    /* ----------------------------- ficha_cliente --------------------------- */
+    /* A FICHA COMPLETA DE UM CLIENTE (16/09/2026). SÓ LÊ — fora espelhar o que o
+     * Asaas responder, que é leitura também.
+     *
+     * O pedido veio depois de duas notas saírem com dado que alguém já tinha
+     * corrigido: a AEVO (endereço velho no Omie) e a EMME (a cobrança trocou de
+     * CNPJ no Asaas e a OS antiga apontava para a Vespera). Quem corrige precisa
+     * VER, num lugar só, o que cada sistema diz — e qual deles a nota usa: o Omie.
+     *
+     * Entrada: { busca } — CNPJ/CPF, nome, `pay_…` ou `cus_…`. Nome devolve
+     * `candidatos`; documento devolve a ficha. */
+    if (action === "ficha_cliente") {
+      const termo = limpo(body?.busca ?? body?.doc ?? "");
+      let doc = /^(pay|cus)_/.test(termo) ? "" : soDigitos(termo);
+
+      if (/^(pay|cus)_/.test(termo)) {
+        let cus = termo;
+        if (termo.startsWith("pay_")) {
+          const { data: p } = await supabase.from("asaas_cache").select("dados")
+            .eq("tipo", "payment").eq("id_asaas", termo).maybeSingle();
+          cus = String(p?.dados?.customer ?? "");
+        }
+        const { data: c } = cus
+          ? await supabase.from("asaas_cache").select("dados").eq("tipo", "customer").eq("id_asaas", cus).maybeSingle()
+          : { data: null };
+        doc = soDigitos(c?.dados?.cpfCnpj);
+        if (!doc) return json({ status: "erro", erro: `Não achei o cliente de ${termo} no espelho do Asaas.` }, 404);
+      }
+
+      if (doc.length !== 11 && doc.length !== 14) {
+        const nomeBusca = termo.replace(/[%_,()]/g, " ").trim();
+        if (nomeBusca.length < 3) {
+          return json({ status: "erro", erro: "Digite o nome, o CNPJ/CPF ou o id (pay_… / cus_…)." }, 400);
+        }
+        const padrao = `%${nomeBusca}%`;
+        const [{ data: doAsaas }, { data: doOmie }] = await Promise.all([
+          supabase.from("asaas_cache").select("dados").eq("tipo", "customer").ilike("dados->>name", padrao).limit(15),
+          supabase.from("omie_clientes_endereco").select("cnpj_cpf, nome").ilike("nome", padrao).limit(15),
+        ]);
+        const vistos = new Map<string, { doc: string; nome: string; fonte: string }>();
+        for (const c of doAsaas ?? []) {
+          const d = soDigitos(c?.dados?.cpfCnpj);
+          if (d && !vistos.has(d)) vistos.set(d, { doc: d, nome: limpo(c?.dados?.name), fonte: "Asaas" });
+        }
+        for (const o of doOmie ?? []) {
+          const d = soDigitos(o?.cnpj_cpf);
+          if (d && !vistos.has(d)) vistos.set(d, { doc: d, nome: limpo(o?.nome), fonte: "Omie" });
+        }
+        return json({ status: "ok", candidatos: [...vistos.values()].slice(0, 20) });
+      }
+
+      const [cacheCus, codigosR, conferencia, antes, semCob, correcoes, receitaR] = await Promise.all([
+        supabase.from("asaas_cache").select("id_asaas, dados, atualizado_em").eq("tipo", "customer").eq("documento", doc),
+        supabase.from("omie_clientes_doc").select("codigo").eq("doc", doc).order("codigo"),
+        supabase.from("nfse_cadastro_sincronizado").select("id_customer, resultado, detalhe, tentativas, sincronizado_em").eq("doc", doc),
+        supabase.from("nf_nota_antes_do_pagamento").select("tipo, ativo, motivo, criado_por, criado_em").eq("doc", doc),
+        supabase.from("nf_notas_sem_cobranca").select("id, valor, descricao, vencimento, criado_em")
+          .eq("doc", doc).order("criado_em", { ascending: false }).limit(10),
+        supabase.from("nf_cadastro_correcoes").select("origem, fonte, operador, criado_em, resultado")
+          .eq("doc", doc).order("criado_em", { ascending: false }).limit(10),
+        doc.length === 14 ? buscaJSON(`https://brasilapi.com.br/api/cnpj/v1/${doc}`) : Promise.resolve(null),
+      ]);
+
+      /* O ASAAS AO VIVO, e o espelho curado com o que ele disser. Falhar não
+         derruba a ficha: fica o espelho, dito como tal. */
+      let asaasAoVivo = true;
+      let clientesAsaas: any[] = [];
+      try {
+        const r = await asaasGet<any>("/customers", { cpfCnpj: doc, limit: 10 });
+        clientesAsaas = Array.isArray(r?.data) ? r.data : [];
+        if (clientesAsaas.length) await gravar(supabase, clientesAsaas.map(mapCustomer)).catch(() => 0);
+      } catch {
+        asaasAoVivo = false;
+      }
+      if (!asaasAoVivo || !clientesAsaas.length) {
+        const doCache = (cacheCus.data ?? []).map((c: any) => c.dados).filter(Boolean);
+        if (!clientesAsaas.length) clientesAsaas = doCache;
+      }
+      const a: any = clientesAsaas.find((c) => !c?.deleted) ?? clientesAsaas[0] ?? null;
+      const cusIds = [...new Set([
+        ...clientesAsaas.map((c) => String(c?.id ?? "")),
+        ...(cacheCus.data ?? []).map((c: any) => String(c.id_asaas)),
+      ].filter(Boolean))];
+
+      // O OMIE AO VIVO — o cadastro de MENOR código, que é o que a emissão usa.
+      const codigos = (codigosR.data ?? []).map((c: any) => Number(c.codigo)).filter(Boolean);
+      const lido = codigos.length ? await cadastroOmie(codigos[0]) : { cadastro: null, erro: null };
+      const o: any = lido.cadastro;
+
+      const receita: any = (receitaR as any)?.ok ? (receitaR as any).dados : null;
+
+      const { data: cobrancasR } = cusIds.length
+        ? await supabase.from("asaas_cache")
+          .select("id_asaas, valor, status, data_vencimento, data_pagamento, dados")
+          // `cliente_ref` é a coluna gerada de `dados->>customer`; filtrar pelo
+          // caminho do JSON no PostgREST volta vazio sem erro.
+          .eq("tipo", "payment").in("cliente_ref", cusIds)
+          .order("data_vencimento", { ascending: false }).limit(15)
+        : { data: [] as any[] };
+      const cobrancas = (cobrancasR ?? []).map((p: any) => ({
+        id_asaas: p.id_asaas, valor: Number(p.valor ?? 0), status: p.status,
+        vencimento: p.data_vencimento, pagamento: p.data_pagamento,
+        descricao: p.dados?.description ?? null, forma: p.dados?.billingType ?? null,
+        link: p.dados?.invoiceUrl ?? null,
+      }));
+
+      /* AS OS — do documento, dos códigos do Omie e das COBRANÇAS dele. A última
+         parte é a que acusa o caso EMME: OS de cobrança deste cliente que aponta
+         para outro cadastro. */
+      const filtros = [`cnpj_cpf.eq.${doc}`];
+      if (codigos.length) filtros.push(`n_cod_cli.in.(${codigos.join(",")})`);
+      if (cobrancas.length) filtros.push(`c_cod_int_os.in.(${cobrancas.map((c) => c.id_asaas).join(",")})`);
+      const { data: osR } = await supabase.from("nf_os_omie")
+        .select("n_cod_os, c_num_os, c_cod_int_os, n_cod_cli, valor, nfse_numero, nfse_status, nfse_mensagem, nfse_verificacao, faturada, cancelada, data_faturamento, data_previsao")
+        .or(filtros.join(",")).order("n_cod_os", { ascending: false }).limit(25);
+      const notas = (osR ?? []).map((n: any) => ({
+        ...n,
+        outro_cliente: codigos.length > 0 && n.n_cod_cli != null && !codigos.includes(Number(n.n_cod_cli)),
+      }));
+
+      /* A COMPARAÇÃO. A nota sai com o que está no OMIE; o Asaas é a fonte do
+         endereço desde 15/09/2026; a Receita é o registro oficial. */
+      const norm = (v: unknown, digitos = false) =>
+        digitos ? soDigitos(v) : semAcento(limpo(v)).toUpperCase().replace(/[^A-Z0-9@.]/g, "");
+      const linha = (campo: string, rotulo: string, va: unknown, vo: unknown, vr: unknown, digitos = false) => {
+        const [na, no, nr] = [norm(va, digitos), norm(vo, digitos), norm(vr, digitos)];
+        return {
+          campo, rotulo,
+          asaas: limpo(va) || null, omie: limpo(vo) || null, receita: limpo(vr) || null,
+          difere_asaas: !!na && !!no && na !== no,
+          difere_receita: !!nr && !!no && nr !== no,
+        };
+      };
+      const comparacao = [
+        linha("nome", "Nome / fantasia", a?.name, o?.nome_fantasia, receita?.nome_fantasia),
+        linha("razao_social", "Razão social", a?.company, o?.razao_social, receita?.razao_social),
+        linha("endereco", "Logradouro", a?.address, o?.endereco, receita ? logradouroDaReceita(receita) : null),
+        linha("endereco_numero", "Número", a?.addressNumber, o?.endereco_numero, receita?.numero),
+        linha("complemento", "Complemento", a?.complement, o?.complemento, receita?.complemento),
+        linha("bairro", "Bairro", a?.province, o?.bairro, receita?.bairro),
+        linha("cep", "CEP", a?.postalCode, o?.cep, receita?.cep, true),
+        linha("cidade", "Cidade", a?.cityName, semUf(o?.cidade), receita?.municipio),
+        linha("estado", "UF", a?.state, o?.estado, receita?.uf),
+        linha("email", "E-mail", a?.email, o?.email, receita?.email),
+        linha("telefone", "Telefone", a?.mobilePhone || a?.phone, o ? doOmie(o, "telefone") : null, receita?.ddd_telefone_1, true),
+      ];
+
+      return json({
+        status: "ok",
+        doc, doc_formatado: docFormatado(doc),
+        nome: limpo(a?.name) || limpo(o?.nome_fantasia) || limpo(receita?.razao_social) || docFormatado(doc),
+        id_customer: a?.id ?? cusIds[0] ?? null,
+        n_cod_cli: codigos[0] ?? null,
+        codigos_omie: codigos,
+        asaas_ao_vivo: asaasAoVivo,
+        erro_leitura_omie: lido.erro,
+        comparacao,
+        // No formato do `EditarCadastroCliente` (o mesmo do `diagnostico`).
+        omie: o ? {
+          ...Object.fromEntries(
+            [...CAMPOS_ENDERECO, "razao_social", "nome_fantasia", "email"].map((k) => [k, limpo(o[k])]),
+          ),
+          telefone: doOmie(o, "telefone"),
+        } : null,
+        asaas: {
+          endereco: a?.address ?? null, endereco_numero: a?.addressNumber ?? null,
+          complemento: a?.complement ?? null, bairro: a?.province ?? null,
+          cidade: a?.cityName ?? null, estado: a?.state ?? null, cep: a?.postalCode ?? null,
+          email: a?.email ?? null, telefone: a?.mobilePhone ?? a?.phone ?? null,
+          razao_social: a?.company ?? null,
+        },
+        receita: receita ? {
+          razao_social: receita.razao_social ?? null,
+          situacao: receita.descricao_situacao_cadastral ?? null,
+          data_situacao: receita.data_situacao_cadastral ?? null,
+          atividade: receita.cnae_fiscal_descricao ?? null,
+          abertura: receita.data_inicio_atividade ?? null,
+        } : null,
+        conferencia: conferencia.data ?? [],
+        antes_do_pagamento: antes.data ?? [],
+        cobrancas,
+        notas,
+        notas_sem_cobranca: semCob.data ?? [],
+        correcoes: (correcoes.data ?? []).map((c: any) => ({
+          origem: c.origem, fonte: c.fonte, operador: c.operador, quando: c.criado_em,
+          ok: c.resultado?.omie?.ok ?? null, escrito: c.resultado?.omie?.escrito ?? null,
+          motivo: c.resultado?.omie?.motivo ?? null,
+        })),
+        brutos: { asaas: clientesAsaas, omie: o, receita },
+      });
     }
 
     /* --------------------------- sincronizar_fila -------------------------- */

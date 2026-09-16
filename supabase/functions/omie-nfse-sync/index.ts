@@ -3041,7 +3041,13 @@ async function emitirDia(
        *
        * O erro passa a ser gritado no log: escrita que ninguém confere é
        * escrita que pode não ter acontecido. */
-      const { resultados: _paraATela, ...gravaveis } = campos;
+      /* LISTA DO QUE É COLUNA, e não do que não é (16/09/2026). Tirar só
+       * `resultados` não bastou: `freios_furados` entrou depois na resposta
+       * manual e voltou a derrubar o update — 8 das 15 emissões manuais da
+       * semana ficaram sem `concluida_em`. Chave nova na resposta não pode
+       * quebrar o diário de novo. */
+      const COLUNAS = ["fila", "emitidas", "falhas", "pulada", "lote", "detalhe", "erro", "bloqueadas"];
+      const gravaveis = Object.fromEntries(Object.entries(campos).filter(([k]) => COLUNAS.includes(k)));
       const { error } = await supabase.from("nf_execucoes")
         .update({ concluida_em: new Date().toISOString(), ...gravaveis })
         .eq("id", idExec);

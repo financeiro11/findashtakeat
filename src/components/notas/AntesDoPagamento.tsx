@@ -305,8 +305,9 @@ export function LiberarAntesDoPagamento({
             <UserPlus className="mt-px h-3.5 w-3.5 shrink-0" />
             <span>
               <strong>Este CNPJ ainda não tem cadastro no Omie — e o Hub cria antes de emitir.</strong> É o
-              primeiro passo de “Liberar e emitir agora”: endereço e razão social saem da Receita Federal, a
-              cidade é conferida pelo CEP nos Correios, e o cadastro nasce no ERP. Só para se faltar algo que
+              primeiro passo de “Liberar e emitir agora”: o endereço sai do cadastro do Asaas (a Receita Federal
+              só entra se ele estiver incompleto), a razão social sai da Receita, a cidade é conferida pelo CEP nos
+              Correios, e o cadastro nasce no ERP. Só para se faltar algo que
               nenhuma dessas fontes tem — e aí a tela diz o que falta, em vez de devolver “cliente sem
               cadastro”.
             </span>

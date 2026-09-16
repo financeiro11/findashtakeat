@@ -309,7 +309,7 @@ export function NotaSemCobranca({
           </DialogTitle>
           <DialogDescription className="text-xs">
             NFS-e avulsa que não parte de uma cobrança do Asaas. Puxe o cliente de lá ou digite o tomador inteiro — o
-            Hub confere o endereço na Receita e nos Correios e cadastra no Omie o que faltar.
+            Hub confere o CEP nos Correios, completa pela Receita o que faltar e cadastra no Omie.
           </DialogDescription>
         </DialogHeader>
 
@@ -409,7 +409,7 @@ export function NotaSemCobranca({
                   {consultando && (
                     <span className="flex items-center gap-1 text-primary">
                       <Loader2 className="h-3 w-3 animate-spin" />
-                      {consultando === "doc" ? "buscando no Omie, Receita e Asaas…" : "buscando o CEP…"}
+                      {consultando === "doc" ? "buscando no Omie, Asaas e Receita…" : "buscando o CEP…"}
                     </span>
                   )}
                 </span>
@@ -463,14 +463,13 @@ export function NotaSemCobranca({
                 <div className="flex items-start gap-2 rounded-md border border-emerald-500/30 bg-emerald-500/5 p-2 text-[11px] leading-relaxed text-emerald-700 dark:text-emerald-400">
                   <Info className="mt-px h-3.5 w-3.5 shrink-0" />
                   <span>
-                    Este documento já tem cadastro no Omie (código <span className="num">{codigoOmie}</span>). A nota sai
-                    para o cadastro de lá, e o endereço abaixo não o altera — o Hub não escreve por cima de cadastro
-                    existente.
+                    Este documento já tem cadastro no Omie (código <span className="num">{codigoOmie}</span>). Antes de
+                    emitir, o Hub atualiza o endereço de lá com o que está abaixo — é ele que sai na nota.
                   </span>
                 </div>
               ) : (
                 <p className="text-[11px] leading-relaxed text-muted-foreground">
-                  Sem cadastro no Omie: o Hub cria com estes dados, conferidos na Receita (CNPJ) e nos Correios (CEP).
+                  Sem cadastro no Omie: o Hub cria com estes dados, com o CEP conferido nos Correios; a Receita (CNPJ) só completa o endereço que estiver faltando.
                 </p>
               )
             )}

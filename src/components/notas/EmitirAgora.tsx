@@ -241,7 +241,7 @@ export function EmitirAgora({
    * transforma "Cliente sem cadastro no Omie" (erro no fim) em "conferido"
    * (degrau no começo).
    * --------------------------------------------------------------------- */
-  const garantirCadastros = async (): Promise<{ ok: boolean; pendencias: ParaVoce[] }> => {
+  const garantirCadastros = async (): Promise<{ ok: boolean; pendencias: ParaVoce[]; barrados?: Set<string> }> => {
     marcar("cadastro", "correndo", "Conferindo no Omie e criando o que faltar…");
     const { data, error } = await sb.functions.invoke("omie-clientes-criar", {
       body: semCobranca
@@ -265,7 +265,14 @@ export function EmitirAgora({
     const res: any[] = data?.resultados ?? [];
     const criados = res.filter((r) => r.situacao === "criado");
     const jaTinham = res.filter((r) => r.situacao === "ja_tinha" || r.situacao === "ja_existia");
-    const travados = res.filter((r) => r.situacao === "bloqueado" || r.situacao === "falhou");
+    const travados = res.filter((r) => r.situacao === "bloqueado" || r.situacao === "falhou" || r.situacao === "nao_tentado");
+    /* AS COBRANÇAS QUE NÃO PODEM IR PARA A EMISSÃO (15/09/2026). Antes, "sem
+       caminho automático" virava aviso e a emissão seguia com TODOS os ids — e
+       o que salvava era o Omie recusar cliente sem cadastro. Com o cadastro que
+       EXISTE mas diverge do endereço informado, ninguém recusa: a nota sai com o
+       endereço velho. Então quem não ficou certo sai da leva aqui. */
+    const barrados = new Set<string>(travados.flatMap((r) => (r.ids ?? []).map(String)));
+    const atualizados = res.filter((r) => r.cadastro_atualizado === true);
 
     /* O QUE SOBE PARA A PESSOA, e só isto: cadastro que a máquina não consegue
        montar. Cada motivo vira instrução — `BLOQUEIOS_CADASTRO` já traduz os
@@ -276,20 +283,25 @@ export function EmitirAgora({
       nome: `${r.nome ?? "cliente sem nome"} · ${formatarDoc(r.doc)}`,
       titulo: r.situacao === "bloqueado"
         ? "O cadastro deste tomador não pode ser montado sozinho"
+        : r.situacao === "nao_tentado"
+        ? "Não deu tempo de conferir este cadastro — mande de novo"
+        : r.n_cod_cli
+        ? "O endereço do cadastro no Omie não pôde ser atualizado"
         : "O Omie recusou o cadastro",
       oQueFazer: BLOQUEIOS_CADASTRO[r.motivo ?? ""] ?? r.motivo ?? "Sem motivo informado.",
-      tentado: r.tentado ?? ["Receita Federal (CNPJ)", "Correios (CEP)", "cadastro do Asaas"],
+      tentado: r.tentado ?? ["cadastro do Asaas", "Receita Federal (CNPJ)", "Correios (CEP)"],
     }));
 
     const partes = [
       jaTinham.length ? `${jaTinham.length} já tinha${jaTinham.length > 1 ? "m" : ""}` : "",
+      atualizados.length ? `${atualizados.length} com o endereço atualizado no Omie` : "",
       criados.length ? `${criados.length} criado${criados.length > 1 ? "s" : ""} agora` : "",
       travados.length ? `${travados.length} sem caminho automático` : "",
     ].filter(Boolean).join(" · ");
 
     marcar("cadastro", travados.length ? "atencao" : "ok", partes || "Nada a fazer.");
     // Segue mesmo com pendência: as OUTRAS cobranças do lote não têm culpa.
-    return { ok: Number(data?.prontos ?? 0) > 0, pendencias };
+    return { ok: Number(data?.prontos ?? 0) > 0, pendencias, barrados };
   };
 
   /* ------------------------------------------------------------------------
@@ -300,12 +312,12 @@ export function EmitirAgora({
    * falha foi o que fazia a emissão em massa desistir no segundo bloco. Aqui a
    * resposta certa é a mesma: esperar e repetir a MESMA leva.
    * --------------------------------------------------------------------- */
-  const emitir = async (): Promise<{ ok: boolean; oss: Array<{ id_asaas: string; n_cod_os: number }>; pendencias: ParaVoce[] }> => {
+  const emitir = async (alvo: string[] = ids): Promise<{ ok: boolean; oss: Array<{ id_asaas: string; n_cod_os: number }>; pendencias: ParaVoce[] }> => {
     marcar("emissao", "correndo", "Criando a OS no Omie e disparando o lote…");
     for (let tentativa = 1; tentativa <= 6 && vivo.current; tentativa++) {
       const { data, error } = await sb.functions.invoke("omie-nfse-sync", {
         body: {
-          action: "emitir", ids, avulsa: avulsa === true,
+          action: "emitir", ids: alvo, avulsa: avulsa === true,
           ...(semCobranca ? { sem_cobranca: semCobranca.id } : {}),
           observacao: observacao?.trim() || null,
           /* O CLIQUE É A AUTORIZAÇÃO (decisão do Henrique, 11/09/2026): a chave
@@ -500,7 +512,18 @@ export function EmitirAgora({
       }
       if (!vivo.current) return;
 
-      const emi = await emitir();
+      // Só vai para a emissão quem saiu do passo do cadastro com o cadastro certo.
+      const barrados = cad.barrados ?? new Set<string>();
+      if (semCobranca && barrados.has(semCobranca.id)) {
+        marcar("emissao", "espera", "O cadastro do tomador não ficou certo — nada foi emitido.");
+        return;
+      }
+      const liberados = ids.filter((id) => !barrados.has(id));
+      if (!semCobranca && !liberados.length) {
+        marcar("emissao", "espera", "Nenhuma cobrança com o cadastro certo para emitir.");
+        return;
+      }
+      const emi = await emitir(liberados);
       pendencias.push(...emi.pendencias);
       if (!emi.ok) return;
       if (!vivo.current) return;

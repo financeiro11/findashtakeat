@@ -1675,10 +1675,11 @@ async function curarEspelhoNota(supabase: any, nota: any) {
  * correção do espelho (em `curarEspelho`) fechou o buraco; isto fecha a
  * sequência.
  *
- * O QUE ELE NÃO FAZ, e não há como fazer: cancelar nota emitida pelo OMIE. A API
- * não tem `CancelarOS` nem nada em `servicos/nfse/` — foi varrida método a
- * método em 25/08/2026. Nota nossa se cancela na tela do Omie, e por isso o ato
- * recusa esse caso em voz alta em vez de tentar e falhar pela metade.
+ * O QUE ELE NÃO FAZ: cancelar nota emitida pelo OMIE. Esse caso tem ato próprio,
+ * `refazerNotaOmie`, logo abaixo — até 15/09/2026 ele não existia, porque a
+ * varredura de 25/08 procurou cancelamento em `servicos/os` e `servicos/nfse` e
+ * o método morava em `servicos/osp`. Este ato continua recusando a nota do Omie
+ * em voz alta, apontando para o outro, em vez de tentar e falhar pela metade.
  *
  * A JUSTIFICATIVA É OBRIGATÓRIA porque o cancelamento de NFS-e é, ele próprio,
  * um ato que a prefeitura registra com motivo. Se alguém precisa escrever a
@@ -1720,9 +1721,8 @@ async function refazerNota(supabase: any, cfg: any, opts: {
   const [candidata] = await candidatas(supabase, [id], false);
   if (candidata?.ja_tem_nota) {
     return {
-      erro: "Esta cobrança já tem NFS-e emitida pelo Omie, e a API do Omie não cancela nota — " +
-        "não existe `CancelarOS` nem `servicos/nfse/`. Cancele na tela do Omie, clique em " +
-        "\"Atualizar do Omie\" aqui, e então a linha volta a aceitar emissão.",
+      erro: "Esta cobrança tem NFS-e emitida pelo Omie, não pelo Asaas. Use \"Refazer a nota\" na linha: " +
+        "para nota do Omie o Hub cancela pelo próprio Omie e reemite na mesma cobrança.",
     };
   }
 
@@ -1849,6 +1849,298 @@ async function refazerNota(supabase: any, cfg: any, opts: {
     valor_agora: pagamento?.value ?? null,
     despachada: Number(emissao?.emitidas ?? 0) > 0,
     emissao,
+  };
+}
+
+/* ---------------------------------------------------------------------------
+ * REFAZER A NOTA DO OMIE — cancelar pela API e reemitir na MESMA cobrança.
+ *
+ * A PORTA ESTAVA NO ENDPOINT VIZINHO. A varredura de 25/08/2026 procurou
+ * cancelamento em `servicos/os` e `servicos/nfse` e concluiu que o Omie não
+ * cancela nota por API. Sondado em 15/09/2026, `servicos/osp` ("Faturamento de
+ * OS") tem os dois métodos que faltavam:
+ *
+ *   • `CancelarOS` { nCodOS, cCancelarNfse } — cancela a OS e, com "S" (o
+ *     padrão), a NFS-e na prefeitura. NÃO tem campo de motivo: a justificativa
+ *     fica no diário do Hub;
+ *   • `AssociarCodIntOS` { nCodOS, cCodIntOS } — troca o código de integração.
+ *
+ * O SEGUNDO É O QUE PERMITE FICAR NA MESMA COBRANÇA. `IncluirOS` recusa
+ * `cCodIntOS` repetido, e a OS cancelada continua existindo com o `pay_…`. Sem
+ * soltá-lo, a nota certa só sairia por OUTRA cobrança — criar uma no Asaas e
+ * excluir a antiga —, que é exatamente a volta que a AEVO deu em 15/09/2026:
+ * Asaas, Omie, Asaas de novo, e uma cobrança duplicada no meio.
+ *
+ * A ORDEM É O ARGUMENTO. Primeiro solta o carimbo, DEPOIS cancela: trocar um
+ * código de integração se desfaz (troca-se de volta); cancelar nota fiscal não.
+ * Se o Omie recusar a troca, nada foi cancelado. Se o cancelamento não se
+ * confirmar, o carimbo volta ao que era — e isso não é zelo: com o carimbo
+ * trocado e a nota velha de pé, o painel deixaria de casar a cobrança com a
+ * nota, e uma cobrança RECEBIDA entraria na fila automática para uma segunda.
+ *
+ * O CANCELAMENTO SÓ CONTA CONFIRMADO AO VIVO (`cCancelada = "S"`). Emitir a
+ * substituta com a velha ainda de pé cria duas notas se a prefeitura recusar —
+ * a mesma lição do `refazerNota` do Asaas. A emissão não mora aqui: quem a
+ * conduz é o `EmitirAgora`, na tela, só depois deste "ok".
+ *
+ * A CONFERÊNCIA ALTERNA `StatusOS` E `ConsultarOS`. O Omie barra a MESMA
+ * chamada repetida em poucos segundos ("consumo redundante"); dois métodos
+ * diferentes lendo o mesmo campo não esbarram nisso.
+ *
+ * ESCRITO SEM TER RODADO NUMA OS REAL: os dois métodos responderam à sonda
+ * (existem), mas o comportamento com uma OS faturada — em especial se
+ * `AssociarCodIntOS` aceita trocar um código que já existe — só se prova no
+ * primeiro uso. Por isso cada passo confere o anterior no Omie, e não na resposta.
+ * ------------------------------------------------------------------------- */
+
+/** A OS está cancelada no Omie? `null` quando a leitura falhou — não é "não". */
+async function osCanceladaAoVivo(nCodOS: number, vez: number): Promise<boolean | null> {
+  try {
+    if (vez % 2 === 0) {
+      const s = await omieCall<any>("servicos/os", "StatusOS", { nCodOS });
+      return String(s?.cCancelada ?? "N") === "S";
+    }
+    const c = await omieCall<any>("servicos/os", "ConsultarOS", { nCodOS });
+    return String(c?.InfoCadastro?.cCancelada ?? "N") === "S";
+  } catch {
+    return null;
+  }
+}
+
+/** Pede o cancelamento (OS + NFS-e na prefeitura) e só diz `cancelada` quando o
+ *  Omie confirma ao vivo. */
+async function cancelarOsEConfirmar(nCodOS: number): Promise<{ cancelada: boolean; recusa: string | null }> {
+  let recusa: string | null = null;
+  try {
+    await omieCall<any>("servicos/osp", "CancelarOS", { nCodOS, cCancelarNfse: "S" }, { semRetentativa: true });
+  } catch (e) {
+    recusa = mensagemDoOmie(e).slice(0, 300);
+  }
+  /* Mesmo com recusa, confere uma vez: a recusa pode ter vindo depois de o Omie
+     ter cancelado (timeout do lado dele), e tratar como "não cancelou" uma OS
+     cancelada levaria a devolver carimbo ou a pedir de novo. */
+  const ate = Date.now() + 75_000;
+  for (let vez = 1; Date.now() < ate; vez++) {
+    await dorme(recusa ? 3_000 : 15_000);
+    const r = await osCanceladaAoVivo(nCodOS, vez);
+    if (r === true) return { cancelada: true, recusa: null };
+    if (recusa) break;
+  }
+  return { cancelada: false, recusa };
+}
+
+/* ---------------------------------------------------------------------------
+ * CANCELAR SÓ — a nota do Omie cai e nada é reemitido.
+ *
+ * O caso que o trouxe (AEVO, 16/09/2026): duas notas com o endereço velho, uma
+ * de cobrança já excluída no Asaas (20274) e outra de nota sem cobrança (20391).
+ * O `refazer_omie` não serve a nenhuma das duas — ele reemite, e é por cobrança
+ * `pay_`. Aqui a entrada é a OS, a saída é a nota cancelada e confirmada, e o que
+ * emitir depois é decisão de quem pediu.
+ *
+ * Só nota AUTORIZADA (status 004 ao vivo): RPS recusado não é nota, e o caminho
+ * dele é o `devolver_a_esteira`/`excluir_os_recusada`.
+ * ------------------------------------------------------------------------- */
+async function cancelarNotaOmie(supabase: any, opts: {
+  nCodOS: number; justificativa: string; usuario: string | null; operador: string | null;
+}) {
+  const nCodOS = Number(opts.nCodOS);
+  const justificativa = String(opts.justificativa ?? "").trim();
+  if (!nCodOS) return { erro: "Informe a OS (`n_cod_os`)." };
+  if (!justificativa) return { erro: "Cancelar exige justificativa — o Omie não guarda motivo; o diário do Hub guarda." };
+
+  const { data: os, error } = await supabase
+    .from("nf_os_omie").select("n_cod_os, c_cod_int_os, nfse_numero, faturada, cancelada")
+    .eq("n_cod_os", nCodOS).maybeSingle();
+  if (error) return { erro: `nf_os_omie: ${error.message}` };
+  if (!os) return { erro: `A OS ${nCodOS} não está no espelho.` };
+  if (os.cancelada) return { ok: true, cancelada: true, ja_estava: true, n_cod_os: nCodOS, nfse_numero: os.nfse_numero };
+
+  let st: any;
+  try {
+    st = await omieCall<any>("servicos/os", "StatusOS", { nCodOS });
+  } catch (e) {
+    return { erro: `Não deu para ler a OS ${nCodOS} no Omie (${mensagemDoOmie(e).slice(0, 160)}). Nada foi feito.` };
+  }
+  const nf = nfseDoStatus(st);
+  const numero = String(os.nfse_numero ?? "").trim() || (nf.nfse_numero as string | null) || null;
+  const jaCancelada = String(st?.cCancelada ?? "N") === "S";
+  const id = String(os.c_cod_int_os ?? "") || null;
+  const diario = (resultado: string, erro: string, extra: Record<string, unknown> = {}) =>
+    supabase.from("nf_emissoes").insert({
+      id_asaas: id, n_cod_os: nCodOS, nfse_numero: numero, acao: "cancelar_omie", resultado, erro,
+      usuario: opts.usuario, operador: opts.operador, payload: { justificativa, ...extra },
+    }).then(() => {}, () => {});
+
+  if (!jaCancelada) {
+    if (String(nf.nfse_status ?? "") !== "004") {
+      return { erro: `A OS ${nCodOS} não tem nota autorizada no Omie (status ${nf.nfse_status ?? "vazio"}). Nada foi cancelado.` };
+    }
+    const { cancelada, recusa } = await cancelarOsEConfirmar(nCodOS);
+    if (!cancelada) {
+      await diario(recusa ? "erro" : "em_processamento",
+        recusa ? `O Omie recusou cancelar a NFS-e ${numero ?? ""}: ${recusa}.`
+          : `Cancelamento da NFS-e ${numero ?? ""} pedido e ainda não confirmado pelo Omie.`);
+      return recusa
+        ? { erro: `O Omie recusou cancelar a NFS-e ${numero ?? ""} (${recusa}).` }
+        : { ok: true, cancelada: false, cancelamento_em_andamento: true, n_cod_os: nCodOS, nfse_numero: numero };
+    }
+  }
+
+  await supabase.from("nf_os_omie").update({ cancelada: true, atualizado_em: new Date().toISOString() }).eq("n_cod_os", nCodOS);
+  await diario("ok", `NFS-e ${numero ?? ""} cancelada pelo Hub (OS ${nCodOS}, CancelarOS com cancelamento na prefeitura), sem reemissão. Motivo: ${justificativa}.`);
+  return { ok: true, cancelada: true, n_cod_os: nCodOS, nfse_numero: numero };
+}
+
+async function refazerNotaOmie(supabase: any, opts: {
+  id: string; justificativa: string; usuario: string | null; operador: string | null;
+}) {
+  const id = String(opts.id ?? "").trim();
+  const justificativa = String(opts.justificativa ?? "").trim();
+  if (!/^pay_[A-Za-z0-9]+$/.test(id)) {
+    return { erro: "Refazer nota do Omie é por cobrança do Asaas (`pay_…`)." };
+  }
+  if (!justificativa) {
+    return { erro: "Refazer uma nota exige justificativa — o Omie não guarda motivo, então é o diário do Hub que o guarda." };
+  }
+
+  const diario = (acao: string, resultado: string, erro: string | null, extra: Record<string, unknown> = {}) =>
+    supabase.from("nf_emissoes").insert({
+      id_asaas: id, acao, resultado, erro, usuario: opts.usuario, operador: opts.operador, ...extra,
+    }).then(() => {}, () => { /* o diário não desfaz o que foi feito no Omie */ });
+
+  /* 1) A OS DESTA COBRANÇA — pelo carimbo, ou pelo carimbo ORIGINAL, que é o caso
+   *    de quem clica de novo depois de uma volta interrompida. */
+  const { data: oss, error } = await supabase
+    .from("nf_os_omie")
+    .select("n_cod_os, c_cod_int_os, carimbo_original, nfse_numero, nfse_status, faturada, cancelada")
+    .or(`c_cod_int_os.eq.${id},carimbo_original.eq.${id}`)
+    .eq("cancelada", false);
+  if (error) return { erro: `nf_os_omie: ${error.message}` };
+  const vivas = (oss ?? []).filter((o: any) => o.faturada === true);
+  if (!vivas.length) {
+    return { erro: "Esta cobrança não tem nota do Omie de pé no espelho. Clique em \"Atualizar do Omie\" e confira." };
+  }
+  if (vivas.length > 1) {
+    return {
+      erro: `Esta cobrança tem ${vivas.length} OS faturadas de pé (${vivas.map((o: any) => o.n_cod_os).join(", ")}). ` +
+        "Isso pede olho humano no Omie — nada foi feito.",
+    };
+  }
+  const os = vivas[0];
+  const nCodOS = Number(os.n_cod_os);
+
+  /* 2) A COBRANÇA, AO VIVO, e o espelho curado antes de qualquer escrita — é o que
+   *    faz a nota nova sair com o valor de agora (ver `curarEspelho`). */
+  let pagamento: any;
+  try {
+    pagamento = await asaasGet<any>(`/payments/${id}`);
+  } catch (e) {
+    return { erro: `Não deu para ler a cobrança no Asaas (${e instanceof Error ? e.message : String(e)}). Nada foi feito.` };
+  }
+  /* COBRANÇA EXCLUÍDA NO ASAAS é o caso de quem já tentou consertar por fora: criou
+   * outra cobrança e apagou a antiga (a AEVO, 15/09/2026). A nota velha continua
+   * de pé e precisa cair do mesmo jeito — mas não há reemissão NESTA cobrança,
+   * então o carimbo não precisa ser solto, e o espelho não é "curado" (o
+   * `curarEspelho` gravaria o status de antes da exclusão). Quem aponta a
+   * cobrança nova é a tela. */
+  const excluida = pagamento?.deleted === true;
+  if (!excluida) await curarEspelho(supabase, id, pagamento).catch(() => { /* a emissão relê */ });
+
+  /* 3) O OMIE, AO VIVO, antes de tocar em qualquer coisa. */
+  let st: any;
+  try {
+    st = await omieCall<any>("servicos/os", "StatusOS", { nCodOS });
+  } catch (e) {
+    return { erro: `Não deu para ler a OS ${nCodOS} no Omie (${mensagemDoOmie(e).slice(0, 160)}). Nada foi feito.` };
+  }
+  const numero = String(os.nfse_numero ?? "").trim() || (nfseDoStatus(st).nfse_numero as string | null) || null;
+  const carimboNovo = `${id}-cancelada-${numero ?? nCodOS}`.slice(0, 60);
+  const carimboVivo = String(st?.cCodIntOS ?? "");
+  let cancelada = String(st?.cCancelada ?? "N") === "S";
+  const base = { n_cod_os: nCodOS, nfse_numero: numero };
+
+  /* 4) SOLTAR O CARIMBO — o passo que se desfaz, e por isso vem primeiro. */
+  let trocouCarimbo = false;
+  if (!excluida && carimboVivo === id) {
+    try {
+      await omieCall<any>("servicos/osp", "AssociarCodIntOS", { nCodOS, cCodIntOS: carimboNovo }, { semRetentativa: true });
+    } catch (e) {
+      const msg = mensagemDoOmie(e).slice(0, 300);
+      await diario("soltar_carimbo", "erro", msg, { ...base, payload: { carimbo_novo: carimboNovo, justificativa } });
+      return { erro: `O Omie não deixou trocar o carimbo da OS ${nCodOS} (${msg}). Nada foi cancelado.` };
+    }
+    // Conferido no Omie, e não na resposta: é a primeira vez que este método roda.
+    let conferido = "";
+    try {
+      const c = await omieCall<any>("servicos/os", "ConsultarOS", { nCodOS });
+      conferido = String(c?.Cabecalho?.cCodIntOS ?? "");
+    } catch { /* fica vazio, e vazio não é o carimbo novo */ }
+    if (conferido !== carimboNovo) {
+      await diario("soltar_carimbo", "erro", `O Omie aceitou a troca, mas a OS continua com "${conferido || "?"}".`, {
+        ...base, payload: { carimbo_novo: carimboNovo, justificativa },
+      });
+      return { erro: `O Omie aceitou trocar o carimbo, mas a OS ${nCodOS} continua com "${conferido || "?"}". Nada foi cancelado.` };
+    }
+    trocouCarimbo = true;
+    await diario("soltar_carimbo", "ok",
+      `Carimbo da OS ${nCodOS} trocado de ${id} para ${carimboNovo}, para a nota certa poder sair nesta mesma cobrança.`,
+      { ...base, payload: { carimbo_novo: carimboNovo, justificativa } });
+  } else if (!excluida && carimboVivo !== carimboNovo) {
+    return {
+      erro: `A OS ${nCodOS} está com o carimbo "${carimboVivo || "vazio"}" no Omie, que não é o desta cobrança. Nada foi feito.`,
+    };
+  }
+
+  /* 5) CANCELAR — OS e NFS-e na prefeitura — e só vale confirmado. */
+  if (!cancelada) {
+    const pedido = await cancelarOsEConfirmar(nCodOS);
+    const recusa = pedido.recusa;
+    cancelada = pedido.cancelada;
+
+    if (!cancelada) {
+      const volta = !trocouCarimbo ? null
+        : await omieCall<any>("servicos/osp", "AssociarCodIntOS", { nCodOS, cCodIntOS: id }, { semRetentativa: true })
+          .then(() => null, (e) => mensagemDoOmie(e).slice(0, 200));
+      const sobreCarimbo = !trocouCarimbo ? ""
+        : volta
+        ? ` ATENÇÃO: o carimbo NÃO voltou para ${id} (${volta}) — a OS ${nCodOS} está com "${carimboNovo}" no Omie, e o painel pode mostrar esta cobrança como sem nota enquanto a ${numero ?? "nota"} continua de pé.`
+        : " O carimbo voltou ao que era.";
+      await diario("cancelar_omie", recusa ? "erro" : "em_processamento",
+        (recusa ? `O Omie recusou cancelar a NFS-e ${numero ?? ""}: ${recusa}.` : `Cancelamento da NFS-e ${numero ?? ""} pedido e ainda não confirmado.`) + sobreCarimbo,
+        { ...base, payload: { justificativa, carimbo_novo: carimboNovo, carimbo_devolvido: !volta } });
+      if (recusa) return { erro: `O Omie recusou cancelar a NFS-e ${numero ?? ""} (${recusa}).${sobreCarimbo}` };
+      return {
+        ok: true, cancelada: false, cancelamento_em_andamento: true, ...base,
+        carimbo_devolvido: !volta,
+        recado: `O cancelamento foi pedido e o Omie ainda não o confirmou.${sobreCarimbo} Clique de novo em alguns minutos — o Hub reconhece o que já foi feito.`,
+      };
+    }
+  }
+
+  /* 6) O ESPELHO ACOMPANHA — só agora, com o cancelamento confirmado. As cinco
+   *    leituras fiscais filtram `cancelada = false`: é isto que tira a OS velha de
+   *    cena e deixa a cobrança voltar a aceitar emissão. */
+  const carimboFinal = excluida ? carimboVivo || id : carimboNovo;
+  await supabase.from("nf_os_omie").update({
+    cancelada: true,
+    c_cod_int_os: carimboFinal,
+    ...(carimboFinal !== id ? { carimbo_original: id } : {}),
+    atualizado_em: new Date().toISOString(),
+  }).eq("n_cod_os", nCodOS);
+
+  await diario("cancelar_omie", "ok",
+    `NFS-e ${numero ?? ""} cancelada pelo Hub (OS ${nCodOS}, CancelarOS com cancelamento na prefeitura). ` +
+    `Motivo: ${justificativa}. ` +
+    (excluida
+      ? "A cobrança já estava excluída no Asaas: nada é reemitido nela."
+      : `O carimbo ${id} ficou livre para a nota certa.`),
+    { ...base, payload: { justificativa, carimbo_final: carimboFinal, cobranca_excluida: excluida, valor_agora: pagamento?.value ?? null } });
+
+  return {
+    ok: true, cancelada: true, ...base, carimbo_novo: carimboFinal,
+    cobranca_excluida: excluida,
+    valor_agora: pagamento?.value ?? null,
   };
 }
 
@@ -4625,6 +4917,51 @@ Deno.serve(async (req) => {
         usuario,
         operador: operador || null,
       }).finally(() => travaSoltar(supabase, donoRefazer));
+      return json(r, (r as any)?.erro ? 400 : 200);
+    }
+
+    /* CANCELAR SÓ — ver `cancelarNotaOmie`. Uma OS por chamada. Por token de
+     * sistema só com `operador` (quem mandou assina), como o `excluir_os_recusada`. */
+    if (action === "cancelar_nota_omie") {
+      const operador = String(body?.operador ?? "").trim();
+      if (ehCron && !operador) {
+        return json({ erro: "Cancelar nota por token exige `operador` — quem mandou cancelar assina no diário." }, 403);
+      }
+      const donoCanc = donoDaVez("cancelar_nota_omie");
+      const travaCanc = await travaTomar(supabase, donoCanc, 170);
+      if (!travaCanc.ok) {
+        return json({ erro: `${frasePerdiVez(travaCanc)} Tente de novo em um minuto.` }, 409);
+      }
+      const r = await cancelarNotaOmie(supabase, {
+        nCodOS: Number(body?.n_cod_os ?? 0),
+        justificativa: String(body?.justificativa ?? ""),
+        usuario, operador: operador || null,
+      }).finally(() => travaSoltar(supabase, donoCanc));
+      return json(r, (r as any)?.erro ? 400 : 200);
+    }
+
+    /* REFAZER A NOTA DO OMIE — cancela pelo `servicos/osp` e solta o carimbo; a
+     * emissão da certa é o passo seguinte, na tela. Ver `refazerNotaOmie`. Uma
+     * cobrança por chamada e nunca por token, pelo mesmo motivo do `refazer`. */
+    if (action === "refazer_omie") {
+      if (ehCron) {
+        return json({ erro: "Cancelar nota fiscal é ato de pessoa: não sai por token de sistema." }, 403);
+      }
+      const id = String(body?.id ?? "").trim();
+      if (!id) return json({ erro: "Informe a cobrança (`id`)." }, 400);
+      /* A trava é a mesma da emissão: enquanto o carimbo troca de mãos, nenhuma
+         rodada pode estar criando OS para esta cobrança. */
+      const donoOmie = donoDaVez("refazer_omie");
+      const travaOmie = await travaTomar(supabase, donoOmie, 170);
+      if (!travaOmie.ok) {
+        return json({ erro: `${frasePerdiVez(travaOmie)} Tente de novo em um minuto.` }, 409);
+      }
+      const r = await refazerNotaOmie(supabase, {
+        id,
+        justificativa: String(body?.justificativa ?? ""),
+        usuario,
+        operador: String(body?.operador ?? "").trim() || null,
+      }).finally(() => travaSoltar(supabase, donoOmie));
       return json(r, (r as any)?.erro ? 400 : 200);
     }
 

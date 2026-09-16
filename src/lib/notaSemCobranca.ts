@@ -105,8 +105,9 @@ export function tomadorDoAsaas(d: any): Tomador {
 /**
  * O formulário no formato de cliente do Asaas — que é o que o cadastro do Omie
  * (`montarCadastro` no `omie-clientes-criar`) já sabe ler. Assim o tomador
- * digitado passa pela MESMA conferência na Receita e nos Correios que todo
- * tomador passa, em vez de ganhar um atalho próprio.
+ * digitado passa pela MESMA régua que todo tomador passa (o endereço digitado
+ * vale se estiver completo, com o CEP conferido nos Correios e a Receita de
+ * reserva), em vez de ganhar um atalho próprio.
  */
 export function tomadorParaAsaas(t: Tomador): Record<string, string> {
   return {

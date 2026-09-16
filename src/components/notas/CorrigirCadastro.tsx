@@ -14,16 +14,18 @@
  *   • O DIFF ANTES DO BOTÃO. Cada campo aparece com o que está lá e o que
  *     entraria, e "(vazio)" tem destaque próprio: preencher buraco não desfaz
  *     decisão de ninguém, sobrescrever valor diferente pode. Quem clica viu.
- *   • O ENDEREÇO NÃO VEM DO ASAAS, vem da Receita (CNPJ) ou do CEP. Foi o Asaas
- *     que produziu a fila de notas presas em E0240 — copiar dele seria fabricar
- *     a próxima. A fonte fica escrita em cada linha.
+ *   • O ENDEREÇO VEM DO ASAAS quando ele está completo, e da Receita (CNPJ) ou
+ *     do CEP só na falta — desde 15/09/2026. Antes era o contrário, e a Receita
+ *     emitia com o endereço de onde a empresa já tinha saído. O que a prefeitura
+ *     recusa (E0240) é CEP e município, e esses seguem conferidos nos Correios
+ *     qualquer que seja a fonte. A fonte fica escrita em cada linha.
  *   • CORRIGIR E REEMITIR SÃO DOIS PASSOS. Emitir nota fiscal é ato que não se
  *     apaga; juntar os dois num clique só faria a correção arrastar a emissão
  *     junto, sem ninguém conferir se o cadastro ficou como devia.
  *
  * O QUE A CONSULTA NÃO SABE vai para `EditarCadastroCliente`, que fica dentro de
  * cada cliente daqui: e-mail (a recusa mais comum, e que não existe em cadastro
- * federal), telefone, nome e o endereço que a Receita tem errado. A régua é a
+ * federal), telefone, nome e o endereço que nenhuma fonte tem certo. A régua é a
  * mesma — diff antes do botão, campo vazio não apaga, Omie e Asaas separados.
  *
  * O que este componente NÃO resolve, e diz na cara: OS já faturada. Aí a nota
@@ -55,10 +57,10 @@ const CAMPO: Record<string, string> = {
 
 /** De onde saiu o endereço proposto — e por que isso importa na linha. */
 const FONTE: Record<string, { rotulo: string; ajuda: string }> = {
-  receita: { rotulo: "Receita Federal", ajuda: "Endereço oficial do CNPJ (BrasilAPI /cnpj). É o mais coerente com o que a prefeitura valida." },
-  firecrawl: { rotulo: "Receita (consulta pública)", ajuda: "O mesmo cadastro federal, lido de uma página pública de consulta porque a BrasilAPI recusou por limite de taxa. Vale como Receita; o código do município veio do CEP." },
-  cep: { rotulo: "CEP", ajuda: "Consulta do CEP (BrasilAPI /cep). Um CEP pertence a exatamente um município — é o par que o erro E0240 recusa." },
-  asaas: { rotulo: "Asaas", ajuda: "As duas consultas caíram; vale o que o Asaas tem, e só porque está completo." },
+  asaas: { rotulo: "Asaas", ajuda: "O endereço que o cliente mantém no Asaas, completo (logradouro, número e CEP). Cidade e UF vêm do CEP, que é o par que o erro E0240 confere." },
+  receita: { rotulo: "Receita Federal", ajuda: "Endereço oficial do CNPJ (BrasilAPI /cnpj). Só entra quando o Asaas não tem o endereço completo — a Receita fica desatualizada quando a empresa se muda." },
+  firecrawl: { rotulo: "Receita (consulta pública)", ajuda: "O mesmo cadastro federal, lido de uma página pública de consulta porque a BrasilAPI recusou por limite de taxa. Vale como Receita, reserva do Asaas; o código do município veio do CEP." },
+  cep: { rotulo: "CEP", ajuda: "Nem o Asaas completo nem a Receita: a consulta do CEP (BrasilAPI /cep) completa logradouro e município. Um CEP pertence a exatamente um município — é o par que o erro E0240 recusa." },
 };
 
 interface Cobranca {
@@ -159,7 +161,7 @@ export function CorrigirCadastro({
     if (!alvo.length) return;
     if (!window.confirm(
       `Corrigir o endereço de ${alvo.length} cliente(s) no Omie?\n\n` +
-      "Cada um recebe o que a Receita/CEP devolveu, escrito por cima do cadastro atual — " +
+      "Cada um recebe o endereço proposto (o do Asaas; Receita/CEP quando ele está incompleto), escrito por cima do cadastro atual — " +
       "só os campos de endereço listados acima.\n\nO Asaas não é tocado por aqui; " +
       "para ele, use o botão de cada cliente.",
     )) return;
@@ -218,11 +220,11 @@ export function CorrigirCadastro({
             Cadastro do cliente — o que trava a nota
           </DialogTitle>
           <DialogDescription className="text-xs leading-relaxed">
-            O endereço proposto vem da <strong>Receita Federal</strong> (CNPJ) ou da consulta de{" "}
-            <strong>CEP</strong>, nunca do Asaas — foi o dado do Asaas que produziu a fila de notas
-            recusadas por município. A escrita é por cima do cadastro atual: só os campos abaixo.
-            O que nenhuma consulta sabe — e-mail, telefone, o endereço que a Receita tem errado —
-            se digita em <strong>Editar cadastro à mão</strong>, dentro de cada cliente.
+            O endereço proposto vem do <strong>Asaas</strong> quando ele está completo, e da{" "}
+            <strong>Receita Federal</strong> (CNPJ) ou do <strong>CEP</strong> só quando falta algo lá. Cidade, UF
+            e CEP são sempre conferidos nos Correios — é o que a prefeitura recusa. A escrita é por cima do
+            cadastro atual: só os campos abaixo. O que nenhuma fonte tem certo — e-mail, telefone, um endereço
+            desatualizado — se digita em <strong>Editar cadastro à mão</strong>, dentro de cada cliente.
           </DialogDescription>
         </DialogHeader>
 
@@ -291,7 +293,7 @@ export function CorrigirCadastro({
               {c.sem_cadastro_omie && (
                 <p className="mt-2 rounded border border-amber-500/30 bg-amber-500/5 p-2 text-[11px] text-amber-700 dark:text-amber-400">
                   Este cliente não tem cadastro no Omie. O conserto aqui é <strong>criar</strong>, não corrigir —
-                  use a aba Auditoria, que cadastra pelo mesmo endereço da Receita.
+                  use a aba Auditoria, que cadastra pela mesma régua (o endereço do Asaas, com a Receita de reserva).
                 </p>
               )}
               {c.bloqueio && (
@@ -326,7 +328,7 @@ export function CorrigirCadastro({
               )}
               {!muda.length && !c.erro_leitura_omie && !c.sem_cadastro_omie && c.proposta && (
                 <p className="mt-2 rounded border border-amber-500/30 bg-amber-500/5 p-2 text-[11px] text-amber-700 dark:text-amber-400">
-                  O cadastro do Omie <strong>já bate</strong> com a Receita/CEP — não há nada que o botão
+                  O cadastro do Omie <strong>já bate</strong> com o endereço proposto — não há nada que o botão
                   automático possa propor, e mesmo assim a nota não saiu. Ou falta um campo que consulta
                   nenhuma sabe (o <strong>e-mail</strong> é a recusa mais comum), ou o endereço está
                   formalmente completo e materialmente errado (logradouro preenchido com o nome da cidade,
@@ -380,7 +382,7 @@ export function CorrigirCadastro({
               {/* O CAMINHO PARA O QUE CONSULTA NENHUMA RESOLVE.
                   Fica FORA do `consertavel` de propósito: quem mais precisa dele
                   é justamente o cliente sobre quem a tela acabou de dizer "já
-                  bate com a Receita e mesmo assim não emite" — e o e-mail, que é
+                  bate com o endereço proposto e mesmo assim não emite" — e o e-mail, que é
                   a recusa mais comum, não está em cadastro federal nenhum. Só
                   desaparece quando a leitura do Omie falhou, que é quando não se
                   sabe o que está lá para comparar. */}

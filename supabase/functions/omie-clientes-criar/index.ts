@@ -15,21 +15,26 @@
 // cadastro que a PREFEITURA aceita é a difícil. Das 277 notas presas em status
 // 003, 158 pararam em "E0240 — CEP do tomador não existe / não pertence ao
 // município" e 24 em código de município errado: dois terços do problema é
-// endereço de cliente. Copiar o endereço do Asaas sem conferir seria fabricar a
-// mesma fila de notas presas, só que mais rápido. Por isso o endereço vem, nesta
-// ordem:
+// endereço de cliente — e o defeito medido era CEP e município, não a fonte do
+// logradouro. Por isso o endereço vem, nesta ordem:
 //
-//   1. RECEITA (BrasilAPI /cnpj) — a PJ tem endereço oficial, e é o mais
-//      coerente com o que a prefeitura valida. Traz de brinde a RAZÃO SOCIAL,
-//      que o Asaas não tem: lá o campo `name` é o nome fantasia ("Japamania -
-//      Vila Food"), e nota fiscal se emite para a razão social.
-//   2. CEP (BrasilAPI /cep) — para pessoa física e para quando a Receita não
-//      responde. O CEP manda no município: um CEP pertence a exatamente uma
-//      cidade, então quando o Asaas discorda do CEP quem está errado é o Asaas.
-//      É EXATAMENTE o par que o E0240 recusa.
-//   3. ASAAS puro — só quando as duas consultas caíram (rede), e só se o
-//      endereço estiver completo. CEP que a consulta disse NÃO EXISTIR bloqueia:
+//   1. ASAAS, quando completo (logradouro, número de verdade e CEP) — é o
+//      cadastro que o CLIENTE mantém. Cidade e UF saem do CEP, não do Asaas: um
+//      CEP pertence a exatamente uma cidade, e é EXATAMENTE o par que o E0240
+//      recusa. Até 15/09/2026 a Receita vinha antes, e a nota da AEVO saiu com a
+//      sala de onde a empresa já tinha saído — a Receita envelhece quando a
+//      empresa se muda e ninguém a atualiza; o Asaas é onde o cliente corrige.
+//   2. RECEITA (BrasilAPI /cnpj) — a reserva, para PJ com o Asaas incompleto.
+//      Ela é consultada SEMPRE, porém: traz a RAZÃO SOCIAL, que o Asaas não tem
+//      (lá o `name` é o fantasia, "Japamania - Vila Food"), e nota fiscal se
+//      emite para a razão social.
+//   3. CEP (BrasilAPI /cep) — nem Asaas completo nem Receita: o CEP completa
+//      logradouro e município.
+//   4. ASAAS cru — só quando as consultas caíram (rede), e só se o endereço
+//      estiver completo. CEP que a consulta disse NÃO EXISTIR bloqueia:
 //      cadastrar sabendo que a prefeitura vai recusar não ajuda ninguém.
+//
+// Em todos, `refinarCep` troca o CEP que os Correios não conhecem.
 //
 // QUEM PODE SER CRIADO SOZINHO. A regra mora no Postgres
 // (`omie_clientes_a_criar`), e o que ela bloqueia não é burocracia:
@@ -166,16 +171,17 @@ const NAO_FORCAVEL = ["documento_invalido", "sem_cliente_no_espelho"];
 type Fonte = "receita" | "firecrawl" | "cep" | "asaas";
 
 /**
- * As fontes que valem como "a Receita disse".
+ * Número de endereço que diz alguma coisa: tem dígito e não é só zero.
  *
- * Existe porque a regra de ouro desta função — só escreve no Omie o cadastro de
- * PJ que bateu com o cadastro federal — estava escrita como `fonte !== "receita"`
- * em dois lugares. Com uma segunda porta para o mesmo dado, a comparação por
- * igualdade passaria a REJEITAR endereço bom, e o sintoma seria o pior possível:
- * o cliente continuaria pulado, com uma mensagem dizendo que a Receita não
- * respondeu, logo depois de ela ter respondido por outro caminho.
+ * É o que separa o Asaas "completo" do incompleto. `S/N`, `SN` e `00` são
+ * preenchimento de formulário — o `00` já apareceu num cadastro formalmente
+ * completo que a prefeitura recusou. Com eles, a Receita (que costuma ter o
+ * número) ainda é melhor que aceitar o buraco.
  */
-const FONTES_OFICIAIS: Fonte[] = ["receita", "firecrawl"];
+const numeroReal = (n: unknown) => {
+  const d = soDigitos(n);
+  return d.length > 0 && !/^0+$/.test(d);
+};
 
 /** Consulta com prazo: BrasilAPI às vezes engasga, e a rodada não pode ficar
  *  presa num cliente. Devolve `null` na falha de rede/tempo e `404` explícito
@@ -244,6 +250,9 @@ interface Cadastro {
   cidade_ibge?: string;
   fonte: Fonte;
   situacao_receita?: string;
+  /** O número não veio de fonte nenhuma: é o `"S/N"` de reserva dos degraus do
+   *  CEP e do Asaas cru. O pré-voo não grava isso em cadastro de CNPJ. */
+  numero_inventado?: boolean;
   /** Quão exato é o CEP que este cadastro carrega — ver `_shared/cep.ts`.
    *  `porta` é o CEP daquele endereço; `rua` e `cidade` são aproximações
    *  assumidas, e existem para que a perda de precisão fique ESCRITA no rastro
@@ -364,7 +373,7 @@ async function refinarCep(cadastro: Cadastro): Promise<Cadastro> {
  * não some, vira duplicado quando alguém arruma na mão.
  *
  * O refinamento do CEP mora no invólucro abaixo, e não em cada `return` de
- * `montarCadastroBruto`: são quatro saídas (Receita, página pública, CEP, Asaas)
+ * `montarCadastroBruto`: são cinco saídas (Asaas, Receita, página pública, CEP, Asaas cru)
  * e a regra é a mesma nas quatro.
  */
 async function montarCadastro(c: Fila): Promise<{ cadastro?: Cadastro; bloqueio?: string }> {
@@ -376,7 +385,12 @@ async function montarCadastro(c: Fila): Promise<{ cadastro?: Cadastro; bloqueio?
 async function montarCadastroBruto(c: Fila): Promise<{ cadastro?: Cadastro; bloqueio?: string }> {
   const nomeAsaas = limpo(c.nome);
 
-  // 1. RECEITA — só PJ. Endereço oficial + razão social.
+  /* 1. RECEITA — só PJ, e sempre consultada, mas o endereço dela é RESERVA.
+   *    Ela vem primeiro por outros dois motivos: a razão social (o Asaas só tem
+   *    o fantasia, e a nota sai para a razão social) e a trava do CNPJ que a
+   *    Receita não conhece. O endereço fica em `oficial` e só é usado se o
+   *    Asaas não tiver o dele inteiro — ver o degrau 2. */
+  let oficial: Cadastro | undefined;
   if (!c.pessoa_fisica) {
     const r = await buscaJSON(`https://brasilapi.com.br/api/cnpj/v1/${c.doc}`);
     ultimoStatusBrasilAPI = r.status ?? null;
@@ -387,23 +401,21 @@ async function montarCadastroBruto(c: Fila): Promise<{ cadastro?: Cadastro; bloq
     }
     const d = r.dados;
     if (r.ok && d && limpo(d.municipio) && soDigitos(d.cep).length === 8) {
-      return {
-        cadastro: {
-          razao_social: limpo(d.razao_social) || nomeAsaas,
-          // O nome fantasia do Asaas vence o da Receita: é por ele que a equipe
-          // reconhece o cliente na tela do Omie, e é o que o próprio cliente usa.
-          nome_fantasia: nomeAsaas || limpo(d.nome_fantasia),
-          endereco: logradouroDaReceita(d) || limpo(c.endereco),
-          endereco_numero: limpo(d.numero) || limpo(c.endereco_numero) || "S/N",
-          complemento: limpo(d.complemento) || limpo(c.complemento),
-          bairro: limpo(d.bairro) || limpo(c.bairro),
-          cidade: limpo(d.municipio),
-          estado: limpo(d.uf).toUpperCase(),
-          cep: soDigitos(d.cep),
-          cidade_ibge: soDigitos(d.codigo_municipio_ibge) || undefined,
-          fonte: "receita",
-          situacao_receita: limpo(d.descricao_situacao_cadastral) || undefined,
-        },
+      oficial = {
+        razao_social: limpo(d.razao_social) || nomeAsaas,
+        // O nome fantasia do Asaas vence o da Receita: é por ele que a equipe
+        // reconhece o cliente na tela do Omie, e é o que o próprio cliente usa.
+        nome_fantasia: nomeAsaas || limpo(d.nome_fantasia),
+        endereco: logradouroDaReceita(d) || limpo(c.endereco),
+        endereco_numero: limpo(d.numero) || limpo(c.endereco_numero) || "S/N",
+        complemento: limpo(d.complemento) || limpo(c.complemento),
+        bairro: limpo(d.bairro) || limpo(c.bairro),
+        cidade: limpo(d.municipio),
+        estado: limpo(d.uf).toUpperCase(),
+        cep: soDigitos(d.cep),
+        cidade_ibge: soDigitos(d.codigo_municipio_ibge) || undefined,
+        fonte: "receita",
+        situacao_receita: limpo(d.descricao_situacao_cadastral) || undefined,
       };
     }
     /* PLANO B: A MESMA RECEITA, POR OUTRA PORTA.
@@ -432,38 +444,78 @@ async function montarCadastroBruto(c: Fila): Promise<{ cadastro?: Cadastro; bloq
         const alt = await consultarCnpjPublico(clienteServico(), c.doc);
         if (alt.dados) {
           const p = alt.dados;
-          return {
-            cadastro: {
-              razao_social: p.razao_social || nomeAsaas,
-              nome_fantasia: nomeAsaas || p.nome_fantasia,
-              endereco: p.logradouro || limpo(c.endereco),
-              endereco_numero: p.numero || limpo(c.endereco_numero) || "S/N",
-              complemento: p.complemento || limpo(c.complemento),
-              bairro: p.bairro || limpo(c.bairro),
-              cidade: p.municipio,
-              estado: p.uf,
-              cep: p.cep,
-              /* O código IBGE não vem da página — ela não o publica. Quem o traz
-               * é o CEP, e a consulta de CEP não custa crédito: sem ele o E0921
-               * ("código do município do tomador") continuaria prendendo a nota,
-               * e teríamos gasto o crédito para trocar um erro por outro. */
-              cidade_ibge: await ibgePeloCep(p.cep),
-              fonte: "firecrawl",
-              situacao_receita: p.situacao || undefined,
-            },
+          oficial = {
+            razao_social: p.razao_social || nomeAsaas,
+            nome_fantasia: nomeAsaas || p.nome_fantasia,
+            endereco: p.logradouro || limpo(c.endereco),
+            endereco_numero: p.numero || limpo(c.endereco_numero) || "S/N",
+            complemento: p.complemento || limpo(c.complemento),
+            bairro: p.bairro || limpo(c.bairro),
+            cidade: p.municipio,
+            estado: p.uf,
+            cep: p.cep,
+            /* O código IBGE não vem da página — ela não o publica. Quem o traz
+             * é o CEP, e a consulta de CEP não custa crédito: sem ele o E0921
+             * ("código do município do tomador") continuaria prendendo a nota,
+             * e teríamos gasto o crédito para trocar um erro por outro. */
+            cidade_ibge: await ibgePeloCep(p.cep),
+            fonte: "firecrawl",
+            situacao_receita: p.situacao || undefined,
           };
+        } else {
+          console.log(`cnpj-publico ${c.doc}: ${alt.motivo}`);
         }
-        console.log(`cnpj-publico ${c.doc}: ${alt.motivo}`);
       } catch (e) {
         // Socorro que falha não pode derrubar a fila: segue para o CEP.
         console.error("cnpj-publico", c.doc, e);
       }
     }
-    // Receita fora do ar ou resposta sem endereço: cai no CEP, abaixo.
+    // Receita fora do ar ou resposta sem endereço: segue sem a reserva oficial.
   }
 
-  // 2. CEP — quem manda no município. Preenche o que o Asaas deixou em branco.
   const cep = soDigitos(c.cep);
+
+  /* 2. ASAAS — o endereço que o CLIENTE mantém, e o que vale desde 15/09/2026.
+   *
+   * A ordem era a inversa, e custou uma nota com endereço errado: a AEVO se
+   * mudou, estava com o endereço novo no Asaas quando o cadastro foi criado, e a
+   * NFS-e 20274 saiu com a sala antiga — que é o que a Receita ainda tem.
+   *
+   * O que continua conferido é o que a prefeitura cobra, e isso nunca foi a
+   * fonte do logradouro: cidade e UF saem do CEP (é o par do E0240), e
+   * `refinarCep`, no invólucro, troca o CEP que os Correios não conhecem. */
+  if (limpo(c.endereco) && numeroReal(c.endereco_numero) && cep.length === 8) {
+    const r = await buscaJSON(`https://brasilapi.com.br/api/cep/v2/${cep}`);
+    const d = r.ok ? r.dados : null;
+    /* CEP que a base diz NÃO EXISTIR não é endereço confiável: cai para a
+     * Receita. Rede caída não é resposta — vale a cidade que o próprio Asaas
+     * tem, e o código IBGE vem do ViaCEP. */
+    const cidade = limpo(d?.city) || (r.naoExiste ? "" : limpo(c.cidade));
+    const estado = (limpo(d?.state) || (r.naoExiste ? "" : limpo(c.estado))).toUpperCase();
+    if (cidade && estado) {
+      return {
+        cadastro: {
+          razao_social: oficial?.razao_social || nomeAsaas,
+          nome_fantasia: nomeAsaas || oficial?.nome_fantasia || "",
+          endereco: limpo(c.endereco),
+          endereco_numero: limpo(c.endereco_numero),
+          complemento: limpo(c.complemento),
+          bairro: limpo(c.bairro) || limpo(d?.neighborhood),
+          cidade,
+          estado,
+          cep,
+          cidade_ibge: soDigitos(d?.ibge?.city) || (await ibgePeloCep(cep)),
+          fonte: "asaas",
+          situacao_receita: oficial?.situacao_receita,
+        },
+      };
+    }
+  }
+
+  // 3. RECEITA — a reserva, quando o Asaas não tem o endereço inteiro.
+  if (oficial) return { cadastro: oficial };
+
+  // 4. CEP — quem manda no município. Preenche o que o Asaas deixou em branco.
   if (cep.length === 8) {
     const r = await buscaJSON(`https://brasilapi.com.br/api/cep/v2/${cep}`);
     if (r.naoExiste) return { bloqueio: "cep_inexistente" };
@@ -483,12 +535,13 @@ async function montarCadastroBruto(c: Fila): Promise<{ cadastro?: Cadastro; bloq
           cep,
           cidade_ibge: soDigitos(d?.ibge?.city) || undefined,
           fonte: "cep",
+          numero_inventado: !numeroReal(c.endereco_numero),
         },
       };
     }
   }
 
-  // 3. ASAAS puro — rede caiu nas duas consultas. Só passa completo.
+  // 5. ASAAS cru — rede caiu nas consultas. Só passa completo.
   const faltando = !limpo(c.endereco) || !limpo(c.cidade) || !limpo(c.estado) || cep.length !== 8;
   if (faltando) return { bloqueio: "endereco_incompleto" };
   return {
@@ -503,6 +556,7 @@ async function montarCadastroBruto(c: Fila): Promise<{ cadastro?: Cadastro; bloq
       estado: limpo(c.estado).toUpperCase(),
       cep,
       fonte: "asaas",
+      numero_inventado: !numeroReal(c.endereco_numero),
     },
   };
 }
@@ -922,6 +976,8 @@ async function clientesSemCobranca(supabase: any, ids: string[]) {
       },
       _dados: d,
       cobrancas: [] as any[],
+      // O carimbo `avl_…` faz o papel do id da cobrança na corrente de emissão.
+      ids_origem: [String(n.id)],
     });
   }
   return [...porDoc.values()];
@@ -941,7 +997,7 @@ async function aplicarCorrecao(
   supabase: any,
   c: { doc: string; nome: string; n_cod_cli: number | null; id_customer: string; dadosAsaas: any },
   opts: {
-    alvos: string[]; ids: string[]; origem: "manual" | "automatico" | "preventivo";
+    alvos: string[]; ids: string[]; origem: "manual" | "automatico" | "preventivo" | "emissao";
     operador: string | null;
     /** O e-mail e o telefone do cadastro federal, quando quem chama já os buscou
      *  (ver `_shared/cnpj-contato.ts`). Opcional porque a busca tem limite de
@@ -1070,7 +1126,7 @@ async function aplicarCorrecao(
          *
          *  • completo  → não há o que fazer, e nunca houve problema (ou ele já
          *    foi resolvido e a lista de trabalho é que estava velha);
-         *  • incompleto → o cadastro bate com a Receita E MESMO ASSIM não emite:
+         *  • incompleto → o cadastro bate com o proposto E MESMO ASSIM não emite:
          *    endereço formalmente completo e materialmente errado (logradouro
          *    preenchido com o nome da cidade, número "00"). Isso é gente.
          *
@@ -1099,10 +1155,10 @@ async function aplicarCorrecao(
           ok: false, nada_a_propor: true, completo,
           acusado: [...acusado],
           motivo: completo && !tentou
-            ? "O cadastro do Omie já está completo e igual ao da Receita — nada a corrigir."
+            ? "O cadastro do Omie já está completo e igual ao proposto (o do Asaas, ou da Receita quando ele está incompleto) — nada a corrigir."
             : tentou
               ? `A prefeitura acusa um campo que a máquina já conferiu: ${tentou}. Isto precisa de gente.`
-              : "O cadastro do Omie bate com a Receita/CEP, continua incompleto, e nem o Asaas nem o cadastro federal publicam o contato que falta. Isto precisa de conferência humana.",
+              : "O cadastro do Omie bate com o endereço proposto, continua incompleto, e nem o Asaas nem o cadastro federal publicam o contato que falta. Isto precisa de conferência humana.",
         };
       } else if ((mudaEndereco || ibgeNovo) && (await existeNosCorreios(cadastro.cep)) === false) {
         /* A TRAVA DE VALIDAÇÃO — nunca escrever CEP que os Correios não conhecem.
@@ -1530,13 +1586,15 @@ async function corrigirRecusados(
  * não sabia buscar. Ver `_shared/cnpj-contato.ts` para por que a BrasilAPI não
  * resolve isso e quem resolve.
  *
- * A RECEITA É EXIGIDA PARA CNPJ, e este é o ponto que separa o pré-voo do
- * conserto de emergência. `montarCadastro` cai para o CEP quando a Receita não
- * responde, e o caminho do CEP escreve `"S/N"` quando ninguém sabe o número. Numa
- * emergência isso é melhor do que nada; aqui não é: gravaríamos um número
- * inventado sobre um cadastro cujo número real existe na Receita — e o cliente
- * ficaria marcado como "já tentado", saindo da fila para sempre. Sem Receita,
- * pula e tenta de novo depois. Não há pressa: isto roda ANTES do corte.
+ * NÚMERO INVENTADO NÃO SE GRAVA EM CNPJ, e este é o ponto que separa o pré-voo
+ * do conserto de emergência. Quando nem o Asaas tem o endereço completo nem a
+ * Receita responde, `montarCadastro` cai para o CEP, que escreve `"S/N"` quando
+ * ninguém sabe o número (`numero_inventado`). Numa emergência isso é melhor do
+ * que nada; aqui não é: gravaríamos um número inventado sobre um cadastro cujo
+ * número real existe na Receita — e o cliente ficaria marcado como "já tentado",
+ * saindo da fila para sempre. Pula e tenta de novo depois. Não há pressa: isto
+ * roda ANTES do corte. (Até 15/09/2026 a guarda era "exige a Receita"; com o
+ * Asaas completo virando a fonte principal, o que se protege é o número.)
  */
 async function prepararCadastros(
   supabase: any, opts: { teto: number; alvos: string[]; operador: string | null; desde?: string | null },
@@ -1600,7 +1658,7 @@ async function prepararCadastros(
     const dadosAsaas = dadosPor.get(c.id_customer) ?? {};
     const pj = String(c.doc).length === 14;
 
-    // Espia a proposta antes de escrever, só para poder EXIGIR a Receita no CNPJ.
+    // Espia a proposta antes de escrever, só para não gravar número inventado em CNPJ.
     const { cadastro, bloqueio } = await montarCadastro(filaDoCliente(c.id_customer, c.doc, dadosAsaas));
     if (!cadastro) {
       // Resposta definitiva (CNPJ que a Receita não conhece, CEP inexistente):
@@ -1610,7 +1668,7 @@ async function prepararCadastros(
       await dorme(900);
       continue;
     }
-    /* SÓ FALTA O CONTATO? Então a exigência da Receita abaixo não se aplica.
+    /* SÓ FALTA O CONTATO? Então a guarda do número inventado abaixo não se aplica.
      *
      * `falta` é montado por `nfse_preparo_montar` juntando o que o cadastro não
      * tem, e quando ele é exatamente "e-mail" o endereço está inteiro — não há
@@ -1619,7 +1677,7 @@ async function prepararCadastros(
      * guarda que existe para proteger um campo que ninguém ia tocar. */
     const soFaltaContato = String(c.falta ?? "").trim() === "e-mail";
 
-    if (pj && !FONTES_OFICIAIS.includes(cadastro.fonte) && !soFaltaContato) {
+    if (pj && cadastro.numero_inventado && !soFaltaContato) {
       /* Fica PENDENTE de propósito: sem marcar, ele volta na próxima passada.
        * Escrever daqui gravaria "S/N" por cima de um número que a Receita
        * conhece — e o cliente sairia da fila carregando um endereço inventado. */
@@ -1633,7 +1691,7 @@ async function prepararCadastros(
          * fim do quinhão, página fora do ar, CNPJ que não está em lugar nenhum). */
         motivo: limite
           ? `A BrasilAPI recusou por limite de taxa (HTTP ${ultimoStatusBrasilAPI}) e a consulta pública também não trouxe o endereço. Pulado; volta na próxima janela.`
-          : `A Receita não respondeu agora (caiu para "${cadastro.fonte}"). Pulado de propósito; volta na próxima passada.`,
+          : `O Asaas não tem o endereço completo e a Receita não respondeu agora (caiu para "${cadastro.fonte}", sem número). Pulado de propósito; volta na próxima passada.`,
       });
       semReceita++;
       /* A BrasilAPI limita por IP, e o sinal de que estamos batendo no limite é
@@ -1853,10 +1911,12 @@ Deno.serve(async (req) => {
      * que o tem, nesta ordem, e a ordem é o argumento:
      *   1. o cadastro do OMIE — se ele existe, é para ele que a nota sai, então é
      *      ele que a pessoa tem de ver;
-     *   2. a RECEITA (BrasilAPI; página pública se ela recusar por limite) — o
-     *      endereço oficial, o mesmo que `montarCadastro` vai usar;
-     *   3. o ASAAS — nome fantasia, e-mail e telefone que o cliente usa;
-     *   4. o cadastro federal de contato (`contatoDoCnpj`) — o e-mail que a
+     *   2. o ASAAS, para o endereço, e só se completo — a mesma régua de
+     *      `montarCadastro` (desde 15/09/2026 a Receita é reserva);
+     *   3. a RECEITA (BrasilAPI; página pública se ela recusar por limite) — o
+     *      endereço quando o Asaas não o tem inteiro, nome e contato;
+     *   4. o ASAAS de novo — nome fantasia, e-mail e telefone que o cliente usa;
+     *   5. o cadastro federal de contato (`contatoDoCnpj`) — o e-mail que a
      *      BrasilAPI não traz, e que é o campo que mais trava nota.
      *
      * O ENDEREÇO VEM EM BLOCO, de uma fonte só. Preencher campo a campo misturaria
@@ -1920,7 +1980,15 @@ Deno.serve(async (req) => {
         if (ca?.[0]) idCustomer = ca[0].id_asaas;
         if (a) por("nome", a.name || a.company, "asaas");
 
-        // 2. RECEITA — só PJ.
+        // 2. ASAAS — o endereço, só se completo. Incompleto, a Receita vem antes.
+        if (a && limpo(a.address) && numeroReal(a.addressNumber) && soDigitos(a.postalCode).length === 8) {
+          porEndereco({
+            cep: a.postalCode, endereco: a.address, numero: a.addressNumber, complemento: a.complement,
+            bairro: a.province, cidade: a.cityName, uf: a.state,
+          }, "asaas");
+        }
+
+        // 3. RECEITA — só PJ.
         if (doc.length === 14) {
           const r = await buscaJSON(`https://brasilapi.com.br/api/cnpj/v1/${doc}`);
           if (r.naoExiste) {
@@ -1955,7 +2023,7 @@ Deno.serve(async (req) => {
           }
         }
 
-        // 3. ASAAS — contato, e o endereço só se ninguém acima o tinha.
+        // 4. ASAAS — contato, e o endereço incompleto só se ninguém acima o tinha.
         if (a) {
           por("email", String(a.email ?? "").split(/[,;\s]+/)[0], "asaas");
           por("telefone", soDigitos(a.mobilePhone ?? a.phone), "asaas");
@@ -1965,7 +2033,7 @@ Deno.serve(async (req) => {
           }, "asaas");
         }
 
-        // 4. CONTATO FEDERAL — só se ainda falta. Tem limite de taxa e cache.
+        // 5. CONTATO FEDERAL — só se ainda falta. Tem limite de taxa e cache.
         if (doc.length === 14 && (!t.email || !t.telefone)) {
           try {
             const c = await contatoDoCnpj(supabase, doc, { ate: Date.now() + 25_000 });
@@ -2029,7 +2097,7 @@ Deno.serve(async (req) => {
      *
      * O QUE ELE DEVOLVE QUANDO NÃO DÁ é a parte que importa para a tela: além do
      * `bloqueio`, vai `tentado[]` — as fontes que foram consultadas antes de
-     * desistir. Quem lê precisa saber que a Receita e o CEP já foram perguntados,
+     * desistir. Quem lê precisa saber que o Asaas, a Receita e o CEP já foram perguntados,
      * senão "não deu" se lê como "ninguém tentou".
      */
     if (action === "garantir") {
@@ -2069,13 +2137,59 @@ Deno.serve(async (req) => {
       const origem = ehCron ? "cron" : "tela";
 
       for (const c of clientes) {
-        const base = { doc: c.doc, nome: c.nome, id_customer: c.id_customer };
-
-        // Já tinha: é a resposta mais comum e não é trabalho nenhum.
-        if (c.n_cod_cli) { saida.push({ ...base, situacao: "ja_tinha", n_cod_cli: c.n_cod_cli }); continue; }
+        /* `ids` sobe em TODA linha: é por ele que a tela tira da emissão a
+           cobrança cujo cadastro não ficou certo. */
+        const ids: string[] = semCobranca.length
+          ? (c.ids_origem ?? [])
+          : (c.cobrancas ?? []).map((x: any) => String(x.id_asaas));
+        const base = { doc: c.doc, nome: c.nome, id_customer: c.id_customer, ids };
 
         if (Date.now() - inicio > PRAZO) {
           saida.push({ ...base, situacao: "nao_tentado", motivo: "A chamada acabou antes da vez deste. Nada foi tocado — repita." });
+          continue;
+        }
+
+        /* JÁ TINHA CADASTRO — E ELE PASSA A SER CONFERIDO ANTES DE EMITIR (15/09/2026).
+         *
+         * Até aqui "já tinha" era a resposta mais comum e não era trabalho nenhum:
+         * a nota saía para o cadastro que o Omie tivesse, fosse ele qual fosse. Foi
+         * assim que a AEVO ganhou DUAS notas com a sala de onde já tinha saído — a
+         * 20274 e a 20391 —, a segunda emitida pela "Nota sem cobrança" com o
+         * endereço certo digitado na tela: o Hub cadastrou a empresa na véspera com
+         * o endereço da Receita, e daí em diante nada comparava o cadastro com o
+         * que o cliente (ou a pessoa) informava.
+         *
+         * Agora a régua é a mesma do conserto (`aplicarCorrecao`): o endereço
+         * proposto sai do Asaas — ou do tomador digitado — e só é escrito se
+         * difere e se o CEP existe nos Correios. Igual, não escreve nada.
+         *
+         * E NÃO CONSEGUIR ATUALIZAR BARRA A NOTA. Emitir sabendo que o cadastro do
+         * Omie diverge do endereço informado é emitir o erro de propósito, e nota
+         * não se corrige, cancela-se. Sem proposta confiável (sem endereço
+         * completo em lugar nenhum), segue com o que o Omie tem, como antes. */
+        if (c.n_cod_cli) {
+          const { feito, cadastro, bloqueio } = await aplicarCorrecao(supabase, {
+            doc: c.doc, nome: c.nome, n_cod_cli: c.n_cod_cli, id_customer: c.id_customer, dadosAsaas: c._dados,
+          }, {
+            alvos: ["omie"], ids, origem: "emissao",
+            operador: quem?.email ?? (ehCron ? "cron" : null),
+          });
+          const om: any = (feito as any).omie ?? {};
+          if (cadastro && om.ok === false && !om.nada_a_propor) {
+            saida.push({
+              ...base, situacao: "falhou", n_cod_cli: c.n_cod_cli,
+              motivo: `O cadastro deste cliente no Omie tem outro endereço e não pôde ser atualizado antes de emitir ` +
+                `(${om.motivo ?? "sem motivo"}). A nota não sai com o endereço velho.`,
+            });
+          } else {
+            saida.push({
+              ...base, situacao: "ja_tinha", n_cod_cli: c.n_cod_cli,
+              cadastro_atualizado: om.ok === true,
+              ...(om.ok === true ? { escrito: om.escrito } : {}),
+              ...(cadastro ? {} : { sem_proposta: bloqueio ?? null }),
+            });
+          }
+          await dorme(400);
           continue;
         }
 
@@ -2095,7 +2209,7 @@ Deno.serve(async (req) => {
             ...base, situacao: "bloqueado", motivo: bloqueio ?? "endereco_incompleto",
             /* O que já foi perguntado, para a tela não mandar a pessoa "tentar de
                novo" aquilo que a máquina acabou de tentar. */
-            tentado: ["Receita Federal (CNPJ)", "Correios (CEP)", "cadastro do Asaas"],
+            tentado: ["cadastro do Asaas", "Receita Federal (CNPJ)", "Correios (CEP)"],
             asaas: c.asaas,
           });
           await dorme(400);

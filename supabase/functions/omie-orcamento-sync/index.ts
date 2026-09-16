@@ -78,7 +78,9 @@ async function listarMovimentos(filtros: Record<string, unknown> = {}, limitePag
   const out: any[] = [];
   let nPagina = 1, totalPaginas = 1;
   do {
-    const r = await omieCall<any>("financas/mf", "ListarMovimentos", { nPagina, nRegPorPagina: 500, ...filtros });
+    // `cExibirDepartamentos`: esta cópia também grava o cache compartilhado — sem o
+    // parâmetro, apagaria os departamentos que o Plano de contas lê (ver _shared/omie.ts).
+    const r = await omieCall<any>("financas/mf", "ListarMovimentos", { nPagina, nRegPorPagina: 500, cExibirDepartamentos: "S", ...filtros });
     for (const m of (r?.movimentos ?? [])) out.push(m);
     totalPaginas = Number(r?.nTotPaginas ?? 1);
     nPagina++;

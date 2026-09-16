@@ -67,6 +67,9 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.0";
 import { asaasGet, asaasPost, asaasUpload } from "../_shared/asaas.ts";
 import { espelhoPdf, lerXmlNfse } from "../_shared/danfse.ts";
 import { segredosDoGmail, tokenDeAcesso } from "../_shared/gmail.ts";
+import {
+  FIM_DA_LISTA, conferirLeituraCompleta, janelaDeAlteracao, osAindaNoForno, statusPendenteDoEspelho, tamanhoDePagina,
+} from "../_shared/listar-os.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -241,76 +244,79 @@ const frasePerdiVez = (t: { quem: string | null; ate: string | null }) =>
 
 /* ------------------------------- espelhar -------------------------------- */
 
-/* Todas as OS, paginadas.
+/* As OS, paginadas — de UMA etapa (`etapa`) ou do acervo inteiro (sem ela).
  *
- * CUIDADO — ESTA FUNÇÃO CUSTA O ACERVO INTEIRO, NÃO O TRABALHO DO DIA. São 500 OS
- * por página, e ela roda de 2 a 4 vezes por rodada de emissão (`limparCorredor` e
- * `ocupantesDaEtapa`) mais uma no espelho. Com 1.287 OS são 3 páginas e ninguém
- * sente; o custo dobra sozinho a cada poucos meses porque cresce com o total de
- * OS já criadas. O teto de 40 páginas (20.000 OS) TRUNCA EM SILÊNCIO — e a trava
- * de raio, que é o que impede faturar OS de terceiro, ficaria cega.
+ * O CORREDOR LÊ SÓ A ETAPA DELE. `filtrar_por_etapa` funciona — sondado em
+ * 28/08/2026 e de novo em 15/09/2026 (etapa 20 → 16 OS, 50 → 550, 60 → 3.448, a
+ * primeira de cada resposta na etapa pedida). `limparCorredor` e
+ * `ocupantesDaEtapa` custam os OCUPANTES, uma chamada; o acervo inteiro ficou só
+ * para o espelho e o diagnóstico `etapas`.
  *
- * O comentário que estava aqui dizia que `ListarOS` só aceita paginação. ESTÁ
- * ERRADO — sondado em 28/08/2026 (`action: "sondar_listaros"`): `filtrar_por_etapa`
- * funciona (etapa 50 → 523 OS, etapa 60 → 763, etapa 20 → vazia, e a primeira OS
- * de cada resposta traz a etapa pedida), e `filtrar_por_data_de` também
- * (1.287 → 81). `etapa` solto é recusado como tag inválida, que é o controle.
+ * 15/09/2026 — O DIA EM QUE A GUARDA ANTIGA PAROU A EMISSÃO. Ela contava páginas
+ * ("teto de 40 páginas de 500 = 20.000 OS"), mas o Omie devolve 100 OS por
+ * página, peça-se 500 ou não: o teto real eram 4.000 OS. O acervo tinha 4.000
+ * exatas; a rodada das 10:00 criou 16, a leitura seguinte veio com 41 páginas e
+ * TODA rodada depois disso abortou — emissão e espelho. E como todo chamador
+ * varria o acervo, eram 41 chamadas por leitura, duas a três vezes por rodada.
  *
- * Quem só precisa saber quem está NUMA etapa deve passar `etapa` e pagar
- * O(ocupantes) em vez de O(acervo). */
-/** Páginas de 500 que a varredura aceita ler. Acima disso ela estoura — ver abaixo. */
-const TETO_PAGINAS_OS = 40;
+ * A GUARDA AGORA É POR REGISTRO (`conferirLeituraCompleta`): "li as N OS que o
+ * próprio Omie diz que existem?". Página é unidade do Omie e ele a muda sem
+ * avisar. Lista cortada continua ESTOURANDO em vez de voltar — a trava de raio
+ * decidindo sobre meio corredor fatura OS de terceiro, e nota não se apaga.
+ *
+ * `prazoMs` é o relógio do espelho: o acervo cresce ~150 OS por dia de emissão
+ * em massa, e a varredura completa um dia não cabe nos 150s. Passado o prazo ela
+ * estoura com a frase dizendo isso — e o forno já foi fechado antes, pelo
+ * `StatusOS` (ver `fecharFornoPeloStatus`), então a nota que nasceu não depende
+ * desta varredura para aparecer. */
+let seqListarOS = 0;
 
-async function listarOS(opts: { etapa?: string } = {}): Promise<any[]> {
-  const out: any[] = [];
+async function listarOS(
+  opts: { etapa?: string; prazoMs?: number; alteradas?: { de: string; ate: string } } = {},
+): Promise<any[]> {
+  const inicio = Date.now();
+  const porCodigo = new Map<number, any>();
+  const tamanho = tamanhoDePagina(seqListarOS++);
   let pagina = 1, totalPaginas = 1;
+  let totalDeRegistros: number | null = null;
   do {
     const r = await omieCall<any>("servicos/os", "ListarOS", {
-      pagina, registros_por_pagina: 500, apenas_importado_api: "N",
+      pagina, registros_por_pagina: tamanho, apenas_importado_api: "N",
       ...(opts.etapa ? { filtrar_por_etapa: opts.etapa } : {}),
+      ...(opts.alteradas ? { filtrar_por_data_de: opts.alteradas.de, filtrar_por_data_ate: opts.alteradas.ate } : {}),
     }).catch((e) => {
-      /* Etapa vazia não é erro: o Omie responde "Não existem registros para a
-         página [1]!" quando o filtro não casa com nada, e para o corredor de
-         isolamento vazio essa é a resposta BOA — a mais comum, aliás. */
-      if (opts.etapa && /não existem registros|nao existem registros/i.test(mensagemDoOmie(e))) return null;
+      /* "Não existem registros para a página [N]!" é o Omie dizendo que acabou —
+         na etapa vazia (a resposta BOA do corredor, a mais comum) ou numa página
+         além do fim. Quem decide se a lista veio inteira é a contagem, abaixo. */
+      if (FIM_DA_LISTA.test(mensagemDoOmie(e)) && (opts.etapa || opts.alteradas || pagina > 1)) return null;
       throw e;
     });
     if (!r) break;
-    out.push(...(r?.osCadastro ?? []));
+    const lista: any[] = r?.osCadastro ?? [];
+    // Por código: página que desliza no meio da leitura repete OS, e contar a
+    // repetida duas vezes esconderia a que ficou de fora.
+    for (const os of lista) {
+      const k = Number(os?.Cabecalho?.nCodOS ?? 0);
+      if (k) porCodigo.set(k, os);
+    }
     totalPaginas = Number(r?.total_de_paginas ?? 1);
+    if (totalDeRegistros === null) totalDeRegistros = Number(r?.total_de_registros ?? Number.NaN);
+    if (!lista.length) break;
 
-    /* TRUNCAMENTO NÃO PASSA CALADO — e este é o modo de falha mais perigoso
-     * desta função inteira.
-     *
-     * Sem esta guarda, passar de `TETO_PAGINAS_OS` devolvia uma lista CORTADA com
-     * cara de lista completa. Quem chama não tem como perceber: `limparCorredor`
-     * e `ocupantesDaEtapa` leriam um corredor que não viram inteiro, concluiriam
-     * "não há mais ninguém aqui" e o `FaturarLoteOS` seguinte fatura a ETAPA —
-     * emitindo nota de OS que não é nossa. Nota não se apaga: cancela-se, com
-     * prazo e justificativa, e a de terceiro nem isso.
-     *
-     * Por isso ela ESTOURA em vez de devolver o que deu. A esteira parar é
-     * recuperável e barulhento; a esteira decidir sobre meia lista, não. E vale
-     * para todos os chamadores, inclusive o espelho: espelhar 20.000 de 25.000 OS
-     * marcaria `faturada` errado e a fila voltaria a servir cobrança que já virou
-     * nota — que foi exatamente o acidente de 27/08.
-     *
-     * Hoje são 3 páginas (1.287 OS), então esta condição não tem como disparar.
-     * Ela é seguro para o dia em que o acervo dobrar algumas vezes — e a saída
-     * desse dia está escrita na mensagem, não numa investigação. */
-    if (totalPaginas > TETO_PAGINAS_OS) {
+    if (opts.prazoMs && pagina < totalPaginas && Date.now() - inicio > opts.prazoMs) {
       throw new Error(
-        `ListarOS devolveu ${totalPaginas} páginas de 500 (~${totalPaginas * 500} OS) e o teto desta função é ` +
-        `${TETO_PAGINAS_OS}. Nada foi lido pela metade de propósito: uma lista cortada faria a trava de raio ` +
-        `decidir sobre um corredor que ela não viu inteiro, e faturar a etapa emitiria nota de OS de terceiro. ` +
-        `A saída é parar de varrer o acervo: passe \`{ etapa }\` em \`listarOS\` nos chamadores do corredor ` +
-        `(\`ocupantesDaEtapa\` e \`limparCorredor\`) — o Omie aceita \`filtrar_por_etapa\`, conferido em 28/08/2026 ` +
-        `com \`action: "sondar_listaros"\`, e aí a varredura passa a custar os ocupantes em vez do acervo.`,
+        `A varredura do acervo passou de ${Math.round(opts.prazoMs / 1000)}s na página ${pagina} de ` +
+        `${totalPaginas} (${totalDeRegistros} OS). O acervo cresceu além do que o espelho completo lê dentro ` +
+        `do relógio da Edge Function — nada foi gravado pela metade. O forno continua fechando pelo StatusOS, ` +
+        `e o espelho de rotina lê só a janela de alteração; o acervo completo (\`completo: true\`) é que não cabe mais.`,
       );
     }
     pagina++;
-  } while (pagina <= totalPaginas && pagina <= TETO_PAGINAS_OS);
-  return out;
+  } while (pagina <= totalPaginas);
+
+  const falta = conferirLeituraCompleta({ lidos: porCodigo.size, totalDeRegistros, etapa: opts.etapa });
+  if (falta) throw new Error(falta);
+  return [...porCodigo.values()];
 }
 
 /**
@@ -422,7 +428,7 @@ async function lerEspelho(supabase: any): Promise<any[]> {
   for (let de = 0; ; de += PAGINA) {
     const { data, error } = await supabase
       .from("nf_os_omie")
-      .select("n_cod_os, nfse_status, status_lido_em")
+      .select("n_cod_os, nfse_status, status_lido_em, faturada, data_faturamento, cancelada, excluida_em")
       .order("n_cod_os", { ascending: true })
       .range(de, de + PAGINA - 1);
     if (error) throw new Error(`nf_os_omie select: ${error.message}`);
@@ -676,12 +682,110 @@ async function fecharRecusadas(supabase: any): Promise<Record<string, unknown>> 
   return { abertas: porOS.size, fechadas: novas.length, lotes_lidos: lotes.size };
 }
 
-async function espelhar(supabase: any, opts: { tetoStatus: number }) {
+/**
+ * O FORNO SE FECHA PELO STATUS DA OS, NÃO PELA VARREDURA DO ACERVO.
+ *
+ * Em 15/09/2026 a varredura do acervo quebrou às 10:02 e o espelho parou junto. A
+ * NFS-e 20274 da AEVO (R$ 14.880), autorizada na véspera às 23:21, passou o dia
+ * na faixa vermelha "parou no meio da emissão" — com o cliente já respondendo o
+ * e-mail da nota. O Hub não sabia porque não tinha voltado para olhar, e a tela
+ * leu o silêncio como falha.
+ *
+ * O que está no forno o Hub SABE qual é (ele mesmo disparou), e perguntar por
+ * cada uma custa um `StatusOS` — método diferente do `ListarOS`, sem disputar a
+ * trava dele. Então isto roda PRIMEIRO e sozinho: o que der errado depois não
+ * desfaz o que foi fechado aqui.
+ */
+async function fecharFornoPeloStatus(supabase: any, teto = 40): Promise<Record<string, unknown>> {
+  const desde = new Date(Date.now() - 7 * 864e5).toISOString();
+  // As mesmas duas ações que `fecharEmProcessamento` sabe fechar.
+  const ACOES = ["faturar", "criar_e_faturar"];
+  const { data: abertas, error } = await supabase
+    .from("nf_emissoes")
+    .select("n_cod_os, criado_em")
+    .eq("resultado", "em_processamento")
+    .in("acao", ACOES)
+    .gte("criado_em", desde)
+    .not("n_cod_os", "is", null)
+    .order("criado_em", { ascending: false })
+    .range(0, 499);
+  if (error) throw new Error(`nf_emissoes (forno): ${error.message}`);
+  if (!abertas?.length) return { no_forno: 0, lidos: 0, com_nota: 0 };
+
+  const { data: desfechos } = await supabase
+    .from("nf_emissoes")
+    .select("n_cod_os, criado_em")
+    .in("n_cod_os", [...new Set(abertas.map((a: any) => Number(a.n_cod_os)))])
+    .in("acao", ACOES)
+    .neq("resultado", "em_processamento")
+    .range(0, 999);
+
+  const alvos = osAindaNoForno(abertas, desfechos ?? [], teto);
+  let lidos = 0, comNota = 0;
+  const erros: string[] = [];
+  for (const nCodOS of alvos) {
+    try {
+      const s = await omieCall<any>("servicos/os", "StatusOS", { nCodOS });
+      const nfse = nfseDoStatus(s);
+      await supabase.from("nf_os_omie").update({
+        ...nfse,
+        c_cod_int_os: String(s?.cCodIntOS ?? "") || null,
+        etapa: String(s?.cEtapa ?? "") || null,
+        faturada: String(s?.cFaturada ?? "N") === "S",
+        cancelada: String(s?.cCancelada ?? "N") === "S",
+        data_faturamento: isoDeBR(s?.dDtFat),
+        status_lido_em: new Date().toISOString(),
+        atualizado_em: new Date().toISOString(),
+      }).eq("n_cod_os", nCodOS);
+      if (nfse.nfse_status === "004") {
+        comNota++;
+        await fecharEmProcessamento(supabase, nCodOS, nfse.nfse_numero as string | null);
+      }
+      lidos++;
+    } catch (e) {
+      erros.push(`${nCodOS}: ${mensagemDoOmie(e).slice(0, 120)}`);
+      if (erros.length >= 3) break; // o Omie está barrando; a próxima rodada retoma
+    }
+  }
+  return { no_forno: alvos.length, lidos, com_nota: comNota, ...(erros.length ? { erros } : {}) };
+}
+
+/** Quanto do relógio da Edge Function a varredura do acervo pode gastar. */
+const PRAZO_VARREDURA_ESPELHO_MS = 90_000;
+
+/**
+ * Quantos dias de alteração o espelho lê. `null` = o acervo inteiro.
+ *
+ * O cron de rodada (10 em 10 min) usa 3: cobre um dia inteiro sem cron e sobra.
+ * O das 18h, que não passa `so_se_houver_forno`, usa 10 — é a rede para qualquer
+ * buraco maior. O acervo inteiro só a pedido (`completo: true`): em 15/09/2026 ele
+ * eram 41 páginas e 77s, crescendo ~1,5 página por dia.
+ */
+function janelaDoEspelho(body: any): number | null {
+  if (body?.completo === true) return null;
+  const pedida = Number(body?.janela_dias);
+  if (Number.isFinite(pedida) && pedida >= 0) return Math.min(pedida, 60);
+  return body?.so_se_houver_forno === true ? 3 : 10;
+}
+
+async function espelhar(supabase: any, opts: { tetoStatus: number; janelaDias?: number | null }) {
+  const janela = opts.janelaDias === null || opts.janelaDias === undefined
+    ? null
+    : janelaDeAlteracao(Date.now(), opts.janelaDias);
+  const forno = await fecharFornoPeloStatus(supabase)
+    .catch((e) => ({ erro: mensagemDoOmie(e).slice(0, 200) }));
+
+  const inicioListagem = Date.now();
   const [osLista, gravadas, { data: cacheClientes }] = await Promise.all([
-    listarOS(),
+    listarOS({ prazoMs: PRAZO_VARREDURA_ESPELHO_MS, ...(janela ? { alteradas: janela } : {}) }),
     lerEspelho(supabase),
     supabase.from("omie_cache").select("dados").eq("chave", "clientes").maybeSingle(),
-  ]);
+  ]).catch((e) => {
+    // A resposta continua sendo falha (a volta não se fechou), mas conta o que o
+    // forno já resolveu antes — senão quem lê o erro acha que nada andou.
+    throw new Error(`${mensagemDoOmie(e)} [antes disso o forno foi conferido pelo StatusOS: ${JSON.stringify(forno)}]`);
+  });
+  const listagemMs = Date.now() - inicioListagem;
 
   // Código do cliente no Omie → CNPJ/CPF. É esse documento que casa com o Asaas;
   // por nome não casa (o Asaas guarda o fantasia, o Omie a razão social).
@@ -720,6 +824,15 @@ async function espelhar(supabase: any, opts: { tetoStatus: number }) {
     });
 
     if (ehStatusPendente(os, jaPor.get(nCodOS))) paraStatus.push(nCodOS);
+  }
+
+  /* A NOTA PRESA NÃO MUDA NO OMIE, e por isso não vem na janela. Quem escolhe
+   * as que precisam de StatusOS, além das listadas, é o espelho GRAVADO — mesma
+   * regra de `ehStatusPendente`. Sem isto, o RPS preso em '003' de junho nunca
+   * mais seria relido depois que o espelho deixou de varrer o acervo. */
+  const listadas = new Set(linhas.map((l) => Number(l.n_cod_os)));
+  for (const n of statusPendenteDoEspelho(gravadas, Date.now(), { carenciaH: CARENCIA_STATUS_H, nascendoDias: NASCENDO_DIAS })) {
+    if (!listadas.has(n)) paraStatus.push(n);
   }
 
   // Grava a listagem primeiro: mesmo que a leitura de status pare no meio (trava
@@ -778,7 +891,12 @@ async function espelhar(supabase: any, opts: { tetoStatus: number }) {
     .catch((e) => ({ erro: mensagemDoOmie(e).slice(0, 200) }));
 
   return {
+    forno,
+    janela: janela ?? "acervo completo",
     os_listadas: linhas.length,
+    // A tendência do relógio: quando isto chegar perto de PRAZO_VARREDURA_ESPELHO_MS,
+    // é hora do espelho incremental — antes de ele estourar.
+    listagem_ms: listagemMs,
     status_pendentes: paraStatus.length,
     status_lidos: lidos,
     com_nota: comNota,
@@ -1557,10 +1675,11 @@ async function curarEspelhoNota(supabase: any, nota: any) {
  * correção do espelho (em `curarEspelho`) fechou o buraco; isto fecha a
  * sequência.
  *
- * O QUE ELE NÃO FAZ, e não há como fazer: cancelar nota emitida pelo OMIE. A API
- * não tem `CancelarOS` nem nada em `servicos/nfse/` — foi varrida método a
- * método em 25/08/2026. Nota nossa se cancela na tela do Omie, e por isso o ato
- * recusa esse caso em voz alta em vez de tentar e falhar pela metade.
+ * O QUE ELE NÃO FAZ: cancelar nota emitida pelo OMIE. Esse caso tem ato próprio,
+ * `refazerNotaOmie`, logo abaixo — até 15/09/2026 ele não existia, porque a
+ * varredura de 25/08 procurou cancelamento em `servicos/os` e `servicos/nfse` e
+ * o método morava em `servicos/osp`. Este ato continua recusando a nota do Omie
+ * em voz alta, apontando para o outro, em vez de tentar e falhar pela metade.
  *
  * A JUSTIFICATIVA É OBRIGATÓRIA porque o cancelamento de NFS-e é, ele próprio,
  * um ato que a prefeitura registra com motivo. Se alguém precisa escrever a
@@ -1602,9 +1721,8 @@ async function refazerNota(supabase: any, cfg: any, opts: {
   const [candidata] = await candidatas(supabase, [id], false);
   if (candidata?.ja_tem_nota) {
     return {
-      erro: "Esta cobrança já tem NFS-e emitida pelo Omie, e a API do Omie não cancela nota — " +
-        "não existe `CancelarOS` nem `servicos/nfse/`. Cancele na tela do Omie, clique em " +
-        "\"Atualizar do Omie\" aqui, e então a linha volta a aceitar emissão.",
+      erro: "Esta cobrança tem NFS-e emitida pelo Omie, não pelo Asaas. Use \"Refazer a nota\" na linha: " +
+        "para nota do Omie o Hub cancela pelo próprio Omie e reemite na mesma cobrança.",
     };
   }
 
@@ -1731,6 +1849,298 @@ async function refazerNota(supabase: any, cfg: any, opts: {
     valor_agora: pagamento?.value ?? null,
     despachada: Number(emissao?.emitidas ?? 0) > 0,
     emissao,
+  };
+}
+
+/* ---------------------------------------------------------------------------
+ * REFAZER A NOTA DO OMIE — cancelar pela API e reemitir na MESMA cobrança.
+ *
+ * A PORTA ESTAVA NO ENDPOINT VIZINHO. A varredura de 25/08/2026 procurou
+ * cancelamento em `servicos/os` e `servicos/nfse` e concluiu que o Omie não
+ * cancela nota por API. Sondado em 15/09/2026, `servicos/osp` ("Faturamento de
+ * OS") tem os dois métodos que faltavam:
+ *
+ *   • `CancelarOS` { nCodOS, cCancelarNfse } — cancela a OS e, com "S" (o
+ *     padrão), a NFS-e na prefeitura. NÃO tem campo de motivo: a justificativa
+ *     fica no diário do Hub;
+ *   • `AssociarCodIntOS` { nCodOS, cCodIntOS } — troca o código de integração.
+ *
+ * O SEGUNDO É O QUE PERMITE FICAR NA MESMA COBRANÇA. `IncluirOS` recusa
+ * `cCodIntOS` repetido, e a OS cancelada continua existindo com o `pay_…`. Sem
+ * soltá-lo, a nota certa só sairia por OUTRA cobrança — criar uma no Asaas e
+ * excluir a antiga —, que é exatamente a volta que a AEVO deu em 15/09/2026:
+ * Asaas, Omie, Asaas de novo, e uma cobrança duplicada no meio.
+ *
+ * A ORDEM É O ARGUMENTO. Primeiro solta o carimbo, DEPOIS cancela: trocar um
+ * código de integração se desfaz (troca-se de volta); cancelar nota fiscal não.
+ * Se o Omie recusar a troca, nada foi cancelado. Se o cancelamento não se
+ * confirmar, o carimbo volta ao que era — e isso não é zelo: com o carimbo
+ * trocado e a nota velha de pé, o painel deixaria de casar a cobrança com a
+ * nota, e uma cobrança RECEBIDA entraria na fila automática para uma segunda.
+ *
+ * O CANCELAMENTO SÓ CONTA CONFIRMADO AO VIVO (`cCancelada = "S"`). Emitir a
+ * substituta com a velha ainda de pé cria duas notas se a prefeitura recusar —
+ * a mesma lição do `refazerNota` do Asaas. A emissão não mora aqui: quem a
+ * conduz é o `EmitirAgora`, na tela, só depois deste "ok".
+ *
+ * A CONFERÊNCIA ALTERNA `StatusOS` E `ConsultarOS`. O Omie barra a MESMA
+ * chamada repetida em poucos segundos ("consumo redundante"); dois métodos
+ * diferentes lendo o mesmo campo não esbarram nisso.
+ *
+ * ESCRITO SEM TER RODADO NUMA OS REAL: os dois métodos responderam à sonda
+ * (existem), mas o comportamento com uma OS faturada — em especial se
+ * `AssociarCodIntOS` aceita trocar um código que já existe — só se prova no
+ * primeiro uso. Por isso cada passo confere o anterior no Omie, e não na resposta.
+ * ------------------------------------------------------------------------- */
+
+/** A OS está cancelada no Omie? `null` quando a leitura falhou — não é "não". */
+async function osCanceladaAoVivo(nCodOS: number, vez: number): Promise<boolean | null> {
+  try {
+    if (vez % 2 === 0) {
+      const s = await omieCall<any>("servicos/os", "StatusOS", { nCodOS });
+      return String(s?.cCancelada ?? "N") === "S";
+    }
+    const c = await omieCall<any>("servicos/os", "ConsultarOS", { nCodOS });
+    return String(c?.InfoCadastro?.cCancelada ?? "N") === "S";
+  } catch {
+    return null;
+  }
+}
+
+/** Pede o cancelamento (OS + NFS-e na prefeitura) e só diz `cancelada` quando o
+ *  Omie confirma ao vivo. */
+async function cancelarOsEConfirmar(nCodOS: number): Promise<{ cancelada: boolean; recusa: string | null }> {
+  let recusa: string | null = null;
+  try {
+    await omieCall<any>("servicos/osp", "CancelarOS", { nCodOS, cCancelarNfse: "S" }, { semRetentativa: true });
+  } catch (e) {
+    recusa = mensagemDoOmie(e).slice(0, 300);
+  }
+  /* Mesmo com recusa, confere uma vez: a recusa pode ter vindo depois de o Omie
+     ter cancelado (timeout do lado dele), e tratar como "não cancelou" uma OS
+     cancelada levaria a devolver carimbo ou a pedir de novo. */
+  const ate = Date.now() + 75_000;
+  for (let vez = 1; Date.now() < ate; vez++) {
+    await dorme(recusa ? 3_000 : 15_000);
+    const r = await osCanceladaAoVivo(nCodOS, vez);
+    if (r === true) return { cancelada: true, recusa: null };
+    if (recusa) break;
+  }
+  return { cancelada: false, recusa };
+}
+
+/* ---------------------------------------------------------------------------
+ * CANCELAR SÓ — a nota do Omie cai e nada é reemitido.
+ *
+ * O caso que o trouxe (AEVO, 16/09/2026): duas notas com o endereço velho, uma
+ * de cobrança já excluída no Asaas (20274) e outra de nota sem cobrança (20391).
+ * O `refazer_omie` não serve a nenhuma das duas — ele reemite, e é por cobrança
+ * `pay_`. Aqui a entrada é a OS, a saída é a nota cancelada e confirmada, e o que
+ * emitir depois é decisão de quem pediu.
+ *
+ * Só nota AUTORIZADA (status 004 ao vivo): RPS recusado não é nota, e o caminho
+ * dele é o `devolver_a_esteira`/`excluir_os_recusada`.
+ * ------------------------------------------------------------------------- */
+async function cancelarNotaOmie(supabase: any, opts: {
+  nCodOS: number; justificativa: string; usuario: string | null; operador: string | null;
+}) {
+  const nCodOS = Number(opts.nCodOS);
+  const justificativa = String(opts.justificativa ?? "").trim();
+  if (!nCodOS) return { erro: "Informe a OS (`n_cod_os`)." };
+  if (!justificativa) return { erro: "Cancelar exige justificativa — o Omie não guarda motivo; o diário do Hub guarda." };
+
+  const { data: os, error } = await supabase
+    .from("nf_os_omie").select("n_cod_os, c_cod_int_os, nfse_numero, faturada, cancelada")
+    .eq("n_cod_os", nCodOS).maybeSingle();
+  if (error) return { erro: `nf_os_omie: ${error.message}` };
+  if (!os) return { erro: `A OS ${nCodOS} não está no espelho.` };
+  if (os.cancelada) return { ok: true, cancelada: true, ja_estava: true, n_cod_os: nCodOS, nfse_numero: os.nfse_numero };
+
+  let st: any;
+  try {
+    st = await omieCall<any>("servicos/os", "StatusOS", { nCodOS });
+  } catch (e) {
+    return { erro: `Não deu para ler a OS ${nCodOS} no Omie (${mensagemDoOmie(e).slice(0, 160)}). Nada foi feito.` };
+  }
+  const nf = nfseDoStatus(st);
+  const numero = String(os.nfse_numero ?? "").trim() || (nf.nfse_numero as string | null) || null;
+  const jaCancelada = String(st?.cCancelada ?? "N") === "S";
+  const id = String(os.c_cod_int_os ?? "") || null;
+  const diario = (resultado: string, erro: string, extra: Record<string, unknown> = {}) =>
+    supabase.from("nf_emissoes").insert({
+      id_asaas: id, n_cod_os: nCodOS, nfse_numero: numero, acao: "cancelar_omie", resultado, erro,
+      usuario: opts.usuario, operador: opts.operador, payload: { justificativa, ...extra },
+    }).then(() => {}, () => {});
+
+  if (!jaCancelada) {
+    if (String(nf.nfse_status ?? "") !== "004") {
+      return { erro: `A OS ${nCodOS} não tem nota autorizada no Omie (status ${nf.nfse_status ?? "vazio"}). Nada foi cancelado.` };
+    }
+    const { cancelada, recusa } = await cancelarOsEConfirmar(nCodOS);
+    if (!cancelada) {
+      await diario(recusa ? "erro" : "em_processamento",
+        recusa ? `O Omie recusou cancelar a NFS-e ${numero ?? ""}: ${recusa}.`
+          : `Cancelamento da NFS-e ${numero ?? ""} pedido e ainda não confirmado pelo Omie.`);
+      return recusa
+        ? { erro: `O Omie recusou cancelar a NFS-e ${numero ?? ""} (${recusa}).` }
+        : { ok: true, cancelada: false, cancelamento_em_andamento: true, n_cod_os: nCodOS, nfse_numero: numero };
+    }
+  }
+
+  await supabase.from("nf_os_omie").update({ cancelada: true, atualizado_em: new Date().toISOString() }).eq("n_cod_os", nCodOS);
+  await diario("ok", `NFS-e ${numero ?? ""} cancelada pelo Hub (OS ${nCodOS}, CancelarOS com cancelamento na prefeitura), sem reemissão. Motivo: ${justificativa}.`);
+  return { ok: true, cancelada: true, n_cod_os: nCodOS, nfse_numero: numero };
+}
+
+async function refazerNotaOmie(supabase: any, opts: {
+  id: string; justificativa: string; usuario: string | null; operador: string | null;
+}) {
+  const id = String(opts.id ?? "").trim();
+  const justificativa = String(opts.justificativa ?? "").trim();
+  if (!/^pay_[A-Za-z0-9]+$/.test(id)) {
+    return { erro: "Refazer nota do Omie é por cobrança do Asaas (`pay_…`)." };
+  }
+  if (!justificativa) {
+    return { erro: "Refazer uma nota exige justificativa — o Omie não guarda motivo, então é o diário do Hub que o guarda." };
+  }
+
+  const diario = (acao: string, resultado: string, erro: string | null, extra: Record<string, unknown> = {}) =>
+    supabase.from("nf_emissoes").insert({
+      id_asaas: id, acao, resultado, erro, usuario: opts.usuario, operador: opts.operador, ...extra,
+    }).then(() => {}, () => { /* o diário não desfaz o que foi feito no Omie */ });
+
+  /* 1) A OS DESTA COBRANÇA — pelo carimbo, ou pelo carimbo ORIGINAL, que é o caso
+   *    de quem clica de novo depois de uma volta interrompida. */
+  const { data: oss, error } = await supabase
+    .from("nf_os_omie")
+    .select("n_cod_os, c_cod_int_os, carimbo_original, nfse_numero, nfse_status, faturada, cancelada")
+    .or(`c_cod_int_os.eq.${id},carimbo_original.eq.${id}`)
+    .eq("cancelada", false);
+  if (error) return { erro: `nf_os_omie: ${error.message}` };
+  const vivas = (oss ?? []).filter((o: any) => o.faturada === true);
+  if (!vivas.length) {
+    return { erro: "Esta cobrança não tem nota do Omie de pé no espelho. Clique em \"Atualizar do Omie\" e confira." };
+  }
+  if (vivas.length > 1) {
+    return {
+      erro: `Esta cobrança tem ${vivas.length} OS faturadas de pé (${vivas.map((o: any) => o.n_cod_os).join(", ")}). ` +
+        "Isso pede olho humano no Omie — nada foi feito.",
+    };
+  }
+  const os = vivas[0];
+  const nCodOS = Number(os.n_cod_os);
+
+  /* 2) A COBRANÇA, AO VIVO, e o espelho curado antes de qualquer escrita — é o que
+   *    faz a nota nova sair com o valor de agora (ver `curarEspelho`). */
+  let pagamento: any;
+  try {
+    pagamento = await asaasGet<any>(`/payments/${id}`);
+  } catch (e) {
+    return { erro: `Não deu para ler a cobrança no Asaas (${e instanceof Error ? e.message : String(e)}). Nada foi feito.` };
+  }
+  /* COBRANÇA EXCLUÍDA NO ASAAS é o caso de quem já tentou consertar por fora: criou
+   * outra cobrança e apagou a antiga (a AEVO, 15/09/2026). A nota velha continua
+   * de pé e precisa cair do mesmo jeito — mas não há reemissão NESTA cobrança,
+   * então o carimbo não precisa ser solto, e o espelho não é "curado" (o
+   * `curarEspelho` gravaria o status de antes da exclusão). Quem aponta a
+   * cobrança nova é a tela. */
+  const excluida = pagamento?.deleted === true;
+  if (!excluida) await curarEspelho(supabase, id, pagamento).catch(() => { /* a emissão relê */ });
+
+  /* 3) O OMIE, AO VIVO, antes de tocar em qualquer coisa. */
+  let st: any;
+  try {
+    st = await omieCall<any>("servicos/os", "StatusOS", { nCodOS });
+  } catch (e) {
+    return { erro: `Não deu para ler a OS ${nCodOS} no Omie (${mensagemDoOmie(e).slice(0, 160)}). Nada foi feito.` };
+  }
+  const numero = String(os.nfse_numero ?? "").trim() || (nfseDoStatus(st).nfse_numero as string | null) || null;
+  const carimboNovo = `${id}-cancelada-${numero ?? nCodOS}`.slice(0, 60);
+  const carimboVivo = String(st?.cCodIntOS ?? "");
+  let cancelada = String(st?.cCancelada ?? "N") === "S";
+  const base = { n_cod_os: nCodOS, nfse_numero: numero };
+
+  /* 4) SOLTAR O CARIMBO — o passo que se desfaz, e por isso vem primeiro. */
+  let trocouCarimbo = false;
+  if (!excluida && carimboVivo === id) {
+    try {
+      await omieCall<any>("servicos/osp", "AssociarCodIntOS", { nCodOS, cCodIntOS: carimboNovo }, { semRetentativa: true });
+    } catch (e) {
+      const msg = mensagemDoOmie(e).slice(0, 300);
+      await diario("soltar_carimbo", "erro", msg, { ...base, payload: { carimbo_novo: carimboNovo, justificativa } });
+      return { erro: `O Omie não deixou trocar o carimbo da OS ${nCodOS} (${msg}). Nada foi cancelado.` };
+    }
+    // Conferido no Omie, e não na resposta: é a primeira vez que este método roda.
+    let conferido = "";
+    try {
+      const c = await omieCall<any>("servicos/os", "ConsultarOS", { nCodOS });
+      conferido = String(c?.Cabecalho?.cCodIntOS ?? "");
+    } catch { /* fica vazio, e vazio não é o carimbo novo */ }
+    if (conferido !== carimboNovo) {
+      await diario("soltar_carimbo", "erro", `O Omie aceitou a troca, mas a OS continua com "${conferido || "?"}".`, {
+        ...base, payload: { carimbo_novo: carimboNovo, justificativa },
+      });
+      return { erro: `O Omie aceitou trocar o carimbo, mas a OS ${nCodOS} continua com "${conferido || "?"}". Nada foi cancelado.` };
+    }
+    trocouCarimbo = true;
+    await diario("soltar_carimbo", "ok",
+      `Carimbo da OS ${nCodOS} trocado de ${id} para ${carimboNovo}, para a nota certa poder sair nesta mesma cobrança.`,
+      { ...base, payload: { carimbo_novo: carimboNovo, justificativa } });
+  } else if (!excluida && carimboVivo !== carimboNovo) {
+    return {
+      erro: `A OS ${nCodOS} está com o carimbo "${carimboVivo || "vazio"}" no Omie, que não é o desta cobrança. Nada foi feito.`,
+    };
+  }
+
+  /* 5) CANCELAR — OS e NFS-e na prefeitura — e só vale confirmado. */
+  if (!cancelada) {
+    const pedido = await cancelarOsEConfirmar(nCodOS);
+    const recusa = pedido.recusa;
+    cancelada = pedido.cancelada;
+
+    if (!cancelada) {
+      const volta = !trocouCarimbo ? null
+        : await omieCall<any>("servicos/osp", "AssociarCodIntOS", { nCodOS, cCodIntOS: id }, { semRetentativa: true })
+          .then(() => null, (e) => mensagemDoOmie(e).slice(0, 200));
+      const sobreCarimbo = !trocouCarimbo ? ""
+        : volta
+        ? ` ATENÇÃO: o carimbo NÃO voltou para ${id} (${volta}) — a OS ${nCodOS} está com "${carimboNovo}" no Omie, e o painel pode mostrar esta cobrança como sem nota enquanto a ${numero ?? "nota"} continua de pé.`
+        : " O carimbo voltou ao que era.";
+      await diario("cancelar_omie", recusa ? "erro" : "em_processamento",
+        (recusa ? `O Omie recusou cancelar a NFS-e ${numero ?? ""}: ${recusa}.` : `Cancelamento da NFS-e ${numero ?? ""} pedido e ainda não confirmado.`) + sobreCarimbo,
+        { ...base, payload: { justificativa, carimbo_novo: carimboNovo, carimbo_devolvido: !volta } });
+      if (recusa) return { erro: `O Omie recusou cancelar a NFS-e ${numero ?? ""} (${recusa}).${sobreCarimbo}` };
+      return {
+        ok: true, cancelada: false, cancelamento_em_andamento: true, ...base,
+        carimbo_devolvido: !volta,
+        recado: `O cancelamento foi pedido e o Omie ainda não o confirmou.${sobreCarimbo} Clique de novo em alguns minutos — o Hub reconhece o que já foi feito.`,
+      };
+    }
+  }
+
+  /* 6) O ESPELHO ACOMPANHA — só agora, com o cancelamento confirmado. As cinco
+   *    leituras fiscais filtram `cancelada = false`: é isto que tira a OS velha de
+   *    cena e deixa a cobrança voltar a aceitar emissão. */
+  const carimboFinal = excluida ? carimboVivo || id : carimboNovo;
+  await supabase.from("nf_os_omie").update({
+    cancelada: true,
+    c_cod_int_os: carimboFinal,
+    ...(carimboFinal !== id ? { carimbo_original: id } : {}),
+    atualizado_em: new Date().toISOString(),
+  }).eq("n_cod_os", nCodOS);
+
+  await diario("cancelar_omie", "ok",
+    `NFS-e ${numero ?? ""} cancelada pelo Hub (OS ${nCodOS}, CancelarOS com cancelamento na prefeitura). ` +
+    `Motivo: ${justificativa}. ` +
+    (excluida
+      ? "A cobrança já estava excluída no Asaas: nada é reemitido nela."
+      : `O carimbo ${id} ficou livre para a nota certa.`),
+    { ...base, payload: { justificativa, carimbo_final: carimboFinal, cobranca_excluida: excluida, valor_agora: pagamento?.value ?? null } });
+
+  return {
+    ok: true, cancelada: true, ...base, carimbo_novo: carimboFinal,
+    cobranca_excluida: excluida,
+    valor_agora: pagamento?.value ?? null,
   };
 }
 
@@ -2114,7 +2524,9 @@ const ETAPA_FILA = "50";
 /** Quem está em cada etapa AGORA, direto do Omie. É o que mede o raio do lote. */
 async function ocupantesDaEtapa(etapa: string): Promise<number[]> {
   const out: number[] = [];
-  for (const os of await listarOS()) {
+  // Só a etapa pedida. O filtro de `cEtapa` abaixo fica: se o Omie um dia ignorar
+  // `filtrar_por_etapa`, a leitura fica cara, mas não errada.
+  for (const os of await listarOS({ etapa })) {
     const cab = os?.Cabecalho ?? {};
     if (String(os?.InfoCadastro?.cCancelada ?? "N") === "S") continue;
     if (String(cab.cEtapa ?? "") === etapa) out.push(Number(cab.nCodOS));
@@ -2183,7 +2595,7 @@ async function limparCorredor(
 
   // Quem está lá, com o que decide o destino de cada um.
   const ocupantes: Array<{ nCodOS: number; faturada: boolean }> = [];
-  for (const os of await listarOS()) {
+  for (const os of await listarOS({ etapa })) {
     const cab = os?.Cabecalho ?? {};
     const info = os?.InfoCadastro ?? {};
     if (String(info.cCancelada ?? "N") === "S") continue;
@@ -4180,7 +4592,10 @@ Deno.serve(async (req) => {
       if (!travaEspelho.ok) {
         return json({ ok: true, pulado: `o espelho cedeu a vez: ${frasePerdiVez(travaEspelho)}` });
       }
-      const r = await espelhar(supabase, { tetoStatus: Math.min(Number(body?.teto_status ?? 120), 400) })
+      const r = await espelhar(supabase, {
+        tetoStatus: Math.min(Number(body?.teto_status ?? 120), 400),
+        janelaDias: janelaDoEspelho(body),
+      })
         .finally(() => travaSoltar(supabase, donoEspelho));
 
       /* O anexo mora aqui, e não no `emitir_dia`, por dois motivos.
@@ -4235,7 +4650,7 @@ Deno.serve(async (req) => {
             const d = donoDaVez("espelho:pos-emissao");
             const t = await travaTomar(supabase, d, 120);
             if (!t.ok) return { pulado: frasePerdiVez(t) };
-            return await espelhar(supabase, { tetoStatus: Math.min(Number(body?.teto_status ?? 40), 400) })
+            return await espelhar(supabase, { tetoStatus: Math.min(Number(body?.teto_status ?? 40), 400), janelaDias: 3 })
               .catch((e) => ({ erro: mensagemDoOmie(e) }))
               .finally(() => travaSoltar(supabase, d));
           })()
@@ -4392,9 +4807,49 @@ Deno.serve(async (req) => {
      *
      * Como se prova sem confiar na documentação: compara-se `total_de_registros`
      * do filtrado com o do cru. Parâmetro ignorado devolve o mesmo total. */
+    /* `sondar_listaros` com `testes` + `procurar`: filtros livres, e para cada um
+     * se as OS procuradas vieram na lista (lê até 6 páginas). É a prova de que
+     * `filtrar_por_data_de` pega OS ALTERADA no período, e não só incluída — a
+     * condição para o espelho deixar de varrer o acervo inteiro. Leitura pura. */
+    if (action === "sondar_listaros" && Array.isArray(body?.testes)) {
+      const procurar = new Set((Array.isArray(body?.procurar) ? body.procurar : []).map(Number));
+      const out: Record<string, unknown> = {};
+      for (const [i, t] of body.testes.entries()) {
+        const filtros = (t && typeof t === "object") ? t as Record<string, unknown> : {};
+        const achadas = new Set<number>();
+        let total: unknown = null, paginas: unknown = null, lidas = 0, erro: string | null = null;
+        for (let pagina = 1; pagina <= 6; pagina++) {
+          try {
+            const r = await omieCall<any>("servicos/os", "ListarOS", {
+              pagina, registros_por_pagina: 480 - i, apenas_importado_api: "N", ...filtros,
+            });
+            total = r?.total_de_registros ?? null;
+            paginas = r?.total_de_paginas ?? null;
+            for (const os of (r?.osCadastro ?? [])) {
+              lidas++;
+              const k = Number(os?.Cabecalho?.nCodOS ?? 0);
+              if (procurar.has(k)) achadas.add(k);
+            }
+            if (pagina >= Number(r?.total_de_paginas ?? 1)) break;
+          } catch (e) {
+            const m = mensagemDoOmie(e);
+            if (!FIM_DA_LISTA.test(m)) erro = m.slice(0, 160);
+            break;
+          }
+          await dorme(1500);
+        }
+        out[JSON.stringify(filtros)] = { total_de_registros: total, total_de_paginas: paginas, lidas, achadas: [...achadas], erro };
+        await dorme(12_000);
+      }
+      return json({ ok: true, listaros: out });
+    }
+
     if (action === "sondar_listaros") {
       const base = { pagina: 1, registros_por_pagina: 1, apenas_importado_api: "N" };
       const testes: Array<[string, Record<string, unknown>]> = [
+        // O tamanho REAL da página: pede 500 e conta quantas vieram. Foi a
+        // diferença entre o pedido e o entregue que parou a emissão em 15/09/2026.
+        ["página de 500 (tamanho real)", { registros_por_pagina: 500 }],
         ["cru (referência)", {}],
         ["etapa 20 (corredor)", { filtrar_por_etapa: "20" }],
         ["etapa 50 (a faturar)", { filtrar_por_etapa: "50" }],
@@ -4407,6 +4862,7 @@ Deno.serve(async (req) => {
           out[nome] = {
             total_de_registros: r?.total_de_registros ?? null,
             total_de_paginas: r?.total_de_paginas ?? null,
+            registros_na_pagina: r?.osCadastro?.length ?? null,
             primeira_os: r?.osCadastro?.[0]?.Cabecalho?.nCodOS ?? null,
             etapa_da_primeira: r?.osCadastro?.[0]?.Cabecalho?.cEtapa ?? null,
           };
@@ -4461,6 +4917,51 @@ Deno.serve(async (req) => {
         usuario,
         operador: operador || null,
       }).finally(() => travaSoltar(supabase, donoRefazer));
+      return json(r, (r as any)?.erro ? 400 : 200);
+    }
+
+    /* CANCELAR SÓ — ver `cancelarNotaOmie`. Uma OS por chamada. Por token de
+     * sistema só com `operador` (quem mandou assina), como o `excluir_os_recusada`. */
+    if (action === "cancelar_nota_omie") {
+      const operador = String(body?.operador ?? "").trim();
+      if (ehCron && !operador) {
+        return json({ erro: "Cancelar nota por token exige `operador` — quem mandou cancelar assina no diário." }, 403);
+      }
+      const donoCanc = donoDaVez("cancelar_nota_omie");
+      const travaCanc = await travaTomar(supabase, donoCanc, 170);
+      if (!travaCanc.ok) {
+        return json({ erro: `${frasePerdiVez(travaCanc)} Tente de novo em um minuto.` }, 409);
+      }
+      const r = await cancelarNotaOmie(supabase, {
+        nCodOS: Number(body?.n_cod_os ?? 0),
+        justificativa: String(body?.justificativa ?? ""),
+        usuario, operador: operador || null,
+      }).finally(() => travaSoltar(supabase, donoCanc));
+      return json(r, (r as any)?.erro ? 400 : 200);
+    }
+
+    /* REFAZER A NOTA DO OMIE — cancela pelo `servicos/osp` e solta o carimbo; a
+     * emissão da certa é o passo seguinte, na tela. Ver `refazerNotaOmie`. Uma
+     * cobrança por chamada e nunca por token, pelo mesmo motivo do `refazer`. */
+    if (action === "refazer_omie") {
+      if (ehCron) {
+        return json({ erro: "Cancelar nota fiscal é ato de pessoa: não sai por token de sistema." }, 403);
+      }
+      const id = String(body?.id ?? "").trim();
+      if (!id) return json({ erro: "Informe a cobrança (`id`)." }, 400);
+      /* A trava é a mesma da emissão: enquanto o carimbo troca de mãos, nenhuma
+         rodada pode estar criando OS para esta cobrança. */
+      const donoOmie = donoDaVez("refazer_omie");
+      const travaOmie = await travaTomar(supabase, donoOmie, 170);
+      if (!travaOmie.ok) {
+        return json({ erro: `${frasePerdiVez(travaOmie)} Tente de novo em um minuto.` }, 409);
+      }
+      const r = await refazerNotaOmie(supabase, {
+        id,
+        justificativa: String(body?.justificativa ?? ""),
+        usuario,
+        operador: String(body?.operador ?? "").trim() || null,
+      }).finally(() => travaSoltar(supabase, donoOmie));
       return json(r, (r as any)?.erro ? 400 : 200);
     }
 

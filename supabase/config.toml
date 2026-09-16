@@ -300,6 +300,15 @@ verify_jwt = false
 [functions.omie-clientes-criar]
 verify_jwt = false
 
+# Webhook do Asaas: quem chama e o SERVIDOR do Asaas, que nao tem (nem teria
+# como ter) um JWT do Supabase. Com verify_jwt = true todo evento morreria em 401
+# no gateway, sem nada no log da funcao — e o Asaas, depois de 15 falhas
+# seguidas, INTERROMPE a fila inteira do webhook. O controle de acesso e o header
+# `asaas-access-token`, comparado em tempo constante com o secret
+# ASAAS_WEBHOOK_TOKEN; sem o secret a funcao recusa tudo (fecha, nao abre).
+[functions.asaas-webhook]
+verify_jwt = false
+
 # Cron 2x/dia (11:20 e 20:20 UTC) com `x-cron-token` e sem Authorization. Estava
 # com verify_jwt = false no projeto hospedado (os crons respondem 200), mas nunca
 # escrito aqui — o primeiro deploy pela CLI trancaria a leitura da caixa. Achado

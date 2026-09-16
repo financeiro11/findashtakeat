@@ -13,7 +13,7 @@ import {
   FileText, Smartphone, Plane, LayoutDashboard, Kanban, FileSpreadsheet, Truck,
   History, FileSignature, Gavel, CheckCircle2, PieChart, TrendingUp, FileBarChart,
   Scale, Target, Brain, Wallet2, ShieldCheck, Megaphone, UserMinus, UserCog, Tags,
-  Palette, Mic, Rocket, Globe2, Paperclip, Radar, Activity,
+  Palette, Mic, Rocket, Globe2, Paperclip, Radar, Activity, ListTree,
   type LucideIcon,
 } from "lucide-react";
 import { capacidadesDaRota, podeVerRota, type Acesso, type Capacidade, type ModuleId } from "./modules";
@@ -128,6 +128,8 @@ export const GRUPOS_FINANCEIRO: NavGrupo[] = [
   ]},
   { label: "Governança", items: [
     { title: "Orçamento", url: "/orcamento", icon: Wallet2, busca: ["realizado", "budget"] },
+    { title: "Plano de contas", url: "/governanca/plano-de-contas", icon: ListTree, badge: "OMIE",
+      busca: ["categorias", "categoria do omie", "classificação", "segregar", "reclassificar", "de-para", "quem recebe"] },
     { title: "Auditoria", url: "/governanca/auditoria", icon: ShieldCheck, busca: ["pix", "achados", "conciliação"] },
     { title: "Notas no ERP", url: "/governanca/notas-erp", icon: Paperclip, busca: ["nota fiscal", "fornecedor", "anexo", "omie", "cobertura", "comprovante"] },
     { title: "Cartão", url: "/governanca/cartao", icon: CreditCard, badge: "OFX", busca: ["fatura", "ofx", "sicoob"] },

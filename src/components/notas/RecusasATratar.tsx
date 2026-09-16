@@ -10,7 +10,7 @@
  * defeito; o que a pessoa precisa é saber o que fazer, e são três coisas:
  *
  *   ✔ consertado        → a máquina já corrigiu o cadastro. Falta só reenviar.
- *   ✖ precisa_de_gente  → o cadastro bate com a Receita e mesmo assim recusa.
+ *   ✖ precisa_de_gente  → o cadastro bate com o endereço proposto e mesmo assim recusa.
  *   ~ so_reenviar       → oscilação da prefeitura; não há cadastro a corrigir.
  *
  * O REENVIO NÃO TEM BOTÃO AQUI, e não é esquecimento: OS faturada com recusa não
@@ -365,7 +365,7 @@ export default function RecusasATratar() {
             <p className="text-xs font-semibold text-foreground">Tentar consertar o cadastro agora</p>
             <p className="mt-0.5 text-[11px] leading-relaxed text-muted-foreground">
               A mesma rodada que corre às 12:45 UTC, disparada na hora. Ela lê a recusa e escreve no
-              cadastro do cliente o que a prefeitura nomeou: endereço e CEP pela Receita, o e-mail que
+              cadastro do cliente o que a prefeitura nomeou: endereço e CEP pelo Asaas (ou pela Receita, quando ele está incompleto), o e-mail que
               falta, e — desde 12/09/2026 — o telefone inválido e o código do município. Não emite nota:
               depois dela, use “Devolver à esteira”.
               {consertado && (

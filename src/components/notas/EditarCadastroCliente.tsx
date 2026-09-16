@@ -1,9 +1,9 @@
 /* ---------------------------------------------------------------------------
  * EDITAR O CADASTRO DO CLIENTE À MÃO — dentro do Hub, nos dois sistemas.
  *
- * O QUE FALTAVA. `CorrigirCadastro` resolve o endereço com o que a Receita ou o
- * CEP respondem, e isso cobre o caso comum. Mas a própria tela tem um recado
- * para o caso que sobra: "o cadastro do Omie já bate com a Receita/CEP — não há
+ * O QUE FALTAVA. `CorrigirCadastro` resolve o endereço com o que o Asaas, a
+ * Receita ou o CEP respondem, e isso cobre o caso comum. Mas a própria tela tem
+ * um recado para o caso que sobra: "o cadastro do Omie já bate com o endereço proposto — não há
  * campo a corrigir daqui, e mesmo assim a nota não saiu". O exemplo que trouxe
  * este arquivo é o mais simples que existe: o Omie recusa o faturamento com
  * "falta preencher o E-mail", e e-mail não está em cadastro federal nenhum.

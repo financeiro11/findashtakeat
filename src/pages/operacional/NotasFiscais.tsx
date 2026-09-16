@@ -59,6 +59,7 @@ import {
 } from "@/components/notas/AntesDoPagamento";
 import { EmitirAgora, type EmissaoSemCobranca } from "@/components/notas/EmitirAgora";
 import { NotaSemCobranca } from "@/components/notas/NotaSemCobranca";
+import { RefazerNotaOmie } from "@/components/notas/RefazerNotaOmie";
 
 const dorme = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -175,12 +176,19 @@ export default function NotasFiscais() {
    * devolver um erro por pré-requisito. */
   const [emitindoAgora, setEmitindoAgora] = useState<{
     ids: string[]; osRecusadas?: number[]; semCobranca?: EmissaoSemCobranca;
+    /** Texto da nota que veio de outro diálogo (o refazer), e não do campo da tela. */
+    observacao?: string;
   } | null>(null);
+  /** A nota do Omie sendo refeita — ver `RefazerNotaOmie`. */
+  const [refazendoOmie, setRefazendoOmie] = useState<LinhaNota | null>(null);
   /* A NOTA QUE NÃO NASCE DE COBRANÇA (14/09/2026) — o diálogo que monta o
    * tomador (do Asaas ou digitado) e entrega o carimbo `avl_…` ao `EmitirAgora`. */
   const [semCobrancaAberto, setSemCobrancaAberto] = useState(false);
   /** Indo buscar no Asaas a cobrança que o espelho ainda não tem — ver `buscarNoAsaas`. */
   const [buscandoAsaas, setBuscandoAsaas] = useState(false);
+  /** Quando a varredura das cobranças do Asaas passou pela última vez — é o que
+   *  explica, na cara, por que a cobrança criada há dez minutos não está na lista. */
+  const [asaasLidoEm, setAsaasLidoEm] = useState<string | null>(null);
   /* O TEXTO QUE VAI DENTRO DA NOTA, e ele nasce vazio a cada emissão.
    *
    * Mesmo raciocínio da chave da avulsa: observação é do ATO. Lembrar a de
@@ -235,6 +243,12 @@ export default function NotasFiscais() {
 
       const { data: cfg } = await sb.from("nf_config").select("data_corte").eq("id", 1).maybeSingle();
       setCorte(cfg?.data_corte ?? null);
+
+      // A janela de cobranças (mês passado → próximo mês) é a varredura que
+      // alimenta esta lista; falhar aqui só esconde o horário.
+      const { data: est } = await sb.from("asaas_sync_estado")
+        .select("ultima_incremental").eq("escopo", "payment:janela").maybeSingle();
+      setAsaasLidoEm(est?.ultima_incremental ?? null);
 
       /* A fila é do dia, não do mês em foco — por isso ela é lida aqui e não
          derivada das linhas. Falhar aqui não pode derrubar a tela: sem o número
@@ -955,13 +969,42 @@ export default function NotasFiscais() {
       <div className="flex flex-wrap items-center gap-2">
         <div className="relative min-w-[220px] flex-1">
           <Search className="absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+          {/* ENTER RELÊ NO ASAAS o que foi digitado (15/09/2026). Digitar só filtra
+              a lista, sem custo; Enter é o gesto de "procure isto de verdade". */}
           <Input
             value={busca}
             onChange={(e) => setBusca(e.target.value)}
-            placeholder="Cliente, CNPJ, descrição, nº da nota…"
+            onKeyDown={(e) => { if (e.key === "Enter" && busca.trim().length >= 3) void buscarNoAsaas(); }}
+            placeholder="Cliente, CNPJ, descrição, nº da nota… (Enter busca no Asaas)"
             className="h-8 pl-7 text-xs"
           />
         </div>
+        {/* O BOTÃO FICA SEMPRE À VISTA, e não só quando a busca volta vazia.
+            Até 15/09/2026 ele só aparecia com a lista vazia — e a AEVO, que já
+            tinha uma cobrança na tela, escondeu a nova que tinha acabado de ser
+            criada no Asaas: com uma linha na lista, nada oferecia a busca. */}
+        <button
+          onClick={() => void buscarNoAsaas()}
+          disabled={buscandoAsaas || busca.trim().length < 3}
+          className="flex h-8 items-center gap-1.5 rounded-md border border-border px-2.5 text-[11px] font-medium text-foreground hover:bg-muted disabled:opacity-40"
+          title={
+            busca.trim().length < 3
+              ? "Digite o nome, o CNPJ/CPF ou o id da cobrança (pay_…) para reler no Asaas."
+              : `Relê no Asaas as cobranças de “${busca.trim()}” e traz para cá o que foi criado ou editado desde a última leitura.\n\n` +
+                "O espelho completo roda três vezes por dia (07:45, 12:30 e 17:00). Isto são uma a três requisições, só do que foi digitado."
+          }
+        >
+          {buscandoAsaas ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
+          Atualizar do Asaas
+        </button>
+        {asaasLidoEm && (
+          <span
+            className="text-[10px] text-muted-foreground"
+            title="Última varredura automática das cobranças do Asaas. O que foi criado ou editado depois disso só aparece com “Atualizar do Asaas”."
+          >
+            Asaas lido às {new Date(asaasLidoEm).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}
+          </span>
+        )}
         <div className="flex flex-wrap gap-1">
           {(["todas", "falta", "nota_rejeitada", "emitida_omie", "emitida_asaas", "em_processamento", "nota_a_cancelar", "nao_exige"] as const).map((f) => (
             <button
@@ -1552,11 +1595,11 @@ export default function NotasFiscais() {
                         <span className="line-clamp-2">{motivoCurto(l.nfse_mensagem)}</span>
                       </div>
                     )}
-                    {/* REFAZER só aparece onde ele funciona: nota viva do ASAAS.
-                        A nota emitida pelo Omie não se cancela por API — não
-                        existe `CancelarOS` nem `servicos/nfse/`, foi varrido
-                        método a método —, então oferecer o botão ali seria
-                        prometer o que o servidor vai recusar. */}
+                    {/* REFAZER, nos dois emissores. A nota do ASAAS se cancela
+                        pelo Asaas (`refazer`); a do OMIE, desde 15/09/2026, pelo
+                        próprio Omie (`servicos/osp/CancelarOS`), que a varredura
+                        de 25/08 não tinha olhado — antes disso o botão ficava
+                        escondido aqui e a pessoa ia cancelar na tela do Omie. */}
                     {/* A PORTA PARA A EXCEÇÃO, e ela fica aqui porque é aqui que a
                         pergunta nasce: a caixa não marca, o hover diz "a cobrança
                         não foi recebida", e até 11/09/2026 o caminho seguinte era
@@ -1630,6 +1673,21 @@ export default function NotasFiscais() {
                         Refazer a nota
                       </button>
                     )}
+                    {l.situacao === "emitida_omie" && l.nfse_numero && l.id_asaas.startsWith("pay_") && (
+                      <button
+                        onClick={() => setRefazendoOmie(l)}
+                        disabled={emitindo}
+                        className="ghost-btn mt-1 flex items-center gap-1 rounded border border-border px-1.5 py-0.5 text-[10px] text-muted-foreground opacity-0 transition-opacity focus-visible:opacity-100 group-hover:opacity-100 disabled:opacity-40"
+                        title={
+                          "Nota saiu errada (valor, endereço, tomador)? O Hub corrige o cadastro com o do Asaas, " +
+                          "cancela esta nota no Omie e na prefeitura e emite a certa nesta mesma cobrança.\n\n" +
+                          "Abre uma tela com o valor de agora e o que muda no cadastro antes de qualquer clique."
+                        }
+                      >
+                        <RefreshCw className="h-2.5 w-2.5" />
+                        Refazer a nota
+                      </button>
+                    )}
                   </td>
                 </tr>
               );
@@ -1691,12 +1749,22 @@ export default function NotasFiscais() {
              cobranças. A nota sem cobrança já traz a descrição inteira que a
              pessoa digitou — somar a observação de outra seleção seria texto de
              outro ato dentro desta nota. */
-          observacao={emitindoAgora.semCobranca ? null : observacao}
+          observacao={emitindoAgora.semCobranca ? null : (emitindoAgora.observacao ?? observacao)}
           avulsa={emitindoAgora.semCobranca ? false : avulsa}
           onFechar={() => setEmitindoAgora(null)}
           onTerminou={carregar}
         />
       )}
+      <RefazerNotaOmie
+        linha={refazendoOmie}
+        linhas={linhas}
+        onRecarregar={() => void carregar()}
+        onFechar={() => setRefazendoOmie(null)}
+        onEmitir={(id, obs) => {
+          setRefazendoOmie(null);
+          setEmitindoAgora({ ids: [id], observacao: obs });
+        }}
+      />
     </div>
   );
 }

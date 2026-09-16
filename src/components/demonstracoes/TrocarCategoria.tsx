@@ -44,6 +44,12 @@ type RespostaTroca = {
    módulo evita refazer a consulta a cada linha aberta no painel. */
 let cacheCategorias: CategoriaOmie[] | null = null;
 
+/** O plano de contas mudou (Governança › Plano de contas criou ou renomeou uma
+ *  categoria): o próximo seletor aberto relê a lista. */
+export function esquecerCategoriasOmie() {
+  cacheCategorias = null;
+}
+
 export function useCategoriasOmie(carregar: boolean) {
   const [categorias, setCategorias] = useState<CategoriaOmie[]>(cacheCategorias ?? []);
   const [carregando, setCarregando] = useState(false);

@@ -26,8 +26,13 @@
 // Auth: usuário logado OU cron (header x-cron-token), como no asaas-extrato-sync.
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.0";
-import { asaasGet, asaasList, asaasCount } from "../_shared/asaas.ts";
+import { asaasGet, asaasList, asaasCount, asaasPost, asaasPut } from "../_shared/asaas.ts";
 import { requireUser } from "../_shared/auth.ts";
+// Os mapeadores e o `gravar` moram no módulo compartilhado desde que o
+// asaas-webhook passou a escrever na mesma tabela — ver o cabeçalho de lá.
+import {
+  gravar, isoDate, mapCustomer, mapInvoice, mapPayment, mapSubscription, num,
+} from "../_shared/asaas-espelho.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -37,7 +42,6 @@ const corsHeaders = {
 const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: { ...corsHeaders, "Content-Type": "application/json" } });
 
-const num = (v: unknown) => { const n = typeof v === "number" ? v : parseFloat(String(v ?? "")); return isNaN(n) ? 0 : n; };
 /** Só os dígitos — o CNPJ chega da tela formatado ou cru, e o Asaas filtra por cru. */
 const soDigitos = (v: unknown) => String(v ?? "").replace(/\D/g, "");
 
@@ -49,11 +53,6 @@ function rangeMes(ref: string): { de: string; ate: string } {
   const [y, m] = ref.split("-").map(Number);
   const ult = new Date(y, m, 0).getDate();
   return { de: `${y}-${String(m).padStart(2, "0")}-01`, ate: `${y}-${String(m).padStart(2, "0")}-${String(ult).padStart(2, "0")}` };
-}
-function isoDate(s?: string | null): string | null {
-  if (!s) return null;
-  const d = String(s).slice(0, 10);
-  return /^\d{4}-\d{2}-\d{2}$/.test(d) ? d : null;
 }
 function subDias(ymd: string, dias: number): string {
   const d = new Date(ymd + "T00:00:00Z");
@@ -178,110 +177,8 @@ async function comOrcamento(
 }
 
 /* -------------------------------- mapeamento ------------------------------- */
-
-type Linha = Record<string, unknown>;
-
-function mapPayment(p: any): Linha {
-  return {
-    tipo: "payment",
-    id_asaas: String(p?.id ?? ""),
-    status: String(p?.status ?? ""),
-    valor: num(p?.value),
-    valor_liquido: p?.netValue == null ? null : num(p.netValue),
-    ciclo: null,
-    // paymentDate é o mesmo campo em que a API filtra; usar um fallback aqui faria a
-    // linha cair num mês diferente do que a busca disse que ela é.
-    data_pagamento: isoDate(p?.paymentDate),
-    data_vencimento: isoDate(p?.dueDate),
-    data_efetiva: null,
-    data_criacao: isoDate(p?.dateCreated),
-    // Forma e data de crédito alimentam o fluxo projetado do /caixa: lá o que importa
-    // não é quando a cobrança vence, e sim quando o dinheiro fica disponível. Quando o
-    // Asaas não diz (cobrança ainda não paga), o prazo sai da forma — ver a função
-    // asaas_prazo_credito na migration.
-    forma: p?.billingType ?? null,
-    data_credito: isoDate(p?.creditDate) ?? isoDate(p?.estimatedCreditDate),
-    dados: p,
-  };
-}
-function mapSubscription(s: any): Linha {
-  return {
-    tipo: "subscription",
-    id_asaas: String(s?.id ?? ""),
-    status: String(s?.status ?? ""),
-    valor: num(s?.value),
-    valor_liquido: null,
-    ciclo: s?.cycle ?? null,
-    data_pagamento: null,
-    data_vencimento: isoDate(s?.nextDueDate),
-    data_efetiva: null,
-    data_criacao: isoDate(s?.dateCreated),
-    dados: s,
-  };
-}
-/** Mesmo formato da `asaas-carga-historica` — dois formatos na mesma tabela
- *  quebrariam a `notas_fiscais_painel`, que lê `nome` e `documento` (colunas
- *  geradas a partir de `dados`). */
-function mapCustomer(c: any): Linha {
-  return {
-    tipo: "customer",
-    id_asaas: String(c?.id ?? ""),
-    // `deleted` importa: cliente apagado no Asaas some da lista `/customers` e só
-    // volta pelo id. É por isso que alguns órfãos eram de 2022 — a carga completa
-    // de agosto não tinha como alcançá-los, e a busca por id tem.
-    status: c?.deleted ? "DELETED" : "ACTIVE",
-    valor: null,
-    valor_liquido: null,
-    ciclo: null,
-    data_pagamento: null,
-    data_vencimento: null,
-    data_efetiva: null,
-    data_criacao: isoDate(c?.dateCreated),
-    dados: c,
-  };
-}
-function mapInvoice(i: any): Linha {
-  return {
-    tipo: "invoice",
-    id_asaas: String(i?.id ?? ""),
-    status: String(i?.status ?? ""),
-    valor: num(i?.value),
-    valor_liquido: null,
-    ciclo: null,
-    data_pagamento: null,
-    data_vencimento: null,
-    data_efetiva: isoDate(i?.effectiveDate),
-    data_criacao: isoDate(i?.dateCreated),
-    dados: i,
-  };
-}
-
-/**
- * Grava no espelho em blocos — um upsert de 3.000 linhas estoura o payload.
- *
- * O `Map` não é economia, é obrigatório: as buscas que alimentam isto se SOBREPÕEM
- * (uma cobrança que vence em julho e foi paga em julho volta nas duas), e o Postgres
- * recusa o lote inteiro com "ON CONFLICT DO UPDATE command cannot affect row a second
- * time" quando a mesma chave aparece duas vezes no MESMO upsert. Na carga completa o
- * erro ficava escondido só porque as duas cópias caíam em lotes diferentes.
- * Vence a última ocorrência, que é a leitura mais recente da API.
- */
-async function gravar(supabase: any, linhas: Linha[]): Promise<number> {
-  const unicas = new Map<string, Linha>();
-  for (const l of linhas) {
-    if (l.id_asaas) unicas.set(`${l.tipo}:${l.id_asaas}`, l);
-  }
-  const validas = [...unicas.values()];
-  const LOTE = 500;
-  for (let i = 0; i < validas.length; i += LOTE) {
-    const { error } = await supabase
-      .from("asaas_cache")
-      .upsert(validas.slice(i, i + LOTE).map((l) => ({ ...l, atualizado_em: new Date().toISOString() })),
-              { onConflict: "tipo,id_asaas" });
-    if (error) throw new Error(`asaas_cache upsert: ${error.message}`);
-  }
-  return validas.length;
-}
+// mapPayment, mapSubscription, mapCustomer, mapInvoice e gravar vivem em
+// `_shared/asaas-espelho.ts` — o asaas-webhook grava no mesmo formato.
 
 async function estado(supabase: any, escopo: string): Promise<any> {
   const { data } = await supabase.from("asaas_sync_estado").select("*").eq("escopo", escopo).maybeSingle();
@@ -374,7 +271,9 @@ async function puxarPagamentos(supabase: any, ref: string, completo: boolean) {
  * varredura por status o encontra, e a API não expõe filtro por "tem refunds". Ele só
  * chega ao espelho quando a linha é revisitada por outra puxada (vencimento no mês ou
  * na janela). Para cobranças antigas parcialmente estornadas, o dado pode faltar — o
- * fechamento definitivo é o webhook PAYMENT_PARTIALLY_REFUNDED, que ainda não existe.
+ * fechamento definitivo é o evento PAYMENT_PARTIALLY_REFUNDED do `asaas-webhook`
+ * (15/09/2026), que só cobre o que acontecer depois de ele estar publicado e com o
+ * evento assinado no cadastro do webhook. O passado continua com este limite.
  */
 const STATUS_DEVOLUCAO = [
   "REFUNDED",              // estorno total já concluído
@@ -731,8 +630,64 @@ Deno.serve(async (req) => {
           status: String(p?.status ?? ""),
           data_vencimento: isoDate(p?.dueDate),
           descricao: p?.description ?? null,
+          // Só vem pela busca por id: as listas do Asaas não devolvem cobrança apagada.
+          excluida: p?.deleted === true,
         })),
       });
+    }
+
+    /* ------------- WEBHOOK — ler e registrar o aviso do Asaas -------------
+     *
+     * Moram aqui, e não no `asaas-webhook`, por dois motivos: o webhook recebe de
+     * FORA sem JWT (qualquer ação a mais nele seria porta aberta), e esta função já
+     * tem a chave da API e o portão `requireUser`/cron. O `authToken` sai do secret
+     * ASAAS_WEBHOOK_TOKEN no servidor — nunca passa pela tela nem pela resposta.
+     *
+     * `webhook_registrar` é idempotente: se já existe um webhook com a mesma URL,
+     * ATUALIZA (PUT) em vez de criar outro. Dois cadastros para a mesma URL fariam
+     * cada evento chegar duas vezes. */
+    if (action === "webhook_status" || action === "webhook_registrar") {
+      const URL_WEBHOOK = `${Deno.env.get("SUPABASE_URL")}/functions/v1/asaas-webhook`;
+      const semSegredo = (w: any) => { const { authToken: _t, ...resto } = w ?? {}; return resto; };
+      const lista = await asaasGet<any>("/webhooks", { limit: 100 });
+      const existentes = (lista?.data ?? []) as any[];
+      const nosso = existentes.find((w) => String(w?.url ?? "") === URL_WEBHOOK) ?? null;
+
+      if (action === "webhook_status") {
+        return json({ ok: true, url: URL_WEBHOOK, nosso: nosso ? semSegredo(nosso) : null, total: existentes.length });
+      }
+
+      const token = Deno.env.get("ASAAS_WEBHOOK_TOKEN");
+      if (!token) return json({ ok: false, erro: "ASAAS_WEBHOOK_TOKEN não está nos secrets." }, 500);
+      const corpo = {
+        name: "Hub Financeiro - espelho asaas_cache",
+        url: URL_WEBHOOK,
+        email: String(body?.email ?? "financeiro@takeat.app"),
+        enabled: true,
+        interrupted: false,
+        apiVersion: 3,
+        authToken: token,
+        sendType: "SEQUENTIALLY",
+        events: [
+          "PAYMENT_CREATED", "PAYMENT_UPDATED", "PAYMENT_CONFIRMED", "PAYMENT_RECEIVED",
+          "PAYMENT_ANTICIPATED", "PAYMENT_OVERDUE", "PAYMENT_DELETED", "PAYMENT_RESTORED",
+          "PAYMENT_REFUNDED", "PAYMENT_PARTIALLY_REFUNDED", "PAYMENT_REFUND_IN_PROGRESS",
+          "PAYMENT_REFUND_DENIED", "PAYMENT_RECEIVED_IN_CASH_UNDONE",
+          "PAYMENT_CHARGEBACK_REQUESTED", "PAYMENT_CHARGEBACK_DISPUTE", "PAYMENT_AWAITING_CHARGEBACK_REVERSAL",
+          "PAYMENT_AWAITING_RISK_ANALYSIS", "PAYMENT_APPROVED_BY_RISK_ANALYSIS", "PAYMENT_REPROVED_BY_RISK_ANALYSIS",
+          "PAYMENT_AUTHORIZED", "PAYMENT_CREDIT_CARD_CAPTURE_REFUSED", "PAYMENT_BANK_SLIP_CANCELLED",
+          "INVOICE_CREATED", "INVOICE_UPDATED", "INVOICE_SYNCHRONIZED", "INVOICE_AUTHORIZED",
+          "INVOICE_PROCESSING_CANCELLATION", "INVOICE_CANCELED", "INVOICE_CANCELLATION_DENIED", "INVOICE_ERROR",
+        ],
+      };
+      try {
+        const r = nosso?.id
+          ? await asaasPut<any>(`/webhooks/${encodeURIComponent(String(nosso.id))}`, corpo)
+          : await asaasPost<any>("/webhooks", corpo);
+        return json({ ok: true, acao: nosso?.id ? "atualizado" : "criado", webhook: semSegredo(r) });
+      } catch (e) {
+        return json({ ok: false, erro: e instanceof Error ? e.message : String(e) }, 502);
+      }
     }
 
     /* ------------- ATUALIZAR (única ação que fala com o Asaas) ------------- */

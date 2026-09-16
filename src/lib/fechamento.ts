@@ -40,6 +40,8 @@ export type Pendencia = {
   frente: Frente;
   /** A célula para onde a tela leva. `null` quando não há célula (categoria órfã). */
   rubrica: string | null;
+  /** O código do Omie da categoria órfã — leva ao Plano de contas, onde ela ganha rubrica. */
+  categoria?: string;
   mes: string;
   titulo: string;
   detalhe: string;
@@ -83,6 +85,8 @@ const brl = (n: number) =>
 export type CategoriaOrfa = {
   mes: string;
   categoria: string;
+  /** O código do Omie. A RPC sempre mandou; a tela passou a usar para o link. */
+  codigo?: string | null;
   quantidade: number;
   valor: number;
   /** Em quantos dos 6 meses anteriores a categoria já vinha órfã. 0 = novidade. */
@@ -153,6 +157,7 @@ export function montarFechamento(opts: {
       chave: `orfa|${o.categoria}`,
       frente: "sem_de_para",
       rubrica: null,
+      ...(o.codigo ? { categoria: o.codigo } : {}),
       mes,
       titulo: nova
         ? `Categoria nova sem DE-PARA: ${o.categoria}`

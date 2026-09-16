@@ -1,8 +1,10 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Link } from "react-router-dom";
 import {
   Loader2, TriangleAlert, Check, FileText, Users, Undo2, ArrowRightLeft, CreditCard, ChevronDown,
-  Paperclip, MessageSquareText, ChevronRight,
+  Paperclip, MessageSquareText, ChevronRight, ArrowUpRight,
 } from "lucide-react";
+import { baseDoTipo, linkPlanoContas } from "@/lib/linksPlanoContas";
 import { toast } from "sonner";
 import { supabase } from "@/integrations/supabase/client";
 import { cn } from "@/lib/utils";
@@ -86,6 +88,10 @@ export type AlvoLancamentos = {
      painel simplesmente não tem com o que confrontar. */
   celulaAnterior?: number | null;
   travadoAnterior?: boolean;
+  /* Códigos do Omie para a lista já abrir filtrada — é o que chega quando alguém
+     sai do Plano de contas querendo ver UMA categoria dentro da célula. O
+     cabeçalho continua somando a célula inteira. */
+  categorias?: string[];
 };
 
 type Lancamento = {
@@ -759,10 +765,13 @@ export function LancamentosSheet({
      categorias do mês novo seriam comparadas com as do corte velho e sairiam
      carimbadas de "nova". O chip aberto NÃO se mexe: é preferência de leitura,
      não estado da célula. */
+  const categoriasPedidas = alvo?.categorias?.join(",") ?? "";
   useEffect(() => {
-    setFiltro(filtroInicial());
+    const inicial = filtroInicial();
+    if (categoriasPedidas) inicial.categorias = new Set(categoriasPedidas.split(","));
+    setFiltro(inicial);
     setHistCategorias([]);
-  }, [alvo?.tipo, alvo?.rubrica, alvo?.mes]);
+  }, [alvo?.tipo, alvo?.rubrica, alvo?.mes, categoriasPedidas]);
 
   const categorias = categoriasDaCelula(linhas);
   /* A composição sai da MESMA lista que está na tela — o histórico só entra
@@ -1333,8 +1342,19 @@ export function LancamentosSheet({
               {/* Curto na tela, exato no hover: qual campo de data o corte usa
                   é o que se confere contra o ERP, mas não precisa ocupar uma
                   linha inteira do cabeçalho toda vez que o painel abre. */}
-              <p className="pt-0.5 text-[11px] text-muted-foreground" title={`Lançamentos do Omie por ${dataUsada}`}>
-                {alvo.tipo.toUpperCase()} · Omie por {alvo.tipo === "dre" ? "competência" : "caixa"}
+              <p className="flex flex-wrap items-center gap-x-2 pt-0.5 text-[11px] text-muted-foreground">
+                <span title={`Lançamentos do Omie por ${dataUsada}`}>
+                  {alvo.tipo.toUpperCase()} · Omie por {alvo.tipo === "dre" ? "competência" : "caixa"}
+                </span>
+                {/* A rubrica mês a mês contra as categorias que a formam, com o porquê
+                    de cada diferença — digitado, travado ou sem explicação. */}
+                <Link
+                  to={linkPlanoContas({ visao: "conferencia", base: baseDoTipo(alvo.tipo), rubrica: alvo.rubrica })}
+                  className="inline-flex items-center gap-0.5 font-medium text-sky-800 hover:underline"
+                  title="Conferir esta rubrica contra as categorias do Omie, mês a mês"
+                >
+                  Conferir no plano de contas <ArrowUpRight className="h-2.5 w-2.5" />
+                </Link>
               </p>
 
               <div className="mt-3 flex items-stretch overflow-hidden rounded-lg border border-border">
@@ -1483,6 +1503,7 @@ export function LancamentosSheet({
 
             {!carregando && !erro && temComposicao && composicao && resumo === "categorias" && (
               <ComposicaoCategorias
+                base={baseDoTipo(alvo.tipo)}
                 comp={composicao}
                 marcadas={filtro.categorias}
                 onMarcadas={(c) => setFiltro({ ...filtro, categorias: c })}

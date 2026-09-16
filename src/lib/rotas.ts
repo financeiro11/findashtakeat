@@ -18,6 +18,7 @@ export const ROTAS: Record<string, { crumbs: string[]; context?: string }> = {
   "/governanca/cartao": { crumbs: ["Governança", "Cartão"], context: "Evolução da fatura · Sicoob" },
   "/governanca/vigilancia": { crumbs: ["Governança", "Vigilância externa"], context: "Página de preço do fornecedor mexeu? · o cliente inadimplente ainda está aberto?" },
   "/orcamento": { crumbs: ["Governança", "Orçamento"], context: "Orçado × realizado · competência do Omie" },
+  "/governanca/plano-de-contas": { crumbs: ["Governança", "Plano de contas"], context: "As categorias do Omie, uma a uma · quem recebe, quanto e em que linha cai" },
   "/governanca/cac": { crumbs: ["Governança", "Painel CAC"], context: "Custo de aquisição por time · exporta para o sistema da controladoria" },
   "/governanca/rescisoes": { crumbs: ["Governança", "Rescisões"], context: "Acerto de saída parcela a parcela · cálculo da skill Rescisão PJ + controle do pagamento" },
   "/operacional/colaboradores": { crumbs: ["Operacional", "Colaboradores (RH)"], context: "Ficha do colaborador · espelho do Portal RH" },

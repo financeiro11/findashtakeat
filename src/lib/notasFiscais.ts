@@ -830,9 +830,10 @@ export const BLOQUEIOS_CADASTRO: Record<string, string> = {
 };
 
 export const FONTE_ENDERECO: Record<string, string> = {
-  receita: "endereço e razão social da Receita Federal",
-  cep: "endereço do Asaas com cidade e UF conferidas pelo CEP",
-  asaas: "endereço do Asaas, sem conferência externa",
+  asaas: "endereço do Asaas, com cidade e UF conferidas pelo CEP",
+  receita: "endereço e razão social da Receita Federal (o Asaas estava incompleto)",
+  firecrawl: "endereço e razão social da Receita, por consulta pública (o Asaas estava incompleto)",
+  cep: "endereço incompleto do Asaas, completado pelo CEP",
 };
 
 /** O selo de uma linha já trabalhada: o que aconteceu, e com que peso. */
